@@ -60,7 +60,7 @@ defmodule SwarmCode.Daemon.Platform.PrivateDirectory do
        do: unsafe(path, :wrong_owner)
 
   defp validate_directory(path, %File.Stat{mode: mode}, _uid)
-       when band(mode, 0o777) != @private_mode,
+       when band(mode, 0o7777) != @private_mode,
        do: unsafe(path, :permissions)
 
   defp validate_directory(_path, %File.Stat{}, _uid), do: :ok

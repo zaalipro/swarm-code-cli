@@ -25,6 +25,19 @@ defmodule SwarmCode.Daemon.Platform.PrivateDirectoryTest do
     assert permissions(leaf) == 0o755
   end
 
+  test "rejects setuid, setgid, and sticky bits on an otherwise mode-0700 directory" do
+    for mode <- [0o4700, 0o2700, 0o1700] do
+      {leaf, uid} = temp_leaf()
+      File.mkdir!(leaf)
+      chmod_special!(leaf, mode)
+
+      assert {:error, {:unsafe_private_directory, ^leaf, :permissions}} =
+               PrivateDirectory.ensure(leaf, uid)
+
+      assert permissions(leaf) == mode
+    end
+  end
+
   test "rejects a symlink" do
     {leaf, uid} = temp_leaf()
     target = Path.join(Path.dirname(leaf), "target")
@@ -98,5 +111,9 @@ defmodule SwarmCode.Daemon.Platform.PrivateDirectoryTest do
     {leaf, File.lstat!(parent).uid}
   end
 
-  defp permissions(path), do: band(File.lstat!(path).mode, 0o777)
+  defp permissions(path), do: band(File.lstat!(path).mode, 0o7777)
+
+  defp chmod_special!(path, mode) do
+    assert {"", 0} = System.cmd("/bin/chmod", [Integer.to_string(mode, 8), path])
+  end
 end
