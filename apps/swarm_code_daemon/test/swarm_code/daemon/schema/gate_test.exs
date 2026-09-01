@@ -129,6 +129,58 @@ defmodule SwarmCode.Daemon.Schema.GateTest do
     assert sha256_file(database) == before
   end
 
+  test "the probe rejects on the 44th migration row without mutation", %{current: database} do
+    SchemaFixture.insert_migration!(database, 20_990_101_000_000)
+    before = sha256_file(database)
+
+    assert {:error, %{code: :schema_incompatible}} = Probe.inspect(database)
+    assert sha256_file(database) == before
+  end
+
+  test "the probe rejects more than 512 normalized schema rows without mutation", %{
+    current: database
+  } do
+    statements =
+      for number <- 1..513 do
+        "CREATE TABLE injected_#{number}(value TEXT);"
+      end
+
+    SchemaFixture.exec!(database, IO.iodata_to_binary(statements))
+    before = sha256_file(database)
+
+    assert {:error, %{code: :schema_incompatible}} = Probe.inspect(database)
+    assert sha256_file(database) == before
+  end
+
+  @tag timeout: 30_000
+  test "the probe rejects more than 4194304 normalized schema bytes without mutation", %{
+    current: database
+  } do
+    payload = String.duplicate("x", 4_194_304)
+    SchemaFixture.exec!(database, "CREATE VIEW oversized AS SELECT '#{payload}' AS value")
+    before = sha256_file(database)
+
+    assert {:error, %{code: :schema_incompatible}} = Probe.inspect(database)
+    assert sha256_file(database) == before
+  end
+
+  test "the probe records only whether a foreign-key violation exists", %{current: database} do
+    SchemaFixture.exec!(
+      database,
+      """
+      CREATE TABLE injected_parent(id INTEGER PRIMARY KEY);
+      CREATE TABLE injected_child(
+        id INTEGER PRIMARY KEY,
+        parent_id INTEGER REFERENCES injected_parent(id)
+      );
+      INSERT INTO injected_child(id, parent_id) VALUES (1, 10), (2, 20);
+      """
+    )
+
+    assert {:ok, probe} = Probe.inspect(database)
+    assert probe.foreign_key_violations == [[1]]
+  end
+
   defp temporary_directory! do
     directory =
       Path.join(

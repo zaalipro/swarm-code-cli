@@ -71,6 +71,12 @@ defmodule SwarmCode.Daemon.Schema.MigrationManifestTest do
     assert_invalid(&Map.put(&1, "sqlite_minimum", "3.51"))
   end
 
+  test "rejects alternate canonical semantic versions for every audited minimum" do
+    assert_invalid(&Map.put(&1, "minimum_reader", "0.2.0"))
+    assert_invalid(&Map.put(&1, "minimum_writer", "0.0.9"))
+    assert_invalid(&Map.put(&1, "sqlite_minimum", "3.50.0"))
+  end
+
   test "malformed runtime keys do not create atoms" do
     key = "runtime-key-#{System.unique_integer([:positive, :monotonic])}"
 

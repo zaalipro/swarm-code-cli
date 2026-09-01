@@ -55,3 +55,52 @@ the temporary directory in `after`.
 ## Concerns
 
 None within Task 6 scope.
+
+## Fix round 1 — review findings
+
+### RED evidence
+
+All review regressions were added before their production changes and failed for the reviewed
+reasons:
+
+- `mise exec -- mix test .../migration_manifest_test.exs`: **6 tests, 1 failure** — alternate
+  canonical `minimum_reader` SemVer loaded without raising.
+- `mise exec -- mix test .../sqlite_query_test.exs`: **3 tests, 3 failures** — the requested
+  reducing API did not exist. The tests cover statement release on success, row-limit rejection,
+  and reducer failure; binding and stepping failure release checks were included in the completed
+  suite as well.
+- `mise exec -- mix test .../gate_test.exs`: **12 tests, 4 failures** — Probe accepted a 44th
+  migration, more than 512 schema rows, more than 4,194,304 normalized bytes, and materialized both
+  FK diagnostic rows.
+- `mise exec -- mix test .../generate_manifest_test.exs`: **1 test, 1 failure** — direct and
+  aliased upstream destinations reached pinned-object lookup instead of being rejected by output
+  confinement.
+
+### GREEN evidence
+
+- `mise exec -- mix test apps/swarm_code_daemon/test/swarm_code/daemon/schema`: **24 tests,
+  0 failures**.
+- Pinned regeneration again produced byte-identical JSON and SQL fixtures; upstream porcelain was
+  identical before and after.
+- `MIX_ENV=test mise exec -- mix precommit`: core **20 tests, 0 failures**; daemon **65 tests,
+  0 failures**; no CLI tests; `provenance verified`.
+
+### Fix-round self-review
+
+- Decoder validation now retains canonical SemVer syntax validation and separately pins reader,
+  writer, and SQLite minimums to `0.1.0-dev`, `0.1.0-dev`, and `3.51.3`.
+- `SqliteQuery.reduce/6` owns prepare/bind/step/release and enforces a nonnegative row ceiling.
+  Its fake-adapter tests observe the same prepared statement being released on success, limit,
+  reducer, bind, and step exits. `rows/3` remains compatible but is bounded by default.
+- Migration collection executes `LIMIT 44`, materializes at most the 44-row sentinel, and rejects
+  that sentinel rather than accepting more than the audited 43.
+- Schema collection executes `LIMIT 513`, rejects the 513th row through the reducing API, masks an
+  individually oversized SQL field inside SQLite, and incrementally hashes each unambiguous
+  encoded field while enforcing the exact 4,194,304-byte aggregate ceiling. It never retains the
+  schema row set or a full-schema encoding.
+- FK probing asks only `SELECT 1 ... LIMIT 1`; every other probe query has an explicit bound, and
+  quick-check is restricted to one diagnostic.
+- Generator destinations and its temporary directory are resolved component-by-component through
+  existing symlinks and normalized ancestors before any write. Any destination contained by the
+  resolved upstream root is rejected. Successful generation records clean upstream porcelain and
+  rechecks the exact value in `after`.

@@ -19,25 +19,32 @@ defmodule SwarmCode.Daemon.Schema.ManifestGenerator do
   def run!(argv) do
     {:ok, _started} = Application.ensure_all_started(:ecto_sqlite3)
     opts = parse_args!(argv)
-    verify_source!(opts.upstream, opts.commit)
-    migrations = read_migrations!(opts.upstream, opts.commit)
-    verify_migration_sources!(migrations)
-
-    temporary_directory =
-      Path.join(
-        System.tmp_dir!(),
-        "swarm-code-schema-manifest-#{random_suffix()}"
-      )
-
-    File.mkdir!(temporary_directory)
+    validate_output_paths!(opts)
+    initial_porcelain = verify_source!(opts.upstream, opts.commit)
 
     try do
-      File.chmod!(temporary_directory, 0o700)
-      {entries, snapshots} = migrate_and_inspect!(temporary_directory, migrations)
-      verify_generated_lineage!(entries)
-      write_outputs!(opts.output, opts.fixtures_dir, entries, snapshots, opts.upstream)
+      migrations = read_migrations!(opts.upstream, opts.commit)
+      verify_migration_sources!(migrations)
+
+      temporary_directory =
+        Path.join(
+          System.tmp_dir!(),
+          "swarm-code-schema-manifest-#{random_suffix()}"
+        )
+
+      reject_upstream_destination!(temporary_directory, opts.upstream)
+      File.mkdir!(temporary_directory)
+
+      try do
+        File.chmod!(temporary_directory, 0o700)
+        {entries, snapshots} = migrate_and_inspect!(temporary_directory, migrations)
+        verify_generated_lineage!(entries)
+        write_outputs!(opts.output, opts.fixtures_dir, entries, snapshots, opts.upstream)
+      after
+        File.rm_rf!(temporary_directory)
+      end
     after
-      File.rm_rf!(temporary_directory)
+      verify_porcelain_unchanged!(opts.upstream, initial_porcelain)
     end
   end
 
@@ -74,20 +81,99 @@ defmodule SwarmCode.Daemon.Schema.ManifestGenerator do
     opts
   end
 
+  defp validate_output_paths!(opts) do
+    reject_upstream_destination!(opts.output, opts.upstream)
+    reject_upstream_destination!(opts.fixtures_dir, opts.upstream)
+  end
+
+  defp reject_upstream_destination!(destination, upstream) do
+    resolved_upstream = resolve_path!(upstream)
+    resolved_destination = resolve_path!(destination)
+    relative = Path.relative_to(resolved_destination, resolved_upstream)
+
+    inside? =
+      relative == "." or
+        (Path.type(relative) == :relative and relative != ".." and
+           not String.starts_with?(relative, "../"))
+
+    if inside? do
+      raise ArgumentError, "generator outputs must resolve outside upstream worktree"
+    end
+  end
+
+  defp resolve_path!(path) do
+    path
+    |> Path.expand()
+    |> Path.split()
+    |> resolve_components!(0)
+  end
+
+  defp resolve_components!(_components, symlink_depth) when symlink_depth > 40 do
+    raise ArgumentError, "generator path contains too many symbolic links"
+  end
+
+  defp resolve_components!([root | components], symlink_depth) do
+    resolve_components!(root, components, symlink_depth)
+  end
+
+  defp resolve_components!(resolved, [], _symlink_depth), do: resolved
+
+  defp resolve_components!(resolved, [component | remaining], symlink_depth) do
+    candidate = Path.join(resolved, component)
+
+    case File.lstat(candidate) do
+      {:ok, %File.Stat{type: :symlink}} ->
+        target = File.read_link!(candidate)
+
+        target =
+          case Path.type(target) do
+            :absolute -> target
+            :relative -> Path.expand(target, resolved)
+            :volumerelative -> raise ArgumentError, "unsupported volume-relative generator path"
+          end
+
+        resolved_target =
+          target
+          |> Path.expand()
+          |> Path.split()
+          |> resolve_components!(symlink_depth + 1)
+
+        resolve_components!(resolved_target, remaining, symlink_depth + 1)
+
+      {:ok, _stat} ->
+        resolve_components!(candidate, remaining, symlink_depth)
+
+      {:error, :enoent} ->
+        Path.join([candidate | remaining]) |> Path.expand()
+
+      {:error, reason} ->
+        raise ArgumentError, "generator path cannot be resolved: #{inspect(reason)}"
+    end
+  end
+
   defp verify_source!(upstream, commit) do
     unless File.dir?(upstream) do
       raise ArgumentError, "upstream must be an existing Git worktree"
     end
 
-    case git(upstream, ["status", "--porcelain", "--untracked-files=all"]) do
-      {"", 0} -> :ok
-      {_dirty, 0} -> raise ArgumentError, "upstream worktree must be clean"
-      {_output, _status} -> raise ArgumentError, "unable to inspect upstream worktree"
-    end
+    porcelain =
+      case git(upstream, ["status", "--porcelain", "--untracked-files=all"]) do
+        {"", 0} -> ""
+        {_dirty, 0} -> raise ArgumentError, "upstream worktree must be clean"
+        {_output, _status} -> raise ArgumentError, "unable to inspect upstream worktree"
+      end
 
     case git(upstream, ["cat-file", "-e", "#{commit}^{commit}"]) do
-      {"", 0} -> :ok
+      {"", 0} -> porcelain
       {_output, _status} -> raise ArgumentError, "pinned upstream commit is unavailable"
+    end
+  end
+
+  defp verify_porcelain_unchanged!(upstream, initial_porcelain) do
+    case git(upstream, ["status", "--porcelain", "--untracked-files=all"]) do
+      {^initial_porcelain, 0} -> :ok
+      {_output, 0} -> raise ArgumentError, "upstream worktree changed during generation"
+      {_output, _status} -> raise ArgumentError, "unable to recheck upstream worktree"
     end
   end
 
@@ -301,8 +387,12 @@ defmodule SwarmCode.Daemon.Schema.ManifestGenerator do
   end
 
   defp write_outputs!(output, fixtures_dir, entries, snapshots, upstream) do
+    reject_upstream_destination!(output, upstream)
+    reject_upstream_destination!(fixtures_dir, upstream)
     File.mkdir_p!(Path.dirname(output))
     File.mkdir_p!(fixtures_dir)
+    reject_upstream_destination!(output, upstream)
+    reject_upstream_destination!(fixtures_dir, upstream)
 
     outputs = [
       {output, manifest_json(entries)},
@@ -320,6 +410,8 @@ defmodule SwarmCode.Daemon.Schema.ManifestGenerator do
     end)
 
     Enum.each(outputs, fn {path, contents} ->
+      reject_upstream_destination!(path, upstream)
+
       case AtomicReplace.write(path, contents, mode: 0o644) do
         :ok -> :ok
         {:error, reason} -> raise File.Error, reason: inspect(reason), action: "write", path: path

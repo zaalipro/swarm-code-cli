@@ -140,6 +140,9 @@ defmodule SwarmCode.Daemon.Schema.MigrationManifest do
     semantic_version!(decoded["minimum_reader"], "minimum reader")
     semantic_version!(decoded["minimum_writer"], "minimum writer")
     semantic_version!(decoded["sqlite_minimum"], "SQLite minimum")
+    require_equal!(decoded["minimum_reader"], "0.1.0-dev", "minimum reader")
+    require_equal!(decoded["minimum_writer"], "0.1.0-dev", "minimum writer")
+    require_equal!(decoded["sqlite_minimum"], "3.51.3", "SQLite minimum")
     digest!(decoded["migration_set_sha256"], "migration-set digest")
 
     require_equal!(
