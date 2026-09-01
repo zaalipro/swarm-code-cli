@@ -3,6 +3,7 @@ defmodule SwarmCode.Daemon.Test.OSProcess do
 
   @default_timeout 5_000
   @owner_key {__MODULE__, :owner}
+  @candidate_owned 1
 
   @spec start_lease_probe!(Path.t()) :: port()
   def start_lease_probe!(dir), do: start_lease_probe!(dir, [])
@@ -19,6 +20,7 @@ defmodule SwarmCode.Daemon.Test.OSProcess do
     owner_opts = %{
       activate_after_first_event?: Keyword.get(test_opts, :activate_after_first_event, false),
       activation_barrier: Keyword.get(test_opts, :activation_barrier),
+      candidate_registration_barrier: Keyword.get(test_opts, :candidate_registration_barrier),
       lifecycle_observer: Keyword.get(test_opts, :lifecycle_observer),
       owner_exit_barrier: Keyword.get(test_opts, :owner_exit_barrier),
       port_opener: Keyword.get(test_opts, :port_opener, &Port.open/2)
@@ -223,6 +225,7 @@ defmodule SwarmCode.Daemon.Test.OSProcess do
     notify_observers(observers, {:owner_started, self()})
     owner = self()
     open_ref = make_ref()
+    open_phase = :atomics.new(1, [])
     port_name = {:spawn_executable, executable}
 
     port_options = [
@@ -234,18 +237,28 @@ defmodule SwarmCode.Daemon.Test.OSProcess do
 
     {worker, worker_monitor} =
       spawn_monitor(fn ->
-        port_worker(owner, open_ref, opts.port_opener, port_name, port_options)
+        port_worker(
+          owner,
+          open_ref,
+          open_phase,
+          opts.candidate_registration_barrier,
+          opts.port_opener,
+          port_name,
+          port_options
+        )
       end)
 
     opening_loop(%{
       activate_after_first_event?: opts.activate_after_first_event?,
       activation_barrier: opts.activation_barrier,
       activation_sent?: false,
+      candidate_registration_barrier: opts.candidate_registration_barrier,
       cleanup_status: nil,
       exit_status: nil,
       finish_ack?: false,
       observers: observers,
       open_error: nil,
+      open_phase: open_phase,
       open_ref: open_ref,
       owner_exit_barrier: opts.owner_exit_barrier,
       port: nil,
@@ -264,12 +277,25 @@ defmodule SwarmCode.Daemon.Test.OSProcess do
     })
   end
 
-  defp port_worker(owner, open_ref, port_opener, port_name, port_options) do
+  defp port_worker(
+         owner,
+         open_ref,
+         open_phase,
+         candidate_registration_barrier,
+         port_opener,
+         port_name,
+         port_options
+       ) do
     try do
       port = port_opener.(port_name, port_options)
       true = is_port(port)
       {:os_pid, os_pid} = Port.info(port, :os_pid)
+      :atomics.put(open_phase, 1, @candidate_owned)
       send(owner, {open_ref, :candidate, self(), port, os_pid})
+
+      if candidate_registration_barrier do
+        send(owner, {open_ref, :candidate_published, self(), port, os_pid})
+      end
 
       port_worker_loop(%{
         active?: false,
@@ -335,11 +361,17 @@ defmodule SwarmCode.Daemon.Test.OSProcess do
   defp opening_loop(state) do
     receive do
       {open_ref, :candidate, worker, port, os_pid}
-      when open_ref == state.open_ref and worker == state.worker ->
-        port_monitor = Port.monitor(port)
-        notify_observers(state.observers, {:candidate_opened, self(), worker, port, os_pid})
-        state = %{state | port: port, port_monitor: port_monitor, port_os_pid: os_pid}
-        opening_loop(maybe_activate(state))
+      when open_ref == state.open_ref and worker == state.worker and
+             is_nil(state.candidate_registration_barrier) ->
+        state
+        |> register_candidate(worker, port, os_pid)
+        |> maybe_activate()
+        |> opening_loop()
+
+      {open_ref, :candidate_published, worker, port, os_pid}
+      when open_ref == state.open_ref and worker == state.worker and
+             not is_nil(state.candidate_registration_barrier) ->
+        await_candidate_registration(state, worker, port, os_pid)
 
       {open_ref, :port_event, port, event}
       when open_ref == state.open_ref and port == state.port ->
@@ -403,15 +435,104 @@ defmodule SwarmCode.Daemon.Test.OSProcess do
     send(state.test_process, {state.start_ref, self(), {:error, {:port_worker_exit, reason}}})
   end
 
+  defp await_candidate_registration(state, worker, port, os_pid) do
+    {barrier_process, barrier_ref} = state.candidate_registration_barrier
+
+    notify_observers(
+      state.observers,
+      {:candidate_awaiting_registration, self(), worker, port, os_pid}
+    )
+
+    send(
+      barrier_process,
+      {barrier_ref, {:candidate_registration_blocked, self(), worker, port, os_pid}}
+    )
+
+    candidate_registration_loop(state, barrier_ref)
+  end
+
+  defp candidate_registration_loop(state, barrier_ref) do
+    receive do
+      {^barrier_ref, :continue} ->
+        opening_loop(%{state | candidate_registration_barrier: nil})
+
+      {:cancel_start, from, request_ref} ->
+        cancel_opening(state, {from, request_ref})
+
+      {:DOWN, monitor, :process, process, _reason}
+      when monitor == state.test_monitor and process == state.test_process ->
+        cancel_opening(%{state | test_process: nil}, nil)
+    end
+  end
+
+  defp register_candidate(state, worker, port, os_pid) do
+    port_monitor = Port.monitor(port)
+    notify_observers(state.observers, {:candidate_opened, self(), worker, port, os_pid})
+    %{state | port: port, port_monitor: port_monitor, port_os_pid: os_pid}
+  end
+
   defp cancel_opening(%{port: nil} = state, waiter) do
-    Process.exit(state.worker, :kill)
-    cancel_without_candidate_loop(state, waiter)
+    case suspend_opening_worker(state) do
+      :blocked_without_port ->
+        Process.exit(state.worker, :kill)
+        cancel_without_candidate_loop(state, waiter)
+
+      :candidate_owned ->
+        cleanup_ref = make_ref()
+        send(state.worker, {state.open_ref, :cleanup, cleanup_ref})
+        true = :erlang.resume_process(state.worker)
+
+        await_candidate_for_cancellation(%{
+          state
+          | termination: {:cleanup, waiter, cleanup_ref},
+            worker_down?: false
+        })
+    end
   end
 
   defp cancel_opening(state, waiter) do
     cleanup_ref = make_ref()
     send(state.worker, {state.open_ref, :cleanup, cleanup_ref})
     termination_loop(%{state | termination: {:cleanup, waiter, cleanup_ref}, worker_down?: false})
+  end
+
+  defp suspend_opening_worker(state) do
+    true = :erlang.suspend_process(state.worker, [:unless_suspending])
+
+    if :atomics.get(state.open_phase, 1) == @candidate_owned or
+         worker_has_open_port?(state.worker) do
+      :candidate_owned
+    else
+      :blocked_without_port
+    end
+  end
+
+  defp worker_has_open_port?(worker) do
+    case Process.info(worker, :links) do
+      {:links, links} -> Enum.any?(links, &is_port/1)
+      nil -> false
+    end
+  end
+
+  defp await_candidate_for_cancellation(state) do
+    receive do
+      {open_ref, :candidate, worker, port, os_pid}
+      when open_ref == state.open_ref and worker == state.worker ->
+        state
+        |> register_candidate_for_cancellation(worker, port, os_pid)
+        |> termination_loop()
+    end
+  end
+
+  defp register_candidate_for_cancellation(state, worker, port, os_pid) do
+    port_monitor = Port.monitor(port)
+
+    notify_observers(
+      state.observers,
+      {:candidate_cleanup_registered, self(), worker, port, os_pid}
+    )
+
+    %{state | port: port, port_monitor: port_monitor, port_os_pid: os_pid}
   end
 
   defp cancel_without_candidate_loop(state, waiter) do

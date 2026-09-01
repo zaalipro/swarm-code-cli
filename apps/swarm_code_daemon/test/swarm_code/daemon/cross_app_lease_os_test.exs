@@ -187,6 +187,64 @@ defmodule SwarmCode.Daemon.CrossAppLeaseOSTest do
     refute File.exists?(Path.join(real_dir, "swarm_code.db"))
   end
 
+  test "startup cancellation before candidate registration observes the real process exit" do
+    dir = private_tmp!()
+    lifecycle_ref = make_ref()
+    registration_ref = make_ref()
+    test_process = self()
+
+    watcher =
+      start_supervised!(
+        {Task, fn -> open_lifecycle_watcher(test_process, lifecycle_ref) end},
+        id: {:pre_registration_lifecycle_watcher, lifecycle_ref}
+      )
+
+    port_opener = fn _name, _options ->
+      Port.open(
+        {:spawn_executable, "/bin/sh"},
+        [
+          :binary,
+          :exit_status,
+          {:line, 4096},
+          args: ["-c", "printf 'READY %s\\n' \"$$\"; exec /bin/cat"]
+        ]
+      )
+    end
+
+    assert_raise RuntimeError, "timed out starting lease probe", fn ->
+      OSProcess.start_lease_probe!(dir,
+        timeout: 1_000,
+        candidate_registration_barrier: {watcher, registration_ref},
+        lifecycle_observer: {watcher, lifecycle_ref},
+        port_opener: port_opener
+      )
+    end
+
+    assert_receive {^lifecycle_ref, {:owner_started, owner}}
+
+    assert_receive {^lifecycle_ref,
+                    {:candidate_awaiting_registration, ^owner, worker, port, os_pid}}
+
+    assert_receive {^port, {:data, {:eol, "READY " <> ready_pid}}}
+    assert Integer.to_string(os_pid) == ready_pid
+    assert_receive {^port, {:exit_status, exact_status}}
+    assert_receive {^lifecycle_ref, {:external_exit, ^port, ^exact_status}}
+    assert exact_status != 0
+    assert_receive {^lifecycle_ref, {:port_down, ^port, :normal}}
+    assert_receive {^lifecycle_ref, {:opener_down, ^worker, :normal}}
+    assert_receive {^lifecycle_ref, {:owner_down, :normal}}
+
+    assert {_, status} =
+             System.cmd("/bin/kill", ["-0", Integer.to_string(os_pid)], stderr_to_stdout: true)
+
+    assert status != 0
+    refute_received {^lifecycle_ref, {:candidate_opened, _owner, _worker, _port, _os_pid}}
+    refute_received {^lifecycle_ref, {:activated, _owner, _worker, _port, _os_pid}}
+    refute File.exists?(Path.join(dir, "instance_lease.db"))
+    refute File.exists?(Path.join(dir, "instance_owner.json"))
+    refute File.exists?(Path.join(dir, "swarm_code.db"))
+  end
+
   test "a probe that never emits READY is closed and fully reaped by the protocol timeout" do
     dir = private_tmp!()
     canonical = Path.join(dir, "swarm_code.db")
@@ -328,6 +386,18 @@ defmodule SwarmCode.Daemon.CrossAppLeaseOSTest do
         )
 
       {^lifecycle_ref, {:candidate_opened, _owner, opener, port, _os_pid} = event} ->
+        opener_monitor = Process.monitor(opener)
+        port_monitor = Port.monitor(port)
+        send(test_process, {lifecycle_ref, event})
+
+        monitors =
+          monitors
+          |> Map.put(opener_monitor, {:opener, opener})
+          |> Map.put(port_monitor, {:port, port})
+
+        open_lifecycle_watcher(test_process, lifecycle_ref, monitors)
+
+      {^lifecycle_ref, {:candidate_awaiting_registration, _owner, opener, port, _os_pid} = event} ->
         opener_monitor = Process.monitor(opener)
         port_monitor = Port.monitor(port)
         send(test_process, {lifecycle_ref, event})
