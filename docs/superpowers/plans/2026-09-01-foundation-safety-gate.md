@@ -426,7 +426,7 @@ git commit -m "build: enforce source provenance policy"
 - Test: `apps/swarm_code_daemon/test/swarm_code/daemon/platform/process_identity_test.exs`
 
 **Interfaces:**
-- `Paths.resolve(keyword()) :: {:ok, PathSet.t()} | {:error, :unsupported_platform | :relative_xdg_path | :alternate_database_forbidden}`.
+- `Paths.resolve(keyword()) :: {:ok, PathSet.t()} | {:error, :unsupported_platform | :relative_xdg_path | :relative_database_path | :alternate_database_forbidden}`.
 - Options are trusted atoms selected by boot code: `platform: :macos | :linux`, `mode: :production | :development | :test | :recovery`, `home: Path.t()`, `env: %{optional(String.t()) => String.t()}`, and optional `database_path: Path.t()`.
 - `PrivateDirectory.ensure(Path.t(), uid) :: :ok | {:error, {:unsafe_private_directory, Path.t(), atom()}}` creates/chmods the leaf to `0700`, rejects symlinks and wrong ownership, and re-lstats after mutation.
 - `ProcessIdentity.current(keyword()) :: {:ok, ProcessIdentity.t()} | {:error, term()}`; the injectable `read_file` and `command` functions exist only as explicit function options, never runtime-selected modules.
@@ -445,6 +445,7 @@ defmodule SwarmCode.Daemon.Platform.PathsTest do
     assert paths.database == "/Users/alice/Library/Application Support/SwarmCode/swarm_code.db"
     assert paths.lease == "/Users/alice/Library/Application Support/SwarmCode/instance_lease.db"
     assert paths.owner_record == "/Users/alice/Library/Application Support/SwarmCode/instance_owner.json"
+    assert paths.config == "/Users/alice/Library/Application Support/SwarmCode"
     assert paths.runtime == "/private/tmp/alice/swarm-code"
   end
 
@@ -456,6 +457,15 @@ defmodule SwarmCode.Daemon.Platform.PathsTest do
     assert paths.state == "/state/swarm-code"
     assert paths.runtime == "/state/swarm-code/run"
     assert paths.socket == "/state/swarm-code/run/daemon.sock"
+  end
+
+  test "relative XDG roots and alternate database paths fail closed" do
+    assert {:error, :relative_xdg_path} =
+             Paths.resolve(platform: :linux, mode: :production, home: "/home/a",
+               env: %{"XDG_DATA_HOME" => "relative/data"})
+    assert {:error, :relative_database_path} =
+             Paths.resolve(platform: :linux, mode: :recovery, home: "/home/a",
+               env: %{}, database_path: "relative.db")
   end
 
   test "an alternate database is explicit and non-production only" do
@@ -514,29 +524,36 @@ defmodule SwarmCode.Daemon.Platform.Paths do
   defp roots(:macos, home, env) do
     data = Path.join([home, "Library", "Application Support", "SwarmCode"])
     runtime_base = absolute_or(Map.get(env, "TMPDIR"), Path.join([home, "Library", "Caches"]))
-    {:ok, %{data: data, config: Path.join(data, "CLI"), state: Path.join([home, "Library", "Logs", "SwarmCode"]),
+    {:ok, %{data: data, config: data, state: Path.join([home, "Library", "Logs", "SwarmCode"]),
       cache: Path.join([home, "Library", "Caches", "SwarmCode", "CLI"]), runtime: Path.join(runtime_base, "swarm-code")}}
   end
 
   defp roots(:linux, home, env) do
-    data = xdg(env, "XDG_DATA_HOME", Path.join([home, ".local", "share"]))
-    config = xdg(env, "XDG_CONFIG_HOME", Path.join(home, ".config"))
-    state = xdg(env, "XDG_STATE_HOME", Path.join([home, ".local", "state"]))
-    cache = xdg(env, "XDG_CACHE_HOME", Path.join(home, ".cache"))
-    app_state = Path.join(state, "swarm-code")
-    runtime = case Map.get(env, "XDG_RUNTIME_DIR") do
-      value when is_binary(value) and value != "" -> if Path.type(value) == :absolute, do: Path.join(value, "swarm-code"), else: Path.join(app_state, "run")
-      _ -> Path.join(app_state, "run")
+    with {:ok, data} <- xdg(env, "XDG_DATA_HOME", Path.join([home, ".local", "share"])),
+         {:ok, config} <- xdg(env, "XDG_CONFIG_HOME", Path.join(home, ".config")),
+         {:ok, state} <- xdg(env, "XDG_STATE_HOME", Path.join([home, ".local", "state"])),
+         {:ok, cache} <- xdg(env, "XDG_CACHE_HOME", Path.join(home, ".cache")),
+         {:ok, runtime_root} <- xdg(env, "XDG_RUNTIME_DIR", Path.join([state, "swarm-code", "run"])) do
+      app_state = Path.join(state, "swarm-code")
+      runtime = if Map.get(env, "XDG_RUNTIME_DIR") in [nil, ""], do: runtime_root, else: Path.join(runtime_root, "swarm-code")
+      {:ok, %{data: Path.join(data, "swarm-code"), config: Path.join(config, "swarm-code"),
+        state: app_state, cache: Path.join(cache, "swarm-code"), runtime: runtime}}
     end
-    {:ok, %{data: Path.join(data, "swarm-code"), config: Path.join(config, "swarm-code"),
-      state: app_state, cache: Path.join(cache, "swarm-code"), runtime: runtime}}
   end
 
   defp roots(_, _, _), do: {:error, :unsupported_platform}
   defp database(nil, _mode, data), do: {:ok, Path.join(data, "swarm_code.db")}
-  defp database(path, mode, _data) when mode in @non_production, do: {:ok, Path.expand(path)}
+  defp database(path, mode, _data) when mode in @non_production and is_binary(path) do
+    if Path.type(path) == :absolute, do: {:ok, Path.expand(path)}, else: {:error, :relative_database_path}
+  end
   defp database(_path, _mode, _data), do: {:error, :alternate_database_forbidden}
-  defp xdg(env, key, fallback), do: absolute_or(Map.get(env, key), fallback)
+  defp xdg(env, key, fallback) do
+    case Map.get(env, key) do
+      value when is_binary(value) and value != "" ->
+        if Path.type(value) == :absolute, do: {:ok, Path.expand(value)}, else: {:error, :relative_xdg_path}
+      _ -> {:ok, fallback}
+    end
+  end
   defp absolute_or(value, fallback) when is_binary(value) and value != "", do: if(Path.type(value) == :absolute, do: Path.expand(value), else: fallback)
   defp absolute_or(_, fallback), do: fallback
 end
