@@ -46,8 +46,8 @@ SwarmCodeCLI.RootSupervisor (:rest_for_one)
 ├── FoundationSupervisor
 │   ├── PathsAndIdentity
 │   ├── CrossAppLease
-│   ├── SwarmCode.Repo
-│   ├── MigrationAndSchemaGate
+│   ├── MigrationAndSchemaGate       # Ecto.Migrator.with_repo/backup/handshake
+│   ├── SwarmCode.Repo               # starts only after the gate succeeds
 │   ├── CredentialBroker
 │   ├── EventHub
 │   ├── SwarmCode.Registry
