@@ -20,6 +20,7 @@ defmodule SwarmCode.Daemon.Schema.ManifestGenerator do
     {:ok, _started} = Application.ensure_all_started(:ecto_sqlite3)
     opts = parse_args!(argv)
     validate_output_paths!(opts)
+    upstream_identity = directory_identity!(opts.upstream)
     initial_porcelain = verify_source!(opts.upstream, opts.commit)
 
     try do
@@ -44,6 +45,8 @@ defmodule SwarmCode.Daemon.Schema.ManifestGenerator do
         File.rm_rf!(temporary_directory)
       end
     after
+      verify_upstream_identity!(opts.upstream, upstream_identity)
+      validate_output_paths!(opts)
       verify_porcelain_unchanged!(opts.upstream, initial_porcelain)
     end
   end
@@ -87,68 +90,105 @@ defmodule SwarmCode.Daemon.Schema.ManifestGenerator do
   end
 
   defp reject_upstream_destination!(destination, upstream) do
-    resolved_upstream = resolve_path!(upstream)
-    resolved_destination = resolve_path!(destination)
-    relative = Path.relative_to(resolved_destination, resolved_upstream)
+    upstream_identity = directory_identity!(upstream)
+    existing_ancestor = destination_existing_base!(Path.absname(destination))
 
-    inside? =
-      relative == "." or
-        (Path.type(relative) == :relative and relative != ".." and
-           not String.starts_with?(relative, "../"))
-
-    if inside? do
+    if ancestor_identity?(existing_ancestor, upstream_identity, MapSet.new()) do
       raise ArgumentError, "generator outputs must resolve outside upstream worktree"
     end
   end
 
-  defp resolve_path!(path) do
-    path
-    |> Path.expand()
-    |> Path.split()
-    |> resolve_components!(0)
-  end
-
-  defp resolve_components!(_components, symlink_depth) when symlink_depth > 40 do
-    raise ArgumentError, "generator path contains too many symbolic links"
-  end
-
-  defp resolve_components!([root | components], symlink_depth) do
-    resolve_components!(root, components, symlink_depth)
-  end
-
-  defp resolve_components!(resolved, [], _symlink_depth), do: resolved
-
-  defp resolve_components!(resolved, [component | remaining], symlink_depth) do
-    candidate = Path.join(resolved, component)
-
-    case File.lstat(candidate) do
-      {:ok, %File.Stat{type: :symlink}} ->
-        target = File.read_link!(candidate)
-
-        target =
-          case Path.type(target) do
-            :absolute -> target
-            :relative -> Path.expand(target, resolved)
-            :volumerelative -> raise ArgumentError, "unsupported volume-relative generator path"
-          end
-
-        resolved_target =
-          target
-          |> Path.expand()
-          |> Path.split()
-          |> resolve_components!(symlink_depth + 1)
-
-        resolve_components!(resolved_target, remaining, symlink_depth + 1)
+  defp directory_identity!(path) do
+    case File.stat(path) do
+      {:ok, %File.Stat{type: :directory} = stat} ->
+        filesystem_identity(stat)
 
       {:ok, _stat} ->
-        resolve_components!(candidate, remaining, symlink_depth)
-
-      {:error, :enoent} ->
-        Path.join([candidate | remaining]) |> Path.expand()
+        raise ArgumentError, "generator path is not a directory"
 
       {:error, reason} ->
         raise ArgumentError, "generator path cannot be resolved: #{inspect(reason)}"
     end
+  end
+
+  defp destination_existing_base!(path) do
+    case Path.split(path) do
+      [root | components] -> resolve_destination_components!(root, components, 0)
+      [] -> raise ArgumentError, "generator destination path must not be empty"
+    end
+  end
+
+  defp resolve_destination_components!(existing, [], _missing_depth), do: existing
+
+  defp resolve_destination_components!(existing, ["." | remaining], missing_depth) do
+    resolve_destination_components!(existing, remaining, missing_depth)
+  end
+
+  defp resolve_destination_components!(existing, [".." | remaining], missing_depth)
+       when missing_depth > 0 do
+    resolve_destination_components!(existing, remaining, missing_depth - 1)
+  end
+
+  defp resolve_destination_components!(existing, [".." | remaining], 0) do
+    resolve_destination_components!(Path.join(existing, ".."), remaining, 0)
+  end
+
+  defp resolve_destination_components!(existing, [_component | remaining], missing_depth)
+       when missing_depth > 0 do
+    resolve_destination_components!(existing, remaining, missing_depth + 1)
+  end
+
+  defp resolve_destination_components!(existing, [component | remaining], 0) do
+    candidate = Path.join(existing, component)
+
+    case File.stat(candidate) do
+      {:ok, %File.Stat{type: :directory}} ->
+        resolve_destination_components!(candidate, remaining, 0)
+
+      {:ok, _stat} when remaining == [] ->
+        existing
+
+      {:ok, _stat} ->
+        raise ArgumentError, "generator path traverses a non-directory component"
+
+      {:error, :enoent} ->
+        resolve_destination_components!(existing, remaining, 1)
+
+      {:error, reason} ->
+        raise ArgumentError, "generator path cannot be resolved: #{inspect(reason)}"
+    end
+  end
+
+  defp ancestor_identity?(directory, upstream_identity, seen) do
+    current_identity = directory_identity!(directory)
+
+    cond do
+      current_identity == upstream_identity ->
+        true
+
+      MapSet.member?(seen, current_identity) ->
+        raise ArgumentError, "generator directory ancestry contains a filesystem loop"
+
+      true ->
+        parent = Path.join(directory, "..")
+        parent_identity = directory_identity!(parent)
+
+        if parent_identity == current_identity do
+          false
+        else
+          ancestor_identity?(parent, upstream_identity, MapSet.put(seen, current_identity))
+        end
+    end
+  end
+
+  defp verify_upstream_identity!(upstream, expected_identity) do
+    unless directory_identity!(upstream) == expected_identity do
+      raise ArgumentError, "upstream worktree identity changed during generation"
+    end
+  end
+
+  defp filesystem_identity(stat) do
+    {stat.major_device, stat.minor_device, stat.inode}
   end
 
   defp verify_source!(upstream, commit) do

@@ -31,6 +31,38 @@ defmodule SwarmCode.Daemon.Schema.GenerateManifestTest do
     end
   end
 
+  test "rejects case and Unicode normalization aliases by filesystem identity before .git writes" do
+    root = temporary_directory!()
+    upstream = Path.join(root, "audit-caf\u00E9")
+    filesystem_alias = Path.join(root, "AUDIT-CAFE\u0301")
+    File.mkdir!(upstream)
+    git!(upstream, ["init", "--quiet"])
+
+    if File.dir?(filesystem_alias) do
+      upstream_identity = filesystem_identity(upstream)
+      assert filesystem_identity(filesystem_alias) == upstream_identity
+
+      assert filesystem_identity(Path.join(filesystem_alias, ".GIT")) ==
+               filesystem_identity(Path.join(upstream, ".git"))
+
+      output = Path.join(filesystem_alias, ".GIT/alias-manifest.json")
+      fixtures = Path.join(filesystem_alias, ".GIT/alias-fixtures")
+      before_porcelain = porcelain(upstream)
+      before_git_entries = File.ls!(Path.join(upstream, ".git")) |> Enum.sort()
+
+      {message, status} = run_generator(upstream, output, fixtures)
+
+      assert status != 0
+      assert message =~ "generator outputs must resolve outside upstream worktree"
+      refute File.exists?(output)
+      refute File.exists?(fixtures)
+      assert porcelain(upstream) == before_porcelain
+      assert File.ls!(Path.join(upstream, ".git")) |> Enum.sort() == before_git_entries
+    else
+      refute :os.type() == {:unix, :darwin}
+    end
+  end
+
   defp run_generator(upstream, output, fixtures) do
     System.cmd(
       find_mix!(),
@@ -67,6 +99,11 @@ defmodule SwarmCode.Daemon.Schema.GenerateManifestTest do
 
   defp git!(upstream, args) do
     System.cmd("git", ["-C", upstream | args], stderr_to_stdout: true)
+  end
+
+  defp filesystem_identity(path) do
+    stat = File.stat!(path)
+    {stat.major_device, stat.minor_device, stat.inode}
   end
 
   defp temporary_directory! do
