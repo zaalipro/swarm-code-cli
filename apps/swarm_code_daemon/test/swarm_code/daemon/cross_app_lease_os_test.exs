@@ -98,32 +98,46 @@ defmodule SwarmCode.Daemon.CrossAppLeaseOSTest do
     refute File.exists?(canonical), "stale-record probes must perform zero canonical DB opens"
   end
 
-  test "a delayed startup reply is cancelled and fully reaped before timeout returns" do
+  test "a blocked port open is cancelled before it can create a later process or lease" do
     dir = private_tmp!()
     canonical = Path.join(dir, "swarm_code.db")
+    lease_path = Path.join(dir, "instance_lease.db")
+    owner_path = Path.join(dir, "instance_owner.json")
     test_process = self()
     lifecycle_ref = make_ref()
 
     watcher =
       start_supervised!(
-        {Task, fn -> lifecycle_watcher(test_process, lifecycle_ref) end},
-        id: {:startup_lifecycle_watcher, lifecycle_ref}
+        {Task, fn -> open_lifecycle_watcher(test_process, lifecycle_ref) end},
+        id: {:open_lifecycle_watcher, lifecycle_ref}
       )
+
+    port_opener = fn _name, _options ->
+      send(watcher, {lifecycle_ref, {:opener_blocked, self()}})
+
+      receive do
+        {^lifecycle_ref, :open} -> raise "cancelled opener resumed unexpectedly"
+      end
+    end
 
     assert_raise RuntimeError, "timed out starting lease probe", fn ->
       OSProcess.start_lease_probe!(dir,
         timeout: 100,
-        startup_barrier: {watcher, lifecycle_ref}
+        lifecycle_observer: {watcher, lifecycle_ref},
+        port_opener: port_opener
       )
     end
 
-    assert_receive {^lifecycle_ref, {:opened, os_pid}}
-    assert_receive {^lifecycle_ref, {:external_exit, status}}
-    assert is_integer(os_pid) and os_pid > 0
-    assert status != 0
-    assert_receive {^lifecycle_ref, {:port_down, :normal}}
+    assert_receive {^lifecycle_ref, {:owner_started, owner}}
+    assert_receive {^lifecycle_ref, {:opener_blocked, opener}}
+    assert_receive {^lifecycle_ref, {:opener_down, ^opener, :killed}}
     assert_receive {^lifecycle_ref, {:owner_down, :normal}}
+    refute_received {^lifecycle_ref, {:opened, _owner, _port, _os_pid}}
+    refute_received {^lifecycle_ref, {:external_exit, _port, _status}}
+    refute File.exists?(lease_path)
+    refute File.exists?(owner_path)
     refute File.exists?(canonical)
+    refute owner == opener
   end
 
   test "a probe that never emits READY is closed and fully reaped by the protocol timeout" do
@@ -242,77 +256,42 @@ defmodule SwarmCode.Daemon.CrossAppLeaseOSTest do
              )
   end
 
-  defp lifecycle_watcher(test_process, lifecycle_ref) do
-    receive do
-      {^lifecycle_ref, {:opened, owner, port, os_pid}} ->
-        owner_monitor = Process.monitor(owner)
-        port_monitor = Port.monitor(port)
-        send(test_process, {lifecycle_ref, {:opened, os_pid}})
-
-        watch_lifecycle(
-          test_process,
-          lifecycle_ref,
-          owner,
-          owner_monitor,
-          port,
-          port_monitor,
-          false
-        )
-    end
+  defp open_lifecycle_watcher(test_process, lifecycle_ref) do
+    open_lifecycle_watcher(test_process, lifecycle_ref, %{})
   end
 
-  defp watch_lifecycle(
-         test_process,
-         lifecycle_ref,
-         owner,
-         owner_monitor,
-         port,
-         port_monitor,
-         owner_down?
-       ) do
+  defp open_lifecycle_watcher(test_process, lifecycle_ref, monitors) do
     receive do
-      {^lifecycle_ref, {:external_exit, ^port, status}} ->
-        send(test_process, {lifecycle_ref, {:external_exit, status}})
+      {^lifecycle_ref, {:owner_started, owner} = event} ->
+        monitor = Process.monitor(owner)
+        send(test_process, {lifecycle_ref, event})
+        open_lifecycle_watcher(test_process, lifecycle_ref, Map.put(monitors, monitor, :owner))
 
-        watch_lifecycle(
+      {^lifecycle_ref, {:opener_blocked, opener} = event} ->
+        monitor = Process.monitor(opener)
+        send(test_process, {lifecycle_ref, event})
+
+        open_lifecycle_watcher(
           test_process,
           lifecycle_ref,
-          owner,
-          owner_monitor,
-          port,
-          port_monitor,
-          owner_down?
+          Map.put(monitors, monitor, {:opener, opener})
         )
 
-      {:DOWN, ^port_monitor, :port, ^port, reason} ->
-        send(test_process, {lifecycle_ref, {:port_down, reason}})
+      {^lifecycle_ref, event} ->
+        send(test_process, {lifecycle_ref, event})
+        open_lifecycle_watcher(test_process, lifecycle_ref, monitors)
 
-        if owner_down? do
-          :ok
-        else
-          watch_lifecycle(
-            test_process,
-            lifecycle_ref,
-            owner,
-            owner_monitor,
-            port,
-            port_monitor,
-            owner_down?
-          )
-        end
+      {:DOWN, monitor, :process, _process, reason} ->
+        kind = Map.fetch!(monitors, monitor)
 
-      {:DOWN, ^owner_monitor, :process, ^owner, reason} ->
-        send(test_process, {lifecycle_ref, {:owner_down, reason}})
+        event =
+          case kind do
+            :owner -> {:owner_down, reason}
+            {:opener, opener} -> {:opener_down, opener, reason}
+          end
 
-        watch_lifecycle(
-          test_process,
-          lifecycle_ref,
-          owner,
-          owner_monitor,
-          port,
-          port_monitor,
-          true
-        )
+        send(test_process, {lifecycle_ref, event})
+        open_lifecycle_watcher(test_process, lifecycle_ref, Map.delete(monitors, monitor))
     end
   end
 end

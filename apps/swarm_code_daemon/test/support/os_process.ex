@@ -19,7 +19,7 @@ defmodule SwarmCode.Daemon.Test.OSProcess do
     owner_opts = %{
       lifecycle_observer: Keyword.get(test_opts, :lifecycle_observer),
       owner_exit_barrier: Keyword.get(test_opts, :owner_exit_barrier),
-      startup_barrier: Keyword.get(test_opts, :startup_barrier)
+      port_opener: Keyword.get(test_opts, :port_opener, &Port.open/2)
     }
 
     {owner, owner_monitor} =
@@ -172,7 +172,8 @@ defmodule SwarmCode.Daemon.Test.OSProcess do
     send(owner, {:cancel_start, self(), request_ref})
 
     receive do
-      {^request_ref, status} when is_integer(status) and status >= 0 ->
+      {^request_ref, status}
+      when status == :no_port or (is_integer(status) and status >= 0) ->
         :ok
 
       {:DOWN, ^owner_monitor, :process, ^owner, reason} ->
@@ -207,57 +208,184 @@ defmodule SwarmCode.Daemon.Test.OSProcess do
 
   defp open_and_own(test_process, start_ref, executable, probe_path, encoded_opts, owner_opts) do
     test_monitor = Process.monitor(test_process)
+    observers = List.wrap(owner_opts.lifecycle_observer)
+    notify_observers(observers, {:owner_started, self()})
+    open_ref = make_ref()
+    owner = self()
 
-    try do
-      port =
-        Port.open(
-          {:spawn_executable, executable},
-          [
-            :binary,
-            :exit_status,
-            {:line, 4096},
-            args: code_path_args() ++ [probe_path, encoded_opts]
-          ]
-        )
+    port_name = {:spawn_executable, executable}
 
-      {:os_pid, port_os_pid} = Port.info(port, :os_pid)
+    port_options = [
+      :binary,
+      :exit_status,
+      {:line, 4096},
+      args: code_path_args() ++ [probe_path, encoded_opts]
+    ]
 
-      observers =
-        [owner_opts.lifecycle_observer, owner_opts.startup_barrier]
-        |> Enum.reject(&is_nil/1)
-        |> Enum.uniq()
-
-      Enum.each(observers, fn {observer, observer_ref} ->
-        send(observer, {observer_ref, {:opened, self(), port, port_os_pid}})
+    {opener, opener_monitor} =
+      spawn_monitor(fn ->
+        run_opener(owner, open_ref, owner_opts.port_opener, port_name, port_options)
       end)
 
-      state = %{
-        cleanup_waiter: nil,
-        exit_status: nil,
-        observers: observers,
-        owner_exit_barrier: owner_opts.owner_exit_barrier,
-        port: port,
-        port_os_pid: port_os_pid,
-        reported_os_pid: nil,
-        start_ref: start_ref,
-        started?: false,
-        startup_barrier: owner_opts.startup_barrier,
-        test_monitor: test_monitor,
-        test_process: test_process
-      }
+    await_open(%{
+      adopted?: false,
+      cancel_waiter: nil,
+      open_error: nil,
+      open_ref: open_ref,
+      opener: opener,
+      opener_monitor: opener_monitor,
+      observers: observers,
+      owner_exit_barrier: owner_opts.owner_exit_barrier,
+      port: nil,
+      port_os_pid: nil,
+      reported_os_pid: nil,
+      start_ref: start_ref,
+      test_monitor: test_monitor,
+      test_process: test_process
+    })
+  end
 
-      if owner_opts.startup_barrier do
-        owner_loop(state)
-      else
-        send(test_process, {start_ref, self(), {:ok, port}})
-        owner_loop(%{state | started?: true})
-      end
+  defp run_opener(owner, open_ref, port_opener, port_name, port_options) do
+    try do
+      port = port_opener.(port_name, port_options)
+      true = is_port(port)
+      {:os_pid, port_os_pid} = Port.info(port, :os_pid)
+      send(owner, {open_ref, :opened, self(), port, port_os_pid})
+      await_port_adoption(owner, open_ref, port)
     rescue
-      error -> send(test_process, {start_ref, self(), {:error, {:exception, error}}})
+      error -> send(owner, {open_ref, :open_error, self(), {:exception, error}})
     catch
-      kind, reason -> send(test_process, {start_ref, self(), {:error, {kind, reason}}})
+      kind, reason -> send(owner, {open_ref, :open_error, self(), {kind, reason}})
     end
   end
+
+  defp await_port_adoption(owner, open_ref, port) do
+    receive do
+      {^open_ref, :adopt} ->
+        true = Port.connect(port, owner)
+        send(owner, {open_ref, :adopted, self(), port})
+
+      {^port, event} ->
+        send(owner, {open_ref, :port_event, port, event})
+        await_port_adoption(owner, open_ref, port)
+    end
+  end
+
+  defp await_open(state) do
+    receive do
+      {open_ref, :opened, opener, port, port_os_pid}
+      when open_ref == state.open_ref and opener == state.opener ->
+        send(opener, {open_ref, :adopt})
+        await_open(%{state | port: port, port_os_pid: port_os_pid})
+
+      {open_ref, :adopted, opener, port}
+      when open_ref == state.open_ref and opener == state.opener and port == state.port ->
+        await_open(%{state | adopted?: true})
+
+      {open_ref, :port_event, port, event}
+      when open_ref == state.open_ref and port == state.port ->
+        state = forward_opening_port_event(state, event)
+        await_open(state)
+
+      {open_ref, :open_error, opener, reason}
+      when open_ref == state.open_ref and opener == state.opener ->
+        await_open(%{state | open_error: reason})
+
+      {:DOWN, monitor, :process, opener, reason}
+      when monitor == state.opener_monitor and opener == state.opener ->
+        opener_finished(state, reason)
+
+      {:cancel_start, from, request_ref} ->
+        Process.exit(state.opener, :kill)
+        await_open(%{state | cancel_waiter: {from, request_ref}})
+
+      {:DOWN, monitor, :process, process, _reason}
+      when monitor == state.test_monitor and process == state.test_process ->
+        Process.exit(state.opener, :kill)
+        await_open(%{state | cancel_waiter: nil, test_process: nil})
+    end
+  end
+
+  defp opener_finished(%{cancel_waiter: waiter} = state, _reason) when not is_nil(waiter) do
+    cancel_after_opener_down(state, waiter)
+  end
+
+  defp opener_finished(%{test_process: nil} = state, _reason) do
+    cancel_after_opener_down(state, nil)
+  end
+
+  defp opener_finished(%{open_error: reason} = state, :normal) when not is_nil(reason) do
+    send(state.test_process, {state.start_ref, self(), {:error, reason}})
+  end
+
+  defp opener_finished(state, :normal) do
+    if state.adopted? and port_connected_to_owner?(state.port) do
+      finish_open(state)
+    else
+      send(state.test_process, {
+        state.start_ref,
+        self(),
+        {:error, :port_adoption_incomplete}
+      })
+    end
+  end
+
+  defp opener_finished(state, reason) do
+    if port_connected_to_owner?(state.port) do
+      finish_open(state)
+    else
+      send(state.test_process, {state.start_ref, self(), {:error, {:opener_exit, reason}}})
+    end
+  end
+
+  defp cancel_after_opener_down(state, waiter) do
+    if port_connected_to_owner?(state.port) do
+      begin_cleanup(owner_state(state, false), waiter)
+    else
+      acknowledge_no_port(waiter)
+    end
+  end
+
+  defp acknowledge_no_port({from, request_ref}), do: send(from, {request_ref, :no_port})
+  defp acknowledge_no_port(nil), do: :ok
+
+  defp finish_open(state) do
+    notify_observers(state.observers, {:opened, self(), state.port, state.port_os_pid})
+    send(state.test_process, {state.start_ref, self(), {:ok, state.port}})
+    owner_loop(owner_state(state, true))
+  end
+
+  defp owner_state(state, started?) do
+    %{
+      cleanup_waiter: nil,
+      exit_status: nil,
+      observers: state.observers,
+      owner_exit_barrier: state.owner_exit_barrier,
+      port: state.port,
+      port_os_pid: state.port_os_pid,
+      reported_os_pid: state.reported_os_pid,
+      start_ref: state.start_ref,
+      started?: started?,
+      test_monitor: state.test_monitor,
+      test_process: state.test_process
+    }
+  end
+
+  defp forward_opening_port_event(state, {:data, {:eol, line}} = event) do
+    send_if_present(state.test_process, {state.port, event})
+    %{state | reported_os_pid: reported_pid(line) || state.reported_os_pid}
+  end
+
+  defp forward_opening_port_event(state, event) do
+    send_if_present(state.test_process, {state.port, event})
+    state
+  end
+
+  defp port_connected_to_owner?(port) when is_port(port) do
+    Port.info(port, :connected) == {:connected, self()}
+  end
+
+  defp port_connected_to_owner?(_port), do: false
 
   defp owner_loop(state) do
     receive do
@@ -296,12 +424,6 @@ defmodule SwarmCode.Daemon.Test.OSProcess do
       {:cancel_start, from, request_ref} ->
         begin_cleanup(state, {from, request_ref})
 
-      {barrier_ref, :continue}
-      when not is_nil(state.startup_barrier) and
-             barrier_ref == elem(state.startup_barrier, 1) ->
-        send(state.test_process, {state.start_ref, self(), {:ok, state.port}})
-        owner_loop(%{state | started?: true, startup_barrier: nil})
-
       {:DOWN, monitor, :process, process, _reason}
       when monitor == state.test_monitor and process == state.test_process ->
         if state.started? do
@@ -327,8 +449,12 @@ defmodule SwarmCode.Daemon.Test.OSProcess do
   end
 
   defp notify_external_exit(observers, port, status) do
+    notify_observers(observers, {:external_exit, port, status})
+  end
+
+  defp notify_observers(observers, event) do
     Enum.each(observers, fn {observer, observer_ref} ->
-      send(observer, {observer_ref, {:external_exit, port, status}})
+      send(observer, {observer_ref, event})
     end)
   end
 
