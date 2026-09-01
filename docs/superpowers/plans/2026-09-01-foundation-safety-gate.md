@@ -234,6 +234,23 @@ defmodule SwarmCode.Governance.ProvenanceTest do
     assert Enum.any?(errors, &String.contains?(&1, "sha256 mismatch"))
   end
 
+  test "absolute, parent-traversing, and symlink destinations are rejected" do
+    outside = Path.join(System.tmp_dir!(), "outside-#{System.unique_integer([:positive])}")
+    File.write!(outside, "outside")
+    root = fixture_root!("authorized", [entry(outside, sha256("outside"))])
+    File.ln_s!(outside, Path.join(root, "linked.ex"))
+    ledger = %{"version" => 1, "entries" => [
+      entry(outside, sha256("outside")),
+      entry("linked.ex", sha256("outside")),
+      entry("../outside.ex", sha256("outside"))
+    ]}
+    File.write!(Path.join(root, "provenance/extracted-files.json"), Jason.encode!(ledger))
+    assert {:error, errors} = Provenance.verify(root)
+    assert Enum.count(errors, &String.contains?(&1, "unconfined provenance destination")) == 2
+    assert Enum.any?(errors, &String.contains?(&1, "missing or not regular"))
+    File.rm!(outside)
+  end
+
   defp entry(path, hash) do
     %{
       "destination" => path,
@@ -243,6 +260,8 @@ defmodule SwarmCode.Governance.ProvenanceTest do
       "classification" => "source"
     }
   end
+
+  defp sha256(bytes), do: :crypto.hash(:sha256, bytes) |> Base.encode16(case: :lower)
 
   defp fixture_root!(status, entries) do
     root = Path.join(System.tmp_dir!(), "provenance-#{System.unique_integer([:positive])}")
@@ -323,16 +342,33 @@ defmodule SwarmCode.Governance.Provenance do
 
   defp entry_errors(root, entry) do
     destination = entry["destination"]
-    path = if is_binary(destination), do: Path.expand(destination, root), else: root
-    confined? = is_binary(destination) and Path.relative_to(path, root) != path and not String.starts_with?(destination, "../")
-    actual = if confined? and File.regular?(path), do: path |> File.read!() |> sha256(), else: nil
+    path = destination_path(root, destination)
+    regular? = is_binary(path) and match?({:ok, %{type: :regular}}, File.lstat(path))
+    actual = if regular?, do: sha256_file(path), else: nil
 
     []
-    |> add(not confined?, "unconfined provenance destination")
+    |> add(is_nil(path), "unconfined provenance destination")
     |> add(entry["upstream_commit"] != @baseline, "entry is not pinned to the audit baseline")
     |> add(entry["classification"] not in @classifications, "invalid provenance classification")
-    |> add(actual == nil, "provenance destination is missing or not regular")
+    |> add(not is_nil(path) and not regular?, "provenance destination is missing or not regular")
     |> add(actual != nil and actual != entry["sha256"], "sha256 mismatch for #{destination}")
+  end
+
+  defp destination_path(root, destination) when is_binary(destination) and destination != "" do
+    segments = Path.split(destination)
+    if Path.type(destination) == :relative and ".." not in segments do
+      Path.expand(destination, root)
+    end
+  end
+
+  defp destination_path(_root, _destination), do: nil
+
+  defp sha256_file(path) do
+    path
+    |> File.stream!([], 1_048_576)
+    |> Enum.reduce(:crypto.hash_init(:sha256), fn chunk, ctx -> :crypto.hash_update(ctx, chunk) end)
+    |> :crypto.hash_final()
+    |> Base.encode16(case: :lower)
   end
 
   defp read_json(path) do
@@ -365,7 +401,7 @@ Commit these truthful initial records:
 
 Run: `mix test apps/swarm_code_core/test/swarm_code/governance/provenance_test.exs && mix swarm_code.provenance.verify`
 
-Expected: 3 tests pass and the task prints `provenance verified`.
+Expected: 4 tests pass and the task prints `provenance verified`.
 
 - [ ] **Step 5: Commit**
 
