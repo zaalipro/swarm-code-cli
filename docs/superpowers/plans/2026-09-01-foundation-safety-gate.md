@@ -862,7 +862,8 @@ git commit -m "test: prove data lease across OS processes"
 - Create: `apps/swarm_code_daemon/lib/swarm_code/daemon/schema/gate.ex`
 - Test: `apps/swarm_code_daemon/test/swarm_code/daemon/schema/migration_manifest_test.exs`
 - Test: `apps/swarm_code_daemon/test/swarm_code/daemon/schema/gate_test.exs`
-- Test fixture: `apps/swarm_code_daemon/test/fixtures/schema/exact_current.db` (generated, gitignored; test helper builds it deterministically)
+- Create generated SQL metadata fixtures: `apps/swarm_code_daemon/priv/schema/fixtures/desktop-current.sql`, `desktop-20260923000000.sql`, `desktop-20260924000000.sql`
+- Test support: `apps/swarm_code_daemon/test/support/schema_fixture.ex` builds temporary databases from the committed SQL metadata and migration-version lists; no generated database is committed.
 
 **Interfaces:**
 - `MigrationManifest.load!() :: MigrationManifest.t()` loads the application priv JSON and validates it before returning structs.
@@ -924,7 +925,7 @@ Expected: missing `MigrationManifest`/`Gate` modules.
 
 - [ ] **Step 3: Generate and commit the exact 43-entry metadata manifest**
 
-`generate_manifest.exs` accepts exactly `--upstream PATH --commit COMMIT --output PATH`; rejects any commit other than `dbb8804b3d7293178e571fa7afdf6bd47d06a51c`; enumerates `priv/repo/migrations/[0-9]*.exs` using `git ls-tree`; reads bytes using `git show COMMIT:PATH`; hashes those bytes; applies one migration at a time only to a fresh `System.tmp_dir!/swarm-code-schema-manifest-<random>/fixture.db`; and computes the normalized hash after every prefix. It refuses if the source worktree is dirty, if there are not exactly 43 migrations, or if the final normalized hash is not `cb75e8448370fa9ca8c1f25969e1b491b035046e87f8b92374f5a1c704304db3`. It always removes the temporary directory.
+`generate_manifest.exs` accepts exactly `--upstream PATH --commit COMMIT --output PATH --fixtures-dir PATH`; rejects any commit other than `dbb8804b3d7293178e571fa7afdf6bd47d06a51c`; enumerates `priv/repo/migrations/[0-9]*.exs` using `git ls-tree`; reads bytes using `git show COMMIT:PATH`; hashes those bytes; applies one migration at a time only to a fresh `System.tmp_dir!/swarm-code-schema-manifest-<random>/fixture.db`; and computes the normalized hash after every prefix. It refuses if the source worktree is dirty, if there are not exactly 43 migrations, or if the final normalized hash is not `cb75e8448370fa9ca8c1f25969e1b491b035046e87f8b92374f5a1c704304db3`. It always removes the temporary directory.
 
 Run once:
 
@@ -932,7 +933,8 @@ Run once:
 mix run --no-start apps/swarm_code_daemon/priv/schema/generate_manifest.exs -- \
   --upstream /Users/zaali/dev/swarm-code \
   --commit dbb8804b3d7293178e571fa7afdf6bd47d06a51c \
-  --output apps/swarm_code_daemon/priv/schema/desktop-dbb8804b.json
+  --output apps/swarm_code_daemon/priv/schema/desktop-dbb8804b.json \
+  --fixtures-dir apps/swarm_code_daemon/priv/schema/fixtures
 ```
 
 The JSON top level is exactly:
@@ -966,6 +968,8 @@ verify last record `20260926000000`,
 schema digest `cb75e8448370fa9ca8c1f25969e1b491b035046e87f8b92374f5a1c704304db3`.
 Every record sets `additive_desktop_readable` true because it belongs to the
 audited desktop lineage; this does not authorize future CLI-only migrations.
+
+The generator also writes deterministic, data-free SQL schema snapshots for the current lineage and the two tested prefixes. Each file contains only ordered `sqlite_schema.sql` DDL plus explicit `schema_migrations` inserts; it contains no user rows, secrets, generated database, or absolute path. `SchemaFixture` executes these committed snapshots into a fresh per-test temporary database, so public CI never depends on `/Users/zaali/dev/swarm-code`. The generator's reproducibility command compares both the JSON manifest and all SQL fixtures byte-for-byte.
 
 - [ ] **Step 4: Implement strict manifest decoding and normalized schema probing**
 
@@ -1001,9 +1005,11 @@ Run:
 mix test apps/swarm_code_daemon/test/swarm_code/daemon/schema
 tmp=$(mktemp)
 mix run --no-start apps/swarm_code_daemon/priv/schema/generate_manifest.exs -- \
-  --upstream /Users/zaali/dev/swarm-code --commit dbb8804b3d7293178e571fa7afdf6bd47d06a51c --output "$tmp"
-cmp "$tmp" apps/swarm_code_daemon/priv/schema/desktop-dbb8804b.json
-rm "$tmp"
+  --upstream /Users/zaali/dev/swarm-code --commit dbb8804b3d7293178e571fa7afdf6bd47d06a51c \
+  --output "$tmp/desktop-dbb8804b.json" --fixtures-dir "$tmp/fixtures"
+cmp "$tmp/desktop-dbb8804b.json" apps/swarm_code_daemon/priv/schema/desktop-dbb8804b.json
+diff -ru "$tmp/fixtures" apps/swarm_code_daemon/priv/schema/fixtures
+rm -rf "$tmp"
 ```
 
 Expected: tests pass and `cmp` is silent.
