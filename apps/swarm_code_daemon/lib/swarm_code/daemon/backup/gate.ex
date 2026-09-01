@@ -8,7 +8,7 @@ defmodule SwarmCode.Daemon.Backup.Gate do
   alias SwarmCode.Daemon.CrossAppLease
   alias SwarmCode.Daemon.CrossAppLease.OwnerRecord
   alias SwarmCode.Daemon.Files.AtomicReplace
-  alias SwarmCode.Daemon.Platform.{DatabaseFingerprint, PrivateDirectory}
+  alias SwarmCode.Daemon.Platform.{DatabaseFingerprint, PhysicalPath, PrivateDirectory}
   alias SwarmCode.Daemon.Schema.{Gate.Decision, Probe, SqliteQuery}
   alias SwarmCode.Daemon.StartupError
 
@@ -17,8 +17,11 @@ defmodule SwarmCode.Daemon.Backup.Gate do
   @chunk_bytes 1_024 * 1_024
   @maximum_tables 512
   @maximum_table_name_bytes 1_024
-  @allowed_options [:fault, :now, :uid]
   @test_build Mix.env() == :test
+  @allowed_options if(@test_build,
+                     do: [:fault, :now, :test_hook, :uid],
+                     else: [:fault, :now, :uid]
+                   )
 
   @spec create(Path.t(), Path.t(), String.t(), GenServer.server(), Decision.t(), keyword()) ::
           {:ok, Artifact.t()} | {:error, StartupError.t()}
@@ -27,6 +30,7 @@ defmodule SwarmCode.Daemon.Backup.Gate do
   def create(source_path, backup_dir, operation_id, lease, decision, opts)
       when is_list(opts) do
     fault = validate_fault_option!(opts)
+    test_hook = validate_test_hook_option!(opts)
 
     safe_create(fn ->
       with :ok <- validate_options(opts),
@@ -34,51 +38,71 @@ defmodule SwarmCode.Daemon.Backup.Gate do
            :ok <- validate_arguments(source_path, backup_dir, operation_id, decision),
            {:ok, owner} <- assert_live_lease(lease),
            :ok <- PrivateDirectory.ensure(backup_dir, uid),
-           {:ok, fingerprint} <- DatabaseFingerprint.for_path(source_path),
-           :ok <- equal(fingerprint, owner.database_fingerprint),
-           {:ok, source} <- source_metadata(source_path, uid, fingerprint),
-           {:ok, source_probe} <- Probe.inspect(source_path),
-           :ok <- equal(source_probe, decision.probe),
-           {:ok, lock_identity} <- directory_lock_identity(backup_dir, uid) do
-        paths = paths(backup_dir, operation_id)
+           {:ok, anchor} <- open_backup_directory(backup_dir, uid) do
+        try do
+          with :ok <-
+                 invoke_test_hook(test_hook, :after_backup_directory_open, %{anchor: anchor}),
+               :ok <- validate_backup_directory(anchor),
+               {:ok, resolved_source} <- DatabaseFingerprint.resolve(source_path),
+               :ok <- equal(resolved_source.fingerprint, owner.database_fingerprint),
+               {:ok, source} <-
+                 source_metadata(resolved_source.path, uid, resolved_source.fingerprint),
+               {:ok, source_probe} <- Probe.inspect(resolved_source.path),
+               :ok <- equal(source_probe, decision.probe) do
+            paths = paths(anchor.path, operation_id)
 
-        :global.trans(
-          {{__MODULE__, lock_identity, operation_id}, self()},
-          fn ->
-            with :ok <- lease_still_held(lease, fingerprint),
-                 :ok <- source_unchanged(source_path, source, fingerprint, uid) do
-              case artifact_state(paths, uid) do
-                :absent ->
-                  create_new(
-                    source_path,
-                    source,
-                    fingerprint,
-                    uid,
-                    decision,
-                    paths,
-                    opts,
-                    fault,
-                    lease
-                  )
+            :global.trans(
+              {{__MODULE__, anchor.identity, operation_id}, self()},
+              fn ->
+                with :ok <- validate_backup_directory(anchor),
+                     :ok <- lease_still_held(lease, resolved_source.fingerprint),
+                     :ok <-
+                       source_unchanged(
+                         resolved_source.path,
+                         source,
+                         resolved_source.fingerprint,
+                         uid
+                       ) do
+                  case artifact_state(paths, uid) do
+                    :absent ->
+                      create_new(
+                        resolved_source.path,
+                        source,
+                        resolved_source.fingerprint,
+                        uid,
+                        decision,
+                        paths,
+                        opts,
+                        fault,
+                        lease,
+                        anchor,
+                        test_hook
+                      )
 
-                :committed ->
-                  revalidate_existing(
-                    source_path,
-                    source,
-                    fingerprint,
-                    uid,
-                    decision,
-                    paths,
-                    lease
-                  )
+                    :committed ->
+                      revalidate_existing(
+                        resolved_source.path,
+                        source,
+                        resolved_source.fingerprint,
+                        uid,
+                        decision,
+                        paths,
+                        lease,
+                        anchor,
+                        test_hook
+                      )
 
-                {:error, _reason} = error ->
-                  error
-              end
-            end
-          end,
-          [node()]
-        )
+                    {:error, _reason} = error ->
+                      error
+                  end
+                end
+              end,
+              [node()]
+            )
+          end
+        after
+          close_backup_directory(anchor)
+        end
       end
     end)
   end
@@ -119,6 +143,34 @@ defmodule SwarmCode.Daemon.Backup.Gate do
   else
     defp validate_configured_fault!(_fault),
       do: raise(ArgumentError, "backup fault injection is unavailable in this build")
+  end
+
+  if @test_build do
+    defp validate_test_hook_option!(opts) do
+      case Keyword.get(opts, :test_hook) do
+        nil -> nil
+        hook when is_function(hook, 2) -> hook
+        _other -> raise ArgumentError, "backup test hook must have arity two"
+      end
+    end
+
+    defp invoke_test_hook(nil, _point, _context), do: :ok
+
+    defp invoke_test_hook(hook, point, context) do
+      case hook.(point, context) do
+        :ok -> :ok
+        {:error, _reason} = error -> error
+        _other -> {:error, :invalid_test_hook_result}
+      end
+    end
+  else
+    defp validate_test_hook_option!(opts) do
+      if Keyword.has_key?(opts, :test_hook),
+        do: raise(ArgumentError, "backup test hooks are unavailable in this build"),
+        else: nil
+    end
+
+    defp invoke_test_hook(_hook, _point, _context), do: :ok
   end
 
   defp validate_options(opts) do
@@ -211,23 +263,105 @@ defmodule SwarmCode.Daemon.Backup.Gate do
     end
   end
 
-  defp directory_lock_identity(path, uid) do
-    case File.lstat(path) do
-      {:ok, %File.Stat{type: :directory, uid: ^uid} = stat} ->
-        {:ok, {stat.major_device, stat.minor_device, stat.inode}}
+  defp open_backup_directory(path, uid) do
+    with {:ok, %{path: resolved_path, stat: stat}} <- PhysicalPath.resolve_directory(path),
+         :ok <- private_directory_stat(stat, uid),
+         {:ok, handle} <- :file.open(String.to_charlist(resolved_path), [:read, :raw, :directory]) do
+      anchor = %{
+        path: resolved_path,
+        uid: uid,
+        identity: directory_identity(stat),
+        handle: handle
+      }
 
-      _other ->
-        {:error, :unsafe_backup_directory}
+      case validate_backup_directory(anchor) do
+        :ok ->
+          {:ok, anchor}
+
+        {:error, _reason} = error ->
+          _ = :file.close(handle)
+          error
+      end
     end
   end
 
-  defp create_new(source_path, source, fingerprint, uid, decision, paths, opts, fault, lease) do
+  defp close_backup_directory(anchor) do
+    _ = :file.close(anchor.handle)
+    :ok
+  end
+
+  defp validate_backup_directory(anchor) do
+    with {:ok, path_stat} <- File.lstat(anchor.path),
+         :ok <- private_directory_stat(path_stat, anchor.uid),
+         :ok <- equal(directory_identity(path_stat), anchor.identity),
+         {:ok, handle_identity} <- directory_handle_identity(anchor.handle),
+         :ok <- equal(handle_identity, anchor.identity) do
+      :ok
+    else
+      _other -> {:error, :backup_directory_changed}
+    end
+  end
+
+  defp private_directory_stat(%File.Stat{type: :directory, uid: uid, mode: mode}, uid)
+       when band(mode, 0o7777) == 0o700,
+       do: :ok
+
+  defp private_directory_stat(_stat, _uid), do: {:error, :unsafe_backup_directory}
+
+  defp directory_handle_identity(handle) do
+    case :file.read_file_info(handle) do
+      {:ok,
+       {:file_info, _size, :directory, _access, _atime, _mtime, _ctime, mode, _links, major,
+        minor, inode, uid, _gid}}
+      when band(mode, 0o7777) == 0o700 ->
+        {:ok, {:directory, major, minor, inode, uid}}
+
+      _other ->
+        {:error, :unsafe_backup_directory_handle}
+    end
+  end
+
+  defp directory_identity(stat),
+    do: {:directory, stat.major_device, stat.minor_device, stat.inode, stat.uid}
+
+  defp directory_operation(anchor, test_hook, point, function) do
+    with :ok <- validate_backup_directory(anchor),
+         :ok <- invoke_test_hook(test_hook, point, %{anchor: anchor}),
+         :ok <- validate_backup_directory(anchor) do
+      result = function.()
+      validation = validate_backup_directory(anchor)
+
+      case {result, validation} do
+        {:ok, :ok} -> :ok
+        {{:ok, _value} = success, :ok} -> success
+        {{:error, _reason} = error, _validation} -> error
+        {_result, {:error, _reason} = error} -> error
+        {other, :ok} -> {:error, {:invalid_directory_operation_result, other}}
+      end
+    end
+  end
+
+  defp create_new(
+         source_path,
+         source,
+         fingerprint,
+         uid,
+         decision,
+         paths,
+         opts,
+         fault,
+         lease,
+         anchor,
+         test_hook
+       ) do
     ownership = begin_ownership()
 
     try do
       try do
         with {:ok, snapshot_identity} <-
-               vacuum_snapshot(source_path, paths.staging_database, uid, ownership),
+               directory_operation(anchor, test_hook, :before_snapshot_create, fn ->
+                 vacuum_snapshot(source_path, paths.staging_database, uid, ownership)
+               end),
              :ok <- inject_fault(fault, :after_snapshot),
              {:ok, snapshot_verification} <-
                verify_database(paths.staging_database, decision.probe),
@@ -245,7 +379,9 @@ defmodule SwarmCode.Daemon.Backup.Gate do
                  snapshot_verification,
                  backup["sha256"],
                  fault,
-                 ownership
+                 ownership,
+                 anchor,
+                 test_hook
                ),
              {:ok, verified_at} <- verified_at(opts),
              manifest <-
@@ -260,16 +396,34 @@ defmodule SwarmCode.Daemon.Backup.Gate do
                ),
              {:ok, manifest_iodata} <- Manifest.encode(manifest),
              {:ok, manifest_identity} <-
-               write_staging_manifest(
-                 paths.staging_manifest,
-                 manifest_iodata,
-                 uid,
-                 ownership
-               ),
+               directory_operation(anchor, test_hook, :before_manifest_create, fn ->
+                 write_staging_manifest(
+                   paths.staging_manifest,
+                   manifest_iodata,
+                   uid,
+                   ownership,
+                   anchor
+                 )
+               end),
              :ok <- inject_fault(fault, :after_manifest),
-             :ok <- sync_file(paths.staging_database),
-             :ok <- sync_file(paths.staging_manifest),
-             :ok <- sync_directory(paths.directory),
+             :ok <-
+               sync_file_anchored(
+                 paths.staging_database,
+                 anchor,
+                 test_hook,
+                 :before_staging_database_sync,
+                 snapshot_identity
+               ),
+             :ok <-
+               sync_file_anchored(
+                 paths.staging_manifest,
+                 anchor,
+                 test_hook,
+                 :before_staging_manifest_sync,
+                 manifest_identity
+               ),
+             :ok <-
+               sync_directory_anchored(anchor, test_hook, :before_staging_directory_sync),
              {:ok, backup_before_publish} <-
                private_file_entry(
                  paths.staging_database,
@@ -285,8 +439,17 @@ defmodule SwarmCode.Daemon.Backup.Gate do
              :ok <- source_unchanged(source_path, source, fingerprint, uid),
              :ok <- inject_fault(fault, :before_publish),
              :ok <-
-               publish(paths, uid, snapshot_identity, manifest_identity, ownership),
-             :ok <- validate_published(paths, uid) do
+               publish(
+                 paths,
+                 uid,
+                 snapshot_identity,
+                 manifest_identity,
+                 ownership,
+                 anchor,
+                 test_hook
+               ),
+             :ok <- validate_published(paths, uid),
+             :ok <- validate_backup_directory(anchor) do
           {:ok,
            artifact(
              paths,
@@ -301,11 +464,21 @@ defmodule SwarmCode.Daemon.Backup.Gate do
         _kind, _reason -> {:error, :backup_creation_failed}
       end
     after
-      finish_ownership(ownership, paths, uid)
+      finish_ownership(ownership, paths, uid, anchor, test_hook)
     end
   end
 
-  defp revalidate_existing(source_path, source, fingerprint, uid, decision, paths, lease) do
+  defp revalidate_existing(
+         source_path,
+         source,
+         fingerprint,
+         uid,
+         decision,
+         paths,
+         lease,
+         anchor,
+         test_hook
+       ) do
     ownership = begin_ownership()
 
     try do
@@ -325,7 +498,9 @@ defmodule SwarmCode.Daemon.Backup.Gate do
                verification,
                backup["sha256"],
                nil,
-               ownership
+               ownership,
+               anchor,
+               test_hook
              ),
            :ok <- equal(independent, manifest["independent_restore"]),
            {:ok, backup_after} <-
@@ -336,7 +511,9 @@ defmodule SwarmCode.Daemon.Backup.Gate do
            :ok <- equal(manifest_after, manifest),
            :ok <- equal(manifest_file_after, manifest_file),
            :ok <- lease_still_held(lease, fingerprint),
-           :ok <- source_unchanged(source_path, source, fingerprint, uid) do
+           :ok <- source_unchanged(source_path, source, fingerprint, uid),
+           :ok <- durable_duplicate(paths, uid, anchor, test_hook),
+           :ok <- validate_backup_directory(anchor) do
         {:ok,
          artifact(
            paths,
@@ -346,7 +523,7 @@ defmodule SwarmCode.Daemon.Backup.Gate do
          )}
       end
     after
-      finish_ownership(ownership, paths, uid)
+      finish_ownership(ownership, paths, uid, anchor, test_hook)
     end
   end
 
@@ -469,8 +646,20 @@ defmodule SwarmCode.Daemon.Backup.Gate do
     end
   end
 
-  defp write_staging_manifest(path, contents, uid, ownership) do
-    case AtomicReplace.write(path, contents, mode: @private_file_mode, replace: false) do
+  defp write_staging_manifest(path, contents, uid, ownership, anchor) do
+    sync_directory = fn _directory ->
+      with :ok <- validate_backup_directory(anchor),
+           :ok <- :file.sync(anchor.handle),
+           :ok <- validate_backup_directory(anchor) do
+        :ok
+      end
+    end
+
+    case AtomicReplace.write(path, contents,
+           mode: @private_file_mode,
+           replace: false,
+           sync_directory: sync_directory
+         ) do
       :ok ->
         own_existing_private_file(ownership, path, uid)
 
@@ -648,9 +837,14 @@ defmodule SwarmCode.Daemon.Backup.Gate do
          expected_verification,
          expected_sha256,
          fault,
-         ownership
+         ownership,
+         anchor,
+         test_hook
        ) do
-    with {:ok, _identity} <- copy_cold_database(source_database, restore_path, uid, ownership),
+    with {:ok, _identity} <-
+           directory_operation(anchor, test_hook, :before_restore_create, fn ->
+             copy_cold_database(source_database, restore_path, uid, ownership)
+           end),
          :ok <- inject_fault(fault, :after_restore_copy),
          {:ok, restore_entry} <-
            private_file_entry(restore_path, uid, Path.basename(restore_path)),
@@ -658,7 +852,10 @@ defmodule SwarmCode.Daemon.Backup.Gate do
          {:ok, restore_verification} <-
            verify_database(restore_path, verification_probe(expected_verification)),
          :ok <- equal(restore_verification, expected_verification),
-         :ok <- remove_registered(ownership, restore_path) do
+         :ok <-
+           directory_operation(anchor, test_hook, :before_restore_cleanup, fn ->
+             remove_registered(ownership, restore_path)
+           end) do
       {:ok,
        expected_verification
        |> Map.put("verified", true)
@@ -722,12 +919,11 @@ defmodule SwarmCode.Daemon.Backup.Gate do
   end
 
   defp source_metadata(source_path, uid, fingerprint) do
-    canonical = Path.expand(source_path)
-
-    with {:ok, main} <- stable_file(canonical, uid, Path.basename(canonical)),
-         {:ok, wal} <- optional_stable_file(canonical <> "-wal", uid),
-         {:ok, shm} <- optional_stable_file(canonical <> "-shm", uid),
-         {:ok, ^fingerprint} <- DatabaseFingerprint.for_path(canonical) do
+    with :ok <- DatabaseFingerprint.verify_resolved(source_path, fingerprint),
+         {:ok, main} <- stable_file(source_path, uid, Path.basename(source_path)),
+         {:ok, wal} <- optional_stable_file(source_path <> "-wal", uid),
+         {:ok, shm} <- optional_stable_file(source_path <> "-shm", uid),
+         :ok <- DatabaseFingerprint.verify_resolved(source_path, fingerprint) do
       {:ok,
        %{
          identities: %{
@@ -860,26 +1056,53 @@ defmodule SwarmCode.Daemon.Backup.Gate do
     end
   end
 
-  defp rename_registered(ownership, from, to, expected_file_identity, uid) do
-    with {:ok, owned_identity} <- Map.fetch(Process.get(ownership).files, from),
-         :ok <- File.rename(from, to),
-         :ok <- move_registration(ownership, from, to, owned_identity),
-         :ok <- verify_identity(to, expected_file_identity, uid) do
+  defp register_link(ownership, from, to, expected_file_identity, uid) do
+    state = Process.get(ownership)
+
+    with {:ok, expected_object_identity} <- Map.fetch(state.files, from),
+         false <- Map.has_key?(state.files, to),
+         {:ok, %File.Stat{type: :regular, uid: ^uid} = stat} <- File.lstat(to),
+         :ok <- equal(object_identity(stat), expected_object_identity),
+         :ok <- equal(file_identity(stat), expected_file_identity) do
+      Process.put(
+        ownership,
+        %{state | files: Map.put(state.files, to, expected_object_identity)}
+      )
+
       :ok
+    else
+      _other -> {:error, :ownership_conflict}
     end
   end
 
-  defp move_registration(ownership, from, to, expected_identity) do
-    state = Process.get(ownership)
-
-    case {Map.fetch(state.files, from), Map.has_key?(state.files, to)} do
-      {{:ok, ^expected_identity}, false} ->
-        files = state.files |> Map.delete(from) |> Map.put(to, expected_identity)
-        Process.put(ownership, %{state | files: files})
-        :ok
-
-      _other ->
-        {:error, :ownership_conflict}
+  defp publish_link(
+         paths,
+         ownership,
+         from,
+         to,
+         expected_file_identity,
+         uid,
+         anchor,
+         test_hook,
+         before_point,
+         after_absence_point
+       ) do
+    with :ok <- validate_backup_directory(anchor),
+         :ok <- invoke_test_hook(test_hook, before_point, %{anchor: anchor, paths: paths}),
+         :ok <- validate_backup_directory(anchor),
+         :absent <- private_regular_state(to, uid),
+         :ok <-
+           invoke_test_hook(test_hook, after_absence_point, %{anchor: anchor, paths: paths}),
+         :ok <- validate_backup_directory(anchor),
+         :ok <- File.ln(from, to),
+         :ok <- register_link(ownership, from, to, expected_file_identity, uid),
+         :ok <- validate_backup_directory(anchor),
+         :ok <- remove_registered(ownership, from),
+         :ok <- verify_identity(to, expected_file_identity, uid),
+         :ok <- validate_backup_directory(anchor) do
+      :ok
+    else
+      _other -> {:error, :publish_failed}
     end
   end
 
@@ -889,19 +1112,34 @@ defmodule SwarmCode.Daemon.Backup.Gate do
     :ok
   end
 
-  defp finish_ownership(ownership, paths, _uid) do
+  defp finish_ownership(ownership, paths, _uid, anchor, test_hook) do
     try do
-      state = Process.get(ownership)
-      commit_marker? = File.lstat(paths.final_manifest) != {:error, :enoent}
-      preserve_final? = state.committed? or commit_marker?
+      _ = invoke_test_hook(test_hook, :before_cleanup, %{anchor: anchor, paths: paths})
 
-      Enum.each(state.files, fn {path, identity} ->
-        unless preserve_final? and path in [paths.final_database, paths.final_manifest] do
-          _ = remove_if_object_identity(path, identity)
+      with :ok <- validate_backup_directory(anchor) do
+        state = Process.get(ownership)
+        commit_marker? = File.lstat(paths.final_manifest) != {:error, :enoent}
+        preserve_final? = state.committed? or commit_marker?
+
+        cleanup_files =
+          Enum.reject(state.files, fn {path, _identity} ->
+            preserve_final? and path in [paths.final_database, paths.final_manifest]
+          end)
+
+        Enum.each(cleanup_files, fn {path, identity} ->
+          with :ok <- validate_backup_directory(anchor),
+               :ok <- remove_if_object_identity(path, identity),
+               :ok <- validate_backup_directory(anchor) do
+            :ok
+          else
+            _other -> :ok
+          end
+        end)
+
+        if cleanup_files != [] do
+          _ = sync_directory_anchored(anchor, nil, :before_cleanup_directory_sync)
         end
-      end)
-
-      _ = sync_directory(paths.directory)
+      end
     catch
       _kind, _reason -> :ok
     after
@@ -909,6 +1147,42 @@ defmodule SwarmCode.Daemon.Backup.Gate do
     end
 
     :ok
+  end
+
+  defp sync_directory_anchored(anchor, test_hook, point) do
+    directory_operation(anchor, test_hook, point, fn -> :file.sync(anchor.handle) end)
+  end
+
+  defp sync_file_anchored(path, anchor, test_hook, point, expected_identity) do
+    directory_operation(anchor, test_hook, point, fn -> sync_file(path, expected_identity) end)
+  end
+
+  defp durable_duplicate(paths, uid, anchor, test_hook) do
+    with {:ok, database_identity} <- private_file_identity(paths.final_database, uid),
+         {:ok, manifest_identity} <- private_file_identity(paths.final_manifest, uid),
+         :ok <-
+           sync_file_anchored(
+             paths.final_database,
+             anchor,
+             test_hook,
+             :before_duplicate_database_sync,
+             database_identity
+           ),
+         :ok <- verify_identity(paths.final_database, database_identity, uid),
+         :ok <-
+           sync_file_anchored(
+             paths.final_manifest,
+             anchor,
+             test_hook,
+             :before_duplicate_manifest_sync,
+             manifest_identity
+           ),
+         :ok <- verify_identity(paths.final_manifest, manifest_identity, uid),
+         :ok <-
+           sync_directory_anchored(anchor, test_hook, :before_duplicate_directory_sync),
+         :ok <- validate_backup_directory(anchor) do
+      :ok
+    end
   end
 
   defp remove_if_object_identity(path, expected_identity) do
@@ -989,37 +1263,45 @@ defmodule SwarmCode.Daemon.Backup.Gate do
     end
   end
 
-  defp publish(paths, uid, database_identity, manifest_identity, ownership) do
-    with :absent <- private_regular_state(paths.final_database, uid),
-         :absent <- private_regular_state(paths.final_manifest, uid),
-         :ok <- verify_identity(paths.staging_database, database_identity, uid),
+  defp publish(
+         paths,
+         uid,
+         database_identity,
+         manifest_identity,
+         ownership,
+         anchor,
+         test_hook
+       ) do
+    with :ok <- verify_identity(paths.staging_database, database_identity, uid),
          :ok <- verify_identity(paths.staging_manifest, manifest_identity, uid),
          :ok <-
-           rename_registered(
+           publish_link(
+             paths,
              ownership,
              paths.staging_database,
              paths.final_database,
              database_identity,
-             uid
-           ) do
-      publish_manifest(paths, uid, manifest_identity, ownership)
-    else
-      _other -> {:error, :publish_failed}
-    end
-  end
-
-  defp publish_manifest(paths, uid, manifest_identity, ownership) do
-    with :absent <- private_regular_state(paths.final_manifest, uid),
+             uid,
+             anchor,
+             test_hook,
+             :before_database_publication,
+             :after_database_absence_check
+           ),
          :ok <-
-           rename_registered(
+           publish_link(
+             paths,
              ownership,
              paths.staging_manifest,
              paths.final_manifest,
              manifest_identity,
-             uid
+             uid,
+             anchor,
+             test_hook,
+             :before_manifest_publication,
+             :after_manifest_absence_check
            ),
          :ok <- mark_committed(ownership),
-         :ok <- sync_directory(paths.directory) do
+         :ok <- sync_directory_anchored(anchor, test_hook, :before_final_directory_sync) do
       :ok
     else
       _other -> {:error, :publish_failed}
@@ -1045,11 +1327,14 @@ defmodule SwarmCode.Daemon.Backup.Gate do
     end
   end
 
-  defp sync_file(path) do
+  defp sync_file(path, expected_identity) do
     case :file.open(String.to_charlist(path), [:read, :raw]) do
       {:ok, io} ->
         try do
-          :file.sync(io)
+          with {:ok, actual_identity} <- handle_identity(io),
+               :ok <- optional_identity_match(actual_identity, expected_identity) do
+            :file.sync(io)
+          end
         after
           _ = :file.close(io)
         end
@@ -1059,19 +1344,9 @@ defmodule SwarmCode.Daemon.Backup.Gate do
     end
   end
 
-  defp sync_directory(path) do
-    case :file.open(String.to_charlist(path), [:read, :raw, :directory]) do
-      {:ok, io} ->
-        try do
-          :file.sync(io)
-        after
-          _ = :file.close(io)
-        end
-
-      {:error, _reason} = error ->
-        error
-    end
-  end
+  defp optional_identity_match(_actual, nil), do: :ok
+  defp optional_identity_match(identity, identity), do: :ok
+  defp optional_identity_match(_actual, _expected), do: {:error, :file_identity_changed}
 
   defp inject_fault(point, point), do: throw({:injected_backup_fault, point})
   defp inject_fault(_configured, _point), do: :ok

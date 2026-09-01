@@ -350,6 +350,255 @@ defmodule SwarmCode.Daemon.Backup.GateTest do
     assert {:ok, ^fingerprint} = DatabaseFingerprint.for_path(aliased_database)
   end
 
+  test "one physical source resolution binds lease metadata probe and VACUUM across symlink dot-dot" do
+    root = private_directory!("source-resolution")
+    other = Path.join(root, "other")
+    child = Path.join(other, "child")
+    File.mkdir!(other)
+    File.chmod!(other, 0o700)
+    File.mkdir!(child)
+    File.chmod!(child, 0o700)
+
+    claimed = Path.join(root, "db.sqlite")
+    actual = Path.join(other, "db.sqlite")
+    copy_private!(prepared_database!(), claimed)
+    actual_fixture = prepared_database!()
+    SchemaFixture.insert_project!(actual_fixture, "actual-2", "Actual two", "/actual/two")
+    copy_private!(actual_fixture, actual)
+
+    link = Path.join(root, "link")
+    File.ln_s!(child, link)
+    source = link <> "/../db.sqlite"
+    assert Path.expand(source) == claimed
+    refute sha256_file(claimed) == sha256_file(actual)
+
+    decision = schema_decision!(source)
+    uid = File.lstat!(root).uid
+    backup_dir = private_child!(root, "backups")
+    fingerprint = database_fingerprint(source)
+    lease = start_lease!(root, uid, fingerprint)
+
+    fixture = %{
+      db: source,
+      lease: lease,
+      decision: decision,
+      backup_dir: backup_dir,
+      uid: uid,
+      fingerprint: fingerprint,
+      secret: "not-present"
+    }
+
+    assert {:ok, artifact} = create(fixture)
+    manifest = decode_manifest!(artifact.manifest)
+    assert manifest["source"]["main"] == file_manifest_entry(actual)
+    assert artifact.source_sha256 == sha256_file(actual)
+    assert manifest["row_counts"]["projects"] == 2
+    assert SchemaFixture.row_counts(artifact.database)["projects"] == 2
+  end
+
+  test "the versioned fingerprint canonicalizes case and Unicode normalization aliases" do
+    database = prepared_database!()
+    canonical = Path.join(Path.dirname(database), "Caf\u00E9.DB")
+    File.rename!(database, canonical)
+    alias_path = Path.join(Path.dirname(database), "cafe\u0301.db")
+
+    canonical_stat = File.lstat!(canonical)
+
+    case File.lstat(alias_path) do
+      {:ok, alias_stat} ->
+        assert {alias_stat.major_device, alias_stat.minor_device, alias_stat.inode} ==
+                 {canonical_stat.major_device, canonical_stat.minor_device, canonical_stat.inode}
+
+        assert {:ok, fingerprint} = DatabaseFingerprint.for_path(canonical)
+        assert {:ok, ^fingerprint} = DatabaseFingerprint.for_path(alias_path)
+
+      {:error, :enoent} ->
+        :ok
+    end
+  end
+
+  test "database no-clobber publication preserves an object substituted after absence check" do
+    fixture = migration_fixture!()
+    final_database = Path.join(fixture.backup_dir, @operation_id <> ".sqlite3")
+    test = self()
+
+    hook = fn
+      :after_database_absence_check, _context ->
+        write_private!(final_database, "database-race-sentinel")
+        send(test, :database_race_substituted)
+        :ok
+
+      _point, _context ->
+        :ok
+    end
+
+    assert {:error, %{code: :backup_failed}} = create(fixture, test_hook: hook)
+    assert_receive :database_race_substituted
+    assert bounded_read!(final_database, 1_024) == "database-race-sentinel"
+    assert File.ls!(fixture.backup_dir) == [Path.basename(final_database)]
+  end
+
+  test "manifest no-clobber commit preserves a substituted marker and the published database" do
+    fixture = migration_fixture!()
+    final_database = Path.join(fixture.backup_dir, @operation_id <> ".sqlite3")
+    final_manifest = Path.join(fixture.backup_dir, @operation_id <> ".manifest.json")
+    test = self()
+
+    hook = fn
+      :after_manifest_absence_check, _context ->
+        write_private!(final_manifest, "manifest-race-sentinel")
+        send(test, :manifest_race_substituted)
+        :ok
+
+      _point, _context ->
+        :ok
+    end
+
+    assert {:error, %{code: :backup_failed}} = create(fixture, test_hook: hook)
+    assert_receive :manifest_race_substituted
+    assert bounded_read!(final_manifest, 1_024) == "manifest-race-sentinel"
+    assert {:ok, _probe} = Probe.inspect(final_database)
+
+    assert File.ls!(fixture.backup_dir) |> Enum.sort() ==
+             [Path.basename(final_database), Path.basename(final_manifest)] |> Enum.sort()
+  end
+
+  test "a retained post-commit directory-sync failure is durably recovered by duplicate admission" do
+    fixture = migration_fixture!()
+    test = self()
+
+    hook = fn
+      :before_final_directory_sync, _context ->
+        send(test, :final_directory_sync_reached)
+        {:error, :injected_directory_sync_failure}
+
+      _point, _context ->
+        :ok
+    end
+
+    assert {:error, %{code: :backup_failed}} = create(fixture, test_hook: hook)
+    assert_receive :final_directory_sync_reached
+
+    assert File.ls!(fixture.backup_dir) |> Enum.sort() ==
+             [@operation_id <> ".manifest.json", @operation_id <> ".sqlite3"]
+
+    assert {:ok, artifact} = create(fixture)
+    assert File.exists?(artifact.database)
+    assert File.exists?(artifact.manifest)
+  end
+
+  for point <- [
+        :before_duplicate_database_sync,
+        :before_duplicate_manifest_sync,
+        :before_duplicate_directory_sync
+      ] do
+    test "duplicate durability failure at #{point} refuses while retaining the committed pair" do
+      fixture = migration_fixture!()
+      assert {:ok, artifact} = create(fixture)
+      before_database = file_state(artifact.database)
+      before_manifest = file_state(artifact.manifest)
+      test = self()
+
+      hook = fn
+        unquote(point), _context ->
+          send(test, {:duplicate_sync_reached, unquote(point)})
+          {:error, :injected_duplicate_sync_failure}
+
+        _other, _context ->
+          :ok
+      end
+
+      assert {:error, %{code: :backup_failed}} = create(fixture, test_hook: hook)
+      assert_receive {:duplicate_sync_reached, unquote(point)}
+      assert file_state(artifact.database) == before_database
+      assert file_state(artifact.manifest) == before_manifest
+
+      assert File.ls!(fixture.backup_dir) |> Enum.sort() ==
+               [Path.basename(artifact.database), Path.basename(artifact.manifest)] |> Enum.sort()
+    end
+  end
+
+  test "a retargeted backup parent alias cannot redirect anchored writes" do
+    fixture = migration_fixture!()
+    root = private_directory!("backup-parent-retarget")
+    parent_a = private_child!(root, "parent-a")
+    parent_b = private_child!(root, "parent-b")
+    backups_a = private_child!(parent_a, "backups")
+    backups_b = private_child!(parent_b, "backups")
+    parent_alias = Path.join(root, "parent-alias")
+    File.ln_s!(parent_a, parent_alias)
+    fixture = %{fixture | backup_dir: Path.join(parent_alias, "backups")}
+    test = self()
+
+    hook = fn
+      :after_backup_directory_open, _context ->
+        File.rm!(parent_alias)
+        File.ln_s!(parent_b, parent_alias)
+        send(test, :backup_parent_retargeted)
+        :ok
+
+      _point, _context ->
+        :ok
+    end
+
+    assert {:ok, artifact} = create(fixture, test_hook: hook)
+    assert_receive :backup_parent_retargeted
+    assert same_object?(Path.dirname(artifact.database), backups_a)
+    assert File.ls!(backups_b) == []
+
+    assert File.ls!(backups_a) |> Enum.sort() ==
+             [@operation_id <> ".manifest.json", @operation_id <> ".sqlite3"]
+  end
+
+  test "a renamed and replaced anchored backup directory refuses before snapshot creation" do
+    fixture = migration_fixture!()
+    moved = fixture.backup_dir <> "-moved"
+    test = self()
+
+    hook = fn
+      :before_snapshot_create, _context ->
+        File.rename!(fixture.backup_dir, moved)
+        File.mkdir!(fixture.backup_dir)
+        File.chmod!(fixture.backup_dir, 0o700)
+        send(test, :backup_directory_replaced)
+        :ok
+
+      _point, _context ->
+        :ok
+    end
+
+    assert {:error, %{code: :backup_failed}} = create(fixture, test_hook: hook)
+    assert_receive :backup_directory_replaced
+    assert File.ls!(fixture.backup_dir) == []
+    assert File.ls!(moved) == []
+  end
+
+  test "a mode-substituted anchored directory is restored before identity-clean cleanup" do
+    fixture = migration_fixture!()
+    test = self()
+
+    hook = fn
+      :before_database_publication, _context ->
+        File.chmod!(fixture.backup_dir, 0o755)
+        send(test, :backup_directory_mode_substituted)
+        :ok
+
+      :before_cleanup, _context ->
+        File.chmod!(fixture.backup_dir, 0o700)
+        send(test, :backup_directory_mode_restored)
+        :ok
+
+      _point, _context ->
+        :ok
+    end
+
+    assert {:error, %{code: :backup_failed}} = create(fixture, test_hook: hook)
+    assert_receive :backup_directory_mode_substituted
+    assert_receive :backup_directory_mode_restored
+    assert permissions(fixture.backup_dir) == 0o700
+    assert File.ls!(fixture.backup_dir) == []
+  end
+
   test "a corrupt source refuses unchanged without a partial artifact" do
     fixture = migration_fixture!()
     File.write!(fixture.db, "corrupt source")
@@ -618,6 +867,34 @@ defmodule SwarmCode.Daemon.Backup.GateTest do
   defp write_private!(path, contents) do
     File.write!(path, contents)
     File.chmod!(path, 0o600)
+  end
+
+  defp copy_private!(source, destination) do
+    File.cp!(source, destination)
+    File.chmod!(destination, 0o600)
+  end
+
+  defp private_directory!(label) do
+    directory = Path.join(System.tmp_dir!(), "swarm-code-#{label}-#{random_suffix()}")
+    File.mkdir!(directory)
+    File.chmod!(directory, 0o700)
+    on_exit(fn -> File.rm_rf!(directory) end)
+    directory
+  end
+
+  defp private_child!(parent, name) do
+    child = Path.join(parent, name)
+    File.mkdir!(child)
+    File.chmod!(child, 0o700)
+    child
+  end
+
+  defp same_object?(left, right) do
+    left_stat = File.lstat!(left)
+    right_stat = File.lstat!(right)
+
+    {left_stat.major_device, left_stat.minor_device, left_stat.inode} ==
+      {right_stat.major_device, right_stat.minor_device, right_stat.inode}
   end
 
   defp permissions(path), do: band(File.lstat!(path).mode, 0o7777)
