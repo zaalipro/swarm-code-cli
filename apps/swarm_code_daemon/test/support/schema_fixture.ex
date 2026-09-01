@@ -2,13 +2,16 @@ defmodule SchemaFixture do
   @moduledoc false
 
   alias Exqlite.Sqlite3
+  alias SwarmCode.Daemon.Schema.SqliteQuery
+
+  @maximum_tables 512
 
   @spec database!(:current | {:prefix, integer()}) :: Path.t()
   def database!(lineage) do
     directory =
       Path.join(
         System.tmp_dir!(),
-        "swarm-code-schema-fixture-#{System.unique_integer([:positive, :monotonic])}"
+        "swarm-code-schema-fixture-#{Base.url_encode64(:crypto.strong_rand_bytes(18), padding: false)}"
       )
 
     File.mkdir!(directory)
@@ -42,6 +45,113 @@ defmodule SchemaFixture do
       :ok = Sqlite3.close(conn)
     end
   end
+
+  @spec insert_project!(Path.t(), String.t(), String.t(), String.t()) :: :ok
+  def insert_project!(database, id, name, root_path) do
+    with_connection(database, :readwrite, fn conn ->
+      execute_bound!(
+        conn,
+        """
+        INSERT INTO projects(id, name, root_path, inserted_at, updated_at)
+        VALUES (?, ?, ?, '2026-09-01T00:00:00Z', '2026-09-01T00:00:00Z')
+        """,
+        [id, name, root_path]
+      )
+    end)
+  end
+
+  @spec insert_foreign_key_violation!(Path.t()) :: :ok
+  def insert_foreign_key_violation!(database) do
+    with_connection(database, :readwrite, fn conn ->
+      :ok = Sqlite3.execute(conn, "PRAGMA foreign_keys=OFF")
+
+      execute_bound!(
+        conn,
+        """
+        INSERT INTO conversations(id, project_id, inserted_at, updated_at)
+        VALUES (?, ?, '2026-09-01T00:00:00Z', '2026-09-01T00:00:00Z')
+        """,
+        ["orphan-conversation", "missing-project"]
+      )
+    end)
+  end
+
+  @spec open_uncheckpointed_wal!(Path.t()) :: Sqlite3.db()
+  def open_uncheckpointed_wal!(database) do
+    {:ok, conn} = Sqlite3.open(database, mode: :readwrite)
+
+    try do
+      [["wal"]] = SqliteQuery.rows(conn, "PRAGMA journal_mode=WAL", [], max_rows: 1)
+      :ok = Sqlite3.execute(conn, "PRAGMA wal_autocheckpoint=0")
+
+      for number <- 1..2 do
+        execute_bound!(
+          conn,
+          """
+          INSERT INTO projects(id, name, root_path, inserted_at, updated_at)
+          VALUES (?, ?, ?, '2026-09-01T00:00:00Z', '2026-09-01T00:00:00Z')
+          """,
+          [
+            "wal-project-#{number}",
+            "WAL project #{number}",
+            "/private/wal-project-#{number}"
+          ]
+        )
+      end
+
+      ExUnit.Callbacks.on_exit(fn -> Sqlite3.close(conn) end)
+      conn
+    rescue
+      error ->
+        _ = Sqlite3.close(conn)
+        reraise error, __STACKTRACE__
+    end
+  end
+
+  @spec row_counts(Path.t()) :: %{String.t() => non_neg_integer()}
+  def row_counts(database) do
+    with_connection(database, :readonly, fn conn ->
+      table_names =
+        SqliteQuery.rows(
+          conn,
+          """
+          SELECT name
+          FROM sqlite_schema
+          WHERE type = 'table' AND name NOT GLOB 'sqlite_*'
+          ORDER BY name
+          LIMIT 513
+          """,
+          [],
+          max_rows: @maximum_tables
+        )
+        |> Enum.map(fn [name] -> name end)
+
+      Map.new(table_names, fn name ->
+        [[count]] =
+          SqliteQuery.rows(conn, "SELECT count(*) FROM #{quote_identifier(name)}", [],
+            max_rows: 1
+          )
+
+        {name, count}
+      end)
+    end)
+  end
+
+  defp with_connection(database, mode, function) do
+    {:ok, conn} = Sqlite3.open(database, mode: mode)
+
+    try do
+      function.(conn)
+    after
+      :ok = Sqlite3.close(conn)
+    end
+  end
+
+  defp execute_bound!(conn, sql, parameters) do
+    SqliteQuery.reduce(conn, sql, parameters, :ok, fn _row, :ok -> :ok end, max_rows: 0)
+  end
+
+  defp quote_identifier(name), do: ~s("#{String.replace(name, "\"", "\"\"")}")
 
   defp fixture_path(:current), do: Path.join(fixtures_directory(), "desktop-current.sql")
 
