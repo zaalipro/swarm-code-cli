@@ -428,7 +428,7 @@ git commit -m "build: enforce source provenance policy"
 **Interfaces:**
 - `Paths.resolve(keyword()) :: {:ok, PathSet.t()} | {:error, :unsupported_platform | :relative_xdg_path | :relative_database_path | :alternate_database_forbidden}`.
 - Options are trusted atoms selected by boot code: `platform: :macos | :linux`, `mode: :production | :development | :test | :recovery`, `home: Path.t()`, `env: %{optional(String.t()) => String.t()}`, and optional `database_path: Path.t()`.
-- `PrivateDirectory.ensure(Path.t(), uid) :: :ok | {:error, {:unsafe_private_directory, Path.t(), atom()}}` creates/chmods the leaf to `0700`, rejects symlinks and wrong ownership, and re-lstats after mutation.
+- `PrivateDirectory.ensure(Path.t(), uid) :: :ok | {:error, {:unsafe_private_directory, Path.t(), atom()}}` creates an absent leaf under the mandatory process `umask 077`, then only `lstat`-validates exact `0700`, type, and ownership. It rejects symlinks and wrong ownership/mode and never pathname-chmods an existing or newly created path.
 - `ProcessIdentity.current(keyword()) :: {:ok, ProcessIdentity.t()} | {:error, term()}`; the injectable `read_file` and `command` functions exist only as explicit function options, never runtime-selected modules.
 
 - [ ] **Step 1: Write RED path tests**
@@ -561,7 +561,7 @@ end
 
 - [ ] **Step 4: Add real filesystem and parser tests, then implement them**
 
-The private-directory test creates a new temp leaf, asserts `Bitwise.band(File.stat!(leaf).mode, 0o777) == 0o700`, replaces it with a symlink, and expects `{:error, {:unsafe_private_directory, ^leaf, :symlink}}`. The implementation must use `File.lstat/1` before and after `File.mkdir/1`/`File.chmod/2`, compare `stat.uid` to the supplied uid, and never follow a symlink.
+The private-directory tests pre-create a `0700` directory and assert success; pre-create `0755` and assert `:permissions` while its mode remains unchanged; install a symlink and assert `:symlink`; and use a synchronized child OS process started by `/bin/sh -c 'umask 077; exec ...'` to prove an absent leaf is created as `0700`. A deterministic race seam substitutes a symlink after initial absence detection and proves the implementation performs no chmod/mutation of its target. The implementation may call `File.mkdir/1` only for an absent leaf, then uses `File.lstat/1` to validate exact type/uid/mode. It never calls `File.chmod/2` or another pathname mutation after creation; a non-`0700` result fails closed and is left for an explicit user repair.
 
 The identity parser test is exact and contains no OS timing:
 
