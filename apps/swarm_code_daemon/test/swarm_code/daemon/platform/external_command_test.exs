@@ -49,7 +49,7 @@ defmodule SwarmCode.Daemon.Platform.ExternalCommandTest do
     refute os_pid_alive?(os_pid)
   end
 
-  test "signal failures are contained and a live requester sees cleanup failure" do
+  test "signal failure keeps the exact reaper alive until terminal Port and PID evidence" do
     test = self()
     supervisor = start_supervised!(Task.Supervisor)
 
@@ -69,12 +69,17 @@ defmodule SwarmCode.Daemon.Platform.ExternalCommandTest do
     owner_monitor = Process.monitor(owner)
     on_exit(fn -> terminate_os_pid(os_pid) end)
 
-    assert Task.await(task) == {:error, :command_cleanup_failed}
     assert_receive {:external_command_signal, ^os_pid, :term}
     assert_receive {:external_command_signal, ^os_pid, :kill}
-    refute_receive {:external_command_terminal, ^os_pid}
-    assert_receive {:DOWN, ^owner_monitor, :process, ^owner, :normal}
+    refute Task.yield(task, 50)
     assert os_pid_alive?(os_pid)
+
+    terminate_os_pid(os_pid)
+
+    assert Task.await(task, 5_000) == {:error, :command_cleanup_failed}
+    assert_receive {:external_command_terminal, ^os_pid}
+    assert_receive {:DOWN, ^owner_monitor, :process, ^owner, :normal}
+    refute os_pid_alive?(os_pid)
   end
 
   test "queued terminal evidence at the cleanup boundary suppresses stale PID signals" do

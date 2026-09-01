@@ -221,8 +221,13 @@ defmodule SwarmCode.Daemon.Platform.ExternalCommand do
         _signal_result = signal(config.signal_executable, os_pid, "-KILL")
 
         case await_terminal(port, port_monitor, running_state, config.kill_grace) do
-          {:ok, _terminal_state} -> terminal(config.observer, os_pid)
-          {:timeout, _kill_state} -> {:error, :command_cleanup_failed}
+          {:ok, _terminal_state} ->
+            terminal(config.observer, os_pid)
+
+          {:timeout, kill_state} ->
+            _terminal_state = await_terminal_forever(port, port_monitor, kill_state)
+            terminal(config.observer, os_pid)
+            {:error, :command_cleanup_failed}
         end
     end
   end
@@ -257,6 +262,26 @@ defmodule SwarmCode.Daemon.Platform.ExternalCommand do
           do_await_terminal(port, port_monitor, state, deadline)
       after
         timeout -> {:timeout, state}
+      end
+    end
+  end
+
+  defp await_terminal_forever(port, port_monitor, state) do
+    if terminal?(state) do
+      state
+    else
+      receive do
+        {^port, {:data, _output}} ->
+          await_terminal_forever(port, port_monitor, state)
+
+        {^port, {:exit_status, status}} when is_integer(status) and status >= 0 ->
+          await_terminal_forever(port, port_monitor, %{state | exit_status: status})
+
+        {:DOWN, ^port_monitor, :port, ^port, _reason} ->
+          await_terminal_forever(port, port_monitor, %{state | port_down?: true})
+
+        _other ->
+          await_terminal_forever(port, port_monitor, state)
       end
     end
   end

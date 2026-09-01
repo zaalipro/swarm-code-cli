@@ -1,6 +1,8 @@
 defmodule SwarmCode.Daemon.Platform.DirectoryHelper do
   @moduledoc false
 
+  alias SwarmCode.Daemon.Platform.DirectoryProtocol
+
   @request_timeout 5_000
   @long_request_timeout 300_000
   @startup_timeout 10_000
@@ -10,7 +12,12 @@ defmodule SwarmCode.Daemon.Platform.DirectoryHelper do
   @maximum_contents_bytes 4 * 1_024 * 1_024
   @test_build Mix.env() == :test
   @allowed_options if(@test_build,
-                     do: [:source_basenames, :test_fail_after_port_open, :test_observer],
+                     do: [
+                       :source_basenames,
+                       :test_fail_after_port_open,
+                       :test_observer,
+                       :test_broker_fault
+                     ],
                      else: [:source_basenames]
                    )
 
@@ -26,10 +33,19 @@ defmodule SwarmCode.Daemon.Platform.DirectoryHelper do
     sources = Keyword.get(opts, :source_basenames, [])
     fail_after_port_open? = fail_after_port_open?(opts)
     observer = observer(opts)
+    broker_fault = broker_fault(opts)
 
-    with :ok <- validate_options(opts, sources, fail_after_port_open?, observer),
+    with :ok <- validate_options(opts, sources, fail_after_port_open?, observer, broker_fault),
          {:ok, executable, arguments} <- broker_command() do
-      do_start(directory, sources, executable, arguments, fail_after_port_open?, observer)
+      do_start(
+        directory,
+        sources,
+        executable,
+        arguments,
+        fail_after_port_open?,
+        observer,
+        broker_fault
+      )
     end
   end
 
@@ -234,10 +250,8 @@ defmodule SwarmCode.Daemon.Platform.DirectoryHelper do
     send(owner, {:stop, self(), ref})
 
     receive do
-      {^ref, :ok} -> await_down(owner, monitor, @request_timeout)
+      {^ref, :ok} -> await_down(owner, monitor, :infinity)
       {:DOWN, ^monitor, :process, ^owner, _reason} -> :ok
-    after
-      @request_timeout + @terminate_grace + @kill_grace -> :ok
     end
 
     Process.demonitor(original_monitor, [:flush])
@@ -245,7 +259,16 @@ defmodule SwarmCode.Daemon.Platform.DirectoryHelper do
     :ok
   end
 
-  defp do_start(directory, sources, executable, arguments, fail_after_port_open?, observer) do
+  defp do_start(
+         directory,
+         sources,
+         executable,
+         arguments,
+         fail_after_port_open?,
+         observer,
+         broker_fault
+       ) do
+    :ok = DirectoryProtocol.preload()
     caller = self()
     ref = make_ref()
 
@@ -259,7 +282,8 @@ defmodule SwarmCode.Daemon.Platform.DirectoryHelper do
           executable,
           arguments,
           fail_after_port_open?,
-          observer
+          observer,
+          broker_fault
         )
       end)
 
@@ -318,11 +342,12 @@ defmodule SwarmCode.Daemon.Platform.DirectoryHelper do
          executable,
          arguments,
          fail_after_port_open?,
-         observer
+         observer,
+         broker_fault
        ) do
     caller_monitor = Process.monitor(caller)
 
-    case open_port(directory, executable, arguments) do
+    case open_port(directory, executable, arguments, broker_fault) do
       {:ok, port, port_monitor, os_pid} ->
         send(caller, {ref, self(), {:starting, os_pid}})
         notify(observer, {:directory_helper_started, os_pid})
@@ -394,7 +419,7 @@ defmodule SwarmCode.Daemon.Platform.DirectoryHelper do
         graceful_stop(port, port_monitor, caller_monitor, os_pid)
 
       {^port, _unexpected} ->
-        terminate(port, port_monitor, os_pid)
+        graceful_stop(port, port_monitor, caller_monitor, os_pid)
 
       {:DOWN, ^port_monitor, :port, ^port, _reason} ->
         :ok
@@ -414,14 +439,13 @@ defmodule SwarmCode.Daemon.Platform.DirectoryHelper do
     end
   end
 
-  defp open_port(directory, executable, arguments) do
+  defp open_port(directory, executable, arguments, broker_fault) do
     port =
       Port.open({:spawn_executable, String.to_charlist(executable)}, [
         :binary,
         :exit_status,
         :hide,
         :use_stdio,
-        {:packet, 4},
         {:cd, String.to_charlist(directory)},
         {:args, Enum.map(arguments, &String.to_charlist/1)},
         {:env,
@@ -431,6 +455,7 @@ defmodule SwarmCode.Daemon.Platform.DirectoryHelper do
            {~c"ERL_FLAGS", ~c""},
            {~c"ERL_LIBS", ~c""},
            {~c"ERL_ZFLAGS", ~c""}
+           | test_broker_fault_environment(broker_fault)
          ]}
       ])
 
@@ -450,35 +475,69 @@ defmodule SwarmCode.Daemon.Platform.DirectoryHelper do
   end
 
   defp await_ready(port, port_monitor, caller_monitor) do
-    receive do
-      {^port, {:data, payload}} ->
-        case decode(payload) do
-          {:ready, path, {:ok, {:directory, _, _, _, _, _}}} when is_binary(path) -> :ok
-          _other -> {:error, :invalid_helper_ready}
+    case receive_frame(port, port_monitor, caller_monitor, @request_timeout) do
+      {:ok, payload} ->
+        case DirectoryProtocol.decode_ready(payload) do
+          {:ok, {:ready, _path, {:ok, _identity}}} -> :ok
+          {:error, _reason} -> {:error, :invalid_helper_ready}
         end
 
-      {^port, {:exit_status, _status}} ->
-        {:error, :helper_start_failed}
-
-      {:DOWN, ^port_monitor, :port, ^port, _reason} ->
-        {:error, :helper_start_failed}
-
-      {:DOWN, ^caller_monitor, :process, _caller, _reason} ->
-        {:error, :helper_requester_stopped}
-
-      {:cancel_start, _caller, _ref} ->
-        {:error, :helper_start_cancelled}
-    after
-      @request_timeout -> {:error, :helper_start_timeout}
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
   defp broker_request(port, port_monitor, caller_monitor, operation) do
-    case Port.command(port, :erlang.term_to_binary(operation)) do
-      true ->
+    with {:ok, frame} <- DirectoryProtocol.encode_request(operation),
+         true <- Port.command(port, frame) do
+      case receive_frame(port, port_monitor, caller_monitor, operation_timeout(operation)) do
+        {:ok, payload} ->
+          case DirectoryProtocol.decode_reply(operation, payload) do
+            {:ok, reply} ->
+              {:ok, reply}
+
+            {:error, _reason} ->
+              {:cleanup, :invalid_helper_response}
+          end
+
+        {:error, :directory_helper_owner_stopped} ->
+          request_broker_stop(port)
+          {:requester_down, :directory_helper_owner_stopped}
+
+        {:error, :directory_helper_timeout} ->
+          request_broker_stop(port)
+          {:cleanup, :directory_helper_timeout}
+
+        {:error, :invalid_helper_response} ->
+          {:cleanup, :invalid_helper_response}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    else
+      _other -> {:error, :helper_command_failed}
+    end
+  end
+
+  defp receive_frame(port, port_monitor, caller_monitor, timeout) do
+    deadline = System.monotonic_time(:millisecond) + timeout
+    do_receive_frame(port, port_monitor, caller_monitor, deadline)
+  end
+
+  defp do_receive_frame(port, port_monitor, caller_monitor, deadline) do
+    case take_queued_frame(port) do
+      {:ok, payload} ->
+        {:ok, payload}
+
+      :empty ->
+        timeout = max(deadline - System.monotonic_time(:millisecond), 0)
+
         receive do
-          {^port, {:data, payload}} ->
-            {:ok, decode(payload)}
+          {^port, {:data, bytes}} when is_binary(bytes) ->
+            case ingest_frames(port, bytes) do
+              :ok -> do_receive_frame(port, port_monitor, caller_monitor, deadline)
+              {:error, _reason} -> {:error, :invalid_helper_response}
+            end
 
           {^port, {:exit_status, _status}} ->
             {:error, :directory_helper_stopped}
@@ -487,58 +546,90 @@ defmodule SwarmCode.Daemon.Platform.DirectoryHelper do
             {:error, :directory_helper_stopped}
 
           {:DOWN, ^caller_monitor, :process, _caller, _reason} ->
-            request_broker_stop(port)
-            {:requester_down, :directory_helper_owner_stopped}
+            {:error, :directory_helper_owner_stopped}
 
           {:cancel_start, _caller, _ref} ->
             {:error, :helper_start_cancelled}
         after
-          operation_timeout(operation) ->
-            request_broker_stop(port)
-            {:cleanup, :directory_helper_timeout}
+          timeout -> {:error, :directory_helper_timeout}
         end
-
-      false ->
-        {:error, :helper_command_failed}
     end
   end
+
+  defp ingest_frames(port, bytes) do
+    state = frame_state(port)
+
+    case DirectoryProtocol.push(state.decoder, bytes) do
+      {:more, decoder} ->
+        put_frame_state(port, %{state | decoder: decoder})
+        :ok
+
+      {:ok, payload, rest} ->
+        put_frame_state(port, %{
+          decoder: DirectoryProtocol.new_decoder(),
+          frames: :queue.in(payload, state.frames)
+        })
+
+        if rest == <<>>, do: :ok, else: ingest_frames(port, rest)
+
+      {:error, _reason} ->
+        {:error, :invalid_frame}
+    end
+  end
+
+  defp take_queued_frame(port) do
+    state = frame_state(port)
+
+    case :queue.out(state.frames) do
+      {{:value, payload}, frames} ->
+        put_frame_state(port, %{state | frames: frames})
+        {:ok, payload}
+
+      {:empty, _frames} ->
+        :empty
+    end
+  end
+
+  defp frame_state(port) do
+    Process.get({__MODULE__, :frames, port}) ||
+      %{
+        decoder: DirectoryProtocol.new_decoder(),
+        frames: :queue.new()
+      }
+  end
+
+  defp put_frame_state(port, state), do: Process.put({__MODULE__, :frames, port}, state)
 
   defp graceful_stop(port, port_monitor, caller_monitor, os_pid) do
-    case await_broker_stop(port, port_monitor, caller_monitor) do
-      :ok ->
-        unless await_port_terminal(port, port_monitor, @terminate_grace),
-          do: terminate(port, port_monitor, os_pid)
-
-      _other ->
-        terminate(port, port_monitor, os_pid)
-    end
-  end
-
-  defp await_broker_stop(port, port_monitor, caller_monitor) do
+    _ = signal(os_pid, "-CONT")
     request_broker_stop(port)
-    deadline = System.monotonic_time(:millisecond) + @request_timeout
-    do_await_broker_stop(port, port_monitor, caller_monitor, deadline)
+    await_broker_terminal(port, port_monitor, caller_monitor, false, false)
   end
 
-  defp do_await_broker_stop(port, port_monitor, caller_monitor, deadline) do
-    timeout = max(deadline - System.monotonic_time(:millisecond), 0)
+  defp await_broker_terminal(_port, _monitor, _caller_monitor, true, true), do: :ok
 
+  defp await_broker_terminal(port, monitor, caller_monitor, exit?, down?) do
     receive do
-      {^port, {:data, payload}} ->
-        case decode(payload) do
-          :ok -> :ok
-          _stale_reply -> do_await_broker_stop(port, port_monitor, caller_monitor, deadline)
-        end
+      {^port, {:exit_status, _status}} ->
+        await_broker_terminal(port, monitor, caller_monitor, true, down?)
+
+      {:DOWN, ^monitor, :port, ^port, _reason} ->
+        await_broker_terminal(port, monitor, caller_monitor, exit?, true)
+
+      {^port, _data} ->
+        await_broker_terminal(port, monitor, caller_monitor, exit?, down?)
 
       {:DOWN, ^caller_monitor, :process, _caller, _reason} ->
-        do_await_broker_stop(port, port_monitor, caller_monitor, deadline)
-    after
-      timeout -> {:error, :directory_helper_timeout}
+        await_broker_terminal(port, monitor, caller_monitor, exit?, down?)
     end
   end
 
   defp request_broker_stop(port) do
-    _ = Port.command(port, :erlang.term_to_binary(:stop))
+    case DirectoryProtocol.encode_request(:stop) do
+      {:ok, frame} -> _ = Port.command(port, frame)
+      {:error, _reason} -> :ok
+    end
+
     :ok
   rescue
     _error -> :ok
@@ -637,8 +728,6 @@ defmodule SwarmCode.Daemon.Platform.DirectoryHelper do
     end
   end
 
-  defp decode(payload), do: :erlang.binary_to_term(payload)
-
   defp signal(pid, signal) do
     case System.cmd("/bin/kill", [signal, Integer.to_string(pid)], stderr_to_stdout: true) do
       {_output, 0} -> :ok
@@ -681,12 +770,18 @@ defmodule SwarmCode.Daemon.Platform.DirectoryHelper do
 
   defp safe_basename(_name), do: {:error, :unsafe_helper_basename}
 
-  defp validate_options(opts, sources, fail_after_port_open?, observer) do
+  defp validate_options(opts, sources, fail_after_port_open?, observer, broker_fault) do
     keys = Keyword.keys(opts)
 
     if Keyword.keyword?(opts) and keys == Enum.uniq(keys) and
          Enum.all?(keys, &(&1 in @allowed_options)) and is_list(sources) and
          is_boolean(fail_after_port_open?) and (is_nil(observer) or is_pid(observer)) and
+         broker_fault in [
+           nil,
+           :crash_finish_copy,
+           :malformed_write_private,
+           :oversized_write_private
+         ] and
          length(sources) <= 3 and
          Enum.all?(sources, &safe_source_basename?/1),
        do: :ok,
@@ -703,9 +798,18 @@ defmodule SwarmCode.Daemon.Platform.DirectoryHelper do
   if @test_build do
     defp fail_after_port_open?(opts), do: Keyword.get(opts, :test_fail_after_port_open, false)
     defp observer(opts), do: Keyword.get(opts, :test_observer)
+    defp broker_fault(opts), do: Keyword.get(opts, :test_broker_fault)
+
+    defp test_broker_fault_environment(nil),
+      do: [{~c"SWARM_CODE_DIRECTORY_BROKER_TEST_FAULT", false}]
+
+    defp test_broker_fault_environment(fault),
+      do: [{~c"SWARM_CODE_DIRECTORY_BROKER_TEST_FAULT", Atom.to_charlist(fault)}]
   else
     defp fail_after_port_open?(_opts), do: false
     defp observer(_opts), do: nil
+    defp broker_fault(_opts), do: nil
+    defp test_broker_fault_environment(_fault), do: []
   end
 
   defp notify(nil, _event), do: :ok
@@ -743,6 +847,12 @@ defmodule SwarmCode.Daemon.Platform.DirectoryHelper do
   end
 
   defp safe_source_path?(_path), do: false
+
+  defp await_down(owner, monitor, :infinity) do
+    receive do
+      {:DOWN, ^monitor, :process, ^owner, _reason} -> :ok
+    end
+  end
 
   defp await_down(owner, monitor, timeout) do
     receive do

@@ -5,22 +5,33 @@ defmodule SwarmCode.Daemon.Platform.DirectoryBroker do
 
   alias Exqlite.Sqlite3
   alias SwarmCode.Daemon.Backup.Gate
+  alias SwarmCode.Daemon.Platform.DirectoryProtocol
   alias SwarmCode.Daemon.Schema.Probe
 
   @private_file_mode 0o600
   @chunk_bytes 1_024 * 1_024
-  @maximum_packet_bytes 8 * 1_024 * 1_024
+  @test_build Mix.env() == :test
 
   @doc false
   def main do
     :ok = :io.setopts(:standard_io, [:binary, encoding: :latin1])
     _ = Application.ensure_all_started(:crypto)
+    :ok = DirectoryProtocol.preload()
+    :ok = configure_test_broker_fault()
     cancel_table = :ets.new(__MODULE__, [:set, :public])
     true = :ets.insert(cancel_table, {:cancelled, false})
     broker = self()
     _reader = spawn_link(fn -> read_loop(broker, cancel_table) end)
-    write_packet({:ready, File.cwd!(), directory_identity(".")})
-    loop(%{cancel_table: cancel_table, copy: nil, owned: %{}, source: nil, sources: []})
+    write_ready({:ready, File.cwd!(), directory_identity(".")})
+
+    loop(%{
+      cancel_table: cancel_table,
+      copy: nil,
+      operation: nil,
+      owned: %{},
+      source: nil,
+      sources: []
+    })
   catch
     _kind, _reason -> :init.stop(1)
   end
@@ -28,21 +39,290 @@ defmodule SwarmCode.Daemon.Platform.DirectoryBroker do
   defp loop(state) do
     receive do
       {:broker_packet, :stop} ->
-        cleanup_state(state)
-        write_packet(:ok)
-        :init.stop(0)
+        stop_broker(state)
+
+      {:broker_packet, request} when is_nil(state.operation) ->
+        loop(start_operation(request, state))
 
       {:broker_packet, request} ->
-        {reply, next_state} = safe_dispatch(request, state)
-        write_packet(reply)
-        loop(next_state)
+        write_reply(request, {:error, :operation_in_progress})
+        loop(state)
+
+      {:operation_reserve, worker, reserve_ref, basename, identity}
+      when state.operation.pid == worker ->
+        send(worker, {reserve_ref, :ok})
+        loop(put_in(state, [:owned, basename], identity))
+
+      {:operation_result, worker, reply, next_state} when state.operation.pid == worker ->
+        next_state = retain_copy_owner(state, worker, reply, next_state)
+
+        if is_nil(next_state.copy) or next_state.copy.owner != worker do
+          Process.demonitor(state.operation.monitor, [:flush])
+        end
+
+        write_reply(state.operation.request, reply)
+        loop(merge_operation_state(state, next_state))
+
+      {:DOWN, monitor, :process, worker, {:copy_operation_result, request, reply}}
+      when state.operation.monitor == monitor and state.operation.pid == worker and
+             state.operation.request == request and request in [:finish_copy, :cancel_copy] ->
+        write_reply(request, reply)
+        loop(complete_copy_operation(state, request, reply))
+
+      {:DOWN, monitor, :process, worker, _reason}
+      when state.operation.monitor == monitor and state.operation.pid == worker ->
+        write_reply(state.operation.request, {:error, :directory_operation_failed})
+        loop(operation_worker_down(state))
+
+      {:DOWN, monitor, :process, worker, _reason}
+      when state.copy.monitor == monitor and state.copy.owner == worker ->
+        loop(cleanup_dead_copy(state))
 
       :broker_input_closed ->
-        cleanup_state(state)
-        :init.stop(0)
+        stop_broker(state)
 
       _other ->
         loop(state)
+    end
+  end
+
+  defp start_operation(request, state) do
+    case {request, state.copy} do
+      {request, %{owner: owner, monitor: monitor}}
+      when request in [:finish_copy, :cancel_copy] ->
+        send(owner, {:copy_operation, request})
+
+        %{
+          state
+          | operation: %{
+              base_owned: state.owned,
+              expected: [],
+              monitor: monitor,
+              pid: owner,
+              request: request
+            }
+        }
+
+      _other ->
+        spawn_operation(request, state)
+    end
+  end
+
+  defp spawn_operation(request, state) do
+    broker = self()
+    base_owned = state.owned
+
+    {worker, monitor} =
+      spawn_monitor(fn ->
+        Process.put({__MODULE__, :broker}, broker)
+        {reply, next_state} = safe_dispatch(request, state)
+        send(broker, {:operation_result, self(), reply, next_state})
+
+        if keep_copy_owner?(request, reply, next_state) do
+          copy_owner_loop(next_state.copy, next_state.cancel_table)
+        end
+      end)
+
+    %{
+      state
+      | operation: %{
+          base_owned: base_owned,
+          expected: expected_creations(request),
+          monitor: monitor,
+          pid: worker,
+          request: request
+        }
+    }
+  end
+
+  defp keep_copy_owner?({:prepare_copy, _source, _destination, _uid}, {:ok, _identity}, %{
+         copy: copy
+       }),
+       do: is_map(copy)
+
+  defp keep_copy_owner?(_request, _reply, _next_state), do: false
+
+  defp retain_copy_owner(state, worker, reply, next_state) do
+    if keep_copy_owner?(state.operation.request, reply, next_state) do
+      copy = Map.merge(next_state.copy, %{monitor: state.operation.monitor, owner: worker})
+      %{next_state | copy: copy}
+    else
+      next_state
+    end
+  end
+
+  defp copy_owner_loop(copy, cancel_table) do
+    receive do
+      {:copy_operation, :finish_copy} ->
+        if crash_copy_owner?(), do: exit(:injected_copy_owner_crash)
+        reply = safe_finish_copy(copy, cancel_table)
+        exit({:copy_operation_result, :finish_copy, reply})
+
+      {:copy_operation, :cancel_copy} ->
+        cleanup_copy_owner(copy)
+        exit({:copy_operation_result, :cancel_copy, :ok})
+    end
+  end
+
+  defp safe_finish_copy(copy, cancel_table) do
+    finish_copy(copy, cancel_table)
+  rescue
+    _error -> {:error, :private_copy_failed}
+  catch
+    _kind, _reason -> {:error, :private_copy_failed}
+  end
+
+  defp cleanup_copy_owner(copy) do
+    _ = File.close(copy.input)
+    _ = File.close(copy.output)
+    cleanup_created([{copy.destination, object_identity(copy.identity)}], copy.uid)
+    :ok
+  end
+
+  defp complete_copy_operation(state, :finish_copy, {:ok, _identity}),
+    do: %{state | copy: nil, operation: nil}
+
+  defp complete_copy_operation(%{copy: copy} = state, _request, _reply) when is_map(copy) do
+    state
+    |> cleanup_dead_copy()
+    |> Map.put(:operation, nil)
+  end
+
+  defp complete_copy_operation(state, _request, _reply),
+    do: %{state | copy: nil, operation: nil}
+
+  defp operation_worker_down(state) do
+    expected = state.operation.expected
+    base_owned = state.operation.base_owned
+    worker = state.operation.pid
+
+    state =
+      if is_map(state.copy) and state.copy.owner == worker do
+        cleanup_dead_copy(state)
+      else
+        state
+      end
+
+    state |> Map.put(:operation, nil) |> capture_expected(expected, base_owned)
+  end
+
+  defp cleanup_dead_copy(state) do
+    destination = state.copy.destination
+    uid = state.copy.uid
+    identity = object_identity(state.copy.identity)
+    _ = repair_mode(0o700, uid)
+    cleanup_created([{destination, identity}], uid)
+    %{state | copy: nil}
+  end
+
+  defp merge_operation_state(live, next) do
+    reservations = Map.drop(live.owned, Map.keys(live.operation.base_owned))
+    %{next | operation: nil, owned: Map.merge(next.owned, reservations)}
+  end
+
+  defp reserve_owned(basename, identity) do
+    case Process.get({__MODULE__, :broker}) do
+      broker when is_pid(broker) ->
+        reserve_ref = make_ref()
+        send(broker, {:operation_reserve, self(), reserve_ref, basename, identity})
+
+        receive do
+          {^reserve_ref, :ok} -> :ok
+        end
+
+      _other ->
+        {:error, :missing_cleanup_owner}
+    end
+  end
+
+  defp stop_broker(state) do
+    state = cancel_operation(state)
+    cleanup_state(state)
+    write_reply(:stop, :ok)
+    :init.stop(0)
+  end
+
+  defp cancel_operation(%{operation: nil} = state), do: state
+
+  defp cancel_operation(state) do
+    cancel_open_source(state.cancel_table)
+    Process.exit(state.operation.pid, :kill)
+    state = await_operation_down(state.operation.pid, state.operation.monitor, state)
+    expected = state.operation.expected
+    base_owned = state.operation.base_owned
+
+    state =
+      if is_map(state.copy) and state.copy.owner == state.operation.pid do
+        %{state | copy: nil}
+      else
+        state
+      end
+
+    state |> Map.put(:operation, nil) |> capture_expected(expected, base_owned)
+  end
+
+  defp expected_creations({:write_private, basename, _contents, uid}), do: [{basename, uid}]
+  defp expected_creations({:copy_private, _source, destination, uid}), do: [{destination, uid}]
+  defp expected_creations({:prepare_copy, _source, destination, uid}), do: [{destination, uid}]
+
+  defp expected_creations({:vacuum, destination, uid}),
+    do: Enum.map(["", "-journal", "-wal", "-shm"], &{destination <> &1, uid})
+
+  defp expected_creations({:open_source, specs, uid_probe, uid}) when is_list(specs) do
+    _ = uid_probe
+    Enum.map(specs, fn {_kind, _source, destination, _identity} -> {destination, uid} end)
+  end
+
+  defp expected_creations({:link, _source, destination}), do: [{destination, nil}]
+  defp expected_creations({:link_source, _index, destination}), do: [{destination, nil}]
+  defp expected_creations(_request), do: []
+
+  defp capture_expected(state, expected, base_owned) do
+    uid = directory_uid()
+    _ = if is_integer(uid), do: repair_mode(0o700, uid)
+
+    Enum.reduce(expected, state, fn {basename, expected_uid}, acc ->
+      if reserved_during_operation?(acc.owned, base_owned, basename) do
+        acc
+      else
+        case File.lstat(basename) do
+          {:ok, %File.Stat{type: :regular, uid: actual_uid} = stat}
+          when is_nil(expected_uid) or actual_uid == expected_uid ->
+            put_in(acc, [:owned, basename], object_identity(stat))
+
+          _other ->
+            acc
+        end
+      end
+    end)
+  end
+
+  defp reserved_during_operation?(owned, base_owned, basename) do
+    case {Map.fetch(base_owned, basename), Map.fetch(owned, basename)} do
+      {:error, {:ok, _identity}} -> true
+      {{:ok, before}, {:ok, current}} -> before != current
+      _other -> false
+    end
+  end
+
+  defp directory_uid do
+    case directory_identity(".") do
+      {:ok, {:directory, _major, _minor, _inode, uid, _mode}} -> uid
+      _other -> nil
+    end
+  end
+
+  defp await_operation_down(worker, monitor, state) do
+    receive do
+      {:DOWN, ^monitor, :process, ^worker, _reason} ->
+        state
+
+      {:operation_result, ^worker, _reply, _next_state} ->
+        await_operation_down(worker, monitor, state)
+
+      {:operation_reserve, ^worker, reserve_ref, basename, identity} ->
+        send(worker, {reserve_ref, {:error, :cancelled}})
+        await_operation_down(worker, monitor, put_in(state.owned[basename], identity))
     end
   end
 
@@ -90,7 +370,14 @@ defmodule SwarmCode.Daemon.Platform.DirectoryBroker do
     do: {:ok, %{state | sources: sources}}
 
   defp dispatch({:link, source, destination}, state) do
-    result = normalize_ok(File.ln(source, destination))
+    result =
+      with :ok <- File.ln(source, destination),
+           {:ok, identity} <- file_identity(destination),
+           :ok <- reserve_owned(destination, object_identity(identity)) do
+        :ok
+      else
+        _other -> {:error, :directory_operation_failed}
+      end
 
     next_state =
       case {result, Map.fetch(state.owned, source)} do
@@ -109,11 +396,23 @@ defmodule SwarmCode.Daemon.Platform.DirectoryBroker do
   defp dispatch({:link_source, index, destination}, %{sources: sources} = state) do
     result =
       case Enum.fetch(sources, index) do
-        {:ok, source} -> normalize_ok(File.ln(source, destination))
-        :error -> {:error, :invalid_source_index}
+        {:ok, source} ->
+          with :ok <- File.ln(source, destination),
+               {:ok, identity} <- file_identity(destination),
+               :ok <- reserve_owned(destination, object_identity(identity)) do
+            {:ok, identity}
+          else
+            _other -> {:error, :directory_operation_failed}
+          end
+
+        :error ->
+          {:error, :invalid_source_index}
       end
 
-    {result, state}
+    case result do
+      {:ok, identity} -> {:ok, track_result(state, destination, {:ok, identity})}
+      {:error, _reason} = error -> {error, state}
+    end
   end
 
   defp dispatch({:unlink_identity, basename, identity}, state) do
@@ -265,7 +564,7 @@ defmodule SwarmCode.Daemon.Platform.DirectoryBroker do
   defp open_source(specs, expected_probe, uid, cancel_table)
        when is_list(specs) and length(specs) in 1..3//1 and is_integer(uid) and uid >= 0 do
     with :ok <- private_directory(uid),
-         {:ok, identities, created} <- link_source_specs(specs, uid),
+         {:ok, identities, created} <- link_source_specs(specs, uid, cancel_table),
          {:ok, main_basename} <- main_basename(specs) do
       open_linked_source(
         main_basename,
@@ -323,7 +622,7 @@ defmodule SwarmCode.Daemon.Platform.DirectoryBroker do
     end
   end
 
-  defp link_source_specs(specs, uid) do
+  defp link_source_specs(specs, uid, cancel_table) do
     result =
       Enum.reduce_while(specs, {:ok, %{}, []}, fn
         {kind, source, destination, nil}, {:ok, identities, created}
@@ -339,7 +638,7 @@ defmodule SwarmCode.Daemon.Platform.DirectoryBroker do
 
         {:shm, source, destination, expected}, {:ok, identities, created}
         when is_binary(source) and is_binary(destination) ->
-          case copy_source_pin(source, destination, expected, uid) do
+          case copy_source_pin(source, destination, expected, uid, cancel_table) do
             {:ok, actual_identity} ->
               {:cont,
                {:ok, Map.put(identities, :shm, expected),
@@ -397,7 +696,7 @@ defmodule SwarmCode.Daemon.Platform.DirectoryBroker do
          :ok <- File.ln(source, destination) do
       case private_identity(destination, uid) do
         {:ok, ^expected} ->
-          :ok
+          reserve_owned(destination, object_identity(expected))
 
         {:ok, actual} ->
           _ = unlink_exact_local(destination, actual)
@@ -420,16 +719,17 @@ defmodule SwarmCode.Daemon.Platform.DirectoryBroker do
     with {:ok, ^expected} <- file_identity(path), do: File.rm(path)
   end
 
-  defp copy_source_pin(source, destination, expected, uid) do
+  defp copy_source_pin(source, destination, expected, uid, cancel_table) do
     with {:ok, input} <- File.open(source, [:read, :binary]) do
       try do
         with {:ok, ^expected} <- handle_identity(input),
              {:error, :enoent} <- File.lstat(destination),
              {:ok, output} <- File.open(destination, [:write, :binary, :exclusive]),
-             {:ok, opened_identity} <- handle_identity(output) do
+             {:ok, opened_identity} <- handle_identity(output),
+             :ok <- reserve_owned(destination, object_identity(opened_identity)) do
           result =
             try do
-              with :ok <- copy_chunks(input, output),
+              with :ok <- copy_chunks(input, output, cancel_table),
                    :ok <- :file.sync(output),
                    {:ok, actual} <- handle_identity(output),
                    {:regular, _major, _minor, _inode, ^uid, mode, _size} = actual,
@@ -509,6 +809,7 @@ defmodule SwarmCode.Daemon.Platform.DirectoryBroker do
 
         with :done <- step,
              {:ok, identity} <- secure_created_file(destination, uid),
+             :ok <- reserve_owned(destination, object_identity(identity)),
              :ok <- private_directory(uid) do
           {:ok, identity}
         else
@@ -576,6 +877,8 @@ defmodule SwarmCode.Daemon.Platform.DirectoryBroker do
   end
 
   defp cleanup_created(created, uid) do
+    _ = repair_mode(0o700, uid)
+
     Enum.each(created, fn {path, expected_object} ->
       case File.lstat(path) do
         {:ok, %File.Stat{type: :regular, uid: ^uid} = stat} ->
@@ -622,10 +925,9 @@ defmodule SwarmCode.Daemon.Platform.DirectoryBroker do
   defp cleanup_open_copy(%{copy: nil} = state), do: state
 
   defp cleanup_open_copy(%{copy: copy} = state) do
-    _ = File.close(copy.input)
-    _ = File.close(copy.output)
-    cleanup_created([{copy.destination, object_identity(copy.identity)}], copy.uid)
-    state |> Map.put(:copy, nil) |> drop_owned(copy.destination)
+    Process.exit(copy.owner, :kill)
+    state = await_operation_down(copy.owner, copy.monitor, state)
+    %{state | copy: nil}
   end
 
   defp track_result(state, basename, {:ok, identity}) do
@@ -710,7 +1012,8 @@ defmodule SwarmCode.Daemon.Platform.DirectoryBroker do
   defp write_private(path, contents, uid) when is_binary(contents) do
     with {:error, :enoent} <- File.lstat(path),
          {:ok, output} <- File.open(path, [:write, :binary, :exclusive]),
-         {:ok, opened_identity} <- handle_identity(output) do
+         {:ok, opened_identity} <- handle_identity(output),
+         :ok <- reserve_owned(path, object_identity(opened_identity)) do
       result =
         try do
           with :ok <- IO.binwrite(output, contents),
@@ -767,7 +1070,8 @@ defmodule SwarmCode.Daemon.Platform.DirectoryBroker do
          {:ok, input} <- File.open(source, [:read, :binary]) do
       try do
         with {:ok, output} <- File.open(destination, [:write, :binary, :exclusive]),
-             {:ok, opened_identity} <- handle_identity(output) do
+             {:ok, opened_identity} <- handle_identity(output),
+             :ok <- reserve_owned(destination, object_identity(opened_identity)) do
           result =
             try do
               with :ok <- copy_chunks(input, output),
@@ -829,6 +1133,7 @@ defmodule SwarmCode.Daemon.Platform.DirectoryBroker do
 
   defp prepare_copy_output(_input, output, destination, uid) do
     with {:ok, identity} <- handle_identity(output),
+         :ok <- reserve_owned(destination, object_identity(identity)),
          {:regular, _major, _minor, _inode, ^uid, mode, 0} = identity,
          true <- band(mode, 0o7777) == @private_file_mode,
          {:ok, ^identity} <- private_identity(destination, uid) do
@@ -1015,18 +1320,69 @@ defmodule SwarmCode.Daemon.Platform.DirectoryBroker do
   defp normalize_error(_other, error), do: {:error, error}
 
   defp read_packet do
-    with <<size::unsigned-big-32>> <- IO.binread(:stdio, 4),
-         true <- size in 1..@maximum_packet_bytes//1,
-         payload when is_binary(payload) and byte_size(payload) == size <-
-           IO.binread(:stdio, size) do
-      {:ok, :erlang.binary_to_term(payload)}
+    with {:ok, payload} <- DirectoryProtocol.read_frame(&IO.binread(:stdio, &1)),
+         {:ok, request} <- DirectoryProtocol.decode_request(payload) do
+      {:ok, request}
     else
       _other -> {:error, :invalid_broker_packet}
     end
   end
 
-  defp write_packet(term) do
-    payload = :erlang.term_to_binary(term)
-    IO.binwrite(:stdio, <<byte_size(payload)::unsigned-big-32, payload::binary>>)
+  defp write_ready(ready) do
+    case DirectoryProtocol.encode_ready(ready) do
+      {:ok, frame} -> IO.binwrite(:stdio, frame)
+      {:error, _reason} -> :init.stop(1)
+    end
+  end
+
+  defp write_encoded_reply(operation, reply) do
+    case DirectoryProtocol.encode_reply(operation, reply) do
+      {:ok, frame} -> IO.binwrite(:stdio, frame)
+      {:error, _reason} -> :init.stop(1)
+    end
+  end
+
+  if @test_build do
+    defp configure_test_broker_fault do
+      fault =
+        case System.get_env("SWARM_CODE_DIRECTORY_BROKER_TEST_FAULT") do
+          "malformed_write_private" -> :malformed_write_private
+          "oversized_write_private" -> :oversized_write_private
+          _other -> nil
+        end
+
+      Process.put({__MODULE__, :test_reply_fault}, fault)
+      :ok
+    end
+
+    defp write_reply(operation, reply) do
+      case take_test_reply_fault(operation) do
+        :malformed ->
+          IO.binwrite(:stdio, <<1::unsigned-big-32, 0>>)
+
+        :oversized ->
+          IO.binwrite(:stdio, <<DirectoryProtocol.maximum_bytes() + 1::unsigned-big-32>>)
+
+        nil ->
+          write_encoded_reply(operation, reply)
+      end
+    end
+
+    defp take_test_reply_fault({:write_private, _basename, _contents, _uid}) do
+      case Process.delete({__MODULE__, :test_reply_fault}) do
+        :malformed_write_private -> :malformed
+        :oversized_write_private -> :oversized
+        _other -> nil
+      end
+    end
+
+    defp take_test_reply_fault(_operation), do: nil
+
+    defp crash_copy_owner?,
+      do: System.get_env("SWARM_CODE_DIRECTORY_BROKER_TEST_FAULT") == "crash_finish_copy"
+  else
+    defp configure_test_broker_fault, do: :ok
+    defp write_reply(operation, reply), do: write_encoded_reply(operation, reply)
+    defp crash_copy_owner?, do: false
   end
 end
