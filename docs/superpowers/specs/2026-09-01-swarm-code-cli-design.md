@@ -184,7 +184,11 @@ While the desktop does not implement the handshake, CLI migrations on the shared
 
 Before every schema or persisted-data repair, with all work stopped and the lease held:
 
-1. create a consistent SQLite online-backup snapshot, never a raw live-WAL copy;
+1. create a consistent SQLite snapshot, never a raw live-WAL copy; the initial
+   implementation uses `VACUUM INTO` on a dedicated connection after Repo has
+   stopped and while the cross-runtime lease is held (SQLite documents it as a
+   live-backup technique); a future `sqlite3_backup` binding may replace the
+   mechanism without changing the verification contract;
 2. harden it to `0600` and write a `0600` manifest containing source/application/schema IDs, SQLite source ID, sizes, SHA-256, migration list, row counts, `quick_check` and `foreign_key_check` results;
 3. open the backup at an independent path, verify representative reads and an independently restorable copy, then fsync the backup and containing directory;
 4. quarantine every changed legacy row losslessly before enforcing new constraints;
