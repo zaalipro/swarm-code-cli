@@ -826,6 +826,14 @@ Expected: compile failure because `OSProcess` does not exist.
 
 `OSProcess.start_lease_probe!/1` uses `Port.open({:spawn_executable, System.find_executable("elixir")}, [:binary, :exit_status, {:line, 4096}, args: code_path_args ++ [probe_path, encoded_opts]])`. It sends every `{port, {:data, {:eol, line}}}` to the test process tagged with that exact port, and `await_*` uses `receive` with a 5,000 ms timeout. There is no `Process.sleep/1`, `Process.alive?/1`, PID-file inference, or restart on timeout.
 
+Deterministic cleanup correction: each opened port has an owner that forwards the exact tagged
+protocol messages and an `on_exit` fallback that terminates only the probe PID reported by its
+`READY` line, waits for the port exit status, and reaps the owner before temporary-directory
+removal. The race test explicitly awaits the losing `HELD` probe before killing the winner. After
+SIGKILL it verifies the old owner bytes remain, then verifies the acquiring successor replaces
+those bytes with its own reported PID. No test calls `File.rm_rf!/1` while one of its probes is
+unsettled.
+
 Add a second test that sends `STOP` instead of SIGKILL, awaits exit, asserts `instance_owner.json` was removed, then proves a new process acquires. Add a third test that leaves the stale owner record after SIGKILL and proves it never grants or blocks ownership.
 
 - [ ] **Step 4: Run GREEN repeatedly**

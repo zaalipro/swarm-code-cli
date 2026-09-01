@@ -11,6 +11,7 @@ defmodule SwarmCodeDaemon.MixProject do
       deps_path: "../../deps",
       lockfile: "../../mix.lock",
       start_permanent: Mix.env() == :prod,
+      elixirc_paths: elixirc_paths(Mix.env()),
       deps: deps()
     ]
   end
@@ -28,4 +29,7 @@ defmodule SwarmCodeDaemon.MixProject do
       {:jason, "== 1.4.5"}
     ]
   end
+
+  defp elixirc_paths(:test), do: ["lib", "test/support"]
+  defp elixirc_paths(_env), do: ["lib"]
 end
