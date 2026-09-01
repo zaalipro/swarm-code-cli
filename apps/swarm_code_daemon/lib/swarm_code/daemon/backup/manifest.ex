@@ -99,6 +99,16 @@ defmodule SwarmCode.Daemon.Backup.Manifest do
 
   def read(_path), do: {:error, :invalid_manifest_path}
 
+  @spec decode(binary()) :: {:ok, t()} | {:error, term()}
+  def decode(contents) when is_binary(contents) and byte_size(contents) <= @maximum_bytes do
+    with {:ok, decoded} <- Jason.decode(contents),
+         :ok <- validate(decoded) do
+      {:ok, decoded}
+    end
+  end
+
+  def decode(_contents), do: {:error, :invalid_manifest}
+
   @spec validate(term()) :: :ok | {:error, term()}
   def validate(manifest) when is_map(manifest) do
     with :ok <- exact_keys(manifest, @keys),

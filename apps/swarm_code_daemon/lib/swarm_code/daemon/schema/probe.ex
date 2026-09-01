@@ -35,27 +35,18 @@ defmodule SwarmCode.Daemon.Schema.Probe do
   def inspect(path) when is_binary(path) do
     with :ok <- regular_file(path),
          {:ok, conn} <- open_readonly(path) do
-      inspect_connection(conn)
+      try do
+        inspect_connection(conn)
+      after
+        _ = Sqlite3.close(conn)
+      end
     end
   end
 
   def inspect(_path), do: {:error, incompatible_error()}
 
-  defp regular_file(path) do
-    case File.lstat(path) do
-      {:ok, %File.Stat{type: :regular}} -> :ok
-      _other -> {:error, incompatible_error()}
-    end
-  end
-
-  defp open_readonly(path) do
-    case Sqlite3.open(path, mode: :readonly) do
-      {:ok, conn} -> {:ok, conn}
-      {:error, _reason} -> {:error, incompatible_error()}
-    end
-  end
-
-  defp inspect_connection(conn) do
+  @spec inspect_connection(term()) :: {:ok, t()} | {:error, StartupError.t()}
+  def inspect_connection(conn) do
     try do
       with :ok <- execute(conn, "PRAGMA query_only=ON"),
            :ok <- execute(conn, "PRAGMA foreign_keys=ON"),
@@ -69,8 +60,20 @@ defmodule SwarmCode.Daemon.Schema.Probe do
       _error -> {:error, incompatible_error()}
     catch
       _kind, _reason -> {:error, incompatible_error()}
-    after
-      _ = Sqlite3.close(conn)
+    end
+  end
+
+  defp regular_file(path) do
+    case File.lstat(path) do
+      {:ok, %File.Stat{type: :regular}} -> :ok
+      _other -> {:error, incompatible_error()}
+    end
+  end
+
+  defp open_readonly(path) do
+    case Sqlite3.open(path, mode: :readonly) do
+      {:ok, conn} -> {:ok, conn}
+      {:error, _reason} -> {:error, incompatible_error()}
     end
   end
 

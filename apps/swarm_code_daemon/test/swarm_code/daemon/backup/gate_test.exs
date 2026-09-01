@@ -396,6 +396,189 @@ defmodule SwarmCode.Daemon.Backup.GateTest do
     assert SchemaFixture.row_counts(artifact.database)["projects"] == 2
   end
 
+  test "snapshot stays pinned when the verified source pathname is swapped then restored" do
+    fixture = migration_fixture!()
+    original_state = source_state(fixture.db)
+    directory = Path.dirname(fixture.db)
+    parked_original = Path.join(directory, "parked-original.sqlite3")
+    incoming = Path.join(directory, "incoming.sqlite3")
+    parked_incoming = Path.join(directory, "parked-incoming.sqlite3")
+
+    replacement = prepared_database!()
+    SchemaFixture.insert_project!(replacement, "incoming-2", "Incoming two", "/incoming/two")
+    SchemaFixture.insert_project!(replacement, "incoming-3", "Incoming three", "/incoming/three")
+    copy_private!(replacement, incoming)
+    test = self()
+
+    hook = fn
+      :before_snapshot_create, _context ->
+        File.rename!(fixture.db, parked_original)
+        File.rename!(incoming, fixture.db)
+        send(test, :source_path_swapped)
+        :ok
+
+      :before_restore_create, _context ->
+        File.rename!(fixture.db, parked_incoming)
+        File.rename!(parked_original, fixture.db)
+        send(test, :source_path_restored)
+        :ok
+
+      _point, _context ->
+        :ok
+    end
+
+    assert {:ok, artifact} = create(fixture, test_hook: hook)
+    assert_receive :source_path_swapped
+    assert_receive :source_path_restored
+    assert source_state(fixture.db) == original_state
+    assert SchemaFixture.row_counts(fixture.db)["projects"] == 2
+    assert SchemaFixture.row_counts(artifact.database)["projects"] == 2
+
+    refute Enum.any?(File.ls!(directory), &String.contains?(&1, ".source-pin."))
+  end
+
+  test "source pin aliases live only in the held backup directory" do
+    fixture = migration_fixture!(wal: true)
+    source_directory = Path.dirname(fixture.db)
+    test = self()
+
+    hook = fn
+      :before_snapshot_create, _context ->
+        source_pins =
+          source_directory
+          |> File.ls!()
+          |> Enum.filter(&String.contains?(&1, ".source-pin"))
+
+        backup_pins =
+          fixture.backup_dir
+          |> File.ls!()
+          |> Enum.filter(&String.contains?(&1, ".source-pin"))
+
+        send(test, {:source_pin_locations, source_pins, backup_pins})
+        :ok
+
+      _point, _context ->
+        :ok
+    end
+
+    assert {:ok, _artifact} = create(fixture, test_hook: hook)
+    assert_receive {:source_pin_locations, [], backup_pins}
+    assert Enum.any?(backup_pins, &String.ends_with?(&1, ".source-pin.sqlite3"))
+    assert Enum.any?(backup_pins, &String.ends_with?(&1, ".source-pin.sqlite3-wal"))
+    assert Enum.any?(backup_pins, &String.ends_with?(&1, ".source-pin.sqlite3-shm"))
+    refute Enum.any?(File.ls!(fixture.backup_dir), &String.contains?(&1, ".source-pin"))
+  end
+
+  test "snapshot keeps the verified pin inode open when its alias is swapped then restored" do
+    fixture = migration_fixture!()
+    source_directory = Path.dirname(fixture.db)
+    incoming = Path.join(source_directory, "incoming-pin.sqlite3")
+    parked_pin = Path.join(source_directory, "parked-source-pin.sqlite3")
+
+    replacement = prepared_database!()
+    SchemaFixture.insert_project!(replacement, "incoming-2", "Incoming two", "/incoming/two")
+    SchemaFixture.insert_project!(replacement, "incoming-3", "Incoming three", "/incoming/three")
+    copy_private!(replacement, incoming)
+    test = self()
+
+    hook = fn
+      :before_snapshot_create, _context ->
+        pinned = source_pin_path!(fixture.backup_dir)
+        File.rename!(pinned, parked_pin)
+        File.rename!(incoming, pinned)
+        send(test, {:source_pin_swapped, pinned})
+        :ok
+
+      :before_restore_create, _context ->
+        receive do
+          {:restore_source_pin, pinned} ->
+            File.rename!(pinned, incoming)
+            File.rename!(parked_pin, pinned)
+        end
+
+        send(test, :source_pin_restored)
+        :ok
+
+      _point, _context ->
+        :ok
+    end
+
+    task_supervisor = start_supervised!(Task.Supervisor)
+
+    task =
+      Task.Supervisor.async_nolink(task_supervisor, fn -> create(fixture, test_hook: hook) end)
+
+    assert_receive {:source_pin_swapped, pinned}, 5_000
+    send(task.pid, {:restore_source_pin, pinned})
+
+    assert {:ok, artifact} = Task.await(task, 10_000)
+    assert_receive :source_pin_restored, 5_000
+    assert SchemaFixture.row_counts(fixture.db)["projects"] == 2
+    assert SchemaFixture.row_counts(artifact.database)["projects"] == 2
+    refute Enum.any?(File.ls!(fixture.backup_dir), &String.contains?(&1, ".source-pin."))
+  end
+
+  test "the held pin connection keeps the verified WAL set when every alias is replaced" do
+    fixture = migration_fixture!(wal: true)
+    source_directory = Path.dirname(fixture.db)
+    before = source_state(fixture.db)
+    replacement = prepared_database!()
+    _replacement_writer = SchemaFixture.open_uncheckpointed_wal!(replacement)
+    assert SchemaFixture.row_counts(replacement)["projects"] == 3
+    test = self()
+
+    hook = fn
+      :before_snapshot_create, _context ->
+        pinned = source_pin_path!(fixture.backup_dir)
+        send(test, {:wal_pin_ready, pinned})
+
+        receive do
+          {:continue_wal_snapshot, ^pinned} -> :ok
+        end
+
+      :before_restore_create, _context ->
+        send(test, :restore_wal_pin_set)
+
+        receive do
+          :continue_wal_restore -> :ok
+        end
+
+      _point, _context ->
+        :ok
+    end
+
+    task_supervisor = start_supervised!(Task.Supervisor)
+
+    task =
+      Task.Supervisor.async_nolink(task_supervisor, fn -> create(fixture, test_hook: hook) end)
+
+    assert_receive {:wal_pin_ready, pinned}, 5_000
+
+    parked =
+      for suffix <- ["", "-wal", "-shm"] do
+        alias_path = pinned <> suffix
+        parked_path = Path.join(source_directory, "parked-pin#{suffix}")
+        File.rename!(alias_path, parked_path)
+        File.ln!(replacement <> suffix, alias_path)
+        {alias_path, parked_path}
+      end
+
+    send(task.pid, {:continue_wal_snapshot, pinned})
+    assert_receive :restore_wal_pin_set, 5_000
+
+    Enum.each(parked, fn {alias_path, parked_path} ->
+      File.rm!(alias_path)
+      File.rename!(parked_path, alias_path)
+    end)
+
+    send(task.pid, :continue_wal_restore)
+
+    assert {:ok, artifact} = Task.await(task, 10_000)
+    assert source_state(fixture.db) == before
+    assert SchemaFixture.row_counts(artifact.database)["projects"] == 2
+    refute Enum.any?(File.ls!(fixture.backup_dir), &String.contains?(&1, ".source-pin."))
+  end
+
   test "the versioned fingerprint canonicalizes case and Unicode normalization aliases" do
     database = prepared_database!()
     canonical = Path.join(Path.dirname(database), "Caf\u00E9.DB")
@@ -461,6 +644,53 @@ defmodule SwarmCode.Daemon.Backup.GateTest do
 
     assert File.ls!(fixture.backup_dir) |> Enum.sort() ==
              [Path.basename(final_database), Path.basename(final_manifest)] |> Enum.sort()
+  end
+
+  test "failure immediately after the database hard link removes both registered aliases" do
+    fixture = migration_fixture!()
+    test = self()
+
+    hook = fn
+      :after_database_link, _context ->
+        send(test, :database_link_created)
+        {:error, :injected_after_database_link_failure}
+
+      _point, _context ->
+        :ok
+    end
+
+    assert {:error, %{code: :backup_failed}} = create(fixture, test_hook: hook)
+    assert_receive :database_link_created
+    assert File.ls!(fixture.backup_dir) == []
+  end
+
+  test "requester death after the manifest commit link retains only a recoverable committed pair" do
+    fixture = migration_fixture!()
+    test = self()
+
+    hook = fn
+      :after_manifest_link, _context ->
+        send(test, :manifest_commit_link_created)
+
+        receive do
+          :continue_manifest_commit -> :ok
+        end
+
+      _point, _context ->
+        :ok
+    end
+
+    supervisor = start_supervised!(Task.Supervisor)
+    task = Task.Supervisor.async_nolink(supervisor, fn -> create(fixture, test_hook: hook) end)
+
+    assert_receive :manifest_commit_link_created, 5_000
+    assert Task.shutdown(task, :brutal_kill) == nil
+
+    final_names = ["#{@operation_id}.manifest.json", "#{@operation_id}.sqlite3"]
+    await_directory_names!(fixture.backup_dir, final_names, 10_000)
+    assert File.ls!(fixture.backup_dir) |> Enum.sort() == Enum.sort(final_names)
+    assert {:ok, artifact} = create(fixture)
+    assert Path.basename(artifact.database) == "#{@operation_id}.sqlite3"
   end
 
   test "a retained post-commit directory-sync failure is durably recovered by duplicate admission" do
@@ -573,19 +803,217 @@ defmodule SwarmCode.Daemon.Backup.GateTest do
     assert File.ls!(moved) == []
   end
 
-  test "a mode-substituted anchored directory is restored before identity-clean cleanup" do
+  @tag timeout: 60_000
+  test "cleanup remains relative to the held directory after it is renamed mid-VACUUM" do
+    fixture = migration_fixture!()
+
+    SchemaFixture.exec!(
+      fixture.db,
+      """
+      CREATE TABLE bulk_payload(id INTEGER PRIMARY KEY, payload BLOB);
+      WITH RECURSIVE numbers(value) AS (
+        SELECT 1
+        UNION ALL
+        SELECT value + 1 FROM numbers WHERE value < 16000
+      )
+      INSERT INTO bulk_payload(id, payload)
+      SELECT value, randomblob(4096) FROM numbers;
+      """
+    )
+
+    assert {:ok, probe} = Probe.inspect(fixture.db)
+    fixture = %{fixture | decision: %{fixture.decision | probe: probe}}
+    moved = fixture.backup_dir <> "-moved"
+    watcher_supervisor = start_supervised!(Task.Supervisor)
+    test = self()
+
+    watcher =
+      Task.Supervisor.async_nolink(watcher_supervisor, fn ->
+        wait_for_vacuum_journal!(fixture.backup_dir, 10_000)
+        File.rename!(fixture.backup_dir, moved)
+        File.mkdir!(fixture.backup_dir)
+        File.chmod!(fixture.backup_dir, 0o700)
+        send(test, :backup_directory_renamed_mid_vacuum)
+        :ok
+      end)
+
+    assert {:error, %{code: :backup_failed}} = create(fixture)
+    assert :ok = Task.await(watcher, 15_000)
+    assert_receive :backup_directory_renamed_mid_vacuum
+    assert File.ls!(fixture.backup_dir) == []
+    assert File.ls!(moved) == []
+  end
+
+  @tag timeout: 60_000
+  test "requester death cancels VACUUM and removes the main file and generated journal" do
+    fixture = migration_fixture!()
+
+    SchemaFixture.exec!(
+      fixture.db,
+      """
+      CREATE TABLE requester_death_payload(id INTEGER PRIMARY KEY, payload BLOB);
+      WITH RECURSIVE numbers(value) AS (
+        SELECT 1
+        UNION ALL
+        SELECT value + 1 FROM numbers WHERE value < 16000
+      )
+      INSERT INTO requester_death_payload(id, payload)
+      SELECT value, randomblob(4096) FROM numbers;
+      """
+    )
+
+    assert {:ok, probe} = Probe.inspect(fixture.db)
+    fixture = %{fixture | decision: %{fixture.decision | probe: probe}}
+    supervisor = start_supervised!(Task.Supervisor)
+    task = Task.Supervisor.async_nolink(supervisor, fn -> create(fixture) end)
+
+    wait_for_vacuum_journal!(fixture.backup_dir, 10_000)
+    assert Task.shutdown(task, :brutal_kill) == nil
+    await_directory_empty!(fixture.backup_dir, 10_000)
+    assert File.ls!(fixture.backup_dir) == []
+  end
+
+  @tag timeout: 60_000
+  test "a non-writable mode introduced mid-VACUUM is repaired before relative cleanup" do
+    fixture = migration_fixture!()
+
+    SchemaFixture.exec!(
+      fixture.db,
+      """
+      CREATE TABLE mode_payload(id INTEGER PRIMARY KEY, payload BLOB);
+      WITH RECURSIVE numbers(value) AS (
+        SELECT 1
+        UNION ALL
+        SELECT value + 1 FROM numbers WHERE value < 16000
+      )
+      INSERT INTO mode_payload(id, payload)
+      SELECT value, randomblob(4096) FROM numbers;
+      """
+    )
+
+    assert {:ok, probe} = Probe.inspect(fixture.db)
+    fixture = %{fixture | decision: %{fixture.decision | probe: probe}}
+    supervisor = start_supervised!(Task.Supervisor)
+    test = self()
+
+    watcher =
+      Task.Supervisor.async_nolink(supervisor, fn ->
+        wait_for_vacuum_journal!(fixture.backup_dir, 10_000)
+        File.chmod!(fixture.backup_dir, 0o500)
+        send(test, :backup_directory_mode_changed_mid_vacuum)
+      end)
+
+    assert {:error, %{code: :backup_failed}} = create(fixture)
+    assert Task.await(watcher, 15_000) == :backup_directory_mode_changed_mid_vacuum
+    assert_receive :backup_directory_mode_changed_mid_vacuum
+    assert permissions(fixture.backup_dir) == 0o700
+    assert File.ls!(fixture.backup_dir) == []
+  end
+
+  test "cleanup remains relative after the held directory is renamed mid-restore copy" do
+    fixture = migration_fixture!()
+    moved = fixture.backup_dir <> "-moved"
+    test = self()
+
+    hook = fn
+      :after_restore_files_open, _context ->
+        File.rename!(fixture.backup_dir, moved)
+        File.mkdir!(fixture.backup_dir)
+        File.chmod!(fixture.backup_dir, 0o700)
+        send(test, :backup_directory_renamed_mid_restore)
+        :ok
+
+      _point, _context ->
+        :ok
+    end
+
+    assert {:error, %{code: :backup_failed}} = create(fixture, test_hook: hook)
+    assert_receive :backup_directory_renamed_mid_restore
+    assert File.ls!(fixture.backup_dir) == []
+    assert File.ls!(moved) == []
+  end
+
+  test "requester death with restore descriptors open removes the exact partial copy" do
+    fixture = migration_fixture!()
+    test = self()
+
+    hook = fn
+      :after_restore_files_open, _context ->
+        send(test, :restore_files_open)
+
+        receive do
+          :continue_restore_copy -> :ok
+        end
+
+      _point, _context ->
+        :ok
+    end
+
+    supervisor = start_supervised!(Task.Supervisor)
+    task = Task.Supervisor.async_nolink(supervisor, fn -> create(fixture, test_hook: hook) end)
+
+    assert_receive :restore_files_open, 5_000
+    assert Task.shutdown(task, :brutal_kill) == nil
+    await_directory_empty!(fixture.backup_dir, 10_000)
+    assert File.ls!(fixture.backup_dir) == []
+  end
+
+  test "cleanup remains relative after the held directory is renamed mid-manifest write" do
+    fixture = migration_fixture!()
+    moved = fixture.backup_dir <> "-moved"
+    test = self()
+
+    hook = fn
+      :after_manifest_temp_sync, _context ->
+        File.rename!(fixture.backup_dir, moved)
+        File.mkdir!(fixture.backup_dir)
+        File.chmod!(fixture.backup_dir, 0o700)
+        send(test, :backup_directory_renamed_mid_manifest)
+        :ok
+
+      _point, _context ->
+        :ok
+    end
+
+    assert {:error, %{code: :backup_failed}} = create(fixture, test_hook: hook)
+    assert_receive :backup_directory_renamed_mid_manifest
+    assert File.ls!(fixture.backup_dir) == []
+    assert File.ls!(moved) == []
+  end
+
+  test "requester death after manifest temp sync removes every registered alias" do
+    fixture = migration_fixture!()
+    test = self()
+
+    hook = fn
+      :after_manifest_temp_sync, _context ->
+        send(test, :manifest_temp_synced)
+
+        receive do
+          :continue_manifest_write -> :ok
+        end
+
+      _point, _context ->
+        :ok
+    end
+
+    supervisor = start_supervised!(Task.Supervisor)
+    task = Task.Supervisor.async_nolink(supervisor, fn -> create(fixture, test_hook: hook) end)
+
+    assert_receive :manifest_temp_synced, 5_000
+    assert Task.shutdown(task, :brutal_kill) == nil
+    await_directory_empty!(fixture.backup_dir, 10_000)
+    assert File.ls!(fixture.backup_dir) == []
+  end
+
+  test "identity-clean cleanup repairs a non-writable held-directory mode" do
     fixture = migration_fixture!()
     test = self()
 
     hook = fn
       :before_database_publication, _context ->
-        File.chmod!(fixture.backup_dir, 0o755)
+        File.chmod!(fixture.backup_dir, 0o500)
         send(test, :backup_directory_mode_substituted)
-        :ok
-
-      :before_cleanup, _context ->
-        File.chmod!(fixture.backup_dir, 0o700)
-        send(test, :backup_directory_mode_restored)
         :ok
 
       _point, _context ->
@@ -594,9 +1022,53 @@ defmodule SwarmCode.Daemon.Backup.GateTest do
 
     assert {:error, %{code: :backup_failed}} = create(fixture, test_hook: hook)
     assert_receive :backup_directory_mode_substituted
-    assert_receive :backup_directory_mode_restored
     assert permissions(fixture.backup_dir) == 0o700
     assert File.ls!(fixture.backup_dir) == []
+  end
+
+  test "source-directory mode changes cannot retarget backup-directory source pins" do
+    fixture = migration_fixture!()
+    source_directory = Path.dirname(fixture.db)
+    test = self()
+
+    hook = fn
+      :before_snapshot_create, _context ->
+        File.chmod!(source_directory, 0o755)
+        send(test, :source_directory_mode_substituted)
+        :ok
+
+      _point, _context ->
+        :ok
+    end
+
+    assert {:ok, _artifact} = create(fixture, test_hook: hook)
+    assert_receive :source_directory_mode_substituted
+    assert permissions(source_directory) == 0o755
+    refute Enum.any?(File.ls!(source_directory), &String.contains?(&1, ".source-pin."))
+    refute Enum.any?(File.ls!(fixture.backup_dir), &String.contains?(&1, ".source-pin."))
+  end
+
+  test "a source pin linked before validation failure is identity-cleaned" do
+    fixture = migration_fixture!()
+    source_directory = Path.dirname(fixture.db)
+    before = source_state(fixture.db)
+    test = self()
+
+    hook = fn
+      :after_source_main_pin_link, _context ->
+        send(test, :source_main_pin_linked)
+        {:error, :injected_pin_validation_failure}
+
+      _point, _context ->
+        :ok
+    end
+
+    assert {:error, %{code: :backup_failed}} = create(fixture, test_hook: hook)
+    assert_receive :source_main_pin_linked
+    assert source_state(fixture.db) == before
+    assert File.ls!(fixture.backup_dir) == []
+    refute Enum.any?(File.ls!(source_directory), &String.contains?(&1, ".source-pin."))
+    refute Enum.any?(File.ls!(fixture.backup_dir), &String.contains?(&1, ".source-pin."))
   end
 
   test "a corrupt source refuses unchanged without a partial artifact" do
@@ -777,6 +1249,16 @@ defmodule SwarmCode.Daemon.Backup.GateTest do
     fingerprint
   end
 
+  defp source_pin_path!(directory) do
+    pins =
+      directory
+      |> File.ls!()
+      |> Enum.filter(&String.ends_with?(&1, ".source-pin.sqlite3"))
+
+    assert [pin] = pins
+    Path.join(directory, pin)
+  end
+
   defp random_suffix,
     do: Base.url_encode64(:crypto.strong_rand_bytes(12), padding: false)
 
@@ -805,6 +1287,7 @@ defmodule SwarmCode.Daemon.Backup.GateTest do
       minor_device: stat.minor_device,
       size: stat.size,
       mode: band(stat.mode, 0o7777),
+      uid: stat.uid,
       sha256: sha256_file(path)
     }
   end
@@ -895,6 +1378,75 @@ defmodule SwarmCode.Daemon.Backup.GateTest do
 
     {left_stat.major_device, left_stat.minor_device, left_stat.inode} ==
       {right_stat.major_device, right_stat.minor_device, right_stat.inode}
+  end
+
+  defp wait_for_vacuum_journal!(directory, timeout) do
+    deadline = System.monotonic_time(:millisecond) + timeout
+    do_wait_for_vacuum_journal!(directory, deadline)
+  end
+
+  defp do_wait_for_vacuum_journal!(directory, deadline) do
+    journal_exists? =
+      directory
+      |> File.ls!()
+      |> Enum.any?(fn name ->
+        String.starts_with?(name, ".#{@operation_id}.") and
+          String.ends_with?(name, ".sqlite3-journal")
+      end)
+
+    cond do
+      journal_exists? ->
+        :ok
+
+      System.monotonic_time(:millisecond) >= deadline ->
+        flunk("timed out waiting for the VACUUM journal entry")
+
+      true ->
+        :erlang.yield()
+        do_wait_for_vacuum_journal!(directory, deadline)
+    end
+  end
+
+  defp await_directory_empty!(directory, timeout) do
+    deadline = System.monotonic_time(:millisecond) + timeout
+    do_await_directory_empty!(directory, deadline)
+  end
+
+  defp await_directory_names!(directory, expected, timeout) do
+    deadline = System.monotonic_time(:millisecond) + timeout
+    do_await_directory_names!(directory, Enum.sort(expected), deadline)
+  end
+
+  defp do_await_directory_names!(directory, expected, deadline) do
+    cond do
+      Enum.sort(File.ls!(directory)) == expected ->
+        :ok
+
+      System.monotonic_time(:millisecond) >= deadline ->
+        flunk("timed out waiting for the recoverable committed pair")
+
+      true ->
+        receive do
+        after
+          1 -> do_await_directory_names!(directory, expected, deadline)
+        end
+    end
+  end
+
+  defp do_await_directory_empty!(directory, deadline) do
+    cond do
+      File.ls!(directory) == [] ->
+        :ok
+
+      System.monotonic_time(:millisecond) >= deadline ->
+        flunk("timed out waiting for the held backup directory to be cleaned")
+
+      true ->
+        receive do
+        after
+          1 -> do_await_directory_empty!(directory, deadline)
+        end
+    end
   end
 
   defp permissions(path), do: band(File.lstat!(path).mode, 0o7777)

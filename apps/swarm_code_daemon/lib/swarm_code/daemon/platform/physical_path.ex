@@ -3,6 +3,8 @@ defmodule SwarmCode.Daemon.Platform.PhysicalPath do
 
   import Bitwise
 
+  alias SwarmCode.Daemon.Platform.ExternalCommand
+
   @maximum_path_bytes 16 * 1_024
   @command_timeout 5_000
 
@@ -38,12 +40,12 @@ defmodule SwarmCode.Daemon.Platform.PhysicalPath do
 
   defp realpath(path) do
     with {:ok, executable} <- realpath_executable(),
-         {:ok, port} <- open_realpath(executable, path) do
-      try do
-        collect_realpath(port, nil, monotonic_deadline())
-      after
-        close_port(port)
-      end
+         {:ok, canonical} <-
+           ExternalCommand.run(executable, ["--", path],
+             timeout: @command_timeout,
+             max_line_bytes: @maximum_path_bytes
+           ) do
+      {:ok, canonical}
     end
   end
 
@@ -66,58 +68,6 @@ defmodule SwarmCode.Daemon.Platform.PhysicalPath do
       {:ok, %File.Stat{type: :regular, mode: mode}} -> band(mode, 0o111) != 0
       _other -> false
     end
-  end
-
-  defp open_realpath(executable, path) do
-    port =
-      Port.open(
-        {:spawn_executable, String.to_charlist(executable)},
-        [
-          :binary,
-          :exit_status,
-          :hide,
-          :use_stdio,
-          :stderr_to_stdout,
-          {:args, [~c"--", String.to_charlist(path)]},
-          {:line, @maximum_path_bytes}
-        ]
-      )
-
-    {:ok, port}
-  rescue
-    _error -> {:error, :realpath_start_failed}
-  end
-
-  defp collect_realpath(port, output, deadline) do
-    timeout = max(deadline - System.monotonic_time(:millisecond), 0)
-
-    receive do
-      {^port, {:data, {:eol, line}}} when is_binary(line) and is_nil(output) ->
-        collect_realpath(port, line, deadline)
-
-      {^port, {:data, _extra_or_overlong_output}} ->
-        {:error, :invalid_realpath_output}
-
-      {^port, {:exit_status, 0}} when is_binary(output) and byte_size(output) > 0 ->
-        {:ok, output}
-
-      {^port, {:exit_status, _status}} ->
-        {:error, :realpath_failed}
-    after
-      timeout -> {:error, :realpath_timeout}
-    end
-  end
-
-  defp monotonic_deadline,
-    do: System.monotonic_time(:millisecond) + @command_timeout
-
-  defp close_port(port) do
-    case Port.info(port) do
-      nil -> :ok
-      _info -> Port.close(port)
-    end
-  rescue
-    _error -> :ok
   end
 
   defp same_object?(left, right) do
