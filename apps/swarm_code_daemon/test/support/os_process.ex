@@ -17,6 +17,8 @@ defmodule SwarmCode.Daemon.Test.OSProcess do
     encoded_opts = encode_opts!(dir, test_opts)
 
     owner_opts = %{
+      activate_after_first_event?: Keyword.get(test_opts, :activate_after_first_event, false),
+      activation_barrier: Keyword.get(test_opts, :activation_barrier),
       lifecycle_observer: Keyword.get(test_opts, :lifecycle_observer),
       owner_exit_barrier: Keyword.get(test_opts, :owner_exit_barrier),
       port_opener: Keyword.get(test_opts, :port_opener, &Port.open/2)
@@ -57,16 +59,27 @@ defmodule SwarmCode.Daemon.Test.OSProcess do
         end
 
       line ->
-        raise "lease probe emitted an unexpected ready line: #{inspect(line)}"
+        cleanup_then_raise!(
+          port,
+          "lease probe emitted an unexpected ready line: #{inspect(line)}"
+        )
     end
   end
 
   @spec await_result!(port()) :: :acquired | :held
   def await_result!(port) when is_port(port) do
     case await_message!(port, :result) do
-      "ACQUIRED" -> :acquired
-      "HELD" -> :held
-      line -> raise "lease probe emitted an unexpected result line: #{inspect(line)}"
+      "ACQUIRED" ->
+        :acquired
+
+      "HELD" ->
+        :held
+
+      line ->
+        cleanup_then_raise!(
+          port,
+          "lease probe emitted an unexpected result line: #{inspect(line)}"
+        )
     end
   end
 
@@ -85,8 +98,7 @@ defmodule SwarmCode.Daemon.Test.OSProcess do
           "lease probe emitted output while awaiting exit: #{inspect(data)}"
         )
     after
-      timeout ->
-        cleanup_then_raise!(port, "timed out awaiting lease probe exit")
+      timeout -> cleanup_then_raise!(port, "timed out awaiting lease probe exit")
     end
   end
 
@@ -133,8 +145,7 @@ defmodule SwarmCode.Daemon.Test.OSProcess do
         finish_owner!(port, status)
         raise "lease probe exited with status #{status} before #{phase}"
     after
-      timeout ->
-        cleanup_then_raise!(port, "timed out awaiting lease probe #{phase}")
+      timeout -> cleanup_then_raise!(port, "timed out awaiting lease probe #{phase}")
     end
   end
 
@@ -206,13 +217,12 @@ defmodule SwarmCode.Daemon.Test.OSProcess do
     raise "lease probe owner exited before acknowledging cleanup: #{inspect(reason)}"
   end
 
-  defp open_and_own(test_process, start_ref, executable, probe_path, encoded_opts, owner_opts) do
+  defp open_and_own(test_process, start_ref, executable, probe_path, encoded_opts, opts) do
     test_monitor = Process.monitor(test_process)
-    observers = List.wrap(owner_opts.lifecycle_observer)
+    observers = List.wrap(opts.lifecycle_observer)
     notify_observers(observers, {:owner_started, self()})
-    open_ref = make_ref()
     owner = self()
-
+    open_ref = make_ref()
     port_name = {:spawn_executable, executable}
 
     port_options = [
@@ -222,36 +232,53 @@ defmodule SwarmCode.Daemon.Test.OSProcess do
       args: code_path_args() ++ [probe_path, encoded_opts]
     ]
 
-    {opener, opener_monitor} =
+    {worker, worker_monitor} =
       spawn_monitor(fn ->
-        run_opener(owner, open_ref, owner_opts.port_opener, port_name, port_options)
+        port_worker(owner, open_ref, opts.port_opener, port_name, port_options)
       end)
 
-    await_open(%{
-      adopted?: false,
-      cancel_waiter: nil,
+    opening_loop(%{
+      activate_after_first_event?: opts.activate_after_first_event?,
+      activation_barrier: opts.activation_barrier,
+      activation_sent?: false,
+      cleanup_status: nil,
+      exit_status: nil,
+      finish_ack?: false,
+      observers: observers,
       open_error: nil,
       open_ref: open_ref,
-      opener: opener,
-      opener_monitor: opener_monitor,
-      observers: observers,
-      owner_exit_barrier: owner_opts.owner_exit_barrier,
+      owner_exit_barrier: opts.owner_exit_barrier,
       port: nil,
+      port_down?: false,
+      port_monitor: nil,
       port_os_pid: nil,
       reported_os_pid: nil,
       start_ref: start_ref,
       test_monitor: test_monitor,
-      test_process: test_process
+      test_process: test_process,
+      termination: nil,
+      worker: worker,
+      worker_down?: false,
+      worker_exit_reason: nil,
+      worker_monitor: worker_monitor
     })
   end
 
-  defp run_opener(owner, open_ref, port_opener, port_name, port_options) do
+  defp port_worker(owner, open_ref, port_opener, port_name, port_options) do
     try do
       port = port_opener.(port_name, port_options)
       true = is_port(port)
-      {:os_pid, port_os_pid} = Port.info(port, :os_pid)
-      send(owner, {open_ref, :opened, self(), port, port_os_pid})
-      await_port_adoption(owner, open_ref, port)
+      {:os_pid, os_pid} = Port.info(port, :os_pid)
+      send(owner, {open_ref, :candidate, self(), port, os_pid})
+
+      port_worker_loop(%{
+        active?: false,
+        exit_status: nil,
+        open_ref: open_ref,
+        owner: owner,
+        os_pid: os_pid,
+        port: port
+      })
     rescue
       error -> send(owner, {open_ref, :open_error, self(), {:exception, error}})
     catch
@@ -259,203 +286,288 @@ defmodule SwarmCode.Daemon.Test.OSProcess do
     end
   end
 
-  defp await_port_adoption(owner, open_ref, port) do
+  defp port_worker_loop(state) do
     receive do
-      {^open_ref, :adopt} ->
-        true = Port.connect(port, owner)
-        send(owner, {open_ref, :adopted, self(), port})
+      {port, {:data, _data} = event} when port == state.port ->
+        send(state.owner, {state.open_ref, :port_event, port, event})
+        port_worker_loop(state)
 
-      {^port, event} ->
-        send(owner, {open_ref, :port_event, port, event})
-        await_port_adoption(owner, open_ref, port)
+      {port, {:exit_status, status} = event} when port == state.port ->
+        send(state.owner, {state.open_ref, :port_event, port, event})
+        port_worker_loop(%{state | exit_status: status})
+
+      {open_ref, :activate} when open_ref == state.open_ref ->
+        send(state.owner, {open_ref, :active, self(), state.port})
+        port_worker_loop(%{state | active?: true})
+
+      {open_ref, :cleanup, cleanup_ref} when open_ref == state.open_ref ->
+        cleanup_port_worker(state, cleanup_ref)
+
+      {open_ref, :finish, finish_ref, status}
+      when open_ref == state.open_ref and status == state.exit_status ->
+        send(state.owner, {open_ref, :worker_finished, finish_ref, self()})
     end
   end
 
-  defp await_open(state) do
-    receive do
-      {open_ref, :opened, opener, port, port_os_pid}
-      when open_ref == state.open_ref and opener == state.opener ->
-        send(opener, {open_ref, :adopt})
-        await_open(%{state | port: port, port_os_pid: port_os_pid})
+  defp cleanup_port_worker(%{exit_status: status} = state, cleanup_ref) when is_integer(status) do
+    send(state.owner, {state.open_ref, :cleanup_complete, cleanup_ref, status, self()})
+  end
 
-      {open_ref, :adopted, opener, port}
-      when open_ref == state.open_ref and opener == state.opener and port == state.port ->
-        await_open(%{state | adopted?: true})
+  defp cleanup_port_worker(state, cleanup_ref) do
+    _ =
+      System.cmd("/bin/kill", ["-KILL", Integer.to_string(state.os_pid)], stderr_to_stdout: true)
+
+    await_cleanup_exit(state, cleanup_ref)
+  end
+
+  defp await_cleanup_exit(state, cleanup_ref) do
+    receive do
+      {port, {:data, _data} = event} when port == state.port ->
+        send(state.owner, {state.open_ref, :port_event, port, event})
+        await_cleanup_exit(state, cleanup_ref)
+
+      {port, {:exit_status, status} = event} when port == state.port ->
+        send(state.owner, {state.open_ref, :port_event, port, event})
+        send(state.owner, {state.open_ref, :cleanup_complete, cleanup_ref, status, self()})
+    end
+  end
+
+  defp opening_loop(state) do
+    receive do
+      {open_ref, :candidate, worker, port, os_pid}
+      when open_ref == state.open_ref and worker == state.worker ->
+        port_monitor = Port.monitor(port)
+        notify_observers(state.observers, {:candidate_opened, self(), worker, port, os_pid})
+        state = %{state | port: port, port_monitor: port_monitor, port_os_pid: os_pid}
+        opening_loop(maybe_activate(state))
 
       {open_ref, :port_event, port, event}
       when open_ref == state.open_ref and port == state.port ->
-        state = forward_opening_port_event(state, event)
-        await_open(state)
+        state = forward_port_event(state, event)
+        opening_loop(maybe_activate_after_event(state))
 
-      {open_ref, :open_error, opener, reason}
-      when open_ref == state.open_ref and opener == state.opener ->
-        await_open(%{state | open_error: reason})
+      {open_ref, :active, worker, port}
+      when open_ref == state.open_ref and worker == state.worker and port == state.port ->
+        notify_observers(state.observers, {:activated, self(), worker, port, state.port_os_pid})
+        notify_observers(state.observers, {:opened, self(), port, state.port_os_pid})
+        send(state.test_process, {state.start_ref, self(), {:ok, port}})
+        runtime_loop(state)
 
-      {:DOWN, monitor, :process, opener, reason}
-      when monitor == state.opener_monitor and opener == state.opener ->
-        opener_finished(state, reason)
+      {open_ref, :open_error, worker, reason}
+      when open_ref == state.open_ref and worker == state.worker ->
+        opening_loop(%{state | open_error: reason})
+
+      {:DOWN, monitor, :process, worker, reason}
+      when monitor == state.worker_monitor and worker == state.worker ->
+        opening_worker_down(state, reason)
+
+      {:DOWN, monitor, :port, port, _reason}
+      when monitor == state.port_monitor and port == state.port ->
+        opening_loop(%{state | port_down?: true})
+
+      {barrier_ref, :activate}
+      when not is_nil(state.activation_barrier) and
+             barrier_ref == elem(state.activation_barrier, 1) ->
+        opening_loop(send_activate(state))
 
       {:cancel_start, from, request_ref} ->
-        Process.exit(state.opener, :kill)
-        await_open(%{state | cancel_waiter: {from, request_ref}})
+        cancel_opening(state, {from, request_ref})
 
       {:DOWN, monitor, :process, process, _reason}
       when monitor == state.test_monitor and process == state.test_process ->
-        Process.exit(state.opener, :kill)
-        await_open(%{state | cancel_waiter: nil, test_process: nil})
+        cancel_opening(%{state | test_process: nil}, nil)
     end
   end
 
-  defp opener_finished(%{cancel_waiter: waiter} = state, _reason) when not is_nil(waiter) do
-    cancel_after_opener_down(state, waiter)
+  defp maybe_activate(%{activation_barrier: barrier} = state) when not is_nil(barrier), do: state
+  defp maybe_activate(%{activate_after_first_event?: true} = state), do: state
+  defp maybe_activate(state), do: send_activate(state)
+
+  defp maybe_activate_after_event(%{activate_after_first_event?: true} = state),
+    do: send_activate(state)
+
+  defp maybe_activate_after_event(state), do: state
+
+  defp send_activate(%{activation_sent?: true} = state), do: state
+
+  defp send_activate(state) do
+    send(state.worker, {state.open_ref, :activate})
+    %{state | activation_sent?: true}
   end
 
-  defp opener_finished(%{test_process: nil} = state, _reason) do
-    cancel_after_opener_down(state, nil)
-  end
-
-  defp opener_finished(%{open_error: reason} = state, :normal) when not is_nil(reason) do
+  defp opening_worker_down(%{open_error: reason} = state, :normal) when not is_nil(reason) do
     send(state.test_process, {state.start_ref, self(), {:error, reason}})
   end
 
-  defp opener_finished(state, :normal) do
-    if state.adopted? and port_connected_to_owner?(state.port) do
-      finish_open(state)
-    else
-      send(state.test_process, {
-        state.start_ref,
-        self(),
-        {:error, :port_adoption_incomplete}
-      })
-    end
+  defp opening_worker_down(state, reason) do
+    send(state.test_process, {state.start_ref, self(), {:error, {:port_worker_exit, reason}}})
   end
 
-  defp opener_finished(state, reason) do
-    if port_connected_to_owner?(state.port) do
-      finish_open(state)
-    else
-      send(state.test_process, {state.start_ref, self(), {:error, {:opener_exit, reason}}})
-    end
+  defp cancel_opening(%{port: nil} = state, waiter) do
+    Process.exit(state.worker, :kill)
+    cancel_without_candidate_loop(state, waiter)
   end
 
-  defp cancel_after_opener_down(state, waiter) do
-    if port_connected_to_owner?(state.port) do
-      begin_cleanup(owner_state(state, false), waiter)
-    else
-      acknowledge_no_port(waiter)
-    end
+  defp cancel_opening(state, waiter) do
+    cleanup_ref = make_ref()
+    send(state.worker, {state.open_ref, :cleanup, cleanup_ref})
+    termination_loop(%{state | termination: {:cleanup, waiter, cleanup_ref}, worker_down?: false})
   end
 
-  defp acknowledge_no_port({from, request_ref}), do: send(from, {request_ref, :no_port})
-  defp acknowledge_no_port(nil), do: :ok
-
-  defp finish_open(state) do
-    notify_observers(state.observers, {:opened, self(), state.port, state.port_os_pid})
-    send(state.test_process, {state.start_ref, self(), {:ok, state.port}})
-    owner_loop(owner_state(state, true))
-  end
-
-  defp owner_state(state, started?) do
-    %{
-      cleanup_waiter: nil,
-      exit_status: nil,
-      observers: state.observers,
-      owner_exit_barrier: state.owner_exit_barrier,
-      port: state.port,
-      port_os_pid: state.port_os_pid,
-      reported_os_pid: state.reported_os_pid,
-      start_ref: state.start_ref,
-      started?: started?,
-      test_monitor: state.test_monitor,
-      test_process: state.test_process
-    }
-  end
-
-  defp forward_opening_port_event(state, {:data, {:eol, line}} = event) do
-    send_if_present(state.test_process, {state.port, event})
-    %{state | reported_os_pid: reported_pid(line) || state.reported_os_pid}
-  end
-
-  defp forward_opening_port_event(state, event) do
-    send_if_present(state.test_process, {state.port, event})
-    state
-  end
-
-  defp port_connected_to_owner?(port) when is_port(port) do
-    Port.info(port, :connected) == {:connected, self()}
-  end
-
-  defp port_connected_to_owner?(_port), do: false
-
-  defp owner_loop(state) do
+  defp cancel_without_candidate_loop(state, waiter) do
     receive do
-      {port, {:data, {:eol, line}} = event} when port == state.port ->
-        send_if_present(state.test_process, {port, event})
-        owner_loop(%{state | reported_os_pid: reported_pid(line) || state.reported_os_pid})
+      {open_ref, :candidate, worker, port, os_pid}
+      when open_ref == state.open_ref and worker == state.worker ->
+        port_monitor = Port.monitor(port)
+        notify_observers(state.observers, {:candidate_opened, self(), worker, port, os_pid})
 
-      {port, {:data, _data} = event} when port == state.port ->
-        send_if_present(state.test_process, {port, event})
-        owner_loop(state)
+        cancel_without_candidate_loop(
+          %{state | port: port, port_monitor: port_monitor, port_os_pid: os_pid},
+          waiter
+        )
 
-      {port, {:exit_status, status} = event} when port == state.port ->
-        send_if_present(state.test_process, {port, event})
-        notify_external_exit(state.observers, port, status)
+      {:DOWN, monitor, :port, port, _reason}
+      when monitor == state.port_monitor and port == state.port ->
+        cancel_without_candidate_loop(%{state | port_down?: true}, waiter)
 
-        case state.cleanup_waiter do
-          {from, request_ref} ->
-            send(from, {request_ref, status})
-            await_owner_exit_barrier(state)
-
-          nil ->
-            owner_loop(%{state | exit_status: status})
+      {:DOWN, monitor, :process, worker, _reason}
+      when monitor == state.worker_monitor and worker == state.worker ->
+        if is_nil(state.port) or state.port_down? do
+          acknowledge_waiter(waiter, :no_port)
+        else
+          await_killed_candidate_port(%{state | worker_down?: true}, waiter)
         end
+    end
+  end
 
-      {:finish, from, request_ref, status} when status == state.exit_status ->
-        send(from, {request_ref, :ok})
-        await_owner_exit_barrier(state)
+  defp await_killed_candidate_port(state, waiter) do
+    receive do
+      {:DOWN, monitor, :port, port, _reason}
+      when monitor == state.port_monitor and port == state.port ->
+        acknowledge_waiter(waiter, :no_port)
+    end
+  end
 
-      {:finish, from, request_ref, reported_status} ->
-        send(from, {request_ref, {:status_mismatch, state.exit_status, reported_status}})
-        owner_loop(state)
+  defp runtime_loop(state) do
+    receive do
+      {open_ref, :port_event, port, event}
+      when open_ref == state.open_ref and port == state.port ->
+        runtime_loop(forward_port_event(state, event))
+
+      {:DOWN, monitor, :port, port, _reason}
+      when monitor == state.port_monitor and port == state.port ->
+        runtime_loop(%{state | port_down?: true})
+
+      {:DOWN, monitor, :process, worker, reason}
+      when monitor == state.worker_monitor and worker == state.worker ->
+        runtime_loop(%{state | worker_down?: true, worker_exit_reason: reason})
 
       {:cleanup, from, request_ref} ->
-        begin_cleanup(state, {from, request_ref})
+        cleanup_ref = make_ref()
+        send(state.worker, {state.open_ref, :cleanup, cleanup_ref})
+        termination_loop(%{state | termination: {:cleanup, {from, request_ref}, cleanup_ref}})
 
-      {:cancel_start, from, request_ref} ->
-        begin_cleanup(state, {from, request_ref})
+      {:finish, from, request_ref, status} when status == state.exit_status ->
+        finish_ref = make_ref()
+        send(state.worker, {state.open_ref, :finish, finish_ref, status})
+        termination_loop(%{state | termination: {:finish, {from, request_ref}, finish_ref}})
 
       {:DOWN, monitor, :process, process, _reason}
       when monitor == state.test_monitor and process == state.test_process ->
-        if state.started? do
-          owner_loop(%{state | test_monitor: nil, test_process: nil})
-        else
-          begin_cleanup(state, nil)
-        end
+        cleanup_ref = make_ref()
+        send(state.worker, {state.open_ref, :cleanup, cleanup_ref})
+        termination_loop(%{state | test_process: nil, termination: {:cleanup, nil, cleanup_ref}})
     end
   end
 
-  defp begin_cleanup(%{exit_status: status} = state, {from, request_ref})
-       when is_integer(status) do
-    send(from, {request_ref, status})
+  defp termination_loop(state) do
+    if termination_complete?(state) do
+      complete_termination(state)
+    else
+      receive do
+        {open_ref, :port_event, port, event}
+        when open_ref == state.open_ref and port == state.port ->
+          termination_loop(forward_port_event(state, event))
+
+        {open_ref, :cleanup_complete, cleanup_ref, status, worker}
+        when open_ref == state.open_ref and worker == state.worker ->
+          case state.termination do
+            {:cleanup, waiter, ^cleanup_ref} ->
+              termination_loop(%{
+                state
+                | cleanup_status: status,
+                  termination: {:cleanup, waiter, cleanup_ref}
+              })
+
+            _other ->
+              termination_loop(state)
+          end
+
+        {open_ref, :worker_finished, finish_ref, worker}
+        when open_ref == state.open_ref and worker == state.worker ->
+          case state.termination do
+            {:finish, waiter, ^finish_ref} ->
+              termination_loop(%{
+                state
+                | finish_ack?: true,
+                  termination: {:finish, waiter, finish_ref}
+              })
+
+            _other ->
+              termination_loop(state)
+          end
+
+        {:DOWN, monitor, :port, port, _reason}
+        when monitor == state.port_monitor and port == state.port ->
+          termination_loop(%{state | port_down?: true})
+
+        {:DOWN, monitor, :process, worker, reason}
+        when monitor == state.worker_monitor and worker == state.worker ->
+          termination_loop(%{state | worker_down?: true, worker_exit_reason: reason})
+      end
+    end
+  end
+
+  defp termination_complete?(state) do
+    state.port_down? and state.worker_down? and
+      case state.termination do
+        {:cleanup, _waiter, _ref} -> is_integer(Map.get(state, :cleanup_status))
+        {:finish, _waiter, _ref} -> Map.get(state, :finish_ack?, false)
+      end
+  end
+
+  defp complete_termination(state) do
+    case state.termination do
+      {:cleanup, waiter, _ref} -> acknowledge_waiter(waiter, state.cleanup_status)
+      {:finish, {from, request_ref}, _ref} -> send(from, {request_ref, :ok})
+    end
+
     await_owner_exit_barrier(state)
   end
 
-  defp begin_cleanup(%{exit_status: status}, nil) when is_integer(status), do: :ok
+  defp acknowledge_waiter({from, request_ref}, result), do: send(from, {request_ref, result})
+  defp acknowledge_waiter(nil, _result), do: :ok
 
-  defp begin_cleanup(state, waiter) do
-    exact_pid = state.reported_os_pid || state.port_os_pid
-    _ = System.cmd("/bin/kill", ["-KILL", Integer.to_string(exact_pid)], stderr_to_stdout: true)
-    owner_loop(%{state | cleanup_waiter: waiter})
+  defp forward_port_event(state, {:data, {:eol, line}} = event) do
+    send_if_present(state.test_process, {state.port, event})
+    notify_observers(state.observers, {:port_event, state.port, event})
+    %{state | reported_os_pid: reported_pid(line) || state.reported_os_pid}
   end
 
-  defp notify_external_exit(observers, port, status) do
-    notify_observers(observers, {:external_exit, port, status})
+  defp forward_port_event(state, {:data, _data} = event) do
+    send_if_present(state.test_process, {state.port, event})
+    notify_observers(state.observers, {:port_event, state.port, event})
+    state
+  end
+
+  defp forward_port_event(state, {:exit_status, status} = event) do
+    send_if_present(state.test_process, {state.port, event})
+    notify_observers(state.observers, {:external_exit, state.port, status})
+    %{state | exit_status: status}
   end
 
   defp notify_observers(observers, event) do
-    Enum.each(observers, fn {observer, observer_ref} ->
-      send(observer, {observer_ref, event})
-    end)
+    Enum.each(observers, fn {observer, observer_ref} -> send(observer, {observer_ref, event}) end)
   end
 
   defp await_owner_exit_barrier(%{owner_exit_barrier: nil}), do: :ok
@@ -496,7 +608,7 @@ defmodule SwarmCode.Daemon.Test.OSProcess do
   end
 
   defp encode_opts!(dir, test_opts) do
-    opts = %{
+    %{
       "app_version" => "0.1.0-dev",
       "database_fingerprint" => "sha256:os-process-test",
       "lease_path" => Path.join(dir, "instance_lease.db"),
@@ -508,8 +620,6 @@ defmodule SwarmCode.Daemon.Test.OSProcess do
       "socket_path" => Path.join(dir, "daemon.sock"),
       "uid" => File.lstat!(dir).uid
     }
-
-    opts
     |> Jason.encode!()
     |> Base.url_encode64(padding: false)
   end

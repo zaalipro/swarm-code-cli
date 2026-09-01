@@ -138,6 +138,53 @@ defmodule SwarmCode.Daemon.CrossAppLeaseOSTest do
     refute File.exists?(owner_path)
     refute File.exists?(canonical)
     refute owner == opener
+
+    real_dir = private_tmp!()
+    real_ref = make_ref()
+
+    real_watcher =
+      start_supervised!(
+        {Task, fn -> open_lifecycle_watcher(test_process, real_ref) end},
+        id: {:real_open_lifecycle_watcher, real_ref}
+      )
+
+    real_port_opener = fn _name, _options ->
+      Port.open(
+        {:spawn_executable, "/bin/sh"},
+        [
+          :binary,
+          :exit_status,
+          {:line, 4096},
+          args: ["-c", "printf 'READY %s\\n' \"$$\"; exec /bin/cat"]
+        ]
+      )
+    end
+
+    assert_raise RuntimeError, "timed out starting lease probe", fn ->
+      OSProcess.start_lease_probe!(real_dir,
+        timeout: 1_000,
+        activation_barrier: {real_watcher, real_ref},
+        lifecycle_observer: {real_watcher, real_ref},
+        port_opener: real_port_opener
+      )
+    end
+
+    assert_receive {^real_ref, {:owner_started, real_owner}}
+
+    assert_receive {^real_ref,
+                    {:candidate_opened, ^real_owner, real_opener, real_port, real_os_pid}}
+
+    assert_receive {^real_port, {:data, {:eol, "READY " <> ready_pid}}}
+    assert Integer.to_string(real_os_pid) == ready_pid
+    assert_receive {^real_ref, {:external_exit, ^real_port, real_status}}
+    assert real_status != 0
+    assert_receive {^real_ref, {:port_down, ^real_port, :normal}}
+    assert_receive {^real_ref, {:opener_down, ^real_opener, :normal}}
+    assert_receive {^real_ref, {:owner_down, :normal}}
+    refute_received {^real_ref, {:activated, _owner, _opener, _port, _pid}}
+    refute File.exists?(Path.join(real_dir, "instance_lease.db"))
+    refute File.exists?(Path.join(real_dir, "instance_owner.json"))
+    refute File.exists?(Path.join(real_dir, "swarm_code.db"))
   end
 
   test "a probe that never emits READY is closed and fully reaped by the protocol timeout" do
@@ -196,10 +243,13 @@ defmodule SwarmCode.Daemon.CrossAppLeaseOSTest do
 
     port =
       OSProcess.start_lease_probe!(dir,
+        activate_after_first_event: true,
         lifecycle_observer: {self(), lifecycle_ref},
         owner_exit_barrier: {self(), exit_barrier_ref}
       )
 
+    assert_receive {^lifecycle_ref, {:candidate_opened, owner, _opener, ^port, _os_pid}}
+    assert_receive {^lifecycle_ref, {:activated, ^owner, _opener, ^port, _os_pid}}
     assert_receive {^lifecycle_ref, {:opened, owner, ^port, _os_pid}}
     owner_monitor = Process.monitor(owner)
     OSProcess.await_ready!(port)
@@ -277,17 +327,30 @@ defmodule SwarmCode.Daemon.CrossAppLeaseOSTest do
           Map.put(monitors, monitor, {:opener, opener})
         )
 
+      {^lifecycle_ref, {:candidate_opened, _owner, opener, port, _os_pid} = event} ->
+        opener_monitor = Process.monitor(opener)
+        port_monitor = Port.monitor(port)
+        send(test_process, {lifecycle_ref, event})
+
+        monitors =
+          monitors
+          |> Map.put(opener_monitor, {:opener, opener})
+          |> Map.put(port_monitor, {:port, port})
+
+        open_lifecycle_watcher(test_process, lifecycle_ref, monitors)
+
       {^lifecycle_ref, event} ->
         send(test_process, {lifecycle_ref, event})
         open_lifecycle_watcher(test_process, lifecycle_ref, monitors)
 
-      {:DOWN, monitor, :process, _process, reason} ->
+      {:DOWN, monitor, type, _process, reason} when type in [:process, :port] ->
         kind = Map.fetch!(monitors, monitor)
 
         event =
           case kind do
             :owner -> {:owner_down, reason}
             {:opener, opener} -> {:opener_down, opener, reason}
+            {:port, port} -> {:port_down, port, reason}
           end
 
         send(test_process, {lifecycle_ref, event})
