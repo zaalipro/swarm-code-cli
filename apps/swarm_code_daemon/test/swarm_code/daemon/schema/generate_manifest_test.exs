@@ -63,6 +63,43 @@ defmodule SwarmCode.Daemon.Schema.GenerateManifestTest do
     end
   end
 
+  test "rejects canceled nonexisting prefixes before mkdir can touch upstream .git" do
+    root = temporary_directory!()
+    upstream = Path.join(root, "upstream")
+    outside = Path.join(root, "outside")
+    output = Path.join(outside, "manifest.json")
+
+    fixtures =
+      Path.join(upstream, ".git/review-nonexistent/../../../outside/fixtures")
+
+    canceled_prefix = Path.join(upstream, ".git/review-nonexistent")
+    File.mkdir!(upstream)
+    git!(upstream, ["init", "--quiet"])
+    before_porcelain = porcelain(upstream)
+    before_git_entries = File.ls!(Path.join(upstream, ".git")) |> Enum.sort()
+
+    assert Path.expand(fixtures) == Path.join(outside, "fixtures")
+
+    File.mkdir_p!(fixtures)
+    assert File.dir?(canceled_prefix)
+    assert porcelain(upstream) == before_porcelain
+    refute File.ls!(Path.join(upstream, ".git")) |> Enum.sort() == before_git_entries
+
+    File.rmdir!(canceled_prefix)
+    File.rm_rf!(outside)
+    assert File.ls!(Path.join(upstream, ".git")) |> Enum.sort() == before_git_entries
+
+    {message, status} = run_generator(upstream, output, fixtures)
+
+    assert status != 0
+    assert message =~ "generator output paths must not contain dot or canceled components"
+    refute File.exists?(output)
+    refute File.exists?(fixtures)
+    refute File.exists?(canceled_prefix)
+    assert porcelain(upstream) == before_porcelain
+    assert File.ls!(Path.join(upstream, ".git")) |> Enum.sort() == before_git_entries
+  end
+
   defp run_generator(upstream, output, fixtures) do
     System.cmd(
       find_mix!(),

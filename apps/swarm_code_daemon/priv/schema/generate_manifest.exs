@@ -87,6 +87,14 @@ defmodule SwarmCode.Daemon.Schema.ManifestGenerator do
   defp validate_output_paths!(opts) do
     reject_upstream_destination!(opts.output, opts.upstream)
     reject_upstream_destination!(opts.fixtures_dir, opts.upstream)
+    validate_output_path_syntax!(opts.output)
+    validate_output_path_syntax!(opts.fixtures_dir)
+  end
+
+  defp validate_output_path_syntax!(path) do
+    if Enum.any?(Path.split(path), &(&1 in [".", ".."])) do
+      raise ArgumentError, "generator output paths must not contain dot or canceled components"
+    end
   end
 
   defp reject_upstream_destination!(destination, upstream) do
