@@ -2,7 +2,10 @@ defmodule SwarmCode.Governance.Provenance do
   @moduledoc false
 
   @baseline "dbb8804b3d7293178e571fa7afdf6bd47d06a51c"
+  @authorization_flags ~w(public_source_copying_allowed copyright_terms_recorded license_terms_recorded notice_terms_recorded)
   @classifications ~w(source test spec)
+  @entry_keys ~w(classification destination sha256 upstream_commit upstream_path)
+  @sha256_regex ~r/\A[0-9a-f]{64}\z/
 
   @spec verify(Path.t()) :: :ok | {:error, [String.t()]}
   def verify(root) do
@@ -18,7 +21,7 @@ defmodule SwarmCode.Governance.Provenance do
     end
   end
 
-  defp policy_errors(policy) do
+  defp policy_errors(policy) when is_map(policy) do
     []
     |> add(policy["version"] != 1, "source policy version must be 1")
     |> add(policy["audit_baseline"] != @baseline, "audit baseline is not pinned")
@@ -28,13 +31,12 @@ defmodule SwarmCode.Governance.Provenance do
     )
     |> add(
       policy["authorization_status"] == "authorized" and
-        not Enum.all?(
-          ~w(public_source_copying_allowed copyright_terms_recorded license_terms_recorded notice_terms_recorded),
-          &policy[&1]
-        ),
+        not Enum.all?(@authorization_flags, &(policy[&1] === true)),
       "authorized extraction requires copying, copyright, license, and NOTICE records"
     )
   end
+
+  defp policy_errors(_policy), do: ["source policy has an invalid shape"]
 
   defp authorization_file_errors(root, %{"authorization_status" => "authorized"}) do
     for file <- ~w(LICENSE NOTICE SOURCE_AUTHORIZATION.md),
@@ -47,7 +49,7 @@ defmodule SwarmCode.Governance.Provenance do
   defp ledger_errors(root, policy, %{"version" => 1, "entries" => entries})
        when is_list(entries) do
     pending =
-      if policy["authorization_status"] == "pending" and entries != [],
+      if authorization_status(policy) == "pending" and entries != [],
         do: ["source extraction is blocked while authorization is pending"],
         else: []
 
@@ -57,32 +59,110 @@ defmodule SwarmCode.Governance.Provenance do
   defp ledger_errors(_root, _policy, _ledger),
     do: ["extracted-files ledger has an invalid shape"]
 
-  defp entry_errors(root, entry) do
-    destination = entry["destination"]
-    path = destination_path(root, destination)
-    regular? = is_binary(path) and match?({:ok, %{type: :regular}}, File.lstat(path))
-    actual = if regular?, do: sha256_file(path), else: nil
-
-    []
-    |> add(is_nil(path), "unconfined provenance destination")
-    |> add(entry["upstream_commit"] != @baseline, "entry is not pinned to the audit baseline")
-    |> add(entry["classification"] not in @classifications, "invalid provenance classification")
-    |> add(
-      not is_nil(path) and not regular?,
-      "provenance destination is missing or not regular"
-    )
-    |> add(actual != nil and actual != entry["sha256"], "sha256 mismatch for #{destination}")
-  end
-
-  defp destination_path(root, destination) when is_binary(destination) and destination != "" do
-    segments = Path.split(destination)
-
-    if Path.type(destination) == :relative and ".." not in segments do
-      Path.expand(destination, root)
+  defp entry_errors(root, entry) when is_map(entry) do
+    if valid_entry_shape?(entry) do
+      validated_entry_errors(root, entry)
+    else
+      ["provenance entry has an invalid shape"]
     end
   end
 
-  defp destination_path(_root, _destination), do: nil
+  defp entry_errors(_root, _entry), do: ["provenance entry has an invalid shape"]
+
+  defp validated_entry_errors(root, entry) do
+    destination = entry["destination"]
+    {actual, destination_errors} = destination_digest(root, destination)
+    valid_sha256? = canonical_sha256?(entry["sha256"])
+
+    destination_errors
+    |> add(
+      not confined_relative_path?(entry["upstream_path"]),
+      "invalid provenance upstream path"
+    )
+    |> add(entry["upstream_commit"] != @baseline, "entry is not pinned to the audit baseline")
+    |> add(entry["classification"] not in @classifications, "invalid provenance classification")
+    |> add(not valid_sha256?, "invalid provenance sha256")
+    |> add(
+      actual != nil and valid_sha256? and actual != entry["sha256"],
+      "sha256 mismatch for #{destination}"
+    )
+  end
+
+  defp valid_entry_shape?(entry) do
+    Enum.sort(Map.keys(entry)) == @entry_keys and
+      Enum.all?(@entry_keys, &is_binary(entry[&1]))
+  end
+
+  defp destination_digest(root, destination) do
+    case destination_path(root, destination) do
+      {:ok, path} -> {sha256_file(path), []}
+      {:error, :unconfined} -> {nil, ["unconfined provenance destination"]}
+      {:error, :not_regular} -> {nil, ["provenance destination is missing or not regular"]}
+    end
+  end
+
+  defp destination_path(root, destination) do
+    with {:ok, segments} <- confined_relative_segments(destination),
+         expanded_root = Path.expand(root),
+         path = Path.absname(destination, expanded_root),
+         true <- descendant?(path, expanded_root),
+         {:ok, regular_path} <- lstat_regular_path(expanded_root, segments) do
+      {:ok, regular_path}
+    else
+      false -> {:error, :unconfined}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp confined_relative_path?(path),
+    do: match?({:ok, _segments}, confined_relative_segments(path))
+
+  defp confined_relative_segments(path) when is_binary(path) and path != "" do
+    segments = Path.split(path)
+
+    if Path.type(path) == :relative and segments not in [[], ["."]] and
+         ".." not in segments and not tilde_path?(segments) do
+      {:ok, segments}
+    else
+      {:error, :unconfined}
+    end
+  end
+
+  defp confined_relative_segments(_path), do: {:error, :unconfined}
+
+  defp tilde_path?([first | _segments]), do: String.starts_with?(first, "~")
+  defp tilde_path?([]), do: false
+
+  defp descendant?(path, root) do
+    prefix = if root == Path.rootname(root), do: root, else: root <> "/"
+    path != root and String.starts_with?(path, prefix)
+  end
+
+  defp lstat_regular_path(root, segments) do
+    last_index = length(segments) - 1
+
+    segments
+    |> Enum.with_index()
+    |> Enum.reduce_while(root, fn {segment, index}, parent ->
+      path = Path.join(parent, segment)
+
+      case File.lstat(path) do
+        {:ok, %{type: :regular}} when index == last_index -> {:halt, {:ok, path}}
+        {:ok, %{type: :directory}} when index < last_index -> {:cont, path}
+        _other -> {:halt, {:error, :not_regular}}
+      end
+    end)
+    |> case do
+      {:ok, path} -> {:ok, path}
+      {:error, :not_regular} -> {:error, :not_regular}
+      _path -> {:error, :not_regular}
+    end
+  end
+
+  defp canonical_sha256?(digest), do: Regex.match?(@sha256_regex, digest)
+
+  defp authorization_status(policy) when is_map(policy), do: policy["authorization_status"]
+  defp authorization_status(_policy), do: nil
 
   defp sha256_file(path) do
     path

@@ -203,8 +203,10 @@ git commit -m "build: create standalone CLI umbrella"
 
 **Interfaces:**
 - Produces `SwarmCode.Governance.Provenance.verify(root) :: :ok | {:error, [String.t()]}`.
-- An extracted entry has string keys `destination`, `upstream_path`, `upstream_commit`, `sha256`, and `classification` (`source`, `test`, or `spec`).
-- Authorization is valid only when the root authorization/license/NOTICE files exist and the policy records all four authorization booleans; an empty extracted ledger is valid before the first extraction.
+- An extracted entry has exactly the string keys `destination`, `upstream_path`, `upstream_commit`, `sha256`, and `classification` (`source`, `test`, or `spec`). All values are strings, the upstream path is nonempty and lexically confined relative, and the digest is canonical lowercase 64-hex SHA-256.
+- Authorization is valid only when the root authorization/license/NOTICE files exist and the policy records all four authorization booleans as literal `true`; an empty extracted ledger is valid before the first extraction.
+- Destination paths reject absolute, tilde-expanded, and parent-traversing forms. Verification uses `lstat` on every destination component and rejects a symlink at the leaf or in any ancestor.
+- Scalar/list policies, malformed ledger roots, and non-map ledger entries return deterministic error lists rather than raising.
 
 - [ ] **Step 1: Write RED tests for the fail-closed policy**
 
@@ -401,7 +403,7 @@ Commit these truthful initial records:
 
 Run: `mix test apps/swarm_code_core/test/swarm_code/governance/provenance_test.exs && mix swarm_code.provenance.verify`
 
-Expected: 4 tests pass and the task prints `provenance verified`.
+Expected: 17 tests pass and the task prints `provenance verified`.
 
 - [ ] **Step 5: Commit**
 
