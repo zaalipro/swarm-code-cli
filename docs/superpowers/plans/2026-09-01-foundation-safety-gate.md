@@ -638,15 +638,15 @@ defmodule SwarmCode.Daemon.CrossAppLeaseTest do
   test "one owner holds an exclusive rollback-journal lease", %{opts: opts} do
     assert {:ok, owner} = CrossAppLease.start_link(opts)
     assert :ok = CrossAppLease.assert_held(owner)
-    assert File.stat!(opts[:lease_path]).mode |> Bitwise.band(0o777) == 0o600
-    assert File.stat!(opts[:owner_path]).mode |> Bitwise.band(0o777) == 0o600
-    assert query_scalar(opts[:lease_path], "PRAGMA journal_mode") == "delete"
+    assert File.stat!(opts[:lease_path]).mode |> Bitwise.band(0o7777) == 0o600
+    assert File.stat!(opts[:owner_path]).mode |> Bitwise.band(0o7777) == 0o600
 
     assert {:error, %SwarmCode.Daemon.StartupError{code: :data_lease_held}} =
              CrossAppLease.start_link(Keyword.put(opts, :identity, %{opts[:identity] | pid: 124}))
 
     GenServer.stop(owner)
     refute File.exists?(opts[:owner_path])
+    assert query_scalar(opts[:lease_path], "PRAGMA journal_mode") == "delete"
     assert {:ok, next_owner} = CrossAppLease.start_link(opts)
     GenServer.stop(next_owner)
   end
@@ -749,7 +749,7 @@ defmodule SwarmCode.Daemon.CrossAppLease do
 end
 ```
 
-`secure_lease_file/2` creates an absent file with `File.open([:write, :exclusive, :binary])`, chmods `0600`, closes it, and for both new/existing cases lstat-verifies regular type, matching UID, and mode `0600` before Exqlite opens it. `OwnerRecord.new/1` creates a 32-byte random diagnostic `lease_nonce` and exact UTC ISO-8601 acquisition time; it emits only protocol version 1, product `cli-daemon`, app version, PID, process/boot identity, acquisition time, database fingerprint, schema epoch/newest migration/manifest hash, and socket path. It never emits the IPC nonce. `remove_if_same_nonce/2` reads at most 32 KiB and deletes only a matching record. Every partially opened Exqlite connection is closed in the error branch; implement this with a private `open_and_acquire/1` `try/after` helper rather than leaving the shortened snippet's connection cleanup implicit.
+`secure_lease_file/2` creates an absent lease through `AtomicReplace.write(path, <<>>, mode: 0o600)` and never pathname-chmods a predictable existing lease. For both new/existing cases it lstat-verifies regular type, matching UID, and exact `Bitwise.band(mode, 0o7777) == 0o600` before Exqlite opens it. A wrong-mode, special-bit, symlink, nonregular, or wrong-owner lease fails closed unchanged. `OwnerRecord.new/1` creates a 32-byte random diagnostic `lease_nonce` and exact UTC ISO-8601 acquisition time; it emits only protocol version 1, product `cli-daemon`, app version, PID, process/boot identity, acquisition time, database fingerprint, schema epoch/newest migration/manifest hash, and socket path. It never emits the IPC nonce. `remove_if_same_nonce/2` reads at most 32 KiB and deletes only a matching record. Every partially opened Exqlite connection is closed in the error branch; implement this with a private `open_and_acquire/1` `try/after` helper rather than leaving the shortened snippet's connection cleanup implicit.
 
 - [ ] **Step 5: Run GREEN**
 
