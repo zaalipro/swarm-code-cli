@@ -98,6 +98,122 @@ defmodule SwarmCode.Daemon.CrossAppLeaseOSTest do
     refute File.exists?(canonical), "stale-record probes must perform zero canonical DB opens"
   end
 
+  test "a delayed startup reply is cancelled and fully reaped before timeout returns" do
+    dir = private_tmp!()
+    canonical = Path.join(dir, "swarm_code.db")
+    test_process = self()
+    lifecycle_ref = make_ref()
+
+    watcher =
+      start_supervised!(
+        {Task, fn -> lifecycle_watcher(test_process, lifecycle_ref) end},
+        id: {:startup_lifecycle_watcher, lifecycle_ref}
+      )
+
+    assert_raise RuntimeError, "timed out starting lease probe", fn ->
+      OSProcess.start_lease_probe!(dir,
+        timeout: 100,
+        startup_barrier: {watcher, lifecycle_ref}
+      )
+    end
+
+    assert_receive {^lifecycle_ref, {:opened, os_pid}}
+    assert_receive {^lifecycle_ref, {:external_exit, status}}
+    assert is_integer(os_pid) and os_pid > 0
+    assert status != 0
+    assert_receive {^lifecycle_ref, {:port_down, :normal}}
+    assert_receive {^lifecycle_ref, {:owner_down, :normal}}
+    refute File.exists?(canonical)
+  end
+
+  test "a probe that never emits READY is closed and fully reaped by the protocol timeout" do
+    dir = private_tmp!()
+    canonical = Path.join(dir, "swarm_code.db")
+    lifecycle_ref = make_ref()
+    exit_barrier_ref = make_ref()
+    await_ref = make_ref()
+    test_process = self()
+
+    port =
+      OSProcess.start_lease_probe!(dir,
+        timeout: 100,
+        probe_mode: :never_ready,
+        lifecycle_observer: {self(), lifecycle_ref},
+        owner_exit_barrier: {self(), exit_barrier_ref}
+      )
+
+    assert_receive {^lifecycle_ref, {:opened, owner, ^port, os_pid}}
+    owner_monitor = Process.monitor(owner)
+    port_monitor = Port.monitor(port)
+
+    start_supervised!(
+      {Task,
+       fn ->
+         result =
+           try do
+             OSProcess.await_ready!(port)
+           rescue
+             error in RuntimeError -> {:raised, error.message}
+           end
+
+         send(test_process, {await_ref, result})
+       end},
+      id: {:never_ready_awaiter, await_ref}
+    )
+
+    assert_receive {^lifecycle_ref, {:external_exit, ^port, status}}, 1_000
+    assert is_integer(os_pid) and os_pid > 0
+    assert status != 0
+    assert_receive {^exit_barrier_ref, {:owner_exit_blocked, ^owner}}
+    refute_receive {^await_ref, _result}, 50
+    send(owner, {exit_barrier_ref, :continue})
+    assert_receive {^await_ref, {:raised, "timed out awaiting lease probe ready"}}
+    assert_receive {:DOWN, ^port_monitor, :port, ^port, :normal}
+    assert_receive {:DOWN, ^owner_monitor, :process, ^owner, :normal}
+    refute File.exists?(canonical)
+  end
+
+  test "normal finalization waits for the port owner to exit after its acknowledgement" do
+    dir = private_tmp!()
+    lifecycle_ref = make_ref()
+    exit_barrier_ref = make_ref()
+    await_ref = make_ref()
+    test_process = self()
+
+    port =
+      OSProcess.start_lease_probe!(dir,
+        lifecycle_observer: {self(), lifecycle_ref},
+        owner_exit_barrier: {self(), exit_barrier_ref}
+      )
+
+    assert_receive {^lifecycle_ref, {:opened, owner, ^port, _os_pid}}
+    owner_monitor = Process.monitor(owner)
+    OSProcess.await_ready!(port)
+    Port.command(port, "GO\n")
+    assert :acquired = OSProcess.await_result!(port)
+    Port.command(port, "STOP\n")
+    assert_receive {^lifecycle_ref, {:external_exit, ^port, 0}}, 1_000
+    assert_receive {^port, {:exit_status, 0}} = exit_message, 1_000
+
+    awaiter =
+      start_supervised!(
+        {Task,
+         fn ->
+           status = OSProcess.await_exit!(port)
+           send(test_process, {await_ref, status})
+         end},
+        id: {:normal_exit_awaiter, await_ref}
+      )
+
+    send(awaiter, exit_message)
+
+    assert_receive {^exit_barrier_ref, {:owner_exit_blocked, ^owner}}
+    refute_receive {^await_ref, _status}, 50
+    send(owner, {exit_barrier_ref, :continue})
+    assert_receive {^await_ref, 0}
+    assert_receive {:DOWN, ^owner_monitor, :process, ^owner, :normal}
+  end
+
   defp start_probe!(dir) do
     port = OSProcess.start_lease_probe!(dir)
     on_exit({OSProcess, port}, fn -> OSProcess.close_and_reap!(port) end)
@@ -124,5 +240,79 @@ defmodule SwarmCode.Daemon.CrossAppLeaseOSTest do
                ["-KILL", Integer.to_string(os_pid)],
                stderr_to_stdout: true
              )
+  end
+
+  defp lifecycle_watcher(test_process, lifecycle_ref) do
+    receive do
+      {^lifecycle_ref, {:opened, owner, port, os_pid}} ->
+        owner_monitor = Process.monitor(owner)
+        port_monitor = Port.monitor(port)
+        send(test_process, {lifecycle_ref, {:opened, os_pid}})
+
+        watch_lifecycle(
+          test_process,
+          lifecycle_ref,
+          owner,
+          owner_monitor,
+          port,
+          port_monitor,
+          false
+        )
+    end
+  end
+
+  defp watch_lifecycle(
+         test_process,
+         lifecycle_ref,
+         owner,
+         owner_monitor,
+         port,
+         port_monitor,
+         owner_down?
+       ) do
+    receive do
+      {^lifecycle_ref, {:external_exit, ^port, status}} ->
+        send(test_process, {lifecycle_ref, {:external_exit, status}})
+
+        watch_lifecycle(
+          test_process,
+          lifecycle_ref,
+          owner,
+          owner_monitor,
+          port,
+          port_monitor,
+          owner_down?
+        )
+
+      {:DOWN, ^port_monitor, :port, ^port, reason} ->
+        send(test_process, {lifecycle_ref, {:port_down, reason}})
+
+        if owner_down? do
+          :ok
+        else
+          watch_lifecycle(
+            test_process,
+            lifecycle_ref,
+            owner,
+            owner_monitor,
+            port,
+            port_monitor,
+            owner_down?
+          )
+        end
+
+      {:DOWN, ^owner_monitor, :process, ^owner, reason} ->
+        send(test_process, {lifecycle_ref, {:owner_down, reason}})
+
+        watch_lifecycle(
+          test_process,
+          lifecycle_ref,
+          owner,
+          owner_monitor,
+          port,
+          port_monitor,
+          true
+        )
+    end
   end
 end

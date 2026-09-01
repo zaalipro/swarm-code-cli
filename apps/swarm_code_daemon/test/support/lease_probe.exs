@@ -33,7 +33,10 @@ lease_opts = [
   app_version: Map.fetch!(opts, "app_version")
 ]
 
-IO.puts("READY #{pid}")
+case Map.fetch!(opts, "probe_mode") do
+  "normal" -> IO.puts("READY #{pid}")
+  "never_ready" -> :ok
+end
 
 case IO.gets("") do
   "GO\n" ->
