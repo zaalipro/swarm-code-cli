@@ -609,7 +609,7 @@ git commit -m "feat: define private platform paths and identity"
 - Test: `apps/swarm_code_daemon/test/swarm_code/daemon/cross_app_lease_test.exs`
 
 **Interfaces:**
-- `AtomicReplace.write(path, iodata, mode: 0o600) :: :ok | {:error, term()}` uses same-directory exclusive temp creation, file fsync, rename, directory fsync, and cleanup on every exit.
+- `AtomicReplace.write(path, iodata, mode: 0o600) :: :ok | {:error, {:pre_publication | :post_publication, term()}}` uses same-directory exclusive temp creation, file fsync, rename, directory fsync, and cleanup on every exit. Pre-publication errors prove the destination is unchanged; post-publication errors explicitly report that publication already changed the destination and later durability/cleanup failed.
 - `CrossAppLease.start_link(keyword()) :: GenServer.on_start()` holds the Exqlite connection for its lifetime.
 - Required options: `lease_path`, `owner_path`, `identity`, `database_fingerprint`, `schema_contract`, `socket_path`, `app_version`, and optional `name`.
 - `CrossAppLease.owner(server) :: OwnerRecord.t()` and `CrossAppLease.assert_held(server) :: :ok` are the only later gate inputs.
@@ -686,7 +686,7 @@ defmodule SwarmCode.Daemon.Files.AtomicReplace do
 end
 ```
 
-Tests inject a write failure by passing invalid iodata, then assert that `Path.wildcard(Path.join(dir, ".owner.json.tmp.*")) == []` and the previous owner file is unchanged.
+Tests inject a write failure by passing invalid iodata, then assert that `Path.wildcard(Path.join(dir, ".owner.json.tmp.*")) == []` and the previous owner file is unchanged. Separate injected publication, directory-sync, and no-replace temp-cleanup failures prove the tagged pre/post-publication distinction; callers remove a just-published matching owner record before treating a post-publication setup result as fatal.
 
 - [ ] **Step 4: Implement the lease critical path exactly**
 
@@ -706,11 +706,11 @@ defmodule SwarmCode.Daemon.CrossAppLease do
 
   @impl true
   def init(opts) do
-    Process.flag(:trap_exit, true)
     with :ok <- secure_lease_file(opts[:lease_path], opts[:identity].uid),
          {:ok, conn} <- Sqlite3.open(opts[:lease_path], mode: :readwrite),
          :ok <- Sqlite3.set_busy_timeout(conn, 0),
-         :ok <- Sqlite3.execute(conn, "PRAGMA journal_mode=DELETE; PRAGMA foreign_keys=ON"),
+         :ok <- set_and_verify_delete_journal(conn),
+         :ok <- Sqlite3.execute(conn, "PRAGMA foreign_keys=ON"),
          :ok <- acquire_exclusive(conn),
          record <- OwnerRecord.new(opts),
          :ok <- AtomicReplace.write(opts[:owner_path], [Jason.encode_to_iodata!(OwnerRecord.to_map(record)), "\n"], mode: 0o600) do
@@ -727,9 +727,9 @@ defmodule SwarmCode.Daemon.CrossAppLease do
 
   @impl true
   def terminate(_reason, state) do
+    remove_if_same_nonce(state.owner_path, state.record.lease_nonce)
     Sqlite3.execute(state.conn, "ROLLBACK")
     Sqlite3.close(state.conn)
-    remove_if_same_nonce(state.owner_path, state.record.lease_nonce)
     :ok
   end
 
@@ -749,7 +749,7 @@ defmodule SwarmCode.Daemon.CrossAppLease do
 end
 ```
 
-`secure_lease_file/2` creates an absent lease through `AtomicReplace.write(path, <<>>, mode: 0o600)` and never pathname-chmods a predictable existing lease. For both new/existing cases it lstat-verifies regular type, matching UID, and exact `Bitwise.band(mode, 0o7777) == 0o600` before Exqlite opens it. A wrong-mode, special-bit, symlink, nonregular, or wrong-owner lease fails closed unchanged. `OwnerRecord.new/1` creates a 32-byte random diagnostic `lease_nonce` and exact UTC ISO-8601 acquisition time; it emits only protocol version 1, product `cli-daemon`, app version, PID, process/boot identity, acquisition time, database fingerprint, schema epoch/newest migration/manifest hash, and socket path. It never emits the IPC nonce. `remove_if_same_nonce/2` reads at most 32 KiB and deletes only a matching record. Every partially opened Exqlite connection is closed in the error branch; implement this with a private `open_and_acquire/1` `try/after` helper rather than leaving the shortened snippet's connection cleanup implicit.
+`secure_lease_file/2` creates an absent lease through `AtomicReplace.write(path, <<>>, mode: 0o600)` and never pathname-chmods a predictable existing lease. For both new/existing cases it lstat-verifies regular type, matching UID, and exact `Bitwise.band(mode, 0o7777) == 0o600` before Exqlite opens it. A wrong-mode, special-bit, symlink, nonregular, or wrong-owner lease fails closed unchanged. `OwnerRecord.new/1` creates a 32-byte random diagnostic `lease_nonce` and exact UTC ISO-8601 acquisition time; it emits only protocol version 1, product `cli-daemon`, app version, PID, process/boot identity, acquisition time, database fingerprint, schema epoch/newest migration/manifest hash, and socket path. It never emits the IPC nonce. The connection sets and queries `PRAGMA journal_mode=DELETE`, accepts only the returned `"delete"` mode, enables foreign keys and busy timeout zero, and only then holds the prepared `BEGIN EXCLUSIVE`; a contended journal operation is not interpreted by error text, and the prepared begin's typed `:busy` result remains authoritative. `remove_if_same_nonce/2` reads at most 32 KiB and deletes only a matching record while the old owner still holds the SQLite lease; after its future parent has stopped higher data users, graceful termination removes the matching record first and only then rolls back/closes, preventing a successor from publishing between compare and removal. `start_link/1` uses the normal OTP `GenServer.start_link/3` handshake without `trap_exit`; typed init refusals are returned at the public boundary without weakening the parent link, so caller/supervisor death cannot orphan a lease holder. Every partially opened Exqlite connection is closed in the error branch; implement this with a private `open_and_acquire/1` `try/after` helper rather than leaving the shortened snippet's connection cleanup implicit.
 
 - [ ] **Step 5: Run GREEN**
 

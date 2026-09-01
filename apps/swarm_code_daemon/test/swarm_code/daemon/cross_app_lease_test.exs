@@ -98,6 +98,16 @@ defmodule SwarmCode.Daemon.CrossAppLeaseTest do
     GenServer.stop(next_owner)
   end
 
+  test "an existing WAL lease is changed to verified rollback-journal mode", %{opts: opts} do
+    create_lease_with_journal_mode!(opts[:lease_path], "WAL")
+    assert query_scalar(opts[:lease_path], "PRAGMA journal_mode") == "wal"
+
+    assert {:ok, owner} = CrossAppLease.start_link(opts)
+    GenServer.stop(owner)
+
+    assert query_scalar(opts[:lease_path], "PRAGMA journal_mode") == "delete"
+  end
+
   test "wrong permissions on an existing lease fail closed without chmod", %{opts: opts} do
     File.write!(opts[:lease_path], "do not open")
     File.chmod!(opts[:lease_path], 0o644)
@@ -179,6 +189,23 @@ defmodule SwarmCode.Daemon.CrossAppLeaseTest do
     GenServer.stop(next_owner)
   end
 
+  test "a fatal post-publication owner error removes its own record before releasing", %{
+    dir: dir,
+    opts: opts
+  } do
+    sync_directory = fn _directory -> {:error, :injected_directory_sync_failure} end
+
+    failed_opts =
+      Keyword.put(opts, :owner_atomic_replace_opts, sync_directory: sync_directory)
+
+    assert {:error, %StartupError{code: :lease_failed}} = CrossAppLease.start_link(failed_opts)
+    refute File.exists?(opts[:owner_path])
+
+    next_opts = Keyword.put(opts, :owner_path, Path.join(dir, "next-owner.json"))
+    assert {:ok, next_owner} = CrossAppLease.start_link(next_opts)
+    GenServer.stop(next_owner)
+  end
+
   test "graceful shutdown removes an owner record only when its nonce still matches", %{
     opts: opts
   } do
@@ -201,6 +228,61 @@ defmodule SwarmCode.Daemon.CrossAppLeaseTest do
     GenServer.stop(owner)
 
     assert File.read!(opts[:owner_path]) == replacement
+  end
+
+  test "owner cleanup completes while the old SQLite lease still excludes a successor", %{
+    opts: opts
+  } do
+    test = self()
+
+    cleanup_barrier = fn ->
+      send(test, {:owner_record_cleaned, self()})
+
+      receive do
+        :continue_shutdown -> :ok
+      end
+    end
+
+    assert {:ok, owner} =
+             CrossAppLease.start_link(Keyword.put(opts, :cleanup_barrier, cleanup_barrier))
+
+    stopper = Task.async(fn -> GenServer.stop(owner) end)
+    assert_receive {:owner_record_cleaned, ^owner}
+    refute File.exists?(opts[:owner_path])
+
+    assert {:error, %StartupError{code: :data_lease_held}} = CrossAppLease.start_link(opts)
+
+    send(owner, :continue_shutdown)
+    assert :ok = Task.await(stopper)
+
+    assert {:ok, successor} = CrossAppLease.start_link(opts)
+    GenServer.stop(successor)
+  end
+
+  test "the lease owner cannot outlive its linked caller", %{opts: opts} do
+    test = self()
+
+    caller =
+      spawn(fn ->
+        {:ok, owner} = CrossAppLease.start_link(opts)
+        send(test, {:linked_owner, self(), owner})
+
+        receive do
+          :stop_caller -> exit(:shutdown)
+        end
+      end)
+
+    assert_receive {:linked_owner, ^caller, owner}
+    assert caller in (Process.info(owner, :links) |> elem(1))
+    caller_monitor = Process.monitor(caller)
+    owner_monitor = Process.monitor(owner)
+    send(caller, :stop_caller)
+
+    assert_receive {:DOWN, ^caller_monitor, :process, ^caller, :shutdown}
+    assert_receive {:DOWN, ^owner_monitor, :process, ^owner, :shutdown}
+
+    assert {:ok, successor} = CrossAppLease.start_link(opts)
+    GenServer.stop(successor)
   end
 
   defp private_tmp! do
@@ -237,6 +319,24 @@ defmodule SwarmCode.Daemon.CrossAppLeaseTest do
     after
       :ok = Sqlite3.close(conn)
     end
+  end
+
+  defp create_lease_with_journal_mode!(path, mode) do
+    {:ok, conn} = Sqlite3.open(path)
+
+    try do
+      {:ok, statement} = Sqlite3.prepare(conn, "PRAGMA journal_mode=#{mode}")
+
+      try do
+        assert {:row, [_mode]} = Sqlite3.step(conn, statement)
+      after
+        :ok = Sqlite3.release(conn, statement)
+      end
+    after
+      :ok = Sqlite3.close(conn)
+    end
+
+    File.chmod!(path, 0o600)
   end
 
   defp file_identity(path) do

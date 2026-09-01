@@ -41,7 +41,7 @@ defmodule SwarmCode.Daemon.Files.AtomicReplaceTest do
     File.chmod!(path, 0o644)
     before = File.lstat!(path)
 
-    assert {:error, :eexist} =
+    assert {:error, {:pre_publication, :eexist}} =
              AtomicReplace.write(path, "replacement", mode: 0o600, replace: false)
 
     after_attempt = File.lstat!(path)
@@ -50,6 +50,52 @@ defmodule SwarmCode.Daemon.Files.AtomicReplaceTest do
     assert {after_attempt.inode, band(after_attempt.mode, 0o7777)} ==
              {before.inode, band(before.mode, 0o7777)}
 
+    assert temp_files(dir, ".lease.db.tmp.") == []
+  end
+
+  test "a publication failure is tagged pre-publication and preserves the destination" do
+    dir = private_tmp!()
+    path = Path.join(dir, "owner.json")
+    File.write!(path, "old")
+    File.chmod!(path, 0o600)
+
+    publish = fn _temp, _path, _replace -> {:error, :injected_publish_failure} end
+
+    assert {:error, {:pre_publication, :injected_publish_failure}} =
+             AtomicReplace.write(path, "new", publish: publish)
+
+    assert File.read!(path) == "old"
+    assert temp_files(dir, ".owner.json.tmp.") == []
+  end
+
+  test "a directory sync failure is tagged post-publication after changing the destination" do
+    dir = private_tmp!()
+    path = Path.join(dir, "owner.json")
+    File.write!(path, "old")
+
+    sync_directory = fn _directory -> {:error, :injected_directory_sync_failure} end
+
+    assert {:error, {:post_publication, :injected_directory_sync_failure}} =
+             AtomicReplace.write(path, "new", sync_directory: sync_directory)
+
+    assert File.read!(path) == "new"
+    assert temp_files(dir, ".owner.json.tmp.") == []
+  end
+
+  test "a no-replace temp cleanup failure is tagged post-publication" do
+    dir = private_tmp!()
+    path = Path.join(dir, "lease.db")
+
+    cleanup_temp = fn temp ->
+      :ok = File.rm(temp)
+      {:error, :injected_cleanup_failure}
+    end
+
+    assert {:error, {:post_publication, :injected_cleanup_failure}} =
+             AtomicReplace.write(path, <<>>, replace: false, cleanup_temp: cleanup_temp)
+
+    assert File.read!(path) == ""
+    assert permissions(path) == 0o600
     assert temp_files(dir, ".lease.db.tmp.") == []
   end
 

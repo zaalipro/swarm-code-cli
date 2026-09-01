@@ -25,13 +25,17 @@ defmodule SwarmCode.Daemon.CrossAppLease do
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
-    case GenServer.start(__MODULE__, opts, Keyword.take(opts, [:name])) do
-      {:ok, server} = success ->
-        Process.link(server)
-        success
+    startup_ref = make_ref()
+    init_opts = Keyword.put(opts, :startup_reply, {self(), startup_ref})
 
-      {:error, _reason} = error ->
-        error
+    case GenServer.start_link(__MODULE__, init_opts, Keyword.take(opts, [:name])) do
+      {:error, :normal} ->
+        receive do
+          {^startup_ref, %StartupError{} = error} -> {:error, error}
+        end
+
+      result ->
+        result
     end
   end
 
@@ -43,12 +47,22 @@ defmodule SwarmCode.Daemon.CrossAppLease do
 
   @impl true
   def init(opts) do
+    try do
+      do_init(opts)
+    rescue
+      error -> stop_with_error(opts, lease_failed({:exception, error}))
+    catch
+      kind, reason -> stop_with_error(opts, lease_failed({kind, reason}))
+    end
+  end
+
+  defp do_init(opts) do
     with :ok <- secure_lease_file(opts[:lease_path], opts[:identity].uid),
          {:ok, conn} <- open_and_acquire(opts[:lease_path]) do
       finish_init(conn, opts)
     else
-      {:error, :busy} -> {:stop, held_error(opts[:owner_path])}
-      {:error, reason} -> {:stop, lease_failed(reason)}
+      {:error, :busy} -> stop_with_error(opts, held_error(opts[:owner_path]))
+      {:error, reason} -> stop_with_error(opts, lease_failed(reason))
     end
   end
 
@@ -60,8 +74,13 @@ defmodule SwarmCode.Daemon.CrossAppLease do
 
   @impl true
   def terminate(_reason, state) do
-    close_connection(state.conn)
-    remove_if_same_nonce(state.owner_path, state.record.lease_nonce)
+    try do
+      remove_if_same_nonce(state.owner_path, state.record.lease_nonce)
+      state.cleanup_barrier.()
+    after
+      close_connection(state.conn)
+    end
+
     :ok
   end
 
@@ -71,9 +90,27 @@ defmodule SwarmCode.Daemon.CrossAppLease do
         record = OwnerRecord.new(opts)
         contents = [Jason.encode_to_iodata!(OwnerRecord.to_map(record)), "\n"]
 
-        case AtomicReplace.write(opts[:owner_path], contents, mode: @private_mode) do
-          :ok -> {:ok, %{conn: conn, record: record, owner_path: opts[:owner_path]}}
-          {:error, _reason} = error -> error
+        atomic_opts =
+          opts
+          |> Keyword.get(:owner_atomic_replace_opts, [])
+          |> Keyword.put(:mode, @private_mode)
+
+        case AtomicReplace.write(opts[:owner_path], contents, atomic_opts) do
+          :ok ->
+            {:ok,
+             %{
+               conn: conn,
+               record: record,
+               owner_path: opts[:owner_path],
+               cleanup_barrier: Keyword.get(opts, :cleanup_barrier, fn -> :ok end)
+             }}
+
+          {:error, {:post_publication, _reason}} = error ->
+            remove_if_same_nonce(opts[:owner_path], record.lease_nonce)
+            error
+
+          {:error, _reason} = error ->
+            error
         end
       rescue
         error -> {:error, {:exception, error}}
@@ -83,12 +120,11 @@ defmodule SwarmCode.Daemon.CrossAppLease do
 
     case result do
       {:ok, _state} = success ->
-        Process.flag(:trap_exit, true)
         success
 
       {:error, reason} ->
         close_connection(conn)
-        {:stop, lease_failed(reason)}
+        stop_with_error(opts, lease_failed(reason))
     end
   end
 
@@ -100,7 +136,7 @@ defmodule SwarmCode.Daemon.CrossAppLease do
       {:error, :enoent} ->
         case AtomicReplace.write(path, <<>>, mode: @private_mode, replace: false) do
           :ok -> validate_lease_path(path, uid)
-          {:error, :eexist} -> validate_lease_path(path, uid)
+          {:error, {:pre_publication, :eexist}} -> validate_lease_path(path, uid)
           {:error, _reason} = error -> error
         end
 
@@ -139,11 +175,20 @@ defmodule SwarmCode.Daemon.CrossAppLease do
       {:ok, conn} ->
         result =
           try do
-            with :ok <- Sqlite3.set_busy_timeout(conn, 0),
-                 :ok <- Sqlite3.execute(conn, "PRAGMA foreign_keys=ON"),
-                 :ok <- acquire_exclusive(conn),
-                 :ok <- Sqlite3.execute(conn, "PRAGMA journal_mode=DELETE") do
-              :ok
+            with :ok <- Sqlite3.set_busy_timeout(conn, 0) do
+              journal_result = set_and_verify_delete_journal(conn)
+              foreign_keys_result = Sqlite3.execute(conn, "PRAGMA foreign_keys=ON")
+
+              case acquire_exclusive(conn) do
+                :ok ->
+                  with :ok <- journal_result,
+                       :ok <- foreign_keys_result do
+                    :ok
+                  end
+
+                {:error, _reason} = error ->
+                  error
+              end
             end
           rescue
             error -> {:error, {:exception, error}}
@@ -162,6 +207,22 @@ defmodule SwarmCode.Daemon.CrossAppLease do
 
       {:error, _reason} = error ->
         error
+    end
+  end
+
+  defp set_and_verify_delete_journal(conn) do
+    with {:ok, statement} <- Sqlite3.prepare(conn, "PRAGMA journal_mode=DELETE") do
+      try do
+        case Sqlite3.step(conn, statement) do
+          {:row, ["delete"]} -> :ok
+          {:row, [mode]} -> {:error, {:unexpected_journal_mode, mode}}
+          :busy -> {:error, :journal_mode_busy}
+          {:error, reason} -> {:error, reason}
+          other -> {:error, {:unexpected_journal_mode_result, other}}
+        end
+      after
+        _ = Sqlite3.release(conn, statement)
+      end
     end
   end
 
@@ -223,6 +284,15 @@ defmodule SwarmCode.Daemon.CrossAppLease do
       "The canonical data lease is held by another runtime.",
       "Stop the owning runtime; never delete or force-unlock the lease."
     )
+  end
+
+  defp stop_with_error(opts, %StartupError{} = error) do
+    case Keyword.fetch(opts, :startup_reply) do
+      {:ok, {caller, startup_ref}} -> send(caller, {startup_ref, error})
+      :error -> :ok
+    end
+
+    {:stop, :normal}
   end
 
   defp lease_failed(reason) do
