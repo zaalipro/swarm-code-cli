@@ -151,7 +151,7 @@ defp deps, do: [{:jason, "== 1.4.5"}]
 defp deps do
   [
     {:swarm_code_core, in_umbrella: true},
-    {:ecto_sql, "== 3.14.2"},
+    {:ecto_sql, "== 3.14.0"},
     {:ecto_sqlite3, "== 0.24.1"},
     {:exqlite, "== 0.39.0"},
     {:jason, "== 1.4.5"}

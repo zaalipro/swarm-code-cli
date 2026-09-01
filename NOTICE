@@ -1,0 +1,12 @@
+SwarmCode CLI
+Copyright (c) 2026 ZaaliPro
+
+This project may adapt authorized material from the pinned upstream SwarmCode
+repository:
+
+  https://github.com/zaalipro/swarm-code.git
+  dbb8804b3d7293178e571fa7afdf6bd47d06a51c
+
+Every adapted file must be enumerated in provenance/extracted-files.json with
+its destination, upstream path, pinned upstream commit, classification, and
+SHA-256 digest.
