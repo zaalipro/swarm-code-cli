@@ -6,15 +6,27 @@ defmodule SwarmCode.Protocol.ChunkBuffer do
   fixed-size owned blocks. The pending fragment list is therefore bounded by
   both a byte target and a fixed fragment count instead of growing with the
   lifetime byte count. `bytes` is the one authoritative total for this buffer;
-  decoder compatibility fields are derived from it. A module-local immutable
-  validator seals every canonical state, so public field alteration fails
-  without rescanning queued payload.
+  decoder compatibility fields are derived from it. A module-local closure
+  retains every canonical state. Public projections are checked against and
+  rebuilt from that state, so altered storage cannot become authoritative.
+  Exact canonical values take a constant-time identity fast path; altered
+  projections are checked only up to a payload-derived fail-closed scan bound.
   """
 
   alias SwarmCode.Protocol.Error
 
   @block_bytes 4_096
   @max_pending_fragments 64
+  @default_protocol_frame_bytes 1_048_576
+  # The floor is deliberately larger than the canonical 1 MiB frame's
+  # ceil(bytes / block_bytes) + pending-fragment allowance. Larger custom
+  # decoder limits use the same formula at validation time, so work stays
+  # finite and proportional rather than becoming an unbounded scan.
+  @minimum_validation_chunks max(
+                               1_024,
+                               div(@default_protocol_frame_bytes + @block_bytes - 1, @block_bytes) +
+                                 @max_pending_fragments
+                             )
 
   defstruct queue: {[], []}, bytes: 0, pending: [], pending_bytes: 0, seal: nil
 
@@ -37,13 +49,15 @@ defmodule SwarmCode.Protocol.ChunkBuffer do
   @doc "Append a binary without concatenating it to previously buffered bytes."
   @spec put(t(), binary()) :: t() | {:error, Error.t()}
   def put(%__MODULE__{} = buffer, binary) when is_binary(binary) do
-    if valid_buffer?(buffer) do
-      case do_put(buffer, binary) do
-        %__MODULE__{} = next -> seal_buffer(next)
-        other -> other
-      end
-    else
-      {:error, Error.new(:invalid_envelope)}
+    case canonical_buffer(buffer) do
+      {:ok, canonical} ->
+        case do_put(canonical, binary) do
+          %__MODULE__{} = next -> seal_buffer(next)
+          other -> other
+        end
+
+      :error ->
+        {:error, Error.new(:invalid_envelope)}
     end
   rescue
     _exception -> {:error, Error.new(:invalid_envelope)}
@@ -56,13 +70,15 @@ defmodule SwarmCode.Protocol.ChunkBuffer do
   @doc "Take exactly `wanted` bytes as iodata, or return `:more`."
   @spec take(t(), non_neg_integer()) :: {:ok, iodata(), t()} | :more | {:error, Error.t()}
   def take(%__MODULE__{} = buffer, wanted) when is_integer(wanted) and wanted >= 0 do
-    if valid_buffer?(buffer) do
-      case do_take(buffer, wanted) do
-        {:ok, parts, %__MODULE__{} = next} -> {:ok, parts, seal_buffer(next)}
-        other -> other
-      end
-    else
-      {:error, Error.new(:invalid_envelope)}
+    case canonical_buffer(buffer) do
+      {:ok, canonical} ->
+        case do_take(canonical, wanted) do
+          {:ok, parts, %__MODULE__{} = next} -> {:ok, parts, seal_buffer(next)}
+          other -> other
+        end
+
+      :error ->
+        {:error, Error.new(:invalid_envelope)}
     end
   rescue
     _exception -> {:error, Error.new(:invalid_envelope)}
@@ -75,7 +91,10 @@ defmodule SwarmCode.Protocol.ChunkBuffer do
   @doc "Return the authoritative number of bytes currently buffered."
   @spec byte_size(t()) :: non_neg_integer() | {:error, Error.t()}
   def byte_size(%__MODULE__{} = buffer) do
-    if valid_buffer?(buffer), do: buffer.bytes, else: {:error, Error.new(:invalid_envelope)}
+    case canonical_buffer(buffer) do
+      {:ok, canonical} -> canonical.bytes
+      :error -> {:error, Error.new(:invalid_envelope)}
+    end
   rescue
     _exception -> {:error, Error.new(:invalid_envelope)}
   catch
@@ -87,7 +106,10 @@ defmodule SwarmCode.Protocol.ChunkBuffer do
   @doc "Validate the canonical public buffer representation without changing it."
   @spec validate(t()) :: :ok | {:error, Error.t()}
   def validate(%__MODULE__{} = buffer) do
-    if valid_buffer?(buffer), do: :ok, else: {:error, Error.new(:invalid_envelope)}
+    case canonical_buffer(buffer) do
+      {:ok, _canonical} -> :ok
+      :error -> {:error, Error.new(:invalid_envelope)}
+    end
   rescue
     _exception -> {:error, Error.new(:invalid_envelope)}
   catch
@@ -99,10 +121,12 @@ defmodule SwarmCode.Protocol.ChunkBuffer do
   @doc "Count compacted blocks, treating the bounded pending batch as one block."
   @spec block_count(t()) :: non_neg_integer() | {:error, Error.t()}
   def block_count(%__MODULE__{} = buffer) do
-    if valid_buffer?(buffer) do
-      :queue.len(buffer.queue) + if(buffer.pending == [], do: 0, else: 1)
-    else
-      {:error, Error.new(:invalid_envelope)}
+    case canonical_buffer(buffer) do
+      {:ok, canonical} ->
+        :queue.len(canonical.queue) + if(canonical.pending == [], do: 0, else: 1)
+
+      :error ->
+        {:error, Error.new(:invalid_envelope)}
     end
   rescue
     _exception -> {:error, Error.new(:invalid_envelope)}
@@ -115,10 +139,9 @@ defmodule SwarmCode.Protocol.ChunkBuffer do
   @doc "Count queue cells plus currently bounded pending-fragment cells."
   @spec metadata_nodes(t()) :: non_neg_integer() | {:error, Error.t()}
   def metadata_nodes(%__MODULE__{} = buffer) do
-    if valid_buffer?(buffer) do
-      :queue.len(buffer.queue) + length(buffer.pending)
-    else
-      {:error, Error.new(:invalid_envelope)}
+    case canonical_buffer(buffer) do
+      {:ok, canonical} -> :queue.len(canonical.queue) + length(canonical.pending)
+      :error -> {:error, Error.new(:invalid_envelope)}
     end
   rescue
     _exception -> {:error, Error.new(:invalid_envelope)}
@@ -131,13 +154,15 @@ defmodule SwarmCode.Protocol.ChunkBuffer do
   @doc "Sum the binary storage referenced by retained queue and pending chunks."
   @spec retained_byte_size(t()) :: non_neg_integer() | {:error, Error.t()}
   def retained_byte_size(%__MODULE__{} = buffer) do
-    if valid_buffer?(buffer) do
-      buffer.queue
-      |> :queue.to_list()
-      |> Enum.reduce(buffer.pending, fn chunk, chunks -> [chunk | chunks] end)
-      |> Enum.reduce(0, fn chunk, total -> :binary.referenced_byte_size(chunk) + total end)
-    else
-      {:error, Error.new(:invalid_envelope)}
+    case canonical_buffer(buffer) do
+      {:ok, canonical} ->
+        canonical.queue
+        |> :queue.to_list()
+        |> Enum.reduce(canonical.pending, fn chunk, chunks -> [chunk | chunks] end)
+        |> Enum.reduce(0, fn chunk, total -> :binary.referenced_byte_size(chunk) + total end)
+
+      :error ->
+        {:error, Error.new(:invalid_envelope)}
     end
   rescue
     _exception -> {:error, Error.new(:invalid_envelope)}
@@ -159,18 +184,17 @@ defmodule SwarmCode.Protocol.ChunkBuffer do
 
   defp append(%__MODULE__{pending_bytes: 0, queue: queue} = buffer, binary)
        when Kernel.byte_size(binary) >= @block_bytes do
-    %{buffer | queue: :queue.in(own_sparse_binary(binary), queue)}
+    %{buffer | queue: :queue.in(own_binary(binary), queue)}
   end
 
   defp append(%__MODULE__{pending_bytes: pending_bytes} = buffer, binary)
        when is_integer(pending_bytes) and pending_bytes >= 0 and pending_bytes < @block_bytes do
-    binary = own_sparse_binary(binary)
     available = @block_bytes - pending_bytes
 
     if Kernel.byte_size(binary) < available do
       next = %{
         buffer
-        | pending: [binary | buffer.pending],
+        | pending: [own_binary(binary) | buffer.pending],
           pending_bytes: pending_bytes + Kernel.byte_size(binary)
       }
 
@@ -193,9 +217,14 @@ defmodule SwarmCode.Protocol.ChunkBuffer do
 
   defp do_take(%__MODULE__{bytes: available}, wanted) when wanted > available, do: :more
 
-  defp do_take(buffer, wanted) do
+  defp do_take(%__MODULE__{bytes: available, pending_bytes: pending_bytes} = buffer, wanted) do
+    # Pending bytes arrive after the queue. Keep them as pending when the
+    # queue alone satisfies this take; flushing a one-byte pending fragment
+    # on every small take would otherwise create one queue cell per call.
+    queue_bytes = available - pending_bytes
+    buffer = if wanted > queue_bytes, do: flush_pending(buffer), else: buffer
+
     buffer
-    |> flush_pending()
     |> take_queue(wanted, [])
     |> case do
       {:ok, parts, next} -> {:ok, parts, %{next | bytes: buffer.bytes - wanted}}
@@ -221,7 +250,7 @@ defmodule SwarmCode.Protocol.ChunkBuffer do
 
           true ->
             <<head::binary-size(wanted), tail::binary>> = chunk
-            tail = own_sparse_binary(tail)
+            tail = own_binary(tail)
             queue = :queue.in_r(tail, rest)
             {:ok, Enum.reverse([head | parts]), %{buffer | queue: queue}}
         end
@@ -240,7 +269,7 @@ defmodule SwarmCode.Protocol.ChunkBuffer do
     %{buffer | pending: [block]}
   end
 
-  defp valid_buffer?(
+  defp canonical_buffer(
          %__MODULE__{
            queue: queue,
            bytes: bytes,
@@ -249,33 +278,152 @@ defmodule SwarmCode.Protocol.ChunkBuffer do
            seal: seal
          } = buffer
        )
-       when is_integer(bytes) and bytes >= 0 and is_list(pending) and
+       when is_integer(bytes) and bytes >= 0 and
               is_integer(pending_bytes) and pending_bytes >= 0 and pending_bytes < @block_bytes do
-    map_size(buffer) == 6 and is_tuple(queue) and tuple_size(queue) == 2 and
-      queue_has_valid_shape?(queue) and
-      (seal_matches?(seal, queue, pending, bytes, pending_bytes) or
-         (is_nil(seal) and exact_unsealed_empty?(queue, pending, bytes, pending_bytes)))
+    cond do
+      map_size(buffer) != 6 ->
+        :error
+
+      is_nil(seal) ->
+        if exact_unsealed_empty?(queue, pending, bytes, pending_bytes),
+          do: {:ok, buffer},
+          else: :error
+
+      true ->
+        with {:ok, canonical} <- sealed_buffer(seal),
+             true <- bytes === canonical.bytes,
+             true <- pending_bytes === canonical.pending_bytes,
+             scan_limit = validation_chunk_limit(canonical.bytes),
+             {:ok, scanned} <- validate_queue_projection(queue, canonical.queue, scan_limit),
+             :ok <-
+               validate_pending_projection(pending, canonical.pending, scan_limit - scanned) do
+          {:ok, canonical}
+        else
+          _other -> :error
+        end
+    end
   end
 
-  defp valid_buffer?(_buffer), do: false
+  defp canonical_buffer(_buffer), do: :error
 
-  defp exact_unsealed_empty?(queue, [], 0, 0), do: :queue.is_empty(queue)
+  defp exact_unsealed_empty?({[], []}, [], 0, 0), do: true
   defp exact_unsealed_empty?(_queue, _pending, _bytes, _pending_bytes), do: false
 
-  defp seal_matches?(seal, queue, pending, bytes, pending_bytes) when is_function(seal, 4) do
+  defp sealed_buffer(seal) when is_function(seal, 0) do
     with {:module, __MODULE__} <- :erlang.fun_info(seal, :module),
-         {:type, :local} <- :erlang.fun_info(seal, :type) do
-      seal.(queue, pending, bytes, pending_bytes) === true
+         {:type, :local} <- :erlang.fun_info(seal, :type),
+         {:chunk_buffer_state, queue, bytes, pending, pending_bytes} <- seal.(),
+         true <- is_integer(bytes) and bytes >= 0,
+         true <- is_integer(pending_bytes) and pending_bytes >= 0,
+         true <- pending_bytes < @block_bytes do
+      {:ok,
+       %__MODULE__{
+         queue: queue,
+         bytes: bytes,
+         pending: pending,
+         pending_bytes: pending_bytes,
+         seal: seal
+       }}
     else
-      _other -> false
+      _other -> :error
     end
+  rescue
+    _exception -> :error
+  catch
+    _kind, _reason -> :error
+  end
+
+  defp sealed_buffer(_seal), do: :error
+
+  defp validate_queue_projection(candidate, canonical, scan_limit) do
+    if same_term?(candidate, canonical) do
+      {:ok, 0}
+    else
+      validate_queue_chunks(candidate, canonical, scan_limit)
+    end
+  end
+
+  defp validate_queue_chunks(
+         {candidate_rear, candidate_front},
+         {canonical_rear, canonical_front},
+         limit
+       ) do
+    with {:ok, count} <-
+           matching_owned_chunks(
+             candidate_rear,
+             canonical_rear,
+             0,
+             limit
+           ),
+         {:ok, final_count} <-
+           matching_owned_chunks(
+             candidate_front,
+             canonical_front,
+             count,
+             limit
+           ) do
+      {:ok, final_count}
+    else
+      _other -> :error
+    end
+  end
+
+  defp validate_queue_chunks(_candidate, _canonical, _limit), do: :error
+
+  defp validation_chunk_limit(bytes) do
+    payload_chunks = div(bytes + @block_bytes - 1, @block_bytes)
+    max(@minimum_validation_chunks, payload_chunks + @max_pending_fragments)
+  end
+
+  defp validate_pending_projection(candidate, canonical, remaining) when remaining >= 0 do
+    if same_term?(candidate, canonical) do
+      :ok
+    else
+      limit = min(remaining, @max_pending_fragments)
+
+      case matching_owned_chunks(candidate, canonical, 0, limit) do
+        {:ok, _count} -> :ok
+        :error -> :error
+      end
+    end
+  end
+
+  defp validate_pending_projection(_candidate, _canonical, _remaining), do: :error
+
+  defp matching_owned_chunks([], [], count, _limit), do: {:ok, count}
+
+  defp matching_owned_chunks(
+         [candidate | candidate_rest],
+         [canonical | canonical_rest],
+         count,
+         limit
+       )
+       when count < limit do
+    if owned_binary?(candidate) and candidate === canonical do
+      matching_owned_chunks(candidate_rest, canonical_rest, count + 1, limit)
+    else
+      :error
+    end
+  end
+
+  defp matching_owned_chunks(_candidate, _canonical, _count, _limit), do: :error
+
+  defp owned_binary?(binary) when is_binary(binary) and Kernel.byte_size(binary) > 0 do
+    :binary.referenced_byte_size(binary) == Kernel.byte_size(binary)
+  end
+
+  defp owned_binary?(_binary), do: false
+
+  # This OTP-pinned identity check is only the normal-state fast path. On a
+  # mismatch, the public ownership API above enforces the storage invariant.
+  # Operations always rebuild from the canonical closure state either way.
+  defp same_term?(left, right) do
+    :erts_debug.same(left, right)
   rescue
     _exception -> false
   catch
     _kind, _reason -> false
   end
-
-  defp seal_matches?(_seal, _queue, _pending, _bytes, _pending_bytes), do: false
 
   defp seal_buffer(%__MODULE__{} = buffer) do
     queue = buffer.queue
@@ -285,34 +433,20 @@ defmodule SwarmCode.Protocol.ChunkBuffer do
 
     %{
       buffer
-      | seal: fn candidate_queue, candidate_pending, candidate_bytes, candidate_pending_bytes ->
-          candidate_queue === queue and candidate_pending === pending and
-            candidate_bytes === bytes and candidate_pending_bytes === pending_bytes
+      | seal: fn ->
+          {:chunk_buffer_state, queue, bytes, pending, pending_bytes}
         end
     }
   end
 
-  defp queue_has_valid_shape?(queue) do
-    :queue.is_queue(queue)
-  rescue
-    _exception -> false
-  catch
-    _kind, _reason -> false
-  end
+  # Every retained binary is exact-owned. This makes referenced size a public,
+  # deterministic invariant instead of relying on backing-storage identity.
+  defp own_binary(<<>>), do: <<>>
 
-  # Sub-binaries are retained directly while they still represent a useful
-  # fraction of their backing binary. Sparse tails are copied so a few bytes
-  # cannot keep a large coalesced socket input alive.
-  defp own_sparse_binary(<<>>), do: <<>>
-
-  defp own_sparse_binary(binary) do
+  defp own_binary(binary) do
     bytes = Kernel.byte_size(binary)
     referenced = :binary.referenced_byte_size(binary)
 
-    if referenced > bytes and (bytes <= @block_bytes or bytes <= div(referenced, 2)) do
-      :binary.copy(binary)
-    else
-      binary
-    end
+    if referenced == bytes, do: binary, else: :binary.copy(binary)
   end
 end

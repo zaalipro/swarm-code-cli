@@ -38,6 +38,54 @@ defmodule SwarmCode.Protocol.FrameTest do
     assert_error(Frame.encode(over_maximum), :frame_too_large)
   end
 
+  test "an exact-maximum partial decoder remains valid after process transfer" do
+    probe = message("")
+    assert {:ok, probe_json} = Envelope.encode(probe)
+
+    expected =
+      message(String.duplicate("x", @default_max_frame_bytes - IO.iodata_length(probe_json)))
+
+    frame = expected |> Frame.encode!() |> IO.iodata_to_binary()
+    <<header::binary-size(4), body::binary>> = frame
+    body_prefix_bytes = byte_size(body) - 1
+    <<body_prefix::binary-size(body_prefix_bytes), body_tail::binary>> = body
+
+    assert {:ok, [], decoder} = FrameDecoder.push(FrameDecoder.new(), header)
+
+    decoder =
+      body_prefix
+      |> fixed_chunks(ChunkBuffer.block_bytes())
+      |> Enum.reduce(decoder, fn chunk, decoder ->
+        assert {:ok, [], decoder} = FrameDecoder.push(decoder, chunk)
+        decoder
+      end)
+
+    assert decoder.buffered_bytes == @default_max_frame_bytes - 1
+
+    assert ChunkBuffer.metadata_nodes(decoder.buffer) <=
+             ceil_div(@default_max_frame_bytes, ChunkBuffer.block_bytes()) + 63
+
+    caller = self()
+    reference = make_ref()
+
+    task =
+      start_supervised!(
+        {Task,
+         fn ->
+           receive do
+             {^reference, transferred, tail} ->
+               send(caller, {reference, FrameDecoder.push(transferred, tail)})
+           end
+         end}
+      )
+
+    send(task, {reference, decoder, body_tail})
+
+    assert_receive {^reference,
+                    {:ok, [^expected], %FrameDecoder{phase: :header, buffered_bytes: 0}}},
+                   5_000
+  end
+
   test "encode returns typed errors and encode! raises only for programmer-invalid input" do
     assert_error(Frame.encode(:not_a_message), :invalid_envelope)
 
@@ -255,7 +303,12 @@ defmodule SwarmCode.Protocol.FrameTest do
     ]
 
     for buffer <- forged_buffers,
-        candidate <- [buffer, %{buffer | seal: nil}, externally_resealed(buffer)] do
+        candidate <- [
+          buffer,
+          %{buffer | seal: nil},
+          externally_resealed(buffer),
+          externally_zero_arity_resealed(buffer)
+        ] do
       forged = %{decoder | buffer: candidate, buffered_bytes: candidate.bytes}
       assert {:error, %Error{}} = FrameDecoder.push(forged, <<>>)
     end
@@ -292,13 +345,27 @@ defmodule SwarmCode.Protocol.FrameTest do
     do_seeded_chunks(rest, [chunk | chunks])
   end
 
+  defp fixed_chunks(binary, chunk_bytes), do: fixed_chunks(binary, chunk_bytes, [])
+
+  defp fixed_chunks(<<>>, _chunk_bytes, chunks), do: Enum.reverse(chunks)
+
+  defp fixed_chunks(binary, chunk_bytes, chunks) do
+    size = min(byte_size(binary), chunk_bytes)
+    <<chunk::binary-size(size), rest::binary>> = binary
+    fixed_chunks(rest, chunk_bytes, [chunk | chunks])
+  end
+
   defp externally_resealed(buffer) do
     %{buffer | seal: fn _queue, _pending, _bytes, _pending_bytes -> true end}
   end
+
+  defp externally_zero_arity_resealed(buffer), do: %{buffer | seal: fn -> true end}
 
   defp assert_error(result, code) do
     assert {:error, %Error{code: ^code, message: message}} = result
     assert is_binary(message)
     assert message != ""
   end
+
+  defp ceil_div(dividend, divisor), do: div(dividend + divisor - 1, divisor)
 end

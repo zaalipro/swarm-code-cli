@@ -6,7 +6,11 @@ defmodule SwarmCode.Protocol.FrameDecoder do
   complete frame in that push has succeeded. On any error the caller must
   discard the decoder and close its connection. The default per-push count is
   64; callers may raise it to the finite safety ceiling of 1,024 when a
-  coalesced batch requires it.
+  coalesced batch requires it. Buffer validation is constant-time for the
+  canonical local state; a transferred or altered projection is checked up to
+  `max(1_024, ceil(buffered_bytes / 4_096) + 64)` chunks. Thus custom
+  multi-gigabyte frame limits carry proportionate, still-finite validation and
+  resource cost.
   """
 
   alias SwarmCode.Protocol.{ChunkBuffer, Envelope, Error, Message}
