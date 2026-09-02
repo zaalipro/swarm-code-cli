@@ -1390,8 +1390,11 @@ defmodule SwarmCode.Daemon.Backup.GateTest do
       directory
       |> File.ls!()
       |> Enum.any?(fn name ->
+        path = Path.join(directory, name)
+
         String.starts_with?(name, ".#{@operation_id}.") and
-          String.ends_with?(name, ".sqlite3-journal")
+          String.ends_with?(name, ".sqlite3-journal") and
+          match?({:ok, %File.Stat{type: :regular, size: size}} when size > 0, File.lstat(path))
       end)
 
     cond do

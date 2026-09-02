@@ -69,6 +69,17 @@ defmodule SwarmCode.Daemon.Platform.DirectoryProtocolTest do
 
     assert {:ok, frame} = DirectoryProtocol.encode_request({:unlink, ".owned"})
 
+    identity = {:regular, 1, 0, 42, 501, 0o100600, 7}
+    probe = valid_probe()
+
+    assert {:error, :invalid_protocol} =
+             DirectoryProtocol.encode_request({
+               :open_source,
+               [{:main, "relative.sqlite3", ".pin.sqlite3", identity}],
+               probe,
+               501
+             })
+
     assert {:more, decoder} =
              DirectoryProtocol.push(
                DirectoryProtocol.new_decoder(),
@@ -122,6 +133,18 @@ defmodule SwarmCode.Daemon.Platform.DirectoryProtocolTest do
              )
   end
 
+  defp valid_probe do
+    %Probe{
+      application_id: 0,
+      migration_versions: [20_260_901_000_000],
+      schema_sha256: String.duplicate("a", 64),
+      sqlite_version: "3.53.3",
+      sqlite_source_id: "bounded-source-id",
+      quick_check: [["ok"]],
+      foreign_key_violations: []
+    }
+  end
+
   test "reply decoding is operation-specific and never accepts an unbounded or foreign shape" do
     operation = {:private_identity, ".owned", 501}
     identity = {:regular, 1, 0, 42, 501, 0o100600, 7}
@@ -162,5 +185,53 @@ defmodule SwarmCode.Daemon.Platform.DirectoryProtocolTest do
                {:verify_database, ".backup.sqlite3", nil},
                {:error, :mismatch}
              )
+  end
+
+  test "open-source replies contain exactly the identities requested by the source specs" do
+    probe = %Probe{
+      application_id: 0,
+      migration_versions: [20_260_901_000_000],
+      schema_sha256: String.duplicate("a", 64),
+      sqlite_version: "3.53.3",
+      sqlite_source_id: "bounded-source-id",
+      quick_check: [["ok"]],
+      foreign_key_violations: []
+    }
+
+    identity = {:regular, 1, 0, 42, 501, 0o100600, 7}
+
+    one_spec =
+      {:open_source, [{:main, "/source.sqlite3", ".pin.sqlite3", identity}], probe, 501}
+
+    assert {:ok, _frame} = DirectoryProtocol.encode_reply(one_spec, {:ok, %{main: identity}})
+
+    assert {:error, :invalid_protocol} =
+             DirectoryProtocol.encode_reply(one_spec, {
+               :ok,
+               %{main: identity, wal: nil, shm: nil}
+             })
+
+    three_specs =
+      {:open_source,
+       [
+         {:main, "/source.sqlite3", ".pin.sqlite3", identity},
+         {:wal, "/source.sqlite3-wal", ".pin.sqlite3-wal", nil},
+         {:shm, "/source.sqlite3-shm", ".pin.sqlite3-shm", nil}
+       ], probe, 501}
+
+    assert {:ok, _frame} =
+             DirectoryProtocol.encode_reply(three_specs, {
+               :ok,
+               %{main: identity, wal: nil, shm: nil}
+             })
+  end
+
+  test "successful replies match the public helper result shape" do
+    identity = {:regular, 1, 0, 42, 501, 0o100600, 7}
+
+    assert {:ok, _frame} = DirectoryProtocol.encode_reply(:finish_copy, {:ok, identity})
+
+    assert {:error, :invalid_protocol} =
+             DirectoryProtocol.encode_reply(:finish_copy, :ok)
   end
 end

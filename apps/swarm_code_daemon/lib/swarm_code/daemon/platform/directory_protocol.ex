@@ -11,6 +11,7 @@ defmodule SwarmCode.Daemon.Platform.DirectoryProtocol do
 
   @error_atoms [
     :all_rowid_aliases_shadowed,
+    :ambiguous_vacuum_sidecar,
     :ambiguous_artifact,
     :backup_cleanup_directory_changed,
     :backup_creation_failed,
@@ -73,6 +74,7 @@ defmodule SwarmCode.Daemon.Platform.DirectoryProtocol do
 
   @type decoder :: %{
           body: [binary()],
+          collected: non_neg_integer(),
           header: binary(),
           remaining: non_neg_integer() | nil
         }
@@ -88,7 +90,11 @@ defmodule SwarmCode.Daemon.Platform.DirectoryProtocol do
   end
 
   @spec new_decoder() :: decoder()
-  def new_decoder, do: %{body: [], header: <<>>, remaining: nil}
+  def new_decoder, do: %{body: [], collected: 0, header: <<>>, remaining: nil}
+
+  @spec collected_bytes(decoder()) :: non_neg_integer()
+  def collected_bytes(%{collected: collected}) when is_integer(collected) and collected >= 0,
+    do: collected
 
   @spec read_frame((pos_integer() -> binary() | :eof | {:error, term()})) ::
           {:ok, binary()} | {:error, :invalid_frame}
@@ -119,6 +125,10 @@ defmodule SwarmCode.Daemon.Platform.DirectoryProtocol do
   def encode_request(request) do
     if valid_request?(request), do: encode(request), else: {:error, :invalid_protocol}
   end
+
+  @doc false
+  @spec valid_request?(term()) :: boolean()
+  def valid_request?(request), do: valid_request_shape?(request)
 
   @spec encode_reply(term(), term()) :: {:ok, iodata()} | {:error, :invalid_protocol}
   def encode_reply(operation, reply) do
@@ -189,12 +199,15 @@ defmodule SwarmCode.Daemon.Platform.DirectoryProtocol do
     header = <<header::binary, piece::binary>>
 
     if byte_size(header) < 4 do
-      {:more, %{decoder | header: header}}
+      {:more, %{decoder | collected: decoder.collected + take, header: header}}
     else
       <<size::unsigned-big-32>> = header
 
       if size in 1..@maximum_bytes//1 do
-        push_body(%{decoder | header: <<>>, remaining: size}, rest)
+        push_body(
+          %{decoder | collected: decoder.collected + take, header: <<>>, remaining: size},
+          rest
+        )
       else
         {:error, :invalid_frame}
       end
@@ -211,7 +224,8 @@ defmodule SwarmCode.Daemon.Platform.DirectoryProtocol do
     if take == remaining do
       {:ok, body |> Enum.reverse() |> IO.iodata_to_binary(), rest}
     else
-      {:more, %{decoder | body: body, remaining: remaining - take}}
+      {:more,
+       %{decoder | body: body, collected: decoder.collected + take, remaining: remaining - take}}
     end
   end
 
@@ -240,7 +254,7 @@ defmodule SwarmCode.Daemon.Platform.DirectoryProtocol do
     end
   end
 
-  defp valid_request?(operation)
+  defp valid_request_shape?(operation)
        when operation in [
               :cancel_copy,
               :close_source,
@@ -252,45 +266,45 @@ defmodule SwarmCode.Daemon.Platform.DirectoryProtocol do
             ],
        do: true
 
-  defp valid_request?({:configure_sources, sources}), do: source_paths?(sources)
+  defp valid_request_shape?({:configure_sources, sources}), do: source_paths?(sources)
 
-  defp valid_request?({operation, source, destination}) when operation == :link,
+  defp valid_request_shape?({operation, source, destination}) when operation == :link,
     do: safe_basename?(source) and safe_basename?(destination)
 
-  defp valid_request?({:unlink, basename}), do: safe_basename?(basename)
+  defp valid_request_shape?({:unlink, basename}), do: safe_basename?(basename)
 
-  defp valid_request?({:link_source, index, destination}),
+  defp valid_request_shape?({:link_source, index, destination}),
     do: index in 0..2 and safe_basename?(destination)
 
-  defp valid_request?({:unlink_identity, basename, identity}),
+  defp valid_request_shape?({:unlink_identity, basename, identity}),
     do: safe_basename?(basename) and file_or_object_identity?(identity)
 
-  defp valid_request?({operation, basename, uid})
+  defp valid_request_shape?({operation, basename, uid})
        when operation in [:entry_state, :private_identity],
        do: safe_basename?(basename) and uid?(uid)
 
-  defp valid_request?({:write_private, basename, contents, uid}),
+  defp valid_request_shape?({:write_private, basename, contents, uid}),
     do:
       safe_basename?(basename) and is_binary(contents) and
         byte_size(contents) <= 4 * 1_024 * 1_024 and
         uid?(uid)
 
-  defp valid_request?({:read_private, basename, uid, maximum}),
+  defp valid_request_shape?({:read_private, basename, uid, maximum}),
     do:
       safe_basename?(basename) and uid?(uid) and is_integer(maximum) and
         maximum in 0..(4 * 1_024 * 1_024)//1
 
-  defp valid_request?({operation, source, destination, uid})
+  defp valid_request_shape?({operation, source, destination, uid})
        when operation in [:copy_private, :prepare_copy],
        do: safe_basename?(source) and safe_basename?(destination) and uid?(uid)
 
-  defp valid_request?({:sync_file, basename, identity, uid}),
+  defp valid_request_shape?({:sync_file, basename, identity, uid}),
     do: safe_basename?(basename) and file_identity?(identity) and uid?(uid)
 
-  defp valid_request?({:adopt, basename, identity, uid}),
+  defp valid_request_shape?({:adopt, basename, identity, uid}),
     do: safe_basename?(basename) and file_identity?(identity) and uid?(uid)
 
-  defp valid_request?({:commit, files, uid}),
+  defp valid_request_shape?({:commit, files, uid}),
     do:
       uid?(uid) and is_list(files) and length(files) in 1..2//1 and
         Enum.all?(files, fn
@@ -298,21 +312,21 @@ defmodule SwarmCode.Daemon.Platform.DirectoryProtocol do
           _other -> false
         end)
 
-  defp valid_request?({:repair_mode, 0o700, uid}), do: uid?(uid)
+  defp valid_request_shape?({:repair_mode, 0o700, uid}), do: uid?(uid)
 
-  defp valid_request?({:file_entry, basename, uid, published_name}),
+  defp valid_request_shape?({:file_entry, basename, uid, published_name}),
     do: safe_basename?(basename) and uid?(uid) and safe_basename?(published_name)
 
-  defp valid_request?({:verify_database, basename, probe}),
+  defp valid_request_shape?({:verify_database, basename, probe}),
     do: safe_basename?(basename) and probe?(probe)
 
-  defp valid_request?({:open_source, specs, probe, uid}),
+  defp valid_request_shape?({:open_source, specs, probe, uid}),
     do: uid?(uid) and source_specs?(specs) and probe?(probe)
 
-  defp valid_request?({:vacuum, destination, uid}),
+  defp valid_request_shape?({:vacuum, destination, uid}),
     do: safe_basename?(destination) and uid?(uid)
 
-  defp valid_request?(_request), do: false
+  defp valid_request_shape?(_request), do: false
 
   defp valid_reply?(:pwd, {:ok, path}), do: safe_path?(path)
 
@@ -334,11 +348,8 @@ defmodule SwarmCode.Daemon.Platform.DirectoryProtocol do
                  ]),
        do: file_identity?(identity)
 
-  defp valid_reply?({:open_source, _specs, _probe, _uid}, {:ok, identities}),
-    do:
-      is_map(identities) and Map.keys(identities) |> Enum.sort() == [:main, :shm, :wal] and
-        file_identity?(identities.main) and optional_file_identity?(identities.wal) and
-        optional_file_identity?(identities.shm)
+  defp valid_reply?({:open_source, specs, _probe, _uid}, {:ok, identities}),
+    do: source_identities?(identities, specs)
 
   defp valid_reply?({:file_entry, _basename, _uid, published}, {:ok, entry}),
     do: file_entry?(entry, published)
@@ -352,7 +363,6 @@ defmodule SwarmCode.Daemon.Platform.DirectoryProtocol do
        when operation in [
               :cancel_copy,
               :close_source,
-              :finish_copy,
               :stop,
               :sync_directory
             ],
@@ -389,21 +399,44 @@ defmodule SwarmCode.Daemon.Platform.DirectoryProtocol do
 
   defp safe_source_basename?(_name), do: false
 
-  defp source_specs?(specs) do
-    is_list(specs) and length(specs) in 1..@maximum_sources//1 and
-      Enum.count(specs, fn
-        {:main, _source, _destination, _identity} -> true
-        _other -> false
-      end) == 1 and
-      Enum.all?(specs, fn
-        {kind, source, destination, identity} when kind in [:main, :wal, :shm] ->
-          safe_path?(source) and safe_basename?(destination) and optional_file_identity?(identity) and
-            (kind != :main or file_identity?(identity))
+  defp safe_source_path?(path), do: safe_path?(path) and Path.type(path) == :absolute
 
-        _other ->
-          false
+  defp source_specs?(specs) do
+    if is_list(specs) and length(specs) in 1..@maximum_sources//1 do
+      kinds = Enum.map(specs, &source_kind/1)
+
+      Enum.count(kinds, &(&1 == :main)) == 1 and kinds == Enum.uniq(kinds) and
+        Enum.all?(specs, fn
+          {kind, source, destination, identity} when kind in [:main, :wal, :shm] ->
+            safe_source_path?(source) and safe_basename?(destination) and
+              optional_file_identity?(identity) and
+              (kind != :main or file_identity?(identity))
+
+          _other ->
+            false
+        end)
+    else
+      false
+    end
+  end
+
+  defp source_kind({kind, _source, _destination, _identity}) when kind in [:main, :wal, :shm],
+    do: kind
+
+  defp source_kind(_spec), do: nil
+
+  defp source_identities?(identities, specs) when is_map(identities) and is_list(specs) do
+    kinds = Enum.map(specs, &source_kind/1)
+
+    Map.keys(identities) |> Enum.sort() == Enum.sort(kinds) and
+      Enum.all?(kinds, fn
+        :main -> file_identity?(identities[:main])
+        kind when kind in [:wal, :shm] -> optional_file_identity?(identities[kind])
+        _other -> false
       end)
   end
+
+  defp source_identities?(_identities, _specs), do: false
 
   defp safe_basename?(name) when is_binary(name) do
     byte_size(name) in 1..@maximum_basename_bytes//1 and String.valid?(name) and

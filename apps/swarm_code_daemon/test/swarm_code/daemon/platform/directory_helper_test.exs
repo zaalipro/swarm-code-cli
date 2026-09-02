@@ -426,7 +426,11 @@ defmodule SwarmCode.Daemon.Platform.DirectoryHelperTest do
     assert File.ls!(directory) == []
   end
 
-  for fault <- [:malformed_write_private, :oversized_write_private] do
+  for fault <- [
+        :extra_frame_write_private,
+        :malformed_write_private,
+        :oversized_write_private
+      ] do
     test "a #{fault} reply cleans broker-owned files before the helper exits normally" do
       directory = private_directory!()
       uid = File.lstat!(directory).uid
@@ -468,6 +472,210 @@ defmodule SwarmCode.Daemon.Platform.DirectoryHelperTest do
     assert File.ls!(directory) == ["source.sqlite3"]
   end
 
+  test "a three-entry commit is rejected before encoding and STOP removes every owned file" do
+    directory = private_directory!()
+    uid = File.lstat!(directory).uid
+    assert {:ok, helper} = DirectoryHelper.start(directory)
+    on_exit(fn -> terminate_os_pid(helper.os_pid) end)
+
+    files =
+      for index <- 1..3 do
+        basename = ".owned-#{index}"
+        assert {:ok, identity} = DirectoryHelper.write_private(helper, basename, "owned", uid)
+        {basename, identity}
+      end
+
+    result = DirectoryHelper.commit(helper, files, uid)
+    pwd_result = DirectoryHelper.pwd(helper)
+    assert :ok = DirectoryHelper.stop(helper)
+
+    assert File.ls!(directory) == []
+    assert result == {:error, :unsafe_helper_request}
+    assert {:ok, _path} = pwd_result
+  end
+
+  test "a one-spec source open returns a matching reply and STOP leaves no source pin" do
+    directory = private_directory!()
+    database = SchemaFixture.database!(:current)
+    uid = File.lstat!(database).uid
+    assert {:ok, probe} = Probe.inspect(database)
+    assert {:ok, helper} = DirectoryHelper.start(directory)
+    on_exit(fn -> terminate_os_pid(helper.os_pid) end)
+
+    result =
+      DirectoryHelper.open_source(
+        helper,
+        [{:main, database, ".pin.sqlite3", file_identity(database)}],
+        probe,
+        uid
+      )
+
+    close_result = if match?({:ok, _identities}, result), do: DirectoryHelper.close_source(helper)
+    assert :ok = DirectoryHelper.stop(helper)
+
+    assert File.ls!(directory) == []
+    assert {:ok, %{main: identity}} = result
+    assert identity == file_identity(database)
+    assert close_result == :ok
+  end
+
+  test "an invalid verify probe is rejected before encoding and STOP retains the cleanup ledger" do
+    directory = private_directory!()
+    database = SchemaFixture.database!(:current)
+    uid = File.lstat!(directory).uid
+    assert {:ok, probe} = Probe.inspect(database)
+    invalid_probe = Map.put(probe, :unexpected, "not in the closed protocol")
+    assert {:ok, helper} = DirectoryHelper.start(directory)
+    on_exit(fn -> terminate_os_pid(helper.os_pid) end)
+
+    assert {:ok, _identity} =
+             DirectoryHelper.write_private(helper, ".owned-before-invalid-request", "owned", uid)
+
+    result =
+      DirectoryHelper.verify_database(helper, ".owned-before-invalid-request", invalid_probe)
+
+    pwd_result = DirectoryHelper.pwd(helper)
+    assert :ok = DirectoryHelper.stop(helper)
+
+    assert File.ls!(directory) == []
+    assert result == {:error, :unsafe_helper_request}
+    assert {:ok, _path} = pwd_result
+  end
+
+  @tag timeout: 120_000
+  test "SIGSTOP cancellation preserves pathnames substituted after VACUUM" do
+    directory = private_directory!()
+    database = SchemaFixture.database!(:current)
+
+    SchemaFixture.exec!(
+      database,
+      """
+      CREATE TABLE cancellation_payload(id INTEGER PRIMARY KEY, payload BLOB);
+      WITH RECURSIVE numbers(value) AS (
+        SELECT 1
+        UNION ALL
+        SELECT value + 1 FROM numbers WHERE value < 32768
+      )
+      INSERT INTO cancellation_payload(id, payload)
+      SELECT value, randomblob(4096) FROM numbers;
+      """
+    )
+
+    assert {:ok, probe} = Probe.inspect(database)
+    uid = File.lstat!(database).uid
+    test = self()
+    supervisor = start_supervised!(Task.Supervisor)
+
+    task =
+      Task.Supervisor.async_nolink(supervisor, fn ->
+        {:ok, helper} =
+          DirectoryHelper.start(directory, test_broker_fault: :pause_vacuum_after_step)
+
+        {:ok, _identities} =
+          DirectoryHelper.open_source(
+            helper,
+            [
+              {:main, database, ".source.sqlite3", file_identity(database)},
+              {:wal, database <> "-wal", ".source.sqlite3-wal", nil},
+              {:shm, database <> "-shm", ".source.sqlite3-shm", nil}
+            ],
+            probe,
+            uid
+          )
+
+        send(test, {:vacuum_helper, helper})
+        DirectoryHelper.vacuum(helper, ".snapshot.sqlite3", uid)
+      end)
+
+    assert_receive {:vacuum_helper, helper}, 10_000
+    owner_monitor = Process.monitor(helper.owner)
+    on_exit(fn -> terminate_os_pid(helper.os_pid) end)
+    snapshot = Path.join(directory, ".snapshot.sqlite3")
+    wait_for_completed_vacuum!(snapshot, 30_000)
+    signal_os_pid!(helper.os_pid, "-STOP")
+
+    File.rm!(snapshot)
+    File.write!(snapshot, "unowned substitute")
+    File.chmod!(snapshot, 0o644)
+    journal = snapshot <> "-journal"
+    File.write!(journal, "unowned journal substitute")
+    File.chmod!(journal, 0o644)
+
+    assert Task.shutdown(task, :brutal_kill) == nil
+    assert_receive {:DOWN, ^owner_monitor, :process, _owner, :normal}, 30_000
+    refute os_pid_alive?(helper.os_pid)
+
+    assert File.read!(snapshot) == "unowned substitute"
+    assert File.read!(journal) == "unowned journal substitute"
+    assert permissions(snapshot) == 0o644
+    assert permissions(journal) == 0o644
+    assert Enum.sort(File.ls!(directory)) == [".snapshot.sqlite3", ".snapshot.sqlite3-journal"]
+  end
+
+  for {label, fault, expected_remaining} <- [
+        {
+          "source link",
+          :pause_link_source_before_reserve,
+          [".candidate.sqlite3", "source.sqlite3"]
+        },
+        {
+          "private file",
+          :pause_write_private_before_reserve,
+          [".candidate.sqlite3"]
+        },
+        {
+          "private SHM",
+          :pause_shm_before_reserve,
+          [".candidate.sqlite3"]
+        },
+        {
+          "final publication link",
+          :pause_link_before_reserve,
+          [".candidate.sqlite3"]
+        }
+      ] do
+    @tag timeout: 30_000
+    test "SIGSTOP cancellation never adopts an unreserved #{label} pathname", context do
+      directory = private_directory!()
+      uid = File.lstat!(directory).uid
+      test = self()
+      supervisor = start_supervised!(Task.Supervisor)
+      fault = unquote(fault)
+
+      source_basenames = source_basenames_for_fault(fault)
+      boundary_source = prepare_boundary_source!(fault, directory)
+
+      task =
+        Task.Supervisor.async_nolink(supervisor, fn ->
+          {:ok, helper} =
+            DirectoryHelper.start(directory,
+              source_basenames: source_basenames,
+              test_broker_fault: fault
+            )
+
+          send(test, {:boundary_helper, context.test, helper})
+          run_boundary_request!(fault, uid, helper, boundary_source)
+        end)
+
+      assert_receive {:boundary_helper, test_name, helper}, 5_000
+      assert test_name == context.test
+      owner_monitor = Process.monitor(helper.owner)
+      on_exit(fn -> terminate_os_pid(helper.os_pid) end)
+      candidate = Path.join(directory, ".candidate.sqlite3")
+      wait_for_path!(candidate, 10_000)
+      signal_os_pid!(helper.os_pid, "-STOP")
+      File.rm!(candidate)
+      File.write!(candidate, "unowned substitute")
+      File.chmod!(candidate, 0o600)
+
+      assert Task.shutdown(task, :brutal_kill) == nil
+      assert_receive {:DOWN, ^owner_monitor, :process, _owner, :normal}, 10_000
+      refute os_pid_alive?(helper.os_pid)
+      assert File.read!(candidate) == "unowned substitute"
+      assert Enum.sort(File.ls!(directory)) == unquote(expected_remaining)
+    end
+  end
+
   defp private_directory! do
     directory =
       Path.join(
@@ -494,6 +702,61 @@ defmodule SwarmCode.Daemon.Platform.DirectoryHelperTest do
     stat = File.lstat!(path)
 
     {stat.type, stat.major_device, stat.minor_device, stat.inode, stat.uid, stat.mode, stat.size}
+  end
+
+  defp source_basenames_for_fault(:pause_link_source_before_reserve), do: ["source.sqlite3"]
+  defp source_basenames_for_fault(_fault), do: []
+
+  defp prepare_boundary_source!(:pause_link_source_before_reserve, directory) do
+    source = Path.join(directory, "source.sqlite3")
+    File.write!(source, "source")
+    File.chmod!(source, 0o600)
+    nil
+  end
+
+  defp prepare_boundary_source!(:pause_shm_before_reserve, _directory) do
+    database = SchemaFixture.database!(:current)
+    shm = Path.join(Path.dirname(database), "boundary-shm")
+    File.write!(shm, :binary.copy(<<0>>, 1_024 * 1_024))
+    File.chmod!(shm, 0o600)
+    {:ok, probe} = Probe.inspect(database)
+    %{database: database, probe: probe, shm: shm}
+  end
+
+  defp prepare_boundary_source!(_fault, _directory), do: nil
+
+  defp run_boundary_request!(:pause_link_source_before_reserve, _uid, helper, nil) do
+    assert :ok = DirectoryHelper.link_source(helper, 0, ".candidate.sqlite3")
+  end
+
+  defp run_boundary_request!(:pause_write_private_before_reserve, uid, helper, nil) do
+    assert {:ok, _identity} =
+             DirectoryHelper.write_private(helper, ".candidate.sqlite3", "owned", uid)
+  end
+
+  defp run_boundary_request!(
+         :pause_shm_before_reserve,
+         uid,
+         helper,
+         %{database: database, probe: probe, shm: shm}
+       ) do
+    assert {:ok, _identities} =
+             DirectoryHelper.open_source(
+               helper,
+               [
+                 {:shm, shm, ".candidate.sqlite3", file_identity(shm)},
+                 {:main, database, ".source.sqlite3", file_identity(database)}
+               ],
+               probe,
+               uid
+             )
+  end
+
+  defp run_boundary_request!(:pause_link_before_reserve, uid, helper, nil) do
+    {:ok, _identity} =
+      DirectoryHelper.write_private(helper, ".staging.sqlite3", "staging", uid)
+
+    assert :ok = DirectoryHelper.link(helper, ".staging.sqlite3", ".candidate.sqlite3")
   end
 
   defp os_pid_alive?(pid) do
@@ -526,6 +789,31 @@ defmodule SwarmCode.Daemon.Platform.DirectoryHelperTest do
   defp wait_for_path!(path, timeout) do
     deadline = System.monotonic_time(:millisecond) + timeout
     do_wait_for_path!(path, deadline)
+  end
+
+  defp wait_for_completed_vacuum!(path, timeout) do
+    deadline = System.monotonic_time(:millisecond) + timeout
+    do_wait_for_completed_vacuum!(path, deadline)
+  end
+
+  defp do_wait_for_completed_vacuum!(path, deadline) do
+    complete? =
+      match?({:ok, %File.Stat{type: :regular, size: size}} when size > 0, File.lstat(path)) and
+        File.lstat(path <> "-journal") == {:error, :enoent}
+
+    cond do
+      complete? ->
+        :ok
+
+      System.monotonic_time(:millisecond) >= deadline ->
+        flunk("timed out waiting for #{Path.basename(path)} VACUUM completion")
+
+      true ->
+        receive do
+        after
+          1 -> do_wait_for_completed_vacuum!(path, deadline)
+        end
+    end
   end
 
   defp do_wait_for_path!(path, deadline) do

@@ -9,7 +9,6 @@ defmodule SwarmCode.Daemon.Platform.DirectoryHelper do
   @terminate_grace 250
   @kill_grace 2_000
   @maximum_basename_bytes 255
-  @maximum_contents_bytes 4 * 1_024 * 1_024
   @test_build Mix.env() == :test
   @allowed_options if(@test_build,
                      do: [
@@ -55,76 +54,38 @@ defmodule SwarmCode.Daemon.Platform.DirectoryHelper do
   def pwd(helper), do: request(helper, :pwd)
 
   @spec link(t(), String.t(), String.t()) :: :ok | {:error, term()}
-  def link(helper, source, destination) do
-    checked_request(helper, [source, destination], {:link, source, destination})
-  end
+  def link(helper, source, destination), do: request(helper, {:link, source, destination})
 
   @spec unlink(t(), String.t()) :: :ok | {:error, term()}
-  def unlink(helper, basename), do: checked_request(helper, [basename], {:unlink, basename})
+  def unlink(helper, basename), do: request(helper, {:unlink, basename})
 
   @spec unlink_identity(t(), String.t(), file_identity()) :: :ok | {:error, term()}
-  def unlink_identity(helper, basename, identity) do
-    with :ok <- safe_basename(basename), true <- valid_file_identity?(identity) do
-      request(helper, {:unlink_identity, basename, identity})
-    else
-      _other -> {:error, :unsafe_helper_request}
-    end
-  end
+  def unlink_identity(helper, basename, identity),
+    do: request(helper, {:unlink_identity, basename, identity})
 
   @spec link_source(t(), 0..2, String.t()) :: :ok | {:error, term()}
-  def link_source(helper, index, destination) when index in 0..2 do
-    checked_request(helper, [destination], {:link_source, index, destination})
-  end
-
-  def link_source(_helper, _index, _destination), do: {:error, :unsafe_helper_request}
+  def link_source(helper, index, destination),
+    do: request(helper, {:link_source, index, destination})
 
   @spec write_private(t(), String.t(), binary(), non_neg_integer()) ::
           {:ok, file_identity()} | {:error, term()}
-  def write_private(helper, basename, contents, uid) do
-    with :ok <- safe_basename(basename),
-         true <- is_binary(contents) and byte_size(contents) <= @maximum_contents_bytes,
-         true <- valid_uid?(uid) do
-      request(helper, {:write_private, basename, contents, uid})
-    else
-      _other -> {:error, :unsafe_helper_request}
-    end
-  end
+  def write_private(helper, basename, contents, uid),
+    do: request(helper, {:write_private, basename, contents, uid})
 
   @spec read_private(t(), String.t(), non_neg_integer(), non_neg_integer()) ::
           {:ok, binary()} | {:error, term()}
-  def read_private(helper, basename, uid, maximum) do
-    with :ok <- safe_basename(basename),
-         true <- valid_uid?(uid),
-         true <- is_integer(maximum) and maximum in 0..@maximum_contents_bytes//1 do
-      request(helper, {:read_private, basename, uid, maximum})
-    else
-      _other -> {:error, :unsafe_helper_request}
-    end
-  end
+  def read_private(helper, basename, uid, maximum),
+    do: request(helper, {:read_private, basename, uid, maximum})
 
   @spec copy_private(t(), String.t(), String.t(), non_neg_integer()) ::
           {:ok, file_identity()} | {:error, term()}
-  def copy_private(helper, source, destination, uid) do
-    with :ok <- safe_basename(source),
-         :ok <- safe_basename(destination),
-         true <- valid_uid?(uid) do
-      request(helper, {:copy_private, source, destination, uid})
-    else
-      _other -> {:error, :unsafe_helper_request}
-    end
-  end
+  def copy_private(helper, source, destination, uid),
+    do: request(helper, {:copy_private, source, destination, uid})
 
   @spec prepare_copy(t(), String.t(), String.t(), non_neg_integer()) ::
           {:ok, file_identity()} | {:error, term()}
-  def prepare_copy(helper, source, destination, uid) do
-    with :ok <- safe_basename(source),
-         :ok <- safe_basename(destination),
-         true <- valid_uid?(uid) do
-      request(helper, {:prepare_copy, source, destination, uid})
-    else
-      _other -> {:error, :unsafe_helper_request}
-    end
-  end
+  def prepare_copy(helper, source, destination, uid),
+    do: request(helper, {:prepare_copy, source, destination, uid})
 
   @spec finish_copy(t()) :: {:ok, file_identity()} | {:error, term()}
   def finish_copy(helper), do: request(helper, :finish_copy)
@@ -134,87 +95,41 @@ defmodule SwarmCode.Daemon.Platform.DirectoryHelper do
 
   @spec private_identity(t(), String.t(), non_neg_integer()) ::
           {:ok, file_identity()} | {:error, term()}
-  def private_identity(helper, basename, uid) do
-    with :ok <- safe_basename(basename), true <- valid_uid?(uid) do
-      request(helper, {:private_identity, basename, uid})
-    else
-      _other -> {:error, :unsafe_helper_request}
-    end
-  end
+  def private_identity(helper, basename, uid),
+    do: request(helper, {:private_identity, basename, uid})
 
   @spec sync_file(t(), String.t(), file_identity(), non_neg_integer()) :: :ok | {:error, term()}
-  def sync_file(helper, basename, identity, uid) do
-    with :ok <- safe_basename(basename),
-         true <- valid_file_identity?(identity),
-         true <- valid_uid?(uid) do
-      request(helper, {:sync_file, basename, identity, uid})
-    else
-      _other -> {:error, :unsafe_helper_request}
-    end
-  end
+  def sync_file(helper, basename, identity, uid),
+    do: request(helper, {:sync_file, basename, identity, uid})
 
   @spec adopt(t(), String.t(), file_identity(), non_neg_integer()) :: :ok | {:error, term()}
-  def adopt(helper, basename, identity, uid) do
-    with :ok <- safe_basename(basename),
-         true <- valid_file_identity?(identity),
-         true <- valid_uid?(uid) do
-      request(helper, {:adopt, basename, identity, uid})
-    else
-      _other -> {:error, :unsafe_helper_request}
-    end
-  end
+  def adopt(helper, basename, identity, uid),
+    do: request(helper, {:adopt, basename, identity, uid})
 
   @spec commit(t(), [{String.t(), file_identity()}], non_neg_integer()) :: :ok | {:error, term()}
-  def commit(helper, files, uid) when is_list(files) do
-    valid? =
-      valid_uid?(uid) and files != [] and
-        Enum.all?(files, fn {basename, identity} ->
-          safe_basename(basename) == :ok and valid_file_identity?(identity)
-        end)
-
-    if valid?, do: request(helper, {:commit, files, uid}), else: {:error, :unsafe_helper_request}
-  end
+  def commit(helper, files, uid), do: request(helper, {:commit, files, uid})
 
   @spec sync_directory(t()) :: :ok | {:error, term()}
   def sync_directory(helper), do: request(helper, :sync_directory)
 
   @spec repair_mode(t(), 0o700, non_neg_integer()) :: :ok | {:error, term()}
-  def repair_mode(helper, 0o700, uid) when is_integer(uid) and uid >= 0,
-    do: request(helper, {:repair_mode, 0o700, uid})
-
-  def repair_mode(_helper, _mode, _uid), do: {:error, :unsafe_helper_request}
+  def repair_mode(helper, mode, uid), do: request(helper, {:repair_mode, mode, uid})
 
   @spec directory_identity(t()) :: {:ok, tuple()} | {:error, term()}
   def directory_identity(helper), do: request(helper, :directory_identity)
 
   @spec entry_state(t(), String.t(), non_neg_integer()) ::
           :absent | {:ok, file_identity()} | {:error, term()}
-  def entry_state(helper, basename, uid) do
-    with :ok <- safe_basename(basename), true <- valid_uid?(uid) do
-      request(helper, {:entry_state, basename, uid})
-    else
-      _other -> {:error, :unsafe_helper_request}
-    end
-  end
+  def entry_state(helper, basename, uid), do: request(helper, {:entry_state, basename, uid})
 
   @spec file_entry(t(), String.t(), non_neg_integer(), String.t()) ::
           {:ok, map()} | {:error, term()}
-  def file_entry(helper, basename, uid, published_name) do
-    with :ok <- safe_basename(basename),
-         :ok <- safe_basename(published_name),
-         true <- valid_uid?(uid) do
-      request(helper, {:file_entry, basename, uid, published_name})
-    else
-      _other -> {:error, :unsafe_helper_request}
-    end
-  end
+  def file_entry(helper, basename, uid, published_name),
+    do: request(helper, {:file_entry, basename, uid, published_name})
 
   @spec verify_database(t(), String.t(), term()) :: {:ok, map()} | {:error, term()}
-  def verify_database(helper, basename, expected_probe) do
-    with :ok <- safe_basename(basename) do
-      request(helper, {:verify_database, basename, expected_probe})
-    end
-  end
+  def verify_database(helper, basename, expected_probe),
+    do: request(helper, {:verify_database, basename, expected_probe})
 
   @spec open_source(
           t(),
@@ -223,22 +138,11 @@ defmodule SwarmCode.Daemon.Platform.DirectoryHelper do
           non_neg_integer()
         ) ::
           {:ok, map()} | {:error, term()}
-  def open_source(helper, specs, expected_probe, uid) do
-    if valid_uid?(uid) and valid_source_specs?(specs) do
-      request(helper, {:open_source, specs, expected_probe, uid})
-    else
-      {:error, :unsafe_helper_request}
-    end
-  end
+  def open_source(helper, specs, expected_probe, uid),
+    do: request(helper, {:open_source, specs, expected_probe, uid})
 
   @spec vacuum(t(), String.t(), non_neg_integer()) :: {:ok, file_identity()} | {:error, term()}
-  def vacuum(helper, destination, uid) do
-    with :ok <- safe_basename(destination), true <- valid_uid?(uid) do
-      request(helper, {:vacuum, destination, uid})
-    else
-      _other -> {:error, :unsafe_helper_request}
-    end
-  end
+  def vacuum(helper, destination, uid), do: request(helper, {:vacuum, destination, uid})
 
   @spec close_source(t()) :: :ok | {:error, term()}
   def close_source(helper), do: request(helper, :close_source)
@@ -386,7 +290,7 @@ defmodule SwarmCode.Daemon.Platform.DirectoryHelper do
         owner_loop(caller_monitor, port, port_monitor, os_pid)
 
       _other ->
-        terminate(port, port_monitor, os_pid)
+        graceful_stop(port, port_monitor, caller_monitor, os_pid)
         send(caller, {ref, self(), {:error, :helper_start_failed}})
     end
   end
@@ -407,7 +311,7 @@ defmodule SwarmCode.Daemon.Platform.DirectoryHelper do
             send(from, {ref, {:error, reason}})
 
           {:error, reason} ->
-            terminate(port, port_monitor, os_pid)
+            graceful_stop(port, port_monitor, caller_monitor, os_pid)
             send(from, {ref, {:error, reason}})
         end
 
@@ -427,6 +331,16 @@ defmodule SwarmCode.Daemon.Platform.DirectoryHelper do
   end
 
   defp request(%{owner: owner, monitor: monitor}, operation) do
+    if DirectoryProtocol.valid_request?(operation) do
+      do_request(owner, monitor, operation)
+    else
+      {:error, :unsafe_helper_request}
+    end
+  end
+
+  defp request(_helper, _operation), do: {:error, :unsafe_helper_request}
+
+  defp do_request(owner, monitor, operation) do
     ref = make_ref()
     send(owner, {:request, self(), ref, operation})
 
@@ -493,6 +407,9 @@ defmodule SwarmCode.Daemon.Platform.DirectoryHelper do
       case receive_frame(port, port_monitor, caller_monitor, operation_timeout(operation)) do
         {:ok, payload} ->
           case DirectoryProtocol.decode_reply(operation, payload) do
+            {:ok, {:error, :helper_operation_failed}} ->
+              {:cleanup, :helper_operation_failed}
+
             {:ok, reply} ->
               {:ok, reply}
 
@@ -515,7 +432,7 @@ defmodule SwarmCode.Daemon.Platform.DirectoryHelper do
           {:error, reason}
       end
     else
-      _other -> {:error, :helper_command_failed}
+      _other -> {:cleanup, :helper_command_failed}
     end
   end
 
@@ -558,22 +475,36 @@ defmodule SwarmCode.Daemon.Platform.DirectoryHelper do
 
   defp ingest_frames(port, bytes) do
     state = frame_state(port)
+    maximum_bytes = DirectoryProtocol.maximum_bytes()
 
-    case DirectoryProtocol.push(state.decoder, bytes) do
-      {:more, decoder} ->
-        put_frame_state(port, %{state | decoder: decoder})
-        :ok
+    if state.queued_bytes + DirectoryProtocol.collected_bytes(state.decoder) + byte_size(bytes) >
+         maximum_bytes do
+      {:error, :invalid_frame}
+    else
+      case DirectoryProtocol.push(state.decoder, bytes) do
+        {:more, decoder} ->
+          put_frame_state(port, %{state | decoder: decoder})
+          :ok
 
-      {:ok, payload, rest} ->
-        put_frame_state(port, %{
-          decoder: DirectoryProtocol.new_decoder(),
-          frames: :queue.in(payload, state.frames)
-        })
+        {:ok, payload, rest} ->
+          queued_bytes = state.queued_bytes + byte_size(payload)
 
-        if rest == <<>>, do: :ok, else: ingest_frames(port, rest)
+          if queued_bytes > maximum_bytes or state.queued_count != 0 or rest != <<>> do
+            {:error, :invalid_frame}
+          else
+            put_frame_state(port, %{
+              decoder: DirectoryProtocol.new_decoder(),
+              frames: :queue.in(payload, state.frames),
+              queued_bytes: queued_bytes,
+              queued_count: 1
+            })
 
-      {:error, _reason} ->
-        {:error, :invalid_frame}
+            :ok
+          end
+
+        {:error, _reason} ->
+          {:error, :invalid_frame}
+      end
     end
   end
 
@@ -582,7 +513,13 @@ defmodule SwarmCode.Daemon.Platform.DirectoryHelper do
 
     case :queue.out(state.frames) do
       {{:value, payload}, frames} ->
-        put_frame_state(port, %{state | frames: frames})
+        put_frame_state(port, %{
+          state
+          | frames: frames,
+            queued_bytes: state.queued_bytes - byte_size(payload),
+            queued_count: state.queued_count - 1
+        })
+
         {:ok, payload}
 
       {:empty, _frames} ->
@@ -594,15 +531,17 @@ defmodule SwarmCode.Daemon.Platform.DirectoryHelper do
     Process.get({__MODULE__, :frames, port}) ||
       %{
         decoder: DirectoryProtocol.new_decoder(),
-        frames: :queue.new()
+        frames: :queue.new(),
+        queued_bytes: 0,
+        queued_count: 0
       }
   end
 
   defp put_frame_state(port, state), do: Process.put({__MODULE__, :frames, port}, state)
 
   defp graceful_stop(port, port_monitor, caller_monitor, os_pid) do
-    _ = signal(os_pid, "-CONT")
     request_broker_stop(port)
+    _ = signal(os_pid, "-CONT")
     await_broker_terminal(port, port_monitor, caller_monitor, false, false)
   end
 
@@ -757,19 +696,6 @@ defmodule SwarmCode.Daemon.Platform.DirectoryHelper do
 
   defp operation_timeout(_operation), do: @request_timeout
 
-  defp checked_request(helper, names, request) do
-    with true <- Enum.all?(names, &(safe_basename(&1) == :ok)), do: request(helper, request)
-  end
-
-  defp safe_basename(name)
-       when is_binary(name) and byte_size(name) in 1..@maximum_basename_bytes//1 do
-    if Regex.match?(~r/\A[.a-zA-Z0-9_-]+\z/, name) and Path.basename(name) == name,
-      do: :ok,
-      else: {:error, :unsafe_helper_basename}
-  end
-
-  defp safe_basename(_name), do: {:error, :unsafe_helper_basename}
-
   defp validate_options(opts, sources, fail_after_port_open?, observer, broker_fault) do
     keys = Keyword.keys(opts)
 
@@ -779,8 +705,14 @@ defmodule SwarmCode.Daemon.Platform.DirectoryHelper do
          broker_fault in [
            nil,
            :crash_finish_copy,
+           :extra_frame_write_private,
            :malformed_write_private,
-           :oversized_write_private
+           :oversized_write_private,
+           :pause_link_before_reserve,
+           :pause_link_source_before_reserve,
+           :pause_shm_before_reserve,
+           :pause_vacuum_after_step,
+           :pause_write_private_before_reserve
          ] and
          length(sources) <= 3 and
          Enum.all?(sources, &safe_source_basename?/1),
@@ -814,39 +746,6 @@ defmodule SwarmCode.Daemon.Platform.DirectoryHelper do
 
   defp notify(nil, _event), do: :ok
   defp notify(observer, event), do: send(observer, event)
-
-  defp valid_uid?(uid), do: is_integer(uid) and uid >= 0
-
-  defp valid_file_identity?({:regular, a, b, c, d, e, f}),
-    do: Enum.all?([a, b, c, d, e, f], &(is_integer(&1) and &1 >= 0))
-
-  defp valid_file_identity?({:regular, a, b, c, d}),
-    do: Enum.all?([a, b, c, d], &(is_integer(&1) and &1 >= 0))
-
-  defp valid_file_identity?(_identity), do: false
-
-  defp valid_source_specs?(specs) when is_list(specs) and length(specs) in 1..3//1 do
-    Enum.all?(specs, fn
-      {kind, source, destination, nil} when kind in [:wal, :shm] ->
-        safe_source_path?(source) and safe_basename(destination) == :ok
-
-      {kind, source, destination, identity} when kind in [:main, :wal, :shm] ->
-        safe_source_path?(source) and safe_basename(destination) == :ok and
-          valid_file_identity?(identity)
-
-      _other ->
-        false
-    end) and Enum.count(specs, fn {kind, _, _, _} -> kind == :main end) == 1
-  end
-
-  defp valid_source_specs?(_specs), do: false
-
-  defp safe_source_path?(path) when is_binary(path) do
-    Path.type(path) == :absolute and byte_size(path) in 1..16_384//1 and String.valid?(path) and
-      not String.contains?(path, <<0>>)
-  end
-
-  defp safe_source_path?(_path), do: false
 
   defp await_down(owner, monitor, :infinity) do
     receive do

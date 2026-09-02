@@ -53,6 +53,11 @@ defmodule SwarmCode.Daemon.Platform.DirectoryBroker do
         send(worker, {reserve_ref, :ok})
         loop(put_in(state, [:owned, basename], identity))
 
+      {:operation_release, worker, release_ref, basename, identity}
+      when state.operation.pid == worker ->
+        send(worker, {release_ref, :ok})
+        loop(release_operation_owned(state, basename, identity))
+
       {:operation_result, worker, reply, next_state} when state.operation.pid == worker ->
         next_state = retain_copy_owner(state, worker, reply, next_state)
 
@@ -60,19 +65,32 @@ defmodule SwarmCode.Daemon.Platform.DirectoryBroker do
           Process.demonitor(state.operation.monitor, [:flush])
         end
 
-        write_reply(state.operation.request, reply)
-        loop(merge_operation_state(state, next_state))
+        next_state = merge_operation_state(state, next_state)
+
+        case write_reply(state.operation.request, reply) do
+          :ok -> loop(next_state)
+          {:error, _reason} -> stop_broker(next_state)
+        end
 
       {:DOWN, monitor, :process, worker, {:copy_operation_result, request, reply}}
       when state.operation.monitor == monitor and state.operation.pid == worker and
              state.operation.request == request and request in [:finish_copy, :cancel_copy] ->
-        write_reply(request, reply)
-        loop(complete_copy_operation(state, request, reply))
+        next_state = complete_copy_operation(state, request, reply)
+
+        case write_reply(request, reply) do
+          :ok -> loop(next_state)
+          {:error, _reason} -> stop_broker(next_state)
+        end
 
       {:DOWN, monitor, :process, worker, _reason}
       when state.operation.monitor == monitor and state.operation.pid == worker ->
-        write_reply(state.operation.request, {:error, :directory_operation_failed})
-        loop(operation_worker_down(state))
+        reply = {:error, :directory_operation_failed}
+        next_state = operation_worker_down(state)
+
+        case write_reply(state.operation.request, reply) do
+          :ok -> loop(next_state)
+          {:error, _reason} -> stop_broker(next_state)
+        end
 
       {:DOWN, monitor, :process, worker, _reason}
       when state.copy.monitor == monitor and state.copy.owner == worker ->
@@ -96,7 +114,6 @@ defmodule SwarmCode.Daemon.Platform.DirectoryBroker do
           state
           | operation: %{
               base_owned: state.owned,
-              expected: [],
               monitor: monitor,
               pid: owner,
               request: request
@@ -115,6 +132,7 @@ defmodule SwarmCode.Daemon.Platform.DirectoryBroker do
     {worker, monitor} =
       spawn_monitor(fn ->
         Process.put({__MODULE__, :broker}, broker)
+        Process.put({__MODULE__, :operation}, request)
         {reply, next_state} = safe_dispatch(request, state)
         send(broker, {:operation_result, self(), reply, next_state})
 
@@ -127,7 +145,6 @@ defmodule SwarmCode.Daemon.Platform.DirectoryBroker do
       state
       | operation: %{
           base_owned: base_owned,
-          expected: expected_creations(request),
           monitor: monitor,
           pid: worker,
           request: request
@@ -192,8 +209,6 @@ defmodule SwarmCode.Daemon.Platform.DirectoryBroker do
     do: %{state | copy: nil, operation: nil}
 
   defp operation_worker_down(state) do
-    expected = state.operation.expected
-    base_owned = state.operation.base_owned
     worker = state.operation.pid
 
     state =
@@ -203,7 +218,7 @@ defmodule SwarmCode.Daemon.Platform.DirectoryBroker do
         state
       end
 
-    state |> Map.put(:operation, nil) |> capture_expected(expected, base_owned)
+    %{state | operation: nil}
   end
 
   defp cleanup_dead_copy(state) do
@@ -227,11 +242,33 @@ defmodule SwarmCode.Daemon.Platform.DirectoryBroker do
         send(broker, {:operation_reserve, self(), reserve_ref, basename, identity})
 
         receive do
-          {^reserve_ref, :ok} -> :ok
+          {^reserve_ref, result} -> result
         end
 
       _other ->
         {:error, :missing_cleanup_owner}
+    end
+  end
+
+  defp release_owned(basename, identity) do
+    case Process.get({__MODULE__, :broker}) do
+      broker when is_pid(broker) ->
+        release_ref = make_ref()
+        send(broker, {:operation_release, self(), release_ref, basename, identity})
+
+        receive do
+          {^release_ref, result} -> result
+        end
+
+      _other ->
+        {:error, :missing_cleanup_owner}
+    end
+  end
+
+  defp release_operation_owned(state, basename, identity) do
+    case Map.fetch(state.owned, basename) do
+      {:ok, ^identity} -> update_in(state.owned, &Map.delete(&1, basename))
+      _other -> state
     end
   end
 
@@ -246,10 +283,12 @@ defmodule SwarmCode.Daemon.Platform.DirectoryBroker do
 
   defp cancel_operation(state) do
     cancel_open_source(state.cancel_table)
-    Process.exit(state.operation.pid, :kill)
+
+    unless vacuum_operation?(state.operation.request) do
+      Process.exit(state.operation.pid, :kill)
+    end
+
     state = await_operation_down(state.operation.pid, state.operation.monitor, state)
-    expected = state.operation.expected
-    base_owned = state.operation.base_owned
 
     state =
       if is_map(state.copy) and state.copy.owner == state.operation.pid do
@@ -258,59 +297,11 @@ defmodule SwarmCode.Daemon.Platform.DirectoryBroker do
         state
       end
 
-    state |> Map.put(:operation, nil) |> capture_expected(expected, base_owned)
+    %{state | operation: nil}
   end
 
-  defp expected_creations({:write_private, basename, _contents, uid}), do: [{basename, uid}]
-  defp expected_creations({:copy_private, _source, destination, uid}), do: [{destination, uid}]
-  defp expected_creations({:prepare_copy, _source, destination, uid}), do: [{destination, uid}]
-
-  defp expected_creations({:vacuum, destination, uid}),
-    do: Enum.map(["", "-journal", "-wal", "-shm"], &{destination <> &1, uid})
-
-  defp expected_creations({:open_source, specs, uid_probe, uid}) when is_list(specs) do
-    _ = uid_probe
-    Enum.map(specs, fn {_kind, _source, destination, _identity} -> {destination, uid} end)
-  end
-
-  defp expected_creations({:link, _source, destination}), do: [{destination, nil}]
-  defp expected_creations({:link_source, _index, destination}), do: [{destination, nil}]
-  defp expected_creations(_request), do: []
-
-  defp capture_expected(state, expected, base_owned) do
-    uid = directory_uid()
-    _ = if is_integer(uid), do: repair_mode(0o700, uid)
-
-    Enum.reduce(expected, state, fn {basename, expected_uid}, acc ->
-      if reserved_during_operation?(acc.owned, base_owned, basename) do
-        acc
-      else
-        case File.lstat(basename) do
-          {:ok, %File.Stat{type: :regular, uid: actual_uid} = stat}
-          when is_nil(expected_uid) or actual_uid == expected_uid ->
-            put_in(acc, [:owned, basename], object_identity(stat))
-
-          _other ->
-            acc
-        end
-      end
-    end)
-  end
-
-  defp reserved_during_operation?(owned, base_owned, basename) do
-    case {Map.fetch(base_owned, basename), Map.fetch(owned, basename)} do
-      {:error, {:ok, _identity}} -> true
-      {{:ok, before}, {:ok, current}} -> before != current
-      _other -> false
-    end
-  end
-
-  defp directory_uid do
-    case directory_identity(".") do
-      {:ok, {:directory, _major, _minor, _inode, uid, _mode}} -> uid
-      _other -> nil
-    end
-  end
+  defp vacuum_operation?({:vacuum, _destination, _uid}), do: true
+  defp vacuum_operation?(_request), do: false
 
   defp await_operation_down(worker, monitor, state) do
     receive do
@@ -323,6 +314,15 @@ defmodule SwarmCode.Daemon.Platform.DirectoryBroker do
       {:operation_reserve, ^worker, reserve_ref, basename, identity} ->
         send(worker, {reserve_ref, {:error, :cancelled}})
         await_operation_down(worker, monitor, put_in(state.owned[basename], identity))
+
+      {:operation_release, ^worker, release_ref, basename, identity} ->
+        send(worker, {release_ref, :ok})
+
+        await_operation_down(
+          worker,
+          monitor,
+          release_operation_owned(state, basename, identity)
+        )
     end
   end
 
@@ -371,10 +371,23 @@ defmodule SwarmCode.Daemon.Platform.DirectoryBroker do
 
   defp dispatch({:link, source, destination}, state) do
     result =
-      with :ok <- File.ln(source, destination),
-           {:ok, identity} <- file_identity(destination),
-           :ok <- reserve_owned(destination, object_identity(identity)) do
-        :ok
+      with {:ok, source_identity} <- file_identity(source),
+           :ok <- File.ln(source, destination),
+           :ok <- pause_before_reserve(:link, nil),
+           :ok <- reserve_owned(destination, object_identity(source_identity)) do
+        result =
+          with {:ok, ^source_identity} <- file_identity(source),
+               {:ok, ^source_identity} <- file_identity(destination),
+               do: :ok
+
+        if result != :ok,
+          do:
+            cleanup_created(
+              [{destination, object_identity(source_identity)}],
+              elem(source_identity, 4)
+            )
+
+        normalize_error(result, :directory_operation_failed)
       else
         _other -> {:error, :directory_operation_failed}
       end
@@ -397,10 +410,26 @@ defmodule SwarmCode.Daemon.Platform.DirectoryBroker do
     result =
       case Enum.fetch(sources, index) do
         {:ok, source} ->
-          with :ok <- File.ln(source, destination),
-               {:ok, identity} <- file_identity(destination),
-               :ok <- reserve_owned(destination, object_identity(identity)) do
-            {:ok, identity}
+          with {:ok, source_identity} <- file_identity(source),
+               :ok <- File.ln(source, destination),
+               :ok <- pause_before_reserve(:link_source, nil),
+               :ok <- reserve_owned(destination, object_identity(source_identity)) do
+            result =
+              with {:ok, ^source_identity} <- file_identity(source),
+                   {:ok, ^source_identity} <- file_identity(destination),
+                   do: {:ok, source_identity}
+
+            if not match?({:ok, _identity}, result),
+              do:
+                cleanup_created(
+                  [{destination, object_identity(source_identity)}],
+                  elem(source_identity, 4)
+                )
+
+            case result do
+              {:ok, _identity} = success -> success
+              _other -> {:error, :directory_operation_failed}
+            end
           else
             _other -> {:error, :directory_operation_failed}
           end
@@ -545,8 +574,8 @@ defmodule SwarmCode.Daemon.Platform.DirectoryBroker do
     do: {{:error, :source_already_open}, state}
 
   defp dispatch({:vacuum, destination, uid}, %{source: %{connection: connection}} = state) do
-    result = vacuum(connection, destination, uid)
-    {result, track_result(state, destination, result)}
+    result = vacuum(connection, destination, uid, state.cancel_table)
+    {result, state}
   end
 
   defp dispatch({:vacuum, _destination, _uid}, state), do: {{:error, :source_not_open}, state}
@@ -661,7 +690,7 @@ defmodule SwarmCode.Daemon.Platform.DirectoryBroker do
                {:ok, Map.put(identities, kind, expected), [{destination, object} | created]}}
 
             _other ->
-              cleanup_created([{destination, object} | created], uid)
+              cleanup_created(created, uid)
               {:halt, {:error, :source_pin_failed}}
           end
 
@@ -692,31 +721,23 @@ defmodule SwarmCode.Daemon.Platform.DirectoryBroker do
   defp ensure_private_shm_pin(error, _specs, _uid), do: error
 
   defp link_source_exact(source, destination, expected, uid) do
-    with {:error, :enoent} <- File.lstat(destination),
-         :ok <- File.ln(source, destination) do
-      case private_identity(destination, uid) do
-        {:ok, ^expected} ->
-          reserve_owned(destination, object_identity(expected))
+    with {:ok, source_identity} <- private_identity(source, uid),
+         {:error, :enoent} <- File.lstat(destination),
+         :ok <- File.ln(source, destination),
+         :ok <- reserve_owned(destination, object_identity(source_identity)) do
+      result =
+        with ^source_identity <- expected,
+             {:ok, ^source_identity} <- private_identity(source, uid),
+             {:ok, ^source_identity} <- private_identity(destination, uid),
+             do: :ok
 
-        {:ok, actual} ->
-          _ = unlink_exact_local(destination, actual)
-          {:error, :source_pin_failed}
+      if result != :ok,
+        do: cleanup_created([{destination, object_identity(source_identity)}], uid)
 
-        _other ->
-          case file_identity(destination) do
-            {:ok, actual} -> _ = unlink_exact_local(destination, actual)
-            _other -> :ok
-          end
-
-          {:error, :source_pin_failed}
-      end
+      normalize_error(result, :source_pin_failed)
     else
       _other -> {:error, :source_pin_failed}
     end
-  end
-
-  defp unlink_exact_local(path, expected) do
-    with {:ok, ^expected} <- file_identity(path), do: File.rm(path)
   end
 
   defp copy_source_pin(source, destination, expected, uid, cancel_table) do
@@ -725,6 +746,7 @@ defmodule SwarmCode.Daemon.Platform.DirectoryBroker do
         with {:ok, ^expected} <- handle_identity(input),
              {:error, :enoent} <- File.lstat(destination),
              {:ok, output} <- File.open(destination, [:write, :binary, :exclusive]),
+             :ok <- pause_before_reserve(:shm, nil),
              {:ok, opened_identity} <- handle_identity(output),
              :ok <- reserve_owned(destination, object_identity(opened_identity)) do
           result =
@@ -790,46 +812,149 @@ defmodule SwarmCode.Daemon.Platform.DirectoryBroker do
     normalize_error(close_result, :source_close_failed)
   end
 
-  defp vacuum(connection, destination, uid) do
+  defp vacuum(connection, destination, uid, cancel_table) do
     result =
       with :ok <- private_directory(uid),
-           :ok <- paths_absent(destination),
-           :ok <- Sqlite3.set_busy_timeout(connection, 5_000),
-           :ok <- Sqlite3.execute(connection, "PRAGMA query_only=OFF"),
-           :ok <- Sqlite3.execute(connection, "PRAGMA foreign_keys=ON"),
-           {:ok, statement} <- Sqlite3.prepare(connection, "VACUUM main INTO ?") do
-        step =
-          try do
-            with :ok <- Sqlite3.bind(statement, [destination]) do
-              Sqlite3.step(connection, statement)
-            end
-          after
-            _ = Sqlite3.release(connection, statement)
-          end
-
-        with :done <- step,
-             {:ok, identity} <- secure_created_file(destination, uid),
-             :ok <- reserve_owned(destination, object_identity(identity)),
-             :ok <- private_directory(uid) do
-          {:ok, identity}
-        else
-          _other -> {:error, :snapshot_failed}
-        end
+           :ok <- paths_absent(destination) do
+        with_reserved_vacuum_files(destination, uid, fn output, journal ->
+          vacuum_into(connection, destination, uid, cancel_table, output, journal)
+        end)
       else
         _other -> {:error, :snapshot_failed}
       end
 
     strict_after = private_directory(uid)
     _ = repair_mode(0o700, uid)
-    sidecars = cleanup_sidecars(destination, uid)
+    sidecars = vacuum_sidecars_absent(destination)
 
     case {result, strict_after, sidecars} do
       {{:ok, identity}, :ok, :ok} ->
         {:ok, identity}
 
       _other ->
-        cleanup_failed_vacuum_output(destination, uid)
         {:error, :snapshot_failed}
+    end
+  end
+
+  defp vacuum_into(connection, destination, uid, cancel_table, output, journal) do
+    with false <- cancelled?(cancel_table),
+         :ok <- verify_reserved_path(destination <> "-journal", journal.identity, false),
+         :ok <- Sqlite3.set_busy_timeout(connection, 5_000),
+         :ok <- Sqlite3.execute(connection, "PRAGMA query_only=OFF"),
+         :ok <- Sqlite3.execute(connection, "PRAGMA foreign_keys=ON"),
+         {:ok, statement} <- Sqlite3.prepare(connection, "VACUUM main INTO ?") do
+      try do
+        step =
+          with :ok <- Sqlite3.bind(statement, [destination]) do
+            Sqlite3.step(connection, statement)
+          end
+
+        with :done <- step,
+             :ok <- pause_after_vacuum_step(cancel_table),
+             :ok <- verify_reserved_path(destination <> "-journal", journal.identity, true),
+             {:ok, identity} <- secure_reserved_output(output, uid),
+             true <- object_identity(identity) == object_identity(output.identity),
+             :ok <- private_directory(uid) do
+          {:ok, identity}
+        else
+          _other -> {:error, :snapshot_failed}
+        end
+      after
+        _ = Sqlite3.release(connection, statement)
+      end
+    else
+      _other -> {:error, :snapshot_failed}
+    end
+  end
+
+  defp with_reserved_vacuum_files(destination, uid, function) when is_function(function, 2) do
+    case open_reserved_empty_file(destination, uid) do
+      {:ok, output} ->
+        try do
+          case open_reserved_empty_file(destination <> "-journal", uid) do
+            {:ok, journal} ->
+              try do
+                result = function.(output, journal)
+
+                with :ok <- verify_open_object(output),
+                     :ok <- verify_open_object(journal),
+                     :ok <- release_absent_journal(journal) do
+                  result
+                else
+                  _other -> {:error, :snapshot_failed}
+                end
+              after
+                _ = File.close(journal.io)
+              end
+
+            {:error, _reason} = error ->
+              error
+          end
+        after
+          _ = File.close(output.io)
+        end
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp open_reserved_empty_file(path, uid) do
+    with {:error, :enoent} <- File.lstat(path),
+         {:ok, io} <- File.open(path, [:write, :binary, :exclusive]) do
+      case reserve_open_empty_file(path, io, uid) do
+        {:ok, identity} ->
+          {:ok, %{identity: identity, io: io, path: path}}
+
+        {:error, _reason} = error ->
+          _ = File.close(io)
+          error
+      end
+    else
+      _other -> {:error, :snapshot_failed}
+    end
+  end
+
+  defp reserve_open_empty_file(path, io, uid) do
+    case handle_identity(io) do
+      {:ok, identity} ->
+        result =
+          with {:regular, _major, _minor, _inode, ^uid, mode, 0} <- identity,
+               true <- band(mode, 0o7777) == @private_file_mode,
+               :ok <- reserve_owned(path, object_identity(identity)),
+               {:ok, ^identity} <- private_identity(path, uid) do
+            {:ok, identity}
+          else
+            _other -> {:error, :snapshot_failed}
+          end
+
+        if match?({:error, _reason}, result),
+          do: cleanup_created([{path, object_identity(identity)}], uid)
+
+        result
+
+      _other ->
+        {:error, :snapshot_failed}
+    end
+  end
+
+  defp verify_open_object(%{identity: identity, io: io}) do
+    case handle_identity(io) do
+      {:ok, {:regular, _major, _minor, _inode, _uid, mode, _size} = actual} ->
+        if object_identity(actual) == object_identity(identity) and
+             band(mode, 0o7777) == @private_file_mode,
+           do: :ok,
+           else: {:error, :snapshot_failed}
+
+      _other ->
+        {:error, :snapshot_failed}
+    end
+  end
+
+  defp release_absent_journal(%{identity: identity, path: path}) do
+    case File.lstat(path) do
+      {:error, :enoent} -> release_owned(path, object_identity(identity))
+      _other -> :ok
     end
   end
 
@@ -842,7 +967,7 @@ defmodule SwarmCode.Daemon.Platform.DirectoryBroker do
     end)
   end
 
-  defp cleanup_sidecars(destination, uid) do
+  defp vacuum_sidecars_absent(destination) do
     Enum.reduce_while(["-journal", "-wal", "-shm"], :ok, fn suffix, :ok ->
       path = destination <> suffix
 
@@ -850,29 +975,25 @@ defmodule SwarmCode.Daemon.Platform.DirectoryBroker do
         {:error, :enoent} ->
           {:cont, :ok}
 
-        {:ok, %File.Stat{type: :regular, uid: ^uid}} ->
-          case file_identity(path) do
-            {:ok, identity} -> unlink_exact_local(path, identity)
-            _other -> {:error, :sidecar_identity_failed}
-          end
-          |> case do
-            :ok -> {:cont, :ok}
-            _other -> {:halt, {:error, :sidecar_cleanup_failed}}
-          end
-
         _other ->
-          {:halt, {:error, :sidecar_cleanup_failed}}
+          {:halt, {:error, :ambiguous_vacuum_sidecar}}
       end
     end)
   end
 
-  defp cleanup_failed_vacuum_output(destination, uid) do
-    case File.lstat(destination) do
-      {:ok, %File.Stat{type: :regular, uid: ^uid} = stat} ->
-        cleanup_created([{destination, object_identity(stat)}], uid)
+  defp verify_reserved_path(path, expected_identity, allow_absent?) do
+    case File.lstat(path) do
+      {:ok, %File.Stat{type: :regular, mode: mode} = stat} ->
+        if object_identity(stat) == object_identity(expected_identity) and
+             band(mode, 0o7777) == @private_file_mode,
+           do: :ok,
+           else: {:error, :ambiguous_vacuum_sidecar}
+
+      {:error, :enoent} when allow_absent? ->
+        :ok
 
       _other ->
-        :ok
+        {:error, :ambiguous_vacuum_sidecar}
     end
   end
 
@@ -882,8 +1003,7 @@ defmodule SwarmCode.Daemon.Platform.DirectoryBroker do
     Enum.each(created, fn {path, expected_object} ->
       case File.lstat(path) do
         {:ok, %File.Stat{type: :regular, uid: ^uid} = stat} ->
-          if is_nil(expected_object) or object_identity(stat) == expected_object,
-            do: File.rm(path)
+          if object_identity(stat) == expected_object, do: File.rm(path)
 
         _other ->
           :ok
@@ -980,14 +1100,13 @@ defmodule SwarmCode.Daemon.Platform.DirectoryBroker do
     end
   end
 
-  defp secure_created_file(path, uid) do
-    with {:ok, %File.Stat{type: :regular, uid: ^uid} = before} <- File.lstat(path),
-         :ok <- File.chmod(path, @private_file_mode),
-         {:ok, %File.Stat{type: :regular, uid: ^uid, mode: mode} = after_chmod} <-
-           File.lstat(path),
-         true <- object_identity(before) == object_identity(after_chmod),
-         true <- band(mode, 0o7777) == @private_file_mode do
-      {:ok, stat_identity(after_chmod)}
+  defp secure_reserved_output(%{path: path, io: io, identity: expected}, uid) do
+    with {:ok, actual} <- handle_identity(io),
+         {:regular, _major, _minor, _inode, ^uid, mode, _size} <- actual,
+         true <- object_identity(actual) == object_identity(expected),
+         true <- band(mode, 0o7777) == @private_file_mode,
+         {:ok, ^actual} <- private_identity(path, uid) do
+      {:ok, actual}
     else
       _other -> {:error, :unsafe_created_file}
     end
@@ -1012,6 +1131,7 @@ defmodule SwarmCode.Daemon.Platform.DirectoryBroker do
   defp write_private(path, contents, uid) when is_binary(contents) do
     with {:error, :enoent} <- File.lstat(path),
          {:ok, output} <- File.open(path, [:write, :binary, :exclusive]),
+         :ok <- pause_before_reserve(:write_private, nil),
          {:ok, opened_identity} <- handle_identity(output),
          :ok <- reserve_owned(path, object_identity(opened_identity)) do
       result =
@@ -1132,19 +1252,25 @@ defmodule SwarmCode.Daemon.Platform.DirectoryBroker do
   end
 
   defp prepare_copy_output(_input, output, destination, uid) do
-    with {:ok, identity} <- handle_identity(output),
-         :ok <- reserve_owned(destination, object_identity(identity)),
-         {:regular, _major, _minor, _inode, ^uid, mode, 0} = identity,
-         true <- band(mode, 0o7777) == @private_file_mode,
-         {:ok, ^identity} <- private_identity(destination, uid) do
-      {:ok, identity}
-    else
-      _other ->
-        case handle_identity(output) do
-          {:ok, identity} -> cleanup_created([{destination, object_identity(identity)}], uid)
-          _other -> :ok
+    case handle_identity(output) do
+      {:ok, identity} ->
+        case reserve_owned(destination, object_identity(identity)) do
+          :ok ->
+            with {:regular, _major, _minor, _inode, ^uid, mode, 0} = identity,
+                 true <- band(mode, 0o7777) == @private_file_mode,
+                 {:ok, ^identity} <- private_identity(destination, uid) do
+              {:ok, identity}
+            else
+              _other ->
+                cleanup_created([{destination, object_identity(identity)}], uid)
+                {:error, :private_copy_failed}
+            end
+
+          _other ->
+            {:error, :private_copy_failed}
         end
 
+      _other ->
         {:error, :private_copy_failed}
     end
   end
@@ -1337,8 +1463,14 @@ defmodule SwarmCode.Daemon.Platform.DirectoryBroker do
 
   defp write_encoded_reply(operation, reply) do
     case DirectoryProtocol.encode_reply(operation, reply) do
-      {:ok, frame} -> IO.binwrite(:stdio, frame)
-      {:error, _reason} -> :init.stop(1)
+      {:ok, frame} ->
+        IO.binwrite(:stdio, frame)
+
+      {:error, _reason} ->
+        case DirectoryProtocol.encode_reply(operation, {:error, :helper_operation_failed}) do
+          {:ok, frame} -> IO.binwrite(:stdio, frame)
+          {:error, _reason} -> :ok
+        end
     end
   end
 
@@ -1346,8 +1478,14 @@ defmodule SwarmCode.Daemon.Platform.DirectoryBroker do
     defp configure_test_broker_fault do
       fault =
         case System.get_env("SWARM_CODE_DIRECTORY_BROKER_TEST_FAULT") do
+          "extra_frame_write_private" -> :extra_frame_write_private
           "malformed_write_private" -> :malformed_write_private
           "oversized_write_private" -> :oversized_write_private
+          "pause_link_before_reserve" -> :pause_link_before_reserve
+          "pause_link_source_before_reserve" -> :pause_link_source_before_reserve
+          "pause_shm_before_reserve" -> :pause_shm_before_reserve
+          "pause_vacuum_after_step" -> :pause_vacuum_after_step
+          "pause_write_private_before_reserve" -> :pause_write_private_before_reserve
           _other -> nil
         end
 
@@ -1357,6 +1495,16 @@ defmodule SwarmCode.Daemon.Platform.DirectoryBroker do
 
     defp write_reply(operation, reply) do
       case take_test_reply_fault(operation) do
+        :extra_frames ->
+          case DirectoryProtocol.encode_reply(operation, reply) do
+            {:ok, frame} ->
+              extra = IO.iodata_to_binary(frame)
+              IO.binwrite(:stdio, [extra, extra])
+
+            {:error, _reason} ->
+              :ok
+          end
+
         :malformed ->
           IO.binwrite(:stdio, <<1::unsigned-big-32, 0>>)
 
@@ -1370,6 +1518,7 @@ defmodule SwarmCode.Daemon.Platform.DirectoryBroker do
 
     defp take_test_reply_fault({:write_private, _basename, _contents, _uid}) do
       case Process.delete({__MODULE__, :test_reply_fault}) do
+        :extra_frame_write_private -> :extra_frames
         :malformed_write_private -> :malformed
         :oversized_write_private -> :oversized
         _other -> nil
@@ -1380,9 +1529,77 @@ defmodule SwarmCode.Daemon.Platform.DirectoryBroker do
 
     defp crash_copy_owner?,
       do: System.get_env("SWARM_CODE_DIRECTORY_BROKER_TEST_FAULT") == "crash_finish_copy"
+
+    defp pause_before_reserve(kind, cancel_table) do
+      fault =
+        case System.get_env("SWARM_CODE_DIRECTORY_BROKER_TEST_FAULT") do
+          "pause_link_before_reserve" -> :pause_link_before_reserve
+          "pause_link_source_before_reserve" -> :pause_link_source_before_reserve
+          "pause_shm_before_reserve" -> :pause_shm_before_reserve
+          "pause_write_private_before_reserve" -> :pause_write_private_before_reserve
+          _other -> nil
+        end
+
+      operation = Process.get({__MODULE__, :operation})
+
+      if pause_reservation?(fault, operation, kind) do
+        await_test_reservation_continue(cancel_table)
+      else
+        :ok
+      end
+    end
+
+    defp await_test_reservation_continue(cancel_table) do
+      receive do
+        :directory_broker_test_continue ->
+          :ok
+      after
+        1 ->
+          if not is_nil(cancel_table) and cancelled?(cancel_table),
+            do: {:error, :cancelled},
+            else: await_test_reservation_continue(cancel_table)
+      end
+    end
+
+    defp pause_reservation?(:pause_link_before_reserve, {:link, _source, _destination}, :link),
+      do: true
+
+    defp pause_reservation?(
+           :pause_link_source_before_reserve,
+           {:link_source, _index, _destination},
+           :link_source
+         ),
+         do: true
+
+    defp pause_reservation?(
+           :pause_shm_before_reserve,
+           {:open_source, _specs, _probe, _uid},
+           :shm
+         ),
+         do: true
+
+    defp pause_reservation?(
+           :pause_write_private_before_reserve,
+           {:write_private, _basename, _contents, _uid},
+           :write_private
+         ),
+         do: true
+
+    defp pause_reservation?(_fault, _operation, _kind), do: false
+
+    defp pause_after_vacuum_step(cancel_table) do
+      if System.get_env("SWARM_CODE_DIRECTORY_BROKER_TEST_FAULT") ==
+           "pause_vacuum_after_step" do
+        await_test_reservation_continue(cancel_table)
+      else
+        :ok
+      end
+    end
   else
     defp configure_test_broker_fault, do: :ok
     defp write_reply(operation, reply), do: write_encoded_reply(operation, reply)
     defp crash_copy_owner?, do: false
+    defp pause_before_reserve(_kind, _cancel_table), do: :ok
+    defp pause_after_vacuum_step(_cancel_table), do: :ok
   end
 end
