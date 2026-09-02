@@ -10,7 +10,7 @@ defmodule SwarmCode.Protocol.Error do
   @enforce_keys [:code, :message]
   defstruct @enforce_keys
 
-  @typedoc "The protocol errors defined by the v1 envelope codec."
+  @typedoc "The protocol errors defined by the v1 envelope and frame codecs."
   @type code ::
           :invalid_json
           | :json_too_large
@@ -20,6 +20,9 @@ defmodule SwarmCode.Protocol.Error do
           | :unsupported_protocol_version
           | :unknown_message_type
           | :unknown_scope_kind
+          | :zero_length_frame
+          | :frame_too_large
+          | :frame_count_limit
 
   @type t :: %__MODULE__{code: code(), message: binary()}
 
@@ -36,6 +39,9 @@ defmodule SwarmCode.Protocol.Error do
 
   def new(:unknown_message_type), do: error(:unknown_message_type, "unknown message type")
   def new(:unknown_scope_kind), do: error(:unknown_scope_kind, "unknown scope kind")
+  def new(:zero_length_frame), do: error(:zero_length_frame, "zero-length frame")
+  def new(:frame_too_large), do: error(:frame_too_large, "frame exceeds maximum size")
+  def new(:frame_count_limit), do: error(:frame_count_limit, "frame count limit exceeded")
 
   defp error(code, message), do: %__MODULE__{code: code, message: message}
 end
