@@ -4,14 +4,18 @@ defmodule SwarmCode.Protocol.FrameDecoder do
 
   A push is all-or-nothing: decoded messages are returned only after every
   complete frame in that push has succeeded. On any error the caller must
-  discard the decoder and close its connection.
+  discard the decoder and close its connection. The default per-push count is
+  64; callers may raise it to the finite safety ceiling of 1,024 when a
+  coalesced batch requires it.
   """
 
   alias SwarmCode.Protocol.{ChunkBuffer, Envelope, Error, Message}
 
   @default_max_frame_bytes 1_048_576
   @default_max_frames_per_push 64
-  @maximum_frames_per_push 64
+  # The option remains configurable above the default, while this finite
+  # ceiling bounds per-push output and recursion under hostile coalescing.
+  @maximum_frames_per_push 1_024
   @maximum_u32 4_294_967_295
 
   defstruct phase: nil,
@@ -22,6 +26,8 @@ defmodule SwarmCode.Protocol.FrameDecoder do
 
   @type phase :: :header | {:body, pos_integer()}
 
+  # `buffered_bytes` is a compatibility projection of `buffer.bytes`; the
+  # decoder never increments or decrements it independently.
   @type t :: %__MODULE__{
           phase: phase(),
           buffer: ChunkBuffer.t(),
@@ -30,7 +36,7 @@ defmodule SwarmCode.Protocol.FrameDecoder do
           max_frames_per_push: pos_integer()
         }
 
-  @doc "Build a decoder with positive, bounded limits."
+  @doc "Build a decoder; frame-count defaults to 64 and may be configured up to 1,024."
   @spec new(keyword()) :: t() | {:error, Error.t()}
   def new(options \\ []) do
     with {:ok, max_frame_bytes, max_frames_per_push} <- normalize_options(options) do
@@ -52,11 +58,12 @@ defmodule SwarmCode.Protocol.FrameDecoder do
   @spec push(t(), binary()) :: {:ok, [Message.t()], t()} | {:error, Error.t()}
   def push(%__MODULE__{} = decoder, binary) when is_binary(binary) do
     with :ok <- validate_decoder(decoder),
-         %ChunkBuffer{} = buffer <- ChunkBuffer.put(decoder.buffer, binary) do
+         %ChunkBuffer{} = buffer <- ChunkBuffer.put(decoder.buffer, binary),
+         buffered_bytes when is_integer(buffered_bytes) <- ChunkBuffer.byte_size(buffer) do
       decoder = %{
         decoder
         | buffer: buffer,
-          buffered_bytes: buffer.bytes
+          buffered_bytes: buffered_bytes
       }
 
       decode_available(decoder, [], 0)
@@ -73,7 +80,7 @@ defmodule SwarmCode.Protocol.FrameDecoder do
   def push(_decoder, _binary), do: {:error, Error.new(:invalid_envelope)}
 
   defp decode_available(
-         %__MODULE__{phase: :header, buffer: %ChunkBuffer{bytes: buffered_bytes}} = decoder,
+         %__MODULE__{phase: :header, buffered_bytes: buffered_bytes} = decoder,
          out,
          _count
        )
@@ -93,8 +100,7 @@ defmodule SwarmCode.Protocol.FrameDecoder do
   end
 
   defp decode_available(
-         %__MODULE__{phase: {:body, length}, buffer: %ChunkBuffer{bytes: buffered_bytes}} =
-           decoder,
+         %__MODULE__{phase: {:body, length}, buffered_bytes: buffered_bytes} = decoder,
          out,
          _count
        )
@@ -124,12 +130,16 @@ defmodule SwarmCode.Protocol.FrameDecoder do
   defp take_bytes(decoder, wanted) do
     case ChunkBuffer.take(decoder.buffer, wanted) do
       {:ok, parts, buffer} ->
-        {:ok, parts,
-         %{
-           decoder
-           | buffer: buffer,
-             buffered_bytes: buffer.bytes
-         }}
+        case ChunkBuffer.byte_size(buffer) do
+          buffered_bytes when is_integer(buffered_bytes) ->
+            {:ok, parts, %{decoder | buffer: buffer, buffered_bytes: buffered_bytes}}
+
+          {:error, %Error{} = error} ->
+            {:error, error}
+
+          _other ->
+            {:error, Error.new(:invalid_envelope)}
+        end
 
       {:error, %Error{} = error} ->
         {:error, error}
@@ -216,22 +226,37 @@ defmodule SwarmCode.Protocol.FrameDecoder do
     {:error, Error.new(:invalid_envelope)}
   end
 
-  defp validate_decoder(%__MODULE__{
-         phase: phase,
-         buffer: %ChunkBuffer{bytes: buffer_bytes},
-         buffered_bytes: buffered_bytes,
-         max_frame_bytes: max_frame_bytes,
-         max_frames_per_push: max_frames_per_push
-       })
-       when is_integer(buffer_bytes) and buffer_bytes >= 0 and is_integer(buffered_bytes) and
-              buffered_bytes == buffer_bytes and
-              is_integer(max_frame_bytes) and max_frame_bytes > 0 and
+  defp validate_decoder(
+         %__MODULE__{
+           phase: phase,
+           buffer: %ChunkBuffer{} = buffer,
+           buffered_bytes: buffered_bytes,
+           max_frame_bytes: max_frame_bytes,
+           max_frames_per_push: max_frames_per_push
+         } = decoder
+       )
+       when is_integer(buffered_bytes) and buffered_bytes >= 0 and is_integer(max_frame_bytes) and
+              max_frame_bytes > 0 and
               max_frame_bytes <= @maximum_u32 and is_integer(max_frames_per_push) and
               max_frames_per_push > 0 and max_frames_per_push <= @maximum_frames_per_push do
-    validate_stable_phase(phase, buffered_bytes, max_frame_bytes)
+    if exact_struct_shape?(decoder) do
+      with ^buffered_bytes <- ChunkBuffer.byte_size(buffer),
+           :ok <- validate_stable_phase(phase, buffered_bytes, max_frame_bytes) do
+        :ok
+      else
+        {:error, %Error{} = error} -> {:error, error}
+        _other -> {:error, Error.new(:invalid_envelope)}
+      end
+    else
+      {:error, Error.new(:invalid_envelope)}
+    end
   end
 
   defp validate_decoder(_decoder), do: {:error, Error.new(:invalid_envelope)}
+
+  defp exact_struct_shape?(%__MODULE__{} = decoder) do
+    map_size(decoder) == 6
+  end
 
   defp validate_stable_phase(:header, buffered_bytes, _max_frame_bytes)
        when buffered_bytes < 4,

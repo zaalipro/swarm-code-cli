@@ -89,4 +89,30 @@ defmodule SwarmCode.Protocol.ChunkBufferTest do
     assert {:error, %Error{}} = ChunkBuffer.put(%{}, "bytes")
     assert {:error, %Error{}} = ChunkBuffer.take(%{}, 0)
   end
+
+  test "forged storage, counts, members, and struct shape are rejected" do
+    buffer = ChunkBuffer.new()
+
+    forged_states =
+      [
+        %{buffer | queue: :queue.in(<<0::32>>, :queue.new()), bytes: 0},
+        %{buffer | queue: :queue.new(), bytes: 1},
+        %{buffer | pending: [:not_binary], pending_bytes: 0, bytes: 0},
+        %{buffer | pending: ["x"], pending_bytes: 2, bytes: 1},
+        %{buffer | pending: ["x"], pending_bytes: 1, bytes: 0},
+        %{buffer | queue: :queue.in(:not_binary, :queue.new()), bytes: 1},
+        %{buffer | queue: {:not, :a, :queue}, bytes: 0}
+      ] ++ [Map.put(buffer, :unexpected, true)]
+
+    for forged <- forged_states,
+        candidate <- [forged, %{forged | seal: nil}, externally_resealed(forged)] do
+      assert {:error, %Error{}} = ChunkBuffer.put(candidate, <<>>)
+      assert {:error, %Error{}} = ChunkBuffer.take(candidate, 0)
+      assert {:error, %Error{}} = ChunkBuffer.byte_size(candidate)
+    end
+  end
+
+  defp externally_resealed(buffer) do
+    %{buffer | seal: fn _queue, _pending, _bytes, _pending_bytes -> true end}
+  end
 end

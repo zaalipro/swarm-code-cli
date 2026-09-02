@@ -116,6 +116,27 @@ defmodule SwarmCode.Protocol.FrameTest do
       FrameDecoder.push(FrameDecoder.new(), IO.iodata_to_binary(List.duplicate(ping, 65))),
       :frame_count_limit
     )
+
+    sixty_five_decoder = FrameDecoder.new(max_frames_per_push: 65)
+
+    assert {:ok, sixty_five, %FrameDecoder{buffered_bytes: 0}} =
+             FrameDecoder.push(
+               sixty_five_decoder,
+               IO.iodata_to_binary(List.duplicate(ping, 65))
+             )
+
+    assert length(sixty_five) == 65
+
+    assert_error(
+      FrameDecoder.push(
+        sixty_five_decoder,
+        IO.iodata_to_binary(List.duplicate(ping, 66))
+      ),
+      :frame_count_limit
+    )
+
+    assert sixty_five_decoder.buffered_bytes == 0
+    assert sixty_five_decoder.phase == :header
   end
 
   test "the frame count limit permits an incomplete next frame and resets per push" do
@@ -173,6 +194,11 @@ defmodule SwarmCode.Protocol.FrameTest do
              max_frames_per_push: 1
            } = FrameDecoder.new(max_frame_bytes: @maximum_u32, max_frames_per_push: 1)
 
+    assert %FrameDecoder{max_frames_per_push: 1_024} =
+             FrameDecoder.new(max_frames_per_push: 1_024)
+
+    assert_error(FrameDecoder.new(max_frames_per_push: 1_025), :frame_count_limit)
+
     for options <- [
           [max_frame_bytes: 0],
           [max_frame_bytes: -1],
@@ -181,7 +207,6 @@ defmodule SwarmCode.Protocol.FrameTest do
           [max_frames_per_push: 0],
           [max_frames_per_push: -1],
           [max_frames_per_push: 1.0],
-          [max_frames_per_push: 65],
           [max_frame_bytes: 8, max_frame_bytes: 9],
           [unknown: 1],
           [{"max_frame_bytes", 1}],
@@ -219,6 +244,28 @@ defmodule SwarmCode.Protocol.FrameTest do
     end
   end
 
+  test "decoder rejects forged buffer storage and unexpected struct shape" do
+    decoder = FrameDecoder.new()
+
+    forged_buffers = [
+      %{decoder.buffer | queue: :queue.in(<<0::32>>, :queue.new()), bytes: 0},
+      %{decoder.buffer | queue: :queue.new(), bytes: 1},
+      %{decoder.buffer | pending: [:not_binary], pending_bytes: 0, bytes: 0},
+      %{decoder.buffer | pending: ["x"], pending_bytes: 2, bytes: 1}
+    ]
+
+    for buffer <- forged_buffers,
+        candidate <- [buffer, %{buffer | seal: nil}, externally_resealed(buffer)] do
+      forged = %{decoder | buffer: candidate, buffered_bytes: candidate.bytes}
+      assert {:error, %Error{}} = FrameDecoder.push(forged, <<>>)
+    end
+
+    assert {:error, %Error{}} =
+             decoder
+             |> Map.put(:unexpected, true)
+             |> FrameDecoder.push(<<>>)
+  end
+
   defp message(value) do
     %Message{
       version: 1,
@@ -243,6 +290,10 @@ defmodule SwarmCode.Protocol.FrameTest do
     size = min(byte_size(binary), :rand.uniform(97))
     <<chunk::binary-size(size), rest::binary>> = binary
     do_seeded_chunks(rest, [chunk | chunks])
+  end
+
+  defp externally_resealed(buffer) do
+    %{buffer | seal: fn _queue, _pending, _bytes, _pending_bytes -> true end}
   end
 
   defp assert_error(result, code) do

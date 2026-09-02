@@ -6,7 +6,9 @@ defmodule SwarmCode.Protocol.ChunkBuffer do
   fixed-size owned blocks. The pending fragment list is therefore bounded by
   both a byte target and a fixed fragment count instead of growing with the
   lifetime byte count. `bytes` is the one authoritative total for this buffer;
-  decoder compatibility fields are derived from it.
+  decoder compatibility fields are derived from it. A module-local immutable
+  validator seals every canonical state, so public field alteration fails
+  without rescanning queued payload.
   """
 
   alias SwarmCode.Protocol.Error
@@ -14,18 +16,19 @@ defmodule SwarmCode.Protocol.ChunkBuffer do
   @block_bytes 4_096
   @max_pending_fragments 64
 
-  defstruct queue: {[], []}, bytes: 0, pending: [], pending_bytes: 0
+  defstruct queue: {[], []}, bytes: 0, pending: [], pending_bytes: 0, seal: nil
 
   @type t :: %__MODULE__{
           queue: :queue.queue(binary()),
           bytes: non_neg_integer(),
           pending: [binary()],
-          pending_bytes: non_neg_integer()
+          pending_bytes: non_neg_integer(),
+          seal: term()
         }
 
   @doc "Build an empty chunk buffer."
   @spec new() :: t()
-  def new, do: %__MODULE__{queue: :queue.new()}
+  def new, do: seal_buffer(%__MODULE__{queue: :queue.new()})
 
   @doc "The fixed byte target used when compacting tiny fragments."
   @spec block_bytes() :: pos_integer()
@@ -35,7 +38,10 @@ defmodule SwarmCode.Protocol.ChunkBuffer do
   @spec put(t(), binary()) :: t() | {:error, Error.t()}
   def put(%__MODULE__{} = buffer, binary) when is_binary(binary) do
     if valid_buffer?(buffer) do
-      do_put(buffer, binary)
+      case do_put(buffer, binary) do
+        %__MODULE__{} = next -> seal_buffer(next)
+        other -> other
+      end
     else
       {:error, Error.new(:invalid_envelope)}
     end
@@ -51,7 +57,10 @@ defmodule SwarmCode.Protocol.ChunkBuffer do
   @spec take(t(), non_neg_integer()) :: {:ok, iodata(), t()} | :more | {:error, Error.t()}
   def take(%__MODULE__{} = buffer, wanted) when is_integer(wanted) and wanted >= 0 do
     if valid_buffer?(buffer) do
-      do_take(buffer, wanted)
+      case do_take(buffer, wanted) do
+        {:ok, parts, %__MODULE__{} = next} -> {:ok, parts, seal_buffer(next)}
+        other -> other
+      end
     else
       {:error, Error.new(:invalid_envelope)}
     end
@@ -65,14 +74,36 @@ defmodule SwarmCode.Protocol.ChunkBuffer do
 
   @doc "Return the authoritative number of bytes currently buffered."
   @spec byte_size(t()) :: non_neg_integer() | {:error, Error.t()}
-  def byte_size(%__MODULE__{bytes: bytes}) when is_integer(bytes) and bytes >= 0, do: bytes
+  def byte_size(%__MODULE__{} = buffer) do
+    if valid_buffer?(buffer), do: buffer.bytes, else: {:error, Error.new(:invalid_envelope)}
+  rescue
+    _exception -> {:error, Error.new(:invalid_envelope)}
+  catch
+    _kind, _reason -> {:error, Error.new(:invalid_envelope)}
+  end
 
   def byte_size(_buffer), do: {:error, Error.new(:invalid_envelope)}
 
+  @doc "Validate the canonical public buffer representation without changing it."
+  @spec validate(t()) :: :ok | {:error, Error.t()}
+  def validate(%__MODULE__{} = buffer) do
+    if valid_buffer?(buffer), do: :ok, else: {:error, Error.new(:invalid_envelope)}
+  rescue
+    _exception -> {:error, Error.new(:invalid_envelope)}
+  catch
+    _kind, _reason -> {:error, Error.new(:invalid_envelope)}
+  end
+
+  def validate(_buffer), do: {:error, Error.new(:invalid_envelope)}
+
   @doc "Count compacted blocks, treating the bounded pending batch as one block."
   @spec block_count(t()) :: non_neg_integer() | {:error, Error.t()}
-  def block_count(%__MODULE__{queue: queue, pending: pending}) when is_list(pending) do
-    :queue.len(queue) + if(pending == [], do: 0, else: 1)
+  def block_count(%__MODULE__{} = buffer) do
+    if valid_buffer?(buffer) do
+      :queue.len(buffer.queue) + if(buffer.pending == [], do: 0, else: 1)
+    else
+      {:error, Error.new(:invalid_envelope)}
+    end
   rescue
     _exception -> {:error, Error.new(:invalid_envelope)}
   catch
@@ -83,8 +114,12 @@ defmodule SwarmCode.Protocol.ChunkBuffer do
 
   @doc "Count queue cells plus currently bounded pending-fragment cells."
   @spec metadata_nodes(t()) :: non_neg_integer() | {:error, Error.t()}
-  def metadata_nodes(%__MODULE__{queue: queue, pending: pending}) when is_list(pending) do
-    :queue.len(queue) + length(pending)
+  def metadata_nodes(%__MODULE__{} = buffer) do
+    if valid_buffer?(buffer) do
+      :queue.len(buffer.queue) + length(buffer.pending)
+    else
+      {:error, Error.new(:invalid_envelope)}
+    end
   rescue
     _exception -> {:error, Error.new(:invalid_envelope)}
   catch
@@ -95,11 +130,15 @@ defmodule SwarmCode.Protocol.ChunkBuffer do
 
   @doc "Sum the binary storage referenced by retained queue and pending chunks."
   @spec retained_byte_size(t()) :: non_neg_integer() | {:error, Error.t()}
-  def retained_byte_size(%__MODULE__{queue: queue, pending: pending}) when is_list(pending) do
-    queue
-    |> :queue.to_list()
-    |> Enum.reduce(pending, fn chunk, chunks -> [chunk | chunks] end)
-    |> Enum.reduce(0, fn chunk, total -> :binary.referenced_byte_size(chunk) + total end)
+  def retained_byte_size(%__MODULE__{} = buffer) do
+    if valid_buffer?(buffer) do
+      buffer.queue
+      |> :queue.to_list()
+      |> Enum.reduce(buffer.pending, fn chunk, chunks -> [chunk | chunks] end)
+      |> Enum.reduce(0, fn chunk, total -> :binary.referenced_byte_size(chunk) + total end)
+    else
+      {:error, Error.new(:invalid_envelope)}
+    end
   rescue
     _exception -> {:error, Error.new(:invalid_envelope)}
   catch
@@ -201,19 +240,57 @@ defmodule SwarmCode.Protocol.ChunkBuffer do
     %{buffer | pending: [block]}
   end
 
-  defp valid_buffer?(%__MODULE__{
-         queue: queue,
-         bytes: bytes,
-         pending: pending,
-         pending_bytes: pending_bytes
-       })
+  defp valid_buffer?(
+         %__MODULE__{
+           queue: queue,
+           bytes: bytes,
+           pending: pending,
+           pending_bytes: pending_bytes,
+           seal: seal
+         } = buffer
+       )
        when is_integer(bytes) and bytes >= 0 and is_list(pending) and
               is_integer(pending_bytes) and pending_bytes >= 0 and pending_bytes < @block_bytes do
-    is_tuple(queue) and tuple_size(queue) == 2 and
-      queue_has_valid_shape?(queue) and bytes >= pending_bytes
+    map_size(buffer) == 6 and is_tuple(queue) and tuple_size(queue) == 2 and
+      queue_has_valid_shape?(queue) and
+      (seal_matches?(seal, queue, pending, bytes, pending_bytes) or
+         (is_nil(seal) and exact_unsealed_empty?(queue, pending, bytes, pending_bytes)))
   end
 
   defp valid_buffer?(_buffer), do: false
+
+  defp exact_unsealed_empty?(queue, [], 0, 0), do: :queue.is_empty(queue)
+  defp exact_unsealed_empty?(_queue, _pending, _bytes, _pending_bytes), do: false
+
+  defp seal_matches?(seal, queue, pending, bytes, pending_bytes) when is_function(seal, 4) do
+    with {:module, __MODULE__} <- :erlang.fun_info(seal, :module),
+         {:type, :local} <- :erlang.fun_info(seal, :type) do
+      seal.(queue, pending, bytes, pending_bytes) === true
+    else
+      _other -> false
+    end
+  rescue
+    _exception -> false
+  catch
+    _kind, _reason -> false
+  end
+
+  defp seal_matches?(_seal, _queue, _pending, _bytes, _pending_bytes), do: false
+
+  defp seal_buffer(%__MODULE__{} = buffer) do
+    queue = buffer.queue
+    pending = buffer.pending
+    bytes = buffer.bytes
+    pending_bytes = buffer.pending_bytes
+
+    %{
+      buffer
+      | seal: fn candidate_queue, candidate_pending, candidate_bytes, candidate_pending_bytes ->
+          candidate_queue === queue and candidate_pending === pending and
+            candidate_bytes === bytes and candidate_pending_bytes === pending_bytes
+        end
+    }
+  end
 
   defp queue_has_valid_shape?(queue) do
     :queue.is_queue(queue)
