@@ -58,6 +58,15 @@ defmodule SwarmCode.Daemon.Platform.DirectoryBroker do
         send(worker, {release_ref, :ok})
         loop(release_operation_owned(state, basename, identity))
 
+      {:vacuum_pre_step, worker, phase_ref} when state.operation.pid == worker ->
+        if cancelled?(state.cancel_table) do
+          send(worker, {phase_ref, {:error, :cancelled}})
+          loop(state)
+        else
+          send(worker, {phase_ref, :ok})
+          loop(put_in(state.operation[:phase], :stepping))
+        end
+
       {:operation_result, worker, reply, next_state} when state.operation.pid == worker ->
         next_state = retain_copy_owner(state, worker, reply, next_state)
 
@@ -115,6 +124,7 @@ defmodule SwarmCode.Daemon.Platform.DirectoryBroker do
           | operation: %{
               base_owned: state.owned,
               monitor: monitor,
+              phase: :running,
               pid: owner,
               request: request
             }
@@ -146,6 +156,7 @@ defmodule SwarmCode.Daemon.Platform.DirectoryBroker do
       | operation: %{
           base_owned: base_owned,
           monitor: monitor,
+          phase: :running,
           pid: worker,
           request: request
         }
@@ -283,12 +294,19 @@ defmodule SwarmCode.Daemon.Platform.DirectoryBroker do
 
   defp cancel_operation(state) do
     cancel_open_source(state.cancel_table)
+    repeat_cancel? = vacuum_step_active?(state.operation)
 
     unless vacuum_operation?(state.operation.request) do
       Process.exit(state.operation.pid, :kill)
     end
 
-    state = await_operation_down(state.operation.pid, state.operation.monitor, state)
+    state =
+      await_operation_down(
+        state.operation.pid,
+        state.operation.monitor,
+        state,
+        repeat_cancel?
+      )
 
     state =
       if is_map(state.copy) and state.copy.owner == state.operation.pid do
@@ -303,17 +321,28 @@ defmodule SwarmCode.Daemon.Platform.DirectoryBroker do
   defp vacuum_operation?({:vacuum, _destination, _uid}), do: true
   defp vacuum_operation?(_request), do: false
 
-  defp await_operation_down(worker, monitor, state) do
+  defp vacuum_step_active?(%{request: {:vacuum, _destination, _uid}, phase: :stepping}),
+    do: true
+
+  defp vacuum_step_active?(_operation), do: false
+
+  defp await_operation_down(worker, monitor, state, repeat_cancel? \\ false) do
     receive do
       {:DOWN, ^monitor, :process, ^worker, _reason} ->
         state
 
       {:operation_result, ^worker, _reply, _next_state} ->
-        await_operation_down(worker, monitor, state)
+        await_operation_down(worker, monitor, state, repeat_cancel?)
 
       {:operation_reserve, ^worker, reserve_ref, basename, identity} ->
         send(worker, {reserve_ref, {:error, :cancelled}})
-        await_operation_down(worker, monitor, put_in(state.owned[basename], identity))
+
+        await_operation_down(
+          worker,
+          monitor,
+          put_in(state.owned[basename], identity),
+          repeat_cancel?
+        )
 
       {:operation_release, ^worker, release_ref, basename, identity} ->
         send(worker, {release_ref, :ok})
@@ -321,8 +350,17 @@ defmodule SwarmCode.Daemon.Platform.DirectoryBroker do
         await_operation_down(
           worker,
           monitor,
-          release_operation_owned(state, basename, identity)
+          release_operation_owned(state, basename, identity),
+          repeat_cancel?
         )
+
+      {:vacuum_pre_step, ^worker, phase_ref} ->
+        send(worker, {phase_ref, {:error, :cancelled}})
+        await_operation_down(worker, monitor, state, repeat_cancel?)
+    after
+      if(repeat_cancel?, do: 1, else: :infinity) ->
+        cancel_source_connection(state.cancel_table)
+        await_operation_down(worker, monitor, state, repeat_cancel?)
     end
   end
 
@@ -346,10 +384,20 @@ defmodule SwarmCode.Daemon.Platform.DirectoryBroker do
   defp cancel_open_source(table) do
     true = :ets.insert(table, {:cancelled, true})
 
+    cancel_source_connection(table)
+  rescue
+    _error -> :ok
+  catch
+    _kind, _reason -> :ok
+  end
+
+  defp cancel_source_connection(table) do
     case :ets.lookup(table, :source_connection) do
       [{:source_connection, connection}] -> _ = Sqlite3.cancel(connection)
       [] -> :ok
     end
+
+    :ok
   rescue
     _error -> :ok
   catch
@@ -844,10 +892,7 @@ defmodule SwarmCode.Daemon.Platform.DirectoryBroker do
          :ok <- Sqlite3.execute(connection, "PRAGMA foreign_keys=ON"),
          {:ok, statement} <- Sqlite3.prepare(connection, "VACUUM main INTO ?") do
       try do
-        step =
-          with :ok <- Sqlite3.bind(statement, [destination]) do
-            Sqlite3.step(connection, statement)
-          end
+        step = vacuum_step(connection, statement, destination, cancel_table)
 
         with :done <- step,
              :ok <- pause_after_vacuum_step(cancel_table),
@@ -864,6 +909,32 @@ defmodule SwarmCode.Daemon.Platform.DirectoryBroker do
       end
     else
       _other -> {:error, :snapshot_failed}
+    end
+  end
+
+  defp vacuum_step(connection, statement, destination, cancel_table) do
+    with :ok <- Sqlite3.bind(statement, [destination]),
+         :ok <- request_vacuum_step() do
+      with :ok <- pause_before_vacuum_step(cancel_table) do
+        Sqlite3.step(connection, statement)
+      end
+    else
+      _other -> {:error, :snapshot_failed}
+    end
+  end
+
+  defp request_vacuum_step do
+    case Process.get({__MODULE__, :broker}) do
+      broker when is_pid(broker) ->
+        phase_ref = make_ref()
+        send(broker, {:vacuum_pre_step, self(), phase_ref})
+
+        receive do
+          {^phase_ref, result} -> result
+        end
+
+      _other ->
+        {:error, :missing_operation_owner}
     end
   end
 
@@ -1485,6 +1556,7 @@ defmodule SwarmCode.Daemon.Platform.DirectoryBroker do
           "pause_link_source_before_reserve" -> :pause_link_source_before_reserve
           "pause_shm_before_reserve" -> :pause_shm_before_reserve
           "pause_vacuum_after_step" -> :pause_vacuum_after_step
+          "pause_vacuum_before_step" -> :pause_vacuum_before_step
           "pause_write_private_before_reserve" -> :pause_write_private_before_reserve
           _other -> nil
         end
@@ -1595,11 +1667,32 @@ defmodule SwarmCode.Daemon.Platform.DirectoryBroker do
         :ok
       end
     end
+
+    defp pause_before_vacuum_step(cancel_table) do
+      if System.get_env("SWARM_CODE_DIRECTORY_BROKER_TEST_FAULT") ==
+           "pause_vacuum_before_step" do
+        await_test_vacuum_cancel(cancel_table)
+      else
+        :ok
+      end
+    end
+
+    defp await_test_vacuum_cancel(cancel_table) do
+      if cancelled?(cancel_table) do
+        :ok
+      else
+        receive do
+        after
+          1 -> await_test_vacuum_cancel(cancel_table)
+        end
+      end
+    end
   else
     defp configure_test_broker_fault, do: :ok
     defp write_reply(operation, reply), do: write_encoded_reply(operation, reply)
     defp crash_copy_owner?, do: false
     defp pause_before_reserve(_kind, _cancel_table), do: :ok
     defp pause_after_vacuum_step(_cancel_table), do: :ok
+    defp pause_before_vacuum_step(_cancel_table), do: :ok
   end
 end

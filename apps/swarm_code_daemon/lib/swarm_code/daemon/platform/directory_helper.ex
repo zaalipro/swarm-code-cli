@@ -257,9 +257,15 @@ defmodule SwarmCode.Daemon.Platform.DirectoryHelper do
         notify(observer, {:directory_helper_started, os_pid})
 
         if fail_after_port_open? do
-          _ = await_ready(port, port_monitor, caller_monitor)
+          ready_result = await_ready(port, port_monitor, caller_monitor)
 
-          case terminate(port, port_monitor, os_pid) do
+          case cleanup_failed_start(
+                 port,
+                 port_monitor,
+                 caller_monitor,
+                 os_pid,
+                 terminal_evidence(ready_result)
+               ) do
             :ok ->
               notify(observer, {:directory_helper_terminal, os_pid})
               send(caller, {ref, self(), {:error, :injected_helper_start_failure}})
@@ -290,7 +296,7 @@ defmodule SwarmCode.Daemon.Platform.DirectoryHelper do
         owner_loop(caller_monitor, port, port_monitor, os_pid)
 
       _other ->
-        graceful_stop(port, port_monitor, caller_monitor, os_pid)
+        graceful_stop(port, port_monitor, caller_monitor, os_pid, terminal_evidence(result))
         send(caller, {ref, self(), {:error, :helper_start_failed}})
     end
   end
@@ -310,6 +316,10 @@ defmodule SwarmCode.Daemon.Platform.DirectoryHelper do
             graceful_stop(port, port_monitor, caller_monitor, os_pid)
             send(from, {ref, {:error, reason}})
 
+          {:terminal, reason, evidence} ->
+            graceful_stop(port, port_monitor, caller_monitor, os_pid, evidence)
+            send(from, {ref, {:error, reason}})
+
           {:error, reason} ->
             graceful_stop(port, port_monitor, caller_monitor, os_pid)
             send(from, {ref, {:error, reason}})
@@ -322,11 +332,14 @@ defmodule SwarmCode.Daemon.Platform.DirectoryHelper do
       {:DOWN, ^caller_monitor, :process, _caller, _reason} ->
         graceful_stop(port, port_monitor, caller_monitor, os_pid)
 
+      {^port, {:exit_status, _status}} ->
+        graceful_stop(port, port_monitor, caller_monitor, os_pid, {true, false})
+
       {^port, _unexpected} ->
         graceful_stop(port, port_monitor, caller_monitor, os_pid)
 
       {:DOWN, ^port_monitor, :port, ^port, _reason} ->
-        :ok
+        graceful_stop(port, port_monitor, caller_monitor, os_pid, {false, true})
     end
   end
 
@@ -396,6 +409,9 @@ defmodule SwarmCode.Daemon.Platform.DirectoryHelper do
           {:error, _reason} -> {:error, :invalid_helper_ready}
         end
 
+      {:error, reason, evidence} ->
+        {:terminal, reason, evidence}
+
       {:error, reason} ->
         {:error, reason}
     end
@@ -428,6 +444,9 @@ defmodule SwarmCode.Daemon.Platform.DirectoryHelper do
         {:error, :invalid_helper_response} ->
           {:cleanup, :invalid_helper_response}
 
+        {:error, reason, evidence} ->
+          {:terminal, reason, evidence}
+
         {:error, reason} ->
           {:error, reason}
       end
@@ -457,10 +476,10 @@ defmodule SwarmCode.Daemon.Platform.DirectoryHelper do
             end
 
           {^port, {:exit_status, _status}} ->
-            {:error, :directory_helper_stopped}
+            {:error, :directory_helper_stopped, {true, false}}
 
           {:DOWN, ^port_monitor, :port, ^port, _reason} ->
-            {:error, :directory_helper_stopped}
+            {:error, :directory_helper_stopped, {false, true}}
 
           {:DOWN, ^caller_monitor, :process, _caller, _reason} ->
             {:error, :directory_helper_owner_stopped}
@@ -540,9 +559,26 @@ defmodule SwarmCode.Daemon.Platform.DirectoryHelper do
   defp put_frame_state(port, state), do: Process.put({__MODULE__, :frames, port}, state)
 
   defp graceful_stop(port, port_monitor, caller_monitor, os_pid) do
-    request_broker_stop(port)
-    _ = signal(os_pid, "-CONT")
-    await_broker_terminal(port, port_monitor, caller_monitor, false, false)
+    graceful_stop(port, port_monitor, caller_monitor, os_pid, {false, false})
+  end
+
+  defp graceful_stop(port, port_monitor, caller_monitor, os_pid, {exit?, down?}) do
+    if not exit? and not down? do
+      request_broker_stop(port)
+      _ = signal(os_pid, "-CONT")
+    end
+
+    await_broker_terminal(port, port_monitor, caller_monitor, exit?, down?)
+  end
+
+  defp terminal_evidence({:terminal, _reason, evidence}), do: evidence
+  defp terminal_evidence(_result), do: {false, false}
+
+  defp cleanup_failed_start(port, port_monitor, _caller_monitor, os_pid, {false, false}),
+    do: terminate(port, port_monitor, os_pid)
+
+  defp cleanup_failed_start(port, port_monitor, caller_monitor, _os_pid, {exit?, down?}) do
+    await_broker_terminal(port, port_monitor, caller_monitor, exit?, down?)
   end
 
   defp await_broker_terminal(_port, _monitor, _caller_monitor, true, true), do: :ok
@@ -712,6 +748,7 @@ defmodule SwarmCode.Daemon.Platform.DirectoryHelper do
            :pause_link_source_before_reserve,
            :pause_shm_before_reserve,
            :pause_vacuum_after_step,
+           :pause_vacuum_before_step,
            :pause_write_private_before_reserve
          ] and
          length(sources) <= 3 and

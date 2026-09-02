@@ -343,6 +343,25 @@ defmodule SwarmCode.Daemon.Platform.DirectoryHelperTest do
     refute os_pid_alive?(os_pid)
   end
 
+  test "terminal evidence consumed while awaiting ready is carried into startup shutdown" do
+    directory = private_directory!()
+    test = self()
+    supervisor = start_supervised!(Task.Supervisor)
+
+    _starter =
+      Task.Supervisor.async_nolink(supervisor, fn ->
+        result = DirectoryHelper.start(directory, test_observer: test)
+        send(test, {:terminated_start_result, result})
+      end)
+
+    assert_receive {:directory_helper_started, os_pid}, 5_000
+    on_exit(fn -> terminate_os_pid(os_pid) end)
+    signal_os_pid!(os_pid, "-KILL")
+
+    assert_receive {:terminated_start_result, {:error, :helper_start_failed}}, 5_000
+    refute os_pid_alive?(os_pid)
+  end
+
   test "requester death terminates and reaps the exact helper shell" do
     directory = private_directory!()
     test = self()
@@ -540,6 +559,92 @@ defmodule SwarmCode.Daemon.Platform.DirectoryHelperTest do
     assert File.ls!(directory) == []
     assert result == {:error, :unsafe_helper_request}
     assert {:ok, _path} = pwd_result
+  end
+
+  @tag timeout: 30_000
+  test "requester loss immediately before VACUUM step remains sticky and reaps the helper" do
+    directory = private_directory!()
+    database = SchemaFixture.database!(:current)
+    assert {:ok, probe} = Probe.inspect(database)
+    uid = File.lstat!(database).uid
+    test = self()
+    supervisor = start_supervised!(Task.Supervisor)
+
+    requester =
+      Task.Supervisor.async_nolink(supervisor, fn ->
+        {:ok, helper} =
+          DirectoryHelper.start(directory, test_broker_fault: :pause_vacuum_before_step)
+
+        {:ok, _identities} =
+          DirectoryHelper.open_source(
+            helper,
+            [
+              {:main, database, ".source.sqlite3", file_identity(database)},
+              {:wal, database <> "-wal", ".source.sqlite3-wal", nil},
+              {:shm, database <> "-shm", ".source.sqlite3-shm", nil}
+            ],
+            probe,
+            uid
+          )
+
+        send(test, {:pre_step_helper, helper})
+
+        receive do
+          :start_vacuum -> DirectoryHelper.vacuum(helper, ".snapshot.sqlite3", uid)
+        end
+      end)
+
+    assert_receive {:pre_step_helper, helper}, 10_000
+    on_exit(fn -> Process.exit(helper.owner, :kill) end)
+    on_exit(fn -> terminate_os_pid(helper.os_pid) end)
+    owner_monitor = Process.monitor(helper.owner)
+
+    {:ok, blocker} = Sqlite3.open(database, mode: :readwrite)
+    on_exit(fn -> Sqlite3.close(blocker) end)
+    assert :ok = Sqlite3.execute(blocker, "BEGIN EXCLUSIVE")
+
+    send(requester.pid, :start_vacuum)
+    wait_for_path!(Path.join(directory, ".snapshot.sqlite3-journal"), 10_000)
+    assert Task.shutdown(requester, :brutal_kill) == nil
+
+    assert_receive {:DOWN, ^owner_monitor, :process, _owner, :normal}, 2_000
+    refute os_pid_alive?(helper.os_pid)
+    assert File.ls!(directory) == []
+  end
+
+  @tag timeout: 30_000
+  test "terminal evidence consumed while awaiting a reply is carried into graceful shutdown" do
+    directory = private_directory!()
+    assert {:ok, helper} = DirectoryHelper.start(directory)
+    on_exit(fn -> Process.exit(helper.owner, :kill) end)
+    on_exit(fn -> terminate_os_pid(helper.os_pid) end)
+    owner_monitor = Process.monitor(helper.owner)
+    supervisor = start_supervised!(Task.Supervisor)
+
+    signal_os_pid!(helper.os_pid, "-STOP")
+
+    requester =
+      Task.Supervisor.async_nolink(supervisor, fn ->
+        receive do
+          :begin_terminal_request -> DirectoryHelper.pwd(helper)
+        end
+      end)
+
+    :erlang.trace(requester.pid, true, [:send])
+    send(requester.pid, :begin_terminal_request)
+    requester_pid = requester.pid
+
+    assert_receive {:trace, ^requester_pid, :send, {:request, ^requester_pid, _request_ref, :pwd},
+                    owner},
+                   5_000
+
+    assert owner == helper.owner
+    :erlang.trace(requester.pid, false, [:send])
+    signal_os_pid!(helper.os_pid, "-KILL")
+
+    assert Task.await(requester, 5_000) == {:error, :directory_helper_stopped}
+    assert_receive {:DOWN, ^owner_monitor, :process, _owner, :normal}, 5_000
+    refute os_pid_alive?(helper.os_pid)
   end
 
   @tag timeout: 120_000
