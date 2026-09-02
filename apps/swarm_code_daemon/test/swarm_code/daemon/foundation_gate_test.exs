@@ -192,7 +192,9 @@ defmodule SwarmCode.Daemon.FoundationGateTest do
     lease_monitor = Process.monitor(lease)
     send(lease, :finish_lease_cleanup)
 
-    assert {:error, %{code: :desktop_active}} = Task.await(task)
+    assert {:error, %{code: :desktop_active} = error} = Task.await(task)
+    refute error.message =~ "abnormal cleanup"
+    refute error.action =~ "stale diagnostic owner record"
     assert_receive {:DOWN, ^lease_monitor, :process, ^lease, :normal}
     assert_reacquirable!(opts)
   end
@@ -245,6 +247,106 @@ defmodule SwarmCode.Daemon.FoundationGateTest do
     assert_receive {:DOWN, ^lease_monitor, :process, ^lease, :killed}, 1_000
     send(caller, :finish_prepare)
     assert_receive {:DOWN, ^caller_monitor, :process, ^caller, :normal}
+  end
+
+  test "caller death during blocked lease cleanup still terminates the linked lease" do
+    fixture = SchemaFixture.database!(:current)
+    parent = self()
+    counter = :counters.new(1, [])
+    task_supervisor = start_supervised!(Task.Supervisor)
+
+    detector = fn ->
+      :ok = :counters.add(counter, 1, 1)
+
+      if :counters.get(counter, 1) == 1,
+        do: :none,
+        else: {:active, %{pid: 736, application: "SwarmCode"}}
+    end
+
+    cleanup_barrier = fn ->
+      send(parent, {:caller_death_cleanup_started, self()})
+
+      receive do
+        :never -> :ok
+      end
+    end
+
+    opts = test_opts(fixture, detector, lease_options: [cleanup_barrier: cleanup_barrier])
+
+    assert {:ok, caller} =
+             Task.Supervisor.start_child(task_supervisor, fn ->
+               _ = FoundationGate.prepare(opts)
+               send(parent, {:unexpected_prepare_return, self()})
+             end)
+
+    caller_monitor = Process.monitor(caller)
+    assert_receive {:caller_death_cleanup_started, lease}, 10_000
+    lease_monitor = Process.monitor(lease)
+
+    Process.exit(caller, :kill)
+
+    assert_receive {:DOWN, ^caller_monitor, :process, ^caller, :killed}, 1_000
+    assert_receive {:DOWN, ^lease_monitor, :process, ^lease, :killed}, 1_000
+    refute_received :unexpected_prepare_return
+    refute File.exists?(Path.join(Path.dirname(fixture), "instance_owner.json"))
+    assert_reacquirable!(opts)
+  end
+
+  test "unrelated linked exits received during lease cleanup retain their caller semantics" do
+    fixture = SchemaFixture.database!(:current)
+    parent = self()
+    counter = :counters.new(1, [])
+    task_supervisor = start_supervised!(Task.Supervisor)
+
+    detector = fn ->
+      :ok = :counters.add(counter, 1, 1)
+
+      if :counters.get(counter, 1) == 1,
+        do: :none,
+        else: {:active, %{pid: 737, application: "SwarmCode"}}
+    end
+
+    cleanup_barrier = fn ->
+      send(parent, {:unrelated_exit_cleanup_started, self()})
+
+      receive do
+        :finish_unrelated_exit_cleanup -> :ok
+      end
+    end
+
+    opts = test_opts(fixture, detector, lease_options: [cleanup_barrier: cleanup_barrier])
+
+    assert {:ok, caller} =
+             Task.Supervisor.start_child(task_supervisor, fn ->
+               sentinel =
+                 spawn_link(fn ->
+                   send(parent, {:unrelated_exit_link_ready, self()})
+
+                   receive do
+                     :die_unrelated -> exit(:unrelated_link_failure)
+                   end
+                 end)
+
+               send(parent, {:unrelated_exit_caller_ready, self(), sentinel})
+
+               result = FoundationGate.prepare(opts)
+               send(parent, {:unexpected_unrelated_exit_result, self(), result})
+             end)
+
+    caller_monitor = Process.monitor(caller)
+    assert_receive {:unrelated_exit_caller_ready, ^caller, sentinel}, 10_000
+    sentinel_monitor = Process.monitor(sentinel)
+    assert_receive {:unrelated_exit_link_ready, ^sentinel}, 10_000
+    assert_receive {:unrelated_exit_cleanup_started, lease}, 10_000
+    lease_monitor = Process.monitor(lease)
+
+    send(sentinel, :die_unrelated)
+    assert_receive {:DOWN, ^sentinel_monitor, :process, ^sentinel, :unrelated_link_failure}, 1_000
+
+    assert_receive {:DOWN, ^caller_monitor, :process, ^caller, :unrelated_link_failure}, 1_000
+    assert_receive {:DOWN, ^lease_monitor, :process, ^lease, :killed}, 1_000
+    refute_received {:unexpected_unrelated_exit_result, ^caller, _result}
+    assert_reacquirable!(opts)
   end
 
   @tag capture_log: true

@@ -36,6 +36,8 @@ defmodule SwarmCode.Daemon.FoundationGate do
   @desktop_applications ["SwarmCode", "SwarmCode.app", "com.zaali.swarmcode"]
   @lease_stop_timeout 5_000
   @lease_down_timeout 5_000
+  @cleanup_owner_ready_timeout 5_000
+  @cleanup_owner_result_timeout @lease_stop_timeout + @lease_down_timeout + 1_000
   @test_build Mix.env() == :test
   @default_mode (case Mix.env() do
                    :prod -> :production
@@ -710,63 +712,454 @@ defmodule SwarmCode.Daemon.FoundationGate do
   end
 
   defp stop_lease_before_return(lease, monitor, primary_error) do
-    # CrossAppLease is linked to its startup caller. Contain that link before
-    # any stop/kill operation so a forced `:kill` cannot propagate to this
-    # caller. The exact monitor remains the terminal-evidence barrier.
-    _ = Process.unlink(lease)
+    caller = self()
+    ref = make_ref()
+    {owner, owner_monitor} = spawn_monitor(fn -> cleanup_owner_entry(caller, ref, lease) end)
 
-    graceful_result = request_graceful_stop(lease)
+    case await_cleanup_owner_ready(owner, owner_monitor, ref) do
+      :ready ->
+        # The cleanup owner has linked the lease before this caller drops its
+        # acquisition link. This closes the only hand-off gap in which caller
+        # cancellation could orphan the SQLite connection.
+        _ = Process.unlink(lease)
+        send(owner, {:foundation_cleanup_release, ref, caller})
+        await_cleanup_owner_result(owner, owner_monitor, lease, monitor, ref, primary_error)
 
-    case await_graceful_lease_down(lease, monitor, graceful_result) do
-      {:down, :normal} when graceful_result == :ok ->
-        primary_error
-
-      {:down, _reason} ->
-        record_cleanup_problem(primary_error)
+      {:owner_down, owner_down?} ->
+        # The caller still owns the original link. A failed owner cannot strand
+        # the lease, so contain the linked fallback and settle the owner first.
+        fallback_cleanup_with_link(
+          lease,
+          monitor,
+          owner,
+          owner_monitor,
+          owner_down?,
+          ref,
+          primary_error
+        )
 
       :timeout ->
-        force_stop_lease(lease, monitor, primary_error)
+        # Ask an owner that has not completed hand-off to leave without touching
+        # the caller's link. If it is unresponsive, the fallback force-terminates
+        # it while trapping the link signals locally.
+        send(owner, {:foundation_cleanup_cancel, ref, caller})
+
+        owner_down? =
+          case await_owner_down(owner, owner_monitor, @cleanup_owner_ready_timeout) do
+            {:down, _reason} -> true
+            :timeout -> false
+          end
+
+        fallback_cleanup_with_link(
+          lease,
+          monitor,
+          owner,
+          owner_monitor,
+          owner_down?,
+          ref,
+          primary_error
+        )
+    end
+  end
+
+  defp await_cleanup_owner_ready(owner, owner_monitor, ref) do
+    receive do
+      {:foundation_cleanup_owner_ready, ^ref, ^owner} ->
+        :ready
+
+      {:foundation_cleanup_owner_failed, ^ref, ^owner} ->
+        {:owner_down, false}
+
+      {:DOWN, ^owner_monitor, :process, ^owner, _reason} ->
+        {:owner_down, true}
+    after
+      @cleanup_owner_ready_timeout -> :timeout
+    end
+  end
+
+  defp await_cleanup_owner_result(owner, owner_monitor, lease, monitor, ref, primary_error) do
+    receive do
+      {:foundation_cleanup_owner_result, ^ref, abnormal?} when is_boolean(abnormal?) ->
+        send(owner, {:foundation_cleanup_ack, ref, self()})
+        lease_reason = await_lease_down_or_force(lease, monitor)
+        settle_cleanup_owner(owner, owner_monitor)
+
+        if abnormal? or abnormal_exit_reason?(lease_reason),
+          do: record_cleanup_problem(primary_error),
+          else: primary_error
+
+      {:DOWN, ^owner_monitor, :process, ^owner, _reason} ->
+        _ = await_lease_down_or_force(lease, monitor)
+        flush_cleanup_owner_messages(ref, owner)
+        record_cleanup_problem(primary_error)
+    after
+      @cleanup_owner_result_timeout ->
+        _ = Process.exit(owner, :kill)
+        _ = await_owner_down(owner, owner_monitor, :infinity)
+        _ = await_lease_down_or_force(lease, monitor)
+        flush_cleanup_owner_messages(ref, owner)
+        record_cleanup_problem(primary_error)
+    end
+  end
+
+  defp cleanup_owner_entry(caller, ref, lease) do
+    # This process owns the lease only for the failure-cleanup interval. It is
+    # deliberately not linked to the caller: caller shutdown is observed
+    # through a monitor, while the lease link guarantees owner cancellation
+    # cannot leave an acquired SQLite connection behind.
+    Process.flag(:trap_exit, true)
+    caller_monitor = Process.monitor(caller)
+    lease_monitor = Process.monitor(lease)
+
+    state = %{
+      caller: caller,
+      caller_monitor: caller_monitor,
+      lease: lease,
+      lease_monitor: lease_monitor,
+      ref: ref,
+      lease_exit_abnormal?: false
+    }
+
+    case link_cleanup_lease(lease) do
+      :ok ->
+        send(caller, {:foundation_cleanup_owner_ready, ref, self()})
+        cleanup_owner_wait_release(state)
+
+      :error ->
+        send(caller, {:foundation_cleanup_owner_failed, ref, self()})
+    end
+  end
+
+  defp link_cleanup_lease(lease) do
+    Process.link(lease)
+    :ok
+  rescue
+    _error -> :error
+  catch
+    _kind, _reason -> :error
+  end
+
+  defp cleanup_owner_wait_release(state) do
+    receive do
+      {:foundation_cleanup_release, ref, caller}
+      when ref == state.ref and caller == state.caller ->
+        cleanup_owner_run(state)
+
+      {:foundation_cleanup_cancel, ref, caller}
+      when ref == state.ref and caller == state.caller ->
+        Process.unlink(state.lease)
+        :ok
+
+      {:EXIT, lease, reason} when lease == state.lease ->
+        cleanup_owner_wait_release(%{
+          state
+          | lease_exit_abnormal?: state.lease_exit_abnormal? or abnormal_exit_reason?(reason)
+        })
+
+      {:DOWN, monitor, :process, lease, reason}
+      when monitor == state.lease_monitor and lease == state.lease ->
+        cleanup_owner_finish(
+          state,
+          state.lease_exit_abnormal? or abnormal_exit_reason?(reason)
+        )
+
+      {:DOWN, monitor, :process, caller, reason}
+      when monitor == state.caller_monitor and caller == state.caller ->
+        cleanup_owner_after_caller_down(state, reason)
+    end
+  end
+
+  defp cleanup_owner_run(state) do
+    graceful_result = request_graceful_stop(state.lease)
+
+    case await_owner_lease_down(state, graceful_result, state.lease_exit_abnormal?) do
+      {:lease_down, reason, abnormal?} ->
+        cleanup_owner_finish(state, abnormal? or abnormal_exit_reason?(reason))
+
+      {:caller_down, reason} ->
+        cleanup_owner_after_caller_down(state, reason)
+
+      {:timeout, _abnormal?} ->
+        force_owner_lease(state)
     end
   end
 
   defp request_graceful_stop(lease) do
+    # A zero wait dispatches GenServer's synchronous stop request and returns
+    # immediately; the cleanup owner then observes the exact lease monitor for
+    # up to @lease_down_timeout while it remains able to notice caller death.
     try do
-      case GenServer.stop(lease, :normal, @lease_stop_timeout) do
-        :ok -> :ok
+      case GenServer.stop(lease, :normal, 0) do
+        :ok -> :requested
         _other -> :failed
       end
     rescue
       _error -> :failed
     catch
+      :exit, {:timeout, _details} -> :requested
+      :exit, _reason -> :failed
       _kind, _reason -> :failed
     end
   end
 
-  defp await_graceful_lease_down(lease, monitor, :failed) do
+  defp await_owner_lease_down(state, graceful_result, abnormal?) do
+    timeout = if graceful_result == :requested, do: @lease_down_timeout, else: 0
+
     receive do
-      {:DOWN, ^monitor, :process, ^lease, reason} -> {:down, reason}
+      {:EXIT, lease, reason} when lease == state.lease ->
+        await_owner_lease_down(
+          state,
+          graceful_result,
+          abnormal? or abnormal_exit_reason?(reason)
+        )
+
+      {:DOWN, monitor, :process, lease, reason}
+      when monitor == state.lease_monitor and lease == state.lease ->
+        {:lease_down, reason, abnormal?}
+
+      {:DOWN, monitor, :process, caller, reason}
+      when monitor == state.caller_monitor and caller == state.caller ->
+        {:caller_down, reason}
     after
-      0 -> :timeout
+      timeout -> {:timeout, abnormal?}
     end
   end
 
-  defp await_graceful_lease_down(lease, monitor, :ok) do
+  defp force_owner_lease(state) do
+    _ = Process.exit(state.lease, :kill)
+
+    case await_owner_forced_down(state, false, nil) do
+      {:lease_down, _reason, caller_down?, caller_reason} ->
+        if caller_down?,
+          do: cleanup_owner_exit_after_lease_down(state, caller_reason),
+          else: cleanup_owner_finish(state, true)
+    end
+  end
+
+  defp await_owner_forced_down(state, caller_down?, caller_reason) do
     receive do
-      {:DOWN, ^monitor, :process, ^lease, reason} -> {:down, reason}
+      {:EXIT, lease, _reason} when lease == state.lease ->
+        await_owner_forced_down(state, caller_down?, caller_reason)
+
+      {:DOWN, monitor, :process, caller, reason}
+      when monitor == state.caller_monitor and caller == state.caller ->
+        await_owner_forced_down(state, true, reason)
+
+      {:DOWN, monitor, :process, lease, reason}
+      when monitor == state.lease_monitor and lease == state.lease ->
+        {:lease_down, reason, caller_down?, caller_reason}
+    end
+  end
+
+  defp cleanup_owner_after_caller_down(state, caller_reason) do
+    _ = Process.exit(state.lease, :kill)
+    _ = await_owner_forced_down(state, true, caller_reason)
+    cleanup_owner_exit_after_lease_down(state, caller_reason)
+  end
+
+  defp cleanup_owner_exit_after_lease_down(state, caller_reason) do
+    Process.unlink(state.lease)
+    exit(caller_reason)
+  end
+
+  defp cleanup_owner_finish(state, abnormal?) do
+    Process.unlink(state.lease)
+    send(state.caller, {:foundation_cleanup_owner_result, state.ref, abnormal?})
+
+    receive do
+      {:foundation_cleanup_ack, ref, caller}
+      when ref == state.ref and caller == state.caller ->
+        :ok
+
+      {:DOWN, monitor, :process, caller, _reason}
+      when monitor == state.caller_monitor and caller == state.caller ->
+        :ok
     after
-      @lease_down_timeout -> :timeout
+      @cleanup_owner_ready_timeout -> :ok
     end
   end
 
-  defp force_stop_lease(lease, monitor, primary_error) do
-    # The lease was unlinked above. Force termination therefore cannot kill
-    # the startup caller; wait for this exact monitor before returning.
-    _ = Process.exit(lease, :kill)
+  defp await_lease_down_or_force(lease, monitor) do
+    case await_lease_down(lease, monitor, @lease_down_timeout) do
+      {:ok, reason} ->
+        reason
+
+      :timeout ->
+        _ = Process.exit(lease, :kill)
+        await_lease_down(lease, monitor, :infinity)
+    end
+  end
+
+  defp await_lease_down(lease, monitor, :infinity) do
+    receive do
+      {:DOWN, ^monitor, :process, ^lease, reason} -> reason
+    end
+  end
+
+  defp await_lease_down(lease, monitor, timeout) do
+    receive do
+      {:DOWN, ^monitor, :process, ^lease, reason} -> {:ok, reason}
+    after
+      timeout -> :timeout
+    end
+  end
+
+  defp await_owner_down(owner, monitor, :infinity) do
+    receive do
+      {:DOWN, ^monitor, :process, ^owner, reason} -> {:down, reason}
+    end
+  end
+
+  defp await_owner_down(owner, monitor, timeout) do
+    receive do
+      {:DOWN, ^monitor, :process, ^owner, reason} -> {:down, reason}
+    after
+      timeout -> :timeout
+    end
+  end
+
+  defp settle_cleanup_owner(owner, monitor) do
+    case await_owner_down(owner, monitor, @cleanup_owner_ready_timeout) do
+      {:down, _reason} ->
+        :ok
+
+      :timeout ->
+        _ = Process.exit(owner, :kill)
+        _ = await_owner_down(owner, monitor, :infinity)
+        :ok
+    end
+  end
+
+  defp fallback_cleanup_with_link(
+         lease,
+         monitor,
+         owner,
+         owner_monitor,
+         owner_down?,
+         ref,
+         primary_error
+       ) do
+    previous_trap_exit = Process.flag(:trap_exit, true)
+    linked_sources = linked_processes()
+
+    try do
+      unless owner_down? do
+        _ = Process.exit(owner, :kill)
+        _ = await_owner_down(owner, owner_monitor, :infinity)
+      end
+
+      graceful_result = request_graceful_stop(lease)
+
+      result =
+        case await_graceful_lease_down_contained(lease, monitor, graceful_result, false) do
+          {:down, reason, abnormal?} ->
+            if abnormal? or abnormal_exit_reason?(reason),
+              do: record_cleanup_problem(primary_error),
+              else: primary_error
+
+          {:timeout, _abnormal?} ->
+            _ = Process.exit(lease, :kill)
+            _ = await_lease_down_contained(lease, monitor)
+            record_cleanup_problem(primary_error)
+        end
+
+      _ = Process.flag(:trap_exit, previous_trap_exit)
+      replay_unrelated_exit_messages(lease, previous_trap_exit, linked_sources)
+      flush_cleanup_owner_messages(ref, owner)
+      result
+    after
+      _ = Process.flag(:trap_exit, previous_trap_exit)
+    end
+  end
+
+  defp await_graceful_lease_down_contained(lease, monitor, graceful_result, abnormal?) do
+    timeout = if graceful_result == :requested, do: @lease_down_timeout, else: 0
 
     receive do
-      {:DOWN, ^monitor, :process, ^lease, _reason} -> record_cleanup_problem(primary_error)
+      {:EXIT, ^lease, reason} ->
+        await_graceful_lease_down_contained(
+          lease,
+          monitor,
+          graceful_result,
+          abnormal? or abnormal_exit_reason?(reason)
+        )
+
+      {:DOWN, ^monitor, :process, ^lease, reason} ->
+        {:down, reason, abnormal?}
+    after
+      timeout -> {:timeout, abnormal?}
     end
   end
+
+  defp await_lease_down_contained(lease, monitor) do
+    receive do
+      {:EXIT, ^lease, _reason} -> await_lease_down_contained(lease, monitor)
+      {:DOWN, ^monitor, :process, ^lease, _reason} -> :ok
+    end
+  end
+
+  defp linked_processes do
+    case Process.info(self(), :links) do
+      {:links, links} when is_list(links) -> links
+      _other -> []
+    end
+  end
+
+  defp replay_unrelated_exit_messages(_lease, true, _linked_sources), do: :ok
+
+  defp replay_unrelated_exit_messages(lease, false, linked_sources) do
+    replay_unrelated_exit_messages(
+      lease,
+      false,
+      Enum.reject(linked_sources, &(&1 == lease)),
+      false
+    )
+  end
+
+  # A real link emits at most one EXIT signal for a given peer. Remove each
+  # observed peer from the replay set so forged/repeated mailbox tuples cannot
+  # keep cleanup in an unbounded drain loop.
+  defp replay_unrelated_exit_messages(lease, false, remaining_sources, lease_exit_seen?) do
+    receive do
+      {:EXIT, ^lease, _reason} when not lease_exit_seen? ->
+        replay_unrelated_exit_messages(lease, false, remaining_sources, true)
+
+      {:EXIT, from, reason} ->
+        if from in remaining_sources do
+          remaining_sources = List.delete(remaining_sources, from)
+
+          if abnormal_exit_reason?(reason) do
+            Process.exit(self(), reason)
+          else
+            replay_unrelated_exit_messages(lease, false, remaining_sources, lease_exit_seen?)
+          end
+        else
+          send(self(), {:EXIT, from, reason})
+          :ok
+        end
+    after
+      0 -> :ok
+    end
+  end
+
+  defp flush_cleanup_owner_messages(ref, owner) do
+    receive do
+      {:foundation_cleanup_owner_ready, ^ref, ^owner} ->
+        flush_cleanup_owner_messages(ref, owner)
+
+      {:foundation_cleanup_owner_failed, ^ref, ^owner} ->
+        flush_cleanup_owner_messages(ref, owner)
+
+      {:foundation_cleanup_owner_result, ^ref, _abnormal?} ->
+        flush_cleanup_owner_messages(ref, owner)
+    after
+      0 -> :ok
+    end
+  end
+
+  defp abnormal_exit_reason?(nil), do: true
+  defp abnormal_exit_reason?(:normal), do: false
+  defp abnormal_exit_reason?(_reason), do: true
 
   defp record_cleanup_problem(%StartupError{} = error) do
     %{
