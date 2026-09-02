@@ -14,6 +14,12 @@ defmodule SwarmCode.Protocol.JsonLimits do
   @default_max_depth 16
   @default_max_entries 8_192
 
+  # The pinned decoder counts the complete integer token, including a leading
+  # minus sign, against its 1,024-byte ceiling.
+  @integer_token_bytes 1_024
+  @max_positive_integer Integer.pow(10, @integer_token_bytes) - 1
+  @min_negative_integer -(Integer.pow(10, @integer_token_bytes - 1) - 1)
+
   @typedoc false
   @type options :: [
           {:max_bytes, non_neg_integer()}
@@ -54,6 +60,16 @@ defmodule SwarmCode.Protocol.JsonLimits do
       {:error, %Error{} = error} -> {:error, error}
       _other -> {:error, Error.new(:invalid_json)}
     end
+  end
+
+  @doc false
+  @spec validate_term(term()) :: :ok | {:error, Error.t()}
+  def validate_term(value) do
+    validate_work([{:value, value, 0}], 0)
+  rescue
+    _exception -> {:error, Error.new(:invalid_envelope)}
+  catch
+    _kind, _reason -> {:error, Error.new(:invalid_envelope)}
   end
 
   defp normalize_options(opts) when is_list(opts) do
@@ -257,6 +273,114 @@ defmodule SwarmCode.Protocol.JsonLimits do
       )
     end
   end
+
+  # The outbound walk uses explicit continuations, so a wide list or deeply
+  # nested caller term cannot grow the process stack. Punctuation is charged
+  # in the same order as the lexical scanner, before the corresponding value is
+  # inspected.
+  defp validate_work([], _entries), do: :ok
+
+  defp validate_work([{:value, value, _depth} | rest], entries) when is_binary(value) do
+    if String.valid?(value),
+      do: validate_work(rest, entries),
+      else: {:error, Error.new(:invalid_envelope)}
+  end
+
+  defp validate_work([{:value, value, _depth} | rest], entries) when is_integer(value) do
+    if value >= @min_negative_integer and value <= @max_positive_integer,
+      do: validate_work(rest, entries),
+      else: {:error, Error.new(:invalid_envelope)}
+  end
+
+  defp validate_work([{:value, value, _depth} | rest], entries) when is_float(value) do
+    if finite_float?(value),
+      do: validate_work(rest, entries),
+      else: {:error, Error.new(:invalid_envelope)}
+  end
+
+  defp validate_work([{:value, value, _depth} | rest], entries)
+       when value in [nil, true, false],
+       do: validate_work(rest, entries)
+
+  defp validate_work([{:value, value, depth} | rest], entries) when is_map(value) do
+    next_depth = depth + 1
+
+    with :ok <- validate_term_depth(next_depth) do
+      if is_struct(value) do
+        {:error, Error.new(:invalid_envelope)}
+      else
+        with {:ok, next_entries} <- add_term_entries(entries, 1) do
+          validate_work([{:map, :maps.iterator(value), next_depth, true} | rest], next_entries)
+        end
+      end
+    end
+  end
+
+  defp validate_work([{:value, value, depth} | rest], entries) when is_list(value) do
+    next_depth = depth + 1
+
+    with :ok <- validate_term_depth(next_depth),
+         {:ok, next_entries} <- add_term_entries(entries, 1) do
+      validate_work([{:list, value, next_depth, true} | rest], next_entries)
+    end
+  end
+
+  defp validate_work([{:map, iterator, depth, first?} | rest], entries) do
+    case :maps.next(iterator) do
+      :none ->
+        validate_work(rest, entries)
+
+      {key, value, next_iterator} when is_binary(key) ->
+        punctuation = if first?, do: 1, else: 2
+
+        with {:ok, next_entries} <- add_term_entries(entries, punctuation) do
+          if String.valid?(key) do
+            validate_work(
+              [
+                {:value, value, depth},
+                {:map, next_iterator, depth, false} | rest
+              ],
+              next_entries
+            )
+          else
+            {:error, Error.new(:invalid_envelope)}
+          end
+        end
+
+      {_key, _value, _next_iterator} ->
+        {:error, Error.new(:invalid_envelope)}
+    end
+  end
+
+  defp validate_work([{:list, [], _depth, _first?} | rest], entries),
+    do: validate_work(rest, entries)
+
+  defp validate_work([{:list, [value | tail], depth, first?} | rest], entries) do
+    addition = if first?, do: 0, else: 1
+
+    with {:ok, next_entries} <- add_term_entries(entries, addition) do
+      validate_work(
+        [{:value, value, depth}, {:list, tail, depth, false} | rest],
+        next_entries
+      )
+    end
+  end
+
+  defp validate_work([{:list, _improper, _depth, _first?} | _rest], _entries),
+    do: {:error, Error.new(:invalid_envelope)}
+
+  defp validate_work([{:value, _value, _depth} | _rest], _entries),
+    do: {:error, Error.new(:invalid_envelope)}
+
+  defp validate_term_depth(depth) when depth <= @default_max_depth, do: :ok
+  defp validate_term_depth(_depth), do: {:error, Error.new(:json_too_deep)}
+
+  defp add_term_entries(entries, addition)
+       when entries + addition <= @default_max_entries,
+       do: {:ok, entries + addition}
+
+  defp add_term_entries(_entries, _addition),
+    do: {:error, Error.new(:json_entry_limit)}
 
   defp decode_ordered(binary) do
     case Jason.decode(binary, keys: :strings, strings: :copy, objects: :ordered_objects) do

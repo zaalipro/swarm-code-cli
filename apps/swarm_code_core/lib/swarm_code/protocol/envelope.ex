@@ -30,7 +30,7 @@ defmodule SwarmCode.Protocol.Envelope do
          {:ok, scope} <- encode_scope(message.scope),
          :ok <- validate_sequence(message.sequence),
          :ok <- validate_occurred_at(message.occurred_at),
-         :ok <- validate_json_map(message.body),
+         :ok <- validate_body_shape(message.body),
          :ok <-
            validate_invariants(
              message.type,
@@ -39,20 +39,18 @@ defmodule SwarmCode.Protocol.Envelope do
              message.sequence,
              message.occurred_at
            ),
-         {:ok, iodata} <-
-           Jason.encode_to_iodata(
-             %{
-               "v" => 1,
-               "type" => type,
-               "request_id" => message.request_id,
-               "nonce" => message.nonce,
-               "scope" => scope,
-               "sequence" => message.sequence,
-               "occurred_at" => message.occurred_at,
-               "body" => message.body
-             },
-             maps: :strict
-           ) do
+         document = %{
+           "v" => 1,
+           "type" => type,
+           "request_id" => message.request_id,
+           "nonce" => message.nonce,
+           "scope" => scope,
+           "sequence" => message.sequence,
+           "occurred_at" => message.occurred_at,
+           "body" => message.body
+         },
+         :ok <- JsonLimits.validate_term(document),
+         {:ok, iodata} <- Jason.encode_to_iodata(document, maps: :strict) do
       {:ok, iodata}
     else
       {:error, %Error{} = error} -> {:error, error}
@@ -92,7 +90,7 @@ defmodule SwarmCode.Protocol.Envelope do
          {:ok, scope} <- decode_scope(document["scope"]),
          :ok <- validate_sequence(document["sequence"]),
          :ok <- validate_occurred_at(document["occurred_at"]),
-         :ok <- validate_json_map(document["body"]),
+         :ok <- validate_body_shape(document["body"]),
          :ok <-
            validate_invariants(
              type,
@@ -298,62 +296,13 @@ defmodule SwarmCode.Protocol.Envelope do
     end
   end
 
-  defp validate_json_map(value) when is_map(value) do
-    if is_struct(value) do
-      {:error, Error.new(:invalid_envelope)}
-    else
-      validate_json_value(value)
-    end
-  rescue
-    _exception -> {:error, Error.new(:invalid_envelope)}
+  defp validate_body_shape(value) when is_map(value) do
+    if is_struct(value),
+      do: {:error, Error.new(:invalid_envelope)},
+      else: :ok
   end
 
-  defp validate_json_map(_value), do: {:error, Error.new(:invalid_envelope)}
-
-  defp validate_json_value(value) when is_binary(value) do
-    if String.valid?(value), do: :ok, else: {:error, Error.new(:invalid_envelope)}
-  end
-
-  defp validate_json_value(value) when is_integer(value), do: :ok
-
-  defp validate_json_value(value) when is_float(value) do
-    if finite_float?(value), do: :ok, else: {:error, Error.new(:invalid_envelope)}
-  end
-
-  defp validate_json_value(value) when value in [nil, true, false], do: :ok
-
-  defp validate_json_value(value) when is_map(value) do
-    if is_struct(value) do
-      {:error, Error.new(:invalid_envelope)}
-    else
-      Enum.reduce_while(value, :ok, fn {key, child}, :ok ->
-        if is_binary(key) and String.valid?(key) do
-          case validate_json_value(child) do
-            :ok -> {:cont, :ok}
-            {:error, %Error{} = error} -> {:halt, {:error, error}}
-          end
-        else
-          {:halt, {:error, Error.new(:invalid_envelope)}}
-        end
-      end)
-    end
-  rescue
-    _exception -> {:error, Error.new(:invalid_envelope)}
-  end
-
-  defp validate_json_value(value) when is_list(value), do: validate_json_list(value)
-  defp validate_json_value(_value), do: {:error, Error.new(:invalid_envelope)}
-
-  defp validate_json_list([]), do: :ok
-
-  defp validate_json_list([head | tail]) do
-    with :ok <- validate_json_value(head),
-         :ok <- validate_json_list(tail) do
-      :ok
-    end
-  end
-
-  defp validate_json_list(_improper), do: {:error, Error.new(:invalid_envelope)}
+  defp validate_body_shape(_value), do: {:error, Error.new(:invalid_envelope)}
 
   defp canonical_uuid?(value) when byte_size(value) == 36 do
     Regex.match?(~r/\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/, value)
@@ -362,9 +311,4 @@ defmodule SwarmCode.Protocol.Envelope do
   end
 
   defp canonical_uuid?(_value), do: false
-
-  defp finite_float?(value) do
-    <<_sign::1, exponent::11, _fraction::52>> = <<value::float-64>>
-    exponent != 0x7FF
-  end
 end

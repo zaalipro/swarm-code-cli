@@ -350,6 +350,82 @@ defmodule SwarmCode.Protocol.EnvelopeTest do
     end
   end
 
+  test "outbound encoding enforces complete-envelope depth and lexical entry limits" do
+    shallow = nested_arrays(14, 0)
+
+    shallow_message = message(:ping, body: %{"nested" => shallow})
+    assert {:ok, encoded} = Envelope.encode(shallow_message)
+    assert {:ok, ^shallow_message} = encoded |> IO.iodata_to_binary() |> Envelope.decode()
+
+    too_deep = nested_arrays(15, 0)
+
+    assert_error(
+      Envelope.encode(message(:ping, body: %{"nested" => too_deep})),
+      :json_too_deep
+    )
+
+    at_entry_limit = Enum.map(1..8_174, fn _ -> 0 end)
+    at_entry_message = message(:ping, body: %{"items" => at_entry_limit})
+    assert {:ok, encoded} = Envelope.encode(at_entry_message)
+    assert {:ok, ^at_entry_message} = encoded |> IO.iodata_to_binary() |> Envelope.decode()
+
+    over_entry_limit = Enum.map(1..8_175, fn _ -> 0 end)
+
+    assert_error(
+      Envelope.encode(message(:ping, body: %{"items" => over_entry_limit})),
+      :json_entry_limit
+    )
+  end
+
+  test "outbound structural checks stop at bounds before inspecting unbounded tails" do
+    too_deep_with_invalid_tail = nested_arrays(15, %URI{scheme: "https"})
+
+    assert_error(
+      Envelope.encode(message(:ping, body: %{"nested" => too_deep_with_invalid_tail})),
+      :json_too_deep
+    )
+
+    too_wide_with_invalid_tail =
+      Enum.map(1..8_189, fn
+        8_189 -> %URI{scheme: "https"}
+        _ -> 0
+      end)
+
+    assert_error(
+      Envelope.encode(message(:ping, body: %{"items" => too_wide_with_invalid_tail})),
+      :json_entry_limit
+    )
+
+    # The struct itself would be outside the depth budget. Structural rejection
+    # must win before the pure-domain struct check gets a chance to inspect it.
+    at_depth_with_invalid_struct = nested_arrays(14, %URI{scheme: "https"})
+
+    assert_error(
+      Envelope.encode(message(:ping, body: %{"nested" => at_depth_with_invalid_struct})),
+      :json_too_deep
+    )
+  end
+
+  test "integer token bounds are symmetric and every successful boundary value decodes" do
+    positive_max = String.duplicate("9", 1_024) |> String.to_integer()
+    negative_max = String.duplicate("9", 1_023) |> String.to_integer() |> Kernel.-()
+    positive_over = String.duplicate("9", 1_025) |> String.to_integer()
+    negative_over = String.duplicate("9", 1_024) |> String.to_integer() |> Kernel.-()
+
+    for integer <- [positive_max, negative_max] do
+      message = message(:ping, body: %{"number" => integer})
+      assert {:ok, encoded} = Envelope.encode(message)
+      assert {:ok, ^message} = encoded |> IO.iodata_to_binary() |> Envelope.decode()
+    end
+
+    for integer <- [positive_over, negative_over] do
+      assert_error(
+        Envelope.encode(message(:ping, body: %{"number" => integer})),
+        :invalid_envelope
+      )
+    end
+  end
+
   test "duplicate keys at the envelope, scope, and body levels are invalid JSON" do
     base = Jason.encode!(wire_message("ping"))
     duplicate_outer = String.replace(base, ~s("v":1), ~s("v":1,"v":1))
@@ -422,6 +498,9 @@ defmodule SwarmCode.Protocol.EnvelopeTest do
   defp wire_scope(kind, id, generation) do
     %{"kind" => kind, "id" => id, "generation" => generation}
   end
+
+  defp nested_arrays(0, value), do: value
+  defp nested_arrays(depth, value), do: [nested_arrays(depth - 1, value)]
 
   defp assert_round_trip(message) do
     assert {:ok, encoded} = Envelope.encode(message)
