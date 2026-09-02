@@ -206,6 +206,26 @@ defmodule SwarmCode.Protocol.FrameTest do
     assert decoder.buffered_bytes == 0
   end
 
+  test "the configured ceiling handles 1,024 coalesced frames atomically" do
+    expected = message("ceiling")
+    ping = Frame.encode!(expected)
+    decoder = FrameDecoder.new(max_frames_per_push: 1_024)
+
+    assert {:ok, messages, %FrameDecoder{phase: :header, buffered_bytes: 0}} =
+             FrameDecoder.push(decoder, IO.iodata_to_binary(List.duplicate(ping, 1_024)))
+
+    assert length(messages) == 1_024
+    assert Enum.all?(messages, &(&1 == expected))
+
+    assert_error(
+      FrameDecoder.push(decoder, IO.iodata_to_binary(List.duplicate(ping, 1_025))),
+      :frame_count_limit
+    )
+
+    assert decoder.phase == :header
+    assert decoder.buffered_bytes == 0
+  end
+
   test "empty pushes are no-ops for new and partially filled decoders" do
     decoder = FrameDecoder.new()
     assert {:ok, [], ^decoder} = FrameDecoder.push(decoder, <<>>)

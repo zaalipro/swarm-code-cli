@@ -97,15 +97,84 @@ defmodule SwarmCode.Protocol.ChunkBufferTest do
     assert ChunkBuffer.retained_byte_size(empty) == 0
   end
 
-  test "every retained chunk owns its exact backing bytes" do
-    source = String.duplicate("a", ChunkBuffer.block_bytes() + 1) <> "ignored"
-    retained = binary_part(source, 0, ChunkBuffer.block_bytes() + 1)
+  test "coalesced header and body takes copy at most linear retained bytes" do
+    body_bytes = ChunkBuffer.block_bytes() - 4
+
+    measurements =
+      for frame_count <- [64, 128, 256] do
+        input_bytes = frame_count * ChunkBuffer.block_bytes()
+        buffer = ChunkBuffer.put(ChunkBuffer.new(), String.duplicate("x", input_bytes))
+
+        {buffer, _retained_bytes, copied_bytes} =
+          Enum.reduce(1..frame_count, {buffer, input_bytes, 0}, fn _index, state ->
+            state
+            |> take_and_measure_copy(4)
+            |> take_and_measure_copy(body_bytes)
+          end)
+
+        assert ChunkBuffer.byte_size(buffer) == 0
+        {input_bytes, copied_bytes}
+      end
+
+    for {input_bytes, copied_bytes} <- measurements do
+      # A post-take retained-size drop is the old backing being released after
+      # one ownership copy. The geometric dense-view policy keeps this sum
+      # within one input length; copying every suffix would be quadratic.
+      assert copied_bytes <= input_bytes
+    end
+
+    [{small_input, small_work}, {medium_input, medium_work}, {large_input, large_work}] =
+      measurements
+
+    assert medium_input == small_input * 2
+    assert large_input == small_input * 4
+    assert medium_work <= small_work * 3
+    assert large_work <= small_work * 6
+  end
+
+  test "a dense owned tail validates but an equal sparser projection does not" do
+    source = String.duplicate("q", ChunkBuffer.block_bytes() * 8)
+    buffer = ChunkBuffer.put(ChunkBuffer.new(), source)
+    assert {:ok, header, buffer} = ChunkBuffer.take(buffer, 4)
+    assert IO.iodata_to_binary(header) == "qqqq"
+    assert ChunkBuffer.retained_byte_size(buffer) == byte_size(source)
+
+    detached = %{buffer | queue: map_queue_chunks(buffer.queue, &Function.identity/1)}
+    assert :ok = ChunkBuffer.validate(detached)
+
+    dense_tail = :queue.get(buffer.queue)
+    sparse_source = String.duplicate("s", 1_000_000) <> dense_tail
+
+    sparse_tail =
+      binary_part(
+        sparse_source,
+        byte_size(sparse_source) - byte_size(dense_tail),
+        byte_size(dense_tail)
+      )
+
+    assert sparse_tail == dense_tail
+
+    assert :binary.referenced_byte_size(sparse_tail) >
+             :binary.referenced_byte_size(dense_tail)
+
+    forged = %{buffer | queue: map_queue_chunks(buffer.queue, fn _chunk -> sparse_tail end)}
+    assert {:error, %Error{}} = ChunkBuffer.validate(forged)
+
+    wanted = ChunkBuffer.byte_size(buffer) - 8
+    assert {:ok, _prefix, tiny} = ChunkBuffer.take(buffer, wanted)
+    assert ChunkBuffer.retained_byte_size(tiny) == 8
+  end
+
+  test "an ingress chunk owns its exact backing bytes" do
+    content = String.duplicate("a", ChunkBuffer.block_bytes() * 16)
+    source = String.duplicate("s", 1_000_000) <> content
+    retained = binary_part(source, byte_size(source) - byte_size(content), byte_size(content))
 
     assert :binary.referenced_byte_size(retained) > byte_size(retained)
 
     buffer = ChunkBuffer.put(ChunkBuffer.new(), retained)
-    assert ChunkBuffer.byte_size(buffer) == byte_size(retained)
-    assert ChunkBuffer.retained_byte_size(buffer) == byte_size(retained)
+    assert ChunkBuffer.byte_size(buffer) == byte_size(content)
+    assert ChunkBuffer.retained_byte_size(buffer) == byte_size(content)
   end
 
   test "public invalid inputs settle as typed errors" do
@@ -205,12 +274,24 @@ defmodule SwarmCode.Protocol.ChunkBufferTest do
   defp externally_zero_arity_resealed(buffer), do: %{buffer | seal: fn -> true end}
 
   defp replace_queue_storage(buffer) do
-    {rear, front} = buffer.queue
+    %{buffer | queue: map_queue_chunks(buffer.queue, &:binary.copy/1)}
+  end
 
-    queue =
-      {Enum.map(rear, &:binary.copy/1), Enum.map(front, &:binary.copy/1)}
+  defp map_queue_chunks({rear, front}, mapper) do
+    {Enum.map(rear, mapper), Enum.map(front, mapper)}
+  end
 
-    %{buffer | queue: queue}
+  defp take_and_measure_copy({buffer, retained_bytes, copied_bytes}, wanted) do
+    assert {:ok, parts, buffer} = ChunkBuffer.take(buffer, wanted)
+    assert IO.iodata_length(parts) == wanted
+    next_retained_bytes = ChunkBuffer.retained_byte_size(buffer)
+
+    copied_bytes =
+      if next_retained_bytes > 0 and next_retained_bytes < retained_bytes,
+        do: copied_bytes + next_retained_bytes,
+        else: copied_bytes
+
+    {buffer, next_retained_bytes, copied_bytes}
   end
 
   defp ceil_div(dividend, divisor), do: div(dividend + divisor - 1, divisor)

@@ -9,6 +9,9 @@ defmodule SwarmCode.Protocol.ChunkBuffer do
   decoder compatibility fields are derived from it. A module-local closure
   retains every canonical state. Public projections are checked against and
   rebuilt from that state, so altered storage cannot become authoritative.
+  Ingress owns its backing storage; partial consumption retains a dense view
+  and copies only after crossing a half-remaining threshold, which bounds
+  cumulative copy work geometrically and prevents sparse-tail amplification.
   Exact canonical values take a constant-time identity fast path; altered
   projections are checked only up to a payload-derived fail-closed scan bound.
   """
@@ -250,7 +253,7 @@ defmodule SwarmCode.Protocol.ChunkBuffer do
 
           true ->
             <<head::binary-size(wanted), tail::binary>> = chunk
-            tail = own_binary(tail)
+            tail = retain_tail(tail)
             queue = :queue.in_r(tail, rest)
             {:ok, Enum.reverse([head | parts]), %{buffer | queue: queue}}
         end
@@ -349,14 +352,14 @@ defmodule SwarmCode.Protocol.ChunkBuffer do
          limit
        ) do
     with {:ok, count} <-
-           matching_owned_chunks(
+           matching_retained_chunks(
              candidate_rear,
              canonical_rear,
              0,
              limit
            ),
          {:ok, final_count} <-
-           matching_owned_chunks(
+           matching_retained_chunks(
              candidate_front,
              canonical_front,
              count,
@@ -381,7 +384,7 @@ defmodule SwarmCode.Protocol.ChunkBuffer do
     else
       limit = min(remaining, @max_pending_fragments)
 
-      case matching_owned_chunks(candidate, canonical, 0, limit) do
+      case matching_retained_chunks(candidate, canonical, 0, limit) do
         {:ok, _count} -> :ok
         :error -> :error
       end
@@ -390,29 +393,43 @@ defmodule SwarmCode.Protocol.ChunkBuffer do
 
   defp validate_pending_projection(_candidate, _canonical, _remaining), do: :error
 
-  defp matching_owned_chunks([], [], count, _limit), do: {:ok, count}
+  defp matching_retained_chunks([], [], count, _limit), do: {:ok, count}
 
-  defp matching_owned_chunks(
+  defp matching_retained_chunks(
          [candidate | candidate_rest],
          [canonical | canonical_rest],
          count,
          limit
        )
        when count < limit do
-    if owned_binary?(candidate) and candidate === canonical do
-      matching_owned_chunks(candidate_rest, canonical_rest, count + 1, limit)
+    if matching_retained_binary?(candidate, canonical) do
+      matching_retained_chunks(candidate_rest, canonical_rest, count + 1, limit)
     else
       :error
     end
   end
 
-  defp matching_owned_chunks(_candidate, _canonical, _count, _limit), do: :error
+  defp matching_retained_chunks(_candidate, _canonical, _count, _limit), do: :error
 
-  defp owned_binary?(binary) when is_binary(binary) and Kernel.byte_size(binary) > 0 do
-    :binary.referenced_byte_size(binary) == Kernel.byte_size(binary)
+  defp matching_retained_binary?(candidate, canonical)
+       when is_binary(candidate) and is_binary(canonical) and
+              Kernel.byte_size(candidate) > 0 do
+    candidate_bytes = Kernel.byte_size(candidate)
+    candidate_referenced = :binary.referenced_byte_size(candidate)
+    canonical_referenced = :binary.referenced_byte_size(canonical)
+
+    candidate_bytes == Kernel.byte_size(canonical) and
+      candidate_referenced <= canonical_referenced and
+      bounded_retained_binary?(candidate_bytes, candidate_referenced) and
+      candidate === canonical
   end
 
-  defp owned_binary?(_binary), do: false
+  defp matching_retained_binary?(_candidate, _canonical), do: false
+
+  defp bounded_retained_binary?(bytes, referenced) do
+    referenced >= bytes and
+      (referenced == bytes or bytes > div(referenced, 2))
+  end
 
   # This OTP-pinned identity check is only the normal-state fast path. On a
   # mismatch, the public ownership API above enforces the storage invariant.
@@ -439,8 +456,7 @@ defmodule SwarmCode.Protocol.ChunkBuffer do
     }
   end
 
-  # Every retained binary is exact-owned. This makes referenced size a public,
-  # deterministic invariant instead of relying on backing-storage identity.
+  # Ingress is copied once when it is a view into caller-owned storage.
   defp own_binary(<<>>), do: <<>>
 
   defp own_binary(binary) do
@@ -448,5 +464,19 @@ defmodule SwarmCode.Protocol.ChunkBuffer do
     referenced = :binary.referenced_byte_size(binary)
 
     if referenced == bytes, do: binary, else: :binary.copy(binary)
+  end
+
+  # Partial consumption keeps a dense view over storage already owned by the
+  # buffer. Once no more than half remains, a single copy releases the old
+  # backing and resets the threshold. Successive copies therefore form a
+  # geometric series bounded by the original input size, and any retained tail
+  # references less than twice its logical size.
+  defp retain_tail(binary) do
+    bytes = Kernel.byte_size(binary)
+    referenced = :binary.referenced_byte_size(binary)
+
+    if referenced > bytes and bytes <= div(referenced, 2),
+      do: :binary.copy(binary),
+      else: binary
   end
 end
