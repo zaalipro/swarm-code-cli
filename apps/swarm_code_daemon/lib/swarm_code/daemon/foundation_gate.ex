@@ -35,6 +35,7 @@ defmodule SwarmCode.Daemon.FoundationGate do
   @maximum_pid 9_223_372_036_854_775_807
   @desktop_applications ["SwarmCode", "SwarmCode.app", "com.zaali.swarmcode"]
   @lease_stop_timeout 5_000
+  @lease_down_timeout 5_000
   @test_build Mix.env() == :test
   @default_mode (case Mix.env() do
                    :prod -> :production
@@ -709,43 +710,61 @@ defmodule SwarmCode.Daemon.FoundationGate do
   end
 
   defp stop_lease_before_return(lease, monitor, primary_error) do
-    stop_result =
-      try do
-        case GenServer.stop(lease, :normal, @lease_stop_timeout) do
-          :ok -> :requested
-          _other -> :failed
-        end
-      rescue
-        _error -> :failed
-      catch
-        _kind, _reason -> :failed
+    # CrossAppLease is linked to its startup caller. Contain that link before
+    # any stop/kill operation so a forced `:kill` cannot propagate to this
+    # caller. The exact monitor remains the terminal-evidence barrier.
+    _ = Process.unlink(lease)
+
+    graceful_result = request_graceful_stop(lease)
+
+    case await_graceful_lease_down(lease, monitor, graceful_result) do
+      {:down, :normal} when graceful_result == :ok ->
+        primary_error
+
+      {:down, _reason} ->
+        record_cleanup_problem(primary_error)
+
+      :timeout ->
+        force_stop_lease(lease, monitor, primary_error)
+    end
+  end
+
+  defp request_graceful_stop(lease) do
+    try do
+      case GenServer.stop(lease, :normal, @lease_stop_timeout) do
+        :ok -> :ok
+        _other -> :failed
       end
-
-    {reason, forced?} = await_lease_down(lease, monitor, stop_result)
-
-    if stop_result == :requested and reason == :normal and not forced? do
-      primary_error
-    else
-      record_cleanup_problem(primary_error)
+    rescue
+      _error -> :failed
+    catch
+      _kind, _reason -> :failed
     end
   end
 
-  defp await_lease_down(lease, monitor, :requested) do
+  defp await_graceful_lease_down(lease, monitor, :failed) do
     receive do
-      {:DOWN, ^monitor, :process, ^lease, reason} -> {reason, false}
-    end
-  end
-
-  defp await_lease_down(lease, monitor, :failed) do
-    receive do
-      {:DOWN, ^monitor, :process, ^lease, reason} -> {reason, false}
+      {:DOWN, ^monitor, :process, ^lease, reason} -> {:down, reason}
     after
-      0 ->
-        Process.exit(lease, :kill)
+      0 -> :timeout
+    end
+  end
 
-        receive do
-          {:DOWN, ^monitor, :process, ^lease, reason} -> {reason, true}
-        end
+  defp await_graceful_lease_down(lease, monitor, :ok) do
+    receive do
+      {:DOWN, ^monitor, :process, ^lease, reason} -> {:down, reason}
+    after
+      @lease_down_timeout -> :timeout
+    end
+  end
+
+  defp force_stop_lease(lease, monitor, primary_error) do
+    # The lease was unlinked above. Force termination therefore cannot kill
+    # the startup caller; wait for this exact monitor before returning.
+    _ = Process.exit(lease, :kill)
+
+    receive do
+      {:DOWN, ^monitor, :process, ^lease, _reason} -> record_cleanup_problem(primary_error)
     end
   end
 

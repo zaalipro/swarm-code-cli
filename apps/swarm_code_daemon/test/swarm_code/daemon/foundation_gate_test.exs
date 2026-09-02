@@ -6,6 +6,7 @@ defmodule SwarmCode.Daemon.FoundationGateTest do
   alias SwarmCode.Daemon.CrossAppLease
   alias SwarmCode.Daemon.FoundationGate
   alias SwarmCode.Daemon.Platform.{DatabaseFingerprint, PrivateDirectory, ProcessIdentity}
+  alias SwarmCode.Daemon.StartupError
 
   @app_version "0.1.0-dev"
   @backup_operation_id "5cebddf0-68ee-4f79-9129-b17f1ca2d6de"
@@ -194,6 +195,110 @@ defmodule SwarmCode.Daemon.FoundationGateTest do
     assert {:error, %{code: :desktop_active}} = Task.await(task)
     assert_receive {:DOWN, ^lease_monitor, :process, ^lease, :normal}
     assert_reacquirable!(opts)
+  end
+
+  @tag capture_log: true
+  test "blocking lease termination cannot kill the prepare caller or mask its primary error" do
+    fixture = SchemaFixture.database!(:current)
+    parent = self()
+    counter = :counters.new(1, [])
+    task_supervisor = start_supervised!(Task.Supervisor)
+
+    detector = fn ->
+      :ok = :counters.add(counter, 1, 1)
+
+      if :counters.get(counter, 1) == 1,
+        do: :none,
+        else: {:active, %{pid: 734, application: "SwarmCode"}}
+    end
+
+    cleanup_barrier = fn ->
+      send(parent, {:blocking_cleanup_started, self()})
+
+      receive do
+        :never -> :ok
+      end
+    end
+
+    opts = test_opts(fixture, detector, lease_options: [cleanup_barrier: cleanup_barrier])
+
+    assert {:ok, caller} =
+             Task.Supervisor.start_child(task_supervisor, fn ->
+               result = FoundationGate.prepare(opts)
+               send(parent, {:prepare_result, self(), result})
+
+               receive do
+                 :finish_prepare -> :ok
+               end
+             end)
+
+    caller_monitor = Process.monitor(caller)
+    assert_receive {:blocking_cleanup_started, lease}, 10_000
+    lease_monitor = Process.monitor(lease)
+
+    assert_receive {:prepare_result, ^caller, {:error, %StartupError{} = error}}, 10_000
+    assert error.code == :desktop_active
+    assert error.message =~ "abnormal cleanup"
+    assert error.action =~ "stale diagnostic owner record"
+    refute_received {:DOWN, ^caller_monitor, :process, ^caller, _reason}
+
+    assert_receive {:DOWN, ^lease_monitor, :process, ^lease, :killed}, 1_000
+    send(caller, :finish_prepare)
+    assert_receive {:DOWN, ^caller_monitor, :process, ^caller, :normal}
+  end
+
+  @tag capture_log: true
+  test "raising lease termination callback returns the primary static error and terminal evidence" do
+    fixture = SchemaFixture.database!(:current)
+    parent = self()
+    counter = :counters.new(1, [])
+    task_supervisor = start_supervised!(Task.Supervisor)
+
+    detector = fn ->
+      :ok = :counters.add(counter, 1, 1)
+
+      if :counters.get(counter, 1) == 1,
+        do: :none,
+        else: {:active, %{pid: 735, application: "SwarmCode"}}
+    end
+
+    cleanup_barrier = fn ->
+      send(parent, {:raising_cleanup_started, self()})
+
+      receive do
+        :raise_cleanup -> raise "untrusted cleanup callback detail"
+      end
+    end
+
+    opts = test_opts(fixture, detector, lease_options: [cleanup_barrier: cleanup_barrier])
+
+    assert {:ok, caller} =
+             Task.Supervisor.start_child(task_supervisor, fn ->
+               result = FoundationGate.prepare(opts)
+               send(parent, {:raising_prepare_result, self(), result})
+
+               receive do
+                 :finish_prepare -> :ok
+               end
+             end)
+
+    caller_monitor = Process.monitor(caller)
+    assert_receive {:raising_cleanup_started, lease}, 10_000
+    lease_monitor = Process.monitor(lease)
+    send(lease, :raise_cleanup)
+
+    assert_receive {:raising_prepare_result, ^caller, {:error, %StartupError{} = error}}, 10_000
+    assert error.code == :desktop_active
+    assert error.message =~ "abnormal cleanup"
+    assert error.action =~ "stale diagnostic owner record"
+    refute error.message =~ "untrusted cleanup callback detail"
+    refute error.action =~ "untrusted cleanup callback detail"
+    refute_received {:DOWN, ^caller_monitor, :process, ^caller, _reason}
+
+    assert_receive {:DOWN, ^lease_monitor, :process, ^lease, lease_reason}, 1_000
+    refute lease_reason == :normal
+    send(caller, :finish_prepare)
+    assert_receive {:DOWN, ^caller_monitor, :process, ^caller, :normal}
   end
 
   test "a malformed second detector result is normalized and releases the acquired lease" do
