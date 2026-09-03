@@ -25,7 +25,14 @@ defmodule SwarmCodeCLI.UI.Effect do
   def validate({:unwatch, watch_ref} = effect),
     do: valid_effect(effect, Intent.valid_id?(watch_ref))
 
-  def validate({kind, request} = effect) when kind in [:query, :command],
+  def validate({:query, %Request{expected_response: expected_response} = request} = effect),
+    do:
+      valid_effect(
+        effect,
+        expected_response != :outcome and match?({:ok, _request}, Request.validate(request))
+      )
+
+  def validate({:command, %Request{expected_response: :outcome} = request} = effect),
     do: valid_effect(effect, match?({:ok, _request}, Request.validate(request)))
 
   def validate({:cancel_request, request_id} = effect),

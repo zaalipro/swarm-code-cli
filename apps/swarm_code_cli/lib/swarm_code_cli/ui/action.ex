@@ -223,7 +223,8 @@ defmodule SwarmCodeCLI.UI.Action do
   defp valid_layout_adjustment?(_adjustment), do: false
 
   defp valid_capabilities?(%Capabilities{} = capabilities) do
-    Enum.sort(Map.keys(capabilities)) == Enum.sort(@capability_keys) and
+    map_size(capabilities) == 17 and
+      Enum.sort(Map.keys(capabilities)) == Enum.sort(@capability_keys) and
       Size.valid?(capabilities.size) and
       capabilities.color_mode in [:truecolor, :ansi256, :ansi16, :monochrome] and
       capabilities.ambiguous_width in [:narrow, :wide] and

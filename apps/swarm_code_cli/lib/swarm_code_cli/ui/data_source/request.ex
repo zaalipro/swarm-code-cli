@@ -44,6 +44,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Request do
       map_size(request) == 8 and Intent.valid_id?(request_id) and Intent.valid?(kind) and
         Context.valid_scope?(scope) and is_integer(generation) and generation >= 0 and
         generation == scope.generation and Context.valid_origin?(origin) and
+        correlated_kind_origin?(kind, origin) and
         is_integer(deadline) and deadline >= 0 and expected_response == :outcome
 
     if valid?, do: {:ok, request}, else: {:error, :invalid_request}
@@ -58,4 +59,47 @@ defmodule SwarmCodeCLI.UI.DataSource.Request do
       {:error, :invalid_request} -> raise ArgumentError, "invalid data source request"
     end
   end
+
+  defp correlated_kind_origin?(
+         {:dispatch, _operation, _text, _target, _attachments},
+         {:draft, _key}
+       ),
+       do: true
+
+  defp correlated_kind_origin?({:steer, _run_id, _node_id, _text, _attachments}, {:draft, _key}),
+    do: true
+
+  defp correlated_kind_origin?({:run_control, _operation, run_id}, {:run, run_id}), do: true
+
+  defp correlated_kind_origin?(
+         {:retry_run, run_id, revision},
+         {:run_revision, run_id, revision}
+       ),
+       do: true
+
+  defp correlated_kind_origin?(
+         {:stop_agent, run_id, agent_id, revision},
+         {:agent, run_id, agent_id, revision}
+       ),
+       do: true
+
+  defp correlated_kind_origin?(
+         {:answer_question, _run_id, _node_id, interaction_id, revision, _option_ids},
+         {:interaction, interaction_id, revision}
+       ),
+       do: true
+
+  defp correlated_kind_origin?(
+         {:resolve_approval, _run_id, _node_id, interaction_id, revision, _decision},
+         {:interaction, interaction_id, revision}
+       ),
+       do: true
+
+  defp correlated_kind_origin?(
+         {:mark_seen, kind, id, revision},
+         {:seen, kind, id, revision}
+       ),
+       do: true
+
+  defp correlated_kind_origin?(_kind, _origin), do: false
 end

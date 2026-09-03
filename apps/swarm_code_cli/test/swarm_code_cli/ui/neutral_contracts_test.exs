@@ -480,9 +480,9 @@ defmodule SwarmCodeCLI.UI.NeutralContractsTest do
 
     delivery = %Delivery{
       kind: :closed,
-      watch_ref: nil,
+      watch_ref: "watch-1",
       request_id: nil,
-      scope: nil,
+      scope: scope,
       generation: 3,
       revision: nil,
       sequence: nil,
@@ -509,7 +509,7 @@ defmodule SwarmCodeCLI.UI.NeutralContractsTest do
 
     delivery = %Delivery{
       kind: :closed,
-      watch_ref: nil,
+      watch_ref: "watch-1",
       request_id: nil,
       scope: scope,
       generation: 3,
@@ -603,7 +603,6 @@ defmodule SwarmCodeCLI.UI.NeutralContractsTest do
     for effect <- [
           {:watch, watch},
           {:unwatch, "watch-1"},
-          {:query, request},
           {:command, request},
           {:cancel_request, "request-1"},
           {:start_timer, "timer-1", 1_000, {:timer_fired, "timer-1"}},
@@ -618,6 +617,12 @@ defmodule SwarmCodeCLI.UI.NeutralContractsTest do
       assert effect == Effect.validate!(effect)
     end
 
+    assert {:error, :invalid_effect} = Effect.validate({:query, request})
+
+    assert_raise ArgumentError, "invalid effect", fn ->
+      Effect.validate!({:query, request})
+    end
+
     for unsafe <- [
           {:watch, self()},
           {:start_timer, "timer-1", 1, fn -> :ok end},
@@ -629,5 +634,178 @@ defmodule SwarmCodeCLI.UI.NeutralContractsTest do
       assert {:error, :invalid_effect} = Effect.validate(unsafe)
       assert_raise ArgumentError, "invalid effect", fn -> Effect.validate!(unsafe) end
     end
+  end
+
+  test "request validation correlates every mutation kind with its exact origin" do
+    request = %Request{
+      request_id: "request-1",
+      kind: {:run_control, :stop, "run-1"},
+      scope: %Scope{kind: :run, id: "run-1", generation: 3},
+      generation: 3,
+      origin: {:run, "run-1"},
+      deadline: 100,
+      expected_response: :outcome
+    }
+
+    assert {:ok, ^request} = Request.validate(request)
+
+    for origin <- [
+          {:draft, {"conversation-1", :main}},
+          {:run_revision, "run-1", 9},
+          {:agent, "run-1", "agent-9", 99},
+          {:interaction, "question-1", 7},
+          {:seen, :run, "run-1", 3}
+        ] do
+      assert {:error, :invalid_request} = Request.validate(%{request | origin: origin})
+    end
+
+    correlated = [
+      {{:dispatch, :send, "text", :main, []}, {:draft, {"conversation-1", :main}}},
+      {{:steer, "run-1", "node-1", "text", []}, {:draft, {"conversation-1", :main}}},
+      {{:run_control, :pause, "run-1"}, {:run, "run-1"}},
+      {{:retry_run, "run-1", 9}, {:run_revision, "run-1", 9}},
+      {{:stop_agent, "run-1", "agent-9", 99}, {:agent, "run-1", "agent-9", 99}},
+      {{:answer_question, "run-1", "node-1", "question-1", 7, ["option-1"]},
+       {:interaction, "question-1", 7}},
+      {{:resolve_approval, "run-1", "node-1", "approval-1", 8, :approve},
+       {:interaction, "approval-1", 8}},
+      {{:mark_seen, :run, "run-1", 3}, {:seen, :run, "run-1", 3}}
+    ]
+
+    for {kind, origin} <- correlated do
+      candidate = %{request | kind: kind, origin: origin}
+      assert {:ok, ^candidate} = Request.validate(candidate)
+    end
+
+    mismatched = [
+      {{:dispatch, :send, "text", :main, []}, {:run, "run-1"}},
+      {{:steer, "run-1", "node-1", "text", []}, {:interaction, "question-1", 7}},
+      {{:run_control, :pause, "run-1"}, {:run, "other-run"}},
+      {{:retry_run, "run-1", 9}, {:run_revision, "run-1", 8}},
+      {{:retry_run, "run-1", 9}, {:run_revision, "other-run", 9}},
+      {{:stop_agent, "run-1", "agent-9", 99}, {:agent, "run-1", "agent-8", 99}},
+      {{:stop_agent, "run-1", "agent-9", 99}, {:agent, "run-1", "agent-9", 98}},
+      {{:answer_question, "run-1", "node-1", "question-1", 7, ["option-1"]},
+       {:interaction, "question-2", 7}},
+      {{:answer_question, "run-1", "node-1", "question-1", 7, ["option-1"]},
+       {:interaction, "question-1", 6}},
+      {{:resolve_approval, "run-1", "node-1", "approval-1", 8, :approve},
+       {:interaction, "approval-2", 8}},
+      {{:resolve_approval, "run-1", "node-1", "approval-1", 8, :approve},
+       {:interaction, "approval-1", 7}},
+      {{:mark_seen, :run, "run-1", 3}, {:seen, :conversation, "run-1", 3}},
+      {{:mark_seen, :run, "run-1", 3}, {:seen, :run, "other-run", 3}},
+      {{:mark_seen, :run, "run-1", 3}, {:seen, :run, "run-1", 2}}
+    ]
+
+    for {kind, origin} <- mismatched do
+      assert {:error, :invalid_request} =
+               Request.validate(%{request | kind: kind, origin: origin})
+    end
+  end
+
+  test "query cannot carry a current mutation request, while resolver commands can" do
+    {:ok, request} =
+      RequestResolver.resolve(
+        {:run_control, :stop, "run-1"},
+        ContractFixtures.run_context("run-1", allowed_actions: [:stop]),
+        "request-command",
+        100
+      )
+
+    assert {:ok, {:command, ^request}} = Effect.validate({:command, request})
+    assert {:error, :invalid_effect} = Effect.validate({:query, request})
+  end
+
+  test "delivery validation enforces a kind-coherent correlation matrix" do
+    scope = %Scope{kind: :conversation, id: "conversation-1", generation: 3}
+
+    ready = %Delivery{
+      kind: :watch_ready,
+      watch_ref: "watch-1",
+      request_id: nil,
+      scope: scope,
+      generation: 3,
+      revision: 4,
+      sequence: nil,
+      body: nil
+    }
+
+    delta = %{ready | kind: :delta, revision: 4, sequence: 9}
+    resyncing = %{ready | kind: :resyncing, revision: nil, sequence: nil}
+    watch_error = %{ready | kind: :error, revision: nil, sequence: nil}
+    closed = %{ready | kind: :closed, revision: nil, sequence: nil}
+
+    response = %Delivery{
+      kind: :response,
+      watch_ref: nil,
+      request_id: "request-1",
+      scope: scope,
+      generation: 3,
+      revision: nil,
+      sequence: nil,
+      body: nil
+    }
+
+    for delivery <- [ready, delta, resyncing, watch_error, closed, response] do
+      assert {:ok, ^delivery} = Delivery.validate(delivery)
+      assert {:ok, {:data, ^delivery}} = Action.validate({:data, delivery})
+    end
+
+    invalid = [
+      %{response | request_id: nil},
+      %{response | watch_ref: "watch-1"},
+      %{response | scope: nil},
+      %{response | generation: 4},
+      %{response | revision: 1},
+      %{response | sequence: 1},
+      %{ready | request_id: "request-1"},
+      %{ready | watch_ref: nil},
+      %{ready | scope: nil},
+      %{ready | revision: nil},
+      %{ready | sequence: 8},
+      %{delta | request_id: "request-1"},
+      %{delta | watch_ref: nil},
+      %{delta | scope: nil},
+      %{delta | generation: 4},
+      %{delta | revision: nil},
+      %{delta | sequence: nil},
+      %{resyncing | request_id: "request-1"},
+      %{resyncing | watch_ref: nil},
+      %{resyncing | scope: nil},
+      %{resyncing | revision: 1},
+      %{resyncing | sequence: 1},
+      %{watch_error | request_id: "request-1"},
+      %{watch_error | watch_ref: nil},
+      %{watch_error | scope: nil},
+      %{watch_error | revision: 1},
+      %{watch_error | sequence: 1},
+      %{closed | request_id: "request-1"},
+      %{closed | watch_ref: nil},
+      %{closed | scope: nil}
+    ]
+
+    for delivery <- invalid do
+      assert {:error, :invalid_delivery} = Delivery.validate(delivery)
+      assert {:error, :invalid_action} = Action.validate({:data, delivery})
+    end
+  end
+
+  test "capability validation rejects oversized forged maps before key traversal" do
+    capabilities =
+      Capabilities.explicit(%Size{columns: 80, rows: 24},
+        stdin_tty?: true,
+        stdout_tty?: true,
+        controlling_tty?: true
+      )
+
+    forged =
+      capabilities
+      |> Map.from_struct()
+      |> Map.merge(Enum.into(1..128, %{}, fn index -> {index, index} end))
+      |> Map.put(:__struct__, Capabilities)
+
+    assert {:error, :invalid_action} =
+             Action.validate({:terminal_capabilities, 1, forged})
   end
 end

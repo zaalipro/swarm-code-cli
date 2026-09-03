@@ -44,12 +44,15 @@ defmodule SwarmCodeCLI.UI.DataSource.Delivery do
         } = delivery
       ) do
     valid? =
-      map_size(delivery) == 9 and
-        kind in [:watch_ready, :delta, :response, :resyncing, :error, :closed] and
-        optional_id?(watch_ref) and optional_id?(request_id) and
-        optional_scope?(scope, generation) and
-        is_integer(generation) and generation >= 0 and optional_non_negative_integer?(revision) and
-        optional_non_negative_integer?(sequence) and is_nil(body)
+      map_size(delivery) == 9 and is_integer(generation) and generation >= 0 and
+        Context.valid_scope?(scope) and scope.generation == generation and is_nil(body) and
+        correlated_kind?(
+          kind,
+          watch_ref,
+          request_id,
+          revision,
+          sequence
+        )
 
     if valid?, do: {:ok, delivery}, else: {:error, :invalid_delivery}
   end
@@ -64,14 +67,22 @@ defmodule SwarmCodeCLI.UI.DataSource.Delivery do
     end
   end
 
-  defp optional_id?(nil), do: true
-  defp optional_id?(id), do: Intent.valid_id?(id)
+  defp correlated_kind?(:watch_ready, watch_ref, nil, revision, nil),
+    do: Intent.valid_id?(watch_ref) and non_negative_integer?(revision)
 
-  defp optional_scope?(nil, _generation), do: true
+  defp correlated_kind?(:delta, watch_ref, nil, revision, sequence),
+    do:
+      Intent.valid_id?(watch_ref) and non_negative_integer?(revision) and
+        non_negative_integer?(sequence)
 
-  defp optional_scope?(scope, generation),
-    do: Context.valid_scope?(scope) and scope.generation == generation
+  defp correlated_kind?(kind, watch_ref, nil, nil, nil)
+       when kind in [:resyncing, :error, :closed],
+       do: Intent.valid_id?(watch_ref)
 
-  defp optional_non_negative_integer?(nil), do: true
-  defp optional_non_negative_integer?(value), do: is_integer(value) and value >= 0
+  defp correlated_kind?(:response, nil, request_id, nil, nil),
+    do: Intent.valid_id?(request_id)
+
+  defp correlated_kind?(_kind, _watch_ref, _request_id, _revision, _sequence), do: false
+
+  defp non_negative_integer?(value), do: is_integer(value) and value >= 0
 end
