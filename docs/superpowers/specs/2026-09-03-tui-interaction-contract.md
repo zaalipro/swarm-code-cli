@@ -82,18 +82,28 @@ The client session has these explicit owners:
 
 ```text
 SwarmCodeCLI.UISupervisor
-|-- TerminalOwner
-|   `-- selected full-screen Renderer adapter
-|-- SessionRuntime
+|-- Fake.Source
+|-- DataSource client (starts unbound)
+|-- SessionRuntime (starts in :binding)
 |   |-- pure Reducer state
 |   |-- current Scene and ActionTable
 |   `-- redraw coalescer
-|-- DataSource owner
-|   `-- Fake for the spike; IPC adapter after daemon prerequisites pass
+|-- TerminalOwner (starts last)
+|   `-- selected full-screen Renderer adapter
 `-- UI-local timer/request supervisor
 ```
 
 `TerminalOwner` is the only process that changes raw/cooked mode, cursor visibility, alternate-screen state, bracketed paste, focus reporting, or mouse reporting. `SessionRuntime` applies every semantic event in order and coalesces paints only. The DataSource owns no terminal state. The renderer owns no domain or editor state.
+
+Startup is an explicit two-phase binding protocol, not a constructor PID cycle:
+
+1. `UISupervisor` starts the source and client DataSource with stable, session-scoped handles and no delivery owner.
+2. It starts `SessionRuntime` in `:binding`; the runtime creates its protected Scene slot and binds itself as the DataSource owner with a unique binding reference.
+3. It starts `TerminalOwner` last. After native initialization, the owner registers its stable handle, terminal generation, and complete capabilities with `SessionRuntime`; successful registration returns the Scene-slot handle.
+4. `SessionRuntime` emits initial watches and the first draw only after both bind acknowledgements. Either acknowledgement may arrive first, but neither may cause partial startup effects.
+5. A failed, duplicate, stale, or timed-out bind closes the client DataSource, cancels any admitted work, destroys the Scene slot, restores an initialized terminal, and terminates the zero-restart `:one_for_all` UI tree. No half-bound process remains available.
+
+Session-scoped handles may resolve to PIDs internally, but circular constructor PIDs are forbidden. A bound DataSource monitors its runtime owner; a registered terminal owner monitors the runtime and supervisor. Close is idempotent from every binding state.
 
 Every timer, subscription, request, monitor, terminal mode, and renderer resource has one owner and one settlement path. Closing the client cancels view-owned requests and subscriptions and detaches. It never synthesizes a domain Stop command.
 
@@ -133,6 +143,7 @@ Reducer state may retain page-limited normalized DTO windows and byte-bounded de
   schema_version: 1,
   revision: non_neg_integer(),
   size: %Size{columns: pos_integer(), rows: pos_integer()},
+  ambiguous_width: :narrow | :wide,
   layout_class: :xl | :wide | :medium | :narrow | :small | :too_small,
   regions: [Region.t()],
   overlay: Dialog.t() | nil,
@@ -187,6 +198,8 @@ The projector, not the renderer, decides:
 - trusted labels and descriptions;
 - how canonical DTO facts become semantic blocks.
 
+Every cell-oriented operation uses `Scene.ambiguous_width`. The default is `:narrow`; `--ambiguous-width=narrow|wide` is the only override. Editor visual columns, wrapping, elision, cursor and selection geometry, renderer drawing, cell capture, and PTY cursor assertions must all consume the same value. No renderer may redetect or silently substitute another East Asian Ambiguous-width policy.
+
 ## 6. Renderer and Input contracts
 
 The renderer behavior is:
@@ -228,6 +241,12 @@ Actions express user or data meaning rather than renderer keys:
 @type t ::
         :boot
         | {:resize, Size.t()}
+        | {:terminal_capabilities, terminal_generation(), Capabilities.t()}
+        | {:terminal_lifecycle, :suspend_requested | :suspended | :resumed | :closing,
+           terminal_generation(), :keyboard | :launcher | :runtime}
+        | {:terminal_failed, terminal_generation(), terminal_error_code()}
+        | {:draw_result, draw_token(), scene_revision(), :ok | {:error, terminal_error_code()}}
+        | :back
         | {:focus_cycle, :next | :previous}
         | {:focus_region, region_id()}
         | {:move, :next | :previous | :first | :last}
@@ -235,6 +254,11 @@ Actions express user or data meaning rather than renderer keys:
         | {:activate, action_id(), scene_revision(), request_id()}
         | {:scroll, region_id(), scroll_operation()}
         | {:editor, DraftKey.t(), EditorOperation.t()}
+        | {:field_editor, FieldKey.t(), EditorOperation.t()}
+        | {:layout_adjust, :navigator | :inspector,
+           :reset | {:preset, :compact | :balanced | :wide} | {:nudge, -8 | -2 | 2 | 8}}
+        | {:composer_height, :reset | {:nudge, -1 | 1}}
+        | {:presenter_handoff_requested, :plain}
         | {:navigate, Destination.t()}
         | {:open_layer, LayerSpec.t()}
         | :close_top_layer
@@ -243,7 +267,19 @@ Actions express user or data meaning rather than renderer keys:
         | {:quit_requested, :detach | :daemon_shutdown}
 ```
 
-`scroll_operation()` is one of line delta, page delta, first, last, follow, and detach. Editor operations are grapheme-based insert, paste, delete, cursor movement, selection extension, undo, redo, and explicit newline. ExRatatui textarea state cannot become authoritative because it would prevent renderer replacement.
+`scroll_operation()` is one of line delta, page delta, first, last, follow, and detach. Editor operations are grapheme-based insert, paste, delete, cursor movement, selection extension, word movement/deletion, line/buffer Home/End, copy, cut, undo, redo, and explicit newline. Undo groups contiguous inserts/deletes until movement, selection, paste, or a 1,000 ms runtime-supplied boundary action; the editor itself reads no clock. ExRatatui textarea state cannot become authoritative because it would prevent renderer replacement.
+
+`FieldKey` is separate from `DraftKey` and has only these forms:
+
+```text
+{:layer_query, layer_id, :switcher | :jump | :action_menu}
+{:region_filter, region_id}
+{:question_other, interaction_id, interaction_revision}
+```
+
+Field editors reuse the grapheme editor but are bounded transient UI state, never composer drafts. Closing their owning layer clears them. Paste, committed IME text, and text fragments route to the active `FieldKey` before a hidden composer. `:back` closes one drill-down page or returns from Activity to its exact saved destination/focus/selection/anchor context; it is distinct from Escape's one-layer cancellation.
+
+Resize is an observed terminal input, not a program action that can resize the emulator. At survival sizes the visible action is therefore `Resize help`, which opens fixed instructions. `presenter_handoff_requested` performs an orderly terminal restore and exits with a fixed control-free `Rerun with --plain` instruction; the spike does not replace the full-screen renderer with the line presenter in-process.
 
 Input resolution consumes at most one action and uses this priority:
 
@@ -254,6 +290,8 @@ Input resolution consumes at most one action and uses this priority:
 5. global keymap.
 
 An input event must never both close one layer and activate the newly exposed layer.
+
+Only `:press` may activate, submit, answer, approve, deny, stop, confirm, queue, detach, or invoke a shortcut. `:repeat` is accepted only for text insertion/deletion, cursor or selection movement, logical-row movement, and scrolling. `:release` is inert. An activation installs a correlated mutation state before emitting its command, so held Enter or a second input cannot enqueue the same mutation twice.
 
 ## 8. Reducer contract
 
@@ -275,6 +313,7 @@ Reducer state owns only:
 - logical scroll anchors and follow state;
 - composer drafts and later form/editor drafts;
 - responsive layout preferences and terminal capabilities;
+- transient `FieldKey` editors and per-mutation `idle | pending | settled` state;
 - logical modal/drill-down stack;
 - correlated outstanding requests and commands;
 - visible-only UI animation state.
@@ -282,6 +321,8 @@ Reducer state owns only:
 The reducer does not decide domain policy. DTOs provide a closed `allowed_actions` set and optional safe disabled reason. The UI may further remove an action because the terminal cannot represent it, but it may not add a domain action that the server did not authorize. The daemon validates every command again.
 
 Every matching semantic data event is applied immediately. State revision becomes dirty, and `SessionRuntime` schedules at most one draw for the current frame interval. Coalescing paints must never coalesce, overwrite, or discard semantic text/tool events. Hidden panes retain facts without running animation timers or repeated layout work.
+
+Mutation projection is closed and explicit. `pending` disables the originating action and names the operation. Settlement is exactly one of accepted, needs input, rejected, deadline exceeded, interrupted, revision conflict, or outcome unknown. Only durable acceptance clears the exact originating draft; every other outcome preserves its editor/dialog and exposes fixed corrective text. A compare-and-set conflict refreshes the interaction and never displays success.
 
 ## 9. Effect contract
 
@@ -296,9 +337,11 @@ Effects are a closed declarative union:
         | {:cancel_request, request_id()}
         | {:start_timer, timer_id(), non_neg_integer(), Action.t()}
         | {:cancel_timer, timer_id()}
+        | {:terminal_control, :suspend | :resume | :shutdown}
         | {:announce, SafeText.t()}
         | {:bell, :needs_you}
         | {:clipboard_write, ClipboardPayload.t()}
+        | {:presenter_handoff, :plain}
         | {:detach, exit_status()}
 ```
 
@@ -311,7 +354,9 @@ Filesystem, Git, process, network, MCP, external-open, reveal, download, and per
 `SwarmCodeCLI.UI.DataSource` is the client-owned boundary that allows the fake interaction lab to precede daemon IPC. Its behavior is:
 
 ```elixir
-start_link(owner: pid(), options: keyword()) :: GenServer.on_start()
+start_link(options: keyword()) :: GenServer.on_start()
+bind_owner(server(), owner_handle(), binding_ref()) ::
+  {:ok, binding_ref()} | {:error, :already_bound | :closed | :binding_failed}
 watch(server(), Watch.t()) :: :ok | {:error, AdmissionError.t()}
 unwatch(server(), watch_ref()) :: :ok
 query(server(), Request.t()) :: :ok | {:error, AdmissionError.t()}
@@ -319,6 +364,8 @@ command(server(), Request.t()) :: :ok | {:error, AdmissionError.t()}
 cancel(server(), request_id()) :: :ok
 close(server()) :: :ok
 ```
+
+Before `bind_owner/3` succeeds, watch/query/command/cancel calls fail with a closed admission error and no delivery can be emitted. Binding is single-assignment, reference-correlated, and monitors the owner. Duplicate/stale binding, owner death, or close settles every buffer and waiter without leaking deliveries to a replacement process.
 
 These calls perform bounded local admission only. Results are delivered asynchronously:
 
@@ -399,6 +446,12 @@ Initial normalized delta variants are:
 - Activity item and aggregate-count update;
 - connection/resync state.
 
+Every page-limited list also carries `idle | loading_before | loading_after | error | closed | resyncing`, opaque page-request identity, and a retryable static-safe error when applicable. Reaching an unloaded edge emits one deduplicated page query and exposes a visible loading sentinel; repeated movement at that edge does not enqueue another query. A response, cancellation, or retry settles the sentinel exactly once.
+
+Item presence is explicit. `off_window` means the item is outside the loaded keyset range and preserves selection/anchor identity; `removed` requires an explicit remove delta or a replacement snapshot whose declared covered range proves absence. On confirmed removal, focus/anchor repairs to the successor at the same visual bias, then the predecessor, then the list's empty-state focus. Prepending retains the existing anchor and visual bias.
+
+Supersession is not removal. A superseded turn remains losslessly visible with the fixed `SUPERSEDED` word and muted role, hides live progress/Needs-you/Reply/Retry, and retains Inspect/Copy/Fork. A running child launched by it says `LAUNCHED BY SUPERSEDED TURN` and keeps server-authorized Stop. Approve/Revise keeps the planner containing the linked implementation visible.
+
 The DataSource never exposes Ecto structs, complete GenServer state, secrets, raw wire maps, or dynamically atomized input. `swarm_code_cli` depends on stable core protocol types, not daemon implementation modules.
 
 ## 11. Responsive layout contract
@@ -429,6 +482,24 @@ Additional invariants:
 - Whole-screen horizontal scrolling is forbidden. Only code, diff, raw JSON, and explicitly wide tables scroll horizontally.
 - Tables collapse to labeled records, schedules default to agenda, consensus sides stack, research timeline moves to Inspector, workflows become list/detail navigation, and settings become searchable master/detail as width decreases.
 
+Content density is deterministic and cell-budgeted:
+
+| Class | Title and state budget | Secondary controls | Status help |
+|---|---|---|---|
+| XL/Wide | Full fake banner, project/branch, conversation/page, mode, running/waiting/Needs-you counts | Full model, effort, approval, target, attachment, queue, and live-run labels | Three to five bindings plus focus identity |
+| Medium | `FAKE — NO USER DATA`, cell-elided project/branch and page, mode, exact state and counts | Model without effort first; chips collapse to labeled counts before Main loses 50 cells | Two or three bindings plus focus identity |
+| Narrow | `FAKE — NO USER DATA`, cell-elided page, mode, exact state and Needs-you count | Target stays named; secondary model/approval and chips move to Inspector/action deck | Two bindings plus `?` and focus identity |
+| Small | `FAKE — NO USER DATA`, mode, exact state and `NEEDS n`; project/page remain available in Inspector/help | One-line target/validation or labeled attachment/queue/run counts | One binding plus `?`; status names focused region/item |
+| Compressed Small/Too small | `FAKE — NO USER DATA`, mode, exact error/size state | Only `Resize help`, Help, Detach, and `Exit; rerun with --plain`; no send/destructive action | `?` plus exact focus identity |
+
+Mode, exact state word, Needs-you state/count, active target type, validation/error, and focus identity are never omitted from the overall Scene. Secondary model/effort/approval metadata, attachments, queue, and live runs collapse in that order to labeled counts or move to Inspector before being elided. Status hints reduce before semantic facts.
+
+Cell-aware elision never splits a grapheme. Human names and model labels end-elide; paths, project/branch pairs, refs, and filenames middle-elide so both identity ends survive. The complete sanitized value is available through Inspector/action-menu detail. Wrapping and elision use the Scene's one ambiguous-width policy.
+
+Projection follows an anti-box-soup rule: assistant prose is unboxed; one prompt-plus-run card has at most one boundary and one progress rule; Navigator and Inspector use separators/whitespace; overlays have the strongest border; orange marks current focus/live work only. Unicode/ASCII kind identity uses stable one-cell `G/S/W/R/C` prefixes and numbered agent lanes, never color alone.
+
+Overlay title, breadcrumb, and action/footer rows are sticky. The body has an independent logical scroll anchor; moving focus auto-reveals the complete focused row with the smallest possible scroll, wraps options deterministically, and shows a compact `item x of y` overflow summary. Tab/Shift+Tab and arrow navigation remain trapped when the first or last control begins offscreen. Resize preserves focused control and body anchor. At `50x14`, an already-open mutation/destructive overlay becomes a read-only summary with Back/Close/Help only; its state is retained until the terminal grows.
+
 ## 12. Keyboard, focus, and modal contracts
 
 ### 12.1 Global keys
@@ -441,6 +512,8 @@ Additional invariants:
 | `Alt+I` | Toggle Inspector. |
 | `Alt+1` through `Alt+4` | Thread, Agents, Timeline, Changes. |
 | `Alt+M` or `/mode` | Mode selector. |
+| `Alt+Shift+H` / `Alt+Shift+L` | Nudge the focused Navigator/Inspector width by -2/+2 cells; adding `Ctrl` uses -8/+8. |
+| `Alt+Shift+0` | Reset the focused Navigator/Inspector width; compact/balanced/wide presets remain in the action menu. |
 | `?` outside text entry | Contextual help. |
 | `g c`, `g w`, `g r`, `g s`, `g u`, `g ,` | Chats, Workflows, Research, Scheduled, Usage, Settings. |
 | `q` outside text entry | Detach request. |
@@ -486,6 +559,9 @@ Every shortcut has a switcher, action-menu, or command route. macOS Command keys
 - `Ctrl+R` opens prompt history.
 - Paste is one insert operation and can never submit.
 - Backspace on an empty draft may remove an explicit Reply/Steer/Revise target; Escape does not silently remove command or target state.
+- `Ctrl+Up`/`Ctrl+Down` adjust composer height by one row and `/composer-height reset` restores the automatic height; the value remains clamped to one through eight.
+- Alt/Option word movement/deletion, line Home/End, Ctrl+Home/Ctrl+End buffer movement, and Shift+movement selection are neutral editor operations. Paste and cut form their own undo groups; contiguous typing/deletion uses the fixed grouping boundary.
+- `Ctrl+C` copies a nonempty selection when bounded clipboard capability is available. When it is unavailable, the selection remains and a visible `COPY UNAVAILABLE` notice offers the action-menu/plain fallback. `Ctrl+X` follows the same rule and deletes only after a successful copy. With no selection or outside text entry, `Ctrl+C` requests detach.
 
 ### 12.5 Questions and approvals
 
@@ -510,6 +586,14 @@ Every shortcut has a switcher, action-menu, or command route. macOS Command keys
 - Destructive confirmation defaults to Cancel. Bare Enter cannot become destructive until the user explicitly focuses the destructive action.
 - Escape closes exactly one logical layer and restores opener region, item, scroll, and selection.
 - If another client resolves a visible interaction, the current dialog becomes a settled/read-only state instead of disappearing and stealing focus.
+- Every operational breakpoint has an explicit focus graph. Traversal visits every enabled region/action-menu control exactly once, never reaches hidden or disabled actions, exposes a focused disabled reason in the action menu, and restores the prior legal focus after resize or layer close.
+- Terminal `focus_lost` pauses visible-only animation and cursor emphasis without changing logical region/item focus; `focus_gained` resumes allowed animation and requests one redraw. Neither event activates, navigates, or resets selection.
+
+### 12.7 Switcher, filters, and transient fields
+
+The switcher and action menus use `FieldKey` editors. Prefixes are closed and literal: no prefix searches all visible fake destinations/actions, `>` commands, `@` conversations, `#` runs/interactions, and `/` current-region items. Ranking is exact prefix match, token-prefix match, then substring; ties use fixed kind precedence and stable display-label/ID ordering. Empty text shows the deterministic recent/default set and zero matches shows one inert `NO RESULTS` row.
+
+Async patches rerank candidates but retain the selected stable ID when it remains; otherwise select the next result at the same index, then the predecessor, then the query field. Escape closes one layer and restores its opener. `:back` returns one drill-down level or the saved Activity return context. Paste/committed IME/text repeat edit only the active field; release events and activation repeats are inert.
 
 ## 13. Draft, scroll, and asynchronous preservation
 
@@ -531,6 +615,8 @@ A composer draft includes:
 - Reply, Steer, Revise, command, goal, and research target/chip state;
 - attachment references and staged validation state;
 - chosen editor height.
+
+Transient `FieldKey` editors contain exact text, logical-grapheme cursor/selection, composition state, and bounded undo only. They are capped at 16,384 bytes and belong to their layer/region; they never alias, clear, or persist a conversation draft. RTL scripts edit in logical grapheme order. Cursor and selection fixtures assert the visible cell edges produced by the chosen ambiguous-width policy; visual bidi reordering is not inferred from codepoint indices.
 
 Later `FormDraft` and `EditableBuffer` state use the same preservation rules and additionally track server baseline revision, dirty fields or content hash, validation results, and submit request.
 
@@ -567,6 +653,9 @@ Rules:
 - resize recomputes wrapping from the stable item and intra-item line rather than retaining a raw row offset;
 - sending the user's own message rejoins once, after durable acceptance;
 - offscreen canonical updates remain available through the next snapshot even when their watch was closed.
+- moving or paging at an unloaded edge emits one correlated page request and focuses a visible loading sentinel; repeat keys cannot duplicate it;
+- page failure replaces the sentinel with a focused retry action, while closed and resyncing states retain the last visible rows;
+- an `off_window` focus/anchor remains logically stable until a page proves its position; only confirmed `removed` state repairs to successor, predecessor, then empty-state focus.
 
 ### 13.3 Async status behavior
 
@@ -576,6 +665,7 @@ Rules:
 - A disconnect or resync marks content stale without replacing it with a blocking spinner.
 - Hidden regions do not animate or continuously recompute.
 - Visible elapsed text updates only when the displayed unit changes.
+- Mutation state is visible as pending until one correlated outcome arrives; async data cannot make a second activation valid while it is pending.
 
 ## 14. Sanitization, trusted chrome, accessibility, and plain mode
 
@@ -600,12 +690,54 @@ OSC 8 is generated only for a separately validated destination. OSC 52 clipboard
 
 ### 14.2 Status and color
 
-- State always has word plus optional glyph plus optional color.
-- Color, bold, and dim are never the only signal.
-- Carbon uses sparse orange focus/live accent and semantic success/warning/error/info roles.
-- Truecolor, 256-color, 16-color, and monochrome mappings are explicit.
-- ASCII replaces box drawing and specialized glyphs without losing state words.
-- Reduced motion removes spinners, pulses, color cycling, and animated scrolling while retaining state.
+Carbon dark is the only spike theme. These roles are exhaustive before the first golden is accepted; `ansi16` names the ordinary/bright ANSI color rather than assuming a numeric palette:
+
+| Role | Truecolor | ANSI 256 | ANSI 16 | Monochrome contract |
+|---|---:|---:|---|---|
+| canvas | background `#141414` | bg 233 | black bg | terminal default background |
+| surface | background `#191919` | bg 234 | black bg | spacing plus separator |
+| card | background `#1e1e1e` | bg 235 | bright-black bg | one border where semantically grouped |
+| border | `#2a2a2a` | 236 | bright black | ASCII/Unicode border, never color alone |
+| text_primary | `#f3f2f0` | 255 | bright white | normal/bold by hierarchy |
+| text_muted | `#8c8b88` | 245 | white | explicit label; dim optional |
+| text_faint | `#5e5d5a` | 240 | bright black | explicit label; dim optional |
+| focus | `#ff6a1a` | 208 | bright yellow | reverse/bold plus `FOCUS`/`>` marker |
+| selection | fg `#f3f2f0`, bg `#262626` | fg 255, bg 236 | reverse | reverse plus `SELECTED`/`>` marker |
+| disabled | `#5e5d5a` | 240 | bright black | `[DISABLED: reason]`; never dim alone |
+| stale | `#f5b400` | 220 | bright yellow | `[STALE]` plus border |
+| accent/assistant | `#ff6a1a` | 208 | bright yellow | `C`/`RUNNING` word or current-focus marker |
+| success | `#3ddc5a` | 41 | bright green | `[DONE]`/`OK` |
+| warning | `#f5b400` | 220 | bright yellow | `[WAITING]`, `[APPROVAL]`, or `!` plus word |
+| error | `#ff4d4f` | 203 | bright red | `[FAILED]`/`ERROR` |
+| info/workflow | `#4da3ff` | 75 | bright blue | `[INFO]` or `W` prefix |
+
+Run-kind roles are Assistant `#ff6a1a`/208/bright-yellow/`C`, Goal `#b08cff`/141/bright-magenta/`G`, Swarm `#2fd0b8`/44/bright-cyan/`S`, Workflow `#4da3ff`/75/bright-blue/`W`, Research `#ff9f45`/215/yellow/`R`, Consensus-Judge `#b8e356`/149/bright-green/`C`, and Ultra `#9b5cff`/135/bright-magenta/`U`. Agent lanes 1-5 are respectively `#2dd4bf`/44/cyan, `#a78bfa`/141/magenta, `#f59e0b`/214/yellow, `#f472b6`/212/magenta, and `#38bdf8`/81/cyan; every lane also prints `A1` through `A5`.
+
+Display labels and tones are separate closed tables:
+
+| State | Required display label | Tone role |
+|---|---|---|
+| connecting | `CONNECTING` | info |
+| empty | `EMPTY` | text_muted |
+| loading | `LOADING` | info |
+| running | `RUNNING` | accent |
+| streaming | `STREAMING` | accent |
+| queued | `QUEUED` | info |
+| waiting_question | `NEEDS ANSWER` | warning |
+| waiting_approval | `NEEDS APPROVAL` | warning |
+| paused | `PAUSED` | warning |
+| retrying | `RETRYING` | warning |
+| done | `DONE` | success |
+| failed | `FAILED — RETRY AVAILABLE` | error |
+| stopped | `STOPPED` | text_muted |
+| interrupted | `INTERRUPTED — RESUME AVAILABLE` | warning |
+| stale | `STALE` | stale |
+| resyncing | `RESYNCING` | info |
+| disconnected | `DISCONNECTED` | error |
+| superseded | `SUPERSEDED` | text_muted |
+| mutation_pending | `PENDING` | info |
+
+Color, bold, and dim are never the only signal. ASCII replaces box drawing and specialized glyphs without losing prefixes/state words. Reduced motion removes spinners, pulses, color cycling, and animated scrolling while retaining the exact state label and static progress value.
 
 ### 14.3 Plain presenter
 
@@ -616,11 +748,17 @@ Plain mode consumes the same normalized DataSource projection, not a serialized 
 - composed of stable headings, exact state words, content, and explicit numbered/named prompts;
 - free of alternate-screen entry, cursor rewriting, animation, terminal hyperlinks, and terminal-control bytes other than newline record separators;
 - compatible with `--ascii`, `--no-color`, `NO_COLOR`, and reduced motion;
-- the VoiceOver and Orca acceptance surface.
+- the screen-reader acceptance surface and targeted path, pending the Phase 5 VoiceOver and Orca workflow.
 
 Every supported question, approval, lifecycle control, workflow gate, research action, and administrative confirmation must have a deterministic line command or numbered prompt. Plain mode is not a passive log viewer. The full-screen TUI has no semantic accessibility tree and must not be described as screen-reader accessible.
 
-`--no-alt-screen` remains an interactive full-screen renderer option that leaves output in normal terminal scrollback; it is distinct from plain mode.
+One owned `Plain.Session` serializes DataSource deliveries, complete stdin lines, prompts, and stdout/stderr records. It never allows concurrent writers or partial-record interleaving. Content/events and prompt re-emission use stdout; static-safe parse/diagnostic messages use stderr. Async output is emitted in source sequence/order, then the still-current prompt is re-emitted. Simultaneous completion and question arrival follow the runtime's single ingress order.
+
+Prompt grammar is stable and scoped: `PROMPT <scope>/<id>@<revision> ...`. Commands include `answer <id>@<revision> <option>`, `approve|deny <id>@<revision>`, `pause|continue|resume|stop <run-id>`, `back`, `help`, and `detach`; later parity tasks add their closed forms. A bare number is accepted only when exactly one current unresolved numbered prompt has been emitted and its revision still matches. Otherwise it prints a correction containing the full non-secret command and preserves the prompt/editor state.
+
+Resolution by another client emits a settled record, invalidates that prompt, and re-emits the next prompt if one exists. Invalid/overlong input, rejected/deadline/interrupted/conflict/outcome-unknown settlement, and an unknown command preserve state and recover at a fresh prompt. EOF and Ctrl+C perform orderly client detach, never domain Stop. Input buffering, output records, prompt registry, and diagnostic strings are count/byte bounded without dropping canonical deliveries.
+
+`--no-alt-screen` remains an interactive full-screen renderer option that preserves pre-existing main-screen scrollback and leaves the final/restoration frame there. It does not promise append-only history for every redraw and is distinct from plain mode.
 
 ## 15. Deterministic fake three-run scenario
 
@@ -666,6 +804,12 @@ Open a global Activity watch and conversation-A workspace watch. Their ready sna
 - detach does not imply run cancellation;
 - Scene output contains only sanitized spans and opaque action IDs.
 
+### 15.4 Curated state and Activity fixtures
+
+A compact state-catalogue fixture covers connecting, empty, loading older, running, streaming, queued, waiting-question, waiting-approval, paused, retrying, done, failed-with-retry, stopped, interrupted-with-resume, stale, resyncing, disconnected, superseded, and mutation-pending using the exact display catalogue in section 14.2.
+
+A separate Activity fixture contains at least three unresolved items across different conversations: two questions with distinct urgency/deadlines and one approval, plus running/paused work, one recent failure, and one completion. Needs-you is oldest-deadline then oldest-created then stable ID; later categories use the fixed section-12 ordering. Async updates retain the selected stable ID, Small collapses Needs-you to a count/action, and Back restores the exact prior destination, region/item focus, selection, and anchors.
+
 ## 16. ExRatatui 0.13.0 four-target go/no-go
 
 The spike pins `{:ex_ratatui, "== 0.13.0"}` and records the resolved lock entry. It builds a fake-only target-native Mix release with bundled ERTS. It does not use Burrito as its production proof and does not touch user data.
@@ -691,13 +835,15 @@ Acceptance uses native hardware or a native VM for the target architecture. Rose
 
 - No lost or duplicated bytes across 10,000 normalized key events and 100 repeated bounded bracketed-paste fixtures.
 - Composer cursor and selection remain correct after every paste and resize.
-- Fixtures cover composed/decomposed accents, Georgian, Arabic/Hebrew, CJK, ambiguous-width symbols, skin-tone emoji, flags, family/occupation ZWJ sequences, and VS15/VS16.
+- Fixtures cover composed/decomposed accents, Georgian, Arabic/Hebrew, CJK, ambiguous-width symbols, skin-tone emoji, flags, family/occupation ZWJ sequences, and VS15/VS16. The same ambiguous fixture passes editor, projector, Scene, cell capture, and PTY cursor assertions under both explicit policies; RTL editing remains logical-grapheme order and asserts visible caret/selection cell edges.
 - Option/Alt, Shift+Tab, key repeat, focus events, and enhanced-key fallback behave deterministically.
 - Mouse is disabled by default; when enabled, click/drag/wheel work without removing keyboard equivalents.
 
 ### 16.3 Lifecycle gates
 
 On each target, execute a 1,000-cycle PTY suite: 200 normal exits, 200 renderer callback errors, 200 SIGINT exits, 200 SIGTERM exits, and 200 SIGTSTP/SIGCONT cycles followed by exit. Assert exact `stty -g`, cursor visibility, alternate-screen exit, bracketed-paste/focus/mouse disablement, and a sentinel on the restored main screen.
+
+The external launcher owns HUP/INT/TERM/TSTP/CONT/SIGUSR1 traps. The child traps only supported SIGUSR2 for launcher control and never installs unsupported child SIGINT/SIGCONT or a TSTP trap. A child suspend request is a bounded validated FIFO record followed by SIGUSR1 to the exact launcher. Child request and external TSTP enter the same non-recursive control path: ordinary `suspend` record, matching `restored`, SIGSTOP exact child, then SIGSTOP exact launcher. After external SIGCONT resumes the launcher, it sends SIGCONT to the exact child, then `resume`, and waits for `ready`. This never forwards TSTP, resets a disposition to self-signal, or relies on orphan-group job control in an isolated `setsid` PTY.
 
 Also verify initialization failure after every terminal-mode transition, non-TTY automatic plain selection without a hang, no TUI logs on stdout, a single terminal owner, SIGHUP client-only closure, and settlement of every timer/request/subscription. SIGKILL cannot be repaired by an in-process renderer and must be documented with `reset`/`stty sane` recovery rather than falsely claimed as restorable.
 
@@ -751,6 +897,16 @@ The minimum renderer-spike set is:
 - `49x13` Too-small monochrome/ASCII: one frame;
 - every representative scene at `80x24` monochrome/ASCII: four frames;
 - question dialog and destructive confirmation at `120x40` in truecolor and monochrome: four frames.
+- eighteen curated high-risk frames, without Cartesian expansion:
+  - `workspace--50x14--monochrome--ascii` and `workspace--120x40--truecolor--reduced-motion-active`;
+  - question and destructive-confirmation at `80x24`, plus both at `50x16` monochrome/ASCII;
+  - Medium `100x24` with Navigator docked and with Inspector docked;
+  - Narrow long ASCII/CJK/RTL project, branch, conversation, model, target, and filename elision;
+  - the same `80x24` workspace with Main focus and Composer focus;
+  - resync/retry, mutation-pending, mutation-conflict, disabled-reason, and Small Needs-you-overflow scenes;
+  - one ambiguous-character cursor scene under `:narrow` and the same scene under `:wide`.
+
+The total is exactly 87 frames. Each manifest entry includes a closed semantic intent and required assertion tags such as `no_send`, `focus_visible`, `sticky_footer`, `static_progress`, `full_value_in_inspector`, or `pending_disables_action`; stable but semantically wrong output is rejected. Component-cell fixtures and structural tests cover additional permutations without multiplying full frames.
 
 All IDs, clocks, elapsed labels, prices, stream chunks, selections, and cursors are fixed fixtures. Boundary property tests cover one cell above and below every width and height threshold.
 
@@ -767,15 +923,20 @@ Required reducer tests cover:
 - async changes cannot alter focus, draft, selection, or logical anchors;
 - independent Main/Inspector follow, detach, deduplicated unseen count, and rejoin;
 - prepended page and resize anchor preservation;
+- one deduplicated edge-page request, loading/error/retry/closed/resync sentinels, and no repeat-key request duplication;
+- off-window versus confirmed-removal handling and successor/predecessor/empty focus-anchor repair;
 - focus hiding/restoration at every breakpoint;
-- modal trap, safest default, single Escape, and opener restoration;
+- complete focus-graph traversal, terminal focus loss/gain semantics, modal trap, safest default, single Escape, Back, and opener restoration;
 - no double activation across input-context priority;
+- activation on press only, bounded edit/move/scroll repeats, inert releases, and duplicate-disabled pending mutation;
 - paste never submits;
 - Ctrl+O always inserts newline;
 - Shift+Enter follows enhanced-key capability;
 - Alt+Enter and `/queue` produce identical queue intent;
 - accepted clears only the originating draft and all other outcomes preserve it;
 - server compare-and-set conflict refreshes instead of claiming local success;
+- switcher/filter/Other `FieldKey` isolation, paste/IME routing, deterministic ranking/no-results, and selection repair under async patches;
+- exact layout nudge/reset/preset and composer-height actions at every clamp;
 - hidden and reduced-motion scenes own no animation timer;
 - the complete deterministic three-run scenario.
 
@@ -783,7 +944,7 @@ Required reducer tests cover:
 
 Required fixtures cover complete and partial CSI/OSC/DCS/APC/PM sequences, CR/backspace spoofing, bidi and zero-width filename spoofing, invalid UTF-8, the Unicode editor corpus, URL credentials, and terminal-title text. Every plain stdout/stderr fixture is scanned to ensure no terminal control survives other than newline record separators.
 
-Plain tests verify chronological deduplication by epoch/scope/sequence, explicit prompts, ASCII, `NO_COLOR`, reduced motion, non-TTY selection, and identical typed command outcomes.
+Plain tests verify chronological deduplication by epoch/scope/sequence, serialized complete records, scoped prompt ID/revision grammar, bare-number ambiguity rejection, prompt re-emission after async output, simultaneous completion/question order, other-client settlement, invalid/overlong recovery, EOF/Ctrl+C detach, stdout/stderr ordering, ASCII, `NO_COLOR`, reduced motion, non-TTY selection, and identical typed command outcomes.
 
 ### 17.4 Lifecycle and architecture tests
 
@@ -819,7 +980,7 @@ The matrix distinguishes evidence supplied by the initial spike from work requir
 | TUI-17 | Usage, pricing, budget | Title cost fixture | Periods, spend/budget headline, full Date/Project/Conversation/Model/Kind/Tokens/Cost records, pricing configuration, informational budget | Phase 4 fixed-database total and responsive-record goldens |
 | TUI-18 | Settings, storage, memory, commands, and administration | Theme/capability and draft primitives | General, Deep research, Appearance, Providers & models, Pricing, MCP servers, Memory, Storage, Commands, Limits, Budget; validation/dirty merge/save notices; cleanup preview/progress/skips/retention/VACUUM | Phase 4 all-eleven-section dirty-form and reversible/destructive-action suite |
 | TUI-19 | Notifications and service onboarding | Activity and opt-in bell effect | Durable in-app events, optional Needs-you bell, native waiting/finished/scheduled/error notifications, explicit launchd/systemd-user enable/disable/remove preserving data | Phase 4 service/restart and notification-preference gate |
-| TUI-20 | Accessible/degraded and headless surfaces | Plain, ASCII, no-color, reduced-motion contract | Complete line-command coverage, no-alt-screen, stable human output, versioned NDJSON, detail fetching, diagnostics on stderr, detach/wait, distinct rejected/failed/interrupted/outcome-unknown exits | Phase 2 plain vertical slice, completed through Phases 3-5; VoiceOver/Orca acceptance |
+| TUI-20 | Screen-reader-targeted/degraded and headless surfaces | Plain, ASCII, no-color, reduced-motion contract | Complete line-command coverage, no-alt-screen, stable human output, versioned NDJSON, detail fetching, diagnostics on stderr, detach/wait, distinct rejected/failed/interrupted/outcome-unknown exits | Phase 2 plain vertical slice, completed through Phases 3-5; VoiceOver/Orca acceptance |
 | TUI-21 | Terminal visual identity and responsiveness | Carbon semantic palette and five operational density bands | Every extracted theme/light-dark catalogue entry, status word/glyph/color, page-specific collapse rules, no whole-screen horizontal scroll, exact focus at all supported sizes | Full-release golden and focus-graph matrix |
 | TUI-22 | Public distribution | Four-target fake release viability only | Four immutable runtime archives, bundled ERTS, link/RPATH/glibc inspection, signatures/provenance/SBOM, Mac signing/notarization, installer/update/rollback/uninstall/offline tests | Phase 5 artifact gate; renderer feasibility alone gives no release claim |
 
@@ -832,7 +993,7 @@ Full parity is reached only when every row has implementation evidence and autom
 1. **Activity Center with return context.** Opening an interaction from another conversation records destination, focus, selection, and anchor. After settlement, Back returns exactly there.
 2. **Server-explained actions.** Hide impossible actions. Temporarily disabled actions display the server-provided safe reason, such as a current indivisible step or an active run preventing project movement.
 3. **Scoped recovery banners.** Disconnect/resync marks affected content stale, preserves it and all editing, and offers Retry/Diagnostics without replacing the screen with a spinner.
-4. **Contextual keyboard help.** The status bar shows only the most relevant three-to-five bindings. `?` opens the complete region/action map. Action menus expose every mnemonic.
+4. **Contextual keyboard help.** Wide/XL status shows the most relevant three-to-five bindings and narrower classes follow section 11's smaller budget. `?` opens the complete region/action map. Action menus expose every mnemonic.
 5. **Mode clarity.** The one-of-six mode is visible in title and composer. Research depth is labeled `Research: Ultra (4x10)`, never merely `Ultra`.
 
 ### Priority 2: efficient dense-data navigation
@@ -898,7 +1059,7 @@ The IPC DataSource must pass the same conformance suite as the fake implementati
 4. Implement reducer state, generations, effects, editor, drafts, focus, modals, and scroll anchors through tests.
 5. Implement Scene projection and all responsive shell classes.
 6. Complete switcher, Activity Center, question dialog, and deterministic three-run scenario.
-7. Implement the permanent plain presenter.
+7. Implement the permanent owned, serialized plain line session and presenter.
 
 This sequence produces no canonical-data or real-daemon UI.
 
@@ -975,6 +1136,6 @@ Full parity is a closed traceability and behavioral-testing claim. Selecting ExR
 - Subscribe-before-snapshot and generation checks prevent stale cross-scope updates.
 - Draft, focus, and logical scroll preservation are independent of canonical data updates.
 - Rendering and plain output share sanitization but not cursor-oriented presentation.
-- Accessibility claims apply to plain mode, not the full-screen cell UI.
+- Plain mode is the screen-reader acceptance surface/targeted path; a proven accessibility claim waits for the Phase 5 VoiceOver and Orca workflow. The full-screen cell UI has no such claim.
 - The exact renderer pin and native release matrix are feasibility gates; full release parity requires all later surfaces and daemon guarantees.
 - No requirement in this document permits dropping canonical content, increasing polling to hide an ownership problem, creating atoms from input, or executing domain work inside the TUI.
