@@ -19,11 +19,11 @@
 - `swarm_code_cli` may depend on stable `swarm_code_core` protocol types, but never on `swarm_code_daemon`. No CLI module may start or call FoundationGate, Repo, migrations, scheduler, MCP, database-path resolution, Unix-socket IPC, Git, provider, workflow, or research execution.
 - The fake source is deterministic and separately owned so a client can detach and reconnect while its three scripted run states continue. It never writes a database, project, configuration, credential, draft, or user-state file.
 - Renderer structs, ExRatatui events, NIF resources, Rustler types, and renderer framework state are confined to `apps/swarm_code_cli/lib/swarm_code_cli/ui/renderer/ex_ratatui_013/` and matching tests/support. They never enter Scene, Action, reducer state, DataSource DTOs, core protocol values, JSON fixtures, or plain output.
-- Pin `{:ex_ratatui, "== 0.13.0"}`. The expected Hex package checksum is `5b9a488a8b895b06cef782ba47effd3a7e03a675d0f44d70277349ad70326671`, and the expected outer checksum is `0448833a5de5aed13fb480f57278deefe1ca3ff62af0d32e64515f4af674c030`.
-- Attest the executable Hex package as primary. Record annotated tag object `e47964edac37e776ee8c43bd53241083b0aa8813` and source target `aa68bfc36016d90d6b1317f1f5edc8c4a6f9d045`, while documenting that the tag still contains v0.12 checksums and cannot supply the v0.13 precompiled path. Assert the package's unexpected 5,011,440-byte `native/ex_ratatui/erl_crash.dump` enters neither repository source archives nor assembled releases.
-- Treat the renderer audit as a constraint, not a defect to hide: ExRatatui 0.13.0 TextInput/Textarea edit Unicode scalars and fragment combining marks, ZWJ emoji, and flags; the neutral grapheme editor is authoritative and the adapter renders it with Paragraph/rich spans only. The published aarch64 Linux GNU NIF imports GLIBC_2.39 `pidfd_spawnp`/`pidfd_getpid`, so Ubuntu 22.04 builds must force a target-native source NIF against glibc 2.35 or reject ExRatatui. On Darwin, ExRatatui's normal SIGTERM restoration can leave `PENDIN` changed, so the outer owner must restore the exact pre-init `stty -g` state after the native restore and the four-target lifecycle gate must prove it.
-- ExRatatui/Crossterm materializes an entire bracketed paste as a Rust `String` and then a BEAM binary before adapter validation. The reducer-facing 262,144-byte limit remains defense in depth, but it does not satisfy bounded-while-reading. Exact-0.13.0 evidence must prove a preallocation bound in the selected artifact or mark the dimension failed; absent that proof, the decision rejects in-process ExRatatui rather than claiming the post-allocation check is sufficient.
-- ExRatatui CellSession omits physical cursor position and underline color. The theme never uses colored underline. Cell goldens record the neutral semantic cursor, while a separate fixed-enum cursor-sequence test and real PTY capture prove physical cursor placement; inability to prove both is rejection.
+- The immutable comparison identity is unconditional: ExRatatui `0.13.0`, Hex inner checksum `5b9a488a8b895b06cef782ba47effd3a7e03a675d0f44d70277349ad70326671`, Hex outer checksum `0448833a5de5aed13fb480f57278deefe1ca3ff62af0d32e64515f4af674c030`, annotated tag object `e47964edac37e776ee8c43bd53241083b0aa8813`, and source target `aa68bfc36016d90d6b1317f1f5edc8c4a6f9d045`. The tag still contains v0.12 checksums and cannot supply the v0.13 precompiled path. These are static Gate-0 facts, not dependency-installation instructions.
+- Only if the skipped conditional ExRatatui comparison Tasks 16-27 are separately authorized and executed, pin `{:ex_ratatui, "== 0.13.0"}`, attest the executable Hex package as primary, and assert that its unexpected 5,011,440-byte `native/ex_ratatui/erl_crash.dump` enters neither repository source archives nor assembled releases. The locked Gate-0 rejection branch must add no ExRatatui, Ratatui, Rustler, or Crossterm dependency and must build or attest no native package.
+- Treat these static renderer facts as constraints, not defects to hide: ExRatatui 0.13.0 TextInput/Textarea edit Unicode scalars and fragment combining marks, ZWJ emoji, and flags; its published aarch64 Linux GNU NIF imports GLIBC_2.39 `pidfd_spawnp`/`pidfd_getpid`; and on Darwin its normal SIGTERM restoration can leave `PENDIN` changed. Only a conditionally executed comparison implements the neutral-grapheme Paragraph/rich-span adapter, forces an Ubuntu 22.04 target-native source NIF against glibc 2.35, restores exact pre-init `stty -g`, or produces four-target lifecycle proof.
+- ExRatatui/Crossterm materializes an entire bracketed paste as a Rust `String` and then a BEAM binary before adapter validation. The reducer-facing 262,144-byte limit remains defense in depth, but it does not satisfy bounded-while-reading and is an unconditional static veto. If a conditional comparison is nevertheless authorized, its evidence records this dimension failed rather than pretending post-allocation validation or PTY input makes it pass.
+- ExRatatui CellSession omits physical cursor position and underline color. The neutral theme never uses colored underline. CellSession capture, fixed-enum physical cursor-sequence tests, and real PTY capture are obligations only for the skipped conditional comparison campaign; the locked branch creates none of them.
 - The renderer-neutral width implementation is a licensed Elixir port of the exact `unicode-width` 0.2.2 algorithm/tables used by ExRatatui 0.13.0. Pin crate checksum `b4ac048d71ede7ee76d585517add45da530660ef4390e49b098733c6e897f254`, upstream commit `9d98411769fe13c7c18cab0b3fbbab29ba8350ea`, and Unicode 17.0.0; preserve MIT/Apache-2.0 notices.
 - IDs are binaries. Decoded or runtime input never creates atoms. Unknown renderer codes/modifiers and unknown fake operation strings are rejected through closed compile-time tables.
 - East Asian Ambiguous width has one renderer-neutral capability, defaults to `:narrow`, and is overridden only by `--ambiguous-width=narrow|wide`; neutral editor/projection/Scene must use it. A renderer advertises a supported subset and rejects unsupported policy before init. Exact ExRatatui/Ratatui supports only narrow; it must never fake wide through post-capture repair.
@@ -43,13 +43,13 @@
 
 ```text
 mix.exs
-  Test-environment precommit selection and the fake-only Mix release.
+  Test-environment precommit selection; fake-only Mix release configuration exists only in conditional Task 22.
 
 apps/swarm_code_cli/mix.exs
-  Exact renderer/test dependencies, application module, and test support path.
+  Neutral test dependencies and test support path; conditional renderer/release configuration only in skipped tasks.
 
 apps/swarm_code_cli/lib/swarm_code_cli/application.ex
-  Idle-by-default application boot and explicit fake-demo boot only.
+  Conditional release-only idle boot and explicit fake-demo boot; not created on the locked branch.
 
 apps/swarm_code_cli/lib/swarm_code_cli/ui/{size,input,action,action_target,intent,request_resolver,effect,renderer}.ex
   Closed renderer/presenter-neutral contracts and the one shared Intent-to-Request path; no framework structs or arbitrary payload maps.
@@ -84,11 +84,14 @@ apps/swarm_code_cli/lib/swarm_code_cli/ui/{session_runtime,effect_runner,termina
 apps/swarm_code_cli/lib/swarm_code_cli/plain/{options,environment,presenter,command,session}.ex
   Permanent owned serialized line surface and deterministic commands.
 
-apps/swarm_code_cli/lib/swarm_code_cli/ui/renderer/ex_ratatui_013/
-  The only ExRatatui/Rustler boundary: event normalization, widget mapping, cell capture, local host.
+apps/swarm_code_cli/lib/swarm_code_cli/demo/{plain,finite_input,finite_script}.ex and lib/mix/tasks/swarm_code.demo.plain.ex
+  Unconditional renderer-free fake/plain composition root, paused bounded input device, finite driver, and contributor command.
 
-apps/swarm_code_cli/lib/swarm_code_cli/demo/
-  Explicit fake-only composition root and finite/native acceptance scripts.
+apps/swarm_code_cli/lib/swarm_code_cli/ui/renderer/ex_ratatui_013/
+  Conditional-only ExRatatui/Rustler boundary: event normalization, widget mapping, cell capture, local host; absent on the locked branch.
+
+apps/swarm_code_cli/lib/swarm_code_cli/demo/{supervisor,main}.ex
+  Conditional native-release composition only; Task 22 reuses the unconditional finite/plain root.
 
 apps/swarm_code_cli/test/fixtures/
   Adversarial text, upstream width vectors, fixed fake script, and 87 exact cell frames.
@@ -97,10 +100,10 @@ third_party/unicode-width-0.2.2/
   Exact licensed source inputs and attestation for the renderer-neutral width port.
 
 scripts/acceptance/tui_*.{py,sh,exs}
-  PTY, performance/soak, native dependency inspection, release smoke, and evidence validation.
+  Conditional PTY, performance/soak, native dependency inspection, release smoke, and evidence validation; absent on the locked branch.
 
 .github/workflows/tui-native-bootstrap.yml
-  Audited default-branch dispatcher that checks out an exact feature SHA for closed preflight/native phases.
+  Conditional audited default-branch dispatcher for a future candidate that passes Gate 0; skipped for the locked branch.
 
 docs/evidence/tui-renderer/ and docs/decisions/tui-renderer.md
   Static exact-candidate rejection plus conditional immutable target observations and candidate-scoped outcomes.
@@ -444,6 +447,52 @@ git commit -m "feat: define safe terminal primitives"
         | {:mouse, Input.mouse_kind(), Input.mouse_button() | nil,
            non_neg_integer(), non_neg_integer(), [Input.modifier()]}
 
+@type SwarmCodeCLI.UI.Intent.dispatch_target() ::
+        :main
+        | {:reply, binary()}
+        | {:thread, binary()}
+        | {:revise, binary()}
+        | {:chip, :command | :goal | :research, binary()}
+
+@type SwarmCodeCLI.UI.Intent.permission() ::
+        :send | :queue | :steer
+        | :pause | :continue | :resume | :stop
+        | :answer_question
+        | :approve | :deny | :always_allow
+        | :mark_seen
+
+@type SwarmCodeCLI.UI.Intent.t() ::
+        {:dispatch, :send | :queue, binary(), Intent.dispatch_target(), [binary()]}
+        | {:steer, binary(), binary(), binary(), [binary()]}
+        | {:run_control, :pause | :continue | :resume | :stop, binary()}
+        | {:answer_question, binary(), binary(), binary(), non_neg_integer(), [binary()]}
+        | {:resolve_approval, binary(), binary(), binary(), non_neg_integer(),
+           :approve | :deny | :always_allow}
+        | {:mark_seen, :conversation | :run | :activity, binary(), non_neg_integer()}
+
+@type SwarmCodeCLI.UI.RequestResolver.Context.origin() ::
+        {:draft, DraftKey.t()}
+        | {:run, binary()}
+        | {:interaction, binary(), non_neg_integer()}
+        | {:seen, :conversation | :run | :activity, binary(), non_neg_integer()}
+
+@type SwarmCodeCLI.UI.RequestResolver.Context.interaction() ::
+        nil
+        | {:question | :approval, binary(), binary(), binary(), non_neg_integer()}
+
+@type SwarmCodeCLI.UI.RequestResolver.Context.t() :: %RequestResolver.Context{
+        scope: SwarmCode.Protocol.Scope.t(),
+        scope_generation: non_neg_integer(),
+        origin: RequestResolver.Context.origin(),
+        active_run_id: binary() | nil,
+        active_node_id: binary() | nil,
+        interaction: RequestResolver.Context.interaction(),
+        editor_text: binary(),
+        dispatch_target: Intent.dispatch_target(),
+        attachment_refs: [binary()],
+        allowed_actions: [Intent.permission()]
+      }
+
 @type SwarmCodeCLI.UI.Action.t() ::
         :boot
         | {:resize, Size.t()}
@@ -489,15 +538,22 @@ git commit -m "feat: define safe terminal primitives"
         | {:bell, :needs_you}
         | {:presenter_handoff, :plain}
         | {:detach, non_neg_integer()}
+
+Destination.conversation(binary()) :: Destination.t()
+Destination.run(binary()) :: Destination.t()
+Destination.activity() :: Destination.t()
+LayerSpec.help() :: LayerSpec.t()
+LayerSpec.run_inspector(binary(), :overview | :agents | :timeline | :changes) :: LayerSpec.t()
 ```
 
 - Key codes are the closed special-key atoms plus `{:function, 1..12}`. Textual keys are valid UTF-8 fragments, never runtime atoms. Modifiers, mouse kinds/buttons, lifecycle states, error codes, request kinds, and effect variants use closed compile-time values.
 - Committed text fragments are at most 4,096 bytes; paste is at most 262,144 bytes and must be bounded while read. Overflow emits one typed rejection, retains no rejected bytes, and leaves the active editor unchanged; truncation is forbidden. Exact ExRatatui's post-allocation cap cannot satisfy this contract and is a static veto.
 - Terminal generation/capability actions let resize/resume update reducer state without a renderer type. Draw results carry a runtime-issued opaque draw token and the exact Scene revision attempted. `terminal_control` is interpreted only by SessionRuntime/LauncherControl; Reducer never sends an OS signal.
 - `FieldKey` is the exact closed union `{:layer_query, layer_id, :switcher | :jump | :action_menu} | {:region_filter, region_id} | {:question_other, interaction_id, revision}`. It cannot alias a `DraftKey`.
-- `ActionTarget.t()` is exactly `{:local, Action.t()} | {:intent, Intent.t()}`. Intent has only bounded send/queue, run-control, Steer, revisioned answer, revisioned `:approve | :deny | :always_allow`, and mark-seen forms. `RequestResolver.resolve/4` consumes normalized scope/origin/revision/editor/attachment/`allowed_actions` context plus fixed request ID/deadline and returns one typed `DataSource.Request` or `:not_allowed | :stale_revision | :invalid_origin | :invalid_intent`; it never consumes a label/action ID or performs I/O.
+- `ActionTarget.t()` is exactly `{:local, Action.t()} | {:intent, Intent.t()}`. The Intent and Context unions are exactly the interface block above; no shorthand tuple, optional map key, or presenter-specific variant is allowed. IDs/references are valid UTF-8 control-free binaries of 1-256 bytes. Dispatch/Steer text is meaningful after `String.trim/1` and at most 262,144 bytes; attachment references are ordered/unique with at most 16 entries; answer option IDs are ordered/unique with at most 16 entries. Context `allowed_actions` is ordered/unique and contains only the closed permission atoms.
+- `RequestResolver.resolve/4` compares dispatch/Steer payload to the context editor/target/attachments, run controls to run origin/`active_run_id`, question/approval identity to interaction origin plus the exact interaction tuple, and mark-seen to exact `{:seen, kind, id, revision}` origin. Dispatch has `nil` active IDs/interaction; Steer has exact active run/node and canonical target `:main`; non-text commands have canonical `""` editor, `:main` target, and `[]` attachments, with unused active IDs/interaction set to `nil`. It also requires the exact permission (`:always_allow` is distinct from `:approve`). Malformed/bound-invalid input returns `:invalid_intent`, missing permission `:not_allowed`, interaction/seen revision mismatch `:stale_revision`, and scope/origin/run/node/payload mismatch `:invalid_origin`. It accepts no label/action ID, performs no I/O, and never fills a mismatch from UI state.
 - `DataSource` callbacks are exactly `start_link(options)`, `bind_owner(server, owner_handle, binding_ref)`, `watch`, `unwatch`, `query`, `command`, `cancel`, and `close`. Before the one successful reference-correlated owner bind, admission fails closed and no delivery is emitted. `Watch`, `Request`, `Delivery`, and `AdmissionError` have their final closed structural fields now; typed DTO bodies arrive later.
-- Only key `:press` can activate/mutate/submit/queue/detach. `:repeat` is admitted only for editor insertion/deletion/movement/selection, logical row movement, and scroll; `:release` is inert. Focus input resolves to a generation-correlated terminal-focus Action. Resize help is a fixed layer action because a client cannot resize its emulator. Presenter handoff means default-Cancel unsent-text confirmation when any DraftKey/FieldKey editor is nonempty, then orderly restore and a fixed `Rerun with --plain` exit instruction, not an in-process renderer swap.
+- Only key `:press` can activate/mutate/submit/queue/detach. `:repeat` is admitted only for editor insertion/deletion/movement/selection, logical row movement, and scroll; `:release` is inert. Focus input resolves to a generation-correlated terminal-focus Action. Resize help is a fixed layer action because a client cannot resize its emulator. Presenter handoff uses the one `Draft.dirty?/1` plus byte-nonempty-FieldKey guard, opens the fixed default-Cancel `UNSENT CHANGES` confirmation when dirty, then on explicit confirmation performs orderly restore and prints fixed `Rerun with --plain`; it is not an in-process renderer swap.
 - Add `{:stream_data, "== 1.4.0", only: :test, runtime: false}` once and add `test/support` through `elixirc_paths/1`.
 
 - [ ] **Step 1: Write RED closed-union tests**
@@ -517,9 +573,18 @@ end
 
 test "TUI and plain intents resolve to the same request bytes" do
   context = ContractFixtures.q1_resolution_context(allowed_actions: [:answer_question, :always_allow])
-  intent = Intent.answer_question("run-a2", "node-a2", "q1", 7, ["option-2"])
+  intent = {:answer_question, "run-a2", "node-a2", "q1", 7, ["option-2"]}
   assert {:ok, request} = RequestResolver.resolve(intent, context, "request-42", 1_788_438_400_000)
   assert ContractFixtures.canonical_request_bytes(request) == ContractFixtures.expected_q1_request_bytes()
+end
+
+test "resolver does not infer always-allow or repair a mismatched context" do
+  context = ContractFixtures.approval_context(allowed_actions: [:approve, :deny])
+  always = {:resolve_approval, "run-a2", "node-a2", "approval-1", 4, :always_allow}
+  assert {:error, :not_allowed} = RequestResolver.resolve(always, context, "request-43", 1_788_438_400_000)
+
+  mismatched = {:run_control, :stop, "other-run"}
+  assert {:error, :invalid_origin} = RequestResolver.resolve(mismatched, context, "request-44", 1_788_438_400_000)
 end
 
 test "random input strings do not grow the atom table" do
@@ -966,6 +1031,7 @@ Editor.visible_slice(Editor.t(), pos_integer(), pos_integer(), :narrow | :wide) 
 
 DraftKey.t() :: {binary(), :main | {:thread, binary()} | {:edit, binary()}}
 Draft.new(DraftKey.t(), Editor.t()) :: Draft.t()
+Draft.dirty?(Draft.t()) :: boolean()
 Drafts.fetch(Drafts.t(), DraftKey.t()) :: Draft.t()
 Drafts.put(Drafts.t(), Draft.t()) :: Drafts.t()
 Drafts.clear_origin(Drafts.t(), DraftKey.t(), binary()) :: Drafts.t()
@@ -977,14 +1043,14 @@ FieldEditors.close_owner(FieldEditors.t(), binary()) :: FieldEditors.t()
 - Operations are bounded valid-UTF-8 committed text fragment/resegment, one bounded paste, delete backward/forward/word, logical left/right/up/down, word movement, line Home/End, buffer Home/End, selection extension, select all, undo, redo, explicit newline, and `{:undo_boundary, boundary_id}`. The editor resegments the affected local neighborhood into extended graphemes. Terminals expose no browser-style composition lifecycle, so no composition operation/state is invented. Shift extends selection. Paste/newline/movement/selection/undo/redo close the current undo group. Contiguous insert/delete schedules or replaces one 1,000 ms timer carrying the current boundary ID; a stale boundary is inert, so the pure editor reads no clock. Paste never produces invoke/send. Copy/cut/OSC 52 are not in this spike.
 - Default editor text bound is 262,144 bytes. Undo is bounded to 100 records and 1,048,576 bytes; eviction drops only derived undo history, never current text.
 - `Editor.visible_slice/4` returns a grapheme-aligned viewport around the cursor bounded to 8,192 source bytes plus logical row/cell metadata using the one capability ambiguous-width policy. Projector passes only this slice to `SafeText.external/2`, so every admitted 262,144-byte draft remains editable even when control escaping would make the whole value exceed a single Scene bound.
-- `Draft` carries exact editor state, vertical/horizontal editor scroll, Reply/Steer/Revise/command/goal/research chip state, attachment metadata references only, validation state, and height clamped to 1-8 rows.
+- `Draft` carries exact editor state, vertical/horizontal editor scroll, `target: :none | Intent.dispatch_target()`, bounded `chips`, attachment metadata references only, `staged_validation: :none | {:pending, binary()} | {:valid, binary()} | {:invalid, [binary()]}`, and height clamped to 1-8 rows. `Draft.dirty?/1` is exactly `String.trim(Editor.text(draft.editor)) != "" or draft.target != :none or draft.chips != [] or draft.attachments != [] or draft.staged_validation != :none`. Cursor, selection, editor scroll, height, and layout preferences do not contribute. The process-exit guard adds a separate `Editor.text(field_editor) != ""` check for every FieldKey; whitespace-only FieldKey text is therefore guarded. No reducer/projector/keymap/degenerate-layout caller may implement another emptiness predicate.
 - A clear operation requires both the exact draft key and originating request ID. It cannot clear a currently newer submission or any other conversation draft.
 - `FieldEditors` holds only the closed `FieldKey` values from Task 4, caps each at 16,384 bytes, and clears by owning layer/region. It never aliases or clears `Drafts`. Switcher/filter/Other paste, committed fragments, cursor, selection, and undo are therefore isolated from the hidden composer.
 - RTL input remains logical-grapheme ordered. Tests assert the visible caret and selection cell edges under the chosen width policy rather than treating Arabic/Hebrew codepoint indices as visual coordinates. `Ctrl+C` is handled by the keymap, not Editor: it is a no-op notice in every text context and detach outside one.
 
 - [ ] **Step 1: Write Unicode editing and draft-isolation RED tests**
 
-Exercise fragmented committed UTF-8 input and local grapheme resegmentation, composed/decomposed accents, Georgian, Arabic/Hebrew logical editing/visible caret edges, CJK, both neutral ambiguous-width policies, skin tones, flags, family/occupation ZWJ sequences, VS15/VS16, word and line/buffer motion/deletion, Shift selection, exact boundary-ID undo grouping/eviction, multiline vertical movement, selection replacement, 100 repeated paste events, 262,144-byte acceptance and one 262,145-byte `:paste_too_large` rejection with unchanged editor, navigation fetch/restore, per-origin clearing, and FieldKey/DraftKey isolation. Assert no composition/copy/cut operation exists.
+Exercise fragmented committed UTF-8 input and local grapheme resegmentation, composed/decomposed accents, Georgian, Arabic/Hebrew logical editing/visible caret edges, CJK, both neutral ambiguous-width policies, skin tones, flags, family/occupation ZWJ sequences, VS15/VS16, word and line/buffer motion/deletion, Shift selection, exact boundary-ID undo grouping/eviction, multiline vertical movement, selection replacement, 100 repeated paste events, 262,144-byte acceptance and one 262,145-byte `:paste_too_large` rejection with unchanged editor, navigation fetch/restore, per-origin clearing, and FieldKey/DraftKey isolation. Add table cases for meaningful text, whitespace-only text, target-only, chip-only, metadata-only attachment, staged-validation-only, and cursor/selection/scroll/height-only drafts; assert the exact `Draft.dirty?/1` result and that byte-nonempty FieldKey text is checked separately. Assert no composition/copy/cut operation exists.
 
 ```elixir
 test "paste is one grapheme-safe edit and cannot submit" do
@@ -1082,12 +1148,12 @@ MutationState.t() ::
 - Moving, paging, `G`, or search at an unloaded edge emits exactly one correlated page query and installs a visible loading sentinel; repeat movement does not duplicate it. Failure makes the sentinel retryable. Closed/resyncing retain visible rows. `off_window` retains focus/anchor; confirmed removal repairs to the successor at the same visual bias, then predecessor, then empty-state focus. Supersession remains visible and never enters removal repair.
 - Navigator preferred/reset is 26 with compact/balanced/wide 24/28/32; Inspector preferred/reset is 42 with 38/46/56. Nudges change preferred by -8/-2/+2/+8. Effective values clamp to dock bounds and Main>=50 without overwriting preference, so widening restores it. Composer uses ±1/reset within 1-8.
 - `:back` restores the complete saved Activity context. `{:invoke, intent, request_id}` calls pure RequestResolver with State's normalized context, synchronously installs `{:pending, request_id, intent}` before its command Effect, and suppresses duplicate/repeat invoke. The exact settled atoms are `:accepted | :needs_input | :rejected | :deadline_exceeded | :interrupted | :revision_conflict | :outcome_unknown`; only `:accepted` clears the exact origin.
-- A contiguous insert/delete emits cancel/start of one 1,000 ms timer carrying `{:undo_boundary, boundary_id}`; stale IDs do nothing. No copy/cut/clipboard effect exists. Current-generation terminal-focus actions pause/resume visible motion, while stale generations change no byte. Detach/plain handoff with any nonempty DraftKey/FieldKey opens default-Cancel unsent-text confirmation; only `{:quit_confirmed, :detach}` or `{:presenter_handoff_confirmed, :plain}` emits the recorded exit path.
+- A contiguous insert/delete emits cancel/start of one 1,000 ms timer carrying `{:undo_boundary, boundary_id}`; stale IDs do nothing. No copy/cut/clipboard effect exists. Current-generation terminal-focus actions pause/resume visible motion, while stale generations change no byte. Every detach/plain-handoff branch calls `Draft.dirty?/1` for DraftKeys and exact byte-nonempty text for FieldKeys. Dirty state opens the `UNSENT CHANGES` default-Cancel confirmation; only `{:quit_confirmed, :detach}` or `{:presenter_handoff_confirmed, :plain}` emits the recorded exit path.
 - `OrderedIdSet` stores insertion order plus a membership index, admits at most 512 IDs for the current bounded window, and never presents map-enumeration order. Duplicate insertion preserves position. Overflow marks the watch snapshot-required and requests resync rather than silently evicting an unseen canonical item.
 
 - [ ] **Step 1: Write stale/gap/navigation/scroll RED tests**
 
-Use the complete reducer list in spec section 17.2, including page-edge loading/error/retry/closed/resync, off-window versus removal repair, FieldKey isolation, exact dock/reset/preference clamps, Back, key-phase/exact MutationState settlement, RequestResolver, undo-boundary timer, unsent-text confirmation, and focus-graph/terminal-generation state. Also assert a higher terminal generation replaces size/capabilities and reprojects without changing draft/focus/scroll, while stale generations, focus actions, and draw results change nothing. Include this ordering assertion:
+Use the complete reducer list in spec section 17.2, including page-edge loading/error/retry/closed/resync, off-window versus removal repair, FieldKey isolation, exact dock/reset/preference clamps, Back, key-phase/exact MutationState settlement, RequestResolver, undo-boundary timer, the single dirty predicate and `UNSENT CHANGES` confirmation, and focus-graph/terminal-generation state. Include target-only, metadata-only attachment, staged-validation-only, whitespace-only composer, byte-nonempty FieldKey, and clean cursor/selection/scroll/height-only exit cases. Also assert a higher terminal generation replaces size/capabilities and reprojects without changing draft/focus/scroll, while stale generations, focus actions, and draw results change nothing. Include this ordering assertion:
 
 ```elixir
 {next, effects} = Reducer.update(state, {:navigate, %Destination{kind: :conversation, id: "conversation-b"}})
@@ -1153,34 +1219,35 @@ git commit -m "feat: reduce correlated async UI state"
 **Interfaces:**
 
 ```elixir
-Layout.classify(Size.t()) :: :xl | :wide | :medium | :narrow | :small | :too_small
+Layout.classify(Size.t()) ::
+  :xl | :wide | :medium | :narrow | :small | :compressed_small | :too_small
 Layout.regions(State.t()) :: [Scene.Region.t()]
 Projector.project(State.t()) :: {Scene.t(), %{required(binary()) => ActionTarget.t()}}
 
 Fixtures.representative(:chat | :swarm | :consensus | :research, Size.t(), Capabilities.t()) :: State.t()
 ```
 
-- Classification is exact: XL `>=170x34`; Wide `>=150x30`; Medium `>=100x24`; Narrow `>=72x20`; Small `>=50x16`; compressed Small `>=50x14`; Too small otherwise. A width-qualified layout missing height falls to the highest lower class whose minima it satisfies.
+- Classification is exact and uses distinct atoms: XL `>=170x34`; Wide `>=150x30`; Medium `>=100x24`; Narrow `>=72x20`; Small `>=50x16`; Compressed Small `>=50x14` as `:compressed_small`; Too small otherwise. A width-qualified layout missing height falls to the highest lower class whose minima it satisfies.
 - At Wide/XL, Navigator reset/default is 26 with presets 24/28/32 and clamp 24-32; Inspector reset/default is 42 with presets 38/46/56 and clamp 38-56; Main remains at least 50 without erasing preferred values. Medium docks Main plus exactly one persisted drawer. Narrow uses Main and full-height overlays. Small uses one-row title, Main, at most two-row needs-you strip, compact composer, and status. Compressed Small retains `Resize help`/Help/Detach/`Exit; rerun with --plain` and hides destructive/send actions. Too small uses the exact degenerate clipped-line/key fallback; it never claims the process can resize the emulator or swap presenter in-process.
 - Main composer height is 1-8; needs-you is at most two; run logs are at most 45 percent of viewport unless maximized. No region overlaps, leaves the screen, or creates whole-screen horizontal scroll.
-- `Projector.Density` implements the exact per-class budgets/degradation order in contract section 11. At `>=50x14`, mode, state, Needs-you, target, validation/error, and focus identity never disappear. Below that floor it renders only prefix-clipped `SIZE … NEED 50x14`, `? HELP`, `q DETACH`, `P EXIT; RERUN --plain` lines as rows/cells allow; those three keys remain active even at `1x1`, and no operational-fact visibility is claimed. Nonempty local text makes q/P enter the clipped `UNSENT TEXT` / `Esc CANCEL` / `X CONFIRM EXIT` state; Enter is inert and only uppercase X confirms. Secondary metadata collapses only in operational layouts. Names/models end-elide, paths/project-branch/refs/filenames middle-elide by cells and ambiguous-width policy.
+- `Projector.Density` implements the exact per-class budgets/degradation order in contract section 11. At `>=50x14`, mode, state, Needs-you, target, validation/error, and focus identity never disappear. Below that floor it renders only prefix-clipped `SIZE … NEED 50x14`, `? HELP`, `q DETACH`, `P EXIT; RERUN --plain` lines as rows/cells allow; those three keys remain active even at `1x1`, and no banner/mode/domain-state/focus visibility is claimed. When the one `Draft.dirty?/1` plus byte-nonempty-FieldKey guard is true, q/P enters the clipped `UNSENT CHANGES` / `Esc CANCEL` / `X CONFIRM EXIT` state; Enter is inert and only uppercase X confirms. Secondary metadata collapses only in operational layouts. Names/models end-elide, paths/project-branch/refs/filenames middle-elide by cells and ambiguous-width policy.
 - Projector owns visible/enabled actions, fixed labels, focus indicator, cursor, exact state catalogue, action IDs, and responsive collapse. It intersects every Intent with DTO `allowed_actions`; it never invents domain permission. Base `FAILED`/`INTERRUPTED` gain Retry/Resume suffixes only when authorized; `QUEUED` uses warning; run kinds use unique A/G/S/W/R/C/U prefixes. Pending mutations disable duplicate action IDs and project every exact MutationState settlement distinctly.
 - Temporarily disabled actions show the DTO's sanitized safe reason. A stale/resyncing slot keeps its content visible and projects a scoped recovery Notice with Retry and Diagnostics rather than a blocking spinner. The status region follows the density budget—three-to-five bindings only at Wide/XL and one plus `?` at Small; `?` opens the complete current region/action map.
 - Superseded turns remain losslessly visible/muted with `SUPERSEDED`, no live bar/Needs-you/Reply/Retry, and retained Inspect/Copy/Fork. Their running children show `LAUNCHED BY SUPERSEDED TURN` and keep server-authorized Stop; planner/implementation linkage remains visible through Approve/Revise.
 - Title/composer always name the single fake mode explicitly. Research depth is rendered as `Research: Ultra (4x10)`, never as the ambiguous standalone word `Ultra`. Hidden regions keep selection/anchor facts without animation or repeated layout work.
-- Dialog projection keeps title/breadcrumb/footer sticky, gives the body an independent logical scroll anchor, minimally auto-reveals the focused wrapped option, and exposes `item x of y` overflow. Resize retains focus/body anchor; at `50x14` an open submit/destructive dialog becomes a read-only Back/Close/Help summary with no hidden action ID. Unsent-text detach/plain-relaunch confirmation uses fixed warning copy and initial Cancel focus.
+- Dialog projection keeps title/breadcrumb/footer sticky, gives the body an independent logical scroll anchor, minimally auto-reveals the focused wrapped option, and exposes `item x of y` overflow. Resize retains focus/body anchor; at `50x14` an open submit/destructive dialog becomes a read-only Back/Close/Help summary with no hidden action ID. Detach/plain-relaunch confirmation uses fixed `UNSENT CHANGES` copy and initial Cancel focus.
 - Apply the contract's anti-box-soup rule: prose is unboxed, a prompt/run group has one boundary/progress rail, panes use separators/space, overlays have the strongest border, and focus/live are the only orange roles. Kind letters and numbered lanes remain present in monochrome/ASCII.
 - The four fixed surfaces are streaming chat/composer, swarm/agent pane, consensus docket/ticker/ledger, and research report/sources. They are representative visual evidence only; static consensus/workflow/research blocks do not claim domain functionality.
 
 - [ ] **Step 1: Write breakpoint and projection RED tests**
 
-Generate one cell above/below every width and height boundary and include `1x1`, `10x3`, and `49x13`. Assert exact class, operational versus degenerate visibility rules, safe key routes, focus relocation/restoration, minimum Main width where applicable, no overlap, exact density budget, and no destructive/send action in compressed/too-small output, including a dialog already open before shrinking.
+Generate one cell above/below every width and height boundary and include `1x1`, `10x3`, and `49x13`. Assert exact class, operational versus degenerate visibility rules, safe key routes, focus relocation/restoration where promised, minimum Main width where applicable, no overlap, exact density budget, and no destructive/send action in compressed/too-small output, including a dialog already open before shrinking. At Too small assert only the four clipped fallback lines and explicitly refute banner/mode/domain-state/focus-identity blocks. Exercise clean, target-only, metadata-only attachment, staged-validation-only, and byte-nonempty FieldKey degenerate exits through the same guard.
 
 ```elixir
 assert Layout.classify(%Size{columns: 170, rows: 34}) == :xl
 assert Layout.classify(%Size{columns: 169, rows: 34}) == :wide
 assert Layout.classify(%Size{columns: 150, rows: 29}) == :medium
-assert Layout.classify(%Size{columns: 50, rows: 14}) == :small
+assert Layout.classify(%Size{columns: 50, rows: 14}) == :compressed_small
 assert Layout.classify(%Size{columns: 49, rows: 14}) == :too_small
 assert Layout.classify(%Size{columns: 50, rows: 13}) == :too_small
 ```
@@ -1248,7 +1315,7 @@ Question.answer_intent(State.t(), PendingInteraction.t(), binary()) :: Intent.t(
 - `Tab`/`Shift+Tab` cycle the explicit focus graph. `Ctrl+O` always inserts newline. Enhanced `Shift+Enter` inserts newline only when capabilities say it is distinguishable. `Alt+Enter` and `/queue` resolve to the same queue Intent. Paste resolves only to one editor paste action. Terminal protocols supply committed fragments, not browser-style IME lifecycle; fragments apply before a later Enter in input order.
 - Only `:press` activates, submits, answers, approves, denies, stops, confirms, queues, or invokes a shortcut. `:repeat` is limited to editor/movement/selection/scroll operations; `:release` is inert. A valid activation installs pending state before emitting exactly one command and removes/disables its action ID until one correlated outcome settles it.
 - Input focus events resolve to `{:terminal_focus, :gained | :lost, state.terminal_generation}`; stale generations are inert. Mouse structs normalize in adapter tests but always resolve `:ignore`, because the spike has no hit map/live capture.
-- `Ctrl+C` inside every DraftKey/FieldKey editor is a no-op plus `EXIT EDITOR BEFORE DETACH`; outside text entry it requests detach. Detach or plain relaunch with any nonempty local editor opens a fixed unsent-text confirmation with Cancel focused. Only an explicit press on Confirm may close the process.
+- `Ctrl+C` inside every DraftKey/FieldKey editor is a no-op plus `EXIT EDITOR BEFORE DETACH`; outside text entry it requests detach. Detach or plain relaunch uses the single `Draft.dirty?/1` plus byte-nonempty-FieldKey guard and opens the fixed `UNSENT CHANGES` confirmation with Cancel focused when dirty. Only an explicit press on Confirm may close the process.
 - Activity order is Needs-you by earliest deadline/oldest creation, then running/paused, recent failures, recent completions, with stable timestamp/ID tie breaks. The fixture has two questions and one approval across conversations plus overflow. Opening any item stores destination/focus/row/selection/Main+Inspector anchors; Back restores all of it exactly.
 - Needs-you bell is opt-in and fires once per newly visible unresolved interaction. Completion/failure remains durable in Activity and never steals focus or forces navigation.
 - A question modal traps focus, uses fixed option labels plus sanitized external bodies, and routes Other through `FieldKey`. It keeps sticky title/breadcrumb/footer, independently scrolls/wraps the body, auto-reveals focused rows, starts on the safest action, and Escape does not answer/skip. Tab/Shift+Tab and arrows work with first/last controls offscreen and after resize. Answer option 2 emits one revision-7 Intent; RequestResolver emits exactly one command request containing A2 run/node/interaction IDs and fixed request UUID. Pending visibly disables resubmission; `:accepted` then resolved marks the modal settled/read-only. Every other exact MutationState settlement preserves the selection/Other editor and shows corrective state. Resolution by another client settles read-only without focus theft; a later close or Back restores the Activity row/context. Authorized approval exposes `:always_allow`; absent authorization hides it in both TUI and plain.
@@ -1256,7 +1323,7 @@ Question.answer_intent(State.t(), PendingInteraction.t(), binary()) :: Intent.t(
 
 - [ ] **Step 1: Write priority/focus/question RED tests**
 
-Cover all key tables relevant to the fake surface plus press/repeat/release gating, injected mouse normalization→ignore, FieldKey paste/committed-fragment isolation, approved switcher prefixes/ranking/no-results/async selection repair, modal focus trap/autoreveal/body scroll, Small resize suppression, single Escape, Back, safest default, exact Activity return, settled-by-other-client behavior, pending duplicate suppression, all seven exact MutationState settlements, paste-not-submit, exact dock/composer controls, stale/current terminal-focus actions, Ctrl+C context rule, unsent-text confirmation, and queue Intent equivalence.
+Cover all key tables relevant to the fake surface plus press/repeat/release gating, injected mouse normalization→ignore, FieldKey paste/committed-fragment isolation, approved switcher prefixes/ranking/no-results/async selection repair, modal focus trap/autoreveal/body scroll, Small resize suppression, single Escape, Back, safest default, exact Activity return, settled-by-other-client behavior, pending duplicate suppression, all seven exact MutationState settlements, paste-not-submit, exact dock/composer controls, stale/current terminal-focus actions, Ctrl+C context rule, dirty-state `UNSENT CHANGES` confirmation including target-only/metadata-only/degenerate routes, and queue Intent equivalence.
 
 ```elixir
 test "answering Q1 carries exact compare-and-set identity once" do
@@ -1317,7 +1384,7 @@ SessionRuntime.register_terminal(server(), GenServer.server(), non_neg_integer()
   {:ok, :ets.tid()} | {:error, :not_binding | :duplicate_terminal | :binding_failed}
 SessionRuntime.input(server(), Input.t()) :: :ok
 SessionRuntime.snapshot(server()) :: State.t()
-SessionRuntime.close(server(), :detach) :: :ok
+SessionRuntime.close(server(), {:confirmed, :detach}) :: :ok
 
 EffectRunner.run(Effect.t(), context()) :: :ok
 ```
@@ -1326,13 +1393,13 @@ EffectRunner.run(Effect.t(), context()) :: :ok
 - Once running, `SessionRuntime` serializes terminal input, DataBridge actions, terminal generation/capability/lifecycle actions, draw settlements, request settlements, and timer actions. It applies every matching semantic event immediately, updates the Scene/ActionTable, and has at most one current-frame draw timer. Additional semantic updates mark the frame dirty but remain individually present in state.
 - `SceneSlot` is a protected, runtime-owned ETS table with one latest already-sanitized Scene keyed by revision and a fixed byte ceiling. SessionRuntime writes it and sends the renderer only `{:draw, revision}`. TerminalOwner reads that exact revision and returns a compact acknowledgment/error, then drops the local Scene value. Whole Scene/draft/transcript values never become a terminal process's retained state or last mailbox message, preventing crash reports from printing visible content. Destroy the table when SessionRuntime stops.
 - `SessionRuntime`, `DataSource.Fake`, and `Fake.Source` implement redacted `format_status/1` output containing counts/IDs/status words only; no draft, SafeText value, transcript, reasoning, question body, or Scene appears in Logger crash reports.
-- `EffectRunner` dispatches only the closed Effect union. It owns timers under `TimerSupervisor`, including exact editor undo-boundary replacement, forwards typed watch/query/command/cancel to the fake adapter, and reports one exact MutationState settlement. No clipboard effect exists. After reducer-confirmed presenter handoff, it completes terminal restore/closure, emits the fixed control-free `Rerun with --plain` instruction, and detaches; it never bypasses the nonempty-editor default-Cancel confirmation or starts Plain.Session inside the same full-screen tree.
+- `EffectRunner` dispatches only the closed Effect union. It owns timers under `TimerSupervisor`, including exact editor undo-boundary replacement, forwards typed watch/query/command/cancel to the fake adapter, and reports one exact MutationState settlement. No clipboard effect exists. After reducer-confirmed presenter handoff, it completes terminal restore/closure, emits the fixed control-free `Rerun with --plain` instruction, and detaches; it never bypasses the `Draft.dirty?/1` plus byte-nonempty-FieldKey default-Cancel confirmation or starts Plain.Session inside the same full-screen tree. `SessionRuntime.close/2` accepts only the internal `{:confirmed, :detach}` token emitted while settling a reducer detach Effect; callers request exit through input/Action, never by invoking close directly.
 - Draw failure becomes a typed safe error and starts orderly terminal/client closure. Client detach first projects a fixed final `DETACHED — RUNS CONTINUE` Scene, writes it to SceneSlot, requests its draw, and waits for that matching acknowledgment within the owned deadline; it then cancels UI timers/requests/watches and closes the client DataSource whether the paint succeeded or failed. It emits no run/agent/domain Stop command.
 - Test renderer accepts only draw tokens/revisions, reads the matching SceneSlot entry, and sends deterministic acknowledgements/errors. It contains no ExRatatui type and never retains the Scene in state/messages.
 
 - [ ] **Step 1: Write runtime RED tests**
 
-Assert both bind-ack orders emit no watch/draw early and exactly one initial set afterward; duplicate/data/terminal bind failure rolls back every resource. Then assert 100 ordered semantic deltas are all applied while at most one pending paint timer exists, an update arriving after timer creation is included in the next actual draw, an update arriving during an in-flight draw schedules the next draw after its acknowledgment, stale/mismatched draw results do nothing, resize/capability generation changes reproject, current/stale terminal-focus generations pause correctly, final confirmed detach/handoff paint is attempted once, nonempty-editor Cancel keeps the process/state, hidden/reduced-motion states own no animation timer, renderer error settles closure, and all timers/requests/watches disappear under monitored shutdown.
+Assert both bind-ack orders emit no watch/draw early and exactly one initial set afterward; duplicate/data/terminal bind failure rolls back every resource. Then assert 100 ordered semantic deltas are all applied while at most one pending paint timer exists, an update arriving after timer creation is included in the next actual draw, an update arriving during an in-flight draw schedules the next draw after its acknowledgment, stale/mismatched draw results do nothing, resize/capability generation changes reproject, current/stale terminal-focus generations pause correctly, final confirmed detach/handoff paint is attempted once, and Cancel keeps drafts/focus/selection/anchors/source/effect history unchanged for meaningful-text, target-only, metadata-only attachment, staged-validation-only, and byte-nonempty FieldKey states. Prove cursor/selection/scroll/height-only and whitespace-only composer state are clean; prove dirty behavior and explicit-confirm-only exit again at `1x1`, `10x3`, and `49x13`; test plain-handoff Cancel/Confirm separately from detach and assert only confirmation emits `Rerun with --plain`. Hidden/reduced-motion states own no animation timer, renderer error settles closure, and all timers/requests/watches disappear under monitored shutdown.
 
 Write the entire spec section 15 script as one deterministic test, including:
 
@@ -1345,7 +1412,7 @@ assert counts == %{running: 2, waiting: 1}
 assert q1.expected_revision == 7
 ```
 
-The test must advance named fake barriers, not time. It creates A and B drafts, navigates A→B→Activity→A, delivers one deliberately late A response, answers Q1 option 2, resizes `160x50 → 80x24 → 50x14 → 160x50`, rejoins Main with End, detaches, then starts a new client adapter against the continuing source. Assert exact cursor, nonempty selection, chips, attachment metadata, heights, independent anchors, deduplicated unseen IDs, A1/A2/B1 states, and no domain Stop request.
+The test must advance named fake barriers, not time. It creates A and B drafts, navigates A→B→Activity→A, delivers one deliberately late A response, answers Q1 option 2, resizes `160x50 → 80x24 → 50x14 → 160x50`, and rejoins Main with End. It then snapshots drafts/focus/selections/Main+Inspector anchors/source/effect history, requests detach through the user action, asserts `UNSENT CHANGES` with Cancel focused and no exit effect, activates the default Cancel, and asserts those captured values unchanged. It requests detach again, explicitly moves focus to Confirm, activates it, asserts only then that the ordered detach effects occur, and starts a new client adapter against the continuing source. Assert exact cursor, nonempty selection, chips, attachment metadata, heights, independent anchors, deduplicated unseen IDs, A1/A2/B1 states, and no domain Stop request. Plain handoff is not part of this canonical script; its independent runtime test exercises Cancel then explicit Confirm and the one fixed instruction.
 
 - [ ] **Step 2: Run RED**
 
@@ -1378,7 +1445,7 @@ git commit -m "feat: prove async fake TUI continuity"
 
 ---
 
-### Task 15: Add the Permanent Plain, ASCII, No-Color, and Reduced-Motion Surface
+### Task 15: Add the Permanent Plain Surface and Runnable Renderer-Free Fake Demo
 
 **Files:**
 - Create: `apps/swarm_code_cli/lib/swarm_code_cli/plain/options.ex`
@@ -1386,80 +1453,181 @@ git commit -m "feat: prove async fake TUI continuity"
 - Create: `apps/swarm_code_cli/lib/swarm_code_cli/plain/presenter.ex`
 - Create: `apps/swarm_code_cli/lib/swarm_code_cli/plain/command.ex`
 - Create: `apps/swarm_code_cli/lib/swarm_code_cli/plain/session.ex`
+- Create: `apps/swarm_code_cli/lib/swarm_code_cli/demo/plain.ex`
+- Create: `apps/swarm_code_cli/lib/swarm_code_cli/demo/finite_input.ex`
+- Create: `apps/swarm_code_cli/lib/swarm_code_cli/demo/finite_script.ex`
+- Create: `apps/swarm_code_cli/lib/mix/tasks/swarm_code.demo.plain.ex`
 - Create: `apps/swarm_code_cli/test/fixtures/plain/three_run_output.txt`
-- Create: `apps/swarm_code_cli/test/fixtures/plain/question_commands.json`
+- Create: `apps/swarm_code_cli/test/fixtures/plain/command_conformance.json`
+- Create: `apps/swarm_code_cli/test/support/request_conformance.ex`
 - Create: `apps/swarm_code_cli/test/swarm_code_cli/plain/options_test.exs`
 - Create: `apps/swarm_code_cli/test/swarm_code_cli/plain/presenter_test.exs`
 - Create: `apps/swarm_code_cli/test/swarm_code_cli/plain/command_test.exs`
+- Create: `apps/swarm_code_cli/test/swarm_code_cli/plain/request_conformance_test.exs`
 - Create: `apps/swarm_code_cli/test/swarm_code_cli/plain/session_test.exs`
+- Create: `apps/swarm_code_cli/test/swarm_code_cli/demo/plain_demo_test.exs`
 
 **Interfaces:**
 
 ```elixir
-Plain.Options.select([binary()], Plain.Environment.t()) :: {:ok, Plain.Options.t()} | {:error, :invalid_option}
+Plain.Options.select([binary()], Plain.Environment.t()) ::
+  {:ok, Plain.Options.t()} | {:error, :invalid_option}
+
 Plain.Presenter.new(Plain.Options.t()) :: Plain.Presenter.t()
-Plain.Presenter.present(Plain.Presenter.t(), binary(), Delivery.t()) :: {Plain.Presenter.t(), [output_record()]}
-Plain.Command.parse(SafeText.t(), Plain.Presenter.t(), binary()) ::
+
+Plain.Presenter.present(Plain.Presenter.t(), binary(), Delivery.t()) ::
+  {Plain.Presenter.t(), [Plain.Presenter.output_record()]}
+
+Plain.Command.parse(binary(), Plain.Presenter.t(), SwarmCode.Protocol.Scope.t()) ::
   {:ok, {:intent, Intent.t()} | {:local, Action.t()}} | {:error, SafeText.t()}
-Plain.Session.start_link(options: Plain.Options.t(), data_source: GenServer.server(), input: io_device(), output: io_device(), error: io_device()) :: GenServer.on_start()
+
+Plain.Session.start_link(
+  options: Plain.Options.t(),
+  data_source: GenServer.server(),
+  input: io_device(),
+  output: io_device(),
+  error: io_device()
+) :: GenServer.on_start()
+
 Plain.Session.close(GenServer.server(), :eof | :interrupt | :detach) :: :ok
 
-output_record() :: {:stdout, iodata()} | {:stderr, iodata()}
+Demo.FiniteScript.steps(:complete) :: [Demo.FiniteScript.step()]
+Demo.FiniteInput.start_link(max_lines: pos_integer(), max_bytes: pos_integer()) :: GenServer.on_start()
+Demo.FiniteInput.device(GenServer.server()) :: io_device()
+Demo.FiniteInput.release_line(GenServer.server(), binary()) :: :ok
+Demo.FiniteInput.eof(GenServer.server()) :: :ok
+
+Demo.Plain.run(
+  :complete,
+  output: io_device(),
+  error: io_device(),
+  timeout: pos_integer()
+) :: :ok | {:error, :timeout | :script_failed | :session_failed}
+
+Mix.Tasks.SwarmCode.Demo.Plain.run(["--script", "complete"]) :: :ok
+
+Plain.Presenter.output_record() :: {:stdout, iodata()} | {:stderr, iodata()}
 ```
 
 - Selection is explicit `--plain`, or automatic when stdin is non-TTY, stdout is non-TTY, no controlling TTY is usable, or TERM equals `dumb` case-insensitively. Plain may consume deterministic commands from piped stdin; full-screen raw polling never starts with a piped input. `--no-alt-screen` remains an interactive renderer option that preserves pre-existing scrollback and the final/restoration frame, not append-only redraw history, and does not imply plain when all three TTY checks pass. `--ascii`, `--no-color`, present `NO_COLOR`, `--reduced-motion`, and `--ambiguous-width=narrow|wide` are retained in options.
 - Plain output is chronological and append-only, deduplicated by `{source_epoch, scope kind/id/generation, sequence}`. It uses fixed headings, exact state words, sanitized content, and explicit prompts. It emits no cursor rewriting, alternate-screen bytes, terminal hyperlinks, animation, bell, or terminal controls other than LF record separators.
-- `Plain.Session` is the one owner of the bound DataSource, bounded line reader, prompt registry, and stdout/stderr writers. It serializes deliveries and complete input lines into non-interleaved LF-terminated records. After async output it re-emits the still-current prompt. Simultaneous completion/question delivery follows the runtime ingress order; no task writes directly to either stream.
-- Prompt grammar is `PROMPT <scope>/<id>@<revision> ...`. Commands cover every fake action, including `answer Q1@7 2`, `approve|deny|always-allow ID@REV`, lifecycle controls, Back, send, queue, follow, help, and detach. `always-allow` exists only when the exact DTO authorizes `:always_allow`. Bare `2` is valid only while exactly one current unresolved numbered prompt has been emitted at the same revision; otherwise a fixed correction shows the full command. Another-client settlement invalidates the stale prompt and emits settled/new-prompt records. Every non-accepted exact MutationState settlement, invalid/overlong input, and unknown command preserves state and recovers. EOF/Ctrl+C detach only, never Stop.
-- Parser returns typed Intent/local Action only. Session supplies the same `RequestResolver.Context`, fixed request ID, and deadline used by the full-screen fixture; neither parser nor presenter constructs Requests. Conformance tests compare Request structs and canonical encoded bytes for TUI versus plain send, queue, answer, approve, deny, authorized Always allow, and run control.
-- ASCII substitutes trusted box/glyph chrome only. No-color/reduced-motion output remains semantically identical. The full-screen TUI is not called screen-reader accessible; plain is the screen-reader acceptance surface/targeted path, with a proven accessibility claim deferred until Phase 5 VoiceOver and Orca runs.
+- `Plain.Session` is the one owner of the bound DataSource, bounded line reader, prompt registry, and stdout/stderr writers. It serializes deliveries and complete input lines into non-interleaved LF-terminated records. After async output it re-emits the still-current prompt. Simultaneous completion/question delivery follows runtime ingress order; no task writes directly to either stream.
+- `Plain.Command.parse/3` returns only the exact `Intent.t()` from Task 4 or an exact local `Action.t()`. It never returns an action ID and never constructs a Request. Session builds the exact Task-4 `%RequestResolver.Context{}` from its normalized scope/origin/current prompt/current run and the parsed text/target/attachment values, then calls `RequestResolver.resolve/4` with fixed request ID/deadline. No alternate permission or command-construction path exists.
+- ASCII substitutes trusted box/glyph chrome only and never transliterates external Unicode. No-color and reduced-motion output remain semantically identical. The full-screen TUI is not called screen-reader accessible; plain is the screen-reader acceptance surface/targeted path, with a proven accessibility claim deferred until Phase 5 VoiceOver and Orca runs.
 
-- [ ] **Step 1: Write selection/output/command RED tests**
+The complete Task-15 grammar and semantic mapping are:
+
+| Line form | Result |
+|---|---|
+| `send [--target TARGET] [--attach ID]... -- TEXT` | `{:dispatch, :send, text, target, refs}` |
+| `queue [--target TARGET] [--attach ID]... -- TEXT` | `{:dispatch, :queue, text, target, refs}` |
+| `steer RUN NODE [--attach ID]... -- TEXT` | `{:steer, run, node, text, refs}` |
+| `answer ID@REV OPTION [OPTION]...` | `{:answer_question, run, node, id, revision, option_ids}` using the current prompt registry |
+| `approve ID@REV` | `{:resolve_approval, run, node, id, revision, :approve}` |
+| `deny ID@REV` | `{:resolve_approval, run, node, id, revision, :deny}` |
+| `always-allow ID@REV` | approval Intent with `:always_allow`, only when that prompt authorizes it |
+| `pause RUN`, `continue RUN`, `resume RUN`, `stop RUN` | the corresponding `{:run_control, operation, run}` |
+| `seen conversation|run|activity ID@REV` | corresponding `{:mark_seen, kind, id, revision}` |
+| `follow main|inspector` | `{:scroll, "main" | "inspector", :follow}` |
+| `go conversation ID`, `go run ID` | `{:navigate, Destination.conversation(ID) | Destination.run(ID)}` |
+| `activity` | `{:navigate, Destination.activity()}` |
+| `inspect RUN [overview|agents|timeline|changes]` | `{:open_layer, LayerSpec.run_inspector(RUN, tab)}`; omitted tab is `overview` |
+| `back`, `help`, `detach` | `:back`, `{:open_layer, LayerSpec.help()}`, `{:quit_requested, :detach}` |
+
+`TARGET` is `main`, `reply:ID`, `thread:ID`, `revise:ID`, `command:ID`, `goal:ID`, or `research:ID`; the last three become the exact chip target tuples. Only one target is legal and it defaults to `main`. Options precede the mandatory `--`. IDs use ASCII `[A-Za-z0-9][A-Za-z0-9._-]{0,255}`; revision is unsigned decimal `0..18446744073709551615`. Prompt/option IDs must be present at the same revision in the bounded prompt registry; run/node/navigation/Inspector IDs must exist in the bounded presentation registry; target IDs must exist in the target catalogue; and attachment refs must be currently staged. Unknown IDs are fixed errors, never speculative requests/actions.
+
+A physical line is valid UTF-8, has no NUL, and is at most 16,384 bytes excluding one LF/CRLF. It decodes to at most 64 arguments; each argument is at most 4,096 bytes; decoded plain text is at most 16,384 bytes; attachments and answer options are each ordered/unique and limited to 16. ASCII space/tab separate words. Bare words contain no whitespace, quote, backslash, CR, LF, or NUL. Single quotes are literal with no escapes and cannot contain single quote/CR/LF/NUL. Double quotes accept only `\\`, `\"`, `\n`, and `\t`; unknown/incomplete escapes fail. Text words are joined with one ASCII space, while a single quoted word preserves internal/edge spaces. There is no interpolation, comment, glob, substitution, or continuation syntax. Unknown commands, duplicate options/attachments, extra arguments, malformed references, and every bound failure produce a fixed sanitized diagnostic without mutation.
+
+A bare decimal `1..999` is accepted only when exactly one current unresolved numbered prompt exists at the emitted revision and the number names one option; it normalizes to the same answer Intent. Otherwise the diagnostic prints the full non-secret `answer ID@REV OPTION` command and preserves state. Another-client settlement invalidates the stale prompt and emits settled/new-prompt records. Every non-accepted exact MutationState settlement, EOF/Ctrl+C, invalid input, and unknown command preserves domain state; EOF/Ctrl+C detach only and never mean Stop.
+
+`command_conformance.json` is the one positive/negative truth table. Each positive domain row contains `name`, exact `line`, named normalized Context fixture, exact decoded Intent, expected Request struct fields, fixed request ID/deadline, and expected canonical request bytes encoded as base64. It has rows for send, queue, Steer, answer, approve, deny, authorized Always allow, Pause, Continue, Resume, Stop, and mark-seen. Local rows cover follow, both navigation forms, Activity, every Inspector tab/default, Back, Help, and Detach with `request`/`canonical_base64` absent. Negative rows cover every quote/escape/bound/duplicate/stale/authorization failure. The single conformance test parses each row; for a domain row it also fetches the full-screen fixture's `{:intent, intent}` ActionTarget, requires exact Intent equality, resolves both with the same Context/request ID/deadline, requires exact Request equality, and compares both encodings to the independent fixture bytes. For a local row it requires the exact Action and proves the resolver spy was not called.
+
+`Demo.Plain` is the unconditional renderer-free composition root for the locked branch. It starts one temporary monitored `:one_for_all` tree in this order: separately owned `Fake.Source`; unbound `DataSource.Fake`; bounded paused `Demo.FiniteInput`; `Plain.Session`, which receives that IO device and reference-binds itself as DataSource owner; then `Demo.FiniteScript`. `FiniteInput` implements only the required Erlang IO read requests, holds at most one released line, and blocks the next read until the driver releases it; it is not a concurrent output writer. The fixed `:complete` driver waits for bind/readiness messages, releases only the committed command rows one at a time, advances named fake barriers, waits for matching deliveries/settlements, sends EOF after detach, and acknowledges completion. It uses no sleep, renderer, terminal raw mode, alternate screen, Application callback, daemon, Repo, user path, or arbitrary operation string. Completion or any failure closes input, session, DataSource, and source under monitors before `run/2` returns. The contributor command is exactly:
+
+```bash
+mise exec -- mix swarm_code.demo.plain --script complete
+```
+
+The Mix task accepts no other script name/path/operation, calls `Mix.Task.run("app.start")`, invokes `Demo.Plain.run/2` with standard output/error devices and a 5,000 ms outer failure deadline, emits only the golden stdout/stderr records, and exits nonzero on typed failure. Native launcher, Application callback, full-screen renderer boot, `mix release`, ERTS bundling, identity, and packaging remain exclusively in conditional Task 22.
+
+- [ ] **Step 1: Write selection, grammar, conformance, session, and executable-demo RED tests**
 
 ```elixir
-test "non-TTY and TERM dumb always select plain" do
-  piped = %Environment{stdin_tty?: false, stdout_tty?: true, controlling_tty?: true, term: "xterm", no_color?: false}
-  dumb = %Environment{stdin_tty?: true, stdout_tty?: true, controlling_tty?: true, term: "dumb", no_color?: false}
-  assert {:ok, %{presenter: :plain}} = Options.select([], piped)
-  assert {:ok, %{presenter: :plain}} = Options.select([], dumb)
+test "one table makes plain and TUI produce canonical-identical requests" do
+  for row <- RequestConformance.domain_rows() do
+    assert {:ok, {:intent, parsed}} =
+             Plain.Command.parse(row.line, row.presenter, row.context.scope)
+    assert {:intent, tui_intent} = RequestConformance.tui_target(row)
+    assert parsed == tui_intent
+    assert parsed == row.intent
+
+    assert {:ok, plain_request} =
+             RequestResolver.resolve(parsed, row.context, row.request_id, row.deadline)
+    assert {:ok, tui_request} =
+             RequestResolver.resolve(tui_intent, row.context, row.request_id, row.deadline)
+    assert plain_request == tui_request
+    assert plain_request == row.request
+    assert RequestConformance.encode(plain_request) == Base.decode64!(row.canonical_base64)
+    assert RequestConformance.encode(tui_request) == Base.decode64!(row.canonical_base64)
+  end
 end
 
-test "plain three-run output is append-only, deduplicated, and control-free" do
-  epoch = PlainFixtures.source_epoch()
-  {presenter, records} = PlainFixtures.present_three_run_script()
-  output = records |> Enum.filter(&match?({:stdout, _}, &1)) |> Enum.map_join(fn {:stdout, io} -> IO.iodata_to_binary(io) end)
-  assert output == File.read!(PlainFixtures.golden_path())
-  assert PlainFixtures.only_lf_controls?(output)
-  assert presenter.last_sequences[{epoch, :conversation, "conversation-a", 1}] == 9
+test "renderer-free composition owns source, unbound adapter, session, and finite driver" do
+  output = StringIO.open("") |> elem(1)
+  error = StringIO.open("") |> elem(1)
+
+  assert :ok = Demo.Plain.run(:complete, output: output, error: error, timeout: 5_000)
+  assert DemoFixtures.output(output) == File.read!(DemoFixtures.golden_path())
+  assert DemoFixtures.output(error) == ""
+  assert DemoFixtures.all_children_down?()
 end
 ```
 
-- [ ] **Step 2: Run RED**
+Also test explicit/automatic selection; append-only deduplication and sanitization; every grammar row and limit; prompt re-emission; bare-number ambiguity; stale/other-client resolution; every exact settlement atom; byte-for-byte stdout/stderr ordering; EOF/interrupt detach; and Unicode/ASCII, color/no-color, motion/reduced-motion combinations.
+
+- [ ] **Step 2: Run RED, including the unavailable contributor command**
 
 ```bash
-mise exec -- mix test apps/swarm_code_cli/test/swarm_code_cli/plain/options_test.exs apps/swarm_code_cli/test/swarm_code_cli/plain/presenter_test.exs apps/swarm_code_cli/test/swarm_code_cli/plain/command_test.exs apps/swarm_code_cli/test/swarm_code_cli/plain/session_test.exs
+mise exec -- mix test apps/swarm_code_cli/test/swarm_code_cli/plain apps/swarm_code_cli/test/swarm_code_cli/demo/plain_demo_test.exs
+mise exec -- mix swarm_code.demo.plain --script complete
 ```
 
-Expected: FAIL because the permanent owned plain line surface does not exist.
+Expected: tests fail because the permanent plain surface/composition root does not exist, and Mix reports that `swarm_code.demo.plain` could not be found.
 
-- [ ] **Step 3: Implement one sanitized line protocol over typed deliveries**
+- [ ] **Step 3: Implement the closed line protocol and owned renderer-free composition**
 
-Pass every external fragment through `SafeText`; fixed prompt syntax comes from `SafeText.chrome/1`. Session binds the unbound DataSource to itself, owns one bounded read request at a time, resolves Intent through shared RequestResolver, scans both stdout and stderr records before writing, and performs one idempotent close path. Tests cover TUI/plain Request byte-equivalence, authorized/unauthorized Always allow, prompt re-emission after async output, bare-number ambiguity, stale resolution by another client, all exact settlement atoms, invalid recovery, EOF/interrupt, and byte-for-byte stdout/stderr order.
+Pass every external output fragment through `SafeText`; fixed prompt syntax comes from exhaustive `SafeText.chrome/1`. Bound input before token construction, use only closed decoders, and never atomize a command/token. Session binds the initially unbound DataSource to itself, owns one bounded read at a time, and serializes all IO. Implement the one conformance table before individual command clauses so TUI/plain behavior cannot drift. Implement the bounded one-line-at-a-time IO protocol and temporary demo tree with reference-correlated readiness, named script steps, monitored teardown, redacted `format_status/1`, and no Application configuration.
 
-- [ ] **Step 4: Run GREEN in every degraded combination**
+- [ ] **Step 4: Run GREEN in every degraded combination and execute the contributor smoke command**
 
 ```bash
-mise exec -- mix test apps/swarm_code_cli/test/swarm_code_cli/plain --seed 0
-NO_COLOR=1 mise exec -- mix test apps/swarm_code_cli/test/swarm_code_cli/plain --seed 0
+mise exec -- mix test apps/swarm_code_cli/test/swarm_code_cli/plain apps/swarm_code_cli/test/swarm_code_cli/demo/plain_demo_test.exs --seed 0
+NO_COLOR=1 mise exec -- mix test apps/swarm_code_cli/test/swarm_code_cli/plain apps/swarm_code_cli/test/swarm_code_cli/demo/plain_demo_test.exs --seed 0
+
+tmp_root=$(mktemp -d "${TMPDIR:-/tmp}/swarm-code-plain-smoke.XXXXXX")
+trap 'rm -rf "$tmp_root"' EXIT
+MIX_QUIET=1 mise exec -- mix swarm_code.demo.plain --script complete >"$tmp_root/stdout" 2>"$tmp_root/stderr"
+cmp apps/swarm_code_cli/test/fixtures/plain/three_run_output.txt "$tmp_root/stdout"
+test ! -s "$tmp_root/stderr"
+rm -rf "$tmp_root"
+trap - EXIT
 ```
 
-Expected: PASS for Unicode/ASCII, color/no-color, motion/reduced-motion, explicit/automatic plain.
+Expected: both test runs pass; the real Mix task exits zero, stdout is byte-identical to the deterministic golden, stderr is empty, and monitored teardown leaves no demo child alive.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add apps/swarm_code_cli/lib/swarm_code_cli/plain apps/swarm_code_cli/test
-git commit -m "feat: add permanent plain line session"
+git add apps/swarm_code_cli/lib/swarm_code_cli/plain \
+  apps/swarm_code_cli/lib/swarm_code_cli/demo/plain.ex \
+  apps/swarm_code_cli/lib/swarm_code_cli/demo/finite_input.ex \
+  apps/swarm_code_cli/lib/swarm_code_cli/demo/finite_script.ex \
+  apps/swarm_code_cli/lib/mix/tasks/swarm_code.demo.plain.ex \
+  apps/swarm_code_cli/test/fixtures/plain \
+  apps/swarm_code_cli/test/support/request_conformance.ex \
+  apps/swarm_code_cli/test/swarm_code_cli/plain \
+  apps/swarm_code_cli/test/swarm_code_cli/demo/plain_demo_test.exs
+git commit -m "feat: run renderer-free fake plain demo"
 ```
 
 ---
@@ -1909,7 +2077,6 @@ Expected: local metrics are diagnostic; target acceptance comes from native evid
 - Create: `apps/swarm_code_cli/lib/swarm_code_cli/application.ex`
 - Create: `apps/swarm_code_cli/lib/swarm_code_cli/demo/supervisor.ex`
 - Create: `apps/swarm_code_cli/lib/swarm_code_cli/demo/main.ex`
-- Create: `apps/swarm_code_cli/lib/swarm_code_cli/demo/finite_script.ex`
 - Create: `apps/swarm_code_cli/lib/swarm_code_cli/ui/renderer/ex_ratatui_013/release_identity.ex`
 - Create: `apps/swarm_code_cli/lib/swarm_code_cli/release/identity_step.ex`
 - Create: `apps/swarm_code_cli/lib/swarm_code_cli/release/dependency_manifest_step.ex`
@@ -1918,7 +2085,6 @@ Expected: local metrics are diagnostic; target acceptance comes from native evid
 - Create: `apps/swarm_code_cli/test/fixtures/release/identity-precompiled.json`
 - Create: `apps/swarm_code_cli/test/fixtures/release/identity-source-built.json`
 - Create: `apps/swarm_code_cli/test/swarm_code_cli/demo/application_test.exs`
-- Create: `apps/swarm_code_cli/test/swarm_code_cli/demo/finite_script_test.exs`
 - Create: `apps/swarm_code_cli/test/swarm_code_cli/release/release_config_test.exs`
 - Create: `apps/swarm_code_cli/test/swarm_code_cli/release/identity_test.exs`
 - Create: `apps/swarm_code_cli/test/swarm_code_cli/release/release_step_order_test.exs`
@@ -1932,7 +2098,7 @@ Mix.Tasks.SwarmCode.Tui.ReleaseManifest.run(["--check", release_root()]) :: :ok
 ExRatatui013.ReleaseIdentity.verify_loaded_nif(identity_manifest()) :: :ok | {:error, Renderer.Error.t()}
 ```
 
-- Application is idle by default; exact `SWARM_CODE_BOOT=fake_demo` starts fake composition. Unknown strings fail static. The release `:swarm_code_tui_spike` seeds core/CLI only, excludes daemon, includes ERTS, sets distribution none, and inventories required renderer/OTP transitive apps without starting SSH/distribution listeners.
+- Application is idle by default; exact `SWARM_CODE_BOOT=fake_demo` starts the conditional renderer-capable composition and reuses Task 15's `Demo.Plain`/`Demo.FiniteScript` for `--plain --script complete`. Unknown strings fail static. The release `:swarm_code_tui_spike` seeds core/CLI only, excludes daemon, includes ERTS, sets distribution none, and inventories required renderer/OTP transitive apps without starting SSH/distribution listeners. This task adds only the Application/native launcher/release packaging; it does not replace or relocate the locked branch's already runnable Mix-task composition root.
 - Root release configuration has this executable order, not a prose-only build convention:
 
 ```elixir
@@ -1951,15 +2117,15 @@ steps: [
 
 - [ ] **Step 1: Write RED release and identity tests**
 
-Inspect root release config, both identity fixtures, tampered archive-vs-extracted/source-built hashes, source-build fields, assembled dependency manifest schema, fake finite Plain.Session execution, tree snapshot behavior, and crash-dump exclusion. The RED ordering test runs assembly with the hooks absent/misordered and proves the identity is missing from the assembled application or the dependency manifest does not match a deliberately changed final file; GREEN requires identity inside the assembled release and manifest hashes from final bytes.
+Inspect root release config, both identity fixtures, tampered archive-vs-extracted/source-built hashes, source-build fields, assembled dependency manifest schema, reuse of Task 15's already-tested finite Plain.Session composition, tree snapshot behavior, and crash-dump exclusion. The RED ordering test runs assembly with the hooks absent/misordered and proves the identity is missing from the assembled application or the dependency manifest does not match a deliberately changed final file; GREEN requires identity inside the assembled release and manifest hashes from final bytes.
 
 - [ ] **Step 2: Run RED**
 
 ```bash
-mise exec -- mix test apps/swarm_code_cli/test/swarm_code_cli/demo/application_test.exs apps/swarm_code_cli/test/swarm_code_cli/demo/finite_script_test.exs apps/swarm_code_cli/test/swarm_code_cli/release/release_config_test.exs apps/swarm_code_cli/test/swarm_code_cli/release/identity_test.exs apps/swarm_code_cli/test/swarm_code_cli/release/release_step_order_test.exs
+mise exec -- mix test apps/swarm_code_cli/test/swarm_code_cli/demo/application_test.exs apps/swarm_code_cli/test/swarm_code_cli/release/release_config_test.exs apps/swarm_code_cli/test/swarm_code_cli/release/identity_test.exs apps/swarm_code_cli/test/swarm_code_cli/release/release_step_order_test.exs
 ```
 
-Expected: FAIL because release/demo/identity manifest do not exist.
+Expected: FAIL because the conditional Application/renderer-release composition and identity manifests do not exist; Task 15's renderer-free demo remains present and passing.
 
 - [ ] **Step 3: Build and verify locally without touching user state**
 
@@ -2385,6 +2551,7 @@ Renderer.Decision.next_candidates({:reject, candidate(), [Renderer.Decision.Reas
 - Rejecting one candidate never selects another. `:ratatui_port` is only a guarded separately planned candidate requiring PaintPlan/Port/bounded-parser/four-target evidence. `:pure_elixir` is the separately planned engineering fallback. Stock TermUI is not selected. `Plain.Session` is the operational renderer-free fallback, not a renderer candidate.
 - `{:adopt, candidate}` is legal only when that same candidate's complete evidence passes its own gates. A failed gate rejects that candidate; missing evidence is incomplete. ExRatatui's failure reason cannot be used as evidence for a Port, pure-Elixir renderer, fork, or TermUI.
 - ADR records the exact static source identities, reasons, skipped expensive tasks, retained neutral Tasks 2-15, 87-frame future candidate matrix, next-candidate plan requirements, and fake/no-user-data boundary. README documents the fake plain demo only, labels full-screen renderer work pending, and makes no installation/parity claim.
+- README's contributor path is the unconditional Task-15 command `mise exec -- mix swarm_code.demo.plain --script complete`; it does not mention the conditional native launcher as available on the locked branch.
 
 - [ ] **Step 1: Write the RED static-decision and candidate-isolation table**
 
@@ -2431,12 +2598,17 @@ Expected exact outer result: `{:reject, :ex_ratatui_013, reasons}` with all four
 ```bash
 mise exec -- mix test apps/swarm_code_cli/test/swarm_code_cli/ui --exclude renderer_gate --seed 0
 mise exec -- mix test apps/swarm_code_cli/test/swarm_code_cli/plain --seed 0
+mise exec -- mix test apps/swarm_code_cli/test/swarm_code_cli/demo/plain_demo_test.exs --seed 0
+plain_smoke=$(mktemp "${TMPDIR:-/tmp}/swarm-code-cli-plain-smoke.XXXXXX")
+MIX_QUIET=1 mise exec -- mix swarm_code.demo.plain --script complete >"$plain_smoke"
+cmp apps/swarm_code_cli/test/fixtures/plain/three_run_output.txt "$plain_smoke"
+rm "$plain_smoke"
 mise exec -- mix precommit
 mise exec -- mix precommit
 MIX_ENV=prod mise exec -- mix compile --warnings-as-errors
 ```
 
-Expected: neutral Tasks 2-15 and static decision pass. No ExRatatui dependency, adapter, native gate, 87 renderer frames, release evidence, runner dispatch, or immutable publication is required/executed on this branch. The 87-frame matrix remains the locked future candidate acceptance set.
+Expected: neutral Tasks 2-15, the actual renderer-free fake/plain contributor command, and static decision pass. No ExRatatui dependency, adapter, native gate, 87 renderer frames, release evidence, runner dispatch, or immutable publication is required/executed on this branch. The 87-frame matrix remains the locked future candidate acceptance set.
 
 - [ ] **Step 5: Re-run claim-boundary and skip checks**
 
@@ -2475,11 +2647,11 @@ For the locked exact-ExRatatui branch, the plan is complete only when all of the
 1. `static-exratatui-013.json` records the four immutable-source vetoes and Decision returns `{:reject, :ex_ratatui_013, reasons}` before any workflow landing, native dependency, PTY/soak/manual campaign, or release publication.
 2. Renderer-neutral Tasks 2-15 pass without ExRatatui/Ratatui/Rustler code: Scene/Input/ActionTarget/Action/Intent/RequestResolver/Reducer/Effect/DataSource boundaries compile and no daemon implementation leaks.
 3. Input is bounded valid-UTF-8 committed text fragments plus distinct bounded paste; Editor resegments graphemes and exposes no invented browser-style composition lifecycle.
-4. TUI ActionTable and Plain.Session use the same typed Intent/RequestResolver and produce byte-identical requests, including authorized `:always_allow`; exact MutationState atoms and pending duplicate suppression are consistent everywhere.
-5. Back, 24/28/32 Navigator presets with 26 reset, 38/46/56 Inspector presets with 42 reset, composer adjustment, generation-correlated terminal focus, undo-boundary IDs, and default-Cancel unsent-text detach/plain-relaunch confirmation pass focused tests. Copy/cut/clipboard and live mouse routing remain unreachable.
-6. Responsive projection passes operational density/elision at `>=50x14` and deterministic clipped safe-key fallback at `1x1`, `10x3`, and other degenerate sizes, with permission-conditioned Retry/Resume suffixes, queued warning, and unique A/G/S/W/R/C/U prefixes.
+4. TUI ActionTable and Plain.Session use the exact typed Intent/RequestResolver.Context unions and one table-driven parse → resolve → canonical-byte suite for every fake domain/local command, including authorized `:always_allow`; exact MutationState atoms and pending duplicate suppression are consistent everywhere.
+5. Back, 24/28/32 Navigator presets with 26 reset, 38/46/56 Inspector presets with 42 reset, composer adjustment, generation-correlated terminal focus, undo-boundary IDs, and the one exact dirty predicate with `UNSENT CHANGES` default-Cancel detach/plain-relaunch confirmation pass focused tests. Metadata-only, target-only, FieldKey, degenerate, Cancel-preservation, and separate handoff paths are explicit. Copy/cut/clipboard and live mouse routing remain unreachable.
+6. Responsive projection passes operational density/elision at `>=50x14`; Compressed Small retains its operational facts, while Too small promises only the four deterministic clipped safe-key lines at `1x1`, `10x3`, and other degenerate sizes. Permission-conditioned Retry/Resume suffixes, queued warning, and unique A/G/S/W/R/C/U prefixes remain exact.
 7. Snapshot/delta/resync/page-edge/loading/error/retry/off-window/removal repair and the deterministic three-run scenario preserve drafts, FieldKeys, cursor/selection/focus/modal/layout/anchors/order without sleeps.
-8. Plain.Session is owned, serialized, append-only/control-free, supports scoped prompt revisions and shared Intents, and remains the screen-reader-targeted/operational fallback without an unearned accessibility claim.
+8. Plain.Session is owned, serialized, append-only/control-free, supports the complete bounded fake grammar/scoped prompt revisions/shared Intents, and is composed unconditionally with Fake.Source plus unbound-then-bound DataSource by the finite `mix swarm_code.demo.plain --script complete` command. It remains the screen-reader-targeted/operational fallback without an unearned accessibility claim.
 9. The risk-selected matrix remains exactly 87 specified future-candidate frames, including the new default-Cancel handoff frame. Neutral wide geometry is tested, while exact ExRatatui wide is a typed rejection and never a captured/PTY-repaired frame.
 10. ADR/README say exact ExRatatui is rejected, the guarded Ratatui Port and pure-Elixir renderers are unimplemented candidates requiring separate plans, Plain.Session is operational, and the fake/no-user-data/no-FoundationGate/Repo/IPC/no-installability boundary remains explicit.
 
