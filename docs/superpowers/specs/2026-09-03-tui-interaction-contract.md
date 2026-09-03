@@ -298,7 +298,7 @@ Field editors reuse the grapheme editor but are bounded transient UI state, neve
 
 @type permission ::
         :send | :queue | :steer
-        | :pause | :continue | :resume | :stop
+        | :pause | :continue | :resume | :stop | :retry | :stop_agent
         | :answer_question
         | :approve | :deny | :always_allow
         | :mark_seen
@@ -307,6 +307,8 @@ Field editors reuse the grapheme editor but are bounded transient UI state, neve
         {:dispatch, :send | :queue, binary(), dispatch_target(), [binary()]}
         | {:steer, binary(), binary(), binary(), [binary()]}
         | {:run_control, :pause | :continue | :resume | :stop, binary()}
+        | {:retry_run, binary(), non_neg_integer()}
+        | {:stop_agent, binary(), binary(), non_neg_integer()}
         | {:answer_question, binary(), binary(), binary(), non_neg_integer(), [binary()]}
         | {:resolve_approval, binary(), binary(), binary(), non_neg_integer(),
            :approve | :deny | :always_allow}
@@ -321,6 +323,8 @@ For dispatch the fields after the operation are normalized text, target, and ord
 @type origin ::
         {:draft, DraftKey.t()}
         | {:run, binary()}
+        | {:run_revision, binary(), non_neg_integer()}
+        | {:agent, binary(), binary(), non_neg_integer()}
         | {:interaction, binary(), non_neg_integer()}
         | {:seen, :conversation | :run | :activity, binary(), non_neg_integer()}
 
@@ -328,12 +332,19 @@ For dispatch the fields after the operation are normalized text, target, and ord
         nil
         | {:question | :approval, binary(), binary(), binary(), non_neg_integer()}
 
+@type run_state ::
+        nil | :queued | :running | :streaming | :waiting_question | :waiting_approval
+        | :paused | :retrying | :done | :failed | :stopped | :interrupted | :superseded
+
 @type t :: %RequestResolver.Context{
         scope: SwarmCode.Protocol.Scope.t(),
         scope_generation: non_neg_integer(),
         origin: origin(),
         active_run_id: binary() | nil,
+        active_run_state: run_state(),
         active_node_id: binary() | nil,
+        active_agent_id: binary() | nil,
+        subject_revision: non_neg_integer() | nil,
         interaction: interaction(),
         editor_text: binary(),
         dispatch_target: Intent.dispatch_target(),
@@ -342,7 +353,7 @@ For dispatch the fields after the operation are normalized text, target, and ord
       }
 ```
 
-The context validator applies the same ID/text/reference bounds, requires `allowed_actions` to be unique and from the closed permission union, and accepts no UI label or action ID. Dispatch uses draft origin, `nil` active IDs/interaction, and exact matching editor/target/attachments. Steer uses draft origin, exact active run/node, `nil` interaction, exact editor/attachments, and canonical `:main` dispatch target. Run control uses matching run origin/active run and canonical `nil` node/interaction, `""` editor, `:main` target, and `[]` attachments. Answer/approval uses matching interaction origin, active run/node, exact interaction tuple, and those same empty text/target/attachment defaults. Mark-seen uses exact `{:seen, kind, id, revision}` origin and all other optional/payload fields at those defaults. Every form requires its exact permission; `:always_allow` never follows from `:approve`. Malformed/bound-invalid unions return `:invalid_intent`, absent permission returns `:not_allowed`, interaction/seen revision mismatch returns `:stale_revision`, and scope/origin/run/node/payload mismatch returns `:invalid_origin`; values are never repaired or inferred.
+The context validator applies the same ID/text/reference bounds, requires `allowed_actions` to be unique and from the closed permission union, and accepts no UI label or action ID. Dispatch uses draft origin, `nil` active run state/ID/node/agent, `nil` subject revision/interaction, and exact matching editor/target/attachments. Steer uses draft origin, exact active run/state/node, `nil` agent/revision/interaction, exact editor/attachments, and canonical `:main` dispatch target. Run control uses matching run origin/active run plus its current state and canonical `nil` node/agent/revision/interaction, `""` editor, `:main` target, and `[]` attachments. Failed-run Retry uses `{:run_revision, run_id, revision}`, the same active run/revision, exact `active_run_state: :failed`, `:retry`, and otherwise the non-text defaults; failed state without `:retry` remains unauthorized. Agent Stop uses `{:agent, run_id, agent_id, revision}`, matching active run/state/agent/revision, `:stop_agent`, and otherwise the non-text defaults; it is never represented as run `:stop`. Answer/approval uses matching interaction origin, active run/state/node, exact interaction tuple, `nil` agent/subject revision, and those same empty text/target/attachment defaults. Mark-seen uses exact `{:seen, kind, id, revision}` origin and all active subject fields/interaction at `nil` plus the other non-text defaults. Every form requires its exact permission; `:always_allow` never follows from `:approve`, `:retry` never follows from failed state alone, and `:stop_agent` never follows from run `:stop`. Malformed/bound-invalid unions return `:invalid_intent`, absent permission or wrong run state returns `:not_allowed`, interaction/seen/run/agent revision mismatch returns `:stale_revision`, and scope/origin/run/node/agent/payload mismatch returns `:invalid_origin`; values are never repaired or inferred.
 
 `RequestResolver.resolve/4` is pure:
 
@@ -397,7 +408,7 @@ The reducer does not decide domain policy. DTOs provide a closed `allowed_action
 
 Every matching semantic data event is applied immediately. State revision becomes dirty, and `SessionRuntime` schedules at most one draw for the current frame interval. Coalescing paints must never coalesce, overwrite, or discard semantic text/tool events. Hidden panes retain facts without running animation timers or repeated layout work.
 
-`MutationState.t()` is exactly `:idle | {:pending, request_id(), Intent.t()} | {:settled, request_id(), :accepted | :needs_input | :rejected | :deadline_exceeded | :interrupted | :revision_conflict | :outcome_unknown}`. Pending disables the originating action and names the operation. Only durable `:accepted` clears the exact originating draft; every other settlement preserves its editor/dialog and exposes fixed corrective text. `:revision_conflict` refreshes the interaction and never displays success. These atom spellings are used by DTO outcome, reducer, projector, plain session, tests, and evidence schemas without hyphen/space aliases.
+`MutationState.t()` is exactly `:idle | {:pending, request_id(), Intent.t()} | {:settled, request_id(), :accepted | :needs_input | :rejected | :deadline_exceeded | :interrupted | :revision_conflict | :outcome_unknown}`. Pending disables the originating action and names the operation. Only durable `:accepted` for an exact dispatch/Steer draft origin may clear that draft; accepted Retry/agent Stop clears no draft and changes no run/agent state until the matching canonical delta. Every other settlement preserves its editor/dialog and exposes fixed corrective text. `:revision_conflict` refreshes the interaction and never displays success. These atom spellings are used by DTO outcome, reducer, projector, plain session, tests, and evidence schemas without hyphen/space aliases.
 
 `{:terminal_focus, state, generation}` applies only when generation equals the current terminal generation. `:lost` pauses visible-only animation/cursor emphasis; `:gained` resumes permitted animation and requests one redraw. Stale focus actions are byte-for-byte inert and neither state changes logical region/item focus, selection, or drafts.
 
@@ -488,7 +499,7 @@ Later surfaces add closed variants for workflows, research, schedules, usage, st
 Closed command variants cover:
 
 - dispatcher launch with stable request UUID, source, project/conversation, text, attachment/research references, explicit target, and queue intent;
-- run Pause, Continue, Resume, Stop, and agent Stop;
+- run Pause, Continue, Resume, Stop; authorized failed-run Retry; and distinctly agent-targeted Stop;
 - Steer;
 - answer question with interaction revision;
 - resolve approval with interaction revision;
@@ -496,6 +507,8 @@ Closed command variants cover:
 - scoped conversation/project actions introduced by their parity task.
 
 Only `RequestResolver` constructs these Request variants from typed Intent plus normalized context. TUI ActionTable activation and Plain.Session command parsing share it and must produce identical structs/canonical bytes. `:always_allow` is accepted only when the exact approval DTO advertises it.
+
+The two easily conflated variants are exact: run Stop is `%Request{kind: {:run_control, :stop, run_id}, origin: {:run, run_id}}`; failed-run Retry is `%Request{kind: {:retry_run, run_id, expected_run_revision}, origin: {:run_revision, run_id, expected_run_revision}}`; and agent Stop is `%Request{kind: {:stop_agent, run_id, agent_id, expected_agent_revision}, origin: {:agent, run_id, agent_id, expected_agent_revision}}`. Retry additionally requires `active_run_state == :failed`. A resolver never converts any one of these three into another.
 
 The DataSource returns one of the approved outcomes:
 
@@ -517,6 +530,8 @@ Initial DTOs are explicit page-limited structures:
 - `ActivitySnapshot`;
 - `PendingInteraction`.
 
+`RunSummary` carries exact run state/revision/allowed actions. Agent rows inside `RunDetailSnapshot` are typed `AgentSummary` values carrying run ID, agent ID, agent revision, state, and distinct allowed actions; this is the sole source for revisioned agent Stop projection.
+
 Initial normalized delta variants are:
 
 - transcript-item upsert/remove;
@@ -530,7 +545,7 @@ Every page-limited list also carries `idle | loading_before | loading_after | er
 
 Item presence is explicit. `off_window` means the item is outside the loaded keyset range and preserves selection/anchor identity; `removed` requires an explicit remove delta or a replacement snapshot whose declared covered range proves absence. On confirmed removal, focus/anchor repairs to the successor at the same visual bias, then the predecessor, then the list's empty-state focus. Prepending retains the existing anchor and visual bias.
 
-Supersession is not removal. A superseded turn remains losslessly visible with the fixed `SUPERSEDED` word and muted role, hides live progress/Needs-you/Reply/Retry, and retains Inspect/Copy/Fork. A running child launched by it says `LAUNCHED BY SUPERSEDED TURN` and keeps server-authorized Stop. Approve/Revise keeps the planner containing the linked implementation visible.
+Supersession is not removal. A superseded turn remains losslessly visible with the fixed `SUPERSEDED` word and muted role, hides live progress/Needs-you/Reply/Retry, and retains Inspect/Copy/Fork. A running agent child launched by it says `LAUNCHED BY SUPERSEDED TURN` and keeps only server-authorized revisioned `:stop_agent`; run Stop remains separate. Approve/Revise keeps the planner containing the linked implementation visible.
 
 The DataSource never exposes Ecto structs, complete GenServer state, secrets, raw wire maps, or dynamically atomized input. `swarm_code_cli` depends on stable core protocol types, not daemon implementation modules.
 
@@ -836,7 +851,7 @@ Display labels and tones are separate closed tables:
 
 Color, bold, and dim are never the only signal. ASCII replaces box drawing and specialized glyphs without losing prefixes/state words. Reduced motion removes spinners, pulses, color cycling, and animated scrolling while retaining the exact state label and static progress value.
 
-Projector may append ` — RETRY AVAILABLE` to `FAILED` only when the DTO's `allowed_actions` contains Retry, and ` — RESUME AVAILABLE` to `INTERRUPTED` only when it contains Resume. Without permission the base word remains unchanged and no corresponding action ID exists.
+Projector may append ` — RETRY AVAILABLE` to `FAILED` only when the DTO's `allowed_actions` contains `:retry`; that action's target is exactly `{:intent, {:retry_run, run_id, run_revision}}`. It may append ` — RESUME AVAILABLE` to `INTERRUPTED` only when `:resume` is present. An agent row exposes Stop only with `:stop_agent`, using exactly `{:intent, {:stop_agent, run_id, agent_id, agent_revision}}`; a run-level Stop remains `{:intent, {:run_control, :stop, run_id}}`. Without the relevant permission the suffix/action ID is absent, and agent/run targets are never interchangeable.
 
 ### 14.3 Plain presenter
 
@@ -857,7 +872,7 @@ Prompt grammar is stable and scoped: `PROMPT <scope>/<id>@<revision> ...`. The i
 
 ```ebnf
 line         = ws?, command, ws?, (LF | CRLF)? ;
-command      = dispatch | steer | answer | approval | run_control | seen
+command      = dispatch | steer | answer | approval | run_control | retry | agent_stop | seen
              | follow | go | activity | inspect | "back" | "help" | "detach"
              | bare_answer ;
 dispatch     = ("send" | "queue"), {ws, dispatch_option}, ws, "--", ws, text ;
@@ -869,6 +884,8 @@ steer        = "steer", ws, id, ws, id, {ws, "--attach", ws, id},
 answer       = "answer", ws, prompt_ref, ws, option, {ws, option} ;
 approval     = ("approve" | "deny" | "always-allow"), ws, prompt_ref ;
 run_control  = ("pause" | "continue" | "resume" | "stop"), ws, id ;
+retry        = "retry", ws, prompt_ref ;
+agent_stop   = "stop-agent", ws, id, ws, prompt_ref ;
 seen         = "seen", ws, ("conversation" | "run" | "activity"), ws, prompt_ref ;
 follow       = "follow", ws, ("main" | "inspector") ;
 go           = "go", ws, ("conversation" | "run"), ws, id ;
@@ -886,7 +903,7 @@ positive_decimal = ? decimal integer 1..999 ? ;
 ws           = ? one or more ASCII space or tab bytes ? ;
 ```
 
-There is exactly one `--target`, defaulting to `main`; at most 16 unique `--attach` values; and all options precede the mandatory `--`. `command:ID`, `goal:ID`, and `research:ID` map to `{:chip, :command | :goal | :research, ID}`. `send`/`queue` map to the exact `{:dispatch, operation, text, target, attachment_refs}` Intent; `steer` maps to `{:steer, run_id, node_id, text, attachment_refs}`; question/approval/run-control/seen map one-to-one to the Intent union in section 7. Prompt/option IDs must exist in the current bounded prompt registry and match its revision; run/node/navigation/Inspector IDs must exist in the current bounded presentation registry; target IDs must exist in the target catalogue; and attachment refs must name currently staged references. Unknown IDs are errors rather than speculative requests. `always-allow` parses only when that exact approval's `allowed_actions` contains `:always_allow`.
+There is exactly one `--target`, defaulting to `main`; at most 16 unique `--attach` values; and all options precede the mandatory `--`. `command:ID`, `goal:ID`, and `research:ID` map to `{:chip, :command | :goal | :research, ID}`. `send`/`queue` map to the exact `{:dispatch, operation, text, target, attachment_refs}` Intent; `steer` maps to `{:steer, run_id, node_id, text, attachment_refs}`; question/approval/run-control/seen map one-to-one to the Intent union in section 7. `retry RUN@REV` maps to `{:retry_run, RUN, REV}` only for the current failed run at that revision with `:retry` authorized. `stop-agent RUN AGENT@REV` maps to `{:stop_agent, RUN, AGENT, REV}` only for that current agent revision with `:stop_agent` authorized; it never maps to `{:run_control, :stop, RUN}`. Prompt/option IDs must exist in the current bounded prompt registry and match its revision; run/node/agent/navigation/Inspector IDs must exist in the current bounded presentation registry; target IDs must exist in the target catalogue; and attachment refs must name currently staged references. Unknown IDs are errors rather than speculative requests. `always-allow` parses only when that exact approval's `allowed_actions` contains `:always_allow`.
 
 `follow main|inspector` maps to `{:scroll, "main" | "inspector", :follow}`. `go conversation ID`, `go run ID`, and `activity` map to `{:navigate, Destination.conversation(ID) | Destination.run(ID) | Destination.activity()}`. `inspect RUN [TAB]` maps to `{:open_layer, LayerSpec.run_inspector(RUN, TAB)}`, with omitted tab equal to `overview`. `back` maps to `:back`; `help` to `{:open_layer, LayerSpec.help()}`; and `detach` to `{:quit_requested, :detach}`. These are local Actions and never enter RequestResolver.
 
@@ -896,9 +913,11 @@ One physical line is at most 16,384 bytes excluding its single line terminator, 
 
 A bare decimal number `1..999` is accepted only when exactly one current unresolved numbered prompt has been emitted, its revision still matches, and that number names one of its options. It is normalized to the same answer Intent as the full command. Otherwise it prints a correction containing the full non-secret `answer ID@REV OPTION` form and preserves state.
 
-`Plain.Command.parse/3` returns a typed `Intent` for domain work or a closed local Action; it never returns `{:activate, action_id, ...}` and never constructs `DataSource.Request` itself. `Plain.Session` supplies the exact normalized `RequestResolver.Context`, fixed request ID, and deadline used by the full-screen fixture and calls `RequestResolver.resolve/4`. One committed table contains the line, context fixture, exact parsed Intent/local Action, expected Request struct, and base64 of canonical request bytes. A single conformance suite consumes every row: domain rows compare plain parse with the TUI ActionTable target, resolve both, compare structs, and compare both byte sequences with the fixture; local rows assert the exact Action and no resolver call. The table has positive rows for send, queue, Steer, answer, approve, deny, authorized Always allow, all four run controls, and mark-seen, plus local follow/navigation/Activity/inspect/back/help/detach rows and negative quoting/bound/authorization cases.
+`Plain.Command.parse/3` returns a typed `Intent` for domain work or a closed local Action; it never returns `{:activate, action_id, ...}` and never constructs `DataSource.Request` itself. `Plain.Session` supplies the exact normalized `RequestResolver.Context`, fixed request ID, and deadline used by the full-screen fixture and calls `RequestResolver.resolve/4`. One committed table contains the line, context fixture, exact parsed Intent/local Action, expected Request struct, and base64 of canonical request bytes. A single conformance suite consumes every row: domain rows compare plain parse with the TUI ActionTable target, resolve both, compare structs, and compare both byte sequences with the fixture; local rows assert the exact Action and no resolver call. The table has positive rows for send, queue, Steer, answer, approve, deny, authorized Always allow, all four run controls, authorized failed-run Retry, authorized agent Stop, and mark-seen, plus local follow/navigation/Activity/inspect/back/help/detach rows. Negative rows separately cover missing Retry permission, non-failed Retry, stale Retry revision, wrong Retry origin, missing agent-Stop permission, stale agent revision, wrong agent/run origin, attempted run-Stop/agent-Stop substitution, and all quoting/bound/authorization cases.
 
-The locked branch exposes one renderer-free contributor command: `mise exec -- mix swarm_code.demo.plain --script complete`. Its bounded composition root starts the separately owned `Fake.Source`, then an unbound `DataSource.Fake`, a paused one-line-at-a-time fake IO device, `Plain.Session` which binds itself, and a finite deterministic driver. The driver releases only committed commands, advances named barriers, waits on acknowledgements rather than sleeping, emits the exact plain golden, detaches, sends EOF, and monitors every child to termination. It accepts no path or arbitrary fake operation. It opens no renderer, raw terminal, alternate screen, daemon, Repo, user path, or Application callback. Native launchers and release packaging remain conditional renderer work.
+From the repository root, the locked branch exposes one renderer-free contributor command: `(cd apps/swarm_code_cli && MIX_QUIET=1 mise exec -- mix swarm_code.demo.plain --script complete)`. The `cd` occurs before Mix launches, so this is the non-umbrella CLI project and no umbrella `app.start`/run task executes. The custom task's only requirement is child-project `compile`; it loads `:swarm_code_cli`, recursively validates its declared application closure is exactly `:compiler`, `:crypto`, `:elixir`, `:jason`, `:kernel`, `:logger`, `:stdlib`, `:swarm_code_cli`, and `:swarm_code_core`, then calls only `Application.ensure_all_started(:swarm_code_cli, :temporary)`. Any daemon, Ecto/Exqlite, renderer/native, or other unexpected application in that closure fails before start. The task snapshots started applications plus registered/translated-initial/raw-initial/current process module identities before and during, owns only the newly started closure apps, and stops those in reverse after the demo; it temporarily raises Logger only around stop/flush and restores it so OTP stop notices cannot alter golden output. The after snapshot must match the before baseline and every stage must contain no daemon/FoundationGate/Repo/Ecto/Exqlite/renderer-native process.
+
+Its bounded composition root starts the separately owned `Fake.Source`, then an unbound `DataSource.Fake`, a paused one-line-at-a-time fake IO device, `Plain.Session` which binds itself, and a finite deterministic driver. The driver releases only committed commands—including authorized failed-run Retry and revisioned agent Stop catalogue steps—advances named barriers, waits on acknowledgements rather than sleeping, proves Retry changes only the failed run and agent Stop changes only the agent, emits the exact plain golden, detaches, sends EOF, and monitors every child to termination. It accepts no path or arbitrary fake operation. It opens no renderer, raw terminal, alternate screen, daemon, Repo, user path, or Application callback. An isolated subprocess runs the exact contributor command against empty task-owned HOME/XDG directories, records a single canonical at-most-32,768-byte before/during/after application/process audit on dedicated fd 3, compares the filesystem tree before/after, and requires golden stdout plus empty stderr. Native launchers and release packaging remain conditional renderer work.
 
 Resolution by another client emits a settled record, invalidates that prompt, and re-emits the next prompt if one exists. Invalid/overlong input, `:rejected | :deadline_exceeded | :interrupted | :revision_conflict | :outcome_unknown` settlement, and an unknown command preserve state and recover at a fresh prompt. EOF and Ctrl+C perform orderly client detach, never domain Stop. Input buffering, output records, prompt registry, and diagnostic strings are count/byte bounded without dropping canonical deliveries.
 
@@ -934,7 +953,7 @@ Open a global Activity watch and conversation-A workspace watch. Their ready sna
 11. Resize `160x50` to `80x24`, then to `50x14`, then back to `160x50`. Inspector selection/anchor and both drafts remain exact; `50x14` exposes the compressed survival UI without destructive actions.
 12. Return to conversation A. A new ready snapshot includes all intervening canonical events. Assert exact multiline text, cursor, selection, chips, attachments, and height; exact Main anchor; exact deduplicated unseen-item count; and correct A1, A2, and B1 states.
 13. Press `End`. Main follow becomes true and unseen becomes empty. Inspector follow remains unchanged.
-14. With the nonempty A/B drafts still present, request detach. Assert the `UNSENT CHANGES` confirmation opens with Cancel focused and no exit effect. Activate the default Cancel action and assert drafts, focus, selections, Main/Inspector anchors, fake-source snapshot, and the complete effect-history prefix are byte-for-byte unchanged. Request detach again, explicitly move focus to Confirm, activate it, and only then assert view cancel, unwatch, timer cancellation, DataSource close, renderer shutdown, and detach effects; no domain Stop command occurs.
+14. With the nonempty A/B drafts still present, request detach. Assert the `UNSENT CHANGES` confirmation opens with Cancel focused and no exit effect. Activate the default Cancel action and assert drafts, focus, selections, Main/Inspector anchors, fake-source snapshot, and the complete effect-history prefix are byte-for-byte unchanged. Request detach again, explicitly move focus to Confirm, activate it, and only then assert view cancel, unwatch, timer cancellation, DataSource close, renderer shutdown, and detach effects; neither `{:run_control, :stop, run_id}` nor `{:stop_agent, run_id, agent_id, revision}` is emitted.
 15. Start a new client against the continuing fake source and recover all three run states from ready snapshots. No claim is made that the unsent process-local drafts survived this new process.
 
 ### 15.3 Required scenario assertions
@@ -1091,6 +1110,7 @@ Required reducer tests cover:
 - exact 24/28/32 Navigator and 38/46/56 Inspector presets, 26/42 resets, nudge/clamp/restore, and composer-height actions;
 - the one exact `Draft.dirty?/1` exit predicate, including meaningful text, metadata-only attachment, target-only/chip-only, staged-validation-only, and excluded cursor/selection/scroll/height-only cases; byte-nonempty FieldKey text; default-Cancel detach/plain-relaunch preservation; explicit confirmation; and the same paths at degenerate sizes;
 - full-screen versus plain `RequestResolver` Request-struct and canonical-byte equivalence, including authorized `:always_allow`;
+- authorized failed-run Retry and agent-targeted Stop each produce their own exact ActionTarget/Request bytes; missing permission, wrong state/origin, stale revision, and run-Stop/agent-Stop substitution are rejected;
 - exact `{:undo_boundary, boundary_id}` timer replacement and stale-boundary rejection; no copy/cut/clipboard action in the spike;
 - hidden and reduced-motion scenes own no animation timer;
 - the complete deterministic three-run scenario.
@@ -1099,15 +1119,18 @@ Required reducer tests cover:
 
 Required fixtures cover complete and partial CSI/OSC/DCS/APC/PM sequences, CR/backspace spoofing, bidi and zero-width filename spoofing, invalid UTF-8, the Unicode editor corpus, URL credentials, and terminal-title text. Every plain stdout/stderr fixture is scanned to ensure no terminal control survives other than newline record separators.
 
-Plain tests verify chronological deduplication by epoch/scope/sequence, serialized complete records, the exact line grammar and every bound in section 14.3, scoped prompt ID/revision grammar, bare-number ambiguity rejection, prompt re-emission after async output, simultaneous completion/question order, other-client settlement, invalid/overlong recovery, EOF/Ctrl+C detach, stdout/stderr ordering, ASCII, `NO_COLOR`, reduced motion, non-TTY selection, and byte-identical shared-Resolver requests including authorized Always allow. One table drives plain parse, TUI ActionTarget intent, resolver, expected Request struct, and expected canonical bytes for every domain-command form; local-command rows assert the exact Action and that the resolver is not called.
+Plain tests verify chronological deduplication by epoch/scope/sequence, serialized complete records, the exact line grammar and every bound in section 14.3, scoped prompt ID/revision grammar, bare-number ambiguity rejection, prompt re-emission after async output, simultaneous completion/question order, other-client settlement, invalid/overlong recovery, EOF/Ctrl+C detach, stdout/stderr ordering, ASCII, `NO_COLOR`, reduced motion, non-TTY selection, and byte-identical shared-Resolver requests including authorized Always allow, failed-run Retry, and agent Stop. One table drives plain parse, TUI ActionTarget intent, resolver, expected Request struct, and expected canonical bytes for every domain-command form; local-command rows assert the exact Action and that the resolver is not called. Negative rows prove authorization, failed-state, origin, revision, and target-kind separation.
 
 ### 17.4 Lifecycle and architecture tests
 
 - Only renderer adapter paths may reference ExRatatui, Ratatui, or Rustler resource types.
 - Neutral UI modules may depend on `swarm_code_core` protocol contracts but not `swarm_code_daemon` modules.
+- The locked-branch test proves CLI declared/prod-tree/runtime dependencies are exactly the neutral set; ExRatatui/Ratatui/Rustler/Crossterm source/lock/tree entries are absent; and only the application fence may contain closed denied app/module-prefix literals without aliases, calls, structs, captures, or code-path loads.
+- The actual contributor command runs in an isolated subprocess and proves before/during/after that only the exact CLI/core/OTP closure starts, forbidden daemon/FoundationGate/Repo/Ecto/Exqlite/native processes never exist, task-owned HOME/XDG bytes do not change, and teardown restores the application/process baseline.
+- Locked completion enumerates and rejects every conditional adapter/native/87-golden/release/evidence/workflow/dispatch/publication output; `deps.unlock --check-unused` is not evidence for this negative claim.
 - Renderer callback failure restores the terminal before propagating a safe error.
 - Terminal output and logs use separate destinations.
-- Client close emits no run Stop unless the user explicitly chose Stop.
+- Client close emits neither run Stop nor agent Stop unless the user explicitly chose that exact target kind.
 - Tests synchronize through PTY readiness messages, monitors, barriers, and virtual clocks, never sleeps or liveness polling.
 
 ## 18. Full-parity missing-surface traceability matrix
@@ -1191,7 +1214,7 @@ The fake-backed contract and renderer spike may proceed without these items. A r
 2. strict versioned body schemas for every request, response, event, and error operation; the current generic envelope/body bound is not sufficient;
 3. `CommandDispatcher` and `ConversationCoordinator` with headless queue draining;
 4. stable idempotent command UUIDs and all four approved outcomes;
-5. server-scoped Pause, Continue, Resume, Stop, Stop-agent, Steer, Answer, and Approval commands with interaction-revision compare-and-set;
+5. server-scoped Pause, Continue, Resume, Stop, revisioned Stop-agent, failed-run Retry, Steer, Answer, and Approval commands with target/interaction-revision compare-and-set;
 6. page-limited shell, project, conversation, workspace, transcript, run-detail, Activity, and pending-interaction DTOs with stable keyset cursors;
 7. explicit detail queries for large text, reasoning, logs, tool results, diffs, workflow source/journal, reports, and sources;
 8. subscribe acknowledgement, snapshot `through_sequence`, per-scope revision/sequence, unsubscribe, and `snapshot_required` semantics;
@@ -1208,13 +1231,13 @@ The IPC DataSource must pass the same conformance suite as the fake implementati
 
 ### 21.1 Contract and fake interaction plan
 
-1. Establish neutral types, ActionTarget/Intent/RequestResolver, renderer/DataSource behaviors, and architecture guards.
+1. Establish neutral types, ActionTarget/Intent/RequestResolver including distinct revisioned Retry/agent Stop, renderer/DataSource behaviors, and architecture guards.
 2. Implement SafeText, terminal capabilities, semantic palette, and adversarial fixtures.
 3. Implement the virtual-clock fake DataSource and watch synchronization contract.
 4. Implement reducer state, exact MutationState atoms, generations, effects, committed-fragment editor/undo boundaries, drafts, terminal focus, modals, and scroll anchors through tests.
 5. Implement Scene projection and all responsive shell classes.
 6. Complete switcher, Activity Center, question dialog, and deterministic three-run scenario.
-7. Implement the permanent owned, serialized plain line session/presenter, the complete bounded fake command grammar and shared conformance table, and the runnable finite renderer-free `mix swarm_code.demo.plain --script complete` composition root.
+7. Implement the permanent owned, serialized plain line session/presenter, the complete bounded fake command grammar/shared conformance table, and the runnable finite renderer-free `(cd apps/swarm_code_cli && MIX_QUIET=1 mise exec -- mix swarm_code.demo.plain --script complete)` composition root with exact CLI/core/OTP start fencing and isolated before/during/after negative-process/file audit.
 
 This sequence produces no canonical-data or real-daemon UI.
 
@@ -1289,6 +1312,7 @@ Full parity is a closed traceability and behavioral-testing claim. Selecting ExR
 - Effects are declarative, owned, bounded, and settled.
 - Domain commands are server-authorized and server-validated.
 - Full-screen and plain domain commands share typed `Intent` plus `RequestResolver`; neither presenter constructs a request ad hoc.
+- Failed-run Retry and agent Stop have distinct permission, Intent, origin/revision, Request, ActionTarget, plain syntax, and conformance rows; neither is inferred from failed state or run Stop.
 - Subscribe-before-snapshot and generation checks prevent stale cross-scope updates.
 - Draft, focus, and logical scroll preservation are independent of canonical data updates.
 - Rendering and plain output share sanitization but not cursor-oriented presentation.

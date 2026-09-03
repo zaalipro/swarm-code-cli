@@ -84,8 +84,8 @@ apps/swarm_code_cli/lib/swarm_code_cli/ui/{session_runtime,effect_runner,termina
 apps/swarm_code_cli/lib/swarm_code_cli/plain/{options,environment,presenter,command,session}.ex
   Permanent owned serialized line surface and deterministic commands.
 
-apps/swarm_code_cli/lib/swarm_code_cli/demo/{plain,finite_input,finite_script}.ex and lib/mix/tasks/swarm_code.demo.plain.ex
-  Unconditional renderer-free fake/plain composition root, paused bounded input device, finite driver, and contributor command.
+apps/swarm_code_cli/lib/swarm_code_cli/demo/{plain,application_fence,finite_input,finite_script}.ex and lib/mix/tasks/swarm_code.demo.plain.ex
+  Unconditional renderer-free fake/plain composition root, exact CLI-only application fence, paused bounded input device, finite driver, and contributor command.
 
 apps/swarm_code_cli/lib/swarm_code_cli/ui/renderer/ex_ratatui_013/
   Conditional-only ExRatatui/Rustler boundary: event normalization, widget mapping, cell capture, local host; absent on the locked branch.
@@ -456,7 +456,7 @@ git commit -m "feat: define safe terminal primitives"
 
 @type SwarmCodeCLI.UI.Intent.permission() ::
         :send | :queue | :steer
-        | :pause | :continue | :resume | :stop
+        | :pause | :continue | :resume | :stop | :retry | :stop_agent
         | :answer_question
         | :approve | :deny | :always_allow
         | :mark_seen
@@ -465,6 +465,8 @@ git commit -m "feat: define safe terminal primitives"
         {:dispatch, :send | :queue, binary(), Intent.dispatch_target(), [binary()]}
         | {:steer, binary(), binary(), binary(), [binary()]}
         | {:run_control, :pause | :continue | :resume | :stop, binary()}
+        | {:retry_run, binary(), non_neg_integer()}
+        | {:stop_agent, binary(), binary(), non_neg_integer()}
         | {:answer_question, binary(), binary(), binary(), non_neg_integer(), [binary()]}
         | {:resolve_approval, binary(), binary(), binary(), non_neg_integer(),
            :approve | :deny | :always_allow}
@@ -473,6 +475,8 @@ git commit -m "feat: define safe terminal primitives"
 @type SwarmCodeCLI.UI.RequestResolver.Context.origin() ::
         {:draft, DraftKey.t()}
         | {:run, binary()}
+        | {:run_revision, binary(), non_neg_integer()}
+        | {:agent, binary(), binary(), non_neg_integer()}
         | {:interaction, binary(), non_neg_integer()}
         | {:seen, :conversation | :run | :activity, binary(), non_neg_integer()}
 
@@ -480,12 +484,19 @@ git commit -m "feat: define safe terminal primitives"
         nil
         | {:question | :approval, binary(), binary(), binary(), non_neg_integer()}
 
+@type SwarmCodeCLI.UI.RequestResolver.Context.run_state() ::
+        nil | :queued | :running | :streaming | :waiting_question | :waiting_approval
+        | :paused | :retrying | :done | :failed | :stopped | :interrupted | :superseded
+
 @type SwarmCodeCLI.UI.RequestResolver.Context.t() :: %RequestResolver.Context{
         scope: SwarmCode.Protocol.Scope.t(),
         scope_generation: non_neg_integer(),
         origin: RequestResolver.Context.origin(),
         active_run_id: binary() | nil,
+        active_run_state: RequestResolver.Context.run_state(),
         active_node_id: binary() | nil,
+        active_agent_id: binary() | nil,
+        subject_revision: non_neg_integer() | nil,
         interaction: RequestResolver.Context.interaction(),
         editor_text: binary(),
         dispatch_target: Intent.dispatch_target(),
@@ -551,7 +562,7 @@ LayerSpec.run_inspector(binary(), :overview | :agents | :timeline | :changes) ::
 - Terminal generation/capability actions let resize/resume update reducer state without a renderer type. Draw results carry a runtime-issued opaque draw token and the exact Scene revision attempted. `terminal_control` is interpreted only by SessionRuntime/LauncherControl; Reducer never sends an OS signal.
 - `FieldKey` is the exact closed union `{:layer_query, layer_id, :switcher | :jump | :action_menu} | {:region_filter, region_id} | {:question_other, interaction_id, revision}`. It cannot alias a `DraftKey`.
 - `ActionTarget.t()` is exactly `{:local, Action.t()} | {:intent, Intent.t()}`. The Intent and Context unions are exactly the interface block above; no shorthand tuple, optional map key, or presenter-specific variant is allowed. IDs/references are valid UTF-8 control-free binaries of 1-256 bytes. Dispatch/Steer text is meaningful after `String.trim/1` and at most 262,144 bytes; attachment references are ordered/unique with at most 16 entries; answer option IDs are ordered/unique with at most 16 entries. Context `allowed_actions` is ordered/unique and contains only the closed permission atoms.
-- `RequestResolver.resolve/4` compares dispatch/Steer payload to the context editor/target/attachments, run controls to run origin/`active_run_id`, question/approval identity to interaction origin plus the exact interaction tuple, and mark-seen to exact `{:seen, kind, id, revision}` origin. Dispatch has `nil` active IDs/interaction; Steer has exact active run/node and canonical target `:main`; non-text commands have canonical `""` editor, `:main` target, and `[]` attachments, with unused active IDs/interaction set to `nil`. It also requires the exact permission (`:always_allow` is distinct from `:approve`). Malformed/bound-invalid input returns `:invalid_intent`, missing permission `:not_allowed`, interaction/seen revision mismatch `:stale_revision`, and scope/origin/run/node/payload mismatch `:invalid_origin`. It accepts no label/action ID, performs no I/O, and never fills a mismatch from UI state.
+- `RequestResolver.resolve/4` compares dispatch/Steer payload to context editor/target/attachments; run controls to `{:run, run_id}` plus `active_run_id`; Retry to `{:run_revision, run_id, revision}`, matching active run/revision, exact failed state, and `:retry`; agent Stop to `{:agent, run_id, agent_id, revision}`, matching active run/agent/revision and `:stop_agent`; question/approval to interaction origin plus the exact interaction tuple; and mark-seen to exact `{:seen, kind, id, revision}` origin. Dispatch has `nil` active state/IDs/revision/interaction; Steer has exact active run/state/node and canonical target `:main`; non-text commands have canonical `""` editor, `:main` target, and `[]` attachments. Every unused active field is `nil`. `:always_allow` is distinct from `:approve`, `:retry` is not implied by `:failed`, and `:stop_agent` is not implied by run `:stop`. Malformed/bound-invalid input returns `:invalid_intent`, missing permission or non-failed Retry `:not_allowed`, interaction/seen/run/agent revision mismatch `:stale_revision`, and scope/origin/run/node/agent/payload mismatch `:invalid_origin`. It accepts no label/action ID, performs no I/O, and never fills a mismatch from UI state.
 - `DataSource` callbacks are exactly `start_link(options)`, `bind_owner(server, owner_handle, binding_ref)`, `watch`, `unwatch`, `query`, `command`, `cancel`, and `close`. Before the one successful reference-correlated owner bind, admission fails closed and no delivery is emitted. `Watch`, `Request`, `Delivery`, and `AdmissionError` have their final closed structural fields now; typed DTO bodies arrive later.
 - Only key `:press` can activate/mutate/submit/queue/detach. `:repeat` is admitted only for editor insertion/deletion/movement/selection, logical row movement, and scroll; `:release` is inert. Focus input resolves to a generation-correlated terminal-focus Action. Resize help is a fixed layer action because a client cannot resize its emulator. Presenter handoff uses the one `Draft.dirty?/1` plus byte-nonempty-FieldKey guard, opens the fixed default-Cancel `UNSENT CHANGES` confirmation when dirty, then on explicit confirmation performs orderly restore and prints fixed `Rerun with --plain`; it is not an in-process renderer swap.
 - Add `{:stream_data, "== 1.4.0", only: :test, runtime: false}` once and add `test/support` through `elixirc_paths/1`.
@@ -585,6 +596,25 @@ test "resolver does not infer always-allow or repair a mismatched context" do
 
   mismatched = {:run_control, :stop, "other-run"}
   assert {:error, :invalid_origin} = RequestResolver.resolve(mismatched, context, "request-44", 1_788_438_400_000)
+end
+
+test "retry and agent Stop remain authorized revisioned target kinds" do
+  retry_context = ContractFixtures.failed_run_context("run-f", 12, allowed_actions: [:retry])
+  assert {:ok, %{kind: {:retry_run, "run-f", 12}, origin: {:run_revision, "run-f", 12}}} =
+           RequestResolver.resolve({:retry_run, "run-f", 12}, retry_context, "request-45", 1_788_438_400_000)
+
+  agent_context = ContractFixtures.agent_context("run-s", "agent-2", 9, allowed_actions: [:stop_agent])
+  assert {:ok, %{kind: {:stop_agent, "run-s", "agent-2", 9}}} =
+           RequestResolver.resolve({:stop_agent, "run-s", "agent-2", 9}, agent_context, "request-46", 1_788_438_400_000)
+
+  assert {:error, :not_allowed} =
+           RequestResolver.resolve({:stop_agent, "run-s", "agent-2", 9},
+             ContractFixtures.run_context("run-s", allowed_actions: [:stop]),
+             "request-47", 1_788_438_400_000)
+
+  assert {:error, :stale_revision} =
+           RequestResolver.resolve({:retry_run, "run-f", 11}, retry_context,
+             "request-48", 1_788_438_400_000)
 end
 
 test "random input strings do not grow the atom table" do
@@ -668,7 +698,7 @@ Scene.validate(Scene.t()) :: :ok | {:error, Renderer.Error.t()}
 
 - `Scene.Block.t/0` is the exhaustive initial union of Text, RichText, Markdown, Code, VirtualList, RunCard, AgentList, ConsensusLedger, ResearchDocument, Progress, Tabs, KeyValues, Composer, Notice, and ActionDeck. Every text position is `SafeText`; action references are opaque binaries. Scene carries the exact `ambiguous_width` capability, and Dialog carries focused-control ID plus independent bounded body-scroll/visible-range metadata for sticky-title/footer projection.
 - `Scene.validate/1` rejects raw text binaries, functions, PIDs, ports, references, unknown block/style atoms, negative/out-of-bounds rectangles, duplicate region/action IDs, invalid cursor, and any region outside Scene size.
-- The architecture test scans `apps/swarm_code_cli/lib`. The only implementation-name/type exemption is the exact directory `/ui/renderer/ex_ratatui_013/`; the adapter itself will live at `/ui/renderer/ex_ratatui_013/adapter.ex`, not the sibling root file. It rejects ExRatatui/Ratatui/Rustler/ResourceArc aliases, structs, remote calls, and names elsewhere, plus any CLI dependency on `swarm_code_daemon`, FoundationGate, Ecto Repo, database paths, or daemon IPC.
+- The architecture test scans `apps/swarm_code_cli/lib`. The only implementation-name/type exemption is the exact conditional directory `/ui/renderer/ex_ratatui_013/`; the adapter itself would live at `/ui/renderer/ex_ratatui_013/adapter.ex`, not the sibling root file. Task 15 adds one non-implementation exception: `demo/application_fence.ex` may contain only the literal denied application atoms and module-prefix binaries enumerated in Task 15 plus `Application`/`:code`/`Process` introspection calls. AST tests reject any alias, struct, remote call, function capture, dependency, dynamic module lookup, or code-path load targeting those denied modules. Everywhere else it rejects ExRatatui/Ratatui/Rustler/ResourceArc names, plus any CLI dependency/call involving `swarm_code_daemon`, FoundationGate, Ecto Repo, database paths, or daemon IPC.
 
 - [ ] **Step 1: Write Scene and boundary RED tests**
 
@@ -869,6 +899,7 @@ git commit -m "feat: secure terminal text and capabilities"
 - Create: `apps/swarm_code_cli/lib/swarm_code_cli/ui/data_source/dto/activity_snapshot.ex`
 - Create: `apps/swarm_code_cli/lib/swarm_code_cli/ui/data_source/dto/pending_interaction.ex`
 - Create: `apps/swarm_code_cli/lib/swarm_code_cli/ui/data_source/dto/run_summary.ex`
+- Create: `apps/swarm_code_cli/lib/swarm_code_cli/ui/data_source/dto/agent_summary.ex`
 - Create: `apps/swarm_code_cli/lib/swarm_code_cli/ui/data_source/dto/transcript_item.ex`
 - Create: `apps/swarm_code_cli/lib/swarm_code_cli/ui/data_source/dto/activity_item.ex`
 - Create: `apps/swarm_code_cli/lib/swarm_code_cli/ui/data_source/dto/connection.ex`
@@ -893,14 +924,16 @@ Fake.Source.snapshot(server()) :: Fake.Script.snapshot()
 ```
 
 - DTOs are page-limited typed structs. `Watch` has binary reference, closed slot, `SwarmCode.Protocol.Scope`, generation, page size 1-200, and byte limit at most 1,048,576. `Request` has binary request ID, closed kind, scope, generation, origin, absolute deadline, and expected response type. `Delivery.body` is only the closed DTO/delta/outcome union. Transcript/Activity windows carry `idle | loading_before | loading_after | error | closed | resyncing`, opaque cursors and correlated request/error metadata.
-- Outcome uses exactly `:accepted | :needs_input | :rejected | :deadline_exceeded | :interrupted | :revision_conflict | :outcome_unknown`; wire strings map through closed clauses only. Approval `allowed_actions` may contain the distinct `:always_allow` atom; neither presenter may infer it.
+- Keep run Stop, Retry, and agent Stop structurally distinct: run Stop is `kind: {:run_control, :stop, run_id}` with `origin: {:run, run_id}`; Retry is `kind: {:retry_run, run_id, run_revision}` with `origin: {:run_revision, run_id, run_revision}`; agent Stop is `kind: {:stop_agent, run_id, agent_id, agent_revision}` with the matching agent origin. Run summaries carry their revision/state and agent rows carry their revision so Projector/Resolver never synthesize a CAS value.
+- Outcome uses exactly `:accepted | :needs_input | :rejected | :deadline_exceeded | :interrupted | :revision_conflict | :outcome_unknown`; wire strings map through closed clauses only. `allowed_actions` keeps `:always_allow`, failed-run `:retry`, run `:stop`, and `:stop_agent` as distinct closed atoms; neither presenter may infer one from state or another permission.
 - Fake Source is the separately owned fake-daemon analogue. It owns A1/A2/B1 canonical scripted facts and continues when a client detaches. The fixture is bounded through `SwarmCode.Protocol.JsonLimits.decode/2`, then closed strings are converted only by clauses. Fixed clock is `2026-09-03T12:00:00Z`; fixed UUIDs and binary barrier IDs are committed.
+- Separate fixed catalogue barriers exercise the two added commands: authorized matching failed-run Retry returns `:accepted` then emits that run at `:retrying` with a new fixed revision; authorized matching agent Stop returns `:accepted` then emits only that agent stopped at a new fixed revision while its parent run remains unchanged. Missing permission, wrong state/origin/target kind, and stale revision return the exact resolver/admission outcome without a delta.
 - `advance/2` mutates source facts in node → assistant text → reasoning → run order and acknowledges only after subscriber messages are enqueued. It never sleeps, opens a user path, or stores draft/UI state. Its redacted `format_status/1` exposes counts/status IDs only. Page replies distinguish off-window from confirmed removal; superseded turns remain losslessly present with the contract's exact allowed-action restrictions.
-- Besides the three-run script, fixtures expose the complete closed status catalogue and an Activity page with two questions, one approval, distinct urgency/deadlines across conversations, running/paused work, failure, and completion. This is deterministic presentation evidence, not new fake domain behavior.
+- Besides the three-run script, fixtures expose the complete closed status catalogue and an Activity page with two questions, one approval, distinct urgency/deadlines across conversations, running/paused work, failures with and without exact `:retry`, agent rows with and without exact `:stop_agent`, run-level `:stop` kept separate, and completion. Run/agent revisions are fixed. This is deterministic presentation evidence, not new fake domain behavior.
 
 - [ ] **Step 1: Write source-state RED tests**
 
-Assert initial three runs, exact fixed identities, barrier ordering, revision-7 Q1, a gap step, `:accepted` answer then resolved/running state, B1 progress, source continuity after attach/detach, bounded page snapshots, invalid fixture rejection, and no runtime atom growth.
+Assert initial three runs, exact fixed identities, barrier ordering, revision-7 Q1, a gap step, `:accepted` answer then resolved/running state, B1 progress, source continuity after attach/detach, bounded page snapshots, authorized/unauthorized failed-run Retry facts, distinct run-Stop/agent-Stop permissions and revisions, invalid fixture rejection, and no runtime atom growth.
 
 ```elixir
 assert :ok = Fake.Source.advance(source, "a1-a2-b1-step-1")
@@ -1147,13 +1180,13 @@ MutationState.t() ::
 - User scrolling detaches immediately; repeated changes to one stable item count once; `:last`/`:follow` rejoins and clears unseen. Main and Inspector are independent; prepending history and resizing preserve stable item/intra-line anchors.
 - Moving, paging, `G`, or search at an unloaded edge emits exactly one correlated page query and installs a visible loading sentinel; repeat movement does not duplicate it. Failure makes the sentinel retryable. Closed/resyncing retain visible rows. `off_window` retains focus/anchor; confirmed removal repairs to the successor at the same visual bias, then predecessor, then empty-state focus. Supersession remains visible and never enters removal repair.
 - Navigator preferred/reset is 26 with compact/balanced/wide 24/28/32; Inspector preferred/reset is 42 with 38/46/56. Nudges change preferred by -8/-2/+2/+8. Effective values clamp to dock bounds and Main>=50 without overwriting preference, so widening restores it. Composer uses ±1/reset within 1-8.
-- `:back` restores the complete saved Activity context. `{:invoke, intent, request_id}` calls pure RequestResolver with State's normalized context, synchronously installs `{:pending, request_id, intent}` before its command Effect, and suppresses duplicate/repeat invoke. The exact settled atoms are `:accepted | :needs_input | :rejected | :deadline_exceeded | :interrupted | :revision_conflict | :outcome_unknown`; only `:accepted` clears the exact origin.
+- `:back` restores the complete saved Activity context. `{:invoke, intent, request_id}` calls pure RequestResolver with State's normalized context, synchronously installs `{:pending, request_id, intent}` before its command Effect, and suppresses duplicate/repeat invoke. The exact settled atoms are `:accepted | :needs_input | :rejected | :deadline_exceeded | :interrupted | :revision_conflict | :outcome_unknown`; only accepted dispatch/Steer with an exact draft origin may clear that draft. Accepted Retry/agent Stop settles its own mutation and changes presentation only through subsequent canonical deltas; it never clears any draft or locally invents retrying/stopped state.
 - A contiguous insert/delete emits cancel/start of one 1,000 ms timer carrying `{:undo_boundary, boundary_id}`; stale IDs do nothing. No copy/cut/clipboard effect exists. Current-generation terminal-focus actions pause/resume visible motion, while stale generations change no byte. Every detach/plain-handoff branch calls `Draft.dirty?/1` for DraftKeys and exact byte-nonempty text for FieldKeys. Dirty state opens the `UNSENT CHANGES` default-Cancel confirmation; only `{:quit_confirmed, :detach}` or `{:presenter_handoff_confirmed, :plain}` emits the recorded exit path.
 - `OrderedIdSet` stores insertion order plus a membership index, admits at most 512 IDs for the current bounded window, and never presents map-enumeration order. Duplicate insertion preserves position. Overflow marks the watch snapshot-required and requests resync rather than silently evicting an unseen canonical item.
 
 - [ ] **Step 1: Write stale/gap/navigation/scroll RED tests**
 
-Use the complete reducer list in spec section 17.2, including page-edge loading/error/retry/closed/resync, off-window versus removal repair, FieldKey isolation, exact dock/reset/preference clamps, Back, key-phase/exact MutationState settlement, RequestResolver, undo-boundary timer, the single dirty predicate and `UNSENT CHANGES` confirmation, and focus-graph/terminal-generation state. Include target-only, metadata-only attachment, staged-validation-only, whitespace-only composer, byte-nonempty FieldKey, and clean cursor/selection/scroll/height-only exit cases. Also assert a higher terminal generation replaces size/capabilities and reprojects without changing draft/focus/scroll, while stale generations, focus actions, and draw results change nothing. Include this ordering assertion:
+Use the complete reducer list in spec section 17.2, including page-edge loading/error/retry/closed/resync, off-window versus removal repair, FieldKey isolation, exact dock/reset/preference clamps, Back, key-phase/exact MutationState settlement, RequestResolver, authorized/stale/mismatched Retry and agent Stop with no optimistic domain-state or draft mutation, undo-boundary timer, the single dirty predicate and `UNSENT CHANGES` confirmation, and focus-graph/terminal-generation state. Include target-only, metadata-only attachment, staged-validation-only, whitespace-only composer, byte-nonempty FieldKey, and clean cursor/selection/scroll/height-only exit cases. Also assert a higher terminal generation replaces size/capabilities and reprojects without changing draft/focus/scroll, while stale generations, focus actions, and draw results change nothing. Include this ordering assertion:
 
 ```elixir
 {next, effects} = Reducer.update(state, {:navigate, %Destination{kind: :conversation, id: "conversation-b"}})
@@ -1231,9 +1264,9 @@ Fixtures.representative(:chat | :swarm | :consensus | :research, Size.t(), Capab
 - At Wide/XL, Navigator reset/default is 26 with presets 24/28/32 and clamp 24-32; Inspector reset/default is 42 with presets 38/46/56 and clamp 38-56; Main remains at least 50 without erasing preferred values. Medium docks Main plus exactly one persisted drawer. Narrow uses Main and full-height overlays. Small uses one-row title, Main, at most two-row needs-you strip, compact composer, and status. Compressed Small retains `Resize help`/Help/Detach/`Exit; rerun with --plain` and hides destructive/send actions. Too small uses the exact degenerate clipped-line/key fallback; it never claims the process can resize the emulator or swap presenter in-process.
 - Main composer height is 1-8; needs-you is at most two; run logs are at most 45 percent of viewport unless maximized. No region overlaps, leaves the screen, or creates whole-screen horizontal scroll.
 - `Projector.Density` implements the exact per-class budgets/degradation order in contract section 11. At `>=50x14`, mode, state, Needs-you, target, validation/error, and focus identity never disappear. Below that floor it renders only prefix-clipped `SIZE … NEED 50x14`, `? HELP`, `q DETACH`, `P EXIT; RERUN --plain` lines as rows/cells allow; those three keys remain active even at `1x1`, and no banner/mode/domain-state/focus visibility is claimed. When the one `Draft.dirty?/1` plus byte-nonempty-FieldKey guard is true, q/P enters the clipped `UNSENT CHANGES` / `Esc CANCEL` / `X CONFIRM EXIT` state; Enter is inert and only uppercase X confirms. Secondary metadata collapses only in operational layouts. Names/models end-elide, paths/project-branch/refs/filenames middle-elide by cells and ambiguous-width policy.
-- Projector owns visible/enabled actions, fixed labels, focus indicator, cursor, exact state catalogue, action IDs, and responsive collapse. It intersects every Intent with DTO `allowed_actions`; it never invents domain permission. Base `FAILED`/`INTERRUPTED` gain Retry/Resume suffixes only when authorized; `QUEUED` uses warning; run kinds use unique A/G/S/W/R/C/U prefixes. Pending mutations disable duplicate action IDs and project every exact MutationState settlement distinctly.
+- Projector owns visible/enabled actions, fixed labels, focus indicator, cursor, exact state catalogue, action IDs, and responsive collapse. It intersects every Intent with DTO `allowed_actions`; it never invents domain permission. `FAILED — RETRY AVAILABLE` exists only for exact `:retry` plus state/revision and stores `{:intent, {:retry_run, run_id, run_revision}}`; otherwise FAILED has no Retry action ID. Agent Stop exists only for exact `:stop_agent` and stores `{:intent, {:stop_agent, run_id, agent_id, agent_revision}}`; run Stop uses `{:intent, {:run_control, :stop, run_id}}`, and the two never share an ID/permission. `INTERRUPTED` gains Resume only when authorized; `QUEUED` uses warning; run kinds use unique A/G/S/W/R/C/U prefixes. Pending mutations disable duplicate action IDs and project every exact MutationState settlement distinctly.
 - Temporarily disabled actions show the DTO's sanitized safe reason. A stale/resyncing slot keeps its content visible and projects a scoped recovery Notice with Retry and Diagnostics rather than a blocking spinner. The status region follows the density budget—three-to-five bindings only at Wide/XL and one plus `?` at Small; `?` opens the complete current region/action map.
-- Superseded turns remain losslessly visible/muted with `SUPERSEDED`, no live bar/Needs-you/Reply/Retry, and retained Inspect/Copy/Fork. Their running children show `LAUNCHED BY SUPERSEDED TURN` and keep server-authorized Stop; planner/implementation linkage remains visible through Approve/Revise.
+- Superseded turns remain losslessly visible/muted with `SUPERSEDED`, no live bar/Needs-you/Reply/Retry, and retained Inspect/Copy/Fork. Their running agent children show `LAUNCHED BY SUPERSEDED TURN` and keep only server-authorized revisioned `:stop_agent`; run Stop remains separate. Planner/implementation linkage remains visible through Approve/Revise.
 - Title/composer always name the single fake mode explicitly. Research depth is rendered as `Research: Ultra (4x10)`, never as the ambiguous standalone word `Ultra`. Hidden regions keep selection/anchor facts without animation or repeated layout work.
 - Dialog projection keeps title/breadcrumb/footer sticky, gives the body an independent logical scroll anchor, minimally auto-reveals the focused wrapped option, and exposes `item x of y` overflow. Resize retains focus/body anchor; at `50x14` an open submit/destructive dialog becomes a read-only Back/Close/Help summary with no hidden action ID. Detach/plain-relaunch confirmation uses fixed `UNSENT CHANGES` copy and initial Cancel focus.
 - Apply the contract's anti-box-soup rule: prose is unboxed, a prompt/run group has one boundary/progress rail, panes use separators/space, overlays have the strongest border, and focus/live are the only orange roles. Kind letters and numbered lanes remain present in monochrome/ASCII.
@@ -1254,7 +1287,7 @@ assert Layout.classify(%Size{columns: 50, rows: 13}) == :too_small
 
 For every projected Scene, assert `Scene.validate/1 == :ok`, all text positions hold `SafeText`, action IDs are opaque binaries, and action-table values never appear in `inspect(scene)`.
 
-Add the complete state-catalogue fixture, both Medium drawer choices, long ASCII/CJK/RTL metadata, Needs-you overflow, disabled reason, `{:pending, ...}`/`:rejected`/`:revision_conflict` notices, and the same ambiguous character/cursor state under narrow and wide policy. Traverse each breakpoint's focus graph: every enabled fake action is reachable, hidden/disabled actions are not activatable, and focused disabled reasons are readable through the action menu.
+Add the complete state-catalogue fixture, both Medium drawer choices, long ASCII/CJK/RTL metadata, Needs-you overflow, disabled reason, `{:pending, ...}`/`:rejected`/`:revision_conflict` notices, and the same ambiguous character/cursor state under narrow and wide policy. For failed runs, assert `:retry` produces the exact revisioned Retry ActionTarget and absence/non-failed state produces no Retry ID. For agent rows, assert `:stop_agent` produces the exact agent/revision target while run `:stop` cannot expose it; likewise agent permission cannot create run Stop. Traverse each breakpoint's focus graph: every enabled fake action is reachable, hidden/disabled actions are not activatable, and focused disabled reasons are readable through the action menu.
 
 - [ ] **Step 2: Run RED**
 
@@ -1323,7 +1356,7 @@ Question.answer_intent(State.t(), PendingInteraction.t(), binary()) :: Intent.t(
 
 - [ ] **Step 1: Write priority/focus/question RED tests**
 
-Cover all key tables relevant to the fake surface plus press/repeat/release gating, injected mouse normalization→ignore, FieldKey paste/committed-fragment isolation, approved switcher prefixes/ranking/no-results/async selection repair, modal focus trap/autoreveal/body scroll, Small resize suppression, single Escape, Back, safest default, exact Activity return, settled-by-other-client behavior, pending duplicate suppression, all seven exact MutationState settlements, paste-not-submit, exact dock/composer controls, stale/current terminal-focus actions, Ctrl+C context rule, dirty-state `UNSENT CHANGES` confirmation including target-only/metadata-only/degenerate routes, and queue Intent equivalence.
+Cover all key tables relevant to the fake surface plus press/repeat/release gating, injected mouse normalization→ignore, FieldKey paste/committed-fragment isolation, approved switcher prefixes/ranking/no-results/async selection repair, modal focus trap/autoreveal/body scroll, Small resize suppression, single Escape, Back, safest default, exact Activity return, settled-by-other-client behavior, pending duplicate suppression, all seven exact MutationState settlements, paste-not-submit, exact dock/composer controls, stale/current terminal-focus actions, Ctrl+C context rule, dirty-state `UNSENT CHANGES` confirmation including target-only/metadata-only/degenerate routes, queue Intent equivalence, authorized/unauthorized failed-run Retry, and distinct authorized/unauthorized agent Stop versus run Stop.
 
 ```elixir
 test "answering Q1 carries exact compare-and-set identity once" do
@@ -1412,7 +1445,7 @@ assert counts == %{running: 2, waiting: 1}
 assert q1.expected_revision == 7
 ```
 
-The test must advance named fake barriers, not time. It creates A and B drafts, navigates A→B→Activity→A, delivers one deliberately late A response, answers Q1 option 2, resizes `160x50 → 80x24 → 50x14 → 160x50`, and rejoins Main with End. It then snapshots drafts/focus/selections/Main+Inspector anchors/source/effect history, requests detach through the user action, asserts `UNSENT CHANGES` with Cancel focused and no exit effect, activates the default Cancel, and asserts those captured values unchanged. It requests detach again, explicitly moves focus to Confirm, activates it, asserts only then that the ordered detach effects occur, and starts a new client adapter against the continuing source. Assert exact cursor, nonempty selection, chips, attachment metadata, heights, independent anchors, deduplicated unseen IDs, A1/A2/B1 states, and no domain Stop request. Plain handoff is not part of this canonical script; its independent runtime test exercises Cancel then explicit Confirm and the one fixed instruction.
+The test must advance named fake barriers, not time. It creates A and B drafts, navigates A→B→Activity→A, delivers one deliberately late A response, answers Q1 option 2, resizes `160x50 → 80x24 → 50x14 → 160x50`, and rejoins Main with End. It then snapshots drafts/focus/selections/Main+Inspector anchors/source/effect history, requests detach through the user action, asserts `UNSENT CHANGES` with Cancel focused and no exit effect, activates the default Cancel, and asserts those captured values unchanged. It requests detach again, explicitly moves focus to Confirm, activates it, asserts only then that the ordered detach effects occur, and starts a new client adapter against the continuing source. Assert exact cursor, nonempty selection, chips, attachment metadata, heights, independent anchors, deduplicated unseen IDs, A1/A2/B1 states, and no run-control Stop or agent Stop request. Plain handoff is not part of this canonical script; its independent runtime test exercises Cancel then explicit Confirm and the one fixed instruction.
 
 - [ ] **Step 2: Run RED**
 
@@ -1454,12 +1487,14 @@ git commit -m "feat: prove async fake TUI continuity"
 - Create: `apps/swarm_code_cli/lib/swarm_code_cli/plain/command.ex`
 - Create: `apps/swarm_code_cli/lib/swarm_code_cli/plain/session.ex`
 - Create: `apps/swarm_code_cli/lib/swarm_code_cli/demo/plain.ex`
+- Create: `apps/swarm_code_cli/lib/swarm_code_cli/demo/application_fence.ex`
 - Create: `apps/swarm_code_cli/lib/swarm_code_cli/demo/finite_input.ex`
 - Create: `apps/swarm_code_cli/lib/swarm_code_cli/demo/finite_script.ex`
 - Create: `apps/swarm_code_cli/lib/mix/tasks/swarm_code.demo.plain.ex`
 - Create: `apps/swarm_code_cli/test/fixtures/plain/three_run_output.txt`
 - Create: `apps/swarm_code_cli/test/fixtures/plain/command_conformance.json`
 - Create: `apps/swarm_code_cli/test/support/request_conformance.ex`
+- Create: `apps/swarm_code_cli/test/support/demo_fixtures.ex`
 - Create: `apps/swarm_code_cli/test/swarm_code_cli/plain/options_test.exs`
 - Create: `apps/swarm_code_cli/test/swarm_code_cli/plain/presenter_test.exs`
 - Create: `apps/swarm_code_cli/test/swarm_code_cli/plain/command_test.exs`
@@ -1492,6 +1527,9 @@ Plain.Session.start_link(
 Plain.Session.close(GenServer.server(), :eof | :interrupt | :detach) :: :ok
 
 Demo.FiniteScript.steps(:complete) :: [Demo.FiniteScript.step()]
+Demo.ApplicationFence.run((-> result)) :: {result, Demo.ApplicationFence.audit()}
+  when result: term()
+Demo.ApplicationFence.maybe_write_fd3(Demo.ApplicationFence.audit()) :: :ok
 Demo.FiniteInput.start_link(max_lines: pos_integer(), max_bytes: pos_integer()) :: GenServer.on_start()
 Demo.FiniteInput.device(GenServer.server()) :: io_device()
 Demo.FiniteInput.release_line(GenServer.server(), binary()) :: :ok
@@ -1512,7 +1550,7 @@ Plain.Presenter.output_record() :: {:stdout, iodata()} | {:stderr, iodata()}
 - Selection is explicit `--plain`, or automatic when stdin is non-TTY, stdout is non-TTY, no controlling TTY is usable, or TERM equals `dumb` case-insensitively. Plain may consume deterministic commands from piped stdin; full-screen raw polling never starts with a piped input. `--no-alt-screen` remains an interactive renderer option that preserves pre-existing scrollback and the final/restoration frame, not append-only redraw history, and does not imply plain when all three TTY checks pass. `--ascii`, `--no-color`, present `NO_COLOR`, `--reduced-motion`, and `--ambiguous-width=narrow|wide` are retained in options.
 - Plain output is chronological and append-only, deduplicated by `{source_epoch, scope kind/id/generation, sequence}`. It uses fixed headings, exact state words, sanitized content, and explicit prompts. It emits no cursor rewriting, alternate-screen bytes, terminal hyperlinks, animation, bell, or terminal controls other than LF record separators.
 - `Plain.Session` is the one owner of the bound DataSource, bounded line reader, prompt registry, and stdout/stderr writers. It serializes deliveries and complete input lines into non-interleaved LF-terminated records. After async output it re-emits the still-current prompt. Simultaneous completion/question delivery follows runtime ingress order; no task writes directly to either stream.
-- `Plain.Command.parse/3` returns only the exact `Intent.t()` from Task 4 or an exact local `Action.t()`. It never returns an action ID and never constructs a Request. Session builds the exact Task-4 `%RequestResolver.Context{}` from its normalized scope/origin/current prompt/current run and the parsed text/target/attachment values, then calls `RequestResolver.resolve/4` with fixed request ID/deadline. No alternate permission or command-construction path exists.
+- `Plain.Command.parse/3` returns only the exact `Intent.t()` from Task 4 or an exact local `Action.t()`. It never returns an action ID and never constructs a Request. Session builds the exact Task-4 `%RequestResolver.Context{}` from its normalized scope/origin/current prompt and current run/state/revision/node/agent plus parsed text/target/attachment values, then calls `RequestResolver.resolve/4` with fixed request ID/deadline. No alternate permission or command-construction path exists.
 - ASCII substitutes trusted box/glyph chrome only and never transliterates external Unicode. No-color and reduced-motion output remain semantically identical. The full-screen TUI is not called screen-reader accessible; plain is the screen-reader acceptance surface/targeted path, with a proven accessibility claim deferred until Phase 5 VoiceOver and Orca runs.
 
 The complete Task-15 grammar and semantic mapping are:
@@ -1527,6 +1565,8 @@ The complete Task-15 grammar and semantic mapping are:
 | `deny ID@REV` | `{:resolve_approval, run, node, id, revision, :deny}` |
 | `always-allow ID@REV` | approval Intent with `:always_allow`, only when that prompt authorizes it |
 | `pause RUN`, `continue RUN`, `resume RUN`, `stop RUN` | the corresponding `{:run_control, operation, run}` |
+| `retry RUN@REV` | `{:retry_run, run, revision}`, only for that failed revision with `:retry` |
+| `stop-agent RUN AGENT@REV` | `{:stop_agent, run, agent, revision}`, only with `:stop_agent`; never run Stop |
 | `seen conversation|run|activity ID@REV` | corresponding `{:mark_seen, kind, id, revision}` |
 | `follow main|inspector` | `{:scroll, "main" | "inspector", :follow}` |
 | `go conversation ID`, `go run ID` | `{:navigate, Destination.conversation(ID) | Destination.run(ID)}` |
@@ -1534,21 +1574,25 @@ The complete Task-15 grammar and semantic mapping are:
 | `inspect RUN [overview|agents|timeline|changes]` | `{:open_layer, LayerSpec.run_inspector(RUN, tab)}`; omitted tab is `overview` |
 | `back`, `help`, `detach` | `:back`, `{:open_layer, LayerSpec.help()}`, `{:quit_requested, :detach}` |
 
-`TARGET` is `main`, `reply:ID`, `thread:ID`, `revise:ID`, `command:ID`, `goal:ID`, or `research:ID`; the last three become the exact chip target tuples. Only one target is legal and it defaults to `main`. Options precede the mandatory `--`. IDs use ASCII `[A-Za-z0-9][A-Za-z0-9._-]{0,255}`; revision is unsigned decimal `0..18446744073709551615`. Prompt/option IDs must be present at the same revision in the bounded prompt registry; run/node/navigation/Inspector IDs must exist in the bounded presentation registry; target IDs must exist in the target catalogue; and attachment refs must be currently staged. Unknown IDs are fixed errors, never speculative requests/actions.
+`TARGET` is `main`, `reply:ID`, `thread:ID`, `revise:ID`, `command:ID`, `goal:ID`, or `research:ID`; the last three become the exact chip target tuples. Only one target is legal and it defaults to `main`. Options precede the mandatory `--`. IDs use ASCII `[A-Za-z0-9][A-Za-z0-9._-]{0,255}`; revision is unsigned decimal `0..18446744073709551615`. Prompt/option IDs must be present at the same revision in the bounded prompt registry; run/node/agent/navigation/Inspector IDs must exist in the bounded presentation registry; target IDs must exist in the target catalogue; and attachment refs must be currently staged. Retry requires exact failed run state/revision plus `:retry`; agent Stop requires exact run/agent/revision plus `:stop_agent`. Unknown IDs are fixed errors, never speculative requests/actions.
 
 A physical line is valid UTF-8, has no NUL, and is at most 16,384 bytes excluding one LF/CRLF. It decodes to at most 64 arguments; each argument is at most 4,096 bytes; decoded plain text is at most 16,384 bytes; attachments and answer options are each ordered/unique and limited to 16. ASCII space/tab separate words. Bare words contain no whitespace, quote, backslash, CR, LF, or NUL. Single quotes are literal with no escapes and cannot contain single quote/CR/LF/NUL. Double quotes accept only `\\`, `\"`, `\n`, and `\t`; unknown/incomplete escapes fail. Text words are joined with one ASCII space, while a single quoted word preserves internal/edge spaces. There is no interpolation, comment, glob, substitution, or continuation syntax. Unknown commands, duplicate options/attachments, extra arguments, malformed references, and every bound failure produce a fixed sanitized diagnostic without mutation.
 
 A bare decimal `1..999` is accepted only when exactly one current unresolved numbered prompt exists at the emitted revision and the number names one option; it normalizes to the same answer Intent. Otherwise the diagnostic prints the full non-secret `answer ID@REV OPTION` command and preserves state. Another-client settlement invalidates the stale prompt and emits settled/new-prompt records. Every non-accepted exact MutationState settlement, EOF/Ctrl+C, invalid input, and unknown command preserves domain state; EOF/Ctrl+C detach only and never mean Stop.
 
-`command_conformance.json` is the one positive/negative truth table. Each positive domain row contains `name`, exact `line`, named normalized Context fixture, exact decoded Intent, expected Request struct fields, fixed request ID/deadline, and expected canonical request bytes encoded as base64. It has rows for send, queue, Steer, answer, approve, deny, authorized Always allow, Pause, Continue, Resume, Stop, and mark-seen. Local rows cover follow, both navigation forms, Activity, every Inspector tab/default, Back, Help, and Detach with `request`/`canonical_base64` absent. Negative rows cover every quote/escape/bound/duplicate/stale/authorization failure. The single conformance test parses each row; for a domain row it also fetches the full-screen fixture's `{:intent, intent}` ActionTarget, requires exact Intent equality, resolves both with the same Context/request ID/deadline, requires exact Request equality, and compares both encodings to the independent fixture bytes. For a local row it requires the exact Action and proves the resolver spy was not called.
+`command_conformance.json` is the one positive/negative truth table. Each positive domain row contains `name`, exact `line`, named normalized Context fixture, exact decoded Intent, expected Request struct fields, fixed request ID/deadline, and expected canonical request bytes encoded as base64. It has rows for send, queue, Steer, answer, approve, deny, authorized Always allow, Pause, Continue, Resume, run Stop, authorized failed-run Retry, authorized agent Stop, and mark-seen. Local rows cover follow, both navigation forms, Activity, every Inspector tab/default, Back, Help, and Detach with `request`/`canonical_base64` absent. Negative rows cover every quote/escape/bound/duplicate/stale/authorization failure plus non-failed/missing-permission/stale/wrong-origin Retry; missing-permission/stale/wrong-run agent Stop; and both run-Stop/agent-Stop substitution directions. The single conformance test parses each row; for a domain row it also fetches the full-screen fixture's `{:intent, intent}` ActionTarget, requires exact Intent equality, resolves both with the same Context/request ID/deadline, requires exact Request equality, and compares both encodings to the independent fixture bytes. For a local row it requires the exact Action and proves the resolver spy was not called.
 
-`Demo.Plain` is the unconditional renderer-free composition root for the locked branch. It starts one temporary monitored `:one_for_all` tree in this order: separately owned `Fake.Source`; unbound `DataSource.Fake`; bounded paused `Demo.FiniteInput`; `Plain.Session`, which receives that IO device and reference-binds itself as DataSource owner; then `Demo.FiniteScript`. `FiniteInput` implements only the required Erlang IO read requests, holds at most one released line, and blocks the next read until the driver releases it; it is not a concurrent output writer. The fixed `:complete` driver waits for bind/readiness messages, releases only the committed command rows one at a time, advances named fake barriers, waits for matching deliveries/settlements, sends EOF after detach, and acknowledges completion. It uses no sleep, renderer, terminal raw mode, alternate screen, Application callback, daemon, Repo, user path, or arbitrary operation string. Completion or any failure closes input, session, DataSource, and source under monitors before `run/2` returns. The contributor command is exactly:
+`Demo.Plain` is the unconditional renderer-free composition root for the locked branch. It starts one temporary monitored `:one_for_all` tree in this order: separately owned `Fake.Source`; unbound `DataSource.Fake`; bounded paused `Demo.FiniteInput`; `Plain.Session`, which receives that IO device and reference-binds itself as DataSource owner; then `Demo.FiniteScript`. `FiniteInput` implements only the required Erlang IO read requests, holds at most one released line, and blocks the next read until the driver releases it; it is not a concurrent output writer. The fixed `:complete` driver waits for bind/readiness messages, releases only the committed command rows one at a time—including authorized `retry failed-run@revision` and `stop-agent run agent@revision` catalogue steps—advances named fake barriers, waits for matching accepted/retrying/agent-stopped deliveries, sends EOF after detach, and acknowledges completion. The Retry step leaves unrelated runs/agents unchanged; the agent Stop step leaves the parent run and other agents unchanged. It uses no sleep, renderer, terminal raw mode, alternate screen, daemon, Repo, user path, or arbitrary operation string. Completion or any failure closes input, session, DataSource, and source under monitors before `run/2` returns. From the repository root, the contributor command is exactly:
 
 ```bash
-mise exec -- mix swarm_code.demo.plain --script complete
+(cd apps/swarm_code_cli && MIX_QUIET=1 mise exec -- mix swarm_code.demo.plain --script complete)
 ```
 
-The Mix task accepts no other script name/path/operation, calls `Mix.Task.run("app.start")`, invokes `Demo.Plain.run/2` with standard output/error devices and a 5,000 ms outer failure deadline, emits only the golden stdout/stderr records, and exits nonzero on typed failure. Native launcher, Application callback, full-screen renderer boot, `mix release`, ERTS bundling, identity, and packaging remain exclusively in conditional Task 22.
+The leading subshell `cd apps/swarm_code_cli` enters the non-umbrella CLI child project before Mix is launched; no umbrella Mix task runs. Inside that child only, the custom task uses `@requirements ["compile"]`; compilation may load Mix/compiler code paths for CLI/core dependencies but neither compiles nor starts the sibling daemon application. `run/1` immediately snapshots `Application.started_applications/0` and the bounded process table, rejects any already-started forbidden app/process, calls `Application.load(:swarm_code_cli)`, and recursively reads each trusted `.app` specification. It validates the resulting declared closure equals exactly the sorted compile-time set `[:compiler, :crypto, :elixir, :jason, :kernel, :logger, :stdlib, :swarm_code_cli, :swarm_code_core]` before loading another member. Any unexpected member—including `:swarm_code_daemon`, `:ecto`, `:ecto_sql`, `:ecto_sqlite3`, `:exqlite`, `:ex_ratatui`, `:rustler`, or `:crossterm`—fails before application start. It then calls only `Application.ensure_all_started(:swarm_code_cli, :temporary)`; it never invokes `Mix.Task.run("app.start")`, `mix run`, or another umbrella-starting task.
+
+`Demo.ApplicationFence.run/1` owns the returned newly-started application list. During the callback, every declared closure app is started, every newly started app belongs to that closure, and no forbidden process exists by registered name, `:proc_lib.translate_initial_call/1`, raw initial call, or current-function module prefix (`Elixir.SwarmCode.Daemon`, `Elixir.SwarmCode.Repo`, `Elixir.Ecto`, `Elixir.Exqlite`, `Elixir.ExRatatui`, or `Elixir.Rustler`). It runs `Demo.Plain.run/2` with standard output/error devices and a 5,000 ms outer failure deadline. In `after`, it first monitors the demo tree fully down, snapshots the Logger primary level, sets it to `:warning` only around reverse `Application.stop/1`, calls `:logger.flush/0`, and restores the exact level so trusted OTP `Application ... exited: :stopped` notices cannot contaminate golden stdout. Stop errors are returned/raised directly and are not log-filtered. It stops only the returned newly-started apps and requires the closure's started/not-started state plus forbidden-process set to equal the pre-start snapshot. It preserves Mix/VM baseline applications that were already running.
+
+The fence always performs these assertions. For the isolated smoke only, environment is accepted as `SWARM_CODE_DEMO_AUDIT_FD` absent or exactly `"3"`; any other value fails. With fd 3 enabled, it writes one canonical JSON record of at most 32,768 bytes containing sorted declared closure, before/during/after started-app sets, newly-started apps, forbidden app/process findings, and demo-child counts; overflow fails before writing a partial record. It accepts no audit path and never writes user state. The task accepts no other script name/path/operation, emits only golden stdout/stderr records, and exits nonzero on any fence/demo failure. Native launcher, Application callback, full-screen renderer boot, `mix release`, ERTS bundling, identity, and packaging remain exclusively in conditional Task 22.
 
 - [ ] **Step 1: Write selection, grammar, conformance, session, and executable-demo RED tests**
 
@@ -1581,50 +1625,98 @@ test "renderer-free composition owns source, unbound adapter, session, and finit
   assert DemoFixtures.output(error) == ""
   assert DemoFixtures.all_children_down?()
 end
+
+test "actual contributor subprocess starts only the CLI declared closure" do
+  expected = ~w(compiler crypto elixir jason kernel logger stdlib swarm_code_cli swarm_code_core)
+  result = DemoFixtures.run_contributor_subprocess(audit_fd: 3, isolated_home?: true)
+
+  assert result.exit_status == 0
+  assert result.stdout == File.read!(DemoFixtures.golden_path())
+  assert result.stderr == ""
+  assert result.audit["declared_closure"] == expected
+  assert result.audit["during"]["closure_started"] == expected
+  assert result.audit["newly_started"] -- expected == []
+  assert result.audit["after"]["started_applications"] ==
+           result.audit["before"]["started_applications"]
+
+  for stage <- ~w(before during after) do
+    assert result.audit[stage]["forbidden_applications"] == []
+    assert result.audit[stage]["forbidden_processes"] == []
+  end
+
+  assert result.audit["after"]["demo_children"] == 0
+  assert result.runtime_tree_before_sha256 == result.runtime_tree_after_sha256
+end
 ```
 
-Also test explicit/automatic selection; append-only deduplication and sanitization; every grammar row and limit; prompt re-emission; bare-number ambiguity; stale/other-client resolution; every exact settlement atom; byte-for-byte stdout/stderr ordering; EOF/interrupt detach; and Unicode/ASCII, color/no-color, motion/reduced-motion combinations.
+Also test explicit/automatic selection; append-only deduplication and sanitization; every grammar row and limit; prompt re-emission; bare-number ambiguity; stale/other-client resolution; every exact settlement atom; byte-for-byte stdout/stderr ordering; EOF/interrupt detach; Unicode/ASCII, color/no-color, motion/reduced-motion combinations; exact application-closure validation; rejection before start for each forbidden/unexpected declared app; `Mix.Task.run("app.start")` absence from the task source; reverse teardown on success/failure/timeout; and before/during/after process scans.
 
 - [ ] **Step 2: Run RED, including the unavailable contributor command**
 
 ```bash
-mise exec -- mix test apps/swarm_code_cli/test/swarm_code_cli/plain apps/swarm_code_cli/test/swarm_code_cli/demo/plain_demo_test.exs
-mise exec -- mix swarm_code.demo.plain --script complete
+(cd apps/swarm_code_cli && mise exec -- mix test test/swarm_code_cli/plain test/swarm_code_cli/demo/plain_demo_test.exs)
+(cd apps/swarm_code_cli && MIX_QUIET=1 mise exec -- mix swarm_code.demo.plain --script complete)
 ```
 
 Expected: tests fail because the permanent plain surface/composition root does not exist, and Mix reports that `swarm_code.demo.plain` could not be found.
 
 - [ ] **Step 3: Implement the closed line protocol and owned renderer-free composition**
 
-Pass every external output fragment through `SafeText`; fixed prompt syntax comes from exhaustive `SafeText.chrome/1`. Bound input before token construction, use only closed decoders, and never atomize a command/token. Session binds the initially unbound DataSource to itself, owns one bounded read at a time, and serializes all IO. Implement the one conformance table before individual command clauses so TUI/plain behavior cannot drift. Implement the bounded one-line-at-a-time IO protocol and temporary demo tree with reference-correlated readiness, named script steps, monitored teardown, redacted `format_status/1`, and no Application configuration.
+Pass every external output fragment through `SafeText`; fixed prompt syntax comes from exhaustive `SafeText.chrome/1`. Bound input before token construction, use only closed decoders, and never atomize a command/token. Session binds the initially unbound DataSource to itself, owns one bounded read at a time, and serializes all IO. Implement the one conformance table—including Retry/agent-Stop negative separation—before individual command clauses so TUI/plain behavior cannot drift. Implement the bounded one-line-at-a-time IO protocol and temporary demo tree with reference-correlated readiness, named script steps, monitored teardown, and redacted `format_status/1`. Implement the exact application fence/load/ensure/try-after-stop/audit sequence above and make the Mix task wrap `Demo.Plain.run/2` in it; do not add Application configuration or call an app-start/run Mix task.
 
 - [ ] **Step 4: Run GREEN in every degraded combination and execute the contributor smoke command**
 
 ```bash
-mise exec -- mix test apps/swarm_code_cli/test/swarm_code_cli/plain apps/swarm_code_cli/test/swarm_code_cli/demo/plain_demo_test.exs --seed 0
-NO_COLOR=1 mise exec -- mix test apps/swarm_code_cli/test/swarm_code_cli/plain apps/swarm_code_cli/test/swarm_code_cli/demo/plain_demo_test.exs --seed 0
+set -euo pipefail
+(cd apps/swarm_code_cli && mise exec -- mix test test/swarm_code_cli/plain test/swarm_code_cli/demo/plain_demo_test.exs --seed 0)
+(cd apps/swarm_code_cli && NO_COLOR=1 mise exec -- mix test test/swarm_code_cli/plain test/swarm_code_cli/demo/plain_demo_test.exs --seed 0)
+(cd apps/swarm_code_cli && mise exec -- mix compile --warnings-as-errors)
 
 tmp_root=$(mktemp -d "${TMPDIR:-/tmp}/swarm-code-plain-smoke.XXXXXX")
 trap 'rm -rf "$tmp_root"' EXIT
-MIX_QUIET=1 mise exec -- mix swarm_code.demo.plain --script complete >"$tmp_root/stdout" 2>"$tmp_root/stderr"
+mkdir -p "$tmp_root/runtime/home" "$tmp_root/runtime/config" "$tmp_root/runtime/data" "$tmp_root/runtime/state" "$tmp_root/runtime/cache"
+find "$tmp_root/runtime" -print | LC_ALL=C sort >"$tmp_root/tree-before"
+(
+  cd apps/swarm_code_cli
+  SWARM_CODE_DEMO_AUDIT_FD=3 mise exec -- env \
+    HOME="$tmp_root/runtime/home" \
+    XDG_CONFIG_HOME="$tmp_root/runtime/config" \
+    XDG_DATA_HOME="$tmp_root/runtime/data" \
+    XDG_STATE_HOME="$tmp_root/runtime/state" \
+    XDG_CACHE_HOME="$tmp_root/runtime/cache" \
+    MIX_QUIET=1 \
+    mix swarm_code.demo.plain --script complete
+) >"$tmp_root/stdout" 2>"$tmp_root/stderr" 3>"$tmp_root/application-audit.json"
+find "$tmp_root/runtime" -print | LC_ALL=C sort >"$tmp_root/tree-after"
 cmp apps/swarm_code_cli/test/fixtures/plain/three_run_output.txt "$tmp_root/stdout"
 test ! -s "$tmp_root/stderr"
+cmp "$tmp_root/tree-before" "$tmp_root/tree-after"
+jq -e '
+  .declared_closure == ["compiler", "crypto", "elixir", "jason", "kernel", "logger", "stdlib", "swarm_code_cli", "swarm_code_core"] and
+  .during.closure_started == .declared_closure and
+  ((.newly_started - .declared_closure) == []) and
+  (.after.started_applications == .before.started_applications) and
+  ([.before, .during, .after] | all(.forbidden_applications == [] and .forbidden_processes == [])) and
+  (.after.demo_children == 0)
+' "$tmp_root/application-audit.json" >/dev/null
 rm -rf "$tmp_root"
 trap - EXIT
 ```
 
-Expected: both test runs pass; the real Mix task exits zero, stdout is byte-identical to the deterministic golden, stderr is empty, and monitored teardown leaves no demo child alive.
+Expected: both child-project test runs pass; the actual contributor task exits zero; stdout is byte-identical to the deterministic golden; stderr is empty; runtime HOME/XDG trees are unchanged; before/during/after audits show only the exact declared CLI/core/OTP closure newly started; daemon/Ecto/Exqlite/FoundationGate/Repo/renderer-native processes never exist; and monitored teardown restores the application baseline with no demo child alive.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add apps/swarm_code_cli/lib/swarm_code_cli/plain \
   apps/swarm_code_cli/lib/swarm_code_cli/demo/plain.ex \
+  apps/swarm_code_cli/lib/swarm_code_cli/demo/application_fence.ex \
   apps/swarm_code_cli/lib/swarm_code_cli/demo/finite_input.ex \
   apps/swarm_code_cli/lib/swarm_code_cli/demo/finite_script.ex \
   apps/swarm_code_cli/lib/mix/tasks/swarm_code.demo.plain.ex \
   apps/swarm_code_cli/test/fixtures/plain \
   apps/swarm_code_cli/test/support/request_conformance.ex \
+  apps/swarm_code_cli/test/support/demo_fixtures.ex \
   apps/swarm_code_cli/test/swarm_code_cli/plain \
   apps/swarm_code_cli/test/swarm_code_cli/demo/plain_demo_test.exs
 git commit -m "feat: run renderer-free fake plain demo"
@@ -2530,6 +2622,8 @@ Expected: exactly four aggregate JSON files are atomically generated from verifi
 - Create: `apps/swarm_code_cli/lib/swarm_code_cli/ui/renderer/decision.ex`
 - Create: `apps/swarm_code_cli/lib/swarm_code_cli/ui/renderer/decision/reason.ex`
 - Create: `apps/swarm_code_cli/test/swarm_code_cli/ui/renderer/decision_test.exs`
+- Create: `apps/swarm_code_cli/test/swarm_code_cli/ui/renderer/locked_branch_test.exs`
+- Create: `apps/swarm_code_cli/test/support/locked_branch_fixtures.ex`
 - Create: `docs/decisions/tui-renderer.md`
 - Modify: `README.md`
 
@@ -2551,7 +2645,10 @@ Renderer.Decision.next_candidates({:reject, candidate(), [Renderer.Decision.Reas
 - Rejecting one candidate never selects another. `:ratatui_port` is only a guarded separately planned candidate requiring PaintPlan/Port/bounded-parser/four-target evidence. `:pure_elixir` is the separately planned engineering fallback. Stock TermUI is not selected. `Plain.Session` is the operational renderer-free fallback, not a renderer candidate.
 - `{:adopt, candidate}` is legal only when that same candidate's complete evidence passes its own gates. A failed gate rejects that candidate; missing evidence is incomplete. ExRatatui's failure reason cannot be used as evidence for a Port, pure-Elixir renderer, fork, or TermUI.
 - ADR records the exact static source identities, reasons, skipped expensive tasks, retained neutral Tasks 2-15, 87-frame future candidate matrix, next-candidate plan requirements, and fake/no-user-data boundary. README documents the fake plain demo only, labels full-screen renderer work pending, and makes no installation/parity claim.
-- README's contributor path is the unconditional Task-15 command `mise exec -- mix swarm_code.demo.plain --script complete`; it does not mention the conditional native launcher as available on the locked branch.
+- README's contributor path is the unconditional Task-15 command `(cd apps/swarm_code_cli && MIX_QUIET=1 mise exec -- mix swarm_code.demo.plain --script complete)`; it does not mention the conditional native launcher as available on the locked branch.
+- `locked_branch_test.exs` is the mechanical negative-output gate. Run from the CLI child with `--no-start`, it asserts declared dependency names are exactly `[:stream_data, :swarm_code_core]`, StreamData remains test-only/runtime-false, runtime application closure is exactly Task 15's nine-app allowlist, root/CLI release configuration is absent, and source/lock/dependency-tree entries contain none of `ex_ratatui`, `ratatui`, `rustler`, or `crossterm`. It also reruns Task 15's isolated actual-command audit and requires before/during/after app/process/file-tree results.
+- Its repository-path table requires the one Gate-0 file `docs/evidence/tui-renderer/static-exratatui-013.json` and rejects every conditional output: the whole `ui/renderer/ex_ratatui_013` directory; Cell/Golden/Probe/TerminalOwner/UISupervisor/LauncherControl modules and focused tests; `swarm_code.tui.*` Mix tasks; exact-87 golden/fuzz renderer fixtures; PTY support; native libraries; conditional Application/Demo release modules; assembled release/config/overlay/identity fixtures; renderer release tests; `scripts/acceptance/tui_*` and `scripts/ci/tui_*`; TUI workflow/governance/license inputs; and every renderer-evidence file/directory except the static record. It also requires untouched pre-conditional SHA-256 values `4034cb544dee1c82d8b95d66a402133e013c6b87f78ac5a26e3fba4a2fe5527b` for `config/runtime.exs`, `b448cbb5bddf63c68cc7296d0873b632d1706487b487e4b3b8c25ddbc9086000` for `rel/env.sh.eex`, and `b086ec47f0c6c7aaeb4cffca5ae5243dd05e0dc96ab761ced93325d5315f4b12` for `apps/swarm_code_cli/test/test_helper.exs`; `NOTICE` may contain Task 6's unicode-width attribution but no renderer-campaign name. No path is merely ignored because a task was skipped.
+- Shell gates independently inspect `apps/swarm_code_cli/mix.exs`, `mix.lock`, the child `mix deps.tree --only prod`, every conditional path/glob, `_build/*/rel`, native extensions, local tags, the GitHub release list, and workflow runs. Remote list scans are bounded to ten 100-item pages and fail rather than claim absence if a list exceeds 1,000 records. The locked branch must have no `tui-spike-evidence-*` release/tag and no run of `.github/workflows/tui-native-bootstrap.yml`. These are read-only absence checks; they never call `deps.unlock`, dispatch, publish, delete, or repair anything.
 
 - [ ] **Step 1: Write the RED static-decision and candidate-isolation table**
 
@@ -2573,22 +2670,51 @@ test "rejection lists candidates without adopting them" do
   refute port_gates == []
   refute elixir_gates == []
 end
+
+test "locked branch has only neutral dependencies and outputs" do
+  audit = LockedBranchFixtures.audit!()
+
+  assert audit.cli_dependencies == [:stream_data, :swarm_code_core]
+  assert audit.runtime_closure ==
+           [:compiler, :crypto, :elixir, :jason, :kernel, :logger, :stdlib,
+            :swarm_code_cli, :swarm_code_core]
+  assert audit.renderer_dependency_hits == []
+  assert audit.conditional_paths == []
+  assert audit.evidence_files == ["docs/evidence/tui-renderer/static-exratatui-013.json"]
+  assert audit.runtime_sha256 == "4034cb544dee1c82d8b95d66a402133e013c6b87f78ac5a26e3fba4a2fe5527b"
+  assert audit.rel_env_sha256 == "b448cbb5bddf63c68cc7296d0873b632d1706487b487e4b3b8c25ddbc9086000"
+  assert audit.test_helper_sha256 == "b086ec47f0c6c7aaeb4cffca5ae5243dd05e0dc96ab761ced93325d5315f4b12"
+  assert audit.notice_renderer_hits == []
+  assert audit.release_config == :absent
+
+  command = LockedBranchFixtures.run_actual_plain_command!()
+  assert command.before.started_applications == command.after.started_applications
+  assert command.during.closure_started == Enum.map(audit.runtime_closure, &Atom.to_string/1)
+  assert command.before.forbidden_applications == []
+  assert command.during.forbidden_applications == []
+  assert command.after.forbidden_applications == []
+  assert command.before.forbidden_processes == []
+  assert command.during.forbidden_processes == []
+  assert command.after.forbidden_processes == []
+  assert command.after.demo_children == 0
+  assert command.runtime_tree_before_sha256 == command.runtime_tree_after_sha256
+end
 ```
 
-Also prove three-pass/one-fail rejects the evaluated candidate, missing evidence is incomplete, an ExRatatui record cannot adopt another renderer, and Plain.Session never appears as a renderer candidate.
+Also prove three-pass/one-fail rejects the evaluated candidate, missing evidence is incomplete, an ExRatatui record cannot adopt another renderer, and Plain.Session never appears as a renderer candidate. `LockedBranchFixtures` obtains child-project deps through `Mix.Project.config/0`, recursively loads but never starts trusted `.app` specs, inspects lock/source as bytes against the four forbidden renderer names, enumerates the exact conditional glob table without following symlinks, hashes runtime/release config, and invokes Task 15's subprocess helper. It creates only task-owned temporary files and removes them under `on_exit`; it never runs `app.start`, a release/evidence task, or a network mutation.
 
 - [ ] **Step 2: Run RED**
 
 ```bash
-mise exec -- mix test apps/swarm_code_cli/test/swarm_code_cli/ui/renderer/decision_test.exs
+(cd apps/swarm_code_cli && mise exec -- mix test --no-start test/swarm_code_cli/ui/renderer/decision_test.exs test/swarm_code_cli/ui/renderer/locked_branch_test.exs)
 ```
 
-Expected: FAIL because objective decision logic does not exist.
+Expected: FAIL because objective decision logic and the locked negative-output gate do not exist.
 
 - [ ] **Step 3: Implement decision logic and generate the evidence-backed ADR result**
 
 ```bash
-MIX_ENV=test mise exec -- mix run -e 'record = "docs/evidence/tui-renderer/static-exratatui-013.json" |> File.read!() |> Jason.decode!(); IO.inspect(SwarmCodeCLI.UI.Renderer.Decision.evaluate(:ex_ratatui_013, [record]), limit: :infinity)'
+(cd apps/swarm_code_cli && MIX_ENV=test mise exec -- mix run --no-start -e 'record = "../../docs/evidence/tui-renderer/static-exratatui-013.json" |> File.read!() |> Jason.decode!(); IO.inspect(SwarmCodeCLI.UI.Renderer.Decision.evaluate(:ex_ratatui_013, [record]), limit: :infinity)')
 ```
 
 Expected exact outer result: `{:reject, :ex_ratatui_013, reasons}` with all four locked veto codes. Copy that generated result/source hashes into ADR status `REJECTED — exact ExRatatui 0.13.0`; explicitly state Tasks 0-1/16-27 were not run because they cannot change the result.
@@ -2596,16 +2722,12 @@ Expected exact outer result: `{:reject, :ex_ratatui_013, reasons}` with all four
 - [ ] **Step 4: Run the implemented neutral slice and two clean precommits**
 
 ```bash
-mise exec -- mix test apps/swarm_code_cli/test/swarm_code_cli/ui --exclude renderer_gate --seed 0
-mise exec -- mix test apps/swarm_code_cli/test/swarm_code_cli/plain --seed 0
-mise exec -- mix test apps/swarm_code_cli/test/swarm_code_cli/demo/plain_demo_test.exs --seed 0
-plain_smoke=$(mktemp "${TMPDIR:-/tmp}/swarm-code-cli-plain-smoke.XXXXXX")
-MIX_QUIET=1 mise exec -- mix swarm_code.demo.plain --script complete >"$plain_smoke"
-cmp apps/swarm_code_cli/test/fixtures/plain/three_run_output.txt "$plain_smoke"
-rm "$plain_smoke"
+(cd apps/swarm_code_cli && mise exec -- mix test test/swarm_code_cli/ui --exclude renderer_gate --seed 0)
+(cd apps/swarm_code_cli && mise exec -- mix test test/swarm_code_cli/plain test/swarm_code_cli/demo/plain_demo_test.exs --seed 0)
+(cd apps/swarm_code_cli && mise exec -- mix test --no-start test/swarm_code_cli/ui/renderer/locked_branch_test.exs --seed 0)
 mise exec -- mix precommit
 mise exec -- mix precommit
-MIX_ENV=prod mise exec -- mix compile --warnings-as-errors
+(cd apps/swarm_code_cli && MIX_ENV=prod mise exec -- mix compile --warnings-as-errors)
 ```
 
 Expected: neutral Tasks 2-15, the actual renderer-free fake/plain contributor command, and static decision pass. No ExRatatui dependency, adapter, native gate, 87 renderer frames, release evidence, runner dispatch, or immutable publication is required/executed on this branch. The 87-frame matrix remains the locked future candidate acceptance set.
@@ -2613,18 +2735,125 @@ Expected: neutral Tasks 2-15, the actual renderer-free fake/plain contributor co
 - [ ] **Step 5: Re-run claim-boundary and skip checks**
 
 ```bash
+set -euo pipefail
 if git grep -n -E 'Phase 2 complete|full parity|production ready|installable now|canonical database ready|ExRatatui 0.13.0 adopted|TermUI selected|Ratatui Port adopted' -- README.md docs/decisions apps/swarm_code_cli; then false; fi
-if git grep -n -E 'FoundationGate|Ecto\.Repo|swarm_code_daemon|DATABASE_PATH' -- apps/swarm_code_cli/lib; then false; fi
-test ! -e apps/swarm_code_cli/lib/swarm_code_cli/ui/renderer/ex_ratatui_013/adapter.ex
-git status --short
+if git grep -n -E 'SwarmCode\.Daemon|Ecto\.Repo|DATABASE_PATH' -- apps/swarm_code_cli/lib ':(exclude)apps/swarm_code_cli/lib/swarm_code_cli/demo/application_fence.ex'; then false; fi
+test "$(git grep -l -E 'swarm_code_daemon|Elixir\.(SwarmCode\.Daemon|Ecto|Exqlite|ExRatatui|Rustler)' -- apps/swarm_code_cli/lib || true)" = "apps/swarm_code_cli/lib/swarm_code_cli/demo/application_fence.ex"
+
+if grep -Eiq 'ex_ratatui|rustler|crossterm|(^|[^[:alnum:]_])ratatui([^[:alnum:]_]|$)' apps/swarm_code_cli/mix.exs mix.lock NOTICE; then false; fi
+deps_tree=$(cd apps/swarm_code_cli && mise exec -- mix deps.tree --only prod)
+printf '%s\n' "$deps_tree" | grep -q 'swarm_code_core'
+printf '%s\n' "$deps_tree" | grep -q 'jason == 1.4.5'
+if printf '%s\n' "$deps_tree" | grep -Eiq 'swarm_code_daemon|ecto|exqlite|ex_ratatui|ratatui|rustler|crossterm'; then false; fi
+if git grep -n -E 'releases:|swarm_code_tui_spike|mod:.*SwarmCodeCLI\.Application' -- mix.exs apps/swarm_code_cli/mix.exs; then false; fi
+
+test "$(shasum -a 256 config/runtime.exs | awk '{print $1}')" = 4034cb544dee1c82d8b95d66a402133e013c6b87f78ac5a26e3fba4a2fe5527b
+test "$(shasum -a 256 rel/env.sh.eex | awk '{print $1}')" = b448cbb5bddf63c68cc7296d0873b632d1706487b487e4b3b8c25ddbc9086000
+test "$(shasum -a 256 apps/swarm_code_cli/test/test_helper.exs | awk '{print $1}')" = b086ec47f0c6c7aaeb4cffca5ae5243dd05e0dc96ab761ced93325d5315f4b12
+
+for path in \
+  .github/workflows/tui-native-bootstrap.yml \
+  governance/tui-evidence-allowed-signers governance/tui-license-policy.json governance/tui-license-inputs.json \
+  third_party/tui-license-texts rust-toolchain-tui-sanitizer.toml \
+  deps/ex_ratatui deps/rustler deps/rustler_precompiled \
+  rel/vm.args.eex rel/overlays/bin/swarm-code-demo \
+  apps/swarm_code_cli/lib/swarm_code_cli/application.ex \
+  apps/swarm_code_cli/lib/swarm_code_cli/demo/supervisor.ex \
+  apps/swarm_code_cli/lib/swarm_code_cli/demo/main.ex \
+  apps/swarm_code_cli/lib/swarm_code_cli/release \
+  apps/swarm_code_cli/lib/swarm_code_cli/ui/renderer/ex_ratatui_013 \
+  apps/swarm_code_cli/lib/swarm_code_cli/ui/renderer/cell.ex \
+  apps/swarm_code_cli/lib/swarm_code_cli/ui/renderer/cell_frame.ex \
+  apps/swarm_code_cli/lib/swarm_code_cli/ui/renderer/golden.ex \
+  apps/swarm_code_cli/lib/swarm_code_cli/ui/renderer/probe.ex \
+  apps/swarm_code_cli/lib/swarm_code_cli/ui/terminal_owner.ex \
+  apps/swarm_code_cli/lib/swarm_code_cli/ui/ui_supervisor.ex \
+  apps/swarm_code_cli/lib/swarm_code_cli/ui/launcher_control.ex \
+  apps/swarm_code_cli/lib/mix/tasks/swarm_code.tui.goldens.ex \
+  apps/swarm_code_cli/lib/mix/tasks/swarm_code.tui.release_manifest.ex \
+  apps/swarm_code_cli/lib/mix/tasks/swarm_code.tui.evidence.ex \
+  apps/swarm_code_cli/test/fixtures/goldens/ex_ratatui_013 \
+  apps/swarm_code_cli/test/fixtures/renderer \
+  apps/swarm_code_cli/test/fixtures/evidence \
+  apps/swarm_code_cli/test/fixtures/release \
+  apps/swarm_code_cli/test/support/pty_harness.ex \
+  apps/swarm_code_cli/test/swarm_code_cli/ui/renderer/ex_ratatui_013_test.exs \
+  apps/swarm_code_cli/test/swarm_code_cli/ui/renderer/ex_ratatui_013_input_test.exs \
+  apps/swarm_code_cli/test/swarm_code_cli/ui/renderer/ex_ratatui_013_boundary_test.exs \
+  apps/swarm_code_cli/test/swarm_code_cli/ui/renderer/golden_test.exs \
+  apps/swarm_code_cli/test/swarm_code_cli/ui/renderer/golden_matrix_test.exs \
+  apps/swarm_code_cli/test/swarm_code_cli/ui/renderer/fuzz_orchestrator_test.exs \
+  apps/swarm_code_cli/test/swarm_code_cli/ui/renderer/unicode_input_test.exs \
+  apps/swarm_code_cli/test/swarm_code_cli/ui/renderer/performance_test.exs \
+  apps/swarm_code_cli/test/swarm_code_cli/ui/renderer/resource_test.exs \
+  apps/swarm_code_cli/test/swarm_code_cli/ui/terminal_owner_test.exs \
+  apps/swarm_code_cli/test/swarm_code_cli/ui/launcher_control_test.exs \
+  apps/swarm_code_cli/test/swarm_code_cli/ui/terminal_lifecycle_test.exs \
+  apps/swarm_code_cli/test/swarm_code_cli/demo/application_test.exs \
+  apps/swarm_code_cli/test/swarm_code_cli/release; do
+  test ! -e "$path"
+  test ! -L "$path"
+done
+
+test -z "$(find scripts/acceptance scripts/ci -maxdepth 1 -name 'tui_*' -print 2>/dev/null)"
+test -z "$(find apps/swarm_code_cli/priv _build -type f \
+  \( -path '*/lib/swarm_code_cli/*' -o -path '*/lib/ex_ratatui/*' -o -path '*/lib/rustler/*' \) \
+  \( -name '*.so' -o -name '*.dylib' -o -name '*.dll' -o -name 'erl_crash.dump' \) -print 2>/dev/null)"
+test -z "$(find _build \( -name 'ex_ratatui' -o -name 'rustler' -o -name 'rustler_precompiled' \) -print 2>/dev/null)"
+test -z "$(find _build -path '*/rel/swarm_code_tui_spike' -print 2>/dev/null)"
+test "$(find docs/evidence/tui-renderer -mindepth 1 -print | LC_ALL=C sort)" = "docs/evidence/tui-renderer/static-exratatui-013.json"
+
+git fetch origin main --quiet
+test -z "$(git tag -l 'tui-spike-evidence-*')"
+test -z "$(git ls-remote --tags origin 'refs/tags/tui-spike-evidence-*')"
+test -z "$(git ls-tree -r --name-only origin/main | grep '^.github/workflows/tui-native-bootstrap.yml$' || true)"
+
+remote_audit_root=$(mktemp -d "${TMPDIR:-/tmp}/swarm-tui-remote-audit.XXXXXX")
+trap 'rm -rf "$remote_audit_root"' EXIT
+release_hits=0
+release_complete=0
+for page in $(seq 1 10); do
+  gh api -H 'X-GitHub-Api-Version: 2026-03-10' "repos/zaalipro/swarm-code-cli/releases?per_page=100&page=$page" >"$remote_audit_root/releases-$page.json"
+  count=$(jq 'length' "$remote_audit_root/releases-$page.json")
+  hits=$(jq '[.[] | select(.tag_name | startswith("tui-spike-evidence-"))] | length' "$remote_audit_root/releases-$page.json")
+  release_hits=$((release_hits + hits))
+  if test "$count" -lt 100; then release_complete=1; break; fi
+done
+test "$release_complete" = 1
+test "$release_hits" = 0
+
+workflow_hits=0
+workflow_complete=0
+for page in $(seq 1 10); do
+  gh api -H 'X-GitHub-Api-Version: 2026-03-10' "repos/zaalipro/swarm-code-cli/actions/runs?per_page=100&page=$page" >"$remote_audit_root/runs-$page.json"
+  count=$(jq '.workflow_runs | length' "$remote_audit_root/runs-$page.json")
+  hits=$(jq '[.workflow_runs[] | select(.path == ".github/workflows/tui-native-bootstrap.yml")] | length' "$remote_audit_root/runs-$page.json")
+  workflow_hits=$((workflow_hits + hits))
+  if test "$count" -lt 100; then workflow_complete=1; break; fi
+done
+test "$workflow_complete" = 1
+test "$workflow_hits" = 0
+rm -rf "$remote_audit_root"
+trap - EXIT
+
+actual_task28_paths=$(git status --porcelain=v1 | sed 's/^...//' | LC_ALL=C sort)
+expected_task28_paths=$(printf '%s\n' \
+  README.md \
+  apps/swarm_code_cli/lib/swarm_code_cli/ui/renderer/decision.ex \
+  apps/swarm_code_cli/lib/swarm_code_cli/ui/renderer/decision/reason.ex \
+  apps/swarm_code_cli/test/support/locked_branch_fixtures.ex \
+  apps/swarm_code_cli/test/swarm_code_cli/ui/renderer/decision_test.exs \
+  apps/swarm_code_cli/test/swarm_code_cli/ui/renderer/locked_branch_test.exs \
+  docs/decisions/tui-renderer.md | LC_ALL=C sort)
+test "$actual_task28_paths" = "$expected_task28_paths"
 ```
 
-Expected: no overclaim/banned runtime reference/conditional adapter output and no uncommitted generated output.
+Expected: no overclaim; the application fence is the sole static daemon/process-prefix denylist reference; CLI source/lock/prod-tree have no renderer or daemon-only dependency; runtime/release inputs remain pre-conditional; every adapter/native/golden/release/evidence/dispatch/publication output is absent except the one Gate-0 static record; no workflow/release/run/tag exists locally or remotely; and the checkout has no uncommitted generated output.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add apps/swarm_code_cli/lib/swarm_code_cli/ui/renderer/decision.ex apps/swarm_code_cli/lib/swarm_code_cli/ui/renderer/decision/reason.ex apps/swarm_code_cli/test/swarm_code_cli/ui/renderer/decision_test.exs docs/decisions/tui-renderer.md README.md
+git add apps/swarm_code_cli/lib/swarm_code_cli/ui/renderer/decision.ex apps/swarm_code_cli/lib/swarm_code_cli/ui/renderer/decision/reason.ex apps/swarm_code_cli/test/swarm_code_cli/ui/renderer/decision_test.exs apps/swarm_code_cli/test/swarm_code_cli/ui/renderer/locked_branch_test.exs apps/swarm_code_cli/test/support/locked_branch_fixtures.ex docs/decisions/tui-renderer.md README.md
 git commit -m "docs: record static TUI renderer rejection"
 ```
 
@@ -2645,15 +2874,15 @@ These are deliberately outside the renderer spike and do not create inert contro
 For the locked exact-ExRatatui branch, the plan is complete only when all of these statements have direct evidence:
 
 1. `static-exratatui-013.json` records the four immutable-source vetoes and Decision returns `{:reject, :ex_ratatui_013, reasons}` before any workflow landing, native dependency, PTY/soak/manual campaign, or release publication.
-2. Renderer-neutral Tasks 2-15 pass without ExRatatui/Ratatui/Rustler code: Scene/Input/ActionTarget/Action/Intent/RequestResolver/Reducer/Effect/DataSource boundaries compile and no daemon implementation leaks.
+2. Renderer-neutral Tasks 2-15 pass without ExRatatui/Ratatui/Rustler implementation or dependency code: Scene/Input/ActionTarget/Action/Intent/RequestResolver/Reducer/Effect/DataSource boundaries compile and no daemon implementation leaks. The sole name occurrences outside conditional adapters are ApplicationFence's AST-checked negative atoms/module-prefix binaries; they cannot load or call those modules.
 3. Input is bounded valid-UTF-8 committed text fragments plus distinct bounded paste; Editor resegments graphemes and exposes no invented browser-style composition lifecycle.
-4. TUI ActionTable and Plain.Session use the exact typed Intent/RequestResolver.Context unions and one table-driven parse → resolve → canonical-byte suite for every fake domain/local command, including authorized `:always_allow`; exact MutationState atoms and pending duplicate suppression are consistent everywhere.
+4. TUI ActionTable and Plain.Session use the exact typed Intent/RequestResolver.Context unions and one table-driven parse → resolve → canonical-byte suite for every fake domain/local command, including authorized `:always_allow`, failed-run Retry, and agent-targeted Stop. Negative rows prove state/permission/origin/revision failures and that run Stop never substitutes for agent Stop; exact MutationState atoms and pending duplicate suppression are consistent everywhere.
 5. Back, 24/28/32 Navigator presets with 26 reset, 38/46/56 Inspector presets with 42 reset, composer adjustment, generation-correlated terminal focus, undo-boundary IDs, and the one exact dirty predicate with `UNSENT CHANGES` default-Cancel detach/plain-relaunch confirmation pass focused tests. Metadata-only, target-only, FieldKey, degenerate, Cancel-preservation, and separate handoff paths are explicit. Copy/cut/clipboard and live mouse routing remain unreachable.
 6. Responsive projection passes operational density/elision at `>=50x14`; Compressed Small retains its operational facts, while Too small promises only the four deterministic clipped safe-key lines at `1x1`, `10x3`, and other degenerate sizes. Permission-conditioned Retry/Resume suffixes, queued warning, and unique A/G/S/W/R/C/U prefixes remain exact.
 7. Snapshot/delta/resync/page-edge/loading/error/retry/off-window/removal repair and the deterministic three-run scenario preserve drafts, FieldKeys, cursor/selection/focus/modal/layout/anchors/order without sleeps.
-8. Plain.Session is owned, serialized, append-only/control-free, supports the complete bounded fake grammar/scoped prompt revisions/shared Intents, and is composed unconditionally with Fake.Source plus unbound-then-bound DataSource by the finite `mix swarm_code.demo.plain --script complete` command. It remains the screen-reader-targeted/operational fallback without an unearned accessibility claim.
+8. Plain.Session is owned, serialized, append-only/control-free, supports the complete bounded fake grammar/scoped prompt revisions/shared Intents, and is composed unconditionally with Fake.Source plus unbound-then-bound DataSource by the finite `(cd apps/swarm_code_cli && MIX_QUIET=1 mise exec -- mix swarm_code.demo.plain --script complete)` command. The command runs from the child project, validates/starts only the exact CLI/core/OTP closure, proves daemon/database/native processes absent before/during/after, restores the application/filesystem baseline, and remains the screen-reader-targeted/operational fallback without an unearned accessibility claim.
 9. The risk-selected matrix remains exactly 87 specified future-candidate frames, including the new default-Cancel handoff frame. Neutral wide geometry is tested, while exact ExRatatui wide is a typed rejection and never a captured/PTY-repaired frame.
-10. ADR/README say exact ExRatatui is rejected, the guarded Ratatui Port and pure-Elixir renderers are unimplemented candidates requiring separate plans, Plain.Session is operational, and the fake/no-user-data/no-FoundationGate/Repo/IPC/no-installability boundary remains explicit.
+10. ADR/README say exact ExRatatui is rejected, the guarded Ratatui Port and pure-Elixir renderers are unimplemented candidates requiring separate plans, Plain.Session is operational, and the fake/no-user-data/no-FoundationGate/Repo/IPC/no-installability boundary remains explicit. The focused locked test and shell gate prove every claimed dependency/adapter/native/golden/release/evidence/dispatch/publication negative rather than relying on skipped tasks or `deps.unlock`.
 
 Conditional Tasks 0-1 and 16-27 are not completion requirements for this locked branch. If reused for a different renderer that first passes its own static Gate 0, their acceptance additionally requires bounded artifact imports, inventory-before-readiness, immutable one-time publication, four explicit aggregate writes, and the no-write incomplete route exactly as specified.
 
