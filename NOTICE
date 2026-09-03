@@ -10,3 +10,9 @@ repository:
 Every adapted file must be enumerated in provenance/extracted-files.json with
 its destination, upstream path, pinned upstream commit, classification, and
 SHA-256 digest.
+
+Unicode terminal width tables are derived from unicode-width 0.2.2
+(commit 9d98411769fe13c7c18cab0b3fbbab29ba8350ea, Unicode 17.0.0), licensed
+under MIT and Apache-2.0. The exact upstream source, licenses, checksum, and
+deterministic generated attestation are preserved in
+third_party/unicode-width-0.2.2/.

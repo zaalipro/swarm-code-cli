@@ -1,0 +1,21 @@
+{
+  "crate": "unicode-width",
+  "version": "0.2.2",
+  "unicode": "17.0.0",
+  "vectors": [
+    {"name": "ascii", "text": "abc", "narrow": 3, "wide": 3},
+    {"name": "composed accent", "text": "é", "narrow": 1, "wide": 1},
+    {"name": "decomposed accent", "text": "é", "narrow": 1, "wide": 1},
+    {"name": "Georgian", "text": "ქართული", "narrow": 7, "wide": 7},
+    {"name": "Arabic", "text": "مرحبا", "narrow": 5, "wide": 5},
+    {"name": "Hebrew", "text": "שלום", "narrow": 4, "wide": 4},
+    {"name": "CJK", "text": "界", "narrow": 2, "wide": 2},
+    {"name": "ambiguous middle dot", "text": "·", "narrow": 1, "wide": 2},
+    {"name": "emoji modifier", "text": "👍🏽", "narrow": 2, "wide": 2},
+    {"name": "flag", "text": "🇬🇪", "narrow": 2, "wide": 2},
+    {"name": "family ZWJ", "text": "👨‍👩‍👧‍👦", "narrow": 2, "wide": 2},
+    {"name": "occupation ZWJ", "text": "👩‍💻", "narrow": 2, "wide": 2},
+    {"name": "text presentation", "text": "❤︎", "narrow": 1, "wide": 2},
+    {"name": "emoji presentation", "text": "❤️", "narrow": 2, "wide": 2}
+  ]
+}
