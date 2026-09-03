@@ -34,6 +34,28 @@ defmodule SwarmCodeCLI.UI.PrimitivesTest do
     refute inspected =~ "FAKE"
   end
 
+  test "forged safe text structs cannot release arbitrary terminal bytes" do
+    terminal_controls = "\e]0;forged title\a\e[31m"
+    directly_forged = %{__struct__: SafeText, value: terminal_controls}
+
+    assert_raise FunctionClauseError, fn -> apply(SafeText, :value, [directly_forged]) end
+
+    assert_raise KeyError, fn ->
+      SafeText |> struct!(value: terminal_controls) |> SafeText.value()
+    end
+
+    for malformed <- [terminal_controls, :unknown, nil] do
+      directly_forged = %{__struct__: SafeText, token: malformed}
+      struct_forged = struct!(SafeText, token: malformed)
+
+      assert_raise FunctionClauseError, fn -> apply(SafeText, :value, [directly_forged]) end
+      assert_raise FunctionClauseError, fn -> apply(SafeText, :value, [struct_forged]) end
+    end
+
+    extra_shape = %{__struct__: SafeText, token: :fake_banner, injected: terminal_controls}
+    assert_raise FunctionClauseError, fn -> apply(SafeText, :value, [extra_shape]) end
+  end
+
   test "capability shape distinguishes input, output, and controlling TTY" do
     size = %Size{columns: 120, rows: 40}
 
