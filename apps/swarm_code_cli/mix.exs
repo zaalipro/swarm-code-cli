@@ -10,6 +10,7 @@ defmodule SwarmCodeCli.MixProject do
       config_path: "../../config/config.exs",
       deps_path: "../../deps",
       lockfile: "../../mix.lock",
+      elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
       deps: deps()
     ]
@@ -19,5 +20,13 @@ defmodule SwarmCodeCli.MixProject do
     [extra_applications: [:logger, :crypto]]
   end
 
-  defp deps, do: [{:swarm_code_core, in_umbrella: true}]
+  defp elixirc_paths(:test), do: ["lib", "test/support"]
+  defp elixirc_paths(_env), do: ["lib"]
+
+  defp deps do
+    [
+      {:swarm_code_core, in_umbrella: true},
+      {:stream_data, "== 1.4.0", only: :test, runtime: false}
+    ]
+  end
 end
