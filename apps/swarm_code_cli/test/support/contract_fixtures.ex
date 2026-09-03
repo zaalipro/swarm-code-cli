@@ -4,8 +4,36 @@ defmodule SwarmCodeCLI.TestSupport.ContractFixtures do
   alias SwarmCode.Protocol.Scope
   alias SwarmCodeCLI.UI.DataSource.Request
   alias SwarmCodeCLI.UI.RequestResolver.Context
+  alias SwarmCodeCLI.UI.{Scene, Size}
+  alias SwarmCodeCLI.UI.Scene.{Rect, Region, Block}
 
   @default_scope %Scope{kind: :conversation, id: "conversation-a", generation: 3}
+
+  def minimal_scene(text) do
+    %Scene{
+      schema_version: 1,
+      revision: 1,
+      size: %Size{columns: 80, rows: 24},
+      ambiguous_width: :narrow,
+      layout_class: :wide,
+      regions: [
+        %Region{
+          id: "main",
+          role: :main,
+          rect: %Rect{x: 0, y: 0, width: 80, height: 24},
+          label: text,
+          focus: :active,
+          blocks: [%Block.Text{text: text}]
+        }
+      ],
+      overlay: nil,
+      cursor: nil,
+      announcements: []
+    }
+  end
+
+  def with_raw_text(scene, text),
+    do: update_in(scene.regions, &[Map.put(hd(&1), :blocks, [%Block.Text{text: text}]) | tl(&1)])
 
   def q1_resolution_context(options \\ []) do
     context(
