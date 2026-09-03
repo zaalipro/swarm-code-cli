@@ -12,6 +12,10 @@ defmodule SwarmCodeCLI.MixProject do
     ]
   end
 
+  def cli do
+    [preferred_envs: [precommit: :test]]
+  end
+
   defp aliases do
     [
       setup: ["deps.get"],
