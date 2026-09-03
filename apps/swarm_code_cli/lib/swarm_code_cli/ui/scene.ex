@@ -176,8 +176,9 @@ defmodule SwarmCodeCLI.UI.Scene do
        }),
        do:
          nonneg?(total) and nonneg?(first) and first <= total and is_list(items) and
+           first + length(items) <= total and
            Enum.all?(items, &valid_block?/1) and opaque?(before) and opaque?(after_cursor) and
-           nonneg?(overscan)
+           nonneg?(overscan) and overscan <= 2
 
   defp valid_block?(%Block.RunCard{id: id, title: title, status: status, body: body}),
     do:
@@ -288,8 +289,12 @@ defmodule SwarmCodeCLI.UI.Scene do
        when is_function(term) or is_pid(term) or is_port(term) or is_reference(term),
        do: true
 
-  defp forbidden_term?(%{__struct__: _} = struct),
-    do: struct |> Map.from_struct() |> forbidden_term?()
+  defp forbidden_term?(%{__struct__: module} = struct) do
+    Map.keys(struct) |> Enum.sort() != Map.keys(module.__struct__()) |> Enum.sort() or
+      struct |> Map.from_struct() |> forbidden_term?()
+  rescue
+    _ -> true
+  end
 
   defp forbidden_term?(map) when is_map(map),
     do: Enum.any?(map, fn {k, v} -> forbidden_term?(k) or forbidden_term?(v) end)

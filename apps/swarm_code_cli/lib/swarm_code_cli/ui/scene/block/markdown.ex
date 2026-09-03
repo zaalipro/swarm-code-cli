@@ -1,4 +1,6 @@
 defmodule SwarmCodeCLI.UI.Scene.Block.Markdown do
-  defstruct text: nil
-  @type t :: %__MODULE__{}
+  alias SwarmCodeCLI.UI.SafeText
+  @enforce_keys [:text]
+  defstruct [:text]
+  @type t :: %__MODULE__{text: SafeText.t()}
 end

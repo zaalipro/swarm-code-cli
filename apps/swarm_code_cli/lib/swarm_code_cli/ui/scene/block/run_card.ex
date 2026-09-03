@@ -1,4 +1,18 @@
 defmodule SwarmCodeCLI.UI.Scene.Block.RunCard do
-  defstruct id: nil, title: nil, status: nil, body: []
-  @type t :: %__MODULE__{}
+  alias SwarmCodeCLI.UI.SafeText
+  alias SwarmCodeCLI.UI.Scene.Block
+  @enforce_keys [:id, :title, :status]
+  defstruct [:id, :title, :status, body: []]
+
+  @type status ::
+          :queued
+          | :running
+          | :streaming
+          | :paused
+          | :waiting_question
+          | :waiting_approval
+          | :completed
+          | :failed
+          | :cancelled
+  @type t :: %__MODULE__{id: binary(), title: SafeText.t(), status: status(), body: [Block.t()]}
 end
