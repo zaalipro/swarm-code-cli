@@ -313,7 +313,8 @@ FoundationBootstrapSupervisor
     ├── CapabilityOwner
     ├── CleanupRegistry
     ├── CleanupOwnerSupervisor
-    ├── LedgerStore
+    ├── LedgerSupervisor
+    │   └── one LedgerStore per admitted operation
     ├── AnchorSupervisor
     │   └── one AnchorOwner per active backup/probe namespace
     ├── GuardianSupervisor
@@ -341,15 +342,23 @@ Tests use `start_supervised!/1`, monitors, messages, and registry transitions. T
 
 ### 10.1 Ledger format and authority
 
-`LedgerStore` owns `<state>/cleanup-v1` through a retained descriptor. It is a mode-`0600`, append-only sequence of bounded UTF-8 JSON records. The decoder rejects any record over 65,536 bytes; every valid v1 header/checkpoint/intent/receipt/transition schema has an encoded maximum of 4,096 bytes; the active ledger is at most 1,048,576 bytes. Records contain a format version, monotonically increasing sequence, operation ID, transition, prior-record SHA-256, and record SHA-256. Body keys remain strings and decode through a closed schema without runtime atom creation.
+`CapabilityOwner` establishes `<state>/cleanup-v1/` and `<state>/cleanup-v1/done/` as retained, trusted-UID directories with exact mode `0700`. Existing symlinks, nondirectories, wrong owners, group/world access, or special bits fail closed; normal startup does not repair them. Namespace operations beneath both directories use only their retained descriptors.
 
-An operation may own at most 32 ephemeral dentries and append at most 128 intent/receipt/state records. Only one namespace-mutating foundation operation (schema probe, backup, or migration preparation) is admitted at a time. Before its first mutation, `LedgerStore` requires `current_bytes + (129 * 4,096) <= 1,048,576`, reserving one checkpoint/header record plus the full operation bound. If that reservation cannot fit, admission fails before mutation. When no operation is active, the store may atomically compact verified terminal history to one new header/checkpoint and fsync file and directory. It never compacts an active, corrupt, or ambiguous operation.
+Each admitted schema-probe, backup, or migration-preparation operation gets one exclusively created `<ledger-id>.wal` directly under `cleanup-v1/`. `ledger-id` is a newly generated canonical UUID independent of user input and maps to exactly one operation ID/generation. The file has trusted UID and exact mode `0600`. Creation is file- and directory-fsynced before the first governed mutation. Reusing a ledger ID, sharing one ledger between operations, or appending a later operation to a terminal ledger is forbidden.
 
-Each append is complete only after the record and ledger descriptor are fsynced. A malformed record, broken hash chain, nonfinal partial record, impossible transition, oversize record, or unexplained tail blocks new mutations and produces `cleanup_ledger_corrupt`. No automatic truncation or guessed repair authorizes deletion.
+A ledger is an append-only sequence of bounded UTF-8 JSON records with a hash chain scoped to that file. It is limited to **1,048,576 total bytes, 32 owned dentries, and 128 total records including its header and terminal record**. The decoder rejects any single record over 65,536 bytes; every valid v1 header/intent/receipt/transition schema has an encoded maximum of 4,096 bytes. Before the first governed mutation, the per-operation `LedgerStore` verifies that the declared worst-case transition sequence fits all three limits. A limit refusal occurs before mutation; there is no global file-size reservation, checkpoint compaction, or requirement to rewrite the history of unrelated operations.
+
+Each append is complete only after the record and ledger descriptor are fsynced. A malformed record, broken hash chain, nonfinal partial record, impossible transition, oversize ledger/record, or unexplained tail blocks mutation for that operation and produces `cleanup_ledger_corrupt`. An ambiguous/corrupt active ledger blocks admission of another namespace-mutating foundation operation until it is inspected because only one such operation may be active. No automatic truncation or guessed repair authorizes deletion.
+
+After a valid terminal transition, the store must move the ledger from `cleanup-v1/<ledger-id>.wal` to `cleanup-v1/done/<ledger-id>.wal` before the operation is considered fully settled. It may do so only by descriptor-relative no-clobber rename. Before reporting the move durable, the store fsyncs the ledger file, performs the rename, then fsyncs both the source `cleanup-v1/` directory and destination `done/` directory. A crash at any move phase replays idempotently from the one valid location; two occupants or a substituted occupant produce `cleanup_pending` without overwrite or deletion.
+
+A committed backup ledger records the final database and manifest basenames, identities, and digests and remains durably correlated with those retained artifacts. It is not compacted into a global checkpoint or deleted while either retained artifact exists. A later retention operation may retire artifacts only under its own receipt/verification contract and must update the correlated ledger durably; retention is outside this foundation milestone.
+
+Recovery enumerates active and `done/` ledger names descriptor-relatively through retained directory-stream cursors in batches of at most 128 entries. It validates each basename and file before opening, processes one bounded ledger at a time, and never calls an unbounded `File.ls`/`Repo.all` equivalent. Cursor restart may revisit an idempotent ledger but may not skip it. In-memory recovery state is capped at 256 summaries and 1,048,576 aggregate bytes; additional terminal detail remains on disk and is demand-loaded. The number of durable terminal ledger files is not treated as one process-memory collection or one global capacity budget.
 
 ### 10.2 Ownership handshake
 
-The ledger governs only ephemeral or rollback-cleanable entries created after `LedgerStore` is live: probe workspaces, operation markers, source pins, private sidecars, staging/restore outputs, published backup artifacts before commit, and manifests. Predictable durable product/config/state/runtime directories are preserve-only capabilities established by `CapabilityOwner`; they are never retrospectively adopted into this cleanup ledger or automatically removed.
+The ledger governs only ephemeral or rollback-cleanable entries created after `LedgerStore` is live: probe workspaces, operation markers, private sidecars, staging/restore outputs, published backup artifacts before commit, and manifests. Predictable durable product/config/state/runtime directories are preserve-only capabilities established by `CapabilityOwner`; they are never retrospectively adopted into this cleanup ledger or automatically removed.
 
 For every governed link, file, directory, staging output, published database, or manifest:
 
@@ -379,7 +388,7 @@ The existing backup artifact, verification, integrity, no-clobber, source-invari
 
 Each backup has:
 
-- one durable ledger operation;
+- one durable per-operation `<ledger-id>.wal`;
 - one `AnchorOwner` holding the exact backup directory and receipts;
 - one supervised `CleanupGuardian` monitoring ledger, anchor, and worker;
 - one disposable SQLite/verification operation worker;
@@ -403,7 +412,8 @@ After backup and manifest staging are independently verified:
 6. durably record the final-manifest acquired receipt;
 7. fsync the backup directory;
 8. append and fsync the ledger `committed` transition;
-9. return the artifact only after reopening/verifying the committed pair by descriptor.
+9. no-clobber move the terminal ledger to `done/` and fsync the ledger plus both directories as specified in Section 10.1;
+10. return the artifact only after reopening/verifying the committed pair by descriptor and its correlated `done/` ledger.
 
 The final manifest remains the commit marker. A final database without a final manifest is never treated as committed. If its acquired receipt is durable, the guardian may remove it during abort. If only intent is durable, it is preserved as ambiguous and future attempts return `cleanup_pending`. A preexisting or detected substituted final name is never deleted; the hostile same-UID check/unlink race remains bounded as stated in Section 15.
 
@@ -480,7 +490,7 @@ Focused suites must include:
 2. **Lease:** all races in Section 6.3, including five consecutive full OS-process race-suite seeds.
 3. **Schema/Repo:** compatible/legacy/incompatible fixtures, canonical main/WAL/SHM byte invariance, WAL-only/no-SHM, post-Ready swaps, one-shot consumption, full pool attestation, guarded reconnect, and binding-loss shutdown.
 4. **Cleanup supervision:** pending-to-terminal observation for DirectoryHelper, ExternalCommand, lease cleanup, probe cleanup, and backup cleanup; supervisor termination reaps exact descendants.
-5. **Backup ledger:** valid replay, torn/corrupt/hash-chain failure, capacity reservation, idempotent record retry, worker/broker death, final-DB reply loss, manifest-last ordering, directory rename/replacement, ambiguous preservation, committed idempotency, and replacement invariance.
+5. **Backup ledger:** exact `0700` root/`done/` directories; one exact-`0600` hash-chained file per operation; 1 MiB/32-dentry/128-record limits; per-ledger limit refusal; many completed ledgers without global capacity exhaustion; bounded cursor recovery and memory; terminal move with file/source-dir/destination-dir fsync; committed artifact correlation; valid replay; torn/corrupt-chain failure; idempotent record retry; worker/broker death; final-DB reply loss; manifest-last ordering; directory rename/replacement; ambiguous preservation; committed idempotency; and replacement invariance.
 6. **Closure debts:** main/WAL/SHM wrong modes and special bits, injectable wrong UID, direct dot-name rejection, generator ancestor retarget, provenance mismatch leak, and production boundary probes.
 
 Every test that expects refusal records before/after digests and modes for canonical and adversary-controlled files. Cleanup tests inspect the held directory identity, not only the old path.
@@ -563,7 +573,7 @@ Implementation order follows dependency direction:
 1. pin and attest the Exqlite 0.39.0 fork; implement opaque native resources and descriptor-relative primitives;
 2. replace pathname private-directory mutation and introduce typed lease config;
 3. introduce foundation cleanup supervision and migrate raw reapers/lease cleanup;
-4. implement the generic durable ledger, anchor, guardian, and receipt handshake required by every temporary namespace;
+4. implement per-operation durable ledger files, bounded recovery, anchor/guardian ownership, and the receipt handshake required by every temporary namespace;
 5. implement dual directory locks and exact guarded lease acquisition, including mode drift;
 6. implement private-SHM schema probing and canonical byte-invariance checks atop the receipt/guardian layer;
 7. implement `DatabaseBindingOwner`, one-shot `ReadyCapability`, `RepoLauncher`, full-pool attestation, and guarded reconnect;
@@ -598,6 +608,7 @@ The residual-hardening milestone is accepted only when all statements below are 
 - Every initial and replacement Repo pool connection attests to the same guarded binding before serving a query.
 - A post-Ready swap refuses before query/write and there is no production pathname reconnect.
 - Every cleanup task has a supervisor, stable ID, bounded caller settlement, and observable terminal/pending state.
+- Cleanup uses an exact-`0700` `cleanup-v1/` layout with one exact-`0600`, hash-chained, bounded ledger per operation; terminal moves fsync the file and both directories, recovery is paged/memory-bounded, and committed ledgers remain correlated with retained artifacts.
 - Every deletion is authorized by a durable acquired receipt from the creating mutation; intent-only/name/inode matches are preserved.
 - Final backup publication is database first, manifest last, directory-fsynced, ledger-committed, independently reopened, and idempotently verified.
 - Broker/worker death and renamed-directory tests never return false cleanup success or touch a replacement.
