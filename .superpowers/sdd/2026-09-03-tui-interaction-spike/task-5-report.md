@@ -34,3 +34,11 @@ GREEN evidence:
 - Full CLI tests: 39 tests, 0 failures.
 
 Changed files are limited to Task 5 Scene/block/test/report paths. Self-review confirmed the exact adapter-root check is used by the actual repository scan, no arbitrary error messages or semantic action targets enter Scene, and the virtual-list typespec matches its runtime `0..2` bound.
+
+## Fix round 2
+
+- Architecture guard now scans `apps/swarm_code_cli/mix.exs` for denied dependency declarations while retaining the `lib/**/*.ex` production scan.
+- Added standalone denials for `:database_path`, `DatabasePath.resolve`, `Exqlite`/SQLite and db-path spellings, plus independent adversarial cases.
+- Replaced the broad `apply` source regex with AST arity checks, preserving neutral identifiers such as `apply_delivery`.
+
+Verification: focused Scene/architecture suite **7 tests, 0 failures**; full CLI suite **39 tests, 0 failures**; format and `git diff --check` passed. Self-review confirms mix dependency scanning is independently callable and comments remain ignored.

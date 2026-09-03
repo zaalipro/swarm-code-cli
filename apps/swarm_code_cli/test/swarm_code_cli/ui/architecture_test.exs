@@ -2,13 +2,18 @@ defmodule SwarmCodeCLI.UI.ArchitectureTest do
   use ExUnit.Case, async: true
 
   @lib_root Path.expand("../../../lib", __DIR__)
-  @implementation_names ~w(ExRatatui Ratatui Rustler ResourceArc SwarmCodeDaemon FoundationGate)
+  @mix_file Path.expand("../../../mix.exs", __DIR__)
+  @implementation_names ~w(ExRatatui Ratatui Rustler ResourceArc SwarmCodeDaemon FoundationGate DatabasePath Exqlite SQLite3 DBPath)
   @source_patterns [
     "swarm_code_daemon",
     "daemon[_ -]?ipc",
     "(^|[\\/.])database([\\/.]|$)",
-    "(?:^|[^[:alnum:]_])(?:apply|module\\.concat|code\\.(?:load|ensure_loaded)|:code\\.)",
-    "ecto\\.repo"
+    "(?:^|[^[:alnum:]_])(?:module\\.concat|code\\.(?:load|ensure_loaded)|:code\\.)",
+    "ecto\\.repo",
+    "exqlite",
+    "database_path",
+    "databasepath",
+    "db_path"
   ]
 
   test "CLI library remains renderer, daemon, repo, and database neutral" do
@@ -20,6 +25,9 @@ defmodule SwarmCodeCLI.UI.ArchitectureTest do
       |> Enum.flat_map(&violations/1)
 
     assert violations == []
+    assert @mix_file |> File.read!() |> scan_mix_dependencies() == []
+    refute scan_mix_dependencies("defp deps, do: [{:rustler, \"0.1\"}]") == []
+    refute scan_mix_dependencies("defp deps, do: [{:swarm_code_daemon, in_umbrella: true}]") == []
   end
 
   test "the exemption is an exact conditional adapter directory, not a sibling file" do
@@ -45,8 +53,19 @@ defmodule SwarmCodeCLI.UI.ArchitectureTest do
     ]
 
     assert Enum.all?(forbidden, &(scan_source(&1, "fixture.ex") != []))
+
+    assert scan_source(
+             "defp apply_delivery(state, delivery), do: {state, delivery}",
+             "fixture.ex"
+           ) == []
+
+    assert scan_source(":database_path", "fixture.ex") != []
+    assert scan_source("DatabasePath.resolve()", "fixture.ex") != []
+    assert scan_source("Exqlite.Sqlite3.open(\"x\")", "fixture.ex") != []
     assert scan_source("# ExRatatui.draw(scene)\n:ok", "fixture.ex") == []
   end
+
+  defp scan_mix_dependencies(source), do: scan_source(source, @mix_file)
 
   defp exempt?(path) do
     root = Path.expand("swarm_code_cli/ui/renderer/ex_ratatui_013", @lib_root)
@@ -95,6 +114,13 @@ defmodule SwarmCodeCLI.UI.ArchitectureTest do
 
         {:apply, _, _} = node, acc ->
           {node, [{path, :dynamic_module_lookup, "apply/3"} | acc]}
+
+        {{:., _, [{:__aliases__, _, [:Kernel]}, :apply]}, _, args} = node, acc
+        when length(args) == 3 ->
+          {node, [{path, :dynamic_module_lookup, "Kernel.apply/3"} | acc]}
+
+        {{:., _, [:erlang, :apply]}, _, args} = node, acc when length(args) in [2, 3] ->
+          {node, [{path, :dynamic_module_lookup, ":erlang.apply"} | acc]}
 
         {{:., _, [:code, function]}, _, _} = node, acc ->
           {node, [{path, :code_path_load, Atom.to_string(function)} | acc]}
