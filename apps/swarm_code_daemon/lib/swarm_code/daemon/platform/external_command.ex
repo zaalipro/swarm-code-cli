@@ -42,7 +42,7 @@ defmodule SwarmCode.Daemon.Platform.ExternalCommand do
 
       receive do
         {^request_ref, ^owner, result} ->
-          await_owner_down(owner, owner_monitor)
+          Process.demonitor(owner_monitor, [:flush])
           result
 
         {:DOWN, ^owner_monitor, :process, ^owner, _reason} ->
@@ -61,13 +61,17 @@ defmodule SwarmCode.Daemon.Platform.ExternalCommand do
         if config.fail_after_port_open? do
           cleanup_result = terminate_and_await(port, port_monitor, os_pid, empty_state(), config)
 
-          result =
-            case cleanup_result do
-              :ok -> {:error, :command_start_failed}
-              {:error, :command_cleanup_failed} -> {:error, :command_cleanup_failed}
-            end
+          case cleanup_result do
+            {:pending, reaper_state} ->
+              send_result(requester, request_ref, {:error, :command_cleanup_pending})
+              reaper_loop(port, port_monitor, reaper_state, config.observer, os_pid)
 
-          send_result(requester, request_ref, result)
+            :ok ->
+              send_result(requester, request_ref, {:error, :command_start_failed})
+
+            _other ->
+              send_result(requester, request_ref, {:error, :command_cleanup_pending})
+          end
         else
           run_open_command(
             requester,
@@ -94,7 +98,7 @@ defmodule SwarmCode.Daemon.Platform.ExternalCommand do
          os_pid,
          config
        ) do
-    state = empty_state()
+    state = %{empty_state() | requester: requester, request_ref: request_ref}
     deadline = monotonic_deadline(config.timeout)
 
     case collect(port, port_monitor, requester_monitor, deadline, state) do
@@ -108,31 +112,46 @@ defmodule SwarmCode.Daemon.Platform.ExternalCommand do
         cleanup_result =
           terminate_and_await(port, port_monitor, os_pid, timeout_state, config)
 
-        command_result =
-          case cleanup_result do
-            :ok -> {:error, :command_timeout}
-            {:error, :command_cleanup_failed} -> {:error, :command_cleanup_failed}
-          end
+        case cleanup_result do
+          {:pending, reaper_state} ->
+            send_result(requester, request_ref, {:error, :command_cleanup_pending})
+            reaper_loop(port, port_monitor, reaper_state, config.observer, os_pid)
 
-        send_result(requester, request_ref, command_result)
+          :ok ->
+            send_result(requester, request_ref, {:error, :command_timeout})
+
+          _other ->
+            send_result(requester, request_ref, {:error, :command_cleanup_pending})
+        end
 
       {:command_error, error_state} ->
         cleanup_result = terminate_and_await(port, port_monitor, os_pid, error_state, config)
 
-        command_result =
-          case cleanup_result do
-            :ok -> {:error, :command_failed}
-            {:error, :command_cleanup_failed} -> {:error, :command_cleanup_failed}
-          end
+        case cleanup_result do
+          {:pending, reaper_state} ->
+            send_result(requester, request_ref, {:error, :command_cleanup_pending})
+            reaper_loop(port, port_monitor, reaper_state, config.observer, os_pid)
 
-        send_result(requester, request_ref, command_result)
+          :ok ->
+            send_result(requester, request_ref, {:error, :command_failed})
+
+          _other ->
+            send_result(requester, request_ref, {:error, :command_cleanup_pending})
+        end
 
       {:requester_down, requester_state} ->
-        _ = terminate_and_await(port, port_monitor, os_pid, requester_state, config)
+        case terminate_and_await(port, port_monitor, os_pid, requester_state, config) do
+          {:pending, reaper_state} ->
+            reaper_loop(port, port_monitor, reaper_state, config.observer, os_pid)
+
+          _other ->
+            :ok
+        end
     end
   end
 
-  defp empty_state, do: %{exit_status: nil, output: nil, port_down?: false}
+  defp empty_state,
+    do: %{exit_status: nil, output: nil, port_down?: false, requester: nil, request_ref: nil}
 
   defp open_port(config) do
     options = [
@@ -225,9 +244,11 @@ defmodule SwarmCode.Daemon.Platform.ExternalCommand do
             terminal(config.observer, os_pid)
 
           {:timeout, kill_state} ->
-            _terminal_state = await_terminal_forever(port, port_monitor, kill_state)
-            terminal(config.observer, os_pid)
-            {:error, :command_cleanup_failed}
+            # The caller receives a bounded, typed outcome immediately after
+            # TERM/KILL grace expires.  This owner remains the explicit reaper
+            # and emits terminal observer evidence only once the exact Port
+            # and child exit events arrive.
+            {:pending, kill_state}
         end
     end
   end
@@ -310,10 +331,10 @@ defmodule SwarmCode.Daemon.Platform.ExternalCommand do
     :ok
   end
 
-  defp await_owner_down(owner, owner_monitor) do
-    receive do
-      {:DOWN, ^owner_monitor, :process, ^owner, _reason} -> :ok
-    end
+  defp reaper_loop(port, port_monitor, state, observer, os_pid) do
+    _terminal_state = await_terminal_forever(port, port_monitor, state)
+    terminal(observer, os_pid)
+    :ok
   end
 
   defp notify(nil, _event), do: :ok

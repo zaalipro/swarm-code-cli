@@ -178,6 +178,24 @@ defmodule SwarmCode.Governance.ProvenanceTest do
     end
   end
 
+  test "a FIFO destination never blocks provenance verification" do
+    root = fixture_root!("authorized", [entry("fifo", String.duplicate("0", 64))])
+    fifo = Path.join(root, "fifo")
+    {_, 0} = System.cmd("/usr/bin/mkfifo", [fifo], stderr_to_stdout: true)
+
+    task = Task.async(fn -> Provenance.verify(root) end)
+    assert {:error, errors} = Task.await(task, 1_000)
+    assert Enum.any?(errors, &String.contains?(&1, "missing or not regular"))
+  end
+
+  test "oversized policy and ledger JSON are rejected with bounded errors" do
+    root = fixture_root!("authorized", [])
+    oversized = String.duplicate("x", 1_048_577)
+    File.write!(Path.join(root, "governance/source-policy.json"), oversized)
+    assert {:error, [message]} = Provenance.verify(root)
+    assert message =~ "cannot read valid JSON"
+  end
+
   defp entry(path, hash) do
     %{
       "destination" => path,

@@ -24,14 +24,26 @@ defmodule SwarmCode.Daemon.Platform.DirectoryBroker do
     _reader = spawn_link(fn -> read_loop(broker, cancel_table) end)
     write_ready({:ready, File.cwd!(), directory_identity(".")})
 
-    loop(%{
+    state = %{
       cancel_table: cancel_table,
       copy: nil,
       operation: nil,
       owned: %{},
       source: nil,
       sources: []
-    })
+    }
+
+    try do
+      loop(state)
+    rescue
+      _error ->
+        cleanup_state(state)
+        :init.stop(1)
+    catch
+      _kind, _reason ->
+        cleanup_state(state)
+        :init.stop(1)
+    end
   catch
     _kind, _reason -> :init.stop(1)
   end
@@ -39,7 +51,7 @@ defmodule SwarmCode.Daemon.Platform.DirectoryBroker do
   defp loop(state) do
     receive do
       {:broker_packet, :stop} ->
-        stop_broker(state)
+        if Process.get({__MODULE__, :stall_stop}), do: loop(state), else: stop_broker(state)
 
       {:broker_packet, request} when is_nil(state.operation) ->
         loop(start_operation(request, state))
@@ -447,6 +459,13 @@ defmodule SwarmCode.Daemon.Platform.DirectoryBroker do
       end
 
     {result, next_state}
+  end
+
+  # Link-and-reserve is one broker operation: the parent ledger is updated
+  # only after this invocation has created and identity-checked the link.
+  defp dispatch({:link_owned, source, destination, uid}, state) do
+    result = link_owned(source, destination, uid)
+    {result, track_result(state, destination, result)}
   end
 
   defp dispatch({:unlink, basename}, state) do
@@ -1484,6 +1503,42 @@ defmodule SwarmCode.Daemon.Platform.DirectoryBroker do
     end
   end
 
+  defp link_owned(source, destination, uid) do
+    with :ok <- private_directory(uid),
+         {:ok, source_identity} <- private_identity(source, uid),
+         {:error, :enoent} <- File.lstat(destination) do
+      case File.ln(source, destination) do
+        :ok ->
+          result =
+            with {:ok, destination_identity} <- private_identity(destination, uid),
+                 true <-
+                   object_identity(destination_identity) == object_identity(source_identity),
+                 :ok <- reserve_owned(destination, object_identity(destination_identity)),
+                 {:ok, ^source_identity} <- private_identity(source, uid),
+                 {:ok, ^destination_identity} <- private_identity(destination, uid) do
+              {:ok, destination_identity}
+            else
+              _other -> {:error, :directory_operation_failed}
+            end
+
+          case result do
+            {:ok, _identity} = success ->
+              success
+
+            {:error, _reason} = error ->
+              cleanup_created([{destination, object_identity(source_identity)}], uid)
+              error
+          end
+
+        {:error, _reason} ->
+          {:error, :directory_operation_failed}
+      end
+    else
+      _other ->
+        {:error, :directory_operation_failed}
+    end
+  end
+
   defp handle_identity(io) do
     case :file.read_file_info(io) do
       {:ok,
@@ -1558,10 +1613,12 @@ defmodule SwarmCode.Daemon.Platform.DirectoryBroker do
           "pause_vacuum_after_step" -> :pause_vacuum_after_step
           "pause_vacuum_before_step" -> :pause_vacuum_before_step
           "pause_write_private_before_reserve" -> :pause_write_private_before_reserve
+          "stall_stop" -> :stall_stop
           _other -> nil
         end
 
       Process.put({__MODULE__, :test_reply_fault}, fault)
+      Process.put({__MODULE__, :stall_stop}, fault == :stall_stop)
       :ok
     end
 

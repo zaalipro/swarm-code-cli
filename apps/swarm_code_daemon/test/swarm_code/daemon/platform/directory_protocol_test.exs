@@ -187,6 +187,22 @@ defmodule SwarmCode.Daemon.Platform.DirectoryProtocolTest do
              )
   end
 
+  test "cleanup-pending startup errors remain in the closed wire union" do
+    error = %StartupError{
+      code: :cleanup_pending,
+      retryable: true,
+      message: "cleanup is pending",
+      action: "retry later"
+    }
+
+    assert {:ok, frame} = DirectoryProtocol.encode_reply(:pwd, {:error, error})
+
+    assert {:ok, payload, <<>>} =
+             DirectoryProtocol.push(DirectoryProtocol.new_decoder(), IO.iodata_to_binary(frame))
+
+    assert {:ok, {:error, ^error}} = DirectoryProtocol.decode_reply(:pwd, payload)
+  end
+
   test "open-source replies contain exactly the identities requested by the source specs" do
     probe = %Probe{
       application_id: 0,

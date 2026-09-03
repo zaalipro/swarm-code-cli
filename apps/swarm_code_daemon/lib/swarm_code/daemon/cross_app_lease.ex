@@ -8,6 +8,8 @@ defmodule SwarmCode.Daemon.CrossAppLease do
   alias Exqlite.Sqlite3
   alias SwarmCode.Daemon.CrossAppLease.OwnerRecord
   alias SwarmCode.Daemon.Files.AtomicReplace
+  alias SwarmCode.Daemon.Platform.BoundFile
+  alias SwarmCode.Daemon.Platform.ProcessIdentity
   alias SwarmCode.Daemon.StartupError
 
   @private_mode 0o600
@@ -57,9 +59,11 @@ defmodule SwarmCode.Daemon.CrossAppLease do
   end
 
   defp do_init(opts) do
-    with :ok <- secure_lease_file(opts[:lease_path], opts[:identity].uid),
-         {:ok, conn} <- open_and_acquire(opts[:lease_path]) do
-      finish_init(conn, opts)
+    with :ok <- validate_options(opts),
+         {:ok, uid} <- option_uid(opts),
+         {:ok, binding} <- secure_lease_file(opts[:lease_path], uid),
+         {:ok, connection_state} <- open_and_acquire(binding, opts) do
+      finish_init(connection_state, opts)
     else
       {:error, :busy} -> stop_with_error(opts, held_error(opts[:owner_path]))
       {:error, reason} -> stop_with_error(opts, lease_failed(reason))
@@ -70,21 +74,36 @@ defmodule SwarmCode.Daemon.CrossAppLease do
   def handle_call(:owner, _from, state), do: {:reply, state.record, state}
 
   @impl true
-  def handle_call(:assert_held, _from, state), do: {:reply, :ok, state}
+  def handle_call(:assert_held, _from, state) do
+    case verify_bound_lease(state.connection_state.binding) do
+      :ok ->
+        {:reply, :ok, state}
+
+      {:error, _reason} = error ->
+        # The connection remains bound to the original inode, but the
+        # canonical pathname is no longer the leased object.  Stop this owner
+        # rather than allowing a second runtime to acquire the replacement.
+        {:stop, :normal, error, state}
+    end
+  end
 
   @impl true
   def terminate(_reason, state) do
-    try do
-      remove_if_same_nonce(state.owner_path, state.record.lease_nonce)
-      state.cleanup_barrier.()
-    after
-      close_connection(state.conn)
-    end
+    result =
+      try do
+        remove_if_same_nonce(state.owner_path, state.record.lease_nonce)
+        invoke_cleanup_barrier(state.cleanup_barrier)
+      after
+        BoundFile.close_sqlite(state.connection_state)
+      end
 
-    :ok
+    case result do
+      :ok -> :ok
+      {:error, :cleanup_barrier_failed} -> exit(:cleanup_barrier_failed)
+    end
   end
 
-  defp finish_init(conn, opts) do
+  defp finish_init(connection_state, opts) do
     result =
       try do
         record = OwnerRecord.new(opts)
@@ -99,7 +118,9 @@ defmodule SwarmCode.Daemon.CrossAppLease do
           :ok ->
             {:ok,
              %{
-               conn: conn,
+               conn: connection_state.connection,
+               connection_state: connection_state,
+               binding: connection_state.binding,
                record: record,
                owner_path: opts[:owner_path],
                cleanup_barrier: Keyword.get(opts, :cleanup_barrier, fn -> :ok end)
@@ -123,7 +144,7 @@ defmodule SwarmCode.Daemon.CrossAppLease do
         success
 
       {:error, reason} ->
-        close_connection(conn)
+        BoundFile.close_sqlite(connection_state)
         stop_with_error(opts, lease_failed(reason))
     end
   end
@@ -131,24 +152,27 @@ defmodule SwarmCode.Daemon.CrossAppLease do
   defp secure_lease_file(path, uid) do
     case File.lstat(path) do
       {:ok, stat} ->
-        validate_lease_file(path, stat, uid)
+        with :ok <- validate_lease_file(path, stat, uid),
+             {:ok, sidecars} <- lease_sidecars(path, uid),
+             {:ok, binding} <-
+               BoundFile.open(path,
+                 mode: :readwrite,
+                 uid: uid,
+                 expected: stat,
+                 sidecars: sidecars
+               ) do
+          {:ok, binding}
+        end
 
       {:error, :enoent} ->
         case AtomicReplace.write(path, <<>>, mode: @private_mode, replace: false) do
-          :ok -> validate_lease_path(path, uid)
-          {:error, {:pre_publication, :eexist}} -> validate_lease_path(path, uid)
+          :ok -> secure_lease_file(path, uid)
+          {:error, {:pre_publication, :eexist}} -> secure_lease_file(path, uid)
           {:error, _reason} = error -> error
         end
 
       {:error, reason} ->
         unsafe_lease(path, reason)
-    end
-  end
-
-  defp validate_lease_path(path, uid) do
-    case File.lstat(path) do
-      {:ok, stat} -> validate_lease_file(path, stat, uid)
-      {:error, reason} -> unsafe_lease(path, reason)
     end
   end
 
@@ -170,9 +194,33 @@ defmodule SwarmCode.Daemon.CrossAppLease do
 
   defp unsafe_lease(path, reason), do: {:error, {:unsafe_lease_file, path, reason}}
 
-  defp open_and_acquire(path) do
-    case Sqlite3.open(path, mode: :readwrite) do
-      {:ok, conn} ->
+  defp lease_sidecars(path, uid) do
+    Enum.reduce_while(["-wal", "-shm"], {:ok, []}, fn suffix, {:ok, acc} ->
+      case File.lstat(path <> suffix) do
+        {:error, :enoent} ->
+          {:cont, {:ok, acc}}
+
+        {:ok, %File.Stat{type: :regular, uid: ^uid, mode: mode} = stat}
+        when band(mode, 0o7777) == @private_mode ->
+          {:cont, {:ok, [{suffix, path <> suffix, stat} | acc]}}
+
+        _other ->
+          {:halt, {:error, {:unsafe_lease_file, path <> suffix, :sidecar}}}
+      end
+    end)
+  end
+
+  defp open_and_acquire(binding, opts) do
+    hook = Keyword.get(opts, :test_open_hook)
+
+    case BoundFile.open_sqlite_from_binding(binding,
+           mode: :readwrite,
+           uid: option_uid_value(opts),
+           before_open: hook
+         ) do
+      {:ok, connection_state} ->
+        conn = connection_state.connection
+
         result =
           try do
             with :ok <- Sqlite3.set_busy_timeout(conn, 0) do
@@ -182,7 +230,8 @@ defmodule SwarmCode.Daemon.CrossAppLease do
               case acquire_exclusive(conn) do
                 :ok ->
                   with :ok <- journal_result,
-                       :ok <- foreign_keys_result do
+                       :ok <- foreign_keys_result,
+                       :ok <- verify_bound_lease(binding) do
                     :ok
                   end
 
@@ -198,10 +247,10 @@ defmodule SwarmCode.Daemon.CrossAppLease do
 
         case result do
           :ok ->
-            {:ok, conn}
+            {:ok, connection_state}
 
           {:error, _reason} = error ->
-            close_connection(conn)
+            BoundFile.close_sqlite(connection_state)
             error
         end
 
@@ -240,11 +289,146 @@ defmodule SwarmCode.Daemon.CrossAppLease do
     end
   end
 
-  defp close_connection(conn) do
+  defp verify_bound_lease(%{path: path, identity: identity}) do
+    case File.lstat(path) do
+      {:ok, stat} ->
+        if BoundFile.object_identity(stat) == BoundFile.object_identity(identity),
+          do: :ok,
+          else: {:error, :lease_identity_changed}
+
+      {:error, reason} ->
+        {:error, {:lease_identity_changed, reason}}
+    end
+  end
+
+  defp invoke_cleanup_barrier(function) when is_function(function, 0) do
     try do
-      _ = Sqlite3.execute(conn, "ROLLBACK")
-    after
-      _ = Sqlite3.close(conn)
+      case function.() do
+        :ok -> :ok
+        _other -> {:error, :cleanup_barrier_failed}
+      end
+    rescue
+      _error -> {:error, :cleanup_barrier_failed}
+    catch
+      _kind, _reason -> {:error, :cleanup_barrier_failed}
+    end
+  end
+
+  defp invoke_cleanup_barrier(_function), do: {:error, :cleanup_barrier_failed}
+
+  defp validate_options(opts) when is_list(opts) do
+    keys = Keyword.keys(opts)
+
+    allowed = [
+      :lease_path,
+      :owner_path,
+      :identity,
+      :database_fingerprint,
+      :schema_contract,
+      :socket_path,
+      :app_version,
+      :cleanup_barrier,
+      :startup_reply,
+      :name,
+      :test_open_hook,
+      :ipc_nonce,
+      :owner_atomic_replace_opts
+    ]
+
+    required = [
+      :lease_path,
+      :owner_path,
+      :identity,
+      :database_fingerprint,
+      :schema_contract,
+      :socket_path,
+      :app_version
+    ]
+
+    if Keyword.keyword?(opts) and keys == Enum.uniq(keys) and Enum.all?(keys, &(&1 in allowed)) and
+         Enum.all?(required, &Keyword.has_key?(opts, &1)) and valid_boot_values?(opts) and
+         (not Keyword.has_key?(opts, :test_open_hook) or Mix.env() == :test) and
+         (not Keyword.has_key?(opts, :owner_atomic_replace_opts) or Mix.env() == :test),
+       do: :ok,
+       else: {:error, :invalid_lease_options}
+  end
+
+  defp validate_options(_opts), do: {:error, :invalid_lease_options}
+
+  defp valid_boot_values?(opts) do
+    identity = Keyword.get(opts, :identity)
+    contract = Keyword.get(opts, :schema_contract)
+
+    match?(%ProcessIdentity{}, identity) and
+      valid_text_path?(Keyword.get(opts, :lease_path)) and
+      valid_text_path?(Keyword.get(opts, :owner_path)) and
+      valid_text_path?(Keyword.get(opts, :socket_path)) and
+      valid_text?(Keyword.get(opts, :database_fingerprint), 4_096) and
+      valid_text?(Keyword.get(opts, :app_version), 128) and
+      is_map(contract) and
+      Map.keys(contract) |> Enum.sort() == [:epoch, :manifest_sha256, :newest_migration] and
+      is_integer(contract.epoch) and contract.epoch >= 0 and
+      is_integer(contract.newest_migration) and contract.newest_migration > 0 and
+      valid_text?(contract.manifest_sha256, 64) and valid_optional_values?(opts)
+  rescue
+    _error -> false
+  catch
+    _kind, _reason -> false
+  end
+
+  defp valid_optional_values?(opts) do
+    valid_optional_function?(opts, :cleanup_barrier, 0) and
+      valid_optional_function_arities?(opts, :test_open_hook, [1, 2]) and
+      valid_optional_nonce?(opts) and valid_optional_startup_reply?(opts)
+  end
+
+  defp valid_optional_function?(opts, key, arity) do
+    case Keyword.fetch(opts, key) do
+      :error -> true
+      {:ok, function} -> is_function(function, arity)
+    end
+  end
+
+  defp valid_optional_function_arities?(opts, key, arities) do
+    case Keyword.fetch(opts, key) do
+      :error -> true
+      {:ok, function} -> Enum.any?(arities, &is_function(function, &1))
+    end
+  end
+
+  defp valid_optional_nonce?(opts) do
+    case Keyword.fetch(opts, :ipc_nonce) do
+      :error -> true
+      {:ok, nonce} -> valid_text?(nonce, 4_096)
+    end
+  end
+
+  defp valid_optional_startup_reply?(opts) do
+    case Keyword.fetch(opts, :startup_reply) do
+      :error -> true
+      {:ok, {pid, ref}} -> is_pid(pid) and is_reference(ref)
+      _other -> false
+    end
+  end
+
+  defp valid_text_path?(path), do: valid_text?(path, 16 * 1_024) and Path.type(path) == :absolute
+
+  defp valid_text?(value, maximum),
+    do:
+      is_binary(value) and byte_size(value) in 1..maximum and String.valid?(value) and
+        not String.contains?(value, [<<0>>, "\n", "\r"])
+
+  defp option_uid(opts) do
+    case Keyword.get(opts, :identity) do
+      %{uid: uid} when is_integer(uid) and uid >= 0 -> {:ok, uid}
+      _other -> {:error, :invalid_identity}
+    end
+  end
+
+  defp option_uid_value(opts) do
+    case option_uid(opts) do
+      {:ok, uid} -> uid
+      _other -> -1
     end
   end
 

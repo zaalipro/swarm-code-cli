@@ -106,6 +106,29 @@ defmodule SwarmCode.Daemon.FoundationGateTest do
     refute_received :identity_called
   end
 
+  test "a symlink XDG ancestor is rejected before any child is created" do
+    root = private_tmp!("symlink-ancestor")
+    target = private_tmp!("symlink-target")
+    alias_root = Path.join(root, "data-alias")
+    File.ln_s!(target, alias_root)
+    database = Path.join(alias_root, "fixture.db")
+
+    assert {:error, %{code: :private_directory_failed}} =
+             FoundationGate.prepare(
+               test_opts(database, fn -> :none end,
+                 env: %{
+                   "XDG_DATA_HOME" => alias_root,
+                   "XDG_CONFIG_HOME" => root,
+                   "XDG_STATE_HOME" => root,
+                   "XDG_CACHE_HOME" => root,
+                   "XDG_RUNTIME_DIR" => root
+                 }
+               )
+             )
+
+    refute File.exists?(Path.join(target, "swarm-code"))
+  end
+
   test "product-owned directories are deduplicated and hardened parent before child" do
     fixture = SchemaFixture.database!(:current)
     root = Path.dirname(fixture)

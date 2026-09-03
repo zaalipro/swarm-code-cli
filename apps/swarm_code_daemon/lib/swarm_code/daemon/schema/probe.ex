@@ -1,14 +1,19 @@
 defmodule SwarmCode.Daemon.Schema.Probe do
   @moduledoc false
 
+  import Bitwise
+
   alias Exqlite.Sqlite3
-  alias SwarmCode.Daemon.Schema.SqliteQuery
+  alias SwarmCode.Daemon.Platform.BoundFile
+  alias SwarmCode.Daemon.Schema.{Binding, SqliteQuery}
   alias SwarmCode.Daemon.StartupError
 
   @maximum_migrations 43
   @migration_sentinel_rows 44
   @maximum_schema_rows 512
   @maximum_schema_bytes 4_194_304
+  @probe_timeout 5_000
+  @private_file_mode 0o600
 
   @enforce_keys [
     :application_id,
@@ -33,17 +38,114 @@ defmodule SwarmCode.Daemon.Schema.Probe do
 
   @spec inspect(Path.t()) :: {:ok, t()} | {:error, StartupError.t()}
   def inspect(path) when is_binary(path) do
-    with :ok <- regular_file(path),
-         {:ok, conn} <- open_readonly(path) do
-      try do
-        inspect_connection(conn)
-      after
-        _ = Sqlite3.close(conn)
-      end
+    case inspect_bound(path) do
+      {:ok, %{probe: probe}} -> {:ok, probe}
+      {:error, %StartupError{} = error} -> {:error, error}
+      _other -> {:error, incompatible_error()}
     end
   end
 
   def inspect(_path), do: {:error, incompatible_error()}
+
+  @doc "Inspect through an identity-bound read-only handle and return its binding."
+  @spec inspect_bound(Path.t(), keyword()) ::
+          {:ok, %{probe: t(), binding: Binding.t()}} | {:error, StartupError.t()}
+  def inspect_bound(path, opts \\ [])
+
+  def inspect_bound(path, opts) when is_binary(path) and is_list(opts) do
+    if not valid_options?(opts),
+      do: {:error, incompatible_error()},
+      else: inspect_bound_worker(path, opts)
+  end
+
+  defp inspect_bound_worker(path, opts) do
+    parent = self()
+    ref = make_ref()
+    alias_snapshot = bound_alias_snapshot(path)
+
+    {worker, monitor} =
+      spawn_monitor(fn ->
+        result = safe_inspect_bound(path, opts)
+        send(parent, {ref, result})
+      end)
+
+    receive do
+      {^ref, result} ->
+        Process.demonitor(monitor, [:flush])
+
+        if match?({:error, _}, result), do: cleanup_bound_aliases(path, alias_snapshot)
+
+        result
+
+      {:DOWN, ^monitor, :process, ^worker, _reason} ->
+        cleanup_bound_aliases(path, alias_snapshot)
+        {:error, incompatible_error()}
+    after
+      @probe_timeout ->
+        Process.exit(worker, :kill)
+        await_worker_down(monitor, worker)
+        cleanup_bound_aliases(path, alias_snapshot)
+        {:error, incompatible_error()}
+    end
+  end
+
+  defp valid_options?(opts) do
+    keys = Keyword.keys(opts)
+
+    Keyword.keyword?(opts) and keys == Enum.uniq(keys) and
+      Enum.all?(keys, &(&1 in [:uid, :before_open, :probe_hook])) and
+      (not Keyword.has_key?(opts, :uid) or (is_integer(opts[:uid]) and opts[:uid] >= 0)) and
+      valid_hook_option?(opts, :before_open) and valid_hook_option?(opts, :probe_hook)
+  end
+
+  defp valid_hook_option?(opts, key) do
+    case Keyword.fetch(opts, key) do
+      :error ->
+        true
+
+      {:ok, function} ->
+        Mix.env() == :test and (is_function(function, 1) or is_function(function, 2))
+    end
+  end
+
+  defp bound_alias_snapshot(path) do
+    case File.ls(Path.dirname(path)) do
+      {:ok, names} -> MapSet.new(names)
+      _other -> MapSet.new()
+    end
+  rescue
+    _error -> MapSet.new()
+  catch
+    _kind, _reason -> MapSet.new()
+  end
+
+  defp cleanup_bound_aliases(path, snapshot) do
+    prefix = ".#{Path.basename(path)}.bound."
+
+    case File.ls(Path.dirname(path)) do
+      {:ok, names} ->
+        Enum.each(names, fn name ->
+          if String.starts_with?(name, prefix) and not MapSet.member?(snapshot, name) do
+            alias_path = Path.join(Path.dirname(path), name)
+
+            case File.lstat(alias_path) do
+              {:ok, %File.Stat{type: :regular, mode: mode}} when band(mode, 0o7777) == 0o600 ->
+                _ = File.rm(alias_path)
+
+              _other ->
+                :ok
+            end
+          end
+        end)
+
+      _other ->
+        :ok
+    end
+  rescue
+    _error -> :ok
+  catch
+    _kind, _reason -> :ok
+  end
 
   @spec inspect_connection(term()) :: {:ok, t()} | {:error, StartupError.t()}
   def inspect_connection(conn) do
@@ -63,17 +165,179 @@ defmodule SwarmCode.Daemon.Schema.Probe do
     end
   end
 
-  defp regular_file(path) do
+  defp safe_inspect_bound(path, opts) do
+    uid = Keyword.get(opts, :uid) || trusted_uid()
+
+    with {:ok, main_stat} <- regular_stat(path, uid),
+         {:ok, sidecars} <- sidecar_stats(path, uid),
+         {:ok, sqlite} <-
+           BoundFile.open_sqlite(path,
+             mode: :readonly,
+             uid: uid,
+             sidecars: sidecars,
+             before_open: Keyword.get(opts, :before_open)
+           ) do
+      try do
+        case inspect_connection(sqlite.connection) do
+          {:ok, probe} ->
+            case invoke_probe_hook(Keyword.get(opts, :probe_hook), path) do
+              :ok ->
+                case verify_bound_paths_now(path, main_stat, sidecars, uid) do
+                  :ok ->
+                    binding = %Binding{
+                      path: path,
+                      identity: BoundFile.object_identity(main_stat),
+                      sidecars:
+                        Map.new(sidecars, fn {suffix, _sidecar_path, stat} ->
+                          {suffix, BoundFile.object_identity(stat)}
+                        end)
+                    }
+
+                    {:ok, %{probe: probe, binding: binding}}
+
+                  {:error, %StartupError{} = error} ->
+                    {:error, error}
+
+                  _other ->
+                    {:error, incompatible_error()}
+                end
+
+              {:error, %StartupError{} = error} ->
+                {:error, error}
+
+              _other ->
+                {:error, incompatible_error()}
+            end
+
+          {:error, %StartupError{} = error} ->
+            {:error, error}
+
+          _other ->
+            {:error, incompatible_error()}
+        end
+      after
+        BoundFile.close_sqlite(sqlite)
+      end
+    else
+      {:error, %StartupError{} = error} -> {:error, error}
+      _other -> {:error, incompatible_error()}
+    end
+  rescue
+    _error -> {:error, incompatible_error()}
+  catch
+    _kind, _reason -> {:error, incompatible_error()}
+  end
+
+  defp trusted_uid do
+    case System.cmd("/usr/bin/id", ["-u"], stderr_to_stdout: true) do
+      {output, 0} when is_binary(output) and byte_size(output) <= 32 ->
+        case Integer.parse(String.trim(output)) do
+          {uid, ""} when uid >= 0 -> uid
+          _other -> nil
+        end
+
+      _other ->
+        nil
+    end
+  rescue
+    _error -> nil
+  catch
+    _kind, _reason -> nil
+  end
+
+  defp regular_stat(path, uid) do
     case File.lstat(path) do
-      {:ok, %File.Stat{type: :regular}} -> :ok
+      {:ok, %File.Stat{type: :regular, uid: actual_uid, mode: mode} = stat}
+      when is_integer(uid) and actual_uid == uid and band(mode, 0o7777) == @private_file_mode ->
+        {:ok, stat}
+
+      _other ->
+        {:error, incompatible_error()}
+    end
+  end
+
+  defp sidecar_stats(path, uid) do
+    Enum.reduce_while(["-wal", "-shm"], {:ok, []}, fn suffix, {:ok, acc} ->
+      case File.lstat(path <> suffix) do
+        {:error, :enoent} ->
+          {:cont, {:ok, acc}}
+
+        {:ok, %File.Stat{type: :regular, uid: actual_uid, mode: mode} = stat}
+        when is_integer(uid) and actual_uid == uid and band(mode, 0o7777) == @private_file_mode ->
+          {:cont, {:ok, [{suffix, path <> suffix, stat} | acc]}}
+
+        _other ->
+          {:halt, {:error, incompatible_error()}}
+      end
+    end)
+  end
+
+  @doc false
+  @spec verify_bound_paths(Path.t(), Binding.t(), non_neg_integer()) ::
+          :ok | {:error, StartupError.t()}
+  def verify_bound_paths(path, %Binding{} = binding, uid)
+      when is_binary(path) and is_integer(uid) do
+    with {:ok, main_stat} <- regular_stat(path, uid),
+         :ok <- BoundFile.same_object(main_stat, binding.identity),
+         {:ok, sidecars} <- sidecar_stats(path, uid),
+         :ok <- equal(sidecar_identity_map(sidecars), binding.sidecars) do
+      :ok
+    else
       _other -> {:error, incompatible_error()}
     end
   end
 
-  defp open_readonly(path) do
-    case Sqlite3.open(path, mode: :readonly) do
-      {:ok, conn} -> {:ok, conn}
-      {:error, _reason} -> {:error, incompatible_error()}
+  def verify_bound_paths(_path, _binding, _uid), do: {:error, incompatible_error()}
+
+  defp verify_bound_paths_now(path, main_stat, sidecars, uid) do
+    with {:ok, current} <- regular_stat(path, uid),
+         :ok <- BoundFile.same_object(current, main_stat),
+         {:ok, current_sidecars} <- sidecar_stats(path, uid),
+         :ok <- equal(sidecar_identity_map(current_sidecars), sidecar_identity_map(sidecars)) do
+      :ok
+    end
+  end
+
+  defp sidecar_identity_map(sidecars) do
+    Map.new(sidecars, fn {suffix, _path, stat_or_identity} ->
+      {suffix, BoundFile.object_identity(stat_or_identity)}
+    end)
+  end
+
+  defp equal(value, value), do: :ok
+  defp equal(_actual, _expected), do: {:error, incompatible_error()}
+
+  defp invoke_probe_hook(nil, _path), do: :ok
+
+  defp invoke_probe_hook(hook, path) when is_function(hook, 2) do
+    case hook.(:after_probe, path) do
+      :ok -> :ok
+      _other -> {:error, incompatible_error()}
+    end
+  rescue
+    _error -> {:error, incompatible_error()}
+  catch
+    _kind, _reason -> {:error, incompatible_error()}
+  end
+
+  defp invoke_probe_hook(hook, path) when is_function(hook, 1) do
+    case hook.(path) do
+      :ok -> :ok
+      _other -> {:error, incompatible_error()}
+    end
+  rescue
+    _error -> {:error, incompatible_error()}
+  catch
+    _kind, _reason -> {:error, incompatible_error()}
+  end
+
+  defp invoke_probe_hook(_hook, _path), do: :ok
+
+  defp await_worker_down(monitor, worker) do
+    receive do
+      {:DOWN, ^monitor, :process, ^worker, _reason} -> :ok
+    after
+      1_000 -> :ok
     end
   end
 

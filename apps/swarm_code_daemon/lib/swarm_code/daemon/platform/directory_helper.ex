@@ -8,6 +8,7 @@ defmodule SwarmCode.Daemon.Platform.DirectoryHelper do
   @startup_timeout 10_000
   @terminate_grace 250
   @kill_grace 2_000
+  @shutdown_timeout @terminate_grace + @kill_grace + 1_000
   @maximum_basename_bytes 255
   @test_build Mix.env() == :test
   @allowed_options if(@test_build,
@@ -55,6 +56,11 @@ defmodule SwarmCode.Daemon.Platform.DirectoryHelper do
 
   @spec link(t(), String.t(), String.t()) :: :ok | {:error, term()}
   def link(helper, source, destination), do: request(helper, {:link, source, destination})
+
+  @spec link_owned(t(), String.t(), String.t(), non_neg_integer()) ::
+          {:ok, file_identity()} | {:error, term()}
+  def link_owned(helper, source, destination, uid),
+    do: request(helper, {:link_owned, source, destination, uid})
 
   @spec unlink(t(), String.t()) :: :ok | {:error, term()}
   def unlink(helper, basename), do: request(helper, {:unlink, basename})
@@ -147,20 +153,52 @@ defmodule SwarmCode.Daemon.Platform.DirectoryHelper do
   @spec close_source(t()) :: :ok | {:error, term()}
   def close_source(helper), do: request(helper, :close_source)
 
-  @spec stop(t()) :: :ok
+  @spec stop(t()) :: :ok | {:error, :directory_helper_cleanup_pending}
   def stop(%{owner: owner, monitor: original_monitor}) do
     monitor = Process.monitor(owner)
     ref = make_ref()
     send(owner, {:stop, self(), ref})
 
-    receive do
-      {^ref, :ok} -> await_down(owner, monitor, :infinity)
-      {:DOWN, ^monitor, :process, ^owner, _reason} -> :ok
-    end
+    result =
+      receive do
+        {^ref, :stopping} ->
+          result =
+            receive do
+              {^ref, :ok} ->
+                case await_down(owner, monitor, @shutdown_timeout) do
+                  :ok -> :ok
+                  :timeout -> {:error, :directory_helper_cleanup_pending}
+                end
+
+              {^ref, {:error, :directory_helper_cleanup_pending}} ->
+                {:error, :directory_helper_cleanup_pending}
+
+              {:DOWN, ^monitor, :process, ^owner, _reason} ->
+                :ok
+            after
+              @shutdown_timeout -> {:error, :directory_helper_cleanup_pending}
+            end
+
+          result
+
+        {^ref, :ok} ->
+          case await_down(owner, monitor, @shutdown_timeout) do
+            :ok -> :ok
+            :timeout -> {:error, :directory_helper_cleanup_pending}
+          end
+
+        {^ref, {:error, :directory_helper_cleanup_pending}} ->
+          {:error, :directory_helper_cleanup_pending}
+
+        {:DOWN, ^monitor, :process, ^owner, _reason} ->
+          :ok
+      after
+        @shutdown_timeout -> {:error, :directory_helper_cleanup_pending}
+      end
 
     Process.demonitor(original_monitor, [:flush])
     Process.demonitor(monitor, [:flush])
-    :ok
+    result
   end
 
   defp do_start(
@@ -270,6 +308,10 @@ defmodule SwarmCode.Daemon.Platform.DirectoryHelper do
               notify(observer, {:directory_helper_terminal, os_pid})
               send(caller, {ref, self(), {:error, :injected_helper_start_failure}})
 
+            {:error, :directory_helper_cleanup_pending, reaper} ->
+              send(caller, {ref, self(), {:error, :directory_helper_cleanup_pending}})
+              reaper_loop(elem(reaper, 0), elem(reaper, 1), elem(reaper, 2), elem(reaper, 3))
+
             {:error, _reason} ->
               send(caller, {ref, self(), {:error, :helper_cleanup_failed}})
           end
@@ -296,8 +338,13 @@ defmodule SwarmCode.Daemon.Platform.DirectoryHelper do
         owner_loop(caller_monitor, port, port_monitor, os_pid)
 
       _other ->
-        graceful_stop(port, port_monitor, caller_monitor, os_pid, terminal_evidence(result))
+        shutdown_result =
+          graceful_stop(port, port_monitor, caller_monitor, os_pid, terminal_evidence(result))
+
         send(caller, {ref, self(), {:error, :helper_start_failed}})
+
+        if shutdown_result == {:error, :directory_helper_cleanup_pending},
+          do: reaper_loop(port, port_monitor, caller_monitor, os_pid)
     end
   end
 
@@ -310,36 +357,55 @@ defmodule SwarmCode.Daemon.Platform.DirectoryHelper do
             owner_loop(caller_monitor, port, port_monitor, os_pid)
 
           {:requester_down, _reason} ->
-            graceful_stop(port, port_monitor, caller_monitor, os_pid)
+            shutdown_and_reap(port, port_monitor, caller_monitor, os_pid)
 
           {:cleanup, reason} ->
-            graceful_stop(port, port_monitor, caller_monitor, os_pid)
             send(from, {ref, {:error, reason}})
+            shutdown_and_reap(port, port_monitor, caller_monitor, os_pid)
 
           {:terminal, reason, evidence} ->
-            graceful_stop(port, port_monitor, caller_monitor, os_pid, evidence)
             send(from, {ref, {:error, reason}})
+            shutdown_and_reap(port, port_monitor, caller_monitor, os_pid, evidence)
 
           {:error, reason} ->
-            graceful_stop(port, port_monitor, caller_monitor, os_pid)
             send(from, {ref, {:error, reason}})
+            shutdown_and_reap(port, port_monitor, caller_monitor, os_pid)
         end
 
       {:stop, from, ref} ->
-        graceful_stop(port, port_monitor, caller_monitor, os_pid)
-        send(from, {ref, :ok})
+        send(from, {ref, :stopping})
+        result = graceful_stop(port, port_monitor, caller_monitor, os_pid)
+
+        case result do
+          :ok ->
+            send(from, {ref, :ok})
+
+          {:error, :directory_helper_cleanup_pending} ->
+            send(from, {ref, {:error, :directory_helper_cleanup_pending}})
+            reaper_loop(port, port_monitor, caller_monitor, os_pid)
+        end
 
       {:DOWN, ^caller_monitor, :process, _caller, _reason} ->
-        graceful_stop(port, port_monitor, caller_monitor, os_pid)
+        shutdown_and_reap(port, port_monitor, caller_monitor, os_pid)
 
       {^port, {:exit_status, _status}} ->
-        graceful_stop(port, port_monitor, caller_monitor, os_pid, {true, false})
+        shutdown_and_reap(port, port_monitor, caller_monitor, os_pid, {true, false})
 
       {^port, _unexpected} ->
-        graceful_stop(port, port_monitor, caller_monitor, os_pid)
+        shutdown_and_reap(port, port_monitor, caller_monitor, os_pid)
 
       {:DOWN, ^port_monitor, :port, ^port, _reason} ->
-        graceful_stop(port, port_monitor, caller_monitor, os_pid, {false, true})
+        shutdown_and_reap(port, port_monitor, caller_monitor, os_pid, {false, true})
+    end
+  end
+
+  defp shutdown_and_reap(port, port_monitor, caller_monitor, os_pid, evidence \\ {false, false}) do
+    case graceful_stop(port, port_monitor, caller_monitor, os_pid, evidence) do
+      :ok ->
+        :ok
+
+      {:error, :directory_helper_cleanup_pending} ->
+        reaper_loop(port, port_monitor, caller_monitor, os_pid)
     end
   end
 
@@ -358,8 +424,11 @@ defmodule SwarmCode.Daemon.Platform.DirectoryHelper do
     send(owner, {:request, self(), ref, operation})
 
     receive do
-      {^ref, result} -> result
-      {:DOWN, ^monitor, :process, ^owner, _reason} -> {:error, :directory_helper_stopped}
+      {^ref, result} ->
+        result
+
+      {:DOWN, ^monitor, :process, ^owner, _reason} ->
+        {:error, :directory_helper_stopped}
     after
       operation_timeout(operation) + @terminate_grace + @kill_grace + 1_000 ->
         {:error, :directory_helper_timeout}
@@ -427,7 +496,7 @@ defmodule SwarmCode.Daemon.Platform.DirectoryHelper do
               {:cleanup, :helper_operation_failed}
 
             {:ok, reply} ->
-              {:ok, reply}
+              if queued_frame?(port), do: {:cleanup, :invalid_helper_response}, else: {:ok, reply}
 
             {:error, _reason} ->
               {:cleanup, :invalid_helper_response}
@@ -451,7 +520,8 @@ defmodule SwarmCode.Daemon.Platform.DirectoryHelper do
           {:error, reason}
       end
     else
-      _other -> {:cleanup, :helper_command_failed}
+      _other ->
+        {:cleanup, :helper_command_failed}
     end
   end
 
@@ -500,30 +570,37 @@ defmodule SwarmCode.Daemon.Platform.DirectoryHelper do
          maximum_bytes do
       {:error, :invalid_frame}
     else
-      case DirectoryProtocol.push(state.decoder, bytes) do
-        {:more, decoder} ->
-          put_frame_state(port, %{state | decoder: decoder})
-          :ok
+      ingest_frame_bytes(port, state, bytes, maximum_bytes)
+    end
+  end
 
-        {:ok, payload, rest} ->
-          queued_bytes = state.queued_bytes + byte_size(payload)
+  defp ingest_frame_bytes(_port, _state, <<>>, _maximum_bytes), do: :ok
 
-          if queued_bytes > maximum_bytes or state.queued_count != 0 or rest != <<>> do
-            {:error, :invalid_frame}
-          else
-            put_frame_state(port, %{
-              decoder: DirectoryProtocol.new_decoder(),
-              frames: :queue.in(payload, state.frames),
-              queued_bytes: queued_bytes,
-              queued_count: 1
-            })
+  defp ingest_frame_bytes(port, state, bytes, maximum_bytes) do
+    case DirectoryProtocol.push(state.decoder, bytes) do
+      {:more, decoder} ->
+        put_frame_state(port, %{state | decoder: decoder})
+        :ok
 
-            :ok
-          end
+      {:ok, payload, rest} ->
+        queued_bytes = state.queued_bytes + byte_size(payload)
 
-        {:error, _reason} ->
+        if queued_bytes > maximum_bytes or state.queued_count >= 64 do
           {:error, :invalid_frame}
-      end
+        else
+          next_state = %{
+            decoder: DirectoryProtocol.new_decoder(),
+            frames: :queue.in(payload, state.frames),
+            queued_bytes: queued_bytes,
+            queued_count: state.queued_count + 1
+          }
+
+          put_frame_state(port, next_state)
+          ingest_frame_bytes(port, next_state, rest, maximum_bytes)
+        end
+
+      {:error, _reason} ->
+        {:error, :invalid_frame}
     end
   end
 
@@ -544,6 +621,11 @@ defmodule SwarmCode.Daemon.Platform.DirectoryHelper do
       {:empty, _frames} ->
         :empty
     end
+  end
+
+  defp queued_frame?(port) do
+    state = frame_state(port)
+    state.queued_count > 0
   end
 
   defp frame_state(port) do
@@ -568,7 +650,14 @@ defmodule SwarmCode.Daemon.Platform.DirectoryHelper do
       _ = signal(os_pid, "-CONT")
     end
 
-    await_broker_terminal(port, port_monitor, caller_monitor, exit?, down?)
+    await_broker_terminal(
+      port,
+      port_monitor,
+      caller_monitor,
+      exit?,
+      down?,
+      @shutdown_timeout
+    )
   end
 
   defp terminal_evidence({:terminal, _reason, evidence}), do: evidence
@@ -577,25 +666,52 @@ defmodule SwarmCode.Daemon.Platform.DirectoryHelper do
   defp cleanup_failed_start(port, port_monitor, _caller_monitor, os_pid, {false, false}),
     do: terminate(port, port_monitor, os_pid)
 
-  defp cleanup_failed_start(port, port_monitor, caller_monitor, _os_pid, {exit?, down?}) do
-    await_broker_terminal(port, port_monitor, caller_monitor, exit?, down?)
+  defp cleanup_failed_start(port, port_monitor, caller_monitor, os_pid, {exit?, down?}) do
+    case await_broker_terminal(
+           port,
+           port_monitor,
+           caller_monitor,
+           exit?,
+           down?,
+           @shutdown_timeout
+         ) do
+      :ok ->
+        :ok
+
+      {:error, :directory_helper_cleanup_pending} ->
+        {:error, :directory_helper_cleanup_pending, {port, port_monitor, caller_monitor, os_pid}}
+    end
   end
 
-  defp await_broker_terminal(_port, _monitor, _caller_monitor, true, true), do: :ok
+  defp await_broker_terminal(_port, _monitor, _caller_monitor, true, true, _timeout), do: :ok
 
-  defp await_broker_terminal(port, monitor, caller_monitor, exit?, down?) do
+  defp await_broker_terminal(port, monitor, caller_monitor, exit?, down?, timeout) do
     receive do
+      {:stop, from, ref} when is_pid(from) ->
+        send(from, {ref, {:error, :directory_helper_cleanup_pending}})
+        await_broker_terminal(port, monitor, caller_monitor, exit?, down?, timeout)
+
       {^port, {:exit_status, _status}} ->
-        await_broker_terminal(port, monitor, caller_monitor, true, down?)
+        await_broker_terminal(port, monitor, caller_monitor, true, down?, timeout)
 
       {:DOWN, ^monitor, :port, ^port, _reason} ->
-        await_broker_terminal(port, monitor, caller_monitor, exit?, true)
+        await_broker_terminal(port, monitor, caller_monitor, exit?, true, timeout)
 
       {^port, _data} ->
-        await_broker_terminal(port, monitor, caller_monitor, exit?, down?)
+        await_broker_terminal(port, monitor, caller_monitor, exit?, down?, timeout)
 
       {:DOWN, ^caller_monitor, :process, _caller, _reason} ->
-        await_broker_terminal(port, monitor, caller_monitor, exit?, down?)
+        await_broker_terminal(port, monitor, caller_monitor, exit?, down?, timeout)
+    after
+      timeout -> {:error, :directory_helper_cleanup_pending}
+    end
+  end
+
+  # The owner remains the explicit reaper after the bounded caller response.
+  defp reaper_loop(port, monitor, caller_monitor, _os_pid) do
+    case await_broker_terminal(port, monitor, caller_monitor, false, false, :infinity) do
+      :ok -> :ok
+      _other -> :ok
     end
   end
 
@@ -658,7 +774,9 @@ defmodule SwarmCode.Daemon.Platform.DirectoryHelper do
          true <- File.regular?(erl),
          true <- File.regular?("/bin/sh"),
          {:ok, daemon} <- app_ebin(:swarm_code_daemon),
+         {:ok, core} <- app_ebin(:swarm_code_core),
          {:ok, exqlite} <- app_ebin(:exqlite),
+         {:ok, jason} <- app_ebin(:jason),
          {:ok, elixir} <- app_ebin(:elixir) do
       erl_arguments =
         [
@@ -679,7 +797,11 @@ defmodule SwarmCode.Daemon.Platform.DirectoryHelper do
           "-pa",
           daemon,
           "-pa",
+          core,
+          "-pa",
           exqlite,
+          "-pa",
+          jason,
           "-pa",
           elixir,
           "-s",
@@ -749,7 +871,8 @@ defmodule SwarmCode.Daemon.Platform.DirectoryHelper do
            :pause_shm_before_reserve,
            :pause_vacuum_after_step,
            :pause_vacuum_before_step,
-           :pause_write_private_before_reserve
+           :pause_write_private_before_reserve,
+           :stall_stop
          ] and
          length(sources) <= 3 and
          Enum.all?(sources, &safe_source_basename?/1),
@@ -760,7 +883,8 @@ defmodule SwarmCode.Daemon.Platform.DirectoryHelper do
   defp safe_source_basename?(name) when is_binary(name),
     do:
       byte_size(name) in 1..@maximum_basename_bytes//1 and String.valid?(name) and
-        not String.contains?(name, [<<0>>, "\n", "\r"]) and Path.basename(name) == name
+        name not in [".", ".."] and not String.contains?(name, [<<0>>, "\n", "\r"]) and
+        Path.basename(name) == name
 
   defp safe_source_basename?(_name), do: false
 
@@ -784,17 +908,11 @@ defmodule SwarmCode.Daemon.Platform.DirectoryHelper do
   defp notify(nil, _event), do: :ok
   defp notify(observer, event), do: send(observer, event)
 
-  defp await_down(owner, monitor, :infinity) do
-    receive do
-      {:DOWN, ^monitor, :process, ^owner, _reason} -> :ok
-    end
-  end
-
   defp await_down(owner, monitor, timeout) do
     receive do
       {:DOWN, ^monitor, :process, ^owner, _reason} -> :ok
     after
-      timeout -> :ok
+      timeout -> :timeout
     end
   end
 end

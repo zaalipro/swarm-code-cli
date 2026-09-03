@@ -435,13 +435,6 @@ defmodule SwarmCode.Daemon.Schema.ManifestGenerator do
   end
 
   defp write_outputs!(output, fixtures_dir, entries, snapshots, upstream) do
-    reject_upstream_destination!(output, upstream)
-    reject_upstream_destination!(fixtures_dir, upstream)
-    File.mkdir_p!(Path.dirname(output))
-    File.mkdir_p!(fixtures_dir)
-    reject_upstream_destination!(output, upstream)
-    reject_upstream_destination!(fixtures_dir, upstream)
-
     outputs = [
       {output, manifest_json(entries)},
       {Path.join(fixtures_dir, "desktop-20260923000000.sql"),
@@ -457,15 +450,375 @@ defmodule SwarmCode.Daemon.Schema.ManifestGenerator do
       end
     end)
 
-    Enum.each(outputs, fn {path, contents} ->
-      reject_upstream_destination!(path, upstream)
+    Enum.each(outputs, fn {path, _contents} -> validate_output_destination!(path, upstream) end)
 
-      case AtomicReplace.write(path, contents, mode: 0o644) do
-        :ok -> :ok
-        {:error, reason} -> raise File.Error, reason: inspect(reason), action: "write", path: path
+    original_cwd = File.cwd!()
+    staging = make_output_staging_directory!(upstream)
+    published_key = {__MODULE__, :generator_published}
+    Process.put(published_key, [])
+    created_dirs_key = {__MODULE__, :generator_created_dirs}
+    Process.put(created_dirs_key, %{})
+
+    try do
+      staged = stage_outputs!(staging, outputs)
+
+      Enum.each(staged, fn staged_output ->
+        published = publish_staged_output!(staged_output, upstream)
+        Process.put(published_key, [published | Process.get(published_key)])
+      end)
+
+      :ok
+    rescue
+      error ->
+        cleanup_published_outputs(Process.get(published_key, []), upstream)
+        cleanup_created_output_directories(Process.get(created_dirs_key, %{}))
+        reraise(error, __STACKTRACE__)
+    after
+      _ = :file.set_cwd(String.to_charlist(original_cwd))
+      cleanup_output_staging!(staging)
+      Process.delete(published_key)
+      Process.delete(created_dirs_key)
+    end
+  end
+
+  # Output generation is deliberately staged in a fresh private directory and
+  # published only while the destination parent is the process cwd.  A cwd is
+  # an inode binding: renaming/replacing the pathname after it is acquired
+  # cannot redirect the relative AtomicReplace operation into another tree.
+  defp make_output_staging_directory!(upstream) do
+    staging = Path.join(System.tmp_dir!(), "swarm-code-schema-output-#{random_suffix()}")
+    reject_upstream_destination!(staging, upstream)
+
+    case File.mkdir(staging) do
+      :ok ->
+        with :ok <- File.chmod(staging, 0o700),
+             {:ok, %File.Stat{type: :directory, mode: mode}} <- File.lstat(staging),
+             true <- Bitwise.band(mode, 0o7777) == 0o700,
+             _identity <- directory_identity!(staging) do
+          staging
+        else
+          _other ->
+            cleanup_output_staging!(staging)
+            raise ArgumentError, "generator staging directory hardening failed"
+        end
+
+      {:error, :eexist} ->
+        raise ArgumentError, "generator staging directory already exists"
+
+      {:error, reason} ->
+        raise File.Error, reason: reason, action: "mkdir", path: staging
+    end
+  end
+
+  defp stage_outputs!(staging, outputs) do
+    Enum.map(outputs, fn {path, contents} ->
+      basename = "#{length(Path.split(path))}-#{Path.basename(path)}"
+      staged_path = Path.join(staging, basename)
+      bytes = IO.iodata_to_binary(contents)
+
+      if byte_size(bytes) > 1_048_576,
+        do: raise(ArgumentError, "generated output exceeds the bounded staging size")
+
+      case File.open(staged_path, [:write, :binary, :exclusive]) do
+        {:ok, io} ->
+          result =
+            try do
+              with :ok <- File.chmod(staged_path, 0o600),
+                   :ok <- IO.binwrite(io, bytes),
+                   :ok <- :file.sync(io) do
+                :ok
+              end
+            after
+              _ = File.close(io)
+            end
+
+          case result do
+            :ok -> {path, bytes, staged_path}
+            {:error, reason} -> raise File.Error, reason: reason, action: "write", path: path
+          end
+
+        {:error, reason} ->
+          raise File.Error, reason: reason, action: "write", path: path
       end
     end)
   end
+
+  defp publish_staged_output!({path, bytes, _staged_path}, upstream) do
+    validate_output_destination!(path, upstream)
+    parent = Path.dirname(Path.expand(path))
+    basename = Path.basename(path)
+    anchor = ensure_output_parent!(parent, upstream)
+    upstream_identity = directory_identity!(upstream)
+    previous = previous_output!(basename)
+
+    try do
+      case AtomicReplace.write(basename, bytes, mode: 0o644) do
+        :ok ->
+          identity = output_file_identity!(basename)
+          ensure_output_anchor!(anchor, upstream)
+          verify_upstream_identity!(upstream, upstream_identity)
+          validate_output_destination!(path, upstream)
+          %{cwd: anchor.cwd, identity: identity, basename: basename, previous: previous}
+
+        {:error, reason} ->
+          raise File.Error, reason: inspect(reason), action: "write", path: path
+      end
+    rescue
+      error ->
+        # If this invocation created a new leaf, remove only that exact inode;
+        # an existing leaf is restored from its bounded preimage instead.
+        cleanup_one_output(anchor, basename, previous, upstream)
+        reraise(error, __STACKTRACE__)
+    end
+  end
+
+  defp previous_output!(basename) do
+    case File.lstat(basename) do
+      {:error, :enoent} ->
+        nil
+
+      {:ok, %File.Stat{type: :regular, mode: mode} = stat} ->
+        case File.read(basename) do
+          {:ok, bytes} when byte_size(bytes) <= 1_048_576 ->
+            %{identity: filesystem_identity(stat), bytes: bytes, mode: Bitwise.band(mode, 0o7777)}
+
+          _other ->
+            raise ArgumentError, "existing generator output is too large to preserve safely"
+        end
+
+      {:ok, _other} ->
+        raise ArgumentError, "generator output destination is not a regular file"
+    end
+  end
+
+  defp ensure_output_parent!(parent, upstream) do
+    absolute = Path.expand(parent)
+    validate_output_path_syntax!(absolute)
+
+    case Path.split(absolute) do
+      [root | components] ->
+        case :file.set_cwd(String.to_charlist(root)) do
+          :ok ->
+            ensure_output_components!(components, upstream)
+
+          {:error, reason} ->
+            raise ArgumentError, "generator output parent cannot be opened: #{inspect(reason)}"
+        end
+
+      _other ->
+        raise ArgumentError, "generator output parent path must be absolute"
+    end
+  end
+
+  defp ensure_output_components!(components, upstream),
+    do: ensure_output_components!(components, upstream, 0)
+
+  defp ensure_output_components!([], upstream, _attempts) do
+    anchor = %{cwd: File.cwd!(), identity: cwd_identity!()}
+    ensure_output_anchor!(anchor, upstream)
+    anchor
+  end
+
+  defp ensure_output_components!([component | rest], upstream, attempts)
+       when attempts <= 3 do
+    case File.lstat(component) do
+      {:ok, %File.Stat{type: :directory}} ->
+        set_output_child_cwd!(component, upstream)
+        ensure_output_components!(rest, upstream, 0)
+
+      {:ok, %File.Stat{type: :symlink}} ->
+        # A symlink is admitted only after following it to a directory and
+        # binding the resulting cwd identity.  If it is swapped later, the
+        # already-held cwd remains on the original inode and the post-write
+        # anchor check fails closed.
+        case File.stat(component) do
+          {:ok, %File.Stat{type: :directory}} ->
+            set_output_child_cwd!(component, upstream)
+            ensure_output_components!(rest, upstream, 0)
+
+          _other ->
+            raise ArgumentError, "generator output parent contains a non-directory symlink"
+        end
+
+      {:error, :enoent} ->
+        case File.mkdir(component) do
+          :ok ->
+            # Enter the newly-created inode before hardening it; chmod on the
+            # held cwd cannot follow a pathname substituted by another actor.
+            set_output_child_cwd!(component, upstream)
+
+            case File.chmod(".", 0o700) do
+              :ok ->
+                case File.lstat(".") do
+                  {:ok, %File.Stat{type: :directory, uid: uid, mode: mode}}
+                  when Bitwise.band(mode, 0o7777) == 0o700 ->
+                    current_uid = File.lstat!(".").uid
+
+                    if uid != current_uid,
+                      do: raise(ArgumentError, "generator output directory owner changed")
+
+                    record_created_output_directory!()
+                    ensure_output_components!(rest, upstream, 0)
+
+                  _other ->
+                    raise ArgumentError, "generator output directory identity changed"
+                end
+
+              {:error, reason} ->
+                raise ArgumentError,
+                      "generator output directory hardening failed: #{inspect(reason)}"
+            end
+
+          {:error, :eexist} ->
+            ensure_output_components!([component | rest], upstream, attempts + 1)
+
+          {:error, reason} ->
+            raise ArgumentError, "generator output directory creation failed: #{inspect(reason)}"
+        end
+
+      {:ok, _other} ->
+        raise ArgumentError, "generator output parent traverses a non-directory"
+
+      {:error, reason} ->
+        raise ArgumentError, "generator output parent cannot be inspected: #{inspect(reason)}"
+    end
+  end
+
+  defp ensure_output_components!(_components, _upstream, _attempts),
+    do: raise(ArgumentError, "generator output directory changed repeatedly")
+
+  defp set_output_child_cwd!(component, upstream) do
+    before =
+      case File.lstat(component) do
+        {:ok, %File.Stat{type: :symlink}} -> File.stat!(component)
+        {:ok, stat} -> stat
+        _other -> raise ArgumentError, "generator output parent disappeared"
+      end
+
+    case :file.set_cwd(String.to_charlist(component)) do
+      :ok ->
+        after_stat = File.lstat!(".")
+
+        if filesystem_identity(before) != filesystem_identity(after_stat),
+          do: raise(ArgumentError, "generator output parent identity changed")
+
+        ensure_output_anchor!(%{cwd: File.cwd!(), identity: cwd_identity!()}, upstream)
+
+      {:error, reason} ->
+        raise ArgumentError, "generator output parent cannot be entered: #{inspect(reason)}"
+    end
+  end
+
+  defp ensure_output_anchor!(%{cwd: cwd, identity: identity}, upstream) do
+    current = cwd_identity!()
+
+    if current != identity,
+      do: raise(ArgumentError, "generator output parent identity changed")
+
+    reject_upstream_destination!(cwd, upstream)
+    :ok
+  end
+
+  defp cwd_identity! do
+    case File.lstat(".") do
+      {:ok, %File.Stat{type: :directory} = stat} -> filesystem_identity(stat)
+      _other -> raise ArgumentError, "generator output cwd is not a directory"
+    end
+  end
+
+  defp output_file_identity!(basename) do
+    case File.lstat(basename) do
+      {:ok, %File.Stat{type: :regular} = stat} -> filesystem_identity(stat)
+      _other -> raise ArgumentError, "generator output identity could not be verified"
+    end
+  end
+
+  defp validate_output_destination!(path, upstream) do
+    validate_output_path_syntax!(path)
+    reject_upstream_destination!(path, upstream)
+    :ok
+  end
+
+  defp cleanup_published_outputs(outputs, upstream) do
+    Enum.each(outputs, fn %{cwd: cwd, basename: basename, identity: identity, previous: previous} ->
+      cleanup_one_output(%{cwd: cwd, identity: identity}, basename, previous, upstream)
+    end)
+  end
+
+  defp cleanup_one_output(%{cwd: cwd, identity: expected_identity}, basename, previous, _upstream) do
+    case :file.set_cwd(String.to_charlist(cwd)) do
+      :ok ->
+        current =
+          case File.lstat(basename) do
+            {:ok, %File.Stat{type: :regular} = stat} -> filesystem_identity(stat)
+            _other -> nil
+          end
+
+        if is_nil(expected_identity) or current == expected_identity do
+          case previous do
+            nil ->
+              _ = File.rm(basename)
+
+            %{bytes: bytes, mode: mode} ->
+              _ = AtomicReplace.write(basename, bytes, mode: mode)
+          end
+        end
+
+      _other ->
+        :ok
+    end
+  rescue
+    _error -> :ok
+  catch
+    _kind, _reason -> :ok
+  end
+
+  defp cleanup_output_staging!(staging) do
+    case File.lstat(staging) do
+      {:ok, %File.Stat{type: :directory}} ->
+        case File.ls(staging) do
+          {:ok, names} -> Enum.each(names, fn name -> _ = File.rm(Path.join(staging, name)) end)
+          _other -> :ok
+        end
+
+        _ = File.rmdir(staging)
+
+      _other ->
+        :ok
+    end
+  rescue
+    _error -> :ok
+  catch
+    _kind, _reason -> :ok
+  end
+
+  defp record_created_output_directory! do
+    key = {__MODULE__, :generator_created_dirs}
+    path = File.cwd!()
+    identity = cwd_identity!()
+    Process.put(key, Map.put(Process.get(key, %{}), path, identity))
+  end
+
+  defp cleanup_created_output_directories(directories) when is_map(directories) do
+    directories
+    |> Enum.sort_by(fn {path, _identity} -> -length(Path.split(path)) end)
+    |> Enum.each(fn {path, expected} ->
+      case File.lstat(path) do
+        {:ok, %File.Stat{type: :directory} = stat} ->
+          if filesystem_identity(stat) == expected and File.ls!(path) == [],
+            do: File.rmdir(path)
+
+        _other ->
+          :ok
+      end
+    end)
+  rescue
+    _error -> :ok
+  catch
+    _kind, _reason -> :ok
+  end
+
+  defp cleanup_created_output_directories(_directories), do: :ok
 
   defp manifest_json(entries) do
     migrations =

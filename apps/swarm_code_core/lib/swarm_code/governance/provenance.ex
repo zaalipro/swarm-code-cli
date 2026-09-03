@@ -8,7 +8,7 @@ defmodule SwarmCode.Governance.Provenance do
   @sha256_regex ~r/\A[0-9a-f]{64}\z/
 
   @spec verify(Path.t()) :: :ok | {:error, [String.t()]}
-  def verify(root) do
+  def verify(root) when is_binary(root) do
     with {:ok, policy} <- read_json(Path.join(root, "governance/source-policy.json")),
          {:ok, ledger} <- read_json(Path.join(root, "provenance/extracted-files.json")) do
       errors =
@@ -20,6 +20,8 @@ defmodule SwarmCode.Governance.Provenance do
       {:error, message} -> {:error, [message]}
     end
   end
+
+  def verify(_root), do: {:error, ["provenance root must be a path"]}
 
   defp policy_errors(policy) when is_map(policy) do
     []
@@ -95,9 +97,17 @@ defmodule SwarmCode.Governance.Provenance do
 
   defp destination_digest(root, destination) do
     case destination_path(root, destination) do
-      {:ok, path} -> {sha256_file(path), []}
-      {:error, :unconfined} -> {nil, ["unconfined provenance destination"]}
-      {:error, :not_regular} -> {nil, ["provenance destination is missing or not regular"]}
+      {:ok, path} ->
+        case sha256_file(path) do
+          {:ok, digest} -> {digest, []}
+          {:error, _reason} -> {nil, ["provenance destination is missing or not regular"]}
+        end
+
+      {:error, :unconfined} ->
+        {nil, ["unconfined provenance destination"]}
+
+      {:error, :not_regular} ->
+        {nil, ["provenance destination is missing or not regular"]}
     end
   end
 
@@ -165,22 +175,128 @@ defmodule SwarmCode.Governance.Provenance do
   defp authorization_status(_policy), do: nil
 
   defp sha256_file(path) do
-    path
-    |> File.stream!([], 1_048_576)
-    |> Enum.reduce(:crypto.hash_init(:sha256), fn chunk, ctx ->
-      :crypto.hash_update(ctx, chunk)
-    end)
-    |> :crypto.hash_final()
-    |> Base.encode16(case: :lower)
+    with {:ok, expected} <- File.lstat(path),
+         {:ok, digest} <- bounded_worker(path, expected, :digest, 64 * 1_024 * 1_024) do
+      {:ok, digest}
+    else
+      _other -> {:error, :read_failed}
+    end
   end
 
   defp read_json(path) do
-    with {:ok, bytes} <- File.read(path), {:ok, value} <- Jason.decode(bytes) do
+    with {:ok, expected} <- File.lstat(path),
+         {:ok, bytes} <- bounded_worker(path, expected, :read, 1_048_576),
+         {:ok, value} <- Jason.decode(bytes) do
       {:ok, value}
     else
-      _ -> {:error, "cannot read valid JSON from #{path}"}
+      _other -> {:error, "cannot read valid JSON from #{path}"}
     end
   end
+
+  defp bounded_worker(path, expected, operation, maximum) do
+    parent = self()
+    ref = make_ref()
+
+    {worker, monitor} =
+      spawn_monitor(fn ->
+        result = bounded_file_operation(path, expected, operation, maximum)
+        send(parent, {ref, result})
+      end)
+
+    receive do
+      {^ref, result} ->
+        Process.demonitor(monitor, [:flush])
+        result
+
+      {:DOWN, ^monitor, :process, ^worker, _reason} ->
+        {:error, :read_failed}
+    after
+      1_000 ->
+        Process.exit(worker, :kill)
+
+        receive do
+          {:DOWN, ^monitor, :process, ^worker, _reason} -> :ok
+        after
+          1_000 -> :ok
+        end
+
+        {:error, :read_timeout}
+    end
+  end
+
+  defp bounded_file_operation(path, expected, :read, maximum) do
+    with {:ok, io} <- File.open(path, [:read, :binary, :raw]),
+         {:ok, actual} <- :file.read_file_info(io),
+         true <- same_object?(actual, expected) do
+      try do
+        case IO.binread(io, maximum + 1) do
+          bytes when is_binary(bytes) and byte_size(bytes) <= maximum -> {:ok, bytes}
+          :eof -> {:ok, <<>>}
+          _other -> {:error, :read_failed}
+        end
+      after
+        _ = File.close(io)
+      end
+    else
+      _other -> {:error, :read_failed}
+    end
+  rescue
+    _error -> {:error, :read_failed}
+  catch
+    _kind, _reason -> {:error, :read_failed}
+  end
+
+  defp bounded_file_operation(path, expected, :digest, maximum) do
+    with {:ok, io} <- File.open(path, [:read, :binary, :raw]),
+         {:ok, actual} <- :file.read_file_info(io),
+         true <- same_object?(actual, expected) do
+      try do
+        hash_digest(io, :crypto.hash_init(:sha256), 0, maximum)
+      after
+        _ = File.close(io)
+      end
+    else
+      _other -> {:error, :read_failed}
+    end
+  rescue
+    _error -> {:error, :read_failed}
+  catch
+    _kind, _reason -> {:error, :read_failed}
+  end
+
+  defp hash_digest(io, context, total, maximum) do
+    case IO.binread(io, 64 * 1_024) do
+      :eof ->
+        {:ok, context |> :crypto.hash_final() |> Base.encode16(case: :lower)}
+
+      bytes when is_binary(bytes) ->
+        next = total + byte_size(bytes)
+
+        if next > maximum,
+          do: {:error, :read_too_large},
+          else: hash_digest(io, :crypto.hash_update(context, bytes), next, maximum)
+
+      _other ->
+        {:error, :read_failed}
+    end
+  end
+
+  defp same_object?(left, right) do
+    object_identity(left) == object_identity(right)
+  rescue
+    _error -> false
+  end
+
+  defp object_identity(%File.Stat{} = stat),
+    do: {stat.type, stat.major_device, stat.minor_device, stat.inode, stat.uid}
+
+  defp object_identity(
+         {:file_info, _size, type, _access, _atime, _mtime, _ctime, _mode, _links, major, minor,
+          inode, uid, _gid}
+       ),
+       do: {type, major, minor, inode, uid}
+
+  defp object_identity(_other), do: :invalid_object
 
   defp add(errors, true, message), do: errors ++ [message]
   defp add(errors, false, _message), do: errors

@@ -4,6 +4,7 @@ defmodule SwarmCode.Daemon.Platform.PrivateDirectory do
   import Bitwise
 
   @private_mode 0o700
+  @trusted_system_symlink_ancestors ["/var"]
 
   @spec ensure(Path.t(), non_neg_integer()) ::
           :ok | {:error, {:unsafe_private_directory, Path.t(), atom()}}
@@ -18,12 +19,18 @@ defmodule SwarmCode.Daemon.Platform.PrivateDirectory do
       when is_binary(path) and is_integer(uid) and uid >= 0 and is_list(opts) do
     mkdir = Keyword.get(opts, :mkdir, &File.mkdir/1)
 
-    case File.lstat(path) do
-      {:ok, stat} ->
-        validate_directory(path, stat, uid)
+    case validate_ancestors(path, uid) do
+      :ok ->
+        case File.lstat(path) do
+          {:ok, stat} ->
+            validate_directory(path, stat, uid)
 
-      {:error, :enoent} ->
-        create(path, uid, mkdir)
+          {:error, :enoent} ->
+            create(path, uid, mkdir)
+
+          {:error, reason} ->
+            unsafe(path, reason)
+        end
 
       {:error, reason} ->
         unsafe(path, reason)
@@ -64,6 +71,42 @@ defmodule SwarmCode.Daemon.Platform.PrivateDirectory do
        do: unsafe(path, :permissions)
 
   defp validate_directory(_path, %File.Stat{}, _uid), do: :ok
+
+  defp validate_ancestors(path, _uid) do
+    components = Path.split(Path.expand(path))
+    root = hd(components)
+
+    components
+    |> Enum.drop(-1)
+    |> Enum.reduce_while(root, fn component, prefix ->
+      next = Path.join(prefix, component)
+
+      case File.lstat(next) do
+        {:ok, %File.Stat{type: :symlink}} when next in @trusted_system_symlink_ancestors ->
+          {:cont, next}
+
+        {:ok, %File.Stat{type: :symlink}} ->
+          {:halt, {:error, :symlink}}
+
+        {:ok, %File.Stat{type: :directory}} ->
+          {:cont, next}
+
+        {:ok, _other} ->
+          {:halt, {:error, :not_directory}}
+
+        {:error, :enoent} ->
+          {:halt, :error}
+
+        {:error, _reason} ->
+          {:halt, {:error, :ancestor_unavailable}}
+      end
+    end)
+    |> case do
+      {:error, reason} -> {:error, reason}
+      :error -> :ok
+      _prefix -> :ok
+    end
+  end
 
   defp unsafe(path, reason), do: {:error, {:unsafe_private_directory, path, reason}}
 end

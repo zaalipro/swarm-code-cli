@@ -538,6 +538,17 @@ defmodule SwarmCode.Daemon.Platform.DirectoryHelperTest do
     assert close_result == :ok
   end
 
+  test "stop returns cleanup-pending instead of waiting forever for a stalled broker" do
+    directory = private_directory!()
+    assert {:ok, helper} = DirectoryHelper.start(directory, test_broker_fault: :stall_stop)
+    on_exit(fn -> terminate_os_pid(helper.os_pid) end)
+
+    started = System.monotonic_time(:millisecond)
+    assert {:error, :directory_helper_cleanup_pending} = DirectoryHelper.stop(helper)
+    assert System.monotonic_time(:millisecond) - started < 10_000
+    assert os_pid_alive?(helper.os_pid)
+  end
+
   test "an invalid verify probe is rejected before encoding and STOP retains the cleanup ledger" do
     directory = private_directory!()
     database = SchemaFixture.database!(:current)

@@ -3,11 +3,13 @@ defmodule SwarmCode.Daemon.Platform.DirectoryProtocol do
 
   alias SwarmCode.Daemon.Schema.Probe
   alias SwarmCode.Daemon.StartupError
+  alias SwarmCode.Protocol.JsonLimits
 
-  @maximum_bytes 8 * 1_024 * 1_024
+  @maximum_bytes 1_048_576
   @maximum_basename_bytes 255
   @maximum_path_bytes 16 * 1_024
   @maximum_sources 3
+  @maximum_payload_bytes @maximum_bytes - 4_096
 
   @error_atoms [
     :all_rowid_aliases_shadowed,
@@ -69,7 +71,9 @@ defmodule SwarmCode.Daemon.Platform.DirectoryProtocol do
     :unsafe_open_file,
     :unsafe_private_file,
     :unsafe_source_file,
-    :unsupported_directory_operation
+    :unsupported_directory_operation,
+    :directory_helper_cleanup_pending,
+    :cleanup_pending
   ]
 
   @type decoder :: %{
@@ -161,36 +165,331 @@ defmodule SwarmCode.Daemon.Platform.DirectoryProtocol do
   end
 
   defp encode(term) do
-    payload = :erlang.term_to_binary(term, [:deterministic, {:minor_version, 2}])
-
-    if byte_size(payload) in 1..@maximum_bytes//1 and not compressed?(payload) do
-      {:ok, [<<byte_size(payload)::unsigned-big-32>>, payload]}
+    with {:ok, wire} <- encode_term(term),
+         document = %{"v" => 1, "kind" => "directory", "term" => wire},
+         :ok <- JsonLimits.validate_term(document),
+         {:ok, payload} <- Jason.encode_to_iodata(document, maps: :strict),
+         size = IO.iodata_length(payload),
+         true <- size in 1..@maximum_bytes//1 do
+      {:ok, [<<size::unsigned-big-32>>, payload]}
     else
-      {:error, :invalid_protocol}
+      _other -> {:error, :invalid_protocol}
     end
   rescue
     _error -> {:error, :invalid_protocol}
+  catch
+    _kind, _reason -> {:error, :invalid_protocol}
   end
 
   defp decode_and_validate(payload, validator)
        when is_binary(payload) and byte_size(payload) in 1..@maximum_bytes//1 do
-    if compressed?(payload) do
-      {:error, :invalid_protocol}
+    with {:ok, document} <- JsonLimits.decode(payload),
+         :ok <- valid_document_shape(document),
+         {:ok, term} <- decode_term(document["term"]),
+         true <- validator.(term) do
+      {:ok, term}
     else
-      try do
-        term = :erlang.binary_to_term(payload, [:safe])
-        if validator.(term), do: {:ok, term}, else: {:error, :invalid_protocol}
-      rescue
-        _error -> {:error, :invalid_protocol}
-      end
+      _other -> {:error, :invalid_protocol}
     end
+  rescue
+    _error -> {:error, :invalid_protocol}
+  catch
+    _kind, _reason -> {:error, :invalid_protocol}
   end
 
   defp decode_and_validate(_payload, _validator), do: {:error, :invalid_protocol}
 
-  defp compressed?(<<131, 80, _rest::binary>>), do: true
-  defp compressed?(<<131, _rest::binary>>), do: false
-  defp compressed?(_payload), do: true
+  defp valid_document_shape(document) when is_map(document) do
+    if Map.keys(document) |> Enum.sort() == ["kind", "term", "v"] and
+         document["v"] == 1 and document["kind"] == "directory",
+       do: :ok,
+       else: {:error, :invalid_protocol}
+  end
+
+  defp valid_document_shape(_document), do: {:error, :invalid_protocol}
+
+  # The broker's control channel is JSON too.  Terms are represented by a
+  # closed tagged tree so no decoder path ever turns peer text into an atom.
+  defp encode_term(value) when is_binary(value), do: {:ok, value}
+  defp encode_term(value) when is_integer(value), do: {:ok, value}
+  defp encode_term(value) when is_float(value) and value == value, do: {:ok, value}
+  defp encode_term(value) when value in [nil, true, false], do: {:ok, value}
+
+  defp encode_term(value) when is_atom(value) do
+    if allowed_atom?(value),
+      do: {:ok, %{"$type" => "atom", "value" => Atom.to_string(value)}},
+      else: {:error, :invalid_protocol}
+  end
+
+  defp encode_term(%Probe{} = probe), do: encode_struct("probe", probe)
+  defp encode_term(%StartupError{} = error), do: encode_struct("startup_error", error)
+
+  defp encode_term(value) when is_tuple(value) do
+    with {:ok, values} <- encode_list(Tuple.to_list(value)) do
+      {:ok, %{"$type" => "tuple", "value" => values}}
+    end
+  end
+
+  defp encode_term(value) when is_list(value) do
+    with {:ok, values} <- encode_list(value) do
+      {:ok, %{"$type" => "list", "value" => values}}
+    end
+  end
+
+  defp encode_term(value) when is_map(value) do
+    pairs = Map.to_list(value)
+
+    with {:ok, encoded} <- encode_pairs(pairs) do
+      {:ok, %{"$type" => "map", "value" => encoded}}
+    end
+  end
+
+  defp encode_term(_value), do: {:error, :invalid_protocol}
+
+  defp encode_struct(module, struct) do
+    with {:ok, fields} <- encode_pairs(Map.to_list(Map.from_struct(struct))) do
+      {:ok, %{"$type" => "struct", "module" => module, "value" => fields}}
+    end
+  end
+
+  defp encode_list(values), do: encode_list(values, [])
+
+  defp encode_list([], acc), do: {:ok, Enum.reverse(acc)}
+
+  defp encode_list([value | rest], acc) do
+    with {:ok, encoded} <- encode_term(value), do: encode_list(rest, [encoded | acc])
+  end
+
+  defp encode_pairs(pairs), do: encode_pairs(pairs, [])
+
+  defp encode_pairs([], acc), do: {:ok, Enum.reverse(acc)}
+
+  defp encode_pairs([{key, value} | rest], acc) do
+    with {:ok, encoded_key} <- encode_term(key),
+         {:ok, encoded_value} <- encode_term(value) do
+      encode_pairs(rest, [[encoded_key, encoded_value] | acc])
+    end
+  end
+
+  defp decode_term(value) when is_binary(value), do: {:ok, value}
+  defp decode_term(value) when is_integer(value), do: {:ok, value}
+  defp decode_term(value) when is_float(value), do: {:ok, value}
+  defp decode_term(value) when value in [nil, true, false], do: {:ok, value}
+
+  defp decode_term(%{"$type" => "atom", "value" => value} = map)
+       when map_size(map) == 2 and is_binary(value),
+       do: decode_atom(value)
+
+  defp decode_term(%{"$type" => "tuple", "value" => values} = map)
+       when map_size(map) == 2 and is_list(values) do
+    with {:ok, decoded} <- decode_list(values), do: {:ok, List.to_tuple(decoded)}
+  end
+
+  defp decode_term(%{"$type" => "list", "value" => values} = map)
+       when map_size(map) == 2 and is_list(values),
+       do: decode_list(values)
+
+  defp decode_term(%{"$type" => "map", "value" => pairs} = map)
+       when map_size(map) == 2 and is_list(pairs),
+       do: decode_map(pairs)
+
+  defp decode_term(%{"$type" => "struct", "module" => module, "value" => pairs} = map)
+       when map_size(map) == 3 and is_binary(module) and is_list(pairs),
+       do: decode_struct(module, pairs)
+
+  defp decode_term(_value) do
+    {:error, :invalid_protocol}
+  end
+
+  defp decode_list(values), do: decode_list(values, [])
+
+  defp decode_list([], acc), do: {:ok, Enum.reverse(acc)}
+
+  defp decode_list([value | rest], acc) do
+    with {:ok, decoded} <- decode_term(value), do: decode_list(rest, [decoded | acc])
+  end
+
+  defp decode_map(pairs), do: decode_map(pairs, %{})
+
+  defp decode_map([], acc), do: {:ok, acc}
+
+  defp decode_map([[key, value] | rest], acc) do
+    with {:ok, decoded_key} <- decode_term(key),
+         true <- is_atom(decoded_key) or is_binary(decoded_key),
+         false <- Map.has_key?(acc, decoded_key),
+         {:ok, decoded_value} <- decode_term(value) do
+      decode_map(rest, Map.put(acc, decoded_key, decoded_value))
+    else
+      _other -> {:error, :invalid_protocol}
+    end
+  end
+
+  defp decode_map(_pairs, _acc), do: {:error, :invalid_protocol}
+
+  defp decode_struct("probe", pairs) do
+    with {:ok, fields} <- decode_map(pairs),
+         true <-
+           Enum.sort(Map.keys(fields)) == [
+             :application_id,
+             :foreign_key_violations,
+             :migration_versions,
+             :quick_check,
+             :schema_sha256,
+             :sqlite_source_id,
+             :sqlite_version
+           ],
+         {:ok, probe} <- safe_probe(fields) do
+      {:ok, probe}
+    else
+      _other -> {:error, :invalid_protocol}
+    end
+  end
+
+  defp decode_struct("startup_error", pairs) do
+    with {:ok, fields} <- decode_map(pairs),
+         true <-
+           Enum.sort(Map.keys(fields)) == [:__exception__, :action, :code, :message, :retryable],
+         {:ok, error} <- safe_startup_error(fields) do
+      {:ok, error}
+    else
+      _other -> {:error, :invalid_protocol}
+    end
+  end
+
+  defp decode_struct(_module, _pairs), do: {:error, :invalid_protocol}
+
+  defp safe_probe(fields) do
+    probe = struct(Probe, fields)
+    if probe?(probe), do: {:ok, probe}, else: {:error, :invalid_protocol}
+  rescue
+    _error -> {:error, :invalid_protocol}
+  end
+
+  defp safe_startup_error(fields) do
+    error = struct(StartupError, fields)
+    if startup_error?(error), do: {:ok, error}, else: {:error, :invalid_protocol}
+  rescue
+    _error -> {:error, :invalid_protocol}
+  end
+
+  defp allowed_atom?(value) do
+    value in [
+      :ok,
+      :error,
+      :ready,
+      :none,
+      :absent,
+      :normal,
+      :regular,
+      :directory,
+      :main,
+      :wal,
+      :shm,
+      :cancel_copy,
+      :close_source,
+      :directory_identity,
+      :finish_copy,
+      :pwd,
+      :stop,
+      :sync_directory,
+      :configure_sources,
+      :link,
+      :unlink,
+      :link_source,
+      :unlink_identity,
+      :entry_state,
+      :private_identity,
+      :write_private,
+      :read_private,
+      :copy_private,
+      :prepare_copy,
+      :sync_file,
+      :adopt,
+      :commit,
+      :repair_mode,
+      :file_entry,
+      :verify_database,
+      :open_source,
+      :vacuum,
+      :operation_in_progress,
+      :link_owned,
+      :application_id,
+      :foreign_key_violations,
+      :migration_versions,
+      :quick_check,
+      :schema_sha256,
+      :sqlite_source_id,
+      :sqlite_version,
+      :__exception__,
+      :action,
+      :code,
+      :message,
+      :retryable
+    ] or value in @error_atoms or value in [:schema_incompatible, :backup_failed]
+  end
+
+  defp decode_atom("ok"), do: {:ok, :ok}
+  defp decode_atom("error"), do: {:ok, :error}
+  defp decode_atom("ready"), do: {:ok, :ready}
+  defp decode_atom("none"), do: {:ok, :none}
+  defp decode_atom("absent"), do: {:ok, :absent}
+  defp decode_atom("normal"), do: {:ok, :normal}
+  defp decode_atom("regular"), do: {:ok, :regular}
+  defp decode_atom("directory"), do: {:ok, :directory}
+  defp decode_atom("main"), do: {:ok, :main}
+  defp decode_atom("wal"), do: {:ok, :wal}
+  defp decode_atom("shm"), do: {:ok, :shm}
+  defp decode_atom("cancel_copy"), do: {:ok, :cancel_copy}
+  defp decode_atom("close_source"), do: {:ok, :close_source}
+  defp decode_atom("directory_identity"), do: {:ok, :directory_identity}
+  defp decode_atom("finish_copy"), do: {:ok, :finish_copy}
+  defp decode_atom("pwd"), do: {:ok, :pwd}
+  defp decode_atom("stop"), do: {:ok, :stop}
+  defp decode_atom("sync_directory"), do: {:ok, :sync_directory}
+  defp decode_atom("configure_sources"), do: {:ok, :configure_sources}
+  defp decode_atom("link"), do: {:ok, :link}
+  defp decode_atom("unlink"), do: {:ok, :unlink}
+  defp decode_atom("link_source"), do: {:ok, :link_source}
+  defp decode_atom("unlink_identity"), do: {:ok, :unlink_identity}
+  defp decode_atom("entry_state"), do: {:ok, :entry_state}
+  defp decode_atom("private_identity"), do: {:ok, :private_identity}
+  defp decode_atom("write_private"), do: {:ok, :write_private}
+  defp decode_atom("read_private"), do: {:ok, :read_private}
+  defp decode_atom("copy_private"), do: {:ok, :copy_private}
+  defp decode_atom("prepare_copy"), do: {:ok, :prepare_copy}
+  defp decode_atom("sync_file"), do: {:ok, :sync_file}
+  defp decode_atom("adopt"), do: {:ok, :adopt}
+  defp decode_atom("commit"), do: {:ok, :commit}
+  defp decode_atom("repair_mode"), do: {:ok, :repair_mode}
+  defp decode_atom("file_entry"), do: {:ok, :file_entry}
+  defp decode_atom("verify_database"), do: {:ok, :verify_database}
+  defp decode_atom("open_source"), do: {:ok, :open_source}
+  defp decode_atom("vacuum"), do: {:ok, :vacuum}
+  defp decode_atom("link_owned"), do: {:ok, :link_owned}
+  defp decode_atom("application_id"), do: {:ok, :application_id}
+  defp decode_atom("foreign_key_violations"), do: {:ok, :foreign_key_violations}
+  defp decode_atom("migration_versions"), do: {:ok, :migration_versions}
+  defp decode_atom("quick_check"), do: {:ok, :quick_check}
+  defp decode_atom("schema_sha256"), do: {:ok, :schema_sha256}
+  defp decode_atom("sqlite_source_id"), do: {:ok, :sqlite_source_id}
+  defp decode_atom("sqlite_version"), do: {:ok, :sqlite_version}
+  defp decode_atom("__exception__"), do: {:ok, :__exception__}
+  defp decode_atom("action"), do: {:ok, :action}
+  defp decode_atom("code"), do: {:ok, :code}
+  defp decode_atom("message"), do: {:ok, :message}
+  defp decode_atom("retryable"), do: {:ok, :retryable}
+
+  defp decode_atom("schema_incompatible"), do: {:ok, :schema_incompatible}
+  defp decode_atom("backup_failed"), do: {:ok, :backup_failed}
+
+  defp decode_atom(value), do: decode_error_atom(value)
+
+  defp decode_error_atom(value) do
+    case Enum.find(@error_atoms, &(Atom.to_string(&1) == value)) do
+      nil -> {:error, :invalid_protocol}
+      atom -> {:ok, atom}
+    end
+  end
 
   defp push_header(%{remaining: nil, header: header} = decoder, bytes) do
     needed = 4 - byte_size(header)
@@ -271,6 +570,9 @@ defmodule SwarmCode.Daemon.Platform.DirectoryProtocol do
   defp valid_request_shape?({operation, source, destination}) when operation == :link,
     do: safe_basename?(source) and safe_basename?(destination)
 
+  defp valid_request_shape?({:link_owned, source, destination, uid}),
+    do: safe_basename?(source) and safe_basename?(destination) and uid?(uid)
+
   defp valid_request_shape?({:unlink, basename}), do: safe_basename?(basename)
 
   defp valid_request_shape?({:link_source, index, destination}),
@@ -286,13 +588,13 @@ defmodule SwarmCode.Daemon.Platform.DirectoryProtocol do
   defp valid_request_shape?({:write_private, basename, contents, uid}),
     do:
       safe_basename?(basename) and is_binary(contents) and
-        byte_size(contents) <= 4 * 1_024 * 1_024 and
+        byte_size(contents) <= @maximum_payload_bytes and
         uid?(uid)
 
   defp valid_request_shape?({:read_private, basename, uid, maximum}),
     do:
       safe_basename?(basename) and uid?(uid) and is_integer(maximum) and
-        maximum in 0..(4 * 1_024 * 1_024)//1
+        maximum in 0..@maximum_payload_bytes//1
 
   defp valid_request_shape?({operation, source, destination, uid})
        when operation in [:copy_private, :prepare_copy],
@@ -344,7 +646,8 @@ defmodule SwarmCode.Daemon.Platform.DirectoryProtocol do
                    :prepare_copy,
                    :private_identity,
                    :vacuum,
-                   :write_private
+                   :write_private,
+                   :link_owned
                  ]),
        do: file_identity?(identity)
 
@@ -379,7 +682,8 @@ defmodule SwarmCode.Daemon.Platform.DirectoryProtocol do
       :link_source,
       :repair_mode,
       :sync_file,
-      :unlink_identity
+      :unlink_identity,
+      :link_owned
     ]
   end
 
@@ -394,7 +698,8 @@ defmodule SwarmCode.Daemon.Platform.DirectoryProtocol do
 
   defp safe_source_basename?(name) when is_binary(name) do
     byte_size(name) in 1..@maximum_basename_bytes//1 and String.valid?(name) and
-      not String.contains?(name, [<<0>>, "\n", "\r"]) and Path.basename(name) == name
+      name not in [".", ".."] and not String.contains?(name, [<<0>>, "\n", "\r"]) and
+      Path.basename(name) == name
   end
 
   defp safe_source_basename?(_name), do: false
@@ -440,7 +745,8 @@ defmodule SwarmCode.Daemon.Platform.DirectoryProtocol do
 
   defp safe_basename?(name) when is_binary(name) do
     byte_size(name) in 1..@maximum_basename_bytes//1 and String.valid?(name) and
-      Regex.match?(~r/\A[.a-zA-Z0-9_-]+\z/, name) and Path.basename(name) == name
+      name not in [".", ".."] and Regex.match?(~r/\A[.a-zA-Z0-9_-]+\z/, name) and
+      Path.basename(name) == name
   end
 
   defp safe_basename?(_name), do: false
@@ -523,7 +829,8 @@ defmodule SwarmCode.Daemon.Platform.DirectoryProtocol do
   defp startup_error?(%StartupError{} = error) do
     Map.keys(error) |> Enum.sort() ==
       [:__exception__, :__struct__, :action, :code, :message, :retryable] and
-      error.__exception__ == true and error.code in [:backup_failed, :schema_incompatible] and
+      error.__exception__ == true and
+      error.code in [:backup_failed, :schema_incompatible, :cleanup_pending] and
       is_boolean(error.retryable) and bounded_text?(error.message, 4_096) and
       bounded_text?(error.action, 4_096)
   end

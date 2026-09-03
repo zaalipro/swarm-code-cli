@@ -4,6 +4,7 @@ defmodule SwarmCode.Daemon.FoundationGate do
   import Bitwise
 
   alias SwarmCode.Daemon.Backup
+  alias SwarmCode.Daemon.FoundationGate.BootConfig
   alias SwarmCode.Daemon.Backup.Artifact
   alias SwarmCode.Daemon.CrossAppLease
 
@@ -34,6 +35,7 @@ defmodule SwarmCode.Daemon.FoundationGate do
   @maximum_identity_bytes 4 * 1_024
   @maximum_pid 9_223_372_036_854_775_807
   @desktop_applications ["SwarmCode", "SwarmCode.app", "com.zaali.swarmcode"]
+  @trusted_system_symlink_ancestors ["/var"]
   @lease_stop_timeout 5_000
   @lease_down_timeout 5_000
   @cleanup_owner_ready_timeout 5_000
@@ -63,7 +65,9 @@ defmodule SwarmCode.Daemon.FoundationGate do
                          :lease_opts,
                          :manifest_path,
                          :now,
-                         :operation_id
+                         :operation_id,
+                         :probe_hook,
+                         :probe_options
                        ]
   else
     @allowed_options @base_options
@@ -73,22 +77,38 @@ defmodule SwarmCode.Daemon.FoundationGate do
     @moduledoc false
 
     alias SwarmCode.Daemon.Platform.{PathSet, ProcessIdentity}
-    alias SwarmCode.Daemon.Schema.Gate.Decision
+    alias SwarmCode.Daemon.Schema.{Binding, Gate.Decision}
 
     @enforce_keys [:paths, :identity, :lease, :schema, :backup]
-    defstruct @enforce_keys
+    defstruct @enforce_keys ++ [binding: nil]
 
     @type t :: %__MODULE__{
             paths: PathSet.t(),
             identity: ProcessIdentity.t(),
             lease: pid(),
             schema: Decision.t(),
-            backup: nil
+            backup: nil,
+            binding: Binding.t() | nil
           }
   end
 
-  @spec prepare(keyword()) :: {:ok, Ready.t()} | {:error, StartupError.t()}
-  def prepare(opts) when is_list(opts) do
+  @spec prepare(keyword() | BootConfig.t()) :: {:ok, Ready.t()} | {:error, StartupError.t()}
+  if @test_build do
+    def prepare(opts) when is_list(opts), do: prepare_list(opts)
+    def prepare(_opts), do: {:error, foundation_failed()}
+  else
+    def prepare([]), do: prepare_list([])
+
+    def prepare(%BootConfig{} = config) do
+      if production_boot_config?(config),
+        do: prepare_list(boot_config_options(config)),
+        else: {:error, production_configuration_rejected()}
+    end
+
+    def prepare(_opts), do: {:error, production_configuration_rejected()}
+  end
+
+  defp prepare_list(opts) when is_list(opts) do
     try do
       with {:ok, paths} <- resolve_paths(opts),
            {:ok, config} <- configuration(opts, paths),
@@ -106,8 +126,6 @@ defmodule SwarmCode.Daemon.FoundationGate do
     end
   end
 
-  def prepare(_opts), do: {:error, foundation_failed()}
-
   @doc false
   @spec schema_contract() :: %{
           epoch: non_neg_integer(),
@@ -115,6 +133,36 @@ defmodule SwarmCode.Daemon.FoundationGate do
           manifest_sha256: String.t()
         }
   def schema_contract, do: @schema_contract
+
+  if not @test_build do
+    defp production_boot_config?(%BootConfig{
+           platform: platform,
+           mode: :production,
+           home: home,
+           env: env,
+           database_path: nil,
+           app_version: app_version
+         })
+         when platform in [:macos, :linux] and is_binary(home) and is_map(env) and
+                is_binary(app_version) do
+      env == %{} and platform == current_platform() and
+        Path.expand(home) == Path.expand(System.user_home!()) and valid_path?(home)
+    rescue
+      _error -> false
+    end
+
+    defp production_boot_config?(_config), do: false
+
+    defp boot_config_options(%BootConfig{} = config) do
+      [
+        platform: config.platform,
+        mode: :production,
+        home: config.home,
+        env: config.env,
+        app_version: config.app_version
+      ]
+    end
+  end
 
   defp resolve_paths(opts) do
     try do
@@ -175,12 +223,15 @@ defmodule SwarmCode.Daemon.FoundationGate do
       operation_id = first_option(opts, [:backup_operation_id, :operation_id], nil)
       backup_options = first_option(opts, [:backup_options, :backup_opts], [])
       lease_options = first_option(opts, [:lease_options, :lease_opts], [])
+      probe_hook = Keyword.get(opts, :probe_hook)
+      probe_options = Keyword.get(opts, :probe_options, [])
 
       if valid_identity_source?(identity) and valid_detector_source?(desktop_detector) and
            is_function(directory_ensure, 2) and is_function(clock, 0) and
            (is_nil(manifest_path) or valid_path?(manifest_path)) and
            (is_nil(operation_id) or valid_uuid?(operation_id)) and
-           valid_backup_options?(backup_options) and valid_lease_options?(lease_options) do
+           valid_backup_options?(backup_options) and valid_lease_options?(lease_options) and
+           valid_probe_options?(probe_hook, probe_options) do
         {:ok,
          %{
            identity: identity,
@@ -190,7 +241,9 @@ defmodule SwarmCode.Daemon.FoundationGate do
            manifest_path: manifest_path,
            backup_operation_id: operation_id,
            backup_options: backup_options,
-           lease_options: lease_options
+           lease_options: lease_options,
+           probe_hook: probe_hook,
+           probe_options: probe_options
          }}
       else
         {:error, :invalid_test_configuration}
@@ -220,6 +273,14 @@ defmodule SwarmCode.Daemon.FoundationGate do
          Keyword.keys(opts) == [:cleanup_barrier] and
          is_function(Keyword.fetch!(opts, :cleanup_barrier), 0)) or opts == []
     end
+
+    defp valid_probe_options?(hook, opts) do
+      (is_nil(hook) or is_function(hook, 1) or is_function(hook, 2)) and
+        Keyword.keyword?(opts) and Keyword.keys(opts) == Enum.uniq(Keyword.keys(opts)) and
+        Enum.all?(Keyword.keys(opts), &(&1 in [:before_open])) and
+        (not Keyword.has_key?(opts, :before_open) or is_function(opts[:before_open], 1) or
+           is_function(opts[:before_open], 2))
+    end
   else
     defp test_configuration(_opts, platform) do
       {:ok,
@@ -231,7 +292,9 @@ defmodule SwarmCode.Daemon.FoundationGate do
          manifest_path: nil,
          backup_operation_id: nil,
          backup_options: [],
-         lease_options: []
+         lease_options: [],
+         probe_hook: nil,
+         probe_options: []
        }}
     end
   end
@@ -346,10 +409,11 @@ defmodule SwarmCode.Daemon.FoundationGate do
           next == expanded ->
             {[next | chain], next, true}
 
-          match?(
-            {:ok, %File.Stat{type: type}} when type in [:directory, :symlink],
-            File.lstat(next)
-          ) ->
+          match?({:ok, %File.Stat{type: :directory}}, File.lstat(next)) ->
+            {chain, next, false}
+
+          next in @trusted_system_symlink_ancestors and
+              match?({:ok, %File.Stat{type: :symlink}}, File.lstat(next)) ->
             {chain, next, false}
 
           true ->
@@ -515,7 +579,7 @@ defmodule SwarmCode.Daemon.FoundationGate do
              {:ok, manifest} <- load_manifest(config.manifest_path),
              :ok <- validate_loaded_contract(manifest),
              {:ok, %Decision{} = decision} <-
-               schema_check(paths.database, manifest, config.app_version) do
+               schema_check(paths.database, manifest, config.app_version, identity.uid, config) do
           finish_decision(decision, lease, paths, identity, fingerprint, config)
         else
           {:error, %StartupError{} = error} -> {:error, error}
@@ -551,9 +615,17 @@ defmodule SwarmCode.Daemon.FoundationGate do
     _kind, _reason -> {:error, database_fingerprint_changed()}
   end
 
-  defp schema_check(path, manifest, app_version) do
+  defp schema_check(path, manifest, app_version, uid, config) do
     try do
-      case Schema.Gate.check(path, manifest, app_version) do
+      probe_options = Map.get(config, :probe_options, []) |> Keyword.put(:uid, uid)
+
+      probe_options =
+        if is_function(Map.get(config, :probe_hook), 1) or
+             is_function(Map.get(config, :probe_hook), 2),
+           do: Keyword.put(probe_options, :probe_hook, config.probe_hook),
+           else: probe_options
+
+      case Schema.Gate.check_bound(path, manifest, app_version, probe_options) do
         {:ok, %Decision{} = decision} -> {:ok, decision}
         {:error, %StartupError{} = error} -> {:error, error}
         _other -> {:error, schema_incompatible()}
@@ -603,22 +675,24 @@ defmodule SwarmCode.Daemon.FoundationGate do
          lease,
          paths,
          identity,
-         _fingerprint,
+         fingerprint,
          _config
        ) do
-    case assert_held(lease) do
-      :ok ->
-        {:ok,
-         %Ready{
-           paths: paths,
-           identity: identity,
-           lease: lease,
-           schema: decision,
-           backup: nil
-         }}
-
-      {:error, %StartupError{} = error} ->
-        {:error, error}
+    with :ok <- assert_held(lease),
+         :ok <- Schema.Gate.verify_binding(paths.database, decision.binding, identity.uid),
+         :ok <- verify_database_fingerprint(paths.database, fingerprint) do
+      {:ok,
+       %Ready{
+         paths: paths,
+         identity: identity,
+         lease: lease,
+         schema: decision,
+         backup: nil,
+         binding: decision.binding
+       }}
+    else
+      {:error, %StartupError{} = error} -> {:error, error}
+      _other -> {:error, database_fingerprint_changed()}
     end
   end
 
@@ -1218,6 +1292,17 @@ defmodule SwarmCode.Daemon.FoundationGate do
       {:unix, :darwin} -> :macos
       {:unix, :linux} -> :linux
       _other -> :unsupported
+    end
+  end
+
+  if not @test_build do
+    defp production_configuration_rejected do
+      StartupError.new(
+        :production_configuration_rejected,
+        false,
+        "Production startup accepts only the canonical boot configuration.",
+        "Use the installed release configuration; recovery and alternate database paths require an explicit recovery command."
+      )
     end
   end
 

@@ -1,43 +1,56 @@
 defmodule SwarmCode.Daemon.Schema.Gate do
   @moduledoc false
 
-  alias SwarmCode.Daemon.Schema.{MigrationManifest, Probe}
+  alias SwarmCode.Daemon.Schema.{Binding, MigrationManifest, Probe}
   alias SwarmCode.Daemon.StartupError
 
   defmodule Decision do
     @moduledoc false
 
-    alias SwarmCode.Daemon.Schema.{MigrationManifest, Probe}
+    alias SwarmCode.Daemon.Schema.{Binding, MigrationManifest, Probe}
 
     @enforce_keys [:status, :applied, :pending, :probe, :app_version]
-    defstruct @enforce_keys
+    defstruct @enforce_keys ++ [binding: nil]
 
     @type t :: %__MODULE__{
             status: :ready | :migration_required | :new_database,
             applied: [pos_integer()],
             pending: [MigrationManifest.Entry.t()],
             probe: Probe.t() | nil,
-            app_version: String.t()
+            app_version: String.t(),
+            binding: Binding.t() | nil
           }
   end
 
   @spec check(Path.t(), MigrationManifest.t(), String.t()) ::
           {:ok, Decision.t()} | {:error, StartupError.t()}
   def check(path, %MigrationManifest{} = manifest, app_version) when is_binary(path) do
+    check_bound(path, manifest, app_version, [])
+  end
+
+  @doc "Run the schema gate while retaining an identity binding for handoff."
+  @spec check_bound(Path.t(), MigrationManifest.t(), String.t(), keyword()) ::
+          {:ok, Decision.t()} | {:error, StartupError.t()}
+  def check_bound(path, %MigrationManifest{} = manifest, app_version, opts)
+      when is_binary(path) and is_list(opts) do
     with :ok <- compatible_app_version(app_version, manifest.minimum_reader) do
       case File.lstat(path) do
         {:error, :enoent} ->
-          {:ok,
-           %Decision{
-             status: :new_database,
-             applied: [],
-             pending: manifest.migrations,
-             probe: nil,
-             app_version: app_version
-           }}
+          if sidecars_absent?(path),
+            do:
+              {:ok,
+               %Decision{
+                 status: :new_database,
+                 applied: [],
+                 pending: manifest.migrations,
+                 probe: nil,
+                 app_version: app_version,
+                 binding: nil
+               }},
+            else: {:error, incompatible_error()}
 
         {:ok, %File.Stat{type: :regular}} ->
-          check_existing(path, manifest, app_version)
+          check_existing(path, manifest, app_version, opts)
 
         _other ->
           {:error, incompatible_error()}
@@ -45,10 +58,24 @@ defmodule SwarmCode.Daemon.Schema.Gate do
     end
   end
 
-  def check(_path, _manifest, _app_version), do: {:error, incompatible_error()}
+  @doc false
+  @spec verify_binding(Path.t(), Binding.t(), non_neg_integer()) ::
+          :ok | {:error, StartupError.t()}
+  def verify_binding(path, %Binding{} = binding, uid) when is_binary(path) and is_integer(uid) do
+    if path != binding.path do
+      {:error, incompatible_error()}
+    else
+      case Probe.verify_bound_paths(path, binding, uid) do
+        :ok -> :ok
+        _other -> {:error, incompatible_error()}
+      end
+    end
+  end
 
-  defp check_existing(path, manifest, app_version) do
-    with {:ok, probe} <- Probe.inspect(path),
+  def verify_binding(_path, _binding, _uid), do: {:error, incompatible_error()}
+
+  defp check_existing(path, manifest, app_version, opts) do
+    with {:ok, %{probe: probe, binding: binding}} <- Probe.inspect_bound(path, opts),
          :ok <- verify_integrity(probe),
          :ok <- verify_sqlite_version(probe.sqlite_version, manifest.sqlite_minimum),
          :ok <- verify_application_id(probe.application_id, manifest.application_ids),
@@ -61,9 +88,15 @@ defmodule SwarmCode.Daemon.Schema.Gate do
          applied: probe.migration_versions,
          pending: pending,
          probe: probe,
-         app_version: app_version
+         app_version: app_version,
+         binding: binding
        }}
     end
+  end
+
+  defp sidecars_absent?(path) do
+    File.lstat(path <> "-wal") == {:error, :enoent} and
+      File.lstat(path <> "-shm") == {:error, :enoent}
   end
 
   defp compatible_app_version(app_version, minimum_reader) do

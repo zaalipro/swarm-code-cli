@@ -5,6 +5,7 @@ defmodule SwarmCode.Daemon.CrossAppLeaseTest do
 
   alias Exqlite.Sqlite3
   alias SwarmCode.Daemon.CrossAppLease
+  alias SwarmCode.Daemon.CrossAppLease.OwnerRecord
   alias SwarmCode.Daemon.Files.AtomicReplace
   alias SwarmCode.Daemon.Platform.ProcessIdentity
   alias SwarmCode.Daemon.StartupError
@@ -49,6 +50,12 @@ defmodule SwarmCode.Daemon.CrossAppLeaseTest do
     ]
 
     %{dir: dir, opts: opts}
+  end
+
+  test "owner records reject path and mode seams outside the typed lease input", %{opts: opts} do
+    for key <- [:mode, :home, :env, :database_path] do
+      assert_raise ArgumentError, fn -> OwnerRecord.new(Keyword.put(opts, key, :untrusted)) end
+    end
   end
 
   test "one owner holds an exclusive rollback-journal lease", %{dir: dir, opts: opts} do
@@ -356,5 +363,105 @@ defmodule SwarmCode.Daemon.CrossAppLeaseTest do
     |> Enum.filter(&String.starts_with?(&1, prefix))
     |> Enum.map(&Path.join(dir, &1))
     |> Enum.sort()
+  end
+end
+
+# Final foundation safety regressions.
+defmodule SwarmCode.Daemon.CrossAppLeaseFinalFixTest do
+  use ExUnit.Case, async: false
+
+  alias SwarmCode.Daemon.CrossAppLease
+  alias SwarmCode.Daemon.Platform.ProcessIdentity
+
+  test "rejects a lease pathname substitution between validation and sqlite open" do
+    dir =
+      Path.join(
+        System.tmp_dir!(),
+        "swarm-code-final-lease-race-#{System.unique_integer([:positive])}"
+      )
+
+    File.mkdir!(dir)
+    File.chmod!(dir, 0o700)
+    on_exit(fn -> File.rm_rf!(dir) end)
+
+    path = Path.join(dir, "instance_lease.db")
+    parked = Path.join(dir, "parked.db")
+    replacement = Path.join(dir, "replacement.db")
+    File.write!(path, <<>>)
+    File.chmod!(path, 0o600)
+    File.write!(replacement, "replacement")
+    File.chmod!(replacement, 0o600)
+    uid = File.lstat!(dir).uid
+
+    hook = fn :before_sqlite_open, ^path ->
+      File.rename!(path, parked)
+      File.ln_s!(replacement, path)
+      :ok
+    end
+
+    opts = [
+      lease_path: path,
+      owner_path: Path.join(dir, "instance_owner.json"),
+      identity: %ProcessIdentity{uid: uid, pid: 1, process_start_id: "final", boot_id: "final"},
+      database_fingerprint: "fingerprint",
+      schema_contract: %{
+        epoch: 0,
+        newest_migration: 1,
+        manifest_sha256: String.duplicate("a", 64)
+      },
+      socket_path: Path.join(dir, "daemon.sock"),
+      app_version: "0.1.0-dev",
+      test_open_hook: hook
+    ]
+
+    assert {:error, %{code: :lease_failed}} = CrossAppLease.start_link(opts)
+    assert File.read!(parked) == <<>>
+    assert File.read_link!(path) == replacement
+  end
+
+  test "a lease owner detects canonical pathname replacement before handoff" do
+    dir =
+      Path.join(
+        System.tmp_dir!(),
+        "swarm-code-final-lease-handoff-#{System.unique_integer([:positive])}"
+      )
+
+    File.mkdir!(dir)
+    File.chmod!(dir, 0o700)
+    on_exit(fn -> File.rm_rf!(dir) end)
+
+    uid = File.lstat!(dir).uid
+    path = Path.join(dir, "instance_lease.db")
+    replacement = Path.join(dir, "replacement.db")
+    File.write!(replacement, "replacement")
+    File.chmod!(replacement, 0o600)
+
+    opts = [
+      lease_path: path,
+      owner_path: Path.join(dir, "instance_owner.json"),
+      identity: %ProcessIdentity{
+        uid: uid,
+        pid: 1,
+        process_start_id: "handoff",
+        boot_id: "handoff"
+      },
+      database_fingerprint: "fingerprint",
+      schema_contract: %{
+        epoch: 0,
+        newest_migration: 1,
+        manifest_sha256: String.duplicate("a", 64)
+      },
+      socket_path: Path.join(dir, "daemon.sock"),
+      app_version: "0.1.0-dev"
+    ]
+
+    assert {:ok, owner} = CrossAppLease.start_link(opts)
+    monitor = Process.monitor(owner)
+    File.rename!(path, path <> ".parked")
+    File.ln_s!(replacement, path)
+
+    assert {:error, :lease_identity_changed} = CrossAppLease.assert_held(owner)
+    assert_receive {:DOWN, ^monitor, :process, ^owner, :normal}
+    assert File.read!(replacement) == "replacement"
   end
 end

@@ -1071,6 +1071,31 @@ defmodule SwarmCode.Daemon.Backup.GateTest do
     refute Enum.any?(File.ls!(fixture.backup_dir), &String.contains?(&1, ".source-pin."))
   end
 
+  test "an abrupt broker death cleans identities already acknowledged by the parent" do
+    fixture = migration_fixture!()
+    test = self()
+
+    hook = fn
+      :after_snapshot, %{anchor: anchor} ->
+        {_output, 0} =
+          System.cmd("/bin/kill", ["-KILL", Integer.to_string(anchor.helper.os_pid)],
+            stderr_to_stdout: true
+          )
+
+        send(test, :backup_broker_killed)
+        :ok
+
+      _point, _context ->
+        :ok
+    end
+
+    result = create(fixture, test_hook: hook)
+    assert_receive :backup_broker_killed, 5_000
+    assert {:error, %{code: code}} = result
+    assert code in [:backup_failed, :cleanup_pending]
+    assert File.ls!(fixture.backup_dir) == []
+  end
+
   test "a corrupt source refuses unchanged without a partial artifact" do
     fixture = migration_fixture!()
     File.write!(fixture.db, "corrupt source")

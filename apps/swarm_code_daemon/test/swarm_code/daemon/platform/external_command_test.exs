@@ -71,12 +71,12 @@ defmodule SwarmCode.Daemon.Platform.ExternalCommandTest do
 
     assert_receive {:external_command_signal, ^os_pid, :term}
     assert_receive {:external_command_signal, ^os_pid, :kill}
-    refute Task.yield(task, 50)
+    assert {:ok, {:error, :command_cleanup_pending}} = result = Task.yield(task, 5_000)
     assert os_pid_alive?(os_pid)
 
     terminate_os_pid(os_pid)
 
-    assert Task.await(task, 5_000) == {:error, :command_cleanup_failed}
+    assert result == {:ok, {:error, :command_cleanup_pending}}
     assert_receive {:external_command_terminal, ^os_pid}
     assert_receive {:DOWN, ^owner_monitor, :process, ^owner, :normal}
     refute os_pid_alive?(os_pid)

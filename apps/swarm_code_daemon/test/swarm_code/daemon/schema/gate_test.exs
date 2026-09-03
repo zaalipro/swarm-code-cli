@@ -181,6 +181,45 @@ defmodule SwarmCode.Daemon.Schema.GateTest do
     assert probe.foreign_key_violations == [[1]]
   end
 
+  test "ready admission refuses a world-readable database and sidecar", %{manifest: manifest} do
+    database = SchemaFixture.database!(:current)
+    File.chmod!(database, 0o644)
+
+    assert {:error, %{code: :schema_incompatible}} = Gate.check(database, manifest, "0.1.0-dev")
+    assert Bitwise.band(File.lstat!(database).mode, 0o7777) == 0o644
+  end
+
+  test "post-probe replacement cannot produce a ready decision", %{manifest: manifest} do
+    database = SchemaFixture.database!(:current)
+    replacement = SchemaFixture.database!(:current)
+    parked = database <> ".parked"
+
+    hook = fn :after_probe, ^database ->
+      File.rename!(database, parked)
+      File.rename!(replacement, database)
+      :ok
+    end
+
+    assert {:error, %{code: :schema_incompatible}} =
+             Gate.check_bound(database, manifest, "0.1.0-dev", probe_hook: hook)
+
+    assert File.exists?(parked)
+    assert File.exists?(database)
+  end
+
+  test "a sidecar appearing during the probe cannot enter a ready handoff", %{manifest: manifest} do
+    database = SchemaFixture.database!(:current)
+
+    hook = fn :after_probe, path ->
+      File.write!(path <> "-wal", "late sidecar", [:exclusive])
+      File.chmod!(path <> "-wal", 0o600)
+      :ok
+    end
+
+    assert {:error, %{code: :schema_incompatible}} =
+             Gate.check_bound(database, manifest, "0.1.0-dev", probe_hook: hook)
+  end
+
   defp temporary_directory! do
     directory =
       Path.join(
