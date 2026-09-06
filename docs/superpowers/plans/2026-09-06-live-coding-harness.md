@@ -112,6 +112,11 @@ actual interfaces before dispatch; this plan is the persistent full-scope ledger
 Full precommit seed774991 passed972tests/fiveproperties/12nativechecks and
 production compile passed. See `docs/research/2026-09-06-live-backend-checkpoint.md`.
 Task3 already executes realmodel/tool operations in tests; durable event/admission,
-usage budgets and child-agent behavior remain. Task4 guarded Exqlite feasibility
-is developing in an isolated vendor fork; root dependency switch remains pending
-review. Tasks5/6 are not complete. The full goal is unchanged.
+usage budgets and child-agent behavior remain. Task4 now selects the reviewed
+source-built Exqlite fork; its exact-descriptor API is still limited to read-only
+development/test fixtures and refuses in production. A closed 12-operation core
+service request codec is implemented, but there is no service transport yet.
+Full precommit seed126450 passed984tests/fiveproperties/12nativechecks, including
+the fork integration and service codec; production compilation also passed.
+Writable guarded storage, reliable Run persistence, and Tasks5/6 remain open.
+The full goal is unchanged.

@@ -27,3 +27,9 @@ third_party/unicode-17.0.0-variants/.
 Native terminal candidate dependency licenses, source URLs, exact registry
 archive checksums and unchanged license texts are recorded in
 third_party/terminal-port/.
+
+
+Exqlite 0.39.0 is vendored under MIT at vendor/exqlite as the source-built
+0.39.0-swarm.1 feasibility fork. Upstream commit, pristine SQLite/license hashes,
+and every change are recorded in vendor/exqlite/UPSTREAM.json and SWARM_PATCHES.md.
+The original Exqlite license and pristine bundled SQLite sources are retained.
