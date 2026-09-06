@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "candidate": "ex_ratatui_013",
+  "result": "reject",
+  "observed_at": "2026-09-06T08:32:04Z",
+  "hex_inner_sha256": "5b9a488a8b895b06cef782ba47effd3a7e03a675d0f44d70277349ad70326671",
+  "hex_outer_sha256": "0448833a5de5aed13fb480f57278deefe1ca3ff62af0d32e64515f4af674c030",
+  "tag_object": "e47964edac37e776ee8c43bd53241083b0aa8813",
+  "source_commit": "aa68bfc36016d90d6b1317f1f5edc8c4a6f9d045",
+  "ratatui_commit": "e665c36cb14752a61cd777fbd06dbef8474f2add",
+  "crossterm_commit": "36d95b26a26e64b0f8c12edfe11f410a6d56a812",
+  "vetoes": [
+    {
+      "code": "unbounded_native_paste",
+      "source": "crossterm 0.29.0 src/event/source/unix/mio.rs:198-217 pushes bytes into a retained Vec until parse succeeds; src/event/sys/unix/parse.rs:813-822 waits for the paste terminator then allocates String. ex_ratatui 0.13.0 native/ex_ratatui/src/events.rs:21,42 forwards Paste(String)."
+    },
+    {
+      "code": "narrow_only_width",
+      "source": "ratatui-core 0.1.2 src/buffer/cell_width.rs:24-43 uses UnicodeWidthStr::width for ordinary string cells. Low-level CellDiffOption::ForcedWidth exists, but ex_ratatui 0.13.0 exposes no declared-width paint or ambiguous-width option; its Paragraph/text integration cannot select wide layout."
+    },
+    {
+      "code": "no_public_no_alt",
+      "source": "ex_ratatui 0.13.0 native/ex_ratatui/src/terminal.rs:88-97 init_terminal(focus_events, mouse_capture) always enables raw mode then executes EnterAlternateScreen; public init has no alternate-screen flag."
+    },
+    {
+      "code": "arm64_jammy_abi",
+      "source": "Published v0.13.0 aarch64-unknown-linux-gnu NIF 2.16 archive sha256 0b79bb4c337c929dc2c7ad21ee61a35882450375a18096771b2c9e49c49fd65a and NIF 2.17 archive sha256 1eb8f5b52d774c71590451ada25fef6423ff2e0419e09736676ca97df05d5f0c have undefined dynamic symbols pidfd_spawnp and pidfd_getpid versioned GLIBC_2.39; Ubuntu 22.04 baseline is glibc 2.35."
+    }
+  ]
+}
