@@ -1,0 +1,31 @@
+{
+  "unicode_version": "17.0.0",
+  "ivd_registration": "2025-07-14",
+  "license": "Unicode-3.0",
+  "sources": [
+    {
+      "file": "StandardizedVariants.txt",
+      "url": "https://www.unicode.org/Public/17.0.0/ucd/StandardizedVariants.txt",
+      "sha256": "f55100b2fb11d3d75a37b8c1ab752192dbd1c4b12328c5ec6b38e3807c0ca597",
+      "bytes": 71251
+    },
+    {
+      "file": "emoji-variation-sequences.txt",
+      "url": "https://www.unicode.org/Public/17.0.0/ucd/emoji/emoji-variation-sequences.txt",
+      "sha256": "bb3d09ef03f206012c7532dd52dc0a21c9efddba0135ea4cf0d9201b8b9bba7e",
+      "bytes": 38315
+    },
+    {
+      "file": "IVD_Sequences.txt",
+      "url": "https://www.unicode.org/ivd/data/2025-07-14/IVD_Sequences.txt",
+      "sha256": "0052165369b6c8783d19b041f0a70537a69d718d577b9df180453be9d8c10a87",
+      "bytes": 1346150
+    },
+    {
+      "file": "UNICODE-LICENSE.txt",
+      "url": "https://www.unicode.org/license.txt",
+      "sha256": "e7a93b009565cfce55919a381437ac4db883e9da2126fa28b91d12732bc53d96",
+      "bytes": 1995
+    }
+  ]
+}

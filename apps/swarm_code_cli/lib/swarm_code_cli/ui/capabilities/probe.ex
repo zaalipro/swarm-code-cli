@@ -1,6 +1,6 @@
 defmodule SwarmCodeCLI.UI.Capabilities.Probe do
   @moduledoc """
-  Inert observations consumed by later pure capability-selection policy.
+  Inert observations consumed by pure capability-selection policy.
 
   This module intentionally performs no operating-system, environment, or
   terminal probing.
@@ -15,6 +15,7 @@ defmodule SwarmCodeCLI.UI.Capabilities.Probe do
             term: nil,
             colorterm: nil,
             no_color?: false,
+            monochrome?: false,
             plain?: false,
             ascii?: false,
             reduced_motion?: false,
@@ -33,10 +34,11 @@ defmodule SwarmCodeCLI.UI.Capabilities.Probe do
           term: binary() | nil,
           colorterm: binary() | nil,
           no_color?: boolean(),
+          monochrome?: boolean(),
           plain?: boolean(),
           ascii?: boolean(),
           reduced_motion?: boolean(),
-          ambiguous_width: :narrow | :wide | nil,
+          ambiguous_width: :narrow | :wide | binary() | nil,
           enhanced_keys: SwarmCodeCLI.UI.Capabilities.feature_state(),
           focus: SwarmCodeCLI.UI.Capabilities.feature_state(),
           paste: SwarmCodeCLI.UI.Capabilities.feature_state(),

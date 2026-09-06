@@ -7,6 +7,7 @@ defmodule SwarmCodeCLI.UI.Capabilities do
   """
 
   alias SwarmCodeCLI.UI.Size
+  alias SwarmCodeCLI.UI.Capabilities.Probe
 
   @type color_mode :: :truecolor | :ansi256 | :ansi16 | :monochrome
   @type ambiguous_width :: :narrow | :wide
@@ -89,6 +90,107 @@ defmodule SwarmCodeCLI.UI.Capabilities do
   end
 
   def explicit(_size, _options), do: raise(ArgumentError, "invalid explicit capabilities")
+
+  @doc """
+  Selects terminal capabilities from inert observations, without OS calls.
+
+  `no_color?` combines the explicit flag and presence of NO_COLOR. A probe owner
+  supplies these observations; this function never reads the process environment.
+  Full-screen features fail closed unless both streams and /dev/tty are usable.
+  The candidate renderer cannot bound paste before allocation or provide live mouse.
+  """
+  @spec from_probe(Probe.t()) :: t()
+  def from_probe(%Probe{} = probe) do
+    validate_probe!(probe)
+
+    width =
+      case probe.ambiguous_width do
+        nil -> :narrow
+        :narrow -> :narrow
+        "narrow" -> :narrow
+        :wide -> :wide
+        "wide" -> :wide
+        _ -> raise ArgumentError, "ambiguous width must be narrow or wide"
+      end
+
+    terminal = is_binary(probe.term) and probe.term not in ["", "dumb"]
+
+    full_screen =
+      probe.stdin_tty? and probe.stdout_tty? and probe.controlling_tty? and terminal and
+        not probe.plain?
+
+    mode =
+      cond do
+        probe.no_color? or probe.monochrome? or not probe.stdout_tty? or not terminal ->
+          :monochrome
+
+        probe.colorterm in ["truecolor", "24bit"] ->
+          :truecolor
+
+        String.contains?(probe.term, "256color") ->
+          :ansi256
+
+        true ->
+          :ansi16
+      end
+
+    features =
+      Enum.map(@feature_options, fn feature ->
+        {feature, if(full_screen, do: Map.fetch!(probe, feature), else: :unavailable)}
+      end)
+
+    explicit(
+      probe.size,
+      features ++
+        [
+          color_mode: mode,
+          ambiguous_width: width,
+          ascii?: probe.ascii?,
+          reduced_motion?: probe.reduced_motion?,
+          tty?: probe.stdin_tty? and probe.stdout_tty?,
+          stdin_tty?: probe.stdin_tty?,
+          stdout_tty?: probe.stdout_tty?,
+          controlling_tty?: probe.controlling_tty?,
+          full_screen?: full_screen,
+          mouse: :unavailable,
+          paste_preallocation_bound?: false
+        ]
+    )
+  end
+
+  def from_probe(_), do: raise(ArgumentError, "invalid capability probe")
+
+  defp validate_probe!(probe) do
+    unless Map.keys(probe) |> Enum.sort() == Map.keys(%Probe{}) |> Enum.sort(),
+      do: raise(ArgumentError, "invalid capability probe shape")
+
+    for key <- [
+          :stdin_tty?,
+          :stdout_tty?,
+          :controlling_tty?,
+          :no_color?,
+          :monochrome?,
+          :plain?,
+          :ascii?,
+          :reduced_motion?,
+          :paste_preallocation_bound?
+        ] do
+      unless is_boolean(Map.fetch!(probe, key)),
+        do: raise(ArgumentError, "invalid boolean probe observation")
+    end
+
+    for key <- [:term, :colorterm] do
+      value = Map.fetch!(probe, key)
+
+      unless is_nil(value) or is_binary(value),
+        do: raise(ArgumentError, "invalid terminal probe observation")
+    end
+
+    for key <- @feature_options do
+      unless Map.fetch!(probe, key) in @feature_states,
+        do: raise(ArgumentError, "invalid feature probe observation")
+    end
+  end
 
   defp validate_options!(options) do
     unless Keyword.keyword?(options) do

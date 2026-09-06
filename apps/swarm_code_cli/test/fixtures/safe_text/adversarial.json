@@ -1,0 +1,5 @@
+[
+  {"input":"ok\u001b]0;owned\u0007\rFAIL\b\u202etxt\u202c\u200b", "output":"ok⟦ESC⟧]0;owned⟦BEL⟧⟦CR⟧FAIL⟦BS⟧⟦RLO U+202E⟧txt⟦PDF U+202C⟧⟦ZWSP U+200B⟧"},
+  {"input":"\u009b31m\u009d8;;link\u009c\u0090data\u009f\u009e", "output":"⟦CSI⟧31m⟦OSC⟧8;;link⟦ST⟧⟦DCS⟧data⟦APC⟧⟦PM⟧"},
+  {"input":"\u2066a\u2067b\u2068c\u2069\ufeff\u00ad", "output":"⟦LRI U+2066⟧a⟦RLI U+2067⟧b⟦FSI U+2068⟧c⟦PDI U+2069⟧⟦BOM U+FEFF⟧⟦SHY U+00AD⟧"}
+]

@@ -16,3 +16,9 @@ Unicode terminal width tables are derived from unicode-width 0.2.2
 under MIT and Apache-2.0. The exact upstream source, licenses, checksum, and
 deterministic generated attestation are preserved in
 third_party/unicode-width-0.2.2/.
+
+SafeText variation eligibility is derived from Unicode 17.0.0 Standardized
+Variants and Emoji Variation Sequences, and the Ideographic Variation Database
+registration dated 2025-07-14. Unicode License V3, source copyright notices,
+exact source bytes, URLs and SHA-256 hashes are preserved in
+third_party/unicode-17.0.0-variants/.

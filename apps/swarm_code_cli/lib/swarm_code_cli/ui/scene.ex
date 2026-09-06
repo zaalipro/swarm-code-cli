@@ -24,6 +24,8 @@ defmodule SwarmCodeCLI.UI.Scene do
             cursor: nil,
             announcements: []
 
+  @type style_role :: Style.role()
+
   @type t :: %__MODULE__{
           schema_version: 1,
           revision: non_neg_integer(),
@@ -226,14 +228,23 @@ defmodule SwarmCodeCLI.UI.Scene do
 
   defp valid_span?(_), do: false
 
-  defp valid_style?(%Style{role: role, foreground: fg, background: bg, modifiers: modifiers}),
-    do:
-      role in Style.roles() and valid_color?(fg) and valid_color?(bg) and is_list(modifiers) and
-        Enum.all?(modifiers, &(&1 in Style.modifiers()))
+  defp valid_style?(%Style{
+         role: role,
+         foreground: fg,
+         background: bg,
+         modifiers: modifiers,
+         prefix: prefix,
+         cues: cues
+       }),
+       do:
+         role in Style.roles() and valid_color?(fg) and valid_color?(bg) and is_list(modifiers) and
+           Enum.all?(modifiers, &(&1 in Style.modifiers())) and
+           (is_nil(prefix) or safe_text?(prefix)) and is_list(cues) and
+           Enum.all?(cues, &(&1 in Style.cues()))
 
   defp valid_style?(_), do: false
   defp valid_color?(nil), do: true
-  defp valid_color?(%Color{role: role}), do: role in Color.roles()
+  defp valid_color?(%Color{} = color), do: Color.valid?(color)
   defp valid_color?(_), do: false
 
   defp safe_text?(%SafeText{} = text) do
