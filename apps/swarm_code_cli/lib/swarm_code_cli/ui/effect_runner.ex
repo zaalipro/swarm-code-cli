@@ -1,7 +1,8 @@
 defmodule SwarmCodeCLI.UI.EffectRunner do
   @moduledoc "Closed effect dispatch. Local ownership stays with the session; admission failures become typed deliveries."
   alias SwarmCodeCLI.UI.Effect
-  alias SwarmCodeCLI.UI.DataSource.{Fake, Delivery, AdmissionError, DTO}
+  alias SwarmCodeCLI.UI.DataSource
+  alias SwarmCodeCLI.UI.DataSource.{Delivery, AdmissionError, DTO}
 
   def run(effect, context) do
     case Effect.validate(effect) do
@@ -11,7 +12,7 @@ defmodule SwarmCodeCLI.UI.EffectRunner do
   end
 
   defp dispatch({:watch, watch}, context) do
-    case safely(fn -> Fake.watch(context.data_source, watch) end) do
+    case safely(fn -> DataSource.watch(context.data_source, watch) end) do
       :ok ->
         :ok
 
@@ -30,7 +31,7 @@ defmodule SwarmCodeCLI.UI.EffectRunner do
   end
 
   defp dispatch({:query, %{kind: {:resync_watch, ref}} = request}, context) do
-    case safely(fn -> Fake.query(context.data_source, request) end) do
+    case safely(fn -> DataSource.query(context.data_source, request) end) do
       :ok ->
         :ok
 
@@ -68,18 +69,18 @@ defmodule SwarmCodeCLI.UI.EffectRunner do
   end
 
   defp dispatch({:unwatch, ref}, context),
-    do: discard(fn -> Fake.unwatch(context.data_source, ref) end)
+    do: discard(fn -> DataSource.unwatch(context.data_source, ref) end)
 
   defp dispatch({:cancel_request, id}, context),
-    do: discard(fn -> Fake.cancel(context.data_source, id) end)
+    do: discard(fn -> DataSource.cancel(context.data_source, id) end)
 
   defp dispatch(effect, context) do
     context.local.(effect)
     :ok
   end
 
-  defp admit(:query, source, request), do: Fake.query(source, request)
-  defp admit(:command, source, request), do: Fake.command(source, request)
+  defp admit(:query, source, request), do: DataSource.query(source, request)
+  defp admit(:command, source, request), do: DataSource.command(source, request)
 
   defp deliver(context, delivery) do
     send(context.owner, {:swarm_code_ui_data, context.source_epoch, delivery})

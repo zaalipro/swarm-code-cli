@@ -8,6 +8,7 @@
 #include <errno.h>
 #include <stdatomic.h>
 #include <stdlib.h>
+#include "swarm_lease.h"
 
 #define SD_MAX_NODES 128
 #define SD_MAX_SCOPES 128
@@ -34,6 +35,14 @@ typedef struct sd_control {
     int data_node;
     int locked;
     int close_error;
+    SwarmLease *lease;
+    int lease_attempted;
+    _Atomic int lease_required;
+    int lease_close_failed;
+    int lease_quarantined;
+#ifdef SWARM_GUARD_TEST
+    SwarmLeaseTestFault lease_test_fault;
+#endif
     sd_node nodes[SD_MAX_NODES];
     struct sd_control *queue_next;
 } sd_control;
@@ -68,6 +77,12 @@ static void sd_retain(sd_control *c) {
 
 static void sd_release(sd_control *c) {
     if (atomic_fetch_sub(&c->refs, 1) == 1) {
+        /* Unexpected undrainable lease preserves controls/exclusion for diagnosis. */
+        if (c->lease_quarantined || (c->lease && swarm_lease_active(c->lease))) {
+            atomic_store(&c->refs, 1);
+            return;
+        }
+        if (c->lease) swarm_lease_free(c->lease);
         enif_mutex_destroy(c->io_mutex);
         enif_free(c);
         atomic_fetch_sub(&sd_live_controls, 1);
@@ -78,6 +93,17 @@ static void sd_release(sd_control *c) {
 static void sd_close_graph(sd_control *c) {
     int failed = c->close_error;
     if (atomic_load(&c->terminal)) return;
+    if (c->lease) {
+        int rc = swarm_lease_close(c->lease);
+        if (swarm_lease_active(c->lease)) {
+            c->lease_close_failed = 1;
+            c->lease_quarantined = 1;
+            atomic_store(&c->terminal, 2);
+            return; /* Never release directory flocks below a live SQLite child. */
+        }
+        atomic_store(&c->lease_required, 0);
+        if (rc != SQLITE_OK) { c->lease_close_failed = 1; failed = 1; }
+    }
     if (c->locked) {
         if (flock(c->nodes[c->data_node].fd, LOCK_UN)) failed = 1;
         if (flock(c->nodes[c->runtime_node].fd, LOCK_UN)) failed = 1;
@@ -269,6 +295,7 @@ static ERL_NIF_TERM sd_new(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[]) 
     atomic_init(&c->revoked, 0);
     atomic_init(&c->queued, 0);
     atomic_init(&c->terminal, 0);
+    atomic_init(&c->lease_required, 0);
     c->runtime_node = c->data_node = -1;
     c->io_mutex = enif_mutex_create("swarm:directory_scope");
     if (!c->io_mutex || !enif_self(env, &c->owner)) {
@@ -472,13 +499,19 @@ static ERL_NIF_TERM sd_close(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[]
     ErlNifPid caller;
     if (!enif_self(env, &caller) || enif_compare_pids(&caller, &c->owner))
         return sd_error(env, "directory_wrong_owner");
-    sd_revoke(c);
     enif_mutex_lock(c->io_mutex);
+    if (c->lease && swarm_lease_active(c->lease) && !atomic_load(&c->revoked)) {
+        enif_mutex_unlock(c->io_mutex);
+        return sd_error(env, "directory_scope_in_use");
+    }
+    sd_revoke(c);
     sd_close_graph(c);
     int terminal = atomic_load(&c->terminal);
     enif_mutex_unlock(c->io_mutex);
     return terminal == 1 ? am_ok : sd_error(env, "directory_close_failed");
 }
+
+#include "swarm_lease_nif.c"
 
 static int sd_service_load(ErlNifEnv *env) {
     ErlNifResourceTypeInit scope_init = {0};
@@ -492,7 +525,9 @@ static int sd_service_load(ErlNifEnv *env) {
       ERL_NIF_RT_CREATE, NULL);
     sd_directory_type = enif_open_resource_type_x(env, "swarm_directory", &directory_init,
       ERL_NIF_RT_CREATE, NULL);
-    if (!sd_scope_type || !sd_directory_type) return -1;
+    sd_lease_type = enif_open_resource_type(env, NULL, "swarm_guarded_lease",
+      sd_lease_destroy, ERL_NIF_RT_CREATE, NULL);
+    if (!sd_scope_type || !sd_directory_type || !sd_lease_type) return -1;
     sd_queue_mutex = enif_mutex_create("swarm:directory_cleanup");
     sd_queue_condition = enif_cond_create("swarm:directory_cleanup");
     if (!sd_queue_mutex || !sd_queue_condition) {

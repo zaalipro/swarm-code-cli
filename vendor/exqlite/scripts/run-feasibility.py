@@ -55,8 +55,8 @@ def main():
              f"ERTS_INCLUDE_DIR={include}", f"ERL_EI_INCLUDE_DIR={include}"], cwd=FORK, env=env)
         run(["mise", "exec", "--", "elixirc", "--ignore-module-conflict", "-o",
              destination / "lib/exqlite/ebin", FORK / "lib/exqlite/sqlite3_nif.ex",
-             FORK / "lib/exqlite/swarm_guard.ex", FORK / "lib/exqlite/directory_scope.ex"], env=env)
-        tests = ("feasibility.exs", "ecto_compat.exs", "directory_scope.exs") if mode == "test" else ("production.exs", "directory_scope.exs")
+             FORK / "lib/exqlite/swarm_guard.ex", FORK / "lib/exqlite/directory_scope.ex", FORK / "lib/exqlite/guarded_lease.ex"], env=env)
+        tests = ("feasibility.exs", "ecto_compat.exs", "directory_scope.exs", "guarded_lease.exs", "lease_close_errors.exs") if mode == "test" else ("production.exs", "directory_scope.exs", "guarded_lease.exs")
         for test in tests:
             run(["mise", "exec", "--", "elixir", FORK / "test/swarm_guard" / test], env=env)
     run(["make", "-n", "EXQLITE_USE_SYSTEM=1"], cwd=FORK, expect=2)

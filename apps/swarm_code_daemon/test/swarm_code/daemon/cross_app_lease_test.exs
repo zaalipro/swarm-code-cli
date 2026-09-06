@@ -30,8 +30,7 @@ defmodule SwarmCode.Daemon.CrossAppLeaseTest do
     dir = private_tmp!()
 
     opts = [
-      lease_path: Path.join(dir, "instance_lease.db"),
-      owner_path: Path.join(dir, "instance_owner.json"),
+      paths: SwarmCode.Daemon.Test.LeaseFixture.paths(dir),
       identity: %ProcessIdentity{
         uid: File.lstat!(dir).uid,
         pid: 123,
@@ -44,30 +43,37 @@ defmodule SwarmCode.Daemon.CrossAppLeaseTest do
         newest_migration: 20_260_926_000_000,
         manifest_sha256: "408afb8e6eb422c8df50fe65536a08f853475c162d584db45b4af708274fd1d0"
       },
-      socket_path: Path.join(dir, "daemon.sock"),
-      app_version: "0.1.0-dev",
-      ipc_nonce: "must-not-be-persisted"
+      app_version: "0.1.0-dev"
     ]
 
     %{dir: dir, opts: opts}
   end
 
   test "owner records reject path and mode seams outside the typed lease input", %{opts: opts} do
-    for key <- [:mode, :home, :env, :database_path] do
-      assert_raise ArgumentError, fn -> OwnerRecord.new(Keyword.put(opts, key, :untrusted)) end
+    semantic =
+      opts
+      |> Keyword.take([:identity, :database_fingerprint, :schema_contract, :app_version])
+      |> Keyword.put(:socket_path, opts[:paths].socket)
+
+    assert %OwnerRecord{} = OwnerRecord.new(semantic)
+
+    for key <- [:mode, :home, :env, :database_path, :paths] do
+      assert_raise ArgumentError, fn ->
+        OwnerRecord.new(Keyword.put(semantic, key, :untrusted))
+      end
     end
   end
 
   test "one owner holds an exclusive rollback-journal lease", %{dir: dir, opts: opts} do
     assert {:ok, owner} = CrossAppLease.start_link(opts)
     assert :ok = CrossAppLease.assert_held(owner)
-    assert permissions(opts[:lease_path]) == 0o600
-    assert permissions(opts[:owner_path]) == 0o600
+    assert permissions(opts[:paths].lease) == 0o600
+    assert permissions(opts[:paths].owner_record) == 0o600
     assert temp_files(dir, ".instance_lease.db.tmp.") == []
     assert temp_files(dir, ".instance_owner.json.tmp.") == []
 
     record = CrossAppLease.owner(owner)
-    persisted = opts[:owner_path] |> File.read!() |> Jason.decode!()
+    persisted = opts[:paths].owner_record |> File.read!() |> Jason.decode!()
 
     assert Enum.sort(Map.keys(persisted)) == @owner_keys
     assert persisted == owner_map(record)
@@ -81,12 +87,11 @@ defmodule SwarmCode.Daemon.CrossAppLeaseTest do
     assert persisted["schema_epoch"] == opts[:schema_contract].epoch
     assert persisted["newest_migration"] == opts[:schema_contract].newest_migration
     assert persisted["manifest_sha256"] == opts[:schema_contract].manifest_sha256
-    assert persisted["socket_path"] == opts[:socket_path]
+    assert persisted["socket_path"] == opts[:paths].socket
     assert {:ok, nonce} = Base.url_decode64(persisted["lease_nonce"], padding: false)
     assert byte_size(nonce) == 32
     assert {:ok, %DateTime{}, 0} = DateTime.from_iso8601(persisted["acquired_at"])
     refute Map.has_key?(persisted, "ipc_nonce")
-    refute File.read!(opts[:owner_path]) =~ opts[:ipc_nonce]
 
     contender_opts = Keyword.put(opts, :identity, %{opts[:identity] | pid: 124})
     contender = Task.async(fn -> CrossAppLease.start_link(contender_opts) end)
@@ -99,30 +104,116 @@ defmodule SwarmCode.Daemon.CrossAppLeaseTest do
             }} = Task.await(contender, 1_000)
 
     GenServer.stop(owner)
-    refute File.exists?(opts[:owner_path])
-    assert query_scalar(opts[:lease_path], "PRAGMA journal_mode") == "delete"
+    refute File.exists?(opts[:paths].owner_record)
+    assert query_scalar(opts[:paths].lease, "PRAGMA journal_mode") == "delete"
     assert {:ok, next_owner} = CrossAppLease.start_link(opts)
     GenServer.stop(next_owner)
   end
 
-  test "an existing WAL lease is changed to verified rollback-journal mode", %{opts: opts} do
-    create_lease_with_journal_mode!(opts[:lease_path], "WAL")
-    assert query_scalar(opts[:lease_path], "PRAGMA journal_mode") == "wal"
-
+  test "native resources belong to the retained owner and copies grant no operations", %{
+    opts: opts
+  } do
     assert {:ok, owner} = CrossAppLease.start_link(opts)
+    state = :sys.get_state(owner)
+    assert {:error, :directory_wrong_owner} = Exqlite.GuardedLease.assert_held(state.lease)
+    assert {:error, :directory_wrong_owner} = Exqlite.GuardedLease.close(state.lease)
+    assert {:error, :directory_wrong_owner} = Exqlite.DirectoryScope.close(state.scope)
+    assert :ok = CrossAppLease.assert_held(owner)
+    GenServer.stop(owner)
+    assert :closed = Exqlite.GuardedLease.status(state.lease)
+    assert :closed = Exqlite.DirectoryScope.status(state.scope)
+  end
+
+  test "OTP status diagnostics do not expose retained native resource terms", %{opts: opts} do
+    assert {:ok, owner} = CrossAppLease.start_link(opts)
+    state = :sys.get_state(owner)
+    status = inspect(:sys.get_status(owner), limit: :infinity)
+    refute status =~ inspect(state.scope)
+    refute status =~ inspect(state.lease)
+    GenServer.stop(owner)
+  end
+
+  test "closed lease inputs reject legacy paths, backend selection and forged derivations", %{
+    opts: opts
+  } do
+    for extra <- [
+          [lease_path: opts[:paths].lease],
+          [ipc_nonce: "secret"],
+          [backend: :legacy],
+          [paths: opts[:paths]],
+          [startup_reply: {self(), make_ref()}]
+        ] do
+      assert {:error, %StartupError{code: :lease_failed}} =
+               CrossAppLease.start_link(opts ++ extra)
+    end
+
+    forged = %{opts[:paths] | lease: Path.join(opts[:paths].data, "alternate.db")}
+
+    assert {:error, %StartupError{code: :lease_failed}} =
+             CrossAppLease.start_link(Keyword.put(opts, :paths, forged))
+
+    refute File.exists?(forged.lease)
+  end
+
+  test "native SQLite transaction excludes an independent SQLite process until drain", %{
+    opts: opts
+  } do
+    assert {:ok, owner} = CrossAppLease.start_link(opts)
+
+    script =
+      "import sqlite3,sys; c=sqlite3.connect(sys.argv[1],timeout=0); c.execute('BEGIN EXCLUSIVE'); c.close()"
+
+    python = System.find_executable("python3") || raise "python3 required"
+
+    {output, status} =
+      System.cmd(python, ["-c", script, opts[:paths].lease], stderr_to_stdout: true)
+
+    assert status != 0
+    assert output =~ "database is locked"
     GenServer.stop(owner)
 
-    assert query_scalar(opts[:lease_path], "PRAGMA journal_mode") == "delete"
+    assert {"", 0} =
+             System.cmd(python, ["-c", script, opts[:paths].lease], stderr_to_stdout: true)
+  end
+
+  test "native acquire hook runs in owner, redacts failures and drains directory exclusion", %{
+    opts: opts
+  } do
+    test_process = self()
+
+    hook = fn :before_native_acquire ->
+      send(test_process, {:native_hook_owner, self()})
+      raise "secret-path-do-not-report"
+    end
+
+    assert {:error, %StartupError{code: :lease_failed} = error} =
+             CrossAppLease.start_link(Keyword.put(opts, :test_open_hook, hook))
+
+    refute error.message =~ "secret-path-do-not-report"
+    assert_receive {:native_hook_owner, hook_owner}
+    refute hook_owner == self()
+    assert {:ok, successor} = CrossAppLease.start_link(opts)
+    GenServer.stop(successor)
+  end
+
+  test "an existing WAL lease is refused without changing its bytes or mode", %{opts: opts} do
+    create_lease_with_journal_mode!(opts[:paths].lease, "WAL")
+    assert query_scalar(opts[:paths].lease, "PRAGMA journal_mode") == "wal"
+
+    before = File.read!(opts[:paths].lease)
+    assert {:error, %StartupError{code: :lease_failed}} = CrossAppLease.start_link(opts)
+    assert File.read!(opts[:paths].lease) == before
+    assert query_scalar(opts[:paths].lease, "PRAGMA journal_mode") == "wal"
   end
 
   test "wrong permissions on an existing lease fail closed without chmod", %{opts: opts} do
-    File.write!(opts[:lease_path], "do not open")
-    File.chmod!(opts[:lease_path], 0o644)
-    before = file_identity(opts[:lease_path])
+    File.write!(opts[:paths].lease, "do not open")
+    File.chmod!(opts[:paths].lease, 0o644)
+    before = file_identity(opts[:paths].lease)
 
     assert {:error, %StartupError{code: :lease_failed}} = CrossAppLease.start_link(opts)
-    assert file_identity(opts[:lease_path]) == before
-    assert File.read!(opts[:lease_path]) == "do not open"
+    assert file_identity(opts[:paths].lease) == before
+    assert File.read!(opts[:paths].lease) == "do not open"
   end
 
   test "special permission bits on an existing lease fail closed without chmod", %{
@@ -130,8 +221,12 @@ defmodule SwarmCode.Daemon.CrossAppLeaseTest do
     opts: opts
   } do
     for mode <- [0o4600, 0o2600, 0o1600] do
-      lease_path = Path.join(dir, "instance_lease-#{Integer.to_string(mode, 8)}.db")
-      mode_opts = Keyword.put(opts, :lease_path, lease_path)
+      data = Path.join(dir, "mode-#{Integer.to_string(mode, 8)}")
+      File.mkdir!(data)
+      File.chmod!(data, 0o700)
+      paths = SwarmCode.Daemon.Test.LeaseFixture.paths(data)
+      lease_path = paths.lease
+      mode_opts = Keyword.put(opts, :paths, paths)
       File.write!(lease_path, "do not open")
       chmod_special!(lease_path, mode)
       before = file_identity(lease_path)
@@ -147,43 +242,43 @@ defmodule SwarmCode.Daemon.CrossAppLeaseTest do
     File.write!(target, "target contents")
     File.chmod!(target, 0o644)
     target_before = file_identity(target)
-    File.ln_s!(target, opts[:lease_path])
+    File.ln_s!(target, opts[:paths].lease)
 
     assert {:error, %StartupError{code: :lease_failed}} = CrossAppLease.start_link(opts)
-    assert File.lstat!(opts[:lease_path]).type == :symlink
-    assert File.read_link!(opts[:lease_path]) == target
+    assert File.lstat!(opts[:paths].lease).type == :symlink
+    assert File.read_link!(opts[:paths].lease) == target
     assert file_identity(target) == target_before
     assert File.read!(target) == "target contents"
   end
 
   test "a nonregular lease fails closed unchanged", %{opts: opts} do
-    File.mkdir!(opts[:lease_path])
-    File.chmod!(opts[:lease_path], 0o700)
-    before = file_identity(opts[:lease_path])
+    File.mkdir!(opts[:paths].lease)
+    File.chmod!(opts[:paths].lease, 0o700)
+    before = file_identity(opts[:paths].lease)
 
     assert {:error, %StartupError{code: :lease_failed}} = CrossAppLease.start_link(opts)
-    assert file_identity(opts[:lease_path]) == before
-    assert File.lstat!(opts[:lease_path]).type == :directory
+    assert file_identity(opts[:paths].lease) == before
+    assert File.lstat!(opts[:paths].lease).type == :directory
   end
 
   test "a lease with the wrong owner fails closed unchanged", %{opts: opts} do
-    File.write!(opts[:lease_path], "do not open")
-    File.chmod!(opts[:lease_path], 0o600)
-    before = file_identity(opts[:lease_path])
+    File.write!(opts[:paths].lease, "do not open")
+    File.chmod!(opts[:paths].lease, 0o600)
+    before = file_identity(opts[:paths].lease)
     wrong_identity = %{opts[:identity] | uid: opts[:identity].uid + 1}
 
     assert {:error, %StartupError{code: :lease_failed}} =
              CrossAppLease.start_link(Keyword.put(opts, :identity, wrong_identity))
 
-    assert file_identity(opts[:lease_path]) == before
-    assert File.read!(opts[:lease_path]) == "do not open"
+    assert file_identity(opts[:paths].lease) == before
+    assert File.read!(opts[:paths].lease) == "do not open"
   end
 
   test "an owner publish failure rolls back and closes the connection and only its temp", %{
     dir: dir,
     opts: opts
   } do
-    File.mkdir!(opts[:owner_path])
+    File.mkdir!(opts[:paths].owner_record)
     sentinel = Path.join(dir, ".instance_owner.json.tmp.keep")
     File.write!(sentinel, "not ours")
 
@@ -191,13 +286,12 @@ defmodule SwarmCode.Daemon.CrossAppLeaseTest do
     assert temp_files(dir, ".instance_owner.json.tmp.") == [sentinel]
     assert File.read!(sentinel) == "not ours"
 
-    next_opts = Keyword.put(opts, :owner_path, Path.join(dir, "next-owner.json"))
-    assert {:ok, next_owner} = CrossAppLease.start_link(next_opts)
+    if File.dir?(opts[:paths].owner_record), do: File.rmdir!(opts[:paths].owner_record)
+    assert {:ok, next_owner} = CrossAppLease.start_link(opts)
     GenServer.stop(next_owner)
   end
 
   test "a fatal post-publication owner error removes its own record before releasing", %{
-    dir: dir,
     opts: opts
   } do
     sync_directory = fn _directory -> {:error, :injected_directory_sync_failure} end
@@ -206,10 +300,10 @@ defmodule SwarmCode.Daemon.CrossAppLeaseTest do
       Keyword.put(opts, :owner_atomic_replace_opts, sync_directory: sync_directory)
 
     assert {:error, %StartupError{code: :lease_failed}} = CrossAppLease.start_link(failed_opts)
-    refute File.exists?(opts[:owner_path])
+    refute File.exists?(opts[:paths].owner_record)
 
-    next_opts = Keyword.put(opts, :owner_path, Path.join(dir, "next-owner.json"))
-    assert {:ok, next_owner} = CrossAppLease.start_link(next_opts)
+    if File.dir?(opts[:paths].owner_record), do: File.rmdir!(opts[:paths].owner_record)
+    assert {:ok, next_owner} = CrossAppLease.start_link(opts)
     GenServer.stop(next_owner)
   end
 
@@ -219,22 +313,22 @@ defmodule SwarmCode.Daemon.CrossAppLeaseTest do
     assert {:ok, owner} = CrossAppLease.start_link(opts)
     replacement = %{"lease_nonce" => "another-owner", "product" => "desktop"}
     replacement_json = [Jason.encode_to_iodata!(replacement), "\n"]
-    assert :ok = AtomicReplace.write(opts[:owner_path], replacement_json, mode: 0o600)
+    assert :ok = AtomicReplace.write(opts[:paths].owner_record, replacement_json, mode: 0o600)
 
     GenServer.stop(owner)
 
-    assert Jason.decode!(File.read!(opts[:owner_path])) == replacement
+    assert Jason.decode!(File.read!(opts[:paths].owner_record)) == replacement
   end
 
   test "graceful shutdown leaves an oversized replacement owner record untouched", %{opts: opts} do
     assert {:ok, owner} = CrossAppLease.start_link(opts)
     replacement = String.duplicate("x", 32 * 1_024 + 1)
-    File.write!(opts[:owner_path], replacement)
-    File.chmod!(opts[:owner_path], 0o600)
+    File.write!(opts[:paths].owner_record, replacement)
+    File.chmod!(opts[:paths].owner_record, 0o600)
 
     GenServer.stop(owner)
 
-    assert File.read!(opts[:owner_path]) == replacement
+    assert File.read!(opts[:paths].owner_record) == replacement
   end
 
   test "owner cleanup completes while the old SQLite lease still excludes a successor", %{
@@ -255,7 +349,7 @@ defmodule SwarmCode.Daemon.CrossAppLeaseTest do
 
     stopper = Task.async(fn -> GenServer.stop(owner) end)
     assert_receive {:owner_record_cleaned, ^owner}
-    refute File.exists?(opts[:owner_path])
+    refute File.exists?(opts[:paths].owner_record)
 
     assert {:error, %StartupError{code: :data_lease_held}} = CrossAppLease.start_link(opts)
 
@@ -292,14 +386,30 @@ defmodule SwarmCode.Daemon.CrossAppLeaseTest do
     assert_receive {:DOWN, ^caller_monitor, :process, ^caller, :shutdown}
     assert_receive {:DOWN, ^owner_monitor, :process, ^owner, :shutdown}
 
-    assert {:ok, successor} = CrossAppLease.start_link(opts)
+    assert {:ok, successor} = await_successor(opts, System.monotonic_time(:millisecond) + 2_000)
     GenServer.stop(successor)
+  end
+
+  # Native DOWN queues revocation; fresh acquisition observes actual release.
+  defp await_successor(opts, deadline) do
+    case CrossAppLease.start_link(opts) do
+      {:error, %StartupError{code: :data_lease_held}} = held ->
+        if System.monotonic_time(:millisecond) < deadline do
+          Process.sleep(10)
+          await_successor(opts, deadline)
+        else
+          held
+        end
+
+      result ->
+        result
+    end
   end
 
   defp private_tmp! do
     dir =
       Path.join(
-        System.tmp_dir!(),
+        SwarmCode.Daemon.Test.LeaseFixture.build_root(),
         "swarm-code-cross-app-lease-#{System.unique_integer([:positive, :monotonic])}"
       )
 
@@ -380,7 +490,7 @@ defmodule SwarmCode.Daemon.CrossAppLeaseFinalFixTest do
   test "rejects a lease pathname substitution between validation and sqlite open" do
     dir =
       Path.join(
-        System.tmp_dir!(),
+        SwarmCode.Daemon.Test.LeaseFixture.build_root(),
         "swarm-code-final-lease-race-#{System.unique_integer([:positive])}"
       )
 
@@ -397,15 +507,14 @@ defmodule SwarmCode.Daemon.CrossAppLeaseFinalFixTest do
     File.chmod!(replacement, 0o600)
     uid = File.lstat!(dir).uid
 
-    hook = fn :before_sqlite_open, ^path ->
+    hook = fn :before_native_acquire, ^path ->
       File.rename!(path, parked)
       File.ln_s!(replacement, path)
       :ok
     end
 
     opts = [
-      lease_path: path,
-      owner_path: Path.join(dir, "instance_owner.json"),
+      paths: SwarmCode.Daemon.Test.LeaseFixture.paths(dir),
       identity: %ProcessIdentity{uid: uid, pid: 1, process_start_id: "final", boot_id: "final"},
       database_fingerprint: "fingerprint",
       schema_contract: %{
@@ -413,7 +522,6 @@ defmodule SwarmCode.Daemon.CrossAppLeaseFinalFixTest do
         newest_migration: 1,
         manifest_sha256: String.duplicate("a", 64)
       },
-      socket_path: Path.join(dir, "daemon.sock"),
       app_version: "0.1.0-dev",
       test_open_hook: hook
     ]
@@ -426,7 +534,7 @@ defmodule SwarmCode.Daemon.CrossAppLeaseFinalFixTest do
   test "a lease owner detects canonical pathname replacement before handoff" do
     dir =
       Path.join(
-        System.tmp_dir!(),
+        SwarmCode.Daemon.Test.LeaseFixture.build_root(),
         "swarm-code-final-lease-handoff-#{System.unique_integer([:positive])}"
       )
 
@@ -441,8 +549,7 @@ defmodule SwarmCode.Daemon.CrossAppLeaseFinalFixTest do
     File.chmod!(replacement, 0o600)
 
     opts = [
-      lease_path: path,
-      owner_path: Path.join(dir, "instance_owner.json"),
+      paths: SwarmCode.Daemon.Test.LeaseFixture.paths(dir),
       identity: %ProcessIdentity{
         uid: uid,
         pid: 1,
@@ -455,7 +562,6 @@ defmodule SwarmCode.Daemon.CrossAppLeaseFinalFixTest do
         newest_migration: 1,
         manifest_sha256: String.duplicate("a", 64)
       },
-      socket_path: Path.join(dir, "daemon.sock"),
       app_version: "0.1.0-dev"
     ]
 
@@ -464,8 +570,32 @@ defmodule SwarmCode.Daemon.CrossAppLeaseFinalFixTest do
     File.rename!(path, path <> ".parked")
     File.ln_s!(replacement, path)
 
-    assert {:error, :lease_identity_changed} = CrossAppLease.assert_held(owner)
+    assert {:error, %{code: :lease_failed}} = CrossAppLease.assert_held(owner)
     assert_receive {:DOWN, ^monitor, :process, ^owner, :normal}
     assert File.read!(replacement) == "replacement"
+  end
+end
+
+defmodule SwarmCode.Daemon.PhysicalBootPathsTest do
+  use ExUnit.Case, async: false
+  alias SwarmCode.Daemon.Platform.PhysicalBootPaths
+
+  test "only the supported macOS var alias is translated" do
+    if :os.type() == {:unix, :darwin} do
+      assert {:ok, "/private/var"} = PhysicalBootPaths.resolve("/var", :macos)
+      assert {:error, _} = PhysicalBootPaths.resolve("/tmp", :macos)
+      assert {:error, _} = PhysicalBootPaths.resolve("/var", :linux)
+    end
+  end
+
+  test "arbitrary symlinks and native path limits refuse before admission" do
+    base = SwarmCode.Daemon.Test.LeaseFixture.build_root()
+    link = Path.join(base, "native-link-#{System.unique_integer([:positive])}")
+    File.ln_s!(base, link)
+    on_exit(fn -> File.rm!(link) end)
+    assert {:error, _} = PhysicalBootPaths.resolve(link, :macos)
+    assert {:error, _} = PhysicalBootPaths.resolve("/" <> String.duplicate("x", 256), :macos)
+    assert {:error, _} = PhysicalBootPaths.resolve("/" <> String.duplicate("x", 4096), :macos)
+    assert {:error, _} = PhysicalBootPaths.resolve(base <> "/../_build", :macos)
   end
 end

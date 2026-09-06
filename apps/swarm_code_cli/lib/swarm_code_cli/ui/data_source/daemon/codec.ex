@@ -1,7 +1,7 @@
 defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
-  @moduledoc "Pure translation between typed client requests and the closed daemon wire protocol."
+  @moduledoc "Pure translation of typed requests, replies and watch events; owns no transport or credit."
   alias SwarmCode.Protocol.{Frame, Message, ServiceRequest}
-  alias SwarmCodeCLI.UI.DataSource.{AdmissionError, Delivery, DTO, Request}
+  alias SwarmCodeCLI.UI.DataSource.{AdmissionError, Delta, Delivery, DTO, Request, Watch}
 
   @responses %{
     "outcome" => {:outcome, DTO.Outcome},
@@ -13,6 +13,165 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
     "pending_interactions" => {:pending_interactions, DTO.PendingInteractionWindow},
     "detail_window" => {:detail_window, DTO.DetailWindow}
   }
+
+  @watch_bodies %{
+    shell: "shell_snapshot",
+    workspace: "workspace_snapshot",
+    activity: "activity_snapshot",
+    inspector: "run_detail_snapshot"
+  }
+
+  def watch_request(watch, wire_id, nonce, timeout_ms) do
+    with {:ok, watch} <- Watch.validate(watch),
+         body = watch_body(watch, timeout_ms),
+         {:ok, _} <- ServiceRequest.decode(body, watch.scope),
+         message = %Message{
+           version: 1,
+           type: :request,
+           request_id: wire_id,
+           nonce: nonce,
+           scope: watch.scope,
+           sequence: nil,
+           occurred_at: nil,
+           body: body
+         },
+         {:ok, _} <- Frame.encode(message) do
+      {:ok, message}
+    else
+      _ -> invalid()
+    end
+  end
+
+  @doc "Validate event correlation and content. The adapter owns sequence/epoch transitions and ACKs."
+  def event(message, watch, nonce) do
+    with {:ok, watch} <- Watch.validate(watch),
+         {:ok, _} <- ServiceRequest.decode(watch_body(watch, 1), watch.scope),
+         {:ok, _} <- Frame.encode(message),
+         true <-
+           message.request_id == nil and message.nonce == nonce and message.scope == watch.scope,
+         true <- is_integer(message.sequence),
+         true <- message.body["watch_ref"] == watch.watch_ref do
+      event_body(message, watch)
+    else
+      _ -> invalid()
+    end
+  end
+
+  defp watch_body(watch, timeout_ms),
+    do: %{
+      "op" => "watch",
+      "watch_ref" => watch.watch_ref,
+      "slot" => Atom.to_string(watch.slot),
+      "page_size" => watch.page_size,
+      "byte_limit" => watch.byte_limit,
+      "timeout_ms" => timeout_ms
+    }
+
+  defp event_body(
+         %Message{
+           type: :event,
+           body:
+             %{
+               "op" => "watch_ready",
+               "revision" => revision,
+               "body_kind" => kind,
+               "value" => value
+             } = body
+         } = message,
+         watch
+       )
+       when map_size(body) == 5 do
+    with true <- @watch_bodies[watch.slot] == kind,
+         {_expected, module} <- @responses[kind],
+         {:ok, dto} <- module.decode(value),
+         true <- exact_wire_shape?(dto, value),
+         {:ok, ^dto} <- restore_identities(dto, nil, nil),
+         true <- scoped_body?(watch.scope, dto),
+         true <- watermark_matches?(dto, message.sequence),
+         true <- body_revision?(dto, revision),
+         {:ok, bytes} <- Jason.encode(value),
+         true <- byte_size(bytes) <= watch.byte_limit,
+         true <- page_sizes?(dto, watch.page_size) do
+      watch_delivery(watch, :watch_ready, dto, revision, nil)
+    else
+      _ -> invalid()
+    end
+  end
+
+  defp event_body(
+         %Message{type: :event, body: %{"op" => "delta", "value" => value} = body} = message,
+         watch
+       )
+       when map_size(body) == 3 do
+    with {:ok, delta} <- Delta.decode(value),
+         true <- exact_wire_shape?(delta, value),
+         true <- delta.sequence == message.sequence,
+         true <- body_revision?(delta.body, delta.revision),
+         true <- scoped_delta?(watch.scope, delta),
+         true <- delta.kind != :snapshot_required do
+      watch_delivery(watch, :delta, delta, delta.revision, delta.sequence)
+    else
+      _ -> invalid()
+    end
+  end
+
+  defp event_body(
+         %Message{
+           type: :snapshot_required,
+           body: %{"op" => "snapshot_required", "reason" => reason} = body
+         },
+         watch
+       )
+       when map_size(body) == 3 and reason in ["overflow", "gap", "epoch_changed"],
+       do: watch_delivery(watch, :resyncing, nil, nil, nil)
+
+  defp event_body(_, _), do: invalid()
+
+  defp watch_delivery(watch, kind, body, revision, sequence) do
+    case Delivery.validate(%Delivery{
+           kind: kind,
+           watch_ref: watch.watch_ref,
+           request_id: nil,
+           scope: watch.scope,
+           generation: watch.generation,
+           revision: revision,
+           sequence: sequence,
+           body: body
+         }) do
+      {:ok, delivery} -> {:ok, delivery}
+      _ -> invalid()
+    end
+  end
+
+  defp body_revision?(%{revision: revision}, expected), do: revision == expected
+  defp body_revision?(_, _), do: true
+
+  defp watermark_matches?(%{__struct__: _} = dto, sequence) do
+    Map.get(dto, :through_sequence, sequence) == sequence and
+      Enum.all?(Map.from_struct(dto), fn {_, value} -> watermark_matches?(value, sequence) end)
+  end
+
+  defp watermark_matches?(values, sequence) when is_list(values),
+    do: Enum.all?(values, &watermark_matches?(&1, sequence))
+
+  defp watermark_matches?(_, _), do: true
+
+  defp page_sizes?(%{__struct__: _} = dto, limit) do
+    Enum.all?(Map.from_struct(dto), fn {key, value} ->
+      (key not in [:runs, :items, :agents, :interactions] or length(value) <= limit) and
+        page_sizes?(value, limit)
+    end)
+  end
+
+  defp page_sizes?(values, limit) when is_list(values),
+    do: Enum.all?(values, &page_sizes?(&1, limit))
+
+  defp page_sizes?(_, _), do: true
+
+  defp scoped_delta?(_, %Delta{kind: kind}) when kind in [:counts_update, :connection], do: true
+  defp scoped_delta?(%{kind: kind}, _) when kind in [:global, :project], do: true
+  defp scoped_delta?(%{kind: :conversation, id: id}, delta), do: delta.conversation_id == id
+  defp scoped_delta?(%{kind: :run, id: id}, delta), do: delta.run_id == id
 
   def request(request, wire_id, nonce, now) do
     with {:ok, request} <- Request.validate(request),
@@ -224,6 +383,10 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
   defp scoped_body?(scope, %{items: items}), do: Enum.all?(items, &scoped_item?(scope, &1))
   defp scoped_body?(_, _), do: true
   defp scoped_item?(%{kind: :global}, _), do: true
+
+  # These DTOs contain run/conversation identities, not project membership.
+  # The daemon resolves membership; this codec verifies the exact outer scope.
+  defp scoped_item?(%{kind: :project}, _), do: true
 
   defp scoped_item?(%{kind: :conversation, id: id}, item),
     do: Map.get(item, :conversation_id) == id

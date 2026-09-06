@@ -1,7 +1,26 @@
 defmodule SwarmCodeCLI.UI.DataSource.Delta do
-  @moduledoc "Closed, ordered canonical fake facts, independent of a client watch."
+  @moduledoc "Closed, ordered presentation facts, independent of a client watch."
   alias SwarmCodeCLI.UI.DataSource.DTO
   alias DTO.Schema
+
+  @bodies %{
+    node_upsert: DTO.TranscriptItem,
+    run_update: DTO.RunSummary,
+    agent_update: DTO.AgentSummary,
+    interaction_upsert: DTO.PendingInteraction,
+    activity_upsert: DTO.ActivityItem,
+    counts_update: DTO.Counts,
+    connection: DTO.Connection
+  }
+  @kinds Map.keys(@bodies) ++
+           [
+             :transcript_remove,
+             :stream_append,
+             :stream_reset,
+             :interaction_remove,
+             :activity_remove,
+             :snapshot_required
+           ]
 
   defstruct [
     :kind,
@@ -64,6 +83,36 @@ defmodule SwarmCodeCLI.UI.DataSource.Delta do
   end
 
   def validate(_), do: {:error, :invalid_delta}
+
+  @doc "Decode fixed wire fields and select a nested DTO only from the closed delta kind."
+  def decode(wire) when is_map(wire) and not is_struct(wire) do
+    kind = Enum.find(@kinds, &(Atom.to_string(&1) == wire["kind"]))
+
+    body_type =
+      case Map.get(@bodies, kind) do
+        nil -> {:optional, {:enum, []}}
+        module -> {:dto, module}
+      end
+
+    Schema.decode(
+      __MODULE__,
+      [
+        kind: {:enum, @kinds},
+        entity_id: {:optional, :id},
+        run_id: {:optional, :id},
+        conversation_id: {:optional, :id},
+        channel: {:optional, {:enum, [:text, :reasoning]}},
+        attempt_id: {:optional, :id},
+        text: {:optional, :text},
+        body: body_type,
+        sequence: :revision,
+        revision: :revision
+      ],
+      wire
+    )
+  end
+
+  def decode(_), do: {:error, :invalid_delta}
 
   defp correlated_body?(%{body: %DTO.RunSummary{} = body} = delta),
     do:

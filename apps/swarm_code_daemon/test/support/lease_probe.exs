@@ -20,8 +20,7 @@ identity = %ProcessIdentity{
 }
 
 lease_opts = [
-  lease_path: Map.fetch!(opts, "lease_path"),
-  owner_path: Map.fetch!(opts, "owner_path"),
+  paths: SwarmCode.Daemon.Test.LeaseFixture.paths(Map.fetch!(opts, "data")),
   identity: identity,
   database_fingerprint: Map.fetch!(opts, "database_fingerprint"),
   schema_contract: %{
@@ -29,7 +28,6 @@ lease_opts = [
     newest_migration: Map.fetch!(opts, "newest_migration"),
     manifest_sha256: Map.fetch!(opts, "manifest_sha256")
   },
-  socket_path: Map.fetch!(opts, "socket_path"),
   app_version: Map.fetch!(opts, "app_version")
 ]
 

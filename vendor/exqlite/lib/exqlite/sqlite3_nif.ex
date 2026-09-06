@@ -28,6 +28,8 @@ defmodule Exqlite.Sqlite3NIF do
                       do: Mix.env() in [:dev, :test],
                       else: System.get_env("SWARM_GUARD_TEST") == "1")
   if @swarm_guard_test do
+    def lease_test_close_fault(_scope, _site), do: :erlang.nif_error(:not_loaded)
+    def lease_test_close_hits(_scope), do: :erlang.nif_error(:not_loaded)
     def guard_admit(_arg), do: :erlang.nif_error(:not_loaded)
     def guard_open(_arg), do: :erlang.nif_error(:not_loaded)
     def guard_resource_identity(_arg), do: :erlang.nif_error(:not_loaded)
@@ -46,6 +48,13 @@ defmodule Exqlite.Sqlite3NIF do
   def directory_assert_locked(_scope), do: :erlang.nif_error(:not_loaded)
   def directory_scope_close(_scope), do: :erlang.nif_error(:not_loaded)
   def directory_scope_status(_scope), do: :erlang.nif_error(:not_loaded)
+
+  # Fixed descriptor-bound lease, not an arbitrary SQLite connection API.
+  def lease_acquire(_scope), do: :erlang.nif_error(:not_loaded)
+  def lease_assert_held(_lease), do: :erlang.nif_error(:not_loaded)
+  def lease_identity(_lease), do: :erlang.nif_error(:not_loaded)
+  def lease_close(_lease), do: :erlang.nif_error(:not_loaded)
+  def lease_status(_lease), do: :erlang.nif_error(:not_loaded)
 
   @spec open(String.t(), integer()) :: {:ok, db()} | {:error, reason()}
   def open(_path, _flags), do: :erlang.nif_error(:not_loaded)

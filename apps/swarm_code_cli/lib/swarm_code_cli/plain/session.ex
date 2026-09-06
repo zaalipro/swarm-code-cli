@@ -8,7 +8,8 @@ defmodule SwarmCodeCLI.Plain.Session do
   alias SwarmCode.Protocol.Scope
   alias SwarmCodeCLI.Plain.{Command, LineReader, Options, Presenter}
   alias SwarmCodeCLI.UI.{Intent, RequestResolver, SafeText}
-  alias SwarmCodeCLI.UI.DataSource.{DataBridge, Delivery, DTO, Fake, Request, Watch}
+  alias SwarmCodeCLI.UI.DataSource
+  alias SwarmCodeCLI.UI.DataSource.{DataBridge, Delivery, DTO, Request, Watch}
 
   def start_link(options), do: GenServer.start_link(__MODULE__, options)
   def snapshot(server), do: GenServer.call(server, :snapshot)
@@ -65,7 +66,7 @@ defmodule SwarmCodeCLI.Plain.Session do
   def handle_continue(:bind, state) do
     bind_ref = "plain-bind"
 
-    case Fake.bind_owner(state.client, self(), bind_ref) do
+    case DataSource.bind_owner(state.client, self(), bind_ref) do
       {:ok, ^bind_ref} ->
         state = write(state, [{:stdout, [SafeText.value(SafeText.chrome(:fake_banner)), "\n"]}])
         {:noreply, open_watch(state, :shell, state.scope)}
@@ -243,7 +244,7 @@ defmodule SwarmCodeCLI.Plain.Session do
         expected_response: :watch_snapshot
       }
 
-      case Fake.query(state.client, request) do
+      case DataSource.query(state.client, request) do
         :ok -> %{state | phase: :awaiting_ready, requests: Map.put(state.requests, id, request)}
         # Recovery of an initial watch or repeated canonical gap may already
         # be owned by the adapter. Its ready/error delivery settles that path.
@@ -278,7 +279,7 @@ defmodule SwarmCodeCLI.Plain.Session do
     with {:ok, context} <- Presenter.context(state.presenter, intent, state.scope),
          {:ok, request} <-
            RequestResolver.resolve(intent, context, request_id, state.now + 30_000),
-         :ok <- Fake.command(state.client, request) do
+         :ok <- DataSource.command(state.client, request) do
       notify(state, {:command, request})
       %{state | phase: :awaiting_outcome, requests: Map.put(state.requests, request_id, request)}
     else
@@ -362,7 +363,7 @@ defmodule SwarmCodeCLI.Plain.Session do
       deadline: state.now + 30_000
     }
 
-    case Fake.query(state.client, request) do
+    case DataSource.query(state.client, request) do
       :ok ->
         notify(state, {:query, request})
 
@@ -395,7 +396,7 @@ defmodule SwarmCodeCLI.Plain.Session do
   defp open_watch(%{phase: :closed} = state, _, _), do: state
 
   defp open_watch(state, slot, scope) do
-    if state.watch, do: Fake.unwatch(state.client, state.watch.watch_ref)
+    if state.watch, do: DataSource.unwatch(state.client, state.watch.watch_ref)
     {ref, state} = id(state, "watch")
 
     watch = %Watch{
@@ -407,7 +408,7 @@ defmodule SwarmCodeCLI.Plain.Session do
       byte_limit: 1_048_576
     }
 
-    case Fake.watch(state.client, watch) do
+    case DataSource.watch(state.client, watch) do
       :ok ->
         %{
           state
@@ -448,7 +449,7 @@ defmodule SwarmCodeCLI.Plain.Session do
     Process.demonitor(state.client_monitor, [:flush])
 
     try do
-      Fake.close(state.client)
+      DataSource.close(state.client)
     catch
       :exit, _ -> :ok
     end
@@ -540,7 +541,7 @@ defmodule SwarmCodeCLI.Plain.Session do
     stop_reader(state)
 
     try do
-      Fake.close(state.client)
+      DataSource.close(state.client)
     catch
       :exit, _ -> :ok
     end

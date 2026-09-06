@@ -33,7 +33,8 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
     SafeText
   }
 
-  alias SwarmCodeCLI.UI.DataSource.{Fake, DataBridge}
+  alias SwarmCodeCLI.UI.DataSource
+  alias SwarmCodeCLI.UI.DataSource.DataBridge
 
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
 
@@ -67,7 +68,7 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
       spawn_monitor(fn ->
         result =
           try do
-            Fake.bind_owner(source, owner, binding)
+            DataSource.bind_owner(source, owner, binding)
           catch
             _, _ -> {:error, :binding_failed}
           end
@@ -448,14 +449,15 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
     timers = TimerSupervisor.close(state.timers)
 
     Enum.each(state.ui.requests, fn {id, _} ->
-      safe(fn -> Fake.cancel(state.data_source, id) end)
+      safe(fn -> DataSource.cancel(state.data_source, id) end)
     end)
 
     Enum.each(state.ui.watches, fn {_, watch} ->
-      if watch.watch_ref, do: safe(fn -> Fake.unwatch(state.data_source, watch.watch_ref) end)
+      if watch.watch_ref,
+        do: safe(fn -> DataSource.unwatch(state.data_source, watch.watch_ref) end)
     end)
 
-    safe(fn -> Fake.close(state.data_source) end)
+    safe(fn -> DataSource.close(state.data_source) end)
     token = identity()
 
     if state.terminal,
@@ -494,7 +496,7 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
     cancel(state.draw_deadline)
     clear_binder(state.binder)
     TimerSupervisor.close(state.timers)
-    safe(fn -> Fake.close(state.data_source) end)
+    safe(fn -> DataSource.close(state.data_source) end)
 
     if state.terminal && state.shutdown_token == nil,
       do: send(state.terminal, {:terminal_control, :shutdown, identity()})

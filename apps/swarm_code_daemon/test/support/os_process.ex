@@ -732,13 +732,11 @@ defmodule SwarmCode.Daemon.Test.OSProcess do
     %{
       "app_version" => "0.1.0-dev",
       "database_fingerprint" => "sha256:os-process-test",
-      "lease_path" => Path.join(dir, "instance_lease.db"),
+      "data" => dir,
       "manifest_sha256" => "408afb8e6eb422c8df50fe65536a08f853475c162d584db45b4af708274fd1d0",
       "newest_migration" => 20_260_926_000_000,
-      "owner_path" => Path.join(dir, "instance_owner.json"),
       "probe_mode" => test_opts |> Keyword.get(:probe_mode, :normal) |> Atom.to_string(),
       "schema_epoch" => 0,
-      "socket_path" => Path.join(dir, "daemon.sock"),
       "uid" => File.lstat!(dir).uid
     }
     |> Jason.encode!()

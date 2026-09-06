@@ -345,12 +345,13 @@ defmodule SwarmCode.Daemon.CrossAppLeaseOSTest do
   defp private_tmp! do
     dir =
       Path.join(
-        System.tmp_dir!(),
+        SwarmCode.Daemon.Test.LeaseFixture.build_root(),
         "swarm-code-cross-app-lease-os-#{System.unique_integer([:positive, :monotonic])}"
       )
 
     File.mkdir!(dir)
     File.chmod!(dir, 0o700)
+    SwarmCode.Daemon.Test.LeaseFixture.paths(dir)
     on_exit(fn -> File.rm_rf!(dir) end)
     dir
   end

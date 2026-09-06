@@ -1565,6 +1565,13 @@ on_load(ErlNifEnv* env, void** priv, ERL_NIF_TERM info)
         enif_mutex_destroy(log_hook_mutex);
         return -1;
     }
+#ifdef SWARM_GUARD_TEST
+    if (swarm_lease_test_install_close_hook() != SQLITE_OK) {
+        sd_service_unload();
+        enif_mutex_destroy(log_hook_mutex);
+        return -1;
+    }
+#endif
 #endif
 
     return 0;
@@ -1579,6 +1586,9 @@ on_unload(ErlNifEnv* caller_env, void* priv_data)
 
 #if !defined(_WIN32)
     sd_service_unload();
+#ifdef SWARM_GUARD_TEST
+    swarm_lease_test_restore_close_hook();
+#endif
 #endif
     sqlite3_config(SQLITE_CONFIG_MALLOC, &default_alloc_methods);
     enif_mutex_destroy(log_hook_mutex);
@@ -2163,6 +2173,15 @@ exqlite_errstr(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 
 static ErlNifFunc nif_funcs[] = {
 #if !defined(_WIN32)
+  {"lease_acquire", 1, sd_lease_acquire, ERL_NIF_DIRTY_JOB_IO_BOUND},
+#ifdef SWARM_GUARD_TEST
+  {"lease_test_close_fault", 2, sd_lease_test_fault, ERL_NIF_DIRTY_JOB_IO_BOUND},
+  {"lease_test_close_hits", 1, sd_lease_test_hits, ERL_NIF_DIRTY_JOB_IO_BOUND},
+#endif
+  {"lease_assert_held", 1, sd_lease_assert, ERL_NIF_DIRTY_JOB_IO_BOUND},
+  {"lease_identity", 1, sd_lease_identity, ERL_NIF_DIRTY_JOB_IO_BOUND},
+  {"lease_close", 1, sd_lease_close, ERL_NIF_DIRTY_JOB_IO_BOUND},
+  {"lease_status", 1, sd_lease_status, ERL_NIF_DIRTY_JOB_IO_BOUND},
   {"directory_scope_new", 0, sd_new, ERL_NIF_DIRTY_JOB_IO_BOUND},
   {"directory_open_root", 2, sd_open_root, ERL_NIF_DIRTY_JOB_IO_BOUND},
   {"directory_open_child", 2, sd_open_child, ERL_NIF_DIRTY_JOB_IO_BOUND},

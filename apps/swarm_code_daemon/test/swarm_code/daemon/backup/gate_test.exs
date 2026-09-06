@@ -1340,7 +1340,11 @@ defmodule SwarmCode.Daemon.Backup.GateTest do
   end
 
   defp migration_fixture!(opts \\ []) do
-    database = SchemaFixture.database!(Keyword.get(opts, :lineage, {:prefix, 20_260_923_000_000}))
+    database =
+      SchemaFixture.database!(
+        Keyword.get(opts, :lineage, {:prefix, 20_260_923_000_000}),
+        SwarmCode.Daemon.Test.LeaseFixture.build_root()
+      )
 
     if Keyword.get(opts, :wal, false) do
       _writer = SchemaFixture.open_uncheckpointed_wal!(database)
@@ -1386,7 +1390,12 @@ defmodule SwarmCode.Daemon.Backup.GateTest do
   end
 
   defp prepared_database! do
-    database = SchemaFixture.database!({:prefix, 20_260_923_000_000})
+    database =
+      SchemaFixture.database!(
+        {:prefix, 20_260_923_000_000},
+        SwarmCode.Daemon.Test.LeaseFixture.build_root()
+      )
+
     SchemaFixture.insert_project!(database, "project-1", "Project", "/private/project")
     database
   end
@@ -1398,12 +1407,23 @@ defmodule SwarmCode.Daemon.Backup.GateTest do
     decision
   end
 
-  defp start_lease!(directory, uid, fingerprint) do
+  defp start_lease!(_directory, uid, fingerprint) do
     unique = System.unique_integer([:positive, :monotonic])
 
+    lease_root =
+      Path.join(
+        SwarmCode.Daemon.Test.LeaseFixture.build_root(),
+        "backup-lease-#{unique}"
+      )
+
+    runtime = Path.join(lease_root, "runtime")
+    File.mkdir_p!(runtime)
+    File.chmod!(lease_root, 0o700)
+    File.chmod!(runtime, 0o700)
+    ExUnit.Callbacks.on_exit(fn -> File.rm_rf!(lease_root) end)
+
     opts = [
-      lease_path: Path.join(directory, "instance_lease-#{unique}.db"),
-      owner_path: Path.join(directory, "instance_owner-#{unique}.json"),
+      paths: SwarmCode.Daemon.Test.LeaseFixture.paths(lease_root, runtime),
       identity: %ProcessIdentity{
         uid: uid,
         pid: System.pid() |> String.to_integer(),
@@ -1416,7 +1436,6 @@ defmodule SwarmCode.Daemon.Backup.GateTest do
         newest_migration: 20_260_929_000_000,
         manifest_sha256: "f04a55a27d1fee6a3192c6ff277993d4ab5a8f6414896e2be87dc3a41f48b75f"
       },
-      socket_path: Path.join(directory, "daemon-#{unique}.sock"),
       app_version: "0.1.0-dev"
     ]
 

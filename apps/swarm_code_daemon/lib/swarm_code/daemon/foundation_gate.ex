@@ -537,12 +537,10 @@ defmodule SwarmCode.Daemon.FoundationGate do
 
   defp acquire_lease(paths, identity, fingerprint, config) do
     required = [
-      lease_path: paths.lease,
-      owner_path: paths.owner_record,
+      paths: paths,
       identity: identity,
       database_fingerprint: fingerprint,
       schema_contract: @schema_contract,
-      socket_path: paths.socket,
       app_version: config.app_version
     ]
 
@@ -561,7 +559,8 @@ defmodule SwarmCode.Daemon.FoundationGate do
       {:ok, lease} when is_pid(lease) ->
         {:ok, lease}
 
-      {:error, %StartupError{code: :data_lease_held} = error} ->
+      {:error, %StartupError{code: code} = error}
+      when code in [:data_lease_held, :lease_failed] ->
         {:error, error}
 
       _other ->
@@ -1240,7 +1239,7 @@ defmodule SwarmCode.Daemon.FoundationGate do
       error
       | message:
           error.message <>
-            " The acquired data lease required abnormal cleanup before this refusal returned.",
+            " The acquired data lease required abnormal cleanup; native settlement is unconfirmed.",
         action:
           error.action <>
             " Confirm the CLI daemon is stopped; a stale diagnostic owner record may remain."

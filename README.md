@@ -63,6 +63,7 @@ the historical 43-migration contract remains available for validation. See the
 - [Approved CLI architecture](docs/superpowers/specs/2026-09-01-swarm-code-cli-design.md)
 - [Foundation safety and macOS residual risk](docs/foundation-safety.md)
 - [Current implementation and desktop parity audit](docs/research/2026-09-06-cli-parity-audit.md)
+- [Current live harness gaps and completion criteria](docs/research/2026-09-07-live-harness-gaps.md)
 - [Renderer decision and verified source constraints](docs/decisions/tui-renderer.md)
 
 Contributor checks: `mise exec -- mix precommit`. The Unicode terminal-width

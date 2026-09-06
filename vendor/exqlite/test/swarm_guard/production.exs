@@ -10,6 +10,8 @@ defmodule SwarmGuardProductionProof do
     refute function_exported?(Exqlite.Sqlite3NIF, :guard_admit, 1)
     refute function_exported?(Exqlite.Sqlite3NIF, :guard_open, 1)
     refute function_exported?(Exqlite.Sqlite3NIF, :guard_counts, 0)
+    refute function_exported?(Exqlite.Sqlite3NIF, :lease_test_close_fault, 2)
+    refute function_exported?(Exqlite.Sqlite3NIF, :lease_test_close_hits, 1)
     assert {:error, :native_guard_unavailable} = Exqlite.SwarmGuard.feasibility_admit(:untrusted)
     assert {:error, :native_guard_unavailable} = Exqlite.SwarmGuard.feasibility_open(make_ref())
     {:ok, db} = Exqlite.Sqlite3.open(":memory:")

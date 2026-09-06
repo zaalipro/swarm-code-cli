@@ -7,10 +7,10 @@ defmodule SchemaFixture do
   @maximum_tables 512
 
   @spec database!(:current | {:prefix, integer()}) :: Path.t()
-  def database!(lineage) do
+  def database!(lineage, base \\ System.tmp_dir!()) do
     directory =
       Path.join(
-        System.tmp_dir!(),
+        base,
         "swarm-code-schema-fixture-#{Base.url_encode64(:crypto.strong_rand_bytes(18), padding: false)}"
       )
 

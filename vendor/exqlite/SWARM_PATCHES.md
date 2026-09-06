@@ -129,3 +129,66 @@ the corrected owner-alive GC suite (eight tests), and coordinated Mix integratio
 (three guarded-fork tests including actual external-process directory locks).
 No sanitizer, global-capacity failure injection, unusual filesystem, hot-upgrade,
 or supported-target matrix result is claimed by those checks.
+
+
+## Production guarded lease predecessor
+
+`c_src/swarm_lease.h`, `swarm_lease_vfs.c`, and `swarm_lease_nif.c` (new) add one
+fixed `instance_lease.db` child to the production directory scope. The SQLite
+translation unit includes the new VFS after pristine SQLite; the directory NIF
+includes its ownership adapter. `lib/exqlite/guarded_lease.ex` and new stubs expose
+only acquire/assert/identity/close/status, not SQL, fd integers or Exqlite db
+resources. `test/swarm_guard/guarded_lease.exs` adds real SQLite/flock and fresh
+OS-producer acceptance cases. The isolated runner builds/tests this facade in
+both modes. `swarm_directories.c` gains child retention/drain and scope-close
+refusal; NIF exports and wrapper include wiring are updated.
+
+Lease creation is exclusive and descriptor-relative. Main opens duplicate the
+admitted fd; rollback journals have exact main/journal role identities, real
+access/open/delete and retained-parent sync. WAL/SHM/FAT paths refuse. Existing
+lease compatibility is checked using a read-only SQLite handle before writable
+operations: no schema entries, application_id zero, user_version zero or one.
+The read-only handle fully closes before writable exclusive acquisition; the
+same policy is checked under the exclusive lock before initializing a zero-byte
+legacy/new lease. Unknown hot-journal recovery that would require writes during
+compatibility checking refuses. No occupied arbitrary SQLite schema is adopted.
+
+Directory scope cleanup closes SQLite and all lease descriptors before releasing
+data/runtime flocks. Explicit scope close refuses an active lease; explicit lease
+close leaves directory locks held. Owner death or GC of an active lease revokes
+and queues the existing native graph, even if other processes retain copied
+opaque terms. Undrainable native state is quarantined with close_failed and held
+exclusion instead of releasing directory locks beneath a live SQLite child.
+A quarantined failure requires VM restart/diagnosis; healthy-path tests do not
+claim fault-injection or recovery from that state. Production database bindings,
+WAL/pools/Ready and daemon CrossAppLease replacement are still separate work.
+
+
+### Lease close-result accounting
+
+All owned lease descriptor closes now use `sl_close_owned_fd`: one OS close,
+recorded result, no fd-number probe or retry. Main closure holds SQLite's Unix
+global-before-inode mutex order, requires the single-connection inode with no
+pending descriptors/SHM, checks `unixUnlock`, then reuses `releaseInodeInfo` and
+`closeUnixFile` bookkeeping with `h` already detached. Thus stock cleanup cannot
+silently close the owned duplicate. Journal and failed-open cleanup use the same
+accounting. Unknown close/unlock or unexpected sibling/pending state marks native
+uncertainty; successful logical detach never clears it. The scope quarantines
+that uncertainty and retains directory flocks instead of reporting clean closure.
+This is a bounded one-connection path, not a general pending-fd pool adapter.
+
+`test/swarm_guard/lease_close_errors.exs` adds three targeted cases, run only in
+test mode by the isolated runner. Test builds install a SQLite close syscall hook
+once before NIF callers run and restore it after cleanup-thread drain. It filters
+by a thread-local lease, exact currently-owned closing fd and armed site; unrelated
+closes pass directly to the saved OS call. The real close runs once, then the
+fault model reports EIO (a consumed-descriptor error). This is injected close
+failure evidence, not a real filesystem-fault or fd-still-open simulation.
+Production contains no hook/injection exports. No pointer or fd is exposed to
+BEAM. The three RED cases exercised actual stock SQLite close behavior before the
+production accounting change, not a cloned failing implementation.
+
+Quarantine remains a VM-restart-only failure disposition. It does not establish
+safe NIF unload/reload, same-VM operator recovery, or normal lifecycle completion.
+The native control retains memory/anchors/flocks in that state; the test process
+must exit to dispose a quarantined injected-fault fixture completely.

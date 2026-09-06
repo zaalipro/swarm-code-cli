@@ -28,8 +28,23 @@ defmodule SwarmCode.Daemon.FoundationGateTest do
     assert {:error, :database_path_present} = DatabaseFingerprint.for_absent_path(absent)
   end
 
+  test "lease publication refusal preserves abnormal cleanup uncertainty" do
+    fixture = fixture_database!(:current)
+    root = Path.dirname(fixture)
+    File.mkdir!(Path.join(root, "instance_owner.json"))
+    barrier = fn -> raise "private cleanup failure" end
+    opts = test_opts(fixture, fn -> :none end, lease_options: [cleanup_barrier: barrier])
+
+    assert {:error, %StartupError{code: :lease_failed} = error} = FoundationGate.prepare(opts)
+    assert error.message =~ "native settlement is unconfirmed"
+    refute error.message =~ "private cleanup failure"
+    assert File.dir?(Path.join(root, "instance_owner.json"))
+    File.rmdir!(Path.join(root, "instance_owner.json"))
+    assert_reacquirable!(opts)
+  end
+
   test "foundation orders identity, private directories, detection, lease, and schema without Repo" do
-    fixture = SchemaFixture.database!(:current)
+    fixture = fixture_database!(:current)
     root = Path.dirname(fixture)
     test = self()
 
@@ -94,7 +109,7 @@ defmodule SwarmCode.Daemon.FoundationGateTest do
   end
 
   test "path resolution fails before the trusted identity callback" do
-    fixture = SchemaFixture.database!(:current)
+    fixture = fixture_database!(:current)
     test = self()
 
     identity = fn ->
@@ -136,7 +151,7 @@ defmodule SwarmCode.Daemon.FoundationGateTest do
   end
 
   test "product-owned directories are deduplicated and hardened parent before child" do
-    fixture = SchemaFixture.database!(:current)
+    fixture = fixture_database!(:current)
     root = Path.dirname(fixture)
     state_root = Path.join(root, "state-root")
     File.mkdir!(state_root)
@@ -193,7 +208,7 @@ defmodule SwarmCode.Daemon.FoundationGateTest do
   end
 
   test "post-acquire desktop refusal releases the lease and waits for terminal cleanup" do
-    fixture = SchemaFixture.database!(:current)
+    fixture = fixture_database!(:current)
     test = self()
     counter = :counters.new(1, [])
 
@@ -230,7 +245,7 @@ defmodule SwarmCode.Daemon.FoundationGateTest do
 
   @tag capture_log: true
   test "blocking lease termination cannot kill the prepare caller or mask its primary error" do
-    fixture = SchemaFixture.database!(:current)
+    fixture = fixture_database!(:current)
     parent = self()
     counter = :counters.new(1, [])
     task_supervisor = start_supervised!(Task.Supervisor)
@@ -270,6 +285,7 @@ defmodule SwarmCode.Daemon.FoundationGateTest do
     assert_receive {:prepare_result, ^caller, {:error, %StartupError{} = error}}, 10_000
     assert error.code == :desktop_active
     assert error.message =~ "abnormal cleanup"
+    assert error.message =~ "native settlement is unconfirmed"
     assert error.action =~ "stale diagnostic owner record"
     refute_received {:DOWN, ^caller_monitor, :process, ^caller, _reason}
 
@@ -279,7 +295,7 @@ defmodule SwarmCode.Daemon.FoundationGateTest do
   end
 
   test "caller death during blocked lease cleanup still terminates the linked lease" do
-    fixture = SchemaFixture.database!(:current)
+    fixture = fixture_database!(:current)
     parent = self()
     counter = :counters.new(1, [])
     task_supervisor = start_supervised!(Task.Supervisor)
@@ -322,7 +338,7 @@ defmodule SwarmCode.Daemon.FoundationGateTest do
   end
 
   test "unrelated linked exits received during lease cleanup retain their caller semantics" do
-    fixture = SchemaFixture.database!(:current)
+    fixture = fixture_database!(:current)
     parent = self()
     counter = :counters.new(1, [])
     task_supervisor = start_supervised!(Task.Supervisor)
@@ -380,7 +396,7 @@ defmodule SwarmCode.Daemon.FoundationGateTest do
 
   @tag capture_log: true
   test "raising lease termination callback returns the primary static error and terminal evidence" do
-    fixture = SchemaFixture.database!(:current)
+    fixture = fixture_database!(:current)
     parent = self()
     counter = :counters.new(1, [])
     task_supervisor = start_supervised!(Task.Supervisor)
@@ -421,6 +437,7 @@ defmodule SwarmCode.Daemon.FoundationGateTest do
     assert_receive {:raising_prepare_result, ^caller, {:error, %StartupError{} = error}}, 10_000
     assert error.code == :desktop_active
     assert error.message =~ "abnormal cleanup"
+    assert error.message =~ "native settlement is unconfirmed"
     assert error.action =~ "stale diagnostic owner record"
     refute error.message =~ "untrusted cleanup callback detail"
     refute error.action =~ "untrusted cleanup callback detail"
@@ -433,7 +450,7 @@ defmodule SwarmCode.Daemon.FoundationGateTest do
   end
 
   test "a malformed second detector result is normalized and releases the acquired lease" do
-    fixture = SchemaFixture.database!(:current)
+    fixture = fixture_database!(:current)
     counter = :counters.new(1, [])
 
     detector = fn ->
@@ -454,7 +471,7 @@ defmodule SwarmCode.Daemon.FoundationGateTest do
   end
 
   test "lease contention preserves the typed refusal and the live owner's lease" do
-    fixture = SchemaFixture.database!(:current)
+    fixture = fixture_database!(:current)
     opts = test_opts(fixture, fn -> :none end)
     assert {:ok, ready} = FoundationGate.prepare(opts)
 
@@ -467,7 +484,7 @@ defmodule SwarmCode.Daemon.FoundationGateTest do
   end
 
   test "existing and absent canonical databases receive distinct versioned fingerprints" do
-    fixture = SchemaFixture.database!(:current)
+    fixture = fixture_database!(:current)
     root = Path.dirname(fixture)
     test = self()
     existing_detector = observing_detector(root, test, :existing_fingerprint)
@@ -513,7 +530,7 @@ defmodule SwarmCode.Daemon.FoundationGateTest do
   end
 
   test "lease diagnostic contract is compile-time pinned and manifest loads after second detection" do
-    fixture = SchemaFixture.database!(:current)
+    fixture = fixture_database!(:current)
     root = Path.dirname(fixture)
     manifest_copy = Path.join(root, "manifest.json")
     File.write!(manifest_copy, "not-json")
@@ -547,8 +564,8 @@ defmodule SwarmCode.Daemon.FoundationGateTest do
   end
 
   test "a database replacement after lease acquisition fails before manifest/schema access" do
-    fixture = SchemaFixture.database!(:current)
-    replacement = SchemaFixture.database!(:current)
+    fixture = fixture_database!(:current)
+    replacement = fixture_database!(:current)
     root = Path.dirname(fixture)
     parked = Path.join(root, "parked-original.db")
     counter = :counters.new(1, [])
@@ -571,7 +588,7 @@ defmodule SwarmCode.Daemon.FoundationGateTest do
   end
 
   test "invalid bundled manifest fails closed after acquisition and releases the lease" do
-    fixture = SchemaFixture.database!(:current)
+    fixture = fixture_database!(:current)
     manifest_copy = Path.join(Path.dirname(fixture), "invalid-manifest.json")
     File.write!(manifest_copy, ~s({"manifest_version":1}))
     File.chmod!(manifest_copy, 0o600)
@@ -590,7 +607,7 @@ defmodule SwarmCode.Daemon.FoundationGateTest do
   end
 
   test "schema incompatibility is read-only, creates no backup, and releases the lease" do
-    fixture = SchemaFixture.database!(:current)
+    fixture = fixture_database!(:current)
     SchemaFixture.delete_migration!(fixture, @newest_migration)
     before = database_state(fixture)
     opts = test_opts(fixture, fn -> :none end)
@@ -602,7 +619,7 @@ defmodule SwarmCode.Daemon.FoundationGateTest do
   end
 
   test "migration-required creates and retains one verified artifact, then refuses implementation" do
-    fixture = SchemaFixture.database!({:prefix, 20_260_924_000_000})
+    fixture = fixture_database!({:prefix, 20_260_924_000_000})
     before = database_state(fixture)
     opts = test_opts(fixture, fn -> :none end)
     backup_dir = Path.join(Path.dirname(fixture), "backups")
@@ -630,7 +647,7 @@ defmodule SwarmCode.Daemon.FoundationGateTest do
   end
 
   test "the legacy 43-migration prefix is backed up before refusing the three appended migrations" do
-    fixture = SchemaFixture.database!({:prefix, 20_260_926_000_000})
+    fixture = fixture_database!({:prefix, 20_260_926_000_000})
 
     SchemaFixture.insert_project!(
       fixture,
@@ -689,7 +706,7 @@ defmodule SwarmCode.Daemon.FoundationGateTest do
   end
 
   test "backup failure preserves the source and leaves no artifact while releasing the lease" do
-    fixture = SchemaFixture.database!({:prefix, 20_260_924_000_000})
+    fixture = fixture_database!({:prefix, 20_260_924_000_000})
     before = database_state(fixture)
 
     opts =
@@ -702,12 +719,12 @@ defmodule SwarmCode.Daemon.FoundationGateTest do
   end
 
   test "production Linux detector is a no-op while injected macOS detection is honored" do
-    linux_fixture = SchemaFixture.database!(:current)
+    linux_fixture = fixture_database!(:current)
     linux_opts = test_opts(linux_fixture, :default)
     assert {:ok, linux_ready} = FoundationGate.prepare(linux_opts)
     GenServer.stop(linux_ready.lease)
 
-    mac_fixture = SchemaFixture.database!(:current)
+    mac_fixture = fixture_database!(:current)
     mac_root = Path.dirname(mac_fixture)
     prepare_macos_parents!(mac_root)
 
@@ -723,7 +740,7 @@ defmodule SwarmCode.Daemon.FoundationGateTest do
   end
 
   test "macOS fails closed when the signed detector helper is unavailable" do
-    fixture = SchemaFixture.database!(:current)
+    fixture = fixture_database!(:current)
     root = Path.dirname(fixture)
     prepare_macos_parents!(root)
 
@@ -741,7 +758,7 @@ defmodule SwarmCode.Daemon.FoundationGateTest do
   end
 
   test "macOS validates the existing product cache parent before its CLI child" do
-    fixture = SchemaFixture.database!(:current)
+    fixture = fixture_database!(:current)
     root = Path.dirname(fixture)
     prepare_macos_parents!(root)
     cache_parent = Path.join([root, "Library", "Caches", "SwarmCode"])
@@ -823,7 +840,7 @@ defmodule SwarmCode.Daemon.FoundationGateTest do
   end
 
   test "a malformed directory or clock callback becomes a static error and never leaks a lease" do
-    fixture = SchemaFixture.database!(:current)
+    fixture = fixture_database!(:current)
 
     assert {:error, directory_error} =
              FoundationGate.prepare(
@@ -834,7 +851,7 @@ defmodule SwarmCode.Daemon.FoundationGateTest do
 
     assert directory_error.code == :private_directory_failed
 
-    migration_fixture = SchemaFixture.database!({:prefix, 20_260_924_000_000})
+    migration_fixture = fixture_database!({:prefix, 20_260_924_000_000})
 
     opts =
       test_opts(migration_fixture, fn -> :none end,
@@ -846,6 +863,10 @@ defmodule SwarmCode.Daemon.FoundationGateTest do
     refute clock_error.message =~ "untrusted"
     refute clock_error.action =~ "untrusted"
     assert_reacquirable!(opts)
+  end
+
+  defp fixture_database!(lineage) do
+    SchemaFixture.database!(lineage, SwarmCode.Daemon.Test.LeaseFixture.build_root())
   end
 
   defp test_opts(database, detector, overrides \\ []) do
@@ -908,8 +929,7 @@ defmodule SwarmCode.Daemon.FoundationGateTest do
     fingerprint = fingerprint || DatabaseFingerprint.for_path(database) |> elem(1)
 
     lease_opts = [
-      lease_path: Path.join(root, "instance_lease.db"),
-      owner_path: Path.join(root, "instance_owner.json"),
+      paths: SwarmCode.Daemon.Test.LeaseFixture.paths(root, Path.join(root, "swarm-code")),
       identity: lease_identity,
       database_fingerprint: fingerprint,
       schema_contract: %{
@@ -917,7 +937,6 @@ defmodule SwarmCode.Daemon.FoundationGateTest do
         newest_migration: @newest_migration,
         manifest_sha256: @manifest_sha256
       },
-      socket_path: Path.join(root, "swarm-code/daemon.sock"),
       app_version: @app_version
     ]
 
@@ -965,7 +984,7 @@ defmodule SwarmCode.Daemon.FoundationGateTest do
   defp private_tmp!(label) do
     path =
       Path.join(
-        System.tmp_dir!(),
+        SwarmCode.Daemon.Test.LeaseFixture.build_root(),
         "swarm-code-foundation-#{label}-#{Base.url_encode64(:crypto.strong_rand_bytes(12), padding: false)}"
       )
 
