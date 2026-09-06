@@ -75,6 +75,24 @@ defmodule SwarmCodeCLI.UI.DraftsTest do
     assert cleared.height == 6
   end
 
+  test "settling a send cannot reuse a stale undo timer identity" do
+    key = {"a", :main}
+    {:ok, original} = Editor.apply(Editor.new(), {:insert, "prompt"})
+    stale_boundary = Editor.undo_group_id(original)
+
+    draft =
+      Drafts.new()
+      |> Drafts.put(Draft.new(key, original))
+      |> Drafts.mark_submitted(key, "request")
+      |> Drafts.clear_origin(key, "request")
+      |> Drafts.fetch(key)
+
+    {:ok, fresh} = Editor.apply(draft.editor, {:insert, "new prompt"})
+    {:ok, after_stale} = Editor.apply(fresh, {:undo_boundary, stale_boundary})
+    assert after_stale == fresh
+    assert Editor.undo_group_id(after_stale) != stale_boundary
+  end
+
   test "store capacity never silently evicts unsent text" do
     a = Draft.new({"a", :main}, editor("unsent"))
     store = Drafts.new(max_drafts: 1) |> Drafts.put(a)
