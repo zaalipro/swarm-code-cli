@@ -155,9 +155,11 @@ records the implemented approach and evidence bounds.
   Historical test evidence remains dated; no provider or normalstartup claim.
 - [x] Run `mise exec -- mix precommit` and
   `MIX_ENV=prod mise exec -- mix compile --warnings-as-errors`.
-- [ ] Verify regenerated artifact equality, unchanged desktop status and no owned
-  helper/fixture processes; commit explicit files and continue the persistent
-  daemon query/command spine under the original full-parity objective.
+- [x] Verify regenerated artifact equality, unchanged desktop status and no owned
+  helper/fixture processes; commit explicit files. Checkpoint `0cc1e5a` passes
+  825 tests, five properties, 12 native checks and production compilation.
+  The persistent daemon query/command spine remains the next milestone under
+  the original full-parity objective.
 
 ## Self-review
 
