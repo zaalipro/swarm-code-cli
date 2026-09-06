@@ -15,15 +15,24 @@ defmodule SwarmCodeCLI.UI.DataSource.Request do
   ]
   defstruct @enforce_keys
 
-  @type expected_response :: :outcome
-  @type kind :: Intent.t()
+  @type expected_response ::
+          :outcome
+          | :shell_snapshot
+          | :workspace_snapshot
+          | :transcript_window
+          | :activity_snapshot
+          | :run_detail_snapshot
+          | :pending_interactions
+  @type query_kind :: :shell | :workspace | :transcript | :activity | :inspector | :pending
+  @type query :: {:query, query_kind(), binary() | nil, :before | :after, 1..200, 1..1_048_576}
+  @type kind :: Intent.t() | query()
 
   @type t :: %__MODULE__{
           request_id: binary(),
           kind: kind(),
           scope: SwarmCode.Protocol.Scope.t(),
           generation: non_neg_integer(),
-          origin: RequestResolver.Context.origin(),
+          origin: RequestResolver.Context.origin() | {:query, query_kind()},
           deadline: non_neg_integer(),
           expected_response: expected_response()
         }
@@ -41,11 +50,11 @@ defmodule SwarmCodeCLI.UI.DataSource.Request do
         } = request
       ) do
     valid? =
-      map_size(request) == 8 and Intent.valid_id?(request_id) and Intent.valid?(kind) and
+      map_size(request) == 8 and Intent.valid_id?(request_id) and valid_kind?(kind) and
         Context.valid_scope?(scope) and is_integer(generation) and generation >= 0 and
-        generation == scope.generation and Context.valid_origin?(origin) and
+        generation == scope.generation and valid_origin?(origin) and
         correlated_kind_origin?(kind, origin) and
-        is_integer(deadline) and deadline >= 0 and expected_response == :outcome
+        is_integer(deadline) and deadline >= 0 and valid_response?(kind, expected_response)
 
     if valid?, do: {:ok, request}, else: {:error, :invalid_request}
   end
@@ -59,6 +68,29 @@ defmodule SwarmCodeCLI.UI.DataSource.Request do
       {:error, :invalid_request} -> raise ArgumentError, "invalid data source request"
     end
   end
+
+  defp valid_kind?({:query, slot, cursor, direction, page_size, byte_limit}),
+    do:
+      slot in [:shell, :workspace, :transcript, :activity, :inspector, :pending] and
+        (is_nil(cursor) or Intent.valid_id?(cursor)) and direction in [:before, :after] and
+        is_integer(page_size) and page_size in 1..200 and is_integer(byte_limit) and
+        byte_limit in 1..1_048_576
+
+  defp valid_kind?(kind), do: Intent.valid?(kind)
+
+  defp valid_origin?({:query, slot}),
+    do: slot in [:shell, :workspace, :transcript, :activity, :inspector, :pending]
+
+  defp valid_origin?(origin), do: Context.valid_origin?(origin)
+  defp valid_response?({:query, slot, _, _, _, _}, response), do: response == query_response(slot)
+  defp valid_response?(_, response), do: response == :outcome
+  def query_response(:shell), do: :shell_snapshot
+  def query_response(:workspace), do: :workspace_snapshot
+  def query_response(:transcript), do: :transcript_window
+  def query_response(:activity), do: :activity_snapshot
+  def query_response(:pending), do: :pending_interactions
+  def query_response(:inspector), do: :run_detail_snapshot
+  defp correlated_kind_origin?({:query, slot, _, _, _, _}, {:query, slot}), do: true
 
   defp correlated_kind_origin?(
          {:dispatch, _operation, _text, _target, _attachments},

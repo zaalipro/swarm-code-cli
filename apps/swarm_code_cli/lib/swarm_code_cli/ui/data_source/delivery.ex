@@ -1,5 +1,5 @@
 defmodule SwarmCodeCLI.UI.DataSource.Delivery do
-  @moduledoc "The closed asynchronous delivery envelope; typed bodies are added with the DTO task."
+  @moduledoc "The closed asynchronous delivery envelope with validated presentation bodies."
 
   alias SwarmCodeCLI.UI.Intent
   alias SwarmCodeCLI.UI.RequestResolver.Context
@@ -17,7 +17,21 @@ defmodule SwarmCodeCLI.UI.DataSource.Delivery do
   defstruct @enforce_keys
 
   @type kind :: :watch_ready | :delta | :response | :resyncing | :error | :closed
-  @type body :: nil
+  alias SwarmCodeCLI.UI.DataSource.{DTO, Delta, AdmissionError}
+
+  @type body ::
+          DTO.ShellSnapshot.t()
+          | DTO.WorkspaceSnapshot.t()
+          | DTO.TranscriptWindow.t()
+          | DTO.RunDetailSnapshot.t()
+          | DTO.ActivitySnapshot.t()
+          | DTO.PendingInteractionWindow.t()
+          | DTO.PendingInteraction.t()
+          | DTO.Outcome.t()
+          | DTO.Connection.t()
+          | Delta.t()
+          | AdmissionError.t()
+          | nil
 
   @type t :: %__MODULE__{
           kind: kind(),
@@ -45,7 +59,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Delivery do
       ) do
     valid? =
       map_size(delivery) == 9 and is_integer(generation) and generation >= 0 and
-        Context.valid_scope?(scope) and scope.generation == generation and is_nil(body) and
+        Context.valid_scope?(scope) and scope.generation == generation and valid_body?(kind, body) and
+        correlated_body?(delivery) and
         correlated_kind?(
           kind,
           watch_ref,
@@ -66,6 +81,48 @@ defmodule SwarmCodeCLI.UI.DataSource.Delivery do
       {:error, :invalid_delivery} -> raise ArgumentError, "invalid data source delivery"
     end
   end
+
+  defp correlated_body?(%{kind: :response, request_id: id, body: %{request_id: body_id}}),
+    do: id == body_id
+
+  defp correlated_body?(%{
+         kind: :delta,
+         revision: revision,
+         sequence: sequence,
+         body: %Delta{revision: body_revision, sequence: body_sequence}
+       }),
+       do: revision == body_revision and sequence == body_sequence
+
+  defp correlated_body?(_), do: true
+
+  defp valid_body?(kind, nil) when kind in [:resyncing, :closed], do: true
+  defp valid_body?(:error, body), do: match?({:ok, _}, AdmissionError.validate(body))
+  defp valid_body?(:delta, body), do: match?({:ok, _}, Delta.validate(body))
+
+  defp valid_body?(kind, body) when kind in [:resyncing, :closed],
+    do: match?({:ok, _}, DTO.Connection.validate(body))
+
+  defp valid_body?(:watch_ready, body), do: page_body?(body)
+
+  defp valid_body?(:response, body),
+    do:
+      page_body?(body) or match?({:ok, _}, DTO.Outcome.validate(body)) or
+        match?({:ok, _}, DTO.PendingInteraction.validate(body))
+
+  defp valid_body?(_, _), do: false
+
+  defp page_body?(%module{} = body)
+       when module in [
+              DTO.ShellSnapshot,
+              DTO.WorkspaceSnapshot,
+              DTO.TranscriptWindow,
+              DTO.RunDetailSnapshot,
+              DTO.ActivitySnapshot,
+              DTO.PendingInteractionWindow
+            ],
+       do: match?({:ok, _}, module.validate(body))
+
+  defp page_body?(_), do: false
 
   defp correlated_kind?(:watch_ready, watch_ref, nil, revision, nil),
     do: Intent.valid_id?(watch_ref) and non_negative_integer?(revision)

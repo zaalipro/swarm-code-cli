@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "clock": "2026-09-03T12:00:00Z",
+  "runs": [
+    {
+      "id": "00000000-0000-4000-8000-0000000000a1",
+      "conversation_id": "00000000-0000-4000-8000-00000000000a",
+      "kind": "chat",
+      "title": "A1",
+      "revision": 1,
+      "state": "running",
+      "allowed_actions": [
+        "pause",
+        "stop"
+      ],
+      "progress": 0
+    },
+    {
+      "id": "00000000-0000-4000-8000-0000000000a2",
+      "conversation_id": "00000000-0000-4000-8000-00000000000a",
+      "kind": "swarm",
+      "title": "A2",
+      "revision": 1,
+      "state": "running",
+      "allowed_actions": [
+        "pause",
+        "stop"
+      ],
+      "progress": 0
+    },
+    {
+      "id": "00000000-0000-4000-8000-0000000000b1",
+      "conversation_id": "00000000-0000-4000-8000-00000000000b",
+      "kind": "research",
+      "title": "B1",
+      "revision": 1,
+      "state": "running",
+      "allowed_actions": [
+        "pause",
+        "stop"
+      ],
+      "progress": 0
+    }
+  ],
+  "barriers": [
+    "a1-a2-b1-step-1",
+    "a1-b1-step-2",
+    "sequence-gap",
+    "catalogue-retry",
+    "catalogue-agent-stop",
+    "catalogue-activity",
+    "catalogue-statuses"
+  ]
+}

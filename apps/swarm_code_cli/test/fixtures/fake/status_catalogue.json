@@ -1,0 +1,181 @@
+{
+  "items": [
+    {
+      "allowed_actions": [],
+      "id": "status-connecting",
+      "page_state": "idle",
+      "request_id": null,
+      "revision": 91,
+      "state": "connecting"
+    },
+    {
+      "allowed_actions": [],
+      "id": "status-empty",
+      "page_state": "idle",
+      "request_id": null,
+      "revision": 91,
+      "state": "empty"
+    },
+    {
+      "allowed_actions": [],
+      "id": "status-loading",
+      "page_state": "loading_before",
+      "request_id": "00000000-0000-4000-8000-000000000001",
+      "revision": 91,
+      "state": "loading"
+    },
+    {
+      "allowed_actions": [],
+      "id": "status-running",
+      "page_state": "idle",
+      "request_id": null,
+      "revision": 91,
+      "state": "running"
+    },
+    {
+      "allowed_actions": [],
+      "id": "status-streaming",
+      "page_state": "idle",
+      "request_id": null,
+      "revision": 91,
+      "state": "streaming"
+    },
+    {
+      "allowed_actions": [],
+      "id": "status-queued",
+      "page_state": "idle",
+      "request_id": null,
+      "revision": 91,
+      "state": "queued"
+    },
+    {
+      "allowed_actions": [],
+      "id": "status-waiting_question",
+      "page_state": "idle",
+      "request_id": null,
+      "revision": 91,
+      "state": "waiting_question"
+    },
+    {
+      "allowed_actions": [],
+      "id": "status-waiting_approval",
+      "page_state": "idle",
+      "request_id": null,
+      "revision": 91,
+      "state": "waiting_approval"
+    },
+    {
+      "allowed_actions": [],
+      "id": "status-paused",
+      "page_state": "idle",
+      "request_id": null,
+      "revision": 91,
+      "state": "paused"
+    },
+    {
+      "allowed_actions": [],
+      "id": "status-retrying",
+      "page_state": "idle",
+      "request_id": null,
+      "revision": 91,
+      "state": "retrying"
+    },
+    {
+      "allowed_actions": [],
+      "id": "status-done",
+      "page_state": "idle",
+      "request_id": null,
+      "revision": 91,
+      "state": "done"
+    },
+    {
+      "allowed_actions": [],
+      "id": "status-failed",
+      "page_state": "idle",
+      "request_id": null,
+      "revision": 91,
+      "state": "failed"
+    },
+    {
+      "allowed_actions": [],
+      "id": "status-stopped",
+      "page_state": "idle",
+      "request_id": null,
+      "revision": 91,
+      "state": "stopped"
+    },
+    {
+      "allowed_actions": [],
+      "id": "status-interrupted",
+      "page_state": "idle",
+      "request_id": null,
+      "revision": 91,
+      "state": "interrupted"
+    },
+    {
+      "allowed_actions": [],
+      "id": "status-stale",
+      "page_state": "idle",
+      "request_id": null,
+      "revision": 91,
+      "state": "stale"
+    },
+    {
+      "allowed_actions": [],
+      "id": "status-resyncing",
+      "page_state": "idle",
+      "request_id": null,
+      "revision": 91,
+      "state": "resyncing"
+    },
+    {
+      "allowed_actions": [],
+      "id": "status-disconnected",
+      "page_state": "idle",
+      "request_id": null,
+      "revision": 91,
+      "state": "disconnected"
+    },
+    {
+      "allowed_actions": [
+        "inspect",
+        "copy",
+        "fork"
+      ],
+      "id": "status-superseded",
+      "page_state": "idle",
+      "request_id": null,
+      "revision": 91,
+      "state": "superseded"
+    },
+    {
+      "allowed_actions": [],
+      "id": "status-mutation_pending",
+      "page_state": "idle",
+      "request_id": "00000000-0000-4000-8000-000000000001",
+      "revision": 91,
+      "state": "mutation_pending"
+    },
+    {
+      "allowed_actions": [
+        "retry"
+      ],
+      "id": "status-failed-retry",
+      "page_state": "idle",
+      "request_id": null,
+      "revision": 41,
+      "state": "failed"
+    },
+    {
+      "allowed_actions": [
+        "resume"
+      ],
+      "id": "status-interrupted-resume",
+      "page_state": "idle",
+      "request_id": null,
+      "revision": 92,
+      "state": "interrupted"
+    }
+  ],
+  "catalogue": "statuses"
+}

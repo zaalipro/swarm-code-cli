@@ -728,13 +728,32 @@ defmodule SwarmCodeCLI.UI.NeutralContractsTest do
       generation: 3,
       revision: 4,
       sequence: nil,
-      body: nil
+      body: %SwarmCodeCLI.UI.DataSource.DTO.TranscriptWindow{}
     }
 
-    delta = %{ready | kind: :delta, revision: 4, sequence: 9}
-    resyncing = %{ready | kind: :resyncing, revision: nil, sequence: nil}
-    watch_error = %{ready | kind: :error, revision: nil, sequence: nil}
-    closed = %{ready | kind: :closed, revision: nil, sequence: nil}
+    delta = %{
+      ready
+      | kind: :delta,
+        revision: 4,
+        sequence: 9,
+        body: %SwarmCodeCLI.UI.DataSource.Delta{
+          kind: :snapshot_required,
+          revision: 4,
+          sequence: 9
+        }
+    }
+
+    resyncing = %{ready | kind: :resyncing, revision: nil, sequence: nil, body: nil}
+
+    watch_error = %{
+      ready
+      | kind: :error,
+        revision: nil,
+        sequence: nil,
+        body: AdmissionError.new(:source_unavailable)
+    }
+
+    closed = %{ready | kind: :closed, revision: nil, sequence: nil, body: nil}
 
     response = %Delivery{
       kind: :response,
@@ -744,7 +763,7 @@ defmodule SwarmCodeCLI.UI.NeutralContractsTest do
       generation: 3,
       revision: nil,
       sequence: nil,
-      body: nil
+      body: %SwarmCodeCLI.UI.DataSource.DTO.Outcome{status: :accepted, request_id: "request-1"}
     }
 
     for delivery <- [ready, delta, resyncing, watch_error, closed, response] do
@@ -753,6 +772,9 @@ defmodule SwarmCodeCLI.UI.NeutralContractsTest do
     end
 
     invalid = [
+      %{ready | body: nil},
+      %{delta | body: nil},
+      %{response | body: nil},
       %{response | request_id: nil},
       %{response | watch_ref: "watch-1"},
       %{response | scope: nil},

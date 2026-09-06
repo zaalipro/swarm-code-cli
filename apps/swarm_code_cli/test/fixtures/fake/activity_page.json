@@ -1,0 +1,259 @@
+{
+  "catalogue": "activity",
+  "page": {
+    "after_cursor": null,
+    "before_cursor": null,
+    "counts": {
+      "done": 1,
+      "failed": 2,
+      "paused": 1,
+      "running": 3,
+      "unseen": 0,
+      "waiting": 0
+    },
+    "covered_ids": [
+      "00000000-0000-4000-8000-0000000000c2",
+      "00000000-0000-4000-8000-0000000000c1",
+      "00000000-0000-4000-8000-0000000000c3",
+      "00000000-0000-4000-8000-0000000000a1",
+      "00000000-0000-4000-8000-0000000000a2",
+      "00000000-0000-4000-8000-0000000000b1",
+      "catalogue-paused",
+      "00000000-0000-4000-8000-0000000000f1",
+      "00000000-0000-4000-8000-0000000000f2",
+      "catalogue-done"
+    ],
+    "error": null,
+    "items": [
+      {
+        "allowed_actions": [
+          "answer_question"
+        ],
+        "conversation_id": "00000000-0000-4000-8000-00000000000b",
+        "created_at": 1788436800000,
+        "deadline": 1788436830000,
+        "id": "00000000-0000-4000-8000-0000000000c2",
+        "interaction": {
+          "allowed_actions": [
+            "answer_question"
+          ],
+          "conversation_id": "00000000-0000-4000-8000-00000000000b",
+          "created_at": 1788436800000,
+          "deadline": 1788436830000,
+          "expected_revision": 9,
+          "id": "00000000-0000-4000-8000-0000000000c2",
+          "kind": "question",
+          "node_id": "00000000-0000-4000-8000-0000000000d3",
+          "question": {
+            "multiple": false,
+            "options": [
+              {
+                "id": "option-1",
+                "label": "Authentication"
+              },
+              {
+                "id": "option-2",
+                "label": "Authentication and tests"
+              }
+            ],
+            "prompt": "Which review should proceed?"
+          },
+          "run_id": "00000000-0000-4000-8000-0000000000b1",
+          "state": "pending",
+          "urgency": "urgent"
+        },
+        "kind": "question",
+        "revision": 9,
+        "run_id": "00000000-0000-4000-8000-0000000000b1",
+        "state": "waiting_question",
+        "title": "Synthetic pending interaction"
+      },
+      {
+        "allowed_actions": [
+          "answer_question"
+        ],
+        "conversation_id": "00000000-0000-4000-8000-00000000000a",
+        "created_at": 1788436800000,
+        "deadline": 1788436860000,
+        "id": "00000000-0000-4000-8000-0000000000c1",
+        "interaction": {
+          "allowed_actions": [
+            "answer_question"
+          ],
+          "conversation_id": "00000000-0000-4000-8000-00000000000a",
+          "created_at": 1788436800000,
+          "deadline": 1788436860000,
+          "expected_revision": 7,
+          "id": "00000000-0000-4000-8000-0000000000c1",
+          "kind": "question",
+          "node_id": "00000000-0000-4000-8000-0000000000d2",
+          "question": {
+            "multiple": false,
+            "options": [
+              {
+                "id": "option-1",
+                "label": "Authentication"
+              },
+              {
+                "id": "option-2",
+                "label": "Authentication and tests"
+              }
+            ],
+            "prompt": "Which review should proceed?"
+          },
+          "run_id": "00000000-0000-4000-8000-0000000000a2",
+          "state": "pending",
+          "urgency": "high"
+        },
+        "kind": "question",
+        "revision": 7,
+        "run_id": "00000000-0000-4000-8000-0000000000a2",
+        "state": "waiting_question",
+        "title": "Synthetic pending interaction"
+      },
+      {
+        "allowed_actions": [
+          "approve",
+          "deny",
+          "always_allow"
+        ],
+        "conversation_id": "00000000-0000-4000-8000-00000000000a",
+        "created_at": 1788436800000,
+        "deadline": 1788436920000,
+        "id": "00000000-0000-4000-8000-0000000000c3",
+        "interaction": {
+          "allowed_actions": [
+            "approve",
+            "deny",
+            "always_allow"
+          ],
+          "conversation_id": "00000000-0000-4000-8000-00000000000a",
+          "created_at": 1788436800000,
+          "deadline": 1788436920000,
+          "expected_revision": 11,
+          "id": "00000000-0000-4000-8000-0000000000c3",
+          "kind": "approval",
+          "node_id": "00000000-0000-4000-8000-0000000000d1",
+          "question": null,
+          "run_id": "00000000-0000-4000-8000-0000000000a1",
+          "state": "pending",
+          "urgency": "normal"
+        },
+        "kind": "approval",
+        "revision": 11,
+        "run_id": "00000000-0000-4000-8000-0000000000a1",
+        "state": "waiting_approval",
+        "title": "Synthetic pending interaction"
+      },
+      {
+        "allowed_actions": [
+          "pause",
+          "stop"
+        ],
+        "conversation_id": "00000000-0000-4000-8000-00000000000a",
+        "created_at": 1788436800000,
+        "deadline": null,
+        "id": "00000000-0000-4000-8000-0000000000a1",
+        "interaction": null,
+        "kind": "running",
+        "revision": 1,
+        "run_id": "00000000-0000-4000-8000-0000000000a1",
+        "state": "running",
+        "title": "A1"
+      },
+      {
+        "allowed_actions": [
+          "pause",
+          "stop"
+        ],
+        "conversation_id": "00000000-0000-4000-8000-00000000000a",
+        "created_at": 1788436800000,
+        "deadline": null,
+        "id": "00000000-0000-4000-8000-0000000000a2",
+        "interaction": null,
+        "kind": "running",
+        "revision": 1,
+        "run_id": "00000000-0000-4000-8000-0000000000a2",
+        "state": "running",
+        "title": "A2"
+      },
+      {
+        "allowed_actions": [
+          "pause",
+          "stop"
+        ],
+        "conversation_id": "00000000-0000-4000-8000-00000000000b",
+        "created_at": 1788436800000,
+        "deadline": null,
+        "id": "00000000-0000-4000-8000-0000000000b1",
+        "interaction": null,
+        "kind": "running",
+        "revision": 1,
+        "run_id": "00000000-0000-4000-8000-0000000000b1",
+        "state": "running",
+        "title": "B1"
+      },
+      {
+        "allowed_actions": [
+          "continue",
+          "stop"
+        ],
+        "conversation_id": "00000000-0000-4000-8000-00000000000b",
+        "created_at": 1788436800000,
+        "deadline": null,
+        "id": "catalogue-paused",
+        "interaction": null,
+        "kind": "paused",
+        "revision": 71,
+        "run_id": "catalogue-paused",
+        "state": "paused",
+        "title": "Paused work"
+      },
+      {
+        "allowed_actions": [
+          "retry"
+        ],
+        "conversation_id": "00000000-0000-4000-8000-00000000000a",
+        "created_at": 1788436800000,
+        "deadline": null,
+        "id": "00000000-0000-4000-8000-0000000000f1",
+        "interaction": null,
+        "kind": "failure",
+        "revision": 41,
+        "run_id": "00000000-0000-4000-8000-0000000000f1",
+        "state": "failed",
+        "title": "Synthetic failed run"
+      },
+      {
+        "allowed_actions": [],
+        "conversation_id": "00000000-0000-4000-8000-00000000000a",
+        "created_at": 1788436800000,
+        "deadline": null,
+        "id": "00000000-0000-4000-8000-0000000000f2",
+        "interaction": null,
+        "kind": "failure",
+        "revision": 43,
+        "run_id": "00000000-0000-4000-8000-0000000000f2",
+        "state": "failed",
+        "title": "Synthetic failed run"
+      },
+      {
+        "allowed_actions": [],
+        "conversation_id": "00000000-0000-4000-8000-00000000000b",
+        "created_at": 1788436800000,
+        "deadline": null,
+        "id": "catalogue-done",
+        "interaction": null,
+        "kind": "completion",
+        "revision": 81,
+        "run_id": "catalogue-done",
+        "state": "done",
+        "title": "Completed work"
+      }
+    ],
+    "presence": "covered",
+    "request_id": null,
+    "state": "idle",
+    "through_sequence": 21
+  }
+}

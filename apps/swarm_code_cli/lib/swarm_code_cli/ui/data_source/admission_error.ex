@@ -5,6 +5,7 @@ defmodule SwarmCodeCLI.UI.DataSource.AdmissionError do
   defstruct @enforce_keys
 
   @codes [
+    :invalid_fixture,
     :not_bound,
     :closed,
     :invalid_watch,
@@ -21,7 +22,8 @@ defmodule SwarmCodeCLI.UI.DataSource.AdmissionError do
   ]
 
   @type code ::
-          :not_bound
+          :invalid_fixture
+          | :not_bound
           | :closed
           | :invalid_watch
           | :invalid_request
@@ -38,6 +40,7 @@ defmodule SwarmCodeCLI.UI.DataSource.AdmissionError do
   @type t :: %__MODULE__{code: code(), message: binary()}
 
   @spec new(code()) :: t()
+  def new(:invalid_fixture), do: error(:invalid_fixture, "invalid fake source fixture")
   def new(:not_bound), do: error(:not_bound, "data source owner is not bound")
   def new(:closed), do: error(:closed, "data source is closed")
   def new(:invalid_watch), do: error(:invalid_watch, "invalid data source watch")
