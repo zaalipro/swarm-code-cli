@@ -11,7 +11,9 @@ the terminal/runtime surfaces. Do not use this milestone as a normal startup pat
 
 Contributor checks: `mise exec -- mix precommit`. The Unicode terminal-width
 source and generated tables can be checked offline with
-`mise exec -- elixir scripts/dev/sync_unicode_width.exs --check`.
+`mise exec -- elixir scripts/dev/sync_unicode_width.exs --check` and
+`python3 scripts/dev/sync_unicode_variants.py --check`. Both checks also run
+as part of `precommit`.
 
 The 2026-09-01 source authorization, MIT license, and NOTICE terms are recorded in
 [`SOURCE_AUTHORIZATION.md`](SOURCE_AUTHORIZATION.md), [`LICENSE`](LICENSE), and [`NOTICE`](NOTICE).

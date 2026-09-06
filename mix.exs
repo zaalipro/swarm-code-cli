@@ -24,8 +24,22 @@ defmodule SwarmCodeCLI.MixProject do
         "compile --warnings-as-errors",
         "deps.unlock --check-unused",
         "test",
-        "swarm_code.provenance.verify"
+        "swarm_code.provenance.verify",
+        &verify_unicode/1
       ]
     ]
+  end
+
+  defp verify_unicode(_args) do
+    for {executable, script} <- [
+          {"elixir", "scripts/dev/sync_unicode_width.exs"},
+          {"python3", "scripts/dev/sync_unicode_variants.py"}
+        ] do
+      {output, status} =
+        System.cmd(executable, [script, "--check"], cd: __DIR__, stderr_to_stdout: true)
+
+      Mix.shell().info(output)
+      if status != 0, do: Mix.raise("Unicode source verification failed: #{script}")
+    end
   end
 end

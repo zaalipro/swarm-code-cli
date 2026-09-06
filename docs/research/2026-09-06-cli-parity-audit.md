@@ -31,7 +31,7 @@ main surfaces against the current desktop and the files actually present here.
 | Startup, persistence and recovery: `application.ex`, `bootstrap.ex`, contexts | Pre-Repo checks only; `SwarmCodeDaemon` is empty | Owned supervision, compatible Repo startup, recovery, commands, daemon connection/reconnection tests |
 | Chats/projects/sidebar: `router.ex`, `components/frame.ex`, `Projects`, `Conversations` | UI destination/request contracts only | CRUD/search/pins/projectless sessions, metadata queries and stable paging, actual persistence tests |
 | Transcript/run cards: `components/chat.ex`, workspace template | Scene block definitions only | Ordered launches/messages/runs, bounded streaming, scroll anchors, fold/read state, fork/edit-resend/compact behavior |
-| Build, Plan, Goal, Ultra, Workflow, Consensus: `Chat.modes/0`, `composer_mode/5` | No composer/editor/runtime | One selected mode, independent approvals/model/effort, mode-aware launch and plan approval paths |
+| Build, Plan, Goal, Ultra, Workflow, Consensus: `Chat.modes/0`, `composer_mode/5` | Pure editor and draft stores; no composer/runtime | One selected mode, independent approvals/model/effort, mode-aware launch and plan approval paths |
 | Agent/operation trees, Thread/Timeline/Changes: `swarm_pane.ex`, `side_chat.ex` | Scene block definitions only | Inspector views, nested ownership, Reply/Steer, scoped Stop/Retry/Resume and real event delivery |
 | Needs-you questions and approvals: `Chat` interview/approval components | Closed intent/request definitions | Revisioned prompt state, visible activity inbox, answer/deny/approve handling and stale-action rejection |
 | Workflows/library/journal/resume: `workflows_live.ex`, `SwarmCode.Workflows` | Absent | Isolated workflow execution and journal, library editor/check/launch, lifecycle and resume tests |
@@ -39,7 +39,7 @@ main surfaces against the current desktop and the files actually present here.
 | Scheduling: `scheduled_live.ex`, scheduler runtime | Absent | Durable schedules/claims, timezones, agenda, manual launch, recovery and no-double-fire tests |
 | Usage and settings: `history_live.ex`, `SettingsLive.sections/0` | Absent | Usage/budgets; all eleven settings sections, secret-store adapters, model/effort and provider/MCP diagnostics |
 | Git/files/attachments/memory/commands | Absent | Confined service operations, diff/editor, recoverable mutations, metadata attachments and terminal command equivalents |
-| Terminal navigation and desktop appearance | Contracts and Unicode width library | Carbon styles, responsive shell, keymap/focus/editor, real renderer, terminal resize/restoration and visual evidence |
+| Terminal navigation and desktop appearance | Contracts, safe text, Unicode width, Carbon styles, pure editor and pane geometry | Scene projection, keymap/focus, real renderer, terminal resize/restoration and visual evidence |
 | Plain/headless and installable artifacts | Absent | Permanent bounded line/NDJSON commands, exit codes, bundled runtime, offline and supported-target smoke tests |
 
 The current desktop router still exposes Chats, Scheduled, Workflows, Research,
@@ -78,6 +78,46 @@ outcomes into terminal behavior when the affected surfaces are implemented.
    900566. A same-sender GenServer call after monitor creation establishes
    delivery before shutdown; the original required shutdown reason is still
    asserted, and a successor still has to acquire the released lease.
+
+## Implemented presentation and editing components
+
+External terminal text now has bounded sanitization with named controls/bidi
+markers, invalid-byte replacement, exact Unicode variation eligibility and
+tab stops under the chosen width policy. Structs are revalidated when read;
+successful sanitization must yield a stable safe value. The new Unicode data
+and generator have offline checksum verification and license notices. Tests
+include arbitrary bytes, split streams, pathological combining sequences,
+emoji joins that contain escaped characters, registered IVS and forged values.
+
+Pure capability selection checks input/output/controlling TTY separately,
+handles plain/dumb/no-color modes and carries one ambiguous-width policy.
+The Carbon theme provides exact truecolor/256/16/monochrome values, fixed state
+words, seven run prefixes, five numbered lanes and structural focus/disabled
+cues. These style values are renderer-neutral; they are not rendered evidence.
+
+Responsive geometry now implements the seven terminal size classes, the
+desktop's Navigator/Main/Inspector hierarchy on wide screens and one dock on
+medium screens. Effective widths preserve at least 50 Main columns and never
+overwrite requested preferences. Small layouts reduce composer/activity rows;
+compressed and degenerate layouts expose no composer geometry or mutation
+size permission. Rectangle tests cover all width/height boundary combinations
+and both medium dock choices. Scene content, focus and keyboard routing still
+need the projector/reducer; geometry alone is not a working TUI.
+
+The pure editor supports committed fragments, paste, grapheme selections,
+word/line/buffer/vertical motion, bounded inverse undo/redo and a source-bounded
+viewport. Tests cover local resegmentation, regional-indicator pairing,
+contextual ligatures, max-size edits and stale timer IDs. Vertical movement
+accounts for temporarily wider partial ligatures. Reset keeps timer identity
+so a late boundary cannot affect a fresh draft.
+
+Draft stores retain exact editor and target/attachment/validation metadata per
+conversation/thread/edit key. A successful response clears only its submitted
+payload and exact request; later edits/newer submissions survive. Search,
+filter and question fields have independent 16 KiB editors. Stores default to
+32 entries (configurable through 128) and refuse capacity exhaustion without
+evicting unsent work. These drafts remain process-local until durable runtime
+integration provides persistence; no crash-survival claim is made.
 
 ## Architecture priorities
 
