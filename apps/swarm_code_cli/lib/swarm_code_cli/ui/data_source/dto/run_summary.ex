@@ -28,7 +28,7 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.RunSummary do
            :superseded
          ]},
       allowed_actions: :actions,
-      progress: :progress
+      progress: {:optional, :progress}
     ],
     defaults: [
       created_sequence: 0,

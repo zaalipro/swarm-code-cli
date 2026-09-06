@@ -5,6 +5,7 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.TranscriptItem do
       created_sequence: 0,
       attachment_refs: [],
       detail_ref: nil,
+      reasoning_detail_ref: nil,
       target_kind: "main",
       target_id: nil
     ],
@@ -12,6 +13,7 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.TranscriptItem do
       created_sequence: :revision,
       attachment_refs: {:list, :id},
       detail_ref: {:optional, {:dto, SwarmCodeCLI.UI.DataSource.DTO.DetailRef}},
+      reasoning_detail_ref: {:optional, {:dto, SwarmCodeCLI.UI.DataSource.DTO.DetailRef}},
       target_kind: {:enum, [:main, :reply, :thread, :revise, :command, :goal, :research, :steer]},
       target_id: {:optional, :id},
       id: :id,
@@ -45,6 +47,7 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.TranscriptItem do
       created_sequence: 0,
       attachment_refs: [],
       detail_ref: nil,
+      reasoning_detail_ref: nil,
       target_kind: :main,
       target_id: nil,
       id: nil,

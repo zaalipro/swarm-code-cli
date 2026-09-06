@@ -107,6 +107,17 @@ defmodule SwarmCodeCLI.UI.Keymap do
       field != nil and state.focus == "query" and code in [:left, :right, :home, :end] ->
         editor_key(code, mods, phase, state, table)
 
+      match?({:approval, _}, layer) and code in [:page_up, :page_down, :home, :end] and mods == [] ->
+        operation =
+          case code do
+            :home -> :first
+            :end -> :last
+            :page_up -> {:page, -1}
+            :page_down -> {:page, 1}
+          end
+
+        result({:scroll, "dialog", operation})
+
       code in [:up, :down, :left, :right] and mods == [] ->
         result({:focus_cycle, if(code in [:up, :left], do: :previous, else: :next)})
 
@@ -230,6 +241,18 @@ defmodule SwarmCodeCLI.UI.Keymap do
   end
 
   defp question_key(_, _, _, _, _), do: :ignore
+
+  defp approval_key("approval_details", [], :press, state, table) do
+    {:approval, id} = hd(state.layers)
+
+    case Map.get(state.read_model.interactions, id) do
+      %{run_id: run, approval: %{arguments_detail_ref: %{id: ref}}} ->
+        find_target(state, table, &(&1 == {:local, {:open_detail, run, ref}}))
+
+      _ ->
+        :ignore
+    end
+  end
 
   defp approval_key(code, [], :press, state, table) do
     decision =

@@ -5,17 +5,19 @@ defmodule SwarmCodeCLI.UI.Reducer.Details do
   alias SwarmCodeCLI.UI.DataSource.{Request, DTO}
 
   def open(state, run_id, ref_id) do
-    item =
-      Enum.find(Map.values(state.read_model.transcript), fn item ->
-        item.run_id == run_id and match?(%DTO.DetailRef{id: ^ref_id}, item.detail_ref)
-      end)
+    ref =
+      DTO.Details.find(
+        Map.values(state.read_model.transcript) ++ Map.values(state.read_model.interactions),
+        run_id,
+        ref_id
+      )
 
-    if item && length(state.layers) < 32 do
+    if ref && length(state.layers) < 32 do
       {state, effects} = Watch.open(state, :inspector, :run, run_id)
 
       detail = %{
         run_id: run_id,
-        ref: item.detail_ref,
+        ref: ref,
         window: nil,
         status: :idle,
         request_id: nil,

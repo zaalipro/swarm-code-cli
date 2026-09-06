@@ -1,19 +1,19 @@
 defmodule SwarmCode.Daemon.Runtime.Run do
   @moduledoc """
-  A supervised live model/tool loop. This is a runtime component, not a canonical
-  database launcher. Its owner supplies the repository, credentials and policy;
-  the service layer is responsible for durable admission and event persistence.
+  Live model/tool loop with an optional acknowledged internal canonical sink.
+  The sink claims the writer and commits exact (run_id, sequence) records before
+  acknowledgement. It must not synchronously call Run. This component does not
+  provide production storage; presentation delivery is separately bounded.
   """
-  use GenServer, restart: :temporary
+  use GenServer, restart: :temporary, shutdown: 10_000
   alias SwarmCode.{LLM, Tools}
   alias SwarmCode.LLM.{Chunks, Request, Result}
   alias SwarmCode.Providers.Provider
-
   @terminal [:completed, :failed, :cancelled]
   @maximum_context 8 * 1_024 * 1_024
   @tool_result_bytes 65_000
   @maximum_calls 32
-  @options ~w(provider model prompt project_root approval max_steps request_timeout_ms subscriber settings system effort)a
+  @options ~w(provider model prompt project_root approval max_steps request_timeout_ms subscriber settings system effort id agent_id canonical_sink canonical_timeout_ms)a
 
   def start_link(opts) do
     with {:ok, config} <- config(opts), do: GenServer.start_link(__MODULE__, config)
@@ -30,15 +30,14 @@ defmodule SwarmCode.Daemon.Runtime.Run do
 
   @impl true
   def init(config) do
-    with {:ok, operations} <- Task.Supervisor.start_link() do
-      Process.flag(:trap_exit, true)
+    Process.flag(:trap_exit, true)
 
+    with {:ok, operations} <- Task.Supervisor.start_link() do
       state =
         Map.merge(config, %{
-          id: uuid(),
           operations: operations,
           op: nil,
-          phase: :model,
+          model_operation_id: nil,
           calls: [],
           messages: [%{role: "user", content: config.prompt}],
           steer: [],
@@ -46,26 +45,40 @@ defmodule SwarmCode.Daemon.Runtime.Run do
           status: :running,
           paused?: false,
           stopping?: false,
+          finishing?: false,
           steps: 0,
           sequence: 0,
-          text: "",
+          canonical_sequence: 0,
           stream: Chunks.new(),
           reasoning: Chunks.new(),
           in_flight: [],
           delivery_stale?: false,
           error: nil,
           waiters: [],
-          usage: %{input: 0, output: 0, cache_read: 0, cache_write: 0}
+          pending: nil,
+          controls: [],
+          resume: nil,
+          usage: %{input: 0, output: 0, cache_read: 0, cache_write: 0},
+          sink_monitor: if(config.canonical_sink, do: Process.monitor(config.canonical_sink))
         })
 
-      {:ok, emit(state, %{type: :started, model: config.model}), {:continue, :advance}}
+      {:ok, state, {:continue, :start}}
     else
       {:error, reason} -> {:stop, reason}
     end
   end
 
   @impl true
-  def handle_continue(:advance, state), do: {:noreply, advance(state)}
+  def handle_continue(:start, state),
+    do:
+      {:noreply,
+       publish(
+         state,
+         %{type: :started, model: state.model, prompt: state.prompt},
+         nil,
+         &advance/1,
+         %{type: :started, model: state.model}
+       )}
 
   @impl true
   def handle_call(:snapshot, {reader, _}, state) do
@@ -81,9 +94,8 @@ defmodule SwarmCode.Daemon.Runtime.Run do
 
   def handle_call({:acknowledge, sequence}, {reader, _}, state)
       when reader == state.subscriber and is_integer(sequence) and sequence >= 0 and
-             sequence <= state.sequence do
-    {:reply, :ok, %{state | in_flight: Enum.reject(state.in_flight, &(&1 <= sequence))}}
-  end
+             sequence <= state.sequence,
+      do: {:reply, :ok, %{state | in_flight: Enum.reject(state.in_flight, &(&1 <= sequence))}}
 
   def handle_call({:acknowledge, _}, _, state),
     do: {:reply, {:error, :invalid_acknowledgment}, state}
@@ -99,33 +111,71 @@ defmodule SwarmCode.Daemon.Runtime.Run do
   def handle_call(:stop, _, %{status: status} = state) when status in @terminal,
     do: {:reply, :ok, state}
 
+  def handle_call(:stop, _, %{stopping?: true} = state), do: {:reply, :ok, state}
+  def handle_call(:stop, _, %{finishing?: true} = state), do: {:reply, :ok, state}
+
   def handle_call(:stop, _, state) do
-    state = %{state | stopping?: true, pending_approval: nil}
-    state = if state.op, do: cancel_operation(state), else: finish(state, :cancelled)
-    {:reply, :ok, state}
+    # Cancellation takes effect immediately, even with a canonical append held.
+    # Its durable request/settlement remains serialized after that append.
+    state = cancel_operation(%{state | stopping?: true})
+    control = fn s -> publish(s, %{type: :stop_requested}, operation_id(s), &advance/1) end
+    {:reply, :ok, drive(%{state | controls: [control | state.controls]})}
   end
 
-  def handle_call(:pause, _, %{status: status} = state) when status in @terminal,
+  def handle_call(command, _, %{status: status} = state)
+      when command in [:pause, :continue] and status in @terminal,
+      do: {:reply, {:error, :terminal}, state}
+
+  def handle_call(command, _, %{finishing?: true} = state) when command in [:pause, :continue],
     do: {:reply, {:error, :terminal}, state}
 
-  def handle_call(:pause, _, state) do
-    state = %{state | paused?: true}
-    {:reply, :ok, if(state.op, do: state, else: hold(state))}
+  def handle_call(:pause, from, state) do
+    enqueue_control(
+      state,
+      fn s ->
+        publish(s, %{type: :pause_requested}, operation_id(s), fn next ->
+          GenServer.reply(from, :ok)
+          advance(%{next | paused?: true})
+        end)
+      end,
+      from,
+      :terminal
+    )
   end
 
-  def handle_call(:continue, _, %{status: status} = state) when status in @terminal,
-    do: {:reply, {:error, :terminal}, state}
+  def handle_call(:continue, from, state) do
+    enqueue_control(
+      state,
+      fn s ->
+        status = if s.pending_approval, do: :waiting_approval, else: :running
 
-  def handle_call(:continue, _, state) do
-    status = if state.pending_approval, do: :waiting_approval, else: :running
-    state = emit(%{state | paused?: false, status: status}, %{type: :continued, status: status})
-    {:reply, :ok, advance(state)}
+        publish(s, %{type: :continued, status: status}, operation_id(s), fn next ->
+          GenServer.reply(from, :ok)
+          advance(%{next | paused?: false, status: status})
+        end)
+      end,
+      from,
+      :terminal
+    )
   end
 
-  def handle_call({:steer, text}, _, %{status: status} = state)
-      when status not in @terminal and is_binary(text) and byte_size(text) in 1..65_000 do
-    if String.valid?(text) and length(state.steer) < 32 do
-      {:reply, :ok, %{state | steer: state.steer ++ [%{role: "user", content: text}]}}
+  def handle_call({:steer, text}, from, state)
+      when is_binary(text) and byte_size(text) in 1..65_000 and state.status not in @terminal and
+             not state.finishing? and not state.stopping? do
+    if String.valid?(text) and length(state.steer) + length(state.controls) < 32 do
+      id = uuid()
+
+      enqueue_control(
+        state,
+        fn s ->
+          publish(s, %{type: :steer_admitted, id: id, text: text}, nil, fn next ->
+            GenServer.reply(from, :ok)
+            advance(%{next | steer: next.steer ++ [%{id: id, text: text}]})
+          end)
+        end,
+        from,
+        :invalid_steer
+      )
     else
       {:reply, {:error, :invalid_steer}, state}
     end
@@ -135,91 +185,132 @@ defmodule SwarmCode.Daemon.Runtime.Run do
 
   def handle_call(
         {:approval, id, decision},
-        _,
-        %{pending_approval: %{id: id, call: call}} = state
+        from,
+        %{pending_approval: %{id: id, resolving?: false} = approval} = state
       )
       when decision in [:allow, :deny] and not state.stopping? do
-    state = %{state | pending_approval: nil, status: :running}
-    state = emit(state, %{type: :approval_resolved, id: id, decision: decision})
+    if length(state.controls) >= 32 do
+      {:reply, {:error, :capacity_exceeded}, state}
+    else
+      state = %{state | pending_approval: %{approval | resolving?: true}}
 
-    state =
-      case decision do
-        :allow ->
-          advance(%{state | calls: [Map.put(call, :approved?, true) | state.calls]})
+      enqueue_control(
+        state,
+        fn s ->
+          event = %{
+            type: :approval_resolved,
+            id: id,
+            decision: decision,
+            parent_model_operation_id: approval.call.parent_model_operation_id,
+            call_id: approval.call.id
+          }
 
-        :deny ->
-          state |> tool_result(call, {:error, "tool execution denied by user"}) |> advance()
-      end
+          publish(s, event, nil, fn next ->
+            GenServer.reply(from, :ok)
+            next = %{next | pending_approval: nil, status: :running}
 
-    {:reply, :ok, state}
+            if decision == :allow,
+              do:
+                advance(%{next | calls: [Map.put(approval.call, :approved?, true) | next.calls]}),
+              else:
+                tool_result(next, nil, approval.call, {:error, "tool execution denied by user"})
+          end)
+        end,
+        from,
+        :stale_approval
+      )
+    end
   end
 
   def handle_call({:approval, _, _}, _, state), do: {:reply, {:error, :stale_approval}, state}
 
-  def handle_call(
-        {:operation_event, token, event},
-        {worker, _},
+  @impl true
+  def handle_info(
+        {:operation_event, token, event, worker, ref},
         %{op: %{token: token, task: %{pid: worker}}} = state
       ) do
-    state =
-      case event do
-        %{type: :text_delta, text: text} ->
-          %{state | stream: Chunks.append(state.stream, text)}
+    # The actual worker waits for one credit and cannot grow this queue.
+    action = fn s ->
+      publish(s, event, operation_id(s), fn next ->
+        send(worker, {ref, :ok})
 
-        %{type: :text_reset} ->
-          %{state | stream: Chunks.new(), text: ""}
+        next =
+          case event do
+            %{type: :text_delta, text: text} ->
+              %{next | stream: Chunks.append(next.stream, text)}
 
-        %{type: :reasoning_delta, text: text} ->
-          %{state | reasoning: Chunks.append(state.reasoning, text)}
+            %{type: :text_reset} ->
+              %{next | stream: Chunks.new()}
 
-        %{type: :reasoning_reset} ->
-          %{state | reasoning: Chunks.new()}
+            %{type: :reasoning_delta, text: text} ->
+              %{next | reasoning: Chunks.append(next.reasoning, text)}
 
-        _ ->
-          state
-      end
+            %{type: :reasoning_reset} ->
+              %{next | reasoning: Chunks.new()}
 
-    {:reply, :ok, emit(state, event)}
+            _ ->
+              next
+          end
+
+        advance(next)
+      end)
+    end
+
+    {:noreply, drive(%{state | controls: state.controls ++ [action]})}
   end
 
-  def handle_call({:operation_event, _, _}, _, state), do: {:reply, :ok, state}
+  def handle_info({:operation_event, _, _, worker, ref}, state) do
+    send(worker, {ref, :ok})
+    {:noreply, state}
+  end
 
-  @impl true
+  def handle_info({ref, result}, %{pending: %{task: %{ref: ref}} = pending} = state),
+    do: {:noreply, %{state | pending: %{pending | result: result}}}
+
+  def handle_info(
+        {:DOWN, ref, :process, _, reason},
+        %{pending: %{task: %{ref: ref}} = pending} = state
+      ) do
+    Process.cancel_timer(pending.timer)
+
+    if reason == :normal and pending.result == {:ok, pending.record.sequence} do
+      state =
+        present(
+          %{state | pending: nil, canonical_sequence: pending.record.sequence},
+          pending.presentation
+        )
+
+      {:noreply, drive(%{state | resume: pending.next})}
+    else
+      {:stop, :canonical_sink_failed, state}
+    end
+  end
+
+  def handle_info({:canonical_timeout, token}, %{pending: %{token: token}} = state),
+    do: {:stop, :canonical_sink_failed, state}
+
+  def handle_info({:DOWN, ref, :process, _, _}, %{sink_monitor: ref} = state)
+      when not is_nil(ref),
+      do: {:stop, :canonical_sink_failed, state}
+
   def handle_info({ref, result}, %{op: %{task: %{ref: ref}} = op} = state),
     do: {:noreply, %{state | op: %{op | result: {:result, result}}}}
 
   def handle_info({:DOWN, ref, :process, _, reason}, %{op: %{task: %{ref: ref}} = op} = state) do
-    Process.cancel_timer(op.timer)
-    state = %{state | op: nil}
-
-    state =
-      cond do
-        state.stopping? ->
-          finish(state, :cancelled)
-
-        reason != :normal ->
-          operation_result(state, op, {:error, "operation terminated"})
-
-        op.result == nil ->
-          operation_result(state, op, {:error, "operation ended without a result"})
-
-        true ->
-          operation_result(state, op, elem(op.result, 1))
-      end
-
-    {:noreply, advance(state)}
+    if op.timer, do: Process.cancel_timer(op.timer)
+    {:noreply, drive(%{state | op: %{op | down: {:down, reason}}})}
   end
 
-  def handle_info({:operation_timeout, token}, %{op: %{token: token}} = state) do
-    state = %{state | error: :operation_timeout, stopping?: true} |> cancel_operation()
-    {:noreply, state}
+  def handle_info({:operation_timeout, token}, %{op: %{token: token, down: nil}} = state) do
+    state = cancel_operation(%{state | error: :operation_timeout, stopping?: true})
+    control = fn s -> publish(s, %{type: :operation_timeout}, operation_id(s), &advance/1) end
+    {:noreply, drive(%{state | controls: [control | state.controls]})}
   end
 
   def handle_info({:EXIT, supervisor, _}, %{operations: supervisor} = state),
     do: {:stop, :operation_supervisor_failed, state}
 
   def handle_info(_, state), do: {:noreply, state}
-
   @impl true
   def terminate(_, state) do
     if Process.alive?(state.operations), do: Supervisor.stop(state.operations, :shutdown, 7_000)
@@ -228,9 +319,60 @@ defmodule SwarmCode.Daemon.Runtime.Run do
 
   @impl true
   def format_status(status),
-    do: Map.put(status, :state, Map.take(status.state, [:id, :status, :steps, :sequence]))
+    do:
+      status
+      |> Map.put(:state, Map.take(status.state, [:id, :agent_id, :status, :steps, :sequence]))
+      |> Map.put(:message, :redacted)
+      |> Map.put(:reason, :redacted)
+      |> Map.put(:log, [])
 
+  defp enqueue_control(%{controls: controls} = state, _, _, _) when length(controls) >= 32,
+    do: {:reply, {:error, :capacity_exceeded}, state}
+
+  defp enqueue_control(state, control, from, rejection) do
+    guarded = fn current ->
+      # Arrival-time validation can expire while a model-result commit is held.
+      # A terminal continuation may already have submitted/committed its final
+      # record before this saved control gets its turn. Never reopen that state.
+      if current.finishing? or current.stopping? or current.status in @terminal do
+        GenServer.reply(from, {:error, rejection})
+        current
+      else
+        control.(current)
+      end
+    end
+
+    {:noreply, drive(%{state | controls: state.controls ++ [guarded]})}
+  end
+
+  defp drive(%{pending: pending} = state) when not is_nil(pending), do: state
+
+  defp drive(%{resume: resume} = state) when not is_nil(resume),
+    do: drive(resume.(%{state | resume: nil}))
+
+  defp drive(%{controls: [control | rest]} = state),
+    do: drive(control.(%{state | controls: rest}))
+
+  defp drive(state), do: advance(state)
+  defp advance(%{pending: pending} = state) when not is_nil(pending), do: state
+  defp advance(%{controls: [_ | _]} = state), do: drive(state)
   defp advance(%{status: status} = state) when status in @terminal, do: state
+  defp advance(%{finishing?: true} = state), do: state
+  defp advance(%{op: %{down: down}} = state) when not is_nil(down), do: settle_operation(state)
+
+  defp advance(%{op: %{effect: effect, task: nil} = op, stopping?: true} = state)
+       when not is_nil(effect),
+       do: advance(%{state | op: %{op | effect: nil, down: {:down, :not_started}}})
+
+  defp advance(%{op: %{effect: effect}, stopping?: true} = state) when not is_nil(effect),
+    do: cancel_operation(state)
+
+  defp advance(%{op: %{effect: effect}, paused?: true} = state) when not is_nil(effect),
+    do: hold(state)
+
+  defp advance(%{op: %{effect: effect} = op} = state) when not is_nil(effect),
+    do: effect.(%{state | op: %{op | effect: nil}})
+
   defp advance(%{op: op} = state) when not is_nil(op), do: state
   defp advance(%{stopping?: true} = state), do: finish(state, :cancelled)
   defp advance(%{paused?: true} = state), do: hold(state)
@@ -238,8 +380,7 @@ defmodule SwarmCode.Daemon.Runtime.Run do
   defp advance(%{calls: [call | rest]} = state), do: admit_tool(%{state | calls: rest}, call)
 
   defp advance(state) do
-    messages = state.messages ++ state.steer
-    state = %{state | messages: messages, steer: [], phase: :model, status: :running}
+    messages = state.messages ++ Enum.map(state.steer, &%{role: "user", content: &1.text})
 
     cond do
       state.steps >= state.max_steps ->
@@ -249,165 +390,397 @@ defmodule SwarmCode.Daemon.Runtime.Run do
         finish(state, :failed, :context_limit)
 
       true ->
-        launch_model(state)
+        launch_model(state, messages)
     end
   end
 
-  defp launch_model(state) do
-    state = %{state | stream: Chunks.new(), reasoning: Chunks.new(), text: ""}
+  defp launch_model(state, messages) do
+    op = new_operation(:model, nil)
 
-    request = %Request{
-      provider: state.provider,
-      model: state.model,
-      system: state.system,
-      messages: state.messages,
-      tools: Tools.specs(),
-      effort: state.effort,
-      deadline_ms: state.request_timeout_ms
+    event = %{
+      type: :model_admitted,
+      step: state.steps + 1,
+      steer_ids: Enum.map(state.steer, & &1.id)
     }
 
-    state =
-      emit(%{state | steps: state.steps + 1}, %{type: :model_started, step: state.steps + 1})
+    publish(
+      %{state | op: op},
+      event,
+      op.id,
+      fn committed ->
+        effect = fn next ->
+          if next.stopping? do
+            advance(%{next | op: %{op | down: {:down, :not_started}}})
+          else
+            request = %Request{
+              provider: next.provider,
+              model: next.model,
+              system: next.system,
+              messages: messages,
+              tools: Tools.specs(),
+              effort: next.effort,
+              deadline_ms: next.request_timeout_ms
+            }
 
-    launch(state, :model, nil, state.request_timeout_ms + 1_000, fn notify ->
-      LLM.stream(request, fn event -> notify.(model_event(event)) end)
-    end)
+            next = %{
+              next
+              | messages: messages,
+                steer: Enum.reject(next.steer, &(&1.id in event.steer_ids)),
+                steps: next.steps + 1,
+                model_operation_id: op.id,
+                stream: Chunks.new(),
+                reasoning: Chunks.new(),
+                status: :running
+            }
+
+            launch_task(
+              next,
+              next.request_timeout_ms + 1_000,
+              fn notify -> LLM.stream(request, fn event -> notify.(model_event(event)) end) end,
+              %{type: :model_started, step: next.steps}
+            )
+          end
+        end
+
+        advance(%{committed | op: %{committed.op | effect: effect}})
+      end,
+      nil
+    )
   end
 
   defp admit_tool(state, call) do
-    cond do
-      Map.has_key?(call, :args_error) ->
-        state |> tool_result(call, {:error, call.args_error}) |> advance()
+    case if(Map.has_key?(call, :args_error),
+           do: {:error, call.args_error},
+           else: Tools.permission(call.name, call.args)
+         ) do
+      {:error, reason} ->
+        tool_result(state, nil, call, {:error, reason})
 
-      true ->
-        case Tools.permission(call.name, call.args) do
-          {:error, reason} ->
-            state |> tool_result(call, {:error, reason}) |> advance()
+      {:ok, permission} ->
+        cond do
+          permission == :read or state.approval == :auto or Map.get(call, :approved?) == true ->
+            launch_tool(state, call)
 
-          {:ok, permission} ->
-            cond do
-              permission == :read or state.approval == :auto or Map.get(call, :approved?) == true ->
-                launch_tool(state, call)
+          state.approval == :read_only ->
+            tool_result(state, nil, call, {:error, "tool denied by read-only policy"})
 
-              state.approval == :read_only ->
-                state
-                |> tool_result(call, {:error, "tool denied by read-only policy"})
-                |> advance()
+          true ->
+            approval = %{id: uuid(), call: call, resolving?: false}
 
-              true ->
-                approval = %{id: uuid(), call: call}
+            event = %{
+              type: :approval_required,
+              id: approval.id,
+              tool: call.name,
+              permission: permission,
+              arguments: call.args,
+              call_id: call.id,
+              parent_model_operation_id: call.parent_model_operation_id
+            }
 
-                emit(%{state | pending_approval: approval, status: :waiting_approval}, %{
-                  type: :approval_required,
-                  id: approval.id,
-                  tool: call.name,
-                  permission: permission,
-                  arguments: preview_arguments(call.args)
-                })
-            end
+            publish(
+              state,
+              event,
+              nil,
+              fn next ->
+                advance(%{next | pending_approval: approval, status: :waiting_approval})
+              end,
+              Map.put(event, :arguments, preview_arguments(call.args))
+            )
         end
     end
   end
 
   defp launch_tool(state, call) do
-    context = %{project_root: state.project_root, settings: state.settings}
-    {timeout, _} = Tools.RunCommand.timeout_for(call.args, context)
-    state = emit(state, %{type: :tool_started, id: call.id, tool: call.name})
+    op = new_operation(:tool, call)
 
-    launch(state, :tool, call, timeout + 3_000, fn notify ->
-      Tools.run(call.name, call.args, context, fn progress, text ->
-        notify.(%{type: :tool_progress, id: call.id, progress: progress, text: bounded(text)})
-      end)
-    end)
-  end
-
-  defp launch(state, kind, call, timeout, function) do
-    owner = self()
-    token = make_ref()
-
-    task =
-      Task.Supervisor.async_nolink(state.operations, fn ->
-        function.(fn event ->
-          GenServer.call(owner, {:operation_event, token, event}, :infinity)
-        end)
-      end)
-
-    timer = Process.send_after(self(), {:operation_timeout, token}, timeout)
-    %{state | op: %{kind: kind, call: call, task: task, token: token, timer: timer, result: nil}}
-  end
-
-  defp operation_result(state, %{kind: :model}, {:ok, %Result{} = result}) do
-    state = %{
-      state
-      | usage: add_usage(state.usage, result.usage),
-        text: result.text,
-        stream: Chunks.new(result.text),
-        reasoning: Chunks.new(result.reasoning)
+    event = %{
+      type: :tool_admitted,
+      id: call.id,
+      tool: call.name,
+      arguments: call.args,
+      parent_model_operation_id: call.parent_model_operation_id
     }
 
-    cond do
-      result.stop_reason == "refusal" ->
-        finish(state, :failed, :provider_refusal)
+    publish(
+      %{state | op: op},
+      event,
+      op.id,
+      fn committed ->
+        effect = fn next ->
+          if next.stopping? do
+            advance(%{next | op: %{op | down: {:down, :not_started}}})
+          else
+            context = %{project_root: next.project_root, settings: next.settings}
+            {timeout, _} = Tools.RunCommand.timeout_for(call.args, context)
 
-      result.stop_reason == "max_tokens" ->
-        finish(state, :failed, :response_limit)
+            launch_task(
+              next,
+              timeout + 3_000,
+              fn notify ->
+                Tools.run(call.name, call.args, context, fn progress, text ->
+                  notify.(%{
+                    type: :tool_progress,
+                    id: call.id,
+                    progress: progress,
+                    text: bounded(text),
+                    parent_model_operation_id: call.parent_model_operation_id
+                  })
+                end)
+              end,
+              %{
+                type: :tool_started,
+                id: call.id,
+                tool: call.name,
+                parent_model_operation_id: call.parent_model_operation_id
+              }
+            )
+          end
+        end
 
-      not valid_calls?(result.tool_calls) ->
-        finish(state, :failed, :invalid_tool_calls)
+        advance(%{committed | op: %{committed.op | effect: effect}})
+      end,
+      nil
+    )
+  end
 
-      true ->
-        assistant = %{role: "assistant", content: result.text, tool_calls: result.tool_calls}
+  defp new_operation(kind, call),
+    do: %{
+      id: uuid(),
+      kind: kind,
+      call: call,
+      task: nil,
+      token: make_ref(),
+      timer: nil,
+      result: nil,
+      down: nil,
+      effect: nil
+    }
 
-        assistant =
-          if result.provider_blocks == [],
-            do: assistant,
-            else: Map.put(assistant, :provider_blocks, result.provider_blocks)
+  defp launch_task(state, timeout, function, started) do
+    owner = self()
+    op = state.op
 
-        state = %{
-          state
-          | messages: state.messages ++ [assistant],
-            text: result.text,
-            calls: result.tool_calls
-        }
+    launched =
+      try do
+        {:ok,
+         Task.Supervisor.async_nolink(state.operations, fn ->
+           receive do
+             {:run_operation, token} when token == op.token ->
+               function.(fn event -> notify(owner, op.token, event) end)
 
-        if result.tool_calls == [] and state.steer == [],
-          do: finish(state, :completed),
-          else: state
+             :swarm_code_tool_cancel ->
+               {:error, "operation cancelled before execution"}
+           end
+         end)}
+      catch
+        _, _ -> :launch_failed
+      end
+
+    case launched do
+      :launch_failed ->
+        advance(%{state | op: %{op | down: {:down, :launch_failed}}})
+
+      {:ok, task} ->
+        state = %{state | op: %{op | task: task}}
+
+        publish(state, started, op.id, fn committed ->
+          # A queued pause is applied before releasing this task's effect gate.
+          effect = fn next ->
+            timer = Process.send_after(self(), {:operation_timeout, op.token}, timeout)
+            send(task.pid, {:run_operation, op.token})
+            advance(%{next | op: %{next.op | timer: timer}})
+          end
+
+          advance(%{committed | op: %{committed.op | effect: effect}})
+        end)
     end
   end
 
-  defp operation_result(state, %{kind: :model}, {:error, reason}),
-    do: finish(state, :failed, {:provider_failed, bounded(reason)})
+  defp notify(owner, token, event) do
+    ref = make_ref()
+    send(owner, {:operation_event, token, event, self(), ref})
 
-  defp operation_result(state, %{kind: :tool, call: call}, result),
-    do: tool_result(state, call, result)
+    receive do
+      {^ref, :ok} ->
+        :ok
 
-  defp operation_result(state, _, _), do: finish(state, :failed, :invalid_operation_result)
+      :swarm_code_tool_cancel ->
+        # Leave cancellation for RunCommand's native cleanup handshake while
+        # breaking its progress wait independently of the canonical sink.
+        send(self(), :swarm_code_tool_cancel)
+        :ok
+    end
+  end
 
-  defp tool_result(state, call, result) do
-    {text, error?} =
+  defp settle_operation(%{op: op} = state) do
+    {_, reason} = op.down
+
+    result =
+      case op.result do
+        {:result, result} ->
+          result
+
+        nil ->
+          {:error,
+           if(reason == :not_started, do: "operation not started", else: "operation terminated")}
+      end
+
+    event = %{
+      type: :operation_settled,
+      kind: op.kind,
+      disposition:
+        if(op.result, do: :result, else: if(state.stopping?, do: :cancelled, else: :failed)),
+      result: canonical_result(result),
+      parent_model_operation_id: parent_model_id(op),
+      call_id: if(op.call, do: op.call.id),
+      launch_state:
+        if(reason == :not_started,
+          do: :not_started,
+          else: if(reason == :launch_failed, do: :launch_failed, else: :started)
+        )
+    }
+
+    publish(
+      state,
+      event,
+      op.id,
+      fn next ->
+        next = %{next | op: nil}
+
+        case op.kind do
+          :model -> model_result(next, op, result)
+          :tool -> tool_result(next, op.id, op.call, result)
+        end
+      end,
+      nil
+    )
+  end
+
+  defp canonical_result({:ok, %Result{} = result}), do: {:ok, Map.from_struct(result)}
+  defp canonical_result({:ok, text}) when is_binary(text), do: {:ok, text}
+  defp canonical_result({:error, reason}) when is_binary(reason), do: {:error, reason}
+  defp canonical_result(_), do: {:error, "invalid operation result"}
+  defp parent_model_id(%{kind: :model, id: id}), do: id
+  defp parent_model_id(%{call: call}), do: call.parent_model_operation_id
+
+  defp model_result(state, op, {:ok, %Result{} = result}) do
+    publish(
+      state,
+      %{type: :model_completed, result: Map.from_struct(result)},
+      op.id,
+      fn next ->
+        next = %{
+          next
+          | usage: add_usage(next.usage, result.usage),
+            stream: Chunks.new(result.text),
+            reasoning: Chunks.new(result.reasoning),
+            model_operation_id: op.id
+        }
+
+        cond do
+          next.stopping? ->
+            advance(next)
+
+          result.stop_reason == "refusal" ->
+            finish(next, :failed, :provider_refusal)
+
+          result.stop_reason == "max_tokens" ->
+            finish(next, :failed, :response_limit)
+
+          not valid_calls?(result.tool_calls) ->
+            finish(next, :failed, :invalid_tool_calls)
+
+          true ->
+            assistant = %{role: "assistant", content: result.text, tool_calls: result.tool_calls}
+
+            assistant =
+              if result.provider_blocks == [],
+                do: assistant,
+                else: Map.put(assistant, :provider_blocks, result.provider_blocks)
+
+            next = %{
+              next
+              | messages: next.messages ++ [assistant],
+                calls:
+                  Enum.map(result.tool_calls, &Map.put(&1, :parent_model_operation_id, op.id))
+            }
+
+            if result.tool_calls == [] and next.steer == [] and next.controls == [],
+              do: finish(next, :completed),
+              else: advance(next)
+        end
+      end,
+      nil
+    )
+  end
+
+  defp model_result(state, op, result) do
+    reason =
       case result do
-        {:ok, text} when is_binary(text) -> {bounded(text), false}
-        {:error, reason} -> {"Error: " <> bounded(reason), true}
+        {:error, reason} -> bounded(reason)
+        _ -> "invalid operation result"
+      end
+
+    publish(
+      state,
+      %{type: :model_failed, error: reason},
+      op.id,
+      fn next ->
+        if next.stopping?,
+          do: advance(next),
+          else: finish(next, :failed, {:provider_failed, reason})
+      end,
+      nil
+    )
+  end
+
+  defp tool_result(state, id, call, result) do
+    {full, error?} =
+      case result do
+        {:ok, text} when is_binary(text) -> {text, false}
+        {:error, reason} when is_binary(reason) -> {"Error: " <> reason, true}
         _ -> {"Error: invalid tool result", true}
       end
 
-    message = %{
-      role: "tool",
-      tool_call_id: call.id,
-      name: call.name,
-      content: text,
-      is_error: error?
-    }
-
-    emit(%{state | messages: state.messages ++ [message]}, %{
+    event = %{
       type: :tool_completed,
       id: call.id,
       tool: call.name,
-      text: text,
+      text: full,
+      error?: error?,
+      result: canonical_result(result),
+      parent_model_operation_id: call.parent_model_operation_id
+    }
+
+    presentation = %{
+      type: :tool_completed,
+      id: call.id,
+      tool: call.name,
+      text: bounded(full),
       error?: error?
-    })
+    }
+
+    publish(
+      state,
+      event,
+      id,
+      fn next ->
+        message = %{
+          role: "tool",
+          tool_call_id: call.id,
+          name: call.name,
+          content: bounded(full),
+          is_error: error?
+        }
+
+        advance(%{next | messages: next.messages ++ [message]})
+      end,
+      presentation
+    )
   end
+
+  defp cancel_operation(%{op: nil} = state), do: state
+  defp cancel_operation(%{op: %{task: nil}} = state), do: state
 
   defp cancel_operation(%{op: %{kind: :tool, call: %{name: "run_command"}, task: task}} = state) do
     send(task.pid, :swarm_code_tool_cancel)
@@ -419,43 +792,105 @@ defmodule SwarmCode.Daemon.Runtime.Run do
     state
   end
 
+  defp operation_id(%{op: nil}), do: nil
+  defp operation_id(%{op: op}), do: op.id
   defp hold(%{status: :paused} = state), do: state
-  defp hold(state), do: emit(%{state | status: :paused}, %{type: :paused})
+
+  defp hold(state),
+    do: publish(state, %{type: :paused}, nil, fn next -> %{next | status: :paused} end)
 
   defp finish(state, status, error \\ nil)
+  defp finish(%{finishing?: true} = state, _, _), do: state
   defp finish(%{status: status} = state, _, _) when status in @terminal, do: state
 
   defp finish(state, status, error) do
     status = if state.error == :operation_timeout, do: :failed, else: status
+    terminal = %{state | status: status, error: error || state.error}
 
-    state = %{
-      state
-      | status: status,
-        error: error || state.error,
-        pending_approval: nil,
-        calls: [],
-        steer: []
+    event = %{
+      type: :finished,
+      result: outcome(terminal),
+      reasoning: Chunks.to_string(state.reasoning),
+      model_operation_id: state.model_operation_id
     }
 
-    state = emit(state, %{type: :finished, result: outcome(state)})
-    Enum.each(state.waiters, &GenServer.reply(&1, {:ok, outcome(state)}))
-    %{state | waiters: []}
+    publish(%{state | finishing?: true}, event, nil, fn next ->
+      next = %{
+        next
+        | status: status,
+          error: terminal.error,
+          pending_approval: nil,
+          calls: [],
+          steer: []
+      }
+
+      Enum.each(next.waiters, &GenServer.reply(&1, {:ok, outcome(next)}))
+      %{next | waiters: []}
+    end)
   end
 
-  defp emit(state, event) do
-    sequence = state.sequence + 1
-    state = %{state | sequence: sequence}
+  defp publish(state, event, operation_id, next),
+    do: publish(state, event, operation_id, next, event)
+
+  defp publish(state, event, operation_id, next, presentation) do
+    record = %{
+      writer: self(),
+      run_id: state.id,
+      agent_id: state.agent_id,
+      operation_id: operation_id,
+      sequence: state.canonical_sequence + 1,
+      event: event
+    }
+
+    if state.canonical_sink do
+      sink = state.canonical_sink
+
+      task =
+        Task.Supervisor.async_nolink(state.operations, fn ->
+          try do
+            GenServer.call(sink, {:append_run_event, record}, :infinity)
+          catch
+            # Task logs otherwise print the raw sink exit and canonical call
+            # arguments before the owning Run can apply its redacted status.
+            _, _ -> :canonical_append_failed
+          end
+        end)
+
+      token = make_ref()
+      timer = Process.send_after(self(), {:canonical_timeout, token}, state.canonical_timeout_ms)
+
+      %{
+        state
+        | pending: %{
+            record: record,
+            presentation: presentation,
+            task: task,
+            token: token,
+            timer: timer,
+            result: nil,
+            next: next
+          }
+      }
+    else
+      next.(present(%{state | canonical_sequence: record.sequence}, presentation))
+    end
+  end
+
+  defp present(state, nil), do: state
+
+  defp present(state, event) do
+    state = %{state | sequence: state.sequence + 1}
 
     cond do
       not is_pid(state.subscriber) or state.delivery_stale? ->
         state
 
       length(state.in_flight) < 32 and :erlang.external_size(event) <= @tool_result_bytes ->
-        send(state.subscriber, {:run_event, state.id, sequence, event})
-        %{state | in_flight: [sequence | state.in_flight]}
+        send(state.subscriber, {:run_event, state.id, state.sequence, event})
+        %{state | in_flight: [state.sequence | state.in_flight]}
 
       true ->
-        send(state.subscriber, {:run_snapshot_required, state.id, sequence})
+        send(state.subscriber, {:run_snapshot_required, state.id, state.sequence})
         %{state | delivery_stale?: true}
     end
   end
@@ -471,9 +906,12 @@ defmodule SwarmCode.Daemon.Runtime.Run do
   defp public_snapshot(state),
     do: %{
       id: state.id,
+      agent_id: state.agent_id,
+      durability: if(state.canonical_sink, do: :acknowledged_sink, else: :transient),
       status: state.status,
       steps: state.steps,
       sequence: state.sequence,
+      canonical_sequence: state.canonical_sequence,
       text: Chunks.to_string(state.stream),
       reasoning: Chunks.to_string(state.reasoning),
       error: state.error,
@@ -531,6 +969,13 @@ defmodule SwarmCode.Daemon.Runtime.Run do
     with true <- Keyword.keyword?(opts),
          keys = Keyword.keys(opts),
          true <- keys == Enum.uniq(keys) and Enum.all?(keys, &(&1 in @options)),
+         id <- Keyword.get_lazy(opts, :id, &uuid/0),
+         agent_id <- Keyword.get_lazy(opts, :agent_id, &uuid/0),
+         true <- valid_uuid?(id) and valid_uuid?(agent_id),
+         sink <- Keyword.get(opts, :canonical_sink),
+         true <- is_nil(sink) or (is_pid(sink) and Process.alive?(sink)),
+         sink_timeout <- Keyword.get(opts, :canonical_timeout_ms, 5_000),
+         true <- is_integer(sink_timeout) and sink_timeout in 1..60_000,
          %Provider{} = supplied <- opts[:provider],
          {:ok, provider} <- Provider.new(Map.from_struct(supplied)),
          model when is_binary(model) and byte_size(model) in 1..1_024 <-
@@ -563,6 +1008,10 @@ defmodule SwarmCode.Daemon.Runtime.Run do
              (is_binary(effort) and Regex.match?(SwarmCode.LLM.Efforts.key_format(), effort)) do
       {:ok,
        %{
+         id: id,
+         agent_id: agent_id,
+         canonical_sink: sink,
+         canonical_timeout_ms: sink_timeout,
          provider: provider,
          model: model,
          prompt: prompt,
@@ -581,6 +1030,11 @@ defmodule SwarmCode.Daemon.Runtime.Run do
   rescue
     _ -> {:error, :invalid_run_configuration}
   end
+
+  defp valid_uuid?(value) when is_binary(value) and byte_size(value) == 36,
+    do: Regex.match?(~r/\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/, value)
+
+  defp valid_uuid?(_), do: false
 
   defp uuid do
     <<a::32, b::16, c::12, d::14, e::48, _::6>> = :crypto.strong_rand_bytes(16)

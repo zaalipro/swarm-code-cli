@@ -1,5 +1,11 @@
 # CLI implementation and desktop parity audit
 
+This is a historical audit of the baseline below. Provider/tool execution and
+daemon runtime ownership have since been implemented; see the
+[live backend checkpoint](2026-09-06-live-backend-checkpoint.md) and
+[canonical sink checkpoint](2026-09-07-canonical-sink-checkpoint.md). The service,
+production persistence, complete feature parity and release gaps remain open.
+
 Audit date: 2026-09-06. CLI baseline: `2d2d5fc` on `feature/cli-working`.
 Desktop reference: `c54f4fb802b32dfe1164012a98b0c5503928c31e` in
 `/Users/zaali/dev/swarm-code`, inspected read-only. The desktop's untracked

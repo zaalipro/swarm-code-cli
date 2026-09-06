@@ -125,9 +125,10 @@ defmodule SwarmCodeCLI.UI.Switcher do
 
   defp local_entries(state) do
     details =
-      for {_, item} <- state.read_model.transcript,
-          Map.get(item, :detail_ref) != nil,
-          do: {:open_detail, item.run_id, item.detail_ref.id}
+      for item <-
+            Map.values(state.read_model.transcript) ++ Map.values(state.read_model.interactions),
+          ref <- SwarmCodeCLI.UI.DataSource.DTO.Details.refs(item),
+          do: {:open_detail, item.run_id, ref.id}
 
     inspectors =
       for {id, _} <- state.read_model.runs, do: {:open_layer, {:run_inspector, id, :overview}}

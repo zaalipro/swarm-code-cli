@@ -1,6 +1,7 @@
 defmodule SwarmCodeCLI.UI.DataSource.DTO.PendingInteraction do
   @moduledoc "Bounded, closed PendingInteraction presentation facts."
   use SwarmCodeCLI.UI.DataSource.DTO.Schema,
+    wire_defaults: [approval: nil],
     fields: [
       id: :id,
       run_id: :id,
@@ -10,6 +11,7 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.PendingInteraction do
       expected_revision: :revision,
       state: {:enum, [:pending, :resolved]},
       question: {:optional, {:dto, SwarmCodeCLI.UI.DataSource.DTO.Question}},
+      approval: {:optional, {:dto, SwarmCodeCLI.UI.DataSource.DTO.Approval}},
       allowed_actions: :actions,
       urgency: {:enum, [:normal, :high, :urgent]},
       deadline: :revision,
@@ -24,6 +26,7 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.PendingInteraction do
       expected_revision: 0,
       state: :pending,
       question: nil,
+      approval: nil,
       allowed_actions: [],
       urgency: :normal,
       deadline: 0,

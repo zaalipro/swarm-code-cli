@@ -42,7 +42,10 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
 
     overflow =
       Support.text(
-        "item #{min(ordinal + 1, length(options))} of #{length(options)}",
+        if(match?({:approval, _}, layer),
+          do: "PgUp/PgDn: scroll arguments",
+          else: "item #{min(ordinal + 1, length(options))} of #{length(options)}"
+        ),
         state,
         rect.width - 2
       )
@@ -411,7 +414,38 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
      focus(state, options)}
   end
 
-  defp interaction(item, state, _rect) do
+  defp interaction(item, state, rect) do
+    details =
+      case item.approval do
+        nil ->
+          []
+
+        approval ->
+          [
+            {"approval_tool",
+             Density.safe(
+               approval.tool <> " · " <> Atom.to_string(approval.permission),
+               state,
+               rect.width * 4
+             ), nil},
+            {"approval_arguments",
+             Density.external(approval.arguments_preview, %{
+               SwarmCodeCLI.UI.SafeText.Limits.content()
+               | ambiguous_width: state.capabilities.ambiguous_width
+             }), nil}
+          ]
+      end
+
+    full =
+      if item.approval && item.approval.arguments_detail_ref do
+        [
+          {"approval_details", Density.safe("Full arguments", state, 40),
+           {:local, {:open_detail, item.run_id, item.approval.arguments_detail_ref.id}}}
+        ]
+      else
+        []
+      end
+
     options =
       for decision <- [:approve, :deny, :always_allow] do
         action =
@@ -425,9 +459,11 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
         {Atom.to_string(decision), SafeText.chrome(decision), action}
       end
 
-    {SafeText.chrome(:approve), options,
+    body = details ++ full ++ options
+
+    {SafeText.chrome(:approve), body,
      [control("cancel", SafeText.chrome(:cancel), {:local, :close_top_layer})],
-     focus(state, options)}
+     focus(state, body)}
   end
 
   defp focus(state, options),

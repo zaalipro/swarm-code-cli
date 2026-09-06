@@ -117,13 +117,21 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
     state.read_model.transcript
     |> Enum.sort_by(&elem(&1, 0))
     |> Enum.filter(fn {_, item} ->
-      run && item.run_id == run.id && not is_nil(Map.get(item, :detail_ref))
+      run && item.run_id == run.id
+    end)
+    |> Enum.flat_map(fn {_, item} ->
+      for {label, ref} <- [
+            {"Full text", item.detail_ref},
+            {"Full reasoning", item.reasoning_detail_ref}
+          ],
+          not is_nil(ref),
+          do: {item.run_id, label, ref}
     end)
     |> Enum.take(2)
-    |> Enum.map(fn {_, item} ->
+    |> Enum.map(fn {run_id, label, ref} ->
       Support.action(
-        SafeText.chrome(:full_detail),
-        {:local, {:open_detail, item.run_id, item.detail_ref.id}}
+        Density.safe(label, state, 40),
+        {:local, {:open_detail, run_id, ref.id}}
       )
     end)
   end
@@ -211,8 +219,8 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
             [
               %Block.Progress{
                 label: Density.safe(SafeText.value(prefix) <> " LIVE", state, width),
-                value: run.progress,
-                maximum: 100
+                value: run.progress || 0,
+                maximum: if(is_nil(run.progress), do: 0, else: 100)
               }
             ],
         else: body

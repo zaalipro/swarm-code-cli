@@ -74,7 +74,7 @@ Files: guarded Exqlite/Repo handoff, foundation supervision, daemon persistence
 contexts and migrations/recovery. Reconcile the existing residual design with
 SourceSnapshot; preserve the exact-object writable-open gate.
 
-- [ ] Prove pinned native descriptor/Exqlite/Ecto feasibility in one SQLite image.
+- [x] Prove pinned native descriptor/Exqlite/Ecto feasibility in one SQLite image.
 - [ ] Supervise lease/binding/Repo and guard initial/replacement connections.
 - [ ] Implement current-schema new-store/migrations and durable conversations,
   messages/runs, command admission/idempotency, terminal settlement and recovery.
@@ -120,3 +120,11 @@ Full precommit seed126450 passed984tests/fiveproperties/12nativechecks, includin
 the fork integration and service codec; production compilation also passed.
 Writable guarded storage, reliable Run persistence, and Tasks5/6 remain open.
 The full goal is unchanged.
+
+The next checkpoint adds daemon process ownership, asynchronous acknowledged Run
+events, actual operation identities, full outcomes and client approval/reasoning
+details. Full precommit seed259396 passed1016tests/fiveproperties/12nativechecks;
+production compilation/boot and eight terminal-demo PTY checks passed. See
+`docs/research/2026-09-07-canonical-sink-checkpoint.md`. Writable persistence,
+transactional producer/command admission, service/adapter and the complete
+advanced/release scope still remain; passing event-sink tests does not close them.

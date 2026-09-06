@@ -71,6 +71,16 @@ defmodule SwarmCodeCLI.Plain.Presenter do
 
       p = remember(p, epoch, delivery)
       {p, records} = apply_delivery(p, delivery)
+      # Each retained transcript can expose text and reasoning, and each
+      # interaction can expose arguments. Derive this bounded index from the
+      # retained facts so an advertised link cannot be evicted independently.
+      refs =
+        for item <- Map.values(p.nodes) ++ Map.values(p.interactions),
+            ref <- DTO.Details.refs(item),
+            into: %{},
+            do: {ref.id, ref}
+
+      p = %{p | detail_refs: refs}
       p = select_prompt(p)
 
       {p,
@@ -121,8 +131,22 @@ defmodule SwarmCodeCLI.Plain.Presenter do
         commands = Enum.filter([:approve, :deny, :always_allow], &(&1 in item.allowed_actions))
 
         [record(["APPROVAL ", reference])] ++
+          approval_records(item) ++
           Enum.map(commands, fn command -> record([approval_verb(command), " ", reference]) end)
     end
+  end
+
+  defp approval_records(%{approval: nil}), do: []
+
+  defp approval_records(%{approval: approval}) do
+    [
+      record(["TOOL ", approval.tool, " ", Atom.to_string(approval.permission)]),
+      record(["ARGUMENTS ", approval.arguments_preview])
+    ] ++
+      if(approval.arguments_detail_ref,
+        do: [record(["detail ", approval.arguments_detail_ref.id])],
+        else: []
+      )
   end
 
   def context(%__MODULE__{} = p, intent, scope) do
@@ -500,10 +524,7 @@ defmodule SwarmCodeCLI.Plain.Presenter do
       |> Enum.take(@limit)
       |> MapSet.new()
 
-    details =
-      if n.detail_ref,
-        do: put_bounded(p.detail_refs, n.detail_ref.id, n.detail_ref),
-        else: p.detail_refs
+    details = Enum.reduce(DTO.Details.refs(n), p.detail_refs, &put_bounded(&2, &1.id, &1))
 
     preview =
       if n.detail_ref,
@@ -523,6 +544,10 @@ defmodule SwarmCodeCLI.Plain.Presenter do
          detail_refs: details
      },
      [record(["TEXT ", n.run_id, "/", n.node_id] ++ preview ++ [" ", n.text])] ++
+       if(n.reasoning_detail_ref,
+         do: [record(["REASONING preview; detail ", n.reasoning_detail_ref.id])],
+         else: []
+       ) ++
        if(n.reasoning == "",
          do: [],
          else: [record(["REASONING ", n.run_id, "/", n.node_id, " ", n.reasoning])]
@@ -542,7 +567,9 @@ defmodule SwarmCodeCLI.Plain.Presenter do
         do: [record(["SETTLED ", i.id, "@", Integer.to_string(previous.expected_revision)])],
         else: []
 
-    {%{p | interactions: put_bounded(p.interactions, i.id, i)},
+    refs = Enum.reduce(DTO.Details.refs(i), p.detail_refs, &put_bounded(&2, &1.id, &1))
+
+    {%{p | interactions: put_bounded(p.interactions, i.id, i), detail_refs: refs},
      records ++ [record(["PENDING ", i.id, "@", Integer.to_string(i.expected_revision)])]}
   end
 
@@ -634,7 +661,7 @@ defmodule SwarmCodeCLI.Plain.Presenter do
 
     details =
       Enum.reduce(removed, p.detail_refs, fn n, refs ->
-        if n.detail_ref, do: Map.delete(refs, n.detail_ref.id), else: refs
+        Map.drop(refs, Enum.map(DTO.Details.refs(n), & &1.id))
       end)
 
     {%{p | nodes: nodes, target_catalogue: targets, detail_refs: details},

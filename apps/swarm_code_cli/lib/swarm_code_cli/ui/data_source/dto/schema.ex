@@ -103,7 +103,7 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.Schema do
       run.seen_revision <= run.revision and run.parent_run_id != run.id
   end
 
-  def relations?(%{__struct__: DTO.DetailRef} = ref), do: ref.total_bytes in 65_537..262_144
+  def relations?(%{__struct__: DTO.DetailRef} = ref), do: ref.total_bytes in 1..16_777_216
 
   def relations?(%{__struct__: DTO.DetailWindow, state: :error} = page),
     do:
@@ -122,6 +122,8 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.Schema do
   def relations?(%{__struct__: DTO.TranscriptItem} = item) do
     SwarmCodeCLI.UI.Intent.valid_id_list?(item.attachment_refs) and
       (is_nil(item.detail_ref) or byte_size(item.text) < item.detail_ref.total_bytes) and
+      (is_nil(item.reasoning_detail_ref) or
+         byte_size(item.reasoning) < item.reasoning_detail_ref.total_bytes) and
       if(item.target_kind == :main, do: is_nil(item.target_id), else: not is_nil(item.target_id)) and
       (item.state != :superseded or
          Enum.all?(item.allowed_actions, &(&1 in [:inspect, :copy, :fork])))
@@ -159,9 +161,15 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.Schema do
 
     Enum.all?(interaction.allowed_actions, &(&1 in actions)) and
       if(interaction.kind == :question,
-        do: not is_nil(interaction.question),
+        do: not is_nil(interaction.question) and is_nil(interaction.approval),
         else: is_nil(interaction.question)
       )
+  end
+
+  def relations?(%{__struct__: DTO.Approval} = approval) do
+    String.trim(approval.tool) != "" and
+      (is_nil(approval.arguments_detail_ref) or
+         byte_size(approval.arguments_preview) < approval.arguments_detail_ref.total_bytes)
   end
 
   def relations?(%{__struct__: DTO.Outcome} = outcome) do

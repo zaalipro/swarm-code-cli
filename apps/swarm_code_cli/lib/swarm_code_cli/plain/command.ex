@@ -143,7 +143,9 @@ defmodule SwarmCodeCLI.Plain.Command do
   defp decode(["detail", ref], p) do
     with true <- id?(ref) and Map.has_key?(p.detail_refs, ref),
          %{run_id: run} <-
-           Enum.find(Map.values(p.nodes), &(&1.detail_ref != nil and &1.detail_ref.id == ref)),
+           Enum.find(Map.values(p.nodes) ++ Map.values(p.interactions), fn item ->
+             Enum.any?(SwarmCodeCLI.UI.DataSource.DTO.Details.refs(item), &(&1.id == ref))
+           end),
          do: local({:open_detail, run, ref})
   end
 

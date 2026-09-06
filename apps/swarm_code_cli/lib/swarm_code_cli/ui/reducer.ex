@@ -292,6 +292,11 @@ defmodule SwarmCodeCLI.UI.Reducer do
     {preview, advanced} = State.next_id(state, :layer)
     state = if match?({_, ^preview}, layer), do: advanced, else: state
 
+    state =
+      if match?({:approval, _}, layer),
+        do: %{state | selection: Map.delete(state.selection, "dialog_scroll")},
+        else: state
+
     next = %{
       push_layer_context(state)
       | layers: [layer | state.layers],
@@ -419,11 +424,17 @@ defmodule SwarmCodeCLI.UI.Reducer do
 
   def focus_graph(%{layers: [{:approval, id} | _]} = state) do
     case Map.get(state.read_model.interactions, id) do
-      %{allowed_actions: actions} ->
-        Enum.map(
-          Enum.filter([:approve, :deny, :always_allow], &(&1 in actions)),
-          &Atom.to_string/1
-        ) ++ ["cancel"]
+      %{allowed_actions: actions} = item ->
+        detail =
+          if item.approval && item.approval.arguments_detail_ref,
+            do: ["approval_details"],
+            else: []
+
+        detail ++
+          Enum.map(
+            Enum.filter([:approve, :deny, :always_allow], &(&1 in actions)),
+            &Atom.to_string/1
+          ) ++ ["cancel"]
 
       _ ->
         ["cancel"]

@@ -112,6 +112,19 @@ mise exec -- mix test apps/swarm_code_daemon/test/swarm_code/llm \
   apps/swarm_code_daemon/test/swarm_code/daemon/runtime/run_test.exs
 ```
 
+The daemon application now owns the provider capability cache and a bounded run
+supervisor, so submitted runs can outlive their client. Run also supports a
+separate acknowledged canonical event sink: model/tool admissions, complete
+outcomes, approvals and terminal events are recorded before dependent effects
+or completion are published. The transactional store for that sink remains to
+be connected through guarded writable startup.
+
+The client can display actual approval arguments, page their full details and
+reasoning, and represent unknown progress. The executable still uses the
+synthetic data source until the daemon service and real adapter are wired.
+See the [runtime/sink checkpoint](docs/research/2026-09-07-canonical-sink-checkpoint.md)
+for exact verification and remaining scope.
+
 The [live harness plan](docs/superpowers/plans/2026-09-06-live-coding-harness.md)
 tracks persistence, daemon/client service, real TUI wiring, advanced desktop
 capabilities and packaged releases. Component tests do not close those gaps.
