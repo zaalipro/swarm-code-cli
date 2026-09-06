@@ -27,7 +27,61 @@ defmodule SwarmCodeCLI.UI.SafeText do
   defstruct [:token]
   @opaque t :: %__MODULE__{token: chrome() | {:external, binary()}}
   @type chrome ::
-          :fake_banner
+          :previous_page
+          | :next_page
+          | :full_detail
+          | :no_results
+          | :confirm_stop
+          | :steer
+          | :mark_seen
+          | :line_break
+          | :submit
+          | :text_limit
+          | :title
+          | :fake_banner_compact
+          | :build_mode
+          | :navigator
+          | :inspector
+          | :composer
+          | :activity
+          | :status
+          | :resize_help
+          | :plain_exit
+          | :unsent_changes
+          | :cancel_exit
+          | :confirm_exit
+          | :help_key
+          | :detach_key
+          | :plain_key
+          | :back_close_help
+          | :read_only_resize
+          | :needs
+          | :target_main
+          | :validation_none
+          | :focus_label
+          | :inspect
+          | :pause
+          | :continue
+          | :send
+          | :queue
+          | :superseded_child
+          | :research_depth
+          | :representative_only
+          | :consensus_docket
+          | :consensus_ledger
+          | :research_report
+          | :sources
+          | :diagnostics
+          | :loading_before
+          | :loading_after
+          | :page_error
+          | :accepted
+          | :needs_input
+          | :rejected
+          | :deadline_exceeded
+          | :outcome_unknown
+          | :revision_conflict
+          | :fake_banner
           | :empty
           | :main
           | :help
@@ -83,6 +137,61 @@ defmodule SwarmCodeCLI.UI.SafeText do
           | :status_disconnected
           | :status_superseded
           | :status_mutation_pending
+
+  def chrome(:full_detail), do: %__MODULE__{token: :full_detail}
+  def chrome(:next_page), do: %__MODULE__{token: :next_page}
+  def chrome(:previous_page), do: %__MODULE__{token: :previous_page}
+  def chrome(:no_results), do: %__MODULE__{token: :no_results}
+  def chrome(:confirm_stop), do: %__MODULE__{token: :confirm_stop}
+  def chrome(:steer), do: %__MODULE__{token: :steer}
+  def chrome(:mark_seen), do: %__MODULE__{token: :mark_seen}
+  def chrome(:line_break), do: %__MODULE__{token: :line_break}
+  def chrome(:submit), do: %__MODULE__{token: :submit}
+  def chrome(:text_limit), do: %__MODULE__{token: :text_limit}
+  def chrome(:title), do: %__MODULE__{token: :title}
+  def chrome(:fake_banner_compact), do: %__MODULE__{token: :fake_banner_compact}
+  def chrome(:build_mode), do: %__MODULE__{token: :build_mode}
+  def chrome(:navigator), do: %__MODULE__{token: :navigator}
+  def chrome(:inspector), do: %__MODULE__{token: :inspector}
+  def chrome(:composer), do: %__MODULE__{token: :composer}
+  def chrome(:activity), do: %__MODULE__{token: :activity}
+  def chrome(:status), do: %__MODULE__{token: :status}
+  def chrome(:resize_help), do: %__MODULE__{token: :resize_help}
+  def chrome(:plain_exit), do: %__MODULE__{token: :plain_exit}
+  def chrome(:unsent_changes), do: %__MODULE__{token: :unsent_changes}
+  def chrome(:cancel_exit), do: %__MODULE__{token: :cancel_exit}
+  def chrome(:confirm_exit), do: %__MODULE__{token: :confirm_exit}
+  def chrome(:help_key), do: %__MODULE__{token: :help_key}
+  def chrome(:detach_key), do: %__MODULE__{token: :detach_key}
+  def chrome(:plain_key), do: %__MODULE__{token: :plain_key}
+  def chrome(:back_close_help), do: %__MODULE__{token: :back_close_help}
+  def chrome(:read_only_resize), do: %__MODULE__{token: :read_only_resize}
+  def chrome(:needs), do: %__MODULE__{token: :needs}
+  def chrome(:target_main), do: %__MODULE__{token: :target_main}
+  def chrome(:validation_none), do: %__MODULE__{token: :validation_none}
+  def chrome(:focus_label), do: %__MODULE__{token: :focus_label}
+  def chrome(:inspect), do: %__MODULE__{token: :inspect}
+  def chrome(:pause), do: %__MODULE__{token: :pause}
+  def chrome(:continue), do: %__MODULE__{token: :continue}
+  def chrome(:send), do: %__MODULE__{token: :send}
+  def chrome(:queue), do: %__MODULE__{token: :queue}
+  def chrome(:superseded_child), do: %__MODULE__{token: :superseded_child}
+  def chrome(:research_depth), do: %__MODULE__{token: :research_depth}
+  def chrome(:representative_only), do: %__MODULE__{token: :representative_only}
+  def chrome(:consensus_docket), do: %__MODULE__{token: :consensus_docket}
+  def chrome(:consensus_ledger), do: %__MODULE__{token: :consensus_ledger}
+  def chrome(:research_report), do: %__MODULE__{token: :research_report}
+  def chrome(:sources), do: %__MODULE__{token: :sources}
+  def chrome(:diagnostics), do: %__MODULE__{token: :diagnostics}
+  def chrome(:loading_before), do: %__MODULE__{token: :loading_before}
+  def chrome(:loading_after), do: %__MODULE__{token: :loading_after}
+  def chrome(:page_error), do: %__MODULE__{token: :page_error}
+  def chrome(:accepted), do: %__MODULE__{token: :accepted}
+  def chrome(:needs_input), do: %__MODULE__{token: :needs_input}
+  def chrome(:rejected), do: %__MODULE__{token: :rejected}
+  def chrome(:deadline_exceeded), do: %__MODULE__{token: :deadline_exceeded}
+  def chrome(:outcome_unknown), do: %__MODULE__{token: :outcome_unknown}
+  def chrome(:revision_conflict), do: %__MODULE__{token: :revision_conflict}
 
   def chrome(:fake_banner), do: %__MODULE__{token: :fake_banner}
   def chrome(:empty), do: %__MODULE__{token: :empty}
@@ -140,6 +249,163 @@ defmodule SwarmCodeCLI.UI.SafeText do
   def chrome(:status_disconnected), do: %__MODULE__{token: :status_disconnected}
   def chrome(:status_superseded), do: %__MODULE__{token: :status_superseded}
   def chrome(:status_mutation_pending), do: %__MODULE__{token: :status_mutation_pending}
+
+  def value(%{__struct__: __MODULE__, token: :full_detail} = text) when map_size(text) == 2,
+    do: "Full text"
+
+  def value(%{__struct__: __MODULE__, token: :next_page} = text) when map_size(text) == 2,
+    do: "Next page"
+
+  def value(%{__struct__: __MODULE__, token: :previous_page} = text) when map_size(text) == 2,
+    do: "Previous page"
+
+  def value(%{__struct__: __MODULE__, token: :no_results} = text) when map_size(text) == 2,
+    do: "NO RESULTS"
+
+  def value(%{__struct__: __MODULE__, token: :confirm_stop} = text) when map_size(text) == 2,
+    do: "Confirm Stop? Cancel keeps this run or agent active."
+
+  def value(%{__struct__: __MODULE__, token: :steer} = text) when map_size(text) == 2, do: "Steer"
+
+  def value(%{__struct__: __MODULE__, token: :mark_seen} = text) when map_size(text) == 2,
+    do: "Mark read"
+
+  def value(%{__struct__: __MODULE__, token: :line_break} = text) when map_size(text) == 2,
+    do: "\n"
+
+  def value(%{__struct__: __MODULE__, token: :submit} = text) when map_size(text) == 2,
+    do: "Submit"
+
+  def value(%{__struct__: __MODULE__, token: :text_limit} = text) when map_size(text) == 2,
+    do: "TEXT LIMIT EXCEEDED"
+
+  def value(%{__struct__: __MODULE__, token: :title} = text) when map_size(text) == 2, do: "Build"
+
+  def value(%{__struct__: __MODULE__, token: :fake_banner_compact} = text)
+      when map_size(text) == 2,
+      do: "FAKE — NO USER DATA"
+
+  def value(%{__struct__: __MODULE__, token: :build_mode} = text) when map_size(text) == 2,
+    do: "Build"
+
+  def value(%{__struct__: __MODULE__, token: :navigator} = text) when map_size(text) == 2,
+    do: "Navigator"
+
+  def value(%{__struct__: __MODULE__, token: :inspector} = text) when map_size(text) == 2,
+    do: "Inspector"
+
+  def value(%{__struct__: __MODULE__, token: :composer} = text) when map_size(text) == 2,
+    do: "Composer · Build"
+
+  def value(%{__struct__: __MODULE__, token: :activity} = text) when map_size(text) == 2,
+    do: "Activity"
+
+  def value(%{__struct__: __MODULE__, token: :status} = text) when map_size(text) == 2,
+    do: "Status"
+
+  def value(%{__struct__: __MODULE__, token: :resize_help} = text) when map_size(text) == 2,
+    do: "Resize help"
+
+  def value(%{__struct__: __MODULE__, token: :plain_exit} = text) when map_size(text) == 2,
+    do: "Exit; rerun with --plain"
+
+  def value(%{__struct__: __MODULE__, token: :unsent_changes} = text) when map_size(text) == 2,
+    do: "UNSENT CHANGES"
+
+  def value(%{__struct__: __MODULE__, token: :cancel_exit} = text) when map_size(text) == 2,
+    do: "Esc CANCEL"
+
+  def value(%{__struct__: __MODULE__, token: :confirm_exit} = text) when map_size(text) == 2,
+    do: "X CONFIRM EXIT"
+
+  def value(%{__struct__: __MODULE__, token: :help_key} = text) when map_size(text) == 2,
+    do: "? HELP"
+
+  def value(%{__struct__: __MODULE__, token: :detach_key} = text) when map_size(text) == 2,
+    do: "q DETACH"
+
+  def value(%{__struct__: __MODULE__, token: :plain_key} = text) when map_size(text) == 2,
+    do: "P EXIT; RERUN --plain"
+
+  def value(%{__struct__: __MODULE__, token: :back_close_help} = text) when map_size(text) == 2,
+    do: "Back / Close / Help"
+
+  def value(%{__struct__: __MODULE__, token: :read_only_resize} = text) when map_size(text) == 2,
+    do: "Read-only at this size; resize to act"
+
+  def value(%{__struct__: __MODULE__, token: :needs} = text) when map_size(text) == 2, do: "NEEDS"
+
+  def value(%{__struct__: __MODULE__, token: :target_main} = text) when map_size(text) == 2,
+    do: "Target: Main"
+
+  def value(%{__struct__: __MODULE__, token: :validation_none} = text) when map_size(text) == 2,
+    do: "Validation: none"
+
+  def value(%{__struct__: __MODULE__, token: :focus_label} = text) when map_size(text) == 2,
+    do: "Focus: "
+
+  def value(%{__struct__: __MODULE__, token: :inspect} = text) when map_size(text) == 2,
+    do: "Inspect"
+
+  def value(%{__struct__: __MODULE__, token: :pause} = text) when map_size(text) == 2, do: "Pause"
+
+  def value(%{__struct__: __MODULE__, token: :continue} = text) when map_size(text) == 2,
+    do: "Continue"
+
+  def value(%{__struct__: __MODULE__, token: :send} = text) when map_size(text) == 2, do: "Send"
+  def value(%{__struct__: __MODULE__, token: :queue} = text) when map_size(text) == 2, do: "Queue"
+
+  def value(%{__struct__: __MODULE__, token: :superseded_child} = text) when map_size(text) == 2,
+    do: "LAUNCHED BY SUPERSEDED TURN"
+
+  def value(%{__struct__: __MODULE__, token: :research_depth} = text) when map_size(text) == 2,
+    do: "Research: Ultra (4x10)"
+
+  def value(%{__struct__: __MODULE__, token: :representative_only} = text)
+      when map_size(text) == 2,
+      do: "Static representative evidence"
+
+  def value(%{__struct__: __MODULE__, token: :consensus_docket} = text) when map_size(text) == 2,
+    do: "Consensus docket"
+
+  def value(%{__struct__: __MODULE__, token: :consensus_ledger} = text) when map_size(text) == 2,
+    do: "Consensus ledger"
+
+  def value(%{__struct__: __MODULE__, token: :research_report} = text) when map_size(text) == 2,
+    do: "Research report"
+
+  def value(%{__struct__: __MODULE__, token: :sources} = text) when map_size(text) == 2,
+    do: "Sources"
+
+  def value(%{__struct__: __MODULE__, token: :diagnostics} = text) when map_size(text) == 2,
+    do: "Diagnostics"
+
+  def value(%{__struct__: __MODULE__, token: :loading_before} = text) when map_size(text) == 2,
+    do: "Loading earlier items"
+
+  def value(%{__struct__: __MODULE__, token: :loading_after} = text) when map_size(text) == 2,
+    do: "Loading later items"
+
+  def value(%{__struct__: __MODULE__, token: :page_error} = text) when map_size(text) == 2,
+    do: "Page error — Retry via Help"
+
+  def value(%{__struct__: __MODULE__, token: :accepted} = text) when map_size(text) == 2,
+    do: "ACCEPTED"
+
+  def value(%{__struct__: __MODULE__, token: :needs_input} = text) when map_size(text) == 2,
+    do: "NEEDS INPUT"
+
+  def value(%{__struct__: __MODULE__, token: :rejected} = text) when map_size(text) == 2,
+    do: "REJECTED"
+
+  def value(%{__struct__: __MODULE__, token: :deadline_exceeded} = text) when map_size(text) == 2,
+    do: "DEADLINE EXCEEDED"
+
+  def value(%{__struct__: __MODULE__, token: :outcome_unknown} = text) when map_size(text) == 2,
+    do: "OUTCOME UNKNOWN"
+
+  def value(%{__struct__: __MODULE__, token: :revision_conflict} = text) when map_size(text) == 2,
+    do: "REVISION CONFLICT"
 
   def value(%{__struct__: __MODULE__, token: :fake_banner} = text) when map_size(text) == 2,
     do: "FAKE DEMO — NO USER DATA"

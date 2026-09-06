@@ -1,7 +1,11 @@
 defmodule SwarmCodeCLI.UI.DataSource.DTO.RunSummary do
   @moduledoc "Bounded, closed RunSummary presentation facts."
   use SwarmCodeCLI.UI.DataSource.DTO.Schema,
+    wire_defaults: [created_sequence: 0, parent_run_id: nil, seen_revision: 0],
     fields: [
+      created_sequence: :revision,
+      parent_run_id: {:optional, :id},
+      seen_revision: :revision,
       id: :id,
       conversation_id: :id,
       kind: {:enum, [:chat, :goal, :swarm, :workflow, :research, :consensus, :ultra]},
@@ -27,6 +31,9 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.RunSummary do
       progress: :progress
     ],
     defaults: [
+      created_sequence: 0,
+      parent_run_id: nil,
+      seen_revision: 0,
       id: nil,
       conversation_id: nil,
       kind: :chat,

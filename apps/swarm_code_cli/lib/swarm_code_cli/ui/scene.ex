@@ -46,9 +46,12 @@ defmodule SwarmCodeCLI.UI.Scene do
     :paused,
     :waiting_question,
     :waiting_approval,
-    :completed,
+    :retrying,
+    :done,
     :failed,
-    :cancelled
+    :stopped,
+    :interrupted,
+    :superseded
   ]
 
   @spec validate(t()) :: :ok | {:error, Error.t()}

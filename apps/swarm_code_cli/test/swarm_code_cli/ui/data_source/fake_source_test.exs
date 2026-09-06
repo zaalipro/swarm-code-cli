@@ -752,16 +752,20 @@ defmodule SwarmCodeCLI.UI.DataSource.FakeSourceTest do
     end
   end
 
-  test "fake fixture admission cannot advertise unsupported command permissions" do
+  test "fake fixture advertises executable steer but rejects send on entity facts" do
     {:ok, script} = Script.decode(fixture())
     run = %{script.runs[Script.id(:a1)] | allowed_actions: [:steer]}
     assert {:ok, ^run} = SwarmCodeCLI.UI.DataSource.DTO.RunSummary.validate(run)
+    assert {:ok, _} = Script.validate(%{script | runs: Map.put(script.runs, run.id, run)})
+    assert {:ok, _} = Script.decode(String.replace(fixture(), ~s("pause"), ~s("steer")))
+
+    stopped = %{run | state: :stopped}
 
     assert {:error, %AdmissionError{code: :invalid_fixture}} =
-             Script.validate(%{script | runs: Map.put(script.runs, run.id, run)})
+             Script.validate(%{script | runs: Map.put(script.runs, run.id, stopped)})
 
     assert {:error, %AdmissionError{code: :invalid_fixture}} =
-             Script.decode(String.replace(fixture(), ~s("pause"), ~s("steer")))
+             Script.decode(String.replace(fixture(), ~s("pause"), ~s("send")))
   end
 
   test "scripted barriers skip stopped and paused branches while independent B1 progresses" do

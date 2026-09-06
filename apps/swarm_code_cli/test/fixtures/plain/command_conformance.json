@@ -1,0 +1,1426 @@
+[
+  {
+    "name": "send",
+    "line": "send --attach attachment-1 -- \"ship it\"",
+    "context_fixture": "send",
+    "context": {
+      "scope": {
+        "kind": "conversation",
+        "id": "conversation-a",
+        "generation": 3
+      },
+      "scope_generation": 3,
+      "origin": [
+        "draft",
+        [
+          "conversation-a",
+          "main"
+        ]
+      ],
+      "active_run_id": null,
+      "active_run_state": null,
+      "active_node_id": null,
+      "active_agent_id": null,
+      "subject_revision": null,
+      "interaction": null,
+      "editor_text": "ship it",
+      "dispatch_target": "main",
+      "attachment_refs": [
+        "attachment-1"
+      ],
+      "allowed_actions": [
+        "send",
+        "queue"
+      ]
+    },
+    "intent": [
+      "dispatch",
+      "send",
+      "ship it",
+      "main",
+      [
+        "attachment-1"
+      ]
+    ],
+    "request": {
+      "request_id": "request-42",
+      "kind": [
+        "dispatch",
+        "send",
+        "ship it",
+        "main",
+        [
+          "attachment-1"
+        ]
+      ],
+      "scope": {
+        "kind": "conversation",
+        "id": "conversation-a",
+        "generation": 3
+      },
+      "generation": 3,
+      "origin": [
+        "draft",
+        [
+          "conversation-a",
+          "main"
+        ]
+      ],
+      "deadline": 1788438400000,
+      "expected_response": "outcome"
+    },
+    "request_id": "request-42",
+    "deadline": 1788438400000,
+    "canonical_base64": "eyJkZWFkbGluZSI6MTc4ODQzODQwMDAwMCwiZXhwZWN0ZWRfcmVzcG9uc2UiOiJvdXRjb21lIiwiZ2VuZXJhdGlvbiI6Mywia2luZCI6WyJkaXNwYXRjaCIsInNlbmQiLCJzaGlwIGl0IiwibWFpbiIsWyJhdHRhY2htZW50LTEiXV0sIm9yaWdpbiI6WyJkcmFmdCIsWyJjb252ZXJzYXRpb24tYSIsIm1haW4iXV0sInJlcXVlc3RfaWQiOiJyZXF1ZXN0LTQyIiwic2NvcGUiOnsiZ2VuZXJhdGlvbiI6MywiaWQiOiJjb252ZXJzYXRpb24tYSIsImtpbmQiOiJjb252ZXJzYXRpb24ifX0="
+  },
+  {
+    "name": "queue",
+    "line": "queue --attach attachment-1 -- \"ship it\"",
+    "context_fixture": "queue",
+    "context": {
+      "scope": {
+        "kind": "conversation",
+        "id": "conversation-a",
+        "generation": 3
+      },
+      "scope_generation": 3,
+      "origin": [
+        "draft",
+        [
+          "conversation-a",
+          "main"
+        ]
+      ],
+      "active_run_id": null,
+      "active_run_state": null,
+      "active_node_id": null,
+      "active_agent_id": null,
+      "subject_revision": null,
+      "interaction": null,
+      "editor_text": "ship it",
+      "dispatch_target": "main",
+      "attachment_refs": [
+        "attachment-1"
+      ],
+      "allowed_actions": [
+        "send",
+        "queue"
+      ]
+    },
+    "intent": [
+      "dispatch",
+      "queue",
+      "ship it",
+      "main",
+      [
+        "attachment-1"
+      ]
+    ],
+    "request": {
+      "request_id": "request-42",
+      "kind": [
+        "dispatch",
+        "queue",
+        "ship it",
+        "main",
+        [
+          "attachment-1"
+        ]
+      ],
+      "scope": {
+        "kind": "conversation",
+        "id": "conversation-a",
+        "generation": 3
+      },
+      "generation": 3,
+      "origin": [
+        "draft",
+        [
+          "conversation-a",
+          "main"
+        ]
+      ],
+      "deadline": 1788438400000,
+      "expected_response": "outcome"
+    },
+    "request_id": "request-42",
+    "deadline": 1788438400000,
+    "canonical_base64": "eyJkZWFkbGluZSI6MTc4ODQzODQwMDAwMCwiZXhwZWN0ZWRfcmVzcG9uc2UiOiJvdXRjb21lIiwiZ2VuZXJhdGlvbiI6Mywia2luZCI6WyJkaXNwYXRjaCIsInF1ZXVlIiwic2hpcCBpdCIsIm1haW4iLFsiYXR0YWNobWVudC0xIl1dLCJvcmlnaW4iOlsiZHJhZnQiLFsiY29udmVyc2F0aW9uLWEiLCJtYWluIl1dLCJyZXF1ZXN0X2lkIjoicmVxdWVzdC00MiIsInNjb3BlIjp7ImdlbmVyYXRpb24iOjMsImlkIjoiY29udmVyc2F0aW9uLWEiLCJraW5kIjoiY29udmVyc2F0aW9uIn19"
+  },
+  {
+    "name": "steer",
+    "line": "steer run-a2 node-a2 -- focus tests",
+    "context_fixture": "steer",
+    "context": {
+      "scope": {
+        "kind": "conversation",
+        "id": "conversation-a",
+        "generation": 3
+      },
+      "scope_generation": 3,
+      "origin": [
+        "draft",
+        [
+          "conversation-a",
+          "main"
+        ]
+      ],
+      "active_run_id": "run-a2",
+      "active_run_state": "streaming",
+      "active_node_id": "node-a2",
+      "active_agent_id": null,
+      "subject_revision": null,
+      "interaction": null,
+      "editor_text": "focus tests",
+      "dispatch_target": "main",
+      "attachment_refs": [],
+      "allowed_actions": [
+        "steer"
+      ]
+    },
+    "intent": [
+      "steer",
+      "run-a2",
+      "node-a2",
+      "focus tests",
+      []
+    ],
+    "request": {
+      "request_id": "request-42",
+      "kind": [
+        "steer",
+        "run-a2",
+        "node-a2",
+        "focus tests",
+        []
+      ],
+      "scope": {
+        "kind": "conversation",
+        "id": "conversation-a",
+        "generation": 3
+      },
+      "generation": 3,
+      "origin": [
+        "draft",
+        [
+          "conversation-a",
+          "main"
+        ]
+      ],
+      "deadline": 1788438400000,
+      "expected_response": "outcome"
+    },
+    "request_id": "request-42",
+    "deadline": 1788438400000,
+    "canonical_base64": "eyJkZWFkbGluZSI6MTc4ODQzODQwMDAwMCwiZXhwZWN0ZWRfcmVzcG9uc2UiOiJvdXRjb21lIiwiZ2VuZXJhdGlvbiI6Mywia2luZCI6WyJzdGVlciIsInJ1bi1hMiIsIm5vZGUtYTIiLCJmb2N1cyB0ZXN0cyIsW11dLCJvcmlnaW4iOlsiZHJhZnQiLFsiY29udmVyc2F0aW9uLWEiLCJtYWluIl1dLCJyZXF1ZXN0X2lkIjoicmVxdWVzdC00MiIsInNjb3BlIjp7ImdlbmVyYXRpb24iOjMsImlkIjoiY29udmVyc2F0aW9uLWEiLCJraW5kIjoiY29udmVyc2F0aW9uIn19"
+  },
+  {
+    "name": "answer",
+    "line": "answer q1@7 option-2",
+    "context_fixture": "answer",
+    "context": {
+      "scope": {
+        "kind": "conversation",
+        "id": "conversation-a",
+        "generation": 3
+      },
+      "scope_generation": 3,
+      "origin": [
+        "interaction",
+        "q1",
+        7
+      ],
+      "active_run_id": "run-a2",
+      "active_run_state": "waiting_question",
+      "active_node_id": "node-a2",
+      "active_agent_id": null,
+      "subject_revision": null,
+      "interaction": [
+        "question",
+        "run-a2",
+        "node-a2",
+        "q1",
+        7
+      ],
+      "editor_text": "",
+      "dispatch_target": "main",
+      "attachment_refs": [],
+      "allowed_actions": [
+        "answer_question"
+      ]
+    },
+    "intent": [
+      "answer_question",
+      "run-a2",
+      "node-a2",
+      "q1",
+      7,
+      [
+        "option-2"
+      ]
+    ],
+    "request": {
+      "request_id": "request-42",
+      "kind": [
+        "answer_question",
+        "run-a2",
+        "node-a2",
+        "q1",
+        7,
+        [
+          "option-2"
+        ]
+      ],
+      "scope": {
+        "kind": "conversation",
+        "id": "conversation-a",
+        "generation": 3
+      },
+      "generation": 3,
+      "origin": [
+        "interaction",
+        "q1",
+        7
+      ],
+      "deadline": 1788438400000,
+      "expected_response": "outcome"
+    },
+    "request_id": "request-42",
+    "deadline": 1788438400000,
+    "canonical_base64": "eyJkZWFkbGluZSI6MTc4ODQzODQwMDAwMCwiZXhwZWN0ZWRfcmVzcG9uc2UiOiJvdXRjb21lIiwiZ2VuZXJhdGlvbiI6Mywia2luZCI6WyJhbnN3ZXJfcXVlc3Rpb24iLCJydW4tYTIiLCJub2RlLWEyIiwicTEiLDcsWyJvcHRpb24tMiJdXSwib3JpZ2luIjpbImludGVyYWN0aW9uIiwicTEiLDddLCJyZXF1ZXN0X2lkIjoicmVxdWVzdC00MiIsInNjb3BlIjp7ImdlbmVyYXRpb24iOjMsImlkIjoiY29udmVyc2F0aW9uLWEiLCJraW5kIjoiY29udmVyc2F0aW9uIn19"
+  },
+  {
+    "name": "approve",
+    "line": "approve approval-1@4",
+    "context_fixture": "approve",
+    "context": {
+      "scope": {
+        "kind": "conversation",
+        "id": "conversation-a",
+        "generation": 3
+      },
+      "scope_generation": 3,
+      "origin": [
+        "interaction",
+        "approval-1",
+        4
+      ],
+      "active_run_id": "run-a2",
+      "active_run_state": "waiting_approval",
+      "active_node_id": "node-a2",
+      "active_agent_id": null,
+      "subject_revision": null,
+      "interaction": [
+        "approval",
+        "run-a2",
+        "node-a2",
+        "approval-1",
+        4
+      ],
+      "editor_text": "",
+      "dispatch_target": "main",
+      "attachment_refs": [],
+      "allowed_actions": [
+        "approve",
+        "deny",
+        "always_allow"
+      ]
+    },
+    "intent": [
+      "resolve_approval",
+      "run-a2",
+      "node-a2",
+      "approval-1",
+      4,
+      "approve"
+    ],
+    "request": {
+      "request_id": "request-42",
+      "kind": [
+        "resolve_approval",
+        "run-a2",
+        "node-a2",
+        "approval-1",
+        4,
+        "approve"
+      ],
+      "scope": {
+        "kind": "conversation",
+        "id": "conversation-a",
+        "generation": 3
+      },
+      "generation": 3,
+      "origin": [
+        "interaction",
+        "approval-1",
+        4
+      ],
+      "deadline": 1788438400000,
+      "expected_response": "outcome"
+    },
+    "request_id": "request-42",
+    "deadline": 1788438400000,
+    "canonical_base64": "eyJkZWFkbGluZSI6MTc4ODQzODQwMDAwMCwiZXhwZWN0ZWRfcmVzcG9uc2UiOiJvdXRjb21lIiwiZ2VuZXJhdGlvbiI6Mywia2luZCI6WyJyZXNvbHZlX2FwcHJvdmFsIiwicnVuLWEyIiwibm9kZS1hMiIsImFwcHJvdmFsLTEiLDQsImFwcHJvdmUiXSwib3JpZ2luIjpbImludGVyYWN0aW9uIiwiYXBwcm92YWwtMSIsNF0sInJlcXVlc3RfaWQiOiJyZXF1ZXN0LTQyIiwic2NvcGUiOnsiZ2VuZXJhdGlvbiI6MywiaWQiOiJjb252ZXJzYXRpb24tYSIsImtpbmQiOiJjb252ZXJzYXRpb24ifX0="
+  },
+  {
+    "name": "deny",
+    "line": "deny approval-1@4",
+    "context_fixture": "deny",
+    "context": {
+      "scope": {
+        "kind": "conversation",
+        "id": "conversation-a",
+        "generation": 3
+      },
+      "scope_generation": 3,
+      "origin": [
+        "interaction",
+        "approval-1",
+        4
+      ],
+      "active_run_id": "run-a2",
+      "active_run_state": "waiting_approval",
+      "active_node_id": "node-a2",
+      "active_agent_id": null,
+      "subject_revision": null,
+      "interaction": [
+        "approval",
+        "run-a2",
+        "node-a2",
+        "approval-1",
+        4
+      ],
+      "editor_text": "",
+      "dispatch_target": "main",
+      "attachment_refs": [],
+      "allowed_actions": [
+        "approve",
+        "deny",
+        "always_allow"
+      ]
+    },
+    "intent": [
+      "resolve_approval",
+      "run-a2",
+      "node-a2",
+      "approval-1",
+      4,
+      "deny"
+    ],
+    "request": {
+      "request_id": "request-42",
+      "kind": [
+        "resolve_approval",
+        "run-a2",
+        "node-a2",
+        "approval-1",
+        4,
+        "deny"
+      ],
+      "scope": {
+        "kind": "conversation",
+        "id": "conversation-a",
+        "generation": 3
+      },
+      "generation": 3,
+      "origin": [
+        "interaction",
+        "approval-1",
+        4
+      ],
+      "deadline": 1788438400000,
+      "expected_response": "outcome"
+    },
+    "request_id": "request-42",
+    "deadline": 1788438400000,
+    "canonical_base64": "eyJkZWFkbGluZSI6MTc4ODQzODQwMDAwMCwiZXhwZWN0ZWRfcmVzcG9uc2UiOiJvdXRjb21lIiwiZ2VuZXJhdGlvbiI6Mywia2luZCI6WyJyZXNvbHZlX2FwcHJvdmFsIiwicnVuLWEyIiwibm9kZS1hMiIsImFwcHJvdmFsLTEiLDQsImRlbnkiXSwib3JpZ2luIjpbImludGVyYWN0aW9uIiwiYXBwcm92YWwtMSIsNF0sInJlcXVlc3RfaWQiOiJyZXF1ZXN0LTQyIiwic2NvcGUiOnsiZ2VuZXJhdGlvbiI6MywiaWQiOiJjb252ZXJzYXRpb24tYSIsImtpbmQiOiJjb252ZXJzYXRpb24ifX0="
+  },
+  {
+    "name": "always_allow",
+    "line": "always-allow approval-1@4",
+    "context_fixture": "always_allow",
+    "context": {
+      "scope": {
+        "kind": "conversation",
+        "id": "conversation-a",
+        "generation": 3
+      },
+      "scope_generation": 3,
+      "origin": [
+        "interaction",
+        "approval-1",
+        4
+      ],
+      "active_run_id": "run-a2",
+      "active_run_state": "waiting_approval",
+      "active_node_id": "node-a2",
+      "active_agent_id": null,
+      "subject_revision": null,
+      "interaction": [
+        "approval",
+        "run-a2",
+        "node-a2",
+        "approval-1",
+        4
+      ],
+      "editor_text": "",
+      "dispatch_target": "main",
+      "attachment_refs": [],
+      "allowed_actions": [
+        "approve",
+        "deny",
+        "always_allow"
+      ]
+    },
+    "intent": [
+      "resolve_approval",
+      "run-a2",
+      "node-a2",
+      "approval-1",
+      4,
+      "always_allow"
+    ],
+    "request": {
+      "request_id": "request-42",
+      "kind": [
+        "resolve_approval",
+        "run-a2",
+        "node-a2",
+        "approval-1",
+        4,
+        "always_allow"
+      ],
+      "scope": {
+        "kind": "conversation",
+        "id": "conversation-a",
+        "generation": 3
+      },
+      "generation": 3,
+      "origin": [
+        "interaction",
+        "approval-1",
+        4
+      ],
+      "deadline": 1788438400000,
+      "expected_response": "outcome"
+    },
+    "request_id": "request-42",
+    "deadline": 1788438400000,
+    "canonical_base64": "eyJkZWFkbGluZSI6MTc4ODQzODQwMDAwMCwiZXhwZWN0ZWRfcmVzcG9uc2UiOiJvdXRjb21lIiwiZ2VuZXJhdGlvbiI6Mywia2luZCI6WyJyZXNvbHZlX2FwcHJvdmFsIiwicnVuLWEyIiwibm9kZS1hMiIsImFwcHJvdmFsLTEiLDQsImFsd2F5c19hbGxvdyJdLCJvcmlnaW4iOlsiaW50ZXJhY3Rpb24iLCJhcHByb3ZhbC0xIiw0XSwicmVxdWVzdF9pZCI6InJlcXVlc3QtNDIiLCJzY29wZSI6eyJnZW5lcmF0aW9uIjozLCJpZCI6ImNvbnZlcnNhdGlvbi1hIiwia2luZCI6ImNvbnZlcnNhdGlvbiJ9fQ=="
+  },
+  {
+    "name": "pause",
+    "line": "pause run-a2",
+    "context_fixture": "pause",
+    "context": {
+      "scope": {
+        "kind": "conversation",
+        "id": "conversation-a",
+        "generation": 3
+      },
+      "scope_generation": 3,
+      "origin": [
+        "run",
+        "run-a2"
+      ],
+      "active_run_id": "run-a2",
+      "active_run_state": "running",
+      "active_node_id": null,
+      "active_agent_id": null,
+      "subject_revision": null,
+      "interaction": null,
+      "editor_text": "",
+      "dispatch_target": "main",
+      "attachment_refs": [],
+      "allowed_actions": [
+        "pause"
+      ]
+    },
+    "intent": [
+      "run_control",
+      "pause",
+      "run-a2"
+    ],
+    "request": {
+      "request_id": "request-42",
+      "kind": [
+        "run_control",
+        "pause",
+        "run-a2"
+      ],
+      "scope": {
+        "kind": "conversation",
+        "id": "conversation-a",
+        "generation": 3
+      },
+      "generation": 3,
+      "origin": [
+        "run",
+        "run-a2"
+      ],
+      "deadline": 1788438400000,
+      "expected_response": "outcome"
+    },
+    "request_id": "request-42",
+    "deadline": 1788438400000,
+    "canonical_base64": "eyJkZWFkbGluZSI6MTc4ODQzODQwMDAwMCwiZXhwZWN0ZWRfcmVzcG9uc2UiOiJvdXRjb21lIiwiZ2VuZXJhdGlvbiI6Mywia2luZCI6WyJydW5fY29udHJvbCIsInBhdXNlIiwicnVuLWEyIl0sIm9yaWdpbiI6WyJydW4iLCJydW4tYTIiXSwicmVxdWVzdF9pZCI6InJlcXVlc3QtNDIiLCJzY29wZSI6eyJnZW5lcmF0aW9uIjozLCJpZCI6ImNvbnZlcnNhdGlvbi1hIiwia2luZCI6ImNvbnZlcnNhdGlvbiJ9fQ=="
+  },
+  {
+    "name": "continue",
+    "line": "continue run-a2",
+    "context_fixture": "continue",
+    "context": {
+      "scope": {
+        "kind": "conversation",
+        "id": "conversation-a",
+        "generation": 3
+      },
+      "scope_generation": 3,
+      "origin": [
+        "run",
+        "run-a2"
+      ],
+      "active_run_id": "run-a2",
+      "active_run_state": "running",
+      "active_node_id": null,
+      "active_agent_id": null,
+      "subject_revision": null,
+      "interaction": null,
+      "editor_text": "",
+      "dispatch_target": "main",
+      "attachment_refs": [],
+      "allowed_actions": [
+        "continue"
+      ]
+    },
+    "intent": [
+      "run_control",
+      "continue",
+      "run-a2"
+    ],
+    "request": {
+      "request_id": "request-42",
+      "kind": [
+        "run_control",
+        "continue",
+        "run-a2"
+      ],
+      "scope": {
+        "kind": "conversation",
+        "id": "conversation-a",
+        "generation": 3
+      },
+      "generation": 3,
+      "origin": [
+        "run",
+        "run-a2"
+      ],
+      "deadline": 1788438400000,
+      "expected_response": "outcome"
+    },
+    "request_id": "request-42",
+    "deadline": 1788438400000,
+    "canonical_base64": "eyJkZWFkbGluZSI6MTc4ODQzODQwMDAwMCwiZXhwZWN0ZWRfcmVzcG9uc2UiOiJvdXRjb21lIiwiZ2VuZXJhdGlvbiI6Mywia2luZCI6WyJydW5fY29udHJvbCIsImNvbnRpbnVlIiwicnVuLWEyIl0sIm9yaWdpbiI6WyJydW4iLCJydW4tYTIiXSwicmVxdWVzdF9pZCI6InJlcXVlc3QtNDIiLCJzY29wZSI6eyJnZW5lcmF0aW9uIjozLCJpZCI6ImNvbnZlcnNhdGlvbi1hIiwia2luZCI6ImNvbnZlcnNhdGlvbiJ9fQ=="
+  },
+  {
+    "name": "resume",
+    "line": "resume run-a2",
+    "context_fixture": "resume",
+    "context": {
+      "scope": {
+        "kind": "conversation",
+        "id": "conversation-a",
+        "generation": 3
+      },
+      "scope_generation": 3,
+      "origin": [
+        "run",
+        "run-a2"
+      ],
+      "active_run_id": "run-a2",
+      "active_run_state": "interrupted",
+      "active_node_id": null,
+      "active_agent_id": null,
+      "subject_revision": null,
+      "interaction": null,
+      "editor_text": "",
+      "dispatch_target": "main",
+      "attachment_refs": [],
+      "allowed_actions": [
+        "resume"
+      ]
+    },
+    "intent": [
+      "run_control",
+      "resume",
+      "run-a2"
+    ],
+    "request": {
+      "request_id": "request-42",
+      "kind": [
+        "run_control",
+        "resume",
+        "run-a2"
+      ],
+      "scope": {
+        "kind": "conversation",
+        "id": "conversation-a",
+        "generation": 3
+      },
+      "generation": 3,
+      "origin": [
+        "run",
+        "run-a2"
+      ],
+      "deadline": 1788438400000,
+      "expected_response": "outcome"
+    },
+    "request_id": "request-42",
+    "deadline": 1788438400000,
+    "canonical_base64": "eyJkZWFkbGluZSI6MTc4ODQzODQwMDAwMCwiZXhwZWN0ZWRfcmVzcG9uc2UiOiJvdXRjb21lIiwiZ2VuZXJhdGlvbiI6Mywia2luZCI6WyJydW5fY29udHJvbCIsInJlc3VtZSIsInJ1bi1hMiJdLCJvcmlnaW4iOlsicnVuIiwicnVuLWEyIl0sInJlcXVlc3RfaWQiOiJyZXF1ZXN0LTQyIiwic2NvcGUiOnsiZ2VuZXJhdGlvbiI6MywiaWQiOiJjb252ZXJzYXRpb24tYSIsImtpbmQiOiJjb252ZXJzYXRpb24ifX0="
+  },
+  {
+    "name": "stop",
+    "line": "stop run-a2",
+    "context_fixture": "stop",
+    "context": {
+      "scope": {
+        "kind": "conversation",
+        "id": "conversation-a",
+        "generation": 3
+      },
+      "scope_generation": 3,
+      "origin": [
+        "run",
+        "run-a2"
+      ],
+      "active_run_id": "run-a2",
+      "active_run_state": "running",
+      "active_node_id": null,
+      "active_agent_id": null,
+      "subject_revision": null,
+      "interaction": null,
+      "editor_text": "",
+      "dispatch_target": "main",
+      "attachment_refs": [],
+      "allowed_actions": [
+        "stop"
+      ]
+    },
+    "intent": [
+      "run_control",
+      "stop",
+      "run-a2"
+    ],
+    "request": {
+      "request_id": "request-42",
+      "kind": [
+        "run_control",
+        "stop",
+        "run-a2"
+      ],
+      "scope": {
+        "kind": "conversation",
+        "id": "conversation-a",
+        "generation": 3
+      },
+      "generation": 3,
+      "origin": [
+        "run",
+        "run-a2"
+      ],
+      "deadline": 1788438400000,
+      "expected_response": "outcome"
+    },
+    "request_id": "request-42",
+    "deadline": 1788438400000,
+    "canonical_base64": "eyJkZWFkbGluZSI6MTc4ODQzODQwMDAwMCwiZXhwZWN0ZWRfcmVzcG9uc2UiOiJvdXRjb21lIiwiZ2VuZXJhdGlvbiI6Mywia2luZCI6WyJydW5fY29udHJvbCIsInN0b3AiLCJydW4tYTIiXSwib3JpZ2luIjpbInJ1biIsInJ1bi1hMiJdLCJyZXF1ZXN0X2lkIjoicmVxdWVzdC00MiIsInNjb3BlIjp7ImdlbmVyYXRpb24iOjMsImlkIjoiY29udmVyc2F0aW9uLWEiLCJraW5kIjoiY29udmVyc2F0aW9uIn19"
+  },
+  {
+    "name": "retry",
+    "line": "retry run-a2@5",
+    "context_fixture": "retry",
+    "context": {
+      "scope": {
+        "kind": "conversation",
+        "id": "conversation-a",
+        "generation": 3
+      },
+      "scope_generation": 3,
+      "origin": [
+        "run_revision",
+        "run-a2",
+        5
+      ],
+      "active_run_id": "run-a2",
+      "active_run_state": "failed",
+      "active_node_id": null,
+      "active_agent_id": null,
+      "subject_revision": 5,
+      "interaction": null,
+      "editor_text": "",
+      "dispatch_target": "main",
+      "attachment_refs": [],
+      "allowed_actions": [
+        "retry"
+      ]
+    },
+    "intent": [
+      "retry_run",
+      "run-a2",
+      5
+    ],
+    "request": {
+      "request_id": "request-42",
+      "kind": [
+        "retry_run",
+        "run-a2",
+        5
+      ],
+      "scope": {
+        "kind": "conversation",
+        "id": "conversation-a",
+        "generation": 3
+      },
+      "generation": 3,
+      "origin": [
+        "run_revision",
+        "run-a2",
+        5
+      ],
+      "deadline": 1788438400000,
+      "expected_response": "outcome"
+    },
+    "request_id": "request-42",
+    "deadline": 1788438400000,
+    "canonical_base64": "eyJkZWFkbGluZSI6MTc4ODQzODQwMDAwMCwiZXhwZWN0ZWRfcmVzcG9uc2UiOiJvdXRjb21lIiwiZ2VuZXJhdGlvbiI6Mywia2luZCI6WyJyZXRyeV9ydW4iLCJydW4tYTIiLDVdLCJvcmlnaW4iOlsicnVuX3JldmlzaW9uIiwicnVuLWEyIiw1XSwicmVxdWVzdF9pZCI6InJlcXVlc3QtNDIiLCJzY29wZSI6eyJnZW5lcmF0aW9uIjozLCJpZCI6ImNvbnZlcnNhdGlvbi1hIiwia2luZCI6ImNvbnZlcnNhdGlvbiJ9fQ=="
+  },
+  {
+    "name": "stop_agent",
+    "line": "stop-agent run-a2 agent-1@6",
+    "context_fixture": "stop_agent",
+    "context": {
+      "scope": {
+        "kind": "conversation",
+        "id": "conversation-a",
+        "generation": 3
+      },
+      "scope_generation": 3,
+      "origin": [
+        "agent",
+        "run-a2",
+        "agent-1",
+        6
+      ],
+      "active_run_id": "run-a2",
+      "active_run_state": "running",
+      "active_node_id": null,
+      "active_agent_id": "agent-1",
+      "subject_revision": 6,
+      "interaction": null,
+      "editor_text": "",
+      "dispatch_target": "main",
+      "attachment_refs": [],
+      "allowed_actions": [
+        "stop_agent"
+      ]
+    },
+    "intent": [
+      "stop_agent",
+      "run-a2",
+      "agent-1",
+      6
+    ],
+    "request": {
+      "request_id": "request-42",
+      "kind": [
+        "stop_agent",
+        "run-a2",
+        "agent-1",
+        6
+      ],
+      "scope": {
+        "kind": "conversation",
+        "id": "conversation-a",
+        "generation": 3
+      },
+      "generation": 3,
+      "origin": [
+        "agent",
+        "run-a2",
+        "agent-1",
+        6
+      ],
+      "deadline": 1788438400000,
+      "expected_response": "outcome"
+    },
+    "request_id": "request-42",
+    "deadline": 1788438400000,
+    "canonical_base64": "eyJkZWFkbGluZSI6MTc4ODQzODQwMDAwMCwiZXhwZWN0ZWRfcmVzcG9uc2UiOiJvdXRjb21lIiwiZ2VuZXJhdGlvbiI6Mywia2luZCI6WyJzdG9wX2FnZW50IiwicnVuLWEyIiwiYWdlbnQtMSIsNl0sIm9yaWdpbiI6WyJhZ2VudCIsInJ1bi1hMiIsImFnZW50LTEiLDZdLCJyZXF1ZXN0X2lkIjoicmVxdWVzdC00MiIsInNjb3BlIjp7ImdlbmVyYXRpb24iOjMsImlkIjoiY29udmVyc2F0aW9uLWEiLCJraW5kIjoiY29udmVyc2F0aW9uIn19"
+  },
+  {
+    "name": "seen_conversation",
+    "line": "seen conversation conversation-a@3",
+    "context_fixture": "seen_conversation",
+    "context": {
+      "scope": {
+        "kind": "conversation",
+        "id": "conversation-a",
+        "generation": 3
+      },
+      "scope_generation": 3,
+      "origin": [
+        "seen",
+        "conversation",
+        "conversation-a",
+        3
+      ],
+      "active_run_id": null,
+      "active_run_state": null,
+      "active_node_id": null,
+      "active_agent_id": null,
+      "subject_revision": null,
+      "interaction": null,
+      "editor_text": "",
+      "dispatch_target": "main",
+      "attachment_refs": [],
+      "allowed_actions": [
+        "mark_seen"
+      ]
+    },
+    "intent": [
+      "mark_seen",
+      "conversation",
+      "conversation-a",
+      3
+    ],
+    "request": {
+      "request_id": "request-42",
+      "kind": [
+        "mark_seen",
+        "conversation",
+        "conversation-a",
+        3
+      ],
+      "scope": {
+        "kind": "conversation",
+        "id": "conversation-a",
+        "generation": 3
+      },
+      "generation": 3,
+      "origin": [
+        "seen",
+        "conversation",
+        "conversation-a",
+        3
+      ],
+      "deadline": 1788438400000,
+      "expected_response": "outcome"
+    },
+    "request_id": "request-42",
+    "deadline": 1788438400000,
+    "canonical_base64": "eyJkZWFkbGluZSI6MTc4ODQzODQwMDAwMCwiZXhwZWN0ZWRfcmVzcG9uc2UiOiJvdXRjb21lIiwiZ2VuZXJhdGlvbiI6Mywia2luZCI6WyJtYXJrX3NlZW4iLCJjb252ZXJzYXRpb24iLCJjb252ZXJzYXRpb24tYSIsM10sIm9yaWdpbiI6WyJzZWVuIiwiY29udmVyc2F0aW9uIiwiY29udmVyc2F0aW9uLWEiLDNdLCJyZXF1ZXN0X2lkIjoicmVxdWVzdC00MiIsInNjb3BlIjp7ImdlbmVyYXRpb24iOjMsImlkIjoiY29udmVyc2F0aW9uLWEiLCJraW5kIjoiY29udmVyc2F0aW9uIn19"
+  },
+  {
+    "name": "seen_run",
+    "line": "seen run run-a2@3",
+    "context_fixture": "seen_run",
+    "context": {
+      "scope": {
+        "kind": "conversation",
+        "id": "conversation-a",
+        "generation": 3
+      },
+      "scope_generation": 3,
+      "origin": [
+        "seen",
+        "run",
+        "run-a2",
+        3
+      ],
+      "active_run_id": null,
+      "active_run_state": null,
+      "active_node_id": null,
+      "active_agent_id": null,
+      "subject_revision": null,
+      "interaction": null,
+      "editor_text": "",
+      "dispatch_target": "main",
+      "attachment_refs": [],
+      "allowed_actions": [
+        "mark_seen"
+      ]
+    },
+    "intent": [
+      "mark_seen",
+      "run",
+      "run-a2",
+      3
+    ],
+    "request": {
+      "request_id": "request-42",
+      "kind": [
+        "mark_seen",
+        "run",
+        "run-a2",
+        3
+      ],
+      "scope": {
+        "kind": "conversation",
+        "id": "conversation-a",
+        "generation": 3
+      },
+      "generation": 3,
+      "origin": [
+        "seen",
+        "run",
+        "run-a2",
+        3
+      ],
+      "deadline": 1788438400000,
+      "expected_response": "outcome"
+    },
+    "request_id": "request-42",
+    "deadline": 1788438400000,
+    "canonical_base64": "eyJkZWFkbGluZSI6MTc4ODQzODQwMDAwMCwiZXhwZWN0ZWRfcmVzcG9uc2UiOiJvdXRjb21lIiwiZ2VuZXJhdGlvbiI6Mywia2luZCI6WyJtYXJrX3NlZW4iLCJydW4iLCJydW4tYTIiLDNdLCJvcmlnaW4iOlsic2VlbiIsInJ1biIsInJ1bi1hMiIsM10sInJlcXVlc3RfaWQiOiJyZXF1ZXN0LTQyIiwic2NvcGUiOnsiZ2VuZXJhdGlvbiI6MywiaWQiOiJjb252ZXJzYXRpb24tYSIsImtpbmQiOiJjb252ZXJzYXRpb24ifX0="
+  },
+  {
+    "name": "seen_activity",
+    "line": "seen activity activity-1@3",
+    "context_fixture": "seen_activity",
+    "context": {
+      "scope": {
+        "kind": "conversation",
+        "id": "conversation-a",
+        "generation": 3
+      },
+      "scope_generation": 3,
+      "origin": [
+        "seen",
+        "activity",
+        "activity-1",
+        3
+      ],
+      "active_run_id": null,
+      "active_run_state": null,
+      "active_node_id": null,
+      "active_agent_id": null,
+      "subject_revision": null,
+      "interaction": null,
+      "editor_text": "",
+      "dispatch_target": "main",
+      "attachment_refs": [],
+      "allowed_actions": [
+        "mark_seen"
+      ]
+    },
+    "intent": [
+      "mark_seen",
+      "activity",
+      "activity-1",
+      3
+    ],
+    "request": {
+      "request_id": "request-42",
+      "kind": [
+        "mark_seen",
+        "activity",
+        "activity-1",
+        3
+      ],
+      "scope": {
+        "kind": "conversation",
+        "id": "conversation-a",
+        "generation": 3
+      },
+      "generation": 3,
+      "origin": [
+        "seen",
+        "activity",
+        "activity-1",
+        3
+      ],
+      "deadline": 1788438400000,
+      "expected_response": "outcome"
+    },
+    "request_id": "request-42",
+    "deadline": 1788438400000,
+    "canonical_base64": "eyJkZWFkbGluZSI6MTc4ODQzODQwMDAwMCwiZXhwZWN0ZWRfcmVzcG9uc2UiOiJvdXRjb21lIiwiZ2VuZXJhdGlvbiI6Mywia2luZCI6WyJtYXJrX3NlZW4iLCJhY3Rpdml0eSIsImFjdGl2aXR5LTEiLDNdLCJvcmlnaW4iOlsic2VlbiIsImFjdGl2aXR5IiwiYWN0aXZpdHktMSIsM10sInJlcXVlc3RfaWQiOiJyZXF1ZXN0LTQyIiwic2NvcGUiOnsiZ2VuZXJhdGlvbiI6MywiaWQiOiJjb252ZXJzYXRpb24tYSIsImtpbmQiOiJjb252ZXJzYXRpb24ifX0="
+  },
+  {
+    "name": "follow_main",
+    "line": "follow main",
+    "context_fixture": "send",
+    "local": [
+      "scroll",
+      "main",
+      "follow"
+    ]
+  },
+  {
+    "name": "follow_inspector",
+    "line": "follow inspector",
+    "context_fixture": "send",
+    "local": [
+      "scroll",
+      "inspector",
+      "follow"
+    ]
+  },
+  {
+    "name": "go_conversation",
+    "line": "go conversation conversation-a",
+    "context_fixture": "send",
+    "local": [
+      "navigate",
+      [
+        "conversation",
+        "conversation-a"
+      ]
+    ]
+  },
+  {
+    "name": "go_run",
+    "line": "go run run-a2",
+    "context_fixture": "send",
+    "local": [
+      "navigate",
+      [
+        "run",
+        "run-a2"
+      ]
+    ]
+  },
+  {
+    "name": "activity",
+    "line": "activity",
+    "context_fixture": "send",
+    "local": [
+      "navigate",
+      "activity"
+    ]
+  },
+  {
+    "name": "inspect_overview",
+    "line": "inspect run-a2 overview",
+    "context_fixture": "send",
+    "local": [
+      "open_layer",
+      [
+        "run_inspector",
+        "run-a2",
+        "overview"
+      ]
+    ]
+  },
+  {
+    "name": "inspect_agents",
+    "line": "inspect run-a2 agents",
+    "context_fixture": "send",
+    "local": [
+      "open_layer",
+      [
+        "run_inspector",
+        "run-a2",
+        "agents"
+      ]
+    ]
+  },
+  {
+    "name": "inspect_timeline",
+    "line": "inspect run-a2 timeline",
+    "context_fixture": "send",
+    "local": [
+      "open_layer",
+      [
+        "run_inspector",
+        "run-a2",
+        "timeline"
+      ]
+    ]
+  },
+  {
+    "name": "inspect_changes",
+    "line": "inspect run-a2 changes",
+    "context_fixture": "send",
+    "local": [
+      "open_layer",
+      [
+        "run_inspector",
+        "run-a2",
+        "changes"
+      ]
+    ]
+  },
+  {
+    "name": "inspect_default",
+    "line": "inspect run-a2",
+    "context_fixture": "send",
+    "local": [
+      "open_layer",
+      [
+        "run_inspector",
+        "run-a2",
+        "overview"
+      ]
+    ]
+  },
+  {
+    "name": "back",
+    "line": "back",
+    "context_fixture": "send",
+    "local": "back"
+  },
+  {
+    "name": "help",
+    "line": "help",
+    "context_fixture": "send",
+    "local": [
+      "open_layer",
+      "help"
+    ]
+  },
+  {
+    "name": "detach",
+    "line": "detach",
+    "context_fixture": "send",
+    "local": [
+      "quit_requested",
+      "detach"
+    ]
+  },
+  {
+    "name": "unknown",
+    "line": "wat",
+    "context_fixture": "send",
+    "error": true
+  },
+  {
+    "name": "unclosed_single",
+    "line": "send -- 'x",
+    "context_fixture": "send",
+    "error": true
+  },
+  {
+    "name": "unclosed_double",
+    "line": "send -- \"x",
+    "context_fixture": "send",
+    "error": true
+  },
+  {
+    "name": "unknown_escape",
+    "line": "send -- \"\\x\"",
+    "context_fixture": "send",
+    "error": true
+  },
+  {
+    "name": "incomplete_escape",
+    "line": "send -- \"x\\",
+    "context_fixture": "send",
+    "error": true
+  },
+  {
+    "name": "bare_backslash",
+    "line": "send -- a\\b",
+    "context_fixture": "send",
+    "error": true
+  },
+  {
+    "name": "adjacent_quote",
+    "line": "send -- a'b'",
+    "context_fixture": "send",
+    "error": true
+  },
+  {
+    "name": "duplicate_target",
+    "line": "send --target main --target main -- x",
+    "context_fixture": "send",
+    "error": true
+  },
+  {
+    "name": "duplicate_attachment",
+    "line": "send --attach attachment-1 --attach attachment-1 -- x",
+    "context_fixture": "send",
+    "error": true
+  },
+  {
+    "name": "unstaged_attachment",
+    "line": "send --attach absent -- x",
+    "context_fixture": "send",
+    "error": true
+  },
+  {
+    "name": "unknown_target",
+    "line": "send --target reply:absent -- x",
+    "context_fixture": "send",
+    "error": true
+  },
+  {
+    "name": "missing_delimiter",
+    "line": "send x",
+    "context_fixture": "send",
+    "error": true
+  },
+  {
+    "name": "empty_text",
+    "line": "send -- \" \"",
+    "context_fixture": "send",
+    "error": true
+  },
+  {
+    "name": "extra_arg",
+    "line": "pause run-a2 x",
+    "context_fixture": "pause",
+    "error": true
+  },
+  {
+    "name": "stale_question",
+    "line": "answer q1@6 option-2",
+    "context_fixture": "answer",
+    "error": true
+  },
+  {
+    "name": "wrong_option",
+    "line": "answer q1@7 absent",
+    "context_fixture": "answer",
+    "error": true
+  },
+  {
+    "name": "duplicate_option",
+    "line": "answer q1@7 option-2 option-2",
+    "context_fixture": "answer",
+    "error": true
+  },
+  {
+    "name": "negative_revision",
+    "line": "answer q1@-1 option-2",
+    "context_fixture": "answer",
+    "error": true
+  },
+  {
+    "name": "overflow_revision",
+    "line": "answer q1@18446744073709551616 option-2",
+    "context_fixture": "answer",
+    "error": true
+  },
+  {
+    "name": "bad_id",
+    "line": "retry -bad@5",
+    "context_fixture": "retry",
+    "error": true
+  },
+  {
+    "name": "unknown_run",
+    "line": "stop absent",
+    "context_fixture": "stop",
+    "error": true
+  },
+  {
+    "name": "retry_stale",
+    "line": "retry run-a2@4",
+    "context_fixture": "retry",
+    "error": true
+  },
+  {
+    "name": "retry_nonfailed",
+    "line": "retry run-a2@3",
+    "context_fixture": "stop",
+    "error": true
+  },
+  {
+    "name": "retry_no_permission",
+    "line": "retry run-a2@5",
+    "context_fixture": "retry_no_permission",
+    "error": true
+  },
+  {
+    "name": "agent_stale",
+    "line": "stop-agent run-a2 agent-1@5",
+    "context_fixture": "stop_agent",
+    "error": true
+  },
+  {
+    "name": "agent_wrong_run",
+    "line": "stop-agent other agent-1@6",
+    "context_fixture": "stop_agent",
+    "error": true
+  },
+  {
+    "name": "agent_no_permission",
+    "line": "stop-agent run-a2 agent-1@6",
+    "context_fixture": "agent_no_permission",
+    "error": true
+  },
+  {
+    "name": "agent_as_run",
+    "line": "stop agent-1",
+    "context_fixture": "stop_agent",
+    "error": true
+  },
+  {
+    "name": "run_as_agent",
+    "line": "stop-agent run-a2 run-a2@6",
+    "context_fixture": "stop_agent",
+    "error": true
+  },
+  {
+    "name": "unauthorized_always_allow",
+    "line": "always-allow approval-1@4",
+    "context_fixture": "approval_no_always",
+    "error": true
+  },
+  {
+    "name": "line_bound",
+    "line": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "context_fixture": "send",
+    "error": true
+  },
+  {
+    "name": "argument_bound",
+    "line": "send -- aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "context_fixture": "send",
+    "error": true
+  },
+  {
+    "name": "argument_count",
+    "line": "a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a",
+    "context_fixture": "send",
+    "error": true
+  },
+  {
+    "name": "nul",
+    "line": "send -- a\u0000b",
+    "context_fixture": "send",
+    "error": true
+  },
+  {
+    "name": "unknown_navigation",
+    "line": "go conversation absent",
+    "context_fixture": "send",
+    "error": true
+  },
+  {
+    "name": "unknown_tab",
+    "line": "inspect run-a2 secret",
+    "context_fixture": "send",
+    "error": true
+  },
+  {
+    "name": "unknown_follow",
+    "line": "follow other",
+    "context_fixture": "send",
+    "error": true
+  },
+  {
+    "name": "answer_bound",
+    "line": "answer q1@7 o0 o1 o2 o3 o4 o5 o6 o7 o8 o9 o10 o11 o12 o13 o14 o15 o16",
+    "context_fixture": "answer",
+    "error": true
+  },
+  {
+    "name": "attachment_bound",
+    "line": "send --attach a0 --attach a1 --attach a2 --attach a3 --attach a4 --attach a5 --attach a6 --attach a7 --attach a8 --attach a9 --attach a10 --attach a11 --attach a12 --attach a13 --attach a14 --attach a15 --attach a16 -- text",
+    "context_fixture": "send",
+    "error": true
+  }
+]

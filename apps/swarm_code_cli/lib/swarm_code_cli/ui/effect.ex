@@ -75,7 +75,7 @@ defmodule SwarmCodeCLI.UI.Effect do
     _value = SafeText.value(safe_text)
     true
   rescue
-    FunctionClauseError -> false
+    _error in [FunctionClauseError, ArgumentError] -> false
   end
 
   defp valid_effect(effect, true), do: {:ok, effect}

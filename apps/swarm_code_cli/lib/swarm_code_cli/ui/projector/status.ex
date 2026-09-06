@@ -1,0 +1,80 @@
+defmodule SwarmCodeCLI.UI.Projector.Status do
+  @moduledoc false
+  alias SwarmCodeCLI.UI.SafeText
+  alias SwarmCodeCLI.UI.Scene.Block
+  alias SwarmCodeCLI.UI.Projector.{Density, Support}
+
+  def project(state, class, width) do
+    keys =
+      case Density.budget(class).bindings do
+        4 -> "Tab Focus · Enter Act · q Detach · ? Help"
+        3 -> "Tab Focus · q Detach · ? Help"
+        2 -> "Tab Focus · q Detach · ?"
+        1 -> "Tab Focus · ?"
+        0 -> "?"
+      end
+
+    focus = "Focus: " <> state.focus
+    [Support.text(focus <> " · " <> keys, state, width)]
+  end
+
+  def notice(%{notice: nil}, _width), do: []
+
+  def notice(state, width) do
+    label =
+      case state.notice do
+        {kind, reason} when is_atom(kind) and is_atom(reason) ->
+          Atom.to_string(kind) <> " · " <> Atom.to_string(reason)
+
+        kind when is_atom(kind) ->
+          Atom.to_string(kind)
+
+        _ ->
+          "ERROR"
+      end
+
+    label = label |> String.replace("_", " ") |> String.upcase()
+    [%Block.Notice{text: Density.safe(label, state, width), severity: :error}]
+  end
+
+  def mutations(state, width) do
+    state.mutations
+    |> Enum.sort_by(&elem(&1, 0))
+    |> Enum.map(fn {_origin, mutation} ->
+      key =
+        case mutation do
+          {:pending, _, _} ->
+            :status_mutation_pending
+
+          {:settled, _, :interrupted} ->
+            :status_interrupted
+
+          {:settled, _, outcome}
+          when outcome in [
+                 :accepted,
+                 :needs_input,
+                 :rejected,
+                 :deadline_exceeded,
+                 :revision_conflict,
+                 :outcome_unknown
+               ] ->
+            outcome
+
+          _ ->
+            :empty
+        end
+
+      %Block.Notice{
+        text: Density.safe(SafeText.chrome(key), state, width),
+        severity: severity(key)
+      }
+    end)
+  end
+
+  defp severity(key)
+       when key in [:rejected, :deadline_exceeded, :revision_conflict, :outcome_unknown],
+       do: :error
+
+  defp severity(:accepted), do: :success
+  defp severity(_), do: :info
+end

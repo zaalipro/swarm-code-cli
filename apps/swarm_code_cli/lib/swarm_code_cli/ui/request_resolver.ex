@@ -15,17 +15,40 @@ defmodule SwarmCodeCLI.UI.RequestResolver do
   @spec resolve(Intent.t(), Context.t(), binary(), non_neg_integer()) ::
           {:ok, Request.t()} | {:error, error()}
   def resolve(intent, context, request_id, deadline) do
-    with {:ok, _intent} <- Intent.validate(intent),
-         {:ok, _context} <- Context.validate(context),
-         true <- Intent.valid_id?(request_id),
+    with true <- Intent.valid_id?(request_id),
          true <- is_integer(deadline) and deadline >= 0 do
-      resolve_valid(intent, context, request_id, deadline)
+      with :ok <- authorize(intent, context) do
+        request = %Request{
+          request_id: request_id,
+          kind: intent,
+          scope: context.scope,
+          generation: context.scope_generation,
+          origin: context.origin,
+          deadline: deadline,
+          expected_response: :outcome
+        }
+
+        case Request.validate(request) do
+          {:ok, valid} -> {:ok, valid}
+          {:error, :invalid_request} -> {:error, :invalid_origin}
+        end
+      end
     else
       _invalid -> {:error, :invalid_intent}
     end
   end
 
-  defp resolve_valid(intent, context, request_id, deadline) do
+  @doc "Validate the same command authority without allocating a request identity."
+  @spec authorize(Intent.t(), Context.t()) :: :ok | {:error, error()}
+  def authorize(intent, context) do
+    with {:ok, _} <- Intent.validate(intent), {:ok, _} <- Context.validate(context) do
+      authorize_valid(intent, context)
+    else
+      _ -> {:error, :invalid_intent}
+    end
+  end
+
+  defp authorize_valid(intent, context) do
     permission = required_permission(intent)
 
     cond do
@@ -45,20 +68,7 @@ defmodule SwarmCodeCLI.UI.RequestResolver do
         {:error, :invalid_origin}
 
       true ->
-        request = %Request{
-          request_id: request_id,
-          kind: intent,
-          scope: context.scope,
-          generation: context.scope_generation,
-          origin: context.origin,
-          deadline: deadline,
-          expected_response: :outcome
-        }
-
-        case Request.validate(request) do
-          {:ok, valid} -> {:ok, valid}
-          {:error, :invalid_request} -> {:error, :invalid_origin}
-        end
+        :ok
     end
   end
 

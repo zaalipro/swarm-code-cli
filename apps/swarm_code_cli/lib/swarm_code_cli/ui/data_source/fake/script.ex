@@ -6,6 +6,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
   alias SwarmCode.Protocol.JsonLimits
   alias SwarmCodeCLI.UI.DataSource.{AdmissionError, Delta, DTO, Request}
   alias DTO.Schema
+  alias SwarmCodeCLI.UI.DataSource.Fake.{Compose, Details}
 
   @clock "2026-09-03T12:00:00Z"
   @clock_ms 1_788_436_800_000
@@ -46,7 +47,10 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
             sequence: 0,
             revision: 0,
             barriers: @barriers,
-            completed: []
+            completed: [],
+            details: %{},
+            commands: %{},
+            conversation_seen: %{}
 
   @type t :: %__MODULE__{
           clock: binary(),
@@ -59,7 +63,10 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
           sequence: non_neg_integer(),
           revision: non_neg_integer(),
           barriers: [binary()],
-          completed: [binary()]
+          completed: [binary()],
+          details: map(),
+          commands: map(),
+          conversation_seen: %{binary() => non_neg_integer()}
         }
   @type snapshot :: t()
   def id(key), do: Map.fetch!(@ids, key)
@@ -82,7 +89,18 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
              {id(:a), :swarm},
              {id(:b), :research}
            ] do
-      script = %__MODULE__{runs: Map.new(decoded, &{&1.id, &1})}
+      decoded =
+        Enum.map(
+          decoded,
+          &%{&1 | allowed_actions: Enum.uniq(&1.allowed_actions ++ [:steer, :mark_seen])}
+        )
+
+      script = %__MODULE__{
+        runs:
+          Map.new(Enum.with_index(decoded, 1), fn {run, index} ->
+            {run.id, %{run | created_sequence: index}}
+          end)
+      }
 
       transcript = [
         item(:a1, :node_a1, "message-A-1", "Authentication review started."),
@@ -92,7 +110,10 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
 
       validate(%{
         script
-        | transcript: Map.new(transcript, &{&1.id, &1}),
+        | transcript:
+            Map.new(Enum.with_index(transcript, 1), fn {item, index} ->
+              {item.id, %{item | created_sequence: index}}
+            end),
           activity: Map.new(decoded, fn run -> {run.id, activity(run)} end)
       })
     else
@@ -133,7 +154,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
 
   def validate(%__MODULE__{} = script) do
     valid =
-      map_size(script) == 12 and Enum.all?(Map.keys(%__MODULE__{}), &Map.has_key?(script, &1)) and
+      map_size(script) == map_size(%__MODULE__{}) and
+        Enum.all?(Map.keys(%__MODULE__{}), &Map.has_key?(script, &1)) and
         script.clock == @clock and script.barriers == @barriers and
         Schema.valid?(:revision, script.sequence) and Schema.valid?(:revision, script.revision) and
         Enum.all?(
@@ -153,7 +175,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
         ) and Schema.valid?({:list, {:dto, DTO.StatusEntry}}, script.statuses) and
         Schema.bounded_list?(script.completed, length(@barriers), &(&1 in @barriers)) and
         Enum.uniq(script.completed) == script.completed and canonical_references?(script) and
-        supported_permissions?(script)
+        supported_permissions?(script) and canonical_extensions?(script)
 
     if valid, do: {:ok, script}, else: {:error, AdmissionError.new(:invalid_fixture)}
   end
@@ -161,15 +183,81 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
   def validate(_), do: {:error, AdmissionError.new(:invalid_fixture)}
 
   defp supported_permissions?(script) do
-    Enum.all?(
-      [script.runs, script.agents, script.transcript, script.interactions, script.activity],
-      fn items ->
-        Enum.all?(items, fn {_, item} ->
-          Enum.all?(item.allowed_actions, &(&1 not in [:send, :queue, :steer, :mark_seen]))
-        end)
-      end
-    )
+    Enum.all?(script.transcript, fn {_, item} ->
+      Enum.all?(item.allowed_actions, &(&1 in [:inspect, :copy, :fork]))
+    end) and
+      Enum.all?(
+        [script.runs, script.agents, script.transcript, script.interactions, script.activity],
+        fn items ->
+          Enum.all?(items, fn {_, item} ->
+            Enum.all?(item.allowed_actions, &(&1 not in [:send, :queue])) and
+              (:steer not in item.allowed_actions or
+                 item.state in [:running, :streaming, :retrying])
+          end)
+        end
+      )
   end
+
+  defp canonical_extensions?(script) do
+    Details.valid?(script.details) and
+      is_map(script.commands) and not is_struct(script.commands) and
+      map_size(script.commands) <= 200 and
+      Enum.all?(script.commands, fn {id, value} ->
+        Schema.valid?(:id, id) and match?(%{fingerprint: _, outcome: %DTO.Outcome{}}, value) and
+          map_size(value) == 2 and is_binary(value.fingerprint) and
+          byte_size(value.fingerprint) == 32 and
+          Schema.valid?({:dto, DTO.Outcome}, value.outcome) and value.outcome.request_id == id
+      end) and
+      is_map(script.conversation_seen) and not is_struct(script.conversation_seen) and
+      map_size(script.conversation_seen) <= 200 and
+      Enum.all?(script.conversation_seen, fn {id, revision} ->
+        Schema.valid?(:id, id) and Schema.valid?(:revision, revision) and
+          revision <= conversation_revision(script, id) and
+          Enum.any?(script.runs, fn {_, run} -> run.conversation_id == id end)
+      end) and
+      Enum.all?(script.transcript, fn {_, item} ->
+        is_nil(item.detail_ref) or
+          case Map.get(script.details, item.detail_ref.id) do
+            %{ref: ref, run_id: run_id, conversation_id: conversation_id, text: text} ->
+              ref == item.detail_ref and run_id == item.run_id and
+                conversation_id == item.conversation_id and String.starts_with?(text, item.text)
+
+            _ ->
+              false
+          end
+      end) and
+      Enum.all?(script.details, fn {id, _} ->
+        Enum.any?(script.transcript, fn {_, item} ->
+          item.detail_ref && item.detail_ref.id == id
+        end)
+      end)
+  end
+
+  def next_created_sequence(script) do
+    Enum.reduce(
+      Map.values(script.runs) ++ Map.values(script.transcript),
+      script.sequence,
+      fn item, last -> max(item.created_sequence, last) end
+    ) + 1
+  end
+
+  def workspace_actions(script, %{kind: :conversation, id: id}) do
+    if Enum.any?(script.runs, fn {_, run} -> run.conversation_id == id end),
+      do: [:send, :queue, :mark_seen],
+      else: []
+  end
+
+  def workspace_actions(_, _), do: []
+
+  def conversation_revision(script, id),
+    do:
+      script.runs
+      |> Map.values()
+      |> Enum.filter(&(&1.conversation_id == id))
+      |> Enum.map(& &1.revision)
+      |> Enum.sum()
+
+  def conversation_seen_revision(script, id), do: Map.get(script.conversation_seen, id, 0)
 
   defp canonical_references?(script) do
     Enum.all?([:a1, :a2, :b1], &Map.has_key?(script.runs, id(&1))) and
@@ -178,6 +266,13 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
         &Map.has_key?(script.transcript, &1)
       ) and
       Enum.all?(script.agents, fn {_, item} -> Map.has_key?(script.runs, item.run_id) end) and
+      Enum.all?(script.runs, fn {_, run} ->
+        is_nil(run.parent_run_id) or
+          case Map.get(script.runs, run.parent_run_id) do
+            nil -> false
+            parent -> parent.conversation_id == run.conversation_id
+          end
+      end) and
       Enum.all?([script.transcript, script.interactions, script.activity], fn items ->
         Enum.all?(items, fn {_, item} ->
           case Map.get(script.runs, item.run_id) do
@@ -474,7 +569,30 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
     end) != :overflow
   end
 
+  defp creation_order(script, deltas) do
+    {ordered, _} =
+      Enum.map_reduce(deltas, next_created_sequence(script), fn
+        %Delta{kind: kind, body: %{created_sequence: 0} = item} = delta, ordinal
+        when kind in [:run_update, :node_upsert] ->
+          existing =
+            if kind == :run_update,
+              do: Map.get(script.runs, item.id),
+              else: Map.get(script.transcript, item.id)
+
+          created = if existing, do: existing.created_sequence, else: ordinal
+
+          {%{delta | body: %{item | created_sequence: created}},
+           if(existing, do: ordinal, else: ordinal + 1)}
+
+        delta, ordinal ->
+          {delta, ordinal}
+      end)
+
+    ordered
+  end
+
   defp do_apply_deltas(script, deltas) do
+    deltas = creation_order(script, deltas)
     next = Enum.reduce(deltas, script, &apply_delta/2)
 
     activity_deltas =
@@ -515,8 +633,11 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
     do: %{
       script
       | runs: Map.put(script.runs, run.id, run),
-        activity: Map.put(script.activity, run.id, activity(run))
+        activity: Map.put(script.activity, run.id, preserve_seen(script, activity(run)))
     }
+
+  defp apply_delta(%Delta{kind: :activity_upsert, body: item}, script),
+    do: %{script | activity: Map.put(script.activity, item.id, item)}
 
   defp apply_delta(%Delta{kind: :agent_update, body: agent}, script),
     do: %{script | agents: Map.put(script.agents, agent.id, agent)}
@@ -561,25 +682,64 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
   @spec command(t(), Request.t()) ::
           {:ok, t(), DTO.Outcome.t(), [Delta.t()]} | {:error, AdmissionError.t()}
   def command(script, request) do
-    with :ok <- scope_allows(script, request),
-         {:ok, deltas, identifiers} <- command_deltas(script, request.kind) do
-      case apply_deltas(script, deltas) do
+    with {:ok, _} <- Request.validate(request) do
+      fingerprint =
+        :crypto.hash(
+          :sha256,
+          :erlang.term_to_binary(
+            {request.kind, request.scope.kind, request.scope.id, request.origin}
+          )
+        )
+
+      case Map.get(script.commands, request.request_id) do
+        %{fingerprint: ^fingerprint, outcome: outcome} -> {:ok, script, outcome, []}
+        nil -> command_new(script, request, fingerprint)
+        _ -> {:error, AdmissionError.new(:request_conflict)}
+      end
+    else
+      _ -> {:error, AdmissionError.new(:invalid_request)}
+    end
+  end
+
+  defp command_new(script, request, fingerprint) do
+    with {:ok, prepared, deltas, identifiers} <- prepare_command(script, request) do
+      case apply_deltas(prepared, deltas) do
         {:error, _} = error ->
           error
 
         {next, deltas} ->
-          with {:ok, next, deltas} <- validate_transition(next, deltas) do
-            {:ok, next,
-             %DTO.Outcome{
-               status: :accepted,
-               request_id: request.request_id,
-               identifiers: identifiers
-             }, deltas}
-          end
+          outcome = %DTO.Outcome{
+            status: :accepted,
+            request_id: request.request_id,
+            identifiers: identifiers
+          }
+
+          next = %{
+            next
+            | commands:
+                Map.put(next.commands, request.request_id, %{
+                  fingerprint: fingerprint,
+                  outcome: outcome
+                })
+          }
+
+          with {:ok, next, deltas} <- validate_transition(next, deltas),
+               do: {:ok, next, outcome, deltas}
       end
     else
+      {:error, %AdmissionError{}} = error -> error
       {:error, code} -> {:error, AdmissionError.new(code)}
     end
+  end
+
+  defp prepare_command(script, %{kind: kind} = request)
+       when elem(kind, 0) in [:dispatch, :steer, :mark_seen],
+       do: Compose.prepare(script, request)
+
+  defp prepare_command(script, request) do
+    with :ok <- scope_allows(script, request),
+         {:ok, deltas, identifiers} <- command_deltas(script, request.kind),
+         do: {:ok, script, deltas, identifiers}
   end
 
   defp scope_allows(_, %{scope: %{kind: :global}}), do: :ok
@@ -648,9 +808,14 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
     with {:ok, run} <- lookup(script.runs, id), :ok <- permission(run, operation) do
       {state, actions} =
         case operation do
-          :stop -> {:stopped, []}
-          :pause -> {:paused, [:continue, :stop]}
-          operation when operation in [:continue, :resume] -> {:running, [:pause, :stop]}
+          :stop ->
+            {:stopped, []}
+
+          :pause ->
+            {:paused, [:continue, :stop]}
+
+          operation when operation in [:continue, :resume] ->
+            {:running, [:pause, :stop, :steer, :mark_seen]}
         end
 
       run_delta =
@@ -730,7 +895,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
       Map.fetch!(script.runs, q.run_id)
       | state: :running,
         revision: script.runs[q.run_id].revision + 1,
-        allowed_actions: [:pause, :stop]
+        allowed_actions: [:pause, :stop, :steer, :mark_seen]
     }
 
     {:ok,
@@ -811,6 +976,13 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
       revision: revision
     }
 
+  defp preserve_seen(script, item) do
+    case Map.get(script.activity, item.id) do
+      nil -> item
+      previous -> %{item | seen_revision: max(item.seen_revision, previous.seen_revision)}
+    end
+  end
+
   defp activity(run) do
     kind =
       case run.state do
@@ -828,6 +1000,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
       state: run.state,
       title: run.title,
       revision: run.revision,
+      seen_revision: run.seen_revision,
       allowed_actions: run.allowed_actions,
       created_at: @clock_ms
     }

@@ -101,7 +101,77 @@ defmodule SwarmCodeCLI.UI.ArchitectureTest do
 
   defp violations(path) do
     source = File.read!(path)
-    scan_source(source, path)
+
+    if Path.expand(path) == Path.join(@lib_root, "swarm_code_cli/demo/application_fence.ex"),
+      do: scan_fence(source, path),
+      else: scan_source(source, path)
+  end
+
+  test "only the exact fence admits negative literals and read-only specification discovery" do
+    assert scan_fence(
+             "@forbidden [:swarm_code_daemon, :ecto, :ecto_sql, :ecto_sqlite3, :exqlite, :ex_ratatui, :rustler, :crossterm]",
+             "fence.ex"
+           ) == []
+
+    assert scan_fence(":code.lib_dir(app)", "fence.ex") == []
+    assert scan_fence(":code.load_file(app)", "fence.ex") != []
+    assert scan_fence("Application.ensure_all_started(:swarm_code_daemon)", "fence.ex") != []
+    assert scan_fence("ExRatatui.draw(scene)", "fence.ex") != []
+    assert scan_fence("@forbidden [ExRatatui]", "fence.ex") != []
+    assert scan_source(":code.lib_dir(app)", "ordinary.ex") != []
+  end
+
+  defp scan_fence(source, path) do
+    case Code.string_to_quoted(source) do
+      {:ok, ast} ->
+        ast =
+          Macro.prewalk(ast, fn
+            {:@, _,
+             [
+               {:forbidden, _,
+                [
+                  [
+                    :swarm_code_daemon,
+                    :ecto,
+                    :ecto_sql,
+                    :ecto_sqlite3,
+                    :exqlite,
+                    :ex_ratatui,
+                    :rustler,
+                    :crossterm
+                  ]
+                ]}
+             ]} ->
+              :ok
+
+            {:@, _,
+             [
+               {:prefixes, _,
+                [
+                  [
+                    "Elixir.SwarmCode.Daemon",
+                    "Elixir.SwarmCode.Repo",
+                    "Elixir.Ecto",
+                    "Elixir.Exqlite",
+                    "Elixir.ExRatatui",
+                    "Elixir.Rustler"
+                  ]
+                ]}
+             ]} ->
+              :ok
+
+            {{:., _, [:code, :lib_dir]}, _, [argument]} ->
+              {:trusted_spec_directory, [], [argument]}
+
+            node ->
+              node
+          end)
+
+        scan_source(Macro.to_string(ast), path)
+
+      _ ->
+        scan_source(source, path)
+    end
   end
 
   defp scan_source(source, path) do

@@ -11,8 +11,11 @@ defmodule SwarmCodeCLI.UI.Scene.Block.RunCard do
           | :paused
           | :waiting_question
           | :waiting_approval
-          | :completed
+          | :retrying
+          | :done
           | :failed
-          | :cancelled
+          | :stopped
+          | :interrupted
+          | :superseded
   @type t :: %__MODULE__{id: binary(), title: SafeText.t(), status: status(), body: [Block.t()]}
 end

@@ -6,10 +6,12 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.Schema do
   defmacro __using__(opts) do
     fields = Keyword.fetch!(opts, :fields)
     defaults = Keyword.fetch!(opts, :defaults)
+    wire_defaults = Keyword.get(opts, :wire_defaults, [])
     types = Enum.map(fields, fn {field, type} -> {field, type_ast(type)} end)
 
     quote do
       @schema unquote(fields)
+      @wire_defaults unquote(wire_defaults)
       defstruct unquote(defaults)
       @type t :: %__MODULE__{unquote_splicing(types)}
       @spec validate(term()) :: {:ok, t()} | {:error, :invalid_dto}
@@ -28,7 +30,8 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.Schema do
       def validate(_), do: {:error, :invalid_dto}
       @doc "Decode exact string keys and closed enum values; reject extra or missing fields."
       def decode(value),
-        do: SwarmCodeCLI.UI.DataSource.DTO.Schema.decode(__MODULE__, @schema, value)
+        do:
+          SwarmCodeCLI.UI.DataSource.DTO.Schema.decode(__MODULE__, @schema, value, @wire_defaults)
     end
   end
 
@@ -82,11 +85,58 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.Schema do
     actions =
       if run.state == :superseded,
         do: [:inspect, :copy, :fork],
-        else: [:pause, :continue, :resume, :stop, :retry, :steer, :inspect, :copy, :fork]
+        else: [
+          :pause,
+          :continue,
+          :resume,
+          :stop,
+          :retry,
+          :steer,
+          :mark_seen,
+          :inspect,
+          :copy,
+          :fork
+        ]
 
     Enum.all?(run.allowed_actions, &(&1 in actions)) and
-      (:retry not in run.allowed_actions or run.state == :failed)
+      (:retry not in run.allowed_actions or run.state == :failed) and
+      run.seen_revision <= run.revision and run.parent_run_id != run.id
   end
+
+  def relations?(%{__struct__: DTO.DetailRef} = ref), do: ref.total_bytes in 65_537..262_144
+
+  def relations?(%{__struct__: DTO.DetailWindow, state: :error} = page),
+    do:
+      is_nil(page.detail_ref) and page.text == "" and is_nil(page.next_offset) and
+        not is_nil(page.error)
+
+  def relations?(%{__struct__: DTO.DetailWindow, state: :idle} = page) do
+    end_offset = page.offset + byte_size(page.text)
+
+    not is_nil(page.detail_ref) and is_nil(page.error) and
+      page.offset < page.detail_ref.total_bytes and byte_size(page.text) > 0 and
+      end_offset <= page.detail_ref.total_bytes and
+      page.next_offset == if(end_offset == page.detail_ref.total_bytes, do: nil, else: end_offset)
+  end
+
+  def relations?(%{__struct__: DTO.TranscriptItem} = item) do
+    SwarmCodeCLI.UI.Intent.valid_id_list?(item.attachment_refs) and
+      (is_nil(item.detail_ref) or byte_size(item.text) < item.detail_ref.total_bytes) and
+      if(item.target_kind == :main, do: is_nil(item.target_id), else: not is_nil(item.target_id)) and
+      (item.state != :superseded or
+         Enum.all?(item.allowed_actions, &(&1 in [:inspect, :copy, :fork])))
+  end
+
+  def relations?(%{__struct__: DTO.WorkspaceSnapshot} = page),
+    do:
+      Enum.all?(page.allowed_actions, &(&1 in [:send, :queue, :mark_seen])) and
+        page.seen_revision <= page.revision and page_relation?(page)
+
+  def relations?(%{__struct__: DTO.ActivityItem} = item),
+    do:
+      item.seen_revision <= item.revision and
+        (item.state != :superseded or
+           Enum.all?(item.allowed_actions, &(&1 in [:inspect, :copy, :fork])))
 
   def relations?(%{__struct__: DTO.AgentSummary} = agent) do
     actions =
@@ -125,7 +175,11 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.Schema do
   def relations?(%{state: :superseded, allowed_actions: actions}),
     do: Enum.all?(actions, &(&1 in [:inspect, :copy, :fork]))
 
-  def relations?(%{state: state, request_id: request_id, error: error}) do
+  def relations?(%{state: _, request_id: _, error: _} = page), do: page_relation?(page)
+
+  def relations?(_), do: true
+
+  defp page_relation?(%{state: state, request_id: request_id, error: error}) do
     case state do
       :error ->
         not is_nil(error) and not is_nil(request_id)
@@ -138,7 +192,16 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.Schema do
     end
   end
 
-  def relations?(_), do: true
+  def decode(module, schema, map, defaults) when is_map(map) and not is_struct(map) do
+    map =
+      Enum.reduce(defaults, map, fn {key, value}, acc ->
+        Map.put_new(acc, Atom.to_string(key), value)
+      end)
+
+    decode(module, schema, map)
+  end
+
+  def decode(_, _, _, _), do: {:error, :invalid_dto}
 
   def decode(module, schema, map) when is_map(map) and not is_struct(map) do
     if map_size(map) == length(schema) do

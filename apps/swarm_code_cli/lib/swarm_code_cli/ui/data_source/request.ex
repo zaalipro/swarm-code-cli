@@ -23,16 +23,26 @@ defmodule SwarmCodeCLI.UI.DataSource.Request do
           | :activity_snapshot
           | :run_detail_snapshot
           | :pending_interactions
+          | :watch_snapshot
+          | :detail_window
   @type query_kind :: :shell | :workspace | :transcript | :activity | :inspector | :pending
   @type query :: {:query, query_kind(), binary() | nil, :before | :after, 1..200, 1..1_048_576}
-  @type kind :: Intent.t() | query()
+  @type kind ::
+          Intent.t()
+          | query()
+          | {:resync_watch, binary()}
+          | {:query_detail, binary(), non_neg_integer(), 4..65_536}
 
   @type t :: %__MODULE__{
           request_id: binary(),
           kind: kind(),
           scope: SwarmCode.Protocol.Scope.t(),
           generation: non_neg_integer(),
-          origin: RequestResolver.Context.origin() | {:query, query_kind()},
+          origin:
+            RequestResolver.Context.origin()
+            | {:query, query_kind()}
+            | {:watch, binary()}
+            | {:query, :detail},
           deadline: non_neg_integer(),
           expected_response: expected_response()
         }
@@ -76,13 +86,24 @@ defmodule SwarmCodeCLI.UI.DataSource.Request do
         is_integer(page_size) and page_size in 1..200 and is_integer(byte_limit) and
         byte_limit in 1..1_048_576
 
+  defp valid_kind?({:query_detail, ref, offset, bytes}),
+    do:
+      Intent.valid_id?(ref) and is_integer(offset) and offset >= 0 and is_integer(bytes) and
+        bytes in 4..65_536
+
+  defp valid_kind?({:resync_watch, ref}), do: Intent.valid_id?(ref)
+
   defp valid_kind?(kind), do: Intent.valid?(kind)
 
   defp valid_origin?({:query, slot}),
-    do: slot in [:shell, :workspace, :transcript, :activity, :inspector, :pending]
+    do: slot in [:shell, :workspace, :transcript, :activity, :inspector, :pending, :detail]
+
+  defp valid_origin?({:watch, ref}), do: Intent.valid_id?(ref)
 
   defp valid_origin?(origin), do: Context.valid_origin?(origin)
   defp valid_response?({:query, slot, _, _, _, _}, response), do: response == query_response(slot)
+  defp valid_response?({:query_detail, _, _, _}, response), do: response == :detail_window
+  defp valid_response?({:resync_watch, _}, response), do: response == :watch_snapshot
   defp valid_response?(_, response), do: response == :outcome
   def query_response(:shell), do: :shell_snapshot
   def query_response(:workspace), do: :workspace_snapshot
@@ -90,6 +111,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Request do
   def query_response(:activity), do: :activity_snapshot
   def query_response(:pending), do: :pending_interactions
   def query_response(:inspector), do: :run_detail_snapshot
+  defp correlated_kind_origin?({:query_detail, _, _, _}, {:query, :detail}), do: true
+  defp correlated_kind_origin?({:resync_watch, ref}, {:watch, ref}), do: true
   defp correlated_kind_origin?({:query, slot, _, _, _, _}, {:query, slot}), do: true
 
   defp correlated_kind_origin?(

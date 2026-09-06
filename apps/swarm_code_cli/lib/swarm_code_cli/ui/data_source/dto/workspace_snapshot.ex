@@ -1,7 +1,11 @@
 defmodule SwarmCodeCLI.UI.DataSource.DTO.WorkspaceSnapshot do
   @moduledoc "Bounded, closed WorkspaceSnapshot presentation facts."
   use SwarmCodeCLI.UI.DataSource.DTO.Schema,
+    wire_defaults: [allowed_actions: [], revision: 0, seen_revision: 0],
     fields: [
+      allowed_actions: :actions,
+      revision: :revision,
+      seen_revision: :revision,
       runs_page: {:dto, SwarmCodeCLI.UI.DataSource.DTO.PageInfo},
       interactions_page: {:dto, SwarmCodeCLI.UI.DataSource.DTO.PageInfo},
       conversation_id: {:optional, :id},
@@ -18,6 +22,9 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.WorkspaceSnapshot do
       through_sequence: :revision
     ],
     defaults: [
+      allowed_actions: [],
+      revision: 0,
+      seen_revision: 0,
       runs_page: nil,
       interactions_page: nil,
       conversation_id: nil,

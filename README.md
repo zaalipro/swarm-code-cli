@@ -1,9 +1,20 @@
 # SwarmCode CLI
 
-This repository currently contains **pre-Repo foundation infrastructure**, not a usable CLI
-release. The safety gate proves canonical-path, identity, private-directory, cross-application
-lease, read-only schema, and verified-backup contracts before later plans add Repo supervision and
-the terminal/runtime surfaces. Do not use this milestone as a normal startup path.
+This repository contains foundation infrastructure and a runnable synthetic interaction demo.
+The plain session and renderer-neutral UI share scoped requests, questions, run controls,
+process-local drafts, and bounded presentation data. Production provider execution, persistence,
+a daemon launcher, and a real terminal renderer remain unfinished.
+
+Run the fixed demo without starting a daemon or opening user data:
+
+```sh
+(cd apps/swarm_code_cli && MIX_QUIET=1 mise exec -- mix swarm_code.demo.plain --script complete)
+```
+
+It demonstrates conversation navigation, answering a question, failed-run Retry, agent Stop,
+and detach. Output is append-only; the demo owns and cleans up its synthetic processes.
+The existing foundation gate covers canonical paths, identity, private directories, leases,
+read-only schema admission, and verified backups. It is not a normal startup path.
 
 - [Approved CLI architecture](docs/superpowers/specs/2026-09-01-swarm-code-cli-design.md)
 - [Foundation safety and macOS residual risk](docs/foundation-safety.md)

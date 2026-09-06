@@ -25,6 +25,9 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Source do
     do: GenServer.call(server, {:request, client_id, request})
 
   def advance(server, barrier), do: GenServer.call(server, {:advance, barrier})
+  def metadata(server), do: GenServer.call(server, :metadata)
+  def unwatch(server, client_id, ref), do: GenServer.call(server, {:unwatch, client_id, ref})
+
   def snapshot(server), do: GenServer.call(server, :snapshot)
 
   @impl true
@@ -41,6 +44,12 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Source do
   end
 
   @impl true
+  def handle_call(:metadata, _, state),
+    do: {:reply, %{source_epoch: state.epoch, sequence: state.script.sequence}, state}
+
+  def handle_call({:unwatch, id, ref}, _, state),
+    do: {:reply, :ok, unwatch_client(state, id, ref)}
+
   def handle_call(:snapshot, _, state), do: {:reply, state.script, state}
 
   def handle_call({:attach, id, pid}, _, state) do
@@ -142,6 +151,20 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Source do
   def handle_call(_, _, state), do: failure(:invalid_request, state)
 
   @impl true
+  def handle_cast({:detach, id, pid}, state) do
+    if match?(%{pid: ^pid}, state.clients[id]),
+      do: {:noreply, detach_client(state, id)},
+      else: {:noreply, state}
+  end
+
+  def handle_cast({:unwatch, id, ref, pid}, state) do
+    if match?(%{pid: ^pid}, state.clients[id]),
+      do: {:noreply, unwatch_client(state, id, ref)},
+      else: {:noreply, state}
+  end
+
+  def handle_cast({:detach, id}, state), do: {:noreply, detach_client(state, id)}
+  def handle_cast({:unwatch, id, ref}, state), do: {:noreply, unwatch_client(state, id, ref)}
   def handle_cast(_, state), do: {:noreply, state}
   @impl true
   def handle_info({:DOWN, monitor, :process, pid, _}, state) do
@@ -194,6 +217,12 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Source do
   defp check(false, code), do: {:error, code}
   defp failure(code, state), do: {:reply, {:error, AdmissionError.new(code)}, state}
 
+  defp unwatch_client(state, id, ref) do
+    if Map.has_key?(state.clients, id),
+      do: update_in(state.clients[id].watches, &Map.delete(&1, ref)),
+      else: state
+  end
+
   defp detach_client(state, id) do
     case Map.pop(state.clients, id) do
       {nil, _} ->
@@ -217,12 +246,19 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Source do
          do: {:ok, state.script, body, []}
   end
 
+  defp execute(state, %Request{kind: {:query_detail, _, _, _}} = request) do
+    with {:ok, body} <- SwarmCodeCLI.UI.DataSource.Fake.Details.query(state.script, request),
+         do: {:ok, state.script, body, []}
+  end
+
   defp execute(state, request), do: Script.command(state.script, request)
 
   defp page(state, slot, scope, size, bytes, cursor, direction, request_id) do
     script = state.script
-    runs = scoped(Map.values(script.runs), scope) |> Enum.sort_by(& &1.id)
-    transcript = scoped(Map.values(script.transcript), scope) |> Enum.sort_by(& &1.id)
+    runs = scoped(Map.values(script.runs), scope) |> Enum.sort_by(&{&1.created_sequence, &1.id})
+
+    transcript =
+      scoped(Map.values(script.transcript), scope) |> Enum.sort_by(&{&1.created_sequence, &1.id})
 
     interactions =
       scoped(Map.values(script.interactions), scope)
@@ -283,6 +319,17 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Source do
               attrs ++
                 [
                   conversation_id: if(scope.kind == :conversation, do: scope.id, else: nil),
+                  allowed_actions: Script.workspace_actions(script, scope),
+                  revision:
+                    if(scope.kind == :conversation,
+                      do: Script.conversation_revision(script, scope.id),
+                      else: 0
+                    ),
+                  seen_revision:
+                    if(scope.kind == :conversation,
+                      do: Script.conversation_seen_revision(script, scope.id),
+                      else: 0
+                    ),
                   runs: run_items,
                   runs_page: struct!(DTO.PageInfo, run_attrs),
                   interactions_page: struct!(DTO.PageInfo, interaction_attrs),

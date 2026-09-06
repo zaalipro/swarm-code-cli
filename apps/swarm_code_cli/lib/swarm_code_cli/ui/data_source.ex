@@ -23,6 +23,6 @@ defmodule SwarmCodeCLI.UI.DataSource do
   @callback unwatch(server(), watch_ref()) :: :ok
   @callback query(server(), Request.t()) :: :ok | {:error, AdmissionError.t()}
   @callback command(server(), Request.t()) :: :ok | {:error, AdmissionError.t()}
-  @callback cancel(server(), request_id()) :: :ok
+  @callback cancel(server(), request_id()) :: :ok | {:error, AdmissionError.t()}
   @callback close(server()) :: :ok
 end

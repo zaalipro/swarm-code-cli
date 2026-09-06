@@ -1,7 +1,9 @@
 defmodule SwarmCodeCLI.UI.DataSource.DTO.ActivityItem do
   @moduledoc "Bounded, closed ActivityItem presentation facts."
   use SwarmCodeCLI.UI.DataSource.DTO.Schema,
+    wire_defaults: [seen_revision: 0],
     fields: [
+      seen_revision: :revision,
       id: :id,
       run_id: :id,
       conversation_id: :id,
@@ -30,6 +32,7 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.ActivityItem do
       created_at: :revision
     ],
     defaults: [
+      seen_revision: 0,
       id: nil,
       run_id: nil,
       conversation_id: nil,

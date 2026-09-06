@@ -23,6 +23,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Delivery do
           DTO.ShellSnapshot.t()
           | DTO.WorkspaceSnapshot.t()
           | DTO.TranscriptWindow.t()
+          | DTO.DetailWindow.t()
           | DTO.RunDetailSnapshot.t()
           | DTO.ActivitySnapshot.t()
           | DTO.PendingInteractionWindow.t()
@@ -106,7 +107,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Delivery do
 
   defp valid_body?(:response, body),
     do:
-      page_body?(body) or match?({:ok, _}, DTO.Outcome.validate(body)) or
+      match?({:ok, _}, DTO.DetailWindow.validate(body)) or page_body?(body) or
+        match?({:ok, _}, DTO.Outcome.validate(body)) or
         match?({:ok, _}, DTO.PendingInteraction.validate(body))
 
   defp valid_body?(_, _), do: false

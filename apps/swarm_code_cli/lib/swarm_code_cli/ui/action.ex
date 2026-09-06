@@ -60,6 +60,9 @@ defmodule SwarmCodeCLI.UI.Action do
 
   @type t ::
           :boot
+          | :editor_detach_notice
+          | {:toggle_dock, :navigator | :inspector}
+          | {:set_tab, :thread | :agents | :timeline | :changes}
           | {:resize, Size.t()}
           | {:terminal_capabilities, non_neg_integer(), Capabilities.t()}
           | {:terminal_lifecycle, :suspend_requested | :suspended | :resumed | :closing,
@@ -76,6 +79,11 @@ defmodule SwarmCodeCLI.UI.Action do
           | {:invoke, Intent.t(), binary()}
           | {:scroll, binary(), ScrollOperation.t()}
           | {:editor, DraftKey.t(), Operation.t()}
+          | {:draft_target, DraftKey.t(), :none | Intent.dispatch_target()}
+          | {:select_option, binary(), binary()}
+          | {:open_detail, binary(), binary()}
+          | {:detail_page, :next | :previous}
+          | {:retry_page, :shell | :workspace | :activity | :inspector, :before | :after}
           | {:field_editor, FieldKey.t(), Operation.t()}
           | {:layout_adjust, :navigator | :inspector,
              :reset
@@ -99,7 +107,15 @@ defmodule SwarmCodeCLI.UI.Action do
   def terminal_error_code?(code), do: code in @terminal_error_codes
 
   @spec validate(term()) :: {:ok, t()} | {:error, :invalid_action}
-  def validate(action) when action in [:boot, :back, :close_top_layer], do: {:ok, action}
+  def validate(action) when action in [:boot, :back, :close_top_layer, :editor_detach_notice],
+    do: {:ok, action}
+
+  def validate({:toggle_dock, dock} = action),
+    do: valid_action(action, dock in [:navigator, :inspector])
+
+  def validate({:set_tab, tab} = action),
+    do: valid_action(action, tab in [:thread, :agents, :timeline, :changes])
+
   def validate({:resize, size} = action), do: valid_action(action, Size.valid?(size))
 
   def validate({:terminal_capabilities, generation, capabilities} = action),
@@ -164,6 +180,30 @@ defmodule SwarmCodeCLI.UI.Action do
         action,
         match?({:ok, _key}, DraftKey.validate(draft_key)) and
           match?({:ok, _operation}, Operation.validate(operation))
+      )
+
+  def validate({:open_detail, run_id, ref_id} = action),
+    do: valid_action(action, Intent.valid_id?(run_id) and Intent.valid_id?(ref_id))
+
+  def validate({:detail_page, direction} = action),
+    do: valid_action(action, direction in [:next, :previous])
+
+  def validate({:select_option, interaction_id, option_id} = action),
+    do: valid_action(action, Intent.valid_id?(interaction_id) and Intent.valid_id?(option_id))
+
+  def validate({:draft_target, key, target} = action),
+    do:
+      valid_action(
+        action,
+        match?({:ok, _}, DraftKey.validate(key)) and
+          (target == :none or Intent.valid_dispatch_target?(target))
+      )
+
+  def validate({:retry_page, slot, direction} = action),
+    do:
+      valid_action(
+        action,
+        slot in [:shell, :workspace, :activity, :inspector] and direction in [:before, :after]
       )
 
   def validate({:field_editor, field_key, operation} = action),
