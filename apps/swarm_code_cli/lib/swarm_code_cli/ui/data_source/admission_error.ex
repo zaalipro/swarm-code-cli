@@ -69,5 +69,15 @@ defmodule SwarmCodeCLI.UI.DataSource.AdmissionError do
 
   def validate(_admission_error), do: {:error, :invalid_admission_error}
 
+  @doc "Decode only a known wire error with its canonical, content-independent message."
+  def decode(%{"code" => code, "message" => message} = value) when map_size(value) == 2 do
+    case Enum.find(@codes, &(Atom.to_string(&1) == code)) do
+      nil -> {:error, :invalid_admission_error}
+      known -> validate(%__MODULE__{code: known, message: message})
+    end
+  end
+
+  def decode(_), do: {:error, :invalid_admission_error}
+
   defp error(code, message), do: %__MODULE__{code: code, message: message}
 end

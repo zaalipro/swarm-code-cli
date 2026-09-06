@@ -9,6 +9,18 @@ defmodule SwarmCode.Protocol.ServiceRequestTest do
   @interaction "66666666-6666-4666-8666-666666666666"
   @max_counter 9_007_199_254_740_991
 
+  test "actual node identities survive steer and approval syntax validation" do
+    for operation <- [:run_steer, :approval_resolve] do
+      {body, scope} = example(operation)
+      assert {:ok, request} = ServiceRequest.decode(Map.put(body, "node_id", @interaction), scope)
+      assert request.params["node_id"] == @interaction
+
+      for invalid <- ["node", "", 7, %{}] do
+        invalid(Map.put(body, "node_id", invalid), scope)
+      end
+    end
+  end
+
   test "literal v1 envelope yields a closed workspace request without changing the envelope" do
     json =
       ~s({"v":1,"type":"request","request_id":"#{@project}","nonce":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","scope":{"kind":"conversation","id":"#{@conversation}","generation":3},"sequence":null,"occurred_at":null,"body":{"op":"query","slot":"workspace","cursor":null,"direction":"after","page_size":50,"byte_limit":262144,"timeout_ms":5000}})
@@ -226,7 +238,7 @@ defmodule SwarmCode.Protocol.ServiceRequestTest do
 
     for operation <- [:run_steer, :approval_resolve] do
       {body, target_scope} = example(operation)
-      invalid(Map.put(body, "node_id", @run), target_scope)
+      invalid(Map.put(body, "node_id", "not-a-node-uuid"), target_scope)
     end
 
     {control, target_scope} = example(:run_control)

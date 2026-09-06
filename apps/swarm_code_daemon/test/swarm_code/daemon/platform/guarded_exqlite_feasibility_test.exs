@@ -2,6 +2,58 @@ defmodule SwarmCode.Daemon.Platform.GuardedExqliteFeasibilityTest do
   use ExUnit.Case, async: false
   alias Exqlite.{Sqlite3, SwarmGuard}
 
+  test "Mix-built native directory scopes hold and release actual OS directory locks" do
+    root =
+      Path.join(
+        Path.expand("../../../../../..", __DIR__),
+        "_build/directory-mix-" <> Base.encode16(:crypto.strong_rand_bytes(12))
+      )
+
+    File.mkdir_p!(root)
+    File.chmod!(root, 0o700)
+    runtime = Path.join(root, "runtime")
+    data = Path.join(root, "data")
+
+    for path <- [runtime, data] do
+      File.mkdir!(path)
+      File.chmod!(path, 0o700)
+    end
+
+    on_exit(fn -> File.rm_rf!(root) end)
+    {:ok, scope} = Exqlite.DirectoryScope.new()
+
+    try do
+      {:ok, runtime_handle} = Exqlite.DirectoryScope.open_root(scope, runtime)
+      {:ok, data_handle} = Exqlite.DirectoryScope.open_root(scope, data)
+      assert :ok = Exqlite.DirectoryScope.lock(scope, runtime_handle, data_handle)
+      assert :ok = Exqlite.DirectoryScope.assert_locked(scope)
+      assert os_directory_lock(runtime) == "busy"
+      assert os_directory_lock(data) == "busy"
+    after
+      assert :ok = Exqlite.DirectoryScope.close(scope)
+    end
+
+    assert os_directory_lock(runtime) == "acquired"
+    assert os_directory_lock(data) == "acquired"
+  end
+
+  defp os_directory_lock(path) do
+    code = """
+    import fcntl,os,sys
+    fd=os.open(sys.argv[1],os.O_RDONLY|os.O_DIRECTORY)
+    try:
+      fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+      print('acquired')
+    except BlockingIOError:
+      print('busy')
+    finally:
+      os.close(fd)
+    """
+
+    {output, 0} = System.cmd("python3", ["-c", code, path])
+    String.trim(output)
+  end
+
   test "the pinned local NIF consumes an exact read-only fixture descriptor" do
     assert Application.spec(:exqlite, :vsn) |> to_string() == "0.39.0-swarm.1"
     assert Code.ensure_loaded?(SwarmGuard)

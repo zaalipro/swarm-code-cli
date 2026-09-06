@@ -37,6 +37,16 @@ defmodule Exqlite.Sqlite3NIF do
     def guard_counts(), do: :erlang.nif_error(:not_loaded)
   end
 
+  # Native production directory resources; no SQLite-open authority.
+  def directory_scope_new(), do: :erlang.nif_error(:not_loaded)
+  def directory_open_root(_scope, _path), do: :erlang.nif_error(:not_loaded)
+  def directory_open_child(_directory, _name), do: :erlang.nif_error(:not_loaded)
+  def directory_identity(_directory), do: :erlang.nif_error(:not_loaded)
+  def directory_lock(_scope, _runtime, _data), do: :erlang.nif_error(:not_loaded)
+  def directory_assert_locked(_scope), do: :erlang.nif_error(:not_loaded)
+  def directory_scope_close(_scope), do: :erlang.nif_error(:not_loaded)
+  def directory_scope_status(_scope), do: :erlang.nif_error(:not_loaded)
+
   @spec open(String.t(), integer()) :: {:ok, db()} | {:error, reason()}
   def open(_path, _flags), do: :erlang.nif_error(:not_loaded)
 

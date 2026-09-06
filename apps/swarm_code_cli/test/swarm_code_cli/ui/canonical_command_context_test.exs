@@ -26,7 +26,9 @@ defmodule SwarmCodeCLI.UI.CanonicalCommandContextTest do
 
     state =
       Enum.reduce(Enum.filter(effects, &match?({:watch, _}, &1)), state, fn _, acc ->
-        assert_receive {:swarm_code_ui_data, "e", %Delivery{kind: :watch_ready} = delivery}
+        # Watch admission is asynchronous and its source deadline is 1 second.
+        # This helper checks command context, not sub-100ms delivery latency.
+        assert_receive {:swarm_code_ui_data, "e", %Delivery{kind: :watch_ready} = delivery}, 2_000
         {next, _} = Reducer.update(acc, {:data, delivery})
         next
       end)

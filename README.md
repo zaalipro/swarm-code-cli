@@ -124,6 +124,10 @@ reasoning, and represent unknown progress. The executable still uses the
 synthetic data source until the daemon service and real adapter are wired.
 See the [runtime/sink checkpoint](docs/research/2026-09-07-canonical-sink-checkpoint.md)
 for exact verification and remaining scope.
+The subsequent [directory and codec checkpoint](docs/research/2026-09-07-directories-codec-checkpoint.md)
+adds production directory ownership/locks and a strict pure client wire codec.
+The SQLite lease, writable database binding, transactional store and transport
+remain necessary before the executable can perform saved live coding sessions.
 
 The [live harness plan](docs/superpowers/plans/2026-09-06-live-coding-harness.md)
 tracks persistence, daemon/client service, real TUI wiring, advanced desktop

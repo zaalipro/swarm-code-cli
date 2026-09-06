@@ -128,3 +128,11 @@ production compilation/boot and eight terminal-demo PTY checks passed. See
 `docs/research/2026-09-07-canonical-sink-checkpoint.md`. Writable persistence,
 transactional producer/command admission, service/adapter and the complete
 advanced/release scope still remain; passing event-sink tests does not close them.
+
+The directory/codec checkpoint adds production opaque directory ownership and
+ordered kernel locks, plus strict pure client request/response translation.
+Final precommit seed424977 passed1028tests/fiveproperties/12nativechecks; production
+compilation and all eight directory checks against root production artifacts
+passed. See `docs/research/2026-09-07-directories-codec-checkpoint.md`. This closes
+neither the SQLite lease nor writable Repo/service/TUI integration. A concrete
+guarded lease patch is staged for the next task, not enabled by this checkpoint.

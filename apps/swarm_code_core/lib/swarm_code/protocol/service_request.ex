@@ -169,12 +169,12 @@ defmodule SwarmCode.Protocol.ServiceRequest do
   end
 
   defp valid_params?(:run_steer, params, scope) do
-    run_scope?(params["run_id"], scope) and params["node_id"] == nil and
+    run_scope?(params["run_id"], scope) and optional_uuid?(params["node_id"]) and
       text?(params["text"], 65_000) and params["attachment_refs"] == []
   end
 
   defp valid_params?(:approval_resolve, params, scope) do
-    run_scope?(params["run_id"], scope) and params["node_id"] == nil and
+    run_scope?(params["run_id"], scope) and optional_uuid?(params["node_id"]) and
       uuid?(params["interaction_id"]) and counter?(params["expected_revision"]) and
       params["decision"] in ["approve", "deny"]
   end
@@ -222,6 +222,8 @@ defmodule SwarmCode.Protocol.ServiceRequest do
     do: Regex.match?(~r/\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/, value)
 
   defp uuid?(_value), do: false
+  defp optional_uuid?(nil), do: true
+  defp optional_uuid?(value), do: uuid?(value)
 
   defp reference?(value) when is_binary(value) and byte_size(value) in 1..256,
     do: String.valid?(value) and control_free?(value)

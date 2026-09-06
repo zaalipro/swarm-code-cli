@@ -220,6 +220,8 @@ make_binary(ErlNifEnv* env, const void* bytes, unsigned int size)
     return term;
 }
 
+#include "swarm_directories.c"
+
 static ERL_NIF_TERM
 make_sqlite3_error_tuple(ErlNifEnv* env, int rc, sqlite3* db)
 {
@@ -1558,6 +1560,13 @@ on_load(ErlNifEnv* env, void** priv, ERL_NIF_TERM info)
         return -1;
     }
 
+#if !defined(_WIN32)
+    if (sd_service_load(env) != 0) {
+        enif_mutex_destroy(log_hook_mutex);
+        return -1;
+    }
+#endif
+
     return 0;
 }
 
@@ -1568,6 +1577,9 @@ on_unload(ErlNifEnv* caller_env, void* priv_data)
     (void)priv_data;
     assert(caller_env);
 
+#if !defined(_WIN32)
+    sd_service_unload();
+#endif
     sqlite3_config(SQLITE_CONFIG_MALLOC, &default_alloc_methods);
     enif_mutex_destroy(log_hook_mutex);
 }
@@ -1583,7 +1595,8 @@ on_upgrade(ErlNifEnv* env, void** priv_data, void** old_priv_data, ERL_NIF_TERM 
     (void)load_info;
     assert(env);
 
-    return 0;
+    /* Static cleanup worker/resource state is not safe for hot takeover. */
+    return -1;
 }
 
 //
@@ -2149,6 +2162,17 @@ exqlite_errstr(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 //
 
 static ErlNifFunc nif_funcs[] = {
+#if !defined(_WIN32)
+  {"directory_scope_new", 0, sd_new, ERL_NIF_DIRTY_JOB_IO_BOUND},
+  {"directory_open_root", 2, sd_open_root, ERL_NIF_DIRTY_JOB_IO_BOUND},
+  {"directory_open_child", 2, sd_open_child, ERL_NIF_DIRTY_JOB_IO_BOUND},
+  {"directory_identity", 1, sd_identity, ERL_NIF_DIRTY_JOB_IO_BOUND},
+  {"directory_lock", 3, sd_lock, ERL_NIF_DIRTY_JOB_IO_BOUND},
+  {"directory_assert_locked", 1, sd_assert_locked, ERL_NIF_DIRTY_JOB_IO_BOUND},
+  {"directory_scope_close", 1, sd_close, ERL_NIF_DIRTY_JOB_IO_BOUND},
+  {"directory_scope_status", 1, sd_status, 0},
+#endif
+
 #ifdef SWARM_GUARD_TEST
   {"guard_admit", 1, guard_admit_nif, ERL_NIF_DIRTY_JOB_IO_BOUND},
   {"guard_open", 1, guard_open_nif, ERL_NIF_DIRTY_JOB_IO_BOUND},

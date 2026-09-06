@@ -94,3 +94,38 @@ and complete upstream regression suite.
 
 Cross-platform native/OS-floor, sanitizer, adversarial namespace/lifecycle and
 full production binding/lease/Ready/pool checks remain separate requirements.
+
+
+## Production directory capability predecessor
+
+The native production directory API is independent of the fixture SQLite API.
+`c_src/swarm_directories.c` (new) is included by `c_src/sqlite3_nif.c` and owns a
+bounded directory graph with captured BEAM owner monitoring, component-wise
+no-follow admission, descriptor-relative child opens and runtime-first/data-second
+nonblocking flock. `lib/exqlite/directory_scope.ex` (new) delegates to new NIF stubs
+in `lib/exqlite/sqlite3_nif.ex`. It accepts no raw descriptors and confers no
+SQLite/Ready/canonical-database authority. It performs no mkdir/chmod/unlink.
+
+The separate refcounted native control block owns all directory descriptors.
+Owner-down and resource destruction only revoke/enqueue a preallocated cleanup
+node. One NIF-owned cleanup thread closes graphs; explicit close is dirty IO.
+Unload stops/drains/joins the thread. Hot NIF upgrade now refuses because native
+resource/thread takeover is not implemented. Close errors are retained as a
+terminal failure rather than reported as clean closure.
+
+`test/swarm_guard/directory_scope.exs` (new) exercises real external-process flock
+contention, rollback after data-lock failure, owner death with copied resources,
+private directory admission, replacement detection and bounded directory capacity.
+The GC case drops all terms while its owner stays alive and verifies external
+lock acquisition before allowing owner exit, independently of owner-down cleanup.
+Unsafe-mode fixtures use native `os.chmod` and verify actual modes: OTP's
+`File.chmod(01700)` on the tested macOS host cleared the special bit.
+`scripts/run-feasibility.py` now compiles the directory facade and runs those tests
+in both native test and production modes. Target-native runtime verification is
+required after applying this change; this record alone is not test evidence.
+
+Root local verification passed the isolated test/production runner (24 tests),
+the corrected owner-alive GC suite (eight tests), and coordinated Mix integration
+(three guarded-fork tests including actual external-process directory locks).
+No sanitizer, global-capacity failure injection, unusual filesystem, hot-upgrade,
+or supported-target matrix result is claimed by those checks.

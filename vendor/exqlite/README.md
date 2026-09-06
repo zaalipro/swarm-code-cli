@@ -3,7 +3,10 @@
 > [SWARM_PATCHES.md](SWARM_PATCHES.md) for the audited patch scope and test commands.
 > Native binaries are compiled locally; system SQLite and precompiled NIF downloads
 > are disabled. The guarded API is only a read-only clean-fixture feasibility path
-> in test/development. Production returns `native_guard_unavailable`.
+> in test/development. Production returns `native_guard_unavailable` for that
+> SQLite fixture API. A separate production `DirectoryScope` primitive provides
+> opaque directory ownership and ordered locks; it does not authorize SQLite or
+> canonical database startup.
 
 # Exqlite
 

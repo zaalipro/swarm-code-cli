@@ -250,6 +250,7 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.Schema do
   defp decode_value({:optional, type}, value), do: decode_value(type, value)
   defp decode_value({:list, type}, values), do: decode_list(type, values, 200)
   defp decode_value({:dto, module}, value), do: module.decode(value)
+  defp decode_value(:error, value), do: AdmissionError.decode(value)
 
   defp decode_value(type, value),
     do: if(valid?(type, value), do: {:ok, value}, else: {:error, :invalid_dto})
