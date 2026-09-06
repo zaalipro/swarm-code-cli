@@ -67,6 +67,32 @@ defmodule SwarmCodeCLI.UI.ArchitectureTest do
 
   defp scan_mix_dependencies(source), do: scan_source(source, @mix_file)
 
+  test "the neutral editor apply API is a definition, not dynamic module dispatch" do
+    assert scan_source(
+             "def apply(editor, operation), do: operate(editor, operation)",
+             "fixture.ex"
+           ) == []
+
+    assert scan_source("@spec apply(t(), Operation.t()) :: {:ok, t()}", "fixture.ex") == []
+
+    assert scan_source("@spec apply(t, Operation.t()) :: {:ok, t} when t: term()", "fixture.ex") ==
+             []
+
+    assert scan_source(
+             "def apply(editor, operation), do: apply(module, :run, [editor, operation])",
+             "fixture.ex"
+           ) != []
+
+    assert scan_source(
+             "def apply(editor, operation), do: Kernel.apply(fun, [operation])",
+             "fixture.ex"
+           ) != []
+
+    assert scan_source("(&Kernel.apply/3).(module, :run, [])", "fixture.ex") != []
+    assert scan_source("(&:erlang.apply/3).(module, :run, [])", "fixture.ex") != []
+    assert scan_source("(&Kernel.apply/2).(fun, [])", "fixture.ex") != []
+  end
+
   defp exempt?(path) do
     root = Path.expand("swarm_code_cli/ui/renderer/ex_ratatui_013", @lib_root)
     expanded = Path.expand(path)
@@ -107,6 +133,21 @@ defmodule SwarmCodeCLI.UI.ArchitectureTest do
   end
 
   defp ast_violations(ast, path) do
+    # An API named apply/2 is not Kernel's dynamic apply. Strip only the name
+    # from definition/spec heads; argument defaults, guards and bodies still
+    # undergo the same scan, including all actual apply invocations.
+    ast =
+      Macro.prewalk(ast, fn
+        {kind, meta, [head | body]} when kind in [:def, :defp] ->
+          {kind, meta, [neutral_definition_head(head) | body]}
+
+        {:@, meta, [{:spec, spec_meta, [spec]}]} ->
+          {:@, meta, [{:spec, spec_meta, [neutral_spec_head(spec)]}]}
+
+        node ->
+          node
+      end)
+
     {_ast, found} =
       Macro.prewalk(ast, [], fn
         {{:., _, [{:__aliases__, _, [:Module]}, :concat]}, _, _} = node, acc ->
@@ -116,8 +157,8 @@ defmodule SwarmCodeCLI.UI.ArchitectureTest do
           {node, [{path, :dynamic_module_lookup, "apply/3"} | acc]}
 
         {{:., _, [{:__aliases__, _, [:Kernel]}, :apply]}, _, args} = node, acc
-        when length(args) == 3 ->
-          {node, [{path, :dynamic_module_lookup, "Kernel.apply/3"} | acc]}
+        when length(args) in [2, 3] ->
+          {node, [{path, :dynamic_module_lookup, "Kernel.apply"} | acc]}
 
         {{:., _, [:erlang, :apply]}, _, args} = node, acc when length(args) in [2, 3] ->
           {node, [{path, :dynamic_module_lookup, ":erlang.apply"} | acc]}
@@ -135,6 +176,16 @@ defmodule SwarmCodeCLI.UI.ArchitectureTest do
                :append_path
              ] ->
           {node, [{path, :code_path_load, Atom.to_string(function)} | acc]}
+
+        {:&, _, [{:/, _, [{{:., _, [{:__aliases__, _, [:Kernel]}, :apply]}, _, _}, arity]}]} =
+            node,
+        acc
+        when arity in [2, 3] ->
+          {node, [{path, :dynamic_module_lookup, "captured Kernel.apply"} | acc]}
+
+        {:&, _, [{:/, _, [{{:., _, [:erlang, :apply]}, _, _}, arity]}]} = node, acc
+        when arity in [2, 3] ->
+          {node, [{path, :dynamic_module_lookup, "captured :erlang.apply"} | acc]}
 
         {:&, _, [captured]} = node, acc ->
           rendered = Macro.to_string(captured)
@@ -156,6 +207,20 @@ defmodule SwarmCodeCLI.UI.ArchitectureTest do
 
     Enum.uniq(found)
   end
+
+  defp neutral_definition_head({:when, meta, [head | guards]}),
+    do: {:when, meta, [neutral_definition_head(head) | guards]}
+
+  defp neutral_definition_head({:apply, meta, args}), do: {:declared_apply, meta, args}
+  defp neutral_definition_head(head), do: head
+
+  defp neutral_spec_head({:when, meta, [spec | constraints]}),
+    do: {:when, meta, [neutral_spec_head(spec) | constraints]}
+
+  defp neutral_spec_head({:"::", meta, [head, result]}),
+    do: {:"::", meta, [neutral_definition_head(head), result]}
+
+  defp neutral_spec_head(spec), do: spec
 
   defp maybe_forbidden(name, path, kind, acc) do
     compact = String.replace(name, ["_", "."], "")

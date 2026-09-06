@@ -57,6 +57,15 @@ defmodule SwarmCodeCLI.UI.Editor.Operation do
     :newline
   ]
 
+  @doc "Actionable size errors for Editor.apply; validate/1 keeps its closed-contract result."
+  def admit({:paste, text}) when is_binary(text) and byte_size(text) > @max_paste_bytes,
+    do: {:error, :paste_too_large}
+
+  def admit({:insert, text}) when is_binary(text) and byte_size(text) > @max_fragment_bytes,
+    do: {:error, :fragment_too_large}
+
+  def admit(_operation), do: :ok
+
   @spec validate(term()) :: {:ok, t()} | {:error, :invalid_editor_operation}
   def validate(operation) when operation in @simple_operations, do: {:ok, operation}
 
