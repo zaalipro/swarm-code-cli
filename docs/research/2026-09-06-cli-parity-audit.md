@@ -221,6 +221,36 @@ trigger and resulting behavior. Real-source command integration also aligned Ste
 run permissions and enabled exact Activity-only question/approval context without
 inventing a cached run.
 
+## Renderer decision and next visible slice
+
+Fresh source verification now backs the [renderer decision](../decisions/tui-renderer.md).
+Exact ExRatatui 0.13.0 is rejected for native paste allocation, the exposed width
+API, missing public no-alt initialization, and the published arm64 GNU ABI.
+The low-level Ratatui ForcedWidth facility is acknowledged; these facts do not
+reject or adopt a separately implemented Port candidate. The bounded decision
+module cannot turn arbitrary pass summaries into adoption.
+
+The local locked-branch tests verify neutral dependencies, the nine-app runtime
+closure, unchanged runtime/release/test-helper files, absence of conditional
+native campaign outputs, and the real plain demo's process/application/runtime-
+file baseline. Review added regressions against executable uses of supposedly
+inert candidate names and symlinks concealing inspected output directories.
+The historical September 1 recommendation now points to this decision.
+
+The next [cell paint design](../superpowers/specs/2026-09-06-cell-paint-plan-design.md)
+and [work breakdown](../superpowers/plans/2026-09-06-cell-paint-plan.md) describe
+how to turn Scene blocks into inspectable cells and passive previews. These
+are preparatory documents; no cell renderer, preview command, or native visual
+comparison is claimed implemented by this checkpoint.
+
+A second full verification exposed a backup-concurrency test deadline mismatch.
+OTP's randomized global-lock retries can sleep up to eight seconds per retry,
+while the test independently awaited each serialized caller for ten seconds.
+A controlled slow-contention probe reproduced the timeout and then completed
+with all four identical artifacts under the enclosing watchdog. The corrected
+test uses an explicit 60-second ExUnit deadline and retains supervised teardown;
+production backup behavior is unchanged.
+
 ## Validation and continuing work
 
 The original full suite ran 79 core, 195 daemon and 39 CLI tests; its only
@@ -262,6 +292,14 @@ command test also verified the declared nine-app closure, application baseline
 restoration, no surviving demo children, and unchanged temporary HOME/XDG paths.
 No real renderer/browser smoke test is claimed. Desktop status remains only its
 pre-existing untracked `.specs/` directory.
+
+Renderer-decision checkpoint verification: two consecutive clean precommits,
+seeds **279839** and **298750**, each passed **79 core + 197 daemon + 382 CLI
+tests and 4 properties** (**658 tests**). Production compilation passed with
+warnings treated as errors. The combined Decision/architecture/locked-branch
+suite passed 26 tests under child `--no-start`, including the actual plain
+command and unchanged isolated runtime-file hashes. No new terminal or browser
+surface was exercised in this decision-only change.
 
 Continue against the original full-parity objective. Completion requires real
 runtime tests, supported-platform artifacts, a rendered terminal compared with

@@ -4,6 +4,11 @@
 **Scope:** read-only technology assessment; no repository was initialized or edited.  
 **Target:** a full-screen, visually polished SwarmCode terminal client on Ubuntu and macOS, with the Elixir/OTP core and ERTS bundled into a one-command install.
 
+> **Superseded recommendation:** the conditional ExRatatui recommendation below
+> is historical research. Fresh immutable-source verification rejects exact
+> 0.13.0; see the [current renderer decision](../../decisions/tui-renderer.md).
+> Ratatui Port and pure-Elixir candidates require their own plans and evidence.
+
 ## Decision in one paragraph
 
 Use **ExRatatui 0.13.x, pinned exactly, behind a SwarmCode-owned semantic presentation boundary**, and use its **reducer runtime** only for terminal/UI state and UI-only subscriptions. Keep all durable state and long-running work in SwarmCode's Elixir supervisors; deliver typed, scoped engine events to the TUI process and render only the visible window. ExRatatui is the best current balance: it exposes Ratatui 0.30/Crossterm 0.29 through an OTP-supervised API, has the exact primitives this product needs (row-scrolled heterogeneous chat lists, Markdown/code, textarea, slash commands, popup, tables, gauges, focus, mouse, paste, resize and true color), a headless backend, precompiled macOS/Linux NIFs, and a tested Burrito path. It avoids inventing and maintaining a custom Elixir↔Rust sidecar protocol. This recommendation is **conditional on a native-safety, input, terminal-restoration and four-target packaging spike** because ExRatatui is young, pre-1.0 and in-process native code. If it fails the gate, retain the semantic boundary and switch the adapter to **TermUI 1.0** (native-free terminal core) or, specifically when crash isolation is the blocker, a supervised **Ratatui Port sidecar**. Always ship a line-oriented `--plain` presentation; no full-screen TUI is screen-reader accessible merely because it has keyboard focus.

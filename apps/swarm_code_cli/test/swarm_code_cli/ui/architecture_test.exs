@@ -102,9 +102,11 @@ defmodule SwarmCodeCLI.UI.ArchitectureTest do
   defp violations(path) do
     source = File.read!(path)
 
-    if Path.expand(path) == Path.join(@lib_root, "swarm_code_cli/demo/application_fence.ex"),
-      do: scan_fence(source, path),
-      else: scan_source(source, path)
+    case Path.relative_to(Path.expand(path), @lib_root) do
+      "swarm_code_cli/demo/application_fence.ex" -> scan_fence(source, path)
+      "swarm_code_cli/ui/renderer/decision.ex" -> scan_decision(source, path)
+      _ -> scan_source(source, path)
+    end
   end
 
   test "only the exact fence admits negative literals and read-only specification discovery" do
@@ -119,6 +121,89 @@ defmodule SwarmCodeCLI.UI.ArchitectureTest do
     assert scan_fence("ExRatatui.draw(scene)", "fence.ex") != []
     assert scan_fence("@forbidden [ExRatatui]", "fence.ex") != []
     assert scan_source(":code.lib_dir(app)", "ordinary.ex") != []
+  end
+
+  test "renderer decision labels do not exempt implementation coupling" do
+    assert scan_decision(":ex_ratatui_013", "decision.ex") == []
+    assert scan_decision("%{\"ratatui_commit\" => \"hash\"}", "decision.ex") == []
+    assert scan_decision("{:ratatui_port, \"ratatui_port\"}", "decision.ex") == []
+
+    for code <- [
+          "ExRatatui.draw(scene)",
+          "apply(module, :draw, [scene])",
+          ":code.load_file(:ex_ratatui_013)",
+          "Application.ensure_all_started(:ex_ratatui)",
+          "Application.ensure_all_started(:ratatui_port)",
+          "Application.load(:ex_ratatui_013)",
+          ":ratatui_port.draw(scene)",
+          "candidate.draw(scene)",
+          "module = :ratatui_port; module.draw(scene)",
+          "import :ratatui_port",
+          "require :ex_ratatui_013",
+          "use :ratatui_port",
+          "alias :ratatui_port, as: Enum; Enum.draw(scene)",
+          "defmodule :ratatui_port do def draw(scene), do: scene end",
+          ":ratatui_other"
+        ] do
+      refute scan_decision(code, "decision.ex") == []
+    end
+
+    refute scan_source(":ex_ratatui_013", "ordinary.ex") == []
+  end
+
+  defp scan_decision(source, path) do
+    case Code.string_to_quoted(source) do
+      {:ok, ast} ->
+        # Decision has no runtime boundary. Keep a closed set of pure static
+        # calls before treating candidate names as inert data; their presence
+        # in an executable receiver or application startup is never exempt.
+        {_, executable} =
+          Macro.prewalk(ast, [], fn
+            {:alias, _, [{:__aliases__, _, [:SwarmCodeCLI, :UI, :Renderer, :Decision, :Reason]}]} =
+                node,
+            found ->
+              {node, found}
+
+            {:defmodule, _, [{:__aliases__, _, [:SwarmCodeCLI, :UI, :Renderer, :Decision]}, _]} =
+                node,
+            found ->
+              {node, found}
+
+            {form, _, _} = node, found
+            when form in [:alias, :import, :require, :use, :defmodule, :defprotocol, :defimpl] ->
+              {node, [{path, :decision_runtime_coupling, Macro.to_string(node)} | found]}
+
+            {{:., _, [{:__aliases__, _, [name]}, _]}, _, _} = node, found
+            when name in [:Enum, :Map, :String, :DateTime, :Reason, :Access] ->
+              {node, found}
+
+            {{:., _, [Access, :get]}, _, _} = node, found ->
+              {node, found}
+
+            {{:., _, _}, _, _} = node, found ->
+              {node, [{path, :decision_runtime_coupling, Macro.to_string(node)} | found]}
+
+            node, found ->
+              {node, found}
+          end)
+
+        ast =
+          Macro.prewalk(ast, fn
+            atom when atom in [:ex_ratatui_013, :ratatui_port] ->
+              :candidate_label
+
+            text when text in ["ex_ratatui_013", "ratatui_port", "ratatui_commit"] ->
+              "candidate_label"
+
+            node ->
+              node
+          end)
+
+        executable ++ scan_source(Macro.to_string(ast), path)
+
+      _ ->
+        scan_source(source, path)
+    end
   end
 
   defp scan_fence(source, path) do

@@ -19,6 +19,7 @@ read-only schema admission, and verified backups. It is not a normal startup pat
 - [Approved CLI architecture](docs/superpowers/specs/2026-09-01-swarm-code-cli-design.md)
 - [Foundation safety and macOS residual risk](docs/foundation-safety.md)
 - [Current implementation and desktop parity audit](docs/research/2026-09-06-cli-parity-audit.md)
+- [Renderer decision and verified source constraints](docs/decisions/tui-renderer.md)
 
 Contributor checks: `mise exec -- mix precommit`. The Unicode terminal-width
 source and generated tables can be checked offline with
