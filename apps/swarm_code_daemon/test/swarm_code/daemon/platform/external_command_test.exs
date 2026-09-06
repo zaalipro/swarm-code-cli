@@ -3,6 +3,28 @@ defmodule SwarmCode.Daemon.Platform.ExternalCommandTest do
 
   alias SwarmCode.Daemon.Platform.ExternalCommand
 
+  test "an asynchronous owner can be cancelled and remains monitored until native termination" do
+    assert {:ok, {owner, ref, monitor} = handle} =
+             ExternalCommand.start("/bin/sleep", ["30"], observer: self(), timeout: 5_000)
+
+    assert_receive {:external_command_started, ^owner, os_pid}, 1_000
+    send(owner, {:cancel_request, make_ref()})
+    refute_receive {:DOWN, ^monitor, :process, ^owner, _}, 20
+    assert ExternalCommand.cancel(handle) == :ok
+    assert_receive {:external_command_terminal, ^os_pid}, 3_000
+    assert_receive {:DOWN, ^monitor, :process, ^owner, :normal}, 3_000
+    refute_receive {^ref, ^owner, {:ok, _}}
+    refute os_pid_alive?(os_pid)
+  end
+
+  test "an asynchronous command retains the existing result and monitor contract" do
+    assert {:ok, {owner, ref, monitor}} =
+             ExternalCommand.start("/bin/echo", ["snapshot-ready"], max_line_bytes: 128)
+
+    assert_receive {^ref, ^owner, {:ok, "snapshot-ready"}}, 1_000
+    assert_receive {:DOWN, ^monitor, :process, ^owner, :normal}, 1_000
+  end
+
   test "normal and nonzero exits report exact child termination" do
     for {executable, args, expected} <- [
           {"/bin/echo", ["bounded-output"], {:ok, "bounded-output"}},

@@ -3,7 +3,7 @@ defmodule SwarmCode.Daemon.Backup.GateTest do
 
   import Bitwise
 
-  alias SwarmCode.Daemon.Backup.{Artifact, Gate}
+  alias SwarmCode.Daemon.Backup.{Artifact, Gate, Manifest}
   alias SwarmCode.Daemon.CrossAppLease
   alias SwarmCode.Daemon.Platform.{DatabaseFingerprint, ProcessIdentity}
   alias SwarmCode.Daemon.Schema.{MigrationManifest, Probe}
@@ -108,6 +108,89 @@ defmodule SwarmCode.Daemon.Backup.GateTest do
              [Path.basename(artifact.database), Path.basename(artifact.manifest)] |> Enum.sort()
   end
 
+  test "a genuine current ready decision backs up all 46 migrations and newly persisted values" do
+    fixture = migration_fixture!(lineage: :current)
+    assert fixture.decision.status == :ready
+    assert fixture.decision.pending == []
+
+    SchemaFixture.exec!(fixture.db, """
+    PRAGMA foreign_keys=ON;
+    INSERT INTO providers(id, name, base_url, fallbacks, inserted_at, updated_at)
+    VALUES ('provider-off', 'Provider off', 'https://example.invalid', 0, '2026-09-06', '2026-09-06'),
+           ('provider-on', 'Provider on', 'https://example.invalid', 1, '2026-09-06', '2026-09-06');
+    INSERT INTO conversations(id, project_id, inserted_at, updated_at)
+    VALUES ('conversation-1', 'project-1', '2026-09-06', '2026-09-06');
+    INSERT INTO runs(id, conversation_id, kind, started_at, inserted_at, updated_at)
+    VALUES ('run-1', 'conversation-1', 'swarm', '2026-09-06', '2026-09-06', '2026-09-06');
+    INSERT INTO nodes(id, run_id, kind, cache_read, cache_write, inserted_at, updated_at)
+    VALUES ('node-1', 'run-1', 'agent', 12345, 678, '2026-09-06', '2026-09-06');
+    INSERT INTO settings(id, bench_layout, inserted_at, updated_at)
+    VALUES ('settings-1', 'scorecard', '2026-09-06', '2026-09-06');
+    """)
+
+    before = source_state(fixture.db)
+
+    expected_values = %{
+      providers: [["provider-off", 0], ["provider-on", 1]],
+      nodes: [[12345, 678]],
+      settings: [["scorecard"]]
+    }
+
+    assert current_values(fixture.db) == expected_values
+    assert {:ok, artifact} = create(fixture)
+    assert source_state(fixture.db) == before
+    assert {:ok, manifest} = Manifest.decode(bounded_read!(artifact.manifest, 4_194_304))
+    assert length(manifest["migrations"]) == 46
+    assert manifest["migrations"] == fixture.decision.applied
+    assert manifest["independent_restore"]["migrations"] == fixture.decision.applied
+    assert manifest["independent_restore"]["verified"] == true
+
+    for verification <- [manifest, manifest["independent_restore"]] do
+      assert verification["quick_check"] == "ok"
+      assert verification["foreign_key_violations"] == []
+      assert verification["row_counts"] == SchemaFixture.row_counts(fixture.db)
+    end
+
+    restored = Path.join(Path.dirname(fixture.db), "independent-current-restore.db")
+    copy_private!(artifact.database, restored)
+    assert {:ok, probe} = Probe.inspect(restored)
+    assert length(probe.migration_versions) == 46
+    assert probe.quick_check == [["ok"]]
+    assert probe.foreign_key_violations == []
+    assert probe.schema_sha256 == fixture.decision.probe.schema_sha256
+    assert current_values(restored) == expected_values
+    assert current_values(artifact.database) == expected_values
+    assert source_state(fixture.db) == before
+
+    overflow = manifest["migrations"] ++ [20_990_101_000_000]
+
+    invalid =
+      manifest
+      |> Map.put("migrations", overflow)
+      |> put_in(["independent_restore", "migrations"], overflow)
+
+    assert {:error, _} = Manifest.decode(Jason.encode!(invalid))
+  end
+
+  defp current_values(database) do
+    {:ok, conn} = Exqlite.Sqlite3.open(database, mode: :readonly)
+
+    try do
+      Map.new(
+        [
+          providers: "SELECT id, fallbacks FROM providers ORDER BY id",
+          nodes: "SELECT cache_read, cache_write FROM nodes ORDER BY id",
+          settings: "SELECT bench_layout FROM settings ORDER BY id"
+        ],
+        fn {key, query} ->
+          {key, SwarmCode.Daemon.Schema.SqliteQuery.rows(conn, query, [], max_rows: 2)}
+        end
+      )
+    after
+      :ok = Exqlite.Sqlite3.close(conn)
+    end
+  end
+
   test "VACUUM INTO includes committed WAL rows without changing main, WAL, or SHM" do
     fixture = migration_fixture!(wal: true)
     before = source_state(fixture.db)
@@ -123,6 +206,73 @@ defmodule SwarmCode.Daemon.Backup.GateTest do
     assert manifest["source"]["shm"]["sha256"] == before["shm"].sha256
     assert manifest["row_counts"]["projects"] == 2
     assert SchemaFixture.row_counts(artifact.database)["projects"] == 2
+  end
+
+  test "fresh unprobed WAL is backed up through copied main and WAL with exact source bytes" do
+    fixture = migration_fixture!(lineage: :current)
+    _writer = SchemaFixture.open_uncheckpointed_wal!(fixture.db)
+    before = source_state(fixture.db)
+    test = self()
+
+    hook = fn
+      :before_snapshot_create, _context ->
+        pinned = source_pin_path!(fixture.backup_dir)
+
+        [workspace] =
+          File.ls!(Path.dirname(fixture.db))
+          |> Enum.filter(&String.starts_with?(&1, ".swarm-snapshot-"))
+
+        supplied = Path.join([Path.dirname(fixture.db), workspace, "snapshot.db"])
+
+        send(
+          test,
+          {:private_source_copy, same_object?(fixture.db, pinned),
+           same_object?(fixture.db <> "-wal", pinned <> "-wal"), same_object?(supplied, pinned),
+           same_object?(supplied <> "-wal", pinned <> "-wal")}
+        )
+
+        :ok
+
+      _point, _context ->
+        :ok
+    end
+
+    result = create(fixture, test_hook: hook)
+    assert source_state(fixture.db) == before
+    assert_receive {:private_source_copy, false, false, false, false}
+    assert {:ok, artifact} = result
+    assert {:ok, manifest} = Manifest.decode(bounded_read!(artifact.manifest, 4_194_304))
+    assert manifest["source"]["main"]["sha256"] == before["main"].sha256
+    assert manifest["source"]["wal"]["sha256"] == before["wal"].sha256
+    assert manifest["source"]["shm"]["sha256"] == before["shm"].sha256
+    assert manifest["row_counts"]["projects"] == 4
+    assert manifest["independent_restore"]["row_counts"]["projects"] == 4
+    restored = Path.join(Path.dirname(fixture.db), "fresh-wal-restore.db")
+    copy_private!(artifact.database, restored)
+    {:ok, conn} = Exqlite.Sqlite3.open(restored, mode: :readonly)
+
+    try do
+      assert SwarmCode.Daemon.Schema.SqliteQuery.rows(
+               conn,
+               "SELECT id, name FROM projects ORDER BY id",
+               [],
+               max_rows: 4
+             ) == [
+               ["project-1", fixture.secret],
+               ["project-2", "Second project"],
+               ["wal-project-1", "WAL project 1"],
+               ["wal-project-2", "WAL project 2"]
+             ]
+    after
+      :ok = Exqlite.Sqlite3.close(conn)
+    end
+
+    assert source_state(fixture.db) == before
+
+    refute Enum.any?(
+             File.ls!(Path.dirname(fixture.db)),
+             &String.starts_with?(&1, ".swarm-snapshot-")
+           )
   end
 
   test "every user table is counted even when its name begins with sqlite" do
@@ -311,7 +461,7 @@ defmodule SwarmCode.Daemon.Backup.GateTest do
     refute File.exists?(backup_dir)
   end
 
-  test "a decision other than migration_required refuses without source or output mutation" do
+  test "an inconsistent ready decision with pending migrations refuses without mutation" do
     fixture = migration_fixture!()
     before = source_state(fixture.db)
 
@@ -326,6 +476,20 @@ defmodule SwarmCode.Daemon.Backup.GateTest do
                now: fn -> @verified_at end
              )
 
+    assert source_state(fixture.db) == before
+    assert File.ls!(fixture.backup_dir) == []
+  end
+
+  test "a ready decision with an applied list different from its probe refuses unchanged" do
+    fixture = migration_fixture!(lineage: :current)
+    before = source_state(fixture.db)
+
+    inconsistent = %{
+      fixture
+      | decision: %{fixture.decision | applied: tl(fixture.decision.applied)}
+    }
+
+    assert {:error, %{code: :backup_failed}} = create(inconsistent)
     assert source_state(fixture.db) == before
     assert File.ls!(fixture.backup_dir) == []
   end
@@ -874,6 +1038,7 @@ defmodule SwarmCode.Daemon.Backup.GateTest do
     assert Task.shutdown(task, :brutal_kill) == nil
     await_directory_empty!(fixture.backup_dir, 10_000)
     assert File.ls!(fixture.backup_dir) == []
+    await_no_snapshots!(Path.dirname(fixture.db), 10_000)
   end
 
   @tag timeout: 60_000
@@ -1097,6 +1262,7 @@ defmodule SwarmCode.Daemon.Backup.GateTest do
     assert {:error, %{code: code}} = result
     assert code in [:backup_failed, :cleanup_pending]
     assert File.ls!(fixture.backup_dir) == []
+    await_no_snapshots!(Path.dirname(fixture.db), 10_000)
   end
 
   test "a corrupt source refuses unchanged without a partial artifact" do
@@ -1174,7 +1340,7 @@ defmodule SwarmCode.Daemon.Backup.GateTest do
   end
 
   defp migration_fixture!(opts \\ []) do
-    database = SchemaFixture.database!({:prefix, 20_260_923_000_000})
+    database = SchemaFixture.database!(Keyword.get(opts, :lineage, {:prefix, 20_260_923_000_000}))
 
     if Keyword.get(opts, :wal, false) do
       _writer = SchemaFixture.open_uncheckpointed_wal!(database)
@@ -1189,7 +1355,11 @@ defmodule SwarmCode.Daemon.Backup.GateTest do
       SchemaFixture.insert_project!(database, "project-2", "Second project", "/private/project-2")
     end
 
-    decision = schema_decision!(database)
+    assert {:ok, decision} = SchemaGate.check(database, MigrationManifest.load!(), "0.1.0-dev")
+
+    assert decision.status ==
+             if(Keyword.get(opts, :lineage) == :current, do: :ready, else: :migration_required)
+
     directory = Path.dirname(database)
     uid = File.lstat!(directory).uid
     backup_dir = Path.join(directory, "backups")
@@ -1243,8 +1413,8 @@ defmodule SwarmCode.Daemon.Backup.GateTest do
       database_fingerprint: fingerprint,
       schema_contract: %{
         epoch: 0,
-        newest_migration: 20_260_926_000_000,
-        manifest_sha256: "408afb8e6eb422c8df50fe65536a08f853475c162d584db45b4af708274fd1d0"
+        newest_migration: 20_260_929_000_000,
+        manifest_sha256: "f04a55a27d1fee6a3192c6ff277993d4ab5a8f6414896e2be87dc3a41f48b75f"
       },
       socket_path: Path.join(directory, "daemon-#{unique}.sock"),
       app_version: "0.1.0-dev"
@@ -1435,6 +1605,27 @@ defmodule SwarmCode.Daemon.Backup.GateTest do
       true ->
         :erlang.yield()
         do_wait_for_vacuum_journal!(directory, deadline)
+    end
+  end
+
+  defp await_no_snapshots!(directory, timeout) do
+    deadline = System.monotonic_time(:millisecond) + timeout
+    do_await_no_snapshots!(directory, deadline)
+  end
+
+  defp do_await_no_snapshots!(directory, deadline) do
+    cond do
+      not Enum.any?(File.ls!(directory), &String.starts_with?(&1, ".swarm-snapshot-")) ->
+        :ok
+
+      System.monotonic_time(:millisecond) >= deadline ->
+        flunk("snapshot owner did not finish cleanup")
+
+      true ->
+        receive do
+        after
+          1 -> do_await_no_snapshots!(directory, deadline)
+        end
     end
   end
 

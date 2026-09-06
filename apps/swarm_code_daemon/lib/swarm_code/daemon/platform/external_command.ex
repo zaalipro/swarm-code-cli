@@ -34,6 +34,26 @@ defmodule SwarmCode.Daemon.Platform.ExternalCommand do
 
   @spec run(Path.t(), [String.t()], keyword()) :: {:ok, String.t()} | {:error, atom()}
   def run(executable, args, opts \\ []) do
+    case start(executable, args, opts) do
+      {:ok, {owner, request_ref, owner_monitor}} ->
+        receive do
+          {^request_ref, ^owner, result} ->
+            Process.demonitor(owner_monitor, [:flush])
+            result
+
+          {:DOWN, ^owner_monitor, :process, ^owner, _reason} ->
+            {:error, :command_owner_failed}
+        end
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  @doc false
+  @spec start(Path.t(), [String.t()], keyword()) ::
+          {:ok, {pid(), reference(), reference()}} | {:error, atom()}
+  def start(executable, args, opts \\ []) do
     with {:ok, config} <- validate(executable, args, opts) do
       requester = self()
       request_ref = make_ref()
@@ -41,15 +61,14 @@ defmodule SwarmCode.Daemon.Platform.ExternalCommand do
       {owner, owner_monitor} =
         spawn_monitor(fn -> command_owner(requester, request_ref, config) end)
 
-      receive do
-        {^request_ref, ^owner, result} ->
-          Process.demonitor(owner_monitor, [:flush])
-          result
-
-        {:DOWN, ^owner_monitor, :process, ^owner, _reason} ->
-          {:error, :command_owner_failed}
-      end
+      {:ok, {owner, request_ref, owner_monitor}}
     end
+  end
+
+  @doc false
+  def cancel({owner, request_ref, _monitor}) when is_pid(owner) and is_reference(request_ref) do
+    send(owner, {:cancel_request, request_ref})
+    :ok
   end
 
   defp command_owner(requester, request_ref, config) do
@@ -229,6 +248,9 @@ defmodule SwarmCode.Daemon.Platform.ExternalCommand do
           collect(port, port_monitor, requester_monitor, deadline, %{state | port_down?: true})
 
         {:DOWN, ^requester_monitor, :process, _requester, _reason} ->
+          {:requester_down, state}
+
+        {:cancel_request, ref} when ref == state.request_ref ->
           {:requester_down, state}
 
         _other ->

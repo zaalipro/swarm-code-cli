@@ -8,8 +8,8 @@ defmodule SwarmCode.Daemon.Schema.MigrationManifestTest do
   @migration_set_sha256 "408afb8e6eb422c8df50fe65536a08f853475c162d584db45b4af708274fd1d0"
   @final_schema_sha256 "cb75e8448370fa9ca8c1f25969e1b491b035046e87f8b92374f5a1c704304db3"
 
-  test "loads the audited 43-entry desktop manifest as validated structs" do
-    manifest = MigrationManifest.load!()
+  test "retains the audited 43-entry historical manifest as validated structs" do
+    manifest = MigrationManifest.load!(default_manifest_path())
 
     assert manifest.manifest_version == 1
     assert manifest.contract == "desktop-dbb8804b"
@@ -37,6 +37,52 @@ defmodule SwarmCode.Daemon.Schema.MigrationManifestTest do
              schema_sha256: @final_schema_sha256,
              additive_desktop_readable?: true
            } = List.last(manifest.migrations)
+  end
+
+  test "the default contract covers the current 46-migration desktop" do
+    manifest = MigrationManifest.load!()
+    assert manifest.contract == "desktop-fb1b4ff"
+    assert manifest.upstream_commit == "fb1b4ff82354ac8ff2e82d4f6516121fd55ff212"
+    assert length(manifest.migrations) == 46
+
+    assert manifest.migration_set_sha256 ==
+             "f04a55a27d1fee6a3192c6ff277993d4ab5a8f6414896e2be87dc3a41f48b75f"
+
+    assert %MigrationManifest.Entry{
+             version: 20_260_929_000_000,
+             filename: "20260929000000_bench_layout.exs",
+             source_sha256: "d2b8980ec14149a54a005d2cf91c6761897e209680acf6b215171be20828eba2"
+           } = List.last(manifest.migrations)
+
+    legacy = MigrationManifest.load!(default_manifest_path())
+    assert Enum.take(manifest.migrations, 43) == legacy.migrations
+  end
+
+  test "rejects an unknown or mixed source contract even when field shapes are canonical" do
+    assert_invalid(&Map.put(&1, "upstream_commit", String.duplicate("a", 40)))
+    assert_invalid(&Map.put(&1, "contract", "desktop-fb1b4ff"))
+
+    assert_invalid(&Map.put(&1, "upstream_commit", "fb1b4ff82354ac8ff2e82d4f6516121fd55ff212"))
+  end
+
+  test "authenticates new intermediate schema hashes and readability flags" do
+    current_path =
+      default_manifest_path() |> Path.dirname() |> Path.join("desktop-fb1b4ff.json")
+
+    for transform <- [
+          fn decoded ->
+            update_in(decoded, ["migrations", Access.at(43), "schema_sha256"], fn _ ->
+              String.duplicate("b", 64)
+            end)
+          end,
+          fn decoded ->
+            update_in(decoded, ["migrations", Access.at(44), "additive_desktop_readable"], fn _ ->
+              false
+            end)
+          end
+        ] do
+      assert_invalid(transform, current_path)
+    end
   end
 
   test "rejects extra top-level and migration keys instead of silently accepting them" do
@@ -77,6 +123,14 @@ defmodule SwarmCode.Daemon.Schema.MigrationManifestTest do
     assert_invalid(&Map.put(&1, "sqlite_minimum", "3.50.0"))
   end
 
+  test "authenticates every intermediate schema hash, not only migration sources and final schema" do
+    assert_invalid(fn decoded ->
+      update_in(decoded, ["migrations", Access.at(20), "schema_sha256"], fn _ ->
+        String.duplicate("a", 64)
+      end)
+    end)
+  end
+
   test "malformed runtime keys do not create atoms" do
     key = "runtime-key-#{System.unique_integer([:positive, :monotonic])}"
 
@@ -85,8 +139,19 @@ defmodule SwarmCode.Daemon.Schema.MigrationManifestTest do
     assert_raise ArgumentError, fn -> String.to_existing_atom(key) end
   end
 
-  defp assert_invalid(transform) do
-    decoded = default_manifest_path() |> File.read!() |> Jason.decode!() |> transform.()
+  test "semantic attestation permits JSON reformatting and enforces the byte boundary" do
+    decoded = default_manifest_path() |> File.read!() |> Jason.decode!()
+    bytes = Jason.encode!(decoded)
+    path = temporary_manifest_path()
+    File.write!(path, bytes <> String.duplicate(" ", 262_144 - byte_size(bytes)))
+    assert MigrationManifest.load!(path) == MigrationManifest.load!(default_manifest_path())
+
+    File.write!(path, " ", [:append])
+    assert_raise ArgumentError, ~r/size limit/, fn -> MigrationManifest.load!(path) end
+  end
+
+  defp assert_invalid(transform, source_path \\ default_manifest_path()) do
+    decoded = source_path |> File.read!() |> Jason.decode!() |> transform.()
     path = temporary_manifest_path()
     File.write!(path, Jason.encode_to_iodata!(decoded))
 

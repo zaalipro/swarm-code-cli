@@ -657,12 +657,15 @@ defmodule SwarmCode.Daemon.Platform.DirectoryBroker do
 
   defp dispatch(_request, state), do: {{:error, :unsupported_directory_operation}, state}
 
+  # Backup.Gate supplies a coherent private SourceSnapshot. Copy every file into
+  # independently broker-owned inodes before opening SQLite: snapshot cancellation
+  # may unlink its workspace while our own receipt-bound copies remain valid.
   defp open_source(specs, expected_probe, uid, cancel_table)
        when is_list(specs) and length(specs) in 1..3//1 and is_integer(uid) and uid >= 0 do
     with :ok <- private_directory(uid),
-         {:ok, identities, created} <- link_source_specs(specs, uid, cancel_table),
+         {:ok, identities, created} <- copy_source_specs(specs, uid, cancel_table),
          {:ok, main_basename} <- main_basename(specs) do
-      open_linked_source(
+      open_copied_source(
         main_basename,
         identities,
         created,
@@ -679,7 +682,7 @@ defmodule SwarmCode.Daemon.Platform.DirectoryBroker do
   defp open_source(_specs, _expected_probe, _uid, _cancel_table),
     do: {:error, :source_pin_failed}
 
-  defp open_linked_source(
+  defp open_copied_source(
          main_basename,
          identities,
          created,
@@ -718,7 +721,7 @@ defmodule SwarmCode.Daemon.Platform.DirectoryBroker do
     end
   end
 
-  defp link_source_specs(specs, uid, cancel_table) do
+  defp copy_source_specs(specs, uid, cancel_table) do
     result =
       Enum.reduce_while(specs, {:ok, %{}, []}, fn
         {kind, source, destination, nil}, {:ok, identities, created}
@@ -732,31 +735,15 @@ defmodule SwarmCode.Daemon.Platform.DirectoryBroker do
               {:halt, {:error, :source_pin_failed}}
           end
 
-        {:shm, source, destination, expected}, {:ok, identities, created}
-        when is_binary(source) and is_binary(destination) ->
-          case copy_source_pin(source, destination, expected, uid, cancel_table) do
+        {kind, source, destination, expected}, {:ok, identities, created}
+        when kind in [:main, :wal, :shm] and is_binary(source) and is_binary(destination) ->
+          case copy_source_pin(source, destination, expected, uid, cancel_table, kind) do
             {:ok, actual_identity} ->
               {:cont,
-               {:ok, Map.put(identities, :shm, expected),
+               {:ok, Map.put(identities, kind, actual_identity),
                 [{destination, object_identity(actual_identity)} | created]}}
 
             {:error, _reason} ->
-              cleanup_created(created, uid)
-              {:halt, {:error, :source_pin_failed}}
-          end
-
-        {kind, source, destination, expected}, {:ok, identities, created}
-        when kind in [:main, :wal, :shm] and is_binary(source) and is_binary(destination) ->
-          object = object_identity(expected)
-
-          result = link_source_exact(source, destination, expected, uid)
-
-          case result do
-            :ok ->
-              {:cont,
-               {:ok, Map.put(identities, kind, expected), [{destination, object} | created]}}
-
-            _other ->
               cleanup_created(created, uid)
               {:halt, {:error, :source_pin_failed}}
           end
@@ -787,33 +774,13 @@ defmodule SwarmCode.Daemon.Platform.DirectoryBroker do
 
   defp ensure_private_shm_pin(error, _specs, _uid), do: error
 
-  defp link_source_exact(source, destination, expected, uid) do
-    with {:ok, source_identity} <- private_identity(source, uid),
-         {:error, :enoent} <- File.lstat(destination),
-         :ok <- File.ln(source, destination),
-         :ok <- reserve_owned(destination, object_identity(source_identity)) do
-      result =
-        with ^source_identity <- expected,
-             {:ok, ^source_identity} <- private_identity(source, uid),
-             {:ok, ^source_identity} <- private_identity(destination, uid),
-             do: :ok
-
-      if result != :ok,
-        do: cleanup_created([{destination, object_identity(source_identity)}], uid)
-
-      normalize_error(result, :source_pin_failed)
-    else
-      _other -> {:error, :source_pin_failed}
-    end
-  end
-
-  defp copy_source_pin(source, destination, expected, uid, cancel_table) do
+  defp copy_source_pin(source, destination, expected, uid, cancel_table, kind) do
     with {:ok, input} <- File.open(source, [:read, :binary]) do
       try do
         with {:ok, ^expected} <- handle_identity(input),
              {:error, :enoent} <- File.lstat(destination),
              {:ok, output} <- File.open(destination, [:write, :binary, :exclusive]),
-             :ok <- pause_before_reserve(:shm, nil),
+             :ok <- pause_before_reserve(kind, nil),
              {:ok, opened_identity} <- handle_identity(output),
              :ok <- reserve_owned(destination, object_identity(opened_identity)) do
           result =
@@ -823,6 +790,7 @@ defmodule SwarmCode.Daemon.Platform.DirectoryBroker do
                    {:ok, actual} <- handle_identity(output),
                    {:regular, _major, _minor, _inode, ^uid, mode, _size} = actual,
                    true <- band(mode, 0o7777) == @private_file_mode,
+                   {:ok, ^expected} <- handle_identity(input),
                    {:ok, ^expected} <- source_identity(source, uid) do
                 {:ok, actual}
               else

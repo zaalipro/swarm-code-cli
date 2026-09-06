@@ -2,11 +2,8 @@ defmodule SwarmCode.Daemon.Schema.MigrationManifest do
   @moduledoc false
 
   @manifest_version 1
-  @contract "desktop-dbb8804b"
-  @upstream_commit "dbb8804b3d7293178e571fa7afdf6bd47d06a51c"
-  @migration_count 43
-  @migration_set_sha256 "408afb8e6eb422c8df50fe65536a08f853475c162d584db45b4af708274fd1d0"
-  @final_schema_sha256 "cb75e8448370fa9ca8c1f25969e1b491b035046e87f8b92374f5a1c704304db3"
+  alias SwarmCode.Daemon.Schema.Contract
+
   @maximum_manifest_bytes 256 * 1_024
 
   @top_level_keys ~w(
@@ -87,7 +84,7 @@ defmodule SwarmCode.Daemon.Schema.MigrationManifest do
     |> :code.priv_dir()
     |> case do
       path when is_list(path) ->
-        Path.join(to_string(path), "schema/desktop-dbb8804b.json")
+        Path.join(to_string(path), "schema/#{Contract.current().name}.json")
 
       {:error, reason} ->
         raise ArgumentError, "daemon priv directory unavailable: #{inspect(reason)}"
@@ -107,15 +104,37 @@ defmodule SwarmCode.Daemon.Schema.MigrationManifest do
   end
 
   defp read_bounded!(path) do
+    # Refuse known devices/directories before opening; still validate the opened
+    # descriptor and bound the read independently of this path observation.
     case File.stat(path) do
-      {:ok, %{type: :regular, size: size}} when size <= @maximum_manifest_bytes ->
-        File.read!(path)
+      {:ok, %File.Stat{type: :regular}} -> :ok
+      _ -> invalid!("manifest is not a regular file")
+    end
 
-      {:ok, %{type: :regular}} ->
-        invalid!("manifest exceeds the size limit")
+    case File.open(path, [:read, :binary, :raw]) do
+      {:ok, io} ->
+        try do
+          with {:ok, record} <- :file.read_file_info(io),
+               %File.Stat{type: :regular} <- File.Stat.from_record(record) do
+            case IO.binread(io, @maximum_manifest_bytes + 1) do
+              bytes when is_binary(bytes) and byte_size(bytes) <= @maximum_manifest_bytes ->
+                bytes
 
-      {:ok, _stat} ->
-        invalid!("manifest is not a regular file")
+              bytes when is_binary(bytes) ->
+                invalid!("manifest exceeds the size limit")
+
+              :eof ->
+                <<>>
+
+              _ ->
+                invalid!("manifest cannot be read")
+            end
+          else
+            _ -> invalid!("manifest is not a regular file")
+          end
+        after
+          File.close(io)
+        end
 
       {:error, _reason} ->
         invalid!("manifest cannot be read")
@@ -126,8 +145,14 @@ defmodule SwarmCode.Daemon.Schema.MigrationManifest do
     exact_keys!(decoded, @top_level_keys, "manifest")
 
     require_equal!(decoded["manifest_version"], @manifest_version, "manifest version")
-    require_equal!(decoded["contract"], @contract, "contract")
-    require_equal!(decoded["upstream_commit"], @upstream_commit, "upstream commit")
+
+    contract =
+      case Contract.fetch(decoded["upstream_commit"]) do
+        {:ok, contract} -> contract
+        :error -> invalid!("unsupported upstream commit")
+      end
+
+    require_equal!(decoded["contract"], contract.name, "contract")
     require_equal!(decoded["application_ids"], [0], "application IDs")
     require_equal!(decoded["data_epoch"], 0, "data epoch")
 
@@ -147,11 +172,11 @@ defmodule SwarmCode.Daemon.Schema.MigrationManifest do
 
     require_equal!(
       decoded["migration_set_sha256"],
-      @migration_set_sha256,
+      contract.migration_set_sha256,
       "migration-set sentinel"
     )
 
-    migrations = migrations!(decoded["migrations"])
+    migrations = migrations!(decoded["migrations"], contract)
 
     %__MODULE__{
       manifest_version: decoded["manifest_version"],
@@ -170,8 +195,8 @@ defmodule SwarmCode.Daemon.Schema.MigrationManifest do
 
   defp decode!(_decoded), do: invalid!("manifest root must be an object")
 
-  defp migrations!(migrations)
-       when is_list(migrations) and length(migrations) == @migration_count do
+  defp migrations!(migrations, contract)
+       when is_list(migrations) and length(migrations) == contract.migration_count do
     entries = Enum.map(migrations, &entry!/1)
     versions = Enum.map(entries, & &1.version)
 
@@ -179,7 +204,7 @@ defmodule SwarmCode.Daemon.Schema.MigrationManifest do
       invalid!("migration versions must be strictly increasing")
     end
 
-    unless migration_set_sha256(entries) == @migration_set_sha256 do
+    unless migration_set_sha256(entries) == contract.migration_set_sha256 do
       invalid!("migration-set digest does not describe the entries")
     end
 
@@ -200,26 +225,33 @@ defmodule SwarmCode.Daemon.Schema.MigrationManifest do
       "first migration source sentinel"
     )
 
-    require_equal!(last.version, 20_260_926_000_000, "last migration version")
+    require_equal!(last.version, contract.last_version, "last migration version")
 
     require_equal!(
       last.filename,
-      "20260926000000_supersede_on_edit.exs",
+      contract.last_filename,
       "last migration filename"
     )
 
     require_equal!(
       last.source_sha256,
-      "9343537359fd75470d78bf4d72da4de5180ceb0e3b39d379e6c1348bc5fa4128",
+      contract.last_source_sha256,
       "last migration source sentinel"
     )
 
-    require_equal!(last.schema_sha256, @final_schema_sha256, "final schema sentinel")
+    require_equal!(last.schema_sha256, contract.final_schema_sha256, "final schema sentinel")
+
+    require_equal!(
+      Contract.lineage_sha256(entries),
+      contract.lineage_sha256,
+      "complete schema lineage"
+    )
+
     entries
   end
 
-  defp migrations!(_migrations),
-    do: invalid!("manifest must contain exactly #{@migration_count} migrations")
+  defp migrations!(_migrations, contract),
+    do: invalid!("manifest must contain exactly #{contract.migration_count} migrations")
 
   defp entry!(entry) when is_map(entry) do
     exact_keys!(entry, @entry_keys, "migration")

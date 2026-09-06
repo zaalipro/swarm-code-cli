@@ -170,13 +170,13 @@ the signed desktop detector. New-database creation, migration execution,
 credential storage, real IPC, provider/tool ownership and release packaging
 remain required. Nothing in the text/width/theme work satisfies those gates.
 
-The frozen schema manifest also predates three migrations present at desktop
+The initial frozen schema manifest predated three migrations present at desktop
 `c54f4fb`: `20260927000000` adds provider fallback preferences,
 `20260928000000` adds node cache-token counters, and `20260929000000` adds the
-consensus bench-layout setting. The current gate correctly rejects those unknown
-newer schemas. Supporting today's desktop database requires a refreshed audited
-schema contract and fixtures; a read service tested against the pinned baseline
-would not establish that compatibility by itself.
+consensus bench-layout setting. The subsequent schema refresh pins the rechecked
+desktop `fb1b4ff`, which has the same 46-migration lineage. Its contract and actual
+replayed fixtures now include those additions; normal daemon startup, migration
+execution and persistent domain services remain separate work.
 
 The source-to-Scene state vocabulary is unified on `done`, `stopped`, `retrying`,
 `interrupted` and `superseded`. Fake dispatch/queue/Steer and revisioned seen
@@ -462,3 +462,59 @@ Continue against the original full-parity objective. Completion requires real
 runtime tests, supported-platform artifacts, a rendered terminal compared with
 the desktop hierarchy, and coverage of each row above. A fake demo, theme
 table or clean unit suite is progress, not proof that the CLI is complete.
+
+## Current schema and coherent snapshot checkpoint
+
+The schema contract refresh targets desktop `fb1b4ff`, with 46 pinned migrations.
+Two independent Ecto replays produced identical entries and snapshots. All 43
+historical entries remain exact, and the production generator reproduced both
+current and legacy artifacts. The manifest now authenticates every intermediate
+schema hash; a regression had shown that canonical-looking tampered prefix hashes
+were previously accepted. Its read is bounded at the file descriptor before JSON
+decoding. Current schema counts now flow through foundation, broker and backup
+metadata, and explicitly requested backups accept genuine consistent ready
+decisions as well as migration-required decisions.
+
+The initial integration run had 104 passing tests and three failures; the complete
+directory-helper suite passed 29 tests. Those failures exposed canonical SHM
+reader-mark writes when SQLite opened hard-linked source files read-only. Full
+`mise exec -- mix precommit`, seed **896732**, confirmed exactly those failures:
+**79 core, 212 daemon and 514 CLI tests** (**805 tests**, **3 failures**) plus
+**5 properties**. Formatting, warnings-as-errors compilation, dependency checks,
+provenance and Unicode checks completed; production compilation passed.
+
+The replacement uses an owned native copy of main/WAL under SQLite-compatible
+locks; SQLite opens only that copy. It never copies or writes canonical SHM.
+An initial eight-lock experiment caused `SQLITE_PROTOCOL` in a competing writer
+and was rejected. The accepted three-lock approach preserves write/checkpoint/
+recovery coordination while leaving reader slots available. Disposable fixture
+experiments verified exact values with pinned Exqlite 3.53.3, including absent
+SHM. They are not cross-platform acceptance evidence.
+
+The production helper now uses bounded copying, descriptor identity checks,
+private permissions, deadlines and a closed output protocol. DMS initializer
+handling follows the pinned SQLite F_GETLK transition. Its 12 ordinary native
+checks pass on Darwin arm64. Mix bundles it at compile time, invalidates a build
+from another platform, and honors `--force`; no runtime compiler is needed.
+The snapshot owner has 12 passing focused tests covering registered reader
+cancellation, requester death, lock refusal and receipt-based cleanup. Ambiguous
+cleanup keeps an owner and reports `snapshot_cleanup_pending`.
+
+Probe integration passes all **24 schema gate tests**, seed **777576**, including
+the three original strict regressions, successful fresh live WAL, absent SHM,
+source replacement and physical symlink/.. resolution. It preserves the original source Binding and removes the
+old prefix-scan cleanup. Backup now copies the complete snapshot
+into independent broker-owned files, so a snapshot deadline cannot invalidate a
+broker reader. The combined backup, broker and foundation run initially recorded
+**110 tests, 1 failure**, seed **903871**: concurrent duplicate backups collided
+while probing before their existing operation lock. Moving the probe into that
+lock fixed the same-seed regression. Review also closed a requester-watcher
+startup gap. Four selected WAL/independent-copy/cancellation regressions passed
+in 19.4 seconds. Final `mise exec -- mix precommit`, seed **870497**, passed **79 core + 232 daemon
++ 514 CLI = 825 tests**, **5 properties**, and **12 native snapshot tests**.
+Formatting, warnings-as-errors compilation, dependency checks, provenance and
+both Unicode checks also passed. `MIX_ENV=prod mise exec -- mix compile
+--warnings-as-errors` passed. This is a local Darwin arm64 schema/backup checkpoint;
+Linux and four-target release acceptance, writable Repo promotion, production
+daemon/provider operation and full feature parity remain open.
+No user database or daily browser state was accessed.

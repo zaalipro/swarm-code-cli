@@ -10,8 +10,8 @@ defmodule SwarmCode.Daemon.FoundationGateTest do
 
   @app_version "0.1.0-dev"
   @backup_operation_id "5cebddf0-68ee-4f79-9129-b17f1ca2d6de"
-  @manifest_sha256 "408afb8e6eb422c8df50fe65536a08f853475c162d584db45b4af708274fd1d0"
-  @newest_migration 20_260_926_000_000
+  @manifest_sha256 "f04a55a27d1fee6a3192c6ff277993d4ab5a8f6414896e2be87dc3a41f48b75f"
+  @newest_migration 20_260_929_000_000
   @now ~U[2026-09-01 12:00:00Z]
 
   test "database fingerprint contract has a canonical distinct absent-path marker" do
@@ -69,6 +69,12 @@ defmodule SwarmCode.Daemon.FoundationGateTest do
     assert ready.identity == identity(root)
     assert ready.schema.status == :ready
     assert ready.backup == nil
+    assert length(ready.schema.applied) == 46
+    assert List.last(ready.schema.applied) == @newest_migration
+    owner = CrossAppLease.owner(ready.lease)
+    assert owner.schema_epoch == 0
+    assert owner.newest_migration == @newest_migration
+    assert owner.manifest_sha256 == @manifest_sha256
     assert :ok = CrossAppLease.assert_held(ready.lease)
     assert self() in (Process.info(ready.lease, :links) |> elem(1))
     refute Process.whereis(SwarmCode.Repo)
@@ -623,6 +629,65 @@ defmodule SwarmCode.Daemon.FoundationGateTest do
     assert database_state(fixture) == before
   end
 
+  test "the legacy 43-migration prefix is backed up before refusing the three appended migrations" do
+    fixture = SchemaFixture.database!({:prefix, 20_260_926_000_000})
+
+    SchemaFixture.insert_project!(
+      fixture,
+      "legacy-project",
+      "Retained project",
+      "/private/legacy"
+    )
+
+    before = database_state(fixture)
+    manifest = SwarmCode.Daemon.Schema.MigrationManifest.load!()
+    assert {:ok, decision} = SwarmCode.Daemon.Schema.Gate.check(fixture, manifest, @app_version)
+    assert decision.status == :migration_required
+
+    assert Enum.map(decision.pending, & &1.version) == [
+             20_260_927_000_000,
+             20_260_928_000_000,
+             20_260_929_000_000
+           ]
+
+    opts = test_opts(fixture, fn -> :none end)
+
+    assert {:error, %{code: :migration_implementation_not_installed}} =
+             FoundationGate.prepare(opts)
+
+    backup_dir = Path.join(Path.dirname(fixture), "backups")
+    backup = Path.join(backup_dir, @backup_operation_id <> ".sqlite3")
+    backup_manifest = File.read!(Path.join(backup_dir, @backup_operation_id <> ".manifest.json"))
+    assert {:ok, decoded} = SwarmCode.Daemon.Backup.Manifest.decode(backup_manifest)
+    assert length(decoded["migrations"]) == 43
+    assert decoded["migrations"] == decision.applied
+    assert decoded["independent_restore"]["migrations"] == decision.applied
+    assert decoded["independent_restore"]["verified"] == true
+    assert decoded["row_counts"] == SchemaFixture.row_counts(fixture)
+    assert SchemaFixture.row_counts(backup) == SchemaFixture.row_counts(fixture)
+    assert {:ok, restored_probe} = SwarmCode.Daemon.Schema.Probe.inspect(backup)
+    assert restored_probe.quick_check == [["ok"]]
+    assert restored_probe.foreign_key_violations == []
+    assert restored_probe.migration_versions == decision.applied
+    {:ok, conn} = Exqlite.Sqlite3.open(backup, mode: :readonly)
+
+    try do
+      assert SwarmCode.Daemon.Schema.SqliteQuery.rows(
+               conn,
+               "SELECT id, name, root_path FROM projects",
+               [],
+               max_rows: 1
+             ) ==
+               [["legacy-project", "Retained project", "/private/legacy"]]
+    after
+      :ok = Exqlite.Sqlite3.close(conn)
+    end
+
+    assert database_state(fixture) == before
+    refute Process.whereis(SwarmCode.Repo)
+    assert_reacquirable!(opts)
+  end
+
   test "backup failure preserves the source and leaves no artifact while releasing the lease" do
     fixture = SchemaFixture.database!({:prefix, 20_260_924_000_000})
     before = database_state(fixture)
@@ -894,7 +959,7 @@ defmodule SwarmCode.Daemon.FoundationGateTest do
     :swarm_code_daemon
     |> :code.priv_dir()
     |> to_string()
-    |> Path.join("schema/desktop-dbb8804b.json")
+    |> Path.join("schema/desktop-fb1b4ff.json")
   end
 
   defp private_tmp!(label) do

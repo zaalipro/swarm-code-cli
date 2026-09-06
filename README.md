@@ -53,6 +53,9 @@ they do not run a terminal, daemon, or provider. Each export gets a fresh direct
 
 The existing foundation gate covers canonical paths, identity, private directories, leases,
 read-only schema admission, and verified backups. It is not a normal startup path.
+Its current schema contract describes all 46 migrations at desktop `fb1b4ff`;
+the historical 43-migration contract remains available for validation. See the
+[schema audit](docs/evidence/schema/desktop-fb1b4ff.json) for source and replay identities.
 
 - [Approved CLI architecture](docs/superpowers/specs/2026-09-01-swarm-code-cli-design.md)
 - [Foundation safety and macOS residual risk](docs/foundation-safety.md)
@@ -63,7 +66,10 @@ Contributor checks: `mise exec -- mix precommit`. The Unicode terminal-width
 source and generated tables can be checked offline with
 `mise exec -- elixir scripts/dev/sync_unicode_width.exs --check` and
 `python3 scripts/dev/sync_unicode_variants.py --check`. Both checks also run
-as part of `precommit`.
+as part of `precommit`. The native schema snapshot checks also run there, or
+separately with `sh scripts/dev/check_schema_snapshot.sh`. Source builds require
+a C11 compiler and Python 3 for these checks; the snapshot executable is bundled
+under the daemon app’s `priv/native/` and never compiled at runtime.
 
 The terminal Port candidate has a bounded Rust input parser, exact cell output,
 credit-controlled wire protocol, restoration guard and Elixir terminal owner.

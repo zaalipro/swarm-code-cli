@@ -133,6 +133,30 @@ defmodule SwarmCode.Daemon.Platform.DirectoryProtocolTest do
              )
   end
 
+  test "the current migration probe crosses the closed protocol but a 47th row rejects" do
+    versions =
+      SwarmCode.Daemon.Schema.MigrationManifest.load!().migrations |> Enum.map(& &1.version)
+
+    assert length(versions) == 46
+    probe = %{valid_probe() | migration_versions: versions}
+    request = {:verify_database, ".backup.sqlite3", probe}
+    assert {:ok, frame} = DirectoryProtocol.encode_request(request)
+
+    assert {:ok, payload, <<>>} =
+             DirectoryProtocol.push(DirectoryProtocol.new_decoder(), IO.iodata_to_binary(frame))
+
+    assert {:ok, ^request} = DirectoryProtocol.decode_request(payload)
+
+    overflow =
+      {:verify_database, ".backup.sqlite3",
+       %{probe | migration_versions: versions ++ [20_990_101_000_000]}}
+
+    assert {:error, :invalid_protocol} = DirectoryProtocol.encode_request(overflow)
+
+    assert {:error, :invalid_protocol} =
+             DirectoryProtocol.decode_request(:erlang.term_to_binary(overflow))
+  end
+
   defp valid_probe do
     %Probe{
       application_id: 0,

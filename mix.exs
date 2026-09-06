@@ -25,9 +25,21 @@ defmodule SwarmCodeCLI.MixProject do
         "deps.unlock --check-unused",
         "test",
         "swarm_code.provenance.verify",
+        &verify_schema_snapshot/1,
         &verify_unicode/1
       ]
     ]
+  end
+
+  defp verify_schema_snapshot(_args) do
+    {output, status} =
+      System.cmd("sh", ["scripts/dev/check_schema_snapshot.sh"],
+        cd: __DIR__,
+        stderr_to_stdout: true
+      )
+
+    Mix.shell().info(output)
+    if status != 0, do: Mix.raise("Native schema snapshot verification failed")
   end
 
   defp verify_unicode(_args) do

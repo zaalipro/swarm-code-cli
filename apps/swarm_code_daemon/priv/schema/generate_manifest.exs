@@ -7,13 +7,9 @@ defmodule SwarmCode.Daemon.Schema.ManifestGenerator do
 
   alias SwarmCode.Daemon.Files.AtomicReplace
 
-  @pinned_commit "dbb8804b3d7293178e571fa7afdf6bd47d06a51c"
-  @migration_count 43
-  @migration_set_sha256 "408afb8e6eb422c8df50fe65536a08f853475c162d584db45b4af708274fd1d0"
-  @final_schema_sha256 "cb75e8448370fa9ca8c1f25969e1b491b035046e87f8b92374f5a1c704304db3"
+  alias SwarmCode.Daemon.Schema.Contract
+
   @first_source_sha256 "7b85670338191af007a196d8b2bf4f88bde6511bddbfb9a5efc691a8c6606f44"
-  @last_source_sha256 "9343537359fd75470d78bf4d72da4de5180ceb0e3b39d379e6c1348bc5fa4128"
-  @snapshot_versions [20_260_923_000_000, 20_260_924_000_000, 20_260_926_000_000]
 
   @spec run!([String.t()]) :: :ok
   def run!(argv) do
@@ -25,7 +21,7 @@ defmodule SwarmCode.Daemon.Schema.ManifestGenerator do
 
     try do
       migrations = read_migrations!(opts.upstream, opts.commit)
-      verify_migration_sources!(migrations)
+      verify_migration_sources!(migrations, opts.contract)
 
       temporary_directory =
         Path.join(
@@ -38,9 +34,20 @@ defmodule SwarmCode.Daemon.Schema.ManifestGenerator do
 
       try do
         File.chmod!(temporary_directory, 0o700)
-        {entries, snapshots} = migrate_and_inspect!(temporary_directory, migrations)
-        verify_generated_lineage!(entries)
-        write_outputs!(opts.output, opts.fixtures_dir, entries, snapshots, opts.upstream)
+
+        {entries, snapshots} =
+          migrate_and_inspect!(temporary_directory, migrations, opts.contract)
+
+        verify_generated_lineage!(entries, opts.contract)
+
+        write_outputs!(
+          opts.output,
+          opts.fixtures_dir,
+          entries,
+          snapshots,
+          opts.upstream,
+          opts.contract
+        )
       after
         File.rm_rf!(temporary_directory)
       end
@@ -73,15 +80,17 @@ defmodule SwarmCode.Daemon.Schema.ManifestGenerator do
 
     opts = Map.new(parsed)
 
-    if opts.commit != @pinned_commit do
-      raise ArgumentError, "unsupported upstream commit"
-    end
+    contract =
+      case Contract.fetch(opts.commit) do
+        {:ok, contract} -> contract
+        :error -> raise ArgumentError, "unsupported upstream commit"
+      end
 
     if Enum.any?(required, &(not is_binary(Map.fetch!(opts, &1)) or Map.fetch!(opts, &1) == "")) do
       raise ArgumentError, "manifest generator paths must not be empty"
     end
 
-    opts
+    Map.put(opts, :contract, contract)
   end
 
   defp validate_output_paths!(opts) do
@@ -260,14 +269,16 @@ defmodule SwarmCode.Daemon.Schema.ManifestGenerator do
       end)
       |> Enum.sort_by(& &1.version)
 
-    if length(migrations) != @migration_count do
-      raise ArgumentError, "expected exactly #{@migration_count} pinned migrations"
+    {:ok, contract} = Contract.fetch(commit)
+
+    if length(migrations) != contract.migration_count do
+      raise ArgumentError, "expected exactly #{contract.migration_count} pinned migrations"
     end
 
     migrations
   end
 
-  defp verify_migration_sources!(migrations) do
+  defp verify_migration_sources!(migrations, contract) do
     versions = Enum.map(migrations, & &1.version)
 
     unless versions == Enum.uniq(versions) do
@@ -283,9 +294,9 @@ defmodule SwarmCode.Daemon.Schema.ManifestGenerator do
       raise ArgumentError, "pinned first migration sentinel does not match"
     end
 
-    unless last.version == 20_260_926_000_000 and
-             last.filename == "20260926000000_supersede_on_edit.exs" and
-             last.source_sha256 == @last_source_sha256 do
+    unless last.version == contract.last_version and
+             last.filename == contract.last_filename and
+             last.source_sha256 == contract.last_source_sha256 do
       raise ArgumentError, "pinned last migration sentinel does not match"
     end
 
@@ -304,12 +315,12 @@ defmodule SwarmCode.Daemon.Schema.ManifestGenerator do
       |> IO.iodata_to_binary()
       |> sha256()
 
-    unless migration_set == @migration_set_sha256 do
+    unless migration_set == contract.migration_set_sha256 do
       raise ArgumentError, "pinned migration-set digest does not match"
     end
   end
 
-  defp migrate_and_inspect!(temporary_directory, migrations) do
+  defp migrate_and_inspect!(temporary_directory, migrations, contract) do
     database = Path.join(temporary_directory, "fixture.db")
     migrations_directory = Path.join(temporary_directory, "migrations")
     File.mkdir!(migrations_directory)
@@ -339,7 +350,7 @@ defmodule SwarmCode.Daemon.Schema.ManifestGenerator do
         }
 
         snapshots =
-          if migration.version in @snapshot_versions do
+          if migration.version in contract.snapshot_versions do
             Map.put(snapshots, migration.version, schema_fixture_sql!())
           else
             snapshots
@@ -427,22 +438,31 @@ defmodule SwarmCode.Daemon.Schema.ManifestGenerator do
     |> Map.fetch!(:rows)
   end
 
-  defp verify_generated_lineage!(entries) do
-    unless length(entries) == @migration_count and
-             List.last(entries).schema_sha256 == @final_schema_sha256 do
-      raise ArgumentError, "generated final normalized schema digest does not match"
+  defp verify_generated_lineage!(entries, contract) do
+    unless length(entries) == contract.migration_count and
+             List.last(entries).schema_sha256 == contract.final_schema_sha256 and
+             Contract.lineage_sha256(entries) == contract.lineage_sha256 do
+      raise ArgumentError, "generated normalized schema lineage digest does not match"
     end
   end
 
-  defp write_outputs!(output, fixtures_dir, entries, snapshots, upstream) do
-    outputs = [
-      {output, manifest_json(entries)},
-      {Path.join(fixtures_dir, "desktop-20260923000000.sql"),
-       Map.fetch!(snapshots, 20_260_923_000_000)},
-      {Path.join(fixtures_dir, "desktop-20260924000000.sql"),
-       Map.fetch!(snapshots, 20_260_924_000_000)},
-      {Path.join(fixtures_dir, "desktop-current.sql"), Map.fetch!(snapshots, 20_260_926_000_000)}
-    ]
+  defp write_outputs!(output, fixtures_dir, entries, snapshots, upstream, contract) do
+    # Preserve the legacy output set exactly; the new contract additionally
+    # records every named prefix, including the final versioned snapshot.
+    versions =
+      if contract.migration_count == 43,
+        do: Enum.reject(contract.snapshot_versions, &(&1 == contract.last_version)),
+        else: contract.snapshot_versions
+
+    outputs =
+      [{output, manifest_json(entries, contract)}] ++
+        Enum.map(versions, fn version ->
+          {Path.join(fixtures_dir, "desktop-#{version}.sql"), Map.fetch!(snapshots, version)}
+        end) ++
+        [
+          {Path.join(fixtures_dir, "desktop-current.sql"),
+           Map.fetch!(snapshots, contract.last_version)}
+        ]
 
     Enum.each(outputs, fn {_path, contents} ->
       if contents =~ upstream do
@@ -820,7 +840,7 @@ defmodule SwarmCode.Daemon.Schema.ManifestGenerator do
 
   defp cleanup_created_output_directories(_directories), do: :ok
 
-  defp manifest_json(entries) do
+  defp manifest_json(entries, contract) do
     migrations =
       entries
       |> Enum.map(&entry_json/1)
@@ -829,14 +849,14 @@ defmodule SwarmCode.Daemon.Schema.ManifestGenerator do
     [
       "{\n",
       "  \"manifest_version\": 1,\n",
-      "  \"contract\": \"desktop-dbb8804b\",\n",
-      "  \"upstream_commit\": \"#{@pinned_commit}\",\n",
+      "  \"contract\": \"#{contract.name}\",\n",
+      "  \"upstream_commit\": \"#{contract.commit}\",\n",
       "  \"application_ids\": [0],\n",
       "  \"data_epoch\": 0,\n",
       "  \"minimum_reader\": \"0.1.0-dev\",\n",
       "  \"minimum_writer\": \"0.1.0-dev\",\n",
       "  \"sqlite_minimum\": \"3.51.3\",\n",
-      "  \"migration_set_sha256\": \"#{@migration_set_sha256}\",\n",
+      "  \"migration_set_sha256\": \"#{contract.migration_set_sha256}\",\n",
       "  \"legacy_handshake\": \"migration-prefix-plus-normalized-schema\",\n",
       "  \"migrations\": [\n",
       migrations,

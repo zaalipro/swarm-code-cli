@@ -161,6 +161,15 @@ defmodule SchemaFixture do
   defp fixture_path({:prefix, 20_260_924_000_000}),
     do: Path.join(fixtures_directory(), "desktop-20260924000000.sql")
 
+  defp fixture_path({:prefix, version})
+       when version in [
+              20_260_926_000_000,
+              20_260_927_000_000,
+              20_260_928_000_000,
+              20_260_929_000_000
+            ],
+       do: Path.join(fixtures_directory(), "desktop-#{version}.sql")
+
   defp fixtures_directory do
     :swarm_code_daemon
     |> :code.priv_dir()

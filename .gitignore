@@ -7,3 +7,4 @@ erl_crash.dump
 *.ez
 /swarm_code_cli-*.tar
 __pycache__/
+/apps/swarm_code_daemon/priv/native/

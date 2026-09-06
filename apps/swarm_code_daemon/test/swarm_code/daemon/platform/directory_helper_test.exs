@@ -529,13 +529,57 @@ defmodule SwarmCode.Daemon.Platform.DirectoryHelperTest do
         uid
       )
 
-    close_result = if match?({:ok, _identities}, result), do: DirectoryHelper.close_source(helper)
+    assert {:ok, %{main: copied_identity}} = result
+    assert copied_identity == file_identity(Path.join(directory, ".pin.sqlite3"))
+    refute same_object?(database, Path.join(directory, ".pin.sqlite3"))
+    close_result = DirectoryHelper.close_source(helper)
     assert :ok = DirectoryHelper.stop(helper)
 
     assert File.ls!(directory) == []
     assert {:ok, %{main: identity}} = result
-    assert identity == file_identity(database)
+    assert identity == copied_identity
     assert close_result == :ok
+  end
+
+  test "unlinking the supplied private WAL snapshot cannot invalidate the broker's independent copies" do
+    database = SchemaFixture.database!(:current)
+    assert {:ok, probe} = Probe.inspect(database)
+    _writer = SchemaFixture.open_uncheckpointed_wal!(database)
+    supplied_directory = private_directory!()
+    supplied = Path.join(supplied_directory, "snapshot.db")
+
+    for suffix <- ["", "-wal", "-shm"] do
+      File.cp!(database <> suffix, supplied <> suffix)
+      File.chmod!(supplied <> suffix, 0o600)
+    end
+
+    directory = private_directory!()
+    uid = File.lstat!(database).uid
+    assert {:ok, helper} = DirectoryHelper.start(directory)
+    on_exit(fn -> terminate_os_pid(helper.os_pid) end)
+
+    specs =
+      for {kind, suffix} <- [main: "", wal: "-wal", shm: "-shm"] do
+        {kind, supplied <> suffix, ".pin.sqlite3" <> suffix, file_identity(supplied <> suffix)}
+      end
+
+    assert {:ok, identities} = DirectoryHelper.open_source(helper, specs, probe, uid)
+
+    for {kind, suffix} <- [main: "", wal: "-wal", shm: "-shm"] do
+      destination = Path.join(directory, ".pin.sqlite3" <> suffix)
+      refute same_object?(supplied <> suffix, destination)
+      # SHM length changes when SQLite initializes its own reader index.
+      assert Tuple.delete_at(identities[kind], 6) ==
+               Tuple.delete_at(file_identity(destination), 6)
+
+      File.rm!(supplied <> suffix)
+    end
+
+    assert {:ok, _identity} = DirectoryHelper.vacuum(helper, ".backup.sqlite3", uid)
+    assert SchemaFixture.row_counts(Path.join(directory, ".backup.sqlite3"))["projects"] == 2
+    assert :ok = DirectoryHelper.close_source(helper)
+    assert :ok = DirectoryHelper.stop(helper)
+    assert File.ls!(directory) == []
   end
 
   test "stop returns cleanup-pending instead of waiting forever for a stalled broker" do

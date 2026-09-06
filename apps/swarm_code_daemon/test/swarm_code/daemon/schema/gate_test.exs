@@ -16,7 +16,7 @@ defmodule SwarmCode.Daemon.Schema.GateTest do
 
     assert {:ok, decision} = Gate.check(database, manifest, "0.1.0-dev")
     assert decision.status == :ready
-    assert List.last(decision.applied) == 20_260_926_000_000
+    assert List.last(decision.applied) == 20_260_929_000_000
     assert decision.pending == []
     assert sha256_file(database) == before
   end
@@ -31,10 +31,56 @@ defmodule SwarmCode.Daemon.Schema.GateTest do
     assert Enum.map(pending, & &1.version) == [
              20_260_924_000_000,
              20_260_925_000_000,
-             20_260_926_000_000
+             20_260_926_000_000,
+             20_260_927_000_000,
+             20_260_928_000_000,
+             20_260_929_000_000
            ]
 
     assert sha256_file(database) == before
+  end
+
+  for {version, pending_versions} <- [
+        {20_260_926_000_000, [20_260_927_000_000, 20_260_928_000_000, 20_260_929_000_000]},
+        {20_260_927_000_000, [20_260_928_000_000, 20_260_929_000_000]},
+        {20_260_928_000_000, [20_260_929_000_000]}
+      ] do
+    test "the exact #{version} prefix requests its current suffix", %{manifest: manifest} do
+      database = SchemaFixture.database!({:prefix, unquote(version)})
+      before = source_bytes(database)
+
+      assert {:ok, %{status: :migration_required, pending: pending}} =
+               Gate.check(database, manifest, "0.1.0-dev")
+
+      assert Enum.map(pending, & &1.version) == unquote(pending_versions)
+      assert source_bytes(database) == before
+    end
+  end
+
+  test "the explicit final prefix is the current schema", %{manifest: manifest} do
+    database = SchemaFixture.database!({:prefix, 20_260_929_000_000})
+
+    assert {:ok, %{status: :ready, applied: applied}} =
+             Gate.check(database, manifest, "0.1.0-dev")
+
+    assert length(applied) == 46
+  end
+
+  test "a wrong current column shape refuses with source and WAL sidecars unchanged", %{
+    manifest: manifest
+  } do
+    database = SchemaFixture.database!(:current)
+
+    SchemaFixture.exec!(
+      database,
+      "ALTER TABLE providers DROP COLUMN fallbacks; ALTER TABLE providers ADD COLUMN fallbacks TEXT DEFAULT 'true' NOT NULL"
+    )
+
+    _writer = SchemaFixture.open_uncheckpointed_wal!(database)
+    before = source_bytes(database)
+    assert {:ok, _} = File.stat(database <> "-wal")
+    assert {:error, %{code: :schema_incompatible}} = Gate.check(database, manifest, "0.1.0-dev")
+    assert source_bytes(database) == before
   end
 
   test "unknown newer migration refuses without mutation", %{
@@ -42,12 +88,13 @@ defmodule SwarmCode.Daemon.Schema.GateTest do
     current: database
   } do
     SchemaFixture.insert_migration!(database, 20_990_101_000_000)
-    before = sha256_file(database)
+    _writer = SchemaFixture.open_uncheckpointed_wal!(database)
+    before = source_bytes(database)
 
     assert {:error, %{code: :schema_incompatible}} =
              Gate.check(database, manifest, "0.1.0-dev")
 
-    assert sha256_file(database) == before
+    assert source_bytes(database) == before
   end
 
   test "known versions with a gap and a normalized-schema mismatch refuse", %{
@@ -79,7 +126,7 @@ defmodule SwarmCode.Daemon.Schema.GateTest do
     assert {:ok, %{status: :new_database, applied: [], pending: pending}} =
              Gate.check(database, manifest, "0.1.0-dev")
 
-    assert length(pending) == 43
+    assert length(pending) == 46
     refute File.exists?(database)
   end
 
@@ -117,10 +164,10 @@ defmodule SwarmCode.Daemon.Schema.GateTest do
     assert {:ok, probe} = Probe.inspect(database)
     assert probe.application_id == 0
     assert hd(probe.migration_versions) == 20_260_820_000_001
-    assert List.last(probe.migration_versions) == 20_260_926_000_000
+    assert List.last(probe.migration_versions) == 20_260_929_000_000
 
     assert probe.schema_sha256 ==
-             "cb75e8448370fa9ca8c1f25969e1b491b035046e87f8b92374f5a1c704304db3"
+             "0f4b2b71ccd619b82a355062cfa405fc64b6cf982d6d2917631c57d688e833ea"
 
     assert probe.quick_check == [["ok"]]
     assert probe.foreign_key_violations == []
@@ -129,12 +176,98 @@ defmodule SwarmCode.Daemon.Schema.GateTest do
     assert sha256_file(database) == before
   end
 
-  test "the probe rejects on the 44th migration row without mutation", %{current: database} do
+  test "the probe rejects on the 47th migration row without mutation", %{current: database} do
     SchemaFixture.insert_migration!(database, 20_990_101_000_000)
-    before = sha256_file(database)
+    _writer = SchemaFixture.open_uncheckpointed_wal!(database)
+    before = source_bytes(database)
 
     assert {:error, %{code: :schema_incompatible}} = Probe.inspect(database)
-    assert sha256_file(database) == before
+    assert source_bytes(database) == before
+  end
+
+  test "a fresh live WAL admits current schema with original bindings and exact source bytes", %{
+    manifest: manifest,
+    current: database
+  } do
+    _writer = SchemaFixture.open_uncheckpointed_wal!(database)
+    before = source_bytes(database)
+    main = File.lstat!(database)
+    wal = File.lstat!(database <> "-wal")
+
+    assert {:ok, %{probe: probe, binding: binding}} = Probe.inspect_bound(database)
+    assert length(probe.migration_versions) == 46
+    assert binding.path == database
+    assert elem(binding.identity, 3) == main.inode
+    assert elem(binding.sidecars["-wal"], 3) == wal.inode
+    assert {:ok, %{status: :ready}} = Gate.check(database, manifest, "0.1.0-dev")
+    assert source_bytes(database) == before
+
+    assert Enum.sort(File.ls!(Path.dirname(database))) ==
+             ["fixture.db", "fixture.db-shm", "fixture.db-wal"]
+  end
+
+  test "a complete WAL without SHM admits current schema without creating a source SHM", %{
+    manifest: manifest,
+    current: database
+  } do
+    # The fixture writer is idle throughout these copies. No source SHM is removed.
+    _writer = SchemaFixture.open_uncheckpointed_wal!(database)
+    directory = temporary_directory!()
+    File.chmod!(directory, 0o700)
+    copied = Path.join(directory, "copied.db")
+
+    for suffix <- ["", "-wal"] do
+      File.cp!(database <> suffix, copied <> suffix)
+      File.chmod!(copied <> suffix, 0o600)
+    end
+
+    before = source_bytes(copied)
+    assert {:ok, %{status: :ready}} = Gate.check(copied, manifest, "0.1.0-dev")
+    assert source_bytes(copied) == before
+    assert Enum.sort(File.ls!(directory)) == ["copied.db", "copied.db-wal"]
+  end
+
+  test "a source replaced before copying cannot yield an admitted snapshot", %{current: database} do
+    replacement = SchemaFixture.database!(:current)
+    parked = database <> ".parked"
+
+    hook = fn :before_sqlite_open, ^database ->
+      File.rename!(database, parked)
+      File.rename!(replacement, database)
+      :ok
+    end
+
+    assert {:error, %{code: :schema_incompatible}} =
+             Probe.inspect_bound(database, before_open: hook)
+
+    assert File.exists?(parked)
+    assert Enum.sort(File.ls!(Path.dirname(database))) == ["fixture.db", "fixture.db.parked"]
+  end
+
+  test "probe resolves symlink dot-dot physically and keeps the original source binding", %{
+    current: database
+  } do
+    root = Path.dirname(database)
+    nested = Path.join(root, "nested")
+    child = Path.join(nested, "child")
+    File.mkdir!(nested)
+    File.mkdir!(child)
+    File.chmod!(nested, 0o700)
+    File.chmod!(child, 0o700)
+    actual = Path.join(nested, "fixture.db")
+    File.cp!(database, actual)
+    File.chmod!(actual, 0o600)
+    SchemaFixture.exec!(actual, "PRAGMA application_id=123")
+    File.ln_s!(child, Path.join(root, "link"))
+    input = Path.join(root, "link") <> "/../fixture.db"
+    assert Path.expand(input) == database
+    before = source_bytes(actual)
+
+    assert {:ok, %{probe: probe, binding: binding}} = Probe.inspect_bound(input)
+    assert probe.application_id == 123
+    assert binding.path == input
+    assert elem(binding.identity, 3) == File.lstat!(actual).inode
+    assert source_bytes(actual) == before
   end
 
   test "the probe rejects more than 512 normalized schema rows without mutation", %{
@@ -230,6 +363,16 @@ defmodule SwarmCode.Daemon.Schema.GateTest do
     File.mkdir!(directory)
     ExUnit.Callbacks.on_exit(fn -> File.rm_rf!(directory) end)
     directory
+  end
+
+  defp source_bytes(database) do
+    Map.new(["", "-wal", "-shm"], fn suffix ->
+      {suffix,
+       case File.read(database <> suffix) do
+         {:ok, bytes} -> {:present, byte_size(bytes), :crypto.hash(:sha256, bytes)}
+         {:error, :enoent} -> :absent
+       end}
+    end)
   end
 
   defp sha256_file(path) do

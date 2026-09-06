@@ -72,6 +72,14 @@ database or its sidecars.
 Backup verification must carry all 46 migration records through the real
 directory broker, independent restore and manifest decoder. A backup of the
 43-migration prefix remains restorable and preserves all source rows and values.
+`Backup.Gate.create` must accept a genuine `:ready` decision for an explicitly
+requested backup, as well as the existing migration-required decision. Ready
+requires an empty pending suffix and applied versions equal to the probe's
+migration versions. An inconsistent ready label on a migration-required decision
+still rejects. The lease, fingerprint, source re-probe and identity checks remain.
+This also prepares verified backups before future persisted-data repair. Tests
+must not relabel a ready decision as migration-required to manufacture evidence.
+Foundation does not automatically back up a ready database.
 The current gate's migration-required path still produces a verified backup and
 its existing implementation-not-installed outcome; this work does not execute
 canonical migrations or start Repo.
@@ -90,3 +98,40 @@ foundation lease metadata, and unchanged refusal bytes. Re-run generation into a
 second isolated output directory and compare every committed artifact exactly.
 Independent review covers the source replay, contract authentication and the
 schema/backup/foundation handoff. Finish with precommit and production compile.
+
+## Discovered WAL read-path defect
+
+The new live-WAL refusal tests reproduced writes to canonical SHM reader marks in
+the existing `Probe -> BoundFile` path. Its read-only SQLite connection shares the
+canonical SHM inode through a hard link. The schema count/contract changes do not
+close this pre-existing defect, and the strict byte-preservation tests must stay.
+
+Review of the pinned SQLite source also shows that putting private SHM beside live
+main/WAL descriptors loses checkpoint and WAL-reset coordination. `readonly_shm=1`
+can reuse an existing writable process-local SHM mapping; missing SHM is another
+unsupported case. Neither a URI-only patch nor prewarming fixture reader marks
+satisfies the invariant. The proposed residual-hardening design's private-SHM
+section needs this synchronization correction before implementation.
+
+The next feasibility probe is an isolated native snapshot helper. It must hold
+SQLite-compatible locks on the exact source objects while copying main/WAL in
+fixed-size chunks into a private workspace, then release source locks. SQLite
+may build private SHM only for those private copies. Existing-SHM locking must
+exclude writers, checkpoints, recovery and WAL resets; missing SHM requires
+exclusive main-file coordination and must refuse contention. File opens used for
+locks do not authorize any source-byte write. Use process isolation to avoid
+POSIX record-lock interference with Exqlite connections already in BEAM.
+
+Feasibility must prove actual current-data reads, source main/WAL/SHM invariance,
+checkpoint/writer exclusion while copying, contention refusal and release after
+failure. This experiment is not a production fallback or completion of the
+guarded filesystem/one-shot Repo capability design. Integration stays incomplete
+until a coherent read path passes the strict tests.
+
+
+The feasibility work led to the separately specified
+[locked snapshot implementation](2026-09-06-locked-snapshot-design.md).
+Its Probe integration now passes the strict source-byte tests. Backup uses a
+second complete copy into independent broker-owned inodes, with original-source
+checks retained. These local results do not promote the larger guarded Repo
+capability or establish supported-platform acceptance.

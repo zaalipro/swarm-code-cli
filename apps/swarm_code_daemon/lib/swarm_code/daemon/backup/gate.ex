@@ -13,7 +13,8 @@ defmodule SwarmCode.Daemon.Backup.Gate do
     DirectoryHelper,
     DirectoryProtocol,
     PhysicalPath,
-    PrivateDirectory
+    PrivateDirectory,
+    SourceSnapshot
   }
 
   alias SwarmCode.Daemon.Schema.{Gate.Decision, Probe, SqliteQuery}
@@ -53,9 +54,7 @@ defmodule SwarmCode.Daemon.Backup.Gate do
                {:ok, resolved_source} <- DatabaseFingerprint.resolve(source_path),
                :ok <- equal(resolved_source.fingerprint, owner.database_fingerprint),
                {:ok, source} <-
-                 source_metadata(resolved_source.path, uid, resolved_source.fingerprint),
-               {:ok, source_probe} <- Probe.inspect(resolved_source.path),
-               :ok <- equal(source_probe, decision.probe) do
+                 source_metadata(resolved_source.path, uid, resolved_source.fingerprint) do
             paths = paths(anchor.path, operation_id)
 
             :global.trans(
@@ -63,6 +62,8 @@ defmodule SwarmCode.Daemon.Backup.Gate do
               fn ->
                 with :ok <- validate_backup_directory(anchor),
                      :ok <- lease_still_held(lease, resolved_source.fingerprint),
+                     {:ok, source_probe} <- Probe.inspect(resolved_source.path),
+                     :ok <- equal(source_probe, decision.probe),
                      :ok <-
                        source_unchanged(
                          resolved_source.path,
@@ -227,8 +228,31 @@ defmodule SwarmCode.Daemon.Backup.Gate do
          source_path,
          backup_dir,
          operation_id,
-         %Decision{status: :migration_required, probe: %Probe{}, app_version: app_version}
-       )
+         %Decision{
+           status: :ready,
+           pending: [],
+           applied: applied,
+           probe: %Probe{migration_versions: applied}
+         } = decision
+       ) do
+    validate_backup_arguments(source_path, backup_dir, operation_id, decision)
+  end
+
+  defp validate_arguments(
+         source_path,
+         backup_dir,
+         operation_id,
+         %Decision{status: :migration_required, probe: %Probe{}} = decision
+       ) do
+    validate_backup_arguments(source_path, backup_dir, operation_id, decision)
+  end
+
+  defp validate_arguments(_source_path, _backup_dir, _operation_id, _decision),
+    do: {:error, :invalid_arguments}
+
+  defp validate_backup_arguments(source_path, backup_dir, operation_id, %Decision{
+         app_version: app_version
+       })
        when is_binary(source_path) and is_binary(backup_dir) and is_binary(operation_id) and
               is_binary(app_version) do
     with {:ok, ^operation_id} <- Ecto.UUID.cast(operation_id),
@@ -240,7 +264,7 @@ defmodule SwarmCode.Daemon.Backup.Gate do
     end
   end
 
-  defp validate_arguments(_source_path, _backup_dir, _operation_id, _decision),
+  defp validate_backup_arguments(_source_path, _backup_dir, _operation_id, _decision),
     do: {:error, :invalid_arguments}
 
   defp assert_live_lease(lease) do
@@ -1090,6 +1114,152 @@ defmodule SwarmCode.Daemon.Backup.Gate do
          test_hook,
          function
        ) do
+    with {:ok, expected} <- snapshot_expected(resolved_source.path, expected_source, uid) do
+      with_backup_snapshot(resolved_source.path, uid, expected, fn snapshot ->
+        with {:ok, snapshot_source} <-
+               source_metadata(snapshot, uid, snapshot_fingerprint(snapshot)) do
+          with_snapshot_pins(
+            snapshot,
+            snapshot_source,
+            expected_probe,
+            uid,
+            operation_id,
+            anchor,
+            test_hook,
+            function
+          )
+        end
+      end)
+    end
+  end
+
+  defp snapshot_fingerprint(path) do
+    {:ok, fingerprint} = DatabaseFingerprint.for_path(path)
+    fingerprint
+  end
+
+  defp snapshot_expected(path, source, uid) do
+    with {:ok, parent} <- File.lstat(Path.dirname(path)),
+         {:ok, main} <- File.lstat(path),
+         true <- file_identity(main) == source.identities["main"],
+         {:ok, wal} <- snapshot_sidecar(path <> "-wal", source.identities["wal"]),
+         {:ok, shm} <- snapshot_sidecar(path <> "-shm", source.identities["shm"]),
+         true <- parent.type == :directory and parent.uid == uid do
+      {:ok, %{main: main, wal: wal, shm: shm, parent: parent}}
+    else
+      _ -> {:error, :source_pin_failed}
+    end
+  end
+
+  defp snapshot_sidecar(path, nil) do
+    if File.lstat(path) == {:error, :enoent}, do: {:ok, nil}, else: {:error, :source_pin_failed}
+  end
+
+  defp snapshot_sidecar(path, expected) do
+    with {:ok, stat} <- File.lstat(path), true <- file_identity(stat) == expected do
+      {:ok, stat}
+    else
+      _ -> {:error, :source_pin_failed}
+    end
+  end
+
+  # Keep the caller's ownership dictionaries on this process. The snapshot callback
+  # only lends its path. The broker creates its own full copies before SQLite open.
+  defp with_backup_snapshot(path, uid, expected, function) do
+    requester = self()
+    ref = make_ref()
+
+    {runner, monitor} =
+      spawn_monitor(fn ->
+        runner = self()
+        spawn(fn -> watch_snapshot_requester(requester, runner) end)
+
+        result =
+          SourceSnapshot.with_snapshot(
+            path,
+            uid,
+            expected,
+            fn snapshot ->
+              send(requester, {ref, :snapshot_ready, self(), snapshot})
+
+              receive do
+                {^ref, :release_snapshot} -> :ok
+              end
+            end,
+            timeout: 300_000,
+            callback_timeout: 300_000
+          )
+
+        send(requester, {ref, :snapshot_result, self(), result})
+      end)
+
+    receive do
+      {^ref, :snapshot_ready, callback, snapshot} ->
+        operation =
+          try do
+            function.(snapshot)
+          rescue
+            _ -> {:error, :source_pin_failed}
+          catch
+            _, _ -> {:error, :source_pin_failed}
+          end
+
+        send(callback, {ref, :release_snapshot})
+
+        case await_backup_snapshot(runner, monitor, ref) do
+          :ok -> operation
+          _ -> {:error, :cleanup_pending}
+        end
+
+      {^ref, :snapshot_result, ^runner, result} ->
+        await_snapshot_runner_down(runner, monitor)
+
+        if result == {:error, :snapshot_cleanup_pending},
+          do: {:error, :cleanup_pending},
+          else: {:error, :source_pin_failed}
+
+      {:DOWN, ^monitor, :process, ^runner, _} ->
+        {:error, :cleanup_pending}
+    end
+  end
+
+  defp watch_snapshot_requester(requester, runner) do
+    requester_monitor = Process.monitor(requester)
+    runner_monitor = Process.monitor(runner)
+
+    receive do
+      {:DOWN, ^runner_monitor, :process, ^runner, _} -> :ok
+      {:DOWN, ^requester_monitor, :process, ^requester, _} -> Process.exit(runner, :kill)
+    end
+  end
+
+  defp await_backup_snapshot(runner, monitor, ref) do
+    receive do
+      {^ref, :snapshot_result, ^runner, result} ->
+        await_snapshot_runner_down(runner, monitor)
+        result
+
+      {:DOWN, ^monitor, :process, ^runner, _} ->
+        {:error, :snapshot_cleanup_pending}
+    end
+  end
+
+  defp await_snapshot_runner_down(runner, monitor) do
+    receive do
+      {:DOWN, ^monitor, :process, ^runner, _} -> :ok
+    end
+  end
+
+  defp with_snapshot_pins(
+         snapshot,
+         expected_source,
+         expected_probe,
+         uid,
+         operation_id,
+         anchor,
+         test_hook,
+         function
+       ) do
     suffix = Base.url_encode64(:crypto.strong_rand_bytes(18), padding: false)
     basename = ".#{operation_id}.#{suffix}.source-pin.sqlite3"
 
@@ -1100,11 +1270,9 @@ defmodule SwarmCode.Daemon.Backup.Gate do
     }
 
     specs = [
-      {:wal, resolved_source.path <> "-wal", Path.basename(pins.wal),
-       expected_source.identities["wal"]},
-      {:shm, resolved_source.path <> "-shm", Path.basename(pins.shm),
-       expected_source.identities["shm"]},
-      {:main, resolved_source.path, Path.basename(pins.main), expected_source.identities["main"]}
+      {:wal, snapshot <> "-wal", Path.basename(pins.wal), expected_source.identities["wal"]},
+      {:shm, snapshot <> "-shm", Path.basename(pins.shm), expected_source.identities["shm"]},
+      {:main, snapshot, Path.basename(pins.main), expected_source.identities["main"]}
     ]
 
     ownership = begin_ownership()
@@ -1113,9 +1281,6 @@ defmodule SwarmCode.Daemon.Backup.Gate do
       try do
         with {:ok, identities} <-
                DirectoryHelper.open_source(anchor.helper, specs, expected_probe, uid),
-             :ok <- equal(identities[:main], expected_source.identities["main"]),
-             :ok <- equal(identities[:wal], expected_source.identities["wal"]),
-             :ok <- equal(identities[:shm], expected_source.identities["shm"]),
              :ok <- register_source_pin_identities(ownership, pins, identities, uid),
              :ok <-
                invoke_test_hook(test_hook, :after_source_main_pin_link, %{
@@ -1183,8 +1348,7 @@ defmodule SwarmCode.Daemon.Backup.Gate do
             actual = file_identity(stat)
 
             valid? =
-              (kind == :shm and not is_nil(expected)) or
-                (generated_shm? and is_nil(expected)) or
+              (generated_shm? and is_nil(expected)) or
                 (not is_nil(expected) and
                    object_identity_from_file_identity(actual) ==
                      object_identity_from_file_identity(expected))

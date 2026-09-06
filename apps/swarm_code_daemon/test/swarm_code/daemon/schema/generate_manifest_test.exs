@@ -3,6 +3,20 @@ defmodule SwarmCode.Daemon.Schema.GenerateManifestTest do
 
   @pinned_commit "dbb8804b3d7293178e571fa7afdf6bd47d06a51c"
 
+  test "rejects an unreviewed commit before opening upstream or creating output" do
+    root = temporary_directory!()
+    upstream = Path.join(root, "missing-upstream")
+    output = Path.join(root, "manifest.json")
+    fixtures = Path.join(root, "fixtures")
+
+    {message, status} = run_generator(upstream, output, fixtures, String.duplicate("a", 40))
+    assert status != 0
+    assert message =~ "unsupported upstream commit"
+    refute File.exists?(upstream)
+    refute File.exists?(output)
+    refute File.exists?(fixtures)
+  end
+
   test "rejects direct, ancestor-normalized, and symlink-aliased upstream outputs without mutation" do
     root = temporary_directory!()
     upstream = Path.join(root, "upstream")
@@ -100,7 +114,7 @@ defmodule SwarmCode.Daemon.Schema.GenerateManifestTest do
     assert File.ls!(Path.join(upstream, ".git")) |> Enum.sort() == before_git_entries
   end
 
-  defp run_generator(upstream, output, fixtures) do
+  defp run_generator(upstream, output, fixtures, commit \\ @pinned_commit) do
     System.cmd(
       find_mix!(),
       [
@@ -111,7 +125,7 @@ defmodule SwarmCode.Daemon.Schema.GenerateManifestTest do
         "--upstream",
         upstream,
         "--commit",
-        @pinned_commit,
+        commit,
         "--output",
         output,
         "--fixtures-dir",

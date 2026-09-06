@@ -4,15 +4,14 @@ defmodule SwarmCode.Daemon.Schema.Probe do
   import Bitwise
 
   alias Exqlite.Sqlite3
-  alias SwarmCode.Daemon.Platform.BoundFile
+  alias SwarmCode.Daemon.Platform.{BoundFile, PhysicalPath, SourceSnapshot}
   alias SwarmCode.Daemon.Schema.{Binding, SqliteQuery}
   alias SwarmCode.Daemon.StartupError
 
-  @maximum_migrations 43
-  @migration_sentinel_rows 44
+  @maximum_migrations SwarmCode.Daemon.Schema.Contract.maximum_migrations()
+  @migration_sentinel_rows @maximum_migrations + 1
   @maximum_schema_rows 512
   @maximum_schema_bytes 4_194_304
-  @probe_timeout 5_000
   @private_file_mode 0o600
 
   @enforce_keys [
@@ -47,7 +46,7 @@ defmodule SwarmCode.Daemon.Schema.Probe do
 
   def inspect(_path), do: {:error, incompatible_error()}
 
-  @doc "Inspect through an identity-bound read-only handle and return its binding."
+  @doc "Inspect an owned coherent snapshot and return the original source binding."
   @spec inspect_bound(Path.t(), keyword()) ::
           {:ok, %{probe: t(), binding: Binding.t()}} | {:error, StartupError.t()}
   def inspect_bound(path, opts \\ [])
@@ -55,38 +54,7 @@ defmodule SwarmCode.Daemon.Schema.Probe do
   def inspect_bound(path, opts) when is_binary(path) and is_list(opts) do
     if not valid_options?(opts),
       do: {:error, incompatible_error()},
-      else: inspect_bound_worker(path, opts)
-  end
-
-  defp inspect_bound_worker(path, opts) do
-    parent = self()
-    ref = make_ref()
-    alias_snapshot = bound_alias_snapshot(path)
-
-    {worker, monitor} =
-      spawn_monitor(fn ->
-        result = safe_inspect_bound(path, opts)
-        send(parent, {ref, result})
-      end)
-
-    receive do
-      {^ref, result} ->
-        Process.demonitor(monitor, [:flush])
-
-        if match?({:error, _}, result), do: cleanup_bound_aliases(path, alias_snapshot)
-
-        result
-
-      {:DOWN, ^monitor, :process, ^worker, _reason} ->
-        cleanup_bound_aliases(path, alias_snapshot)
-        {:error, incompatible_error()}
-    after
-      @probe_timeout ->
-        Process.exit(worker, :kill)
-        await_worker_down(monitor, worker)
-        cleanup_bound_aliases(path, alias_snapshot)
-        {:error, incompatible_error()}
-    end
+      else: safe_inspect_bound(path, opts)
   end
 
   defp valid_options?(opts) do
@@ -106,45 +74,6 @@ defmodule SwarmCode.Daemon.Schema.Probe do
       {:ok, function} ->
         Mix.env() == :test and (is_function(function, 1) or is_function(function, 2))
     end
-  end
-
-  defp bound_alias_snapshot(path) do
-    case File.ls(Path.dirname(path)) do
-      {:ok, names} -> MapSet.new(names)
-      _other -> MapSet.new()
-    end
-  rescue
-    _error -> MapSet.new()
-  catch
-    _kind, _reason -> MapSet.new()
-  end
-
-  defp cleanup_bound_aliases(path, snapshot) do
-    prefix = ".#{Path.basename(path)}.bound."
-
-    case File.ls(Path.dirname(path)) do
-      {:ok, names} ->
-        Enum.each(names, fn name ->
-          if String.starts_with?(name, prefix) and not MapSet.member?(snapshot, name) do
-            alias_path = Path.join(Path.dirname(path), name)
-
-            case File.lstat(alias_path) do
-              {:ok, %File.Stat{type: :regular, mode: mode}} when band(mode, 0o7777) == 0o600 ->
-                _ = File.rm(alias_path)
-
-              _other ->
-                :ok
-            end
-          end
-        end)
-
-      _other ->
-        :ok
-    end
-  rescue
-    _error -> :ok
-  catch
-    _kind, _reason -> :ok
   end
 
   @spec inspect_connection(term()) :: {:ok, t()} | {:error, StartupError.t()}
@@ -168,56 +97,40 @@ defmodule SwarmCode.Daemon.Schema.Probe do
   defp safe_inspect_bound(path, opts) do
     uid = Keyword.get(opts, :uid) || trusted_uid()
 
-    with {:ok, main_stat} <- regular_stat(path, uid),
-         {:ok, sidecars} <- sidecar_stats(path, uid),
-         {:ok, sqlite} <-
-           BoundFile.open_sqlite(path,
-             mode: :readonly,
-             uid: uid,
-             sidecars: sidecars,
-             before_open: Keyword.get(opts, :before_open)
-           ) do
-      try do
-        case inspect_connection(sqlite.connection) do
-          {:ok, probe} ->
-            case invoke_probe_hook(Keyword.get(opts, :probe_hook), path) do
-              :ok ->
-                case verify_bound_paths_now(path, main_stat, sidecars, uid) do
-                  :ok ->
-                    binding = %Binding{
-                      path: path,
-                      identity: BoundFile.object_identity(main_stat),
-                      sidecars:
-                        Map.new(sidecars, fn {suffix, _sidecar_path, stat} ->
-                          {suffix, BoundFile.object_identity(stat)}
-                        end)
-                    }
+    with {:ok, resolved} <- PhysicalPath.resolve_regular(path),
+         {:ok, main_stat} <- regular_stat(resolved.path, uid),
+         :ok <- BoundFile.same_object(main_stat, resolved.stat),
+         {:ok, sidecars} <- sidecar_stats(resolved.path, uid),
+         {:ok, parent_stat} <- File.lstat(Path.dirname(resolved.path)) do
+      expected = %{
+        main: main_stat,
+        wal: sidecar_stat(sidecars, "-wal"),
+        shm: sidecar_stat(sidecars, "-shm"),
+        parent: parent_stat
+      }
 
-                    {:ok, %{probe: probe, binding: binding}}
+      SourceSnapshot.with_snapshot(
+        resolved.path,
+        uid,
+        expected,
+        fn snapshot_path ->
+          with {:ok, probe} <-
+                 SourceSnapshot.with_connection(snapshot_path, &inspect_connection/1),
+               :ok <- invoke_probe_hook(Keyword.get(opts, :probe_hook), path),
+               :ok <- verify_bound_paths_now(resolved.path, main_stat, sidecars, uid),
+               :ok <- verify_bound_paths_now(path, main_stat, sidecars, uid) do
+            binding = %Binding{
+              path: path,
+              identity: BoundFile.object_identity(main_stat),
+              sidecars: sidecar_identity_map(sidecars)
+            }
 
-                  {:error, %StartupError{} = error} ->
-                    {:error, error}
-
-                  _other ->
-                    {:error, incompatible_error()}
-                end
-
-              {:error, %StartupError{} = error} ->
-                {:error, error}
-
-              _other ->
-                {:error, incompatible_error()}
-            end
-
-          {:error, %StartupError{} = error} ->
-            {:error, error}
-
-          _other ->
-            {:error, incompatible_error()}
-        end
-      after
-        BoundFile.close_sqlite(sqlite)
-      end
+            {:ok, %{probe: probe, binding: binding}}
+          end
+        end,
+        snapshot_options(opts, path, main_stat, sidecars)
+      )
+      |> normalize_snapshot_result()
     else
       {:error, %StartupError{} = error} -> {:error, error}
       _other -> {:error, incompatible_error()}
@@ -227,6 +140,55 @@ defmodule SwarmCode.Daemon.Schema.Probe do
   catch
     _kind, _reason -> {:error, incompatible_error()}
   end
+
+  defp sidecar_stat(sidecars, suffix) do
+    case List.keyfind(sidecars, suffix, 0) do
+      {^suffix, _path, stat} -> stat
+      nil -> nil
+    end
+  end
+
+  defp snapshot_options(opts, path, main_stat, sidecars) do
+    case Keyword.get(opts, :before_open) do
+      nil ->
+        []
+
+      hook ->
+        binding = %{
+          path: path,
+          identity: BoundFile.object_identity(main_stat),
+          sidecars: sidecars
+        }
+
+        [
+          test_before_copy: fn _snapshot_path ->
+            result =
+              if is_function(hook, 2),
+                do: hook.(:before_sqlite_open, path),
+                else: hook.(binding)
+
+            if result == :ok, do: :ok, else: {:error, incompatible_error()}
+          end
+        ]
+    end
+  end
+
+  defp normalize_snapshot_result({:ok, %{probe: %__MODULE__{}, binding: %Binding{}}} = result),
+    do: result
+
+  defp normalize_snapshot_result({:error, %StartupError{}} = error), do: error
+
+  defp normalize_snapshot_result({:error, :snapshot_cleanup_pending}) do
+    {:error,
+     StartupError.new(
+       :cleanup_pending,
+       true,
+       "Schema snapshot cleanup is still pending.",
+       "Keep the source directory private until the snapshot owner has finished cleanup."
+     )}
+  end
+
+  defp normalize_snapshot_result(_result), do: {:error, incompatible_error()}
 
   defp trusted_uid do
     case System.cmd("/usr/bin/id", ["-u"], stderr_to_stdout: true) do
@@ -333,22 +295,14 @@ defmodule SwarmCode.Daemon.Schema.Probe do
 
   defp invoke_probe_hook(_hook, _path), do: :ok
 
-  defp await_worker_down(monitor, worker) do
-    receive do
-      {:DOWN, ^monitor, :process, ^worker, _reason} -> :ok
-    after
-      1_000 -> :ok
-    end
-  end
-
   defp build_probe(conn) do
     [[application_id]] = bounded_rows(conn, "PRAGMA application_id", [], 1)
 
     migration_versions =
       bounded_rows(
         conn,
-        "SELECT version FROM schema_migrations ORDER BY version LIMIT 44",
-        [],
+        "SELECT version FROM schema_migrations ORDER BY version LIMIT ?",
+        [@migration_sentinel_rows],
         @migration_sentinel_rows
       )
       |> Enum.map(fn [version] when is_integer(version) -> version end)

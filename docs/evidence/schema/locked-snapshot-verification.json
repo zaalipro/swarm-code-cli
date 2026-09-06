@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "date": "2026-09-06",
+  "platform": "Darwin arm64",
+  "desktop_commit": "fb1b4ff82354ac8ff2e82d4f6516121fd55ff212",
+  "sqlite_pinned_version": "3.53.3",
+  "ordinary_native_harness_sqlite_version": "3.50.4",
+  "precommit": {
+    "command": "mise exec -- mix precommit",
+    "seed": 870497,
+    "core_tests": 79,
+    "daemon_tests": 232,
+    "cli_tests": 514,
+    "properties": 5,
+    "native_tests": 12,
+    "failures": 0,
+    "format_compile_dependencies_provenance_unicode": "passed"
+  },
+  "production_compile": {
+    "command": "MIX_ENV=prod mise exec -- mix compile --warnings-as-errors",
+    "exit_status": 0
+  },
+  "generator_artifact_equality": {
+    "current": 8,
+    "legacy": 4,
+    "all_byte_identical": true
+  },
+  "regressions": [
+    "intermediate schema lineage tampering",
+    "fresh live-WAL refusal/source SHM preservation",
+    "current-schema WAL admission",
+    "missing-SHM admission without source SHM creation",
+    "physical symlink/.. resolution",
+    "DMS lock-state discrimination",
+    "source directory exact private permissions",
+    "cross-platform native rebuild and --force",
+    "registered SQLite cancellation before cleanup",
+    "requester and broker death cleanup",
+    "independent broker copy survives supplied snapshot unlink",
+    "duplicate backup requests serialize source probes"
+  ],
+  "limits": [
+    "Ordinary DMS tests do not reproduce the initializer timing race.",
+    "Native harness and pinned Exqlite integration tests are separate evidence.",
+    "Linux and four-target release acceptance have not been run.",
+    "Broader one-shot Ready/guarded writable Repo promotion remains open.",
+    "No production daemon, provider execution, canonical migrations or full parity is claimed.",
+    "No user database or desktop repository implementation was modified."
+  ]
+}

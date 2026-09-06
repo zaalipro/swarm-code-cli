@@ -5,7 +5,7 @@ defmodule SwarmCode.Daemon.Backup.Manifest do
   @maximum_tables 512
   @maximum_table_name_bytes 1_024
   @maximum_sqlite_text_bytes 4_096
-  @maximum_migrations 43
+  @maximum_migrations SwarmCode.Daemon.Schema.Contract.maximum_migrations()
 
   @keys ~w(
     application

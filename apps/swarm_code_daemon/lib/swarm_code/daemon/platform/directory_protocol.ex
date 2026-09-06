@@ -8,6 +8,7 @@ defmodule SwarmCode.Daemon.Platform.DirectoryProtocol do
   @maximum_bytes 1_048_576
   @maximum_basename_bytes 255
   @maximum_path_bytes 16 * 1_024
+  @maximum_migrations SwarmCode.Daemon.Schema.Contract.maximum_migrations()
   @maximum_sources 3
   @maximum_payload_bytes @maximum_bytes - 4_096
 
@@ -798,7 +799,8 @@ defmodule SwarmCode.Daemon.Platform.DirectoryProtocol do
 
   defp probe?(_probe), do: false
 
-  defp migration_versions?(versions) when is_list(versions) and length(versions) <= 43 do
+  defp migration_versions?(versions)
+       when is_list(versions) and length(versions) <= @maximum_migrations do
     Enum.all?(versions, &(is_integer(&1) and &1 > 0)) and
       versions == Enum.sort(Enum.uniq(versions))
   end
