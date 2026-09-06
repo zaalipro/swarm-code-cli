@@ -10,7 +10,7 @@ behavior. No desktop application, database, settings, or source was changed.
 
 This repository is a foundation implementation, not a usable CLI. All three
 application entry modules are empty. There is no command launcher, application
-supervisor, running daemon, query/command service, provider execution, reducer,
+supervisor, running daemon, real query/command service, provider execution, reducer,
 projector, terminal adapter, or plain session. The number of contract modules
 and passing unit tests must not be described as desktop feature coverage.
 
@@ -29,11 +29,11 @@ main surfaces against the current desktop and the files actually present here.
 | Desktop capability and authoritative source | CLI state | Required implementation/evidence |
 |---|---|---|
 | Startup, persistence and recovery: `application.ex`, `bootstrap.ex`, contexts | Pre-Repo checks only; `SwarmCodeDaemon` is empty | Owned supervision, compatible Repo startup, recovery, commands, daemon connection/reconnection tests |
-| Chats/projects/sidebar: `router.ex`, `components/frame.ex`, `Projects`, `Conversations` | UI destination/request contracts only | CRUD/search/pins/projectless sessions, metadata queries and stable paging, actual persistence tests |
-| Transcript/run cards: `components/chat.ex`, workspace template | Scene block definitions only | Ordered launches/messages/runs, bounded streaming, scroll anchors, fold/read state, fork/edit-resend/compact behavior |
+| Chats/projects/sidebar: `router.ex`, `components/frame.ex`, `Projects`, `Conversations` | UI contracts and synthetic scoped pages | CRUD/search/pins/projectless sessions, real metadata queries and persistence tests |
+| Transcript/run cards: `components/chat.ex`, workspace template | Scene blocks and synthetic ordered source facts | Real launches/messages/runs, bounded streaming, scroll anchors, fold/read state, fork/edit-resend/compact behavior |
 | Build, Plan, Goal, Ultra, Workflow, Consensus: `Chat.modes/0`, `composer_mode/5` | Pure editor and draft stores; no composer/runtime | One selected mode, independent approvals/model/effort, mode-aware launch and plan approval paths |
 | Agent/operation trees, Thread/Timeline/Changes: `swarm_pane.ex`, `side_chat.ex` | Scene block definitions only | Inspector views, nested ownership, Reply/Steer, scoped Stop/Retry/Resume and real event delivery |
-| Needs-you questions and approvals: `Chat` interview/approval components | Closed intent/request definitions | Revisioned prompt state, visible activity inbox, answer/deny/approve handling and stale-action rejection |
+| Needs-you questions and approvals: `Chat` interview/approval components | Typed synthetic interactions, resolution, stale-action and parent-state rejection | Real interaction service, visible activity inbox, modal/projector integration |
 | Workflows/library/journal/resume: `workflows_live.ex`, `SwarmCode.Workflows` | Absent | Isolated workflow execution and journal, library editor/check/launch, lifecycle and resume tests |
 | Research/HTML reports/sources: `research_live.ex`, `Research.Levels` | A research Scene block only | Background jobs, four depths, report/source viewing and export, cancellation/ownership tests |
 | Scheduling: `scheduled_live.ex`, scheduler runtime | Absent | Durable schedules/claims, timezones, agenda, manual launch, recovery and no-double-fire tests |
@@ -78,6 +78,13 @@ outcomes into terminal behavior when the affected surfaces are implemented.
    900566. A same-sender GenServer call after monitor creation establishes
    delivery before shutdown; the original required shutdown reason is still
    asserted, and a successor still has to acquire the released lease.
+6. A later full-suite run exposed a real fast-command race: a short-lived
+   child could close its Port before PID lookup, so successful output was
+   reported as `command_start_failed`. A deterministic regression reproduces
+   this with real Port events. ExternalCommand now retains the Port with EOF
+   mode, closes after both EOF and exit status, and awaits monitored DOWN.
+   Once exit is known, delayed EOF cannot trigger TERM/KILL against a stale PID.
+   Both event orders and pending-reaper completion are covered by focused tests.
 
 ## Implemented presentation and editing components
 
@@ -119,6 +126,17 @@ filter and question fields have independent 16 KiB editors. Stores default to
 evicting unsent work. These drafts remain process-local until durable runtime
 integration provides persistence; no crash-survival claim is made.
 
+The separately owned fake Source now supplies typed, scoped, paginated data
+for three scripted runs. Client detach does not destroy its canonical facts.
+It supports revisioned questions/approvals, run controls, failed-run Retry and
+distinct agent Stop. Its validators reject malformed field sets and mismatched
+scope metadata. Scripted progress derives current revisions; stopping a run
+settles its interactions; paused/stopped branches remain unchanged while other
+branches progress. Oversized text updates reject the entire transition without
+losing source content or publishing a partial sequence. Fixed fixtures cover
+status/Activity catalogues, keyset windows and a deliberate sequence gap.
+This is synthetic data for interaction development, not user-data execution.
+
 ## Architecture priorities
 
 Keep domain ownership in the daemon, with the TUI and plain surface consuming
@@ -149,6 +167,18 @@ the signed desktop detector. New-database creation, migration execution,
 credential storage, real IPC, provider/tool ownership and release packaging
 remain required. Nothing in the text/width/theme work satisfies those gates.
 
+Before the source-to-Scene pipeline is connected, unify the run-state vocabulary
+or provide an explicit tested conversion. Current DTO/Theme words include
+`done`, `stopped`, `retrying`, `interrupted` and `superseded`; the older RunCard
+Scene contract uses `completed`/`cancelled` and lacks several of those states.
+Do not silently drop a status or convert a recoverable interruption to failure.
+
+The initial fake source query surface also does not cover explicit Inspector-tab
+selection or opaque large-detail queries. Dispatch, Steer and mark-seen still
+need source execution support. The client synchronization layer must perform
+owner binding, watch filtering, ready-before-delta ordering, gap/resync handling,
+request settlement, cancellation and cleanup before a reducer can rely on it.
+
 ## Validation and continuing work
 
 The original full suite ran 79 core, 195 daemon and 39 CLI tests; its only
@@ -156,6 +186,28 @@ failure was the reproduced lease-monitor race. Width changes have 14 passing
 focused tests, including new failing-before-fix regressions. The lease suite
 has 16 passing tests. Source attestation passes via
 `mise exec -- elixir scripts/dev/sync_unicode_width.exs --check`.
+
+After the presentation, editor, drafts, geometry and initial typed source
+implementation, `mise exec -- mix precommit` passed with seed 381891:
+79 core, 195 daemon, 133 CLI tests and 4 properties; formatting, warnings-as-errors
+compilation, dependency checks, source provenance and both Unicode verifiers
+passed. Source review then added regression coverage for revision rollback,
+stopped-run resurrection, malformed DTO field sets, over-limit append admission,
+cross-scope delta metadata and question reopening across barrier orders.
+The corrected Source/neutral suite passed 52 tests at seed 0; its Source-only
+suite passed 30 tests at seed 4901. A subsequent complete CLI run passed
+143 tests and 4 properties. That run exposed the separate fast-child Port
+lifecycle race described above; its fix passed independent code review.
+
+Final verification on the corrected code: `mise exec -- mix precommit`, seed
+579062, passed **79 core + 197 daemon + 143 CLI tests and 4 properties**.
+Formatting, warnings-as-errors compilation, dependency checks, source provenance
+and both offline Unicode verifiers passed. A separate
+`MIX_ENV=prod mise exec -- mix compile --warnings-as-errors` passed, and a
+production-mode invocation confirmed the test-only Port hook is rejected.
+The desktop still has only its pre-existing untracked `.specs/` directory;
+its source and user data were not modified. No rendered TUI/browser smoke test
+is claimed: there is no runnable renderer or browser surface in this checkout.
 
 Continue against the original full-parity objective. Completion requires real
 runtime tests, supported-platform artifacts, a rendered terminal compared with

@@ -20,6 +20,81 @@ defmodule SwarmCode.Daemon.Platform.ExternalCommandTest do
     end
   end
 
+  test "child exit before PID lookup preserves output and exact terminal evidence" do
+    test = self()
+
+    for {executable, args, expected} <- [
+          {"/bin/echo", ["bounded-output"], {:ok, "bounded-output"}},
+          {"/usr/bin/false", [], {:error, :command_failed}}
+        ],
+        evidence_order <- [:exit_first, :eof_first] do
+      assert ExternalCommand.run(executable, args,
+               observer: test,
+               test_after_port_open: fn port ->
+                 messages = await_open_child_exit!(port)
+
+                 messages
+                 |> Enum.sort_by(fn
+                   {^port, {:exit_status, _}} -> evidence_order != :exit_first
+                   _other -> evidence_order == :exit_first
+                 end)
+                 |> Enum.each(&send(self(), &1))
+
+                 send(test, {:exited_before_pid_lookup, port})
+               end
+             ) == expected
+
+      assert_receive {:exited_before_pid_lookup, port}
+      assert_receive {:external_command_started, _owner, os_pid}
+      assert_receive {:external_command_terminal, ^os_pid}
+      refute_receive {:external_command_signal, ^os_pid, _signal}
+      assert Port.info(port) == nil
+      refute os_pid_alive?(os_pid)
+    end
+  end
+
+  test "known child exit suppresses PID signals while output EOF is pending" do
+    test = self()
+
+    assert {:error, :command_cleanup_pending} =
+             ExternalCommand.run("/bin/echo", ["bounded-output"],
+               observer: test,
+               terminate_grace: 10,
+               kill_grace: 10,
+               test_fail_after_port_open: true,
+               test_after_port_open: fn port ->
+                 # Delay only the real EOF event; the real child exit remains
+                 # queued for cleanup, and must prevent any stale PID signal.
+                 receive do
+                   {^port, :eof} -> :ok
+                 after
+                   1_000 -> flunk("child output did not close")
+                 end
+
+                 receive do
+                   {^port, {:exit_status, _status}} = message -> send(self(), message)
+                 after
+                   1_000 -> flunk("child did not exit")
+                 end
+
+                 send(test, {:withheld_output_eof, port})
+               end
+             )
+
+    assert_receive {:withheld_output_eof, port}
+    assert_receive {:external_command_started, owner, os_pid}
+    owner_monitor = Process.monitor(owner)
+    refute os_pid_alive?(os_pid)
+    refute_receive {:external_command_signal, ^os_pid, _signal}
+    refute_receive {:external_command_terminal, ^os_pid}
+    assert Process.alive?(owner)
+
+    send(owner, {port, :eof})
+    assert_receive {:external_command_terminal, ^os_pid}
+    assert_receive {:DOWN, ^owner_monitor, :process, ^owner, :normal}
+    assert Port.info(port) == nil
+  end
+
   test "observer protocol accepts only a nonblocking process destination" do
     callback = fn _event -> :ok end
 
@@ -202,6 +277,29 @@ defmodule SwarmCode.Daemon.Platform.ExternalCommandTest do
     assert_receive {:external_command_signal, ^os_pid, :term}
     assert_receive {:external_command_terminal, ^os_pid}
     refute os_pid_alive?(os_pid)
+  end
+
+  # Leave real Port evidence queued, but hold the owner before its PID lookup
+  # until the child has exited and the driver has delivered EOF or closed.
+  defp await_open_child_exit!(port, exit? \\ false, ended? \\ false, messages \\ [])
+
+  defp await_open_child_exit!(_port, true, true, messages) do
+    Enum.reverse(messages)
+  end
+
+  defp await_open_child_exit!(port, exit?, ended?, messages) do
+    receive do
+      {^port, {:exit_status, _status}} = message ->
+        await_open_child_exit!(port, true, ended?, [message | messages])
+
+      {^port, :eof} = message ->
+        await_open_child_exit!(port, exit?, true, [message | messages])
+
+      {:DOWN, _monitor, :port, ^port, _reason} = message ->
+        await_open_child_exit!(port, exit?, true, [message | messages])
+    after
+      1_000 -> flunk("child did not exit before PID lookup")
+    end
   end
 
   defp os_pid_alive?(pid) do

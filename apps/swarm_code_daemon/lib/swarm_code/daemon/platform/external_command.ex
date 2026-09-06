@@ -16,6 +16,7 @@ defmodule SwarmCode.Daemon.Platform.ExternalCommand do
                        :max_line_bytes,
                        :observer,
                        :terminate_grace,
+                       :test_after_port_open,
                        :test_before_terminate,
                        :test_fail_after_port_open,
                        :test_signal_executable,
@@ -151,12 +152,20 @@ defmodule SwarmCode.Daemon.Platform.ExternalCommand do
   end
 
   defp empty_state,
-    do: %{exit_status: nil, output: nil, port_down?: false, requester: nil, request_ref: nil}
+    do: %{
+      exit_status: nil,
+      eof?: false,
+      output: nil,
+      port_down?: false,
+      requester: nil,
+      request_ref: nil
+    }
 
   defp open_port(config) do
     options = [
       :binary,
       :exit_status,
+      :eof,
       :hide,
       :use_stdio,
       :stderr_to_stdout,
@@ -165,8 +174,12 @@ defmodule SwarmCode.Daemon.Platform.ExternalCommand do
     ]
 
     options = if config.cwd, do: [{:cd, String.to_charlist(config.cwd)} | options], else: options
+
+    # Retain the Port through a fast child exit so its exact OS PID remains
+    # available. Close it only after both output EOF and child exit evidence.
     port = Port.open({:spawn_executable, String.to_charlist(config.executable)}, options)
     port_monitor = Port.monitor(port)
+    invoke_after_port_open(config.after_port_open, port)
 
     case Port.info(port, :os_pid) do
       {:os_pid, os_pid} when is_integer(os_pid) and os_pid > 0 ->
@@ -195,7 +208,22 @@ defmodule SwarmCode.Daemon.Platform.ExternalCommand do
           {:command_error, %{state | output: :invalid}}
 
         {^port, {:exit_status, status}} when is_integer(status) and status >= 0 ->
-          collect(port, port_monitor, requester_monitor, deadline, %{state | exit_status: status})
+          collect(
+            port,
+            port_monitor,
+            requester_monitor,
+            deadline,
+            close_finished_port(port, %{state | exit_status: status})
+          )
+
+        {^port, :eof} ->
+          collect(
+            port,
+            port_monitor,
+            requester_monitor,
+            deadline,
+            close_finished_port(port, %{state | eof?: true})
+          )
 
         {:DOWN, ^port_monitor, :port, ^port, _reason} ->
           collect(port, port_monitor, requester_monitor, deadline, %{state | port_down?: true})
@@ -217,8 +245,12 @@ defmodule SwarmCode.Daemon.Platform.ExternalCommand do
         terminal(config.observer, os_pid)
 
       {:timeout, running_state} ->
-        notify(config.observer, {:external_command_signal, os_pid, :term})
-        _signal_result = signal(config.signal_executable, os_pid, "-TERM")
+        # A retained Port can outlive its child; never signal a PID whose exact
+        # exit status is already known while waiting for output EOF or DOWN.
+        if is_nil(running_state.exit_status) do
+          notify(config.observer, {:external_command_signal, os_pid, :term})
+          _signal_result = signal(config.signal_executable, os_pid, "-TERM")
+        end
 
         case await_terminal(port, port_monitor, running_state, config.terminate_grace) do
           {:ok, _terminal_state} ->
@@ -236,8 +268,10 @@ defmodule SwarmCode.Daemon.Platform.ExternalCommand do
         terminal(config.observer, os_pid)
 
       {:timeout, running_state} ->
-        notify(config.observer, {:external_command_signal, os_pid, :kill})
-        _signal_result = signal(config.signal_executable, os_pid, "-KILL")
+        if is_nil(running_state.exit_status) do
+          notify(config.observer, {:external_command_signal, os_pid, :kill})
+          _signal_result = signal(config.signal_executable, os_pid, "-KILL")
+        end
 
         case await_terminal(port, port_monitor, running_state, config.kill_grace) do
           {:ok, _terminal_state} ->
@@ -274,7 +308,20 @@ defmodule SwarmCode.Daemon.Platform.ExternalCommand do
           do_await_terminal(port, port_monitor, state, deadline)
 
         {^port, {:exit_status, status}} when is_integer(status) and status >= 0 ->
-          do_await_terminal(port, port_monitor, %{state | exit_status: status}, deadline)
+          do_await_terminal(
+            port,
+            port_monitor,
+            close_finished_port(port, %{state | exit_status: status}),
+            deadline
+          )
+
+        {^port, :eof} ->
+          do_await_terminal(
+            port,
+            port_monitor,
+            close_finished_port(port, %{state | eof?: true}),
+            deadline
+          )
 
         {:DOWN, ^port_monitor, :port, ^port, _reason} ->
           do_await_terminal(port, port_monitor, %{state | port_down?: true}, deadline)
@@ -296,7 +343,18 @@ defmodule SwarmCode.Daemon.Platform.ExternalCommand do
           await_terminal_forever(port, port_monitor, state)
 
         {^port, {:exit_status, status}} when is_integer(status) and status >= 0 ->
-          await_terminal_forever(port, port_monitor, %{state | exit_status: status})
+          await_terminal_forever(
+            port,
+            port_monitor,
+            close_finished_port(port, %{state | exit_status: status})
+          )
+
+        {^port, :eof} ->
+          await_terminal_forever(
+            port,
+            port_monitor,
+            close_finished_port(port, %{state | eof?: true})
+          )
 
         {:DOWN, ^port_monitor, :port, ^port, _reason} ->
           await_terminal_forever(port, port_monitor, %{state | port_down?: true})
@@ -306,6 +364,16 @@ defmodule SwarmCode.Daemon.Platform.ExternalCommand do
       end
     end
   end
+
+  # Account for EOF and exit_status independently; close only after both
+  # child termination and complete output delivery are established.
+  defp close_finished_port(port, %{eof?: true, exit_status: status} = state)
+       when is_integer(status) do
+    Port.close(port)
+    state
+  end
+
+  defp close_finished_port(_port, state), do: state
 
   defp result(%{exit_status: 0, output: output}) when is_binary(output), do: {:ok, output}
   defp result(%{exit_status: 0, output: nil}), do: {:ok, ""}
@@ -348,6 +416,7 @@ defmodule SwarmCode.Daemon.Platform.ExternalCommand do
     observer = Keyword.get(opts, :observer)
     cwd = Keyword.get(opts, :cwd)
     signal_executable = signal_executable(opts)
+    after_port_open = after_port_open(opts)
     before_terminate = before_terminate(opts)
     fail_after_port_open? = fail_after_port_open?(opts)
 
@@ -360,6 +429,7 @@ defmodule SwarmCode.Daemon.Platform.ExternalCommand do
          true <- is_integer(max_line_bytes) and max_line_bytes in 1..@maximum_line_bytes//1,
          true <- is_nil(observer) or is_pid(observer),
          true <- is_nil(cwd) or is_binary(cwd),
+         true <- is_nil(after_port_open) or is_function(after_port_open, 1),
          true <- is_nil(before_terminate) or is_function(before_terminate, 1),
          true <- is_boolean(fail_after_port_open?),
          true <- is_binary(signal_executable) and Path.type(signal_executable) == :absolute do
@@ -373,6 +443,7 @@ defmodule SwarmCode.Daemon.Platform.ExternalCommand do
          max_line_bytes: max_line_bytes,
          observer: observer,
          cwd: cwd,
+         after_port_open: after_port_open,
          before_terminate: before_terminate,
          fail_after_port_open?: fail_after_port_open?,
          signal_executable: signal_executable
@@ -383,6 +454,7 @@ defmodule SwarmCode.Daemon.Platform.ExternalCommand do
   end
 
   if @test_build do
+    defp after_port_open(opts), do: Keyword.get(opts, :test_after_port_open)
     defp before_terminate(opts), do: Keyword.get(opts, :test_before_terminate)
 
     defp signal_executable(opts),
@@ -390,10 +462,14 @@ defmodule SwarmCode.Daemon.Platform.ExternalCommand do
 
     defp fail_after_port_open?(opts), do: Keyword.get(opts, :test_fail_after_port_open, false)
   else
+    defp after_port_open(_opts), do: nil
     defp before_terminate(_opts), do: nil
     defp signal_executable(_opts), do: "/bin/kill"
     defp fail_after_port_open?(_opts), do: false
   end
+
+  defp invoke_after_port_open(nil, _port), do: :ok
+  defp invoke_after_port_open(function, port), do: function.(port)
 
   defp invoke_before_terminate(nil), do: :ok
   defp invoke_before_terminate(function), do: function.(self())
