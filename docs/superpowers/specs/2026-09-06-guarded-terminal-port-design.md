@@ -1,6 +1,6 @@
 # Guarded terminal Port candidate
 
-Status: implementation candidate; not adopted. This follows the completed cell
+Status: locally runnable implementation candidate; not adopted. This follows the completed cell
 painter and the exact ExRatatui rejection. Work stays in swarm-code-cli; the
 desktop, canonical data, and global toolchain are untouched.
 
@@ -23,8 +23,8 @@ width reserves cells, and native captures must establish actual appearance.
 
 ## Components
 
-- `native/terminal_port`: project-owned Rust library and eventual executable.
-  Pure parser tests need only std. Rendering adds exact direct versions of
+- `native/terminal_port`: project-owned Rust library and executable.
+  The parser uses only std. Rendering uses exact direct versions of
   ratatui-core and crossterm with default features disabled; Cargo.lock pins all
   transitive versions. Crossterm events, cursor queries and raw-mode global state
   are unused. The guard owns termios on the explicit descriptor instead.
@@ -40,9 +40,10 @@ width reserves cells, and native captures must establish actual appearance.
   one restoration path. No claim covers killing the entire process group with
   SIGKILL; recovery remains `reset`/`stty sane` for that case.
 
-The runnable integration will be a fixed synthetic terminal demo using existing
-Fake.Source/SessionRuntime. It must exercise navigation, editor input, questions,
-run/agent controls and detach, not only draw static scenes. The plain command
+The runnable integration is a fixed synthetic terminal demo using existing
+Fake.Source/SessionRuntime, launched by `scripts/dev/run_terminal_demo.sh`.
+It connects navigation, editor input, questions, run/agent controls and detach
+through the existing reducer and keymap. The plain command
 retains its application/process boundary. This candidate does not start a daemon,
 provider, Repo, or canonical-data service.
 
@@ -97,15 +98,37 @@ versioned binary body. Draw frames carry revision, dimensions, palette, position
 whole glyphs and cursor only; action Intents and source DTOs never leave BEAM.
 The adapter preserves opaque action metadata locally because live mouse remains
 disabled. Frame, event, credit, ready, paint-ack, shutdown and restored records
-will receive exact layouts and cross-language fixtures in the transport task.
+have exact layouts and cross-language fixtures in the
+[wire contract](../../implementation/terminal-port-wire-v1.md).
 
-The writer opens /dev/tty explicitly; stdin/stdout remain protocol channels.
+The painter validates before output, clears each dirty row, fills reserved styled
+cells, and positions each glyph absolutely. It retains the prior buffer only after
+flush succeeds. A fixed 8 KiB output buffer batches writes and never flushes on Drop.
+The BEAM owner uses nonblocking `Port.command/3` admission and holds new input credit
+while a draw is pending. A resize detected before painting returns Skipped and
+queues the new size; geometry changes during painting are not atomic.
+
+Standalone launch opens /dev/tty explicitly. OTP28 detaches a spawned Port from
+its controlling terminal, so the fixed `--beam-port` mode uses `:nouse_stdio`: it
+verifies inherited fd0/fd1 are the same actual terminal, obtains its name from the
+kernel, opens an independent descriptor with O_NOFOLLOW/O_NOCTTY/O_CLOEXEC, and
+checks device identity against the inherited descriptors. Only then are protocol
+fd3/fd4 mapped to stdin/stdout. No caller-supplied tty path is accepted. The
+independent descriptor prevents nonblocking I/O flags from changing the parent
+shell's open-file description. Invalid/mismatched descriptors fail before modes.
 Initialization explicitly chooses alternate-screen or no-alt before any mode
 change. No-alt never enters the alternate screen. Resize is queried on that fd;
 raw/cooked transitions use the retained original termios. Disable mouse, bracketed
 paste and focus reporting, restore cursor visibility/style, and restore termios
 on orderly closure and each injected initialization failure. Suspend restores
-before stopping; resume reinitializes and requests a fresh current frame.
+before stopping. External resume emits ResumeNeeded and discards queued old draws
+and credit until a fresh Resume command; Ready then starts a fresh UI generation.
+The guard independently watches the parent pipe and reaps a stopped writer on EOF.
+The launcher uses `-noinput` to prevent BEAM's user driver from reading the tty.
+Ctrl-Z remains editor undo; full shell foreground-job control is not implemented.
+Every restoration retry reestablishes nonblocking output before attempting escape
+mode cleanup and resets termios even on output failure. Permanent backpressure
+returns a restoration error and exits; it cannot guarantee terminal escape state.
 
 ## Verification and claim boundary
 
@@ -114,10 +137,11 @@ cover every packet split, exact paste bounds, malformed UTF-8 recovery, unknown
 control-string floods, false terminators, 100 bounded pastes, 10000 ordered keys,
 credit-compatible prefix consumption, and retained-capacity counters.
 
-The next tasks add cross-language wire fixtures, exact frame-output tests for both
-width policies, overwritten wide spans, all color modes and cursor shapes, and a
-real PTY harness. The integrated demo must restore exact termios and preserve
-main-screen sentinels in no-alt mode. Real keyboard paths use the existing reducer;
+Cross-language wire fixtures and exact frame-output tests cover both width policies,
+overwritten wide spans, all color modes and cursor shapes. Local owned-PTY tests
+cover real input, mode changes, failures, resize and resume. The integrated demo
+checks exact termios restoration and no-alt initialization. No-alt paints in the
+main screen and does not promise to preserve its previous contents. Real keyboard paths use the existing reducer;
 shutdown never synthesizes domain Stop. Browser checks, when needed for captured
 visual artifacts, use ego-lite and close only the task space without clearing
 sessions/cookies.

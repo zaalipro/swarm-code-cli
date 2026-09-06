@@ -1,10 +1,10 @@
 # SwarmCode CLI
 
-This repository contains foundation infrastructure, a runnable synthetic interaction demo,
-and a passive cell preview gallery.
+This repository contains foundation infrastructure, runnable synthetic plain and
+interactive terminal demos, and a passive cell preview gallery.
 The plain session and renderer-neutral UI share scoped requests, questions, run controls,
 process-local drafts, and bounded presentation data. Production provider execution, persistence,
-a daemon launcher, and a real terminal renderer remain unfinished.
+a daemon launcher, and supported-platform renderer acceptance remain unfinished.
 
 Run the fixed demo without starting a daemon or opening user data:
 
@@ -14,6 +14,31 @@ Run the fixed demo without starting a daemon or opening user data:
 
 It demonstrates conversation navigation, answering a question, failed-run Retry, agent Stop,
 and detach. Output is append-only; the demo owns and cleans up its synthetic processes.
+
+Build the guarded terminal candidate, then run the interactive demo in a terminal:
+
+```sh
+scripts/dev/check_terminal_port.sh
+scripts/dev/run_terminal_demo.sh
+```
+
+The demo uses fixed synthetic conversations and the Carbon Navigator/Main/Composer
+layout. Tab moves focus; Enter activates; Escape returns to content. Press `a`,
+search for `Open question`, and press Enter to answer the pending question.
+Question digits focus an option; Enter submits it. Outside the editor, `q`
+detaches; an unsent draft shows Cancel/Confirm. Ctrl-Z remains editor undo.
+
+Options are `--no-alt-screen`, `--ascii`, `--monochrome`,
+`--ambiguous-width narrow|wide`, and `--reduced-motion`. `NO_COLOR` selects
+monochrome. The launcher starts BEAM with `-noinput` so its user driver does not
+compete with the native input owner. Non-TTY and `TERM=dumb` invocations reject
+before terminal mode changes; use the plain demo in those environments.
+
+The native writer has a separate restoration guard and supports resize and
+external suspend/resume. Local macOS PTY checks cover cleanup after normal exit,
+signals and writer failure. Full shell foreground-job control, native visual and
+performance acceptance, and all four supported-target release gates remain open.
+This demo does not connect to a daemon or load user data.
 
 Export the synthetic UI as a cell preview gallery:
 
@@ -40,15 +65,20 @@ source and generated tables can be checked offline with
 `python3 scripts/dev/sync_unicode_variants.py --check`. Both checks also run
 as part of `precommit`.
 
-The terminal Port candidate currently has a pure Rust input parser and a draw-frame
-decoder. It does not yet open a terminal. Run its separate tests with the pinned
-Rust toolchain:
+The terminal Port candidate has a bounded Rust input parser, exact cell output,
+credit-controlled wire protocol, restoration guard and Elixir terminal owner.
+Run its separate checks with the pinned Rust toolchain, followed by the local
+PTY suites (which create and clean up their own terminals and processes):
 
 ```sh
 scripts/dev/check_terminal_port.sh
+PYTHONDONTWRITEBYTECODE=1 python3 scripts/dev/test_terminal_port_pty.py
+PYTHONDONTWRITEBYTECODE=1 python3 scripts/dev/test_terminal_demo_pty.py
 ```
 
-The check keeps Cargo build/cache output under `_build` and uses a repository-local
+The first command builds the debug executable, checks formatting, runs Rust tests,
+and verifies the locked dependency license manifest. It keeps Cargo build/cache
+output under `_build` and uses a repository-local
 compiler if present, otherwise the pinned installed Rust toolchain. It installs nothing.
 The parser bounds paste while reading, preserves packet boundaries and UTF-8, and
 discards control strings. Legacy Alt punctuation from `!` through `/` and CSI-u

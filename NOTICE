@@ -22,3 +22,7 @@ Variants and Emoji Variation Sequences, and the Ideographic Variation Database
 registration dated 2025-07-14. Unicode License V3, source copyright notices,
 exact source bytes, URLs and SHA-256 hashes are preserved in
 third_party/unicode-17.0.0-variants/.
+
+Native terminal candidate dependency licenses, source URLs, exact registry
+archive checksums and unchanged license texts are recorded in
+third_party/terminal-port/.

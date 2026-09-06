@@ -8,3 +8,12 @@ publish = false
 [lib]
 name = "swarm_terminal_port"
 path = "src/lib.rs"
+
+[dependencies]
+ratatui-core = { version = "=0.1.2", default-features = false, features = ["std"] }
+crossterm = { version = "=0.29.0", default-features = false }
+libc = "=0.2.189"
+
+[[bin]]
+name = "swarm-terminal-port"
+path = "src/main.rs"

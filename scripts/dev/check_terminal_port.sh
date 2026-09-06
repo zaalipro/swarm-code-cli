@@ -17,3 +17,4 @@ fi
 
 "$terminal_port_cargo" fmt --manifest-path native/terminal_port/Cargo.toml --check
 "$terminal_port_cargo" test --manifest-path native/terminal_port/Cargo.toml --locked
+python3 scripts/dev/verify_terminal_port_licenses.py

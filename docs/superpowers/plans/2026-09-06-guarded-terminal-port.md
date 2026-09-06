@@ -48,25 +48,24 @@ Key, Phase, Modifiers and Rejection values map to the existing UI.Input contract
 
 ## Task2: Credit-controlled wire and exact cell output
 
-Progress: Draw-v1 codec and bounded native diagnostic are implemented; the
-control/event record layouts, credit state machine and real output writer remain.
-Five Elixir codec tests and four Rust decoder tests pass; twelve representative
-Elixir frames pass through the compiled native diagnostic. Exact body layout is
-in `docs/implementation/terminal-port-wire-v1.md`.
+Progress: Draw-v1 codec, control/event records, credit state machine and exact-cell
+writer are implemented. Ratatui core and commands-only Crossterm are pinned with
+events disabled; 58 locked crate records and 108 license texts are verified offline.
+Exact body layouts are in `docs/implementation/terminal-port-wire-v1.md`.
 
 Files: Rust wire/frame/output modules and Elixir
 `ui/renderer/ratatui_port/{wire,frame}.ex`, cross-language fixture corpus.
 Consumes: validated Paint.Plan and parser Event. Produces: versioned transport
 bytes, bounded decode steps, exact positioned terminal output and paint acks.
 
-- [ ] Specify exact closed record byte layouts, packet limits, cursor/style enums,
+- [x] Specify exact closed record byte layouts, packet limits, cursor/style enums,
   invalid-record closure and one-credit state machine before implementing them.
-- [ ] Add independently decoded cross-language fixtures, truncated/oversized
+- [x] Add independently decoded cross-language fixtures, truncated/oversized
   headers, bad UTF-8/control glyphs, row-crossing widths and palette overflow.
-- [ ] Pin core/commands dependencies with events disabled; verify actual feature
+- [x] Pin core/commands dependencies with events disabled; verify actual feature
   tree and record licenses/provenance. Use explicit cursor moves per glyph and
   clear old complete spans; do not rely on ForcedWidth's omitted trailing clears.
-- [ ] Compare output to exact grids across both width policies, wide overwrite,
+- [x] Compare output to exact grids across both width policies, wide overwrite,
   palette modes, cursor visibility/shapes, and frame revision/ack correlation.
 
 ## Task3: Restoration guard and real PTY execution
@@ -74,13 +73,15 @@ bytes, bounded decode steps, exact positioned terminal output and paint acks.
 Files: native guard/tty/main modules, task-owned Python PTY harness/tests.
 Consumes: versioned protocol; produces ready/input/paint-ack/restored records.
 
-- [ ] Write PTY tests that snapshot termios and main-screen sentinel; test normal
-  shutdown and failure after every mode transition before implementing lifecycle.
-- [ ] Open the explicit terminal fd, snapshot modes, create guarded writer
-  ownership and bounded poll loop. No tty fallback to protocol stdin/stdout.
-- [ ] Test parent EOF, renderer failure, INT/TERM/HUP, resize, suspend/resume,
+- [x] Write PTY tests that snapshot termios; test normal shutdown and injected
+  initialization failure before implementing lifecycle. No-alt avoids entering
+  alternate screen; painting there does not preserve old main-screen content.
+- [x] Open the explicit terminal fd, snapshot modes, create guarded writer
+  ownership and bounded poll loop. BEAM launch uses verified inherited tty
+  descriptors and separate protocol fd3/fd4; there is no unverified tty fallback.
+- [x] Test parent EOF, renderer failure, INT/TERM/HUP, resize, suspend/resume,
   no-alt and alternate-screen; verify exact restoration and child termination.
-- [ ] Capture actual cell output/input bytes and resource bounds. Record local
+- [x] Capture actual cell output/input bytes and resource bounds. Record local
   platform evidence without marking absent native targets as passed.
 
 ## Task4: Interactive CLI integration and candidate evaluation
@@ -88,14 +89,20 @@ Consumes: versioned protocol; produces ready/input/paint-ack/restored records.
 Files: Elixir RatatuiPort adapter/terminal owner, fixed demo Mix task and tests;
 renderer decision/locked audit updates scoped to the new candidate.
 
-- [ ] Test two-phase binding, stale revision, credit ack, terminal failure and
+- [x] Test two-phase binding, stale revision, credit ack, terminal failure and
   shutdown against the existing SessionRuntime before adding the owner.
-- [ ] Compose the existing Fake.Source/SessionRuntime into an interactive terminal
+- [x] Compose the existing Fake.Source/SessionRuntime into an interactive terminal
   demo; keyboard navigation, composer, questions, controls and detach must work.
-- [ ] Run the real command in task-owned PTYs; verify unchanged plain demo,
+- [x] Run the real command in task-owned PTYs; verify unchanged plain demo,
   process/application boundaries, no canonical IO, exact restoration and no leaks.
 - [ ] Continue the candidate's native input/frame/lifecycle/performance and
   supported-target campaign. Emit incomplete evidence for unavailable targets;
   never change the decision to adopt from local checks alone.
-- [ ] Update README/audit, run full precommit and production compile, commit
-  explicit files, and continue original daemon/provider/persistence/parity work.
+- [x] Update README/audit, run full precommit and production compile. Final seed
+  832090 passed 789 tests + 5 properties; native 44 Rust + 14 PTY, live demo 8 PTY,
+  then 3 focused live checks after the final lifecycle/message changes. All scoped
+  reviews approved; ego-lite task space and local server closed.
+- [x] Commit the reviewed local implementation checkpoint with explicit files.
+- [ ] Continue original daemon/provider/persistence/parity work. Candidate adoption,
+  complete native campaign and supported-target release artifacts remain open
+  independently of this local implementation checkpoint.

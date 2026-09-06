@@ -1,8 +1,8 @@
 # Terminal Port wire v1
 
-Implementation status: Elixir draw encoder and bounded native draw decoder are
-implemented and checked with cross-language fixtures. Control/event transport,
-credits and live terminal owner remain in progress.
+Implementation status: draw/control codecs, bounded response framing, native
+writer, credit loop, restoration guard and live Elixir owner are implemented.
+Native PTY evidence is local to this machine.
 This protocol belongs only to the disposable terminal adapter, not daemon IPC.
 All integers are unsigned big-endian. Unknown tags/enums, trailing bytes and
 invalid sizes close the renderer connection with a fixed diagnostic; they never
@@ -51,14 +51,10 @@ are serialized: the keyboard-only adapter needs cells and cursor, and activation
 ownership remains in SessionRuntime. The sequence is a local monotonically
 assigned draw token, separate from revision. At most one frame can be unacknowledged.
 
-## Reserved record tags and input mapping
+## Input mapping
 
-Tag1 init,2 input-credit,4 shutdown,5 suspend,6 resume,16 ready,17 input,18 painted,
-19 restored,20 resize and21 fixed error are reserved for the native integration.
-They are not accepted by the draw encoder and have no executable implementation
-yet. Exact record layouts, decoder allocation limits and connection-state tests
-must precede use. Reserved tags cannot authorize the terminal owner to send
-unvalidated maps or unbounded JSON.
+Draw encoding is separate from the closed control and response records specified
+below. Unknown tags cannot authorize unvalidated maps or unbounded JSON.
 
 The parser's closed Rust event values map to existing UI.Input, with no strings
 converted to atoms. Phase codes are press0,repeat1,release2. Modifier bits0..5
@@ -68,3 +64,73 @@ Delete,Insert,Escape,Null,CapsLock,ScrollLock,NumLock,PrintScreen,Pause,Menu,
 KeypadBegin. F1..F12 reserve32..43. Any other numeric code is unsupported, never
 constructed as an arbitrary key. Text fragments and completed paste retain exact
 UTF8 bytes; rejections contain only a reason code, never rejected content.
+
+## Control and response records
+
+These exact layouts extend v1 for the terminal owner. Every body begins
+with version:u8=1,tag:u8. They use the same four-byte length prefix as Draw.
+Generation and token/sequence are u64. A token identifies one outstanding control
+or input credit, not a source/domain action.
+
+| Direction/tag | Fields after version/tag |
+|---|---|
+| BEAM→native Init1 | generation, flags:u8 |
+| BEAM→native Credit2,Shutdown4,Suspend5,Resume6 | generation, token |
+| Native→BEAM Ready16 | generation, columns:u16, rows:u16, flags:u8 |
+| Native→BEAM Input17 | generation, credit-token, input-kind:u8, payload below |
+| Native→BEAM Painted18 | generation, draw-sequence, revision:u64 |
+| Native→BEAM Skipped23 | generation, draw-sequence, revision:u64 |
+| Native→BEAM ResumeNeeded24 | generation |
+| Native→BEAM Restored19 | generation, control-token, state:u8 (closed0,suspended1) |
+| Native→BEAM Resize20 | generation, credit-token, columns:u16,rows:u16 |
+| Native→BEAM Error21 | generation, reason:u8 |
+
+Flag bits are alternate-screen0,focus-reporting1,bracketed-paste2; others reject.
+Ready confirms applied flags. Sizes are nonzero u16 observations; the renderer's
+Draw admission remains500×200. Input kinds/payloads are:
+
+- Key0: phase:u8,key-code:u8,modifier-bits:u8.
+- Text1: phase:u8,modifier-bits:u8,length:u16,exact UTF8 bytes (1..4096).
+- Paste2: length:u32,exact UTF8 bytes (0..262144).
+- Rejected3: reason:u8 (invalid-UTF8=0,text-fragment-too-large1,paste-too-large2).
+- FocusGained4/FocusLost5: empty payload.
+
+Error reasons1..6 are protocol,initialization,draw,read,write,restoration. No raw
+exception, OS path, terminal bytes, or source content enters an error. The maximum
+native response body is262167bytes (largest paste record). Decode checks this cap,
+closed enums, exact lengths and trailing-byte absence before admitting neutral
+Input. Framing must bound retained bytes before passing a complete body to decode.
+
+Input and Resize share one credit. The native reader consumes only while a credit
+is outstanding, emits exactly one event bearing that token, then stops reading.
+Pending resize observations coalesce and use the next credit. The BEAM owner
+submits input to SessionRuntime before granting the next strictly increasing
+token. No unsolicited event is admitted. Generation mismatches, duplicate credit,
+and non-increasing draw sequences close the connection. A Painted record is sent
+only after output flush and returns both draw sequence and Scene revision.
+Skipped23 means that observed terminal dimensions differ from the frame before
+painting. It emits no terminal bytes, consumes that draw sequence, and schedules
+a Resize for the next input credit. The owner settles the old draw as retryable
+and supplies a fresh frame after applying Resize. Geometry can still change
+during multi-write painting; no atomic terminal resize guarantee is implied.
+
+Shutdown and Suspend revoke input credit before mode restoration. Restored is
+sent only after successful mode output and exact termios restoration; Resume produces a new Ready and a
+fresh full paint. The native session loop and guard enforce these lifecycle properties in the
+owned PTY tests. Full supported-platform and shell job-control evidence remains
+separate from local protocol tests.
+
+Every restoration attempt uses nonblocking output with a bounded write deadline,
+including retries after restoring descriptor status flags. Exact termios reset
+runs even if mode output fails. A permanently blocked terminal can prevent escape
+mode cleanup; that path returns restoration Error21 and exits nonzero, without a
+false Restored acknowledgement. BEAM waits for actual guard exit status before
+claiming cleanup; protocol EOF alone does not establish process termination.
+
+External suspend/continue uses an explicit barrier. On CONT the writer remains
+inactive and sends ResumeNeeded24. That record cancels pre-barrier pending paints
+and credits; the owner settles old draws as retryable and sends a fresh Resume
+control. FIFO ordering lets native discard old queued Draw/Credit commands until
+that Resume. Only after reactivation/Ready may the owner send a fresh draw and
+credit. This avoids stale credits crossing external resume. Pending terminal
+bytes stay bounded and are not read or emitted while the barrier is active.

@@ -6,3 +6,4 @@
 erl_crash.dump
 *.ez
 /swarm_code_cli-*.tar
+__pycache__/

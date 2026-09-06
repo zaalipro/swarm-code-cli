@@ -9,11 +9,11 @@ behavior. No desktop application, database, settings, or source was changed.
 ## Assessment
 
 The repository now has a runnable synthetic plain demo, a pure reducer/projector,
-keyboard routing, a cell painter and passive preview gallery, and a renderer-neutral
-session runtime. It is still not a CLI
+keyboard routing, a cell painter and passive preview gallery, a renderer-neutral
+session runtime, and a locally runnable guarded terminal demo. It is still not a CLI
 for real user work: the application entry modules are empty, with no production
 launcher, running daemon, provider execution, persistent query/command service,
-or terminal renderer. Passing synthetic interaction tests do not establish
+or supported-platform renderer acceptance. Passing synthetic interaction tests do not establish
 desktop feature coverage.
 
 The foundations have useful safeguards: bounded protocol framing/JSON,
@@ -41,7 +41,7 @@ main surfaces against the current desktop and the files actually present here.
 | Scheduling: `scheduled_live.ex`, scheduler runtime | Absent | Durable schedules/claims, timezones, agenda, manual launch, recovery and no-double-fire tests |
 | Usage and settings: `history_live.ex`, `SettingsLive.sections/0` | Absent | Usage/budgets; all eleven settings sections, secret-store adapters, model/effort and provider/MCP diagnostics |
 | Git/files/attachments/memory/commands | Absent | Confined service operations, diff/editor, recoverable mutations, metadata attachments and terminal command equivalents |
-| Terminal navigation and desktop appearance | Carbon Scenes and cell previews, responsive panes, reducer/keymap, revision-correlated runtime | Real renderer, terminal resize/restoration and native visual evidence |
+| Terminal navigation and desktop appearance | Carbon Scenes, responsive panes, reducer/keymap and guarded interactive terminal demo; local input/resize/restoration PTY checks | Full native visual/input/lifecycle/performance campaign and supported-target artifacts |
 | Plain/headless and installable artifacts | Bounded plain line session and executable synthetic Mix demo | Real service adapter, production commands/exit codes, bundled runtime, offline and supported-target smoke tests |
 
 The current desktop router still exposes Chats, Scheduled, Workflows, Research,
@@ -103,7 +103,7 @@ handles plain/dumb/no-color modes and carries one ambiguous-width policy.
 The Carbon theme provides exact truecolor/256/16/monochrome values, fixed state
 words, seven run prefixes, five numbered lanes and structural focus/disabled
 cues. The Projector now uses these renderer-neutral styles in valid Scenes;
-these are not rendered terminal evidence.
+the guarded demo now renders them locally; native visual acceptance remains open.
 
 Responsive geometry now implements the seven terminal size classes, the
 desktop's Navigator/Main/Inspector hierarchy on wide screens and one dock on
@@ -112,7 +112,7 @@ overwrite requested preferences. Small layouts reduce composer/activity rows;
 compressed and degenerate layouts expose no composer geometry or mutation
 size permission. Rectangle tests cover all width/height boundary combinations
 and both medium dock choices. Reducer, Projector and Keymap now connect scene
-content, focus and keyboard routing; a real terminal adapter remains absent.
+content, focus and keyboard routing; the guarded adapter binds these to real input/output.
 
 The pure editor supports committed fragments, paste, grapheme selections,
 word/line/buffer/vertical motion, bounded inverse undo/redo and a source-bounded
@@ -295,11 +295,12 @@ coupling checks. No runtime dependency or application startup changed.
 
 Source review determined that the stock ratatui-crossterm backend enables the
 unbounded event reader transitively and can consume input for cursor queries.
-The separately planned candidate therefore uses ratatui-core cells, a project-owned
-writer and crossterm commands with events disabled. Neither rendering library is
-installed as a dependency yet. The current Rust library has no terminal IO;
-the restoration guard, credit transport, terminal owner and interactive demo
-remain subsequent work in the [candidate plan](../superpowers/plans/2026-09-06-guarded-terminal-port.md).
+The implemented candidate therefore uses ratatui-core 0.1.2 cells, a project-owned
+writer and crossterm 0.29.0 commands with all Crossterm features disabled.
+Cargo.lock pins the graph; an offline verifier checks 58 locked crate identities
+and 108 retained license texts. The executable, restoration guard, credit
+transport, terminal owner and interactive synthetic demo are now implemented in
+the [candidate plan](../superpowers/plans/2026-09-06-guarded-terminal-port.md).
 
 The original full suite ran 79 core, 195 daemon and 39 CLI tests; its only
 failure was the reproduced lease-monitor race. Width changes have 14 passing
@@ -375,6 +376,66 @@ diagnostic; oversize, zero-length, truncated and trailing-byte inputs rejected.
 Both scoped component reviews and the architecture/script follow-up are approved.
 No live terminal, PTY, browser, provider, or canonical-data path was exercised by
 this checkpoint. The desktop retains only its pre-existing untracked `.specs/`.
+
+## Guarded interactive terminal checkpoint
+
+`scripts/dev/run_terminal_demo.sh` now runs the existing three-run fixture through
+SessionRuntime, a BEAM terminal owner, and the native guarded writer. It exercises
+actual keyboard navigation, question selection/submission, bracketed paste,
+composer focus, dirty Cancel/Confirm and clean detach. The launcher requires
+`-noinput` because BEAM's user driver otherwise competes for terminal input.
+Non-TTY and dumb terminals reject before mode changes and print the working plain
+demo command. The demo is fixed synthetic data; it starts no Repo or provider.
+
+The owner retains bounded wire state and correlation tokens, fetches exact Scene
+revisions, permits one pending draw and one credit, and uses `Port.command/3` with
+`:nosuspend`. The native writer validates complete declared-width spans, clears
+dirty rows and commits its prior cell buffer only after a successful flush. An
+explicit-flush 8 KiB buffer avoids a syscall for every command without Drop output.
+One local 120×40 full-change sample improved from 123 ms to 12 ms; these isolated
+samples are not p95 or renderer-adoption performance evidence.
+
+Review and real PTY execution reproduced and corrected these integration defects:
+
+- OTP28's Port detachment removes `/dev/tty`. The closed BEAM handoff verifies
+  inherited fd0/fd1 identify the same terminal, opens an independent kernel-named
+  descriptor, and reserves fd3/fd4 for protocol. Parent file-status flags stay exact.
+- Delayed input credit expired a pending Escape before reading its queued CSI or
+  paste suffix. Expiry now follows parser state and consumes queued suffixes first.
+- Parent EOF could leak a writer stopped by SIGSTOP and its guard. The guard now
+  observes parent closure independently and reaps the exact writer before restoring.
+- External resume could race old credit or paint. ResumeNeeded establishes a FIFO
+  barrier; Ready starts a fresh UI generation and full paint after a new Resume.
+- Blocking `Port.command` stalled owner callbacks. Nonblocking admission closes
+  the failed renderer within a bounded deadline; new credit waits for pending paint.
+- A restoration retry could write through flags reset to blocking after an earlier
+  output timeout. Every attempt now reestablishes nonblocking mode and still resets
+  termios on failure. An undrained sink exits with restoration error and no children;
+  successful escape-mode cleanup is not claimed when the sink stays blocked.
+
+Native verification passed **44 Rust tests** and **14 owned-PTY tests**, plus
+formatting and offline license verification. The live BEAM demo passed **8 PTY
+tests**; the final fallback-message and lifecycle follow-up passed **3 focused
+tests**. Tests cover exact termios, no-alt initialization, writer SIGKILL, signals,
+resize-before-paint rejection, suspend/resume, bounded blocked-sink exit and no
+surviving descendants. A resize during a multi-write paint is not atomic. Full
+foreground shell job control remains unimplemented; Ctrl-Z retains editor undo.
+
+Final `mise exec -- mix precommit`, seed **832090**, passed **79 core + 197 daemon
++ 513 CLI tests and 5 properties** (**789 tests**). Formatting, warnings-as-errors
+compilation, dependency checks, provenance and both offline Unicode checks passed.
+Final production compilation also passed with warnings treated as errors. Scoped
+reviews approved the painter, codecs, owner, guard and restoration retry fix.
+The desktop retains only its pre-existing untracked `.specs/` directory.
+
+Ego-lite replayed actual native ANSI captures in pinned xterm.js 5.5.0 at 120×40,
+in truecolor and monochrome. The final inspection covered workspace hierarchy,
+Carbon surfaces and status accents, question options, composer draft and default
+Cancel focus. The eight captures and hashed manifest remain under ignored
+`_build/terminal-demo-captures/`. The task space and exact local HTTP server were
+closed; daily browser sessions and cookies were untouched. This is native byte
+output viewed through a browser emulator, not a substitute for native font shaping
+or the complete 87-frame/four-target acceptance campaign.
 
 Continue against the original full-parity objective. Completion requires real
 runtime tests, supported-platform artifacts, a rendered terminal compared with

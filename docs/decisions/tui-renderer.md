@@ -3,13 +3,19 @@
 Status: **REJECTED — exact ExRatatui 0.13.0**. Verified 2026-09-06.
 
 The CLI keeps its renderer-neutral Scene, reducer, input, theme, data-source and
-session boundaries. Its runnable presentation is the synthetic plain demo:
+session boundaries. Its stable synthetic plain demo remains available:
 
 ```sh
 (cd apps/swarm_code_cli && MIX_QUIET=1 mise exec -- mix swarm_code.demo.plain --script complete)
 ```
 
-A full-screen renderer remains pending. The September 1 stack recommendation
+A separately implemented guarded Port candidate now runs the synthetic workspace
+through `scripts/dev/run_terminal_demo.sh`. Local macOS PTY checks and captured
+ANSI replay establish limited implementation evidence; the full native campaign
+and supported-target artifacts remain open. `Renderer.Decision` still cannot
+adopt a candidate from arbitrary passing summaries.
+
+A production renderer decision remains pending. The September 1 stack recommendation
 was conditional and is superseded by this decision and the September 3
 interaction contract. Rejecting this version does not adopt another renderer.
 
@@ -73,8 +79,11 @@ Candidate-specific target failures reject their candidate; arbitrary pass
 summaries cannot adopt one. No complete candidate campaign verification format
 exists yet, so adoption is deliberately unavailable on this branch.
 
-The next candidates are a guarded Ratatui/Crossterm Port with a bounded streaming
-input parser and declared-width PaintPlan, then a project-owned pure-Elixir
+The current candidate is a guarded Ratatui/Crossterm Port with a bounded streaming
+input parser and declared-width PaintPlan. It has exact-cell output, bounded
+credits, a separate restoration guard, and a synthetic interactive demo; see its
+[design](../superpowers/specs/2026-09-06-guarded-terminal-port-design.md).
+The fallback candidate is a project-owned pure-Elixir
 exact-cell renderer/input implementation. Each needs its own plan, bounded
 queues, one terminal owner, restoration guard, width proof and four-target
 evidence. Stock TermUI is prior art. Plain.Session is a presentation fallback,
@@ -83,8 +92,8 @@ not a full-screen renderer candidate.
 Tasks 0–1 and 16–27 of the old interaction plan were not executed: their native
 bootstrap, adapter, PTY/soak campaign, release, signing and publishing work cannot
 remove these static vetoes. The future acceptance matrix of 87 exact cell/style/
-cursor/focus/action frames remains in the interaction spec; none is claimed as
-rendered evidence. The retained neutral Tasks 2–15 have implemented components
+cursor/focus/action frames remains in the interaction spec; the complete matrix
+is not claimed as rendered evidence. The retained neutral Tasks 2–15 have implemented components
 and a running demo, with [documented interaction gaps](../implementation/task13-keyboard-surfaces.md).
 This is not full desktop parity, real daemon execution, durable UI state, or an
 installable production client.

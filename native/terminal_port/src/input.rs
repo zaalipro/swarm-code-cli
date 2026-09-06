@@ -428,6 +428,11 @@ impl InputParser {
         }
     }
 
+    /// Owner clock starts only when parsing actually reaches an ambiguous ESC.
+    pub fn pending_escape(&self) -> bool {
+        matches!(self.state, State::Escape)
+    }
+
     /// Only an ambiguous standalone Escape is eligible for the owner's timeout.
     pub fn expire_escape(&mut self) -> Option<Event> {
         if matches!(self.state, State::Escape) {

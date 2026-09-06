@@ -57,6 +57,22 @@ defmodule SwarmCodeCLI.UI.ArchitectureTest do
     refute exempt?(Path.join(@lib_root, "swarm_code_cli/ui/renderer/ratatui_port/frame.ex"))
   end
 
+  test "the terminal demo composition may start only its exact planned owner" do
+    owner = "SwarmCodeCLI.UI.Renderer.RatatuiPort.Owner"
+    assert scan_terminal_demo("alias #{owner}\nOwner.start_link(options)", "terminal.ex") == []
+    refute scan_source("alias #{owner}", "ordinary.ex") == []
+
+    for source <- [
+          "Exqlite.Sqlite3.open(path)",
+          "SwarmCodeDaemon.start_link()",
+          "alias SwarmCodeCLI.UI.Renderer.RatatuiPort.Frame",
+          "ExRatatui.draw(scene)",
+          "apply(module, :start_link, [])"
+        ] do
+      refute scan_terminal_demo(source, "terminal.ex") == []
+    end
+  end
+
   test "adversarial implementation coupling forms are rejected while comments are ignored" do
     forbidden = [
       "ExRatatui.draw(scene)",
@@ -124,9 +140,29 @@ defmodule SwarmCodeCLI.UI.ArchitectureTest do
 
     case Path.relative_to(Path.expand(path), @lib_root) do
       "swarm_code_cli/demo/application_fence.ex" -> scan_fence(source, path)
+      "swarm_code_cli/demo/terminal.ex" -> scan_terminal_demo(source, path)
       "swarm_code_cli/ui/renderer/decision.ex" -> scan_decision(source, path)
       "swarm_code_cli/ui/renderer/ratatui_port/" <> _ -> scan_port(source, path)
       _ -> scan_source(source, path)
+    end
+  end
+
+  defp scan_terminal_demo(source, path) do
+    case Code.string_to_quoted(source) do
+      {:ok, ast} ->
+        ast
+        |> Macro.prewalk(fn
+          {:__aliases__, meta, [:SwarmCodeCLI, :UI, :Renderer, :RatatuiPort, :Owner]} ->
+            {:__aliases__, meta, [:TerminalAdapterOwner]}
+
+          node ->
+            node
+        end)
+        |> Macro.to_string()
+        |> scan_source(path)
+
+      _ ->
+        scan_source(source, path)
     end
   end
 

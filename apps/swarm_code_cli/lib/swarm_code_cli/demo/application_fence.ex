@@ -34,7 +34,15 @@ defmodule SwarmCodeCLI.Demo.ApplicationFence do
   @process_limit 4096
   @type audit :: map()
 
-  def run(callback) when is_function(callback, 0) do
+  def run(callback, options \\ []) when is_function(callback, 0) do
+    timeout =
+      case options do
+        [] -> 5000
+        [timeout: :infinity] -> :infinity
+        [timeout: value] when is_integer(value) and value > 0 and value <= 4_294_967_295 -> value
+        _ -> raise ArgumentError, "invalid demo lifetime"
+      end
+
     audit_descriptor!()
     if Process.get(@tracking), do: raise("demo fence is already active")
     before = snapshot()
@@ -46,7 +54,7 @@ defmodule SwarmCodeCLI.Demo.ApplicationFence do
 
     try do
       case Application.ensure_all_started(:swarm_code_cli, :temporary) do
-        {:ok, newly} -> owned_run(callback, before, declared, newly)
+        {:ok, newly} -> owned_run(callback, before, declared, newly, timeout)
         {:error, _} -> raise("demo application start failed")
       end
     after
@@ -131,7 +139,7 @@ defmodule SwarmCodeCLI.Demo.ApplicationFence do
     end
   end
 
-  defp owned_run(callback, before, declared, newly) do
+  defp owned_run(callback, before, declared, newly, timeout) do
     try do
       during = snapshot()
       assert_clean!(during)
@@ -139,7 +147,7 @@ defmodule SwarmCodeCLI.Demo.ApplicationFence do
       unless Enum.all?(newly, &(&1 in @closure)) and during.closure_started == names(@closure),
         do: raise("demo application startup escaped closure")
 
-      result = run_callback(callback)
+      result = run_callback(callback, timeout)
       latest = snapshot()
       assert_clean!(latest)
       trees = Process.get(@tracking)
@@ -178,7 +186,7 @@ defmodule SwarmCodeCLI.Demo.ApplicationFence do
     end)
   end
 
-  defp run_callback(callback) do
+  defp run_callback(callback, timeout) do
     owner = self()
     token = make_ref()
 
@@ -196,7 +204,8 @@ defmodule SwarmCodeCLI.Demo.ApplicationFence do
         send(owner, {token, :result, result})
       end)
 
-    deadline = System.monotonic_time(:millisecond) + 5000
+    deadline =
+      if timeout == :infinity, do: :infinity, else: System.monotonic_time(:millisecond) + timeout
 
     try do
       await_callback(pid, monitor, token, deadline)
@@ -237,10 +246,13 @@ defmodule SwarmCodeCLI.Demo.ApplicationFence do
         Process.put({__MODULE__, :callback_down, token}, true)
         raise("demo callback process failed")
     after
-      max(0, deadline - System.monotonic_time(:millisecond)) ->
+      remaining(deadline) ->
         raise("demo callback deadline exceeded")
     end
   end
+
+  defp remaining(:infinity), do: :infinity
+  defp remaining(deadline), do: max(0, deadline - System.monotonic_time(:millisecond))
 
   defp stop_apps!(newly) do
     level = :logger.get_primary_config().level

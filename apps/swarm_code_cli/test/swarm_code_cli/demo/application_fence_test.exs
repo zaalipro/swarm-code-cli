@@ -79,6 +79,21 @@ defmodule SwarmCodeCLI.Demo.ApplicationFenceTest do
     """)
   end
 
+  test "explicit interactive lifetime exceeds the finite default and still restores baseline" do
+    isolated!(~S"""
+    before = started.()
+    {:interactive_done, audit} = ApplicationFence.run(fn ->
+      Process.send_after(self(), :finish, 5100)
+      receive do: (:finish -> :interactive_done)
+    end, timeout: :infinity)
+    assert audit.after.started_applications == before
+    assert started.() == before
+    for options <- [[timeout: 0], [timeout: -1], [timeout: :infinity, extra: true], [timeout: 5, timeout: 6]] do
+      assert_raise ArgumentError, fn -> ApplicationFence.run(fn -> flunk("invalid options") end, options) end
+    end
+    """)
+  end
+
   test "Mix task rejects alternate scripts without starting applications" do
     isolated!(~S"""
     before = started.()
