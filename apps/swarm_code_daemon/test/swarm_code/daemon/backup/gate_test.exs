@@ -199,6 +199,7 @@ defmodule SwarmCode.Daemon.Backup.GateTest do
     assert File.ls!(fixture.backup_dir) |> Enum.sort() == entries
   end
 
+  @tag timeout: 60_000
   test "concurrent duplicate callers converge on one fully verified committed artifact" do
     fixture = migration_fixture!()
     task_supervisor = start_supervised!(Task.Supervisor)
@@ -223,9 +224,11 @@ defmodule SwarmCode.Daemon.Backup.GateTest do
 
     Enum.each(callers, &send(&1, :create_backup))
 
+    # :global lock contention uses randomized backoff of up to eight seconds per retry.
+    # Bound the whole test with ExUnit; a per-caller deadline races valid serialized work.
     artifacts =
       Enum.map(tasks, fn task ->
-        assert {:ok, artifact} = Task.await(task, 10_000)
+        assert {:ok, artifact} = Task.await(task, :infinity)
         artifact
       end)
 
