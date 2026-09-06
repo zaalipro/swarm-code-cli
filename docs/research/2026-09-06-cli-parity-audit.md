@@ -170,6 +170,14 @@ the signed desktop detector. New-database creation, migration execution,
 credential storage, real IPC, provider/tool ownership and release packaging
 remain required. Nothing in the text/width/theme work satisfies those gates.
 
+The frozen schema manifest also predates three migrations present at desktop
+`c54f4fb`: `20260927000000` adds provider fallback preferences,
+`20260928000000` adds node cache-token counters, and `20260929000000` adds the
+consensus bench-layout setting. The current gate correctly rejects those unknown
+newer schemas. Supporting today's desktop database requires a refreshed audited
+schema contract and fixtures; a read service tested against the pinned baseline
+would not establish that compatibility by itself.
+
 The source-to-Scene state vocabulary is unified on `done`, `stopped`, `retrying`,
 `interrupted` and `superseded`. Fake dispatch/queue/Steer and revisioned seen
 commands now execute synthetic transitions. Oversized admitted text stays in
@@ -412,6 +420,11 @@ Review and real PTY execution reproduced and corrected these integration defects
   output timeout. Every attempt now reestablishes nonblocking mode and still resets
   termios on failure. An undrained sink exits with restoration error and no children;
   successful escape-mode cleanup is not claimed when the sink stays blocked.
+- The UI binding deadline could expire before native Ready and both owners then
+  exited normally, falsely reporting a successful demo. The terminal owner now
+  treats runtime loss before successful Ready registration as initialization
+  failure. A regression runs the actual demo/application fence with a stalled
+  native fixture and checks the failure result and complete application cleanup.
 
 Native verification passed **44 Rust tests** and **14 owned-PTY tests**, plus
 formatting and offline license verification. The live BEAM demo passed **8 PTY
@@ -427,6 +440,14 @@ compilation, dependency checks, provenance and both offline Unicode checks passe
 Final production compilation also passed with warnings treated as errors. Scoped
 reviews approved the painter, codecs, owner, guard and restoration retry fix.
 The desktop retains only its pre-existing untracked `.specs/` directory.
+
+The final startup-timeout integration fix was reproduced through the actual
+demo/application fence before correction. Its 10-test Owner/Demo suite passed,
+as did an actual clean native detach. Post-fix `mise exec -- mix precommit`, seed
+**122018**, passed **79 core + 197 daemon + 514 CLI tests and 5 properties**
+(**790 tests**), including formatting, dependency, provenance and Unicode checks.
+Production compilation passed and the scoped final integration review approved
+the fix with no remaining findings.
 
 Ego-lite replayed actual native ANSI captures in pinned xterm.js 5.5.0 at 120×40,
 in truecolor and monochrome. The final inspection covered workspace hierarchy,

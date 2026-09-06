@@ -173,6 +173,11 @@ defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.Owner do
   defp dispatch({:EXIT, port, _}, %{port: port} = state),
     do: {:stop, :terminal_unavailable, state}
 
+  # Only successful Ready registration creates the scene slot. The runtime's
+  # shorter binding deadline may end normally before the native init deadline.
+  defp dispatch({:DOWN, monitor, :process, _, _}, %{monitor: monitor, slot: nil} = state),
+    do: {:stop, :terminal_initialization_failed, state}
+
   defp dispatch({:DOWN, monitor, :process, _, _}, %{monitor: monitor, port: nil} = state),
     do: {:stop, :normal, state}
 
@@ -401,6 +406,7 @@ defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.Owner do
 
   defp safe_reason(reason)
        when reason in [
+              :terminal_initialization_failed,
               :terminal_protocol_failed,
               :terminal_unavailable,
               :terminal_timeout,
