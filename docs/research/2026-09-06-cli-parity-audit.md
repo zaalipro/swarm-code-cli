@@ -278,6 +278,29 @@ production backup behavior is unchanged.
 
 ## Validation and continuing work
 
+The guarded Rust Port candidate now has a std-only input parser and a bounded
+Draw-v1 codec shared by Elixir and Rust. Parser limits are enforced while bytes
+are consumed, including paste overflow, split UTF-8, control-string discard and
+one-event prefix consumption. Independent review found and fixed missing SOS
+control-string handling. Legacy Alt punctuation and CSI-u extended forms remain
+explicitly unsupported; this is not full terminal-input acceptance.
+
+The native diagnostic checks the length header before allocating a body; its borrowed
+decoder validates palette, cursor and complete declared-width cell coverage, and
+exposes no text in diagnostic output. Twelve actual Elixir-generated representative frames passed through the
+compiled Rust diagnostic across three dimensions/modes and both width policies.
+The project-owned codec keeps action/focus metadata in BEAM. The adapter directory
+admits its own namespace while retaining the existing daemon/database/dynamic-code
+coupling checks. No runtime dependency or application startup changed.
+
+Source review determined that the stock ratatui-crossterm backend enables the
+unbounded event reader transitively and can consume input for cursor queries.
+The separately planned candidate therefore uses ratatui-core cells, a project-owned
+writer and crossterm commands with events disabled. Neither rendering library is
+installed as a dependency yet. The current Rust library has no terminal IO;
+the restoration guard, credit transport, terminal owner and interactive demo
+remain subsequent work in the [candidate plan](../superpowers/plans/2026-09-06-guarded-terminal-port.md).
+
 The original full suite ran 79 core, 195 daemon and 39 CLI tests; its only
 failure was the reproduced lease-monitor race. Width changes have 14 passing
 focused tests, including new failing-before-fix regressions. The lease suite
@@ -341,6 +364,17 @@ the visually checked gallery, and ego-lite loaded all seventeen final SVGs.
 The original plain demo and its golden/process/application checks remained in
 the passing umbrella suite. Desktop status remains only its pre-existing
 untracked `.specs/` directory. No desktop source or user data was modified.
+
+Terminal-input/codec checkpoint: `mise exec -- mix precommit`, seed **328227**,
+passed **79 core + 197 daemon + 495 CLI tests and 5 properties** (**771 tests**).
+Production compilation passed. `scripts/dev/check_terminal_port.sh` passed
+rustfmt and **24 Rust tests** (20 parser, 4 frame decoder) with the pinned
+Rust 1.97.1 compiler isolated under repository `_build`. The check script does not
+install toolchains. Twelve actual Elixir draw frames decoded through the native
+diagnostic; oversize, zero-length, truncated and trailing-byte inputs rejected.
+Both scoped component reviews and the architecture/script follow-up are approved.
+No live terminal, PTY, browser, provider, or canonical-data path was exercised by
+this checkpoint. The desktop retains only its pre-existing untracked `.specs/`.
 
 Continue against the original full-parity objective. Completion requires real
 runtime tests, supported-platform artifacts, a rendered terminal compared with

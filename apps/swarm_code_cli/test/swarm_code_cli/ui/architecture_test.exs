@@ -37,6 +37,26 @@ defmodule SwarmCodeCLI.UI.ArchitectureTest do
     refute exempt?(Path.join(@lib_root, "other/ui/renderer/ex_ratatui_013/evil.ex"))
   end
 
+  test "planned Port modules retain every coupling check except their own namespace" do
+    source = "defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.Frame do\n:ok\nend"
+    assert scan_port(source, "frame.ex") == []
+    refute scan_source(source, "neutral.ex") == []
+
+    for source <- [
+          "SwarmCodeDaemon.start_link()",
+          "use Ecto.Repo",
+          "ExRatatui.draw(scene)",
+          "alias SwarmCodeCLI.UI.Renderer.RatatuiPort.Exqlite",
+          "Module.concat([\"Rata\", \"tui\"])",
+          "apply(module, :draw, [scene])",
+          ":code.load_file(:ex_ratatui)"
+        ] do
+      refute scan_port(source, "frame.ex") == []
+    end
+
+    refute exempt?(Path.join(@lib_root, "swarm_code_cli/ui/renderer/ratatui_port/frame.ex"))
+  end
+
   test "adversarial implementation coupling forms are rejected while comments are ignored" do
     forbidden = [
       "ExRatatui.draw(scene)",
@@ -105,7 +125,27 @@ defmodule SwarmCodeCLI.UI.ArchitectureTest do
     case Path.relative_to(Path.expand(path), @lib_root) do
       "swarm_code_cli/demo/application_fence.ex" -> scan_fence(source, path)
       "swarm_code_cli/ui/renderer/decision.ex" -> scan_decision(source, path)
+      "swarm_code_cli/ui/renderer/ratatui_port/" <> _ -> scan_port(source, path)
       _ -> scan_source(source, path)
+    end
+  end
+
+  defp scan_port(source, path) do
+    case Code.string_to_quoted(source) do
+      {:ok, ast} ->
+        ast
+        |> Macro.prewalk(fn
+          {:__aliases__, meta, [:SwarmCodeCLI, :UI, :Renderer, :RatatuiPort | rest]} ->
+            {:__aliases__, meta, [:SwarmCodeCLI, :UI, :Renderer, :PortCandidate | rest]}
+
+          node ->
+            node
+        end)
+        |> Macro.to_string()
+        |> scan_source(path)
+
+      _ ->
+        scan_source(source, path)
     end
   end
 

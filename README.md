@@ -40,6 +40,22 @@ source and generated tables can be checked offline with
 `python3 scripts/dev/sync_unicode_variants.py --check`. Both checks also run
 as part of `precommit`.
 
+The terminal Port candidate currently has a pure Rust input parser and a draw-frame
+decoder. It does not yet open a terminal. Run its separate tests with the pinned
+Rust toolchain:
+
+```sh
+scripts/dev/check_terminal_port.sh
+```
+
+The check keeps Cargo build/cache output under `_build` and uses a repository-local
+compiler if present, otherwise the pinned installed Rust toolchain. It installs nothing.
+The parser bounds paste while reading, preserves packet boundaries and UTF-8, and
+discards control strings. Legacy Alt punctuation from `!` through `/` and CSI-u
+alternate-key/text extensions are currently unsupported. See the
+[candidate design](docs/superpowers/specs/2026-09-06-guarded-terminal-port-design.md)
+and [draw wire contract](docs/implementation/terminal-port-wire-v1.md).
+
 The 2026-09-01 source authorization, MIT license, and NOTICE terms are recorded in
 [`SOURCE_AUTHORIZATION.md`](SOURCE_AUTHORIZATION.md), [`LICENSE`](LICENSE), and [`NOTICE`](NOTICE).
 The current desktop does not honor the shared lease, so concurrent desktop/CLI operation is not
