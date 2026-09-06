@@ -2,9 +2,11 @@ defmodule SwarmCode.Governance.Provenance do
   @moduledoc false
 
   @baseline "dbb8804b3d7293178e571fa7afdf6bd47d06a51c"
+  @adaptation_pins [@baseline, "fb1b4ff82354ac8ff2e82d4f6516121fd55ff212"]
   @authorization_flags ~w(public_source_copying_allowed copyright_terms_recorded license_terms_recorded notice_terms_recorded)
   @classifications ~w(source test spec)
   @entry_keys ~w(classification destination sha256 upstream_commit upstream_path)
+  @adaptation_keys Enum.sort(["upstream_sha256" | @entry_keys])
   @sha256_regex ~r/\A[0-9a-f]{64}\z/
 
   @spec verify(Path.t()) :: :ok | {:error, [String.t()]}
@@ -48,30 +50,41 @@ defmodule SwarmCode.Governance.Provenance do
 
   defp authorization_file_errors(_root, _policy), do: []
 
-  defp ledger_errors(root, policy, %{"version" => 1, "entries" => entries})
-       when is_list(entries) do
+  defp ledger_errors(root, policy, %{"version" => version, "entries" => entries})
+       when version in [1, 2] and is_list(entries) do
     pending =
       if authorization_status(policy) == "pending" and entries != [],
         do: ["source extraction is blocked while authorization is pending"],
         else: []
 
-    pending ++ Enum.flat_map(entries, &entry_errors(root, &1))
+    duplicates =
+      if version == 2 do
+        destinations = for %{"destination" => destination} <- entries, do: destination
+
+        if length(destinations) == length(Enum.uniq(destinations)),
+          do: [],
+          else: ["duplicate provenance destination"]
+      else
+        []
+      end
+
+    pending ++ duplicates ++ Enum.flat_map(entries, &entry_errors(root, &1, version))
   end
 
   defp ledger_errors(_root, _policy, _ledger),
     do: ["extracted-files ledger has an invalid shape"]
 
-  defp entry_errors(root, entry) when is_map(entry) do
-    if valid_entry_shape?(entry) do
-      validated_entry_errors(root, entry)
+  defp entry_errors(root, entry, version) when is_map(entry) do
+    if valid_entry_shape?(entry, version) do
+      validated_entry_errors(root, entry, version)
     else
       ["provenance entry has an invalid shape"]
     end
   end
 
-  defp entry_errors(_root, _entry), do: ["provenance entry has an invalid shape"]
+  defp entry_errors(_root, _entry, _version), do: ["provenance entry has an invalid shape"]
 
-  defp validated_entry_errors(root, entry) do
+  defp validated_entry_errors(root, entry, version) do
     destination = entry["destination"]
     {actual, destination_errors} = destination_digest(root, destination)
     valid_sha256? = canonical_sha256?(entry["sha256"])
@@ -81,7 +94,14 @@ defmodule SwarmCode.Governance.Provenance do
       not confined_relative_path?(entry["upstream_path"]),
       "invalid provenance upstream path"
     )
-    |> add(entry["upstream_commit"] != @baseline, "entry is not pinned to the audit baseline")
+    |> add(
+      not pinned_commit?(entry["upstream_commit"], version),
+      "entry is not pinned to the audit baseline"
+    )
+    |> add(
+      version == 2 and not canonical_sha256?(entry["upstream_sha256"]),
+      "invalid provenance upstream sha256"
+    )
     |> add(entry["classification"] not in @classifications, "invalid provenance classification")
     |> add(not valid_sha256?, "invalid provenance sha256")
     |> add(
@@ -90,10 +110,13 @@ defmodule SwarmCode.Governance.Provenance do
     )
   end
 
-  defp valid_entry_shape?(entry) do
-    Enum.sort(Map.keys(entry)) == @entry_keys and
-      Enum.all?(@entry_keys, &is_binary(entry[&1]))
+  defp valid_entry_shape?(entry, version) do
+    keys = if version == 2, do: @adaptation_keys, else: @entry_keys
+    Enum.sort(Map.keys(entry)) == keys and Enum.all?(keys, &is_binary(entry[&1]))
   end
+
+  defp pinned_commit?(commit, 1), do: commit == @baseline
+  defp pinned_commit?(commit, 2), do: commit in @adaptation_pins
 
   defp destination_digest(root, destination) do
     case destination_path(root, destination) do

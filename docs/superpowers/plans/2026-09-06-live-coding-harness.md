@@ -33,11 +33,11 @@ with redacted inspection. Preserve wire/continuation/cache/usage semantics.
 `SwarmCode.LLM.stream(Request.t(), callback)` returns Result or explicit error.
 `list_models(config)` and provider selection must function without desktop app.
 
-- [ ] Write/replay provider behavior tests RED before backend extraction.
-- [ ] Implement actual transport and configuration, no fake production adapter.
-- [ ] Test chunked real loopback HTTP SSE, malformed/truncated streams, tool args,
+- [x] Write/replay provider behavior tests RED before backend extraction.
+- [x] Implement actual transport and configuration, no fake production adapter.
+- [x] Test chunked real loopback HTTP SSE, malformed/truncated streams, tool args,
   authentication/rate failures, redirect credential protection and cancellation.
-- [ ] Review and record source/destination provenance; root dependency integration.
+- [x] Review and record source/destination provenance; root dependency integration.
 
 ## Task 2: Coding tool registry and owned operations
 
@@ -50,11 +50,11 @@ Preserve exact-edit preconditions and path confinement. Registry invokes only
 closed installed tools. Implement read/list/search/write/edit first; shell tool
 uses owned process cancellation/deadline/output and deterministic result ordering.
 
-- [ ] RED tests perform actual fixture read/search/edit and reject root escapes,
+- [x] RED tests perform actual fixture read/search/edit and reject root escapes,
   ambiguous edits and malformed arguments; no mutation on refusal.
-- [ ] Adapt tool implementations with provenance, remove desktop UI dependencies.
-- [ ] Verify shell command/test execution, bounded output, timeout and stop cleanup.
-- [ ] Review scoped tool implementation and operation ownership.
+- [x] Adapt tool implementations with provenance, remove desktop UI dependencies.
+- [x] Verify shell command/test execution, bounded output, timeout and stop cleanup.
+- [x] Review scoped tool implementation and operation ownership.
 
 ## Task 3: Live agent/run engine
 
@@ -62,11 +62,11 @@ Files: daemon `engine/*`, core runtime request/event/result contracts and tests.
 Consumes the real provider/backend and tool registry. A supervised run owns
 model/tool operations, approvals and child agents. No slow IO in state callbacks.
 
-- [ ] RED integration sends a prompt through actual loopback provider, receives
+- [x] RED integration sends a prompt through actual loopback provider, receives
   read/edit/run_command requests, executes them, and returns final model output.
 - [ ] Implement streamed events, ordered tool results, turn/context/usage limits,
   policy questions, pause/continue/steer and structural stop.
-- [ ] Verify actual project changes/test exit status, refusal and cancellation.
+- [x] Verify actual project changes/test exit status, refusal and cancellation.
 
 ## Task 4: Production ownership and persistence
 
@@ -105,3 +105,13 @@ production launcher/settings flow and terminal integration.
 Each task has its own failing/passing evidence and review. The runtime is not
 complete after any single task. More detailed task briefs are written from the
 actual interfaces before dispatch; this plan is the persistent full-scope ledger.
+
+
+## Verified backend checkpoint
+
+Full precommit seed774991 passed972tests/fiveproperties/12nativechecks and
+production compile passed. See `docs/research/2026-09-06-live-backend-checkpoint.md`.
+Task3 already executes realmodel/tool operations in tests; durable event/admission,
+usage budgets and child-agent behavior remain. Task4 guarded Exqlite feasibility
+is developing in an isolated vendor fork; root dependency switch remains pending
+review. Tasks5/6 are not complete. The full goal is unchanged.

@@ -1,10 +1,13 @@
 # SwarmCode CLI
 
-This repository contains foundation infrastructure, runnable synthetic plain and
-interactive terminal demos, and a passive cell preview gallery.
+This repository contains a live provider/tool backend, foundation infrastructure,
+runnable synthetic plain and interactive terminal demos, and a passive preview gallery.
 The plain session and renderer-neutral UI share scoped requests, questions, run controls,
-process-local drafts, and bounded presentation data. Production provider execution, persistence,
-a daemon launcher, and supported-platform renderer acceptance remain unfinished.
+process-local drafts, and bounded presentation data. The backend now includes OpenAI-compatible/Anthropic HTTP streaming, six real
+coding tools, and an owned agent loop with approvals, pause/steer/stop and bounded
+stream recovery. It has been exercised against local HTTP providers and actual
+temporary repositories. The executable TUI still uses sample data: persistent
+service integration, a production launcher and platform acceptance remain unfinished.
 
 Run the fixed demo without starting a daemon or opening user data:
 
@@ -96,3 +99,19 @@ The 2026-09-01 source authorization, MIT license, and NOTICE terms are recorded 
 [`SOURCE_AUTHORIZATION.md`](SOURCE_AUTHORIZATION.md), [`LICENSE`](LICENSE), and [`NOTICE`](NOTICE).
 The current desktop does not honor the shared lease, so concurrent desktop/CLI operation is not
 supported; follow the shutdown order in the safety note.
+
+
+The live runtime component is `SwarmCode.Daemon.Runtime.Run` in the daemon app.
+It is a building block for the full harness, not a canonical database startup
+entrypoint. Focused integration tests run real HTTP streaming and file/shell
+operations without remote API calls:
+
+```sh
+mise exec -- mix test apps/swarm_code_daemon/test/swarm_code/llm \
+  apps/swarm_code_daemon/test/swarm_code/tools \
+  apps/swarm_code_daemon/test/swarm_code/daemon/runtime/run_test.exs
+```
+
+The [live harness plan](docs/superpowers/plans/2026-09-06-live-coding-harness.md)
+tracks persistence, daemon/client service, real TUI wiring, advanced desktop
+capabilities and packaged releases. Component tests do not close those gaps.

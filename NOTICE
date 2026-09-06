@@ -6,10 +6,11 @@ repository:
 
   https://github.com/zaalipro/swarm-code.git
   dbb8804b3d7293178e571fa7afdf6bd47d06a51c
+  fb1b4ff82354ac8ff2e82d4f6516121fd55ff212
 
 Every adapted file must be enumerated in provenance/extracted-files.json with
 its destination, upstream path, pinned upstream commit, classification, and
-SHA-256 digest.
+source and adapted-destination SHA-256 digests.
 
 Unicode terminal width tables are derived from unicode-width 0.2.2
 (commit 9d98411769fe13c7c18cab0b3fbbab29ba8350ea, Unicode 17.0.0), licensed

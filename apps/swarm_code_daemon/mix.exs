@@ -4,12 +4,25 @@ defmodule Mix.Tasks.Compile.SchemaSnapshot do
   @impl true
   def run(args) do
     root = Path.dirname(Mix.Project.project_file())
-    source = Path.expand("../../native/schema_snapshot/main.c", root)
-    destination = Path.join(root, "priv/native/swarm-schema-snapshot")
+
+    results =
+      for {directory, executable} <- [
+            {"schema_snapshot", "swarm-schema-snapshot"},
+            {"tool_command", "swarm-tool-command"}
+          ] do
+        build(root, directory, executable, args)
+      end
+
+    if Enum.any?(results, &(&1 == :built)), do: {:ok, []}, else: {:noop, []}
+  end
+
+  defp build(root, directory, executable, args) do
+    source = Path.expand("../../native/#{directory}/main.c", root)
+    destination = Path.join(root, "priv/native/#{executable}")
     stamp_path = destination <> ".platform"
 
     platform =
-      "schema-snapshot-v1\n#{inspect(:os.type())}\n#{:erlang.system_info(:system_architecture)}\n"
+      "#{executable}-v1\n#{inspect(:os.type())}\n#{:erlang.system_info(:system_architecture)}\n"
 
     if "--force" in args or File.read(stamp_path) != {:ok, platform} or
          Mix.Utils.stale?([source, Mix.Project.project_file()], [destination]) do
@@ -25,17 +38,17 @@ defmodule Mix.Tasks.Compile.SchemaSnapshot do
             stderr_to_stdout: true
           )
 
-        if status != 0, do: Mix.raise("Schema snapshot helper compilation failed:\n" <> output)
+        if status != 0, do: Mix.raise("#{executable} compilation failed:\n" <> output)
         File.chmod!(temporary, 0o755)
         File.rename!(temporary, destination)
         File.write!(temporary, platform)
         File.rename!(temporary, stamp_path)
-        {:ok, []}
+        :built
       after
         File.rm(temporary)
       end
     else
-      {:noop, []}
+      :unchanged
     end
   end
 end
@@ -69,6 +82,7 @@ defmodule SwarmCodeDaemon.MixProject do
       {:ecto_sql, "== 3.14.0"},
       {:ecto_sqlite3, "== 0.24.1"},
       {:exqlite, "== 0.39.0"},
+      {:req, "== 0.7.3"},
       {:jason, "== 1.4.5"}
     ]
   end

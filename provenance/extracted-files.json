@@ -1,1 +1,253 @@
-{"version":1,"entries":[]}
+{
+  "version": 2,
+  "entries": [
+    {
+      "classification": "source",
+      "destination": "apps/swarm_code_daemon/lib/swarm_code/daemon/runtime/run.ex",
+      "sha256": "17e853a398ac4ef9052c9f465ab8bb8b19717abf09d4e08fc962dcc4a0f82c79",
+      "upstream_commit": "fb1b4ff82354ac8ff2e82d4f6516121fd55ff212",
+      "upstream_path": "lib/swarm_code/engine/agent_server.ex",
+      "upstream_sha256": "423fead00abd90f17885fa62871653431fca79a756bd1458a00447770dc4326e"
+    },
+    {
+      "classification": "source",
+      "destination": "apps/swarm_code_daemon/lib/swarm_code/llm.ex",
+      "sha256": "b43fedd91284cfe4273632bdff32dcd94c17f97173045943986457b33095fe3c",
+      "upstream_commit": "fb1b4ff82354ac8ff2e82d4f6516121fd55ff212",
+      "upstream_path": "lib/swarm_code/llm.ex",
+      "upstream_sha256": "2382d9e9d30f1d01a72bd586421256f034de98eeef5d00c65dd5e7310968d85f"
+    },
+    {
+      "classification": "source",
+      "destination": "apps/swarm_code_daemon/lib/swarm_code/llm/anthropic.ex",
+      "sha256": "6c89bb3a15174ad74ffd2e0a32080e6dde65ae43a30a12e29844a43092c1d6db",
+      "upstream_commit": "fb1b4ff82354ac8ff2e82d4f6516121fd55ff212",
+      "upstream_path": "lib/swarm_code/llm/anthropic.ex",
+      "upstream_sha256": "04b7368b591545833511763851fc37b4ad2a6a165f107d07e29c4cc8f6c3dd8c"
+    },
+    {
+      "classification": "source",
+      "destination": "apps/swarm_code_daemon/lib/swarm_code/llm/chunks.ex",
+      "sha256": "d50d0cd8541d97e2033c1642b145db6309e13799f9ebb632aaf7061442e6db28",
+      "upstream_commit": "fb1b4ff82354ac8ff2e82d4f6516121fd55ff212",
+      "upstream_path": "lib/swarm_code/llm/chunks.ex",
+      "upstream_sha256": "d50d0cd8541d97e2033c1642b145db6309e13799f9ebb632aaf7061442e6db28"
+    },
+    {
+      "classification": "source",
+      "destination": "apps/swarm_code_daemon/lib/swarm_code/llm/efforts.ex",
+      "sha256": "3289ac47bd7404adcfc3a4157af15a230145af72349dd010d758e8f72958ca60",
+      "upstream_commit": "fb1b4ff82354ac8ff2e82d4f6516121fd55ff212",
+      "upstream_path": "lib/swarm_code/llm/efforts.ex",
+      "upstream_sha256": "d548281145c9766b7d5a49aa553c581d4a38075c374c4f5eee95866d4dd4cf74"
+    },
+    {
+      "classification": "source",
+      "destination": "apps/swarm_code_daemon/lib/swarm_code/llm/http.ex",
+      "sha256": "565c69e721ee75a6be50736d4390cbb761f97171b16165c255d4dfe91ccdb311",
+      "upstream_commit": "fb1b4ff82354ac8ff2e82d4f6516121fd55ff212",
+      "upstream_path": "lib/swarm_code/llm/http.ex",
+      "upstream_sha256": "44dd78c0bdfddcbf748aaf0fe90af9375e97cfbfdf74bc039da52aebd25d3f58"
+    },
+    {
+      "classification": "source",
+      "destination": "apps/swarm_code_daemon/lib/swarm_code/llm/openai.ex",
+      "sha256": "ed17e16c9ccbc7654b90874bfb045680b671395cbcb0983f780b7ec89b952549",
+      "upstream_commit": "fb1b4ff82354ac8ff2e82d4f6516121fd55ff212",
+      "upstream_path": "lib/swarm_code/llm/openai.ex",
+      "upstream_sha256": "89166d5f0e44395faeeeda58d2975bd6cfc075e1682401970785415ea5ab771a"
+    },
+    {
+      "classification": "source",
+      "destination": "apps/swarm_code_daemon/lib/swarm_code/llm/provider.ex",
+      "sha256": "4456128fd217939010d5b5abce600db5186b2704ae6418b1ddf175ff8155bb81",
+      "upstream_commit": "fb1b4ff82354ac8ff2e82d4f6516121fd55ff212",
+      "upstream_path": "lib/swarm_code/llm/provider.ex",
+      "upstream_sha256": "4456128fd217939010d5b5abce600db5186b2704ae6418b1ddf175ff8155bb81"
+    },
+    {
+      "classification": "source",
+      "destination": "apps/swarm_code_daemon/lib/swarm_code/llm/provider_caps.ex",
+      "sha256": "865a4d09eb79cf83086ca61e8a3e62edc497c35a3841cd0707ca29aeec897033",
+      "upstream_commit": "fb1b4ff82354ac8ff2e82d4f6516121fd55ff212",
+      "upstream_path": "lib/swarm_code/llm/provider_caps.ex",
+      "upstream_sha256": "865a4d09eb79cf83086ca61e8a3e62edc497c35a3841cd0707ca29aeec897033"
+    },
+    {
+      "classification": "source",
+      "destination": "apps/swarm_code_daemon/lib/swarm_code/llm/request.ex",
+      "sha256": "7d3a64b58d9085c259194d32c90890bc7ba679d571528ae3aa59050ec63015d2",
+      "upstream_commit": "fb1b4ff82354ac8ff2e82d4f6516121fd55ff212",
+      "upstream_path": "lib/swarm_code/llm/request.ex",
+      "upstream_sha256": "f758def1e4b87bc561d41cbefc6dc738a1b9249b0b5b6dc59cb13ac619e7bd3d"
+    },
+    {
+      "classification": "source",
+      "destination": "apps/swarm_code_daemon/lib/swarm_code/llm/result.ex",
+      "sha256": "94712847e18af370dd0df74862cc9584fb30571c5166f10b6b7bd6a8cf152fd2",
+      "upstream_commit": "fb1b4ff82354ac8ff2e82d4f6516121fd55ff212",
+      "upstream_path": "lib/swarm_code/llm/result.ex",
+      "upstream_sha256": "94712847e18af370dd0df74862cc9584fb30571c5166f10b6b7bd6a8cf152fd2"
+    },
+    {
+      "classification": "source",
+      "destination": "apps/swarm_code_daemon/lib/swarm_code/llm/sse.ex",
+      "sha256": "a3e9e9dacc3abe4cbccd4e63e04fb70aa46feb52bd038593e9c5038cdd54851b",
+      "upstream_commit": "fb1b4ff82354ac8ff2e82d4f6516121fd55ff212",
+      "upstream_path": "lib/swarm_code/llm/sse.ex",
+      "upstream_sha256": "a3e9e9dacc3abe4cbccd4e63e04fb70aa46feb52bd038593e9c5038cdd54851b"
+    },
+    {
+      "classification": "source",
+      "destination": "apps/swarm_code_daemon/lib/swarm_code/llm/tool_args.ex",
+      "sha256": "1a407ce347fcc5c57317e73db575589060699d27b03c74ee29dd4cd1b0d9d61e",
+      "upstream_commit": "fb1b4ff82354ac8ff2e82d4f6516121fd55ff212",
+      "upstream_path": "lib/swarm_code/llm/tool_args.ex",
+      "upstream_sha256": "1a407ce347fcc5c57317e73db575589060699d27b03c74ee29dd4cd1b0d9d61e"
+    },
+    {
+      "classification": "source",
+      "destination": "apps/swarm_code_daemon/lib/swarm_code/providers/provider.ex",
+      "sha256": "7fd6cc4033811031a5a47d718f0e8f4df75b9e1b4886d913bef8e3dbdb93e1e3",
+      "upstream_commit": "fb1b4ff82354ac8ff2e82d4f6516121fd55ff212",
+      "upstream_path": "lib/swarm_code/providers/provider.ex",
+      "upstream_sha256": "4ee6e396f7ef21cfbcb2ac5ca68d31a848d2cf755b5445a666ec91c0be1ceb98"
+    },
+    {
+      "classification": "source",
+      "destination": "apps/swarm_code_daemon/lib/swarm_code/tools/atomic_file.ex",
+      "sha256": "a821de72a7da23c2b96f93aeee0fc51c541d2e12260924c66d0e3d82f8fd3671",
+      "upstream_commit": "fb1b4ff82354ac8ff2e82d4f6516121fd55ff212",
+      "upstream_path": "lib/swarm_code/atomic_file.ex",
+      "upstream_sha256": "773e653fbb1d61463065a2e792c49e2e5fd399c8e81bc62b67503c26f7283fe5"
+    },
+    {
+      "classification": "source",
+      "destination": "apps/swarm_code_daemon/lib/swarm_code/tools/edit_file.ex",
+      "sha256": "937dc472506a7c7f12286d2ff4f183ca0eeffcd0915a83e1ddf2f781c97c1ac6",
+      "upstream_commit": "fb1b4ff82354ac8ff2e82d4f6516121fd55ff212",
+      "upstream_path": "lib/swarm_code/tools/edit_file.ex",
+      "upstream_sha256": "57686872f9159aa54cb0c1fa15f992ad0c4273fee93cc50b86dfda7190132724"
+    },
+    {
+      "classification": "source",
+      "destination": "apps/swarm_code_daemon/lib/swarm_code/tools/grep.ex",
+      "sha256": "87eb2f5b09c873c77cce60b898ca80623da61c0273f1717f35759ae48246c373",
+      "upstream_commit": "fb1b4ff82354ac8ff2e82d4f6516121fd55ff212",
+      "upstream_path": "lib/swarm_code/tools/grep.ex",
+      "upstream_sha256": "60869f48ce79c4ca745bd46e7cc08ba5e6fe26058e97ccf90402fcf17ab90958"
+    },
+    {
+      "classification": "source",
+      "destination": "apps/swarm_code_daemon/lib/swarm_code/tools/list_dir.ex",
+      "sha256": "0b415126252b33291843020eb0f61f69fbd21b6f539b3d86d035660a45a18682",
+      "upstream_commit": "fb1b4ff82354ac8ff2e82d4f6516121fd55ff212",
+      "upstream_path": "lib/swarm_code/tools/list_dir.ex",
+      "upstream_sha256": "0b415126252b33291843020eb0f61f69fbd21b6f539b3d86d035660a45a18682"
+    },
+    {
+      "classification": "source",
+      "destination": "apps/swarm_code_daemon/lib/swarm_code/tools/path.ex",
+      "sha256": "1fc69fb18b37b373e8afc23dbaaa6c407a080448c67c8bfdddbb6769b41c1bfa",
+      "upstream_commit": "fb1b4ff82354ac8ff2e82d4f6516121fd55ff212",
+      "upstream_path": "lib/swarm_code/tools/path.ex",
+      "upstream_sha256": "97cf1620852c6a8727f3410fc2fafcd4537002c1a8a1211de8dbb29980eae922"
+    },
+    {
+      "classification": "source",
+      "destination": "apps/swarm_code_daemon/lib/swarm_code/tools/read_file.ex",
+      "sha256": "5aaa4636b0849ed2e73adb978fe8d71e1ccdb7247b026ce28c8ca5665285a08e",
+      "upstream_commit": "fb1b4ff82354ac8ff2e82d4f6516121fd55ff212",
+      "upstream_path": "lib/swarm_code/tools/read_file.ex",
+      "upstream_sha256": "88c9f745b1e8a5906153fa63568c896358976d7299687093f6e735f02f2c4bbc"
+    },
+    {
+      "classification": "source",
+      "destination": "apps/swarm_code_daemon/lib/swarm_code/tools/run_command.ex",
+      "sha256": "1c7aa4dcf6f3ee5a02b1d6f9e6d827df5a3b515cef1d8e5eecfc5c60e0ed54b4",
+      "upstream_commit": "fb1b4ff82354ac8ff2e82d4f6516121fd55ff212",
+      "upstream_path": "lib/swarm_code/tools/run_command.ex",
+      "upstream_sha256": "9673683476d914c8d22ba88de52058ed517b2ba50545d9106796df924abd6715"
+    },
+    {
+      "classification": "source",
+      "destination": "apps/swarm_code_daemon/lib/swarm_code/tools/tool.ex",
+      "sha256": "c5ca97dd5ac0cca8839f77d04280a1a2bcaa493a36b97e5f756bf00850cb6e77",
+      "upstream_commit": "fb1b4ff82354ac8ff2e82d4f6516121fd55ff212",
+      "upstream_path": "lib/swarm_code/tools/tool.ex",
+      "upstream_sha256": "c5ca97dd5ac0cca8839f77d04280a1a2bcaa493a36b97e5f756bf00850cb6e77"
+    },
+    {
+      "classification": "source",
+      "destination": "apps/swarm_code_daemon/lib/swarm_code/tools/write_file.ex",
+      "sha256": "e59d464dc44b51741dccc7c7884f7adca549e90ec35034dfb4a81f7567630231",
+      "upstream_commit": "fb1b4ff82354ac8ff2e82d4f6516121fd55ff212",
+      "upstream_path": "lib/swarm_code/tools/write_file.ex",
+      "upstream_sha256": "1601f5bb13bb649303d26be22100f662a4d4671c4363c45daabc7736b349d329"
+    },
+    {
+      "classification": "test",
+      "destination": "apps/swarm_code_daemon/test/swarm_code/llm/chunks_test.exs",
+      "sha256": "466e134bb6cdfa7869f87b50ff3a65319d4923023c77c7c2af51161f603e07bd",
+      "upstream_commit": "fb1b4ff82354ac8ff2e82d4f6516121fd55ff212",
+      "upstream_path": "test/swarm_code/llm/chunks_test.exs",
+      "upstream_sha256": "466e134bb6cdfa7869f87b50ff3a65319d4923023c77c7c2af51161f603e07bd"
+    },
+    {
+      "classification": "test",
+      "destination": "apps/swarm_code_daemon/test/swarm_code/llm/efforts_test.exs",
+      "sha256": "572d71d20e5d414ec008af0b593a604b6015273c8b7f13bcddbb77a4946c64ae",
+      "upstream_commit": "fb1b4ff82354ac8ff2e82d4f6516121fd55ff212",
+      "upstream_path": "test/swarm_code/llm/efforts_test.exs",
+      "upstream_sha256": "f0b050431e218f04a814c96b78a756350bc7091dbeb8f99324305379ec93232e"
+    },
+    {
+      "classification": "test",
+      "destination": "apps/swarm_code_daemon/test/swarm_code/llm/sse_test.exs",
+      "sha256": "689e82374e8cec094f6529268ea776ab132548bc8f24cfa639075ad01cea97c1",
+      "upstream_commit": "fb1b4ff82354ac8ff2e82d4f6516121fd55ff212",
+      "upstream_path": "test/swarm_code/llm/sse_test.exs",
+      "upstream_sha256": "689e82374e8cec094f6529268ea776ab132548bc8f24cfa639075ad01cea97c1"
+    },
+    {
+      "classification": "test",
+      "destination": "apps/swarm_code_daemon/test/swarm_code/llm/tool_args_test.exs",
+      "sha256": "8b414b47d7e79867e9db1dd5952d832f80c6413578dde2e1b86cd81896af02e9",
+      "upstream_commit": "fb1b4ff82354ac8ff2e82d4f6516121fd55ff212",
+      "upstream_path": "test/swarm_code/llm/tool_args_test.exs",
+      "upstream_sha256": "8b414b47d7e79867e9db1dd5952d832f80c6413578dde2e1b86cd81896af02e9"
+    },
+    {
+      "classification": "test",
+      "destination": "apps/swarm_code_daemon/test/swarm_code/tools/grep_test.exs",
+      "sha256": "ada8da4315d2335e738247d8d5b5ff651110bb50e467d35dd2ffa8ccae244985",
+      "upstream_commit": "fb1b4ff82354ac8ff2e82d4f6516121fd55ff212",
+      "upstream_path": "test/swarm_code/tools/grep_test.exs",
+      "upstream_sha256": "55bdd51e8bba91623d5c275bb43ab6b93a6c149cbf947d7830c51a214476f641"
+    },
+    {
+      "classification": "test",
+      "destination": "apps/swarm_code_daemon/test/swarm_code/tools/path_test.exs",
+      "sha256": "1d239582ffbb8283413936fffbe5ce85ae1d386348a7581260fc1b363f7037dc",
+      "upstream_commit": "fb1b4ff82354ac8ff2e82d4f6516121fd55ff212",
+      "upstream_path": "test/swarm_code/tools/path_test.exs",
+      "upstream_sha256": "cb5cd5c3e300269059b17751d28270e76e49c959efbaf7a17d0921a849b73105"
+    },
+    {
+      "classification": "test",
+      "destination": "apps/swarm_code_daemon/test/swarm_code/tools/read_list_test.exs",
+      "sha256": "5d22236c501658ee9b8816a67f93ebb35aee3941798834036a7ed4019abbc245",
+      "upstream_commit": "fb1b4ff82354ac8ff2e82d4f6516121fd55ff212",
+      "upstream_path": "test/swarm_code/tools/read_list_test.exs",
+      "upstream_sha256": "633f4539d8cfca221ccf566fc3d97fe7aa5c81a17ff3fedc0866e2d7fb1c3ebd"
+    },
+    {
+      "classification": "test",
+      "destination": "apps/swarm_code_daemon/test/swarm_code/tools/write_edit_test.exs",
+      "sha256": "3a47bc33f4e36f7ad22d5aa35bbbc383a346497214ca7fdcaf1dfaf7f77f73ef",
+      "upstream_commit": "fb1b4ff82354ac8ff2e82d4f6516121fd55ff212",
+      "upstream_path": "test/swarm_code/tools/write_edit_test.exs",
+      "upstream_sha256": "3cfdd4764db39110a7aea37d194259e57ae1f167e27d0eb554960cb0d6fc9704"
+    }
+  ]
+}

@@ -2,6 +2,62 @@ defmodule SwarmCode.Governance.ProvenanceTest do
   use ExUnit.Case, async: true
   alias SwarmCode.Governance.Provenance
 
+  @current_commit "fb1b4ff82354ac8ff2e82d4f6516121fd55ff212"
+
+  test "adapted current source records independent upstream and destination digests" do
+    {root, original} = valid_entry_fixture!()
+
+    adapted =
+      original
+      |> Map.put("upstream_commit", @current_commit)
+      |> Map.put("upstream_sha256", sha256("original desktop source"))
+
+    write_json!(Path.join(root, "provenance/extracted-files.json"), %{
+      "version" => 2,
+      "entries" => [adapted]
+    })
+
+    assert :ok = Provenance.verify(root)
+
+    File.write!(Path.join(root, "lib/copied.ex"), "unrecorded adaptation")
+    assert {:error, errors} = Provenance.verify(root)
+    assert "sha256 mismatch for lib/copied.ex" in errors
+  end
+
+  test "adaptation records reject unknown source pins and malformed upstream digests" do
+    {root, original} = valid_entry_fixture!()
+
+    for {commit, digest} <- [
+          {String.duplicate("a", 40), sha256("original")},
+          {@current_commit, "not a digest"}
+        ] do
+      adapted =
+        original
+        |> Map.put("upstream_commit", commit)
+        |> Map.put("upstream_sha256", digest)
+
+      write_json!(Path.join(root, "provenance/extracted-files.json"), %{
+        "version" => 2,
+        "entries" => [adapted]
+      })
+
+      assert {:error, _errors} = Provenance.verify(root)
+    end
+  end
+
+  test "adaptation records cannot claim the same destination twice" do
+    {root, original} = valid_entry_fixture!()
+    adapted = Map.put(original, "upstream_sha256", sha256("original"))
+
+    write_json!(Path.join(root, "provenance/extracted-files.json"), %{
+      "version" => 2,
+      "entries" => [adapted, adapted]
+    })
+
+    assert {:error, errors} = Provenance.verify(root)
+    assert "duplicate provenance destination" in errors
+  end
+
   test "pending authorization accepts an empty extraction ledger" do
     root = fixture_root!("pending", [])
     assert :ok = Provenance.verify(root)
