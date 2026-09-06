@@ -1,7 +1,8 @@
 defmodule SwarmCodeCLI.UI.Projector.Dialog do
   @moduledoc "Sticky dialog chrome around a separately windowed, cell-wrapped body."
-  alias SwarmCodeCLI.UI.{Editor, FieldEditors, SafeText, Switcher, Width}
-  alias SwarmCodeCLI.UI.Scene.{Block, Dialog, Rect}
+  alias SwarmCodeCLI.UI.{Editor, FieldEditors, SafeText, Switcher, Theme, Width}
+  alias SwarmCodeCLI.UI.Scene.{Block, Dialog, Rect, Span}
+  alias SwarmCodeCLI.UI.Paint.{Metrics, Options}
   alias SwarmCodeCLI.UI.Projector.{Density, Support}
   def project(state, class, background \\ %{})
   def project(%{layers: []}, _class, _background), do: nil
@@ -19,17 +20,63 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
           contents(layer, state, rect, class)
       end
 
+    footer_focus? = Enum.any?(footer, &match?({:dialog_control, ^focus, _, _}, &1))
+    style = Theme.style(:focus, state.capabilities)
+
+    prefix_width =
+      Width.cells(SafeText.value(style.prefix), state.capabilities.ambiguous_width) + 1
+
+    footer =
+      Enum.map(footer, fn
+        {:dialog_control, id, label, target} when id == focus ->
+          Support.action(label, target, style)
+
+        {:dialog_control, _, label, target} ->
+          Support.action(label, target)
+
+        block ->
+          block
+      end)
+
+    ordinal = Enum.find_index(options, fn {id, _, _} -> id == focus end) || 0
+
+    overflow =
+      Support.text(
+        "item #{min(ordinal + 1, length(options))} of #{length(options)}",
+        state,
+        rect.width - 2
+      )
+
+    footer = [overflow | footer]
+    {measured_footer, _} = Support.finalize(footer, state.revision)
+
+    paint_options = %Options{
+      color_mode: state.capabilities.color_mode,
+      ascii?: state.capabilities.ascii?
+    }
+
+    {:ok, footer_height} =
+      Metrics.height(
+        measured_footer,
+        min(rect.width - 2, 500),
+        paint_options,
+        min(rect.height, 200),
+        state.capabilities.ambiguous_width
+      )
+
     rows =
       Enum.flat_map(options, fn {id, label, action} ->
         text = label |> SafeText.value()
-        lines = Width.wrap(text, max(1, rect.width - 2), state.capabilities.ambiguous_width)
+        focused? = id == focus and not footer_focus?
+        width = max(1, rect.width - 2 - if(focused?, do: prefix_width, else: 0))
+        lines = Width.wrap(text, width, state.capabilities.ambiguous_width)
 
         Enum.map(lines, fn line ->
           {id, Density.safe(line, state, rect.width - 2), action}
         end)
       end)
 
-    height = max(1, rect.height - 4)
+    height = max(0, rect.height - 2 - footer_height)
 
     indices =
       rows
@@ -71,29 +118,26 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
       |> Enum.drop(first)
       |> Enum.take(height)
       |> Enum.map_reduce(MapSet.new(), fn {id, text, action}, seen ->
+        first? = not MapSet.member?(seen, id)
+        focused? = id == focus and first? and not footer_focus?
+
         block =
-          if action && not MapSet.member?(seen, id),
-            do: Support.action(text, action),
-            else: %Block.Text{text: text}
+          cond do
+            action && first? && focused? -> Support.action(text, action, style)
+            action && first? -> Support.action(text, action)
+            focused? -> %Block.RichText{spans: [%Span{text: text, style: style}]}
+            true -> %Block.Text{text: text}
+          end
 
         {block, MapSet.put(seen, id)}
       end)
-
-    ordinal = Enum.find_index(options, fn {id, _, _} -> id == focus end) || 0
-
-    overflow =
-      Support.text(
-        "item #{min(ordinal + 1, length(options))} of #{length(options)}",
-        state,
-        rect.width - 2
-      )
 
     %Dialog{
       id: "dialog",
       rect: rect,
       title: Density.safe(title, state, rect.width - 2),
       blocks: visible,
-      footer: [overflow | footer],
+      footer: footer,
       focused_control_id: focus,
       body_scroll: first,
       body_visible_range: {first, min(first + height, length(rows))},
@@ -101,8 +145,10 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
     }
   end
 
+  defp control(id, label, target), do: {:dialog_control, id, label, target}
+
   defp contents({:unsent_changes, kind}, state, _rect, class) do
-    cancel = Support.action(SafeText.chrome(:cancel_exit), {:local, :close_top_layer})
+    cancel = control("cancel", SafeText.chrome(:cancel_exit), {:local, :close_top_layer})
 
     confirm_target =
       if kind == :plain,
@@ -112,7 +158,7 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
     confirm =
       if class == :compressed_small,
         do: [],
-        else: [Support.action(SafeText.chrome(:confirm_exit), {:local, confirm_target})]
+        else: [control("confirm", SafeText.chrome(:confirm_exit), {:local, confirm_target})]
 
     {SafeText.chrome(:unsent_changes), [{"cancel", SafeText.chrome(:cancel_exit), nil}],
      [cancel] ++ confirm,
@@ -139,10 +185,12 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
       subject && revision_valid && Support.allowed?(state, subject, permission) &&
         class != :compressed_small
 
-    cancel = Support.action(SafeText.chrome(:cancel), {:local, :close_top_layer})
+    cancel = control("cancel", SafeText.chrome(:cancel), {:local, :close_top_layer})
 
     confirm =
-      if permitted, do: [Support.action(SafeText.chrome(:confirm), {:intent, intent})], else: []
+      if permitted,
+        do: [control("confirm", SafeText.chrome(:confirm), {:intent, intent})],
+        else: []
 
     title = SafeText.chrome(:stop)
 
@@ -185,10 +233,10 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
     next =
       cond do
         detail && detail.status == :error ->
-          [Support.action(SafeText.chrome(:retry), {:local, {:detail_page, :next}})]
+          [control("next", SafeText.chrome(:retry), {:local, {:detail_page, :next}})]
 
         detail && detail.status == :idle && window && window.next_offset ->
-          [Support.action(SafeText.chrome(:next_page), {:local, {:detail_page, :next}})]
+          [control("next", SafeText.chrome(:next_page), {:local, {:detail_page, :next}})]
 
         true ->
           []
@@ -196,11 +244,18 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
 
     previous =
       if detail && detail.status == :idle && detail.history != [],
-        do: [Support.action(SafeText.chrome(:previous_page), {:local, {:detail_page, :previous}})],
+        do: [
+          control(
+            "previous",
+            SafeText.chrome(:previous_page),
+            {:local, {:detail_page, :previous}}
+          )
+        ],
         else: []
 
     footer =
-      previous ++ next ++ [Support.action(SafeText.chrome(:cancel), {:local, :close_top_layer})]
+      previous ++
+        next ++ [control("cancel", SafeText.chrome(:cancel), {:local, :close_top_layer})]
 
     offset = if window, do: window.offset, else: 0
     title = Density.safe("Detail · byte #{offset}", state, rect.width - 2)
@@ -224,7 +279,7 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
       |> Enum.map(fn {id, label} -> {id, Density.safe(label, state, rect.width * 4), nil} end)
 
     {SafeText.chrome(:help), options,
-     [Support.action(SafeText.chrome(:cancel), {:local, :close_top_layer})],
+     [control("cancel", SafeText.chrome(:cancel), {:local, :close_top_layer})],
      focus(state, options)}
   end
 
@@ -254,7 +309,7 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
       end)
 
     {SafeText.chrome(:inspector), options,
-     [Support.action(SafeText.chrome(:cancel), {:local, :close_top_layer})],
+     [control("cancel", SafeText.chrome(:cancel), {:local, :close_top_layer})],
      focus(state, options)}
   end
 
@@ -265,7 +320,7 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
       interaction(item, state, rect)
     else
       {SafeText.chrome(:read_only_resize), [{"close", SafeText.chrome(:back_close_help), nil}],
-       [Support.action(SafeText.chrome(:cancel), {:local, :close_top_layer})], "close"}
+       [control("cancel", SafeText.chrome(:cancel), {:local, :close_top_layer})], "close"}
     end
   end
 
@@ -296,7 +351,7 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
     options = if options == [], do: [{"empty", SafeText.chrome(:no_results), nil}], else: options
     title = Density.safe("Search: " <> query, state, rect.width - 2)
 
-    {title, options, [Support.action(SafeText.chrome(:cancel), {:local, :close_top_layer})],
+    {title, options, [control("cancel", SafeText.chrome(:cancel), {:local, :close_top_layer})],
      if(state.focus == "query", do: "query", else: focus(state, options))}
   end
 
@@ -338,7 +393,8 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
     submit =
       if item.question.multiple and permitted and selected != [] do
         [
-          Support.action(
+          control(
+            "submit",
             SafeText.chrome(:submit),
             {:intent,
              {:answer_question, item.run_id, item.node_id, item.id, item.expected_revision,
@@ -349,7 +405,7 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
         []
       end
 
-    footer = submit ++ [Support.action(SafeText.chrome(:cancel), {:local, :close_top_layer})]
+    footer = submit ++ [control("cancel", SafeText.chrome(:cancel), {:local, :close_top_layer})]
 
     {Density.safe(item.question.prompt, state, rect.width * 4), options, footer,
      focus(state, options)}
@@ -370,7 +426,7 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
       end
 
     {SafeText.chrome(:approve), options,
-     [Support.action(SafeText.chrome(:cancel), {:local, :close_top_layer})],
+     [control("cancel", SafeText.chrome(:cancel), {:local, :close_top_layer})],
      focus(state, options)}
   end
 

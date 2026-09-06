@@ -17,9 +17,9 @@ defmodule SwarmCodeCLI.UI.Projector.Composer do
 
     target =
       case draft && draft.target do
-        nil -> "Main"
-        :none -> "Main"
-        :main -> "Main"
+        nil -> nil
+        :none -> nil
+        :main -> nil
         {:reply, _} -> "Reply"
         {:thread, _} -> "Thread"
         {:revise, _} -> "Revise"
@@ -28,17 +28,16 @@ defmodule SwarmCodeCLI.UI.Projector.Composer do
 
     validation =
       case draft && draft.staged_validation do
-        nil -> "none"
-        :none -> "none"
+        nil -> nil
+        :none -> nil
         {:pending, _} -> "pending"
         {:valid, _} -> "valid"
         {:invalid, errors} -> "ERROR " <> Enum.join(errors, ", ")
       end
 
-    [
-      Support.text("Target: " <> target, state, width),
-      Support.text("Validation: " <> validation, state, width)
-    ]
+    for {label, value} <- [{"Target", target}, {"Validation", validation}],
+        value != nil,
+        do: Support.text(label <> ": " <> value, state, width)
   end
 
   def actions(state, class) do

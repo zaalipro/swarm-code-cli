@@ -1,6 +1,7 @@
 # SwarmCode CLI
 
-This repository contains foundation infrastructure and a runnable synthetic interaction demo.
+This repository contains foundation infrastructure, a runnable synthetic interaction demo,
+and a passive cell preview gallery.
 The plain session and renderer-neutral UI share scoped requests, questions, run controls,
 process-local drafts, and bounded presentation data. Production provider execution, persistence,
 a daemon launcher, and a real terminal renderer remain unfinished.
@@ -13,6 +14,18 @@ Run the fixed demo without starting a daemon or opening user data:
 
 It demonstrates conversation navigation, answering a question, failed-run Retry, agent Stop,
 and detach. Output is append-only; the demo owns and cleans up its synthetic processes.
+
+Export the synthetic UI as a cell preview gallery:
+
+```sh
+(cd apps/swarm_code_cli && mise exec -- mix swarm_code.demo.cells)
+```
+
+Open `index.html` in the printed directory under `_build/cell-previews/`. The command
+creates 17 SVGs covering chat, swarm, consensus, research, narrow dialogs, and the
+minimum-size fallback. These passive previews show the cell layout and Carbon colors;
+they do not run a terminal, daemon, or provider. Each export gets a fresh directory.
+
 The existing foundation gate covers canonical paths, identity, private directories, leases,
 read-only schema admission, and verified backups. It is not a normal startup path.
 

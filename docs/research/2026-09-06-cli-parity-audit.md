@@ -9,7 +9,8 @@ behavior. No desktop application, database, settings, or source was changed.
 ## Assessment
 
 The repository now has a runnable synthetic plain demo, a pure reducer/projector,
-keyboard routing, and a renderer-neutral session runtime. It is still not a CLI
+keyboard routing, a cell painter and passive preview gallery, and a renderer-neutral
+session runtime. It is still not a CLI
 for real user work: the application entry modules are empty, with no production
 launcher, running daemon, provider execution, persistent query/command service,
 or terminal renderer. Passing synthetic interaction tests do not establish
@@ -40,7 +41,7 @@ main surfaces against the current desktop and the files actually present here.
 | Scheduling: `scheduled_live.ex`, scheduler runtime | Absent | Durable schedules/claims, timezones, agenda, manual launch, recovery and no-double-fire tests |
 | Usage and settings: `history_live.ex`, `SettingsLive.sections/0` | Absent | Usage/budgets; all eleven settings sections, secret-store adapters, model/effort and provider/MCP diagnostics |
 | Git/files/attachments/memory/commands | Absent | Confined service operations, diff/editor, recoverable mutations, metadata attachments and terminal command equivalents |
-| Terminal navigation and desktop appearance | Carbon Scenes, responsive panes, reducer/keymap, revision-correlated runtime | Real renderer, terminal resize/restoration and visual evidence |
+| Terminal navigation and desktop appearance | Carbon Scenes and cell previews, responsive panes, reducer/keymap, revision-correlated runtime | Real renderer, terminal resize/restoration and native visual evidence |
 | Plain/headless and installable artifacts | Bounded plain line session and executable synthetic Mix demo | Real service adapter, production commands/exit codes, bundled runtime, offline and supported-target smoke tests |
 
 The current desktop router still exposes Chats, Scheduled, Workflows, Research,
@@ -221,7 +222,7 @@ trigger and resulting behavior. Real-source command integration also aligned Ste
 run permissions and enabled exact Activity-only question/approval context without
 inventing a cached run.
 
-## Renderer decision and next visible slice
+## Renderer decision and cell previews
 
 Fresh source verification now backs the [renderer decision](../decisions/tui-renderer.md).
 Exact ExRatatui 0.13.0 is rejected for native paste allocation, the exposed width
@@ -237,11 +238,35 @@ file baseline. Review added regressions against executable uses of supposedly
 inert candidate names and symlinks concealing inspected output directories.
 The historical September 1 recommendation now points to this decision.
 
-The next [cell paint design](../superpowers/specs/2026-09-06-cell-paint-plan-design.md)
-and [work breakdown](../superpowers/plans/2026-09-06-cell-paint-plan.md) describe
-how to turn Scene blocks into inspectable cells and passive previews. These
-are preparatory documents; no cell renderer, preview command, or native visual
-comparison is claimed implemented by this checkpoint.
+The [cell paint design](../superpowers/specs/2026-09-06-cell-paint-plan-design.md)
+and [work breakdown](../superpowers/plans/2026-09-06-cell-paint-plan.md) now have a
+pure implementation. `Paint.build/2` paints all fifteen Scene block variants
+into a bounded row-major Plan. Shared styled text handles cross-span graphemes,
+contextual widths, both ambiguous-width policies, clipping, and color admission.
+Canvas overwrite/fill operations clear complete wide glyphs and their action
+ownership. Modal painting excludes background actions; visible action rectangles,
+cursor, focus, and clipped-action diagnostics accompany the cells.
+
+The fixed `mix swarm_code.demo.cells` command exports seventeen passive SVGs and
+an HTML gallery in a fresh `_build/cell-previews/` directory. The twelve core
+frames cover four run kinds at 80×24, 120×40, and 160×50; the remaining frames
+cover question/confirmation dialogs at 80×24 and 50×16 in monochrome ASCII,
+and the 49×13 survival surface. Export does not start a daemon or read user data.
+SVG uses fixed 10×20 pixel cells, with preview-only fallback colors for terminal
+defaults and no scripts or external resources.
+
+Ego-lite visual review checked the responsive Navigator/Main/Inspector hierarchy,
+Carbon surfaces and orange accents, default Cancel focus, narrow option focus,
+and the resize/help/detach fallback. It exposed duplicate status/default metadata,
+unnecessary zero-needs rows, missing focused-control cues, broken word wrapping,
+and gallery upscaling; these were corrected. Integration review also exposed
+combining-mark word breaks, crashes beyond the Paint size limits, Markdown
+source-line versus rendered-row mismatches, and follow mode hiding the newest
+message behind an older long message. Shared transcript row layout addresses
+the scroll/paint mismatch without placing full history into a frame. The gallery loaded all seventeen
+images. The task space and local HTTP server were closed after final verification;
+daily sessions and cookies were untouched. This is synthetic cell/browser evidence, not terminal font shaping,
+input/lifecycle evidence, or the native 87-frame acceptance matrix.
 
 A second full verification exposed a backup-concurrency test deadline mismatch.
 OTP's randomized global-lock retries can sleep up to eight seconds per retry,
@@ -300,6 +325,22 @@ warnings treated as errors. The combined Decision/architecture/locked-branch
 suite passed 26 tests under child `--no-start`, including the actual plain
 command and unchanged isolated runtime-file hashes. No new terminal or browser
 surface was exercised in this decision-only change.
+
+Cell-paint checkpoint verification: final `mise exec -- mix precommit`, seed
+**3159**, passed **79 core + 197 daemon + 489 CLI tests and 5 properties**
+(**765 tests**). Formatting, warnings-as-errors compilation, dependency checks,
+source provenance, and both offline Unicode verifiers passed. The final
+`MIX_ENV=prod mise exec -- mix compile --warnings-as-errors` also passed.
+Independent scoped reviews approved cell/span ownership, color and byte admission,
+the canvas optimization, SVG/export boundaries, and the final transcript fixes.
+The final focused integration suite passed 93 tests before the full run.
+
+The actual preview command exported eighteen files to
+`_build/cell-previews/preview-1788691377745019-1/`. All eighteen exactly matched
+the visually checked gallery, and ego-lite loaded all seventeen final SVGs.
+The original plain demo and its golden/process/application checks remained in
+the passing umbrella suite. Desktop status remains only its pre-existing
+untracked `.specs/` directory. No desktop source or user data was modified.
 
 Continue against the original full-parity objective. Completion requires real
 runtime tests, supported-platform artifacts, a rendered terminal compared with

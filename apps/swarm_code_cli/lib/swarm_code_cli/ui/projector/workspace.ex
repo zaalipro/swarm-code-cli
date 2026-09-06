@@ -2,6 +2,7 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
   @moduledoc false
   alias SwarmCodeCLI.UI.{ReadModel, SafeText, Theme}
   alias SwarmCodeCLI.UI.Scene.Block
+  alias SwarmCodeCLI.UI.Paint.{Metrics, Options}
   alias SwarmCodeCLI.UI.Projector.{Composer, Density, Status, Support}
 
   def project(state, rect, class) do
@@ -23,12 +24,26 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
     do: content_height(state, rect, class, chrome(state, rect, class))
 
   defp content_height(state, rect, _class, chrome) do
-    remaining =
-      max(
-        0,
-        rect.height - length(chrome.mandatory) - length(chrome.summary) -
-          min(length(chrome.notices), 2) - length(chrome.deck) - 3
+    blocks = chrome.mandatory ++ chrome.summary ++ Enum.take(chrome.notices, 2) ++ chrome.deck
+    {blocks, _measurement_actions} = Support.finalize(blocks, state.revision)
+
+    options = %Options{
+      color_mode: state.capabilities.color_mode,
+      ascii?: state.capabilities.ascii?
+    }
+
+    # Run cards, wrapped action decks and notice prefixes consume painted rows,
+    # rather than one row per top-level semantic block.
+    {:ok, chrome_height} =
+      Metrics.height(
+        blocks,
+        min(rect.width, 500),
+        options,
+        min(rect.height, 200),
+        state.capabilities.ambiguous_width
       )
+
+    remaining = max(0, rect.height - chrome_height)
 
     cond do
       state.destination == :activity -> remaining
@@ -46,7 +61,13 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
       |> Enum.count(&(Map.get(&1, :state) == :pending and not superseded?(state, &1)))
 
     facts = Composer.facts(state, rect.width)
-    mandatory = [Support.text("NEEDS #{needs}", state, rect.width)] ++ facts
+
+    needs_summary =
+      if needs > 0 or state.preferences.activity_height == 0,
+        do: [Support.text("NEEDS #{needs}", state, rect.width)],
+        else: []
+
+    mandatory = needs_summary ++ facts
 
     notices =
       Status.notice(state, rect.width) ++
@@ -155,19 +176,10 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
   end
 
   def card(state, run, width, class) do
-    {prefix, role} = Theme.run_kind(kind(run.kind))
-    {word, state_role} = Theme.status(run.state)
+    {prefix, _role} = Theme.run_kind(kind(run.kind))
     enabled = class not in [:compressed_small, :too_small] and run.state != :superseded
     retry? = enabled and run.state == :failed and Support.allowed?(state, run, :retry)
     resume? = enabled and run.state == :interrupted and Support.allowed?(state, run, :resume)
-
-    status =
-      SafeText.value(word) <>
-        cond do
-          retry? -> " — RETRY AVAILABLE"
-          resume? -> " — RESUME AVAILABLE"
-          true -> ""
-        end
 
     actions = if enabled, do: run_actions(state, run, retry?, resume?), else: []
 
@@ -183,14 +195,14 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
               )
             ]
 
-    body = [
-      Support.styled(
-        status,
-        if(run.state == :superseded, do: :text_muted, else: state_role),
-        state,
-        width
-      )
-    ]
+    # The RunCard boundary already carries the canonical status. Only surface
+    # additional information here when it changes the user's next action.
+    body =
+      cond do
+        retry? -> [Support.text("RETRY AVAILABLE", state, width)]
+        resume? -> [Support.text("RESUME AVAILABLE", state, width)]
+        true -> []
+      end
 
     body =
       if run.state in [:running, :streaming],
@@ -208,7 +220,6 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
     body = body ++ if(actions == [], do: [], else: [%Block.ActionDeck{actions: actions}])
     # Run-kind identity is textual in monochrome as well as color; the boundary is singular.
     title = Density.safe(SafeText.value(prefix) <> " " <> run.title, state, width)
-    _role = role
     %Block.RunCard{id: opaque(run.id), title: title, status: run.state, body: body}
   end
 
@@ -268,47 +279,44 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
         _ -> 0
       end
 
-    first = if scroll && scroll.follow?, do: max(0, length(items) - height), else: index
-    visible = items |> Enum.drop(first) |> Enum.take(height)
+    follow? = scroll && scroll.follow?
+    candidates = items |> Enum.with_index()
+    candidates = if follow?, do: Enum.reverse(candidates), else: Enum.drop(candidates, index)
 
-    {blocks, _} =
-      Enum.map_reduce(visible, height, fn {id, item}, left ->
-        item = ReadModel.transcript_item(state.read_model, id) || item
+    {blocks, _left, first} =
+      Enum.reduce_while(candidates, {[], height, index}, fn
+        _, {blocks, 0, first} ->
+          {:halt, {blocks, 0, first}}
 
-        line =
-          case anchor do
-            {^id, offset, _} when is_integer(offset) -> offset
-            _ -> 0
+        {{id, item}, item_index}, {blocks, left, first} ->
+          item = ReadModel.transcript_item(state.read_model, id) || item
+
+          line =
+            case anchor do
+              {^id, offset, _} -> offset
+              _ -> 0
+            end
+
+          {block, rows} =
+            SwarmCodeCLI.UI.Transcript.window(
+              item,
+              run.kind,
+              width,
+              state.capabilities,
+              line,
+              left,
+              follow?
+            )
+
+          if block do
+            {:cont,
+             {[block | blocks], max(0, left - rows), if(follow?, do: item_index, else: first)}}
+          else
+            {:cont, {blocks, left, first}}
           end
-
-        overhead = if item.role == :tool and run.kind == :research, do: 1, else: 0
-
-        limits = %{
-          SwarmCodeCLI.UI.SafeText.Limits.content()
-          | ambiguous_width: state.capabilities.ambiguous_width
-        }
-
-        lines =
-          item.text
-          |> Density.external(limits)
-          |> SafeText.value()
-          |> SwarmCodeCLI.UI.Width.wrap(width, state.capabilities.ambiguous_width)
-
-        line =
-          if scroll && scroll.follow?,
-            do: max(0, length(lines) - max(0, left - overhead)),
-            else: line
-
-        visible_lines = lines |> Enum.drop(line) |> Enum.take(max(0, left - overhead))
-        text = visible_lines |> Enum.join("\n") |> Density.external(limits)
-
-        block =
-          if left > overhead, do: content_item(item, text, state, width, run.kind), else: nil
-
-        {block, max(0, left - length(visible_lines) - overhead)}
       end)
 
-    blocks = Enum.reject(blocks, &is_nil/1)
+    blocks = if follow?, do: blocks, else: Enum.reverse(blocks)
 
     [
       %Block.VirtualList{
@@ -320,37 +328,6 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
         overscan: 0
       }
     ]
-  end
-
-  defp content_item(item, text, state, _width, kind) do
-    cond do
-      item.state == :superseded ->
-        %Block.RichText{
-          spans: [
-            %SwarmCodeCLI.UI.Scene.Span{
-              text:
-                SafeText.concat([
-                  SafeText.chrome(:status_superseded),
-                  SafeText.chrome(:line_break),
-                  text
-                ]),
-              style: Theme.style(:text_muted, state.capabilities)
-            }
-          ]
-        }
-
-      item.role == :tool and kind == :consensus ->
-        %Block.ConsensusLedger{entries: [text]}
-
-      item.role == :tool and kind == :research ->
-        %Block.ResearchDocument{title: SafeText.chrome(:research_report), sources: [text]}
-
-      item.role == :assistant ->
-        %Block.Markdown{text: text}
-
-      true ->
-        %Block.Text{text: text}
-    end
   end
 
   defp cursor(state, key) do

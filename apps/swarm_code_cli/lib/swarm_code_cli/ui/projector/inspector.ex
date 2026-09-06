@@ -1,8 +1,8 @@
 defmodule SwarmCodeCLI.UI.Projector.Inspector do
   @moduledoc false
   alias SwarmCodeCLI.UI.{SafeText, Theme}
-  alias SwarmCodeCLI.UI.Scene.Block
-  alias SwarmCodeCLI.UI.Projector.Support
+  alias SwarmCodeCLI.UI.Scene.{Block, Span}
+  alias SwarmCodeCLI.UI.Projector.{Density, Support}
 
   def project(state, rect, class) do
     run = Support.run(state)
@@ -32,13 +32,21 @@ defmodule SwarmCodeCLI.UI.Projector.Inspector do
     {status, role} = Theme.status(agent.state)
     label = SafeText.value(lane) <> " Agent " <> agent.id <> " · " <> SafeText.value(status)
 
-    caption =
-      Support.styled(
-        label,
+    style =
+      Theme.style(
         if(agent.launched_by_superseded, do: :text_muted, else: role),
-        state,
-        width
+        state.capabilities
       )
+
+    # The caption already spells out the status, including in monochrome.
+    caption = %Block.RichText{
+      spans: [
+        %Span{
+          text: Density.safe(label, state, width),
+          style: %{style | role: :plain, prefix: nil}
+        }
+      ]
+    }
 
     child =
       if agent.launched_by_superseded,

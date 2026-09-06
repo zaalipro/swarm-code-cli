@@ -19,6 +19,9 @@ defmodule SwarmCodeCLI.UI.Projector.Support do
 
   def action(label, target), do: {:projector_action, label, ActionTarget.validate!(target)}
 
+  def action(label, target, style),
+    do: {:projector_action, label, ActionTarget.validate!(target), style}
+
   def allowed?(state, dto, permission) do
     permission in Map.get(dto, :allowed_actions, []) and not pending?(state, dto) and
       not accepted_interaction?(state, dto)
@@ -81,6 +84,13 @@ defmodule SwarmCodeCLI.UI.Projector.Support do
   end
 
   def finalize(value, revision), do: resolve(value, revision, [], %{})
+
+  defp resolve({:projector_action, label, target, style}, rev, path, table) do
+    {block, table} = resolve({:projector_action, label, target}, rev, path, table)
+
+    {%Block.RichText{spans: [%Span{text: label, style: style}], action_id: block.action_id},
+     table}
+  end
 
   defp resolve({:projector_action, label, target}, rev, path, table) do
     id =

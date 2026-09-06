@@ -1,6 +1,6 @@
 defmodule SwarmCodeCLI.UI.ScrollMetrics do
   @moduledoc "Pure, lazy logical text-line measurements using the same escaping and width policy as projection."
-  alias SwarmCodeCLI.UI.{Layout, ReadModel, SafeText, Width}
+  alias SwarmCodeCLI.UI.{Layout, ReadModel, Transcript}
 
   def viewport(state, region) do
     layout = Layout.calculate(state.size, state.preferences)
@@ -24,24 +24,9 @@ defmodule SwarmCodeCLI.UI.ScrollMetrics do
         1
 
       item ->
-        limits = %{
-          SafeText.Limits.content()
-          | ambiguous_width: state.capabilities.ambiguous_width
-        }
-
-        text =
-          case SafeText.external(item.text, limits) do
-            {:ok, text} -> text
-            {:error, _} -> SafeText.chrome(:text_limit)
-          end
-
-        width = max(1, viewport(state, region).width)
-
-        text
-        |> SafeText.value()
-        |> Width.wrap(width, state.capabilities.ambiguous_width)
-        |> length()
-        |> max(1)
+        run = Map.get(state.read_model.runs, item.run_id)
+        kind = if run, do: run.kind, else: :chat
+        Transcript.height(item, kind, viewport(state, region).width, state.capabilities) |> max(1)
     end
   end
 end

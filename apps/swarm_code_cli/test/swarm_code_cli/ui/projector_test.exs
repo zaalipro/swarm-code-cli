@@ -49,7 +49,8 @@ defmodule SwarmCodeCLI.UI.ProjectorTest do
         assert joined =~ "NO USER DATA"
         assert joined =~ "Build"
         assert joined =~ "NEEDS"
-        assert joined =~ "Target"
+        refute joined =~ "Target: Main"
+        refute joined =~ "Validation: none"
         assert joined =~ "Focus"
       else
         assert length(scene.regions) == 1
@@ -336,7 +337,7 @@ defmodule SwarmCodeCLI.UI.ProjectorTest do
     {scene, _} = Projector.project(state)
     main = Enum.find(scene.regions, &(&1.role == :main))
     list = Enum.find(main.blocks, &is_struct(&1, Scene.Block.VirtualList))
-    prose = hd(list.items).text |> SafeText.value()
+    prose = hd(list.items) |> texts() |> Enum.join()
     assert prose =~ "\n"
     refute prose =~ "…"
     assert length(String.split(prose, "\n")) <= main.rect.height
@@ -734,7 +735,7 @@ defmodule SwarmCodeCLI.UI.ProjectorTest do
       lines =
         list.items
         |> Enum.map(fn block ->
-          block.text |> SafeText.value() |> String.split("\n") |> length()
+          block |> texts() |> Enum.join() |> String.split("\n") |> length()
         end)
         |> Enum.sum()
 
