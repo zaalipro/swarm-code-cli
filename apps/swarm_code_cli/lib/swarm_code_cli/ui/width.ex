@@ -63,25 +63,24 @@ defmodule SwarmCodeCLI.UI.Width do
   def take_cells(binary, limit, ambiguous)
       when is_binary(binary) and is_integer(limit) and limit >= 0 and
              ambiguous in [:narrow, :wide] do
-    {prefixes, _last} =
-      Enum.map_reduce(graphemes(binary), "", fn grapheme, prefix ->
-        candidate = prefix <> grapheme
-        {{candidate, cells(candidate, ambiguous)}, candidate}
-      end)
-
-    {prefix, used} =
-      prefixes
-      |> Enum.take_while(fn {_prefix, width} -> width <= limit end)
-      |> List.last({"", 0})
-
-    {prefix, binary_part(binary, byte_size(prefix), byte_size(binary) - byte_size(prefix)), used}
+    take_prefix(binary, limit, ambiguous, "", 0)
   end
 
   @spec wrap(binary(), pos_integer(), :narrow | :wide) :: [binary()]
   def wrap(binary, width, ambiguous)
       when is_binary(binary) and is_integer(width) and width > 0 and
-             ambiguous in [:narrow, :wide],
-      do: do_wrap(binary, width, ambiguous, [])
+             ambiguous in [:narrow, :wide] do
+    if binary == "" do
+      []
+    else
+      binary
+      |> String.split(["\r\n", "\n"])
+      |> Enum.flat_map(fn
+        "" -> [""]
+        line -> do_wrap(line, width, ambiguous, [])
+      end)
+    end
+  end
 
   @spec elide(binary(), non_neg_integer(), :end | :middle, :narrow | :wide) :: binary()
   def elide(binary, limit, position, ambiguous)
@@ -100,14 +99,29 @@ defmodule SwarmCodeCLI.UI.Width do
     end
   end
 
+  defp take_prefix(remaining, limit, ambiguous, prefix, used) do
+    case String.next_grapheme(remaining) do
+      nil ->
+        {prefix, "", used}
+
+      {grapheme, tail} ->
+        candidate = prefix <> grapheme
+        candidate_width = cells(candidate, ambiguous)
+
+        if candidate_width <= limit,
+          do: take_prefix(tail, limit, ambiguous, candidate, candidate_width),
+          else: {prefix, remaining, used}
+    end
+  end
+
   defp do_wrap(<<>>, _width, _ambiguous, acc), do: Enum.reverse(acc)
 
   defp do_wrap(binary, width, ambiguous, acc) do
     {head, tail, _} = take_cells(binary, width, ambiguous)
 
     if head == "" do
-      [first | rest] = graphemes(binary)
-      do_wrap(IO.iodata_to_binary(rest), width, ambiguous, [first | acc])
+      {first, rest} = String.next_grapheme(binary)
+      do_wrap(rest, width, ambiguous, [first | acc])
     else
       do_wrap(tail, width, ambiguous, [head | acc])
     end
@@ -123,14 +137,29 @@ defmodule SwarmCodeCLI.UI.Width do
     {left, _, left_width} = take_cells(binary, left_target, ambiguous)
     right_target = available - left_width
 
-    reversed = binary |> graphemes() |> Enum.reverse() |> IO.iodata_to_binary()
-    {right_reversed, _, _} = take_cells(reversed, right_target, ambiguous)
-    right = right_reversed |> graphemes() |> Enum.reverse() |> IO.iodata_to_binary()
+    # Keep the original grapheme boundaries: joining reversed flag sequences
+    # and segmenting again can pair different regional indicators.
+    right =
+      binary
+      |> graphemes()
+      |> Enum.reverse()
+      |> take_suffix(right_target, ambiguous, "")
+
     candidate = left <> @ellipsis <> right
 
     if cells(candidate, ambiguous) <= available + cells(@ellipsis, ambiguous),
       do: candidate,
       else: end_elide(binary, available, ambiguous)
+  end
+
+  defp take_suffix([], _limit, _ambiguous, suffix), do: suffix
+
+  defp take_suffix([grapheme | rest], limit, ambiguous, suffix) do
+    candidate = grapheme <> suffix
+
+    if cells(candidate, ambiguous) <= limit,
+      do: take_suffix(rest, limit, ambiguous, candidate),
+      else: suffix
   end
 
   defp width_in_string(cp, next_info, mode) do

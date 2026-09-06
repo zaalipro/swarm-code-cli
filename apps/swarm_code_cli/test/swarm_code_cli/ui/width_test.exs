@@ -117,6 +117,27 @@ defmodule SwarmCodeCLI.UI.WidthTest do
     assert Width.wrap("界", 1, :narrow) == ["界"]
   end
 
+  test "wrap preserves hard line breaks, empty lines, and the final empty line" do
+    assert Width.wrap("A\n\n界B\n", 2, :narrow) == ["A", "", "界", "B", ""]
+    assert Width.wrap("AB\r\nC", 2, :narrow) == ["AB", "C"]
+    assert Width.wrap("\r\n", 2, :narrow) == ["", ""]
+    assert Width.wrap("", 2, :narrow) == []
+  end
+
+  test "a viewport measures only its visible prefix, independent of the hidden tail" do
+    # A full-transcript prefix list used to allocate and remeasure every growing
+    # prefix, even when the viewport fits only eight cells.
+    small = "é👩‍💻" <> String.duplicate("x", 100)
+    large = "é👩‍💻" <> String.duplicate("x", 10_000)
+    Width.take_cells(small, 8, :narrow)
+    {small_result, small_work} = measured_take(small)
+    {large_result, large_work} = measured_take(large)
+
+    assert elem(small_result, 0) == "é👩‍💻xxxxx"
+    assert elem(large_result, 0) == "é👩‍💻xxxxx"
+    assert large_work < small_work * 4
+  end
+
   test "end elision stays within the limit without splitting graphemes" do
     assert Width.elide("A👩‍💻BC", 0, :end, :narrow) == ""
     assert Width.elide("A👩‍💻BC", 1, :end, :narrow) == "…"
@@ -128,5 +149,16 @@ defmodule SwarmCodeCLI.UI.WidthTest do
     assert Width.elide("AB👩‍💻CD", 4, :middle, :narrow) == "A…CD"
     assert Width.cells(Width.elide("AB👩‍💻CD", 4, :middle, :narrow), :narrow) <= 4
     refute String.contains?(Width.elide("AB👩‍💻CD", 4, :middle, :narrow), "‍")
+  end
+
+  test "middle elision retains original flag boundaries in its suffix" do
+    assert Width.elide("ABXYZ🇬🇪🇺CD", 6, :middle, :narrow) == "AB…🇺CD"
+  end
+
+  defp measured_take(text) do
+    {:reductions, before} = Process.info(self(), :reductions)
+    result = Width.take_cells(text, 8, :narrow)
+    {:reductions, after_count} = Process.info(self(), :reductions)
+    {result, after_count - before}
   end
 end

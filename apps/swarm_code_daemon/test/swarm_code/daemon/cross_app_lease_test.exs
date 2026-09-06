@@ -283,6 +283,10 @@ defmodule SwarmCode.Daemon.CrossAppLeaseTest do
     assert caller in (Process.info(owner, :links) |> elem(1))
     caller_monitor = Process.monitor(caller)
     owner_monitor = Process.monitor(owner)
+    # Monitor signals are asynchronous. The call from this same sender is a
+    # barrier proving the owner received the monitor before its caller exits.
+    # Without it, shutdown can overtake monitor delivery and report :noproc.
+    assert :ok = CrossAppLease.assert_held(owner)
     send(caller, :stop_caller)
 
     assert_receive {:DOWN, ^caller_monitor, :process, ^caller, :shutdown}

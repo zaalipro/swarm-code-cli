@@ -7,6 +7,11 @@ the terminal/runtime surfaces. Do not use this milestone as a normal startup pat
 
 - [Approved CLI architecture](docs/superpowers/specs/2026-09-01-swarm-code-cli-design.md)
 - [Foundation safety and macOS residual risk](docs/foundation-safety.md)
+- [Current implementation and desktop parity audit](docs/research/2026-09-06-cli-parity-audit.md)
+
+Contributor checks: `mise exec -- mix precommit`. The Unicode terminal-width
+source and generated tables can be checked offline with
+`mise exec -- elixir scripts/dev/sync_unicode_width.exs --check`.
 
 The 2026-09-01 source authorization, MIT license, and NOTICE terms are recorded in
 [`SOURCE_AUTHORIZATION.md`](SOURCE_AUTHORIZATION.md), [`LICENSE`](LICENSE), and [`NOTICE`](NOTICE).
