@@ -33,7 +33,21 @@ defmodule SwarmCodeCLI.UI.Switcher do
     conversations =
       runs |> Enum.map(& &1.conversation_id) |> Enum.reject(&is_nil/1) |> Enum.uniq()
 
+    libraries =
+      if state.banner in [:live_banner, :persisted_banner] do
+        Enum.map(SwarmCodeCLI.UI.Library.features(), fn feature ->
+          entry(
+            SwarmCodeCLI.UI.Library.title(feature),
+            :action,
+            {:local, {:open_layer, {:library, feature}}}
+          )
+        end)
+      else
+        []
+      end
+
     local ++
+      libraries ++
       local_entries(state) ++
       domain_entries(state) ++
       Enum.map(

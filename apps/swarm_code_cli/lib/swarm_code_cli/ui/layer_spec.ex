@@ -11,6 +11,10 @@ defmodule SwarmCodeCLI.UI.LayerSpec do
           | {:unsent_changes, :detach | :plain}
           | {:confirm_intent, Intent.t()}
           | {:detail, binary(), binary()}
+          | {:library, atom()}
+          | {:research_form, binary()}
+          | {:feature_form, atom(), binary()}
+          | {:command_report, binary()}
           | {:switcher | :action_menu | :jump | :region_filter, binary()}
 
   @spec help() :: t()
@@ -42,7 +46,15 @@ defmodule SwarmCodeCLI.UI.LayerSpec do
   end
 
   def validate({kind, id} = layer)
-      when kind in [:question, :approval, :switcher, :action_menu, :jump, :region_filter],
+      when kind in [
+             :question,
+             :approval,
+             :switcher,
+             :action_menu,
+             :jump,
+             :region_filter,
+             :command_report
+           ],
       do: if(Intent.valid_id?(id), do: {:ok, layer}, else: {:error, :invalid_layer_spec})
 
   def validate({:confirm_intent, {:run_control, :stop, _} = intent} = layer),
@@ -52,6 +64,28 @@ defmodule SwarmCodeCLI.UI.LayerSpec do
     do: if(Intent.valid?(intent), do: {:ok, layer}, else: {:error, :invalid_layer_spec})
 
   def validate({:unsent_changes, path} = layer) when path in [:detach, :plain], do: {:ok, layer}
+
+  def validate({:library, feature} = layer)
+      when feature in [
+             :workflows,
+             :research,
+             :schedules,
+             :settings,
+             :usage,
+             :changes,
+             :checkpoints,
+             :mcp,
+             :memory
+           ],
+      do: {:ok, layer}
+
+  def validate({:research_form, owner} = layer),
+    do: if(Intent.valid_id?(owner), do: {:ok, layer}, else: {:error, :invalid_layer_spec})
+
+  def validate({:feature_form, feature, id} = layer)
+      when feature in [:workflows, :schedules, :settings, :mcp, :memory] do
+    if Intent.valid_id?(id), do: {:ok, layer}, else: {:error, :invalid_layer_spec}
+  end
 
   def validate(_layer), do: {:error, :invalid_layer_spec}
 end

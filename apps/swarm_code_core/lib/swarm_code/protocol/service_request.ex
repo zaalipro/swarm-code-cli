@@ -26,6 +26,9 @@ defmodule SwarmCode.Protocol.ServiceRequest do
           | :run_control
           | :run_steer
           | :approval_resolve
+          | :feature_query
+          | :feature_command
+          | :question_answer
 
   @type t :: %__MODULE__{
           operation: operation(),
@@ -94,6 +97,9 @@ defmodule SwarmCode.Protocol.ServiceRequest do
   defp decode_operation("run.control"), do: :run_control
   defp decode_operation("run.steer"), do: :run_steer
   defp decode_operation("approval.resolve"), do: :approval_resolve
+  defp decode_operation("feature.query"), do: :feature_query
+  defp decode_operation("feature.command"), do: :feature_command
+  defp decode_operation("question.answer"), do: :question_answer
   defp decode_operation(_operation), do: nil
 
   defp encode_operation(:query), do: "query"
@@ -108,6 +114,9 @@ defmodule SwarmCode.Protocol.ServiceRequest do
   defp encode_operation(:run_control), do: "run.control"
   defp encode_operation(:run_steer), do: "run.steer"
   defp encode_operation(:approval_resolve), do: "approval.resolve"
+  defp encode_operation(:feature_query), do: "feature.query"
+  defp encode_operation(:feature_command), do: "feature.command"
+  defp encode_operation(:question_answer), do: "question.answer"
   defp encode_operation(_operation), do: nil
 
   defp param_keys(:query), do: ~w(slot cursor direction page_size byte_limit)
@@ -124,6 +133,12 @@ defmodule SwarmCode.Protocol.ServiceRequest do
 
   defp param_keys(:approval_resolve),
     do: ~w(run_id node_id interaction_id expected_revision decision)
+
+  defp param_keys(:feature_query), do: ~w(feature id cursor page_size byte_limit)
+  defp param_keys(:feature_command), do: ~w(feature action id attributes)
+
+  defp param_keys(:question_answer),
+    do: ~w(run_id node_id interaction_id expected_revision answers custom_text)
 
   defp param_keys(_operation), do: []
 
@@ -161,7 +176,7 @@ defmodule SwarmCode.Protocol.ServiceRequest do
     scope.kind == :conversation and params["action"] == "send" and
       text?(params["text"], 262_144) and
       params["target"] == %{"kind" => "main", "id" => nil} and
-      params["attachment_refs"] == []
+      attachment_refs?(params["attachment_refs"])
   end
 
   defp valid_params?(:run_control, params, scope) do
@@ -170,7 +185,7 @@ defmodule SwarmCode.Protocol.ServiceRequest do
 
   defp valid_params?(:run_steer, params, scope) do
     run_scope?(params["run_id"], scope) and optional_uuid?(params["node_id"]) and
-      text?(params["text"], 65_000) and params["attachment_refs"] == []
+      text?(params["text"], 65_000) and attachment_refs?(params["attachment_refs"])
   end
 
   defp valid_params?(:approval_resolve, params, scope) do
@@ -178,6 +193,69 @@ defmodule SwarmCode.Protocol.ServiceRequest do
       uuid?(params["interaction_id"]) and counter?(params["expected_revision"]) and
       params["decision"] in ["approve", "deny"]
   end
+
+  defp valid_params?(:feature_query, params, scope) do
+    params["feature"] in ~w(workflows research schedules settings usage changes checkpoints mcp memory) and
+      optional_reference?(params["id"]) and
+      (params["cursor"] == nil or reference?(params["cursor"])) and
+      page_bounds?(params) and
+      scope.kind in [:global, :project, :conversation]
+  end
+
+  defp valid_params?(:feature_command, params, scope) do
+    actions = %{
+      "workflows" => ~w(start pause resume stop),
+      "research" => ~w(start stop retry report pin),
+      "schedules" => ~w(save toggle run_now delete),
+      "settings" => ~w(update),
+      "checkpoints" => ~w(restore),
+      "mcp" => ~w(save toggle delete),
+      "memory" => ~w(update clear)
+    }
+
+    scope.kind in [:global, :project, :conversation] and
+      params["action"] in Map.get(actions, params["feature"], []) and
+      (reference?(params["id"]) or
+         (is_nil(params["id"]) and
+            {params["feature"], params["action"]} in [
+              {"research", "start"},
+              {"schedules", "save"},
+              {"settings", "update"},
+              {"mcp", "save"}
+            ])) and
+      is_map(params["attributes"]) and json_attributes?(params["attributes"], 0)
+  end
+
+  defp valid_params?(:question_answer, params, scope) do
+    run_scope?(params["run_id"], scope) and uuid?(params["node_id"]) and
+      uuid?(params["interaction_id"]) and counter?(params["expected_revision"]) and
+      is_list(params["answers"]) and length(params["answers"]) <= 64 and
+      Enum.all?(params["answers"], &reference?/1) and
+      Enum.uniq(params["answers"]) == params["answers"] and
+      is_binary(params["custom_text"]) and byte_size(params["custom_text"]) <= 4_000 and
+      String.valid?(params["custom_text"]) and
+      (params["answers"] != [] or String.trim(params["custom_text"]) != "")
+  end
+
+  defp json_attributes?(_, depth) when depth > 6, do: false
+
+  defp json_attributes?(value, _) when is_binary(value),
+    do: byte_size(value) <= 32_000 and String.valid?(value)
+
+  defp json_attributes?(value, _) when is_boolean(value) or is_nil(value) or is_number(value),
+    do: true
+
+  defp json_attributes?(value, depth) when is_map(value) and map_size(value) <= 64,
+    do:
+      Enum.all?(value, fn {key, item} ->
+        is_binary(key) and byte_size(key) in 1..64 and String.valid?(key) and
+          json_attributes?(item, depth + 1)
+      end)
+
+  defp json_attributes?(value, depth) when is_list(value),
+    do: length(value) <= 64 and Enum.all?(value, &json_attributes?(&1, depth + 1))
+
+  defp json_attributes?(_, _), do: false
 
   defp valid_scope?(%Scope{} = scope) do
     exact_keys?(scope, @scope_keys) and counter?(scope.generation) and
@@ -225,6 +303,9 @@ defmodule SwarmCode.Protocol.ServiceRequest do
   defp optional_uuid?(nil), do: true
   defp optional_uuid?(value), do: uuid?(value)
 
+  defp optional_reference?(nil), do: true
+  defp optional_reference?(value), do: reference?(value)
+
   defp reference?(value) when is_binary(value) and byte_size(value) in 1..256,
     do: String.valid?(value) and control_free?(value)
 
@@ -234,6 +315,12 @@ defmodule SwarmCode.Protocol.ServiceRequest do
     do: String.valid?(value) and String.trim(value) != ""
 
   defp text?(_value, _limit), do: false
+
+  defp attachment_refs?(refs) when is_list(refs) and length(refs) <= 4 do
+    Enum.uniq(refs) == refs and Enum.all?(refs, &uuid?/1)
+  end
+
+  defp attachment_refs?(_), do: false
 
   defp control_free?(<<>>), do: true
 

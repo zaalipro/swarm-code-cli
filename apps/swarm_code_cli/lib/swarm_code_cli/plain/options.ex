@@ -7,7 +7,10 @@ defmodule SwarmCodeCLI.Plain.Options do
             ascii?: false,
             color?: true,
             reduced_motion?: false,
-            ambiguous_width: :narrow
+            ambiguous_width: :narrow,
+            format: :text,
+            banner: :fake,
+            detached_runs?: true
 
   @type t :: %__MODULE__{
           plain?: boolean(),
@@ -15,7 +18,10 @@ defmodule SwarmCodeCLI.Plain.Options do
           ascii?: boolean(),
           color?: boolean(),
           reduced_motion?: boolean(),
-          ambiguous_width: :narrow | :wide
+          ambiguous_width: :narrow | :wide,
+          format: :text | :ndjson,
+          banner: :fake | :plain | :saved,
+          detached_runs?: boolean()
         }
 
   def select(args, %Environment{} = env) when is_list(args) do
@@ -54,6 +60,7 @@ defmodule SwarmCodeCLI.Plain.Options do
         "--reduced-motion" -> {:reduced_motion?, true}
         "--ambiguous-width=narrow" -> {:ambiguous_width, :narrow}
         "--ambiguous-width=wide" -> {:ambiguous_width, :wide}
+        "--ndjson" -> {:format, :ndjson}
         _ -> :error
       end
 

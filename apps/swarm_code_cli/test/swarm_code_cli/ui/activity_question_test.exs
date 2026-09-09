@@ -3,6 +3,54 @@ defmodule SwarmCodeCLI.UI.ActivityQuestionTest do
   alias SwarmCodeCLI.UI.{Activity, Question, State}
   alias SwarmCodeCLI.UI.DataSource.DTO
 
+  test "custom answer stays scoped to its pending interaction and crosses the wire" do
+    alias SwarmCodeCLI.UI.{Editor, FieldEditors, Intent}
+    alias SwarmCodeCLI.UI.DataSource.{Request, Daemon.Codec}
+    run = "11111111-1111-4111-8111-111111111111"
+    node = "22222222-2222-4222-8222-222222222222"
+    id = "33333333-3333-4333-8333-333333333333"
+
+    item = %DTO.PendingInteraction{
+      id: id,
+      run_id: run,
+      node_id: node,
+      expected_revision: 7,
+      allowed_actions: [:answer_question],
+      question: %DTO.Question{options: [%DTO.QuestionOption{id: "one"}]}
+    }
+
+    state = %State{}
+    {:ok, editor} = Editor.apply(Editor.new(max_bytes: 16_384), {:insert, "My own answer"})
+
+    state = %{
+      state
+      | read_model: %{state.read_model | interactions: %{id => item}},
+        field_editors: FieldEditors.put(state.field_editors, {:question_other, id, 7}, editor)
+    }
+
+    intent = Question.answer_intent(state, item, "other")
+
+    assert {:answer_question, ^run, ^node, ^id, 7,
+            %{option_ids: [], custom_text: "My own answer"}} = intent
+
+    assert {:ok, ^intent} = Intent.validate(intent)
+
+    request = %Request{
+      request_id: "answer",
+      kind: intent,
+      scope: %SwarmCode.Protocol.Scope{kind: :run, id: run, generation: 2},
+      generation: 2,
+      origin: {:interaction, id, 7},
+      deadline: 5_000,
+      expected_response: :outcome
+    }
+
+    assert {:ok, message} = Codec.request(request, node, String.duplicate("A", 43), 0)
+    assert message.body["op"] == "question.answer"
+    assert message.body["answers"] == []
+    assert message.body["custom_text"] == "My own answer"
+  end
+
   test "Activity sorts unresolved deadlines before running then newest failures and completions" do
     items = [
       %DTO.ActivityItem{id: "complete", kind: :completion, created_at: 100},

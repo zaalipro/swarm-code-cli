@@ -25,6 +25,8 @@ defmodule SwarmCodeCLI.UI.DataSource do
   @callback command(server(), Request.t()) :: :ok | {:error, AdmissionError.t()}
   @callback cancel(server(), request_id()) :: :ok | {:error, AdmissionError.t()}
   @callback close(server()) :: :ok
+  @callback consume(server(), reference(), :applied | :discarded) ::
+              :ok | {:error, AdmissionError.t()}
 
   @doc "Bind the UI owner through the common adapter process protocol."
   def bind_owner(server, owner, ref), do: GenServer.call(server, {:bind, owner, ref}, :infinity)
@@ -37,4 +39,7 @@ defmodule SwarmCodeCLI.UI.DataSource do
 
   def cancel(server, id), do: GenServer.call(server, {:cancel, id})
   def close(server), do: GenServer.call(server, :close)
+
+  def consume(server, receipt, disposition),
+    do: GenServer.call(server, {:consume, receipt, disposition})
 end

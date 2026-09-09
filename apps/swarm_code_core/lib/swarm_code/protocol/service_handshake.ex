@@ -22,7 +22,9 @@ defmodule SwarmCode.Protocol.ServiceHandshake do
     "run.continue" => :run_continue,
     "run.stop" => :run_stop,
     "run.steer" => :run_steer,
-    "approval.resolve" => :approval_resolve
+    "approval.resolve" => :approval_resolve,
+    "feature.command" => :feature_command,
+    "question.answer" => :question_answer
   }
   @max_frame_bytes 1_048_576
 
@@ -41,6 +43,8 @@ defmodule SwarmCode.Protocol.ServiceHandshake do
             | :run_stop
             | :run_steer
             | :approval_resolve
+            | :feature_command
+            | :question_answer
 
     @type t :: %__MODULE__{
             source_epoch: binary(),

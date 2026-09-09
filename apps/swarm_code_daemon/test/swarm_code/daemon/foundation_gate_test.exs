@@ -739,13 +739,13 @@ defmodule SwarmCode.Daemon.FoundationGateTest do
     refute File.exists?(Path.join(mac_root, "instance_lease.db"))
   end
 
-  test "macOS fails closed when the signed detector helper is unavailable" do
+  test "macOS refuses before leasing when the signed detector helper is unavailable" do
     fixture = fixture_database!(:current)
     root = Path.dirname(fixture)
     prepare_macos_parents!(root)
 
     opts =
-      test_opts(fixture, :default,
+      test_opts(fixture, fn -> {:error, :macos_platform_helper_unavailable} end,
         platform: :macos,
         home: root,
         env: %{"TMPDIR" => root}

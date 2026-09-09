@@ -90,6 +90,15 @@ defmodule SwarmCodeCLI.UI.Action do
              | {:preset, :compact | :balanced | :wide}
              | {:nudge, -8 | -2 | 2 | 8}}
           | {:composer_height, :reset | {:nudge, -1 | 1}}
+          | {:complete_command, binary()}
+          | {:library_page, :next | :previous | :refresh}
+          | {:library_command, atom(), binary(), atom()}
+          | {:library_select, binary()}
+          | {:research_depth, :low | :medium | :high | :ultra}
+          | :research_start
+          | :feature_submit
+          | {:feature_cycle, binary(), -1 | 1}
+          | {:library_confirm, boolean()}
           | {:presenter_handoff_requested, :plain}
           | {:presenter_handoff_confirmed, :plain}
           | {:navigate, Destination.t()}
@@ -112,6 +121,43 @@ defmodule SwarmCodeCLI.UI.Action do
 
   def validate({:toggle_dock, dock} = action),
     do: valid_action(action, dock in [:navigator, :inspector])
+
+  def validate({:library_page, direction} = action),
+    do: valid_action(action, direction in [:next, :previous, :refresh])
+
+  def validate({:library_command, feature, id, action} = value),
+    do:
+      valid_action(
+        value,
+        feature in SwarmCodeCLI.UI.Library.features() and Intent.valid_id?(id) and
+          action in [
+            :start,
+            :pause,
+            :resume,
+            :stop,
+            :delete,
+            :restore,
+            :retry,
+            :report,
+            :toggle,
+            :run_now,
+            :update,
+            :clear
+          ]
+      )
+
+  def validate({:library_select, id} = action), do: valid_action(action, Intent.valid_id?(id))
+
+  def validate({:research_depth, depth} = action),
+    do: valid_action(action, depth in [:low, :medium, :high, :ultra])
+
+  def validate(:research_start), do: {:ok, :research_start}
+  def validate(:feature_submit), do: {:ok, :feature_submit}
+
+  def validate({:feature_cycle, field, direction} = action),
+    do: valid_action(action, SwarmCodeCLI.UI.Intent.valid_id?(field) and direction in [-1, 1])
+
+  def validate({:library_confirm, value} = action), do: valid_action(action, is_boolean(value))
 
   def validate({:set_tab, tab} = action),
     do: valid_action(action, tab in [:thread, :agents, :timeline, :changes])
@@ -223,6 +269,9 @@ defmodule SwarmCodeCLI.UI.Action do
 
   def validate({:composer_height, adjustment} = action),
     do: valid_action(action, adjustment == :reset or adjustment in [{:nudge, -1}, {:nudge, 1}])
+
+  def validate({:complete_command, name} = action),
+    do: valid_action(action, SwarmCodeCLI.UI.SlashPalette.valid_name?(name))
 
   def validate({:presenter_handoff_requested, :plain} = action), do: {:ok, action}
   def validate({:presenter_handoff_confirmed, :plain} = action), do: {:ok, action}

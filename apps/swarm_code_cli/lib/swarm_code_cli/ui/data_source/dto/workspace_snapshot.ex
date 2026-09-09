@@ -1,7 +1,16 @@
 defmodule SwarmCodeCLI.UI.DataSource.DTO.WorkspaceSnapshot do
   @moduledoc "Bounded, closed WorkspaceSnapshot presentation facts."
   use SwarmCodeCLI.UI.DataSource.DTO.Schema,
-    wire_defaults: [allowed_actions: [], revision: 0, seen_revision: 0],
+    wire_defaults: [
+      allowed_actions: [],
+      revision: 0,
+      seen_revision: 0,
+      mode: nil,
+      chat_model: nil,
+      swarm_model: nil,
+      effort: nil,
+      swarm_effort: nil
+    ],
     fields: [
       allowed_actions: :actions,
       revision: :revision,
@@ -9,6 +18,11 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.WorkspaceSnapshot do
       runs_page: {:dto, SwarmCodeCLI.UI.DataSource.DTO.PageInfo},
       interactions_page: {:dto, SwarmCodeCLI.UI.DataSource.DTO.PageInfo},
       conversation_id: {:optional, :id},
+      mode: {:optional, {:enum, [:build, :plan, :ultra, :workflow, :consensus]}},
+      chat_model: {:optional, :text},
+      swarm_model: {:optional, :text},
+      effort: {:optional, :text},
+      swarm_effort: {:optional, :text},
       runs: {:list, {:dto, SwarmCodeCLI.UI.DataSource.DTO.RunSummary}},
       transcript: {:dto, SwarmCodeCLI.UI.DataSource.DTO.TranscriptWindow},
       interactions: {:list, {:dto, SwarmCodeCLI.UI.DataSource.DTO.PendingInteraction}},
@@ -28,6 +42,11 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.WorkspaceSnapshot do
       runs_page: nil,
       interactions_page: nil,
       conversation_id: nil,
+      mode: nil,
+      chat_model: nil,
+      swarm_model: nil,
+      effort: nil,
+      swarm_effort: nil,
       runs: [],
       transcript: nil,
       interactions: [],

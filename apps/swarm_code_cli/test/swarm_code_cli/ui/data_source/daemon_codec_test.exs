@@ -44,14 +44,34 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.CodecTest do
     assert message.body["action"] == "send"
     assert message.body["target"] == %{"kind" => "main", "id" => nil}
 
+    assert {:ok, _message} =
+             Codec.request(
+               %{
+                 request
+                 | kind:
+                     {:dispatch, :send, "Fix the test", :main,
+                      ["33333333-3333-4333-8333-333333333333"]}
+               },
+               @wire,
+               @nonce,
+               1_000
+             )
+
     for kind <- [
           {:dispatch, :queue, "Fix the test", :main, []},
-          {:dispatch, :send, "Fix the test", :main, ["attachment"]},
           {:dispatch, :send, "Fix the test", {:reply, "node"}, []}
         ] do
       assert {:error, %AdmissionError{code: :not_allowed}} =
                Codec.request(%{request | kind: kind}, @wire, @nonce, 1_000)
     end
+
+    assert {:error, %AdmissionError{code: :invalid_request}} =
+             Codec.request(
+               %{request | kind: {:dispatch, :send, "Fix the test", :main, ["attachment"]}},
+               @wire,
+               @nonce,
+               1_000
+             )
   end
 
   test "response checks wire correlation before restoring the original local request ID" do
@@ -139,6 +159,54 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.CodecTest do
              )
   end
 
+  test "command feedback stays exact, accepted-only and scoped while old ledger outcomes decode" do
+    request = %{
+      query()
+      | kind: {:dispatch, :send, "/goal", :main, []},
+        origin: {:draft, {@conversation, :main}},
+        expected_response: :outcome
+    }
+
+    old = %{
+      "status" => "accepted",
+      "request_id" => @wire,
+      "identifiers" => [],
+      "interaction" => nil,
+      "error" => nil,
+      "corrective_action" => "none"
+    }
+
+    feedback = %{
+      "kind" => "report",
+      "feature" => nil,
+      "title" => "Goal",
+      "text" => "Finish the CLI",
+      "conversation_id" => @conversation
+    }
+
+    value = Map.put(old, "feedback", feedback)
+
+    assert {:ok, %{body: %DTO.Outcome{feedback: nil}}} =
+             Codec.response(result("outcome", old), request, @wire, @nonce)
+
+    assert {:ok, %{body: %DTO.Outcome{feedback: %DTO.Feedback{text: "Finish the CLI"}}}} =
+             Codec.response(result("outcome", value), request, @wire, @nonce)
+
+    for invalid <- [
+          put_in(value["feedback"]["conversation_id"], @wire),
+          put_in(value["feedback"]["kind"], "execute"),
+          put_in(value["feedback"]["text"], String.duplicate("x", 65_537)),
+          Map.put(value, "feedback", Map.delete(feedback, "feature")),
+          put_in(value["feedback"]["extra"], "hidden"),
+          Map.delete(value, "interaction"),
+          Map.put(value, "status", "outcome_unknown"),
+          Map.put(value, "feedback", %{feedback | "kind" => "navigate", "feature" => nil})
+        ] do
+      assert {:error, %AdmissionError{code: :invalid_request}} =
+               Codec.response(result("outcome", invalid), request, @wire, @nonce)
+    end
+  end
+
   test "actual run and node identities survive approval and steering translation" do
     run = "33333333-3333-4333-8333-333333333333"
     node = "44444444-4444-4444-8444-444444444444"
@@ -223,6 +291,58 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.CodecTest do
                  @nonce
                )
     end
+  end
+
+  test "workspace metadata deltas preserve scope and cannot enter a shell watch" do
+    watch = %SwarmCodeCLI.UI.DataSource.Watch{
+      watch_ref: "metadata",
+      slot: :workspace,
+      scope: @scope,
+      generation: 2,
+      page_size: 20,
+      byte_limit: 262_144
+    }
+
+    value = %{
+      "kind" => "workspace_metadata",
+      "entity_id" => nil,
+      "run_id" => nil,
+      "conversation_id" => @conversation,
+      "attempt_id" => nil,
+      "channel" => nil,
+      "text" => nil,
+      "sequence" => 1,
+      "revision" => 1,
+      "body" => %{
+        "conversation_id" => @conversation,
+        "mode" => "plan",
+        "chat_model" => "planner",
+        "swarm_model" => nil,
+        "effort" => nil,
+        "swarm_effort" => nil
+      }
+    }
+
+    event = %Message{
+      version: 1,
+      type: :event,
+      request_id: nil,
+      nonce: @nonce,
+      scope: @scope,
+      sequence: 1,
+      occurred_at: "2026-09-09T00:00:00Z",
+      body: %{"op" => "delta", "watch_ref" => "metadata", "value" => value}
+    }
+
+    assert {:ok, %{kind: :workspace_metadata}} = SwarmCodeCLI.UI.DataSource.Delta.decode(value)
+
+    assert {:ok, %{body: %{body: %DTO.WorkspaceMetadata{mode: :plan}}}} =
+             Codec.event(event, watch, @nonce)
+
+    scope = %Scope{kind: :global, id: nil, generation: 2}
+
+    assert {:error, %AdmissionError{code: :invalid_request}} =
+             Codec.event(%{event | scope: scope}, %{watch | slot: :shell, scope: scope}, @nonce)
   end
 
   test "detail responses match requested reference offset and byte limit" do

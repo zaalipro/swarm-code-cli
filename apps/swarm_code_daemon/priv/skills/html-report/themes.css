@@ -1,0 +1,159 @@
+/* Five palettes and four font pairings. Copy ONE :root block and ONE font
+   link verbatim, then add at most two subject accents. Every palette here is
+   taken from a report that worked. */
+
+/* ── PALETTE 1 · "terminal" — cool technical, benchmarks, hardware ───────── */
+:root {
+  --bg: #060912;
+  --surface: #0d1220;
+  --surface-2: #121826;
+  --border: rgba(255, 255, 255, .07);
+  --border-2: rgba(255, 255, 255, .12);
+  --text: #e8eaf2;
+  --text-dim: #7a8099;
+  --text-muted: #4a5068;
+  --a1: #00cfb4;                 /* first entity   */
+  --a2: #ff6b35;                 /* second entity  */
+  --gold: #f0c040;               /* highlight      */
+  --a1-dim: rgba(0, 207, 180, .12);
+  --a2-dim: rgba(255, 107, 53, .12);
+}
+
+/* ── PALETTE 2 · "instrument" — dashboards, dense readouts, telemetry ────── */
+:root {
+  --bg: #030810;
+  --surface: #060d1a;
+  --surface-2: #091221;
+  --border: rgba(0, 212, 255, .07);
+  --border-2: rgba(0, 212, 255, .16);
+  --text: #d8eeff;
+  --text-dim: #3f6880;
+  --text-muted: #1b3245;
+  --a1: #00d4ff;
+  --a2: #00ffaa;
+  --gold: #ffc84a;
+  --warn: #ff8c42;
+  --bad: #ff2d6b;
+  --a1-dim: rgba(0, 212, 255, .10);
+  --a2-dim: rgba(0, 255, 170, .10);
+}
+
+/* ── PALETTE 3 · "ledger" — money, mining, operations, risk ──────────────── */
+:root {
+  --bg: #080808;
+  --surface: #101010;
+  --surface-2: #181818;
+  --border: #242424;
+  --border-2: #303030;
+  --text: #e8e4dc;
+  --text-dim: #888070;
+  --text-muted: #3a3632;
+  --a1: #d4943a;                 /* gold  */
+  --a2: #3a9e6a;                 /* green */
+  --bad: #c84040;
+  /* spec 60 T98: the shared rules read `--gold` and `--warn`; this palette had neither. */
+  --gold: #d4943a;
+  --warn: #c84040;
+  --a1-dim: #1a1006;
+  --a2-dim: #071410;
+}
+
+/* ── PALETTE 4 · "biosphere" — biology, materials, energy, agriculture ───── */
+:root {
+  --bg: #050d0f;
+  --surface: #0c1e21;
+  --surface-2: #0f2428;
+  --border: rgba(29, 255, 184, .12);
+  --border-2: rgba(29, 255, 184, .30);
+  --text: #e8f4f0;
+  --text-dim: #8ab5ae;
+  --text-muted: #4a7068;
+  --a1: #1dffb8;
+  --a2: #4dcfff;
+  --gold: #e8c96d;
+  --warn: #ff8c5a;
+  --a1-dim: rgba(29, 255, 184, .10);
+  --a2-dim: rgba(77, 207, 255, .10);
+}
+
+/* ── PALETTE 5 · "editorial" — essays, strategy, long-form argument ──────── */
+:root {
+  --bg: #0c0b0e;
+  --surface: #131118;
+  --surface-2: #191722;
+  --border: #2a2833;
+  --border-2: #3a3746;
+  --text: #ece7dd;
+  --text-dim: #9a94a4;
+  --text-muted: #5a5566;
+  --a1: #5fd9a4;                 /* mint  */
+  --a2: #e8956d;                 /* coral */
+  --gold: #e8c96d;
+  /* spec 60 T98: links and chips read `--a1-dim`/`--a2-dim`; this palette had neither. */
+  --a1-dim: rgba(95, 217, 164, .12);
+  --a2-dim: rgba(232, 149, 109, .12);
+  --maxw: 860px;
+}
+
+/* ═══ FONT PAIRINGS ══════════════════════════════════════════════════════ */
+/* One <link> per report. Display / body / mono, in that order. */
+
+/* A · industrial — condensed display, tight body, technical mono.
+   Best with palette 1, 2 or 3.
+   <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;600;700;800&family=Barlow:wght@300;400;500&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"> */
+.font-a { --display: 'Barlow Condensed', sans-serif; --body: 'Barlow', sans-serif; --mono: 'JetBrains Mono', monospace }
+
+/* B · geometric — a wide display face, a neutral body, a wide mono.
+   Best with palette 1 or 4.
+   <link href="https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&family=Inter:wght@300;400;500&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"> */
+.font-b { --display: 'Syne', sans-serif; --body: 'Inter', sans-serif; --mono: 'JetBrains Mono', monospace }
+
+/* C · editorial — an optical serif, a grotesque body, a humanist mono.
+   Best with palette 5 or 4.
+   <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300..900;1,9..144,400..600&family=Archivo:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet"> */
+.font-c { --display: 'Fraunces', serif; --body: 'Archivo', sans-serif; --mono: 'IBM Plex Mono', monospace }
+
+/* D · instrument — a machined display face for readouts.
+   Best with palette 2.
+   <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@700;900&family=Outfit:wght@300;400;500;600&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet"> */
+.font-d { --display: 'Orbitron', monospace; --body: 'Outfit', sans-serif; --mono: 'Space Mono', monospace }
+
+/* ═══ THE BASE, WHICH IS THE SAME EVERY TIME ═════════════════════════════ */
+
+* { box-sizing: border-box; margin: 0; padding: 0 }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--body);
+  font-size: 15px;
+  line-height: 1.62;
+  -webkit-font-smoothing: antialiased;
+}
+
+.wrap { max-width: var(--maxw, 1240px); margin: 0 auto; padding: 0 24px }
+
+/* Numbers are mono and tabular, everywhere, without exception. */
+.mono, .num, td.num, .stat-num, .spec-val {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The type contrast that carries the whole design (constraint 5). */
+.kicker, .section-meta, .stat-label, .spec-key, .chip-tag, th {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: .12em;
+  color: var(--text-muted);
+}
+
+h1 { font-family: var(--display); font-size: clamp(2.4rem, 6vw, 4.4rem); line-height: 1.02; letter-spacing: -.02em }
+h2 { font-family: var(--display); font-size: clamp(1.5rem, 3vw, 2.1rem); line-height: 1.12; letter-spacing: -.015em }
+h3 { font-family: var(--display); font-size: 1.1rem; letter-spacing: -.01em }
+
+a { color: var(--a1); text-decoration: none; border-bottom: 1px solid var(--a1-dim) }
+a:hover { border-bottom-color: var(--a1) }
+
+/* The source marker. Small, raised, never in the way. */
+sup.ref { font-family: var(--mono); font-size: 9.5px; color: var(--a1); padding-left: 2px }

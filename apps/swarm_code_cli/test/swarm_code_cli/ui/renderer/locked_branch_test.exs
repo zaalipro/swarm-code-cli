@@ -31,7 +31,7 @@ defmodule SwarmCodeCLI.UI.Renderer.LockedBranchTest do
              "b086ec47f0c6c7aaeb4cffca5ae5243dd05e0dc96ab761ced93325d5315f4b12"
 
     assert audit.notice_renderer_hits == []
-    assert audit.release_config == :absent
+    assert audit.release_config == :present
   end
 
   @tag :tmp_dir
@@ -62,6 +62,21 @@ defmodule SwarmCodeCLI.UI.Renderer.LockedBranchTest do
     File.write!(Path.join(renderer, "future_candidate/adapter.ex"), "fixture")
     File.ln_s!(Path.join(root, "missing"), Path.join(renderer, "ex_ratatui_013"))
     assert LockedBranchFixtures.conditional_paths(root) == expected
+  end
+
+  @tag :tmp_dir
+  test "dependency include links remain outside renderer scope while renderer include links are reported",
+       %{tmp_dir: root} do
+    for app <- ["hackney", "ex_ratatui", "swarm_code_cli"] do
+      path = Path.join(root, "_build/test/lib/#{app}")
+      File.mkdir_p!(path)
+      File.ln_s!("/nonexistent/source/include", Path.join(path, "include"))
+    end
+
+    findings = LockedBranchFixtures.conditional_paths(root)
+    refute "_build/test/lib/hackney/include" in findings
+    assert "_build/test/lib/ex_ratatui/include" in findings
+    assert "_build/test/lib/swarm_code_cli/include" in findings
   end
 
   @tag :tmp_dir

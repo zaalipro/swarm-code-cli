@@ -14,7 +14,14 @@ defmodule SwarmCodeCLI.UI.Projector.Shell do
           {blocks, new_cursor} = blocks(role, state, rect, layout.class)
           id = Atom.to_string(role)
           focus = if state.focus == id and state.layers == [], do: :active, else: :inactive
-          label = Density.safe(SafeText.chrome(role), state, rect.width)
+
+          label =
+            case role do
+              :title -> Composer.mode_label(state)
+              :composer -> Composer.label(state)
+              _ -> SafeText.chrome(role)
+            end
+            |> Density.safe(state, rect.width)
 
           region = %Region{
             id: id,
@@ -48,17 +55,32 @@ defmodule SwarmCodeCLI.UI.Projector.Shell do
   end
 
   defp blocks(:title, state, rect, class) do
-    banner = Density.budget(class).banner |> SafeText.chrome() |> SafeText.value()
-    {[Support.text(banner <> " · Build", state, rect.width)], nil}
+    banner =
+      (Map.get(state, :banner) || Density.budget(class).banner)
+      |> SafeText.chrome()
+      |> SafeText.value()
+
+    workspace = Map.get(state.read_model.snapshots, :workspace)
+    mode = Composer.mode_label(state)
+    model = workspace && Map.get(workspace, :chat_model)
+
+    suffix =
+      if is_binary(model) and model != "",
+        do: " · " <> mode <> " · " <> model,
+        else: " · " <> mode
+
+    {[Support.text(banner <> suffix, state, rect.width)], nil}
   end
 
   defp blocks(:main, state, rect, class), do: {Workspace.project(state, rect, class), nil}
   defp blocks(:inspector, state, rect, class), do: {Inspector.project(state, rect, class), nil}
+
   defp blocks(:composer, state, rect, _), do: Composer.project(state, rect)
   defp blocks(:status, state, rect, class), do: {Status.project(state, class, rect.width), nil}
 
   defp blocks(:activity, state, rect, _class) do
     needs = state.read_model.interactions |> Map.values() |> Enum.count(&(&1.state == :pending))
+
     {[Support.text("NEEDS #{needs} · Activity", state, rect.width)], nil}
   end
 
@@ -101,31 +123,46 @@ defmodule SwarmCodeCLI.UI.Projector.Shell do
       |> min(max(0, length(items) - capacity))
       |> max(0)
 
+    display_items =
+      if items == [],
+        do: [:empty, :hint, :features],
+        else: items
+
     rows =
-      items
+      display_items
       |> Enum.drop(first)
       |> Enum.take(capacity)
-      |> Enum.map(fn {id, run} ->
-        title = Density.safe(run.title, state, rect.width)
+      |> Enum.map(fn
+        :empty ->
+          Support.text("No runs yet", state, rect.width)
 
-        title =
-          if id == selected,
-            do:
-              Density.safe(
-                SafeText.concat([SafeText.chrome(:selection_marker), title]),
-                state,
-                rect.width
-              ),
-            else: title
+        :hint ->
+          Support.text("Send a prompt to begin", state, rect.width)
 
-        Support.action(title, {:local, {:navigate, {:run, id}}})
+        :features ->
+          Support.text("Ctrl-K  Features", state, rect.width)
+
+        {id, run} ->
+          title = Density.safe(run.title, state, rect.width)
+
+          title =
+            if id == selected,
+              do:
+                Density.safe(
+                  SafeText.concat([SafeText.chrome(:selection_marker), title]),
+                  state,
+                  rect.width
+                ),
+              else: title
+
+          Support.action(title, {:local, {:navigate, {:run, id}}})
       end)
 
     page = Map.get(state.pages, :shell)
 
     {[
        %Block.VirtualList{
-         total_count: length(items),
+         total_count: length(display_items),
          first_index: first,
          items: rows,
          before_cursor: page && page.before_cursor,

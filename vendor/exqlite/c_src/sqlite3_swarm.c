@@ -17,4 +17,5 @@
 
 #if SQLITE_OS_UNIX && !OS_VXWORKS
 #include "swarm_lease_vfs.c"
+#include "swarm_binding_vfs.c"
 #endif

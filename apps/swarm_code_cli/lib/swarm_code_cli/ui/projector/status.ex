@@ -5,20 +5,32 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
   alias SwarmCodeCLI.UI.Projector.{Density, Support}
 
   def project(state, class, width) do
+    bindings = Density.budget(class).bindings
+
     keys =
-      case Density.budget(class).bindings do
-        4 -> "Tab Focus · Enter Act · q Detach · ? Help"
-        3 -> "Tab Focus · q Detach · ? Help"
-        2 -> "Tab Focus · q Detach · ?"
-        1 -> "Tab Focus · ?"
-        0 -> "?"
+      if state.focus == "composer" do
+        if bindings >= 3,
+          do: "Enter Send · Esc Read · Ctrl-O Newline · Ctrl-K Features",
+          else: "Enter Send · Esc Read"
+      else
+        tab = if state.focus == "main", do: "Tab Type", else: "Tab Next"
+
+        case bindings do
+          4 -> tab <> " · Enter Act · Ctrl-K Features · ? Help · q Quit"
+          3 -> tab <> " · Ctrl-K Features · ? Help · q Quit"
+          2 -> tab <> " · q Quit · ? Help"
+          1 -> tab <> " · q Quit"
+          0 -> "?"
+        end
       end
 
-    focus = "Focus: " <> state.focus
-    [Support.text(focus <> " · " <> keys, state, width)]
+    [Support.text("Focus: " <> state.focus <> " · " <> keys, state, width)]
   end
 
   def notice(%{notice: nil}, _width), do: []
+
+  def notice(%{notice: {:command_feedback, text}} = state, width) when is_binary(text),
+    do: [%Block.Notice{text: Density.safe(text, state, width), severity: :info}]
 
   def notice(state, width) do
     label =

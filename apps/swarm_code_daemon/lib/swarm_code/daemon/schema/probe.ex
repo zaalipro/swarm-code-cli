@@ -324,6 +324,8 @@ defmodule SwarmCode.Daemon.Schema.Probe do
   end
 
   defp normalized_schema_sha256(conn) do
+    SwarmCode.Daemon.Schema.CliMetadata.validate_connection!(conn)
+
     {hash_context, _encoded_bytes} =
       SqliteQuery.reduce(
         conn,
@@ -365,6 +367,15 @@ defmodule SwarmCode.Daemon.Schema.Probe do
   defp hash_schema_row([nil, nil, nil, nil, _raw_bytes], _accumulator) do
     raise RuntimeError, "normalized schema byte limit exceeded"
   end
+
+  defp hash_schema_row([_type, name, _table, _sql, _bytes], accumulator)
+       when name in [
+              "cli_command_ledger",
+              "cli_command_ledger_updated_idx",
+              "cli_attachment_staging",
+              "cli_attachment_staging_lookup_idx"
+            ],
+       do: accumulator
 
   defp hash_schema_row([type, name, table_name, schema_sql, _raw_bytes], accumulator) do
     Enum.reduce([type, name, table_name, schema_sql], accumulator, &hash_schema_field/2)

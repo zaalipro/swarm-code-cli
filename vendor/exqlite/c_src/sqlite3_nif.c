@@ -68,6 +68,7 @@ ErlNifMutex* log_hook_mutex = NULL;
 typedef struct connection
 {
     sqlite3* db;
+    struct swarm_binding_resource *binding_resource;
 #ifdef SWARM_GUARD_TEST
     guard_resource_t *guard_resource;
 #endif
@@ -221,6 +222,7 @@ make_binary(ErlNifEnv* env, const void* bytes, unsigned int size)
 }
 
 #include "swarm_directories.c"
+#include "swarm_binding_nif.c"
 
 static ERL_NIF_TERM
 make_sqlite3_error_tuple(ErlNifEnv* env, int rc, sqlite3* db)
@@ -305,6 +307,13 @@ connection_release_lock(connection_t* conn)
 {
     assert(conn);
     enif_mutex_unlock(conn->mutex);
+}
+
+/* Cached SQLite pages can satisfy reads without entering xRead.  Binding-backed
+ * operations therefore re-attest the retained VFS/control before every call. */
+static inline int connection_binding_valid(connection_t *conn) {
+    return !conn->binding_resource ||
+      swarm_bound_assert(conn->binding_resource->lease->scope->control->binding_vfs) == SQLITE_OK;
 }
 
 static inline void
@@ -503,6 +512,7 @@ exqlite_open(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 #ifdef SWARM_GUARD_TEST
     conn->guard_resource  = NULL;
 #endif
+    conn->binding_resource = NULL;
     conn->db              = db;
     conn->mutex           = mutex;
     conn->interrupt_mutex = NULL;
@@ -528,6 +538,85 @@ exqlite_open(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
     enif_release_resource(conn);
 
     return make_ok_tuple(env, result);
+}
+
+ERL_NIF_TERM
+swarm_binding_open(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
+{
+    assert(env);
+
+    connection_t *conn=NULL; sqlite3 *db=NULL; ErlNifMutex *mutex=NULL;
+    ERL_NIF_TERM result; swarm_binding_ticket *ticket; ErlNifPid caller;
+    if(argc!=1||!enif_get_resource(env,argv[0],swarm_binding_ticket_type,(void**)&ticket))return enif_make_badarg(env);
+    if(!enif_self(env,&caller)||enif_compare_pids(&caller,&ticket->consumer))return sd_error(env,"database_binding_wrong_consumer");
+    if(atomic_exchange(&ticket->consumed,1))return sd_error(env,"database_binding_ticket_consumed");
+    swarm_binding_resource *binding=ticket->binding;
+    sd_control *c=binding->lease->scope->control;
+    enif_mutex_lock(c->io_mutex);
+    if(atomic_load(&c->revoked)||atomic_load(&binding->closed)||!c->binding_vfs){
+        enif_mutex_unlock(c->io_mutex);return sd_error(env,"database_binding_changed");
+    }
+    c->binding_connections++;
+    enif_mutex_unlock(c->io_mutex);
+    int rc=swarm_bound_open(c->binding_vfs,&db);
+    if(rc!=SQLITE_OK){
+        enif_mutex_lock(c->io_mutex);c->binding_connections--;sd_revoke(c);enif_mutex_unlock(c->io_mutex);
+        return sd_error(env,"database_binding_changed");
+    }
+    mutex = enif_mutex_create("exqlite:connection");
+    if (mutex == NULL) {
+        swarm_bound_close(c->binding_vfs,db);
+        enif_mutex_lock(c->io_mutex);c->binding_connections--;sd_revoke(c);enif_mutex_unlock(c->io_mutex);
+        return make_error_tuple(env, am_failed_to_create_mutex);
+    }
+
+    conn = enif_alloc_resource(connection_type, sizeof(connection_t));
+    if (!conn) {
+        swarm_bound_close(c->binding_vfs,db);
+        enif_mutex_lock(c->io_mutex);c->binding_connections--;sd_revoke(c);enif_mutex_unlock(c->io_mutex);
+        enif_mutex_destroy(mutex);
+        return make_error_tuple(env, am_out_of_memory);
+    }
+#ifdef SWARM_GUARD_TEST
+    conn->guard_resource  = NULL;
+#endif
+    conn->binding_resource = binding;
+    enif_keep_resource(binding);
+    conn->db              = db;
+    conn->mutex           = mutex;
+    conn->interrupt_mutex = NULL;
+    memset(conn->authorizer_deny, 0, sizeof(conn->authorizer_deny));
+
+    // Initialize busy handler fields
+    conn->cancelled              = 0;
+    conn->busy_timeout_ms        = 2000; // default matches sqlite3_busy_timeout(db, 2000)
+    conn->progress_handler_steps = 1000;
+    conn->callback_env           = NULL;
+
+    conn->interrupt_mutex = enif_mutex_create("exqlite:interrupt");
+    if (conn->interrupt_mutex == NULL) {
+        enif_release_resource(conn);
+        return make_error_tuple(env, am_failed_to_create_mutex);
+    }
+
+    // Install our custom busy handler + progress handler
+    sqlite3_busy_handler(db, exqlite_busy_handler, conn);
+    connection_configure_progress_handler(conn);
+
+    result = enif_make_resource(env, conn);
+    enif_release_resource(conn);
+
+    return make_ok_tuple(env, result);
+}
+
+static ERL_NIF_TERM swarm_binding_assert_connection(ErlNifEnv *env,int argc,const ERL_NIF_TERM argv[]) {
+    connection_t *conn;
+    if(argc!=1||!enif_get_resource(env,argv[0],connection_type,(void**)&conn))return enif_make_badarg(env);
+    connection_acquire_lock(conn);
+    int rc=conn->db && conn->binding_resource ?
+      swarm_bound_assert(conn->binding_resource->lease->scope->control->binding_vfs) : SQLITE_IOERR;
+    connection_release_lock(conn);
+    return rc==SQLITE_OK?am_ok:sd_error(env,"database_binding_changed");
 }
 
 ///
@@ -584,9 +673,10 @@ exqlite_close(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
     // to later run to clean those up
     enif_mutex_lock(conn->interrupt_mutex);
 #ifdef SWARM_GUARD_TEST
-    rc = conn->guard_resource ? sqlite3_close(conn->db) : sqlite3_close_v2(conn->db);
+    rc = conn->binding_resource ? swarm_bound_close(conn->binding_resource->lease->scope->control->binding_vfs,conn->db) :
+      conn->guard_resource ? sqlite3_close(conn->db) : sqlite3_close_v2(conn->db);
 #else
-    rc = sqlite3_close_v2(conn->db);
+    rc = conn->binding_resource ? swarm_bound_close(conn->binding_resource->lease->scope->control->binding_vfs,conn->db) : sqlite3_close_v2(conn->db);
 #endif
     if (rc != SQLITE_OK) {
         enif_mutex_unlock(conn->interrupt_mutex);
@@ -595,7 +685,10 @@ exqlite_close(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
         connection_release_lock(conn);
         return error;
     }
+    int uncertain=conn->binding_resource &&
+      swarm_bound_close_status(conn->binding_resource->lease->scope->control->binding_vfs)!=SQLITE_OK;
     conn->db = NULL;
+    swarm_binding_connection_release(conn);
 #ifdef SWARM_GUARD_TEST
     guard_connection_release(conn);
 #endif
@@ -604,7 +697,7 @@ exqlite_close(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
     connection_clear_caller(conn);
     connection_release_lock(conn);
 
-    return am_ok;
+    return uncertain?sd_error(env,"database_binding_close_failed"):am_ok;
 }
 
 ///
@@ -634,6 +727,12 @@ exqlite_execute(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 
     connection_acquire_lock(conn);
     connection_stash_caller(conn, env);
+
+    if (!connection_binding_valid(conn)) {
+        connection_clear_caller(conn);
+        connection_release_lock(conn);
+        return make_error_tuple(env, am_connection_closed);
+    }
 
     if (conn->db == NULL) {
         connection_clear_caller(conn);
@@ -721,6 +820,12 @@ exqlite_prepare(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
     // ensure connection is not getting closed by parallel thread
     connection_acquire_lock(conn);
     connection_stash_caller(conn, env);
+    if (!connection_binding_valid(conn)) {
+        connection_clear_caller(conn);
+        connection_release_lock(conn);
+        enif_release_resource(statement);
+        return make_error_tuple(env, am_connection_closed);
+    }
     if (conn->db == NULL) {
         connection_clear_caller(conn);
         connection_release_lock(conn);
@@ -1021,6 +1126,12 @@ exqlite_multi_step(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
     connection_acquire_lock(conn);
     connection_stash_caller(conn, env);
 
+    if (!connection_binding_valid(conn)) {
+        connection_clear_caller(conn);
+        connection_release_lock(conn);
+        return make_error_tuple(env, am_connection_closed);
+    }
+
     if (statement->statement == NULL) {
         connection_clear_caller(conn);
         connection_release_lock(conn);
@@ -1096,6 +1207,12 @@ exqlite_step(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 
     connection_acquire_lock(conn);
     connection_stash_caller(conn, env);
+
+    if (!connection_binding_valid(conn)) {
+        connection_clear_caller(conn);
+        connection_release_lock(conn);
+        return make_error_tuple(env, am_connection_closed);
+    }
 
     if (statement->statement == NULL) {
         connection_clear_caller(conn);
@@ -1429,7 +1546,24 @@ connection_type_destructor(ErlNifEnv* env, void* arg)
     }
 
     if (conn->db) {
-        sqlite3_close_v2(conn->db);
+        if(conn->binding_resource){
+            int rc=swarm_bound_close(conn->binding_resource->lease->scope->control->binding_vfs,conn->db);
+            if(rc==SQLITE_OK)swarm_binding_connection_release(conn);
+            else {
+                /* Transfer the still-live SQLite handle to the native control.
+                 * The retained binding reference owns this terminal quarantine. */
+                sd_control *c=conn->binding_resource->lease->scope->control;
+                enif_mutex_lock(c->io_mutex);
+                sqlite3_busy_handler(conn->db,NULL,NULL);
+                sqlite3_progress_handler(conn->db,0,NULL,NULL);
+                sqlite3_update_hook(conn->db,NULL,NULL);
+                sqlite3_set_authorizer(conn->db,NULL,NULL);
+                for(int i=0;i<8;i++)if(!c->binding_quarantine_db[i]){c->binding_quarantine_db[i]=conn->db;break;}
+                c->binding_quarantined=1;
+                c->lease_quarantined=1;sd_revoke(c);
+                enif_mutex_unlock(c->io_mutex);
+            }
+        } else sqlite3_close_v2(conn->db);
         conn->db = NULL;
 #ifdef SWARM_GUARD_TEST
         guard_connection_release(conn);
@@ -1561,6 +1695,8 @@ on_load(ErlNifEnv* env, void** priv, ERL_NIF_TERM info)
     }
 
 #if !defined(_WIN32)
+    if (swarm_bound_install_close_hook() != SQLITE_OK) return -1;
+    if (swarm_binding_service_load(env) != 0) return -1;
     if (sd_service_load(env) != 0) {
         enif_mutex_destroy(log_hook_mutex);
         return -1;
@@ -1735,6 +1871,7 @@ authorizer_callback(void* user_data, int action, const char* arg1, const char* a
     (void)db_name;
     (void)trigger;
     connection_t* conn = (connection_t*)user_data;
+    if (conn->binding_resource && (action==SQLITE_ATTACH || action==SQLITE_DETACH)) return SQLITE_DENY;
     if (action >= 0 && action < AUTHORIZER_DENY_SIZE && conn->authorizer_deny[action]) {
         return SQLITE_DENY;
     }
@@ -1892,7 +2029,7 @@ exqlite_set_authorizer(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
     if (list_len == 0) {
         // Empty list: clear the authorizer
         memset(conn->authorizer_deny, 0, sizeof(conn->authorizer_deny));
-        sqlite3_set_authorizer(conn->db, NULL, NULL);
+        sqlite3_set_authorizer(conn->db, conn->binding_resource ? authorizer_callback : NULL, conn);
         connection_release_lock(conn);
         return am_ok;
     }
@@ -2190,6 +2327,20 @@ static ErlNifFunc nif_funcs[] = {
   {"directory_assert_locked", 1, sd_assert_locked, ERL_NIF_DIRTY_JOB_IO_BOUND},
   {"directory_scope_close", 1, sd_close, ERL_NIF_DIRTY_JOB_IO_BOUND},
   {"directory_scope_status", 1, sd_status, 0},
+#ifdef SWARM_GUARD_TEST
+  {"database_binding_test_close_fault", 1, swarm_binding_test_close_fault, ERL_NIF_DIRTY_JOB_IO_BOUND},
+  {"database_binding_test_close_hits", 1, swarm_binding_test_close_hits, ERL_NIF_DIRTY_JOB_IO_BOUND},
+#endif
+  {"database_binding_assert_connection", 1, swarm_binding_assert_connection, ERL_NIF_DIRTY_JOB_IO_BOUND},
+  {"database_binding_acquire", 3, swarm_binding_acquire, ERL_NIF_DIRTY_JOB_IO_BOUND},
+  {"database_binding_create", 2, swarm_binding_create, ERL_NIF_DIRTY_JOB_IO_BOUND},
+  {"database_binding_open", 1, swarm_binding_open, ERL_NIF_DIRTY_JOB_IO_BOUND},
+  {"database_binding_authorize", 2, swarm_binding_authorize, ERL_NIF_DIRTY_JOB_IO_BOUND},
+  {"database_binding_connections", 1, swarm_binding_connections, ERL_NIF_DIRTY_JOB_IO_BOUND},
+  {"database_binding_acquire", 2, swarm_binding_acquire, ERL_NIF_DIRTY_JOB_IO_BOUND},
+  {"database_binding_assert", 1, swarm_binding_assert, ERL_NIF_DIRTY_JOB_IO_BOUND},
+  {"database_binding_close", 1, swarm_binding_close, ERL_NIF_DIRTY_JOB_IO_BOUND},
+  {"database_binding_status", 1, swarm_binding_status, ERL_NIF_DIRTY_JOB_IO_BOUND},
 #endif
 
 #ifdef SWARM_GUARD_TEST

@@ -12,11 +12,11 @@ defmodule SwarmCodeCLI.UI.RequestResolver do
 
   @type error :: :not_allowed | :stale_revision | :invalid_origin | :invalid_intent
 
-  @spec resolve(Intent.t(), Context.t(), binary(), non_neg_integer()) ::
+  @spec resolve(Intent.t(), Context.t(), binary(), integer()) ::
           {:ok, Request.t()} | {:error, error()}
   def resolve(intent, context, request_id, deadline) do
     with true <- Intent.valid_id?(request_id),
-         true <- is_integer(deadline) and deadline >= 0 do
+         true <- is_integer(deadline) do
       with :ok <- authorize(intent, context) do
         request = %Request{
           request_id: request_id,

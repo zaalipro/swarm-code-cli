@@ -1098,6 +1098,7 @@ defmodule SwarmCodeCLI.UI.Width.Table do
     {0xE0000, 0xE0FFF, 0},
     {0xE1000, 0x10FFFF, 1}
   ]
+
   @wide [
     {0x0, 0x9, 1},
     {0xA, 0xA, 3},
@@ -3009,10 +3010,13 @@ defmodule SwarmCodeCLI.UI.Width.Table do
     {0x1ED15, 0x1ED15}
   ]
 
+  @narrow_tuple List.to_tuple(@narrow)
+  @wide_tuple List.to_tuple(@wide)
+
   def width(cp, mode), do: elem(width_info(cp, mode), 0)
 
   def width_info(cp, mode) when mode in [:narrow, :wide] do
-    raw = lookup(if(mode == :narrow, do: @narrow, else: @wide), cp)
+    raw = lookup(if(mode == :narrow, do: @narrow_tuple, else: @wide_tuple), cp)
 
     if cp == 0x2764 and mode == :wide do
       {2, 0}
@@ -3040,10 +3044,17 @@ defmodule SwarmCodeCLI.UI.Width.Table do
   def solidus_transparent?(cp),
     do: ligature_transparent?(cp) or member?(@solidus_transparent, cp)
 
-  defp lookup(ranges, cp) do
-    case Enum.find(ranges, fn {lo, hi, _} -> cp >= lo and cp <= hi end) do
-      {_, _, width} -> width
-      nil -> 1
+  defp lookup(ranges, cp), do: lookup(ranges, cp, 0, tuple_size(ranges) - 1)
+  defp lookup(_ranges, _cp, low, high) when low > high, do: 1
+
+  defp lookup(ranges, cp, low, high) do
+    middle = div(low + high, 2)
+    {lo, hi, width} = elem(ranges, middle)
+
+    cond do
+      cp < lo -> lookup(ranges, cp, low, middle - 1)
+      cp > hi -> lookup(ranges, cp, middle + 1, high)
+      true -> width
     end
   end
 

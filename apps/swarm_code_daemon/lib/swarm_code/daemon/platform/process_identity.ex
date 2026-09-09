@@ -15,7 +15,7 @@ defmodule SwarmCode.Daemon.Platform.ProcessIdentity do
   def current(opts \\ []) do
     case Keyword.get_lazy(opts, :platform, &current_platform/0) do
       :linux -> current_linux(opts)
-      :macos -> {:error, :macos_platform_helper_unavailable}
+      :macos -> SwarmCode.Daemon.Platform.MacOS.current_identity()
       _other -> {:error, :unsupported_platform}
     end
   end

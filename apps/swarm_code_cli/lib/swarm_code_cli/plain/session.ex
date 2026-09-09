@@ -24,9 +24,11 @@ defmodule SwarmCodeCLI.Plain.Session do
     now = Keyword.fetch!(options, :now)
     presenter_options = Keyword.fetch!(options, :options)
     output_timeout = Keyword.get(options, :output_timeout, 1000)
+    eof_mode = Keyword.get(options, :eof, :close)
 
     if Intent.valid_id?(epoch) and Intent.valid_id?(conversation) and is_integer(now) and now >= 0 and
-         match?(%Options{}, presenter_options) and is_integer(output_timeout) and
+         match?(%Options{}, presenter_options) and eof_mode in [:close, :wait] and
+         is_integer(output_timeout) and
          output_timeout in 1..5000 do
       client = Keyword.fetch!(options, :data_source)
 
@@ -38,6 +40,9 @@ defmodule SwarmCodeCLI.Plain.Session do
         input: Keyword.fetch!(options, :input),
         output: Keyword.fetch!(options, :output),
         output_timeout: output_timeout,
+        eof_mode: eof_mode,
+        eof_pending?: false,
+        completion_ids: MapSet.new(),
         error: Keyword.fetch!(options, :error),
         observer: Keyword.get(options, :observer),
         reader: nil,
@@ -68,7 +73,7 @@ defmodule SwarmCodeCLI.Plain.Session do
 
     case DataSource.bind_owner(state.client, self(), bind_ref) do
       {:ok, ^bind_ref} ->
-        state = write(state, [{:stdout, [SafeText.value(SafeText.chrome(:fake_banner)), "\n"]}])
+        state = write(state, [{:stdout, [banner(state.presenter.options.banner), "\n"]}])
         {:noreply, open_watch(state, :shell, state.scope)}
 
       _ ->
@@ -82,6 +87,35 @@ defmodule SwarmCodeCLI.Plain.Session do
   def handle_call(_, _from, state), do: {:reply, {:error, :invalid_request}, state}
 
   @impl true
+  def handle_info(
+        {:swarm_code_ui_closed, source, epoch},
+        %{client: source, epoch: epoch} = state
+      ),
+      do: {:noreply, finish(state, :source_unavailable)}
+
+  def handle_info(
+        {:swarm_code_ui_data, epoch, receipt, delivery} = message,
+        %{phase: phase} = state
+      )
+      when phase != :closed do
+    valid =
+      match?({:ok, _}, DataBridge.normalize(message, state.epoch)) and matches?(state, delivery)
+
+    {:noreply, next} =
+      if valid do
+        handle_info({:swarm_code_ui_data, epoch, delivery}, state)
+      else
+        {:noreply, state}
+      end
+
+    disposition = if valid and next.phase != :closed, do: :applied, else: :discarded
+
+    case consume(state.client, receipt, disposition) do
+      :ok -> {:noreply, next}
+      _ -> {:noreply, finish(next, :source_unavailable)}
+    end
+  end
+
   def handle_info({:swarm_code_ui_data, _, _} = message, %{phase: phase} = state)
       when phase != :closed do
     case DataBridge.normalize(message, state.epoch) do
@@ -89,6 +123,7 @@ defmodule SwarmCodeCLI.Plain.Session do
         if matches?(state, delivery) do
           {presenter, records} = Presenter.present(state.presenter, state.epoch, delivery)
           next = write(%{state | presenter: presenter}, records)
+          next = track_completion(next, delivery)
           notify(state, {:delivery, delivery})
 
           next =
@@ -111,10 +146,23 @@ defmodule SwarmCodeCLI.Plain.Session do
 
     next =
       case result do
-        :eof -> finish(state, :eof)
-        {:line, line} -> process_line(state, line)
-        {:error, :line_too_large} -> report(state, "Plain input line exceeds 16384 bytes.")
-        {:error, _} -> finish(report(state, "Plain input failed."), :input_failed)
+        :eof ->
+          if state.eof_mode == :wait do
+            token = make_ref()
+            Process.send_after(self(), {:eof_probe, token}, 50)
+            %{state | eof_pending?: true, phase: {:eof_waiting, token}}
+          else
+            finish(state, :eof)
+          end
+
+        {:line, line} ->
+          process_line(state, line)
+
+        {:error, :line_too_large} ->
+          report(state, "Plain input line exceeds 16384 bytes.")
+
+        {:error, _} ->
+          finish(report(state, "Plain input failed."), :input_failed)
       end
 
     {:noreply, request_read(next)}
@@ -127,10 +175,28 @@ defmodule SwarmCodeCLI.Plain.Session do
   def handle_info({:DOWN, monitor, :process, _pid, _reason}, %{client_monitor: monitor} = state),
     do: {:noreply, finish(state, :source_unavailable)}
 
+  def handle_info(
+        {:DOWN, monitor, :process, _pid, _reason},
+        %{reader_monitor: monitor, eof_pending?: true} = state
+      ),
+      do: {:noreply, %{state | reader: nil, reader_monitor: nil}}
+
   def handle_info({:DOWN, monitor, :process, _pid, _reason}, %{reader_monitor: monitor} = state),
     do: {:noreply, finish(state, :eof)}
 
+  def handle_info(
+        {:eof_probe, token},
+        %{eof_pending?: true, phase: {:eof_waiting, token}} = state
+      ),
+      do: {:noreply, if(map_size(state.requests) == 0, do: query_completion(state), else: state)}
+
   def handle_info(_, state), do: {:noreply, state}
+
+  defp consume(source, receipt, disposition) do
+    DataSource.consume(source, receipt, disposition)
+  catch
+    :exit, _ -> {:error, :source_unavailable}
+  end
 
   defp matches?(state, %Delivery{
          kind: :response,
@@ -155,6 +221,12 @@ defmodule SwarmCodeCLI.Plain.Session do
 
   defp response_matches?(%{expected_response: :outcome}, %DTO.Outcome{}), do: true
 
+  defp response_matches?(%{expected_response: :workspace_snapshot}, %DTO.WorkspaceSnapshot{}),
+    do: true
+
+  defp response_matches?(%{expected_response: :run_detail_snapshot}, %DTO.RunDetailSnapshot{}),
+    do: true
+
   defp response_matches?(%{expected_response: :detail_window}, %DTO.DetailWindow{state: :error}),
     do: true
 
@@ -167,6 +239,51 @@ defmodule SwarmCodeCLI.Plain.Session do
   defp response_matches?(_, _), do: false
 
   defp ready(%{phase: :closed} = state, _), do: state
+
+  defp ready(
+         %{eof_pending?: true} = state,
+         %{kind: :response, body: %DTO.Outcome{status: :accepted}}
+       ),
+       do: query_completion(state)
+
+  defp ready(%{eof_pending?: true} = state, %{kind: :response, body: body})
+       when is_struct(body, DTO.WorkspaceSnapshot) or is_struct(body, DTO.RunDetailSnapshot) do
+    runs = if is_struct(body, DTO.WorkspaceSnapshot), do: body.runs, else: List.wrap(body.run)
+    owned = Enum.filter(runs, &MapSet.member?(state.completion_ids, &1.id))
+
+    cond do
+      Enum.any?(owned, &(&1.state in [:waiting_question, :waiting_approval])) ->
+        finish(state, :needs_input)
+
+      Enum.any?(owned, &(&1.state not in [:done, :failed, :stopped, :interrupted, :superseded])) ->
+        %{state | phase: :waiting_completion}
+
+      Enum.any?(owned, &(&1.state in [:failed, :stopped, :interrupted])) ->
+        finish(state, :run_failed)
+
+      true ->
+        finish(state, :eof)
+    end
+  end
+
+  defp ready(
+         %{eof_pending?: true, phase: :waiting_completion} = state,
+         %{kind: :delta, body: %{kind: :run_update, body: %{id: id, state: status}}}
+       )
+       when status in [
+              :done,
+              :failed,
+              :stopped,
+              :interrupted,
+              :superseded,
+              :waiting_question,
+              :waiting_approval
+            ] do
+    if MapSet.member?(state.completion_ids, id), do: query_completion(state), else: state
+  end
+
+  defp ready(%{eof_pending?: true} = state, %{kind: :watch_ready}),
+    do: query_completion(state)
 
   defp ready(%{startup_conversation: conversation} = state, %{kind: :watch_ready})
        when conversation != nil do
@@ -223,7 +340,11 @@ defmodule SwarmCodeCLI.Plain.Session do
   end
 
   defp ready(%{phase: :awaiting_outcome} = state, %{kind: :response}) do
-    if map_size(state.requests) == 0, do: %{state | phase: :ready}, else: state
+    if map_size(state.requests) == 0 do
+      if state.eof_pending?, do: finish(state, :eof), else: %{state | phase: :ready}
+    else
+      state
+    end
   end
 
   defp ready(state, %{kind: :resyncing}) do
@@ -270,6 +391,35 @@ defmodule SwarmCodeCLI.Plain.Session do
           state,
           [{:stderr, [SafeText.value(safe), "\n"]}] ++ Presenter.prompt_records(state.presenter)
         )
+    end
+  end
+
+  defp track_completion(state, %{
+         kind: :response,
+         body: %DTO.Outcome{status: :accepted, identifiers: ids}
+       }) do
+    %{state | completion_ids: Enum.reduce(ids, state.completion_ids, &MapSet.put(&2, &1))}
+  end
+
+  defp track_completion(state, _), do: state
+
+  defp query_completion(state) do
+    {id, state} = id(state, "completion")
+    slot = if state.scope.kind == :run, do: :inspector, else: :workspace
+
+    request = %Request{
+      request_id: id,
+      kind: {:query, slot, nil, :before, 200, 1_048_576},
+      scope: state.scope,
+      generation: state.scope.generation,
+      origin: {:query, slot},
+      deadline: state.now + 30_000,
+      expected_response: Request.query_response(slot)
+    }
+
+    case DataSource.query(state.client, request) do
+      :ok -> %{state | phase: :awaiting_outcome, requests: Map.put(state.requests, id, request)}
+      _ -> finish(state, :source_unavailable)
     end
   end
 
@@ -455,7 +605,10 @@ defmodule SwarmCodeCLI.Plain.Session do
     end
 
     if reason != :output_failed,
-      do: emit_records(state, [{:stdout, "DETACHED — RUNS CONTINUE\n"}])
+      do:
+        emit_records(state, [
+          {:stdout, [detach_message(state.presenter.options.detached_runs?), "\n"]}
+        ])
 
     notify(state, {:closed, reason})
     %{state | phase: :closed, reader: nil, reader_monitor: nil, requests: %{}, watch: nil}
@@ -485,7 +638,10 @@ defmodule SwarmCodeCLI.Plain.Session do
     {worker, monitor} =
       :erlang.spawn_opt(
         fn ->
-          send(owner, {:plain_output, token, write_records(output, error, records)})
+          send(
+            owner,
+            {:plain_output, token, write_records(output, error, records, state.presenter.options)}
+          )
         end,
         [:link, :monitor]
       )
@@ -518,11 +674,23 @@ defmodule SwarmCodeCLI.Plain.Session do
     result
   end
 
-  defp write_records(output, error, records) do
+  defp write_records(output, error, records, options) do
     Enum.reduce_while(records, :ok, fn {stream, content}, :ok ->
       device = if stream == :stderr, do: error, else: output
 
-      case IO.write(device, IO.iodata_to_binary(content)) do
+      encoded =
+        case options.format do
+          :ndjson ->
+            Jason.encode!(%{
+              "stream" => Atom.to_string(stream),
+              "text" => IO.iodata_to_binary(content)
+            }) <> "\n"
+
+          _ ->
+            IO.iodata_to_binary(content)
+        end
+
+      case IO.write(device, encoded) do
         :ok -> {:cont, :ok}
         _ -> {:halt, :error}
       end
@@ -532,6 +700,12 @@ defmodule SwarmCodeCLI.Plain.Session do
   catch
     :exit, _ -> :error
   end
+
+  defp banner(:fake), do: SafeText.value(SafeText.chrome(:fake_banner))
+  defp banner(:plain), do: "SWARMCODE CLI — PLAIN"
+  defp banner(:saved), do: "SWARMCODE CLI — SAVED"
+  defp detach_message(true), do: "DETACHED — RUNS CONTINUE"
+  defp detach_message(false), do: "DETACHED — SESSION CLOSED"
 
   defp notify(%{observer: nil}, _), do: :ok
   defp notify(state, event), do: send(state.observer, {:plain_session, self(), event})

@@ -11,9 +11,17 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
 
     content =
       cond do
-        state.destination == :activity -> activity_content(state, rect.width, height)
-        chrome.run -> content(state, chrome.run, rect.width, height)
-        true -> []
+        state.destination == :activity ->
+          activity_content(state, rect.width, height)
+
+        chrome.run ->
+          # Mode summaries live in the measured chrome above. Keep the actual
+          # transcript on the shared viewport so Home/End/PageUp/PageDown use
+          # the same logical anchors and wrapped-row metrics for every mode.
+          content(state, chrome.run, rect.width, height)
+
+        true ->
+          welcome_content(state, rect.width, height)
       end
 
     chrome.mandatory ++ chrome.summary ++ Enum.take(chrome.notices, 2) ++ chrome.deck ++ content
@@ -45,11 +53,9 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
 
     remaining = max(0, rect.height - chrome_height)
 
-    cond do
-      state.destination == :activity -> remaining
-      chrome.run -> min(remaining, div(rect.height * 45, 100))
-      true -> 0
-    end
+    if chrome.run,
+      do: min(remaining, div(rect.height * 45, 100)),
+      else: min(remaining, max(1, div(rect.height * 65, 100)))
   end
 
   defp chrome(state, rect, class) do
@@ -74,7 +80,9 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
         Status.mutations(state, rect.width) ++ recovery(state, rect.width, class)
 
     summary =
-      if run, do: [card(state, run, rect.width, class)], else: [Support.chrome(:status_empty)]
+      if run,
+        do: [card(state, run, rect.width, class) | mode_panel(state, run, rect.width)],
+        else: []
 
     actions =
       if class == :compressed_small do
@@ -95,6 +103,87 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
     deck = if actions == [], do: [], else: [%Block.ActionDeck{actions: actions}]
 
     %{run: run, mandatory: mandatory, notices: notices, summary: summary, deck: deck}
+  end
+
+  defp welcome_content(state, width, height) when height > 0 do
+    mode = Composer.mode_label(state)
+
+    {headline, detail} =
+      case mode do
+        "Plan" -> {"READY TO PLAN", "Describe the change and I will map the safest steps."}
+        "Goal" -> {"GOAL MODE READY", "Set the objective for every run in this conversation."}
+        "Ultra" -> {"READY FOR ULTRA", "Big tasks become staged workflows with visible progress."}
+        "Workflow" -> {"WORKFLOW AUTHORING READY", "Describe the automation you want to create."}
+        "Consensus" -> {"READY FOR CONSENSUS", "Ask for a plan that a second model will judge."}
+        _ -> {"READY TO BUILD", "Ask for a change, inspect the project, or choose a mode."}
+      end
+
+    workspace = Map.get(state.read_model.snapshots, :workspace)
+    model = if workspace, do: Map.get(workspace, :chat_model), else: nil
+
+    model_line =
+      if is_binary(model) and model != "",
+        do: "Model · " <> model,
+        else: "Model · configured in Settings"
+
+    blocks = [
+      Support.styled(headline, :heading, state, width),
+      Support.text(detail, state, width),
+      Support.styled("FIRST STEPS", :info, state, width),
+      Support.text("1  Type a request below and press Enter", state, width),
+      Support.text("2  Type / to browse slash commands", state, width),
+      Support.text(
+        "3  Press Ctrl-K to open workflows, research, memory, and settings",
+        state,
+        width
+      ),
+      Support.styled(model_line, :text_muted, state, width),
+      %Block.VirtualList{total_count: 0, first_index: 0, items: [], overscan: 0}
+    ]
+
+    [
+      %Block.VirtualList{
+        total_count: length(blocks),
+        first_index: 0,
+        items: Enum.take(blocks, height),
+        overscan: 0
+      }
+    ]
+  end
+
+  defp welcome_content(_state, _width, _height), do: []
+
+  defp mode_panel(state, run, width) do
+    case run.kind do
+      :goal ->
+        [Support.styled("GOAL PROGRESS", :run_goal, state, width), progress(run, state, width)]
+
+      :ultra ->
+        [Support.styled("PIPELINE  PLAN  →  BUILD  →  VERIFY", :run_ultra, state, width)]
+
+      :workflow ->
+        [Support.styled("WORKFLOW RUN  ·  inputs and stages", :run_workflow, state, width)]
+
+      :consensus ->
+        [Support.styled("CONSENSUS  ·  plan ↔ changes", :run_consensus_judge, state, width)]
+
+      :research ->
+        [Support.styled("RESEARCH  ·  report and sources", :run_research, state, width)]
+
+      :swarm ->
+        [Support.styled("SWARM  ·  parallel agent lanes", :run_swarm, state, width)]
+
+      _ ->
+        []
+    end
+  end
+
+  defp progress(run, state, width) do
+    %Block.Progress{
+      label: Density.safe("Goal", state, width),
+      value: run.progress || 0,
+      maximum: if(is_nil(run.progress), do: 0, else: 100)
+    }
   end
 
   defp activity_content(state, width, height) do
@@ -140,7 +229,7 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
     workspace = Map.get(state.read_model.snapshots, :workspace)
 
     conversation =
-      if workspace && is_binary(workspace.conversation_id) &&
+      if workspace && is_binary(Map.get(workspace, :conversation_id)) &&
            state.destination == {:conversation, workspace.conversation_id} &&
            Support.allowed?(state, workspace, :mark_seen),
          do: [

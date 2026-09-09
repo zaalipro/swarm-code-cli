@@ -108,7 +108,7 @@ defmodule SwarmCode.Daemon.FoundationGate do
     def prepare(_opts), do: {:error, production_configuration_rejected()}
   end
 
-  defp prepare_list(opts) when is_list(opts) do
+  defp prepare_list(opts, purpose \\ :probe) when is_list(opts) do
     try do
       with {:ok, paths} <- resolve_paths(opts),
            {:ok, config} <- configuration(opts, paths),
@@ -117,7 +117,13 @@ defmodule SwarmCode.Daemon.FoundationGate do
            :ok <- detect_desktop(config.desktop_detector, identity.uid),
            {:ok, fingerprint} <- database_fingerprint(paths.database),
            {:ok, lease} <- acquire_lease(paths, identity, fingerprint, config) do
-        prepare_while_holding_lease(lease, paths, identity, fingerprint, config)
+        prepare_while_holding_lease(
+          lease,
+          paths,
+          identity,
+          fingerprint,
+          Map.put(config, :purpose, purpose)
+        )
       end
     rescue
       _error -> {:error, foundation_failed()}
@@ -133,6 +139,32 @@ defmodule SwarmCode.Daemon.FoundationGate do
           manifest_sha256: String.t()
         }
   def schema_contract, do: @schema_contract
+
+  @doc "Prepare an existing or absent canonical database for guarded Repo promotion."
+  if @test_build do
+    def prepare_for_repo(opts) when is_list(opts), do: prepare_list(opts, :repo)
+    def prepare_for_repo(_), do: {:error, foundation_failed()}
+  else
+    def prepare_for_repo([]), do: prepare_list([], :repo)
+
+    def prepare_for_repo(%BootConfig{} = config) do
+      if production_boot_config?(config),
+        do: prepare_list(boot_config_options(config), :repo),
+        else: {:error, production_configuration_rejected()}
+    end
+
+    def prepare_for_repo(_), do: {:error, production_configuration_rejected()}
+  end
+
+  @doc "Seal a ready schema in its original native lease owner."
+  def seal_ready(%Ready{
+        lease: lease,
+        schema: %Decision{status: :ready, pending: []},
+        binding: binding
+      }),
+      do: CrossAppLease.seal_binding(lease, binding)
+
+  def seal_ready(_), do: {:error, :invalid_ready_capability}
 
   if not @test_build do
     defp production_boot_config?(%BootConfig{
@@ -517,7 +549,7 @@ defmodule SwarmCode.Daemon.FoundationGate do
   defp default_desktop_detector(:linux), do: fn -> :none end
 
   defp default_desktop_detector(:macos),
-    do: fn -> {:error, :macos_platform_helper_unavailable} end
+    do: SwarmCode.Daemon.Platform.MacOS.desktop_detector()
 
   defp default_desktop_detector(_platform),
     do: fn -> {:error, :macos_platform_helper_unavailable} end
@@ -696,14 +728,29 @@ defmodule SwarmCode.Daemon.FoundationGate do
   end
 
   defp finish_decision(
-         %Decision{status: :new_database},
-         _lease,
-         _paths,
-         _identity,
-         _fingerprint,
-         _config
+         %Decision{status: :new_database} = decision,
+         lease,
+         paths,
+         identity,
+         fingerprint,
+         config
        ) do
-    {:error, new_database_implementation_not_installed()}
+    if config.purpose == :repo do
+      with :ok <- assert_held(lease),
+           :ok <- verify_database_fingerprint(paths.database, fingerprint) do
+        {:ok,
+         %Ready{
+           paths: paths,
+           identity: identity,
+           lease: lease,
+           schema: decision,
+           backup: nil,
+           binding: nil
+         }}
+      end
+    else
+      {:error, new_database_implementation_not_installed()}
+    end
   end
 
   defp finish_decision(
@@ -731,7 +778,22 @@ defmodule SwarmCode.Daemon.FoundationGate do
            backup_opts
          ) do
       {:ok, %Artifact{} = artifact} ->
-        {:error, migration_implementation_not_installed(artifact)}
+        if config.purpose == :repo do
+          with :ok <- assert_held(lease),
+               :ok <- Schema.Gate.verify_binding(paths.database, decision.binding, identity.uid) do
+            {:ok,
+             %Ready{
+               paths: paths,
+               identity: identity,
+               lease: lease,
+               schema: decision,
+               backup: artifact,
+               binding: decision.binding
+             }}
+          end
+        else
+          {:error, migration_implementation_not_installed(artifact)}
+        end
 
       {:error, %StartupError{} = error} ->
         {:error, error}

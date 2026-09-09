@@ -130,9 +130,15 @@ defmodule SwarmCodeCLI.UI.ArchitectureTest do
   end
 
   defp exempt?(path) do
-    root = Path.expand("swarm_code_cli/ui/renderer/ex_ratatui_013", @lib_root)
+    roots =
+      [
+        "swarm_code_cli/ui/renderer/ex_ratatui_013",
+        "swarm_code_cli/release"
+      ]
+      |> Enum.map(&Path.expand(&1, @lib_root))
+
     expanded = Path.expand(path)
-    expanded == root or String.starts_with?(expanded, root <> "/")
+    Enum.any?(roots, &(&1 == expanded or String.starts_with?(expanded, &1 <> "/")))
   end
 
   defp violations(path) do

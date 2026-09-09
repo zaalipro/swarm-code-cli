@@ -112,6 +112,69 @@ defmodule SwarmCodeCLI.UI.ReducerNavigationTest do
     end
   end
 
+  test "run workspace refresh installs run detail and clears its pending request" do
+    {state, _} = Reducer.update(initial(), {:navigate, {:run, "r"}})
+    watch = state.watches.workspace
+
+    request = %Request{
+      request_id: "refresh-run",
+      kind: {:query, :workspace, nil, :after, 20, 65_536},
+      scope: watch.scope,
+      generation: watch.generation,
+      origin: {:query, :workspace},
+      deadline: 30_000,
+      expected_response: :workspace_snapshot
+    }
+
+    state = %{
+      state
+      | requests: %{request.request_id => request},
+        pages: %{
+          workspace: %SwarmCodeCLI.UI.PageState{
+            status: :loading_after,
+            request_id: request.request_id,
+            direction: :after
+          }
+        }
+    }
+
+    run = %DTO.RunSummary{
+      id: "r",
+      conversation_id: "c",
+      title: "Refreshed run",
+      kind: :chat,
+      state: :running,
+      allowed_actions: [:pause]
+    }
+
+    body = %DTO.RunDetailSnapshot{
+      request_id: request.request_id,
+      run: run,
+      transcript: %DTO.TranscriptWindow{
+        state: :idle,
+        presence: :covered,
+        items: [],
+        covered_ids: []
+      }
+    }
+
+    delivery = %Delivery{
+      kind: :response,
+      request_id: request.request_id,
+      watch_ref: nil,
+      scope: request.scope,
+      generation: request.generation,
+      revision: nil,
+      sequence: nil,
+      body: body
+    }
+
+    {state, []} = Reducer.update(state, {:data, delivery})
+    refute Map.has_key?(state.requests, request.request_id)
+    assert state.pages.workspace.status == :idle
+    assert state.read_model.snapshots.workspace == body
+  end
+
   defp outcome(status) do
     interaction = %DTO.PendingInteraction{
       id: "i",

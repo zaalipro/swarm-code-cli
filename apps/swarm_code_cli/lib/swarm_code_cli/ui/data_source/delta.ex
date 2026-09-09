@@ -9,6 +9,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Delta do
     agent_update: DTO.AgentSummary,
     interaction_upsert: DTO.PendingInteraction,
     activity_upsert: DTO.ActivityItem,
+    workspace_metadata: DTO.WorkspaceMetadata,
     counts_update: DTO.Counts,
     connection: DTO.Connection
   }
@@ -46,6 +47,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Delta do
           | :interaction_remove
           | :activity_upsert
           | :activity_remove
+          | :workspace_metadata
           | :counts_update
           | :connection
           | :snapshot_required
@@ -65,6 +67,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Delta do
             | DTO.ActivityItem.t()
             | DTO.Counts.t()
             | DTO.Connection.t()
+            | DTO.WorkspaceMetadata.t()
             | nil,
           sequence: non_neg_integer(),
           revision: non_neg_integer()
@@ -146,6 +149,11 @@ defmodule SwarmCodeCLI.UI.DataSource.Delta do
   defp correlated_body?(%{kind: kind} = delta) when kind in [:stream_append, :stream_reset],
     do: Schema.valid?(:id, delta.run_id) and Schema.valid?(:id, delta.conversation_id)
 
+  defp correlated_body?(%{kind: :workspace_metadata, body: body} = delta),
+    do:
+      delta.conversation_id == body.conversation_id and is_nil(delta.entity_id) and
+        is_nil(delta.run_id) and is_nil(delta.attempt_id)
+
   defp correlated_body?(_), do: false
 
   defp valid_body?(%{
@@ -177,6 +185,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Delta do
         :activity_upsert -> DTO.ActivityItem
         :counts_update -> DTO.Counts
         :connection -> DTO.Connection
+        :workspace_metadata -> DTO.WorkspaceMetadata
         _ -> nil
       end
 

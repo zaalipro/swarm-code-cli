@@ -27,6 +27,7 @@ defmodule Exqlite.Connection do
   alias Exqlite.Pragma
   alias Exqlite.Query
   alias Exqlite.Result
+  alias Exqlite.DatabaseBinding
   alias Exqlite.Sqlite3
   require Logger
 
@@ -38,7 +39,8 @@ defmodule Exqlite.Connection do
     :transaction_status,
     :status,
     :chunk_size,
-    :before_disconnect
+    :before_disconnect,
+    :database_binding
   ]
 
   @type t() :: %__MODULE__{
@@ -60,6 +62,7 @@ defmodule Exqlite.Connection do
 
   @type connection_opt() ::
           {:database, String.t()}
+          | {:database_binding, DatabaseBinding.t()}
           | {:default_transaction_mode, transaction_mode()}
           | {:mode, Sqlite3.open_opt()}
           | {:journal_mode, journal_mode()}
@@ -81,8 +84,7 @@ defmodule Exqlite.Connection do
           | {:hard_heap_limit, integer()}
           | {:key, String.t()}
           | {:custom_pragmas, [{keyword(), integer() | boolean() | String.t()}]}
-          | {:before_disconnect,
-             (Exception.t(), t -> any) | {module, atom, [any]} | nil}
+          | {:before_disconnect, (Exception.t(), t -> any) | {module, atom, [any]} | nil}
 
   @impl true
   @doc """
@@ -200,30 +202,46 @@ defmodule Exqlite.Connection do
   """
   @spec connect([connection_opt()]) :: {:ok, t()} | {:error, Exception.t()}
   def connect(options) do
-    database = Keyword.get(options, :database)
+    if Keyword.has_key?(options, :database_binding) do
+      options =
+        Keyword.put_new(
+          options,
+          :chunk_size,
+          Application.get_env(:exqlite, :default_chunk_size, 50)
+        )
 
-    options =
-      Keyword.put_new(
-        options,
-        :chunk_size,
-        Application.get_env(:exqlite, :default_chunk_size, 50)
-      )
+      with {:ok, ticket} <- binding_ticket(Keyword.fetch!(options, :database_binding)),
+           {:ok, db} <- DatabaseBinding.open(ticket) do
+        initialize_connection(db, nil, nil, options)
+      else
+        {:error, reason} -> {:error, %Error{message: to_string(reason)}}
+      end
+    else
+      database = Keyword.get(options, :database)
 
-    case database do
-      nil ->
-        {:error,
-         %Error{
-           message: """
-           You must provide a :database to the database. \
-           Example: connect(database: "./") or connect(database: :memory)\
-           """
-         }}
+      options =
+        Keyword.put_new(
+          options,
+          :chunk_size,
+          Application.get_env(:exqlite, :default_chunk_size, 50)
+        )
 
-      :memory ->
-        do_connect(":memory:", options)
+      case database do
+        nil ->
+          {:error,
+           %Error{
+             message: """
+             You must provide a :database to the database. \
+             Example: connect(database: "./") or connect(database: :memory)\
+             """
+           }}
 
-      _ ->
-        do_connect(database, options)
+        :memory ->
+          do_connect(":memory:", options)
+
+        _ ->
+          do_connect(database, options)
+      end
     end
   end
 
@@ -247,7 +265,10 @@ defmodule Exqlite.Connection do
 
   @impl true
   def checkout(%__MODULE__{status: :idle} = state) do
-    {:ok, %{state | status: :busy}}
+    case attest_state(state) do
+      :ok -> {:ok, %{state | status: :busy}}
+      {:error, reason} -> {:disconnect, %Error{message: to_string(reason)}, state}
+    end
   end
 
   def checkout(%__MODULE__{status: :busy} = state) do
@@ -255,7 +276,17 @@ defmodule Exqlite.Connection do
   end
 
   @impl true
-  def ping(state), do: {:ok, state}
+  def ping(state) do
+    case attest_state(state) do
+      :ok -> {:ok, state}
+      {:error, reason} -> {:disconnect, %Error{message: to_string(reason)}, state}
+    end
+  end
+
+  defp attest_state(%__MODULE__{database_binding: true, db: db}),
+    do: DatabaseBinding.assert_connection(db)
+
+  defp attest_state(_state), do: :ok
 
   ##
   ## Handlers
@@ -422,9 +453,13 @@ defmodule Exqlite.Connection do
   defp get_pragma(db, pragma_name) do
     {:ok, statement} = Sqlite3.prepare(db, "PRAGMA #{pragma_name}")
 
-    case Sqlite3.fetch_all(db, statement) do
-      {:ok, [[value]]} -> {:ok, value}
-      _ -> :error
+    try do
+      case Sqlite3.fetch_all(db, statement) do
+        {:ok, [[value]]} -> {:ok, value}
+        _ -> :error
+      end
+    after
+      Sqlite3.release(db, statement)
     end
   end
 
@@ -578,11 +613,26 @@ defmodule Exqlite.Connection do
     Sqlite3.enable_load_extension(db, false)
   end
 
+  defp binding_ticket({module, function, args})
+       when is_atom(module) and is_atom(function) and is_list(args),
+       do: apply(module, function, args ++ [self()])
+
+  defp binding_ticket(ticket) when is_reference(ticket), do: {:ok, ticket}
+  defp binding_ticket(_), do: {:error, :invalid_database_binding}
+
   defp do_connect(database, options) do
     with {:ok, directory} <- resolve_directory(database),
          :ok <- mkdir_p(directory),
          {:ok, db} <- Sqlite3.open(database, options),
-         :ok <- set_key(db, options),
+         result <- initialize_connection(db, directory, database, options) do
+      result
+    else
+      {:error, reason} -> {:error, %Exqlite.Error{message: to_string(reason)}}
+    end
+  end
+
+  defp initialize_connection(db, directory, database, options) do
+    with :ok <- set_key(db, options),
          :ok <- set_custom_pragmas(db, options),
          :ok <- set_journal_mode(db, options),
          :ok <- set_temp_store(db, options),
@@ -601,23 +651,45 @@ defmodule Exqlite.Connection do
          :ok <- set_soft_heap_limit(db, options),
          :ok <- set_hard_heap_limit(db, options),
          :ok <- load_extensions(db, options),
-         :ok <- deserialize(db, options) do
+         :ok <- deserialize(db, options),
+         :ok <- binding_attestation(db, options),
+         :ok <- binding_ready_callback(db, options) do
       state = %__MODULE__{
         db: db,
-        default_transaction_mode:
-          Keyword.get(options, :default_transaction_mode, :deferred),
+        default_transaction_mode: Keyword.get(options, :default_transaction_mode, :deferred),
         directory: directory,
         path: database,
         transaction_status: :idle,
         status: :idle,
         chunk_size: Keyword.get(options, :chunk_size),
-        before_disconnect: Keyword.get(options, :before_disconnect, nil)
+        before_disconnect: Keyword.get(options, :before_disconnect, nil),
+        database_binding: Keyword.has_key?(options, :database_binding)
       }
 
       {:ok, state}
     else
       {:error, reason} ->
+        Sqlite3.close(db)
         {:error, %Exqlite.Error{message: to_string(reason)}}
+    end
+  end
+
+  defp binding_attestation(db, options) do
+    if Keyword.has_key?(options, :database_binding),
+      do: DatabaseBinding.assert_connection(db),
+      else: :ok
+  end
+
+  defp binding_ready_callback(db, options) do
+    case Keyword.get(options, :database_binding_ready) do
+      {module, function, args} when is_atom(module) and is_atom(function) and is_list(args) ->
+        apply(module, function, args ++ [self(), db])
+
+      nil ->
+        :ok
+
+      _ ->
+        {:error, :invalid_database_binding_ready}
     end
   end
 

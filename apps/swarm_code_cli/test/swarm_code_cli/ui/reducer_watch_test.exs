@@ -84,6 +84,39 @@ defmodule SwarmCodeCLI.UI.ReducerWatchTest do
     assert Reducer.update(next, {:data, old}) == {next, []}
   end
 
+  test "workspace metadata advances without touching the draft or transcript and ignores stale revisions" do
+    {state, _} = initial()
+    {state, []} = Reducer.update(state, {:data, ready(state)})
+    {state, _} = Reducer.update(state, {:editor, {"c", :main}, {:insert, "unsent work"}})
+    body = struct(DTO.WorkspaceMetadata, conversation_id: "c", mode: :plan, chat_model: "planner")
+
+    delta = %Delta{
+      kind: :workspace_metadata,
+      conversation_id: "c",
+      sequence: 11,
+      revision: 11,
+      body: body
+    }
+
+    delivery = %{ready(state) | kind: :delta, sequence: 11, revision: 11, body: delta}
+    {updated, []} = Reducer.update(state, {:data, delivery})
+    assert updated.read_model.snapshots.workspace.mode == :plan
+    assert updated.drafts == state.drafts
+    assert updated.read_model.transcript == state.read_model.transcript
+    stale_body = struct(DTO.WorkspaceMetadata, conversation_id: "c", mode: :build)
+
+    stale = %{
+      delivery
+      | sequence: 12,
+        revision: 9,
+        body: %{delta | sequence: 12, revision: 9, body: stale_body}
+    }
+
+    {unchanged, []} = Reducer.update(updated, {:data, stale})
+    assert unchanged.read_model.snapshots.workspace.mode == :plan
+    assert unchanged.watches.workspace.sequence == 12
+  end
+
   test "bounded ordered IDs and chunks do not silently drop bytes or identities" do
     ids =
       Enum.reduce(1..512, OrderedIdSet.new(), fn n, acc ->

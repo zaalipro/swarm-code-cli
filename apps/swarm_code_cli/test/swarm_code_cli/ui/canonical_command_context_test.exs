@@ -59,7 +59,8 @@ defmodule SwarmCodeCLI.UI.CanonicalCommandContextTest do
                       kind: :response,
                       request_id: "steer-request",
                       body: %{status: :accepted}
-                    }}
+                    }},
+                   2_000
 
     assert Enum.any?(Source.snapshot(source).transcript, fn {_, item} ->
              item.text == "focus tests" and item.target_kind == :steer

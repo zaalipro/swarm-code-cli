@@ -44,10 +44,15 @@ Normal ready admission does not create a backup automatically.
 
 The current macOS desktop release does not acquire the shared SQLite lease. SwarmCode CLI detects an already-running desktop before and after acquiring its own lease, but the desktop can still start after the second check. Concurrent desktop/CLI operation is unsupported. Quit the desktop before starting the CLI daemon, and stop the CLI daemon before reopening the desktop. There is no force-unlock option.
 
-The signed macOS bundle-identity detector is a separate follow-up spike. Until it is available,
-macOS startup fails closed with `:macos_platform_helper_unavailable`; the CLI never falls back to
-process-name matching or kills a desktop process. Linux uses the no-op detector after its trusted
-identity and path checks.
+The bundled macOS helper now performs the read-only detector and process identity probe using
+`NSWorkspace`, `libproc`, and `sysctl`. It requires the exact `com.zaali.swarmcode` bundle
+identifier, same-UID ancestry, stable process start tuple, and current boot UUID. Output is one
+bounded JSON line. The Elixir wrapper verifies its pinned SHA-256 and strict code signature before
+invocation, rejects malformed or oversized output, and never falls back to process-name matching
+or kills a desktop process. Source builds use an ad-hoc signature and remain internal artifacts;
+release builds must replace that signature with the signed/notarized Developer ID helper before
+packaging. If the helper is missing, modified, unsigned, or inaccessible, macOS startup fails
+closed with `:macos_platform_helper_unavailable`.
 
 ## Recovery and data guarantees
 

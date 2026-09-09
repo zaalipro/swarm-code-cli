@@ -16,7 +16,7 @@ defmodule SchemaFixture do
 
     File.mkdir!(directory)
     File.chmod!(directory, 0o700)
-    ExUnit.Callbacks.on_exit(fn -> File.rm_rf!(directory) end)
+    ExUnit.Callbacks.on_exit(fn -> remove_fixture_directory(directory) end)
 
     database = Path.join(directory, "fixture.db")
     File.write!(database, <<>>, [:exclusive])
@@ -24,6 +24,21 @@ defmodule SchemaFixture do
     exec!(database, File.read!(fixture_path(lineage)))
     database
   end
+
+  defp remove_fixture_directory(directory, attempts \\ 20)
+
+  defp remove_fixture_directory(directory, attempts) when attempts > 0 do
+    case File.rm_rf(directory) do
+      {:ok, _} ->
+        :ok
+
+      {:error, _reason, _path} ->
+        Process.sleep(25)
+        remove_fixture_directory(directory, attempts - 1)
+    end
+  end
+
+  defp remove_fixture_directory(directory, _attempts), do: File.rm_rf(directory)
 
   @spec insert_migration!(Path.t(), integer()) :: :ok
   def insert_migration!(database, version) when is_integer(version) do

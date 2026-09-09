@@ -20,9 +20,46 @@ defmodule SwarmCodeCLI.UI.Projector.Inspector do
       |> Enum.map(fn {{_, agent}, index} -> agent(state, agent, index, rect.width, class) end)
 
     metadata =
-      if run && run.kind == :research,
-        do: [Support.chrome(:research_depth), Support.chrome(:representative_only)],
-        else: []
+      cond do
+        run && run.kind == :research ->
+          [Support.chrome(:research_depth), Support.chrome(:representative_only)]
+
+        run && run.kind == :goal ->
+          [
+            Support.styled("GOAL", :run_goal, state, rect.width),
+            Support.text("Checklist facts are shown in the workspace.", state, rect.width)
+          ]
+
+        run && run.kind == :consensus ->
+          [
+            Support.styled("REVIEW BOARD", :run_consensus_judge, state, rect.width),
+            Support.text("Plan ↔ changes", state, rect.width),
+            Support.text("Use o for full text", state, rect.width)
+          ]
+
+        run && run.kind == :ultra ->
+          [
+            Support.styled("PIPELINE", :run_ultra, state, rect.width),
+            Support.text("Plan → Build → Verify", state, rect.width),
+            Support.text("Stage details appear as they arrive.", state, rect.width)
+          ]
+
+        run && run.kind == :workflow ->
+          [
+            Support.styled("WORKFLOW", :run_workflow, state, rect.width),
+            Support.text("Inputs and stages", state, rect.width),
+            Support.text("Open Ctrl-K Features to run another.", state, rect.width)
+          ]
+
+        run && run.kind == :research ->
+          [
+            Support.styled("RESEARCH", :run_research, state, rect.width),
+            Support.text("Report + sources", state, rect.width)
+          ]
+
+        true ->
+          []
+      end
 
     metadata ++ [%Block.AgentList{agents: rows}]
   end

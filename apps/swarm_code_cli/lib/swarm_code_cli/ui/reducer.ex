@@ -1,9 +1,22 @@
 defmodule SwarmCodeCLI.UI.Reducer do
   @moduledoc "Pure semantic transitions. Every clock, identifier seed and external fact comes from the owner."
-  alias SwarmCodeCLI.UI.{Action, Init, State, WatchState, Drafts, FieldEditors, Layout, SafeText}
+  alias SwarmCodeCLI.UI.{
+    Action,
+    Init,
+    State,
+    WatchState,
+    Drafts,
+    FieldEditors,
+    Layout,
+    SafeText,
+    FeatureForm
+  }
+
   alias SwarmCodeCLI.UI.Layout.Preferences
+  alias SwarmCodeCLI.UI.SlashPalette
   alias SwarmCodeCLI.UI.Reducer.{Watch, Commands, Pages, Editing, Details}
   alias SwarmCodeCLI.UI.DataSource.DTO.Outcome
+  alias SwarmCodeCLI.UI.DataSource.DTO
 
   @spec init(Init.t()) :: {State.t(), [SwarmCodeCLI.UI.Effect.t()]}
   def init(%Init{} = init) do
@@ -12,6 +25,8 @@ defmodule SwarmCodeCLI.UI.Reducer do
     {:ok, _} = SwarmCodeCLI.UI.Destination.validate(init.destination)
 
     unless SwarmCodeCLI.UI.Intent.valid_id?(init.source_epoch) and
+             init.banner in [nil, :live_banner, :persisted_banner] and
+             init.focus in ["main", "composer"] and
              SwarmCodeCLI.UI.Intent.valid_id?(init.id_prefix) and is_integer(init.now) and
              init.now >= 0 and is_integer(init.deadline_ms) and init.deadline_ms >= 0 and
              is_integer(init.id_sequence) and init.id_sequence >= 0,
@@ -28,6 +43,7 @@ defmodule SwarmCodeCLI.UI.Reducer do
 
     {state, shell} = Watch.open(state, :shell, :global, nil)
     {state, destination} = open_destination(state, init.destination)
+
     effects = shell ++ destination
     Enum.each(effects, &SwarmCodeCLI.UI.Effect.validate!/1)
     {state, effects}
@@ -184,7 +200,13 @@ defmodule SwarmCodeCLI.UI.Reducer do
     {state, effects ++ moved}
   end
 
-  defp transition(state, {:move, direction}), do: Pages.move(state, direction)
+  defp transition(state, {:move, direction}) do
+    if SlashPalette.open?(state),
+      do: {SlashPalette.move(state, direction), []},
+      else: Pages.move(state, direction)
+  end
+
+  defp transition(state, {:complete_command, name}), do: SlashPalette.complete(state, name)
   defp transition(state, {:scroll, region, operation}), do: Pages.scroll(state, region, operation)
 
   defp transition(state, {:retry_page, slot, direction}),
@@ -214,8 +236,60 @@ defmodule SwarmCodeCLI.UI.Reducer do
     end
   end
 
-  defp transition(state, {kind, key, operation}) when kind in [:editor, :field_editor],
-    do: Editing.apply(state, kind, key, operation)
+  defp transition(
+         %{layers: [{:research_form, owner} | _], library: %{command_id: nil}} = state,
+         {:field_editor, {:research_question, owner} = key, operation}
+       ) do
+    {next, effects} = Editing.apply(state, :field_editor, key, operation)
+
+    next =
+      if next.notice == {:editor_error, :text_too_large},
+        do: %{
+          next
+          | library: %{
+              next.library
+              | message: "Question is limited to 4,000 bytes. Shorten the text and try again."
+            }
+        },
+        else: next
+
+    {next, effects}
+  end
+
+  defp transition(state, {:field_editor, {:research_question, _}, _}), do: {state, []}
+
+  defp transition(
+         %{layers: [{:feature_form, _, _} | _], feature_form: %{owner: owner, command_id: nil}} =
+           state,
+         {:field_editor, {:feature_field, owner, _} = key, operation}
+       ) do
+    if FeatureForm.editable?(state, elem(key, 2)) do
+      {next, effects} = Editing.apply(state, :field_editor, key, operation)
+
+      next =
+        if next.notice == {:editor_error, :text_too_large},
+          do: %{
+            next
+            | feature_form: %{
+                next.feature_form
+                | error: "Field values are limited to 16,384 bytes."
+              }
+          },
+          else: next
+
+      {next, effects}
+    else
+      {state, []}
+    end
+  end
+
+  defp transition(state, {:field_editor, {:feature_field, _, _}, _}), do: {state, []}
+
+  defp transition(state, {kind, key, operation}) when kind in [:editor, :field_editor] do
+    {next, effects} = Editing.apply(state, kind, key, operation)
+    next = if kind == :editor and next != state, do: %{next | slash_palette: nil}, else: next
+    {next, effects}
+  end
 
   defp transition(state, {:select_option, id, option_id}) do
     case Map.get(state.read_model.interactions, id) do
@@ -275,6 +349,100 @@ defmodule SwarmCodeCLI.UI.Reducer do
   defp transition(state, {:open_layer, {:detail, run_id, ref_id}}),
     do: Details.open(state, run_id, ref_id)
 
+  defp transition(state, {:open_layer, {:library, feature} = layer}) do
+    state = push_layer_context(state)
+
+    SwarmCodeCLI.UI.Library.open(
+      %{state | layers: [layer | state.layers], focus: "cancel"},
+      feature
+    )
+  end
+
+  defp transition(
+         %{layers: [{:library, :research} | _], library: %{command_id: nil, request_id: nil}} =
+           state,
+         {:open_layer, {:research_form, _owner} = layer}
+       ) do
+    state = push_layer_context(state)
+
+    %{
+      state
+      | layers: [layer | state.layers],
+        focus: "question",
+        hidden_focus: state.focus,
+        library: %{state.library | message: nil},
+        selection: Map.put(state.selection, {:research_form, :depth}, :medium)
+    }
+    |> then(&{&1, []})
+  end
+
+  defp transition(state, {:open_layer, {:research_form, _}}), do: {state, []}
+
+  defp transition(
+         %{
+           layers: [{:library, feature} | _],
+           library: %{request_id: nil, command_id: nil, body: body}
+         } = state,
+         {:open_layer, {:feature_form, feature, id}}
+       )
+       when feature in [:workflows, :schedules, :settings, :mcp, :memory] and is_binary(id) do
+    item = Enum.find(body.items, &(&1.id == id && not is_nil(&1.form)))
+
+    form =
+      cond do
+        item -> item.form
+        id == "new" and feature == :schedules -> SwarmCodeCLI.UI.Library.new_form(:schedules)
+        id == "new" and feature == :mcp -> SwarmCodeCLI.UI.Library.new_form(:mcp)
+        true -> nil
+      end
+
+    case form do
+      %DTO.FeatureForm{} = form ->
+        context = %{focus: state.focus, hidden_focus: state.hidden_focus}
+
+        FeatureForm.open(
+          %{state | layer_contexts: [context | state.layer_contexts]},
+          feature,
+          id,
+          form
+        )
+
+      _ ->
+        {state, []}
+    end
+  end
+
+  defp transition(state, {:open_layer, {:feature_form, _, _}}), do: {state, []}
+
+  defp transition(state, {:library_page, direction}),
+    do: SwarmCodeCLI.UI.Library.page(state, direction)
+
+  defp transition(
+         %{library: %{feature: feature}} = state,
+         {:library_command, feature, id, action}
+       ),
+       do: SwarmCodeCLI.UI.Library.command(state, id, action)
+
+  defp transition(state, {:library_command, _, _, _}), do: {state, []}
+  defp transition(state, {:library_select, id}), do: SwarmCodeCLI.UI.Library.select(state, id)
+
+  defp transition(state, {:library_confirm, value}),
+    do: SwarmCodeCLI.UI.Library.confirm(state, value)
+
+  defp transition(state, :research_start), do: SwarmCodeCLI.UI.Library.start_research(state)
+  defp transition(state, :feature_submit), do: FeatureForm.submit(state)
+
+  defp transition(state, {:feature_cycle, field, direction}),
+    do: FeatureForm.cycle(state, field, direction)
+
+  defp transition(
+         %{layers: [{:research_form, _} | _], library: %{command_id: nil}} = state,
+         {:research_depth, depth}
+       ),
+       do: {%{state | selection: Map.put(state.selection, {:research_form, :depth}, depth)}, []}
+
+  defp transition(state, {:research_depth, _}), do: {state, []}
+
   defp transition(state, {:open_layer, {:run_inspector, id, tab} = layer}) do
     state = push_layer_context(state)
     {state, effects} = Watch.open(state, :inspector, :run, id)
@@ -293,7 +461,7 @@ defmodule SwarmCodeCLI.UI.Reducer do
     state = if match?({_, ^preview}, layer), do: advanced, else: state
 
     state =
-      if match?({:approval, _}, layer),
+      if match?({:approval, _}, layer) or match?({:command_report, _}, layer),
         do: %{state | selection: Map.delete(state.selection, "dialog_scroll")},
         else: state
 
@@ -315,6 +483,11 @@ defmodule SwarmCodeCLI.UI.Reducer do
   defp transition(%{layers: []} = state, :close_top_layer), do: {state, []}
 
   defp transition(%{layers: [layer | rest]} = state, :close_top_layer) do
+    state = if match?({:library, _}, layer), do: SwarmCodeCLI.UI.Library.close(state), else: state
+
+    state =
+      if match?({:command_report, _}, layer), do: %{state | command_report: nil}, else: state
+
     {context, contexts} =
       case state.layer_contexts do
         [head | tail] -> {head, tail}
@@ -324,7 +497,15 @@ defmodule SwarmCodeCLI.UI.Reducer do
     fields =
       case layer do
         {kind, owner}
-        when kind in [:switcher, :jump, :action_menu, :region_filter, :question, :approval] ->
+        when kind in [
+               :switcher,
+               :jump,
+               :action_menu,
+               :region_filter,
+               :question,
+               :approval,
+               :research_form
+             ] ->
           FieldEditors.close_owner(state.field_editors, owner)
 
         _ ->
@@ -341,23 +522,36 @@ defmodule SwarmCodeCLI.UI.Reducer do
         exit_pending: nil
     }
 
-    if match?({:run_inspector, _, _}, layer) or match?({:detail, _, _}, layer) do
-      state = %{state | detail: nil}
+    state =
+      if match?({:research_form, _}, layer),
+        do: %{state | selection: Map.delete(state.selection, {:research_form, :depth})},
+        else: state
 
-      case Enum.find(rest, &match?({:run_inspector, _, _}, &1)) do
-        {:run_inspector, run_id, tab} ->
-          Watch.open(
-            %{state | tabs: Map.put(state.tabs, :inspector, tab)},
-            :inspector,
-            :run,
-            run_id
-          )
-
-        nil ->
-          Watch.close(state, :inspector)
-      end
+    if match?({:research_form, _}, layer) do
+      Editing.close_fields(state, elem(layer, 1))
     else
-      {state, []}
+      if match?({:feature_form, _, _}, layer) do
+        FeatureForm.close(state)
+      else
+        if match?({:run_inspector, _, _}, layer) or match?({:detail, _, _}, layer) do
+          state = %{state | detail: nil}
+
+          case Enum.find(rest, &match?({:run_inspector, _, _}, &1)) do
+            {:run_inspector, run_id, tab} ->
+              Watch.open(
+                %{state | tabs: Map.put(state.tabs, :inspector, tab)},
+                :inspector,
+                :run,
+                run_id
+              )
+
+            nil ->
+              Watch.close(state, :inspector)
+          end
+        else
+          {state, []}
+        end
+      end
     end
   end
 
@@ -366,8 +560,20 @@ defmodule SwarmCodeCLI.UI.Reducer do
       %{scope: scope, generation: generation} = request
       when scope == delivery.scope and generation == delivery.generation ->
         case {request.expected_response, delivery.body} do
+          {:library_snapshot, body} ->
+            SwarmCodeCLI.UI.Library.response(state, request, body)
+
           {:outcome, %Outcome{request_id: id} = outcome} when id == delivery.request_id ->
-            Commands.settle(state, request, outcome)
+            cond do
+              match?({:feature_form, _}, request.origin) ->
+                FeatureForm.command_response(state, request, outcome)
+
+              match?({:feature, _}, request.origin) ->
+                SwarmCodeCLI.UI.Library.command_response(state, request, outcome)
+
+              true ->
+                settle_command(state, request, outcome)
+            end
 
           {:outcome, _} ->
             {state, []}
@@ -409,13 +615,40 @@ defmodule SwarmCodeCLI.UI.Reducer do
   defp transition(state, {:quit_confirmed, :detach}), do: {state, []}
   defp transition(state, {:presenter_handoff_confirmed, :plain}), do: {state, []}
 
+  defp settle_command(state, request, outcome) do
+    {settled, effects} = Commands.settle(state, request, outcome)
+
+    case {outcome.status, outcome.feedback, request.origin, State.current_draft_key(state)} do
+      {:accepted, %{kind: kind} = feedback, {:draft, {conversation, _}}, {conversation, _}}
+      when feedback.conversation_id in [nil, conversation] ->
+        {shown, extra} = show_feedback(settled, kind, feedback, request.request_id)
+        {shown, effects ++ extra}
+
+      _ ->
+        {settled, effects}
+    end
+  end
+
+  defp show_feedback(state, :navigate, %{feature: feature}, _)
+       when feature in [:workflows, :research, :checkpoints],
+       do: transition(state, {:open_layer, {:library, feature}})
+
+  defp show_feedback(state, :report, feedback, id) do
+    transition(%{state | command_report: feedback}, {:open_layer, {:command_report, id}})
+  end
+
+  defp show_feedback(state, :notice, feedback, _),
+    do: {%{state | notice: {:command_feedback, feedback.text}}, []}
+
+  defp show_feedback(state, _, _, _), do: {state, []}
+
   def focus_graph(%{layers: [{kind, _} | _]}) when kind in [:unsent_changes, :confirm_intent],
     do: ["cancel", "confirm"]
 
   def focus_graph(%{layers: [{:question, id} | _]} = state) do
     case Map.get(state.read_model.interactions, id) do
-      %{question: %{options: options, multiple: multiple}} ->
-        Enum.map(options, & &1.id) ++ if(multiple, do: ["submit", "cancel"], else: ["cancel"])
+      %{question: %{options: options}} ->
+        Enum.map(options, & &1.id) ++ ["other", "submit", "cancel"]
 
       _ ->
         ["cancel"]
@@ -446,6 +679,16 @@ defmodule SwarmCodeCLI.UI.Reducer do
       do: ["query"] ++ Enum.map(SwarmCodeCLI.UI.Switcher.visible(state), & &1.id) ++ ["cancel"]
 
   def focus_graph(%{layers: [{:detail, _, _} | _]}), do: ["detail", "previous", "next", "cancel"]
+
+  def focus_graph(%{layers: [{:library, _} | _]} = state),
+    do: SwarmCodeCLI.UI.Library.focus_graph(state)
+
+  def focus_graph(%{layers: [{:research_form, _} | _]}),
+    do: ["question", "low", "medium", "high", "ultra", "start", "cancel"]
+
+  def focus_graph(%{layers: [{:feature_form, _, _} | _]} = state),
+    do: FeatureForm.focus_graph(state)
+
   def focus_graph(%{layers: [{:run_inspector, _, _} | _]}), do: ["inspector", "cancel"]
   def focus_graph(%{layers: [_ | _]}), do: ["dialog", "cancel"]
 
@@ -505,6 +748,11 @@ defmodule SwarmCodeCLI.UI.Reducer do
         do:
           Watch.close(state, if(state.destination == :activity, do: :activity, else: :workspace)),
         else: {state, []}
+
+    state =
+      if destination != state.destination and state.focus == "navigator",
+        do: %{state | focus: "main", hidden_focus: nil},
+        else: state
 
     {state, opened} = open_destination(%{state | destination: destination}, destination)
     {state, effects ++ opened}

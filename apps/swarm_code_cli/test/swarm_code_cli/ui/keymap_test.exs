@@ -49,6 +49,16 @@ defmodule SwarmCodeCLI.UI.KeymapTest do
              Keymap.resolve(Input.key(:enter, [:shift]), enhanced, table)
   end
 
+  test "Tab from the conversation transcript goes directly to the composer" do
+    for columns <- [80, 120, 170] do
+      size = %Size{columns: columns, rows: 40}
+      current = %{state() | focus: "main", size: size, capabilities: %Capabilities{size: size}}
+
+      assert {:ok, {:focus_region, "composer"}} =
+               Keymap.resolve(Input.key(:tab), current, %{})
+    end
+  end
+
   test "single Escape, editor interrupt notice and generation-correlated focus" do
     state = state()
 

@@ -6,11 +6,13 @@ defmodule SwarmCodeCLI.UI.Init do
     :capabilities,
     :source_epoch,
     destination: :activity,
+    focus: "main",
     now: 0,
     deadline_ms: 30_000,
     id_prefix: "ui",
     id_sequence: 0,
-    terminal_generation: 0
+    terminal_generation: 0,
+    banner: nil
   ]
 
   @type t :: %__MODULE__{}

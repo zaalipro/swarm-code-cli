@@ -26,16 +26,26 @@ defmodule SwarmCodeCLI.UI.FieldEditors do
     FieldKey.validate!(key)
 
     case Map.fetch(fields.entries, key) do
-      {:ok, editor} -> editor
-      :error -> Editor.new(max_bytes: 16_384, ambiguous_width: fields.ambiguous_width)
+      {:ok, editor} ->
+        editor
+
+      :error ->
+        limit =
+          if match?({:question_other, _, _}, key) or match?({:research_question, _}, key),
+            do: 4_000,
+            else: 16_384
+
+        Editor.new(max_bytes: limit, ambiguous_width: fields.ambiguous_width)
     end
   end
 
   def put(%__MODULE__{} = fields, key, %{__struct__: Editor} = editor) do
     FieldKey.validate!(key)
 
-    unless is_integer(editor.max_bytes) and editor.max_bytes <= 16_384 and
-             Editor.text_bytes(editor) <= 16_384,
+    limit = if match?({:research_question, _}, key), do: 4_000, else: 16_384
+
+    unless is_integer(editor.max_bytes) and editor.max_bytes <= limit and
+             Editor.text_bytes(editor) <= limit,
            do: raise(ArgumentError, "field editor exceeds its text bound")
 
     if not Map.has_key?(fields.entries, key) and map_size(fields.entries) >= fields.max_fields,

@@ -7,13 +7,14 @@ defmodule SwarmCode.Daemon.Runtime.Run do
   """
   use GenServer, restart: :temporary, shutdown: 10_000
   alias SwarmCode.{LLM, Tools}
+  alias SwarmCode.Domain.Attachments
   alias SwarmCode.LLM.{Chunks, Request, Result}
   alias SwarmCode.Providers.Provider
   @terminal [:completed, :failed, :cancelled]
   @maximum_context 8 * 1_024 * 1_024
   @tool_result_bytes 65_000
   @maximum_calls 32
-  @options ~w(provider model prompt project_root approval max_steps request_timeout_ms subscriber settings system effort id agent_id canonical_sink canonical_timeout_ms)a
+  @options ~w(provider model prompt attachments project_root approval max_steps request_timeout_ms subscriber settings system effort id agent_id canonical_sink canonical_timeout_ms)a
 
   def start_link(opts) do
     with {:ok, config} <- config(opts), do: GenServer.start_link(__MODULE__, config)
@@ -25,7 +26,7 @@ defmodule SwarmCode.Daemon.Runtime.Run do
   def stop(run), do: GenServer.call(run, :stop)
   def pause(run), do: GenServer.call(run, :pause)
   def continue(run), do: GenServer.call(run, :continue)
-  def steer(run, text), do: GenServer.call(run, {:steer, text})
+  def steer(run, text, attachments \\ []), do: GenServer.call(run, {:steer, text, attachments})
   def resolve_approval(run, id, decision), do: GenServer.call(run, {:approval, id, decision})
 
   @impl true
@@ -39,7 +40,7 @@ defmodule SwarmCode.Daemon.Runtime.Run do
           op: nil,
           model_operation_id: nil,
           calls: [],
-          messages: [%{role: "user", content: config.prompt}],
+          messages: [user_message(config.prompt, config.attachments)],
           steer: [],
           pending_approval: nil,
           status: :running,
@@ -159,19 +160,34 @@ defmodule SwarmCode.Daemon.Runtime.Run do
     )
   end
 
-  def handle_call({:steer, text}, from, state)
+  def handle_call({:steer, text, attachments}, from, state)
       when is_binary(text) and byte_size(text) in 1..65_000 and state.status not in @terminal and
              not state.finishing? and not state.stopping? do
-    if String.valid?(text) and length(state.steer) + length(state.controls) < 32 do
+    if String.valid?(text) and valid_attachments?(attachments) and
+         length(state.steer) + length(state.controls) < 32 do
       id = uuid()
 
       enqueue_control(
         state,
         fn s ->
-          publish(s, %{type: :steer_admitted, id: id, text: text}, nil, fn next ->
-            GenServer.reply(from, :ok)
-            advance(%{next | steer: next.steer ++ [%{id: id, text: text}]})
-          end)
+          publish(
+            s,
+            %{
+              type: :steer_admitted,
+              id: id,
+              text: text,
+              attachment_refs: Enum.map(attachments, & &1["id"])
+            },
+            nil,
+            fn next ->
+              GenServer.reply(from, :ok)
+
+              advance(%{
+                next
+                | steer: next.steer ++ [%{id: id, text: text, attachments: attachments}]
+              })
+            end
+          )
         end,
         from,
         :invalid_steer
@@ -181,7 +197,10 @@ defmodule SwarmCode.Daemon.Runtime.Run do
     end
   end
 
-  def handle_call({:steer, _}, _, state), do: {:reply, {:error, :invalid_steer}, state}
+  def handle_call({:steer, text}, from, state), do: handle_call({:steer, text, []}, from, state)
+
+  def handle_call({:steer, _text, _attachments}, _, state),
+    do: {:reply, {:error, :invalid_steer}, state}
 
   def handle_call(
         {:approval, id, decision},
@@ -380,7 +399,7 @@ defmodule SwarmCode.Daemon.Runtime.Run do
   defp advance(%{calls: [call | rest]} = state), do: admit_tool(%{state | calls: rest}, call)
 
   defp advance(state) do
-    messages = state.messages ++ Enum.map(state.steer, &%{role: "user", content: &1.text})
+    messages = state.messages ++ Enum.map(state.steer, &user_message(&1.text, &1.attachments))
 
     cond do
       state.steps >= state.max_steps ->
@@ -1005,7 +1024,9 @@ defmodule SwarmCode.Daemon.Runtime.Run do
          effort <- Keyword.get(opts, :effort, "medium"),
          true <-
            is_nil(effort) or
-             (is_binary(effort) and Regex.match?(SwarmCode.LLM.Efforts.key_format(), effort)) do
+             (is_binary(effort) and Regex.match?(SwarmCode.LLM.Efforts.key_format(), effort)),
+         attachments <- Keyword.get(opts, :attachments, []),
+         true <- valid_attachments?(attachments) do
       {:ok,
        %{
          id: id,
@@ -1015,6 +1036,7 @@ defmodule SwarmCode.Daemon.Runtime.Run do
          provider: provider,
          model: model,
          prompt: prompt,
+         attachments: attachments,
          project_root: root,
          approval: approval,
          max_steps: steps,
@@ -1030,6 +1052,21 @@ defmodule SwarmCode.Daemon.Runtime.Run do
   rescue
     _ -> {:error, :invalid_run_configuration}
   end
+
+  defp user_message(text, attachments) do
+    images = Attachments.images(attachments)
+    base = %{role: "user", content: text}
+    if images == [], do: base, else: Map.put(base, :images, images)
+  end
+
+  defp valid_attachments?(attachments) when is_list(attachments) and length(attachments) <= 4 do
+    Enum.all?(attachments, fn
+      %{"id" => id} when is_binary(id) -> match?({:ok, _, _}, Attachments.path(id))
+      _ -> false
+    end)
+  end
+
+  defp valid_attachments?(_), do: false
 
   defp valid_uuid?(value) when is_binary(value) and byte_size(value) == 36,
     do: Regex.match?(~r/\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/, value)

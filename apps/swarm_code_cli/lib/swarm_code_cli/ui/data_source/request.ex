@@ -25,13 +25,27 @@ defmodule SwarmCodeCLI.UI.DataSource.Request do
           | :pending_interactions
           | :watch_snapshot
           | :detail_window
+          | :library_snapshot
   @type query_kind :: :shell | :workspace | :transcript | :activity | :inspector | :pending
+  @features [
+    :workflows,
+    :research,
+    :schedules,
+    :settings,
+    :usage,
+    :changes,
+    :checkpoints,
+    :mcp,
+    :memory
+  ]
   @type query :: {:query, query_kind(), binary() | nil, :before | :after, 1..200, 1..1_048_576}
   @type kind ::
           Intent.t()
           | query()
           | {:resync_watch, binary()}
           | {:query_detail, binary(), non_neg_integer(), 4..65_536}
+          | {:feature_query, atom(), binary() | nil, binary() | nil, 1..200, 1..1_048_576}
+          | {:feature_command, atom(), atom(), binary() | nil, map()}
 
   @type t :: %__MODULE__{
           request_id: binary(),
@@ -43,7 +57,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Request do
             | {:query, query_kind()}
             | {:watch, binary()}
             | {:query, :detail},
-          deadline: non_neg_integer(),
+          deadline: integer(),
           expected_response: expected_response()
         }
 
@@ -64,7 +78,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Request do
         Context.valid_scope?(scope) and is_integer(generation) and generation >= 0 and
         generation == scope.generation and valid_origin?(origin) and
         correlated_kind_origin?(kind, origin) and
-        is_integer(deadline) and deadline >= 0 and valid_response?(kind, expected_response)
+        is_integer(deadline) and valid_response?(kind, expected_response)
 
     if valid?, do: {:ok, request}, else: {:error, :invalid_request}
   end
@@ -91,18 +105,51 @@ defmodule SwarmCodeCLI.UI.DataSource.Request do
       Intent.valid_id?(ref) and is_integer(offset) and offset >= 0 and is_integer(bytes) and
         bytes in 4..65_536
 
+  defp valid_kind?({:feature_query, feature, id, cursor, size, bytes}),
+    do:
+      feature in @features and (is_nil(id) or Intent.valid_id?(id)) and
+        (is_nil(cursor) or Intent.valid_id?(cursor)) and is_integer(size) and size in 1..200 and
+        is_integer(bytes) and bytes in 1..1_048_576
+
   defp valid_kind?({:resync_watch, ref}), do: Intent.valid_id?(ref)
+
+  defp valid_kind?({:feature_command, feature, action, id, attrs})
+       when is_atom(feature) and is_atom(action) do
+    body = %{
+      "op" => "feature.command",
+      "feature" => Atom.to_string(feature),
+      "action" => Atom.to_string(action),
+      "id" => id,
+      "attributes" => attrs,
+      "timeout_ms" => 5000
+    }
+
+    match?(
+      {:ok, _},
+      SwarmCode.Protocol.ServiceRequest.decode(
+        body,
+        %SwarmCode.Protocol.Scope{kind: :global, id: nil, generation: 0}
+      )
+    )
+  end
 
   defp valid_kind?(kind), do: Intent.valid?(kind)
 
   defp valid_origin?({:query, slot}),
     do: slot in [:shell, :workspace, :transcript, :activity, :inspector, :pending, :detail]
 
+  defp valid_origin?({:feature, feature}), do: feature in @features
+  defp valid_origin?({:feature_form, feature}), do: feature in @features
+
   defp valid_origin?({:watch, ref}), do: Intent.valid_id?(ref)
 
   defp valid_origin?(origin), do: Context.valid_origin?(origin)
   defp valid_response?({:query, slot, _, _, _, _}, response), do: response == query_response(slot)
   defp valid_response?({:query_detail, _, _, _}, response), do: response == :detail_window
+
+  defp valid_response?({:feature_query, _, _, _, _, _}, response),
+    do: response == :library_snapshot
+
   defp valid_response?({:resync_watch, _}, response), do: response == :watch_snapshot
   defp valid_response?(_, response), do: response == :outcome
   def query_response(:shell), do: :shell_snapshot
@@ -111,6 +158,16 @@ defmodule SwarmCodeCLI.UI.DataSource.Request do
   def query_response(:activity), do: :activity_snapshot
   def query_response(:pending), do: :pending_interactions
   def query_response(:inspector), do: :run_detail_snapshot
+
+  defp correlated_kind_origin?({:feature_query, feature, _, _, _, _}, {:feature, feature}),
+    do: true
+
+  defp correlated_kind_origin?({:feature_command, feature, _, _, _}, {:feature, feature}),
+    do: true
+
+  defp correlated_kind_origin?({:feature_command, feature, _, _, _}, {:feature_form, feature}),
+    do: true
+
   defp correlated_kind_origin?({:query_detail, _, _, _}, {:query, :detail}), do: true
   defp correlated_kind_origin?({:resync_watch, ref}, {:watch, ref}), do: true
   defp correlated_kind_origin?({:query, slot, _, _, _, _}, {:query, slot}), do: true

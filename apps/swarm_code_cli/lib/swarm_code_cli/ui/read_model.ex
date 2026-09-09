@@ -209,6 +209,24 @@ defmodule SwarmCodeCLI.UI.ReadModel do
     {:ok, %{model | snapshots: snapshots}, [], []}
   end
 
+  def delta(model, :workspace, %Delta{kind: :workspace_metadata, body: body, revision: revision}) do
+    case model.snapshots[:workspace] do
+      %DTO.WorkspaceSnapshot{conversation_id: id} = snapshot when id == body.conversation_id ->
+        if revision <= snapshot.revision do
+          {:ok, model, [], []}
+        else
+          fields =
+            Map.drop(Map.from_struct(body), [:conversation_id]) |> Map.put(:revision, revision)
+
+          snapshots = Map.put(model.snapshots, :workspace, struct(snapshot, fields))
+          {:ok, %{model | snapshots: snapshots}, [], []}
+        end
+
+      _ ->
+        {:error, :snapshot_required}
+    end
+  end
+
   defp install(model, slot, body) do
     runs =
       case body do

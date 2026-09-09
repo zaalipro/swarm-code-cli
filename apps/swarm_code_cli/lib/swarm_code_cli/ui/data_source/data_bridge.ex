@@ -3,6 +3,10 @@ defmodule SwarmCodeCLI.UI.DataSource.DataBridge do
   alias SwarmCodeCLI.UI.DataSource.Delivery
   alias SwarmCodeCLI.UI.Intent
 
+  def normalize({:swarm_code_ui_data, epoch, receipt, delivery}, expected)
+      when is_reference(receipt),
+      do: normalize({:swarm_code_ui_data, epoch, delivery}, expected)
+
   def normalize({:swarm_code_ui_data, epoch, delivery}, expected) do
     cond do
       not Intent.valid_id?(epoch) ->

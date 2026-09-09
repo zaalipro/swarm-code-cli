@@ -22,6 +22,7 @@ defmodule SwarmCodeCLI.UI.SafeText do
   alias SwarmCodeCLI.UI.SafeText.{Limits, Variants}
   alias SwarmCodeCLI.UI.Width
   alias SwarmCodeCLI.UI.Width.Table
+  @mark_regex ~r/^\p{M}$/u
   @derive {Inspect, only: []}
   @enforce_keys [:token]
   defstruct [:token]
@@ -39,6 +40,8 @@ defmodule SwarmCodeCLI.UI.SafeText do
           | :text_limit
           | :title
           | :fake_banner_compact
+          | :live_banner
+          | :persisted_banner
           | :build_mode
           | :navigator
           | :inspector
@@ -150,6 +153,8 @@ defmodule SwarmCodeCLI.UI.SafeText do
   def chrome(:text_limit), do: %__MODULE__{token: :text_limit}
   def chrome(:title), do: %__MODULE__{token: :title}
   def chrome(:fake_banner_compact), do: %__MODULE__{token: :fake_banner_compact}
+  def chrome(:live_banner), do: %__MODULE__{token: :live_banner}
+  def chrome(:persisted_banner), do: %__MODULE__{token: :persisted_banner}
   def chrome(:build_mode), do: %__MODULE__{token: :build_mode}
   def chrome(:navigator), do: %__MODULE__{token: :navigator}
   def chrome(:inspector), do: %__MODULE__{token: :inspector}
@@ -284,6 +289,13 @@ defmodule SwarmCodeCLI.UI.SafeText do
   def value(%{__struct__: __MODULE__, token: :fake_banner_compact} = text)
       when map_size(text) == 2,
       do: "FAKE — NO USER DATA"
+
+  def value(%{__struct__: __MODULE__, token: :live_banner} = text) when map_size(text) == 2,
+    do: "LIVE · UNSAVED"
+
+  def value(%{__struct__: __MODULE__, token: :persisted_banner} = text)
+      when map_size(text) == 2,
+      do: "SAVED · DEV"
 
   def value(%{__struct__: __MODULE__, token: :build_mode} = text) when map_size(text) == 2,
     do: "Build"
@@ -648,7 +660,11 @@ defmodule SwarmCodeCLI.UI.SafeText do
   defp sanitized_identity?(binary, limit),
     do: sanitize(binary, limit, 8, :narrow) == {:ok, binary}
 
-  defp sanitize(binary, limit, tabs, width), do: scan(binary, limit, tabs, width, 0, [])
+  defp sanitize(binary, limit, tabs, width) do
+    binary
+    |> repair_invalid_utf8()
+    |> scan(limit, tabs, width, 0, [])
+  end
 
   defp scan(<<>>, _remaining, _tabs, _width, _column, acc),
     do: {:ok, acc |> Enum.reverse() |> IO.iodata_to_binary()}
@@ -664,6 +680,24 @@ defmodule SwarmCodeCLI.UI.SafeText do
         error
     end
   end
+
+  defp repair_invalid_utf8(binary) do
+    case :unicode.characters_to_binary(binary, :utf8, :utf8) do
+      ^binary ->
+        binary
+
+      {:error, valid, rest} ->
+        {_, tail} = split_invalid_byte(rest)
+        IO.iodata_to_binary([valid, "�", repair_invalid_utf8(tail)])
+
+      {:incomplete, valid, rest} ->
+        {_, tail} = split_invalid_byte(rest)
+        IO.iodata_to_binary([valid, "�", repair_invalid_utf8(tail)])
+    end
+  end
+
+  defp split_invalid_byte(<<byte, rest::binary>>), do: {byte, rest}
+  defp split_invalid_byte(<<>>), do: {0, <<>>}
 
   defp sanitize_grapheme("\t", remaining, tabs, _width, column) do
     spaces = tabs - rem(column, tabs)
@@ -707,7 +741,7 @@ defmodule SwarmCodeCLI.UI.SafeText do
       base = hd(cps)
 
       %{
-        combining: printable_base?(base),
+        combining: base != 0xFFFD and printable_base?(base),
         join: valid_emoji_join?(cps),
         keycap:
           cps in [[?#, 0xFE0F, 0x20E3], [?*, 0xFE0F, 0x20E3]] or
@@ -789,7 +823,7 @@ defmodule SwarmCodeCLI.UI.SafeText do
   defp valid_flag_tags?(_), do: false
 
   defp hex(cp), do: cp |> Integer.to_string(16) |> String.pad_leading(4, "0")
-  defp mark?(cp), do: Regex.match?(~r/^\p{M}$/u, <<cp::utf8>>)
+  defp mark?(cp), do: Regex.match?(@mark_regex, <<cp::utf8>>)
 
   defp variation?(cp),
     do: cp in [0x180B, 0x180C, 0x180D, 0x180F] or cp in 0xFE00..0xFE0F or cp in 0xE0100..0xE01EF

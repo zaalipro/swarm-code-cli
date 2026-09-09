@@ -12,7 +12,8 @@ defmodule SwarmCode.Daemon.Application do
   def start(_type, _args) do
     children = [
       SwarmCode.LLM.ProviderCaps,
-      SwarmCode.Daemon.Runtime.RunSupervisor
+      SwarmCode.Daemon.Runtime.RunSupervisor,
+      SwarmCode.Domain.Runtime
     ]
 
     Supervisor.start_link(children,

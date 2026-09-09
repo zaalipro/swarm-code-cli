@@ -211,6 +211,28 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
     end
   end
 
+  def handle_info(
+        {:swarm_code_ui_closed, source, epoch},
+        %{data_source: source, ui: %{source_epoch: epoch}} = state
+      ),
+      do: {:noreply, begin_shutdown(state, :source_unavailable)}
+
+  def handle_info({:swarm_code_ui_data, _, receipt, _} = envelope, %{phase: :running} = state) do
+    case DataBridge.normalize(envelope, state.ui.source_epoch) do
+      {:ok, action} ->
+        next = update(state, action)
+
+        case consume(state.data_source, receipt, :applied) do
+          :ok -> {:noreply, next}
+          _ -> {:noreply, begin_shutdown(next, :source_unavailable)}
+        end
+
+      _ ->
+        consume(state.data_source, receipt, :discarded)
+        {:noreply, state}
+    end
+  end
+
   def handle_info({:swarm_code_ui_data, _, _} = envelope, %{phase: :running} = state) do
     case DataBridge.normalize(envelope, state.ui.source_epoch) do
       {:ok, action} -> {:noreply, update(state, action)}
@@ -261,6 +283,12 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
   defp maybe_start(state), do: state
   defp resolved(state, {:ok, action}), do: update(state, action)
   defp resolved(state, _), do: state
+
+  defp consume(source, receipt, disposition) do
+    DataSource.consume(source, receipt, disposition)
+  catch
+    :exit, _ -> {:error, :source_unavailable}
+  end
 
   defp update(%{ui: %{lifecycle: :closing}} = state, _), do: state
 

@@ -49,6 +49,26 @@ defmodule SwarmCodeCLI.UI.Reducer.Editing do
     ArgumentError -> {%{state | notice: :draft_capacity_reached}, []}
   end
 
+  def close_fields(state, owner) do
+    keys =
+      state.timers
+      |> Map.keys()
+      |> Enum.flat_map(fn
+        {:field_editor, key} -> if elem(key, 1) == owner, do: [key], else: []
+        _ -> []
+      end)
+
+    {timers, effects} =
+      Enum.reduce(keys, {state.timers, []}, fn key, {timers, effects} ->
+        case Map.pop(timers, {:field_editor, key}) do
+          {nil, timers} -> {timers, effects}
+          {timer, timers} -> {timers, [{:cancel_timer, timer.id} | effects]}
+        end
+      end)
+
+    {%{state | timers: timers}, Enum.reverse(effects)}
+  end
+
   defp editor(state, :editor, key), do: Drafts.fetch(state.drafts, key).editor
   defp editor(state, :field_editor, key), do: FieldEditors.fetch(state.field_editors, key)
 

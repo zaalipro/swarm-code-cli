@@ -60,8 +60,17 @@ defmodule SwarmCode.Daemon.Platform.ProcessIdentityTest do
            }
   end
 
-  test "current fails closed on Darwin while the signed helper is unavailable" do
-    assert {:error, :macos_platform_helper_unavailable} =
-             ProcessIdentity.current(platform: :macos)
+  test "current macOS identity uses the bundled signed helper" do
+    if :os.type() == {:unix, :darwin} do
+      assert {:ok, identity} = ProcessIdentity.current(platform: :macos)
+      assert identity.pid == String.to_integer(System.pid())
+      {uid, 0} = System.cmd("/usr/bin/id", ["-u"])
+      assert identity.uid == String.to_integer(String.trim(uid))
+      assert String.starts_with?(identity.process_start_id, "darwin-proc-start:")
+      assert {:ok, ^identity} = ProcessIdentity.current(platform: :macos)
+    else
+      assert {:error, :macos_platform_helper_unavailable} =
+               ProcessIdentity.current(platform: :macos)
+    end
   end
 end

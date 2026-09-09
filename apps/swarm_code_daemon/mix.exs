@@ -13,7 +13,71 @@ defmodule Mix.Tasks.Compile.SchemaSnapshot do
         build(root, directory, executable, args)
       end
 
+    results = [build_platform(root, args) | results]
     if Enum.any?(results, &(&1 == :built)), do: {:ok, []}, else: {:noop, []}
+  end
+
+  defp build_platform(root, args) do
+    if :os.type() == {:unix, :darwin} do
+      source = Path.expand("../../native/platform_identity/main.m", root)
+      destination = Path.join(root, "priv/native/swarm-macos-helper")
+
+      if "--force" in args or
+           Mix.Utils.stale?([source, Mix.Project.project_file()], [destination]) do
+        temporary = destination <> ".#{System.unique_integer([:positive])}.tmp"
+        File.mkdir_p!(Path.dirname(destination))
+
+        try do
+          {output, status} =
+            System.cmd(
+              "/usr/bin/clang",
+              [
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+                "-O2",
+                "-fobjc-arc",
+                "-framework",
+                "AppKit",
+                source,
+                "-o",
+                temporary
+              ],
+              stderr_to_stdout: true
+            )
+
+          if status != 0, do: Mix.raise("macOS helper compilation failed:\n" <> output)
+          # Source builds are internal artifacts; release builds must re-sign
+          # with Developer ID before compiling the Elixir helper digest.
+          identity = System.get_env("SWARM_MACOS_SIGN_IDENTITY", "-")
+
+          {output, status} =
+            System.cmd(
+              "/usr/bin/codesign",
+              [
+                "--force",
+                "--sign",
+                identity,
+                "--identifier",
+                "com.zaali.swarmcode.cli.platform",
+                temporary
+              ],
+              stderr_to_stdout: true
+            )
+
+          if status != 0, do: Mix.raise("macOS helper signing failed:\n" <> output)
+          File.chmod!(temporary, 0o755)
+          File.rename!(temporary, destination)
+          :built
+        after
+          File.rm(temporary)
+        end
+      else
+        :unchanged
+      end
+    else
+      :unchanged
+    end
   end
 
   defp build(root, directory, executable, args) do
@@ -83,7 +147,11 @@ defmodule SwarmCodeDaemon.MixProject do
       {:ecto_sqlite3, "== 0.24.1"},
       {:exqlite, path: "../../vendor/exqlite", override: true, env: Mix.env()},
       {:req, "== 0.7.3"},
-      {:jason, "== 1.4.5"}
+      {:jason, "== 1.4.5"},
+      {:earmark, "== 1.4.49"},
+      {:floki, "== 0.38.4"},
+      {:html_sanitize_ex, "== 1.5.5"},
+      {:tzdata, "== 1.1.4"}
     ]
   end
 

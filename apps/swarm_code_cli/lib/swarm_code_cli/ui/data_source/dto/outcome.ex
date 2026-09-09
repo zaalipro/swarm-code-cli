@@ -16,14 +16,17 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.Outcome do
       request_id: :id,
       identifiers: {:list, :id},
       interaction: {:optional, {:dto, SwarmCodeCLI.UI.DataSource.DTO.PendingInteraction}},
+      feedback: {:optional, {:dto, SwarmCodeCLI.UI.DataSource.DTO.Feedback}},
       error: {:optional, :error},
       corrective_action: {:enum, [:none, :retry, :refresh, :answer]}
     ],
+    wire_defaults: [feedback: nil],
     defaults: [
       status: :rejected,
       request_id: nil,
       identifiers: [],
       interaction: nil,
+      feedback: nil,
       error: nil,
       corrective_action: :none
     ]

@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ $# -eq 1 && "$1" == "--help" ]]; then
+  cat <<'HELP'
+SwarmCode development TUI — SAVED · DEV
+
+Usage: scripts/dev/run_saved_session.sh
+
+Resumes the latest saved conversation for SWARM_PROJECT_ROOT by default.
+Set SWARM_CONVERSATION to latest, new, or an existing conversation UUID.
+Saved provider settings are reused. Explicit overrides require SWARM_BASE_URL
+or the provider-specific base URL.
+
+First build: scripts/dev/check_terminal_port.sh
+Keys: Tab focus, Enter send, Escape return, Ctrl-K switcher, q exit.
+HELP
+  exit 0
+fi
+if [[ $# -ne 0 ]]; then echo "Usage: scripts/dev/run_saved_session.sh [--help]" >&2; exit 2; fi
+root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+source "$root/scripts/dev/load_provider_env.sh"
+export SWARM_PROJECT_ROOT="${SWARM_PROJECT_ROOT:-$PWD}"
+cd "$root"
+exec mise exec -- elixir --erl '-noinput' -S mix run --no-start -r scripts/dev/persisted_session.exs -e 'SwarmCode.Development.PersistedSession.run()'

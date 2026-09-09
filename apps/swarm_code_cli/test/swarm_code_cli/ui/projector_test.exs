@@ -61,6 +61,42 @@ defmodule SwarmCodeCLI.UI.ProjectorTest do
     end
   end
 
+  test "saved workspace metadata changes the title and exposes the selected model" do
+    state = fixture()
+
+    workspace =
+      struct(SwarmCodeCLI.UI.DataSource.DTO.WorkspaceSnapshot,
+        mode: :plan,
+        chat_model: "planner-fixture",
+        allowed_actions: [:send]
+      )
+
+    state = put_in(state.read_model.snapshots[:workspace], workspace)
+    {scene, _} = Projector.project(state)
+    title = hd(Enum.filter(scene.regions, &(&1.role == :title)))
+    rendered = Enum.join(texts(title), " ")
+    assert rendered =~ "Plan"
+    assert rendered =~ "planner-fixture"
+    refute rendered =~ "· Build"
+    refute Enum.join(texts(scene), " ") =~ "Composer · Build"
+  end
+
+  test "run-detail workspace renders without inventing conversation send permission" do
+    state = fixture()
+    run = hd(Map.values(state.read_model.runs))
+
+    detail = %SwarmCodeCLI.UI.DataSource.DTO.RunDetailSnapshot{
+      run: run,
+      transcript: %SwarmCodeCLI.UI.DataSource.DTO.TranscriptWindow{}
+    }
+
+    state = %{state | destination: {:run, run.id}}
+    state = put_in(state.read_model.snapshots[:workspace], detail)
+    {scene, actions} = Projector.project(state)
+    assert Scene.validate(scene) == :ok
+    refute Enum.any?(Map.values(actions), &match?({:intent, {:dispatch, _, _, _, _}}, &1))
+  end
+
   test "retry is exact failed revision permission and pending disables it" do
     state = fixture()
     run = hd(Map.values(state.read_model.runs))
@@ -558,7 +594,8 @@ defmodule SwarmCodeCLI.UI.ProjectorTest do
     state = %{fixture() | destination: {:conversation, "different"}}
     {scene, actions} = Projector.project(state)
     refute {:intent, {:run_control, :stop, "fixture-run"}} in Map.values(actions)
-    assert Enum.join(texts(scene), " ") =~ "EMPTY"
+    assert Enum.join(texts(scene), " ") =~ "READY TO BUILD"
+    refute Enum.join(texts(scene), " ") =~ "EMPTY"
   end
 
   test "Activity destination projects retained activity and exact mark read revision" do

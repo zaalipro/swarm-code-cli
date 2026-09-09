@@ -156,6 +156,9 @@ defmodule SwarmCodeCLI.UI.EffectRunner do
 
       :detail_window ->
         struct!(DTO.DetailWindow, attrs)
+
+      :library_snapshot ->
+        struct!(DTO.LibrarySnapshot, attrs ++ [feature: elem(request.kind, 1)])
     end
   end
 

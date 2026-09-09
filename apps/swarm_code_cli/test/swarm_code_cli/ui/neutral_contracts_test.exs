@@ -447,7 +447,7 @@ defmodule SwarmCodeCLI.UI.NeutralContractsTest do
     end
 
     assert {:error, :invalid_intent} = RequestResolver.resolve(intent, context, "", 1)
-    assert {:error, :invalid_intent} = RequestResolver.resolve(intent, context, "request", -1)
+    assert {:error, :invalid_intent} = RequestResolver.resolve(intent, context, "request", 1.0)
   end
 
   test "data source shells have final correlation fields and reject arbitrary bodies" do

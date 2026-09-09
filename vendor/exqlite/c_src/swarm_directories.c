@@ -9,6 +9,7 @@
 #include <stdatomic.h>
 #include <stdlib.h>
 #include "swarm_lease.h"
+#include "swarm_binding.h"
 
 #define SD_MAX_NODES 128
 #define SD_MAX_SCOPES 128
@@ -40,6 +41,14 @@ typedef struct sd_control {
     _Atomic int lease_required;
     int lease_close_failed;
     int lease_quarantined;
+    sqlite3 *binding_quarantine_db[8];
+    SbBinding *binding_vfs;
+    unsigned binding_connections;
+    int binding_quarantined;
+    char binding_name[64];
+    int binding_fd;
+    int binding_attempted;
+    struct stat binding_identity;
 #ifdef SWARM_GUARD_TEST
     SwarmLeaseTestFault lease_test_fault;
 #endif
@@ -93,6 +102,21 @@ static void sd_release(sd_control *c) {
 static void sd_close_graph(sd_control *c) {
     int failed = c->close_error;
     if (atomic_load(&c->terminal)) return;
+    if(c->binding_quarantined){
+        c->lease_quarantined=1;atomic_store(&c->terminal,2);return;
+    }
+    if (c->binding_connections) { atomic_store(&c->queued, 0); return; }
+    if (c->binding_vfs) {
+        if (swarm_bound_dispose(c->binding_vfs)!=SQLITE_OK) {
+            c->binding_quarantined=1; c->lease_quarantined=1;
+            atomic_store(&c->terminal,2); return;
+        }
+        c->binding_vfs=NULL;
+    }
+    if (c->binding_fd >= 0) {
+        int fd = c->binding_fd; c->binding_fd = -1;
+        if (close(fd)) {c->binding_quarantined=1;c->lease_quarantined=1;atomic_store(&c->terminal,2);return;}
+    }
     if (c->lease) {
         int rc = swarm_lease_close(c->lease);
         if (swarm_lease_active(c->lease)) {
@@ -297,6 +321,7 @@ static ERL_NIF_TERM sd_new(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[]) 
     atomic_init(&c->terminal, 0);
     atomic_init(&c->lease_required, 0);
     c->runtime_node = c->data_node = -1;
+    c->binding_fd = -1;
     c->io_mutex = enif_mutex_create("swarm:directory_scope");
     if (!c->io_mutex || !enif_self(env, &c->owner)) {
         if (c->io_mutex) enif_mutex_destroy(c->io_mutex);

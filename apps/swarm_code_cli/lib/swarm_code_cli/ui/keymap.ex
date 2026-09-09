@@ -1,6 +1,6 @@
 defmodule SwarmCodeCLI.UI.Keymap do
   @moduledoc "Single-action input resolution: modal, field, composer, content, global."
-  alias SwarmCodeCLI.UI.{Action, Input, Layout, Question, State, Switcher}
+  alias SwarmCodeCLI.UI.{Action, Input, Layout, Question, SlashPalette, State, Switcher}
 
   def resolve(input, state, table) when is_map(table) do
     case Input.validate(input) do
@@ -14,6 +14,15 @@ defmodule SwarmCodeCLI.UI.Keymap do
   def activate(target, state, table) do
     if Enum.any?(table, fn {_, current} -> current == target end) do
       case target do
+        {:intent, {:dispatch, :send, "/workflows", :main, []}}
+        when state.banner == :live_banner ->
+          result({:open_layer, {:library, :workflows}})
+
+        {:intent, {:dispatch, :send, text, :main, []}}
+        when state.banner == :live_banner and
+               text in ["/deep_research", "/deep_research "] ->
+          result({:open_layer, {:library, :research}})
+
         {:local, action} ->
           result(action)
 
@@ -54,14 +63,27 @@ defmodule SwarmCodeCLI.UI.Keymap do
   defp key(:escape, [], :press, %{focus: "composer"}, _), do: result({:focus_region, "main"})
   defp key(:escape, [], :press, _, _), do: result(:back)
 
+  defp key(:tab, [], phase, %{focus: "main", layers: []} = state, _)
+       when phase in [:press, :repeat] do
+    layout = Layout.calculate(state.size, state.preferences)
+
+    if Map.has_key?(layout.rects, :composer),
+      do: result({:focus_region, "composer"}),
+      else: result({:focus_cycle, :next})
+  end
+
   defp key("c", [:control], :press, state, _) do
     if editor_context(state),
       do: result(:editor_detach_notice),
       else: result({:quit_requested, :detach})
   end
 
-  defp key(:tab, [], phase, _, _) when phase in [:press, :repeat],
-    do: result({:focus_cycle, :next})
+  defp key(:tab, [], phase, state, _) when phase in [:press, :repeat] do
+    case SlashPalette.selected(state) do
+      %{name: name} -> result({:complete_command, name})
+      nil -> result({:focus_cycle, :next})
+    end
+  end
 
   defp key(code, mods, phase, _, _)
        when phase in [:press, :repeat] and
@@ -73,6 +95,10 @@ defmodule SwarmCodeCLI.UI.Keymap do
 
   defp key(code, mods, phase, %{focus: "composer"} = state, table) do
     cond do
+      code in [:up, :down] and mods == [] and phase in [:press, :repeat] and
+          SlashPalette.open?(state) ->
+        result({:move, if(code == :down, do: :next, else: :previous)})
+
       code == :enter and mods == [] and phase == :press ->
         find_target(state, table, &match?({:intent, {:dispatch, :send, _, _, _}}, &1))
 
@@ -107,7 +133,8 @@ defmodule SwarmCodeCLI.UI.Keymap do
       field != nil and state.focus == "query" and code in [:left, :right, :home, :end] ->
         editor_key(code, mods, phase, state, table)
 
-      match?({:approval, _}, layer) and code in [:page_up, :page_down, :home, :end] and mods == [] ->
+      (match?({:approval, _}, layer) or match?({:command_report, _}, layer)) and
+        code in [:page_up, :page_down, :home, :end] and mods == [] ->
         operation =
           case code do
             :home -> :first
@@ -118,13 +145,30 @@ defmodule SwarmCodeCLI.UI.Keymap do
 
         result({:scroll, "dialog", operation})
 
+      match?({:research_form, _}, layer) and state.focus == "question" and
+          code in [:left, :right, :home, :end] ->
+        editor_key(code, mods, phase, state, table)
+
+      match?({:feature_form, _, _}, layer) and String.starts_with?(state.focus, "field:") and
+        code in [:left, :right] and mods == [] and phase == :press ->
+        key = String.replace_prefix(state.focus, "field:", "")
+
+        if SwarmCodeCLI.UI.FeatureForm.choice?(state, key),
+          do: result({:feature_cycle, key, if(code == :right, do: 1, else: -1)}),
+          else: editor_key(code, mods, phase, state, table)
+
       code in [:up, :down, :left, :right] and mods == [] ->
         result({:focus_cycle, if(code in [:up, :left], do: :previous, else: :next)})
 
       code == :enter and mods == [] and phase == :press ->
         modal_activate(layer, state, table)
 
-      code == "b" and mods == [] and phase == :press and is_nil(field) ->
+      match?({:library, _}, layer) and code in [:page_up, :page_down] and mods == [] and
+          phase == :press ->
+        result({:library_page, if(code == :page_up, do: :previous, else: :next)})
+
+      code == "b" and mods == [] and phase == :press and is_nil(field) and
+        not match?({:research_form, _}, layer) and not match?({:feature_form, _, _}, layer) ->
         result(:close_top_layer)
 
       field != nil and state.focus not in ["cancel", "confirm"] ->
@@ -176,7 +220,7 @@ defmodule SwarmCodeCLI.UI.Keymap do
       nil ->
         :ignore
 
-      %{question: %{multiple: true}} when state.focus != "submit" ->
+      %{question: %{multiple: true}} when state.focus not in ["submit", "other"] ->
         activate({:local, {:select_option, id, state.focus}}, state, table)
 
       item ->
@@ -189,6 +233,32 @@ defmodule SwarmCodeCLI.UI.Keymap do
 
   defp modal_activate({:approval, _}, state, table),
     do: approval_key(state.focus, [], :press, state, table)
+
+  defp modal_activate({:library, _}, %{focus: focus} = state, _) do
+    case SwarmCodeCLI.UI.Library.activation(state, focus) do
+      nil -> :ignore
+      action -> result(action)
+    end
+  end
+
+  defp modal_activate({:research_form, _}, %{focus: "start"}, _), do: result(:research_start)
+
+  defp modal_activate({:research_form, _}, %{focus: focus}, _)
+       when focus in ["low", "medium", "high", "ultra"],
+       do: result({:research_depth, String.to_atom(focus)})
+
+  defp modal_activate({:research_form, _}, _, _), do: :ignore
+
+  defp modal_activate({:feature_form, _, _}, %{focus: "submit"}, _), do: result(:feature_submit)
+
+  defp modal_activate({:feature_form, _, _}, %{focus: "field:" <> key} = state, _),
+    do:
+      if(SwarmCodeCLI.UI.FeatureForm.choice?(state, key),
+        do: result({:feature_cycle, key, 1}),
+        else: :ignore
+      )
+
+  defp modal_activate({:feature_form, _, _}, _, _), do: :ignore
 
   defp modal_activate({kind, _}, state, table) when kind in [:switcher, :action_menu] do
     entries = Switcher.visible(state, table)
@@ -351,6 +421,23 @@ defmodule SwarmCodeCLI.UI.Keymap do
         case state.read_model.interactions[id] do
           %{state: :pending, expected_revision: revision} ->
             {:field_editor, {:question_other, id, revision}}
+
+          _ ->
+            nil
+        end
+
+      match?({:research_form, _}, layer) and state.focus == "question" ->
+        {:research_form, owner} = layer
+
+        if state.library.command_id == nil,
+          do: {:field_editor, {:research_question, owner}},
+          else: nil
+
+      match?({:feature_form, _, _}, layer) and String.starts_with?(state.focus, "field:") ->
+        case state.feature_form do
+          %{command_id: nil, owner: owner} ->
+            {:field_editor,
+             {:feature_field, owner, String.replace_prefix(state.focus, "field:", "")}}
 
           _ ->
             nil

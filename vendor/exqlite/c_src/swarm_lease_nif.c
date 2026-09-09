@@ -112,6 +112,10 @@ static ERL_NIF_TERM sd_lease_close(ErlNifEnv *env, int argc, const ERL_NIF_TERM 
     if (!enif_self(env, &caller) || enif_compare_pids(&caller, &c->owner))
         return sd_error(env, "directory_wrong_owner");
     enif_mutex_lock(c->io_mutex);
+    if (c->binding_fd >= 0) {
+        enif_mutex_unlock(c->io_mutex);
+        return sd_error(env, "database_binding_in_use");
+    }
     int rc = swarm_lease_close(c->lease);
     if (!swarm_lease_active(c->lease)) atomic_store(&c->lease_required, 0);
     if (rc != SQLITE_OK) { c->lease_close_failed = 1; sd_revoke(c); }

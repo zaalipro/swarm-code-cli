@@ -11,7 +11,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
     "activity_snapshot" => {:activity_snapshot, DTO.ActivitySnapshot},
     "run_detail_snapshot" => {:run_detail_snapshot, DTO.RunDetailSnapshot},
     "pending_interactions" => {:pending_interactions, DTO.PendingInteractionWindow},
-    "detail_window" => {:detail_window, DTO.DetailWindow}
+    "detail_window" => {:detail_window, DTO.DetailWindow},
+    "library_snapshot" => {:library_snapshot, DTO.LibrarySnapshot}
   }
 
   @watch_bodies %{
@@ -57,11 +58,14 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
     end
   end
 
+  defp wire_slot(%{slot: :workspace, scope: %{kind: :run}}), do: :inspector
+  defp wire_slot(%{slot: slot}), do: slot
+
   defp watch_body(watch, timeout_ms),
     do: %{
       "op" => "watch",
       "watch_ref" => watch.watch_ref,
-      "slot" => Atom.to_string(watch.slot),
+      "slot" => Atom.to_string(wire_slot(watch)),
       "page_size" => watch.page_size,
       "byte_limit" => watch.byte_limit,
       "timeout_ms" => timeout_ms
@@ -81,7 +85,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
          watch
        )
        when map_size(body) == 5 do
-    with true <- @watch_bodies[watch.slot] == kind,
+    with true <- @watch_bodies[wire_slot(watch)] == kind,
          {_expected, module} <- @responses[kind],
          {:ok, dto} <- module.decode(value),
          true <- exact_wire_shape?(dto, value),
@@ -169,6 +173,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
   defp page_sizes?(_, _), do: true
 
   defp scoped_delta?(_, %Delta{kind: kind}) when kind in [:counts_update, :connection], do: true
+  defp scoped_delta?(%{kind: :global}, %Delta{kind: :workspace_metadata}), do: false
+  defp scoped_delta?(%{kind: :project}, %Delta{kind: :workspace_metadata}), do: false
   defp scoped_delta?(%{kind: kind}, _) when kind in [:global, :project], do: true
   defp scoped_delta?(%{kind: :conversation, id: id}, delta), do: delta.conversation_id == id
   defp scoped_delta?(%{kind: :run, id: id}, delta), do: delta.run_id == id
@@ -178,7 +184,10 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
          true <- is_integer(now),
          :ok <- not_expired(request.deadline, now),
          {:ok, body} <- request_body(request.kind),
-         body = Map.put(body, "timeout_ms", min(request.deadline - now, 600_000)),
+         body =
+           body
+           |> wire_request_slot(request.scope)
+           |> Map.put("timeout_ms", min(request.deadline - now, 600_000)),
          {:ok, _} <- ServiceRequest.decode(body, request.scope),
          message = %Message{
            version: 1,
@@ -209,6 +218,14 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
     end
   end
 
+  # Run destinations occupy the UI workspace, but the service exposes their
+  # snapshots and transcript pages through the inspector slot.
+  defp wire_request_slot(%{"op" => "query", "slot" => slot} = body, %{kind: :run})
+       when slot in ["workspace", "transcript"],
+       do: Map.put(body, "slot", "inspector")
+
+  defp wire_request_slot(body, _), do: body
+
   defp request_body({:query, slot, cursor, direction, size, bytes}) do
     {:ok,
      %{
@@ -224,9 +241,56 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
   defp request_body({:query_detail, ref, offset, bytes}),
     do: {:ok, %{"op" => "detail", "detail_ref" => ref, "offset" => offset, "bytes" => bytes}}
 
+  defp request_body({:feature_query, feature, id, cursor, size, bytes}),
+    do:
+      {:ok,
+       %{
+         "op" => "feature.query",
+         "feature" => Atom.to_string(feature),
+         "id" => id,
+         "cursor" => cursor,
+         "page_size" => size,
+         "byte_limit" => bytes
+       }}
+
   defp request_body({:resync_watch, ref}), do: {:ok, %{"op" => "resync", "watch_ref" => ref}}
 
-  defp request_body({:dispatch, :send, text, :main, []}),
+  defp request_body({:feature_command, feature, action, id, attrs}),
+    do:
+      {:ok,
+       %{
+         "op" => "feature.command",
+         "feature" => Atom.to_string(feature),
+         "action" => Atom.to_string(action),
+         "id" => id,
+         "attributes" => attrs
+       }}
+
+  defp request_body({:answer_question, run, node, interaction, revision, answers})
+       when is_list(answers),
+       do:
+         request_body(
+           {:answer_question, run, node, interaction, revision,
+            %{option_ids: answers, custom_text: ""}}
+         )
+
+  defp request_body(
+         {:answer_question, run, node, interaction, revision,
+          %{option_ids: answers, custom_text: custom}}
+       ),
+       do:
+         {:ok,
+          %{
+            "op" => "question.answer",
+            "run_id" => run,
+            "node_id" => node,
+            "interaction_id" => interaction,
+            "expected_revision" => revision,
+            "answers" => answers,
+            "custom_text" => custom
+          }}
+
+  defp request_body({:dispatch, :send, text, :main, attachments}) when is_list(attachments),
     do:
       {:ok,
        %{
@@ -234,13 +298,13 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
          "action" => "send",
          "text" => text,
          "target" => %{"kind" => "main", "id" => nil},
-         "attachment_refs" => []
+         "attachment_refs" => attachments
        }}
 
   defp request_body({:run_control, action, run}) when action in [:pause, :continue, :stop],
     do: {:ok, %{"op" => "run.control", "action" => Atom.to_string(action), "run_id" => run}}
 
-  defp request_body({:steer, run, node, text, []}),
+  defp request_body({:steer, run, node, text, attachments}) when is_list(attachments),
     do:
       {:ok,
        %{
@@ -248,7 +312,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
          "run_id" => run,
          "node_id" => node,
          "text" => text,
-         "attachment_refs" => []
+         "attachment_refs" => attachments
        }}
 
   defp request_body({:resolve_approval, run, node, interaction, revision, decision})
@@ -283,13 +347,14 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
        )
        when map_size(body) == 3 do
     with {expected, module} <- Map.get(@responses, kind),
-         true <- expected == request.expected_response,
+         true <- response_kind_matches?(expected, request),
          {:ok, dto} <- module.decode(value),
          true <- exact_wire_shape?(dto, value),
          :ok <- body_identity(dto, message.request_id),
          true <- scoped_body?(request.scope, dto),
          true <- response_matches?(request, dto),
          {:ok, dto} <- restore_identities(dto, message.request_id, request.request_id),
+         dto = ui_response(dto, request),
          delivery = %Delivery{
            kind: :response,
            request_id: request.request_id,
@@ -311,8 +376,31 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
   defp body_identity(%{request_id: id}, id), do: :ok
   defp body_identity(%{request_id: _}, _), do: :error
   defp body_identity(_, _), do: :ok
-  # Fixture DTO decoders retain legacy defaults. The v1 service wire requires
-  # every field explicitly, including nested nullable fields.
+  # Durable ledger outcomes written before command feedback remain readable.
+  # No other omitted fields, including nested nullable fields, are accepted.
+  defp exact_wire_shape?(%DTO.Outcome{feedback: nil} = dto, wire)
+       when is_map(wire) and not is_map_key(wire, "feedback"),
+       do: exact_wire_shape?(dto, Map.put(wire, "feedback", nil))
+
+  defp exact_wire_shape?(%DTO.WorkspaceSnapshot{} = dto, wire)
+       when is_map(wire) and not is_map_key(wire, "mode") and
+              not is_map_key(wire, "chat_model") and not is_map_key(wire, "swarm_model") and
+              not is_map_key(wire, "effort") and not is_map_key(wire, "swarm_effort") do
+    wire =
+      wire
+      |> Map.put_new("mode", nil)
+      |> Map.put_new("chat_model", nil)
+      |> Map.put_new("swarm_model", nil)
+      |> Map.put_new("effort", nil)
+      |> Map.put_new("swarm_effort", nil)
+
+    exact_wire_shape?(dto, wire)
+  end
+
+  defp exact_wire_shape?(%DTO.LibraryItem{form: nil} = dto, wire)
+       when is_map(wire) and not is_map_key(wire, "form"),
+       do: exact_wire_shape?(dto, Map.put(wire, "form", nil))
+
   defp exact_wire_shape?(%{__struct__: _} = dto, wire) when is_map(wire) do
     fields = Map.from_struct(dto)
 
@@ -372,6 +460,11 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
       Enum.all?(page.runs ++ page.interactions ++ page.transcript.items, &scoped_item?(scope, &1))
   end
 
+  defp scoped_body?(%{kind: :conversation, id: id}, %DTO.Outcome{feedback: feedback}),
+    do: is_nil(feedback) or feedback.conversation_id in [nil, id]
+
+  defp scoped_body?(_, %DTO.Outcome{}), do: true
+
   defp scoped_body?(scope, %DTO.ShellSnapshot{} = page),
     do: Enum.all?(page.runs, &scoped_item?(scope, &1))
 
@@ -380,6 +473,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
       (is_nil(page.run) or scoped_item?(scope, page.run)) and
         Enum.all?(page.agents ++ page.transcript.items, &scoped_item?(scope, &1))
 
+  defp scoped_body?(_scope, %DTO.LibrarySnapshot{}), do: true
   defp scoped_body?(scope, %{items: items}), do: Enum.all?(items, &scoped_item?(scope, &1))
   defp scoped_body?(_, _), do: true
   defp scoped_item?(%{kind: :global}, _), do: true
@@ -394,12 +488,46 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
   defp scoped_item?(%{kind: :run, id: id}, item), do: Map.get(item, :run_id, item.id) == id
   defp scoped_item?(_, _), do: false
 
+  defp ui_response(%DTO.RunDetailSnapshot{transcript: transcript}, %Request{
+         kind: {:query, :transcript, _, _, _, _},
+         scope: %{kind: :run}
+       }),
+       do: transcript
+
+  defp ui_response(dto, _), do: dto
+
+  defp response_kind_matches?(:run_detail_snapshot, %Request{
+         scope: %{kind: :run},
+         expected_response: expected
+       })
+       when expected in [:workspace_snapshot, :transcript_window],
+       do: true
+
+  defp response_kind_matches?(expected, %Request{expected_response: expected}), do: true
+  defp response_kind_matches?(_, _), do: false
+
   defp response_matches?(%Request{kind: {:query_detail, id, offset, bytes}}, body),
     do:
       body.offset == offset and byte_size(body.text) <= bytes and
         (body.state == :error or body.detail_ref.id == id)
 
+  defp response_matches?(
+         %Request{kind: {:feature_query, feature, _, _, size, bytes}},
+         %DTO.LibrarySnapshot{} = body
+       ),
+       do:
+         body.feature == feature and length(body.items) <= size and
+           byte_size(Jason.encode!(wire_value(body))) <= bytes
+
   defp response_matches?(_, _), do: true
+
+  defp wire_value(%_{} = value), do: value |> Map.from_struct() |> wire_value()
+
+  defp wire_value(value) when is_map(value),
+    do: Map.new(value, fn {k, v} -> {k, wire_value(v)} end)
+
+  defp wire_value(value) when is_list(value), do: Enum.map(value, &wire_value/1)
+  defp wire_value(value), do: value
   defp not_expired(deadline, now) when deadline > now, do: :ok
   defp not_expired(_, _), do: {:error, AdmissionError.new(:deadline_expired)}
   defp invalid, do: {:error, AdmissionError.new(:invalid_request)}

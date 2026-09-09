@@ -53,10 +53,10 @@ def main():
             env["SWARM_GUARD_TEST"] = "1"
         run(["make", f"MIX_APP_PATH={destination / 'lib/exqlite'}",
              f"ERTS_INCLUDE_DIR={include}", f"ERL_EI_INCLUDE_DIR={include}"], cwd=FORK, env=env)
-        run(["mise", "exec", "--", "elixirc", "--ignore-module-conflict", "-o",
+        run(["mise", "exec", "--", "elixirc", "--ignore-module-conflict", "-pa", destination / "lib/*/ebin", "-o",
              destination / "lib/exqlite/ebin", FORK / "lib/exqlite/sqlite3_nif.ex",
-             FORK / "lib/exqlite/swarm_guard.ex", FORK / "lib/exqlite/directory_scope.ex", FORK / "lib/exqlite/guarded_lease.ex"], env=env)
-        tests = ("feasibility.exs", "ecto_compat.exs", "directory_scope.exs", "guarded_lease.exs", "lease_close_errors.exs") if mode == "test" else ("production.exs", "directory_scope.exs", "guarded_lease.exs")
+             FORK / "lib/exqlite/swarm_guard.ex", FORK / "lib/exqlite/directory_scope.ex", FORK / "lib/exqlite/guarded_lease.ex", FORK / "lib/exqlite/database_binding.ex", FORK / "lib/exqlite/connection.ex"], env=env)
+        tests = ("feasibility.exs", "ecto_compat.exs", "directory_scope.exs", "guarded_lease.exs", "lease_close_errors.exs", "binding_close_errors.exs", "database_binding.exs") if mode == "test" else ("production.exs", "directory_scope.exs", "guarded_lease.exs", "database_binding.exs")
         for test in tests:
             run(["mise", "exec", "--", "elixir", FORK / "test/swarm_guard" / test], env=env)
     run(["make", "-n", "EXQLITE_USE_SYSTEM=1"], cwd=FORK, expect=2)

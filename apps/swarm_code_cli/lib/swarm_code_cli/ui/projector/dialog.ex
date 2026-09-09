@@ -150,6 +150,22 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
 
   defp control(id, label, target), do: {:dialog_control, id, label, target}
 
+  defp contents({:command_report, _}, %{command_report: report} = state, rect, _class)
+       when not is_nil(report) do
+    rows =
+      report.text
+      |> String.split("\n")
+      |> Enum.with_index()
+      |> Enum.map(fn {line, i} ->
+        {"report-#{i}", Density.external(line, SafeText.Limits.content()), nil}
+      end)
+
+    {Density.safe(report.title, state, rect.width - 2), rows,
+     [
+       control("cancel", Density.safe("Close", state, rect.width - 2), {:local, :close_top_layer})
+     ], state.focus}
+  end
+
   defp contents({:unsent_changes, kind}, state, _rect, class) do
     cancel = control("cancel", SafeText.chrome(:cancel_exit), {:local, :close_top_layer})
 
@@ -276,7 +292,15 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
         {"help-inspect", "i: Inspector · Esc: Back / close"},
         {"help-detach", "q: Detach · P: Exit; rerun with --plain"},
         {"help-editor", "Composer: Enter send; Ctrl+O newline; Alt+Enter queue"},
-        {"help-safety", "Fake demo only. No user data or real execution."},
+        {"help-safety",
+         if(state.banner in [:live_banner, :persisted_banner],
+           do:
+             if(state.banner == :persisted_banner,
+               do: "Saved local session. Ctrl+K: feature libraries.",
+               else: "Live session · unsaved. Ctrl+K: feature libraries."
+             ),
+           else: "Fake demo only. No user data or real execution."
+         )},
         {"help-focus-current", "Focus: " <> state.focus}
       ]
       |> Enum.map(fn {id, label} -> {id, Density.safe(label, state, rect.width * 4), nil} end)
@@ -284,6 +308,123 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
     {SafeText.chrome(:help), options,
      [control("cancel", SafeText.chrome(:cancel), {:local, :close_top_layer})],
      focus(state, options)}
+  end
+
+  defp contents({:library, feature}, state, rect, _class) do
+    alias SwarmCodeCLI.UI.Library
+    body = state.library && state.library.body
+    selected = Library.selected(state)
+
+    options =
+      Enum.map(Library.rows(state), fn {item, index} ->
+        label = item.title <> " · " <> item.status
+        label = if selected && selected.id == item.id, do: "› " <> label, else: "  " <> label
+
+        {"row-#{index}", Density.safe(label, state, rect.width * 2),
+         {:local, {:library_select, item.id}}}
+      end)
+
+    detail =
+      cond do
+        state.library && state.library.confirmation ->
+          {id, action} = state.library.confirmation
+          item = Enum.find((body && body.items) || [], &(&1.id == id))
+
+          {verb, consequence} =
+            case action do
+              :delete -> {"Delete", "This removes the saved entry."}
+              :clear -> {"Clear", "This removes the saved memory content."}
+              :restore -> {"Restore", "This restores the checkpoint and changes project files."}
+            end
+
+          verb <> " " <> ((item && item.title) || id) <> "? " <> consequence
+
+        is_nil(body) ->
+          "Loading…"
+
+        body.state == :error ->
+          "Unavailable · " <> body.error.message
+
+        options == [] ->
+          "No entries"
+
+        selected ->
+          selected.subtitle <> "\n" <> selected.detail
+
+        true ->
+          "Select an entry to view details and actions."
+      end
+
+    options = options ++ [{"details", Density.safe(detail, state, rect.width * 8), nil}]
+
+    options =
+      if state.library && state.library.message,
+        do:
+          options ++ [{"result", Density.safe(state.library.message, state, rect.width * 2), nil}],
+        else: options
+
+    footer =
+      Enum.map(Library.controls(state), fn {id, label, action} ->
+        control(id, Density.safe(label, state, 40), {:local, action})
+      end)
+
+    graph = Library.focus_graph(state)
+
+    {SafeText.external(Library.title(feature), SafeText.Limits.content()) |> elem(1), options,
+     footer, if(state.focus in graph, do: state.focus, else: "cancel")}
+  end
+
+  defp contents({:research_form, owner}, state, rect, _class) do
+    q = FieldEditors.fetch(state.field_editors, {:research_question, owner}) |> Editor.text()
+    depth = Map.get(state.selection, {:research_form, :depth}, :medium)
+
+    options =
+      [{"question", "Question: " <> if(q == "", do: "(required)", else: q), nil}] ++
+        Enum.map([:low, :medium, :high, :ultra], fn d ->
+          {Atom.to_string(d), if(d == depth, do: "› ", else: "  ") <> Atom.to_string(d),
+           {:local, {:research_depth, d}}}
+        end)
+
+    options =
+      Enum.map(options, fn {id, label, target} ->
+        {id, Density.safe(label, state, 4_100), target}
+      end)
+
+    options =
+      if state.library.message,
+        do:
+          options ++ [{"result", Density.safe(state.library.message, state, rect.width * 4), nil}],
+        else: options
+
+    {Density.safe("New research", state, rect.width), options,
+     [
+       control("start", Density.safe("Start", state, 40), {:local, :research_start}),
+       control("cancel", SafeText.chrome(:cancel), {:local, :close_top_layer})
+     ], state.focus}
+  end
+
+  defp contents({:feature_form, _feature, _id}, state, rect, _class) do
+    form = state.feature_form.form
+
+    options =
+      Enum.map(form.fields, fn field ->
+        value = SwarmCodeCLI.UI.FeatureForm.value(state, field.key)
+        label = field.label <> ": " <> if(value == "", do: "(empty)", else: value)
+        {"field:" <> field.key, Density.safe(label, state, rect.width * 3), nil}
+      end)
+
+    options =
+      if state.feature_form.error,
+        do:
+          options ++
+            [{"error", Density.safe(state.feature_form.error, state, rect.width * 4), nil}],
+        else: options
+
+    {Density.safe(form.title, state, rect.width - 2), options,
+     [
+       control("submit", Density.safe(form.submit_label, state, 40), {:local, :feature_submit}),
+       control("cancel", SafeText.chrome(:cancel), {:local, :close_top_layer})
+     ], state.focus}
   end
 
   defp contents({:run_inspector, id, _tab}, state, rect, class) do
@@ -378,9 +519,10 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
               {:local, {:select_option, item.id, option.id}}
 
             true ->
-              {:intent,
-               {:answer_question, item.run_id, item.node_id, item.id, item.expected_revision,
-                [option.id]}}
+              case SwarmCodeCLI.UI.Question.answer_intent(state, item, option.id) do
+                :ignore -> nil
+                intent -> {:intent, intent}
+              end
           end
 
         marker =
@@ -393,20 +535,21 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
          target}
       end)
 
-    submit =
-      if item.question.multiple and permitted and selected != [] do
+    custom = SwarmCodeCLI.UI.Question.other_text(state, item)
+
+    options =
+      options ++
         [
-          control(
-            "submit",
-            SafeText.chrome(:submit),
-            {:intent,
-             {:answer_question, item.run_id, item.node_id, item.id, item.expected_revision,
-              selected}}
-          )
+          {"other", Density.safe("Your answer: " <> custom, state, rect.width * 8),
+           if(permitted, do: {:local, {:focus_region, "other"}})}
         ]
-      else
-        []
-      end
+
+    submit_intent = SwarmCodeCLI.UI.Question.answer_intent(state, item, "submit")
+
+    submit =
+      if permitted and submit_intent != :ignore,
+        do: [control("submit", SafeText.chrome(:submit), {:intent, submit_intent})],
+        else: []
 
     footer = submit ++ [control("cancel", SafeText.chrome(:cancel), {:local, :close_top_layer})]
 
@@ -483,8 +626,8 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
     do: %Rect{x: 0, y: 0, width: size.columns, height: size.rows}
 
   defp rectangle(size, _class) do
-    width = min(80, size.columns - 4)
-    height = min(24, size.rows - 4)
+    width = max(1, min(80, size.columns - 4))
+    height = max(1, min(24, size.rows - 4))
 
     %Rect{
       x: div(size.columns - width, 2),

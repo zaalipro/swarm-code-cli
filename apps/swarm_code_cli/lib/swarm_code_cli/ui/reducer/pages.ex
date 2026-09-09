@@ -3,7 +3,8 @@ defmodule SwarmCodeCLI.UI.Reducer.Pages do
   alias SwarmCodeCLI.UI.{State, Scroll, ScrollMetrics, PageState}
   alias SwarmCodeCLI.UI.DataSource.Request
 
-  def scroll(%{layers: [{:approval, _} | _]} = state, "dialog", operation) do
+  def scroll(%{layers: [{kind, _} | _]} = state, "dialog", operation)
+      when kind in [:approval, :command_report] do
     # The dialog already measures its wrapped body and sticky footer. Use that
     # same viewport so paging can reach every argument without changing focus
     # to an approving action.
@@ -217,6 +218,9 @@ defmodule SwarmCodeCLI.UI.Reducer.Pages do
   defp expected?(:shell_snapshot, %SwarmCodeCLI.UI.DataSource.DTO.ShellSnapshot{}), do: true
 
   defp expected?(:workspace_snapshot, %SwarmCodeCLI.UI.DataSource.DTO.WorkspaceSnapshot{}),
+    do: true
+
+  defp expected?(:workspace_snapshot, %SwarmCodeCLI.UI.DataSource.DTO.RunDetailSnapshot{}),
     do: true
 
   defp expected?(:transcript_window, %SwarmCodeCLI.UI.DataSource.DTO.TranscriptWindow{}), do: true

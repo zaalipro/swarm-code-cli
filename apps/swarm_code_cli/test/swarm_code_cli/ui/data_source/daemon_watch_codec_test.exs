@@ -32,6 +32,17 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.WatchCodecTest do
     end
   end
 
+  test "run workspace watch is admitted as inspector and decodes run detail snapshot" do
+    run_watch = %{watch() | scope: %{@scope | kind: :run, id: @run}}
+    assert {:ok, message} = Codec.watch_request(run_watch, @wire, @nonce, 5_000)
+    assert message.body["slot"] == "inspector"
+
+    assert {:ok, %ServiceRequest{operation: :watch}} =
+             ServiceRequest.decode(message.body, message.scope)
+
+    assert run_watch.scope.kind == :run
+  end
+
   test "initial snapshot supplies its watermark while the delivery has no delta sequence" do
     message = ready()
     assert {:ok, message} = Envelope.decode(json(message))

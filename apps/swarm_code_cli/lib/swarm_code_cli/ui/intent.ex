@@ -56,7 +56,8 @@ defmodule SwarmCodeCLI.UI.Intent do
           | {:run_control, :pause | :continue | :resume | :stop, binary()}
           | {:retry_run, binary(), non_neg_integer()}
           | {:stop_agent, binary(), binary(), non_neg_integer()}
-          | {:answer_question, binary(), binary(), binary(), non_neg_integer(), [binary()]}
+          | {:answer_question, binary(), binary(), binary(), non_neg_integer(),
+             [binary()] | %{option_ids: [binary()], custom_text: binary()}}
           | {:resolve_approval, binary(), binary(), binary(), non_neg_integer(),
              :approve | :deny | :always_allow}
           | {:mark_seen, :conversation | :run | :activity, binary(), non_neg_integer()}
@@ -151,7 +152,7 @@ defmodule SwarmCodeCLI.UI.Intent do
           valid_id?(node_id),
           valid_id?(interaction_id),
           non_negative_integer?(revision),
-          valid_id_list?(option_ids)
+          valid_answer?(option_ids)
         ])
 
   def validate({:resolve_approval, run_id, node_id, interaction_id, revision, decision} = intent)
@@ -184,6 +185,13 @@ defmodule SwarmCodeCLI.UI.Intent do
   defp valid_intent(intent, checks) do
     if Enum.all?(checks), do: {:ok, intent}, else: {:error, :invalid_intent}
   end
+
+  defp valid_answer?(%{option_ids: ids, custom_text: custom} = answer) when map_size(answer) == 2,
+    do:
+      valid_id_list?(ids) and is_binary(custom) and byte_size(custom) <= 4_000 and
+        String.valid?(custom) and (ids != [] or String.trim(custom) != "")
+
+  defp valid_answer?(ids), do: valid_id_list?(ids)
 
   defp non_negative_integer?(value), do: is_integer(value) and value >= 0
 

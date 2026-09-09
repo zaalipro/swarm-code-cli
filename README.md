@@ -1,13 +1,130 @@
 # SwarmCode CLI
 
-This repository contains a live provider/tool backend, foundation infrastructure,
-runnable synthetic plain and interactive terminal demos, and a passive preview gallery.
-The plain session and renderer-neutral UI share scoped requests, questions, run controls,
-process-local drafts, and bounded presentation data. The backend now includes OpenAI-compatible/Anthropic HTTP streaming, six real
-coding tools, and an owned agent loop with approvals, pause/steer/stop and bounded
-stream recovery. It has been exercised against local HTTP providers and actual
-temporary repositories. The executable TUI still uses sample data: persistent
-service integration, a production launcher and platform acceptance remain unfinished.
+This repository contains a runnable terminal client connected to real
+OpenAI-compatible/Anthropic providers, six coding tools, approvals, run controls,
+and a local Unix-socket service. The saved development launcher uses guarded
+canonical storage and resumes conversations across restart. Terminal feature forms
+cover workflows, scheduled tasks, settings, and deep research. Advanced-mode
+acceptance coverage is still being expanded; the packaged release launcher is
+available for the verified TUI path.
+The live launcher uses in-memory history. Deterministic demos and a passive
+preview gallery are also available.
+
+Start a saved development session from this checkout with a model available from
+your provider and an API key already set in your environment. The development
+launchers also load `~/.secrets` automatically when no provider key is exported:
+
+```sh
+scripts/dev/check_terminal_port.sh
+export SWARM_PROJECT_ROOT=/absolute/path/to/your/project
+export SWARM_MODEL=your-model-id
+export SWARM_BASE_URL=https://api.openai.com/v1
+# OPENAI_API_KEY supplies authentication by default.
+scripts/dev/run_saved_session.sh
+```
+
+You may keep the same exports in `~/.secrets`; the launcher preserves values
+already exported for `SWARM_*`, `OPENAI_*`, and `ANTHROPIC_*` in the calling shell.
+The saved, live, and plain development launchers share this behavior. Set
+`SWARM_ENV_FILE=/path/to/provider.env` to use another shell environment file.
+An exported provider key, including an explicitly empty key for local servers,
+skips automatic loading.
+
+To start an unsaved development session using the same provider settings:
+
+```sh
+export SWARM_PROJECT_ROOT=/absolute/path/to/your/project
+export SWARM_MODEL=your-model-id
+export SWARM_BASE_URL=https://api.openai.com/v1
+scripts/dev/run_live_session.sh
+```
+
+For pipes, CI, SSH sessions, or terminals where the full-screen renderer is not
+available, use the persisted plain presenter:
+
+```sh
+printf 'send -- inspect this project\ndetach\n' | scripts/dev/run_plain_session.sh
+```
+
+It accepts one command per line (`send --`, `queue --`, `answer`, `pause`,
+`continue`, `stop`, `retry`, `inspect`, `detail`, `back`, and `detach`). Slash
+commands are sent with `send -- /command ...`. Add `--ndjson` for one JSON
+object per output record:
+
+```sh
+scripts/dev/run_plain_session.sh --ndjson < commands.txt
+```
+
+`run_saved_session.sh` resumes the latest conversation for the selected project
+and keeps transcripts across detach/restart. Set `SWARM_CONVERSATION=new` for a
+new conversation, `latest` to resume, or an existing conversation UUID. The launcher
+creates or migrates the database through guarded startup and refuses an active
+desktop or incompatible database. On macOS, quit the desktop before starting
+saved mode and exit the CLI before reopening the desktop; they share storage.
+
+Conversation sessions open with the composer ready for typing. Tab focuses the
+next region, Enter sends, Escape returns to the main view, and `q` exits outside
+the editor. The saved title says `SAVED · DEV`; the live title says
+`LIVE · UNSAVED`. Exiting either development launcher stops its owned runs. The
+saved launcher performs guarded admission before accessing shared storage.
+
+To assemble a checked BEAM release, including the native terminal-port gate:
+
+```sh
+scripts/dev/build_release.sh
+```
+
+The release is written to `_build/prod/rel/swarm_code_cli` and includes the
+native terminal helper plus a `swarm-code` launcher:
+
+```sh
+_build/prod/rel/swarm_code_cli/bin/swarm-code tui
+```
+
+The release launcher uses the same `SWARM_PROJECT_ROOT`, `SWARM_CONVERSATION`,
+and provider variables as the saved development session.
+
+| Variable | Meaning |
+| --- | --- |
+| `SWARM_PROVIDER` | `openai` (default) or `anthropic` |
+| `SWARM_MODEL` | Required model ID; provider-specific `OPENAI_MODEL` / `ANTHROPIC_MODEL` also work |
+| `SWARM_BASE_URL` | Explicit provider endpoint; OpenAI-compatible URLs include `/v1`, Anthropic URLs omit it. Provider-specific `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL` also work. |
+| `SWARM_API_KEY` | Overrides `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`; may be empty for local servers |
+| `SWARM_PROJECT_ROOT` | Project directory; defaults to the shell's current directory |
+| `SWARM_APPROVAL` | `ask` (default), `read-only`, or `auto` |
+| `SWARM_EFFORT` | Reasoning effort key; defaults to `medium` |
+| `SWARM_ENV_FILE` | Optional shell environment file; defaults to `~/.secrets` for development launchers |
+
+Use `scripts/dev/run_live_session.sh --help` for startup help without building or
+opening the TUI. For Anthropic set `SWARM_PROVIDER=anthropic`,
+`SWARM_BASE_URL=https://api.anthropic.com`, `ANTHROPIC_API_KEY`, and a supported
+model ID. Local OpenAI-compatible servers can use an empty `SWARM_API_KEY`.
+
+Saved slash commands are parsed and dispatched through the typed service boundary.
+`/swarm`, `/goal`, `/plan`, `/review`, `/effort`, `/swarm_effort`, `/rewind`,
+`/stop`, `/resume`, `/workflow`, `/workflows`, `/create-workflow`, `/ultra`,
+`/consensus`, `/deep_research`, and `/compact` have daemon execution mappings.
+`/attach <image-path>` stages a confined project image for the next saved
+message; the attachment is consumed when that message starts.
+Advanced flows still require full end-to-end acceptance. The unsaved launcher
+supports ordinary coding prompts and local workflow/research library navigation.
+
+`Ctrl+K` opens the live switcher, including Workflows, Deep Research, Scheduled
+Tasks, Settings, Usage, Changes, Checkpoints, and MCP Servers. Library dialogs
+support bounded paging, refresh, scoped mutations, confirmation for destructive
+actions, and correlated responses. `/goal` presents the conversation goal;
+`/workflows`, `/deep_research`, and `/rewind` open their corresponding libraries.
+Use PgUp/PgDn or Home/End to read long goal reports. The unsaved launcher reports
+persisted features unavailable because it has no Domain Repo.
+
+Feature-library rows can open typed forms for workflow starts, schedule creation or
+editing, and settings updates. Arrow keys cycle choices and booleans; Enter submits;
+Escape cancels. Rejected values stay in the form with an error message.
+
+The persisted service uses the guarded Foundation-to-Repo handoff, durable command
+ledger, bounded projections, streamed deltas, and reconnect-safe request identity.
+See the [persisted service checkpoint](docs/research/2026-09-09-persisted-service-checkpoint.md)
+and [guarded Repo checkpoint](docs/research/2026-09-09-guarded-repo-checkpoint.md).
 
 Run the fixed demo without starting a daemon or opening user data:
 
@@ -64,6 +181,7 @@ the historical 43-migration contract remains available for validation. See the
 - [Foundation safety and macOS residual risk](docs/foundation-safety.md)
 - [Current implementation and desktop parity audit](docs/research/2026-09-06-cli-parity-audit.md)
 - [Current live harness gaps and completion criteria](docs/research/2026-09-07-live-harness-gaps.md)
+- [Command discovery and local service checkpoint](docs/research/2026-09-08-command-service-checkpoint.md)
 - [Renderer decision and verified source constraints](docs/decisions/tui-renderer.md)
 
 Contributor checks: `mise exec -- mix precommit`. The Unicode terminal-width
@@ -117,19 +235,38 @@ The daemon application now owns the provider capability cache and a bounded run
 supervisor, so submitted runs can outlive their client. Run also supports a
 separate acknowledged canonical event sink: model/tool admissions, complete
 outcomes, approvals and terminal events are recorded before dependent effects
-or completion are published. The transactional store for that sink remains to
-be connected through guarded writable startup.
+or completion are published. This component belongs to the transient runtime.
+Saved sessions use the extracted Domain engine and guarded Repo instead.
 
-The client can display actual approval arguments, page their full details and
-reasoning, and represent unknown progress. The executable still uses the
-synthetic data source until the daemon service and real adapter are wired.
+The client can display actual approval arguments, page transcript details and
+reasoning, and represent unknown progress. The development launcher uses the real
+daemon adapter; `swarm_code.demo.*` continues to use synthetic data.
 See the [runtime/sink checkpoint](docs/research/2026-09-07-canonical-sink-checkpoint.md)
 for exact verification and remaining scope.
 The subsequent [directory and codec checkpoint](docs/research/2026-09-07-directories-codec-checkpoint.md)
 adds production directory ownership/locks and a strict pure client wire codec.
-The SQLite lease, writable database binding, transactional store and transport
-remain necessary before the executable can perform saved live coding sessions.
+The saved launcher now provides guarded database startup, command persistence,
+and history across restart. Release packaging and clean-host installation remain
+separate work.
+
+The CLI now also includes a bounded local Unix-socket service listener, strict
+capability and nonce admission, reconnect-safe request identities, watch
+sequence credit, typed snapshot/command transport tests, the six-mode slash
+command registry and renderer-native slash completion. Custom project/global
+Markdown commands are loaded with confinement, size, UTF-8, front-matter and
+exclusive-write checks. The listener does not start with the application; the
+development launchers explicitly own it with their selected backend. Socket
+acceptance tests cover approvals, file editing, shell verification, final output,
+and reconnect. The saved PTY smoke also verifies transcript recovery after a
+second launcher process starts.
 
 The [live harness plan](docs/superpowers/plans/2026-09-06-live-coding-harness.md)
 tracks persistence, daemon/client service, real TUI wiring, advanced desktop
 capabilities and packaged releases. Component tests do not close those gaps.
+
+The live terminal smoke test runs entirely against a loopback HTTP provider:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 scripts/dev/test_live_session_pty.py
+PYTHONDONTWRITEBYTECODE=1 python3 scripts/dev/test_saved_session_pty.py
+```

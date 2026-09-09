@@ -173,17 +173,42 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.Schema do
   end
 
   def relations?(%{__struct__: DTO.Outcome} = outcome) do
-    case outcome.status do
-      :needs_input -> not is_nil(outcome.interaction) and is_nil(outcome.error)
-      :rejected -> not is_nil(outcome.error) and is_nil(outcome.interaction)
-      _ -> is_nil(outcome.interaction)
-    end
+    (is_nil(outcome.feedback) or outcome.status == :accepted) and
+      case outcome.status do
+        :needs_input -> not is_nil(outcome.interaction) and is_nil(outcome.error)
+        :rejected -> not is_nil(outcome.error) and is_nil(outcome.interaction)
+        _ -> is_nil(outcome.interaction)
+      end
+  end
+
+  def relations?(%{__struct__: DTO.Feedback} = feedback) do
+    byte_size(feedback.title) <= 256 and
+      case feedback.kind do
+        :navigate -> not is_nil(feedback.feature) and feedback.text == ""
+        kind when kind in [:report, :notice] -> is_nil(feedback.feature) and feedback.text != ""
+      end
   end
 
   def relations?(%{state: :superseded, allowed_actions: actions}),
     do: Enum.all?(actions, &(&1 in [:inspect, :copy, :fork]))
 
   def relations?(%{state: _, request_id: _, error: _} = page), do: page_relation?(page)
+
+  def relations?(%{__struct__: SwarmCodeCLI.UI.DataSource.DTO.FormField} = f) do
+    Enum.all?([f.key, f.label, f.value, f.hint], &String.valid?/1) and
+      byte_size(f.key) <= 16_384 and byte_size(f.label) <= 16_384 and
+      byte_size(f.value) <= 16_384 and byte_size(f.hint) <= 16_384 and
+      length(f.choices) <= 64 and
+      Enum.all?(f.choices, &(String.valid?(&1) and byte_size(&1) <= 16_384)) and
+      Enum.uniq(f.choices) == f.choices
+  end
+
+  def relations?(%{__struct__: SwarmCodeCLI.UI.DataSource.DTO.FeatureForm} = f) do
+    String.valid?(f.title) and String.valid?(f.submit_label) and
+      byte_size(f.title) <= 16_384 and byte_size(f.submit_label) <= 16_384 and
+      length(f.fields) <= 32 and Enum.uniq_by(f.fields, & &1.key) == f.fields and
+      Enum.all?(f.fields, &relations?/1)
+  end
 
   def relations?(_), do: true
 

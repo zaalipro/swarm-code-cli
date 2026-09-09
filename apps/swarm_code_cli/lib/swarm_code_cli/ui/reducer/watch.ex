@@ -173,7 +173,10 @@ defmodule SwarmCodeCLI.UI.Reducer.Watch do
     watch = state.watches[slot]
 
     cond do
-      delivery.sequence <= watch.sequence or delivery.revision < watch.revision ->
+      # Sequence is the watch's ordering watermark. Revisions belong to the
+      # individual entity and may legitimately be older than another entity's
+      # latest update; ReadModel.delta performs the per-entity stale check.
+      delivery.sequence <= watch.sequence ->
         {state, []}
 
       watch.status in [:resyncing, :closed, :frozen] ->
@@ -189,7 +192,13 @@ defmodule SwarmCodeCLI.UI.Reducer.Watch do
 
           {:ok, model, changed, removed} ->
             old_ids = Map.get(state.read_model.order, slot, [])
-            watch = %{watch | revision: delivery.revision, sequence: delivery.sequence}
+
+            watch = %{
+              watch
+              | revision: max(watch.revision, delivery.revision),
+                sequence: delivery.sequence
+            }
+
             state = %{state | read_model: model, watches: Map.put(state.watches, slot, watch)}
             {state, overflow} = update_scrolls(state, slot, changed, removed, old_ids)
             if overflow, do: resync(state, slot), else: {state, []}

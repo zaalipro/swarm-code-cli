@@ -765,4 +765,13 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake do
       |> Map.put(:message, :redacted)
       |> Map.put(:reason, :redacted)
       |> Map.put(:log, [])
+
+  @impl true
+  def consume(server, receipt, disposition) when disposition in [:applied, :discarded] do
+    if is_pid(resolve(server)) and is_reference(receipt),
+      do: :ok,
+      else: {:error, AdmissionError.new(:invalid_request)}
+  end
+
+  def consume(_server, _receipt, _disposition), do: {:error, AdmissionError.new(:invalid_request)}
 end

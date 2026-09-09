@@ -7,12 +7,13 @@ LAUNCH = ROOT / 'scripts/dev/run_terminal_demo.sh'
 CSI = re.compile(r'\x1b\[([0-?]*[ -/]*)([@-~])')
 
 class Demo:
-    def __init__(self, args=(), term='xterm-256color'):
+    def __init__(self, args=(), term='xterm-256color', launcher=None, environment=None):
         self.master, self.slave = os.openpty()
         fcntl.ioctl(self.slave, termios.TIOCSWINSZ, struct.pack('HHHH', 40, 120, 0, 0))
         mr, mw = os.pipe(); rr, self.release = os.pipe()
         env = dict(os.environ, TERM=term)
-        self.holder = subprocess.Popen([sys.executable, __file__, '--holder', str(self.slave), str(mw), str(rr), *args], pass_fds=(self.slave,mw,rr), env=env)
+        env.update(environment or {})
+        self.holder = subprocess.Popen([sys.executable, __file__, '--holder', str(self.slave), str(mw), str(rr), str(launcher or LAUNCH), *args], pass_fds=(self.slave,mw,rr), env=env)
         os.close(mw); os.close(rr)
         self.meta = os.fdopen(mr)
         info = json.loads(self.meta.readline())
@@ -56,7 +57,11 @@ class Demo:
             self.pump()
             if select.select([self.meta],[],[],0)[0]:
                 self.status=int(self.meta.readline()); break
-        assert marker in self.screen(), ('missing marker',marker,self.screen(),bytes(self.output[-2000:]))
+        if marker not in self.screen():
+            directory = ROOT / '_build/terminal-demo-captures'
+            directory.mkdir(parents=True, exist_ok=True)
+            (directory / 'failed-terminal.ansi').write_bytes(bytes(self.output))
+            raise AssertionError(('missing marker', marker, self.screen(), bytes(self.output[-2000:])))
     def capture(self, name):
         end=time.monotonic()+.2
         while time.monotonic()<end: self.pump()
@@ -186,7 +191,7 @@ class LiveDemo(unittest.TestCase):
 def holder():
     slave,meta,release=map(int,sys.argv[2:5]); os.setsid(); fcntl.ioctl(slave,termios.TIOCSCTTY,0)
     original=termios.tcgetattr(slave); original[6]=[b[0] if isinstance(b,bytes) else b for b in original[6]]
-    child=subprocess.Popen(['bash',str(LAUNCH),*sys.argv[5:]],stdin=slave,stdout=slave,stderr=slave,cwd=ROOT)
+    child=subprocess.Popen(['bash',sys.argv[5],*sys.argv[6:]],stdin=slave,stdout=slave,stderr=slave,cwd=ROOT)
     os.write(meta,(json.dumps({'pid':child.pid,'termios':original})+'\n').encode())
     code=child.wait(); os.write(meta,(str(code)+'\n').encode()); os.read(release,1)
 if __name__=='__main__':

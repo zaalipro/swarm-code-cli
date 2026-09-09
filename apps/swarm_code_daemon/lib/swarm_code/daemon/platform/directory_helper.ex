@@ -445,14 +445,15 @@ defmodule SwarmCode.Daemon.Platform.DirectoryHelper do
         {:cd, String.to_charlist(directory)},
         {:args, Enum.map(arguments, &String.to_charlist/1)},
         {:env,
-         [
-           {~c"ERL_AFLAGS", ~c""},
-           {~c"ERL_CRASH_DUMP", ~c"/dev/null"},
-           {~c"ERL_FLAGS", ~c""},
-           {~c"ERL_LIBS", ~c""},
-           {~c"ERL_ZFLAGS", ~c""}
-           | test_broker_fault_environment(broker_fault)
-         ]}
+         release_environment() ++
+           [
+             {~c"ERL_AFLAGS", ~c""},
+             {~c"ERL_CRASH_DUMP", ~c"/dev/null"},
+             {~c"ERL_FLAGS", ~c""},
+             {~c"ERL_LIBS", ~c""},
+             {~c"ERL_ZFLAGS", ~c""}
+             | test_broker_fault_environment(broker_fault)
+           ]}
       ])
 
     monitor = Port.monitor(port)
@@ -779,35 +780,36 @@ defmodule SwarmCode.Daemon.Platform.DirectoryHelper do
          {:ok, jason} <- app_ebin(:jason),
          {:ok, elixir} <- app_ebin(:elixir) do
       erl_arguments =
-        [
-          "+S",
-          "1:1",
-          "+A",
-          "1",
-          "+SDio",
-          "1",
-          "+SDcpu",
-          "1",
-          "-noshell",
-          "-boot",
-          "no_dot_erlang",
-          "-kernel",
-          "error_logger",
-          "silent",
-          "-pa",
-          daemon,
-          "-pa",
-          core,
-          "-pa",
-          exqlite,
-          "-pa",
-          jason,
-          "-pa",
-          elixir,
-          "-s",
-          "Elixir.SwarmCode.Daemon.Platform.DirectoryBroker",
-          "main"
-        ]
+        release_boot_arguments() ++
+          [
+            "+S",
+            "1:1",
+            "+A",
+            "1",
+            "+SDio",
+            "1",
+            "+SDcpu",
+            "1",
+            "-noshell",
+            "-boot",
+            boot_file(),
+            "-kernel",
+            "error_logger",
+            "silent",
+            "-pa",
+            daemon,
+            "-pa",
+            core,
+            "-pa",
+            exqlite,
+            "-pa",
+            jason,
+            "-pa",
+            elixir,
+            "-s",
+            "Elixir.SwarmCode.Daemon.Platform.DirectoryBroker",
+            "main"
+          ]
 
       {:ok, "/bin/sh", ["-c", "umask 077; exec \"$@\"", "directory-broker", erl | erl_arguments]}
     else
@@ -822,6 +824,52 @@ defmodule SwarmCode.Daemon.Platform.DirectoryHelper do
 
       _other ->
         {:error, :missing_application_ebin}
+    end
+  end
+
+  defp boot_file do
+    case {System.get_env("RELEASE_ROOT"), System.get_env("RELEASE_VSN")} do
+      {root, version} when is_binary(root) and is_binary(version) ->
+        Path.join([root, "releases", version, "start_clean"])
+
+      _ ->
+        "no_dot_erlang"
+    end
+  end
+
+  defp release_environment do
+    base =
+      for name <- ~w(RELEASE_ROOT RELEASE_VSN),
+          value = System.get_env(name),
+          is_binary(value),
+          do: {String.to_charlist(name), String.to_charlist(value)}
+
+    case System.get_env("RELEASE_ROOT") do
+      root when is_binary(root) ->
+        [{~c"RELEASE_LIB", String.to_charlist(Path.join(root, "lib"))} | base]
+
+      _ ->
+        base
+    end
+  end
+
+  defp release_boot_arguments do
+    case {System.get_env("RELEASE_ROOT"), System.get_env("RELEASE_VSN")} do
+      {root, version} when is_binary(root) and is_binary(version) ->
+        [
+          "-boot_var",
+          "RELEASE_LIB",
+          Path.join(root, "lib"),
+          "-boot_var",
+          "RELEASE_ROOT",
+          root,
+          "-boot_var",
+          "RELEASE_VSN",
+          version
+        ]
+
+      _ ->
+        []
     end
   end
 

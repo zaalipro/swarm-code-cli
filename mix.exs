@@ -8,6 +8,17 @@ defmodule SwarmCodeCLI.MixProject do
       elixir: "~> 1.18.4",
       start_permanent: Mix.env() == :prod,
       deps: [],
+      releases: [
+        swarm_code_cli: [
+          applications: [
+            swarm_code_core: :permanent,
+            swarm_code_daemon: :permanent,
+            swarm_code_cli: :permanent
+          ],
+          overlays: ["rel/overlays"],
+          steps: [:assemble]
+        ]
+      ],
       aliases: aliases()
     ]
   end

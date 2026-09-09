@@ -2,7 +2,7 @@ defmodule SwarmCode.Daemon.CrossAppLease do
   @moduledoc false
   use GenServer
 
-  alias Exqlite.{DirectoryScope, GuardedLease}
+  alias Exqlite.{DatabaseBinding, DirectoryScope, GuardedLease}
   alias SwarmCode.Daemon.CrossAppLease.OwnerRecord
   alias SwarmCode.Daemon.Files.AtomicReplace
   alias SwarmCode.Daemon.Platform.{PathSet, PhysicalBootPaths, ProcessIdentity}
@@ -54,6 +54,39 @@ defmodule SwarmCode.Daemon.CrossAppLease do
   @spec assert_held(GenServer.server()) :: :ok | {:error, StartupError.t()}
   def assert_held(server), do: GenServer.call(server, :assert_held)
 
+  def seal_binding(server, binding), do: GenServer.call(server, {:seal_binding, binding}, 15_000)
+
+  def create_binding(server, basename),
+    do: GenServer.call(server, {:create_binding, basename}, 15_000)
+
+  def consume(server, capability, size), do: GenServer.call(server, {:consume, capability, size})
+  def admit_repo(server, generation), do: GenServer.call(server, {:admit_repo, generation})
+  def close_binding(server), do: GenServer.call(server, :close_binding)
+  def binding_status(server), do: GenServer.call(server, :binding_status)
+
+  def verify_promoted(server, generation, decision),
+    do: GenServer.call(server, {:verify_promoted, generation, decision}, 15_000)
+
+  def configure_connection(options, server, generation) do
+    slot = Keyword.fetch!(options, :pool_index)
+
+    case GenServer.call(server, {:authorize_slot, generation, slot}) do
+      {:ok, ticket} ->
+        options
+        |> Keyword.put(:database_binding, ticket)
+        |> Keyword.put(
+          :database_binding_ready,
+          {__MODULE__, :connection_ready, [server, generation, slot]}
+        )
+
+      _ ->
+        raise "guarded database connection refused"
+    end
+  end
+
+  def connection_ready(server, generation, slot, pid, db) when pid == self(),
+    do: GenServer.call(server, {:connection_ready, generation, slot, db})
+
   @impl true
   def init(opts) do
     case protected(fn -> prepare_owner(opts) end) do
@@ -77,6 +110,14 @@ defmodule SwarmCode.Daemon.CrossAppLease do
         runtime_dir: nil,
         data_dir: nil,
         lease: nil,
+        binding: nil,
+        capability: nil,
+        generation: nil,
+        repo: nil,
+        pool_size: 0,
+        slots: %{},
+        coordinator_monitor: nil,
+        coordinator: elem(opts[:startup_reply], 0),
         paths: opts[:paths],
         physical: physical,
         uid: opts[:identity].uid,
@@ -134,6 +175,228 @@ defmodule SwarmCode.Daemon.CrossAppLease do
   @impl true
   def handle_call(:owner, _from, state), do: {:reply, state.record, state}
 
+  def handle_call(
+        {:seal_binding, admission},
+        {caller, _},
+        %{coordinator: caller, binding: nil, capability: nil} = state
+      ) do
+    result =
+      protected(fn ->
+        with :ok <- verify_physical(state),
+             :ok <- GuardedLease.assert_held(state.lease),
+             :ok <-
+               SwarmCode.Daemon.Schema.Gate.verify_binding(
+                 state.paths.database,
+                 admission,
+                 state.uid
+               ),
+             {:regular, device, _minor, inode, uid} <- admission.identity,
+             true <- uid == state.uid and Path.basename(state.paths.database) == "swarm_code.db" do
+          DatabaseBinding.acquire(state.lease, {device, inode, uid}, "swarm_code.db")
+        end
+      end)
+
+    case result do
+      {:ok, binding} ->
+        capability = make_ref()
+        monitor = Process.monitor(caller)
+        Process.unlink(caller)
+
+        {:reply, {:ok, capability},
+         %{
+           state
+           | binding: binding,
+             capability: capability,
+             phase: :probed,
+             coordinator_monitor: monitor
+         }}
+
+      _ ->
+        {:reply, {:error, :database_binding_changed}, state}
+    end
+  end
+
+  def handle_call({:consume, capability, size}, {caller, _}, state) do
+    if caller == state.coordinator and state.phase == :probed and
+         is_reference(capability) and capability == state.capability and size in 1..8 do
+      generation = make_ref()
+
+      {:reply, {:ok, generation},
+       %{state | capability: nil, generation: generation, pool_size: size, phase: :starting_repo}}
+    else
+      {:reply, {:error, :invalid_ready_capability}, state}
+    end
+  end
+
+  def handle_call({:admit_repo, generation}, {caller, _}, state) do
+    if state.phase == :starting_repo and state.repo == nil and generation == state.generation and
+         linked_ancestor?(caller, state.coordinator) do
+      opts = [
+        name: nil,
+        log: false,
+        pool_size: state.pool_size,
+        pool_count: 1,
+        journal_mode: :wal,
+        temp_store: :memory,
+        synchronous: :full,
+        foreign_keys: :on,
+        busy_timeout: 2_000,
+        timeout: 5_000,
+        queue_target: 50,
+        idle_interval: 1_000,
+        configure: {__MODULE__, :configure_connection, [self(), generation]},
+        database_binding: :requires_slot_authorization,
+        telemetry_prefix: [:swarm_code, :guarded_repo]
+      ]
+
+      {:reply, {:ok, opts}, %{state | repo: caller}}
+    else
+      {:reply, {:error, :invalid_ready_capability}, state}
+    end
+  end
+
+  def handle_call({:authorize_slot, generation, slot}, {caller, _}, state) do
+    existing = state.slots[slot]
+    replaceable = existing == nil or existing.pid == caller or not Process.alive?(existing.pid)
+
+    if state.phase in [:starting_repo, :live] and generation == state.generation and
+         is_integer(slot) and slot in 1..state.pool_size and replaceable and
+         connection_member?(caller, state.repo, slot) do
+      case protected(fn ->
+             with :ok <- verify_physical(state),
+                  :ok <- DatabaseBinding.assert_held(state.binding),
+                  do: DatabaseBinding.authorize(state.binding, caller)
+           end) do
+        {:ok, ticket} ->
+          entry = %{pid: caller, ready: false, db: nil}
+          {:reply, {:ok, ticket}, %{state | slots: Map.put(state.slots, slot, entry)}}
+
+        _ ->
+          fence_reply(state)
+      end
+    else
+      {:reply, {:error, :invalid_connection_member}, state}
+    end
+  end
+
+  def handle_call({:connection_ready, generation, slot, db}, {caller, _}, state) do
+    if state.phase in [:starting_repo, :live] and generation == state.generation and
+         match?(%{pid: ^caller, ready: false}, state.slots[slot]) and
+         connection_member?(caller, state.repo, slot) do
+      case protected(fn ->
+             with :ok <- DatabaseBinding.assert_connection(db),
+                  do: DatabaseBinding.assert_held(state.binding)
+           end) do
+        :ok ->
+          slots = Map.put(state.slots, slot, %{pid: caller, ready: true, db: db})
+
+          ready =
+            map_size(slots) == state.pool_size and
+              Enum.all?(slots, fn {_, item} -> item.ready end)
+
+          if ready, do: send(state.coordinator, {:guarded_pool_ready, self(), generation})
+          {:reply, :ok, %{state | slots: slots, phase: if(ready, do: :live, else: state.phase)}}
+
+        _ ->
+          fence_reply(state)
+      end
+    else
+      {:reply, {:error, :invalid_connection_member}, state}
+    end
+  end
+
+  def handle_call(
+        {:verify_promoted, generation,
+         %SwarmCode.Daemon.Schema.Gate.Decision{status: :ready, pending: []} = decision},
+        {caller, _},
+        state
+      ) do
+    if caller == state.coordinator and generation == state.generation and state.phase == :live do
+      result =
+        protected(fn ->
+          with :ok <- DatabaseBinding.assert_held(state.binding),
+               :ok <-
+                 SwarmCode.Daemon.Schema.Gate.verify_binding(
+                   state.paths.database,
+                   decision.binding,
+                   state.uid
+                 ),
+               do: DatabaseBinding.assert_held(state.binding)
+        end)
+
+      {:reply, result, state}
+    else
+      {:reply, {:error, :database_binding_changed}, state}
+    end
+  end
+
+  def handle_call({:verify_promoted, _, _}, _from, state),
+    do: {:reply, {:error, :database_binding_changed}, state}
+
+  def handle_call(:binding_status, _from, state) do
+    ready = Enum.count(state.slots, fn {_, slot} -> slot.ready and Process.alive?(slot.pid) end)
+    {:reply, %{phase: state.phase, initialized_slots: ready}, state}
+  end
+
+  def handle_call(:close_binding, {caller, _}, %{coordinator: caller} = state) do
+    case protected(fn -> close_native_binding(state) end) do
+      :ok -> {:reply, :ok, %{state | binding: nil, phase: :binding_closed, slots: %{}}}
+      _ -> {:reply, {:error, :cleanup_pending}, %{state | phase: :closing}}
+    end
+  end
+
+  def handle_call({:seal_binding, _}, _from, state),
+    do: {:reply, {:error, :invalid_ready_capability}, state}
+
+  def handle_call(
+        {:create_binding, basename},
+        {caller, _},
+        %{coordinator: caller, binding: nil, capability: nil} = state
+      )
+      when basename == "swarm_code.db" do
+    result =
+      protected(fn ->
+        with true <- Path.basename(state.paths.database) == basename,
+             :ok <-
+               SwarmCode.Daemon.Platform.DatabaseFingerprint.verify_path_or_absent(
+                 state.paths.database,
+                 state.record.database_fingerprint
+               ),
+             :ok <- verify_physical(state) do
+          DatabaseBinding.create(state.lease, basename)
+        end
+      end)
+
+    case result do
+      {:ok, binding, identity} ->
+        capability = make_ref()
+        monitor = Process.monitor(caller)
+        Process.unlink(caller)
+
+        state = %{
+          state
+          | binding: binding,
+            capability: capability,
+            coordinator_monitor: monitor,
+            phase: :probed
+        }
+
+        case refresh_created_fingerprint(state) do
+          {:ok, next} -> {:reply, {:ok, capability, identity}, next}
+          _ -> {:reply, {:error, :database_binding_changed}, %{state | phase: :failed}}
+        end
+
+      error ->
+        {:reply, error, state}
+    end
+  end
+
+  def handle_call({:create_binding, _}, _from, state),
+    do: {:reply, {:error, :invalid_ready_capability}, state}
+
+  def handle_call(:close_binding, _from, state),
+    do: {:reply, {:error, :invalid_ready_capability}, state}
+
   @impl true
   def handle_call(:assert_held, _from, state) do
     case protected(fn ->
@@ -158,7 +421,102 @@ defmodule SwarmCode.Daemon.CrossAppLease do
     end
   end
 
+  defp refresh_created_fingerprint(state) do
+    with :ok <- DatabaseBinding.assert_held(state.binding),
+         {:ok, fingerprint} <-
+           SwarmCode.Daemon.Platform.DatabaseFingerprint.for_path(state.paths.database) do
+      record = %{state.record | database_fingerprint: fingerprint}
+
+      with :ok <-
+             AtomicReplace.write(
+               state.paths.owner_record,
+               [Jason.encode_to_iodata!(OwnerRecord.to_map(record)), "\n"],
+               mode: 0o600
+             ),
+           :ok <- DatabaseBinding.assert_held(state.binding) do
+        {:ok, %{state | record: record}}
+      end
+    end
+  end
+
   defp cleanup(state) do
+    case protected(fn -> close_native_binding(state) end) do
+      :ok -> cleanup_lease(state)
+      _ -> {:error, :native_cleanup_unconfirmed}
+    end
+  end
+
+  defp close_native_binding(%{binding: nil}), do: :ok
+
+  defp close_native_binding(state) do
+    if state.repo == nil or not Process.alive?(state.repo) do
+      Enum.each(state.slots, fn {_, slot} ->
+        if slot.db, do: Exqlite.Sqlite3.close(slot.db)
+      end)
+    end
+
+    with 0 <- DatabaseBinding.connections(state.binding), do: DatabaseBinding.close(state.binding)
+  end
+
+  defp fence_reply(state) do
+    send(state.coordinator, {:guarded_pool_failed, self()})
+    {:reply, {:error, :database_binding_changed}, %{state | phase: :failed}}
+  end
+
+  # DBConnection runs connection supervisors under its global watcher, not
+  # beneath Repo. Match the real supervisor child ID, owner pool and slot;
+  # reaching Repo through arbitrary process links is not membership proof.
+  defp connection_member?(pid, repo, slot) when is_pid(repo) do
+    with {:dictionary, dictionary} <- Process.info(pid, :dictionary),
+         [supervisor | _] when is_pid(supervisor) <- Keyword.get(dictionary, :"$ancestors"),
+         children <- Supervisor.which_children(supervisor),
+         {{Exqlite.Connection, pool, ^slot}, ^pid, :worker, _} <-
+           Enum.find(children, fn {_, child, _, _} -> child == pid end),
+         true <-
+           Enum.any?(Supervisor.which_children(repo), fn {_, child, _, _} -> child == pool end) do
+      true
+    else
+      _ -> false
+    end
+  catch
+    :exit, _ -> false
+  end
+
+  defp connection_member?(_, _, _), do: false
+
+  defp linked_ancestor?(pid, target) when is_pid(target) do
+    with {:dictionary, dictionary} <- Process.info(pid, :dictionary),
+         [^target | _] <- Keyword.get(dictionary, :"$ancestors"),
+         {:links, links} <- Process.info(pid, :links) do
+      target in links
+    else
+      _ -> false
+    end
+  end
+
+  defp linked_ancestor?(_, _), do: false
+
+  @impl true
+  def handle_info({:DOWN, ref, :process, _, _}, %{coordinator_monitor: ref} = state) do
+    if is_pid(state.repo), do: Process.exit(state.repo, :kill)
+    send(self(), :drain_binding)
+    {:noreply, %{state | phase: :closing}}
+  end
+
+  def handle_info(:drain_binding, state) do
+    case protected(fn -> close_native_binding(state) end) do
+      :ok ->
+        {:stop, :normal, %{state | binding: nil}}
+
+      _ ->
+        Process.send_after(self(), :drain_binding, 100)
+        {:noreply, state}
+    end
+  end
+
+  def handle_info(_, state), do: {:noreply, state}
+
+  defp cleanup_lease(state) do
     # Each operation is protected independently: publication/removal or a test
     # callback exception cannot skip either native close. Every result counts.
     record_result =

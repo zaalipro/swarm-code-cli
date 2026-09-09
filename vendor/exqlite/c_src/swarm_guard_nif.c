@@ -94,6 +94,7 @@ static void guard_connection_release(connection_t *conn) {
     resource->connection_live = 0;
     atomic_fetch_sub(&guard_live_connections, 1);
     enif_mutex_unlock(resource->mutex);
+    conn->binding_resource = NULL;
     conn->guard_resource = NULL;
     enif_release_resource(resource);
 }
@@ -126,6 +127,7 @@ static ERL_NIF_TERM guard_open_nif(ErlNifEnv *env, int argc, const ERL_NIF_TERM 
     conn->db = db;
     conn->mutex = enif_mutex_create("exqlite:connection");
     conn->interrupt_mutex = enif_mutex_create("exqlite:interrupt");
+    conn->binding_resource = NULL;
     conn->guard_resource = resource;
     enif_keep_resource(resource);
     resource->connection_live = 1;

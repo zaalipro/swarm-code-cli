@@ -1,9 +1,28 @@
 defmodule SwarmCodeCLI.UI.Projector.Composer do
   @moduledoc false
-  alias SwarmCodeCLI.UI.{Drafts, Editor, Intent, SafeText, State, Width}
+  alias SwarmCodeCLI.UI.{Drafts, Editor, Intent, SafeText, SlashPalette, State, Width}
   alias SwarmCodeCLI.UI.SafeText.Limits
   alias SwarmCodeCLI.UI.Scene.{Block, Cursor}
   alias SwarmCodeCLI.UI.Projector.{Density, Support}
+
+  def mode_label(state) do
+    workspace = Map.get(state.read_model.snapshots, :workspace)
+
+    case workspace && Map.get(workspace, :mode) do
+      :plan -> "Plan"
+      :swarm -> "Swarm"
+      :ultra -> "Ultra"
+      :workflow -> "Workflow"
+      :consensus -> "Consensus"
+      :research -> "Research"
+      _ -> "Build"
+    end
+  end
+
+  def label(state), do: "Composer · " <> mode_label(state)
+
+  def placeholder(state, width),
+    do: Density.safe("Type a message, or / for commands…", state, width)
 
   def draft(state) do
     case State.current_draft_key(state) do
@@ -53,9 +72,11 @@ defmodule SwarmCodeCLI.UI.Projector.Composer do
         Enum.all?(draft.attachments, &(&1.status == :ready)) and
           not match?({:invalid, _}, draft.staged_validation)
 
+      allowed_actions = if workspace, do: Map.get(workspace, :allowed_actions, []), else: []
+
       dispatch =
         for operation <- [:send, :queue],
-            workspace && operation in workspace.allowed_actions,
+            operation in allowed_actions,
             intent = {:dispatch, operation, text, target, refs},
             ready and Intent.valid?(intent),
             not Map.has_key?(state.drafts.pending, draft.key),
@@ -107,7 +128,9 @@ defmodule SwarmCodeCLI.UI.Projector.Composer do
 
     if draft do
       policy = state.capabilities.ambiguous_width
-      slice = Editor.visible_slice(draft.editor, rect.width, max(1, rect.height - 1), policy)
+      suggestions = SlashPalette.visible(state, min(4, max(0, rect.height - 1)))
+      editor_height = max(1, rect.height - length(suggestions))
+      slice = Editor.visible_slice(draft.editor, rect.width, max(1, editor_height - 1), policy)
       limits = %{Limits.composer_viewport() | ambiguous_width: policy}
       safe = Density.external(slice.text, limits)
       lines = safe |> SafeText.value() |> Width.wrap(rect.width, policy)
@@ -122,12 +145,12 @@ defmodule SwarmCodeCLI.UI.Projector.Composer do
 
       prefix_lines = Width.wrap(before, rect.width, policy)
       caret_row = max(0, length(prefix_lines) - 1)
-      first = max(0, caret_row - max(0, rect.height - 1))
+      first = max(0, caret_row - max(0, editor_height - 1))
 
       visible =
         lines
         |> Enum.drop(first)
-        |> Enum.take(rect.height)
+        |> Enum.take(editor_height)
         |> Enum.join("\n")
         |> Density.external(limits)
 
@@ -135,7 +158,7 @@ defmodule SwarmCodeCLI.UI.Projector.Composer do
         if state.focus == "composer" and state.layers == [] do
           %Cursor{
             x: rect.x + min(rect.width - 1, Width.cells(List.last(prefix_lines) || "", policy)),
-            y: rect.y + min(rect.height - 1, caret_row - first),
+            y: rect.y + min(editor_height - 1, caret_row - first),
             shape: :bar,
             visible?: state.terminal_focus == :gained
           }
@@ -144,16 +167,25 @@ defmodule SwarmCodeCLI.UI.Projector.Composer do
       {[
          %Block.Composer{
            text: visible,
-           placeholder: Density.safe(SafeText.chrome(:composer), state, rect.width)
+           placeholder: placeholder(state, rect.width)
          }
-       ], cursor}
+       ] ++ palette_blocks(suggestions, state, rect.width), cursor}
     else
       {[
          %Block.Composer{
            text: SafeText.chrome(:empty),
-           placeholder: Density.safe(SafeText.chrome(:composer), state, rect.width)
-         }
+           placeholder: placeholder(state, rect.width)
+         },
+         Support.text("Enter send  ·  Ctrl-O newline  ·  Ctrl-K features", state, rect.width)
        ], nil}
     end
+  end
+
+  defp palette_blocks(suggestions, state, width) do
+    Enum.map(suggestions, fn item ->
+      marker = if item.selected?, do: "> ", else: "  "
+      hint = if item.selected?, do: " [Tab]", else: ""
+      Support.text(marker <> "/" <> item.name <> hint <> "  " <> item.desc, state, width)
+    end)
   end
 end

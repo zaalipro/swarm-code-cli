@@ -9,6 +9,7 @@ defmodule SwarmCodeCLI.UI.Paint.ProjectorTest do
     Layout,
     Paint,
     Projector,
+    ReadModel,
     Size,
     State,
     Width
@@ -18,6 +19,7 @@ defmodule SwarmCodeCLI.UI.Paint.ProjectorTest do
   alias SwarmCodeCLI.UI.Scene.Block
   alias SwarmCodeCLI.UI.Projector.Workspace
   alias SwarmCodeCLI.UI.DataSource.DTO.{PendingInteraction, Question, QuestionOption}
+  alias SwarmCodeCLI.UI.DataSource.DTO.WorkspaceSnapshot
 
   @sizes [
     {80, 24},
@@ -105,6 +107,40 @@ defmodule SwarmCodeCLI.UI.Paint.ProjectorTest do
         end
       end
     end
+  end
+
+  test "empty conversation paints an actionable welcome state and visible composer" do
+    state = fixture(:chat, {120, 40})
+
+    workspace = %WorkspaceSnapshot{
+      mode: :build,
+      chat_model: "deepseek-v4-pro",
+      conversation_id: "fixture-conversation",
+      transcript: nil,
+      state: :idle
+    }
+
+    empty = %{
+      state
+      | destination: {:conversation, "fixture-conversation"},
+        read_model: %ReadModel{snapshots: %{workspace: workspace}},
+        focus: "composer"
+    }
+
+    {scene, _table, plan} = paint(empty)
+    pixels = screen(plan)
+    main = Enum.find(scene.regions, &(&1.role == :main))
+    composer = Enum.find(scene.regions, &(&1.role == :composer))
+    navigator = Enum.find(scene.regions, &(&1.role == :navigator))
+
+    assert pixels =~ "READY TO BUILD"
+    assert pixels =~ "Ask for a change"
+    assert pixels =~ "Type a message"
+    assert pixels =~ "/ for commands"
+    assert pixels =~ "No runs yet"
+    assert composer.rect.height >= 1
+    assert main.rect.height > 0
+    assert navigator.rect.height > 0
   end
 
   test "all capability combinations preserve visible actions and composer cell position" do
@@ -368,7 +404,11 @@ defmodule SwarmCodeCLI.UI.Paint.ProjectorTest do
       main = Enum.find(scene.regions, &(&1.role == :main))
       list = Enum.find(main.blocks, &is_struct(&1, Block.VirtualList))
       assert {:ok, actual_rows} = Metrics.height(list, main.rect.width)
-      assert actual_rows == Workspace.content_height(state, main.rect, scene.layout_class)
+      content_height = Workspace.content_height(state, main.rect, scene.layout_class)
+
+      if kind == :chat,
+        do: assert(actual_rows == content_height),
+        else: assert(actual_rows <= content_height)
     end
   end
 

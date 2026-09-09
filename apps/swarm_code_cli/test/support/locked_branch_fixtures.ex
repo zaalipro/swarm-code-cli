@@ -11,10 +11,8 @@ defmodule SwarmCodeCLI.Test.LockedBranchFixtures do
     third_party/tui-license-texts rust-toolchain-tui-sanitizer.toml
     deps/ex_ratatui deps/rustler deps/rustler_precompiled
     rel/vm.args.eex rel/overlays/bin/swarm-code-demo
-    apps/swarm_code_cli/lib/swarm_code_cli/application.ex
     apps/swarm_code_cli/lib/swarm_code_cli/demo/supervisor.ex
     apps/swarm_code_cli/lib/swarm_code_cli/demo/main.ex
-    apps/swarm_code_cli/lib/swarm_code_cli/release
     apps/swarm_code_cli/lib/swarm_code_cli/ui/renderer/ex_ratatui_013
     apps/swarm_code_cli/lib/swarm_code_cli/ui/renderer/cell.ex
     apps/swarm_code_cli/lib/swarm_code_cli/ui/renderer/cell_frame.ex
@@ -174,6 +172,10 @@ defmodule SwarmCodeCLI.Test.LockedBranchFixtures do
         # library scope, and we never follow them. Build roots, app roots, release
         # paths and CLI/native links remain findings.
         case Path.split(path) do
+          ["_build", _, "lib", app, "include"]
+          when app not in ["swarm_code_cli", "ex_ratatui", "rustler", "rustler_precompiled"] ->
+            false
+
           ["_build", _, "lib", app, leaf] when leaf in ["priv", "src"] ->
             app in ["swarm_code_cli", "ex_ratatui", "rustler", "rustler_precompiled"]
 
