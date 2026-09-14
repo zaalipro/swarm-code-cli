@@ -251,7 +251,11 @@ defmodule SwarmCodeCLI.UI.ProjectorTest do
     assert list.total_count == 10_000
     assert list.first_index == 9989
     assert length(list.items) <= main.rect.height
-    assert hd(texts(list)) in [" ", "row 9990"]
+    # The anchored item renders its editorial turn rows first: a blank separator, then the role
+    # label, then the text. Pin the content sequence exactly (ignoring the blank and the row
+    # separators) so the window is still proven to start at the anchored item.
+    content = texts(list) |> Enum.reject(&(&1 in [" ", "\n"])) |> Enum.take(2)
+    assert content == ["A assistant", "row 9990"]
   end
 
   test "page errors expose scoped retry diagnostics while retaining content" do

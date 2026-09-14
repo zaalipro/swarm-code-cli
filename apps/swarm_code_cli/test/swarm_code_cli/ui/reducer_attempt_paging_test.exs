@@ -1,6 +1,6 @@
 defmodule SwarmCodeCLI.UI.ReducerAttemptPagingTest do
   use ExUnit.Case, async: true
-  alias SwarmCodeCLI.UI.{ReadModel, ChunkDeque, Reducer, Init, Size, Capabilities}
+  alias SwarmCodeCLI.UI.{ReadModel, ChunkDeque, Reducer, Init, ScrollMetrics, Size, Capabilities}
   alias SwarmCodeCLI.UI.DataSource.{DTO, Delta, Delivery, AdmissionError}
 
   def model do
@@ -196,19 +196,31 @@ defmodule SwarmCodeCLI.UI.ReducerAttemptPagingTest do
     region = Enum.find(scene.regions, &(&1.id == "main"))
     visible = Enum.find(region.blocks, &is_struct(&1, SwarmCodeCLI.UI.Scene.Block.VirtualList))
     assert length(visible.items) > 0
-    # PageDown advances by row count; with editorial turn labels (+2 rows per item),
-    # the anchor may land at a different item than visible_count would suggest.
-    # Assert that PageDown moves forward (anchor > first visible item).
+
+    # PageDown advances by exactly one viewport of RENDERED rows: no skipped row and no
+    # repeated row. Editorial turn labels make each item 3 rows here (blank + role label +
+    # text), so the landing point is derived from real measured heights rather than from the
+    # visible item count, which no longer equals the row count.
+    height = ScrollMetrics.content_height(first, :main)
+
+    {expected_id, expected_offset} =
+      Enum.reduce_while(rows, height, fn row, left ->
+        rendered = ScrollMetrics.height(first, :main, row.id)
+        if left < rendered, do: {:halt, {row.id, left}}, else: {:cont, left - rendered}
+      end)
+
     {next, []} = Reducer.update(first, {:scroll, "main", {:page, 1}})
-    anchor_id = elem(next.scrolls.main.anchor, 0)
-    anchor_idx = Enum.find_index(rows, &(&1.id == anchor_id))
-    assert anchor_idx > 0, "PageDown should advance past the first item"
+    assert next.scrolls.main.anchor == {expected_id, expected_offset, :top}
     {scene, _} = SwarmCodeCLI.UI.Projector.project(next)
     region = Enum.find(scene.regions, &(&1.id == "main"))
 
     next_window =
       Enum.find(region.blocks, &is_struct(&1, SwarmCodeCLI.UI.Scene.Block.VirtualList))
 
-    assert next_window.first_index > 0
+    assert next_window.first_index == Enum.find_index(rows, &(&1.id == expected_id))
+
+    # PageUp is the exact inverse, back to the very first row.
+    {back, []} = Reducer.update(next, {:scroll, "main", {:page, -1}})
+    assert back.scrolls.main.anchor == {"row1", 0, :top}
   end
 end
