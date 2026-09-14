@@ -11,7 +11,7 @@ defmodule SwarmCodeCLI.UI.CommandFeedbackTest do
 
     {scene, _} = Projector.project(shown)
     assert scene.overlay != nil
-    assert SafeText.value(scene.overlay.title) == "Conversation goal"
+    assert SafeText.value(scene.overlay.title) == " Conversation goal "
 
     assert Enum.any?(
              scene.overlay.blocks,
