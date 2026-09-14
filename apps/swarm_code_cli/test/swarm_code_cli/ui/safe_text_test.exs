@@ -318,4 +318,41 @@ defmodule SwarmCodeCLI.UI.SafeTextTest do
              )
     end
   end
+
+  test "every catalogue glyph has a one-cell ASCII twin and Support.glyph picks it" do
+    alias SwarmCodeCLI.UI.Width
+    alias SwarmCodeCLI.UI.Projector.Support
+
+    pairs = Support.glyphs()
+    assert map_size(pairs) > 0
+
+    for {unicode_token, ascii_token} <- pairs do
+      unicode = SafeText.value(SafeText.chrome(unicode_token))
+      ascii = SafeText.value(SafeText.chrome(ascii_token))
+
+      # A chrome glyph that is two cells under :wide would overflow its column.
+      for policy <- [:narrow, :wide] do
+        assert Width.cells(unicode, policy) == 1,
+               "#{unicode_token} (#{unicode}) is not 1 cell under #{policy}"
+
+        assert Width.cells(ascii, policy) == 1,
+               "#{ascii_token} (#{ascii}) is not 1 cell under #{policy}"
+      end
+
+      assert ascii == for(<<c <- ascii>>, c < 128, into: "", do: <<c>>),
+             "#{ascii_token} fallback is not pure ASCII"
+
+      assert SafeText.value(Support.glyph(unicode_token, %{capabilities: %{ascii?: true}})) ==
+               ascii
+
+      assert SafeText.value(Support.glyph(unicode_token, %{capabilities: %{ascii?: false}})) ==
+               unicode
+    end
+
+    # Tokens without a twin pass through unchanged in both modes.
+    for mode <- [true, false] do
+      assert SafeText.value(Support.glyph(:workspace_label, %{capabilities: %{ascii?: mode}})) ==
+               "WORKSPACE"
+    end
+  end
 end

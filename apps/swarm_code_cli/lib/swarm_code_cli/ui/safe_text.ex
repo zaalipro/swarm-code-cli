@@ -169,6 +169,15 @@ defmodule SwarmCodeCLI.UI.SafeText do
           | :plan_decline
           | :plan_done
           | :plan_steps_label
+          | :glyph_selected_ascii
+          | :glyph_inactive_ascii
+          | :glyph_workflows_ascii
+          | :glyph_research_ascii
+          | :glyph_memory_ascii
+          | :glyph_changes_ascii
+          | :composer_gutter_ascii
+          | :pipeline_arrow_ascii
+          | :plan_done_ascii
 
   def chrome(:full_detail), do: %__MODULE__{token: :full_detail}
   def chrome(:next_page), do: %__MODULE__{token: :next_page}
@@ -312,6 +321,15 @@ defmodule SwarmCodeCLI.UI.SafeText do
   def chrome(:plan_decline), do: %__MODULE__{token: :plan_decline}
   def chrome(:plan_done), do: %__MODULE__{token: :plan_done}
   def chrome(:plan_steps_label), do: %__MODULE__{token: :plan_steps_label}
+  def chrome(:glyph_selected_ascii), do: %__MODULE__{token: :glyph_selected_ascii}
+  def chrome(:glyph_inactive_ascii), do: %__MODULE__{token: :glyph_inactive_ascii}
+  def chrome(:glyph_workflows_ascii), do: %__MODULE__{token: :glyph_workflows_ascii}
+  def chrome(:glyph_research_ascii), do: %__MODULE__{token: :glyph_research_ascii}
+  def chrome(:glyph_memory_ascii), do: %__MODULE__{token: :glyph_memory_ascii}
+  def chrome(:glyph_changes_ascii), do: %__MODULE__{token: :glyph_changes_ascii}
+  def chrome(:composer_gutter_ascii), do: %__MODULE__{token: :composer_gutter_ascii}
+  def chrome(:pipeline_arrow_ascii), do: %__MODULE__{token: :pipeline_arrow_ascii}
+  def chrome(:plan_done_ascii), do: %__MODULE__{token: :plan_done_ascii}
 
   def value(%{__struct__: __MODULE__, token: :full_detail} = text) when map_size(text) == 2,
     do: "Full text"
@@ -726,6 +744,41 @@ defmodule SwarmCodeCLI.UI.SafeText do
 
   def value(%{__struct__: __MODULE__, token: :plan_steps_label} = text) when map_size(text) == 2,
     do: "PLAN STEPS"
+
+  def value(%{__struct__: __MODULE__, token: :glyph_selected_ascii} = text)
+      when map_size(text) == 2,
+      do: "*"
+
+  def value(%{__struct__: __MODULE__, token: :glyph_inactive_ascii} = text)
+      when map_size(text) == 2,
+      do: "o"
+
+  def value(%{__struct__: __MODULE__, token: :glyph_workflows_ascii} = text)
+      when map_size(text) == 2,
+      do: "#"
+
+  def value(%{__struct__: __MODULE__, token: :glyph_research_ascii} = text)
+      when map_size(text) == 2,
+      do: "^"
+
+  def value(%{__struct__: __MODULE__, token: :glyph_memory_ascii} = text)
+      when map_size(text) == 2,
+      do: "@"
+
+  def value(%{__struct__: __MODULE__, token: :glyph_changes_ascii} = text)
+      when map_size(text) == 2,
+      do: "+"
+
+  def value(%{__struct__: __MODULE__, token: :composer_gutter_ascii} = text)
+      when map_size(text) == 2,
+      do: ">"
+
+  def value(%{__struct__: __MODULE__, token: :pipeline_arrow_ascii} = text)
+      when map_size(text) == 2,
+      do: ">"
+
+  def value(%{__struct__: __MODULE__, token: :plan_done_ascii} = text) when map_size(text) == 2,
+    do: "*"
 
   def value(%{__struct__: __MODULE__, token: {:external, binary}} = text)
       when map_size(text) == 2 and is_binary(binary) do

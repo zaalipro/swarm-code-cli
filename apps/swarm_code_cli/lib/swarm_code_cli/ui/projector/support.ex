@@ -27,6 +27,29 @@ defmodule SwarmCodeCLI.UI.Projector.Support do
       ]
     }
 
+  # Chrome glyphs rendered as literal row text (not as a Span style prefix) are not
+  # reached by Paint.Blocks.prefix_value/2, so the ASCII form is chosen here, where
+  # capabilities are known. Both members of each pair are catalogue chrome.
+  @ascii_glyphs %{
+    glyph_selected: :glyph_selected_ascii,
+    glyph_inactive: :glyph_inactive_ascii,
+    glyph_workflows: :glyph_workflows_ascii,
+    glyph_research: :glyph_research_ascii,
+    glyph_memory: :glyph_memory_ascii,
+    glyph_changes: :glyph_changes_ascii,
+    composer_gutter: :composer_gutter_ascii,
+    pipeline_arrow: :pipeline_arrow_ascii,
+    plan_done: :plan_done_ascii
+  }
+
+  @doc "Catalogue glyph for the terminal's capabilities; always one cell in both width policies."
+  def glyph(token, %{capabilities: %{ascii?: true}}) when is_map_key(@ascii_glyphs, token),
+    do: SafeText.chrome(Map.fetch!(@ascii_glyphs, token))
+
+  def glyph(token, _state), do: SafeText.chrome(token)
+
+  def glyphs, do: @ascii_glyphs
+
   def action(label, target), do: {:projector_action, label, ActionTarget.validate!(target)}
 
   def action(label, target, style),
