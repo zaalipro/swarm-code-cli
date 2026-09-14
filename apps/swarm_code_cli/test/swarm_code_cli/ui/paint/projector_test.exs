@@ -576,8 +576,12 @@ defmodule SwarmCodeCLI.UI.Paint.ProjectorTest do
     {scene, _, plan} = paint(state)
     main = Enum.find(scene.regions, &(&1.role == :main))
     list = Enum.find(main.blocks, &is_struct(&1, Block.VirtualList))
-    {:ok, list_height} = Metrics.height(list, main.rect.width)
-    assert list_height <= main.rect.height
+    # The painted list must occupy EXACTLY the rows the scroll metric predicts. That equality is
+    # what keeps anchors, follow and paging exact, so assert it rather than a bound.
+    assert Metrics.height(list, main.rect.width) ==
+             {:ok, ScrollMetrics.height(state, :main, item.id)}
+
+    assert {:ok, 10} = Metrics.height(list, main.rect.width)
     chrome = Enum.take_while(main.blocks, &(not is_struct(&1, Block.VirtualList)))
     assert {:ok, offset} = Metrics.height(chrome, main.rect.width)
 

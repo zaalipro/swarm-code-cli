@@ -184,7 +184,7 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
         [Support.styled("GOAL PROGRESS", :run_goal, state, width), progress(run, state, width)]
 
       run.kind == :ultra ->
-        [Support.styled("PLAN ❯ BUILD ❯ VERIFY", :run_ultra, state, width)]
+        [Support.styled(pipeline_stages(state), :run_ultra, state, width)]
 
       run.kind == :workflow ->
         [Support.styled("WORKFLOW RUN  ·  inputs and stages", :run_workflow, state, width)]
@@ -633,4 +633,11 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
   defp kind(:consensus), do: :consensus_judge
   defp kind(kind), do: kind
   defp opaque(id), do: :crypto.hash(:sha256, id) |> Base.url_encode64(padding: false)
+
+  # The stage arrow is catalogue chrome, so it must go through Support.glyph/2 to get its
+  # one-cell ASCII twin; a literal ❯ would survive into ASCII mode (NOTES_2 #36).
+  defp pipeline_stages(state) do
+    arrow = SafeText.value(Support.glyph(:pipeline_arrow, state))
+    "PLAN " <> arrow <> " BUILD " <> arrow <> " VERIFY"
+  end
 end

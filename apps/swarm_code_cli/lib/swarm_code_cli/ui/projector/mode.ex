@@ -1,5 +1,6 @@
 defmodule SwarmCodeCLI.UI.Projector.Mode do
   @moduledoc "Mode specific projections from bounded read model facts."
+  alias SwarmCodeCLI.UI.SafeText
   alias SwarmCodeCLI.UI.Scene.Block
   alias SwarmCodeCLI.UI.Projector.Support
 
@@ -90,7 +91,7 @@ defmodule SwarmCodeCLI.UI.Projector.Mode do
     status = to_string(run.state)
 
     [
-      Support.styled("PLAN ❯ BUILD ❯ VERIFY", :run_ultra, state, width),
+      Support.styled(pipeline_stages(state), :run_ultra, state, width),
       Support.text("Run status · " <> status, state, width),
       Support.text(
         if(rows == [],
@@ -161,4 +162,11 @@ defmodule SwarmCodeCLI.UI.Projector.Mode do
   defp role(%{role: :tool}), do: :accent
   defp role(%{role: :assistant}), do: :run_assistant
   defp role(_), do: :body
+
+  # The stage arrow is catalogue chrome, so it must go through Support.glyph/2 to get its
+  # one-cell ASCII twin; a literal ❯ would survive into ASCII mode (NOTES_2 #36).
+  defp pipeline_stages(state) do
+    arrow = SafeText.value(Support.glyph(:pipeline_arrow, state))
+    "PLAN " <> arrow <> " BUILD " <> arrow <> " VERIFY"
+  end
 end
