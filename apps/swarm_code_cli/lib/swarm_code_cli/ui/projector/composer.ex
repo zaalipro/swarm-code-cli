@@ -125,15 +125,20 @@ defmodule SwarmCodeCLI.UI.Projector.Composer do
 
   def project(state, rect) do
     draft = draft(state)
+    # 2-cell left gutter: ▐ (accent when focused, text_faint otherwise; ASCII > )
+    gutter_value = SafeText.value(Support.glyph(:composer_gutter, state))
+    gutter_prefix = gutter_value <> " "
+    indent = "  "
+    editor_width = max(1, rect.width - 2)
 
     if draft do
       policy = state.capabilities.ambiguous_width
       suggestions = SlashPalette.visible(state, min(4, max(0, rect.height - 1)))
       editor_height = max(1, rect.height - length(suggestions))
-      slice = Editor.visible_slice(draft.editor, rect.width, max(1, editor_height - 1), policy)
+      slice = Editor.visible_slice(draft.editor, editor_width, max(1, editor_height - 1), policy)
       limits = %{Limits.composer_viewport() | ambiguous_width: policy}
       safe = Density.external(slice.text, limits)
-      lines = safe |> SafeText.value() |> Width.wrap(rect.width, policy)
+      lines = safe |> SafeText.value() |> Width.wrap(editor_width, policy)
       # Keep the caret's source context visible after control escaping expands it.
       before =
         slice.text
@@ -143,21 +148,39 @@ defmodule SwarmCodeCLI.UI.Projector.Composer do
         |> Density.external(limits)
         |> SafeText.value()
 
-      prefix_lines = Width.wrap(before, rect.width, policy)
+      prefix_lines = Width.wrap(before, editor_width, policy)
       caret_row = max(0, length(prefix_lines) - 1)
       first = max(0, caret_row - max(0, editor_height - 1))
 
-      visible =
+      visible_lines =
         lines
         |> Enum.drop(first)
         |> Enum.take(editor_height)
-        |> Enum.join("\n")
-        |> Density.external(limits)
+
+      # Prepend gutter on first visible line, 2-space indent on subsequent lines.
+      # When the editor is empty, leave text empty so the placeholder (with gutter) shows.
+      visible =
+        if slice.text != "" do
+          prefixed =
+            case visible_lines do
+              [fl | rest] ->
+                [gutter_prefix <> fl | Enum.map(rest, &(indent <> &1))]
+
+              [] ->
+                []
+            end
+
+          Density.external(Enum.join(prefixed, "\n"), limits)
+        else
+          Density.external("", limits)
+        end
 
       cursor =
         if state.focus == "composer" and state.layers == [] do
           %Cursor{
-            x: rect.x + min(rect.width - 1, Width.cells(List.last(prefix_lines) || "", policy)),
+            x:
+              rect.x + 2 +
+                min(editor_width - 1, Width.cells(List.last(prefix_lines) || "", policy)),
             y: rect.y + min(editor_height - 1, caret_row - first),
             shape: :bar,
             visible?: state.terminal_focus == :gained
@@ -167,18 +190,23 @@ defmodule SwarmCodeCLI.UI.Projector.Composer do
       {[
          %Block.Composer{
            text: visible,
-           placeholder: placeholder(state, rect.width)
+           placeholder: gutter_placeholder(state, editor_width, gutter_prefix)
          }
        ] ++ palette_blocks(suggestions, state, rect.width), cursor}
     else
       {[
          %Block.Composer{
            text: SafeText.chrome(:empty),
-           placeholder: placeholder(state, rect.width)
+           placeholder: gutter_placeholder(state, editor_width, gutter_prefix)
          },
          Support.text("Enter send  ·  Ctrl-O newline  ·  Ctrl-K features", state, rect.width)
        ], nil}
     end
+  end
+
+  defp gutter_placeholder(state, editor_width, gutter_prefix) do
+    base = SafeText.value(placeholder(state, editor_width))
+    Density.safe(gutter_prefix <> base, state, editor_width + 2)
   end
 
   defp palette_blocks(suggestions, state, width) do

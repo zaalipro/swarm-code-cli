@@ -151,6 +151,35 @@ defmodule SwarmCodeCLI.UI.Fixtures do
       attempt_id: "attempt-fixture"
     }
 
+  @doc """
+  Returns a representative state augmented with a ShellSnapshot containing
+  non-zero counts and a connected Connection. The base representative/3 state
+  is unchanged; this function only adds the :shell snapshot slot.
+  """
+  @spec representative_with_shell(
+          :chat | :swarm | :consensus | :research,
+          Size.t(),
+          Capabilities.t()
+        ) ::
+          State.t()
+  def representative_with_shell(kind, size, capabilities) do
+    state = representative(kind, size, capabilities)
+
+    shell = %DTO.ShellSnapshot{
+      counts: %DTO.Counts{
+        running: 2,
+        waiting: 1,
+        paused: 0,
+        failed: 1,
+        done: 3,
+        unseen: 0
+      },
+      connection: %DTO.Connection{state: :connected, source_epoch: "fixture-epoch"}
+    }
+
+    put_in(state.read_model.snapshots[:shell], shell)
+  end
+
   defp title(:chat), do: "Streaming conversation"
   defp title(:swarm), do: "Swarm · independent agent lanes"
   defp title(:consensus), do: "Consensus · docket and ledger"

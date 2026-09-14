@@ -74,7 +74,7 @@ defmodule SwarmCodeCLI.UI.ResearchFormTest do
              Keymap.resolve(Input.key(:left), state, %{})
 
     {scene, _} = Projector.project(state)
-    assert SafeText.value(scene.overlay.title) == "New research"
+    assert SafeText.value(scene.overlay.title) == " New research "
 
     assert Enum.any?(
              scene.overlay.footer,

@@ -34,6 +34,16 @@ defmodule SwarmCodeCLI.UI.RepresentativeScenesTest do
         end
 
       for text <- evidence, do: assert(pixels =~ text)
+
+      # Editorial turn labels (decision 15): chat has few enough items for all to be visible
+      if kind == :chat do
+        assert pixels =~ "YOU"
+        assert pixels =~ "assistant"
+      end
+
+      # All kinds show "assistant" label for the assistant turn
+      assert pixels =~ "assistant"
+
       main = Enum.find(scene.regions, &(&1.role == :main))
       assert Enum.count(main.blocks, &is_struct(&1, Block.RunCard)) == 1
 

@@ -1,6 +1,6 @@
 defmodule SwarmCodeCLI.UI.ReducerAttemptPagingTest do
   use ExUnit.Case, async: true
-  alias SwarmCodeCLI.UI.{ReadModel, ChunkDeque, Reducer, Init, Size, Capabilities}
+  alias SwarmCodeCLI.UI.{ReadModel, ChunkDeque, Reducer, Init, ScrollMetrics, Size, Capabilities}
   alias SwarmCodeCLI.UI.DataSource.{DTO, Delta, Delivery, AdmissionError}
 
   def model do
@@ -94,7 +94,12 @@ defmodule SwarmCodeCLI.UI.ReducerAttemptPagingTest do
 
     {first, []} = Reducer.update(state, {:scroll, "navigator", :first})
     {page, []} = Reducer.update(first, {:scroll, "navigator", {:page, 1}})
-    assert page.scrolls.navigator.anchor == {"r22", 0, :top}
+    # Navigator capacity at 100x24 with banner=nil:
+    #   rect.height = 22, destinations = 2 (Conversation + Activity),
+    #   fixed_rows = 2 + 2 (blank + RUNS heading) = 4,
+    #   capacity = max(0, 22 - 1 - 4) = 17.
+    # PageDown from r1 advances by 17 to r18.
+    assert page.scrolls.navigator.anchor == {"r18", 0, :top}
     {back, []} = Reducer.update(page, {:scroll, "navigator", {:page, -1}})
     assert back.scrolls.navigator.anchor == {"r1", 0, :top}
   end
@@ -191,15 +196,31 @@ defmodule SwarmCodeCLI.UI.ReducerAttemptPagingTest do
     region = Enum.find(scene.regions, &(&1.id == "main"))
     visible = Enum.find(region.blocks, &is_struct(&1, SwarmCodeCLI.UI.Scene.Block.VirtualList))
     assert length(visible.items) > 0
-    expected = Enum.at(rows, length(visible.items)).id
+
+    # PageDown advances by exactly one viewport of RENDERED rows: no skipped row and no
+    # repeated row. Editorial turn labels make each item 3 rows here (blank + role label +
+    # text), so the landing point is derived from real measured heights rather than from the
+    # visible item count, which no longer equals the row count.
+    height = ScrollMetrics.content_height(first, :main)
+
+    {expected_id, expected_offset} =
+      Enum.reduce_while(rows, height, fn row, left ->
+        rendered = ScrollMetrics.height(first, :main, row.id)
+        if left < rendered, do: {:halt, {row.id, left}}, else: {:cont, left - rendered}
+      end)
+
     {next, []} = Reducer.update(first, {:scroll, "main", {:page, 1}})
-    assert elem(next.scrolls.main.anchor, 0) == expected
+    assert next.scrolls.main.anchor == {expected_id, expected_offset, :top}
     {scene, _} = SwarmCodeCLI.UI.Projector.project(next)
     region = Enum.find(scene.regions, &(&1.id == "main"))
 
     next_window =
       Enum.find(region.blocks, &is_struct(&1, SwarmCodeCLI.UI.Scene.Block.VirtualList))
 
-    assert next_window.first_index == length(visible.items)
+    assert next_window.first_index == Enum.find_index(rows, &(&1.id == expected_id))
+
+    # PageUp is the exact inverse, back to the very first row.
+    {back, []} = Reducer.update(next, {:scroll, "main", {:page, -1}})
+    assert back.scrolls.main.anchor == {"row1", 0, :top}
   end
 end

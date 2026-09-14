@@ -184,6 +184,97 @@ defmodule SwarmCodeCLI.UI.SafeTextTest do
     assert SafeText.value(safe) == "a⟦FVS1 U+180B⟧"
   end
 
+  test "new chrome tokens round-trip through chrome/1, value/1 and concat" do
+    alias SwarmCodeCLI.UI.Width
+
+    tokens = [
+      {:swarmcode_wordmark, "SWARMCODE"},
+      {:workspace_label, "WORKSPACE"},
+      {:nav_conversation, "Conversation"},
+      {:nav_activity, "Activity"},
+      {:nav_workflows, "Workflows"},
+      {:nav_research, "Research"},
+      {:nav_memory, "Memory"},
+      {:runs_label, "RUNS"},
+      {:glyph_selected, "◉"},
+      {:glyph_inactive, "◌"},
+      {:glyph_workflows, "⧉"},
+      {:glyph_research, "⌁"},
+      {:glyph_memory, "⌘"},
+      {:glyph_changes, "⬡"},
+      {:live_run_label, "LIVE RUN"},
+      {:agents_label, "AGENTS"},
+      {:you_label, "YOU"},
+      {:assistant_label, "assistant"},
+      {:tool_label, "tool"},
+      {:system_label, "system"},
+      {:gap_hairline, "╎"},
+      {:composer_gutter, "▐"},
+      {:pipeline_arrow, "❯"},
+      {:persistent_objective, "Persistent objective"},
+      {:plan_approve, "Approve"},
+      {:plan_revise, "Revise"},
+      {:plan_decline, "Decline"},
+      {:plan_done, "✓"},
+      {:plan_steps_label, "PLAN STEPS"}
+    ]
+
+    for {token, expected_value} <- tokens do
+      safe = SafeText.chrome(token)
+      assert SafeText.value(safe) == expected_value, "value mismatch for #{token}"
+
+      # Round-trip: concat with empty produces the same value
+      concatenated = SafeText.concat([safe, SafeText.chrome(:empty)])
+      assert SafeText.value(concatenated) == expected_value
+    end
+  end
+
+  test "new glyph tokens are exactly 1 cell under both width policies" do
+    alias SwarmCodeCLI.UI.Width
+
+    glyph_tokens = [
+      {:glyph_selected, "◉"},
+      {:glyph_inactive, "◌"},
+      {:glyph_workflows, "⧉"},
+      {:glyph_research, "⌁"},
+      {:glyph_memory, "⌘"},
+      {:glyph_changes, "⬡"},
+      {:gap_hairline, "╎"},
+      {:composer_gutter, "▐"},
+      {:pipeline_arrow, "❯"},
+      {:plan_done, "✓"}
+    ]
+
+    ascii_fallbacks = [
+      {"*", :glyph_selected},
+      {"o", :glyph_inactive},
+      {"#", :glyph_workflows},
+      {"^", :glyph_research},
+      {"@", :glyph_memory},
+      {"+", :glyph_changes},
+      {"|", :gap_hairline},
+      {">", :composer_gutter},
+      {">", :pipeline_arrow},
+      {"*", :plan_done}
+    ]
+
+    for {token, glyph} <- glyph_tokens do
+      assert Width.cells(glyph, :narrow) == 1,
+             "#{token} glyph #{glyph} is not 1 cell under :narrow"
+
+      assert Width.cells(glyph, :wide) == 1,
+             "#{token} glyph #{glyph} is not 1 cell under :wide"
+    end
+
+    for {ascii, token} <- ascii_fallbacks do
+      assert Width.cells(ascii, :narrow) == 1,
+             "ASCII fallback #{ascii} for #{token} is not 1 cell"
+
+      assert Width.cells(ascii, :wide) == 1,
+             "ASCII fallback #{ascii} for #{token} is not 1 cell under :wide"
+    end
+  end
+
   property "mixed valid Unicode and deceptive scalars produce a stable safe value" do
     check all(
             chunks <-
@@ -225,6 +316,43 @@ defmodule SwarmCodeCLI.UI.SafeTextTest do
                ~r/[\x00-\x09\x0B-\x1F\x7F-\x9F\x{202A}-\x{202E}\x{2066}-\x{2069}]/u,
                output
              )
+    end
+  end
+
+  test "every catalogue glyph has a one-cell ASCII twin and Support.glyph picks it" do
+    alias SwarmCodeCLI.UI.Width
+    alias SwarmCodeCLI.UI.Projector.Support
+
+    pairs = Support.glyphs()
+    assert map_size(pairs) > 0
+
+    for {unicode_token, ascii_token} <- pairs do
+      unicode = SafeText.value(SafeText.chrome(unicode_token))
+      ascii = SafeText.value(SafeText.chrome(ascii_token))
+
+      # A chrome glyph that is two cells under :wide would overflow its column.
+      for policy <- [:narrow, :wide] do
+        assert Width.cells(unicode, policy) == 1,
+               "#{unicode_token} (#{unicode}) is not 1 cell under #{policy}"
+
+        assert Width.cells(ascii, policy) == 1,
+               "#{ascii_token} (#{ascii}) is not 1 cell under #{policy}"
+      end
+
+      assert ascii == for(<<c <- ascii>>, c < 128, into: "", do: <<c>>),
+             "#{ascii_token} fallback is not pure ASCII"
+
+      assert SafeText.value(Support.glyph(unicode_token, %{capabilities: %{ascii?: true}})) ==
+               ascii
+
+      assert SafeText.value(Support.glyph(unicode_token, %{capabilities: %{ascii?: false}})) ==
+               unicode
+    end
+
+    # Tokens without a twin pass through unchanged in both modes.
+    for mode <- [true, false] do
+      assert SafeText.value(Support.glyph(:workspace_label, %{capabilities: %{ascii?: mode}})) ==
+               "WORKSPACE"
     end
   end
 end

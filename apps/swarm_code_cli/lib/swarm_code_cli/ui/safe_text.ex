@@ -140,6 +140,46 @@ defmodule SwarmCodeCLI.UI.SafeText do
           | :status_disconnected
           | :status_superseded
           | :status_mutation_pending
+          | :swarmcode_wordmark
+          | :workspace_label
+          | :nav_conversation
+          | :nav_activity
+          | :nav_workflows
+          | :nav_research
+          | :nav_memory
+          | :runs_label
+          | :glyph_selected
+          | :glyph_inactive
+          | :glyph_workflows
+          | :glyph_research
+          | :glyph_memory
+          | :glyph_changes
+          | :live_run_label
+          | :agents_label
+          | :you_label
+          | :assistant_label
+          | :tool_label
+          | :system_label
+          | :gap_hairline
+          | :composer_gutter
+          | :pipeline_arrow
+          | :persistent_objective
+          | :plan_approve
+          | :plan_revise
+          | :plan_decline
+          | :plan_done
+          | :plan_steps_label
+          | :glyph_selected_ascii
+          | :glyph_inactive_ascii
+          | :glyph_workflows_ascii
+          | :glyph_research_ascii
+          | :glyph_memory_ascii
+          | :glyph_changes_ascii
+          | :composer_gutter_ascii
+          | :pipeline_arrow_ascii
+          | :plan_done_ascii
+          | :glyph_failed
+          | :glyph_failed_ascii
 
   def chrome(:full_detail), do: %__MODULE__{token: :full_detail}
   def chrome(:next_page), do: %__MODULE__{token: :next_page}
@@ -254,6 +294,46 @@ defmodule SwarmCodeCLI.UI.SafeText do
   def chrome(:status_disconnected), do: %__MODULE__{token: :status_disconnected}
   def chrome(:status_superseded), do: %__MODULE__{token: :status_superseded}
   def chrome(:status_mutation_pending), do: %__MODULE__{token: :status_mutation_pending}
+  def chrome(:swarmcode_wordmark), do: %__MODULE__{token: :swarmcode_wordmark}
+  def chrome(:workspace_label), do: %__MODULE__{token: :workspace_label}
+  def chrome(:nav_conversation), do: %__MODULE__{token: :nav_conversation}
+  def chrome(:nav_activity), do: %__MODULE__{token: :nav_activity}
+  def chrome(:nav_workflows), do: %__MODULE__{token: :nav_workflows}
+  def chrome(:nav_research), do: %__MODULE__{token: :nav_research}
+  def chrome(:nav_memory), do: %__MODULE__{token: :nav_memory}
+  def chrome(:runs_label), do: %__MODULE__{token: :runs_label}
+  def chrome(:glyph_selected), do: %__MODULE__{token: :glyph_selected}
+  def chrome(:glyph_inactive), do: %__MODULE__{token: :glyph_inactive}
+  def chrome(:glyph_workflows), do: %__MODULE__{token: :glyph_workflows}
+  def chrome(:glyph_research), do: %__MODULE__{token: :glyph_research}
+  def chrome(:glyph_memory), do: %__MODULE__{token: :glyph_memory}
+  def chrome(:glyph_changes), do: %__MODULE__{token: :glyph_changes}
+  def chrome(:live_run_label), do: %__MODULE__{token: :live_run_label}
+  def chrome(:agents_label), do: %__MODULE__{token: :agents_label}
+  def chrome(:you_label), do: %__MODULE__{token: :you_label}
+  def chrome(:assistant_label), do: %__MODULE__{token: :assistant_label}
+  def chrome(:tool_label), do: %__MODULE__{token: :tool_label}
+  def chrome(:system_label), do: %__MODULE__{token: :system_label}
+  def chrome(:gap_hairline), do: %__MODULE__{token: :gap_hairline}
+  def chrome(:composer_gutter), do: %__MODULE__{token: :composer_gutter}
+  def chrome(:pipeline_arrow), do: %__MODULE__{token: :pipeline_arrow}
+  def chrome(:persistent_objective), do: %__MODULE__{token: :persistent_objective}
+  def chrome(:plan_approve), do: %__MODULE__{token: :plan_approve}
+  def chrome(:plan_revise), do: %__MODULE__{token: :plan_revise}
+  def chrome(:plan_decline), do: %__MODULE__{token: :plan_decline}
+  def chrome(:plan_done), do: %__MODULE__{token: :plan_done}
+  def chrome(:plan_steps_label), do: %__MODULE__{token: :plan_steps_label}
+  def chrome(:glyph_selected_ascii), do: %__MODULE__{token: :glyph_selected_ascii}
+  def chrome(:glyph_inactive_ascii), do: %__MODULE__{token: :glyph_inactive_ascii}
+  def chrome(:glyph_workflows_ascii), do: %__MODULE__{token: :glyph_workflows_ascii}
+  def chrome(:glyph_research_ascii), do: %__MODULE__{token: :glyph_research_ascii}
+  def chrome(:glyph_memory_ascii), do: %__MODULE__{token: :glyph_memory_ascii}
+  def chrome(:glyph_changes_ascii), do: %__MODULE__{token: :glyph_changes_ascii}
+  def chrome(:composer_gutter_ascii), do: %__MODULE__{token: :composer_gutter_ascii}
+  def chrome(:pipeline_arrow_ascii), do: %__MODULE__{token: :pipeline_arrow_ascii}
+  def chrome(:plan_done_ascii), do: %__MODULE__{token: :plan_done_ascii}
+  def chrome(:glyph_failed), do: %__MODULE__{token: :glyph_failed}
+  def chrome(:glyph_failed_ascii), do: %__MODULE__{token: :glyph_failed_ascii}
 
   def value(%{__struct__: __MODULE__, token: :full_detail} = text) when map_size(text) == 2,
     do: "Full text"
@@ -579,6 +659,137 @@ defmodule SwarmCodeCLI.UI.SafeText do
   def value(%{__struct__: __MODULE__, token: :status_mutation_pending} = text)
       when map_size(text) == 2,
       do: "PENDING"
+
+  def value(%{__struct__: __MODULE__, token: :swarmcode_wordmark} = text)
+      when map_size(text) == 2,
+      do: "SWARMCODE"
+
+  def value(%{__struct__: __MODULE__, token: :workspace_label} = text) when map_size(text) == 2,
+    do: "WORKSPACE"
+
+  def value(%{__struct__: __MODULE__, token: :nav_conversation} = text) when map_size(text) == 2,
+    do: "Conversation"
+
+  def value(%{__struct__: __MODULE__, token: :nav_activity} = text) when map_size(text) == 2,
+    do: "Activity"
+
+  def value(%{__struct__: __MODULE__, token: :nav_workflows} = text) when map_size(text) == 2,
+    do: "Workflows"
+
+  def value(%{__struct__: __MODULE__, token: :nav_research} = text) when map_size(text) == 2,
+    do: "Research"
+
+  def value(%{__struct__: __MODULE__, token: :nav_memory} = text) when map_size(text) == 2,
+    do: "Memory"
+
+  def value(%{__struct__: __MODULE__, token: :runs_label} = text) when map_size(text) == 2,
+    do: "RUNS"
+
+  def value(%{__struct__: __MODULE__, token: :glyph_selected} = text) when map_size(text) == 2,
+    do: "◉"
+
+  def value(%{__struct__: __MODULE__, token: :glyph_inactive} = text) when map_size(text) == 2,
+    do: "◌"
+
+  def value(%{__struct__: __MODULE__, token: :glyph_workflows} = text) when map_size(text) == 2,
+    do: "⧉"
+
+  def value(%{__struct__: __MODULE__, token: :glyph_research} = text) when map_size(text) == 2,
+    do: "⌁"
+
+  def value(%{__struct__: __MODULE__, token: :glyph_memory} = text) when map_size(text) == 2,
+    do: "⌘"
+
+  def value(%{__struct__: __MODULE__, token: :glyph_changes} = text) when map_size(text) == 2,
+    do: "⬡"
+
+  def value(%{__struct__: __MODULE__, token: :live_run_label} = text) when map_size(text) == 2,
+    do: "LIVE RUN"
+
+  def value(%{__struct__: __MODULE__, token: :agents_label} = text) when map_size(text) == 2,
+    do: "AGENTS"
+
+  def value(%{__struct__: __MODULE__, token: :you_label} = text) when map_size(text) == 2,
+    do: "YOU"
+
+  def value(%{__struct__: __MODULE__, token: :assistant_label} = text) when map_size(text) == 2,
+    do: "assistant"
+
+  def value(%{__struct__: __MODULE__, token: :tool_label} = text) when map_size(text) == 2,
+    do: "tool"
+
+  def value(%{__struct__: __MODULE__, token: :system_label} = text) when map_size(text) == 2,
+    do: "system"
+
+  def value(%{__struct__: __MODULE__, token: :gap_hairline} = text) when map_size(text) == 2,
+    do: "╎"
+
+  def value(%{__struct__: __MODULE__, token: :composer_gutter} = text) when map_size(text) == 2,
+    do: "▐"
+
+  def value(%{__struct__: __MODULE__, token: :pipeline_arrow} = text) when map_size(text) == 2,
+    do: "❯"
+
+  def value(%{__struct__: __MODULE__, token: :persistent_objective} = text)
+      when map_size(text) == 2,
+      do: "Persistent objective"
+
+  def value(%{__struct__: __MODULE__, token: :plan_approve} = text) when map_size(text) == 2,
+    do: "Approve"
+
+  def value(%{__struct__: __MODULE__, token: :plan_revise} = text) when map_size(text) == 2,
+    do: "Revise"
+
+  def value(%{__struct__: __MODULE__, token: :plan_decline} = text) when map_size(text) == 2,
+    do: "Decline"
+
+  def value(%{__struct__: __MODULE__, token: :plan_done} = text) when map_size(text) == 2,
+    do: "✓"
+
+  def value(%{__struct__: __MODULE__, token: :plan_steps_label} = text) when map_size(text) == 2,
+    do: "PLAN STEPS"
+
+  def value(%{__struct__: __MODULE__, token: :glyph_selected_ascii} = text)
+      when map_size(text) == 2,
+      do: "*"
+
+  def value(%{__struct__: __MODULE__, token: :glyph_inactive_ascii} = text)
+      when map_size(text) == 2,
+      do: "o"
+
+  def value(%{__struct__: __MODULE__, token: :glyph_workflows_ascii} = text)
+      when map_size(text) == 2,
+      do: "#"
+
+  def value(%{__struct__: __MODULE__, token: :glyph_research_ascii} = text)
+      when map_size(text) == 2,
+      do: "^"
+
+  def value(%{__struct__: __MODULE__, token: :glyph_memory_ascii} = text)
+      when map_size(text) == 2,
+      do: "@"
+
+  def value(%{__struct__: __MODULE__, token: :glyph_changes_ascii} = text)
+      when map_size(text) == 2,
+      do: "+"
+
+  def value(%{__struct__: __MODULE__, token: :composer_gutter_ascii} = text)
+      when map_size(text) == 2,
+      do: ">"
+
+  def value(%{__struct__: __MODULE__, token: :pipeline_arrow_ascii} = text)
+      when map_size(text) == 2,
+      do: ">"
+
+  def value(%{__struct__: __MODULE__, token: :plan_done_ascii} = text) when map_size(text) == 2,
+    do: "*"
+
+  def value(%{__struct__: __MODULE__, token: :glyph_failed} = text) when map_size(text) == 2,
+    do: "✗"
+
+  def value(%{__struct__: __MODULE__, token: :glyph_failed_ascii} = text)
+      when map_size(text) == 2,
+      do: "x"
 
   def value(%{__struct__: __MODULE__, token: {:external, binary}} = text)
       when map_size(text) == 2 and is_binary(binary) do

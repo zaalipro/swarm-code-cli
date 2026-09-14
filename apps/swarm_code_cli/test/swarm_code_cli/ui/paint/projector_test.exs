@@ -159,7 +159,8 @@ defmodule SwarmCodeCLI.UI.Paint.ProjectorTest do
       {scene, _, plan} = paint(state)
       composer = Enum.find(scene.regions, &(&1.role == :composer))
       assert plan.cursor == scene.cursor
-      assert plan.cursor.x == composer.rect.x + Width.cells(prefix, policy)
+      # +2 accounts for the 2-cell composer gutter (▐ or > in ASCII)
+      assert plan.cursor.x == composer.rect.x + 2 + Width.cells(prefix, policy)
       assert plan.cursor.y == composer.rect.y
       assert {:glyph, "X", 1, _} = Plan.cell(plan, plan.cursor.x, plan.cursor.y)
       assert row(plan, composer.rect.y, composer.rect.x, composer.rect.width) =~ prefix <> "X"
@@ -551,7 +552,8 @@ defmodule SwarmCodeCLI.UI.Paint.ProjectorTest do
 
   test "Markdown scroll height and windows count rendered rows with complete fence context" do
     alias SwarmCodeCLI.UI.ScrollMetrics
-    state = fixture(:chat, {80, 24})
+    # Use 80x30 so all content + labels fit in the viewport
+    state = fixture(:chat, {80, 30})
     item = %{state.read_model.transcript["002"] | text: "```\na\n```\nb\nc\nd\ne\nf\ng\nh"}
 
     state = %{
@@ -569,23 +571,32 @@ defmodule SwarmCodeCLI.UI.Paint.ProjectorTest do
           })
     }
 
-    assert ScrollMetrics.height(state, :main, item.id) == 8
+    # +2 for editorial turn label rows (blank + role label)
+    assert ScrollMetrics.height(state, :main, item.id) == 10
     {scene, _, plan} = paint(state)
     main = Enum.find(scene.regions, &(&1.role == :main))
     list = Enum.find(main.blocks, &is_struct(&1, Block.VirtualList))
-    assert {:ok, 8} = Metrics.height(list, main.rect.width)
+    # The painted list must occupy EXACTLY the rows the scroll metric predicts. That equality is
+    # what keeps anchors, follow and paging exact, so assert it rather than a bound.
+    assert Metrics.height(list, main.rect.width) ==
+             {:ok, ScrollMetrics.height(state, :main, item.id)}
+
+    assert {:ok, 10} = Metrics.height(list, main.rect.width)
     chrome = Enum.take_while(main.blocks, &(not is_struct(&1, Block.VirtualList)))
     assert {:ok, offset} = Metrics.height(chrome, main.rect.width)
 
+    # Labels add 2 rows before content (blank + role label at this width)
     for {line, index} <- Enum.with_index(~w(a b c d e f g h)) do
-      assert String.trim(row(plan, main.rect.y + offset + index, main.rect.x, main.rect.width)) ==
+      assert String.trim(
+               row(plan, main.rect.y + offset + 2 + index, main.rect.x, main.rect.width)
+             ) ==
                line
     end
 
     long = %{item | text: "```\n" <> Enum.map_join(1..250, "\n", &"code #{&1}") <> "\n```"}
     state = put_in(state.read_model.transcript[item.id], long)
-    state = put_in(state.scrolls.main.anchor, {item.id, 240, :top})
-    assert ScrollMetrics.height(state, :main, item.id) == 250
+    state = put_in(state.scrolls.main.anchor, {item.id, 242, :top})
+    assert ScrollMetrics.height(state, :main, item.id) == 252
     {scene, _, plan} = paint(state)
     main = Enum.find(scene.regions, &(&1.role == :main))
     assert screen(plan) =~ "code 241"
@@ -618,14 +629,15 @@ defmodule SwarmCodeCLI.UI.Paint.ProjectorTest do
             Map.put(state.scrolls, :main, %{
               state.scrolls.main
               | follow?: false,
-                anchor: {item.id, 2, :top}
+                anchor: {item.id, 4, :top}
             })
       }
 
       {scene, _, plan} = paint(state)
       main = Enum.find(scene.regions, &(&1.role == :main))
       lines = Prose.wrap(item.text, main.rect.width, policy)
-      assert ScrollMetrics.height(state, :main, item.id) == length(lines)
+      # +2 for editorial turn label rows (blank + role label)
+      assert ScrollMetrics.height(state, :main, item.id) == length(lines) + 2
       list = Enum.find(main.blocks, &is_struct(&1, Block.VirtualList))
 
       expected =
@@ -667,7 +679,8 @@ defmodule SwarmCodeCLI.UI.Paint.ProjectorTest do
           })
     }
 
-    assert ScrollMetrics.height(state, :main, item.id) == 813
+    # +2 for editorial turn label rows (blank + role label)
+    assert ScrollMetrics.height(state, :main, item.id) == 815
     {_, _, plan} = paint(state)
     assert screen(plan) =~ String.duplicate("*", 80)
   end
@@ -676,12 +689,21 @@ defmodule SwarmCodeCLI.UI.Paint.ProjectorTest do
     alias SwarmCodeCLI.UI.{SafeText, Transcript}
     state = fixture(:chat, {80, 24})
     item = %{state.read_model.transcript["002"] | text: "**alpha beta gamma delta**"}
-    {block, 4} = Transcript.window(item, :chat, 8, state.capabilities, 0, 10, false)
+    # Label rows (blank + role) are included; skip them to check bold content
+    {block, _row_count} = Transcript.window(item, :chat, 8, state.capabilities, 2, 10, false)
     spans = Enum.reject(block.spans, &(SafeText.value(&1.text) == "\n"))
-    assert Enum.all?(spans, &(:bold in &1.style.modifiers))
-    assert Enum.map_join(spans, &SafeText.value(&1.text)) == "alpha beta gamma delta"
+    bold_spans = Enum.filter(spans, &(:bold in &1.style.modifiers))
+    assert Enum.map_join(bold_spans, &SafeText.value(&1.text)) == "alpha beta gamma delta"
     item = %{item | text: "```\na\nb\nc\n```\noutside"}
-    {block, 2} = Transcript.window(item, :chat, 8, state.capabilities, 1, 2, false)
+    # Labels wrap at width 8; compute actual label+fence offset dynamically
+    all_rows = Transcript.rows(item, :chat, 8, state.capabilities) |> Enum.to_list()
+
+    a_index =
+      Enum.find_index(all_rows, fn row ->
+        Enum.map_join(row.units, & &1.text) == "a"
+      end)
+
+    {block, 2} = Transcript.window(item, :chat, 8, state.capabilities, a_index + 1, 2, false)
     assert Enum.map_join(block.spans, &SafeText.value(&1.text)) == "b\nc"
     expected = SwarmCodeCLI.UI.Theme.style(:code, state.capabilities).foreground
 
@@ -699,7 +721,8 @@ defmodule SwarmCodeCLI.UI.Paint.ProjectorTest do
     assert {:ok, safe} = SafeText.external(source, SafeText.Limits.content())
     assert byte_size(SafeText.value(safe)) > SafeText.Limits.content().input_bytes
     item = %{state.read_model.transcript["002"] | text: source}
-    {block, _} = Transcript.window(item, :chat, 500, state.capabilities, 0, 2, false)
+    # Skip label rows (offset 2) to get only content rows
+    {block, _} = Transcript.window(item, :chat, 500, state.capabilities, 2, 2, false)
     assert Enum.map_join(block.spans, &SafeText.value(&1.text)) == SafeText.value(safe)
   end
 
@@ -745,8 +768,10 @@ defmodule SwarmCodeCLI.UI.Paint.ProjectorTest do
       }
 
       rows = Transcript.rows(item, :chat, 80, state.capabilities) |> Enum.to_list()
+      # First 2 rows are label rows (blank + role label); content rows follow
+      content_rows = Enum.drop(rows, 2)
 
-      assert Enum.map_join(rows, &Enum.map_join(&1.units, fn unit -> unit.text end)) ==
+      assert Enum.map_join(content_rows, &Enum.map_join(&1.units, fn unit -> unit.text end)) ==
                SafeText.value(safe)
 
       assert ScrollMetrics.height(state, :main, item.id) == length(rows)

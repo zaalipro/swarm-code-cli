@@ -251,7 +251,11 @@ defmodule SwarmCodeCLI.UI.ProjectorTest do
     assert list.total_count == 10_000
     assert list.first_index == 9989
     assert length(list.items) <= main.rect.height
-    assert hd(texts(list)) == "row 9990"
+    # The anchored item renders its editorial turn rows first: a blank separator, then the role
+    # label, then the text. Pin the content sequence exactly (ignoring the blank and the row
+    # separators) so the window is still proven to start at the anchored item.
+    content = texts(list) |> Enum.reject(&(&1 in [" ", "\n"])) |> Enum.take(2)
+    assert content == ["A assistant", "row 9990"]
   end
 
   test "page errors expose scoped retry diagnostics while retaining content" do
@@ -714,7 +718,7 @@ defmodule SwarmCodeCLI.UI.ProjectorTest do
 
     {scene, actions} = Projector.project(state)
     navigator = Enum.find(scene.regions, &(&1.role == :navigator))
-    [window] = navigator.blocks
+    window = Enum.find(navigator.blocks, &is_struct(&1, SwarmCodeCLI.UI.Scene.Block.VirtualList))
     assert Scene.validate(scene) == :ok
     assert window.first_index > 0
     assert window.total_count == 60
@@ -738,7 +742,10 @@ defmodule SwarmCodeCLI.UI.ProjectorTest do
     assert navigator.follow == :none
     {scene, actions} = Projector.project(%{state | selection: %{"navigator" => "nav-60"}})
     navigator = Enum.find(scene.regions, &(&1.role == :navigator))
-    assert hd(navigator.blocks).first_index == 0
+
+    assert Enum.find(navigator.blocks, &is_struct(&1, SwarmCodeCLI.UI.Scene.Block.VirtualList)).first_index ==
+             0
+
     assert {:local, {:navigate, {:run, "nav-60"}}} in Map.values(actions)
   end
 
