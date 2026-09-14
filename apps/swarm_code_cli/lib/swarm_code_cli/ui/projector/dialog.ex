@@ -138,7 +138,7 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
     %Dialog{
       id: "dialog",
       rect: rect,
-      title: Density.safe(title, state, rect.width - 2),
+      title: pad_title(title, state, rect),
       blocks: visible,
       footer: footer,
       focused_control_id: focus,
@@ -146,6 +146,21 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
       body_visible_range: {first, min(first + height, length(rows))},
       body_total_count: length(rows)
     }
+  end
+
+  # Pad the title with one space on each side so it reads like ┌─ Title ─┐
+  # rather than starting flush at the corner.  Elide to rect.width - 4 first
+  # (2 border + 2 padding) so the padded result fits in rect.width - 2.
+  defp pad_title(title, state, rect) do
+    max_cells = max(0, rect.width - 4)
+    safe = Density.safe(title, state, max_cells)
+    text = SafeText.value(safe)
+
+    if text == "" do
+      safe
+    else
+      Density.safe(" " <> text <> " ", state, rect.width - 2)
+    end
   end
 
   defp control(id, label, target), do: {:dialog_control, id, label, target}

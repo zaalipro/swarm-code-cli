@@ -114,7 +114,7 @@ defmodule SwarmCodeCLI.UI.LibraryTest do
 
     {ready, []} = Reducer.update(loading, {:data, delivery})
     {scene, _} = Projector.project(ready)
-    assert SafeText.value(scene.overlay.title) == "Workflows"
+    assert SafeText.value(scene.overlay.title) == " Workflows "
 
     assert Enum.any?(scene.overlay.blocks, fn block ->
              Map.has_key?(block, :text) and
