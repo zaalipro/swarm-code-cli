@@ -2,7 +2,11 @@ defmodule SwarmCode.Governance.Provenance do
   @moduledoc false
 
   @baseline "dbb8804b3d7293178e571fa7afdf6bd47d06a51c"
-  @adaptation_pins [@baseline, "fb1b4ff82354ac8ff2e82d4f6516121fd55ff212"]
+  @adaptation_pins [
+    @baseline,
+    "fb1b4ff82354ac8ff2e82d4f6516121fd55ff212",
+    "ccb19732c7225a6bc88556f8f743bab7bda41a5b"
+  ]
   @authorization_flags ~w(public_source_copying_allowed copyright_terms_recorded license_terms_recorded notice_terms_recorded)
   @classifications ~w(source test spec)
   @entry_keys ~w(classification destination sha256 upstream_commit upstream_path)

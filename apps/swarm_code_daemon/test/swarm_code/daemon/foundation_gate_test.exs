@@ -10,8 +10,8 @@ defmodule SwarmCode.Daemon.FoundationGateTest do
 
   @app_version "0.1.0-dev"
   @backup_operation_id "5cebddf0-68ee-4f79-9129-b17f1ca2d6de"
-  @manifest_sha256 "f04a55a27d1fee6a3192c6ff277993d4ab5a8f6414896e2be87dc3a41f48b75f"
-  @newest_migration 20_260_929_000_000
+  @manifest_sha256 "16c5bb6d88c007fad7042c6f13afa65455a8a6157e2e86c25d68748d7c984e82"
+  @newest_migration 20_261_015_000_003
   @now ~U[2026-09-01 12:00:00Z]
 
   test "database fingerprint contract has a canonical distinct absent-path marker" do
@@ -84,7 +84,7 @@ defmodule SwarmCode.Daemon.FoundationGateTest do
     assert ready.identity == identity(root)
     assert ready.schema.status == :ready
     assert ready.backup == nil
-    assert length(ready.schema.applied) == 46
+    assert length(ready.schema.applied) == 53
     assert List.last(ready.schema.applied) == @newest_migration
     owner = CrossAppLease.owner(ready.lease)
     assert owner.schema_epoch == 0
@@ -646,7 +646,7 @@ defmodule SwarmCode.Daemon.FoundationGateTest do
     assert database_state(fixture) == before
   end
 
-  test "the legacy 43-migration prefix is backed up before refusing the three appended migrations" do
+  test "the legacy 43-migration prefix is backed up before refusing the ten appended migrations" do
     fixture = fixture_database!({:prefix, 20_260_926_000_000})
 
     SchemaFixture.insert_project!(
@@ -664,7 +664,14 @@ defmodule SwarmCode.Daemon.FoundationGateTest do
     assert Enum.map(decision.pending, & &1.version) == [
              20_260_927_000_000,
              20_260_928_000_000,
-             20_260_929_000_000
+             20_260_929_000_000,
+             20_260_930_000_000,
+             20_261_001_000_000,
+             20_261_001_000_001,
+             20_261_015_000_000,
+             20_261_015_000_001,
+             20_261_015_000_002,
+             20_261_015_000_003
            ]
 
     opts = test_opts(fixture, fn -> :none end)
@@ -978,7 +985,7 @@ defmodule SwarmCode.Daemon.FoundationGateTest do
     :swarm_code_daemon
     |> :code.priv_dir()
     |> to_string()
-    |> Path.join("schema/desktop-fb1b4ff.json")
+    |> Path.join("schema/desktop-ccb1973.json")
   end
 
   defp private_tmp!(label) do

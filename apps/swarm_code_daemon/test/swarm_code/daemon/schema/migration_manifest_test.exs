@@ -39,23 +39,32 @@ defmodule SwarmCode.Daemon.Schema.MigrationManifestTest do
            } = List.last(manifest.migrations)
   end
 
-  test "the default contract covers the current 46-migration desktop" do
+  test "the default contract covers the current 53-migration desktop" do
     manifest = MigrationManifest.load!()
-    assert manifest.contract == "desktop-fb1b4ff"
-    assert manifest.upstream_commit == "fb1b4ff82354ac8ff2e82d4f6516121fd55ff212"
-    assert length(manifest.migrations) == 46
+    assert manifest.contract == "desktop-ccb1973"
+    assert manifest.upstream_commit == "ccb19732c7225a6bc88556f8f743bab7bda41a5b"
+    assert length(manifest.migrations) == 53
 
     assert manifest.migration_set_sha256 ==
-             "f04a55a27d1fee6a3192c6ff277993d4ab5a8f6414896e2be87dc3a41f48b75f"
+             "16c5bb6d88c007fad7042c6f13afa65455a8a6157e2e86c25d68748d7c984e82"
 
     assert %MigrationManifest.Entry{
-             version: 20_260_929_000_000,
-             filename: "20260929000000_bench_layout.exs",
-             source_sha256: "d2b8980ec14149a54a005d2cf91c6761897e209680acf6b215171be20828eba2"
+             version: 20_261_015_000_003,
+             filename: "20261015000003_sub_agent_timeout.exs",
+             source_sha256: "df5bacfee3402e35dcc7c6f1b3a4c944f9ff4359c1920be865b00fe02beb653b"
            } = List.last(manifest.migrations)
 
     legacy = MigrationManifest.load!(default_manifest_path())
     assert Enum.take(manifest.migrations, 43) == legacy.migrations
+
+    previous =
+      MigrationManifest.load!(
+        default_manifest_path()
+        |> Path.dirname()
+        |> Path.join("desktop-fb1b4ff.json")
+      )
+
+    assert Enum.take(manifest.migrations, 46) == previous.migrations
   end
 
   test "rejects an unknown or mixed source contract even when field shapes are canonical" do

@@ -13,7 +13,7 @@ defmodule SwarmCode.Daemon.Schema.Contract do
     last_source_sha256: "9343537359fd75470d78bf4d72da4de5180ceb0e3b39d379e6c1348bc5fa4128",
     snapshot_versions: [20_260_923_000_000, 20_260_924_000_000, 20_260_926_000_000]
   }
-  @current %{
+  @previous %{
     commit: "fb1b4ff82354ac8ff2e82d4f6516121fd55ff212",
     name: "desktop-fb1b4ff",
     migration_count: 46,
@@ -32,13 +32,34 @@ defmodule SwarmCode.Daemon.Schema.Contract do
       20_260_929_000_000
     ]
   }
+  @current %{
+    commit: "ccb19732c7225a6bc88556f8f743bab7bda41a5b",
+    name: "desktop-ccb1973",
+    migration_count: 53,
+    migration_set_sha256: "16c5bb6d88c007fad7042c6f13afa65455a8a6157e2e86c25d68748d7c984e82",
+    final_schema_sha256: "cd6ee5ce99c4adc8587993eb9b4cf4758e7e4e6c31bc28cc64b3df8395777b82",
+    lineage_sha256: "007e492e7f3fa431b5da83071d30ccf2db5f9bf536dbda97246fac4454cace8b",
+    last_version: 20_261_015_000_003,
+    last_filename: "20261015000003_sub_agent_timeout.exs",
+    last_source_sha256: "df5bacfee3402e35dcc7c6f1b3a4c944f9ff4359c1920be865b00fe02beb653b",
+    snapshot_versions: [
+      20_260_923_000_000,
+      20_260_924_000_000,
+      20_260_926_000_000,
+      20_260_927_000_000,
+      20_260_928_000_000,
+      20_260_929_000_000,
+      20_261_015_000_003
+    ]
+  }
 
   @spec current() :: map()
   def current, do: @current
 
   @spec fetch(term()) :: {:ok, map()} | :error
   def fetch("dbb8804b3d7293178e571fa7afdf6bd47d06a51c"), do: {:ok, @legacy}
-  def fetch("fb1b4ff82354ac8ff2e82d4f6516121fd55ff212"), do: {:ok, @current}
+  def fetch("fb1b4ff82354ac8ff2e82d4f6516121fd55ff212"), do: {:ok, @previous}
+  def fetch("ccb19732c7225a6bc88556f8f743bab7bda41a5b"), do: {:ok, @current}
   def fetch(_), do: :error
 
   @spec maximum_migrations() :: pos_integer()

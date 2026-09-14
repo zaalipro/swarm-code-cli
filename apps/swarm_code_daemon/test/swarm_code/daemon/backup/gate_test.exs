@@ -108,7 +108,7 @@ defmodule SwarmCode.Daemon.Backup.GateTest do
              [Path.basename(artifact.database), Path.basename(artifact.manifest)] |> Enum.sort()
   end
 
-  test "a genuine current ready decision backs up all 46 migrations and newly persisted values" do
+  test "a genuine current ready decision backs up all 53 migrations and newly persisted values" do
     fixture = migration_fixture!(lineage: :current)
     assert fixture.decision.status == :ready
     assert fixture.decision.pending == []
@@ -140,7 +140,7 @@ defmodule SwarmCode.Daemon.Backup.GateTest do
     assert {:ok, artifact} = create(fixture)
     assert source_state(fixture.db) == before
     assert {:ok, manifest} = Manifest.decode(bounded_read!(artifact.manifest, 4_194_304))
-    assert length(manifest["migrations"]) == 46
+    assert length(manifest["migrations"]) == 53
     assert manifest["migrations"] == fixture.decision.applied
     assert manifest["independent_restore"]["migrations"] == fixture.decision.applied
     assert manifest["independent_restore"]["verified"] == true
@@ -154,7 +154,7 @@ defmodule SwarmCode.Daemon.Backup.GateTest do
     restored = Path.join(Path.dirname(fixture.db), "independent-current-restore.db")
     copy_private!(artifact.database, restored)
     assert {:ok, probe} = Probe.inspect(restored)
-    assert length(probe.migration_versions) == 46
+    assert length(probe.migration_versions) == 53
     assert probe.quick_check == [["ok"]]
     assert probe.foreign_key_violations == []
     assert probe.schema_sha256 == fixture.decision.probe.schema_sha256

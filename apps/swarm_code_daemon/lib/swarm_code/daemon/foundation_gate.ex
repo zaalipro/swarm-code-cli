@@ -21,7 +21,7 @@ defmodule SwarmCode.Daemon.FoundationGate do
   alias SwarmCode.Daemon.Schema.MigrationManifest
   alias SwarmCode.Daemon.StartupError
 
-  @manifest_source Path.expand("../../../priv/schema/desktop-fb1b4ff.json", __DIR__)
+  @manifest_source Path.expand("../../../priv/schema/desktop-ccb1973.json", __DIR__)
   @external_resource @manifest_source
   @audited_manifest MigrationManifest.load!(@manifest_source)
   @schema_contract %{

@@ -1736,6 +1736,62 @@
       "upstream_commit": "fb1b4ff82354ac8ff2e82d4f6516121fd55ff212",
       "upstream_path": "lib/swarm_code_web/live/workspace_live.ex",
       "upstream_sha256": "5b081d749d362ab34b1838acede8e593d64aa83c42f93a5865f7d4d2483dd4b9"
+    },
+    {
+      "classification": "source",
+      "destination": "apps/swarm_code_daemon/priv/domain_repo/migrations/20260930000000_mcp_disabled_tools.exs",
+      "sha256": "efe0d2493ff55cb9adc24448c3f79935df0657f424ad591c6c5a2a798ac32a61",
+      "upstream_commit": "ccb19732c7225a6bc88556f8f743bab7bda41a5b",
+      "upstream_path": "priv/repo/migrations/20260930000000_mcp_disabled_tools.exs",
+      "upstream_sha256": "dc01fef0a2d3463208ed049d17a0ac547a43061855c12e38422658a4a903cfe9"
+    },
+    {
+      "classification": "source",
+      "destination": "apps/swarm_code_daemon/priv/domain_repo/migrations/20261001000000_project_auto_approve.exs",
+      "sha256": "3ab42f70271a5aea072e661dc0717de44ad972a8bc066ae4da160912878a4e35",
+      "upstream_commit": "ccb19732c7225a6bc88556f8f743bab7bda41a5b",
+      "upstream_path": "priv/repo/migrations/20261001000000_project_auto_approve.exs",
+      "upstream_sha256": "4f7a653fff46a92cf8813d7514e06eb4815448291d79973de83bda2614d6a1ef"
+    },
+    {
+      "classification": "source",
+      "destination": "apps/swarm_code_daemon/priv/domain_repo/migrations/20261001000001_shell_settings.exs",
+      "sha256": "9fbbb561e84bba8168f75259e32890eaef70b4f471b5c65c3914cff615ea14eb",
+      "upstream_commit": "ccb19732c7225a6bc88556f8f743bab7bda41a5b",
+      "upstream_path": "priv/repo/migrations/20261001000001_shell_settings.exs",
+      "upstream_sha256": "26e3a20679f853a359b5c84e8db01d39eaad77b70e0ef840813cdceb5da583ea"
+    },
+    {
+      "classification": "source",
+      "destination": "apps/swarm_code_daemon/priv/domain_repo/migrations/20261015000000_compact_due.exs",
+      "sha256": "add1b473bbdd454e6573ce2818688389a8f61073a29c250df165dc04a4386e02",
+      "upstream_commit": "ccb19732c7225a6bc88556f8f743bab7bda41a5b",
+      "upstream_path": "priv/repo/migrations/20261015000000_compact_due.exs",
+      "upstream_sha256": "696e6b99f1646f708b62bc1337d0de8f497cc37ce9ea25554bf1a086f6bc9808"
+    },
+    {
+      "classification": "source",
+      "destination": "apps/swarm_code_daemon/priv/domain_repo/migrations/20261015000001_error_kind.exs",
+      "sha256": "b0d8c884bca8998d2d926e60c29ad679d280fdd43b418958562c7d1d8c787923",
+      "upstream_commit": "ccb19732c7225a6bc88556f8f743bab7bda41a5b",
+      "upstream_path": "priv/repo/migrations/20261015000001_error_kind.exs",
+      "upstream_sha256": "c3db08b95ee55e9a5302f83a1711d9687dbf0d970edd59200e2fe8d35b6d9f9c"
+    },
+    {
+      "classification": "source",
+      "destination": "apps/swarm_code_daemon/priv/domain_repo/migrations/20261015000002_project_trust.exs",
+      "sha256": "dba3d0103a0e353458dcfb36ab75538d6e5a20dade003cec5797585f030ed027",
+      "upstream_commit": "ccb19732c7225a6bc88556f8f743bab7bda41a5b",
+      "upstream_path": "priv/repo/migrations/20261015000002_project_trust.exs",
+      "upstream_sha256": "2364ad1576b1c615725b48132e387246029ead9be18a8489253dc5a0e39437b9"
+    },
+    {
+      "classification": "source",
+      "destination": "apps/swarm_code_daemon/priv/domain_repo/migrations/20261015000003_sub_agent_timeout.exs",
+      "sha256": "d91031fb4811050ff0dcb97f1cae6370b95145e07b57e8c6836505f0e17888f2",
+      "upstream_commit": "ccb19732c7225a6bc88556f8f743bab7bda41a5b",
+      "upstream_path": "priv/repo/migrations/20261015000003_sub_agent_timeout.exs",
+      "upstream_sha256": "df5bacfee3402e35dcc7c6f1b3a4c944f9ff4359c1920be865b00fe02beb653b"
     }
   ]
 }

@@ -3,6 +3,17 @@ defmodule SwarmCode.Daemon.Schema.GateTest do
 
   alias SwarmCode.Daemon.Schema.{Gate, MigrationManifest, Probe}
 
+  # Migrations the pinned contract appends after the former desktop-fb1b4ff tail.
+  @appended_suffix [
+    20_260_930_000_000,
+    20_261_001_000_000,
+    20_261_001_000_001,
+    20_261_015_000_000,
+    20_261_015_000_001,
+    20_261_015_000_002,
+    20_261_015_000_003
+  ]
+
   setup do
     manifest = MigrationManifest.load!()
     %{manifest: manifest, current: SchemaFixture.database!(:current)}
@@ -16,7 +27,7 @@ defmodule SwarmCode.Daemon.Schema.GateTest do
 
     assert {:ok, decision} = Gate.check(database, manifest, "0.1.0-dev")
     assert decision.status == :ready
-    assert List.last(decision.applied) == 20_260_929_000_000
+    assert List.last(decision.applied) == 20_261_015_000_003
     assert decision.pending == []
     assert sha256_file(database) == before
   end
@@ -34,16 +45,18 @@ defmodule SwarmCode.Daemon.Schema.GateTest do
              20_260_926_000_000,
              20_260_927_000_000,
              20_260_928_000_000,
-             20_260_929_000_000
+             20_260_929_000_000 | @appended_suffix
            ]
 
     assert sha256_file(database) == before
   end
 
   for {version, pending_versions} <- [
-        {20_260_926_000_000, [20_260_927_000_000, 20_260_928_000_000, 20_260_929_000_000]},
-        {20_260_927_000_000, [20_260_928_000_000, 20_260_929_000_000]},
-        {20_260_928_000_000, [20_260_929_000_000]}
+        {20_260_926_000_000,
+         [20_260_927_000_000, 20_260_928_000_000, 20_260_929_000_000 | @appended_suffix]},
+        {20_260_927_000_000, [20_260_928_000_000, 20_260_929_000_000 | @appended_suffix]},
+        {20_260_928_000_000, [20_260_929_000_000 | @appended_suffix]},
+        {20_260_929_000_000, @appended_suffix}
       ] do
     test "the exact #{version} prefix requests its current suffix", %{manifest: manifest} do
       database = SchemaFixture.database!({:prefix, unquote(version)})
@@ -58,12 +71,12 @@ defmodule SwarmCode.Daemon.Schema.GateTest do
   end
 
   test "the explicit final prefix is the current schema", %{manifest: manifest} do
-    database = SchemaFixture.database!({:prefix, 20_260_929_000_000})
+    database = SchemaFixture.database!({:prefix, 20_261_015_000_003})
 
     assert {:ok, %{status: :ready, applied: applied}} =
              Gate.check(database, manifest, "0.1.0-dev")
 
-    assert length(applied) == 46
+    assert length(applied) == 53
   end
 
   test "a wrong current column shape refuses with source and WAL sidecars unchanged", %{
@@ -126,7 +139,7 @@ defmodule SwarmCode.Daemon.Schema.GateTest do
     assert {:ok, %{status: :new_database, applied: [], pending: pending}} =
              Gate.check(database, manifest, "0.1.0-dev")
 
-    assert length(pending) == 46
+    assert length(pending) == 53
     refute File.exists?(database)
   end
 
@@ -164,10 +177,10 @@ defmodule SwarmCode.Daemon.Schema.GateTest do
     assert {:ok, probe} = Probe.inspect(database)
     assert probe.application_id == 0
     assert hd(probe.migration_versions) == 20_260_820_000_001
-    assert List.last(probe.migration_versions) == 20_260_929_000_000
+    assert List.last(probe.migration_versions) == 20_261_015_000_003
 
     assert probe.schema_sha256 ==
-             "0f4b2b71ccd619b82a355062cfa405fc64b6cf982d6d2917631c57d688e833ea"
+             "cd6ee5ce99c4adc8587993eb9b4cf4758e7e4e6c31bc28cc64b3df8395777b82"
 
     assert probe.quick_check == [["ok"]]
     assert probe.foreign_key_violations == []
@@ -176,7 +189,7 @@ defmodule SwarmCode.Daemon.Schema.GateTest do
     assert sha256_file(database) == before
   end
 
-  test "the probe rejects on the 47th migration row without mutation", %{current: database} do
+  test "the probe rejects on the 54th migration row without mutation", %{current: database} do
     SchemaFixture.insert_migration!(database, 20_990_101_000_000)
     _writer = SchemaFixture.open_uncheckpointed_wal!(database)
     before = source_bytes(database)
@@ -195,7 +208,7 @@ defmodule SwarmCode.Daemon.Schema.GateTest do
     wal = File.lstat!(database <> "-wal")
 
     assert {:ok, %{probe: probe, binding: binding}} = Probe.inspect_bound(database)
-    assert length(probe.migration_versions) == 46
+    assert length(probe.migration_versions) == 53
     assert binding.path == database
     assert elem(binding.identity, 3) == main.inode
     assert elem(binding.sidecars["-wal"], 3) == wal.inode

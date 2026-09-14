@@ -57,7 +57,7 @@ defmodule SwarmCode.Daemon.GuardedRepoTest do
     assert {:ok, _repo} = RepoLauncher.await_ready(launcher, 90_000)
 
     Task.async(fn ->
-      assert [[46]] = Repo.query!("SELECT count(*) FROM schema_migrations").rows
+      assert [[53]] = Repo.query!("SELECT count(*) FROM schema_migrations").rows
 
       assert %{num_rows: 1} =
                Repo.query!(
@@ -87,7 +87,7 @@ defmodule SwarmCode.Daemon.GuardedRepoTest do
     assert {:ok, _} = RepoLauncher.await_ready(launcher, 90_000)
 
     Task.async(fn ->
-      assert [[46]] = Repo.query!("SELECT count(*) FROM schema_migrations").rows
+      assert [[53]] = Repo.query!("SELECT count(*) FROM schema_migrations").rows
       assert [["Before"]] = Repo.query!("SELECT name FROM projects WHERE id='project'").rows
     end)
     |> Task.await()
