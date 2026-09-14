@@ -159,7 +159,8 @@ defmodule SwarmCodeCLI.UI.Paint.ProjectorTest do
       {scene, _, plan} = paint(state)
       composer = Enum.find(scene.regions, &(&1.role == :composer))
       assert plan.cursor == scene.cursor
-      assert plan.cursor.x == composer.rect.x + Width.cells(prefix, policy)
+      # +2 accounts for the 2-cell composer gutter (▐ or > in ASCII)
+      assert plan.cursor.x == composer.rect.x + 2 + Width.cells(prefix, policy)
       assert plan.cursor.y == composer.rect.y
       assert {:glyph, "X", 1, _} = Plan.cell(plan, plan.cursor.x, plan.cursor.y)
       assert row(plan, composer.rect.y, composer.rect.x, composer.rect.width) =~ prefix <> "X"

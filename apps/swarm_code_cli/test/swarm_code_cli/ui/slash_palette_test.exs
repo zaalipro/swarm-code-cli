@@ -111,7 +111,8 @@ defmodule SwarmCodeCLI.UI.SlashPaletteTest do
       rect = %Rect{x: 2, y: 4, width: width, height: height}
       {blocks, cursor} = Composer.project(original, rect)
       assert %Block.Composer{} = hd(blocks)
-      assert cursor.x == 5 and cursor.y == 4
+      # +2 accounts for the 2-cell composer gutter
+      assert cursor.x == 7 and cursor.y == 4
       assert length(blocks) <= height
 
       for %Block.Text{text: safe} <- blocks do
