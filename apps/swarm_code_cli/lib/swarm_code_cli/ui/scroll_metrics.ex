@@ -1,13 +1,15 @@
 defmodule SwarmCodeCLI.UI.ScrollMetrics do
   @moduledoc "Pure, lazy logical text-line measurements using the same escaping and width policy as projection."
   alias SwarmCodeCLI.UI.{Layout, ReadModel, Transcript}
+  alias SwarmCodeCLI.UI.Projector.Shell
 
   def viewport(state, region) do
     layout = Layout.calculate(state.size, state.preferences)
     Map.get(layout.rects, region, layout.rects.main)
   end
 
-  def content_height(state, :navigator), do: max(1, viewport(state, :navigator).height - 1)
+  def content_height(state, :navigator),
+    do: max(1, viewport(state, :navigator).height - 1 - Shell.navigator_fixed_rows(state))
 
   def content_height(state, :main) do
     rect = viewport(state, :main)
