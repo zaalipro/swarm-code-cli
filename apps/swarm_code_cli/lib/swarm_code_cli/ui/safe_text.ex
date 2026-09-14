@@ -178,6 +178,8 @@ defmodule SwarmCodeCLI.UI.SafeText do
           | :composer_gutter_ascii
           | :pipeline_arrow_ascii
           | :plan_done_ascii
+          | :glyph_failed
+          | :glyph_failed_ascii
 
   def chrome(:full_detail), do: %__MODULE__{token: :full_detail}
   def chrome(:next_page), do: %__MODULE__{token: :next_page}
@@ -330,6 +332,8 @@ defmodule SwarmCodeCLI.UI.SafeText do
   def chrome(:composer_gutter_ascii), do: %__MODULE__{token: :composer_gutter_ascii}
   def chrome(:pipeline_arrow_ascii), do: %__MODULE__{token: :pipeline_arrow_ascii}
   def chrome(:plan_done_ascii), do: %__MODULE__{token: :plan_done_ascii}
+  def chrome(:glyph_failed), do: %__MODULE__{token: :glyph_failed}
+  def chrome(:glyph_failed_ascii), do: %__MODULE__{token: :glyph_failed_ascii}
 
   def value(%{__struct__: __MODULE__, token: :full_detail} = text) when map_size(text) == 2,
     do: "Full text"
@@ -779,6 +783,13 @@ defmodule SwarmCodeCLI.UI.SafeText do
 
   def value(%{__struct__: __MODULE__, token: :plan_done_ascii} = text) when map_size(text) == 2,
     do: "*"
+
+  def value(%{__struct__: __MODULE__, token: :glyph_failed} = text) when map_size(text) == 2,
+    do: "✗"
+
+  def value(%{__struct__: __MODULE__, token: :glyph_failed_ascii} = text)
+      when map_size(text) == 2,
+      do: "x"
 
   def value(%{__struct__: __MODULE__, token: {:external, binary}} = text)
       when map_size(text) == 2 and is_binary(binary) do

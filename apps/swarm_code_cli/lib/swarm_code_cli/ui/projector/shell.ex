@@ -94,7 +94,7 @@ defmodule SwarmCodeCLI.UI.Projector.Shell do
     shell_snapshot = Map.get(state.read_model.snapshots, :shell)
     counts = shell_snapshot && Map.get(shell_snapshot, :counts)
 
-    right_parts = counts_parts(counts)
+    right_parts = counts_parts(counts, state)
     right_text = Enum.join(right_parts, " · ")
     right_cells = if right_text == "", do: 0, else: Width.cells(right_text, policy)
 
@@ -326,26 +326,20 @@ defmodule SwarmCodeCLI.UI.Projector.Shell do
     end)
   end
 
-  defp counts_parts(nil), do: []
+  defp counts_parts(nil, _state), do: []
 
-  defp counts_parts(counts) do
-    parts = []
-
-    parts =
-      if counts.running > 0,
-        do: parts ++ ["◉ #{counts.running} running"],
-        else: parts
-
-    parts =
-      if counts.waiting > 0,
-        do: parts ++ ["◌ #{counts.waiting} waiting"],
-        else: parts
-
-    parts =
-      if counts.failed > 0,
-        do: parts ++ ["✗ #{counts.failed} failed"],
-        else: parts
-
-    parts
+  # Glyphs go through Support.glyph/2 so they degrade to their one-cell ASCII twins in ASCII mode
+  # (a bare SafeText.chrome/1 here would leave Unicode on screen; see ORCHESTRATOR_NOTES_2 #36).
+  defp counts_parts(counts, state) do
+    for {field, token, word} <- [
+          {:running, :glyph_selected, "running"},
+          {:waiting, :glyph_inactive, "waiting"},
+          {:failed, :glyph_failed, "failed"}
+        ],
+        count = Map.get(counts, field, 0),
+        count > 0 do
+      SafeText.value(Support.glyph(token, state)) <>
+        " " <> Integer.to_string(count) <> " " <> word
+    end
   end
 end

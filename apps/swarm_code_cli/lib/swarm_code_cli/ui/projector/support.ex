@@ -39,7 +39,8 @@ defmodule SwarmCodeCLI.UI.Projector.Support do
     glyph_changes: :glyph_changes_ascii,
     composer_gutter: :composer_gutter_ascii,
     pipeline_arrow: :pipeline_arrow_ascii,
-    plan_done: :plan_done_ascii
+    plan_done: :plan_done_ascii,
+    glyph_failed: :glyph_failed_ascii
   }
 
   @doc "Catalogue glyph for the terminal's capabilities; always one cell in both width policies."
