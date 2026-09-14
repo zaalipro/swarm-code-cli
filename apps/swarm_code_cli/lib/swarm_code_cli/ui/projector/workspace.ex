@@ -24,7 +24,8 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
           welcome_content(state, rect.width, height)
       end
 
-    chrome.mandatory ++ chrome.summary ++ Enum.take(chrome.notices, 2) ++ chrome.deck ++ content
+    chrome.mandatory ++
+      chrome.summary ++ Enum.take(chrome.notices, 2) ++ chrome.deck ++ chrome.separator ++ content
   end
 
   @doc "Exact Main text viewport rows after required chrome, notices and action decks."
@@ -32,7 +33,10 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
     do: content_height(state, rect, class, chrome(state, rect, class))
 
   defp content_height(state, rect, _class, chrome) do
-    blocks = chrome.mandatory ++ chrome.summary ++ Enum.take(chrome.notices, 2) ++ chrome.deck
+    blocks =
+      chrome.mandatory ++
+        chrome.summary ++ Enum.take(chrome.notices, 2) ++ chrome.deck ++ chrome.separator
+
     {blocks, _measurement_actions} = Support.finalize(blocks, state.revision)
 
     options = %Options{
@@ -81,7 +85,7 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
 
     summary =
       if run,
-        do: [card(state, run, rect.width, class) | mode_panel(state, run, rect.width)],
+        do: [card(state, run, rect.width, class) | mode_panel(state, run, rect.width, class)],
         else: []
 
     actions =
@@ -102,7 +106,18 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
 
     deck = if actions == [], do: [], else: [%Block.ActionDeck{actions: actions}]
 
-    %{run: run, mandatory: mandatory, notices: notices, summary: summary, deck: deck}
+    # Blank separator row between chrome and transcript (decision 34):
+    # produced inside chrome/3 so BOTH project/3 AND content_height/4 see it.
+    separator = if run, do: [Support.text(" ", state, rect.width)], else: []
+
+    %{
+      run: run,
+      mandatory: mandatory,
+      notices: notices,
+      summary: summary,
+      deck: deck,
+      separator: separator
+    }
   end
 
   defp welcome_content(state, width, height) when height > 0 do
@@ -153,27 +168,40 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
 
   defp welcome_content(_state, _width, _height), do: []
 
-  defp mode_panel(state, run, width) do
-    case run.kind do
-      :goal ->
+  defp mode_panel(state, run, width, class) do
+    plan? = match?(%{mode: :plan}, Map.get(state.read_model.snapshots, :workspace))
+
+    cond do
+      run.kind == :goal and class in [:xl, :wide] ->
+        # Goal sidecard at xl/wide: title bold in run_goal, subtitle, progress
+        [
+          Support.styled(run.title, :run_goal, state, width),
+          Support.styled("Persistent objective", :text_muted, state, width),
+          progress(run, state, width)
+        ]
+
+      run.kind == :goal ->
         [Support.styled("GOAL PROGRESS", :run_goal, state, width), progress(run, state, width)]
 
-      :ultra ->
-        [Support.styled("PIPELINE  PLAN  →  BUILD  →  VERIFY", :run_ultra, state, width)]
+      run.kind == :ultra ->
+        [Support.styled("PLAN ❯ BUILD ❯ VERIFY", :run_ultra, state, width)]
 
-      :workflow ->
+      run.kind == :workflow ->
         [Support.styled("WORKFLOW RUN  ·  inputs and stages", :run_workflow, state, width)]
 
-      :consensus ->
+      run.kind == :consensus ->
         [Support.styled("CONSENSUS  ·  plan ↔ changes", :run_consensus_judge, state, width)]
 
-      :research ->
+      run.kind == :research ->
         [Support.styled("RESEARCH  ·  report and sources", :run_research, state, width)]
 
-      :swarm ->
+      run.kind == :swarm ->
         [Support.styled("SWARM  ·  parallel agent lanes", :run_swarm, state, width)]
 
-      _ ->
+      plan? ->
+        plan_panel(state, run, width)
+
+      true ->
         []
     end
   end
@@ -186,8 +214,90 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
     }
   end
 
+  defp plan_panel(state, run, width) do
+    items =
+      state.read_model.transcript
+      |> Enum.sort_by(&elem(&1, 0))
+      |> Enum.filter(fn {_, i} -> i.run_id == run.id end)
+      |> Enum.flat_map(fn {_, i} ->
+        Regex.scan(~r/^\s*- \[([ xX])\]\s+(.+)$/m, i.text || "", capture: :all_but_first)
+        |> Enum.map(fn [mark, label] -> {mark in ["x", "X"], label} end)
+      end)
+
+    heading = [Support.section_heading("PLAN STEPS", state, width)]
+
+    checklist =
+      if items == [] do
+        [Support.styled("No checklist items reported yet.", :text_muted, state, width)]
+      else
+        Enum.map(items, fn {done, label} ->
+          glyph =
+            if done,
+              do: SafeText.value(Support.glyph(:plan_done, state)),
+              else: SafeText.value(Support.glyph(:glyph_inactive, state))
+
+          Support.styled(glyph <> " " <> label, :body, state, width)
+        end)
+      end
+
+    gate = plan_gate_actions(state, run)
+    heading ++ checklist ++ gate
+  end
+
+  defp plan_gate_actions(state, run) do
+    # Decision 23: plan gate uses :approve / :deny from pending approval interactions.
+    # Find pending approval interactions for this run.
+    approval =
+      state.read_model.interactions
+      |> Enum.sort_by(&elem(&1, 0))
+      |> Enum.find(fn {_, item} ->
+        item.run_id == run.id and item.kind == :approval and item.state == :pending and
+          not superseded?(state, item)
+      end)
+
+    case approval do
+      {id, _item} ->
+        approve_action =
+          if Support.allowed?(state, run, :approve),
+            do: [
+              Support.action(
+                SafeText.chrome(:plan_approve),
+                {:local, {:open_layer, {:approval, id}}}
+              )
+            ],
+            else: []
+
+        decline_action =
+          if Support.allowed?(state, run, :deny),
+            do: [
+              Support.action(
+                SafeText.chrome(:plan_decline),
+                {:local, {:open_layer, {:approval, id}}}
+              )
+            ],
+            else: []
+
+        steer_action =
+          if Support.allowed?(state, run, :steer),
+            do: [
+              Support.action(
+                SafeText.chrome(:plan_revise),
+                {:local, {:open_layer, {:approval, id}}}
+              )
+            ],
+            else: []
+
+        actions = approve_action ++ steer_action ++ decline_action
+        if actions == [], do: [], else: [%Block.ActionDeck{actions: actions}]
+
+      nil ->
+        []
+    end
+  end
+
   defp activity_content(state, width, height) do
-    items = state.read_model.activity |> Enum.sort_by(&elem(&1, 0))
+    items =
+      state.read_model.activity |> Enum.sort_by(fn {_, item} -> urgency_rank(item.state) end)
 
     blocks =
       items
@@ -199,6 +309,14 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
 
     [%Block.VirtualList{total_count: length(items), first_index: 0, items: blocks, overscan: 0}]
   end
+
+  # Activity urgency sort: pending first, then running/streaming, then failed, then everything else.
+  defp urgency_rank(:waiting_question), do: 0
+  defp urgency_rank(:waiting_approval), do: 0
+  defp urgency_rank(:running), do: 1
+  defp urgency_rank(:streaming), do: 1
+  defp urgency_rank(:failed), do: 2
+  defp urgency_rank(_), do: 3
 
   defp detail_actions(state) do
     run = Support.run(state)
@@ -415,11 +533,20 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
 
     blocks = if follow?, do: blocks, else: Enum.reverse(blocks)
 
+    # Detached-from-bottom indicator: when not following and newer items exist below
+    visible_count = length(blocks)
+    newer = length(items) - first - visible_count
+
+    detached_indicator =
+      if not (follow? || false) and newer > 0,
+        do: [Support.styled("#{newer} new", :info, state, width)],
+        else: []
+
     [
       %Block.VirtualList{
         total_count: length(items),
         first_index: min(first, length(items)),
-        items: blocks,
+        items: blocks ++ detached_indicator,
         before_cursor: cursor(state, :before_cursor),
         after_cursor: cursor(state, :after_cursor),
         overscan: 0

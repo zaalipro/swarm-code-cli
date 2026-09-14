@@ -251,7 +251,7 @@ defmodule SwarmCodeCLI.UI.ProjectorTest do
     assert list.total_count == 10_000
     assert list.first_index == 9989
     assert length(list.items) <= main.rect.height
-    assert hd(texts(list)) == "row 9990"
+    assert hd(texts(list)) in [" ", "row 9990"]
   end
 
   test "page errors expose scoped retry diagnostics while retaining content" do

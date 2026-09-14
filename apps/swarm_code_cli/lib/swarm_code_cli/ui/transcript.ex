@@ -1,6 +1,6 @@
 defmodule SwarmCodeCLI.UI.Transcript do
   @moduledoc "Shared lazy rendered transcript rows for scroll measurement and projection."
-  alias SwarmCodeCLI.UI.{Prose, SafeText, Width}
+  alias SwarmCodeCLI.UI.{Prose, SafeText, Theme, Width}
   alias SwarmCodeCLI.UI.Paint.{Markdown, Options, Text}
   alias SwarmCodeCLI.UI.Paint.Style, as: PaintStyle
   alias SwarmCodeCLI.UI.Scene.{Block, Color, Span, Style}
@@ -20,11 +20,35 @@ defmodule SwarmCodeCLI.UI.Transcript do
     {:ok, base} = PaintStyle.resolve(%Style{role: :text_primary}, @base, options.color_mode)
     policy = capabilities.ambiguous_width
 
+    # Editorial turn meta styles (decision 15)
+    {:ok, faint} = PaintStyle.resolve(%Style{role: :text_faint}, @base, options.color_mode)
+    faint_bold = %{faint | modifiers: Enum.uniq(faint.modifiers ++ [:bold])}
+    {:ok, muted} = PaintStyle.resolve(%Style{role: :text_muted}, @base, options.color_mode)
+
+    theme_kind = theme_kind(kind)
+
+    {:ok, kind_style} =
+      PaintStyle.resolve(
+        %Style{role: elem(Theme.run_kind(theme_kind), 1)},
+        @base,
+        options.color_mode
+      )
+
+    kind_glyph = SafeText.value(elem(Theme.run_kind(theme_kind), 0))
+
+    # Turn label rows: blank separator + role label
+    label =
+      case item.role do
+        :user -> [plain(" ", base), plain("YOU", faint_bold)]
+        :assistant -> [plain(" ", base), plain(kind_glyph <> " assistant", kind_style)]
+        :tool -> [plain(" ", base), plain("tool", muted)]
+        :system -> [plain(" ", base), plain("system", faint)]
+        _ -> []
+      end
+
     {prefix, content} =
       cond do
         item.state == :superseded ->
-          {:ok, muted} = PaintStyle.resolve(%Style{role: :text_muted}, base, options.color_mode)
-
           {[plain(SafeText.value(SafeText.chrome(:status_superseded)), muted)],
            plain_lines(text, muted)}
 
@@ -45,7 +69,7 @@ defmodule SwarmCodeCLI.UI.Transcript do
           {[], plain_lines(text, base)}
       end
 
-    Stream.concat(prefix, content)
+    Stream.concat(label ++ prefix, content)
     |> Stream.flat_map(&layout(&1, width, policy))
   end
 
@@ -168,4 +192,9 @@ defmodule SwarmCodeCLI.UI.Transcript do
 
   defp color(nil), do: nil
   defp color(value), do: %Color{role: :default, value: value}
+
+  # Map run kind to Theme.run_kind/1 key (same mapping as Workspace.kind/1)
+  defp theme_kind(:chat), do: :assistant
+  defp theme_kind(:consensus), do: :consensus_judge
+  defp theme_kind(kind), do: kind
 end

@@ -90,7 +90,7 @@ defmodule SwarmCodeCLI.UI.Projector.Mode do
     status = to_string(run.state)
 
     [
-      Support.styled("PLAN  →  BUILD  →  VERIFY", :run_ultra, state, width),
+      Support.styled("PLAN ❯ BUILD ❯ VERIFY", :run_ultra, state, width),
       Support.text("Run status · " <> status, state, width),
       Support.text(
         if(rows == [],
@@ -113,9 +113,9 @@ defmodule SwarmCodeCLI.UI.Projector.Mode do
   defp consensus(rows, state, width) do
     [
       Support.styled("Consensus", :heading, state, width),
-      Support.styled("PLAN", :run_consensus_judge, state, width),
+      Support.section_heading("PLAN", state, width),
       Support.text(section(rows, "plan"), state, width),
-      Support.styled("CHANGES", :run_consensus_judge, state, width),
+      Support.section_heading("CHANGES", state, width),
       Support.text(section(rows, "change"), state, width),
       Support.text("Docket 01 · " <> section(rows, "docket"), state, width),
       Support.text("Ledger: " <> section(rows, "ledger"), state, width)
@@ -125,9 +125,9 @@ defmodule SwarmCodeCLI.UI.Projector.Mode do
   defp research(rows, state, width) do
     [
       Support.styled("Research report", :heading, state, width),
-      Support.styled("RESEARCH REPORT", :run_research, state, width),
+      Support.section_heading("RESEARCH REPORT", state, width),
       Support.text(section(rows, "report"), state, width),
-      Support.styled("SOURCES", :run_research, state, width),
+      Support.section_heading("SOURCES", state, width),
       Support.text(section(rows, "source"), state, width),
       Support.text("Fixture notes · " <> section(rows, "notes"), state, width)
     ]
