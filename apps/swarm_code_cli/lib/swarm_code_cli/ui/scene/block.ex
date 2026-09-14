@@ -14,7 +14,8 @@ defmodule SwarmCodeCLI.UI.Scene.Block do
     KeyValues,
     Composer,
     Notice,
-    ActionDeck
+    ActionDeck,
+    Diff
   }
 
   @type t ::
@@ -33,6 +34,7 @@ defmodule SwarmCodeCLI.UI.Scene.Block do
           | Composer.t()
           | Notice.t()
           | ActionDeck.t()
+          | Diff.t()
   def modules,
     do: [
       Text,
@@ -49,6 +51,7 @@ defmodule SwarmCodeCLI.UI.Scene.Block do
       KeyValues,
       Composer,
       Notice,
-      ActionDeck
+      ActionDeck,
+      Diff
     ]
 end

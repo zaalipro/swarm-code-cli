@@ -20,7 +20,8 @@ defmodule SwarmCodeCLI.UI.Paint.Blocks do
     Block.KeyValues,
     Block.Composer,
     Block.Notice,
-    Block.ActionDeck
+    Block.ActionDeck,
+    Block.Diff
   ]
   @statuses [
     :queued,
@@ -185,7 +186,76 @@ defmodule SwarmCodeCLI.UI.Paint.Blocks do
        when is_list(tabs) and is_integer(selected) and selected >= 0,
        do: inline(tabs, ctx, rows, selected, 0, [])
 
+  # Header first, then each hunk; the caller's row budget is honored between
+  # every line so a long diff degrades to its first rows instead of failing.
+  defp block(
+         %Block.Diff{
+           path: path,
+           added: added,
+           removed: removed,
+           hunks: hunks,
+           truncated?: truncated?
+         },
+         ctx,
+         rows
+       )
+       when is_list(hunks) and is_integer(added) and added >= 0 and is_integer(removed) and
+              removed >= 0 and is_boolean(truncated?) do
+    header =
+      render(
+        [
+          run(path, role(:title, ctx)),
+          raw("  +" <> Integer.to_string(added), role(:success, ctx)),
+          raw("  -" <> Integer.to_string(removed), role(:error, ctx))
+        ],
+        ctx,
+        rows
+      )
+
+    body = diff_hunks(hunks, ctx, rows - length(header))
+
+    marker =
+      if truncated? do
+        render(
+          [raw(if(ctx.options.ascii?, do: "...", else: "…"), role(:text_muted, ctx))],
+          ctx,
+          rows - length(header) - length(body)
+        )
+      else
+        []
+      end
+
+    header ++ body ++ marker
+  end
+
   defp block(_, _, _), do: fail(:invalid_scene)
+
+  defp diff_hunks(_, _, rows) when rows <= 0, do: []
+  defp diff_hunks([], _, _), do: []
+
+  defp diff_hunks([{header, lines} | rest], ctx, rows) do
+    head = render([run(header, role(:info, ctx))], ctx, rows)
+    body = diff_lines(lines, ctx, rows - length(head))
+    used = length(head) + length(body)
+    head ++ body ++ diff_hunks(rest, ctx, rows - used)
+  end
+
+  defp diff_hunks(_, _, _), do: fail(:invalid_scene)
+
+  defp diff_lines(_, _, rows) when rows <= 0, do: []
+  defp diff_lines([], _, _), do: []
+
+  defp diff_lines([{kind, text} | rest], ctx, rows) when kind in [:add, :del, :ctx, :meta] do
+    line = render([run(text, role(diff_role(kind), ctx))], ctx, rows)
+    line ++ diff_lines(rest, ctx, rows - length(line))
+  end
+
+  defp diff_lines(_, _, _), do: fail(:invalid_scene)
+
+  defp diff_role(:add), do: :success
+  defp diff_role(:del), do: :error
+  defp diff_role(:meta), do: :text_muted
+  defp diff_role(:ctx), do: :text_primary
 
   defp key_values(_, _, 0, _), do: []
   defp key_values([], _, _, _), do: []

@@ -60,7 +60,16 @@ defmodule SwarmCodeCLI.UI.Paint.BlocksTest do
       {%Block.Composer{text: safe(""), placeholder: safe("Type here")}, ["Type here"]},
       {%Block.Notice{text: safe("Ready"), severity: :info, action_id: "notice"},
        ["[INFO] Ready"]},
-      {%Block.ActionDeck{actions: [safe("Yes"), safe("No")]}, ["Yes  No"]}
+      {%Block.ActionDeck{actions: [safe("Yes"), safe("No")]}, ["Yes  No"]},
+      {%Block.Diff{
+         path: safe("lib/foo.ex"),
+         added: 1,
+         removed: 1,
+         hunks: [
+           {safe("@@ -1 +1 @@"),
+            [{:ctx, safe(" keep")}, {:del, safe("-old")}, {:add, safe("+new")}]}
+         ]
+       }, ["lib/foo.ex  +1  -1", "@@ -1 +1 @@", " keep", "-old", "+new"]}
     ]
 
     assert MapSet.new(Enum.map(cases, fn {block, _} -> block.__struct__ end)) ==

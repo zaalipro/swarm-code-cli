@@ -142,7 +142,8 @@ defmodule SwarmCodeCLI.UI.Action do
             :toggle,
             :run_now,
             :update,
-            :clear
+            :clear,
+            :diff
           ]
       )
 

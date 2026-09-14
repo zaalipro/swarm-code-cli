@@ -174,6 +174,12 @@ defmodule SwarmCodeCLI.UI.Library do
              focus: "cancel_action"
          }, []}
 
+      # The catalog returns a file's diff as that row's detail when the query
+      # names it, so Diff re-queries this page for the selected path rather
+      # than sending a command the domain does not define.
+      action == :diff ->
+        request(state, state.library.cursor, id)
+
       action == :start and feature == :workflows ->
         case Enum.find(body.items, &(&1.id == id)) do
           %{form: %DTO.FeatureForm{} = form} ->
@@ -263,7 +269,8 @@ defmodule SwarmCodeCLI.UI.Library do
                 :report,
                 :toggle,
                 :run_now,
-                :clear
+                :clear,
+                :diff
               ])
           ),
         else: []
@@ -375,14 +382,14 @@ defmodule SwarmCodeCLI.UI.Library do
     end
   end
 
-  defp request(state, cursor) do
+  defp request(state, cursor, item_id \\ nil) do
     {id, state} = State.next_id(state, :library)
 
     scope = scope_for(state, state.library.feature)
 
     query = %Request{
       request_id: id,
-      kind: {:feature_query, state.library.feature, nil, cursor, 20, 262_144},
+      kind: {:feature_query, state.library.feature, item_id, cursor, 20, 262_144},
       scope: scope,
       generation: scope.generation,
       origin: {:feature, state.library.feature},

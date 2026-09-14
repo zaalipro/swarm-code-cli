@@ -219,7 +219,27 @@ defmodule SwarmCodeCLI.UI.Scene do
       severity in [:info, :success, :warning, :error] and safe_text?(text) and action_id?(action)
 
   defp valid_block?(%Block.ActionDeck{actions: actions}), do: valid_display_list?(actions)
+
+  defp valid_block?(%Block.Diff{
+         path: path,
+         added: added,
+         removed: removed,
+         hunks: hunks,
+         truncated?: truncated?
+       }),
+       do:
+         safe_text?(path) and nonneg?(added) and nonneg?(removed) and
+           is_boolean(truncated?) and is_list(hunks) and Enum.all?(hunks, &valid_hunk?/1)
+
   defp valid_block?(_), do: false
+
+  defp valid_hunk?({header, lines}),
+    do: safe_text?(header) and is_list(lines) and Enum.all?(lines, &valid_diff_line?/1)
+
+  defp valid_hunk?(_), do: false
+
+  defp valid_diff_line?({kind, text}) when kind in [:add, :del, :ctx, :meta], do: safe_text?(text)
+  defp valid_diff_line?(_), do: false
 
   defp valid_display_list?(items) when is_list(items),
     do: Enum.all?(items, &(safe_text?(&1) or valid_span?(&1) or valid_block?(&1)))

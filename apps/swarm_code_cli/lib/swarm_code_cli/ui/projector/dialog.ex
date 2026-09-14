@@ -1,6 +1,6 @@
 defmodule SwarmCodeCLI.UI.Projector.Dialog do
   @moduledoc "Sticky dialog chrome around a separately windowed, cell-wrapped body."
-  alias SwarmCodeCLI.UI.{Editor, FieldEditors, SafeText, Switcher, Theme, Width}
+  alias SwarmCodeCLI.UI.{Editor, FieldEditors, SafeText, Switcher, Theme, UnifiedDiff, Width}
   alias SwarmCodeCLI.UI.Scene.{Block, Dialog, Rect, Span}
   alias SwarmCodeCLI.UI.Paint.{Metrics, Options}
   alias SwarmCodeCLI.UI.Projector.{Density, Support}
@@ -355,7 +355,7 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
           "Select an entry to view details and actions."
       end
 
-    options = options ++ [{"details", Density.safe(detail, state, rect.width * 8), nil}]
+    options = options ++ detail_rows(feature, detail, state, rect)
 
     options =
       if state.library && state.library.message,
@@ -607,6 +607,41 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
     {SafeText.chrome(:approve), body,
      [control("cancel", SafeText.chrome(:cancel), {:local, :close_top_layer})],
      focus(state, body)}
+  end
+
+  # The Changes feature sends real `git diff` text as an item's detail. One
+  # option row per diff line keeps the +/- prefixes and hunk headers readable;
+  # Density.safe/3 would otherwise fold the whole diff onto a single line.
+  # Detail that is not a diff at all (a subtitle, a status note) is left alone.
+  defp detail_rows(:changes, detail, state, rect) when is_binary(detail) do
+    case UnifiedDiff.blocks(detail, ambiguous_width: state.capabilities.ambiguous_width) do
+      {[], _note} ->
+        [{"details", Density.safe(detail, state, rect.width * 8), nil}]
+
+      {files, _} ->
+        files
+        |> Enum.flat_map(&diff_detail_lines/1)
+        |> Enum.with_index()
+        |> Enum.map(fn {line, index} ->
+          {"details-#{index}", Density.safe(line, state, rect.width * 2), nil}
+        end)
+    end
+  end
+
+  defp detail_rows(_feature, detail, state, rect),
+    do: [{"details", Density.safe(detail, state, rect.width * 8), nil}]
+
+  defp diff_detail_lines(file) do
+    header =
+      SafeText.value(file.path) <>
+        "  +" <> Integer.to_string(file.added) <> "  -" <> Integer.to_string(file.removed)
+
+    body =
+      Enum.flat_map(file.hunks, fn {hunk, lines} ->
+        [SafeText.value(hunk) | Enum.map(lines, fn {_kind, text} -> SafeText.value(text) end)]
+      end)
+
+    [header] ++ body ++ if(file.truncated?, do: ["…"], else: [])
   end
 
   defp focus(state, options),
