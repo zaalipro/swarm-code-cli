@@ -714,7 +714,7 @@ defmodule SwarmCodeCLI.UI.ProjectorTest do
 
     {scene, actions} = Projector.project(state)
     navigator = Enum.find(scene.regions, &(&1.role == :navigator))
-    [window] = navigator.blocks
+    window = Enum.find(navigator.blocks, &is_struct(&1, SwarmCodeCLI.UI.Scene.Block.VirtualList))
     assert Scene.validate(scene) == :ok
     assert window.first_index > 0
     assert window.total_count == 60
@@ -738,7 +738,10 @@ defmodule SwarmCodeCLI.UI.ProjectorTest do
     assert navigator.follow == :none
     {scene, actions} = Projector.project(%{state | selection: %{"navigator" => "nav-60"}})
     navigator = Enum.find(scene.regions, &(&1.role == :navigator))
-    assert hd(navigator.blocks).first_index == 0
+
+    assert Enum.find(navigator.blocks, &is_struct(&1, SwarmCodeCLI.UI.Scene.Block.VirtualList)).first_index ==
+             0
+
     assert {:local, {:navigate, {:run, "nav-60"}}} in Map.values(actions)
   end
 

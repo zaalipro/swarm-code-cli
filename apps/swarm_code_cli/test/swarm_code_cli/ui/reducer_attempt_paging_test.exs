@@ -94,7 +94,12 @@ defmodule SwarmCodeCLI.UI.ReducerAttemptPagingTest do
 
     {first, []} = Reducer.update(state, {:scroll, "navigator", :first})
     {page, []} = Reducer.update(first, {:scroll, "navigator", {:page, 1}})
-    assert page.scrolls.navigator.anchor == {"r22", 0, :top}
+    # Navigator capacity at 100x24 with banner=nil:
+    #   rect.height = 22, destinations = 2 (Conversation + Activity),
+    #   fixed_rows = 2 + 2 (blank + RUNS heading) = 4,
+    #   capacity = max(0, 22 - 1 - 4) = 17.
+    # PageDown from r1 advances by 17 to r18.
+    assert page.scrolls.navigator.anchor == {"r18", 0, :top}
     {back, []} = Reducer.update(page, {:scroll, "navigator", {:page, -1}})
     assert back.scrolls.navigator.anchor == {"r1", 0, :top}
   end
