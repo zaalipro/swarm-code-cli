@@ -54,10 +54,18 @@ defmodule SwarmCodeCLI.UI.Paint.Scene do
 
     ctx = fill(ctx, region.rect, style)
 
+    # Paint gap-column hairline for navigator and inspector docks
+    ctx = hairline(region, ctx, style)
+
     {ctx, rect} =
       if region.role == :navigator do
         heading =
-          resolve(if(region.focus == :active, do: :focus, else: :heading), style, ctx.options)
+          if region.focus == :active do
+            resolve(:focus, style, ctx.options)
+          else
+            resolved = resolve(:text_faint, style, ctx.options)
+            %{resolved | modifiers: [:bold]}
+          end
 
         label = [%Block.Text{text: region.label}]
 
@@ -136,6 +144,32 @@ defmodule SwarmCodeCLI.UI.Paint.Scene do
     |> glyph(rect.x + rect.width - 1, rect.y, elem(corners, 1), 1, index, nil)
     |> glyph(rect.x, rect.y + rect.height - 1, elem(corners, 2), 1, index, nil)
     |> glyph(rect.x + rect.width - 1, rect.y + rect.height - 1, elem(corners, 3), 1, index, nil)
+  end
+
+  defp hairline(region, ctx, surface) do
+    rect = region.rect
+
+    gap_col =
+      case region.role do
+        :navigator -> rect.x + rect.width
+        :inspector -> rect.x - 1
+        _ -> nil
+      end
+
+    if gap_col != nil and gap_col >= 0 do
+      border_style = resolve(:border, surface, ctx.options)
+      {index, ctx} = index(ctx, border_style)
+      glyph_char = chrome("╎", "|", ctx)
+
+      Enum.reduce(rect.y..(rect.y + rect.height - 1)//1, ctx, fn y, acc ->
+        case Canvas.put(acc.canvas, gap_col, y, glyph_char, 1, index, nil) do
+          {:ok, canvas} -> %{acc | canvas: canvas}
+          {:error, _} -> acc
+        end
+      end)
+    else
+      ctx
+    end
   end
 
   defp chrome(unicode, ascii, ctx),

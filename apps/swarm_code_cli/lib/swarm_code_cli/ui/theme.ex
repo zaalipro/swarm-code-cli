@@ -132,7 +132,11 @@ defmodule SwarmCodeCLI.UI.Theme do
   defp base_style(:value, mode), do: base_style(:text_primary, mode)
   defp base_style(:code, mode), do: base_style(:text_primary, mode)
   defp base_style(:link, mode), do: base_style(:info, mode)
-  defp base_style(:key, mode), do: base_style(:text_primary, mode) |> Map.put(:modifiers, [:bold])
+
+  defp base_style(:key, mode),
+    do:
+      %Style{foreground: color(mode, 0x4DA3FF, 75, :bright_blue)} |> Map.put(:modifiers, [:bold])
+
   defp base_style(:status, mode), do: base_style(:text_primary, mode)
   defp base_style(:selected, mode), do: base_style(:selection, mode)
 

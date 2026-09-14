@@ -6,7 +6,11 @@ defmodule SwarmCodeCLI.UI.ProjectorModeTest do
   alias SwarmCodeCLI.UI.Projector.Composer
 
   test "Ultra mode renders status strings without crashing" do
-    state = %{read_model: %{transcript: %{}}, capabilities: %Capabilities{size: %Size{columns: 80, rows: 24}}}
+    state = %{
+      read_model: %{transcript: %{}},
+      capabilities: %Capabilities{size: %Size{columns: 80, rows: 24}}
+    }
+
     run = %{id: "run-1", kind: :ultra, state: :running}
 
     assert [%{first_index: 0, items: items}] = Mode.project(state, run, 80, 10)

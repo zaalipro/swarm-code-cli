@@ -1,7 +1,7 @@
 defmodule SwarmCodeCLI.UI.Projector.Support do
   @moduledoc false
   alias SwarmCodeCLI.UI.{ActionTarget, SafeText, Theme}
-  alias SwarmCodeCLI.UI.Scene.{Block, Span}
+  alias SwarmCodeCLI.UI.Scene.{Block, Span, Style}
   alias SwarmCodeCLI.UI.DataSource.DTO
   alias SwarmCodeCLI.UI.Projector.Density
   def text(value, state, width), do: %Block.Text{text: Density.safe(value, state, width)}
@@ -13,6 +13,16 @@ defmodule SwarmCodeCLI.UI.Projector.Support do
         %Span{
           text: Density.safe(value, state, width),
           style: Theme.style(role, state.capabilities)
+        }
+      ]
+    }
+
+  def section_heading(value, state, width, role \\ :text_faint),
+    do: %Block.RichText{
+      spans: [
+        %Span{
+          text: Density.safe(value, state, width),
+          style: %Style{role: role, modifiers: [:bold]}
         }
       ]
     }

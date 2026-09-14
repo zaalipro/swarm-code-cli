@@ -184,6 +184,97 @@ defmodule SwarmCodeCLI.UI.SafeTextTest do
     assert SafeText.value(safe) == "a⟦FVS1 U+180B⟧"
   end
 
+  test "new chrome tokens round-trip through chrome/1, value/1 and concat" do
+    alias SwarmCodeCLI.UI.Width
+
+    tokens = [
+      {:swarmcode_wordmark, "SWARMCODE"},
+      {:workspace_label, "WORKSPACE"},
+      {:nav_conversation, "Conversation"},
+      {:nav_activity, "Activity"},
+      {:nav_workflows, "Workflows"},
+      {:nav_research, "Research"},
+      {:nav_memory, "Memory"},
+      {:runs_label, "RUNS"},
+      {:glyph_selected, "◉"},
+      {:glyph_inactive, "◌"},
+      {:glyph_workflows, "⧉"},
+      {:glyph_research, "⌁"},
+      {:glyph_memory, "⌘"},
+      {:glyph_changes, "⬡"},
+      {:live_run_label, "LIVE RUN"},
+      {:agents_label, "AGENTS"},
+      {:you_label, "YOU"},
+      {:assistant_label, "assistant"},
+      {:tool_label, "tool"},
+      {:system_label, "system"},
+      {:gap_hairline, "╎"},
+      {:composer_gutter, "▐"},
+      {:pipeline_arrow, "❯"},
+      {:persistent_objective, "Persistent objective"},
+      {:plan_approve, "Approve"},
+      {:plan_revise, "Revise"},
+      {:plan_decline, "Decline"},
+      {:plan_done, "✓"},
+      {:plan_steps_label, "PLAN STEPS"}
+    ]
+
+    for {token, expected_value} <- tokens do
+      safe = SafeText.chrome(token)
+      assert SafeText.value(safe) == expected_value, "value mismatch for #{token}"
+
+      # Round-trip: concat with empty produces the same value
+      concatenated = SafeText.concat([safe, SafeText.chrome(:empty)])
+      assert SafeText.value(concatenated) == expected_value
+    end
+  end
+
+  test "new glyph tokens are exactly 1 cell under both width policies" do
+    alias SwarmCodeCLI.UI.Width
+
+    glyph_tokens = [
+      {:glyph_selected, "◉"},
+      {:glyph_inactive, "◌"},
+      {:glyph_workflows, "⧉"},
+      {:glyph_research, "⌁"},
+      {:glyph_memory, "⌘"},
+      {:glyph_changes, "⬡"},
+      {:gap_hairline, "╎"},
+      {:composer_gutter, "▐"},
+      {:pipeline_arrow, "❯"},
+      {:plan_done, "✓"}
+    ]
+
+    ascii_fallbacks = [
+      {"*", :glyph_selected},
+      {"o", :glyph_inactive},
+      {"#", :glyph_workflows},
+      {"^", :glyph_research},
+      {"@", :glyph_memory},
+      {"+", :glyph_changes},
+      {"|", :gap_hairline},
+      {">", :composer_gutter},
+      {">", :pipeline_arrow},
+      {"*", :plan_done}
+    ]
+
+    for {token, glyph} <- glyph_tokens do
+      assert Width.cells(glyph, :narrow) == 1,
+             "#{token} glyph #{glyph} is not 1 cell under :narrow"
+
+      assert Width.cells(glyph, :wide) == 1,
+             "#{token} glyph #{glyph} is not 1 cell under :wide"
+    end
+
+    for {ascii, token} <- ascii_fallbacks do
+      assert Width.cells(ascii, :narrow) == 1,
+             "ASCII fallback #{ascii} for #{token} is not 1 cell"
+
+      assert Width.cells(ascii, :wide) == 1,
+             "ASCII fallback #{ascii} for #{token} is not 1 cell under :wide"
+    end
+  end
+
   property "mixed valid Unicode and deceptive scalars produce a stable safe value" do
     check all(
             chunks <-

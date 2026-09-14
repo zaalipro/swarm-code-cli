@@ -44,7 +44,8 @@ defmodule SwarmCodeCLI.UI.Projector.Mode do
             if key == id and item.run_id == run.id, do: index
           end)
 
-        _ -> if(scroll && scroll.follow?, do: max(length(blocks) - height, 0), else: 0)
+        _ ->
+          if(scroll && scroll.follow?, do: max(length(blocks) - height, 0), else: 0)
       end
 
     min(max(requested, 0), length(blocks))

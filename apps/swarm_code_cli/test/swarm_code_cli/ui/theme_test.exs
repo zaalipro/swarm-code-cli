@@ -30,7 +30,8 @@ defmodule SwarmCodeCLI.UI.ThemeTest do
     {:agent_lane_2, 0xA78BFA, 141, :magenta},
     {:agent_lane_3, 0xF59E0B, 214, :yellow},
     {:agent_lane_4, 0xF472B6, 212, :magenta},
-    {:agent_lane_5, 0x38BDF8, 81, :cyan}
+    {:agent_lane_5, 0x38BDF8, 81, :cyan},
+    {:key, 0x4DA3FF, 75, :bright_blue}
   ]
   defp caps(mode), do: Capabilities.explicit(%Size{columns: 80, rows: 24}, color_mode: mode)
 
