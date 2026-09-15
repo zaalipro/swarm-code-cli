@@ -127,6 +127,9 @@ defmodule SwarmCodeCLI.UI.Capabilities do
         probe.colorterm in ["truecolor", "24bit"] ->
           :truecolor
 
+        truecolor_terminal?(probe.term) ->
+          :truecolor
+
         String.contains?(probe.term, "256color") ->
           :ansi256
 
@@ -159,6 +162,16 @@ defmodule SwarmCodeCLI.UI.Capabilities do
   end
 
   def from_probe(_), do: raise(ArgumentError, "invalid capability probe")
+
+  defp truecolor_terminal?(term) when is_binary(term) do
+    components = String.split(term, "-")
+    known = ~w[iterm iterm2 kitty wezterm alacritty ghostty foot contour rio]
+
+    Enum.any?(components, fn component -> component in known end) or
+      String.ends_with?(term, "-direct")
+  end
+
+  defp truecolor_terminal?(_), do: false
 
   defp validate_probe!(probe) do
     unless Map.keys(probe) |> Enum.sort() == Map.keys(%Probe{}) |> Enum.sort(),
