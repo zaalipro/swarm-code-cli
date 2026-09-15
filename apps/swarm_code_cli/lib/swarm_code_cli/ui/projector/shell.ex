@@ -2,8 +2,21 @@ defmodule SwarmCodeCLI.UI.Projector.Shell do
   @moduledoc false
   alias SwarmCodeCLI.UI.{SafeText, Theme, Width}
   alias SwarmCodeCLI.UI.Scene.{Block, Region, Span, Style}
-  alias SwarmCodeCLI.UI.Projector.{Composer, Density, Inspector, Status, Support, Workspace}
-  @order [:title, :navigator, :main, :inspector, :activity, :composer, :status]
+
+  alias SwarmCodeCLI.UI.Projector.{
+    Composer,
+    Density,
+    Inspector,
+    RunRow,
+    Status,
+    Support,
+    Workspace
+  }
+
+  # The navigator dock is gone. Its job — showing what is running and getting you
+  # there — belongs to the tab row on row 1, the Ctrl-G dashboard and Ctrl-K, so
+  # the shell projects no left dock and main takes the reclaimed width.
+  @order [:title, :tabline, :main, :inspector, :activity, :composer, :status]
   def project(state, layout) do
     Enum.reduce(@order, {[], nil}, fn role, {regions, cursor} ->
       case Map.get(layout.rects, role) do
@@ -19,7 +32,7 @@ defmodule SwarmCodeCLI.UI.Projector.Shell do
             case role do
               :title -> Composer.mode_label(state)
               :composer -> Composer.label(state)
-              :navigator -> SafeText.chrome(:workspace_label)
+              :tabline -> SafeText.chrome(:runs_label)
               _ -> SafeText.chrome(role)
             end
             |> Density.safe(state, rect.width)
@@ -33,40 +46,9 @@ defmodule SwarmCodeCLI.UI.Projector.Shell do
             focus: focus
           }
 
-          region =
-            case {role, blocks} do
-              {:navigator, blocks} when is_list(blocks) ->
-                window = Enum.find(blocks, &match?(%Block.VirtualList{}, &1))
-
-                if window do
-                  scroll = Map.get(state.scrolls, :navigator)
-
-                  %{
-                    region
-                    | scroll_offset: window.first_index,
-                      visible_range:
-                        {window.first_index, window.first_index + length(window.items)},
-                      follow: if(scroll && scroll.follow?, do: :end, else: :none)
-                  }
-                else
-                  region
-                end
-
-              _ ->
-                region
-            end
-
           {regions ++ [region], new_cursor || cursor}
       end
     end)
-  end
-
-  @doc """
-  Number of fixed rows before the VirtualList in the navigator.
-  destination_count + 1 blank row + 1 RUNS heading.
-  """
-  def navigator_fixed_rows(state) do
-    length(destinations(state)) + 2
   end
 
   defp blocks(:title, state, rect, class) do
@@ -129,6 +111,8 @@ defmodule SwarmCodeCLI.UI.Projector.Shell do
     {[%Block.RichText{spans: spans}], nil}
   end
 
+  defp blocks(:tabline, state, rect, _class), do: {[tabline(state, rect.width)], nil}
+
   defp blocks(:main, state, rect, class), do: {Workspace.project(state, rect, class), nil}
   defp blocks(:inspector, state, rect, class), do: {Inspector.project(state, rect, class), nil}
 
@@ -161,178 +145,231 @@ defmodule SwarmCodeCLI.UI.Projector.Shell do
     {[block], nil}
   end
 
-  defp blocks(:navigator, state, rect, _class) do
-    fallback = state.read_model.runs |> Map.keys() |> Enum.sort()
-    ids = Map.get(state.read_model.order, :shell, fallback)
+  # ── Tabline ─────────────────────────────────────────────────────────────────
+  #
+  # The awareness affordance: one row, directly under the title bar, carrying the
+  # runs you are working across so switching is never a blind act.
+  #
+  # The whole row is a single `Block.RichText` of styled spans and never sibling
+  # blocks: blocks stack vertically, so a row assembled from several of them
+  # would print one line per block instead of one tab row.
 
-    items =
-      Enum.flat_map(ids, fn id ->
-        case Map.fetch(state.read_model.runs, id) do
-          {:ok, run} -> [{id, run}]
-          :error -> []
+  @tabline_hint "Ctrl-R runs   Ctrl-G all   Ctrl-K features"
+  @tabline_max 4
+  @tab_title 20
+  # stripe + space + mark + space + title + space + dot + trailing space
+  @tab_chrome 7
+  @tab_gap 1
+  @hint_gap 2
+
+  @doc """
+  The one-line tab row for a region `width` cells wide.
+
+  Up to four runs, the active one first and then the most recent others; each is
+  an accent stripe (only when active), the kind mark, the title and a status dot,
+  with the active tab sitting on the hover surface. The keys hint is
+  right-aligned on the same row. Runs that do not fit are folded into a trailing
+  `+N` rather than shrunk into unreadable stubs, so every tab that is drawn stays
+  readable.
+  """
+  def tabline(state, width) do
+    policy = state.capabilities.ambiguous_width
+    {shown, overflow, hint} = tabline_plan(state, width)
+    active = active_run_id(state)
+
+    tabs =
+      shown
+      |> Enum.map(&tab_spans(&1, &1.id == active, state))
+      |> Enum.intersperse([plain_gap(@tab_gap, state)])
+      |> List.flatten()
+
+    left = tabs ++ overflow_spans(overflow, shown, state)
+    hint_cells = if hint == "", do: 0, else: Width.cells(hint, policy)
+    pad = max(0, width - spans_cells(left, policy) - hint_cells)
+
+    %Block.RichText{
+      spans: left ++ pad_span(pad, state) ++ hint_spans(hint, hint_cells, state)
+    }
+  end
+
+  @doc """
+  What the row shows at `width`: `{tabs, overflow, hint}`.
+
+  Every measurement is in terminal cells under the state's own ambiguous-width
+  policy, never in characters: a two-cell title grapheme measured as one would
+  push the row past the terminal edge and wrap it onto a second line.
+  """
+  def tabline_plan(state, width) do
+    policy = state.capabilities.ambiguous_width
+    runs = tabline_runs(state)
+    total = length(runs)
+    candidates = Enum.take(runs, @tabline_max)
+    widths = Enum.map(candidates, &tab_cells(&1, state, policy))
+
+    hint_cells = Width.cells(@tabline_hint, policy)
+    room_for_hint? = hint_cells + @hint_gap <= width
+
+    # The tabs are budgeted before the hint. A 42-cell static hint that fits the
+    # row but leaves no room for a single tab turns the one affordance that
+    # replaced the navigator into a bare "+N" — a row announcing runs it will
+    # not show. The hint is the least valuable thing here, and its keys are on
+    # the status row as well, so it is what goes when both cannot be drawn.
+    with_hint =
+      if room_for_hint?,
+        do: plan(widths, total, max(0, width - hint_cells - @hint_gap), policy),
+        else: {0, 0}
+
+    bare = plan(widths, total, width, policy)
+
+    hint? =
+      room_for_hint? and
+        (candidates == [] or elem(with_hint, 0) > 0 or elem(bare, 0) == 0)
+
+    {count, overflow} = if hint?, do: with_hint, else: bare
+
+    {Enum.take(candidates, count), overflow, if(hint?, do: @tabline_hint, else: "")}
+  end
+
+  # Widest first: the row keeps as many whole tabs as `budget` allows and spends
+  # what is left on the +N remainder.
+  defp plan(widths, total, budget, policy) do
+    count =
+      Enum.find(length(widths)..0//-1, 0, fn k ->
+        needed(widths, k, total, policy) <= budget
+      end)
+
+    overflow = if needed(widths, count, total, policy) <= budget, do: total - count, else: 0
+
+    {count, overflow}
+  end
+
+  @doc """
+  The runs the tab row offers: the active one first, then the rest in shell order.
+
+  `RunRow.visible/3` is the shared order — the sequence the data source sent in
+  `order[:shell]`, then anything the shell has not mentioned by recency — and it
+  already drops superseded runs, which have been replaced by a newer turn and
+  are not somewhere you can switch back to.
+  """
+  def tabline_runs(state) do
+    ordered = RunRow.visible(state.read_model.runs, "", RunRow.shell_order(state))
+
+    case active_run_id(state) do
+      nil ->
+        ordered
+
+      id ->
+        case Enum.split_with(ordered, &(&1.id == id)) do
+          {[active], rest} -> [active | rest]
+          {_, _} -> ordered
         end
-      end)
-
-    fixed = navigator_fixed_rows(state)
-    capacity = max(0, rect.height - 1 - fixed)
-    scroll = Map.get(state.scrolls, :navigator)
-
-    anchor =
-      case scroll do
-        %{anchor: {id, _, _}} -> Enum.find_index(items, fn {key, _} -> key == id end) || 0
-        _ -> 0
-      end
-
-    selected = Map.get(state.selection, "navigator")
-    selected_index = Enum.find_index(items, fn {id, _} -> id == selected end)
-    first = if scroll && scroll.follow?, do: max(0, length(items) - capacity), else: anchor
-
-    first =
-      cond do
-        is_integer(selected_index) and selected_index < first ->
-          selected_index
-
-        is_integer(selected_index) and selected_index >= first + capacity ->
-          selected_index - capacity + 1
-
-        true ->
-          first
-      end
-      |> min(max(0, length(items) - capacity))
-      |> max(0)
-
-    display_items =
-      if items == [],
-        do: [:empty, :hint, :features],
-        else: items
-
-    rows =
-      display_items
-      |> Enum.drop(first)
-      |> Enum.take(capacity)
-      |> Enum.map(fn
-        :empty ->
-          Support.text("No runs yet", state, rect.width)
-
-        :hint ->
-          Support.text("Send a prompt to begin", state, rect.width)
-
-        :features ->
-          Support.text("Ctrl-K  Features", state, rect.width)
-
-        {id, run} ->
-          kind_glyph = Support.glyph(:glyph_selected, state)
-
-          title =
-            SafeText.concat([
-              Density.safe(" ", state, 1),
-              kind_glyph,
-              Density.safe(" ", state, 1),
-              Density.safe(run.title, state, rect.width)
-            ])
-
-          title =
-            if id == selected,
-              do:
-                Density.safe(
-                  SafeText.concat([SafeText.chrome(:selection_marker), title]),
-                  state,
-                  rect.width
-                ),
-              else: Density.safe(title, state, rect.width)
-
-          # Decision D4: a run row is coloured by its state. The prefix cue is
-          # cleared so the row does not gain a textual status prefix it never had.
-          {_word, role} = Theme.status(run.state)
-          status_style = Theme.style(role, state.capabilities)
-          row_style = %{status_style | role: :plain, prefix: nil, cues: []}
-
-          Support.action(title, {:local, {:navigate, {:run, id}}}, row_style)
-      end)
-
-    page = Map.get(state.pages, :shell)
-
-    # Build destination entries
-    dest_blocks = destination_blocks(state, rect)
-
-    # Blank separator row
-    blank = Support.text(" ", state, rect.width)
-
-    # RUNS section heading (with leading space for indentation)
-    runs_label = SafeText.concat([Density.safe(" ", state, 1), SafeText.chrome(:runs_label)])
-    runs_heading = Support.section_heading(runs_label, state, rect.width)
-
-    nav_blocks =
-      dest_blocks ++
-        [blank, runs_heading] ++
-        [
-          %Block.VirtualList{
-            total_count: length(display_items),
-            first_index: first,
-            items: rows,
-            before_cursor: page && page.before_cursor,
-            after_cursor: page && page.after_cursor,
-            overscan: 0
-          }
-        ]
-
-    {nav_blocks, nil}
-  end
-
-  # Destination entries for the navigator
-  defp destinations(state) do
-    base = [
-      {:conversation, :glyph_selected, :nav_conversation,
-       {:navigate, current_conversation(state)}},
-      {:activity, :glyph_inactive, :nav_activity, {:navigate, :activity}}
-    ]
-
-    library =
-      if state.banner in [:live_banner, :persisted_banner] do
-        [
-          {:workflows, :glyph_workflows, :nav_workflows, {:open_layer, {:library, :workflows}}},
-          {:research, :glyph_research, :nav_research, {:open_layer, {:library, :research}}},
-          {:memory, :glyph_memory, :nav_memory, {:open_layer, {:library, :memory}}}
-        ]
-      else
-        []
-      end
-
-    base ++ library
-  end
-
-  defp current_conversation(state) do
-    case state.destination do
-      {:conversation, id} when is_binary(id) ->
-        {:conversation, id}
-
-      {:run, id} ->
-        run = Map.get(state.read_model.runs, id)
-        conv_id = run && run.conversation_id
-        if is_binary(conv_id), do: {:conversation, conv_id}, else: :activity
-
-      _ ->
-        :activity
     end
   end
 
-  defp destination_blocks(state, rect) do
-    dests = destinations(state)
+  defp active_run_id(state) do
+    case Support.run(state) do
+      %{id: id} -> id
+      _ -> nil
+    end
+  end
 
-    Enum.map(dests, fn {_key, glyph_token, label_token, target} ->
-      glyph = Support.glyph(glyph_token, state)
-      label = SafeText.chrome(label_token)
+  # The wire kinds :chat and :consensus are not Theme.run_kind/1 keys, so they go
+  # through RunRow.theme_kind/1 before any theme lookup or the lookup would raise.
+  defp tab_spans(run, active?, state) do
+    kind = RunRow.theme_kind(run.kind)
+    {_kind_letter, kind_role} = Theme.run_kind(kind)
+    {_status_word, status_role} = Theme.status(run.state)
 
-      entry_text =
-        SafeText.concat([
-          Density.safe(" ", state, 1),
-          glyph,
-          Density.safe(" ", state, 1),
-          label
-        ])
+    surface = if active?, do: hover_background(state)
 
-      Support.action(Density.safe(entry_text, state, rect.width), {:local, target})
-    end)
+    [
+      stripe_span(active?, surface, state),
+      plain_gap(1, state, surface),
+      %Span{
+        text: Support.glyph(Theme.run_mark(kind), state),
+        style: %{tint(kind_role, surface, state) | modifiers: [:bold]}
+      },
+      plain_gap(1, state, surface),
+      %Span{text: tab_title(run, state), style: tab_title_style(active?, surface, state)},
+      plain_gap(1, state, surface),
+      %Span{text: Support.glyph(:dot, state), style: tint(status_role, surface, state)},
+      plain_gap(1, state, surface)
+    ]
+  end
+
+  # Only the active tab carries the stripe; an inactive one spends the same cell
+  # on a blank so the tabs stay on a common grid instead of shifting sideways as
+  # the active run changes.
+  defp stripe_span(true, surface, state),
+    do: %Span{text: Support.glyph(:stripe, state), style: tint(:accent, surface, state)}
+
+  defp stripe_span(false, surface, state), do: plain_gap(1, state, surface)
+
+  defp tab_title(run, state), do: Density.safe(run.title, state, @tab_title)
+
+  defp tab_title_style(true, surface, state),
+    do: %{tint(:text_primary, surface, state) | modifiers: [:bold]}
+
+  defp tab_title_style(false, surface, state), do: tint(:text_muted, surface, state)
+
+  defp tab_cells(run, state, policy),
+    do: @tab_chrome + Width.cells(SafeText.value(tab_title(run, state)), policy)
+
+  defp needed(widths, count, total, policy) do
+    tabs = widths |> Enum.take(count) |> Enum.sum()
+    tabs + max(0, count - 1) * @tab_gap + overflow_cells(total - count, count, policy)
+  end
+
+  defp overflow_cells(0, _count, _policy), do: 0
+  defp overflow_cells(n, 0, policy), do: Width.cells(overflow_text(n), policy)
+  defp overflow_cells(n, _count, policy), do: @tab_gap + Width.cells(overflow_text(n), policy)
+
+  defp overflow_text(n), do: "+" <> Integer.to_string(n)
+
+  defp overflow_spans(0, _shown, _state), do: []
+
+  defp overflow_spans(n, shown, state) do
+    text = overflow_text(n)
+    cells = Width.cells(text, state.capabilities.ambiguous_width)
+    lead = if shown == [], do: [], else: [plain_gap(@tab_gap, state)]
+
+    lead ++ [%Span{text: Density.safe(text, state, cells), style: tint(:text_faint, nil, state)}]
+  end
+
+  defp hint_spans("", _cells, _state), do: []
+
+  defp hint_spans(hint, cells, state),
+    do: [%Span{text: Density.safe(hint, state, cells), style: tint(:text_faint, nil, state)}]
+
+  # A zero-cell span would still be a span; an empty SafeText is not worth
+  # minting, so the padding disappears entirely when the row is already full.
+  defp pad_span(0, _state), do: []
+  defp pad_span(width, state), do: [plain_gap(width, state)]
+
+  defp spans_cells(spans, policy),
+    do: Enum.reduce(spans, 0, &(Width.cells(SafeText.value(&1.text), policy) + &2))
+
+  defp plain_gap(width, state, background \\ nil),
+    do: %Span{
+      text: Density.safe(String.duplicate(" ", width), state, width),
+      style: tint(:plain, background, state)
+    }
+
+  defp hover_background(state), do: Theme.style(:hover, state.capabilities).background
+
+  # Paint resolves a span prefix as `style.prefix || themed.prefix`, so blanking a
+  # span's own prefix does not suppress a role's cue: the theme puts it straight
+  # back. The colour is borrowed onto the cue-free `:plain` role instead, the way
+  # `RunRow.tinted/2` does it, with `background` overriding so the active tab can
+  # sit on the hover surface while its spans keep their own foregrounds.
+  defp tint(role, background, state) do
+    themed = Theme.style(role, state.capabilities)
+
+    %{
+      Theme.style(:plain, state.capabilities)
+      | foreground: themed.foreground,
+        background: background || themed.background
+    }
   end
 
   defp counts_parts(nil, _state), do: []

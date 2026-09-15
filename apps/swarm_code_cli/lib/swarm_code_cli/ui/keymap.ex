@@ -1,6 +1,7 @@
 defmodule SwarmCodeCLI.UI.Keymap do
   @moduledoc "Single-action input resolution: modal, field, composer, content, global."
   alias SwarmCodeCLI.UI.{Action, Input, Layout, Question, SlashPalette, State, Switcher}
+  alias SwarmCodeCLI.UI.Projector.RunsDashboard
 
   def resolve(input, state, table) when is_map(table) do
     case Input.validate(input) do
@@ -58,6 +59,14 @@ defmodule SwarmCodeCLI.UI.Keymap do
 
   defp route({:text_fragment, phase, text, mods}, state, table),
     do: key(text, Enum.sort(mods), phase, state, table)
+
+  # Esc unwinds the dashboard one step at a time: it drops the filter query
+  # first and only closes the layer once there is nothing left to clear.
+  defp key(:escape, [], :press, %{layers: [{:runs_dashboard, _} | _]} = state, _) do
+    if State.runs_filter(state) == "",
+      do: result(:close_top_layer),
+      else: result({:dashboard_filter, :clear})
+  end
 
   defp key(:escape, [], :press, %{layers: [_ | _]}, _), do: result(:close_top_layer)
   defp key(:escape, [], :press, %{focus: "composer"}, _), do: result({:focus_region, "main"})
@@ -127,6 +136,53 @@ defmodule SwarmCodeCLI.UI.Keymap do
           Layout.calculate(state.size, state.preferences).class == :too_small ->
         tiny_exit(code, mods, phase, state)
 
+      # Ctrl-G toggles the dashboard shut, and inside it the bare letters that
+      # close a dialog ("q", which would otherwise quit the session, and the
+      # generic "b" back key) close rather than quitting. They only do so while
+      # the filter is empty: once a query is being typed they are letters, or a
+      # filter could never spell "query" or "boundary".
+      match?({:runs_dashboard, _}, layer) and phase == :press and
+          dashboard_close?(code, mods, state) ->
+        result(:close_top_layer)
+
+      match?({:runs_dashboard, _}, layer) and phase in [:press, :repeat] and
+        code == :backspace and mods == [] ->
+        result({:dashboard_filter, :backspace})
+
+      # The dashboard windows its runs, so it needs the paging keys the
+      # scrolling navigator used to answer. Moving the focus moves the window,
+      # which is what keeps the focused row inside the action table.
+      match?({:runs_dashboard, _}, layer) and phase in [:press, :repeat] and
+        code in [:page_up, :page_down, :home, :end] and mods == [] ->
+        case RunsDashboard.page_focus(state, code) do
+          nil -> :ignore
+          id -> result({:focus_region, id})
+        end
+
+      # Letter keys arrive as text fragments, so a printable fragment with no
+      # command modifier is typing into the filter rather than a binding.
+      match?({:runs_dashboard, _}, layer) and phase in [:press, :repeat] and
+        is_binary(code) and mods in [[], [:shift]] and
+          not dashboard_close?(code, mods, state) ->
+        result({:dashboard_filter, {:append, code}})
+
+      # Ctrl-R toggles the palette shut. Every other printable keystroke types
+      # into its filter, so unlike the dashboard the palette has no bare-letter
+      # close key: Esc and Ctrl-R close it, "q" and "b" are query characters.
+      match?({:run_palette, _}, layer) and phase == :press and code == "r" and
+          mods == [:control] ->
+        result(:close_top_layer)
+
+      match?({:run_palette, _}, layer) and phase in [:press, :repeat] and
+        code == :backspace and mods == [] ->
+        result({:dashboard_filter, :backspace})
+
+      # Letter keys arrive as text fragments, so a printable fragment with no
+      # command modifier is typing into the filter rather than a binding.
+      match?({:run_palette, _}, layer) and phase in [:press, :repeat] and
+        is_binary(code) and mods in [[], [:shift]] ->
+        result({:dashboard_filter, {:append, code}})
+
       match?({:jump, _}, layer) and code == "g" and mods == [] and phase == :press ->
         result({:move, :first})
 
@@ -186,6 +242,13 @@ defmodule SwarmCodeCLI.UI.Keymap do
       true ->
         :ignore
     end
+  end
+
+  # The dashboard's close letters while its filter is empty. Ctrl-G always
+  # closes; "q" and "b" are typing once a query has been started.
+  defp dashboard_close?(code, mods, state) do
+    (code == "g" and mods == [:control]) or
+      (code in ["q", "b"] and mods == [] and State.runs_filter(state) == "")
   end
 
   defp tiny_exit("X", modifiers, :press, %{
@@ -268,6 +331,13 @@ defmodule SwarmCodeCLI.UI.Keymap do
         if(state.focus == "query", do: List.first(entries))
 
     if entry, do: activate(entry.target, state, table), else: :ignore
+  end
+
+  defp modal_activate({kind, _}, state, table)
+       when kind in [:runs_dashboard, :run_palette] do
+    if Map.has_key?(state.read_model.runs, state.focus),
+      do: activate({:local, {:navigate, {:run, state.focus}}}, state, table),
+      else: :ignore
   end
 
   defp modal_activate({:run_inspector, run_id, _}, state, table) do
@@ -567,7 +637,14 @@ defmodule SwarmCodeCLI.UI.Keymap do
   defp global("k", [:control], :press, state, _),
     do: result({:open_layer, Switcher.open(state, state.focus)})
 
-  defp global("b", [:control], :press, _, _), do: result({:toggle_dock, :navigator})
+  defp global("g", [:control], :press, state, _),
+    do: result({:open_layer, {:runs_dashboard, elem(State.next_id(state, :layer), 0)}})
+
+  defp global("r", [:control], :press, state, _),
+    do: result({:open_layer, {:run_palette, elem(State.next_id(state, :layer), 0)}})
+
+  # The navigator is gone; Ctrl-B toggles the one pane there is left to toggle.
+  defp global("b", [:control], :press, _, _), do: result({:toggle_dock, :inspector})
   defp global("i", [:alt], :press, _, _), do: result({:toggle_dock, :inspector})
   defp global("?", [], :press, _, _), do: result({:open_layer, :help})
   defp global("q", [], :press, _, _), do: result({:quit_requested, :detach})
@@ -585,12 +662,8 @@ defmodule SwarmCodeCLI.UI.Keymap do
   defp global(code, mods, :press, state, _)
        when code in ["H", "L", "h", "l", "0"] and
               mods in [[:alt, :shift], [:alt, :control, :shift]] do
-    dock =
-      case state.focus do
-        "navigator" -> :navigator
-        "inspector" -> :inspector
-        _ -> nil
-      end
+    # Only a pane the layout draws can be resized, and the navigator is not one.
+    dock = if state.focus == "inspector", do: :inspector
 
     amount = if :control in mods, do: 8, else: 2
 

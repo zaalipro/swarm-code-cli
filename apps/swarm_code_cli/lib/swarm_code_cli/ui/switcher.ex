@@ -24,7 +24,6 @@ defmodule SwarmCodeCLI.UI.Switcher do
       entry("Help", :action, {:local, {:open_layer, :help}}, true),
       entry("Detach", :action, {:local, {:quit_requested, :detach}}),
       entry("Plain presenter", :action, {:local, {:presenter_handoff_requested, :plain}}),
-      entry("Toggle Navigator", :action, {:local, {:toggle_dock, :navigator}}),
       entry("Toggle Inspector", :action, {:local, {:toggle_dock, :inspector}})
     ]
 
@@ -154,10 +153,11 @@ defmodule SwarmCodeCLI.UI.Switcher do
 
     tabs = for tab <- [:thread, :agents, :timeline, :changes], do: {:set_tab, tab}
 
+    # Only the inspector is offered: a "navigator width" command would mutate a
+    # preference no pane reads any more.
     layouts =
-      for dock <- [:navigator, :inspector],
-          preset <- [:compact, :balanced, :wide],
-          do: {:layout_adjust, dock, {:preset, preset}}
+      for preset <- [:compact, :balanced, :wide],
+          do: {:layout_adjust, :inspector, {:preset, preset}}
 
     Enum.map(
       details ++ inspectors ++ interactions ++ tabs ++ layouts ++ [{:composer_height, :reset}],

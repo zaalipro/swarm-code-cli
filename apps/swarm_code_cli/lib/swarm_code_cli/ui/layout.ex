@@ -11,6 +11,13 @@ defmodule SwarmCodeCLI.UI.Layout do
   alias SwarmCodeCLI.UI.Layout.Preferences
   alias SwarmCodeCLI.UI.Scene.Rect
   defstruct [:class, :size, :preferences, rects: %{}, mutations_visible?: false]
+
+  # Row 0 is the title and row 1 is the tab row, so every other pane starts at
+  # row 2 and the vertical budget the docks, main, activity and composer share is
+  # three rows short of the terminal (title, tabline, status).
+  @chrome_rows 3
+  @body_top 2
+
   @type class :: :xl | :wide | :medium | :narrow | :small | :compressed_small | :too_small
   @type t :: %__MODULE__{
           class: class(),
@@ -55,7 +62,7 @@ defmodule SwarmCodeCLI.UI.Layout do
   defp rectangles(class, size, preferences) do
     c = size.columns
     r = size.rows
-    {x, width, panes} = docks(class, c, r - 2, preferences)
+    {x, width, panes} = docks(class, c, r - @chrome_rows, preferences)
 
     composer =
       case class do
@@ -69,37 +76,38 @@ defmodule SwarmCodeCLI.UI.Layout do
         do: min(preferences.activity_height, 1),
         else: preferences.activity_height
 
-    main_height = r - 2 - composer - activity
+    main_height = r - @chrome_rows - composer - activity
 
     panes
     |> Map.merge(%{
       title: rect(0, 0, c, 1),
+      tabline: rect(0, 1, c, 1),
       status: rect(0, r - 1, c, 1),
-      main: rect(x, 1, width, main_height)
+      main: rect(x, @body_top, width, main_height)
     })
-    |> maybe_rect(:activity, x, 1 + main_height, width, activity)
+    |> maybe_rect(:activity, x, @body_top + main_height, width, activity)
     |> maybe_rect(:composer, x, r - 1 - composer, width, composer)
   end
 
-  defp docks(class, c, height, preferences) when class in [:xl, :wide] do
-    nav = clamp(preferences.navigator_width, 24, 32)
-    inspector = clamp(preferences.inspector_width, 38, min(56, c - nav - 2 - 50))
+  # The navigator dock is gone: the shell offers its runs through the tab row and
+  # the Ctrl-G dashboard, so main starts flush at column 0 and keeps the width the
+  # navigator used to take at every class that docks nothing on the left.
+  #
+  # :xl and :wide have room for main and the inspector both, so they always dock
+  # it; at :medium the inspector's columns come out of main, so it is docked only
+  # when `medium_dock` asks for it.
+  defp docks(class, c, height, preferences) when class in [:xl, :wide],
+    do: inspector_dock(c, height, preferences)
 
-    {nav + 1, c - nav - inspector - 2,
-     %{navigator: rect(0, 1, nav, height), inspector: rect(c - inspector, 1, inspector, height)}}
-  end
-
-  defp docks(:medium, c, height, %Preferences{medium_dock: :navigator} = preferences) do
-    nav = clamp(preferences.navigator_width, 24, min(32, c - 1 - 50))
-    {nav + 1, c - nav - 1, %{navigator: rect(0, 1, nav, height)}}
-  end
-
-  defp docks(:medium, c, height, %Preferences{medium_dock: :inspector} = preferences) do
-    inspector = clamp(preferences.inspector_width, 38, min(56, c - 1 - 50))
-    {0, c - inspector - 1, %{inspector: rect(c - inspector, 1, inspector, height)}}
-  end
+  defp docks(:medium, c, height, %Preferences{medium_dock: :inspector} = preferences),
+    do: inspector_dock(c, height, preferences)
 
   defp docks(_class, c, _height, _preferences), do: {0, c, %{}}
+
+  defp inspector_dock(c, height, preferences) do
+    inspector = clamp(preferences.inspector_width, 38, min(56, c - 1 - 50))
+    {0, c - inspector - 1, %{inspector: rect(c - inspector, @body_top, inspector, height)}}
+  end
 
   defp maybe_rect(rects, _name, _x, _y, _width, 0), do: rects
 

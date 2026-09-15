@@ -11,6 +11,10 @@ defmodule SwarmCodeCLI.UI.Theme do
   alias SwarmCodeCLI.UI.{Capabilities, SafeText, Scene}
   alias SwarmCodeCLI.UI.Scene.{Color, Style}
   @modes [:truecolor, :ansi256, :ansi16, :monochrome]
+
+  @type run_kind ::
+          :assistant | :goal | :swarm | :workflow | :research | :consensus_judge | :ultra
+
   def roles, do: Style.roles()
 
   @spec style(Scene.style_role(), Capabilities.t()) :: Style.t()
@@ -314,6 +318,27 @@ defmodule SwarmCodeCLI.UI.Theme do
     do: {SafeText.chrome(:run_consensus_judge), :run_consensus_judge}
 
   def run_kind(:ultra), do: {SafeText.chrome(:run_ultra), :run_ultra}
+
+  @doc """
+  The catalogue glyph token that marks a run kind.
+
+  `run_kind/1` keeps the single-letter identity ("S", "G", "W") that rides along
+  as a style prefix cue and is what a colourless terminal falls back to; this is
+  the design's kind mark, drawn as row text. Every token below is registered in
+  `UI.Projector.Support` ASCII glyph table, so a caller resolves it through
+  `Support.glyph/2` and gets the ASCII twin when the terminal cannot draw it.
+  `:ultra` has no mark of its own in the catalogue and borrows the effort dial:
+  ultra is the maximum-effort kind.
+  """
+  @spec run_mark(run_kind()) :: SafeText.chrome()
+  def run_mark(:assistant), do: :assistant_mark
+  def run_mark(:goal), do: :glyph_selected
+  def run_mark(:swarm), do: :kind_swarm_mark
+  def run_mark(:workflow), do: :glyph_workflows
+  def run_mark(:research), do: :search_mark
+  def run_mark(:consensus_judge), do: :kind_consensus_mark
+  def run_mark(:ultra), do: :effort_mark
+
   def agent_lane(1), do: {SafeText.chrome(:agent_lane_1), :agent_lane_1}
   def agent_lane(2), do: {SafeText.chrome(:agent_lane_2), :agent_lane_2}
   def agent_lane(3), do: {SafeText.chrome(:agent_lane_3), :agent_lane_3}

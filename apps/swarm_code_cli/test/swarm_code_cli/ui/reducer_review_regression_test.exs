@@ -1,6 +1,7 @@
 defmodule SwarmCodeCLI.UI.ReducerReviewRegressionTest do
   use ExUnit.Case, async: true
   alias SwarmCodeCLI.UI.{Reducer, Init, Size, Capabilities, ReadModel, ChunkDeque, Keymap}
+  alias SwarmCodeCLI.UI.Input
   alias SwarmCodeCLI.UI.DataSource.{DTO, Delivery, Delta}
 
   def item(revision \\ 0, text \\ "old"),
@@ -163,16 +164,23 @@ defmodule SwarmCodeCLI.UI.ReducerReviewRegressionTest do
     assert {:ok, {:navigate, {:run, "run-a"}}} =
              Keymap.resolve({:key, :press, :enter, []}, selected, table)
 
-    {scrolled, []} = Reducer.update(selected, {:scroll, "navigator", {:line, 1}})
-    assert scrolled.scrolls.navigator.anchor == {"run-b", 0, :top}
-    assert scrolled.selection["navigator"] == "run-b"
+    # Moving on through the list is the Ctrl-G dashboard's job now: the deleted
+    # navigator's scroll is inert, so the run after run-a is reached by opening
+    # the dashboard and moving down, and Enter still opens what it lands on
+    # without disturbing Main.
+    {dash, _} = Reducer.update(selected, {:open_layer, {:runs_dashboard, "dash"}})
+    assert dash.focus == "run-a"
+
+    {:ok, down} = Keymap.resolve(Input.key(:down), dash, %{})
+    {moved, []} = Reducer.update(dash, down)
+    assert moved.focus == "run-b"
 
     assert {:ok, {:navigate, {:run, "run-b"}}} =
-             Keymap.resolve({:key, :press, :enter, []}, scrolled, %{
+             Keymap.resolve({:key, :press, :enter, []}, moved, %{
                "open" => {:local, {:navigate, {:run, "run-b"}}}
              })
 
-    assert scrolled.scrolls.main == state.scrolls.main
+    assert moved.scrolls.main == state.scrolls.main
   end
 
   test "Navigator unloaded edge queries shell once while Main page stays idle" do
@@ -200,14 +208,19 @@ defmodule SwarmCodeCLI.UI.ReducerReviewRegressionTest do
     }
 
     {state, []} = Reducer.update(state, {:data, ready})
-    state = %{state | focus: "navigator"}
-    {pending, [{:query, request}]} = Reducer.update(state, {:scroll, "navigator", :last})
+
+    # The navigator's scroll was the only caller that paged more shell rows in.
+    # The Ctrl-G dashboard is that caller now: reaching the end of its list asks
+    # the shell for the next page, once, and leaves Main's paging alone.
+    {dash, _} = Reducer.update(state, {:open_layer, {:runs_dashboard, "dash"}})
+    {:ok, action} = Keymap.resolve(Input.key(:end), dash, %{})
+    {pending, [{:query, request}]} = Reducer.update(dash, action)
     assert request.kind == {:query, :shell, "shell-after", :after, 200, 1_048_576}
     assert request.scope == watch.scope
     assert pending.pages.shell.status == :loading_after
     assert pending.pages.workspace == state.pages.workspace
     assert pending.scrolls.main == state.scrolls.main
-    assert Reducer.update(pending, {:scroll, "navigator", :last}) == {pending, []}
+    assert Reducer.update(pending, action) == {pending, []}
   end
 
   test "same-slot stale snapshots preserve newer rows without relying on shared coverage" do

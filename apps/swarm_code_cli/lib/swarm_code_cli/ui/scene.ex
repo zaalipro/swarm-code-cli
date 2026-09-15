@@ -37,7 +37,7 @@ defmodule SwarmCodeCLI.UI.Scene do
           cursor: Cursor.t() | nil,
           announcements: [Announcement.t()]
         }
-  @roles [:title, :navigator, :main, :inspector, :activity, :composer, :status]
+  @roles [:title, :tabline, :navigator, :main, :inspector, :activity, :composer, :status]
   @layouts [:xl, :wide, :medium, :narrow, :small, :compressed_small, :too_small]
   @run_states [
     :queued,

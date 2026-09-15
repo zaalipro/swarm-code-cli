@@ -68,7 +68,10 @@ defmodule SwarmCodeCLI.UI.ReducerPresentationTest do
     {narrow, []} = Reducer.update(state, {:resize, %Size{columns: 60, rows: 20}})
     assert narrow.preferences == state.preferences
     {restored, []} = Reducer.update(narrow, {:resize, state.size})
-    assert Layout.calculate(restored.size, restored.preferences).rects.navigator.width == 32
+    # The navigator pane is gone, so its preference round-trips without ever
+    # becoming a rectangle; the inspector still proves the clamping path.
+    assert restored.preferences.navigator_width == 32
+    refute Map.has_key?(Layout.calculate(restored.size, restored.preferences).rects, :navigator)
     assert Layout.calculate(restored.size, restored.preferences).rects.inspector.width == 56
     {restored, []} = Reducer.update(restored, {:layout_adjust, :navigator, :reset})
     {restored, []} = Reducer.update(restored, {:layout_adjust, :inspector, :reset})

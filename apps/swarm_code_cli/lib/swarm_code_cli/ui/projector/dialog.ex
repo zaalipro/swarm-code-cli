@@ -3,9 +3,19 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
   alias SwarmCodeCLI.UI.{Editor, FieldEditors, SafeText, Switcher, Theme, UnifiedDiff, Width}
   alias SwarmCodeCLI.UI.Scene.{Block, Dialog, Rect, Span}
   alias SwarmCodeCLI.UI.Paint.{Metrics, Options}
-  alias SwarmCodeCLI.UI.Projector.{Density, Support}
+  alias SwarmCodeCLI.UI.Projector.{Density, RunPalette, RunsDashboard, Support}
   def project(state, class, background \\ %{})
   def project(%{layers: []}, _class, _background), do: nil
+
+  # The runs dashboard owns the whole screen and renders surface cards rather
+  # than the centred option list, so it builds its own Scene.Dialog.
+  def project(%{layers: [{:runs_dashboard, _} | _]} = state, class, _background),
+    do: RunsDashboard.dialog(state, class)
+
+  # The run palette is centred rather than full screen, but it is the same kind
+  # of body: striped surface rows carrying a gauge, not single-line options.
+  def project(%{layers: [{:run_palette, _} | _]} = state, class, _background),
+    do: RunPalette.dialog(state, class)
 
   def project(state, class, background) do
     layer = hd(state.layers)

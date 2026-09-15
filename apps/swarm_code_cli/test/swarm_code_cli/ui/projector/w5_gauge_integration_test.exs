@@ -137,8 +137,11 @@ defmodule SwarmCodeCLI.UI.Projector.W5GaugeIntegrationTest do
     end
   end
 
-  describe "navigator run row colors (Change 3)" do
-    test "two navigator rows for runs in different states have different foreground colors" do
+  # The navigator's run rows carried the run-state colour. The dock is gone, so
+  # the same evidence is now the tab row's status dots: one dot per run, coloured
+  # by that run's state.
+  describe "run-state colour on the tab row (Change 3)" do
+    test "two runs in different states get different status colours on the tab row" do
       # Build a fixture with multiple runs by adding a second run
       state = fixture(:chat, %Size{columns: 150, rows: 30}, color_mode: :truecolor)
 
@@ -159,22 +162,21 @@ defmodule SwarmCodeCLI.UI.Projector.W5GaugeIntegrationTest do
 
       {scene, _} = Projector.project(state)
 
-      nav_region = Enum.find(scene.regions, &(&1.role == :navigator))
-      assert nav_region
+      refute Enum.any?(scene.regions, &(&1.role == :navigator))
+      tabline = Enum.find(scene.regions, &(&1.role == :tabline))
+      assert tabline
 
-      rich_texts =
-        find_blocks(
-          nav_region.blocks,
-          &match?(%Block.RichText{action_id: id} when is_binary(id), &1)
-        )
+      dot = SafeText.value(SafeText.chrome(:dot))
 
-      # At least two run rows with different styles
-      assert length(rich_texts) >= 2
+      colors =
+        tabline.blocks
+        |> find_blocks(&match?(%Block.RichText{}, &1))
+        |> Enum.flat_map(& &1.spans)
+        |> Enum.filter(&(SafeText.value(&1.text) == dot))
+        |> Enum.map(& &1.style.foreground)
 
-      styles = Enum.map(rich_texts, fn rt -> hd(rt.spans).style end)
-      colors = Enum.map(styles, & &1.foreground)
-
-      # Different run states should yield different foreground colors
+      # One dot per run, and the two states do not share a colour.
+      assert length(colors) >= 2
       assert length(Enum.uniq(colors)) > 1
     end
   end

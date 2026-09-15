@@ -7,7 +7,9 @@ defmodule SwarmCodeCLI.UI.Paint.ShellFormatTest do
     Paint,
     Projector,
     ReadModel,
-    Size
+    SafeText,
+    Size,
+    Theme
   }
 
   alias SwarmCodeCLI.UI.Paint.{Options, Plan}
@@ -50,6 +52,10 @@ defmodule SwarmCodeCLI.UI.Paint.ShellFormatTest do
           _ -> text
         end
     end
+  end
+
+  defp screen(plan) do
+    for y <- 0..(plan.size.rows - 1), into: "", do: row(plan, y) <> "\n"
   end
 
   defp cell_style(plan, x, y) do
@@ -199,74 +205,79 @@ defmodule SwarmCodeCLI.UI.Paint.ShellFormatTest do
     end
   end
 
-  describe "navigator structure" do
-    test "WORKSPACE heading at xl" do
+  # The navigator owned columns 0..25: a WORKSPACE heading on row 1, a list of
+  # destinations, a RUNS heading and the run rows. The dock is gone. Row 1 is the
+  # tab row, main starts flush at column 0, and the destinations that used to be
+  # listed are reached through the keys the tab row advertises.
+  describe "the shell body after the navigator was removed" do
+    test "no WORKSPACE heading: row 1 is the tab row" do
       state = fixture(:chat, {170, 34})
       plan = paint(state)
-      nav_row1 = row(plan, 1, 0, 26)
-      assert nav_row1 =~ "WORKSPACE"
+      refute screen(plan) =~ "WORKSPACE"
+      assert row(plan, 1) =~ "Ctrl-R runs"
+      assert row(plan, 1) =~ "Ctrl-G all"
     end
 
-    test "destination entries: Conversation and Activity with banner=nil" do
+    test "no destination entries: main owns columns 0..25 from row 2 down" do
       state = fixture(:chat, {170, 34})
       plan = paint(state)
-      nav_row2 = row(plan, 2, 0, 26)
-      nav_row3 = row(plan, 3, 0, 26)
-      assert nav_row2 =~ "Conversation"
-      assert nav_row3 =~ "Activity"
+      assert row(plan, 2, 0, 26) =~ "Streaming conversation"
+      refute screen(plan) =~ "◉ Conversation"
+      refute screen(plan) =~ "◌ Activity"
     end
 
-    test "destination entries: all 5 with live banner" do
+    test "no library destinations with a live banner: Ctrl-K carries them" do
       state = fixture(:chat, {170, 34}, banner: :persisted_banner)
       plan = paint(state)
-      nav_row2 = row(plan, 2, 0, 26)
-      nav_row3 = row(plan, 3, 0, 26)
-      nav_row4 = row(plan, 4, 0, 26)
-      nav_row5 = row(plan, 5, 0, 26)
-      nav_row6 = row(plan, 6, 0, 26)
-      assert nav_row2 =~ "Conversation"
-      assert nav_row3 =~ "Activity"
-      assert nav_row4 =~ "Workflows"
-      assert nav_row5 =~ "Research"
-      assert nav_row6 =~ "Memory"
+      pixels = screen(plan)
+
+      for label <- ["WORKSPACE", "Workflows", "Research", "Memory"] do
+        refute pixels =~ label, "#{label} survived the navigator's removal"
+      end
+
+      assert row(plan, 1) =~ "Ctrl-K features"
     end
 
-    test "RUNS heading appears after blank row with banner=nil" do
+    test "no RUNS heading with banner=nil: the tab row is the runs affordance" do
       state = fixture(:chat, {170, 34})
       plan = paint(state)
-      # With 2 destinations (rows 2-3), blank row at 4, RUNS at row 5
-      nav_row5 = row(plan, 5, 0, 26)
-      assert nav_row5 =~ "RUNS"
+      refute screen(plan) =~ "RUNS"
+      assert row(plan, 1) =~ "Ctrl-R runs"
     end
 
-    test "RUNS heading appears after blank row with live banner" do
+    test "no RUNS heading with live banner either" do
       state = fixture(:chat, {170, 34}, banner: :persisted_banner)
       plan = paint(state)
-      # With 5 destinations (rows 2-6), blank row at 7, RUNS at row 8
-      nav_row8 = row(plan, 8, 0, 26)
-      assert nav_row8 =~ "RUNS"
+      refute screen(plan) =~ "RUNS"
+      assert row(plan, 1) =~ "Ctrl-R runs"
     end
 
-    test "run entry with kind glyph at xl" do
+    test "the run is a tab on row 1 carrying its kind mark" do
       state = fixture(:chat, {170, 34})
       plan = paint(state)
-      # Run entry after RUNS heading. With banner=nil: rows 2-3 dest, 4 blank, 5 RUNS, 6 run
-      nav_row6 = row(plan, 6, 0, 26)
-      assert nav_row6 =~ "Streaming conversation"
-      # Has glyph before it (◉)
-      assert nav_row6 =~ "◉"
+      tab_row = row(plan, 1)
+      # A tab elides the title to 20 cells; the run card in main keeps it whole.
+      assert tab_row =~ "Streaming conversat"
+      assert tab_row =~ SafeText.value(SafeText.chrome(Theme.run_mark(:assistant)))
+      assert tab_row =~ SafeText.value(SafeText.chrome(:dot))
+      assert row(plan, 2) =~ "Streaming conversation"
     end
 
-    test "empty state rows preserved" do
+    test "with no runs the tab row still offers the keys and main says what to do" do
       state = fixture(:chat, {170, 34})
       # Remove all runs to trigger empty state
       state = put_in(state.read_model.runs, %{})
       state = put_in(state.read_model.order, %{})
       plan = paint(state)
-      all_nav = for y <- 1..31, do: row(plan, y, 0, 26)
-      nav_text = Enum.join(all_nav, "\n")
-      assert nav_text =~ "No runs yet"
-      assert nav_text =~ "Send a prompt to begin"
+      pixels = screen(plan)
+
+      # The navigator's "No runs yet / Send a prompt to begin" pair is gone; the
+      # same guidance is main's welcome, and the keys are on the tab row.
+      refute pixels =~ "No runs yet"
+      assert row(plan, 1) =~ "Ctrl-R runs"
+      assert pixels =~ "READY TO BUILD"
+      assert pixels =~ "Ask for a change"
+      assert pixels =~ "Type a request below and press Enter"
     end
   end
 
@@ -287,12 +298,19 @@ defmodule SwarmCodeCLI.UI.Paint.ShellFormatTest do
       assert title =~ "SWARMCODE"
     end
 
-    test "ASCII glyphs in navigator" do
+    test "ASCII glyphs in the tab row" do
+      # The navigator's ASCII destination glyphs are gone with the dock; the tab
+      # row is where the shell now spends its glyphs, and they degrade too.
       state = fixture(:chat, {170, 34}, color: :monochrome, ascii: true)
       plan = paint(state)
-      nav_row2 = row(plan, 2, 0, 26)
-      assert nav_row2 =~ "*"
-      assert nav_row2 =~ "Conversation"
+      tab_row = row(plan, 1)
+      assert tab_row =~ "*"
+      assert tab_row =~ "Streaming conversat"
+
+      for unicode <- [:assistant_mark, :dot, :stripe] do
+        refute tab_row =~ SafeText.value(SafeText.chrome(unicode)),
+               "#{unicode} survived into ASCII mode on the tab row"
+      end
     end
 
     test "Focus: composer in monochrome" do

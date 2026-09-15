@@ -131,16 +131,21 @@ defmodule SwarmCodeCLI.UI.Paint.ProjectorTest do
     pixels = screen(plan)
     main = Enum.find(scene.regions, &(&1.role == :main))
     composer = Enum.find(scene.regions, &(&1.role == :composer))
-    navigator = Enum.find(scene.regions, &(&1.role == :navigator))
+    tabline = Enum.find(scene.regions, &(&1.role == :tabline))
 
     assert pixels =~ "READY TO BUILD"
     assert pixels =~ "Ask for a change"
     assert pixels =~ "Type a message"
     assert pixels =~ "/ for commands"
-    assert pixels =~ "No runs yet"
+    # The navigator is gone: it no longer reports "No runs yet" from a dock, and
+    # the tab row on row 1 carries the way into the runs instead.
+    refute Enum.any?(scene.regions, &(&1.role == :navigator))
+    refute pixels =~ "No runs yet"
+    assert pixels =~ "Ctrl-R runs"
     assert composer.rect.height >= 1
     assert main.rect.height > 0
-    assert navigator.rect.height > 0
+    assert main.rect.x == 0
+    assert tabline.rect == %SwarmCodeCLI.UI.Scene.Rect{x: 0, y: 1, width: 120, height: 1}
   end
 
   test "all capability combinations preserve visible actions and composer cell position" do

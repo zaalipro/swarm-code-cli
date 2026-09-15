@@ -695,14 +695,23 @@ defmodule SwarmCodeCLI.UI.ProjectorTest do
     refute target in Map.values(actions)
   end
 
-  test "navigator follows shell order and reveals selected run beyond first viewport" do
-    alias SwarmCodeCLI.UI.{Scroll, PageState}
+  # The navigator used to own the shell run list: a VirtualList of every run in
+  # `order.shell`, scrolled by `scrolls.navigator` and revealing
+  # `selection["navigator"]`. The dock is gone, so this pins the two things that
+  # replaced it — the tab row and the Ctrl-G dashboard — and, most importantly,
+  # that a session restored onto the vanished region still projects.
+  test "a session restored onto the deleted navigator projects, and its runs live on the tab row and in Ctrl-G" do
+    alias SwarmCodeCLI.UI.{Input, Keymap, PageState, Reducer, Scroll, State}
+    alias SwarmCodeCLI.UI.Projector.{RunsDashboard, Shell, Support}
+
     state = fixture(100, 24)
     original = state.read_model.runs["fixture-run"]
     runs = for i <- 1..60, do: %{original | id: "nav-#{i}", title: "Navigator run #{i}"}
     order = runs |> Enum.map(& &1.id) |> Enum.reverse()
 
-    state = %{
+    # Exactly what a saved session hands back: focus, selection and a scroll
+    # anchor all naming a region that no longer exists.
+    stale = %{
       state
       | focus: "navigator",
         read_model: %{
@@ -716,37 +725,79 @@ defmodule SwarmCodeCLI.UI.ProjectorTest do
         pages: %{shell: %PageState{before_cursor: "shell-before", after_cursor: "shell-after"}}
     }
 
-    {scene, actions} = Projector.project(state)
-    navigator = Enum.find(scene.regions, &(&1.role == :navigator))
-    window = Enum.find(navigator.blocks, &is_struct(&1, SwarmCodeCLI.UI.Scene.Block.VirtualList))
+    {scene, _actions} = Projector.project(stale)
     assert Scene.validate(scene) == :ok
-    assert window.first_index > 0
-    assert window.total_count == 60
-    assert length(window.items) <= navigator.rect.height - 1
+    refute Enum.any?(scene.regions, &(&1.role == :navigator))
 
-    assert Enum.map(window.items, fn row -> actions[row.action_id] end) ==
-             Enum.map(
-               Enum.slice(order, window.first_index, length(window.items)),
-               &{:local, {:navigate, {:run, &1}}}
-             )
+    # Main takes the columns the dock used to hold, at column 0.
+    main = Enum.find(scene.regions, &(&1.role == :main))
+    assert main.rect.x == 0
+    assert main.rect.width == 100
+    assert main.rect.y == 2
 
-    assert {:local, {:navigate, {:run, "nav-5"}}} in Map.values(actions)
-    refute {:local, {:navigate, {:run, "nav-60"}}} in Map.values(actions)
-    assert window.before_cursor == "shell-before"
-    assert window.after_cursor == "shell-after"
-    assert navigator.scroll_offset == window.first_index
+    # Every run is still accounted for on the one-line tab row: the ones that fit
+    # are tabs, the rest are the +N remainder.
+    tabline = Enum.find(scene.regions, &(&1.role == :tabline))
+    assert tabline.rect == %SwarmCodeCLI.UI.Scene.Rect{x: 0, y: 1, width: 100, height: 1}
+    {shown, overflow, _hint} = Shell.tabline_plan(stale, 100)
+    assert shown != []
+    assert length(shown) + overflow == 60
 
-    assert navigator.visible_range ==
-             {window.first_index, window.first_index + length(window.items)}
+    # The row is in the order the data source sent, not in a map's hash order:
+    # the run being looked at leads, then order[:shell] decides. A count alone
+    # would hold for any permutation.
+    active = with %{id: id} <- Support.run(stale), do: [id], else: (_ -> [])
+    expected = active ++ Enum.reject(order, &(&1 in active))
 
-    assert navigator.follow == :none
-    {scene, actions} = Projector.project(%{state | selection: %{"navigator" => "nav-60"}})
-    navigator = Enum.find(scene.regions, &(&1.role == :navigator))
+    assert Enum.map(shown, & &1.id) == Enum.take(expected, length(shown))
 
-    assert Enum.find(navigator.blocks, &is_struct(&1, SwarmCodeCLI.UI.Scene.Block.VirtualList)).first_index ==
-             0
+    # The list itself moved to the Ctrl-G dashboard, which lists every run in
+    # that same shell order.
+    {layer_id, _} = State.next_id(stale, :layer)
+    {dash, _} = Reducer.update(stale, {:open_layer, {:runs_dashboard, layer_id}})
+    assert RunsDashboard.ids(dash) == order
 
-    assert {:local, {:navigate, {:run, "nav-60"}}} in Map.values(actions)
+    # It windows that list the way the scrolling VirtualList it replaced did, so
+    # what it offers is what it draws: an action id for a row that was painted
+    # nowhere is not reachability, it is a table entry nobody can reach.
+    {scene, actions} = Projector.project(dash)
+    assert Scene.validate(scene) == :ok
+    targets = Map.values(actions)
+    drawn = dash |> RunsDashboard.window() |> Map.fetch!(:shown) |> Enum.map(& &1.id)
+
+    assert drawn == Enum.take(order, length(drawn))
+    assert length(drawn) < 60
+
+    for id <- drawn do
+      assert {:local, {:navigate, {:run, id}}} in targets,
+             "the dashboard drew #{id} without offering it"
+    end
+
+    for id <- order -- drawn do
+      refute {:local, {:navigate, {:run, id}}} in targets,
+             "the dashboard offered #{id}, which it painted nowhere"
+    end
+
+    # And the rows outside the window are reachable, because the window follows
+    # the focus the keyboard moves. End lands on the oldest run — the one the
+    # navigator could only reach by scrolling — draws it, and opens it.
+    assert {:ok, action} = Keymap.resolve(Input.key(:end), dash, actions)
+    {ended, _} = Reducer.update(dash, action)
+    assert ended.focus == List.last(order)
+
+    {scene, actions} = Projector.project(ended)
+    assert Scene.validate(scene) == :ok
+    assert scene.overlay.focused_control_id == "nav-1"
+
+    assert {:local, {:navigate, {:run, "nav-1"}}} in Map.values(actions),
+           "the dashboard did not draw the row the keyboard moved to"
+
+    assert Keymap.resolve(Input.key(:enter), ended, actions) ==
+             {:ok, {:navigate, {:run, "nav-1"}}}
+
+    # Projection is pure: the stale keys are still exactly where they were.
+    assert stale.selection["navigator"] == "nav-5"
+    assert stale.scrolls.navigator.anchor == {"nav-8", 0, :top}
   end
 
   test "shared Main content height matches projected lines after chrome and notices" do

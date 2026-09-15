@@ -16,7 +16,12 @@ defmodule SwarmCodeCLI.UI.Reducer do
   alias SwarmCodeCLI.UI.SlashPalette
   alias SwarmCodeCLI.UI.Reducer.{Watch, Commands, Pages, Editing, Details}
   alias SwarmCodeCLI.UI.DataSource.DTO.Outcome
+  alias SwarmCodeCLI.UI.Projector.{RunPalette, RunsDashboard}
   alias SwarmCodeCLI.UI.DataSource.DTO
+
+  # The query is drawn on the dashboard header line beside the counts, so it is
+  # bounded rather than allowed to grow with every keystroke.
+  @max_filter_length 64
 
   @spec init(Init.t()) :: {State.t(), [SwarmCodeCLI.UI.Effect.t()]}
   def init(%Init{} = init) do
@@ -73,7 +78,11 @@ defmodule SwarmCodeCLI.UI.Reducer do
       {%{state | notice: :detach_requires_confirmation},
        [{:announce, SafeText.chrome(:detach_key)}]}
 
-  defp transition(state, {:toggle_dock, dock}) do
+  # The only pane left to dock is the inspector, so this is a real toggle rather
+  # than a "set the dock to this pane": the value it toggles to when the
+  # inspector is already docked is `:none`, the named absence of a dock.
+  defp transition(state, {:toggle_dock, :inspector}) do
+    dock = if state.preferences.medium_dock == :inspector, do: :none, else: :inspector
     {resize(%{state | preferences: %{state.preferences | medium_dock: dock}}, state.size), []}
   end
 
@@ -182,16 +191,32 @@ defmodule SwarmCodeCLI.UI.Reducer do
   end
 
   defp transition(state, {:focus_region, region}) do
-    if region in focus_graph(state),
-      do: {%{state | focus: region, hidden_focus: nil}, []},
+    graph = focus_graph(state)
+
+    if region in graph,
+      do: dashboard_page(%{state | focus: region, hidden_focus: nil}, graph, region),
       else: {state, []}
   end
 
   defp transition(state, {:focus_cycle, direction}) do
     graph = focus_graph(state)
-    index = Enum.find_index(graph, &(&1 == state.focus)) || 0
-    index = Integer.mod(index + if(direction == :next, do: 1, else: -1), length(graph))
-    {%{state | focus: Enum.at(graph, index)}, []}
+
+    # A focus the graph no longer holds — a session restored onto the deleted
+    # navigator, say — is not a position to count from: Tab re-enters the ring at
+    # its first region instead of stepping off an imaginary index 0.
+    focus =
+      case Enum.find_index(graph, &(&1 == state.focus)) do
+        nil ->
+          List.first(graph)
+
+        index ->
+          Enum.at(
+            graph,
+            Integer.mod(index + if(direction == :next, do: 1, else: -1), length(graph))
+          )
+      end
+
+    dashboard_page(%{state | focus: focus}, graph, focus)
   end
 
   defp transition(%{layers: [{:jump, _} | _]} = state, {:move, direction}) do
@@ -472,13 +497,45 @@ defmodule SwarmCodeCLI.UI.Reducer do
     }
 
     focus =
-      if match?({:unsent_changes, _}, layer) or match?({:approval, _}, layer) or
-           match?({:question, _}, layer) or match?({:confirm_intent, _}, layer),
-         do: "cancel",
-         else: List.first(focus_graph(next))
+      cond do
+        match?({:unsent_changes, _}, layer) or match?({:approval, _}, layer) or
+          match?({:question, _}, layer) or match?({:confirm_intent, _}, layer) ->
+          "cancel"
+
+        # The palette is a switcher: it opens on the run you are looking at, not
+        # on the top of its own list.
+        match?({:run_palette, _}, layer) ->
+          RunPalette.initial_focus(next)
+
+        true ->
+          List.first(focus_graph(next))
+      end
 
     {%{next | focus: focus}, []}
   end
+
+  # The runs filter is a plain query string in `selection`, not a field editor:
+  # neither run view carries a cursor or a selection, so a keystroke is an
+  # append, a delete of the last grapheme, or a reset. The Ctrl-G dashboard and
+  # the Ctrl-R palette share the query and the action; only one of them is ever
+  # the top layer, and both drop the query when they close.
+  defp transition(%{layers: [layer | _]} = state, {:dashboard_filter, operation})
+       when is_tuple(layer) and tuple_size(layer) == 2 and
+              elem(layer, 0) in [:runs_dashboard, :run_palette] do
+    query = State.runs_filter(state)
+
+    next =
+      case operation do
+        {:append, fragment} -> String.slice(query <> fragment, 0, @max_filter_length)
+        :backspace -> String.slice(query, 0, max(String.length(query) - 1, 0))
+        :clear -> ""
+      end
+
+    {reanchor(State.put_runs_filter(state, next)), []}
+  end
+
+  # Typing only reaches the filter while a run view is the top layer.
+  defp transition(state, {:dashboard_filter, _operation}), do: {state, []}
 
   defp transition(%{layers: []} = state, :close_top_layer), do: {state, []}
 
@@ -525,6 +582,13 @@ defmodule SwarmCodeCLI.UI.Reducer do
     state =
       if match?({:research_form, _}, layer),
         do: %{state | selection: Map.delete(state.selection, {:research_form, :depth})},
+        else: state
+
+    # A closed run view keeps no query, so the next Ctrl-G or Ctrl-R opens on
+    # every run.
+    state =
+      if match?({:runs_dashboard, _}, layer) or match?({:run_palette, _}, layer),
+        do: State.put_runs_filter(state, ""),
         else: state
 
     if match?({:research_form, _}, layer) do
@@ -690,17 +754,26 @@ defmodule SwarmCodeCLI.UI.Reducer do
     do: FeatureForm.focus_graph(state)
 
   def focus_graph(%{layers: [{:run_inspector, _, _} | _]}), do: ["inspector", "cancel"]
+
+  def focus_graph(%{layers: [{:run_palette, _} | _]} = state), do: RunPalette.focus_graph(state)
+
+  def focus_graph(%{layers: [{:runs_dashboard, _} | _]} = state),
+    do: RunsDashboard.focus_graph(state)
+
   def focus_graph(%{layers: [_ | _]}), do: ["dialog", "cancel"]
 
+  # Only regions the layout actually draws are offered to Tab. The navigator is
+  # not one of them any more, so a restored session focused on it finds itself
+  # outside the ring; `focus_cycle` puts it back on the first real region rather
+  # than counting from a member that no longer exists.
   def focus_graph(state) do
     rects = Layout.calculate(state.size, state.preferences).rects
 
-    Enum.filter(["navigator", "main", "inspector", "composer"], fn region ->
+    Enum.filter(["main", "inspector", "composer"], fn region ->
       Map.has_key?(rects, region_atom(region))
     end)
   end
 
-  defp region_atom("navigator"), do: :navigator
   defp region_atom("main"), do: :main
   defp region_atom("inspector"), do: :inspector
   defp region_atom("composer"), do: :composer
@@ -798,8 +871,41 @@ defmodule SwarmCodeCLI.UI.Reducer do
 
   defp repair_switcher(_, next), do: next
 
+  # Narrowing can hide the selected palette row, so the selection falls back to
+  # the first run still listed rather than pointing at a row you cannot see.
+  defp reanchor(%{layers: [{:run_palette, _} | _]} = state) do
+    graph = RunPalette.focus_graph(state)
+    if state.focus in graph, do: state, else: %{state | focus: List.first(graph)}
+  end
+
+  defp reanchor(%{layers: [{:runs_dashboard, _} | _]} = state) do
+    graph = RunsDashboard.focus_graph(state)
+    if state.focus in graph, do: state, else: %{state | focus: List.first(graph)}
+  end
+
+  defp reanchor(state), do: state
+
+  # Reaching the end of the dashboard's list asks the shell for the next page.
+  # The navigator's scroll used to be the only caller that paged shell rows in;
+  # the dashboard that replaced it is now that caller.
+  defp dashboard_page(%{layers: [{:runs_dashboard, _} | _]} = state, graph, focus) do
+    if focus == List.last(graph) and Map.has_key?(state.read_model.runs, focus) and
+         is_map(Map.get(state.watches, :shell)),
+       do: Pages.request(state, :shell, :after),
+       else: {state, []}
+  end
+
+  defp dashboard_page(state, _graph, _focus), do: {state, []}
+
   defp close_switcher(%{layers: [{kind, _} | _]} = state)
-       when kind in [:switcher, :jump, :action_menu, :region_filter],
+       when kind in [
+              :switcher,
+              :jump,
+              :action_menu,
+              :region_filter,
+              :run_palette,
+              :runs_dashboard
+            ],
        do: transition(state, :close_top_layer)
 
   defp close_switcher(%{layers: [{:confirm_intent, _} | _]} = state),

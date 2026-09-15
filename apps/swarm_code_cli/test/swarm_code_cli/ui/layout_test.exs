@@ -33,12 +33,26 @@ defmodule SwarmCodeCLI.UI.LayoutTest do
 
   test "wide shell matches desktop navigation transcript and inspector hierarchy" do
     layout = Layout.calculate(size(150, 30), Preferences.new())
-    assert layout.rects.navigator == %Rect{x: 0, y: 1, width: 26, height: 28}
-    assert layout.rects.inspector == %Rect{x: 108, y: 1, width: 42, height: 28}
-    assert layout.rects.main == %Rect{x: 27, y: 1, width: 80, height: 24}
-    assert layout.rects.composer == %Rect{x: 27, y: 26, width: 80, height: 3}
+    # The navigator dock is gone; row 1 is the tab row and main starts at column 0.
+    refute Map.has_key?(layout.rects, :navigator)
+    assert layout.rects.title == %Rect{x: 0, y: 0, width: 150, height: 1}
+    assert layout.rects.tabline == %Rect{x: 0, y: 1, width: 150, height: 1}
+    assert layout.rects.inspector == %Rect{x: 108, y: 2, width: 42, height: 27}
+    assert layout.rects.main == %Rect{x: 0, y: 2, width: 107, height: 23}
+    assert layout.rects.activity == %Rect{x: 0, y: 25, width: 107, height: 1}
+    assert layout.rects.composer == %Rect{x: 0, y: 26, width: 107, height: 3}
     assert layout.rects.status == %Rect{x: 0, y: 29, width: 150, height: 1}
     assert layout.mutations_visible?
+    # Main is exactly the old 80 columns plus the navigator's 26 and its gap.
+    assert layout.rects.main.width == 80 + 26 + 1
+    # Rows in order: 0 title, 1 tabline, main, activity, composer, 29 status.
+    assert layout.rects.main.y == layout.rects.tabline.y + 1
+
+    assert layout.rects.activity.y == layout.rects.main.y + layout.rects.main.height
+    assert layout.rects.composer.y == layout.rects.activity.y + layout.rects.activity.height
+
+    assert layout.rects.status.y ==
+             layout.rects.composer.y + layout.rects.composer.height
   end
 
   test "medium docks exactly one pane and shrinking never overwrites preferred widths" do
@@ -50,11 +64,27 @@ defmodule SwarmCodeCLI.UI.LayoutTest do
     assert medium.preferences == preferences
     wide = Layout.calculate(size(150, 30), medium.preferences)
     assert wide.rects.inspector.width == 56
-    assert wide.rects.navigator.width == 26
+    # No navigator at any class now, so main takes what the dock used to hold.
+    refute Map.has_key?(wide.rects, :navigator)
+    assert wide.rects.main == %Rect{x: 0, y: 2, width: 93, height: 23}
 
-    nav = Layout.calculate(size(100, 24), %{preferences | medium_dock: :navigator})
-    assert nav.rects.navigator.width == 26
-    refute Map.has_key?(nav.rects, :inspector)
+    # `:none` is the named absence of a dock — the value `:navigator` used to
+    # hold, now that it no longer points at a deleted pane — and it is the
+    # default, so a stock medium terminal gives main the whole width.
+    assert Preferences.new().medium_dock == :none
+    assert_raise ArgumentError, fn -> Preferences.new(medium_dock: :navigator) end
+
+    none = Layout.calculate(size(100, 24), %{preferences | medium_dock: :none})
+    refute Map.has_key?(none.rects, :navigator)
+    refute Map.has_key?(none.rects, :inspector)
+    assert none.rects.main.x == 0
+    assert none.rects.main.width == 100
+    assert none.rects.tabline == %Rect{x: 0, y: 1, width: 100, height: 1}
+    assert Layout.calculate(size(100, 24), Preferences.new()).rects == none.rects
+
+    # And Ctrl-B docks the inspector a medium terminal can still hold.
+    assert Layout.calculate(size(100, 24), %{preferences | medium_dock: :inspector}).rects
+           |> Map.has_key?(:inspector)
   end
 
   test "small terminals preserve content while survival sizes have no composer" do
@@ -79,7 +109,7 @@ defmodule SwarmCodeCLI.UI.LayoutTest do
   test "all pane rectangles are positive, disjoint and bounded at every breakpoint" do
     for c <- [1, 49, 50, 51, 71, 72, 73, 99, 100, 101, 149, 150, 151, 169, 170, 171],
         r <- [1, 13, 14, 15, 16, 19, 20, 23, 24, 29, 30, 33, 34, 35],
-        dock <- [:navigator, :inspector] do
+        dock <- [:none, :inspector] do
       layout =
         Layout.calculate(
           size(c, r),
@@ -111,7 +141,16 @@ defmodule SwarmCodeCLI.UI.LayoutTest do
     changed = preferences |> Preferences.nudge(:navigator, 8) |> Preferences.nudge(:inspector, -2)
     assert changed.navigator_width == 34
     assert changed.inspector_width == 40
-    assert Layout.calculate(size(150, 30), changed).rects.navigator.width == 32
+    # The navigator preference is still carried and reset-able, but no pane reads
+    # it any more, so the width it asks for is never drawn.
+    refute Map.has_key?(Layout.calculate(size(150, 30), changed).rects, :navigator)
+    assert Layout.calculate(size(150, 30), changed).rects.main.width == 109
+
+    # Effective clamping still leaves the stored preference alone on the pane
+    # that is drawn: 50 columns requested, 49 granted at 100 columns.
+    docked = Preferences.new(inspector_width: 50, medium_dock: :inspector)
+    assert Layout.calculate(size(100, 24), docked).rects.inspector.width == 49
+    assert docked.inspector_width == 50
     assert Preferences.reset(changed, :navigator).navigator_width == 26
     assert Preferences.preset(changed, :inspector, :balanced).inspector_width == 46
     assert_raise FunctionClauseError, fn -> Preferences.nudge(changed, :inspector, 3) end

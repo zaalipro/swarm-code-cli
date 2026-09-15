@@ -30,7 +30,11 @@ defmodule SwarmCodeCLI.UI.Reducer.Pages do
     {%{state | selection: selection}, []}
   end
 
-  def scroll(state, region, operation) when region in ["main", "inspector", "navigator"] do
+  # The navigator is not one of them. A session restored onto the deleted region
+  # still carries `scrolls.navigator` and `selection["navigator"]`, and scrolling
+  # a region that is drawn nowhere must leave both exactly as they were rather
+  # than measure them against main's viewport and page the shell in behind them.
+  def scroll(state, region, operation) when region in ["main", "inspector"] do
     key = region_key(region)
     slot = slot(state, key)
     ids = Map.get(state.read_model.order, slot, [])
@@ -47,19 +51,6 @@ defmodule SwarmCodeCLI.UI.Reducer.Pages do
       )
 
     state = %{state | scrolls: Map.put(state.scrolls, key, scroll)}
-
-    state =
-      if key == :navigator and operation != :detach do
-        selected =
-          case scroll.anchor do
-            {id, _, _} -> id
-            nil -> nil
-          end
-
-        %{state | selection: Map.put(state.selection, "navigator", selected)}
-      else
-        state
-      end
 
     direction = direction(operation)
 

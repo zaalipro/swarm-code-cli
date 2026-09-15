@@ -1,8 +1,20 @@
 defmodule SwarmCodeCLI.UI.ThemeTest do
   use ExUnit.Case, async: true
-  alias SwarmCodeCLI.UI.{Capabilities, SafeText, Scene, Size, Theme}
+  alias SwarmCodeCLI.UI.{Capabilities, SafeText, Scene, Size, Theme, Width}
   alias SwarmCodeCLI.UI.Scene.{Color, Span, Style, Block}
+  alias SwarmCodeCLI.UI.Projector.Support
   alias SwarmCodeCLI.TestSupport.ContractFixtures
+
+  # {kind, token, glyph, ASCII twin}: the design's kind marks.
+  @run_marks [
+    {:assistant, :assistant_mark, "✳", "*"},
+    {:goal, :glyph_selected, "◉", "*"},
+    {:swarm, :kind_swarm_mark, "⋔", "S"},
+    {:workflow, :glyph_workflows, "⧉", "#"},
+    {:research, :search_mark, "⌕", "/"},
+    {:consensus_judge, :kind_consensus_mark, "⚖", "C"},
+    {:ultra, :effort_mark, "◕", "e"}
+  ]
 
   @foregrounds [
     {:border, 0x2A2A2A, 236, :bright_black},
@@ -107,6 +119,49 @@ defmodule SwarmCodeCLI.UI.ThemeTest do
 
     assert_raise FunctionClauseError, fn -> apply(Theme, :run_kind, [:unknown]) end
     assert_raise FunctionClauseError, fn -> Theme.agent_lane(6) end
+  end
+
+  test "every run kind maps to its design mark, one cell under both width policies" do
+    for {kind, token, glyph, ascii} <- @run_marks do
+      assert Theme.run_mark(kind) == token
+      assert SafeText.value(SafeText.chrome(token)) == glyph
+
+      # A mark that is two cells under :wide would overrun the column it marks.
+      for policy <- [:narrow, :wide] do
+        assert Width.cells(glyph, policy) == 1,
+               "#{token} (#{glyph}) is not one cell under #{policy}"
+
+        assert Width.cells(ascii, policy) == 1,
+               "the #{token} ASCII twin (#{ascii}) is not one cell under #{policy}"
+      end
+    end
+
+    assert_raise FunctionClauseError, fn -> apply(Theme, :run_mark, [:unknown]) end
+    # Wire kinds must be translated the way Workspace.kind/1 does, not passed through.
+    assert_raise FunctionClauseError, fn -> apply(Theme, :run_mark, [:chat]) end
+    assert_raise FunctionClauseError, fn -> apply(Theme, :run_mark, [:consensus]) end
+  end
+
+  test "every run mark is a registered glyph that degrades to its ASCII twin" do
+    for {kind, token, glyph, ascii} <- @run_marks do
+      assert Map.has_key?(Support.glyphs(), token),
+             "#{token} has no registered ASCII twin, so #{kind} would stay Unicode"
+
+      assert SafeText.value(Support.glyph(token, %{capabilities: %{ascii?: false}})) == glyph
+      assert SafeText.value(Support.glyph(token, %{capabilities: %{ascii?: true}})) == ascii
+      assert ascii == for(<<c <- ascii>>, c < 128, into: "", do: <<c>>)
+    end
+  end
+
+  test "run_mark leaves the run_kind letter vocabulary and its roles untouched" do
+    for {kind, token, _glyph, _ascii} <- @run_marks do
+      {prefix, role} = Theme.run_kind(kind)
+
+      # The letter is still the prefix cue; the mark is a separate vocabulary.
+      assert SafeText.value(prefix) in ~w(A G S W R C U)
+      assert Theme.style(role, caps(:monochrome)).prefix == prefix
+      refute SafeText.value(prefix) == SafeText.value(SafeText.chrome(token))
+    end
   end
 
   test "statuses are base labels only and queued is warning" do

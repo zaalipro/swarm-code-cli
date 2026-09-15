@@ -1,6 +1,8 @@
 defmodule SwarmCodeCLI.UI.ReducerAttemptPagingTest do
   use ExUnit.Case, async: true
   alias SwarmCodeCLI.UI.{ReadModel, ChunkDeque, Reducer, Init, ScrollMetrics, Size, Capabilities}
+  alias SwarmCodeCLI.UI.{Input, Keymap}
+  alias SwarmCodeCLI.UI.Projector.RunsDashboard
   alias SwarmCodeCLI.UI.DataSource.{DTO, Delta, Delivery, AdmissionError}
 
   def model do
@@ -72,7 +74,10 @@ defmodule SwarmCodeCLI.UI.ReducerAttemptPagingTest do
     assert ChunkDeque.materialize(next, {"other", :reasoning, "older"}) == "other"
   end
 
-  test "Navigator PageDown advances by its visible content capacity without skipping a row" do
+  # The scrolling navigator that used to own this contract is gone; the Ctrl-G
+  # dashboard that replaced it windows the same shell list, so the contract moved
+  # onto it: one PageDown is one screenful, no more and no less.
+  test "the runs dashboard pages by its visible capacity without skipping a run" do
     size = %Size{columns: 100, rows: 24}
 
     {state, _} =
@@ -86,22 +91,29 @@ defmodule SwarmCodeCLI.UI.ReducerAttemptPagingTest do
       counts: %DTO.Counts{}
     }
 
-    state = %{
-      state
-      | read_model: ReadModel.snapshot(state.read_model, :shell, body),
-        focus: "navigator"
-    }
+    state = %{state | read_model: ReadModel.snapshot(state.read_model, :shell, body)}
+    {dash, _} = Reducer.update(state, {:open_layer, {:runs_dashboard, "dash"}})
 
-    {first, []} = Reducer.update(state, {:scroll, "navigator", :first})
-    {page, []} = Reducer.update(first, {:scroll, "navigator", {:page, 1}})
-    # Navigator capacity at 100x24 with banner=nil:
-    #   rect.height = 22, destinations = 2 (Conversation + Activity),
-    #   fixed_rows = 2 + 2 (blank + RUNS heading) = 4,
-    #   capacity = max(0, 22 - 1 - 4) = 17.
-    # PageDown from r1 advances by 17 to r18.
-    assert page.scrolls.navigator.anchor == {"r18", 0, :top}
-    {back, []} = Reducer.update(page, {:scroll, "navigator", {:page, -1}})
-    assert back.scrolls.navigator.anchor == {"r1", 0, :top}
+    ids = RunsDashboard.ids(dash)
+    capacity = length(RunsDashboard.window(dash).shown)
+    assert capacity > 1
+    assert capacity < 60
+    assert dash.focus == List.first(ids)
+
+    {:ok, action} = Keymap.resolve(Input.key(:page_down), dash, %{})
+    {page, _} = Reducer.update(dash, action)
+
+    # Exactly one capacity on: the run after the last one the window held, so
+    # nothing between the two pages is stepped over.
+    assert page.focus == Enum.at(ids, capacity)
+    window = RunsDashboard.window(page)
+    assert page.focus in Enum.map(window.shown, & &1.id)
+    assert window.first + length(window.shown) == capacity + 1
+
+    {:ok, back_action} = Keymap.resolve(Input.key(:page_up), page, %{})
+    {back, _} = Reducer.update(page, back_action)
+    assert back.focus == List.first(ids)
+    assert RunsDashboard.window(back).first == 0
   end
 
   test "failed recovery clears correlation and explicit page retry admits a new watch resync" do

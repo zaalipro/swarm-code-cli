@@ -16,6 +16,8 @@ defmodule SwarmCodeCLI.UI.LayerSpec do
           | {:feature_form, atom(), binary()}
           | {:command_report, binary()}
           | {:switcher | :action_menu | :jump | :region_filter, binary()}
+          | {:runs_dashboard, binary()}
+          | {:run_palette, binary()}
 
   @spec help() :: t()
   def help, do: :help
@@ -53,7 +55,9 @@ defmodule SwarmCodeCLI.UI.LayerSpec do
              :action_menu,
              :jump,
              :region_filter,
-             :command_report
+             :command_report,
+             :runs_dashboard,
+             :run_palette
            ],
       do: if(Intent.valid_id?(id), do: {:ok, layer}, else: {:error, :invalid_layer_spec})
 

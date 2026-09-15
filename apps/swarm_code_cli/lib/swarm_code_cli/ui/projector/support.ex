@@ -87,6 +87,17 @@ defmodule SwarmCodeCLI.UI.Projector.Support do
   def action(label, target, style),
     do: {:projector_action, label, ActionTarget.validate!(target), style}
 
+  @doc """
+  A clickable row built from already-styled spans.
+
+  `action/3` collapses its label into a single span, which cannot express a row
+  whose segments carry different roles (a kind-coloured title beside a
+  status-coloured word beside a two-tone gauge). This keeps the spans and still
+  resolves to one opaque action id for the whole line.
+  """
+  def action_spans(spans, target) when is_list(spans),
+    do: {:projector_action_spans, spans, ActionTarget.validate!(target)}
+
   def allowed?(state, dto, permission) do
     permission in Map.get(dto, :allowed_actions, []) and not pending?(state, dto) and
       not accepted_interaction?(state, dto)
@@ -163,6 +174,15 @@ defmodule SwarmCodeCLI.UI.Projector.Support do
       |> Base.url_encode64(padding: false)
 
     {%Block.Text{text: label, action_id: id}, Map.put(table, id, target)}
+  end
+
+  defp resolve({:projector_action_spans, spans, target}, rev, path, table) do
+    id =
+      :crypto.hash(:sha256, :erlang.term_to_binary({rev, path, target}))
+      |> Base.url_encode64(padding: false)
+
+    {spans, table} = resolve(spans, rev, path, Map.put(table, id, target))
+    {%Block.RichText{spans: spans, action_id: id}, table}
   end
 
   defp resolve(%SafeText{} = text, _rev, _path, table), do: {text, table}

@@ -27,6 +27,10 @@ defmodule SwarmCodeCLI.UI.Action do
     :session_failed
   ]
 
+  # One keystroke at a time reaches the runs dashboard filter, so a fragment is
+  # bounded far below the editor's 4 KiB: a paste never routes here.
+  @max_filter_fragment_bytes 64
+
   @capability_keys [
     :__struct__,
     :size,
@@ -61,7 +65,7 @@ defmodule SwarmCodeCLI.UI.Action do
   @type t ::
           :boot
           | :editor_detach_notice
-          | {:toggle_dock, :navigator | :inspector}
+          | {:toggle_dock, :inspector}
           | {:set_tab, :thread | :agents | :timeline | :changes}
           | {:resize, Size.t()}
           | {:terminal_capabilities, non_neg_integer(), Capabilities.t()}
@@ -103,6 +107,7 @@ defmodule SwarmCodeCLI.UI.Action do
           | {:presenter_handoff_confirmed, :plain}
           | {:navigate, Destination.t()}
           | {:open_layer, LayerSpec.t()}
+          | {:dashboard_filter, {:append, binary()} | :backspace | :clear}
           | :close_top_layer
           | {:data, Delivery.t()}
           | {:timer_fired, binary()}
@@ -120,7 +125,7 @@ defmodule SwarmCodeCLI.UI.Action do
     do: {:ok, action}
 
   def validate({:toggle_dock, dock} = action),
-    do: valid_action(action, dock in [:navigator, :inspector])
+    do: valid_action(action, dock == :inspector)
 
   def validate({:library_page, direction} = action),
     do: valid_action(action, direction in [:next, :previous, :refresh])
@@ -283,6 +288,9 @@ defmodule SwarmCodeCLI.UI.Action do
   def validate({:open_layer, layer} = action),
     do: valid_action(action, match?({:ok, _layer}, LayerSpec.validate(layer)))
 
+  def validate({:dashboard_filter, operation} = action),
+    do: valid_action(action, valid_filter_operation?(operation))
+
   def validate({:data, delivery} = action),
     do: valid_action(action, match?({:ok, _delivery}, Delivery.validate(delivery)))
 
@@ -306,6 +314,23 @@ defmodule SwarmCodeCLI.UI.Action do
   defp valid_draw_result?(:ok), do: true
   defp valid_draw_result?({:error, code}), do: terminal_error_code?(code)
   defp valid_draw_result?(_result), do: false
+
+  defp valid_filter_operation?(operation) when operation in [:backspace, :clear], do: true
+
+  defp valid_filter_operation?({:append, fragment}) when is_binary(fragment),
+    do:
+      fragment != "" and byte_size(fragment) <= @max_filter_fragment_bytes and
+        String.valid?(fragment) and printable_fragment?(fragment)
+
+  defp valid_filter_operation?(_operation), do: false
+
+  # A filter query is drawn inline in the dashboard header, so only printable
+  # graphemes may enter it: control codes, tabs and newlines are not typing.
+  defp printable_fragment?(fragment) do
+    fragment
+    |> String.to_charlist()
+    |> Enum.all?(&(&1 >= 0x20 and &1 != 0x7F and not (&1 >= 0x80 and &1 <= 0x9F)))
+  end
 
   defp valid_layout_adjustment?(:reset), do: true
   defp valid_layout_adjustment?({:preset, preset}), do: preset in [:compact, :balanced, :wide]

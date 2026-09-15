@@ -48,6 +48,24 @@ defmodule SwarmCodeCLI.UI.State do
   ]
 
   @type t :: %__MODULE__{}
+
+  # The Ctrl-G dashboard keeps its filter query in `selection` under one key that
+  # the keymap, the reducer and the dashboard projector all have to agree on, so
+  # the key itself lives here instead of being spelled out in three modules.
+  @runs_filter_key "runs_dashboard_filter"
+
+  @doc "The runs dashboard filter query, `\"\"` when nothing has been typed."
+  @spec runs_filter(t() | map()) :: binary()
+  def runs_filter(%{selection: selection}), do: Map.get(selection, @runs_filter_key, "")
+
+  @doc "Stores the runs dashboard filter query; an empty query drops the key entirely."
+  @spec put_runs_filter(t(), binary()) :: t()
+  def put_runs_filter(state, "" = _query),
+    do: %{state | selection: Map.delete(state.selection, @runs_filter_key)}
+
+  def put_runs_filter(state, query) when is_binary(query),
+    do: %{state | selection: Map.put(state.selection, @runs_filter_key, query)}
+
   def next_id(state, kind) do
     sequence = state.id_sequence + 1
     identity = :erlang.term_to_binary({state.id_prefix, state.source_epoch, kind, sequence})

@@ -1,7 +1,22 @@
 defmodule SwarmCodeCLI.UI.ReducerNavigationTest do
   use ExUnit.Case, async: true
-  alias SwarmCodeCLI.UI.{Reducer, Init, Size, Capabilities, Drafts, FieldEditors, Editor, State}
+
+  alias SwarmCodeCLI.UI.{
+    Capabilities,
+    Drafts,
+    Editor,
+    FieldEditors,
+    Init,
+    Paint,
+    Reducer,
+    Scene,
+    Scroll,
+    Size,
+    State
+  }
+
   alias SwarmCodeCLI.UI.DataSource.{DTO, Delivery, Request}
+  alias SwarmCodeCLI.UI.Paint.{Options, Plan}
 
   def initial do
     size = %Size{columns: 150, rows: 40}
@@ -398,5 +413,91 @@ defmodule SwarmCodeCLI.UI.ReducerNavigationTest do
     assert settled.read_model == state.read_model
     assert settled.drafts == state.drafts
     assert settled.mutations[request.origin] == {:settled, "agent-stop", :accepted}
+  end
+
+  # The navigator region was deleted. A session saved while it was focused comes
+  # back naming a region the layout no longer draws, and that must be inert, not
+  # fatal: Tab has to re-enter the ring on a region that exists, the stale scroll
+  # and selection entries have to survive being read, and nothing may crash.
+  describe "a session restored onto the deleted navigator" do
+    defp stale_navigator_session do
+      state = initial()
+
+      %{
+        state
+        | focus: "navigator",
+          hidden_focus: "navigator",
+          selection: Map.put(state.selection, "navigator", "r"),
+          scrolls:
+            Map.put(state.scrolls, :navigator, %Scroll{anchor: {"r", 0, :top}, follow?: false})
+      }
+    end
+
+    test "Tab no longer offers a region that does not exist" do
+      state = stale_navigator_session()
+      graph = Reducer.focus_graph(state)
+
+      refute "navigator" in graph
+      assert graph == ["main", "inspector", "composer"]
+    end
+
+    test "Tab from the stale focus lands on the first region that does exist" do
+      state = stale_navigator_session()
+      {next, []} = Reducer.update(state, {:focus_cycle, :next})
+      assert next.focus == "main"
+
+      {previous, []} = Reducer.update(state, {:focus_cycle, :previous})
+      assert previous.focus == "main"
+
+      # And from there Tab keeps walking the real ring.
+      {second, []} = Reducer.update(next, {:focus_cycle, :next})
+      assert second.focus == "inspector"
+    end
+
+    test "focusing the vanished region by name is refused" do
+      state = stale_navigator_session()
+      assert {^state, []} = Reducer.update(state, {:focus_region, "navigator"})
+      assert state.focus == "navigator"
+    end
+
+    test "a resize moves the stale focus onto main and keeps the stale entries" do
+      state = stale_navigator_session()
+      {resized, _} = Reducer.update(state, {:resize, %Size{columns: 100, rows: 24}})
+
+      assert resized.focus == "main"
+      assert resized.selection["navigator"] == "r"
+      assert resized.scrolls.navigator.anchor == {"r", 0, :top}
+    end
+
+    test "the stale state still projects and paints with no navigator region" do
+      state = stale_navigator_session()
+      {scene, _actions} = SwarmCodeCLI.UI.Projector.project(state)
+
+      assert Scene.validate(scene) == :ok
+      refute Enum.any?(scene.regions, &(&1.role == :navigator))
+      assert Enum.find(scene.regions, &(&1.role == :main)).rect.x == 0
+      assert Enum.find(scene.regions, &(&1.role == :tabline)).rect.y == 1
+
+      assert {:ok, plan} = Paint.build(scene, %Options{color_mode: :truecolor})
+      assert :ok = Plan.validate(plan)
+    end
+
+    test "scrolling the vanished region is inert rather than fatal" do
+      state = stale_navigator_session()
+
+      # Inert means inert: the stale anchor and selection the sibling test says
+      # must survive a resize have to survive a scroll too, and a region drawn
+      # nowhere must not page the shell in behind the user's back. Asserting a
+      # two-tuple comes back proves nothing — every Reducer.update returns one.
+      for operation <- [:first, :last, {:line, 1}, {:page, 1}, {:page, -1}] do
+        assert {next, []} = Reducer.update(state, {:scroll, "navigator", operation})
+
+        assert next == state,
+               "#{inspect(operation)} changed the state of a region that is drawn nowhere"
+
+        assert %Scroll{anchor: {"r", 0, :top}, follow?: false} = next.scrolls.navigator
+        assert next.selection["navigator"] == "r"
+      end
+    end
   end
 end
