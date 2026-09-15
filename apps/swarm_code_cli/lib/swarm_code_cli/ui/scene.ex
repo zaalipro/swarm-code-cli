@@ -220,6 +220,21 @@ defmodule SwarmCodeCLI.UI.Scene do
 
   defp valid_block?(%Block.ActionDeck{actions: actions}), do: valid_display_list?(actions)
 
+  defp valid_block?(%Block.Gauge{tone: tone, value: value, maximum: maximum, style: style, label: label}),
+    do:
+      tone in Style.roles() and nonneg?(value) and nonneg?(maximum) and
+        style in [:ticks, :bar, :segments] and (is_nil(label) or safe_text?(label))
+
+  defp valid_block?(%Block.Chart{series: series, tone: tone, height: height, label: label}),
+    do:
+      is_list(series) and Enum.all?(series, &nonneg?/1) and tone in Style.roles() and
+        is_integer(height) and height in 1..4 and (is_nil(label) or safe_text?(label))
+
+  defp valid_block?(%Block.Surface{blocks: blocks, tone: tone, accent: accent, rounded: rounded}),
+    do:
+      is_list(blocks) and Enum.all?(blocks, &valid_block?/1) and tone in Style.roles() and
+        (is_nil(accent) or accent in Style.roles()) and is_boolean(rounded)
+
   defp valid_block?(%Block.Diff{
          path: path,
          added: added,

@@ -355,4 +355,31 @@ defmodule SwarmCodeCLI.UI.SafeTextTest do
                "WORKSPACE"
     end
   end
+
+  test "every braille pattern is one cell and stays inside the braille block" do
+    alias SwarmCodeCLI.UI.Width
+
+    # A braille cell addresses 2x4 dots, so a chart drawn with it has four times
+    # the vertical resolution of the cell grid. All 256 patterns must be one
+    # cell under both policies or a chart would shift the layout.
+    for bits <- 0..255 do
+      glyph = SafeText.value(SafeText.chrome({:braille, bits}))
+
+      assert glyph == <<0x2800 + bits::utf8>>
+      assert String.length(glyph) == 1
+
+      for policy <- [:narrow, :wide] do
+        assert Width.cells(glyph, policy) == 1,
+               "braille #{bits} (#{glyph}) is not 1 cell under #{policy}"
+      end
+    end
+  end
+
+  test "braille rejects out-of-range patterns rather than coercing them" do
+    # The catalogue stays closed only because the guard is exhaustive: anything
+    # accepted here must land inside U+2800..U+28FF.
+    for bits <- [-1, 256, 1_000, :not_an_integer, nil] do
+      assert_raise FunctionClauseError, fn -> SafeText.chrome({:braille, bits}) end
+    end
+  end
 end

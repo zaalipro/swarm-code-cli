@@ -64,7 +64,8 @@ defmodule SwarmCodeCLI.UI.Paint.ShellFormatTest do
       state = fixture(:chat, {170, 34})
       plan = paint(state)
       title = row(plan, 0)
-      assert String.starts_with?(title, "SWARMCODE  ")
+      # After W5 Change 2, the logo mark appears before the wordmark
+      assert title =~ "⬢ SWARMCODE  "
     end
 
     test "contiguous banner triple is preserved at xl" do
@@ -85,7 +86,8 @@ defmodule SwarmCodeCLI.UI.Paint.ShellFormatTest do
       state = fixture(:chat, {80, 24})
       plan = paint(state)
       title = row(plan, 0)
-      assert String.starts_with?(String.trim(title), "SWARMCODE  FAKE — NO USER DATA · Build")
+      # After W5 Change 2, the logo mark appears before the wordmark
+      assert String.starts_with?(String.trim(title), "⬢ SWARMCODE  FAKE — NO USER DATA · Build")
     end
 
     test "contiguous banner triple at small" do

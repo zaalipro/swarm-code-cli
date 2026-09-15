@@ -15,7 +15,10 @@ defmodule SwarmCodeCLI.UI.Scene.Block do
     Composer,
     Notice,
     ActionDeck,
-    Diff
+    Diff,
+    Gauge,
+    Chart,
+    Surface
   }
 
   @type t ::
@@ -35,6 +38,9 @@ defmodule SwarmCodeCLI.UI.Scene.Block do
           | Notice.t()
           | ActionDeck.t()
           | Diff.t()
+          | Gauge.t()
+          | Chart.t()
+          | Surface.t()
   def modules,
     do: [
       Text,
@@ -52,6 +58,9 @@ defmodule SwarmCodeCLI.UI.Scene.Block do
       Composer,
       Notice,
       ActionDeck,
-      Diff
+      Diff,
+      Gauge,
+      Chart,
+      Surface
     ]
 end

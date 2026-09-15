@@ -52,6 +52,51 @@ defmodule SwarmCodeCLI.UI.CapabilitiesTest do
     end
   end
 
+  test "truecolor terminal families are recognised without COLORTERM" do
+    # Bare terminal names are recognised
+    for term <- ~w[iterm iterm2 kitty wezterm alacritty ghostty foot contour rio] do
+      caps = Capabilities.from_probe(probe(term: term, colorterm: nil))
+
+      assert caps.color_mode == :truecolor,
+             "expected #{term} to be recognised as truecolor"
+    end
+
+    # Real-world composite TERM values are recognised by component
+    for term <- ~w[xterm-ghostty xterm-kitty xterm-wezterm foot-extra] do
+      caps = Capabilities.from_probe(probe(term: term, colorterm: nil))
+
+      assert caps.color_mode == :truecolor,
+             "expected #{term} to be recognised as truecolor"
+    end
+
+    # Any *-direct suffix also gets :truecolor
+    caps = Capabilities.from_probe(probe(term: "xterm-direct", colorterm: nil))
+    assert caps.color_mode == :truecolor
+
+    # COLORTERM still wins over the terminal family
+    caps = Capabilities.from_probe(probe(term: "iterm", colorterm: "truecolor"))
+    assert caps.color_mode == :truecolor
+
+    # Suppression flags still force monochrome even for known terminals
+    caps = Capabilities.from_probe(probe(term: "wezterm", no_color?: true))
+    assert caps.color_mode == :monochrome
+
+    caps = Capabilities.from_probe(probe(term: "alacritty", monochrome?: true))
+    assert caps.color_mode == :monochrome
+
+    # Unknown TERM still degrades
+    caps = Capabilities.from_probe(probe(term: "obscure-term", colorterm: nil))
+    assert caps.color_mode == :ansi16
+
+    # xterm alone (no truecolor component) still degrades to ansi16
+    caps = Capabilities.from_probe(probe(term: "xterm", colorterm: nil))
+    assert caps.color_mode == :ansi16
+
+    # *-256color still wins for unknown families
+    caps = Capabilities.from_probe(probe(term: "obscure-256color", colorterm: nil))
+    assert caps.color_mode == :ansi256
+  end
+
   test "width overrides and explicit accessibility observations survive pure selection" do
     assert Capabilities.from_probe(probe()).ambiguous_width == :narrow
 

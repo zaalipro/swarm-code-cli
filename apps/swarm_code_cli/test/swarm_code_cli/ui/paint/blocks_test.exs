@@ -69,7 +69,11 @@ defmodule SwarmCodeCLI.UI.Paint.BlocksTest do
            {safe("@@ -1 +1 @@"),
             [{:ctx, safe(" keep")}, {:del, safe("-old")}, {:add, safe("+new")}]}
          ]
-       }, ["lib/foo.ex  +1  -1", "@@ -1 +1 @@", " keep", "-old", "+new"]}
+       }, ["lib/foo.ex  +1  -1", "@@ -1 +1 @@", " keep", "-old", "+new"]},
+      {%Block.Gauge{tone: :accent, value: 1, maximum: 2, style: :ticks},
+       [String.duplicate("▐", 80)]},
+      {%Block.Chart{series: [4, 0], tone: :accent, height: 1}, [<<0x2847::utf8>>]},
+      {%Block.Surface{blocks: [text("inner")], tone: :card}, [" inner"]}
     ]
 
     assert MapSet.new(Enum.map(cases, fn {block, _} -> block.__struct__ end)) ==

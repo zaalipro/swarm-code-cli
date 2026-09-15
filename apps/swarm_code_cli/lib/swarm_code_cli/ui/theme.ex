@@ -108,6 +108,110 @@ defmodule SwarmCodeCLI.UI.Theme do
   defp base_style(:card, mode),
     do: %Style{background: color(mode, 0x1E1E1E, 235, :bright_black)} |> cue(:card, mode)
 
+  defp base_style(:ticks_track, mode),
+    do: %Style{foreground: color(mode, 0x3C3C3B, 238, :bright_black)} |> cue(:ticks_track, mode)
+
+  defp base_style(:border_soft, mode),
+    do: %Style{foreground: color(mode, 0x2A2A2A, 236, :bright_black)} |> cue(:border_soft, mode)
+
+  defp base_style(:popover, mode),
+    do: %Style{background: color(mode, 0x1C1C1C, 234, :black)} |> cue(:popover, mode)
+
+  defp base_style(:hover, mode),
+    do: %Style{background: color(mode, 0x262626, 236, :bright_black)} |> cue(:hover, mode)
+
+  defp base_style(:on_accent, mode),
+    do:
+      %Style{
+        foreground: color(mode, 0x111111, 233, :black),
+        background: color(mode, 0xFF6A1A, 208, :bright_yellow)
+      }
+      |> cue(:on_accent, mode)
+
+  defp base_style(:on_warn, mode),
+    do:
+      %Style{
+        foreground: color(mode, 0x111111, 233, :black),
+        background: color(mode, 0xF5B400, 220, :bright_yellow)
+      }
+      |> cue(:on_warn, mode)
+
+  defp base_style(:ultra_a, mode),
+    do: %Style{foreground: color(mode, 0xFF5DB1, 205, :bright_magenta)} |> cue(:ultra_a, mode)
+
+  defp base_style(:ultra_b, mode),
+    do: %Style{foreground: color(mode, 0x9B5CFF, 135, :bright_magenta)} |> cue(:ultra_b, mode)
+
+  defp base_style(:chip_accent, mode),
+    do:
+      %Style{
+        foreground: color(mode, 0xFF6A1A, 208, :bright_yellow),
+        background: color(mode, 0x3E291D, 236, :black)
+      }
+      |> cue(:chip_accent, mode)
+
+  defp base_style(:chip_ok, mode),
+    do:
+      %Style{
+        foreground: color(mode, 0x3DDC5A, 41, :bright_green),
+        background: color(mode, 0x223926, 236, :black)
+      }
+      |> cue(:chip_ok, mode)
+
+  defp base_style(:chip_warn, mode),
+    do:
+      %Style{
+        foreground: color(mode, 0xF5B400, 220, :bright_yellow),
+        background: color(mode, 0x3C331A, 236, :black)
+      }
+      |> cue(:chip_warn, mode)
+
+  defp base_style(:chip_err, mode),
+    do:
+      %Style{
+        foreground: color(mode, 0xFF4D4F, 203, :bright_red),
+        background: color(mode, 0x3E2525, 236, :black)
+      }
+      |> cue(:chip_err, mode)
+
+  defp base_style(:chip_info, mode),
+    do:
+      %Style{
+        foreground: color(mode, 0x4DA3FF, 75, :bright_blue),
+        background: color(mode, 0x25313E, 236, :black)
+      }
+      |> cue(:chip_info, mode)
+
+  defp base_style(:ext_ts, mode),
+    do: %Style{foreground: color(mode, 0x4DA3FF, 75, :bright_blue)} |> cue(:ext_ts, mode)
+
+  defp base_style(:ext_ex, mode),
+    do: %Style{foreground: color(mode, 0xA78BFA, 141, :magenta)} |> cue(:ext_ex, mode)
+
+  defp base_style(:ext_js, mode),
+    do: %Style{foreground: color(mode, 0xF5B400, 220, :bright_yellow)} |> cue(:ext_js, mode)
+
+  defp base_style(:ext_md, mode),
+    do: %Style{foreground: color(mode, 0x3DDC5A, 41, :bright_green)} |> cue(:ext_md, mode)
+
+  defp base_style(:ext_css, mode),
+    do: %Style{foreground: color(mode, 0xF472B6, 212, :magenta)} |> cue(:ext_css, mode)
+
+  defp base_style(:ext_json, mode),
+    do: %Style{foreground: color(mode, 0xFF9D5C, 215, :yellow)} |> cue(:ext_json, mode)
+
+  defp base_style(:ext_html, mode),
+    do: %Style{foreground: color(mode, 0xFF7A59, 209, :bright_red)} |> cue(:ext_html, mode)
+
+  defp base_style(:ext_py, mode),
+    do: %Style{foreground: color(mode, 0x38BDF8, 81, :cyan)} |> cue(:ext_py, mode)
+
+  defp base_style(:ext_rs, mode),
+    do: %Style{foreground: color(mode, 0xF97316, 208, :bright_yellow)} |> cue(:ext_rs, mode)
+
+  defp base_style(:ext_go, mode),
+    do: %Style{foreground: color(mode, 0x22D3EE, 44, :bright_cyan)} |> cue(:ext_go, mode)
+
   defp base_style(:selection, mode) when mode in [:ansi16, :monochrome],
     do: %Style{modifiers: [:reversed]} |> cue(:selection, mode)
 
@@ -169,7 +273,9 @@ defmodule SwarmCodeCLI.UI.Theme do
     do: %{style | prefix: SafeText.chrome(:stale_marker), cues: [:border]}
 
   defp cue(style, :surface, _mode), do: %{style | cues: [:separator]}
-  defp cue(style, role, _mode) when role in [:card, :border], do: %{style | cues: [:border]}
+
+  defp cue(style, role, _mode) when role in [:card, :border, :border_soft],
+    do: %{style | cues: [:border]}
 
   defp cue(style, role, _mode) when role in [:text_muted, :text_faint],
     do: %{style | cues: [:explicit_label]}
@@ -213,6 +319,26 @@ defmodule SwarmCodeCLI.UI.Theme do
   def agent_lane(3), do: {SafeText.chrome(:agent_lane_3), :agent_lane_3}
   def agent_lane(4), do: {SafeText.chrome(:agent_lane_4), :agent_lane_4}
   def agent_lane(5), do: {SafeText.chrome(:agent_lane_5), :agent_lane_5}
+
+  @spec file_type(String.t()) :: Style.role()
+  def file_type("ts"), do: :ext_ts
+  def file_type("tsx"), do: :ext_ts
+  def file_type("ex"), do: :ext_ex
+  def file_type("exs"), do: :ext_ex
+  def file_type("js"), do: :ext_js
+  def file_type("jsx"), do: :ext_js
+  def file_type("md"), do: :ext_md
+  def file_type("mdx"), do: :ext_md
+  def file_type("css"), do: :ext_css
+  def file_type("scss"), do: :ext_css
+  def file_type("json"), do: :ext_json
+  def file_type("html"), do: :ext_html
+  def file_type("heex"), do: :ext_html
+  def file_type("py"), do: :ext_py
+  def file_type("rs"), do: :ext_rs
+  def file_type("go"), do: :ext_go
+  def file_type(_), do: :text_muted
+
   def status(:connecting), do: {SafeText.chrome(:status_connecting), :info}
   def status(:empty), do: {SafeText.chrome(:status_empty), :text_muted}
   def status(:loading), do: {SafeText.chrome(:status_loading), :info}

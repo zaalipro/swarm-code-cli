@@ -180,6 +180,69 @@ defmodule SwarmCodeCLI.UI.SafeText do
           | :plan_done_ascii
           | :glyph_failed
           | :glyph_failed_ascii
+          | :stripe
+          | :stripe_ascii
+          | :stripe_off
+          | :stripe_off_ascii
+          | :corner_tl
+          | :corner_tl_ascii
+          | :corner_tr
+          | :corner_tr_ascii
+          | :corner_bl
+          | :corner_bl_ascii
+          | :corner_br
+          | :corner_br_ascii
+          | :seg_on
+          | :seg_on_ascii
+          | :seg_off
+          | :seg_off_ascii
+          | :rule
+          | :rule_ascii
+          | :dot_small
+          | :dot_small_ascii
+          | :dot
+          | :dot_ascii
+          | :agent_lead
+          | :agent_lead_ascii
+          | :agent_sub
+          | :agent_sub_ascii
+          | :assistant_mark
+          | :assistant_mark_ascii
+          | :kind_swarm_mark
+          | :kind_swarm_mark_ascii
+          | :kind_consensus_mark
+          | :kind_consensus_mark_ascii
+          | :kind_plan
+          | :kind_plan_ascii
+          | :close_mark
+          | :close_mark_ascii
+          | :settings_mark
+          | :settings_mark_ascii
+          | :logo_mark
+          | :logo_mark_ascii
+          | :search_mark
+          | :search_mark_ascii
+          | :branch_mark
+          | :branch_mark_ascii
+          | :retry_mark
+          | :retry_mark_ascii
+          | :enter_key
+          | :enter_key_ascii
+          | :check_mark
+          | :check_mark_ascii
+          | :chevron
+          | :chevron_ascii
+          | :write_mark
+          | :write_mark_ascii
+          | :clock_mark
+          | :clock_mark_ascii
+          | :effort_mark
+          | :effort_mark_ascii
+          | :shield_mark
+          | :shield_mark_ascii
+          | :usage_mark
+          | :usage_mark_ascii
+          | {:braille, 0..255}
 
   def chrome(:full_detail), do: %__MODULE__{token: :full_detail}
   def chrome(:next_page), do: %__MODULE__{token: :next_page}
@@ -334,6 +397,74 @@ defmodule SwarmCodeCLI.UI.SafeText do
   def chrome(:plan_done_ascii), do: %__MODULE__{token: :plan_done_ascii}
   def chrome(:glyph_failed), do: %__MODULE__{token: :glyph_failed}
   def chrome(:glyph_failed_ascii), do: %__MODULE__{token: :glyph_failed_ascii}
+  def chrome(:stripe), do: %__MODULE__{token: :stripe}
+  def chrome(:stripe_ascii), do: %__MODULE__{token: :stripe_ascii}
+  def chrome(:stripe_off), do: %__MODULE__{token: :stripe_off}
+  def chrome(:stripe_off_ascii), do: %__MODULE__{token: :stripe_off_ascii}
+  def chrome(:corner_tl), do: %__MODULE__{token: :corner_tl}
+  def chrome(:corner_tl_ascii), do: %__MODULE__{token: :corner_tl_ascii}
+  def chrome(:corner_tr), do: %__MODULE__{token: :corner_tr}
+  def chrome(:corner_tr_ascii), do: %__MODULE__{token: :corner_tr_ascii}
+  def chrome(:corner_bl), do: %__MODULE__{token: :corner_bl}
+  def chrome(:corner_bl_ascii), do: %__MODULE__{token: :corner_bl_ascii}
+  def chrome(:corner_br), do: %__MODULE__{token: :corner_br}
+  def chrome(:corner_br_ascii), do: %__MODULE__{token: :corner_br_ascii}
+  def chrome(:seg_on), do: %__MODULE__{token: :seg_on}
+  def chrome(:seg_on_ascii), do: %__MODULE__{token: :seg_on_ascii}
+  def chrome(:seg_off), do: %__MODULE__{token: :seg_off}
+  def chrome(:seg_off_ascii), do: %__MODULE__{token: :seg_off_ascii}
+  def chrome(:rule), do: %__MODULE__{token: :rule}
+  def chrome(:rule_ascii), do: %__MODULE__{token: :rule_ascii}
+  def chrome(:dot_small), do: %__MODULE__{token: :dot_small}
+  def chrome(:dot_small_ascii), do: %__MODULE__{token: :dot_small_ascii}
+  def chrome(:dot), do: %__MODULE__{token: :dot}
+  def chrome(:dot_ascii), do: %__MODULE__{token: :dot_ascii}
+  def chrome(:agent_lead), do: %__MODULE__{token: :agent_lead}
+  def chrome(:agent_lead_ascii), do: %__MODULE__{token: :agent_lead_ascii}
+  def chrome(:agent_sub), do: %__MODULE__{token: :agent_sub}
+  def chrome(:agent_sub_ascii), do: %__MODULE__{token: :agent_sub_ascii}
+  def chrome(:assistant_mark), do: %__MODULE__{token: :assistant_mark}
+  def chrome(:assistant_mark_ascii), do: %__MODULE__{token: :assistant_mark_ascii}
+  def chrome(:kind_swarm_mark), do: %__MODULE__{token: :kind_swarm_mark}
+  def chrome(:kind_swarm_mark_ascii), do: %__MODULE__{token: :kind_swarm_mark_ascii}
+  def chrome(:kind_consensus_mark), do: %__MODULE__{token: :kind_consensus_mark}
+  def chrome(:kind_consensus_mark_ascii), do: %__MODULE__{token: :kind_consensus_mark_ascii}
+  def chrome(:kind_plan), do: %__MODULE__{token: :kind_plan}
+  def chrome(:kind_plan_ascii), do: %__MODULE__{token: :kind_plan_ascii}
+  def chrome(:close_mark), do: %__MODULE__{token: :close_mark}
+  def chrome(:close_mark_ascii), do: %__MODULE__{token: :close_mark_ascii}
+  def chrome(:settings_mark), do: %__MODULE__{token: :settings_mark}
+  def chrome(:settings_mark_ascii), do: %__MODULE__{token: :settings_mark_ascii}
+  def chrome(:logo_mark), do: %__MODULE__{token: :logo_mark}
+  def chrome(:logo_mark_ascii), do: %__MODULE__{token: :logo_mark_ascii}
+  def chrome(:search_mark), do: %__MODULE__{token: :search_mark}
+  def chrome(:search_mark_ascii), do: %__MODULE__{token: :search_mark_ascii}
+  def chrome(:branch_mark), do: %__MODULE__{token: :branch_mark}
+  def chrome(:branch_mark_ascii), do: %__MODULE__{token: :branch_mark_ascii}
+  def chrome(:retry_mark), do: %__MODULE__{token: :retry_mark}
+  def chrome(:retry_mark_ascii), do: %__MODULE__{token: :retry_mark_ascii}
+  def chrome(:enter_key), do: %__MODULE__{token: :enter_key}
+  def chrome(:enter_key_ascii), do: %__MODULE__{token: :enter_key_ascii}
+  def chrome(:check_mark), do: %__MODULE__{token: :check_mark}
+  def chrome(:check_mark_ascii), do: %__MODULE__{token: :check_mark_ascii}
+  def chrome(:chevron), do: %__MODULE__{token: :chevron}
+  def chrome(:chevron_ascii), do: %__MODULE__{token: :chevron_ascii}
+  def chrome(:write_mark), do: %__MODULE__{token: :write_mark}
+  def chrome(:write_mark_ascii), do: %__MODULE__{token: :write_mark_ascii}
+  def chrome(:clock_mark), do: %__MODULE__{token: :clock_mark}
+  def chrome(:clock_mark_ascii), do: %__MODULE__{token: :clock_mark_ascii}
+  def chrome(:effort_mark), do: %__MODULE__{token: :effort_mark}
+  def chrome(:effort_mark_ascii), do: %__MODULE__{token: :effort_mark_ascii}
+  def chrome(:shield_mark), do: %__MODULE__{token: :shield_mark}
+  def chrome(:shield_mark_ascii), do: %__MODULE__{token: :shield_mark_ascii}
+  def chrome(:usage_mark), do: %__MODULE__{token: :usage_mark}
+  def chrome(:usage_mark_ascii), do: %__MODULE__{token: :usage_mark_ascii}
+
+  # A braille cell is 2x4 addressable dots. Carrying the bit pattern rather than
+  # 256 separate tokens keeps the catalogue closed: the value is provably inside
+  # U+2800..U+28FF for every accepted input.
+  def chrome({:braille, bits}) when is_integer(bits) and bits in 0..255,
+    do: %__MODULE__{token: {:braille, bits}}
 
   def value(%{__struct__: __MODULE__, token: :full_detail} = text) when map_size(text) == 2,
     do: "Full text"
@@ -790,6 +921,258 @@ defmodule SwarmCodeCLI.UI.SafeText do
   def value(%{__struct__: __MODULE__, token: :glyph_failed_ascii} = text)
       when map_size(text) == 2,
       do: "x"
+
+  def value(%{__struct__: __MODULE__, token: :stripe} = text)
+      when map_size(text) == 2,
+      do: "▐"
+
+  def value(%{__struct__: __MODULE__, token: :stripe_ascii} = text)
+      when map_size(text) == 2,
+      do: "#"
+
+  def value(%{__struct__: __MODULE__, token: :stripe_off} = text)
+      when map_size(text) == 2,
+      do: "▐"
+
+  def value(%{__struct__: __MODULE__, token: :stripe_off_ascii} = text)
+      when map_size(text) == 2,
+      do: "-"
+
+  def value(%{__struct__: __MODULE__, token: :corner_tl} = text)
+      when map_size(text) == 2,
+      do: "▗"
+
+  def value(%{__struct__: __MODULE__, token: :corner_tl_ascii} = text)
+      when map_size(text) == 2,
+      do: " "
+
+  def value(%{__struct__: __MODULE__, token: :corner_tr} = text)
+      when map_size(text) == 2,
+      do: "▖"
+
+  def value(%{__struct__: __MODULE__, token: :corner_tr_ascii} = text)
+      when map_size(text) == 2,
+      do: " "
+
+  def value(%{__struct__: __MODULE__, token: :corner_bl} = text)
+      when map_size(text) == 2,
+      do: "▝"
+
+  def value(%{__struct__: __MODULE__, token: :corner_bl_ascii} = text)
+      when map_size(text) == 2,
+      do: " "
+
+  def value(%{__struct__: __MODULE__, token: :corner_br} = text)
+      when map_size(text) == 2,
+      do: "▘"
+
+  def value(%{__struct__: __MODULE__, token: :corner_br_ascii} = text)
+      when map_size(text) == 2,
+      do: " "
+
+  def value(%{__struct__: __MODULE__, token: :seg_on} = text)
+      when map_size(text) == 2,
+      do: "▰"
+
+  def value(%{__struct__: __MODULE__, token: :seg_on_ascii} = text)
+      when map_size(text) == 2,
+      do: "#"
+
+  def value(%{__struct__: __MODULE__, token: :seg_off} = text)
+      when map_size(text) == 2,
+      do: "▱"
+
+  def value(%{__struct__: __MODULE__, token: :seg_off_ascii} = text)
+      when map_size(text) == 2,
+      do: "-"
+
+  def value(%{__struct__: __MODULE__, token: :rule} = text)
+      when map_size(text) == 2,
+      do: "▬"
+
+  def value(%{__struct__: __MODULE__, token: :rule_ascii} = text)
+      when map_size(text) == 2,
+      do: "-"
+
+  def value(%{__struct__: __MODULE__, token: :dot_small} = text)
+      when map_size(text) == 2,
+      do: "▪"
+
+  def value(%{__struct__: __MODULE__, token: :dot_small_ascii} = text)
+      when map_size(text) == 2,
+      do: "-"
+
+  def value(%{__struct__: __MODULE__, token: :dot} = text)
+      when map_size(text) == 2,
+      do: "⬤"
+
+  def value(%{__struct__: __MODULE__, token: :dot_ascii} = text)
+      when map_size(text) == 2,
+      do: "*"
+
+  def value(%{__struct__: __MODULE__, token: :agent_lead} = text)
+      when map_size(text) == 2,
+      do: "⬡"
+
+  def value(%{__struct__: __MODULE__, token: :agent_lead_ascii} = text)
+      when map_size(text) == 2,
+      do: "o"
+
+  def value(%{__struct__: __MODULE__, token: :agent_sub} = text)
+      when map_size(text) == 2,
+      do: "✦"
+
+  def value(%{__struct__: __MODULE__, token: :agent_sub_ascii} = text)
+      when map_size(text) == 2,
+      do: "+"
+
+  def value(%{__struct__: __MODULE__, token: :assistant_mark} = text)
+      when map_size(text) == 2,
+      do: "✳"
+
+  def value(%{__struct__: __MODULE__, token: :assistant_mark_ascii} = text)
+      when map_size(text) == 2,
+      do: "*"
+
+  def value(%{__struct__: __MODULE__, token: :kind_swarm_mark} = text)
+      when map_size(text) == 2,
+      do: "⋔"
+
+  def value(%{__struct__: __MODULE__, token: :kind_swarm_mark_ascii} = text)
+      when map_size(text) == 2,
+      do: "S"
+
+  def value(%{__struct__: __MODULE__, token: :kind_consensus_mark} = text)
+      when map_size(text) == 2,
+      do: "⚖"
+
+  def value(%{__struct__: __MODULE__, token: :kind_consensus_mark_ascii} = text)
+      when map_size(text) == 2,
+      do: "C"
+
+  def value(%{__struct__: __MODULE__, token: :kind_plan} = text)
+      when map_size(text) == 2,
+      do: "≣"
+
+  def value(%{__struct__: __MODULE__, token: :kind_plan_ascii} = text)
+      when map_size(text) == 2,
+      do: "P"
+
+  def value(%{__struct__: __MODULE__, token: :close_mark} = text)
+      when map_size(text) == 2,
+      do: "✕"
+
+  def value(%{__struct__: __MODULE__, token: :close_mark_ascii} = text)
+      when map_size(text) == 2,
+      do: "x"
+
+  def value(%{__struct__: __MODULE__, token: :settings_mark} = text)
+      when map_size(text) == 2,
+      do: "⚙"
+
+  def value(%{__struct__: __MODULE__, token: :settings_mark_ascii} = text)
+      when map_size(text) == 2,
+      do: "*"
+
+  def value(%{__struct__: __MODULE__, token: :logo_mark} = text)
+      when map_size(text) == 2,
+      do: "⬢"
+
+  def value(%{__struct__: __MODULE__, token: :logo_mark_ascii} = text)
+      when map_size(text) == 2,
+      do: "#"
+
+  def value(%{__struct__: __MODULE__, token: :search_mark} = text)
+      when map_size(text) == 2,
+      do: "⌕"
+
+  def value(%{__struct__: __MODULE__, token: :search_mark_ascii} = text)
+      when map_size(text) == 2,
+      do: "/"
+
+  def value(%{__struct__: __MODULE__, token: :branch_mark} = text)
+      when map_size(text) == 2,
+      do: "⎇"
+
+  def value(%{__struct__: __MODULE__, token: :branch_mark_ascii} = text)
+      when map_size(text) == 2,
+      do: "Y"
+
+  def value(%{__struct__: __MODULE__, token: :retry_mark} = text)
+      when map_size(text) == 2,
+      do: "↻"
+
+  def value(%{__struct__: __MODULE__, token: :retry_mark_ascii} = text)
+      when map_size(text) == 2,
+      do: "r"
+
+  def value(%{__struct__: __MODULE__, token: :enter_key} = text)
+      when map_size(text) == 2,
+      do: "↵"
+
+  def value(%{__struct__: __MODULE__, token: :enter_key_ascii} = text)
+      when map_size(text) == 2,
+      do: "<"
+
+  def value(%{__struct__: __MODULE__, token: :check_mark} = text)
+      when map_size(text) == 2,
+      do: "✓"
+
+  def value(%{__struct__: __MODULE__, token: :check_mark_ascii} = text)
+      when map_size(text) == 2,
+      do: "v"
+
+  def value(%{__struct__: __MODULE__, token: :chevron} = text)
+      when map_size(text) == 2,
+      do: "›"
+
+  def value(%{__struct__: __MODULE__, token: :chevron_ascii} = text)
+      when map_size(text) == 2,
+      do: ">"
+
+  def value(%{__struct__: __MODULE__, token: :write_mark} = text)
+      when map_size(text) == 2,
+      do: "✎"
+
+  def value(%{__struct__: __MODULE__, token: :write_mark_ascii} = text)
+      when map_size(text) == 2,
+      do: "w"
+
+  def value(%{__struct__: __MODULE__, token: :clock_mark} = text)
+      when map_size(text) == 2,
+      do: "◷"
+
+  def value(%{__struct__: __MODULE__, token: :clock_mark_ascii} = text)
+      when map_size(text) == 2,
+      do: "t"
+
+  def value(%{__struct__: __MODULE__, token: :effort_mark} = text)
+      when map_size(text) == 2,
+      do: "◕"
+
+  def value(%{__struct__: __MODULE__, token: :effort_mark_ascii} = text)
+      when map_size(text) == 2,
+      do: "e"
+
+  def value(%{__struct__: __MODULE__, token: :shield_mark} = text)
+      when map_size(text) == 2,
+      do: "❖"
+
+  def value(%{__struct__: __MODULE__, token: :shield_mark_ascii} = text)
+      when map_size(text) == 2,
+      do: "!"
+
+  def value(%{__struct__: __MODULE__, token: :usage_mark} = text)
+      when map_size(text) == 2,
+      do: "⌗"
+
+  def value(%{__struct__: __MODULE__, token: :usage_mark_ascii} = text)
+      when map_size(text) == 2,
+      do: "#"
+
+  def value(%{__struct__: __MODULE__, token: {:braille, bits}} = text)
+      when map_size(text) == 2 and is_integer(bits) and bits in 0..255,
+      do: <<0x2800 + bits::utf8>>
 
   def value(%{__struct__: __MODULE__, token: {:external, binary}} = text)
       when map_size(text) == 2 and is_binary(binary) do
