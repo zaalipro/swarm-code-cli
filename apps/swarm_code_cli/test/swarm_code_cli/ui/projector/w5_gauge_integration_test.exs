@@ -1,0 +1,217 @@
+defmodule SwarmCodeCLI.UI.Projector.W5GaugeIntegrationTest do
+  use ExUnit.Case, async: true
+  alias SwarmCodeCLI.UI.{Capabilities, Fixtures, Paint, Projector, SafeText, Size}
+  alias SwarmCodeCLI.UI.Paint.{Options, Plan}
+  alias SwarmCodeCLI.UI.Scene.Block
+
+  defp fixture(kind, size, opts \\ []) do
+    caps = struct(Capabilities, Keyword.take(opts, [:ascii?, :color_mode, :ambiguous_width]))
+    caps = %{caps | size: size}
+    Fixtures.representative(kind, size, caps)
+  end
+
+  defp find_blocks(value, predicate) do
+    do_find_blocks(value, predicate)
+  end
+
+  defp do_find_blocks(%{__struct__: _} = block, predicate) do
+    matched = if predicate.(block), do: [block], else: []
+    nested = do_find_blocks(Map.from_struct(block), predicate)
+    matched ++ nested
+  end
+
+  defp do_find_blocks(map, predicate) when is_map(map) do
+    map
+    |> Map.values()
+    |> Enum.flat_map(&do_find_blocks(&1, predicate))
+  end
+
+  defp do_find_blocks(list, predicate) when is_list(list) do
+    Enum.flat_map(list, &do_find_blocks(&1, predicate))
+  end
+
+  defp do_find_blocks(_, _predicate), do: []
+
+  describe "workspace gauge integration (Change 1)" do
+    test "running run projects a Gauge, not a Progress" do
+      state = fixture(:chat, %Size{columns: 150, rows: 30})
+      run = hd(Map.values(state.read_model.runs))
+      state = put_in(state.read_model.runs[run.id].state, :running)
+      state = put_in(state.read_model.runs[run.id].progress, 62)
+
+      {scene, _} = Projector.project(state)
+
+      gauges = find_blocks(scene.regions, &match?(%Block.Gauge{}, &1))
+      progresses = find_blocks(scene.regions, &match?(%Block.Progress{}, &1))
+
+      assert length(gauges) > 0, "Expected at least one Gauge for running run"
+      assert progresses == [], "No Progress blocks should remain in workspace projector"
+    end
+
+    test "gauge tone is the run-kind role for a running assistant run" do
+      state = fixture(:chat, %Size{columns: 150, rows: 30})
+      run = hd(Map.values(state.read_model.runs))
+      state = put_in(state.read_model.runs[run.id].kind, :chat)
+      state = put_in(state.read_model.runs[run.id].state, :running)
+      state = put_in(state.read_model.runs[run.id].progress, 42)
+
+      {scene, _} = Projector.project(state)
+
+      gauges = find_blocks(scene.regions, &match?(%Block.Gauge{style: :ticks}, &1))
+      assert length(gauges) > 0
+
+      gauge = hd(gauges)
+      assert gauge.tone == :run_assistant
+    end
+
+    test "gauge tone is the run-kind role for a streaming goal run" do
+      state = fixture(:chat, %Size{columns: 150, rows: 30})
+      run = hd(Map.values(state.read_model.runs))
+      state = put_in(state.read_model.runs[run.id].kind, :goal)
+      state = put_in(state.read_model.runs[run.id].state, :streaming)
+      state = put_in(state.read_model.runs[run.id].progress, 75)
+
+      {scene, _} = Projector.project(state)
+
+      gauges = find_blocks(scene.regions, &match?(%Block.Gauge{style: :ticks}, &1))
+      gauge = Enum.find(gauges, fn g -> g.value == 75 end)
+      assert gauge, "Expected gauge with value 75"
+      assert gauge.tone == :run_goal
+    end
+
+    test "run with progress: nil yields a gauge with maximum: 0" do
+      state = fixture(:chat, %Size{columns: 150, rows: 30})
+      run = hd(Map.values(state.read_model.runs))
+      state = put_in(state.read_model.runs[run.id].state, :running)
+      state = put_in(state.read_model.runs[run.id].progress, nil)
+
+      {scene, _} = Projector.project(state)
+
+      gauges = find_blocks(scene.regions, &match?(%Block.Gauge{style: :ticks}, &1))
+      gauge = Enum.find(gauges, fn g -> g.maximum == 0 end)
+      assert gauge, "Expected gauge with maximum: 0 for indeterminate progress"
+      assert gauge.value == 0
+    end
+
+    test "all gauges use style: :ticks" do
+      state = fixture(:chat, %Size{columns: 150, rows: 30})
+      run = hd(Map.values(state.read_model.runs))
+      state = put_in(state.read_model.runs[run.id].state, :running)
+      state = put_in(state.read_model.runs[run.id].progress, 50)
+
+      {scene, _} = Projector.project(state)
+
+      gauges = find_blocks(scene.regions, &match?(%Block.Gauge{}, &1))
+      assert Enum.all?(gauges, fn g -> g.style == :ticks end)
+    end
+  end
+
+  describe "title bar logo mark (Change 2)" do
+    test "painted title row carries the logo mark before the wordmark in Unicode mode" do
+      state = fixture(:chat, %Size{columns: 150, rows: 30}, ascii?: false)
+      title = paint_row_0(state)
+
+      assert title =~ "⬢ SWARMCODE  "
+    end
+
+    test "painted title row degrades the logo mark to its ASCII twin in ASCII mode" do
+      state = fixture(:chat, %Size{columns: 150, rows: 30}, ascii?: true)
+      title = paint_row_0(state)
+
+      refute title =~ "⬢", "Unicode logo must not survive into ASCII mode"
+      assert title =~ "# SWARMCODE  "
+    end
+
+    test "title region spans still carry the logo mark in the accent-bold wordmark style" do
+      state = fixture(:chat, %Size{columns: 150, rows: 30}, ascii?: false)
+      {scene, _} = Projector.project(state)
+      title_region = Enum.find(scene.regions, &(&1.role == :title))
+      assert title_region
+
+      rendered = render_blocks(title_region.blocks)
+      assert rendered =~ "⬢"
+
+      %Block.RichText{spans: [logo_span | _]} = hd(title_region.blocks)
+      assert SafeText.value(logo_span.text) == "⬢"
+      assert :bold in logo_span.style.modifiers
+    end
+  end
+
+  describe "navigator run row colors (Change 3)" do
+    test "two navigator rows for runs in different states have different foreground colors" do
+      # Build a fixture with multiple runs by adding a second run
+      state = fixture(:chat, %Size{columns: 150, rows: 30}, color_mode: :truecolor)
+
+      run1 = hd(Map.values(state.read_model.runs))
+
+      run2 = %{
+        run1
+        | id: "fixture-run-2",
+          title: "Second run for color test",
+          state: :failed
+      }
+
+      state = put_in(state.read_model.runs[run1.id].state, :done)
+      state = put_in(state.read_model.runs[run2.id], run2)
+
+      # Add run2 to the shell order
+      state = put_in(state.read_model.order[:shell], [run1.id, run2.id])
+
+      {scene, _} = Projector.project(state)
+
+      nav_region = Enum.find(scene.regions, &(&1.role == :navigator))
+      assert nav_region
+
+      rich_texts =
+        find_blocks(
+          nav_region.blocks,
+          &match?(%Block.RichText{action_id: id} when is_binary(id), &1)
+        )
+
+      # At least two run rows with different styles
+      assert length(rich_texts) >= 2
+
+      styles = Enum.map(rich_texts, fn rt -> hd(rt.spans).style end)
+      colors = Enum.map(styles, & &1.foreground)
+
+      # Different run states should yield different foreground colors
+      assert length(Enum.uniq(colors)) > 1
+    end
+  end
+
+  # Paints the state and returns the text of the title row (row 0), following the
+  # helpers in test/swarm_code_cli/ui/paint/shell_format_test.exs.
+  defp paint_row_0(state) do
+    {scene, _table} = Projector.project(state)
+
+    options = %Options{
+      color_mode: state.capabilities.color_mode,
+      ascii?: state.capabilities.ascii?
+    }
+
+    assert {:ok, plan} = Paint.build(scene, options)
+    assert :ok = Plan.validate(plan)
+
+    for column <- 0..(plan.size.columns - 1), reduce: "" do
+      text ->
+        case Plan.cell(plan, column, 0) do
+          {:glyph, glyph, _, _} -> text <> glyph
+          _ -> text
+        end
+    end
+  end
+
+  defp render_blocks(blocks) when is_list(blocks) do
+    Enum.map_join(blocks, " ", &render_block/1)
+  end
+
+  defp render_block(%Block.Text{text: text}), do: SafeText.value(text)
+
+  defp render_block(%Block.RichText{spans: spans}) do
+    Enum.map_join(spans, "", fn span ->
+      SafeText.value(span.text)
+    end)
+  end
+
+  defp render_block(_), do: ""
+end

@@ -180,7 +180,10 @@ defmodule SwarmCodeCLI.UI.LivePresentationTest do
     state = put_in(state.read_model.runs[run.id], run)
     {scene, _} = Projector.project(state)
     assert Scene.validate(scene) == :ok
-    assert Enum.any?(progress_blocks(scene), &match?(%{value: 0, maximum: 0}, &1))
+    # W5 Change 1: workspace now projects Gauge blocks, not Progress blocks.
+    # The indeterminate contract is unchanged: value 0, maximum 0, no invented percentage.
+    assert Enum.any?(gauge_blocks(scene), &match?(%{value: 0, maximum: 0}, &1))
+    assert progress_blocks(scene) == []
   end
 
   test "long reasoning has a distinct bounded detail reference available in TUI and plain" do
@@ -320,4 +323,14 @@ defmodule SwarmCodeCLI.UI.LivePresentationTest do
   defp progress_blocks(value) when is_map(value), do: value |> Map.values() |> progress_blocks()
   defp progress_blocks(value) when is_list(value), do: Enum.flat_map(value, &progress_blocks/1)
   defp progress_blocks(_), do: []
+
+  # W5 Change 1: workspace projects Gauge blocks for running runs
+  defp gauge_blocks(%Scene.Block.Gauge{} = block), do: [block]
+
+  defp gauge_blocks(%{__struct__: _} = value),
+    do: value |> Map.from_struct() |> gauge_blocks()
+
+  defp gauge_blocks(value) when is_map(value), do: value |> Map.values() |> gauge_blocks()
+  defp gauge_blocks(value) when is_list(value), do: Enum.flat_map(value, &gauge_blocks/1)
+  defp gauge_blocks(_), do: []
 end

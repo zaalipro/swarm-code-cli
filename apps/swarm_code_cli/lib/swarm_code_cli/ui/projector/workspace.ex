@@ -206,11 +206,15 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
     end
   end
 
-  defp progress(run, state, width) do
-    %Block.Progress{
-      label: Density.safe("Goal", state, width),
+  defp progress(run, _state, _width) do
+    {_prefix, role} = Theme.run_kind(kind(run.kind))
+
+    %Block.Gauge{
+      tone: role,
       value: run.progress || 0,
-      maximum: if(is_nil(run.progress), do: 0, else: 100)
+      maximum: if(is_nil(run.progress), do: 0, else: 100),
+      style: :ticks,
+      label: nil
     }
   end
 
@@ -391,7 +395,7 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
   end
 
   def card(state, run, width, class) do
-    {prefix, _role} = Theme.run_kind(kind(run.kind))
+    {prefix, role} = Theme.run_kind(kind(run.kind))
     enabled = class not in [:compressed_small, :too_small] and run.state != :superseded
     retry? = enabled and run.state == :failed and Support.allowed?(state, run, :retry)
     resume? = enabled and run.state == :interrupted and Support.allowed?(state, run, :resume)
@@ -424,10 +428,12 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
         do:
           body ++
             [
-              %Block.Progress{
-                label: Density.safe(SafeText.value(prefix) <> " LIVE", state, width),
+              %Block.Gauge{
+                tone: role,
                 value: run.progress || 0,
-                maximum: if(is_nil(run.progress), do: 0, else: 100)
+                maximum: if(is_nil(run.progress), do: 0, else: 100),
+                style: :ticks,
+                label: nil
               }
             ],
         else: body

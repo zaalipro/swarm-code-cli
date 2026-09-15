@@ -86,8 +86,9 @@ defmodule SwarmCodeCLI.UI.Projector.Shell do
         do: banner <> " · " <> mode <> " · " <> model,
         else: banner <> " · " <> mode
 
+    logo_mark = SafeText.value(Support.glyph(:logo_mark, state))
     wordmark = SafeText.value(SafeText.chrome(:swarmcode_wordmark))
-    left_text = wordmark <> "  " <> triple
+    left_text = logo_mark <> " " <> wordmark <> "  " <> triple
     left_cells = Width.cells(left_text, policy)
 
     # Right-aligned live counts from ShellSnapshot.counts
@@ -105,6 +106,8 @@ defmodule SwarmCodeCLI.UI.Projector.Shell do
 
     spans =
       [
+        %Span{text: Density.safe(logo_mark, state, rect.width), style: wordmark_style},
+        %Span{text: Density.safe(" ", state, rect.width), style: wordmark_style},
         %Span{text: Density.safe(wordmark, state, rect.width), style: wordmark_style},
         %Span{text: Density.safe("  ", state, rect.width), style: %Style{role: :text_primary}},
         %Span{text: Density.safe(triple, state, rect.width), style: %Style{role: :text_primary}}
@@ -238,7 +241,13 @@ defmodule SwarmCodeCLI.UI.Projector.Shell do
                 ),
               else: Density.safe(title, state, rect.width)
 
-          Support.action(title, {:local, {:navigate, {:run, id}}})
+          # Decision D4: a run row is coloured by its state. The prefix cue is
+          # cleared so the row does not gain a textual status prefix it never had.
+          {_word, role} = Theme.status(run.state)
+          status_style = Theme.style(role, state.capabilities)
+          row_style = %{status_style | role: :plain, prefix: nil, cues: []}
+
+          Support.action(title, {:local, {:navigate, {:run, id}}}, row_style)
       end)
 
     page = Map.get(state.pages, :shell)
