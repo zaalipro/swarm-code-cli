@@ -21,7 +21,10 @@ defmodule SwarmCodeCLI.UI.Paint.Blocks do
     Block.Composer,
     Block.Notice,
     Block.ActionDeck,
-    Block.Diff
+    Block.Diff,
+    Block.Gauge,
+    Block.Chart,
+    Block.Surface
   ]
   @statuses [
     :queued,
@@ -228,7 +231,293 @@ defmodule SwarmCodeCLI.UI.Paint.Blocks do
     header ++ body ++ marker
   end
 
+  # --- Gauge ---
+  defp block(
+         %Block.Gauge{tone: tone, value: value, maximum: maximum, style: style, label: label},
+         ctx,
+         rows
+       )
+       when is_atom(tone) and is_integer(value) and value >= 0 and is_integer(maximum) and
+              maximum >= 0 and style in [:ticks, :bar, :segments] do
+    slots = max(1, ctx.width)
+
+    label_runs = if label, do: [run(label, ctx.style)], else: []
+
+    gauge_runs =
+      if maximum == 0 do
+        gauge_track(style, slots, ctx)
+      else
+        filled = div(min(value, maximum) * slots, maximum)
+        gauge_filled(style, filled, slots, tone, ctx)
+      end
+
+    render(label_runs ++ gauge_runs, ctx, rows)
+  end
+
+  # --- Chart ---
+  defp block(
+         %Block.Chart{series: series, tone: tone, height: height, label: label},
+         ctx,
+         rows
+       )
+       when is_list(series) and is_atom(tone) and is_integer(height) and height in 1..4 do
+    if ctx.options.ascii? do
+      chart_ascii(series, label, ctx, rows)
+    else
+      chart_braille(series, tone, height, label, ctx, rows)
+    end
+  end
+
+  # --- Surface ---
+  defp block(
+         %Block.Surface{blocks: blocks, tone: tone, accent: accent, rounded: rounded},
+         ctx,
+         rows
+       )
+       when is_list(blocks) and is_atom(tone) and is_boolean(rounded) do
+    bg_style = role(tone, ctx)
+    indent = if accent, do: 2, else: 1
+
+    inner_ctx = %{
+      ctx
+      | width: max(0, ctx.width - indent),
+        style: bg_style
+    }
+
+    body_lines = sequence(blocks, inner_ctx, max(0, rows - if(rounded, do: 2, else: 0)))
+
+    accent_col =
+      if accent do
+        accent_glyph =
+          if ctx.options.ascii?,
+            do: "#",
+            else: SafeText.value(SafeText.chrome(:stripe))
+
+        [raw(accent_glyph, role(accent, ctx))]
+      else
+        nil
+      end
+
+    padded_lines =
+      Enum.map(body_lines, fn line ->
+        prefix_runs =
+          if accent_col do
+            accent_col ++ [raw(" ", bg_style)]
+          else
+            [raw(" ", bg_style)]
+          end
+
+        prefix_line = render(prefix_runs, %{ctx | width: indent}, 1)
+
+        case prefix_line do
+          [pline] ->
+            %{
+              units: pline.units ++ line.units,
+              cells: pline.cells + line.cells
+            }
+
+          [] ->
+            line
+        end
+      end)
+
+    if rounded do
+      surface_with_corners(padded_lines, ctx, bg_style, rows)
+    else
+      Enum.take(padded_lines, rows)
+    end
+  end
+
   defp block(_, _, _), do: fail(:invalid_scene)
+
+  # --- Gauge helpers ---
+
+  defp gauge_track(:ticks, slots, ctx) do
+    glyph = gauge_glyph(:stripe_off, ctx)
+    List.duplicate(raw(glyph, role(:ticks_track, ctx)), slots)
+  end
+
+  defp gauge_track(:bar, slots, ctx) do
+    glyph = gauge_glyph(:stripe_off, ctx)
+    List.duplicate(raw(glyph, role(:ticks_track, ctx)), slots)
+  end
+
+  defp gauge_track(:segments, slots, ctx) do
+    glyph = gauge_glyph(:seg_off, ctx)
+    List.duplicate(raw(glyph, role(:ticks_track, ctx)), slots)
+  end
+
+  defp gauge_filled(:ticks, filled, slots, tone, ctx) do
+    on_glyph = gauge_glyph(:stripe, ctx)
+    off_glyph = gauge_glyph(:stripe_off, ctx)
+
+    lit = List.duplicate(raw(on_glyph, role(tone, ctx)), filled)
+    unlit = List.duplicate(raw(off_glyph, role(:ticks_track, ctx)), slots - filled)
+    lit ++ unlit
+  end
+
+  defp gauge_filled(:bar, filled, slots, tone, ctx) do
+    on_glyph = gauge_glyph(:stripe, ctx)
+    off_glyph = gauge_glyph(:stripe_off, ctx)
+
+    lit = List.duplicate(raw(on_glyph, role(tone, ctx)), filled)
+    unlit = List.duplicate(raw(off_glyph, role(:ticks_track, ctx)), slots - filled)
+    lit ++ unlit
+  end
+
+  defp gauge_filled(:segments, filled, slots, tone, ctx) do
+    on_glyph = gauge_glyph(:seg_on, ctx)
+    off_glyph = gauge_glyph(:seg_off, ctx)
+
+    lit = List.duplicate(raw(on_glyph, role(tone, ctx)), filled)
+    unlit = List.duplicate(raw(off_glyph, role(:ticks_track, ctx)), slots - filled)
+    lit ++ unlit
+  end
+
+  defp gauge_glyph(token, ctx) do
+    if ctx.options.ascii? do
+      case token do
+        :stripe -> "#"
+        :stripe_off -> "-"
+        :seg_on -> "#"
+        :seg_off -> "-"
+      end
+    else
+      SafeText.value(SafeText.chrome(token))
+    end
+  end
+
+  # --- Chart helpers ---
+
+  defp chart_ascii(series, label, ctx, rows) do
+    label_text = if label, do: value!(label), else: "chart"
+
+    case series do
+      [] ->
+        render([raw(label_text <> " (no data)", ctx.style)], ctx, rows)
+
+      _ ->
+        {mn, mx} = Enum.min_max(series)
+        last = List.last(series)
+
+        summary =
+          label_text <>
+            " min=" <>
+            Integer.to_string(mn) <>
+            " max=" <> Integer.to_string(mx) <> " last=" <> Integer.to_string(last)
+
+        render([raw(summary, ctx.style)], ctx, rows)
+    end
+  end
+
+  defp chart_braille(series, tone, height, label, ctx, rows) do
+    case series do
+      [] ->
+        label_runs = if label, do: [run(label, ctx.style)], else: [raw("(no data)", ctx.style)]
+        render(label_runs, ctx, rows)
+
+      _ ->
+        max_val = Enum.max(series)
+        total_rows = height * 4
+        padded = if rem(length(series), 2) != 0, do: series ++ [0], else: series
+        col_count = div(length(padded), 2)
+
+        cell_rows =
+          for row <- 0..(height - 1) do
+            cells =
+              for col <- 0..(col_count - 1) do
+                left = Enum.at(padded, col * 2)
+                right = Enum.at(padded, col * 2 + 1)
+                braille_cell(left, right, row, height, total_rows, max_val)
+              end
+
+            glyph_runs =
+              Enum.map(cells, fn bits ->
+                raw(SafeText.value(SafeText.chrome({:braille, bits})), role(tone, ctx))
+              end)
+
+            render(glyph_runs, ctx, 1)
+          end
+
+        body = List.flatten(cell_rows)
+        label_line = if label, do: render([run(label, ctx.style)], ctx, 1), else: []
+        Enum.take(body ++ label_line, rows)
+    end
+  end
+
+  @col0_bits [0x01, 0x02, 0x04, 0x40]
+  @col1_bits [0x08, 0x10, 0x20, 0x80]
+
+  defp braille_cell(left_val, right_val, cell_row, _height, total_rows, max_val) do
+    if max_val == 0 do
+      0
+    else
+      left_dots = quantize(left_val, total_rows, max_val)
+      right_dots = quantize(right_val, total_rows, max_val)
+
+      Enum.reduce(0..3, 0, fn dot_idx, bits ->
+        abs_row = cell_row * 4 + dot_idx
+        screen_row = total_rows - 1 - abs_row
+
+        left_bit = if screen_row < left_dots, do: Enum.at(@col0_bits, dot_idx), else: 0
+        right_bit = if screen_row < right_dots, do: Enum.at(@col1_bits, dot_idx), else: 0
+        Bitwise.bor(bits, Bitwise.bor(left_bit, right_bit))
+      end)
+    end
+  end
+
+  defp quantize(value, total_rows, max_val) when max_val > 0 do
+    div(value * total_rows, max_val)
+  end
+
+  defp quantize(_, _, _), do: 0
+
+  # --- Surface helpers ---
+
+  defp surface_with_corners(body_lines, ctx, bg_style, rows) do
+    tl_glyph =
+      if ctx.options.ascii?,
+        do: " ",
+        else: SafeText.value(SafeText.chrome(:corner_tl))
+
+    tr_glyph =
+      if ctx.options.ascii?,
+        do: " ",
+        else: SafeText.value(SafeText.chrome(:corner_tr))
+
+    bl_glyph =
+      if ctx.options.ascii?,
+        do: " ",
+        else: SafeText.value(SafeText.chrome(:corner_bl))
+
+    br_glyph =
+      if ctx.options.ascii?,
+        do: " ",
+        else: SafeText.value(SafeText.chrome(:corner_br))
+
+    fill_width = max(0, ctx.width - 2)
+
+    top_runs = [
+      raw(tl_glyph, bg_style),
+      raw(String.duplicate(" ", fill_width), bg_style),
+      raw(tr_glyph, bg_style)
+    ]
+
+    bottom_runs = [
+      raw(bl_glyph, bg_style),
+      raw(String.duplicate(" ", fill_width), bg_style),
+      raw(br_glyph, bg_style)
+    ]
+
+    top_line = render(top_runs, ctx, 1)
+    bottom_line = render(bottom_runs, ctx, 1)
+
+    if body_lines == [] do
+      Enum.take(top_line ++ bottom_line, rows)
+    else
+      Enum.take(top_line ++ body_lines ++ bottom_line, rows)
+    end
+  end
 
   defp diff_hunks(_, _, rows) when rows <= 0, do: []
   defp diff_hunks([], _, _), do: []
