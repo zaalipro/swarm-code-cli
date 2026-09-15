@@ -138,6 +138,127 @@ defmodule SwarmCodeCLI.UI.ThemeTest do
     assert_raise FunctionClauseError, fn -> apply(Theme, :status, [:unknown]) end
   end
 
+  test "every role in Style.roles/0 produces a %Style{} in all four colour modes" do
+    for role <- Style.roles(), mode <- [:truecolor, :ansi256, :ansi16, :monochrome] do
+      style = Theme.style(role, caps(mode))
+
+      assert %Style{role: ^role} = style,
+             "Theme.style(#{inspect(role)}, #{inspect(mode)}) did not return a %Style{}"
+    end
+  end
+
+  test "chip fill background hex values match the web's composited values exactly" do
+    chip_fills = [
+      {:chip_accent, {0x3E, 0x29, 0x1D}},
+      {:chip_ok, {0x22, 0x39, 0x26}},
+      {:chip_warn, {0x3C, 0x33, 0x1A}},
+      {:chip_err, {0x3E, 0x25, 0x25}},
+      {:chip_info, {0x25, 0x31, 0x3E}}
+    ]
+
+    for {role, {r, g, b}} <- chip_fills do
+      style = Theme.style(role, caps(:truecolor))
+
+      assert style.background.value == {:rgb, r, g, b},
+             "#{role} background expected {:rgb, #{r}, #{g}, #{b}}, got #{inspect(style.background.value)}"
+    end
+  end
+
+  test "chip foreground hex values match the web token colours" do
+    chip_fgs = [
+      {:chip_accent, {0xFF, 0x6A, 0x1A}},
+      {:chip_ok, {0x3D, 0xDC, 0x5A}},
+      {:chip_warn, {0xF5, 0xB4, 0x00}},
+      {:chip_err, {0xFF, 0x4D, 0x4F}},
+      {:chip_info, {0x4D, 0xA3, 0xFF}}
+    ]
+
+    for {role, {r, g, b}} <- chip_fgs do
+      style = Theme.style(role, caps(:truecolor))
+      assert style.foreground.value == {:rgb, r, g, b}
+    end
+  end
+
+  test "Theme.file_type/1 maps known extensions to ext_* roles" do
+    mappings = [
+      {"ts", :ext_ts},
+      {"tsx", :ext_ts},
+      {"ex", :ext_ex},
+      {"exs", :ext_ex},
+      {"js", :ext_js},
+      {"jsx", :ext_js},
+      {"md", :ext_md},
+      {"mdx", :ext_md},
+      {"css", :ext_css},
+      {"scss", :ext_css},
+      {"json", :ext_json},
+      {"html", :ext_html},
+      {"heex", :ext_html},
+      {"py", :ext_py},
+      {"rs", :ext_rs},
+      {"go", :ext_go}
+    ]
+
+    for {ext, expected_role} <- mappings do
+      assert Theme.file_type(ext) == expected_role,
+             "file_type(#{inspect(ext)}) expected #{inspect(expected_role)}"
+    end
+  end
+
+  test "Theme.file_type/1 defaults to :text_muted for unknown extensions" do
+    for ext <- ["txt", "yml", "toml", "rb", "java", "c", "cpp", "unknown", ""] do
+      assert Theme.file_type(ext) == :text_muted
+    end
+  end
+
+  test "W2 theme roles degrade to sensible ansi256, ansi16 and monochrome" do
+    w2_fg_roles = [
+      {:ticks_track, 0x3C3C3B, 238, :bright_black},
+      {:border_soft, 0x2A2A2A, 236, :bright_black},
+      {:ultra_a, 0xFF5DB1, 205, :bright_magenta},
+      {:ultra_b, 0x9B5CFF, 135, :bright_magenta},
+      {:ext_ts, 0x4DA3FF, 75, :bright_blue},
+      {:ext_ex, 0xA78BFA, 141, :magenta},
+      {:ext_js, 0xF5B400, 220, :bright_yellow},
+      {:ext_md, 0x3DDC5A, 41, :bright_green},
+      {:ext_css, 0xF472B6, 212, :magenta},
+      {:ext_json, 0xFF9D5C, 215, :yellow},
+      {:ext_html, 0xFF7A59, 209, :bright_red},
+      {:ext_py, 0x38BDF8, 81, :cyan},
+      {:ext_rs, 0xF97316, 208, :bright_yellow},
+      {:ext_go, 0x22D3EE, 44, :bright_cyan}
+    ]
+
+    for {role, rgb, index, ansi} <- w2_fg_roles do
+      assert Theme.style(role, caps(:truecolor)).foreground.value ==
+               {:rgb, div(rgb, 65_536), rem(div(rgb, 256), 256), rem(rgb, 256)}
+
+      assert Theme.style(role, caps(:ansi256)).foreground.value == {:indexed, index}
+      assert Theme.style(role, caps(:ansi16)).foreground.value == {:ansi, ansi}
+      assert Theme.style(role, caps(:monochrome)).foreground == nil
+    end
+
+    w2_bg_roles = [
+      {:popover, 0x1C1C1C, 234, :black},
+      {:hover, 0x262626, 236, :bright_black}
+    ]
+
+    for {role, rgb, index, ansi} <- w2_bg_roles do
+      assert Theme.style(role, caps(:truecolor)).background.value ==
+               {:rgb, div(rgb, 65_536), rem(div(rgb, 256), 256), rem(rgb, 256)}
+
+      assert Theme.style(role, caps(:ansi256)).background.value == {:indexed, index}
+      assert Theme.style(role, caps(:ansi16)).background.value == {:ansi, ansi}
+      assert Theme.style(role, caps(:monochrome)).background == nil
+    end
+
+    for role <- [:on_accent, :on_warn] do
+      style = Theme.style(role, caps(:truecolor))
+      assert style.foreground != nil
+      assert style.background != nil
+    end
+  end
+
   test "every style remains a closed renderer-neutral Scene value" do
     for role <- Theme.roles(), mode <- [:truecolor, :ansi256, :ansi16, :monochrome] do
       style = Theme.style(role, caps(mode))
@@ -164,7 +285,7 @@ defmodule SwarmCodeCLI.UI.ThemeTest do
     assert Enum.sort(Theme.roles()) == Enum.sort(Style.roles())
     assert_raise FunctionClauseError, fn -> Theme.style(:invented, caps(:truecolor)) end
 
-    for value <- [{:rgb, 256, 0, 0}, {:indexed, -1}, {:ansi, :made_up}, "\e[31m"] do
+    for value <- [{:rgb, 256, 0, 0}, {:indexed, -1}, {:ansi, :made_up}, "\\e[31m"] do
       refute Color.valid?(struct!(Color, role: :default, value: value))
     end
   end

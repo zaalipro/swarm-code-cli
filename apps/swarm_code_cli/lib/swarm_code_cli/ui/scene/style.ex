@@ -43,7 +43,30 @@ defmodule SwarmCodeCLI.UI.Scene.Style do
     :agent_lane_2,
     :agent_lane_3,
     :agent_lane_4,
-    :agent_lane_5
+    :agent_lane_5,
+    :ticks_track,
+    :border_soft,
+    :popover,
+    :hover,
+    :on_accent,
+    :on_warn,
+    :ultra_a,
+    :ultra_b,
+    :chip_accent,
+    :chip_ok,
+    :chip_warn,
+    :chip_err,
+    :chip_info,
+    :ext_ts,
+    :ext_ex,
+    :ext_js,
+    :ext_md,
+    :ext_css,
+    :ext_json,
+    :ext_html,
+    :ext_py,
+    :ext_rs,
+    :ext_go
   ]
   @modifiers [:bold, :dim, :italic, :underlined, :reversed]
   @cues [:separator, :border, :explicit_label, :reason_required]
@@ -92,6 +115,29 @@ defmodule SwarmCodeCLI.UI.Scene.Style do
           | :agent_lane_3
           | :agent_lane_4
           | :agent_lane_5
+          | :ticks_track
+          | :border_soft
+          | :popover
+          | :hover
+          | :on_accent
+          | :on_warn
+          | :ultra_a
+          | :ultra_b
+          | :chip_accent
+          | :chip_ok
+          | :chip_warn
+          | :chip_err
+          | :chip_info
+          | :ext_ts
+          | :ext_ex
+          | :ext_js
+          | :ext_md
+          | :ext_css
+          | :ext_json
+          | :ext_html
+          | :ext_py
+          | :ext_rs
+          | :ext_go
   @type t :: %__MODULE__{
           role: role(),
           foreground: Color.t() | nil,
