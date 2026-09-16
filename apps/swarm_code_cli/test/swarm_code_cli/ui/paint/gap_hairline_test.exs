@@ -10,6 +10,7 @@ defmodule SwarmCodeCLI.UI.Paint.GapHairlineTest do
   }
 
   alias SwarmCodeCLI.UI.Paint.{Options, Plan}
+  alias SwarmCodeCLI.UI.Scene.Rect
 
   defp fixture(kind, {columns, rows}, opts \\ []) do
     policy = Keyword.get(opts, :policy, :narrow)
@@ -44,12 +45,12 @@ defmodule SwarmCodeCLI.UI.Paint.GapHairlineTest do
   end
 
   describe "gap-column hairline at xl (170x34)" do
-    test "no navigator gap column 26: main runs flush from column 0" do
+    test "no navigator gap column 26: nothing is docked to the left of main" do
       state = fixture(:chat, {170, 34})
       plan = paint(state)
 
-      # The navigator dock is gone, so column 26 is main's own text, never the
-      # hairline that used to separate the dock from main.
+      # The navigator dock is gone, so column 26 is inside main's own band, never
+      # the hairline that used to separate the dock from main.
       glyphs = column_glyphs(plan, 26, 2, 32)
 
       refute Enum.any?(glyphs, &(&1 == "╎")),
@@ -57,7 +58,25 @@ defmodule SwarmCodeCLI.UI.Paint.GapHairlineTest do
 
       {scene, _} = SwarmCodeCLI.UI.Projector.project(state)
       main = Enum.find(scene.regions, &(&1.role == :main))
-      assert main.rect.x == 0
+
+      # Main's band runs from column 0 to the inspector's gap at 127; it sets its
+      # 96-cell reading measure in the middle of it. The columns the navigator
+      # owned are main's own empty gutter, so nothing is painted there and no
+      # region starts to the left of main.
+      assert main.rect == %Rect{x: 15, y: 2, width: 96, height: 27}
+
+      docked =
+        for region <- scene.regions,
+            region.role not in [:title, :tabline, :status],
+            region.rect.x < main.rect.x,
+            do: {region.role, region.rect}
+
+      assert docked == [], "a pane is docked to the left of main: #{inspect(docked)}"
+
+      for x <- 0..(main.rect.x - 1), y <- 2..32 do
+        assert cell_glyph(plan, x, y) in [nil, " "],
+               "#{inspect(cell_glyph(plan, x, y))} is painted at (#{x}, #{y}), left of main"
+      end
     end
 
     test "inspector gap column 127 contains hairline glyph" do
@@ -70,6 +89,15 @@ defmodule SwarmCodeCLI.UI.Paint.GapHairlineTest do
 
       assert Enum.all?(glyphs, &(&1 == "╎")),
              "Expected all cells in inspector gap column 127 to be hairline, got: #{inspect(glyphs)}"
+
+      # The hairline belongs to the inspector's dock, not to main's right edge,
+      # so centring main's reading measure neither orphans it nor runs main into
+      # it: it stays one column left of the inspector and clear of main.
+      {scene, _} = Projector.project(state)
+      main = Enum.find(scene.regions, &(&1.role == :main))
+      inspector = Enum.find(scene.regions, &(&1.role == :inspector))
+      assert inspector.rect.x - 1 == 127
+      assert main.rect.x + main.rect.width <= 127
     end
 
     test "the tab row on row 1 is never split by a gap column" do

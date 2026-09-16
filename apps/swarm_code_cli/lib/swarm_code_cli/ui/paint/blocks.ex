@@ -26,6 +26,11 @@ defmodule SwarmCodeCLI.UI.Paint.Blocks do
     Block.Chart,
     Block.Surface
   ]
+  # Card chrome: a two-cell left gutter (coloured edge + space) and one cell of
+  # right padding, so content is inset on both sides like the web's cards.
+  @card_gutter 2
+  @card_pad 1
+
   @statuses [
     :queued,
     :running,
@@ -122,23 +127,45 @@ defmodule SwarmCodeCLI.UI.Paint.Blocks do
     header ++ sequence(sources, ctx, rows - length(header))
   end
 
+  # A run card is a CARD: a filled surface with a status-coloured edge, its body
+  # inset so nothing inside it runs edge to edge. Painting the body at the full
+  # region width is what made a gauge fill the whole terminal.
   defp block(%Block.RunCard{title: title, status: status, body: body}, ctx, rows)
        when status in @statuses do
     {status_text, status_role} = Theme.status(status)
     boundary = if ctx.options.ascii?, do: " - ", else: " — "
+    inner = ctx.width - @card_gutter - @card_pad
+
+    # Under four columns the frame would cost more cells than the region has, and
+    # a card that overflows its own region is worse than no card: the run reads
+    # as plain text there, exactly as it did before cards existed.
+    {inner_ctx, framed?} =
+      if inner >= 1,
+        do: {%{ctx | width: inner, style: role(:card, ctx)}, true},
+        else: {ctx, false}
 
     header =
       render(
         [
-          run(title, role(:title, ctx)),
-          raw(boundary, ctx.style),
-          run(status_text, role(status_role, ctx))
+          run(title, role(:title, inner_ctx)),
+          raw(boundary, inner_ctx.style),
+          run(status_text, role(status_role, inner_ctx))
         ],
-        ctx,
+        inner_ctx,
         rows
       )
 
-    header ++ sequence(body, ctx, rows - length(header))
+    lines = header ++ sequence(body, inner_ctx, rows - length(header))
+
+    if framed? do
+      stripe = if ctx.options.ascii?, do: "|", else: SafeText.value(SafeText.chrome(:stripe))
+
+      lines
+      |> Enum.map(&card_line(&1, ctx, stripe, role(status_role, ctx), inner_ctx.style))
+      |> Enum.take(rows)
+    else
+      Enum.take(lines, rows)
+    end
   end
 
   defp block(%Block.Composer{text: value, placeholder: placeholder}, ctx, rows) do
@@ -276,8 +303,11 @@ defmodule SwarmCodeCLI.UI.Paint.Blocks do
        )
        when is_list(blocks) and is_atom(tone) and is_boolean(rounded) do
     bg_style = role(tone, ctx)
-    indent = if accent, do: 2, else: 1
+    indent = if accent, do: @card_gutter, else: 1
 
+    # A surface only indents; it does not reserve a right pad. Its callers (the
+    # runs dashboard and the run palette) build rows that are measured to fill
+    # the surface exactly, so taking a column back from them wraps every row.
     inner_ctx = %{
       ctx
       | width: max(0, ctx.width - indent),
@@ -311,13 +341,11 @@ defmodule SwarmCodeCLI.UI.Paint.Blocks do
 
         case prefix_line do
           [pline] ->
-            %{
-              units: pline.units ++ line.units,
-              cells: pline.cells + line.cells
-            }
+            %{units: pline.units ++ line.units, cells: pline.cells + line.cells}
+            |> pad_line(ctx, bg_style, ctx.width)
 
           [] ->
-            line
+            pad_line(line, ctx, bg_style, ctx.width)
         end
       end)
 
@@ -329,6 +357,36 @@ defmodule SwarmCodeCLI.UI.Paint.Blocks do
   end
 
   defp block(_, _, _), do: fail(:invalid_scene)
+
+  # --- card framing ---
+
+  # Left gutter is the coloured edge plus a space; the right keeps one space so
+  # text never touches the card boundary.
+  defp card_line(line, ctx, stripe, edge, card) do
+    prefix =
+      case render([raw(stripe, edge), raw(" ", card)], %{ctx | width: @card_gutter}, 1) do
+        [p] -> p
+        _ -> %{units: [], cells: 0}
+      end
+
+    %{units: prefix.units ++ line.units, cells: prefix.cells + line.cells}
+    |> pad_line(ctx, card, ctx.width)
+  end
+
+  # Fills the rest of the row with the surface colour, so a card paints as a
+  # rectangle rather than stopping wherever its text happens to end.
+  defp pad_line(line, ctx, style, target) do
+    missing = max(0, target - line.cells)
+
+    if missing == 0 do
+      line
+    else
+      case render([raw(String.duplicate(" ", missing), style)], %{ctx | width: missing}, 1) do
+        [pad] -> %{units: line.units ++ pad.units, cells: line.cells + pad.cells}
+        _ -> line
+      end
+    end
+  end
 
   # --- Gauge helpers ---
 

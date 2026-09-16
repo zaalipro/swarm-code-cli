@@ -24,8 +24,51 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
           welcome_content(state, rect.width, height)
       end
 
-    chrome.mandatory ++
-      chrome.summary ++ Enum.take(chrome.notices, 2) ++ chrome.deck ++ chrome.separator ++ content
+    head =
+      chrome.mandatory ++
+        chrome.summary ++
+        Enum.take(chrome.notices, 2) ++ chrome.deck ++ chrome.separator
+
+    bottom_anchor(head, content, state, rect)
+  end
+
+  # A conversation reads from the bottom: the newest turn sits just above the
+  # composer, the way every chat surface behaves. Without this the transcript
+  # pins to the top and a short conversation leaves the screen looking broken.
+  #
+  # The chrome does not ride down with it. `NEEDS n`, the composer facts and the
+  # run card are a prominence contract: a pending question has to be in the same
+  # place on main's first row whether the transcript is empty or a thousand turns
+  # long, and a header that drifts with content length is not a header. So the
+  # spacer goes BETWEEN the chrome and the transcript, never before the chrome.
+
+  # `Blocks.lines/6` measures at most 200 rows, so a pane taller than that cannot
+  # be measured honestly; it keeps the transcript where it is.
+  defp bottom_anchor(head, content, _state, rect) when rect.height > 200,
+    do: head ++ content
+
+  defp bottom_anchor(head, content, state, rect) do
+    {measured, _actions} = Support.finalize(head ++ content, state.revision)
+
+    options = %Options{
+      color_mode: state.capabilities.color_mode,
+      ascii?: state.capabilities.ascii?
+    }
+
+    case Metrics.height(
+           measured,
+           min(rect.width, 500),
+           options,
+           rect.height,
+           state.capabilities.ambiguous_width
+         ) do
+      {:ok, painted} when painted < rect.height ->
+        spacer = List.duplicate(Support.text(" ", state, rect.width), rect.height - painted)
+        head ++ spacer ++ content
+
+      _ ->
+        head ++ content
+    end
   end
 
   @doc "Exact Main text viewport rows after required chrome, notices and action decks."

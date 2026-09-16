@@ -144,7 +144,22 @@ defmodule SwarmCodeCLI.UI.Paint.ProjectorTest do
     assert pixels =~ "Ctrl-R runs"
     assert composer.rect.height >= 1
     assert main.rect.height > 0
-    assert main.rect.x == 0
+
+    # Nothing is docked on the left, so main's band is the whole 120-column
+    # terminal; it centres its 96-cell reading measure inside that band. The tab
+    # row still spans the terminal, which is how it stays reachable from either
+    # gutter.
+    assert main.rect.x == 12
+    assert main.rect.width == 96
+    assert main.rect.x == div(120 - main.rect.width, 2)
+
+    docked =
+      for region <- scene.regions,
+          region.role not in [:title, :tabline, :status],
+          region.rect.x < main.rect.x,
+          do: {region.role, region.rect}
+
+    assert docked == [], "a pane is docked to the left of main: #{inspect(docked)}"
     assert tabline.rect == %SwarmCodeCLI.UI.Scene.Rect{x: 0, y: 1, width: 120, height: 1}
   end
 

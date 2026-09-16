@@ -2,7 +2,7 @@ defmodule SwarmCodeCLI.UI.Projector.Inspector do
   @moduledoc false
   alias SwarmCodeCLI.UI.{SafeText, Theme}
   alias SwarmCodeCLI.UI.Scene.{Block, Span}
-  alias SwarmCodeCLI.UI.Projector.{Density, Support}
+  alias SwarmCodeCLI.UI.Projector.{Density, RunRow, Support}
 
   def project(state, rect, class) do
     run = Support.run(state)
@@ -57,7 +57,9 @@ defmodule SwarmCodeCLI.UI.Projector.Inspector do
           []
       end
 
-    heading ++ agents_card ++ metadata ++ needs_card ++ [%Block.AgentList{agents: rows}]
+    facts = run_facts(run, agents, state, rect.width)
+
+    heading ++ agents_card ++ metadata ++ facts ++ needs_card ++ [%Block.AgentList{agents: rows}]
   end
 
   # Faint bold uppercase heading per run kind (decision 8, 27).
@@ -124,6 +126,49 @@ defmodule SwarmCodeCLI.UI.Projector.Inspector do
     else
       []
     end
+  end
+
+  # A run with no agents (an ordinary assistant turn) used to leave this pane
+  # empty apart from its heading — a tall column of nothing. Show the facts the
+  # read model actually holds, and nothing it does not.
+  defp run_facts(nil, _agents, _state, _width), do: []
+  defp run_facts(_run, agents, _state, _width) when agents != [], do: []
+
+  defp run_facts(run, _agents, state, width) do
+    {word, role} = Theme.status(run.state)
+
+    progress =
+      case run.progress do
+        nil -> []
+        value -> [Support.text("Progress · #{value}%", state, width)]
+      end
+
+    [
+      status_line(word, role, state, width),
+      Support.text("Kind · #{run.kind}", state, width)
+    ] ++
+      progress ++
+      [
+        Support.text(" ", state, width),
+        Support.text("Ctrl-G  all runs", state, width),
+        Support.text("Ctrl-R  switch run", state, width)
+      ]
+  end
+
+  # The status roles carry a text prefix cue — :accent prints "RUNNING" — which
+  # is how a colourless terminal still reads the state. Styling the status word
+  # with its own role therefore prints the state twice ("RUNNING STREAMING").
+  # Borrow the role's colour onto the cue-free :plain role, exactly as the runs
+  # dashboard does for its kind marks, so the line reads as one word.
+  defp status_line(word, role, state, width) do
+    %Block.RichText{
+      spans: [
+        %Span{
+          text: Density.safe(SafeText.value(word), state, width),
+          style: %{RunRow.tinted(role, state) | modifiers: [:bold]}
+        }
+      ]
+    }
   end
 
   # Ultra pipeline text with safe glyph (decision 29): "Plan ❯ Build ❯ Verify"

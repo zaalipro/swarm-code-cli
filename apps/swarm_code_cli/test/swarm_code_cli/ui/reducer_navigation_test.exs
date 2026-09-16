@@ -17,6 +17,7 @@ defmodule SwarmCodeCLI.UI.ReducerNavigationTest do
 
   alias SwarmCodeCLI.UI.DataSource.{DTO, Delivery, Request}
   alias SwarmCodeCLI.UI.Paint.{Options, Plan}
+  alias SwarmCodeCLI.UI.Scene.Rect
 
   def initial do
     size = %Size{columns: 150, rows: 40}
@@ -475,7 +476,23 @@ defmodule SwarmCodeCLI.UI.ReducerNavigationTest do
 
       assert Scene.validate(scene) == :ok
       refute Enum.any?(scene.regions, &(&1.role == :navigator))
-      assert Enum.find(scene.regions, &(&1.role == :main)).rect.x == 0
+
+      # Main's band still starts at column 0: the stale navigator reserves
+      # nothing. Main centres its 96-cell reading measure inside the 107 columns
+      # the 42-cell inspector and its gap leave, so nothing sits to its left.
+      main = Enum.find(scene.regions, &(&1.role == :main))
+      inspector = Enum.find(scene.regions, &(&1.role == :inspector))
+      assert inspector.rect.x - 1 == 107
+      assert main.rect == %Rect{x: 5, y: 2, width: 96, height: 33}
+      assert main.rect.x == div(107 - main.rect.width, 2)
+
+      docked =
+        for region <- scene.regions,
+            region.role not in [:title, :tabline, :status],
+            region.rect.x < main.rect.x,
+            do: {region.role, region.rect}
+
+      assert docked == [], "a pane is docked to the left of main: #{inspect(docked)}"
       assert Enum.find(scene.regions, &(&1.role == :tabline)).rect.y == 1
 
       assert {:ok, plan} = Paint.build(scene, %Options{color_mode: :truecolor})

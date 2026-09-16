@@ -1,12 +1,18 @@
 defmodule SwarmCodeCLI.UI.Paint.BlocksTest do
   use ExUnit.Case, async: true
-  alias SwarmCodeCLI.UI.{SafeText, Scene}
+  alias SwarmCodeCLI.UI.{SafeText, Scene, Width}
   alias SwarmCodeCLI.UI.SafeText.Limits
   alias SwarmCodeCLI.UI.Paint.{Blocks, Options}
   alias Scene.{Block, Span, Style}
   @base %{foreground: nil, background: nil, modifiers: []}
   defp safe(text), do: elem(SafeText.external(text, Limits.content()), 1)
   defp text(value), do: %Block.Text{text: safe(value)}
+
+  # A card surface paints as a rectangle: its text, then its own background to
+  # the end of the row. `strings/1` reports every glyph on the row, so a card row
+  # is the text followed by exactly enough spaces to reach the region width.
+  defp filled(value, width \\ 80),
+    do: value <> String.duplicate(" ", width - Width.cells(value, :narrow))
 
   defp layout(blocks, width \\ 80, rows \\ 100, options \\ %Options{}) do
     assert {:ok, lines} = Blocks.lines(blocks, width, options, @base, rows)
@@ -46,7 +52,7 @@ defmodule SwarmCodeCLI.UI.Paint.BlocksTest do
       {%Block.VirtualList{total_count: 99, first_index: 20, items: [text("one"), text("two")]},
        ["one", "two"]},
       {%Block.RunCard{id: "run", title: safe("Build"), status: :done, body: [text("body")]},
-       ["Build — DONE", "body"]},
+       [filled("▐ Build — DONE"), filled("▐ body")]},
       {%Block.AgentList{agents: [safe("agent one"), text("agent two")]},
        ["agent one", "agent two"]},
       {%Block.ConsensusLedger{entries: [safe("vote")]}, ["Consensus", "vote"]},
@@ -73,7 +79,7 @@ defmodule SwarmCodeCLI.UI.Paint.BlocksTest do
       {%Block.Gauge{tone: :accent, value: 1, maximum: 2, style: :ticks},
        [String.duplicate("▐", 80)]},
       {%Block.Chart{series: [4, 0], tone: :accent, height: 1}, [<<0x2847::utf8>>]},
-      {%Block.Surface{blocks: [text("inner")], tone: :card}, [" inner"]}
+      {%Block.Surface{blocks: [text("inner")], tone: :card}, [filled(" inner")]}
     ]
 
     assert MapSet.new(Enum.map(cases, fn {block, _} -> block.__struct__ end)) ==
@@ -99,7 +105,7 @@ defmodule SwarmCodeCLI.UI.Paint.BlocksTest do
                100,
                %Options{ascii?: true}
              )
-           ) == ["界— - DONE"]
+           ) == [filled("| 界— - DONE")]
   end
 
   test "action deck wraps between whole labels and preserves IDs" do
@@ -136,8 +142,51 @@ defmodule SwarmCodeCLI.UI.Paint.BlocksTest do
       body: [%Block.ResearchDocument{title: safe("Sources"), sources: [text("one"), text("two")]}]
     }
 
-    assert strings(layout([nested, text("last")], 80, 3)) == ["Run — RUNNING", "Sources", "one"]
+    assert strings(layout([nested, text("last")], 80, 3)) ==
+             [filled("▐ Run — RUNNING"), filled("▐ Sources"), filled("▐ one")]
+
     assert layout([nested], 80, 0) == []
+  end
+
+  test "a run card paints as a card: status edge, inset body, filled to the region" do
+    card = %Block.RunCard{id: "r", title: safe("Build"), status: :failed, body: [text("body")]}
+    [header, body] = layout([card], 20)
+
+    # Both rows are the full region width, so the card is a rectangle rather than
+    # a ragged run of text that stops wherever its content ends.
+    assert header.cells == 20
+    assert body.cells == 20
+    assert strings([header, body]) == [filled("▐ Build — FAILED", 20), filled("▐ body", 20)]
+
+    surface = List.last(header.units).style.background
+    assert surface != nil
+
+    for line <- [header, body] do
+      [edge, gutter | rest] = line.units
+      # A one-cell status edge, then the two-cell gutter that insets the body.
+      assert edge.text == "▐"
+      assert gutter.text == " "
+      assert Enum.all?(rest, &(&1.style.background == surface))
+      # The right pad keeps the last cell on the surface and off the text.
+      assert List.last(line.units).text == " "
+    end
+
+    # The edge is coloured by the run's status, not by one fixed accent.
+    edges =
+      for status <- [:failed, :done, :running],
+          do: hd(hd(layout([%{card | status: status}], 20)).units).style.foreground
+
+    assert Enum.all?(edges, &(&1 != nil))
+    assert Enum.uniq(edges) == edges
+
+    # A card never overflows its region. Under four columns the frame costs more
+    # cells than there are, so the run degrades to plain text instead.
+    for width <- 1..8 do
+      assert Enum.all?(layout([card], width), &(&1.cells <= width)),
+             "a run card overflowed a #{width}-column region"
+    end
+
+    assert strings(layout([card], 3, 1)) == ["Bui"]
   end
 
   test "selected tabs preserve source newlines and emit a selected prefix only once" do

@@ -218,10 +218,18 @@ defmodule SwarmCodeCLI.UI.Paint.ShellFormatTest do
       assert row(plan, 1) =~ "Ctrl-G all"
     end
 
-    test "no destination entries: main owns columns 0..25 from row 2 down" do
+    test "no destination entries: main's band owns columns 0..25 from row 2 down" do
       state = fixture(:chat, {170, 34})
       plan = paint(state)
-      assert row(plan, 2, 0, 26) =~ "Streaming conversation"
+      {scene, _} = Projector.project(state)
+      main = Enum.find(scene.regions, &(&1.role == :main))
+
+      # Main's band starts at column 0 and its reading measure is centred inside
+      # it, so main reaches into the columns the navigator used to own and the
+      # rest of them are its empty gutter, not a dock.
+      assert main.rect.x < 26
+      assert row(plan, 2, main.rect.x, main.rect.width) =~ "Streaming conversation"
+      assert String.trim(row(plan, 2, 0, main.rect.x)) == ""
       refute screen(plan) =~ "◉ Conversation"
       refute screen(plan) =~ "◌ Activity"
     end
