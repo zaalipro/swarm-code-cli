@@ -73,6 +73,9 @@ defmodule SwarmCodeCLI.UI.Projector.WorkspaceTurnsTest do
 
   defp lines(n), do: Enum.map_join(1..n, "\n", &"result line #{&1}")
 
+  defp glyph(token, state),
+    do: SwarmCodeCLI.UI.SafeText.value(SwarmCodeCLI.UI.Projector.Support.glyph(token, state))
+
   test "a streaming turn paints its speaker line with the agent's step and the caret" do
     {rows, _, _, _} = fixture(:swarm, {100, 30}) |> painted()
     at = index_of(rows, "  lead")
@@ -340,6 +343,56 @@ defmodule SwarmCodeCLI.UI.Projector.WorkspaceTurnsTest do
     {rows, _, _, _} = painted(expanded)
     assert index_of(rows, "    v scout-1")
     assert Enum.any?(rows, &(&1 == "      ... 3 more  (Enter opens)"))
+  end
+
+  test "a run reads as prompt, work, then words, whatever order the daemon created them in" do
+    state = fixture(:chat, {170, 40})
+    run = SwarmCodeCLI.UI.Projector.Support.run(state)
+    root = "root-" <> run.id
+
+    item = fn id, fields ->
+      struct(
+        %DTO.TranscriptItem{id: id, run_id: run.id, node_id: root, state: :done, text: "t"},
+        fields
+      )
+    end
+
+    # A chat turn creates the answer before the agent and its calls.
+    items = [
+      item.("m-user", role: :user, kind: :text, created_sequence: 1, text: "the prompt"),
+      item.("m-answer",
+        role: :assistant,
+        kind: :text,
+        created_sequence: 2,
+        state: :streaming,
+        text: "the answer"
+      ),
+      item.(root, node_id: root, role: :assistant, kind: :text, created_sequence: 3, text: ""),
+      item.("op-think", role: :tool, kind: :thinking, created_sequence: 4),
+      item.("op-grep", role: :tool, kind: :tool, created_sequence: 5)
+    ]
+
+    state = put_in(state.read_model.transcript, Map.new(items, &{&1.id, &1}))
+    state = put_in(state.read_model.order[:workspace], Enum.map(items, & &1.id))
+
+    assert Turns.order(state) == ["m-user", root, "op-think", "op-grep", "m-answer"]
+
+    # A second run keeps its place after the first, whatever its items rank.
+    later = item.("m-later", run_id: "run-later", role: :user, kind: :text, created_sequence: 9)
+    state = put_in(state.read_model.transcript["m-later"], later)
+    state = put_in(state.read_model.order[:workspace], Enum.map(items, & &1.id) ++ ["m-later"])
+    assert List.last(Turns.order(state)) == "m-later"
+
+    {rows, _, _, _} = painted(state)
+    prompt = index_of(rows, "  you")
+    work = Enum.find_index(rows, &String.starts_with?(&1, "    " <> glyph(:collapsed, state)))
+    # The answer's body ("t") paints after the calls; the lead's own line,
+    # empty as it is, opens the work above them.
+    words = Enum.find_index(rows, &(&1 == "  the answer"))
+    assert prompt && work && words, "rows: " <> inspect(Enum.take(rows, 14))
+
+    assert prompt < work and work < words,
+           inspect({prompt, work, words}) <> " rows: " <> inspect(Enum.take(rows, 16))
   end
 
   test "durations and byte counts read as people write them" do

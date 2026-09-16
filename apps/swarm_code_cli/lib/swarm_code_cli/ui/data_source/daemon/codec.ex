@@ -34,8 +34,11 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
       :swarm_effort,
       :changes,
       :verdicts,
-      :agents
+      :agents,
+      :project,
+      :models
     ],
+    DTO.WorkspaceMetadata => [:project, :models],
     DTO.TranscriptItem => [:kind, :tool, :agent_id, :tokens_in, :tokens_out, :at],
     DTO.AgentSummary => [
       :name,

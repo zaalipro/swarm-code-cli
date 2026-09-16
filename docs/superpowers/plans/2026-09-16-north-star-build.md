@@ -141,3 +141,28 @@ an ordinary saved conversation's snapshot can be published at all, with every
 silent close on either side now named on stderr; and the main screen brought to
 the mock (flush-left transcript, one-row run headline instead of the card and
 kind banners, top-anchored turns, hive before verdict, a rule for the strip).
+
+Later the same night, from a screenshot of a live swarm run:
+
+- **Live agents.** The persisted backend publishes an `agent_update` delta for
+  every agent whose summary changed on a refresh, so the hive lanes and the
+  speaker names follow a running swarm instead of saying `assistant`/`tool`
+  until the next snapshot. The client's delta envelope rule for agents now
+  accepts the conversation id the daemon stamps on every delta.
+- **Agent items.** An agent node's transcript text is what it produced
+  (result, else detail, then error), never its name: "Lead" over three blank
+  rows is gone. The run's root agent is retired from the transcript the
+  moment its assistant message exists, empty or streaming, so a chat turn
+  no longer paints two "Assistant · thinking" lines for one answer.
+- **Reading order.** `Turns.order/1` reads each run as prompt, work, words:
+  the daemon creates a chat turn's answer before its tool calls, and the
+  companion sorts the same way.
+- **Chrome.** One action row under the headline (Pause/Stop/Inspect, then
+  the composer's, what waits, and the full-text openers); a request that went
+  through paints no notice (`OK ACCEPTED` is gone, pending and failures
+  stay); the title row leads with the project's name once the daemon says it
+  (`SAVED · DEV` remains only for sessions without a project) and names the
+  sub agents' model when it differs from the chat model.
+- **Wire.** Workspace metadata and snapshot carry `project` and `models`
+  (every configured provider's models, ≤ 400, as `provider_id`/`provider`/
+  `model`), the ground for `/model` and `/swarm_model` and the picker.

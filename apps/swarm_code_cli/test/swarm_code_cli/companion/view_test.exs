@@ -250,8 +250,10 @@ defmodule SwarmCodeCLI.Companion.ViewTest do
 
   test "transcript items carry their kind, tool call, tokens and time" do
     view = View.build(swarm(), 0)
-    assert Enum.map(view.transcript, & &1.id) == ~w(001 002 005 006 007 008 009)
-    assert Enum.map(view.transcript, & &1.kind) == ~w(text text tool tool thinking tool error)
+    # Prompt, then the work, then the words: the reply the daemon created
+    # before the tool calls reads after them, as it does in the terminal.
+    assert Enum.map(view.transcript, & &1.id) == ~w(001 005 006 007 008 002 009)
+    assert Enum.map(view.transcript, & &1.kind) == ~w(text tool tool thinking tool text error)
 
     grep = Enum.find(view.transcript, &(&1.id == "005"))
     assert grep.agent_id == "agent-2" and grep.tokens == 876 and grep.at == @clock - 170_000

@@ -191,9 +191,13 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
     [%Block.Notice{text: Density.safe(label, state, width), severity: :error}]
   end
 
+  # A request that went through says nothing: its effect is on screen already
+  # (the message in the transcript, the dialog gone). Only a request still in
+  # flight or one that failed is worth a row.
   def mutations(state, width) do
     state.mutations
     |> Enum.sort_by(&elem(&1, 0))
+    |> Enum.reject(fn {_origin, mutation} -> match?({:settled, _, :accepted}, mutation) end)
     |> Enum.map(fn {_origin, mutation} ->
       key =
         case mutation do

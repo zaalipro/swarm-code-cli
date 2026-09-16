@@ -63,14 +63,24 @@ defmodule SwarmCodeCLI.UI.Projector.Shell do
 
     workspace = Map.get(state.read_model.snapshots, :workspace)
     mode = Composer.mode_label(state)
-    model = workspace && Map.get(workspace, :chat_model)
+
+    # The project's name leads once the daemon says it; the launcher's banner
+    # is for sessions that have no project to name (the fake demo, an unsaved
+    # live session). Then the mode, the chat model, and the sub agents' model
+    # when it is a different one.
+    lead = present(workspace && Map.get(workspace, :project)) || banner
+    model = present(workspace && Map.get(workspace, :chat_model))
+    swarm = present(workspace && Map.get(workspace, :swarm_model))
+    agents_model = if swarm && swarm != model, do: "agents " <> swarm
 
     triple =
-      if is_binary(model) and model != "",
-        do: banner <> " · " <> mode <> " · " <> model,
-        else: banner <> " · " <> mode
-
-    triple = Enum.join([triple | spend_parts(Support.run(state))], " · ")
+      Enum.join(
+        Enum.reject(
+          [lead, mode, model, agents_model | spend_parts(Support.run(state))],
+          &is_nil/1
+        ),
+        " · "
+      )
 
     logo_mark = SafeText.value(Support.glyph(:logo_mark, state))
     wordmark = SafeText.value(SafeText.chrome(:swarmcode_wordmark))
@@ -395,6 +405,9 @@ defmodule SwarmCodeCLI.UI.Projector.Shell do
   end
 
   defp spend_parts(_none), do: []
+
+  defp present(value) when is_binary(value) and value != "", do: value
+  defp present(_), do: nil
 
   defp money(cost) when cost < 0.01, do: "$" <> :erlang.float_to_binary(cost / 1, decimals: 3)
   defp money(cost), do: "$" <> :erlang.float_to_binary(cost / 1, decimals: 2)

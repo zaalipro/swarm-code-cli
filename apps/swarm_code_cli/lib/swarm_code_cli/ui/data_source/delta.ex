@@ -130,10 +130,11 @@ defmodule SwarmCodeCLI.UI.DataSource.Delta do
       delta.entity_id == body.id and delta.run_id == body.id and
         delta.conversation_id == body.conversation_id and is_nil(delta.attempt_id)
 
+  # An agent belongs to a run. The envelope may carry that run's conversation
+  # so a conversation-scoped watch can route it (the daemon stamps every
+  # delta), or leave it out (the fake source does); the body never has one.
   defp correlated_body?(%{body: %DTO.AgentSummary{} = body} = delta),
-    do:
-      delta.entity_id == body.id and delta.run_id == body.run_id and is_nil(delta.conversation_id) and
-        is_nil(delta.attempt_id)
+    do: delta.entity_id == body.id and delta.run_id == body.run_id and is_nil(delta.attempt_id)
 
   # Changes and verdicts belong to a run; the envelope carries the run's
   # conversation so conversation-scoped watches can route them.

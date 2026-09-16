@@ -1314,7 +1314,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackendTest do
     assert third["transcript"]["before_cursor"] == nil
   end
 
-  test "a represented completed root is removed from an already open transcript", c do
+  test "a root spoken for by its answer leaves an already open transcript", c do
     {:ok, run} =
       Conversations.create_run(%{
         conversation_id: c.conversation.id,
@@ -1333,14 +1333,6 @@ defmodule SwarmCode.Daemon.Service.PersistedBackendTest do
 
     {:ok, _} = Conversations.update_run(run, %{root_node_id: root.id})
 
-    {:ok, message} =
-      Conversations.create_message(%{
-        conversation_id: c.conversation.id,
-        run_id: run.id,
-        role: "assistant",
-        content: ""
-      })
-
     watch = %ServiceRequest{
       operation: :watch,
       timeout_ms: 5000,
@@ -1352,22 +1344,25 @@ defmodule SwarmCode.Daemon.Service.PersistedBackendTest do
       }
     }
 
+    # Before the answer exists the root agent is the run's only voice.
     assert {:watch, _, _, _, baseline} =
              GenServer.call(c.backend, {:service_watch, self(), "deduplicate", c.scope, watch})
 
     assert Enum.any?(baseline["transcript"]["items"], &(&1["id"] == root.id))
     send(c.backend, {:service_ready, self(), "deduplicate"})
-    {:ok, _} = Conversations.update_message(message, %{content: "Final response"})
 
+    # The answer arrives, still empty and streaming: it speaks for the root
+    # from now on, so the root's own item is retired rather than doubled.
     {:ok, _} =
-      root
-      |> SwarmCode.Domain.Conversations.Node.changeset(%{
-        status: "done",
-        result: "Final response"
+      Conversations.create_message(%{
+        conversation_id: c.conversation.id,
+        run_id: run.id,
+        role: "assistant",
+        content: ""
       })
-      |> Repo.update()
 
-    assert {:ok, _} = query(c.backend, c.scope, "workspace")
+    assert {:ok, %{"value" => workspace}} = query(c.backend, c.scope, "workspace")
+    refute Enum.any?(workspace["transcript"]["items"], &(&1["id"] == root.id))
     assert receive_removal(c.backend, "deduplicate", root.id, 20)
   end
 

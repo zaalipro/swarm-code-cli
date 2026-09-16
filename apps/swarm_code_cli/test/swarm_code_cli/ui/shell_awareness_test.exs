@@ -29,6 +29,22 @@ defmodule SwarmCodeCLI.UI.ShellAwarenessTest do
     Fixtures.representative(:chat, size, %Capabilities{size: size, color_mode: :truecolor})
   end
 
+  defp with_workspace(state, fields) do
+    run = state.read_model.runs |> Map.values() |> List.first()
+
+    workspace =
+      struct(
+        %DTO.WorkspaceSnapshot{
+          conversation_id: run && run.conversation_id,
+          revision: 1,
+          runs: Map.values(state.read_model.runs)
+        },
+        fields
+      )
+
+    put_in(state.read_model.snapshots[:workspace], workspace)
+  end
+
   defp approval(id, run_id, opts \\ []) do
     %DTO.PendingInteraction{
       id: id,
@@ -212,6 +228,70 @@ defmodule SwarmCodeCLI.UI.ShellAwarenessTest do
         end)
 
       refute screen(put_in(state.read_model.runs, runs)) =~ "tokens"
+    end
+  end
+
+  describe "the title row's lead" do
+    test "is the project's name once the daemon says it, then the models" do
+      state =
+        with_workspace(fixture(),
+          project: "ailogic",
+          chat_model: "deepseek-v4.1-flash",
+          swarm_model: "gpt-5.5"
+        )
+
+      [title | _] = String.split(screen(state), "\n")
+      assert title =~ "SWARMCODE  ailogic · "
+      assert title =~ "deepseek-v4.1-flash · agents gpt-5.5"
+      refute title =~ "SAVED"
+    end
+
+    test "says nothing about the sub agents' model while it is the chat model" do
+      state =
+        with_workspace(fixture(),
+          project: "ailogic",
+          chat_model: "deepseek-v4.1-flash",
+          swarm_model: "deepseek-v4.1-flash"
+        )
+
+      [title | _] = String.split(screen(state), "\n")
+      refute title =~ "agents "
+    end
+
+    test "falls back to the launcher's banner for a session without a project" do
+      state = with_workspace(%{fixture() | banner: :persisted_banner}, project: nil)
+      [title | _] = String.split(screen(state), "\n")
+      assert title =~ "SWARMCODE  SAVED · DEV · "
+    end
+  end
+
+  describe "the main pane's chrome" do
+    test "keeps quiet about a request that went through" do
+      state = fixture()
+      accepted = Map.put(state.mutations, {:composer, "fixture"}, {:settled, "r-1", :accepted})
+      refute screen(%{state | mutations: accepted}) =~ "ACCEPTED"
+
+      pending = Map.put(state.mutations, {:composer, "fixture"}, {:pending, "r-2", :noop})
+      assert screen(%{state | mutations: pending}) =~ "PENDING"
+    end
+
+    test "puts the run's actions and the full-text openers on one row" do
+      state = fixture()
+
+      # The newest item of the run in view has more text than the window shows.
+      {id, item} =
+        state.read_model.transcript
+        |> Enum.filter(fn {_, item} -> item.role == :assistant end)
+        |> Enum.max_by(fn {id, _} -> id end)
+
+      item = %{item | detail_ref: %DTO.DetailRef{id: id <> ":text", total_bytes: 9_000}}
+      state = put_in(state.read_model.transcript[id], item)
+
+      rows = String.split(screen(state), "\n")
+      deck = Enum.find(rows, &(&1 =~ "Inspect"))
+      assert deck, "no deck row"
+      assert deck =~ "Full reply"
+      assert Enum.count(rows, &(&1 =~ "Full reply")) == 1
     end
   end
 

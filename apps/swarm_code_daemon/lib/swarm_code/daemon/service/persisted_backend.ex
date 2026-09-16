@@ -12,6 +12,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   alias SwarmCode.Domain.{Attachments, Conversations, Engine, Projects, Repo}
   alias SwarmCode.Protocol.ServiceRequest
   alias SwarmCode.Domain.Engine.{Events, Questions, RunServer}
+  @max_models 400
   @terminal [:completed, :failed, :cancelled, :interrupted]
   alias SwarmCode.Daemon.Service.{CommandDispatcher, PersistedProjection, CommandLedger}
 
@@ -539,6 +540,9 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
   defp error_code(:unknown_outcome), do: :unknown_outcome
   defp error_code(:not_configured), do: :source_unavailable
+  # The client's closed error enum has no "not found": a model no provider
+  # lists is an argument the request cannot carry, which is what it says.
+  defp error_code(:unknown_model), do: :invalid_request
   defp error_code(reason) when is_atom(reason), do: :not_allowed
   defp error_code(_), do: :source_unavailable
 
@@ -1113,6 +1117,18 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       else
         acc = broadcast(acc, delta("run_update", run, run.id, summary(run, acc)))
 
+        # Agents move while a run is live: a new lane, a step, a gauge. Each
+        # one that differs from the last published body goes out as its own
+        # upsert, so the hive and the speaker lines follow without a resync.
+        previous_agents = Map.new((previous && previous.agents) || [], &{&1["id"], &1})
+
+        acc =
+          Enum.reduce(run.agents, acc, fn agent, a ->
+            if previous_agents[agent["id"]] == agent,
+              do: a,
+              else: broadcast(a, delta("agent_update", run, agent["id"], agent))
+          end)
+
         removed_records =
           ((previous && Enum.map(previous.records, & &1.id)) || []) --
             Enum.map(run.records, & &1.id)
@@ -1509,11 +1525,39 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     %{
       "conversation_id" => conversation.id,
       "mode" => workspace_mode(conversation),
+      "project" => project_name(conversation),
       "chat_model" => effective_model_name(conversation, :chat),
       "swarm_model" => effective_model_name(conversation, :swarm),
       "effort" => conversation.effort,
-      "swarm_effort" => conversation.swarm_effort
+      "swarm_effort" => conversation.swarm_effort,
+      "models" => model_options()
     }
+  end
+
+  defp project_name(%{project: %{name: name}}) when is_binary(name) and name != "",
+    do: preview(name, 200)
+
+  defp project_name(%{project: %{root_path: root}}) when is_binary(root) and root != "",
+    do: preview(Path.basename(root), 200)
+
+  defp project_name(_), do: nil
+
+  # Every model a `/model` or `/swarm_model` switch may name, provider by
+  # provider, bounded so a gateway that lists hundreds of ids cannot flood the
+  # wire. The ids are what the dispatcher resolves; the names are for people.
+  defp model_options do
+    SwarmCode.Domain.Providers.list()
+    |> Enum.flat_map(fn provider ->
+      Enum.map(provider.models || [], fn model ->
+        %{
+          "provider_id" => provider.id,
+          "provider" => preview(provider.name || "", 200),
+          "model" => preview(model, 200)
+        }
+      end)
+    end)
+    |> Enum.filter(&(&1["model"] != ""))
+    |> Enum.take(@max_models)
   end
 
   defp effective_model_name(conversation, role) do

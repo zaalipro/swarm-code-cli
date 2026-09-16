@@ -21,6 +21,7 @@ defmodule SwarmCodeCLI.Companion.View do
   """
 
   alias SwarmCodeCLI.UI.{ReadModel, State}
+  alias SwarmCodeCLI.UI.Projector.Workspace.Turns
   alias SwarmCodeCLI.UI.DataSource.DTO
   alias SwarmCodeCLI.UI.Projector.{Shell, Support}
 
@@ -287,7 +288,7 @@ defmodule SwarmCodeCLI.Companion.View do
     model.transcript
     |> Map.values()
     |> Enum.filter(&(&1.run_id == run.id))
-    |> Enum.sort_by(&{&1.created_sequence, &1.id})
+    |> Enum.sort_by(&{Turns.rank(&1), &1.created_sequence, &1.id})
     |> Enum.take(-@max_items)
     |> Enum.map(&ReadModel.transcript_item(model, &1.id))
   end

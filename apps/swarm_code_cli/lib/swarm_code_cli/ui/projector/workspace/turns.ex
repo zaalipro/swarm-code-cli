@@ -116,12 +116,51 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
 
   # --- turns -----------------------------------------------------------------
 
-  defp order(state) do
-    case Map.get(state.read_model.order, :workspace, []) do
-      [] -> state.read_model.transcript |> Map.keys() |> Enum.sort()
-      ids -> ids
-    end
+  @doc """
+  The workspace's items in reading order. The daemon orders by creation, and
+  a chat turn creates its answer before the tool calls that produce it; read
+  that way the reply sits above the work. Here each run reads as a turn: the
+  prompt, then the agents and their calls as they happened, then what was
+  said. Runs keep the order they were created in.
+  """
+  def order(state) do
+    ids =
+      case Map.get(state.read_model.order, :workspace, []) do
+        [] -> state.read_model.transcript |> Map.keys() |> Enum.sort()
+        ids -> ids
+      end
+
+    transcript = state.read_model.transcript
+
+    first_index_by_run =
+      ids
+      |> Enum.with_index()
+      |> Enum.reduce(%{}, fn {id, index}, acc ->
+        case Map.get(transcript, id) do
+          %{run_id: run_id} -> Map.put_new(acc, run_id, index)
+          _ -> acc
+        end
+      end)
+
+    ids
+    |> Enum.with_index()
+    |> Enum.sort_by(fn {id, index} ->
+      case Map.get(transcript, id) do
+        %{run_id: run_id} = item ->
+          {Map.get(first_index_by_run, run_id, index), rank(item), index}
+
+        _ ->
+          {index, 0, index}
+      end
+    end)
+    |> Enum.map(&elem(&1, 0))
   end
+
+  @doc "Within a run: the prompt (0), then the work (1: agents, tool calls, thinking), then the words (2)."
+  def rank(%{role: :user}), do: 0
+  def rank(%{kind: kind}) when kind in [:tool, :thinking], do: 1
+  def rank(%{id: id, node_id: id}), do: 1
+  def rank(_), do: 2
 
   defp turn_start?(_item, nil), do: false
   defp turn_start?(item, previous), do: not (burst?(item) and burst?(previous))

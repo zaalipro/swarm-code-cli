@@ -122,7 +122,11 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
           )
         ]
       else
-        Composer.actions(state, class) ++
+        # One row of actions under the headline: the run's own first (Pause,
+        # Stop, Inspect), then the composer's, what waits on you, and the
+        # full-text openers. Two decks split by a notice read as two screens.
+        run_deck_actions(state, run, class) ++
+          Composer.actions(state, class) ++
           interaction_actions(state, class) ++ seen_actions(state) ++ detail_actions(state)
       end
 
@@ -418,7 +422,7 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
   # on their own row when there are any. The card this replaces spent five
   # rows on the same facts, led with the system's status word, and was
   # followed by a kind banner that the hive panel already says better.
-  defp headline(state, run, width, class) do
+  defp headline(state, run, width, _class) do
     kind = RunRow.theme_kind(run.kind)
     {_letter, kind_role} = Theme.run_kind(kind)
     {_word, status_role} = Theme.status(run.state)
@@ -443,7 +447,7 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
       ]
     }
 
-    [line | run_deck(state, run, class)]
+    [line]
   end
 
   # The title is cut on a word boundary when it must be cut at all.
@@ -477,24 +481,23 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
     end
   end
 
-  defp run_deck(state, run, class) do
+  defp run_deck_actions(_state, nil, _class), do: []
+
+  defp run_deck_actions(state, run, class) do
     enabled = class not in [:compressed_small, :too_small] and run.state != :superseded
     retry? = enabled and run.state == :failed and Support.allowed?(state, run, :retry)
     resume? = enabled and run.state == :interrupted and Support.allowed?(state, run, :resume)
 
-    actions =
-      if enabled,
-        do:
-          run_actions(state, run, retry?, resume?) ++
-            [
-              Support.action(
-                SafeText.chrome(:inspect),
-                {:local, {:open_layer, {:run_inspector, run.id, :overview}}}
-              )
-            ],
-        else: []
-
-    if actions == [], do: [], else: [%Block.ActionDeck{actions: actions}]
+    if enabled,
+      do:
+        run_actions(state, run, retry?, resume?) ++
+          [
+            Support.action(
+              SafeText.chrome(:inspect),
+              {:local, {:open_layer, {:run_inspector, run.id, :overview}}}
+            )
+          ],
+      else: []
   end
 
   # "running · 3 agents", "done · 02:14", "stopped by you", "waiting for you".
@@ -599,11 +602,8 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
   end
 
   defp content(state, run, width, height) do
-    ids = Map.get(state.read_model.order, :workspace, [])
-    ids = if ids == [], do: state.read_model.transcript |> Map.keys() |> Enum.sort(), else: ids
-
     items =
-      Enum.flat_map(ids, fn id ->
+      Enum.flat_map(Turns.order(state), fn id ->
         case Map.get(state.read_model.transcript, id) do
           %{run_id: run_id} = item when run_id == run.id -> [{id, item}]
           _ -> []

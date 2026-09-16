@@ -220,6 +220,82 @@ defmodule SwarmCode.Daemon.Service.WireContractTest do
     assert items[c.other.id]["agent_id"] == c.other.id
   end
 
+  test "an agent node speaks what it produced, never its own name", c do
+    assert {:ok, %{"value" => workspace}} = query(c.backend, c.scope, "workspace")
+    items = Map.new(workspace["transcript"]["items"], &{&1["id"], &1})
+
+    # The run's root agent is spoken for by its answer the moment the answer
+    # exists, so the lead node is not an item of its own here.
+    refute Map.has_key?(items, c.lead.id)
+
+    # A worker's result and error follow each other; the name stays out.
+    assert items[c.other.id]["text"] == "Docs findings\n" <> String.duplicate("e", 300)
+    refute String.starts_with?(items[c.other.id]["text"], "docs-writer")
+  end
+
+  test "workspace metadata names the project and lists every provider's models", c do
+    {:ok, provider} =
+      SwarmCode.Domain.Providers.create(%{
+        name: "Fixture gateway",
+        kind: "openai_compatible",
+        base_url: "http://127.0.0.1:1/v1",
+        api_key: "unused",
+        models: ["fixture-model", "fixture-model-mini"]
+      })
+
+    on_exit(fn -> SwarmCode.Domain.Providers.delete(provider) end)
+
+    assert {:ok, %{"value" => workspace}} = query(c.backend, c.scope, "workspace")
+    assert workspace["project"] == "Wire"
+
+    assert %{
+             "provider_id" => provider.id,
+             "provider" => "Fixture gateway",
+             "model" => "fixture-model"
+           } in workspace["models"]
+
+    assert {:ok, decoded} = DTO.WorkspaceSnapshot.decode(workspace)
+    assert decoded.project == "Wire"
+    assert Enum.any?(decoded.models, &(&1.model == "fixture-model-mini"))
+  end
+
+  test "refresh publishes an agent_update for each agent that moved", c do
+    watch = %ServiceRequest{
+      operation: :watch,
+      timeout_ms: 5000,
+      params: %{
+        "watch_ref" => "agents",
+        "slot" => "workspace",
+        "page_size" => 50,
+        "byte_limit" => 1_048_576
+      }
+    }
+
+    assert {:watch, 0, _, "workspace_snapshot", _} =
+             GenServer.call(c.backend, {:service_watch, self(), "watch", c.scope, watch})
+
+    send(c.backend, {:service_ready, self(), "agents"})
+
+    {:ok, worker} = Conversations.update_node(c.worker, %{progress: 90, status: "done"})
+    SwarmCode.Domain.Engine.Events.broadcast(c.conversation.id, {:run_updated, c.run})
+    deltas = collect(c.backend, "agents", 40)
+    for delta <- deltas, do: assert({:ok, _} = Delta.decode(delta))
+
+    updates = Enum.filter(deltas, &(&1["kind"] == "agent_update"))
+
+    assert %{"body" => body, "run_id" => run_id, "revision" => revision} =
+             Enum.find(updates, &(&1["entity_id"] == worker.id))
+
+    assert run_id == c.run.id
+    assert body["progress"] == 90
+    assert body["state"] == "done"
+    assert body["name"] == "integrations-ops"
+    assert revision == body["revision"]
+
+    # The lead did not move, so nothing is said about it.
+    refute Enum.any?(updates, &(&1["entity_id"] == c.lead.id))
+  end
+
   test "workspace snapshots carry the agents of their runs", c do
     assert {:ok, %{"value" => workspace}} = query(c.backend, c.scope, "workspace")
     assert [_ | _] = agents = workspace["agents"]

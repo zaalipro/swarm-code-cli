@@ -108,10 +108,12 @@ defmodule SwarmCode.Daemon.Service.PersistedProjection do
           run_id: n.run_id,
           node_id: n.id,
           role: fragment("case when ? = 'agent' then 'assistant' else 'tool' end", n.kind),
+          # What the node produced, never its name: the client draws the
+          # speaker line from the agent the item belongs to, so a name in the
+          # body was a lead called "Lead" over three blank rows.
           text:
             fragment(
-              "substr(coalesce(?, '') || char(10) || coalesce(?, ?, '') || char(10) || coalesce(?, ''), 1, 2048)",
-              n.name,
+              "substr(trim(coalesce(?, ?, '') || char(10) || coalesce(?, ''), char(10)), 1, 2048)",
               n.result,
               n.detail,
               n.error
@@ -123,8 +125,7 @@ defmodule SwarmCode.Daemon.Service.PersistedProjection do
           updated_at: n.updated_at,
           text_bytes:
             fragment(
-              "length(cast(coalesce(?, '') || char(10) || coalesce(?, ?, '') || char(10) || coalesce(?, '') as blob))",
-              n.name,
+              "length(cast(trim(coalesce(?, ?, '') || char(10) || coalesce(?, ''), char(10)) as blob))",
               n.result,
               n.detail,
               n.error
@@ -167,13 +168,18 @@ defmodule SwarmCode.Daemon.Service.PersistedProjection do
     )
   end
 
+  # The run's root agent is represented by its answer as soon as the answer
+  # exists, empty or streaming: a chat turn creates the assistant message
+  # before the agent node, and two "Assistant · thinking" lines for one
+  # answer read as two answers. The answering llm op is represented only
+  # once the answer is complete and equal to its result.
   defp represented_answer_query do
     from(m in Message,
       where:
         m.run_id == parent_as(:record_run).id and m.role == "assistant" and
-          m.content != "" and parent_as(:record_node).status == "done" and
           (parent_as(:record_node).id == parent_as(:record_run).root_node_id or
-             (parent_as(:record_node).parent_id == parent_as(:record_run).root_node_id and
+             (m.content != "" and parent_as(:record_node).status == "done" and
+                parent_as(:record_node).parent_id == parent_as(:record_run).root_node_id and
                 parent_as(:record_node).kind == "op" and parent_as(:record_node).op_type == "llm" and
                 parent_as(:record_node).result == m.content)),
       select: 1
