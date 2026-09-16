@@ -152,6 +152,24 @@ defmodule SwarmCodeCLI.UI.DataSource.DaemonTest do
     assert :ok = DataSource.close(second)
   end
 
+  test "a new session never reuses an earlier session's wire identity" do
+    # The daemon's command ledger is durable and keyed by the wire id alone. The
+    # plain CLI numbers its requests per session, so without the epoch in the
+    # hash its third request landed on the previous session's ledger row: the
+    # same text replayed that session's "accepted" with nothing executed, and a
+    # different text was rejected as a conflict.
+    later = "55555555-5555-4555-8555-555555555555"
+    {first, server_a} = connected!()
+    {second, server_b} = connected!(later)
+    assert :ok = DataSource.command(first, command_request("plain-request-3", "fix"))
+    assert_receive {:request, ^server_a, %Message{body: %{"op" => "dispatch"}} = a}, 1000
+    assert :ok = DataSource.command(second, command_request("plain-request-3", "fix"))
+    assert_receive {:request, ^server_b, %Message{body: %{"op" => "dispatch"}} = b}, 1000
+    assert a.request_id != b.request_id
+    assert :ok = DataSource.close(first)
+    assert :ok = DataSource.close(second)
+  end
+
   test "disconnect after command write produces unknown outcome instead of rejection" do
     {client, server} = connected!()
     assert :ok = DataSource.command(client, command_request("uncertain", "disconnect"))
@@ -377,11 +395,11 @@ defmodule SwarmCodeCLI.UI.DataSource.DaemonTest do
     assert_receive {:swarm_code_ui_closed, ^client, @epoch}, 1_000
   end
 
-  defp connected! do
+  defp connected!(epoch \\ @epoch) do
     path = socket_path!()
-    {listener, server} = socket_server(path, self())
+    {listener, server} = socket_server(path, self(), epoch)
     on_exit(fn -> close_socket(listener, path) end)
-    {:ok, client} = daemon(path)
+    {:ok, client} = daemon(path, epoch)
     assert {:ok, "bind-1"} = DataSource.bind_owner(client, self(), "bind-1")
     {client, server}
   end
@@ -405,12 +423,12 @@ defmodule SwarmCodeCLI.UI.DataSource.DaemonTest do
         expected_response: :outcome
     }
 
-  defp daemon(path),
+  defp daemon(path, epoch \\ @epoch),
     do:
       SwarmCodeCLI.UI.DataSource.Daemon.start_link(
         socket_path: path,
         nonce: @nonce,
-        source_epoch: @epoch,
+        source_epoch: epoch,
         timeout: 1_000
       )
 
@@ -421,7 +439,7 @@ defmodule SwarmCodeCLI.UI.DataSource.DaemonTest do
         "swarm-code-daemon-test-#{System.unique_integer([:positive])}.sock"
       )
 
-  defp socket_server(path, test) do
+  defp socket_server(path, test, epoch \\ @epoch) do
     {:ok, listener} = :socket.open(:local, :stream, :default)
     :ok = :socket.bind(listener, %{family: :local, path: path})
     :ok = :socket.listen(listener, 4)
@@ -429,13 +447,13 @@ defmodule SwarmCodeCLI.UI.DataSource.DaemonTest do
     server =
       spawn_link(fn ->
         {:ok, socket} = :socket.accept(listener)
-        server_loop(socket, test, FrameDecoder.new())
+        server_loop(socket, test, FrameDecoder.new(), epoch)
       end)
 
     {listener, server}
   end
 
-  defp server_loop(socket, test, decoder) do
+  defp server_loop(socket, test, decoder, epoch) do
     case :socket.recv(socket, 0, 1_000) do
       {:ok, bytes} ->
         {:ok, messages, next_decoder} = FrameDecoder.push(decoder, bytes)
@@ -444,7 +462,7 @@ defmodule SwarmCodeCLI.UI.DataSource.DaemonTest do
           case message.body["op"] do
             "hello" ->
               send(test, {:hello, self(), message})
-              send_frame(socket, hello_ok(message.request_id, message.nonce))
+              send_frame(socket, hello_ok(message.request_id, message.nonce, epoch))
 
             "watch" ->
               send(test, {:request, self(), message})
@@ -586,13 +604,13 @@ defmodule SwarmCodeCLI.UI.DataSource.DaemonTest do
           end
         end)
 
-        server_loop(socket, test, next_decoder)
+        server_loop(socket, test, next_decoder, epoch)
 
       {:error, :closed} ->
         send(test, {:peer_closed, self()})
 
       {:error, :timeout} ->
-        server_loop(socket, test, decoder)
+        server_loop(socket, test, decoder, epoch)
     end
   end
 
@@ -606,10 +624,10 @@ defmodule SwarmCodeCLI.UI.DataSource.DaemonTest do
     end
   end
 
-  defp hello_ok(request_id, nonce) do
+  defp hello_ok(request_id, nonce, epoch) do
     {:ok, body} =
       ServiceHandshake.encode_hello_ok(%ServiceHandshake.HelloOk{
-        source_epoch: @epoch,
+        source_epoch: epoch,
         connection_id: @connection,
         capabilities: [
           :query,

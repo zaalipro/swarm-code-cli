@@ -14,6 +14,20 @@ defmodule SwarmCode.Development.PlainSession do
     for app <- [:req, :swarm_code_core, :swarm_code_cli, :swarm_code_daemon],
         do: unwrap!(Application.ensure_all_started(app), "application startup")
 
+    # The daemon resolves a provider kind through this registry and answers
+    # "unknown provider kind" for anything absent; the saved-session launcher
+    # has always registered both adapters, and this one must too or every
+    # send fails before it reaches the network.
+    Application.put_env(
+      :swarm_code_daemon,
+      :llm_providers,
+      Application.get_env(:swarm_code_daemon, :llm_providers, %{})
+      |> Map.merge(%{
+        "openai_compatible" => SwarmCode.Domain.LLM.OpenAI,
+        "anthropic" => SwarmCode.Domain.LLM.Anthropic
+      })
+    )
+
     boot = BootConfig.canonical(platform(), System.user_home!(), version())
     {:ok, launcher} = RepoLauncher.start_link(boot_config: boot, pool_size: 4)
     Process.unlink(launcher)

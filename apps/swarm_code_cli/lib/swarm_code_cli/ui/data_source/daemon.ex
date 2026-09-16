@@ -201,7 +201,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
              :capacity_exceeded
            ),
          {:ok, message} <-
-           Codec.request(request, wire_id(request.request_id), state.nonce, now()),
+           Codec.request(request, wire_id(state.epoch, request.request_id), state.nonce, now()),
          true <- request_capability(message.body) in state.capabilities do
       entry = %{request: request, kind: kind, deadline: request.deadline}
 
@@ -789,9 +789,17 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
 
   # Stable per-client identity: retries/reconnects preserve the durable local
   # request identity while the wire still carries a canonical UUID.
-  defp wire_id(request_id) do
+  #
+  # The daemon's command ledger is durable and keyed by this wire id alone, so
+  # it has to differ between sessions as well as between requests. A client
+  # that numbers its requests per session (the plain CLI sends "plain-request-3"
+  # in every session) would otherwise hit the ledger row of an earlier session:
+  # the same text replayed that session's "accepted" with nothing executed, and
+  # a different text was rejected as a conflict. The source epoch is unique per
+  # session and constant across reconnects within it, so it belongs in the hash.
+  defp wire_id(epoch, request_id) do
     <<a::32, b::16, _::4, c::12, _::2, d::14, e::48, _::binary>> =
-      :crypto.hash(:sha256, request_id)
+      :crypto.hash(:sha256, [epoch, 0, request_id])
 
     [hex(a, 8), hex(b, 4), "4" <> hex(c, 3), hex(Bitwise.bor(d, 0x8000), 4), hex(e, 12)]
     |> Enum.join("-")

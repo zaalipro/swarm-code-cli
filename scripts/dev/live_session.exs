@@ -49,6 +49,21 @@ defmodule SwarmCode.Development.LiveSession do
     {:ok, _} = Application.ensure_all_started(:swarm_code_core)
     {:ok, _} = Application.ensure_all_started(:swarm_code_cli)
     {:ok, _} = Application.ensure_all_started(:swarm_code_daemon)
+
+    # The daemon resolves a provider kind through this registry and answers
+    # "unknown provider kind" for anything absent; the saved-session launcher
+    # has always registered both adapters, and this one must too or every
+    # send fails before it reaches the network.
+    Application.put_env(
+      :swarm_code_daemon,
+      :llm_providers,
+      Application.get_env(:swarm_code_daemon, :llm_providers, %{})
+      |> Map.merge(%{
+        "openai_compatible" => SwarmCode.Domain.LLM.OpenAI,
+        "anthropic" => SwarmCode.Domain.LLM.Anthropic
+      })
+    )
+
     source_epoch = uuid()
     conversation_id = uuid()
     nonce = Base.url_encode64(:crypto.strong_rand_bytes(32), padding: false)
