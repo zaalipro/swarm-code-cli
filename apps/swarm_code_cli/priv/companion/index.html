@@ -1,0 +1,1086 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>SwarmCode · Visual companion</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    --bg: #17171a; --panel: #1f1f23; --panel-2: #26262b; --line: #303036;
+    --text: #e8e8ea; --dim: #8a8a92; --faint: #5c5c64;
+    --accent: #ff7a1a; --green: #4ade80; --amber: #fbbf24; --red: #f87171;
+    --violet: #a78bfa; --teal: #2dd4bf; --blue: #60a5fa;
+    --lane1: #ff7a1a; --lane2: #2dd4bf; --lane3: #60a5fa; --lane4: #f472b6; --lane5: #a3e635; --lane6: #a78bfa;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); font: 13px/1.5 var(--mono); }
+  a { color: var(--blue); }
+  header {
+    display: flex; align-items: center; gap: 18px; padding: 8px 16px; border-bottom: 1px solid var(--line);
+    background: linear-gradient(180deg, #1c1c20, #17171a);
+  }
+  header .logo { color: var(--accent); font-weight: 700; letter-spacing: .04em; white-space: nowrap; }
+  header .meta { color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  header .meta b { color: var(--text); font-weight: 500; }
+  header .right { margin-left: auto; color: var(--dim); display: flex; gap: 18px; white-space: nowrap; align-items: center; }
+  .tabs { display: flex; gap: 6px; padding: 8px 16px; border-bottom: 1px solid var(--line); background: #19191c; overflow-x: auto; min-height: 43px; }
+  .tab { padding: 3px 10px; border-radius: 6px; color: var(--dim); white-space: nowrap; cursor: pointer; border: 1px solid transparent; }
+  .tab.active { color: var(--text); background: var(--panel-2); border-color: var(--line); }
+  .tab .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
+  .tab .badge { color: var(--red); font-weight: 700; margin-left: 6px; }
+  .tab .cells { color: var(--faint); margin-left: 8px; letter-spacing: -1px; }
+  .tab .cells i { font-style: normal; }
+  .tab .when { color: var(--faint); margin-left: 7px; }
+  .tab.new { color: var(--faint); }
+  .tab.none { color: var(--faint); cursor: default; }
+  main {
+    display: grid; grid-template-columns: 1.15fr 1.25fr 0.9fr; gap: 14px; padding: 14px 16px 90px;
+    grid-template-areas: "hive mid needs" "verdict mid artifacts" "time time time";
+  }
+  #hive { grid-area: hive; } #mid { grid-area: mid; } #needs { grid-area: needs; }
+  #verdict { grid-area: verdict; } #artifacts { grid-area: artifacts; } #time { grid-area: time; }
+  #mid { display: flex; flex-direction: column; gap: 14px; min-width: 0; min-height: 0; }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; min-width: 0; }
+  section h2 { margin: 0 0 8px; font-size: 11px; letter-spacing: .12em; color: var(--dim); font-weight: 600; display: flex; align-items: baseline; gap: 10px; }
+  section h2 .sub { color: var(--faint); letter-spacing: 0; font-weight: 400; text-transform: none; margin-left: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .empty { color: var(--faint); padding: 14px 0; text-align: center; }
+  .empty small { display: block; font-size: 11px; color: var(--faint); opacity: .8; }
+  #hive svg { width: 100%; height: auto; display: block; }
+  #hive .none text { font: 12px var(--mono); fill: var(--faint); text-anchor: middle; }
+  .node { cursor: pointer; }
+  .node text { font: 11px var(--mono); fill: var(--text); text-anchor: middle; pointer-events: none; }
+  .node .step { fill: var(--dim); font-size: 10px; }
+  .node.small text { font-size: 10px; } .node.small .step { font-size: 9px; }
+  .node.waiting .step { fill: var(--red); }
+  .node .ring { fill: none; stroke: #34343a; stroke-width: 4; }
+  .node .arc { fill: none; stroke-width: 4; stroke-linecap: round; transform: rotate(-90deg); transform-origin: center; transition: stroke-dashoffset .4s; }
+  .node .core { fill: #26262b; stroke-width: 1.5; }
+  .node.streaming .core { animation: breathe 1.6s ease-in-out infinite; }
+  .node .halo { display: none; }
+  .node.waiting .halo { display: block; fill: none; stroke: var(--red); stroke-width: 2; animation: halo 1.4s ease-out infinite; }
+  .node.focused .ring { stroke: #4a4a52; }
+  .node.future { opacity: .18; }
+  .edge { stroke: #3a3a41; stroke-width: 1.5; fill: none; }
+  .edge.handoff { stroke: var(--teal); stroke-dasharray: 4 4; animation: dash 1.2s linear infinite; }
+  .edge.future { opacity: .15; }
+  @keyframes breathe { 0%,100% { stroke-width: 1.5 } 50% { stroke-width: 3.5 } }
+  @keyframes halo { 0% { r: 30; opacity: .9 } 100% { r: 44; opacity: 0 } }
+  @keyframes dash { to { stroke-dashoffset: -16 } }
+  .lanes { margin-top: 8px; display: grid; gap: 4px; }
+  .lane { display: grid; grid-template-columns: 14px 78px 1fr 70px 52px; gap: 8px; align-items: center; padding: 3px 6px; border-radius: 6px; cursor: pointer; }
+  .lane:hover, .lane.focused { background: var(--panel-2); }
+  .lane.future { opacity: .25; }
+  .lane .hex { font-size: 13px; }
+  .lane .name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .lane .step { color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .lane .gauge { height: 8px; background: #2e2e34; border-radius: 4px; overflow: hidden; }
+  .lane .gauge i { display: block; height: 100%; transition: width .4s; }
+  .lane .tok { color: var(--faint); text-align: right; font-size: 11px; }
+  .lane.waiting .step { color: var(--red); }
+
+  #comb .files { display: grid; gap: 2px; margin-bottom: 8px; }
+  .file { display: grid; grid-template-columns: 1fr auto auto auto; gap: 10px; align-items: center; padding: 3px 6px; border-radius: 6px; cursor: pointer; }
+  .file:hover, .file.open { background: var(--panel-2); }
+  .file.future { opacity: .25; }
+  .file .path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .file .path span { color: var(--dim); }
+  .chip { font-size: 10px; padding: 1px 6px; border-radius: 10px; border: 1px solid currentColor; white-space: nowrap; }
+  .file .hunks { color: var(--dim); font-size: 11px; white-space: nowrap; }
+  .file .state { font-size: 11px; width: 62px; text-align: right; color: var(--faint); }
+  .file.accepted .state { color: var(--green); }
+  .file.reverted .state { color: var(--red); }
+  .blast { color: var(--amber); font-size: 12px; padding: 6px 8px; border: 1px dashed #4a3f1f; border-radius: 6px; margin-bottom: 8px; }
+  .blast b { color: var(--amber); }
+  .diff { background: #141416; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; font-size: 12px; }
+  .diff .head { display: flex; gap: 12px; padding: 5px 10px; background: #1b1b1f; color: var(--dim); border-bottom: 1px solid var(--line); white-space: nowrap; align-items: center; }
+  .diff .head .path { overflow: hidden; text-overflow: ellipsis; color: var(--text); }
+  .diff .head .btns { margin-left: auto; display: flex; gap: 6px; }
+  .diff pre { margin: 0; padding: 6px 0; overflow-x: auto; }
+  .diff .l { display: inline-block; width: 100%; padding: 0 10px; white-space: pre; line-height: 1.55; }
+  .diff .l::before { content: attr(data-n); display: inline-block; width: 34px; color: var(--faint); text-align: right; margin-right: 12px; }
+  .diff .add { background: rgba(74, 222, 128, .10); color: #b7f0c8; }
+  .diff .del { background: rgba(248, 113, 113, .12); color: #f7c2c2; }
+  .diff .hunk { color: var(--blue); background: #17171a; }
+  .diff.future, #verdictBody.future { opacity: .25; }
+  .k { color: #c084fc; } .s { color: #86efac; } .f { color: #93c5fd; } .c { color: var(--faint); font-style: italic; }
+  button {
+    font: inherit; font-size: 11px; color: var(--text); background: var(--panel-2); border: 1px solid var(--line);
+    border-radius: 6px; padding: 2px 9px; cursor: pointer; white-space: nowrap;
+  }
+  button:hover { border-color: var(--dim); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button:disabled:hover { border-color: var(--line); }
+  button kbd { color: var(--accent); font: inherit; margin-right: 4px; }
+  button.ok kbd { color: var(--green); } button.no kbd { color: var(--red); }
+
+  /* transcript */
+  #transcript { flex: 1; display: flex; flex-direction: column; min-height: 0; position: relative; }
+  #transcript .stream { flex: 1; overflow: auto; min-height: 220px; max-height: min(66vh, 760px); display: grid; gap: 2px; align-content: start; padding-right: 4px; }
+  #mid.has-files #transcript .stream { max-height: 420px; }
+  .msg { display: grid; grid-template-columns: 78px 1fr; gap: 10px; padding: 4px 6px; border-radius: 6px; cursor: pointer; font-size: 12px; align-items: start; }
+  .msg:hover, .msg.focused { background: var(--panel-2); }
+  .msg.future { display: none; }
+  .msg .who { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-top: 1px; }
+  .msg.you .who { color: var(--dim); }
+  .msg .body { min-width: 0; }
+  .msg .text { white-space: pre-wrap; word-break: break-word; color: var(--text); }
+  .msg.you .text { color: #d6d6da; }
+  .msg .st { color: var(--faint); font-size: 10px; letter-spacing: .06em; margin-left: 8px; }
+  .msg.waiting .st { color: var(--red); }
+  .msg.streaming .st { color: var(--green); }
+  .msg.tool .text { color: var(--dim); background: #141416; border: 1px solid var(--line); border-radius: 6px; padding: 3px 8px; display: inline-block; max-width: 100%; }
+  .msg.tool .text::before { content: "$ "; color: var(--faint); }
+  .msg.error .text { color: #f7c2c2; border-left: 2px solid var(--red); padding-left: 8px; }
+  .msg.system .text { color: var(--dim); font-style: italic; }
+  .msg .caret { display: inline-block; width: 7px; height: 12px; background: var(--green); vertical-align: -2px; margin-left: 2px; animation: blink 1s steps(2) infinite; }
+  @keyframes blink { 50% { opacity: 0 } }
+  .msg details { margin: 2px 0 0; }
+  .msg summary { color: var(--faint); font-size: 11px; cursor: pointer; list-style: none; user-select: none; }
+  .msg summary::before { content: "▸ "; }
+  .msg details[open] summary::before { content: "▾ "; }
+  .msg summary::-webkit-details-marker { display: none; }
+  .msg .think { color: var(--dim); font-style: italic; white-space: pre-wrap; word-break: break-word; margin-top: 2px; padding-left: 10px; border-left: 1px solid var(--line); font-size: 11.5px; }
+  .msg.think-only .text { display: none; }
+  #latest { position: absolute; right: 18px; bottom: 14px; display: none; }
+  #latest.show { display: block; }
+
+  .scrub { position: relative; padding: 18px 6px 4px; }
+  .scrub input[type=range] { width: 100%; accent-color: var(--accent); }
+  .pins { position: absolute; left: 6px; right: 6px; top: 6px; height: 12px; }
+  .pin { position: absolute; top: 0; transform: translateX(-50%); color: var(--dim); font-size: 10px; white-space: nowrap; cursor: pointer; }
+  .pin::after { content: ""; display: block; width: 1px; height: 10px; background: var(--faint); margin: 0 auto; }
+  .asof { display: flex; gap: 16px; color: var(--dim); font-size: 12px; align-items: center; }
+  .asof b { color: var(--text); font-weight: 600; }
+  .asof .live { color: var(--green); }
+  .asof .past { color: var(--amber); }
+  .asof .actions { margin-left: auto; display: flex; gap: 6px; }
+  .events { display: flex; gap: 2px; margin-top: 8px; height: 26px; align-items: flex-end; }
+  .events i { flex: 1; display: block; background: #2b2b31; border-radius: 2px 2px 0 0; min-width: 2px; }
+  .events i.you { background: var(--dim); } .events i.lead { background: var(--accent); }
+  .events i.judge { background: var(--violet); } .events i.wait { background: var(--red); }
+  .events i.future { opacity: .15; }
+  .events .empty { flex: 1; padding: 0; }
+
+  #needs .cards { display: grid; gap: 8px; }
+  #needs .card { border: 1px solid #4a2626; background: #221a1a; border-radius: 8px; padding: 10px 12px; }
+  #needs .card.current { border-color: #7a3a3a; box-shadow: 0 0 0 1px #3a2020 inset; }
+  #needs .card.future { opacity: .25; }
+  #needs .card.question { border-color: #3d3a4a; background: #1d1b22; }
+  #needs .card.question.current { border-color: #5f5980; box-shadow: 0 0 0 1px #2a2735 inset; }
+  #needs .cmd { color: var(--text); font-weight: 600; word-break: break-word; }
+  #needs .cmd span { color: var(--dim); font-weight: 400; margin-left: 10px; }
+  #needs .why { color: var(--dim); font-style: italic; margin: 4px 0 8px; }
+  #needs .risk { color: var(--amber); font-size: 12px; }
+  #needs .keys { display: flex; gap: 6px; flex-wrap: wrap; }
+  #needs .sent { color: var(--faint); font-size: 11px; margin-top: 6px; }
+
+  #verdict table { border-collapse: collapse; width: 100%; font-size: 12px; }
+  #verdict th, #verdict td { padding: 3px 6px; text-align: center; border-bottom: 1px solid var(--line); }
+  #verdict th:first-child, #verdict td:first-child { text-align: left; color: var(--dim); }
+  #verdict th { color: var(--text); font-weight: 600; }
+  #verdict th.win, #verdict td.win { background: rgba(167, 139, 250, .10); }
+  #verdict th.win { color: var(--violet); }
+  .pips i { display: inline-block; width: 7px; height: 7px; border-radius: 2px; background: #34343a; margin: 0 1px; }
+  .pips i.on { background: var(--violet); }
+  #verdict .foot { display: flex; gap: 6px; margin-top: 8px; align-items: center; color: var(--dim); font-size: 12px; }
+  #verdict .foot .actions { margin-left: auto; display: flex; gap: 6px; }
+
+  #artifacts .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .art { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: #141416; cursor: pointer; }
+  .art .cap { padding: 5px 8px; color: var(--dim); font-size: 11px; display: flex; gap: 8px; white-space: nowrap; overflow: hidden; }
+  .art .cap b { overflow: hidden; text-overflow: ellipsis; color: var(--text); font-weight: 500; }
+  .art .cap span { margin-left: auto; }
+  .art svg, .art img { width: 100%; height: auto; display: block; aspect-ratio: 16 / 10; object-fit: cover; }
+  .art.future { opacity: .25; }
+
+  footer {
+    position: fixed; left: 0; right: 0; bottom: 0; display: flex; gap: 18px; align-items: center; padding: 8px 16px;
+    background: #141416; border-top: 1px solid var(--line); color: var(--dim); font-size: 12px;
+  }
+  footer kbd { color: var(--accent); }
+  footer .tui { margin-left: auto; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  footer .tui b { color: var(--dim); font-weight: 600; }
+  #toast {
+    position: fixed; left: 50%; bottom: 52px; transform: translateX(-50%) translateY(20px); opacity: 0;
+    background: var(--panel-2); border: 1px solid var(--accent); color: var(--text); padding: 6px 14px; border-radius: 8px;
+    transition: all .25s; pointer-events: none; font-size: 12px; max-width: 70vw; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  #toast b { color: var(--accent); }
+  #toast.warn { border-color: var(--amber); } #toast.warn b { color: var(--amber); }
+  .note { color: var(--faint); font-size: 10px; letter-spacing: .1em; border: 1px solid var(--line); border-radius: 4px; padding: 0 6px; }
+  .note.live { color: var(--green); border-color: #234b32; }
+  .note.live::before { content: "● "; }
+  .note.reconnecting { color: var(--amber); border-color: #4a3f1f; animation: pulse 1.2s ease-in-out infinite; }
+  .note.reconnecting::before { content: "◌ "; }
+  .note.fixture { color: var(--violet); border-color: #3d3552; }
+  @keyframes pulse { 50% { opacity: .55 } }
+  @media (max-width: 1280px) { main { grid-template-columns: 1fr 1fr; grid-template-areas: "hive mid" "needs mid" "verdict artifacts" "time time"; } }
+</style>
+</head>
+<body>
+<header>
+  <span class="logo">⬢ SWARMCODE</span>
+  <span class="meta" id="hdrMeta"><b>…</b></span>
+  <span class="right"><span id="hdrCost" title="cost"></span><span id="hdrCtx" title="context tokens"></span><span id="hdrApproval"></span><span id="hdrKeymap"></span><span id="clock"></span><span class="note reconnecting" id="pill">CONNECTING</span></span>
+</header>
+<div class="tabs" id="tabs"></div>
+
+<main>
+  <section id="hive">
+    <h2>HIVE <span class="sub" id="hiveSub"></span></h2>
+    <svg id="hiveSvg" viewBox="0 0 520 380" aria-label="Hive graph">
+      <defs>
+        <filter id="glow"><feGaussianBlur stdDeviation="2.5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+      </defs>
+      <g id="edges"></g>
+      <g id="nodes"></g>
+      <g id="hiveNone" class="none" hidden><text x="260" y="190">no agents yet</text></g>
+    </svg>
+    <div class="lanes" id="lanes"></div>
+  </section>
+
+  <div id="mid">
+    <section id="comb">
+      <h2>CHANGES · THE COMB <span class="sub" id="combSub"></span></h2>
+      <div class="blast" id="blast" hidden></div>
+      <div class="files" id="files"></div>
+      <div class="diff" id="diff" hidden>
+        <div class="head"><span class="path" id="diffPath"></span><span id="diffHunk"></span><span id="diffAgent"></span>
+          <span class="btns"><button class="ok" data-act="accept"><kbd>a</kbd>accept</button><button class="no" data-act="revert"><kbd>r</kbd>revert</button><button data-act="editor"><kbd>o</kbd>$EDITOR</button></span></div>
+        <pre id="diffPre"></pre>
+      </div>
+      <div class="empty" id="combEmpty" hidden>No changes yet.<small id="combUnavailable"></small></div>
+    </section>
+
+    <section id="transcript">
+      <h2>TRANSCRIPT <span class="sub" id="transcriptSub"></span></h2>
+      <div class="stream" id="stream"></div>
+      <div class="empty" id="streamEmpty" hidden>Nothing has been said yet.</div>
+      <button id="latest">↓ latest</button>
+    </section>
+  </div>
+
+  <section id="needs">
+    <h2>WAITING FOR YOU <span class="sub" id="needsCount"></span></h2>
+    <div class="cards" id="needCards"></div>
+    <div class="empty" id="needsEmpty" hidden>Nothing is waiting on you.</div>
+  </section>
+
+  <section id="time">
+    <h2>TIMELINE <span class="sub">drag to scrub · [ ] step checkpoints · esc back to live</span></h2>
+    <div class="scrub">
+      <div class="pins" id="pins"></div>
+      <input type="range" id="scrub" min="0" max="0" value="0">
+    </div>
+    <div class="asof">
+      <span>as of <b id="asof">—</b></span>
+      <span id="liveTag" class="live">● live</span>
+      <span id="delta"></span>
+      <span class="actions"><button data-tl="branch"><kbd>b</kbd>branch from here</button><button data-tl="compare"><kbd>c</kbd>compare with now</button><button data-tl="rewind"><kbd>r</kbd>rewind run to here</button></span>
+    </div>
+    <div class="events" id="events"></div>
+  </section>
+
+  <section id="verdict">
+    <h2 id="verdictTitle">CONSENSUS <span class="sub" id="verdictSub"></span></h2>
+    <div id="verdictBody"></div>
+    <div class="empty" id="verdictEmpty" hidden>No consensus run.<small>not reported by the daemon yet</small></div>
+  </section>
+
+  <section id="artifacts">
+    <h2>ARTEFACTS <span class="sub" id="artSub">o opens · inline in kitty-capable terminals</span></h2>
+    <div class="grid" id="artGrid"></div>
+    <div class="empty" id="artEmpty" hidden>No artefacts yet.<small>not reported by the daemon yet</small></div>
+  </section>
+</main>
+
+<footer>
+  <span><kbd>click</kbd> focuses the same thing in the TUI</span>
+  <span><kbd>n</kbd>/<kbd>N</kbd> next / previous thing waiting on you</span>
+  <span><kbd>1</kbd>–<kbd>9</kbd> answer the highlighted card</span>
+  <span><kbd>[</kbd> <kbd>]</kbd> checkpoints</span>
+  <span class="tui">TUI focus: <b id="tuiFocus">—</b> · session <span id="ftSession">—</span> · <span id="ftHost"></span> · one-time token</span>
+</footer>
+<div id="toast"></div>
+
+<script>
+(() => {
+  'use strict';
+  // ---------- helpers ----------
+  const $ = (s, r = document) => r.querySelector(s);
+  const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
+  const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+  const arr = (x) => (Array.isArray(x) ? x : []);
+  const obj = (x) => (x && typeof x === 'object' && !Array.isArray(x) ? x : {});
+  const num = (x, d = null) => (typeof x === 'number' && Number.isFinite(x) ? x : d);
+  const str = (x, d = '') => (typeof x === 'string' ? x : d);
+  const LANES = ['var(--lane1)', 'var(--lane2)', 'var(--lane3)', 'var(--lane4)', 'var(--lane5)', 'var(--lane6)'];
+  const hueColor = (h) => LANES[((num(h, 0) % 6) + 6) % 6];
+  const pad2 = (n) => String(n).padStart(2, '0');
+  const hhmm = (ms) => { const d = new Date(ms); return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`; };
+  const hhmmss = (ms) => { const d = new Date(ms); return `${hhmm(ms)}:${pad2(d.getSeconds())}`; };
+  const elapsed = (from, to) => {
+    if (from == null || to == null) return '';
+    const s = Math.max(0, Math.floor((to - from) / 1000));
+    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), r = s % 60;
+    return h > 0 ? `${h}:${pad2(m)}:${pad2(r)}` : `${pad2(m)}:${pad2(r)}`;
+  };
+  const tokens = (n) => {
+    if (n == null) return '—';
+    if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
+    if (n >= 1e4) return `${Math.round(n / 1000)}k`;
+    return `${(n / 1000).toFixed(1)}k`;
+  };
+  const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+  const toast = (html, warn = false) => {
+    const t = $('#toast'); t.innerHTML = html; t.className = 'show' + (warn ? ' warn' : '');
+    clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('show'), 1800);
+  };
+  // Keyed reconciliation: keeps existing elements (and their running CSS animations) when data changes.
+  const reconcile = (parent, items, keyOf, create, update) => {
+    const existing = new Map();
+    for (const el of Array.from(parent.children)) if (el.dataset.key != null) existing.set(el.dataset.key, el);
+    const keep = new Set();
+    items.forEach((item, i) => {
+      const key = String(keyOf(item, i));
+      let el = existing.get(key);
+      if (!el || keep.has(key)) { el = create(item, i); el.dataset.key = key; }
+      keep.add(key);
+      update(el, item, i);
+      const ref = parent.children[i];
+      if (ref !== el) parent.insertBefore(el, ref || null);
+    });
+    for (const [key, el] of existing) if (!keep.has(key)) el.remove();
+  };
+  const svgEl = (tag, attrs = {}) => {
+    const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
+    for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
+    return el;
+  };
+  const setText = (el, text) => { if (el.textContent !== text) el.textContent = text; };
+  const setAttr = (el, k, v) => { if (el.getAttribute(k) !== String(v)) el.setAttribute(k, v); };
+
+  // ---------- state ----------
+  const params = new URLSearchParams(location.search);
+  const FIXTURE = params.get('fixture');
+  let view = null;           // last view JSON
+  let receivedAt = 0;        // Date.now() when view arrived
+  let revision = -1;
+  let agentsById = new Map();
+  let tabsById = new Map();
+  let seqCache = new Map();  // agent id -> sequence
+  let maxSeq = 0;
+  let scrubAt = num(parseInt(params.get('at'), 10)); // null = live; ?at=N starts rewound (design aid)
+  let currentNeed = 0;       // index into needs for n/N
+  let openFileId = null;
+  let localFocus = null;     // {kind,id} after a click, until the view says otherwise
+  const openThoughts = new Set();
+  const disabledNeeds = new Map(); // need id -> reason string
+  const nowMs = () => (view ? num(obj(view.session).now, Date.now()) + (Date.now() - receivedAt) : Date.now());
+
+  // ---------- data access ----------
+  const agentName = (id) => { const a = agentsById.get(id); return a ? str(a.name, id) : (id ? `agent-${String(id).slice(0, 4)}` : ''); };
+  const agentHue = (id) => { const a = agentsById.get(id); return a ? hueColor(a.hue) : 'var(--dim)'; };
+  const activeRun = () => obj(view && view.run);
+  const activeTab = () => arr(view && view.tabs).find((t) => t && t.active);
+
+  // Sequence number for anything the scrubber filters. Transcript and timeline carry `at`;
+  // agents get the `at` of their first transcript item, else a linear estimate from timestamps, else 0.
+  const agentSeq = (a) => {
+    if (seqCache.has(a.id)) return seqCache.get(a.id);
+    let s = null;
+    for (const t of arr(view.transcript)) if (t && t.agent_id === a.id && num(t.at) != null) { s = s == null ? t.at : Math.min(s, t.at); }
+    if (s == null) {
+      const run = activeRun(), rs = num(run.started_at), now = num(obj(view.session).now), st = num(a.started_at);
+      if (rs != null && now != null && st != null && now > rs && maxSeq > 0) s = Math.round(((st - rs) / (now - rs)) * maxSeq);
+      else s = 0;
+    }
+    s = Math.max(0, Math.min(maxSeq, s));
+    seqCache.set(a.id, s);
+    return s;
+  };
+  const needSeq = (n) => {
+    let s = null;
+    for (const e of arr(obj(view.timeline).events)) if (e && e.kind === 'wait' && e.agent_id === n.agent_id && num(e.at) != null) s = e.at;
+    if (s != null) return s;
+    const a = agentsById.get(n.agent_id);
+    return a ? agentSeq(a) : 0;
+  };
+  const at = (x) => num(x && x.at, 0);
+  const isFuture = (seq) => scrubAt != null && seq > scrubAt;
+
+  // ---------- header + tabs ----------
+  const STATE_COLOR = (t) => {
+    const s = str(t.state).toLowerCase(), k = str(t.kind).toLowerCase();
+    if (s === 'waiting' || s.startsWith('waiting')) return 'var(--red)';
+    if (['failed', 'error', 'errored'].includes(s)) return 'var(--red)';
+    if (['done', 'completed', 'complete', 'finished', 'succeeded', 'success'].includes(s)) return 'var(--green)';
+    if (['judging', 'scoring', 'consensus'].includes(s) || k === 'consensus') return 'var(--violet)';
+    if (['cancelled', 'canceled', 'aborted'].includes(s)) return 'var(--faint)';
+    if (['queued', 'pending', 'idle'].includes(s)) return 'var(--dim)';
+    return 'var(--accent)';
+  };
+  const cellsFor = (t) => {
+    const n = Math.max(0, num(t.agents, 0));
+    let cells = '';
+    if (t.active && arr(view.agents).length) {
+      for (const a of arr(view.agents).slice(0, 12)) cells += ['queued', 'pending', 'idle'].includes(str(a.state).toLowerCase()) ? '⬡' : '⬢';
+      if (arr(view.agents).length > 12) cells += `+${arr(view.agents).length - 12}`;
+    } else {
+      cells = '⬢'.repeat(Math.min(n, 12)) + (n > 12 ? `+${n - 12}` : '');
+    }
+    if (str(t.kind).toLowerCase() === 'consensus') cells += ' ⚖';
+    return cells;
+  };
+  const renderHeader = () => {
+    const h = obj(view.header), s = obj(view.session);
+    $('#hdrMeta').innerHTML = `<b>${esc(str(h.project, '—'))}</b> · ${esc(str(h.mode, '—'))} · ${esc(str(h.model, '—'))}`;
+    const cost = num(h.cost), ctx = num(h.context_tokens);
+    setText($('#hdrCost'), cost != null ? `$${cost.toFixed(2)}` : '');
+    $('#hdrCost').title = cost != null ? 'cost' : 'cost: not reported by the daemon yet';
+    setText($('#hdrCtx'), ctx != null ? `${tokens(ctx)} ctx` : '');
+    setText($('#hdrApproval'), str(h.approval));
+    setText($('#hdrKeymap'), [str(h.keymap), str(h.effort)].filter(Boolean).join(' · '));
+    setText($('#ftSession'), str(s.id, '—'));
+    setText($('#ftHost'), location.host || 'file');
+  };
+  const renderTabs = () => {
+    const tabs = arr(view.tabs).filter(Boolean);
+    const parent = $('#tabs');
+    const items = tabs.length ? [...tabs, { id: '__new', kind: 'new' }] : [{ id: '__none', kind: 'none' }];
+    reconcile(parent, items, (t) => t.id, (t) => {
+      const el = document.createElement('div');
+      el.className = 'tab';
+      if (t.kind === 'new') { el.classList.add('new'); el.textContent = '+ new'; el.addEventListener('click', () => focusIn('composer', null, 'composer')); return el; }
+      if (t.kind === 'none') { el.classList.add('none'); el.textContent = 'no runs yet'; return el; }
+      el.innerHTML = '<span class="dot"></span><span class="title"></span><span class="badge"></span><span class="cells"></span><span class="when"></span>';
+      el.addEventListener('click', () => focusIn('run', el.dataset.id, el.dataset.title));
+      return el;
+    }, (el, t) => {
+      if (t.kind === 'new' || t.kind === 'none') return;
+      el.dataset.id = str(t.id); el.dataset.title = str(t.title, t.id);
+      el.classList.toggle('active', !!t.active);
+      $('.dot', el).style.background = STATE_COLOR(t);
+      setText($('.title', el), str(t.title, str(t.id, 'run')));
+      const needs = num(t.needs, 0);
+      setText($('.badge', el), needs > 0 ? `!${needs}` : '');
+      setText($('.cells', el), cellsFor(t));
+      const started = num(t.started_at), finished = num(t.finished_at);
+      setText($('.when', el), started != null && finished == null ? elapsed(started, nowMs()) : '');
+    });
+  };
+
+  // ---------- hive ----------
+  const layoutHive = (agents) => {
+    const leads = agents.filter((a) => str(a.role) === 'lead');
+    const lead = leads[0] || agents.find((a) => a.parent_id == null) || agents[0] || null;
+    let others = agents.filter((a) => a !== lead);
+    // judge last so it lands at the bottom of the ring
+    others = [...others.filter((a) => str(a.role) !== 'judge'), ...others.filter((a) => str(a.role) === 'judge')];
+    const n = others.length;
+    const cx = 260;
+    const pos = new Map();
+    let cy = 190, height = 380, r = 30;
+    if (n <= 12) {
+      const rx = Math.min(210, 165 + Math.max(0, n - 5) * 8);
+      const ry = Math.min(148, 125 + Math.max(0, n - 5) * 4);
+      others.forEach((a, i) => {
+        const ang = (Math.PI / 2) - (n - 1 - i) * (2 * Math.PI / n);
+        pos.set(a.id, { x: cx + rx * Math.cos(ang), y: cy + ry * Math.sin(ang) });
+      });
+    } else {
+      r = 26;
+      const inner = others.slice(0, 8), outer = others.slice(8);
+      cy = 202; height = 404;
+      inner.forEach((a, i) => {
+        const ang = (Math.PI / 2) - (inner.length - 1 - i) * (2 * Math.PI / inner.length);
+        pos.set(a.id, { x: cx + 130 * Math.cos(ang), y: cy + 95 * Math.sin(ang) });
+      });
+      outer.forEach((a, i) => {
+        const ang = (Math.PI / 2) + (Math.PI / outer.length) - (outer.length - 1 - i) * (2 * Math.PI / outer.length);
+        pos.set(a.id, { x: cx + 215 * Math.cos(ang), y: cy + 160 * Math.sin(ang) });
+      });
+    }
+    if (lead) pos.set(lead.id, { x: cx, y: cy });
+    return { lead, others, pos, cx, cy, height, r };
+  };
+  const renderHiveSub = () => {
+    const agents = arr(view.agents).filter((a) => a && a.id != null);
+    const run = activeRun();
+    const visible = agents.filter((a) => !isFuture(agentSeq(a)));
+    const tok = agents.reduce((s, a) => (num(a.tokens) != null ? (s == null ? 0 : s) + a.tokens : s), null);
+    const parts = [];
+    if (str(run.title)) parts.push(str(run.title));
+    parts.push(agents.length ? plural(visible.length, 'agent') : 'no active run');
+    const started = num(run.started_at);
+    if (started != null) parts.push(elapsed(started, num(run.finished_at) ?? nowMs()));
+    if (tok != null) parts.push(`${tokens(tok)} tokens`);
+    setText($('#hiveSub'), parts.join(' · '));
+  };
+  const renderHive = () => {
+    const agents = arr(view.agents).filter((a) => a && a.id != null);
+    const svg = $('#hiveSvg');
+    const { lead, others, pos, cx, cy, height, r } = layoutHive(agents);
+    setAttr(svg, 'viewBox', `0 0 520 ${height}`);
+    $('#hiveNone').style.display = agents.length > 0 ? 'none' : '';
+    $('#hiveNone text').setAttribute('y', cy);
+    const ordered = lead ? [lead, ...others] : others;
+    const focusId = focusedId('agent');
+
+    // edges
+    const edges = arr(activeRun().edges).filter((e) => e && pos.has(e.from) && pos.has(e.to));
+    reconcile($('#edges'), edges, (e) => `${e.from}>${e.to}:${str(e.kind)}`, (e) => svgEl(str(e.kind) === 'handoff' ? 'path' : 'line'), (el, e) => {
+      const a = pos.get(e.from), b = pos.get(e.to);
+      const kind = str(e.kind) === 'handoff' ? 'handoff' : 'spawn';
+      const seq = Math.max(agentSeq(agentsById.get(e.from)), agentSeq(agentsById.get(e.to)));
+      el.setAttribute('class', `edge ${kind}${isFuture(seq) ? ' future' : ''}`);
+      if (kind === 'handoff') {
+        const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+        let dx = mx - cx, dy = my - cy, len = Math.hypot(dx, dy);
+        if (len < 1) { dx = -(b.y - a.y); dy = b.x - a.x; len = Math.hypot(dx, dy) || 1; }
+        const px = Math.max(16, Math.min(504, mx + (dx / len) * 150)), py = Math.max(16, Math.min(height - 16, my + (dy / len) * 150));
+        setAttr(el, 'd', `M${a.x.toFixed(1)} ${a.y.toFixed(1)} Q ${px.toFixed(1)} ${py.toFixed(1)} ${b.x.toFixed(1)} ${b.y.toFixed(1)}`);
+      } else {
+        setAttr(el, 'x1', a.x.toFixed(1)); setAttr(el, 'y1', a.y.toFixed(1)); setAttr(el, 'x2', b.x.toFixed(1)); setAttr(el, 'y2', b.y.toFixed(1));
+      }
+    });
+
+    // nodes
+    const circ = 2 * Math.PI * r;
+    reconcile($('#nodes'), ordered, (a) => a.id, (a) => {
+      const g = svgEl('g', { class: 'node' });
+      g.appendChild(svgEl('circle', { class: 'halo', r }));
+      g.appendChild(svgEl('circle', { class: 'ring', r }));
+      g.appendChild(svgEl('circle', { class: 'arc', r, 'stroke-dasharray': circ.toFixed(1), 'stroke-dashoffset': circ.toFixed(1) }));
+      g.appendChild(svgEl('circle', { class: 'core', r: r - 6 }));
+      const t1 = svgEl('text', { y: -2 }); const t2 = svgEl('text', { class: 'step', y: 11 });
+      g.appendChild(t1); g.appendChild(t2);
+      g.addEventListener('click', () => focusIn('agent', g.dataset.id, g.dataset.name));
+      return g;
+    }, (g, a) => {
+      const p = pos.get(a.id);
+      g.dataset.id = str(a.id); g.dataset.name = str(a.name, a.id);
+      setAttr(g, 'transform', `translate(${p.x.toFixed(1)} ${p.y.toFixed(1)})`);
+      const state = str(a.state).toLowerCase();
+      const waiting = !!a.waiting || state === 'waiting' || state.startsWith('waiting');
+      const cls = ['node'];
+      if (r < 30) cls.push('small');
+      if (state === 'streaming') cls.push('streaming');
+      if (waiting) cls.push('waiting');
+      if (isFuture(agentSeq(a))) cls.push('future');
+      if (focusId != null && focusId === a.id) cls.push('focused');
+      setAttr(g, 'class', cls.join(' '));
+      const color = hueColor(a.hue);
+      const arc = $('.arc', g), core = $('.core', g);
+      setAttr(arc, 'stroke', color); setAttr(core, 'stroke', color);
+      const p01 = Math.max(0, Math.min(1, num(a.progress, 0)));
+      setAttr(arc, 'stroke-dashoffset', (circ * (1 - p01)).toFixed(1));
+      const maxChars = r >= 30 ? 9 : 8;
+      let name = str(a.name, str(a.id));
+      if (str(a.role) === 'judge' && !name.startsWith('⚖')) name = `⚖ ${name}`;
+      if (name.length > maxChars + 1) name = name.slice(0, maxChars) + '…';
+      setText($$('text', g)[0], name);
+      const stepWord = waiting ? 'waiting' : ['done', 'completed', 'complete', 'finished'].includes(state) ? 'done ✓' : (state || 'idle');
+      setText($('.step', g), stepWord.length > 9 ? stepWord.slice(0, 8) + '…' : stepWord);
+    });
+
+    renderHiveSub();
+
+    // lanes
+    reconcile($('#lanes'), agents, (a) => a.id, (a) => {
+      const el = document.createElement('div');
+      el.className = 'lane';
+      el.innerHTML = '<span class="hex"></span><span class="name"></span><span class="step"></span><span class="gauge"><i></i></span><span class="tok"></span>';
+      el.addEventListener('click', () => focusIn('agent', el.dataset.id, el.dataset.name));
+      return el;
+    }, (el, a) => {
+      el.dataset.id = str(a.id); el.dataset.name = str(a.name, a.id);
+      const state = str(a.state).toLowerCase();
+      const waiting = !!a.waiting || state === 'waiting' || state.startsWith('waiting');
+      el.classList.toggle('waiting', waiting);
+      el.classList.toggle('future', isFuture(agentSeq(a)));
+      el.classList.toggle('focused', focusId != null && focusId === a.id);
+      const color = hueColor(a.hue);
+      const hex = $('.hex', el); hex.style.color = color;
+      setText(hex, ['queued', 'pending', 'idle'].includes(state) ? '⬡' : '⬢');
+      setText($('.name', el), str(a.name, str(a.id)));
+      let step = str(a.step, state);
+      if (waiting) { const need = arr(view.needs).find((n) => n && n.agent_id === a.id); step = `waiting for you${need ? ' · ' + str(need.title, str(need.command)) : ''}`; }
+      setText($('.step', el), step);
+      const bar = $('.gauge i', el); bar.style.width = `${Math.round(Math.max(0, Math.min(1, num(a.progress, 0))) * 100)}%`; bar.style.background = color;
+      setText($('.tok', el), tokens(num(a.tokens)));
+    });
+  };
+
+  // ---------- changes ----------
+  const hl = (src) => {
+    const re = /(#.*$)|("(?:[^"\\]|\\.)*")|(:[a-zA-Z_]\w*[?!]?)|(\b(?:defmodule|defp|def|do|end|case|cond|if|else|unless|when|fn|with|import|alias|use|require|plug|pipeline|true|false|nil)\b)|(\b[a-z_]\w*[?!]?(?=\())/g;
+    let out = '', last = 0, m;
+    while ((m = re.exec(src))) {
+      out += esc(src.slice(last, m.index));
+      const cls = m[1] ? 'c' : (m[2] || m[3]) ? 's' : m[4] ? 'k' : 'f';
+      out += `<span class="${cls}">${esc(m[0])}</span>`;
+      last = m.index + m[0].length;
+    }
+    return out + esc(src.slice(last));
+  };
+  const renderChanges = () => {
+    const ch = obj(view.changes);
+    const files = arr(ch.files).filter((f) => f && (f.id != null || f.path != null));
+    const empty = files.length === 0;
+    $('#mid').classList.toggle('has-files', !empty);
+    $('#combEmpty').hidden = !empty;
+    $('#files').hidden = empty;
+    $('#blast').hidden = empty || !str(ch.blast);
+    if (!empty && str(ch.blast)) $('#blast').innerHTML = `⚠ blast radius: ${esc(ch.blast)}`;
+    if (empty) {
+      setText($('#combUnavailable'), str(ch.unavailable, 'not reported by the daemon yet'));
+      setText($('#combSub'), 'no changes yet');
+      $('#diff').hidden = true;
+      return;
+    }
+    const visible = files.filter((f) => !isFuture(at(f)));
+    $('#blast').hidden = !str(ch.blast) || visible.length < 2;
+    const add = visible.reduce((s, f) => s + num(f.added, 0), 0), del = visible.reduce((s, f) => s + num(f.removed, 0), 0);
+    const agents = new Set(); visible.forEach((f) => { arr(f.agents).forEach((a) => agents.add(a)); if (f.agent_id) agents.add(f.agent_id); });
+    setText($('#combSub'), visible.length ? `${plural(visible.length, 'file')} · +${add} −${del} · ${plural(agents.size, 'agent')}` : 'no changes yet');
+    if (openFileId == null || !files.some((f) => keyOfFile(f) === openFileId)) openFileId = keyOfFile(files[0]);
+    reconcile($('#files'), files, keyOfFile, (f) => {
+      const el = document.createElement('div');
+      el.className = 'file';
+      el.innerHTML = '<span class="path"><span class="dir"></span><span class="base"></span></span><span class="chip"></span><span class="hunks"></span><span class="state"></span>';
+      el.addEventListener('click', () => { openFileId = el.dataset.key; renderChanges(); focusIn('item', el.dataset.id, el.dataset.base); });
+      return el;
+    }, (el, f) => {
+      const path = str(f.path, str(f.id)); const i = path.lastIndexOf('/');
+      el.dataset.id = str(f.id, path); el.dataset.base = path.slice(i + 1);
+      el.classList.toggle('open', keyOfFile(f) === openFileId);
+      el.classList.toggle('future', isFuture(at(f)));
+      el.classList.toggle('accepted', str(f.state) === 'accepted');
+      el.classList.toggle('reverted', str(f.state) === 'reverted');
+      setText($('.dir', el), path.slice(0, i + 1)); setText($('.base', el), path.slice(i + 1));
+      const chip = $('.chip', el); setText(chip, agentName(f.agent_id)); chip.style.color = agentHue(f.agent_id); chip.hidden = !f.agent_id;
+      setText($('.hunks', el), `${plural(num(f.hunks, 0), 'hunk')} · +${num(f.added, 0)} −${num(f.removed, 0)}`);
+      setText($('.state', el), str(f.state, 'pending'));
+    });
+    const open = files.find((f) => keyOfFile(f) === openFileId);
+    const lines = open ? arr(open.diff) : [];
+    $('#diff').hidden = !open || lines.length === 0;
+    if (open && lines.length) {
+      setText($('#diffPath'), str(open.path)); setText($('#diffHunk'), str(open.hunk_label, `${plural(num(open.hunks, 0), 'hunk')}`));
+      const ag = $('#diffAgent'); setText(ag, agentName(open.agent_id)); ag.style.color = agentHue(open.agent_id);
+      $('#diff').classList.toggle('future', isFuture(at(open)));
+      $('#diffPre').innerHTML = lines.map((l) => {
+        const t = str(l && l.t, 'ctx'), mark = t === 'add' ? '+' : t === 'del' ? '-' : t === 'hunk' ? '' : ' ';
+        const cls = t === 'hunk' ? 'l hunk' : t === 'add' ? 'l add' : t === 'del' ? 'l del' : 'l';
+        return `<span class="${cls}" data-n="${esc(l && l.n != null ? l.n : '')}">${esc(mark)}${t === 'hunk' ? esc(l.s) : hl(str(l && l.s))}</span>`;
+      }).join('\n');
+    }
+  };
+  const keyOfFile = (f) => String(f.id != null ? f.id : f.path);
+
+  // ---------- transcript ----------
+  const renderTranscript = () => {
+    const items = arr(view.transcript).filter((t) => t && t.id != null);
+    const stream = $('#stream');
+    const atBottom = stream.scrollHeight - stream.scrollTop - stream.clientHeight < 12 || stream._first !== false;
+    stream._first = false;
+    $('#streamEmpty').hidden = items.length > 0;
+    const focusId = focusedId('item');
+    reconcile(stream, items, (t) => t.id, (t) => {
+      const el = document.createElement('div');
+      el.className = 'msg';
+      el.innerHTML = '<span class="who"></span><div class="body"><span class="text"></span><span class="st"></span><details><summary>thinking</summary><div class="think"></div></details></div>';
+      el.addEventListener('click', (e) => { if (e.target.closest('details')) return; focusIn('item', el.dataset.id, el.dataset.who); });
+      const d = $('details', el);
+      d.addEventListener('toggle', () => { if (d.open) openThoughts.add(el.dataset.id); else openThoughts.delete(el.dataset.id); });
+      return el;
+    }, (el, t) => {
+      el.dataset.id = str(t.id);
+      const role = str(t.role).toLowerCase(), kind = str(t.kind).toLowerCase(), state = str(t.state).toLowerCase();
+      const you = role === 'user';
+      const who = you ? 'you' : role === 'system' ? 'system' : agentName(t.agent_id) || 'agent';
+      el.dataset.who = who;
+      const cls = ['msg'];
+      if (you) cls.push('you');
+      if (kind === 'tool' || kind === 'tool_call' || kind === 'tool_result') cls.push('tool');
+      if (kind === 'error' || state === 'error' || state === 'failed') cls.push('error');
+      if (role === 'system' || kind === 'system') cls.push('system');
+      if (state === 'streaming') cls.push('streaming');
+      if (state === 'waiting' || state.startsWith('waiting')) cls.push('waiting');
+      if (kind === 'reasoning' || (!str(t.text) && str(t.reasoning))) cls.push('think-only');
+      if (isFuture(at(t))) cls.push('future');
+      if (focusId != null && focusId === t.id) cls.push('focused');
+      el.className = cls.join(' ');
+      const w = $('.who', el); setText(w, who); w.style.color = you ? '' : agentHue(t.agent_id);
+      const text = $('.text', el);
+      const body = kind === 'reasoning' && !str(t.text) ? '' : str(t.text);
+      setText(text, body);
+      if (state === 'streaming') { if (!$('.caret', text.parentNode)) { const c = document.createElement('span'); c.className = 'caret'; text.after(c); } }
+      else { const c = $('.caret', el); if (c) c.remove(); }
+      const stLabel = state === 'streaming' ? 'streaming' : state.startsWith('waiting') ? 'waiting for you' : (state === 'error' || state === 'failed') ? 'error' : state === 'queued' ? 'queued' : state === 'cancelled' ? 'cancelled' : '';
+      setText($('.st', el), stLabel);
+      const reasoning = kind === 'reasoning' ? str(t.text) || str(t.reasoning) : str(t.reasoning);
+      const d = $('details', el);
+      d.hidden = !reasoning;
+      setText($('.think', el), reasoning);
+      if (openThoughts.has(String(t.id)) !== d.open) d.open = openThoughts.has(String(t.id));
+    });
+    const visible = items.filter((t) => !isFuture(at(t)));
+    const streaming = visible.filter((t) => str(t.state).toLowerCase() === 'streaming').length;
+    setText($('#transcriptSub'), items.length ? `${plural(visible.length, 'item')}${streaming ? ` · ${streaming} streaming` : ''}` : '');
+    if (atBottom) { stream.scrollTop = stream.scrollHeight; $('#latest').classList.remove('show'); }
+    else $('#latest').classList.add('show');
+  };
+  $('#stream').addEventListener('scroll', () => {
+    const s = $('#stream');
+    $('#latest').classList.toggle('show', s.scrollHeight - s.scrollTop - s.clientHeight >= 12);
+  });
+  $('#latest').addEventListener('click', () => { const s = $('#stream'); s.scrollTop = s.scrollHeight; });
+
+  // ---------- needs ----------
+  const actionFor = (need, opt) => {
+    if (str(need.kind).toLowerCase() === 'question') return 'answer';
+    const id = str(opt.id).toLowerCase(), label = str(opt.label).toLowerCase();
+    if (/deny|reject|refuse|^no$/.test(id) || /^deny|^reject|^refuse/.test(label)) return 'deny';
+    if (/approve|allow|always|yes|once/.test(id) || /^allow|^always|^yes/.test(label)) return 'approve';
+    return 'answer';
+  };
+  const renderNeeds = () => {
+    const needs = arr(view.needs).filter((n) => n && n.id != null);
+    $('#needsEmpty').hidden = needs.length > 0;
+    if (currentNeed >= needs.length) currentNeed = Math.max(0, needs.length - 1);
+    setText($('#needsCount'), needs.length ? `${needs.length} across all runs · n next` : '');
+    const run = activeRun();
+    reconcile($('#needCards'), needs, (n) => n.id, (n) => {
+      const el = document.createElement('div');
+      el.className = 'card';
+      el.innerHTML = '<div class="cmd"><span class="what"></span><span class="where"></span></div><div class="risk"></div><div class="why"></div><div class="keys"></div><div class="sent" hidden></div>';
+      el.addEventListener('click', (e) => { if (e.target.closest('button')) return; currentNeed = Array.from(el.parentNode.children).indexOf(el); renderNeeds(); });
+      return el;
+    }, (el, n, i) => {
+      el.dataset.id = str(n.id);
+      const q = str(n.kind).toLowerCase() === 'question';
+      el.classList.toggle('question', q);
+      el.classList.toggle('current', i === currentNeed);
+      el.classList.toggle('future', isFuture(needSeq(n)));
+      const what = str(n.command) ? `$ ${n.command}` : str(n.title, 'needs an answer');
+      setText($('.what', el), what);
+      const tab = tabsById.get(n.run_id);
+      const where = [];
+      if (str(n.cwd)) where.push(`in ${n.cwd}`);
+      if (n.run_id != null && n.run_id !== run.id) where.push(`run "${tab ? str(tab.title, n.run_id) : n.run_id}"`);
+      setText($('.where', el), where.join(' · '));
+      const risk = $('.risk', el); risk.hidden = !str(n.risk); setText(risk, str(n.risk));
+      const why = $('.why', el); why.hidden = !str(n.reason);
+      const byName = agentsById.has(n.agent_id) ? agentName(n.agent_id) : (tab ? str(tab.title) : '');
+      setText(why, str(n.reason) ? `"${n.reason}"${byName ? ` — ${byName}` : ''}` : '');
+      const disabled = disabledNeeds.get(String(n.id));
+      const opts = arr(n.options).filter((o) => o && (o.id != null || o.label != null));
+      reconcile($('.keys', el), opts, (o, j) => `${o.id != null ? o.id : o.label}:${j}`, () => {
+        const b = document.createElement('button'); b.innerHTML = '<kbd></kbd><span></span>';
+        b.addEventListener('click', (e) => { e.stopPropagation(); act(b.dataset.need, b.dataset.opt); });
+        return b;
+      }, (b, o, j) => {
+        b.dataset.need = str(n.id); b.dataset.opt = str(o.id, o.label);
+        const action = actionFor(n, o);
+        b.className = action === 'approve' ? 'ok' : action === 'deny' ? 'no' : '';
+        setText($('kbd', b), i === currentNeed && j < 9 ? String(j + 1) : '');
+        setText($('span', b), str(o.label, str(o.id)));
+        b.disabled = !!disabled; b.title = disabled || '';
+      });
+      const sent = $('.sent', el); sent.hidden = !disabled; setText(sent, disabled || '');
+    });
+  };
+
+  // ---------- timeline ----------
+  const renderTimeline = () => {
+    const tl = obj(view.timeline);
+    const events = arr(tl.events).filter((e) => e && num(e.at) != null);
+    const scrub = $('#scrub');
+    scrub.max = maxSeq; scrub.disabled = maxSeq === 0;
+    scrub.value = scrubAt == null ? maxSeq : Math.min(scrubAt, maxSeq);
+    // pins: start, checkpoints, now
+    const cps = arr(tl.checkpoints).map((c) => (typeof c === 'number' ? { at: c, label: `#${c}` } : obj(c))).filter((c) => num(c.at) != null);
+    const pins = maxSeq > 0 ? [{ at: 0, label: 'start' }, ...cps.filter((c) => c.at > 0 && c.at < maxSeq), { at: maxSeq, label: 'now' }] : [{ at: 0, label: 'start' }];
+    reconcile($('#pins'), pins, (p) => `${p.at}:${str(p.label)}`, () => {
+      const el = document.createElement('span'); el.className = 'pin';
+      el.addEventListener('click', () => { scrubTo(+el.dataset.at); });
+      return el;
+    }, (el, p) => {
+      el.dataset.at = p.at; el.style.left = `${maxSeq ? (p.at / maxSeq) * 100 : 0}%`;
+      setText(el, str(p.label, `#${p.at}`));
+    });
+    // bars
+    const byAt = new Map(); arr(view.transcript).forEach((t) => { if (t && num(t.at) != null) byAt.set(t.at, t); });
+    const ev = $('#events');
+    if (!events.length) { ev.innerHTML = '<div class="empty" style="font-size:11px">no events yet</div>'; }
+    else {
+      if ($('.empty', ev)) ev.innerHTML = '';
+      reconcile(ev, events, (e, i) => `${e.at}:${i}`, () => document.createElement('i'), (el, e, i) => {
+        const kind = str(e.kind).toLowerCase();
+        el.className = `${['you', 'lead', 'judge', 'wait'].includes(kind) ? kind : 'agent'}${isFuture(e.at) ? ' future' : ''}`;
+        el.style.background = kind === 'agent' && e.agent_id ? agentHue(e.agent_id) : '';
+        const t = byAt.get(e.at);
+        const h = t ? 30 + Math.min(70, Math.round(Math.log2(1 + str(t.text).length) * 8)) : 30 + ((i * 37) % 70);
+        el.style.height = `${h}%`;
+        el.title = `#${e.at} ${kind}${e.agent_id ? ' · ' + agentName(e.agent_id) : ''}`;
+      });
+    }
+    // as-of line
+    const live = scrubAt == null || scrubAt >= maxSeq;
+    const now = num(obj(view.session).now);
+    setText($('#asof'), live ? (now != null ? hhmmss(now) : 'now') : `event ${scrubAt} of ${maxSeq}`);
+    $('#liveTag').textContent = live ? '● live' : '◷ rewound'; $('#liveTag').className = live ? 'live' : 'past';
+    if (live) setText($('#delta'), '');
+    else {
+      const laterItems = arr(view.transcript).filter((t) => t && at(t) > scrubAt).length;
+      const laterAgents = arr(view.agents).filter((a) => a && isFuture(agentSeq(a))).length;
+      setText($('#delta'), `${plural(laterItems, 'item')} and ${plural(laterAgents, 'agent')} arrive after this point`);
+    }
+  };
+  const scrubTo = (v) => { v = Math.max(0, Math.min(maxSeq, Math.round(v))); scrubAt = v >= maxSeq ? null : v; renderAll(); };
+  $('#scrub').addEventListener('input', () => scrubTo(+$('#scrub').value));
+  const checkpointSeqs = () => {
+    const cps = arr(obj(view && view.timeline).checkpoints).map((c) => (typeof c === 'number' ? c : num(obj(c).at))).filter((x) => x != null);
+    const stops = cps.length ? cps : [0.25, 0.5, 0.75].map((f) => Math.round(maxSeq * f));
+    return Array.from(new Set([0, ...stops, maxSeq])).filter((x) => x >= 0 && x <= maxSeq).sort((a, b) => a - b);
+  };
+  const stepCheckpoint = (dir) => {
+    const cur = scrubAt == null ? maxSeq : scrubAt, stops = checkpointSeqs();
+    const next = dir > 0 ? stops.find((s) => s > cur) : [...stops].reverse().find((s) => s < cur);
+    if (next != null) scrubTo(next);
+  };
+
+  // ---------- verdict ----------
+  const renderVerdict = () => {
+    const v = view.verdict && typeof view.verdict === 'object' ? view.verdict : null;
+    $('#verdictEmpty').hidden = !!v;
+    $('#verdictBody').hidden = !v;
+    $('#verdictBody').classList.toggle('future', !!v && num(v.at) != null && isFuture(v.at));
+    if (!v) { $('#verdictTitle').firstChild.textContent = 'CONSENSUS '; setText($('#verdictSub'), ''); $('#verdictBody').innerHTML = ''; return; }
+    const cands = arr(v.candidates).map((c) => obj(c)), crit = arr(v.criteria).map((c) => obj(c));
+    const scale = Math.max(1, num(v.scale, 4));
+    $('#verdictTitle').firstChild.textContent = `CONSENSUS${str(v.title) ? ' · ' + v.title : ''} `;
+    setText($('#verdictSub'), [str(v.judge, 'judge'), plural(cands.length, 'candidate'), plural(crit.length, 'criterion').replace('criterions', 'criteria')].join(' · '));
+    const totals = arr(v.totals);
+    const winIdx = cands.findIndex((c) => c.winner);
+    const th = cands.map((c, i) => `<th class="${i === winIdx ? 'win' : ''}">${esc(str(c.label, str(c.id)))}</th>`).join('');
+    const rows = crit.map((c) => `<tr><td>${esc(str(c.label))}</td>${cands.map((_, i) => {
+      const s = num(arr(c.scores)[i], 0);
+      return `<td class="pips ${i === winIdx ? 'win' : ''}">${Array.from({ length: scale }, (_, k) => `<i class="${k < s ? 'on' : ''}"></i>`).join('')}</td>`;
+    }).join('')}</tr>`).join('');
+    const tot = cands.length ? `<tr><td><b>score</b></td>${cands.map((_, i) => `<td class="${i === winIdx ? 'win' : ''}">${i === winIdx ? '<b>' : ''}${esc(num(totals[i]) != null ? totals[i] : crit.reduce((s, c) => s + num(arr(c.scores)[i], 0), 0))}${i === winIdx ? '</b>' : ''}</td>`).join('')}</tr>` : '';
+    $('#verdictBody').innerHTML = `<table><thead><tr><th>criterion</th>${th}</tr></thead><tbody>${rows}${tot}</tbody></table>` +
+      `<div class="foot"><span>${str(v.note) ? `${esc(str(v.judge, 'judge'))}: "${esc(v.note)}"` : ''}</span><span class="actions"><button class="ok" data-v="vote"><kbd>v</kbd>vote with judge</button><button data-v="override"><kbd>V</kbd>override…</button></span></div>`;
+    $$('#verdictBody [data-v]').forEach((b) => b.addEventListener('click', () => toast('Voting is not wired yet · answer in the TUI', true)));
+  };
+
+  // ---------- artefacts ----------
+  const placeholder = (kind, color) => kind === 'image'
+    ? `<svg viewBox="0 0 320 200"><rect width="320" height="200" fill="#0f0f12"/><rect width="320" height="18" fill="#1d1d22"/><circle cx="12" cy="9" r="4" fill="#f87171"/><circle cx="26" cy="9" r="4" fill="#fbbf24"/><circle cx="40" cy="9" r="4" fill="#4ade80"/><rect x="70" y="4" width="180" height="10" rx="5" fill="#2a2a30"/><rect x="90" y="50" width="140" height="110" rx="8" fill="#1b1b20" stroke="#303036"/><rect x="104" y="66" width="112" height="10" rx="3" fill="#2e2e34"/><rect x="104" y="86" width="112" height="14" rx="3" fill="#26262b" stroke="#3a3a41"/><rect x="104" y="108" width="112" height="14" rx="3" fill="#26262b" stroke="#3a3a41"/><rect x="104" y="134" width="112" height="16" rx="4" fill="${color}"/></svg>`
+    : `<svg viewBox="0 0 320 200"><rect width="320" height="200" fill="#141416"/><rect x="16" y="22" width="150" height="10" rx="3" fill="#e8e8ea" opacity=".85"/><rect x="16" y="42" width="110" height="7" rx="3" fill="#8a8a92"/><rect x="16" y="66" width="288" height="1" fill="#303036"/><rect x="16" y="82" width="240" height="6" rx="3" fill="${color}" opacity=".8"/><rect x="16" y="100" width="210" height="6" rx="3" fill="#3a3a41"/><rect x="16" y="118" width="250" height="6" rx="3" fill="#3a3a41"/><rect x="16" y="136" width="180" height="6" rx="3" fill="#3a3a41"/><rect x="16" y="154" width="220" height="6" rx="3" fill="#3a3a41"/></svg>`;
+  const renderArtifacts = () => {
+    const arts = arr(view.artifacts).filter((a) => a && (a.id != null || a.name != null));
+    $('#artEmpty').hidden = arts.length > 0;
+    reconcile($('#artGrid'), arts, (a) => (a.id != null ? a.id : a.name), () => {
+      const el = document.createElement('div'); el.className = 'art';
+      el.innerHTML = '<div class="thumb"></div><div class="cap"><b></b><em class="by" style="font-style:normal"></em><span></span></div>';
+      el.addEventListener('click', () => focusIn('item', el.dataset.id, el.dataset.name));
+      return el;
+    }, (el, a) => {
+      el.dataset.id = str(a.id, str(a.name)); el.dataset.name = str(a.name, str(a.id));
+      el.classList.toggle('future', isFuture(at(a)));
+      const kind = str(a.kind, /\.(png|jpe?g|gif|webp|svg)$/i.test(str(a.name)) ? 'image' : 'report');
+      const color = agentHue(a.agent_id) === 'var(--dim)' ? '#ff7a1a' : agentHue(a.agent_id);
+      const thumb = $('.thumb', el);
+      const sig = `${kind}|${str(a.url)}|${color}`;
+      if (thumb.dataset.sig !== sig) {
+        thumb.dataset.sig = sig;
+        if (str(a.url) && kind === 'image') { thumb.innerHTML = ''; const img = document.createElement('img'); img.alt = str(a.name); img.src = a.url; img.loading = 'lazy'; thumb.appendChild(img); }
+        else thumb.innerHTML = placeholder(kind, color);
+      }
+      setText($('.cap b', el), str(a.name, str(a.id)));
+      setText($('.by', el), [agentName(a.agent_id), str(a.caption)].filter(Boolean).join(' · '));
+      setText($('.cap span', el), str(a.meta));
+    });
+  };
+
+  // ---------- focus / act ----------
+  const focusedId = (kind) => {
+    const f = localFocus || obj(view && view.focus);
+    return f && f.kind === kind && f.id != null ? f.id : null;
+  };
+  const focusLabel = (f) => {
+    if (!f || !f.kind) return '—';
+    if (f.kind === 'agent') return agentName(f.id) || 'agent';
+    if (f.kind === 'run') { const t = tabsById.get(f.id); return t ? str(t.title, f.id) : (f.id != null ? String(f.id) : 'run'); }
+    if (f.id != null) return `${f.kind} ${String(f.id).slice(0, 8)}`;
+    return f.kind;
+  };
+  const post = async (path, body) => {
+    const res = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    return res.status;
+  };
+  const focusIn = async (kind, id, name) => {
+    localFocus = { kind, id };
+    setText($('#tuiFocus'), name || focusLabel(localFocus));
+    renderAll();
+    toast(`Focused in TUI: <b>${esc(name || kind)}</b>`);
+    if (FIXTURE) return;
+    try {
+      const status = await post('focus', { kind, id });
+      if (status !== 204 && status !== 200) toast(`TUI did not accept the focus (HTTP ${status})`, true);
+    } catch (e) { toast('Could not reach the session', true); }
+  };
+  const act = async (needId, optId) => {
+    const need = arr(view.needs).find((n) => n && String(n.id) === String(needId));
+    if (!need) return;
+    const opt = arr(need.options).find((o) => o && String(o.id != null ? o.id : o.label) === String(optId)) || { id: optId, label: optId };
+    const action = actionFor(need, opt);
+    const label = str(opt.label, str(opt.id));
+    if (FIXTURE) {
+      // no backend: play the answer locally so the design can be exercised
+      view.needs = arr(view.needs).filter((n) => n !== need);
+      const a = agentsById.get(need.agent_id);
+      if (a) { a.waiting = false; a.state = action === 'deny' ? 'running' : 'running'; a.step = action === 'deny' ? 'denied · rethinking' : `running ${str(need.command, need.title)}`; }
+      arr(view.tabs).forEach((t) => { if (t && t.id === need.run_id) t.needs = Math.max(0, num(t.needs, 0) - 1); });
+      arr(view.transcript).forEach((t) => { if (t && t.agent_id === need.agent_id && str(t.state).startsWith('waiting')) t.state = 'done'; });
+      index(); renderAll();
+      toast(action === 'deny' ? `Denied · ${agentName(need.agent_id) || 'agent'} will explain and retry` : `${label} · ${agentName(need.agent_id) || 'agent'} continues`);
+      return;
+    }
+    disabledNeeds.set(String(need.id), `sending ${label}…`); renderNeeds();
+    try {
+      const status = await post('act', { action, id: need.id, revision: num(need.revision, revision), option: str(opt.id, label) });
+      if (status === 204 || status === 200) { disabledNeeds.set(String(need.id), `sent: ${label}`); toast(`Sent <b>${esc(label)}</b> to the TUI`); }
+      else if (status === 501) { disabledNeeds.set(String(need.id), 'answer this in the TUI'); toast('Answering from the browser is not available yet · answer this in the TUI', true); }
+      else if (status === 409) { disabledNeeds.delete(String(need.id)); toast('The TUI rejected that answer (it may have changed) · try again', true); }
+      else { disabledNeeds.delete(String(need.id)); toast(`Could not send (HTTP ${status})`, true); }
+    } catch (e) { disabledNeeds.delete(String(need.id)); toast('Could not reach the session', true); }
+    renderNeeds();
+  };
+  const cycleNeed = (dir) => {
+    const needs = arr(view && view.needs).filter((n) => n && n.id != null);
+    if (!needs.length) { toast('Nothing is waiting on you'); return; }
+    currentNeed = (currentNeed + dir + needs.length) % needs.length;
+    renderNeeds();
+    const card = $$('#needCards .card')[currentNeed]; if (card) card.scrollIntoView({ block: 'nearest' });
+    const n = needs[currentNeed];
+    if (agentsById.has(n.agent_id)) focusIn('agent', n.agent_id, agentName(n.agent_id));
+    else if (n.run_id != null) focusIn('run', n.run_id, (tabsById.get(n.run_id) || {}).title || n.run_id);
+  };
+
+  // ---------- render ----------
+  const index = () => {
+    agentsById = new Map(arr(view.agents).filter((a) => a && a.id != null).map((a) => [a.id, a]));
+    tabsById = new Map(arr(view.tabs).filter((t) => t && t.id != null).map((t) => [t.id, t]));
+    seqCache = new Map();
+    let m = 0;
+    for (const e of arr(obj(view.timeline).events)) if (e && num(e.at) != null) m = Math.max(m, e.at);
+    for (const t of arr(view.transcript)) if (t && num(t.at) != null) m = Math.max(m, t.at);
+    maxSeq = m;
+    if (scrubAt != null && scrubAt >= maxSeq) scrubAt = null;
+  };
+  const renderAll = () => {
+    if (!view) return;
+    try { renderHeader(); } catch (e) { console.error('header', e); }
+    try { renderTabs(); } catch (e) { console.error('tabs', e); }
+    try { renderHive(); } catch (e) { console.error('hive', e); }
+    try { renderChanges(); } catch (e) { console.error('changes', e); }
+    try { renderTranscript(); } catch (e) { console.error('transcript', e); }
+    try { renderNeeds(); } catch (e) { console.error('needs', e); }
+    try { renderTimeline(); } catch (e) { console.error('timeline', e); }
+    try { renderVerdict(); } catch (e) { console.error('verdict', e); }
+    try { renderArtifacts(); } catch (e) { console.error('artifacts', e); }
+    setText($('#tuiFocus'), focusLabel(localFocus || obj(view.focus)));
+  };
+  let lastNotice = null;
+  const apply = (v) => {
+    if (!v || typeof v !== 'object') return;
+    const rev = num(v.revision, revision + 1);
+    view = v; revision = rev; receivedAt = Date.now();
+    if (num(v.revision) != null) localFocus = null; // the TUI's focus wins once it reports
+    for (const id of disabledNeeds.keys()) if (!arr(v.needs).some((n) => n && String(n.id) === id)) disabledNeeds.delete(id);
+    index();
+    renderAll();
+    const notice = str(v.notice) || null;
+    if (notice && notice !== lastNotice) toast(esc(notice), true);
+    lastNotice = notice;
+  };
+
+  // ---------- connection ----------
+  const pill = (mode, title) => { const p = $('#pill'); p.className = `note ${mode}`; p.textContent = { live: 'LIVE', poll: 'LIVE · POLL', reconnecting: 'RECONNECTING', fixture: 'FIXTURE' }[mode]; p.classList.toggle('live', mode === 'live' || mode === 'poll'); p.title = title || ''; };
+  let es = null, pollTimer = null, sseRetry = null, polling = false;
+  const startPolling = () => {
+    if (polling) return;
+    polling = true;
+    const tick = async () => {
+      if (!polling) return;
+      try {
+        const res = await fetch(`view?since=${encodeURIComponent(revision)}`, { cache: 'no-store' });
+        if (res.status === 200) { apply(await res.json()); pill('poll', 'event stream unavailable · polling every 500 ms'); }
+        else if (res.status === 204) { if (view) pill('poll', 'event stream unavailable · polling every 500 ms'); }
+        else pill('reconnecting', `view answered HTTP ${res.status}`);
+      } catch (e) { pill('reconnecting', 'the session is not answering'); }
+      pollTimer = setTimeout(tick, 500);
+    };
+    tick();
+  };
+  const stopPolling = () => { polling = false; clearTimeout(pollTimer); pollTimer = null; };
+  const connectStream = () => {
+    if (!('EventSource' in window)) { startPolling(); return; }
+    try { es = new EventSource('events'); } catch (e) { startPolling(); return; }
+    es.addEventListener('view', (e) => {
+      try { apply(JSON.parse(e.data)); } catch (err) { console.error('bad view', err); return; }
+      stopPolling(); pill('live', 'event stream connected');
+    });
+    es.addEventListener('ping', () => {});
+    es.addEventListener('open', () => { if (view) pill('live', 'event stream connected'); });
+    es.addEventListener('error', () => {
+      pill('reconnecting', 'event stream dropped · polling view');
+      startPolling();
+      if (es.readyState === EventSource.CLOSED) { // e.g. 404: the server does not stream; retry the stream now and then
+        clearTimeout(sseRetry); sseRetry = setTimeout(connectStream, 15000);
+      }
+    });
+  };
+  const boot = async () => {
+    setText($('#ftHost'), location.host || 'file');
+    if (FIXTURE) {
+      const file = FIXTURE === '1' || FIXTURE === 'true' ? 'fixture.json' : `fixture-${FIXTURE.replace(/[^a-z0-9_-]/gi, '')}.json`;
+      try { const res = await fetch(file, { cache: 'no-store' }); apply(await res.json()); pill('fixture', `${file} · no session`); }
+      catch (e) { pill('reconnecting', `could not load ${file}`); toast(`Could not load ${esc(file)}`, true); }
+      return;
+    }
+    try { const res = await fetch('view', { cache: 'no-store' }); if (res.ok) apply(await res.json()); } catch (e) { /* the stream or polling will report */ }
+    connectStream();
+  };
+
+  // ---------- keys, clocks, misc buttons ----------
+  document.addEventListener('keydown', (e) => {
+    if (e.target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName) && e.target.id !== 'scrub') return;
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.key === '[') { stepCheckpoint(-1); e.preventDefault(); }
+    else if (e.key === ']') { stepCheckpoint(1); e.preventDefault(); }
+    else if (e.key === 'n') cycleNeed(1);
+    else if (e.key === 'N') cycleNeed(-1);
+    else if (e.key === 'Escape') { if (scrubAt != null) scrubTo(maxSeq); }
+    else if (/^[1-9]$/.test(e.key)) {
+      const needs = arr(view && view.needs).filter((n) => n && n.id != null);
+      const n = needs[currentNeed]; const o = n && arr(n.options)[+e.key - 1];
+      if (n && o) act(n.id, str(o.id, o.label));
+    }
+  });
+  $$('#diff [data-act]').forEach((b) => b.addEventListener('click', (e) => { e.stopPropagation(); toast('Accept / revert is not wired yet · use the TUI', true); }));
+  $$('#time [data-tl]').forEach((b) => b.addEventListener('click', () => toast(`${b.dataset.tl} is not wired yet · use the TUI`, true)));
+  const tickClock = () => { setText($('#clock'), hhmm(nowMs())); };
+  setInterval(() => { tickClock(); if (view) { try { renderTabs(); renderHiveSub(); } catch (e) { /* ignore */ } } }, 1000);
+  tickClock();
+  boot();
+})();
+</script>
+</body>
+</html>

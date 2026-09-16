@@ -117,6 +117,23 @@ actions, and correlated responses. `/goal` presents the conversation goal;
 Use PgUp/PgDn or Home/End to read long goal reports. The unsaved launcher reports
 persisted features unavailable because it has no Domain Repo.
 
+## Visual companion
+
+A saved or live session can serve a local web page that mirrors the same
+session: header, run tabs, agents, the transcript stream, what is waiting for
+you, and the timeline. Clicking in the page focuses the same thing in the TUI.
+Open it from the `Ctrl+K` palette with `Open visual companion`; the status
+notice then shows the URL long enough to copy it.
+
+The page is served from `127.0.0.1` on a random port, and every path carries a
+one-time token generated at startup, so nothing off this machine can reach it.
+Set `SWARM_COMPANION=0` before launching to turn the companion off entirely.
+
+![Visual companion rendering its fixture data](docs/superpowers/mockups/companion.png)
+
+The page can be developed without a session: `apps/swarm_code_cli/priv/companion/index.html?fixture=1`
+renders the bundled fixture, and `scripts/dev/companion_screenshot.sh <url> <out.png>` captures it headlessly.
+
 Feature-library rows can open typed forms for workflow starts, schedule creation or
 editing, and settings updates. Arrow keys cycle choices and booleans; Enter submits;
 Escape cancels. Rejected values stay in the form with an error message.

@@ -545,6 +545,7 @@ defmodule SwarmCodeCLI.UI.NeutralContractsTest do
       {:composer_height, {:nudge, 1}},
       {:presenter_handoff_requested, :plain},
       {:presenter_handoff_confirmed, :plain},
+      :open_companion,
       {:navigate, Destination.activity()},
       {:open_layer, LayerSpec.help()},
       :close_top_layer,
@@ -568,7 +569,8 @@ defmodule SwarmCodeCLI.UI.NeutralContractsTest do
           {:open_layer, %{arbitrary: true}},
           {:data, %{arbitrary: true}},
           {:composer_height, {:nudge, 2}},
-          {:layout_adjust, :main, :reset}
+          {:layout_adjust, :main, :reset},
+          {:open_companion, :now}
         ] do
       assert {:error, :invalid_action} = Action.validate(action)
       assert_raise ArgumentError, "invalid action", fn -> Action.validate!(action) end
@@ -611,6 +613,7 @@ defmodule SwarmCodeCLI.UI.NeutralContractsTest do
           {:announce, SwarmCodeCLI.UI.SafeText.chrome(:help)},
           {:bell, :needs_you},
           {:presenter_handoff, :plain},
+          {:companion, :open},
           {:detach, 0}
         ] do
       assert {:ok, ^effect} = Effect.validate(effect)
@@ -629,7 +632,8 @@ defmodule SwarmCodeCLI.UI.NeutralContractsTest do
           {:terminal_control, :sigstop},
           {:announce, "raw"},
           {:detach, -1},
-          {:clipboard, "secret"}
+          {:clipboard, "secret"},
+          {:companion, :close}
         ] do
       assert {:error, :invalid_effect} = Effect.validate(unsafe)
       assert_raise ArgumentError, "invalid effect", fn -> Effect.validate!(unsafe) end

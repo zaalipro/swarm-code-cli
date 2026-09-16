@@ -11,6 +11,7 @@ defmodule SwarmCodeCLI.MixProject do
       releases: [
         swarm_code_cli: [
           applications: [
+            inets: :permanent,
             swarm_code_core: :permanent,
             swarm_code_daemon: :permanent,
             swarm_code_cli: :permanent

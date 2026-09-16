@@ -1,0 +1,19 @@
+{
+  "revision": 1,
+  "session": {"id": "8e5e507a", "started_at": 1789554968831, "now": 1789554972831},
+  "header": {"project": "ailogic", "model": "deepseek-v4.1-flash", "mode": "build",
+             "approval": "read-only", "keymap": "vim", "effort": "max",
+             "cost": null, "context_tokens": null},
+  "tabs": [],
+  "run": {"id": null, "title": null, "state": null, "kind": null,
+          "started_at": null, "finished_at": null, "edges": []},
+  "agents": [],
+  "transcript": [],
+  "needs": [],
+  "changes": {"files": [], "unavailable": "not reported by the daemon yet"},
+  "timeline": {"events": [], "checkpoints": []},
+  "verdict": null,
+  "artifacts": [],
+  "focus": {"kind": "composer", "id": null},
+  "notice": null
+}

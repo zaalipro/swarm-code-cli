@@ -81,6 +81,10 @@ defmodule SwarmCodeCLI.UI.Reducer do
       {%{state | notice: :detach_requires_confirmation},
        [{:announce, SafeText.chrome(:detach_key)}]}
 
+  # The palette's one route out to a browser. The reducer stays pure and changes
+  # nothing: the session runtime owns opening the page and the URL notice.
+  defp transition(state, :open_companion), do: {state, [{:companion, :open}]}
+
   # The only pane left to dock is the inspector, so this is a real toggle rather
   # than a "set the dock to this pane": the value it toggles to when the
   # inspector is already docked is `:none`, the named absence of a dock.

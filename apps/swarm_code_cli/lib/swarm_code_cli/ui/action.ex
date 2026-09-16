@@ -67,6 +67,7 @@ defmodule SwarmCodeCLI.UI.Action do
   @type t ::
           :boot
           | :editor_detach_notice
+          | :open_companion
           | {:toggle_dock, :inspector}
           | {:set_tab, :thread | :agents | :timeline | :changes}
           | {:set_keymap, :default | :vim}
@@ -131,8 +132,9 @@ defmodule SwarmCodeCLI.UI.Action do
   def terminal_error_code?(code), do: code in @terminal_error_codes
 
   @spec validate(term()) :: {:ok, t()} | {:error, :invalid_action}
-  def validate(action) when action in [:boot, :back, :close_top_layer, :editor_detach_notice],
-    do: {:ok, action}
+  def validate(action)
+      when action in [:boot, :back, :close_top_layer, :editor_detach_notice, :open_companion],
+      do: {:ok, action}
 
   def validate({:toggle_dock, dock} = action),
     do: valid_action(action, dock == :inspector)

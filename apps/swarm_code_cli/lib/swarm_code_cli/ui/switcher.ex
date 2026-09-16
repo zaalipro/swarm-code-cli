@@ -25,6 +25,7 @@ defmodule SwarmCodeCLI.UI.Switcher do
       entry("Detach", :action, {:local, {:quit_requested, :detach}}),
       entry("Plain presenter", :action, {:local, {:presenter_handoff_requested, :plain}}),
       entry("Toggle Inspector", :action, {:local, {:toggle_dock, :inspector}}),
+      entry("Open visual companion", :action, {:local, :open_companion}),
       vim_mode_entry(state)
     ]
 

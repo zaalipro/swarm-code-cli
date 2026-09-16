@@ -3,6 +3,7 @@ defmodule SwarmCode.Development.LiveSession do
   alias SwarmCode.Daemon.Runtime.Configuration
   alias SwarmCode.Daemon.Service
   alias SwarmCode.Daemon.Service.LiveBackend
+  alias SwarmCodeCLI.Companion
   alias SwarmCodeCLI.UI.{Capabilities, Init, SessionRuntime, Size}
   alias SwarmCodeCLI.UI.DataSource.Daemon
   alias SwarmCodeCLI.UI.Renderer.RatatuiPort.Owner
@@ -125,6 +126,8 @@ defmodule SwarmCode.Development.LiveSession do
             instruction_sink: self()
           )
 
+        start_companion(supervisor, runtime, Path.basename(root))
+
         IO.puts(
           :stderr,
           "DEVELOPMENT LIVE SESSION — UNSAVED\nRuns and transcripts disappear when this session closes. Tools can change project files."
@@ -197,6 +200,16 @@ defmodule SwarmCode.Development.LiveSession do
       System.get_env("COLORTERM") in ["truecolor", "24bit"] -> :truecolor
       String.contains?(System.get_env("TERM") || "", "256color") -> :ansi256
       true -> :ansi16
+    end
+  end
+
+  # The visual companion mirrors this session on a loopback port; the palette's
+  # "Open visual companion" shows the URL. SWARM_COMPANION=0 leaves it out, and
+  # the URL is never printed here because it carries the session token.
+  defp start_companion(supervisor, runtime, project) do
+    if System.get_env("SWARM_COMPANION") != "0" do
+      companion = child!(supervisor, Companion, runtime: runtime, project: project)
+      SessionRuntime.attach_companion(runtime, Companion.sink(companion))
     end
   end
 

@@ -3,6 +3,7 @@ defmodule SwarmCode.Development.PersistedSession do
   alias SwarmCode.Daemon.RepoLauncher
   alias SwarmCode.Daemon.FoundationGate.BootConfig
   alias SwarmCode.Daemon.Service.{PersistedBackend, SessionConfiguration, SessionSelection}
+  alias SwarmCodeCLI.Companion
   alias SwarmCodeCLI.UI.{Capabilities, Init, SessionRuntime, Size}
   alias SwarmCodeCLI.UI.DataSource.Daemon
   alias SwarmCodeCLI.UI.Renderer.RatatuiPort.Owner
@@ -27,6 +28,7 @@ defmodule SwarmCode.Development.PersistedSession do
     root = System.get_env("SWARM_PROJECT_ROOT") || File.cwd!()
     unless File.dir?(root), do: Mix.raise("SWARM_PROJECT_ROOT must be an existing directory")
     options = selection_options!(System.get_env("SWARM_CONVERSATION"))
+
     executable =
       System.get_env("SWARM_TERMINAL_PORT") ||
         Path.expand("../../_build/terminal-port/debug/swarm-terminal-port", __DIR__)
@@ -131,6 +133,7 @@ defmodule SwarmCode.Development.PersistedSession do
           instruction_sink: self()
         )
 
+      start_companion(supervisor, runtime, Path.basename(session.project.root_path))
       IO.puts(:stderr, "SAVED DEV SESSION — conversation #{conversation_id}; q stops owned runs.")
 
       owner =
@@ -215,6 +218,16 @@ defmodule SwarmCode.Development.PersistedSession do
 
   defp unwrap!({:error, reason}, label),
     do: Mix.raise("Saved #{label} failed: #{inspect(reason)}")
+
+  # The visual companion mirrors this session on a loopback port; the palette's
+  # "Open visual companion" shows the URL. SWARM_COMPANION=0 leaves it out, and
+  # the URL is never printed here because it carries the session token.
+  defp start_companion(supervisor, runtime, project) do
+    if System.get_env("SWARM_COMPANION") != "0" do
+      companion = child!(supervisor, Companion, runtime: runtime, project: project)
+      SessionRuntime.attach_companion(runtime, Companion.sink(companion))
+    end
+  end
 
   defp child!(supervisor, module, options),
     do:

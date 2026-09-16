@@ -94,4 +94,13 @@ defmodule SwarmCodeCLI.UI.ReducerPresentationTest do
     assert {reset, []} = Reducer.update(shrunk, {:composer_height, :reset})
     assert reset.composer_height == 3
   end
+
+  # Opening the companion is entirely an effect: the pinned state proves the
+  # reducer touched nothing, including the revision.
+  test "opening the visual companion emits one effect and leaves state untouched" do
+    state = initial()
+    assert {:ok, :open_companion} = SwarmCodeCLI.UI.Action.validate(:open_companion)
+    assert {^state, [{:companion, :open}]} = Reducer.update(state, :open_companion)
+    assert {:ok, {:companion, :open}} = SwarmCodeCLI.UI.Effect.validate({:companion, :open})
+  end
 end

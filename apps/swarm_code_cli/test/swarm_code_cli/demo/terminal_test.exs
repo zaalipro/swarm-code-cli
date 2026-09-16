@@ -37,7 +37,7 @@ defmodule SwarmCodeCLI.Demo.TerminalTest do
       assert audit.before.started_applications == audit.after.started_applications
       assert audit.after.demo_children == 0
       assert audit.during.closure_started ==
-        ~w(compiler crypto elixir jason kernel logger stdlib swarm_code_cli swarm_code_core)
+        ~w(compiler crypto elixir inets jason kernel logger stdlib swarm_code_cli swarm_code_core)
     after
       receive do
         {:native_pid, pid} ->
@@ -54,7 +54,7 @@ defmodule SwarmCodeCLI.Demo.TerminalTest do
     """
 
     allowed =
-      ~w(compiler crypto elixir jason kernel logger stdlib swarm_code_cli swarm_code_core ex_unit)
+      ~w(compiler crypto elixir inets jason kernel logger stdlib swarm_code_cli swarm_code_core ex_unit)
 
     paths =
       :code.get_path()

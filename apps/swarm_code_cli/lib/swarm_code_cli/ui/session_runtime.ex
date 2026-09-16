@@ -33,6 +33,7 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
     SafeText
   }
 
+  alias SwarmCodeCLI.Companion
   alias SwarmCodeCLI.UI.DataSource
   alias SwarmCodeCLI.UI.DataSource.DataBridge
 
@@ -47,6 +48,11 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
   def action(server, action), do: GenServer.call(server, {:action, action})
   def activate(server, revision, id), do: GenServer.call(server, {:activate, revision, id})
   def snapshot(server), do: GenServer.call(server, :snapshot)
+
+  @doc "Names the companion sink (pid or nil) after start; it receives the current state at once."
+  def attach_companion(server, companion),
+    do: GenServer.call(server, {:attach_companion, companion})
+
   def status(server), do: GenServer.call(server, :status)
   def close(server, token), do: GenServer.call(server, {:close, token})
 
@@ -61,6 +67,12 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
       do: raise(ArgumentError, "invalid runtime initialization")
 
     {ui, effects} = Reducer.init(init)
+    companion = Keyword.get(opts, :companion)
+
+    if not (is_nil(companion) or is_pid(companion)),
+      do: raise(ArgumentError, "invalid companion sink")
+
+    push(companion, ui)
     binding = identity()
     owner = self()
 
@@ -107,6 +119,7 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
        secret: make_ref(),
        sequence: 0,
        instruction_sink: Keyword.get(opts, :instruction_sink),
+       companion: companion,
        final_pending?: false,
        close_kind: nil,
        shutdown_token: nil,
@@ -116,6 +129,13 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
 
   @impl true
   def handle_call(:snapshot, _, state), do: {:reply, state.ui, state}
+
+  def handle_call({:attach_companion, companion}, _, state)
+      when is_nil(companion) or is_pid(companion) do
+    push(companion, state.ui)
+    {:reply, :ok, %{state | companion: companion}}
+  end
+
   def handle_call(:status, _, state), do: {:reply, summary(state), state}
   def handle_call({:close, _}, _, state), do: {:reply, {:error, :confirmation_required}, state}
 
@@ -296,15 +316,26 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
     {ui, emitted} = Reducer.update(state.ui, action)
     next = %{state | ui: ui}
     effects(next, emitted)
+    if ui == state.ui, do: next, else: commit(next, state.ui)
+  end
 
-    if ui == state.ui,
-      do: next,
-      else:
-        next
-        |> invalidate_generation(state.ui.terminal_generation)
-        |> pause_frame()
-        |> project()
-        |> schedule()
+  # Every state the terminal will see is also the companion's; the hub
+  # coalesces, so this is one message per change and nothing more.
+  defp commit(next, previous) do
+    push(next.companion, next.ui)
+
+    next
+    |> invalidate_generation(previous.terminal_generation)
+    |> pause_frame()
+    |> project()
+    |> schedule()
+  end
+
+  defp push(nil, _ui), do: :ok
+
+  defp push(companion, ui) when is_pid(companion) do
+    send(companion, {:companion_state, ui})
+    :ok
   end
 
   defp effects(state, emitted) do
@@ -337,6 +368,28 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
   end
 
   defp local_effect(state, {:terminal_control, :shutdown}), do: begin_shutdown(state, :detach)
+
+  # The palette's "Open visual companion": the reducer only emits, the runtime
+  # opens the page and shows the URL through the existing feedback notice so it
+  # can be copied even when no browser answers. No action carries free text, so
+  # the notice value is written here, as the terminal generation already is.
+  defp local_effect(%{phase: :running} = state, {:companion, :open}) do
+    text =
+      case Companion.url() do
+        {:ok, url} ->
+          case Companion.open() do
+            :ok -> "Companion: " <> url
+            {:error, _} -> "Companion: " <> url <> " (browser did not open)"
+          end
+
+        :unavailable ->
+          "Companion is off (SWARM_COMPANION=0)"
+      end
+
+    ui = %{state.ui | notice: {:command_feedback, text}, revision: state.ui.revision + 1}
+    commit(%{state | ui: ui}, state.ui)
+  end
+
   # Announcements already live in the safe Scene; no text is sent to terminal state.
   defp local_effect(state, _), do: state
 

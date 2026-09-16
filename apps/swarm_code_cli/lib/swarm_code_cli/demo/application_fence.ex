@@ -3,6 +3,7 @@ defmodule SwarmCodeCLI.Demo.ApplicationFence do
   @closure Enum.sort([
              :compiler,
              :crypto,
+             :inets,
              :elixir,
              :jason,
              :kernel,

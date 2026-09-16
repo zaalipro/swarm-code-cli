@@ -3,7 +3,7 @@ defmodule SwarmCodeCLI.UI.Renderer.LockedBranchTest do
 
   alias SwarmCodeCLI.Test.LockedBranchFixtures
 
-  @closure ~w(compiler crypto elixir jason kernel logger stdlib swarm_code_cli swarm_code_core)a
+  @closure ~w(compiler crypto elixir inets jason kernel logger stdlib swarm_code_cli swarm_code_core)a
 
   setup context do
     if root = context[:tmp_dir], do: on_exit(fn -> File.rm_rf!(root) end)

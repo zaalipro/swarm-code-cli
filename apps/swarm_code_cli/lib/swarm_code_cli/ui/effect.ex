@@ -16,6 +16,7 @@ defmodule SwarmCodeCLI.UI.Effect do
           | {:announce, SafeText.t()}
           | {:bell, :needs_you}
           | {:presenter_handoff, :plain}
+          | {:companion, :open}
           | {:detach, non_neg_integer()}
 
   @spec validate(term()) :: {:ok, t()} | {:error, :invalid_effect}
@@ -57,6 +58,7 @@ defmodule SwarmCodeCLI.UI.Effect do
 
   def validate({:bell, :needs_you} = effect), do: {:ok, effect}
   def validate({:presenter_handoff, :plain} = effect), do: {:ok, effect}
+  def validate({:companion, :open} = effect), do: {:ok, effect}
 
   def validate({:detach, exit_status} = effect),
     do: valid_effect(effect, is_integer(exit_status) and exit_status >= 0)

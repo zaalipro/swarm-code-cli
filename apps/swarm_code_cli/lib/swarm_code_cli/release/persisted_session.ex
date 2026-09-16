@@ -12,6 +12,7 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
   alias SwarmCode.Daemon.RepoLauncher
   alias SwarmCode.Daemon.FoundationGate.BootConfig
   alias SwarmCode.Daemon.Service.{PersistedBackend, SessionConfiguration, SessionSelection}
+  alias SwarmCodeCLI.Companion
   alias SwarmCodeCLI.UI.{Capabilities, Init, SessionRuntime, Size}
   alias SwarmCodeCLI.UI.DataSource.Daemon
   alias SwarmCodeCLI.UI.Renderer.RatatuiPort.Owner
@@ -143,6 +144,7 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
           instruction_sink: self()
         )
 
+      start_companion(supervisor, runtime, Path.basename(session.project.root_path))
       IO.puts(:stderr, "SAVED DEV SESSION — conversation #{conversation_id}; q stops owned runs.")
 
       owner =
@@ -178,6 +180,16 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
         _ ->
           :ok
       end
+    end
+  end
+
+  # The visual companion mirrors this session on a loopback port; the palette's
+  # "Open visual companion" shows the URL. SWARM_COMPANION=0 leaves it out, and
+  # the URL is never printed here because it carries the session token.
+  defp start_companion(supervisor, runtime, project) do
+    if System.get_env("SWARM_COMPANION") != "0" do
+      companion = child!(supervisor, Companion, runtime: runtime, project: project)
+      SessionRuntime.attach_companion(runtime, Companion.sink(companion))
     end
   end
 

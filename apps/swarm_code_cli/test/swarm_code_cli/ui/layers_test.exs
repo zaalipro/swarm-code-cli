@@ -35,4 +35,16 @@ defmodule SwarmCodeCLI.UI.LayersTest do
     query = elem(Editor.apply(Editor.new(), {:insert, "full detail"}), 1)
     assert Enum.any?(Switcher.rank(query, entries), &(&1.target == target))
   end
+
+  # The visual companion has no key binding, so the palette is its only door.
+  test "the palette lists the visual companion as one local action" do
+    entries = Switcher.entries(%State{}, %{})
+    assert entry = Enum.find(entries, &(&1.label == "Open visual companion"))
+    assert entry.kind == :action
+    assert entry.target == {:local, :open_companion}
+    assert {:ok, _target} = SwarmCodeCLI.UI.ActionTarget.validate(entry.target)
+
+    query = elem(Editor.apply(Editor.new(), {:insert, ">visual"}), 1)
+    assert Enum.any?(Switcher.rank(query, entries), &(&1.target == entry.target))
+  end
 end

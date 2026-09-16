@@ -6,7 +6,7 @@ defmodule SwarmCodeCLI.Demo.ApplicationFenceTest do
     before = started.()
     level = :logger.get_primary_config().level
     {during, audit} = ApplicationFence.run(fn -> started.() end)
-    expected = ~w(compiler crypto elixir jason kernel logger stdlib swarm_code_cli swarm_code_core)
+    expected = ~w(compiler crypto elixir inets jason kernel logger stdlib swarm_code_cli swarm_code_core)
     assert audit.declared_closure == expected
     assert audit.during.closure_started == expected
     assert expected -- during == []
@@ -208,7 +208,7 @@ defmodule SwarmCodeCLI.Demo.ApplicationFenceTest do
     audit = Jason.decode!(result["audit"])
 
     expected =
-      ~w(compiler crypto elixir jason kernel logger stdlib swarm_code_cli swarm_code_core)
+      ~w(compiler crypto elixir inets jason kernel logger stdlib swarm_code_cli swarm_code_core)
 
     assert audit["declared_closure"] == expected
     assert audit["during"]["closure_started"] == expected
@@ -225,7 +225,7 @@ defmodule SwarmCodeCLI.Demo.ApplicationFenceTest do
 
   defp isolated!(source) do
     allowed =
-      ~w(compiler crypto elixir jason kernel logger stdlib swarm_code_cli swarm_code_core mix ex_unit)
+      ~w(compiler crypto elixir inets jason kernel logger stdlib swarm_code_cli swarm_code_core mix ex_unit)
 
     paths =
       :code.get_path()

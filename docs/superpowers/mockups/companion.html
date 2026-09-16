@@ -1,0 +1,404 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>SwarmCode · Visual companion · design mockup</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    --bg: #17171a; --panel: #1f1f23; --panel-2: #26262b; --line: #303036;
+    --text: #e8e8ea; --dim: #8a8a92; --faint: #5c5c64;
+    --accent: #ff7a1a; --green: #4ade80; --amber: #fbbf24; --red: #f87171;
+    --violet: #a78bfa; --teal: #2dd4bf; --blue: #60a5fa;
+    --lane1: #ff7a1a; --lane2: #2dd4bf; --lane3: #60a5fa; --lane4: #f472b6; --lane5: #a3e635; --lane6: #a78bfa;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); font: 13px/1.5 var(--mono); }
+  a { color: var(--blue); }
+  header {
+    display: flex; align-items: center; gap: 18px; padding: 8px 16px; border-bottom: 1px solid var(--line);
+    background: linear-gradient(180deg, #1c1c20, #17171a);
+  }
+  header .logo { color: var(--accent); font-weight: 700; letter-spacing: .04em; }
+  header .meta { color: var(--dim); }
+  header .meta b { color: var(--text); font-weight: 500; }
+  header .right { margin-left: auto; color: var(--dim); display: flex; gap: 18px; }
+  .tabs { display: flex; gap: 6px; padding: 8px 16px; border-bottom: 1px solid var(--line); background: #19191c; overflow-x: auto; }
+  .tab { padding: 3px 10px; border-radius: 6px; color: var(--dim); white-space: nowrap; cursor: pointer; border: 1px solid transparent; }
+  .tab.active { color: var(--text); background: var(--panel-2); border-color: var(--line); }
+  .tab .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
+  .tab .badge { color: var(--red); font-weight: 700; margin-left: 6px; }
+  .tab .cells { color: var(--faint); margin-left: 8px; letter-spacing: -1px; }
+  .tab .cells i { font-style: normal; }
+  main {
+    display: grid; grid-template-columns: 1.15fr 1.25fr 0.9fr; gap: 14px; padding: 14px 16px 90px;
+    grid-template-areas: "hive comb needs" "verdict comb artifacts" "time time time";
+  }
+  #hive { grid-area: hive; } #comb { grid-area: comb; } #needs { grid-area: needs; }
+  #verdict { grid-area: verdict; } #artifacts { grid-area: artifacts; } #time { grid-area: time; }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; min-width: 0; }
+  section h2 { margin: 0 0 8px; font-size: 11px; letter-spacing: .12em; color: var(--dim); font-weight: 600; display: flex; align-items: baseline; gap: 10px; }
+  section h2 .sub { color: var(--faint); letter-spacing: 0; font-weight: 400; text-transform: none; margin-left: auto; }
+  #hive svg { width: 100%; height: auto; display: block; }
+  .node { cursor: pointer; }
+  .node text { font: 11px var(--mono); fill: var(--text); text-anchor: middle; pointer-events: none; }
+  .node .step { fill: var(--dim); font-size: 10px; }
+  .node .ring { fill: none; stroke: #34343a; stroke-width: 4; }
+  .node .arc { fill: none; stroke-width: 4; stroke-linecap: round; transform: rotate(-90deg); transform-origin: center; transition: stroke-dashoffset .4s; }
+  .node .core { fill: #26262b; stroke-width: 1.5; }
+  .node.streaming .core { animation: breathe 1.6s ease-in-out infinite; }
+  .node.waiting .halo { fill: none; stroke: var(--red); stroke-width: 2; animation: halo 1.4s ease-out infinite; }
+  .node.future { opacity: .18; }
+  .edge { stroke: #3a3a41; stroke-width: 1.5; fill: none; }
+  .edge.handoff { stroke: var(--teal); stroke-dasharray: 4 4; animation: dash 1.2s linear infinite; }
+  .edge.future { opacity: .15; }
+  @keyframes breathe { 0%,100% { stroke-width: 1.5 } 50% { stroke-width: 3.5 } }
+  @keyframes halo { 0% { r: 30; opacity: .9 } 100% { r: 44; opacity: 0 } }
+  @keyframes dash { to { stroke-dashoffset: -16 } }
+  .lanes { margin-top: 8px; display: grid; gap: 4px; }
+  .lane { display: grid; grid-template-columns: 14px 78px 1fr 70px 52px; gap: 8px; align-items: center; padding: 3px 6px; border-radius: 6px; cursor: pointer; }
+  .lane:hover, .lane.focused { background: var(--panel-2); }
+  .lane.future { opacity: .25; }
+  .lane .hex { font-size: 13px; }
+  .lane .name { font-weight: 600; }
+  .lane .step { color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .lane .gauge { height: 8px; background: #2e2e34; border-radius: 4px; overflow: hidden; }
+  .lane .gauge i { display: block; height: 100%; }
+  .lane .tok { color: var(--faint); text-align: right; font-size: 11px; }
+  .lane.waiting .step { color: var(--red); }
+
+  #comb .files { display: grid; gap: 2px; margin-bottom: 8px; }
+  .file { display: grid; grid-template-columns: 1fr auto auto auto; gap: 10px; align-items: center; padding: 3px 6px; border-radius: 6px; cursor: pointer; }
+  .file:hover, .file.open { background: var(--panel-2); }
+  .file.future { opacity: .25; }
+  .file .path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .file .path span { color: var(--dim); }
+  .chip { font-size: 10px; padding: 1px 6px; border-radius: 10px; border: 1px solid currentColor; white-space: nowrap; }
+  .file .hunks { color: var(--dim); font-size: 11px; }
+  .file .state { font-size: 11px; width: 62px; text-align: right; color: var(--faint); }
+  .file.accepted .state { color: var(--green); }
+  .file.reverted .state { color: var(--red); }
+  .blast { color: var(--amber); font-size: 12px; padding: 6px 8px; border: 1px dashed #4a3f1f; border-radius: 6px; margin-bottom: 8px; }
+  .diff { background: #141416; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; font-size: 12px; }
+  .diff .head { display: flex; gap: 12px; padding: 5px 10px; background: #1b1b1f; color: var(--dim); border-bottom: 1px solid var(--line); white-space: nowrap; align-items: center; }
+  .diff .head .path { overflow: hidden; text-overflow: ellipsis; }
+  .diff .head .btns { margin-left: auto; display: flex; gap: 6px; }
+  .diff .head .path { color: var(--text); }
+  .diff pre { margin: 0; padding: 6px 0; overflow-x: auto; }
+  .diff .l { display: inline-block; width: 100%; padding: 0 10px; white-space: pre; line-height: 1.55; }
+  .diff .l::before { content: attr(data-n); display: inline-block; width: 34px; color: var(--faint); text-align: right; margin-right: 12px; }
+  .diff .add { background: rgba(74, 222, 128, .10); color: #b7f0c8; }
+  .diff .del { background: rgba(248, 113, 113, .12); color: #f7c2c2; }
+  .diff .hunk { color: var(--blue); background: #17171a; }
+  .k { color: #c084fc; } .s { color: #86efac; } .f { color: #93c5fd; } .c { color: var(--faint); font-style: italic; }
+  button {
+    font: inherit; font-size: 11px; color: var(--text); background: var(--panel-2); border: 1px solid var(--line);
+    border-radius: 6px; padding: 2px 9px; cursor: pointer; white-space: nowrap;
+  }
+  button:hover { border-color: var(--dim); }
+  button kbd { color: var(--accent); font: inherit; margin-right: 4px; }
+  button.ok kbd { color: var(--green); } button.no kbd { color: var(--red); }
+
+  .scrub { position: relative; padding: 18px 6px 4px; }
+  .scrub input[type=range] { width: 100%; accent-color: var(--accent); }
+  .pins { position: absolute; left: 6px; right: 6px; top: 6px; height: 12px; }
+  .pin { position: absolute; top: 0; transform: translateX(-50%); color: var(--dim); font-size: 10px; white-space: nowrap; cursor: pointer; }
+  .pin::after { content: ""; display: block; width: 1px; height: 10px; background: var(--faint); margin: 0 auto; }
+  .asof { display: flex; gap: 16px; color: var(--dim); font-size: 12px; align-items: center; }
+  .asof b { color: var(--text); font-weight: 600; }
+  .asof .live { color: var(--green); }
+  .asof .past { color: var(--amber); }
+  .asof .actions { margin-left: auto; display: flex; gap: 6px; }
+  .events { display: flex; gap: 2px; margin-top: 8px; height: 26px; align-items: flex-end; }
+  .events i { flex: 1; display: block; background: #2b2b31; border-radius: 2px 2px 0 0; }
+  .events i.you { background: var(--dim); } .events i.lead { background: var(--accent); }
+  .events i.l2 { background: var(--teal); } .events i.l3 { background: var(--blue); } .events i.l4 { background: var(--lane4); }
+  .events i.judge { background: var(--violet); } .events i.wait { background: var(--red); }
+  .events i.future { opacity: .15; }
+
+  #needs .card { border: 1px solid #4a2626; background: #221a1a; border-radius: 8px; padding: 10px 12px; }
+  #needs .cmd { color: var(--text); font-weight: 600; }
+  #needs .cmd span { color: var(--dim); font-weight: 400; margin-left: 10px; }
+  #needs .why { color: var(--dim); font-style: italic; margin: 4px 0 8px; }
+  #needs .risk { color: var(--amber); font-size: 12px; }
+  #needs .keys { display: flex; gap: 6px; flex-wrap: wrap; }
+  #needs .empty { color: var(--faint); padding: 14px 0; text-align: center; }
+
+  #verdict table { border-collapse: collapse; width: 100%; font-size: 12px; }
+  #verdict th, #verdict td { padding: 3px 6px; text-align: center; border-bottom: 1px solid var(--line); }
+  #verdict th:first-child, #verdict td:first-child { text-align: left; color: var(--dim); }
+  #verdict th { color: var(--text); font-weight: 600; }
+  #verdict th.win, #verdict td.win { background: rgba(167, 139, 250, .10); }
+  #verdict th.win { color: var(--violet); }
+  .pips i { display: inline-block; width: 7px; height: 7px; border-radius: 2px; background: #34343a; margin: 0 1px; }
+  .pips i.on { background: var(--violet); }
+  #verdict .foot { display: flex; gap: 6px; margin-top: 8px; align-items: center; color: var(--dim); font-size: 12px; }
+  #verdict .foot .actions { margin-left: auto; display: flex; gap: 6px; }
+
+  #artifacts .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .art { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: #141416; cursor: pointer; }
+  .art .cap { padding: 5px 8px; color: var(--dim); font-size: 11px; display: flex; gap: 8px; white-space: nowrap; overflow: hidden; }
+  .art .cap b { overflow: hidden; text-overflow: ellipsis; }
+  .art .cap b { color: var(--text); font-weight: 500; }
+  .art .cap span { margin-left: auto; }
+  .art svg { width: 100%; height: auto; display: block; }
+  .art.future { opacity: .25; }
+
+  footer {
+    position: fixed; left: 0; right: 0; bottom: 0; display: flex; gap: 18px; align-items: center; padding: 8px 16px;
+    background: #141416; border-top: 1px solid var(--line); color: var(--dim); font-size: 12px;
+  }
+  footer kbd { color: var(--accent); }
+  footer .tui { margin-left: auto; color: var(--faint); }
+  #toast {
+    position: fixed; left: 50%; bottom: 52px; transform: translateX(-50%) translateY(20px); opacity: 0;
+    background: var(--panel-2); border: 1px solid var(--accent); color: var(--text); padding: 6px 14px; border-radius: 8px;
+    transition: all .25s; pointer-events: none; font-size: 12px;
+  }
+  #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  #toast b { color: var(--accent); }
+  .note { color: var(--faint); font-size: 10px; letter-spacing: .1em; border: 1px solid var(--line); border-radius: 4px; padding: 0 6px; }
+  @media (max-width: 1280px) { main { grid-template-columns: 1fr 1fr; grid-template-areas: "hive comb" "needs comb" "verdict artifacts" "time time"; } }
+</style>
+</head>
+<body>
+<header>
+  <span class="logo">⬢ SWARMCODE</span>
+  <span class="meta"><b>ailogic</b> · main ✓ · deepseek-v4.1-flash</span>
+  <span class="right"><span>$0.42</span><span>12k ctx</span><span>read-only</span><span id="clock">15:00</span><span class="note">DESIGN MOCKUP · STATIC DATA</span></span>
+</header>
+<div class="tabs">
+  <div class="tab active"><span class="dot" style="background:var(--accent)"></span>read only app analysis<span class="cells">⬢⬢⬢⬡</span> <span style="color:var(--faint)">02:14</span></div>
+  <div class="tab"><span class="dot" style="background:var(--red)"></span>migrate auth to tokens<span class="badge">!1</span><span class="cells">⬢⬢⬢⬢⬢⬢</span> <span style="color:var(--faint)">18:02</span></div>
+  <div class="tab"><span class="dot" style="background:var(--violet)"></span>consensus: terminal change<span class="cells">⬢⬢⬢⬢⬢ ⚖</span></div>
+  <div class="tab"><span class="dot" style="background:var(--green)"></span>hi<span class="cells">⬢</span></div>
+  <div class="tab"><span class="dot" style="background:var(--green)"></span>hi again<span class="cells">⬢</span></div>
+  <div class="tab" style="color:var(--faint)">+ new</div>
+</div>
+
+<main>
+  <section id="hive">
+    <h2>HIVE <span class="sub">read only app analysis · <span id="agentCount">5 agents</span> · 02:14 · 4.1k tokens</span></h2>
+    <svg viewBox="0 0 520 380" aria-label="Hive graph">
+      <defs>
+        <filter id="glow"><feGaussianBlur stdDeviation="2.5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+      </defs>
+      <g id="edges">
+        <line class="edge" x1="260" y1="190" x2="120" y2="90" data-at="5"/>
+        <line class="edge" x1="260" y1="190" x2="400" y2="90" data-at="5"/>
+        <line class="edge" x1="260" y1="190" x2="110" y2="300" data-at="20"/>
+        <line class="edge" x1="260" y1="190" x2="410" y2="300" data-at="45"/>
+        <line class="edge" x1="260" y1="190" x2="260" y2="340" data-at="70"/>
+        <path class="edge handoff" d="M120 90 C 200 40, 340 40, 410 300" data-at="45"/>
+      </g>
+      <g id="nodes">
+        <g class="node streaming" transform="translate(260 190)" data-name="lead" data-at="0" data-step="planning → 3 lanes" data-color="var(--accent)">
+          <circle class="ring" r="30"/><circle class="arc" r="30" stroke="var(--accent)" stroke-dasharray="188.5" stroke-dashoffset="47"/>
+          <circle class="core" r="24" stroke="var(--accent)"/>
+          <text y="-2">lead</text><text class="step" y="11">planning</text>
+        </g>
+        <g class="node" transform="translate(120 90)" data-name="scout-1" data-at="5" data-step="read 12 files · ailogic_web/" data-color="var(--teal)">
+          <circle class="ring" r="30"/><circle class="arc" r="30" stroke="var(--teal)" stroke-dasharray="188.5" stroke-dashoffset="0"/>
+          <circle class="core" r="24" stroke="var(--teal)"/>
+          <text y="-2">scout-1</text><text class="step" y="11">done ✓</text>
+        </g>
+        <g class="node streaming" transform="translate(400 90)" data-name="scout-2" data-at="5" data-step="grep &quot;Repo\.&quot; · 41 hits" data-color="var(--blue)">
+          <circle class="ring" r="30"/><circle class="arc" r="30" stroke="var(--blue)" stroke-dasharray="188.5" stroke-dashoffset="75"/>
+          <circle class="core" r="24" stroke="var(--blue)"/>
+          <text y="-2">scout-2</text><text class="step" y="11">reading</text>
+        </g>
+        <g class="node" transform="translate(110 300)" data-name="scout-3" data-at="20" data-step="ls lib/ailogic_web" data-color="var(--lane5)">
+          <circle class="ring" r="30"/><circle class="arc" r="30" stroke="var(--lane5)" stroke-dasharray="188.5" stroke-dashoffset="150"/>
+          <circle class="core" r="24" stroke="var(--lane5)"/>
+          <text y="-2">scout-3</text><text class="step" y="11">queued</text>
+        </g>
+        <g class="node waiting" transform="translate(410 300)" data-name="builder-4" data-at="45" data-step="wants to run mix ecto.migrate" data-color="var(--lane4)">
+          <circle class="halo" r="30"/>
+          <circle class="ring" r="30"/><circle class="arc" r="30" stroke="var(--lane4)" stroke-dasharray="188.5" stroke-dashoffset="110"/>
+          <circle class="core" r="24" stroke="var(--lane4)"/>
+          <text y="-2">builder-4</text><text class="step" y="11" style="fill:var(--red)">waiting</text>
+        </g>
+        <g class="node" transform="translate(260 340)" data-name="judge" data-at="70" data-step="scoring 3 candidates" data-color="var(--violet)">
+          <circle class="ring" r="30"/><circle class="arc" r="30" stroke="var(--violet)" stroke-dasharray="188.5" stroke-dashoffset="130"/>
+          <circle class="core" r="24" stroke="var(--violet)"/>
+          <text y="-2">⚖ judge</text><text class="step" y="11">scoring</text>
+        </g>
+      </g>
+    </svg>
+    <div class="lanes" id="lanes">
+      <div class="lane" data-name="lead" data-at="0"><span class="hex" style="color:var(--accent)">⬢</span><span class="name">lead</span><span class="step">planning → 3 lanes, then synthesis</span><span class="gauge"><i style="width:75%;background:var(--accent)"></i></span><span class="tok">1.8k</span></div>
+      <div class="lane" data-name="scout-1" data-at="5"><span class="hex" style="color:var(--teal)">⬢</span><span class="name">scout-1</span><span class="step">read 12 files · ailogic_web/ ✓</span><span class="gauge"><i style="width:100%;background:var(--teal)"></i></span><span class="tok">0.9k</span></div>
+      <div class="lane" data-name="scout-2" data-at="5"><span class="hex" style="color:var(--blue)">⬢</span><span class="name">scout-2</span><span class="step">grep "Repo\." · 41 hits · reading lib/ailogic</span><span class="gauge"><i style="width:60%;background:var(--blue)"></i></span><span class="tok">0.7k</span></div>
+      <div class="lane" data-name="scout-3" data-at="20"><span class="hex" style="color:var(--lane5)">⬡</span><span class="name">scout-3</span><span class="step">queued · ls lib/ailogic_web</span><span class="gauge"><i style="width:20%;background:var(--lane5)"></i></span><span class="tok">0.1k</span></div>
+      <div class="lane waiting" data-name="builder-4" data-at="45"><span class="hex" style="color:var(--lane4)">⬢</span><span class="name">builder-4</span><span class="step">waiting for you · mix ecto.migrate</span><span class="gauge"><i style="width:42%;background:var(--lane4)"></i></span><span class="tok">0.5k</span></div>
+      <div class="lane" data-name="judge" data-at="70"><span class="hex" style="color:var(--violet)">⬢</span><span class="name">judge</span><span class="step">scoring 3 candidates against 4 criteria</span><span class="gauge"><i style="width:30%;background:var(--violet)"></i></span><span class="tok">0.1k</span></div>
+    </div>
+  </section>
+
+  <section id="comb">
+    <h2>CHANGES · THE COMB <span class="sub" id="combSub">3 files · +41 −9 · 2 agents</span></h2>
+    <div class="blast" id="blast">⚠ blast radius: scout-2 and builder-4 both touch <b>lib/ailogic_web/user_auth.ex</b> · 2 overlapping hunks</div>
+    <div class="files">
+      <div class="file open" data-at="45" data-name="user_auth.ex"><span class="path"><span>lib/ailogic_web/</span>user_auth.ex</span><span class="chip" style="color:var(--lane4)">builder-4</span><span class="hunks">3 hunks · +28 −6</span><span class="state">pending</span></div>
+      <div class="file" data-at="50" data-name="router.ex"><span class="path"><span>lib/ailogic_web/</span>router.ex</span><span class="chip" style="color:var(--lane4)">builder-4</span><span class="hunks">1 hunk · +9 −3</span><span class="state">pending</span></div>
+      <div class="file" data-at="30" data-name="AUDIT.md"><span class="path"><span>docs/</span>AUDIT.md</span><span class="chip" style="color:var(--blue)">scout-2</span><span class="hunks">1 hunk · +4 −0</span><span class="state">pending</span></div>
+    </div>
+    <div class="diff" id="diff" data-at="45">
+      <div class="head"><span class="path">lib/ailogic_web/user_auth.ex</span><span>hunk 2 of 3</span><span style="color:var(--lane4)">builder-4</span>
+        <span class="btns"><button class="ok" data-act="accept"><kbd>a</kbd>accept</button><button class="no" data-act="revert"><kbd>r</kbd>revert</button><button><kbd>o</kbd>$EDITOR</button></span></div>
+      <pre>
+<span class="l hunk" data-n="">@@ -41,9 +41,14 @@ defmodule AilogicWeb.UserAuth do</span>
+<span class="l" data-n="41">  <span class="k">def</span> <span class="f">fetch_current_user</span>(conn, _opts) <span class="k">do</span></span>
+<span class="l del" data-n="42">-    {user_token, conn} = ensure_user_token(conn)</span>
+<span class="l del" data-n="43">-    user = user_token &amp;&amp; Accounts.get_user_by_session_token(user_token)</span>
+<span class="l add" data-n="42">+    <span class="c"># Spec 61 §2: bearer tokens win over the session cookie so API</span></span>
+<span class="l add" data-n="43">+    <span class="c"># clients and the browser share one code path.</span></span>
+<span class="l add" data-n="44">+    {token, conn} = bearer_or_session_token(conn)</span>
+<span class="l add" data-n="45">+    user = token &amp;&amp; Accounts.get_user_by_token(token, <span class="s">:any</span>)</span>
+<span class="l" data-n="46">    assign(conn, <span class="s">:current_user</span>, user)</span>
+<span class="l" data-n="47">  <span class="k">end</span></span>
+<span class="l add" data-n="48">+</span>
+<span class="l add" data-n="49">+  <span class="k">defp</span> <span class="f">bearer_or_session_token</span>(conn) <span class="k">do</span></span>
+<span class="l add" data-n="50">+    <span class="k">case</span> get_req_header(conn, <span class="s">"authorization"</span>) <span class="k">do</span></span>
+<span class="l add" data-n="51">+      [<span class="s">"Bearer "</span> &lt;&gt; token] -&gt; {token, conn}</span>
+<span class="l add" data-n="52">+      _ -&gt; ensure_user_token(conn)</span>
+<span class="l add" data-n="53">+    <span class="k">end</span></span>
+<span class="l add" data-n="54">+  <span class="k">end</span></span>
+      </pre>
+    </div>
+  </section>
+
+  <section id="needs">
+    <h2>WAITING FOR YOU <span class="sub" id="needsCount">1 across all runs · n next</span></h2>
+    <div class="card" id="needsCard" data-at="45">
+      <div class="cmd">$ mix ecto.migrate <span>in ~/dev/ailogic</span></div>
+      <div class="risk">writes the database · reversible with mix ecto.rollback</div>
+      <div class="why">"the token table migration must exist before I can compile the tests" — builder-4</div>
+      <div class="keys">
+        <button class="ok" data-approve="once"><kbd>y</kbd>allow once</button>
+        <button class="ok" data-approve="run"><kbd>Y</kbd>allow for this run</button>
+        <button data-approve="always"><kbd>a</kbd>always</button>
+        <button class="no" data-approve="deny"><kbd>d</kbd>deny</button>
+        <button data-approve="edit"><kbd>e</kbd>edit command</button>
+      </div>
+    </div>
+    <div class="empty" id="needsEmpty" hidden>Nothing is waiting on you.</div>
+  </section>
+
+  <section id="time">
+    <h2>TIMELINE <span class="sub">drag to scrub · [ ] step checkpoints · b branch · c compare</span></h2>
+    <div class="scrub">
+      <div class="pins">
+        <span class="pin" style="left:0%" data-go="0">14:58 start</span>
+        <span class="pin" style="left:30%" data-go="30">audit written</span>
+        <span class="pin" style="left:55%" data-go="55">auth patched</span>
+        <span class="pin" style="left:100%" data-go="100">now</span>
+      </div>
+      <input type="range" id="scrub" min="0" max="100" value="100">
+    </div>
+    <div class="asof">
+      <span>as of <b id="asof">15:00:14</b></span>
+      <span id="liveTag" class="live">● live</span>
+      <span id="delta"></span>
+      <span class="actions"><button><kbd>b</kbd>branch from here</button><button><kbd>c</kbd>compare with now</button><button><kbd>r</kbd>rewind run to here</button></span>
+    </div>
+    <div class="events" id="events"></div>
+  </section>
+
+  <section id="verdict">
+    <h2>CONSENSUS · terminal change <span class="sub">judge · 3 candidates · 4 criteria</span></h2>
+    <table>
+      <thead><tr><th>criterion</th><th>A · minimal</th><th class="win">B · tabline</th><th>C · sidebar</th></tr></thead>
+      <tbody>
+        <tr><td>keeps every key reachable</td><td class="pips"><i class="on"></i><i class="on"></i><i class="on"></i><i></i></td><td class="win pips"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i></td><td class="pips"><i class="on"></i><i class="on"></i><i></i><i></i></td></tr>
+        <tr><td>works at 100 columns</td><td class="pips"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i></td><td class="win pips"><i class="on"></i><i class="on"></i><i class="on"></i><i></i></td><td class="pips"><i class="on"></i><i></i><i></i><i></i></td></tr>
+        <tr><td>shows all runs at once</td><td class="pips"><i class="on"></i><i></i><i></i><i></i></td><td class="win pips"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i></td><td class="pips"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i></td></tr>
+        <tr><td>no new packages</td><td class="pips"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i></td><td class="win pips"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i></td><td class="pips"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i></td></tr>
+        <tr><td><b>score</b></td><td>12</td><td class="win"><b>15</b></td><td>11</td></tr>
+      </tbody>
+    </table>
+    <div class="foot"><span>judge: "B keeps the sidebar's overview without its width cost"</span><span class="actions"><button class="ok"><kbd>v</kbd>vote with judge</button><button><kbd>V</kbd>override…</button></span></div>
+  </section>
+
+  <section id="artifacts">
+    <h2>ARTEFACTS <span class="sub">o opens · inline in kitty-capable terminals</span></h2>
+    <div class="grid">
+      <div class="art" data-at="60" data-name="login-page.png">
+        <svg viewBox="0 0 320 200"><rect width="320" height="200" fill="#0f0f12"/><rect x="0" y="0" width="320" height="18" fill="#1d1d22"/><circle cx="12" cy="9" r="4" fill="#f87171"/><circle cx="26" cy="9" r="4" fill="#fbbf24"/><circle cx="40" cy="9" r="4" fill="#4ade80"/><rect x="70" y="4" width="180" height="10" rx="5" fill="#2a2a30"/><rect x="90" y="50" width="140" height="110" rx="8" fill="#1b1b20" stroke="#303036"/><rect x="104" y="66" width="112" height="10" rx="3" fill="#2e2e34"/><rect x="104" y="86" width="112" height="14" rx="3" fill="#26262b" stroke="#3a3a41"/><rect x="104" y="108" width="112" height="14" rx="3" fill="#26262b" stroke="#3a3a41"/><rect x="104" y="134" width="112" height="16" rx="4" fill="#ff7a1a"/><text x="160" y="146" font-size="9" fill="#17171a" text-anchor="middle" font-family="monospace">Sign in with token</text></svg>
+        <div class="cap"><b>login-page.png</b> builder-4 · smoke test<span>1200×800</span></div>
+      </div>
+      <div class="art" data-at="30" data-name="AUDIT.html">
+        <svg viewBox="0 0 320 200"><rect width="320" height="200" fill="#141416"/><text x="16" y="30" font-size="13" fill="#e8e8ea" font-family="monospace" font-weight="bold">Auth audit · ailogic_web</text><text x="16" y="52" font-size="9" fill="#8a8a92" font-family="monospace">8 controllers · 3 without a plug</text><rect x="16" y="66" width="288" height="1" fill="#303036"/><g font-family="monospace" font-size="9"><text x="16" y="86" fill="#f87171">✕ PageController.dashboard  no :require_authenticated_user</text><text x="16" y="104" fill="#f87171">✕ ReportController.export   no :require_authenticated_user</text><text x="16" y="122" fill="#fbbf24">! ApiController.tokens      plug present, no rate limit</text><text x="16" y="140" fill="#4ade80">✓ SessionController          ok</text><text x="16" y="158" fill="#4ade80">✓ UserSettingsController     ok</text></g></svg>
+        <div class="cap"><b>AUDIT.html</b> scout-2 · report<span>4 findings</span></div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <span><kbd>click</kbd> focuses the same thing in the TUI</span>
+  <span><kbd>n</kbd>/<kbd>N</kbd> next / previous thing waiting on you</span>
+  <span><kbd>z</kbd> zoom overview · run · lane</span>
+  <span><kbd>[</kbd> <kbd>]</kbd> checkpoints</span>
+  <span class="tui">TUI focus: <b id="tuiFocus">composer</b> · session 8e5e507a · localhost:8765 · one-time token</span>
+</footer>
+<div id="toast"></div>
+
+<script>
+  const $ = (s, r = document) => r.querySelector(s);
+  const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
+  const toast = (html) => { const t = $('#toast'); t.innerHTML = html; t.classList.add('show'); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('show'), 1600); };
+  const focus = (name) => { $('#tuiFocus').textContent = name; $$('.lane').forEach(l => l.classList.toggle('focused', l.dataset.name === name)); toast(`Focused in TUI: <b>${name}</b>`); };
+
+  $$('.node').forEach(n => n.addEventListener('click', () => focus(n.dataset.name)));
+  $$('.lane').forEach(l => l.addEventListener('click', () => focus(l.dataset.name)));
+  $$('.file').forEach(f => f.addEventListener('click', () => { $$('.file').forEach(o => o.classList.remove('open')); f.classList.add('open'); focus(f.dataset.name); }));
+  $$('.art').forEach(a => a.addEventListener('click', () => focus(a.dataset.name)));
+
+  $$('#diff [data-act]').forEach(b => b.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const f = $('.file.open'); f.classList.remove('accepted', 'reverted');
+    f.classList.add(b.dataset.act === 'accept' ? 'accepted' : 'reverted');
+    $('.state', f).textContent = b.dataset.act === 'accept' ? 'accepted' : 'reverted';
+    toast(`${b.dataset.act}ed hunk 2 of 3 · builder-4 told`);
+  }));
+
+  $$('[data-approve]').forEach(b => b.addEventListener('click', () => {
+    const v = b.dataset.approve;
+    if (v === 'edit') { toast('Editing the command in the TUI composer'); focus('composer'); return; }
+    $('#needsCard').hidden = true; $('#needsEmpty').hidden = false; $('#needsCount').textContent = '0 across all runs';
+    const bn = $$('.node').find(n => n.dataset.name === 'builder-4'); bn.classList.remove('waiting'); $('.step', bn).textContent = v === 'deny' ? 'denied' : 'running'; $('.step', bn).style.fill = '';
+    const bl = $$('.lane').find(l => l.dataset.name === 'builder-4'); bl.classList.remove('waiting'); $('.step', bl).textContent = v === 'deny' ? 'denied · rethinking' : 'running mix ecto.migrate';
+    $$('.tab .badge').forEach(x => x.remove());
+    toast(v === 'deny' ? 'Denied · builder-4 will explain and retry' : `Allowed (${v}) · builder-4 continues`);
+  }));
+
+  // Timeline: every element with data-at is a fact that exists from that moment on.
+  const events = 'you lead lead l2 l3 l2 l2 l3 lead l2 l2 l3 l3 lead l4 l4 wait l4 lead l2 judge judge l4 lead lead l2 l3 judge lead lead'.split(' ');
+  const ev = $('#events');
+  events.forEach((k, i) => { const b = document.createElement('i'); b.className = k; b.style.height = (30 + (i * 37) % 70) + '%'; b.dataset.at = Math.round(i / (events.length - 1) * 100); ev.appendChild(b); });
+  const scrub = $('#scrub');
+  const render = () => {
+    const at = +scrub.value;
+    $$('[data-at]').forEach(el => el.classList.toggle('future', +el.dataset.at > at));
+    const secs = Math.round(134 * at / 100); const m = String(Math.floor(secs / 60)).padStart(2, '0'); const s = String(secs % 60).padStart(2, '0');
+    $('#asof').textContent = at === 100 ? '15:00:14' : `14:58:00 + ${m}:${s}`;
+    $('#liveTag').textContent = at === 100 ? '● live' : '◷ rewound'; $('#liveTag').className = at === 100 ? 'live' : 'past';
+    const agents = $$('.lane').filter(l => +l.dataset.at <= at).length; $('#agentCount').textContent = `${agents} agent${agents === 1 ? '' : 's'}`;
+    const files = $$('.file').filter(f => +f.dataset.at <= at).length; $('#combSub').textContent = files === 3 ? '3 files · +41 −9 · 2 agents' : files === 0 ? 'no changes yet' : `${files} file${files === 1 ? '' : 's'}`;
+    $('#blast').style.display = at >= 45 ? '' : 'none';
+    $('#delta').textContent = at === 100 ? '' : `${3 - files} file${3 - files === 1 ? '' : 's'} and ${6 - agents} agent${6 - agents === 1 ? '' : 's'} arrive after this point`;
+  };
+  scrub.addEventListener('input', render);
+  $$('.pin').forEach(p => p.addEventListener('click', () => { scrub.value = p.dataset.go; render(); }));
+  document.addEventListener('keydown', (e) => {
+    if (e.key === '[') { scrub.value = Math.max(0, [100, 55, 30, 0].find(v => v < +scrub.value) ?? 0); render(); }
+    if (e.key === ']') { scrub.value = [0, 30, 55, 100].find(v => v > +scrub.value) ?? 100; render(); }
+    if (e.key === 'n') focus('builder-4');
+  });
+  render();
+  setInterval(() => { const d = new Date(); $('#clock').textContent = `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`; }, 1000);
+</script>
+</body>
+</html>

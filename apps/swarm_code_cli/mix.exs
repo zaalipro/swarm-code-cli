@@ -19,7 +19,7 @@ defmodule SwarmCodeCli.MixProject do
   def application do
     [
       mod: {SwarmCodeCLI.Application, []},
-      extra_applications: [:logger, :crypto]
+      extra_applications: [:logger, :crypto, :inets]
     ]
   end
 
