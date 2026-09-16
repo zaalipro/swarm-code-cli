@@ -92,7 +92,7 @@ defmodule SwarmCodeCLI.UI.Paint.ProjectorTest do
       else
         pixels = screen(plan)
 
-        for fact <- ["NO USER DATA", "Build", "Activity", "Focus"] do
+        for fact <- ["NO USER DATA", "Build", "Focus"] do
           assert pixels =~ fact, "#{kind} #{inspect(size)} is missing #{fact}"
         end
 
@@ -147,11 +147,9 @@ defmodule SwarmCodeCLI.UI.Paint.ProjectorTest do
     assert main.rect.height > 0
 
     # Nothing is docked on the left, so main's band is the whole 120-column
-    # terminal; it centres its 96-cell reading measure inside that band. The tab
-    # row still spans the terminal, which is how it stays reachable from either
-    # gutter.
-    assert main.rect.x == 12
-    assert main.rect.width == 96
+    # terminal and main takes all of it. The tab row spans the terminal too.
+    assert main.rect.x == 0
+    assert main.rect.width == 120
     assert main.rect.x == div(120 - main.rect.width, 2)
 
     docked =
@@ -332,7 +330,7 @@ defmodule SwarmCodeCLI.UI.Paint.ProjectorTest do
 
     for run <- runs do
       {_, table, plan} = paint(%{state | read_model: model, destination: {:run, run.id}})
-      assert screen(plan) =~ String.upcase(Atom.to_string(run.state))
+      assert screen(plan) =~ run.title
       assert {:intent, {:retry_run, "failed", 7}} in Map.values(table) == (run.id == "failed")
 
       assert {:intent, {:run_control, :resume, "interrupted"}} in Map.values(table) ==
@@ -384,7 +382,12 @@ defmodule SwarmCodeCLI.UI.Paint.ProjectorTest do
 
       {scene, table, plan} = paint(state)
       main = Enum.find(scene.regions, &(&1.role == :main))
-      deck = Enum.find(main.blocks, &is_struct(&1, Block.ActionDeck))
+      # The run's own action row comes first; the deck under test is the wide one.
+      deck =
+        main.blocks
+        |> Enum.filter(&is_struct(&1, Block.ActionDeck))
+        |> Enum.max_by(&length(&1.actions))
+
       assert {:ok, deck_height} = Metrics.height(deck, main.rect.width, %Options{}, 200, policy)
       assert deck_height > 1
 
@@ -450,13 +453,11 @@ defmodule SwarmCodeCLI.UI.Paint.ProjectorTest do
           &row(plan, &1, main.rect.x, main.rect.width)
         )
 
-      word =
-        status |> SwarmCodeCLI.UI.Theme.status() |> elem(0) |> SwarmCodeCLI.UI.SafeText.value()
-
-      assert length(String.split(pixels, word)) - 1 == 1
+      # The headline names the run once; its actions say what can be done.
+      assert length(String.split(pixels, "Streaming conversation")) - 1 == 1
       refute pixels =~ "RUNNING STREAMING"
-      assert pixels =~ "RETRY AVAILABLE" == (status == :failed)
-      assert pixels =~ "RESUME AVAILABLE" == (status == :interrupted)
+      assert pixels =~ "Retry" == (status == :failed)
+      assert pixels =~ "Resume" == (status == :interrupted)
     end
   end
 

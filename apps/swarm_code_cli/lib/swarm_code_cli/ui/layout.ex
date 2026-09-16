@@ -17,10 +17,6 @@ defmodule SwarmCodeCLI.UI.Layout do
   # three rows short of the terminal (title, tabline, status).
   @chrome_rows 3
   @body_top 2
-  # Reading measure for the conversation column, in cells, and the smallest
-  # gutter that makes centring worth the columns it costs.
-  @measure 96
-  @measure_gutter 4
 
   @type class :: :xl | :wide | :medium | :narrow | :small | :compressed_small | :too_small
   @type t :: %__MODULE__{
@@ -94,19 +90,11 @@ defmodule SwarmCodeCLI.UI.Layout do
     |> maybe_rect(:composer, read_x, r - 1 - composer, read_width, composer)
   end
 
-  # A terminal will happily set a 130-column line of prose, and it is horrible to
-  # read. The conversation keeps a reading measure and centres it, which is also
-  # what stops a card's gauge from being painted as a wall across the whole
-  # screen.
-  #
-  # A band that cannot spare @measure_gutter cells on each side is left exactly
-  # as the docks handed it over: main keeps every column it owns and still
-  # starts at column 0, or at the dock offset. A two-cell inset is not a margin,
-  # it is a rounding error, and it would cost the text more than it gives it.
-  defp measure(x, width) when width >= @measure + 2 * @measure_gutter do
-    {x + div(width - @measure, 2), @measure}
-  end
-
+  # The conversation is flush left and takes the whole band the docks leave it:
+  # text starts at column 2 and a tool call's one-liner has the width it needs.
+  # The old centred 96-cell reading measure put fifteen blank columns to the
+  # left of every turn on a wide terminal, which read as a broken layout, not
+  # as typography; prose is wrapped by the transcript itself.
   defp measure(x, width), do: {x, width}
 
   # The navigator dock is gone: the shell offers its runs through the tab row and

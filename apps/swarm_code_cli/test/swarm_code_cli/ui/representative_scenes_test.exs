@@ -46,7 +46,7 @@ defmodule SwarmCodeCLI.UI.RepresentativeScenesTest do
       assert pixels =~ if(kind == :swarm, do: "lead · ", else: "assistant · ")
 
       main = Enum.find(scene.regions, &(&1.role == :main))
-      assert Enum.count(main.blocks, &is_struct(&1, Block.RunCard)) == 1
+      assert Enum.count(main.blocks, &is_struct(&1, Block.RunCard)) == 0
 
       if kind in [:consensus, :research] do
         heading = if kind == :consensus, do: "Consensus", else: "Research report"

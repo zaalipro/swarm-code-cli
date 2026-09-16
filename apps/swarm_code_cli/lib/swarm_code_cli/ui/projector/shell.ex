@@ -123,29 +123,35 @@ defmodule SwarmCodeCLI.UI.Projector.Shell do
   defp blocks(:composer, state, rect, _), do: Composer.project(state, rect)
   defp blocks(:status, state, rect, class), do: {Status.project(state, class, rect.width), nil}
 
+  # The strip between the transcript and the composer is a rule, as in the
+  # design's frame; when something waits on the user it leads with the word,
+  # in the warning colour, and the rule takes the rest of the row.
   defp blocks(:activity, state, rect, _class) do
     needs = state.read_model.interactions |> Map.values() |> Enum.count(&(&1.state == :pending))
+    policy = state.capabilities.ambiguous_width
+    rule = SafeText.value(Support.glyph(:rule, state))
+    rule_cells = max(1, Width.cells(rule, policy))
 
-    activity_text =
-      if needs > 0, do: "Waiting for you · #{needs} · Activity", else: "Activity"
+    lead = if needs > 0, do: "Waiting for you · #{needs} ", else: ""
+    fill = String.duplicate(rule, div(max(0, rect.width - Width.cells(lead, policy)), rule_cells))
 
-    block =
-      if needs > 0 do
-        # Use accent color for the strip when needs > 0, without the RUNNING prefix
-        accent_style = Theme.style(:accent, state.capabilities)
-        clean_style = %{accent_style | role: :plain, prefix: nil, cues: []}
+    warning = Theme.style(:warning, state.capabilities)
 
-        %Block.RichText{
-          spans: [
-            %Span{
-              text: Density.safe(activity_text, state, rect.width),
-              style: clean_style
-            }
-          ]
-        }
-      else
-        Support.text(activity_text, state, rect.width)
-      end
+    lead_spans =
+      if lead == "",
+        do: [],
+        else: [
+          %Span{
+            text: Density.safe(lead, state, rect.width),
+            style: %{warning | role: :plain, prefix: nil, cues: [], modifiers: [:bold]}
+          }
+        ]
+
+    block = %Block.RichText{
+      spans:
+        lead_spans ++
+          [%Span{text: Density.safe(fill, state, rect.width), style: %Style{role: :text_muted}}]
+    }
 
     {[block], nil}
   end

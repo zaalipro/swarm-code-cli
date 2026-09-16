@@ -228,12 +228,10 @@ defmodule SwarmCodeCLI.UI.Paint.ShellFormatTest do
       {scene, _} = Projector.project(state)
       main = Enum.find(scene.regions, &(&1.role == :main))
 
-      # Main's band starts at column 0 and its reading measure is centred inside
-      # it, so main reaches into the columns the navigator used to own and the
-      # rest of them are its empty gutter, not a dock.
-      assert main.rect.x < 26
+      # Main's band starts at column 0 and main takes all of it: the columns the
+      # navigator used to own are the transcript's now, not a gutter or a dock.
+      assert main.rect.x == 0
       assert row(plan, 2, main.rect.x, main.rect.width) =~ "Streaming conversation"
-      assert String.trim(row(plan, 2, 0, main.rect.x)) == ""
       refute screen(plan) =~ "◉ Conversation"
       refute screen(plan) =~ "◌ Activity"
     end
@@ -299,7 +297,9 @@ defmodule SwarmCodeCLI.UI.Paint.ShellFormatTest do
       plan = paint(state)
       activity_row = row(plan, 29)
       refute activity_row =~ "Waiting for you"
-      assert activity_row =~ "Activity"
+
+      assert activity_row =~
+               SwarmCodeCLI.UI.SafeText.value(SwarmCodeCLI.UI.SafeText.chrome(:rule))
     end
   end
 

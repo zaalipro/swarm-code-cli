@@ -52,8 +52,10 @@ defmodule SwarmCodeCLI.UI.Projector.Inspector do
   # The verdict card sits above the hive on a judged run; the card is short and
   # the lanes take what is left.
   defp thread(state, run, width, height, opts) do
+    # The hive leads: who is working and on what is the first thing to know;
+    # the judge's card, when there is one, reads below it.
     card = Verdict.card(state, run, width)
-    card ++ Hive.panel(state, run, width, max(0, height - length(card)), opts)
+    Hive.panel(state, run, width, max(0, height - length(card)), opts) ++ card
   end
 
   # One clickable name per tab, the current one lit.

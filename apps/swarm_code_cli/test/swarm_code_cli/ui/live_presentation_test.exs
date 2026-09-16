@@ -180,9 +180,9 @@ defmodule SwarmCodeCLI.UI.LivePresentationTest do
     state = put_in(state.read_model.runs[run.id], run)
     {scene, _} = Projector.project(state)
     assert Scene.validate(scene) == :ok
-    # W5 Change 1: workspace now projects Gauge blocks, not Progress blocks.
-    # The indeterminate contract is unchanged: value 0, maximum 0, no invented percentage.
-    assert Enum.any?(gauge_blocks(scene), &match?(%{value: 0, maximum: 0}, &1))
+    # The run card and its gauge are gone from main: the state is a row of
+    # words, and an unknown progress invents no percentage anywhere.
+    assert gauge_blocks(scene) == []
     assert progress_blocks(scene) == []
   end
 

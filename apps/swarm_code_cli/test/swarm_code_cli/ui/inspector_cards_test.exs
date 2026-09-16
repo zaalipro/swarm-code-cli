@@ -208,17 +208,18 @@ defmodule SwarmCodeCLI.UI.InspectorCardsTest do
   end
 
   describe "verdict card" do
-    test "the thread tab of a consensus run shows the newest verdict above the hive" do
+    test "the thread tab of a consensus run shows the newest verdict below the hive" do
       rows = rows(:consensus, 170, 34)
 
-      assert Enum.at(rows, 1) == "VERDICT · round 1 · done"
-      assert Enum.at(rows, 2) =~ ~r/^✓ tests_pass {6}142 tests, 0 failures$/
-      assert Enum.at(rows, 3) =~ ~r/^✓ no_regressions  auth paths unchanged$/
+      v = Enum.find_index(rows, &(&1 == "VERDICT · round 1 · done"))
+      assert v, "no verdict row"
+      assert Enum.at(rows, v + 1) =~ ~r/^✓ tests_pass {6}142 tests, 0 failures$/
+      assert Enum.at(rows, v + 2) =~ ~r/^✓ no_regressions  auth paths unchanged$/
       # The panel is 42 cells wide, so the longest note is elided.
-      assert Enum.at(rows, 4) =~ ~r/^✕ docs_updated {4}architecture.md still d…$/
-      assert Enum.at(rows, 5) =~ ~r/^— style {11}not evaluated$/
-      assert Enum.at(rows, 6) =~ ~r/^Two of three proposals meet the bar/
-      assert Enum.find_index(rows, &String.starts_with?(&1, "HIVE  ")) > 6
+      assert Enum.at(rows, v + 3) =~ ~r/^✕ docs_updated {4}architecture.md still d…$/
+      assert Enum.at(rows, v + 4) =~ ~r/^— style {11}not evaluated$/
+      assert Enum.at(rows, v + 5) =~ ~r/^Two of three proposals meet the bar/
+      assert Enum.find_index(rows, &String.starts_with?(&1, "HIVE  ")) < v
     end
 
     test "the newest round wins" do
@@ -236,8 +237,9 @@ defmodule SwarmCodeCLI.UI.InspectorCardsTest do
       state = put_in(state.read_model.verdicts, %{"judge-1" => older, "judge-2" => newer})
       {rows, _, _, _} = painted(state)
 
-      assert Enum.at(rows, 1) == "VERDICT · round 2 · done"
-      assert Enum.at(rows, 2) =~ ~r/^✓ docs_updated  docs landed$/
+      v = Enum.find_index(rows, &(&1 == "VERDICT · round 2 · done"))
+      assert v, "no verdict row"
+      assert Enum.at(rows, v + 1) =~ ~r/^✓ docs_updated  docs landed$/
       refute Enum.any?(rows, &String.contains?(&1, "142 tests"))
     end
 
@@ -258,8 +260,9 @@ defmodule SwarmCodeCLI.UI.InspectorCardsTest do
       state = put_in(state.read_model.agents, %{"judge-agent" => judge})
       {rows, _, _, _} = painted(state)
 
-      assert Enum.at(rows, 1) == "VERDICT"
-      assert Enum.at(rows, 2) == "No verdict yet · judge running"
+      v = Enum.find_index(rows, &(&1 == "VERDICT"))
+      assert v, "no verdict row"
+      assert Enum.at(rows, v + 1) == "No verdict yet · judge running"
       assert Enum.any?(rows, &(&1 =~ ~r/^⚖ judge reading proposal B/))
     end
 

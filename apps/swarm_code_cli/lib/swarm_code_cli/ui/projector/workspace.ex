@@ -13,8 +13,6 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
 
   # Paint's card chrome: a two-cell left gutter and one cell of right padding.
   # The title is cut to the header width that leaves, so it never wraps.
-  @card_gutter 2
-  @card_pad 1
 
   def project(state, rect, class) do
     chrome = chrome(state, rect, class)
@@ -40,47 +38,13 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
         chrome.summary ++
         Enum.take(chrome.notices, 2) ++ chrome.deck ++ chrome.separator
 
-    bottom_anchor(head, content, state, rect)
+    head ++ content
   end
 
-  # A conversation reads from the bottom: the newest turn sits just above the
-  # composer, the way every chat surface behaves. Without this the transcript
-  # pins to the top and a short conversation leaves the screen looking broken.
-  #
-  # The chrome does not ride down with it. `NEEDS n`, the composer facts and the
-  # run card are a prominence contract: a pending question has to be in the same
-  # place on main's first row whether the transcript is empty or a thousand turns
-  # long, and a header that drifts with content length is not a header. So the
-  # spacer goes BETWEEN the chrome and the transcript, never before the chrome.
-
-  # `Blocks.lines/6` measures at most 200 rows, so a pane taller than that cannot
-  # be measured honestly; it keeps the transcript where it is.
-  defp bottom_anchor(head, content, _state, rect) when rect.height > 200,
-    do: head ++ content
-
-  defp bottom_anchor(head, content, state, rect) do
-    {measured, _actions} = Support.finalize(head ++ content, state.revision)
-
-    options = %Options{
-      color_mode: state.capabilities.color_mode,
-      ascii?: state.capabilities.ascii?
-    }
-
-    case Metrics.height(
-           measured,
-           min(rect.width, 500),
-           options,
-           rect.height,
-           state.capabilities.ambiguous_width
-         ) do
-      {:ok, painted} when painted < rect.height ->
-        spacer = List.duplicate(Support.text(" ", state, rect.width), rect.height - painted)
-        head ++ spacer ++ content
-
-      _ ->
-        head ++ content
-    end
-  end
+  # The transcript reads from the top, under the run's headline, and follows
+  # the newest turn once it is longer than the pane: a short conversation sits
+  # where the eye starts, not against the composer with a screen of blank
+  # rows above it.
 
   @doc "Exact Main text viewport rows after required chrome, notices and action decks."
   def content_height(state, rect, class),
@@ -143,7 +107,7 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
 
     summary =
       if run,
-        do: [card(state, run, rect.width, class) | mode_panel(state, run, rect.width, class)],
+        do: headline(state, run, rect.width, class) ++ mode_panel(state, run, rect.width, class),
         else: []
 
     actions =
@@ -243,18 +207,6 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
 
       run.kind == :ultra ->
         [Support.styled(pipeline_stages(state), :run_ultra, state, width)]
-
-      run.kind == :workflow ->
-        [Support.styled("WORKFLOW RUN  ·  inputs and stages", :run_workflow, state, width)]
-
-      run.kind == :consensus ->
-        [Support.styled("CONSENSUS  ·  plan ↔ changes", :run_consensus_judge, state, width)]
-
-      run.kind == :research ->
-        [Support.styled("RESEARCH  ·  report and sources", :run_research, state, width)]
-
-      run.kind == :swarm ->
-        [Support.styled("SWARM  ·  parallel agent lanes", :run_swarm, state, width)]
 
       plan? ->
         plan_panel(state, run, width)
@@ -461,76 +413,40 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
     end)
   end
 
-  def card(state, run, width, class) do
-    {prefix, role} = Theme.run_kind(kind(run.kind))
-    enabled = class not in [:compressed_small, :too_small] and run.state != :superseded
-    retry? = enabled and run.state == :failed and Support.allowed?(state, run, :retry)
-    resume? = enabled and run.state == :interrupted and Support.allowed?(state, run, :resume)
+  # One row says which run this is and where it stands: the kind's glyph and
+  # colour, the title, and the state in plain words. The run's actions follow
+  # on their own row when there are any. The card this replaces spent five
+  # rows on the same facts, led with the system's status word, and was
+  # followed by a kind banner that the hive panel already says better.
+  defp headline(state, run, width, class) do
+    kind = RunRow.theme_kind(run.kind)
+    {_letter, kind_role} = Theme.run_kind(kind)
+    {_word, status_role} = Theme.status(run.state)
+    plain = RunRow.tinted(:text_primary, state)
 
-    actions = if enabled, do: run_actions(state, run, retry?, resume?), else: []
-
-    actions =
-      if class in [:compressed_small, :too_small],
-        do: [],
-        else:
-          actions ++
-            [
-              Support.action(
-                SafeText.chrome(:inspect),
-                {:local, {:open_layer, {:run_inspector, run.id, :overview}}}
-              )
-            ]
-
-    # The card's header carries the canonical status word; its first row says
-    # the same thing in plain words with the facts that matter next.
-    body = [tinted(state_words(run, state), elem(Theme.status(run.state), 1), state, width)]
-
-    body =
-      body ++
-        cond do
-          retry? -> [Support.text("RETRY AVAILABLE", state, width)]
-          resume? -> [Support.text("RESUME AVAILABLE", state, width)]
-          true -> []
-        end
-
-    body =
-      if run.state in [:running, :streaming],
-        do:
-          body ++
-            [
-              %Block.Gauge{
-                tone: role,
-                value: run.progress || 0,
-                maximum: if(is_nil(run.progress), do: 0, else: 100),
-                style: :ticks,
-                label: nil
-              }
-            ],
-        else: body
-
-    body = body ++ if(actions == [], do: [], else: [%Block.ActionDeck{actions: actions}])
-    # Run-kind identity is textual in monochrome as well as color; the boundary is singular.
-    title = card_title(run, prefix, state, width)
-    %Block.RunCard{id: opaque(run.id), title: title, status: run.state, body: body}
-  end
-
-  # The title gets the cells Paint's card header leaves after the kind letter,
-  # the boundary and the status word, and is cut on a word boundary with an
-  # ellipsis so it never ends mid-word and never wraps into a second row.
-  defp card_title(run, prefix, state, width) do
+    words = "  " <> state_words(run, state)
     policy = state.capabilities.ambiguous_width
-    {status_text, _} = Theme.status(run.state)
-    boundary = if state.capabilities.ascii?, do: " - ", else: " — "
-    lead = SafeText.value(prefix) <> " "
-    inner = max(1, width - @card_gutter - @card_pad)
+    title_room = max(8, width - 4 - Width.cells(words, policy))
 
-    avail =
-      inner - Width.cells(lead, policy) - Width.cells(boundary, policy) -
-        Width.cells(SafeText.value(status_text), policy)
+    line = %Block.RichText{
+      spans: [
+        %Span{
+          text: Support.glyph(Theme.run_mark(kind), state),
+          style: %{RunRow.tinted(kind_role, state) | modifiers: [:bold]}
+        },
+        %Span{text: Density.safe(" ", state, width), style: plain},
+        %Span{
+          text: Density.safe(word_cut(run.title, title_room, state), state, title_room),
+          style: %{plain | modifiers: [:bold]}
+        },
+        %Span{text: Density.safe(words, state, width), style: RunRow.tinted(status_role, state)}
+      ]
+    }
 
-    Density.safe(lead <> word_cut(run.title, max(avail, 1), state), state, width)
+    [line | run_deck(state, run, class)]
   end
 
+  # The title is cut on a word boundary when it must be cut at all.
   defp word_cut(title, avail, state) do
     policy = state.capabilities.ambiguous_width
     title = title |> Density.safe(state, 500) |> SafeText.value()
@@ -559,6 +475,26 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
         words -> Enum.join(Enum.reverse(words), " ") <> ellipsis
       end
     end
+  end
+
+  defp run_deck(state, run, class) do
+    enabled = class not in [:compressed_small, :too_small] and run.state != :superseded
+    retry? = enabled and run.state == :failed and Support.allowed?(state, run, :retry)
+    resume? = enabled and run.state == :interrupted and Support.allowed?(state, run, :resume)
+
+    actions =
+      if enabled,
+        do:
+          run_actions(state, run, retry?, resume?) ++
+            [
+              Support.action(
+                SafeText.chrome(:inspect),
+                {:local, {:open_layer, {:run_inspector, run.id, :overview}}}
+              )
+            ],
+        else: []
+
+    if actions == [], do: [], else: [%Block.ActionDeck{actions: actions}]
   end
 
   # "running · 3 agents", "done · 02:14", "stopped by you", "waiting for you".
@@ -822,7 +758,6 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
   defp kind(:chat), do: :assistant
   defp kind(:consensus), do: :consensus_judge
   defp kind(kind), do: kind
-  defp opaque(id), do: :crypto.hash(:sha256, id) |> Base.url_encode64(padding: false)
 
   # The stage arrow is catalogue chrome, so it must go through Support.glyph/2 to get its
   # one-cell ASCII twin; a literal ❯ would survive into ASCII mode (NOTES_2 #36).

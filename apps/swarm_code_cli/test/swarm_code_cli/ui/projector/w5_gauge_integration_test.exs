@@ -32,77 +32,43 @@ defmodule SwarmCodeCLI.UI.Projector.W5GaugeIntegrationTest do
 
   defp do_find_blocks(_, _predicate), do: []
 
-  describe "workspace gauge integration (Change 1)" do
-    test "running run projects a Gauge, not a Progress" do
+  defp texts(%SafeText{} = t), do: [SafeText.value(t)]
+  defp texts(%{__struct__: _} = t), do: t |> Map.from_struct() |> texts()
+  defp texts(m) when is_map(m), do: m |> Map.values() |> texts()
+  defp texts(l) when is_list(l), do: Enum.flat_map(l, &texts/1)
+  defp texts(t) when is_tuple(t), do: t |> Tuple.to_list() |> texts()
+  defp texts(_), do: []
+
+  describe "the run headline" do
+    # The main pane no longer carries a run card with a gauge: the run's state
+    # is one row of plain words under the tabs, and progress lives on the tab
+    # row and in the hive's lanes. Nothing in main invents a percentage.
+    test "a running run shows its state in words, not a gauge in main" do
       state = fixture(:chat, %Size{columns: 150, rows: 30})
       run = hd(Map.values(state.read_model.runs))
       state = put_in(state.read_model.runs[run.id].state, :running)
       state = put_in(state.read_model.runs[run.id].progress, 62)
 
       {scene, _} = Projector.project(state)
+      main = Enum.find(scene.regions, &(&1.role == :main))
 
-      gauges = find_blocks(scene.regions, &match?(%Block.Gauge{}, &1))
-      progresses = find_blocks(scene.regions, &match?(%Block.Progress{}, &1))
-
-      assert length(gauges) > 0, "Expected at least one Gauge for running run"
-      assert progresses == [], "No Progress blocks should remain in workspace projector"
+      assert find_blocks(main, &match?(%Block.Gauge{}, &1)) == []
+      assert find_blocks(main, &match?(%Block.Progress{}, &1)) == []
+      assert find_blocks(main, &match?(%Block.RunCard{}, &1)) == []
+      assert Enum.join(texts(main), " ") =~ "running"
     end
 
-    test "gauge tone is the run-kind role for a running assistant run" do
-      state = fixture(:chat, %Size{columns: 150, rows: 30})
-      run = hd(Map.values(state.read_model.runs))
-      state = put_in(state.read_model.runs[run.id].kind, :chat)
-      state = put_in(state.read_model.runs[run.id].state, :running)
-      state = put_in(state.read_model.runs[run.id].progress, 42)
-
-      {scene, _} = Projector.project(state)
-
-      gauges = find_blocks(scene.regions, &match?(%Block.Gauge{style: :ticks}, &1))
-      assert length(gauges) > 0
-
-      gauge = hd(gauges)
-      assert gauge.tone == :run_assistant
-    end
-
-    test "gauge tone is the run-kind role for a streaming goal run" do
-      state = fixture(:chat, %Size{columns: 150, rows: 30})
-      run = hd(Map.values(state.read_model.runs))
-      state = put_in(state.read_model.runs[run.id].kind, :goal)
-      state = put_in(state.read_model.runs[run.id].state, :streaming)
-      state = put_in(state.read_model.runs[run.id].progress, 75)
-
-      {scene, _} = Projector.project(state)
-
-      gauges = find_blocks(scene.regions, &match?(%Block.Gauge{style: :ticks}, &1))
-      gauge = Enum.find(gauges, fn g -> g.value == 75 end)
-      assert gauge, "Expected gauge with value 75"
-      assert gauge.tone == :run_goal
-    end
-
-    test "run with progress: nil yields a gauge with maximum: 0" do
+    test "an unknown progress invents no percentage" do
       state = fixture(:chat, %Size{columns: 150, rows: 30})
       run = hd(Map.values(state.read_model.runs))
       state = put_in(state.read_model.runs[run.id].state, :running)
       state = put_in(state.read_model.runs[run.id].progress, nil)
 
       {scene, _} = Projector.project(state)
+      main = Enum.find(scene.regions, &(&1.role == :main))
 
-      gauges = find_blocks(scene.regions, &match?(%Block.Gauge{style: :ticks}, &1))
-      gauge = Enum.find(gauges, fn g -> g.maximum == 0 end)
-      assert gauge, "Expected gauge with maximum: 0 for indeterminate progress"
-      assert gauge.value == 0
-    end
-
-    test "all gauges use style: :ticks" do
-      state = fixture(:chat, %Size{columns: 150, rows: 30})
-      run = hd(Map.values(state.read_model.runs))
-      state = put_in(state.read_model.runs[run.id].state, :running)
-      state = put_in(state.read_model.runs[run.id].progress, 50)
-
-      {scene, _} = Projector.project(state)
-
-      gauges = find_blocks(scene.regions, &match?(%Block.Gauge{}, &1))
-      assert Enum.all?(gauges, fn g -> g.style == :ticks end)
+      refute Enum.join(texts(main), " ") =~ "%"
+      assert find_blocks(main, &match?(%Block.Gauge{}, &1)) == []
     end
   end
 

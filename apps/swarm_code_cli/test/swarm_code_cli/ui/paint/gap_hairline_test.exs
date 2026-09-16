@@ -63,7 +63,7 @@ defmodule SwarmCodeCLI.UI.Paint.GapHairlineTest do
       # 96-cell reading measure in the middle of it. The columns the navigator
       # owned are main's own empty gutter, so nothing is painted there and no
       # region starts to the left of main.
-      assert main.rect == %Rect{x: 15, y: 2, width: 96, height: 27}
+      assert main.rect == %Rect{x: 0, y: 2, width: 127, height: 27}
 
       docked =
         for region <- scene.regions,
@@ -73,7 +73,7 @@ defmodule SwarmCodeCLI.UI.Paint.GapHairlineTest do
 
       assert docked == [], "a pane is docked to the left of main: #{inspect(docked)}"
 
-      for x <- 0..(main.rect.x - 1), y <- 2..32 do
+      for x <- 0..(main.rect.x - 1)//1, y <- 2..32 do
         assert cell_glyph(plan, x, y) in [nil, " "],
                "#{inspect(cell_glyph(plan, x, y))} is painted at (#{x}, #{y}), left of main"
       end

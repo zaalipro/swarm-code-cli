@@ -179,7 +179,7 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
     {name, style} = speaker(item, run, state)
     marker = if expanded?, do: :expanded, else: :collapsed
     title = first_line(tool.title) || first_line(tool.name) || "tool"
-    summary = first_line(tool.detail) || bytes(tool.result_bytes)
+    summary = summary_line(tool) || bytes(tool.result_bytes)
     status = if item.tool, do: tool.status, else: item.state
     {mark, mark_style} = status_mark(status, state)
     duration = tool_duration(tool, state)
@@ -200,6 +200,34 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
     line = one_liner(head, summary, tail, state, width)
     body = if expanded?, do: preview(item.text, :text_primary, state, width), else: []
     [line | body]
+  end
+
+  # A backend's detail often repeats the path the title already names
+  # ("lib/x.ex (1196 lines) defmodule…" under "read lib/x.ex"); the row says
+  # the path once and keeps what the detail adds.
+  defp summary_line(tool) do
+    detail = first_line(tool.detail)
+
+    case {detail, tool.files} do
+      {text, [path | _]} when is_binary(text) and is_binary(path) and path != "" ->
+        if String.starts_with?(text, path) do
+          text
+          |> String.replace_prefix(path, "")
+          |> String.replace(~r/^\s*\((.*?)\)\s*/, "\\1 · ")
+          |> String.trim()
+          |> String.trim_trailing("·")
+          |> String.trim()
+          |> case do
+            "" -> nil
+            rest -> rest
+          end
+        else
+          text
+        end
+
+      _ ->
+        detail
+    end
   end
 
   # The summary is the part that gives way: it takes what is left after the

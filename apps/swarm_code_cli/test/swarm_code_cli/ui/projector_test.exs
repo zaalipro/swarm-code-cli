@@ -48,7 +48,7 @@ defmodule SwarmCodeCLI.UI.ProjectorTest do
         joined = Enum.join(texts(scene), " ")
         assert joined =~ "NO USER DATA"
         assert joined =~ "Build"
-        assert joined =~ "Activity"
+        refute joined =~ "NEEDS"
         refute joined =~ "Target: Main"
         refute joined =~ "Validation: none"
         assert joined =~ "Focus"
@@ -111,7 +111,6 @@ defmodule SwarmCodeCLI.UI.ProjectorTest do
       {scene, actions} = Projector.project(next)
       target = {:intent, {:retry_run, run.id, 7}}
       assert target in Map.values(actions) == enabled
-      assert Enum.join(texts(scene), " ") =~ "RETRY AVAILABLE" == enabled
 
       {_, pending} =
         Projector.project(%{

@@ -198,7 +198,7 @@ defmodule SwarmCodeCLI.UI.Projector.WorkspaceTurnsTest do
     end
   end
 
-  test "the run card cuts a long title on a word boundary and says its state in plain words" do
+  test "the run headline cuts a long title on a word boundary and says its state in plain words" do
     title =
       "Read only application analysis of the authentication, session and billing layers " <>
         "for the quarterly architecture review"
@@ -207,17 +207,16 @@ defmodule SwarmCodeCLI.UI.Projector.WorkspaceTurnsTest do
     state = put_in(state.read_model.runs["fixture-run"].title, title)
     {rows, _, _, _} = painted(state)
 
-    card = Enum.find(rows, &(&1 =~ "STREAMING"))
-    [_, shown] = Regex.run(~r/S (.*) — STREAMING$/, card)
+    row = Enum.find(rows, &String.contains?(&1, "running · 5 agents"))
+    assert row, "no headline row"
+    [_, shown] = Regex.run(~r/^\S (.*?) {2,}running · 5 agents\s*$/u, row)
     assert String.ends_with?(shown, "…")
     kept = String.trim_trailing(shown, "…")
     assert String.starts_with?(title, kept)
     assert String.at(title, String.length(kept)) == " "
     refute String.ends_with?(kept, " ")
 
-    # Plain words follow on the card's next row; no second row of title.
-    assert Enum.at(rows, index_of(rows, "▐ S ") + 1) == "▐ running · 5 agents"
-
+    # The state follows the title on the same row, in plain words.
     for {run_state, words} <- [
           {:stopped, "stopped by you"},
           {:waiting_question, "waiting for you"},
@@ -227,12 +226,13 @@ defmodule SwarmCodeCLI.UI.Projector.WorkspaceTurnsTest do
       run = state.read_model.runs["fixture-run"]
       run = %{run | state: run_state, finished_at: run.started_at + 134_000, agents_total: 3}
       {rows, _, _, _} = painted(put_in(state.read_model.runs["fixture-run"], run))
-      assert Enum.any?(rows, &(&1 == "▐ " <> words)), "#{run_state} lacks #{words}"
+      assert Enum.any?(rows, &String.contains?(&1, "  " <> words)), "#{run_state} lacks #{words}"
     end
 
     short = put_in(state.read_model.runs["fixture-run"].title, "Short title")
     {rows, _, _, _} = painted(short)
-    assert Enum.any?(rows, &(&1 == "▐ S Short title — STREAMING"))
+    assert Enum.any?(rows, &(&1 =~ ~r/^\S Short title {2,}running · 5 agents\s*$/u))
+    refute Enum.any?(rows, &String.contains?(&1, "STREAMING"))
   end
 
   test "full-text actions are labelled by what they open, one per kind" do

@@ -483,7 +483,7 @@ defmodule SwarmCodeCLI.UI.ReducerNavigationTest do
       main = Enum.find(scene.regions, &(&1.role == :main))
       inspector = Enum.find(scene.regions, &(&1.role == :inspector))
       assert inspector.rect.x - 1 == 107
-      assert main.rect == %Rect{x: 5, y: 2, width: 96, height: 33}
+      assert main.rect == %Rect{x: 0, y: 2, width: 107, height: 33}
       assert main.rect.x == div(107 - main.rect.width, 2)
 
       docked =
