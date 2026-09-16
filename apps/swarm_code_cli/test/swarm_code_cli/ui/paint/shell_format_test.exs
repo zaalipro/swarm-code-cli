@@ -178,13 +178,17 @@ defmodule SwarmCodeCLI.UI.Paint.ShellFormatTest do
       assert status =~ "Ctrl-K"
     end
 
+    # The old row hinted "?" here, a key that types a question mark in the
+    # composer; hints now come from the binding table for the composer context,
+    # where the third strongest is the command palette.
     test "narrow shows 3 hints for composer focus" do
       state = fixture(:chat, {80, 24})
       plan = paint(state)
       status = row(plan, 23)
       assert status =~ "Enter"
       assert status =~ "Esc"
-      assert status =~ "?"
+      assert status =~ "Ctrl-K"
+      refute status =~ "?"
     end
 
     test "small shows 2 hints for composer focus" do

@@ -12,6 +12,13 @@ defmodule SwarmCodeCLI.UI.EditorTest do
 
   defp filled(text, opts \\ []), do: edit(Editor.new(opts), {:paste, text})
 
+  defp at(text, index, opts \\ []) do
+    editor = edit(filled(text, opts), {:move, :buffer_start})
+    Enum.reduce(1..index//1, editor, fn _, acc -> edit(acc, {:move, :right}) end)
+  end
+
+  defp records(editor), do: length(editor.undo)
+
   test "fragmented accents, modifiers, flags and ZWJ retain exact bytes and graphemes" do
     for text <- ["é", "👩🏽‍🚒", "🇬🇪🇺🇸🇫", "👨‍👩‍👧‍👦", "❤︎❤️", "ქართული", "العربية", "עברית", "界"] do
       editor = Enum.reduce(String.codepoints(text), Editor.new(), &edit(&2, {:insert, &1}))
@@ -72,6 +79,254 @@ defmodule SwarmCodeCLI.UI.EditorTest do
 
     assert Editor.text(editor |> edit({:move, :buffer_start}) |> edit(:delete_backward)) ==
              "one  界 "
+  end
+
+  test "word end and first nonblank resolve at line boundaries, blank lines and the buffer end" do
+    for {from, target} <- [{0, 4}, {3, 4}, {4, 7}, {7, 12}, {10, 12}, {11, 12}, {12, 12}] do
+      assert Editor.cursor(edit(at("abcd ef\n  gh", from), {:move, :word_end})) == target
+    end
+
+    for {from, target} <- [{0, 0}, {5, 0}, {7, 0}, {8, 10}, {10, 10}, {12, 10}] do
+      assert Editor.cursor(edit(at("abcd ef\n  gh", from), {:move, :first_nonblank})) == target
+    end
+
+    # Only blanks ahead clamps to the buffer end, as forward word motion does.
+    assert Editor.cursor(edit(at("abc   ", 3), {:move, :word_end})) == 6
+    assert Editor.cursor(edit(at("ab", 2), {:move, :word_end})) == 2
+    # `^` on a blank line is its end; on an empty line it is the line itself.
+    assert Editor.cursor(edit(at("x\n   \ny", 4), {:move, :first_nonblank})) == 5
+    assert Editor.cursor(edit(at("x\n\ny", 2), {:move, :first_nonblank})) == 2
+    # Multi-codepoint graphemes and CJK are single logical steps.
+    assert Editor.cursor(edit(at("👩🏽‍🚒界 ab", 0), {:move, :word_end})) == 1
+    assert Editor.cursor(edit(at("界界 ab", 0), {:move, :word_end})) == 2
+    assert Editor.selection(edit(at("abcd ef", 0), {:extend_selection, :word_end})) == {0, 4}
+    assert Editor.selection(edit(at("  abc", 5), {:extend_selection, :first_nonblank})) == {2, 5}
+  end
+
+  test "motion deletes take the whole span in one record and fill the unnamed register" do
+    for {span, from, text, register, cursor} <- [
+          {:word_right, 0, "two three", "one ", 0},
+          {:word_end, 0, " two three", "one", 0},
+          {:word_left, 7, "one  three", "two", 4},
+          {:line_start, 4, "two three", "one ", 0},
+          {:right, 0, "ne two three", "o", 0},
+          {:left, 1, "ne two three", "o", 0}
+        ] do
+      before = at("one two three", from)
+      deleted = edit(before, {:delete, span})
+      assert Editor.text(deleted) == text
+      assert Editor.register(deleted) == {register, :charwise}
+      assert Editor.cursor(deleted) == cursor
+      assert records(deleted) == records(before) + 1
+      assert Editor.text(edit(deleted, :undo)) == "one two three"
+    end
+
+    ends = edit(at("one two\nx", 3), {:delete, :line_end})
+    assert Editor.text(ends) == "one\nx"
+    assert Editor.register(ends) == {" two", :charwise}
+    assert Editor.text(edit(at("   one", 5), {:delete, :first_nonblank})) == "   e"
+    # A span that covers nothing changes neither the text nor the register.
+    for span <- [:line_end, :word_right, :word_end, :right, :buffer_end] do
+      assert edit(at("abc", 3), {:delete, span}) == at("abc", 3)
+    end
+  end
+
+  test "line delete takes the line and its newline on first, middle, last and only lines" do
+    for {from, text, register, cursor} <- [
+          {0, "b\nc", "a\n", 0},
+          {2, "a\nc", "b\n", 2},
+          {4, "a\nb", "c\n", 2}
+        ] do
+      deleted = edit(at("a\nb\nc", from), {:delete, :line})
+      assert Editor.text(deleted) == text
+      assert Editor.register(deleted) == {register, :linewise}
+      assert Editor.cursor(deleted) == cursor
+      assert Editor.text(edit(deleted, :undo)) == "a\nb\nc"
+    end
+
+    only = edit(at("abc", 1), {:delete, :line})
+    assert Editor.text(only) == ""
+    assert Editor.register(only) == {"abc\n", :linewise}
+    assert Editor.cursor(only) == 0
+    assert Editor.text(edit(only, :undo)) == "abc"
+    assert Editor.text(edit(at("abc\n", 0), {:delete, :line})) == ""
+    # An empty buffer has no line to take and leaves the register alone.
+    assert edit(Editor.new(), {:delete, :line}) == Editor.new()
+    # A linewise register is newline-normalised; the splice keeps exact bytes.
+    crlf = edit(at("a\r\nb", 0), {:delete, :line})
+    assert Editor.text(crlf) == "b"
+    assert Editor.register(crlf) == {"a\n", :linewise}
+    assert Editor.text(edit(crlf, :undo)) == "a\r\nb"
+  end
+
+  test "a span delete undoes to the exact text, caret and selection and redoes forward" do
+    editor =
+      at("界é👩‍💻 tail", 0)
+      |> edit({:extend_selection, :right})
+      |> edit({:extend_selection, :right})
+
+    assert Editor.selection(editor) == {0, 2}
+    deleted = edit(editor, {:delete, :selection})
+    assert Editor.text(deleted) == "👩‍💻 tail"
+    assert Editor.register(deleted) == {"界é", :charwise}
+    restored = edit(deleted, :undo)
+    assert Editor.text(restored) == "界é👩‍💻 tail"
+    assert Editor.cursor(restored) == 2
+    assert Editor.selection(restored) == {0, 2}
+    assert Editor.text(edit(restored, :redo)) == "👩‍💻 tail"
+    # Removing one flag pair must not resegment the untouched neighbour.
+    flags = edit(at("🇬🇪🇺🇸", 0), {:delete, :right})
+    assert Editor.text(flags) == "🇺🇸"
+    assert Editor.text(edit(flags, :undo)) == "🇬🇪🇺🇸"
+    zwj = edit(at("👩‍💻界", 0), {:delete, :line})
+    assert Editor.text(zwj) == ""
+    assert Editor.text(edit(zwj, :undo)) == "👩‍💻界"
+  end
+
+  test "yank fills the register without editing and put places charwise and linewise text" do
+    before = at("one two", 0)
+    charwise = edit(before, {:yank, :word_right})
+    assert Editor.text(charwise) == "one two"
+    assert Editor.register(charwise) == {"one ", :charwise}
+    assert records(charwise) == records(before)
+    # `p` goes after the caret's grapheme, `P` onto it; both stay in the line.
+    assert Editor.text(edit(charwise, :put_after)) == "oone ne two"
+    assert Editor.text(edit(charwise, :put_before)) == "one one two"
+    assert Editor.cursor(edit(charwise, :put_before)) == 3
+    assert Editor.text(edit(at("ab", 2), {:yank, :left}) |> edit(:put_after)) == "abb"
+
+    linewise = edit(at("a\nb", 0), {:yank, :line})
+    assert Editor.register(linewise) == {"a\n", :linewise}
+    assert Editor.text(edit(linewise, :put_after)) == "a\na\nb"
+    assert Editor.cursor(edit(linewise, :put_after)) == 2
+    assert Editor.text(edit(linewise, :put_before)) == "a\na\nb"
+    assert Editor.cursor(edit(linewise, :put_before)) == 0
+    # A last line without a newline of its own borrows one for the new block.
+    assert Editor.text(edit(at("a\nb", 2), {:yank, :line}) |> edit(:put_after)) == "a\nb\nb"
+    # An empty register is a no-op both ways.
+    assert edit(filled("abc"), :put_after) == filled("abc")
+    assert edit(filled("abc"), :put_before) == filled("abc")
+    # A yank collapses to the start of its span; `yy` holds the caret.
+    assert Editor.cursor(edit(at("one two", 7), {:yank, :word_left})) == 4
+    assert Editor.cursor(edit(at("one two", 5), {:yank, :line})) == 5
+    # Putting a multi-codepoint grapheme keeps it whole.
+    emoji = at("👩‍💻界", 0) |> edit({:yank, :right}) |> edit({:move, :buffer_end})
+    assert Editor.text(edit(emoji, :put_after)) == "👩‍💻界👩‍💻"
+  end
+
+  test "selection spans need a selection and motion spans absorb the one that is open" do
+    plain = at("one two three", 0)
+    assert edit(plain, {:delete, :selection}) == plain
+    assert edit(plain, {:yank, :selection}) == plain
+    assert Editor.register(edit(plain, {:yank, :selection})) == nil
+
+    selected =
+      plain
+      |> edit({:move, :right})
+      |> edit({:extend_selection, :right})
+      |> edit({:extend_selection, :right})
+
+    assert Editor.selection(selected) == {1, 3}
+    yanked = edit(selected, {:yank, :selection})
+    assert Editor.text(yanked) == "one two three"
+    assert Editor.register(yanked) == {"ne", :charwise}
+    assert Editor.selection(yanked) == nil
+    assert Editor.cursor(yanked) == 1
+
+    deleted = edit(selected, {:delete, :selection})
+    assert Editor.text(deleted) == "o two three"
+    assert Editor.register(deleted) == {"ne", :charwise}
+    assert records(deleted) == records(selected) + 1
+
+    # A motion span is the open selection extended by that motion.
+    extended = edit(selected, {:delete, :word_right})
+    assert Editor.text(extended) == "otwo three"
+    assert Editor.register(extended) == {"ne ", :charwise}
+    assert Editor.selection(extended) == nil
+    assert Editor.text(edit(extended, :undo)) == "one two three"
+  end
+
+  test "a counted operation folds into one record and repeats history operations" do
+    base = at("one two three", 0)
+    moved = edit(base, {:times, 3, {:move, :right}})
+    assert Editor.cursor(moved) == 3
+    assert records(moved) == records(base)
+    assert moved.redo == base.redo
+    assert Editor.text(edit(moved, :undo)) == ""
+
+    deleted = edit(base, {:times, 2, {:delete, :word_right}})
+    assert Editor.text(deleted) == "three"
+    assert records(deleted) == records(base) + 1
+    # The register grows in document order, so a put restores what was taken.
+    assert Editor.register(deleted) == {"one two ", :charwise}
+    assert Editor.text(edit(deleted, :undo)) == "one two three"
+    assert Editor.text(deleted |> edit(:undo) |> edit(:redo)) == "three"
+
+    backward = edit(at("one two three", 7), {:times, 2, {:delete, :word_left}})
+    assert Editor.text(backward) == " three"
+    assert Editor.register(backward) == {"one two", :charwise}
+
+    lines = edit(at("a\nb\nc", 0), {:times, 3, {:delete, :line}})
+    assert Editor.text(lines) == ""
+    assert Editor.register(lines) == {"a\nb\nc\n", :linewise}
+    assert records(lines) == records(at("a\nb\nc", 0)) + 1
+    assert Editor.text(edit(lines, :undo)) == "a\nb\nc"
+    last = edit(at("a\nb\nc", 4), {:times, 2, {:delete, :line}})
+    assert Editor.text(last) == "a"
+    assert Editor.register(last) == {"b\nc\n", :linewise}
+    # A repeated put stays contiguous because the caret ends on the last one.
+    assert Editor.text(edit(at("xy", 0), {:yank, :right}) |> edit({:times, 2, :put_after})) ==
+             "xxxy"
+
+    # A repeat is atomic: a step that cannot fit rejects the whole fold.
+    tight = at("abcd", 4, max_bytes: 6)
+    assert {:error, :text_too_large} = Editor.apply(tight, {:times, 3, {:insert, "z"}})
+    assert Editor.text(edit(tight, {:times, 2, {:insert, "z"}})) == "abcdzz"
+    assert records(edit(tight, {:times, 2, {:insert, "z"}})) == records(tight) + 1
+
+    # Counted history operations walk the stacks instead of folding a record.
+    typed = Enum.reduce(["a", "b", "c"], Editor.new(), &edit(&2, {:paste, &1}))
+    assert Editor.text(edit(typed, {:times, 2, :undo})) == "a"
+    assert Editor.text(typed |> edit({:times, 2, :undo}) |> edit({:times, 2, :redo})) == "abc"
+
+    # One folded record over the byte budget is evicted whole, as a group is.
+    evicted = edit(at("abcdef", 0, undo_bytes: 3), {:times, 4, {:delete, :right}})
+    assert Editor.text(evicted) == "ef"
+    assert evicted.undo == []
+    assert Editor.text(edit(evicted, :undo)) == "ef"
+  end
+
+  test "the register survives unrelated edits and a put that will not fit is rejected" do
+    yanked = edit(at("one two", 0), {:yank, :word_right})
+
+    typed =
+      yanked
+      |> edit({:insert, "Z"})
+      |> edit(:delete_backward)
+      |> edit({:paste, "tail"})
+      |> edit(:undo)
+
+    assert Editor.text(typed) == "one two"
+    assert Editor.register(typed) == {"one ", :charwise}
+    assert Editor.text(edit(typed, :put_before)) == "one one two"
+
+    # Insert-mode deletions leave the register alone; span deletes fill it.
+    assert Editor.register(edit(yanked, :delete_forward)) == {"one ", :charwise}
+    assert Editor.register(edit(yanked, :delete_word_forward)) == {"one ", :charwise}
+    assert Editor.register(edit(yanked, {:delete, :right})) == {"o", :charwise}
+
+    # A put is bounded by max_bytes and reports the oversize-insert error.
+    full = edit(at("abcdef", 0, max_bytes: 12), {:yank, :line})
+    assert Editor.register(full) == {"abcdef\n", :linewise}
+    assert {:error, :fragment_too_large} = Editor.apply(full, :put_after)
+    assert {:error, :fragment_too_large} = Editor.apply(full, :put_before)
+
+    assert Editor.text(edit(at("abcdef", 0, max_bytes: 13), {:yank, :line}) |> edit(:put_before)) ==
+             "abcdef\nabcdef"
+
+    # A register wider than one insert fragment is not an oversize fragment.
+    big = edit(filled(String.duplicate("a", 5000)), {:yank, :line})
+    assert Editor.text_bytes(edit(big, :put_before)) == 10_001
   end
 
   test "vertical movement retains preferred cells across short lines under explicit policies" do
@@ -185,6 +440,11 @@ defmodule SwarmCodeCLI.UI.EditorTest do
     refute inspect(editor) =~ "secret"
     refute inspect(editor.buffer) =~ "secret"
     refute inspect(Editor.visible_slice(editor, 80, 8, :narrow)) =~ "secret"
+    held = filled("secret-token") |> edit({:yank, :line}) |> edit(:select_all)
+    assert Editor.register(held) == {"secret-token\n", :linewise}
+    refute inspect(held) =~ "secret"
+    refute inspect(Editor.reset(held)) =~ "secret"
+    assert Editor.register(Editor.reset(held)) == nil
   end
 
   test "undoing a local edit does not resegment the untouched buffer" do
@@ -303,10 +563,21 @@ defmodule SwarmCodeCLI.UI.EditorTest do
           :undo,
           :redo,
           :select_all,
+          :put_after,
+          :put_before,
           {:move, :left},
           {:move, :right},
+          {:move, :word_end},
+          {:move, :first_nonblank},
           {:extend_selection, :left},
-          {:extend_selection, :right}
+          {:extend_selection, :right},
+          {:delete, :line},
+          {:delete, :word_right},
+          {:delete, :selection},
+          {:yank, :line},
+          {:yank, :selection},
+          {:times, 2, {:move, :right}},
+          {:times, 2, {:delete, :left}}
         ])
       ])
 

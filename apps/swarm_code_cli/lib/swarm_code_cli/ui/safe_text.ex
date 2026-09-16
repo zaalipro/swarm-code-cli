@@ -242,6 +242,11 @@ defmodule SwarmCodeCLI.UI.SafeText do
           | :shield_mark_ascii
           | :usage_mark
           | :usage_mark_ascii
+          | :jump_title
+          | :jump_top
+          | :jump_bottom
+          | :jump_next_run
+          | :jump_previous_run
           | {:braille, 0..255}
 
   def chrome(:full_detail), do: %__MODULE__{token: :full_detail}
@@ -458,6 +463,13 @@ defmodule SwarmCodeCLI.UI.SafeText do
   def chrome(:shield_mark), do: %__MODULE__{token: :shield_mark}
   def chrome(:shield_mark_ascii), do: %__MODULE__{token: :shield_mark_ascii}
   def chrome(:usage_mark), do: %__MODULE__{token: :usage_mark}
+
+  # The go-to popup's which-key rows: fixed chrome, one token each.
+  def chrome(:jump_title), do: %__MODULE__{token: :jump_title}
+  def chrome(:jump_top), do: %__MODULE__{token: :jump_top}
+  def chrome(:jump_bottom), do: %__MODULE__{token: :jump_bottom}
+  def chrome(:jump_next_run), do: %__MODULE__{token: :jump_next_run}
+  def chrome(:jump_previous_run), do: %__MODULE__{token: :jump_previous_run}
   def chrome(:usage_mark_ascii), do: %__MODULE__{token: :usage_mark_ascii}
 
   # A braille cell is 2x4 addressable dots. Carrying the bit pattern rather than
@@ -1169,6 +1181,26 @@ defmodule SwarmCodeCLI.UI.SafeText do
   def value(%{__struct__: __MODULE__, token: :usage_mark_ascii} = text)
       when map_size(text) == 2,
       do: "#"
+
+  def value(%{__struct__: __MODULE__, token: :jump_title} = text)
+      when map_size(text) == 2,
+      do: "Go to"
+
+  def value(%{__struct__: __MODULE__, token: :jump_top} = text)
+      when map_size(text) == 2,
+      do: "g   Top"
+
+  def value(%{__struct__: __MODULE__, token: :jump_bottom} = text)
+      when map_size(text) == 2,
+      do: "G   Bottom"
+
+  def value(%{__struct__: __MODULE__, token: :jump_next_run} = text)
+      when map_size(text) == 2,
+      do: "t   Next run"
+
+  def value(%{__struct__: __MODULE__, token: :jump_previous_run} = text)
+      when map_size(text) == 2,
+      do: "T   Previous run"
 
   def value(%{__struct__: __MODULE__, token: {:braille, bits}} = text)
       when map_size(text) == 2 and is_integer(bits) and bits in 0..255,

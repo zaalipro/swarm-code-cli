@@ -30,7 +30,8 @@ defmodule SwarmCodeCLI.Demo.Terminal do
         capabilities: caps,
         source_epoch: "terminal-demo",
         destination: {:conversation, Script.id(:a)},
-        now: Script.clock_ms()
+        now: Script.clock_ms(),
+        keymap: Init.keymap_from_env()
       }
 
       runtime =

@@ -2,8 +2,9 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
   @moduledoc "Sticky dialog chrome around a separately windowed, cell-wrapped body."
   alias SwarmCodeCLI.UI.{Editor, FieldEditors, SafeText, Switcher, Theme, UnifiedDiff, Width}
   alias SwarmCodeCLI.UI.Scene.{Block, Dialog, Rect, Span}
+  alias SwarmCodeCLI.UI.Keymap.Bindings
   alias SwarmCodeCLI.UI.Paint.{Metrics, Options}
-  alias SwarmCodeCLI.UI.Projector.{Density, RunPalette, RunsDashboard, Support}
+  alias SwarmCodeCLI.UI.Projector.{Density, KeyLabel, RunPalette, RunRow, RunsDashboard, Support}
   def project(state, class, background \\ %{})
   def project(%{layers: []}, _class, _background), do: nil
 
@@ -19,11 +20,11 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
 
   def project(state, class, background) do
     layer = hd(state.layers)
-    rect = rectangle(state.size, class)
+    rect = rectangle(layer, state.size, class)
 
     {title, options, footer, focus} =
       case layer do
-        {kind, _} when kind in [:switcher, :action_menu, :jump, :region_filter] ->
+        {kind, _} when kind in [:switcher, :action_menu, :region_filter] ->
           switcher(state, rect, class, background)
 
         _ ->
@@ -52,10 +53,11 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
 
     overflow =
       Support.text(
-        if(match?({:approval, _}, layer),
-          do: "PgUp/PgDn: scroll arguments",
-          else: "item #{min(ordinal + 1, length(options))} of #{length(options)}"
-        ),
+        case layer do
+          {:approval, _} -> "PgUp/PgDn: scroll arguments"
+          :help -> "PgUp/PgDn, Ctrl-D/U scroll · #{length(options)} lines"
+          _ -> "item #{min(ordinal + 1, length(options))} of #{length(options)}"
+        end,
         state,
         rect.width - 2
       )
@@ -174,6 +176,18 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
   end
 
   defp control(id, label, target), do: {:dialog_control, id, label, target}
+
+  # The go-to popup is a which-key list, not a search: it shows the four keys the
+  # binding table says follow `g`, and the second key closes it and acts.
+  defp contents({:jump, _}, state, rect, _class) do
+    options =
+      Enum.map(Bindings.jump_rows(), fn {id, token, action} ->
+        {id, Density.safe(SafeText.chrome(token), state, rect.width - 2), {:local, action}}
+      end)
+
+    {SafeText.chrome(:jump_title), options,
+     [control("cancel", SafeText.chrome(:cancel), {:local, :close_top_layer})], state.focus}
+  end
 
   defp contents({:command_report, _}, %{command_report: report} = state, rect, _class)
        when not is_nil(report) do
@@ -308,31 +322,74 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
      if(state.focus in ["cancel", "next", "previous"], do: state.focus, else: "dialog")}
   end
 
-  defp contents(:help, state, rect, _class) do
-    options =
-      [
-        {"help-focus", "Tab / Shift+Tab: cycle focused region"},
-        {"help-move", "Up / Down: move; Enter: activate"},
-        {"help-scroll", "PageUp / PageDown: scroll; End: follow"},
-        {"help-inspect", "i: Inspector · Esc: Back / close"},
-        {"help-detach", "q: Detach · P: Exit; rerun with --plain"},
-        {"help-editor", "Composer: Enter send; Ctrl+O newline; Alt+Enter queue"},
-        {"help-safety",
-         if(state.banner in [:live_banner, :persisted_banner],
-           do:
-             if(state.banner == :persisted_banner,
-               do: "Saved local session. Ctrl+K: feature libraries.",
-               else: "Live session · unsaved. Ctrl+K: feature libraries."
-             ),
-           else: "Fake demo only. No user data or real execution."
-         )},
-        {"help-focus-current", "Focus: " <> state.focus}
-      ]
-      |> Enum.map(fn {id, label} -> {id, Density.safe(label, state, rect.width * 4), nil} end)
+  # The help sheet is the binding table for the context the user pressed ? in,
+  # grouped the way the table groups it, two entries to a line when the dialog
+  # is wide enough to keep both readable. No row is a control, so the footer's
+  # Cancel keeps the focus and the rows are never given a focus prefix that
+  # would wrap them.
+  # Below this inner width a second column leaves each help line under 40
+  # cells and elides most of them; one wide column reads better than two
+  # clipped ones.
+  @help_two_column_width 130
+  @help_gutter 2
+  @help_key_max 24
 
-    {SafeText.chrome(:help), options,
-     [control("cancel", SafeText.chrome(:cancel), {:local, :close_top_layer})],
-     focus(state, options)}
+  defp contents(:help, state, rect, _class) do
+    context = help_context(state)
+    inner = max(1, rect.width - 2)
+    ascii? = state.capabilities.ascii?
+    policy = state.capabilities.ambiguous_width
+
+    sections =
+      for group <- Bindings.groups(),
+          rows =
+            context
+            |> Bindings.for_context()
+            |> Enum.filter(&(&1.group == group))
+            |> Enum.map(fn binding ->
+              keys = binding |> Bindings.keys_in_context(context) |> KeyLabel.joined(ascii?)
+              {keys, binding.help}
+            end),
+          rows != [],
+          do: {group, rows}
+
+    columns = if inner >= @help_two_column_width, do: 2, else: 1
+    column = div(inner - (columns - 1) * @help_gutter, columns)
+
+    widest_key =
+      sections
+      |> Enum.flat_map(fn {_group, rows} -> Enum.map(rows, &Width.cells(elem(&1, 0), policy)) end)
+      |> Enum.max(fn -> 0 end)
+
+    # The key column is never wider than half a column, nor than @help_key_max:
+    # one row with four spellings of a resize chord must not cost every other
+    # row its help text. A chord list that does not fit loses its tail.
+    key_width = min(widest_key, max(1, min(@help_key_max, div(column, 2))))
+
+    lines =
+      Enum.flat_map(sections, fn {group, rows} ->
+        heading = String.upcase(SwarmCodeCLI.UI.Keymap.Docs.group_title(group))
+
+        entries =
+          rows
+          |> Enum.map(&help_entry(&1, key_width, column, state, policy))
+          |> Enum.chunk_every(columns)
+          |> Enum.map(&Enum.join(&1, String.duplicate(" ", @help_gutter)))
+
+        [heading | entries]
+      end)
+
+    options =
+      lines
+      |> Enum.with_index()
+      |> Enum.map(fn {line, index} ->
+        {"help-" <> Integer.to_string(index), Density.safe(line, state, inner), nil}
+      end)
+
+    title = Density.safe("Keys · " <> SwarmCodeCLI.UI.Keymap.Docs.title(context), state, inner)
+
+    {title, options, [control("cancel", SafeText.chrome(:cancel), {:local, :close_top_layer})],
+     "cancel"}
   end
 
   defp contents({:library, feature}, state, rect, _class) do
@@ -669,6 +726,32 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
     [header] ++ body ++ if(file.truncated?, do: ["…"], else: [])
   end
 
+  # One "keys  help" cell, padded to exactly `column` cells so two of them line
+  # up. The help text is elided before the keys are.
+  defp help_entry({keys, help}, key_width, column, state, policy) do
+    key_cell = keys |> Width.elide(key_width, :end, policy) |> RunRow.pad(key_width, state)
+    help_width = max(0, column - key_width - @help_gutter)
+
+    help_cell =
+      if help_width > 0,
+        do: String.duplicate(" ", @help_gutter) <> Width.elide(help, help_width, :end, policy),
+        else: ""
+
+    RunRow.pad(key_cell <> help_cell, column, state)
+  end
+
+  # The sheet describes the state underneath it: the layers below the help
+  # layer and the focus the reducer saved when it opened.
+  defp help_context(state) do
+    focus =
+      case state.layer_contexts do
+        [%{focus: focus} | _] -> focus
+        _ -> state.focus
+      end
+
+    SwarmCodeCLI.UI.Keymap.Context.of(%{state | layers: tl(state.layers), focus: focus})
+  end
+
   defp focus(state, options),
     do:
       if(
@@ -682,12 +765,18 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
           end
       )
 
-  defp rectangle(size, class) when class in [:narrow, :small, :compressed_small],
+  defp rectangle(_layer, size, class) when class in [:narrow, :small, :compressed_small],
     do: %Rect{x: 0, y: 0, width: size.columns, height: size.rows}
 
-  defp rectangle(size, _class) do
-    width = max(1, min(80, size.columns - 4))
-    height = max(1, min(24, size.rows - 4))
+  # The help sheet is a reference, not a prompt: it takes the room a wide
+  # terminal has, which is what lets it run two columns, and most of the
+  # height, which is what keeps a context's whole grammar on one screen.
+  defp rectangle(:help, size, _class), do: centred(size, 150, size.rows - 2)
+  defp rectangle(_layer, size, _class), do: centred(size, 80, 24)
+
+  defp centred(size, max_width, max_height) do
+    width = max(1, min(max_width, size.columns - 4))
+    height = max(1, min(max_height, size.rows - 4))
 
     %Rect{
       x: div(size.columns - width, 2),

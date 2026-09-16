@@ -964,11 +964,19 @@ defmodule SwarmCodeCLI.UI.ProjectorRunsDashboardTest do
       assert visible_ids(next) == []
     end
 
-    test "the generic b back key behaves like q: close while empty, type once typing" do
+    # Was "the generic b back key behaves like q: close while empty, type once
+    # typing". The keyboard grammar retired "b" as a close key everywhere, so it
+    # is now a query character in both cases, which this asserts in both.
+    test "b is a query character whether or not a query has been started" do
       state = populated()
 
       assert Keymap.resolve(Input.text_fragment(:press, "b", []), state, %{}) ==
-               {:ok, :close_top_layer}
+               {:ok, {:dashboard_filter, {:append, "b"}}}
+
+      {first, action} = press(state, Input.text_fragment(:press, "b", []))
+      assert action == {:dashboard_filter, {:append, "b"}}
+      assert query(first) == "b"
+      assert first.layers == [@layer]
 
       typed = type(state, "auth")
       {next, action} = press(typed, Input.text_fragment(:press, "b", []))

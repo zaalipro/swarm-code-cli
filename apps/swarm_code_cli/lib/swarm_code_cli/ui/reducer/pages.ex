@@ -3,32 +3,13 @@ defmodule SwarmCodeCLI.UI.Reducer.Pages do
   alias SwarmCodeCLI.UI.{State, Scroll, ScrollMetrics, PageState}
   alias SwarmCodeCLI.UI.DataSource.Request
 
+  # The help sheet is the one bare-atom layer with a body longer than a screen.
+  def scroll(%{layers: [:help | _]} = state, "dialog", operation),
+    do: scroll_dialog(state, operation)
+
   def scroll(%{layers: [{kind, _} | _]} = state, "dialog", operation)
-      when kind in [:approval, :command_report] do
-    # The dialog already measures its wrapped body and sticky footer. Use that
-    # same viewport so paging can reach every argument without changing focus
-    # to an approving action.
-    state = %{state | focus: "cancel"}
-
-    dialog =
-      SwarmCodeCLI.UI.Projector.Dialog.project(state, SwarmCodeCLI.UI.Layout.classify(state.size))
-
-    {first, last} = dialog.body_visible_range
-    height = max(1, last - first)
-    maximum = max(0, dialog.body_total_count - height)
-
-    target =
-      case operation do
-        {:line, count} -> first + count
-        {:page, count} -> first + height * count
-        :first -> 0
-        :last -> maximum
-        _ -> first
-      end
-
-    selection = Map.put(state.selection, "dialog_scroll", min(maximum, max(0, target)))
-    {%{state | selection: selection}, []}
-  end
+      when kind in [:approval, :command_report],
+      do: scroll_dialog(state, operation)
 
   # The navigator is not one of them. A session restored onto the deleted region
   # still carries `scrolls.navigator` and `selection["navigator"]`, and scrolling
@@ -60,6 +41,33 @@ defmodule SwarmCodeCLI.UI.Reducer.Pages do
   end
 
   def scroll(state, _, _), do: {state, []}
+
+  defp scroll_dialog(state, operation) do
+    # The dialog already measures its wrapped body and sticky footer. Use that
+    # same viewport so paging can reach every argument without changing focus
+    # to an approving action.
+    state = %{state | focus: "cancel"}
+
+    dialog =
+      SwarmCodeCLI.UI.Projector.Dialog.project(state, SwarmCodeCLI.UI.Layout.classify(state.size))
+
+    {first, last} = dialog.body_visible_range
+    height = max(1, last - first)
+    maximum = max(0, dialog.body_total_count - height)
+
+    target =
+      case operation do
+        {:line, count} -> first + count
+        {:half_page, count} -> first + max(1, div(height, 2)) * count
+        {:page, count} -> first + height * count
+        :first -> 0
+        :last -> maximum
+        _ -> first
+      end
+
+    selection = Map.put(state.selection, "dialog_scroll", min(maximum, max(0, target)))
+    {%{state | selection: selection}, []}
+  end
 
   def move(state, direction) do
     region = region_key(state.focus)

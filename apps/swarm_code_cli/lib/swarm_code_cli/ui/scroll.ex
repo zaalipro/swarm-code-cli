@@ -37,22 +37,29 @@ defmodule SwarmCodeCLI.UI.Scroll do
   def apply(scroll, :first, ids, _),
     do: %{scroll | anchor: anchor(List.first(ids), 0), follow?: false}
 
-  def apply(scroll, {kind, delta}, ids, height) when kind in [:line, :page],
+  def apply(scroll, {kind, delta}, ids, height) when kind in [:line, :half_page, :page],
     do: __MODULE__.apply(scroll, {kind, delta}, ids, height, fn _ -> 1 end)
 
   def apply(scroll, operation, ids, page_height, height_for)
 
-  def apply(scroll, {kind, delta}, ids, page_height, height_for) when kind in [:line, :page] do
+  def apply(scroll, {kind, delta}, ids, page_height, height_for)
+      when kind in [:line, :half_page, :page] do
     follow_anchor = {List.last(ids), max(0, item_height(height_for, List.last(ids)) - 1), :top}
     {id, line, bias} = if scroll.follow?, do: follow_anchor, else: scroll.anchor || follow_anchor
     index = Enum.find_index(ids, &(&1 == id)) || 0
-    movement = if kind == :page, do: delta * page_height, else: delta
+    movement = delta * lines_per(kind, page_height)
     anchor = if ids == [], do: nil, else: locate(ids, index, line + movement, bias, height_for)
     %{scroll | anchor: anchor, follow?: false}
   end
 
   def apply(scroll, operation, ids, height, _),
     do: __MODULE__.apply(scroll, operation, ids, height)
+
+  # Ctrl-D and Ctrl-U move half a viewport, never less than a line, so the keys
+  # still do something in a one-row pane.
+  defp lines_per(:page, page_height), do: page_height
+  defp lines_per(:half_page, page_height), do: max(1, div(page_height, 2))
+  defp lines_per(:line, _page_height), do: 1
 
   defp locate(ids, index, line, bias, height_for) do
     id = Enum.at(ids, index)

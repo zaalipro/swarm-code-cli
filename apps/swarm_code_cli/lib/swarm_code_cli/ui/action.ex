@@ -10,9 +10,11 @@ defmodule SwarmCodeCLI.UI.Action do
     DraftKey,
     FieldKey,
     Intent,
+    Keymap,
     LayerSpec,
     ScrollOperation,
-    Size
+    Size,
+    Vim
   }
 
   @terminal_error_codes [
@@ -67,6 +69,14 @@ defmodule SwarmCodeCLI.UI.Action do
           | :editor_detach_notice
           | {:toggle_dock, :inspector}
           | {:set_tab, :thread | :agents | :timeline | :changes}
+          | {:set_keymap, :default | :vim}
+          | {:vim,
+             {:mode, Vim.mode()}
+             | {:pending, nil | binary()}
+             | {:count, nil | pos_integer()}
+             | {:edit_then, [Operation.t(), ...], Vim.mode()}}
+          | {:run_tab, :next | :previous | 1 | 2 | 3 | 4}
+          | {:inspector_tab, :next | :previous}
           | {:resize, Size.t()}
           | {:terminal_capabilities, non_neg_integer(), Capabilities.t()}
           | {:terminal_lifecycle, :suspend_requested | :suspended | :resumed | :closing,
@@ -167,6 +177,41 @@ defmodule SwarmCodeCLI.UI.Action do
 
   def validate({:set_tab, tab} = action),
     do: valid_action(action, tab in [:thread, :agents, :timeline, :changes])
+
+  def validate({:set_keymap, keymap} = action),
+    do: valid_action(action, keymap in [:default, :vim])
+
+  # `:next`/`:previous` cycle the stable run order; 1..4 pick the tab drawn at
+  # that position, which is the only thing an Alt-digit accelerator can mean.
+  def validate({:run_tab, target} = action),
+    do: valid_action(action, target in [:next, :previous] or target in 1..4)
+
+  def validate({:inspector_tab, direction} = action),
+    do: valid_action(action, direction in [:next, :previous])
+
+  # The composer's vim state moves through actions so that one keystroke is
+  # still one action: a mode, a pending operator (nil cancels the count too), a
+  # count, or an edit followed by a mode for the keys that do both (`cw`, `o`).
+  def validate({:vim, {:mode, mode}} = action), do: valid_action(action, mode in Vim.modes())
+
+  def validate({:vim, {:pending, pending}} = action),
+    do:
+      valid_action(action, is_nil(pending) or pending in Keymap.Vim.operators() or pending == "g")
+
+  def validate({:vim, {:count, count}} = action),
+    do:
+      valid_action(
+        action,
+        is_nil(count) or (is_integer(count) and count >= 1 and count <= Vim.max_count())
+      )
+
+  def validate({:vim, {:edit_then, operations, mode}} = action),
+    do:
+      valid_action(
+        action,
+        is_list(operations) and operations != [] and mode in Vim.modes() and
+          Enum.all?(operations, &match?({:ok, _}, Operation.validate(&1)))
+      )
 
   def validate({:resize, size} = action), do: valid_action(action, Size.valid?(size))
 

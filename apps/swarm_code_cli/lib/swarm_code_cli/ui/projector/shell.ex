@@ -154,7 +154,18 @@ defmodule SwarmCodeCLI.UI.Projector.Shell do
   # blocks: blocks stack vertically, so a row assembled from several of them
   # would print one line per block instead of one tab row.
 
-  @tabline_hint "Ctrl-R runs   Ctrl-G all   Ctrl-K features"
+  # The keys come from the binding table at compile time, so a rebind of the
+  # run palette, the dashboard or the command palette re-spells the hint; the
+  # three words are the tab row's own.
+  @tabline_hint Enum.map_join(
+                  [run_palette: "runs", runs_dashboard: "all", command_palette: "features"],
+                  "   ",
+                  fn {id, word} ->
+                    SwarmCodeCLI.UI.Projector.KeyLabel.primary(
+                      SwarmCodeCLI.UI.Keymap.Bindings.fetch(id)
+                    ) <> " " <> word
+                  end
+                )
   @tabline_max 4
   @tab_title 20
   # stripe + space + mark + space + title + space + dot + trailing space

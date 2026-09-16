@@ -130,7 +130,8 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
         source_epoch: source_epoch,
         destination: {:conversation, conversation_id},
         banner: :persisted_banner,
-        now: System.system_time(:millisecond)
+        now: System.system_time(:millisecond),
+        keymap: Init.keymap_from_env()
       }
 
       runtime =

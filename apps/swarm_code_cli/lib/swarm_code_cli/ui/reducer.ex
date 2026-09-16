@@ -13,6 +13,9 @@ defmodule SwarmCodeCLI.UI.Reducer do
   }
 
   alias SwarmCodeCLI.UI.Layout.Preferences
+  alias SwarmCodeCLI.UI.Keymap.Bindings
+  alias SwarmCodeCLI.UI.Projector.RunRow
+  alias SwarmCodeCLI.UI.Vim
   alias SwarmCodeCLI.UI.SlashPalette
   alias SwarmCodeCLI.UI.Reducer.{Watch, Commands, Pages, Editing, Details}
   alias SwarmCodeCLI.UI.DataSource.DTO.Outcome
@@ -31,7 +34,7 @@ defmodule SwarmCodeCLI.UI.Reducer do
 
     unless SwarmCodeCLI.UI.Intent.valid_id?(init.source_epoch) and
              init.banner in [nil, :live_banner, :persisted_banner] and
-             init.focus in ["main", "composer"] and
+             init.focus in ["main", "composer"] and init.keymap in [:default, :vim] and
              SwarmCodeCLI.UI.Intent.valid_id?(init.id_prefix) and is_integer(init.now) and
              init.now >= 0 and is_integer(init.deadline_ms) and init.deadline_ms >= 0 and
              is_integer(init.id_sequence) and init.id_sequence >= 0,
@@ -97,6 +100,107 @@ defmodule SwarmCodeCLI.UI.Reducer do
       end
 
     {%{state | tabs: Map.put(state.tabs, :inspector, tab), layers: layers}, []}
+  end
+
+  # `[` and `]` rotate the same four tabs `{:set_tab, _}` sets, through the same
+  # clause, so a docked inspector and a run_inspector overlay cannot drift apart.
+  # `:overview` is the run_inspector layer's spelling of `:thread`.
+  defp transition(state, {:inspector_tab, direction}) do
+    tabs = Bindings.inspector_tabs()
+
+    current =
+      case Map.get(state.tabs, :inspector, :thread) do
+        :overview -> :thread
+        tab -> tab
+      end
+
+    index = Enum.find_index(tabs, &(&1 == current)) || 0
+    step = if direction == :next, do: 1, else: -1
+    transition(state, {:set_tab, Enum.at(tabs, Integer.mod(index + step, length(tabs)))})
+  end
+
+  # The go-to popup is a which-key list: the second key closes it and acts.
+  defp transition(%{layers: [{:jump, _} | _]} = state, {:run_tab, target}) do
+    {state, effects} = transition(state, :close_top_layer)
+    {state, moved} = transition(state, {:run_tab, target})
+    {state, effects ++ moved}
+  end
+
+  # Alt-1..4 pick the tab at that position *as drawn*, which is the active-first
+  # order the tab row paints.
+  defp transition(state, {:run_tab, position}) when is_integer(position) do
+    case Enum.at(SwarmCodeCLI.UI.Projector.Shell.tabline_runs(state), position - 1) do
+      %{id: id} -> transition(state, {:navigate, {:run, id}})
+      _ -> {state, []}
+    end
+  end
+
+  # g-t cycles the *stable* order instead. The drawn order puts the active run
+  # first, so stepping through it would ping-pong between two tabs forever.
+  defp transition(state, {:run_tab, direction}) do
+    runs = RunRow.visible(state.read_model.runs, "", RunRow.shell_order(state))
+    current = current_run_id(state)
+    index = Enum.find_index(runs, &(&1.id == current))
+    step = if direction == :next, do: 1, else: -1
+
+    target =
+      case {runs, index} do
+        {[], _} -> nil
+        {_, nil} -> if direction == :next, do: List.first(runs), else: List.last(runs)
+        {_, index} -> Enum.at(runs, Integer.mod(index + step, length(runs)))
+      end
+
+    if target, do: transition(state, {:navigate, {:run, target.id}}), else: {state, []}
+  end
+
+  defp transition(state, {:set_keymap, keymap}),
+    do: {%{state | keymap: keymap, vim: %Vim{}}, []}
+
+  # Entering INSERT is also entering the composer: `i` from the transcript
+  # lands there typing, and a mode is meaningless anywhere else. The other
+  # modes only ever start from inside the composer.
+  defp transition(%{focus: focus} = state, {:vim, {:mode, :insert}}) when focus != "composer" do
+    {state, effects} = transition(state, {:focus_region, "composer"})
+
+    if state.focus == "composer",
+      do: {%{state | vim: %Vim{mode: :insert}}, effects},
+      else: {state, effects}
+  end
+
+  defp transition(state, {:vim, {:mode, mode}}) do
+    state =
+      if state.vim.mode == :visual and mode != :visual, do: collapse_selection(state), else: state
+
+    {%{state | vim: %Vim{mode: mode}}, []}
+  end
+
+  # A cancelled prefix takes its count with it; a new prefix keeps the count
+  # typed before it (`2d` then `w`).
+  defp transition(state, {:vim, {:pending, nil}}), do: {clear_vim_prefix(state), []}
+
+  defp transition(state, {:vim, {:pending, prefix}}),
+    do: {%{state | vim: %{state.vim | pending: prefix}}, []}
+
+  defp transition(state, {:vim, {:count, count}}),
+    do: {%{state | vim: %{state.vim | count: count}}, []}
+
+  # One key that edits and changes mode: the operations first, in order, on the
+  # composer's draft, then the mode. Both clear the prefix.
+  defp transition(state, {:vim, {:edit_then, operations, mode}}) do
+    case State.current_draft_key(state) do
+      nil ->
+        {state, []}
+
+      key ->
+        {state, effects} =
+          Enum.reduce(operations, {state, []}, fn operation, {state, effects} ->
+            {next, more} = transition(state, {:editor, key, operation})
+            {next, effects ++ more}
+          end)
+
+        {state, more} = transition(state, {:vim, {:mode, mode}})
+        {state, effects ++ more}
+    end
   end
 
   defp transition(state, {:open_detail, run_id, ref_id}), do: Details.open(state, run_id, ref_id)
@@ -313,6 +417,16 @@ defmodule SwarmCodeCLI.UI.Reducer do
   defp transition(state, {kind, key, operation}) when kind in [:editor, :field_editor] do
     {next, effects} = Editing.apply(state, kind, key, operation)
     next = if kind == :editor and next != state, do: %{next | slash_palette: nil}, else: next
+
+    # A completed edit is the end of any vim command, so the operator and count
+    # that led to it are spent. An undo boundary is the editor's own timer, not
+    # a key, and must not swallow a prefix the user is still typing.
+    next =
+      if kind == :editor and next.keymap == :vim and
+           not match?({:undo_boundary, _}, operation),
+         do: clear_vim_prefix(next),
+         else: next
+
     {next, effects}
   end
 
@@ -738,8 +852,13 @@ defmodule SwarmCodeCLI.UI.Reducer do
     end
   end
 
+  # The go-to popup lists four fixed rows rather than a searchable catalogue, so
+  # its ring is those rows. `Bindings.jump_rows/0` is the one copy of them.
+  def focus_graph(%{layers: [{:jump, _} | _]}),
+    do: Enum.map(Bindings.jump_rows(), &elem(&1, 0)) ++ ["cancel"]
+
   def focus_graph(%{layers: [{kind, _} | _]} = state)
-      when kind in [:switcher, :jump, :action_menu, :region_filter],
+      when kind in [:switcher, :action_menu, :region_filter],
       do: ["query"] ++ Enum.map(SwarmCodeCLI.UI.Switcher.visible(state), & &1.id) ++ ["cancel"]
 
   def focus_graph(%{layers: [{:detail, _, _} | _]}), do: ["detail", "previous", "next", "cancel"]
@@ -772,6 +891,31 @@ defmodule SwarmCodeCLI.UI.Reducer do
     Enum.filter(["main", "inspector", "composer"], fn region ->
       Map.has_key?(rects, region_atom(region))
     end)
+  end
+
+  defp clear_vim_prefix(state), do: %{state | vim: %{state.vim | pending: nil, count: nil}}
+
+  # Leaving VISUAL drops the selection without moving the caret. The editor has
+  # no operation for "select nothing" (every move both moves and deselects), so
+  # the anchor is cleared on the draft directly.
+  defp collapse_selection(state) do
+    case State.current_draft_key(state) do
+      nil ->
+        state
+
+      key ->
+        draft = Drafts.fetch(state.drafts, key)
+        editor = %{draft.editor | anchor: nil}
+        %{state | drafts: Drafts.put(state.drafts, %{draft | editor: editor})}
+    end
+  end
+
+  # The run the shell considers current: the tab row and g-t have to agree on it.
+  defp current_run_id(state) do
+    case SwarmCodeCLI.UI.Projector.Support.run(state) do
+      %{id: id} -> id
+      _ -> nil
+    end
   end
 
   defp region_atom("main"), do: :main
@@ -850,7 +994,7 @@ defmodule SwarmCodeCLI.UI.Reducer do
   end
 
   defp repair_switcher(old, %{layers: [{kind, _} = layer | _]} = next)
-       when kind in [:switcher, :jump, :action_menu, :region_filter] do
+       when kind in [:switcher, :action_menu, :region_filter] do
     if next == old or next.focus in ["query", "cancel"] or List.first(old.layers) != layer do
       next
     else

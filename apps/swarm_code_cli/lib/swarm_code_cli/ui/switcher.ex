@@ -24,7 +24,8 @@ defmodule SwarmCodeCLI.UI.Switcher do
       entry("Help", :action, {:local, {:open_layer, :help}}, true),
       entry("Detach", :action, {:local, {:quit_requested, :detach}}),
       entry("Plain presenter", :action, {:local, {:presenter_handoff_requested, :plain}}),
-      entry("Toggle Inspector", :action, {:local, {:toggle_dock, :inspector}})
+      entry("Toggle Inspector", :action, {:local, {:toggle_dock, :inspector}}),
+      vim_mode_entry(state)
     ]
 
     runs = state.read_model.runs |> Map.values() |> Enum.sort_by(& &1.id)
@@ -276,6 +277,14 @@ defmodule SwarmCodeCLI.UI.Switcher do
   defp prefix("#" <> query), do: {[:conversation, :research, :run], query}
   defp prefix(">" <> query), do: {[:action], query}
   defp prefix(query), do: {@kinds, query}
+
+  # The one place the vim keymap is switched from inside the shell. The label
+  # names the state it is in, the target the state it will be in.
+  defp vim_mode_entry(%{keymap: :vim}),
+    do: entry("Vim mode: on", :action, {:local, {:set_keymap, :default}})
+
+  defp vim_mode_entry(_state),
+    do: entry("Vim mode: off", :action, {:local, {:set_keymap, :vim}})
 
   defp entry(label, kind, target, recent? \\ false),
     do: %Entry{

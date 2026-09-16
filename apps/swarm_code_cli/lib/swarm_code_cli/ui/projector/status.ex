@@ -1,85 +1,108 @@
 defmodule SwarmCodeCLI.UI.Projector.Status do
-  @moduledoc false
-  alias SwarmCodeCLI.UI.SafeText
+  @moduledoc """
+  The status row: where the keys are, what the vim mode is, and the few
+  bindings worth a reminder right now.
+
+  The hints are read off `UI.Keymap.Bindings` for the current context, so a
+  rebind can never leave the row advertising a key that does something else.
+  How many fit is the layout class's `bindings` budget plus one, the count the
+  row has always shown; a hint that would push the row past its width is
+  dropped from the low-priority end before anything wraps.
+  """
+  alias SwarmCodeCLI.UI.{SafeText, Width}
+  alias SwarmCodeCLI.UI.Keymap.{Bindings, Context}
   alias SwarmCodeCLI.UI.Scene.{Block, Span, Style}
-  alias SwarmCodeCLI.UI.Projector.Density
+  alias SwarmCodeCLI.UI.Projector.{Density, KeyLabel, RunRow}
+
+  @composer_contexts [:composer, :composer_normal, :composer_visual]
 
   def project(state, class, width) do
-    bindings = Density.budget(class).bindings
-    focus = state.focus
+    policy = state.capabilities.ambiguous_width
+    context = Context.of(state)
+    budget = Density.budget(class).bindings
+
+    lead = lead_spans(state, context, width)
+    showcmd = showcmd_spans(state, width)
+    warning = connection_warning(state, width)
+    fixed = cells(lead ++ showcmd ++ warning, policy)
 
     hints =
-      cond do
-        focus == "composer" and bindings >= 4 ->
-          [
-            {"Tab", "Composer"},
-            {"Enter", "Send"},
-            {"Esc", "Read"},
-            {"Ctrl-O", "Newline"},
-            {"Ctrl-K", "Features"}
-          ]
-
-        focus == "composer" and bindings >= 3 ->
-          [{"Enter", "Send"}, {"Esc", "Read"}, {"Ctrl-O", "Newline"}, {"Ctrl-K", "Features"}]
-
-        focus == "composer" and bindings >= 2 ->
-          [{"Enter", "Send"}, {"Esc", "Read"}, {"?", "Help"}]
-
-        focus == "composer" and bindings >= 1 ->
-          [{"Enter", "Send"}, {"Esc", "Read"}]
-
-        focus == "composer" ->
-          [{"?", ""}]
-
-        # Non-composer focus
-        bindings >= 4 ->
-          tab = if focus == "main", do: "Type", else: "Next"
-          [{"Tab", tab}, {"Enter", "Act"}, {"Ctrl-K", "Features"}, {"?", "Help"}, {"q", "Quit"}]
-
-        bindings >= 3 ->
-          tab = if focus == "main", do: "Type", else: "Next"
-          [{"Tab", tab}, {"Ctrl-K", "Features"}, {"?", "Help"}, {"q", "Quit"}]
-
-        bindings >= 2 ->
-          tab = if focus == "main", do: "Type", else: "Next"
-          [{"Tab", tab}, {"q", "Quit"}, {"?", "Help"}]
-
-        bindings >= 1 ->
-          tab = if focus == "main", do: "Type", else: "Next"
-          [{"Tab", tab}, {"q", "Quit"}]
-
-        true ->
-          [{"?", ""}]
-      end
-
-    # Build RichText spans
-    focus_spans = [
-      %Span{text: Density.safe("Focus: ", state, width), style: %Style{role: :text_primary}},
-      %Span{text: Density.safe(focus, state, width), style: %Style{role: :text_primary}}
-    ]
-
-    hint_spans =
-      Enum.flat_map(hints, fn {key, label} ->
-        sep = [%Span{text: Density.safe("  ", state, width), style: %Style{role: :text_primary}}]
-        key_span = [%Span{text: Density.safe(key, state, width), style: %Style{role: :key}}]
-
-        label_span =
-          if label != "",
-            do: [
-              %Span{
-                text: Density.safe(" " <> label, state, width),
-                style: %Style{role: :text_muted}
-              }
-            ],
-            else: []
-
-        sep ++ key_span ++ label_span
+      context
+      |> Bindings.hinted()
+      |> Enum.take(budget + 1)
+      |> Enum.flat_map(fn binding ->
+        case Bindings.key_in_context(binding, context) do
+          nil -> []
+          key -> [{KeyLabel.label(key, state.capabilities.ascii?), binding.label}]
+        end
       end)
 
-    spans = focus_spans ++ hint_spans ++ connection_warning(state, width)
-
-    [%Block.RichText{spans: spans}]
+    [
+      %Block.RichText{
+        spans: lead ++ showcmd ++ fit(hints, state, width - fixed, policy) ++ warning
+      }
+    ]
   end
+
+  # With vim on and the composer focused the left segment is the mode, in the
+  # colour of its role but without the role's text cue (a cue would print the
+  # word twice in a colourless terminal). Everywhere else it is the focus.
+  defp lead_spans(%{keymap: :vim} = state, context, width) when context in @composer_contexts do
+    {word, role} =
+      case state.vim.mode do
+        :insert -> {"INSERT", :success}
+        :normal -> {"NORMAL", :accent}
+        :visual -> {"VISUAL", :warning}
+      end
+
+    [
+      %Span{
+        text: Density.safe(word, state, width),
+        style: %{RunRow.tinted(role, state) | modifiers: [:bold]}
+      }
+    ]
+  end
+
+  defp lead_spans(state, _context, width) do
+    [
+      %Span{text: Density.safe("Focus: ", state, width), style: %Style{role: :text_primary}},
+      %Span{text: Density.safe(state.focus, state, width), style: %Style{role: :text_primary}}
+    ]
+  end
+
+  # Vim's showcmd: the count and operator typed so far, so "2d" is visible while
+  # the motion is still to come.
+  defp showcmd_spans(%{keymap: :vim, vim: %{count: count, pending: pending}} = state, width)
+       when not (is_nil(count) and is_nil(pending)) do
+    text = " " <> if(count, do: Integer.to_string(count), else: "") <> (pending || "")
+    [%Span{text: Density.safe(text, state, width), style: %Style{role: :text_muted}}]
+  end
+
+  defp showcmd_spans(_state, _width), do: []
+
+  # As many hints as fit, dropped from the weakest end; the separator, the key
+  # and the label are three spans so the key alone carries the key role.
+  defp fit(hints, state, available, policy) do
+    spans = Enum.flat_map(hints, &hint_spans(&1, state))
+
+    if hints == [] or cells(spans, policy) <= available,
+      do: spans,
+      else: fit(Enum.drop(hints, -1), state, available, policy)
+  end
+
+  defp hint_spans({key, label}, state) do
+    [
+      %Span{text: Density.safe("  ", state, 2), style: %Style{role: :text_primary}},
+      %Span{text: Density.safe(key, state, 24), style: %Style{role: :key}},
+      %Span{text: Density.safe(" " <> label, state, 24), style: %Style{role: :text_muted}}
+    ]
+  end
+
+  defp cells(spans, policy),
+    do:
+      Enum.reduce(spans, 0, fn span, sum ->
+        sum + Width.cells(SafeText.value(span.text), policy)
+      end)
 
   defp connection_warning(state, width) do
     # Find the worst connection status across all watch slots

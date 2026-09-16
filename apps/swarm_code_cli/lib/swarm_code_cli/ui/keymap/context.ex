@@ -1,0 +1,61 @@
+defmodule SwarmCodeCLI.UI.Keymap.Context do
+  @moduledoc """
+  Which row of the binding table a keystroke is read against.
+
+  One context is computed per key, before any lookup, so the grammar is a
+  function of the state rather than of the order of a `cond`.
+
+  | context | when |
+  |---|---|
+  | `:composer` | composer focused, no layer, keymap `:default` or vim INSERT |
+  | `:composer_normal` | vim keymap, composer focused, NORMAL |
+  | `:composer_visual` | vim keymap, composer focused, VISUAL |
+  | `:main` | `focus == "main"`, no layer |
+  | `:inspector` | `focus == "inspector"`, no layer |
+  | `:picker` | the top layer searches or lists: switcher, run palette, runs dashboard, go-to, action menu, region filter |
+  | `:field` | any other layer whose focus is a text field |
+  | `:dialog` | any other layer |
+
+  A picker is a picker before it is a field: its query *is* the layer, and its
+  keys (Ctrl-N, Home, the opening chord) have to beat the field editor's.
+  """
+
+  alias SwarmCodeCLI.UI.Keymap
+
+  @picker_layers [
+    :switcher,
+    :run_palette,
+    :runs_dashboard,
+    :jump,
+    :action_menu,
+    :region_filter
+  ]
+
+  @doc "The layer kinds that make the `:picker` context."
+  @spec picker_layers() :: [atom()]
+  def picker_layers, do: @picker_layers
+
+  @doc "True when `layer` is one of the searching or listing layers."
+  @spec picker?(term()) :: boolean()
+  def picker?({kind, _id}) when kind in @picker_layers, do: true
+  def picker?(_layer), do: false
+
+  @spec of(map()) :: atom()
+  def of(%{layers: [layer | _]} = state) do
+    cond do
+      picker?(layer) -> :picker
+      match?({:field_editor, _}, Keymap.editor_context(state)) -> :field
+      true -> :dialog
+    end
+  end
+
+  def of(%{focus: "composer"} = state), do: composer(state)
+  def of(%{focus: "inspector"}), do: :inspector
+  def of(_state), do: :main
+
+  # The vim modes only exist while the vim keymap is on; with `:default` the
+  # composer is always the plain composer however `state.vim` happens to read.
+  defp composer(%{keymap: :vim, vim: %{mode: :normal}}), do: :composer_normal
+  defp composer(%{keymap: :vim, vim: %{mode: :visual}}), do: :composer_visual
+  defp composer(_state), do: :composer
+end

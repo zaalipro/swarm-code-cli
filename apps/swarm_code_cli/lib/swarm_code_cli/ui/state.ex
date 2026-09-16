@@ -1,6 +1,6 @@
 defmodule SwarmCodeCLI.UI.State do
   @moduledoc "Immutable UI state. Inspection intentionally excludes all user and source content."
-  alias SwarmCodeCLI.UI.{Drafts, FieldEditors, Scroll, ReadModel}
+  alias SwarmCodeCLI.UI.{Drafts, FieldEditors, Scroll, ReadModel, Vim}
   alias SwarmCodeCLI.UI.Layout.Preferences
   @derive {Inspect, only: [:revision, :terminal_generation, :lifecycle]}
   defstruct [
@@ -31,6 +31,10 @@ defmodule SwarmCodeCLI.UI.State do
     drafts: %Drafts{},
     field_editors: %FieldEditors{},
     preferences: %Preferences{},
+    # The keymap preference is session-scoped and lives here rather than in
+    # Preferences, which is validated as exactly six layout keys.
+    keymap: :default,
+    vim: %Vim{},
     composer_height: 3,
     scrolls: %{main: %Scroll{}, inspector: %Scroll{}, navigator: %Scroll{follow?: false}},
     layers: [],
