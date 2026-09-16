@@ -291,6 +291,74 @@ defmodule SwarmCode.Daemon.Service.LiveBackendTest do
            )
   end
 
+  test "the unsaved session emits every wire-contract field with defaults", %{
+    backend: backend,
+    scope: scope
+  } do
+    {:ok, %{"value" => %{"identifiers" => [id]}}} =
+      request(backend, "contract", scope, send_request())
+
+    assert {:ok, %{"value" => live}} = query(backend, scope, "workspace")
+    assert [run] = live["runs"]
+    assert run["agents_running"] == 1
+    assert run["finished_at"] == nil
+    assert is_integer(run["started_at"]) and run["started_at"] > 0
+
+    assert_receive {:provider_waiting, provider}, 5_000
+    send(provider, :release)
+    wait_done(backend, scope, id)
+
+    assert {:ok, %{"value" => workspace}} = query(backend, scope, "workspace")
+    assert {:ok, _} = SwarmCodeCLI.UI.DataSource.DTO.WorkspaceSnapshot.decode(workspace)
+    assert workspace["changes"] == []
+    assert workspace["verdicts"] == []
+    assert [run] = workspace["runs"]
+
+    assert Map.take(run, ~w(tokens_in tokens_out cost_usd model agents_total agents_running
+                            needs changes consensus error)) == %{
+             "tokens_in" => 0,
+             "tokens_out" => 0,
+             "cost_usd" => nil,
+             "model" => nil,
+             "agents_total" => 1,
+             "agents_running" => 0,
+             "needs" => 0,
+             "changes" => 0,
+             "consensus" => false,
+             "error" => nil
+           }
+
+    assert is_integer(run["finished_at"]) and run["finished_at"] >= run["started_at"]
+
+    node_id = :sys.get_state(backend).runs[id].node_id
+
+    for item <- workspace["transcript"]["items"] do
+      assert item["kind"] == "text"
+      assert item["tool"] == nil
+      assert item["agent_id"] == node_id
+      assert item["tokens_in"] == 0 and item["tokens_out"] == 0
+      assert item["at"] == run["started_at"]
+    end
+
+    assert {:ok, %{"value" => detail}} =
+             query(backend, %{scope | kind: :run, id: id}, "inspector")
+
+    assert {:ok, _} = SwarmCodeCLI.UI.DataSource.DTO.RunDetailSnapshot.decode(detail)
+    assert [agent] = detail["agents"]
+    assert agent["id"] == node_id
+    assert agent["run_id"] == id
+    assert agent["name"] == "Assistant"
+    assert agent["role"] == "assistant"
+    assert agent["step"] == "done"
+    assert agent["state"] == "done"
+    assert agent["progress"] == 0
+    assert agent["parent_id"] == nil
+    assert agent["depth"] == 0
+    assert agent["started_at"] == run["started_at"]
+    assert agent["finished_at"] == run["finished_at"]
+    assert agent["error"] == nil
+  end
+
   defp request(backend, id, scope, req),
     do: GenServer.call(backend, {:service_request, id, scope, req})
 

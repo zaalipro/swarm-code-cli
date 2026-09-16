@@ -35,7 +35,20 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
     failed_no_retry: "00000000-0000-4000-8000-0000000000f2",
     agent_stop: "00000000-0000-4000-8000-0000000000e1",
     agent_no_stop: "00000000-0000-4000-8000-0000000000e2",
-    request: "00000000-0000-4000-8000-000000000001"
+    request: "00000000-0000-4000-8000-000000000001",
+    lead: "00000000-0000-4000-8000-00000000a201",
+    scout_1: "00000000-0000-4000-8000-00000000a202",
+    scout_2: "00000000-0000-4000-8000-00000000a203",
+    builder_4: "00000000-0000-4000-8000-00000000a204",
+    judge: "00000000-0000-4000-8000-00000000a205",
+    change_1: "00000000-0000-4000-8000-00000000a2c1",
+    change_2: "00000000-0000-4000-8000-00000000a2c2",
+    change_3: "00000000-0000-4000-8000-00000000a2c3",
+    node_tool_1: "00000000-0000-4000-8000-00000000a2e1",
+    node_tool_2: "00000000-0000-4000-8000-00000000a2e2",
+    node_tool_3: "00000000-0000-4000-8000-00000000a2e3",
+    node_thinking: "00000000-0000-4000-8000-00000000a2e4",
+    node_error: "00000000-0000-4000-8000-00000000a2e5"
   }
   defstruct clock: @clock,
             runs: %{},
@@ -43,6 +56,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
             transcript: %{},
             interactions: %{},
             activity: %{},
+            changes: %{},
+            verdicts: %{},
             statuses: [],
             sequence: 0,
             revision: 0,
@@ -59,6 +74,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
           transcript: %{binary() => DTO.TranscriptItem.t()},
           interactions: %{binary() => DTO.PendingInteraction.t()},
           activity: %{binary() => DTO.ActivityItem.t()},
+          changes: %{binary() => DTO.Change.t()},
+          verdicts: %{binary() => DTO.Verdict.t()},
           statuses: [DTO.StatusEntry.t()],
           sequence: non_neg_integer(),
           revision: non_neg_integer(),
@@ -95,17 +112,30 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
           &%{&1 | allowed_actions: Enum.uniq(&1.allowed_actions ++ [:steer, :mark_seen])}
         )
 
-      script = %__MODULE__{
-        runs:
-          Map.new(Enum.with_index(decoded, 1), fn {run, index} ->
-            {run.id, %{run | created_sequence: index}}
-          end)
-      }
+      runs =
+        Map.new(Enum.with_index(decoded, 1), fn {run, index} ->
+          {run.id, hive_run(%{run | created_sequence: index})}
+        end)
+
+      script = %__MODULE__{runs: runs}
 
       transcript = [
-        item(:a1, :node_a1, "message-A-1", "Authentication review started."),
-        item(:a2, :node_a2, "message-A-2", "Swarm plan\nReview authentication\nand its tests"),
-        item(:b1, :node_b1, "message-B-1", "Research started.")
+        item(:a1, :node_a1, "message-A-1", "Authentication review started.",
+          at: @clock_ms - 95_000,
+          tokens_in: 1_180,
+          tokens_out: 96
+        ),
+        item(:a2, :node_a2, "message-A-2", "Swarm plan\nReview authentication\nand its tests",
+          agent_id: id(:lead),
+          at: @clock_ms - 80_000,
+          tokens_in: 2_410,
+          tokens_out: 188
+        ),
+        item(:b1, :node_b1, "message-B-1", "Research started.",
+          at: @clock_ms - 60_000,
+          tokens_in: 640,
+          tokens_out: 42
+        )
       ]
 
       validate(%{
@@ -114,7 +144,10 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
             Map.new(Enum.with_index(transcript, 1), fn {item, index} ->
               {item.id, %{item | created_sequence: index}}
             end),
-          activity: Map.new(decoded, fn run -> {run.id, activity(run)} end)
+          activity: Map.new(Map.values(runs), fn run -> {run.id, activity(run)} end),
+          agents: Map.new(hive_agents(), &{&1.id, &1}),
+          changes: Map.new(hive_changes(), &{&1.id, &1}),
+          verdicts: Map.new([hive_verdict()], &{&1.id, &1})
       })
     else
       _ -> {:error, AdmissionError.new(:invalid_fixture)}
@@ -164,7 +197,9 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
             {script.agents, DTO.AgentSummary},
             {script.transcript, DTO.TranscriptItem},
             {script.interactions, DTO.PendingInteraction},
-            {script.activity, DTO.ActivityItem}
+            {script.activity, DTO.ActivityItem},
+            {script.changes, DTO.Change},
+            {script.verdicts, DTO.Verdict}
           ],
           fn {items, module} ->
             is_map(items) and not is_struct(items) and map_size(items) <= 200 and
@@ -266,6 +301,15 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
         &Map.has_key?(script.transcript, &1)
       ) and
       Enum.all?(script.agents, fn {_, item} -> Map.has_key?(script.runs, item.run_id) end) and
+      Enum.all?(script.verdicts, fn {_, item} -> Map.has_key?(script.runs, item.run_id) end) and
+      Enum.all?(script.changes, fn {_, change} ->
+        Map.has_key?(script.runs, change.run_id) and
+          (is_nil(change.agent_id) or
+             match?(
+               %{run_id: run_id} when run_id == change.run_id,
+               script.agents[change.agent_id]
+             ))
+      end) and
       Enum.all?(script.runs, fn {_, run} ->
         is_nil(run.parent_run_id) or
           case Map.get(script.runs, run.parent_run_id) do
@@ -328,7 +372,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
       script.runs[id(:a2)]
       | revision: script.runs[id(:a2)].revision + 1,
         state: :waiting_question,
-        allowed_actions: [:stop]
+        allowed_actions: [:stop],
+        needs: 1
     }
 
     b1 = %{script.runs[id(:b1)] | revision: script.runs[id(:b1)].revision + 1, progress: 40}
@@ -347,6 +392,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
         fact(:run_update, a1)
       ]) ++
         a2_facts ++
+        hive_facts(script) ++
         running_facts(script, :b1, [
           stream(script.transcript["message-B-1"], :text, " Report sources collected."),
           fact(:run_update, b1)
@@ -642,6 +688,15 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
   defp apply_delta(%Delta{kind: :agent_update, body: agent}, script),
     do: %{script | agents: Map.put(script.agents, agent.id, agent)}
 
+  defp apply_delta(%Delta{kind: :change_upsert, body: change}, script),
+    do: %{script | changes: Map.put(script.changes, change.id, change)}
+
+  defp apply_delta(%Delta{kind: :change_remove, entity_id: id}, script),
+    do: %{script | changes: Map.delete(script.changes, id)}
+
+  defp apply_delta(%Delta{kind: :verdict_upsert, body: verdict}, script),
+    do: %{script | verdicts: Map.put(script.verdicts, verdict.id, verdict)}
+
   defp apply_delta(%Delta{kind: :interaction_upsert, body: interaction}, script),
     do: %{
       script
@@ -823,7 +878,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
           run
           | state: state,
             revision: run.revision + 1,
-            allowed_actions: actions
+            allowed_actions: actions,
+            needs: if(operation == :stop, do: 0, else: run.needs)
         })
 
       settled =
@@ -891,11 +947,17 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
   end
 
   defp resolve_interaction(script, q) do
+    still_pending =
+      Enum.count(script.interactions, fn {_, other} ->
+        other.run_id == q.run_id and other.state == :pending and other.id != q.id
+      end)
+
     run = %{
       Map.fetch!(script.runs, q.run_id)
       | state: :running,
         revision: script.runs[q.run_id].revision + 1,
-        allowed_actions: [:pause, :stop, :steer, :mark_seen]
+        allowed_actions: [:pause, :stop, :steer, :mark_seen],
+        needs: still_pending
     }
 
     {:ok,
@@ -934,16 +996,321 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
     }
   end
 
-  defp item(run, node, message, text),
-    do: %DTO.TranscriptItem{
-      id: message,
-      run_id: id(run),
-      node_id: id(node),
-      conversation_id: id(if(run == :b1, do: :b, else: :a)),
+  defp item(run, node, message, text, extra \\ []),
+    do:
+      struct!(
+        %DTO.TranscriptItem{
+          id: message,
+          run_id: id(run),
+          node_id: id(node),
+          conversation_id: id(if(run == :b1, do: :b, else: :a)),
+          revision: 1,
+          text: text,
+          attempt_id: "attempt-1",
+          allowed_actions: [:inspect, :copy, :fork]
+        },
+        extra
+      )
+
+  # -- hive: named agents, tool calls, changes and a verdict on the swarm run --
+
+  defp hive_run(%DTO.RunSummary{id: run_id} = run) do
+    extra =
+      cond do
+        run_id == id(:a1) ->
+          [tokens_in: 3_420, tokens_out: 612, cost_usd: 0.021, model: "deepseek-v4-pro"]
+
+        run_id == id(:a2) ->
+          [
+            tokens_in: 18_640,
+            tokens_out: 4_210,
+            cost_usd: 0.184,
+            model: "kimi-k2-thinking",
+            agents_total: 5,
+            agents_running: 3,
+            changes: 3,
+            consensus: true
+          ]
+
+        true ->
+          [tokens_in: 7_880, tokens_out: 1_030, cost_usd: 0.062, model: "deepseek-v4-pro"]
+      end
+
+    struct!(run, [started_at: @clock_ms - 120_000] ++ extra)
+  end
+
+  defp hive_agents do
+    base = [
+      run_id: id(:a2),
       revision: 1,
-      text: text,
-      attempt_id: "attempt-1",
-      allowed_actions: [:inspect, :copy, :fork]
+      state: :running,
+      allowed_actions: [:stop_agent],
+      started_at: @clock_ms - 110_000
+    ]
+
+    [
+      agent(:lead, base,
+        name: "lead",
+        role: :lead,
+        title: "Coordinate the authentication review",
+        step: "planning",
+        progress: 35,
+        tokens_in: 6_120,
+        tokens_out: 1_480,
+        cost_usd: 0.061
+      ),
+      agent(:scout_1, base,
+        name: "scout-1",
+        role: :sub,
+        title: "Map the auth call sites",
+        step: "grep \"Repo\\.\"",
+        progress: 70,
+        tokens_in: 3_210,
+        tokens_out: 640,
+        cost_usd: 0.028,
+        parent_id: id(:lead),
+        depth: 1
+      ),
+      agent(:scout_2, base,
+        name: "scout-2",
+        role: :sub,
+        title: "Read the session tests",
+        step: "read test/session_test.exs",
+        progress: 55,
+        tokens_in: 2_980,
+        tokens_out: 512,
+        cost_usd: 0.024,
+        parent_id: id(:lead),
+        depth: 1
+      ),
+      agent(:builder_4, base,
+        name: "builder-4",
+        role: :worker,
+        title: "Harden the token refresh path",
+        step: "edit lib/swarm_code/repo.ex",
+        progress: 40,
+        tokens_in: 5_340,
+        tokens_out: 1_320,
+        cost_usd: 0.058,
+        parent_id: id(:lead),
+        depth: 1,
+        changes_stat: "+42 −7"
+      ),
+      agent(:judge, base,
+        name: "judge",
+        role: :judge,
+        title: "Judge · round 1",
+        step: "queued",
+        state: :queued,
+        allowed_actions: [],
+        progress: 0,
+        tokens_in: 990,
+        tokens_out: 258,
+        cost_usd: 0.013,
+        parent_id: id(:lead),
+        depth: 1,
+        started_at: nil
+      )
+    ]
+  end
+
+  defp agent(key, base, extra),
+    do: struct!(%DTO.AgentSummary{id: id(key)}, Keyword.merge(base, extra))
+
+  defp hive_changes do
+    [
+      change(:change_1, id(:builder_4), "lib/swarm_code/repo.ex", true, @clock_ms - 40_000, 1),
+      change(
+        :change_2,
+        id(:builder_4),
+        "test/swarm_code/repo_test.exs",
+        true,
+        @clock_ms - 30_000,
+        1
+      ),
+      change(:change_3, id(:lead), "docs/architecture.md", false, @clock_ms - 20_000, 1)
+    ]
+  end
+
+  defp change(key, agent_id, path, restorable, at, revision),
+    do: %DTO.Change{
+      id: id(key),
+      run_id: id(:a2),
+      agent_id: agent_id,
+      path: path,
+      restorable: restorable,
+      at: at,
+      revision: revision
+    }
+
+  defp hive_verdict do
+    %DTO.Verdict{
+      id: id(:judge),
+      run_id: id(:a2),
+      round: 1,
+      status: :done,
+      checks: [
+        %DTO.VerdictCheck{key: "tests_pass", ok: true, note: "142 tests, 0 failures"},
+        %DTO.VerdictCheck{key: "no_regressions", ok: true, note: "auth paths unchanged"},
+        %DTO.VerdictCheck{key: "docs_updated", ok: false, note: "architecture.md still draft"},
+        %DTO.VerdictCheck{key: "style", ok: nil, note: "not evaluated"}
+      ],
+      summary: "Two of three proposals meet the bar; the docs change needs another pass.",
+      revision: 1
+    }
+  end
+
+  # First-barrier facts for the swarm run: tool one-liners, a thought, an
+  # error, two agent steps, and a change and verdict revision.
+  defp hive_facts(script) do
+    tool = fn key, node, agent, tool, text, extra ->
+      item(
+        :a2,
+        node,
+        key,
+        text,
+        [kind: :tool, role: :tool, state: :done, agent_id: id(agent), tool: tool] ++ extra
+      )
+    end
+
+    items = [
+      tool.(
+        "tool-A-2-1",
+        :node_tool_1,
+        :scout_1,
+        %DTO.ToolCall{
+          name: "grep",
+          title: "grep \"Repo\\.\"",
+          detail: "lib/ test/ · 41 hits",
+          status: :done,
+          started_at: @clock_ms - 70_000,
+          finished_at: @clock_ms - 69_600,
+          duration_ms: 400,
+          result_bytes: 3_812,
+          files: []
+        },
+        "lib/swarm_code/repo.ex:12\nlib/swarm_code/repo.ex:48\ntest/swarm_code/repo_test.exs:9",
+        at: @clock_ms - 70_000,
+        tokens_in: 812,
+        tokens_out: 64
+      ),
+      tool.(
+        "tool-A-2-2",
+        :node_tool_2,
+        :scout_2,
+        %DTO.ToolCall{
+          name: "read_file",
+          title: "read test/session_test.exs",
+          detail: "218 lines",
+          status: :done,
+          started_at: @clock_ms - 66_000,
+          finished_at: @clock_ms - 65_880,
+          duration_ms: 120,
+          result_bytes: 7_144,
+          files: ["test/session_test.exs"]
+        },
+        "defmodule SwarmCode.SessionTest do\n  use ExUnit.Case, async: true",
+        at: @clock_ms - 66_000,
+        tokens_in: 1_790,
+        tokens_out: 51
+      ),
+      item(:a2, :node_thinking, "thinking-A-2", "",
+        kind: :thinking,
+        state: :done,
+        agent_id: id(:lead),
+        reasoning:
+          "The refresh path and the session tests disagree about expiry; builder-4 should change the repository before the tests.",
+        at: @clock_ms - 62_000,
+        tokens_in: 2_240,
+        tokens_out: 210
+      ),
+      tool.(
+        "tool-A-2-3",
+        :node_tool_3,
+        :builder_4,
+        %DTO.ToolCall{
+          name: "edit_file",
+          title: "edit lib/swarm_code/repo.ex",
+          detail: "+42 −7",
+          status: :done,
+          started_at: @clock_ms - 45_000,
+          finished_at: @clock_ms - 44_100,
+          duration_ms: 900,
+          result_bytes: 512,
+          files: ["lib/swarm_code/repo.ex"]
+        },
+        "Replaced the refresh guard with an expiry check.",
+        at: @clock_ms - 45_000,
+        tokens_in: 3_020,
+        tokens_out: 388
+      ),
+      item(
+        :a2,
+        :node_error,
+        "error-A-2",
+        "run_command failed: mix test exited with status 1 (2 failures).",
+        kind: :error,
+        role: :system,
+        state: :failed,
+        agent_id: id(:builder_4),
+        at: @clock_ms - 41_000
+      )
+    ]
+
+    scout_1 = %{
+      script.agents[id(:scout_1)]
+      | revision: 2,
+        state: :done,
+        allowed_actions: [],
+        step: "done",
+        progress: 100,
+        tokens_in: 3_640,
+        tokens_out: 702,
+        finished_at: @clock_ms - 55_000
+    }
+
+    builder_4 = %{
+      script.agents[id(:builder_4)]
+      | revision: 2,
+        step: "run mix test",
+        progress: 65,
+        tokens_in: 6_110,
+        tokens_out: 1_540
+    }
+
+    change_3 = %{script.changes[id(:change_3)] | revision: 2, restorable: true}
+
+    verdict = %{
+      script.verdicts[id(:judge)]
+      | revision: 2,
+        summary: "Two of three proposals meet the bar; docs pass scheduled after the test fix."
+    }
+
+    if script.runs[id(:a2)].state in [:running, :streaming, :retrying] and
+         Map.has_key?(script.agents, id(:scout_1)) and
+         Map.has_key?(script.agents, id(:builder_4)) and
+         Map.has_key?(script.changes, id(:change_3)) and
+         Map.has_key?(script.verdicts, id(:judge)) and
+         not Map.has_key?(script.transcript, "tool-A-2-1") do
+      Enum.map(items, &fact(:node_upsert, &1)) ++
+        [
+          fact(:agent_update, scout_1),
+          fact(:agent_update, builder_4),
+          run_fact(script, :change_upsert, change_3),
+          run_fact(script, :verdict_upsert, verdict)
+        ]
+    else
+      []
+    end
+  end
+
+  defp run_fact(script, kind, item),
+    do: %Delta{
+      kind: kind,
+      entity_id: item.id,
+      run_id: item.run_id,
+      conversation_id: script.runs[item.run_id].conversation_id,
+      body: item
     }
 
   defp question(key, run, node, revision, urgency, deadline),

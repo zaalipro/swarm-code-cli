@@ -7,9 +7,21 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.TranscriptItem do
       detail_ref: nil,
       reasoning_detail_ref: nil,
       target_kind: "main",
-      target_id: nil
+      target_id: nil,
+      kind: "text",
+      tool: nil,
+      agent_id: nil,
+      tokens_in: 0,
+      tokens_out: 0,
+      at: 0
     ],
     fields: [
+      kind: {:enum, [:text, :thinking, :tool, :error, :system]},
+      tool: {:optional, {:dto, SwarmCodeCLI.UI.DataSource.DTO.ToolCall}},
+      agent_id: {:optional, :id},
+      tokens_in: :count,
+      tokens_out: :count,
+      at: :count,
       created_sequence: :revision,
       attachment_refs: {:list, :id},
       detail_ref: {:optional, {:dto, SwarmCodeCLI.UI.DataSource.DTO.DetailRef}},
@@ -44,6 +56,12 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.TranscriptItem do
       allowed_actions: :actions
     ],
     defaults: [
+      kind: :text,
+      tool: nil,
+      agent_id: nil,
+      tokens_in: 0,
+      tokens_out: 0,
+      at: 0,
       created_sequence: 0,
       attachment_refs: [],
       detail_ref: nil,

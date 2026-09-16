@@ -165,6 +165,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Compose do
       role: :user,
       state: :done,
       revision: 1,
+      at: Script.clock_ms(),
       attempt_id: "synthetic-attempt",
       attachment_refs: attachments,
       target_kind: target_kind,

@@ -9,9 +9,13 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.WorkspaceSnapshot do
       chat_model: nil,
       swarm_model: nil,
       effort: nil,
-      swarm_effort: nil
+      swarm_effort: nil,
+      changes: [],
+      verdicts: []
     ],
     fields: [
+      changes: {:list, {:dto, SwarmCodeCLI.UI.DataSource.DTO.Change}},
+      verdicts: {:list, {:dto, SwarmCodeCLI.UI.DataSource.DTO.Verdict}},
       allowed_actions: :actions,
       revision: :revision,
       seen_revision: :revision,
@@ -36,6 +40,8 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.WorkspaceSnapshot do
       through_sequence: :revision
     ],
     defaults: [
+      changes: [],
+      verdicts: [],
       allowed_actions: [],
       revision: 0,
       seen_revision: 0,

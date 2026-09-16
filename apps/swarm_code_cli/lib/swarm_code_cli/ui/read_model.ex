@@ -9,11 +9,14 @@ defmodule SwarmCodeCLI.UI.ReadModel do
             agents: %{},
             interactions: %{},
             activity: %{},
+            changes: %{},
+            verdicts: %{},
             order: %{},
             coverage: %{},
             chunks: %ChunkDeque{}
 
   @type t :: %__MODULE__{}
+  @tables [:runs, :transcript, :agents, :interactions, :activity, :changes, :verdicts]
 
   def snapshot(model, slot, body) do
     incoming = install(%__MODULE__{}, slot, body)
@@ -21,7 +24,7 @@ defmodule SwarmCodeCLI.UI.ReadModel do
     previous = model
 
     model =
-      Enum.reduce([:runs, :transcript, :agents, :interactions, :activity], model, fn field, acc ->
+      Enum.reduce(@tables, model, fn field, acc ->
         shared =
           previous.coverage
           |> Map.delete(slot)
@@ -133,7 +136,9 @@ defmodule SwarmCodeCLI.UI.ReadModel do
              :run_update,
              :agent_update,
              :interaction_upsert,
-             :activity_upsert
+             :activity_upsert,
+             :change_upsert,
+             :verdict_upsert
            ] do
     field =
       case kind do
@@ -142,6 +147,8 @@ defmodule SwarmCodeCLI.UI.ReadModel do
         :agent_update -> :agents
         :interaction_upsert -> :interactions
         :activity_upsert -> :activity
+        :change_upsert -> :changes
+        :verdict_upsert -> :verdicts
       end
 
     table = Map.fetch!(model, field)
@@ -173,12 +180,13 @@ defmodule SwarmCodeCLI.UI.ReadModel do
   end
 
   def delta(model, slot, %Delta{kind: kind, entity_id: id})
-      when kind in [:transcript_remove, :interaction_remove, :activity_remove] do
+      when kind in [:transcript_remove, :interaction_remove, :activity_remove, :change_remove] do
     field =
       case kind do
         :transcript_remove -> :transcript
         :interaction_remove -> :interactions
         :activity_remove -> :activity
+        :change_remove -> :changes
       end
 
     model = Map.update!(model, field, &Map.delete(&1, id))
@@ -256,12 +264,17 @@ defmodule SwarmCodeCLI.UI.ReadModel do
           if item.interaction, do: [item.interaction], else: []
         end)
 
+    changes = Map.get(body, :changes, [])
+    verdicts = Map.get(body, :verdicts, [])
+
     coverage = %{
       runs: Enum.map(runs, & &1.id),
       transcript: Enum.map(transcript, & &1.id),
       activity: Enum.map(activity, & &1.id),
       agents: Enum.map(Map.get(body, :agents, []), & &1.id),
-      interactions: Enum.map(interactions, & &1.id)
+      interactions: Enum.map(interactions, & &1.id),
+      changes: Enum.map(changes, & &1.id),
+      verdicts: Enum.map(verdicts, & &1.id)
     }
 
     model = %{model | coverage: Map.put(model.coverage, slot, coverage)}
@@ -272,6 +285,8 @@ defmodule SwarmCodeCLI.UI.ReadModel do
     |> put_rows(:activity, activity)
     |> put_rows(:agents, Map.get(body, :agents, []))
     |> put_rows(:interactions, interactions)
+    |> put_rows(:changes, changes)
+    |> put_rows(:verdicts, verdicts)
     |> Map.update!(:order, &Map.put(&1, slot, Enum.map(rows, fn row -> row.id end)))
   end
 
@@ -281,12 +296,7 @@ defmodule SwarmCodeCLI.UI.ReadModel do
     %{model | coverage: Map.put(model.coverage, slot, fields)}
   end
 
-  def bounded?(model),
-    do:
-      Enum.all?(
-        [:runs, :transcript, :agents, :interactions, :activity],
-        &(map_size(Map.fetch!(model, &1)) <= 512)
-      )
+  def bounded?(model), do: Enum.all?(@tables, &(map_size(Map.fetch!(model, &1)) <= 512))
 
   defp entity_revision(row), do: Map.get(row, :revision, Map.get(row, :expected_revision, 0))
 

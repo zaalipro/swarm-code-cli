@@ -14,6 +14,8 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.Schema do
       @wire_defaults unquote(wire_defaults)
       defstruct unquote(defaults)
       @type t :: %__MODULE__{unquote_splicing(types)}
+      @doc false
+      def __wire_defaults__, do: @wire_defaults
       @spec validate(term()) :: {:ok, t()} | {:error, :invalid_dto}
       def validate(%__MODULE__{} = value) do
         valid =
@@ -37,7 +39,10 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.Schema do
 
   defp type_ast(:id), do: quote(do: binary())
   defp type_ast(:text), do: quote(do: binary())
+  defp type_ast({:text, _max_bytes}), do: quote(do: binary())
   defp type_ast(:revision), do: quote(do: non_neg_integer())
+  defp type_ast(:count), do: quote(do: non_neg_integer())
+  defp type_ast(:float), do: quote(do: float())
   defp type_ast(:progress), do: quote(do: 0..100)
   defp type_ast(:boolean), do: quote(do: boolean())
   defp type_ast(:error), do: quote(do: AdmissionError.t())
@@ -55,8 +60,18 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.Schema do
   def valid?(:text, value),
     do: is_binary(value) and byte_size(value) <= 65_536 and String.valid?(value)
 
+  def valid?({:text, max_bytes}, value),
+    do: is_binary(value) and byte_size(value) <= max_bytes and String.valid?(value)
+
   def valid?(:revision, value),
     do: is_integer(value) and value >= 0 and value <= 9_007_199_254_740_991
+
+  # Counters, byte sizes and unix-millisecond instants share the revision range.
+  def valid?(:count, value), do: valid?(:revision, value)
+
+  # Money and other non-negative measures; JSON may carry a whole number.
+  def valid?(:float, value),
+    do: is_number(value) and value >= 0 and value <= 9_007_199_254_740_991
 
   def valid?(:progress, value), do: is_integer(value) and value in 0..100
   def valid?(:boolean, value), do: is_boolean(value)
@@ -276,6 +291,9 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.Schema do
   defp decode_value({:list, type}, values), do: decode_list(type, values, 200)
   defp decode_value({:dto, module}, value), do: module.decode(value)
   defp decode_value(:error, value), do: AdmissionError.decode(value)
+
+  defp decode_value(:float, value) when is_integer(value),
+    do: decode_value(:float, value * 1.0)
 
   defp decode_value(type, value),
     do: if(valid?(type, value), do: {:ok, value}, else: {:error, :invalid_dto})

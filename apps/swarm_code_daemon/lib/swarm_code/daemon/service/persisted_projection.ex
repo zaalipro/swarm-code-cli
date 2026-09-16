@@ -2,7 +2,11 @@ defmodule SwarmCode.Daemon.Service.PersistedProjection do
   @moduledoc false
   import Ecto.Query
   alias SwarmCode.Domain.Repo
+  alias SwarmCode.Domain.Checkpoints.Checkpoint
   alias SwarmCode.Domain.Conversations.{Run, Message, Node}
+
+  # An op that is still open: the agent is on it, so its title is the agent's step.
+  @open_ops ~w(running retrying awaiting_approval awaiting_answer paused)
 
   def runs(conversation, scope, cursor \\ nil, direction \\ "before", limit \\ 201) do
     base = from(r in Run, where: r.conversation_id == ^conversation)
@@ -27,6 +31,12 @@ defmodule SwarmCode.Daemon.Service.PersistedProjection do
           launched_by_run_id: r.launched_by_run_id,
           consensus: r.consensus,
           goal_id: r.goal_id,
+          tokens_in: r.tokens_in,
+          tokens_out: r.tokens_out,
+          cost_usd: r.cost_usd,
+          model: r.model,
+          started_at: r.started_at,
+          finished_at: r.finished_at,
           inserted_at: r.inserted_at,
           updated_at: r.updated_at
         }
@@ -58,6 +68,10 @@ defmodule SwarmCode.Daemon.Service.PersistedProjection do
     m = if scope && scope.kind == :run, do: from([m, r] in m, where: r.id == ^scope.id), else: m
     n = if scope && scope.kind == :run, do: from([n, r] in n, where: r.id == ^scope.id), else: n
 
+    # Both halves of the union list the same keys in the same order. The
+    # message half is first, so its column types are the ones Ecto loads the
+    # rows with: `agent_id`, `started_at` and `finished_at` are typed fields
+    # here so an op node's timings and parent come back cast, not raw text.
     m =
       from([m, r] in m,
         select: %{
@@ -72,7 +86,18 @@ defmodule SwarmCode.Daemon.Service.PersistedProjection do
           inserted_at: m.inserted_at,
           updated_at: m.updated_at,
           text_bytes: fragment("length(cast(coalesce(?, '') as blob))", m.content),
-          reasoning_bytes: fragment("length(cast(coalesce(?, '') as blob))", m.reasoning)
+          reasoning_bytes: fragment("length(cast(coalesce(?, '') as blob))", m.reasoning),
+          source_kind: m.role,
+          op_type: fragment("null"),
+          title: fragment("null"),
+          detail: fragment("null"),
+          input: fragment("null"),
+          agent_id: r.root_node_id,
+          started_at: m.inserted_at,
+          finished_at: m.inserted_at,
+          tokens_in: m.tokens_in,
+          tokens_out: m.tokens_out,
+          result_bytes: fragment("0")
         }
       )
 
@@ -104,7 +129,19 @@ defmodule SwarmCode.Daemon.Service.PersistedProjection do
               n.detail,
               n.error
             ),
-          reasoning_bytes: fragment("0")
+          reasoning_bytes: fragment("0"),
+          source_kind: n.kind,
+          op_type: n.op_type,
+          title: fragment("substr(coalesce(?, ''), 1, 200)", n.title),
+          detail: fragment("substr(coalesce(?, ''), 1, 200)", n.detail),
+          input: n.input,
+          agent_id:
+            fragment("case when ? = 'agent' then ? else ? end", n.kind, n.id, n.parent_id),
+          started_at: n.started_at,
+          finished_at: n.finished_at,
+          tokens_in: n.tokens_in,
+          tokens_out: n.tokens_out,
+          result_bytes: fragment("length(cast(coalesce(?, '') as blob))", n.result)
         }
       )
 
@@ -156,10 +193,96 @@ defmodule SwarmCode.Daemon.Service.PersistedProjection do
           run_id: n.run_id,
           kind: n.kind,
           status: n.status,
-          updated_at: n.updated_at
+          updated_at: n.updated_at,
+          name: n.name,
+          role: n.role,
+          title: n.title,
+          progress: n.progress,
+          tokens_in: n.tokens_in,
+          tokens_out: n.tokens_out,
+          cost_usd: n.cost_usd,
+          started_at: n.started_at,
+          finished_at: n.finished_at,
+          parent_id: n.parent_id,
+          depth: n.depth,
+          changes_stat: n.changes_stat,
+          error: fragment("substr(coalesce(?, ''), 1, 200)", n.error),
+          # Only a judge's result is read (its verdict JSON); everyone else's
+          # stays in the database.
+          result: fragment("case when ? like 'Judge%' then ? else null end", n.name, n.result)
         }
       )
     )
+  end
+
+  @doc "The newest still-open op per agent of `ids`: `%{agent_id => op}`."
+  def running_ops(_conversation, []), do: %{}
+
+  def running_ops(conversation, ids) do
+    Repo.all(
+      from(n in Node,
+        join: r in Run,
+        on: r.id == n.run_id,
+        where:
+          r.conversation_id == ^conversation and n.run_id in ^ids and n.kind == "op" and
+            n.status in ^@open_ops,
+        order_by: [desc: n.started_at, desc: n.inserted_at, desc: n.id],
+        limit: 400,
+        select: %{
+          parent_id: n.parent_id,
+          op_type: n.op_type,
+          title: fragment("substr(coalesce(?, ''), 1, 200)", n.title),
+          started_at: n.started_at
+        }
+      )
+    )
+    |> Enum.reduce(%{}, fn op, acc -> Map.put_new(acc, op.parent_id, op) end)
+  end
+
+  @doc """
+  The newest 200 checkpoints of `ids`, with the agent that wrote each one (the
+  checkpoint's node is the write op; its parent is the agent) and that agent's
+  worktree, so the path can be shown relative to it.
+  """
+  def checkpoints(_conversation, []), do: []
+
+  def checkpoints(conversation, ids) do
+    Repo.all(
+      from(c in Checkpoint,
+        left_join: n in Node,
+        on: n.id == c.node_id,
+        left_join: a in Node,
+        on:
+          a.id == fragment("case when ? = 'agent' then ? else ? end", n.kind, n.id, n.parent_id),
+        where: c.conversation_id == ^conversation and c.run_id in ^ids,
+        order_by: [desc: c.inserted_at, desc: c.id],
+        limit: 200,
+        select: %{
+          id: c.id,
+          run_id: c.run_id,
+          node_id: c.node_id,
+          agent_id: a.id,
+          workspace_path: a.workspace_path,
+          path: c.path,
+          restorable: c.restorable,
+          inserted_at: c.inserted_at
+        }
+      )
+    )
+  end
+
+  @doc "How many checkpoints each run of `ids` has: `%{run_id => count}`."
+  def checkpoint_counts(_conversation, []), do: %{}
+
+  def checkpoint_counts(conversation, ids) do
+    Repo.all(
+      from(c in Checkpoint,
+        where: c.conversation_id == ^conversation and c.run_id in ^ids,
+        group_by: c.run_id,
+        select: {c.run_id, count(c.id)}
+      )
+    )
+    |> Map.new()
   end
 
   def run_metadata(conversation, ids) do

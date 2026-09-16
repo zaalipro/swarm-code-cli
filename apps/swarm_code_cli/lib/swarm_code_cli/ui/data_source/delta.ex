@@ -11,7 +11,9 @@ defmodule SwarmCodeCLI.UI.DataSource.Delta do
     activity_upsert: DTO.ActivityItem,
     workspace_metadata: DTO.WorkspaceMetadata,
     counts_update: DTO.Counts,
-    connection: DTO.Connection
+    connection: DTO.Connection,
+    change_upsert: DTO.Change,
+    verdict_upsert: DTO.Verdict
   }
   @kinds Map.keys(@bodies) ++
            [
@@ -20,6 +22,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Delta do
              :stream_reset,
              :interaction_remove,
              :activity_remove,
+             :change_remove,
              :snapshot_required
            ]
 
@@ -50,6 +53,9 @@ defmodule SwarmCodeCLI.UI.DataSource.Delta do
           | :workspace_metadata
           | :counts_update
           | :connection
+          | :change_upsert
+          | :change_remove
+          | :verdict_upsert
           | :snapshot_required
   @type t :: %__MODULE__{
           kind: kind(),
@@ -68,6 +74,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Delta do
             | DTO.Counts.t()
             | DTO.Connection.t()
             | DTO.WorkspaceMetadata.t()
+            | DTO.Change.t()
+            | DTO.Verdict.t()
             | nil,
           sequence: non_neg_integer(),
           revision: non_neg_integer()
@@ -127,6 +135,12 @@ defmodule SwarmCodeCLI.UI.DataSource.Delta do
       delta.entity_id == body.id and delta.run_id == body.run_id and is_nil(delta.conversation_id) and
         is_nil(delta.attempt_id)
 
+  # Changes and verdicts belong to a run; the envelope carries the run's
+  # conversation so conversation-scoped watches can route them.
+  defp correlated_body?(%{body: %{__struct__: module} = body} = delta)
+       when module in [DTO.Change, DTO.Verdict],
+       do: delta.entity_id == body.id and delta.run_id == body.run_id and is_nil(delta.attempt_id)
+
   defp correlated_body?(
          %{body: %{id: id, run_id: run_id, conversation_id: conversation_id}} = delta
        ),
@@ -149,6 +163,9 @@ defmodule SwarmCodeCLI.UI.DataSource.Delta do
   defp correlated_body?(%{kind: kind} = delta) when kind in [:stream_append, :stream_reset],
     do: Schema.valid?(:id, delta.run_id) and Schema.valid?(:id, delta.conversation_id)
 
+  defp correlated_body?(%{kind: :change_remove} = delta),
+    do: Schema.valid?(:id, delta.run_id) and is_nil(delta.attempt_id)
+
   defp correlated_body?(%{kind: :workspace_metadata, body: body} = delta),
     do:
       delta.conversation_id == body.conversation_id and is_nil(delta.entity_id) and
@@ -170,7 +187,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Delta do
            Schema.valid?(:text, text)
 
   defp valid_body?(%{kind: kind, body: nil, entity_id: id, channel: nil, text: nil})
-       when kind in [:transcript_remove, :interaction_remove, :activity_remove],
+       when kind in [:transcript_remove, :interaction_remove, :activity_remove, :change_remove],
        do: Schema.valid?(:id, id)
 
   defp valid_body?(%{kind: :snapshot_required, body: nil, channel: nil, text: nil}), do: true
@@ -186,6 +203,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Delta do
         :counts_update -> DTO.Counts
         :connection -> DTO.Connection
         :workspace_metadata -> DTO.WorkspaceMetadata
+        :change_upsert -> DTO.Change
+        :verdict_upsert -> DTO.Verdict
         _ -> nil
       end
 

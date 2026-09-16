@@ -275,7 +275,9 @@ defmodule SwarmCode.Daemon.Service.LiveBackend do
               created: state.revision + 1,
               approval: nil,
               steers: [],
-              tools: []
+              tools: [],
+              at: now_ms(),
+              finished_at: nil
             }
 
             next = %{
@@ -428,21 +430,7 @@ defmodule SwarmCode.Daemon.Service.LiveBackend do
           %{run | text: run.text <> text}
 
         %{type: :tool_started, id: call_id, tool: tool} ->
-          %{
-            run
-            | tools:
-                run.tools ++
-                  [
-                    %{
-                      id: Ecto.UUID.generate(),
-                      call_id: call_id,
-                      tool: tool,
-                      text: "",
-                      status: "running",
-                      revision: revision
-                    }
-                  ]
-          }
+          %{run | tools: run.tools ++ [new_tool(call_id, tool, revision)]}
 
         %{type: :tool_progress, id: call_id, text: text} ->
           update_tool(run, call_id, text, "running", revision)
@@ -451,21 +439,7 @@ defmodule SwarmCode.Daemon.Service.LiveBackend do
           run =
             if Enum.any?(run.tools, &(&1.call_id == call_id)),
               do: run,
-              else: %{
-                run
-                | tools:
-                    run.tools ++
-                      [
-                        %{
-                          id: Ecto.UUID.generate(),
-                          call_id: call_id,
-                          tool: event.tool,
-                          text: "",
-                          status: "running",
-                          revision: revision
-                        }
-                      ]
-              }
+              else: %{run | tools: run.tools ++ [new_tool(call_id, event.tool, revision)]}
 
           update_tool(run, call_id, text, if(failed, do: "failed", else: "done"), revision)
 
@@ -485,10 +459,17 @@ defmodule SwarmCode.Daemon.Service.LiveBackend do
           %{run | status: status}
 
         %{type: :finished, result: result, reasoning: reasoning} ->
-          %{run | status: result.status, text: result.text, reasoning: reasoning, approval: nil}
+          %{
+            run
+            | status: result.status,
+              text: result.text,
+              reasoning: reasoning,
+              approval: nil,
+              finished_at: now_ms()
+          }
 
         %{type: :finished, status: status} ->
-          %{run | status: status, approval: nil}
+          %{run | status: status, approval: nil, finished_at: now_ms()}
 
         %{type: :approval_required} ->
           %{run | status: :waiting_approval, approval: approval(event, run, state)}
@@ -506,7 +487,8 @@ defmodule SwarmCode.Daemon.Service.LiveBackend do
                       id: steer_id,
                       text: text,
                       revision: revision,
-                      attachments: Map.get(event, :attachment_refs, [])
+                      attachments: Map.get(event, :attachment_refs, []),
+                      at: now_ms()
                     }
                   ]
           }
@@ -705,13 +687,15 @@ defmodule SwarmCode.Daemon.Service.LiveBackend do
               "swarm_effort" => nil,
               "runs" => selected,
               "transcript" => transcript,
-              "interactions" => Enum.take(pending, limit)
+              "interactions" => Enum.take(pending, limit),
+              "changes" => [],
+              "verdicts" => []
             })
 
           "inspector" ->
             Map.merge(base, %{
               "run" => List.first(selected),
-              "agents" => [],
+              "agents" => runs |> Enum.map(&agent(&1, state)) |> Enum.take(limit),
               "transcript" => transcript,
               "tab" => "thread"
             })
@@ -725,6 +709,35 @@ defmodule SwarmCode.Daemon.Service.LiveBackend do
 
       fit(kind, body, params["byte_limit"])
     end
+  end
+
+  # The unsaved runtime has one assistant per run and no checkpoints or judges:
+  # the agent is synthesized from the run, changes and verdicts stay empty.
+  defp agent(run, _state) do
+    open = run.tools |> Enum.reverse() |> Enum.find(&(&1.status == "running"))
+
+    %{
+      "id" => run.node_id,
+      "run_id" => run.id,
+      "revision" => run.revision,
+      "state" => status(run.status),
+      "allowed_actions" => [],
+      "launched_by_superseded" => false,
+      "name" => "Assistant",
+      "role" => "assistant",
+      "title" => "",
+      "step" => preview(if(open, do: open.tool, else: status(run.status)), 200),
+      "progress" => 0,
+      "tokens_in" => 0,
+      "tokens_out" => 0,
+      "cost_usd" => nil,
+      "started_at" => run.at,
+      "finished_at" => run.finished_at,
+      "parent_id" => nil,
+      "depth" => 0,
+      "changes_stat" => nil,
+      "error" => nil
+    }
   end
 
   defp page(items, nil, _direction, limit) do
@@ -783,11 +796,25 @@ defmodule SwarmCode.Daemon.Service.LiveBackend do
       "revision" => run.revision,
       "state" => status(run.status),
       "allowed_actions" => actions(run),
-      "progress" => nil
+      "progress" => nil,
+      "tokens_in" => 0,
+      "tokens_out" => 0,
+      "cost_usd" => nil,
+      "model" => state.opts[:model],
+      "agents_total" => 1,
+      "agents_running" => if(run.status in @terminal, do: 0, else: 1),
+      "needs" => if(run.approval, do: 1, else: 0),
+      "changes" => 0,
+      "started_at" => run.at,
+      "finished_at" => run.finished_at,
+      "consensus" => false,
+      "error" => nil
     }
 
   defp transcript(run, state) do
-    user = node(run, state, run.user_id, "user", run.prompt, "", "done", run.created)
+    user =
+      node(run, state, run.user_id, "user", run.prompt, "", "done", run.created)
+      |> Map.merge(facts("text", run.node_id, run.at))
 
     assistant =
       node(
@@ -800,6 +827,7 @@ defmodule SwarmCode.Daemon.Service.LiveBackend do
         status(run.status),
         run.revision
       )
+      |> Map.merge(facts("text", run.node_id, run.at))
 
     user = Map.put(user, "attachment_refs", attachment_ids(run.attachments))
 
@@ -815,25 +843,75 @@ defmodule SwarmCode.Daemon.Service.LiveBackend do
           tool.status,
           tool.revision
         )
+        |> Map.merge(facts("tool", run.node_id, tool.started_at, tool_call(tool)))
       end) ++
       Enum.map(run.steers, fn steer ->
         node(run, state, steer.id, "user", steer.text, "", "done", steer.revision)
         |> Map.put("attachment_refs", steer.attachments)
         |> Map.merge(%{"target_kind" => "steer", "target_id" => run.node_id})
+        |> Map.merge(facts("text", run.node_id, steer.at))
       end)
   end
 
+  defp facts(kind, agent_id, at, tool \\ nil),
+    do: %{
+      "kind" => kind,
+      "tool" => tool,
+      "agent_id" => agent_id,
+      "tokens_in" => 0,
+      "tokens_out" => 0,
+      "at" => at || 0
+    }
+
+  defp tool_call(tool) do
+    finished = tool.finished_at
+
+    %{
+      "name" => preview(tool.tool, 200),
+      "title" => preview(tool.tool, 200),
+      "detail" => tool.text |> String.split("\n", parts: 2) |> hd() |> preview(200),
+      "status" => tool.status,
+      "started_at" => tool.started_at,
+      "finished_at" => finished,
+      "duration_ms" => if(finished, do: max(finished - tool.started_at, 0)),
+      "result_bytes" => byte_size(tool.text),
+      "files" => []
+    }
+  end
+
+  defp new_tool(call_id, tool, revision),
+    do: %{
+      id: Ecto.UUID.generate(),
+      call_id: call_id,
+      tool: tool,
+      text: "",
+      status: "running",
+      revision: revision,
+      started_at: now_ms(),
+      finished_at: nil
+    }
+
   defp update_tool(run, call_id, text, status, revision) do
+    finished = if status in ["done", "failed"], do: now_ms()
+
     %{
       run
       | tools:
           Enum.map(run.tools, fn tool ->
             if tool.call_id == call_id,
-              do: %{tool | text: text, status: status, revision: revision},
+              do: %{
+                tool
+                | text: text,
+                  status: status,
+                  revision: revision,
+                  finished_at: finished || tool.finished_at
+              },
               else: tool
           end)
     }
   end
+
+  defp now_ms, do: System.system_time(:millisecond)
 
   defp node(run, state, id, role, text, reasoning, status, revision),
     do: %{

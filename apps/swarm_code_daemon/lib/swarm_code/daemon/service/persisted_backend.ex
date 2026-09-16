@@ -54,6 +54,9 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
       state = %{
         opts: Keyword.put(opts, :project_root, root),
+        # The realized root and the roots as configured: checkpoint paths are
+        # recorded under whichever form the engine resolved against.
+        roots: Enum.uniq([root, opts[:project_root], project_root]),
         runs: %{},
         order: [],
         watches: %{},
@@ -64,7 +67,9 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         attachment_ids: staged_attachments,
         refresh_pending: false,
         repo_monitor: Process.monitor(Process.whereis(Repo)),
-        streams: %{}
+        streams: %{},
+        changes: %{},
+        verdicts: %{}
       }
 
       {:ok, reload(state)}
@@ -636,15 +641,215 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
   defp refresh(state), do: publish_changes(state, reload(state))
 
-  defp agent_summary(n),
-    do: %{
+  # `ops` is `%{agent_id => newest open op}`; an agent's step is that op's
+  # title (a tool call reads "grep Bootstrap|…", a think reads "thinking"),
+  # else its status word.
+  defp agent_summary(n, ops) do
+    status = normalize_node_status(n.status)
+
+    step =
+      case ops[n.id] do
+        %{title: title} when is_binary(title) and title != "" -> title
+        %{op_type: type} when is_binary(type) and type != "" -> type
+        _ -> status
+      end
+
+    %{
       "id" => n.id,
       "run_id" => n.run_id,
       "revision" => stamp(n.updated_at),
-      "state" => normalize_node_status(n.status),
+      "state" => status,
       "allowed_actions" => [],
-      "launched_by_superseded" => false
+      "launched_by_superseded" => false,
+      "name" => clip(n.name, 200) || "",
+      "role" => agent_role(n),
+      "title" => clip(n.title, 200) || "",
+      "step" => clip(step, 200),
+      "progress" => progress(n.progress),
+      "tokens_in" => n.tokens_in || 0,
+      "tokens_out" => n.tokens_out || 0,
+      "cost_usd" => n.cost_usd,
+      "started_at" => ms(n.started_at),
+      "finished_at" => ms(n.finished_at),
+      "parent_id" => n.parent_id,
+      "depth" => n.depth || 0,
+      "changes_stat" => clip(n.changes_stat, 200),
+      "error" => if(present?(n.error), do: clip(n.error, 200))
     }
+  end
+
+  defp agent_role(%{role: "worker", name: "Judge" <> _}), do: "judge"
+  defp agent_role(%{role: role}) when role in ["lead", "sub", "worker", "assistant"], do: role
+  defp agent_role(_), do: "unknown"
+
+  # Progress is always a gauge on the wire: an agent that never reported one is at 0.
+  defp progress(value) when is_integer(value), do: value |> max(0) |> min(100)
+  defp progress(_), do: 0
+
+  # A live agent: not queued, not finished.
+  defp live_agent?(%{status: status}),
+    do: status in ["running", "retrying", "awaiting_approval", "awaiting_answer", "paused"]
+
+  # The run's error is its root agent's; a run that failed without one borrows
+  # the first failed agent's. A worker's failure inside a running run is the
+  # agent's error, not the run's.
+  defp run_error(row, agents) do
+    root = Enum.find(agents, &(&1.id == row.root_node_id))
+    failed = Enum.find(agents, &(&1.status == "failed" and present?(&1.error)))
+
+    cond do
+      root && present?(root.error) -> clip(root.error, 200)
+      failed && row.status in ["failed", "interrupted"] -> clip(failed.error, 200)
+      true -> nil
+    end
+  end
+
+  defp present?(text), do: is_binary(text) and text != ""
+
+  defp item_kind(%{source_kind: "op", op_type: "llm"}), do: "thinking"
+  defp item_kind(%{source_kind: "op"}), do: "tool"
+  defp item_kind(%{source_kind: kind}) when kind in ["user", "assistant", "agent"], do: "text"
+  defp item_kind(%{source_kind: "error"}), do: "error"
+  defp item_kind(_), do: "system"
+
+  defp tool_call(%{source_kind: "op", op_type: type} = r)
+       when is_binary(type) and type != "llm" do
+    started = ms(r.started_at)
+    finished = ms(r.finished_at)
+
+    %{
+      "name" => clip(type, 200),
+      "title" => clip(r.title, 200) || "",
+      "detail" => clip(r.detail, 200) || "",
+      "status" => normalize_node_status(r.status),
+      "started_at" => started,
+      "finished_at" => finished,
+      "duration_ms" => if(started && finished && finished >= started, do: finished - started),
+      "result_bytes" => r.result_bytes || 0,
+      "files" => op_files(type, r.input)
+    }
+  end
+
+  defp tool_call(_), do: nil
+
+  @file_ops ~w(read_file edit_file write_file list_dir)
+
+  defp op_files(type, input) when type in @file_ops and is_binary(input) do
+    case Jason.decode(input) do
+      {:ok, %{"path" => path}} when is_binary(path) and path != "" ->
+        [String.slice(path, 0, 512)]
+
+      _ ->
+        []
+    end
+  end
+
+  defp op_files(_, _), do: []
+
+  defp change_body(c, state) do
+    %{
+      "id" => c.id,
+      "run_id" => c.run_id,
+      "agent_id" => c.agent_id,
+      "path" => change_path(c.path, c.workspace_path, state.roots),
+      "restorable" => c.restorable == true,
+      "at" => ms(c.inserted_at) || 0,
+      "revision" => stamp(c.inserted_at)
+    }
+  end
+
+  # Inside the agent's worktree → relative to the worktree; inside the project
+  # → relative to the project root; anywhere else stays as recorded.
+  defp change_path(path, worktree, roots) when is_binary(path) do
+    case Enum.find([worktree | roots], &inside?(path, &1)) do
+      nil -> path
+      base -> Path.relative_to(path, base)
+    end
+    |> preview(1024)
+  end
+
+  defp change_path(_, _, _), do: ""
+
+  defp inside?(path, base) when is_binary(base) and base != "",
+    do: String.starts_with?(path, String.trim_trailing(base, "/") <> "/")
+
+  defp inside?(_, _), do: false
+
+  # A judge node whose result decodes as a JSON object is a verdict; `status` is
+  # the judge node's state word (the checks say how it rated each criterion).
+  defp verdict_body(%{name: "Judge" <> _ = name, result: result} = n) when is_binary(result) do
+    case Jason.decode(result) do
+      {:ok, %{} = verdict} ->
+        %{
+          "id" => n.id,
+          "run_id" => n.run_id,
+          "round" => judge_round(name),
+          "status" => normalize_node_status(n.status),
+          "checks" => verdict_checks(verdict["checks"]),
+          "summary" => clip(to_text(verdict["summary"]), 400) || "",
+          "revision" => stamp(n.updated_at)
+        }
+
+      _ ->
+        nil
+    end
+  end
+
+  defp verdict_body(_), do: nil
+
+  defp judge_round(name) do
+    case Regex.run(~r/round\s+(\d+)/, name) do
+      [_, digits] -> String.to_integer(digits)
+      _ -> 0
+    end
+  end
+
+  defp verdict_checks(checks) when is_list(checks) do
+    checks
+    |> Enum.filter(&is_map/1)
+    |> Enum.take(32)
+    |> Enum.map(fn check ->
+      %{
+        "key" => clip(to_text(check["key"]), 200) || "",
+        "ok" => check_ok(check),
+        "note" => clip(to_text(check["note"]), 400) || ""
+      }
+    end)
+  end
+
+  defp verdict_checks(_), do: []
+
+  defp check_ok(%{"ok" => ok}) when is_boolean(ok), do: ok
+  defp check_ok(%{"status" => "pass"}), do: true
+  defp check_ok(%{"status" => "fail"}), do: false
+  defp check_ok(_), do: nil
+
+  defp to_text(value) when is_binary(value), do: value
+  defp to_text(nil), do: nil
+  defp to_text(value), do: inspect(value)
+
+  # A wire text bound is in bytes (the client's `{:text, n}`), cut on a
+  # character boundary.
+  defp clip(nil, _), do: nil
+  defp clip(text, max) when is_binary(text), do: preview(text, max)
+  defp clip(_, _), do: nil
+
+  # Wall-clock milliseconds; a raw SQLite datetime string (an untyped union
+  # column) is parsed, anything else is unknown.
+  defp ms(nil), do: nil
+  defp ms(%DateTime{} = value), do: DateTime.to_unix(value, :millisecond)
+
+  defp ms(%NaiveDateTime{} = value),
+    do: value |> DateTime.from_naive!("Etc/UTC") |> DateTime.to_unix(:millisecond)
+
+  defp ms(value) when is_binary(value) do
+    case NaiveDateTime.from_iso8601(value) do
+      {:ok, naive} -> ms(naive)
+      _ -> nil
+    end
+  end
+
+  defp ms(_), do: nil
 
   defp presentation_kind(%{goal_id: id}) when is_binary(id), do: "goal"
   defp presentation_kind(%{consensus: true}), do: "consensus"
@@ -661,9 +866,14 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   end
 
   defp build_projection(state, rows, records, agents) do
-    pending = Questions.list(state.opts[:conversation_id]) |> Enum.take(200)
+    conv = state.opts[:conversation_id]
+    ids = Enum.map(rows, & &1.id)
+    pending = Questions.list(conv) |> Enum.take(200)
     grouped_records = Enum.group_by(records, & &1.run_id)
     grouped_agents = Enum.group_by(agents, & &1.run_id)
+    ops = PersistedProjection.running_ops(conv, ids)
+    checkpoints = PersistedProjection.checkpoints(conv, ids)
+    checkpoint_counts = PersistedProjection.checkpoint_counts(conv, ids)
 
     runs =
       Map.new(rows, fn row ->
@@ -683,10 +893,21 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
           created: stamp(row.inserted_at),
           revision: revision,
           records: [],
-          agents: Enum.map(ns, &agent_summary/1),
+          agents: Enum.map(ns, &agent_summary(&1, ops)),
           node_ids: Enum.map(ns, & &1.id),
           approval: nil,
-          interactions: []
+          interactions: [],
+          tokens_in: row.tokens_in || 0,
+          tokens_out: row.tokens_out || 0,
+          cost_usd: row.cost_usd,
+          model: clip(row.model, 200),
+          agents_total: length(ns),
+          agents_running: Enum.count(ns, &live_agent?/1),
+          changes_count: Map.get(checkpoint_counts, row.id, 0),
+          started_at: ms(row.started_at),
+          finished_at: ms(row.finished_at),
+          consensus: row.consensus == true,
+          error: run_error(row, ns)
         }
 
         rs =
@@ -702,7 +923,13 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
               created: stamp(r.inserted_at),
               text_bytes: r.text_bytes,
               reasoning_bytes: r.reasoning_bytes,
-              attachments: Map.get(r, :attachments, [])
+              attachments: Map.get(r, :attachments, []),
+              kind: item_kind(r),
+              tool: tool_call(r),
+              agent_id: r.agent_id,
+              tokens_in: r.tokens_in || 0,
+              tokens_out: r.tokens_out || 0,
+              at: ms(r.started_at) || ms(r.inserted_at) || 0
             }
 
             case state.streams[r.id] do
@@ -742,14 +969,45 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     revision = Enum.max([state.revision | Enum.map(Map.values(runs), & &1.revision)])
     revision = if metadata != state.metadata, do: revision + 1, else: revision
 
+    verdicts =
+      Enum.flat_map(agents, fn n ->
+        case verdict_body(n) do
+          nil -> []
+          body -> [{n.id, body}]
+        end
+      end)
+
     %{
       state
       | runs: runs,
         order: Enum.map(rows, & &1.id),
         streams: Map.take(state.streams, live_messages),
         revision: revision,
-        metadata: metadata
+        metadata: metadata,
+        changes: Map.new(checkpoints, &{&1.id, change_body(&1, state)}),
+        verdicts: Map.new(verdicts)
     }
+  end
+
+  # The changes and verdicts of the runs a snapshot shows, newest first.
+  defp changes_for(runs, state) do
+    ids = MapSet.new(runs, & &1.id)
+
+    state.changes
+    |> Map.values()
+    |> Enum.filter(&MapSet.member?(ids, &1["run_id"]))
+    |> Enum.sort_by(&{&1["at"], &1["id"]}, :desc)
+    |> Enum.take(200)
+  end
+
+  defp verdicts_for(runs, state) do
+    ids = MapSet.new(runs, & &1.id)
+
+    state.verdicts
+    |> Map.values()
+    |> Enum.filter(&MapSet.member?(ids, &1["run_id"]))
+    |> Enum.sort_by(&{&1["revision"], &1["id"]}, :desc)
+    |> Enum.take(200)
   end
 
   defp query_projection(params, scope, state) do
@@ -844,6 +1102,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
   defp publish_changes(old, state) do
     state = if old.metadata != state.metadata, do: broadcast_metadata(state), else: state
+    state = publish_entities(old, state)
 
     Enum.reduce(state.order, state, fn id, acc ->
       run = acc.runs[id]
@@ -889,6 +1148,36 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     end)
   end
 
+  # Changes and verdicts travel like the other entities: an upsert for every
+  # body that differs from the last published one, a removal for a checkpoint
+  # that left the newest-200 window or was deleted. The body's revision is the
+  # delta's, so the client dedupes on it.
+  defp publish_entities(old, state) do
+    state =
+      Enum.reduce(state.changes, state, fn {id, body}, acc ->
+        if old.changes[id] == body,
+          do: acc,
+          else: broadcast(acc, entity_delta("change_upsert", body["run_id"], id, body, acc))
+      end)
+
+    state =
+      Enum.reduce(Map.keys(old.changes) -- Map.keys(state.changes), state, fn id, acc ->
+        gone = old.changes[id]
+        broadcast(acc, entity_delta("change_remove", gone["run_id"], id, nil, acc))
+      end)
+
+    Enum.reduce(state.verdicts, state, fn {id, body}, acc ->
+      if old.verdicts[id] == body,
+        do: acc,
+        else: broadcast(acc, entity_delta("verdict_upsert", body["run_id"], id, body, acc))
+    end)
+  end
+
+  defp entity_delta(kind, run_id, entity, body, state) do
+    run = state.runs[run_id] || %{id: run_id, revision: state.revision}
+    delta(kind, run, entity, body)
+  end
+
   defp broadcast_metadata(state) do
     broadcast(state, %{
       "kind" => "workspace_metadata",
@@ -926,6 +1215,14 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         |> Map.put("node_id", row.node_id)
         |> Map.put("attachment_refs", attachment_ids(Map.get(row, :attachments, [])))
         |> Map.put("created_sequence", row.created)
+        |> Map.merge(%{
+          "kind" => row.kind,
+          "tool" => row.tool,
+          "agent_id" => row.agent_id,
+          "tokens_in" => row.tokens_in,
+          "tokens_out" => row.tokens_out,
+          "at" => row.at
+        })
         |> Map.put(
           "detail_ref",
           if(row.text_bytes > byte_size(preview(row.text)),
@@ -952,7 +1249,19 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       "revision" => run.revision,
       "state" => status(run.status),
       "allowed_actions" => actions(run),
-      "progress" => nil
+      "progress" => nil,
+      "tokens_in" => run.tokens_in,
+      "tokens_out" => run.tokens_out,
+      "cost_usd" => run.cost_usd,
+      "model" => run.model,
+      "agents_total" => run.agents_total,
+      "agents_running" => run.agents_running,
+      "needs" => length(run.interactions),
+      "changes" => run.changes_count,
+      "started_at" => run.started_at,
+      "finished_at" => run.finished_at,
+      "consensus" => run.consensus,
+      "error" => run.error
     }
 
   defp member?(_, %{kind: :global, id: nil}), do: true
@@ -1157,7 +1466,9 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
                 "conversation_id" => state.opts[:conversation_id],
                 "runs" => selected,
                 "transcript" => transcript,
-                "interactions" => Enum.take(pending, limit)
+                "interactions" => Enum.take(pending, limit),
+                "changes" => changes_for(runs, state),
+                "verdicts" => verdicts_for(runs, state)
               })
               |> Map.merge(state.metadata)
 

@@ -22,6 +22,65 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
     inspector: "run_detail_snapshot"
   }
 
+  # Keys a daemon may omit on the v1 wire: fields added after the body was
+  # frozen, filled from each DTO's wire defaults. Legacy fixture-only defaults
+  # (`allowed_actions`, `created_sequence`, ...) stay mandatory on the wire.
+  @optional_wire_keys %{
+    DTO.WorkspaceSnapshot => [
+      :mode,
+      :chat_model,
+      :swarm_model,
+      :effort,
+      :swarm_effort,
+      :changes,
+      :verdicts
+    ],
+    DTO.TranscriptItem => [:kind, :tool, :agent_id, :tokens_in, :tokens_out, :at],
+    DTO.AgentSummary => [
+      :name,
+      :role,
+      :title,
+      :step,
+      :progress,
+      :tokens_in,
+      :tokens_out,
+      :cost_usd,
+      :started_at,
+      :finished_at,
+      :parent_id,
+      :depth,
+      :changes_stat,
+      :error
+    ],
+    DTO.RunSummary => [
+      :tokens_in,
+      :tokens_out,
+      :cost_usd,
+      :model,
+      :agents_total,
+      :agents_running,
+      :needs,
+      :changes,
+      :started_at,
+      :finished_at,
+      :consensus,
+      :error
+    ],
+    DTO.ToolCall => [
+      :title,
+      :detail,
+      :status,
+      :started_at,
+      :finished_at,
+      :duration_ms,
+      :result_bytes,
+      :files
+    ],
+    DTO.Change => [:agent_id, :restorable, :at],
+    DTO.Verdict => [:round, :status, :checks, :summary],
+    DTO.VerdictCheck => [:ok, :note]
+  }
+
   def watch_request(watch, wire_id, nonce, timeout_ms) do
     with {:ok, watch} <- Watch.validate(watch),
          body = watch_body(watch, timeout_ms),
@@ -382,27 +441,13 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
        when is_map(wire) and not is_map_key(wire, "feedback"),
        do: exact_wire_shape?(dto, Map.put(wire, "feedback", nil))
 
-  defp exact_wire_shape?(%DTO.WorkspaceSnapshot{} = dto, wire)
-       when is_map(wire) and not is_map_key(wire, "mode") and
-              not is_map_key(wire, "chat_model") and not is_map_key(wire, "swarm_model") and
-              not is_map_key(wire, "effort") and not is_map_key(wire, "swarm_effort") do
-    wire =
-      wire
-      |> Map.put_new("mode", nil)
-      |> Map.put_new("chat_model", nil)
-      |> Map.put_new("swarm_model", nil)
-      |> Map.put_new("effort", nil)
-      |> Map.put_new("swarm_effort", nil)
-
-    exact_wire_shape?(dto, wire)
-  end
-
   defp exact_wire_shape?(%DTO.LibraryItem{form: nil} = dto, wire)
        when is_map(wire) and not is_map_key(wire, "form"),
        do: exact_wire_shape?(dto, Map.put(wire, "form", nil))
 
-  defp exact_wire_shape?(%{__struct__: _} = dto, wire) when is_map(wire) do
+  defp exact_wire_shape?(%{__struct__: module} = dto, wire) when is_map(wire) do
     fields = Map.from_struct(dto)
+    wire = with_optional_wire_keys(module, wire)
 
     map_size(fields) == map_size(wire) and
       Enum.all?(fields, fn {key, value} ->
@@ -419,6 +464,20 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
         Enum.all?(Enum.zip(values, wires), fn {a, b} -> exact_wire_shape?(a, b) end)
 
   defp exact_wire_shape?(_, _), do: true
+
+  defp with_optional_wire_keys(module, wire) do
+    case Map.get(@optional_wire_keys, module) do
+      nil ->
+        wire
+
+      keys ->
+        defaults = module.__wire_defaults__()
+
+        Enum.reduce(keys, wire, fn key, acc ->
+          Map.put_new(acc, Atom.to_string(key), Keyword.fetch!(defaults, key))
+        end)
+    end
+  end
 
   defp restore_identities(%{__struct__: _} = dto, wire, local) do
     Enum.reduce_while(Map.from_struct(dto), {:ok, dto}, fn {key, value}, {:ok, acc} ->

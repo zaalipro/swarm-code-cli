@@ -318,6 +318,18 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Source do
               DTO.WorkspaceSnapshot,
               attrs ++
                 [
+                  changes:
+                    script.changes
+                    |> Map.values()
+                    |> scoped_by_run(scope, script)
+                    |> Enum.sort_by(&{-&1.at, &1.id})
+                    |> Enum.take(200),
+                  verdicts:
+                    script.verdicts
+                    |> Map.values()
+                    |> scoped_by_run(scope, script)
+                    |> Enum.sort_by(&{&1.run_id, &1.round, &1.id})
+                    |> Enum.take(200),
                   conversation_id: if(scope.kind == :conversation, do: scope.id, else: nil),
                   allowed_actions: Script.workspace_actions(script, scope),
                   revision:
@@ -386,6 +398,17 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Source do
     do: Enum.filter(items, &(Map.get(&1, :run_id, &1.id) == id))
 
   defp scoped(_, _), do: []
+
+  # Changes and verdicts carry a run but no conversation; scope them by run.
+  defp scoped_by_run(items, %{kind: :global}, _script), do: items
+
+  defp scoped_by_run(items, %{kind: :conversation, id: id}, script),
+    do: Enum.filter(items, &match?(%{conversation_id: ^id}, script.runs[&1.run_id]))
+
+  defp scoped_by_run(items, %{kind: :run, id: id}, _script),
+    do: Enum.filter(items, &(&1.run_id == id))
+
+  defp scoped_by_run(_, _, _), do: []
   defp slice(items, nil, _, size), do: sliced(items, 0, size)
 
   defp slice(items, cursor, direction, size) do
