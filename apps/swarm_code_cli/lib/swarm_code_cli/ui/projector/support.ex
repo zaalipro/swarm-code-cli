@@ -149,10 +149,16 @@ defmodule SwarmCodeCLI.UI.Projector.Support do
       {:run, id} ->
         Map.get(state.read_model.runs, id)
 
+      # The newest run is the conversation's current one: it is where the
+      # message just sent went and where the reply will stream. Picking the
+      # lowest id, as this used to, kept the transcript on the first run for
+      # ever and put every reply into a tab the user was not looking at. Both
+      # data sources fill `created_sequence`; the id breaks ties.
       {:conversation, id} ->
         state.read_model.runs
-        |> Enum.sort_by(&elem(&1, 0))
-        |> Enum.find_value(fn {_, run} -> if run.conversation_id == id, do: run end)
+        |> Map.values()
+        |> Enum.filter(&(&1.conversation_id == id))
+        |> Enum.max_by(&{&1.created_sequence, &1.id}, fn -> nil end)
 
       :activity ->
         nil
