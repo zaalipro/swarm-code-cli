@@ -117,6 +117,62 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcherTest do
              Dispatcher.dispatch(c.id, "/create-workflow off")
   end
 
+  test "model switches resolve exact, bare and ambiguous ids and refuse unknown ones", %{
+    conversation: c
+  } do
+    make = fn name, models ->
+      {:ok, provider} =
+        Providers.create(%{
+          name: name,
+          kind: "openai_compatible",
+          base_url: "http://127.0.0.1:1/v1",
+          api_key: "",
+          models: models,
+          default_model: hd(models)
+        })
+
+      on_exit(fn -> Providers.delete(provider) end)
+      provider
+    end
+
+    alpha = make.("alpha-" <> c.id, ["shared-model", "alpha-only"])
+    beta = make.("beta-" <> c.id, ["shared-model", "beta-only"])
+
+    # An exact "<provider_id>|<model>" pair wins outright.
+    assert {:ok, %{type: :updated, command: "model", field: :chat_model, value: "beta-only"}} =
+             Dispatcher.dispatch(c.id, "/model " <> beta.id <> "|beta-only")
+
+    assert %{chat_provider_id: beta_id, chat_model: "beta-only"} = Conversations.get!(c.id)
+    assert beta_id == beta.id
+
+    # A pair naming a model that provider does not list is not an exact match.
+    assert {:error, :unknown_model} =
+             Dispatcher.dispatch(c.id, "/model " <> beta.id <> "|alpha-only")
+
+    # A bare id only one provider lists goes to that provider.
+    assert {:ok, %{field: :swarm_model, value: "alpha-only"}} =
+             Dispatcher.dispatch(c.id, "/swarm_model alpha-only")
+
+    assert %{swarm_provider_id: alpha_id, swarm_model: "alpha-only"} = Conversations.get!(c.id)
+    assert alpha_id == alpha.id
+
+    # A bare id both list prefers the provider the conversation already uses
+    # for that role: beta for chat, alpha for swarm.
+    assert {:ok, %{value: "shared-model"}} = Dispatcher.dispatch(c.id, "/model shared-model")
+    assert %{chat_provider_id: ^beta_id, chat_model: "shared-model"} = Conversations.get!(c.id)
+
+    assert {:ok, %{value: "shared-model"}} =
+             Dispatcher.dispatch(c.id, "/swarm_model shared-model")
+
+    assert %{swarm_provider_id: ^alpha_id, swarm_model: "shared-model"} =
+             Conversations.get!(c.id)
+
+    # Nobody lists it: nothing changes.
+    assert {:error, :unknown_model} = Dispatcher.dispatch(c.id, "/model nobody-has-this")
+    assert {:error, :missing_argument} = Dispatcher.dispatch(c.id, "/model")
+    assert %{chat_model: "shared-model", swarm_model: "shared-model"} = Conversations.get!(c.id)
+  end
+
   test "engine errors remain failures while goal and custom mode changes persist", %{
     conversation: c
   } do

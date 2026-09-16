@@ -4,7 +4,7 @@ defmodule SwarmCode.CommandsTest do
 
   test "catalogue exposes all builtins" do
     assert Enum.map(Commands.catalogue(), & &1.name) ==
-             ~w(swarm goal plan review effort swarm_effort rewind stop resume workflow workflows create-workflow ultra consensus deep_research attach compact)
+             ~w(swarm goal plan review effort swarm_effort model swarm_model rewind stop resume workflow workflows create-workflow ultra consensus deep_research attach compact)
   end
 
   test "catalogue ranking" do
@@ -34,6 +34,32 @@ defmodule SwarmCode.CommandsTest do
     assert {:ok, %{name: "plan", mode: :plan}} = Commands.parse("/plan")
     assert {:ok, %{name: "swarm_effort", effort: :max}} = Commands.parse("/swarm_effort max")
     assert {:error, %{type: :invalid_effort}} = Commands.parse("/effort extreme")
+  end
+
+  test "model switches parse one bounded token and keep it a string" do
+    assert {:ok,
+            %{name: "model", kind: :builtin, action: :set_model, target: :chat, model: "gpt-5.5"}} =
+             Commands.parse("/model gpt-5.5")
+
+    assert {:ok, %{name: "swarm_model", action: :set_model, target: :swarm, model: "abc|gpt-5.5"}} =
+             Commands.parse("/swarm_model abc|gpt-5.5 ")
+
+    assert {:error, %{type: :missing_argument}} = Commands.parse("/model")
+    assert {:error, %{type: :missing_argument}} = Commands.parse("/swarm_model   ")
+    assert {:error, %{type: :invalid_argument}} = Commands.parse("/model gpt 5")
+    assert {:error, %{type: :invalid_argument}} = Commands.parse("/model gpt\u0001x")
+
+    assert {:error, %{type: :invalid_argument}} =
+             Commands.parse("/model " <> String.duplicate("a", 257))
+
+    assert {:ok, %{model: model}} = Commands.parse("/model " <> String.duplicate("a", 256))
+    assert byte_size(model) == 256
+  end
+
+  test "the palette completes /mo to model and /swarm_m to swarm_model" do
+    assert hd(Commands.catalogue("/mo")).name == "model"
+    assert Enum.map(Commands.catalogue("/swarm_m"), & &1.name) == ["swarm_model"]
+    assert Enum.find(Commands.catalogue(), &(&1.name == "swarm_model")).desc =~ "sub agents"
   end
 
   test "attachment staging parses a bounded path" do

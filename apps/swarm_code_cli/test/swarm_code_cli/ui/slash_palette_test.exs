@@ -36,7 +36,7 @@ defmodule SwarmCodeCLI.UI.SlashPaletteTest do
 
   test "palette exposes every builtin with description and follows registry ranking" do
     entries = SlashPalette.entries(state("/"))
-    assert length(entries) == 17
+    assert length(entries) == 19
     assert Enum.all?(entries, &(is_binary(&1.desc) and &1.desc != ""))
     assert Enum.map(SlashPalette.entries(state("/research")), & &1.name) == ["deep_research"]
     assert SlashPalette.entries(state("/ese")) == []

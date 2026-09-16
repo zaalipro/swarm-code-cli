@@ -4,7 +4,7 @@ defmodule SwarmCodeCLI.UI.FieldKey do
   alias SwarmCodeCLI.UI.Intent
 
   @type t ::
-          {:layer_query, binary(), :switcher | :jump | :action_menu}
+          {:layer_query, binary(), :switcher | :jump | :action_menu | :model_picker}
           | {:region_filter, binary()}
           | {:question_other, binary(), non_neg_integer()}
           | {:research_question, binary()}
@@ -12,7 +12,7 @@ defmodule SwarmCodeCLI.UI.FieldKey do
 
   @spec validate(term()) :: {:ok, t()} | {:error, :invalid_field_key}
   def validate({:layer_query, layer_id, kind} = key)
-      when kind in [:switcher, :jump, :action_menu] do
+      when kind in [:switcher, :jump, :action_menu, :model_picker] do
     if Intent.valid_id?(layer_id), do: {:ok, key}, else: {:error, :invalid_field_key}
   end
 

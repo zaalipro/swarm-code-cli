@@ -6,7 +6,16 @@ end
 
 defmodule SwarmCodeCLI.UI.Switcher do
   @moduledoc "Closed-prefix, deterministic switcher over destinations supported by this spike."
-  alias SwarmCodeCLI.UI.{Drafts, Editor, FieldEditors, MutationState, RequestResolver, State}
+  alias SwarmCodeCLI.UI.{
+    Drafts,
+    Editor,
+    FieldEditors,
+    ModelPicker,
+    MutationState,
+    RequestResolver,
+    State
+  }
+
   alias SwarmCodeCLI.UI.Reducer.Commands
   alias SwarmCodeCLI.UI.Switcher.Entry
   @kinds [:command, :workflow, :project, :repository, :conversation, :research, :run, :action]
@@ -16,6 +25,7 @@ defmodule SwarmCodeCLI.UI.Switcher do
     do: {:layer_query, id, kind}
 
   def field_key({:region_filter, id}), do: {:region_filter, id}
+  def field_key({:model_picker, _, _} = layer), do: ModelPicker.field_key(layer)
   def field_key(_), do: nil
 
   def catalogue(state) do
@@ -28,6 +38,16 @@ defmodule SwarmCodeCLI.UI.Switcher do
       entry("Open visual companion", :action, {:local, :open_companion}),
       vim_mode_entry(state)
     ]
+
+    # Both pickers open on the same next layer id: only one of them ever does.
+    models =
+      for target <- ModelPicker.targets(),
+          do:
+            entry(
+              ModelPicker.label(target),
+              :action,
+              {:local, {:open_layer, ModelPicker.open(state, target)}}
+            )
 
     runs = state.read_model.runs |> Map.values() |> Enum.sort_by(& &1.id)
 
@@ -48,6 +68,7 @@ defmodule SwarmCodeCLI.UI.Switcher do
       end
 
     local ++
+      models ++
       libraries ++
       local_entries(state) ++
       domain_entries(state) ++

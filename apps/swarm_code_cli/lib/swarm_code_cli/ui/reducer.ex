@@ -5,9 +5,12 @@ defmodule SwarmCodeCLI.UI.Reducer do
     Init,
     State,
     WatchState,
+    Draft,
     Drafts,
+    Editor,
     FieldEditors,
     Layout,
+    ModelPicker,
     SafeText,
     FeatureForm
   }
@@ -354,18 +357,37 @@ defmodule SwarmCodeCLI.UI.Reducer do
     {%{state | expansions: expansions}, []}
   end
 
-  defp transition(state, {:invoke, intent, id}) do
-    if Layout.calculate(state.size, state.preferences).mutations_visible? do
-      {next, effects} = Commands.invoke(state, intent, id)
-
-      if effects != [] do
-        {next, closed} = close_switcher(next)
-        {next, closed ++ effects}
-      else
-        {next, effects}
+  # A picker row sends a command the user did not type. The request resolver
+  # only admits a dispatch whose text is the draft's, so the draft is given the
+  # command first — as if it had been typed — and the accepted outcome clears
+  # it the way a sent draft is cleared. Unsent work is never overwritten: the
+  # pick is refused instead. The picker closes on either answer, and takes the
+  # palette it was opened from with it.
+  defp transition(%{layers: [{:model_picker, _, _} | _]} = state, {:invoke, intent, id}) do
+    {next, effects} =
+      case prime_model_pick(state, intent) do
+        {:ok, primed} -> invoke_intent(primed, intent, id)
+        {:error, notice} -> {%{state | notice: {:command_feedback, notice}}, []}
       end
+
+    {next, closed} = close_switcher(next)
+
+    {next, closed_palette} =
+      if match?([{:switcher, _} | _], next.layers),
+        do: close_switcher(next),
+        else: {next, []}
+
+    {next, closed ++ closed_palette ++ effects}
+  end
+
+  defp transition(state, {:invoke, intent, id}) do
+    {next, effects} = invoke_intent(state, intent, id)
+
+    if effects != [] do
+      {next, closed} = close_switcher(next)
+      {next, closed ++ effects}
     else
-      {state, []}
+      {next, effects}
     end
   end
 
@@ -634,7 +656,16 @@ defmodule SwarmCodeCLI.UI.Reducer do
 
   defp transition(state, {:open_layer, layer}) do
     {preview, advanced} = State.next_id(state, :layer)
-    state = if match?({_, ^preview}, layer), do: advanced, else: state
+
+    state =
+      if match?({_, ^preview}, layer) or match?({_, _, ^preview}, layer),
+        do: advanced,
+        else: state
+
+    # The bare `/model` in the composer is the picker's opener, not a message:
+    # once the picker is up the composer has nothing left to send.
+    state =
+      if match?({:model_picker, _, _}, layer), do: clear_opener_draft(state), else: state
 
     state =
       if match?({:approval, _}, layer) or match?({:command_report, _}, layer),
@@ -714,6 +745,9 @@ defmodule SwarmCodeCLI.UI.Reducer do
                :approval,
                :research_form
              ] ->
+          FieldEditors.close_owner(state.field_editors, owner)
+
+        {:model_picker, _, owner} ->
           FieldEditors.close_owner(state.field_editors, owner)
 
         _ ->
@@ -898,6 +932,9 @@ defmodule SwarmCodeCLI.UI.Reducer do
       when kind in [:switcher, :action_menu, :region_filter],
       do: ["query"] ++ Enum.map(SwarmCodeCLI.UI.Switcher.visible(state), & &1.id) ++ ["cancel"]
 
+  def focus_graph(%{layers: [{:model_picker, _, _} = layer | _]} = state),
+    do: ModelPicker.focus_graph(state, layer)
+
   def focus_graph(%{layers: [{:detail, _, _} | _]}), do: ["detail", "previous", "next", "cancel"]
 
   def focus_graph(%{layers: [{:library, _} | _]} = state),
@@ -1050,7 +1087,67 @@ defmodule SwarmCodeCLI.UI.Reducer do
     end
   end
 
+  defp repair_switcher(old, %{layers: [{:model_picker, _, _} = layer | _]} = next) do
+    if next == old or next.focus in ["query", "cancel"] or List.first(old.layers) != layer do
+      next
+    else
+      previous = ModelPicker.rows(old, layer)
+      index = Enum.find_index(previous, &(&1.id == old.focus)) || 0
+
+      %{
+        next
+        | focus: ModelPicker.repair_selection(next.focus, index, ModelPicker.rows(next, layer))
+      }
+    end
+  end
+
   defp repair_switcher(_, next), do: next
+
+  # The composer's draft is emptied only when it is the bare command that
+  # opened the picker; a draft opened over from the palette is left alone.
+  defp clear_opener_draft(state) do
+    with key when not is_nil(key) <- State.current_draft_key(state),
+         draft = Drafts.fetch(state.drafts, key),
+         target when not is_nil(target) <- ModelPicker.opener(Editor.text(draft.editor)) do
+      %{state | drafts: Drafts.put(state.drafts, Draft.clear(draft))}
+    else
+      _ -> state
+    end
+  end
+
+  defp invoke_intent(state, intent, id) do
+    if Layout.calculate(state.size, state.preferences).mutations_visible?,
+      do: Commands.invoke(state, intent, id),
+      else: {state, []}
+  end
+
+  # The draft takes the picked command when it is empty or already holds it;
+  # anything else is unsent work the pick must not replace.
+  defp prime_model_pick(state, {:dispatch, :send, text, :main, []}) do
+    case State.current_draft_key(state) do
+      nil ->
+        {:error, "No conversation is open to switch the model of."}
+
+      key ->
+        draft = Drafts.fetch(state.drafts, key)
+        current = Editor.text(draft.editor)
+
+        cond do
+          current == text ->
+            {:ok, state}
+
+          String.trim(current) == "" and draft.attachments == [] ->
+            {:ok, editor} = Editor.apply(Editor.reset(draft.editor), {:insert, text})
+            draft = %{Draft.clear(draft) | editor: editor}
+            {:ok, %{state | drafts: Drafts.put(state.drafts, draft)}}
+
+          true ->
+            {:error, "Send or clear the draft first, then pick a model."}
+        end
+    end
+  end
+
+  defp prime_model_pick(_state, _intent), do: {:error, "That is not a model to pick."}
 
   # Narrowing can hide the selected palette row, so the selection falls back to
   # the first run still listed rather than pointing at a row you cannot see.
@@ -1090,6 +1187,9 @@ defmodule SwarmCodeCLI.UI.Reducer do
        do: transition(state, :close_top_layer)
 
   defp close_switcher(%{layers: [{:confirm_intent, _} | _]} = state),
+    do: transition(state, :close_top_layer)
+
+  defp close_switcher(%{layers: [{:model_picker, _, _} | _]} = state),
     do: transition(state, :close_top_layer)
 
   defp close_switcher(state), do: {state, []}

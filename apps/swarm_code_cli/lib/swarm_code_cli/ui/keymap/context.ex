@@ -12,7 +12,7 @@ defmodule SwarmCodeCLI.UI.Keymap.Context do
   | `:composer_visual` | vim keymap, composer focused, VISUAL |
   | `:main` | `focus == "main"`, no layer |
   | `:inspector` | `focus == "inspector"`, no layer |
-  | `:picker` | the top layer searches or lists: switcher, run palette, runs dashboard, go-to, action menu, region filter |
+  | `:picker` | the top layer searches or lists: switcher, run palette, runs dashboard, go-to, action menu, region filter, model picker |
   | `:field` | any other layer whose focus is a text field |
   | `:dialog` | any other layer |
 
@@ -28,7 +28,8 @@ defmodule SwarmCodeCLI.UI.Keymap.Context do
     :runs_dashboard,
     :jump,
     :action_menu,
-    :region_filter
+    :region_filter,
+    :model_picker
   ]
 
   @doc "The layer kinds that make the `:picker` context."
@@ -38,6 +39,7 @@ defmodule SwarmCodeCLI.UI.Keymap.Context do
   @doc "True when `layer` is one of the searching or listing layers."
   @spec picker?(term()) :: boolean()
   def picker?({kind, _id}) when kind in @picker_layers, do: true
+  def picker?({:model_picker, _target, _id}), do: true
   def picker?(_layer), do: false
 
   @spec of(map()) :: atom()

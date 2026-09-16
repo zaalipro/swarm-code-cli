@@ -18,6 +18,7 @@ defmodule SwarmCodeCLI.UI.LayerSpec do
           | {:switcher | :action_menu | :jump | :region_filter, binary()}
           | {:runs_dashboard, binary()}
           | {:run_palette, binary()}
+          | {:model_picker, :chat | :swarm, binary()}
 
   @spec help() :: t()
   def help, do: :help
@@ -60,6 +61,11 @@ defmodule SwarmCodeCLI.UI.LayerSpec do
              :run_palette
            ],
       do: if(Intent.valid_id?(id), do: {:ok, layer}, else: {:error, :invalid_layer_spec})
+
+  # The picker remembers which model it switches: the chat model or the one
+  # the sub agents use. The id owns its query field like any other picker.
+  def validate({:model_picker, target, id} = layer) when target in [:chat, :swarm],
+    do: if(Intent.valid_id?(id), do: {:ok, layer}, else: {:error, :invalid_layer_spec})
 
   def validate({:confirm_intent, {:run_control, :stop, _} = intent} = layer),
     do: if(Intent.valid?(intent), do: {:ok, layer}, else: {:error, :invalid_layer_spec})

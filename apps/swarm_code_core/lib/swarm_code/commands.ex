@@ -18,6 +18,8 @@ defmodule SwarmCode.Commands do
     {"effort", "<low|medium|high|max>", "Reasoning effort of this conversation's chat model"},
     {"swarm_effort", "<low|medium|high|max>",
      "Reasoning effort of this conversation's sub agent model"},
+    {"model", "<model | provider_id|model>", "Switch this conversation's chat model"},
+    {"swarm_model", "<model | provider_id|model>", "Switch the model the sub agents use"},
     {"rewind", "", "Restore files to how they were before an earlier turn"},
     {"stop", "", "Stop everything running in this conversation"},
     {"resume", "", "Resume the last stopped run of this conversation"},
@@ -175,6 +177,22 @@ defmodule SwarmCode.Commands do
           target: if(name == "effort", do: :chat, else: :swarm)
         })
     end
+  end
+
+  # A model id is one token: a bare model name, or `<provider_id>|<model>` as
+  # `SwarmCode.Domain.Providers.option/2` spells it. It stays a string; the
+  # daemon resolves it against the configured providers.
+  defp parse_known(%{name: name}, "", _) when name in ["model", "swarm_model"],
+    do: error(:missing_argument)
+
+  defp parse_known(%{name: name} = item, args, _) when name in ["model", "swarm_model"] do
+    if valid_text?(args, @max_label) and not Regex.match?(~r/[\s\p{Cc}]/u, args),
+      do:
+        ok(item, :set_model, %{
+          model: args,
+          target: if(name == "model", do: :chat, else: :swarm)
+        }),
+      else: error(:invalid_argument)
   end
 
   defp parse_known(%{name: "swarm"}, "", _), do: error(:missing_argument)

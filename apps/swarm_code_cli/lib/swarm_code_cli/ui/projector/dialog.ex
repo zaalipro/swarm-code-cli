@@ -1,6 +1,16 @@
 defmodule SwarmCodeCLI.UI.Projector.Dialog do
   @moduledoc "Sticky dialog chrome around a separately windowed, cell-wrapped body."
-  alias SwarmCodeCLI.UI.{Editor, FieldEditors, SafeText, Switcher, Theme, UnifiedDiff, Width}
+  alias SwarmCodeCLI.UI.{
+    Editor,
+    FieldEditors,
+    ModelPicker,
+    SafeText,
+    Switcher,
+    Theme,
+    UnifiedDiff,
+    Width
+  }
+
   alias SwarmCodeCLI.UI.Scene.{Block, Dialog, Rect, Span}
   alias SwarmCodeCLI.UI.Keymap.Bindings
   alias SwarmCodeCLI.UI.Paint.{Metrics, Options}
@@ -26,6 +36,9 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
       case layer do
         {kind, _} when kind in [:switcher, :action_menu, :region_filter] ->
           switcher(state, rect, class, background)
+
+        {:model_picker, _, _} ->
+          model_picker(layer, state, rect)
 
         _ ->
           contents(layer, state, rect, class)
@@ -584,6 +597,37 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
     {title, options, [control("cancel", SafeText.chrome(:cancel), {:local, :close_top_layer})],
      if(state.focus == "query", do: "query", else: focus(state, options))}
   end
+
+  # One row per model the daemon lists, the one in use marked, the provider
+  # after the model so a filter on either reads the same. A snapshot with no
+  # models says so in one line rather than showing an empty search.
+  defp model_picker({:model_picker, target, _} = layer, state, rect) do
+    query = ModelPicker.query(state, layer)
+    mark = SafeText.value(Support.glyph(:check, state))
+
+    options =
+      Enum.map(ModelPicker.rows(state, layer), fn row ->
+        label =
+          if(row.current?, do: mark, else: " ") <> " " <> row.model <> "  " <> row.provider
+
+        {row.id, Density.safe(label, state, rect.width * 4), {:intent, row.intent}}
+      end)
+
+    options =
+      cond do
+        options != [] -> options
+        ModelPicker.options(state) == [] -> [{"empty", no_models(state, rect), nil}]
+        true -> [{"empty", SafeText.chrome(:no_results), nil}]
+      end
+
+    title = Density.safe(ModelPicker.title(target) <> ": " <> query, state, rect.width - 2)
+
+    {title, options, [control("cancel", SafeText.chrome(:cancel), {:local, :close_top_layer})],
+     if(state.focus == "query", do: "query", else: focus(state, options))}
+  end
+
+  defp no_models(state, rect),
+    do: Density.safe("No provider lists any model.", state, rect.width - 2)
 
   defp interaction(%{kind: :question} = item, state, rect) do
     permitted = Support.allowed?(state, item, :answer_question)

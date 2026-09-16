@@ -43,7 +43,8 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
     :not_attachable,
     :conversation_not_found,
     :invalid_request,
-    :ambiguous_run
+    :ambiguous_run,
+    :unknown_model
   ]
   @review_prompt "Review the current uncommitted changes: call git_status and git_diff, then " <>
                    "report problems with file:line references ordered by severity, and suggest " <>
@@ -192,6 +193,34 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
 
     with {:ok, _} <- Conversations.update(conv, fields),
          do: result(conv, cmd.name, :updated, %{fields: fields, field: field, value: cmd.effort})
+  end
+
+  # `/model` and `/swarm_model` take either `<provider_id>|<model>` or a bare
+  # model id. A bare id that several providers list goes to the provider the
+  # conversation already uses for that role, then the settings default, then
+  # the first provider by name; an id nobody lists is refused rather than
+  # stored, so the header never names a model no provider can serve.
+  defp execute(conv, %{action: :set_model} = cmd, _) do
+    case resolve_model(conv, cmd.target, cmd.model) do
+      {:ok, provider_id, model} ->
+        {id_field, model_field} =
+          if cmd.target == :chat,
+            do: {:chat_provider_id, :chat_model},
+            else: {:swarm_provider_id, :swarm_model}
+
+        fields = %{id_field => provider_id, model_field => model}
+
+        with {:ok, _} <- Conversations.update(conv, fields),
+             do:
+               result(conv, cmd.name, :updated, %{
+                 fields: fields,
+                 field: model_field,
+                 value: model
+               })
+
+      :error ->
+        {:error, :unknown_model}
+    end
   end
 
   defp execute(conv, %{action: :start_turn, mode: :consensus} = cmd, opts) do
@@ -377,6 +406,48 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
         run_id: wf.run_id
       })
     end
+  end
+
+  defp resolve_model(conv, target, arg) do
+    providers = Providers.list()
+    lists? = fn provider, model -> model in (provider.models || []) end
+
+    exact =
+      case Providers.parse_option(arg) do
+        {provider_id, model} ->
+          case Enum.find(providers, &(&1.id == provider_id)) do
+            %{} = provider -> if lists?.(provider, model), do: {provider, model}
+            nil -> nil
+          end
+
+        nil ->
+          nil
+      end
+
+    case exact do
+      {provider, model} ->
+        {:ok, provider.id, model}
+
+      nil ->
+        case Enum.filter(providers, &lists?.(&1, arg)) do
+          [] -> :error
+          [provider] -> {:ok, provider.id, arg}
+          candidates -> {:ok, preferred_provider(conv, target, candidates).id, arg}
+        end
+    end
+  end
+
+  defp preferred_provider(conv, target, candidates) do
+    settings = Settings.get_cached()
+
+    {current, default} =
+      if target == :chat,
+        do: {conv.chat_provider_id, settings.default_chat_provider_id},
+        else: {conv.swarm_provider_id, settings.default_swarm_provider_id}
+
+    Enum.find(candidates, &(&1.id == current)) ||
+      Enum.find(candidates, &(&1.id == default)) ||
+      hd(candidates)
   end
 
   defp workflow_run(conv, handle) do

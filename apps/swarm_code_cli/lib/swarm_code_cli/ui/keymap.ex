@@ -22,7 +22,7 @@ defmodule SwarmCodeCLI.UI.Keymap do
   `Ctrl-Z`.
   """
 
-  alias SwarmCodeCLI.UI.{Action, Input, Layout, Question, State, Switcher}
+  alias SwarmCodeCLI.UI.{Action, Input, Layout, ModelPicker, Question, State, Switcher}
   alias SwarmCodeCLI.UI.Keymap.{Bindings, Context, Special}
 
   @spec resolve(term(), map(), map()) :: {:ok, Action.t()} | :ignore
@@ -47,13 +47,21 @@ defmodule SwarmCodeCLI.UI.Keymap do
                text in ["/deep_research", "/deep_research "] ->
           result({:open_layer, {:library, :research}})
 
+        # A bare `/model` or `/swarm_model` has nothing to send yet: it opens
+        # the picker, whichever surface pressed Send. The reducer clears the
+        # draft as the layer opens.
+        {:intent, {:dispatch, :send, text, :main, []}} = target
+        when is_binary(text) ->
+          case ModelPicker.opener(text) do
+            nil -> invoke(target, state)
+            picker -> result({:open_layer, ModelPicker.open(state, picker)})
+          end
+
         {:local, action} ->
           result(action)
 
-        {:intent, intent} ->
-          if destructive?(intent) and not match?([{:confirm_intent, ^intent} | _], state.layers),
-            do: result({:open_layer, {:confirm_intent, intent}}),
-            else: result({:invoke, intent, elem(State.next_id(state, :request), 0)})
+        {:intent, _intent} = target ->
+          invoke(target, state)
 
         _ ->
           :ignore
@@ -61,6 +69,12 @@ defmodule SwarmCodeCLI.UI.Keymap do
     else
       :ignore
     end
+  end
+
+  defp invoke({:intent, intent}, state) do
+    if destructive?(intent) and not match?([{:confirm_intent, ^intent} | _], state.layers),
+      do: result({:open_layer, {:confirm_intent, intent}}),
+      else: result({:invoke, intent, elem(State.next_id(state, :request), 0)})
   end
 
   # ---------------------------------------------------------------- routing
@@ -282,6 +296,17 @@ defmodule SwarmCodeCLI.UI.Keymap do
         if(state.focus == "query", do: List.first(entries))
 
     if entry, do: activate(entry.target, state, table), else: :ignore
+  end
+
+  # A picker row carries the command it sends; Enter on the query picks the
+  # first row the query leaves, as in the switcher.
+  def modal_activate({:model_picker, _, _} = layer, state, table) do
+    rows = ModelPicker.rows(state, layer)
+
+    row =
+      Enum.find(rows, &(&1.id == state.focus)) || if(state.focus == "query", do: List.first(rows))
+
+    if row, do: activate({:intent, row.intent}, state, table), else: :ignore
   end
 
   def modal_activate({kind, _}, state, table)
