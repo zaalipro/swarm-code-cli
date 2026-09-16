@@ -407,9 +407,69 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
     {scene, table} = Projector.project(state.ui)
 
     case SceneSlot.put(state.slot, scene) do
-      :ok -> %{state | table: table}
-      _ -> begin_shutdown(state, :invalid_scene)
+      :ok ->
+        %{state | table: table}
+
+      _ ->
+        explain_invalid_scene(scene)
+        begin_shutdown(state, :invalid_scene)
     end
+  end
+
+  # A close the user did not ask for is said on stderr in plain words; a
+  # session that vanishes with exit 0 cannot be reported, let alone fixed.
+  defp report_shutdown({:draw_failed, result}) do
+    IO.puts(
+      :stderr,
+      "SwarmCode closed: a frame could not be drawn: #{inspect(result, limit: 40)}."
+    )
+  end
+
+  defp report_shutdown(kind)
+       when kind in [
+              :binding_failed,
+              :draw_failed,
+              :source_unavailable,
+              :terminal_unavailable,
+              :invalid_scene
+            ],
+       do: IO.puts(:stderr, "SwarmCode closed: " <> shutdown_words(kind) <> ".")
+
+  defp report_shutdown(_kind), do: :ok
+
+  defp shutdown_words(:binding_failed), do: "the terminal could not be bound"
+  defp shutdown_words(:draw_failed), do: "a frame could not be drawn"
+  defp shutdown_words(:source_unavailable), do: "the daemon connection closed"
+  defp shutdown_words(:terminal_unavailable), do: "the terminal port went away"
+  defp shutdown_words(:invalid_scene), do: "the screen failed validation"
+
+  # A scene the slot refuses closes the session; saying why on stderr is the
+  # difference between a bug report and a silent exit. With SWARM_SCENE_DUMP
+  # set the scene is written there as an Erlang term for inspection.
+  defp explain_invalid_scene(scene) do
+    bytes = safe_size(scene)
+
+    IO.puts(
+      :stderr,
+      "SwarmCode closed: the screen failed validation " <>
+        "(valid: #{inspect(match?(:ok, SwarmCodeCLI.UI.Scene.validate(scene)))}, " <>
+        "bytes: #{bytes}, size: #{inspect(Map.get(scene, :size))})."
+    )
+
+    case System.get_env("SWARM_SCENE_DUMP") do
+      path when is_binary(path) and path != "" ->
+        File.write(path, :erlang.term_to_binary(scene))
+        IO.puts(:stderr, "Scene written to #{path}.")
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp safe_size(scene) do
+    :erlang.external_size(scene)
+  rescue
+    _ -> -1
   end
 
   defp pause_frame(%{ui: %{lifecycle: lifecycle}, draw: {:timer, _}} = state)
@@ -458,7 +518,7 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
         state.final_pending? -> final_paint(%{next | final_pending?: false}, state.close_kind)
         state.phase == :closing -> begin_shutdown(next, state.close_kind)
         result == {:error, :stale_revision} -> schedule(next)
-        result != :ok -> begin_shutdown(next, :draw_failed)
+        result != :ok -> begin_shutdown(next, {:draw_failed, result})
         state.ui.revision != revision -> schedule(next)
         true -> next
       end
@@ -533,6 +593,8 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
   defp begin_shutdown(%{shutdown_token: token} = state, _) when not is_nil(token), do: state
 
   defp begin_shutdown(state, kind) do
+    report_shutdown(kind)
+    kind = if match?({:draw_failed, _}, kind), do: :draw_failed, else: kind
     cancel(state.binding_timer)
     cancel(state.frame_timer)
     cancel(state.draw_deadline)

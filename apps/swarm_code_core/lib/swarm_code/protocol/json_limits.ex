@@ -12,7 +12,12 @@ defmodule SwarmCode.Protocol.JsonLimits do
 
   @default_max_bytes 1_048_576
   @default_max_depth 16
-  @default_max_entries 8_192
+  # A workspace snapshot carries a page of runs with their agents, a transcript
+  # window whose items each nest a tool call, the changes ledger and the
+  # verdicts: a hundred-item transcript alone is several thousand entries, and
+  # the old 8,192 closed the connection on ordinary saved sessions. The byte
+  # cap above still bounds memory; this only bounds the shape.
+  @default_max_entries 65_536
 
   # The pinned decoder counts the complete integer token, including a leading
   # minus sign, against its 1,024-byte ceiling.

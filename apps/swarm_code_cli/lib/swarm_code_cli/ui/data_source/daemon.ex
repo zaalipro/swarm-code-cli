@@ -251,13 +251,20 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
 
         {:noreply, next |> dispatch_next() |> arm()}
 
-      _ ->
+      other ->
+        IO.puts(
+          :stderr,
+          "SwarmCode: a daemon frame could not be decoded: #{inspect(other, limit: 20)}"
+        )
+
         {:noreply, shutdown(state)}
     end
   end
 
-  def handle_info({:tcp_closed, socket}, %{socket: socket} = state),
-    do: {:noreply, shutdown(state)}
+  def handle_info({:tcp_closed, socket}, %{socket: socket} = state) do
+    IO.puts(:stderr, "SwarmCode: the daemon closed the connection.")
+    {:noreply, shutdown(state)}
+  end
 
   def handle_info({:tcp_error, socket, _}, %{socket: socket} = state),
     do: {:noreply, shutdown(state)}
@@ -379,7 +386,16 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
            decoded_bytes: state.decoded_bytes + decoded
        }}
     else
-      _ -> :error
+      reason ->
+        # A message the client cannot accept closes the connection; naming it
+        # on stderr turns a silent exit into something that can be fixed.
+        IO.puts(
+          :stderr,
+          "SwarmCode: rejected a daemon message (#{inspect(message.type)} " <>
+            "#{inspect(Map.get(message.body, "op"))}): #{inspect(reason, limit: 60, printable_limit: 400)}"
+        )
+
+        :error
     end
   end
 

@@ -364,12 +364,12 @@ defmodule SwarmCode.Protocol.EnvelopeTest do
       :json_too_deep
     )
 
-    at_entry_limit = Enum.map(1..8_174, fn _ -> 0 end)
+    at_entry_limit = Enum.map(1..65_518, fn _ -> 0 end)
     at_entry_message = message(:ping, body: %{"items" => at_entry_limit})
     assert {:ok, encoded} = Envelope.encode(at_entry_message)
     assert {:ok, ^at_entry_message} = encoded |> IO.iodata_to_binary() |> Envelope.decode()
 
-    over_entry_limit = Enum.map(1..8_175, fn _ -> 0 end)
+    over_entry_limit = Enum.map(1..65_519, fn _ -> 0 end)
 
     assert_error(
       Envelope.encode(message(:ping, body: %{"items" => over_entry_limit})),
@@ -386,8 +386,8 @@ defmodule SwarmCode.Protocol.EnvelopeTest do
     )
 
     too_wide_with_invalid_tail =
-      Enum.map(1..8_189, fn
-        8_189 -> %URI{scheme: "https"}
+      Enum.map(1..65_533, fn
+        65_533 -> %URI{scheme: "https"}
         _ -> 0
       end)
 

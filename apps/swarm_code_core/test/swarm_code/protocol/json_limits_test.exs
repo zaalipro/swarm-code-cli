@@ -7,7 +7,7 @@ defmodule SwarmCode.Protocol.JsonLimitsTest do
     too_deep = String.duplicate("[", 17) <> String.duplicate("]", 17)
     assert_error(JsonLimits.validate(too_deep), :json_too_deep)
 
-    bomb = "[" <> Enum.map_join(1..8_193, ",", fn _ -> "0" end) <> "]"
+    bomb = "[" <> Enum.map_join(1..65_537, ",", fn _ -> "0" end) <> "]"
     assert_error(JsonLimits.validate(bomb), :json_entry_limit)
 
     assert :ok =
@@ -23,8 +23,8 @@ defmodule SwarmCode.Protocol.JsonLimitsTest do
     assert :ok = JsonLimits.validate(at_depth)
     assert_error(JsonLimits.validate(over_depth), :json_too_deep)
 
-    at_entries = "[" <> Enum.map_join(1..8_192, ",", fn _ -> "0" end) <> "]"
-    over_entries = "[" <> Enum.map_join(1..8_193, ",", fn _ -> "0" end) <> "]"
+    at_entries = "[" <> Enum.map_join(1..65_536, ",", fn _ -> "0" end) <> "]"
+    over_entries = "[" <> Enum.map_join(1..65_537, ",", fn _ -> "0" end) <> "]"
     assert :ok = JsonLimits.validate(at_entries)
     assert_error(JsonLimits.validate(over_entries), :json_entry_limit)
   end

@@ -1,6 +1,7 @@
 defmodule SwarmCode.Daemon.Service.Connection do
   @moduledoc false
   use GenServer, restart: :temporary
+  require Logger
 
   alias SwarmCode.Daemon.Service.RequestRouter
   alias SwarmCode.Protocol.{Frame, FrameDecoder, Message, ServiceHandshake, ServiceRequest}
@@ -106,7 +107,21 @@ defmodule SwarmCode.Daemon.Service.Connection do
 
           {:noreply, %{state | watches: Map.put(state.watches, ref, entry)}}
         else
-          _ -> {:stop, :normal, state}
+          {:error, reason} ->
+            closing("a delta could not be sent: #{inspect(reason, limit: 20)}")
+            {:stop, :normal, state}
+
+          false ->
+            closing(
+              "a watch fell too far behind (#{length(entry.in_flight)} frames, " <>
+                "#{entry.bytes} bytes unacknowledged)"
+            )
+
+            {:stop, :normal, state}
+
+          _ ->
+            closing("a delta could not be sent")
+            {:stop, :normal, state}
         end
 
       _ ->
@@ -123,27 +138,53 @@ defmodule SwarmCode.Daemon.Service.Connection do
       nil ->
         {:noreply, state}
 
-      %{task: task} ->
+      %{task: task, message: message} ->
         Task.Supervisor.terminate_child(state.workers, task.pid)
+        closing("a request timed out (#{describe(message)})")
         {:stop, :normal, state}
     end
   end
 
-  def handle_info({:handshake_timeout, token}, %{phase: :hello, token: token} = state),
-    do: {:stop, :normal, state}
+  def handle_info({:handshake_timeout, token}, %{phase: :hello, token: token} = state) do
+    closing("the client did not complete the handshake in time")
+    {:stop, :normal, state}
+  end
 
-  def handle_info({:partial_timeout, token}, %{partial_timer: {_, token}} = state),
-    do: {:stop, :normal, state}
+  def handle_info({:partial_timeout, token}, %{partial_timer: {_, token}} = state) do
+    closing("the client left a frame unfinished")
+    {:stop, :normal, state}
+  end
 
-  def handle_info({:DOWN, ref, :process, _, _}, %{backend_monitor: ref} = state),
-    do: {:stop, :normal, state}
+  def handle_info({:DOWN, ref, :process, _, reason}, %{backend_monitor: ref} = state) do
+    closing("the backend went away: #{inspect(reason, limit: 20)}")
+    {:stop, :normal, state}
+  end
 
-  def handle_info({:DOWN, ref, :process, _, _}, state) when is_map_key(state.requests, ref),
-    do: {:stop, :normal, state}
+  def handle_info({:DOWN, ref, :process, _, reason}, state)
+      when is_map_key(state.requests, ref) do
+    closing(
+      "a request worker died (#{describe(state.requests[ref].message)}): " <>
+        inspect(reason, limit: 40, printable_limit: 300)
+    )
+
+    {:stop, :normal, state}
+  end
 
   def handle_info({:tcp_closed, _socket}, state), do: {:stop, :normal, state}
   def handle_info({:tcp_error, _socket, _reason}, state), do: {:stop, :normal, state}
   def handle_info(_, state), do: {:noreply, state}
+
+  # A connection that closes on its own says why, once, at warning level:
+  # the client only sees a closed socket, and a silent close on the daemon
+  # side cannot be reported by anyone.
+  defp closing(words),
+    do: Logger.warning("SwarmCode daemon closed a client connection: " <> words)
+
+  defp describe(%Message{body: body}) when is_map(body),
+    do:
+      "#{Map.get(body, "operation", "?")} #{inspect(Map.get(body, "params", %{}) |> Map.take(["slot", "kind"]))}"
+
+  defp describe(_message), do: "?"
 
   @impl true
   def terminate(_, state) do
@@ -402,6 +443,17 @@ defmodule SwarmCode.Daemon.Service.Connection do
       send(state.config.backend, {:service_ready, self(), ref})
       {:noreply, %{state | watches: Map.put(state.watches, ref, entry)}}
     else
+      size =
+        case Frame.encode(message) do
+          {:ok, frame} -> "#{IO.iodata_length(frame)} bytes"
+          {:error, reason} -> "encode failed: #{inspect(reason, limit: 20)}"
+        end
+
+      closing(
+        "a watch snapshot could not be published (#{kind}, #{size}, " <>
+          "#{map_size(state.watches)} watches, phase #{inspect(Map.get(state.watches, ref, %{})[:phase])})"
+      )
+
       {:stop, :normal, state}
     end
   end
