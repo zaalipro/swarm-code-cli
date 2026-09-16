@@ -99,7 +99,10 @@ defmodule SwarmCodeCLI.UI.Keymap.Bindings do
     },
     %Binding{
       id: :command_palette,
-      keys: [{"k", [:control]}],
+      # Ctrl-P, the palette key of most editors. Ctrl-K was taken by the
+      # user's workspace switcher, and a chord the terminal never delivers is
+      # no chord at all.
+      keys: [{"p", [:control]}],
       action: {:special, :command_palette},
       contexts: [:global],
       group: :layers,
@@ -595,7 +598,8 @@ defmodule SwarmCodeCLI.UI.Keymap.Bindings do
     },
     %Binding{
       id: :picker_previous,
-      keys: [{:up, []}, {"p", [:control]}],
+      # No Ctrl-P alias: that chord is the palette everywhere, pickers included.
+      keys: [{:up, []}],
       action: {:focus_cycle, :previous},
       contexts: [:picker],
       group: :navigate,

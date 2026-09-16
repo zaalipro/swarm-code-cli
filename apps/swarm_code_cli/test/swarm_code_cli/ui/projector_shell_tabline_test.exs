@@ -6,7 +6,7 @@ defmodule SwarmCodeCLI.UI.ProjectorShellTablineTest do
   alias SwarmCodeCLI.UI.Paint.{Blocks, Options}
   alias SwarmCodeCLI.UI.Projector.{Shell, Support}
 
-  @hint "Ctrl-R runs   Ctrl-G all   Ctrl-K features"
+  @hint "Ctrl-R runs   Ctrl-G all   Ctrl-P features"
 
   # A tab is stripe, gap, mark, gap, title, gap, dot, gap: eight spans whose
   # title sits at offset 4.

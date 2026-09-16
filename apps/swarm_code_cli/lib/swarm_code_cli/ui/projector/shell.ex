@@ -14,7 +14,7 @@ defmodule SwarmCodeCLI.UI.Projector.Shell do
   }
 
   # The navigator dock is gone. Its job — showing what is running and getting you
-  # there — belongs to the tab row on row 1, the Ctrl-G dashboard and Ctrl-K, so
+  # there — belongs to the tab row on row 1, the Ctrl-G dashboard and Ctrl-P, so
   # the shell projects no left dock and main takes the reclaimed width.
   @order [:title, :tabline, :main, :inspector, :activity, :composer, :status]
   def project(state, layout) do

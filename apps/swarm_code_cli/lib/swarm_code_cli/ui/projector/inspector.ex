@@ -1,5 +1,10 @@
 defmodule SwarmCodeCLI.UI.Projector.Inspector do
   @moduledoc false
+  # The palette chord comes from the binding table at compile time, so a
+  # rebind re-spells this text.
+  @palette_key SwarmCodeCLI.UI.Projector.KeyLabel.primary(
+                 SwarmCodeCLI.UI.Keymap.Bindings.fetch(:command_palette)
+               )
   alias SwarmCodeCLI.UI.{SafeText, Theme}
   alias SwarmCodeCLI.UI.Scene.{Block, Span}
   alias SwarmCodeCLI.UI.Projector.{Density, RunRow, Support}
@@ -50,7 +55,11 @@ defmodule SwarmCodeCLI.UI.Projector.Inspector do
         run && run.kind == :workflow ->
           [
             Support.text("Inputs and stages", state, rect.width),
-            Support.text("Open Ctrl-K Features to run another.", state, rect.width)
+            Support.text(
+              "Open " <> @palette_key <> " Features to run another.",
+              state,
+              rect.width
+            )
           ]
 
         true ->

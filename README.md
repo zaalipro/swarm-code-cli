@@ -109,7 +109,7 @@ message; the attachment is consumed when that message starts.
 Advanced flows still require full end-to-end acceptance. The unsaved launcher
 supports ordinary coding prompts and local workflow/research library navigation.
 
-`Ctrl+K` opens the live switcher, including Workflows, Deep Research, Scheduled
+`Ctrl+P` opens the live switcher, including Workflows, Deep Research, Scheduled
 Tasks, Settings, Usage, Changes, Checkpoints, and MCP Servers. Library dialogs
 support bounded paging, refresh, scoped mutations, confirmation for destructive
 actions, and correlated responses. `/goal` presents the conversation goal;
@@ -122,7 +122,7 @@ persisted features unavailable because it has no Domain Repo.
 A saved or live session can serve a local web page that mirrors the same
 session: header, run tabs, agents, the transcript stream, what is waiting for
 you, and the timeline. Clicking in the page focuses the same thing in the TUI.
-Open it from the `Ctrl+K` palette with `Open visual companion`; the status
+Open it from the `Ctrl+P` palette with `Open visual companion`; the status
 notice then shows the URL long enough to copy it.
 
 The page is served from `127.0.0.1` on a random port, and every path carries a

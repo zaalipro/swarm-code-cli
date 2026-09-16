@@ -1,5 +1,10 @@
 defmodule SwarmCodeCLI.UI.Projector.Composer do
   @moduledoc false
+  # The palette chord comes from the binding table at compile time, so a
+  # rebind re-spells this text.
+  @palette_key SwarmCodeCLI.UI.Projector.KeyLabel.primary(
+                 SwarmCodeCLI.UI.Keymap.Bindings.fetch(:command_palette)
+               )
   alias SwarmCodeCLI.UI.{Drafts, Editor, Intent, SafeText, SlashPalette, State, Width}
   alias SwarmCodeCLI.UI.SafeText.Limits
   alias SwarmCodeCLI.UI.Scene.{Block, Cursor}
@@ -199,7 +204,11 @@ defmodule SwarmCodeCLI.UI.Projector.Composer do
            text: SafeText.chrome(:empty),
            placeholder: gutter_placeholder(state, editor_width, gutter_prefix)
          },
-         Support.text("Enter send  ·  Ctrl-O newline  ·  Ctrl-K features", state, rect.width)
+         Support.text(
+           "Enter send  ·  Ctrl-O newline  ·  " <> @palette_key <> " features",
+           state,
+           rect.width
+         )
        ], nil}
     end
   end

@@ -1,5 +1,10 @@
 defmodule SwarmCodeCLI.UI.Projector.Workspace do
   @moduledoc false
+  # The palette chord comes from the binding table at compile time, so a
+  # rebind re-spells this text.
+  @palette_key SwarmCodeCLI.UI.Projector.KeyLabel.primary(
+                 SwarmCodeCLI.UI.Keymap.Bindings.fetch(:command_palette)
+               )
   alias SwarmCodeCLI.UI.{ReadModel, SafeText, Theme}
   alias SwarmCodeCLI.UI.Scene.Block
   alias SwarmCodeCLI.UI.Paint.{Metrics, Options}
@@ -191,7 +196,7 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
       Support.text("1  Type a request below and press Enter", state, width),
       Support.text("2  Type / to browse slash commands", state, width),
       Support.text(
-        "3  Press Ctrl-K to open workflows, research, memory, and settings",
+        "3  Press " <> @palette_key <> " to open workflows, research, memory, and settings",
         state,
         width
       ),

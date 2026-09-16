@@ -13,7 +13,7 @@ defmodule SwarmCodeCLI.UI.Projector.KeyLabel do
     * A modified letter chord is case-insensitive at the terminal, and the
       table binds both cases (and the `:shift` permutations) so a real keyboard
       cannot miss. `Ctrl-k`, `Alt-h`, `Alt-Shift-H` therefore all *print* as
-      `Ctrl-K` / `Alt-H`, and `labels/2` dedupes them, which is what keeps
+      `Ctrl-P` / `Alt-H`, and `labels/2` dedupes them, which is what keeps
       `:layout_narrower`'s eight keys from printing as eight alternatives.
     * A bare fragment keeps its case, because there `g` and `G` are different
       bindings.

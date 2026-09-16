@@ -155,8 +155,8 @@ defmodule SwarmCodeCLI.UI.KeymapTest do
   # ---------------------------------------------------------------- the layers
 
   describe "layer chords" do
-    test "Ctrl-K, Ctrl-G and Ctrl-R each toggle their own layer shut" do
-      for {mods_key, kind} <- [{"k", :switcher}, {"g", :runs_dashboard}, {"r", :run_palette}] do
+    test "Ctrl-P, Ctrl-G and Ctrl-R each toggle their own layer shut" do
+      for {mods_key, kind} <- [{"p", :switcher}, {"g", :runs_dashboard}, {"r", :run_palette}] do
         assert {:ok, {:open_layer, {^kind, _}}} =
                  Keymap.resolve(letter(mods_key, [:control]), main(), %{})
 
@@ -304,15 +304,17 @@ defmodule SwarmCodeCLI.UI.KeymapTest do
   # ------------------------------------------------------------------- pickers
 
   describe "pickers" do
-    test "arrows, Ctrl-N/Ctrl-P and Tab move; letters filter" do
+    test "arrows, Ctrl-N and Tab move; Ctrl-P is the palette; letters filter" do
       picker = %{main() | layers: [{:run_palette, "p"}]}
 
       assert Keymap.resolve(Input.key(:down), picker, %{}) == {:ok, {:focus_cycle, :next}}
       assert Keymap.resolve(Input.key(:up), picker, %{}) == {:ok, {:focus_cycle, :previous}}
       assert Keymap.resolve(letter("n", [:control]), picker, %{}) == {:ok, {:focus_cycle, :next}}
 
-      assert Keymap.resolve(letter("p", [:control]), picker, %{}) ==
-               {:ok, {:focus_cycle, :previous}}
+      # Ctrl-P is the command palette everywhere, so a picker cannot use it for
+      # "previous"; the arrow is the only spelling.
+      assert {:ok, {:open_layer, {:switcher, _}}} =
+               Keymap.resolve(letter("p", [:control]), picker, %{})
 
       assert Keymap.resolve(Input.key(:tab), picker, %{}) == {:ok, {:focus_cycle, :next}}
 

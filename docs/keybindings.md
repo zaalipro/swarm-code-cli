@@ -39,7 +39,7 @@ the command palette).
 
 | Keys | Does |
 |---|---|
-| `Ctrl-K` | Command palette; the same chord closes it |
+| `Ctrl-P` | Command palette; the same chord closes it |
 | `Ctrl-G` | Runs dashboard; the same chord closes it |
 | `Ctrl-R` | Run palette; the same chord closes it |
 | `Ctrl-B` / `Alt-I` | Show or hide the inspector dock |
@@ -142,7 +142,7 @@ the command palette).
 
 | Keys | Does |
 |---|---|
-| `Ctrl-K` | Command palette; the same chord closes it |
+| `Ctrl-P` | Command palette; the same chord closes it |
 | `Ctrl-G` | Runs dashboard; the same chord closes it |
 | `Ctrl-B` / `Alt-I` | Show or hide the inspector dock |
 | `Alt-H` / `Alt-Shift-H` / `Ctrl-Alt-H` / `Ctrl-Alt-Shift-H` | Narrow the inspector dock (add Ctrl for a bigger step) |
@@ -209,7 +209,7 @@ the command palette).
 
 | Keys | Does |
 |---|---|
-| `Ctrl-K` | Command palette; the same chord closes it |
+| `Ctrl-P` | Command palette; the same chord closes it |
 | `Ctrl-G` | Runs dashboard; the same chord closes it |
 | `Ctrl-B` / `Alt-I` | Show or hide the inspector dock |
 | `Alt-H` / `Alt-Shift-H` / `Ctrl-Alt-H` / `Ctrl-Alt-Shift-H` | Narrow the inspector dock (add Ctrl for a bigger step) |
@@ -282,7 +282,7 @@ the command palette).
 
 | Keys | Does |
 |---|---|
-| `Ctrl-K` | Command palette; the same chord closes it |
+| `Ctrl-P` | Command palette; the same chord closes it |
 | `Ctrl-G` | Runs dashboard; the same chord closes it |
 | `Ctrl-R` | Run palette; the same chord closes it |
 | `Ctrl-B` / `Alt-I` | Show or hide the inspector dock |
@@ -358,7 +358,7 @@ the command palette).
 
 | Keys | Does |
 |---|---|
-| `Ctrl-K` | Command palette; the same chord closes it |
+| `Ctrl-P` | Command palette; the same chord closes it |
 | `Ctrl-G` | Runs dashboard; the same chord closes it |
 | `Ctrl-R` | Run palette; the same chord closes it |
 | `Ctrl-B` / `Alt-I` | Show or hide the inspector dock |
@@ -385,7 +385,7 @@ the command palette).
 | `g` | From the go-to popup, jump to the first item |
 | `G` | From the go-to popup, jump to the last item |
 | `↓` / `Ctrl-N` | Next result |
-| `↑` / `Ctrl-P` | Previous result |
+| `↑` | Previous result |
 | `PgDn` / `Ctrl-D` | A screenful further down the list |
 | `PgUp` / `Ctrl-U` | A screenful further up the list |
 | `Home` | The first row of the list |
@@ -420,7 +420,7 @@ the command palette).
 
 | Keys | Does |
 |---|---|
-| `Ctrl-K` | Command palette; the same chord closes it |
+| `Ctrl-P` | Command palette; the same chord closes it |
 | `Ctrl-G` | Runs dashboard; the same chord closes it |
 | `Ctrl-R` | Run palette; the same chord closes it |
 | `Ctrl-B` / `Alt-I` | Show or hide the inspector dock |
@@ -466,7 +466,7 @@ the command palette).
 
 | Keys | Does |
 |---|---|
-| `Ctrl-K` | Command palette; the same chord closes it |
+| `Ctrl-P` | Command palette; the same chord closes it |
 | `Ctrl-G` | Runs dashboard; the same chord closes it |
 | `Ctrl-R` | Run palette; the same chord closes it |
 | `Ctrl-B` / `Alt-I` | Show or hide the inspector dock |
@@ -547,7 +547,7 @@ the command palette).
 
 | Keys | Does |
 |---|---|
-| `Ctrl-K` | Command palette; the same chord closes it |
+| `Ctrl-P` | Command palette; the same chord closes it |
 | `Ctrl-G` | Runs dashboard; the same chord closes it |
 | `Ctrl-R` | Run palette; the same chord closes it |
 | `Ctrl-B` / `Alt-I` | Show or hide the inspector dock |

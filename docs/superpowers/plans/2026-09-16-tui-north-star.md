@@ -92,7 +92,7 @@ at 44 cells and collapses to a one-line strip under 120 columns.
   The web layer has 8 controllers and no auth on…         │ Ctrl-G runs  Ctrl-I inspect
  ─────────────────────────────────────────────────────────┴────────────────────────────
  ▍ Type a message, / for commands…                              read-only · vim NORMAL
-  Enter send · Esc back · Ctrl-K palette · ? keys                                      
+  Enter send · Esc back · Ctrl-P palette · ? keys                                      
 ```
 
 What changed against today:

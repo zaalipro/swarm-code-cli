@@ -56,7 +56,7 @@ class LiveSession(unittest.TestCase):
                 self.assertEqual(requests[0]['messages'][-1]['content'], 'Verify live terminal')
                 terminal.send(b'\x1b')
                 terminal.wait_for(b'Focus: main')
-                terminal.send(b'\x0b')
+                terminal.send(b'\x10')
                 terminal.wait_for(b'Search:')
                 terminal.send(b'Settings')
                 terminal.wait_for(b'Settings')

@@ -360,3 +360,8 @@ building it:
 `/vim` as a slash command (the catalogue is in `swarm_code_core`, shared with
 the web); persisting the preference to disk; mouse; `Ctrl-Shift` chords that
 need the kitty protocol; vim features listed as v2 above.
+
+- 2026-09-16, later: the palette moved from `Ctrl-K` to `Ctrl-P`. The user's
+  workspace switcher owns `Ctrl-K`, so the terminal never delivered it. The
+  picker rows lost their `Ctrl-P` "previous" alias for the same reason; arrows
+  remain.

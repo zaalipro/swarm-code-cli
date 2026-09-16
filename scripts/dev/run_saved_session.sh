@@ -12,8 +12,8 @@ Saved provider settings are reused. Explicit overrides require SWARM_BASE_URL
 or the provider-specific base URL.
 
 First build: scripts/dev/check_terminal_port.sh
-Keys: Tab focus, Enter send, Escape return, Ctrl-K switcher, q exit.
-Visual companion: Ctrl-K, "Open visual companion" (SWARM_COMPANION=0 disables).
+Keys: Tab focus, Enter send, Escape return, Ctrl-P switcher, q exit.
+Visual companion: Ctrl-P, "Open visual companion" (SWARM_COMPANION=0 disables).
 HELP
   exit 0
 fi

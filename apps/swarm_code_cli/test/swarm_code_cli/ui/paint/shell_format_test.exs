@@ -164,7 +164,7 @@ defmodule SwarmCodeCLI.UI.Paint.ShellFormatTest do
       assert status =~ "Enter"
       assert status =~ "Esc"
       assert status =~ "Ctrl-O"
-      assert status =~ "Ctrl-K"
+      assert status =~ "Ctrl-P"
     end
 
     test "medium shows 4 hints for composer focus" do
@@ -175,7 +175,7 @@ defmodule SwarmCodeCLI.UI.Paint.ShellFormatTest do
       assert status =~ "Enter"
       assert status =~ "Esc"
       assert status =~ "Ctrl-O"
-      assert status =~ "Ctrl-K"
+      assert status =~ "Ctrl-P"
     end
 
     # The old row hinted "?" here, a key that types a question mark in the
@@ -187,7 +187,7 @@ defmodule SwarmCodeCLI.UI.Paint.ShellFormatTest do
       status = row(plan, 23)
       assert status =~ "Enter"
       assert status =~ "Esc"
-      assert status =~ "Ctrl-K"
+      assert status =~ "Ctrl-P"
       refute status =~ "?"
     end
 
@@ -238,7 +238,7 @@ defmodule SwarmCodeCLI.UI.Paint.ShellFormatTest do
       refute screen(plan) =~ "◌ Activity"
     end
 
-    test "no library destinations with a live banner: Ctrl-K carries them" do
+    test "no library destinations with a live banner: Ctrl-P carries them" do
       state = fixture(:chat, {170, 34}, banner: :persisted_banner)
       plan = paint(state)
       pixels = screen(plan)
@@ -247,7 +247,7 @@ defmodule SwarmCodeCLI.UI.Paint.ShellFormatTest do
         refute pixels =~ label, "#{label} survived the navigator's removal"
       end
 
-      assert row(plan, 1) =~ "Ctrl-K features"
+      assert row(plan, 1) =~ "Ctrl-P features"
     end
 
     test "no RUNS heading with banner=nil: the tab row is the runs affordance" do
