@@ -135,3 +135,9 @@ the timeline scrubber strip in the inspector; a "no output for 40 s" stall
 notice; `RunDetailSnapshot` still carries no changes/verdicts; `agent_update`
 deltas are not published live; the judge approve/revise word has no wire field;
 `ui/transcript.ex` is unused and kept.
+
+Follow-ups the same evening: the protocol's JSON entry cap (8,192 → 65,536) so
+an ordinary saved conversation's snapshot can be published at all, with every
+silent close on either side now named on stderr; and the main screen brought to
+the mock (flush-left transcript, one-row run headline instead of the card and
+kind banners, top-anchored turns, hive before verdict, a rule for the strip).
