@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# swarmcode — the installed SwarmCode terminal client.
+#
+# Opens the saved session for a project directory (the current directory by
+# default) with the same environment rules as the development launchers:
+# provider settings come from the shell, or from ~/.secrets (SWARM_ENV_FILE)
+# when no provider key is exported.
+set -euo pipefail
+
+usage() {
+  cat <<'HELP'
+Usage: swarmcode [DIR]        open the saved session for DIR (default: the current directory)
+       swarmcode --help
+
+SWARM_PROJECT_ROOT is ignored; name the directory instead.
+
+Provider settings (shell exports win; otherwise loaded from ~/.secrets or SWARM_ENV_FILE):
+  SWARM_MODEL          model id (required)
+  SWARM_BASE_URL       endpoint; OpenAI-compatible URLs include /v1
+  SWARM_API_KEY        or OPENAI_API_KEY / ANTHROPIC_API_KEY
+  SWARM_PROVIDER       openai (default) or anthropic
+  SWARM_EFFORT         reasoning effort key
+
+Session:
+  SWARM_CONVERSATION   latest (default), new, or a conversation UUID
+  SWARM_APPROVAL       ask (default), read-only, or auto
+  SWARM_KEYMAP=vim     vim keys in the composer
+  SWARM_COMPANION=0    do not serve the visual companion
+
+Keys: Ctrl-P palette (also "Open visual companion"), ? every key, q quit.
+HELP
+}
+
+self="$0"
+if command -v readlink >/dev/null 2>&1; then
+  resolved=$(readlink -f -- "$self" 2>/dev/null || true)
+  [[ -n "$resolved" ]] && self="$resolved"
+fi
+root=$(CDPATH= cd -- "$(dirname -- "$self")/.." && pwd)
+
+project=""
+case "${1:-}" in
+  "") ;;
+  --help | -h) usage; exit 0 ;;
+  -*) echo "swarmcode: unknown option '$1'. Run 'swarmcode --help'." >&2; exit 2 ;;
+  *) project="$1" ;;
+esac
+if [[ $# -gt 1 ]]; then
+  echo "swarmcode: too many arguments. Run 'swarmcode --help'." >&2
+  exit 2
+fi
+
+# The project is the directory named on the command line, else where the
+# command was run. SWARM_PROJECT_ROOT is deliberately ignored: shells that
+# source the environment file export it everywhere, and a command that opened
+# the same project from every directory would be useless. Name the directory.
+# shellcheck source=/dev/null
+. "$root/bin/load_provider_env.sh"
+if [[ -n "$project" ]]; then
+  root_dir="$project"
+else
+  root_dir="$PWD"
+fi
+if [[ ! -d "$root_dir" ]]; then
+  echo "swarmcode: '$root_dir' is not a directory." >&2
+  exit 2
+fi
+SWARM_PROJECT_ROOT=$(cd -- "$root_dir" && pwd)
+export SWARM_PROJECT_ROOT
+export SWARM_TERMINAL_PORT="${SWARM_TERMINAL_PORT:-$root/bin/swarm-terminal-port}"
+export SWARM_RELEASE_TUI=1
+exec "$root/bin/swarm_code_cli" start

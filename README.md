@@ -84,6 +84,23 @@ _build/prod/rel/swarm_code_cli/bin/swarm-code tui
 The release launcher uses the same `SWARM_PROJECT_ROOT`, `SWARM_CONVERSATION`,
 and provider variables as the saved development session.
 
+### Install as `swarmcode`
+
+```sh
+scripts/install.sh
+swarmcode            # the saved session for the current directory
+swarmcode ~/dev/app  # or for a named project
+```
+
+The installer builds the release, copies it to `~/.local/share/swarmcode`, and
+writes `~/.local/bin/swarmcode` (set `SWARMCODE_PREFIX` for another prefix).
+`swarmcode` loads provider settings from `~/.secrets` (or `SWARM_ENV_FILE`) when
+no key is exported, exactly like the development launchers, but always opens
+the directory it was given or run from: a `SWARM_PROJECT_ROOT` inside the
+environment file is ignored so that one project is not opened from everywhere.
+Re-run the installer after pulling changes; conversations live in the
+canonical database and survive reinstalls.
+
 | Variable | Meaning |
 | --- | --- |
 | `SWARM_PROVIDER` | `openai` (default) or `anthropic` |
