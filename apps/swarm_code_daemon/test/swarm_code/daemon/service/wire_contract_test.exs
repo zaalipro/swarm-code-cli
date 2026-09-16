@@ -220,6 +220,19 @@ defmodule SwarmCode.Daemon.Service.WireContractTest do
     assert items[c.other.id]["agent_id"] == c.other.id
   end
 
+  test "workspace snapshots carry the agents of their runs", c do
+    assert {:ok, %{"value" => workspace}} = query(c.backend, c.scope, "workspace")
+    assert [_ | _] = agents = workspace["agents"]
+
+    for agent <- agents do
+      assert is_binary(agent["id"])
+      assert agent["run_id"] == c.run.id
+      assert is_binary(agent["name"])
+    end
+
+    assert Enum.any?(agents, &(&1["id"] == c.worker.id))
+  end
+
   test "workspace snapshots list changes and verdicts, newest first", c do
     assert {:ok, %{"value" => workspace}} = query(c.backend, c.scope, "workspace")
     assert [worktree_change, project_change] = workspace["changes"]

@@ -6,6 +6,18 @@ defmodule SwarmCodeCLI.Companion.View do
   unknown lists `[]`. The active run and the tab order come from the same
   projector helpers the TUI paints with, so the page never disagrees with it.
   Nothing here performs IO; the hub owns the clock and the encoding cadence.
+
+  The wire now carries real facts, so the page shows them: agent names, roles,
+  steps, gauges, tokens and cost; tool calls on transcript items; the changes
+  ledger with its blast radius; the judge's verdict. Two shapes are derived
+  rather than reported, and both are documented where they are built:
+  `run.edges` fall back to lead → everyone when the daemon reports no parent
+  ids, and `timeline.checkpoints` are one change per minute. Only artefacts
+  stay empty; the daemon does not record them yet.
+
+  `at` is milliseconds everywhere (transcript, timeline, changes), so the
+  page's scrubber axis is wall-clock time. Items whose time is unknown inherit
+  the previous item's time, which keeps that axis monotonic and finite.
   """
 
   alias SwarmCodeCLI.UI.{ReadModel, State}
@@ -13,9 +25,11 @@ defmodule SwarmCodeCLI.Companion.View do
   alias SwarmCodeCLI.UI.Projector.{Shell, Support}
 
   @max_items 200
+  @max_changes 200
+  @max_checkpoints 12
   @max_text 4_000
   @hues 6
-  @unavailable "not reported by the daemon yet"
+  @minute 60_000
   @terminal_states [:done, :failed, :stopped, :interrupted, :superseded]
   @waiting_states [:waiting_question, :waiting_approval]
   @swarm_kinds [:swarm, :consensus, :ultra, :workflow]
@@ -31,10 +45,18 @@ defmodule SwarmCodeCLI.Companion.View do
   def build(%State{} = state, now, meta \\ []) when is_integer(now) and now >= 0 do
     run = Support.run(state)
     rows = run_agents(state, run)
-    items = run_items(state, run)
-    lead = lead_id(items, rows)
+    raw = run_items(state, run)
+    lead = lead_id(raw, rows)
     rows = lead_first(rows, lead)
-    agents = rows |> Enum.with_index() |> Enum.map(fn {row, index} -> agent(row, index, lead) end)
+    parents = parents(rows, lead)
+    judges = for row <- rows, row.role == :judge, into: MapSet.new(), do: row.id
+    items = stamp(raw, run)
+    changes = run_changes(state, run)
+
+    agents =
+      rows
+      |> Enum.with_index()
+      |> Enum.map(fn {row, index} -> agent(row, index, lead, parents) end)
 
     %{
       revision: 0,
@@ -45,13 +67,16 @@ defmodule SwarmCodeCLI.Companion.View do
       },
       header: header(state, run, meta),
       tabs: tabs(state, run),
-      run: run_json(run, rows, lead),
+      run: run_json(run, rows, parents),
       agents: agents,
       transcript: Enum.map(items, &item(&1, state)),
       needs: needs(state),
-      changes: %{files: [], unavailable: @unavailable},
-      timeline: %{events: Enum.map(items, &event(&1, state, lead)), checkpoints: []},
-      verdict: nil,
+      changes: changes_json(changes),
+      timeline: %{
+        events: items |> Enum.map(&event(&1, state, lead, judges)) |> Enum.sort_by(& &1.at),
+        checkpoints: checkpoints(changes)
+      },
+      verdict: verdict(state, run),
       artifacts: [],
       focus: focus(state, run, items),
       notice: notice(state.notice)
@@ -75,15 +100,18 @@ defmodule SwarmCodeCLI.Companion.View do
 
     %{
       project: Keyword.get(meta, :project),
-      model: pick(workspace, swarm?, :swarm_model, :chat_model),
+      model: run_model(run) || pick(workspace, swarm?, :swarm_model, :chat_model),
       mode: workspace && workspace.mode && word(workspace.mode),
       approval: nil,
       keymap: word(state.keymap),
       effort: pick(workspace, swarm?, :swarm_effort, :effort),
-      cost: nil,
-      context_tokens: nil
+      cost: run && run.cost_usd,
+      context_tokens: run && sum_tokens(run.tokens_in, run.tokens_out)
     }
   end
+
+  defp run_model(nil), do: nil
+  defp run_model(run), do: blank_to_nil(run.model)
 
   defp pick(nil, _, _, _), do: nil
 
@@ -99,15 +127,18 @@ defmodule SwarmCodeCLI.Companion.View do
     needs = pending_interactions(state)
 
     Enum.map(Shell.tabline_runs(state), fn row ->
+      counted = Enum.count(state.read_model.agents, fn {_, a} -> a.run_id == row.id end)
+      pending = Enum.count(needs, &(&1.run_id == row.id))
+
       %{
         id: row.id,
         title: row.title,
         state: word(row.state),
         kind: word(row.kind),
-        agents: Enum.count(state.read_model.agents, fn {_, a} -> a.run_id == row.id end),
-        needs: Enum.count(needs, &(&1.run_id == row.id)),
-        started_at: nil,
-        finished_at: nil,
+        agents: max(row.agents_total, counted),
+        needs: max(row.needs, pending),
+        started_at: row.started_at,
+        finished_at: row.finished_at,
         active: row.id == active
       }
     end)
@@ -124,20 +155,18 @@ defmodule SwarmCodeCLI.Companion.View do
       edges: []
     }
 
-  defp run_json(run, rows, lead) do
-    edges =
-      if lead,
-        do: for(row <- rows, row.id != lead, do: %{from: lead, to: row.id, kind: "spawn"}),
-        else: []
-
+  defp run_json(run, rows, parents) do
     %{
       id: run.id,
       title: run.title,
       state: word(run.state),
       kind: word(run.kind),
-      started_at: nil,
-      finished_at: nil,
-      edges: edges
+      started_at: run.started_at,
+      finished_at: run.finished_at,
+      edges:
+        for row <- rows, parent = Map.get(parents, row.id), parent != nil do
+          %{from: parent, to: row.id, kind: "spawn"}
+        end
     }
   end
 
@@ -149,21 +178,35 @@ defmodule SwarmCodeCLI.Companion.View do
     state.read_model.agents
     |> Map.values()
     |> Enum.filter(&(&1.run_id == run.id))
-    |> Enum.sort_by(& &1.id)
+    |> Enum.sort_by(&{&1.depth, &1.id})
   end
 
-  # The daemon sends no parent or root marker, and agent ids are node ids, so
-  # the lead is the agent that authored the run's earliest non-user item. When
-  # no item names an agent, nobody is the lead and the hive has no centre.
+  # The lead is the agent the daemon marks `:lead`; failing that the root of
+  # the parent forest; failing that the agent that authored the run's earliest
+  # non-user item. When nothing names one, nobody leads and the hive has no
+  # centre.
   defp lead_id(_items, []), do: nil
 
   defp lead_id(items, rows) do
     ids = MapSet.new(rows, & &1.id)
 
-    Enum.find_value(items, fn item ->
-      if item.role != :user and MapSet.member?(ids, item.node_id), do: item.node_id
-    end)
+    cond do
+      row = Enum.find(rows, &(&1.role == :lead)) ->
+        row.id
+
+      row = Enum.find(rows, &root_of_forest?(&1, rows)) ->
+        row.id
+
+      true ->
+        Enum.find_value(items, fn item ->
+          id = item.agent_id || item.node_id
+          if item.role != :user and is_binary(id) and MapSet.member?(ids, id), do: id
+        end)
+    end
   end
+
+  defp root_of_forest?(row, rows),
+    do: row.parent_id == nil and Enum.any?(rows, &(&1.parent_id == row.id))
 
   defp lead_first(rows, nil), do: rows
 
@@ -172,32 +215,66 @@ defmodule SwarmCodeCLI.Companion.View do
     leads ++ rest
   end
 
-  defp agent(row, index, lead) do
+  # Spawn parents, honest first: every reported `parent_id` that names another
+  # agent of this run. Only when the daemon reports none at all does the lead
+  # stand in as everyone's parent, so the hive still draws a graph instead of a
+  # scatter. Agents and edges read the same map, so they can never disagree.
+  defp parents(rows, lead) do
+    ids = MapSet.new(rows, & &1.id)
+
+    real =
+      for row <- rows,
+          is_binary(row.parent_id),
+          row.parent_id != row.id,
+          MapSet.member?(ids, row.parent_id),
+          into: %{},
+          do: {row.id, row.parent_id}
+
+    if map_size(real) == 0 and lead != nil,
+      do: Map.new(rows, &{&1.id, if(&1.id == lead, do: nil, else: lead)}),
+      else: real
+  end
+
+  defp agent(row, index, lead, parents) do
     lead? = row.id == lead
 
     %{
       id: row.id,
-      name: if(lead?, do: "lead", else: "agent-" <> short(row.id)),
-      role: if(lead?, do: "lead", else: "worker"),
+      name: blank_to_nil(row.name) || "agent-" <> short(row.id),
+      role: role(row, lead?),
       state: word(row.state),
-      step: word(row.state),
-      progress: progress(row.state),
-      tokens: nil,
-      hue: rem(index, @hues),
+      step: blank_to_nil(row.step) || word(row.state),
+      progress: progress(row),
+      tokens: sum_tokens(row.tokens_in, row.tokens_out),
+      cost: row.cost_usd,
+      hue: if(lead?, do: 0, else: rem(index, @hues)),
       waiting: row.state in @waiting_states,
-      parent_id: if(lead?, do: nil, else: lead),
-      started_at: nil
+      parent_id: Map.get(parents, row.id),
+      started_at: row.started_at,
+      finished_at: row.finished_at,
+      error: blank_to_nil(row.error)
     }
   end
 
-  defp short(id) do
+  defp role(%{role: role}, _lead?) when role not in [:unknown, nil], do: word(role)
+  defp role(_row, true), do: "lead"
+  defp role(_row, false), do: "worker"
+
+  defp short(id) when is_binary(id) do
     id
     |> String.replace_prefix("agent-", "")
     |> String.slice(0, 4)
   end
 
-  defp progress(state) when state in @terminal_states, do: 1.0
-  defp progress(:queued), do: 0.0
+  defp short(_), do: "?"
+
+  # The reported gauge wins. Without one, the state still says something true:
+  # finished work is full, queued work is empty, anything else is half.
+  defp progress(%{progress: progress}) when is_integer(progress) and progress > 0,
+    do: min(progress, 100) / 100
+
+  defp progress(%{state: state}) when state in @terminal_states, do: 1.0
+  defp progress(%{state: :queued}), do: 0.0
   defp progress(_), do: 0.5
 
   # -- transcript and timeline ---------------------------------------------
@@ -215,35 +292,140 @@ defmodule SwarmCodeCLI.Companion.View do
     |> Enum.map(&ReadModel.transcript_item(model, &1.id))
   end
 
-  defp item(item, state) do
+  # One axis for the scrubber: milliseconds. An item with no time of its own
+  # sits where the previous one did, starting at the run's own start.
+  defp stamp(items, run) do
+    start = (run && run.started_at) || 0
+
+    items
+    |> Enum.map_reduce(start, fn item, last ->
+      at = if is_integer(item.at) and item.at > 0, do: item.at, else: last
+      {{item, at}, at}
+    end)
+    |> elem(0)
+  end
+
+  defp item({item, at}, state) do
     %{
       id: item.id,
       role: word(item.role),
-      agent_id: agent_id(state, item.node_id),
+      agent_id: item_agent(state, item),
       state: word(item.state),
-      kind: "text",
+      kind: word(item.kind),
       text: cap(item.text),
       reasoning: blank_to_nil(cap(item.reasoning)),
-      at: item.created_sequence
+      tool: tool(item.tool),
+      tokens: sum_tokens(item.tokens_in, item.tokens_out),
+      at: at
     }
   end
 
-  defp event(item, state, lead) do
-    agent = agent_id(state, item.node_id)
+  defp tool(%DTO.ToolCall{} = tool) do
+    %{
+      name: blank_to_nil(tool.name),
+      title: blank_to_nil(tool.title),
+      detail: blank_to_nil(tool.detail),
+      status: word(tool.status),
+      duration_ms: tool.duration_ms,
+      result_bytes: tool.result_bytes,
+      files: tool.files
+    }
+  end
+
+  defp tool(_), do: nil
+
+  defp event({item, at}, state, lead, judges) do
+    agent = item_agent(state, item)
 
     kind =
       cond do
         item.role == :user -> "you"
         item.state in @waiting_states -> "wait"
+        agent != nil and MapSet.member?(judges, agent) -> "judge"
+        item.kind == :tool -> "tool"
         agent != nil and agent != lead -> "agent"
         true -> "lead"
       end
 
-    %{at: item.created_sequence, kind: kind, agent_id: agent}
+    %{at: at, kind: kind, agent_id: agent}
   end
 
   defp cap(nil), do: ""
   defp cap(text) when is_binary(text), do: String.slice(text, 0, @max_text)
+
+  # -- changes and verdict --------------------------------------------------
+
+  defp run_changes(_state, nil), do: []
+
+  defp run_changes(state, run) do
+    state.read_model.changes
+    |> Map.values()
+    |> Enum.filter(&(&1.run_id == run.id))
+    |> Enum.sort_by(&{&1.at, &1.id})
+    |> Enum.take(-@max_changes)
+  end
+
+  defp changes_json(changes) do
+    files =
+      Enum.map(changes, fn change ->
+        %{
+          id: change.id,
+          path: change.path,
+          agent_id: change.agent_id,
+          restorable: change.restorable,
+          at: change.at
+        }
+      end)
+
+    %{files: files, blast: blast(changes), unavailable: nil}
+  end
+
+  # Blast radius: the paths two or more agents wrote. Everything else in the
+  # ledger is one agent's own work and needs no warning.
+  defp blast(changes) do
+    changes
+    |> Enum.reject(&(blank_to_nil(&1.agent_id) == nil))
+    |> Enum.group_by(& &1.path, & &1.agent_id)
+    |> Enum.map(fn {path, ids} -> {path, ids |> Enum.uniq() |> Enum.sort()} end)
+    |> Enum.filter(fn {_path, ids} -> length(ids) > 1 end)
+    |> Enum.sort_by(&elem(&1, 0))
+    |> Enum.map(fn {path, ids} -> %{path: path, agent_ids: ids} end)
+  end
+
+  # Checkpoints are the timeline's pins, so one per minute is enough: the first
+  # change of each minute, newest twelve, labelled with the file's name.
+  defp checkpoints(changes) do
+    changes
+    |> Enum.reject(&(&1.at == 0))
+    |> Enum.group_by(&div(&1.at, @minute))
+    |> Enum.map(fn {_minute, [first | _]} -> first end)
+    |> Enum.sort_by(& &1.at)
+    |> Enum.take(-@max_checkpoints)
+    |> Enum.map(&%{at: &1.at, label: Path.basename(&1.path)})
+  end
+
+  defp verdict(_state, nil), do: nil
+
+  defp verdict(state, run) do
+    state.read_model.verdicts
+    |> Map.values()
+    |> Enum.filter(&(&1.run_id == run.id))
+    |> Enum.max_by(&{&1.round, &1.revision, &1.id}, fn -> nil end)
+    |> verdict_json()
+  end
+
+  defp verdict_json(nil), do: nil
+
+  defp verdict_json(verdict) do
+    %{
+      id: verdict.id,
+      run_id: verdict.run_id,
+      round: verdict.round,
+      status: word(verdict.status),
+      checks: Enum.map(verdict.checks, &%{key: &1.key, ok: &1.ok, note: blank_to_nil(&1.note)}),
+      summary: blank_to_nil(verdict.summary)
+    }
+  end
 
   # -- needs ----------------------------------------------------------------
 
@@ -309,7 +491,7 @@ defmodule SwarmCodeCLI.Companion.View do
       state.focus == "inspector" and agent_id(state, inspector) != nil ->
         %{kind: "agent", id: inspector}
 
-      state.focus == "main" and is_binary(main) and Enum.any?(items, &(&1.id == main)) ->
+      state.focus == "main" and is_binary(main) and Enum.any?(items, &(elem(&1, 0).id == main)) ->
         %{kind: "item", id: main}
 
       run != nil ->
@@ -333,12 +515,21 @@ defmodule SwarmCodeCLI.Companion.View do
 
   # -- helpers --------------------------------------------------------------
 
+  defp item_agent(state, item),
+    do: agent_id(state, item.agent_id) || agent_id(state, item.node_id)
+
   defp agent_id(_state, nil), do: nil
 
   defp agent_id(state, id) when is_binary(id),
     do: if(Map.has_key?(state.read_model.agents, id), do: id, else: nil)
 
   defp agent_id(_state, _), do: nil
+
+  defp sum_tokens(into, out) do
+    total = (is_integer(into) && into) || 0
+    total = total + ((is_integer(out) && out) || 0)
+    if total > 0, do: total
+  end
 
   defp session_id(epoch) when is_binary(epoch), do: String.slice(epoch, 0, 8)
   defp session_id(_), do: nil

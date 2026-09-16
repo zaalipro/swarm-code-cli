@@ -18,6 +18,7 @@ defmodule SwarmCodeCLI.UI.Paint.ProjectorTest do
   alias SwarmCodeCLI.UI.Paint.{Metrics, Options, Plan}
   alias SwarmCodeCLI.UI.Scene.Block
   alias SwarmCodeCLI.UI.Projector.Workspace
+  alias SwarmCodeCLI.UI.Projector.Workspace.Turns
   alias SwarmCodeCLI.UI.DataSource.DTO.{PendingInteraction, Question, QuestionOption}
   alias SwarmCodeCLI.UI.DataSource.DTO.WorkspaceSnapshot
 
@@ -91,7 +92,7 @@ defmodule SwarmCodeCLI.UI.Paint.ProjectorTest do
       else
         pixels = screen(plan)
 
-        for fact <- ["NO USER DATA", "Build", "NEEDS", "Focus"] do
+        for fact <- ["NO USER DATA", "Build", "Activity", "Focus"] do
           assert pixels =~ fact, "#{kind} #{inspect(size)} is missing #{fact}"
         end
 
@@ -283,7 +284,7 @@ defmodule SwarmCodeCLI.UI.Paint.ProjectorTest do
       assert {:ok, rows} = Metrics.height(chrome, main.rect.width, options, 200, policy)
       layout = Layout.calculate(state.size, state.preferences)
       height = Workspace.content_height(state, main.rect, layout.class)
-      assert height == min(max(0, main.rect.height - rows), div(main.rect.height * 45, 100))
+      assert height == max(0, main.rect.height - rows)
 
       assert Enum.count(main.rect.y..(main.rect.y + main.rect.height - 1), fn y ->
                row(plan, y, main.rect.x, main.rect.width) =~ "transcript line"
@@ -397,7 +398,7 @@ defmodule SwarmCodeCLI.UI.Paint.ProjectorTest do
       assert {:ok, height} = Metrics.height(chrome, main.rect.width, %Options{}, 200, policy)
 
       assert Workspace.content_height(state, main.rect, scene.layout_class) ==
-               min(max(0, main.rect.height - height), div(main.rect.height * 45, 100))
+               max(0, main.rect.height - height)
     end
   end
 
@@ -478,12 +479,12 @@ defmodule SwarmCodeCLI.UI.Paint.ProjectorTest do
     end
   end
 
-  test "empty needs is reported once and pending interactions stay prominent" do
+  test "nothing waiting says nothing, and a pending interaction is announced on the strip" do
     for activity_height <- [0, 1, 2] do
       state = fixture(:chat, {80, 24})
       state = %{state | preferences: %{state.preferences | activity_height: activity_height}}
       {_, _, plan} = paint(state)
-      assert length(String.split(screen(plan), "NEEDS 0")) - 1 == 1
+      refute screen(plan) =~ "Waiting for you"
 
       item = %PendingInteraction{
         id: "pending",
@@ -496,31 +497,29 @@ defmodule SwarmCodeCLI.UI.Paint.ProjectorTest do
       state = put_in(state.read_model.interactions[item.id], item)
       {scene, _, plan} = paint(state)
       main = Enum.find(scene.regions, &(&1.role == :main))
-      assert row(plan, main.rect.y, main.rect.x, main.rect.width) =~ "NEEDS 1"
+      assert row(plan, main.rect.y, main.rect.x, main.rect.width) =~ "Waiting for you · 1"
     end
   end
 
-  test "inspector captions carry one status with their exact stop on the same row" do
+  test "inspector lanes name every agent once and open the run's agents" do
     for color <- [:truecolor, :monochrome], policy <- [:narrow, :wide] do
       state = fixture(:swarm, {160, 50}, policy, color)
       {scene, table, plan} = paint(state)
       inspector = Enum.find(scene.regions, &(&1.role == :inspector))
+      [run_id] = Map.keys(state.read_model.runs)
+      target = {:local, {:open_layer, {:run_inspector, run_id, :agents}}}
+
+      lanes =
+        for {id, ^target} <- table do
+          [rect | _] = plan.actions[id]
+          row(plan, rect.y, inspector.rect.x, inspector.rect.width)
+        end
+
+      assert length(lanes) == map_size(state.read_model.agents)
 
       for agent <- Map.values(state.read_model.agents) do
-        target = {:intent, {:stop_agent, agent.run_id, agent.id, agent.revision}}
-        {id, _} = Enum.find(table, fn {_, value} -> value == target end)
-        [rect | _] = plan.actions[id]
-        text = row(plan, rect.y, inspector.rect.x, inspector.rect.width)
-
-        word =
-          agent.state
-          |> SwarmCodeCLI.UI.Theme.status()
-          |> elem(0)
-          |> SwarmCodeCLI.UI.SafeText.value()
-
-        assert text =~ agent.id
-        assert text =~ "Stop"
-        assert length(String.split(text, word)) - 1 == 1
+        assert Enum.count(lanes, &String.contains?(&1, agent.name)) == 1
+        assert Enum.count(lanes, &String.contains?(&1, agent.name <> " ")) == 1
       end
     end
   end
@@ -591,8 +590,8 @@ defmodule SwarmCodeCLI.UI.Paint.ProjectorTest do
           })
     }
 
-    # +2 for editorial turn label rows (blank + role label)
-    assert ScrollMetrics.height(state, :main, item.id) == 10
+    # The first turn has no blank row: one speaker line, then the eight lines.
+    assert ScrollMetrics.height(state, :main, item.id) == 9
     {scene, _, plan} = paint(state)
     main = Enum.find(scene.regions, &(&1.role == :main))
     list = Enum.find(main.blocks, &is_struct(&1, Block.VirtualList))
@@ -601,22 +600,22 @@ defmodule SwarmCodeCLI.UI.Paint.ProjectorTest do
     assert Metrics.height(list, main.rect.width) ==
              {:ok, ScrollMetrics.height(state, :main, item.id)}
 
-    assert {:ok, 10} = Metrics.height(list, main.rect.width)
+    assert {:ok, 9} = Metrics.height(list, main.rect.width)
     chrome = Enum.take_while(main.blocks, &(not is_struct(&1, Block.VirtualList)))
     assert {:ok, offset} = Metrics.height(chrome, main.rect.width)
 
-    # Labels add 2 rows before content (blank + role label at this width)
+    # The speaker line takes one row before the content.
     for {line, index} <- Enum.with_index(~w(a b c d e f g h)) do
       assert String.trim(
-               row(plan, main.rect.y + offset + 2 + index, main.rect.x, main.rect.width)
+               row(plan, main.rect.y + offset + 1 + index, main.rect.x, main.rect.width)
              ) ==
                line
     end
 
     long = %{item | text: "```\n" <> Enum.map_join(1..250, "\n", &"code #{&1}") <> "\n```"}
     state = put_in(state.read_model.transcript[item.id], long)
-    state = put_in(state.scrolls.main.anchor, {item.id, 242, :top})
-    assert ScrollMetrics.height(state, :main, item.id) == 252
+    state = put_in(state.scrolls.main.anchor, {item.id, 241, :top})
+    assert ScrollMetrics.height(state, :main, item.id) == 251
     {scene, _, plan} = paint(state)
     main = Enum.find(scene.regions, &(&1.role == :main))
     assert screen(plan) =~ "code 241"
@@ -655,25 +654,33 @@ defmodule SwarmCodeCLI.UI.Paint.ProjectorTest do
 
       {scene, _, plan} = paint(state)
       main = Enum.find(scene.regions, &(&1.role == :main))
-      lines = Prose.wrap(item.text, main.rect.width, policy)
-      # +2 for editorial turn label rows (blank + role label)
-      assert ScrollMetrics.height(state, :main, item.id) == length(lines) + 2
+      margin = Turns.margin()
+      lines = Prose.wrap(item.text, main.rect.width - margin, policy)
+      # The first turn has no blank row: one speaker line, then the prose.
+      assert ScrollMetrics.height(state, :main, item.id) == length(lines) + 1
       list = Enum.find(main.blocks, &is_struct(&1, Block.VirtualList))
 
+      # Anchor row 4 is the fourth prose line; every painted row starts at the
+      # two-cell margin and carries exactly one wrapped line.
       expected =
         lines
-        |> Enum.drop(2)
+        |> Enum.drop(3)
         |> Enum.take(Workspace.content_height(state, main.rect, scene.layout_class))
 
       assert Enum.map_join(hd(list.items).spans, &SafeText.value(&1.text)) ==
-               Enum.join(expected, "\n")
+               Enum.map_join(expected, "\n", &(String.duplicate(" ", margin) <> &1))
 
       chrome = Enum.take_while(main.blocks, &(not is_struct(&1, Block.VirtualList)))
       assert {:ok, offset} = Metrics.height(chrome, main.rect.width, %Options{}, 200, policy)
 
       for {line, index} <- Enum.with_index(expected) do
         assert String.trim_trailing(
-                 row(plan, main.rect.y + offset + index, main.rect.x, main.rect.width)
+                 row(
+                   plan,
+                   main.rect.y + offset + index,
+                   main.rect.x + margin,
+                   main.rect.width - margin
+                 )
                ) == String.trim_trailing(line)
       end
     end
@@ -699,10 +706,11 @@ defmodule SwarmCodeCLI.UI.Paint.ProjectorTest do
           })
     }
 
-    # +2 for editorial turn label rows (blank + role label)
-    assert ScrollMetrics.height(state, :main, item.id) == 815
+    # One speaker line, then 65 000 cells of literal text wrapped two cells in.
+    inner = ScrollMetrics.viewport(state, :main).width - Turns.margin()
+    assert ScrollMetrics.height(state, :main, item.id) == div(65_000 + inner - 1, inner) + 1
     {_, _, plan} = paint(state)
-    assert screen(plan) =~ String.duplicate("*", 80)
+    assert screen(plan) =~ String.duplicate("*", inner)
   end
 
   test "Markdown style survives wrapping and an anchor inside an open fence" do
@@ -787,14 +795,17 @@ defmodule SwarmCodeCLI.UI.Paint.ProjectorTest do
             })
       }
 
-      rows = Transcript.rows(item, :chat, 80, state.capabilities) |> Enum.to_list()
-      # First 2 rows are label rows (blank + role label); content rows follow
+      # Transcript.rows is the independent reference: its content rows at the
+      # transcript's inner width (two cells in) are what Turns paints under the
+      # single speaker line of a first turn.
+      inner = ScrollMetrics.viewport(state, :main).width - Turns.margin()
+      rows = Transcript.rows(item, :chat, inner, state.capabilities) |> Enum.to_list()
       content_rows = Enum.drop(rows, 2)
 
       assert Enum.map_join(content_rows, &Enum.map_join(&1.units, fn unit -> unit.text end)) ==
                SafeText.value(safe)
 
-      assert ScrollMetrics.height(state, :main, item.id) == length(rows)
+      assert ScrollMetrics.height(state, :main, item.id) == length(content_rows) + 1
       {_, _, plan} = paint(state)
       assert screen(plan) =~ "**́**"
     end

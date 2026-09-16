@@ -42,7 +42,7 @@ defmodule SwarmCodeCLI.UI.LivePresentationTest do
     {scene, actions} = Projector.project(state)
     assert Scene.validate(scene) == :ok
     rendered = Enum.join(texts(scene.overlay), " ")
-    assert rendered =~ "run_command"
+    assert rendered =~ "Tool: run command"
     assert rendered =~ "mix test"
     refute rendered =~ "\e"
     assert {:local, {:open_detail, "fixture-run", "approval-args"}} in Map.values(actions)

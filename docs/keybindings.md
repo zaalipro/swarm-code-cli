@@ -277,6 +277,8 @@ the command palette).
 | `o` | Open the full text of the selected item |
 | `Enter` | Activate what is focused |
 | `Alt-Enter` | Queue the draft instead of sending it |
+| `n` | Open the next approval or question waiting on you, across every run |
+| `N` | Open the previous approval or question waiting on you |
 
 ### Layers
 
@@ -353,6 +355,8 @@ the command palette).
 | `o` | Open the full text of the selected item |
 | `Enter` | Activate what is focused |
 | `Alt-Enter` | Queue the draft instead of sending it |
+| `n` | Open the next approval or question waiting on you, across every run |
+| `N` | Open the previous approval or question waiting on you |
 
 ### Layers
 

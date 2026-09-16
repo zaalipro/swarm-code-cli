@@ -71,7 +71,18 @@ defmodule SwarmCodeCLI.UI.Projector.Support do
     clock_mark: :clock_mark_ascii,
     effort_mark: :effort_mark_ascii,
     shield_mark: :shield_mark_ascii,
-    usage_mark: :usage_mark_ascii
+    usage_mark: :usage_mark_ascii,
+    hex_full: :hex_full_ascii,
+    hex_empty: :hex_empty_ascii,
+    judge: :judge_ascii,
+    caret: :caret_ascii,
+    collapsed: :collapsed_ascii,
+    expanded: :expanded_ascii,
+    check: :check_ascii,
+    fail: :fail_ascii,
+    gauge_on: :gauge_on_ascii,
+    gauge_off: :gauge_off_ascii,
+    waiting: :waiting_ascii
   }
 
   @doc "Catalogue glyph for the terminal's capabilities; always one cell in both width policies."

@@ -489,6 +489,39 @@ defmodule SwarmCodeCLI.UI.Reducer do
   defp transition(%{layers: layers} = state, {:open_layer, _}) when length(layers) >= 32,
     do: {%{state | notice: :layer_capacity_reached}, []}
 
+  # Jumping to something that waits on the user: go to its run, then open its
+  # dialog on top. A dialog already open for another interaction is closed
+  # first, or the walk would stack dialogs the user then has to unwind.
+  defp transition(state, {:open_interaction, id}) do
+    case Map.get(state.read_model.interactions, id) do
+      %{state: :pending, kind: kind, run_id: run_id} when kind in [:question, :approval] ->
+        {state, closed} =
+          case state.layers do
+            [{top, _} | _] when top in [:question, :approval] ->
+              transition(state, :close_top_layer)
+
+            _ ->
+              {state, []}
+          end
+
+        {state, moved} =
+          if state.destination == {:run, run_id},
+            do: {state, []},
+            else: transition(state, {:navigate, {:run, run_id}})
+
+        {state, opened} = transition(state, {:open_layer, {kind, id}})
+        {state, closed ++ moved ++ opened}
+
+      _ ->
+        transition(state, :nothing_waiting)
+    end
+  end
+
+  defp transition(state, :nothing_waiting) do
+    {:ok, text} = SafeText.external("Nothing is waiting on you.", SafeText.Limits.content())
+    {%{state | notice: {:command_feedback, SafeText.value(text)}}, [{:announce, text}]}
+  end
+
   defp transition(state, {:open_layer, {:detail, run_id, ref_id}}),
     do: Details.open(state, run_id, ref_id)
 

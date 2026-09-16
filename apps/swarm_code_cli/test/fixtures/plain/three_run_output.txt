@@ -22,6 +22,35 @@ QUESTION 00000000-0000-4000-8000-0000000000c1@7 Which review should proceed?
 1. option-1 Authentication
 2. option-2 Authentication and tests
 answer 00000000-0000-4000-8000-0000000000c1@7 option-1
+TEXT 00000000-0000-4000-8000-0000000000a2/00000000-0000-4000-8000-00000000a2e1 lib/swarm_code/repo.ex:12
+lib/swarm_code/repo.ex:48
+test/swarm_code/repo_test.exs:9
+QUESTION 00000000-0000-4000-8000-0000000000c1@7 Which review should proceed?
+1. option-1 Authentication
+2. option-2 Authentication and tests
+answer 00000000-0000-4000-8000-0000000000c1@7 option-1
+TEXT 00000000-0000-4000-8000-0000000000a2/00000000-0000-4000-8000-00000000a2e2 defmodule SwarmCode.SessionTest do
+  use ExUnit.Case, async: true
+QUESTION 00000000-0000-4000-8000-0000000000c1@7 Which review should proceed?
+1. option-1 Authentication
+2. option-2 Authentication and tests
+answer 00000000-0000-4000-8000-0000000000c1@7 option-1
+TEXT 00000000-0000-4000-8000-0000000000a2/00000000-0000-4000-8000-00000000a2e4 
+REASONING 00000000-0000-4000-8000-0000000000a2/00000000-0000-4000-8000-00000000a2e4 The refresh path and the session tests disagree about expiry; builder-4 should change the repository before the tests.
+QUESTION 00000000-0000-4000-8000-0000000000c1@7 Which review should proceed?
+1. option-1 Authentication
+2. option-2 Authentication and tests
+answer 00000000-0000-4000-8000-0000000000c1@7 option-1
+TEXT 00000000-0000-4000-8000-0000000000a2/00000000-0000-4000-8000-00000000a2e3 Replaced the refresh guard with an expiry check.
+QUESTION 00000000-0000-4000-8000-0000000000c1@7 Which review should proceed?
+1. option-1 Authentication
+2. option-2 Authentication and tests
+answer 00000000-0000-4000-8000-0000000000c1@7 option-1
+TEXT 00000000-0000-4000-8000-0000000000a2/00000000-0000-4000-8000-00000000a2e5 run_command failed: mix test exited with status 1 (2 failures).
+QUESTION 00000000-0000-4000-8000-0000000000c1@7 Which review should proceed?
+1. option-1 Authentication
+2. option-2 Authentication and tests
+answer 00000000-0000-4000-8000-0000000000c1@7 option-1
 ACTIVITY 00000000-0000-4000-8000-0000000000a1@2 running A1
 QUESTION 00000000-0000-4000-8000-0000000000c1@7 Which review should proceed?
 1. option-1 Authentication
@@ -50,6 +79,15 @@ REASONING 00000000-0000-4000-8000-0000000000a1/00000000-0000-4000-8000-000000000
 TEXT 00000000-0000-4000-8000-0000000000a2/00000000-0000-4000-8000-0000000000d2 Swarm plan
 Review authentication
 and its tests
+TEXT 00000000-0000-4000-8000-0000000000a2/00000000-0000-4000-8000-00000000a2e1 lib/swarm_code/repo.ex:12
+lib/swarm_code/repo.ex:48
+test/swarm_code/repo_test.exs:9
+TEXT 00000000-0000-4000-8000-0000000000a2/00000000-0000-4000-8000-00000000a2e2 defmodule SwarmCode.SessionTest do
+  use ExUnit.Case, async: true
+TEXT 00000000-0000-4000-8000-0000000000a2/00000000-0000-4000-8000-00000000a2e4 
+REASONING 00000000-0000-4000-8000-0000000000a2/00000000-0000-4000-8000-00000000a2e4 The refresh path and the session tests disagree about expiry; builder-4 should change the repository before the tests.
+TEXT 00000000-0000-4000-8000-0000000000a2/00000000-0000-4000-8000-00000000a2e3 Replaced the refresh guard with an expiry check.
+TEXT 00000000-0000-4000-8000-0000000000a2/00000000-0000-4000-8000-00000000a2e5 run_command failed: mix test exited with status 1 (2 failures).
 PENDING 00000000-0000-4000-8000-0000000000c1@7
 QUESTION 00000000-0000-4000-8000-0000000000c1@7 Which review should proceed?
 1. option-1 Authentication
@@ -87,4 +125,13 @@ REASONING 00000000-0000-4000-8000-0000000000a1/00000000-0000-4000-8000-000000000
 TEXT 00000000-0000-4000-8000-0000000000a2/00000000-0000-4000-8000-0000000000d2 Swarm plan
 Review authentication
 and its tests
+TEXT 00000000-0000-4000-8000-0000000000a2/00000000-0000-4000-8000-00000000a2e1 lib/swarm_code/repo.ex:12
+lib/swarm_code/repo.ex:48
+test/swarm_code/repo_test.exs:9
+TEXT 00000000-0000-4000-8000-0000000000a2/00000000-0000-4000-8000-00000000a2e2 defmodule SwarmCode.SessionTest do
+  use ExUnit.Case, async: true
+TEXT 00000000-0000-4000-8000-0000000000a2/00000000-0000-4000-8000-00000000a2e4 
+REASONING 00000000-0000-4000-8000-0000000000a2/00000000-0000-4000-8000-00000000a2e4 The refresh path and the session tests disagree about expiry; builder-4 should change the repository before the tests.
+TEXT 00000000-0000-4000-8000-0000000000a2/00000000-0000-4000-8000-00000000a2e3 Replaced the refresh guard with an expiry check.
+TEXT 00000000-0000-4000-8000-0000000000a2/00000000-0000-4000-8000-00000000a2e5 run_command failed: mix test exited with status 1 (2 failures).
 DETACHED — RUNS CONTINUE

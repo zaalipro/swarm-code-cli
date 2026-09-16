@@ -83,8 +83,10 @@ defmodule SwarmCodeCLI.UI.ThreeRunScenarioTest do
     action(runtime, {:scroll, "main", {:line, 5}})
     before = SessionRuntime.snapshot(runtime)
     assert Editor.text(draft(before, a).editor) == "Review authentication\nand its tests"
-    # Fixture message-A-2 has three lines; zero-based final line is 2.
-    assert before.scrolls.main.anchor == {"message-A-2", 2, :top}
+    # message-A-1 opens the transcript as two rows (its speaker line and one
+    # line of text, no blank row above the first turn); five lines down is
+    # message-A-2's second text row (blank, speaker line, then its lines).
+    assert before.scrolls.main.anchor == {"message-A-2", 3, :top}
     assert before.scrolls.main.follow? == false
     assert Editor.cursor(draft(before, a).editor) == 33
     assert Editor.selection(draft(before, a).editor) == {33, 34}

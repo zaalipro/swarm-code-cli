@@ -1,6 +1,7 @@
 defmodule SwarmCodeCLI.UI.ScrollMetrics do
   @moduledoc "Pure, lazy logical text-line measurements using the same escaping and width policy as projection."
-  alias SwarmCodeCLI.UI.{Layout, ReadModel, Transcript}
+  alias SwarmCodeCLI.UI.Layout
+  alias SwarmCodeCLI.UI.Projector.Workspace.Turns
 
   def viewport(state, region) do
     layout = Layout.calculate(state.size, state.preferences)
@@ -18,15 +19,7 @@ defmodule SwarmCodeCLI.UI.ScrollMetrics do
   # keeps its cursor under `:navigator`; its rows are one line each.
   def height(_, :navigator, _), do: 1
 
-  def height(state, region, id) do
-    case ReadModel.transcript_item(state.read_model, id) do
-      nil ->
-        1
-
-      item ->
-        run = Map.get(state.read_model.runs, item.run_id)
-        kind = if run, do: run.kind, else: :chat
-        Transcript.height(item, kind, viewport(state, region).width, state.capabilities) |> max(1)
-    end
-  end
+  # The main transcript's rows come from one place, Workspace.Turns, so the
+  # height an anchor counts is exactly the height the painter draws.
+  def height(state, region, id), do: Turns.height(state, viewport(state, region).width, id)
 end

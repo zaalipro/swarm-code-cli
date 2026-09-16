@@ -298,7 +298,8 @@ defmodule SwarmCodeCLI.UI.Paint.ShellFormatTest do
       state = fixture(:chat, {170, 34})
       plan = paint(state)
       activity_row = row(plan, 29)
-      assert activity_row =~ "NEEDS 0 · Activity"
+      refute activity_row =~ "Waiting for you"
+      assert activity_row =~ "Activity"
     end
   end
 

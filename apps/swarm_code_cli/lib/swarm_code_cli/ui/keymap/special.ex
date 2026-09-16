@@ -240,6 +240,21 @@ defmodule SwarmCodeCLI.UI.Keymap.Special do
 
   def run(:select_option, _key, _state, _table), do: :ignore
 
+  # ------------------------------------------------------- waiting on you
+
+  # `n` and `N` walk the approvals and questions waiting on the user, across
+  # every run, in the order the tab row shows the runs: the run in view first,
+  # then the rest by recency. From inside one of those dialogs the walk
+  # continues from it; from anywhere else it starts at the run in view. Both
+  # keys wrap, and both say so when nothing is waiting rather than doing
+  # nothing in silence.
+  def run(name, _key, state, _table) when name in [:next_need, :previous_need] do
+    case waiting_step(state, if(name == :next_need, do: 1, else: -1)) do
+      nil -> ok(:nothing_waiting)
+      id -> ok({:open_interaction, id})
+    end
+  end
+
   # ---------------------------------------------------------------- fields
 
   def run(name, _key, state, _table) when name in [:field_left, :field_right] do
@@ -275,6 +290,51 @@ defmodule SwarmCodeCLI.UI.Keymap.Special do
   end
 
   # ----------------------------------------------------------------- guts
+
+  defp waiting_step(state, step) do
+    waiting = waiting_ids(state)
+
+    case waiting do
+      [] ->
+        nil
+
+      _ ->
+        current =
+          case state.layers do
+            [{kind, id} | _] when kind in [:question, :approval] ->
+              Enum.find_index(waiting, &(&1 == id))
+
+            _ ->
+              nil
+          end
+
+        index =
+          case {current, step} do
+            {nil, 1} -> 0
+            {nil, _} -> length(waiting) - 1
+            {at, _} -> Integer.mod(at + step, length(waiting))
+          end
+
+        Enum.at(waiting, index)
+    end
+  end
+
+  # Pending interactions in tab order, then by id inside a run, so the walk is
+  # the one the user can predict from the row above the transcript.
+  defp waiting_ids(state) do
+    by_run =
+      state.read_model.interactions
+      |> Map.values()
+      |> Enum.filter(&(&1.state == :pending))
+      |> Enum.group_by(& &1.run_id)
+
+    run_order = SwarmCodeCLI.UI.Projector.Shell.tabline_runs(state) |> Enum.map(& &1.id)
+    stray = Map.keys(by_run) -- run_order
+
+    Enum.flat_map(run_order ++ Enum.sort(stray), fn run_id ->
+      by_run |> Map.get(run_id, []) |> Enum.map(& &1.id) |> Enum.sort()
+    end)
+  end
 
   defp toggle_layer(state, kind) do
     if match?([{^kind, _} | _], state.layers),

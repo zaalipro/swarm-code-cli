@@ -1468,7 +1468,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
                 "transcript" => transcript,
                 "interactions" => Enum.take(pending, limit),
                 "changes" => changes_for(runs, state),
-                "verdicts" => verdicts_for(runs, state)
+                "verdicts" => verdicts_for(runs, state),
+                "agents" => Enum.flat_map(runs, & &1.agents) |> Enum.take(limit)
               })
               |> Map.merge(state.metadata)
 

@@ -11,9 +11,11 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.WorkspaceSnapshot do
       effort: nil,
       swarm_effort: nil,
       changes: [],
-      verdicts: []
+      verdicts: [],
+      agents: []
     ],
     fields: [
+      agents: {:list, {:dto, SwarmCodeCLI.UI.DataSource.DTO.AgentSummary}},
       changes: {:list, {:dto, SwarmCodeCLI.UI.DataSource.DTO.Change}},
       verdicts: {:list, {:dto, SwarmCodeCLI.UI.DataSource.DTO.Verdict}},
       allowed_actions: :actions,
@@ -40,6 +42,7 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.WorkspaceSnapshot do
       through_sequence: :revision
     ],
     defaults: [
+      agents: [],
       changes: [],
       verdicts: [],
       allowed_actions: [],

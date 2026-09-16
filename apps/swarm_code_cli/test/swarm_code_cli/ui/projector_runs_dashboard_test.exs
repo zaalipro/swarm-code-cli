@@ -318,31 +318,70 @@ defmodule SwarmCodeCLI.UI.ProjectorRunsDashboardTest do
       end
     end
 
-    test "a row shows the title, the status word and the meta on that one line" do
+    test "a row shows the title, its agent cells and its state in plain words on that one line" do
       [row] =
         populated()
         |> painted_lines()
         |> Enum.filter(&String.contains?(&1, "Swarm auth boundary"))
 
-      assert row =~ "RUNNING"
-      assert row =~ "3 agents"
+      assert row =~ "⬢⬢⬢"
+      assert row =~ "running · 3 agents"
+      refute row =~ "RUNNING"
     end
 
-    test "the gauge is 28 cells wide whatever the progress" do
-      for progress <- [0, 40, 100] do
-        state = populated()
-        state = put_in(state.read_model.runs["research-1"].progress, progress)
+    test "one cell per agent, capped at twelve and then +N" do
+      state = populated()
+      state = put_in(state.read_model.runs["research-1"].agents_total, 14)
+      state = put_in(state.read_model.runs["research-1"].agents_running, 5)
 
-        [row] =
-          state
-          |> painted_lines()
-          |> Enum.filter(&String.contains?(&1, "Auth landscape"))
+      [row] =
+        state
+        |> painted_lines()
+        |> Enum.filter(&String.contains?(&1, "Auth landscape"))
 
-        tick = SafeText.value(SafeText.chrome(:seg_on))
-        ticks = row |> String.graphemes() |> Enum.count(&(&1 == tick))
+      hex = SafeText.value(SafeText.chrome(:hex_full))
+      empty = SafeText.value(SafeText.chrome(:hex_empty))
 
-        assert ticks == 28, "progress #{progress} drew #{ticks} ticks"
-      end
+      assert row =~ String.duplicate(hex, 5) <> String.duplicate(empty, 7) <> "+2"
+      refute row =~ SafeText.value(SafeText.chrome(:seg_on))
+    end
+
+    test "the elapsed time, the ! and the newest agent's step are drawn from the read model" do
+      state = populated()
+      state = %{state | now: 1_788_436_800_000}
+
+      state =
+        put_in(state.read_model.runs["swarm-1"], %{
+          state.read_model.runs["swarm-1"]
+          | started_at: 1_788_436_800_000 - 134_000,
+            needs: 1
+        })
+
+      state =
+        put_in(state.read_model.agents["a2"], %{
+          state.read_model.agents["a2"]
+          | name: "lead",
+            role: :lead,
+            step: "planning",
+            started_at: 1_788_436_800_000 - 100_000
+        })
+
+      state =
+        put_in(state.read_model.runs["chat-1"], %{
+          state.read_model.runs["chat-1"]
+          | state: :stopped
+        })
+
+      lines = painted_lines(state)
+      [swarm] = Enum.filter(lines, &String.contains?(&1, "Swarm auth boundary"))
+      [chat] = Enum.filter(lines, &String.contains?(&1, "Assistant thread"))
+      [consensus] = Enum.filter(lines, &String.contains?(&1, "Auth review board"))
+
+      assert swarm =~ ~r/⬢⬢⬢ +02:14 ! lead planning/
+      assert chat =~ "stopped by you"
+      refute chat =~ "STOPPED"
+      # A run nothing waits on has a blank where the ! would be.
+      refute consensus =~ "!"
     end
 
     test "groups are separated by a blank line" do

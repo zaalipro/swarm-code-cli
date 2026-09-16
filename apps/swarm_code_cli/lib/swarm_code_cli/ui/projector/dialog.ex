@@ -330,6 +330,10 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
   # Below this inner width a second column leaves each help line under 40
   # cells and elides most of them; one wide column reads better than two
   # clipped ones.
+  @approve_key KeyLabel.primary(Bindings.fetch(:approve))
+  @always_allow_key KeyLabel.primary(Bindings.fetch(:always_allow))
+  @deny_key KeyLabel.primary(Bindings.fetch(:deny))
+
   @help_two_column_width 130
   @help_gutter 2
   @help_key_max 24
@@ -639,7 +643,15 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
      focus(state, options)}
   end
 
+  # The approval card answers the three questions the user has before they
+  # press a key: who is asking, what exactly would run, and what it could
+  # touch. The command comes first because it is what the user will read; the
+  # tool and permission line says it in the system's words for anyone who
+  # wants them; the risk line says what a yes lets happen. Each decision row
+  # carries its key so the card is usable without the help sheet.
   defp interaction(item, state, rect) do
+    wide = rect.width * 4
+
     details =
       case item.approval do
         nil ->
@@ -647,17 +659,13 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
 
         approval ->
           [
-            {"approval_tool",
-             Density.safe(
-               approval.tool <> " · " <> Atom.to_string(approval.permission),
-               state,
-               rect.width * 4
-             ), nil},
             {"approval_arguments",
              Density.external(approval.arguments_preview, %{
                SwarmCodeCLI.UI.SafeText.Limits.content()
                | ambiguous_width: state.capabilities.ambiguous_width
-             }), nil}
+             }), nil},
+            {"approval_tool", Density.safe(approval_tool_line(approval), state, wide), nil},
+            {"approval_risk", Density.safe(approval_risk_line(approval), state, wide), nil}
           ]
       end
 
@@ -672,7 +680,11 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
       end
 
     options =
-      for decision <- [:approve, :deny, :always_allow] do
+      for {decision, key} <- [
+            {:approve, @approve_key},
+            {:always_allow, @always_allow_key},
+            {:deny, @deny_key}
+          ] do
         action =
           if Support.allowed?(state, item, decision),
             do:
@@ -681,15 +693,51 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
                 decision}},
             else: nil
 
-        {Atom.to_string(decision), SafeText.chrome(decision), action}
+        label = SafeText.value(SafeText.chrome(decision)) <> "  " <> key
+        {Atom.to_string(decision), Density.safe(label, state, wide), action}
       end
 
     body = details ++ full ++ options
 
-    {SafeText.chrome(:approve), body,
+    {Density.safe(approval_title(item, state), state, max(rect.width - 2, 8)), body,
      [control("cancel", SafeText.chrome(:cancel), {:local, :close_top_layer})],
      focus(state, body)}
   end
+
+  # "scout-1 wants to run a command": the agent by name when the daemon has
+  # named it, else the plainest true thing.
+  defp approval_title(item, state) do
+    agent =
+      case Map.get(state.read_model.agents, item.node_id) do
+        %{name: name} when is_binary(name) and name != "" -> name
+        _ -> "The agent"
+      end
+
+    agent <> " wants to " <> approval_verb(item.approval)
+  end
+
+  defp approval_verb(nil), do: "do something that needs your permission"
+  defp approval_verb(%{tool: "run_command"}), do: "run a command"
+  defp approval_verb(%{tool: tool}) when tool in ["edit_file", "write_file"], do: "change a file"
+  defp approval_verb(%{tool: "delete_file"}), do: "delete a file"
+  defp approval_verb(%{tool: tool, permission: :execute}), do: "run " <> tool_words(tool)
+  defp approval_verb(%{tool: tool}), do: "use " <> tool_words(tool)
+
+  defp tool_words(tool) when is_binary(tool), do: String.replace(tool, "_", " ")
+  defp tool_words(_tool), do: "a tool"
+
+  defp approval_tool_line(%{tool: tool, permission: permission}),
+    do: "Tool: " <> tool_words(tool) <> " · needs permission to " <> permission_word(permission)
+
+  defp permission_word(:execute), do: "execute"
+  defp permission_word(:write), do: "write"
+  defp permission_word(other), do: to_string(other)
+
+  defp approval_risk_line(%{permission: :execute}),
+    do: "A yes runs it on your machine, in the project directory."
+
+  defp approval_risk_line(%{permission: :write}), do: "A yes changes files in the project."
+  defp approval_risk_line(_approval), do: "A yes lets it go ahead."
 
   # The Changes feature sends real `git diff` text as an item's detail. One
   # option row per diff line keeps the +/- prefixes and hunk headers readable;

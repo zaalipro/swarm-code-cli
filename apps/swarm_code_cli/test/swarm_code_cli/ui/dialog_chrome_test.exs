@@ -215,9 +215,9 @@ defmodule SwarmCodeCLI.UI.DialogChromeTest do
         assert scene.overlay != nil
         full = screen(plan)
 
-        # Title has padding — the approval dialog title is "Approve"
+        # Title has padding — the approval card is titled by who wants what
         title_row = row(plan, scene.overlay.rect.y)
-        assert title_row =~ " Approve "
+        assert title_row =~ " The agent wants to change a file "
 
         # Exactly one FOCUS >
         assert focus_count(plan) == 1

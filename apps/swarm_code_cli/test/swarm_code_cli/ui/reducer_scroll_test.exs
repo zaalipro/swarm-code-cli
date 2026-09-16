@@ -335,11 +335,12 @@ defmodule SwarmCodeCLI.UI.ReducerScrollTest do
 
     {line, []} = Reducer.update(state, {:scroll, "main", {:line, 1}})
     assert line.scrolls.main.anchor == {"a", 1, :cursor}
-    # +2 label rows (blank + role label) added by editorial turn labels
-    {boundary, []} = Reducer.update(line, {:scroll, "main", {:line, 4}})
+    # The first item is one speaker line and three text lines, four rows in
+    # all; the line after its last row is the top of "b".
+    {boundary, []} = Reducer.update(line, {:scroll, "main", {:line, 3}})
     assert boundary.scrolls.main.anchor == {"b", 0, :cursor}
     {back, []} = Reducer.update(boundary, {:scroll, "main", {:line, -1}})
-    assert back.scrolls.main.anchor == {"a", 4, :cursor}
+    assert back.scrolls.main.anchor == {"a", 3, :cursor}
     {resized, []} = Reducer.update(back, {:resize, %Size{columns: 60, rows: 20}})
     assert resized.scrolls.main.anchor == back.scrolls.main.anchor
   end

@@ -689,7 +689,8 @@ defmodule SwarmCode.Daemon.Service.LiveBackend do
               "transcript" => transcript,
               "interactions" => Enum.take(pending, limit),
               "changes" => [],
-              "verdicts" => []
+              "verdicts" => [],
+              "agents" => runs |> Enum.map(&agent(&1, state)) |> Enum.take(limit)
             })
 
           "inspector" ->

@@ -99,3 +99,39 @@ changes, companion page screenshot), commit.
   fixtures, the fake source, and unit tests.
 - Every new glyph must have an ASCII fallback in `Support.glyphs` and pass the
   width-safe check the catalogue enforces.
+
+## Status (2026-09-16, end of the build)
+
+Delivered, on one commit after this plan:
+
+- **Wave 1** (D1, C1): the wire contract above, both daemon backends, the client
+  DTOs, deltas, read model, fake source and `Fixtures.representative`.
+- **U1 transcript**: speaker lines with local times, tool one-liners with
+  durations and outcomes, expandable results and thinking, streaming caret,
+  run cards in plain words, no left gutter. New `projector/workspace/turns.ex`;
+  `scroll_metrics.ex` measures through it so anchors and painted rows agree.
+- **U2 hive**: the inspector's agents tab is the hive (one lane per agent,
+  lane colours, judge `⚖`, waiting lanes in warning); changes tab from
+  `DTO.Change` with agent chips and blast radius; timeline tab; verdict card;
+  dashboard and palette rows carry `⬢N`, elapsed and `!`.
+- **U3 shell**: status row leads with `Waiting for you · N` (never a zero);
+  tabs carry `⬢N`, elapsed (or the finished run's duration) and `!N`, titles
+  cut on a word boundary at 24 cells, badges shed below 120/100 columns; the
+  title row shows `12k tokens · $0.42` once known; `n`/`N` walk the pending
+  approvals and questions across runs (`{:open_interaction, id}` navigates and
+  opens the dialog, `:nothing_waiting` says so); the approval card is titled
+  "<agent> wants to run a command" with the command, tool line, a risk line
+  and the decision keys. `docs/keybindings.md` regenerated.
+- **C2 companion**: the view carries agents, changes, verdicts and spend; the
+  page renders tool one-liners, the verdict scorecard, the waiting card and
+  timed change rows. `scripts/dev/companion_fixture.exs` writes both fixtures
+  from the real view builder so the preview cannot drift from the live page.
+- **Runtime**: a live session (init `now` of 0) reads the wall clock at each
+  commit, so elapsed times move; scripted sessions keep their fixed clock.
+
+Deferred (not on the wire or not in scope): approval reason and working
+directory (no wire field); per-agent focus action; the companion `act` route;
+the timeline scrubber strip in the inspector; a "no output for 40 s" stall
+notice; `RunDetailSnapshot` still carries no changes/verdicts; `agent_update`
+deltas are not published live; the judge approve/revise word has no wire field;
+`ui/transcript.ex` is unused and kept.

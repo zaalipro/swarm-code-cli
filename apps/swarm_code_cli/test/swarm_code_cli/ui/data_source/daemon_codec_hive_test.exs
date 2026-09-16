@@ -177,6 +177,43 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.CodecHiveTest do
              )
   end
 
+  test "a workspace query response carries the agents of its runs" do
+    request = %Request{
+      request_id: "local-8",
+      kind: {:query, :workspace, nil, :after, 50, 262_144},
+      scope: @scope,
+      generation: 2,
+      origin: {:query, :workspace},
+      deadline: 5_000,
+      expected_response: :workspace_snapshot
+    }
+
+    value =
+      Wire.workspace()
+      |> Map.put("agents", [Wire.agent_summary()])
+      |> Map.put("request_id", @wire)
+      |> Map.put("runs_page", Map.put(Wire.page(), "request_id", @wire))
+      |> Map.put("interactions_page", Map.put(Wire.page(), "request_id", @wire))
+      |> Map.put("transcript", Map.put(Wire.page(), "request_id", @wire) |> Map.put("items", []))
+
+    response = %Message{
+      version: 1,
+      sequence: nil,
+      occurred_at: nil,
+      type: :response,
+      request_id: @wire,
+      nonce: @nonce,
+      scope: @scope,
+      body: %{"op" => "result", "response_kind" => "workspace_snapshot", "value" => value}
+    }
+
+    assert {:ok, %Delivery{body: page}} =
+             Codec.response(through_json(response), request, @wire, @nonce)
+
+    assert [%DTO.AgentSummary{id: "agent-4", run_id: run_id}] = page.agents
+    assert run_id == Wire.run_id()
+  end
+
   test "a workspace query response carries changes and verdicts" do
     request = %Request{
       request_id: "local-7",

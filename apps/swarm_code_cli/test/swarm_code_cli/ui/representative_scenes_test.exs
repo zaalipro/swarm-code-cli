@@ -13,7 +13,7 @@ defmodule SwarmCodeCLI.UI.RepresentativeScenesTest do
   test "four fixed surfaces use distinct semantic evidence and bounded windows" do
     for {kind, evidence} <- [
           chat: ["The workspace is ready", "synthetic changes"],
-          swarm: ["Five numbered lanes", "Agent agent-5", "NEEDS ANSWER"],
+          swarm: ["Five numbered lanes", "⚖ judge", "waiting for you"],
           consensus: ["Consensus", "Docket 01", "Ledger:"],
           research: ["Research report", "Synthetic source", "Fixture notes"]
         ] do
@@ -37,12 +37,13 @@ defmodule SwarmCodeCLI.UI.RepresentativeScenesTest do
 
       # Editorial turn labels (decision 15): chat has few enough items for all to be visible
       if kind == :chat do
-        assert pixels =~ "YOU"
-        assert pixels =~ "assistant"
+        assert pixels =~ "you · "
+        assert pixels =~ "assistant · "
       end
 
-      # All kinds show "assistant" label for the assistant turn
-      assert pixels =~ "assistant"
+      # The assistant turn is spoken by the run's agent when the hive names one
+      # (the swarm lead), and by "assistant" otherwise.
+      assert pixels =~ if(kind == :swarm, do: "lead · ", else: "assistant · ")
 
       main = Enum.find(scene.regions, &(&1.role == :main))
       assert Enum.count(main.blocks, &is_struct(&1, Block.RunCard)) == 1

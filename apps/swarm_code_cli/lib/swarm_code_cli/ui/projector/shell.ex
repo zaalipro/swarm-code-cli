@@ -3,6 +3,8 @@ defmodule SwarmCodeCLI.UI.Projector.Shell do
   alias SwarmCodeCLI.UI.{SafeText, Theme, Width}
   alias SwarmCodeCLI.UI.Scene.{Block, Region, Span, Style}
 
+  alias SwarmCodeCLI.UI.Projector.Inspector.Words
+
   alias SwarmCodeCLI.UI.Projector.{
     Composer,
     Density,
@@ -68,6 +70,8 @@ defmodule SwarmCodeCLI.UI.Projector.Shell do
         do: banner <> " · " <> mode <> " · " <> model,
         else: banner <> " · " <> mode
 
+    triple = Enum.join([triple | spend_parts(Support.run(state))], " · ")
+
     logo_mark = SafeText.value(Support.glyph(:logo_mark, state))
     wordmark = SafeText.value(SafeText.chrome(:swarmcode_wordmark))
     left_text = logo_mark <> " " <> wordmark <> "  " <> triple
@@ -122,7 +126,8 @@ defmodule SwarmCodeCLI.UI.Projector.Shell do
   defp blocks(:activity, state, rect, _class) do
     needs = state.read_model.interactions |> Map.values() |> Enum.count(&(&1.state == :pending))
 
-    activity_text = "NEEDS #{needs} · Activity"
+    activity_text =
+      if needs > 0, do: "Waiting for you · #{needs} · Activity", else: "Activity"
 
     block =
       if needs > 0 do
@@ -167,7 +172,7 @@ defmodule SwarmCodeCLI.UI.Projector.Shell do
                   end
                 )
   @tabline_max 4
-  @tab_title 20
+  @tab_title 24
   # stripe + space + mark + space + title + space + dot + trailing space
   @tab_chrome 7
   @tab_gap 1
@@ -190,7 +195,7 @@ defmodule SwarmCodeCLI.UI.Projector.Shell do
 
     tabs =
       shown
-      |> Enum.map(&tab_spans(&1, &1.id == active, state))
+      |> Enum.map(&tab_spans(&1, &1.id == active, state, width))
       |> Enum.intersperse([plain_gap(@tab_gap, state)])
       |> List.flatten()
 
@@ -215,7 +220,7 @@ defmodule SwarmCodeCLI.UI.Projector.Shell do
     runs = tabline_runs(state)
     total = length(runs)
     candidates = Enum.take(runs, @tabline_max)
-    widths = Enum.map(candidates, &tab_cells(&1, state, policy))
+    widths = Enum.map(candidates, &tab_cells(&1, state, policy, width))
 
     hint_cells = Width.cells(@tabline_hint, policy)
     room_for_hint? = hint_cells + @hint_gap <= width
@@ -286,12 +291,25 @@ defmodule SwarmCodeCLI.UI.Projector.Shell do
 
   # The wire kinds :chat and :consensus are not Theme.run_kind/1 keys, so they go
   # through RunRow.theme_kind/1 before any theme lookup or the lookup would raise.
-  defp tab_spans(run, active?, state) do
+  defp tab_spans(run, active?, state, width) do
     kind = RunRow.theme_kind(run.kind)
     {_kind_letter, kind_role} = Theme.run_kind(kind)
     {_status_word, status_role} = Theme.status(run.state)
 
     surface = if active?, do: hover_background(state)
+
+    badges =
+      run
+      |> badges(state, width)
+      |> Enum.flat_map(fn {text, role, modifiers} ->
+        [
+          plain_gap(1, state, surface),
+          %Span{
+            text: Density.safe(text, state, @tab_title),
+            style: %{tint(role, surface, state) | modifiers: modifiers}
+          }
+        ]
+      end)
 
     [
       stripe_span(active?, surface, state),
@@ -303,10 +321,77 @@ defmodule SwarmCodeCLI.UI.Projector.Shell do
       plain_gap(1, state, surface),
       %Span{text: tab_title(run, state), style: tab_title_style(active?, surface, state)},
       plain_gap(1, state, surface),
-      %Span{text: Support.glyph(:dot, state), style: tint(status_role, surface, state)},
-      plain_gap(1, state, surface)
-    ]
+      %Span{text: Support.glyph(:dot, state), style: tint(status_role, surface, state)}
+    ] ++ badges ++ [plain_gap(1, state, surface)]
   end
+
+  # What a tab says about its run beyond the title: how many agents it runs,
+  # how long it has been going, and whether it is waiting on the user. Each is
+  # `{text, role, modifiers}` and each is left out when unknown, so a run the
+  # daemon has said nothing about is a bare title, not a title with zeros.
+  #
+  # Narrow rows keep the tabs by shedding the badges first: the elapsed time
+  # goes below 120 columns and the agent count below 100, since a row that
+  # drops a whole run to fit a clock has its priorities backwards. The `!`
+  # never goes: it is the one badge that asks the user for something.
+  defp badges(run, state, width) do
+    agents =
+      if width >= 100 and is_integer(run.agents_total) and run.agents_total > 0,
+        do: [
+          {Support.glyph(:hex_full, state)
+           |> SafeText.value()
+           |> Kernel.<>(Integer.to_string(run.agents_total)), :text_muted, []}
+        ],
+        else: []
+
+    elapsed =
+      case {width >= 120, run_elapsed(run, state)} do
+        {true, text} when is_binary(text) -> [{text, :text_muted, []}]
+        _ -> []
+      end
+
+    needs =
+      if is_integer(run.needs) and run.needs > 0,
+        do: [{"!" <> Integer.to_string(run.needs), :warning, [:bold]}],
+        else: []
+
+    agents ++ elapsed ++ needs
+  end
+
+  # A finished run shows how long it took, from its own two stamps. A running
+  # one shows how long it has been going, against the state's clock, and
+  # nothing while that clock has not been set: a fixture's zero would read as
+  # a lie of fifty years.
+  defp run_elapsed(%{started_at: started, finished_at: finished}, _state)
+       when is_integer(started) and is_integer(finished),
+       do: Words.elapsed(started, finished)
+
+  defp run_elapsed(%{started_at: started}, %{now: now}) when is_integer(started) and now > 0,
+    do: Words.elapsed(started, now)
+
+  defp run_elapsed(_run, _state), do: nil
+
+  # The tokens and cost of the run in view, for the title row: `12k tokens`,
+  # `$0.42`. Left out until the daemon has reported them; a header that said
+  # `0k tokens · $0.00` on every fresh run would be noise, not news.
+  defp spend_parts(%{} = run) do
+    tokens = (run.tokens_in || 0) + (run.tokens_out || 0)
+
+    tokens_part = if tokens > 0, do: [Words.tokens(tokens) <> " tokens"], else: []
+
+    cost_part =
+      case run.cost_usd do
+        cost when is_number(cost) and cost > 0 -> [money(cost)]
+        _ -> []
+      end
+
+    tokens_part ++ cost_part
+  end
+
+  defp spend_parts(_none), do: []
+
+  defp money(cost) when cost < 0.01, do: "$" <> :erlang.float_to_binary(cost / 1, decimals: 3)
+  defp money(cost), do: "$" <> :erlang.float_to_binary(cost / 1, decimals: 2)
 
   # Only the active tab carries the stripe; an inactive one spends the same cell
   # on a blank so the tabs stay on a common grid instead of shifting sideways as
@@ -316,15 +401,51 @@ defmodule SwarmCodeCLI.UI.Projector.Shell do
 
   defp stripe_span(false, surface, state), do: plain_gap(1, state, surface)
 
-  defp tab_title(run, state), do: Density.safe(run.title, state, @tab_title)
+  # The title is cut on a word boundary when it must be cut at all: "Migrate
+  # the billing…" reads as a title, "Migrate the billing sch…" as an accident.
+  # The boundary is only honoured when it leaves at least half the budget, so
+  # a title that is one long word still shows most of that word.
+  defp tab_title(run, state) do
+    policy = state.capabilities.ambiguous_width
+    title = run.title |> Density.safe(state, @tab_title * 4) |> SafeText.value()
+
+    if Width.cells(title, policy) <= @tab_title do
+      Density.safe(title, state, @tab_title)
+    else
+      ellipsis = Width.cells("…", policy)
+      {head, _rest, _used} = Width.take_cells(title, @tab_title - ellipsis, policy)
+
+      head =
+        case :binary.matches(head, " ") do
+          [] ->
+            head
+
+          matches ->
+            {last_space, _} = List.last(matches)
+
+            if last_space * 2 >= @tab_title,
+              do: binary_part(head, 0, last_space),
+              else: head
+        end
+
+      Density.safe(String.trim_trailing(head) <> "…", state, @tab_title)
+    end
+  end
 
   defp tab_title_style(true, surface, state),
     do: %{tint(:text_primary, surface, state) | modifiers: [:bold]}
 
   defp tab_title_style(false, surface, state), do: tint(:text_muted, surface, state)
 
-  defp tab_cells(run, state, policy),
-    do: @tab_chrome + Width.cells(SafeText.value(tab_title(run, state)), policy)
+  defp tab_cells(run, state, policy, width) do
+    badge_cells =
+      run
+      |> badges(state, width)
+      |> Enum.map(fn {text, _role, _modifiers} -> 1 + Width.cells(text, policy) end)
+      |> Enum.sum()
+
+    @tab_chrome + Width.cells(SafeText.value(tab_title(run, state)), policy) + badge_cells
+  end
 
   defp needed(widths, count, total, policy) do
     tabs = widths |> Enum.take(count) |> Enum.sum()

@@ -745,6 +745,26 @@ defmodule SwarmCodeCLI.UI.Keymap.Bindings do
       repeat: true
     },
     %Binding{
+      id: :next_need,
+      keys: [{"n", []}],
+      action: {:special, :next_need},
+      contexts: [:main, :inspector],
+      group: :act,
+      label: "Next waiting",
+      help: "Open the next approval or question waiting on you, across every run",
+      hint: 1
+    },
+    %Binding{
+      id: :previous_need,
+      keys: [{"N", []}],
+      action: {:special, :previous_need},
+      contexts: [:main, :inspector],
+      group: :act,
+      label: "Prev waiting",
+      help: "Open the previous approval or question waiting on you",
+      hint: 0
+    },
+    %Binding{
       id: :approve,
       keys: [{"a", []}],
       action: {:special, :approve},

@@ -111,6 +111,7 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
        slot: SceneSlot.new(),
        table: %{},
        frame_ms: frame,
+       wall_clock?: init.now == 0,
        close_ms: timeout,
        draw: :idle,
        frame_timer: nil,
@@ -322,6 +323,7 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
   # Every state the terminal will see is also the companion's; the hub
   # coalesces, so this is one message per change and nothing more.
   defp commit(next, previous) do
+    next = tick(next)
     push(next.companion, next.ui)
 
     next
@@ -330,6 +332,14 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
     |> project()
     |> schedule()
   end
+
+  # A live session reads the wall clock at every commit, so the tabs' elapsed
+  # times move. A scripted session (a demo, a test) was given a fixed clock at
+  # init and keeps it, or its golden output would change with the date.
+  defp tick(%{wall_clock?: true} = state),
+    do: %{state | ui: %{state.ui | now: System.system_time(:millisecond)}}
+
+  defp tick(state), do: state
 
   defp push(nil, _ui), do: :ok
 

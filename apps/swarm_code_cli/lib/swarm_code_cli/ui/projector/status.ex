@@ -21,7 +21,7 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
     context = Context.of(state)
     budget = Density.budget(class).bindings
 
-    lead = lead_spans(state, context, width)
+    lead = waiting_spans(state, width) ++ lead_spans(state, context, width)
     showcmd = showcmd_spans(state, width)
     warning = connection_warning(state, width)
     fixed = cells(lead ++ showcmd ++ warning, policy)
@@ -42,6 +42,33 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
         spans: lead ++ showcmd ++ fit(hints, state, width - fixed, policy) ++ warning
       }
     ]
+  end
+
+  # Anything waiting on the user leads the row, ahead of the mode or focus
+  # word: an approval or a question is the one fact that should interrupt
+  # whatever the user was reading. The count is of pending interactions across
+  # every run, the same number the tab row spells as `!N` per run. Nothing is
+  # drawn when nothing waits; a row that said "0" would train the eye to skip
+  # the word on the day it matters.
+  defp waiting_spans(state, width) do
+    case waiting_count(state) do
+      0 ->
+        []
+
+      count ->
+        [
+          %Span{
+            text: Density.safe("Waiting for you · #{count}", state, width),
+            style: %Style{role: :warning, modifiers: [:bold]}
+          },
+          %Span{text: Density.safe("  ", state, width), style: %Style{role: :text_primary}}
+        ]
+    end
+  end
+
+  @doc "How many approvals and questions are waiting on the user, across every run."
+  def waiting_count(state) do
+    state.read_model.interactions |> Map.values() |> Enum.count(&(&1.state == :pending))
   end
 
   # With vim on and the composer focused the left segment is the mode, in the

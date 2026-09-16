@@ -5,7 +5,7 @@ defmodule SwarmCodeCLI.UI.Projector.RunsDashboard do
   The dashboard owns the whole screen minus the title row and the status row, so
   it is projected as a `Scene.Dialog` whose rect spans the full terminal rather
   than going through the centred option-list dialog chrome: its rows are
-  `Block.Surface` cards carrying a gauge, not single-line options.
+  `Block.Surface` cards carrying the run's agent cells, not single-line options.
 
   The row itself lives in `UI.Projector.RunRow`, which the Ctrl-R palette draws
   with its own column widths; this module owns the grouping, the headings, the
@@ -27,21 +27,24 @@ defmodule SwarmCodeCLI.UI.Projector.RunsDashboard do
   alias SwarmCodeCLI.UI.{SafeText, State, Theme, Width}
   alias SwarmCodeCLI.UI.Scene.{Block, Dialog, Rect, Span}
   alias SwarmCodeCLI.UI.Projector.{Density, RunRow, Support}
+  alias SwarmCodeCLI.UI.Projector.Inspector.{Hive, Words}
 
-  @gauge_width 28
-  @status_width 12
-  @meta_width 30
+  # Twelve agent cells and room for `+N` beyond them.
+  @cells_width 15
+  @time_width 6
+  @words_width 30
   @min_title 10
 
   # Column widths for a row budget: the first set that still leaves a readable
-  # title. The gauge is the point of this view, so it narrows rather than
-  # vanishing; the columns around it go in order of how little they carry.
+  # title. The agent cells are the point of this view, so they narrow rather
+  # than vanishing; the columns around them go in order of how little they
+  # carry: the words first, then the elapsed time.
   @columns [
-    [status_width: @status_width, gauge_width: @gauge_width, meta_width: @meta_width],
-    [status_width: @status_width, gauge_width: @gauge_width, meta_width: 0],
-    [status_width: @status_width, gauge_width: 16, meta_width: 0],
-    [status_width: 0, gauge_width: 16, meta_width: 0],
-    [status_width: 0, gauge_width: 8, meta_width: 0]
+    [cells_width: @cells_width, time_width: @time_width, words_width: @words_width],
+    [cells_width: @cells_width, time_width: @time_width, words_width: 16],
+    [cells_width: @cells_width, time_width: @time_width, words_width: 0],
+    [cells_width: @cells_width, time_width: 0, words_width: 0],
+    [cells_width: 8, time_width: 0, words_width: 0]
   ]
 
   # The dialog's own border rows and its single footer line.
@@ -381,14 +384,25 @@ defmodule SwarmCodeCLI.UI.Projector.RunsDashboard do
     }
   end
 
-  # One run is one line. The accent stripe and the surface padding consume two
-  # cells on the left of the card, and the card itself sits inside the dialog
-  # border, so the row is budgeted for `width - 2` of the body width and ends
-  # exactly where the card does.
+  # One run is one line: the kind mark and the title through the shared row
+  # builder, then the hive's own columns as the trail — one cell per agent, the
+  # elapsed time or the word that ended the run, `!` when it waits on you, and
+  # what its newest running agent is doing. The accent stripe and the surface
+  # padding consume two cells on the left of the card, and the card itself sits
+  # inside the dialog border, so the row is budgeted for `width - 2` of the body
+  # width and ends exactly where the card does.
   defp render_run_row(run, kind, state, width) do
     {_kind_letter, kind_role} = Theme.run_kind(kind)
     budget = max(0, width - @accent_width)
-    spans = RunRow.spans(run, kind, state, row_opts(columns(budget), budget))
+    columns = columns(budget)
+
+    spans =
+      RunRow.spans(
+        run,
+        kind,
+        state,
+        Keyword.put(row_opts(columns, budget), :trail, trail(run, kind_role, columns, state))
+      )
 
     # The whole line is one action, so clicking anywhere on the card opens the run.
     row = Support.action_spans(spans, {:local, {:navigate, {:run, run.id}}})
@@ -400,16 +414,110 @@ defmodule SwarmCodeCLI.UI.Projector.RunsDashboard do
     }
   end
 
+  @doc "The hive columns of a run row: cells, elapsed, `!`, words. Exposed for tests."
+  def trail(run, kind_role, columns, state) do
+    cells = [RunRow.gap(2, state) | Hive.cells(run, state, columns[:cells_width], kind_role)]
+
+    time =
+      case columns[:time_width] do
+        0 ->
+          []
+
+        time_width ->
+          {text, role} = time(run, state)
+
+          [
+            RunRow.gap(2, state),
+            %Span{
+              text: Density.safe(RunRow.pad_leading(text, time_width, state), state, time_width),
+              style: RunRow.tinted(role, state)
+            }
+          ]
+      end
+
+    words =
+      case columns[:words_width] do
+        0 ->
+          []
+
+        words_width ->
+          [
+            RunRow.gap(1, state),
+            %Span{
+              text: Hive.fit(Hive.run_words(run, state), words_width, state),
+              style: RunRow.tinted(words_role(run), state)
+            }
+          ]
+      end
+
+    cells ++ time ++ [RunRow.gap(1, state), bang(run, state)] ++ words
+  end
+
+  # The elapsed time while the run is live, the word that ended it otherwise;
+  # a stopped or interrupted run keeps the time it ran for, its words say why.
+  defp time(run, state) do
+    cond do
+      run.state == :done ->
+        {"done", :success}
+
+      run.state == :failed ->
+        {"failed", :error}
+
+      Words.live?(run.state) ->
+        {Words.elapsed(run.started_at, Words.until(run, state)) || "", :text_faint}
+
+      true ->
+        {Words.elapsed(run.started_at, run.finished_at) || "", :text_faint}
+    end
+  end
+
+  # `!` in the warning colour when the run waits on you, a blank cell otherwise.
+  defp bang(run, state) do
+    if Map.get(run, :needs, 0) > 0,
+      do: %Span{
+        text: Support.glyph(:waiting, state),
+        style: %{RunRow.tinted(:warning, state) | modifiers: [:bold]}
+      },
+      else: RunRow.gap(1, state)
+  end
+
+  defp words_role(run) do
+    cond do
+      Words.waiting?(run.state) -> :warning
+      run.state == :failed -> :error
+      run.state == :done -> :success
+      true -> :text_muted
+    end
+  end
+
   defp columns(budget), do: Enum.find(@columns, List.last(@columns), &fits?(&1, budget))
 
   defp fits?(columns, budget), do: budget - RunRow.chrome_width(row_opts(columns)) >= @min_title
 
-  defp row_opts(columns), do: Keyword.put(columns, :min_title, @min_title)
+  # The shared builder draws only the mark and the title; every other column is
+  # the trail, whose cells are reserved so the title takes exactly what is left.
+  defp row_opts(columns),
+    do: [
+      status_width: 0,
+      gauge_width: 0,
+      meta_width: 0,
+      min_title: @min_title,
+      reserved: trail_width(columns)
+    ]
 
   defp row_opts(columns, budget) do
     opts = row_opts(columns)
     Keyword.put(opts, :title_width, RunRow.title_width(budget, opts))
   end
+
+  # Every trail column carries the gap before it; the `!` cell is always drawn.
+  defp trail_width(columns) do
+    2 + columns[:cells_width] +
+      cost(columns[:time_width], 2) + 2 + cost(columns[:words_width], 1)
+  end
+
+  defp cost(0, _gap), do: 0
+  defp cost(width, gap), do: gap + width
 
   # What the window left out, counted rather than painted off the bottom.
   defp overflow_line(_state, _width, 0, count, total) when count >= total, do: []

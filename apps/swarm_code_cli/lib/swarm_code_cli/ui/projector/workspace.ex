@@ -5,10 +5,16 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
   @palette_key SwarmCodeCLI.UI.Projector.KeyLabel.primary(
                  SwarmCodeCLI.UI.Keymap.Bindings.fetch(:command_palette)
                )
-  alias SwarmCodeCLI.UI.{ReadModel, SafeText, Theme}
-  alias SwarmCodeCLI.UI.Scene.Block
+  alias SwarmCodeCLI.UI.{ReadModel, SafeText, Theme, Width}
+  alias SwarmCodeCLI.UI.Scene.{Block, Span}
   alias SwarmCodeCLI.UI.Paint.{Metrics, Options}
-  alias SwarmCodeCLI.UI.Projector.{Composer, Density, Status, Support}
+  alias SwarmCodeCLI.UI.Projector.{Composer, Density, RunRow, Status, Support}
+  alias SwarmCodeCLI.UI.Projector.Workspace.Turns
+
+  # Paint's card chrome: a two-cell left gutter and one cell of right padding.
+  # The title is cut to the header width that leaves, so it never wraps.
+  @card_gutter 2
+  @card_pad 1
 
   def project(state, rect, class) do
     chrome = chrome(state, rect, class)
@@ -105,8 +111,10 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
 
     remaining = max(0, rect.height - chrome_height)
 
+    # The transcript takes every row the chrome leaves. The old 45% cap came in
+    # with the first demo and left the lower half of a tall terminal blank.
     if chrome.run,
-      do: min(remaining, div(rect.height * 45, 100)),
+      do: remaining,
       else: min(remaining, max(1, div(rect.height * 65, 100)))
   end
 
@@ -120,9 +128,11 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
 
     facts = Composer.facts(state, rect.width)
 
+    # Plain words, and only when there is something to say: nothing waits, so
+    # nothing is shown; the pending interactions themselves stay in the deck.
     needs_summary =
-      if needs > 0 or state.preferences.activity_height == 0,
-        do: [Support.text("NEEDS #{needs}", state, rect.width)],
+      if needs > 0,
+        do: [tinted("Waiting for you · #{needs}", :warning, state, rect.width)],
         else: []
 
     mandatory = needs_summary ++ facts
@@ -373,24 +383,33 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
   defp detail_actions(state) do
     run = Support.run(state)
 
-    state.read_model.transcript
-    |> Enum.sort_by(&elem(&1, 0))
-    |> Enum.filter(fn {_, item} ->
-      run && item.run_id == run.id
-    end)
-    |> Enum.flat_map(fn {_, item} ->
-      for {label, ref} <- [
-            {"Full text", item.detail_ref},
-            {"Full reasoning", item.reasoning_detail_ref}
-          ],
-          not is_nil(ref),
-          do: {item.run_id, label, ref}
-    end)
-    |> Enum.take(2)
-    |> Enum.map(fn {run_id, label, ref} ->
+    # One action per kind of detail, for the newest item that has it, labelled
+    # by what it opens: two anonymous "Full text" buttons told the user nothing.
+    items =
+      state.read_model.transcript
+      |> Enum.sort_by(&elem(&1, 0), :desc)
+      |> Enum.map(&elem(&1, 1))
+      |> Enum.filter(&(run && &1.run_id == run.id))
+
+    text =
+      case Enum.find(items, &(not is_nil(&1.detail_ref))) do
+        %{role: :user} = item -> [{"Full prompt", item}]
+        %{} = item -> [{"Full reply", item}]
+        nil -> []
+      end
+
+    reasoning =
+      case Enum.find(items, &(not is_nil(&1.reasoning_detail_ref))) do
+        %{} = item -> [{"Full reasoning", item}]
+        nil -> []
+      end
+
+    Enum.map(text ++ reasoning, fn {label, item} ->
+      ref = if label == "Full reasoning", do: item.reasoning_detail_ref, else: item.detail_ref
+
       Support.action(
         Density.safe(label, state, 40),
-        {:local, {:open_detail, run_id, ref.id}}
+        {:local, {:open_detail, item.run_id, ref.id}}
       )
     end)
   end
@@ -462,14 +481,17 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
               )
             ]
 
-    # The RunCard boundary already carries the canonical status. Only surface
-    # additional information here when it changes the user's next action.
+    # The card's header carries the canonical status word; its first row says
+    # the same thing in plain words with the facts that matter next.
+    body = [tinted(state_words(run, state), elem(Theme.status(run.state), 1), state, width)]
+
     body =
-      cond do
-        retry? -> [Support.text("RETRY AVAILABLE", state, width)]
-        resume? -> [Support.text("RESUME AVAILABLE", state, width)]
-        true -> []
-      end
+      body ++
+        cond do
+          retry? -> [Support.text("RETRY AVAILABLE", state, width)]
+          resume? -> [Support.text("RESUME AVAILABLE", state, width)]
+          true -> []
+        end
 
     body =
       if run.state in [:running, :streaming],
@@ -488,8 +510,121 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
 
     body = body ++ if(actions == [], do: [], else: [%Block.ActionDeck{actions: actions}])
     # Run-kind identity is textual in monochrome as well as color; the boundary is singular.
-    title = Density.safe(SafeText.value(prefix) <> " " <> run.title, state, width)
+    title = card_title(run, prefix, state, width)
     %Block.RunCard{id: opaque(run.id), title: title, status: run.state, body: body}
+  end
+
+  # The title gets the cells Paint's card header leaves after the kind letter,
+  # the boundary and the status word, and is cut on a word boundary with an
+  # ellipsis so it never ends mid-word and never wraps into a second row.
+  defp card_title(run, prefix, state, width) do
+    policy = state.capabilities.ambiguous_width
+    {status_text, _} = Theme.status(run.state)
+    boundary = if state.capabilities.ascii?, do: " - ", else: " — "
+    lead = SafeText.value(prefix) <> " "
+    inner = max(1, width - @card_gutter - @card_pad)
+
+    avail =
+      inner - Width.cells(lead, policy) - Width.cells(boundary, policy) -
+        Width.cells(SafeText.value(status_text), policy)
+
+    Density.safe(lead <> word_cut(run.title, max(avail, 1), state), state, width)
+  end
+
+  defp word_cut(title, avail, state) do
+    policy = state.capabilities.ambiguous_width
+    title = title |> Density.safe(state, 500) |> SafeText.value()
+
+    if Width.cells(title, policy) <= avail do
+      title
+    else
+      ellipsis = if state.capabilities.ascii?, do: "...", else: "…"
+      budget = avail - Width.cells(ellipsis, policy)
+
+      {kept, _used} =
+        title
+        |> String.split(" ", trim: true)
+        |> Enum.reduce_while({[], 0}, fn word, {acc, used} ->
+          needed = Width.cells(word, policy) + if(acc == [], do: 0, else: 1)
+
+          if used + needed <= budget,
+            do: {:cont, {[word | acc], used + needed}},
+            else: {:halt, {acc, used}}
+        end)
+
+      # A cut that ends on a bare separator ("Swarm ·…") reads worse than one
+      # word shorter; under one word there is no boundary to cut on.
+      case Enum.drop_while(kept, &(&1 in ["·", "-", "—", ":", "|", "/"])) do
+        [] -> title |> Density.safe(state, avail) |> SafeText.value()
+        words -> Enum.join(Enum.reverse(words), " ") <> ellipsis
+      end
+    end
+  end
+
+  # "running · 3 agents", "done · 02:14", "stopped by you", "waiting for you".
+  defp state_words(run, state) do
+    agents =
+      case run.agents_total do
+        0 -> nil
+        1 -> "1 agent"
+        n -> "#{n} agents"
+      end
+
+    case run.state do
+      :stopped -> "stopped by you"
+      s when s in [:waiting_question, :waiting_approval] -> "waiting for you"
+      s when s in [:running, :streaming] -> words(["running", agents, elapsed(run, state)])
+      :done -> words(["done", elapsed(run, state)])
+      :failed -> words(["failed", run.error])
+      :queued -> "queued"
+      :paused -> "paused"
+      :retrying -> "retrying"
+      :interrupted -> "interrupted"
+      :superseded -> "superseded by a newer turn"
+    end
+  end
+
+  defp elapsed(%{started_at: started, finished_at: finished}, _state)
+       when is_integer(started) and is_integer(finished) and finished >= started,
+       do: mmss(finished - started)
+
+  # A live run counts from its start on the state clock, which only moves once
+  # the reducer has ticked; fixtures at clock zero show no elapsed time.
+  defp elapsed(%{started_at: started, finished_at: nil}, %{now: now})
+       when is_integer(started) and started > 0 and is_integer(now) and now > started,
+       do: mmss(now - started)
+
+  defp elapsed(_, _), do: nil
+
+  defp mmss(ms) do
+    total = div(ms, 1000)
+    hours = div(total, 3600)
+    minutes = rem(div(total, 60), 60)
+    seconds = rem(total, 60)
+
+    if hours > 0,
+      do: "#{hours}:#{pad2(minutes)}:#{pad2(seconds)}",
+      else: "#{pad2(minutes)}:#{pad2(seconds)}"
+  end
+
+  defp pad2(n), do: n |> Integer.to_string() |> String.pad_leading(2, "0")
+
+  defp words(parts) do
+    parts
+    |> Enum.reject(&(is_nil(&1) or &1 == ""))
+    |> Enum.join(" · ")
+  end
+
+  # A role's colour on one bold row, without the role's prefix cue: the words
+  # are the label, so "! WAITING Waiting for you" would say it twice.
+  defp tinted(value, role, state, width) do
+    style = RunRow.tinted(role, state)
+
+    %Block.RichText{
+      spans: [
+        %Span{text: Density.safe(value, state, width), style: %{style | modifiers: [:bold]}}
+      ]
+    }
   end
 
   defp run_actions(state, run, retry?, resume?) do
@@ -552,6 +687,13 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
     candidates = items |> Enum.with_index()
     candidates = if follow?, do: Enum.reverse(candidates), else: Enum.drop(candidates, index)
 
+    # Each item knows the run's item before it: that decides whether a blank
+    # row opens a new turn or the item continues a burst of tool calls.
+    previous_by_id =
+      [nil | Enum.map(items, &elem(&1, 1))]
+      |> Enum.zip(Enum.map(items, &elem(&1, 0)))
+      |> Map.new(fn {previous, id} -> {id, previous} end)
+
     {blocks, _left, first} =
       Enum.reduce_while(candidates, {[], height, index}, fn
         _, {blocks, 0, first} ->
@@ -567,15 +709,9 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
             end
 
           {block, rows} =
-            SwarmCodeCLI.UI.Transcript.window(
-              item,
-              run.kind,
-              width,
-              state.capabilities,
-              line,
-              left,
-              follow?
-            )
+            item
+            |> Turns.rows(Map.get(previous_by_id, id), run, state, width)
+            |> Turns.window(line, left, follow?, state)
 
           if block do
             {:cont,

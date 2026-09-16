@@ -1,19 +1,47 @@
 {
-  "revision": 1,
-  "session": {"id": "8e5e507a", "started_at": 1789554968831, "now": 1789554972831},
-  "header": {"project": "ailogic", "model": "deepseek-v4.1-flash", "mode": "build",
-             "approval": "read-only", "keymap": "vim", "effort": "max",
-             "cost": null, "context_tokens": null},
+  "session": {
+    "id": "fixture",
+    "now": 1788436800000,
+    "started_at": 1788436800000
+  },
+  "run": {
+    "id": null,
+    "state": null,
+    "started_at": null,
+    "title": null,
+    "kind": null,
+    "edges": [],
+    "finished_at": null
+  },
+  "header": {
+    "mode": null,
+    "keymap": "default",
+    "project": "swarm-code-cli",
+    "model": null,
+    "approval": null,
+    "cost": null,
+    "effort": null,
+    "context_tokens": null
+  },
+  "notice": null,
   "tabs": [],
-  "run": {"id": null, "title": null, "state": null, "kind": null,
-          "started_at": null, "finished_at": null, "edges": []},
-  "agents": [],
+  "revision": 0,
   "transcript": [],
-  "needs": [],
-  "changes": {"files": [], "unavailable": "not reported by the daemon yet"},
-  "timeline": {"events": [], "checkpoints": []},
+  "changes": {
+    "files": [],
+    "unavailable": null,
+    "blast": []
+  },
+  "agents": [],
   "verdict": null,
-  "artifacts": [],
-  "focus": {"kind": "composer", "id": null},
-  "notice": null
+  "needs": [],
+  "focus": {
+    "id": null,
+    "kind": "composer"
+  },
+  "timeline": {
+    "events": [],
+    "checkpoints": []
+  },
+  "artifacts": []
 }

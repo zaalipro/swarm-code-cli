@@ -242,6 +242,28 @@ defmodule SwarmCodeCLI.UI.SafeText do
           | :shield_mark_ascii
           | :usage_mark
           | :usage_mark_ascii
+          | :hex_full
+          | :hex_full_ascii
+          | :hex_empty
+          | :hex_empty_ascii
+          | :judge
+          | :judge_ascii
+          | :caret
+          | :caret_ascii
+          | :collapsed
+          | :collapsed_ascii
+          | :expanded
+          | :expanded_ascii
+          | :check
+          | :check_ascii
+          | :fail
+          | :fail_ascii
+          | :gauge_on
+          | :gauge_on_ascii
+          | :gauge_off
+          | :gauge_off_ascii
+          | :waiting
+          | :waiting_ascii
           | :jump_title
           | :jump_top
           | :jump_bottom
@@ -471,6 +493,31 @@ defmodule SwarmCodeCLI.UI.SafeText do
   def chrome(:jump_next_run), do: %__MODULE__{token: :jump_next_run}
   def chrome(:jump_previous_run), do: %__MODULE__{token: :jump_previous_run}
   def chrome(:usage_mark_ascii), do: %__MODULE__{token: :usage_mark_ascii}
+
+  # The hive and transcript glyphs of the north star: one cell under both width
+  # policies, each with a pure-ASCII twin chosen by Projector.Support.glyph/2.
+  def chrome(:hex_full), do: %__MODULE__{token: :hex_full}
+  def chrome(:hex_full_ascii), do: %__MODULE__{token: :hex_full_ascii}
+  def chrome(:hex_empty), do: %__MODULE__{token: :hex_empty}
+  def chrome(:hex_empty_ascii), do: %__MODULE__{token: :hex_empty_ascii}
+  def chrome(:judge), do: %__MODULE__{token: :judge}
+  def chrome(:judge_ascii), do: %__MODULE__{token: :judge_ascii}
+  def chrome(:caret), do: %__MODULE__{token: :caret}
+  def chrome(:caret_ascii), do: %__MODULE__{token: :caret_ascii}
+  def chrome(:collapsed), do: %__MODULE__{token: :collapsed}
+  def chrome(:collapsed_ascii), do: %__MODULE__{token: :collapsed_ascii}
+  def chrome(:expanded), do: %__MODULE__{token: :expanded}
+  def chrome(:expanded_ascii), do: %__MODULE__{token: :expanded_ascii}
+  def chrome(:check), do: %__MODULE__{token: :check}
+  def chrome(:check_ascii), do: %__MODULE__{token: :check_ascii}
+  def chrome(:fail), do: %__MODULE__{token: :fail}
+  def chrome(:fail_ascii), do: %__MODULE__{token: :fail_ascii}
+  def chrome(:gauge_on), do: %__MODULE__{token: :gauge_on}
+  def chrome(:gauge_on_ascii), do: %__MODULE__{token: :gauge_on_ascii}
+  def chrome(:gauge_off), do: %__MODULE__{token: :gauge_off}
+  def chrome(:gauge_off_ascii), do: %__MODULE__{token: :gauge_off_ascii}
+  def chrome(:waiting), do: %__MODULE__{token: :waiting}
+  def chrome(:waiting_ascii), do: %__MODULE__{token: :waiting_ascii}
 
   # A braille cell is 2x4 addressable dots. Carrying the bit pattern rather than
   # 256 separate tokens keeps the catalogue closed: the value is provably inside
@@ -1181,6 +1228,96 @@ defmodule SwarmCodeCLI.UI.SafeText do
   def value(%{__struct__: __MODULE__, token: :usage_mark_ascii} = text)
       when map_size(text) == 2,
       do: "#"
+
+  # Block elements U+2580..U+258F (▍ ▇ ▁) are two cells under the :wide policy,
+  # so the caret and the gauge use the one-cell rectangles U+25AC..U+25AE.
+  def value(%{__struct__: __MODULE__, token: :hex_full} = text)
+      when map_size(text) == 2,
+      do: "⬢"
+
+  def value(%{__struct__: __MODULE__, token: :hex_full_ascii} = text)
+      when map_size(text) == 2,
+      do: "o"
+
+  def value(%{__struct__: __MODULE__, token: :hex_empty} = text)
+      when map_size(text) == 2,
+      do: "⬡"
+
+  def value(%{__struct__: __MODULE__, token: :hex_empty_ascii} = text)
+      when map_size(text) == 2,
+      do: "."
+
+  def value(%{__struct__: __MODULE__, token: :judge} = text)
+      when map_size(text) == 2,
+      do: "⚖"
+
+  def value(%{__struct__: __MODULE__, token: :judge_ascii} = text)
+      when map_size(text) == 2,
+      do: "j"
+
+  def value(%{__struct__: __MODULE__, token: :caret} = text)
+      when map_size(text) == 2,
+      do: "▮"
+
+  def value(%{__struct__: __MODULE__, token: :caret_ascii} = text)
+      when map_size(text) == 2,
+      do: "|"
+
+  def value(%{__struct__: __MODULE__, token: :collapsed} = text)
+      when map_size(text) == 2,
+      do: "▸"
+
+  def value(%{__struct__: __MODULE__, token: :collapsed_ascii} = text)
+      when map_size(text) == 2,
+      do: ">"
+
+  def value(%{__struct__: __MODULE__, token: :expanded} = text)
+      when map_size(text) == 2,
+      do: "▾"
+
+  def value(%{__struct__: __MODULE__, token: :expanded_ascii} = text)
+      when map_size(text) == 2,
+      do: "v"
+
+  def value(%{__struct__: __MODULE__, token: :check} = text)
+      when map_size(text) == 2,
+      do: "✓"
+
+  def value(%{__struct__: __MODULE__, token: :check_ascii} = text)
+      when map_size(text) == 2,
+      do: "+"
+
+  def value(%{__struct__: __MODULE__, token: :fail} = text)
+      when map_size(text) == 2,
+      do: "✕"
+
+  def value(%{__struct__: __MODULE__, token: :fail_ascii} = text)
+      when map_size(text) == 2,
+      do: "x"
+
+  def value(%{__struct__: __MODULE__, token: :gauge_on} = text)
+      when map_size(text) == 2,
+      do: "▬"
+
+  def value(%{__struct__: __MODULE__, token: :gauge_on_ascii} = text)
+      when map_size(text) == 2,
+      do: "#"
+
+  def value(%{__struct__: __MODULE__, token: :gauge_off} = text)
+      when map_size(text) == 2,
+      do: "▭"
+
+  def value(%{__struct__: __MODULE__, token: :gauge_off_ascii} = text)
+      when map_size(text) == 2,
+      do: "-"
+
+  def value(%{__struct__: __MODULE__, token: :waiting} = text)
+      when map_size(text) == 2,
+      do: "!"
+
+  def value(%{__struct__: __MODULE__, token: :waiting_ascii} = text)
+      when map_size(text) == 2,
+      do: "!"
 
   def value(%{__struct__: __MODULE__, token: :jump_title} = text)
       when map_size(text) == 2,

@@ -602,13 +602,29 @@ defmodule SwarmCodeCLI.UI.ProjectorRunPaletteTest do
       end
     end
 
-    test "a row carries the kind mark, the title, the status word and the meta" do
+    test "a row carries the kind mark, the title, the state in plain words and the agent count" do
       [row] = row_for(populated(), "Swarm auth boundary")
 
       assert row =~ "⋔"
-      assert row =~ "RUNNING"
-      assert row =~ "3 agents"
-      assert row =~ "40%"
+      assert row =~ "running · 3 agents"
+      assert row =~ "⬢3"
+      refute row =~ "RUNNING"
+    end
+
+    test "a run that waits on you carries ! beside the stripe" do
+      state = populated()
+      state = put_in(state.read_model.runs["swarm-1"].needs, 1)
+      state = put_in(state.read_model.runs["swarm-1"].state, :waiting_approval)
+      state = put_in(state.read_model.runs["chat-1"].state, :stopped)
+
+      [swarm] = row_for(state, "Swarm auth boundary")
+      [chat] = row_for(state, "Assistant thread")
+
+      assert swarm =~ "! ⋔ Swarm auth boundary"
+      assert swarm =~ "waiting for you"
+      assert chat =~ "  ✳ Assistant thread"
+      assert chat =~ "stopped by you"
+      refute chat =~ "STOPPED"
     end
 
     test "the gauge is exactly 16 cells whatever the progress" do
@@ -651,7 +667,7 @@ defmodule SwarmCodeCLI.UI.ProjectorRunPaletteTest do
       ticks = row |> String.graphemes() |> Enum.count(&(&1 == tick))
 
       assert ticks == @gauge_width
-      assert row =~ "RUNNING"
+      refute row =~ "running"
     end
   end
 
@@ -665,21 +681,21 @@ defmodule SwarmCodeCLI.UI.ProjectorRunPaletteTest do
       refute without =~ "agent"
     end
 
-    test "a consensus run reports reviewers rather than agents" do
+    test "a consensus run counts its judge as one cell" do
       [row] = row_for(populated(), "Auth review board")
 
-      assert row =~ "1 reviewer"
-      refute row =~ "agent"
+      assert row =~ "⬢1"
+      refute row =~ "reviewer"
     end
 
-    test "research and workflow fall back to real progress, inventing no counts" do
+    test "research and workflow say their state, inventing no counts" do
       [research] = row_for(populated(), "Auth landscape")
       [workflow] = row_for(populated(), "Release checklist")
 
-      assert research =~ "12%"
+      assert research =~ "running"
       refute research =~ "source"
 
-      assert workflow =~ "100%"
+      assert workflow =~ "running"
       refute workflow =~ "stage"
       refute workflow =~ "step"
     end
