@@ -16,7 +16,12 @@ defmodule SwarmCodeCLI.UI.Transcript do
         {:error, _} -> SafeText.value(SafeText.chrome(:text_limit))
       end
 
-    options = %Options{color_mode: capabilities.color_mode, ascii?: capabilities.ascii?}
+    options = %Options{
+      color_mode: capabilities.color_mode,
+      ascii?: capabilities.ascii?,
+      glyph_tier: capabilities.glyph_tier
+    }
+
     {:ok, base} = PaintStyle.resolve(%Style{role: :text_primary}, @base, options.color_mode)
     policy = capabilities.ambiguous_width
 

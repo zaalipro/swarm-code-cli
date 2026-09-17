@@ -22,6 +22,7 @@ defmodule SwarmCodeCLI.UI.Scene.Style do
     :text_primary,
     :text_muted,
     :text_faint,
+    :text_ghost,
     :focus,
     :selection,
     :stale,
@@ -93,6 +94,7 @@ defmodule SwarmCodeCLI.UI.Scene.Style do
           | :text_primary
           | :text_muted
           | :text_faint
+          | :text_ghost
           | :focus
           | :selection
           | :stale

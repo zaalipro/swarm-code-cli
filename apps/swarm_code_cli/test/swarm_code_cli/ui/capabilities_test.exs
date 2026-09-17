@@ -129,4 +129,38 @@ defmodule SwarmCodeCLI.UI.CapabilitiesTest do
       assert_raise ArgumentError, fn -> Capabilities.from_probe(probe(options)) end
     end
   end
+
+  describe "glyph_tier" do
+    test "defaults to :measured" do
+      caps = Capabilities.explicit(%Size{columns: 80, rows: 24}, [])
+      assert caps.glyph_tier == :measured
+    end
+
+    test "ghostty with truecolor and the narrow policy is :rich" do
+      probe = probe(term: "xterm-ghostty", colorterm: "truecolor")
+      assert Capabilities.from_probe(probe).glyph_tier == :rich
+
+      for term <- ["xterm-kitty", "wezterm", "iterm2", "xterm-iterm"] do
+        assert Capabilities.from_probe(probe(term: term)).glyph_tier == :rich, term
+      end
+    end
+
+    test "the wide policy, ASCII, a 256-colour terminal, or an unknown terminal stay :measured" do
+      base = [term: "xterm-ghostty", colorterm: "truecolor"]
+
+      assert Capabilities.from_probe(probe(base ++ [ambiguous_width: :wide])).glyph_tier ==
+               :measured
+
+      assert Capabilities.from_probe(probe(base ++ [ascii?: true])).glyph_tier == :measured
+      assert Capabilities.from_probe(probe(base ++ [no_color?: true])).glyph_tier == :measured
+      assert Capabilities.from_probe(probe(term: "xterm-256color")).glyph_tier == :measured
+      assert Capabilities.from_probe(probe(term: "alacritty")).glyph_tier == :measured
+    end
+
+    test "explicit rejects an unknown tier" do
+      assert_raise ArgumentError, fn ->
+        Capabilities.explicit(%Size{columns: 80, rows: 24}, glyph_tier: :pixels)
+      end
+    end
+  end
 end

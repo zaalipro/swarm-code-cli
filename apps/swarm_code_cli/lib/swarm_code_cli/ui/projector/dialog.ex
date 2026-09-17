@@ -80,7 +80,8 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
 
     paint_options = %Options{
       color_mode: state.capabilities.color_mode,
-      ascii?: state.capabilities.ascii?
+      ascii?: state.capabilities.ascii?,
+      glyph_tier: state.capabilities.glyph_tier
     }
 
     {:ok, footer_height} =

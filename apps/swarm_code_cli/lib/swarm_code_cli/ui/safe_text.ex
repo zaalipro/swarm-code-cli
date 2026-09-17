@@ -198,6 +198,30 @@ defmodule SwarmCodeCLI.UI.SafeText do
           | :seg_off_ascii
           | :rule
           | :rule_ascii
+          | :eighth_1
+          | :eighth_2
+          | :eighth_3
+          | :eighth_4
+          | :eighth_5
+          | :eighth_6
+          | :eighth_7
+          | :block_full
+          | :half_lower
+          | :half_upper
+          | :vert_1
+          | :vert_2
+          | :vert_3
+          | :vert_4
+          | :vert_5
+          | :vert_6
+          | :vert_7
+          | :dash_rule
+          | :copy_mark
+          | :copy_mark_ascii
+          | :ops_mark
+          | :ops_mark_ascii
+          | :command_mark
+          | :command_mark_ascii
           | :dot_small
           | :dot_small_ascii
           | :dot
@@ -442,6 +466,30 @@ defmodule SwarmCodeCLI.UI.SafeText do
   def chrome(:seg_off_ascii), do: %__MODULE__{token: :seg_off_ascii}
   def chrome(:rule), do: %__MODULE__{token: :rule}
   def chrome(:rule_ascii), do: %__MODULE__{token: :rule_ascii}
+  def chrome(:eighth_1), do: %__MODULE__{token: :eighth_1}
+  def chrome(:eighth_2), do: %__MODULE__{token: :eighth_2}
+  def chrome(:eighth_3), do: %__MODULE__{token: :eighth_3}
+  def chrome(:eighth_4), do: %__MODULE__{token: :eighth_4}
+  def chrome(:eighth_5), do: %__MODULE__{token: :eighth_5}
+  def chrome(:eighth_6), do: %__MODULE__{token: :eighth_6}
+  def chrome(:eighth_7), do: %__MODULE__{token: :eighth_7}
+  def chrome(:block_full), do: %__MODULE__{token: :block_full}
+  def chrome(:half_lower), do: %__MODULE__{token: :half_lower}
+  def chrome(:half_upper), do: %__MODULE__{token: :half_upper}
+  def chrome(:vert_1), do: %__MODULE__{token: :vert_1}
+  def chrome(:vert_2), do: %__MODULE__{token: :vert_2}
+  def chrome(:vert_3), do: %__MODULE__{token: :vert_3}
+  def chrome(:vert_4), do: %__MODULE__{token: :vert_4}
+  def chrome(:vert_5), do: %__MODULE__{token: :vert_5}
+  def chrome(:vert_6), do: %__MODULE__{token: :vert_6}
+  def chrome(:vert_7), do: %__MODULE__{token: :vert_7}
+  def chrome(:dash_rule), do: %__MODULE__{token: :dash_rule}
+  def chrome(:copy_mark), do: %__MODULE__{token: :copy_mark}
+  def chrome(:copy_mark_ascii), do: %__MODULE__{token: :copy_mark_ascii}
+  def chrome(:ops_mark), do: %__MODULE__{token: :ops_mark}
+  def chrome(:ops_mark_ascii), do: %__MODULE__{token: :ops_mark_ascii}
+  def chrome(:command_mark), do: %__MODULE__{token: :command_mark}
+  def chrome(:command_mark_ascii), do: %__MODULE__{token: :command_mark_ascii}
   def chrome(:dot_small), do: %__MODULE__{token: :dot_small}
   def chrome(:dot_small_ascii), do: %__MODULE__{token: :dot_small_ascii}
   def chrome(:dot), do: %__MODULE__{token: :dot}
@@ -980,6 +1028,104 @@ defmodule SwarmCodeCLI.UI.SafeText do
   def value(%{__struct__: __MODULE__, token: :glyph_failed_ascii} = text)
       when map_size(text) == 2,
       do: "x"
+
+  # Rich tier glyphs (East Asian Ambiguous: one cell under :narrow only). Only
+  # Projector.Support.glyph/2 hands these out, and only at the :rich tier.
+  def value(%{__struct__: __MODULE__, token: :eighth_1} = text)
+      when map_size(text) == 2,
+      do: "▏"
+
+  def value(%{__struct__: __MODULE__, token: :eighth_2} = text)
+      when map_size(text) == 2,
+      do: "▎"
+
+  def value(%{__struct__: __MODULE__, token: :eighth_3} = text)
+      when map_size(text) == 2,
+      do: "▍"
+
+  def value(%{__struct__: __MODULE__, token: :eighth_4} = text)
+      when map_size(text) == 2,
+      do: "▌"
+
+  def value(%{__struct__: __MODULE__, token: :eighth_5} = text)
+      when map_size(text) == 2,
+      do: "▋"
+
+  def value(%{__struct__: __MODULE__, token: :eighth_6} = text)
+      when map_size(text) == 2,
+      do: "▊"
+
+  def value(%{__struct__: __MODULE__, token: :eighth_7} = text)
+      when map_size(text) == 2,
+      do: "▉"
+
+  def value(%{__struct__: __MODULE__, token: :block_full} = text)
+      when map_size(text) == 2,
+      do: "█"
+
+  def value(%{__struct__: __MODULE__, token: :half_lower} = text)
+      when map_size(text) == 2,
+      do: "▄"
+
+  def value(%{__struct__: __MODULE__, token: :half_upper} = text)
+      when map_size(text) == 2,
+      do: "▀"
+
+  def value(%{__struct__: __MODULE__, token: :vert_1} = text)
+      when map_size(text) == 2,
+      do: "▁"
+
+  def value(%{__struct__: __MODULE__, token: :vert_2} = text)
+      when map_size(text) == 2,
+      do: "▂"
+
+  def value(%{__struct__: __MODULE__, token: :vert_3} = text)
+      when map_size(text) == 2,
+      do: "▃"
+
+  def value(%{__struct__: __MODULE__, token: :vert_4} = text)
+      when map_size(text) == 2,
+      do: "▄"
+
+  def value(%{__struct__: __MODULE__, token: :vert_5} = text)
+      when map_size(text) == 2,
+      do: "▅"
+
+  def value(%{__struct__: __MODULE__, token: :vert_6} = text)
+      when map_size(text) == 2,
+      do: "▆"
+
+  def value(%{__struct__: __MODULE__, token: :vert_7} = text)
+      when map_size(text) == 2,
+      do: "▇"
+
+  def value(%{__struct__: __MODULE__, token: :dash_rule} = text)
+      when map_size(text) == 2,
+      do: "┄"
+
+  def value(%{__struct__: __MODULE__, token: :copy_mark} = text)
+      when map_size(text) == 2,
+      do: "⧉"
+
+  def value(%{__struct__: __MODULE__, token: :copy_mark_ascii} = text)
+      when map_size(text) == 2,
+      do: "c"
+
+  def value(%{__struct__: __MODULE__, token: :ops_mark} = text)
+      when map_size(text) == 2,
+      do: "≣"
+
+  def value(%{__struct__: __MODULE__, token: :ops_mark_ascii} = text)
+      when map_size(text) == 2,
+      do: "="
+
+  def value(%{__struct__: __MODULE__, token: :command_mark} = text)
+      when map_size(text) == 2,
+      do: "⌘"
+
+  def value(%{__struct__: __MODULE__, token: :command_mark_ascii} = text)
+      when map_size(text) == 2,
+      do: "$"
 
   def value(%{__struct__: __MODULE__, token: :stripe} = text)
       when map_size(text) == 2,

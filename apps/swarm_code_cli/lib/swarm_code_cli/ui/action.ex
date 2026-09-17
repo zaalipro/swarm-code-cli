@@ -50,7 +50,8 @@ defmodule SwarmCodeCLI.UI.Action do
     :paste,
     :mouse,
     :alternate_screen,
-    :paste_preallocation_bound?
+    :paste_preallocation_bound?,
+    :glyph_tier
   ]
 
   @type terminal_error_code ::
@@ -397,7 +398,7 @@ defmodule SwarmCodeCLI.UI.Action do
   defp valid_layout_adjustment?(_adjustment), do: false
 
   defp valid_capabilities?(%Capabilities{} = capabilities) do
-    map_size(capabilities) == 17 and
+    map_size(capabilities) == 18 and
       Enum.sort(Map.keys(capabilities)) == Enum.sort(@capability_keys) and
       Size.valid?(capabilities.size) and
       capabilities.color_mode in [:truecolor, :ansi256, :ansi16, :monochrome] and
@@ -408,7 +409,8 @@ defmodule SwarmCodeCLI.UI.Action do
       boolean?(capabilities.full_screen?) and feature?(capabilities.enhanced_keys) and
       feature?(capabilities.focus) and feature?(capabilities.paste) and
       capabilities.mouse == :unavailable and feature?(capabilities.alternate_screen) and
-      boolean?(capabilities.paste_preallocation_bound?)
+      boolean?(capabilities.paste_preallocation_bound?) and
+      capabilities.glyph_tier in [:measured, :rich]
   end
 
   defp valid_capabilities?(_capabilities), do: false

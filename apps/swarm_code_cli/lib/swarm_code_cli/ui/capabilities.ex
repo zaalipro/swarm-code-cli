@@ -12,6 +12,13 @@ defmodule SwarmCodeCLI.UI.Capabilities do
   @type color_mode :: :truecolor | :ansi256 | :ansi16 | :monochrome
   @type ambiguous_width :: :narrow | :wide
   @type feature_state :: :supported | :best_effort | :unavailable
+  @typedoc """
+  Which glyph vocabulary the projectors may use. `:measured` is the closed set of
+  glyphs that are one cell under both width policies; `:rich` adds the East Asian
+  Ambiguous blocks (eighths, halves, `┄`) that a known terminal renders as one cell
+  under the narrow policy.
+  """
+  @type glyph_tier :: :measured | :rich
 
   @enforce_keys [:size]
   defstruct size: nil,
@@ -29,7 +36,8 @@ defmodule SwarmCodeCLI.UI.Capabilities do
             paste: :unavailable,
             mouse: :unavailable,
             alternate_screen: :unavailable,
-            paste_preallocation_bound?: false
+            paste_preallocation_bound?: false,
+            glyph_tier: :measured
 
   @type t :: %__MODULE__{
           size: Size.t(),
@@ -47,7 +55,8 @@ defmodule SwarmCodeCLI.UI.Capabilities do
           paste: feature_state(),
           mouse: :unavailable,
           alternate_screen: feature_state(),
-          paste_preallocation_bound?: boolean()
+          paste_preallocation_bound?: boolean(),
+          glyph_tier: glyph_tier()
         }
 
   @defaults [
@@ -65,7 +74,8 @@ defmodule SwarmCodeCLI.UI.Capabilities do
     paste: :unavailable,
     mouse: :unavailable,
     alternate_screen: :unavailable,
-    paste_preallocation_bound?: false
+    paste_preallocation_bound?: false,
+    glyph_tier: :measured
   ]
 
   @boolean_options [
@@ -142,6 +152,14 @@ defmodule SwarmCodeCLI.UI.Capabilities do
         {feature, if(full_screen, do: Map.fetch!(probe, feature), else: :unavailable)}
       end)
 
+    # Rich glyphs need true colour to be worth it, the narrow policy to measure as
+    # one cell, and a terminal known to render the ambiguous blocks as one cell.
+    tier =
+      if mode == :truecolor and width == :narrow and not probe.ascii? and
+           rich_terminal?(probe.term),
+         do: :rich,
+         else: :measured
+
     explicit(
       probe.size,
       features ++
@@ -156,7 +174,8 @@ defmodule SwarmCodeCLI.UI.Capabilities do
           controlling_tty?: probe.controlling_tty?,
           full_screen?: full_screen,
           mouse: :unavailable,
-          paste_preallocation_bound?: false
+          paste_preallocation_bound?: false,
+          glyph_tier: tier
         ]
     )
   end
@@ -172,6 +191,13 @@ defmodule SwarmCodeCLI.UI.Capabilities do
   end
 
   defp truecolor_terminal?(_), do: false
+
+  defp rich_terminal?(term) when is_binary(term) do
+    components = String.split(term, "-")
+    Enum.any?(components, &(&1 in ~w[ghostty kitty wezterm iterm iterm2]))
+  end
+
+  defp rich_terminal?(_), do: false
 
   defp validate_probe!(probe) do
     unless Map.keys(probe) |> Enum.sort() == Map.keys(%Probe{}) |> Enum.sort(),
@@ -219,6 +245,7 @@ defmodule SwarmCodeCLI.UI.Capabilities do
     validate_member!(options, :color_mode, [:truecolor, :ansi256, :ansi16, :monochrome])
     validate_member!(options, :ambiguous_width, [:narrow, :wide])
     validate_member!(options, :mouse, [:unavailable])
+    validate_member!(options, :glyph_tier, [:measured, :rich])
 
     Enum.each(@boolean_options, &validate_member!(options, &1, [true, false]))
     Enum.each(@feature_options, &validate_member!(options, &1, @feature_states))

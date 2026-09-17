@@ -59,7 +59,8 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
 
     options = %Options{
       color_mode: state.capabilities.color_mode,
-      ascii?: state.capabilities.ascii?
+      ascii?: state.capabilities.ascii?,
+      glyph_tier: state.capabilities.glyph_tier
     }
 
     # Run cards, wrapped action decks and notice prefixes consume painted rows,

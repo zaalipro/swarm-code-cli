@@ -497,7 +497,13 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
 
   defp prose_rows(text, role, markdown?, state, inner) do
     caps = state.capabilities
-    options = %Options{color_mode: caps.color_mode, ascii?: caps.ascii?}
+
+    options = %Options{
+      color_mode: caps.color_mode,
+      ascii?: caps.ascii?,
+      glyph_tier: caps.glyph_tier
+    }
+
     {:ok, base} = PaintStyle.resolve(%Style{role: role}, @base, options.color_mode)
     policy = caps.ambiguous_width
     text = admitted(text, state)

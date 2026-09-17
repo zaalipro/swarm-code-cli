@@ -34,9 +34,9 @@
 - Test: `apps/swarm_code_cli/test/swarm_code_cli/ui/capabilities_test.exs`, `apps/swarm_code_cli/test/swarm_code_cli/ui/theme_test.exs`, create `apps/swarm_code_cli/test/swarm_code_cli/ui/glyph_tier_test.exs`
 
 **Interfaces:**
-- Produces: `Capabilities.glyph_tier :: :measured | :rich` (default `:measured`); `Paint.Options.glyph_tier` (same, default `:measured`); `Theme.style(:text_ghost, caps)`; SafeText tokens `:eighth_1 .. :eighth_7` (`▏▎▍▌▋▊▉`), `:block_full` (`█`), `:half_lower` (`▄`), `:half_upper` (`▀`), `:vert_1 .. :vert_7` (`▁▂▃▄▅▆▇`), `:dash_rule` (`┄`), `:copy_mark` (`⧉`), `:ops_mark` (`≣`), `:command_mark` (`⌘`), each with a `_ascii` twin; `Support.glyph(token, state)` resolving by `state.capabilities.ascii?` then `state.capabilities.glyph_tier`; `Support.measured_glyphs/0` returning the rich → measured twin map.
+- Produces: `Capabilities.glyph_tier :: :measured | :rich` (default `:measured`); `Paint.Options.glyph_tier` (same, default `:measured`); `Theme.style(:text_ghost, caps)`; SafeText tokens `:eighth_1 .. :eighth_7` (`▏▎▍▌▋▊▉`), `:block_full` (`█`), `:half_lower` (`▄`), `:half_upper` (`▀`), `:vert_1 .. :vert_7` (`▁▂▃▄▅▆▇`), `:dash_rule` (`┄`) with no ASCII twins of their own, plus measured tokens `:copy_mark` (`⧉`), `:ops_mark` (`≣`), `:command_mark` (`⌘`) each with a `_ascii` twin; `Support.glyph(token, state)` resolving by `state.capabilities.ascii?` (a rich token goes through its measured twin's ASCII form) then `state.capabilities.glyph_tier`; `Support.measured_glyphs/0` returning the rich → measured twin map.
 
-- [ ] **Step 1: Write the failing capability tests**
+- [ ] **Step 1: Write the failing capability tests** ✅
 
 Append to `capabilities_test.exs` (use the existing probe helper in that file; if it builds probes with `%Probe{}` literals, copy that shape):
 
@@ -134,9 +134,8 @@ defmodule SwarmCodeCLI.UI.GlyphTierTest do
       measured = Map.fetch!(Support.measured_glyphs(), token)
       mv = SafeText.value(SafeText.chrome(measured))
       assert Width.cells(mv, :narrow) == 1 and Width.cells(mv, :wide) == 1, "#{measured} twin"
-      ascii = Map.fetch!(Support.glyphs(), token)
-      av = SafeText.value(SafeText.chrome(ascii))
-      assert av =~ ~r/^[ -~]$/, "#{ascii} must be one ASCII character"
+      av = SafeText.value(Support.glyph(token, state(ascii?: true, glyph_tier: :rich)))
+      assert av =~ ~r/^[ -~]$/, "#{token} must have a one-character ASCII form"
     end
   end
 
@@ -164,7 +163,7 @@ Expected: FunctionClauseError on `SafeText.chrome/1`.
 
 - [ ] **Step 8: Add the tokens**
 
-In `safe_text.ex`, following the exact pattern of `:stripe` (its `@type token` entry near line 183, its `chrome/1` clause near line 427, and its `value/1` clause guarded by `map_size(text) == 2`; grep `:stripe` to find all three), add: `eighth_1`..`eighth_7` → `"▏" "▎" "▍" "▌" "▋" "▊" "▉"`; `block_full` → `"█"`; `half_lower` → `"▄"`; `half_upper` → `"▀"`; `vert_1`..`vert_7` → `"▁" "▂" "▃" "▄" "▅" "▆" "▇"`; `dash_rule` → `"┄"`; `copy_mark` → `"⧉"`; `ops_mark` → `"≣"`; `command_mark` → `"⌘"`; and ASCII twins `eighth_N_ascii` → `"#"`, `block_full_ascii` → `"#"`, `half_lower_ascii` / `half_upper_ascii` → `" "`, `vert_N_ascii` → `"|"` for N ≥ 4 and `"."` below, `dash_rule_ascii` → `"-"`, `copy_mark_ascii` → `"c"`, `ops_mark_ascii` → `"="`, `command_mark_ascii` → `"$"`. If `safe_text_test.exs` pins the token count or enumerates tokens, extend it.
+In `safe_text.ex`, following the exact pattern of `:stripe` (its `@type token` entry near line 183, its `chrome/1` clause near line 427, and its `value/1` clause guarded by `map_size(text) == 2`; grep `:stripe` to find all three), add: `eighth_1`..`eighth_7` → `"▏" "▎" "▍" "▌" "▋" "▊" "▉"`; `block_full` → `"█"`; `half_lower` → `"▄"`; `half_upper` → `"▀"`; `vert_1`..`vert_7` → `"▁" "▂" "▃" "▄" "▅" "▆" "▇"`; `dash_rule` → `"┄"`; `copy_mark` → `"⧉"`; `ops_mark` → `"≣"`; `command_mark` → `"⌘"`; and ASCII twins only for the three measured tokens: `copy_mark_ascii` → `"c"`, `ops_mark_ascii` → `"="`, `command_mark_ascii` → `"$"`. Rich tokens get no ASCII twin: the existing test "every catalogue glyph has a one-cell ASCII twin" iterates `Support.glyphs()` and requires one cell under both policies, which a rich token cannot satisfy, so a rich token under ASCII resolves through its measured twin (whose ASCII twin already exists). If `safe_text_test.exs` pins the token count or enumerates tokens, extend it.
 
 In `support.ex`:
 
@@ -181,9 +180,13 @@ In `support.ex`:
   }
 ```
 
-extend `@ascii_glyphs` with the new tokens (`eighth_1: :eighth_1_ascii`, … , `copy_mark: :copy_mark_ascii`, …), and replace `glyph/2` with:
+extend `@ascii_glyphs` with the three measured tokens only (`copy_mark: :copy_mark_ascii`, `ops_mark: :ops_mark_ascii`, `command_mark: :command_mark_ascii`), and replace `glyph/2` with:
 
 ```elixir
+  def glyph(token, %{capabilities: %{ascii?: true}} = state)
+      when is_map_key(@measured_glyphs, token),
+      do: glyph(Map.fetch!(@measured_glyphs, token), state)
+
   def glyph(token, %{capabilities: %{ascii?: true}}) when is_map_key(@ascii_glyphs, token),
     do: SafeText.chrome(Map.fetch!(@ascii_glyphs, token))
 

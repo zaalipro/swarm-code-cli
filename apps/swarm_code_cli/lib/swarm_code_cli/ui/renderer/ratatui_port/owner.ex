@@ -89,7 +89,8 @@ defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.Owner do
            {:ok, plan} <-
              Paint.build(scene, %Options{
                color_mode: state.caps.color_mode,
-               ascii?: state.caps.ascii?
+               ascii?: state.caps.ascii?,
+               glyph_tier: state.caps.glyph_tier
              }),
            {:ok, bytes} <- Frame.encode(plan, sequence),
            true <- Port.command(state.port, bytes, [:nosuspend]),

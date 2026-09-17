@@ -34,6 +34,11 @@ defmodule SwarmCodeCLI.UI.Theme do
   defp base_style(:text_faint, mode),
     do: %Style{foreground: color(mode, 0x5E5D5A, 240, :bright_black)} |> cue(:text_faint, mode)
 
+  # One step below faint: placeholders such as "no tools yet" that must read as
+  # absence rather than as content.
+  defp base_style(:text_ghost, mode),
+    do: %Style{foreground: color(mode, 0x4B4A48, 239, :bright_black)} |> cue(:text_ghost, mode)
+
   defp base_style(:focus, mode),
     do: %Style{foreground: color(mode, 0xFF6A1A, 208, :bright_yellow)} |> cue(:focus, mode)
 
@@ -281,7 +286,7 @@ defmodule SwarmCodeCLI.UI.Theme do
   defp cue(style, role, _mode) when role in [:card, :border, :border_soft],
     do: %{style | cues: [:border]}
 
-  defp cue(style, role, _mode) when role in [:text_muted, :text_faint],
+  defp cue(style, role, _mode) when role in [:text_muted, :text_faint, :text_ghost],
     do: %{style | cues: [:explicit_label]}
 
   defp cue(style, :accent, _mode), do: %{style | prefix: SafeText.chrome(:accent_marker)}

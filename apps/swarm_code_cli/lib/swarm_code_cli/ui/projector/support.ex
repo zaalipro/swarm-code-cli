@@ -82,16 +82,56 @@ defmodule SwarmCodeCLI.UI.Projector.Support do
     fail: :fail_ascii,
     gauge_on: :gauge_on_ascii,
     gauge_off: :gauge_off_ascii,
-    waiting: :waiting_ascii
+    waiting: :waiting_ascii,
+    copy_mark: :copy_mark_ascii,
+    ops_mark: :ops_mark_ascii,
+    command_mark: :command_mark_ascii
+  }
+
+  # Rich tokens (eighth blocks, half blocks, vertical eighths, the dashed rule) are
+  # East Asian Ambiguous: one cell under the narrow policy, two under the wide one.
+  # Below the :rich tier each one is drawn by its measured twin, and the twin's own
+  # ASCII form serves the ASCII terminal, so no rich token needs an ASCII twin.
+  @measured_glyphs %{
+    eighth_1: :stripe,
+    eighth_2: :stripe,
+    eighth_3: :stripe,
+    eighth_4: :stripe,
+    eighth_5: :stripe,
+    eighth_6: :stripe,
+    eighth_7: :stripe,
+    block_full: :stripe,
+    half_lower: :corner_tl,
+    half_upper: :corner_bl,
+    vert_1: :dot_small,
+    vert_2: :dot_small,
+    vert_3: :dot_small,
+    vert_4: :seg_on,
+    vert_5: :seg_on,
+    vert_6: :seg_on,
+    vert_7: :seg_on,
+    dash_rule: :rule
   }
 
   @doc "Catalogue glyph for the terminal's capabilities; always one cell in both width policies."
+  def glyph(token, %{capabilities: %{ascii?: true}} = state)
+      when is_map_key(@measured_glyphs, token),
+      do: glyph(Map.fetch!(@measured_glyphs, token), state)
+
   def glyph(token, %{capabilities: %{ascii?: true}}) when is_map_key(@ascii_glyphs, token),
     do: SafeText.chrome(Map.fetch!(@ascii_glyphs, token))
+
+  def glyph(token, %{capabilities: %{glyph_tier: :rich}}), do: SafeText.chrome(token)
+
+  def glyph(token, _state) when is_map_key(@measured_glyphs, token),
+    do: SafeText.chrome(Map.fetch!(@measured_glyphs, token))
 
   def glyph(token, _state), do: SafeText.chrome(token)
 
   def glyphs, do: @ascii_glyphs
+
+  @doc "The measured twin of every rich token."
+  def measured_glyphs, do: @measured_glyphs
 
   def action(label, target), do: {:projector_action, label, ActionTarget.validate!(target)}
 
