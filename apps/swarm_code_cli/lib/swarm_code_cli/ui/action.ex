@@ -73,6 +73,7 @@ defmodule SwarmCodeCLI.UI.Action do
           | {:open_interaction, binary()}
           | {:toggle_dock, :inspector}
           | {:set_tab, :agents | :timeline | :changes}
+          | {:select_agent, binary()}
           | {:set_keymap, :default | :vim}
           | {:vim,
              {:mode, Vim.mode()}
@@ -189,6 +190,9 @@ defmodule SwarmCodeCLI.UI.Action do
     do: valid_action(action, SwarmCodeCLI.UI.Intent.valid_id?(field) and direction in [-1, 1])
 
   def validate({:library_confirm, value} = action), do: valid_action(action, is_boolean(value))
+
+  def validate({:select_agent, id} = action),
+    do: valid_action(action, is_binary(id) and id != "")
 
   def validate({:set_tab, tab} = action),
     do: valid_action(action, tab in [:agents, :timeline, :changes])

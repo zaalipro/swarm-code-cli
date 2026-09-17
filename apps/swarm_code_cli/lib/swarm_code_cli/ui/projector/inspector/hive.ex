@@ -1,18 +1,13 @@
 defmodule SwarmCodeCLI.UI.Projector.Inspector.Hive do
   @moduledoc """
-  The hive: one lane per agent of a run, and the agent cells every run row draws.
+  The agents of a run, and the agent cells every run row draws.
 
-  A lane is one line — `⬢ lead     planning           ▬▬▬▬▭▭  1.8k` — the
-  agent's glyph and name in its lane colour, its current step, a six-cell gauge
-  of its progress and its tokens. The whole line is one action that opens the
-  run's agents in the run inspector overlay, which is where the agent can be
-  stopped. The runs dashboard and the run palette draw the same agents as a
-  strip of cells (`⬢⬢⬢⬡`) through `cells/4`, so a run reads the same at every
-  zoom level.
-
-  A run the daemon reports no agents for is still one agent — the assistant
-  answering it — so the hive draws a single lane from the run summary rather
-  than an empty panel.
+  The Agents tab (`Inspector.Agents`) draws the cards; this module holds what
+  the cards and the rest of the screen share: the run's agents in lane order,
+  the assistant standing in for a run that reports no agents, each agent's
+  lane colour, glyph, name and step in plain words, the count of what waits on
+  you, and the strip of cells (`⬢⬢⬢⬡`) the runs dashboard and the run palette
+  draw through `cells/4`, so a run reads the same at every zoom level.
   """
   alias SwarmCodeCLI.UI.{SafeText, Theme, Width}
   alias SwarmCodeCLI.UI.DataSource.DTO
@@ -20,20 +15,9 @@ defmodule SwarmCodeCLI.UI.Projector.Inspector.Hive do
   alias SwarmCodeCLI.UI.Projector.{Density, RunRow, Support}
   alias SwarmCodeCLI.UI.Projector.Inspector.Words
 
-  @gauge_cells 6
-  @tokens_width 5
-  @min_name 4
-  @max_name 12
-  @min_step 8
-  # The step keeps at least this when a lane also offers `stop`, so "waiting
-  # for you" is never cut; the tokens column yields first.
-  @min_step_with_stop 15
   @max_cells 12
   @more_width 3
   @lane_roles 5
-  # The deck's two-cell separator and the word.
-  @stop_label "stop"
-  @stop_cost 6
 
   # ------------------------------------------------------------------ agents
 
@@ -71,7 +55,8 @@ defmodule SwarmCodeCLI.UI.Projector.Inspector.Hive do
       name: "assistant",
       role: :assistant,
       step: "",
-      progress: Map.get(run, :progress) || 0,
+      # `nil` stays `nil`: an unknown progress is never drawn as zero percent.
+      progress: Map.get(run, :progress),
       tokens_in: run.tokens_in,
       tokens_out: run.tokens_out,
       cost_usd: run.cost_usd,
@@ -169,244 +154,7 @@ defmodule SwarmCodeCLI.UI.Projector.Inspector.Hive do
     end
   end
 
-  # ------------------------------------------------------------------- panel
-
-  @doc """
-  The HIVE panel: a header, the summary line, one lane per agent, then what is
-  waiting on you and how many files changed while there is room — never a
-  zero. Every row is budgeted to `width` and the list stops at `height` rows.
-
-  `stop?: false` withholds the per-lane stop action (compressed classes).
-  """
-  def panel(state, run, width, height, opts \\ [])
-
-  def panel(state, nil, width, height, _opts) do
-    [
-      heading("HIVE", "", state, width),
-      Support.text("No run selected", state, width),
-      blank(state),
-      Support.text("Ctrl-G  all runs", state, width),
-      Support.text("Ctrl-R  switch run", state, width)
-    ]
-    |> Enum.take(max(0, height))
-  end
-
-  def panel(state, run, width, height, opts) do
-    lanes = lanes_for(state, run)
-
-    header = [
-      heading("HIVE", run.title, state, width),
-      summary(run, lanes, state, width),
-      blank(state)
-    ]
-
-    footer =
-      case footer(run, state, width) do
-        [] -> []
-        lines -> [blank(state) | lines]
-      end
-
-    lane_rows = max(0, height - length(header))
-    rows = lanes(state, run, lanes, width, lane_rows, opts)
-
-    rows =
-      if lane_rows - length(rows) >= length(footer),
-        do: rows ++ footer,
-        else: rows
-
-    Enum.take(header ++ rows, max(0, height))
-  end
-
-  @doc """
-  The lane rows alone, at most `height` of them. Each lane is one action that
-  opens the run's agents; an agent that may be stopped gets a `stop` action
-  packed on the same row, and a child of a superseded turn says so on the row
-  beneath it, in the catalogue's exact words.
-  """
-  def lanes(state, run, agents, width, height, opts \\ []) do
-    stop? = Keyword.get(opts, :stop?, true)
-
-    stops =
-      Map.new(agents, fn agent ->
-        {agent.id, stop? and Support.allowed?(state, agent, :stop_agent)}
-      end)
-
-    any_stop? = Enum.any?(Map.values(stops))
-    lane_width = if any_stop?, do: max(0, width - @stop_cost), else: width
-
-    name_width =
-      agents
-      |> Enum.map(&measure(name(&1), state))
-      |> Enum.max(fn -> @min_name end)
-      |> max(@min_name)
-      |> min(@max_name)
-
-    # One rule for the whole panel, so the columns line up lane to lane.
-    tokens? =
-      not any_stop? or
-        lane_width - (2 + name_width + 1) - (2 + @gauge_cells) - (1 + @tokens_width) >=
-          @min_step_with_stop
-
-    agents
-    |> Enum.with_index()
-    |> Enum.flat_map(fn {agent, index} ->
-      spans = lane(agent, index, state, lane_width, name_width, tokens?: tokens?)
-
-      action =
-        Support.action_spans(
-          spans,
-          {:local, {:open_layer, {:run_inspector, run.id, :agents}}}
-        )
-
-      row =
-        if Map.get(stops, agent.id),
-          do: %Block.ActionDeck{actions: [action, stop(agent, state)]},
-          else: action
-
-      child =
-        if Map.get(agent, :launched_by_superseded, false),
-          do: [Support.text(SafeText.chrome(:superseded_child), state, width)],
-          else: []
-
-      [row | child]
-    end)
-    |> Enum.take(max(0, height))
-  end
-
-  defp stop(agent, state) do
-    Support.action(
-      Density.safe(@stop_label, state, measure(@stop_label, state)),
-      {:intent, {:stop_agent, agent.run_id, agent.id, agent.revision}},
-      Theme.style(:text_muted, state.capabilities)
-    )
-  end
-
-  @doc "The styled spans of one lane, exactly `width` cells or fewer."
-  def lane(agent, index, state, width, name_width, opts \\ []) do
-    role = lane_role(agent, index)
-    lane_style = %{RunRow.tinted(role, state) | modifiers: [:bold]}
-    glyph = Support.glyph(glyph_token(agent), state)
-
-    fixed = measure(SafeText.value(glyph), state) + 1 + name_width + 1
-    tokens_extra = 1 + @tokens_width
-    gauge_extra = 2 + @gauge_cells
-
-    {gauge?, tokens?, step_width} =
-      cond do
-        Keyword.get(opts, :tokens?, true) and
-            width - fixed - gauge_extra - tokens_extra >= @min_step ->
-          {true, true, width - fixed - gauge_extra - tokens_extra}
-
-        width - fixed - gauge_extra >= @min_step ->
-          {true, false, width - fixed - gauge_extra}
-
-        true ->
-          {false, false, max(0, width - fixed)}
-      end
-
-    [
-      %Span{text: glyph, style: lane_style},
-      RunRow.gap(1, state),
-      %Span{text: fit(name(agent), name_width, state), style: lane_style},
-      RunRow.gap(1, state),
-      %Span{text: fit(step(agent), step_width, state), style: step_style(agent, state)}
-    ] ++
-      if(gauge?, do: gauge(agent, role, state), else: []) ++
-      if(tokens?, do: tokens(agent, state), else: [])
-  end
-
-  defp step_style(agent, state) do
-    cond do
-      Words.waiting?(agent.state) -> RunRow.tinted(:warning, state)
-      agent.state == :failed -> RunRow.tinted(:error, state)
-      Words.finished?(agent.state) -> Theme.style(:text_faint, state.capabilities)
-      true -> Theme.style(:text_muted, state.capabilities)
-    end
-  end
-
-  # Six cells: the lit run in the lane colour, the rest on the muted track.
-  defp gauge(agent, role, state) do
-    progress = agent.progress || 0
-    lit = (progress / 100 * @gauge_cells) |> round() |> max(0) |> min(@gauge_cells)
-    on = SafeText.value(Support.glyph(:gauge_on, state))
-    off = SafeText.value(Support.glyph(:gauge_off, state))
-
-    [
-      RunRow.gap(2, state),
-      %Span{
-        text: Density.safe(String.duplicate(on, lit), state, lit),
-        style: RunRow.tinted(role, state)
-      },
-      %Span{
-        text: Density.safe(String.duplicate(off, @gauge_cells - lit), state, @gauge_cells - lit),
-        style: RunRow.tinted(:ticks_track, state)
-      }
-    ]
-  end
-
-  # Blank rather than "0k": a zero is never shown.
-  defp tokens(agent, state) do
-    text =
-      case agent.tokens_in + agent.tokens_out do
-        0 -> ""
-        total -> Words.tokens(total)
-      end
-
-    [
-      RunRow.gap(1, state),
-      %Span{
-        text: Density.safe(RunRow.pad_leading(text, @tokens_width, state), state, @tokens_width),
-        style: Theme.style(:text_faint, state.capabilities)
-      }
-    ]
-  end
-
-  # `HIVE  <title>`: the label in the accent, the title bold, elided to fit.
-  defp heading(label, title, state, width) do
-    label_width = measure(label, state)
-    title_width = max(0, width - label_width - 2)
-
-    %Block.RichText{
-      spans: [
-        %Span{
-          text: Density.safe(label, state, label_width),
-          style: %{RunRow.tinted(:accent, state) | modifiers: [:bold]}
-        },
-        RunRow.gap(min(2, max(0, width - label_width)), state),
-        %Span{
-          text: Density.safe(title, state, title_width),
-          style: %{Theme.style(:text_primary, state.capabilities) | modifiers: [:bold]}
-        }
-      ]
-    }
-  end
-
-  # `5 agents · 04:59 · 22.9k tokens`, leaving out what the read model lacks.
-  defp summary(run, lanes, state, width) do
-    count = max(total(run, state), length(lanes))
-    elapsed = Words.elapsed(run.started_at, Words.until(run, state))
-
-    tokens =
-      case run.tokens_in + run.tokens_out do
-        0 -> Enum.reduce(lanes, 0, &(&1.tokens_in + &1.tokens_out + &2))
-        n -> n
-      end
-
-    parts =
-      [Words.count(count, "agent", "agents"), elapsed] ++
-        if(tokens > 0, do: [Words.tokens(tokens) <> " tokens"], else: [])
-
-    text = parts |> Enum.reject(&is_nil/1) |> Enum.join(" · ")
-
-    %Block.RichText{
-      spans: [
-        %Span{
-          text: Density.safe(text, state, width),
-          style: Theme.style(:text_faint, state.capabilities)
-        }
-      ]
-    }
-  end
+  # ---------------------------------------------------------------- waiting
 
   @doc """
   How many interactions of `run` wait on you. Counts the pending interactions
@@ -420,50 +168,6 @@ defmodule SwarmCodeCLI.UI.Projector.Inspector.Hive do
     |> Map.values()
     |> Enum.count(&(&1.state == :pending and &1.run_id == run.id))
     |> max(Map.get(run, :needs, 0))
-  end
-
-  defp footer(run, state, width) do
-    pending = pending(state, run)
-
-    files =
-      state.read_model.changes
-      |> Map.values()
-      |> Enum.filter(&(&1.run_id == run.id))
-      |> Enum.map(& &1.path)
-      |> Enum.uniq()
-      |> length()
-      |> max(Map.get(run, :changes, 0))
-
-    waiting =
-      if pending > 0,
-        do: [
-          %Block.RichText{
-            spans: [
-              %Span{
-                text: Density.safe("WAITING FOR YOU · #{pending}", state, width),
-                style: %{RunRow.tinted(:warning, state) | modifiers: [:bold]}
-              }
-            ]
-          }
-        ],
-        else: []
-
-    changes =
-      if files > 0,
-        do: [
-          %Block.RichText{
-            spans: [
-              %Span{
-                text:
-                  Density.safe("CHANGES · " <> Words.count(files, "file", "files"), state, width),
-                style: %{Theme.style(:text_faint, state.capabilities) | modifiers: [:bold]}
-              }
-            ]
-          }
-        ],
-        else: []
-
-    waiting ++ changes
   end
 
   # ------------------------------------------------------------------- cells

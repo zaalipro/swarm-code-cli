@@ -2,8 +2,8 @@ defmodule SwarmCodeCLI.UI.Projector.Inspector do
   @moduledoc """
   The docked inspector: three tabs over the run you are looking at.
 
-    * agents — the hive: one lane per agent, what it is doing, its gauge and
-      its tokens, with the verdict card of a judged run below it;
+    * agents — the lead card, what waits on you, the verdict of a judged run,
+      the sub-agent cards and the operations of the selected agent;
     * timeline — the run's transcript as a list of events;
     * changes — the ledger of files the run's agents touched.
 
@@ -16,7 +16,7 @@ defmodule SwarmCodeCLI.UI.Projector.Inspector do
   alias SwarmCodeCLI.UI.Keymap.Bindings
   alias SwarmCodeCLI.UI.Scene.{Block, Span}
   alias SwarmCodeCLI.UI.Projector.{Density, RunRow, Support}
-  alias SwarmCodeCLI.UI.Projector.Inspector.{Changes, Hive, Timeline, Verdict}
+  alias SwarmCodeCLI.UI.Projector.Inspector.{Agents, Changes, Hive, Timeline}
 
   def project(state, rect, class) do
     run = Support.run(state)
@@ -48,12 +48,7 @@ defmodule SwarmCodeCLI.UI.Projector.Inspector do
     end
   end
 
-  # The hive leads: who is working and on what is the first thing to know; the
-  # judge's card, when there is one, reads below it.
-  defp agents(state, run, width, height, opts) do
-    card = Verdict.card(state, run, width)
-    Hive.panel(state, run, width, max(0, height - length(card)), opts) ++ card
-  end
+  defp agents(state, run, width, height, opts), do: Agents.tab(state, run, width, height, opts)
 
   # One clickable name per tab, the current one lit on the hover surface, and
   # the count of what waits on you as an amber pill after `agents`. The deck

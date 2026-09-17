@@ -517,4 +517,11 @@ defmodule SwarmCodeCLI.UI.ReducerNavigationTest do
       end
     end
   end
+
+  test "select_agent remembers the agent whose operations the inspector shows" do
+    state = initial()
+    {state, []} = Reducer.update(state, {:select_agent, "agent-2"})
+    assert state.tabs.agent == "agent-2"
+    assert SwarmCodeCLI.UI.Action.validate({:select_agent, ""}) == {:error, :invalid_action}
+  end
 end

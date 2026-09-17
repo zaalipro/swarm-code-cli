@@ -133,6 +133,21 @@ defmodule SwarmCodeCLI.UI.Projector.Support do
   @doc "The measured twin of every rich token."
   def measured_glyphs, do: @measured_glyphs
 
+  @doc """
+  A chip: the text with one space each side on a tinted surface, clipped to
+  `width`. The chip roles carry a background (`:chip_accent`, `:chip_ok`,
+  `:chip_warn`, `:chip_err`, `:chip_info`, `:hover`); text in a chip is never
+  elided to less than one character.
+  """
+  def chip(text, role, state, width) do
+    inner = text |> Density.safe(state, max(1, width - 2)) |> SafeText.value()
+
+    %Span{
+      text: Density.safe(" " <> inner <> " ", state, max(0, width)),
+      style: SwarmCodeCLI.UI.Projector.RunRow.tinted(role, state)
+    }
+  end
+
   def action(label, target), do: {:projector_action, label, ActionTarget.validate!(target)}
 
   def action(label, target, style),

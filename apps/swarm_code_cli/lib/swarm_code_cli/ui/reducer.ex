@@ -106,6 +106,11 @@ defmodule SwarmCodeCLI.UI.Reducer do
     {%{state | tabs: Map.put(state.tabs, :inspector, tab), layers: layers}, []}
   end
 
+  # Which agent's operations the inspector's drawer shows; the projector falls
+  # back to the newest running agent when the chosen one is not in the run.
+  defp transition(state, {:select_agent, id}) when is_binary(id),
+    do: {%{state | tabs: Map.put(state.tabs, :agent, id)}, []}
+
   # `[` and `]` rotate the same three tabs `{:set_tab, _}` sets, through the same
   # clause, so a docked inspector and a run_inspector overlay cannot drift apart.
   # `:overview` and `:thread` are older spellings of the agents tab, kept for

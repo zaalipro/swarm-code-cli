@@ -502,26 +502,31 @@ defmodule SwarmCodeCLI.UI.Paint.ProjectorTest do
     end
   end
 
-  test "inspector lanes name every agent once and open the run's agents" do
+  test "inspector rows name every sub-agent once and select it; the lead heads the card" do
     for color <- [:truecolor, :monochrome], policy <- [:narrow, :wide] do
       state = fixture(:swarm, {160, 50}, policy, color)
       {scene, table, plan} = paint(state)
       inspector = Enum.find(scene.regions, &(&1.role == :inspector))
-      [run_id] = Map.keys(state.read_model.runs)
-      target = {:local, {:open_layer, {:run_inspector, run_id, :agents}}}
+      agents = Map.values(state.read_model.agents)
+      lead = Enum.find(agents, &(&1.role == :lead))
 
-      lanes =
-        for {id, ^target} <- table do
+      rows =
+        for {id, {:local, {:select_agent, agent_id}}} <- table do
           [rect | _] = plan.actions[id]
-          row(plan, rect.y, inspector.rect.x, inspector.rect.width)
+          {agent_id, row(plan, rect.y, inspector.rect.x, inspector.rect.width)}
         end
 
-      assert length(lanes) == map_size(state.read_model.agents)
+      assert length(rows) == length(agents) - 1
 
-      for agent <- Map.values(state.read_model.agents) do
-        assert Enum.count(lanes, &String.contains?(&1, agent.name)) == 1
-        assert Enum.count(lanes, &String.contains?(&1, agent.name <> " ")) == 1
+      for agent <- agents, agent.id != lead.id do
+        assert Enum.count(rows, fn {id, text} ->
+                 id == agent.id and String.contains?(text, agent.name <> " ")
+               end) == 1
       end
+
+      # The lead is the card: its name on the row under the head, no row of its own.
+      assert row(plan, inspector.rect.y + 3, inspector.rect.x, inspector.rect.width) =~ lead.name
+      refute Enum.any?(rows, fn {id, _} -> id == lead.id end)
     end
   end
 
