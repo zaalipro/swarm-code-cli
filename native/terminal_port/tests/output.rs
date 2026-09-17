@@ -151,7 +151,9 @@ fn colors_modifiers_and_all_cursor_shapes_survive_projection() {
                 assert!(out.contains(s), "{out:?} missing {s:?}");
             }
             assert!(out.contains(escape));
-            assert!(out.ends_with("\x1b[1;2H\x1b[?25h"));
+            // The cursor is placed and shown inside the synchronized update,
+            // whose closing sequence is the last thing a painted frame writes.
+            assert!(out.ends_with("\x1b[1;2H\x1b[?25h\x1b[?2026l"));
         }
     }
 }

@@ -158,6 +158,9 @@ fn paint(previous: Option<&Painted>, next: &Painted, writer: &mut impl Write) ->
             continue;
         }
         if !painted {
+            // DEC private mode 2026: the terminal holds the frame back until the
+            // closing sequence, so a partially painted grid is never shown.
+            writer.write_all(b"\x1b[?2026h")?;
             command(writer, Hide)?;
             painted = true;
         }
@@ -208,6 +211,10 @@ fn paint(previous: Option<&Painted>, next: &Painted, writer: &mut impl Write) ->
                 }
             }
         }
+    }
+    // A cursor-only change stays unbracketed: one cursor move cannot tear.
+    if painted {
+        writer.write_all(b"\x1b[?2026l")?;
     }
     Ok(())
 }
@@ -276,4 +283,40 @@ fn command(writer: &mut impl Write, command: impl Command) -> io::Result<()> {
             .error
             .unwrap_or_else(|| io::Error::other("terminal command formatting failed"))
     })
+}
+
+#[cfg(test)]
+mod sync_tests {
+    use super::*;
+
+    fn painted(symbol: &str) -> Painted {
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 2, 1));
+        let cell = &mut buffer[(0, 0)];
+        cell.set_symbol(symbol);
+        cell.diff_option = CellDiffOption::ForcedWidth(NonZeroU16::new(1).unwrap());
+        Painted {
+            buffer,
+            cursor: None,
+        }
+    }
+
+    #[test]
+    fn a_painted_frame_is_bracketed_in_synchronized_update_mode() {
+        let mut out = Vec::new();
+        paint(None, &painted("x"), &mut out).unwrap();
+        let text = String::from_utf8_lossy(&out);
+        assert!(
+            text.starts_with("\x1b[?2026h"),
+            "opens the bracket first: {text:?}"
+        );
+        assert!(text.ends_with("\x1b[?2026l"), "closes it last: {text:?}");
+    }
+
+    #[test]
+    fn an_unchanged_frame_writes_nothing() {
+        let first = painted("x");
+        let mut out = Vec::new();
+        paint(Some(&first), &painted("x"), &mut out).unwrap();
+        assert!(out.is_empty(), "{:?}", String::from_utf8_lossy(&out));
+    }
 }
