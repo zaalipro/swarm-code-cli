@@ -225,21 +225,43 @@ defmodule SwarmCodeCLI.UI.Scene do
          value: value,
          maximum: maximum,
          style: style,
+         gradient_to: gradient_to,
          label: label
        }),
        do:
          tone in Style.roles() and nonneg?(value) and nonneg?(maximum) and
-           style in [:ticks, :bar, :segments] and (is_nil(label) or safe_text?(label))
+           style in [:ticks, :bar, :segments, :smooth] and
+           (is_nil(gradient_to) or gradient_to in Style.roles()) and
+           (is_nil(label) or safe_text?(label))
 
-  defp valid_block?(%Block.Chart{series: series, tone: tone, height: height, label: label}),
-    do:
-      is_list(series) and Enum.all?(series, &nonneg?/1) and tone in Style.roles() and
-        is_integer(height) and height in 1..4 and (is_nil(label) or safe_text?(label))
+  defp valid_block?(%Block.Chart{
+         series: series,
+         tone: tone,
+         height: height,
+         style: style,
+         label: label
+       }),
+       do:
+         is_list(series) and Enum.all?(series, &nonneg?/1) and tone in Style.roles() and
+           is_integer(height) and height in 1..4 and style in [:braille, :sparkline] and
+           (is_nil(label) or safe_text?(label))
 
-  defp valid_block?(%Block.Surface{blocks: blocks, tone: tone, accent: accent, rounded: rounded}),
+  defp valid_block?(%Block.Surface{
+         blocks: blocks,
+         tone: tone,
+         accent: accent,
+         rounded: rounded,
+         edges: edges
+       }),
+       do:
+         is_list(blocks) and Enum.all?(blocks, &valid_block?/1) and tone in Style.roles() and
+           (is_nil(accent) or accent in Style.roles()) and is_boolean(rounded) and
+           edges in [:corners, :half]
+
+  defp valid_block?(%Block.Columns{columns: columns, gap: gap}),
     do:
-      is_list(blocks) and Enum.all?(blocks, &valid_block?/1) and tone in Style.roles() and
-        (is_nil(accent) or accent in Style.roles()) and is_boolean(rounded)
+      is_list(columns) and columns != [] and nonneg?(gap) and
+        Enum.all?(columns, &valid_column?/1)
 
   defp valid_block?(%Block.Diff{
          path: path,
@@ -261,6 +283,14 @@ defmodule SwarmCodeCLI.UI.Scene do
 
   defp valid_diff_line?({kind, text}) when kind in [:add, :del, :ctx, :meta], do: safe_text?(text)
   defp valid_diff_line?(_), do: false
+
+  # A column is a plain map: a positive width and its own display list.
+  defp valid_column?(%{width: width, blocks: blocks} = column),
+    do:
+      map_size(column) == 2 and is_integer(width) and width > 0 and
+        valid_display_list?(blocks)
+
+  defp valid_column?(_), do: false
 
   defp valid_display_list?(items) when is_list(items),
     do: Enum.all?(items, &(safe_text?(&1) or valid_span?(&1) or valid_block?(&1)))

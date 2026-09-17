@@ -79,7 +79,11 @@ defmodule SwarmCodeCLI.UI.Paint.BlocksTest do
       {%Block.Gauge{tone: :accent, value: 1, maximum: 2, style: :ticks},
        [String.duplicate("▐", 80)]},
       {%Block.Chart{series: [4, 0], tone: :accent, height: 1}, [<<0x2847::utf8>>]},
-      {%Block.Surface{blocks: [text("inner")], tone: :card}, [filled(" inner")]}
+      {%Block.Surface{blocks: [text("inner")], tone: :card}, [filled(" inner")]},
+      {%Block.Columns{
+         columns: [%{width: 3, blocks: [text("a")]}, %{width: 3, blocks: [text("b")]}],
+         gap: 1
+       }, ["a   b  "]}
     ]
 
     assert MapSet.new(Enum.map(cases, fn {block, _} -> block.__struct__ end)) ==

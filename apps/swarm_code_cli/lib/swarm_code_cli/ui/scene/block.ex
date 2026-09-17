@@ -18,7 +18,8 @@ defmodule SwarmCodeCLI.UI.Scene.Block do
     Diff,
     Gauge,
     Chart,
-    Surface
+    Surface,
+    Columns
   }
 
   @type t ::
@@ -41,6 +42,7 @@ defmodule SwarmCodeCLI.UI.Scene.Block do
           | Gauge.t()
           | Chart.t()
           | Surface.t()
+          | Columns.t()
   def modules,
     do: [
       Text,
@@ -61,6 +63,7 @@ defmodule SwarmCodeCLI.UI.Scene.Block do
       Diff,
       Gauge,
       Chart,
-      Surface
+      Surface,
+      Columns
     ]
 end

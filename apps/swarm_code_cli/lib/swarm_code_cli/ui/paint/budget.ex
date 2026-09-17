@@ -143,6 +143,14 @@ defmodule SwarmCodeCLI.UI.Paint.Budget do
     end
   end
 
+  # A `Block.Columns` column is a plain map: its width and its own block list.
+  defp walk(%{width: width, blocks: blocks} = column, depth, display_depth, count)
+       when map_size(column) == 2 do
+    with {:ok, count} <- count_node(count),
+         {:ok, count} <- walk(width, depth + 1, display_depth, count),
+         do: walk(blocks, depth + 1, display_depth, count)
+  end
+
   defp walk(tuple, depth, display_depth, count) when is_tuple(tuple) and tuple_size(tuple) <= 4 do
     with {:ok, count} <- count_node(count) do
       Enum.reduce_while(Tuple.to_list(tuple), {:ok, count}, fn value, {:ok, current} ->

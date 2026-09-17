@@ -24,7 +24,8 @@ defmodule SwarmCodeCLI.UI.Paint.Blocks do
     Block.Diff,
     Block.Gauge,
     Block.Chart,
-    Block.Surface
+    Block.Surface,
+    Block.Columns
   ]
   # Card chrome: a two-cell left gutter (coloured edge + space) and one cell of
   # right padding, so content is inset on both sides like the web's cards.
@@ -259,51 +260,82 @@ defmodule SwarmCodeCLI.UI.Paint.Blocks do
   end
 
   # --- Gauge ---
+  # `:smooth` fills eight steps per cell and may carry a gradient; both exist
+  # only at tier `:rich`, so under `:measured` (and ASCII) it paints as ticks.
   defp block(
-         %Block.Gauge{tone: tone, value: value, maximum: maximum, style: style, label: label},
+         %Block.Gauge{
+           tone: tone,
+           value: value,
+           maximum: maximum,
+           style: style,
+           gradient_to: gradient_to,
+           label: label
+         },
          ctx,
          rows
        )
        when is_atom(tone) and is_integer(value) and value >= 0 and is_integer(maximum) and
-              maximum >= 0 and style in [:ticks, :bar, :segments] do
+              maximum >= 0 and style in [:ticks, :bar, :segments, :smooth] and
+              is_atom(gradient_to) do
     slots = max(1, ctx.width)
+    style = if style == :smooth and not rich?(ctx), do: :ticks, else: style
 
     label_runs = if label, do: [run(label, ctx.style)], else: []
 
     gauge_runs =
-      if maximum == 0 do
-        gauge_track(style, slots, ctx)
-      else
-        filled = div(min(value, maximum) * slots, maximum)
-        gauge_filled(style, filled, slots, tone, ctx)
+      cond do
+        maximum == 0 ->
+          gauge_track(style, slots, ctx)
+
+        style == :smooth ->
+          gauge_smooth(value, maximum, slots, tone, gradient_to, ctx)
+
+        true ->
+          filled = div(min(value, maximum) * slots, maximum)
+          gauge_filled(style, filled, slots, tone, ctx)
       end
 
     render(label_runs ++ gauge_runs, ctx, rows)
   end
 
   # --- Chart ---
+  # A sparkline is one row of vertical eighths at tier `:rich`; its measured
+  # twin is braille at height 1, so both tiers spend the same rows.
   defp block(
-         %Block.Chart{series: series, tone: tone, height: height, label: label},
+         %Block.Chart{series: series, tone: tone, height: height, style: style, label: label},
          ctx,
          rows
        )
-       when is_list(series) and is_atom(tone) and is_integer(height) and height in 1..4 do
-    if ctx.options.ascii? do
-      chart_ascii(series, label, ctx, rows)
-    else
-      chart_braille(series, tone, height, label, ctx, rows)
+       when is_list(series) and is_atom(tone) and is_integer(height) and height in 1..4 and
+              style in [:braille, :sparkline] do
+    cond do
+      ctx.options.ascii? -> chart_ascii(series, label, ctx, rows)
+      style == :sparkline and rich?(ctx) -> chart_sparkline(series, tone, label, ctx, rows)
+      style == :sparkline -> chart_braille(series, tone, 1, label, ctx, rows)
+      true -> chart_braille(series, tone, height, label, ctx, rows)
     end
   end
 
   # --- Surface ---
+  # `edges: :half` draws a half-row margin at tier `:rich`; everywhere else it
+  # paints exactly like `rounded: true`, so both tiers spend the same rows.
   defp block(
-         %Block.Surface{blocks: blocks, tone: tone, accent: accent, rounded: rounded},
+         %Block.Surface{
+           blocks: blocks,
+           tone: tone,
+           accent: accent,
+           rounded: rounded,
+           edges: edges
+         },
          ctx,
          rows
        )
-       when is_list(blocks) and is_atom(tone) and is_boolean(rounded) do
+       when is_list(blocks) and is_atom(tone) and is_boolean(rounded) and
+              edges in [:corners, :half] do
     bg_style = role(tone, ctx)
     indent = if accent, do: @card_gutter, else: 1
+    half? = edges == :half and rich?(ctx)
+    framed? = rounded or edges == :half
 
     # A surface only indents; it does not reserve a right pad. Its callers (the
     # runs dashboard and the run palette) build rows that are measured to fill
@@ -314,7 +346,7 @@ defmodule SwarmCodeCLI.UI.Paint.Blocks do
         style: bg_style
     }
 
-    body_lines = sequence(blocks, inner_ctx, max(0, rows - if(rounded, do: 2, else: 0)))
+    body_lines = sequence(blocks, inner_ctx, max(0, rows - if(framed?, do: 2, else: 0)))
 
     accent_col =
       if accent do
@@ -349,14 +381,64 @@ defmodule SwarmCodeCLI.UI.Paint.Blocks do
         end
       end)
 
-    if rounded do
-      surface_with_corners(padded_lines, ctx, bg_style, rows)
+    cond do
+      half? -> surface_with_half_edges(padded_lines, ctx, bg_style, rows)
+      framed? -> surface_with_corners(padded_lines, ctx, bg_style, rows)
+      true -> Enum.take(padded_lines, rows)
+    end
+  end
+
+  # --- Columns ---
+  # Each column is laid out at its own width, every line padded to that width
+  # in the inherited style, then the rows are zipped side by side with `gap`
+  # spaces between; a column that ran out of rows contributes blanks. The
+  # widths and the gaps must fit the region, or the scene is invalid.
+  defp block(%Block.Columns{columns: columns, gap: gap}, ctx, rows)
+       when is_list(columns) and columns != [] and is_integer(gap) and gap >= 0 do
+    widths = Enum.map(columns, &column_width/1)
+
+    if Enum.sum(widths) + gap * (length(columns) - 1) > ctx.width, do: fail(:invalid_scene)
+
+    rendered =
+      Enum.map(columns, fn %{width: width, blocks: blocks} ->
+        blocks
+        |> sequence(%{ctx | width: width}, rows)
+        |> Enum.map(&pad_line(&1, ctx, ctx.style, width))
+      end)
+
+    height = rendered |> Enum.map(&length/1) |> Enum.max()
+
+    spacer =
+      if gap > 0,
+        do: hd(render([raw(String.duplicate(" ", gap), ctx.style)], %{ctx | width: gap}, 1)),
+        else: nil
+
+    if height == 0 do
+      []
     else
-      Enum.take(padded_lines, rows)
+      for row <- 0..(height - 1) do
+        rendered
+        |> Enum.zip(widths)
+        |> Enum.map(fn {lines, width} ->
+          Enum.at(lines, row) || pad_line(%{units: [], cells: 0}, ctx, ctx.style, width)
+        end)
+        |> Enum.intersperse(spacer)
+        |> Enum.reject(&is_nil/1)
+        |> Enum.reduce(%{units: [], cells: 0}, fn part, acc ->
+          %{units: acc.units ++ part.units, cells: acc.cells + part.cells}
+        end)
+      end
+      |> Enum.take(rows)
     end
   end
 
   defp block(_, _, _), do: fail(:invalid_scene)
+
+  defp column_width(%{width: width, blocks: blocks} = column)
+       when map_size(column) == 2 and is_integer(width) and width > 0 and is_list(blocks),
+       do: width
+
+  defp column_width(_), do: fail(:invalid_scene)
 
   # --- card framing ---
 
@@ -405,6 +487,8 @@ defmodule SwarmCodeCLI.UI.Paint.Blocks do
     List.duplicate(raw(glyph, role(:ticks_track, ctx)), slots)
   end
 
+  defp gauge_track(:smooth, slots, ctx), do: List.duplicate(raw(" ", smooth_track(ctx)), slots)
+
   defp gauge_filled(:ticks, filled, slots, tone, ctx) do
     on_glyph = gauge_glyph(:stripe, ctx)
     off_glyph = gauge_glyph(:stripe_off, ctx)
@@ -444,6 +528,56 @@ defmodule SwarmCodeCLI.UI.Paint.Blocks do
       SafeText.value(SafeText.chrome(token))
     end
   end
+
+  # Eighth-block fill at tier `:rich`: whole cells are the full block, the
+  # boundary cell is the matching left eighth on the track colour, and the
+  # rest is the track. The track is a space on the track colour, one cell in
+  # every width policy. A gradient mixes each lit cell's foreground from `tone`
+  # towards `gradient_to`; outside truecolor the colours are not RGB and every
+  # cell keeps `tone`.
+  @eighths [:eighth_1, :eighth_2, :eighth_3, :eighth_4, :eighth_5, :eighth_6, :eighth_7]
+
+  defp gauge_smooth(value, maximum, slots, tone, gradient_to, ctx) do
+    eighths = div(min(value, maximum) * slots * 8, maximum)
+    whole = div(eighths, 8)
+    part = rem(eighths, 8)
+    track = smooth_track(ctx)
+    from = role(tone, ctx)
+    to = if gradient_to, do: role(gradient_to, ctx)
+
+    for i <- 0..(slots - 1) do
+      lit = if to, do: mix_fg(from, to, i / max(1, slots - 1)), else: from
+
+      cond do
+        i < whole ->
+          raw(glyph(:block_full), lit)
+
+        i == whole and part > 0 ->
+          raw(glyph(Enum.at(@eighths, part - 1)), %{lit | background: track.background})
+
+        true ->
+          raw(" ", track)
+      end
+    end
+  end
+
+  defp smooth_track(ctx) do
+    track = role(:ticks_track, ctx)
+    %{track | background: track.foreground}
+  end
+
+  defp mix_fg(%{foreground: {:rgb, r1, g1, b1}} = from, %{foreground: {:rgb, r2, g2, b2}}, t) do
+    mix = fn x, y -> round(x + (y - x) * t) end
+    %{from | foreground: {:rgb, mix.(r1, r2), mix.(g1, g2), mix.(b1, b2)}}
+  end
+
+  defp mix_fg(from, _to, _t), do: from
+
+  # The rich glyphs are reached only here: never under ASCII, and only when the
+  # session's capabilities chose the `:rich` tier (narrow policy, truecolor).
+  defp rich?(ctx), do: not ctx.options.ascii? and ctx.options.glyph_tier == :rich
+
+  defp glyph(token), do: SafeText.value(SafeText.chrome(token))
 
   # --- Chart helpers ---
 
@@ -501,6 +635,36 @@ defmodule SwarmCodeCLI.UI.Paint.Blocks do
         label_line = if label, do: render([run(label, ctx.style)], ctx, 1), else: []
         Enum.take(body ++ label_line, rows)
     end
+  end
+
+  # One row at tier `:rich`: each value is a vertical eighth normalised to the
+  # peak, an empty cell for zero and the full block for the peak itself. The
+  # first `width` values are shown, as the braille row does, and a label
+  # follows on its own row.
+  @verticals [:vert_1, :vert_2, :vert_3, :vert_4, :vert_5, :vert_6, :vert_7]
+
+  defp chart_sparkline([], _tone, label, ctx, rows) do
+    label_runs = if label, do: [run(label, ctx.style)], else: [raw("(no data)", ctx.style)]
+    render(label_runs, ctx, rows)
+  end
+
+  defp chart_sparkline(series, tone, label, ctx, rows) do
+    peak = max(1, Enum.max(series))
+    lit = role(tone, ctx)
+
+    runs =
+      series
+      |> Enum.take(ctx.width)
+      |> Enum.map(fn value ->
+        case round(value / peak * 8) do
+          0 -> raw(" ", lit)
+          8 -> raw(glyph(:block_full), lit)
+          level -> raw(glyph(Enum.at(@verticals, level - 1)), lit)
+        end
+      end)
+
+    label_line = if label, do: render([run(label, ctx.style)], ctx, 1), else: []
+    Enum.take(render(runs, ctx, 1) ++ label_line, rows)
   end
 
   @col0_bits [0x01, 0x02, 0x04, 0x40]
@@ -575,6 +739,39 @@ defmodule SwarmCodeCLI.UI.Paint.Blocks do
     else
       Enum.take(top_line ++ body_lines ++ bottom_line, rows)
     end
+  end
+
+  # The half-row margin at tier `:rich`: a lower half block on top and an
+  # upper half block below, in the surface colour over the outside background,
+  # with the quadrant corners in the same style so the frame reads as one
+  # rounded shape one half-row taller than the body.
+  defp surface_with_half_edges(body_lines, ctx, bg_style, rows) do
+    edge = %{ctx.style | foreground: bg_style.background}
+    fill_width = max(0, ctx.width - 2)
+
+    top_line =
+      render(
+        [
+          raw(glyph(:corner_tl), edge),
+          raw(String.duplicate(glyph(:half_lower), fill_width), edge),
+          raw(glyph(:corner_tr), edge)
+        ],
+        ctx,
+        1
+      )
+
+    bottom_line =
+      render(
+        [
+          raw(glyph(:corner_bl), edge),
+          raw(String.duplicate(glyph(:half_upper), fill_width), edge),
+          raw(glyph(:corner_br), edge)
+        ],
+        ctx,
+        1
+      )
+
+    Enum.take(top_line ++ body_lines ++ bottom_line, rows)
   end
 
   defp diff_hunks(_, _, rows) when rows <= 0, do: []
