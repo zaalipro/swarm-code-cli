@@ -37,18 +37,27 @@ defmodule SwarmCodeCLI.Demo.Cells do
   """
   alias SwarmCodeCLI.Demo.Cells.Directory
   alias SwarmCodeCLI.UI.{Capabilities, Fixtures, Paint, Projector, Size}
-  alias SwarmCodeCLI.UI.DataSource.DTO.{PendingInteraction, Question, QuestionOption}
+  alias SwarmCodeCLI.UI.DataSource.DTO.{Approval, PendingInteraction, Question, QuestionOption}
   alias SwarmCodeCLI.UI.Paint.{Options, SVG}
 
   @root Path.expand("../../../../..", __DIR__)
   @output Path.join(@root, "_build/cell-previews")
+  # `{kind, {columns, rows}, color_mode, ascii?, glyph_tier}`.
   @core for kind <- [:chat, :swarm, :consensus, :research],
             size <- [{80, 24}, {120, 40}, {160, 50}],
-            do: {kind, size, :truecolor, false}
+            do: {kind, size, :truecolor, false, :measured}
   @dialogs for kind <- [:question, :confirmation],
                size <- [{80, 24}, {50, 16}],
-               do: {kind, size, :monochrome, true}
-  @examples @core ++ @dialogs ++ [{:too_small, {49, 13}, :monochrome, true}]
+               do: {kind, size, :monochrome, true, :measured}
+  # The agents tab at both glyph tiers, on a 56-cell dock, and the waiting card.
+  @pane [
+    {:swarm, {170, 42}, :truecolor, false, :rich},
+    {:swarm, {170, 42}, :truecolor, false, :measured},
+    {:consensus, {170, 42}, :truecolor, false, :rich},
+    {:approval, {170, 42}, :truecolor, false, :rich},
+    {:swarm, {150, 30}, :truecolor, false, :rich}
+  ]
+  @examples @core ++ @dialogs ++ @pane ++ [{:too_small, {49, 13}, :monochrome, true, :measured}]
 
   @spec run() ::
           {:ok, %{directory: binary(), files: [binary()]}}
@@ -109,13 +118,14 @@ defmodule SwarmCodeCLI.Demo.Cells do
     _ -> {:error, :render_failed}
   end
 
-  defp render({kind, {columns, rows}, mode, ascii?}) do
+  defp render({kind, {columns, rows}, mode, ascii?, tier}) do
     size = %Size{columns: columns, rows: rows}
-    capabilities = %Capabilities{size: size, color_mode: mode, ascii?: ascii?}
+    capabilities = %Capabilities{size: size, color_mode: mode, ascii?: ascii?, glyph_tier: tier}
     state = fixture(kind, size, capabilities)
     {scene, _table} = Projector.project(state)
+    options = %Options{color_mode: mode, ascii?: ascii?, glyph_tier: tier}
 
-    with {:ok, plan} <- Paint.build(scene, %Options{color_mode: mode, ascii?: ascii?}),
+    with {:ok, plan} <- Paint.build(scene, options),
          {:ok, svg} <- SVG.encode(plan) do
       {:ok, svg}
     else
@@ -151,15 +161,47 @@ defmodule SwarmCodeCLI.Demo.Cells do
     %{state | layers: [{:confirm_intent, {:run_control, :stop, "fixture-run"}}], focus: "cancel"}
   end
 
+  # A swarm whose builder waits for permission to run a command: the waiting
+  # card under the lead card, and the count on the strip.
+  defp fixture(:approval, size, capabilities) do
+    state = Fixtures.representative(:swarm, size, capabilities) |> wide_dock()
+
+    interaction = %PendingInteraction{
+      id: "preview-approval",
+      run_id: "fixture-run",
+      node_id: "agent-4",
+      conversation_id: "fixture-conversation",
+      kind: :approval,
+      expected_revision: 4,
+      approval: %Approval{
+        tool: "run_command",
+        permission: :execute,
+        arguments_preview: "mix ecto.migrate"
+      },
+      allowed_actions: [:approve, :deny],
+      urgency: :high,
+      created_at: state.now - 1_000
+    }
+
+    state = put_in(state.read_model.interactions[interaction.id], interaction)
+    put_in(state.read_model.agents["agent-4"].state, :waiting_approval)
+  end
+
   defp fixture(:too_small, size, capabilities),
     do: Fixtures.representative(:chat, size, capabilities)
 
   defp fixture(kind, size, capabilities),
-    do: Fixtures.representative(kind, size, capabilities)
+    do: Fixtures.representative(kind, size, capabilities) |> wide_dock()
 
-  defp filename({kind, {columns, rows}, mode, ascii?}) do
+  # From 170 columns the dock has room for the two-column sub-agent grid.
+  defp wide_dock(%{size: %Size{columns: columns}} = state) when columns >= 170,
+    do: %{state | preferences: %{state.preferences | inspector_width: 56}}
+
+  defp wide_dock(state), do: state
+
+  defp filename({kind, {columns, rows}, mode, ascii?, tier}) do
     name = if kind == :too_small, do: "too-small", else: Atom.to_string(kind)
-    suffix = if ascii?, do: "-ascii", else: ""
+    suffix = if(ascii?, do: "-ascii", else: "") <> if(tier == :rich, do: "-rich", else: "")
     "#{name}-#{columns}x#{rows}-#{mode}#{suffix}.svg"
   end
 
@@ -181,8 +223,10 @@ defmodule SwarmCodeCLI.Demo.Cells do
 
   defp gallery do
     figures =
-      Enum.map(@examples, fn {kind, {columns, rows}, mode, ascii?} = example ->
-        label = "#{kind} / #{columns} × #{rows} / #{mode}#{if ascii?, do: " / ASCII", else: ""}"
+      Enum.map(@examples, fn {kind, {columns, rows}, mode, ascii?, tier} = example ->
+        label =
+          "#{kind} / #{columns} × #{rows} / #{mode}" <>
+            if(ascii?, do: " / ASCII", else: "") <> if(tier == :rich, do: " / rich", else: "")
 
         "<figure><figcaption>#{label}</figcaption><img src=\"#{filename(example)}\" " <>
           "alt=\"#{label} synthetic cell preview\" width=\"#{columns * 10}\" " <>

@@ -16,7 +16,7 @@ defmodule SwarmCodeCLI.Demo.CellsTest do
 
     assert Path.dirname(directory) == Path.join(@repo, "_build/cell-previews")
     assert files == Enum.sort(files)
-    assert length(files) == 18
+    assert length(files) == 23
     assert "index.html" in files
     assert Enum.sort(File.ls!(directory)) == files
 
@@ -36,6 +36,23 @@ defmodule SwarmCodeCLI.Demo.CellsTest do
 
     svg = assert_svg(Path.join(directory, "too-small-49x13-monochrome-ascii.svg"), 49, 13)
     refute svg =~ "data-action="
+
+    # The agents tab at both tiers: the rich one carries the eighth blocks and
+    # half-row edges, the measured one only the stripes and quadrants.
+    rich = assert_svg(Path.join(directory, "swarm-170x42-truecolor-rich.svg"), 170, 42)
+    measured = assert_svg(Path.join(directory, "swarm-170x42-truecolor.svg"), 170, 42)
+    assert rich =~ "█" and rich =~ "▄"
+    refute measured =~ "█" or measured =~ "▄"
+    assert measured =~ "▐" and measured =~ "▗"
+
+    for name <-
+          ~w(consensus-170x42-truecolor-rich.svg approval-170x42-truecolor-rich.svg swarm-150x30-truecolor-rich.svg) do
+      assert name in files
+    end
+
+    # One <text> per cell, so look for the waiting card's amber "?" rather than a phrase.
+    approval = File.read!(Path.join(directory, "approval-170x42-truecolor-rich.svg"))
+    assert approval =~ ~r/fill="#f5b400"[^>]*>\?<\/text>/
 
     html = File.read!(Path.join(directory, "index.html"))
     assert html =~ "FAKE DEMO"
@@ -79,9 +96,9 @@ defmodule SwarmCodeCLI.Demo.CellsTest do
 
   test "real child-project command exports files and rejects arguments and umbrella invocation" do
     {output, 0} = System.cmd("mix", ["swarm_code.demo.cells"], cd: @child, stderr_to_stdout: true)
-    [_, directory] = Regex.run(~r/Cell previews: (.+) \(18 files\)/, output)
+    [_, directory] = Regex.run(~r/Cell previews: (.+) \(23 files\)/, output)
     on_exit(fn -> File.rm_rf!(directory) end)
-    assert length(File.ls!(directory)) == 18
+    assert length(File.ls!(directory)) == 23
     assert_svg(Path.join(directory, "chat-80x24-truecolor.svg"), 80, 24)
 
     {unknown, status} =
