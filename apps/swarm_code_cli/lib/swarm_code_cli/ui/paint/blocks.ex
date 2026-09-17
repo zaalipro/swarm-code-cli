@@ -719,16 +719,25 @@ defmodule SwarmCodeCLI.UI.Paint.Blocks do
 
     fill_width = max(0, ctx.width - 2)
 
+    # A quadrant in the surface colour over the outside background is the
+    # rounded corner; painted in the surface's own style it would take the
+    # inherited foreground and read as a bright square. ASCII has no quadrant
+    # and keeps the whole corner cell in the surface colour.
+    corner =
+      if ctx.options.ascii?,
+        do: bg_style,
+        else: %{ctx.style | foreground: bg_style.background}
+
     top_runs = [
-      raw(tl_glyph, bg_style),
+      raw(tl_glyph, corner),
       raw(String.duplicate(" ", fill_width), bg_style),
-      raw(tr_glyph, bg_style)
+      raw(tr_glyph, corner)
     ]
 
     bottom_runs = [
-      raw(bl_glyph, bg_style),
+      raw(bl_glyph, corner),
       raw(String.duplicate(" ", fill_width), bg_style),
-      raw(br_glyph, bg_style)
+      raw(br_glyph, corner)
     ]
 
     top_line = render(top_runs, ctx, 1)

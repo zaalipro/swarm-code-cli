@@ -62,6 +62,25 @@ defmodule SwarmCodeCLI.UI.Paint.RichBlocksTest do
       assert Enum.all?(body, fn {_, _, bg} -> bg == {:rgb, 30, 30, 30} end)
     end
 
+    test "quadrant corners take the surface colour over the outside background, at both tiers" do
+      for tier <- [:measured, :rich] do
+        [top, _body, bottom] =
+          lines(
+            [%Block.Surface{blocks: [%Block.Text{text: safe("hi")}], tone: :card, rounded: true}],
+            6,
+            tier
+          )
+
+        for line <- [top, bottom], {_, fg, bg} <- [List.first(line), List.last(line)] do
+          assert fg == {:rgb, 30, 30, 30}, "corner foreground is the card colour"
+          assert bg == {:rgb, 20, 20, 20}, "corner background is the outside"
+        end
+
+        {_, _fg, fill_bg} = Enum.at(top, 1)
+        assert fill_bg == {:rgb, 30, 30, 30}
+      end
+    end
+
     test "measured falls back to the quadrant corners" do
       [top | _] = lines([%Block.Surface{blocks: [], tone: :card, edges: :half}], 6, :measured)
       assert text(top) == t(:corner_tl) <> "    " <> t(:corner_tr)
