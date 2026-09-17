@@ -674,22 +674,32 @@ defmodule SwarmCodeCLI.UI.KeymapTest do
       assert state.destination == {:run, "a"}
     end
 
-    test "[ and ] rotate the inspector's four tabs, overlay included" do
-      state = %{main() | tabs: %{inspector: :thread}}
+    test "[ and ] rotate the inspector's three tabs, overlay included" do
+      state = %{main() | tabs: %{inspector: :agents}}
 
       {state, _} = Reducer.update(state, {:inspector_tab, :next})
-      assert state.tabs.inspector == :agents
+      assert state.tabs.inspector == :timeline
 
       {state, _} = Reducer.update(state, {:inspector_tab, :previous})
-      assert state.tabs.inspector == :thread
+      assert state.tabs.inspector == :agents
 
       {state, _} = Reducer.update(state, {:inspector_tab, :previous})
       assert state.tabs.inspector == :changes
 
       overlay = %{state | layers: [{:run_inspector, "r", :changes}]}
       {overlay, _} = Reducer.update(overlay, {:inspector_tab, :next})
-      assert overlay.tabs.inspector == :thread
-      assert overlay.layers == [{:run_inspector, "r", :overview}]
+      assert overlay.tabs.inspector == :agents
+      assert overlay.layers == [{:run_inspector, "r", :agents}]
+
+      # A saved layer may still spell the agents tab :overview; rotation starts there.
+      saved = %{
+        main()
+        | tabs: %{inspector: :overview},
+          layers: [{:run_inspector, "r", :overview}]
+      }
+
+      {saved, _} = Reducer.update(saved, {:inspector_tab, :next})
+      assert saved.tabs.inspector == :timeline
     end
 
     test "the keymap preference lives on the state and starts at :default" do

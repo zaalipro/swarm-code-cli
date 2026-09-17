@@ -174,7 +174,7 @@ defmodule SwarmCodeCLI.UI.Switcher do
           item.state == :pending,
           do: {:open_layer, {item.kind, id}}
 
-    tabs = for tab <- [:thread, :agents, :timeline, :changes], do: {:set_tab, tab}
+    tabs = for tab <- SwarmCodeCLI.UI.Keymap.Bindings.inspector_tabs(), do: {:set_tab, tab}
 
     # Only the inspector is offered: a "navigator width" command would mutate a
     # preference no pane reads any more.

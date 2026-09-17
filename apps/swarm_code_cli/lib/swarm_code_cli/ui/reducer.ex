@@ -99,25 +99,23 @@ defmodule SwarmCodeCLI.UI.Reducer do
   defp transition(state, {:set_tab, tab}) do
     layers =
       case state.layers do
-        [{:run_inspector, id, _} | rest] ->
-          [{:run_inspector, id, if(tab == :thread, do: :overview, else: tab)} | rest]
-
-        other ->
-          other
+        [{:run_inspector, id, _} | rest] -> [{:run_inspector, id, tab} | rest]
+        other -> other
       end
 
     {%{state | tabs: Map.put(state.tabs, :inspector, tab), layers: layers}, []}
   end
 
-  # `[` and `]` rotate the same four tabs `{:set_tab, _}` sets, through the same
+  # `[` and `]` rotate the same three tabs `{:set_tab, _}` sets, through the same
   # clause, so a docked inspector and a run_inspector overlay cannot drift apart.
-  # `:overview` is the run_inspector layer's spelling of `:thread`.
+  # `:overview` and `:thread` are older spellings of the agents tab, kept for
+  # saved layers.
   defp transition(state, {:inspector_tab, direction}) do
     tabs = Bindings.inspector_tabs()
 
     current =
-      case Map.get(state.tabs, :inspector, :thread) do
-        :overview -> :thread
+      case Map.get(state.tabs, :inspector, :agents) do
+        old when old in [:overview, :thread] -> :agents
         tab -> tab
       end
 

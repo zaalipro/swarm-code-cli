@@ -72,7 +72,7 @@ defmodule SwarmCodeCLI.UI.Keymap.Bindings do
   # it only appears in the NORMAL and VISUAL sheets, where it is the point.
   @groups [:vim, :navigate, :focus, :runs, :act, :layers, :edit, :session]
 
-  @inspector_tabs [:thread, :agents, :timeline, :changes]
+  @inspector_tabs [:agents, :timeline, :changes]
 
   @bindings [
     # ------------------------------------------------------------------

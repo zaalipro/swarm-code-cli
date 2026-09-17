@@ -67,6 +67,15 @@ defmodule SwarmCodeCLI.UI.InspectorCardsTest do
 
   defp targets(table, target), do: for({id, ^target} <- table, do: id)
 
+  # The background of the first cell of `text` on the row that contains it.
+  defp background(plan, rect, rows, text) do
+    y = Enum.find_index(rows, &String.contains?(&1, text))
+    assert y, "no row contains #{inspect(text)}"
+    x = rows |> Enum.at(y) |> String.split(text) |> hd() |> String.length()
+    {:glyph, _, _, style} = Plan.cell(plan, rect.x + x, rect.y + y)
+    elem(plan.palette, style).background
+  end
+
   # The foreground of the first cell of `text` on the row that contains it.
   defp foreground(plan, rect, rows, text) do
     y = Enum.find_index(rows, &String.contains?(&1, text))
@@ -77,13 +86,32 @@ defmodule SwarmCodeCLI.UI.InspectorCardsTest do
   end
 
   describe "tab strip" do
-    test "the first row names the four tabs and each name is clickable" do
+    test "the first row names the three tabs, each name is clickable, and the waiting count follows agents" do
       {rows, table, _plan, _rect} = :swarm |> state(170, 34) |> painted()
 
-      assert hd(rows) == "thread  agents  timeline  changes"
+      # The swarm fixture has one interaction waiting on you.
+      assert hd(rows) == "agents   1   timeline  changes"
 
-      for tab <- [:thread, :agents, :timeline, :changes] do
+      for tab <- [:agents, :timeline, :changes] do
         assert length(targets(table, {:local, {:set_tab, tab}})) == 1
+      end
+
+      assert hd(rows(:chat, 170, 34)) == "agents  timeline  changes"
+    end
+
+    test "the current tab is lit on the hover surface and the count is amber" do
+      state = state(:swarm, 170, 34, caps: [color_mode: :truecolor], tab: :timeline)
+      {rows, _table, plan, rect} = painted(state, :truecolor)
+
+      assert foreground(plan, rect, rows, "timeline") == {:rgb, 255, 106, 26}
+      assert background(plan, rect, rows, "timeline") == {:rgb, 38, 38, 38}
+      assert background(plan, rect, rows, " 1 ") == @warning
+    end
+
+    test "older tab spellings and unknown values fall back to the agents tab" do
+      for tab <- [:thread, :overview, :nonsense] do
+        assert :swarm |> state(170, 34, tab: tab) |> painted() |> elem(0) |> hd() ==
+                 "agents   1   timeline  changes"
       end
     end
   end
@@ -266,10 +294,16 @@ defmodule SwarmCodeCLI.UI.InspectorCardsTest do
       assert Enum.any?(rows, &(&1 =~ ~r/^⚖ judge reading proposal B/))
     end
 
-    test "the agents tab of a consensus run carries no verdict card" do
+    test "the agents tab of a consensus run carries the verdict card below the hive; the other tabs do not" do
       rows = rows(:consensus, 170, 34, tab: :agents)
-      refute Enum.any?(rows, &String.contains?(&1, "VERDICT"))
       assert Enum.at(rows, 1) =~ ~r/^HIVE  Consensus/
+      hive = Enum.find_index(rows, &(&1 =~ ~r/^HIVE  Consensus/))
+      verdict = Enum.find_index(rows, &String.starts_with?(&1, "VERDICT"))
+      assert verdict > hive
+
+      for tab <- [:timeline, :changes] do
+        refute Enum.any?(rows(:consensus, 170, 34, tab: tab), &String.contains?(&1, "VERDICT"))
+      end
     end
   end
 

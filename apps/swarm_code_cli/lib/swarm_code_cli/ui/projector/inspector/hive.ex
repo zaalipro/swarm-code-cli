@@ -408,14 +408,22 @@ defmodule SwarmCodeCLI.UI.Projector.Inspector.Hive do
     }
   end
 
+  @doc """
+  How many interactions of `run` wait on you. Counts the pending interactions
+  in the read model, and never fewer than the run's own `needs`, since the run
+  summary can arrive before the interactions themselves.
+  """
+  def pending(_state, nil), do: 0
+
+  def pending(state, run) do
+    state.read_model.interactions
+    |> Map.values()
+    |> Enum.count(&(&1.state == :pending and &1.run_id == run.id))
+    |> max(Map.get(run, :needs, 0))
+  end
+
   defp footer(run, state, width) do
-    # The run summary counts what waits on you even when the interactions
-    # themselves have not reached the read model yet.
-    pending =
-      state.read_model.interactions
-      |> Map.values()
-      |> Enum.count(&(&1.state == :pending and &1.run_id == run.id))
-      |> max(Map.get(run, :needs, 0))
+    pending = pending(state, run)
 
     files =
       state.read_model.changes

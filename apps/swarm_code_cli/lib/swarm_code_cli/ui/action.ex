@@ -72,7 +72,7 @@ defmodule SwarmCodeCLI.UI.Action do
           | :nothing_waiting
           | {:open_interaction, binary()}
           | {:toggle_dock, :inspector}
-          | {:set_tab, :thread | :agents | :timeline | :changes}
+          | {:set_tab, :agents | :timeline | :changes}
           | {:set_keymap, :default | :vim}
           | {:vim,
              {:mode, Vim.mode()}
@@ -191,7 +191,7 @@ defmodule SwarmCodeCLI.UI.Action do
   def validate({:library_confirm, value} = action), do: valid_action(action, is_boolean(value))
 
   def validate({:set_tab, tab} = action),
-    do: valid_action(action, tab in [:thread, :agents, :timeline, :changes])
+    do: valid_action(action, tab in [:agents, :timeline, :changes])
 
   def validate({:set_keymap, keymap} = action),
     do: valid_action(action, keymap in [:default, :vim])
