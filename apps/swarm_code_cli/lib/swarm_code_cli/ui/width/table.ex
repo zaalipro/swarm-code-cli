@@ -1098,7 +1098,6 @@ defmodule SwarmCodeCLI.UI.Width.Table do
     {0xE0000, 0xE0FFF, 0},
     {0xE1000, 0x10FFFF, 1}
   ]
-
   @wide [
     {0x0, 0x9, 1},
     {0xA, 0xA, 3},

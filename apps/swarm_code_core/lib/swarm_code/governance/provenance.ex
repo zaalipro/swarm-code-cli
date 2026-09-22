@@ -29,6 +29,28 @@ defmodule SwarmCode.Governance.Provenance do
 
   def verify(_root), do: {:error, ["provenance root must be a path"]}
 
+  @doc """
+  Computes the lowercase hex sha256 of the provenance destination `path`.
+
+  Returns `{:ok, digest}` or `{:error, reason}` (`:missing`, `:read_failed`,
+  `:read_too_large`, `:read_timeout`). The path must already be resolved
+  inside the manifest root (see `verify/1` for confinement).
+  """
+  @spec digest_file(Path.t()) :: {:ok, String.t()} | {:error, atom()}
+  def digest_file(path) when is_binary(path) do
+    with {:ok, expected} <- File.lstat(path),
+         true <- expected.type == :regular,
+         {:ok, digest} <- bounded_worker(path, expected, :digest, 64 * 1_024 * 1_024) do
+      {:ok, digest}
+    else
+      false -> {:error, :missing}
+      {:error, reason} -> {:error, reason}
+      _other -> {:error, :read_failed}
+    end
+  end
+
+  def digest_file(_path), do: {:error, :missing}
+
   defp policy_errors(policy) when is_map(policy) do
     []
     |> add(policy["version"] != 1, "source policy version must be 1")

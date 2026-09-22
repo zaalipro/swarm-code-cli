@@ -655,8 +655,17 @@ defmodule SwarmCode.Domain.Storage do
     else
       Task.Supervisor.start_child(SwarmCode.Domain.TaskSupervisor, fn ->
         case Registry.register(SwarmCode.Domain.Registry, :storage_cleanup, nil) do
-          {:ok, _} -> execute(plan, &broadcast/1)
-          _ -> broadcast({:storage_failed, :busy})
+          {:ok, _} ->
+            try do
+              execute(plan, &broadcast/1)
+            rescue
+              e ->
+                broadcast({:storage_failed, e})
+                reraise e, __STACKTRACE__
+            end
+
+          _ ->
+            broadcast({:storage_failed, :busy})
         end
       end)
     end
@@ -757,12 +766,16 @@ defmodule SwarmCode.Domain.Storage do
       ids ->
         bytes = measure.(ids)
 
-        {:ok, {count, _}} =
-          Repo.transaction(fn -> Repo.delete_all(from(s in schema, where: s.id in ^ids)) end)
+        case Repo.transaction(fn -> Repo.delete_all(from(s in schema, where: s.id in ^ids)) end) do
+          {:ok, {count, _}} ->
+            state
+            |> advance(count, bytes)
+            |> batch_delete(schema, id_query, measure)
 
-        state
-        |> advance(count, bytes)
-        |> batch_delete(schema, id_query, measure)
+          {:error, reason} ->
+            Logger.warning("storage batch delete failed for #{inspect(schema)}: #{inspect(reason)}")
+            state
+        end
     end
   end
 
@@ -815,18 +828,20 @@ defmodule SwarmCode.Domain.Storage do
           )
         ) || 0
 
-      {:ok, _} =
-        Repo.transaction(fn ->
-          # Spec 49 §4.4: the node rows stay. Status, tokens, cost, timings,
-          # titles and the tree all keep working; only the exhaust goes.
-          Repo.update_all(from(n in Node, where: n.run_id in ^ids and n.id not in ^keep),
-            set: [result: nil, input: nil, prompt: nil, detail: nil]
-          )
+      case Repo.transaction(fn ->
+             Repo.update_all(from(n in Node, where: n.run_id in ^ids and n.id not in ^keep),
+               set: [result: nil, input: nil, prompt: nil, detail: nil]
+             )
 
-          Repo.update_all(from(r in Run, where: r.id in ^ids), set: [pruned: true])
-        end)
+             Repo.update_all(from(r in Run, where: r.id in ^ids), set: [pruned: true])
+           end) do
+        {:ok, _} ->
+          advance(state, length(ids), bytes)
 
-      advance(state, length(ids), bytes)
+        {:error, reason} ->
+          Logger.warning("storage prune payloads failed for runs #{inspect(ids)}: #{inspect(reason)}")
+          state
+      end
     end)
     |> log("runs pruned")
   end

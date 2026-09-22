@@ -80,6 +80,37 @@ defmodule SwarmCodeCLI.UI.Renderer.LockedBranchTest do
   end
 
   @tag :tmp_dir
+  test "path audit ignores ordinary mix build layout: the CLI priv link and this project's own release",
+       %{tmp_dir: root} do
+    # Mix links every umbrella app's priv into its build directory, and
+    # `mix release` assembles `_build/prod/rel/swarm_code_cli`. Neither is an
+    # output of the rejected renderer campaign, so neither may be reported.
+    priv_link = Path.join(root, "_build/prod/lib/swarm_code_cli/priv")
+    File.mkdir_p!(Path.dirname(priv_link))
+    File.ln_s!(Path.join(root, "outside"), priv_link)
+
+    release = Path.join(root, "_build/prod/rel/swarm_code_cli/bin/swarm-code")
+    File.mkdir_p!(Path.dirname(release))
+    File.write!(release, "fixture")
+
+    assert LockedBranchFixtures.conditional_paths(root) == []
+  end
+
+  @tag :tmp_dir
+  test "path audit still reports a campaign-assembled release tree that is not this project's release",
+       %{tmp_dir: root} do
+    campaign = Path.join(root, "_build/test/rel/ex_ratatui_013/lib/renderer.so")
+    File.mkdir_p!(Path.dirname(campaign))
+    File.write!(campaign, "fixture")
+
+    findings = LockedBranchFixtures.conditional_paths(root)
+
+    assert "_build/test/rel" in findings
+    assert "_build/test/rel/ex_ratatui_013" in findings
+    assert "_build/test/rel/ex_ratatui_013/lib/renderer.so" in findings
+  end
+
+  @tag :tmp_dir
   test "path audit reports a symlink ancestor without reading its external target", %{
     tmp_dir: root
   } do

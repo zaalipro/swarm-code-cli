@@ -654,8 +654,14 @@ defmodule SwarmCode.Daemon.Backup.Gate do
     cleanup_result = finish_ownership(ownership, paths, uid, anchor, test_hook)
 
     case cleanup_result do
-      :ok -> operation_result
-      {:error, _reason} -> {:error, :cleanup_pending}
+      :ok ->
+        operation_result
+
+      {:error, _reason} ->
+        case operation_result do
+          {:ok, artifact} -> {:ok, artifact}
+          _ -> {:error, :cleanup_pending}
+        end
     end
   end
 
@@ -734,8 +740,14 @@ defmodule SwarmCode.Daemon.Backup.Gate do
     cleanup_result = finish_ownership(ownership, paths, uid, anchor, test_hook)
 
     case cleanup_result do
-      :ok -> operation_result
-      {:error, _reason} -> {:error, :cleanup_pending}
+      :ok ->
+        operation_result
+
+      {:error, _reason} ->
+        case operation_result do
+          {:ok, artifact} -> {:ok, artifact}
+          _ -> {:error, :cleanup_pending}
+        end
     end
   end
 

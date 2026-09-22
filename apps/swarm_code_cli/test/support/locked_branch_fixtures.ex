@@ -157,23 +157,55 @@ defmodule SwarmCodeCLI.Test.LockedBranchFixtures do
         end
       end)
 
+    build_paths = descendants(root, "_build") ++ descendants(root, "apps/swarm_code_cli/priv")
+
     native =
-      for path <- descendants(root, "_build") ++ descendants(root, "apps/swarm_code_cli/priv"),
+      for path <- build_paths,
           conditional_build_path?(path) or uninspectable_build_link?(root, path),
           do: path
 
-    Enum.sort(Enum.uniq(exact ++ scripts ++ tasks ++ native ++ root_links))
+    Enum.sort(
+      Enum.uniq(exact ++ scripts ++ tasks ++ native ++ root_links ++ foreign_rel_dirs(root))
+    )
+  end
+
+  # `_build/<env>/rel` is where `mix release` assembles releases. The directory is
+  # only a finding when it holds no release of this project — either because it is
+  # empty or because the campaign assembled a different release there. When our own
+  # release is present the directory is ordinary build layout.
+  defp foreign_rel_dirs(root) do
+    for env <- children(root, "_build"),
+        rel <- [Path.join(env, "rel")],
+        {:ok, %{type: :directory}} <- [lstat_without_links(root, rel)],
+        not Enum.any?(children(root, rel), &own_release_child?/1),
+        do: rel
+  end
+
+  # A direct child of `_build/<env>/rel` is this project's release when it is named
+  # after the release the root mix.exs declares.
+  defp own_release_child?(path) do
+    case Path.split(path) do
+      ["_build", _, "rel", name] -> name == "swarm_code_cli"
+      _ -> false
+    end
   end
 
   defp uninspectable_build_link?(root, path) do
     case lstat_without_links(root, path) do
       {:symlink, _} ->
         # Mix links dependency source/assets here. They are outside the CLI/native
-        # library scope, and we never follow them. Build roots, app roots, release
-        # paths and CLI/native links remain findings.
+        # library scope, and we never follow them. Build roots, app roots and
+        # CLI/native links remain findings.
         case Path.split(path) do
           ["_build", _, "lib", app, "include"]
           when app not in ["swarm_code_cli", "ex_ratatui", "rustler", "rustler_precompiled"] ->
+            false
+
+          # Mix itself creates `_build/<env>/lib/<app>/priv -> apps/<app>/priv` for
+          # every umbrella app, so the CLI's own priv link is ordinary build layout
+          # rather than a campaign output. A `src` link, or a priv link for one of
+          # the rejected renderer dependencies, stays a finding.
+          ["_build", _, "lib", "swarm_code_cli", "priv"] ->
             false
 
           ["_build", _, "lib", app, leaf] when leaf in ["priv", "src"] ->
@@ -194,14 +226,48 @@ defmodule SwarmCodeCLI.Test.LockedBranchFixtures do
     campaign_app =
       Enum.any?(components, &(&1 in ["ex_ratatui", "rustler", "rustler_precompiled"]))
 
-    assembled_release = match?(["_build", _, "rel" | _], components)
-
+    # A native library or crash dump is a finding only when it belongs to the CLI
+    # app's own build directory or to a campaign dependency. Matching the bare
+    # component "swarm_code_cli" anywhere also matches the release directory name
+    # `_build/<env>/rel/swarm_code_cli`, which would flag the OTP and exqlite NIFs
+    # that every assembled release legitimately carries.
     cli_native =
-      ("swarm_code_cli" in components or campaign_app) and
+      (cli_build_path?(components) or campaign_app) and
         (Path.extname(path) in [".so", ".dylib", ".dll"] or
            Path.basename(path) == "erl_crash.dump")
 
-    campaign_app or assembled_release or cli_native
+    campaign_app or cli_native or assembled_release?(components)
+  end
+
+  # `_build/<env>/lib/swarm_code_cli/...` — the CLI app's own build output.
+  defp cli_build_path?(components) do
+    case components do
+      ["_build", _, "lib", "swarm_code_cli" | _] -> true
+      _ -> false
+    end
+  end
+
+  # `_build/<env>/rel` is where `mix release` assembles releases, so a `rel` tree
+  # is only a finding when it holds something other than this project's own
+  # release. The `rel` directory itself follows its contents: it stays clean when
+  # the only release inside it is ours, and it is reported when a campaign release
+  # is assembled there or when it holds no release at all.
+  defp assembled_release?(components) do
+    case components do
+      ["_build", _, "rel"] -> false
+      ["_build", _, "rel" | rest] -> not own_release_output?(rest)
+      _ -> false
+    end
+  end
+
+  # The release this repository builds, per the root mix.exs release name and the
+  # `_build/prod/rel/swarm_code_cli` path `scripts/dev/build_release.sh` writes.
+  # A sibling campaign release under the same `rel` directory is still a finding.
+  defp own_release_output?(rest) do
+    case rest do
+      ["swarm_code_cli" | _] -> true
+      _ -> false
+    end
   end
 
   # Include symlinks (even dangling ones) as findings but never recurse into them.

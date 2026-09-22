@@ -114,6 +114,8 @@ defmodule SwarmCode.Daemon.FoundationGate do
            {:ok, config} <- configuration(opts, paths),
            {:ok, identity} <- obtain_identity(config.identity),
            :ok <- ensure_private_directories(paths, identity.uid, config.directory_ensure),
+           # Note: desktop detection is a CLI-side safety guard (CLI refuses to run if desktop is active).
+           # The desktop app itself has no lease awareness, so mutual exclusion holds CLI-side only.
            :ok <- detect_desktop(config.desktop_detector, identity.uid),
            {:ok, fingerprint} <- database_fingerprint(paths.database),
            {:ok, lease} <- acquire_lease(paths, identity, fingerprint, config) do

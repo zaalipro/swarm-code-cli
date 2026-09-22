@@ -14,7 +14,7 @@
     "tests/emoji-test.txt": "1d8a944f88d7952f7ef7c5167fef3c67995bcae24543949710231b03a201acda"
   },
   "generated": {
-    "apps/swarm_code_cli/lib/swarm_code_cli/ui/width/table.ex": "755aa2a4109df15e507e8d7c61fdcf4fb74779ce22dd19d0fd04f8662894142b",
+    "apps/swarm_code_cli/lib/swarm_code_cli/ui/width/table.ex": "f57e85fad9151209720ec6ac98ec824a6b26fbd9d38cd43df60f74a8a31525c7",
     "apps/swarm_code_cli/test/fixtures/unicode_width/vectors.json": "c63285ee027f3048c8243310c97134278f5d995cf1b8b740134dd36580dd465e"
   }
 }
