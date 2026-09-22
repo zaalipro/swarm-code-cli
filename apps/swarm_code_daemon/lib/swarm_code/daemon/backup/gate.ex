@@ -3,6 +3,8 @@ defmodule SwarmCode.Daemon.Backup.Gate do
 
   import Bitwise
 
+  require Logger
+
   alias Exqlite.Sqlite3
   alias SwarmCode.Daemon.Backup.{Artifact, Manifest}
   alias SwarmCode.Daemon.CrossAppLease
@@ -108,7 +110,8 @@ defmodule SwarmCode.Daemon.Backup.Gate do
                         paths,
                         lease,
                         anchor,
-                        test_hook
+                        test_hook,
+                        fault
                       )
 
                     {:error, _reason} = error ->
@@ -145,6 +148,15 @@ defmodule SwarmCode.Daemon.Backup.Gate do
         {:error, :cleanup_pending} ->
           {:error, cleanup_pending_error()}
 
+        {:error, {:helper_cleanup, _reason}} ->
+          {:error, cleanup_pending_error()}
+
+        {:error, {:parent_cleanup, _reason}} ->
+          {:error, cleanup_pending_error()}
+
+        {:error, {:finish_ownership, _reason}} ->
+          {:error, cleanup_pending_error()}
+
         _other ->
           {:error, backup_failed()}
       end
@@ -168,7 +180,13 @@ defmodule SwarmCode.Daemon.Backup.Gate do
 
   if @test_build do
     defp validate_configured_fault!(fault)
-         when fault in [:after_snapshot, :after_manifest, :after_restore_copy, :before_publish],
+         when fault in [
+                :after_snapshot,
+                :after_manifest,
+                :after_restore_copy,
+                :before_publish,
+                :finish_ownership
+              ],
          do: fault
 
     defp validate_configured_fault!(fault),
@@ -651,18 +669,10 @@ defmodule SwarmCode.Daemon.Backup.Gate do
         _kind, _reason -> {:error, :backup_creation_failed}
       end
 
-    cleanup_result = finish_ownership(ownership, paths, uid, anchor, test_hook)
+    cleanup_result =
+      finish_ownership(ownership, paths, uid, anchor, test_hook, fault)
 
-    case cleanup_result do
-      :ok ->
-        operation_result
-
-      {:error, _reason} ->
-        case operation_result do
-          {:ok, artifact} -> {:ok, artifact}
-          _ -> {:error, :cleanup_pending}
-        end
-    end
+    settle_cleanup(cleanup_result, operation_result, :create_new)
   end
 
   defp revalidate_existing(
@@ -674,7 +684,8 @@ defmodule SwarmCode.Daemon.Backup.Gate do
          paths,
          lease,
          anchor,
-         test_hook
+         test_hook,
+         fault
        ) do
     ownership = begin_ownership()
 
@@ -737,19 +748,27 @@ defmodule SwarmCode.Daemon.Backup.Gate do
         _kind, _reason -> {:error, :backup_creation_failed}
       end
 
-    cleanup_result = finish_ownership(ownership, paths, uid, anchor, test_hook)
+    cleanup_result =
+      finish_ownership(ownership, paths, uid, anchor, test_hook, fault)
 
-    case cleanup_result do
-      :ok ->
-        operation_result
-
-      {:error, _reason} ->
-        case operation_result do
-          {:ok, artifact} -> {:ok, artifact}
-          _ -> {:error, :cleanup_pending}
-        end
-    end
+    settle_cleanup(cleanup_result, operation_result, :revalidate_existing)
   end
+
+  # When the artifact was verified complete but its ownership cleanup failed,
+  # the artifact still stands — the discarded cleanup failure is surfaced as a
+  # warning carrying the reason, never swallowed silently.
+  defp settle_cleanup(:ok, operation_result, _block), do: operation_result
+
+  defp settle_cleanup({:error, reason}, {:ok, artifact}, block) do
+    Logger.warning(
+      "backup #{block}: verified artifact kept despite cleanup failure (#{inspect(reason)})"
+    )
+
+    {:ok, artifact}
+  end
+
+  defp settle_cleanup({:error, _reason}, _operation_result, _block),
+    do: {:error, :cleanup_pending}
 
   defp validate_existing_manifest(manifest, source, decision, paths) do
     with :ok <- equal(manifest["operation_id"], Path.basename(paths.final_database, ".sqlite3")),
@@ -1622,7 +1641,7 @@ defmodule SwarmCode.Daemon.Backup.Gate do
     :ok
   end
 
-  defp finish_ownership(ownership, paths, _uid, anchor, test_hook) do
+  defp finish_ownership(ownership, paths, _uid, anchor, test_hook, fault) do
     state = Process.get(ownership) || %{committed?: false, files: %{}}
 
     helper_result =
@@ -1636,18 +1655,26 @@ defmodule SwarmCode.Daemon.Backup.Gate do
 
     parent_result = parent_cleanup_owned(state, paths, anchor, test_hook)
 
+    ownership_result = inject_fault(fault, :finish_ownership)
+
     result =
-      case {helper_result, parent_result} do
-        {:ok, :ok} ->
+      case {helper_result, parent_result, ownership_result} do
+        {:ok, :ok, :ok} ->
           :ok
 
-        {{:error, :directory_helper_cleanup_pending}, _} ->
+        {{:error, helper_reason}, _, _} ->
+          {:error, {:helper_cleanup, helper_reason}}
+
+        {{:error, _reason}, :ok, :ok} ->
           {:error, :cleanup_pending}
 
-        {{:error, _reason}, :ok} ->
-          {:error, :cleanup_pending}
+        {_, {:error, parent_reason}, :ok} ->
+          {:error, {:parent_cleanup, parent_reason}}
 
-        {_helper, {:error, _reason}} ->
+        {_, _, {:error, ownership_reason}} ->
+          {:error, {:finish_ownership, ownership_reason}}
+
+        {:ok, :ok, _} ->
           {:error, :cleanup_pending}
       end
 
@@ -2038,6 +2065,12 @@ defmodule SwarmCode.Daemon.Backup.Gate do
     end
   end
 
+  # Fault injection for the cleanup tail: unlike the operation faults above
+  # (which throw), `:finish_ownership` returns the cleanup-failure *result* so
+  # both `create_new` and `revalidate_existing` keep the verified artifact and
+  # surface the failure only in the warning. `nil` fault never fires.
+  defp inject_fault(nil, _point), do: :ok
+  defp inject_fault(:finish_ownership, :finish_ownership), do: {:error, :finish_ownership}
   defp inject_fault(point, point), do: throw({:injected_backup_fault, point})
   defp inject_fault(_configured, _point), do: :ok
 

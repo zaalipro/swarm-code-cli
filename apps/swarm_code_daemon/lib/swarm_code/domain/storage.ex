@@ -44,6 +44,34 @@ defmodule SwarmCode.Domain.Storage do
   # Spec 49 §1.7: VACUUM writes a second copy of the file before it swaps.
   @vacuum_headroom 2
 
+  # Test seam for the sweep's transaction paths (mission storage-safety): an
+  # arity-1 function set as `:storage_transaction_seam` is called with
+  # `{step, ids, calls}` before each transaction and may return
+  # `{:error, reason}` to force the `{:error}` branch without touching the
+  # database. `calls` counts prior transactions of the same step. Absent, the
+  # seam is a no-op.
+  defp transaction_seam(step, ids, calls) do
+    case Application.get_env(:swarm_code_daemon, :storage_transaction_seam) do
+      fun when is_function(fun, 1) -> fun.({step, ids, calls})
+      _ -> :ok
+    end
+  end
+
+  defp with_seam(step, ids, calls, fun) do
+    case transaction_seam(step, ids, calls) do
+      {:error, reason} ->
+        send(self(), {:storage_seam_forced, step, ids, calls, reason})
+        {:error, reason}
+
+      _ ->
+        Repo.transaction(fun)
+    end
+  rescue
+    e ->
+      send(self(), {:storage_seam_forced, step, ids, calls, e})
+      reraise e, __STACKTRACE__
+  end
+
   @type selection :: map()
   @type plan :: map()
 
@@ -674,13 +702,27 @@ defmodule SwarmCode.Domain.Storage do
   @doc """
   Runs a plan in the calling process — the retention sweep's path (spec 49 §2),
   and what the tests drive.
+
+  Unlike `run/1`, the caller's `notify` is the sweep's own channel: pass a
+  function capturing the events (e.g. `&send(self(), &1)`) to observe
+  `{:storage_progress, _}`, `{:storage_failed, _}` and `{:storage_done, _}`.
   """
-  @spec run_sync(plan()) :: map()
-  def run_sync(plan), do: execute(plan, fn _ -> :ok end)
+  @spec run_sync(plan(), (tuple() -> term())) :: map()
+  def run_sync(plan, notify \\ fn _ -> :ok end), do: execute(plan, notify)
 
   defp execute(plan, notify) do
     before = file_bytes()
-    state = %{done: 0, total: plan.total_count, bytes: 0, step: "", notify: notify}
+
+    state = %{
+      done: 0,
+      total: plan.total_count,
+      bytes: 0,
+      step: "",
+      errors: [],
+      notify: notify
+    }
+
+    if plan[:__raise__], do: raise(plan[:__raise__])
 
     state =
       state
@@ -702,7 +744,8 @@ defmodule SwarmCode.Domain.Storage do
       before: before.db,
       after: file_bytes().db,
       reclaimable: reclaimable_bytes(),
-      vacuum: vacuum
+      vacuum: vacuum,
+      errors: Enum.reverse(state.errors)
     }
 
     notify.({:storage_done, result})
@@ -735,10 +778,15 @@ defmodule SwarmCode.Domain.Storage do
     query = prunable_journals(plan.journal_days, plan.session_ids, plan.planned_at)
 
     state
-    |> batch_delete(JournalEntry, from(j in query, select: j.id), fn ids ->
-      Repo.one(from(j in JournalEntry, where: j.id in ^ids, select: sum(col_bytes(j.result)))) ||
-        0
-    end)
+    |> batch_delete(
+      JournalEntry,
+      from(j in query, select: j.id),
+      fn ids ->
+        Repo.one(from(j in JournalEntry, where: j.id in ^ids, select: sum(col_bytes(j.result)))) ||
+          0
+      end,
+      plan
+    )
     |> log("workflow journal rows")
   end
 
@@ -750,34 +798,53 @@ defmodule SwarmCode.Domain.Storage do
     query = prunable_checkpoints(plan.checkpoint_days, plan.session_ids, plan.planned_at)
 
     state
-    |> batch_delete(Checkpoint, from(c in query, select: c.id), fn ids ->
-      Repo.one(
-        from(c in Checkpoint, where: c.id in ^ids, select: sum(col_bytes(c.previous_content)))
-      ) || 0
-    end)
+    |> batch_delete(
+      Checkpoint,
+      from(c in query, select: c.id),
+      fn ids ->
+        Repo.one(
+          from(c in Checkpoint, where: c.id in ^ids, select: sum(col_bytes(c.previous_content)))
+        ) || 0
+      end,
+      plan
+    )
     |> log("rewind snapshots")
   end
 
-  defp batch_delete(state, schema, id_query, measure) do
-    case Repo.all(from(q in id_query, limit: @batch)) do
+  defp batch_delete(state, schema, id_query, measure, plan) do
+    batch_size = plan[:__batch_size__] || @batch
+    do_batch_delete(state, schema, id_query, measure, batch_size, 0)
+  end
+
+  defp do_batch_delete(state, schema, id_query, measure, batch_size, calls) do
+    case Repo.all(from(q in id_query, limit: ^batch_size)) do
       [] ->
         state
 
       ids ->
         bytes = measure.(ids)
 
-        case Repo.transaction(fn -> Repo.delete_all(from(s in schema, where: s.id in ^ids)) end) do
+        case with_seam(:journal_delete, ids, calls, fn ->
+               Repo.delete_all(from(s in schema, where: s.id in ^ids))
+             end) do
           {:ok, {count, _}} ->
             state
             |> advance(count, bytes)
-            |> batch_delete(schema, id_query, measure)
+            |> do_batch_delete(schema, id_query, measure, batch_size, calls + 1)
 
           {:error, reason} ->
-            Logger.warning("storage batch delete failed for #{inspect(schema)}: #{inspect(reason)}")
-            state
+            Logger.warning(
+              "storage batch delete failed for #{inspect(schema)}: #{inspect(reason)}"
+            )
+
+            state.notify.({:storage_failed, %{step: :journal_delete, reason: reason}})
+            record_error(state, :journal_delete, reason)
         end
     end
   end
+
+  defp record_error(state, step, reason),
+    do: %{state | errors: [%{step: step, reason: reason} | state.errors]}
 
   # 3. payload prune -------------------------------------------------------
 
@@ -789,61 +856,68 @@ defmodule SwarmCode.Domain.Storage do
     from(r in query, select: r.id)
     |> Repo.all()
     |> Enum.chunk_every(@run_batch)
-    |> Enum.reduce(state, fn ids, state ->
-      # Spec 51 §1.9: consensus is reconstructed from the judge's prompt/result
-      # and the submit_plan / write_spec op results (spec 37 §3); those rows
-      # keep their text, and the reclaimed figure leaves them out the same way.
-      keep_ops =
-        Repo.all(
-          from(o in Node,
-            where: o.run_id in ^ids and o.op_type in ~w(submit_plan write_spec),
-            select: o.id
-          )
-        )
-
-      # Spec 51 §5.8: a run whose rounds were stored as they were produced
-      # (`consensus_config["rounds_done"]`) reads its card from those entries,
-      # so its judge rows are pruned like any worker; a run from before that
-      # keeps the judge's text (the §1.9 interim).
-      legacy =
-        Repo.all(from(r in Run, where: r.id in ^ids, select: {r.id, r.consensus_config}))
-        |> Enum.filter(fn {_id, cfg} -> List.wrap(Map.get(cfg || %{}, "rounds_done")) == [] end)
-        |> Enum.map(&elem(&1, 0))
-
-      keep_agents =
-        Repo.all(
-          from(a in Node,
-            where: a.parent_id in ^keep_ops and a.run_id in ^legacy,
-            select: a.id
-          )
-        )
-
-      keep = keep_ops ++ keep_agents
-
-      bytes =
-        Repo.one(
-          from(n in Node,
-            where: n.run_id in ^ids and n.id not in ^keep,
-            select: sum(node_bytes(n))
-          )
-        ) || 0
-
-      case Repo.transaction(fn ->
-             Repo.update_all(from(n in Node, where: n.run_id in ^ids and n.id not in ^keep),
-               set: [result: nil, input: nil, prompt: nil, detail: nil]
-             )
-
-             Repo.update_all(from(r in Run, where: r.id in ^ids), set: [pruned: true])
-           end) do
-        {:ok, _} ->
-          advance(state, length(ids), bytes)
-
-        {:error, reason} ->
-          Logger.warning("storage prune payloads failed for runs #{inspect(ids)}: #{inspect(reason)}")
-          state
-      end
-    end)
+    |> Enum.with_index()
+    |> Enum.reduce(state, fn {ids, calls}, state -> prune_batch(state, ids, calls) end)
     |> log("runs pruned")
+  end
+
+  defp prune_batch(state, ids, calls) do
+    # Spec 51 §1.9: consensus is reconstructed from the judge's prompt/result
+    # and the submit_plan / write_spec op results (spec 37 §3); those rows
+    # keep their text, and the reclaimed figure leaves them out the same way.
+    keep_ops =
+      Repo.all(
+        from(o in Node,
+          where: o.run_id in ^ids and o.op_type in ~w(submit_plan write_spec),
+          select: o.id
+        )
+      )
+
+    # Spec 51 §5.8: a run whose rounds were stored as they were produced
+    # (`consensus_config["rounds_done"]`) reads its card from those entries,
+    # so its judge rows are pruned like any worker; a run from before that
+    # keeps the judge's text (the §1.9 interim).
+    legacy =
+      Repo.all(from(r in Run, where: r.id in ^ids, select: {r.id, r.consensus_config}))
+      |> Enum.filter(fn {_id, cfg} -> List.wrap(Map.get(cfg || %{}, "rounds_done")) == [] end)
+      |> Enum.map(&elem(&1, 0))
+
+    keep_agents =
+      Repo.all(
+        from(a in Node,
+          where: a.parent_id in ^keep_ops and a.run_id in ^legacy,
+          select: a.id
+        )
+      )
+
+    keep = keep_ops ++ keep_agents
+
+    bytes =
+      Repo.one(
+        from(n in Node,
+          where: n.run_id in ^ids and n.id not in ^keep,
+          select: sum(node_bytes(n))
+        )
+      ) || 0
+
+    case with_seam(:prune_payloads, ids, calls, fn ->
+           Repo.update_all(from(n in Node, where: n.run_id in ^ids and n.id not in ^keep),
+             set: [result: nil, input: nil, prompt: nil, detail: nil]
+           )
+
+           Repo.update_all(from(r in Run, where: r.id in ^ids), set: [pruned: true])
+         end) do
+      {:ok, _} ->
+        advance(state, length(ids), bytes)
+
+      {:error, reason} ->
+        Logger.warning(
+          "storage prune payloads failed for runs #{inspect(ids)}: #{inspect(reason)}"
+        )
+
+        state.notify.({:storage_failed, %{step: :prune_payloads, reason: reason}})
+        record_error(state, :prune_payloads, reason)
+    end
   end
 
   # 4. research ------------------------------------------------------------

@@ -1,6 +1,8 @@
 defmodule SwarmCode.Daemon.Backup.GateTest do
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog, only: [capture_log: 1]
+
   import Bitwise
 
   alias SwarmCode.Daemon.Backup.{Artifact, Gate, Manifest}
@@ -333,6 +335,67 @@ defmodule SwarmCode.Daemon.Backup.GateTest do
       assert source_state(fixture.db) == before
       assert File.ls!(fixture.backup_dir) == []
     end
+  end
+
+  test "create_new returns the verified artifact when finish_ownership fails" do
+    fixture = migration_fixture!()
+    before = source_state(fixture.db)
+
+    log =
+      capture_log(fn ->
+        assert {:ok, artifact} = create(fixture, fault: :finish_ownership)
+        send(self(), {:artifact, artifact})
+      end)
+
+    assert_received {:artifact, artifact}
+    assert artifact.__struct__ == Artifact
+    assert log =~ "verified artifact kept despite cleanup failure"
+    assert log =~ ":finish_ownership"
+    # The source database is untouched and the committed pair stands.
+    assert source_state(fixture.db) == before
+    assert File.exists?(artifact.database)
+    assert File.exists?(artifact.manifest)
+  end
+
+  test "revalidate_existing returns the verified artifact when finish_ownership fails" do
+    fixture = migration_fixture!()
+    assert {:ok, first} = create(fixture)
+    before = source_state(fixture.db)
+
+    log =
+      capture_log(fn ->
+        assert {:ok, second} = create(fixture, fault: :finish_ownership)
+        send(self(), {:artifact, second})
+      end)
+
+    assert_received {:artifact, artifact}
+    assert artifact == first
+    assert log =~ "verified artifact kept despite cleanup failure"
+    assert log =~ ":finish_ownership"
+    assert source_state(fixture.db) == before
+  end
+
+  test "operation failure combined with finish_ownership failure is still cleanup_pending" do
+    fixture = migration_fixture!()
+    before = source_state(fixture.db)
+
+    # Fail the operation LATE (after the artifact is fully staged but before
+    # publish) while the ownership cleanup also fails: no false success.
+    hook = fn
+      :before_staging_database_sync, _context -> {:error, :injected_late_operation_failure}
+      _point, _context -> :ok
+    end
+
+    log =
+      capture_log(fn ->
+        result = create(fixture, fault: :finish_ownership, test_hook: hook)
+        send(self(), {:result, result})
+      end)
+
+    assert_received {:result, {:error, %{code: :cleanup_pending}}}
+    assert source_state(fixture.db) == before
+    assert File.ls!(fixture.backup_dir) == []
+    assert log == "" or is_binary(log)
   end
 
   test "an identical duplicate operation is fully revalidated and returns the original artifact" do

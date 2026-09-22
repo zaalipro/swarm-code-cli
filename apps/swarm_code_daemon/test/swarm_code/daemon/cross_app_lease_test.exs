@@ -390,6 +390,50 @@ defmodule SwarmCode.Daemon.CrossAppLeaseTest do
     GenServer.stop(successor)
   end
 
+  test "admit_repo returns immediate mode and fifteen-second timeouts", %{opts: opts} do
+    # Asserts the guarded Repo option list desktop parity (the shared domain
+    # modules assume IMMEDIATE transactions): default_transaction_mode
+    # :immediate, busy_timeout 15_000, timeout 15_000.
+    #
+    # The handshake needs :starting_repo phase + a generation + a caller that
+    # is a linked child of the coordinator. Reaching :starting_repo through
+    # consume/2 needs a real native database binding (seal_binding), so the
+    # test drives those exact preconditions with :sys.replace_state/2 — the
+    # option list under test is built by handle_call({:admit_repo, _}, _, _)
+    # alone, which the replacement does not touch.
+    assert {:ok, owner} = CrossAppLease.start_link(opts)
+    generation = make_ref()
+
+    :sys.replace_state(owner, fn state ->
+      %{state | phase: :starting_repo, generation: generation}
+    end)
+
+    coordinator = self()
+
+    # linked_ancestor?/2 requires the caller's $ancestors head to be the
+    # coordinator AND a link to it — exactly the shape of a Repo supervisor
+    # started by the launcher (a proc_lib child of the launcher's tree). A
+    # raw spawn_link child does NOT carry [coordinator] as its $ancestors
+    # (verified by probe), so the caller is spawned with :proc_lib, which
+    # sets $ancestors to [parent].
+    caller =
+      :proc_lib.spawn_link(__MODULE__, :admit_caller, [owner, generation, coordinator])
+
+    assert_receive {:admitted, {:ok, repo_opts}}, 5_000
+    assert Keyword.get(repo_opts, :default_transaction_mode) == :immediate
+    assert Keyword.get(repo_opts, :busy_timeout) == 15_000
+    assert Keyword.get(repo_opts, :timeout) == 15_000
+
+    GenServer.stop(owner)
+    assert is_pid(caller)
+  end
+
+  @doc false
+  def admit_caller(owner, generation, coordinator) do
+    result = CrossAppLease.admit_repo(owner, generation)
+    send(coordinator, {:admitted, result})
+  end
+
   # Native DOWN queues revocation; fresh acquisition observes actual release.
   defp await_successor(opts, deadline) do
     case CrossAppLease.start_link(opts) do
