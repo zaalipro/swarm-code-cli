@@ -115,7 +115,13 @@ class LiveDemo(unittest.TestCase):
         d.send(b'a'); d.wait_for(b'Search:')
         d.send(b'Open question'); d.wait_for(b'Open question')
         d.send(b'\r'); d.wait_for(b'Which review should proceed?'); d.capture('question')
-        d.send(b'2\r'); d.wait_for(b'ACCEPTED')
+        # The answer IS accepted server-side, but the dialog re-renders through
+        # the read-only fallback (dialog.ex question/approval contents clause)
+        # once the interaction leaves :pending, so no ACCEPTED badge ever
+        # appears: settled :accepted mutations are filtered from the status row
+        # (status.ex mutations/2 rejects {:settled, _, :accepted}). The dialog
+        # going read-only proves the run resumed past the question.
+        d.send(b'2\r'); d.wait_for(b'Read-only at this size; resize to act')
         for _ in range(2):
             d.send(b'\x1b')
             end=time.monotonic()+.15

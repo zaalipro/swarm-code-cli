@@ -92,10 +92,13 @@ SwarmCode.Development.PersistedSession.run_for_test(boot)
                 terminal = Demo(launcher=wrapper)
                 try:
                     terminal.wait_for(b'Focus: composer', timeout=120)
-                    terminal.wait_for(b'SAVED')
-                    self.assertNotIn(b'FAKE', terminal.screen())
+                    # The SAVED · DEV launcher banner is the title lead only until
+                    # the workspace snapshot arrives; shell.ex then leads with
+                    # the project name, so wait for the actually-rendered banner
+                    # (phase 0 starts in Build mode, phase 1 resumes in Plan).
                     mode = 'Build' if phase == 0 else 'Plan'
-                    terminal.wait_for(f'SAVED · DEV · {mode} · pty-fixture'.encode())
+                    terminal.wait_for(f'project · {mode} · pty-fixture'.encode())
+                    self.assertNotIn(b'FAKE', terminal.screen())
                     terminal.descendants()
                     match = re.search(rb'conversation ([0-9a-f-]{36})', terminal.output)
                     self.assertIsNotNone(match)
@@ -118,7 +121,7 @@ SwarmCode.Development.PersistedSession.run_for_test(boot)
                         terminal.wait_for(b'Focus: composer')
                         terminal.send(b'\x1b[200~/plan\x1b[201~\r')
                         terminal.wait_for(b'Plan mode enabled')
-                        terminal.wait_for('SAVED · DEV · Plan · pty-fixture'.encode())
+                        terminal.wait_for('project · Plan · pty-fixture'.encode())
                         terminal.capture('saved-plan-mode')
                         terminal.send(b'\x1b[200~/rewind\x1b[201~\r')
                         terminal.wait_for(b'Checkpoints')
@@ -126,15 +129,19 @@ SwarmCode.Development.PersistedSession.run_for_test(boot)
                         terminal.wait_for(b'Focus: composer')
                         terminal.send(b'\x1b')
                         terminal.wait_for(b'Focus: main')
+                        # Shift-Tab used to walk focus to the (since-removed)
+                        # navigator dock; the focus graph is now main, inspector
+                        # and composer only, so Shift-Tab from main wraps to the
+                        # composer's editor.
                         terminal.send(b'\x1b[Z')
-                        terminal.wait_for(b'Focus: navigator')
-                        terminal.send(b'\x1b[B\r')
+                        terminal.wait_for(b'Focus: composer')
+                        terminal.send(b'\x1b')
                         terminal.wait_for(b'Focus: main')
                         terminal.wait_for(b'Saved terminal verified.')
                         terminal.capture('saved-run-navigation')
                         self.assertNotIn(b'Page error', terminal.screen())
                         terminal.send(b'\x1b')
-                        terminal.wait_for('SAVED · DEV · Plan · pty-fixture'.encode())
+                        terminal.wait_for('project · Plan · pty-fixture'.encode())
                     # q is text while the composer is focused; leave the editor
                     # first, matching the footer's explicit Esc Back hint.
                     if b'Focus: composer' in terminal.screen():
