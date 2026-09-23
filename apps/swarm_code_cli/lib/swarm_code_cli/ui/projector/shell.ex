@@ -377,8 +377,11 @@ defmodule SwarmCodeCLI.UI.Projector.Shell do
        when is_integer(started) and is_integer(finished),
        do: Words.elapsed(started, finished)
 
-  defp run_elapsed(%{started_at: started}, %{now: now}) when is_integer(started) and now > 0,
-    do: Words.elapsed(started, now)
+  # Only a live run's clock runs: a failed workflow the daemon never stamped
+  # finished must not count on for hours (ux F14).
+  defp run_elapsed(%{started_at: started, state: run_state}, %{now: now})
+       when is_integer(started) and is_integer(now) and now > 0,
+       do: if(Words.live?(run_state), do: Words.elapsed(started, now))
 
   defp run_elapsed(_run, _state), do: nil
 

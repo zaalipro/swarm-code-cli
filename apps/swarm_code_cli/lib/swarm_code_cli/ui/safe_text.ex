@@ -686,7 +686,7 @@ defmodule SwarmCodeCLI.UI.SafeText do
   def value(%{__struct__: __MODULE__, token: :queue} = text) when map_size(text) == 2, do: "Queue"
 
   def value(%{__struct__: __MODULE__, token: :superseded_child} = text) when map_size(text) == 2,
-    do: "LAUNCHED BY SUPERSEDED TURN"
+    do: "Launched by a superseded turn"
 
   def value(%{__struct__: __MODULE__, token: :research_depth} = text) when map_size(text) == 2,
     do: "Research: Ultra (4x10)"

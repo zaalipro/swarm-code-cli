@@ -27,11 +27,15 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
     context = Context.of(state)
     budget = if class in [:xl, :wide, :medium], do: 2, else: 1
 
-    lead = [gap(" ", state)] ++ vim_spans(state, context)
+    lead = [gap(" ", state)] ++ vim_spans(state, context) ++ select_spans(state)
     lead_cells = cells(lead, policy)
     parts = facts(state, class)
     toast = toast(state)
-    right = toast || hints(state, context, budget)
+
+    right =
+      toast ||
+        if(select_mode?(state), do: select_hints(state), else: hints(state, context, budget))
+
     right = if right == [], do: [], else: right ++ [gap(" ", state)]
 
     # The hints give way before the facts that matter most (mode, waiting,
@@ -100,6 +104,49 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
   end
 
   defp vim_spans(_state, _context), do: []
+
+  # Select mode (E1: Ctrl-T; focus on the transcript or the inspector with no
+  # layer open) says so at the lead, and its keys replace the composer's.
+  defp select_mode?(state), do: state.focus in ["main", "inspector"] and state.layers == []
+
+  defp select_spans(state) do
+    if select_mode?(state),
+      do: [span("SELECT", tint(:plain, state, :accent, [:bold]), state), gap("  ", state)],
+      else: []
+  end
+
+  defp select_hints(state) do
+    ascii? = state.capabilities.ascii?
+    first = fn id -> id |> Bindings.keys_for() |> List.first() end
+
+    move =
+      case {first.(:move_next), first.(:move_previous)} do
+        {nil, _} ->
+          []
+
+        {down, nil} ->
+          [{KeyLabel.label(down, ascii?), "move"}]
+
+        {down, up} ->
+          [{KeyLabel.label(down, ascii?) <> "/" <> KeyLabel.label(up, ascii?), "move"}]
+      end
+
+    rest =
+      for {id, words} <- [activate: "open", copy_selection: "copy", escape: "back"],
+          key = first.(id),
+          key != nil,
+          do: {KeyLabel.label(key, ascii?), words}
+
+    (move ++ rest)
+    |> Enum.map(fn {key, words} ->
+      [
+        span(key, tint(:plain, state, :key, [:bold]), state),
+        span(" " <> words, tint(:plain, state, :text_faint, []), state)
+      ]
+    end)
+    |> Enum.intersperse([gap("   ", state)])
+    |> List.flatten()
+  end
 
   # mode · approval · trust · model · ctx · cost · waiting · connection
   defp facts(state, class) do

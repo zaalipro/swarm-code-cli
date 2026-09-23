@@ -46,7 +46,7 @@ defmodule SwarmCodeCLI.UI.Projector.RunPalette do
     %Dialog{
       id: "run_palette",
       rect: rect,
-      title: Density.safe("SWITCH RUN", state, max(0, rect.width - 4)),
+      title: Density.safe("Switch run", state, max(0, rect.width - 4)),
       blocks: [
         filter_line(state, length(runs), total, rect.width)
         | body(state, runs, rect, first, height)

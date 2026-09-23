@@ -73,7 +73,7 @@ defmodule SwarmCodeCLI.UI.ProjectorModeTest do
     refute Enum.any?(texts, &String.contains?(&1, "→"))
   end
 
-  test "consensus mode uses section_heading for PLAN and CHANGES labels" do
+  test "consensus mode uses section_heading for the Plan and Changes labels" do
     transcript = %{
       "t1" => %{run_id: "run-1", role: :tool, text: "plan details here"},
       "t2" => %{run_id: "run-1", role: :tool, text: "change details here"}
@@ -94,20 +94,20 @@ defmodule SwarmCodeCLI.UI.ProjectorModeTest do
         _ -> []
       end)
 
-    # PLAN and CHANGES should be section headings with bold modifier
+    # Plan and Changes should be section headings with bold modifier
     plan_span =
       Enum.find(spans, fn span ->
-        SwarmCodeCLI.UI.SafeText.value(span.text) == "PLAN" and :bold in span.style.modifiers
+        SwarmCodeCLI.UI.SafeText.value(span.text) == "Plan" and :bold in span.style.modifiers
       end)
 
-    assert plan_span, "PLAN section heading should be bold"
+    assert plan_span, "Plan section heading should be bold"
 
     changes_span =
       Enum.find(spans, fn span ->
-        SwarmCodeCLI.UI.SafeText.value(span.text) == "CHANGES" and :bold in span.style.modifiers
+        SwarmCodeCLI.UI.SafeText.value(span.text) == "Changes" and :bold in span.style.modifiers
       end)
 
-    assert changes_span, "CHANGES section heading should be bold"
+    assert changes_span, "Changes section heading should be bold"
 
     # Pinned strings must survive
     all_text =

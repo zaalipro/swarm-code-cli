@@ -194,7 +194,7 @@ defmodule SwarmCodeCLI.UI.ProjectorTest do
       end)
 
     {scene, actions} = Projector.project(state)
-    assert Enum.join(texts(scene), " ") =~ "LAUNCHED BY SUPERSEDED TURN"
+    assert Enum.join(texts(scene), " ") =~ "Launched by a superseded turn"
     refute {:intent, {:run_control, :stop, "fixture-run"}} in Map.values(actions)
   end
 

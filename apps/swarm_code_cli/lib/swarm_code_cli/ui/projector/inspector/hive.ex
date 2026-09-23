@@ -227,7 +227,8 @@ defmodule SwarmCodeCLI.UI.Projector.Inspector.Hive do
       ]
   end
 
-  defp cell_role(agent, live_role) do
+  @doc false
+  def cell_role(agent, live_role) do
     cond do
       Words.waiting?(agent.state) -> :warning
       agent.state == :failed -> :error

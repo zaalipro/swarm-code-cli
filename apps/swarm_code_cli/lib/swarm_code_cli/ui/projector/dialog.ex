@@ -72,7 +72,10 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
     layer = hd(state.layers)
     rect = rectangle(layer, state.size, class)
 
-    {title, options, footer, focus} =
+    # `decor` draws a picker row as more than text in colour: the title with
+    # the query's letters picked out, the detail dimmed, the kind or shortcut
+    # against the right edge, a check on the current one, provider headings.
+    {title, options, footer, focus, decor} =
       case layer do
         {kind, _} when kind in [:switcher, :action_menu, :region_filter] ->
           switcher(state, rect, class, background)
@@ -81,7 +84,8 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
           model_picker(layer, state, rect)
 
         _ ->
-          contents(layer, state, rect, class)
+          {title, options, footer, focus} = contents(layer, state, rect, class)
+          {title, options, footer, focus, %{}}
       end
 
     footer_focus? = Enum.any?(footer, &match?({:dialog_control, ^focus, _, _}, &1))
@@ -118,14 +122,16 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
           block
       end)
 
-    ordinal = Enum.find_index(options, fn {id, _, _} -> id == focus end) || 0
+    # Headings are not items.
+    items = Enum.reject(options, fn {id, _, _} -> match?(%{heading: _}, Map.get(decor, id)) end)
+    ordinal = Enum.find_index(items, fn {id, _, _} -> id == focus end) || 0
 
     overflow =
       Support.text(
         case layer do
           {:approval, _} -> "PgUp/PgDn: scroll arguments"
           :help -> "PgUp/PgDn, Ctrl-D/U scroll · #{length(options)} lines"
-          _ -> "item #{min(ordinal + 1, length(options))} of #{length(options)}"
+          _ -> "item #{min(ordinal + 1, length(items))} of #{length(items)}"
         end,
         state,
         rect.width - 2
@@ -158,12 +164,23 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
         width =
           max(1, rect.width - 2 - if(focused? or not mono?, do: prefix_width, else: 0))
 
-        lines = Width.wrap(text, width, state.capabilities.ambiguous_width)
+        # A decorated row is one line; its spans clip it.
+        lines =
+          if Map.has_key?(decor, id) and not mono?,
+            do: [text],
+            else: Width.wrap(text, width, state.capabilities.ambiguous_width)
 
         Enum.map(lines, fn line ->
           {id, Density.safe(line, state, rect.width - 2), action}
         end)
       end)
+
+    # A picker is as tall as its rows (top edge where the centred box would
+    # start, so filtering shortens it from below), never a tall empty box.
+    rect =
+      if picker_layer?(layer) and class not in [:narrow, :small, :compressed_small],
+        do: %{rect | height: min(rect.height, max(8, length(rows) + 2 + footer_height))},
+        else: rect
 
     height = max(0, rect.height - 2 - footer_height)
 
@@ -220,13 +237,19 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
             end
           else
             spans =
-              option_spans(
-                text,
-                id == focus and not footer_focus?,
-                state,
-                rect.width - 2,
-                line_role(diff?, text)
-              )
+              case Map.get(decor, id) do
+                nil ->
+                  option_spans(
+                    text,
+                    id == focus and not footer_focus?,
+                    state,
+                    rect.width - 2,
+                    line_role(diff?, text)
+                  )
+
+                row ->
+                  decor_spans(row, id == focus and not footer_focus?, state, rect.width - 2)
+              end
 
             if action && first?,
               do: Support.action_spans(spans, action),
@@ -317,6 +340,185 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
   end
 
   defp hover(state), do: Theme.style(:hover, state.capabilities).background
+
+  defp picker_layer?({kind, _}) when kind in [:switcher, :action_menu, :region_filter, :jump],
+    do: true
+
+  defp picker_layer?({:model_picker, _, _}), do: true
+  defp picker_layer?(_layer), do: false
+
+  # A picker row in colour: rail, an optional check, the title with the
+  # query's letters in the accent, the detail dimmed, and the kind or
+  # shortcut against the right edge. A heading is a faint bold line.
+  defp decor_spans(%{heading: heading}, _focused?, state, width) do
+    [
+      %Span{
+        text: Density.safe("  " <> heading, state, width),
+        style: %{RunRow.tinted(:text_faint, state) | modifiers: [:bold]}
+      }
+    ]
+  end
+
+  defp decor_spans(row, focused?, state, width) do
+    policy = state.capabilities.ambiguous_width
+    surface = if focused?, do: hover(state)
+
+    paint = fn role, modifiers ->
+      %{RunRow.tinted(role, state) | background: surface, modifiers: modifiers}
+    end
+
+    rail =
+      if focused?,
+        do: {SafeText.value(Support.glyph(:stripe, state)) <> " ", paint.(:accent, [])},
+        else: {"  ", paint.(:text_primary, [])}
+
+    mark =
+      cond do
+        not row.marks? ->
+          []
+
+        row.current? ->
+          [{SafeText.value(Support.glyph(:check, state)) <> " ", paint.(:success, [:bold])}]
+
+        true ->
+          [{"  ", paint.(:text_primary, [])}]
+      end
+
+    title_style = paint.(:text_primary, if(focused?, do: [:bold], else: []))
+    hit_style = paint.(:accent, [:bold])
+
+    title =
+      for {piece, hit?} <- highlight(row.title, row.query),
+          do: {piece, if(hit?, do: hit_style, else: title_style)}
+
+    detail =
+      if row.detail in [nil, ""],
+        do: [],
+        else: [{"  " <> row.detail, paint.(:text_faint, [])}]
+
+    right = if row.right in [nil, ""], do: [], else: [{row.right, paint.(row.right_role, [])}]
+
+    left = [rail | mark] ++ title ++ detail
+    measure = fn spans -> Enum.reduce(spans, 0, &(&2 + Width.cells(elem(&1, 0), policy))) end
+    left_cells = measure.(left)
+    right_cells = measure.(right)
+
+    spans =
+      if right != [] and left_cells + right_cells + 2 <= width,
+        do:
+          left ++
+            [
+              {String.duplicate(" ", width - left_cells - right_cells - 1),
+               paint.(:text_primary, [])}
+            ] ++
+            right ++ [{" ", paint.(:text_primary, [])}],
+        else:
+          left ++ [{String.duplicate(" ", max(0, width - left_cells)), paint.(:text_primary, [])}]
+
+    spans
+    |> clip_pieces(width, policy)
+    |> Enum.map(fn {text, style} ->
+      %Span{text: Density.safe(text, state, width), style: style}
+    end)
+  end
+
+  defp clip_pieces(pieces, width, policy) do
+    {kept, _} =
+      Enum.reduce_while(pieces, {[], 0}, fn {text, style}, {acc, used} ->
+        cells = Width.cells(text, policy)
+
+        cond do
+          text == "" ->
+            {:cont, {acc, used}}
+
+          used + cells <= width ->
+            {:cont, {[{text, style} | acc], used + cells}}
+
+          used >= width ->
+            {:halt, {acc, used}}
+
+          true ->
+            {taken, _, taken_cells} = Width.take_cells(text, width - used, policy)
+            {:halt, {[{taken, style} | acc], used + taken_cells}}
+        end
+      end)
+
+    Enum.reverse(kept)
+  end
+
+  # The title cut at the query's first case-insensitive match, else at the
+  # starts of the words the query's letters begin, else whole.
+  defp highlight(title, query) do
+    query = query |> to_string() |> String.trim() |> String.trim_leading("/") |> strip_kind()
+
+    down = String.downcase(title)
+
+    cond do
+      query == "" ->
+        [{title, false}]
+
+      match = :binary.match(down, String.downcase(query)) ->
+        {at, size} = match
+
+        if byte_size(down) == byte_size(title) do
+          [
+            {binary_part(title, 0, at), false},
+            {binary_part(title, at, size), true},
+            {binary_part(title, at + size, byte_size(title) - at - size), false}
+          ]
+          |> Enum.reject(&(elem(&1, 0) == ""))
+        else
+          [{title, false}]
+        end
+
+      true ->
+        [{title, false}]
+    end
+  end
+
+  defp strip_kind(<<c, rest::binary>>) when c in [?@, ?#, ?>], do: String.trim(rest)
+  defp strip_kind(query), do: query
+
+  # Chrome words for what an entry is, when it is not an action.
+  @entry_kinds %{
+    command: "command",
+    workflow: "workflow",
+    project: "project",
+    repository: "repository",
+    conversation: "conversation",
+    research: "research",
+    run: "run"
+  }
+
+  # The key that does the same as a palette action, from the binding table.
+  @entry_bindings %{
+    {:local, {:open_layer, :help}} => :help,
+    {:local, {:toggle_dock, :inspector}} => :toggle_inspector,
+    {:local, {:presenter_handoff_requested, :plain}} => :presenter_handoff
+  }
+
+  defp entry_right(entry, state) do
+    case Map.get(@entry_bindings, entry.target) do
+      nil ->
+        {Map.get(@entry_kinds, entry.kind, ""), :text_faint}
+
+      id ->
+        case Bindings.keys_for(id) do
+          [key | _] -> {KeyLabel.label(key, state.capabilities.ascii?), :key}
+          [] -> {"", :text_faint}
+        end
+    end
+  end
+
+  # "always_allow" and "inspector width balanced" read as sentences.
+  defp sentence(text) do
+    text = String.replace(text, "_", " ")
+
+    case String.next_grapheme(text) do
+      {first, rest} -> String.upcase(first) <> rest
+      nil -> text
+    end
+  end
 
   # Pad the title with one space on each side so it reads like ┌─ Title ─┐
   # rather than starting flush at the corner.  Elide to rect.width - 4 first
@@ -762,11 +964,30 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
         {entry.id, Density.safe(entry.label, state, rect.width * 4), entry.target}
       end)
 
+    marks? = Enum.any?(entries, &Map.get(&1, :current?, false))
+
+    decor =
+      Map.new(entries, fn entry ->
+        title = Map.get(entry, :title) || entry.label
+        {right, right_role} = entry_right(entry, state)
+
+        {entry.id,
+         %{
+           title: sentence(title),
+           detail: Map.get(entry, :detail),
+           query: query,
+           current?: Map.get(entry, :current?, false),
+           marks?: marks?,
+           right: right,
+           right_role: right_role
+         }}
+      end)
+
     options = if options == [], do: [{"empty", SafeText.chrome(:no_results), nil}], else: options
     title = Density.safe("Search: " <> query, state, rect.width - 2)
 
     {title, options, [control("cancel", SafeText.chrome(:cancel), {:local, :close_top_layer})],
-     if(state.focus == "query", do: "query", else: focus(state, options))}
+     if(state.focus == "query", do: "query", else: focus(state, options)), decor}
   end
 
   # One row per model the daemon lists, the one in use marked, the provider
@@ -775,14 +996,52 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
   defp model_picker({:model_picker, target, _} = layer, state, rect) do
     query = ModelPicker.query(state, layer)
     mark = SafeText.value(Support.glyph(:check, state))
+    rows = ModelPicker.rows(state, layer)
 
-    options =
-      Enum.map(ModelPicker.rows(state, layer), fn row ->
+    # In colour the provider is a heading above its models (E's
+    # `first_in_group?`, else where the provider changes); the plain label
+    # keeps it after the model for monochrome and older painters.
+    {headed, _} =
+      Enum.map_reduce(rows, nil, fn row, previous ->
+        first? = Map.get(row, :first_in_group?, row.provider != previous)
+        {{row, first?}, row.provider}
+      end)
+
+    mono? = Theme.style(:focus, state.capabilities).prefix != nil
+
+    {options, decor} =
+      Enum.reduce(headed, {[], %{}}, fn {row, first?}, {options, decor} ->
         label =
           if(row.current?, do: mark, else: " ") <> " " <> row.model <> "  " <> row.provider
 
-        {row.id, Density.safe(label, state, rect.width * 4), {:intent, row.intent}}
+        option = {row.id, Density.safe(label, state, rect.width * 4), {:intent, row.intent}}
+
+        row_decor = %{
+          title: row.model,
+          detail: nil,
+          query: query,
+          current?: row.current?,
+          marks?: true,
+          right: if(row.current?, do: "in use", else: ""),
+          right_role: :text_faint
+        }
+
+        heading_id = "heading:" <> (Map.get(row, :provider_id) || row.provider || "")
+
+        if first? and not mono? do
+          heading = {heading_id, Density.safe(row.provider || "", state, rect.width), nil}
+
+          {[option, heading | options],
+           decor
+           |> Map.put(row.id, row_decor)
+           |> Map.put(heading_id, %{heading: row.provider || ""})}
+        else
+          {[option | options], Map.put(decor, row.id, row_decor)}
+        end
       end)
+
+    options = Enum.reverse(options)
+    choices = Enum.reject(options, &match?({"heading:" <> _, _, _}, &1))
 
     options =
       cond do
@@ -794,7 +1053,10 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
     title = Density.safe(ModelPicker.title(target) <> ": " <> query, state, rect.width - 2)
 
     {title, options, [control("cancel", SafeText.chrome(:cancel), {:local, :close_top_layer})],
-     if(state.focus == "query", do: "query", else: focus(state, options))}
+     if(state.focus == "query",
+       do: "query",
+       else: focus(state, if(choices == [], do: options, else: choices))
+     ), decor}
   end
 
   defp no_models(state, rect),

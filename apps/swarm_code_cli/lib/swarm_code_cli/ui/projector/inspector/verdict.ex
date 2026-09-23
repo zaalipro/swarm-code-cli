@@ -41,7 +41,7 @@ defmodule SwarmCodeCLI.UI.Projector.Inspector.Verdict do
       end
 
     [
-      heading("VERDICT", state, width),
+      heading("Verdict", state, width),
       Support.styled(text, :text_muted, state, width),
       Hive.blank(state)
     ]
@@ -49,7 +49,7 @@ defmodule SwarmCodeCLI.UI.Projector.Inspector.Verdict do
 
   defp rows(state, _run, verdict, width) do
     round = if verdict.round > 0, do: " · round #{verdict.round}", else: ""
-    title = "VERDICT" <> round <> " · " <> Words.state(verdict.status)
+    title = "Verdict" <> round <> " · " <> Words.state(verdict.status)
 
     key_width =
       verdict.checks

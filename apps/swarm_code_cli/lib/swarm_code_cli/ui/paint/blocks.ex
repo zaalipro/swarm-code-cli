@@ -261,7 +261,9 @@ defmodule SwarmCodeCLI.UI.Paint.Blocks do
 
   # --- Gauge ---
   # `:smooth` fills eight steps per cell and may carry a gradient; both exist
-  # only at tier `:rich`, so under `:measured` (and ASCII) it paints as ticks.
+  # only at tier `:rich`, so under `:measured` (and ASCII) it paints as a line
+  # of the status row's one-cell gauge rectangles (`▬▬▬▭▭`), not as a fence of
+  # half blocks.
   defp block(
          %Block.Gauge{
            tone: tone,
@@ -278,7 +280,7 @@ defmodule SwarmCodeCLI.UI.Paint.Blocks do
               maximum >= 0 and style in [:ticks, :bar, :segments, :smooth] and
               is_atom(gradient_to) do
     slots = max(1, ctx.width)
-    style = if style == :smooth and not rich?(ctx), do: :ticks, else: style
+    style = if style == :smooth and not rich?(ctx), do: :line, else: style
 
     label_runs = if label, do: [run(label, ctx.style)], else: []
 
@@ -489,6 +491,11 @@ defmodule SwarmCodeCLI.UI.Paint.Blocks do
 
   defp gauge_track(:smooth, slots, ctx), do: List.duplicate(raw(" ", smooth_track(ctx)), slots)
 
+  defp gauge_track(:line, slots, ctx) do
+    glyph = gauge_glyph(:gauge_off, ctx)
+    List.duplicate(raw(glyph, role(:ticks_track, ctx)), slots)
+  end
+
   defp gauge_filled(:ticks, filled, slots, tone, ctx) do
     on_glyph = gauge_glyph(:stripe, ctx)
     off_glyph = gauge_glyph(:stripe_off, ctx)
@@ -516,6 +523,15 @@ defmodule SwarmCodeCLI.UI.Paint.Blocks do
     lit ++ unlit
   end
 
+  defp gauge_filled(:line, filled, slots, tone, ctx) do
+    lit = List.duplicate(raw(gauge_glyph(:gauge_on, ctx), role(tone, ctx)), filled)
+
+    unlit =
+      List.duplicate(raw(gauge_glyph(:gauge_off, ctx), role(:ticks_track, ctx)), slots - filled)
+
+    lit ++ unlit
+  end
+
   defp gauge_glyph(token, ctx) do
     if ctx.options.ascii? do
       case token do
@@ -523,6 +539,8 @@ defmodule SwarmCodeCLI.UI.Paint.Blocks do
         :stripe_off -> "-"
         :seg_on -> "#"
         :seg_off -> "-"
+        :gauge_on -> "#"
+        :gauge_off -> "-"
       end
     else
       SafeText.value(SafeText.chrome(token))

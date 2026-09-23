@@ -106,7 +106,7 @@ defmodule SwarmCodeCLI.UI.Projector.Mode do
 
   defp workflow(state, rows, width) do
     [
-      Support.styled("WORKFLOW LIBRARY", :run_workflow, state, width),
+      Support.styled("Workflow library", :run_workflow, state, width),
       Support.text("Workflow entry action is available from the feature library.", state, width)
     ] ++ stream(rows, state, width)
   end
@@ -114,9 +114,9 @@ defmodule SwarmCodeCLI.UI.Projector.Mode do
   defp consensus(rows, state, width) do
     [
       Support.styled("Consensus", :heading, state, width),
-      Support.section_heading("PLAN", state, width),
+      Support.section_heading("Plan", state, width),
       Support.text(section(rows, "plan"), state, width),
-      Support.section_heading("CHANGES", state, width),
+      Support.section_heading("Changes", state, width),
       Support.text(section(rows, "change"), state, width),
       Support.text("Docket 01 · " <> section(rows, "docket"), state, width),
       Support.text("Ledger: " <> section(rows, "ledger"), state, width)
@@ -126,9 +126,9 @@ defmodule SwarmCodeCLI.UI.Projector.Mode do
   defp research(rows, state, width) do
     [
       Support.styled("Research report", :heading, state, width),
-      Support.section_heading("RESEARCH REPORT", state, width),
+      Support.section_heading("Research report", state, width),
       Support.text(section(rows, "report"), state, width),
-      Support.section_heading("SOURCES", state, width),
+      Support.section_heading("Sources", state, width),
       Support.text(section(rows, "source"), state, width),
       Support.text("Fixture notes · " <> section(rows, "notes"), state, width)
     ]
@@ -138,7 +138,7 @@ defmodule SwarmCodeCLI.UI.Projector.Mode do
     agents = state.read_model.agents |> Enum.count(fn {_, a} -> a.run_id == run.id end)
 
     [
-      Support.styled("SWARM AGENTS", :run_swarm, state, width),
+      Support.styled("Swarm agents", :run_swarm, state, width),
       Support.text("Agents reported · " <> Integer.to_string(agents), state, width)
     ] ++ stream(rows, state, width)
   end
@@ -167,6 +167,6 @@ defmodule SwarmCodeCLI.UI.Projector.Mode do
   # one-cell ASCII twin; a literal ❯ would survive into ASCII mode (NOTES_2 #36).
   defp pipeline_stages(state) do
     arrow = SafeText.value(Support.glyph(:pipeline_arrow, state))
-    "PLAN " <> arrow <> " BUILD " <> arrow <> " VERIFY"
+    "Plan " <> arrow <> " build " <> arrow <> " verify"
   end
 end

@@ -51,9 +51,46 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
         rows |> Enum.take(growth) |> Composer.card_blocks(state, rect.width)
 
       nil ->
-        if SlashPalette.open?(state) and state.layers == [],
-          do: Enum.take(Composer.slash_popup(state, rect.width), max(0, rect.height - 4)),
-          else: []
+        cond do
+          state.layers != [] ->
+            []
+
+          SlashPalette.open?(state) ->
+            Enum.take(Composer.slash_popup(state, rect.width), max(0, rect.height - 4))
+
+          (paths = path_completion(state)) != [] ->
+            Enum.take(Composer.path_popup(paths, state, rect.width), max(0, rect.height - 4))
+
+          true ->
+            []
+        end
+    end
+  end
+
+  # E5's `@path` completion (`state.path_completion`: `%{items, index,
+  # dismissed?}`, kept by `Reducer.PathCompletion`, which clears it whenever
+  # the caret leaves the token): the window of eight rows around the
+  # selection, as `PathCompletion.visible/2` makes it. Read with Map.get so
+  # this compiles before owner E's branch is merged.
+  @path_rows 8
+
+  defp path_completion(state) do
+    case Map.get(state, :path_completion) do
+      %{items: [_ | _] = items, index: selected} = completion ->
+        if Map.get(completion, :dismissed?, false) do
+          []
+        else
+          first = max(0, min(selected, length(items) - @path_rows))
+
+          items
+          |> Enum.with_index()
+          |> Enum.drop(first)
+          |> Enum.take(@path_rows)
+          |> Enum.map(fn {item, position} -> Map.put(item, :selected?, position == selected) end)
+        end
+
+      _ ->
+        []
     end
   end
 
@@ -252,7 +289,7 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
         ]
 
       run.kind == :goal ->
-        [Support.styled("GOAL PROGRESS", :run_goal, state, width), progress(run, state, width)]
+        [Support.styled("Goal progress", :run_goal, state, width), progress(run, state, width)]
 
       run.kind == :ultra ->
         [Support.styled(pipeline_stages(state), :run_ultra, state, width)]
@@ -287,7 +324,7 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
         |> Enum.map(fn [mark, label] -> {mark in ["x", "X"], label} end)
       end)
 
-    heading = [Support.section_heading("PLAN STEPS", state, width)]
+    heading = [Support.section_heading("Plan steps", state, width)]
 
     checklist =
       if items == [] do
@@ -623,6 +660,6 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
   # one-cell ASCII twin; a literal ❯ would survive into ASCII mode (NOTES_2 #36).
   defp pipeline_stages(state) do
     arrow = SafeText.value(Support.glyph(:pipeline_arrow, state))
-    "PLAN " <> arrow <> " BUILD " <> arrow <> " VERIFY"
+    "Plan " <> arrow <> " build " <> arrow <> " verify"
   end
 end

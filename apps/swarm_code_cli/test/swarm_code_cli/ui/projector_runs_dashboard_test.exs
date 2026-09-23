@@ -140,11 +140,11 @@ defmodule SwarmCodeCLI.UI.ProjectorRunsDashboardTest do
     test "the group heading carries the kind mark and name" do
       rendered = populated() |> RunsDashboard.project(150) |> texts() |> Enum.join(" ")
 
-      assert rendered =~ "SWARMS"
-      assert rendered =~ "CONSENSUS"
-      assert rendered =~ "DEEP RESEARCH"
-      assert rendered =~ "WORKFLOWS"
-      assert rendered =~ "GOALS"
+      assert rendered =~ "Swarms"
+      assert rendered =~ "Consensus"
+      assert rendered =~ "Deep research"
+      assert rendered =~ "Workflows"
+      assert rendered =~ "Goals"
     end
   end
 
@@ -386,8 +386,8 @@ defmodule SwarmCodeCLI.UI.ProjectorRunsDashboardTest do
 
     test "groups are separated by a blank line" do
       lines = painted_lines(populated())
-      swarms = Enum.find_index(lines, &String.contains?(&1, "SWARMS"))
-      consensus = Enum.find_index(lines, &String.contains?(&1, "CONSENSUS"))
+      swarms = Enum.find_index(lines, &String.contains?(&1, "Swarms"))
+      consensus = Enum.find_index(lines, &String.contains?(&1, "Consensus"))
 
       assert swarms < consensus
       assert Enum.any?(Enum.slice(lines, swarms..consensus), &(String.trim(&1) == ""))
@@ -534,12 +534,12 @@ defmodule SwarmCodeCLI.UI.ProjectorRunsDashboardTest do
   describe "kind marks" do
     # {themed kind, group label, mark, ASCII twin, run_kind letter, run title}
     @marks [
-      {:swarm, "SWARMS", "⋔", "S", "S", "Swarm auth boundary"},
-      {:consensus_judge, "CONSENSUS", "⚖", "C", "C", "Auth review board"},
-      {:research, "DEEP RESEARCH", "⌕", "/", "R", "Auth landscape"},
-      {:workflow, "WORKFLOWS", "⧉", "#", "W", "Release checklist"},
-      {:goal, "GOALS", "◉", "*", "G", "Auth hardening"},
-      {:assistant, "ASSISTANT", "✳", "*", "A", "Assistant thread"}
+      {:swarm, "Swarms", "⋔", "S", "S", "Swarm auth boundary"},
+      {:consensus_judge, "Consensus", "⚖", "C", "C", "Auth review board"},
+      {:research, "Deep research", "⌕", "/", "R", "Auth landscape"},
+      {:workflow, "Workflows", "⧉", "#", "W", "Release checklist"},
+      {:goal, "Goals", "◉", "*", "G", "Auth hardening"},
+      {:assistant, "Assistant", "✳", "*", "A", "Assistant thread"}
     ]
 
     defp mark_lines(state, opts \\ []) do
@@ -646,7 +646,7 @@ defmodule SwarmCodeCLI.UI.ProjectorRunsDashboardTest do
         state = populated()
         state = %{state | capabilities: %{state.capabilities | ambiguous_width: policy}}
         lines = mark_lines(state, policy: policy)
-        heading = Enum.find(lines, &String.contains?(&1, "SWARMS"))
+        heading = Enum.find(lines, &String.contains?(&1, "Swarms"))
 
         assert heading, "no SWARMS heading under #{policy}"
         refute String.contains?(heading, "…"), "the #{policy} heading rule was elided"
@@ -750,7 +750,7 @@ defmodule SwarmCodeCLI.UI.ProjectorRunsDashboardTest do
         |> texts()
         |> Enum.join(" ")
 
-      assert rendered =~ "1 runs"
+      assert rendered =~ "1 run ·"
     end
   end
 
@@ -941,7 +941,7 @@ defmodule SwarmCodeCLI.UI.ProjectorRunsDashboardTest do
 
       assert rendered =~ "/rel"
       refute rendered =~ "/ filter"
-      assert rendered =~ "1 runs"
+      assert rendered =~ "1 run ·"
 
       {scene, _} = Projector.project(typed)
       assert Scene.validate(scene) == :ok

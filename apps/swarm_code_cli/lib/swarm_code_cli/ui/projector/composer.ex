@@ -13,7 +13,7 @@ defmodule SwarmCodeCLI.UI.Projector.Composer do
 
   alias SwarmCodeCLI.UI.SafeText.Limits
   alias SwarmCodeCLI.UI.Scene.{Block, Cursor, Span}
-  alias SwarmCodeCLI.UI.Projector.{ApprovalCard, Density, Markdown, RunRow, Support}
+  alias SwarmCodeCLI.UI.Projector.{ApprovalCard, Density, HiveStrip, Markdown, RunRow, Support}
 
   def mode_label(state) do
     workspace = Map.get(state.read_model.snapshots, :workspace)
@@ -227,20 +227,24 @@ defmodule SwarmCodeCLI.UI.Projector.Composer do
         row(left, right, if(growth == 0, do: :approval, else: :approval_body), state, width)
 
       nil ->
-        hairline =
-          Markdown.hairline(%{
-            ascii?: state.capabilities.ascii?,
-            policy: state.capabilities.ambiguous_width
-          })
-
-        row(
-          [{String.duplicate(hairline, max(1, width)), tint(:text_ghost, state)}],
-          [],
-          nil,
-          state,
-          width
-        )
+        HiveStrip.block(state, width) || hairline(state, width)
     end
+  end
+
+  defp hairline(state, width) do
+    hairline =
+      Markdown.hairline(%{
+        ascii?: state.capabilities.ascii?,
+        policy: state.capabilities.ambiguous_width
+      })
+
+    row(
+      [{String.duplicate(hairline, max(1, width)), tint(:text_ghost, state)}],
+      [],
+      nil,
+      state,
+      width
+    )
   end
 
   @doc """
@@ -376,17 +380,62 @@ defmodule SwarmCodeCLI.UI.Projector.Composer do
           do: {SafeText.value(Support.glyph(:stripe, state)), tint(:accent, state)},
           else: {" ", tint(:text_muted, state)}
 
+      args =
+        case Map.get(item, :args) do
+          args when is_binary(args) and args != "" -> [{" " <> args, tint(:text_faint, state)}]
+          _ -> []
+        end
+
       row(
-        [
-          rail,
-          {"  /" <> item.name, name_style},
-          {"   " <> (item.desc || ""), tint(:text_muted, state)}
-        ],
+        [rail, {"  /" <> item.name, name_style}] ++
+          args ++ [{"   " <> (item.desc || ""), tint(:text_muted, state)}],
         if(item.selected?,
           do: [{"Tab", tint(:key, state, [:bold])}, {" complete", tint(:text_faint, state)}],
           else: []
         ),
         if(item.selected?, do: :hover, else: :popover),
+        state,
+        width
+      )
+    end)
+  end
+
+  @doc """
+  The `@path` popup: the project files matching the token at the caret (E5's
+  `Reducer.PathCompletion.visible/2` items: `title` a project-relative path,
+  `matches` its matched grapheme indices, drawn bold), the selected one on
+  the hover surface with the accent rail.
+  """
+  def path_popup(items, state, width) do
+    Enum.map(items, fn item ->
+      selected? = Map.get(item, :selected?, false)
+      path = to_string(Map.get(item, :title) || Map.get(item, :id) || "")
+      matches = item |> Map.get(:matches, []) |> List.wrap() |> MapSet.new()
+
+      base = if selected?, do: tint(:text_primary, state), else: tint(:text_muted, state)
+      hit = tint(:accent, state, [:bold])
+
+      rail =
+        if selected?,
+          do: {SafeText.value(Support.glyph(:stripe, state)), tint(:accent, state)},
+          else: {" ", tint(:text_muted, state)}
+
+      pieces =
+        path
+        |> String.graphemes()
+        |> Enum.with_index()
+        |> Enum.chunk_by(fn {_g, i} -> MapSet.member?(matches, i) end)
+        |> Enum.map(fn [{_, i} | _] = run ->
+          {Enum.map_join(run, &elem(&1, 0)), if(MapSet.member?(matches, i), do: hit, else: base)}
+        end)
+
+      row(
+        [rail, {"  @", tint(:text_faint, state)} | pieces],
+        if(selected?,
+          do: [{"Tab", tint(:key, state, [:bold])}, {" insert", tint(:text_faint, state)}],
+          else: []
+        ),
+        if(selected?, do: :hover, else: :popover),
         state,
         width
       )

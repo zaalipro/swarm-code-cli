@@ -96,7 +96,7 @@ defmodule SwarmCodeCLI.UI.Projector.Inspector.Agents do
       two_sided(
         state,
         inner,
-        faint_bold("CURRENT TASK", state),
+        faint_bold("Current task", state),
         percent(progress || 0, role, state)
       )
 
@@ -135,7 +135,7 @@ defmodule SwarmCodeCLI.UI.Projector.Inspector.Agents do
 
   # `AGENT` at the left, `stop` at the right when the agent may be stopped.
   defp head_row(state, run, lead, inner, opts) do
-    label = faint_bold("AGENT", state)
+    label = faint_bold("Agent", state)
 
     if Keyword.get(opts, :stop?, true) and Support.allowed?(state, lead, :stop_agent) and
          lead.id != run.id do
@@ -222,16 +222,16 @@ defmodule SwarmCodeCLI.UI.Projector.Inspector.Agents do
     model = Map.get(run, :model)
 
     case agent.role do
-      :assistant -> join(["ASSISTANT", model])
-      :judge -> join(["JUDGE", round_words(state, run)])
-      :lead -> join(["LEAD AGENT", model])
-      _ -> join([String.upcase(Atom.to_string(agent.role)), model])
+      :assistant -> join(["Assistant", model])
+      :judge -> join(["Judge", round_words(state, run)])
+      :lead -> join(["Lead agent", model])
+      _ -> join([agent.role |> Atom.to_string() |> String.capitalize(), model])
     end
   end
 
   defp round_words(state, run) do
     case Verdict.judged?(run) && Verdict.newest(state, run) do
-      %{round: round} when round > 0 -> "ROUND #{round}"
+      %{round: round} when round > 0 -> "round #{round}"
       _ -> nil
     end
   end
@@ -346,7 +346,7 @@ defmodule SwarmCodeCLI.UI.Projector.Inspector.Agents do
     if Words.finished?(agent.state) or Words.waiting?(agent.state), do: nil, else: :accent
   end
 
-  # `LEAD 7.6k · SUBS 15k` beside the task, or `7.6k TOKENS`; nothing for zero.
+  # `lead 7.6k · subs 15k` beside the task, or `7.6k tokens`; nothing for zero.
   defp metric(lead, subs, state) do
     own = lead.tokens_in + lead.tokens_out
     others = Enum.reduce(subs, 0, &(&1.tokens_in + &1.tokens_out + &2))
@@ -354,10 +354,10 @@ defmodule SwarmCodeCLI.UI.Projector.Inspector.Agents do
     text =
       cond do
         subs != [] and own + others > 0 ->
-          "LEAD #{Words.tokens(own)} · SUBS #{Words.tokens(others)}"
+          "lead #{Words.tokens(own)} · subs #{Words.tokens(others)}"
 
         own > 0 ->
-          Words.tokens(own) <> " TOKENS"
+          Words.tokens(own) <> " tokens"
 
         true ->
           nil
@@ -534,7 +534,7 @@ defmodule SwarmCodeCLI.UI.Projector.Inspector.Agents do
     two_sided(
       state,
       width,
-      faint_bold("SUB-AGENTS", state),
+      faint_bold("Sub-agents", state),
       if(text == "", do: [], else: [faint(text, Hive.measure(text, state), state)])
     )
   end
@@ -584,13 +584,14 @@ defmodule SwarmCodeCLI.UI.Projector.Inspector.Agents do
         {:local, {:select_agent, agent.id}}
       )
 
-    kind = join([String.upcase(sub_word(agent)), "D#{agent.depth}", flag(agent)])
+    depth = if is_integer(agent.depth) and agent.depth > 1, do: "depth #{agent.depth}"
+    kind = join([sub_word(agent), depth, flag(agent)])
 
     metrics =
       two_sided(
         state,
         inner,
-        if(tokens > 0, do: [faint(Words.tokens(tokens) <> " TOK", inner, state)], else: []),
+        if(tokens > 0, do: [faint(Words.tokens(tokens) <> " tok", inner, state)], else: []),
         if(ops > 0, do: [faint(Words.count(ops, "op", "ops"), inner, state)], else: [])
       )
 
@@ -707,11 +708,11 @@ defmodule SwarmCodeCLI.UI.Projector.Inspector.Agents do
 
   defp flag(agent) do
     cond do
-      agent.state == :waiting_approval -> "APPROVAL"
-      agent.state == :waiting_question -> "QUESTION"
-      agent.state == :failed -> "FAILED"
-      agent.state == :done -> "DONE"
-      Map.get(agent, :launched_by_superseded, false) -> "SUPERSEDED"
+      agent.state == :waiting_approval -> "approval"
+      agent.state == :waiting_question -> "question"
+      agent.state == :failed -> "failed"
+      agent.state == :done -> "done"
+      Map.get(agent, :launched_by_superseded, false) -> "superseded"
       true -> nil
     end
   end
@@ -777,7 +778,7 @@ defmodule SwarmCodeCLI.UI.Projector.Inspector.Agents do
         state,
         width,
         [
-          faint_bold("OPERATIONS · ", state),
+          faint_bold("Operations · ", state),
           %Span{
             text: Density.safe(name, state, max(1, width - 20)),
             style: %{RunRow.tinted(role, state) | modifiers: [:bold]}
@@ -811,15 +812,15 @@ defmodule SwarmCodeCLI.UI.Projector.Inspector.Agents do
 
   defp status_word(agent) do
     cond do
-      agent.state == :waiting_approval -> {"APPROVAL", :warning}
-      agent.state == :waiting_question -> {"WAITING", :warning}
-      agent.state == :done -> {"DONE", :success}
-      agent.state == :failed -> {"FAILED", :error}
-      agent.state in [:stopped, :interrupted, :superseded] -> {"STOPPED", :text_muted}
-      agent.state == :paused -> {"PAUSED", :warning}
-      agent.state == :retrying -> {"RETRYING", :warning}
-      agent.state == :queued -> {"QUEUED", :text_muted}
-      true -> {"ACTIVE", :success}
+      agent.state == :waiting_approval -> {"approval", :warning}
+      agent.state == :waiting_question -> {"waiting", :warning}
+      agent.state == :done -> {"done", :success}
+      agent.state == :failed -> {"failed", :error}
+      agent.state in [:stopped, :interrupted, :superseded] -> {"stopped", :text_muted}
+      agent.state == :paused -> {"paused", :warning}
+      agent.state == :retrying -> {"retrying", :warning}
+      agent.state == :queued -> {"queued", :text_muted}
+      true -> {"active", :success}
     end
   end
 

@@ -26,7 +26,7 @@ defmodule SwarmCodeCLI.UI.StatusHintsTest do
   @sizes [{170, 40}, {150, 30}, {120, 30}, {80, 24}, {50, 16}, {50, 14}]
 
   describe "hints" do
-    for {columns, rows} <- @sizes, focus <- ["main", "composer"] do
+    for {columns, rows} <- @sizes, focus <- ["composer"] do
       test "#{focus} at #{columns}x#{rows}: the strongest hints, and the row never overflows" do
         state = fixture({unquote(columns), unquote(rows)}, unquote(focus))
         class = Layout.classify(state.size)
@@ -52,12 +52,27 @@ defmodule SwarmCodeCLI.UI.StatusHintsTest do
       assert Enum.any?(hint_pairs(state), &(row =~ &1))
     end
 
-    test "the strongest hints come first: Send leads the composer, Compose leads main" do
-      composer = paint_last_row(fixture({170, 40}, "composer"))
-      main = paint_last_row(fixture({170, 40}, "main"))
+    for {columns, rows} <- @sizes do
+      test "select mode at #{columns}x#{rows}: SELECT leads, its keys follow, nothing overflows" do
+        state = fixture({unquote(columns), unquote(rows)}, "main")
+        class = Layout.classify(state.size)
+        [%{spans: spans}] = Status.project(state, class, state.size.columns)
+        assert cells(spans, state) <= state.size.columns
 
+        row = paint_last_row(state)
+        assert String.starts_with?(row, " SELECT  Build")
+
+        down = :move_next |> Bindings.keys_for() |> hd() |> KeyLabel.label()
+        up = :move_previous |> Bindings.keys_for() |> hd() |> KeyLabel.label()
+        assert row =~ down <> "/" <> up <> " move"
+        assert row =~ "Enter open"
+        assert row =~ "Esc back"
+      end
+    end
+
+    test "the strongest hints come first: Send leads the composer" do
+      composer = paint_last_row(fixture({170, 40}, "composer"))
       assert composer =~ "send"
-      assert main =~ "compose"
     end
 
     test "the row never names a focus or carries a cue prefix in colour" do
@@ -70,7 +85,7 @@ defmodule SwarmCodeCLI.UI.StatusHintsTest do
     end
 
     test "the left side is the session's mode, then its facts, joined by quiet dots" do
-      row = paint_last_row(fixture({170, 40}, "main"))
+      row = paint_last_row(fixture({170, 40}, "composer"))
       assert String.starts_with?(row, " Build")
       assert row =~ " · "
     end
