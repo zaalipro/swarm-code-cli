@@ -225,8 +225,22 @@ defmodule SwarmCodeCLI.UI.ReadModel do
           end)
     }
 
-    order = Map.update(model.order, slot, [], &List.delete(&1, id))
-    {:ok, %{model | order: order, chunks: ChunkDeque.delete(model.chunks, id)}, [], [id]}
+    # pass71 F17 (review R5): an approval's interaction and its op's
+    # transcript item share an id, so settling the approval removed the op
+    # from the transcript's order and a denied command vanished until the
+    # conversation was reopened. Only a field the slot's order lists removes
+    # from it.
+    listed? = field == :transcript or (slot == :activity and field == :activity)
+
+    order =
+      if listed?,
+        do: Map.update(model.order, slot, [], &List.delete(&1, id)),
+        else: model.order
+
+    chunks =
+      if field == :transcript, do: ChunkDeque.delete(model.chunks, id), else: model.chunks
+
+    {:ok, %{model | order: order, chunks: chunks}, [], [id]}
   end
 
   def delta(_model, _slot, %Delta{kind: :snapshot_required}), do: {:error, :snapshot_required}
