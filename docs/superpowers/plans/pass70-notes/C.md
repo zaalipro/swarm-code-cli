@@ -7,9 +7,17 @@ Branch `p70/C`, worktree `/Users/zaali/dev/swarm-code-cli-wt/p70-C`.
 | task | status | commits |
 | --- | --- | --- |
 | C1 DTO + wire additions, fake parity | done, tag `p70-C-wire` = `89aa263` | 89aa263 |
-| C2 approvals end to end (pre-sync half) | op-node admission, full card, five decisions, F11 | 5b98942 |
+| C2 approvals end to end | done: op-node admission, full card, five decisions (engine's own after A-sync), F11, mark_seen, mode + trust as operations | 5b98942, 68da489 |
+| C3 conversations list/new/open, project.update, mark_seen | done | 4bfb4c4, 8ae724e |
 | C4 rel F4 tripwires (daemon + client) | done | 8626a41 |
-| C3 conversations list/new/open, project.update, mark_seen | done | 4bfb4c4 |
+| C5 subscriptions (notifications, mcp, research, workflows, toast, waiting, rate limits) | done | 8ef394b |
+| (merge) `p70-A-sync` | merged after tagging `p70-C-wire` | 09b353d |
+| C6 HEAD projection fields | done: stop reasons, error kinds, labels, agent model, background commands (rate limits in C5) | f49a893 |
+| C7 slash registry + dispatcher | done | a51de47 |
+| C8 Full detail, run-scoped Changes with diffs, @path | done | a0377f3, d254bb3 |
+| C10 `Domain.Tools.Path` in the persisted service | done | 47af032 |
+| C9 incremental projection | not done (see Left) | — |
+| socket acceptance for every new operation | done | 4b6208d |
 
 (kept current; the table grows as tasks land)
 
@@ -235,6 +243,92 @@ item and the checkpoints carry line counts and `diff_ref`s whose details load.
 - A watch queue overflow → `snapshot_required` (reason `overflow`) → client
   re-watch; never a close.
 
+### Subscriptions (C5, for D and E)
+
+Everything below reaches the **shell** watch only, as `toast` or `rate_limit`
+deltas (see the C1 table):
+
+| source | delta |
+| --- | --- |
+| `Notifications.notify_finished/1` | toast `:success`, title "Finished" |
+| `Notifications.notify/1` | toast `:info` |
+| ui `{:toast, text}` (watchdog "Workflow … resumed") | toast `:info` |
+| ui `{:waiting_changed}` when **another** conversation starts waiting | toast `:waiting`, title "Waiting for you", `conversation_id` + `run_id` set, text "<title> needs an approval/an answer" (once per conversation until it stops waiting) |
+| ui `{:rate_limit, provider_id, snapshot}` (synced LLM.HTTP) | `rate_limit` delta; the shell snapshot's `rate_limits` holds the last per provider |
+| mcp `{:mcp_status, id, {:error, _}}` / later `:ready` | toast `:warning` "MCP server failed" once / `:success` "MCP server ready" |
+| ui research/workflow run changes | projection refresh (no delta of their own) |
+
+### HEAD projection fields (C6)
+
+- `RunSummary` / `AgentSummary`: `stop_reason` (an `LLM.Error` orchestration
+  reason: `user_stopped`, `turn_budget`, `doom_loop`, `spawn_timeout`, …),
+  `error_kind` (a provider error kind: `rate_limit`, `context_overflow`, …),
+  `stop_label` (the desktop chip text: "turn limit", "rate limit", "stopped",
+  …). A stopped run with no kind is `user_stopped`/"stopped".
+- `AgentSummary.model`: the model the RunServer put on the node (virtual, from
+  `nodes_upsert`); nil until the service has seen the agent start.
+  `provider_name`/`retry_at` stay nil (not recorded by the domain).
+- `WorkspaceSnapshot.background` + `background_upsert` / `background_remove`
+  deltas (workspace and inspector watches): what `Tools.BackgroundProcs` lists
+  for the projected runs; id `"<run_id>:<os_pid>"`, `state: :running`,
+  `exit_code`/`cwd`/`agent_id` nil, `output_bytes` 0. Rechecked every 5 s
+  while any is listed (the table has no events). Needs B6's runtime child;
+  empty without it.
+
+### Slash commands (C7, for E)
+
+`SwarmCode.Commands` gains `new`, `clear`, `resume [conversation]`,
+`resume-run` (the old `/resume`), `approval [read-only|auto|full]`, `trust`,
+`diff`, `cost`, `search <words>`, `export [file]`, `agents`, `help`, `quit`.
+`Commands.client?/1` and a `client: true` key on catalogue entries and parse
+results mark what the terminal should do itself:
+
+| command | parse action | client? | the reducer should | the service (if sent anyway) |
+| --- | --- | --- | --- | --- |
+| `/new`, `/clear` | `:new_conversation` | yes | send `{:conversation_new}` and re-scope to the outcome's id | creates + switches; outcome `identifiers: [id]`, feedback navigate `:conversations` |
+| `/resume` | `:select_conversation` | yes | open the conversation picker (`{:conversation_list, …}`) | feedback navigate `:conversations`, identifiers `[]` |
+| `/resume <x>` | `:open_conversation` (`conversation: x`) | **no** (`client: false`) | send it | id / id prefix (≥ 4) / title words in this project → switches; `identifiers: [id]`, navigate `:conversations`; else rejected |
+| `/diff` | `:show_changes` | yes | open Changes (`{:feature_query, :changes, …}` in the conversation scope) | feedback navigate `:changes` |
+| `/help` | `:help` | yes | show its own help | report "Commands" (every entry, `/name args — desc`) |
+| `/quit` | `:quit` | yes | quit | rejected (`client_only` → `not_allowed`) |
+| `/approval` | `:show_approval` | no | send | report: mode, trust, what it means, remembered families |
+| `/approval <m>` | `:set_approval` | no | send (or `{:project_update, m, nil}`) | notice "Approval mode: …", metadata delta, toast |
+| `/trust` | `:trust_project` | no | send (or `{:project_update, nil, true}`) | notice, metadata delta, toast |
+| `/cost` | `:show_cost` | no | send | report: total and per model |
+| `/search <w>` | `:search` | no | send | report: this project's conversations whose messages match (FTS), each with a `/resume <id8>` line |
+| `/export [f]` | `:export` | no | send | report "Exported" + the path; `~/Downloads/<title>_<date>.md` (or the project root), a named file only inside the project with `.md/.markdown/.txt`, never over an existing file |
+| `/agents` | `:list_agents` | no | send | report: agent definitions |
+
+`DTO.Feedback.feature` gains `:conversations` (a navigate feedback: the
+picker when `identifiers == []`, else the conversation the service switched
+to). The reducer's `settle_command/3` shows feedback only when
+`feedback.conversation_id` is nil or the current one: the service keeps it
+nil for these.
+
+### Full detail, changes and diffs, @path (C8)
+
+- Full detail of an agent/op item now loads: the service reads exactly the
+  text the item's `detail_ref.total_bytes` measured (it prepended the node
+  name before, so every window's total mismatched and the reducer dropped it).
+- A **finished** run's `Change`: `op_id`, `file_state`, `added`, `removed`,
+  `diff_ref` (`"<checkpoint_id>:diff"`, `total_bytes` exact). Its edit op's
+  `ToolCall`: `added`, `removed`, `diff_ref` (`"<op_id>:diff"`). A live run's
+  changes have `diff_ref: nil`, `file_state: :unknown` until the run is over
+  (the after side is still moving). Both load with the normal detail query in
+  the conversation scope or the run's inspector scope; the text is a unified
+  diff (`--- a/<path>` / `+++ b/<path>` / `@@`), 16 KiB windows are fine.
+- Changes (`{:feature_query, :changes, id, …}`) in a conversation or run scope
+  lists the files its runs changed (newest first, title = project-relative
+  path, subtitle = the run's prompt, status `created`/`changed`), with
+  `detail` = the unified diff of the item asked for by `id`. The project scope
+  still lists the Git tree.
+- `@path`: `{:feature_query, :files, query_or_nil, nil, 20, 65_536}` →
+  `LibrarySnapshot{feature: :files}`; items ranked by the synced
+  `FuzzyMatch`; `matches` = grapheme indices to highlight (the query as one
+  piece when the path has it, file name first). No query lists the shallowest
+  paths first. The index is the confined `.gitignore`-aware walk (≤ 50 000,
+  rewalked at most every 30 s).
+
 ## Consumed contracts
 
 - A2 (after A-sync): `RunServer.pending_interactions/1` approval rows gain
@@ -250,13 +344,32 @@ item and the checkpoints carry line counts and `diff_ref`s whose details load.
 - E: `Intent.validate/1` decision guard widened to `:approve | :approve_run |
   :always_prefix | :deny | :deny_stop | :always_allow` if the reducer validates
   the intent before building the `Request`.
+- E: after an accepted `conversation_new`/`conversation_open` (or a slash
+  outcome with navigate `:conversations` and `identifiers: [id]`), unwatch
+  the old conversation's watches and watch `{:conversation, id}` with a new
+  generation; the shell watch resyncs by itself.
+- E (tests): `test/swarm_code_cli/ui/slash_palette_test.exs` pins the builtin
+  count and the last entry. With C7: line 39 `length(entries) == 31` (was 19)
+  and line 71 `SlashPalette.selected(last).name == "quit"` (was "compact").
+- E: handle the `client: true` slash commands locally (table above).
+- B (blocking for real sessions): B6's runtime children
+  (`Hooks.TaskSupervisor`, `Tools.BackgroundProcs`, `LSP.Supervisor`). Without
+  `Hooks.TaskSupervisor` every tool call crashes after it runs; C's tests
+  start it themselves when it is missing.
+- B (tests): `session_selection_test.exs:18` expects `"auto"`; the synced
+  `Projects` creates projects `read_only` (A's note).
 - B: `apps/swarm_code_daemon/lib/swarm_code/daemon/backup/gate.ex:1668` has an
   unreachable clause warning under Elixir 1.18.4; `compile --warnings-as-errors`
   on a clean build fails on it.
+- A / finisher (provenance): re-record the ledger sha256 of the two
+  manifest-listed files below (`mix swarm_code.provenance.verify` fails until
+  then).
 
 ## Manifest-listed files edited
 
-(none so far)
+- `apps/swarm_code_core/lib/swarm_code/commands.ex` (C7: the session commands).
+- `apps/swarm_code_daemon/lib/swarm_code/daemon/service/command_dispatcher.ex`
+  (C7: their execution; C10: `Domain.Tools.Path`).
 
 ## Verification
 
@@ -267,7 +380,44 @@ item and the checkpoints carry line counts and `diff_ref`s whose details load.
   apps/swarm_code_cli/test/swarm_code_cli/ui/data_source` 183/0 (includes
   `pass70_approval_test` 4, `pass70_conversation_test` 7, the rewritten
   listener overflow/timeout tests and two daemon re-watch tests).
+- Final, on the merged tree (p70-A-sync + C): `mix test` (umbrella) —
+  core `145 tests, 0 failures`; daemon `660 tests, 3 failures`; cli
+  `5 properties, 1202 tests, 2 failures`. None in C's files:
+  - daemon `SessionSelectionTest` "creates a project and resumes …" (B's
+    test; the synced `Projects` creates projects read-only, A's note);
+  - daemon `Backup.GateTest` × 2 ("fresh unprobed WAL …", "a genuine current
+    ready decision backs up all 57 migrations …": B's gate cannot back up the
+    FTS5 shadow tables, A's note);
+  - cli `SlashPaletteTest` × 2 (E's test pins 19 builtins and "compact" as the
+    last; C7 adds 12 — see the request to E).
+  New C tests: `pass70_approval_test` 5, `pass70_conversation_test` 14,
+  `pass70_session_commands_test` 8, `pass70_changes_test` 5,
+  `pass70_socket_test` 3, `pass70_wire_test` 9, `pass70_fake_test` 9,
+  `commands_test` 4 new.
+- `mix format --check-formatted`: clean. `mix compile --warnings-as-errors`:
+  clean (the `backup/gate.ex:1668` warning shows only on a forced build, B's).
+- `mix swarm_code.provenance.verify` will fail until the two manifest-listed
+  files' sha256 are re-recorded (A/finisher).
 
 ## Left
 
-(updated as tasks land)
+- C9 (P2, arch F14) incremental projection: not done. A `nodes_patch` carries
+  only the streaming columns (status, progress, detail, tokens, cost, turn),
+  not `updated_at`, `result` or `error`, so the in-memory result cannot equal a
+  reload (revisions and the record text derive from those). An exact
+  incremental path needs the RunServer to put `updated_at` in the patch (A's
+  domain) or the service to keep raw node rows; the golden-equivalence test
+  should compare `state.runs` after patches with a fresh `reload/1`.
+- Slash commands and diffs run inside the persisted backend's `handle_call`
+  (DB reads, `/export` file write, diff computation for up to 50 finished-run
+  checkpoints per reload). Bounded, but the AGENTS rule wants owned tasks for
+  filesystem/long DB work; this is the same place the pre-pass dispatcher ran.
+- A finished run's diff whose file changed on disk afterwards (with no later
+  checkpoint of that path) is computed again with a different size; a detail
+  view opened on the old `diff_ref` then needs reopening.
+- `RunSummary.provider_name`/`retry_at`, `AgentSummary.provider_name`/
+  `retry_at`, `ToolCall.exit_code`/`background`, `BackgroundCommand.cwd`/
+  `exit_code`/`output_bytes` stay nil/0 from the persisted service (the domain
+  records none of them).
+- No real-provider smoke session was run (no sandbox session started); all
+  verification is on fixtures and loopback providers.
