@@ -87,6 +87,8 @@ defmodule SwarmCodeCLI.UI.Reducer do
     case Action.validate(action) do
       {:ok, action} ->
         {next, effects} = transition(state, action)
+        {next, effects} = replay_deferred(next, effects)
+        {next, effects} = track_sent_turn(next, effects)
         {next, effects} = sync_interactions(next, effects, action)
         next = stamp_notice(state, next)
         next = repair_switcher(state, next)
@@ -106,55 +108,99 @@ defmodule SwarmCodeCLI.UI.Reducer do
   # ------------------------------------------------ the composer-first keys
 
   # Esc in the composer stops the turn that is generating, and nothing else.
+  # A turn that was sent but is not on screen yet is that turn (I3).
   defp transition(state, {:interrupt, :escape}) do
     case Keymap.live_turn(state) do
       %{id: id, allowed_actions: actions} = _turn ->
         if :stop in actions, do: stop_turn(state, id), else: {state, []}
 
       nil ->
-        {state, []}
+        case stop_unseen_turn(state) do
+          {:ok, next} -> {next, []}
+          :none -> {state, []}
+        end
     end
   end
 
-  # Ctrl-C: a second press inside the window quits (asking first when runs are
-  # live, and confirming that question when it is already on screen); the
-  # first press closes a layer, else clears the draft, else stops the turn,
-  # and arms the second.
+  # Ctrl-C (pass71 R1): a press closes the top layer, else clears the draft,
+  # else stops the turn in view (or the one just sent, I3). Such a press never
+  # arms the quit and disarms one that was armed. Only a press that has
+  # nothing else to do arms it, and a second such press inside the window
+  # quits (asking first when runs are live, and confirming that question when
+  # it is already on screen).
   defp transition(%{layers: [{:unsent_changes, kind} | _], exit_pending: kind} = state, {
          :interrupt,
          :ctrl_c
        }),
        do: finish_exit(disarm_quit(state), kind)
 
-  defp transition(%{quit_armed: armed} = state, {:interrupt, :ctrl_c}) when not is_nil(armed) do
-    {state, effects} = exit_requested(disarm_quit(state), :detach)
-    {state, [{:cancel_timer, armed} | effects]}
-  end
-
   defp transition(state, {:interrupt, :ctrl_c}) do
     turn = Keymap.live_turn(state, @live_states)
     key = State.current_draft_key(state)
 
-    {state, effects, stopping?} =
+    acted =
       cond do
         state.layers != [] ->
-          Tuple.insert_at(transition(state, :close_top_layer), 2, false)
+          transition(state, :close_top_layer)
 
-        key != nil and Keymap.draft_text(state) != "" ->
+        key != nil and Keymap.draft_text(state) != "" and not sending?(state, key) ->
           {state, a} = Editing.apply(state, :editor, key, :select_all)
           {state, b} = Editing.apply(state, :editor, key, :delete_backward)
-          {%{state | history_cursor: nil}, a ++ b, false}
+          {%{state | history_cursor: nil}, a ++ b}
 
         turn != nil and :stop in turn.allowed_actions ->
-          {state, effects} = stop_turn(state, turn.id)
-          {state, effects, effects != []}
+          case stop_turn(state, turn.id) do
+            {_, []} -> :idle
+            stopped -> stopped
+          end
+
+        turn == nil ->
+          case stop_unseen_turn(state) do
+            {:ok, next} -> {next, []}
+            :none -> :idle
+          end
 
         true ->
-          {state, [], false}
+          :idle
       end
 
-    {state, armed} = arm_quit(state, stopping?)
-    {state, effects ++ armed}
+    case {acted, state.quit_armed} do
+      {:idle, nil} ->
+        arm_quit(state)
+
+      {:idle, armed} ->
+        {state, effects} = exit_requested(disarm_quit(state), :detach)
+        {state, [{:cancel_timer, armed} | effects]}
+
+      {{next, effects}, nil} ->
+        {next, effects}
+
+      {{next, effects}, armed} ->
+        next = disarm_quit(next)
+
+        next =
+          if next.notice == {:command_feedback, quit_hint()},
+            do: %{next | notice: nil},
+            else: next
+
+        {next, [{:cancel_timer, armed} | effects]}
+    end
+  end
+
+  # Enter typed before the workspace was ready (R2): kept, one at most, and
+  # replayed by `replay_deferred/2` once the watch is.
+  defp transition(state, :defer_send) do
+    case State.current_draft_key(state) do
+      nil ->
+        {state, []}
+
+      key ->
+        {%{
+           state
+           | deferred_send: {key, Keymap.draft_text(state)},
+             notice: {:command_feedback, "Sends once the conversation has loaded."}
+         }, []}
+    end
   end
 
   defp transition(%{quit_armed: id} = state, {:timer_fired, id}) do
@@ -1094,6 +1140,7 @@ defmodule SwarmCodeCLI.UI.Reducer do
   defp settle_command(state, request, outcome) do
     {settled, effects} = Commands.settle(state, request, outcome)
     settled = remember_prompt(settled, request, outcome)
+    settled = note_sent_turn(settled, request, outcome)
 
     case {outcome.status, outcome.feedback, request.origin, State.current_draft_key(state)} do
       {:accepted, %{kind: kind} = feedback, {:draft, {conversation, _}}, {conversation, _}}
@@ -1544,15 +1591,173 @@ defmodule SwarmCodeCLI.UI.Reducer do
       else: {%{next | notice: {:command_feedback, "Stopping the turn."}}, effects}
   end
 
-  # The press that stops the turn says so; any other press (the turn already
-  # stopped, a layer closed, a draft cleared) says how to quit (pass70 F12).
-  defp arm_quit(state, stopping?) do
-    {id, state} = State.next_id(state, :timer)
-    cancel = if state.quit_armed, do: [{:cancel_timer, state.quit_armed}], else: []
-    notice = if stopping?, do: state.notice, else: {:command_feedback, quit_hint()}
+  # The draft is on its way: its send is pending with the service.
+  defp sending?(state, key), do: match?({:send, _}, send_in_flight(state, key))
 
-    {%{state | quit_armed: id, notice: notice},
-     cancel ++ [{:start_timer, id, @quit_window_ms, {:timer_fired, id}}]}
+  defp send_in_flight(state, key) do
+    case Map.get(state.mutations, {:draft, key}) do
+      {:pending, id, {:dispatch, :send, _, _, _}} -> {:send, id}
+      _ -> nil
+    end
+  end
+
+  # pass71 I3: Ctrl-C or Esc right after Enter. The send is still pending, or
+  # it was accepted but its run is not on screen yet; either way the stop is
+  # kept and sent once the run appears (`stop_on_arrival/2`), never dropped.
+  defp stop_unseen_turn(state) do
+    with {conversation, _} = key <- State.current_draft_key(state),
+         target when not is_nil(target) <- unseen_turn(state, key, conversation),
+         # A stop already waiting for this turn: this press has nothing to add.
+         false <- state.stop_on_arrival == {conversation, target} do
+      {:ok,
+       %{
+         state
+         | stop_on_arrival: {conversation, target},
+           notice: {:command_feedback, "Stopping the turn."}
+       }}
+    else
+      _ -> :none
+    end
+  end
+
+  defp unseen_turn(state, key, conversation) do
+    case {send_in_flight(state, key), state.sent_turn} do
+      {{:send, id}, _} -> {:request, id}
+      {nil, {^conversation, run_id}} -> {:run, run_id}
+      _ -> nil
+    end
+  end
+
+  # After every transition: the run an accepted send started is remembered
+  # until the read model shows it, and a stop asked for before it did is sent
+  # once it does (or dropped once the run has ended, or the view has moved to
+  # another conversation, or the send was refused).
+  defp track_sent_turn(state, effects) do
+    conversation =
+      case State.current_draft_key(state) do
+        {id, _} -> id
+        nil -> nil
+      end
+
+    state =
+      case state.sent_turn do
+        {^conversation, run_id} ->
+          if Map.has_key?(state.read_model.runs, run_id),
+            do: %{state | sent_turn: nil},
+            else: state
+
+        nil ->
+          state
+
+        _other ->
+          %{state | sent_turn: nil}
+      end
+
+    case state.stop_on_arrival do
+      nil ->
+        {state, effects}
+
+      {^conversation, {:request, id}} ->
+        if Map.has_key?(state.requests, id),
+          do: {state, effects},
+          else: {%{state | stop_on_arrival: nil}, effects}
+
+      {^conversation, {:run, run_id}} ->
+        case Map.get(state.read_model.runs, run_id) do
+          nil ->
+            {state, effects}
+
+          %{state: run_state, allowed_actions: actions} ->
+            cond do
+              run_state not in @live_states ->
+                {%{state | stop_on_arrival: nil}, effects}
+
+              :stop in actions ->
+                {state, more} = stop_turn(%{state | stop_on_arrival: nil}, run_id)
+                {state, effects ++ more}
+
+              true ->
+                {state, effects}
+            end
+        end
+
+      _other ->
+        {%{state | stop_on_arrival: nil}, effects}
+    end
+  end
+
+  # An accepted send names the run it started: remember it while it is not on
+  # screen, and aim a stop that waited for this request at it.
+  defp note_sent_turn(
+         state,
+         %{kind: {:dispatch, :send, _, _, _}, origin: {:draft, {conv, _}}} = request,
+         %Outcome{
+           status: :accepted,
+           identifiers: [run_id | _]
+         }
+       ) do
+    state =
+      if Map.has_key?(state.read_model.runs, run_id),
+        do: state,
+        else: %{state | sent_turn: {conv, run_id}}
+
+    case state.stop_on_arrival do
+      {^conv, {:request, id}} when id == request.request_id ->
+        %{state | stop_on_arrival: {conv, {:run, run_id}}}
+
+      _ ->
+        state
+    end
+  end
+
+  defp note_sent_turn(state, _request, _outcome), do: state
+
+  # R2: the Enter kept while the workspace loaded is sent once its watch is
+  # ready, exactly as Send would have sent it then. It is dropped, and says
+  # so, when the draft changed meanwhile, the view moved elsewhere, or the
+  # watch failed.
+  defp replay_deferred(%{deferred_send: nil} = state, effects), do: {state, effects}
+
+  defp replay_deferred(%{deferred_send: {key, text}} = state, effects) do
+    status = Map.get(state.watches, :workspace, %{status: :closed}).status
+
+    cond do
+      State.current_draft_key(state) != key ->
+        drop_deferred(state, effects, "Not sent: another conversation opened first.")
+
+      status in [:frozen, :resyncing] ->
+        {state, effects}
+
+      status != :ready ->
+        drop_deferred(state, effects, "Not sent: the conversation did not load.")
+
+      Keymap.draft_text(state) != text ->
+        drop_deferred(state, effects, "Not sent: the draft changed after Enter.")
+
+      true ->
+        state = %{state | deferred_send: nil}
+
+        case Keymap.draft_send(state) do
+          {:ok, action} ->
+            {state, more} = transition(state, action)
+            {state, effects ++ more}
+
+          :ignore ->
+            {state, effects}
+        end
+    end
+  end
+
+  defp drop_deferred(state, effects, words),
+    do: {%{state | deferred_send: nil, notice: {:command_feedback, words}}, effects}
+
+  # Only a press with nothing else to do arms the quit, and it says how to
+  # quit (pass70 F12, pass71 R1).
+  defp arm_quit(state) do
+    {id, state} = State.next_id(state, :timer)
+
+    {%{state | quit_armed: id, notice: {:command_feedback, quit_hint()}},
+     [{:start_timer, id, @quit_window_ms, {:timer_fired, id}}]}
   end
 
   defp disarm_quit(state), do: %{state | quit_armed: nil}

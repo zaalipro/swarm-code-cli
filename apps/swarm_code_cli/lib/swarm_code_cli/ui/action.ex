@@ -73,6 +73,7 @@ defmodule SwarmCodeCLI.UI.Action do
           | {:open_interaction, binary()}
           | {:interrupt, :escape | :ctrl_c}
           | :select_mode
+          | :defer_send
           | {:compose, binary()}
           | {:history, :previous | :next}
           | :copy_selection
@@ -169,6 +170,10 @@ defmodule SwarmCodeCLI.UI.Action do
     do: valid_action(action, source in [:escape, :ctrl_c])
 
   def validate(:select_mode), do: {:ok, :select_mode}
+
+  # Enter in the composer before the workspace is ready: the reducer keeps
+  # the draft as one deferred send and replays it once the watch is (R2).
+  def validate(:defer_send), do: {:ok, :defer_send}
   def validate(:copy_selection), do: {:ok, :copy_selection}
 
   # A printable key pressed in select mode leaves it and types: one fragment,

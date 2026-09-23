@@ -76,38 +76,67 @@ defmodule SwarmCodeCLI.UI.Keymap do
   def activate(target, state, table) do
     if Enum.any?(table, fn {_, current} -> current == target end) do
       case target do
-        {:intent, {:dispatch, :send, "/workflows", :main, []}}
-        when state.banner == :live_banner ->
-          result({:open_layer, {:library, :workflows}})
-
-        {:intent, {:dispatch, :send, text, :main, []}}
-        when state.banner == :live_banner and
-               text in ["/deep_research", "/deep_research "] ->
-          result({:open_layer, {:library, :research}})
-
-        # A bare `/model` or `/swarm_model` has nothing to send yet: it opens
-        # the picker, whichever surface pressed Send. The reducer clears the
-        # draft as the layer opens. The session's own commands (/help, /quit,
-        # /new, /resume, /queue …) never reach the daemon either.
-        {:intent, {:dispatch, :send, text, :main, []}} = target
-        when is_binary(text) ->
-          case {local_command(text), ModelPicker.opener(text)} do
-            {command, _} when not is_nil(command) -> result({:slash_local, command})
-            {nil, nil} -> invoke(target, state)
-            {nil, picker} -> result({:open_layer, ModelPicker.open(state, picker)})
-          end
-
-        {:local, action} ->
-          result(action)
-
-        {:intent, _intent} = target ->
-          invoke(target, state)
-
-        _ ->
-          :ignore
+        {:intent, {:dispatch, :send, _, _, _}} -> send_target(target, state)
+        {:local, action} -> result(action)
+        {:intent, _intent} -> invoke(target, state)
+        _ -> :ignore
       end
     else
       :ignore
+    end
+  end
+
+  @doc """
+  What Send does with the current draft, as if its drawn Send target had been
+  activated: the action a deferred Enter replays once the workspace is ready
+  (pass71 R2). `:ignore` when there is no draft or it is blank.
+  """
+  @spec draft_send(map()) :: {:ok, Action.t()} | :ignore
+  def draft_send(state) do
+    case draft_dispatch(state, :send) do
+      {:ok, {:invoke, intent, _id}} -> send_target({:intent, intent}, state)
+      :ignore -> :ignore
+    end
+  end
+
+  defp send_target({:intent, {:dispatch, :send, "/workflows", :main, []}}, state)
+       when state.banner == :live_banner,
+       do: result({:open_layer, {:library, :workflows}})
+
+  defp send_target({:intent, {:dispatch, :send, text, :main, []}}, state)
+       when state.banner == :live_banner and text in ["/deep_research", "/deep_research "],
+       do: result({:open_layer, {:library, :research}})
+
+  # A bare `/model` or `/swarm_model` has nothing to send yet: it opens the
+  # picker, whichever surface pressed Send. The reducer clears the draft as
+  # the layer opens. The session's own commands (/help, /quit, /new, /resume,
+  # /queue …) never reach the daemon either.
+  defp send_target({:intent, {:dispatch, :send, text, :main, []}} = target, state)
+       when is_binary(text) do
+    case {local_command(text), ModelPicker.opener(text)} do
+      {command, _} when not is_nil(command) -> result({:slash_local, command})
+      {nil, nil} -> invoke(target, state)
+      {nil, picker} -> result({:open_layer, ModelPicker.open(state, picker)})
+    end
+  end
+
+  defp send_target(target, state), do: invoke(target, state)
+
+  @doc """
+  Whether an Enter that found no Send target should wait for the workspace:
+  a conversation is in view, its watch is still loading, and the draft holds
+  text that is not already on its way.
+  """
+  @spec deferrable_send?(map()) :: boolean()
+  def deferrable_send?(state) do
+    with {:conversation, _} <- state.destination,
+         %{status: status} when status in [:frozen, :resyncing] <-
+           Map.get(state.watches, :workspace),
+         key when not is_nil(key) <- State.current_draft_key(state),
+         false <- Map.has_key?(state.drafts.pending, key) do
+      String.trim(draft_text(state)) != ""
+    else
+      _ -> false
     end
   end
 

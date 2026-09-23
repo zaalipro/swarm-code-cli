@@ -191,34 +191,45 @@ defmodule SwarmCodeCLI.UI.ComposerFirstTest do
   # ------------------------------------------------------------- Ctrl-C
 
   describe "the Ctrl-C ladder" do
-    test "first press clears the draft (undoably) and arms; second press quits" do
+    # pass71 R1: a press that clears a draft or stops a turn never arms the
+    # quit; two idle presses inside the window do.
+    test "first press clears the draft (undoably) without arming; two idle presses quit" do
       state = ready([]) |> type("hello")
       {state, effects} = press(state, ctrl("c"))
       assert text(state) == ""
-      assert is_binary(state.quit_armed)
-      assert timer(effects) == state.quit_armed
+      assert state.quit_armed == nil
+      assert timer(effects) == nil
 
       state = press!(state, ctrl("z"))
       assert text(state) == "hello"
 
       state = press!(state, ctrl("c"))
       {state, effects} = press(state, ctrl("c"))
+      assert is_binary(state.quit_armed)
+      assert timer(effects) == state.quit_armed
+      assert state.notice == {:command_feedback, "Press Ctrl-C again to quit."}
+
+      {state, effects} = press(state, ctrl("c"))
       assert state.lifecycle == :closing
       assert {:detach, 0} in effects
     end
 
-    test "with an empty draft it stops the turn, and the window closes after its timer" do
+    test "with an empty draft it stops the turn; a quick second press does not quit" do
       state = ready([run("r", :waiting_approval)])
       {state, effects} = press(state, ctrl("c"))
       assert [{:run_control, :stop, "r"}] = commands(effects)
-      armed = state.quit_armed
-
-      {state, []} = Reducer.update(state, {:timer_fired, armed})
       assert state.quit_armed == nil
+      assert state.notice == {:command_feedback, "Stopping the turn."}
 
-      # A fresh first press again: it does not quit.
+      # The stop is still on its way: this press has nothing to do but arm.
       {state, _} = press(state, ctrl("c"))
       assert state.lifecycle == :running
+      assert state.layers == []
+      assert is_binary(state.quit_armed)
+
+      {state, []} = Reducer.update(state, {:timer_fired, state.quit_armed})
+      assert state.quit_armed == nil
+      assert state.notice == nil
     end
 
     test "quitting with live runs asks, and a third press confirms" do
@@ -234,12 +245,10 @@ defmodule SwarmCodeCLI.UI.ComposerFirstTest do
       assert {:detach, 0} in effects
     end
 
-    test "the press that stops says so; a later press, after its window, says how to quit" do
+    test "after the turn stopped, a press says how to quit" do
       state = ready([run("r", :waiting_approval)])
       state = press!(state, ctrl("c"))
       assert state.notice == {:command_feedback, "Stopping the turn."}
-
-      {state, []} = Reducer.update(state, {:timer_fired, state.quit_armed})
 
       {state, _} =
         Reducer.update(state, {:data, delta(state, :run_update, run("r", :stopped, actions: []))})
@@ -249,12 +258,29 @@ defmodule SwarmCodeCLI.UI.ComposerFirstTest do
       assert is_binary(state.quit_armed)
     end
 
-    test "a layer closes first" do
+    test "a press that clears a draft typed inside the window disarms the quit" do
+      state = ready([]) |> press!(ctrl("c"))
+      armed = state.quit_armed
+      assert is_binary(armed)
+
+      {state, effects} = state |> type("oops") |> press(ctrl("c"))
+      assert text(state) == ""
+      assert state.quit_armed == nil
+      assert {:cancel_timer, armed} in effects
+      assert state.notice != {:command_feedback, "Press Ctrl-C again to quit."}
+
+      # Quitting still takes two idle presses from here.
+      state = press!(state, ctrl("c"))
+      assert state.lifecycle == :running
+    end
+
+    test "a layer closes first and does not arm" do
       state = ready([]) |> press!(Input.key({:function, 1}))
       assert state.layers == [:help]
       state = press!(state, ctrl("c"))
       assert state.layers == []
       assert state.lifecycle == :running
+      assert state.quit_armed == nil
     end
   end
 

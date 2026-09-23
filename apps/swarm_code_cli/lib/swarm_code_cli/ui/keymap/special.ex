@@ -222,8 +222,14 @@ defmodule SwarmCodeCLI.UI.Keymap.Special do
   def run(:activate, _key, %{layers: [layer | _]} = state, table),
     do: Keymap.modal_activate(layer, state, table)
 
-  def run(:activate, _key, %{focus: "composer"} = state, table),
-    do: Keymap.find_target(state, table, &match?({:intent, {:dispatch, :send, _, _, _}}, &1))
+  # Enter before the workspace has loaded has no Send target yet; it is kept
+  # as one deferred send the reducer replays once the watch is ready (R2).
+  def run(:activate, _key, %{focus: "composer"} = state, table) do
+    case Keymap.find_target(state, table, &match?({:intent, {:dispatch, :send, _, _, _}}, &1)) do
+      :ignore -> if Keymap.deferrable_send?(state), do: ok(:defer_send), else: :ignore
+      resolved -> resolved
+    end
+  end
 
   def run(:activate, _key, state, table), do: Keymap.content_activate(state, table)
 

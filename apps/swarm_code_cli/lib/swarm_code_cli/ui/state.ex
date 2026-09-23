@@ -40,6 +40,17 @@ defmodule SwarmCodeCLI.UI.State do
     # The composer's `@path` list (`Reducer.PathCompletion`), nil when the
     # caret ends no `@` token.
     path_completion: nil,
+    # pass71-I fields: Enter before the workspace is ready, and a Ctrl-C (or
+    # Esc) that races the send it follows.
+    # {draft key, text}: an Enter typed while the workspace watch was still
+    # loading, replayed once it is ready (one at most).
+    deferred_send: nil,
+    # {conversation id, run id}: the run the newest accepted send started,
+    # while the read model does not show it yet.
+    sent_turn: nil,
+    # {conversation id, {:request, id} | {:run, id}}: a stop asked for before
+    # the turn it stops was on screen; it is sent once that run appears.
+    stop_on_arrival: nil,
     library: nil,
     feature_form: nil,
     banner: nil,

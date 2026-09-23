@@ -39,7 +39,7 @@ the command palette).
 
 | Keys | Does |
 |---|---|
-| `Enter` | Send the draft (in every vim mode) |
+| `Enter` | Send the draft (in every vim mode); while loading, it sends once ready |
 | `Alt-Enter` | Queue the draft instead of sending it |
 | `Ctrl-N` | Open the next approval or question waiting on you |
 
@@ -78,7 +78,7 @@ the command palette).
 | Keys | Does |
 |---|---|
 | `F1` | The keyboard help sheet; the same key closes it |
-| `Ctrl-C` | Clear the draft, else stop the turn; press twice to quit |
+| `Ctrl-C` | Clear the draft, else stop the turn; twice with nothing to stop quits |
 | `Esc` | Stop the turn that is streaming; the draft stays |
 
 ## Composer, vim NORMAL
@@ -152,7 +152,7 @@ the command palette).
 
 | Keys | Does |
 |---|---|
-| `Enter` | Send the draft (in every vim mode) |
+| `Enter` | Send the draft (in every vim mode); while loading, it sends once ready |
 | `Alt-Enter` | Queue the draft instead of sending it |
 | `Ctrl-N` | Open the next approval or question waiting on you |
 
@@ -178,7 +178,7 @@ the command palette).
 | Keys | Does |
 |---|---|
 | `?` / `F1` | The keyboard help sheet; the same key closes it |
-| `Ctrl-C` | Clear the draft, else stop the turn; press twice to quit |
+| `Ctrl-C` | Clear the draft, else stop the turn; twice with nothing to stop quits |
 | `Esc` | Close the top layer, end a vim mode, or leave select mode |
 
 ## Composer, vim VISUAL
@@ -233,7 +233,7 @@ the command palette).
 
 | Keys | Does |
 |---|---|
-| `Enter` | Send the draft (in every vim mode) |
+| `Enter` | Send the draft (in every vim mode); while loading, it sends once ready |
 | `Alt-Enter` | Queue the draft instead of sending it |
 | `Ctrl-N` | Open the next approval or question waiting on you |
 
@@ -253,7 +253,7 @@ the command palette).
 | Keys | Does |
 |---|---|
 | `?` / `F1` | The keyboard help sheet; the same key closes it |
-| `Ctrl-C` | Clear the draft, else stop the turn; press twice to quit |
+| `Ctrl-C` | Clear the draft, else stop the turn; twice with nothing to stop quits |
 | `Esc` | Close the top layer, end a vim mode, or leave select mode |
 
 ## Transcript (main)
@@ -331,7 +331,7 @@ the command palette).
 | Keys | Does |
 |---|---|
 | `?` / `F1` | The keyboard help sheet; the same key closes it |
-| `Ctrl-C` | Clear the draft, else stop the turn; press twice to quit |
+| `Ctrl-C` | Clear the draft, else stop the turn; twice with nothing to stop quits |
 | `q` | Close the top layer; in select mode with none open, quit |
 | `Esc` | Close the top layer, end a vim mode, or leave select mode |
 | `P` | Hand off to the plain presenter |
@@ -411,7 +411,7 @@ the command palette).
 | Keys | Does |
 |---|---|
 | `?` / `F1` | The keyboard help sheet; the same key closes it |
-| `Ctrl-C` | Clear the draft, else stop the turn; press twice to quit |
+| `Ctrl-C` | Clear the draft, else stop the turn; twice with nothing to stop quits |
 | `q` | Close the top layer; in select mode with none open, quit |
 | `Esc` | Close the top layer, end a vim mode, or leave select mode |
 | `P` | Hand off to the plain presenter |
@@ -473,7 +473,7 @@ the command palette).
 | Keys | Does |
 |---|---|
 | `F1` | The keyboard help sheet; the same key closes it |
-| `Ctrl-C` | Clear the draft, else stop the turn; press twice to quit |
+| `Ctrl-C` | Clear the draft, else stop the turn; twice with nothing to stop quits |
 | `q` | Close the top layer; in select mode with none open, quit |
 | `Esc` | Close the top layer, end a vim mode, or leave select mode |
 
@@ -533,7 +533,7 @@ the command palette).
 | Keys | Does |
 |---|---|
 | `F1` | The keyboard help sheet; the same key closes it |
-| `Ctrl-C` | Clear the draft, else stop the turn; press twice to quit |
+| `Ctrl-C` | Clear the draft, else stop the turn; twice with nothing to stop quits |
 | `Esc` | Close the top layer, end a vim mode, or leave select mode |
 
 ## Dialogs
@@ -602,6 +602,6 @@ the command palette).
 | Keys | Does |
 |---|---|
 | `?` / `F1` | The keyboard help sheet; the same key closes it |
-| `Ctrl-C` | Clear the draft, else stop the turn; press twice to quit |
+| `Ctrl-C` | Clear the draft, else stop the turn; twice with nothing to stop quits |
 | `q` | Close the top layer; in select mode with none open, quit |
 | `Esc` | Close the top layer, end a vim mode, or leave select mode |
