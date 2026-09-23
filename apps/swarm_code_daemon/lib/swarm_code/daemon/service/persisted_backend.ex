@@ -54,6 +54,9 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
       Events.subscribe(opts[:conversation_id])
       Events.ui_subscribe()
+      # pass70 C5 (arch F10): what happens outside this conversation.
+      SwarmCode.Domain.PubSub.subscribe(SwarmCode.Domain.PubSub, "notifications")
+      SwarmCode.Domain.MCP.subscribe()
 
       state = %{
         opts: Keyword.put(opts, :project_root, root),
@@ -72,7 +75,13 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         repo_monitor: Process.monitor(Process.whereis(Repo)),
         streams: %{},
         changes: %{},
-        verdicts: %{}
+        verdicts: %{},
+        # pass70 C5: the waits already told about (so a toast fires once per
+        # new wait elsewhere), the providers' last rate-limit windows, and the
+        # MCP servers that failed (so their recovery is told too).
+        waiting_seen: MapSet.new(Questions.list(), & &1.conversation_id),
+        rate_limits: %{},
+        mcp_failed: MapSet.new()
       }
 
       {:ok, reload(state)}
@@ -203,6 +212,36 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     {:noreply, publish_changes(state, next)}
   end
 
+  # pass70 C5 (arch F10): the domain's own notices become toasts on the shell
+  # watch. "Waiting" comes from `:waiting_changed` instead, which knows the
+  # conversation.
+  def handle_info({:notification, kind, message}, state) when is_binary(message) do
+    case kind do
+      :finished -> {:noreply, toast(state, "success", "Finished", message, nil)}
+      :info -> {:noreply, toast(state, "info", "SwarmCode", message, nil)}
+      _waiting -> {:noreply, state}
+    end
+  end
+
+  def handle_info({:toast, text}, state) when is_binary(text),
+    do: {:noreply, toast(state, "info", "SwarmCode", text, nil)}
+
+  def handle_info({:waiting_changed}, state),
+    do: {:noreply, schedule_refresh(waiting_elsewhere(state))}
+
+  # Runs of this conversation may be research or workflow runs; the library
+  # itself is read on demand, so a changed workflow file needs no delta.
+  def handle_info({event}, state)
+      when event in [:research_runs_changed, :workflow_runs_changed, :workflows_changed],
+      do: {:noreply, schedule_refresh(state)}
+
+  def handle_info({:rate_limit, provider_id, snapshot}, state)
+      when is_binary(provider_id) and is_map(snapshot),
+      do: {:noreply, rate_limit(state, provider_id, snapshot)}
+
+  def handle_info({:mcp_status, server_id, status}, state),
+    do: {:noreply, mcp_status(state, server_id, status)}
+
   def handle_info(event, state) when is_tuple(event) do
     if elem(event, 0) in [
          :run_created,
@@ -221,9 +260,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
          :waiting_changed,
          :workflow_updated,
          :conversation_updated
-       ] and not state.refresh_pending do
-      Process.send_after(self(), :refresh_projection, 20)
-      {:noreply, %{state | refresh_pending: true}}
+       ] do
+      {:noreply, schedule_refresh(state)}
     else
       {:noreply, state}
     end
@@ -714,6 +752,145 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       "revision" => revision
     })
   end
+
+  defp schedule_refresh(%{refresh_pending: true} = state), do: state
+
+  defp schedule_refresh(state) do
+    Process.send_after(self(), :refresh_projection, 20)
+    %{state | refresh_pending: true}
+  end
+
+  # One toast when another conversation starts waiting (not per request: a
+  # conversation already waiting is already told).
+  defp waiting_elsewhere(state) do
+    waits = Questions.list() |> Enum.take(200)
+    current = state.opts[:conversation_id]
+
+    fresh =
+      waits
+      |> Enum.reject(fn wait ->
+        wait.conversation_id == current or
+          MapSet.member?(state.waiting_seen, wait.conversation_id)
+      end)
+      |> Enum.uniq_by(& &1.conversation_id)
+
+    state = %{state | waiting_seen: MapSet.new(waits, & &1.conversation_id)}
+
+    Enum.reduce(fresh, state, fn wait, acc ->
+      what = if wait.kind == :approval, do: "an approval", else: "an answer"
+
+      toast(
+        acc,
+        "waiting",
+        "Waiting for you",
+        conversation_title(wait.conversation_id) <> " needs " <> what,
+        wait.run_id,
+        wait.conversation_id
+      )
+    end)
+  end
+
+  defp conversation_title(id) do
+    case Conversations.get(id) do
+      %{title: title} when is_binary(title) and title != "" -> preview(title, 120)
+      _ -> "Another conversation"
+    end
+  end
+
+  # pass70 C5/C6: a provider's rate-limit window (the synced engine reports
+  # one per response). One per provider, on the shell watch and its snapshot.
+  defp rate_limit(state, provider_id, snapshot) do
+    used = Map.get(snapshot, :used_percent)
+
+    if is_number(used) and
+         (Map.has_key?(state.rate_limits, provider_id) or
+            map_size(state.rate_limits) < 100) do
+      revision = state.revision + 1
+
+      body = %{
+        "provider_id" => provider_id,
+        "provider" => rate_provider(provider_id),
+        "scope" => preview(to_string(Map.get(snapshot, :scope) || ""), 64),
+        "used_percent" => min(max(used * 1.0, 0.0), 100.0),
+        "resets_at" => ms(Map.get(snapshot, :resets_at)),
+        "retry_at" => ms(Map.get(snapshot, :retry_at)),
+        "revision" => revision
+      }
+
+      same? =
+        Map.delete(state.rate_limits[provider_id] || %{}, "revision") ==
+          Map.delete(body, "revision")
+
+      if same? do
+        state
+      else
+        state = %{
+          state
+          | revision: revision,
+            rate_limits: Map.put(state.rate_limits, provider_id, body)
+        }
+
+        broadcast(state, %{
+          "kind" => "rate_limit",
+          "entity_id" => provider_id,
+          "run_id" => nil,
+          "conversation_id" => nil,
+          "channel" => nil,
+          "attempt_id" => nil,
+          "text" => nil,
+          "body" => body,
+          "sequence" => 0,
+          "revision" => revision
+        })
+      end
+    else
+      state
+    end
+  end
+
+  defp rate_provider(id) do
+    case SwarmCode.Domain.Providers.get_cached(id) do
+      %{name: name} when is_binary(name) -> preview(name, 200)
+      _ -> ""
+    end
+  rescue
+    _ -> ""
+  end
+
+  # MCP: a failure is told once, and so is the recovery after it.
+  defp mcp_status(state, server_id, {:error, reason}) do
+    if MapSet.member?(state.mcp_failed, server_id) do
+      state
+    else
+      text = mcp_name(server_id) <> ": " <> preview(to_string_safe(reason), 400)
+      state = %{state | mcp_failed: MapSet.put(state.mcp_failed, server_id)}
+      toast(state, "warning", "MCP server failed", text, nil)
+    end
+  end
+
+  defp mcp_status(state, server_id, :ready) do
+    if MapSet.member?(state.mcp_failed, server_id) do
+      state = %{state | mcp_failed: MapSet.delete(state.mcp_failed, server_id)}
+      toast(state, "success", "MCP server ready", mcp_name(server_id), nil)
+    else
+      state
+    end
+  end
+
+  defp mcp_status(state, _server_id, _status), do: state
+
+  defp mcp_name(id) do
+    case SwarmCode.Domain.MCP.get(id) do
+      %{name: name} when is_binary(name) and name != "" -> preview(name, 120)
+      _ -> "MCP server"
+    end
+  rescue
+    _ -> "MCP server"
+  end
+
+  defp to_string_safe(value) when is_binary(value), do: value
+  defp to_string_safe(value) when is_atom(value), do: Atom.to_string(value)
+  defp to_string_safe(value), do: inspect(value, limit: 20, printable_limit: 400)
 
   defp unknown_outcome(id),
     do:
@@ -1892,6 +2069,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
           case slot do
             "shell" ->
               Map.merge(base, %{
+                "rate_limits" =>
+                  state.rate_limits |> Map.values() |> Enum.sort_by(& &1["provider"]),
                 "runs" => selected,
                 "connection" => %{
                   "state" => "connected",

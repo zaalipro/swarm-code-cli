@@ -3,12 +3,14 @@ defmodule SwarmCode.Daemon.Service.Pass70ConversationTest do
   pass70 C3 (arch F7) and the project half of C2 (arch F12): one persisted
   service lists the project's conversations, creates and opens them in place
   (re-subscribing and re-projecting), changes the project's approval mode and
-  trust, and marks things seen.
+  trust, and marks things seen. C5 (arch F10): what happens outside the open
+  conversation reaches the shell watch as toasts and rate limits.
   """
   use ExUnit.Case, async: false
   import Ecto.Query
   alias SwarmCode.Daemon.Service.PersistedBackend, as: Backend
-  alias SwarmCode.Domain.{Cache, Conversations, Projects, Repo}
+  alias SwarmCode.Domain.{Cache, Conversations, MCP, Notifications, Projects, Providers, Repo}
+  alias SwarmCode.Domain.Engine.{Events, Questions}
   alias SwarmCode.Domain.Conversations.Conversation
   alias SwarmCode.Protocol.{Scope, ServiceRequest}
   alias SwarmCodeCLI.UI.DataSource.{Delta, DTO}
@@ -213,6 +215,99 @@ defmodule SwarmCode.Daemon.Service.Pass70ConversationTest do
     # Idempotent: marking again is accepted again (nothing is ledgered).
     assert {:ok, %{"value" => %{"status" => "accepted"}}} =
              seen(c.backend, "seen", "conversation", c.current.id)
+  end
+
+  describe "outside the open conversation (C5)" do
+    setup c do
+      watch!(c.backend, "shell", global(), "shell")
+      :ok
+    end
+
+    test "finished notices and domain toasts become shell toasts", c do
+      Notifications.notify_finished("Swarm finished: tidy the parser")
+      assert %DTO.Toast{level: :success, text: "Swarm finished: tidy the parser"} = toast!()
+
+      Events.ui_broadcast({:toast, "Workflow Nightly resumed"})
+      assert %DTO.Toast{level: :info, text: "Workflow Nightly resumed"} = toast!()
+
+      # "Waiting" notices carry no conversation; the waits table does (below).
+      Notifications.notify_waiting("worker-a")
+      refute_receive {:service_delta, _, "shell", %{"kind" => "toast"}}, 200
+      assert Process.alive?(c.backend)
+    end
+
+    test "a wait in another conversation is told once; one in the open one is not", c do
+      run = Ecto.UUID.generate()
+      node = Ecto.UUID.generate()
+      on_exit(fn -> Questions.delete_run(run) end)
+
+      Questions.put(c.older.id, run, node, :approval)
+      toast = toast!()
+      assert {toast.level, toast.conversation_id, toast.run_id} == {:waiting, c.older.id, run}
+      assert toast.text == "Older work needs an approval"
+
+      # A conversation already waiting is not told again for a second request.
+      Questions.put(c.older.id, run, Ecto.UUID.generate(), :question)
+      refute_receive {:service_delta, _, "shell", %{"kind" => "toast"}}, 200
+
+      mine = Ecto.UUID.generate()
+      on_exit(fn -> Questions.delete_run(mine) end)
+      Questions.put(c.current.id, mine, Ecto.UUID.generate(), :approval)
+      refute_receive {:service_delta, _, "shell", %{"kind" => "toast"}}, 200
+    end
+
+    test "a provider's rate-limit window reaches the shell and its snapshot", c do
+      {:ok, provider} =
+        Providers.create(%{
+          name: "limits-#{System.unique_integer([:positive])}",
+          kind: "openai_compatible",
+          base_url: "http://127.0.0.1:9/v1",
+          models: ["m"],
+          default_model: "m"
+        })
+
+      window = %{used_percent: 62.5, resets_at: ~U[2026-09-23 12:00:00Z], scope: "requests"}
+      Events.ui_broadcast({:rate_limit, provider.id, window})
+
+      assert_receive {:service_delta, backend, "shell", %{"kind" => "rate_limit"} = delta}, 2000
+      send(backend, {:service_credit, self(), "shell", delta["sequence"]})
+      assert {:ok, %Delta{entity_id: id, body: %DTO.RateLimit{} = limit}} = Delta.decode(delta)
+      assert id == provider.id
+
+      assert {limit.provider, limit.used_percent, limit.scope} ==
+               {provider.name, 62.5, "requests"}
+
+      assert limit.resets_at == DateTime.to_unix(window.resets_at, :millisecond)
+
+      # The same window again is not news.
+      Events.ui_broadcast({:rate_limit, provider.id, window})
+      refute_receive {:service_delta, _, "shell", %{"kind" => "rate_limit"}}, 200
+
+      assert {:ok, %{"value" => shell}} = query(c.backend, global(), "shell")
+
+      assert {:ok, %DTO.ShellSnapshot{rate_limits: [%DTO.RateLimit{used_percent: 62.5}]}} =
+               DTO.ShellSnapshot.decode(shell)
+    end
+
+    test "an MCP failure is told once and so is its recovery" do
+      id = Ecto.UUID.generate()
+      MCP.broadcast_status(id, {:error, "connection refused"})
+      assert %DTO.Toast{level: :warning, text: "MCP server: connection refused"} = toast!()
+
+      MCP.broadcast_status(id, {:error, "connection refused"})
+      refute_receive {:service_delta, _, "shell", %{"kind" => "toast"}}, 200
+
+      MCP.broadcast_status(id, :ready)
+      assert %DTO.Toast{level: :success, title: "MCP server ready"} = toast!()
+    end
+  end
+
+  # A watch sends one delta at a time: each is acknowledged like a client does.
+  defp toast! do
+    assert_receive {:service_delta, backend, "shell", %{"kind" => "toast"} = delta}, 2000
+    send(backend, {:service_credit, self(), "shell", delta["sequence"]})
+    assert {:ok, %Delta{body: %DTO.Toast{} = toast}} = Delta.decode(delta)
+    toast
   end
 
   defp watch!(backend, slot, scope, ref) do
