@@ -104,6 +104,22 @@ defmodule SwarmCode.Daemon.Schema.Gate do
   def verify_binding(_path, _binding, _uid), do: {:error, incompatible_error()}
 
   defp check_existing(path, manifest, app_version, opts) do
+    # pass70 Q13: a file that is not SQLite at all gets its own sentence; the
+    # general one ("comes from a SwarmCode version this swarmcode does not
+    # know") sent the person to upgrade something for a stray file.
+    if sqlite_header?(path),
+      do: check_sqlite(path, manifest, app_version, opts),
+      else: {:error, Refusal.not_a_database()}
+  end
+
+  defp sqlite_header?(path) do
+    case File.open(path, [:read, :binary], &IO.binread(&1, 16)) do
+      {:ok, "SQLite format 3" <> <<0>>} -> true
+      _ -> false
+    end
+  end
+
+  defp check_sqlite(path, manifest, app_version, opts) do
     with {:ok, %{probe: probe, binding: binding}} <- Probe.inspect_bound(path, opts),
          :ok <- verify_integrity(probe),
          :ok <- verify_sqlite_version(probe.sqlite_version, manifest.sqlite_minimum),
@@ -139,7 +155,8 @@ defmodule SwarmCode.Daemon.Schema.Gate do
   end
 
   defp verify_integrity(%Probe{quick_check: [["ok"]], foreign_key_violations: []}), do: :ok
-  defp verify_integrity(_probe), do: {:error, incompatible_error()}
+  defp verify_integrity(%Probe{quick_check: [["ok"]]}), do: {:error, incompatible_error()}
+  defp verify_integrity(_probe), do: {:error, Refusal.damaged()}
 
   defp verify_sqlite_version(actual, minimum) do
     with {:ok, actual_version} <- Version.parse(actual),

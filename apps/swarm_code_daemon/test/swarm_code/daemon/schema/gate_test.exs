@@ -247,11 +247,32 @@ defmodule SwarmCode.Daemon.Schema.GateTest do
       File.write!(database, contents)
       before = sha256_file(database)
 
-      assert {:error, %{code: :schema_incompatible}} =
+      # pass70 Q13: said as what it is, not as an unknown SwarmCode version.
+      assert {:error, %{code: :schema_incompatible} = error} =
                Gate.check(database, manifest, "0.1.0-dev")
 
+      assert error.message =~ "is not a SwarmCode database"
       assert sha256_file(database) == before
     end
+  end
+
+  test "a database that fails its integrity check says so (pass70 Q13)", %{
+    manifest: manifest,
+    current: database
+  } do
+    # Scribble over the last page's b-tree header (a table or index root, not
+    # the schema page): the file still opens and still reads as SQLite.
+    %{size: size} = File.stat!(database)
+    {:ok, file} = :file.open(database, [:read, :write, :binary])
+    :ok = :file.pwrite(file, size - 4096, :binary.copy(<<0xFF>>, 64))
+    :ok = :file.close(file)
+    before = sha256_file(database)
+
+    assert {:error, %{code: :schema_incompatible} = error} =
+             Gate.check(database, manifest, "0.1.0-dev")
+
+    assert error.message =~ "failed SQLite's integrity check"
+    assert sha256_file(database) == before
   end
 
   test "an unsupported application ID refuses unchanged", %{

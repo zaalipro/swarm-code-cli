@@ -683,6 +683,11 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
     failure(@exit_refused, message, action)
   end
 
+  @doc false
+  # The words a schema refusal is said with, for the regression tests.
+  def schema_words(%{code: :schema_incompatible} = error),
+    do: startup_words(:schema_incompatible, error, nil)
+
   defp startup_words(:desktop_active, _error, _boot),
     do:
       {"The SwarmCode app is open, and only one of them can use your conversations at a time.",
@@ -694,12 +699,15 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
        "Close it first (Ctrl-C twice, and once more if it asks), then run swarmcode again."}
 
   # The allowlist's two refusals (pass70 D2: an upgrade only the app makes, a
-  # database from a newer app) already say what to do; any other schema
-  # failure gets the general sentence.
+  # database from a newer app) and the gate's stray-file and damaged-file ones
+  # (Q13) already say what to do; any other schema failure gets the general
+  # sentence.
   defp startup_words(:schema_incompatible, error, _boot) do
     refusals = [
       SwarmCode.Daemon.Schema.Refusal.desktop_upgrade_required(),
-      SwarmCode.Daemon.Schema.Refusal.database_ahead()
+      SwarmCode.Daemon.Schema.Refusal.database_ahead(),
+      SwarmCode.Daemon.Schema.Refusal.not_a_database(),
+      SwarmCode.Daemon.Schema.Refusal.damaged()
     ]
 
     if Enum.any?(refusals, &(&1.message == error.message)),

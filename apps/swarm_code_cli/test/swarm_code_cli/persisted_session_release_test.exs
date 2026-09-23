@@ -34,6 +34,19 @@ defmodule SwarmCodeCLI.Release.PersistedSessionTest do
     refute PersistedSession.ascii?(%{"LANG" => "en_US.UTF-8"})
   end
 
+  test "a stray or damaged database file is said as such (pass70 Q13)" do
+    alias SwarmCode.Daemon.Schema.Refusal
+
+    for refusal <- [Refusal.not_a_database(), Refusal.damaged()] do
+      assert PersistedSession.schema_words(refusal) == {refusal.message, refusal.action}
+      refute refusal.message =~ "does not know"
+    end
+
+    unknown = %{Refusal.damaged() | message: "Schema contract mismatch."}
+    {general, _} = PersistedSession.schema_words(unknown)
+    assert general =~ "does not know"
+  end
+
   test "the private log lives in the platform's state directory" do
     path = PersistedSession.log_path()
     assert Path.basename(path) == "cli.log"
