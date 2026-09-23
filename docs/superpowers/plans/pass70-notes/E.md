@@ -7,9 +7,10 @@ Owner E: interaction, sessions, entry points. Branch `p70/E`, worktree
 
 | task | what | commit |
 | --- | --- | --- |
-| E1 | composer-first keyboard (D5) | see `git log --grep 'pass70 E1'` |
-| E2 | approvals over the conversation, `y Y A d D n`, auto-open with a typing grace | same commit as E1 |
-| E5 (history half) | Up/Down prompt history per conversation | same commit as E1 |
+| E1 | composer-first keyboard (D5) | c8eb87c |
+| E2 | approvals over the conversation, `y Y A d D n`, auto-open with a typing grace | c8eb87c, e559db2 (read model: background, rate limits, toasts, unknown deltas) |
+| E5 (history half) | Up/Down prompt history per conversation | c8eb87c |
+| E3 | conversation switcher, `/resume` `/new` `/clear` `/approval` `/trust`, model picker by provider | f48378e (after merging `p70-C-wire`, 8d7e37e) |
 
 ### E1 keyboard, as built
 
@@ -58,6 +59,26 @@ Owner E: interaction, sessions, entry points. Branch `p70/E`, worktree
   `a` stays as a legacy alias of `y` because `projector/dialog.ex` reads `Bindings.fetch(:approve)` at
   compile time.
 
+### E3 conversations, as built
+
+- Opening the palette (`{:open_layer, {:switcher, _}}`) sends one `{:conversation_list, nil, 50, _}`
+  query (origin `{:conversation, :list}`, shell watch scope); the answer is kept in
+  `state.conversations` (a `DTO.ConversationList`). Conversation entries are listed by title, never by
+  id: `Title · N runs · live · k waiting · open` ("Untitled conversation" when empty), target
+  `{:local, {:open_conversation, id}}`, never marked recent. "New conversation" is always there.
+- `{:open_conversation, id}` closes the palette and sends `{:conversation_open, id}` (origin
+  `{:conversation, :open}`); the view navigates only once the service accepts, then re-asks for the
+  list and focuses the composer. The conversation already open only closes the palette.
+- `/new` and `/clear`: `{:conversation_new}`; accepted → the new conversation opens (identifiers[0]).
+  `/resume` and `/conversations` open the palette with the query `#` (conversations only).
+- `/approval read-only|auto|full` sends `{:project_update, mode, nil}`; bare it says the current mode;
+  anything else leaves the draft and says the three words. `/trust` sends `{:project_update, nil, true}`.
+  Refusals become a sentence in the notice.
+- Run entries in the palette read `Run: <title>` (no uuid). "Detach" is now "Quit".
+- Model picker rows carry `provider_id`, `first_in_group?` (a provider heading goes above) and
+  `current?` = the model matches and (the provider matches `chat_provider`/`swarm_provider`, or none
+  is known). Group order is the daemon's order.
+
 ### E5 history half
 
 - Up on an empty draft walks `Reducer.prompt_history/2`: prompts accepted in this session (newest
@@ -77,11 +98,15 @@ Owner E: interaction, sessions, entry points. Branch `p70/E`, worktree
   `item.approval.allowed_decisions`, else derived from `allowed_actions` (approve / deny / always).
 - **State fields** (block `# pass70-E fields`, after `command_report`): `quit_armed`,
   `quit_live_runs`, `interaction_grace`, `auto_opened`, `dismissed_interactions`, `prompt_history`,
-  `history_cursor`.
+  `history_cursor`, `conversations`.
 - **Select mode** ⇔ `state.focus in ["main", "inspector"] and state.layers == []`.
 - **Actions** (validated in `UI.Action`): `{:interrupt, :escape | :ctrl_c}`, `:select_mode`,
   `{:compose, text}`, `{:history, :previous | :next}`, `:copy_selection`,
-  `{:slash_local, :help | :quit | :new | :resume | :conversations | :queue}`.
+  `{:slash_local, :help | :quit | :new | :resume | :conversations | :queue | :approval | :trust}`,
+  `{:open_conversation, id}`, `:new_conversation`.
+- **Switcher entries** (`Switcher.Entry`) gain `title`, `detail`, `current?`: D may draw the title
+  bold and the detail dim, and mark `current?`. `state.conversations` is the last list answer.
+- **Model picker rows** gain `provider_id`, `first_in_group?`, and `current?` per provider.
 - **Effect** `{:copy, text}` (≤ `Effect.max_copy_bytes/0` = 256 KiB). The session runtime sends the
   terminal `{:terminal_copy, generation, token, text}` and waits 1 s for
   `{:terminal_copy_result, token, :ok | {:error, reason}}`; the notice then says "Copied N lines." or
@@ -106,6 +131,9 @@ Owner E: interaction, sessions, entry points. Branch `p70/E`, worktree
 - **D (quit confirmation):** `{:unsent_changes, :detach}` is also the live-run quit question. When
   `state.quit_live_runs > 0` please title it "Stop N live runs and quit?" (and mention unsent work only
   when `State.dirty?/1`).
+- **D (palette/model picker):** draw `Switcher.Entry.title` with `detail` dimmed (the `label` keeps
+  both for older painters), and in the model picker a provider heading above each row with
+  `first_in_group?`, plus a check on `current?`.
 - **D (status line):** the composer hints now come from `:send`, `:interrupt_turn` (Esc "Interrupt"),
   `:composer_newline`, `:command_palette`, `:complete` (Tab), `:next_need_chord` (Ctrl-N "Waiting"),
   `:select_mode` (Ctrl-T "Select"), `:interrupt` (Ctrl-C). Select mode (`focus == "main"`, no layer)
