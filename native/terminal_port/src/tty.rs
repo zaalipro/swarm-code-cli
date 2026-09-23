@@ -3,6 +3,7 @@ use std::{
     fs::{File, OpenOptions},
     io::{self, Write},
     os::fd::{AsRawFd, FromRawFd, RawFd},
+    os::unix::fs::OpenOptionsExt,
     time::{Duration, Instant},
 };
 
@@ -15,7 +16,14 @@ pub struct Tty {
 }
 impl Tty {
     pub fn open() -> io::Result<Self> {
-        let file = OpenOptions::new().read(true).write(true).open("/dev/tty")?;
+        // O_NONBLOCK: opening the tty of a vanished pty must fail, never wait
+        // (rel F17). Blocking mode is restored before the flags are recorded.
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY)
+            .open("/dev/tty")?;
+        blocking(file.as_raw_fd())?;
         Self::from_file(file)
     }
     pub fn beam_handoff() -> io::Result<Self> {
@@ -39,16 +47,24 @@ impl Tty {
         if unsafe { libc::ttyname_r(0, name.as_mut_ptr(), name.len()) } != 0 {
             return Err(io::Error::last_os_error());
         }
+        // O_NONBLOCK: an open of a revoked or vanished terminal fails at once
+        // instead of parking this helper in the kernel (rel F17). The
+        // descriptor is returned to blocking mode before its flags are recorded.
         let fd = unsafe {
             libc::open(
                 name.as_ptr(),
-                libc::O_RDWR | libc::O_NOCTTY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                libc::O_RDWR
+                    | libc::O_NOCTTY
+                    | libc::O_NOFOLLOW
+                    | libc::O_CLOEXEC
+                    | libc::O_NONBLOCK,
             )
         };
         if fd < 0 {
             return Err(io::Error::last_os_error());
         }
         let file = unsafe { File::from_raw_fd(fd) };
+        blocking(fd)?;
         let mut owned: libc::stat = unsafe { std::mem::zeroed() };
         if unsafe { libc::fstat(fd, &mut owned) < 0 || libc::isatty(fd) != 1 }
             || owned.st_mode & libc::S_IFMT != libc::S_IFCHR
@@ -107,6 +123,10 @@ impl Tty {
         }
         if flags & 4 != 0 {
             out.write_all(b"\x1b[?2004h")?;
+        }
+        // pass70 B10: button reports in SGR encoding, for the wheel only.
+        if flags & crate::protocol::FLAG_MOUSE != 0 {
+            out.write_all(b"\x1b[?1000h\x1b[?1006h")?;
         }
         out.flush()
     }
@@ -183,6 +203,13 @@ pub fn size(fd: RawFd) -> io::Result<(u16, u16)> {
         return Err(io::ErrorKind::InvalidData.into());
     }
     Ok((size.ws_col, size.ws_row))
+}
+fn blocking(fd: RawFd) -> io::Result<()> {
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags & !libc::O_NONBLOCK) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
 }
 pub fn nonblocking(fd: RawFd) -> io::Result<()> {
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };

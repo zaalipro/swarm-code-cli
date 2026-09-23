@@ -20,6 +20,8 @@ cleanup_overlay() {
 }
 trap cleanup_overlay EXIT INT TERM
 mise exec -- mix release swarm_code_cli --overwrite
+# The cookie is unused (RELEASE_DISTRIBUTION=none) but never world-readable.
+chmod 0600 "_build/${MIX_ENV}/rel/swarm_code_cli/releases/COOKIE"
 
 echo "Release ready: _build/${MIX_ENV}/rel/swarm_code_cli"
 echo "Start it with: _build/${MIX_ENV}/rel/swarm_code_cli/bin/swarmcode [DIR]"

@@ -123,6 +123,8 @@ defmodule SchemaFixture do
     end
   end
 
+  # The backup gate's table set: FTS5 shadow tables are the virtual table's
+  # internals (pass70 B), so they are neither counted nor proved.
   @spec row_counts(Path.t()) :: %{String.t() => non_neg_integer()}
   def row_counts(database) do
     with_connection(database, :readonly, fn conn ->
@@ -133,6 +135,9 @@ defmodule SchemaFixture do
           SELECT name
           FROM sqlite_schema
           WHERE type = 'table' AND name NOT GLOB 'sqlite_*'
+            AND name NOT IN (
+              SELECT name FROM pragma_table_list WHERE schema = 'main' AND type = 'shadow'
+            )
           ORDER BY name
           LIMIT 513
           """,

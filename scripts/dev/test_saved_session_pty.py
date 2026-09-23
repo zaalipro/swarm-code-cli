@@ -149,8 +149,8 @@ SwarmCode.Development.PersistedSession.run_for_test(boot)
                         terminal.wait_for(b'Focus: main')
                     terminal.send(b'q')
                     terminal.finish()
-                    self.assertIn(b'guarded storage released.', terminal.output)
-                    self.assertNotIn(b'cleanup remains pending', terminal.output)
+                    # A clean close is silent; a bounded, unconfirmed one says so.
+                    self.assertNotIn(b'handle still pending', terminal.output)
                 finally:
                     terminal.close()
 

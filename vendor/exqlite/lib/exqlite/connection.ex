@@ -257,10 +257,12 @@ defmodule Exqlite.Connection do
     # See: https://github.com/elixir-sqlite/exqlite/issues/192
     Sqlite3.cancel(db)
 
-    case Sqlite3.close(db) do
-      :ok -> :ok
-      {:error, reason} -> {:error, %Error{message: to_string(reason)}}
-    end
+    # SwarmCode: DBConnection matches `:ok = disconnect(...)`, so an error here
+    # crashed the pooled connection process. A bound (guarded) close that SQLite
+    # refuses because a statement is still referenced leaves the handle with its
+    # owner: the lease retires and closes it once the statement is finalized.
+    _ = Sqlite3.close(db)
+    :ok
   end
 
   @impl true
@@ -295,16 +297,43 @@ defmodule Exqlite.Connection do
   @impl true
   def handle_prepare(%Query{} = query, options, state) do
     with {:ok, query} <- prepare(query, options, state) do
-      {:ok, query, state}
+      {:ok, unpin(query, state), state}
     end
   end
 
   @impl true
   def handle_execute(%Query{} = query, params, options, state) do
     with {:ok, query} <- prepare(query, options, state) do
-      execute(:execute, query, params, state)
+      :execute
+      |> execute(query, params, state)
+      |> finish_statement(query, state)
     end
   end
+
+  # SwarmCode: a bound (guarded) connection closes with `sqlite3_close`, which
+  # refuses while any statement is unfinalized. Ecto caches the returned query
+  # (and its statement ref) for the Repo's lifetime, and `handle_execute/4`
+  # re-prepares anyway, so a cached ref only pinned its connection. Bound
+  # connections finalize every statement when the call ends and hand back a
+  # query without a ref; unbound connections keep upstream behaviour.
+  defp unpin(%Query{ref: ref} = query, %__MODULE__{database_binding: true, db: db})
+       when ref != nil do
+    _ = Sqlite3.release(db, ref)
+    %{query | ref: nil}
+  end
+
+  defp unpin(query, _state), do: query
+
+  defp finish_statement(result, query, %__MODULE__{database_binding: true} = state) do
+    _ = unpin(query, state)
+
+    case result do
+      {:ok, %Query{} = done, result, next} -> {:ok, %{done | ref: nil}, result, next}
+      other -> other
+    end
+  end
+
+  defp finish_statement(result, _query, _state), do: result
 
   @doc """
   Begin a transaction.

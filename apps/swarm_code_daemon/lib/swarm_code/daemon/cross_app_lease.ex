@@ -116,6 +116,7 @@ defmodule SwarmCode.Daemon.CrossAppLease do
         repo: nil,
         pool_size: 0,
         slots: %{},
+        retired: [],
         coordinator_monitor: nil,
         coordinator: elem(opts[:startup_reply], 0),
         paths: opts[:paths],
@@ -270,6 +271,10 @@ defmodule SwarmCode.Daemon.CrossAppLease do
            end) do
         {:ok, ticket} ->
           entry = %{pid: caller, ready: false, db: nil}
+          # A replaced connection's handle must never become unreachable garbage
+          # in this (mostly idle) heap: its native close would then wait for a GC
+          # that never comes and guarded cleanup could not finish (pass70 B1).
+          state = retire(state, existing)
           {:reply, {:ok, ticket}, %{state | slots: Map.put(state.slots, slot, entry)}}
 
         _ ->
@@ -340,9 +345,14 @@ defmodule SwarmCode.Daemon.CrossAppLease do
   end
 
   def handle_call(:close_binding, {caller, _}, %{coordinator: caller} = state) do
+    state = close_retired(state)
+
     case protected(fn -> close_native_binding(state) end) do
-      :ok -> {:reply, :ok, %{state | binding: nil, phase: :binding_closed, slots: %{}}}
-      _ -> {:reply, {:error, :cleanup_pending}, %{state | phase: :closing}}
+      :ok ->
+        {:reply, :ok, %{state | binding: nil, phase: :binding_closed, slots: %{}, retired: []}}
+
+      _ ->
+        {:reply, {:error, :cleanup_pending}, %{state | phase: :closing}}
     end
   end
 
@@ -450,6 +460,10 @@ defmodule SwarmCode.Daemon.CrossAppLease do
   defp close_native_binding(%{binding: nil}), do: :ok
 
   defp close_native_binding(state) do
+    # Garbage handles in this heap hold native connections open until a GC.
+    :erlang.garbage_collect(self())
+    Enum.each(Map.get(state, :retired, []), &Exqlite.Sqlite3.close/1)
+
     if state.repo == nil or not Process.alive?(state.repo) do
       Enum.each(state.slots, fn {_, slot} ->
         if slot.db, do: Exqlite.Sqlite3.close(slot.db)
@@ -457,6 +471,26 @@ defmodule SwarmCode.Daemon.CrossAppLease do
     end
 
     with 0 <- DatabaseBinding.connections(state.binding), do: DatabaseBinding.close(state.binding)
+  end
+
+  defp retire(state, %{db: db}) when db != nil do
+    close_retired(%{state | retired: [db | state.retired]})
+  end
+
+  defp retire(state, _existing), do: state
+
+  # A retired handle belongs to a connection process that disconnected or
+  # died; nothing uses it any more. Close it now when SQLite agrees (every
+  # statement finalized) and keep only the ones it still refuses.
+  defp close_retired(%{retired: []} = state), do: state
+
+  defp close_retired(state) do
+    retired =
+      Enum.reject(state.retired, fn db ->
+        protected(fn -> Exqlite.Sqlite3.close(db) end) == :ok
+      end)
+
+    %{state | retired: retired}
   end
 
   defp fence_reply(state) do
@@ -505,6 +539,8 @@ defmodule SwarmCode.Daemon.CrossAppLease do
   end
 
   def handle_info(:drain_binding, state) do
+    state = close_retired(state)
+
     case protected(fn -> close_native_binding(state) end) do
       :ok ->
         {:stop, :normal, %{state | binding: nil}}

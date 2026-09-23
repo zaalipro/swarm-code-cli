@@ -192,3 +192,27 @@ Quarantine remains a VM-restart-only failure disposition. It does not establish
 safe NIF unload/reload, same-VM operator recovery, or normal lifecycle completion.
 The native control retains memory/anchors/flocks in that state; the test process
 must exit to dispose a quarantined injected-fault fixture completely.
+
+
+## Guarded connection close (SwarmCode CLI pass 70, B1)
+
+`lib/exqlite/connection.ex` changes two behaviours, both needed because a bound
+connection closes with `sqlite3_close` (v1), which refuses while any statement
+of that connection is unfinalized:
+
+- `disconnect/2` always returns `:ok`. `DBConnection.Connection` matches
+  `:ok = disconnect(...)`, so a refused close used to crash the pooled
+  connection process (the "client exited" MatchError). A refused bound handle
+  stays open; the daemon's `CrossAppLease` retires the replaced slot's handle
+  and closes it once SQLite agrees, and at the latest during guarded cleanup.
+- On a bound connection (`database_binding: true`) `handle_prepare/3` and
+  `handle_execute/4` finalize their statement when the call ends and return the
+  query with `ref: nil`. Ecto caches the returned query for the Repo's lifetime;
+  a cached statement ref only pinned its connection, because `handle_execute/4`
+  re-prepares on every call anyway. Unbound connections keep upstream
+  behaviour. Streams (`handle_declare/4`) still own their statement until
+  `handle_deallocate/4`.
+
+Regression: `apps/swarm_code_daemon/test/swarm_code/daemon/repo_launcher_test.exs`
+kills a process that holds a checkout after warming the query cache and asserts
+the pool stays live and `RepoLauncher.close/1` returns `:ok` within 3 s.

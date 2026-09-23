@@ -275,6 +275,25 @@ class TerminalPortPTY(unittest.TestCase):
         while select.select([p.master], [], [], 0)[0]:
             p.terminal.extend(os.read(p.master, 65536))
 
+    def test_copy_writes_osc52_and_opt_in_wheel_reports(self):
+        # pass70 B10: clipboard text leaves as OSC 52 between frames; with the
+        # mouse flag the wheel arrives as a payload-6 event and clicks vanish.
+        p = self.port(flags=7 | 16)
+        self.assertIn(b'\x1b[?1000h\x1b[?1006h', p.terminal)
+        text = 'hi\n\tthere'.encode()
+        p.send(packet(struct.pack('>BBQQI', 1, 7, GEN, 1, len(text)) + text))
+        end = time.monotonic() + 3
+        while b'\x1b]52;c;aGkKCXRoZXJl\x07' not in p.terminal and time.monotonic() < end:
+            p.pump()
+        self.assertIn(b'\x1b]52;c;aGkKCXRoZXJl\x07', p.terminal)
+        os.write(p.master, b'\x1b[<0;5;6M\x1b[<0;5;6m\x1b[<65;12;3M')
+        p.send(command(2, 2))
+        self.assertEqual(p.recv(), struct.pack('>BBQQBBBHH', 1, 17, GEN, 2, 6, 1, 0, 11, 2))
+        p.send(command(4, 3))
+        self.assertEqual(p.recv()[1], 19)
+        p.restored()
+        self.assertIn(b'\x1b[?1006l', p.terminal)
+
     def test_draw_credit_paste_escape_and_shutdown(self):
         p = self.port()
         p.send(draw(text=b'XYZ'))

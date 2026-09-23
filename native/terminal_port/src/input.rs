@@ -90,6 +90,15 @@ pub enum Event {
     Rejected(Rejection),
     FocusGained,
     FocusLost,
+    /// pass70 B10: one wheel notch over a zero-based cell, reported only when
+    /// the owner asked for mouse reports (opt-in; they disable the terminal's
+    /// own text selection).
+    Wheel {
+        up: bool,
+        column: u16,
+        row: u16,
+        modifiers: Modifiers,
+    },
 }
 impl fmt::Debug for Event {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -118,6 +127,18 @@ impl fmt::Debug for Event {
             Self::Rejected(reason) => f.debug_tuple("Rejected").field(reason).finish(),
             Self::FocusGained => f.write_str("FocusGained"),
             Self::FocusLost => f.write_str("FocusLost"),
+            Self::Wheel {
+                up,
+                column,
+                row,
+                modifiers,
+            } => f
+                .debug_struct("Wheel")
+                .field("up", up)
+                .field("column", column)
+                .field("row", row)
+                .field("modifiers", modifiers)
+                .finish(),
         }
     }
 }
@@ -515,6 +536,9 @@ fn decode_sequence(params: &[u8], final_byte: u8, ss3: bool) -> Option<Event> {
     if !ss3 && final_byte == b'u' {
         return decode_csi_u(params);
     }
+    if !ss3 && matches!(final_byte, b'M' | b'm') && params.first() == Some(&b'<') {
+        return decode_sgr_mouse(&params[1..], final_byte);
+    }
     if !ss3 && params.is_empty() {
         if final_byte == b'I' {
             return Some(Event::FocusGained);
@@ -577,6 +601,45 @@ fn decode_sequence(params: &[u8], final_byte: u8, ss3: bool) -> Option<Event> {
         }
     };
     Some(key_event(key, Phase::Press, mods))
+}
+/// SGR mouse report `CSI < button ; column ; row M|m` (1-based cells). Only a
+/// wheel press (64 up, 65 down, plus 4 Shift, 8 Alt, 16 Control) becomes an
+/// event; clicks, drags, releases and horizontal wheels are consumed silently.
+fn decode_sgr_mouse(params: &[u8], final_byte: u8) -> Option<Event> {
+    let mut fields = params.split(|b| *b == b';');
+    let button = decimal(fields.next()?)?;
+    let column = decimal(fields.next()?)?;
+    let row = decimal(fields.next()?)?;
+    if fields.next().is_some() || final_byte != b'M' || column == 0 || row == 0 {
+        return None;
+    }
+    if column > u32::from(u16::MAX) || row > u32::from(u16::MAX) {
+        return None;
+    }
+    if button & !(3 | 4 | 8 | 16) != 64 {
+        return None;
+    }
+    let up = match button & 3 {
+        0 => true,
+        1 => false,
+        _ => return None,
+    };
+    let mut bits = 0;
+    if button & 4 != 0 {
+        bits |= 1;
+    }
+    if button & 16 != 0 {
+        bits |= 2;
+    }
+    if button & 8 != 0 {
+        bits |= 4;
+    }
+    Some(Event::Wheel {
+        up,
+        column: (column - 1) as u16,
+        row: (row - 1) as u16,
+        modifiers: Modifiers(bits),
+    })
 }
 fn decode_csi_u(params: &[u8]) -> Option<Event> {
     let mut fields = params.split(|b| *b == b';');

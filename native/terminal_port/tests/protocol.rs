@@ -1,7 +1,7 @@
 use swarm_terminal_port::input::{Event, Key, Modifiers, Phase, Rejection};
 use swarm_terminal_port::protocol::{
-    Command, ProtocolError, decode_command, encode_event, failure, painted, ready, resize,
-    restored, resume_needed, skipped,
+    Command, MAX_COPY_BYTES, ProtocolError, decode_command, encode_event, failure, osc52, painted,
+    ready, resize, restored, resume_needed, skipped,
 };
 fn packet(body: &[u8]) -> Vec<u8> {
     let mut p = (body.len() as u32).to_be_bytes().to_vec();
@@ -292,4 +292,95 @@ fn fixed_response_sizes_and_largest_paste_packet_are_exact() {
             .len(),
         27
     );
+}
+
+// pass70 B10: clipboard text through OSC 52 and opt-in wheel reports.
+fn copy(text: &[u8]) -> Vec<u8> {
+    let mut b = vec![1, 7];
+    b.extend_from_slice(&7u64.to_be_bytes());
+    b.extend_from_slice(&9u64.to_be_bytes());
+    b.extend_from_slice(&(text.len() as u32).to_be_bytes());
+    b.extend_from_slice(text);
+    b
+}
+#[test]
+fn copy_commands_carry_bounded_inert_clipboard_text() {
+    let body = copy(b"fn main() {\n\tok()\n}");
+    let command = decode_command(&body).unwrap();
+    assert_eq!(
+        command,
+        Command::Copy {
+            generation: 7,
+            token: 9,
+            text: "fn main() {\n\tok()\n}"
+        }
+    );
+    assert_eq!(command.operation(), "copy");
+    assert_eq!(command.token(), Some(9));
+    assert!(!format!("{command:?}").contains("main"));
+    assert!(decode_command(&copy(&vec![b'x'; MAX_COPY_BYTES])).is_ok());
+    for bad in [
+        copy(b""),
+        copy(&vec![b'x'; MAX_COPY_BYTES + 1]),
+        copy(b"\x1b]52;c;evil\x07"),
+        copy(b"bell\x07"),
+        copy(b"carriage\r"),
+        copy("rtl\u{202e}".as_bytes()),
+        copy("c1\u{9b}".as_bytes()),
+        copy(&[0xff, 0xfe]),
+        {
+            let mut b = copy(b"ab");
+            b.push(0);
+            b
+        },
+        {
+            let mut b = copy(b"ab");
+            b.pop();
+            b
+        },
+    ] {
+        assert_eq!(decode_command(&bad), Err(ProtocolError));
+    }
+}
+#[test]
+fn osc52_is_standard_base64_terminated_by_bel() {
+    assert_eq!(osc52("a"), b"\x1b]52;c;YQ==\x07");
+    assert_eq!(osc52("hi"), b"\x1b]52;c;aGk=\x07");
+    assert_eq!(osc52("abc"), b"\x1b]52;c;YWJj\x07");
+    assert_eq!(osc52("界\n"), b"\x1b]52;c;55WMCg==\x07");
+}
+#[test]
+fn the_mouse_flag_is_an_init_flag_and_wheel_events_have_a_payload() {
+    let mut b = vec![1, 1];
+    b.extend_from_slice(&7u64.to_be_bytes());
+    b.push(1 | 2 | 4 | 16);
+    assert_eq!(
+        decode_command(&b).unwrap(),
+        Command::Init {
+            generation: 7,
+            flags: 23
+        }
+    );
+    for flags in [8, 32, 64, 128] {
+        b[10] = flags;
+        assert!(decode_command(&b).is_err());
+    }
+    assert!(ready(7, 80, 24, 23).is_ok());
+    assert!(ready(7, 80, 24, 8).is_err());
+    let packet = encode_event(
+        7,
+        9,
+        &Event::Wheel {
+            up: false,
+            column: 300,
+            row: 2,
+            modifiers: Modifiers::from_bits(2).unwrap(),
+        },
+    )
+    .unwrap();
+    let mut expected = vec![1, 17];
+    expected.extend_from_slice(&7u64.to_be_bytes());
+    expected.extend_from_slice(&9u64.to_be_bytes());
+    expected.extend_from_slice(&[6, 1, 2, 1, 44, 0, 2]);
+    assert_eq!(packet, self::packet(&expected));
 }

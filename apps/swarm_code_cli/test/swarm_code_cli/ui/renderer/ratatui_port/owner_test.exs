@@ -1,6 +1,7 @@
 defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.OwnerTest do
   use ExUnit.Case, async: false
-  alias SwarmCodeCLI.UI.{Capabilities, Fixtures, Projector, SceneSlot, Size}
+  alias SwarmCodeCLI.UI.{Capabilities, Fixtures, Projector, SafeText, SceneSlot, Size}
+  alias SwarmCodeCLI.UI.Scene.Block
   alias SwarmCodeCLI.UI.Renderer.RatatuiPort.Owner
 
   defmodule Runtime do
@@ -248,5 +249,187 @@ defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.OwnerTest do
     send(owner, {:draw, "large", 1})
     send(owner, {:terminal_control, :shutdown, "close"})
     assert_receive {:DOWN, ^monitor, :process, ^owner, :terminal_protocol_failed}, 4500
+    # rel F17: the helper that never read its EOF was signalled away.
+    refute os_alive?(os_pid)
+  end
+
+  # pass70 B2: a frame that cannot be painted never stops the owner.
+  @tag capture_log: true
+  test "a scene over the paint budget keeps the owner alive and draws an error line" do
+    {owner, runtime} = owner()
+    ready(owner)
+    scene(runtime, 1)
+    send(owner, {:draw, "first", 1})
+    :sys.get_state(owner)
+    record(owner, <<1, 18, 1::64, 1::64, 1::64>>)
+    assert_receive {:draw_result, "first", 1, :ok}
+    previous = :sys.get_state(owner).last_plan
+
+    oversized(runtime, 2)
+    send(owner, {:draw, "big", 2})
+    state = :sys.get_state(owner)
+    assert Process.alive?(owner)
+    assert state.pending == {2, 2, "big"}
+    assert MapSet.member?(state.draw_errors, :capacity_exceeded)
+    assert last_row(state.last_plan) =~ "too large to draw"
+    # Every row above the error line is the previous frame.
+    %{columns: columns, rows: rows} = previous.size
+
+    assert Enum.slice(Tuple.to_list(state.last_plan.cells), 0, columns * (rows - 1)) ==
+             Enum.slice(Tuple.to_list(previous.cells), 0, columns * (rows - 1))
+
+    record(owner, <<1, 18, 1::64, 2::64, 2::64>>)
+    assert_receive {:draw_result, "big", 2, :ok}
+
+    # The same failure again is drawn again but logged only once (state keeps
+    # one entry per reason), and a good scene afterwards paints normally.
+    oversized(runtime, 3)
+    send(owner, {:draw, "big-again", 3})
+    assert MapSet.size(:sys.get_state(owner).draw_errors) == 1
+    record(owner, <<1, 18, 1::64, 3::64, 3::64>>)
+    assert_receive {:draw_result, "big-again", 3, :ok}
+    scene(runtime, 4)
+    send(owner, {:draw, "good", 4})
+    refute last_row(:sys.get_state(owner).last_plan) =~ "too large"
+  end
+
+  @tag capture_log: true
+  test "a first frame that cannot be painted draws a blank screen with the error line" do
+    {owner, runtime} = owner()
+    ready(owner)
+    oversized(runtime, 1)
+    send(owner, {:draw, "big", 1})
+    state = :sys.get_state(owner)
+    assert state.pending == {1, 1, "big"}
+    assert last_row(state.last_plan) =~ "too large to draw"
+    assert :ok = SwarmCodeCLI.UI.Paint.Plan.validate(state.last_plan)
+  end
+
+  test "a slow paint is answered early, and the newest request is drawn after it" do
+    {owner, runtime} = owner()
+    ready(owner)
+    scene(runtime, 1)
+    send(owner, {:draw, "slow", 1})
+    %{timer: {_, identity}} = :sys.get_state(owner)
+    send(owner, {:deadline, identity, :draw})
+    assert_receive {:draw_result, "slow", 1, {:error, :stale_revision}}
+    assert :sys.get_state(owner).pending_replied?
+
+    scene(runtime, 2)
+    send(owner, {:draw, "queued", 2})
+    assert :sys.get_state(owner).queued == {"queued", 2}
+    scene(runtime, 3)
+    send(owner, {:draw, "newest", 3})
+    assert_receive {:draw_result, "queued", 2, {:error, :stale_revision}}
+    state = record(owner, <<1, 18, 1::64, 1::64, 1::64>>)
+    refute_receive {:draw_result, "slow", 1, :ok}, 30
+    assert state.pending == {2, 3, "newest"}
+    assert state.queued == nil
+    record(owner, <<1, 18, 1::64, 2::64, 3::64>>)
+    assert_receive {:draw_result, "newest", 3, :ok}
+    assert Process.alive?(owner)
+  end
+
+  @tag capture_log: true
+  test "a helper that ignores SIGTERM is killed when the owner stops" do
+    runtime = start_supervised!({Runtime, self()})
+
+    owner =
+      start_supervised!(
+        {Owner,
+         runtime: runtime,
+         capabilities: %Capabilities{size: %Size{columns: 80, rows: 24}},
+         flags: %{alternate?: false, focus?: true, paste?: true},
+         executable: Path.expand("../../../../support/terminal_wire_stubborn.sh", __DIR__)},
+        restart: :temporary
+      )
+
+    {:os_pid, os_pid} = Port.info(:sys.get_state(owner).port, :os_pid)
+
+    on_exit(fn ->
+      System.cmd("/bin/kill", ["-KILL", Integer.to_string(os_pid)], stderr_to_stdout: true)
+    end)
+
+    assert os_alive?(os_pid)
+    monitor = Process.monitor(owner)
+    GenServer.stop(owner, :shutdown, 10_000)
+    assert_receive {:DOWN, ^monitor, :process, ^owner, _}, 10_000
+    refute os_alive?(os_pid)
+  end
+
+  defp oversized(runtime, revision) do
+    size = %Size{columns: 80, rows: 24}
+
+    {scene, _} =
+      Projector.project(Fixtures.representative(:chat, size, %Capabilities{size: size}))
+
+    [region | rest] = scene.regions
+    padding = List.duplicate(%Block.Text{text: SafeText.chrome(:main)}, 5_000)
+
+    scene = %{
+      scene
+      | revision: revision,
+        regions: [%{region | blocks: region.blocks ++ padding} | rest]
+    }
+
+    :ok = GenServer.call(runtime, {:put, scene})
+  end
+
+  defp last_row(%{size: %{columns: columns, rows: rows}, cells: cells}) do
+    cells
+    |> Tuple.to_list()
+    |> Enum.slice((rows - 1) * columns, columns)
+    |> Enum.map_join(fn
+      {:glyph, text, _, _} -> text
+      _ -> ""
+    end)
+  end
+
+  defp os_alive?(os_pid) do
+    {_, status} =
+      System.cmd("/bin/kill", ["-0", Integer.to_string(os_pid)], stderr_to_stdout: true)
+
+    status == 0
+  end
+
+  # pass70 B10: copy is asynchronous, validated in the caller, and spends a
+  # control token only once the terminal is running.
+  test "copy validates in the caller and sends only while running" do
+    {owner, _runtime} = owner()
+    before = :sys.get_state(owner).counter
+    assert :ok = Owner.copy(owner, "early")
+    assert :sys.get_state(owner).counter == before
+
+    ready(owner)
+    assert :ok = Owner.copy(owner, "hello\n\tworld")
+    assert :sys.get_state(owner).counter == before + 1
+    assert {:error, :invalid_text} = Owner.copy(owner, "\e[2J")
+    assert {:error, :invalid_text} = Owner.copy(owner, "")
+    assert :sys.get_state(owner).counter == before + 1
+
+    # The renderer-neutral message the runtime sends; bad text is refused
+    # without spending a token or stopping the owner.
+    send(owner, {:terminal_copy, "from the runtime"})
+    assert :sys.get_state(owner).counter == before + 2
+    send(owner, {:terminal_copy, "\e]52;c;x\a"})
+    assert :sys.get_state(owner).counter == before + 2
+    assert Process.alive?(owner)
+  end
+
+  test "the mouse flag is expected back in ready and reported as a capability" do
+    runtime = start_supervised!({Runtime, self()})
+
+    owner =
+      start_supervised!(
+        {Owner,
+         runtime: runtime,
+         capabilities: %Capabilities{size: %Size{columns: 80, rows: 24}},
+         flags: %{alternate?: false, focus?: true, paste?: true, mouse?: true},
+         executable: Path.expand("../../../../support/terminal_wire_sink.sh", __DIR__)}
+      )
+
+    record(owner, <<1, 16, 1::64, 80::16, 24::16, 22>>)
+    assert_receive {:registered, ^owner, 1, caps}
+    assert caps.mouse == :best_effort
   end
 end

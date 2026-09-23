@@ -60,7 +60,13 @@ fn absolute_positions_follow_declared_width_for_both_policies() {
             &[(1, 0, "·"), (3, 0, "👩‍💻"), (3, 0, "abc"), (1, 0, "z")],
         );
         let out = draw(&mut Painter::new(), &body);
-        for expected in ["\x1b[1;1H·", "\x1b[1;2H👩‍💻", "\x1b[1;5Habc", "\x1b[1;8Hz"] {
+        // pass70 B8: a glyph whose advance is uncertain (wide or non-ASCII)
+        // reserves its columns and re-anchors; ASCII advances implicitly.
+        for expected in [
+            "\x1b[1;1H\x1b[K·",
+            "\x1b[1;2H   \x1b[1;2H👩‍💻",
+            "\x1b[1;5Habcz",
+        ] {
             assert!(out.contains(expected), "{out:?} missing {expected:?}");
         }
         assert!(!out.contains("?1049"));
@@ -84,10 +90,14 @@ fn replacement_clears_complete_old_wide_row_before_any_new_glyph() {
             &[(1, 0, "a"), (1, 0, "b"), (1, 0, "c"), (1, 0, "d")],
         ),
     );
-    let clear = out.find("\x1b[K").expect("clear old complete row");
-    assert!(clear < out.find("\x1b[1;1Ha").unwrap());
+    // pass70 B8: the old wide glyph's columns are erased in place (ECH), not
+    // the whole line, before any new glyph; the new run needs one move.
+    let erase = out
+        .find("\x1b[1;1H\x1b[4X")
+        .expect("erase the old wide glyph");
+    assert!(erase < out.find("abcd").unwrap());
     assert!(out.contains("\x1b[44m"));
-    assert!(out.contains("\x1b[1;4Hd"));
+    assert!(!out.contains("\x1b[K"));
 }
 
 #[test]
@@ -111,8 +121,7 @@ fn only_changed_rows_repaint_and_resize_forces_full_frame() {
     assert!(!out.contains("\x1b[1;1H"));
     assert!(out.contains("\x1b[2;1Hcc"));
     let out = draw(&mut p, &plain(3, 1, &[(3, 0, "aaa")]));
-    assert!(out.contains("\x1b[1;1Haaa"));
-    assert!(out.contains("\x1b[K"));
+    assert!(out.contains("\x1b[1;1H\x1b[Kaaa"));
 }
 
 #[test]
@@ -245,8 +254,8 @@ fn write_or_flush_failure_invalidates_previous_frame_for_retry() {
             .is_err()
         );
         let out = draw(&mut p, &new);
-        assert!(out.contains("\x1b[1;1Haa"));
-        assert!(out.contains("\x1b[2;1Hcc"));
+        assert!(out.contains("\x1b[1;1H\x1b[Kaa"));
+        assert!(out.contains("\x1b[2;1H\x1b[Kcc"));
     }
 }
 
@@ -258,7 +267,7 @@ fn maximum_grid_exceeds_u16_area_without_truncating_or_panicking() {
 }
 
 #[test]
-fn reserved_columns_receive_each_desired_background_before_glyphs() {
+fn reserved_columns_receive_the_glyph_style_before_the_glyph() {
     let out = draw(
         &mut Painter::new(),
         &frame(
@@ -271,13 +280,13 @@ fn reserved_columns_receive_each_desired_background_before_glyphs() {
             &[(2, 0, "a"), (2, 1, "b")],
         ),
     );
-    let first_fill = out.find("\x1b[1;1H  ").unwrap();
-    let second_fill = out.find("\x1b[1;3H  ").unwrap();
-    let first_glyph = out.find("\x1b[1;1Ha").unwrap();
-    assert!(first_fill < second_fill && second_fill < first_glyph);
-    let style = &out[first_fill..second_fill];
-    assert!(style.contains("\x1b[42m"));
-    assert!(style.contains("\x1b[7m"));
+    // Each reserved pair is filled with its own style, then the glyph lands
+    // on its first column; only the changed attributes are written.
+    assert!(out.contains("\x1b[37m\x1b[44m  \x1b[1;1Ha"), "{out:?}");
+    assert!(
+        out.contains("\x1b[31m\x1b[42m\x1b[7m\x1b[1;3H  \x1b[1;3Hb"),
+        "{out:?}"
+    );
 }
 
 #[test]
@@ -295,4 +304,203 @@ fn ansi16_uses_basic_sgr_without_requiring_indexed_color_support() {
         assert!(out.contains(&format!("\x1b[{}m", foreground + 10)));
     }
     assert!(!out.contains(";5;"));
+}
+
+// ---------------------------------------------------------------- pass70 B8
+// Output volume (ux M9): only changed cells are written, one cursor move per
+// changed span, SGR only on a style change, and budgets for the two hot paths
+// at 160x45: a keystroke under 2 KB and a streamed delta under 50 KB.
+
+fn owned(glyphs: &[(u16, u16, String)]) -> Vec<(u16, u16, &str)> {
+    glyphs
+        .iter()
+        .map(|(w, p, t)| (*w, *p, t.as_str()))
+        .collect()
+}
+
+#[test]
+fn a_changed_run_is_one_move_and_one_style() {
+    let mut p = Painter::new();
+    let row = |text: &str| -> Vec<(u16, u16, String)> {
+        text.chars().map(|c| (1, 0, c.to_string())).collect()
+    };
+    draw(&mut p, &plain(20, 1, &owned(&row("aaaaaaaaaaaaaaaaaaaa"))));
+    let out = draw(&mut p, &plain(20, 1, &owned(&row("aaaaaxxxaaaaaaaaaaaa"))));
+    assert_eq!(out.matches('H').count(), 1, "{out:?}");
+    assert!(out.contains("\x1b[1;6Hxxx"), "{out:?}");
+    assert!(!out.contains("\x1b[K"), "{out:?}");
+    assert!(!out.contains('a'), "{out:?}");
+}
+
+#[test]
+fn equal_styles_share_one_sgr_and_a_dropped_modifier_resets() {
+    let palette: &[&[u8]] = &[&[0, 0, 1], &[0, 0, 0]];
+    let glyphs = [(1, 0, "a"), (1, 0, "b"), (1, 0, "c"), (1, 1, "d")];
+    let out = draw(
+        &mut Painter::new(),
+        &frame(4, 1, false, 0, palette, None, &glyphs),
+    );
+    assert_eq!(out.matches("\x1b[1m").count(), 1, "{out:?}");
+    // Bold cannot be switched off portably: reset, then the plain glyph.
+    assert!(out.contains("\x1b[1mabc\x1b[0md"), "{out:?}");
+}
+
+#[test]
+fn a_span_widens_to_whole_glyphs_of_both_frames() {
+    let mut p = Painter::new();
+    draw(
+        &mut p,
+        &plain(4, 1, &[(1, 0, "a"), (2, 0, "界"), (1, 0, "b")]),
+    );
+    let out = draw(
+        &mut p,
+        &plain(4, 1, &[(1, 0, "a"), (1, 0, "c"), (1, 0, "d"), (1, 0, "b")]),
+    );
+    // The old wide glyph covered columns 2-3: both are erased, then repainted.
+    assert!(out.contains("\x1b[1;2H\x1b[2X"), "{out:?}");
+    assert!(out.contains("cd"), "{out:?}");
+    assert!(!out.contains('a') && !out.contains('b'), "{out:?}");
+}
+
+#[test]
+fn a_new_wide_glyph_erases_its_reserved_columns_first() {
+    let mut p = Painter::new();
+    draw(
+        &mut p,
+        &plain(4, 1, &[(1, 0, "a"), (1, 0, "b"), (1, 0, "c"), (1, 0, "d")]),
+    );
+    let out = draw(
+        &mut p,
+        &plain(4, 1, &[(2, 0, "界"), (1, 0, "c"), (1, 0, "d")]),
+    );
+    assert!(out.contains("\x1b[1;1H  \x1b[1;1H界"), "{out:?}");
+    assert!(!out.contains('c') && !out.contains('d'), "{out:?}");
+}
+
+/// A 160x45 workspace in truecolor: a styled header, a transcript beside an
+/// agents panel split by a rule, a boxed composer and a status line. Every
+/// glyph is one character, the projector's worst case.
+struct Workspace {
+    transcript: Vec<String>,
+    draft: String,
+    tokens: u32,
+}
+
+const PALETTE: [&[u8]; 6] = [
+    &[0, 0, 0],                             // plain
+    &[3, 250, 250, 250, 3, 30, 60, 110, 1], // header, bold
+    &[3, 140, 140, 150, 0, 2],              // dim
+    &[3, 90, 200, 220, 0, 0],               // accent
+    &[3, 80, 80, 90, 0, 0],                 // rules
+    &[3, 20, 20, 20, 3, 200, 200, 210, 16], // status, reversed
+];
+
+impl Workspace {
+    fn new() -> Self {
+        Self {
+            transcript: (0..60)
+                .map(|i| {
+                    format!(
+                        "line {i}: the agent read lib/swarm_code/engine.ex and found {i} callers"
+                    )
+                })
+                .collect(),
+            draft: String::new(),
+            tokens: 5_200,
+        }
+    }
+
+    fn frame(&self) -> Vec<u8> {
+        let (columns, rows) = (160usize, 45usize);
+        let mut glyphs: Vec<(u16, u16, String)> = Vec::with_capacity(columns * rows);
+        let mut put = |segments: &[(&str, u16)]| {
+            let mut used = 0;
+            for (text, palette) in segments {
+                for c in text.chars() {
+                    if used < columns {
+                        glyphs.push((1, *palette, c.to_string()));
+                        used += 1;
+                    }
+                }
+            }
+            let pad = segments.last().map_or(0, |(_, p)| *p);
+            for _ in used..columns {
+                glyphs.push((1, pad, " ".to_string()));
+            }
+        };
+        let header = format!(
+            " SWARMCODE  ailogic · Build · deepseek-v4-pro · {:.1}k tokens · $0.02",
+            self.tokens as f32 / 1000.0
+        );
+        put(&[(&header, 1)]);
+        put(&[(" 3 Reply with exactly the word  ", 3), ("done · 00:04", 2)]);
+        let rule_row = "─".repeat(columns);
+        let body = 37;
+        let first = self.transcript.len().saturating_sub(body);
+        for y in 0..body {
+            let text = self.transcript.get(first + y).map_or("", String::as_str);
+            let left = format!("  {text:<113}");
+            let panel = format!(
+                " agent {y:>2} · running · {:>5} tok",
+                self.tokens + y as u32
+            );
+            put(&[(&left[..115], 0), ("│", 4), (&panel, 2)]);
+        }
+        put(&[(&rule_row, 4)]);
+        let draft = format!("│ {}", self.draft);
+        put(&[(&draft, 0)]);
+        put(&[("", 0)]);
+        put(&[("", 0)]);
+        put(&[(&rule_row, 4)]);
+        put(&[(
+            " Focus: composer  Enter Send  Esc Back out  Ctrl-P Palette",
+            5,
+        )]);
+        let cursor = (2 + self.draft.chars().count() as u16, 40u16, 1u8, true);
+        frame(160, 45, false, 3, &PALETTE, Some(cursor), &owned(&glyphs))
+    }
+}
+
+fn bytes(p: &mut Painter, body: &[u8]) -> usize {
+    let mut out = Vec::new();
+    p.draw(body, &mut out).unwrap();
+    out.len()
+}
+
+#[test]
+fn a_keystroke_writes_under_two_kilobytes_at_160x45() {
+    let mut p = Painter::new();
+    let mut workspace = Workspace::new();
+    let full = bytes(&mut p, &workspace.frame());
+    let mut worst = 0;
+    for c in "fix the failing test in engine_test.exs".chars() {
+        workspace.draft.push(c);
+        worst = worst.max(bytes(&mut p, &workspace.frame()));
+    }
+    assert!(
+        worst < 2_048,
+        "a keystroke wrote {worst} bytes (full frame {full})"
+    );
+    assert!(worst < 100, "one character and the cursor: {worst} bytes");
+}
+
+#[test]
+fn a_streamed_delta_writes_under_fifty_kilobytes_at_160x45() {
+    let mut p = Painter::new();
+    let mut workspace = Workspace::new();
+    let full = bytes(&mut p, &workspace.frame());
+    let mut worst = 0;
+    for i in 0..20 {
+        // A new transcript line scrolls every row of the body, and the token
+        // gauges in the header and the agents panel move with it.
+        workspace.transcript.push(format!(
+            "streamed {i}: the reply grows by one more line of text"
+        ));
+        workspace.tokens += 37;
+        worst = worst.max(bytes(&mut p, &workspace.frame()));
+    }
+    assert!(
+        worst < 51_200,
+        "a streamed delta wrote {worst} bytes (full frame {full})"
+    );
 }

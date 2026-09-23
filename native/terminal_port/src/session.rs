@@ -209,6 +209,23 @@ impl Session<'_> {
                 self.awaiting_resume = false;
                 self.activate()?;
             }
+            // pass70 B10: OSC 52 between frames. A suspended terminal belongs
+            // to the shell, so the text is dropped; a failed write only costs
+            // the next frame a full repaint.
+            Command::Copy { text, .. } => {
+                if self.active && !self.awaiting_resume {
+                    let sequence = protocol::osc52(text);
+                    if self
+                        .output
+                        .write_all(&sequence)
+                        .and_then(|()| self.output.flush())
+                        .is_err()
+                    {
+                        self.output.discard();
+                        self.painter.invalidate();
+                    }
+                }
+            }
         }
         Ok(false)
     }

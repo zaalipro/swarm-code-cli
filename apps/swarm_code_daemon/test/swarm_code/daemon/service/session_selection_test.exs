@@ -15,7 +15,9 @@ defmodule SwarmCode.Daemon.Service.SessionSelectionTest do
   test "creates a project and resumes its saved conversation without duplicate rows", c do
     assert {:ok, first} = SessionSelection.open(c.root)
     assert first.project.root_path == c.root
-    assert first.project.approval_mode == "auto"
+    # D4: a new project starts read-only until trusted, exactly like the desktop
+    # (pass 63 T31); the CLI never picks a mode of its own.
+    assert first.project.approval_mode == "read_only"
     assert first.conversation.project_id == first.project.id
 
     assert {:ok, again} = SessionSelection.open(Path.join(c.root, "."))

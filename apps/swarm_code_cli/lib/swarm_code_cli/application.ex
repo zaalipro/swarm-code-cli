@@ -20,11 +20,21 @@ defmodule SwarmCodeCLI.Application do
     Supervisor.start_link(children, strategy: :one_for_one, name: SwarmCodeCLI.Supervisor)
   end
 
+  # pass70 B3: the release exits with the session's status (0 done, 1 failure,
+  # 2 usage, 3 startup refused) and never prints a stack trace: the entry point
+  # reports its own failures, and anything that still escapes is one line.
   defp run_release_session do
-    try do
-      SwarmCodeCLI.Release.PersistedSession.run()
-    after
-      :init.stop()
-    end
+    status =
+      try do
+        SwarmCodeCLI.Release.PersistedSession.run_entry(
+          System.get_env("SWARM_RELEASE_MODE") || "tui"
+        )
+      catch
+        _kind, _reason ->
+          IO.puts(:stderr, "swarmcode: stopped unexpectedly. Run it again; your work is saved.")
+          1
+      end
+
+    System.stop(if(is_integer(status) and status in 0..255, do: status, else: 1))
   end
 end
