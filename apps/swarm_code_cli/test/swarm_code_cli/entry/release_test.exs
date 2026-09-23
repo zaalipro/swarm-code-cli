@@ -34,7 +34,10 @@ defmodule SwarmCodeCLI.ReleaseTest do
       for {args, text} <- [
             {["--bogus"], "unknown option '--bogus'."},
             {["--resume"], "--resume needs a value."},
-            {["--resume", "x"], "--resume needs a conversation id."},
+            {["--resume", "x"],
+             "--resume needs a whole conversation id; /resume inside swarmcode picks one."},
+            {["--resume", "7d01acff"],
+             "--resume needs a whole conversation id; /resume inside swarmcode picks one."},
             {["--new", "--resume", @conversation],
              "choose one of --new, --continue and --resume."},
             {["--json"], "--json goes with -p."},

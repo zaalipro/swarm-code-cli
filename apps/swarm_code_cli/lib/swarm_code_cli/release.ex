@@ -232,7 +232,9 @@ defmodule SwarmCodeCLI.Release do
         {:error, "--model needs a model name."}
 
       parsed.conversation not in [nil, "new", "latest"] and not uuid?(parsed.conversation) ->
-        {:error, "--resume needs a conversation id."}
+        # pass70 Q19: an eight-digit prefix is an id to a person; say what
+        # is missing and where the ids are.
+        {:error, "--resume needs a whole conversation id; /resume inside swarmcode picks one."}
 
       parsed.prompt != nil and parsed.prompt != "-" and not prompt?(parsed.prompt) ->
         {:error, "-p needs a prompt of at most 256 KiB."}

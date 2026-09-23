@@ -3,7 +3,6 @@ defmodule SwarmCodeCLI.UI.FeatureFormTest do
 
   alias SwarmCodeCLI.UI.{
     Capabilities,
-    Editor,
     FeatureForm,
     Init,
     Input,
@@ -165,7 +164,7 @@ defmodule SwarmCodeCLI.UI.FeatureFormTest do
     assert FeatureForm.value(opened, "max_agent_turns") == ""
   end
 
-  defp field(key, label, opts \\ []),
+  defp field(key, label, opts),
     do: struct!(DTO.FormField, Keyword.merge([key: key, label: label], opts))
 
   defp ready(feature, id, action, fields) do
