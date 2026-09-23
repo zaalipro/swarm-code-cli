@@ -541,7 +541,17 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
     # A command that ran but exited non-zero failed, as far as the reader cares.
     code = Map.get(tool, :exit_code)
     status = if status == :done and is_integer(code) and code != 0, do: :failed, else: status
-    {mark, mark_style} = status_mark(status, state)
+
+    # pass71 F12 (review R4): a command handed to the background, or a poll
+    # that found it still running, has no exit code yet; a green check said it
+    # had succeeded. It shows the clock until a poll reports the code.
+    pending? = status == :done and is_nil(code) and background_pending?(item, tool)
+
+    {mark, mark_style} =
+      if pending?,
+        do: {glyph(:clock_mark, state), {:role, :info, []}},
+        else: status_mark(status, state)
+
     verb = verb(tool)
     target = target(tool, verb)
 
@@ -549,9 +559,11 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
     counts = edit_counts(item, tool, diff, state)
 
     summary =
-      if counts == [],
-        do: summary_line(tool) || last_line(item, tool) || bytes(tool.result_bytes),
-        else: nil
+      cond do
+        counts != [] -> nil
+        pending? and poll?(tool) -> "still running"
+        true -> summary_line(tool) || last_line(item, tool) || bytes(tool.result_bytes)
+      end
 
     duration = tool_duration(tool, state)
 
@@ -584,6 +596,13 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
 
     [spec(left ++ [{:right, right}], nil) | body]
   end
+
+  defp background_pending?(item, tool),
+    do:
+      Map.get(tool, :background) == true or
+        (is_binary(item.text) and String.starts_with?(item.text, "exit code pending"))
+
+  defp poll?(tool), do: String.starts_with?(tool.title || "", "poll background process")
 
   # A command that failed says its exit code; one handed to the background
   # says so, since its output keeps arriving after the row.

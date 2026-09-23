@@ -164,6 +164,49 @@ defmodule SwarmCodeCLI.UI.Projector.WorkspaceTurnsTest do
              SwarmCodeCLI.UI.Keymap.content_activate(state, table)
   end
 
+  # pass71 F12 (review R4): "✓ run mix format … exit code pending" and four
+  # "✓ poll background process" rows for one command that had not finished.
+  test "a background command and a poll that found it running show no check" do
+    state = fixture(:swarm, {100, 60}) |> Map.put(:expansions, MapSet.new())
+    clock = glyph(:clock_mark, state)
+    check = glyph(:check, state)
+
+    background = %DTO.ToolCall{
+      name: "run_command",
+      title: "run: mix format",
+      status: :done,
+      background: true
+    }
+
+    poll = %DTO.ToolCall{
+      name: "run_command",
+      title: "poll background process 3313",
+      status: :done
+    }
+
+    state =
+      state
+      |> replace_item("005", &%{&1 | tool: background, text: "exit code pending\nformatting"})
+      |> replace_item("006", &%{&1 | tool: poll, text: "exit code pending\n[SwarmCode: …]"})
+      |> Map.put(:expansions, MapSet.new(["scout-1", "005", "006"]))
+
+    {rows, _, _, _} = painted(state)
+    format_row = Enum.find(rows, &(&1 =~ "mix format"))
+    poll_row = Enum.find(rows, &(&1 =~ "3313"))
+    assert format_row && poll_row, inspect(rows)
+    assert format_row =~ clock and not (format_row =~ check)
+    assert poll_row =~ clock and poll_row =~ "still running"
+
+    done = %{poll | title: "poll background process 3313"}
+
+    {rows, _, _, _} =
+      state
+      |> replace_item("006", &%{&1 | tool: %{done | exit_code: 0}, text: "exit code 0\nok"})
+      |> painted()
+
+    assert Enum.find(rows, &(&1 =~ "3313")) =~ check
+  end
+
   test "a reply cut past what the daemon sends inline says so under its last row" do
     state = fixture(:swarm, {100, 60})
     answer = state.read_model.transcript["002"]
