@@ -207,7 +207,10 @@ defmodule SwarmCode.Daemon.Service.WireContractTest do
              # pass70 C8: a grep changes no file.
              "added" => nil,
              "removed" => nil,
-             "diff_ref" => nil
+             "diff_ref" => nil,
+             # pass71 F5: nor has it a hunk to show.
+             "hunk" => nil,
+             "diff_lines" => 0
            }
 
     edit = items[c.edit.id]

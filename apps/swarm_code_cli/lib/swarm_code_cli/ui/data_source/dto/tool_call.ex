@@ -14,7 +14,9 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.ToolCall do
       removed: nil,
       diff_ref: nil,
       exit_code: nil,
-      background: false
+      background: false,
+      hunk: nil,
+      diff_lines: 0
     ],
     fields: [
       name: {:text, 200},
@@ -48,7 +50,11 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.ToolCall do
       removed: {:optional, :count},
       diff_ref: {:optional, {:dto, SwarmCodeCLI.UI.DataSource.DTO.DetailRef}},
       exit_code: {:optional, :count},
-      background: :boolean
+      background: :boolean,
+      # pass71 F5: an edit's first hunk (from its first `@@`, at most 13 lines)
+      # and the body lines of its whole diff, for the inline preview (R5).
+      hunk: {:optional, {:text, 4096}},
+      diff_lines: :count
     ],
     defaults: [
       name: "",
@@ -64,6 +70,8 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.ToolCall do
       removed: nil,
       diff_ref: nil,
       exit_code: nil,
-      background: false
+      background: false,
+      hunk: nil,
+      diff_lines: 0
     ]
 end

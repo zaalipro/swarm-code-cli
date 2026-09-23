@@ -1614,6 +1614,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       "added" => diff && diff.added,
       "removed" => diff && diff.removed,
       "diff_ref" => diff && %{"id" => r.id <> ":diff", "total_bytes" => diff.total},
+      "hunk" => diff && Map.get(diff, :hunk),
+      "diff_lines" => (diff && Map.get(diff, :diff_lines)) || 0,
       "name" => clip(type, 200),
       "title" => clip(r.title, 200) || "",
       "detail" => clip(r.detail, 200) || "",
@@ -1659,12 +1661,15 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
            case diff.(conversation, id) do
              {:ok, diff} ->
                {id,
-                %{
-                  added: diff.added,
-                  removed: diff.removed,
-                  file_state: diff.file_state,
-                  total: byte_size(diff.text)
-                }}
+                Map.merge(
+                  %{
+                    added: diff.added,
+                    removed: diff.removed,
+                    file_state: diff.file_state,
+                    total: byte_size(diff.text)
+                  },
+                  diff_summary(diff.text)
+                )}
 
              _ ->
                {id, nil}
@@ -1722,7 +1727,10 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
            %{
              added: sum_known(known, :added),
              removed: sum_known(known, :removed),
-             total: Enum.sum(Enum.map(known, & &1.total)) + length(known) - 1
+             total: Enum.sum(Enum.map(known, & &1.total)) + length(known) - 1,
+             # pass71 F5: the edit's first hunk, and the body lines of all of it.
+             hunk: Enum.find_value(known, &Map.get(&1, :hunk)),
+             diff_lines: Enum.sum(Enum.map(known, &Map.get(&1, :diff_lines, 0)))
            }}
         ]
       else
@@ -1731,6 +1739,41 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     end)
     |> Map.new()
   end
+
+  # pass71 F5 (V's request S-1): what an edit row shows in place, its first
+  # hunk (the `@@` line and at most 12 lines, 4 KB), and the body lines of the
+  # whole diff (from the first `@@`, file headers excluded) for its count.
+  @hunk_lines 13
+  @hunk_bytes 4096
+
+  @doc false
+  def diff_summary(text) when is_binary(text) do
+    lines =
+      text
+      |> String.trim_trailing("\n")
+      |> String.split(["\r\n", "\n"])
+      |> Enum.reject(
+        &(String.starts_with?(&1, "--- ") or String.starts_with?(&1, "+++ ") or
+            String.starts_with?(&1, "diff --git ") or String.starts_with?(&1, "index "))
+      )
+      |> Enum.drop_while(&(not String.starts_with?(&1, "@@")))
+
+    hunk =
+      case lines do
+        [head | body] ->
+          [head | Enum.take_while(body, &(not String.starts_with?(&1, "@@")))]
+          |> Enum.take(@hunk_lines)
+          |> Enum.join("\n")
+          |> preview(@hunk_bytes)
+
+        [] ->
+          nil
+      end
+
+    %{hunk: hunk, diff_lines: length(lines)}
+  end
+
+  def diff_summary(_), do: %{hunk: nil, diff_lines: 0}
 
   defp sum_known(known, key) do
     if Enum.all?(known, &is_integer(Map.get(&1, key))),

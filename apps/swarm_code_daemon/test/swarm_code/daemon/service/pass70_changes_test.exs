@@ -123,7 +123,7 @@ defmodule SwarmCode.Daemon.Service.Pass70ChangesTest do
 
   test "Full detail of an agent's long result loads the size its item promised", c do
     {run, agent, _op} = run!(c, "done")
-    long = String.duplicate("line of the report\n", 400)
+    long = String.duplicate("line of the report\n", 500)
 
     Repo.update!(Ecto.Changeset.change(agent, result: long))
 
@@ -168,6 +168,13 @@ defmodule SwarmCode.Daemon.Service.Pass70ChangesTest do
     assert {tool.added, tool.removed, tool.diff_ref.id} == {2, 1, op.id <> ":diff"}
     op_window = detail!(c, c.scope, tool.diff_ref.id, 0, 16_384)
     assert op_window.text == window.text and op_window.detail_ref == tool.diff_ref
+
+    # pass71 F5 (V's request S-1): the edit row's first hunk travels with it,
+    # so a real session shows it in place (R5) without opening the diff.
+    assert String.starts_with?(tool.hunk, "@@ ")
+    assert tool.hunk =~ "-two" and tool.hunk =~ "+TWO" and tool.hunk =~ "+four"
+    refute tool.hunk =~ "+++ b/"
+    assert tool.diff_lines == length(String.split(tool.hunk, "\n"))
   end
 
   test "a live run's change waits for the run before it offers a diff", c do
