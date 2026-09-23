@@ -13,6 +13,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   alias SwarmCode.Protocol.ServiceRequest
   alias SwarmCode.Domain.Engine.{Events, Questions, RunServer}
   @max_models 400
+  # Operations that read: never ledgered, answered with a typed error.
+  @reads [:query, :detail, :feature_query, :conversation_list]
   @terminal [:completed, :failed, :cancelled, :interrupted]
   alias SwarmCode.Daemon.Service.{CommandDispatcher, PersistedProjection, CommandLedger}
 
@@ -88,7 +90,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     else
       _ ->
         response =
-          if Map.get(request, :operation) in [:query, :detail, :feature_query],
+          if Map.get(request, :operation) in @reads,
             do: wire_error(:not_allowed),
             else: reject(id, :not_allowed)
 
@@ -236,7 +238,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     do: %{status | state: %{mode: :persisted, runs: map_size(status.state.runs)}}
 
   defp admit_request(id, scope, request, state) do
-    command? = Map.get(request, :operation) not in [:query, :detail, :feature_query]
+    command? = Map.get(request, :operation) not in @reads
 
     fingerprint =
       :crypto.hash(
@@ -258,7 +260,9 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         {:reply, reject(id, :request_conflict), state}
 
       true ->
-        durable = command? and request.operation not in [:conversation_open]
+        # Opening a conversation and marking something seen are idempotent
+        # and ledger nothing; creating one or changing the project does.
+        durable = command? and request.operation not in [:conversation_open, :mark_seen]
 
         admission =
           if durable,
@@ -381,10 +385,97 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     {result("detail_window", detail(params, scope, id, next)), next}
   end
 
+  # pass70 C3 (arch F7): any conversation of the admitted project opens in
+  # place; the service re-subscribes and re-projects, and its global watches
+  # re-snapshot. `nil` is the one already open.
   defp execute(%{operation: :conversation_open, params: params}, _scope, id, state) do
-    if params["conversation_id"] in [nil, state.opts[:conversation_id]],
-      do: {accepted(id, [state.opts[:conversation_id]]), state},
-      else: {reject(id, :not_allowed), state}
+    target = params["conversation_id"] || state.opts[:conversation_id]
+    project = state.opts[:project_id]
+
+    case Conversations.get(target) do
+      %{project_id: ^project} ->
+        {accepted(id, [target]), switch_conversation(state, target)}
+
+      _ ->
+        {reject(id, :not_allowed), state}
+    end
+  end
+
+  # Create and open: the new conversation is where the next prompt goes.
+  defp execute(%{operation: :conversation_new}, _scope, id, state) do
+    case Conversations.create(state.opts[:project_id]) do
+      {:ok, conversation} ->
+        {accepted(id, [conversation.id]), switch_conversation(state, conversation.id)}
+
+      {:error, _} ->
+        {reject(id, :not_allowed), state}
+    end
+  end
+
+  defp execute(%{operation: :conversation_list, params: params}, _scope, id, state) do
+    case PersistedProjection.conversations(
+           state.opts[:project_id],
+           params["cursor"],
+           params["page_size"]
+         ) do
+      {:ok, rows, more?} ->
+        body = conversation_list(rows, more?, params["cursor"], id, state)
+
+        case fit("conversation_list", body, params["byte_limit"]) do
+          {:ok, kind, body} -> {result(kind, body), state}
+          {:error, code} -> {wire_error(code), state}
+        end
+
+      {:error, code} ->
+        {wire_error(code), state}
+    end
+  end
+
+  # pass70 C2 (arch F12): the project's approval mode and trust, the
+  # desktop's (`Projects.trust/1` after the engine sync; before it, trusting
+  # lifts a read-only project to `auto`, which is what trust does there).
+  defp execute(%{operation: :project_update, params: params}, _scope, id, state) do
+    project = Projects.get!(state.opts[:project_id])
+
+    with {:ok, project} <- trust_project(project, params["trusted"]),
+         {:ok, project} <- set_mode(project, params["approval_mode"]) do
+      text = project_notice(project, params)
+      state = refresh(state)
+      state = toast(state, "success", "Project", text, nil)
+
+      {accepted(id, [project.id], %{
+         "kind" => "notice",
+         "feature" => nil,
+         "title" => "Project",
+         "text" => text,
+         "conversation_id" => nil
+       }), state}
+    else
+      _ -> {reject(id, :invalid_request), state}
+    end
+  end
+
+  defp execute(%{operation: :mark_seen, params: params}, scope, id, state) do
+    target = params["id"]
+
+    result =
+      case params["kind"] do
+        "conversation" ->
+          if target == state.opts[:conversation_id],
+            do: Conversations.mark_seen(target),
+            else: {:error, :not_allowed}
+
+        _run_or_activity ->
+          case state.runs[target] do
+            nil -> {:error, :not_allowed}
+            run -> if run_member?(run, scope, state), do: Conversations.mark_run_seen(run.id)
+          end
+      end
+
+    case result do
+      {:ok, _} -> {accepted(id, [target]), refresh(state)}
+      _ -> {reject(id, :not_allowed), state}
+    end
   end
 
   defp execute(%{operation: :question_answer, params: p}, scope, id, state) do
@@ -468,6 +559,161 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   end
 
   defp execute(_, _, id, state), do: {reject(id, :not_allowed), state}
+
+  defp switch_conversation(state, id) do
+    if id == state.opts[:conversation_id] do
+      state
+    else
+      Events.unsubscribe(state.opts[:conversation_id])
+      Events.subscribe(id)
+
+      # Watches of the whole project (the shell, the activity list) now show
+      # another conversation: they re-snapshot. Watches of the old
+      # conversation hear nothing more; their client re-scopes them.
+      watches =
+        Enum.reduce(state.watches, state.watches, fn {{connection, ref} = key, entry}, acc ->
+          if entry.scope.kind in [:global, :project] do
+            send(connection, {:service_resync, self(), ref})
+            Process.demonitor(entry.monitor, [:flush])
+            Map.delete(acc, key)
+          else
+            acc
+          end
+        end)
+
+      reload(%{
+        state
+        | opts: Keyword.put(state.opts, :conversation_id, id),
+          watches: watches,
+          runs: %{},
+          order: [],
+          streams: %{},
+          changes: %{},
+          verdicts: %{},
+          metadata: nil,
+          research_ids: [],
+          attachment_ids: CommandLedger.staged_attachments(state.opts[:project_id], id),
+          refresh_pending: false
+      })
+    end
+  end
+
+  defp conversation_list(rows, more?, cursor, id, state) do
+    # The conversations with a running run: one registry select.
+    live =
+      MapSet.new(
+        Registry.select(SwarmCode.Domain.Registry, [{{{:run, :_}, :_, {:"$1", :_}}, [], [:"$1"]}])
+      )
+
+    waiting =
+      Questions.list()
+      |> Enum.frequencies_by(& &1.conversation_id)
+
+    current = state.opts[:conversation_id]
+
+    items =
+      Enum.map(rows, fn row ->
+        {runs, finished} = row.stats
+
+        %{
+          "id" => row.id,
+          "title" => preview(row.title || "", 256),
+          "created_at" => ms(row.inserted_at) || 0,
+          "updated_at" => ms(row.updated_at) || 0,
+          "run_count" => runs,
+          "live" => MapSet.member?(live, row.id),
+          "waiting" => Map.get(waiting, row.id, 0),
+          "unread" => unread?(row.last_seen_at, finished),
+          "current" => row.id == current
+        }
+      end)
+
+    %{
+      "project" => project_label(state.opts[:project_id]),
+      "current_id" => current,
+      "items" => items,
+      "state" => "idle",
+      "before_cursor" => if(cursor && items != [], do: hd(items)["id"]),
+      "after_cursor" => if(more? and items != [], do: List.last(items)["id"]),
+      "request_id" => id,
+      "error" => nil,
+      "presence" => if(cursor || more?, do: "off_window", else: "covered"),
+      "covered_ids" => Enum.map(items, & &1["id"]),
+      "through_sequence" => 0
+    }
+  end
+
+  defp unread?(_seen, nil), do: false
+  defp unread?(nil, _finished), do: true
+
+  defp unread?(seen, finished) do
+    case {ms(seen), ms(finished)} do
+      {seen, finished} when is_integer(seen) and is_integer(finished) -> finished > seen
+      _ -> false
+    end
+  end
+
+  defp project_label(project_id) do
+    case Projects.get(project_id) do
+      %{} = project -> project_name(%{project: project})
+      _ -> nil
+    end
+  end
+
+  defp trust_project(project, true) do
+    if Code.ensure_loaded?(Projects) and function_exported?(Projects, :trust, 1) do
+      apply(Projects, :trust, [project])
+    else
+      if project.approval_mode == "read_only",
+        do: Projects.update(project, %{approval_mode: "auto"}),
+        else: {:ok, project}
+    end
+  end
+
+  defp trust_project(project, _), do: {:ok, project}
+
+  defp set_mode(project, mode) when mode in ["read_only", "auto", "full_access"],
+    do: Projects.update(project, %{approval_mode: mode})
+
+  defp set_mode(project, _), do: {:ok, project}
+
+  defp project_notice(project, %{"approval_mode" => mode}) when is_binary(mode),
+    do: "Approval mode: " <> mode_words(project.approval_mode)
+
+  defp project_notice(project, _),
+    do: "Project trusted; approval mode " <> mode_words(project.approval_mode)
+
+  defp mode_words("read_only"), do: "read-only"
+  defp mode_words("full_access"), do: "full access"
+  defp mode_words(mode), do: to_string(mode)
+
+  # pass70 C1: a transient notice for the shell watch.
+  defp toast(state, level, title, text, run_id, conversation_id \\ nil) do
+    toast_id = Ecto.UUID.generate()
+    revision = state.revision + 1
+
+    broadcast(%{state | revision: revision}, %{
+      "kind" => "toast",
+      "entity_id" => toast_id,
+      "run_id" => nil,
+      "conversation_id" => nil,
+      "channel" => nil,
+      "attempt_id" => nil,
+      "text" => nil,
+      "body" => %{
+        "id" => toast_id,
+        "level" => level,
+        "title" => preview(title, 200),
+        "text" => preview(text, 1024),
+        "run_id" => run_id,
+        "conversation_id" => conversation_id,
+        "at" => System.system_time(:millisecond),
+        "revision" => revision
+      },
+      "sequence" => 0,
+      "revision" => revision
+    })
+  end
 
   defp unknown_outcome(id),
     do:
@@ -1496,10 +1742,23 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         member?(state, entry.scope) and
           (entry.scope.kind != :run or entry.scope.id == delta["run_id"]) and
           case entry.slot do
-            "shell" -> delta["kind"] == "run_update"
-            "activity" -> delta["kind"] == "activity_upsert"
-            "workspace" -> delta["kind"] != "activity_upsert"
-            _ -> delta["kind"] not in ["activity_upsert", "workspace_metadata"]
+            # pass70 C1: toasts and rate limits reach the shell watch alone.
+            "shell" ->
+              delta["kind"] in ["run_update", "toast", "rate_limit"]
+
+            "activity" ->
+              delta["kind"] == "activity_upsert"
+
+            "workspace" ->
+              delta["kind"] not in ["activity_upsert", "toast", "rate_limit"]
+
+            _ ->
+              delta["kind"] not in [
+                "activity_upsert",
+                "workspace_metadata",
+                "toast",
+                "rate_limit"
+              ]
           end
 
       if relevant do
@@ -1691,6 +1950,9 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   defp workspace_mode(_), do: "build"
 
   defp workspace_metadata(conversation) do
+    chat = SwarmCode.Domain.Providers.effective_model(conversation, :chat)
+    totals = PersistedProjection.conversation_totals(conversation.id)
+
     %{
       "conversation_id" => conversation.id,
       "mode" => workspace_mode(conversation),
@@ -1699,9 +1961,47 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       "swarm_model" => effective_model_name(conversation, :swarm),
       "effort" => conversation.effort,
       "swarm_effort" => conversation.swarm_effort,
-      "models" => model_options()
+      "models" => model_options(),
+      # pass70 C1/C2: the status line's facts.
+      "approval_mode" => approval_mode(conversation),
+      "trusted" => trusted(conversation),
+      "chat_provider" => provider_name(chat),
+      "context_used" => totals.context_used,
+      "context_window" => context_window(chat),
+      "cost_usd" => totals.cost_usd,
+      "title" => if(is_binary(conversation.title), do: preview(conversation.title, 256))
     }
   end
+
+  defp approval_mode(%{project: %{approval_mode: mode}})
+       when mode in ["read_only", "auto", "full_access"],
+       do: mode
+
+  defp approval_mode(_), do: nil
+
+  # nil until the domain knows trust (the A-sync adds `trusted_at`).
+  defp trusted(%{project: %{} = project}) do
+    if Map.has_key?(project, :trusted_at), do: not is_nil(Map.get(project, :trusted_at))
+  end
+
+  defp trusted(_), do: nil
+
+  defp provider_name({:ok, %{provider: %{name: name}}}) when is_binary(name) and name != "",
+    do: preview(name, 200)
+
+  defp provider_name(_), do: nil
+
+  # The window the harness works in: the point where `Context.trim/2` starts
+  # dropping history (the model's configured window at 75 % after the sync).
+  defp context_window({:ok, %{model: model}}) when is_binary(model) do
+    context = SwarmCode.Domain.Engine.Context
+
+    if function_exported?(context, :budget, 2),
+      do: apply(context, :budget, [model, SwarmCode.Domain.Settings.get_cached()]),
+      else: context.budget(model)
+  end
+
+  defp context_window(_), do: nil
 
   defp project_name(%{project: %{name: name}}) when is_binary(name) and name != "",
     do: preview(name, 200)

@@ -3,7 +3,7 @@ defmodule SwarmCode.Daemon.Service.PersistedProjection do
   import Ecto.Query
   alias SwarmCode.Domain.Repo
   alias SwarmCode.Domain.Checkpoints.Checkpoint
-  alias SwarmCode.Domain.Conversations.{Run, Message, Node}
+  alias SwarmCode.Domain.Conversations.{Conversation, Run, Message, Node}
 
   # An op that is still open: the agent is on it, so its title is the agent's step.
   @open_ops ~w(running retrying awaiting_approval awaiting_answer paused)
@@ -289,6 +289,113 @@ defmodule SwarmCode.Daemon.Service.PersistedProjection do
       )
     )
     |> Map.new()
+  end
+
+  @doc """
+  pass70 C3: a keyset page of the project's conversations, newest first
+  (`updated_at`, then id). Research conversations are the research's, not the
+  user's, and stay out. `cursor` is the id of the last row of the previous
+  page. Returns `{:ok, rows, more?}` or `{:error, :invalid_request}`.
+  """
+  def conversations(project_id, cursor, limit) do
+    base =
+      from(c in Conversation,
+        where: c.project_id == ^project_id and is_nil(c.research_id)
+      )
+
+    boundary =
+      if cursor,
+        do:
+          Repo.one(
+            from(c in base, where: c.id == ^cursor, select: %{id: c.id, updated_at: c.updated_at})
+          )
+
+    if cursor && is_nil(boundary) do
+      {:error, :invalid_request}
+    else
+      bounded =
+        if boundary,
+          do:
+            from(c in base,
+              where:
+                c.updated_at < ^boundary.updated_at or
+                  (c.updated_at == ^boundary.updated_at and c.id < ^boundary.id)
+            ),
+          else: base
+
+      rows =
+        Repo.all(
+          from(c in bounded,
+            order_by: [desc: c.updated_at, desc: c.id],
+            limit: ^(limit + 1),
+            select: %{
+              id: c.id,
+              title: fragment("substr(coalesce(?, ''), 1, 256)", c.title),
+              inserted_at: c.inserted_at,
+              updated_at: c.updated_at,
+              last_seen_at: c.last_seen_at
+            }
+          )
+        )
+
+      {page, rest} = Enum.split(rows, limit)
+      ids = Enum.map(page, & &1.id)
+
+      stats =
+        if ids == [],
+          do: %{},
+          else:
+            Repo.all(
+              from(r in Run,
+                where: r.conversation_id in ^ids,
+                group_by: r.conversation_id,
+                select: {r.conversation_id, count(r.id), max(r.finished_at)}
+              )
+            )
+            |> Map.new(fn {id, count, finished} -> {id, {count, finished}} end)
+
+      {:ok, Enum.map(page, &Map.put(&1, :stats, Map.get(stats, &1.id, {0, nil}))), rest != []}
+    end
+  end
+
+  @doc """
+  pass70 C1/C6: the conversation's spend and its context gauge — the prompt
+  tokens of its newest model call, which is what the next turn starts from.
+  """
+  def conversation_totals(conversation) do
+    cost =
+      Repo.one(
+        from(r in Run,
+          where: r.conversation_id == ^conversation,
+          select: sum(r.cost_usd)
+        )
+      )
+
+    # The newest run first, then its newest model call: two indexed lookups
+    # instead of a scan of every node of the conversation.
+    newest =
+      Repo.one(
+        from(r in Run,
+          where: r.conversation_id == ^conversation,
+          order_by: [desc: r.inserted_at, desc: r.id],
+          limit: 1,
+          select: r.id
+        )
+      )
+
+    context =
+      newest &&
+        Repo.one(
+          from(n in Node,
+            where:
+              n.run_id == ^newest and n.kind == "op" and n.op_type == "llm" and n.tokens_in > 0,
+            order_by: [desc: n.inserted_at, desc: n.id],
+            limit: 1,
+            select: n.tokens_in
+          )
+        )
+
+    %{cost_usd: cost, context_used: context}
   end
 
   def run_metadata(conversation, ids) do
