@@ -35,12 +35,18 @@ defmodule SwarmCodeCLI.UI.Projector.Inspector.Changes do
 
     body =
       case changes do
-        [] -> [Support.text("No files changed yet", state, width)]
+        [] -> [Support.text(empty_words(run), state, width)]
         changes -> rows(changes, agents, state, width, max(0, height - length(header) - 1))
       end
 
     Enum.take(header ++ [Hive.blank(state) | body], max(0, height))
   end
+
+  # pass71 V1: a finished turn that changed nothing has nothing still to come.
+  defp empty_words(%{state: state}) when state in [:done, :failed, :stopped, :interrupted],
+    do: "No files changed"
+
+  defp empty_words(_run), do: "No files changed yet"
 
   @doc """
   The changes of the run, newest first; or of the conversation's runs when the

@@ -102,7 +102,8 @@ defmodule SwarmCodeCLI.UI.InspectorCardsTest do
       assert length(targets(table, {:local, {:set_tab, :timeline}})) == 2
       assert length(targets(table, {:local, {:set_tab, :changes}})) == 2
 
-      assert hd(rows(:chat, 170, 34)) == "agents  timeline  changes"
+      # pass71 V1: a single-agent turn's first tab is its run card.
+      assert hd(rows(:chat, 170, 34)) == "run  timeline  changes"
     end
 
     test "the current tab is lit on the hover surface and the count is amber" do
@@ -244,19 +245,68 @@ defmodule SwarmCodeCLI.UI.InspectorCardsTest do
       refute Enum.any?(rows, &(&1 =~ ~r/[⬢⬡✦⚖⬤▐▬◷⎇›]/u))
     end
 
-    test "a run with no agents draws the assistant as the lead card with no sub-agents" do
+    # pass71 V1 (R3): a single-agent turn earns its columns with a compact run
+    # card and the changes it made, never the per-step operations.
+    test "a single-agent chat turn shows the compact run card and its changes" do
       rows = rows(:chat, 170, 34)
 
-      assert Enum.at(rows, 3) =~ ~r/^▐ {6}assistant +⬤ active$/
-      # The name row says assistant; the line under it names the model only.
-      assert Enum.at(rows, 4) =~ ~r/^▐ {2}✳ {3}deepseek-v4-pro$/
-      assert Enum.at(rows, 5) =~ ~r/^▐ {6}\d\d:\d\d · 4\.0k tok$/
-      assert Enum.at(rows, 10) =~ ~r/^▐ writing +4\.0k tokens$/
+      assert Enum.at(rows, 2) =~ ~r/^▐ ✳ assistant +⬤ active$/
+      assert Enum.at(rows, 3) == "▐ deepseek-v4-pro"
+      assert Enum.at(rows, 4) =~ ~r/^▐ elapsed 5m 00s +tokens  4k$/
+      assert Enum.at(rows, 5) =~ ~r/^▐ cost    \$0\.02$/
+      assert Enum.member?(rows, "Changes")
+      assert Enum.member?(rows, "No files changed yet")
+      refute Enum.any?(rows, &String.contains?(&1, "Operations"))
+      refute Enum.any?(rows, &String.contains?(&1, "Current task"))
       refute Enum.any?(rows, &String.contains?(&1, "Sub-agents"))
       refute Enum.any?(rows, &String.contains?(&1, "stop"))
-      refute Enum.any?(rows, &(&1 =~ ~r/· 0\b/))
-      assert Enum.any?(rows, &(&1 =~ ~r/^Operations · assistant$/))
-      assert Enum.any?(rows, &(&1 == "nothing yet"))
+    end
+
+    test "the compact card lists the turn's changes and counts its files" do
+      state = state(:chat, 170, 34)
+
+      change = %DTO.Change{
+        id: "c1",
+        run_id: @run,
+        path: "lib/tickets/guard.ex",
+        at: @now - 1_000,
+        restorable: true,
+        file_state: :modified,
+        added: 5,
+        removed: 1
+      }
+
+      state = put_in(state.read_model.changes, %{"c1" => change})
+      {rows, _table, _plan, _rect} = painted(state)
+
+      assert Enum.any?(rows, &(&1 =~ ~r/files +1$/))
+      assert Enum.any?(rows, &String.starts_with?(&1, "Changes · 1 file · +5 −1"))
+      assert Enum.any?(rows, &(&1 =~ ~r/^M lib\/tickets\/guard\.ex +\+5 −1/))
+    end
+
+    test "a chat turn that spawned sub-agents keeps the full hive" do
+      state = state(:chat, 170, 34)
+
+      sub = %DTO.AgentSummary{
+        id: "sub-1",
+        run_id: @run,
+        revision: 1,
+        state: :running,
+        name: "scout-1",
+        role: :worker,
+        depth: 1,
+        step: "grep",
+        tokens_in: 10,
+        tokens_out: 10,
+        started_at: @now - 2_000
+      }
+
+      lead = %DTO.AgentSummary{sub | id: "lead-1", name: "lead", role: :lead, depth: 0}
+      state = put_in(state.read_model.agents, %{"sub-1" => sub, "lead-1" => lead})
+      {rows, _table, _plan, _rect} = painted(state)
+
+      assert hd(rows) == "agents  timeline  changes"
+      assert Enum.any?(rows, &String.contains?(&1, "Current task"))
     end
 
     test "a finished assistant that used nothing says so, not \"yet\" (pass70 Q11)" do
