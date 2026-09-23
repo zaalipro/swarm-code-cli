@@ -68,7 +68,11 @@ defmodule SwarmCodeCLI.UI.Projector.Inspector do
             },
             else: Theme.style(:text_faint, caps)
 
-        label = Atom.to_string(tab)
+        # pass71 V1: a single-agent turn's first tab is its run card.
+        label =
+          if tab == :agents and Agents.compact?(state, run),
+            do: "run",
+            else: Atom.to_string(tab)
 
         action =
           Support.action(Density.safe(label, state, width), {:local, {:set_tab, tab}}, style)

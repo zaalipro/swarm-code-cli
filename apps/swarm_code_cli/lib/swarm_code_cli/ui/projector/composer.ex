@@ -238,13 +238,40 @@ defmodule SwarmCodeCLI.UI.Projector.Composer do
         policy: state.capabilities.ambiguous_width
       })
 
-    row(
-      [{String.duplicate(hairline, max(1, width)), tint(:text_ghost, state)}],
-      [],
-      nil,
-      state,
-      width
-    )
+    # pass71 V5: prompts waiting behind the live turn are counted on the rule,
+    # near its right end, until they start.
+    label =
+      case queued(state) do
+        0 -> nil
+        n -> " #{n} queued "
+      end
+
+    tail = 2
+    label_cells = if label, do: Width.cells(label, state.capabilities.ambiguous_width), else: 0
+
+    segments =
+      if label && width >= label_cells + tail + 8,
+        do: [
+          {String.duplicate(hairline, width - label_cells - tail), tint(:text_ghost, state)},
+          {label, tint(:warning, state, [:bold])},
+          {String.duplicate(hairline, tail), tint(:text_ghost, state)}
+        ],
+        else: [{String.duplicate(hairline, max(1, width)), tint(:text_ghost, state)}]
+
+    row(segments, [], nil, state, width)
+  end
+
+  @doc """
+  How many prompts of the open conversation wait behind its live turn: the
+  workspace snapshot's `queued` (pass71 S5), `0` when unknown.
+  """
+  def queued(state) do
+    snapshot = state.read_model.snapshots |> Map.get(:workspace)
+
+    case snapshot && Map.get(snapshot, :queued, 0) do
+      n when is_integer(n) and n > 0 -> n
+      _ -> 0
+    end
   end
 
   @doc """
@@ -265,7 +292,13 @@ defmodule SwarmCodeCLI.UI.Projector.Composer do
   # The draft, on the same card surface a sent prompt gets in the transcript.
   defp draft_blocks(state, rect) do
     draft = draft(state)
-    gutter_value = SafeText.value(Support.glyph(:composer_gutter, state))
+    # pass71 V1 (R3): a thin rail where the terminal draws `▏`; below the rich
+    # tier the gutter keeps its stripe, the only focus cue the draft has.
+    gutter_value =
+      if state.capabilities.glyph_tier == :rich and not state.capabilities.ascii?,
+        do: SafeText.value(Support.rail(state)),
+        else: SafeText.value(Support.glyph(:composer_gutter, state))
+
     editor_width = max(1, rect.width - 4)
     focused? = state.focus == "composer" and state.layers == []
     gutter_style = if focused?, do: tint(:accent, state), else: tint(:text_faint, state)
@@ -377,7 +410,7 @@ defmodule SwarmCodeCLI.UI.Projector.Composer do
 
       rail =
         if item.selected?,
-          do: {SafeText.value(Support.glyph(:stripe, state)), tint(:accent, state)},
+          do: {SafeText.value(Support.rail(state)), tint(:accent, state)},
           else: {" ", tint(:text_muted, state)}
 
       args =
@@ -417,7 +450,7 @@ defmodule SwarmCodeCLI.UI.Projector.Composer do
 
       rail =
         if selected?,
-          do: {SafeText.value(Support.glyph(:stripe, state)), tint(:accent, state)},
+          do: {SafeText.value(Support.rail(state)), tint(:accent, state)},
           else: {" ", tint(:text_muted, state)}
 
       pieces =

@@ -43,6 +43,7 @@ defmodule SwarmCodeCLI.UI.Projector.Support do
     glyph_failed: :glyph_failed_ascii,
     stripe: :stripe_ascii,
     stripe_off: :stripe_off_ascii,
+    rail_gap: :rail_ascii,
     corner_tl: :corner_tl_ascii,
     corner_tr: :corner_tr_ascii,
     corner_bl: :corner_bl_ascii,
@@ -94,6 +95,7 @@ defmodule SwarmCodeCLI.UI.Projector.Support do
   # ASCII form serves the ASCII terminal, so no rich token needs an ASCII twin.
   @measured_glyphs %{
     eighth_1: :stripe,
+    rail: :rail_gap,
     eighth_2: :stripe,
     eighth_3: :stripe,
     eighth_4: :stripe,
@@ -129,6 +131,17 @@ defmodule SwarmCodeCLI.UI.Projector.Support do
   def glyph(token, _state), do: SafeText.chrome(token)
 
   def glyphs, do: @ascii_glyphs
+
+  @doc """
+  pass71 V1 (R3): the thin rail beside a card, a prompt or a selected row. `▏`
+  at the rich tier and `|` in ASCII; at the measured tier a one-cell gap (the
+  row's surface carries the cue), except in monochrome, where no surface shows
+  and the `▐` stripe keeps a selection legible.
+  """
+  def rail(%{capabilities: %{ascii?: false, glyph_tier: :measured, color_mode: :monochrome}}),
+    do: SafeText.chrome(:stripe)
+
+  def rail(state), do: glyph(:rail, state)
 
   @doc "The measured twin of every rich token."
   def measured_glyphs, do: @measured_glyphs

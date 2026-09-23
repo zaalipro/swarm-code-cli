@@ -321,7 +321,7 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
 
     if focused? do
       surface = hover(state)
-      rail = SafeText.value(Support.glyph(:stripe, state))
+      rail = SafeText.value(Support.rail(state))
 
       [
         %Span{
@@ -375,7 +375,7 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
 
     rail =
       if focused?,
-        do: {SafeText.value(Support.glyph(:stripe, state)) <> " ", paint.(:accent, [])},
+        do: {SafeText.value(Support.rail(state)) <> " ", paint.(:accent, [])},
         else: {"  ", paint.(:text_primary, [])}
 
     mark =
@@ -758,7 +758,8 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
 
     lines =
       Enum.flat_map(sections, fn {group, rows} ->
-        heading = String.upcase(SwarmCodeCLI.UI.Keymap.Docs.group_title(group))
+        # pass71 V5: headings in sentence case, as everywhere else.
+        heading = SwarmCodeCLI.UI.Keymap.Docs.group_title(group)
 
         entries =
           rows
@@ -897,6 +898,68 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
        control("submit", Density.safe(form.submit_label, state, 40), {:local, :feature_submit}),
        control("cancel", SafeText.chrome(:cancel), {:local, :close_top_layer})
      ], state.focus}
+  end
+
+  # pass71 V5: `/diff` below the docking width opens the inspector as a
+  # dialog on its changes tab: the run's files, each opening its diff.
+  defp contents({:run_inspector, id, :changes}, state, rect, _class) do
+    alias SwarmCodeCLI.UI.Projector.Inspector.Changes
+
+    run = Map.get(state.read_model.runs, id)
+    # A turn that changed nothing shows what the conversation changed.
+    changes =
+      case Changes.changes(state, run || %{id: id}) do
+        [] -> Changes.changes(state, nil)
+        changes -> changes
+      end
+
+    minus = if state.capabilities.ascii?, do: "-", else: "−"
+
+    options =
+      changes
+      |> Enum.with_index()
+      |> Enum.map(fn {change, index} ->
+        letter =
+          case Map.get(change, :file_state) do
+            :created -> "A "
+            :modified -> "M "
+            :deleted -> "D "
+            _ -> ""
+          end
+
+        counts =
+          case {Map.get(change, :added), Map.get(change, :removed)} do
+            {nil, nil} -> ""
+            {a, r} -> "  +#{a || 0} #{minus}#{r || 0}"
+          end
+
+        target =
+          case Map.get(change, :diff_ref) do
+            %{id: ref} when is_binary(ref) -> {:local, {:open_detail, change.run_id, ref}}
+            _ -> {:local, {:open_layer, {:library, :checkpoints}}}
+          end
+
+        {"change-" <> Integer.to_string(index),
+         Density.safe(letter <> change.path <> counts, state, rect.width * 2), target}
+      end)
+
+    files = changes |> Enum.map(& &1.path) |> Enum.uniq() |> length()
+
+    title =
+      case files do
+        0 -> "Changes"
+        1 -> "Changes · 1 file"
+        n -> "Changes · #{n} files"
+      end
+
+    options =
+      if options == [],
+        do: [{"none", Density.safe("No files changed", state, rect.width), nil}],
+        else: options
+
+    {Density.safe(title, state, rect.width), options,
+     [control("cancel", SafeText.chrome(:cancel), {:local, :close_top_layer})],
+     focus(state, options)}
   end
 
   defp contents({:run_inspector, id, _tab}, state, rect, class) do

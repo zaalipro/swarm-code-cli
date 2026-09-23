@@ -269,6 +269,148 @@ defmodule SwarmCodeCLI.UI.Theme do
   defp base_style(:emphasis, mode),
     do: base_style(:text_primary, mode) |> Map.put(:modifiers, [:bold])
 
+  # ---------------------------------------------------------------- light
+
+  # pass71 V4 (R6): Carbon light, from the desktop's
+  # `html[data-theme="carbon"][data-mode="light"]` tokens, keyed by the dark
+  # value each one replaces. A colour with no entry (the accent) is the same
+  # in both modes.
+  @light_rgb %{
+    # text, muted, faint, ghost
+    0xF3F2F0 => 0x1A1A1A,
+    0x8C8B88 => 0x6B6A67,
+    0x5E5D5A => 0x96948F,
+    0x4B4A48 => 0xB5B3AE,
+    # border, bar track, elevated, card, popover, hover
+    0x2A2A2A => 0xE2E0DC,
+    0x3C3C3B => 0xE2E0DC,
+    0x191919 => 0xFAF9F7,
+    0x1E1E1E => 0xFFFFFF,
+    0x1C1C1C => 0xFFFFFF,
+    0x262626 => 0xECEBE8,
+    # on-accent text, ok, warn, err, info
+    0x111111 => 0xFFFFFF,
+    0x3DDC5A => 0x16A34A,
+    0xF5B400 => 0xB98300,
+    0xFF4D4F => 0xDC2626,
+    0x4DA3FF => 0x2563EB,
+    # lanes
+    0x2DD4BF => 0x0F766E,
+    0xA78BFA => 0x7C3AED,
+    0xF59E0B => 0x92400E,
+    0xF472B6 => 0xBE185D,
+    0x38BDF8 => 0x0369A1,
+    # run kinds and the rest of the dark accents, darkened to read on white
+    0xB08CFF => 0x7C3AED,
+    0x2FD0B8 => 0x0F766E,
+    0xFF9F45 => 0xC2410C,
+    0xB8E356 => 0x4D7C0F,
+    0x9B5CFF => 0x7C3AED,
+    0xFF5DB1 => 0xBE185D,
+    0xFF9D5C => 0xC2410C,
+    0xFF7A59 => 0xC2410C,
+    0xF97316 => 0xC2410C,
+    0x22D3EE => 0x0E7490,
+    # chip surfaces: the soft tints on a white card
+    0x3E291D => 0xFFE9DD,
+    0x223926 => 0xE3F4E8,
+    0x3C331A => 0xF7EDD5,
+    0x3E2525 => 0xFBE3E3,
+    0x25313E => 0xE1EAFB
+  }
+  @light_page 0xF4F3F1
+  @light_text 0x1A1A1A
+
+  # The xterm-256 indices the dark theme uses, and their light twins.
+  @light_index %{
+    255 => 234,
+    245 => 242,
+    240 => 246,
+    239 => 249,
+    236 => 254,
+    238 => 253,
+    234 => 255,
+    235 => 231,
+    233 => 231,
+    41 => 28,
+    220 => 136,
+    203 => 160,
+    75 => 26,
+    44 => 30,
+    141 => 92,
+    214 => 94,
+    212 => 162,
+    81 => 25,
+    149 => 64,
+    135 => 92,
+    205 => 162,
+    215 => 166,
+    209 => 166
+  }
+  @light_index_page 255
+  @light_index_text 234
+
+  @doc """
+  pass71 V4: a painted palette entry in Carbon light. The terminal's own
+  background and foreground become the light page and its text, so the light
+  theme reads the same on a dark terminal. ANSI-16 and monochrome entries are
+  unchanged: their colours are the terminal's own.
+  """
+  def light_entry(%{foreground: fg, background: bg} = entry, mode)
+      when mode in [:truecolor, :ansi256] do
+    %{entry | foreground: light(fg, :text, mode), background: light(bg, :page, mode)}
+  end
+
+  def light_entry(entry, _mode), do: entry
+
+  @doc "The Carbon light twin of one dark palette value."
+  def light(nil, :page, :truecolor), do: rgb(@light_page)
+  def light(nil, :text, :truecolor), do: rgb(@light_text)
+  def light(nil, :page, :ansi256), do: {:indexed, @light_index_page}
+  def light(nil, :text, :ansi256), do: {:indexed, @light_index_text}
+
+  def light({:rgb, r, g, b} = value, _slot, _mode) do
+    case Map.fetch(@light_rgb, r * 65_536 + g * 256 + b) do
+      {:ok, twin} -> rgb(twin)
+      :error -> value
+    end
+  end
+
+  def light({:indexed, index} = value, _slot, _mode) do
+    case Map.fetch(@light_index, index) do
+      {:ok, twin} -> {:indexed, twin}
+      :error -> value
+    end
+  end
+
+  def light(value, _slot, _mode), do: value
+
+  defp rgb(hex), do: {:rgb, div(hex, 65_536), rem(div(hex, 256), 256), rem(hex, 256)}
+
+  @doc """
+  pass71 V4 (R6): which theme to paint. `SWARM_THEME` (`light` or `dark`)
+  wins; otherwise the desktop's settings `mode`; otherwise dark. Pure: the
+  caller reads the environment and the settings.
+  """
+  @spec mode(binary() | nil, term()) :: :dark | :light
+  def mode(env, settings_mode) do
+    case normalize_mode(env) do
+      nil -> normalize_mode(settings_mode) || :dark
+      mode -> mode
+    end
+  end
+
+  defp normalize_mode(value) when is_binary(value) do
+    case value |> String.trim() |> String.downcase() do
+      "light" -> :light
+      "dark" -> :dark
+      _ -> nil
+    end
+  end
+
+  defp normalize_mode(value) when value in [:light, :dark], do: value
+  defp normalize_mode(_), do: nil
+
   defp color(:truecolor, rgb, _index, _ansi),
     do: %Color{
       role: :default,

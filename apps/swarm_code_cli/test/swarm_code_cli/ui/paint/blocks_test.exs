@@ -52,7 +52,7 @@ defmodule SwarmCodeCLI.UI.Paint.BlocksTest do
       {%Block.VirtualList{total_count: 99, first_index: 20, items: [text("one"), text("two")]},
        ["one", "two"]},
       {%Block.RunCard{id: "run", title: safe("Build"), status: :done, body: [text("body")]},
-       [filled("▐ Build — DONE"), filled("▐ body")]},
+       [filled("  Build — DONE"), filled("  body")]},
       {%Block.AgentList{agents: [safe("agent one"), text("agent two")]},
        ["agent one", "agent two"]},
       {%Block.ConsensusLedger{entries: [safe("vote")]}, ["Consensus", "vote"]},
@@ -153,7 +153,7 @@ defmodule SwarmCodeCLI.UI.Paint.BlocksTest do
     }
 
     assert strings(layout([nested, text("last")], 80, 3)) ==
-             [filled("▐ Run — RUNNING"), filled("▐ Sources"), filled("▐ one")]
+             [filled("  Run — RUNNING"), filled("  Sources"), filled("  one")]
 
     assert layout([nested], 80, 0) == []
   end
@@ -166,7 +166,7 @@ defmodule SwarmCodeCLI.UI.Paint.BlocksTest do
     # a ragged run of text that stops wherever its content ends.
     assert header.cells == 20
     assert body.cells == 20
-    assert strings([header, body]) == [filled("▐ Build — FAILED", 20), filled("▐ body", 20)]
+    assert strings([header, body]) == [filled("  Build — FAILED", 20), filled("  body", 20)]
 
     surface = List.last(header.units).style.background
     assert surface != nil
@@ -174,7 +174,7 @@ defmodule SwarmCodeCLI.UI.Paint.BlocksTest do
     for line <- [header, body] do
       [edge, gutter | rest] = line.units
       # A one-cell status edge, then the two-cell gutter that insets the body.
-      assert edge.text == "▐"
+      assert edge.text == " "
       assert gutter.text == " "
       assert Enum.all?(rest, &(&1.style.background == surface))
       # The right pad keeps the last cell on the surface and off the text.

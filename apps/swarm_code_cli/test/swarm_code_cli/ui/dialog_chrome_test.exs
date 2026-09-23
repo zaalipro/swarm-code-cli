@@ -70,11 +70,14 @@ defmodule SwarmCodeCLI.UI.DialogChromeTest do
 
   # Rows inside the dialog whose first cell after the border is the rail.
   defp rail_rows(plan, scene, state) do
-    rail = SafeText.value(Support.glyph(:stripe, state))
+    # pass71 V1: the rail is thin (a gap at the measured tier), so a rail row
+    # is the rail glyph on the hover surface.
+    rail = SafeText.value(Support.rail(state))
     rect = scene.overlay.rect
+    %{value: hover} = Theme.style(:hover, state.capabilities).background
 
     Enum.count((rect.y + 1)..(rect.y + rect.height - 2), fn y ->
-      row(plan, y, rect.x + 1, 1) == rail
+      row(plan, y, rect.x + 1, 1) == rail and background(plan, rect.x + 1, y) == hover
     end)
   end
 
@@ -129,7 +132,9 @@ defmodule SwarmCodeCLI.UI.DialogChromeTest do
       y =
         Enum.find(
           (rect.y + 1)..(rect.y + rect.height - 2),
-          &(row(plan, &1, rect.x + 1, 1) == "▐")
+          &(row(plan, &1, rect.x + 1, 1) == SafeText.value(Support.rail(state)) and
+              background(plan, rect.x + 1, &1) ==
+                Theme.style(:hover, state.capabilities).background.value)
         )
 
       assert background(plan, rect.x + 4, y) ==

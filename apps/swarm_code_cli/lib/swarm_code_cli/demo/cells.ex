@@ -68,11 +68,18 @@ defmodule SwarmCodeCLI.Demo.Cells do
     {{:conversation, :palette}, {120, 36}, :truecolor, false, :measured},
     {{:conversation, :model_picker}, {120, 36}, :truecolor, false, :measured}
   ]
+  # pass71 V6: the round's screens at the rich tier (thin rails, the compact
+  # run card, code cards, inline hunks) and in Carbon light (V4).
+  @pass71 for scene <- [:first_reply, :trouble, :swarm],
+              size <- [{160, 45}, {120, 36}],
+              do: {{:conversation, scene}, size, :truecolor, false, :rich}
+  @light for scene <- [:first_reply, :trouble, :approval],
+             do: {{:light, scene}, {160, 45}, :truecolor, false, :rich}
   @examples @core ++
               @dialogs ++
               @pane ++
               [{:too_small, {49, 13}, :monochrome, true, :measured}] ++
-              @conversations ++ @pickers
+              @conversations ++ @pickers ++ @pass71 ++ @light
 
   @doc "How many files `run/0` writes, the index included."
   def file_count, do: length(@examples) + 1
@@ -141,7 +148,8 @@ defmodule SwarmCodeCLI.Demo.Cells do
     capabilities = %Capabilities{size: size, color_mode: mode, ascii?: ascii?, glyph_tier: tier}
     state = fixture(kind, size, capabilities)
     {scene, _table} = Projector.project(state)
-    options = %Options{color_mode: mode, ascii?: ascii?, glyph_tier: tier}
+    theme = if match?({:light, _}, kind), do: :light, else: :dark
+    options = %Options{color_mode: mode, ascii?: ascii?, glyph_tier: tier, theme: theme}
 
     with {:ok, plan} <- Paint.build(scene, options),
          {:ok, svg} <- SVG.encode(plan) do
@@ -218,6 +226,9 @@ defmodule SwarmCodeCLI.Demo.Cells do
     %{state | layers: [{:model_picker, :chat, "preview-models"}], focus: "dialog"}
   end
 
+  defp fixture({:light, scene}, size, capabilities),
+    do: Conversation.state(scene, size, capabilities)
+
   defp fixture({:conversation, scene}, size, capabilities),
     do: Conversation.state(scene, size, capabilities)
 
@@ -238,6 +249,9 @@ defmodule SwarmCodeCLI.Demo.Cells do
 
         {:conversation, scene} ->
           "conversation-" <> String.replace(Atom.to_string(scene), "_", "-")
+
+        {:light, scene} ->
+          "light-" <> String.replace(Atom.to_string(scene), "_", "-")
 
         kind ->
           Atom.to_string(kind)
@@ -269,6 +283,7 @@ defmodule SwarmCodeCLI.Demo.Cells do
         name =
           case kind do
             {:conversation, scene} -> "conversation #{scene}"
+            {:light, scene} -> "light #{scene}"
             kind -> Atom.to_string(kind)
           end
 

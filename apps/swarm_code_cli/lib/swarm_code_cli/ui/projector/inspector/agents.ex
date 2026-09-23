@@ -16,7 +16,8 @@ defmodule SwarmCodeCLI.UI.Projector.Inspector.Agents do
   alias SwarmCodeCLI.UI.{SafeText, Theme}
   alias SwarmCodeCLI.UI.Scene.{Block, Span}
   alias SwarmCodeCLI.UI.Projector.{Density, RunRow, Support}
-  alias SwarmCodeCLI.UI.Projector.Inspector.{Hive, Ops, Verdict, Words}
+  alias SwarmCodeCLI.UI.Projector.Inspector.{Changes, Hive, Ops, Verdict, Words}
+  alias SwarmCodeCLI.UI.Projector.Workspace.Turns
 
   # Two mini-card columns need this many cells; above this many sub-agents the
   # grid becomes rows.
@@ -46,6 +47,30 @@ defmodule SwarmCodeCLI.UI.Projector.Inspector.Agents do
 
   def tab(state, run, width, height, opts) do
     [lead | subs] = Hive.lanes_for(state, run)
+
+    if compact?(run, subs),
+      do: compact(state, run, lead, width, height, opts),
+      else: hive(state, run, lead, subs, width, height, opts)
+  end
+
+  # pass71 V1 (R3): a chat or goal turn answered by one agent has no hive to
+  # show; the pane says what the turn cost and what it changed.
+  @single_kinds [:chat, :goal]
+
+  @doc """
+  Whether the Agents tab shows the compact run card: the run is a chat or goal
+  turn with no sub-agents. Swarms, workflows and every other kind keep the hive.
+  """
+  def compact?(state, run) when is_map(state) and is_map(run) do
+    [_lead | subs] = Hive.lanes_for(state, run)
+    compact?(run, subs)
+  end
+
+  def compact?(_state, nil), do: false
+  def compact?(%{kind: kind}, []) when kind in @single_kinds, do: true
+  def compact?(_run, _subs), do: false
+
+  defp hive(state, run, lead, subs, width, height, opts) do
     selected = selected(state, run, [lead | subs])
 
     {lead_blocks, lead_rows} = lead_card(state, run, lead, subs, width, height, opts)
@@ -63,6 +88,187 @@ defmodule SwarmCodeCLI.UI.Projector.Inspector.Agents do
     drawer = if left >= @drawer_min, do: drawer(state, selected, width, left), else: []
 
     lead_blocks ++ waiting ++ verdict ++ subs_blocks ++ drawer
+  end
+
+  # The run card, what waits on you, then the files the turn changed; never
+  # the per-step operations, which the transcript already shows in place.
+  defp compact(state, run, lead, width, height, opts) do
+    {card, card_rows} = run_card(state, run, lead, width, opts)
+    card = if card_rows <= height, do: card, else: []
+    left = height - if(card == [], do: 0, else: card_rows)
+
+    {waiting, waiting_rows} = fit(waiting_card(state, run, width), left)
+    left = left - waiting_rows
+
+    changes =
+      if left >= 3,
+        do: [Hive.blank(state) | Changes.tab(state, run, width, left - 1, solo: true)],
+        else: []
+
+    card ++ waiting ++ changes
+  end
+
+  # `✳ assistant                 ● done`, the model, then the facts two by two:
+  # elapsed, tokens, cost and files changed, each only when known.
+  defp run_card(state, run, lead, width, opts) do
+    # One cell of right padding keeps the status off the pane's edge.
+    inner = max(0, width - 3)
+    role = Hive.lane_role(lead, 0)
+    glyph = SafeText.value(Support.glyph(avatar_token(lead), state))
+    {word, word_role} = status_word(lead)
+
+    name = [
+      %Span{
+        text: Density.safe(glyph, state, 1),
+        style: %{RunRow.tinted(role, state) | modifiers: [:bold]}
+      },
+      RunRow.gap(1, state),
+      %Span{
+        text: Density.safe(Hive.name(lead), state, max(1, inner - 12)),
+        style: %{RunRow.tinted(role, state) | modifiers: [:bold]}
+      }
+    ]
+
+    status = [
+      %Span{text: Support.glyph(:dot, state), style: RunRow.tinted(word_role, state)},
+      RunRow.gap(1, state),
+      %Span{
+        text: Density.safe(word, state, Hive.measure(word, state)),
+        style: %{RunRow.tinted(word_role, state) | modifiers: [:bold]}
+      }
+    ]
+
+    model = subtitle(run, lead, state)
+
+    rows =
+      [name_row(state, run, lead, inner, name, status, opts)] ++
+        if(model != "", do: [%Block.RichText{spans: [faint(model, inner, state)]}], else: []) ++
+        fact_rows(run_facts(state, run, lead), inner, state) ++ error_row(run, inner, state)
+
+    {[%Block.Surface{blocks: rows, tone: :card, accent: role, edges: :half}],
+     length(rows) + @card_edges}
+  end
+
+  # The name and the status; an agent that may be stopped offers `stop`
+  # between them, as the hive's lead card does.
+  defp name_row(state, run, lead, inner, name, status, opts) do
+    if Keyword.get(opts, :stop?, true) and Support.allowed?(state, lead, :stop_agent) and
+         lead.id != run.id do
+      stop = "stop"
+      stop_width = Hive.measure(stop, state)
+      # The deck puts two cells between its items.
+      left_width = max(0, inner - stop_width - cells(status, state) - 4)
+
+      %Block.ActionDeck{
+        actions: [
+          %Block.RichText{spans: [pad_spans(name, left_width, state)]},
+          Support.action(
+            Density.safe(stop, state, stop_width),
+            {:intent, {:stop_agent, lead.run_id, lead.id, lead.revision}},
+            Theme.style(:text_muted, state.capabilities)
+          ),
+          %Block.RichText{spans: status}
+        ]
+      }
+    else
+      two_sided(state, inner, name, status)
+    end
+  end
+
+  defp pad_spans(spans, width, state) do
+    text = Enum.map_join(clip_spans(spans, width, state), &SafeText.value(&1.text))
+    %{hd(spans) | text: Density.safe(RunRow.pad(text, width, state), state, width)}
+  end
+
+  defp run_facts(state, run, lead) do
+    tokens = run_tokens(run, [lead])
+    files = state |> Changes.changes(run) |> Enum.map(& &1.path) |> Enum.uniq() |> length()
+    # Counted from the ledger drawn under the card, so the two always agree.
+    cost = Map.get(run, :cost_usd)
+
+    elapsed =
+      case {run.started_at, Words.until(run, state)} do
+        {started, until} when is_integer(started) and is_integer(until) and until >= started ->
+          Turns.duration_text(until - started)
+
+        _ ->
+          nil
+      end
+
+    [
+      {"elapsed", elapsed},
+      {"tokens", if(tokens > 0, do: Turns.compact(tokens))},
+      {"cost", if(is_number(cost) and cost > 0, do: money(cost))},
+      {"files", if(files > 0, do: Integer.to_string(files))}
+    ]
+    |> Enum.reject(fn {_label, value} -> is_nil(value) end)
+  end
+
+  # A failed turn says why, in the error colour, on the card itself.
+  defp error_row(%{state: :failed} = run, inner, state) do
+    case Map.get(run, :error) || Map.get(run, :stop_label) do
+      text when is_binary(text) and text != "" ->
+        [
+          %Block.RichText{
+            spans: [
+              %Span{
+                text: Density.safe(first_line(text), state, inner),
+                style: RunRow.tinted(:error, state)
+              }
+            ]
+          }
+        ]
+
+      _ ->
+        []
+    end
+  end
+
+  defp error_row(_run, _inner, _state), do: []
+
+  defp first_line(text), do: text |> String.split(["\r\n", "\n"], parts: 2) |> hd()
+
+  defp money(cost) when cost < 0.01, do: "$" <> :erlang.float_to_binary(cost / 1, decimals: 3)
+  defp money(cost), do: "$" <> :erlang.float_to_binary(cost / 1, decimals: 2)
+
+  @fact_label 8
+
+  # Two facts a row when both fit, one a row when the pane is narrow.
+  defp fact_rows([], _inner, _state), do: []
+
+  defp fact_rows(facts, inner, state) do
+    column = div(inner, 2)
+    widest = facts |> Enum.map(fn {_l, v} -> Hive.measure(v, state) end) |> Enum.max()
+    per_row = if column >= @fact_label + widest + 1, do: 2, else: 1
+    cell = if per_row == 2, do: column, else: inner
+
+    facts
+    |> Enum.chunk_every(per_row)
+    |> Enum.map(fn chunk ->
+      spans =
+        chunk
+        |> Enum.with_index()
+        |> Enum.flat_map(fn {{label, value}, index} ->
+          last? = index == length(chunk) - 1
+          room = max(0, cell - @fact_label)
+
+          value_text =
+            if last?, do: value, else: RunRow.pad(value, room, state)
+
+          [
+            %Span{
+              text: Density.safe(RunRow.pad(label, @fact_label, state), state, @fact_label),
+              style: Theme.style(:text_faint, state.capabilities)
+            },
+            %Span{
+              text: Density.safe(value_text, state, max(1, room)),
+              style: %{Theme.style(:text_primary, state.capabilities) | modifiers: [:bold]}
+            }
+          ]
+        end)
+
+      %Block.RichText{spans: clip_spans(spans, inner, state)}
+    end)
   end
 
   # A one-row-per-block section is taken whole or not at all.

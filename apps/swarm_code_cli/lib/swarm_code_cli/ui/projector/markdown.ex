@@ -23,7 +23,11 @@ defmodule SwarmCodeCLI.UI.Projector.Markdown do
 
   @type style :: atom() | {:syntax, atom()}
   @type segment :: {binary(), style()}
-  @type row :: %{segments: [segment()], fill: nil | :code_card}
+  @type row :: %{
+          optional(:header) => true,
+          segments: [segment()],
+          fill: nil | :code_card
+        }
 
   # A source line longer than this is laid out as plain text: the inline
   # scanner is linear, but a pathological line should not pay for it on every
@@ -217,7 +221,9 @@ defmodule SwarmCodeCLI.UI.Projector.Markdown do
     pad = {String.duplicate(" ", @code_pad), :code_text}
     label = if language == "", do: "code", else: language
 
-    header = %{segments: [pad, {label, :code_lang}], fill: :code_card}
+    # pass71 V2 (R4): the card's one-row header: the language as a chip. The
+    # transcript adds the copy hint at its right in select mode.
+    header = %{segments: [pad, {" " <> label <> " ", :code_lang}], fill: :code_card, header: true}
 
     body =
       lines
@@ -228,7 +234,8 @@ defmodule SwarmCodeCLI.UI.Projector.Markdown do
         |> Enum.map(fn segments -> %{segments: [pad | segments], fill: :code_card} end)
       end)
 
-    [header | body]
+    # One blank card row closes the card, so the last line never sits on its edge.
+    [header | body] ++ [%{segments: [pad], fill: :code_card}]
   end
 
   defp block_rows({:table, header, aligns, body}, ctx), do: table(header, aligns, body, ctx)

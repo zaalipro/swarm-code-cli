@@ -90,6 +90,55 @@ defmodule SwarmCodeCLI.UI.Projector.SignalsTest do
       assert foreground(plan, x, removed) != foreground(plan, x, added)
     end
 
+    # pass71 V3 (R5): the first hunk is in place without expanding the row.
+    test "an edit shows its first hunk inline, unexpanded" do
+      {rows, _scene, _table, _plan} = scene(:trouble, {120, 60}) |> screen()
+
+      edit = find(rows, ~r/edit +lib\/tickets\/guard\.ex +\+5 −1 +14ms$/)
+      assert edit, Enum.join(rows, "\n")
+      assert Enum.at(rows, edit + 1) =~ ~r/^ +@@ -12,9 \+12,13 @@/
+      assert find(rows, ~r/^ +\+  def authorize\(actor, ticket\) do/)
+    end
+
+    test "a long diff stops after twelve lines and says how many more and how to open it" do
+      state = scene(:trouble, {120, 60})
+      id = "demo-run-2-item-004"
+      item = state.read_model.transcript[id]
+
+      body = Enum.map_join(1..30, "\n", &"+line #{&1}")
+      second = "@@ -80,2 +94,3 @@\n context\n+more\n context"
+
+      long =
+        "--- a/lib/tickets/guard.ex\n+++ b/lib/tickets/guard.ex\n@@ -1,0 +1,30 @@\n" <>
+          body <> "\n" <> second
+
+      state = put_in(state.read_model.transcript[id], %{item | text: long})
+      {rows, _scene, _table, _plan} = screen(state)
+
+      edit = find(rows, ~r/edit +lib\/tickets\/guard\.ex/)
+      assert Enum.at(rows, edit + 1) =~ ~r/^ +@@ -1,0 \+1,30 @@/
+      assert Enum.at(rows, edit + 12) =~ ~r/^ +\+line 11$/
+      # 35 diff lines, 12 shown.
+      assert Enum.at(rows, edit + 13) =~ ~r/^ +… 23 more lines · Enter opens$/
+      refute Enum.any?(rows, &(&1 =~ "+line 12"))
+    end
+
+    test "the daemon's first hunk and line count are read from the tool call" do
+      state = scene(:trouble, {120, 60})
+      id = "demo-run-2-item-004"
+      item = state.read_model.transcript[id]
+      hunk = "@@ -3,2 +3,2 @@\n-old\n+new\n keep"
+      # Until the daemon puts the fields on the wire the struct carries them as extra keys.
+      tool = Map.merge(item.tool, %{hunk: hunk, diff_lines: 40})
+      state = put_in(state.read_model.transcript[id], %{item | text: "Edited", tool: tool})
+      {rows, _scene, _table, _plan} = screen(state)
+
+      edit = find(rows, ~r/edit +lib\/tickets\/guard\.ex/)
+      assert Enum.at(rows, edit + 1) =~ ~r/^ +@@ -3,2 \+3,2 @@/
+      assert Enum.at(rows, edit + 2) =~ ~r/^ +-old$/
+      assert Enum.at(rows, edit + 5) =~ ~r/^ +… 36 more lines · Enter opens$/
+    end
+
     test "a command that exited non-zero is a failed row with its code and last line" do
       {rows, _scene, _table, _plan} = scene(:trouble, {120, 60}) |> screen()
 

@@ -291,7 +291,21 @@ defmodule SwarmCodeCLI.UI.Paint.NewBlocksTest do
 
       assert length(texts) == 1
       [line_text] = texts
-      assert String.starts_with?(line_text, "▐")
+      # pass71 V1 (R3): a thin rail; at the measured tier a one-cell gap.
+      assert String.starts_with?(line_text, "  hello")
+    end
+
+    test "the accent rail is thin: ▏ at the rich tier, ▐ only in monochrome, | in ASCII" do
+      surface = %Block.Surface{blocks: [text("hello")], tone: :card, accent: :accent}
+
+      for {options, rail} <- [
+            {%Options{glyph_tier: :rich}, "▏"},
+            {%Options{color_mode: :monochrome}, "▐"},
+            {%Options{ascii?: true}, "|"}
+          ] do
+        [line] = layout([surface], 40, 100, options)
+        assert hd(line.units).text == rail, inspect(options)
+      end
     end
 
     test "surface with accent has different style on leftmost column" do
@@ -305,7 +319,7 @@ defmodule SwarmCodeCLI.UI.Paint.NewBlocksTest do
       lines = layout([surface], 40)
       [line] = lines
       first_unit = hd(line.units)
-      assert first_unit.text == "▐"
+      assert first_unit.text == " "
     end
 
     test "non-rounded surface without accent indents by one space" do
