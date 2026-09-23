@@ -5,8 +5,10 @@ This file is how the finisher merges the branch. Newest state first in each sect
 
 ## Sync point
 
-- `p70-A-sync` is the commit "pass70 A: notes for p70-A-sync" (the child of `f02a670`); its sha
-  is recorded in the next notes update. B and C: `git merge --no-edit p70-A-sync`.
+- `p70-A-sync` = `150a7f2450723ef7eccb58b3370f5e007f6166e6` ("pass70 A: notes for p70-A-sync",
+  the child of `f02a670`; lightweight, local). B and C: `git merge --no-edit p70-A-sync`.
+  Everything after it (A5, A6, notes) touches only tests, `provenance/**`, the sync tool and
+  this file.
 - After merging it, read "Requests for other owners" below: B6's three runtime children are
   needed before any tool call works in a saved session.
 
@@ -17,6 +19,9 @@ This file is how the finisher merges the branch. Newest state first in each sect
 | A1 | `1fef98e` | `mix swarm_code.provenance.sync` + rules + patches + `--check` in precommit |
 | A2 | `9dcc3f2`, re-record in the tag commit | domain synced to desktop 6dd8d82; `pending_interactions/1` rows extended |
 | A3+A4 | `f02a670` | 4 migrations, `Schema.Contract` 6dd8d82 (57), manifest + fixtures, gate points at it; `forward_compatible` allowlist, human refusals |
+| tag | `150a7f2` | `p70-A-sync`: notes + the RunServer patch re-recorded |
+| A5 | `e3ec21c` | 20 more pure upstream test files synced (24 in all), pure parts of five more ported by hand |
+| A6 | `ef1b0c1` | loopback-HTTP saved-mode turn through the synced engine under the guarded Repo |
 
 ## The sync tool (A1)
 
@@ -109,8 +114,16 @@ restart", finished_at: now})`) → `Attachments.prune_abandoned/0`. Then (deskto
 `Isolation.Ownership.cleanup_stale(Projects.Workspace.worktrees_dir(root), root)` when that dir
 exists.
 
-Shutdown (desktop `quit.ex`): pause workflows, `Engine.stop_all/0`, kill every
-`Tools.BackgroundProcs.list_all/0` entry, stop LSP clients (`LSP.Supervisor`).
+Shutdown (desktop `quit.ex` `stop_everything/0` at 6dd8d82, in this order):
+`Workflows.control(run_id, :pause, [])` for every active workflow with a live runner (desktop
+only; the CLI starts none) → `Engine.stop_all()` → for every
+`%{run_id: r, os_pid: p} <- Tools.BackgroundProcs.list_all()`, `Tools.BackgroundProcs.kill(r, p)`
+(a yielded or `&` command outlives its run, so `stop_all` never reaches it) → poll
+`Engine.running_run_ids() == []` for up to 30 s (the runs' final flush) → then
+`Supervisor.terminate_child` of `Engine.RunSupervisor`, `Research.Supervisor`,
+`MCP.Supervisor`, 5 s each (brutal kill after). The desktop leaves LSP clients to the VM halt;
+a CLI daemon that outlives a session should also stop `LSP.Supervisor` (it owns the
+language-server ports). `domain/engine/pass70_saved_turn_test.exs` does the stop/poll part.
 
 `Application.get_env(:swarm_code_daemon, …)` keys the synced domain reads (all optional,
 defaults in code): `:domain_config_dir` (fetch!, via `domain/paths.ex`), `:llm_providers`,
@@ -143,6 +156,49 @@ defaults in code): `:domain_config_dir` (fetch!, via `domain/paths.ex`), `:llm_p
 - Same SQLite (3.53.3), `ecto_sql` 3.14.0 and `ecto_sqlite3` 0.24.1 as the desktop at 6dd8d82,
   so a desktop-migrated 57-DB hashes identically to the generated manifest.
 
+## Upstream unit tests (A5)
+
+- The `test/swarm_code/` mapping lists 24 desktop test files explicitly (`files`, not globs):
+  every file at 6dd8d82 that runs without the desktop `DataCase`, `LLM.Fake`, the web layer or
+  a second module in the file. They land under `apps/swarm_code_daemon/test/swarm_code/domain/`
+  with classification `test`, rewritten and formatted like the source. Covered: command safety
+  (polish60/62), project context, prompts (+ pass60), consensus, context, policy, git + git
+  tools, skills, commands, pricing, scheduler cron/next, workflows host/panel bound, llm
+  chunks/sse/tool args, research levels, projects workspace, atomic file, polish53 tools.
+- Two of them wrote to and deleted in the real global directory (`Paths.config_dir/0`):
+  `commands_test.exs` and `engine/project_context_test.exs`. Their recorded patches call
+  `SwarmCode.Domain.TestGlobalDir.isolate!/0` (new, `test/support/domain_global_dir.ex`) in
+  `setup`. `prompts_test.exs` keeps its earlier patch. `SwarmCode.Domain.Fixtures.tmp_dir/0`
+  (`test/support/domain_fixtures.ex`) is the one desktop fixture they use.
+- The pure parts of five mixed files are ported by hand in
+  `domain/pass70_upstream_units_test.exs` (19 tests; source file and test names in its
+  moduledoc): FuzzyMatch in bytes (T94), LSP.Language + file URIs, Context hysteresis (B4),
+  edit_file's four passes (T9), Ripgrep detection + fallback (C1, C3). These are CLI-local, not
+  in the ledger; if upstream changes them, port again.
+- `polish67_tools_test.exs` is not synced: it defines a second module that uses `DataCase`. The
+  sync tool now removes (and `--check` flags) a ledger entry whose file the rules no longer
+  select, like one deleted upstream.
+
+## Engine regression under the guarded Repo (A6)
+
+`apps/swarm_code_daemon/test/swarm_code/domain/engine/pass70_saved_turn_test.exs`, 2 tests, one
+guarded launch in `setup_all` (the backup + 53 → 57 migration takes ~9 s; each turn ~0.1-0.3 s):
+
+1. A 53-migration fixture DB goes through `RepoLauncher` (verified backup, allowlisted
+   migration to 57), then a loopback openai-compatible provider scripts `run_command`
+   (`printf ready`, `yield_ms: 5000`) → `edit_file` (`notes.md` beta → gamma) → text. Asserts:
+   run `done`, file changed, the tool results reach turns 2 and 3 of the provider, both op
+   nodes `done`, one checkpoint row for `notes.md`, and the pass-69 FTS5 index finds "gamma".
+2. An `auto`-mode trusted project: `touch made.txt` waits on a real RunServer approval; the
+   `pending_interactions/1` row carries `tool`, `command`, `cwd`, `reason` (justification),
+   `command_family: "touch"`, `classification: :normal`, `permission: :execute`, the five
+   `allowed_decisions`, `requested_at`, and an `agent_id` ≠ `node_id`; the op row is persisted
+   as `awaiting_approval`; `resolve_approval(run, node, {:always_prefix, "anything"})` runs it,
+   and the project remembers the server's `"touch"`, not the client's value.
+
+It starts `BackgroundProcs`, `Hooks.TaskSupervisor` and `LSP.Supervisor` itself when
+`domain/runtime.ex` does not (B6) and sets `:llm_providers` like `persisted_backend_test.exs`.
+
 ## Files outside my set that I had to touch (count bumps only)
 
 The re-pin moves pinned counts in tests other owners own. I changed only these lines; please
@@ -155,6 +211,8 @@ keep them on merge:
 - `apps/swarm_code_daemon/test/swarm_code/daemon/platform/directory_protocol_test.exs` (B):
   53 → 57, "54th" → "58th".
 - `apps/swarm_code_daemon/test/support/schema_fixture.ex`: the four new prefix versions.
+- New files (no conflict possible): `apps/swarm_code_daemon/test/support/domain_global_dir.ex`
+  and `apps/swarm_code_daemon/test/support/domain_fixtures.ex` (the synced tests' support).
 
 ## Manifest-listed files edited by others
 
@@ -192,13 +250,43 @@ my set; the ones below remain and are not in my files):
   previous_content: …, restorable: …, inserted_at: …}) |> Checkpoint.validate() |> Repo.insert!()`
   (or `Checkpoints.insert/3`). Ten `WireContractTest` tests fail on `NOT NULL constraint failed:
   checkpoints.conversation_id` until then.
+- **B (config/test.exs, B5)**: keep `:domain_config_dir` on a private temporary directory in
+  the test config, and keep `domain/paths.ex` honouring that app-env override before any
+  runtime resolution. If B5 resolves the directory to `~/Library/Application Support/SwarmCode`
+  at runtime, the synced upstream tests (skills, commands, project context, memory) would read
+  and delete a person's real global files. My synced tests that write there call
+  `SwarmCode.Domain.TestGlobalDir.isolate!/0` first (patched), but the default must stay safe.
 - **C**: consume the frozen `pending_interactions/1` row shape above; map
   `approve_run → :always`, `always_prefix → {:always_prefix, family}`, `deny_stop → :deny_stop`.
 
 ## Verification
 
-(filled in at the end)
+At `ef1b0c1` plus this notes commit (tree clean, `MIX_QUIET` unset, all through `mise exec --`):
+
+- `mix format --check-formatted`: exit 0. `mix compile --warnings-as-errors`: exit 0 (not
+  `--force`; see the B request for `backup/gate.ex:1668`).
+- `mix swarm_code.provenance.verify`: "provenance verified". `mix swarm_code.provenance.sync
+  --check`: "every synced file derives from the pinned commit".
+- Focused: `domain/engine/pass70_saved_turn_test.exs` 2 tests, 0 failures, four runs in a row;
+  domain + schema + foundation gate + governance tests 0 failures (earlier in the pass: 333).
+- Full umbrella `mix test` (once, exit 2):
+  - `swarm_code_core`: 141 tests, 0 failures.
+  - `swarm_code_daemon`: 876 tests, 14 failures, all in other owners' files and listed under
+    Requests: `session_selection_test` (1, B, read_only default), `wire_contract_test` (10, C,
+    Checkpoint ownership ids), `persisted_backend_test` "a real agent interview" (1, B6, no
+    `Hooks.TaskSupervisor`), `backup/gate_test` (2, B, FTS5 `WITHOUT ROWID` shadow table).
+  - `swarm_code_cli`: 5 properties, 1182 tests, 1 failure: `plain/session_test.exs:208`
+    "unresponsive output is bounded and detaches its client" (`assert_receive :output_started`
+    within 100 ms under full-suite load). The file passes alone (10 tests, 0 failures) and this
+    branch changes nothing under `apps/swarm_code_cli`: a timing flake, not mine.
 
 ## Left
 
-(filled in at the end)
+- Not started by the CLI and not needed for a chat/swarm session: the desktop's `Scheduler` and
+  `Workflows.Runner.Watchdog` (the desktop owns scheduled tasks and workflow orphans).
+- The hand-ported units (`pass70_upstream_units_test.exs`) are outside the ledger; a future
+  sync does not refresh them.
+- The guarded launch of a small 53-migration fixture takes 8.6-9.0 s in `await_ready` (verified
+  backup + migration); measured only, not profiled (backup is B's).
+- Warnings seen while compiling CLI tests (not mine, not failures): unused `field/3` defaults
+  and alias `Editor` in `ui/feature_form_test.exs`, unused `scene` in `ui/projector_test.exs`.
