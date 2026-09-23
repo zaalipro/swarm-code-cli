@@ -134,24 +134,25 @@ defmodule SwarmCodeCLI.UI.Reducer do
     turn = Keymap.live_turn(state, @live_states)
     key = State.current_draft_key(state)
 
-    {state, effects} =
+    {state, effects, stopping?} =
       cond do
         state.layers != [] ->
-          transition(state, :close_top_layer)
+          Tuple.insert_at(transition(state, :close_top_layer), 2, false)
 
         key != nil and Keymap.draft_text(state) != "" ->
           {state, a} = Editing.apply(state, :editor, key, :select_all)
           {state, b} = Editing.apply(state, :editor, key, :delete_backward)
-          {%{state | history_cursor: nil}, a ++ b}
+          {%{state | history_cursor: nil}, a ++ b, false}
 
         turn != nil and :stop in turn.allowed_actions ->
-          stop_turn(state, turn.id)
+          {state, effects} = stop_turn(state, turn.id)
+          {state, effects, effects != []}
 
         true ->
-          {state, []}
+          {state, [], false}
       end
 
-    {state, armed} = arm_quit(state)
+    {state, armed} = arm_quit(state, stopping?)
     {state, effects ++ armed}
   end
 
@@ -1537,15 +1538,12 @@ defmodule SwarmCodeCLI.UI.Reducer do
       else: {%{next | notice: {:command_feedback, "Stopping the turn."}}, effects}
   end
 
-  defp arm_quit(state) do
+  # The press that stops the turn says so; any other press (the turn already
+  # stopped, a layer closed, a draft cleared) says how to quit (pass70 F12).
+  defp arm_quit(state, stopping?) do
     {id, state} = State.next_id(state, :timer)
     cancel = if state.quit_armed, do: [{:cancel_timer, state.quit_armed}], else: []
-
-    notice =
-      case state.notice do
-        {:command_feedback, "Stopping the turn."} -> state.notice
-        _ -> {:command_feedback, quit_hint()}
-      end
+    notice = if stopping?, do: state.notice, else: {:command_feedback, quit_hint()}
 
     {%{state | quit_armed: id, notice: notice},
      cancel ++ [{:start_timer, id, @quit_window_ms, {:timer_fired, id}}]}

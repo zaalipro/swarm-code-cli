@@ -234,6 +234,21 @@ defmodule SwarmCodeCLI.UI.ComposerFirstTest do
       assert {:detach, 0} in effects
     end
 
+    test "the press that stops says so; a later press, after its window, says how to quit" do
+      state = ready([run("r", :waiting_approval)])
+      state = press!(state, ctrl("c"))
+      assert state.notice == {:command_feedback, "Stopping the turn."}
+
+      {state, []} = Reducer.update(state, {:timer_fired, state.quit_armed})
+
+      {state, _} =
+        Reducer.update(state, {:data, delta(state, :run_update, run("r", :stopped, actions: []))})
+
+      state = press!(state, ctrl("c"))
+      assert state.notice == {:command_feedback, "Press Ctrl-C again to quit."}
+      assert is_binary(state.quit_armed)
+    end
+
     test "a layer closes first" do
       state = ready([]) |> press!(Input.key({:function, 1}))
       assert state.layers == [:help]
