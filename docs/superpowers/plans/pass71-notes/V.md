@@ -8,7 +8,7 @@ Owner V: visuals. Branch `p71/V`, worktree `/Users/zaali/dev/swarm-code-cli-wt/p
 | task | what | commits |
 | --- | --- | --- |
 | V1 (R3) thin rails | `Support.rail/1` / paint `rail_glyph/1`: `▏` at the rich tier, a one-cell gap at the measured tier (every one-cell-under-both-policies thin bar, `⎸ ⏐ ❘`, is missing from Menlo / SF Mono / MesloLGS), `▐` kept only in monochrome where no surface carries the cue, `|` in ASCII. Used by the prompt card, the selection rail, the active tab, surfaces and run cards, dialog/palette/@path selections, the approval card; the composer gutter is `▏` at rich and keeps its stripe below (its only focus cue). New SafeText tokens `:rail` (rich, measured twin `:rail_gap`), `:rail_gap`, `:rail_ascii`. | 3ef959e |
-| V1 (R3) compact side pane | `Inspector.Agents.compact?/2`: a `:chat`/`:goal` run with no sub-agents shows a run card (glyph + name, status dot + word, model, `elapsed · tokens · cost · files` two per row, the error of a failed turn, `stop` when allowed) then the Changes ledger (`Changes.tab/4`); never Current task / Operations. The first tab is labelled `run` then. Swarms, workflows and a chat that spawned sub-agents keep the hive. "No files changed" (no "yet") once the run is finished. | b7a8f6f, 1ebc947 |
+| V1 (R3) compact side pane | `Inspector.Agents.compact?/2`: a `:chat`/`:goal` run with no sub-agents shows a run card (glyph + name, status dot + word, model, `elapsed · tokens · cost · files` two per row, the error of a failed turn, `stop` when allowed) then the Changes ledger (`Changes.tab/4`); never Current task / Operations. The first tab is labelled `run` then. Swarms, workflows and a chat that spawned sub-agents keep the hive. "No files changed" (no "yet") once the run is finished. | b7a8f6f, 1ebc947, 399c9c0 (the card's ledger has no author column: `Changes.tab/5 solo: true`) |
 | V2 (R4) code card | the fence's header row is the language as a chip (`:code_lang` on the hover surface), `y copy` right-aligned in select mode (`focus == "main"`, no layer); one blank card row closes the card. `Turns.style_of/3` keeps a chip's own background on a card. | 91dcde0 |
 | V3 (R5) inline hunk | every edit row shows its first hunk (the `@@` line plus body, at most 12 lines) without expanding; longer diffs end `… N more lines · Enter opens`. Source: `ToolCall.hunk` (see request S-1) else the item's text when it is a unified diff. `+N −M` counted from a whole diff when the daemon sent none. | bb7b1bb |
 | V4 (R6) light | `Paint.Options.theme :: :dark \| :light` (default dark; `validate/1` now 5 keys); `Paint.build` swaps the palette through `Theme.light_entry/2` (Carbon light tokens from `themes.css`, dark value → light twin, 256-colour indices too; the canvas becomes `--bg #f4f3f1` / `--text #1a1a1a` so a dark terminal shows the light theme; ANSI-16 and monochrome unchanged). `Theme.mode(env, settings_mode)` decides: `SWARM_THEME` wins, then the desktop's settings `mode`, then dark. **Not wired to a live session yet** (request I-2/S-2). | 301cebf |
@@ -63,4 +63,14 @@ None (all edits under `apps/swarm_code_cli/lib/swarm_code_cli/{ui,demo}` and tes
     `v1-approval-160x45-rich.png` (compact card), `v2-first_reply-160x45-rich.png` (code card, select
     mode), `v3-trouble-160x45-rich.png` (inline hunk), `v4-trouble-160x45-rich-light.png`,
     `v4-approval-120x36-measured-light.png`, `v5-trouble-90x30-measured.png` (changes dialog),
-    `v5q-first_reply-120x36-measured.png` (2 queued), `gallery-*.png` (from the cell gallery).
+    `v5q-first_reply-120x36-measured.png` (2 queued), `v1c-trouble-run2-160x45-rich.png` (card +
+    solo ledger), `gallery-*.png` (from the cell gallery).
+- Real session (release built in this worktree, sandbox `HOME=/private/tmp/p70cli/p71-V/home`,
+  scratch `/private/tmp/p70cli/p71-V/ailogic`, GNU screen 160x45 with `-L`, `TERM=xterm-ghostty`;
+  1 real prompt, deepseek-v4-pro): `/trust`, `/approval auto`, then an edit + code-block prompt.
+  `shots/real-p1.{txt,svg,png}` (vt.py from `raw.log`): the compact run card (`Assistant ● done`,
+  `elapsed 21s · tokens 27k · cost $0.06 · files 1`), the ledger `M lib/ailogic.ex +1 −1`, the code
+  card with its `elixir` chip, no Operations drawer. The edit row shows `+1 −1` but no hunk: the
+  persisted backend does not send it yet (request S-1). The session was quit with Ctrl-C twice
+  (EXIT=0) and the screen closed; `_build/prod` removed afterwards.
+- `/private/tmp/p70cli/p71-V/svg2png.py` now also reads vt.py's `rgb(…)` fills.
