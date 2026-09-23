@@ -1068,7 +1068,7 @@
     {
       "classification": "source",
       "destination": "apps/swarm_code_daemon/lib/swarm_code/domain/tools/run_command.ex",
-      "sha256": "53b06dbc278b3af00000f214cc714d7fb395327289f136642c05c7780fb6d09c",
+      "sha256": "4630261412724ea7af46e03c5cb8f0ac43f6fa5d77dd7cf2857612edb6035c0d",
       "upstream_commit": "6dd8d82ef29f9a6608b942259e1801846bb87ed9",
       "upstream_path": "lib/swarm_code/tools/run_command.ex",
       "upstream_sha256": "ea6d417838742d55bee632755afb0ad5554823e9f18b101a016383a9261841d9"
@@ -1892,7 +1892,7 @@
     {
       "classification": "source",
       "destination": "apps/swarm_code_daemon/lib/swarm_code/domain/hooks.ex",
-      "sha256": "45cbc522deeef0dcd761bf389d5dcfad36b70fbcc17f6312625216d988ae429a",
+      "sha256": "211e12a59e2d315e49bbb6df3bd133c4ceed21b5684121f80947aadee44fb963",
       "upstream_commit": "6dd8d82ef29f9a6608b942259e1801846bb87ed9",
       "upstream_path": "lib/swarm_code/hooks.ex",
       "upstream_sha256": "c0f5033f4b5424f011a43ba016588f236d143282cc7be11940460081ca7e13dc"

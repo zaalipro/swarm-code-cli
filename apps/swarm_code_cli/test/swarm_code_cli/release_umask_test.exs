@@ -43,6 +43,21 @@ defmodule SwarmCodeCLI.ReleaseUmaskTest do
     assert mode(subdir) == 0o700
   end
 
+  # pass71 F6 (review R7): the user's umask is kept for the project commands.
+  test "the release env keeps the umask the user started with", c do
+    env_sh = Path.join(c.dir, "env.sh")
+    File.write!(env_sh, EEx.eval_file(Path.join(@root, "rel/env.sh.eex")))
+
+    {output, 0} =
+      System.cmd(
+        "/bin/sh",
+        ["-c", ~s|umask 022; . "$1"; echo "$SWARM_USER_UMASK $(umask)"|, "sh", env_sh],
+        env: [{"SWARM_USER_UMASK", nil}]
+      )
+
+    assert String.trim(output) == "0022 0077"
+  end
+
   test "the development session launchers narrow the umask too" do
     for script <- ~w(run_saved_session.sh run_plain_session.sh run_live_session.sh) do
       lines = @root |> Path.join("scripts/dev/#{script}") |> File.read!() |> String.split("\n")

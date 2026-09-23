@@ -1,0 +1,13 @@
+# CLI-local change to lib/swarm_code/hooks.ex at 6dd8d82, after the rewrite
+# rules of provenance/sync-rules.json. Recorded by mix swarm_code.provenance.sync.
+--- a/apps/swarm_code_daemon/lib/swarm_code/domain/hooks.ex
++++ b/apps/swarm_code_daemon/lib/swarm_code/domain/hooks.ex
+@@ -238,7 +238,7 @@
+             :binary,
+             :exit_status,
+             :stderr_to_stdout,
+-            args: ["-c", "exec </dev/null\n" <> command],
++            args: ["-c", RunCommand.umask_prefix() <> "exec </dev/null\n" <> command],
+             cd: String.to_charlist(root),
+             env: port_env
+           ])

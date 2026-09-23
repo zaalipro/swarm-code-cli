@@ -238,7 +238,7 @@ defmodule SwarmCode.Domain.Hooks do
             :binary,
             :exit_status,
             :stderr_to_stdout,
-            args: ["-c", "exec </dev/null\n" <> command],
+            args: ["-c", RunCommand.umask_prefix() <> "exec </dev/null\n" <> command],
             cd: String.to_charlist(root),
             env: port_env
           ])

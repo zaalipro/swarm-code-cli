@@ -109,7 +109,10 @@ defmodule SwarmCode.Domain.Tools.RunCommand do
     poll? = pid_arg(args, "poll") != nil
     stop? = pid_arg(args, "stop") != nil
 
-    if poll? and not stop? and blank?(args["command"]), do: :read, else: :execute
+    # CLI pass71 F7 (review R3): `run/3` never runs `command` when polling,
+    # so a `command` sent along with `poll` (models send `"true"`) must not
+    # turn the poll into an approval for a command that does not run.
+    if poll? and not stop?, do: :read, else: :execute
   end
 
   @impl true
@@ -361,6 +364,24 @@ defmodule SwarmCode.Domain.Tools.RunCommand do
   # `command` is concatenated, not `to_string/1`-ed: a provider that streams a
   # non-string `command` still raises here and the model is told the call
   # crashed, exactly as before this task (`failure_test.exs:72`).
+  @doc """
+  The user's own umask for a command the model or a hook runs (CLI pass71 F6).
+
+  The CLI release runs its VM under `umask 077` so the database, logs and
+  backups are private; `env.sh` keeps the umask the user started it with in
+  `SWARM_USER_UMASK`. Without this a `touch` in the project made a 0600 file.
+  """
+  @spec umask_prefix() :: String.t()
+  def umask_prefix do
+    case System.get_env("SWARM_USER_UMASK") do
+      value when is_binary(value) ->
+        if Regex.match?(~r/\A0?[0-7]{3}\z/, value), do: "umask " <> value <> "\n", else: ""
+
+      _ ->
+        ""
+    end
+  end
+
   defp script(command, rc_file) do
     # Spec 51 §7.3 (R18): the port's stdin is a pipe nobody ever writes to, so
     # `cat`, `git commit` without `-m`, `python`, `npm init`, `ssh` and `sudo`
@@ -370,7 +391,8 @@ defmodule SwarmCode.Domain.Tools.RunCommand do
     # the command left behind — once the shell exits, a survivor is re-parented
     # to launchd and nothing links it to this call any more. It is written
     # before the status file, so a status file means the job list is complete.
-    "exec </dev/null\n" <>
+    umask_prefix() <>
+      "exec </dev/null\n" <>
       command <>
       "\n" <>
       ~s(__sc_rc=$?; jobs -p > ") <>
