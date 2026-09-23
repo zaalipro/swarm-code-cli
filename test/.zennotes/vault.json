@@ -1,0 +1,9 @@
+{
+  "primaryNotesLocation": "root",
+  "dailyNotes": {
+    "enabled": true,
+    "directory": "Daily",
+    "titlePattern": "yyyy-MM-dd",
+    "tasksDueOnNoteDate": true
+  }
+}
