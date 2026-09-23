@@ -645,8 +645,8 @@ defmodule SwarmCodeCLI.UI.Paint.ProjectorTest do
     }
 
     # The first turn has no blank row: the header, the code card's language
-    # chip and its line, then the seven prose lines.
-    assert ScrollMetrics.height(state, :main, item.id) == 10
+    # chip, its line and its closing row (pass71 V2), then the seven prose lines.
+    assert ScrollMetrics.height(state, :main, item.id) == 11
     {scene, _, plan} = paint(state)
     main = Enum.find(scene.regions, &(&1.role == :main))
     list = Enum.find(main.blocks, &is_struct(&1, Block.VirtualList))
@@ -655,12 +655,12 @@ defmodule SwarmCodeCLI.UI.Paint.ProjectorTest do
     assert Metrics.height(list, main.rect.width) ==
              {:ok, ScrollMetrics.height(state, :main, item.id)}
 
-    assert {:ok, 10} = Metrics.height(list, main.rect.width)
+    assert {:ok, 11} = Metrics.height(list, main.rect.width)
     chrome = Enum.take_while(main.blocks, &(not is_struct(&1, Block.VirtualList)))
     assert {:ok, offset} = Metrics.height(chrome, main.rect.width)
 
     # The header and the chip take two rows before the content.
-    for {line, index} <- Enum.with_index(~w(a b c d e f g h)) do
+    for {line, index} <- Enum.with_index(["a", "" | ~w(b c d e f g h)]) do
       assert String.trim(
                row(plan, main.rect.y + offset + 2 + index, main.rect.x, main.rect.width)
              ) ==
@@ -670,7 +670,7 @@ defmodule SwarmCodeCLI.UI.Paint.ProjectorTest do
     long = %{item | text: "```\n" <> Enum.map_join(1..250, "\n", &"code #{&1}") <> "\n```"}
     state = put_in(state.read_model.transcript[item.id], long)
     state = put_in(state.scrolls.main.anchor, {item.id, 200, :top})
-    assert ScrollMetrics.height(state, :main, item.id) == 252
+    assert ScrollMetrics.height(state, :main, item.id) == 253
     {scene, _, plan} = paint(state)
     main = Enum.find(scene.regions, &(&1.role == :main))
     assert screen(plan) =~ "code 199"

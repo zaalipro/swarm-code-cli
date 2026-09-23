@@ -1093,11 +1093,25 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
           ascii?: state.capabilities.ascii?
         )
         |> Enum.map(fn
-          %{fill: :code_card, segments: segments} -> spec([pad | segments], {indent, :code_card})
-          %{segments: segments} -> spec([pad | segments], nil)
+          %{fill: :code_card, segments: segments, header: true} ->
+            spec([pad | segments] ++ copy_hint(state), {indent, :code_card})
+
+          %{fill: :code_card, segments: segments} ->
+            spec([pad | segments], {indent, :code_card})
+
+          %{segments: segments} ->
+            spec([pad | segments], nil)
         end)
     end
   end
+
+  # In select mode a code card's header says how to copy it.
+  defp copy_hint(%{focus: "main", layers: []} = state) do
+    _ = state
+    [{:right, [{"y", {:role, :info, [:bold]}}, {" copy ", :faint}]}]
+  end
+
+  defp copy_hint(_state), do: []
 
   # --- facts ------------------------------------------------------------------------------------------
 
@@ -1439,8 +1453,10 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
   def style_of(key, state, background) do
     base = key_style(key, state)
 
-    case background && surface(background, state) do
-      nil -> base
+    # A chip keeps its own surface on a card (pass71 V2: the code card's
+    # language chip).
+    case base.background == nil && background && surface(background, state) do
+      falsy when falsy in [nil, false] -> base
       color -> %{base | background: color}
     end
   end
@@ -1466,7 +1482,10 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
   defp key_style(:quote, state), do: tint(:text_muted, state, [:italic])
   defp key_style(:rule, state), do: tint(:text_ghost, state)
   defp key_style(:table_head, state), do: tint(:text_primary, state, [:bold])
-  defp key_style(:code_lang, state), do: tint(:text_faint, state)
+
+  defp key_style(:code_lang, state),
+    do: %{tint(:text_muted, state) | background: surface(:chip, state)}
+
   defp key_style(:code_text, state), do: tint(:text_primary, state)
   defp key_style(:user_rail, state), do: tint(:accent, state)
   defp key_style({:syntax, kind}, state), do: tint(Map.get(@syntax, kind, :text_primary), state)
