@@ -98,7 +98,7 @@ defmodule SwarmCodeCLI.UI.DataSource.LibraryServiceTest do
       scope: scope,
       generation: 2,
       origin: {:feature, :settings},
-      deadline: System.monotonic_time(:millisecond) + 5_000,
+      deadline: System.system_time(:millisecond) + 5_000,
       expected_response: :library_snapshot
     }
 

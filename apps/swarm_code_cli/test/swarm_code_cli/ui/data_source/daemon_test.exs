@@ -187,9 +187,9 @@ defmodule SwarmCodeCLI.UI.DataSource.DaemonTest do
              DataSource.command(client, command_request("new", "fix"))
   end
 
-  test "expired signed monotonic deadline refuses without a wire request" do
+  test "an expired wall-clock deadline refuses without a wire request" do
     {client, server} = connected!()
-    request = %{query_request("expired") | deadline: System.monotonic_time(:millisecond) - 1}
+    request = %{query_request("expired") | deadline: System.system_time(:millisecond) - 1}
     assert {:error, %AdmissionError{code: :deadline_expired}} = DataSource.query(client, request)
     refute_receive {:request, ^server, _}, 30
     assert :ok = DataSource.close(client)
@@ -265,7 +265,7 @@ defmodule SwarmCodeCLI.UI.DataSource.DaemonTest do
 
     request = %{
       command_request("timed-out", "hold")
-      | deadline: System.monotonic_time(:millisecond) + 80
+      | deadline: System.system_time(:millisecond) + 80
     }
 
     assert :ok = DataSource.command(client, request)
@@ -282,8 +282,83 @@ defmodule SwarmCodeCLI.UI.DataSource.DaemonTest do
     assert {:error, %AdmissionError{code: :request_conflict}} =
              DataSource.command(client, %{
                request
-               | deadline: System.monotonic_time(:millisecond) + 1_000
+               | deadline: System.system_time(:millisecond) + 1_000
              })
+
+    assert :ok = DataSource.close(client)
+  end
+
+  # pass71 S1: producers stamp deadlines with the wall clock (`state.now`); the
+  # source used to compare them with the monotonic clock, so no request ever
+  # expired. One injected clock drives both sides here.
+  test "a deadline fires on the monotonic clock and a late reply is ignored" do
+    clock = start_supervised!({Agent, fn -> %{system: 1_790_000_000_000, monotonic: -5_000} end})
+    tick = fn kind -> Agent.get(clock, &Map.fetch!(&1, kind)) end
+    advance = fn kind, ms -> Agent.update(clock, &Map.update!(&1, kind, fn v -> v + ms end)) end
+
+    path = socket_path!()
+    {listener, server} = socket_server(path, self())
+    on_exit(fn -> close_socket(listener, path) end)
+
+    {:ok, client} =
+      SwarmCodeCLI.UI.DataSource.Daemon.start_link(
+        socket_path: path,
+        nonce: @nonce,
+        source_epoch: @epoch,
+        timeout: 1_000,
+        clock: tick
+      )
+
+    assert {:ok, "bind-1"} = DataSource.bind_owner(client, self(), "bind-1")
+
+    request = %{command_request("late-1", "late") | deadline: tick.(:system) + 30_000}
+    assert :ok = DataSource.command(client, request)
+
+    assert_receive {:late, ^server, socket, %Message{body: %{"timeout_ms" => 30_000}} = sent},
+                   1_000
+
+    # A wall-clock step alone expires nothing.
+    advance.(:system, 3_600_000)
+    refute_receive {:swarm_code_ui_data, _, _, _}, 250
+
+    advance.(:monotonic, 30_001)
+
+    assert_receive {:swarm_code_ui_data, @epoch, receipt,
+                    %Delivery{
+                      body: %DTO.Outcome{
+                        request_id: "late-1",
+                        status: :outcome_unknown,
+                        error: %AdmissionError{code: :deadline_expired}
+                      }
+                    }},
+                   1_000
+
+    assert :ok = DataSource.consume(client, receipt, :applied)
+
+    body = %{
+      "status" => "accepted",
+      "request_id" => sent.request_id,
+      "identifiers" => [@connection],
+      "interaction" => nil,
+      "error" => nil,
+      "corrective_action" => "none"
+    }
+
+    send_frame(socket, %{
+      sent
+      | type: :response,
+        body: %{"op" => "result", "response_kind" => "outcome", "value" => body}
+    })
+
+    refute_receive {:swarm_code_ui_data, _, _, _}, 250
+
+    # The connection survived the late reply.
+    next = %{command_request("after-late", "fix") | deadline: tick.(:system) + 30_000}
+    assert :ok = DataSource.command(client, next)
+
+    assert_receive {:swarm_code_ui_data, @epoch, _,
+                    %Delivery{body: %DTO.Outcome{request_id: "after-late", status: :accepted}}},
+                   1_000
 
     assert :ok = DataSource.close(client)
   end
@@ -485,7 +560,7 @@ defmodule SwarmCodeCLI.UI.DataSource.DaemonTest do
       scope: watch.scope,
       generation: 0,
       origin: {:watch, "shell-1"},
-      deadline: System.monotonic_time(:millisecond) + 5_000,
+      deadline: System.system_time(:millisecond) + 5_000,
       expected_response: :watch_snapshot
     }
 
@@ -515,7 +590,7 @@ defmodule SwarmCodeCLI.UI.DataSource.DaemonTest do
       scope: @scope,
       generation: 0,
       origin: {:query, :transcript},
-      deadline: System.monotonic_time(:millisecond) + 2_000,
+      deadline: System.system_time(:millisecond) + 2_000,
       expected_response: :transcript_window
     }
 
@@ -666,6 +741,9 @@ defmodule SwarmCodeCLI.UI.DataSource.DaemonTest do
               cond do
                 message.body["text"] == "hold" ->
                   :ok
+
+                message.body["text"] == "late" ->
+                  send(test, {:late, self(), socket, message})
 
                 message.body["text"] == "bad-error" ->
                   send_frame(socket, %{
