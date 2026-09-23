@@ -133,6 +133,45 @@ defmodule SwarmCode.Daemon.Service.SessionConfigurationTest do
     assert SessionConfiguration.overlay(fresh) == fresh
   end
 
+  # pass70 F: the dispatcher overlays only at the engine boundary, so an
+  # explicit /model equal to the override is still written, and it ends the
+  # override.
+  test "a /model choice is persisted and ends the --model override", c do
+    a = provider!(%{name: "Alpha", models: ["a-model"], default_model: "a-model"})
+
+    b =
+      provider!(%{
+        name: "Beta",
+        base_url: "https://beta.invalid/v1",
+        models: ["b-model"],
+        default_model: "b-model"
+      })
+
+    {:ok, conversation} =
+      Conversations.update(c.session.conversation, %{
+        chat_provider_id: a.id,
+        chat_model: "a-model"
+      })
+
+    session = %{c.session | conversation: conversation}
+
+    assert {:ok, _} =
+             SessionConfiguration.prepare(session, %{"SWARM_MODEL_OVERRIDE" => "beta/b-model"})
+
+    assert SessionConfiguration.override() == %{provider_id: b.id, model: "b-model"}
+
+    assert {:ok, _} =
+             SwarmCode.Daemon.Service.CommandDispatcher.dispatch(
+               conversation.id,
+               "/model #{b.id}|b-model"
+             )
+
+    assert SessionConfiguration.override() == nil
+    fresh = Conversations.get!(conversation.id)
+    assert fresh.chat_provider_id == b.id
+    assert fresh.chat_model == "b-model"
+  end
+
   test "first run: no usable provider, SWARM_* create exactly one row and say so", c do
     before_conversation = Repo.query!("SELECT * FROM conversations").rows
 

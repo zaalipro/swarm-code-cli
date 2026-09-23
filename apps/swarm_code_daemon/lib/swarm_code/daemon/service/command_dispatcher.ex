@@ -5,6 +5,7 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
   results ask the presenter to act; they do not claim a selection was performed.
   """
   alias SwarmCode.Commands
+  alias SwarmCode.Daemon.Service.SessionConfiguration
 
   alias SwarmCode.Domain.{
     Agents,
@@ -122,9 +123,12 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
     with {:ok, conv} <- custom_mode(conv, cmd.mode) do
       result =
         if cmd.action == :start_swarm,
-          do: Engine.start_swarm(conv, cmd.prompt),
+          do: Engine.start_swarm(SessionConfiguration.overlay(conv), cmd.prompt),
           else:
-            Engine.start_chat_turn(conv, cmd.prompt, attachments(opts),
+            Engine.start_chat_turn(
+              SessionConfiguration.overlay(conv),
+              cmd.prompt,
+              attachments(opts),
               research_ids: research_ids(opts)
             )
 
@@ -133,7 +137,7 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
   end
 
   defp execute(conv, %{action: :start_swarm} = cmd, _opts),
-    do: started(conv, cmd.name, Engine.start_swarm(conv, cmd.task))
+    do: started(conv, cmd.name, Engine.start_swarm(SessionConfiguration.overlay(conv), cmd.task))
 
   defp execute(conv, %{action: :pursue_goal} = cmd, _opts) do
     mode = if cmd.execution == :swarm, do: "swarm", else: "chat"
@@ -151,8 +155,8 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
 
       result =
         if mode == "swarm",
-          do: Engine.start_swarm(conv, goal.text, args),
-          else: Engine.start_goal_turn(conv, goal.text, args)
+          do: Engine.start_swarm(SessionConfiguration.overlay(conv), goal.text, args),
+          else: Engine.start_goal_turn(SessionConfiguration.overlay(conv), goal.text, args)
 
       case started(conv, cmd.name, result) do
         {:ok, result} -> {:ok, Map.put(result, :goal_id, goal.id)}
@@ -223,13 +227,17 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
 
         fields = %{id_field => provider_id, model_field => model}
 
-        with {:ok, _} <- Conversations.update(conv, fields),
-             do:
-               result(conv, cmd.name, :updated, %{
-                 fields: fields,
-                 field: model_field,
-                 value: model
-               })
+        # An explicit `/model` wins over the launcher's `--model` from here on
+        # (the override lives only in memory, pass70 D3).
+        with {:ok, _} <- Conversations.update(conv, fields) do
+          SessionConfiguration.clear_override()
+
+          result(conv, cmd.name, :updated, %{
+            fields: fields,
+            field: model_field,
+            value: model
+          })
+        end
 
       :error ->
         {:error, :unknown_model}
@@ -241,7 +249,7 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
       started(
         conv,
         cmd.name,
-        Engine.start_chat_turn(conv, cmd.task, attachments(opts),
+        Engine.start_chat_turn(SessionConfiguration.overlay(conv), cmd.task, attachments(opts),
           research_ids: research_ids(opts)
         )
       )
@@ -253,7 +261,10 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
       started(
         conv,
         cmd.name,
-        Engine.start_chat_turn(conv, "/create-workflow " <> cmd.prompt, attachments(opts),
+        Engine.start_chat_turn(
+          SessionConfiguration.overlay(conv),
+          "/create-workflow " <> cmd.prompt,
+          attachments(opts),
           prompt: cmd.prompt,
           command: :create_workflow,
           research_ids: research_ids(opts)
@@ -267,13 +278,17 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
       started(
         conv,
         cmd.name,
-        Engine.start_chat_turn(conv, @review_prompt, attachments(opts),
+        Engine.start_chat_turn(
+          SessionConfiguration.overlay(conv),
+          @review_prompt,
+          attachments(opts),
           research_ids: research_ids(opts)
         )
       )
 
   defp execute(conv, %{action: :compact} = cmd, _),
-    do: started(conv, cmd.name, Engine.start_compact(conv, cmd.focus))
+    do:
+      started(conv, cmd.name, Engine.start_compact(SessionConfiguration.overlay(conv), cmd.focus))
 
   defp execute(conv, %{action: :stop_all} = cmd, _) do
     active = Engine.running_runs(conv.id)

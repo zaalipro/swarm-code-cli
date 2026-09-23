@@ -18,7 +18,12 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   # Operations that read: never ledgered, answered with a typed error.
   @reads [:query, :detail, :feature_query, :conversation_list]
   @terminal [:completed, :failed, :cancelled, :interrupted]
-  alias SwarmCode.Daemon.Service.{CommandDispatcher, PersistedProjection, CommandLedger}
+  alias SwarmCode.Daemon.Service.{
+    CommandDispatcher,
+    CommandLedger,
+    PersistedProjection,
+    SessionConfiguration
+  }
 
   @errors %{
     invalid_request: "invalid data source request",
@@ -82,6 +87,9 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         # new wait elsewhere), the providers' last rate-limit windows, and the
         # MCP servers that failed (so their recovery is told too).
         waiting_seen: MapSet.new(Questions.list(), & &1.conversation_id),
+        # pass70 D3: the first-run onboarding sentence, told once as a toast
+        # when the shell watch is ready.
+        first_run_notice: SessionConfiguration.notice(),
         rate_limits: %{},
         mcp_failed: MapSet.new(),
         # pass70 C6: an agent's model is a virtual node field the RunServer
@@ -152,8 +160,12 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     key = {connection, ref}
 
     case state.watches[key] do
-      nil -> {:noreply, state}
-      entry -> {:noreply, flush(put_in(state.watches[key], %{entry | ready: true}), key)}
+      nil ->
+        {:noreply, state}
+
+      entry ->
+        state = flush(put_in(state.watches[key], %{entry | ready: true}), key)
+        {:noreply, first_run_toast(state, entry.slot)}
     end
   end
 
@@ -382,7 +394,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
           )
         else
           Engine.start_chat_turn(
-            Conversations.get!(state.opts[:conversation_id]),
+            SessionConfiguration.overlay(Conversations.get!(state.opts[:conversation_id])),
             text,
             attachments,
             research_ids: state.research_ids
@@ -816,6 +828,11 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   defp mode_words("read_only"), do: "read-only"
   defp mode_words("full_access"), do: "full access"
   defp mode_words(mode), do: to_string(mode)
+
+  defp first_run_toast(%{first_run_notice: text} = state, "shell") when is_binary(text),
+    do: toast(%{state | first_run_notice: nil}, "info", "First run", text, nil)
+
+  defp first_run_toast(state, _slot), do: state
 
   # pass70 C1: a transient notice for the shell watch.
   defp toast(state, level, title, text, run_id, conversation_id \\ nil) do
@@ -2428,6 +2445,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   defp workspace_mode(_), do: "build"
 
   defp workspace_metadata(conversation) do
+    # The status line names the model this session runs (a `--model` override).
+    conversation = SessionConfiguration.overlay(conversation)
     chat = SwarmCode.Domain.Providers.effective_model(conversation, :chat)
     totals = PersistedProjection.conversation_totals(conversation.id)
 
