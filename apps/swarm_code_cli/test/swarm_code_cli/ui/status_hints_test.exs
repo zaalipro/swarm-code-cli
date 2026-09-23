@@ -70,6 +70,16 @@ defmodule SwarmCodeCLI.UI.StatusHintsTest do
       end
     end
 
+    test "Esc interrupt is offered only while a turn streams (pass70 Q7)" do
+      state = fixture({170, 40}, "composer")
+      assert paint_last_row(state) =~ "Esc interrupt"
+
+      runs = Map.new(state.read_model.runs, fn {id, run} -> {id, %{run | state: :done}} end)
+      idle = put_in(state.read_model.runs, runs)
+      refute paint_last_row(idle) =~ "interrupt"
+      assert paint_last_row(idle) =~ "send"
+    end
+
     test "the strongest hints come first: Send leads the composer" do
       composer = paint_last_row(fixture({170, 40}, "composer"))
       assert composer =~ "send"

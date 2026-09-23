@@ -533,6 +533,8 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
   defp hints(state, context, budget) do
     context
     |> Bindings.hinted()
+    # pass70 Q7: "Esc interrupt" only while there is a turn to interrupt.
+    |> Enum.reject(&(&1.id == :interrupt_turn and SwarmCodeCLI.UI.Keymap.live_turn(state) == nil))
     |> Enum.flat_map(fn binding ->
       case Bindings.key_in_context(binding, context) do
         nil -> []
