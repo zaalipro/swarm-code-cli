@@ -266,11 +266,12 @@ defmodule SwarmCodeCLI.UI.ConversationsTest do
       {state, _} = Reducer.update(state, {:open_layer, layer})
       rows = ModelPicker.rows(state, layer)
 
+      # The model in use's provider is listed first (pass70 Q5).
       assert Enum.map(rows, &{&1.provider, &1.model, &1.first_in_group?, &1.current?}) == [
-               {"Alpha", "a-large", true, false},
-               {"Alpha", "shared", false, false},
                {"Beta", "shared", true, true},
-               {"Beta", "b-mini", false, false}
+               {"Beta", "b-mini", false, false},
+               {"Alpha", "a-large", true, false},
+               {"Alpha", "shared", false, false}
              ]
     end
 

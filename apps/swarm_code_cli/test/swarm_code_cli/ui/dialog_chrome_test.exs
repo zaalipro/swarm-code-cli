@@ -190,7 +190,7 @@ defmodule SwarmCodeCLI.UI.DialogChromeTest do
         assert full =~ "Option 1"
         assert full =~ "Option 2"
         assert full =~ "Cancel"
-        assert full =~ "item 1 of"
+        assert full =~ ~r"1 of \d · Enter chooses"
 
         assert_status_bar_when_visible(plan, scene)
       end

@@ -90,7 +90,7 @@ defmodule SwarmCodeCLI.UI.Projector.PickersTest do
     end
 
     test "entries that are not actions say what they are" do
-      state = scene(:first_reply, {120, 36}) |> palette("#")
+      state = scene(:first_reply, {120, 36}) |> palette("Run:")
       {rows, _scene, _table, _plan} = screen(state)
       # E3 labels run entries "Run: <title>"; the kind sits right-aligned.
       assert Enum.any?(rows, &(&1 =~ ~r/Run: .* run │/)), Enum.join(rows, "\n")
@@ -115,7 +115,7 @@ defmodule SwarmCodeCLI.UI.Projector.PickersTest do
 
       assert Enum.at(rows, llmotions + 1) =~ ~r/✓ deepseek-v4\.1-flash +in use │/
       assert Enum.at(rows, anthropic + 1) =~ "claude-opus-5"
-      assert Enum.any?(rows, &(&1 =~ "item 1 of 3"))
+      assert Enum.any?(rows, &(&1 =~ "1 of 3 · Enter chooses · Esc closes"))
       assert scene.overlay.rect.height <= 10
     end
 

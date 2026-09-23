@@ -95,14 +95,15 @@ defmodule SwarmCodeCLI.UI.Switcher do
   # The others come first in the service's order (newest first), then the
   # one on screen, then "New conversation": Enter after /resume opens the
   # most recent other conversation.
-  defp conversation_entries(%{conversations: %{items: items}}) when is_list(items) do
+  defp conversation_entries(%{conversations: %{items: items}} = state) when is_list(items) do
     {current, others} = Enum.split_with(items, &(&1.current == true))
+    now = Map.get(state, :now)
 
     (others ++ current)
     |> Enum.with_index(-1_000)
     |> Enum.map(fn {item, order} ->
       title = conversation_title(item)
-      detail = conversation_detail(item)
+      detail = conversation_detail(item, now)
 
       %{
         entry(title <> " · " <> detail, :conversation, {:local, {:open_conversation, item.id}})
@@ -125,7 +126,7 @@ defmodule SwarmCodeCLI.UI.Switcher do
 
   defp conversation_title(_item), do: "Untitled conversation"
 
-  defp conversation_detail(item) do
+  defp conversation_detail(item, now) do
     runs =
       case item.run_count do
         1 -> "1 run"
@@ -136,11 +137,27 @@ defmodule SwarmCodeCLI.UI.Switcher do
       runs,
       if(item.live, do: "live"),
       if(is_integer(item.waiting) and item.waiting > 0, do: "#{item.waiting} waiting"),
-      if(item.current, do: "open")
+      if(item.current, do: "open", else: ago(Map.get(item, :updated_at), now))
     ]
     |> Enum.reject(&is_nil/1)
     |> Enum.join(" · ")
   end
+
+  # pass70 Q10: when a conversation last moved, as people say it, so the
+  # resume list reads like a list of recent work rather than of run counts.
+  @doc false
+  def ago(at, now) when is_integer(at) and at > 0 and is_integer(now) and now >= at do
+    minutes = div(now - at, 60_000)
+
+    cond do
+      minutes < 1 -> "just now"
+      minutes < 60 -> "#{minutes} min ago"
+      minutes < 48 * 60 -> "#{div(minutes, 60)} h ago"
+      true -> "#{div(minutes, 24 * 60)} d ago"
+    end
+  end
+
+  def ago(_at, _now), do: nil
 
   defp run_label(%{title: title}) when is_binary(title) and title != "",
     do: "Run: " <> String.trim(title)
@@ -366,7 +383,9 @@ defmodule SwarmCodeCLI.UI.Switcher do
 
   defp prefix("/" <> query), do: {[:command, :workflow], query}
   defp prefix("@" <> query), do: {[:project, :repository], query}
-  defp prefix("#" <> query), do: {[:conversation, :research, :run], query}
+  # `#` is the resume list: conversations and researches. Runs have their own
+  # switcher (Ctrl-R) and only buried the conversations (pass70 Q10).
+  defp prefix("#" <> query), do: {[:conversation, :research], query}
   defp prefix(">" <> query), do: {[:action], query}
   defp prefix(query), do: {@kinds, query}
 

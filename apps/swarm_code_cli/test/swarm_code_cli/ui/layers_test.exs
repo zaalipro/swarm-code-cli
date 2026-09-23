@@ -19,7 +19,8 @@ defmodule SwarmCodeCLI.UI.LayersTest do
     ]
 
     query = fn text -> elem(Editor.apply(Editor.new(), {:insert, text}), 1) end
-    assert Enum.map(Switcher.rank(query.("#review"), entries), & &1.id) == ["r"]
+    # `#` lists conversations and researches; runs are Ctrl-R's (pass70 Q10).
+    assert Switcher.rank(query.("#review"), entries) == []
     assert Enum.map(Switcher.rank(query.(">review"), entries), & &1.id) == ["a"]
     assert Switcher.rank(query.("@review"), entries) == []
     assert Switcher.repair_selection("r", 0, entries) == "r"

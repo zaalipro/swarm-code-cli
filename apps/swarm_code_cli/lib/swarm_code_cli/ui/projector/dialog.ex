@@ -129,9 +129,15 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
     overflow =
       Support.text(
         case layer do
-          {:approval, _} -> "PgUp/PgDn: scroll arguments"
-          :help -> "PgUp/PgDn, Ctrl-D/U scroll · #{length(options)} lines"
-          _ -> "item #{min(ordinal + 1, length(items))} of #{length(items)}"
+          {:approval, _} ->
+            "PgUp/PgDn: scroll arguments"
+
+          :help ->
+            "PgUp/PgDn, Ctrl-D/U scroll · #{length(options)} lines"
+
+          # pass70 Q10: where the choice is and how to make it, not "item 1 of 8".
+          _ ->
+            "#{min(ordinal + 1, length(items))} of #{length(items)} · Enter chooses · Esc closes"
         end,
         state,
         rect.width - 2
@@ -976,11 +982,19 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
       end)
 
     options = if options == [], do: [{"empty", SafeText.chrome(:no_results), nil}], else: options
-    title = Density.safe("Search: " <> query, state, rect.width - 2)
+    title = Density.safe(switcher_title(query), state, rect.width - 2)
 
     {title, options, [control("cancel", SafeText.chrome(:cancel), {:local, :close_top_layer})],
      if(state.focus == "query", do: "query", else: focus(state, options)), decor}
   end
+
+  # pass70 Q10: the palette names what its prefix lists instead of echoing
+  # the prefix ("Search: #" after /resume).
+  defp switcher_title("#" <> query), do: "Conversations: " <> query
+  defp switcher_title("/" <> query), do: "Commands: " <> query
+  defp switcher_title(">" <> query), do: "Actions: " <> query
+  defp switcher_title("@" <> query), do: "Projects: " <> query
+  defp switcher_title(query), do: "Search: " <> query
 
   # One row per model the daemon lists, the one in use marked, the provider
   # after the model so a filter on either reads the same. A snapshot with no

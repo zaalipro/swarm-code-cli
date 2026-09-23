@@ -418,7 +418,7 @@ defmodule SwarmCodeCLI.UI.ProjectorTest do
     assert Scene.validate(scene) == :ok
     assert scene.overlay.focused_control_id == "query"
     assert {:intent, {:run_control, :stop, "fixture-run"}} in Map.values(actions)
-    assert Enum.join(texts(scene.overlay), " ") =~ ">Stop"
+    assert Enum.join(texts(scene.overlay), " ") =~ "Actions: Stop"
     {_, actions} = Projector.project(%{state | size: %Size{columns: 50, rows: 14}})
     refute Enum.any?(Map.values(actions), &match?({:intent, _}, &1))
   end

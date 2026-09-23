@@ -297,7 +297,7 @@ defmodule SwarmCodeCLI.UI.ModelPickerTest do
       assert full =~ "  shared-model  Alpha"
       assert full =~ "  shared-model  Beta"
       assert full =~ "  beta-mini  Beta"
-      assert full =~ "item 1 of 4"
+      assert full =~ "1 of 4 · Enter chooses · Esc closes"
 
       assert Enum.any?(Map.values(table), fn target ->
                target ==
