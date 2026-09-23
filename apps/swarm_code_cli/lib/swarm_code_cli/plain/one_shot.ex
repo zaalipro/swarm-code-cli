@@ -454,8 +454,7 @@ defmodule SwarmCodeCLI.Plain.OneShot do
 
         say(
           state,
-          "denied #{what.label}: nobody is here to approve it. " <>
-            "/approval auto or full allows more without asking."
+          "denied #{what.label}: nobody is here to approve it." <> denial_hint(mode(state))
         )
       else
         stop_run(state, item.run_id, "#{what.label} could not be denied, so the run")
@@ -466,6 +465,24 @@ defmodule SwarmCodeCLI.Plain.OneShot do
   end
 
   defp answer(state, _), do: state
+
+  @doc """
+  What the denial line suggests, from the project's approval mode (pass70 Q8):
+  a project already on `auto` was told to switch to "auto or full".
+  """
+  @spec denial_hint(term()) :: String.t()
+  def denial_hint(mode) when mode in [:auto, "auto"],
+    do: " /approval full runs every command without asking."
+
+  def denial_hint(mode) when mode in [:full_access, "full_access"], do: ""
+  def denial_hint(_mode), do: " /approval auto or full allows more without asking."
+
+  defp mode(state) do
+    case Map.get(state.ui.read_model.snapshots, :workspace) do
+      %{} = workspace -> Map.get(workspace, :approval_mode)
+      _ -> nil
+    end
+  end
 
   defp describe(%DTO.PendingInteraction{approval: %DTO.Approval{} = approval}) do
     subject = approval.command || argument(approval.arguments_preview)

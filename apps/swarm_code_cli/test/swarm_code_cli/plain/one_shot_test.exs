@@ -303,6 +303,13 @@ defmodule SwarmCodeCLI.Plain.OneShotTest do
     assert text(context.output) == "first part the rest\n"
   end
 
+  test "the denial line suggests the next approval mode, not the one in force (pass70 Q8)" do
+    assert OneShot.denial_hint(:auto) == " /approval full runs every command without asking."
+    assert OneShot.denial_hint(:read_only) =~ "/approval auto or full"
+    assert OneShot.denial_hint(nil) =~ "/approval auto or full"
+    assert OneShot.denial_hint(:full_access) == ""
+  end
+
   test "an approval nobody can give is denied and said; the run goes on", context do
     approval = %DTO.PendingInteraction{
       id: @interaction,
