@@ -14,6 +14,13 @@ defmodule SwarmCodeCLI.UI.KeymapTest do
 
   defp main, do: %{state() | focus: "main"}
 
+  defp typed(state, text) do
+    key = {"c", :main}
+    draft = SwarmCodeCLI.UI.Drafts.fetch(state.drafts, key)
+    {:ok, editor} = SwarmCodeCLI.UI.Editor.apply(draft.editor, {:insert, text})
+    %{state | drafts: SwarmCodeCLI.UI.Drafts.put(state.drafts, %{draft | editor: editor})}
+  end
+
   defp letter(text, mods \\ []), do: Input.text_fragment(:press, text, mods)
 
   defp with_runs(state, ids) do
@@ -81,7 +88,7 @@ defmodule SwarmCodeCLI.UI.KeymapTest do
       end
     end
 
-    test "steps out one level: filter, then layer, then composer" do
+    test "steps out one level: filter, then layer, then select mode; never leaves the composer" do
       dashboard = %{main() | layers: [{:runs_dashboard, "d"}]}
       assert Keymap.resolve(Input.key(:escape), dashboard, %{}) == {:ok, :close_top_layer}
 
@@ -91,8 +98,10 @@ defmodule SwarmCodeCLI.UI.KeymapTest do
       assert Keymap.resolve(Input.key(:escape), %{main() | layers: [:help, :help]}, %{}) ==
                {:ok, :close_top_layer}
 
-      assert Keymap.resolve(Input.key(:escape), state(), %{}) == {:ok, {:focus_region, "main"}}
-      assert Keymap.resolve(Input.key(:escape), main(), %{}) == :ignore
+      # In the composer Esc stops a streaming turn (the reducer decides whether
+      # one streams); in select mode it hands back to the composer.
+      assert Keymap.resolve(Input.key(:escape), state(), %{}) == {:ok, {:interrupt, :escape}}
+      assert Keymap.resolve(Input.key(:escape), main(), %{}) == {:ok, {:focus_region, "composer"}}
     end
 
     test "Alt-Left and Backspace carry :back, and only in main or the inspector" do
@@ -155,14 +164,26 @@ defmodule SwarmCodeCLI.UI.KeymapTest do
   # ---------------------------------------------------------------- the layers
 
   describe "layer chords" do
-    test "Ctrl-P, Ctrl-G and Ctrl-R each toggle their own layer shut" do
+    test "Ctrl-G and Ctrl-R toggle their own layer; Ctrl-P only ever opens (rel F6)" do
       for {mods_key, kind} <- [{"p", :switcher}, {"g", :runs_dashboard}, {"r", :run_palette}] do
         assert {:ok, {:open_layer, {^kind, _}}} =
                  Keymap.resolve(letter(mods_key, [:control]), main(), %{})
 
+        assert {:ok, {:open_layer, {^kind, _}}} =
+                 Keymap.resolve(letter(mods_key, [:control]), state(), %{})
+      end
+
+      for {mods_key, kind} <- [{"g", :runs_dashboard}, {"r", :run_palette}] do
         open = %{main() | layers: [{kind, "layer"}]}
         assert Keymap.resolve(letter(mods_key, [:control]), open, %{}) == {:ok, :close_top_layer}
       end
+
+      # Pressed again, the palette keeps its query focused, so what is typed
+      # next lands in the palette and never in a prompt behind it.
+      palette = %{main() | layers: [{:switcher, "layer"}], focus: "row-1"}
+
+      assert Keymap.resolve(letter("p", [:control]), palette, %{}) ==
+               {:ok, {:focus_region, "query"}}
     end
 
     test "Ctrl chords reach through a modal's text field; bare letters do not" do
@@ -178,12 +199,11 @@ defmodule SwarmCodeCLI.UI.KeymapTest do
       assert Keymap.resolve(letter("?"), main(), %{}) == {:ok, {:open_layer, :help}}
     end
 
-    test "Ctrl-C detaches outside an editor and warns inside one" do
-      assert Keymap.resolve(letter("c", [:control]), state(), %{}) ==
-               {:ok, :editor_detach_notice}
-
-      assert Keymap.resolve(letter("c", [:control]), main(), %{}) ==
-               {:ok, {:quit_requested, :detach}}
+    test "Ctrl-C is the interrupt ladder everywhere; the reducer decides the rung" do
+      for current <- [state(), main(), %{main() | layers: [:help]}] do
+        assert Keymap.resolve(letter("c", [:control]), current, %{}) ==
+                 {:ok, {:interrupt, :ctrl_c}}
+      end
     end
   end
 
@@ -419,6 +439,7 @@ defmodule SwarmCodeCLI.UI.KeymapTest do
       assert {:ok, {:invoke, ^agent, _}} =
                Keymap.resolve(Input.key(:enter), %{modal | focus: "confirm"}, table)
 
+      # A held "x" neither stops again nor falls through to typing.
       assert :ignore = Keymap.resolve(Input.text_fragment(:repeat, "x", []), state, table)
     end
 
@@ -505,10 +526,19 @@ defmodule SwarmCodeCLI.UI.KeymapTest do
       assert Keymap.resolve(letter("w", [:control]), state, %{}) ==
                {:ok, {:editor, {"c", :main}, :delete_word_backward}}
 
-      # Ctrl-U is the clear-draft idiom. The resolver validates the operation
-      # before returning it, so this asserts the vocabulary as well as the key.
-      assert Keymap.resolve(letter("u", [:control]), state, %{}) ==
+      # Ctrl-U is the clear-draft idiom on a draft. The resolver validates the
+      # operation before returning it, so this asserts the vocabulary as well
+      # as the key. On an empty draft it and Ctrl-D scroll the transcript.
+      typed = typed(state, "hello")
+
+      assert Keymap.resolve(letter("u", [:control]), typed, %{}) ==
                {:ok, {:editor, {"c", :main}, {:delete, :line_start}}}
+
+      assert Keymap.resolve(letter("u", [:control]), state, %{}) ==
+               {:ok, {:scroll, "main", {:half_page, -1}}}
+
+      assert Keymap.resolve(letter("d", [:control]), state, %{}) ==
+               {:ok, {:scroll, "main", {:half_page, 1}}}
     end
 
     test "Tab from the conversation transcript goes directly to the composer" do
@@ -572,9 +602,11 @@ defmodule SwarmCodeCLI.UI.KeymapTest do
 
   # ----------------------------------------------------------------- unbound
 
-  test "/ is unbound in main: its layer filtered nothing it could show" do
-    assert Keymap.resolve(letter("/"), main(), %{}) == :ignore
-    assert Keymap.resolve(letter("/"), %{main() | focus: "inspector"}, %{}) == :ignore
+  test "/ in select mode goes back to the composer and starts a command there" do
+    assert Keymap.resolve(letter("/"), main(), %{}) == {:ok, {:compose, "/"}}
+
+    assert Keymap.resolve(letter("/"), %{main() | focus: "inspector"}, %{}) ==
+             {:ok, {:compose, "/"}}
 
     # It is still typing wherever typing is what a key means.
     assert {:ok, {:editor, _, {:insert, "/"}}} = Keymap.resolve(letter("/"), state(), %{})

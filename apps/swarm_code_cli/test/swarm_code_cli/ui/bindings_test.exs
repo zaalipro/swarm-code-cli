@@ -28,7 +28,9 @@ defmodule SwarmCodeCLI.UI.BindingsTest do
 
   @dialog_layers %{
     approve: {:approval, "approval-1"},
+    approve_run: {:approval, "approval-1"},
     deny: {:approval, "approval-1"},
+    deny_stop: {:approval, "approval-1"},
     always_allow: {:approval, "approval-1"},
     confirm_yes: {:confirm_intent, {:run_control, :stop, "run-1"}},
     confirm_no: {:confirm_intent, {:run_control, :stop, "run-1"}},
@@ -127,7 +129,6 @@ defmodule SwarmCodeCLI.UI.BindingsTest do
       # Every one of these is a decision, not an accident:
       #   "q" types in a picker that has a query box;
       #   Shift-Enter needs a terminal that reports it, which none here does;
-      #   Esc in main with nothing open has nothing to step out of;
       #   Enter in the research question box is not a control;
       #   the resize chords need the inspector focused, the only dock left;
       #   "3".."9" with only two options on the question;
@@ -140,8 +141,6 @@ defmodule SwarmCodeCLI.UI.BindingsTest do
                    {:close_or_quit, :picker},
                    {:composer_newline, :composer},
                    {:composer_newline, :field},
-                   {:escape, :main},
-                   {:escape, :inspector},
                    {:question_option, :dialog},
                    {:vim_delete_char, :composer_normal},
                    {:vim_delete_char_back, :composer_normal}
@@ -350,14 +349,22 @@ defmodule SwarmCodeCLI.UI.BindingsTest do
     state = Fixtures.representative(:swarm, @size, %Capabilities{size: @size})
 
     interactions = %{
-      "approval-1" => %DTO.PendingInteraction{
-        id: "approval-1",
-        run_id: "fixture-run",
-        node_id: "node-a",
-        expected_revision: 3,
-        allowed_actions: [:approve, :deny, :always_allow, :resolve_approval],
-        approval: %DTO.Approval{tool: "edit", permission: :write, arguments_preview: "a.ex"}
-      },
+      # `allowed_decisions` is the wire field of pass 70 (owner C); put
+      # rather than built so this compiles before and after it lands.
+      "approval-1" =>
+        Map.put(
+          %DTO.PendingInteraction{
+            id: "approval-1",
+            kind: :approval,
+            run_id: "fixture-run",
+            node_id: "node-a",
+            expected_revision: 3,
+            allowed_actions: [:approve, :deny, :always_allow],
+            approval: %DTO.Approval{tool: "edit", permission: :write, arguments_preview: "a.ex"}
+          },
+          :allowed_decisions,
+          [:approve, :approve_run, :always_prefix, :deny, :deny_stop]
+        ),
       "question-1" => %DTO.PendingInteraction{
         id: "question-1",
         run_id: "fixture-run",

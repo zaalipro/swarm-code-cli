@@ -24,9 +24,12 @@ defmodule SwarmCodeCLI.UI.Keymap.Special do
 
   # ---------------------------------------------------------------- layers
 
+  # Ctrl-P opens the palette and never toggles it shut: a second press while it
+  # is up puts the caret back in its query, so what is typed next lands there
+  # and never in the composer behind it (rel F6).
   def run(:command_palette, _key, state, _table) do
     if match?([{:switcher, _} | _], state.layers),
-      do: ok(:close_top_layer),
+      do: ok({:focus_region, "query"}),
       else: ok({:open_layer, Switcher.open(state, state.focus)})
   end
 
@@ -40,29 +43,35 @@ defmodule SwarmCodeCLI.UI.Keymap.Special do
   def run(:run_palette, _key, state, _table),
     do: toggle_layer(state, :run_palette)
 
-  def run(:detach, _key, state, _table) do
-    if Keymap.editor_context(state),
-      do: ok(:editor_detach_notice),
-      else: ok({:quit_requested, :detach})
-  end
+  # The Ctrl-C ladder lives in the reducer: it knows the draft, the turn in
+  # view and whether the second-press quit is armed.
+  def run(:interrupt, _key, _state, _table), do: ok({:interrupt, :ctrl_c})
 
   # With vim on, Esc inside the composer walks the modes first: VISUAL to
-  # NORMAL, INSERT to NORMAL, a pending operator cancelled, and only a bare
-  # NORMAL hands focus back to main.
+  # NORMAL, INSERT to NORMAL, a pending operator cancelled, and a bare NORMAL
+  # stops a streaming turn like the plain composer's Esc.
   def run(:escape, _key, %{keymap: :vim, focus: "composer", layers: []} = state, _table),
     do: Keymap.Vim.escape(state)
 
-  # Esc steps out exactly one level and never navigates: the dashboard and the
-  # palette drop their query first, then any layer closes, then the composer
-  # hands focus back to main. `:back` lives on Alt-Left and Backspace.
+  # Esc steps out exactly one level and never navigates or leaves the
+  # composer: the dashboard and the palette drop their query first, then any
+  # layer closes, select mode hands back to the composer, and in the composer
+  # it stops a streaming turn (the reducer does nothing when none streams).
+  # `:back` lives on Alt-Left and Backspace.
   def run(:escape, _key, state, _table) do
     cond do
       filtering?(state) -> ok({:dashboard_filter, :clear})
       state.layers != [] -> ok(:close_top_layer)
-      state.focus == "composer" -> ok({:focus_region, "main"})
-      true -> :ignore
+      state.focus in ["main", "inspector"] -> ok({:focus_region, "composer"})
+      true -> ok({:interrupt, :escape})
     end
   end
+
+  # Ctrl-T enters select mode from the composer and leaves it from the
+  # transcript or the inspector.
+  def run(:select_mode, _key, _state, _table), do: ok(:select_mode)
+
+  def run(:copy_selected, _key, _state, _table), do: ok(:copy_selection)
 
   # "q" closes the top layer and only quits when there is none. Inside a run
   # view it closes while the filter is empty and types once a query has been
@@ -89,6 +98,16 @@ defmodule SwarmCodeCLI.UI.Keymap.Special do
     if Map.has_key?(layout.rects, :composer),
       do: ok({:focus_region, "composer"}),
       else: ok({:focus_cycle, :next})
+  end
+
+  # Tab never takes the caret out of the composer: it completes a slash
+  # command, queues the draft while a turn runs (the non-Alt queue path), and
+  # otherwise does nothing.
+  def run(:focus_next, _key, %{focus: "composer", layers: []} = state, table) do
+    case SlashPalette.selected(state) do
+      %{name: name} -> ok({:complete_command, name})
+      nil -> if Keymap.live_turn(state), do: run(:queue, nil, state, table), else: :ignore
+    end
   end
 
   def run(:focus_next, _key, state, _table) do
@@ -159,6 +178,21 @@ defmodule SwarmCodeCLI.UI.Keymap.Special do
 
   def run(:scroll_page_down, _key, state, _table), do: scroll(state, {:page, 1})
   def run(:scroll_page_up, _key, state, _table), do: scroll(state, {:page, -1})
+
+  # On an empty draft there is nothing for Ctrl-U to delete or Ctrl-D to act
+  # on, so they scroll the transcript the way they do in select mode.
+  def run(:composer_half_up, _key, state, _table) do
+    if Keymap.draft_text(state) == "",
+      do: ok({:scroll, "main", {:half_page, -1}}),
+      else: Keymap.edit(state, {:delete, :line_start})
+  end
+
+  def run(:composer_half_down, _key, state, _table) do
+    if Keymap.draft_text(state) == "",
+      do: ok({:scroll, "main", {:half_page, 1}}),
+      else: :ignore
+  end
+
   def run(:scroll_half_down, _key, state, _table), do: scroll(state, {:half_page, 1})
   def run(:scroll_half_up, _key, state, _table), do: scroll(state, {:half_page, -1})
   def run(:scroll_line_down, _key, state, _table), do: scroll(state, {:line, 1})
@@ -185,8 +219,18 @@ defmodule SwarmCodeCLI.UI.Keymap.Special do
   # Enter in the composer, under its own name so the surfaces can say "Send".
   def run(:send, key, state, table), do: run(:activate, key, state, table)
 
-  def run(:queue, _key, state, table),
-    do: Keymap.find_target(state, table, &match?({:intent, {:dispatch, :queue, _, _, _}}, &1))
+  # The drawn Queue target when there is one; otherwise the draft as it
+  # stands, which the reducer authorizes exactly like the drawn one.
+  def run(:queue, _key, state, table) do
+    case Keymap.find_target(
+           state,
+           table,
+           &match?({:intent, {:dispatch, :queue, _, _, _}}, &1)
+         ) do
+      :ignore -> Keymap.draft_dispatch(state, :queue)
+      resolved -> resolved
+    end
+  end
 
   # --------------------------------------------------------------- pickers
 
@@ -202,13 +246,24 @@ defmodule SwarmCodeCLI.UI.Keymap.Special do
 
   def run(:approve, _key, state, table), do: Keymap.approval_key("a", state, table)
   def run(:deny, _key, state, table), do: Keymap.approval_key("d", state, table)
+  def run(:deny_stop, _key, state, table), do: Keymap.approval_key("D", state, table)
+  def run(:approve_run, _key, state, table), do: Keymap.approval_key("Y", state, table)
   def run(:always_allow, _key, state, table), do: Keymap.approval_key("A", state, table)
+
+  def run(:confirm_yes, _key, %{layers: [{:approval, _} | _]} = state, table),
+    do: Keymap.approval_key("y", state, table)
 
   def run(:confirm_yes, _key, %{layers: [layer | _]} = state, table) do
     if confirmable?(layer),
       do: Keymap.modal_activate(layer, %{state | focus: "confirm"}, table),
       else: :ignore
   end
+
+  # "n" on an approval or a question is "the next one waiting": this one
+  # stays pending and comes back round.
+  def run(:confirm_no, key, %{layers: [{kind, _} | _]} = state, table)
+      when kind in [:approval, :question],
+      do: run(:next_need, key, state, table)
 
   def run(:confirm_no, _key, %{layers: [layer | _]}, _table),
     do: if(confirmable?(layer), do: ok(:close_top_layer), else: :ignore)
@@ -375,7 +430,11 @@ defmodule SwarmCodeCLI.UI.Keymap.Special do
     if docked? or overlay?, do: ok({:inspector_tab, direction}), else: :ignore
   end
 
-  defp scroll(state, operation), do: ok({:scroll, state.focus, operation})
+  # From the composer the page keys scroll the transcript: the caret stays put.
+  defp scroll(%{focus: focus}, operation) when focus in ["main", "inspector"],
+    do: ok({:scroll, focus, operation})
+
+  defp scroll(_state, operation), do: ok({:scroll, "main", operation})
 
   defp expansion(state, expanded?) do
     case selected(state) do
@@ -408,11 +467,26 @@ defmodule SwarmCodeCLI.UI.Keymap.Special do
   defp confirmable?({:unsent_changes, _}), do: true
   defp confirmable?(_layer), do: false
 
+  # Up on an empty draft (and Up or Down while walking the history) reads
+  # the prompts already sent in this conversation; otherwise the arrows move
+  # the caret, or the selection of an open slash list.
   defp composer_line(state, direction, movement) do
-    if SlashPalette.open?(state),
-      do: ok({:move, direction}),
-      else: Keymap.edit(state, {:move, movement})
+    cond do
+      SlashPalette.open?(state) -> ok({:move, direction})
+      history?(state, direction) -> ok({:history, direction})
+      true -> Keymap.edit(state, {:move, movement})
+    end
   end
+
+  defp history?(%{history_cursor: {key, _, _}} = state, _direction),
+    do: key == State.current_draft_key(state)
+
+  # The reducer reads the history (sent prompts, then the transcript's user
+  # turns); an empty draft is all it takes to start walking it.
+  defp history?(state, :previous),
+    do: State.current_draft_key(state) != nil and Keymap.draft_text(state) == ""
+
+  defp history?(_state, _direction), do: false
 
   defp ok(action), do: Keymap.result(action)
 

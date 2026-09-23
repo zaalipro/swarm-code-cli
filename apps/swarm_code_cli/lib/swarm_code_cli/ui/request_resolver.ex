@@ -55,7 +55,7 @@ defmodule SwarmCodeCLI.UI.RequestResolver do
       obvious_target_mismatch?(intent, context) ->
         {:error, :invalid_origin}
 
-      permission not in context.allowed_actions ->
+      not permitted?(permission, context.allowed_actions) ->
         {:error, :not_allowed}
 
       retry_not_failed?(intent, context) ->
@@ -71,6 +71,20 @@ defmodule SwarmCodeCLI.UI.RequestResolver do
         :ok
     end
   end
+
+  # The three finer approval decisions are admitted by their own permission
+  # when a source lists it, and otherwise by the one they refine: a source
+  # that only knows approve / deny / always still lets the finer key through,
+  # and its daemon decides what it can honour.
+  defp permitted?(permission, allowed)
+       when permission in [:approve_run, :always_prefix, :deny_stop],
+       do: permission in allowed or refined(permission) in allowed
+
+  defp permitted?(permission, allowed), do: permission in allowed
+
+  defp refined(:approve_run), do: :approve
+  defp refined(:always_prefix), do: :always_allow
+  defp refined(:deny_stop), do: :deny
 
   defp required_permission({:dispatch, permission, _text, _target, _attachments}), do: permission
   defp required_permission({:steer, _run_id, _node_id, _text, _attachments}), do: :steer

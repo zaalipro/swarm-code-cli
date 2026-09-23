@@ -71,6 +71,12 @@ defmodule SwarmCodeCLI.UI.Action do
           | :open_companion
           | :nothing_waiting
           | {:open_interaction, binary()}
+          | {:interrupt, :escape | :ctrl_c}
+          | :select_mode
+          | {:compose, binary()}
+          | {:history, :previous | :next}
+          | :copy_selection
+          | {:slash_local, :help | :quit | :new | :resume | :conversations | :queue}
           | {:toggle_dock, :inspector}
           | {:set_tab, :agents | :timeline | :changes}
           | {:select_agent, binary()}
@@ -149,6 +155,25 @@ defmodule SwarmCodeCLI.UI.Action do
 
   def validate({:open_interaction, id} = action),
     do: valid_action(action, SwarmCodeCLI.UI.Intent.valid_id?(id))
+
+  # Esc and Ctrl-C both stop the turn in view; which key asked decides what
+  # else happens (Ctrl-C clears a draft first and arms the second-press quit).
+  def validate({:interrupt, source} = action),
+    do: valid_action(action, source in [:escape, :ctrl_c])
+
+  def validate(:select_mode), do: {:ok, :select_mode}
+  def validate(:copy_selection), do: {:ok, :copy_selection}
+
+  # A printable key pressed in select mode leaves it and types: one fragment,
+  # bounded like any editor insert.
+  def validate({:compose, text} = action),
+    do: valid_action(action, match?({:ok, _}, Operation.validate({:insert, text})))
+
+  def validate({:history, direction} = action),
+    do: valid_action(action, direction in [:previous, :next])
+
+  def validate({:slash_local, command} = action),
+    do: valid_action(action, command in [:help, :quit, :new, :resume, :conversations, :queue])
 
   def validate({:toggle_dock, dock} = action),
     do: valid_action(action, dock == :inspector)

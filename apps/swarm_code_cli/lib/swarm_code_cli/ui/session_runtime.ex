@@ -37,6 +37,9 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
   alias SwarmCodeCLI.UI.DataSource
   alias SwarmCodeCLI.UI.DataSource.DataBridge
 
+  # How long a terminal has to acknowledge a copy before it is taken as unable.
+  @copy_ack_ms 1_000
+
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
 
   def register_terminal(server, terminal, generation, capabilities),
@@ -124,7 +127,8 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
        final_pending?: false,
        close_kind: nil,
        shutdown_token: nil,
-       close_timer: nil
+       close_timer: nil,
+       copy: nil
      }}
   end
 
@@ -224,6 +228,14 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
 
   def handle_info({:owned_effect, secret, effect}, %{secret: secret} = state),
     do: {:noreply, local_effect(state, effect)}
+
+  def handle_info({:terminal_copy_result, token, result}, %{copy: {token, timer, lines}} = state) do
+    cancel(timer)
+    {:noreply, copy_notice(state, if(result == :ok, do: {:ok, lines}, else: result))}
+  end
+
+  def handle_info({:copy_timeout, token}, %{copy: {token, _, _}} = state),
+    do: {:noreply, copy_notice(state, :timeout)}
 
   def handle_info({:owned_timer, id, token}, %{phase: :running} = state) do
     case TimerSupervisor.settle(state.timers, id, token) do
@@ -400,8 +412,36 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
     commit(%{state | ui: ui}, state.ui)
   end
 
+  # Select mode's `y`. The one terminal message that carries content: the
+  # text the user asked to put on the clipboard, which the terminal writes as
+  # OSC 52 and acknowledges with `{:terminal_copy_result, token, result}`. A
+  # terminal that does not answer within a second cannot copy, and says so.
+  defp local_effect(%{phase: :running, terminal: terminal} = state, {:copy, text})
+       when is_pid(terminal) do
+    token = identity()
+    send(terminal, {:terminal_copy, state.ui.terminal_generation, token, text})
+    timer = Process.send_after(self(), {:copy_timeout, token}, @copy_ack_ms)
+    cancel(elem(state.copy || {nil, nil}, 1))
+    lines = length(String.split(text, "\n"))
+    %{state | copy: {token, timer, lines}}
+  end
+
+  defp local_effect(state, {:copy, _text}), do: copy_notice(state, :unsupported)
+
   # Announcements already live in the safe Scene; no text is sent to terminal state.
   defp local_effect(state, _), do: state
+
+  defp copy_notice(state, result) do
+    text =
+      case result do
+        {:ok, 1} -> "Copied 1 line."
+        {:ok, lines} -> "Copied #{lines} lines."
+        _ -> "This terminal cannot take a copy from SwarmCode."
+      end
+
+    ui = %{state.ui | notice: {:command_feedback, text}, revision: state.ui.revision + 1}
+    commit(%{state | ui: ui, copy: nil}, state.ui)
+  end
 
   defp project(state) do
     {scene, table} = Projector.project(state.ui)
@@ -560,7 +600,12 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
     cancel(state.frame_timer)
     cancel(state.draw_deadline)
     ui = %{state.ui | revision: state.ui.revision + 1}
-    {:ok, detached} = SafeText.external("DETACHED — RUNS CONTINUE", SafeText.Limits.content())
+
+    {:ok, detached} =
+      SafeText.external(
+        if(kind == :plain, do: "Leaving the full-screen view.", else: "Closing SwarmCode."),
+        SafeText.Limits.content()
+      )
 
     scene = %Scene{
       revision: ui.revision,

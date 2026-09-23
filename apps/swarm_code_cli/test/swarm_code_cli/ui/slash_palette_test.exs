@@ -78,7 +78,9 @@ defmodule SwarmCodeCLI.UI.SlashPaletteTest do
     assert {^original, []} = Reducer.update(original, {:complete_command, "goal"})
     {completed, _} = Reducer.update(original, {:complete_command, "swarm"})
     assert Editor.text(Drafts.fetch(completed.drafts, {"c", :main}).editor) == "/swarm "
-    assert {:ok, {:focus_cycle, :next}} = Keymap.resolve(Input.key(:tab), completed, %{})
+    # With nothing left to complete and no turn running, Tab keeps the caret
+    # in the composer.
+    assert :ignore = Keymap.resolve(Input.key(:tab), completed, %{})
   end
 
   test "selection resets for changed query and completion changes only current draft" do

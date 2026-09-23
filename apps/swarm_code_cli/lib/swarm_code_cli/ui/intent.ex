@@ -24,8 +24,16 @@ defmodule SwarmCodeCLI.UI.Intent do
     :approve,
     :deny,
     :always_allow,
+    :approve_run,
+    :always_prefix,
+    :deny_stop,
     :mark_seen
   ]
+
+  # How the desktop answers an approval: once, for the rest of the run, always
+  # for the command's family, deny, or deny and stop the run. `:always_allow`
+  # is the older "always" the daemon still understands.
+  @decisions [:approve, :approve_run, :always_prefix, :always_allow, :deny, :deny_stop]
 
   @type dispatch_target ::
           :main
@@ -48,7 +56,12 @@ defmodule SwarmCodeCLI.UI.Intent do
           | :approve
           | :deny
           | :always_allow
+          | :approve_run
+          | :always_prefix
+          | :deny_stop
           | :mark_seen
+
+  @type decision :: :approve | :approve_run | :always_prefix | :always_allow | :deny | :deny_stop
 
   @type t ::
           {:dispatch, :send | :queue, binary(), dispatch_target(), [binary()]}
@@ -58,12 +71,15 @@ defmodule SwarmCodeCLI.UI.Intent do
           | {:stop_agent, binary(), binary(), non_neg_integer()}
           | {:answer_question, binary(), binary(), binary(), non_neg_integer(),
              [binary()] | %{option_ids: [binary()], custom_text: binary()}}
-          | {:resolve_approval, binary(), binary(), binary(), non_neg_integer(),
-             :approve | :deny | :always_allow}
+          | {:resolve_approval, binary(), binary(), binary(), non_neg_integer(), decision()}
           | {:mark_seen, :conversation | :run | :activity, binary(), non_neg_integer()}
 
   @spec permissions() :: [permission()]
   def permissions, do: @permissions
+
+  @doc "Every approval decision, in the order the keys offer them."
+  @spec decisions() :: [decision()]
+  def decisions, do: @decisions
 
   @spec permission?(term()) :: boolean()
   def permission?(permission), do: permission in @permissions
@@ -156,7 +172,7 @@ defmodule SwarmCodeCLI.UI.Intent do
         ])
 
   def validate({:resolve_approval, run_id, node_id, interaction_id, revision, decision} = intent)
-      when decision in [:approve, :deny, :always_allow],
+      when decision in @decisions,
       do:
         valid_intent(intent, [
           valid_id?(run_id),

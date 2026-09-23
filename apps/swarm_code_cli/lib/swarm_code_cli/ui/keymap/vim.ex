@@ -73,8 +73,10 @@ defmodule SwarmCodeCLI.UI.Keymap.Vim do
   @spec escape(map()) :: {:ok, term()} | :ignore
   def escape(%{vim: %{mode: :visual}}), do: ok({:vim, {:mode, :normal}})
 
+  # A bare NORMAL has no mode left to leave; like the plain composer's Esc it
+  # stops a streaming turn and never takes the caret out of the composer.
   def escape(%{vim: %{mode: :normal, pending: nil, count: nil}}),
-    do: ok({:focus_region, "main"})
+    do: ok({:interrupt, :escape})
 
   def escape(%{vim: %{mode: :normal}}), do: ok({:vim, {:pending, nil}})
 

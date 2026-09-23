@@ -12,12 +12,19 @@ the command palette).
 
 ## Composer
 
+### Navigate
+
+| Keys | Does |
+|---|---|
+| `PgDn` | Scroll one page down |
+| `PgUp` | Scroll one page up |
+| `Ctrl-D` | On an empty draft, scroll the transcript half a page down |
+
 ### Focus
 
 | Keys | Does |
 |---|---|
-| `Tab` | Move focus on; from the transcript, into the composer |
-| `Shift-Tab` | Move focus back |
+| `Ctrl-T` | Select mode: j/k move, Enter open, y copy, Esc back to typing |
 
 ### Runs
 
@@ -34,12 +41,13 @@ the command palette).
 |---|---|
 | `Enter` | Send the draft (in every vim mode) |
 | `Alt-Enter` | Queue the draft instead of sending it |
+| `Ctrl-N` | Open the next approval or question waiting on you |
 
 ### Layers
 
 | Keys | Does |
 |---|---|
-| `Ctrl-P` | Command palette; the same chord closes it |
+| `Ctrl-P` | Command palette; pressed again it keeps the palette and its query |
 | `Ctrl-G` | Runs dashboard; the same chord closes it |
 | `Ctrl-R` | Run palette; the same chord closes it |
 | `Ctrl-B` / `Alt-I` | Show or hide the inspector dock |
@@ -51,13 +59,14 @@ the command palette).
 
 | Keys | Does |
 |---|---|
-| `Ctrl-O` / `Shift-Enter` | Insert a line break without sending |
-| `↑` | Up a line, or up the slash-command list |
-| `↓` | Down a line, or down the slash-command list |
+| `Tab` | Complete a slash command; while a turn runs, queue the draft behind it |
+| `Ctrl-O` / `Ctrl-J` / `Shift-Enter` | Insert a line break without sending (Ctrl-O or Ctrl-J) |
+| `↑` | Up a line; on an empty draft, the previous prompt; up the slash list |
+| `↓` | Down a line; back towards the draft in prompt history; down the slash list |
 | `Ctrl-A` | Move to the start of the line |
 | `Ctrl-E` | Move to the end of the line |
 | `Ctrl-W` | Delete the word before the cursor |
-| `Ctrl-U` | Delete back to the start of the line |
+| `Ctrl-U` | Delete back to the start of the line; on an empty draft, scroll up |
 | `Ctrl-Z` | Undo the last edit |
 | `Ctrl-Shift-Z` | Redo (needs a terminal that reports Ctrl-Shift) |
 | `Ctrl-↑` | Give the composer one more row |
@@ -68,8 +77,8 @@ the command palette).
 | Keys | Does |
 |---|---|
 | `F1` | The keyboard help sheet; the same key closes it |
-| `Ctrl-C` | Detach from the session and leave it running |
-| `Esc` | Step out one level; never navigates history |
+| `Ctrl-C` | Clear the draft, else stop the turn; press twice to quit |
+| `Esc` | Stop the turn that is streaming; the draft stays |
 
 ## Composer, vim NORMAL
 
@@ -113,12 +122,19 @@ the command palette).
 | `v` | VISUAL: motions select, then d, y or c act on it |
 | `V` | VISUAL with the whole line selected |
 
+### Navigate
+
+| Keys | Does |
+|---|---|
+| `PgDn` | Scroll one page down |
+| `PgUp` | Scroll one page up |
+
 ### Focus
 
 | Keys | Does |
 |---|---|
-| `Tab` | Move focus on; from the transcript, into the composer |
-| `Shift-Tab` | Move focus back |
+| `Tab` | Move focus on; from select mode, back into the composer |
+| `Ctrl-T` | Select mode: j/k move, Enter open, y copy, Esc back to typing |
 
 ### Runs
 
@@ -137,12 +153,13 @@ the command palette).
 |---|---|
 | `Enter` | Send the draft (in every vim mode) |
 | `Alt-Enter` | Queue the draft instead of sending it |
+| `Ctrl-N` | Open the next approval or question waiting on you |
 
 ### Layers
 
 | Keys | Does |
 |---|---|
-| `Ctrl-P` | Command palette; the same chord closes it |
+| `Ctrl-P` | Command palette; pressed again it keeps the palette and its query |
 | `Ctrl-G` | Runs dashboard; the same chord closes it |
 | `Ctrl-B` / `Alt-I` | Show or hide the inspector dock |
 | `Alt-H` / `Alt-Shift-H` / `Ctrl-Alt-H` / `Ctrl-Alt-Shift-H` | Narrow the inspector dock (add Ctrl for a bigger step) |
@@ -154,8 +171,8 @@ the command palette).
 | Keys | Does |
 |---|---|
 | `?` / `F1` | The keyboard help sheet; the same key closes it |
-| `Ctrl-C` | Detach from the session and leave it running |
-| `Esc` | Step out one level; never navigates history |
+| `Ctrl-C` | Clear the draft, else stop the turn; press twice to quit |
+| `Esc` | Close the top layer, end a vim mode, or leave select mode |
 
 ## Composer, vim VISUAL
 
@@ -180,12 +197,19 @@ the command palette).
 | `y` | Copy the selection |
 | `c` | Delete the selection, then INSERT |
 
+### Navigate
+
+| Keys | Does |
+|---|---|
+| `PgDn` | Scroll one page down |
+| `PgUp` | Scroll one page up |
+
 ### Focus
 
 | Keys | Does |
 |---|---|
-| `Tab` | Move focus on; from the transcript, into the composer |
-| `Shift-Tab` | Move focus back |
+| `Tab` | Move focus on; from select mode, back into the composer |
+| `Ctrl-T` | Select mode: j/k move, Enter open, y copy, Esc back to typing |
 
 ### Runs
 
@@ -204,12 +228,13 @@ the command palette).
 |---|---|
 | `Enter` | Send the draft (in every vim mode) |
 | `Alt-Enter` | Queue the draft instead of sending it |
+| `Ctrl-N` | Open the next approval or question waiting on you |
 
 ### Layers
 
 | Keys | Does |
 |---|---|
-| `Ctrl-P` | Command palette; the same chord closes it |
+| `Ctrl-P` | Command palette; pressed again it keeps the palette and its query |
 | `Ctrl-G` | Runs dashboard; the same chord closes it |
 | `Ctrl-B` / `Alt-I` | Show or hide the inspector dock |
 | `Alt-H` / `Alt-Shift-H` / `Ctrl-Alt-H` / `Ctrl-Alt-Shift-H` | Narrow the inspector dock (add Ctrl for a bigger step) |
@@ -221,8 +246,8 @@ the command palette).
 | Keys | Does |
 |---|---|
 | `?` / `F1` | The keyboard help sheet; the same key closes it |
-| `Ctrl-C` | Detach from the session and leave it running |
-| `Esc` | Step out one level; never navigates history |
+| `Ctrl-C` | Clear the draft, else stop the turn; press twice to quit |
+| `Esc` | Close the top layer, end a vim mode, or leave select mode |
 
 ## Transcript (main)
 
@@ -250,8 +275,9 @@ the command palette).
 
 | Keys | Does |
 |---|---|
-| `Tab` | Move focus on; from the transcript, into the composer |
+| `Tab` | Move focus on; from select mode, back into the composer |
 | `Shift-Tab` | Move focus back |
+| `Ctrl-T` | Select mode: j/k move, Enter open, y copy, Esc back to typing |
 | `i` | Focus the composer (INSERT in vim) |
 
 ### Runs
@@ -274,6 +300,7 @@ the command palette).
 | `p` | Pause or continue the current run |
 | `m` | Mark the current run as seen |
 | `a` | Open the action menu for what is selected |
+| `y` | Copy the selected item's text to the clipboard |
 | `o` | Open the full text of the selected item |
 | `Enter` | Activate what is focused |
 | `Alt-Enter` | Queue the draft instead of sending it |
@@ -284,7 +311,7 @@ the command palette).
 
 | Keys | Does |
 |---|---|
-| `Ctrl-P` | Command palette; the same chord closes it |
+| `Ctrl-P` | Command palette; pressed again it keeps the palette and its query |
 | `Ctrl-G` | Runs dashboard; the same chord closes it |
 | `Ctrl-R` | Run palette; the same chord closes it |
 | `Ctrl-B` / `Alt-I` | Show or hide the inspector dock |
@@ -297,9 +324,9 @@ the command palette).
 | Keys | Does |
 |---|---|
 | `?` / `F1` | The keyboard help sheet; the same key closes it |
-| `Ctrl-C` | Detach from the session and leave it running |
-| `q` | Close the top layer; with none open, quit |
-| `Esc` | Step out one level; never navigates history |
+| `Ctrl-C` | Clear the draft, else stop the turn; press twice to quit |
+| `q` | Close the top layer; in select mode with none open, quit |
+| `Esc` | Close the top layer, end a vim mode, or leave select mode |
 | `P` | Hand off to the plain presenter |
 
 ## Inspector
@@ -328,8 +355,9 @@ the command palette).
 
 | Keys | Does |
 |---|---|
-| `Tab` | Move focus on; from the transcript, into the composer |
+| `Tab` | Move focus on; from select mode, back into the composer |
 | `Shift-Tab` | Move focus back |
+| `Ctrl-T` | Select mode: j/k move, Enter open, y copy, Esc back to typing |
 | `i` | Focus the composer (INSERT in vim) |
 
 ### Runs
@@ -352,6 +380,7 @@ the command palette).
 | `p` | Pause or continue the current run |
 | `m` | Mark the current run as seen |
 | `a` | Open the action menu for what is selected |
+| `y` | Copy the selected item's text to the clipboard |
 | `o` | Open the full text of the selected item |
 | `Enter` | Activate what is focused |
 | `Alt-Enter` | Queue the draft instead of sending it |
@@ -362,7 +391,7 @@ the command palette).
 
 | Keys | Does |
 |---|---|
-| `Ctrl-P` | Command palette; the same chord closes it |
+| `Ctrl-P` | Command palette; pressed again it keeps the palette and its query |
 | `Ctrl-G` | Runs dashboard; the same chord closes it |
 | `Ctrl-R` | Run palette; the same chord closes it |
 | `Ctrl-B` / `Alt-I` | Show or hide the inspector dock |
@@ -375,9 +404,9 @@ the command palette).
 | Keys | Does |
 |---|---|
 | `?` / `F1` | The keyboard help sheet; the same key closes it |
-| `Ctrl-C` | Detach from the session and leave it running |
-| `q` | Close the top layer; with none open, quit |
-| `Esc` | Step out one level; never navigates history |
+| `Ctrl-C` | Clear the draft, else stop the turn; press twice to quit |
+| `q` | Close the top layer; in select mode with none open, quit |
+| `Esc` | Close the top layer, end a vim mode, or leave select mode |
 | `P` | Hand off to the plain presenter |
 
 ## Pickers: command palette, run palette, runs dashboard, go-to
@@ -399,7 +428,7 @@ the command palette).
 
 | Keys | Does |
 |---|---|
-| `Tab` | Move focus on; from the transcript, into the composer |
+| `Tab` | Move focus on; from select mode, back into the composer |
 | `Shift-Tab` | Move focus back |
 
 ### Runs
@@ -424,7 +453,7 @@ the command palette).
 
 | Keys | Does |
 |---|---|
-| `Ctrl-P` | Command palette; the same chord closes it |
+| `Ctrl-P` | Command palette; pressed again it keeps the palette and its query |
 | `Ctrl-G` | Runs dashboard; the same chord closes it |
 | `Ctrl-R` | Run palette; the same chord closes it |
 | `Ctrl-B` / `Alt-I` | Show or hide the inspector dock |
@@ -437,9 +466,9 @@ the command palette).
 | Keys | Does |
 |---|---|
 | `F1` | The keyboard help sheet; the same key closes it |
-| `Ctrl-C` | Detach from the session and leave it running |
-| `q` | Close the top layer; with none open, quit |
-| `Esc` | Step out one level; never navigates history |
+| `Ctrl-C` | Clear the draft, else stop the turn; press twice to quit |
+| `q` | Close the top layer; in select mode with none open, quit |
+| `Esc` | Close the top layer, end a vim mode, or leave select mode |
 
 ## Text fields inside dialogs
 
@@ -447,7 +476,7 @@ the command palette).
 
 | Keys | Does |
 |---|---|
-| `Tab` | Move focus on; from the transcript, into the composer |
+| `Tab` | Move focus on; from select mode, back into the composer |
 | `Shift-Tab` | Move focus back |
 
 ### Runs
@@ -470,7 +499,7 @@ the command palette).
 
 | Keys | Does |
 |---|---|
-| `Ctrl-P` | Command palette; the same chord closes it |
+| `Ctrl-P` | Command palette; pressed again it keeps the palette and its query |
 | `Ctrl-G` | Runs dashboard; the same chord closes it |
 | `Ctrl-R` | Run palette; the same chord closes it |
 | `Ctrl-B` / `Alt-I` | Show or hide the inspector dock |
@@ -484,7 +513,7 @@ the command palette).
 |---|---|
 | `←` | Move the cursor left, or pick the previous choice |
 | `→` | Move the cursor right, or pick the next choice |
-| `Ctrl-O` / `Shift-Enter` | Insert a line break without sending |
+| `Ctrl-O` / `Ctrl-J` / `Shift-Enter` | Insert a line break without sending (Ctrl-O or Ctrl-J) |
 | `Ctrl-A` | Move to the start of the line |
 | `Ctrl-E` | Move to the end of the line |
 | `Ctrl-W` | Delete the word before the cursor |
@@ -497,8 +526,8 @@ the command palette).
 | Keys | Does |
 |---|---|
 | `F1` | The keyboard help sheet; the same key closes it |
-| `Ctrl-C` | Detach from the session and leave it running |
-| `Esc` | Step out one level; never navigates history |
+| `Ctrl-C` | Clear the draft, else stop the turn; press twice to quit |
+| `Esc` | Close the top layer, end a vim mode, or leave select mode |
 
 ## Dialogs
 
@@ -519,7 +548,7 @@ the command palette).
 
 | Keys | Does |
 |---|---|
-| `Tab` | Move focus on; from the transcript, into the composer |
+| `Tab` | Move focus on; from select mode, back into the composer |
 | `Shift-Tab` | Move focus back |
 
 ### Runs
@@ -539,11 +568,13 @@ the command palette).
 |---|---|
 | `Enter` | Activate what is focused |
 | `Alt-Enter` | Queue the draft instead of sending it |
-| `a` | Approve the pending request |
-| `d` | Deny the pending request |
-| `A` | Approve this request and ones like it |
-| `y` | Confirm: yes |
-| `n` | Confirm: no, close without doing it |
+| `y` | Confirm: yes; on an approval, allow it once |
+| `a` | Allow the pending request once (same as y) |
+| `Y` | Allow it for the rest of this run |
+| `A` | Always allow commands of this family in the project |
+| `d` | Deny the pending request; the run goes on without it |
+| `D` | Deny the pending request and stop the run |
+| `n` | Confirm: no; on an approval or question, the next one waiting |
 | `1` / `2` / `3` / `4` / `5` / `6` / `7` / `8` / `9` | Pick a numbered question option |
 | `Space` | Tick or untick the focused option |
 
@@ -551,7 +582,7 @@ the command palette).
 
 | Keys | Does |
 |---|---|
-| `Ctrl-P` | Command palette; the same chord closes it |
+| `Ctrl-P` | Command palette; pressed again it keeps the palette and its query |
 | `Ctrl-G` | Runs dashboard; the same chord closes it |
 | `Ctrl-R` | Run palette; the same chord closes it |
 | `Ctrl-B` / `Alt-I` | Show or hide the inspector dock |
@@ -564,6 +595,6 @@ the command palette).
 | Keys | Does |
 |---|---|
 | `?` / `F1` | The keyboard help sheet; the same key closes it |
-| `Ctrl-C` | Detach from the session and leave it running |
-| `q` | Close the top layer; with none open, quit |
-| `Esc` | Step out one level; never navigates history |
+| `Ctrl-C` | Clear the draft, else stop the turn; press twice to quit |
+| `q` | Close the top layer; in select mode with none open, quit |
+| `Esc` | Close the top layer, end a vim mode, or leave select mode |
