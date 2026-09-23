@@ -402,7 +402,10 @@ impl InputParser {
     fn ordinary(&mut self, byte: u8, modifiers: Modifiers) -> Option<Event> {
         let key = match byte {
             0 => Some(Key::Null),
-            b'\r' | b'\n' => Some(Key::Enter),
+            // Terminals send CR for Enter; a bare LF is Ctrl-J (pass70: the
+            // composer's newline beside Ctrl-O), decoded below with the other
+            // C0 letters.
+            b'\r' => Some(Key::Enter),
             b'\t' => Some(Key::Tab),
             8 | 127 => Some(Key::Backspace),
             _ => None,

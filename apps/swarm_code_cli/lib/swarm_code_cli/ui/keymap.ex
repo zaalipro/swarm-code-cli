@@ -126,6 +126,10 @@ defmodule SwarmCodeCLI.UI.Keymap do
 
   defp route({:key, :release, _, _}, _, _), do: :ignore
   defp route({:text_fragment, :release, _, _}, _, _), do: :ignore
+
+  defp route({:mouse, kind, _, column, row, _}, state, _) when kind in [:wheel_up, :wheel_down],
+    do: wheel(kind, column, row, state)
+
   defp route({:mouse, _, _, _, _, _}, _, _), do: :ignore
 
   defp route(:focus_gained, state, _),
@@ -277,6 +281,43 @@ defmodule SwarmCodeCLI.UI.Keymap do
     case State.current_draft_key(state) do
       nil -> :ignore
       key -> result({:editor, key, operation})
+    end
+  end
+
+  # ------------------------------------------------------------ mouse wheel
+
+  # pass70 F (E6's second half, B10's opt-in `SWARM_MOUSE=1` reports): a wheel
+  # notch scrolls three lines of what is under the pointer and never moves
+  # focus. A paged layer (help, an approval card, a report) takes the wheel
+  # while it is open; any other layer (a picker, a form) ignores it.
+  @wheel_lines 3
+
+  defp wheel(kind, column, row, state) do
+    delta = if kind == :wheel_up, do: -@wheel_lines, else: @wheel_lines
+
+    case state.layers do
+      [:help | _] ->
+        result({:scroll, "dialog", {:line, delta}})
+
+      [{layer, _} | _] when layer in [:approval, :command_report] ->
+        result({:scroll, "dialog", {:line, delta}})
+
+      [_ | _] ->
+        :ignore
+
+      [] ->
+        result({:scroll, wheel_region(column, row, state), {:line, delta}})
+    end
+  end
+
+  defp wheel_region(column, row, state) do
+    case state.size && Layout.calculate(state.size, state.preferences).rects do
+      %{inspector: %{x: x, y: y, width: w, height: h}}
+      when column >= x and column < x + w and row >= y and row < y + h ->
+        "inspector"
+
+      _ ->
+        "main"
     end
   end
 

@@ -490,6 +490,31 @@ defmodule SwarmCodeCLI.UI.KeymapTest do
       assert :ignore = Keymap.resolve({:mouse, :press, :left, 1, 2, []}, state, %{})
     end
 
+    # pass70 F: SWARM_MOUSE=1 wheel notches scroll what is under the pointer,
+    # three lines, without moving focus; a paged layer takes them.
+    test "the mouse wheel scrolls main, the docked inspector or a paged layer" do
+      state = %{state() | size: %SwarmCodeCLI.UI.Size{columns: 160, rows: 45}}
+
+      assert {:ok, {:scroll, "main", {:line, -3}}} =
+               Keymap.resolve({:mouse, :wheel_up, nil, 10, 10, []}, state, %{})
+
+      assert {:ok, {:scroll, "main", {:line, 3}}} =
+               Keymap.resolve({:mouse, :wheel_down, nil, 10, 10, []}, state, %{})
+
+      assert {:ok, {:scroll, "inspector", {:line, 3}}} =
+               Keymap.resolve({:mouse, :wheel_down, nil, 150, 10, []}, state, %{})
+
+      assert {:ok, {:scroll, "dialog", {:line, -3}}} =
+               Keymap.resolve(
+                 {:mouse, :wheel_up, nil, 10, 10, []},
+                 %{state | layers: [:help]},
+                 %{}
+               )
+
+      picker = %{state | layers: [{:switcher, "switch"}], focus: "query"}
+      assert :ignore = Keymap.resolve({:mouse, :wheel_up, nil, 10, 10, []}, picker, %{})
+    end
+
     test "Enter activates only an authorized current target; newline is capability gated" do
       state = state()
       intent = {:dispatch, :send, "hello", :main, []}

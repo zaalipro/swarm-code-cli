@@ -226,26 +226,23 @@ defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.Owner do
   defp dispatch(:grant, state), do: {:noreply, grant(state)}
 
   # A copy spends a control token only when the port accepted it.
-  defp dispatch({:terminal_copy, text}, %{phase: :running, port: port} = state)
-       when port != nil do
-    token = state.counter + 1
-
-    case Wire.copy(1, token, text) do
-      {:ok, bytes} ->
-        if Port.command(port, bytes, [:nosuspend]) do
-          {:noreply, %{state | counter: token}}
-        else
-          Logger.info("clipboard copy dropped: the terminal was busy")
-          {:noreply, state}
-        end
-
-      _ ->
-        Logger.info("clipboard copy refused: the text is empty, too long or has controls")
-        {:noreply, state}
-    end
+  defp dispatch({:terminal_copy, text}, state) do
+    {_result, next} = copy_text(state, text)
+    {:noreply, next}
   end
 
-  defp dispatch({:terminal_copy, _}, state), do: {:noreply, state}
+  # pass70 F: the session runtime's acknowledged form (select mode's `y`). The
+  # runtime waits for `{:terminal_copy_result, token, result}` to say whether
+  # the copy left; a copy for an older terminal generation is refused.
+  defp dispatch({:terminal_copy, generation, token, text}, state) do
+    {result, next} =
+      if generation == state.generation,
+        do: copy_text(state, text),
+        else: {{:error, :stale_generation}, state}
+
+    send(state.runtime, {:terminal_copy_result, token, result})
+    {:noreply, next}
+  end
 
   defp dispatch({:plain_instruction, "Rerun with --plain"}, %{phase: :restored} = state) do
     IO.puts(
@@ -256,6 +253,26 @@ defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.Owner do
   end
 
   defp dispatch(_, state), do: {:noreply, state}
+
+  defp copy_text(%{phase: :running, port: port} = state, text) when port != nil do
+    token = state.counter + 1
+
+    case Wire.copy(1, token, text) do
+      {:ok, bytes} ->
+        if Port.command(port, bytes, [:nosuspend]) do
+          {:ok, %{state | counter: token}}
+        else
+          Logger.info("clipboard copy dropped: the terminal was busy")
+          {{:error, :busy}, state}
+        end
+
+      _ ->
+        Logger.info("clipboard copy refused: the text is empty, too long or has controls")
+        {{:error, :invalid_text}, state}
+    end
+  end
+
+  defp copy_text(state, _text), do: {{:error, :unavailable}, state}
 
   defp record({:resume_needed, 1}, %{phase: :running} = state) do
     if state.pending && not state.pending_replied? do

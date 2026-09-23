@@ -161,7 +161,11 @@ fn controls_alt_and_modified_keys() {
         feed(&mut p, b"\r\n\t\x08\x7f\0"),
         vec![
             key(Key::Enter),
-            key(Key::Enter),
+            Event::Text {
+                phase: Phase::Press,
+                text: "j".into(),
+                modifiers: Modifiers::from_bits(2).unwrap()
+            },
             key(Key::Tab),
             key(Key::Backspace),
             key(Key::Backspace),

@@ -590,9 +590,17 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
   defp copy_notice(state, result) do
     text =
       case result do
-        {:ok, 1} -> "Copied 1 line."
-        {:ok, lines} -> "Copied #{lines} lines."
-        _ -> "This terminal cannot take a copy from SwarmCode."
+        {:ok, 1} ->
+          "Copied 1 line."
+
+        {:ok, lines} ->
+          "Copied #{lines} lines."
+
+        {:error, :invalid_text} ->
+          "Not copied: the text is over 64 KiB or has control characters."
+
+        _ ->
+          "This terminal cannot take a copy from SwarmCode."
       end
 
     ui = %{state.ui | notice: {:command_feedback, text}, revision: state.ui.revision + 1}

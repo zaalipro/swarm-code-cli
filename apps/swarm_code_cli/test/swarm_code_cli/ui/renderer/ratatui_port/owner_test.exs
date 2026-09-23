@@ -416,6 +416,30 @@ defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.OwnerTest do
     assert Process.alive?(owner)
   end
 
+  # pass70 F: the session runtime's `y` sends the acknowledged form and waits
+  # for `{:terminal_copy_result, token, result}` from the owner.
+  @tag capture_log: true
+  test "the acknowledged copy answers the runtime with the result" do
+    {owner, runtime} = owner()
+    generation = :sys.get_state(owner).generation
+    send(owner, {:terminal_copy, generation, :early, "early"})
+    assert_receive {:terminal_copy_result, :early, {:error, :unavailable}}
+
+    ready(owner)
+    before = :sys.get_state(owner).counter
+    send(owner, {:terminal_copy, generation, :ok, "two\nlines"})
+    assert_receive {:terminal_copy_result, :ok, :ok}
+    assert :sys.get_state(owner).counter == before + 1
+
+    send(owner, {:terminal_copy, generation, :bad, "\e[2J"})
+    assert_receive {:terminal_copy_result, :bad, {:error, :invalid_text}}
+
+    send(owner, {:terminal_copy, generation + 7, :old, "stale"})
+    assert_receive {:terminal_copy_result, :old, {:error, :stale_generation}}
+    assert :sys.get_state(owner).counter == before + 1
+    assert Process.alive?(owner) and Process.alive?(runtime)
+  end
+
   test "the mouse flag is expected back in ready and reported as a capability" do
     runtime = start_supervised!({Runtime, self()})
 
