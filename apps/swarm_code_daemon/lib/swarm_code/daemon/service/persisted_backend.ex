@@ -44,8 +44,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
          %{project_id: project_id} <- Conversations.get(opts[:conversation_id]),
          true <- project_id == opts[:project_id],
          %{root_path: project_root} <- Projects.get!(project_id),
-         {:ok, root} <- SwarmCode.Tools.Path.real_path(opts[:project_root]),
-         {:ok, ^root} <- SwarmCode.Tools.Path.real_path(project_root),
+         {:ok, root} <- SwarmCode.Domain.Tools.Path.real_path(opts[:project_root]),
+         {:ok, ^root} <- SwarmCode.Domain.Tools.Path.real_path(project_root),
          true <- File.dir?(root) do
       :ok = CommandLedger.ensure!()
 

@@ -346,10 +346,10 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
   defp execute(conv, %{action: :attach_file} = cmd, opts) do
     path = Path.expand(cmd.path, conv.project.root_path)
 
-    with {:ok, root} <- SwarmCode.Tools.Path.real_path(conv.project.root_path),
+    with {:ok, root} <- SwarmCode.Domain.Tools.Path.real_path(conv.project.root_path),
          true <- length(attachments(opts)) < Attachments.max_per_message(),
-         {:ok, real} <- SwarmCode.Tools.Path.real_path(path),
-         true <- SwarmCode.Tools.Path.confined?(root, real),
+         {:ok, real} <- SwarmCode.Domain.Tools.Path.real_path(path),
+         true <- SwarmCode.Domain.Tools.Path.confined?(root, real),
          mime when mime in ["image/png", "image/jpeg", "image/gif", "image/webp"] <-
            mime_for(real),
          {:ok, binary} <- read_image(root, real),
@@ -667,7 +667,7 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
     expanded = Path.expand(path, root)
     expanded = if File.dir?(expanded), do: Path.join(expanded, export_name(conv)), else: expanded
 
-    if SwarmCode.Tools.Path.confined?(root, Path.dirname(expanded)) and
+    if SwarmCode.Domain.Tools.Path.confined?(root, Path.dirname(expanded)) and
          Path.extname(expanded) in [".md", ".markdown", ".txt"],
        do: {:ok, root, unique(expanded)},
        else: {:error, :invalid_argument}
@@ -879,7 +879,7 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
              true <-
                elem(actual, 2) == :regular and elem(actual, 11) == expected.inode and
                  elem(actual, 9) == expected.major_device,
-             true <- SwarmCode.Tools.Path.confined?(root, path),
+             true <- SwarmCode.Domain.Tools.Path.confined?(root, path),
              {:ok, data} <- :file.read(io, Attachments.max_bytes() + 1),
              true <- byte_size(data) <= Attachments.max_bytes() do
           {:ok, data}
