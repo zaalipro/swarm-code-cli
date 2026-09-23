@@ -395,18 +395,25 @@ defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.OwnerTest do
   # pass70 B10: copy is asynchronous, validated in the caller, and spends a
   # control token only once the terminal is running.
   test "copy validates in the caller and sends only while running" do
-    alias SwarmCodeCLI.UI.Renderer.RatatuiPort
     {owner, _runtime} = owner()
     before = :sys.get_state(owner).counter
-    assert :ok = RatatuiPort.copy(owner, "early")
+    assert :ok = Owner.copy(owner, "early")
     assert :sys.get_state(owner).counter == before
 
     ready(owner)
-    assert :ok = RatatuiPort.copy(owner, "hello\n\tworld")
+    assert :ok = Owner.copy(owner, "hello\n\tworld")
     assert :sys.get_state(owner).counter == before + 1
-    assert {:error, :invalid_text} = RatatuiPort.copy(owner, "\e[2J")
-    assert {:error, :invalid_text} = RatatuiPort.copy(owner, "")
+    assert {:error, :invalid_text} = Owner.copy(owner, "\e[2J")
+    assert {:error, :invalid_text} = Owner.copy(owner, "")
     assert :sys.get_state(owner).counter == before + 1
+
+    # The renderer-neutral message the runtime sends; bad text is refused
+    # without spending a token or stopping the owner.
+    send(owner, {:terminal_copy, "from the runtime"})
+    assert :sys.get_state(owner).counter == before + 2
+    send(owner, {:terminal_copy, "\e]52;c;x\a"})
+    assert :sys.get_state(owner).counter == before + 2
+    assert Process.alive?(owner)
   end
 
   test "the mouse flag is expected back in ready and reported as a capability" do

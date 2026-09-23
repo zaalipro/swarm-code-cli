@@ -27,10 +27,13 @@ defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.Owner do
 
   @doc """
   pass70 B10: puts `text` on the system clipboard through the terminal (OSC
-  52), between frames. Asynchronous, so the runtime (which this owner calls)
-  never waits on it. `{:error, :invalid_text}` for text the wire refuses:
-  empty, over 64 KiB, invalid UTF-8, or a control other than LF and TAB.
-  Terminals without OSC 52 ignore it; a suspended terminal drops it.
+  52), between frames. The renderer-neutral form is the message
+  `{:terminal_copy, text}` to the terminal pid the runtime registered (the UI
+  must not name this module); this function is that message plus caller-side
+  validation. Asynchronous, so the runtime (which this owner calls) never
+  waits on it. `{:error, :invalid_text}` for text the wire refuses: empty,
+  over 64 KiB, invalid UTF-8, or a control other than LF and TAB. Terminals
+  without OSC 52 ignore it; a suspended terminal drops it.
   """
   @spec copy(pid(), binary()) :: :ok | {:error, :invalid_text}
   def copy(owner, text) when is_pid(owner) do
@@ -227,12 +230,17 @@ defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.Owner do
        when port != nil do
     token = state.counter + 1
 
-    with {:ok, bytes} <- Wire.copy(1, token, text),
-         true <- Port.command(port, bytes, [:nosuspend]) do
-      {:noreply, %{state | counter: token}}
-    else
+    case Wire.copy(1, token, text) do
+      {:ok, bytes} ->
+        if Port.command(port, bytes, [:nosuspend]) do
+          {:noreply, %{state | counter: token}}
+        else
+          Logger.info("clipboard copy dropped: the terminal was busy")
+          {:noreply, state}
+        end
+
       _ ->
-        Logger.info("clipboard copy dropped: the terminal was busy")
+        Logger.info("clipboard copy refused: the text is empty, too long or has controls")
         {:noreply, state}
     end
   end

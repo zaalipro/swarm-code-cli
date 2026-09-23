@@ -46,6 +46,34 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
   @spec run() :: non_neg_integer()
   def run, do: main(nil, label: :release)
 
+  # The packaged entry points a release may run, chosen by `SWARM_RELEASE_MODE`
+  # from this fixed table (runtime input never names a module). `tui` is the
+  # default whenever `SWARM_RELEASE_TUI=1`. Each entry returns the exit status.
+  # The table lives here, under `release/`, the one CLI directory allowed to
+  # look modules up at run time (the UI architecture test).
+  @entries %{
+    "tui" => {__MODULE__, :run},
+    "headless" => {SwarmCodeCLI.Release.Headless, :run},
+    "plain" => {SwarmCodeCLI.Release.Headless, :run_plain}
+  }
+
+  @doc "Runs the release entry named by `SWARM_RELEASE_MODE`; returns the exit status."
+  @spec run_entry(String.t()) :: non_neg_integer()
+  def run_entry(mode) when is_binary(mode) do
+    with {module, function} <- Map.get(@entries, mode),
+         true <- Code.ensure_loaded?(module) and function_exported?(module, function, 0) do
+      apply(module, function, [])
+    else
+      _ ->
+        IO.puts(
+          :stderr,
+          "swarmcode: this build has no #{inspect(mode)} mode. Run swarmcode --help."
+        )
+
+        @exit_usage
+    end
+  end
+
   @doc """
   Runs the TUI session for a development launcher (`scripts/dev/run_saved_session.sh`).
   Same behaviour as `run/0`, plus a first stderr line naming the conversation.

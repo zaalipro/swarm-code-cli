@@ -15,7 +15,7 @@ Owner B: runtime, storage safety, terminal robustness, launcher. Branch `p70/B`,
 | B6 P0 | 9aa8f22, 387e8c4 | Runtime children: `Tools.BackgroundProcs`, `Hooks.TaskSupervisor`, `LSP.Supervisor`. `SwarmCode.Daemon.Boot` gives desktop Bootstrap parity and `SwarmCode.Daemon.Shutdown` gives desktop Quit parity; both are wired into the saved session. A's requests are done: backup verification skips FTS5 shadow tables, and the session_selection test expects `read_only`. |
 | B7 P1 | 255bc65, c843b4c | `RELEASE_DISTRIBUTION=none` and `umask 077`; the COOKIE is 0600 (build and install). A second `swarmcode` exits 3 with "Another swarmcode (process N, since HH:MM) is already using your conversations." The locked-branch audit pins the new `rel/env.sh.eex`, and the release test moved out of the audit's reserved path. |
 | B8 P1 | 8c309dd | The port writes only changed cells. Each dirty row repaints one span, widened to whole glyphs of both frames, with one cursor move, SGR only on a style change, and implicit advance over exact ASCII. Wide or non-ASCII glyphs reserve their columns and re-anchor; an old uncertain glyph is erased with ECH. |
-| B10 P2 | 0eaa8d5 | `RatatuiPort.copy(owner, text)` writes OSC 52. Opt-in SGR wheel reports, `SWARM_MOUSE=1`. |
+| B10 P2 | 0eaa8d5, (fix below) | Clipboard copy writes OSC 52. Opt-in SGR wheel reports, `SWARM_MOUSE=1`. |
 
 ## Contracts (for C, D, E and the finisher)
 
@@ -31,11 +31,14 @@ Owner B: runtime, storage safety, terminal robustness, launcher. Branch `p70/B`,
   - never raises
 - `PersistedSession.report(failure) :: status` prints the failure; `log_path/0` returns the log
   path.
-- `SWARM_RELEASE_MODE` selects the entry:
+- `SWARM_RELEASE_MODE` selects the entry through the fixed table in
+  `PersistedSession.run_entry/1`:
   - `tui` (default): `PersistedSession.run/0`
   - `headless`: `SwarmCodeCLI.Release.Headless.run/0`
   - `plain`: `SwarmCodeCLI.Release.Headless.run_plain/0`
   - every entry returns an exit status; the application calls `System.stop(status)`
+  - an unknown mode, or an entry not built yet, is exit 2
+  - the table lives under `release/`, the directory the UI architecture test lets look modules up
 - `SwarmCode.Daemon.Service.SessionConfiguration`:
   - `overlay(conversation)`: applies the session override in memory
   - `override/0`: `%{provider_id, model}` or nil
@@ -51,11 +54,16 @@ Owner B: runtime, storage safety, terminal robustness, launcher. Branch `p70/B`,
   - pauses workflows, runs `Engine.stop_all`, then kills background commands
   - waits up to 10 s for flush
   - stops the runs, research, MCP and LSP subtrees
-- `SwarmCodeCLI.UI.Renderer.RatatuiPort.copy(owner_pid, text) :: :ok | {:error, :invalid_text}`:
+- Clipboard copy: send `{:terminal_copy, text}` to the terminal pid the runtime registered
+  (`state.terminal`).
+  - This is the renderer-neutral form. The UI architecture test forbids naming `RatatuiPort`
+    outside `ui/renderer/ratatui_port/`, which is why there is no facade module.
+  - `RatatuiPort.Owner.copy(pid, text) :: :ok | {:error, :invalid_text}` is the same message plus
+    validation in the caller.
   - `text` is 1..65,536 bytes of UTF-8; LF and TAB are the only controls allowed, and CRLF
-    becomes LF
-  - asynchronous (safe to call from the runtime)
-  - dropped while the terminal is suspended; terminals without OSC 52 ignore it
+    becomes LF.
+  - Asynchronous. Invalid text is logged and dropped. The text is also dropped while the terminal
+    is suspended, and terminals without OSC 52 ignore it.
 - Owner `flags: %{mouse?: true}` (saved session: `SWARM_MOUSE=1`):
   - a wheel notch arrives as `{:mouse, :wheel_up | :wheel_down, nil, column, row, modifiers}`,
     already valid in `UI.Input`
@@ -94,7 +102,7 @@ Owner B: runtime, storage safety, terminal robustness, launcher. Branch `p70/B`,
   - Implement `SwarmCodeCLI.Release.Headless.run/0` and `run_plain/0` per the entry table, or
     build them on `with_saved_session/2`.
   - Route `{:mouse, :wheel_up | :wheel_down, …}`: `Keymap.route` ignores mouse today. Use
-    `RatatuiPort.copy/2` for `y`.
+    `{:terminal_copy, text}` for `y`.
   - The runtime's own stderr lines ("SwarmCode closed: …") and `begin_shutdown(:invalid_scene)`
     in `session_runtime.ex` still use the old wording.
   - Seen in the sandbox (old UI):

@@ -38,4 +38,9 @@ defmodule SwarmCodeCLI.Release.PersistedSessionTest do
     output = capture_io(:stderr, fn -> assert PersistedSession.run_for_test([]) == 2 end)
     assert output =~ "swarmcode: "
   end
+
+  test "an unknown release mode is a usage error, never a module lookup" do
+    output = capture_io(:stderr, fn -> assert PersistedSession.run_entry("Elixir.File") == 2 end)
+    assert output =~ ~s(swarmcode: this build has no "Elixir.File" mode.)
+  end
 end
