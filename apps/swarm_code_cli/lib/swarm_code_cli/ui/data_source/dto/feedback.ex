@@ -15,7 +15,8 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.Feedback do
             :changes,
             :checkpoints,
             :mcp,
-            :memory
+            :memory,
+            :files
           ]}},
       title: :text,
       text: :text,

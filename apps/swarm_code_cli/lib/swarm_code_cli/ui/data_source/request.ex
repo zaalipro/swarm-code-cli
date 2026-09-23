@@ -26,6 +26,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Request do
           | :watch_snapshot
           | :detail_window
           | :library_snapshot
+          | :conversation_list
   @type query_kind :: :shell | :workspace | :transcript | :activity | :inspector | :pending
   @features [
     :workflows,
@@ -36,8 +37,10 @@ defmodule SwarmCodeCLI.UI.DataSource.Request do
     :changes,
     :checkpoints,
     :mcp,
-    :memory
+    :memory,
+    :files
   ]
+  @decisions [:approve, :approve_run, :always_prefix, :deny, :deny_stop, :always_allow]
   @type query :: {:query, query_kind(), binary() | nil, :before | :after, 1..200, 1..1_048_576}
   @type kind ::
           Intent.t()
@@ -46,6 +49,18 @@ defmodule SwarmCodeCLI.UI.DataSource.Request do
           | {:query_detail, binary(), non_neg_integer(), 4..65_536}
           | {:feature_query, atom(), binary() | nil, binary() | nil, 1..200, 1..1_048_576}
           | {:feature_command, atom(), atom(), binary() | nil, map()}
+          | {:conversation_list, binary() | nil, 1..200, 1..1_048_576}
+          | {:conversation_new}
+          | {:conversation_open, binary()}
+          | {:project_update, :read_only | :auto | :full_access | nil, true | nil}
+          | {:resolve_approval, binary(), binary(), binary(), non_neg_integer(), decision()}
+  @typedoc """
+  pass70 C1: `:approve` once, `:approve_run` every call of this tool in this
+  run (`:always_allow` is its legacy name), `:always_prefix` the command
+  family the service computed for this request, `:deny`, `:deny_stop`.
+  """
+  @type decision ::
+          :approve | :approve_run | :always_prefix | :deny | :deny_stop | :always_allow
 
   @type t :: %__MODULE__{
           request_id: binary(),
@@ -56,7 +71,9 @@ defmodule SwarmCodeCLI.UI.DataSource.Request do
             RequestResolver.Context.origin()
             | {:query, query_kind()}
             | {:watch, binary()}
-            | {:query, :detail},
+            | {:query, :detail}
+            | {:conversation, :list | :new | :open}
+            | {:project, :update},
           deadline: integer(),
           expected_response: expected_response()
         }
@@ -113,6 +130,26 @@ defmodule SwarmCodeCLI.UI.DataSource.Request do
 
   defp valid_kind?({:resync_watch, ref}), do: Intent.valid_id?(ref)
 
+  defp valid_kind?({:conversation_list, cursor, size, bytes}),
+    do:
+      (is_nil(cursor) or Intent.valid_id?(cursor)) and is_integer(size) and size in 1..200 and
+        is_integer(bytes) and bytes in 1..1_048_576
+
+  defp valid_kind?({:conversation_new}), do: true
+  defp valid_kind?({:conversation_open, id}), do: uuid?(id)
+
+  defp valid_kind?({:project_update, mode, trusted}),
+    do:
+      mode in [nil, :read_only, :auto, :full_access] and trusted in [nil, true] and
+        (mode != nil or trusted != nil)
+
+  # The widened decision set; the rest of the tuple is the Intent's.
+  defp valid_kind?({:resolve_approval, run_id, node_id, interaction_id, revision, decision})
+       when decision in @decisions,
+       do:
+         Intent.valid_id?(run_id) and Intent.valid_id?(node_id) and
+           Intent.valid_id?(interaction_id) and is_integer(revision) and revision >= 0
+
   defp valid_kind?({:feature_command, feature, action, id, attrs})
        when is_atom(feature) and is_atom(action) do
     body = %{
@@ -142,6 +179,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Request do
   defp valid_origin?({:feature_form, feature}), do: feature in @features
 
   defp valid_origin?({:watch, ref}), do: Intent.valid_id?(ref)
+  defp valid_origin?({:conversation, action}) when action in [:list, :new, :open], do: true
+  defp valid_origin?({:project, :update}), do: true
 
   defp valid_origin?(origin), do: Context.valid_origin?(origin)
   defp valid_response?({:query, slot, _, _, _, _}, response), do: response == query_response(slot)
@@ -151,6 +190,10 @@ defmodule SwarmCodeCLI.UI.DataSource.Request do
     do: response == :library_snapshot
 
   defp valid_response?({:resync_watch, _}, response), do: response == :watch_snapshot
+
+  defp valid_response?({:conversation_list, _, _, _}, response),
+    do: response == :conversation_list
+
   defp valid_response?(_, response), do: response == :outcome
   def query_response(:shell), do: :shell_snapshot
   def query_response(:workspace), do: :workspace_snapshot
@@ -170,6 +213,13 @@ defmodule SwarmCodeCLI.UI.DataSource.Request do
 
   defp correlated_kind_origin?({:query_detail, _, _, _}, {:query, :detail}), do: true
   defp correlated_kind_origin?({:resync_watch, ref}, {:watch, ref}), do: true
+
+  defp correlated_kind_origin?({:conversation_list, _, _, _}, {:conversation, :list}),
+    do: true
+
+  defp correlated_kind_origin?({:conversation_new}, {:conversation, :new}), do: true
+  defp correlated_kind_origin?({:conversation_open, _}, {:conversation, :open}), do: true
+  defp correlated_kind_origin?({:project_update, _, _}, {:project, :update}), do: true
   defp correlated_kind_origin?({:query, slot, _, _, _, _}, {:query, slot}), do: true
 
   defp correlated_kind_origin?(
@@ -214,4 +264,9 @@ defmodule SwarmCodeCLI.UI.DataSource.Request do
        do: true
 
   defp correlated_kind_origin?(_kind, _origin), do: false
+
+  defp uuid?(value) when is_binary(value) and byte_size(value) == 36,
+    do: Regex.match?(~r/\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/, value)
+
+  defp uuid?(_value), do: false
 end

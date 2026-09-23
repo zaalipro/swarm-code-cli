@@ -13,7 +13,8 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.LibrarySnapshot do
            :changes,
            :checkpoints,
            :mcp,
-           :memory
+           :memory,
+           :files
          ]},
       title: :text,
       description: :text,

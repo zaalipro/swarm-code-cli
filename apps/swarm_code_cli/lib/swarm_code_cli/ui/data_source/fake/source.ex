@@ -10,7 +10,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Source do
   """
   use GenServer
   alias SwarmCodeCLI.UI.DataSource.{AdmissionError, Delivery, DTO, Request, Watch}
-  alias SwarmCodeCLI.UI.DataSource.Fake.Script
+  alias SwarmCodeCLI.UI.DataSource.Fake.{Script, Session}
   alias SwarmCodeCLI.UI.Intent
   @max_clients 32
   @max_watches 16
@@ -247,7 +247,15 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Source do
   end
 
   defp execute(state, %Request{kind: {:query_detail, _, _, _}} = request) do
-    with {:ok, body} <- SwarmCodeCLI.UI.DataSource.Fake.Details.query(state.script, request),
+    result =
+      Session.detail(state.script, request) ||
+        SwarmCodeCLI.UI.DataSource.Fake.Details.query(state.script, request)
+
+    with {:ok, body} <- result, do: {:ok, state.script, body, []}
+  end
+
+  defp execute(state, %Request{kind: {:conversation_list, _, _, _}} = request) do
+    with {:ok, body} <- Session.conversation_list(state.script, request),
          do: {:ok, state.script, body, []}
   end
 
@@ -310,7 +318,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Source do
                   runs: selected,
                   counts: Script.counts(script),
                   connection: %DTO.Connection{source_epoch: state.epoch}
-                ]
+                ] ++ Session.shell_fields(script)
             )
 
           :workspace ->
@@ -347,7 +355,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Source do
                   interactions_page: struct!(DTO.PageInfo, interaction_attrs),
                   transcript: window,
                   interactions: interaction_items
-                ]
+                ] ++ Session.workspace_fields(script, scope)
             )
 
           :pending ->

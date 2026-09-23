@@ -29,6 +29,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Delivery do
           | DTO.PendingInteractionWindow.t()
           | DTO.PendingInteraction.t()
           | DTO.LibrarySnapshot.t()
+          | DTO.ConversationList.t()
           | DTO.Outcome.t()
           | DTO.Connection.t()
           | Delta.t()
@@ -110,6 +111,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Delivery do
     do:
       match?({:ok, _}, DTO.DetailWindow.validate(body)) or page_body?(body) or
         match?({:ok, _}, DTO.LibrarySnapshot.validate(body)) or
+        match?({:ok, _}, DTO.ConversationList.validate(body)) or
         match?({:ok, _}, DTO.Outcome.validate(body)) or
         match?({:ok, _}, DTO.PendingInteraction.validate(body))
 

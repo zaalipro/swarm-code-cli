@@ -184,8 +184,18 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.Schema do
   def relations?(%{__struct__: DTO.Approval} = approval) do
     String.trim(approval.tool) != "" and
       (is_nil(approval.arguments_detail_ref) or
-         byte_size(approval.arguments_preview) < approval.arguments_detail_ref.total_bytes)
+         byte_size(approval.arguments_preview) < approval.arguments_detail_ref.total_bytes) and
+      Enum.uniq(approval.allowed_decisions) == approval.allowed_decisions and
+      (:always_prefix not in approval.allowed_decisions or
+         (is_binary(approval.command_family) and String.trim(approval.command_family) != ""))
   end
+
+  def relations?(%{__struct__: DTO.ConversationList} = page),
+    do:
+      Enum.uniq_by(page.items, & &1.id) == page.items and
+        Enum.count(page.items, & &1.current) <= 1 and page_relation?(page)
+
+  def relations?(%{__struct__: DTO.RateLimit} = limit), do: limit.used_percent <= 100
 
   def relations?(%{__struct__: DTO.Outcome} = outcome) do
     (is_nil(outcome.feedback) or outcome.status == :accepted) and

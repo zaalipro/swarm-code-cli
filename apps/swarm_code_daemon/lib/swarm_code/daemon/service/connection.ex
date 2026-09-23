@@ -331,7 +331,17 @@ defmodule SwarmCode.Daemon.Service.Connection do
         :question_answer ->
           :question_answer
 
-        op when op in [:query, :detail, :watch, :conversation_open] ->
+        op
+        when op in [
+               :query,
+               :detail,
+               :watch,
+               :conversation_open,
+               :conversation_list,
+               :conversation_new,
+               :mark_seen,
+               :project_update
+             ] ->
           operation
 
         op when op in [:ack, :unwatch, :resync] ->
