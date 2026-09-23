@@ -6,6 +6,13 @@ use crate::input::{Event, Key, Phase, Rejection};
 use std::fmt;
 
 pub const MAX_COMMAND_BYTES: usize = MAX_FRAME_BYTES;
+/// pass70 B10: the largest clipboard text one Copy command carries (OSC 52
+/// sends it base64-encoded, about 87 KiB).
+pub const MAX_COPY_BYTES: usize = 65_536;
+/// Init flag bits: alternate screen, focus reports, bracketed paste, and
+/// (pass70 B10, opt-in) SGR mouse reports for the wheel.
+pub const FLAG_MOUSE: u8 = 16;
+pub const FLAGS: u8 = 1 | 2 | 4 | FLAG_MOUSE;
 pub const MAX_RESPONSE_BYTES: usize = 262_167;
 
 /// A fixed diagnostic that cannot expose rejected input or OS details.
@@ -14,12 +21,35 @@ pub struct ProtocolError;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Command<'a> {
-    Init { generation: u64, flags: u8 },
-    Credit { generation: u64, token: u64 },
-    Draw { sequence: u64, body: &'a [u8] },
-    Shutdown { generation: u64, token: u64 },
-    Suspend { generation: u64, token: u64 },
-    Resume { generation: u64, token: u64 },
+    Init {
+        generation: u64,
+        flags: u8,
+    },
+    Credit {
+        generation: u64,
+        token: u64,
+    },
+    Draw {
+        sequence: u64,
+        body: &'a [u8],
+    },
+    Shutdown {
+        generation: u64,
+        token: u64,
+    },
+    Suspend {
+        generation: u64,
+        token: u64,
+    },
+    Resume {
+        generation: u64,
+        token: u64,
+    },
+    Copy {
+        generation: u64,
+        token: u64,
+        text: &'a str,
+    },
 }
 impl Command<'_> {
     /// Draw inherits the already initialized connection's generation.
@@ -29,7 +59,8 @@ impl Command<'_> {
             | Self::Credit { generation, .. }
             | Self::Shutdown { generation, .. }
             | Self::Suspend { generation, .. }
-            | Self::Resume { generation, .. } => Some(*generation),
+            | Self::Resume { generation, .. }
+            | Self::Copy { generation, .. } => Some(*generation),
             Self::Draw { .. } => None,
         }
     }
@@ -38,7 +69,8 @@ impl Command<'_> {
             Self::Credit { token, .. }
             | Self::Shutdown { token, .. }
             | Self::Suspend { token, .. }
-            | Self::Resume { token, .. } => Some(*token),
+            | Self::Resume { token, .. }
+            | Self::Copy { token, .. } => Some(*token),
             _ => None,
         }
     }
@@ -50,6 +82,7 @@ impl Command<'_> {
             Self::Shutdown { .. } => "shutdown",
             Self::Suspend { .. } => "suspend",
             Self::Resume { .. } => "resume",
+            Self::Copy { .. } => "copy",
         }
     }
 }
@@ -68,6 +101,9 @@ impl fmt::Debug for Command<'_> {
                 debug
                     .field("sequence", sequence)
                     .field("body_bytes", &body.len());
+            }
+            Self::Copy { text, .. } => {
+                debug.field("text_bytes", &text.len());
             }
             _ => {}
         }
@@ -89,6 +125,9 @@ pub fn decode_command(body: &[u8]) -> Result<Command<'_>, ProtocolError> {
             body,
         });
     }
+    if body[1] == 7 {
+        return decode_copy(body);
+    }
     let expected = match body[1] {
         1 => 11,
         2 | 4 | 5 | 6 => 18,
@@ -100,7 +139,7 @@ pub fn decode_command(body: &[u8]) -> Result<Command<'_>, ProtocolError> {
     let generation = u64::from_be_bytes(body[2..10].try_into().map_err(|_| ProtocolError)?);
     if body[1] == 1 {
         let flags = body[10];
-        if flags > 7 {
+        if flags & !FLAGS != 0 {
             return Err(ProtocolError);
         }
         return Ok(Command::Init { generation, flags });
@@ -113,6 +152,61 @@ pub fn decode_command(body: &[u8]) -> Result<Command<'_>, ProtocolError> {
         6 => Command::Resume { generation, token },
         _ => return Err(ProtocolError),
     })
+}
+
+/// `1, 7, generation, token, length:u32, text`: clipboard text for OSC 52.
+/// Line feeds and tabs are kept; every other control, and the bidirectional
+/// overrides and isolates, are refused so the clipboard never receives
+/// terminal instructions or reordered text.
+fn decode_copy(body: &[u8]) -> Result<Command<'_>, ProtocolError> {
+    if body.len() < 23 {
+        return Err(ProtocolError);
+    }
+    let generation = u64::from_be_bytes(body[2..10].try_into().map_err(|_| ProtocolError)?);
+    let token = u64::from_be_bytes(body[10..18].try_into().map_err(|_| ProtocolError)?);
+    let length = u32::from_be_bytes(body[18..22].try_into().map_err(|_| ProtocolError)?) as usize;
+    if !(1..=MAX_COPY_BYTES).contains(&length) || body.len() != 22 + length {
+        return Err(ProtocolError);
+    }
+    let text = std::str::from_utf8(&body[22..]).map_err(|_| ProtocolError)?;
+    if text.chars().any(|c| {
+        (c.is_control() && c != '\n' && c != '\t')
+            || matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+    }) {
+        return Err(ProtocolError);
+    }
+    Ok(Command::Copy {
+        generation,
+        token,
+        text,
+    })
+}
+
+/// The OSC 52 sequence that puts `text` on the system clipboard.
+pub fn osc52(text: &str) -> Vec<u8> {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(8 + bytes.len().div_ceil(3) * 4);
+    out.extend_from_slice(b"\x1b]52;c;");
+    for chunk in bytes.chunks(3) {
+        let n = (u32::from(chunk[0]) << 16)
+            | (u32::from(*chunk.get(1).unwrap_or(&0)) << 8)
+            | u32::from(*chunk.get(2).unwrap_or(&0));
+        out.push(ALPHABET[(n >> 18) as usize & 63]);
+        out.push(ALPHABET[(n >> 12) as usize & 63]);
+        out.push(if chunk.len() > 1 {
+            ALPHABET[(n >> 6) as usize & 63]
+        } else {
+            b'='
+        });
+        out.push(if chunk.len() > 2 {
+            ALPHABET[n as usize & 63]
+        } else {
+            b'='
+        });
+    }
+    out.push(7);
+    out
 }
 
 // Length is checked by each public encoder before this sole allocation site.
@@ -187,6 +281,7 @@ pub fn encode_event(generation: u64, credit: u64, event: &Event) -> Result<Vec<u
         }
         Event::Rejected(_) => 2,
         Event::FocusGained | Event::FocusLost => 1,
+        Event::Wheel { .. } => 7,
     };
     let body_len = 18 + payload_len;
     if body_len > MAX_RESPONSE_BYTES {
@@ -224,6 +319,16 @@ pub fn encode_event(generation: u64, credit: u64, event: &Event) -> Result<Vec<u
         ]),
         Event::FocusGained => packet.push(4),
         Event::FocusLost => packet.push(5),
+        Event::Wheel {
+            up,
+            column,
+            row,
+            modifiers,
+        } => {
+            packet.extend_from_slice(&[6, u8::from(!*up), modifiers.bits()]);
+            packet.extend_from_slice(&column.to_be_bytes());
+            packet.extend_from_slice(&row.to_be_bytes());
+        }
     }
     Ok(packet)
 }
@@ -233,7 +338,7 @@ pub fn ready(
     rows: u16,
     flags: u8,
 ) -> Result<Vec<u8>, ProtocolError> {
-    if columns == 0 || rows == 0 || flags > 7 {
+    if columns == 0 || rows == 0 || flags & !FLAGS != 0 {
         return Err(ProtocolError);
     }
     let mut packet = response(16, generation, 15);

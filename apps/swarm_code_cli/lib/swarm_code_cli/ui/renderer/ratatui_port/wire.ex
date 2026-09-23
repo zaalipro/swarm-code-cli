@@ -10,16 +10,62 @@ defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.Wire do
   @mods [:shift, :control, :alt, :super, :hyper, :meta]
   @rejections {:invalid_utf8, :text_fragment_too_large, :paste_too_large}
   @errors {:protocol, :initialization, :draw, :read, :write, :restoration}
+  # Init flag bits the native side accepts (alternate, focus, paste, mouse).
+  @flag_mask 1 ||| 2 ||| 4 ||| 16
+  @max_copy 65_536
 
+  @doc """
+  The init record. `mouse?` (pass70 B10, optional, default false) asks for
+  SGR mouse reports so the wheel arrives as `{:mouse, :wheel_up | :wheel_down,
+  nil, column, row, modifiers}`; it also turns off the terminal's own text
+  selection, so it stays opt-in.
+  """
   def init(generation, %{alternate?: alt, focus?: focus, paste?: paste} = options)
       when is_integer(generation) and generation >= 0 and generation <= @max_u64 and
-             map_size(options) == 3 and is_boolean(alt) and is_boolean(focus) and
+             map_size(options) in [3, 4] and is_boolean(alt) and is_boolean(focus) and
              is_boolean(paste) do
-    flags = bit(alt, 1) ||| bit(focus, 2) ||| bit(paste, 4)
-    {:ok, <<11::32, 1, 1, generation::64, flags>>}
+    case Map.drop(options, [:alternate?, :focus?, :paste?]) do
+      extra when extra == %{} or extra in [%{mouse?: true}, %{mouse?: false}] ->
+        flags =
+          bit(alt, 1) ||| bit(focus, 2) ||| bit(paste, 4) |||
+            bit(Map.get(extra, :mouse?, false), 16)
+
+        {:ok, <<11::32, 1, 1, generation::64, flags>>}
+
+      _ ->
+        invalid()
+    end
   end
 
   def init(_, _), do: invalid()
+
+  @doc """
+  pass70 B10: clipboard text for OSC 52. Bounded (1..65,536 bytes of UTF-8);
+  line feeds and tabs are kept, CRLF becomes LF, and any other control or
+  bidirectional override is refused, so the clipboard never carries terminal
+  instructions.
+  """
+  def copy(generation, token, text)
+      when is_integer(generation) and generation >= 0 and generation <= @max_u64 and
+             is_integer(token) and token >= 0 and token <= @max_u64 and is_binary(text) do
+    text = String.replace(text, "\r\n", "\n")
+
+    if byte_size(text) in 1..@max_copy and String.valid?(text) and inert?(text),
+      do:
+        {:ok,
+         <<22 + byte_size(text)::32, 1, 7, generation::64, token::64, byte_size(text)::32,
+           text::binary>>},
+      else: invalid()
+  end
+
+  def copy(_, _, _), do: invalid()
+
+  defp inert?(text) do
+    not String.match?(
+      text,
+      ~r/[\x{0}-\x{8}\x{b}-\x{1f}\x{7f}-\x{9f}\x{202a}-\x{202e}\x{2066}-\x{2069}]/u
+    )
+  end
 
   def control(operation, generation, token)
       when operation in [:credit, :shutdown, :suspend, :resume] and
@@ -35,7 +81,7 @@ defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.Wire do
   def decode(_), do: invalid()
 
   defp record(<<1, 16, generation::64, columns::16, rows::16, flags>>)
-       when columns > 0 and rows > 0 and flags <= 7,
+       when columns > 0 and rows > 0 and (flags &&& bnot(@flag_mask)) == 0,
        do: {:ok, {:ready, generation, %Size{columns: columns, rows: rows}, flags}}
 
   defp record(<<1, 24, generation::64>>), do: {:ok, {:resume_needed, generation}}
@@ -80,6 +126,12 @@ defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.Wire do
 
   defp payload(<<3, rejection>>) when rejection <= 2,
     do: {:ok, {:rejected, elem(@rejections, rejection)}}
+
+  defp payload(<<6, direction, modifiers, column::16, row::16>>)
+       when direction in [0, 1] and modifiers < 64 do
+    kind = if direction == 0, do: :wheel_up, else: :wheel_down
+    {:ok, {:mouse, kind, nil, column, row, modifiers(modifiers)}}
+  end
 
   defp payload(<<4>>), do: {:ok, :focus_gained}
   defp payload(<<5>>), do: {:ok, :focus_lost}

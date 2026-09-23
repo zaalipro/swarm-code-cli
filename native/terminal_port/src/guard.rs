@@ -163,9 +163,11 @@ pub fn run(beam_port: bool) -> i32 {
         let mut byte = [0];
         match supervisor.read(&mut byte) {
             Ok(1) => {
+                // Byte 8 (never a flag) restores; any other byte made only of
+                // init flags activates with them.
                 let result = match byte[0] {
-                    0..=7 => tty.activate(byte[0]),
                     8 => tty.restore(),
+                    flags if flags & !crate::protocol::FLAGS == 0 => tty.activate(flags),
                     _ => Err(io::ErrorKind::InvalidData.into()),
                 };
                 let _ = supervisor.write_all(&[u8::from(result.is_ok())]);

@@ -391,4 +391,38 @@ defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.OwnerTest do
 
     status == 0
   end
+
+  # pass70 B10: copy is asynchronous, validated in the caller, and spends a
+  # control token only once the terminal is running.
+  test "copy validates in the caller and sends only while running" do
+    alias SwarmCodeCLI.UI.Renderer.RatatuiPort
+    {owner, _runtime} = owner()
+    before = :sys.get_state(owner).counter
+    assert :ok = RatatuiPort.copy(owner, "early")
+    assert :sys.get_state(owner).counter == before
+
+    ready(owner)
+    assert :ok = RatatuiPort.copy(owner, "hello\n\tworld")
+    assert :sys.get_state(owner).counter == before + 1
+    assert {:error, :invalid_text} = RatatuiPort.copy(owner, "\e[2J")
+    assert {:error, :invalid_text} = RatatuiPort.copy(owner, "")
+    assert :sys.get_state(owner).counter == before + 1
+  end
+
+  test "the mouse flag is expected back in ready and reported as a capability" do
+    runtime = start_supervised!({Runtime, self()})
+
+    owner =
+      start_supervised!(
+        {Owner,
+         runtime: runtime,
+         capabilities: %Capabilities{size: %Size{columns: 80, rows: 24}},
+         flags: %{alternate?: false, focus?: true, paste?: true, mouse?: true},
+         executable: Path.expand("../../../../support/terminal_wire_sink.sh", __DIR__)}
+      )
+
+    record(owner, <<1, 16, 1::64, 80::16, 24::16, 22>>)
+    assert_receive {:registered, ^owner, 1, caps}
+    assert caps.mouse == :best_effort
+  end
 end

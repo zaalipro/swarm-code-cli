@@ -25,6 +25,25 @@ defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.Owner do
 
   def start_link(options), do: GenServer.start_link(__MODULE__, options)
 
+  @doc """
+  pass70 B10: puts `text` on the system clipboard through the terminal (OSC
+  52), between frames. Asynchronous, so the runtime (which this owner calls)
+  never waits on it. `{:error, :invalid_text}` for text the wire refuses:
+  empty, over 64 KiB, invalid UTF-8, or a control other than LF and TAB.
+  Terminals without OSC 52 ignore it; a suspended terminal drops it.
+  """
+  @spec copy(pid(), binary()) :: :ok | {:error, :invalid_text}
+  def copy(owner, text) when is_pid(owner) do
+    case Wire.copy(1, 0, text) do
+      {:ok, _} ->
+        send(owner, {:terminal_copy, text})
+        :ok
+
+      _ ->
+        {:error, :invalid_text}
+    end
+  end
+
   @impl true
   def init(options) do
     Process.flag(:trap_exit, true)
@@ -203,6 +222,23 @@ defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.Owner do
 
   defp dispatch(:grant, state), do: {:noreply, grant(state)}
 
+  # A copy spends a control token only when the port accepted it.
+  defp dispatch({:terminal_copy, text}, %{phase: :running, port: port} = state)
+       when port != nil do
+    token = state.counter + 1
+
+    with {:ok, bytes} <- Wire.copy(1, token, text),
+         true <- Port.command(port, bytes, [:nosuspend]) do
+      {:noreply, %{state | counter: token}}
+    else
+      _ ->
+        Logger.info("clipboard copy dropped: the terminal was busy")
+        {:noreply, state}
+    end
+  end
+
+  defp dispatch({:terminal_copy, _}, state), do: {:noreply, state}
+
   defp dispatch({:plain_instruction, "Rerun with --plain"}, %{phase: :restored} = state) do
     IO.puts(
       "Run (cd apps/swarm_code_cli && MIX_QUIET=1 mise exec -- mix swarm_code.demo.plain --script complete)"
@@ -235,9 +271,11 @@ defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.Owner do
   end
 
   defp record({:ready, 1, size, bits}, state) do
+    mouse? = Map.get(state.flags, :mouse?, false)
+
     expected =
       if(state.flags.alternate?, do: 1, else: 0) ||| if(state.flags.focus?, do: 2, else: 0) |||
-        if state.flags.paste?, do: 4, else: 0
+        if(state.flags.paste?, do: 4, else: 0) ||| if(mouse?, do: 16, else: 0)
 
     true = bits == expected and state.phase in [:initializing, :resuming]
 
@@ -254,7 +292,7 @@ defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.Owner do
         focus: feature(state.flags.focus?),
         paste: feature(state.flags.paste?),
         enhanced_keys: :unavailable,
-        mouse: :unavailable
+        mouse: feature(mouse?)
     }
 
     state = cancel(state)

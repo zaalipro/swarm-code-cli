@@ -124,6 +124,10 @@ impl Tty {
         if flags & 4 != 0 {
             out.write_all(b"\x1b[?2004h")?;
         }
+        // pass70 B10: button reports in SGR encoding, for the wheel only.
+        if flags & crate::protocol::FLAG_MOUSE != 0 {
+            out.write_all(b"\x1b[?1000h\x1b[?1006h")?;
+        }
         out.flush()
     }
     pub fn restore(&mut self) -> io::Result<()> {

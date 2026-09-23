@@ -288,7 +288,14 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
         child!(supervisor, Owner,
           runtime: runtime,
           capabilities: caps,
-          flags: %{alternate?: true, focus?: true, paste?: true},
+          # B10: SWARM_MOUSE=1 opts into wheel reports (they turn off the
+          # terminal's own click-and-drag selection, so never by default).
+          flags: %{
+            alternate?: true,
+            focus?: true,
+            paste?: true,
+            mouse?: System.get_env("SWARM_MOUSE") == "1"
+          },
           executable: executable
         )
 

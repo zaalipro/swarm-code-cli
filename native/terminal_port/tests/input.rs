@@ -531,3 +531,33 @@ fn sos_control_strings_discard_at_every_split_and_only_st_terminates() {
     assert_eq!(parser.finish(), None);
     assert_eq!(feed(&mut parser, b"x"), vec![text("x")]);
 }
+
+// pass70 B10: SGR mouse reports (opt-in) carry the wheel; nothing else leaks.
+#[test]
+fn sgr_wheel_reports_become_events_and_other_mouse_reports_are_consumed() {
+    let wheel = |up, column, row, bits| Event::Wheel {
+        up,
+        column,
+        row,
+        modifiers: Modifiers::from_bits(bits).unwrap(),
+    };
+    let bytes = b"\x1b[<64;10;5M\x1b[<0;3;3M\x1b[<0;3;3m\x1b[<65;1;1M\x1b[<32;4;4M\
+\x1b[<66;1;1M\x1b[<64;0;1M\x1b[<84;2;2M\x1b[<72;2;2Ma";
+    for split in 0..=bytes.len() {
+        let mut p = InputParser::new();
+        let mut events = feed(&mut p, &bytes[..split]);
+        events.extend(feed(&mut p, &bytes[split..]));
+        assert_eq!(
+            events,
+            vec![
+                wheel(true, 9, 4, 0),
+                wheel(false, 0, 0, 0),
+                // 64 + 16 Control + 4 Shift; 64 + 8 Alt.
+                wheel(true, 1, 1, 1 | 2),
+                wheel(true, 1, 1, 4),
+                text("a"),
+            ],
+            "split at {split}"
+        );
+    }
+}
