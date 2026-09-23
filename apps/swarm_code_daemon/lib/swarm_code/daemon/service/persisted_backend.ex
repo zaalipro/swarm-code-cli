@@ -13,6 +13,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   alias SwarmCode.Protocol.ServiceRequest
   alias SwarmCode.Domain.Engine.{Events, Questions, RunServer}
   @max_models 400
+  # pass70 C8: finished-run checkpoints whose change facts a reload computes.
+  @facts_per_reload 50
   # Operations that read: never ledgered, answered with a typed error.
   @reads [:query, :detail, :feature_query, :conversation_list]
   @terminal [:completed, :failed, :cancelled, :interrupted]
@@ -1341,15 +1343,13 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
   # pass70 C8: per checkpoint of a finished run, what `FeatureCatalog.change_diff/2`
   # says it changed (counts, file state, the diff's size). Computed once per
-  # checkpoint, at most 50 per projection, kept for the checkpoints shown.
-  @facts_per_reload 50
-
-  defp change_facts(cache, checkpoints, terminal, conversation) do
+  # checkpoint, at most `budget` per projection, kept for the checkpoints shown.
+  defp change_facts(cache, checkpoints, terminal, conversation, budget) do
     finished = MapSet.new(terminal)
     shown = Enum.filter(checkpoints, &MapSet.member?(finished, &1.run_id))
 
     {facts, _budget} =
-      Enum.reduce(shown, {%{}, @facts_per_reload}, fn c, {acc, budget} ->
+      Enum.reduce(shown, {%{}, budget}, fn c, {acc, budget} ->
         case Map.fetch(cache, c.id) do
           {:ok, facts} ->
             {Map.put(acc, c.id, facts), budget}
@@ -1554,10 +1554,12 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     {:ok, records, _, _} = PersistedProjection.records(conv, nil, nil, "before", 200)
     ids = Enum.map(rows, & &1.id)
     agents = PersistedProjection.agents(conv, ids)
-    build_projection(state, rows, records, agents)
+    build_projection(state, rows, records, agents, @facts_per_reload)
   end
 
-  defp build_projection(state, rows, records, agents) do
+  # `facts_budget`: how many finished-run checkpoints may have their change
+  # facts computed now — the reload's; a query's page reuses what it has.
+  defp build_projection(state, rows, records, agents, facts_budget \\ 0) do
     conv = state.opts[:conversation_id]
     ids = Enum.map(rows, & &1.id)
     pending = Questions.list(conv) |> Enum.take(200)
@@ -1569,7 +1571,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     terminal =
       for row <- rows, row.status in ["done", "stopped", "failed", "interrupted"], do: row.id
 
-    facts = change_facts(state.change_facts, checkpoints, terminal, conv)
+    facts = change_facts(state.change_facts, checkpoints, terminal, conv, facts_budget)
     state = %{state | change_facts: facts}
     op_facts = op_diff_facts(checkpoints, facts)
     checkpoint_counts = PersistedProjection.checkpoint_counts(conv, ids)
