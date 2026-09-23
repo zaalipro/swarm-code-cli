@@ -112,10 +112,14 @@ defmodule SwarmCode.Daemon.Schema.Gate do
       else: {:error, Refusal.not_a_database()}
   end
 
+  # Only bytes that were read and are not the header refuse here (a zero-byte
+  # file reads as `:eof`); a path that cannot be opened goes on to the probe,
+  # which says why exactly as before.
   defp sqlite_header?(path) do
     case File.open(path, [:read, :binary], &IO.binread(&1, 16)) do
       {:ok, "SQLite format 3" <> <<0>>} -> true
-      _ -> false
+      {:ok, _other} -> false
+      {:error, _reason} -> true
     end
   end
 

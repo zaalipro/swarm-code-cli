@@ -256,6 +256,17 @@ defmodule SwarmCode.Daemon.Schema.GateTest do
     end
   end
 
+  test "an unreadable database is not called a stray file (pass70 Q13)", %{
+    manifest: manifest,
+    current: database
+  } do
+    File.chmod!(database, 0o000)
+    on_exit(fn -> File.chmod(database, 0o600) end)
+
+    assert {:error, error} = Gate.check(database, manifest, "0.1.0-dev")
+    refute error.message =~ "is not a SwarmCode database"
+  end
+
   test "a database that fails its integrity check says so (pass70 Q13)", %{
     manifest: manifest,
     current: database
