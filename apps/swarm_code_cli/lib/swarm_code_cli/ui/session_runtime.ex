@@ -39,6 +39,10 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
 
   # How long a terminal has to acknowledge a copy before it is taken as unable.
   @copy_ack_ms 1_000
+  # How long a terminal has to step aside before Ctrl-X gives up.
+  @suspend_ms 5_000
+  # The edited draft is read back bounded like a paste (plus a final newline).
+  @max_edit_bytes 262_144
 
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
 
@@ -128,7 +132,10 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
        close_kind: nil,
        shutdown_token: nil,
        close_timer: nil,
-       copy: nil
+       copy: nil,
+       # Ctrl-X: nil, or %{key, dir, file, task, timer} while the editor owns the terminal.
+       edit: nil,
+       editor: Keyword.get(opts, :editor, &__MODULE__.run_editor/1)
      }}
   end
 
@@ -176,6 +183,7 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
         {:presenter_handoff_confirmed, _} -> false
         {:invoke, _, _} -> false
         {:timer_fired, _} -> false
+        {:external_edit_done, _, _} -> false
         _ -> true
       end
 
@@ -236,6 +244,20 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
 
   def handle_info({:copy_timeout, token}, %{copy: {token, _, _}} = state),
     do: {:noreply, copy_notice(state, :timeout)}
+
+  def handle_info({ref, result}, %{edit: %{task: %Task{ref: ref}}} = state) do
+    Process.demonitor(ref, [:flush])
+    {:noreply, finish_edit(state, result)}
+  end
+
+  def handle_info(
+        {:DOWN, ref, :process, _, _},
+        %{edit: %{task: %Task{ref: ref}}} = state
+      ),
+      do: {:noreply, finish_edit(state, {:error, :unavailable})}
+
+  def handle_info({:edit_timeout, key}, %{edit: %{key: key, task: nil}} = state),
+    do: {:noreply, finish_edit(state, {:error, :terminal})}
 
   def handle_info({:owned_timer, id, token}, %{phase: :running} = state) do
     case TimerSupervisor.settle(state.timers, id, token) do
@@ -329,8 +351,118 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
     {ui, emitted} = Reducer.update(state.ui, action)
     next = %{state | ui: ui}
     effects(next, emitted)
-    if ui == state.ui, do: next, else: commit(next, state.ui)
+    next = if ui == state.ui, do: next, else: commit(next, state.ui)
+    start_editor(next)
   end
+
+  # Ctrl-X, second step: the terminal has stepped aside, so the editor runs
+  # (owned by this process, linked and monitored) on the private copy.
+  defp start_editor(%{edit: %{task: nil} = edit, ui: %{lifecycle: :suspended}} = state) do
+    cancel(edit.timer)
+    runner = state.editor
+    file = edit.file
+
+    task =
+      Task.async(fn ->
+        with :ok <- runner.(file), do: read_back(file)
+      end)
+
+    %{state | edit: %{edit | task: task, timer: nil}}
+  end
+
+  defp start_editor(state), do: state
+
+  # The terminal comes back, the copy is removed, and the reducer gets the
+  # text or the reason; whatever happened, the edit is over.
+  defp finish_edit(%{edit: edit} = state, result) do
+    cancel(edit.timer)
+
+    if state.terminal,
+      do: send(state.terminal, {:terminal_control, :resume, state.ui.terminal_generation})
+
+    remove_edit(edit)
+
+    result =
+      if match?({:ok, _}, result) or match?({:error, _}, result),
+        do: result,
+        else: {:error, :unavailable}
+
+    update(%{state | edit: nil}, {:external_edit_done, edit.key, result})
+  end
+
+  @doc false
+  # Runs $VISUAL, else $EDITOR, else vi on `file`; the command may carry
+  # arguments (`code -w`). A port child runs in a session of its own, so
+  # `/dev/tty` is not there: with `:nouse_stdio` it inherits this VM's stdin
+  # and stdout, the terminal itself (the native port reopens it the same way).
+  def run_editor(file) do
+    command =
+      [System.get_env("VISUAL"), System.get_env("EDITOR")]
+      |> Enum.map(&String.trim(&1 || ""))
+      |> Enum.find("vi", &(&1 != ""))
+
+    port =
+      Port.open({:spawn_executable, ~c"/bin/sh"}, [
+        :exit_status,
+        :nouse_stdio,
+        args: [
+          "-c",
+          ~s(exec $SWARM_EDIT_COMMAND "$1" 2>&1),
+          "swarmcode-editor",
+          file
+        ],
+        env: [{~c"SWARM_EDIT_COMMAND", String.to_charlist(command)}]
+      ])
+
+    receive do
+      {^port, {:exit_status, 0}} -> :ok
+      {^port, {:exit_status, status}} -> {:error, {:exit, min(max(status, 1), 255)}}
+    end
+  rescue
+    _ -> {:error, :unavailable}
+  end
+
+  defp read_back(file) do
+    with {:ok, %{size: size}} when size <= @max_edit_bytes + 1 <- File.stat(file),
+         {:ok, text} <- File.read(file) do
+      # Editors end a file with a newline the draft never had.
+      text = String.replace_suffix(text, "\n", "")
+
+      cond do
+        byte_size(text) > @max_edit_bytes -> {:error, :too_large}
+        not String.valid?(text) -> {:error, :not_utf8}
+        true -> {:ok, text}
+      end
+    else
+      {:ok, _} -> {:error, :too_large}
+      _ -> {:error, :unavailable}
+    end
+  end
+
+  # A private directory (0700) holding one file (0600) with the draft.
+  defp edit_copy(text) do
+    dir =
+      Path.join(
+        System.tmp_dir!(),
+        "swarmcode-edit-" <> Base.url_encode64(:crypto.strong_rand_bytes(12), padding: false)
+      )
+
+    file = Path.join(dir, "draft.md")
+
+    with :ok <- File.mkdir(dir),
+         :ok <- File.chmod(dir, 0o700),
+         :ok <- File.write(file, text, [:exclusive]),
+         :ok <- File.chmod(file, 0o600) do
+      {:ok, dir, file}
+    else
+      _ ->
+        File.rm_rf(dir)
+        :error
+    end
+  end
+
+  defp remove_edit(%{dir: dir}) when is_binary(dir), do: File.rm_rf(dir)
+  defp remove_edit(_), do: :ok
 
   # Every state the terminal will see is also the companion's; the hub
   # coalesces, so this is one message per change and nothing more.
@@ -427,6 +559,30 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
   end
 
   defp local_effect(state, {:copy, _text}), do: copy_notice(state, :unsupported)
+
+  # Ctrl-X, first step: a private copy of the draft, then the terminal is
+  # asked to step aside; the editor starts once it has (`start_editor/1`).
+  defp local_effect(
+         %{phase: :running, terminal: terminal, edit: nil} = state,
+         {:edit_externally, key, text}
+       )
+       when is_pid(terminal) do
+    case edit_copy(text) do
+      {:ok, dir, file} ->
+        send(terminal, {:terminal_control, :suspend, state.ui.terminal_generation})
+        timer = Process.send_after(self(), {:edit_timeout, key}, @suspend_ms)
+        %{state | edit: %{key: key, dir: dir, file: file, task: nil, timer: timer}}
+
+      :error ->
+        update(state, {:external_edit_done, key, {:error, :unavailable}})
+    end
+  end
+
+  defp local_effect(%{edit: nil} = state, {:edit_externally, key, _text}),
+    do: update(state, {:external_edit_done, key, {:error, :terminal}})
+
+  defp local_effect(state, {:edit_externally, key, _text}),
+    do: update(state, {:external_edit_done, key, {:error, :busy}})
 
   # Announcements already live in the safe Scene; no text is sent to terminal state.
   defp local_effect(state, _), do: state
@@ -688,6 +844,8 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
 
   @impl true
   def terminate(_, state) do
+    if state.edit && state.edit.task, do: Task.shutdown(state.edit.task, :brutal_kill)
+    remove_edit(state.edit)
     cancel(state.close_timer)
     cancel(state.binding_timer)
     cancel(state.frame_timer)

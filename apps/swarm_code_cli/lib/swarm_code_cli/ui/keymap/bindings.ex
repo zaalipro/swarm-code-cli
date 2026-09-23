@@ -968,6 +968,15 @@ defmodule SwarmCodeCLI.UI.Keymap.Bindings do
       hint: 7
     },
     %Binding{
+      id: :external_editor,
+      keys: [{"x", [:control]}],
+      action: {:special, :external_editor},
+      contexts: [:composer, :composer_normal],
+      group: :edit,
+      label: "Editor",
+      help: "Edit the draft in $VISUAL or $EDITOR; saving and quitting brings it back"
+    },
+    %Binding{
       id: :composer_up,
       keys: [{:up, []}],
       action: {:special, :composer_up},

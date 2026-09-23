@@ -2,7 +2,7 @@ defmodule SwarmCodeCLI.UI.Effect do
   @moduledoc "The exhaustive declarative reducer effect vocabulary."
 
   alias SwarmCodeCLI.UI.DataSource.{Request, Watch}
-  alias SwarmCodeCLI.UI.{Action, Intent, SafeText}
+  alias SwarmCodeCLI.UI.{Action, DraftKey, Intent, SafeText}
 
   @type t ::
           {:watch, Watch.t()}
@@ -18,6 +18,7 @@ defmodule SwarmCodeCLI.UI.Effect do
           | {:presenter_handoff, :plain}
           | {:companion, :open}
           | {:copy, binary()}
+          | {:edit_externally, DraftKey.t(), binary()}
           | {:detach, non_neg_integer()}
 
   # What select mode's `y` may put on the clipboard in one OSC 52 write.
@@ -74,6 +75,16 @@ defmodule SwarmCodeCLI.UI.Effect do
         effect,
         is_binary(text) and text != "" and byte_size(text) <= @max_copy_bytes and
           String.valid?(text)
+      )
+
+  # Ctrl-X: the session runtime suspends the terminal, runs $VISUAL/$EDITOR
+  # on a private copy of the draft and answers `{:external_edit_done, …}`.
+  def validate({:edit_externally, key, text} = effect),
+    do:
+      valid_effect(
+        effect,
+        match?({:ok, _}, DraftKey.validate(key)) and is_binary(text) and
+          byte_size(text) <= @max_copy_bytes and String.valid?(text)
       )
 
   def validate({:detach, exit_status} = effect),

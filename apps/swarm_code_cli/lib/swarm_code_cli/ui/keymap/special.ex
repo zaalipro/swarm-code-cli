@@ -73,6 +73,14 @@ defmodule SwarmCodeCLI.UI.Keymap.Special do
   # transcript or the inspector.
   def run(:select_mode, _key, _state, _table), do: ok(:select_mode)
 
+  # Ctrl-X: the draft goes to $VISUAL/$EDITOR and comes back when it exits.
+  def run(:external_editor, _key, state, _table) do
+    case State.current_draft_key(state) do
+      nil -> :ignore
+      key -> ok({:external_editor, key})
+    end
+  end
+
   def run(:copy_selected, _key, _state, _table), do: ok(:copy_selection)
 
   # "q" closes the top layer and only quits when there is none. Inside a run

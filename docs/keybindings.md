@@ -61,6 +61,7 @@ the command palette).
 |---|---|
 | `Tab` | Complete a slash command; while a turn runs, queue the draft behind it |
 | `Ctrl-O` / `Ctrl-J` / `Shift-Enter` | Insert a line break without sending (Ctrl-O or Ctrl-J) |
+| `Ctrl-X` | Edit the draft in $VISUAL or $EDITOR; saving and quitting brings it back |
 | `↑` | Up a line; on an empty draft, the previous prompt; up the slash list |
 | `↓` | Down a line; back towards the draft in prompt history; down the slash list |
 | `Ctrl-A` | Move to the start of the line |
@@ -165,6 +166,12 @@ the command palette).
 | `Alt-H` / `Alt-Shift-H` / `Ctrl-Alt-H` / `Ctrl-Alt-Shift-H` | Narrow the inspector dock (add Ctrl for a bigger step) |
 | `Alt-L` / `Alt-Shift-L` / `Ctrl-Alt-L` / `Ctrl-Alt-Shift-L` | Widen the inspector dock (add Ctrl for a bigger step) |
 | `Alt-0` / `Alt-Shift-0` / `Ctrl-Alt-0` / `Ctrl-Alt-Shift-0` | Reset the inspector dock to its default width |
+
+### Edit
+
+| Keys | Does |
+|---|---|
+| `Ctrl-X` | Edit the draft in $VISUAL or $EDITOR; saving and quitting brings it back |
 
 ### Session
 

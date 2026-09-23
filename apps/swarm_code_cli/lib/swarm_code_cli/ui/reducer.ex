@@ -530,6 +530,37 @@ defmodule SwarmCodeCLI.UI.Reducer do
 
   defp transition(state, {:complete_command, name}), do: SlashPalette.complete(state, name)
   defp transition(state, {:complete_path, path}), do: PathCompletion.complete(state, path)
+
+  # Ctrl-X. The terminal steps aside exactly as for Ctrl-Z (no frame is drawn
+  # while it does); the session runtime runs the editor and answers.
+  defp transition(%{lifecycle: :running} = state, {:external_editor, key}) do
+    if key == State.current_draft_key(state) do
+      text = Editor.text(Drafts.fetch(state.drafts, key).editor)
+      {%{state | lifecycle: :suspend_requested}, [{:edit_externally, key, text}]}
+    else
+      {state, []}
+    end
+  end
+
+  defp transition(state, {:external_editor, _}), do: {state, []}
+
+  # The edited text replaces the draft as one undoable edit; the terminal's
+  # own `:resumed` brings the lifecycle back when it was suspended.
+  defp transition(state, {:external_edit_done, key, result}) do
+    state =
+      if state.lifecycle == :suspend_requested, do: %{state | lifecycle: :running}, else: state
+
+    case result do
+      {:ok, text} ->
+        if text == Editor.text(Drafts.fetch(state.drafts, key).editor),
+          do: {state, []},
+          else: replace_draft(%{state | history_cursor: nil}, key, text)
+
+      {:error, reason} ->
+        {%{state | notice: {:command_feedback, external_edit_words(reason)}}, []}
+    end
+  end
+
   defp transition(state, :dismiss_completion), do: PathCompletion.dismiss(state)
   defp transition(state, {:scroll, region, operation}), do: Pages.scroll(state, region, operation)
 
@@ -1745,6 +1776,23 @@ defmodule SwarmCodeCLI.UI.Reducer do
 
     {%{state | slash_palette: nil}, a ++ b}
   end
+
+  defp external_edit_words({:exit, status}),
+    do: "The editor exited with status #{status}; the draft is unchanged."
+
+  defp external_edit_words(:too_large),
+    do: "The edited text is over 256 KiB; the draft is unchanged."
+
+  defp external_edit_words(:not_utf8),
+    do: "The edited text is not UTF-8; the draft is unchanged."
+
+  defp external_edit_words(:terminal),
+    do: "The terminal could not step aside for the editor."
+
+  defp external_edit_words(:busy), do: "The editor is already open."
+
+  defp external_edit_words(:unavailable),
+    do: "No editor could be started; set $VISUAL or $EDITOR."
 
   # ------------------------------------------------- client slash commands
 
