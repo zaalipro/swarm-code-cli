@@ -22,6 +22,7 @@ release="$root/_build/prod/rel/swarm_code_cli"
 rm -rf -- "$share"
 mkdir -p -- "$share" "$bin"
 cp -R -- "$release/." "$share/"
+chmod 0600 "$share/releases/COOKIE"
 
 cat > "$bin/swarmcode" <<SHIM
 #!/bin/sh
