@@ -88,6 +88,38 @@ defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.OwnerTest do
     assert :sys.get_state(owner).credit == 2
   end
 
+  # pass71 F4 (V's request I-2/S-2): the launcher's theme reaches the paint;
+  # without it the light palette was reachable only from tests.
+  test "the theme the launcher chose paints the frame" do
+    runtime = start_supervised!({Runtime, self()})
+    caps = %Capabilities{size: %Size{columns: 80, rows: 24}, color_mode: :truecolor}
+
+    owner =
+      start_supervised!(
+        {Owner,
+         runtime: runtime,
+         capabilities: caps,
+         theme: :light,
+         flags: %{alternate?: false, focus?: true, paste?: true},
+         executable: Path.expand("../../../../support/terminal_wire_sink.sh", __DIR__)}
+      )
+
+    ready(owner)
+    scene(runtime, 1)
+    send(owner, {:draw, "light", 1})
+    plan = :sys.get_state(owner).last_plan
+    backgrounds = plan.palette |> Tuple.to_list() |> Enum.map(& &1.background)
+    assert {:rgb, 0xF4, 0xF3, 0xF1} in backgrounds
+  end
+
+  test "rich terminals get the rich glyph tier from a hand-built capability set" do
+    assert Capabilities.glyph_tier(:truecolor, :narrow, false, "xterm-ghostty") == :rich
+    assert Capabilities.glyph_tier(:ansi256, :narrow, false, "xterm-ghostty") == :measured
+    assert Capabilities.glyph_tier(:truecolor, :wide, false, "xterm-kitty") == :measured
+    assert Capabilities.glyph_tier(:truecolor, :narrow, true, "xterm-kitty") == :measured
+    assert Capabilities.glyph_tier(:truecolor, :narrow, false, "screen") == :measured
+  end
+
   test "consumed input credit is replenished only after the current draw flushes" do
     {owner, runtime} = owner()
     ready(owner)

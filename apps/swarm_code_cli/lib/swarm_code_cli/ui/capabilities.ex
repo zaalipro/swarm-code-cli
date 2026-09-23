@@ -156,11 +156,7 @@ defmodule SwarmCodeCLI.UI.Capabilities do
 
     # Rich glyphs need true colour to be worth it, the narrow policy to measure as
     # one cell, and a terminal known to render the ambiguous blocks as one cell.
-    tier =
-      if mode == :truecolor and width == :narrow and not probe.ascii? and
-           rich_terminal?(probe.term),
-         do: :rich,
-         else: :measured
+    tier = glyph_tier(mode, width, probe.ascii?, probe.term)
 
     explicit(
       probe.size,
@@ -193,6 +189,18 @@ defmodule SwarmCodeCLI.UI.Capabilities do
   end
 
   defp truecolor_terminal?(_), do: false
+
+  @doc """
+  The glyph tier a launcher that builds its capabilities by hand should use
+  (pass71 F4: the release and the dev launchers never took the probe's path,
+  so every real session drew at the measured tier).
+  """
+  @spec glyph_tier(color_mode(), ambiguous_width(), boolean(), String.t() | nil) :: glyph_tier()
+  def glyph_tier(mode, width, ascii?, term) do
+    if mode == :truecolor and width == :narrow and not ascii? and rich_terminal?(term),
+      do: :rich,
+      else: :measured
+  end
 
   defp rich_terminal?(term) when is_binary(term) do
     components = String.split(term, "-")

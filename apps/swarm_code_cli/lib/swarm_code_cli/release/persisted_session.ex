@@ -291,12 +291,17 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
           timeout: 30_000
         )
 
+      color_mode = color_mode()
+      ascii? = ascii?(System.get_env())
+
       caps = %Capabilities{
         size: %Size{columns: 80, rows: 24},
         stdin_tty?: true,
         stdout_tty?: true,
-        color_mode: color_mode(),
-        ascii?: ascii?(System.get_env())
+        color_mode: color_mode,
+        ascii?: ascii?,
+        # pass71 F4: the rich tier (thin rails, V1) where the terminal has it.
+        glyph_tier: Capabilities.glyph_tier(color_mode, :narrow, ascii?, System.get_env("TERM"))
       }
 
       init = %Init{
@@ -334,7 +339,8 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
             paste?: true,
             mouse?: System.get_env("SWARM_MOUSE") == "1"
           },
-          executable: executable
+          executable: executable,
+          theme: SwarmCodeCLI.UI.Theme.mode(System.get_env("SWARM_THEME"), settings_mode())
         )
 
       owner_monitor = Process.monitor(owner)
@@ -1007,6 +1013,22 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
   """
   @spec ascii?(map()) :: boolean()
   def ascii?(env) when is_map(env), do: Map.get(env, "SWARM_ASCII") in ["1", "true", "yes"]
+
+  # pass71 F4: the desktop's light/dark choice (`settings.mode`), read
+  # without `Settings.get/0`, which inserts the row when it is missing.
+  defp settings_mode do
+    case SwarmCode.Domain.Repo.query(
+           "SELECT mode FROM settings ORDER BY inserted_at LIMIT 1",
+           []
+         ) do
+      {:ok, %{rows: [[mode]]}} -> mode
+      _ -> nil
+    end
+  rescue
+    _ -> nil
+  catch
+    :exit, _ -> nil
+  end
 
   defp color_mode do
     cond do

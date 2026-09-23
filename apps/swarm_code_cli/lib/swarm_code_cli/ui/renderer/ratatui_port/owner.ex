@@ -86,6 +86,9 @@ defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.Owner do
        port: port,
        decoder: Decoder.new(),
        caps: caps,
+       # pass71 F4 (V's request I-2/S-2): the launcher decides the theme once
+       # (`Theme.mode/2`: SWARM_THEME, else the desktop settings' mode).
+       theme: Keyword.get(options, :theme, :dark),
        flags: flags,
        slot: nil,
        generation: 1,
@@ -482,7 +485,8 @@ defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.Owner do
         options = %Options{
           color_mode: state.caps.color_mode,
           ascii?: state.caps.ascii?,
-          glyph_tier: state.caps.glyph_tier
+          glyph_tier: state.caps.glyph_tier,
+          theme: state.theme
         }
 
         case encode(fn -> Paint.build(scene, options) end, sequence) do

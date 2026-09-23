@@ -104,7 +104,9 @@ defmodule SwarmCode.Development.LiveSession do
           size: %Size{columns: 80, rows: 24},
           stdin_tty?: true,
           stdout_tty?: true,
-          color_mode: color_mode()
+          color_mode: color_mode(),
+          glyph_tier:
+            Capabilities.glyph_tier(color_mode(), :narrow, false, System.get_env("TERM"))
         }
 
         init = %Init{
@@ -139,7 +141,8 @@ defmodule SwarmCode.Development.LiveSession do
             runtime: runtime,
             capabilities: caps,
             flags: %{alternate?: true, focus?: true, paste?: true},
-            executable: executable
+            executable: executable,
+            theme: SwarmCodeCLI.UI.Theme.mode(System.get_env("SWARM_THEME"), nil)
           )
 
         owner_monitor = Process.monitor(owner)
