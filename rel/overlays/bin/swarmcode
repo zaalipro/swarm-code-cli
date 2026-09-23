@@ -23,8 +23,9 @@ Opens the saved session for DIR (default: the current directory).
   --continue, -c  continue the latest conversation (the default)
   --resume ID     open the conversation with this id
   --model M       use model M (or provider/model) for this session only
-  -p PROMPT       run one turn without the full-screen view, print the answer and
-                  exit; approvals nobody can give are denied and said on stderr.
+  -p PROMPT       run one turn in a new conversation (-c or --resume to continue
+                  one) without the full-screen view, print the answer and exit;
+                  approvals nobody can give are denied and said on stderr.
                   PROMPT - reads the prompt from stdin
   --json          with -p: print one JSON object instead of the streamed answer
   --plain         line-by-line presenter for pipes, CI and SSH (type `help`);
@@ -169,6 +170,10 @@ export SWARM_PROJECT_ROOT
 export SWARM_TERMINAL_PORT="${SWARM_TERMINAL_PORT:-$root/bin/swarm-terminal-port}"
 if [[ -n "$conversation" ]]; then
   export SWARM_CONVERSATION="$conversation"
+elif [[ $prompt_set -eq 1 && -z "${SWARM_CONVERSATION:-}" ]]; then
+  # pass71 F9 (review R6): a one-shot starts its own conversation; it used to
+  # land in the conversation you were working in and carry all its context.
+  export SWARM_CONVERSATION=new
 fi
 # A session's model override comes from --model alone: an export left in a
 # shell or an environment file never changes which model answers.

@@ -83,6 +83,7 @@ defmodule SwarmCodeCLI.Release.Headless do
   defp run_session(session, mode) do
     # First-run onboarding (D3) says on stderr that it wrote the provider row.
     if notice = session[:notice], do: IO.puts(:stderr, "swarmcode: " <> notice)
+    warn_full_access(session, mode)
     {dir, stat} = private_directory()
     {:ok, supervisor} = Supervisor.start_link([], strategy: :one_for_all, max_restarts: 0)
     Process.unlink(supervisor)
@@ -123,6 +124,19 @@ defmodule SwarmCodeCLI.Release.Headless do
       remove_private_directory(dir, stat)
     end
   end
+
+  # pass71 F9 (review R6): `-p` runs with the project's approval mode, and in
+  # full access nothing asks; say so once, before the turn, on stderr.
+  @doc false
+  def warn_full_access(%{project: %{approval_mode: "full_access"}}, {:prompt, _, _}) do
+    IO.puts(
+      :stderr,
+      "swarmcode: this project is in full access: commands and edits run without asking " <>
+        "(/approval auto in swarmcode to change it)."
+    )
+  end
+
+  def warn_full_access(_session, _mode), do: :ok
 
   defp present({:prompt, prompt, format}, source, epoch, conversation) do
     OneShot.run(

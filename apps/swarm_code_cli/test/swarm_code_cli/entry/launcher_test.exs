@@ -155,6 +155,17 @@ defmodule SwarmCodeCLI.Release.LauncherTest do
       assert stub(context)["MODEL"] == "<unset>"
     end
 
+    # pass71 F9 (review R6): a one-shot no longer lands in the working
+    # conversation; -c and --resume still choose one, and so does the export.
+    test "-p alone starts a new conversation", context do
+      launch(context, ["-p", "hi"])
+      assert stub(context)["CONVERSATION"] == "new"
+      launch(context, ["-p", "hi"], [{"SWARM_CONVERSATION", @conversation}])
+      assert stub(context)["CONVERSATION"] == @conversation
+      launch(context, ["--plain"])
+      assert stub(context)["CONVERSATION"] == "<unset>"
+    end
+
     test "--new and --continue name the conversation; the flag wins over the export", context do
       launch(context, ["--new", "-p", "hi"], [{"SWARM_CONVERSATION", @conversation}])
       assert stub(context)["CONVERSATION"] == "new"

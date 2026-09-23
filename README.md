@@ -133,10 +133,11 @@ swarmcode [DIR] [--new | --continue | --resume ID] [--model M]
   latest, `--resume ID` a given one; `/resume` in the TUI picks one by title.
 - `--model M` (or `provider/model`) answers with another model for this session
   only; nothing is written to the providers or the conversation.
-- `-p PROMPT` runs one turn without the full-screen view and prints the answer
+- `-p PROMPT` runs one turn in a new conversation (add `-c` or `--resume ID` to
+  continue one) without the full-screen view and prints the answer
   as it streams (`-p -` reads the prompt from stdin). The project's approval mode
   applies; anything that would still need a person is denied, and a line on
-  stderr says what. A question stops the run. `--json` prints one object at the
+  stderr says what (and, in full access, that nothing asks). A question stops the run. `--json` prints one object at the
   end instead: `conversation_id`, `run_id`, `state`, `text`, `error`, `denied`,
   `exit_code`.
 - `--plain` is the line presenter for pipes, CI and SSH (one command per line,
@@ -148,7 +149,7 @@ swarmcode [DIR] [--new | --continue | --resume ID] [--model M]
 
 ```sh
 swarmcode -p "summarise the open TODOs in lib/" > todos.md
-swarmcode --new -p "run the tests and fix what fails" --json | jq .state
+swarmcode -p "run the tests and fix what fails" --json | jq .state
 swarmcode -p - --model anthropic/claude-sonnet < review-request.md
 ```
 
