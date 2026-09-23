@@ -820,10 +820,47 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
     detail =
       if expanded?,
         do: Enum.flat_map(items, &worker_detail_rows(&1, ctx, state, width, true)),
-        else: []
+        else: stopped_report_rows(items, agent, ctx, state, width)
 
     [line | detail]
   end
+
+  # pass71 F14 (review R9): a swarm stopped before the lead's synthesis kept
+  # only the quoted first line of each finished worker's report, so the work
+  # it had paid for was out of sight. Its first rows show under the lane line.
+  @report_rows 12
+
+  defp stopped_report_rows(items, agent, %{run: %{state: run_state}}, state, width)
+       when run_state in [:stopped, :failed, :interrupted] do
+    report =
+      items
+      |> Enum.filter(&(&1.kind == :text and &1.role != :user))
+      |> List.last()
+
+    if report && agent && agent.state == :done do
+      rows = prose_rows(report.text, state, width, @body + 2)
+      shown = Enum.take(rows, @report_rows)
+      more = length(rows) - length(shown)
+
+      if more > 0,
+        do:
+          shown ++
+            [
+              spec(
+                [
+                  {String.duplicate(" ", @body + 2), :plain},
+                  {"#{ellipsis(state)} #{more} more rows · l opens the lane", :faint}
+                ],
+                nil
+              )
+            ],
+        else: shown
+    else
+      []
+    end
+  end
+
+  defp stopped_report_rows(_items, _agent, _ctx, _state, _width), do: []
 
   # A worker's other items take no row until its lane is expanded; expanded,
   # each shows under the lane line.
@@ -1074,6 +1111,11 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
       ctx.answer && String.ends_with?(residual, "_(stopped)_") ->
         []
 
+      # pass71 F14 (review R9): a stopped swarm's own message says it
+      # ("Swarm stopped by user."), wherever in the turn it sits.
+      Enum.any?(ctx.items, &stop_said?/1) ->
+        []
+
       ctx.answer && residual != "" ->
         [spec([{String.duplicate(" ", @body), :plain}, {"stopped", :faint}], nil)]
 
@@ -1083,6 +1125,12 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
   end
 
   defp footer_rows(_ctx, _state, _width), do: []
+
+  defp stop_said?(%{kind: :text, role: role, text: text})
+       when role != :user and is_binary(text),
+       do: text |> String.trim() |> String.ends_with?("stopped by user.")
+
+  defp stop_said?(_item), do: false
 
   # What to do about a failed turn: wait for the retry the daemon scheduled,
   # or retry it and perhaps switch model.

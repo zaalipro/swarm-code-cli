@@ -262,6 +262,34 @@ defmodule SwarmCodeCLI.UI.Projector.WorkspaceTurnsTest do
     assert back.selection["main"] == before
   end
 
+  # pass71 F14 (review R9): Esc on a swarm whose worker had finished left only
+  # the report's quoted heading, then "Swarm stopped by user." and "stopped by
+  # you". The report's first rows show under its lane, and one stop line.
+  test "a stopped swarm shows its finished workers' reports and one stop line" do
+    state = fixture(:swarm, {120, 80})
+    report = Enum.map_join(1..15, "\n\n", &"Finding #{&1}: the refresh path skips expiry.")
+
+    state =
+      state
+      |> replace_item("006", &%{&1 | kind: :text, role: :assistant, tool: nil, text: report})
+      |> replace_item("007", &%{&1 | kind: :text, text: "Swarm stopped by user.", reasoning: ""})
+      |> put_in(
+        [Access.key(:read_model), Access.key(:agents), "agent-3", Access.key(:state)],
+        :done
+      )
+      |> put_in(
+        [Access.key(:read_model), Access.key(:runs), "fixture-run", Access.key(:state)],
+        :stopped
+      )
+
+    {rows, _, _, _} = painted(state)
+    assert Enum.any?(rows, &(&1 =~ "Finding 1: the refresh path"))
+    assert Enum.any?(rows, &(&1 =~ "Finding 6: the refresh path"))
+    assert Enum.any?(rows, &(&1 =~ "more rows · l opens the lane"))
+    refute Enum.any?(rows, &(&1 =~ "Finding 15"))
+    assert Enum.count(rows, &(&1 =~ "stopped by")) == 1
+  end
+
   test "a failed run ends in an error card that says what to do next" do
     state = fixture(:swarm, {100, 30})
     run = state.read_model.runs["fixture-run"]
