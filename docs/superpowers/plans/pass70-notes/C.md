@@ -6,7 +6,10 @@ Branch `p70/C`, worktree `/Users/zaali/dev/swarm-code-cli-wt/p70-C`.
 
 | task | status | commits |
 | --- | --- | --- |
-| C1 DTO + wire additions, fake parity | done, tagged `p70-C-wire` | see `git log p70-C-wire` |
+| C1 DTO + wire additions, fake parity | done, tag `p70-C-wire` = `89aa263` | 89aa263 |
+| C2 approvals end to end (pre-sync half) | op-node admission, full card, five decisions, F11 | 5b98942 |
+| C4 rel F4 tripwires (daemon + client) | done | 8626a41 |
+| C3 conversations list/new/open, project.update, mark_seen | done | 4bfb4c4 |
 
 (kept current; the table grows as tasks land)
 
@@ -200,6 +203,38 @@ item and the checkpoints carry line counts and `diff_ref`s whose details load.
 `conversation_new/open`, `project_update` (metadata delta + toast),
 `:always_prefix` (toast) and `:deny_stop` (run stops) all work.
 
+### Conversation switch semantics (C3, for D and E)
+
+- One persisted service serves one conversation at a time; `conversation.open`
+  / `conversation.new` switch it. After the `:accepted` outcome:
+  - watches in **global/project** scope (the shell) get `snapshot_required`
+    (reason `epoch_changed`); the client data source re-watches them itself
+    (fresh wire ref, same UI ref, `:resyncing` delivery first, then a normal
+    `:watch_ready`). Nothing for the reducer to do but render `:resyncing`.
+  - watches in the **old conversation's** scope go silent (their scope is no
+    longer a member). The reducer must unwatch them and watch
+    `{:conversation, new_id}` with a new generation. Queries against the old
+    conversation are answered `not_allowed`.
+- The status-line facts ride on `workspace_metadata`: `approval_mode`,
+  `trusted` (nil before A-sync), `chat_provider`, `context_used` (newest model
+  call's input tokens), `context_window` (the harness's trim budget for the
+  chat model, i.e. where history starts being dropped), `cost_usd`
+  (conversation total), `title`.
+- `project.update` answers `:accepted` with a `notice` feedback, broadcasts a
+  `workspace_metadata` delta and a `toast` (shell watch only).
+- `mark_seen`: `conversation` must be the open one; `run`/`activity` a run of
+  it. Not ledgered (idempotent).
+
+### Reliability (C4)
+
+- A request that times out (30 s default deadline now, client and service),
+  crashes or answers untyped fails **alone**: reads get an error frame
+  (`deadline_expired` / `source_unavailable`), commands an `outcome_unknown`
+  result with `corrective_action: refresh`, watches `snapshot_required`. The
+  connection stays open.
+- A watch queue overflow → `snapshot_required` (reason `overflow`) → client
+  re-watch; never a close.
+
 ## Consumed contracts
 
 - A2 (after A-sync): `RunServer.pending_interactions/1` approval rows gain
@@ -228,6 +263,10 @@ item and the checkpoints carry line counts and `diff_ref`s whose details load.
 - C1: `mix test apps/swarm_code_core/test/swarm_code/protocol` 76/0;
   `mix test apps/swarm_code_cli/test` 1198 tests, 0 failures (5 properties);
   `mix test apps/swarm_code_daemon/test/swarm_code/daemon/service` 85/0.
+- C2–C4: `mix test apps/swarm_code_daemon/test/swarm_code/daemon/service
+  apps/swarm_code_cli/test/swarm_code_cli/ui/data_source` 183/0 (includes
+  `pass70_approval_test` 4, `pass70_conversation_test` 7, the rewritten
+  listener overflow/timeout tests and two daemon re-watch tests).
 
 ## Left
 
