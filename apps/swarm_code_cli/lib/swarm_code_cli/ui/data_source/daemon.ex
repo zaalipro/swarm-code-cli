@@ -7,6 +7,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
   after the bound owner consumes its delivery receipt.
   """
   use GenServer
+  require Logger
   @behaviour SwarmCodeCLI.UI.DataSource
 
   alias SwarmCode.Protocol.{Frame, FrameDecoder, Message, ServiceHandshake, ServiceRequest}
@@ -20,6 +21,10 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
   @max_deliveries 32
   @max_wire_bytes 1_048_576
   @max_decoded_bytes 2_097_152
+  # pass70 C4 (rel F4): watch, control and consume deadlines. One second
+  # closed the session on any stall of the daemon (a busy SQLite writer, a GC,
+  # a big snapshot); thirty is the command deadline the UI already uses.
+  @default_timeout 30_000
 
   @impl true
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
@@ -51,7 +56,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
          path: opts[:socket_path],
          nonce: opts[:nonce],
          epoch: opts[:source_epoch],
-         timeout: Keyword.get(opts, :timeout, 1_000),
+         timeout: Keyword.get(opts, :timeout, @default_timeout),
          socket: nil,
          owner: nil,
          owner_monitor: nil,
@@ -63,6 +68,10 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
          capabilities: [],
          frame_limit: @max_wire_bytes,
          watches: %{},
+         # pass70 C4: a watch the daemon asks to re-snapshot is re-opened on the
+         # wire under a fresh reference; the UI keeps its own.
+         wire_refs: %{},
+         rewatches: 0,
          used_watches: MapSet.new(),
          controls: %{},
          requests: %{},
@@ -159,13 +168,16 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
         sequence: nil,
         acked: nil,
         phase: :pending,
-        wire_id: message.request_id
+        wire_id: message.request_id,
+        wire_ref: watch.watch_ref,
+        offset: 0
       }
 
       {:reply, :ok,
        %{
          state
          | watches: Map.put(state.watches, watch.watch_ref, entry),
+           wire_refs: Map.put(state.wire_refs, watch.watch_ref, watch.watch_ref),
            used_watches: MapSet.put(state.used_watches, watch.watch_ref)
        }}
     else
@@ -179,10 +191,32 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
         {:reply, :ok, state}
 
       entry ->
-        case control(state, entry.watch.scope, %{"op" => "unwatch", "watch_ref" => ref}) do
-          {:ok, next} -> {:reply, :ok, %{next | watches: Map.delete(next.watches, ref)}}
-          :error -> {:reply, :ok, shutdown(state)}
+        case control(state, entry.watch.scope, %{"op" => "unwatch", "watch_ref" => entry.wire_ref}) do
+          {:ok, next} ->
+            {:reply, :ok,
+             %{
+               next
+               | watches: Map.delete(next.watches, ref),
+                 wire_refs: Map.delete(next.wire_refs, entry.wire_ref)
+             }}
+
+          :error ->
+            {:reply, :ok, shutdown(state)}
         end
+    end
+  end
+
+  # pass70 C4: a resync is a fresh snapshot on a fresh wire reference; its
+  # answer is the watch's next `watch_ready`, like the fake source's.
+  def handle_call({:request, :query, %Request{kind: {:resync_watch, ref}} = value}, _from, state) do
+    with {:ok, request} <- Request.validate(value),
+         %{watch: watch} <- state.watches[ref],
+         true <- watch.scope == request.scope and watch.generation == request.generation,
+         {:ok, next} <- rewatch(state, ref) do
+      {:reply, :ok, next}
+    else
+      :error -> {:reply, {:error, AdmissionError.new(:source_unavailable)}, shutdown(state)}
+      _ -> failure(:invalid_request, state)
     end
   end
 
@@ -252,8 +286,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
         {:noreply, next |> dispatch_next() |> arm()}
 
       other ->
-        IO.puts(
-          :stderr,
+        Logger.warning(
           "SwarmCode: a daemon frame could not be decoded: #{inspect(other, limit: 20)}"
         )
 
@@ -262,7 +295,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
   end
 
   def handle_info({:tcp_closed, socket}, %{socket: socket} = state) do
-    IO.puts(:stderr, "SwarmCode: the daemon closed the connection.")
+    Logger.warning("SwarmCode: the daemon closed the connection.")
     {:noreply, shutdown(state)}
   end
 
@@ -360,21 +393,53 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
     end
   end
 
+  # pass70 C4: the daemon dropped this watch's backlog (a slow consumer, a
+  # conversation switch). Tell the UI it is resyncing and re-open the watch
+  # under a fresh wire reference; the new snapshot arrives as `watch_ready`.
+  defp receive_message(
+         %Message{type: :snapshot_required, request_id: nil, occurred_at: at} = message,
+         %{phase: :bound} = state
+       )
+       when is_binary(at) do
+    with %{"op" => "snapshot_required", "watch_ref" => wire, "reason" => reason} = body <-
+           message.body,
+         true <- map_size(body) == 3 and reason in ["overflow", "gap", "epoch_changed"],
+         true <- message.nonce == state.nonce and is_integer(message.sequence),
+         ui when is_binary(ui) <- state.wire_refs[wire],
+         %{watch: watch} <- state.watches[ui],
+         true <- message.scope == watch.scope,
+         {:ok, next} <- rewatch(state, ui),
+         {:ok, next} <- queue_delivery(next, resyncing(watch), 0) do
+      {:ok, next}
+    else
+      _ -> :error
+    end
+  end
+
   defp receive_message(%Message{type: :event} = message, %{phase: :bound} = state) do
-    ref = message.body["watch_ref"]
+    wire = message.body["watch_ref"]
+    ref = state.wire_refs[wire]
 
     with %{watch: watch} = entry <- state.watches[ref],
-         {:ok, delivery} <- Codec.event(message, watch, state.nonce),
+         {:ok, delivery} <- Codec.event(message, %{watch | watch_ref: wire}, state.nonce),
          true <- admissible_sequence?(entry, delivery),
          {:ok, frame} <- Frame.encode(message),
          bytes = IO.iodata_length(frame),
+         delivery = ui_delivery(delivery, ref, entry.offset),
          decoded = :erlang.external_size(delivery),
          true <- state.delivery_count < @max_deliveries,
          true <- bytes + state.wire_bytes <= @max_wire_bytes,
          true <- decoded + state.decoded_bytes <= @max_decoded_bytes do
-      sequence = if delivery.kind == :watch_ready, do: message.sequence, else: delivery.sequence
+      sequence = message.sequence
       entry = %{entry | phase: :ready, sequence: sequence}
-      item = %{delivery: delivery, wire_bytes: bytes, decoded_bytes: decoded}
+
+      item = %{
+        delivery: delivery,
+        wire_bytes: bytes,
+        decoded_bytes: decoded,
+        wire_ref: wire,
+        wire_sequence: sequence
+      }
 
       {:ok,
        %{
@@ -388,9 +453,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
     else
       reason ->
         # A message the client cannot accept closes the connection; naming it
-        # on stderr turns a silent exit into something that can be fixed.
-        IO.puts(
-          :stderr,
+        # in the log turns a silent exit into something that can be fixed.
+        Logger.warning(
           "SwarmCode: rejected a daemon message (#{inspect(message.type)} " <>
             "#{inspect(Map.get(message.body, "op"))}): #{inspect(reason, limit: 60, printable_limit: 400)}"
         )
@@ -483,16 +547,19 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
         decoded_bytes: state.decoded_bytes - item.decoded_bytes
     }
 
-  defp credit(state, %{delivery: %Delivery{kind: :delta, watch_ref: ref, sequence: sequence}}) do
+  # Credit is wire credit: the wire reference and sequence the delta came on.
+  # A delta of a wire watch that has since been re-opened credits nothing.
+  defp credit(state, %{
+         delivery: %Delivery{kind: :delta, watch_ref: ref},
+         wire_ref: wire,
+         wire_sequence: sequence
+       }) do
     case state.watches[ref] do
-      nil ->
-        {:ok, state}
-
-      entry ->
+      %{wire_ref: ^wire} = entry ->
         if sequence <= entry.sequence and (entry.acked == nil or sequence > entry.acked) do
           case control(state, entry.watch.scope, %{
                  "op" => "ack",
-                 "watch_ref" => ref,
+                 "watch_ref" => wire,
                  "sequence" => sequence
                }) do
             {:ok, next} -> {:ok, put_in(next.watches[ref].acked, sequence)}
@@ -501,6 +568,9 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
         else
           :error
         end
+
+      _ ->
+        {:ok, state}
     end
   end
 
@@ -522,6 +592,85 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
       _ -> :error
     end
   end
+
+  # Re-open `ref` on a fresh wire reference; its UI sequence continues from
+  # the last one the old wire delivered.
+  defp rewatch(state, ref) do
+    old = state.watches[ref]
+    count = state.rewatches + 1
+    wire = "~rw-#{count}"
+    offset = (old.sequence || 0) + old.offset
+    unwatch = %{"op" => "unwatch", "watch_ref" => old.wire_ref}
+
+    with {:ok, state} <- control(state, old.watch.scope, unwatch),
+         {:ok, message} <-
+           Codec.watch_request(%{old.watch | watch_ref: wire}, uuid(), state.nonce, state.timeout),
+         :ok <- write(state, message) do
+      entry = %{
+        old
+        | wire_ref: wire,
+          wire_id: message.request_id,
+          phase: :pending,
+          sequence: nil,
+          acked: nil,
+          offset: offset
+      }
+
+      {:ok,
+       %{
+         state
+         | watches: Map.put(state.watches, ref, entry),
+           wire_refs: state.wire_refs |> Map.delete(old.wire_ref) |> Map.put(wire, ref),
+           rewatches: count
+       }}
+    else
+      _ -> :error
+    end
+  end
+
+  defp resyncing(watch),
+    do: %Delivery{
+      kind: :resyncing,
+      watch_ref: watch.watch_ref,
+      request_id: nil,
+      scope: watch.scope,
+      generation: watch.generation,
+      revision: nil,
+      sequence: nil,
+      body: nil
+    }
+
+  # The UI's view of a wire delivery: its own watch reference, and sequences
+  # that continue across re-opened wire watches.
+  defp ui_delivery(delivery, ref, 0), do: %{delivery | watch_ref: ref}
+
+  defp ui_delivery(%Delivery{kind: :delta, body: delta} = delivery, ref, offset),
+    do: %{
+      delivery
+      | watch_ref: ref,
+        sequence: delivery.sequence + offset,
+        body: %{delta | sequence: delta.sequence + offset}
+    }
+
+  defp ui_delivery(%Delivery{body: body} = delivery, ref, offset),
+    do: %{delivery | watch_ref: ref, body: shift_watermark(body, offset)}
+
+  defp shift_watermark(%module{} = dto, offset) do
+    fields =
+      dto
+      |> Map.from_struct()
+      |> Map.new(fn
+        {:through_sequence, value} when is_integer(value) -> {:through_sequence, value + offset}
+        {key, value} -> {key, shift_watermark(value, offset)}
+      end)
+
+    struct(module, fields)
+  end
+
+  defp shift_watermark(values, offset) when is_list(values),
+    do: Enum.map(values, &shift_watermark(&1, offset))
+
+  defp shift_watermark(value, _offset), do: value
 
   defp arm(%{phase: :bound, socket: socket} = state) do
     if state.delivery_count < @max_deliveries and state.wire_bytes < @max_wire_bytes and
@@ -841,8 +990,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
       String.valid?(opts[:socket_path]) and not String.contains?(opts[:socket_path], <<0>>) and
       Path.type(opts[:socket_path]) == :absolute and
       (opts[:source_epoch] == nil or Intent.valid_id?(opts[:source_epoch])) and
-      is_integer(Keyword.get(opts, :timeout, 1_000)) and
-      Keyword.get(opts, :timeout, 1_000) in 1..60_000
+      is_integer(Keyword.get(opts, :timeout, @default_timeout)) and
+      Keyword.get(opts, :timeout, @default_timeout) in 1..60_000
   end
 
   defp valid_options?(_), do: false

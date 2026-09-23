@@ -395,6 +395,110 @@ defmodule SwarmCodeCLI.UI.DataSource.DaemonTest do
     assert_receive {:swarm_code_ui_closed, ^client, @epoch}, 1_000
   end
 
+  # pass70 C4 (rel F4): a daemon that drops a watch's backlog asks for a
+  # snapshot; the client re-opens the watch on a fresh wire reference, the UI
+  # sees `resyncing` then a `watch_ready` whose sequences continue, and credit
+  # goes to the new wire watch.
+  test "snapshot_required re-opens the watch on the wire without closing the session" do
+    path = socket_path!()
+    {listener, server} = socket_server(path, self())
+    on_exit(fn -> close_socket(listener, path) end)
+    {:ok, client} = daemon(path)
+    assert {:ok, "bind-1"} = DataSource.bind_owner(client, self(), "bind-1")
+
+    watch = %Watch{
+      watch_ref: "resync-me",
+      slot: :workspace,
+      scope: @scope,
+      generation: 0,
+      page_size: 5,
+      byte_limit: 65_536
+    }
+
+    assert :ok = DataSource.watch(client, watch)
+    assert_receive {:request, ^server, %Message{body: %{"watch_ref" => "resync-me"}}}
+
+    assert_receive {:swarm_code_ui_data, @epoch, ready,
+                    %Delivery{kind: :watch_ready, watch_ref: "resync-me", body: first}}
+
+    assert first.through_sequence == 1
+    assert :ok = DataSource.consume(client, ready, :applied)
+
+    assert_receive {:swarm_code_ui_data, @epoch, delta,
+                    %Delivery{kind: :delta, watch_ref: "resync-me", sequence: 2}}
+
+    # The old wire watch is already gone: its delta credits nothing.
+    assert :ok = DataSource.consume(client, delta, :applied)
+    refute_receive {:ack, ^server, %Message{body: %{"watch_ref" => "resync-me"}}}, 20
+
+    assert_receive {:swarm_code_ui_data, @epoch, resync,
+                    %Delivery{kind: :resyncing, watch_ref: "resync-me"}}
+
+    assert :ok = DataSource.consume(client, resync, :applied)
+    assert_receive {:request, ^server, %Message{body: %{"op" => "watch", "watch_ref" => wire}}}
+    refute wire == "resync-me"
+
+    assert_receive {:swarm_code_ui_data, @epoch, again,
+                    %Delivery{kind: :watch_ready, watch_ref: "resync-me", body: second}}
+
+    # The wire snapshot is at 1 on the new wire; the UI continues past 2.
+    assert second.through_sequence == 3
+    assert second.transcript.through_sequence == 3
+    assert :ok = DataSource.consume(client, again, :applied)
+
+    assert_receive {:swarm_code_ui_data, @epoch, next,
+                    %Delivery{kind: :delta, watch_ref: "resync-me", sequence: 4, body: body}}
+
+    assert body.sequence == 4
+    assert :ok = DataSource.consume(client, next, :applied)
+    assert_receive {:ack, ^server, %Message{body: %{"watch_ref" => ^wire, "sequence" => 2}}}
+    assert Process.alive?(client)
+    assert :ok = DataSource.close(client)
+  end
+
+  test "a resync query re-opens its watch and answers with the next watch_ready" do
+    path = socket_path!()
+    {listener, server} = socket_server(path, self())
+    on_exit(fn -> close_socket(listener, path) end)
+    {:ok, client} = daemon(path)
+    assert {:ok, "bind-1"} = DataSource.bind_owner(client, self(), "bind-1")
+
+    watch = %Watch{
+      watch_ref: "shell-1",
+      slot: :shell,
+      scope: %Scope{kind: :global, id: nil, generation: 0},
+      generation: 0,
+      page_size: 5,
+      byte_limit: 65_536
+    }
+
+    assert :ok = DataSource.watch(client, watch)
+    assert_receive {:request, ^server, %Message{body: %{"watch_ref" => "shell-1"}}}
+    assert_receive {:swarm_code_ui_data, @epoch, ready, %Delivery{kind: :watch_ready}}
+    assert :ok = DataSource.consume(client, ready, :applied)
+    assert_receive {:swarm_code_ui_data, @epoch, counts, %Delivery{kind: :delta, sequence: 2}}
+    assert :ok = DataSource.consume(client, counts, :applied)
+
+    resync = %Request{
+      request_id: "resync-1",
+      kind: {:resync_watch, "shell-1"},
+      scope: watch.scope,
+      generation: 0,
+      origin: {:watch, "shell-1"},
+      deadline: System.monotonic_time(:millisecond) + 5_000,
+      expected_response: :watch_snapshot
+    }
+
+    assert :ok = DataSource.query(client, resync)
+    assert_receive {:request, ^server, %Message{body: %{"op" => "watch", "watch_ref" => "~rw-1"}}}
+
+    assert_receive {:swarm_code_ui_data, @epoch, _,
+                    %Delivery{kind: :watch_ready, watch_ref: "shell-1", body: body}}
+
+    assert body.through_sequence == 3
+    assert :ok = DataSource.close(client)
+  end
+
   defp connected!(epoch \\ @epoch) do
     path = socket_path!()
     {listener, server} = socket_server(path, self(), epoch)
@@ -488,14 +592,38 @@ defmodule SwarmCodeCLI.UI.DataSource.DaemonTest do
 
                 send(test, {:burst_sent, self()})
               else
-                if message.body["watch_ref"] == "workspace-1" do
-                  send_frame(socket, watch_ready())
-                  send_frame(socket, delta())
-                else
+                if message.body["watch_ref"] == "resync-me" do
                   send_frame(socket, snapshot_for(message))
+                  send_frame(socket, counts_for(message))
 
-                  if message.body["slot"] in ["shell", "workspace"],
-                    do: send_frame(socket, counts_for(message))
+                  send_frame(socket, %Message{
+                    version: 1,
+                    type: :snapshot_required,
+                    request_id: nil,
+                    nonce: message.nonce,
+                    scope: message.scope,
+                    sequence: 3,
+                    occurred_at: "2026-09-23T00:00:00Z",
+                    body: %{
+                      "op" => "snapshot_required",
+                      "watch_ref" => "resync-me",
+                      "reason" => "overflow"
+                    }
+                  })
+                end
+
+                if message.body["watch_ref"] == "resync-me" do
+                  :ok
+                else
+                  if message.body["watch_ref"] == "workspace-1" do
+                    send_frame(socket, watch_ready())
+                    send_frame(socket, delta())
+                  else
+                    send_frame(socket, snapshot_for(message))
+
+                    if message.body["slot"] in ["shell", "workspace"],
+                      do: send_frame(socket, counts_for(message))
+                  end
                 end
               end
 
