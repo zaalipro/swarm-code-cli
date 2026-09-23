@@ -516,8 +516,27 @@ defmodule SwarmCodeCLI.UI.Keymap do
       Map.has_key?(state.read_model.runs, selected) ->
         activate({:local, {:navigate, {:run, selected}}}, state, table)
 
+      # pass70 Q9: Enter on an edit opens its diff (select mode says "Enter
+      # open"); before, it only folded the row open onto "edited x: 1
+      # replacement(s)".
+      diff = diff_target(state, selected) ->
+        case find_target(state, table, &(&1 == diff)) do
+          :ignore -> find_target(state, table, &match?({:local, {:expand, ^selected, _}}, &1))
+          resolved -> resolved
+        end
+
       true ->
         find_target(state, table, &match?({:local, {:expand, ^selected, _}}, &1))
+    end
+  end
+
+  defp diff_target(state, selected) do
+    case Map.get(state.read_model.transcript, selected) do
+      %{run_id: run, tool: %{diff_ref: %{id: ref}}} when is_binary(ref) ->
+        {:local, {:open_detail, run, ref}}
+
+      _ ->
+        nil
     end
   end
 
