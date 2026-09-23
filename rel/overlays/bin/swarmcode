@@ -45,6 +45,7 @@ Provider settings (shell exports win; otherwise loaded from ~/.secrets or SWARM_
 Session:
   SWARM_CONVERSATION   latest (default), new, or a conversation id (the flags win)
   SWARM_KEYMAP=vim     vim keys in the composer
+  SWARM_ASCII=1        plain ASCII glyphs, for a terminal or font without symbols
   SWARM_COMPANION=0    do not serve the visual companion
 
 Keys: type to write; Enter sends, Esc stops a turn, Ctrl-C twice quits,

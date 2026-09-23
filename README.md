@@ -171,6 +171,7 @@ canonical database and survive reinstalls.
 | `SWARM_CONVERSATION` | `latest` (default), `new`, or a conversation id; the `swarmcode` flags win |
 | `SWARM_MODEL_OVERRIDE` | Set by `swarmcode --model` only: the session's model, never written |
 | `SWARM_KEYMAP` | `vim` for vim keys in the composer |
+| `SWARM_ASCII` | `1` draws plain ASCII glyphs, for a terminal or font without symbols |
 | `SWARM_MOUSE` | `1` for mouse-wheel scrolling |
 | `SWARM_COMPANION` | `0` turns the visual companion off |
 | `SWARM_APPROVAL` | Unsaved live launcher only: `ask` (default), `read-only` or `auto`; saved sessions use the project's approval mode |

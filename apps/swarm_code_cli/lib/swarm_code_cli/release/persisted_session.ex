@@ -295,7 +295,8 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
         size: %Size{columns: 80, rows: 24},
         stdin_tty?: true,
         stdout_tty?: true,
-        color_mode: color_mode()
+        color_mode: color_mode(),
+        ascii?: ascii?(System.get_env())
       }
 
       init = %Init{
@@ -969,6 +970,15 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
   end
 
   defp release_tui?, do: System.get_env("SWARM_RELEASE_TUI") == "1"
+
+  @doc """
+  Whether the session draws the ASCII twins of its glyphs (pass70 Q12):
+  `SWARM_ASCII=1` asks for it, for a terminal or font without the box,
+  block and symbol glyphs. Before, nothing in the release could reach that
+  tier.
+  """
+  @spec ascii?(map()) :: boolean()
+  def ascii?(env) when is_map(env), do: Map.get(env, "SWARM_ASCII") in ["1", "true", "yes"]
 
   defp color_mode do
     cond do

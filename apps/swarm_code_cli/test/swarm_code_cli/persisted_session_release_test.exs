@@ -28,6 +28,12 @@ defmodule SwarmCodeCLI.Release.PersistedSessionTest do
     assert hd(String.split(output, "\n")) == "swarmcode: could not start."
   end
 
+  test "SWARM_ASCII=1 selects the ASCII glyph tier (pass70 Q12)" do
+    assert PersistedSession.ascii?(%{"SWARM_ASCII" => "1"})
+    refute PersistedSession.ascii?(%{"SWARM_ASCII" => "0"})
+    refute PersistedSession.ascii?(%{"LANG" => "en_US.UTF-8"})
+  end
+
   test "the private log lives in the platform's state directory" do
     path = PersistedSession.log_path()
     assert Path.basename(path) == "cli.log"
