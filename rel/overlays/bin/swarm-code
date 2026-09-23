@@ -1,19 +1,11 @@
 #!/bin/sh
+# Legacy name kept for old shims: everything is `swarmcode` now (pass70 B3).
+# `swarm-code tui [ARGS]` and `swarm-code [ARGS]` both run `swarmcode [ARGS]`.
 set -eu
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-export SWARM_TERMINAL_PORT="${SWARM_TERMINAL_PORT:-$root/bin/swarm-terminal-port}"
 
-case "${1:-}" in
-  ""|--help|-h)
-    exec "$root/bin/swarm_code_cli" eval 'SwarmCodeCLI.Release.main(["--help"])'
-    ;;
-  tui)
-    export SWARM_RELEASE_TUI=1
-    exec "$root/bin/swarm_code_cli" start
-    ;;
-  *)
-    echo "Unknown command. Run 'swarm-code --help'." >&2
-    exit 2
-    ;;
-esac
+if [ "${1:-}" = "tui" ]; then
+  shift
+fi
+exec "$root/bin/swarmcode" "$@"

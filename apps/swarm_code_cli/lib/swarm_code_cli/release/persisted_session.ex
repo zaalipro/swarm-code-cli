@@ -1,14 +1,30 @@
 defmodule SwarmCodeCLI.Release.PersistedSession do
-  @moduledoc false
+  @moduledoc """
+  The saved `swarmcode` session: guarded storage, session selection, provider
+  resolution, the terminal UI, and an orderly close.
+
+  Nothing here raises to the terminal (pass70 B3). Every failure becomes one
+  human sentence plus what to do, printed on stderr after the terminal is
+  restored, and an exit status: 1 failure, 2 usage, 3 startup refused. The
+  details go to the private log (`log_path/0`), which also receives every
+  Logger message while the session runs, never the tty. After a session ends a
+  short summary is printed to the main screen (pass70 B9).
+  """
   @compile {:no_warn_undefined,
             [
               SwarmCode.Daemon.FoundationGate.BootConfig,
+              SwarmCode.Daemon.Platform.Paths,
               SwarmCode.Daemon.RepoLauncher,
               SwarmCode.Daemon.Service.SessionConfiguration,
               SwarmCode.Daemon.Service.SessionSelection,
+              SwarmCode.Daemon.StartupError,
+              SwarmCode.Daemon.Boot,
+              SwarmCode.Daemon.Shutdown,
               SwarmCode.Domain.Engine,
+              SwarmCode.Domain.Repo,
               Ecto.UUID
             ]}
+  require Logger
   alias SwarmCode.Daemon.RepoLauncher
   alias SwarmCode.Daemon.FoundationGate.BootConfig
   alias SwarmCode.Daemon.Service.{PersistedBackend, SessionConfiguration, SessionSelection}
@@ -17,72 +33,191 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
   alias SwarmCodeCLI.UI.DataSource.Daemon
   alias SwarmCodeCLI.UI.Renderer.RatatuiPort.Owner
 
-  def run, do: launch(nil)
+  @exit_failure 1
+  @exit_usage 2
+  @exit_refused 3
+  @log_bytes 2_097_152
+  @log_files 3
+
+  @typedoc "A failure the user reads: exit status, one sentence, one action."
+  @type failure :: %{status: 1..3, message: String.t(), action: String.t()}
+
+  @doc "Runs the packaged TUI session. Returns the process exit status; never raises."
+  @spec run() :: non_neg_integer()
+  def run, do: main(nil, label: :release)
+
+  @doc """
+  Runs the TUI session for a development launcher (`scripts/dev/run_saved_session.sh`).
+  Same behaviour as `run/0`, plus a first stderr line naming the conversation.
+  """
+  @spec run_dev() :: non_neg_integer()
+  def run_dev, do: main(nil, label: :dev)
 
   # A trusted test runner passes this directly. No environment variable or
   # production command-line option can select an alternate database path.
+  @spec run_for_test(keyword() | struct()) :: non_neg_integer()
   def run_for_test(boot_config) do
-    unless mix_test?(), do: raise_error("Test boot configuration requires MIX_ENV=test")
-    launch(boot_config)
+    if mix_test?(),
+      do: main(boot_config, label: :dev),
+      else: report(failure(@exit_usage, "Test boot configuration requires MIX_ENV=test.", ""))
   end
 
-  defp launch(test_boot) do
-    unless System.argv() == [], do: raise_error("Saved session accepts no command-line arguments")
+  @doc """
+  Contract for headless entry points (owner E, `swarmcode -p` / `--plain`):
+  boots guarded storage and the saved runtime exactly like the TUI (log file,
+  lease, migrations, session selection, provider resolution, boot recovery),
+  calls `fun.(session)` with `%{project: _, conversation: _, notice: _}`, then
+  stops live runs and closes storage. `options`: `:project_root` (default
+  `SWARM_PROJECT_ROOT` or cwd), `:conversation` (`:latest | :new | uuid`,
+  default from `SWARM_CONVERSATION`). Returns `{:ok, fun_result}` or
+  `{:error, failure}`; print a failure with `report/1`. Never raises.
+  """
+  @spec with_saved_session(keyword(), (map() -> term())) :: {:ok, term()} | {:error, failure()}
+  def with_saved_session(options \\ [], fun) when is_list(options) and is_function(fun, 1) do
+    guarded(fn ->
+      root = Keyword.get_lazy(options, :project_root, &project_root/0)
+      selection = Keyword.get_lazy(options, :conversation, &selection_from_env/0)
+      check_root!(root)
+      route_logger!(log_path(nil))
+      start_applications!()
 
-    unless (release_tui?() or :init.get_argument(:noinput) != :error) and
-             :prim_tty.isatty(:stdin) == true and
-             :prim_tty.isatty(:stdout) == true and
-             System.get_env("TERM") not in [nil, "", "dumb"],
-           do: raise_error("SAVED DEV SESSION requires a real terminal and -noinput")
+      with_storage(
+        nil,
+        fn session ->
+          result = fun.(session)
+          {:ok, result, %{stopped: stop_live_runs()}}
+        end,
+        root,
+        conversation: selection
+      )
+    end)
+    |> case do
+      {:ok, {:ok, result, _summary}} -> {:ok, result}
+      {:ok, {:error, failure}} -> {:error, failure}
+      {:error, failure} -> {:error, failure}
+    end
+  end
 
-    root = System.get_env("SWARM_PROJECT_ROOT") || File.cwd!()
-    unless File.dir?(root), do: raise_error("SWARM_PROJECT_ROOT must be an existing directory")
-    options = selection_options!(System.get_env("SWARM_CONVERSATION"))
+  @doc "Prints a failure (two lines and the log path) on stderr and returns its exit status."
+  @spec report(failure()) :: non_neg_integer()
+  def report(%{status: status, message: message, action: action}) do
+    lines =
+      ["swarmcode: " <> message] ++
+        if(action != "", do: ["  " <> action], else: []) ++
+        if(status != @exit_usage and File.exists?(log_path(nil)),
+          do: ["  Details: " <> log_path(nil)],
+          else: []
+        )
 
-    executable =
-      System.get_env("SWARM_TERMINAL_PORT") ||
-        Path.expand("../../_build/terminal-port/debug/swarm-terminal-port", __DIR__)
+    IO.puts(:stderr, Enum.join(lines, "\n"))
+    status
+  end
 
-    unless File.regular?(executable),
-      do: raise_error("Build the guarded terminal port first: scripts/dev/check_terminal_port.sh")
+  @doc "The private log file: `~/Library/Logs/SwarmCode/cli.log` on macOS, XDG state on Linux."
+  @spec log_path(term()) :: Path.t()
+  def log_path(boot \\ nil) do
+    case paths_for(boot) do
+      {:ok, paths} -> Path.join(paths.state, "cli.log")
+      _ -> Path.join([System.user_home!(), "Library", "Logs", "SwarmCode", "cli.log"])
+    end
+  end
 
-    for app <- [:req, :swarm_code_core, :swarm_code_cli, :swarm_code_daemon],
-        do: unwrap!(Application.ensure_all_started(app), "application startup")
+  ## The TUI session
 
-    Application.put_env(
-      :swarm_code_daemon,
-      :llm_providers,
-      Application.get_env(:swarm_code_daemon, :llm_providers, %{})
-      |> Map.merge(%{
-        "openai_compatible" => SwarmCode.Domain.LLM.OpenAI,
-        "anthropic" => SwarmCode.Domain.LLM.Anthropic
-      })
-    )
+  defp main(test_boot, opts) do
+    result =
+      guarded(fn ->
+        preflight!()
+        root = project_root()
+        check_root!(root)
+        selection = selection_from_env()
+        executable = terminal_port!()
+        route_logger!(log_path(test_boot))
+        start_applications!()
 
+        with_storage(test_boot, fn session -> tui(session, executable, opts) end, root,
+          conversation: selection
+        )
+      end)
+
+    case result do
+      {:ok, {:ok, outcome, summary}} ->
+        print_summary(summary)
+        outcome_status(outcome)
+
+      {:ok, {:error, failure}} ->
+        report(failure)
+
+      {:error, failure} ->
+        report(failure)
+    end
+  end
+
+  defp tui(session, executable, opts) do
+    started_at = DateTime.utc_now()
+
+    if opts[:label] == :dev,
+      do: IO.puts(:stderr, "swarmcode (dev) — conversation #{session.conversation.id}")
+
+    outcome = run_ui(session, executable)
+    # Read the summary while storage and the runs are still up, then stop them.
+    summary = query_worker(fn -> summary(session, started_at) end)
+    stopped = stop_live_runs()
+    {:ok, outcome, Map.merge(summary, %{stopped: stopped, notice: session[:notice]})}
+  end
+
+  # Starts storage, selects and configures the session, runs `fun`, and always
+  # closes the owned runtime. `fun` returns `{:ok, outcome, summary}`.
+  defp with_storage(test_boot, fun, root, selection) do
     version = Application.spec(:swarm_code_daemon, :vsn) |> to_string()
-    platform = if match?({:unix, :darwin}, :os.type()), do: :macos, else: :linux
-    boot = test_boot || BootConfig.canonical(platform, System.user_home!(), version)
+    boot = test_boot || BootConfig.canonical(platform(), System.user_home!(), version)
+
     {:ok, launcher} = RepoLauncher.start_link(boot_config: boot, pool_size: 4)
     Process.unlink(launcher)
 
     try do
-      unwrap!(RepoLauncher.await_ready(launcher, 120_000), "guarded database startup")
-      # SQL callers are short-lived. Returning plain session structs does not
-      # retain native statement resources in the launcher while the TUI runs.
-      session =
-        query_worker(fn ->
-          session = unwrap!(SessionSelection.open(root, options), "session selection")
-
-          unwrap!(
-            SessionConfiguration.prepare(session, System.get_env()),
-            "provider configuration"
-          )
-        end)
-
-      run_ui(session, executable)
+      with :ok <- await_storage(launcher, boot),
+           {:ok, session} <- open_session(root, selection) do
+        boot_runtime()
+        fun.(session)
+      end
     after
       close_owned_runtime(launcher)
     end
+  end
+
+  defp await_storage(launcher, boot) do
+    case RepoLauncher.await_ready(launcher, 120_000) do
+      {:ok, _repo} -> :ok
+      {:error, reason} -> {:error, startup_failure(reason, boot)}
+    end
+  end
+
+  defp open_session(root, selection) do
+    # SQL callers are short-lived. Returning plain session structs does not
+    # retain native statement resources in the launcher while the TUI runs.
+    query_worker(fn ->
+      with {:ok, session} <- SessionSelection.open(root, selection),
+           {:ok, session} <- SessionConfiguration.prepare(session, System.get_env()) do
+        {:ok, session}
+      else
+        {:error, reason} -> {:error, session_failure(reason, selection)}
+      end
+    end)
+  end
+
+  # B6: desktop bootstrap parity once the synced domain lands (Daemon.Boot).
+  defp boot_runtime do
+    if Code.ensure_loaded?(SwarmCode.Daemon.Boot) and
+         function_exported?(SwarmCode.Daemon.Boot, :run, 0) do
+      apply(SwarmCode.Daemon.Boot, :run, [])
+    end
+
+    :ok
+  catch
+    kind, reason ->
+      Logger.error("boot recovery failed: #{Exception.format(kind, reason)}")
+      :ok
   end
 
   defp run_ui(session, executable) do
@@ -115,7 +250,12 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
       )
 
       source =
-        child!(supervisor, Daemon, socket_path: path, nonce: nonce, source_epoch: source_epoch)
+        child!(supervisor, Daemon,
+          socket_path: path,
+          nonce: nonce,
+          source_epoch: source_epoch,
+          timeout: 30_000
+        )
 
       caps = %Capabilities{
         size: %Size{columns: 80, rows: 24},
@@ -145,7 +285,6 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
         )
 
       start_companion(supervisor, runtime, Path.basename(session.project.root_path))
-      IO.puts(:stderr, "SAVED DEV SESSION — conversation #{conversation_id}; q stops owned runs.")
 
       owner =
         child!(supervisor, Owner,
@@ -162,14 +301,28 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
         {:DOWN, ^owner_monitor, :process, ^owner, :normal} ->
           :ok
 
-        {:DOWN, ^owner_monitor, :process, ^owner, _} ->
-          raise_error("Saved terminal failed")
+        {:DOWN, ^owner_monitor, :process, ^owner, reason} ->
+          Logger.error("terminal owner stopped: #{inspect(reason)}")
 
-        {:DOWN, ^supervisor_monitor, :process, ^supervisor, _} ->
-          raise_error("Saved session failed")
+          {:failed,
+           failure(
+             @exit_failure,
+             "The terminal stopped responding, so swarmcode closed.",
+             "Run swarmcode again; your conversation is saved."
+           )}
+
+        {:DOWN, ^supervisor_monitor, :process, ^supervisor, reason} ->
+          Logger.error("session supervisor stopped: #{inspect(reason)}")
+
+          {:failed,
+           failure(
+             @exit_failure,
+             "The session stopped unexpectedly, so swarmcode closed.",
+             "Run swarmcode again; your conversation is saved."
+           )}
       end
     after
-      if Process.alive?(supervisor), do: Supervisor.stop(supervisor, :normal, 15_000)
+      if Process.alive?(supervisor), do: stop_quietly(supervisor)
 
       case File.lstat(dir) do
         {:ok, current}
@@ -193,11 +346,40 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
     end
   end
 
+  ## Close
+
+  defp stop_live_runs do
+    live = safe_running_run_ids()
+
+    if Process.whereis(SwarmCode.Domain.Registry) do
+      if Code.ensure_loaded?(SwarmCode.Daemon.Shutdown) and
+           function_exported?(SwarmCode.Daemon.Shutdown, :run, 0) do
+        apply(SwarmCode.Daemon.Shutdown, :run, [])
+      else
+        query_worker(fn -> SwarmCode.Domain.Engine.stop_all() end)
+      end
+    end
+
+    length(live)
+  catch
+    kind, reason ->
+      Logger.error("stopping live runs failed: #{Exception.format(kind, reason)}")
+      0
+  end
+
+  defp safe_running_run_ids do
+    if Process.whereis(SwarmCode.Domain.Registry),
+      do: SwarmCode.Domain.Engine.running_run_ids(),
+      else: []
+  catch
+    _, _ -> []
+  end
+
   defp close_owned_runtime(launcher) do
     if Process.whereis(SwarmCode.Domain.Registry) do
-      query_worker(fn -> SwarmCode.Domain.Engine.stop_all() end)
-      # This process owns the development VM runtime. Stop agents, tasks,
-      # research and caches before retiring the guarded storage pool.
+      _ = stop_live_runs()
+      # This process owns the VM runtime. Stop agents, tasks, research and
+      # caches before retiring the guarded storage pool.
       Application.stop(:swarm_code_daemon)
     end
 
@@ -213,37 +395,489 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
           )
 
         other ->
-          raise_error("Guarded storage cleanup failed: #{inspect(other)}")
+          Logger.error("guarded storage close: #{inspect(other)}")
       end
     end
+  catch
+    kind, reason -> Logger.error("closing storage failed: #{Exception.format(kind, reason)}")
   end
 
-  defp query_worker(fun), do: fun |> Task.async() |> Task.await(30_000)
-  defp selection_options!(nil), do: [conversation: :latest]
-  defp selection_options!("latest"), do: [conversation: :latest]
-  defp selection_options!("new"), do: [conversation: :new]
+  defp stop_quietly(supervisor) do
+    Supervisor.stop(supervisor, :normal, 15_000)
+  catch
+    :exit, _ -> :ok
+  end
 
-  defp selection_options!(id) do
-    case Ecto.UUID.cast(id) do
-      {:ok, ^id} -> [conversation: id]
-      _ -> raise_error("SWARM_CONVERSATION must be latest, new, or a UUID")
+  ## Summary (B9)
+
+  # Plain SQL: this app does not depend on Ecto at compile time.
+  defp summary(session, started_at) do
+    id = session.conversation.id
+    since = DateTime.to_iso8601(started_at)
+
+    title = scalar("SELECT title FROM conversations WHERE id = ?1", [id])
+
+    prompt =
+      scalar(
+        "SELECT content FROM messages WHERE conversation_id = ?1 AND role = 'user' " <>
+          "ORDER BY position DESC LIMIT 1",
+        [id]
+      )
+
+    files =
+      rows(
+        "SELECT DISTINCT path FROM checkpoints WHERE conversation_id = ?1 AND inserted_at >= ?2 " <>
+          "ORDER BY path LIMIT 200",
+        [id, since]
+      )
+
+    %{
+      title: title,
+      prompt: prompt,
+      files:
+        for(
+          [path] <- files,
+          is_binary(path),
+          do: Path.relative_to(path, session.project.root_path)
+        ),
+      root: session.project.root_path
+    }
+  rescue
+    error ->
+      Logger.error("exit summary: #{Exception.message(error)}")
+      %{title: nil, prompt: nil, files: [], root: session.project.root_path}
+  end
+
+  defp scalar(sql, params) do
+    case rows(sql, params) do
+      [[value] | _] when is_binary(value) -> value
+      _ -> nil
     end
   end
 
-  defp unwrap!({:ok, value}, _label), do: value
+  defp rows(sql, params) do
+    case SwarmCode.Domain.Repo.query(sql, params) do
+      {:ok, %{rows: rows}} when is_list(rows) -> rows
+      _ -> []
+    end
+  end
 
-  defp unwrap!({:error, reason}, label),
-    do: raise_error("Saved #{label} failed: #{inspect(reason)}")
+  defp print_summary(summary) do
+    dim = fn text -> if(color?(), do: "\e[2m" <> text <> "\e[22m", else: text) end
+    label = fn text -> dim.(String.pad_trailing(text, 14)) end
 
-  defp child!(supervisor, module, options),
-    do:
-      unwrap!(
-        Supervisor.start_child(
-          supervisor,
-          Supervisor.child_spec({module, options}, restart: :temporary, shutdown: 10_000)
-        ),
-        "component startup"
+    title = one_line(summary[:title]) || "Untitled conversation"
+    prompt = one_line(summary[:prompt])
+    notice = one_line(summary[:notice])
+    files = summary[:files] || []
+    stopped = summary[:stopped] || 0
+
+    lines =
+      [
+        "",
+        "  " <> bold(title),
+        prompt && "  " <> label.("Last prompt") <> prompt,
+        files != [] && "  " <> label.("Files changed") <> files_line(files),
+        stopped > 0 && "  " <> label.("Stopped") <> plural(stopped, "live run") <> ".",
+        notice && "  " <> label.("Note") <> notice,
+        "  " <> label.("Resume") <> resume_command(summary[:root]),
+        ""
+      ]
+      |> Enum.filter(&is_binary/1)
+
+    IO.puts(Enum.join(lines, "\n"))
+  end
+
+  defp files_line(files) do
+    shown = Enum.take(files, 3)
+    rest = length(files) - length(shown)
+    names = Enum.map(shown, &(one_line(&1) || "?"))
+    "#{length(files)} · " <> Enum.join(names, ", ") <> if(rest > 0, do: ", +#{rest}", else: "")
+  end
+
+  defp resume_command(root) do
+    here = System.get_env("PWD")
+
+    if root == nil or root == here,
+      do: "swarmcode --continue",
+      else: "swarmcode --continue " <> shell_quote(root)
+  end
+
+  defp shell_quote(path) do
+    if path =~ ~r/^[A-Za-z0-9_\/.~+-]+$/,
+      do: path,
+      else: "'" <> String.replace(path, "'", "'\\''") <> "'"
+  end
+
+  defp one_line(nil), do: nil
+
+  defp one_line(text) when is_binary(text) do
+    line =
+      text
+      |> String.split(["\r\n", "\n", "\r"], trim: true)
+      |> List.first("")
+      |> String.replace(~r/[\x00-\x1F\x7F-\x9F]/u, " ")
+      |> String.trim()
+
+    cond do
+      line == "" -> nil
+      String.length(line) > 72 -> String.slice(line, 0, 71) <> "…"
+      true -> line
+    end
+  end
+
+  defp plural(1, noun), do: "1 " <> noun
+  defp plural(count, noun), do: "#{count} #{noun}s"
+
+  defp bold(text), do: if(color?(), do: "\e[1m" <> text <> "\e[22m", else: text)
+
+  defp color?,
+    do: System.get_env("NO_COLOR") in [nil, ""] and :prim_tty.isatty(:stdout) == true
+
+  defp outcome_status(:ok), do: 0
+  defp outcome_status({:failed, failure}), do: report(failure)
+
+  ## Failures
+
+  # Runs `fun`, turning a thrown failure or any crash into `{:error, failure}`.
+  defp guarded(fun) do
+    {:ok, fun.()}
+  catch
+    :throw, {__MODULE__, failure} ->
+      {:error, failure}
+
+    kind, reason ->
+      Logger.error(
+        "swarmcode stopped unexpectedly: " <> Exception.format(kind, reason, __STACKTRACE__)
       )
+
+      {:error,
+       failure(
+         @exit_failure,
+         "swarmcode stopped unexpectedly.",
+         "Run it again; your conversation is saved."
+       )}
+  end
+
+  defp fail!(status, message, action), do: throw({__MODULE__, failure(status, message, action)})
+
+  defp failure(status, message, action), do: %{status: status, message: message, action: action}
+
+  defp preflight! do
+    unless System.argv() == [],
+      do: fail!(@exit_usage, "unexpected arguments.", "Run swarmcode --help.")
+
+    unless (release_tui?() or :init.get_argument(:noinput) != :error) and
+             :prim_tty.isatty(:stdin) == true and
+             :prim_tty.isatty(:stdout) == true and
+             System.get_env("TERM") not in [nil, "", "dumb"],
+           do:
+             fail!(
+               @exit_usage,
+               "swarmcode needs an interactive terminal.",
+               ~s(In pipes and scripts use swarmcode -p "prompt" or swarmcode --plain.)
+             )
+  end
+
+  defp check_root!(root) do
+    unless is_binary(root) and File.dir?(root),
+      do: fail!(@exit_usage, "#{inspect(root)} is not a directory.", "Name a project directory.")
+  end
+
+  defp terminal_port! do
+    executable =
+      System.get_env("SWARM_TERMINAL_PORT") ||
+        Path.expand("../../_build/terminal-port/debug/swarm-terminal-port", __DIR__)
+
+    if File.regular?(executable),
+      do: executable,
+      else:
+        fail!(
+          @exit_failure,
+          "The swarmcode terminal helper is missing.",
+          "Reinstall swarmcode (scripts/install.sh), or build it with scripts/dev/check_terminal_port.sh."
+        )
+  end
+
+  defp start_applications! do
+    for app <- [:req, :swarm_code_core, :swarm_code_cli, :swarm_code_daemon] do
+      case Application.ensure_all_started(app) do
+        {:ok, _} ->
+          :ok
+
+        {:error, reason} ->
+          Logger.error("application #{app} did not start: #{inspect(reason)}")
+          fail!(@exit_failure, "swarmcode could not start.", "Reinstall swarmcode.")
+      end
+    end
+
+    Application.put_env(
+      :swarm_code_daemon,
+      :llm_providers,
+      Application.get_env(:swarm_code_daemon, :llm_providers, %{})
+      |> Map.merge(%{
+        "openai_compatible" => SwarmCode.Domain.LLM.OpenAI,
+        "anthropic" => SwarmCode.Domain.LLM.Anthropic
+      })
+    )
+  end
+
+  defp startup_failure(%{__struct__: SwarmCode.Daemon.StartupError} = error, boot) do
+    Logger.error("startup refused: #{error.code}: #{error.message} #{error.action}")
+    {message, action} = startup_words(error.code, error, boot)
+    failure(@exit_refused, message, action)
+  end
+
+  defp startup_failure(reason, _boot) do
+    Logger.error("guarded storage did not start: #{inspect(reason)}")
+    {message, action} = storage_words(reason)
+    failure(@exit_refused, message, action)
+  end
+
+  defp startup_words(:desktop_active, _error, _boot),
+    do:
+      {"The SwarmCode app is open, and only one of them can use your conversations at a time.",
+       "Quit the SwarmCode app, then run swarmcode again."}
+
+  defp startup_words(:data_lease_held, _error, boot),
+    do: {lease_holder(boot), "Close it first (q, then y if it asks), then run swarmcode again."}
+
+  defp startup_words(:schema_incompatible, _error, _boot),
+    do:
+      {"Your conversations database comes from a SwarmCode version this swarmcode does not know.",
+       "Update swarmcode, or open the SwarmCode app once to upgrade the database. Nothing was changed."}
+
+  defp startup_words(code, _error, _boot)
+       when code in [:private_directory_failed, :path_resolution_failed, :lease_failed],
+       do:
+         {"swarmcode could not safely open its private data folder.",
+          "Check that ~/Library/Application Support/SwarmCode belongs to you and has mode 0700."}
+
+  defp startup_words(:macos_platform_helper_unavailable, _error, _boot),
+    do:
+      {"swarmcode could not check whether the SwarmCode app is running.",
+       "Reinstall swarmcode (scripts/install.sh)."}
+
+  defp startup_words(code, _error, _boot) when code in [:backup_failed, :backup_unverified],
+    do:
+      {"swarmcode could not make a verified backup before upgrading the database, so it changed nothing.",
+       "Free some disk space and run swarmcode again."}
+
+  defp startup_words(_code, error, _boot), do: {error.message, error.action}
+
+  defp storage_words(reason) when reason in [:migration_failed, :migration_timeout],
+    do:
+      {"swarmcode could not upgrade the database; it was left as it was.",
+       "Your verified backup is in the SwarmCode backups folder. Open the SwarmCode app, or report this."}
+
+  defp storage_words(_reason),
+    do:
+      {"swarmcode could not open your conversations database.",
+       "Close other SwarmCode windows and run swarmcode again."}
+
+  defp session_failure(:provider_required, _),
+    do:
+      failure(
+        @exit_refused,
+        "No model provider is set up yet.",
+        "Add one in SwarmCode Settings, or set SWARM_MODEL, SWARM_BASE_URL and SWARM_API_KEY in ~/.secrets."
+      )
+
+  defp session_failure(:unknown_model, _),
+    do:
+      failure(
+        @exit_usage,
+        "No provider offers the model given with --model.",
+        "Use a model from /model, or provider/model."
+      )
+
+  defp session_failure(:conversation_not_found, _),
+    do:
+      failure(
+        @exit_usage,
+        "That conversation is not part of this project.",
+        "Use swarmcode --continue, or --resume with an id from this project."
+      )
+
+  defp session_failure(:invalid_project, _),
+    do:
+      failure(
+        @exit_usage,
+        "That project directory cannot be opened.",
+        "Name a readable directory."
+      )
+
+  defp session_failure(reason, _selection) do
+    Logger.error("session could not be prepared: #{inspect(reason)}")
+
+    failure(
+      @exit_failure,
+      "swarmcode could not open the conversation.",
+      "Run swarmcode again; nothing was changed."
+    )
+  end
+
+  # B7: the lease owner record names the process that holds the data lease.
+  defp lease_holder(boot) do
+    with {:ok, paths} <- paths_for(boot),
+         {:ok, %File.Stat{type: :regular, size: size}} when size <= 32_768 <-
+           File.lstat(paths.owner_record),
+         {:ok, body} <- File.read(paths.owner_record),
+         {:ok, %{"pid" => pid} = record} when is_integer(pid) <- Jason.decode(body) do
+      since =
+        case DateTime.from_iso8601(to_string(record["acquired_at"])) do
+          {:ok, at, _} -> ", since " <> local_clock(at)
+          _ -> ""
+        end
+
+      "Another swarmcode (process #{pid}#{since}) is already using your conversations."
+    else
+      _ -> "Another swarmcode is already using your conversations."
+    end
+  rescue
+    _ -> "Another swarmcode is already using your conversations."
+  end
+
+  defp local_clock(%DateTime{} = at) do
+    {_date, {hour, minute, _}} =
+      at
+      |> DateTime.to_naive()
+      |> NaiveDateTime.to_erl()
+      |> :calendar.universal_time_to_local_time()
+
+    :io_lib.format("~2..0B:~2..0B", [hour, minute]) |> IO.iodata_to_binary()
+  end
+
+  ## Logging
+
+  # Every Logger message of this VM goes to a private, rotated file: the tty is
+  # the TUI's (rel F4, F8). The directory is 0700 and the file 0600.
+  defp route_logger!(path) do
+    dir = Path.dirname(path)
+
+    with :ok <- File.mkdir_p(dir),
+         :ok <- File.chmod(dir, 0o700),
+         :ok <- touch_private(path) do
+      config = %{
+        file: String.to_charlist(path),
+        max_no_bytes: @log_bytes,
+        max_no_files: @log_files
+      }
+
+      handler = %{
+        config: config,
+        level: :info,
+        formatter: Logger.default_formatter(colors: [enabled: false])
+      }
+
+      _ = :logger.remove_handler(:default)
+
+      case :logger.add_handler(:default, :logger_std_h, handler) do
+        :ok -> :ok
+        {:error, _} -> quiet_console()
+      end
+    else
+      _ -> quiet_console()
+    end
+  end
+
+  # Without a log file nothing may reach the terminal either.
+  defp quiet_console do
+    _ = :logger.remove_handler(:default)
+    :ok
+  end
+
+  defp touch_private(path) do
+    case File.open(path, [:append]) do
+      {:ok, io} ->
+        File.close(io)
+        File.chmod(path, 0o600)
+
+      error ->
+        error
+    end
+  end
+
+  ## Helpers
+
+  defp paths_for(nil) do
+    home = System.user_home!()
+
+    SwarmCode.Daemon.Platform.Paths.resolve(
+      platform: platform(),
+      mode: :production,
+      home: home,
+      env:
+        Map.take(
+          System.get_env(),
+          ~w(TMPDIR XDG_DATA_HOME XDG_CONFIG_HOME XDG_STATE_HOME XDG_CACHE_HOME XDG_RUNTIME_DIR)
+        )
+    )
+  rescue
+    _ -> :error
+  end
+
+  defp paths_for(%{__struct__: _} = boot) do
+    SwarmCode.Daemon.Platform.Paths.resolve(
+      platform: boot.platform,
+      mode: boot.mode,
+      home: boot.home,
+      env: boot.env
+    )
+  rescue
+    _ -> :error
+  end
+
+  defp paths_for(boot) when is_list(boot) do
+    SwarmCode.Daemon.Platform.Paths.resolve(Keyword.take(boot, [:platform, :mode, :home, :env]))
+  rescue
+    _ -> :error
+  end
+
+  defp paths_for(_), do: :error
+
+  defp platform, do: if(match?({:unix, :darwin}, :os.type()), do: :macos, else: :linux)
+
+  defp project_root, do: System.get_env("SWARM_PROJECT_ROOT") || File.cwd!()
+
+  defp query_worker(fun), do: fun |> Task.async() |> Task.await(30_000)
+
+  defp selection_from_env do
+    case System.get_env("SWARM_CONVERSATION") do
+      value when value in [nil, "", "latest"] ->
+        :latest
+
+      "new" ->
+        :new
+
+      id ->
+        case Ecto.UUID.cast(id) do
+          {:ok, ^id} ->
+            id
+
+          _ ->
+            fail!(
+              @exit_usage,
+              "SWARM_CONVERSATION must be latest, new, or a conversation id.",
+              "Run swarmcode --help."
+            )
+        end
+    end
+  end
+
+  defp child!(supervisor, module, options) do
+    case Supervisor.start_child(
+           supervisor,
+           Supervisor.child_spec({module, options}, restart: :temporary, shutdown: 10_000)
+         ) do
+      {:ok, pid} ->
+        pid
+
+      {:error, reason} ->
+        Logger.error("#{inspect(module)} did not start: #{inspect(reason)}")
+        fail!(@exit_failure, "swarmcode could not start its session.", "Run it again.")
+    end
+  end
 
   defp private_directory! do
     dir =
@@ -261,7 +895,11 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
         private_directory!()
 
       _ ->
-        raise_error("Unable to create saved-session socket directory")
+        fail!(
+          @exit_failure,
+          "swarmcode could not create its private socket folder.",
+          "Check /tmp."
+        )
     end
   end
 
@@ -270,8 +908,6 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
   end
 
   defp release_tui?, do: System.get_env("SWARM_RELEASE_TUI") == "1"
-
-  defp raise_error(message), do: raise(RuntimeError, message)
 
   defp color_mode do
     cond do
