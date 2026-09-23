@@ -37,7 +37,7 @@ command below says otherwise. Native builds also need `cc` (C11), `python3`, and
 | Real unsaved session | `scripts/dev/run_live_session.sh` |
 | Headless session, one command per line on stdin | `scripts/dev/run_plain_session.sh [--ndjson]` |
 | Release / install | `scripts/dev/build_release.sh` → `_build/prod/rel/swarm_code_cli`; `scripts/install.sh` installs `swarmcode` |
-| Packaged entry points | `bin/swarmcode [DIR] [--new\|--continue\|--resume ID] [--model M] [-p PROMPT [--json]] [--plain [--ndjson]]`; the launcher validates flags in bash (usage exits 2 before any VM), the TUI is `bin/swarm_code_cli start` with `SWARM_RELEASE_TUI=1`, `-p`/`--plain` are `bin/swarm_code_cli eval 'SwarmCodeCLI.Release.main(System.argv())' …`. Exit codes 0 done, 1 failed, 2 usage, 3 startup refused |
+| Packaged entry points | `bin/swarmcode [DIR] [--new\|--continue\|--resume ID] [--model M] [-p PROMPT [--json]] [--plain [--ndjson]]`; the launcher validates flags in bash (usage exits 2 before any VM), the TUI is `bin/swarm_code_cli start` with `SWARM_RELEASE_TUI=1`, `-p`/`--plain` are `bin/swarm_code_cli eval 'SwarmCodeCLI.Release.main(System.argv())' …`; `-p` starts a new conversation unless `-c`/`--resume`/`SWARM_CONVERSATION` names one (pass 71). Exit codes 0 done, 1 failed, 2 usage, 3 startup refused |
 | Re-derive the desktop domain | `mise exec -- mix swarm_code.provenance.sync --ref <desktop sha>` (read-only `git` on `~/dev/swarm-code` or `$SWARM_CODE_UPSTREAM`); `--check` verifies (in precommit) |
 | Re-pin a hand-edited ledger file outside the sync mappings | `mise exec -- mix swarm_code.provenance.repin <path> …` |
 
@@ -178,15 +178,26 @@ by `scripts/dev/sync_unicode_width.exs --check`, `sync_unicode_variants.py --che
 - Measure glyphs with `SwarmCodeCLI.UI.Width.cells/2` under both ambiguous-width policies before
   drawing. Box drawing, half blocks and emoji are ambiguous or wide. Progress is the `▐` tick
   bar, not a solid fill. Colours come from `UI.Theme` (the web app's Carbon tokens); never invent
-  a palette.
+  a palette. The launchers build the capabilities by hand: the rich glyph tier (thin `▏` rails)
+  needs truecolor and a `TERM` naming ghostty, kitty, wezterm or iTerm
+  (`Capabilities.glyph_tier/4`), and the light palette is chosen once by `Theme.mode/2`
+  (`SWARM_THEME`, else the desktop settings' `mode`) and passed to the port owner (pass 71).
 - To drive the real TUI end to end, do not sleep inside the Python pty harness: it stops draining
   the pty and the port dies with fake `:draw`/`:restoration` errors. Use GNU screen
   (`screen -dmS name …`, then `screen -S name -p 0 -X width -w 170 45`, `-X stuff`,
   `-X hardcopy`), and always quit the TUI with its own quit path (Ctrl-C twice, and a third time if
-  it asks "Stop N live runs and quit?") before closing the window. The release prints a short exit summary to
-  the main screen after it leaves the alternate screen. `rel/env.sh.eex` starts the VM with
-  `+Bd`, so a Ctrl-C in a cooked terminal (boot, `-p`, the moment after the summary) ends the
-  process instead of opening the Erlang BREAK menu; the locked-branch test pins that file's
-  hash. In screen, `hardcopy` mangles non-ASCII; the `-L` logfile keeps the raw bytes (use it
+  it asks "Stop N live runs and quit?") before closing the window. Screen sets `TERM=screen`
+  inside its window, so pass `TERM=xterm-ghostty COLORTERM=truecolor` in the command to see the
+  rich tier. The release prints a short exit summary to the main screen after it leaves the
+  alternate screen (the runs the quit stopped, and `swarmcode --resume <id>` for the
+  conversation on screen). `rel/env.sh.eex` starts the VM with `+Bd`, so a Ctrl-C in a cooked
+  terminal (boot, `-p`, the moment after the summary) ends the process instead of opening the
+  Erlang BREAK menu, and runs it under `umask 077` while keeping the user's umask in
+  `SWARM_USER_UMASK` for the commands and hooks the model runs in the project
+  (`RunCommand.umask_prefix/0`); the locked-branch test pins that file's hash. In screen, `hardcopy` mangles non-ASCII; the `-L` logfile keeps the raw bytes (use it
   to measure output per keystroke or per reply).
+- A transcript item carries at most 8 KB of a prompt or reply and 2 KB of a tool's output
+  (`PersistedBackend` `@reply_bytes`, the projection's `substr`), with a `detail_ref` for the
+  rest; the transcript says how much is left and Enter (or `o`) on the item opens it whole. A
+  snapshot that would not fit its byte limit falls back to 2 KB items (pass 71).
 - The plain launcher closes at stdin EOF, so hold stdin open to see a model reply.
