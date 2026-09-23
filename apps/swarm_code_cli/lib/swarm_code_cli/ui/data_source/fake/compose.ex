@@ -37,7 +37,12 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Compose do
         }
 
         with {:ok, next, item} <- Details.store(script, item, text) do
-          {:ok, next, [fact(:run_update, run), fact(:node_upsert, item)],
+          # pass71 S5: a queued prompt raises the conversation's queue count.
+          queued =
+            if operation == :queue,
+              do: SwarmCodeCLI.UI.DataSource.Fake.Session.queued_fact(script, conversation, 1)
+
+          {:ok, next, [fact(:run_update, run), fact(:node_upsert, item)] ++ List.wrap(queued),
            [run.id, item.id, node_id]}
         end
       end

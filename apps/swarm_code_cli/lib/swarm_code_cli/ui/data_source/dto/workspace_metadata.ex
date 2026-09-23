@@ -10,7 +10,8 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.WorkspaceMetadata do
       context_used: nil,
       context_window: nil,
       cost_usd: nil,
-      title: nil
+      title: nil,
+      queued: 0
     ],
     fields: [
       conversation_id: :id,
@@ -30,7 +31,9 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.WorkspaceMetadata do
       context_used: {:optional, :count},
       context_window: {:optional, :count},
       cost_usd: {:optional, :float},
-      title: {:optional, {:text, 256}}
+      title: {:optional, {:text, 256}},
+      # pass71 S5: prompts of this conversation queued behind its live turn.
+      queued: :count
     ],
     defaults: [
       conversation_id: nil,
@@ -47,6 +50,7 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.WorkspaceMetadata do
       context_used: nil,
       context_window: nil,
       cost_usd: nil,
-      title: nil
+      title: nil,
+      queued: 0
     ]
 end

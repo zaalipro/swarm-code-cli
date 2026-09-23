@@ -45,7 +45,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
       :context_window,
       :cost_usd,
       :title,
-      :background
+      :background,
+      :queued
     ],
     DTO.WorkspaceMetadata => [
       :project,
@@ -56,7 +57,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
       :context_used,
       :context_window,
       :cost_usd,
-      :title
+      :title,
+      :queued
     ],
     DTO.ShellSnapshot => [:rate_limits],
     DTO.Approval => [

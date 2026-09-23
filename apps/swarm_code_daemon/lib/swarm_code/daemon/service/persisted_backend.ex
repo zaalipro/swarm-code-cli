@@ -2724,7 +2724,9 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       "context_used" => totals.context_used,
       "context_window" => context_window(chat),
       "cost_usd" => totals.cost_usd,
-      "title" => if(is_binary(conversation.title), do: preview(conversation.title, 256))
+      "title" => if(is_binary(conversation.title), do: preview(conversation.title, 256)),
+      # pass71 S5: the prompts waiting behind the live turn (`conversations.queued`).
+      "queued" => length(conversation.queued || [])
     }
   end
 
