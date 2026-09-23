@@ -542,7 +542,8 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
     verb = verb(tool)
     target = target(tool, verb)
 
-    counts = edit_counts(item, tool, state)
+    diff = diff_source(item, tool)
+    counts = edit_counts(item, tool, diff, state)
 
     summary =
       if counts == [],
@@ -570,10 +571,11 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
 
     expanded? = MapSet.member?(state.expansions, item.id)
 
+    # pass71 V3 (R5): an edit shows its first hunk in place, expanded or not.
     body =
       cond do
+        diff -> first_hunk(diff, tool, state, width, indent + 2)
         not expanded? -> []
-        diff?(item.text) -> diff_preview(item.text, tool, state, width, indent + 2)
         true -> preview(item.text, :muted, state, width, indent + 2)
       end
 
@@ -599,25 +601,59 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
 
   @diff_preview 12
 
-  # An edit's diff, opened in place: hunks in the diff colours, the first
-  # dozen lines, and how to read the rest.
-  defp diff_preview(text, tool, state, width, indent) do
+  # The diff an edit row shows: the daemon's first hunk (`ToolCall.hunk`,
+  # pass71 S contract, read with `Map.get` until it is on the wire), else the
+  # item's own text when that is a unified diff.
+  defp diff_source(item, tool) do
+    case Map.get(tool, :hunk) do
+      hunk when is_binary(hunk) and hunk != "" ->
+        if diff?(hunk), do: hunk, else: nil
+
+      _ ->
+        if diff?(item.text), do: item.text, else: nil
+    end
+  end
+
+  # The body lines of a unified diff, without its file headers.
+  defp diff_lines(text, state) do
+    text
+    |> admitted(state)
+    |> String.trim_trailing("\n")
+    |> String.split(["\r\n", "\n"])
+    |> Enum.reject(
+      &(String.starts_with?(&1, "--- ") or String.starts_with?(&1, "+++ ") or
+          String.starts_with?(&1, "diff --git ") or String.starts_with?(&1, "index "))
+    )
+    |> Enum.drop_while(&(not String.starts_with?(&1, "@@")))
+  end
+
+  # An edit's first hunk, in place: its `@@` line and at most a dozen lines in
+  # the diff colours, then how many lines the whole diff has beyond them.
+  defp first_hunk(text, tool, state, width, indent) do
     policy = state.capabilities.ambiguous_width
     inner = max(1, width - indent - 1)
     pad = String.duplicate(" ", indent)
+    lines = diff_lines(text, state)
 
-    lines =
-      text
-      |> admitted(state)
-      |> String.trim_trailing("\n")
-      |> String.split(["\r\n", "\n"])
-      |> Enum.reject(
-        &(String.starts_with?(&1, "--- ") or String.starts_with?(&1, "+++ ") or
-            String.starts_with?(&1, "diff --git ") or String.starts_with?(&1, "index "))
-      )
+    {hunk, _rest} =
+      case lines do
+        [head | body] ->
+          {[head | Enum.take_while(body, &(not String.starts_with?(&1, "@@")))], []}
 
-    shown = Enum.take(lines, @diff_preview)
-    more = length(lines) - length(shown)
+        [] ->
+          {[], []}
+      end
+
+    shown = Enum.take(hunk, @diff_preview)
+
+    # The daemon may send only the first hunk and count the rest.
+    total =
+      case Map.get(tool, :diff_lines) do
+        n when is_integer(n) and n >= length(lines) -> n
+        _ -> length(lines)
+      end
+
+    more = total - length(shown)
 
     rows =
       for line <- shown do
@@ -627,16 +663,9 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
       end
 
     hint =
-      cond do
-        more > 0 and Map.get(tool, :diff_ref) ->
-          "#{ellipsis(state)} #{more} more  (the diff opens in full)"
-
-        more > 0 ->
-          "#{ellipsis(state)} #{more} more  (Enter opens)"
-
-        true ->
-          nil
-      end
+      if more > 0,
+        do:
+          "#{ellipsis(state)} #{more} more #{if more == 1, do: "line", else: "lines"} · Enter opens"
 
     if hint, do: rows ++ [spec([{pad, :plain}, {hint, :faint}], nil)], else: rows
   end
@@ -675,18 +704,28 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
   end
 
   # `+3 −1` for an edit, from the counts the daemon sends or its `+N −M` detail.
-  defp edit_counts(item, tool, state) do
+  defp edit_counts(item, tool, diff, state) do
     added = Map.get(item, :added) || Map.get(tool, :added)
     removed = Map.get(item, :removed) || Map.get(tool, :removed)
 
     {added, removed} =
-      if is_integer(added) or is_integer(removed) do
-        {added || 0, removed || 0}
-      else
-        case Regex.run(~r/^\+(\d+)\s*[−-](\d+)$/u, String.trim(tool.detail || "")) do
-          [_, a, r] -> {String.to_integer(a), String.to_integer(r)}
-          nil -> {nil, nil}
-        end
+      cond do
+        is_integer(added) or is_integer(removed) ->
+          {added || 0, removed || 0}
+
+        match = Regex.run(~r/^\+(\d+)\s*[−-](\d+)$/u, String.trim(tool.detail || "")) ->
+          [_, a, r] = match
+          {String.to_integer(a), String.to_integer(r)}
+
+        # The counts of a diff the row shows whole (never of a first hunk alone).
+        diff != nil and not is_binary(Map.get(tool, :hunk)) ->
+          lines = diff_lines(diff, state)
+
+          {Enum.count(lines, &String.starts_with?(&1, "+")),
+           Enum.count(lines, &String.starts_with?(&1, "-"))}
+
+        true ->
+          {nil, nil}
       end
 
     if is_integer(added),
