@@ -4,14 +4,17 @@ defmodule SwarmCode.Daemon.Service.Pass70ConversationTest do
   service lists the project's conversations, creates and opens them in place
   (re-subscribing and re-projecting), changes the project's approval mode and
   trust, and marks things seen. C5 (arch F10): what happens outside the open
-  conversation reaches the shell watch as toasts and rate limits.
+  conversation reaches the shell watch as toasts and rate limits. C6 (arch
+  F16): runs and agents say why they stopped and on which model, and the
+  workspace lists what its runs left running.
   """
   use ExUnit.Case, async: false
   import Ecto.Query
   alias SwarmCode.Daemon.Service.PersistedBackend, as: Backend
   alias SwarmCode.Domain.{Cache, Conversations, MCP, Notifications, Projects, Providers, Repo}
   alias SwarmCode.Domain.Engine.{Events, Questions}
-  alias SwarmCode.Domain.Conversations.Conversation
+  alias SwarmCode.Domain.Conversations.{Conversation, Node, Run}
+  alias SwarmCode.Domain.Tools.BackgroundProcs
   alias SwarmCode.Protocol.{Scope, ServiceRequest}
   alias SwarmCodeCLI.UI.DataSource.{Delta, DTO}
 
@@ -303,6 +306,146 @@ defmodule SwarmCode.Daemon.Service.Pass70ConversationTest do
 
       MCP.broadcast_status(id, :ready)
       assert %DTO.Toast{level: :success, title: "MCP server ready"} = toast!()
+    end
+  end
+
+  describe "why it stopped, on which model, what it left running (C6)" do
+    setup c do
+      {:ok, run} =
+        Conversations.create_run(%{
+          conversation_id: c.current.id,
+          kind: "swarm",
+          prompt: "Tidy the parser",
+          status: "failed",
+          model: "fixture-model",
+          started_at: DateTime.utc_now()
+        })
+
+      {:ok, stopped} =
+        Conversations.create_run(%{
+          conversation_id: c.current.id,
+          kind: "chat",
+          prompt: "Explain it",
+          status: "stopped",
+          started_at: DateTime.utc_now()
+        })
+
+      {:ok, worker} =
+        Conversations.insert_node(%{
+          run_id: run.id,
+          kind: "agent",
+          role: "worker",
+          name: "worker-a",
+          status: "failed",
+          depth: 1
+        })
+
+      Repo.update_all(from(r in Run, where: r.id == ^run.id), set: [error_kind: "rate_limit"])
+
+      Repo.update_all(from(n in Node, where: n.id == ^worker.id),
+        set: [error_kind: "turn_budget"]
+      )
+
+      refresh!(c.backend)
+      %{run: run, stopped: stopped, worker: worker}
+    end
+
+    test "runs and agents carry the stop reason, the error kind and their labels", c do
+      assert {:ok, %{"value" => snapshot}} =
+               query(c.backend, conversation(c.current.id), "workspace")
+
+      assert {:ok, %DTO.WorkspaceSnapshot{runs: runs, agents: agents}} =
+               DTO.WorkspaceSnapshot.decode(snapshot)
+
+      failed = Enum.find(runs, &(&1.id == c.run.id))
+
+      assert {failed.error_kind, failed.stop_reason, failed.stop_label} ==
+               {"rate_limit", nil, "rate limit"}
+
+      stopped = Enum.find(runs, &(&1.id == c.stopped.id))
+      assert {stopped.stop_reason, stopped.stop_label} == {"user_stopped", "stopped"}
+
+      worker = Enum.find(agents, &(&1.id == c.worker.id))
+
+      assert {worker.stop_reason, worker.error_kind, worker.stop_label} ==
+               {"turn_budget", nil, "turn limit"}
+    end
+
+    test "an agent's model comes from the engine's node broadcast", c do
+      send(
+        c.backend,
+        {:nodes_upsert, c.run.id, [%Node{id: c.worker.id, kind: "agent", model: "gpt-mini"}]}
+      )
+
+      assert eventually(fn ->
+               {:ok, %{"value" => snapshot}} =
+                 query(c.backend, conversation(c.current.id), "workspace")
+
+               Enum.any?(
+                 snapshot["agents"],
+                 &(&1["id"] == c.worker.id and &1["model"] == "gpt-mini")
+               )
+             end)
+    end
+
+    test "what a run left running is listed, published and removed", c do
+      unless Process.whereis(BackgroundProcs), do: start_supervised!(BackgroundProcs)
+      watch!(c.backend, "workspace", conversation(c.current.id), "workspace")
+
+      [key] = BackgroundProcs.put(c.run.id, [424_242], "npm run dev")
+      on_exit(fn -> BackgroundProcs.delete(key) end)
+      refresh!(c.backend)
+
+      delta = receive_kind!("background_upsert")
+      assert {:ok, %Delta{body: %DTO.BackgroundCommand{} = command}} = Delta.decode(delta)
+
+      assert {command.pid, command.command, command.state, command.run_id} ==
+               {424_242, "npm run dev", :running, c.run.id}
+
+      assert {:ok, %{"value" => snapshot}} =
+               query(c.backend, conversation(c.current.id), "workspace")
+
+      assert [%{"pid" => 424_242}] = snapshot["background"]
+
+      BackgroundProcs.delete(key)
+      refresh!(c.backend)
+
+      assert %{"kind" => "background_remove", "entity_id" => id} =
+               receive_kind!("background_remove")
+
+      assert id == command.id
+    end
+  end
+
+  # What a conversation event schedules, without the 20 ms coalescing timer.
+  defp refresh!(backend) do
+    send(backend, :refresh_projection)
+    :sys.get_state(backend)
+  end
+
+  defp receive_kind!(kind) do
+    receive do
+      {:service_delta, backend, ref, %{"kind" => ^kind} = delta} ->
+        send(backend, {:service_credit, self(), ref, delta["sequence"]})
+        delta
+
+      {:service_delta, backend, ref, delta} ->
+        send(backend, {:service_credit, self(), ref, delta["sequence"]})
+        receive_kind!(kind)
+    after
+      2000 -> flunk("no #{kind} delta")
+    end
+  end
+
+  defp eventually(fun, n \\ 100)
+  defp eventually(fun, 0), do: fun.()
+
+  defp eventually(fun, n) do
+    if fun.() do
+      true
+    else
+      Process.sleep(20)
+      eventually(fun, n - 1)
     end
   end
 

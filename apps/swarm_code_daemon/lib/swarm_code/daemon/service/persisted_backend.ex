@@ -81,7 +81,13 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         # MCP servers that failed (so their recovery is told too).
         waiting_seen: MapSet.new(Questions.list(), & &1.conversation_id),
         rate_limits: %{},
-        mcp_failed: MapSet.new()
+        mcp_failed: MapSet.new(),
+        # pass70 C6: an agent's model is a virtual node field the RunServer
+        # broadcasts and never stores; kept for the agents projected. And what
+        # the projected runs left running in the background.
+        agent_models: %{},
+        background: %{},
+        background_tick: nil
       }
 
       {:ok, reload(state)}
@@ -241,6 +247,26 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
   def handle_info({:mcp_status, server_id, status}, state),
     do: {:noreply, mcp_status(state, server_id, status)}
+
+  # pass70 C6: the models of the agents a run just registered or switched.
+  def handle_info({:nodes_upsert, _run_id, nodes} = event, state) when is_list(nodes) do
+    models =
+      for %{kind: "agent", id: id, model: model} <- nodes,
+          is_binary(id) and is_binary(model) and model != "",
+          into: state.agent_models,
+          do: {id, model}
+
+    handle_info({:projection_event, event}, %{state | agent_models: models})
+  end
+
+  # A background command ends without an event: while any is listed, look
+  # again every few seconds.
+  def handle_info(:background_tick, state) do
+    next = reload(%{state | background_tick: nil})
+    {:noreply, publish_changes(state, next)}
+  end
+
+  def handle_info({:projection_event, _event}, state), do: {:noreply, schedule_refresh(state)}
 
   def handle_info(event, state) when is_tuple(event) do
     if elem(event, 0) in [
@@ -1097,8 +1123,9 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   # `ops` is `%{agent_id => newest open op}`; an agent's step is that op's
   # title (a tool call reads "grep Bootstrap|…", a think reads "thinking"),
   # else its status word.
-  defp agent_summary(n, ops) do
+  defp agent_summary(n, ops, models) do
     status = normalize_node_status(n.status)
+    stop = stop_facts(n.status, Map.get(n, :error_kind))
 
     step =
       case ops[n.id] do
@@ -1127,8 +1154,39 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       "parent_id" => n.parent_id,
       "depth" => n.depth || 0,
       "changes_stat" => clip(n.changes_stat, 200),
-      "error" => if(present?(n.error), do: clip(n.error, 200))
+      "error" => if(present?(n.error), do: clip(n.error, 200)),
+      "model" => clip(models[n.id], 200)
     }
+    |> Map.merge(stop)
+  end
+
+  # pass70 C6 (arch F16): why a run or an agent stopped, as the synced domain
+  # records it (`error_kind` holds a provider error kind or an orchestration
+  # stop reason, `LLM.Error`), with the desktop's chip label. A run the user
+  # stopped carries no kind: its reason is `user_stopped`.
+  defp stop_facts(status, kind) do
+    error = SwarmCode.Domain.LLM.Error
+
+    {reason, error_kind} =
+      cond do
+        is_binary(kind) and error.stop_reason?(known_atom(kind)) -> {kind, nil}
+        is_binary(kind) and error.kind?(known_atom(kind)) -> {nil, kind}
+        status == "stopped" -> {"user_stopped", nil}
+        true -> {nil, nil}
+      end
+
+    %{
+      "stop_reason" => reason,
+      "error_kind" => error_kind,
+      "stop_label" => error.stop_reason_label(reason || error_kind)
+    }
+  end
+
+  # Only atoms that already exist: a kind written by a newer desktop is text.
+  defp known_atom(text) do
+    String.to_existing_atom(text)
+  rescue
+    ArgumentError -> nil
   end
 
   defp agent_role(%{role: "worker", name: "Judge" <> _}), do: "judge"
@@ -1364,7 +1422,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
           created: stamp(row.inserted_at),
           revision: revision,
           records: [],
-          agents: Enum.map(ns, &agent_summary(&1, ops)),
+          agents: Enum.map(ns, &agent_summary(&1, ops, state.agent_models)),
           node_ids: Enum.map(ns, & &1.id),
           approval: nil,
           interactions: [],
@@ -1378,7 +1436,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
           started_at: ms(row.started_at),
           finished_at: ms(row.finished_at),
           consensus: row.consensus == true,
-          error: run_error(row, ns)
+          error: run_error(row, ns),
+          stop: stop_facts(row.status, Map.get(row, :error_kind))
         }
 
         rs =
@@ -1450,6 +1509,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         end
       end)
 
+    background = background_bodies(ids)
+
     %{
       state
       | runs: runs,
@@ -1458,9 +1519,59 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         revision: revision,
         metadata: metadata,
         changes: Map.new(checkpoints, &{&1.id, change_body(&1, state)}),
-        verdicts: Map.new(verdicts)
+        verdicts: Map.new(verdicts),
+        agent_models: Map.take(state.agent_models, Enum.map(agents, & &1.id)),
+        background: background
     }
+    |> background_tick()
   end
+
+  # pass70 C6: what the projected runs left running (`Tools.BackgroundProcs`,
+  # an ETS table; empty when the runtime has none).
+  defp background_bodies([]), do: %{}
+
+  defp background_bodies(run_ids) do
+    runs = MapSet.new(run_ids)
+
+    SwarmCode.Domain.Tools.BackgroundProcs.list_all()
+    |> Enum.filter(&MapSet.member?(runs, &1.run_id))
+    |> Enum.take(200)
+    |> Map.new(fn entry ->
+      id = "#{entry.run_id}:#{entry.os_pid}"
+
+      {id,
+       %{
+         "id" => id,
+         "run_id" => entry.run_id,
+         "agent_id" => nil,
+         "pid" => entry.os_pid,
+         "command" => preview(to_string(entry.command), 512),
+         "cwd" => nil,
+         "state" => "running",
+         "exit_code" => nil,
+         "started_at" => ms(entry.started_at),
+         "output_bytes" => 0,
+         "revision" => stamp(entry.started_at)
+       }}
+    end)
+  rescue
+    _ -> %{}
+  end
+
+  defp background_for(runs, state) do
+    shown = MapSet.new(runs, & &1.id)
+
+    state.background
+    |> Map.values()
+    |> Enum.filter(&MapSet.member?(shown, &1["run_id"]))
+    |> Enum.sort_by(&{&1["started_at"], &1["id"]})
+  end
+
+  defp background_tick(%{background: background, background_tick: nil} = state)
+       when map_size(background) > 0,
+       do: %{state | background_tick: Process.send_after(self(), :background_tick, 5_000)}
+
+  defp background_tick(state), do: state
 
   # The changes and verdicts of the runs a snapshot shows, newest first.
   defp changes_for(runs, state) do
@@ -1762,10 +1873,23 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         broadcast(acc, entity_delta("change_remove", gone["run_id"], id, nil, acc))
       end)
 
-    Enum.reduce(state.verdicts, state, fn {id, body}, acc ->
-      if old.verdicts[id] == body,
-        do: acc,
-        else: broadcast(acc, entity_delta("verdict_upsert", body["run_id"], id, body, acc))
+    state =
+      Enum.reduce(state.verdicts, state, fn {id, body}, acc ->
+        if old.verdicts[id] == body,
+          do: acc,
+          else: broadcast(acc, entity_delta("verdict_upsert", body["run_id"], id, body, acc))
+      end)
+
+    state =
+      Enum.reduce(state.background, state, fn {id, body}, acc ->
+        if old.background[id] == body,
+          do: acc,
+          else: broadcast(acc, entity_delta("background_upsert", body["run_id"], id, body, acc))
+      end)
+
+    Enum.reduce(Map.keys(old.background) -- Map.keys(state.background), state, fn id, acc ->
+      gone = old.background[id]
+      broadcast(acc, entity_delta("background_remove", gone["run_id"], id, nil, acc))
     end)
   end
 
@@ -1834,31 +1958,33 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       end)
 
   defp summary(run, state),
-    do: %{
-      "created_sequence" => run.created,
-      "parent_run_id" => run.parent_run_id,
-      "seen_revision" => 0,
-      "id" => run.id,
-      "conversation_id" => state.opts[:conversation_id],
-      "kind" => run.kind,
-      "title" => preview(run.prompt, 256),
-      "revision" => run.revision,
-      "state" => status(run.status),
-      "allowed_actions" => actions(run),
-      "progress" => nil,
-      "tokens_in" => run.tokens_in,
-      "tokens_out" => run.tokens_out,
-      "cost_usd" => run.cost_usd,
-      "model" => run.model,
-      "agents_total" => run.agents_total,
-      "agents_running" => run.agents_running,
-      "needs" => length(run.interactions),
-      "changes" => run.changes_count,
-      "started_at" => run.started_at,
-      "finished_at" => run.finished_at,
-      "consensus" => run.consensus,
-      "error" => run.error
-    }
+    do:
+      %{
+        "created_sequence" => run.created,
+        "parent_run_id" => run.parent_run_id,
+        "seen_revision" => 0,
+        "id" => run.id,
+        "conversation_id" => state.opts[:conversation_id],
+        "kind" => run.kind,
+        "title" => preview(run.prompt, 256),
+        "revision" => run.revision,
+        "state" => status(run.status),
+        "allowed_actions" => actions(run),
+        "progress" => nil,
+        "tokens_in" => run.tokens_in,
+        "tokens_out" => run.tokens_out,
+        "cost_usd" => run.cost_usd,
+        "model" => run.model,
+        "agents_total" => run.agents_total,
+        "agents_running" => run.agents_running,
+        "needs" => length(run.interactions),
+        "changes" => run.changes_count,
+        "started_at" => run.started_at,
+        "finished_at" => run.finished_at,
+        "consensus" => run.consensus,
+        "error" => run.error
+      }
+      |> Map.merge(run.stop)
 
   defp member?(_, %{kind: :global, id: nil}), do: true
   defp member?(state, %{kind: :project, id: id}), do: id == state.opts[:project_id]
@@ -1917,12 +2043,24 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
             "workspace" ->
               delta["kind"] not in ["activity_upsert", "toast", "rate_limit"]
 
-            _ ->
+            # pass70 C6: background commands belong to the workspace and the
+            # run inspector, not to the transcript or pending windows.
+            "inspector" ->
               delta["kind"] not in [
                 "activity_upsert",
                 "workspace_metadata",
                 "toast",
                 "rate_limit"
+              ]
+
+            _ ->
+              delta["kind"] not in [
+                "activity_upsert",
+                "workspace_metadata",
+                "toast",
+                "rate_limit",
+                "background_upsert",
+                "background_remove"
               ]
           end
 
@@ -2080,7 +2218,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
                 "interactions" => Enum.take(pending, limit),
                 "changes" => changes_for(runs, state),
                 "verdicts" => verdicts_for(runs, state),
-                "agents" => Enum.flat_map(runs, & &1.agents) |> Enum.take(limit)
+                "agents" => Enum.flat_map(runs, & &1.agents) |> Enum.take(limit),
+                "background" => background_for(runs, state)
               })
               |> Map.merge(state.metadata)
 

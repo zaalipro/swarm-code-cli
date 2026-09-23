@@ -35,6 +35,7 @@ defmodule SwarmCode.Daemon.Service.PersistedProjection do
           tokens_out: r.tokens_out,
           cost_usd: r.cost_usd,
           model: r.model,
+          error_kind: r.error_kind,
           started_at: r.started_at,
           finished_at: r.finished_at,
           inserted_at: r.inserted_at,
@@ -213,6 +214,7 @@ defmodule SwarmCode.Daemon.Service.PersistedProjection do
           depth: n.depth,
           changes_stat: n.changes_stat,
           error: fragment("substr(coalesce(?, ''), 1, 200)", n.error),
+          error_kind: n.error_kind,
           # Only a judge's result is read (its verdict JSON); everyone else's
           # stays in the database.
           result: fragment("case when ? like 'Judge%' then ? else null end", n.name, n.result)
