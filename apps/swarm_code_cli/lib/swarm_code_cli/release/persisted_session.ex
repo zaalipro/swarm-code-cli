@@ -194,9 +194,10 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
     if opts[:label] == :dev,
       do: IO.puts(:stderr, "swarmcode (dev) — conversation #{session.conversation.id}")
 
-    outcome = run_ui(session, executable)
+    {outcome, current} = run_ui(session, executable)
+    shown = %{session | conversation: %{session.conversation | id: current}}
     # Read the summary while storage and the runs are still up, then stop them.
-    summary = query_worker(fn -> summary(session, started_at) end)
+    summary = query_worker(fn -> summary(shown, started_at) end)
     stopped = stop_live_runs()
     {:ok, outcome, Map.merge(summary, %{stopped: stopped, notice: session[:notice]})}
   end
@@ -346,43 +347,48 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
       owner_monitor = Process.monitor(owner)
       supervisor_monitor = Process.monitor(supervisor)
 
-      receive do
-        {:DOWN, ^owner_monitor, :process, ^owner, :normal} ->
-          # The runtime names a close nobody asked for (the daemon connection
-          # went away, a frame could not be drawn); it is reported now that
-          # the terminal is restored.
-          receive do
-            {:session_closed, words} when is_binary(words) ->
-              {:failed,
-               failure(
-                 @exit_failure,
-                 "The session closed because " <> words <> ".",
-                 "Run swarmcode again; your conversation is saved."
-               )}
-          after
-            0 -> :ok
-          end
+      outcome =
+        receive do
+          {:DOWN, ^owner_monitor, :process, ^owner, :normal} ->
+            # The runtime names a close nobody asked for (the daemon connection
+            # went away, a frame could not be drawn); it is reported now that
+            # the terminal is restored.
+            receive do
+              {:session_closed, words} when is_binary(words) ->
+                {:failed,
+                 failure(
+                   @exit_failure,
+                   "The session closed because " <> words <> ".",
+                   "Run swarmcode again; your conversation is saved."
+                 )}
+            after
+              0 -> :ok
+            end
 
-        {:DOWN, ^owner_monitor, :process, ^owner, reason} ->
-          Logger.error("terminal owner stopped: #{inspect(reason)}")
+          {:DOWN, ^owner_monitor, :process, ^owner, reason} ->
+            Logger.error("terminal owner stopped: #{inspect(reason)}")
 
-          {:failed,
-           failure(
-             @exit_failure,
-             "The terminal stopped responding, so swarmcode closed.",
-             "Run swarmcode again; your conversation is saved."
-           )}
+            {:failed,
+             failure(
+               @exit_failure,
+               "The terminal stopped responding, so swarmcode closed.",
+               "Run swarmcode again; your conversation is saved."
+             )}
 
-        {:DOWN, ^supervisor_monitor, :process, ^supervisor, reason} ->
-          Logger.error("session supervisor stopped: #{inspect(reason)}")
+          {:DOWN, ^supervisor_monitor, :process, ^supervisor, reason} ->
+            Logger.error("session supervisor stopped: #{inspect(reason)}")
 
-          {:failed,
-           failure(
-             @exit_failure,
-             "The session stopped unexpectedly, so swarmcode closed.",
-             "Run swarmcode again; your conversation is saved."
-           )}
-      end
+            {:failed,
+             failure(
+               @exit_failure,
+               "The session stopped unexpectedly, so swarmcode closed.",
+               "Run swarmcode again; your conversation is saved."
+             )}
+        end
+
+      # pass71 F21: the summary describes the conversation on screen at the
+      # end (after /new or /resume), not the one the session opened with.
+      {outcome, current_conversation(runtime, conversation_id)}
     after
       if Process.alive?(supervisor), do: stop_quietly(supervisor)
 
@@ -396,6 +402,15 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
           :ok
       end
     end
+  end
+
+  defp current_conversation(runtime, fallback) do
+    case SessionRuntime.snapshot(runtime) do
+      %{destination: {:conversation, id}} when is_binary(id) -> id
+      _ -> fallback
+    end
+  catch
+    :exit, _ -> fallback
   end
 
   # The visual companion mirrors this session on a loopback port; the palette's
