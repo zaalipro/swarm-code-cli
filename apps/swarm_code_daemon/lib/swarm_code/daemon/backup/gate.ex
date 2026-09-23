@@ -929,6 +929,10 @@ defmodule SwarmCode.Daemon.Backup.Gate do
     end
   end
 
+  # pass70 B (A's request): the FTS5 index of pass 69 owns shadow tables, two
+  # of them `WITHOUT ROWID` (`messages_fts_idx`, `messages_fts_config`), which
+  # have no rowid to prove. SQLite maintains them from the virtual table, whose
+  # own count and rowid proof are kept, and `quick_check` covers their b-trees.
   defp table_names(conn) do
     rows =
       SqliteQuery.rows(
@@ -939,6 +943,9 @@ defmodule SwarmCode.Daemon.Backup.Gate do
                END
         FROM sqlite_schema
         WHERE type = 'table' AND name NOT GLOB 'sqlite_*'
+          AND name NOT IN (
+            SELECT name FROM pragma_table_list WHERE schema = 'main' AND type = 'shadow'
+          )
         ORDER BY name
         LIMIT 513
         """,
