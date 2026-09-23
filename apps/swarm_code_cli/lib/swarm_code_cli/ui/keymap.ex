@@ -46,6 +46,33 @@ defmodule SwarmCodeCLI.UI.Keymap do
 
   def resolve(_, _, _), do: :ignore
 
+  @doc """
+  Whether `input` is plain typing into the composer: a printable fragment or a
+  Backspace that no binding of the composer claims, outside the grace and
+  confirmation paths. Such a key resolves to an edit of the draft without
+  looking at the action table, so the session may apply it before the table
+  of the previous keystroke has been projected (pass70 Q4).
+  """
+  @spec typing?(term(), map()) :: boolean()
+  def typing?({:text_fragment, phase, text, mods}, state)
+      when phase in [:press, :repeat] and is_binary(text),
+      do: plain_typing?(text, fragment_mods(mods), phase, state)
+
+  def typing?({:key, phase, :backspace, []}, state) when phase in [:press, :repeat],
+    do: plain_typing?(:backspace, [], phase, state)
+
+  def typing?(_input, _state), do: false
+
+  defp plain_typing?(code, mods, phase, state) do
+    mods == [] and Context.of(state) == :composer and not tiny_unsent?(state) and
+      not confirm_exit?(code, mods, phase, state) and not grace?(state) and
+      Bindings.lookup(:composer, code, mods) == nil and
+      match?({:ok, _}, Input.validate(input_of(code, phase)))
+  end
+
+  defp input_of(:backspace, phase), do: {:key, phase, :backspace, []}
+  defp input_of(text, phase), do: {:text_fragment, phase, text, []}
+
   def activate(target, state, table) do
     if Enum.any?(table, fn {_, current} -> current == target end) do
       case target do

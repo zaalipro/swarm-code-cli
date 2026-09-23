@@ -126,6 +126,10 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
        # Only a launcher that asked for the wall clock repaints on the clock.
        ticking?: Keyword.get(opts, :wall_clock, false) == true,
        clock_timer: nil,
+       # pass70 Q4: a typed key is being applied without projecting it
+       # (`lazy?`); the scene and table are behind the state (`dirty?`).
+       lazy?: false,
+       dirty?: false,
        close_ms: timeout,
        draw: :idle,
        frame_timer: nil,
@@ -178,8 +182,21 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
     end
   end
 
-  def handle_call({:input, input}, _, %{phase: :running} = state),
-    do: {:reply, :ok, resolved(state, Keymap.resolve(input, state.ui, state.table))}
+  # pass70 Q4: plain typing is applied at once and projected with the next
+  # frame, so a burst of keys costs one projection per frame instead of one
+  # per key (40 typed characters took ~5 s in the release). Any other key
+  # needs the action table of what is on screen, so a pending projection is
+  # made first.
+  def handle_call({:input, input}, _, %{phase: :running} = state) do
+    if Keymap.typing?(input, state.ui) do
+      state = %{state | lazy?: true}
+      next = resolved(state, Keymap.resolve(input, state.ui, state.table))
+      {:reply, :ok, %{next | lazy?: false}}
+    else
+      state = projected(state)
+      {:reply, :ok, resolved(state, Keymap.resolve(input, state.ui, state.table))}
+    end
+  end
 
   def handle_call({:action, action}, _, %{phase: :running} = state) do
     allowed =
@@ -198,6 +215,8 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
   end
 
   def handle_call({:activate, revision, id}, _, %{phase: :running} = state) do
+    state = projected(state)
+
     result =
       if revision == state.ui.revision and Map.has_key?(state.table, id),
         do: Keymap.activate(state.table[id], state.ui, state.table),
@@ -492,10 +511,18 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
     next
     |> invalidate_generation(previous.terminal_generation)
     |> pause_frame()
-    |> project()
+    |> project_or_defer()
     |> schedule()
     |> clock()
   end
+
+  defp project_or_defer(%{lazy?: true} = state), do: %{state | dirty?: true}
+  defp project_or_defer(state), do: project(state)
+
+  # The scene and table of the latest state, projected now if a typed key
+  # deferred it.
+  defp projected(%{dirty?: true} = state), do: project(state)
+  defp projected(state), do: state
 
   # pass70 Q2: what the screen says about time (a live run's elapsed clock, a
   # toast that fades after a few seconds) changes while nothing else does, so
@@ -684,6 +711,7 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
 
   defp project(state) do
     {scene, table} = Projector.project(state.ui)
+    state = %{state | dirty?: false}
 
     case SceneSlot.put(state.slot, scene) do
       :ok ->
@@ -793,6 +821,13 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
   end
 
   defp schedule(state), do: state
+
+  defp draw(%{dirty?: true} = state) do
+    case projected(state) do
+      %{phase: :running} = next -> draw(next)
+      closing -> closing
+    end
+  end
 
   defp draw(state) do
     token = identity()
