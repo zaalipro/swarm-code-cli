@@ -180,13 +180,15 @@ defmodule SwarmCode.Daemon.Service.Pass70ConversationTest do
     refute_received {:service_delta, _, "workspace", %{"kind" => "toast"}}
   end
 
-  test "trusting a read-only project lets it work (auto)", c do
+  test "trusting a read-only project stamps trust and lets it work (auto)", c do
     {:ok, _} = Projects.update(Projects.get(c.project.id), %{approval_mode: "read_only"})
 
-    assert {:ok, %{"value" => %{"status" => "accepted"}}} =
+    assert {:ok, %{"value" => %{"status" => "accepted", "feedback" => feedback}}} =
              update(c.backend, "trust", global(), %{"trusted" => true})
 
-    assert Projects.get(c.project.id).approval_mode == "auto"
+    assert feedback["text"] == "Project trusted; approval mode auto"
+    project = Projects.get(c.project.id)
+    assert {project.approval_mode, Projects.trusted?(project)} == {"auto", true}
   end
 
   test "the workspace snapshot carries the status line's facts", c do
@@ -194,13 +196,15 @@ defmodule SwarmCode.Daemon.Service.Pass70ConversationTest do
              query(c.backend, conversation(c.current.id), "workspace")
 
     assert {:ok, %DTO.WorkspaceSnapshot{} = page} = DTO.WorkspaceSnapshot.decode(snapshot)
-    assert {page.approval_mode, page.title} == {:auto, "Current work"}
-    # Trust is a fact of the synced domain only; before it the field is nil.
-    project = Projects.get(c.project.id)
+    assert {page.approval_mode, page.title, page.trusted} == {:auto, "Current work", false}
+    assert is_integer(page.context_window) or page.context_window == nil
 
-    if Map.has_key?(project, :trusted_at),
-      do: assert(is_boolean(page.trusted)),
-      else: assert(page.trusted == nil)
+    {:ok, _} = Projects.trust(Projects.get(c.project.id))
+
+    assert {:ok, %{"value" => snapshot}} =
+             query(c.backend, conversation(c.current.id), "workspace")
+
+    assert snapshot["trusted"] == true
   end
 
   test "mark seen stamps the open conversation and refuses another", c do

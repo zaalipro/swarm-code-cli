@@ -470,8 +470,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   end
 
   # pass70 C2 (arch F12): the project's approval mode and trust, the
-  # desktop's (`Projects.trust/1` after the engine sync; before it, trusting
-  # lifts a read-only project to `auto`, which is what trust does there).
+  # desktop's own (`Projects.trust/1` stamps `trusted_at` and lifts a
+  # read-only project to `auto`).
   defp execute(%{operation: :project_update, params: params}, _scope, id, state) do
     project = Projects.get!(state.opts[:project_id])
 
@@ -698,15 +698,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     end
   end
 
-  defp trust_project(project, true) do
-    if Code.ensure_loaded?(Projects) and function_exported?(Projects, :trust, 1) do
-      apply(Projects, :trust, [project])
-    else
-      if project.approval_mode == "read_only",
-        do: Projects.update(project, %{approval_mode: "auto"}),
-        else: {:ok, project}
-    end
-  end
+  defp trust_project(project, true), do: Projects.trust(project)
 
   defp trust_project(project, _), do: {:ok, project}
 
@@ -2154,11 +2146,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
   defp approval_mode(_), do: nil
 
-  # nil until the domain knows trust (the A-sync adds `trusted_at`).
-  defp trusted(%{project: %{} = project}) do
-    if Map.has_key?(project, :trusted_at), do: not is_nil(Map.get(project, :trusted_at))
-  end
-
+  defp trusted(%{project: %{} = project}), do: Projects.trusted?(project)
   defp trusted(_), do: nil
 
   defp provider_name({:ok, %{provider: %{name: name}}}) when is_binary(name) and name != "",
@@ -2167,14 +2155,10 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   defp provider_name(_), do: nil
 
   # The window the harness works in: the point where `Context.trim/2` starts
-  # dropping history (the model's configured window at 75 % after the sync).
-  defp context_window({:ok, %{model: model}}) when is_binary(model) do
-    context = SwarmCode.Domain.Engine.Context
-
-    if function_exported?(context, :budget, 2),
-      do: apply(context, :budget, [model, SwarmCode.Domain.Settings.get_cached()]),
-      else: context.budget(model)
-  end
+  # dropping history (75 % of the model's configured window, or the default
+  # budget for its family).
+  defp context_window({:ok, %{model: model}}) when is_binary(model),
+    do: SwarmCode.Domain.Engine.Context.budget(model, SwarmCode.Domain.Settings.get_cached())
 
   defp context_window(_), do: nil
 
