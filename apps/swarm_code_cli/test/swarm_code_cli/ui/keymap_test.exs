@@ -490,6 +490,20 @@ defmodule SwarmCodeCLI.UI.KeymapTest do
       assert :ignore = Keymap.resolve({:mouse, :press, :left, 1, 2, []}, state, %{})
     end
 
+    # pass70 F: the quit confirmation says "X CONFIRM EXIT" at every size.
+    test "X confirms the quit confirmation at a normal size too" do
+      state = %{
+        state()
+        | size: %SwarmCodeCLI.UI.Size{columns: 120, rows: 40},
+          layers: [{:unsent_changes, :detach}],
+          exit_pending: :detach,
+          focus: "cancel"
+      }
+
+      assert {:ok, {:quit_confirmed, :detach}} = Keymap.resolve(letter("X"), state, %{})
+      assert :ignore = Keymap.resolve(letter("X"), %{state | exit_pending: nil}, %{})
+    end
+
     # pass70 F: SWARM_MOUSE=1 wheel notches scroll what is under the pointer,
     # three lines, without moving focus; a paged layer takes them.
     test "the mouse wheel scrolls main, the docked inspector or a paged layer" do

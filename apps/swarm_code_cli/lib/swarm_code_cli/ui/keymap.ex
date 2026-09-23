@@ -164,6 +164,11 @@ defmodule SwarmCodeCLI.UI.Keymap do
       tiny_unsent?(state) ->
         tiny_exit(code, mods, phase, state)
 
+      # The quit confirmation says "X CONFIRM EXIT" at every size, so X
+      # confirms it at every size (pass70 F), not only at :too_small.
+      confirm_exit?(code, mods, phase, state) ->
+        tiny_exit(code, mods, phase, state)
+
       grace?(state) ->
         grace(code, mods, state)
 
@@ -329,6 +334,11 @@ defmodule SwarmCodeCLI.UI.Keymap do
     do: Layout.calculate(state.size, state.preferences).class == :too_small
 
   defp tiny_unsent?(_state), do: false
+
+  defp confirm_exit?("X", [], :press, %{layers: [{:unsent_changes, kind} | _], exit_pending: kind}),
+       do: true
+
+  defp confirm_exit?(_code, _mods, _phase, _state), do: false
 
   defp tiny_exit("X", _mods, :press, %{
          layers: [{:unsent_changes, kind} | _],

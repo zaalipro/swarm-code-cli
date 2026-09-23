@@ -26,6 +26,8 @@ defmodule SwarmCodeCLI.Demo.Terminal do
         )
 
       init = %Init{
+        # Composer-first (pass70 D5), like the saved and live launchers.
+        focus: "composer",
         size: caps.size,
         capabilities: caps,
         source_epoch: "terminal-demo",

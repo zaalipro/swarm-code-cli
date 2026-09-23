@@ -108,38 +108,49 @@ class Demo:
 class LiveDemo(unittest.TestCase):
     def demo(self,*args,**kwargs):
         demo=Demo(*args,**kwargs); self.addCleanup(demo.close); return demo
+    # pass70 (D5): the keyboard is composer-first, so letters type and `q` is
+    # text. Ctrl-C closes a layer, clears the draft, stops the turn, and a
+    # second press within 1.5 s quits (a third confirms "Stop N live runs and
+    # quit?"). `quit` presses it until the demo exits.
+    def settle(self,d,seconds):
+        end=time.monotonic()+seconds
+        while time.monotonic()<end: d.pump()
+    def quit(self,d,presses=8):
+        for _ in range(presses):
+            if d.status is not None: break
+            d.send(b'\x03')
+            end=time.monotonic()+.3
+            while time.monotonic()<end and d.status is None:
+                d.pump()
+                if select.select([d.meta],[],[],0)[0]: d.status=int(d.meta.readline())
+        d.finish()
     def test_live_banner_and_clean_detach(self):
-        d=self.demo(); d.wait_for(b'NO USER DATA'); d.descendants(); d.send(b'q'); d.finish()
+        d=self.demo(); d.wait_for(b'NO USER DATA'); d.descendants()
+        # A letter is text in the composer, never a command.
+        d.send(b'q'); self.settle(d,.3); self.assertIsNone(d.status)
+        self.quit(d)
     def test_question_navigation_paste_and_dirty_cancel_confirm(self):
         d=self.demo(); d.wait_for(b'NO USER DATA'); d.descendants(); d.capture('workspace')
-        d.send(b'a'); d.wait_for(b'Search:')
-        d.send(b'Open question'); d.wait_for(b'Open question')
-        d.send(b'\r'); d.wait_for(b'Which review should proceed?'); d.capture('question')
-        # The answer IS accepted server-side, but the dialog re-renders through
-        # the read-only fallback (dialog.ex question/approval contents clause)
-        # once the interaction leaves :pending, so no ACCEPTED badge ever
-        # appears: settled :accepted mutations are filtered from the status row
-        # (status.ex mutations/2 rejects {:settled, _, :accepted}). The dialog
-        # going read-only proves the run resumed past the question.
-        d.send(b'2\r'); d.wait_for(b'Read-only at this size; resize to act')
-        for _ in range(2):
-            d.send(b'\x1b')
-            end=time.monotonic()+.15
-            while time.monotonic()<end: d.pump()
-        d.wait_for(b'Focus: main')
-        for _ in range(4):
-            d.send(b'\t')
-            end=time.monotonic()+.2
-            while time.monotonic()<end: d.pump()
-            if b'Focus: composer' in d.screen(): break
-        self.assertIn(b'Focus: composer',d.screen())
+        # The waiting question opens over the conversation by itself (E2).
+        d.wait_for(b'Which review should proceed?'); d.capture('question')
+        # Keys typed right after it opens go to the draft; wait out the grace.
+        self.settle(d,1.0)
+        d.send(b'2'); self.settle(d,.2); d.send(b'\r')
+        # Answered: the card closes by itself once it is no longer pending.
+        end=time.monotonic()+20
+        while b'Which review should proceed?' in d.screen() and time.monotonic()<end: d.pump()
+        self.assertNotIn(b'Which review should proceed?',d.screen())
         d.send(b'\x1b[200~PTY draft marker\x1b[201~'); d.wait_for(b'PTY draft marker'); d.capture('composer')
-        d.send(b'\x1b'); d.wait_for(b'Focus: main')
-        d.send(b'q'); d.wait_for(b'UNSENT CHANGES'); d.capture('before-detach')
-        d.send(b'\r'); d.wait_for(b'Focus: main')
+        # Select mode (Ctrl-T): `q` quits there and asks about the unsent draft
+        # (or the live runs); Enter on the focused Cancel keeps everything.
+        d.send(b'\x14'); self.settle(d,.3); d.send(b'q'); self.settle(d,.5)
+        d.wait_for(b'quit'); d.capture('before-detach')
+        d.send(b'\r'); self.settle(d,.5)
+        self.assertIsNone(d.status)
         self.assertIn(b'PTY draft marker',d.screen())
-        d.send(b'q'); d.wait_for(b'UNSENT CHANGES')
-        d.send(b'\t\r'); d.finish()
+        # Cancel returns to select mode, where `q` asks again; X confirms.
+        d.wait_for(b'SELECT'); d.send(b'q'); d.wait_for(b'CONFIRM EXIT')
+        d.send(b'X'); d.finish()
 
     def test_killed_native_writer_restores_before_demo_returns(self):
         d=self.demo(); d.wait_for(b'NO USER DATA')
@@ -165,14 +176,13 @@ class LiveDemo(unittest.TestCase):
         end=time.monotonic()+3
         while termios.tcgetattr(d.slave)==d.original and time.monotonic()<end: d.pump()
         self.assertNotEqual(termios.tcgetattr(d.slave),d.original)
-        d.send(b'\t'); d.wait_for(b'Focus: composer')
+        # Input works again after the barrier: the composer takes a paste.
         d.send(b'\x1b[200~After resume\x1b[201~'); d.wait_for(b'After resume')
-        d.send(b'\x1b'); d.wait_for(b'Focus: main')
-        d.send(b'q'); d.wait_for(b'UNSENT CHANGES'); d.send(b'\t\r'); d.finish()
+        self.quit(d)
 
     def test_no_alt_screen_and_closed_options(self):
         d=self.demo(('--no-alt-screen','--ascii','--monochrome','--ambiguous-width','wide','--reduced-motion'))
-        d.wait_for(b'NO USER DATA'); d.descendants(); d.send(b'q'); d.finish()
+        d.wait_for(b'NO USER DATA'); d.descendants(); self.quit(d)
         self.assertNotIn(b'\x1b[?1049h',d.output)
         self.assertNotIn(b'\x1b[?1049l',d.output)
     def test_invalid_option_rejected_before_modes(self):
