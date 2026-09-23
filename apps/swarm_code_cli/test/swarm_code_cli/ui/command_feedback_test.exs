@@ -33,6 +33,13 @@ defmodule SwarmCodeCLI.UI.CommandFeedbackTest do
     assert {^shown, []} = Reducer.update(shown, {:data, delivery})
   end
 
+  test "diff shows the inspector's changes tab" do
+    {state, request} = pending("/diff")
+    {shown, []} = Reducer.update(state, {:data, response(request, :navigate, "", :changes)})
+    assert shown.tabs.inspector == :changes
+    assert shown.layers == []
+  end
+
   test "late feedback settles the old command without opening a report over another conversation" do
     {state, request} = pending("/goal")
     {away, _} = Reducer.update(state, {:navigate, {:conversation, "other"}})

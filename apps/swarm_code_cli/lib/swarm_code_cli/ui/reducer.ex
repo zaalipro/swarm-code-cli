@@ -1149,6 +1149,11 @@ defmodule SwarmCodeCLI.UI.Reducer do
        when feature in [:workflows, :research, :checkpoints],
        do: transition(state, {:open_layer, {:library, feature}})
 
+  # `/diff` (pass70 F16): the service answers "navigate to changes"; the
+  # inspector's changes tab is that view.
+  defp show_feedback(state, :navigate, %{feature: :changes}, _),
+    do: transition(state, {:set_tab, :changes})
+
   defp show_feedback(state, :report, feedback, id) do
     transition(%{state | command_report: feedback}, {:open_layer, {:command_report, id}})
   end
