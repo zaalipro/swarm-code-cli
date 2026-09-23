@@ -50,9 +50,9 @@ defmodule SwarmCodeCLI.Demo.CellsTest do
       assert name in files
     end
 
-    # One <text> per cell, so look for the waiting card's amber "?" rather than a phrase.
+    # One <text> per cell, so look for the waiting card's amber "!" rather than a phrase.
     approval = File.read!(Path.join(directory, "approval-170x42-truecolor-rich.svg"))
-    assert approval =~ ~r/fill="#f5b400"[^>]*>\?<\/text>/
+    assert approval =~ ~r/fill="#f5b400"[^>]*>!<\/text>/
 
     html = File.read!(Path.join(directory, "index.html"))
     assert html =~ "FAKE DEMO"

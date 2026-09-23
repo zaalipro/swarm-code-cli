@@ -418,11 +418,17 @@ defmodule SwarmCodeCLI.UI.Projector.Inspector.Agents do
 
     {verb, line, words} =
       case item do
-        %{
-          kind: :approval,
-          approval: %{arguments_preview: preview, permission: permission, tool: tool}
-        } ->
-          {"wants to run a command", preview || "", permission_words(tool, permission)}
+        %{kind: :approval} ->
+          facts = SwarmCodeCLI.UI.Projector.Composer.approval_facts(item)
+
+          subject =
+            cond do
+              facts.command -> "$ " <> facts.command
+              facts.path -> facts.path
+              true -> facts.subject
+            end
+
+          {"wants to " <> approval_verb(facts), subject, "decide in the composer below"}
 
         %{question: %{prompt: prompt}} when is_binary(prompt) ->
           {"asks a question", prompt, "answer it to let the agent continue"}
@@ -435,7 +441,7 @@ defmodule SwarmCodeCLI.UI.Projector.Inspector.Agents do
       Support.action_spans(
         [
           %Span{
-            text: Density.safe("?", state, 1),
+            text: Density.safe(if(item.kind == :approval, do: "!", else: "?"), state, 1),
             style: %{RunRow.tinted(:warning, state) | modifiers: [:bold]}
           },
           RunRow.gap(1, state),
@@ -457,7 +463,7 @@ defmodule SwarmCodeCLI.UI.Projector.Inspector.Agents do
         spans: [
           %Span{
             text: Density.safe(line, state, inner),
-            style: Theme.style(:code, state.capabilities)
+            style: %{RunRow.tinted(:text_primary, state) | modifiers: [:bold]}
           }
         ]
       },
@@ -473,10 +479,15 @@ defmodule SwarmCodeCLI.UI.Projector.Inspector.Agents do
     }
   end
 
-  # The head names the agent and the preview names the command, so the words
-  # only say what kind of permission it is.
-  defp permission_words(_tool, :write), do: "writes files · needs your permission"
-  defp permission_words(_tool, _execute), do: "runs a command · needs your permission"
+  defp approval_verb(%{tool: "run_command"}), do: "run a command"
+
+  defp approval_verb(%{tool: tool}) when tool in ["edit_file", "write_file", "edit_files"],
+    do: "change a file"
+
+  defp approval_verb(%{tool: tool}) when is_binary(tool) and tool != "",
+    do: "use " <> String.replace(tool, "_", " ")
+
+  defp approval_verb(_), do: "do something that needs your permission"
 
   # --------------------------------------------------------- sub-agents
 

@@ -6,7 +6,9 @@ defmodule SwarmCodeCLI.UI.ProjectorShellTablineTest do
   alias SwarmCodeCLI.UI.Paint.{Blocks, Options}
   alias SwarmCodeCLI.UI.Projector.{Shell, Support}
 
-  @hint "Ctrl-R runs   Ctrl-G all   Ctrl-P features"
+  # The run switcher is the one key the row spells; the dashboard and the
+  # palette are on the status row and in the help sheet.
+  @hint "Ctrl-R runs"
 
   # A tab is stripe, gap, mark, gap, title, gap, dot, gap: eight spans whose
   # title sits at offset 4.
@@ -228,11 +230,11 @@ defmodule SwarmCodeCLI.UI.ProjectorShellTablineTest do
 
     test "the overflow counts every run the row left out, not just the fifth" do
       state = populated()
-      {shown, overflow, _hint} = Shell.tabline_plan(state, 120)
+      {shown, overflow, _hint} = Shell.tabline_plan(state, 90)
 
       assert length(shown) < 4
       assert overflow == 5 - length(shown)
-      assert state |> painted(120) |> hd() |> String.contains?("+#{overflow}")
+      assert state |> painted(90) |> hd() |> String.contains?("+#{overflow}")
     end
 
     test "tabs are dropped whole rather than shrunk into stubs" do
@@ -293,11 +295,11 @@ defmodule SwarmCodeCLI.UI.ProjectorShellTablineTest do
     test "a narrow row spends its width on a tab before it spends it on the hint" do
       state = populated()
 
-      # The hint is 42 cells. At the :small and :compressed_small shell widths
-      # (50-71 columns) reserving it first leaves 6-27 cells for a tab that costs
-      # 24, so the row would announce runs it never shows: a bare "+5" where the
-      # one affordance that replaced the navigator should be.
-      for width <- [50, 60, 71] do
+      # Reserving the hint first at a narrow width would leave too little for
+      # a tab that costs 24 cells, so the row would announce runs it never
+      # shows: a bare "+5" where the one affordance that replaced the
+      # navigator should be.
+      for width <- [30, 50, 60, 71] do
         {shown, overflow, _hint} = Shell.tabline_plan(state, width)
 
         assert shown != [], "the tab row drew no tab at all at #{width} columns"
@@ -309,17 +311,16 @@ defmodule SwarmCodeCLI.UI.ProjectorShellTablineTest do
                "the active run was missing from the row at #{width} columns"
       end
 
-      # At the narrowest shell the hint and a tab cannot both be drawn, and it is
-      # the hint that goes.
-      assert {[_ | _], _overflow, ""} = Shell.tabline_plan(state, 50)
+      # When the hint and a tab cannot both be drawn, it is the hint that goes.
+      assert {[_ | _], _overflow, ""} = Shell.tabline_plan(state, 30)
     end
 
     test "a row too narrow for the hint drops it rather than wrapping" do
       state = populated()
-      {_shown, _overflow, hint} = Shell.tabline_plan(state, 40)
+      {_shown, _overflow, hint} = Shell.tabline_plan(state, 30)
 
       assert hint == ""
-      assert [row] = painted(state, 40)
+      assert [row] = painted(state, 30)
       refute String.contains?(row, "Ctrl-R")
     end
   end

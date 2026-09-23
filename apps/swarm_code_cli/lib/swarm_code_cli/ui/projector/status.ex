@@ -1,80 +1,72 @@
 defmodule SwarmCodeCLI.UI.Projector.Status do
   @moduledoc """
-  The status row: where the keys are, what the vim mode is, and the few
-  bindings worth a reminder right now.
+  The one line of chrome at the bottom (ux M5): what the session is set to and
+  what it has cost, then, against the right edge, either a toast or the two
+  keys worth a reminder in this context.
 
-  The hints are read off `UI.Keymap.Bindings` for the current context, so a
-  rebind can never leave the row advertising a key that does something else.
-  How many fit is the layout class's `bindings` budget plus one, the count the
-  row has always shown; a hint that would push the row past its width is
-  dropped from the low-priority end before anything wraps.
+      Build · auto · deepseek-v4.1-flash · ctx 19k · $0.04 · 1 waiting     Esc interrupt  ? keys
+
+  The left side is mode, approval mode and trust (when the daemon says them),
+  the chat model, the context the last step used, the conversation's cost, and
+  anything waiting on the user. Feedback that used to be pinned under the
+  headline (`REJECTED`, `PENDING`, a command's report) is a toast here in
+  words. The hints are read off `UI.Keymap.Bindings` for the current context,
+  so a rebind can never leave the row advertising a key that does something
+  else. Nothing on this row is an id, a focus name or a cue prefix.
   """
   alias SwarmCodeCLI.UI.{SafeText, Width}
   alias SwarmCodeCLI.UI.Keymap.{Bindings, Context}
-  alias SwarmCodeCLI.UI.Scene.{Block, Span, Style}
-  alias SwarmCodeCLI.UI.Projector.{Density, KeyLabel, RunRow}
+  alias SwarmCodeCLI.UI.Scene.{Block, Span}
+  alias SwarmCodeCLI.UI.Projector.{Composer, Density, KeyLabel, RunRow, Support}
+  alias SwarmCodeCLI.UI.Projector.Workspace.Turns
 
   @composer_contexts [:composer, :composer_normal, :composer_visual]
 
   def project(state, class, width) do
     policy = state.capabilities.ambiguous_width
     context = Context.of(state)
-    budget = Density.budget(class).bindings
+    budget = if class in [:xl, :wide, :medium], do: 2, else: 1
 
-    lead = waiting_spans(state, width) ++ lead_spans(state, context, width)
-    showcmd = showcmd_spans(state, width)
-    warning = connection_warning(state, width)
-    fixed = cells(lead ++ showcmd ++ warning, policy)
+    left = vim_spans(state, context) ++ facts(state, class)
+    toast = toast(state)
+    right = toast || hints(state, context, budget)
 
-    hints =
-      context
-      |> Bindings.hinted()
-      |> Enum.take(budget + 1)
-      |> Enum.flat_map(fn binding ->
-        case Bindings.key_in_context(binding, context) do
-          nil -> []
-          key -> [{KeyLabel.label(key, state.capabilities.ascii?), binding.label}]
-        end
-      end)
+    left = [gap(" ", state)] ++ left
+    right = if right == [], do: [], else: right ++ [gap(" ", state)]
+    left_cells = cells(left, policy)
+    right_cells = cells(right, policy)
 
-    [
-      %Block.RichText{
-        spans: lead ++ showcmd ++ fit(hints, state, width - fixed, policy) ++ warning
-      }
-    ]
-  end
+    spans =
+      cond do
+        right != [] and left_cells + right_cells + 2 <= width ->
+          left ++ [gap(String.duplicate(" ", width - left_cells - right_cells), state)] ++ right
 
-  # Anything waiting on the user leads the row, ahead of the mode or focus
-  # word: an approval or a question is the one fact that should interrupt
-  # whatever the user was reading. The count is of pending interactions across
-  # every run, the same number the tab row spells as `!N` per run. Nothing is
-  # drawn when nothing waits; a row that said "0" would train the eye to skip
-  # the word on the day it matters.
-  defp waiting_spans(state, width) do
-    case waiting_count(state) do
-      0 ->
-        []
+        # Feedback outranks the facts: they give up their tail so it is read.
+        toast != nil ->
+          kept = clip(left, max(0, width - right_cells - 2), policy, state)
+          pad = max(0, width - cells(kept, policy) - right_cells)
+          clip(kept ++ [gap(String.duplicate(" ", pad), state)] ++ right, width, policy, state)
 
-      count ->
-        [
-          %Span{
-            text: Density.safe("Waiting for you · #{count}", state, width),
-            style: %Style{role: :warning, modifiers: [:bold]}
-          },
-          %Span{text: Density.safe("  ", state, width), style: %Style{role: :text_primary}}
-        ]
-    end
+        true ->
+          clip(left, width, policy, state)
+      end
+
+    [%Block.RichText{spans: spans}]
   end
 
   @doc "How many approvals and questions are waiting on the user, across every run."
   def waiting_count(state) do
-    state.read_model.interactions |> Map.values() |> Enum.count(&(&1.state == :pending))
+    runs = state.read_model.runs
+
+    state.read_model.interactions
+    |> Map.values()
+    |> Enum.count(
+      &(&1.state == :pending and not match?(%{state: :superseded}, Map.get(runs, &1.run_id)))
+    )
   end
 
-  # With vim on and the composer focused the left segment is the mode, in the
-  # colour of its role but without the role's text cue (a cue would print the
-  # word twice in a colourless terminal). Everywhere else it is the focus.
-  defp lead_spans(%{keymap: :vim} = state, context, width) when context in @composer_contexts do
+  # With vim on and the composer focused the row leads with the mode.
+  defp vim_spans(%{keymap: :vim} = state, context) when context in @composer_contexts do
     {word, role} =
       case state.vim.mode do
         :insert -> {"INSERT", :success}
@@ -82,57 +74,158 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
         :visual -> {"VISUAL", :warning}
       end
 
-    [
-      %Span{
-        text: Density.safe(word, state, width),
-        style: %{RunRow.tinted(role, state) | modifiers: [:bold]}
-      }
-    ]
+    showcmd =
+      case state.vim do
+        %{count: nil, pending: nil} ->
+          ""
+
+        %{count: count, pending: pending} ->
+          " " <> if(count, do: Integer.to_string(count), else: "") <> (pending || "")
+      end
+
+    [span(word <> showcmd, tint(:plain, state, role, [:bold]), state), gap("  ", state)]
   end
 
-  defp lead_spans(state, _context, width) do
-    [
-      %Span{text: Density.safe("Focus: ", state, width), style: %Style{role: :text_primary}},
-      %Span{text: Density.safe(state.focus, state, width), style: %Style{role: :text_primary}}
-    ]
+  defp vim_spans(_state, _context), do: []
+
+  # mode · approval · trust · model · ctx · cost · waiting · connection
+  defp facts(state, class) do
+    workspace = Map.get(state.read_model.snapshots, :workspace)
+    run = Support.run(state)
+
+    mode = {Composer.mode_label(state), tint(:plain, state, :text_primary, [:bold])}
+
+    approval =
+      case workspace && Map.get(workspace, :approval_mode) do
+        nil -> nil
+        mode -> approval_words(mode, state)
+      end
+
+    trust =
+      case workspace && Map.get(workspace, :trust) do
+        value when value in [false, :untrusted, "untrusted"] ->
+          {"untrusted", tint(:plain, state, :warning, [])}
+
+        _ ->
+          nil
+      end
+
+    chat_model = workspace && Map.get(workspace, :chat_model)
+    swarm_model = workspace && Map.get(workspace, :swarm_model)
+
+    model =
+      case chat_model do
+        model when is_binary(model) and model != "" ->
+          {model, tint(:plain, state, :text_muted, [])}
+
+        _ ->
+          nil
+      end
+
+    # The sub agents' model, only when it is not the chat model.
+    agents =
+      if is_binary(swarm_model) and swarm_model != "" and swarm_model != chat_model,
+        do: {"agents " <> swarm_model, tint(:plain, state, :text_faint, [])}
+
+    context = context_words(state, run, workspace)
+    cost = cost_words(state)
+
+    waiting =
+      case waiting_count(state) do
+        0 -> nil
+        n -> {"#{n} waiting", tint(:plain, state, :warning, [:bold])}
+      end
+
+    connection = connection(state)
+
+    parts =
+      if class in [:narrow, :small, :compressed_small],
+        do: [mode, approval, model, waiting, connection],
+        else: [mode, approval, trust, model, agents, context, cost, waiting, connection]
+
+    parts
+    |> Enum.reject(&is_nil/1)
+    |> Enum.map(fn {text, style} -> span(text, style, state) end)
+    |> Enum.intersperse(span(" · ", tint(:plain, state, :text_ghost, []), state))
   end
 
-  # Vim's showcmd: the count and operator typed so far, so "2d" is visible while
-  # the motion is still to come.
-  defp showcmd_spans(%{keymap: :vim, vim: %{count: count, pending: pending}} = state, width)
-       when not (is_nil(count) and is_nil(pending)) do
-    text = " " <> if(count, do: Integer.to_string(count), else: "") <> (pending || "")
-    [%Span{text: Density.safe(text, state, width), style: %Style{role: :text_muted}}]
+  defp approval_words(mode, state) do
+    case to_string(mode) do
+      "read_only" ->
+        {"read-only", tint(:plain, state, :info, [])}
+
+      "read-only" ->
+        {"read-only", tint(:plain, state, :info, [])}
+
+      "auto" ->
+        {"auto", tint(:plain, state, :text_muted, [])}
+
+      full when full in ["full", "full_access", "full-access"] ->
+        {"full access", tint(:plain, state, :warning, [])}
+
+      other ->
+        {String.replace(other, "_", " "), tint(:plain, state, :text_muted, [])}
+    end
   end
 
-  defp showcmd_spans(_state, _width), do: []
+  # The context the last model step used: the newest item of the run in view
+  # that reports input tokens, against the model's window when it is known.
+  defp context_words(state, run, workspace) do
+    tokens =
+      if run do
+        state.read_model.transcript
+        |> Map.values()
+        |> Enum.filter(&(&1.run_id == run.id and is_integer(&1.tokens_in) and &1.tokens_in > 0))
+        |> Enum.max_by(&{&1.at || 0, &1.created_sequence}, fn -> nil end)
+        |> then(&(&1 && &1.tokens_in))
+      end
 
-  # As many hints as fit, dropped from the weakest end; the separator, the key
-  # and the label are three spans so the key alone carries the key role.
-  defp fit(hints, state, available, policy) do
-    spans = Enum.flat_map(hints, &hint_spans(&1, state))
+    window = workspace && Map.get(workspace, :context_window)
 
-    if hints == [] or cells(spans, policy) <= available,
-      do: spans,
-      else: fit(Enum.drop(hints, -1), state, available, policy)
+    cond do
+      is_nil(tokens) ->
+        nil
+
+      is_integer(window) and window > 0 ->
+        filled = min(6, div(tokens * 6 + window - 1, window))
+        on = SafeText.value(Support.glyph(:gauge_on, state))
+        off = SafeText.value(Support.glyph(:gauge_off, state))
+
+        {"ctx " <>
+           String.duplicate(on, filled) <>
+           String.duplicate(off, 6 - filled) <>
+           " " <>
+           Turns.compact(tokens) <> "/" <> Turns.compact(window),
+         tint(:plain, state, :text_muted, [])}
+
+      true ->
+        {"ctx " <> Turns.compact(tokens), tint(:plain, state, :text_muted, [])}
+    end
   end
 
-  defp hint_spans({key, label}, state) do
-    [
-      %Span{text: Density.safe("  ", state, 2), style: %Style{role: :text_primary}},
-      %Span{text: Density.safe(key, state, 24), style: %Style{role: :key}},
-      %Span{text: Density.safe(" " <> label, state, 24), style: %Style{role: :text_muted}}
-    ]
+  # What the conversation in view has cost so far.
+  defp cost_words(state) do
+    runs =
+      case state.destination do
+        {:conversation, id} ->
+          state.read_model.runs |> Map.values() |> Enum.filter(&(&1.conversation_id == id))
+
+        {:run, id} ->
+          state.read_model.runs |> Map.get(id) |> List.wrap()
+
+        _ ->
+          []
+      end
+
+    total = runs |> Enum.map(&(&1.cost_usd || 0)) |> Enum.sum()
+
+    if total > 0, do: {money(total), tint(:plain, state, :text_muted, [])}
   end
 
-  defp cells(spans, policy),
-    do:
-      Enum.reduce(spans, 0, fn span, sum ->
-        sum + Width.cells(SafeText.value(span.text), policy)
-      end)
+  defp money(cost) when cost < 0.01, do: "$" <> :erlang.float_to_binary(cost / 1, decimals: 3)
+  defp money(cost), do: "$" <> :erlang.float_to_binary(cost / 1, decimals: 2)
 
-  defp connection_warning(state, width) do
-    # Find the worst connection status across all watch slots
+  defp connection(state) do
     worst =
       state.watches
       |> Map.values()
@@ -145,28 +238,121 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
         end
       end)
 
-    case worst do
-      :disconnected ->
-        [
-          %Span{text: Density.safe("  ", state, width), style: %Style{role: :text_primary}},
-          %Span{text: Density.safe("disconnected", state, width), style: %Style{role: :error}}
-        ]
+    failed_page =
+      state
+      |> Support.recovering_pages()
+      |> Enum.find(fn {_slot, page} -> page.status == :error end)
 
-      :resyncing ->
-        [
-          %Span{text: Density.safe("  ", state, width), style: %Style{role: :text_primary}},
-          %Span{text: Density.safe("resyncing", state, width), style: %Style{role: :warning}}
-        ]
-
-      :stale ->
-        [
-          %Span{text: Density.safe("  ", state, width), style: %Style{role: :text_primary}},
-          %Span{text: Density.safe("stale", state, width), style: %Style{role: :warning}}
-        ]
-
-      nil ->
-        []
+    case {worst, failed_page} do
+      {:disconnected, _} -> {"disconnected", tint(:plain, state, :error, [:bold])}
+      {:resyncing, _} -> {"reconnecting", tint(:plain, state, :warning, [])}
+      {:stale, _} -> {"stale", tint(:plain, state, :warning, [])}
+      {nil, {_slot, %{direction: :before}}} -> {"older messages did not load", error(state)}
+      {nil, {_slot, _page}} -> {"new messages did not load", error(state)}
+      {nil, nil} -> nil
     end
+  end
+
+  defp error(state), do: tint(:plain, state, :error, [])
+
+  # Feedback in words, on the right of the row, instead of the key hints.
+  defp toast(state) do
+    text_role =
+      case state.notice do
+        {:command_feedback, text} when is_binary(text) -> {first_line(text), :info}
+        nil -> mutation_toast(state)
+        other -> {notice_words(other), :error}
+      end
+
+    case text_role do
+      nil -> nil
+      {text, role} -> [span(text, tint(:plain, state, role, []), state)]
+    end
+  end
+
+  defp first_line(text), do: text |> String.split(["\r\n", "\n"], parts: 2) |> hd()
+
+  defp notice_words({kind, reason}) when is_atom(kind) and is_atom(reason),
+    do: sentence(Atom.to_string(kind) <> ": " <> Atom.to_string(reason))
+
+  defp notice_words(kind) when is_atom(kind), do: sentence(Atom.to_string(kind))
+  defp notice_words(_), do: "Something went wrong"
+
+  defp sentence(text) do
+    text = String.replace(text, "_", " ")
+    String.upcase(String.first(text)) <> String.slice(text, 1..-1//1)
+  end
+
+  defp mutation_toast(state) do
+    state.mutations
+    |> Enum.sort_by(&elem(&1, 0))
+    |> Enum.reverse()
+    |> Enum.find_value(fn {_origin, mutation} ->
+      case mutation do
+        {:pending, _, _} -> {"Sending…", :info}
+        {:settled, _, :rejected} -> {"The daemon refused that request", :error}
+        {:settled, _, :deadline_exceeded} -> {"That request timed out", :error}
+        {:settled, _, :revision_conflict} -> {"That changed meanwhile; try again", :warning}
+        {:settled, _, :outcome_unknown} -> {"Not sure that went through", :warning}
+        {:settled, _, :needs_input} -> {"That needs your input", :warning}
+        {:settled, _, :interrupted} -> {"Interrupted", :warning}
+        _ -> nil
+      end
+    end)
+  end
+
+  # The strongest `budget` hints for the context, key then word.
+  defp hints(state, context, budget) do
+    context
+    |> Bindings.hinted()
+    |> Enum.flat_map(fn binding ->
+      case Bindings.key_in_context(binding, context) do
+        nil -> []
+        key -> [{KeyLabel.label(key, state.capabilities.ascii?), binding.label}]
+      end
+    end)
+    |> Enum.take(budget)
+    |> Enum.map(fn {key, label} ->
+      [
+        span(key, tint(:plain, state, :key, [:bold]), state),
+        span(" " <> String.downcase(label), tint(:plain, state, :text_faint, []), state)
+      ]
+    end)
+    |> Enum.intersperse([gap("   ", state)])
+    |> List.flatten()
+  end
+
+  defp span(text, style, state), do: %Span{text: Density.safe(text, state, 200), style: style}
+  defp gap(text, state), do: span(text, tint(:plain, state, :text_primary, []), state)
+
+  defp tint(:plain, state, role, modifiers),
+    do: %{RunRow.tinted(role, state) | background: nil, modifiers: modifiers}
+
+  defp cells(spans, policy),
+    do: Enum.reduce(spans, 0, &(Width.cells(SafeText.value(&1.text), policy) + &2))
+
+  defp clip(spans, width, policy, state) do
+    {kept, _} =
+      Enum.reduce_while(spans, {[], 0}, fn span, {acc, used} ->
+        text = SafeText.value(span.text)
+        c = Width.cells(text, policy)
+
+        cond do
+          used + c <= width ->
+            {:cont, {[span | acc], used + c}}
+
+          used >= width ->
+            {:halt, {acc, used}}
+
+          true ->
+            {taken, _, taken_cells} = Width.take_cells(text, width - used, policy)
+
+            {:halt,
+             {[%{span | text: Density.safe(taken, state, width)} | acc], used + taken_cells}}
+        end
+      end)
+
+    Enum.reverse(kept)
   end
 
   def notice(%{notice: nil}, _width), do: []

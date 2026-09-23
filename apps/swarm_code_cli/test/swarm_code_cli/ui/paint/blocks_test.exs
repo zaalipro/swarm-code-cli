@@ -61,11 +61,10 @@ defmodule SwarmCodeCLI.UI.Paint.BlocksTest do
       {%Block.Progress{label: safe("Load"), value: 1, maximum: 2},
        ["Load [██████████░░░░░░░░░░] 50%"]},
       {%Block.Progress{label: safe("Load")}, ["Load …"]},
-      {%Block.Tabs{tabs: [safe("A"), safe("B")], selected: 1}, ["A  SELECTED > B"]},
+      {%Block.Tabs{tabs: [safe("A"), safe("B")], selected: 1}, ["A  B"]},
       {%Block.KeyValues{rows: [{safe("Name"), safe("Value")}]}, ["Name: Value"]},
       {%Block.Composer{text: safe(""), placeholder: safe("Type here")}, ["Type here"]},
-      {%Block.Notice{text: safe("Ready"), severity: :info, action_id: "notice"},
-       ["[INFO] Ready"]},
+      {%Block.Notice{text: safe("Ready"), severity: :info, action_id: "notice"}, ["Ready"]},
       {%Block.ActionDeck{actions: [safe("Yes"), safe("No")]}, ["Yes  No"]},
       {%Block.Diff{
          path: safe("lib/foo.ex"),
@@ -91,6 +90,13 @@ defmodule SwarmCodeCLI.UI.Paint.BlocksTest do
 
     for {block, expected} <- cases,
         do: assert(strings(layout([block])) == expected, inspect(block.__struct__))
+
+    # Monochrome spells what colour shows.
+    notice = %Block.Notice{text: safe("Ready"), severity: :info}
+
+    assert strings(layout([notice], 80, 100, %Options{color_mode: :monochrome})) == [
+             "[INFO] Ready"
+           ]
   end
 
   test "prefix is emitted once and ascii only affects trusted chrome" do
@@ -194,9 +200,15 @@ defmodule SwarmCodeCLI.UI.Paint.BlocksTest do
   end
 
   test "selected tabs preserve source newlines and emit a selected prefix only once" do
-    assert strings(layout([%Block.Tabs{tabs: [text("a\nb")]}])) == ["SELECTED > a", "b"]
+    # The prefix spells the selection only where colour cannot show it (ux M6).
+    mono = %Options{color_mode: :monochrome}
+    tabs = [%Block.Tabs{tabs: [text("a\nb")]}]
+    assert strings(layout(tabs, 80, 100, mono)) == ["SELECTED > a", "b"]
+    assert strings(layout(tabs)) == ["a", "b"]
+
     tab = %Span{text: safe("Name"), style: %Style{role: :selected}, action_id: "tab"}
-    assert strings(layout([%Block.Tabs{tabs: [tab]}])) == ["SELECTED > Name"]
+    assert strings(layout([%Block.Tabs{tabs: [tab]}], 80, 100, mono)) == ["SELECTED > Name"]
+    assert strings(layout([%Block.Tabs{tabs: [tab]}])) == ["Name"]
   end
 
   test "rejects structural floods even when every item is empty" do

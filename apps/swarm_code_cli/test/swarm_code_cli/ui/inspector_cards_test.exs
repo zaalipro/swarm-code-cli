@@ -343,9 +343,9 @@ defmodule SwarmCodeCLI.UI.InspectorCardsTest do
       {rows, table, _, _} = painted(state)
 
       assert Enum.at(rows, 13) =~ ~r/^▗ +▖$/
-      assert Enum.at(rows, 14) == "▐ ? judge wants to run a command"
-      assert Enum.at(rows, 15) == "▐ mix ecto.migrate"
-      assert Enum.at(rows, 16) == "▐ runs a command · needs your permission"
+      assert Enum.at(rows, 14) == "▐ ! judge wants to run a command"
+      assert Enum.at(rows, 15) == "▐ $ mix ecto.migrate"
+      assert Enum.at(rows, 16) == "▐ decide in the composer below"
       assert length(targets(table, {:local, {:open_interaction, "ask-1"}})) == 1
     end
   end

@@ -322,7 +322,8 @@ defmodule SwarmCodeCLI.UI.ReducerScrollTest do
 
   test "line scroll traverses wrapped lines before changing stable item and resize keeps bias" do
     {state, _} = initial()
-    item = %{state.read_model.transcript["a"] | text: "first\nsecond\nthird"}
+    # A four-line prompt: the card is one row per line, with no speaker line.
+    item = %{state.read_model.transcript["a"] | role: :user, text: "first\nsecond\nthird\nfourth"}
 
     state = %{
       state
@@ -335,8 +336,8 @@ defmodule SwarmCodeCLI.UI.ReducerScrollTest do
 
     {line, []} = Reducer.update(state, {:scroll, "main", {:line, 1}})
     assert line.scrolls.main.anchor == {"a", 1, :cursor}
-    # The first item is one speaker line and three text lines, four rows in
-    # all; the line after its last row is the top of "b".
+    # The first item is four rows; the line after its last row is the top
+    # of "b".
     {boundary, []} = Reducer.update(line, {:scroll, "main", {:line, 3}})
     assert boundary.scrolls.main.anchor == {"b", 0, :cursor}
     {back, []} = Reducer.update(boundary, {:scroll, "main", {:line, -1}})

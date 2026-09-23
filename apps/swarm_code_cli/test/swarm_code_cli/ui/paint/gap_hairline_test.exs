@@ -63,7 +63,7 @@ defmodule SwarmCodeCLI.UI.Paint.GapHairlineTest do
       # 96-cell reading measure in the middle of it. The columns the navigator
       # owned are main's own empty gutter, so nothing is painted there and no
       # region starts to the left of main.
-      assert main.rect == %Rect{x: 0, y: 2, width: 127, height: 27}
+      assert main.rect == %Rect{x: 0, y: 1, width: 127, height: 28}
 
       docked =
         for region <- scene.regions,
@@ -100,12 +100,12 @@ defmodule SwarmCodeCLI.UI.Paint.GapHairlineTest do
       assert main.rect.x + main.rect.width <= 127
     end
 
-    test "the tab row on row 1 is never split by a gap column" do
+    test "the title and tab row on row 0 is never split by a gap column" do
       state = fixture(:chat, {170, 34})
       plan = paint(state)
 
       for x <- 0..169 do
-        refute cell_glyph(plan, x, 1) == "╎",
+        refute cell_glyph(plan, x, 0) == "╎",
                "A hairline crossed the tab row at column #{x}"
       end
     end

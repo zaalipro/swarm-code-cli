@@ -12,11 +12,12 @@ defmodule SwarmCodeCLI.UI.Layout do
   alias SwarmCodeCLI.UI.Scene.Rect
   defstruct [:class, :size, :preferences, rects: %{}, mutations_visible?: false]
 
-  # Row 0 is the title and row 1 is the tab row, so every other pane starts at
-  # row 2 and the vertical budget the docks, main, activity and composer share is
-  # three rows short of the terminal (title, tabline, status).
-  @chrome_rows 3
-  @body_top 2
+  # Row 0 is the title and tab row, one row for both (ux M5): every other pane
+  # starts at row 1 and the vertical budget the docks, main, activity and
+  # composer share is two rows short of the terminal (title, status). At 80x24
+  # that leaves main 18 rows.
+  @chrome_rows 2
+  @body_top 1
 
   @type class :: :xl | :wide | :medium | :narrow | :small | :compressed_small | :too_small
   @type t :: %__MODULE__{
@@ -82,7 +83,6 @@ defmodule SwarmCodeCLI.UI.Layout do
     panes
     |> Map.merge(%{
       title: rect(0, 0, c, 1),
-      tabline: rect(0, 1, c, 1),
       status: rect(0, r - 1, c, 1),
       main: rect(read_x, @body_top, read_width, main_height)
     })

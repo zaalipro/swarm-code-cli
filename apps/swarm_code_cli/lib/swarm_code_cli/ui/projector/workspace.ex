@@ -5,57 +5,70 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
   @palette_key SwarmCodeCLI.UI.Projector.KeyLabel.primary(
                  SwarmCodeCLI.UI.Keymap.Bindings.fetch(:command_palette)
                )
-  alias SwarmCodeCLI.UI.{ReadModel, SafeText, Theme, Width}
+  alias SwarmCodeCLI.UI.{SafeText, SlashPalette, Theme}
   alias SwarmCodeCLI.UI.Scene.{Block, Span}
   alias SwarmCodeCLI.UI.Paint.{Metrics, Options}
-  alias SwarmCodeCLI.UI.Projector.{Composer, Density, RunRow, Status, Support}
+  alias SwarmCodeCLI.UI.Projector.{Composer, Density, RunRow, Support}
   alias SwarmCodeCLI.UI.Projector.Workspace.Turns
 
-  # Paint's card chrome: a two-cell left gutter and one cell of right padding.
-  # The title is cut to the header width that leaves, so it never wraps.
+  @enter_key SwarmCodeCLI.UI.Projector.KeyLabel.primary(
+               SwarmCodeCLI.UI.Keymap.Bindings.fetch(:send)
+             )
 
+  # Main is the conversation. What used to sit above it (the title again, a
+  # "Waiting for you" banner, a headline, a notice, an action row) is gone:
+  # the run is on the tab row, what waits is on the status line and in the
+  # composer slot, feedback is a toast on the status line, and the actions
+  # are keys. What stays above the transcript is only what nothing else
+  # says: a draft's target or validation, and the plan, goal or ultra panel.
   def project(state, rect, class) do
-    chrome = chrome(state, rect, class)
-    height = content_height(state, rect, class, chrome)
+    head = head(state, rect, class)
+    popup = popup(state, rect)
+    height = content_height(state, rect, class, head) - length(popup)
 
     content =
       cond do
-        state.destination == :activity ->
-          activity_content(state, rect.width, height)
-
-        chrome.run ->
-          # Mode summaries live in the measured chrome above. Keep the actual
-          # transcript on the shared viewport so Home/End/PageUp/PageDown use
-          # the same logical anchors and wrapped-row metrics for every mode.
-          content(state, chrome.run, rect.width, height)
-
-        true ->
-          welcome_content(state, rect.width, height)
+        state.destination == :activity -> activity_content(state, rect.width, height)
+        Turns.view_order(state) != [] -> content(state, rect.width, height)
+        true -> welcome_content(state, rect.width, height)
       end
 
-    head =
-      chrome.mandatory ++
-        chrome.summary ++
-        Enum.take(chrome.notices, 2) ++ chrome.deck ++ chrome.separator
+    # The transcript fills what is left; a short one leaves blank rows between
+    # it and the popup, so the popup always sits on the composer.
+    filler =
+      if popup == [],
+        do: [],
+        else: List.duplicate(Support.text(" ", state, 1), max(0, height - painted_rows(content)))
 
-    head ++ content
+    head ++ content ++ filler ++ popup
   end
 
-  # The transcript reads from the top, under the run's headline, and follows
-  # the newest turn once it is longer than the pane: a short conversation sits
-  # where the eye starts, not against the composer with a screen of blank
-  # rows above it.
+  # The slash popup sits at the bottom of main, on the composer it completes.
+  defp popup(state, rect) do
+    if SlashPalette.open?(state) and state.layers == [],
+      do: Enum.take(Composer.slash_popup(state, rect.width), max(0, rect.height - 4)),
+      else: []
+  end
 
-  @doc "Exact Main text viewport rows after required chrome, notices and action decks."
+  defp painted_rows([%Block.VirtualList{items: items}]),
+    do:
+      Enum.reduce(items, 0, fn
+        %Block.RichText{spans: spans}, sum -> sum + newline_count(spans) + 1
+        _, sum -> sum + 1
+      end)
+
+  defp painted_rows(_), do: 0
+
+  defp newline_count(spans), do: Enum.count(spans, &(SafeText.value(&1.text) == "\n"))
+
+  @doc "Exact Main text viewport rows after the few rows of head that remain."
   def content_height(state, rect, class),
-    do: content_height(state, rect, class, chrome(state, rect, class))
+    do: content_height(state, rect, class, head(state, rect, class)) - length(popup(state, rect))
 
-  defp content_height(state, rect, _class, chrome) do
-    blocks =
-      chrome.mandatory ++
-        chrome.summary ++ Enum.take(chrome.notices, 2) ++ chrome.deck ++ chrome.separator
+  defp content_height(_state, rect, _class, []), do: max(0, rect.height)
 
-    {blocks, _measurement_actions} = Support.finalize(blocks, state.revision)
+  defp content_height(state, rect, _class, head) do
+    {blocks, _measurement_actions} = Support.finalize(head, state.revision)
 
     options = %Options{
       color_mode: state.capabilities.color_mode,
@@ -63,9 +76,7 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
       glyph_tier: state.capabilities.glyph_tier
     }
 
-    # Run cards, wrapped action decks and notice prefixes consume painted rows,
-    # rather than one row per top-level semantic block.
-    {:ok, chrome_height} =
+    {:ok, head_height} =
       Metrics.height(
         blocks,
         min(rect.width, 500),
@@ -74,114 +85,113 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
         state.capabilities.ambiguous_width
       )
 
-    remaining = max(0, rect.height - chrome_height)
-
-    # The transcript takes every row the chrome leaves. The old 45% cap came in
-    # with the first demo and left the lower half of a tall terminal blank.
-    if chrome.run,
-      do: remaining,
-      else: min(remaining, max(1, div(rect.height * 65, 100)))
+    max(0, rect.height - head_height)
   end
 
-  defp chrome(state, rect, class) do
+  defp head(state, rect, class) do
+    run = Support.run(state)
+    facts = Composer.facts(state, rect.width)
+    panel = if run, do: mode_panel(state, run, rect.width, class), else: []
+    panel = if panel == [], do: [], else: panel ++ [Support.text(" ", state, rect.width)]
+    facts ++ panel
+  end
+
+  @doc """
+  The actions the keys reach that are no longer drawn: the run's controls,
+  send and steer, what waits on the user, mark seen, the full-text openers,
+  the page retries and the plan gate. The projector puts them in the action
+  table without a block, so `Keymap.find_target/3` still finds them.
+  """
+  def keyboard_actions(state, class) do
     run = Support.run(state)
 
-    needs =
-      state.read_model.interactions
-      |> Map.values()
-      |> Enum.count(&(Map.get(&1, :state) == :pending and not superseded?(state, &1)))
-
-    facts = Composer.facts(state, rect.width)
-
-    # Plain words, and only when there is something to say: nothing waits, so
-    # nothing is shown; the pending interactions themselves stay in the deck.
-    needs_summary =
-      if needs > 0,
-        do: [tinted("Waiting for you · #{needs}", :warning, state, rect.width)],
-        else: []
-
-    mandatory = needs_summary ++ facts
-
-    notices =
-      Status.notice(state, rect.width) ++
-        Status.mutations(state, rect.width) ++ recovery(state, rect.width, class)
-
-    summary =
-      if run,
-        do: headline(state, run, rect.width, class) ++ mode_panel(state, run, rect.width, class),
-        else: []
-
-    actions =
-      if class == :compressed_small do
-        [
-          Support.action(SafeText.chrome(:resize_help), {:local, {:open_layer, :help}}),
-          Support.action(SafeText.chrome(:help), {:local, {:open_layer, :help}}),
-          Support.action(SafeText.chrome(:detach), {:local, {:quit_requested, :detach}}),
-          Support.action(
-            SafeText.chrome(:plain_exit),
-            {:local, {:presenter_handoff_requested, :plain}}
-          )
-        ]
-      else
-        # One row of actions under the headline: the run's own first (Pause,
-        # Stop, Inspect), then the composer's, what waits on you, and the
-        # full-text openers. Two decks split by a notice read as two screens.
-        run_deck_actions(state, run, class) ++
-          Composer.actions(state, class) ++
-          interaction_actions(state, class) ++ seen_actions(state) ++ detail_actions(state)
-      end
-
-    deck = if actions == [], do: [], else: [%Block.ActionDeck{actions: actions}]
-
-    # Blank separator row between chrome and transcript (decision 34):
-    # produced inside chrome/3 so BOTH project/3 AND content_height/4 see it.
-    separator = if run, do: [Support.text(" ", state, rect.width)], else: []
-
-    %{
-      run: run,
-      mandatory: mandatory,
-      notices: notices,
-      summary: summary,
-      deck: deck,
-      separator: separator
-    }
+    if class in [:compressed_small, :too_small] do
+      [
+        Support.action(SafeText.chrome(:resize_help), {:local, {:open_layer, :help}}),
+        Support.action(SafeText.chrome(:detach), {:local, {:quit_requested, :detach}}),
+        Support.action(
+          SafeText.chrome(:plain_exit),
+          {:local, {:presenter_handoff_requested, :plain}}
+        )
+      ]
+    else
+      run_deck_actions(state, run, class) ++
+        Composer.actions(state, class) ++
+        interaction_actions(state, class) ++
+        slot_decisions(state) ++
+        seen_actions(state) ++
+        detail_actions(state) ++
+        recovery_actions(state, class) ++ if(run, do: plan_gate_actions(state, run), else: [])
+    end
   end
 
+  # An empty conversation: what this is, the three keys that start everything,
+  # and the model that will answer.
   defp welcome_content(state, width, height) when height > 0 do
     mode = Composer.mode_label(state)
 
     {headline, detail} =
       case mode do
-        "Plan" -> {"READY TO PLAN", "Describe the change and I will map the safest steps."}
-        "Goal" -> {"GOAL MODE READY", "Set the objective for every run in this conversation."}
-        "Ultra" -> {"READY FOR ULTRA", "Big tasks become staged workflows with visible progress."}
-        "Workflow" -> {"WORKFLOW AUTHORING READY", "Describe the automation you want to create."}
-        "Consensus" -> {"READY FOR CONSENSUS", "Ask for a plan that a second model will judge."}
-        _ -> {"READY TO BUILD", "Ask for a change, inspect the project, or choose a mode."}
+        "Plan" -> {"Ready to plan", "Describe the change and I will map the safest steps."}
+        "Goal" -> {"Goal mode", "Set the objective for every run in this conversation."}
+        "Ultra" -> {"Ready for ultra", "Big tasks become staged workflows with visible progress."}
+        "Workflow" -> {"Workflow authoring", "Describe the automation you want to create."}
+        "Consensus" -> {"Ready for consensus", "Ask for a plan that a second model will judge."}
+        _ -> {"Ready to build", "Ask for a change, inspect the project, or choose a mode."}
       end
 
     workspace = Map.get(state.read_model.snapshots, :workspace)
     model = if workspace, do: Map.get(workspace, :chat_model), else: nil
+    project = if workspace, do: Map.get(workspace, :project), else: nil
+    mark = SafeText.value(Support.glyph(:assistant_mark, state))
+    accent = RunRow.tinted(:accent, state)
+    faint = RunRow.tinted(:text_faint, state)
+    muted = RunRow.tinted(:text_muted, state)
+    plain = RunRow.tinted(:text_primary, state)
 
-    model_line =
-      if is_binary(model) and model != "",
-        do: "Model · " <> model,
-        else: "Model · configured in Settings"
+    line = fn spans ->
+      %Block.RichText{
+        spans:
+          Enum.map(spans, fn {text, style} ->
+            %Span{text: Density.safe(text, state, width), style: style}
+          end)
+      }
+    end
 
-    blocks = [
-      Support.styled(headline, :heading, state, width),
-      Support.text(detail, state, width),
-      Support.styled("FIRST STEPS", :info, state, width),
-      Support.text("1  Type a request below and press Enter", state, width),
-      Support.text("2  Type / to browse slash commands", state, width),
-      Support.text(
-        "3  Press " <> @palette_key <> " to open workflows, research, memory, and settings",
-        state,
-        width
-      ),
-      Support.styled(model_line, :text_muted, state, width),
-      %Block.VirtualList{total_count: 0, first_index: 0, items: [], overscan: 0}
+    keys = [
+      {@enter_key, "send"},
+      {"/", "commands"},
+      {@palette_key, "workflows, research, memory, settings"}
     ]
+
+    blocks =
+      [
+        line.([{" ", plain}]),
+        line.([
+          {"  " <> mark <> " ", %{accent | modifiers: [:bold]}},
+          {headline, %{plain | modifiers: [:bold]}}
+        ]),
+        line.([{"    " <> detail, muted}]),
+        line.([{" ", plain}])
+      ] ++
+        Enum.map(keys, fn {key, words} ->
+          line.([
+            {"    " <> String.pad_trailing(key, 8),
+             %{RunRow.tinted(:key, state) | modifiers: [:bold]}},
+            {words, muted}
+          ])
+        end) ++
+        [
+          line.([{" ", plain}]),
+          line.(
+            [{"    ", plain}] ++
+              if(project, do: [{project, plain}, {"  ·  ", faint}], else: []) ++
+              [
+                {if(is_binary(model) and model != "", do: model, else: "model from Settings"),
+                 faint}
+              ]
+          )
+        ]
 
     [
       %Block.VirtualList{
@@ -306,8 +316,7 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
             ],
             else: []
 
-        actions = approve_action ++ steer_action ++ decline_action
-        if actions == [], do: [], else: [%Block.ActionDeck{actions: actions}]
+        approve_action ++ steer_action ++ decline_action
 
       nil ->
         []
@@ -405,6 +414,19 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
     conversation ++ activity
   end
 
+  # The decisions of the approval in the composer slot: the card draws them
+  # as key hints, so their targets live here for the keys to find.
+  defp slot_decisions(state) do
+    case Composer.waiting_approvals(state) do
+      [item | _] ->
+        for {_decision, _key, words, target} <- Composer.approval_decisions(state, item),
+            do: Support.action(Density.safe(words, state, 40), target)
+
+      [] ->
+        []
+    end
+  end
+
   defp interaction_actions(state, _class) do
     state.read_model.interactions
     |> Enum.sort_by(&elem(&1, 0))
@@ -416,70 +438,6 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
 
       Support.action(SafeText.chrome(label), {:local, {:open_layer, {item.kind, id}}})
     end)
-  end
-
-  # One row says which run this is and where it stands: the kind's glyph and
-  # colour, the title, and the state in plain words. The run's actions follow
-  # on their own row when there are any. The card this replaces spent five
-  # rows on the same facts, led with the system's status word, and was
-  # followed by a kind banner that the hive panel already says better.
-  defp headline(state, run, width, _class) do
-    kind = RunRow.theme_kind(run.kind)
-    {_letter, kind_role} = Theme.run_kind(kind)
-    {_word, status_role} = Theme.status(run.state)
-    plain = RunRow.tinted(:text_primary, state)
-
-    words = "  " <> state_words(run, state)
-    policy = state.capabilities.ambiguous_width
-    title_room = max(8, width - 4 - Width.cells(words, policy))
-
-    line = %Block.RichText{
-      spans: [
-        %Span{
-          text: Support.glyph(Theme.run_mark(kind), state),
-          style: %{RunRow.tinted(kind_role, state) | modifiers: [:bold]}
-        },
-        %Span{text: Density.safe(" ", state, width), style: plain},
-        %Span{
-          text: Density.safe(word_cut(run.title, title_room, state), state, title_room),
-          style: %{plain | modifiers: [:bold]}
-        },
-        %Span{text: Density.safe(words, state, width), style: RunRow.tinted(status_role, state)}
-      ]
-    }
-
-    [line]
-  end
-
-  # The title is cut on a word boundary when it must be cut at all.
-  defp word_cut(title, avail, state) do
-    policy = state.capabilities.ambiguous_width
-    title = title |> Density.safe(state, 500) |> SafeText.value()
-
-    if Width.cells(title, policy) <= avail do
-      title
-    else
-      ellipsis = if state.capabilities.ascii?, do: "...", else: "…"
-      budget = avail - Width.cells(ellipsis, policy)
-
-      {kept, _used} =
-        title
-        |> String.split(" ", trim: true)
-        |> Enum.reduce_while({[], 0}, fn word, {acc, used} ->
-          needed = Width.cells(word, policy) + if(acc == [], do: 0, else: 1)
-
-          if used + needed <= budget,
-            do: {:cont, {[word | acc], used + needed}},
-            else: {:halt, {acc, used}}
-        end)
-
-      # A cut that ends on a bare separator ("Swarm ·…") reads worse than one
-      # word shorter; under one word there is no boundary to cut on.
-      case Enum.drop_while(kept, &(&1 in ["·", "-", "—", ":", "|", "/"])) do
-        [] -> title |> Density.safe(state, avail) |> SafeText.value()
-        words -> Enum.join(Enum.reverse(words), " ") <> ellipsis
-      end
-    end
   end
 
   defp run_deck_actions(_state, nil, _class), do: []
@@ -499,72 +457,6 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
             )
           ],
       else: []
-  end
-
-  # "running · 3 agents", "done · 02:14", "stopped by you", "waiting for you".
-  defp state_words(run, state) do
-    agents =
-      case run.agents_total do
-        0 -> nil
-        1 -> "1 agent"
-        n -> "#{n} agents"
-      end
-
-    case run.state do
-      :stopped -> "stopped by you"
-      s when s in [:waiting_question, :waiting_approval] -> "waiting for you"
-      s when s in [:running, :streaming] -> words(["running", agents, elapsed(run, state)])
-      :done -> words(["done", elapsed(run, state)])
-      :failed -> words(["failed", run.error])
-      :queued -> "queued"
-      :paused -> "paused"
-      :retrying -> "retrying"
-      :interrupted -> "interrupted"
-      :superseded -> "superseded by a newer turn"
-    end
-  end
-
-  defp elapsed(%{started_at: started, finished_at: finished}, _state)
-       when is_integer(started) and is_integer(finished) and finished >= started,
-       do: mmss(finished - started)
-
-  # A live run counts from its start on the state clock, which only moves once
-  # the reducer has ticked; fixtures at clock zero show no elapsed time.
-  defp elapsed(%{started_at: started, finished_at: nil}, %{now: now})
-       when is_integer(started) and started > 0 and is_integer(now) and now > started,
-       do: mmss(now - started)
-
-  defp elapsed(_, _), do: nil
-
-  defp mmss(ms) do
-    total = div(ms, 1000)
-    hours = div(total, 3600)
-    minutes = rem(div(total, 60), 60)
-    seconds = rem(total, 60)
-
-    if hours > 0,
-      do: "#{hours}:#{pad2(minutes)}:#{pad2(seconds)}",
-      else: "#{pad2(minutes)}:#{pad2(seconds)}"
-  end
-
-  defp pad2(n), do: n |> Integer.to_string() |> String.pad_leading(2, "0")
-
-  defp words(parts) do
-    parts
-    |> Enum.reject(&(is_nil(&1) or &1 == ""))
-    |> Enum.join(" · ")
-  end
-
-  # A role's colour on one bold row, without the role's prefix cue: the words
-  # are the label, so "! WAITING Waiting for you" would say it twice.
-  defp tinted(value, role, state, width) do
-    style = RunRow.tinted(role, state)
-
-    %Block.RichText{
-      spans: [
-        %Span{text: Density.safe(value, state, width), style: %{style | modifiers: [:bold]}}
-      ]
-    }
   end
 
   defp run_actions(state, run, retry?, resume?) do
@@ -602,78 +494,14 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
     retry ++ resume ++ controls ++ seen
   end
 
-  defp content(state, run, width, height) do
-    items =
-      Enum.flat_map(Turns.order(state), fn id ->
-        case Map.get(state.read_model.transcript, id) do
-          %{run_id: run_id} = item when run_id == run.id -> [{id, item}]
-          _ -> []
-        end
-      end)
-
-    scroll = Map.get(state.scrolls, :main)
-    anchor = scroll && scroll.anchor
-
-    index =
-      case anchor do
-        {id, _, _} -> Enum.find_index(items, fn {key, _} -> key == id end) || 0
-        _ -> 0
-      end
-
-    follow? = scroll && scroll.follow?
-    candidates = items |> Enum.with_index()
-    candidates = if follow?, do: Enum.reverse(candidates), else: Enum.drop(candidates, index)
-
-    # Each item knows the run's item before it: that decides whether a blank
-    # row opens a new turn or the item continues a burst of tool calls.
-    previous_by_id =
-      [nil | Enum.map(items, &elem(&1, 1))]
-      |> Enum.zip(Enum.map(items, &elem(&1, 0)))
-      |> Map.new(fn {previous, id} -> {id, previous} end)
-
-    {blocks, _left, first} =
-      Enum.reduce_while(candidates, {[], height, index}, fn
-        _, {blocks, 0, first} ->
-          {:halt, {blocks, 0, first}}
-
-        {{id, item}, item_index}, {blocks, left, first} ->
-          item = ReadModel.transcript_item(state.read_model, id) || item
-
-          line =
-            case anchor do
-              {^id, offset, _} -> offset
-              _ -> 0
-            end
-
-          {block, rows} =
-            item
-            |> Turns.rows(Map.get(previous_by_id, id), run, state, width)
-            |> Turns.window(line, left, follow?, state)
-
-          if block do
-            {:cont,
-             {[block | blocks], max(0, left - rows), if(follow?, do: item_index, else: first)}}
-          else
-            {:cont, {blocks, left, first}}
-          end
-      end)
-
-    blocks = if follow?, do: blocks, else: Enum.reverse(blocks)
-
-    # Detached-from-bottom indicator: when not following and newer items exist below
-    visible_count = length(blocks)
-    newer = length(items) - first - visible_count
-
-    detached_indicator =
-      if not (follow? || false) and newer > 0,
-        do: [Support.styled("#{newer} new", :info, state, width)],
-        else: []
+  defp content(state, width, height) do
+    {blocks, first, total} = Turns.viewport(state, width, height)
 
     [
       %Block.VirtualList{
-        total_count: length(items),
-        first_index: min(first, length(items)),
-        items: blocks ++ detached_indicator,
+        total_count: total,
+        first_index: first,
+        items: blocks,
         before_cursor: cursor(state, :before_cursor),
         after_cursor: cursor(state, :after_cursor),
         overscan: 0
@@ -688,61 +516,20 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
     end
   end
 
-  defp recovery(state, width, class) do
-    pages =
-      Enum.reduce(state.watches, state.pages, fn {slot, watch}, pages ->
-        if watch.status in [:stale, :resyncing, :disconnected] do
-          page = Map.get(pages, slot, %SwarmCodeCLI.UI.PageState{})
-          Map.put(pages, slot, %{page | status: watch.status})
-        else
-          pages
-        end
-      end)
-
-    pages
-    |> Enum.sort_by(&elem(&1, 0))
+  # A slot whose page failed or went stale can be asked again; the status line
+  # says which, and these are the keys' targets.
+  defp recovery_actions(state, class) do
+    state
+    |> Support.recovering_pages()
     |> Enum.flat_map(fn {slot, page} ->
-      if page.status in [
-           :stale,
-           :disconnected,
-           :resyncing,
-           :error,
-           :loading_before,
-           :loading_after
-         ] do
-        key =
-          case page.status do
-            :stale -> :status_stale
-            :disconnected -> :status_disconnected
-            :resyncing -> :status_resyncing
-            :error -> :page_error
-            x -> x
-          end
+      if page.status in [:error, :stale, :disconnected, :resyncing] and
+           class != :compressed_small do
+        direction = if page.direction in [:before, :after], do: page.direction, else: :after
 
-        notice = %Block.Notice{
-          text:
-            Density.safe(
-              Atom.to_string(slot) <> " · " <> SafeText.value(SafeText.chrome(key)),
-              state,
-              width
-            ),
-          severity: :warning
-        }
-
-        actions =
-          if page.status in [:error, :stale, :disconnected, :resyncing] and
-               class != :compressed_small do
-            direction = if page.direction in [:before, :after], do: page.direction, else: :after
-
-            [
-              Support.action(SafeText.chrome(:retry), {:local, {:retry_page, slot, direction}}),
-              Support.action(SafeText.chrome(:diagnostics), {:local, {:open_layer, :help}})
-            ]
-          else
-            []
-          end
-
-        [notice] ++ if(actions == [], do: [], else: [%Block.ActionDeck{actions: actions}])
+        [
+          Support.action(SafeText.chrome(:retry), {:local, {:retry_page, slot, direction}}),
+          Support.action(SafeText.chrome(:diagnostics), {:local, {:open_layer, :help}})
+        ]
       else
         []
       end

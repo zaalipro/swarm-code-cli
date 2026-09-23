@@ -1,10 +1,10 @@
 defmodule SwarmCodeCLI.UI.ShellAwarenessTest do
   @moduledoc """
   The shell tells the user what waits on them and what each run costs: the
-  status row leads with "Waiting for you · N", the tabs carry agent counts,
-  elapsed time and a `!`, the title row carries tokens and cost, `n`/`N` walk
-  the pending approvals and questions across runs, and the approval card says
-  who wants to run what.
+  status row says "N waiting" and the conversation's cost, the tabs carry
+  agent counts, elapsed time and a `!`, the turn's header carries its tokens,
+  `n`/`N` walk the pending approvals and questions across runs, and the
+  approval card in the composer slot says who wants to run what.
   """
   use ExUnit.Case, async: true
 
@@ -16,6 +16,7 @@ defmodule SwarmCodeCLI.UI.ShellAwarenessTest do
     Reducer,
     SafeText,
     Size,
+    Theme,
     WatchState
   }
 
@@ -135,19 +136,21 @@ defmodule SwarmCodeCLI.UI.ShellAwarenessTest do
   end
 
   describe "the status row" do
-    test "leads with what waits on you, in the warning colour, and says nothing at zero" do
+    test "counts what waits on you, in the warning colour, and says nothing at zero" do
       [%{spans: spans}] = Status.project(fixture(), :xl, 170)
-      refute Enum.any?(spans, &(SafeText.value(&1.text) =~ "Waiting for you"))
+      refute Enum.any?(spans, &(SafeText.value(&1.text) =~ "waiting"))
 
-      [%{spans: [lead | _]}] = Status.project(with_waiting(fixture()), :xl, 170)
-      assert SafeText.value(lead.text) == "Waiting for you · 3"
-      assert lead.style.role == :warning
-      assert :bold in lead.style.modifiers
+      state = with_waiting(fixture())
+      [%{spans: spans}] = Status.project(state, :xl, 170)
+      waiting = Enum.find(spans, &(SafeText.value(&1.text) == "3 waiting"))
+      assert waiting
+      assert waiting.style.foreground == Theme.style(:warning, state.capabilities).foreground
+      assert :bold in waiting.style.modifiers
     end
 
-    test "the word survives painting at 80 columns" do
-      assert screen(%{with_waiting(fixture(80)) | size: %Size{columns: 80, rows: 24}}) =~
-               "Waiting for you · 3"
+    test "the count survives painting at 80 columns" do
+      state = %{with_waiting(fixture(80)) | size: %Size{columns: 80, rows: 24}}
+      assert state |> screen() |> String.split("\n") |> List.last() =~ "3 waiting"
     end
   end
 
@@ -214,9 +217,12 @@ defmodule SwarmCodeCLI.UI.ShellAwarenessTest do
     end
   end
 
-  describe "the title row" do
-    test "carries the tokens and cost of the run in view" do
-      assert screen(fixture()) =~ ~r/\d+(\.\d+)?k tokens · \$\d+\.\d+/
+  describe "spend" do
+    test "the turn's header carries its tokens and the status row the conversation's cost" do
+      state = %{fixture() | destination: {:conversation, "fixture-conversation"}}
+      rows = String.split(screen(state), "\n")
+      assert Enum.any?(rows, &(&1 =~ ~r/\d+k tok/))
+      assert List.last(rows) =~ ~r/\$\d+\.\d+/
     end
 
     test "says nothing about spend until the daemon reports it" do
@@ -227,12 +233,14 @@ defmodule SwarmCodeCLI.UI.ShellAwarenessTest do
           {id, %{run | tokens_in: 0, tokens_out: 0, cost_usd: nil}}
         end)
 
-      refute screen(put_in(state.read_model.runs, runs)) =~ "tokens"
+      pixels = screen(put_in(state.read_model.runs, runs))
+      refute pixels =~ " tok"
+      refute pixels =~ "$"
     end
   end
 
   describe "the title row's lead" do
-    test "is the project's name once the daemon says it, then the models" do
+    test "is the project's name once the daemon says it; the models are on the status row" do
       state =
         with_workspace(fixture(),
           project: "ailogic",
@@ -240,10 +248,10 @@ defmodule SwarmCodeCLI.UI.ShellAwarenessTest do
           swarm_model: "gpt-5.5"
         )
 
-      [title | _] = String.split(screen(state), "\n")
-      assert title =~ "SWARMCODE  ailogic · "
-      assert title =~ "deepseek-v4.1-flash · agents gpt-5.5"
-      refute title =~ "SAVED"
+      rows = String.split(screen(state), "\n")
+      assert String.starts_with?(hd(rows), " ⬢ ailogic   ")
+      refute hd(rows) =~ "SAVED"
+      assert List.last(rows) =~ "deepseek-v4.1-flash · agents gpt-5.5"
     end
 
     test "says nothing about the sub agents' model while it is the chat model" do
@@ -254,31 +262,32 @@ defmodule SwarmCodeCLI.UI.ShellAwarenessTest do
           swarm_model: "deepseek-v4.1-flash"
         )
 
-      [title | _] = String.split(screen(state), "\n")
-      refute title =~ "agents "
+      refute state |> screen() |> String.split("\n") |> List.last() =~ "agents "
     end
 
-    test "falls back to the launcher's banner for a session without a project" do
+    test "falls back to the product's name for a saved session without a project" do
       state = with_workspace(%{fixture() | banner: :persisted_banner}, project: nil)
       [title | _] = String.split(screen(state), "\n")
-      assert title =~ "SWARMCODE  SAVED · DEV · "
+      assert String.starts_with?(title, " ⬢ SwarmCode   ")
+      refute title =~ "SAVED"
     end
   end
 
   describe "the main pane's chrome" do
-    test "keeps quiet about a request that went through" do
+    test "keeps quiet about a request that went through and says one in flight in words" do
       state = fixture()
       accepted = Map.put(state.mutations, {:composer, "fixture"}, {:settled, "r-1", :accepted})
       refute screen(%{state | mutations: accepted}) =~ "ACCEPTED"
 
       pending = Map.put(state.mutations, {:composer, "fixture"}, {:pending, "r-2", :noop})
-      assert screen(%{state | mutations: pending}) =~ "PENDING"
+      pixels = screen(%{state | mutations: pending})
+      refute pixels =~ "PENDING"
+      assert pixels |> String.split("\n") |> List.last() =~ "Sending…"
     end
 
-    test "puts the run's actions and the full-text openers on one row" do
+    test "draws no deck row: the run's actions and the full-text openers are on the keys" do
       state = fixture()
 
-      # The newest item of the run in view has more text than the window shows.
       {id, item} =
         state.read_model.transcript
         |> Enum.filter(fn {_, item} -> item.role == :assistant end)
@@ -287,11 +296,12 @@ defmodule SwarmCodeCLI.UI.ShellAwarenessTest do
       item = %{item | detail_ref: %DTO.DetailRef{id: id <> ":text", total_bytes: 9_000}}
       state = put_in(state.read_model.transcript[id], item)
 
-      rows = String.split(screen(state), "\n")
-      deck = Enum.find(rows, &(&1 =~ "Inspect"))
-      assert deck, "no deck row"
-      assert deck =~ "Full reply"
-      assert Enum.count(rows, &(&1 =~ "Full reply")) == 1
+      pixels = screen(state)
+      refute pixels =~ "Full reply"
+      refute pixels =~ "Inspect"
+
+      {_scene, table} = Projector.project(state)
+      assert {:local, {:open_detail, item.run_id, id <> ":text"}} in Map.values(table)
     end
   end
 
@@ -339,7 +349,7 @@ defmodule SwarmCodeCLI.UI.ShellAwarenessTest do
   end
 
   describe "the approval card" do
-    test "names the agent, shows the command, the tool, the risk and the keys" do
+    test "names the agent, shows the command, where it runs and the keys" do
       state = with_waiting(fixture())
 
       agent = %DTO.AgentSummary{id: "node-a-1", name: "scout-1", role: :sub}
@@ -347,15 +357,18 @@ defmodule SwarmCodeCLI.UI.ShellAwarenessTest do
       {state, _} = Reducer.update(state, {:open_interaction, "a-1"})
 
       {scene, actions} = Projector.project(state)
-      words = scene.overlay |> texts() |> Enum.join("\n")
+      assert scene.overlay == nil
+      composer = Enum.find(scene.regions, &(&1.role == :composer))
+      words = composer |> texts() |> Enum.join("\n")
+      pixels = screen(state)
 
-      assert String.trim(SafeText.value(scene.overlay.title)) == "scout-1 wants to run a command"
-      assert words =~ "mix test --failed"
-      assert words =~ "Tool: run command · needs permission to execute"
-      assert words =~ "A yes runs it on your machine, in the project directory."
-      assert words =~ "Approve  a"
-      assert words =~ "Always allow  A"
-      assert words =~ "Deny  d"
+      assert pixels =~ "scout-1 wants to run a command"
+      assert words =~ "$ mix test --failed"
+      assert words =~ "runs on your machine, in the project"
+      assert words =~ "y"
+      assert words =~ " once"
+      assert words =~ " always “mix”"
+      assert words =~ " deny"
 
       assert Enum.any?(
                Map.values(actions),
@@ -375,12 +388,11 @@ defmodule SwarmCodeCLI.UI.ShellAwarenessTest do
 
       state = put_in(state.read_model.interactions["a-1"], write)
       {state, _} = Reducer.update(state, {:open_interaction, "a-1"})
-      {scene, _} = Projector.project(state)
+      pixels = screen(state)
 
-      assert String.trim(SafeText.value(scene.overlay.title)) ==
-               "The agent wants to change a file"
-
-      assert scene.overlay |> texts() |> Enum.join("\n") =~ "A yes changes files in the project."
+      assert pixels =~ "The assistant wants to change a file"
+      assert pixels =~ "lib/app.ex"
+      assert pixels =~ "changes files in the project"
     end
   end
 end

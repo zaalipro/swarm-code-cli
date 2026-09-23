@@ -1,7 +1,7 @@
 defmodule SwarmCodeCLI.UI.Projector.Shell do
   @moduledoc false
   alias SwarmCodeCLI.UI.{SafeText, Theme, Width}
-  alias SwarmCodeCLI.UI.Scene.{Block, Region, Span, Style}
+  alias SwarmCodeCLI.UI.Scene.{Block, Region, Span}
 
   alias SwarmCodeCLI.UI.Projector.Inspector.Words
 
@@ -18,8 +18,10 @@ defmodule SwarmCodeCLI.UI.Projector.Shell do
   # The navigator dock is gone. Its job — showing what is running and getting you
   # there — belongs to the tab row on row 1, the Ctrl-G dashboard and Ctrl-P, so
   # the shell projects no left dock and main takes the reclaimed width.
-  @order [:title, :tabline, :main, :inspector, :activity, :composer, :status]
+  @order [:title, :main, :inspector, :activity, :composer, :status]
   def project(state, layout) do
+    layout = without_idle_inspector(state, layout)
+
     Enum.reduce(@order, {[], nil}, fn role, {regions, cursor} ->
       case Map.get(layout.rects, role) do
         nil ->
@@ -53,79 +55,82 @@ defmodule SwarmCodeCLI.UI.Projector.Shell do
     end)
   end
 
+  # One row for the title and the runs (ux M5): the mark and the project,
+  # then the run tabs with the switcher hint on the right. The mode, model,
+  # tokens and cost moved to the status line, where the eye looks for them
+  # while typing.
+  # A conversation with no run has nothing to inspect: the welcome takes the
+  # dock's columns instead of a pane that says "No run selected".
+  defp without_idle_inspector(state, %{rects: %{inspector: _, main: main} = rects} = layout) do
+    if Support.run(state) == nil and state.destination != :activity do
+      width = layout.size.columns
+      rects = Map.delete(rects, :inspector)
+      rects = %{rects | main: %{main | width: width}}
+
+      rects =
+        Enum.reduce([:activity, :composer], rects, fn key, acc ->
+          case Map.get(acc, key) do
+            nil -> acc
+            rect -> Map.put(acc, key, %{rect | width: width})
+          end
+        end)
+
+      %{layout | rects: rects}
+    else
+      layout
+    end
+  end
+
+  defp without_idle_inspector(_state, layout), do: layout
+
   defp blocks(:title, state, rect, class) do
     policy = state.capabilities.ambiguous_width
-
-    banner =
-      (Map.get(state, :banner) || Density.budget(class).banner)
-      |> SafeText.chrome()
-      |> SafeText.value()
-
     workspace = Map.get(state.read_model.snapshots, :workspace)
-    mode = Composer.mode_label(state)
 
-    # The project's name leads once the daemon says it; the launcher's banner
-    # is for sessions that have no project to name (the fake demo, an unsaved
-    # live session). Then the mode, the chat model, and the sub agents' model
-    # when it is a different one.
-    lead = present(workspace && Map.get(workspace, :project)) || banner
-    model = present(workspace && Map.get(workspace, :chat_model))
-    swarm = present(workspace && Map.get(workspace, :swarm_model))
-    agents_model = if swarm && swarm != model, do: "agents " <> swarm
+    project = present(workspace && Map.get(workspace, :project))
+    banner = Map.get(state, :banner) || Density.budget(class).banner
+    lead = project || banner_words(banner)
 
-    triple =
-      Enum.join(
-        Enum.reject(
-          [lead, mode, model, agents_model | spend_parts(Support.run(state))],
-          &is_nil/1
-        ),
-        " · "
-      )
+    # A project name shares the row with the tabs; the fake demo's warning
+    # is the one thing its user must not miss, so it is never cut for them.
+    lead_cells =
+      if project || banner in [nil, :persisted_banner],
+        do: max(1, div(rect.width, 3)),
+        else: max(1, rect.width - 4)
 
-    logo_mark = SafeText.value(Support.glyph(:logo_mark, state))
-    wordmark = SafeText.value(SafeText.chrome(:swarmcode_wordmark))
-    left_text = logo_mark <> " " <> wordmark <> "  " <> triple
-    left_cells = Width.cells(left_text, policy)
+    logo = SafeText.value(Support.glyph(:logo_mark, state))
+    accent = Theme.style(:accent, state.capabilities)
+    logo_style = %{accent | role: :plain, prefix: nil, cues: [], modifiers: [:bold]}
 
-    # Right-aligned live counts from ShellSnapshot.counts
-    shell_snapshot = Map.get(state.read_model.snapshots, :shell)
-    counts = shell_snapshot && Map.get(shell_snapshot, :counts)
+    lead_style = %{
+      Theme.style(:text_primary, state.capabilities)
+      | role: :plain,
+        prefix: nil,
+        cues: [],
+        modifiers: [:bold]
+    }
 
-    right_parts = counts_parts(counts, state)
-    right_text = Enum.join(right_parts, " · ")
-    right_cells = if right_text == "", do: 0, else: Width.cells(right_text, policy)
+    left = [
+      %Span{text: Density.safe(" " <> logo <> " ", state, rect.width), style: logo_style},
+      %Span{text: Density.safe(lead, state, lead_cells), style: lead_style}
+    ]
 
-    # Accent bold without the RUNNING prefix cue
-    accent_style = Theme.style(:accent, state.capabilities)
-    wordmark_style = %{accent_style | role: :plain, prefix: nil, cues: [], modifiers: [:bold]}
-    counts_style = %{accent_style | role: :plain, prefix: nil, cues: []}
+    left_cells =
+      Enum.reduce(left, 0, &(Width.cells(SafeText.value(&1.text), policy) + &2))
+
+    gap = 3
+    room = rect.width - left_cells - gap
 
     spans =
-      [
-        %Span{text: Density.safe(logo_mark, state, rect.width), style: wordmark_style},
-        %Span{text: Density.safe(" ", state, rect.width), style: wordmark_style},
-        %Span{text: Density.safe(wordmark, state, rect.width), style: wordmark_style},
-        %Span{text: Density.safe("  ", state, rect.width), style: %Style{role: :text_primary}},
-        %Span{text: Density.safe(triple, state, rect.width), style: %Style{role: :text_primary}}
-      ]
-
-    spans =
-      if right_text != "" and left_cells + right_cells + 2 <= rect.width do
-        pad = String.duplicate(" ", rect.width - left_cells - right_cells)
-
-        spans ++
-          [
-            %Span{text: Density.safe(pad, state, rect.width), style: %Style{role: :text_primary}},
-            %Span{text: Density.safe(right_text, state, rect.width), style: counts_style}
-          ]
+      if room >= 12 do
+        %Block.RichText{spans: tabs} = tabline(state, room)
+        left ++ [plain_gap(gap, state)] ++ tabs
       else
-        spans
+        left
       end
 
     {[%Block.RichText{spans: spans}], nil}
   end
-
-  defp blocks(:tabline, state, rect, _class), do: {[tabline(state, rect.width)], nil}
 
   defp blocks(:main, state, rect, class), do: {Workspace.project(state, rect, class), nil}
   defp blocks(:inspector, state, rect, class), do: {Inspector.project(state, rect, class), nil}
@@ -133,38 +138,20 @@ defmodule SwarmCodeCLI.UI.Projector.Shell do
   defp blocks(:composer, state, rect, _), do: Composer.project(state, rect)
   defp blocks(:status, state, rect, class), do: {Status.project(state, class, rect.width), nil}
 
-  # The strip between the transcript and the composer is a rule, as in the
-  # design's frame; when something waits on the user it leads with the word,
-  # in the warning colour, and the rule takes the rest of the row.
-  defp blocks(:activity, state, rect, _class) do
-    needs = state.read_model.interactions |> Map.values() |> Enum.count(&(&1.state == :pending))
-    policy = state.capabilities.ambiguous_width
-    rule = SafeText.value(Support.glyph(:rule, state))
-    rule_cells = max(1, Width.cells(rule, policy))
+  # The row between the transcript and the composer: a hairline, or the title
+  # of the approval that has taken the composer slot.
+  defp blocks(:activity, state, rect, _class), do: {[Composer.edge(state, rect)], nil}
 
-    lead = if needs > 0, do: "Waiting for you · #{needs} ", else: ""
-    fill = String.duplicate(rule, div(max(0, rect.width - Width.cells(lead, policy)), rule_cells))
+  # The launcher's banner, in words for the title. A saved session is the
+  # product, not a dev build, so it reads as SwarmCode until the daemon names
+  # the project; the fake demo and the unsaved session keep saying what they
+  # are, since that is the one thing their user must not miss.
+  defp banner_words(:persisted_banner), do: SafeText.value(SafeText.chrome(:swarmcode_wordmark))
+  defp banner_words(nil), do: SafeText.value(SafeText.chrome(:swarmcode_wordmark))
+  defp banner_words(token), do: token |> SafeText.chrome() |> SafeText.value()
 
-    warning = Theme.style(:warning, state.capabilities)
-
-    lead_spans =
-      if lead == "",
-        do: [],
-        else: [
-          %Span{
-            text: Density.safe(lead, state, rect.width),
-            style: %{warning | role: :plain, prefix: nil, cues: [], modifiers: [:bold]}
-          }
-        ]
-
-    block = %Block.RichText{
-      spans:
-        lead_spans ++
-          [%Span{text: Density.safe(fill, state, rect.width), style: %Style{role: :text_muted}}]
-    }
-
-    {[block], nil}
-  end
+  defp present(value) when is_binary(value) and value != "", do: value
+  defp present(_), do: nil
 
   # ── Tabline ─────────────────────────────────────────────────────────────────
   #
@@ -179,7 +166,7 @@ defmodule SwarmCodeCLI.UI.Projector.Shell do
   # run palette, the dashboard or the command palette re-spells the hint; the
   # three words are the tab row's own.
   @tabline_hint Enum.map_join(
-                  [run_palette: "runs", runs_dashboard: "all", command_palette: "features"],
+                  [run_palette: "runs"],
                   "   ",
                   fn {id, word} ->
                     SwarmCodeCLI.UI.Projector.KeyLabel.primary(
@@ -292,8 +279,16 @@ defmodule SwarmCodeCLI.UI.Projector.Shell do
 
       id ->
         case Enum.split_with(ordered, &(&1.id == id)) do
-          {[active], rest} -> [active | rest]
-          {_, _} -> ordered
+          {[active], rest} ->
+            [active | rest]
+
+          # The run in view keeps its tab even when a newer turn replaced it,
+          # so the row always says what is on screen.
+          {_, _} ->
+            case Map.get(state.read_model.runs, id) do
+              nil -> ordered
+              active -> [active | ordered]
+            end
         end
     end
   end
@@ -386,31 +381,6 @@ defmodule SwarmCodeCLI.UI.Projector.Shell do
     do: Words.elapsed(started, now)
 
   defp run_elapsed(_run, _state), do: nil
-
-  # The tokens and cost of the run in view, for the title row: `12k tokens`,
-  # `$0.42`. Left out until the daemon has reported them; a header that said
-  # `0k tokens · $0.00` on every fresh run would be noise, not news.
-  defp spend_parts(%{} = run) do
-    tokens = (run.tokens_in || 0) + (run.tokens_out || 0)
-
-    tokens_part = if tokens > 0, do: [Words.tokens(tokens) <> " tokens"], else: []
-
-    cost_part =
-      case run.cost_usd do
-        cost when is_number(cost) and cost > 0 -> [money(cost)]
-        _ -> []
-      end
-
-    tokens_part ++ cost_part
-  end
-
-  defp spend_parts(_none), do: []
-
-  defp present(value) when is_binary(value) and value != "", do: value
-  defp present(_), do: nil
-
-  defp money(cost) when cost < 0.01, do: "$" <> :erlang.float_to_binary(cost / 1, decimals: 3)
-  defp money(cost), do: "$" <> :erlang.float_to_binary(cost / 1, decimals: 2)
 
   # Only the active tab carries the stripe; an inactive one spends the same cell
   # on a blank so the tabs stay on a common grid instead of shifting sideways as
@@ -521,22 +491,5 @@ defmodule SwarmCodeCLI.UI.Projector.Shell do
       | foreground: themed.foreground,
         background: background || themed.background
     }
-  end
-
-  defp counts_parts(nil, _state), do: []
-
-  # Glyphs go through Support.glyph/2 so they degrade to their one-cell ASCII twins in ASCII mode
-  # (a bare SafeText.chrome/1 here would leave Unicode on screen; see ORCHESTRATOR_NOTES_2 #36).
-  defp counts_parts(counts, state) do
-    for {field, token, word} <- [
-          {:running, :glyph_selected, "running"},
-          {:waiting, :glyph_inactive, "waiting"},
-          {:failed, :glyph_failed, "failed"}
-        ],
-        count = Map.get(counts, field, 0),
-        count > 0 do
-      SafeText.value(Support.glyph(token, state)) <>
-        " " <> Integer.to_string(count) <> " " <> word
-    end
   end
 end

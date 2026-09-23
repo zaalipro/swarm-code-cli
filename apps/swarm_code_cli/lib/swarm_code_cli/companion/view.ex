@@ -21,7 +21,6 @@ defmodule SwarmCodeCLI.Companion.View do
   """
 
   alias SwarmCodeCLI.UI.{ReadModel, State}
-  alias SwarmCodeCLI.UI.Projector.Workspace.Turns
   alias SwarmCodeCLI.UI.DataSource.DTO
   alias SwarmCodeCLI.UI.Projector.{Shell, Support}
 
@@ -288,10 +287,18 @@ defmodule SwarmCodeCLI.Companion.View do
     model.transcript
     |> Map.values()
     |> Enum.filter(&(&1.run_id == run.id))
-    |> Enum.sort_by(&{Turns.rank(&1), &1.created_sequence, &1.id})
+    |> Enum.sort_by(&{reading_rank(&1), &1.created_sequence, &1.id})
     |> Enum.take(-@max_items)
     |> Enum.map(&ReadModel.transcript_item(model, &1.id))
   end
+
+  # The page lists a run's items flat, so it reads them as a turn: the prompt,
+  # then the work as it happened, then what was said (the daemon creates the
+  # reply before the calls that produce it).
+  defp reading_rank(%{role: :user}), do: 0
+  defp reading_rank(%{kind: kind}) when kind in [:tool, :thinking], do: 1
+  defp reading_rank(%{id: id, node_id: id}), do: 1
+  defp reading_rank(_), do: 2
 
   # One axis for the scrubber: milliseconds. An item with no time of its own
   # sits where the previous one did, starting at the run's own start.

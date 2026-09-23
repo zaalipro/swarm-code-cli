@@ -851,19 +851,23 @@ defmodule SwarmCodeCLI.UI.Paint.Blocks do
        else: inline(rest, ctx, rows, selected, index + 1, visible)
   end
 
+  # The words stand in for the selection colour, so only a colourless
+  # terminal gets them; in colour the selected surface says it.
   defp selected_item(value, ctx, rows) do
-    prefix = raw("SELECTED > ", ctx.style)
+    prefix =
+      if ctx.options.color_mode == :monochrome, do: [raw("SELECTED > ", ctx.style)], else: []
+
     selected_ctx = Map.put(ctx, :prefix_role, :selected)
 
     case value do
       %SafeText{} ->
-        render([prefix, run(value, ctx.style)], ctx, rows)
+        render(prefix ++ [run(value, ctx.style)], ctx, rows)
 
       %Span{} ->
-        render([prefix | span_runs(value, selected_ctx)], ctx, rows)
+        render(prefix ++ span_runs(value, selected_ctx), ctx, rows)
 
       %Block.Text{text: text, action_id: id} ->
-        render([prefix, run(text, ctx.style, id)], ctx, rows)
+        render(prefix ++ [run(text, ctx.style, id)], ctx, rows)
 
       %Block.RichText{spans: spans, action_id: id} when is_list(spans) ->
         action!(id)
@@ -874,10 +878,10 @@ defmodule SwarmCodeCLI.UI.Paint.Blocks do
             _ -> fail(:invalid_scene)
           end)
 
-        render([prefix | runs], ctx, rows)
+        render(prefix ++ runs, ctx, rows)
 
       _ ->
-        header = render([prefix], ctx, rows)
+        header = if prefix == [], do: [], else: render(prefix, ctx, rows)
 
         header ++
           if(rows > length(header),

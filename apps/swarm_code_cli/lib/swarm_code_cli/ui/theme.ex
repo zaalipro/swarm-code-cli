@@ -2,11 +2,17 @@ defmodule SwarmCodeCLI.UI.Theme do
   @moduledoc """
   Carbon dark as renderer-neutral color values, text prefixes and layout cues.
 
-  Consumers render `prefix` in every color mode and honor structural `cues`.
+  A role's text prefix (`FOCUS >`, `[INFO]`, `! WAITING`, the run-kind
+  letters) is the colour's stand-in, so it is attached only in `:monochrome`,
+  the mode `NO_COLOR` selects; in colour the colour says it and a prefix would
+  say it twice (ux M6). Structural `cues` hold in every mode.
   `:reason_required` requires the projector to supply the disabled reason as
   SafeText beside the fixed [DISABLED] prefix. Status words and action availability
   remain projector data; status/1 never invents Retry or Resume permission.
   No colored underline or renderer escape sequences are represented here.
+
+  The canvas is the terminal's own background (ux M11): `:canvas` carries no
+  colour, and only surfaces that the design draws as cards fill their cells.
   """
   alias SwarmCodeCLI.UI.{Capabilities, SafeText, Scene}
   alias SwarmCodeCLI.UI.Scene.{Color, Style}
@@ -19,7 +25,8 @@ defmodule SwarmCodeCLI.UI.Theme do
 
   @spec style(Scene.style_role(), Capabilities.t()) :: Style.t()
   def style(role, %Capabilities{color_mode: mode}) when mode in @modes do
-    role |> base_style(mode) |> Map.put(:role, role)
+    style = role |> base_style(mode) |> Map.put(:role, role)
+    if mode == :monochrome, do: style, else: %{style | prefix: nil}
   end
 
   defp base_style(:border, mode),
@@ -108,8 +115,7 @@ defmodule SwarmCodeCLI.UI.Theme do
   defp base_style(:agent_lane_5, mode),
     do: %Style{foreground: color(mode, 0x38BDF8, 81, :cyan)} |> cue(:agent_lane_5, mode)
 
-  defp base_style(:canvas, mode),
-    do: %Style{background: color(mode, 0x141414, 233, :black)} |> cue(:canvas, mode)
+  defp base_style(:canvas, mode), do: %Style{} |> cue(:canvas, mode)
 
   defp base_style(:surface, mode),
     do: %Style{background: color(mode, 0x191919, 234, :black)} |> cue(:surface, mode)
@@ -243,7 +249,14 @@ defmodule SwarmCodeCLI.UI.Theme do
   defp base_style(:body, mode), do: base_style(:text_primary, mode)
   defp base_style(:label, mode), do: base_style(:text_muted, mode)
   defp base_style(:value, mode), do: base_style(:text_primary, mode)
-  defp base_style(:code, mode), do: base_style(:text_primary, mode)
+  # Code reads on its own surface: inline code is a chip on the hover fill and
+  # a fenced block a card, in the desktop's `.prose-chat code` colours.
+  defp base_style(:code, mode),
+    do: %Style{
+      foreground: color(mode, 0xF3F2F0, 255, :bright_white),
+      background: color(mode, 0x262626, 236, :black)
+    }
+
   defp base_style(:link, mode), do: base_style(:info, mode)
 
   defp base_style(:key, mode),

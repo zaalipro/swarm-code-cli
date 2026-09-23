@@ -231,6 +231,26 @@ defmodule SwarmCodeCLI.UI.Projector.Support do
     end
   end
 
+  @doc """
+  The page slots that are not simply idle: a watch gone stale, resyncing or
+  disconnected, a page request that failed or is loading. Sorted by slot.
+  """
+  def recovering_pages(state) do
+    state.watches
+    |> Enum.reduce(state.pages, fn {slot, watch}, pages ->
+      if watch.status in [:stale, :resyncing, :disconnected] do
+        page = Map.get(pages, slot, %SwarmCodeCLI.UI.PageState{})
+        Map.put(pages, slot, %{page | status: watch.status})
+      else
+        pages
+      end
+    end)
+    |> Enum.filter(fn {_slot, page} ->
+      page.status in [:stale, :disconnected, :resyncing, :error, :loading_before, :loading_after]
+    end)
+    |> Enum.sort_by(&elem(&1, 0))
+  end
+
   def finalize(value, revision), do: resolve(value, revision, [], %{})
 
   defp resolve({:projector_action, label, target, style}, rev, path, table) do
