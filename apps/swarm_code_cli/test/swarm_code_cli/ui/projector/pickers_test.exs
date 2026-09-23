@@ -78,6 +78,17 @@ defmodule SwarmCodeCLI.UI.Projector.PickersTest do
       assert foreground(plan, x, y) == accent
     end
 
+    # pass70 F: the palette matches fuzzily, so it lists titles that do not
+    # contain the query; the highlight crashed the projector on every one of
+    # them (typing "Settings" in the palette closed the session).
+    test "every prefix of a query projects, whether or not a title contains it" do
+      for query <- ["S", "Se", "Set", "Sett", "Settings", "stg", "zz"] do
+        state = scene(:first_reply, {120, 36}) |> palette(query)
+        {rows, _scene, _table, _plan} = screen(state)
+        assert Enum.any?(rows, &(&1 =~ "Search:"))
+      end
+    end
+
     test "entries that are not actions say what they are" do
       state = scene(:first_reply, {120, 36}) |> palette("#")
       {rows, _scene, _table, _plan} = screen(state)

@@ -446,32 +446,24 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
     Enum.reverse(kept)
   end
 
-  # The title cut at the query's first case-insensitive match, else at the
-  # starts of the words the query's letters begin, else whole.
+  # The title cut at the query's first case-insensitive match, else whole.
+  # The palette matches fuzzily, so most titles it lists do not contain the
+  # query at all (`:nomatch`, which is truthy: a `cond` on it crashed the
+  # projector and closed the session, pass70 F).
   defp highlight(title, query) do
     query = query |> to_string() |> String.trim() |> String.trim_leading("/") |> strip_kind()
-
     down = String.downcase(title)
 
-    cond do
-      query == "" ->
-        [{title, false}]
+    case query != "" and :binary.match(down, String.downcase(query)) do
+      {at, size} when byte_size(down) == byte_size(title) ->
+        [
+          {binary_part(title, 0, at), false},
+          {binary_part(title, at, size), true},
+          {binary_part(title, at + size, byte_size(title) - at - size), false}
+        ]
+        |> Enum.reject(&(elem(&1, 0) == ""))
 
-      match = :binary.match(down, String.downcase(query)) ->
-        {at, size} = match
-
-        if byte_size(down) == byte_size(title) do
-          [
-            {binary_part(title, 0, at), false},
-            {binary_part(title, at, size), true},
-            {binary_part(title, at + size, byte_size(title) - at - size), false}
-          ]
-          |> Enum.reject(&(elem(&1, 0) == ""))
-        else
-          [{title, false}]
-        end
-
-      true ->
+      _ ->
         [{title, false}]
     end
   end
