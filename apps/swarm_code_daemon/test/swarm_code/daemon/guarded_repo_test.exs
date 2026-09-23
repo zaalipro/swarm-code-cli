@@ -57,7 +57,7 @@ defmodule SwarmCode.Daemon.GuardedRepoTest do
     assert {:ok, _repo} = RepoLauncher.await_ready(launcher, 90_000)
 
     Task.async(fn ->
-      assert [[53]] = Repo.query!("SELECT count(*) FROM schema_migrations").rows
+      assert [[57]] = Repo.query!("SELECT count(*) FROM schema_migrations").rows
 
       assert %{num_rows: 1} =
                Repo.query!(
@@ -78,7 +78,7 @@ defmodule SwarmCode.Daemon.GuardedRepoTest do
     assert :ok = RepoLauncher.close(next)
   end
 
-  @tag lineage: {:prefix, 20_260_926_000_000}, timeout: 120_000
+  @tag lineage: {:prefix, 20_261_015_000_003}, timeout: 120_000
   test "old schema is backed up and migrated without losing data", %{
     boot: boot,
     database: database
@@ -87,7 +87,7 @@ defmodule SwarmCode.Daemon.GuardedRepoTest do
     assert {:ok, _} = RepoLauncher.await_ready(launcher, 90_000)
 
     Task.async(fn ->
-      assert [[53]] = Repo.query!("SELECT count(*) FROM schema_migrations").rows
+      assert [[57]] = Repo.query!("SELECT count(*) FROM schema_migrations").rows
       assert [["Before"]] = Repo.query!("SELECT name FROM projects WHERE id='project'").rows
     end)
     |> Task.await()
@@ -96,7 +96,7 @@ defmodule SwarmCode.Daemon.GuardedRepoTest do
     assert :ok = RepoLauncher.close(launcher)
   end
 
-  @tag lineage: {:prefix, 20_260_926_000_000}, timeout: 120_000
+  @tag lineage: {:prefix, 20_261_015_000_003}, timeout: 120_000
   test "backup failure refuses migration without altering the existing database", %{
     boot: boot,
     database: database

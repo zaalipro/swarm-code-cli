@@ -32,7 +32,7 @@ defmodule SwarmCode.Daemon.Schema.Contract do
       20_260_929_000_000
     ]
   }
-  @current %{
+  @ccb1973 %{
     commit: "ccb19732c7225a6bc88556f8f743bab7bda41a5b",
     name: "desktop-ccb1973",
     migration_count: 53,
@@ -52,6 +52,41 @@ defmodule SwarmCode.Daemon.Schema.Contract do
       20_261_015_000_003
     ]
   }
+  # Desktop pass 69. The four migrations after ccb1973 are additive (three
+  # defaulted `settings` columns and the `messages_fts` FTS5 index with its
+  # triggers), so an older desktop keeps working on a database the CLI moved
+  # forward: they are the only versions the CLI may run itself
+  # (`forward_compatible`, see `Schema.Gate.admit_migration/2`).
+  @current %{
+    commit: "6dd8d82ef29f9a6608b942259e1801846bb87ed9",
+    name: "desktop-6dd8d82",
+    migration_count: 57,
+    migration_set_sha256: "4c0a8ec7fa4ca33aba4ca17ee300b98e1be008e165e7ff18f69d05943137e23f",
+    final_schema_sha256: "a0145e85d9d401c8f95bf724f91d5930694ab6adb487335c7a25857b7a63cc87",
+    lineage_sha256: "ffdb70fb5b5d0a9140450bc330cc1ad368a596798300800754eda5c856cc1298",
+    last_version: 20_261_017_000_004,
+    last_filename: "20261017000004_isolation_backend.exs",
+    last_source_sha256: "0051949533fe1318fe94b08f557b4db4b526641ff947fe117f4237e714c8fd16",
+    snapshot_versions: [
+      20_260_923_000_000,
+      20_260_924_000_000,
+      20_260_926_000_000,
+      20_260_927_000_000,
+      20_260_928_000_000,
+      20_260_929_000_000,
+      20_261_015_000_003,
+      20_261_015_000_004,
+      20_261_016_000_001,
+      20_261_016_000_002,
+      20_261_017_000_004
+    ],
+    forward_compatible: [
+      20_261_015_000_004,
+      20_261_016_000_001,
+      20_261_016_000_002,
+      20_261_017_000_004
+    ]
+  }
 
   @spec current() :: map()
   def current, do: @current
@@ -59,7 +94,8 @@ defmodule SwarmCode.Daemon.Schema.Contract do
   @spec fetch(term()) :: {:ok, map()} | :error
   def fetch("dbb8804b3d7293178e571fa7afdf6bd47d06a51c"), do: {:ok, @legacy}
   def fetch("fb1b4ff82354ac8ff2e82d4f6516121fd55ff212"), do: {:ok, @previous}
-  def fetch("ccb19732c7225a6bc88556f8f743bab7bda41a5b"), do: {:ok, @current}
+  def fetch("ccb19732c7225a6bc88556f8f743bab7bda41a5b"), do: {:ok, @ccb1973}
+  def fetch("6dd8d82ef29f9a6608b942259e1801846bb87ed9"), do: {:ok, @current}
   def fetch(_), do: :error
 
   @spec maximum_migrations() :: pos_integer()
