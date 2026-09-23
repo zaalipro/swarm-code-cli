@@ -168,7 +168,15 @@ None. `vendor/exqlite` is not a provenance entry; its patch is recorded in
     - the synthetic budget test (truecolor, one glyph per char) measured 54 B per keystroke, a
       worst streamed delta of 8.3 KB, and 13.9 KB for a full frame
   - Every screen session I started is closed. I killed only pids I started.
-- Full umbrella suite, format and warnings: see the final section below.
+- **Full umbrella `mix test`** (after f8cc404):
+  - swarm_code_core: 140 tests, 0 failures
+  - swarm_code_daemon: 636 tests, 10 failures, all C's
+    `service/wire_contract_test.exs` (checkpoint fixture ownership ids, see A's notes)
+  - swarm_code_cli: 5 properties, 1195 tests, 0 failures
+- The first full run also failed `ui/architecture_test.exs`. `application.ex` used `apply/3`,
+  and a `RatatuiPort` facade sat outside the port directory. Fixed in f8cc404.
+- `mix format --check-formatted` passes, and so does `mix compile --force --warnings-as-errors`.
+  `scripts/dev/check_terminal_port.sh` is OK.
 
 ## Leftovers
 
