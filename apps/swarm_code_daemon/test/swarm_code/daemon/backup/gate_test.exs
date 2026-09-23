@@ -742,7 +742,7 @@ defmodule SwarmCode.Daemon.Backup.GateTest do
     send(task.pid, {:restore_source_pin, pinned})
 
     assert {:ok, artifact} = Task.await(task, 10_000)
-    assert_receive :source_pin_restored, 5_000
+    assert_receive :source_pin_restored, 30_000
     assert SchemaFixture.row_counts(fixture.db)["projects"] == 2
     assert SchemaFixture.row_counts(artifact.database)["projects"] == 2
     refute Enum.any?(File.ls!(fixture.backup_dir), &String.contains?(&1, ".source-pin."))
@@ -794,7 +794,7 @@ defmodule SwarmCode.Daemon.Backup.GateTest do
       end
 
     send(task.pid, {:continue_wal_snapshot, pinned})
-    assert_receive :restore_wal_pin_set, 5_000
+    assert_receive :restore_wal_pin_set, 30_000
 
     Enum.each(parked, fn {alias_path, parked_path} ->
       File.rm!(alias_path)
@@ -913,7 +913,10 @@ defmodule SwarmCode.Daemon.Backup.GateTest do
     supervisor = start_supervised!(Task.Supervisor)
     task = Task.Supervisor.async_nolink(supervisor, fn -> create(fixture, test_hook: hook) end)
 
-    assert_receive :manifest_commit_link_created, 5_000
+    # pass70 Q23: a backup under a loaded full suite took longer than 5 s to
+    # reach its hook once; the hook waits are 30 s, which costs a passing run
+    # nothing.
+    assert_receive :manifest_commit_link_created, 30_000
     assert Task.shutdown(task, :brutal_kill) == nil
 
     final_names = ["#{@operation_id}.manifest.json", "#{@operation_id}.sqlite3"]
@@ -1183,7 +1186,7 @@ defmodule SwarmCode.Daemon.Backup.GateTest do
     supervisor = start_supervised!(Task.Supervisor)
     task = Task.Supervisor.async_nolink(supervisor, fn -> create(fixture, test_hook: hook) end)
 
-    assert_receive :restore_files_open, 5_000
+    assert_receive :restore_files_open, 30_000
     assert Task.shutdown(task, :brutal_kill) == nil
     await_directory_empty!(fixture.backup_dir, 10_000)
     assert File.ls!(fixture.backup_dir) == []
@@ -1231,7 +1234,7 @@ defmodule SwarmCode.Daemon.Backup.GateTest do
     supervisor = start_supervised!(Task.Supervisor)
     task = Task.Supervisor.async_nolink(supervisor, fn -> create(fixture, test_hook: hook) end)
 
-    assert_receive :manifest_temp_synced, 5_000
+    assert_receive :manifest_temp_synced, 30_000
     assert Task.shutdown(task, :brutal_kill) == nil
     await_directory_empty!(fixture.backup_dir, 10_000)
     assert File.ls!(fixture.backup_dir) == []
@@ -1321,7 +1324,7 @@ defmodule SwarmCode.Daemon.Backup.GateTest do
     end
 
     result = create(fixture, test_hook: hook)
-    assert_receive :backup_broker_killed, 5_000
+    assert_receive :backup_broker_killed, 30_000
     assert {:error, %{code: code}} = result
     assert code in [:backup_failed, :cleanup_pending]
     assert File.ls!(fixture.backup_dir) == []
