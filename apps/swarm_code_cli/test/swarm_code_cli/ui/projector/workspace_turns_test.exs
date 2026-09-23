@@ -244,6 +244,24 @@ defmodule SwarmCodeCLI.UI.Projector.WorkspaceTurnsTest do
     assert span.style.prefix == nil
   end
 
+  # pass71 F13 (review R11): `j`/`k` landed on items that draw nothing until
+  # selected; the silent model step "007" is one.
+  test "select mode steps over items that draw no row" do
+    state = fixture(:swarm, {100, 60})
+    ids = state.read_model.order.workspace
+    at = Enum.find_index(ids, &(&1 == "007"))
+    before = Enum.at(ids, at - 1)
+    state = %{state | focus: "main", layers: [], selection: %{"main" => before}}
+    assert ScrollMetrics.height(%{state | selection: %{}}, :main, "007") == 0
+
+    {moved, _} = SwarmCodeCLI.UI.Reducer.update(state, {:move, :next})
+    refute moved.selection["main"] == "007"
+    assert ScrollMetrics.height(%{moved | selection: %{}}, :main, moved.selection["main"]) > 0
+
+    {back, _} = SwarmCodeCLI.UI.Reducer.update(moved, {:move, :previous})
+    assert back.selection["main"] == before
+  end
+
   test "a failed run ends in an error card that says what to do next" do
     state = fixture(:swarm, {100, 30})
     run = state.read_model.runs["fixture-run"]

@@ -105,9 +105,9 @@ defmodule SwarmCodeCLI.UI.Reducer.Pages do
   def move(state, direction) do
     region = region_key(state.focus)
     slot = slot(state, region)
-    ids = ScrollMetrics.order(state, region, slot)
     key = Atom.to_string(region)
     current = Map.get(state.selection, key)
+    ids = state |> ScrollMetrics.order(region, slot) |> drawn(state, region, current)
     index = Enum.find_index(ids, &(&1 == current)) || -1
 
     target =
@@ -140,6 +140,18 @@ defmodule SwarmCodeCLI.UI.Reducer.Pages do
       do: request(state, slot, if(direction in [:previous, :first], do: :before, else: :after)),
       else: {state, []}
   end
+
+  # pass71 F13 (review R11): select mode stepped through the read model's
+  # order, so `j`/`k` landed on items that draw nothing until selected (a
+  # silent thought, a worker's calls under a folded lane). The main
+  # transcript's stops are the items that draw a row unselected, plus the
+  # current one.
+  defp drawn(ids, state, :main, current) do
+    unselected = %{state | selection: Map.delete(state.selection, "main")}
+    Enum.filter(ids, &(&1 == current or ScrollMetrics.height(unselected, :main, &1) > 0))
+  end
+
+  defp drawn(ids, _state, _region, _current), do: ids
 
   def request(state, slot, direction) do
     page = Map.get(state.pages, slot, %PageState{})
