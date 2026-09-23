@@ -392,20 +392,31 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
 
     title_style = paint.(:text_primary, if(focused?, do: [:bold], else: []))
     hit_style = paint.(:accent, [:bold])
-
-    title =
-      for {piece, hit?} <- highlight(row.title, row.query),
-          do: {piece, if(hit?, do: hit_style, else: title_style)}
+    measure = fn spans -> Enum.reduce(spans, 0, &(&2 + Width.cells(elem(&1, 0), policy))) end
 
     detail =
       if row.detail in [nil, ""],
         do: [],
         else: [{"  " <> row.detail, paint.(:text_faint, [])}]
 
+    # pass70 QA: a long title gives way to its detail. The detail ("3 runs ·
+    # 5 min ago") is what tells one conversation from the next, and it was
+    # the part cut at the border ("11 runs · o"); the title is elided instead,
+    # as long as a readable stretch of it is left.
+    room = width - measure.([rail | mark]) - measure.(detail)
+
+    title_text =
+      if detail != [] and Width.cells(row.title, policy) > room and room >= 16,
+        do: Width.elide(row.title, room, :end, policy),
+        else: row.title
+
+    title =
+      for {piece, hit?} <- highlight(title_text, row.query),
+          do: {piece, if(hit?, do: hit_style, else: title_style)}
+
     right = if row.right in [nil, ""], do: [], else: [{row.right, paint.(row.right_role, [])}]
 
     left = [rail | mark] ++ title ++ detail
-    measure = fn spans -> Enum.reduce(spans, 0, &(&2 + Width.cells(elem(&1, 0), policy))) end
     left_cells = measure.(left)
     right_cells = measure.(right)
 
