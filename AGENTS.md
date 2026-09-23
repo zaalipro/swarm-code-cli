@@ -167,8 +167,10 @@ by `scripts/dev/sync_unicode_width.exs --check`, `sync_unicode_variants.py --che
   bare letters must set `focus: "main"` or the letter is treated as typing.
 - The keyboard is composer-first (pass 70, D5): letters always type; Esc stops the streaming
   turn or closes the top layer and never moves focus; Ctrl-C closes a layer, else clears the
-  draft (Ctrl-Z restores it), else stops the turn, and a second Ctrl-C within 1.5 s quits
-  (asking "Stop N live runs and quit?" when runs are live); `q` closes or quits only in select
+  draft (Ctrl-Z restores it), else stops the turn (also the turn Enter just sent, before it
+  shows), and none of those arms the quit; two idle Ctrl-C presses within 1.5 s quit (pass71
+  R1, asking "Stop N live runs and quit?" when runs are live); Enter before the conversation
+  has loaded is kept and sent once it has (R2); `q` closes or quits only in select
   mode (Ctrl-T), dialogs and pickers. Ctrl-J (the port decodes a bare LF as Ctrl-J) and Ctrl-O insert a
   newline; Ctrl-X edits the draft in `$VISUAL`/`$EDITOR`. An approval card opens over the
   conversation by itself with `y Y A d D n`. `SWARM_MOUSE=1` opts into SGR wheel reports (off by

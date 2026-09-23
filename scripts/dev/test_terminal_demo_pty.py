@@ -109,9 +109,10 @@ class LiveDemo(unittest.TestCase):
     def demo(self,*args,**kwargs):
         demo=Demo(*args,**kwargs); self.addCleanup(demo.close); return demo
     # pass70 (D5): the keyboard is composer-first, so letters type and `q` is
-    # text. Ctrl-C closes a layer, clears the draft, stops the turn, and a
-    # second press within 1.5 s quits (a third confirms "Stop N live runs and
-    # quit?"). `quit` presses it until the demo exits.
+    # text. Ctrl-C closes a layer, clears the draft or stops the turn, and
+    # none of those arms the quit (pass71 R1); two idle presses within 1.5 s
+    # quit (a third confirms "Stop N live runs and quit?"). `quit` presses it
+    # until the demo exits.
     def settle(self,d,seconds):
         end=time.monotonic()+seconds
         while time.monotonic()<end: d.pump()

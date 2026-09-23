@@ -158,8 +158,8 @@ SwarmCode.Development.PersistedSession.run_for_test(boot)
                         terminal.wait_for(b'Plan')
                         terminal.capture('saved-run-navigation')
                         self.assertNotIn(b'Page error', terminal.screen())
-                    # Ctrl-C closes a layer or clears the draft; a second press
-                    # within 1.5 s quits (letters type into the composer).
+                    # Ctrl-C closes a layer or clears the draft without arming the
+                    # quit; two idle presses within 1.5 s quit (pass71 R1).
                     for _ in range(8):
                         if terminal.status is not None:
                             break

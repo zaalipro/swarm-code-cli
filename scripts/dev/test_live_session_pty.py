@@ -64,7 +64,8 @@ class LiveSession(unittest.TestCase):
                 terminal.send(b'\r')
                 terminal.wait_for(b'Unavailable')
                 terminal.capture('live-library-unavailable')
-                # Ctrl-C closes the layers, then two presses quit (letters type).
+                # Ctrl-C closes the layers (a press that closes, clears or stops
+                # never arms the quit), then two idle presses quit (pass71 R1).
                 for _ in range(8):
                     if terminal.status is not None:
                         break
