@@ -406,20 +406,20 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
 
   # B6: the desktop's quit (pause workflows, stop runs, kill commands the runs
   # left running, flush, stop runs/research/MCP/LSP subtrees). Idempotent.
-  # Returns how many live runs it stopped.
+  # Returns the live runs it stopped (pass71 S4: `%{id, kind, title}` each).
   defp stop_live_runs do
     if Process.whereis(SwarmCode.Domain.Registry) do
-      %{stopped: stopped} =
+      %{stopped_runs: stopped} =
         fun_with_deadline(fn -> SwarmCode.Daemon.Shutdown.run() end, 60_000)
 
       stopped
     else
-      0
+      []
     end
   catch
     kind, reason ->
       Logger.error("stopping live runs failed: #{Exception.format(kind, reason)}")
-      0
+      []
   end
 
   defp fun_with_deadline(fun, timeout), do: fun |> Task.async() |> Task.await(timeout)
@@ -519,7 +519,7 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
     prompt = one_line(summary[:prompt])
     notice = one_line(summary[:notice])
     files = summary[:files] || []
-    stopped = summary[:stopped] || 0
+    stopped = summary[:stopped] || []
 
     lines =
       [
@@ -527,7 +527,7 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
         "  " <> bold(title),
         prompt && "  " <> label.("Last prompt") <> prompt,
         files != [] && "  " <> label.("Files changed") <> files_line(files),
-        stopped > 0 && "  " <> label.("Stopped") <> plural(stopped, "live run") <> ".",
+        stopped != [] && "  " <> label.("Stopped") <> stopped_lines(stopped),
         notice && "  " <> label.("Note") <> notice,
         "  " <> label.("Resume") <> resume_command(summary[:root]),
         ""
@@ -535,6 +535,26 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
       |> Enum.filter(&is_binary/1)
 
     IO.puts(Enum.join(lines, "\n"))
+  end
+
+  # pass71 S4 (R1): every run the quit stopped, one per line under the count.
+  @doc false
+  def stopped_lines(runs) do
+    indent = "\n" <> String.duplicate(" ", 16) <> "· "
+
+    Enum.join([
+      plural(length(runs), "live run")
+      | Enum.map(runs, fn run -> indent <> stopped_run(run) end)
+    ])
+  end
+
+  defp stopped_run(run) do
+    title = one_line(run[:title]) || "Untitled run"
+
+    case run[:kind] do
+      kind when kind in [nil, "", "chat"] -> title
+      kind -> title <> " · " <> (one_line(kind) || "run")
+    end
   end
 
   defp files_line(files) do

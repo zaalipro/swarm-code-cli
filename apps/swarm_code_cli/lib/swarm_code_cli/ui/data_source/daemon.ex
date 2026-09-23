@@ -5,6 +5,14 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
   Endpoint and nonce must come from an admitted launcher. This module does not
   authenticate peer credentials or launch a daemon. Watch credit is released only
   after the bound owner consumes its delivery receipt.
+
+  Clocks (pass71 S1): a `Request.deadline` is the owner's wall-clock
+  millisecond (`state.now + deadline_ms`, the clock every producer uses). The
+  source converts it once, at admission, into a remaining budget and a
+  monotonic deadline; every later comparison (requests, controls, receipts,
+  partial frames) is monotonic, so a wall-clock step cannot stretch or cut a
+  deadline. The optional `:clock` is a one-argument function of
+  `:system | :monotonic` returning milliseconds (tests inject one).
   """
   use GenServer
   require Logger
@@ -57,6 +65,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
          nonce: opts[:nonce],
          epoch: opts[:source_epoch],
          timeout: Keyword.get(opts, :timeout, @default_timeout),
+         clock: Keyword.get(opts, :clock, &default_clock/1),
          socket: nil,
          owner: nil,
          owner_monitor: nil,
@@ -234,10 +243,17 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
                map_size(state.requests) + state.delivery_count < @max_deliveries,
              :capacity_exceeded
            ),
+         wall = state.clock.(:system),
          {:ok, message} <-
-           Codec.request(request, wire_id(state.epoch, request.request_id), state.nonce, now()),
+           Codec.request(request, wire_id(state.epoch, request.request_id), state.nonce, wall),
          true <- request_capability(message.body) in state.capabilities do
-      entry = %{request: request, kind: kind, deadline: request.deadline}
+      # pass71 S1: the wall-clock deadline becomes a monotonic one here, with
+      # the same budget the wire request carries (`timeout_ms`).
+      entry = %{
+        request: request,
+        kind: kind,
+        deadline: now(state) + message.body["timeout_ms"]
+      }
 
       next = %{
         state
@@ -269,7 +285,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
         partial =
           if decoder.phase == :header and decoder.buffered_bytes == 0,
             do: nil,
-            else: state.partial_since || now()
+            else: state.partial_since || now(state)
 
         next =
           Enum.reduce_while(
@@ -310,9 +326,9 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
 
   def handle_info({:deadline, token}, %{timer: {_, token}, phase: :bound} = state) do
     expired =
-      (state.partial_since != nil and now() - state.partial_since >= state.timeout) or
-        Enum.any?(state.controls, fn {_, control} -> control.deadline <= now() end) or
-        (state.receipt != nil and state.receipt.deadline <= now())
+      (state.partial_since != nil and now(state) - state.partial_since >= state.timeout) or
+        Enum.any?(state.controls, fn {_, control} -> control.deadline <= now(state) end) or
+        (state.receipt != nil and state.receipt.deadline <= now(state))
 
     if expired do
       {:noreply, shutdown(state)}
@@ -516,7 +532,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
           %{
             state
             | queue: queue,
-              receipt: %{token: token, item: item, deadline: now() + state.timeout}
+              receipt: %{token: token, item: item, deadline: now(state) + state.timeout}
           }
         else
           dispatch_next(release_receipt(%{state | queue: queue}, item))
@@ -586,7 +602,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
       {:ok,
        %{
          state
-         | controls: Map.put(state.controls, id, %{scope: scope, deadline: now() + state.timeout})
+         | controls:
+             Map.put(state.controls, id, %{scope: scope, deadline: now(state) + state.timeout})
        }}
     else
       _ -> :error
@@ -806,7 +823,9 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
   defp cancel_timer(nil), do: :ok
   defp cancel_timer({timer, _}), do: Process.cancel_timer(timer)
   defp failure(code, state), do: {:reply, {:error, AdmissionError.new(code)}, state}
-  defp now, do: System.monotonic_time(:millisecond)
+  defp now(state), do: state.clock.(:monotonic)
+  defp default_clock(:system), do: System.system_time(:millisecond)
+  defp default_clock(:monotonic), do: System.monotonic_time(:millisecond)
   defp admit_check(true, _), do: :ok
   defp admit_check(false, code), do: {:error, AdmissionError.new(code)}
   defp request_capability(%{"op" => "query"}), do: :query
@@ -828,8 +847,10 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
   defp request_capability(_), do: nil
 
   defp expire_requests(state) do
+    now = now(state)
+
     {expired, pending} =
-      Enum.split_with(state.requests, fn {_, entry} -> entry.deadline <= now() end)
+      Enum.split_with(state.requests, fn {_, entry} -> entry.deadline <= now end)
 
     Enum.reduce(expired, %{state | requests: Map.new(pending)}, fn {wire_id, entry}, acc ->
       status = if entry.kind == :command, do: :outcome_unknown, else: :deadline_exceeded
@@ -983,10 +1004,13 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
 
   defp valid_options?(opts) when is_list(opts) do
     Keyword.keyword?(opts) and
-      Enum.sort(Keyword.keys(opts)) in [
-        Enum.sort([:socket_path, :nonce, :source_epoch]),
-        Enum.sort([:socket_path, :nonce, :source_epoch, :timeout])
-      ] and is_binary(opts[:socket_path]) and byte_size(opts[:socket_path]) in 1..1_024 and
+      MapSet.subset?(
+        MapSet.new(Keyword.keys(opts)),
+        MapSet.new([:socket_path, :nonce, :source_epoch, :timeout, :clock])
+      ) and Enum.all?([:socket_path, :nonce, :source_epoch], &Keyword.has_key?(opts, &1)) and
+      length(Keyword.keys(opts)) == length(Enum.uniq(Keyword.keys(opts))) and
+      is_function(Keyword.get(opts, :clock, &default_clock/1), 1) and
+      is_binary(opts[:socket_path]) and byte_size(opts[:socket_path]) in 1..1_024 and
       String.valid?(opts[:socket_path]) and not String.contains?(opts[:socket_path], <<0>>) and
       Path.type(opts[:socket_path]) == :absolute and
       (opts[:source_epoch] == nil or Intent.valid_id?(opts[:source_epoch])) and

@@ -226,7 +226,7 @@ defmodule SwarmCodeCLI.UI.DataSource.RuntimeServiceTest do
       scope: @scope,
       generation: 0,
       origin: origin,
-      deadline: System.monotonic_time(:millisecond) + 5_000,
+      deadline: System.system_time(:millisecond) + 5_000,
       expected_response: :outcome
     }
 

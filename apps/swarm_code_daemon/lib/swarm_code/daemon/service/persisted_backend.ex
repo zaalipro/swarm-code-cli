@@ -7,6 +7,16 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   Commands reserve a durable CLI metadata identity before execution. Completed
   outcomes replay after restart; unfinished reservations return outcome_unknown.
   The in-memory response cache is capped at 4096 identities.
+
+  Slow reads (pass71 S2): feature queries (the `@path` file index, the Git tree
+  of Changes, the libraries) and diffs not yet cached run as supervised,
+  monitored jobs (`Task.Supervisor.async_nolink` under
+  `SwarmCode.Domain.TaskSupervisor`), correlated by task reference. The caller's
+  reply is deferred until its job ends, so a slow walk or Git call never stalls
+  other requests. A newer `@path` query replaces an older one (answered
+  `stale_revision`); a conversation switch cancels every job (`not_allowed`);
+  a job past its request's `timeout_ms` is killed (`source_unavailable`); and
+  so is every job when the service stops. At most 8 jobs run at once.
   """
   use GenServer
   alias SwarmCode.Domain.{Attachments, Conversations, Engine, Projects, Repo}
@@ -17,6 +27,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   @facts_per_reload 50
   # Operations that read: never ledgered, answered with a typed error.
   @reads [:query, :detail, :feature_query, :conversation_list]
+  # pass71 S2: slow reads run as jobs; this many at once, the rest are refused.
+  @max_jobs 8
   @terminal [:completed, :failed, :cancelled, :interrupted]
   alias SwarmCode.Daemon.Service.{
     CommandDispatcher,
@@ -55,6 +67,9 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
          {:ok, ^root} <- SwarmCode.Domain.Tools.Path.real_path(project_root),
          true <- File.dir?(root) do
       :ok = CommandLedger.ensure!()
+      # pass71 S2: `terminate/2` must run on a supervisor shutdown so it can
+      # kill the running jobs and settle their callers.
+      Process.flag(:trap_exit, true)
 
       staged_attachments =
         CommandLedger.staged_attachments(opts[:project_id], opts[:conversation_id])
@@ -79,6 +94,14 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         research_ids: [],
         attachment_ids: staged_attachments,
         refresh_pending: false,
+        # pass71 S6: what the armed refresh has to do — a full reload, or only
+        # the runs and nodes a streaming tick touched — the inputs of the last
+        # projection (the rows the targeted refetch replaces), and how many
+        # projections of each kind ran.
+        full_pending: false,
+        partial: nil,
+        inputs: nil,
+        projections: %{full: 0, partial: 0},
         repo_monitor: Process.monitor(Process.whereis(Repo)),
         streams: %{},
         changes: %{},
@@ -103,10 +126,20 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         diff_cache: %{},
         diff_order: [],
         change_facts: %{},
+        # pass71 S2: finished-run checkpoints still without facts, the job
+        # computing some of them, and the ones whose diff failed (not retried).
+        facts_missing: [],
+        facts_job: nil,
+        facts_failed: MapSet.new(),
         file_index: nil,
         # pass70 Q3: monitors on this conversation's running chat runs while
         # prompts are queued behind them (monitor ref => true).
-        queue_monitors: %{}
+        queue_monitors: %{},
+        # pass71 S2: running read jobs (task ref => job), where they run, and
+        # the functions that do the slow work (tests inject blocking fakes).
+        jobs: %{},
+        task_supervisor: Keyword.get(opts, :task_supervisor, SwarmCode.Domain.TaskSupervisor),
+        work: work(opts[:work])
       }
 
       {:ok, reload(state)}
@@ -118,9 +151,9 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   end
 
   @impl true
-  def handle_call({:service_request, id, scope, request}, _, state) do
+  def handle_call({:service_request, id, scope, request}, from, state) do
     with {:ok, _} <- ServiceRequest.encode(request, scope), true <- member?(state, scope) do
-      admit_request(id, scope, request, state)
+      admit_request(id, scope, request, from, state)
     else
       _ ->
         response =
@@ -196,12 +229,45 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       when is_map_key(monitors, monitor),
       do: {:noreply, drain_queue(%{state | queue_monitors: Map.delete(monitors, monitor)})}
 
+  # pass71 S2: a job crashed or was killed without answering.
+  def handle_info({:DOWN, ref, :process, _, _}, %{jobs: jobs} = state)
+      when is_map_key(jobs, ref),
+      do: {:noreply, settle_job(state, ref, wire_error(:source_unavailable))}
+
+  def handle_info({:DOWN, ref, :process, _, _}, %{facts_job: %{ref: ref, ids: ids}} = state),
+    do: {:noreply, facts_done(state, Map.new(ids, &{&1, nil}))}
+
   def handle_info({:DOWN, monitor, :process, _, _}, state) do
     {:noreply,
      Enum.reduce(state.watches, state, fn {key, entry}, acc ->
        if entry.monitor == monitor, do: unwatch(acc, key), else: acc
      end)}
   end
+
+  # pass71 S2: the facts job of this conversation finished (a stale one was
+  # cancelled and its reference forgotten, so its result falls through).
+  def handle_info({ref, {conversation, results}}, %{facts_job: %{ref: ref}} = state)
+      when is_map(results) do
+    Process.demonitor(ref, [:flush])
+
+    if conversation == state.opts[:conversation_id],
+      do: {:noreply, facts_done(state, results)},
+      else: {:noreply, %{state | facts_job: nil}}
+  end
+
+  # pass71 S2: a job's result, correlated by its task reference.
+  def handle_info({ref, result}, %{jobs: jobs} = state)
+      when is_reference(ref) and is_map_key(jobs, ref) do
+    Process.demonitor(ref, [:flush])
+    job = jobs[ref]
+    {response, next} = job.finish.(result, %{state | jobs: Map.delete(jobs, ref)})
+    cancel_job_timer(job)
+    GenServer.reply(job.from, response)
+    {:noreply, next}
+  end
+
+  def handle_info({:job_timeout, ref}, %{jobs: jobs} = state) when is_map_key(jobs, ref),
+    do: {:noreply, cancel_job(state, ref, wire_error(:source_unavailable))}
 
   def handle_info({:assistant_delta, message_id, text}, state)
       when is_binary(message_id) and is_binary(text) do
@@ -241,8 +307,16 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       else: {:noreply, state}
   end
 
+  # pass71 S6: a streaming tick refetches only what it touched; anything
+  # else (or a refresh nobody armed) reloads the whole projection.
   def handle_info(:refresh_projection, state) do
-    next = reload(%{state | refresh_pending: false})
+    cleared = %{state | refresh_pending: false, full_pending: false, partial: nil}
+
+    next =
+      if state.full_pending or state.partial == nil,
+        do: reload(cleared),
+        else: partial_reload(cleared, state.partial)
+
     {:noreply, publish_changes(state, next)}
   end
 
@@ -275,6 +349,24 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
   def handle_info({:mcp_status, server_id, status}, state),
     do: {:noreply, mcp_status(state, server_id, status)}
+
+  # pass71 S6 (C9): a streaming tick (`Node.patch_cols/0`: status while
+  # running, progress, detail, tokens, cost, turn) and the run totals written
+  # in the same flush refresh only the rows they name.
+  def handle_info({:nodes_patch, run_id, patches}, state)
+      when is_binary(run_id) and is_list(patches) do
+    ids = for {id, cols} <- patches, is_binary(id) and is_map(cols), do: id
+    {:noreply, schedule_partial(state, [run_id], ids)}
+  end
+
+  # Only a totals tick (the counters moved, nothing a card keys off did) is
+  # partial; any other run update, or one that changed nothing we hold, is a
+  # signal to reload everything.
+  def handle_info({:run_updated, %{id: run_id} = run}, state) when is_binary(run_id) do
+    if totals_tick?(run, state),
+      do: {:noreply, schedule_partial(state, [run_id], [])},
+      else: {:noreply, schedule_refresh(state)}
+  end
 
   # pass70 C6: the models of the agents a run just registered or switched.
   def handle_info({:nodes_upsert, _run_id, nodes} = event, state) when is_list(nodes) do
@@ -324,12 +416,17 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   def handle_info(_, state), do: {:noreply, state}
 
   @impl true
-  def terminate(_, state), do: Events.unsubscribe(state.opts[:conversation_id])
+  def terminate(_, state) do
+    cancel_jobs(state, wire_error(:source_unavailable))
+    cancel_facts_job(state.facts_job, state.task_supervisor)
+    Events.unsubscribe(state.opts[:conversation_id])
+  end
+
   @impl true
   def format_status(status),
     do: %{status | state: %{mode: :persisted, runs: map_size(status.state.runs)}}
 
-  defp admit_request(id, scope, request, state) do
+  defp admit_request(id, scope, request, from, state) do
     command? = Map.get(request, :operation) not in @reads
 
     fingerprint =
@@ -382,9 +479,19 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
                    state}
               end
 
-            if durable, do: CommandLedger.complete(state.opts[:project_id], id, response)
-            next = if command?, do: put_in(next.requests[id], {fingerprint, response}), else: next
-            {:reply, response, next}
+            case response do
+              # pass71 S2: a read whose work runs as a job answers later.
+              {:job, job} when not command? ->
+                start_job(next, from, job, request.timeout_ms)
+
+              response ->
+                if durable, do: CommandLedger.complete(state.opts[:project_id], id, response)
+
+                next =
+                  if command?, do: put_in(next.requests[id], {fingerprint, response}), else: next
+
+                {:reply, response, next}
+            end
         end
     end
   end
@@ -545,51 +652,75 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   # pass70 C8: `@path` completion over the project's files (the index is
   # walked at most every 30 s and kept while it is fresh).
   defp execute(%{operation: :feature_query, params: %{"feature" => "files"} = p}, _, id, state) do
-    {paths, state} = file_index(state)
-    items = SwarmCode.Domain.FeatureCatalog.file_matches(paths, p["id"], p["page_size"])
+    # pass71 S2: the walk and the ranking run as a job; a newer query
+    # replaces an older one still running.
+    index = fresh_file_index(state)
+    root = state.opts[:project_root]
+    walk = state.work.file_index
 
-    body = %{
-      "feature" => "files",
-      "title" => "Files",
-      "description" => "Files of the project",
-      "items" =>
-        Enum.map(items, fn item ->
-          %{
-            "id" => item.id,
-            "title" => item.title,
-            "subtitle" => item.subtitle,
-            "status" => item.status,
-            "detail" => item.detail,
-            "actions" => [],
-            "form" => nil,
-            "matches" => item.matches
-          }
-        end),
-      "state" => "idle",
-      "before_cursor" => nil,
-      "after_cursor" => nil,
-      "request_id" => id,
-      "error" => nil,
-      "presence" => "covered",
-      "covered_ids" => Enum.map(items, & &1.id),
-      "through_sequence" => state.revision
-    }
-
-    case fit("library_snapshot", body, p["byte_limit"]) do
-      {:ok, kind, body} -> {result(kind, body), state}
-      {:error, code} -> {wire_error(code), state}
+    work = fn ->
+      paths = index || walk.(root)
+      walked = if index, do: nil, else: paths
+      {walked, SwarmCode.Domain.FeatureCatalog.file_matches(paths, p["id"], p["page_size"])}
     end
+
+    finish = fn {walked, items}, state ->
+      state = if walked, do: put_file_index(state, walked), else: state
+      files_page(items, p, id, state)
+    end
+
+    {{:job, %{key: :files, replace: true, work: work, finish: finish}}, state}
   end
 
-  defp execute(%{operation: operation} = request, scope, id, state)
-       when operation in [:feature_query, :feature_command] do
+  # pass71 S2: a feature query reads the Repo, files and Git (Changes in the
+  # project scope lists the working tree): a job. Mutations stay in order here.
+  defp execute(%{operation: :feature_query} = request, scope, id, state) do
+    scoped = feature_scope(scope, state)
+    revision = state.revision
+    run = state.work.feature_query
+    work = fn -> run.(request, scoped, id, revision) end
+    {{:job, %{key: nil, replace: false, work: work, finish: &{&1, &2}}}, state}
+  end
+
+  defp execute(%{operation: :feature_command} = request, scope, id, state) do
     scoped = feature_scope(scope, state)
     {SwarmCode.Daemon.Service.FeatureRequest.execute(request, scoped, id, state.revision), state}
   end
 
   defp execute(%{operation: :detail, params: params}, scope, id, state) do
-    next = state |> refresh() |> warm_diff(params["detail_ref"], scope)
-    {result("detail_window", detail(params, scope, id, next)), next}
+    next = refresh(state)
+
+    case uncached_diff(next, params["detail_ref"], scope) do
+      # pass71 S2: a diff not in the cache is computed by a job, then paged
+      # from the cache like any other.
+      {:ok, diff_id} ->
+        conversation = next.opts[:conversation_id]
+        diff = next.work.diff
+
+        work = fn -> bounded_diff(diff_text(diff_id, scope, conversation, diff)) end
+
+        finish = fn
+          {:ok, text}, state ->
+            state = cache_diff(state, {diff_id, scope.kind, scope.id}, text)
+            {result("detail_window", detail(params, scope, id, state)), state}
+
+          {:error, :too_large}, state ->
+            window =
+              params
+              |> detail(scope, id, state)
+              |> Map.put("error", error(:capacity_exceeded))
+
+            {result("detail_window", window), state}
+
+          _, state ->
+            {result("detail_window", detail(params, scope, id, state)), state}
+        end
+
+        {{:job, %{key: nil, replace: false, work: work, finish: finish}}, next}
+
+      :cached ->
+        {result("detail_window", detail(params, scope, id, next)), next}
+    end
   end
 
   # pass70 C3 (arch F7): any conversation of the admitted project opens in
@@ -820,7 +951,9 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       state
     else
       Enum.each(state.queue_monitors, fn {ref, _pid} -> Process.demonitor(ref, [:flush]) end)
-      state = %{state | queue_monitors: %{}}
+      # pass71 S2: reads of the old conversation are answered as queries
+      # against it are now: not allowed.
+      state = %{cancel_jobs(state, wire_error(:not_allowed)) | queue_monitors: %{}}
       Events.unsubscribe(state.opts[:conversation_id])
       Events.subscribe(id)
 
@@ -851,9 +984,15 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
           research_ids: [],
           attachment_ids: CommandLedger.staged_attachments(state.opts[:project_id], id),
           refresh_pending: false,
+          full_pending: false,
+          partial: nil,
+          inputs: nil,
           diff_cache: %{},
           diff_order: [],
-          change_facts: %{}
+          change_facts: %{},
+          facts_missing: [],
+          facts_job: cancel_facts_job(state.facts_job, state.task_supervisor),
+          facts_failed: MapSet.new()
       })
     end
   end
@@ -975,9 +1114,27 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     })
   end
 
-  defp schedule_refresh(%{refresh_pending: true} = state), do: state
+  defp schedule_refresh(state), do: arm_refresh(%{state | full_pending: true, partial: nil})
 
-  defp schedule_refresh(state) do
+  # pass71 S6: a partial refresh accumulates the runs and nodes of the ticks
+  # coalesced into it; a pending full reload already covers them.
+  defp schedule_partial(%{full_pending: true} = state, _runs, _nodes), do: arm_refresh(state)
+
+  defp schedule_partial(state, runs, nodes) do
+    partial = state.partial || %{runs: MapSet.new(), nodes: MapSet.new()}
+
+    arm_refresh(%{
+      state
+      | partial: %{
+          runs: MapSet.union(partial.runs, MapSet.new(runs)),
+          nodes: MapSet.union(partial.nodes, MapSet.new(nodes))
+        }
+    })
+  end
+
+  defp arm_refresh(%{refresh_pending: true} = state), do: state
+
+  defp arm_refresh(state) do
     Process.send_after(self(), :refresh_projection, 20)
     %{state | refresh_pending: true}
   end
@@ -1472,38 +1629,73 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   defp tool_call(_, _), do: nil
 
   # pass70 C8: per checkpoint of a finished run, what `FeatureCatalog.change_diff/2`
-  # says it changed (counts, file state, the diff's size). Computed once per
-  # checkpoint, at most `budget` per projection, kept for the checkpoints shown.
-  defp change_facts(cache, checkpoints, terminal, conversation, budget) do
+  # says it changed (counts, file state, the diff's size), kept for the
+  # checkpoints shown. pass71 S2: the diffs are computed by a facts job, never
+  # here; this returns what is known and the checkpoints still missing.
+  defp change_facts(cache, checkpoints, terminal, failed) do
     finished = MapSet.new(terminal)
     shown = Enum.filter(checkpoints, &MapSet.member?(finished, &1.run_id))
 
-    {facts, _budget} =
-      Enum.reduce(shown, {%{}, budget}, fn c, {acc, budget} ->
-        case Map.fetch(cache, c.id) do
-          {:ok, facts} ->
-            {Map.put(acc, c.id, facts), budget}
+    Enum.reduce(shown, {%{}, []}, fn c, {acc, missing} ->
+      case Map.fetch(cache, c.id) do
+        {:ok, facts} -> {Map.put(acc, c.id, facts), missing}
+        :error -> {acc, if(MapSet.member?(failed, c.id), do: missing, else: [c.id | missing])}
+      end
+    end)
+    |> then(fn {facts, missing} -> {facts, Enum.reverse(missing)} end)
+  end
 
-          :error when budget > 0 ->
-            case SwarmCode.Domain.FeatureCatalog.change_diff(conversation, c.id) do
-              {:ok, diff} ->
-                {Map.put(acc, c.id, %{
-                   added: diff.added,
-                   removed: diff.removed,
-                   file_state: diff.file_state,
-                   total: byte_size(diff.text)
-                 }), budget - 1}
+  # pass71 S2: at most `@facts_per_reload` missing facts per job, one job at a
+  # time; its result lands through `handle_info/2` and refreshes the projection.
+  defp start_facts_job(%{facts_job: nil, facts_missing: [_ | _]} = state) do
+    ids = Enum.take(state.facts_missing, @facts_per_reload)
+    conversation = state.opts[:conversation_id]
+    diff = state.work.change_diff
 
-              _ ->
-                {acc, budget - 1}
-            end
+    task =
+      Task.Supervisor.async_nolink(state.task_supervisor, fn ->
+        {conversation,
+         Map.new(ids, fn id ->
+           case diff.(conversation, id) do
+             {:ok, diff} ->
+               {id,
+                %{
+                  added: diff.added,
+                  removed: diff.removed,
+                  file_state: diff.file_state,
+                  total: byte_size(diff.text)
+                }}
 
-          :error ->
-            {acc, budget}
-        end
+             _ ->
+               {id, nil}
+           end
+         end)}
       end)
 
-    facts
+    %{state | facts_job: %{ref: task.ref, pid: task.pid, ids: ids}}
+  end
+
+  defp start_facts_job(state), do: state
+
+  defp facts_done(state, results) do
+    {known, failed} = Enum.split_with(results, fn {_, facts} -> facts != nil end)
+
+    %{
+      state
+      | facts_job: nil,
+        change_facts: Map.merge(state.change_facts, Map.new(known)),
+        facts_failed: Enum.reduce(failed, state.facts_failed, &MapSet.put(&2, elem(&1, 0)))
+    }
+    |> schedule_refresh()
+  end
+
+  defp cancel_facts_job(nil, _supervisor), do: nil
+
+  defp cancel_facts_job(%{ref: ref, pid: pid}, supervisor) do
+    Process.demonitor(ref, [:flush])
+    Task.Supervisor.terminate_child(supervisor, pid)
+    Process.exit(pid, :kill)
+    nil
   end
 
   # An op's diff is its checkpoints' diffs joined by a newline, oldest first
@@ -1684,27 +1876,129 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     {:ok, records, _, _} = PersistedProjection.records(conv, nil, nil, "before", 200)
     ids = Enum.map(rows, & &1.id)
     agents = PersistedProjection.agents(conv, ids)
-    build_projection(state, rows, records, agents, @facts_per_reload)
+
+    state
+    |> build_projection(rows, records, agents, :reload)
+    |> count_projection(:full)
+    |> start_facts_job()
   end
 
-  # `facts_budget`: how many finished-run checkpoints may have their change
-  # facts computed now — the reload's; a query's page reuses what it has.
-  defp build_projection(state, rows, records, agents, facts_budget \\ 0) do
+  # pass71 S6 (C9): the runs and nodes a streaming tick named are refetched
+  # and replace their rows in the last projection's inputs; the rest (running
+  # ops, checkpoints, their counts) is reused, then projected as a reload
+  # would. It falls back to a full reload when a row is gone, is not in the
+  # projection, or changed anything a tick cannot carry: then the change was
+  # structural and its own event is on its way. Golden-tested against a reload.
+  @run_tick_keys [:tokens_in, :tokens_out, :cost_usd, :model, :updated_at]
+  @agent_tick_keys [:status, :progress, :tokens_in, :tokens_out, :cost_usd, :updated_at]
+  @record_tick_keys [:status, :text, :text_bytes, :detail, :tokens_in, :tokens_out, :updated_at]
+
+  defp partial_reload(%{inputs: nil} = state, _partial), do: reload(state)
+
+  defp partial_reload(%{inputs: inputs} = state, %{runs: runs, nodes: nodes}) do
+    conv = state.opts[:conversation_id]
+    run_ids = MapSet.to_list(runs)
+    agent_ids = for a <- inputs.agents, MapSet.member?(nodes, a.id), do: a.id
+    record_ids = for r <- inputs.records, MapSet.member?(nodes, r.id), do: r.id
+
+    with true <- Enum.all?(run_ids, fn id -> Enum.any?(inputs.rows, &(&1.id == id)) end),
+         {:ok, rows, _, _} <-
+           PersistedProjection.runs(conv, %{kind: :runs, ids: run_ids}, nil, "before", 201),
+         {:ok, rows} <- tick_rows(inputs.rows, rows, @run_tick_keys, length(run_ids)),
+         {:ok, agents} <-
+           tick_rows(
+             inputs.agents,
+             PersistedProjection.agents_by_ids(conv, agent_ids),
+             @agent_tick_keys,
+             length(agent_ids)
+           ),
+         {:ok, records} <-
+           tick_rows(
+             inputs.records,
+             PersistedProjection.records_by_ids(conv, record_ids),
+             @record_tick_keys,
+             length(record_ids)
+           ) do
+      state
+      |> build_projection(rows, records, agents, {:partial, inputs})
+      |> count_projection(:partial)
+      |> start_facts_job()
+    else
+      _ -> reload(state)
+    end
+  end
+
+  # `fresh` (the `expected` rows asked for, all still there) replaces the rows
+  # of `cached` with its ids, in place, when each differs only in `keys`.
+  defp tick_rows(_cached, fresh, _keys, expected) when length(fresh) != expected, do: :error
+
+  defp tick_rows(cached, fresh, keys, _expected) do
+    by_id = Map.new(fresh, &{&1.id, &1})
+
+    matched =
+      Enum.count(cached, fn row ->
+        case by_id[row.id] do
+          nil -> false
+          new -> Map.drop(new, keys) == Map.drop(row, keys)
+        end
+      end)
+
+    if matched == map_size(by_id),
+      do: {:ok, Enum.map(cached, &Map.get(by_id, &1.id, &1))},
+      else: :error
+  end
+
+  defp totals_tick?(run, %{inputs: %{rows: rows}}) do
+    case Enum.find(rows, &(&1.id == run.id)) do
+      nil ->
+        false
+
+      row ->
+        Enum.all?(
+          [:status, :finished_at, :error_kind, :root_node_id, :kind],
+          &(Map.get(run, &1) == Map.get(row, &1))
+        ) and Enum.any?([:tokens_in, :tokens_out, :cost_usd], &(Map.get(run, &1) != row[&1]))
+    end
+  end
+
+  defp totals_tick?(_run, _state), do: false
+
+  defp count_projection(state, kind),
+    do: %{state | projections: Map.update!(state.projections, kind, &(&1 + 1))}
+
+  # `mode`: `:reload` and `{:partial, inputs}` are the service's own
+  # projection (they record which facts are missing, for the facts job, and
+  # keep their inputs); `:page` is a query's page, which reuses what it has.
+  defp build_projection(state, rows, records, agents, mode \\ :page) do
     conv = state.opts[:conversation_id]
     ids = Enum.map(rows, & &1.id)
     pending = Questions.list(conv) |> Enum.take(200)
     grouped_records = Enum.group_by(records, & &1.run_id)
     grouped_agents = Enum.group_by(agents, & &1.run_id)
-    ops = PersistedProjection.running_ops(conv, ids)
-    checkpoints = PersistedProjection.checkpoints(conv, ids)
+
+    {ops, checkpoints, checkpoint_counts} =
+      case mode do
+        {:partial, inputs} ->
+          {inputs.ops, inputs.checkpoints, inputs.checkpoint_counts}
+
+        _ ->
+          {PersistedProjection.running_ops(conv, ids), PersistedProjection.checkpoints(conv, ids),
+           PersistedProjection.checkpoint_counts(conv, ids)}
+      end
+
+    reload? = mode != :page
 
     terminal =
       for row <- rows, row.status in ["done", "stopped", "failed", "interrupted"], do: row.id
 
-    facts = change_facts(state.change_facts, checkpoints, terminal, conv, facts_budget)
-    state = %{state | change_facts: facts}
+    {facts, missing} = change_facts(state.change_facts, checkpoints, terminal, state.facts_failed)
+
+    state =
+      if reload?,
+        do: %{state | change_facts: facts, facts_missing: missing},
+        else: %{state | change_facts: facts}
+
     op_facts = op_diff_facts(checkpoints, facts)
-    checkpoint_counts = PersistedProjection.checkpoint_counts(conv, ids)
 
     runs =
       Map.new(rows, fn row ->
@@ -1823,7 +2117,19 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         changes: Map.new(checkpoints, &{&1.id, change_body(&1, state)}),
         verdicts: Map.new(verdicts),
         agent_models: Map.take(state.agent_models, Enum.map(agents, & &1.id)),
-        background: background
+        background: background,
+        inputs:
+          if(reload?,
+            do: %{
+              rows: rows,
+              records: records,
+              agents: agents,
+              ops: ops,
+              checkpoints: checkpoints,
+              checkpoint_counts: checkpoint_counts
+            },
+            else: state.inputs
+          )
     }
     |> background_tick()
   end
@@ -2579,7 +2885,9 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       "context_used" => totals.context_used,
       "context_window" => context_window(chat),
       "cost_usd" => totals.cost_usd,
-      "title" => if(is_binary(conversation.title), do: preview(conversation.title, 256))
+      "title" => if(is_binary(conversation.title), do: preview(conversation.title, 256)),
+      # pass71 S5: the prompts waiting behind the live turn (`conversations.queued`).
+      "queued" => length(conversation.queued || [])
     }
   end
 
@@ -2785,39 +3093,82 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     end
   end
 
+  defp files_page(items, p, id, state) do
+    body = %{
+      "feature" => "files",
+      "title" => "Files",
+      "description" => "Files of the project",
+      "items" =>
+        Enum.map(items, fn item ->
+          %{
+            "id" => item.id,
+            "title" => item.title,
+            "subtitle" => item.subtitle,
+            "status" => item.status,
+            "detail" => item.detail,
+            "actions" => [],
+            "form" => nil,
+            "matches" => item.matches
+          }
+        end),
+      "state" => "idle",
+      "before_cursor" => nil,
+      "after_cursor" => nil,
+      "request_id" => id,
+      "error" => nil,
+      "presence" => "covered",
+      "covered_ids" => Enum.map(items, & &1.id),
+      "through_sequence" => state.revision
+    }
+
+    case fit("library_snapshot", body, p["byte_limit"]) do
+      {:ok, kind, body} -> {result(kind, body), state}
+      {:error, code} -> {wire_error(code), state}
+    end
+  end
+
   @file_index_ms 30_000
 
-  defp file_index(%{file_index: {at, paths}} = state) when is_list(paths) do
-    if System.monotonic_time(:millisecond) - at < @file_index_ms,
-      do: {paths, state},
-      else: file_index(%{state | file_index: nil})
+  defp fresh_file_index(%{file_index: {at, paths}}) when is_list(paths) do
+    if System.monotonic_time(:millisecond) - at < @file_index_ms, do: paths
   end
 
-  defp file_index(state) do
-    {paths, _truncated?} = SwarmCode.Domain.FeatureCatalog.file_index(state.opts[:project_root])
-    {paths, %{state | file_index: {System.monotonic_time(:millisecond), paths}}}
-  end
+  defp fresh_file_index(_state), do: nil
+
+  defp put_file_index(state, paths),
+    do: %{state | file_index: {System.monotonic_time(:millisecond), paths}}
 
   # A diff is computed once and paged from memory: at most 8 of them and
   # 4 MB, the oldest dropped first (and computed again when asked again).
   @diff_cache_entries 8
   @diff_cache_bytes 4_000_000
 
-  defp warm_diff(state, ref, scope) when is_binary(ref) do
-    with [id, "diff"] <- String.split(ref, ":", parts: 2),
-         false <- Map.has_key?(state.diff_cache, {id, scope.kind, scope.id}),
-         {:ok, text} <- diff_text(id, scope, state) do
-      key = {id, scope.kind, scope.id}
-      order = state.diff_order ++ [key]
-      cache = Map.put(state.diff_cache, key, text)
-      {cache, order} = trim_diffs(cache, order)
-      %{state | diff_cache: cache, diff_order: order}
-    else
-      _ -> state
+  defp uncached_diff(state, ref, scope) when is_binary(ref) do
+    case String.split(ref, ":", parts: 2) do
+      [id, "diff"] ->
+        if Map.has_key?(state.diff_cache, {id, scope.kind, scope.id}),
+          do: :cached,
+          else: {:ok, id}
+
+      _ ->
+        :cached
     end
   end
 
-  defp warm_diff(state, _ref, _scope), do: state
+  defp uncached_diff(_state, _ref, _scope), do: :cached
+
+  # One diff never takes more than the whole cache: bigger is refused whole.
+  defp bounded_diff({:ok, text}) when byte_size(text) > @diff_cache_bytes,
+    do: {:error, :too_large}
+
+  defp bounded_diff(other), do: other
+
+  defp cache_diff(state, key, text) do
+    order = List.delete(state.diff_order, key) ++ [key]
+    cache = Map.put(state.diff_cache, key, text)
+    {cache, order} = trim_diffs(cache, order)
+    %{state | diff_cache: cache, diff_order: order}
+  end
 
   defp trim_diffs(cache, [oldest | rest] = order) do
     bytes = cache |> Map.values() |> Enum.map(&byte_size/1) |> Enum.sum()
@@ -2838,11 +3189,9 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
   # A checkpoint id (a change) or an op id (an edit): its diff, when it belongs
   # to this conversation (and to the run a run-scoped inspector shows).
-  defp diff_text(id, scope, state) do
-    conversation = state.opts[:conversation_id]
-
+  defp diff_text(id, scope, conversation, change_or_op_diff) do
     with true <- uuid?(id),
-         {:ok, run_id, diff} <- change_or_op_diff(conversation, id),
+         {:ok, run_id, diff} <- change_or_op_diff.(conversation, id),
          true <- scope.kind != :run or scope.id == run_id do
       {:ok, diff.text}
     else
@@ -2967,4 +3316,79 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     }
 
   defp wire_error(code), do: {:error, Map.put(error(code), "op", "error")}
+
+  # pass71 S2: the slow work, overridable for tests (a blocking fake).
+  defp work(overrides) do
+    defaults = %{
+      file_index: fn root -> elem(SwarmCode.Domain.FeatureCatalog.file_index(root), 0) end,
+      diff: &change_or_op_diff/2,
+      change_diff: &SwarmCode.Domain.FeatureCatalog.change_diff/2,
+      feature_query: &SwarmCode.Daemon.Service.FeatureRequest.execute/4
+    }
+
+    if is_map(overrides),
+      do: Map.merge(defaults, Map.take(overrides, Map.keys(defaults))),
+      else: defaults
+  end
+
+  defp start_job(state, from, job, timeout) do
+    state = if job.replace, do: replace_jobs(state, job.key), else: state
+
+    if map_size(state.jobs) >= @max_jobs do
+      {:reply, wire_error(:capacity_exceeded), state}
+    else
+      task = Task.Supervisor.async_nolink(state.task_supervisor, job.work)
+      timer = Process.send_after(self(), {:job_timeout, task.ref}, timeout)
+
+      entry = %{
+        pid: task.pid,
+        from: from,
+        key: job.key,
+        finish: job.finish,
+        timer: timer
+      }
+
+      {:noreply, %{state | jobs: Map.put(state.jobs, task.ref, entry)}}
+    end
+  end
+
+  defp replace_jobs(state, key) do
+    state.jobs
+    |> Enum.filter(fn {_, job} -> job.key == key end)
+    |> Enum.reduce(state, fn {ref, _}, acc ->
+      cancel_job(acc, ref, wire_error(:stale_revision))
+    end)
+  end
+
+  defp cancel_jobs(state, response),
+    do: Enum.reduce(Map.keys(state.jobs), state, &cancel_job(&2, &1, response))
+
+  defp cancel_job(state, ref, response) do
+    case Map.pop(state.jobs, ref) do
+      {nil, _} ->
+        state
+
+      {job, jobs} ->
+        Process.demonitor(ref, [:flush])
+        Task.Supervisor.terminate_child(state.task_supervisor, job.pid)
+        Process.exit(job.pid, :kill)
+        cancel_job_timer(job)
+        GenServer.reply(job.from, response)
+        %{state | jobs: jobs}
+    end
+  end
+
+  defp settle_job(state, ref, response) do
+    case Map.pop(state.jobs, ref) do
+      {nil, _} ->
+        state
+
+      {job, jobs} ->
+        cancel_job_timer(job)
+        GenServer.reply(job.from, response)
+        %{state | jobs: jobs}
+    end
+  end
+
+  defp cancel_job_timer(%{timer: timer}), do: Process.cancel_timer(timer)
 end

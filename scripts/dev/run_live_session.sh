@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# pass71 S3: what the session writes (logs, sockets, backups, temp files) is
+# owner-only, like the release (`rel/env.sh.eex`).
+umask 077
 if [[ $# -eq 1 && "$1" == "--help" ]]; then
   cat <<'HELP'
 SwarmCode development TUI — LIVE · UNSAVED

@@ -196,6 +196,8 @@ defmodule SwarmCode.Daemon.Service.Pass70QaQueueTest do
 
     {:ok, %{"value" => workspace}} = query(c.backend, c.scope, "workspace")
     assert "queue" in workspace["allowed_actions"]
+    # pass71 S5: the queue count rides on the workspace metadata.
+    assert workspace["queued"] == 0
 
     assert {:ok, %{"value" => %{"status" => "accepted", "feedback" => %{"text" => words}}}} =
              request(c.backend, "queue", c.scope, queue_request("And then say hello"))
@@ -204,6 +206,8 @@ defmodule SwarmCode.Daemon.Service.Pass70QaQueueTest do
     assert Conversations.get(c.conversation.id).queued == ["And then say hello"]
     # Nothing new started while the first turn waits.
     assert length(Conversations.list_runs(c.conversation.id)) == 1
+
+    assert eventually(fn -> queued_count(c) == 1 end)
 
     assert {:ok, %{"value" => %{"status" => "accepted"}}} =
              resolve(c, "approve", run, approval, "approve")
@@ -218,6 +222,7 @@ defmodule SwarmCode.Daemon.Service.Pass70QaQueueTest do
            end)
 
     assert Conversations.get(c.conversation.id).queued == []
+    assert eventually(fn -> queued_count(c) == 0 end)
   end
 
   test "with no turn running, a queued prompt is an ordinary send", c do
@@ -270,6 +275,12 @@ defmodule SwarmCode.Daemon.Service.Pass70QaQueueTest do
           "byte_limit" => 1_048_576
         }
       })
+
+  defp queued_count(c) do
+    {:ok, %{"value" => workspace}} = query(c.backend, c.scope, "workspace")
+    {:ok, %DTO.WorkspaceSnapshot{queued: queued}} = DTO.WorkspaceSnapshot.decode(workspace)
+    queued
+  end
 
   # The command ledger is durable per project: every test names its own.
   defp id(name), do: "#{name}-#{System.unique_integer([:positive])}"

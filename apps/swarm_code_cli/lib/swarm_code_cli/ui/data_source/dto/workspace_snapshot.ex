@@ -22,7 +22,8 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.WorkspaceSnapshot do
       context_window: nil,
       cost_usd: nil,
       title: nil,
-      background: []
+      background: [],
+      queued: 0
     ],
     fields: [
       project: {:optional, {:text, 200}},
@@ -43,6 +44,8 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.WorkspaceSnapshot do
       cost_usd: {:optional, :float},
       title: {:optional, {:text, 256}},
       background: {:list, {:dto, SwarmCodeCLI.UI.DataSource.DTO.BackgroundCommand}},
+      # pass71 S5: prompts of this conversation queued behind its live turn.
+      queued: :count,
       allowed_actions: :actions,
       revision: :revision,
       seen_revision: :revision,
@@ -80,6 +83,7 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.WorkspaceSnapshot do
       cost_usd: nil,
       title: nil,
       background: [],
+      queued: 0,
       allowed_actions: [],
       revision: 0,
       seen_revision: 0,

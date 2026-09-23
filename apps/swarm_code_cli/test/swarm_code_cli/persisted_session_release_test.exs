@@ -47,6 +47,27 @@ defmodule SwarmCodeCLI.Release.PersistedSessionTest do
     assert general =~ "does not know"
   end
 
+  # pass71 S4 (R1): the exit summary names every run the quit stopped.
+  test "the exit summary lists each stopped run under the count" do
+    text =
+      PersistedSession.stopped_lines([
+        %{id: "a", kind: "chat", title: "Fix the login test\nsecond line"},
+        %{id: "b", kind: "swarm", title: "Research caching"},
+        %{id: "c", kind: nil, title: nil}
+      ])
+
+    pad = String.duplicate(" ", 16)
+
+    assert text ==
+             "3 live runs\n" <>
+               pad <>
+               "· Fix the login test\n" <>
+               pad <> "· Research caching · swarm\n" <> pad <> "· Untitled run"
+
+    assert PersistedSession.stopped_lines([%{id: "a", kind: "chat", title: "One"}]) ==
+             "1 live run\n" <> pad <> "· One"
+  end
+
   test "the private log lives in the platform's state directory" do
     path = PersistedSession.log_path()
     assert Path.basename(path) == "cli.log"

@@ -178,11 +178,8 @@ defmodule SwarmCode.Daemon.Service.Pass70SocketTest do
       |> Checkpoint.validate()
       |> Repo.insert!()
 
-    assert {:ok, %DTO.WorkspaceSnapshot{changes: [change]}} =
-             roundtrip(c, {:query, :workspace, nil, :before, 50, 1_048_576}, {:query, :workspace},
-               expected: :workspace_snapshot,
-               scope: scope
-             )
+    # pass71 S2: the change's facts come from a job; ask until they are there.
+    change = settled_change(c, scope, 200)
 
     assert change.id == checkpoint.id and change.diff_ref.id == checkpoint.id <> ":diff"
 
@@ -194,6 +191,28 @@ defmodule SwarmCode.Daemon.Service.Pass70SocketTest do
 
     assert ref == change.diff_ref
     assert text =~ "-defmodule Old do" and text =~ "+defmodule App do"
+  end
+
+  defp settled_change(c, scope, tries) do
+    assert {:ok, %DTO.WorkspaceSnapshot{changes: [change]}} =
+             roundtrip(c, {:query, :workspace, nil, :before, 50, 1_048_576}, {:query, :workspace},
+               expected: :workspace_snapshot,
+               scope: scope
+             )
+
+    cond do
+      change.diff_ref != nil ->
+        change
+
+      tries > 0 ->
+        receive do
+        after
+          10 -> settled_change(c, scope, tries - 1)
+        end
+
+      true ->
+        flunk("the change never got its diff")
+    end
   end
 
   defp roundtrip(c, kind, origin, opts \\ []) do

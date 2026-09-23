@@ -580,9 +580,29 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Session do
         trusted: session.trusted,
         chat_provider: "llmotions",
         title: session.conversations[conversation_id].title,
-        cost_usd: cost(script, conversation_id)
+        cost_usd: cost(script, conversation_id),
+        queued: queued(script, conversation_id)
       }
     }
+
+  @doc """
+  pass71 S5: the metadata fact after a prompt of `conversation_id` was queued
+  (`extra` more than the runs already queued: the one being added).
+  """
+  def queued_fact(%{session: %__MODULE__{} = session} = script, conversation_id, extra) do
+    fact = metadata_fact(script, session, conversation_id)
+    %{fact | body: %{fact.body | queued: fact.body.queued + extra}}
+  end
+
+  def queued_fact(_script, _conversation_id, _extra), do: nil
+
+  # The fake's queue: its conversation's runs still in the `:queued` state.
+  defp queued(script, conversation_id),
+    do:
+      Enum.count(
+        script.runs,
+        fn {_, run} -> run.conversation_id == conversation_id and run.state == :queued end
+      )
 
   @doc "Facts a widened approval decision adds after the interaction resolves."
   def decision_facts(script, q, :deny_stop) do
@@ -686,6 +706,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Session do
       context_used: 18_640,
       context_window: 131_072,
       cost_usd: if(conversation_id, do: cost(script, conversation_id)),
+      queued: if(conversation_id, do: queued(script, conversation_id), else: 0),
       title:
         case s.conversations[conversation_id] do
           %{title: title} -> title

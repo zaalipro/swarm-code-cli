@@ -218,9 +218,24 @@ defmodule SwarmCode.Daemon.Service.Pass70ChangesTest do
     assert hd(all["items"])["title"] == "README.md"
   end
 
-  defp refresh!(backend) do
+  # pass71 S2: change facts come from a facts job; wait until it settled.
+  defp refresh!(backend, tries \\ 200) do
     send(backend, :refresh_projection)
-    :sys.get_state(backend)
+    state = :sys.get_state(backend)
+
+    cond do
+      state.facts_job == nil and state.facts_missing == [] ->
+        state
+
+      tries > 0 ->
+        receive do
+        after
+          10 -> refresh!(backend, tries - 1)
+        end
+
+      true ->
+        flunk("the change facts never settled")
+    end
   end
 
   defp query(c, slot),

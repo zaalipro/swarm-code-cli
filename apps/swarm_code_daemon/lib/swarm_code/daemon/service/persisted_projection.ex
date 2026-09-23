@@ -46,7 +46,25 @@ defmodule SwarmCode.Daemon.Service.PersistedProjection do
     page(query, cursor, direction, limit)
   end
 
-  def records(conversation, scope, cursor \\ nil, direction \\ "before", limit \\ 201) do
+  def records(conversation, scope, cursor \\ nil, direction \\ "before", limit \\ 201),
+    do: page(records_query(conversation, scope), cursor, direction, limit)
+
+  @doc """
+  pass71 S6: the records of `ids` (node ids) exactly as `records/5` selects
+  them: the same union, so every column loads with the same type.
+  """
+  def records_by_ids(_conversation, []), do: []
+
+  def records_by_ids(conversation, ids) do
+    Repo.all(
+      from(x in subquery(records_query(conversation, nil)),
+        where: x.id in ^ids,
+        order_by: [asc: x.inserted_at, asc: x.id]
+      )
+    )
+  end
+
+  defp records_query(conversation, scope) do
     m =
       from(m in Message,
         join: r in Run,
@@ -147,7 +165,7 @@ defmodule SwarmCode.Daemon.Service.PersistedProjection do
         }
       )
 
-    page(from(x in subquery(union_all(m, ^n))), cursor, direction, limit)
+    from(x in subquery(union_all(m, ^n)))
   end
 
   # Window eviction is not removal. Only retire nodes whose answer is now
@@ -189,37 +207,49 @@ defmodule SwarmCode.Daemon.Service.PersistedProjection do
 
   def agents(conversation, ids) do
     Repo.all(
-      from(n in Node,
-        join: r in Run,
-        on: r.id == n.run_id,
-        where: r.conversation_id == ^conversation and n.run_id in ^ids and n.kind == "agent",
+      from(n in agents_query(conversation),
+        where: n.run_id in ^ids,
         order_by: [desc: n.inserted_at, desc: n.id],
-        limit: 200,
-        select: %{
-          id: n.id,
-          run_id: n.run_id,
-          kind: n.kind,
-          status: n.status,
-          updated_at: n.updated_at,
-          name: n.name,
-          role: n.role,
-          title: n.title,
-          progress: n.progress,
-          tokens_in: n.tokens_in,
-          tokens_out: n.tokens_out,
-          cost_usd: n.cost_usd,
-          started_at: n.started_at,
-          finished_at: n.finished_at,
-          parent_id: n.parent_id,
-          depth: n.depth,
-          changes_stat: n.changes_stat,
-          error: fragment("substr(coalesce(?, ''), 1, 200)", n.error),
-          error_kind: n.error_kind,
-          # Only a judge's result is read (its verdict JSON); everyone else's
-          # stays in the database.
-          result: fragment("case when ? like 'Judge%' then ? else null end", n.name, n.result)
-        }
+        limit: 200
       )
+    )
+  end
+
+  @doc "pass71 S6: the agents of `ids` (node ids), selected as `agents/2` does."
+  def agents_by_ids(_conversation, []), do: []
+
+  def agents_by_ids(conversation, ids),
+    do: Repo.all(from(n in agents_query(conversation), where: n.id in ^ids))
+
+  defp agents_query(conversation) do
+    from(n in Node,
+      join: r in Run,
+      on: r.id == n.run_id,
+      where: r.conversation_id == ^conversation and n.kind == "agent",
+      select: %{
+        id: n.id,
+        run_id: n.run_id,
+        kind: n.kind,
+        status: n.status,
+        updated_at: n.updated_at,
+        name: n.name,
+        role: n.role,
+        title: n.title,
+        progress: n.progress,
+        tokens_in: n.tokens_in,
+        tokens_out: n.tokens_out,
+        cost_usd: n.cost_usd,
+        started_at: n.started_at,
+        finished_at: n.finished_at,
+        parent_id: n.parent_id,
+        depth: n.depth,
+        changes_stat: n.changes_stat,
+        error: fragment("substr(coalesce(?, ''), 1, 200)", n.error),
+        error_kind: n.error_kind,
+        # Only a judge's result is read (its verdict JSON); everyone else's
+        # stays in the database.
+        result: fragment("case when ? like 'Judge%' then ? else null end", n.name, n.result)
+      }
     )
   end
 

@@ -41,7 +41,7 @@ defmodule SwarmCodeCLI.UI.DataSource.LiveServiceTest do
       scope: @scope,
       generation: 0,
       origin: {:query, :workspace},
-      deadline: System.monotonic_time(:millisecond) + 2_000,
+      deadline: System.system_time(:millisecond) + 2_000,
       expected_response: :workspace_snapshot
     }
 
@@ -59,7 +59,7 @@ defmodule SwarmCodeCLI.UI.DataSource.LiveServiceTest do
       scope: @scope,
       generation: 0,
       origin: {:draft, {@conversation, :main}},
-      deadline: System.monotonic_time(:millisecond) + 2_000,
+      deadline: System.system_time(:millisecond) + 2_000,
       expected_response: :outcome
     }
 
