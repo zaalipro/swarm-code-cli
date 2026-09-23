@@ -43,7 +43,9 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
 
   @margin 2
   @body 4
-  @preview 5
+  # pass71 F2: an expanded row shows this many lines of what it has (5 hid most
+  # of a 2 KB output behind a count that nothing opened).
+  @preview 20
   @verb_cells 6
   @summary_cells 36
   @lanes [:agent_lane_1, :agent_lane_2, :agent_lane_3, :agent_lane_4, :agent_lane_5]
@@ -499,7 +501,8 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
   # the work, after the run's last item.
   defp lead_rows(%{id: id}, %{answer: %{id: id}}, _state, _width), do: []
 
-  defp lead_rows(item, _ctx, state, width), do: prose_rows(item.text, state, width, @body)
+  defp lead_rows(item, _ctx, state, width),
+    do: prose_rows(item.text, state, width, @body) ++ cut_rows(item, state)
 
   # What a step said, where the answer started with it; else nothing unless
   # the step is selected or expanded, and then its time and its reasoning.
@@ -576,7 +579,7 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
       cond do
         diff -> first_hunk(diff, tool, state, width, indent + 2)
         not expanded? -> []
-        true -> preview(item.text, :muted, state, width, indent + 2)
+        true -> preview(item.text, :muted, state, width, indent + 2, item.detail_ref)
       end
 
     [spec(left ++ [{:right, right}], nil) | body]
@@ -962,12 +965,35 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
         []
 
       shown_before? ->
-        [blank() | prose_rows(text, state, width, @body)]
+        [blank() | prose_rows(text, state, width, @body)] ++ cut_rows(ctx.answer, state)
 
       true ->
-        prose_rows(text, state, width, @body)
+        prose_rows(text, state, width, @body) ++ cut_rows(ctx.answer, state)
     end
   end
+
+  # pass71 F1 (review R1): a reply longer than what the daemon sends inline
+  # (8 KB) says so under its last row, and names the key that opens it all.
+  defp cut_rows(%{detail_ref: %{total_bytes: total}} = item, state)
+       when is_integer(total) do
+    shown = byte_size(item.text || "")
+    more = bytes(max(total - shown, 1))
+
+    key =
+      if selected?(state, item.id), do: "Enter opens it all", else: "Ctrl-T, Enter opens it all"
+
+    [
+      spec(
+        [
+          {String.duplicate(" ", @body), :plain},
+          {"#{ellipsis(state)} #{more} more · #{key}", :faint}
+        ],
+        nil
+      )
+    ]
+  end
+
+  defp cut_rows(_item, _state), do: []
 
   # Whether an item of the turn draws a row between the header and the
   # answer: a call, an error, a worker's lane, a step that says something.
@@ -1091,7 +1117,11 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
   end
 
   # The first `@preview` source lines, each clipped to one row, then the count.
-  defp preview(text, style, state, width, indent \\ @body + 2) do
+  # pass71 F2 (review R2): with a detail ref the text is only the daemon's
+  # 2 KB preview, so the count says how much is left in bytes and Enter opens
+  # it (`Keymap.content_activate/2`); without one the whole text is here and
+  # Enter folds it, so the count names no key.
+  defp preview(text, style, state, width, indent \\ @body + 2, ref \\ nil) do
     policy = state.capabilities.ambiguous_width
     inner = max(1, width - indent - 1)
 
@@ -1111,11 +1141,21 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
         spec([{pad, :plain}, {head, style}], nil)
       end
 
-    if more > 0,
-      do:
-        rows ++
-          [spec([{pad, :plain}, {"#{ellipsis(state)} #{more} more  (Enter opens)", :faint}], nil)],
-      else: rows
+    tail =
+      case ref do
+        %{total_bytes: total} when is_integer(total) ->
+          left = bytes(max(total - byte_size(text || ""), 1))
+          lines = if more > 0, do: "#{more}+ more lines, ", else: ""
+          "#{ellipsis(state)} #{lines}#{left} more · Enter opens"
+
+        _ when more > 0 ->
+          "#{ellipsis(state)} #{more} more #{if more == 1, do: "line", else: "lines"}"
+
+        _ ->
+          nil
+      end
+
+    if tail, do: rows ++ [spec([{pad, :plain}, {tail, :faint}], nil)], else: rows
   end
 
   defp prose_rows(text, state, width, indent) do

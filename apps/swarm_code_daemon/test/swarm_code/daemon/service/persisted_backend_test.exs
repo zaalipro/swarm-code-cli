@@ -646,7 +646,10 @@ defmodule SwarmCode.Daemon.Service.PersistedBackendTest do
              request(c.backend, "long-detail", c.scope, detail)
 
     assert byte_size(full_chunk) == 1024
-    assert Enum.all?(first["items"], &(byte_size(&1["text"]) <= 2048))
+    # pass71 F1: a prompt or reply travels up to 8 KB; past that it keeps a
+    # detail ref (this one's 9 KB prompt opens through it).
+    assert Enum.all?(first["items"], &(byte_size(&1["text"]) <= 8192))
+    assert byte_size(item["text"]) == 8192
     page = %{page | params: %{page.params | "cursor" => first["before_cursor"]}}
     assert {:ok, %{"value" => second}} = request(c.backend, "page2", c.scope, page)
     assert length(second["items"]) == 50
@@ -658,6 +661,64 @@ defmodule SwarmCode.Daemon.Service.PersistedBackendTest do
     assert Enum.all?(state.runs, fn {_, r} ->
              Enum.all?(r.records, &(byte_size(&1.text) <= 8192))
            end)
+  end
+
+  # pass71 F1 (review R1): a 2.5 KB reply was cut at the 2 KB preview with no
+  # marker; it now travels whole, and only a tool's output keeps the preview.
+  test "a reply over 2 KB travels whole; a long tool output keeps its detail ref", c do
+    {:ok, run} =
+      Conversations.create_run(%{
+        conversation_id: c.conversation.id,
+        kind: "chat",
+        prompt: "Long reply",
+        status: "done",
+        started_at: DateTime.utc_now()
+      })
+
+    reply = String.duplicate("word ", 500) <> "Would you like me to switch modes?"
+
+    {:ok, message} =
+      Conversations.create_message(%{
+        conversation_id: c.conversation.id,
+        run_id: run.id,
+        role: "assistant",
+        content: reply
+      })
+
+    {:ok, lead} =
+      Conversations.insert_node(%{
+        run_id: run.id,
+        kind: "agent",
+        role: "lead",
+        name: "lead",
+        status: "done",
+        started_at: DateTime.utc_now()
+      })
+
+    {:ok, op} =
+      Conversations.insert_node(%{
+        run_id: run.id,
+        kind: "op",
+        op_type: "run_command",
+        parent_id: lead.id,
+        name: "run_command",
+        title: "grep",
+        status: "done",
+        started_at: DateTime.utc_now(),
+        result: Enum.map_join(1..150, "\n", &"line #{&1} #{String.duplicate("y", 30)}")
+      })
+
+    assert {:ok, %{"value" => value}} = query(c.backend, c.scope, "workspace")
+    items = value["transcript"]["items"]
+    answer = Enum.find(items, &(&1["id"] == message.id))
+    assert answer["text"] == reply
+    assert answer["detail_ref"] == nil
+
+    output = Enum.find(items, &(&1["id"] == op.id))
+    assert byte_size(output["text"]) <= 2048
+    assert %{"id" => ref, "total_bytes" => total} = output["detail_ref"]
+    assert ref == op.id <> ":text"
+    assert total > 4000
   end
 
   test "assistant text streams before provider finish and survives an intervening query", c do

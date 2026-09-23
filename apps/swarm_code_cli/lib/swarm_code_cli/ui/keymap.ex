@@ -554,8 +554,27 @@ defmodule SwarmCodeCLI.UI.Keymap do
           resolved -> resolved
         end
 
+      # pass71 F1/F2 (review R1/R2): a reply or an output the daemon sent
+      # only in part opens whole; "(Enter opens)" used to fold it instead.
+      detail = text_target(state, selected) ->
+        case find_target(state, table, &(&1 == detail)) do
+          :ignore -> find_target(state, table, &match?({:local, {:expand, ^selected, _}}, &1))
+          resolved -> resolved
+        end
+
       true ->
         find_target(state, table, &match?({:local, {:expand, ^selected, _}}, &1))
+    end
+  end
+
+  @doc false
+  def text_target(state, selected) do
+    case Map.get(state.read_model.transcript, selected) do
+      %{run_id: run, detail_ref: %{id: ref}} when is_binary(ref) ->
+        {:local, {:open_detail, run, ref}}
+
+      _ ->
+        nil
     end
   end
 

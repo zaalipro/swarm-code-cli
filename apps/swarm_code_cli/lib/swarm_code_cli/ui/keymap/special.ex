@@ -182,7 +182,21 @@ defmodule SwarmCodeCLI.UI.Keymap.Special do
 
   def run(:open_detail, _key, state, table) do
     run_id = current_run(state)
-    Keymap.find_target(state, table, &match?({:local, {:open_detail, ^run_id, _}}, &1))
+
+    # pass71 F2: the selected item's own detail when it has one.
+    case Keymap.text_target(state, Map.get(state.selection, state.focus)) do
+      {:local, {:open_detail, ^run_id, _}} = own ->
+        case Keymap.find_target(state, table, &(&1 == own)) do
+          :ignore ->
+            Keymap.find_target(state, table, &match?({:local, {:open_detail, ^run_id, _}}, &1))
+
+          resolved ->
+            resolved
+        end
+
+      _ ->
+        Keymap.find_target(state, table, &match?({:local, {:open_detail, ^run_id, _}}, &1))
+    end
   end
 
   # ------------------------------------------------------- selection, scroll

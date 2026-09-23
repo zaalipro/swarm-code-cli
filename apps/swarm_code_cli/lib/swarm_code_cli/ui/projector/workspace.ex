@@ -428,9 +428,19 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
       |> Enum.map(&elem(&1, 1))
       |> Enum.filter(&(run && &1.run_id == run.id))
 
+    # pass71 F1/F2 (review R1/R2): the selected item's own text first, so
+    # Enter and `o` on a cut reply or a long command output open that item.
+    chosen = Map.get(state.read_model.transcript, Map.get(state.selection, "main"))
+
+    chosen =
+      if (match?(%{detail_ref: %{id: _}}, chosen) and run) && chosen.run_id == run.id,
+        do: chosen,
+        else: Enum.find(items, &(not is_nil(&1.detail_ref)))
+
     text =
-      case Enum.find(items, &(not is_nil(&1.detail_ref))) do
+      case chosen do
         %{role: :user} = item -> [{"Full prompt", item}]
+        %{kind: :tool} = item -> [{"Full output", item}]
         %{} = item -> [{"Full reply", item}]
         nil -> []
       end

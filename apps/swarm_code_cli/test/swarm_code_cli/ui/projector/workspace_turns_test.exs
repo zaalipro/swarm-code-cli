@@ -120,10 +120,12 @@ defmodule SwarmCodeCLI.UI.Projector.WorkspaceTurnsTest do
     assert Enum.all?(rows, &(String.length(&1) <= 100))
   end
 
-  test "an expanded lane shows its calls, the first five result lines and counts the rest" do
+  # pass71 F2: an expanded row shows twenty lines; the count of the rest
+  # names no key when the whole text is on the client (Enter folds it).
+  test "an expanded lane shows its calls, the first twenty result lines and counts the rest" do
     state =
-      fixture(:swarm, {100, 30})
-      |> replace_item("005", &%{&1 | text: lines(8)})
+      fixture(:swarm, {100, 60})
+      |> replace_item("005", &%{&1 | text: lines(23)})
       |> Map.put(:expansions, MapSet.new(["005"]))
 
     {rows, _, _, _} = painted(state)
@@ -131,19 +133,48 @@ defmodule SwarmCodeCLI.UI.Projector.WorkspaceTurnsTest do
 
     assert Enum.at(rows, at + 1) =~ ~r/^      ✓ grep  "Repo\\\."\s+lib\/ test\/ · 41 hits  0\.4s$/
 
-    assert Enum.slice(rows, at + 2, 6) == [
-             "        result line 1",
-             "        result line 2",
-             "        result line 3",
-             "        result line 4",
-             "        result line 5",
-             "        … 3 more  (Enter opens)"
-           ]
+    assert Enum.slice(rows, at + 2, 21) ==
+             Enum.map(1..20, &"        result line #{&1}") ++ ["        … 3 more lines"]
 
     # Collapsing again through the same expansion set restores the lane line.
     {collapsed, _, _, _} = painted(%{state | expansions: MapSet.new()})
     assert index_of(collapsed, "    ✦ scout-1")
     refute Enum.any?(collapsed, &(&1 =~ "result line"))
+  end
+
+  # pass71 F1/F2 (review R1/R2): a text the daemon sent only in part says
+  # how much is left and Enter opens it whole; a reply cut past 8 KB says so
+  # under its last row instead of ending mid-word.
+  test "an output sent in part counts what is left in bytes and Enter opens it" do
+    ref = %DTO.DetailRef{id: "005:text", total_bytes: 9_000}
+
+    state =
+      fixture(:swarm, {100, 60})
+      |> replace_item("005", &%{&1 | text: lines(23), detail_ref: ref})
+      |> Map.put(:expansions, MapSet.new(["005"]))
+      |> Map.put(:focus, "main")
+      |> Map.put(:selection, %{"main" => "005"})
+
+    {rows, _, table, _} = painted(state)
+    assert Enum.any?(rows, &(&1 =~ ~r/^        … 3\+ more lines, \d+\.\d kB more · Enter opens$/))
+    run = state.read_model.transcript["005"].run_id
+    assert {:local, {:open_detail, run, "005:text"}} in Map.values(table)
+
+    assert {:ok, {:open_detail, ^run, "005:text"}} =
+             SwarmCodeCLI.UI.Keymap.content_activate(state, table)
+  end
+
+  test "a reply cut past what the daemon sends inline says so under its last row" do
+    state = fixture(:swarm, {100, 60})
+    answer = state.read_model.transcript["002"]
+    total = byte_size(answer.text) + 4_000
+    ref = %DTO.DetailRef{id: "002:text", total_bytes: total}
+
+    state =
+      replace_item(state, "002", &%{&1 | state: :done, detail_ref: ref})
+
+    {rows, _, _, _} = painted(state)
+    assert Enum.any?(rows, &(&1 == "    … 4.0 kB more · Ctrl-T, Enter opens it all"))
   end
 
   test "a model step takes no row until it is opened, then says it thought and for how long" do
@@ -289,7 +320,7 @@ defmodule SwarmCodeCLI.UI.Projector.WorkspaceTurnsTest do
 
     expanded =
       %{state | expansions: MapSet.new(["005", "007"])}
-      |> replace_item("005", &%{&1 | text: lines(8)})
+      |> replace_item("005", &%{&1 | text: lines(23)})
 
     for state <- [state, expanded] do
       {scene, _, _} = paint(state)
@@ -304,7 +335,7 @@ defmodule SwarmCodeCLI.UI.Projector.WorkspaceTurnsTest do
 
     # An expansion grows the lane it opens, and nothing else.
     assert ScrollMetrics.height(expanded, :main, "005") ==
-             ScrollMetrics.height(state, :main, "005") + 7
+             ScrollMetrics.height(state, :main, "005") + 22
 
     assert ScrollMetrics.height(expanded, :main, "006") ==
              ScrollMetrics.height(state, :main, "006")
@@ -320,11 +351,11 @@ defmodule SwarmCodeCLI.UI.Projector.WorkspaceTurnsTest do
 
     expanded =
       fixture(:swarm, {100, 30}, ascii: true)
-      |> replace_item("005", &%{&1 | text: lines(8)})
+      |> replace_item("005", &%{&1 | text: lines(23)})
       |> Map.put(:expansions, MapSet.new(["005"]))
 
     {rows, _, _, _} = painted(expanded)
-    assert Enum.any?(rows, &(&1 == "        ... 3 more  (Enter opens)"))
+    assert Enum.any?(rows, &(&1 == "        ... 3 more lines"))
 
     for row <- rows, glyph <- ["▐", "✦", "▮", "✓", "⋔"] do
       refute row =~ glyph, "#{glyph} in ASCII row #{row}"

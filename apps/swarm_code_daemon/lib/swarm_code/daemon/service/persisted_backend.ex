@@ -2536,10 +2536,19 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         if(is_map(body), do: Map.get(body, "revision", run.revision), else: run.revision)
     }
 
-  defp transcript(run, state),
+  # pass71 F1 (review R1): a reply or prompt travels whole up to
+  # `@reply_bytes` (the projection reads that much); a tool's output keeps the
+  # 2 KB preview and opens through its detail. A snapshot that would not fit
+  # its byte limit falls back to 2 KB for every item (`snapshot/5`).
+  @reply_bytes 8192
+
+  defp transcript(run, state, bound \\ @reply_bytes),
     do:
       Enum.map(run.records, fn row ->
+        text_bound = if row.role in ["user", "assistant"], do: bound, else: 2048
+
         node(run, state, row.id, row.role, row.text, row.reasoning, row.status, row.revision)
+        |> Map.put("text", preview(row.text, text_bound))
         |> Map.put("node_id", row.node_id)
         |> Map.put("attachment_refs", attachment_ids(Map.get(row, :attachments, [])))
         |> Map.put("created_sequence", row.created)
@@ -2553,7 +2562,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         })
         |> Map.put(
           "detail_ref",
-          if(row.text_bytes > byte_size(preview(row.text)),
+          if(row.text_bytes > byte_size(preview(row.text, text_bound)),
             do: %{"id" => row.id <> ":text", "total_bytes" => row.text_bytes}
           )
         )
@@ -2754,6 +2763,13 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   end
 
   defp snapshot(params, scope, request_id, state) do
+    case snapshot(params, scope, request_id, state, @reply_bytes) do
+      {:error, :capacity_exceeded} -> snapshot(params, scope, request_id, state, 2048)
+      other -> other
+    end
+  end
+
+  defp snapshot(params, scope, request_id, state, bound) do
     with {:ok, state, before, after_cursor} <- query_projection(params, scope, state) do
       runs =
         state.order |> Enum.map(&state.runs[&1]) |> Enum.filter(&run_member?(&1, scope, state))
@@ -2761,7 +2777,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       limit = params["page_size"]
 
       items =
-        Enum.flat_map(runs, &transcript(&1, state))
+        Enum.flat_map(runs, &transcript(&1, state, bound))
         |> Enum.sort_by(&{&1["created_sequence"], &1["id"]})
 
       pending = Enum.flat_map(runs, & &1.interactions)

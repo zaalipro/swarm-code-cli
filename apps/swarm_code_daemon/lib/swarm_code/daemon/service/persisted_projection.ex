@@ -98,7 +98,9 @@ defmodule SwarmCode.Daemon.Service.PersistedProjection do
           run_id: m.run_id,
           node_id: fragment("coalesce(?, ?)", r.root_node_id, r.id),
           role: m.role,
-          text: fragment("substr(coalesce(?, ''), 1, 2048)", m.content),
+          # pass71 F1: a prompt or reply is read up to 8 KB (the backend's
+          # `@reply_bytes`); longer ones keep a detail ref.
+          text: fragment("substr(coalesce(?, ''), 1, 8192)", m.content),
           reasoning: fragment("substr(coalesce(?, ''), 1, 2048)", m.reasoning),
           attachments: m.attachments,
           status: r.status,
@@ -132,10 +134,11 @@ defmodule SwarmCode.Daemon.Service.PersistedProjection do
           # body was a lead called "Lead" over three blank rows.
           text:
             fragment(
-              "substr(trim(coalesce(?, ?, '') || char(10) || coalesce(?, ''), char(10)), 1, 2048)",
+              "substr(trim(coalesce(?, ?, '') || char(10) || coalesce(?, ''), char(10)), 1, case when ? = 'agent' then 8192 else 2048 end)",
               n.result,
               n.detail,
-              n.error
+              n.error,
+              n.kind
             ),
           reasoning: fragment("''"),
           attachments: fragment("'[]'"),
