@@ -447,16 +447,17 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
             "custom_text" => custom
           }}
 
-  defp request_body({:dispatch, :send, text, :main, attachments}) when is_list(attachments),
-    do:
-      {:ok,
-       %{
-         "op" => "dispatch",
-         "action" => "send",
-         "text" => text,
-         "target" => %{"kind" => "main", "id" => nil},
-         "attachment_refs" => attachments
-       }}
+  defp request_body({:dispatch, action, text, :main, attachments})
+       when action in [:send, :queue] and is_list(attachments),
+       do:
+         {:ok,
+          %{
+            "op" => "dispatch",
+            "action" => Atom.to_string(action),
+            "text" => text,
+            "target" => %{"kind" => "main", "id" => nil},
+            "attachment_refs" => attachments
+          }}
 
   defp request_body({:run_control, action, run}) when action in [:pause, :continue, :stop],
     do: {:ok, %{"op" => "run.control", "action" => Atom.to_string(action), "run_id" => run}}

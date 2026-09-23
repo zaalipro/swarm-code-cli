@@ -32,7 +32,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.CodecTest do
              Codec.request(request, @wire, @nonce, 5_000)
   end
 
-  test "send supports main text and refuses unsupported actions without silently rewriting them" do
+  test "send and queue support main text and refuse unsupported targets without silently rewriting them" do
     request = %{
       query()
       | kind: {:dispatch, :send, "Fix the test", :main, []},
@@ -57,8 +57,18 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.CodecTest do
                1_000
              )
 
+    # pass70 Q3: queueing behind a running turn is a dispatch of its own.
+    assert {:ok, queued} =
+             Codec.request(
+               %{request | kind: {:dispatch, :queue, "Fix the test", :main, []}},
+               @wire,
+               @nonce,
+               1_000
+             )
+
+    assert queued.body["action"] == "queue"
+
     for kind <- [
-          {:dispatch, :queue, "Fix the test", :main, []},
           {:dispatch, :send, "Fix the test", {:reply, "node"}, []}
         ] do
       assert {:error, %AdmissionError{code: :not_allowed}} =

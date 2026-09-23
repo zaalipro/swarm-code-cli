@@ -218,7 +218,7 @@ defmodule SwarmCode.Protocol.ServiceRequest do
   end
 
   defp valid_params?(:dispatch_send, params, scope) do
-    scope.kind == :conversation and params["action"] == "send" and
+    scope.kind == :conversation and params["action"] in ["send", "queue"] and
       text?(params["text"], 262_144) and
       params["target"] == %{"kind" => "main", "id" => nil} and
       attachment_refs?(params["attachment_refs"])

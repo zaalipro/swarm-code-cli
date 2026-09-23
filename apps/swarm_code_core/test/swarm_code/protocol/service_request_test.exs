@@ -304,7 +304,8 @@ defmodule SwarmCode.Protocol.ServiceRequestTest do
   test "unimplemented mutation variants are refused instead of being downgraded" do
     {dispatch, target_scope} = example(:dispatch_send)
 
-    for action <- ["queue", "revise", "send_now", :send],
+    # "queue" is implemented since pass70 Q3.
+    for action <- ["revise", "send_now", :send, :queue],
         do: invalid(Map.put(dispatch, "action", action), target_scope)
 
     for target <- [
@@ -452,6 +453,10 @@ defmodule SwarmCode.Protocol.ServiceRequestTest do
        ~s({"op":"conversation.open","conversation_id":null,"timeout_ms":5000}), scope(:project)},
       {:dispatch_send,
        ~s({"op":"dispatch","action":"send","text":"hello","target":{"kind":"main","id":null},"attachment_refs":[],"timeout_ms":5000}),
+       scope(:conversation)},
+      # pass70 Q3: a prompt queued behind the running turn.
+      {:dispatch_send,
+       ~s({"op":"dispatch","action":"queue","text":"hello","target":{"kind":"main","id":null},"attachment_refs":[],"timeout_ms":5000}),
        scope(:conversation)},
       {:run_control,
        ~s({"op":"run.control","run_id":"#{@run}","action":"pause","timeout_ms":5000}),

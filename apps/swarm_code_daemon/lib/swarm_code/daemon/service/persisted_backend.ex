@@ -103,7 +103,10 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         diff_cache: %{},
         diff_order: [],
         change_facts: %{},
-        file_index: nil
+        file_index: nil,
+        # pass70 Q3: monitors on this conversation's running chat runs while
+        # prompts are queued behind them (monitor ref => true).
+        queue_monitors: %{}
       }
 
       {:ok, reload(state)}
@@ -187,6 +190,11 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
   def handle_info({:DOWN, monitor, :process, _, _}, %{repo_monitor: monitor} = state),
     do: {:stop, :admitted_repo_lost, state}
+
+  # pass70 Q3: the chat turn a queued prompt waits behind has ended.
+  def handle_info({:DOWN, monitor, :process, _, _}, %{queue_monitors: monitors} = state)
+      when is_map_key(monitors, monitor),
+      do: {:noreply, drain_queue(%{state | queue_monitors: Map.delete(monitors, monitor)})}
 
   def handle_info({:DOWN, monitor, :process, _, _}, state) do
     {:noreply,
@@ -377,6 +385,58 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
             if durable, do: CommandLedger.complete(state.opts[:project_id], id, response)
             next = if command?, do: put_in(next.requests[id], {fingerprint, response}), else: next
             {:reply, response, next}
+        end
+    end
+  end
+
+  # pass70 Q3: Tab (or Alt-Enter, or /queue) while a turn runs puts the prompt
+  # on the conversation's queue, the desktop's own `conversations.queued`; it
+  # starts when the running chat turn ends. With no chat turn running it is an
+  # ordinary send. A slash command or an attachment is never queued.
+  defp execute(
+         %{operation: :dispatch_send, params: %{"action" => "queue"} = params},
+         scope,
+         id,
+         state
+       ) do
+    conversation_id = state.opts[:conversation_id]
+    text = params["text"]
+
+    cond do
+      String.starts_with?(String.trim_leading(text), "/") or params["attachment_refs"] != [] or
+          state.attachment_ids != [] ->
+        {reject(id, :not_allowed), state}
+
+      not Engine.chat_running?(conversation_id) ->
+        execute(
+          %{operation: :dispatch_send, params: %{params | "action" => "send"}},
+          scope,
+          id,
+          state
+        )
+
+      true ->
+        conversation = Conversations.get!(conversation_id)
+
+        case Conversations.set_queued(conversation, (conversation.queued || []) ++ [text]) do
+          {:ok, updated} ->
+            count = length(updated.queued)
+
+            text =
+              if count == 1,
+                do: "Queued; it starts when this turn ends.",
+                else: "Queued; #{count} prompts wait for this turn to end."
+
+            {accepted(id, [conversation_id], %{
+               "kind" => "notice",
+               "feature" => nil,
+               "title" => "Queue",
+               "text" => text,
+               "conversation_id" => nil
+             }), watch_queue(state)}
+
+          _ ->
+            {reject(id, :not_allowed), state}
         end
     end
   end
@@ -707,10 +767,60 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
   defp execute(_, _, id, state), do: {reject(id, :not_allowed), state}
 
+  # The pids of this conversation's running chat runs, each monitored once.
+  defp watch_queue(state) do
+    conversation_id = state.opts[:conversation_id]
+
+    pids =
+      Registry.select(SwarmCode.Domain.Registry, [
+        {{{:run, :_}, :"$1", {:"$2", :"$3"}},
+         [{:==, :"$2", conversation_id}, {:==, :"$3", "chat"}], [:"$1"]}
+      ])
+
+    monitors =
+      Enum.reduce(pids, state.queue_monitors, fn pid, acc ->
+        if Enum.any?(acc, fn {_ref, watched} -> watched == pid end),
+          do: acc,
+          else: Map.put(acc, Process.monitor(pid), pid)
+      end)
+
+    %{state | queue_monitors: monitors}
+  end
+
+  # Takes the queue's head (the desktop's IMMEDIATE pop, so a desktop window
+  # on the same conversation cannot start it twice) and starts it as a chat
+  # turn; still running, it waits for the next turn to end.
+  defp drain_queue(state) do
+    conversation_id = state.opts[:conversation_id]
+
+    cond do
+      Engine.chat_running?(conversation_id) ->
+        watch_queue(state)
+
+      true ->
+        case Conversations.pop_queued(conversation_id) do
+          {:ok, text, conversation} ->
+            case Engine.start_chat_turn(SessionConfiguration.overlay(conversation), text, []) do
+              {:ok, _} ->
+                refresh(state)
+
+              {:error, _} ->
+                Conversations.set_queued(conversation, [text | conversation.queued || []])
+                toast(state, "error", "Queue", "The queued prompt could not start.", nil)
+            end
+
+          _ ->
+            state
+        end
+    end
+  end
+
   defp switch_conversation(state, id) do
     if id == state.opts[:conversation_id] do
       state
     else
+      Enum.each(state.queue_monitors, fn {ref, _pid} -> Process.demonitor(ref, [:flush]) end)
+      state = %{state | queue_monitors: %{}}
       Events.unsubscribe(state.opts[:conversation_id])
       Events.subscribe(id)
 
@@ -2399,7 +2509,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
             "workspace" ->
               Map.merge(base, %{
-                "allowed_actions" => ["send"],
+                "allowed_actions" => ["send", "queue"],
                 "revision" => state.revision,
                 "seen_revision" => 0,
                 "runs_page" => base,
