@@ -589,4 +589,20 @@ defmodule SwarmCodeCLI.Companion.ViewTest do
     refute View.fingerprint(View.build(swarm(), 1)) ==
              View.fingerprint(View.build(%{swarm() | focus: "main"}, 1))
   end
+
+  test "pass70 C1 facts reach the page: the command, where, why, the verdict and the mode" do
+    size = %Size{columns: 120, rows: 36}
+    state = SwarmCodeCLI.Demo.Conversation.state(:approval, size, %Capabilities{size: size})
+    view = View.build(state, state.now)
+
+    assert view.header.approval == "auto"
+    assert [need] = view.needs
+    assert need.command == "ls -la notes"
+    assert need.cwd == "."
+    assert need.reason =~ "notes"
+    assert need.risk == "safe"
+
+    trouble = SwarmCodeCLI.Demo.Conversation.state(:trouble, size, %Capabilities{size: size})
+    assert View.build(trouble, trouble.now).header.approval == "read-only"
+  end
 end

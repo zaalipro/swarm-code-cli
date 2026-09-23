@@ -43,6 +43,20 @@ defmodule SwarmCodeCLI.Demo.Conversation do
   @spec clock() :: pos_integer()
   def clock, do: @clock
 
+  @doc "Every scene, in the order the gallery shows them."
+  @spec scenes() :: [scene()]
+  def scenes,
+    do: [
+      :first_reply,
+      :approval,
+      :approval_edit,
+      :swarm,
+      :long,
+      :failed_workflow,
+      :trouble,
+      :empty
+    ]
+
   @spec state(scene(), Size.t(), Capabilities.t()) :: State.t()
   def state(scene, %Size{} = size, %Capabilities{} = capabilities) do
     capabilities = %{capabilities | size: size}

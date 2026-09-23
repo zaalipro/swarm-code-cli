@@ -102,13 +102,24 @@ defmodule SwarmCodeCLI.Companion.View do
       project: Keyword.get(meta, :project),
       model: run_model(run) || pick(workspace, swarm?, :swarm_model, :chat_model),
       mode: workspace && workspace.mode && word(workspace.mode),
-      approval: nil,
+      approval: approval_words(workspace && Map.get(workspace, :approval_mode)),
       keymap: word(state.keymap),
       effort: pick(workspace, swarm?, :swarm_effort, :effort),
-      cost: run && run.cost_usd,
-      context_tokens: run && sum_tokens(run.tokens_in, run.tokens_out)
+      cost: (run && run.cost_usd) || (workspace && Map.get(workspace, :cost_usd)),
+      context_tokens:
+        (run && sum_tokens(run.tokens_in, run.tokens_out)) ||
+          (workspace && Map.get(workspace, :context_used))
     }
   end
+
+  # pass70 C1: the project's approval mode, in the status row's words.
+  defp approval_words(nil), do: nil
+  defp approval_words(mode) when mode in [:read_only, "read_only"], do: "read-only"
+
+  defp approval_words(mode) when mode in [:full, :full_access, "full", "full_access"],
+    do: "full access"
+
+  defp approval_words(mode), do: word(mode)
 
   defp run_model(nil), do: nil
   defp run_model(run), do: blank_to_nil(run.model)
@@ -453,11 +464,22 @@ defmodule SwarmCodeCLI.Companion.View do
   defp need(%DTO.PendingInteraction{kind: :approval} = need, state) do
     approval = need.approval || %DTO.Approval{}
 
+    # pass70 C1: the command itself, where it runs, why, and the daemon's
+    # verdict on it when it has one; the argument preview otherwise.
+    risk =
+      case Map.get(approval, :classification) do
+        classification when classification in [:dangerous, :safe] -> word(classification)
+        _ -> word(approval.permission)
+      end
+
     base(need, state)
     |> Map.merge(%{
       title: blank_to_nil(approval.tool) || "approval",
-      command: blank_to_nil(approval.arguments_preview),
-      risk: word(approval.permission),
+      command:
+        blank_to_nil(Map.get(approval, :command)) || blank_to_nil(approval.arguments_preview),
+      risk: risk,
+      cwd: blank_to_nil(Map.get(approval, :cwd)),
+      reason: blank_to_nil(Map.get(approval, :reason)),
       options: [%{id: "approve", label: "allow"}, %{id: "deny", label: "deny"}]
     })
   end

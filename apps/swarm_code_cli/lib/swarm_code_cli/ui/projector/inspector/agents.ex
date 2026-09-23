@@ -631,12 +631,16 @@ defmodule SwarmCodeCLI.UI.Projector.Inspector.Agents do
 
   # One row per sub-agent: `› ✦ scout-1   grep "Repo\."   ▐▐▐▐▐▐  3.8k`.
   defp sub_rows(state, subs, width) do
+    # A name is cut only when the column is full: it may take everything but
+    # the gauge and the fifteen cells "waiting for you" needs (ux M8).
+    room = max(12, width - 5 - (1 + @gauge_cells) - @min_step)
+
     name_width =
       subs
       |> Enum.map(&Hive.measure(Hive.name(&1), state))
       |> Enum.max(fn -> 4 end)
       |> max(4)
-      |> min(12)
+      |> min(room)
 
     subs
     |> Enum.with_index(1)

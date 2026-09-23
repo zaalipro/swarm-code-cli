@@ -378,7 +378,10 @@ defmodule SwarmCodeCLI.UI.Projector.ApprovalCard do
 
     more =
       if shown < total,
-        do: [{"#{first + 1}–#{first + shown} of #{total} · PgDn", tint(:text_faint, state)}],
+        do: [
+          {"#{first + 1}#{if(state.capabilities.ascii?, do: "-", else: "–")}#{first + shown} of #{total} · PgDn",
+           tint(:text_faint, state)}
+        ],
         else: []
 
     where_row =

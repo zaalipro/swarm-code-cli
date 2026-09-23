@@ -36,6 +36,7 @@ defmodule SwarmCodeCLI.Demo.Cells do
   approximations, not native terminal acceptance evidence.
   """
   alias SwarmCodeCLI.Demo.Cells.Directory
+  alias SwarmCodeCLI.Demo.Conversation
   alias SwarmCodeCLI.UI.{Capabilities, Fixtures, Paint, Projector, Size}
   alias SwarmCodeCLI.UI.DataSource.DTO.{Approval, PendingInteraction, Question, QuestionOption}
   alias SwarmCodeCLI.UI.Paint.{Options, SVG}
@@ -57,7 +58,24 @@ defmodule SwarmCodeCLI.Demo.Cells do
     {:approval, {170, 42}, :truecolor, false, :rich},
     {:swarm, {150, 30}, :truecolor, false, :rich}
   ]
-  @examples @core ++ @dialogs ++ @pane ++ [{:too_small, {49, 13}, :monochrome, true, :measured}]
+  # pass70 D8: the conversation-shaped scenes (`Demo.Conversation`) at the four
+  # golden sizes, and the palette and model picker over one of them.
+  @golden_sizes [{160, 45}, {120, 36}, {90, 30}, {80, 24}]
+  @conversations for scene <- Conversation.scenes(),
+                     size <- @golden_sizes,
+                     do: {{:conversation, scene}, size, :truecolor, false, :measured}
+  @pickers [
+    {{:conversation, :palette}, {120, 36}, :truecolor, false, :measured},
+    {{:conversation, :model_picker}, {120, 36}, :truecolor, false, :measured}
+  ]
+  @examples @core ++
+              @dialogs ++
+              @pane ++
+              [{:too_small, {49, 13}, :monochrome, true, :measured}] ++
+              @conversations ++ @pickers
+
+  @doc "How many files `run/0` writes, the index included."
+  def file_count, do: length(@examples) + 1
 
   @spec run() ::
           {:ok, %{directory: binary(), files: [binary()]}}
@@ -190,6 +208,19 @@ defmodule SwarmCodeCLI.Demo.Cells do
   defp fixture(:too_small, size, capabilities),
     do: Fixtures.representative(:chat, size, capabilities)
 
+  defp fixture({:conversation, :palette}, size, capabilities) do
+    state = Conversation.state(:first_reply, size, capabilities)
+    %{state | layers: [{:switcher, "preview-palette"}], focus: "dialog"}
+  end
+
+  defp fixture({:conversation, :model_picker}, size, capabilities) do
+    state = Conversation.state(:first_reply, size, capabilities)
+    %{state | layers: [{:model_picker, :chat, "preview-models"}], focus: "dialog"}
+  end
+
+  defp fixture({:conversation, scene}, size, capabilities),
+    do: Conversation.state(scene, size, capabilities)
+
   defp fixture(kind, size, capabilities),
     do: Fixtures.representative(kind, size, capabilities) |> wide_dock()
 
@@ -200,7 +231,18 @@ defmodule SwarmCodeCLI.Demo.Cells do
   defp wide_dock(state), do: state
 
   defp filename({kind, {columns, rows}, mode, ascii?, tier}) do
-    name = if kind == :too_small, do: "too-small", else: Atom.to_string(kind)
+    name =
+      case kind do
+        :too_small ->
+          "too-small"
+
+        {:conversation, scene} ->
+          "conversation-" <> String.replace(Atom.to_string(scene), "_", "-")
+
+        kind ->
+          Atom.to_string(kind)
+      end
+
     suffix = if(ascii?, do: "-ascii", else: "") <> if(tier == :rich, do: "-rich", else: "")
     "#{name}-#{columns}x#{rows}-#{mode}#{suffix}.svg"
   end
@@ -224,8 +266,14 @@ defmodule SwarmCodeCLI.Demo.Cells do
   defp gallery do
     figures =
       Enum.map(@examples, fn {kind, {columns, rows}, mode, ascii?, tier} = example ->
+        name =
+          case kind do
+            {:conversation, scene} -> "conversation #{scene}"
+            kind -> Atom.to_string(kind)
+          end
+
         label =
-          "#{kind} / #{columns} × #{rows} / #{mode}" <>
+          "#{name} / #{columns} × #{rows} / #{mode}" <>
             if(ascii?, do: " / ASCII", else: "") <> if(tier == :rich, do: " / rich", else: "")
 
         "<figure><figcaption>#{label}</figcaption><img src=\"#{filename(example)}\" " <>
