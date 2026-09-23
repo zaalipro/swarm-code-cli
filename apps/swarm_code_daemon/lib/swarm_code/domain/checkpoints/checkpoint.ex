@@ -16,11 +16,17 @@ defmodule SwarmCode.Domain.Checkpoints.Checkpoint do
     field(:inserted_at, :utc_datetime_usec)
   end
 
-  @fields ~w(conversation_id run_id node_id path previous_content restorable inserted_at)a
+  # spec 68 T3: ownership IDs removed from cast/3; set via put_change in
+  # Checkpoints.insert/3 from trusted runtime context.
+  @fields ~w(path previous_content restorable inserted_at)a
 
   def changeset(checkpoint, attrs) do
     checkpoint
     |> cast(attrs, @fields)
-    |> validate_required([:conversation_id, :path])
+  end
+
+  @doc false
+  def validate(changeset) do
+    validate_required(changeset, [:conversation_id, :path])
   end
 end

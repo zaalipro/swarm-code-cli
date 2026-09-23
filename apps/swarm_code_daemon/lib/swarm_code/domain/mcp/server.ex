@@ -17,12 +17,15 @@ defmodule SwarmCode.Domain.MCP.Server do
     field(:url, :string)
     field(:headers, :map, default: %{})
     field(:enabled, :boolean, default: true)
+    # spec 62 T1: the raw MCP names of this server's tools the owner switched
+    # off — they stay in the Settings list, but no agent is offered them.
+    field(:disabled_tools, {:array, :string}, default: [])
     field(:project_id, :binary_id)
 
     timestamps(type: :utc_datetime_usec)
   end
 
-  @fields ~w(name transport command args env url headers enabled project_id)a
+  @fields ~w(name transport command args env url headers enabled disabled_tools project_id)a
 
   def changeset(server, attrs) do
     server

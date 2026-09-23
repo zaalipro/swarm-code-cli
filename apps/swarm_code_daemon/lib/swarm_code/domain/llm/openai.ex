@@ -7,8 +7,9 @@ defmodule SwarmCode.Domain.LLM.OpenAI do
 
   alias SwarmCode.Domain.LLM.{Chunks, Efforts, HTTP, Request, Result, SSE, ToolArgs}
 
-  # Servers that rejected `reasoning_effort` once are remembered for the rest of
-  # the session so every later request skips the parameter (and the retry).
+  # Servers that rejected `reasoning_effort` or `prompt_cache_key` once are
+  # remembered (`ProviderCaps`, ETS) for the rest of the session so every later
+  # request skips the parameter (and the retry).
 
   @impl true
   def stream(%Request{} = r, on_event) do
@@ -32,6 +33,8 @@ defmodule SwarmCode.Domain.LLM.OpenAI do
 
     body = if r.tools == [], do: body, else: Map.put(body, "tools", format_tools(r.tools))
     body = put_effort(body, r)
+    # spec 66 T18: prefix-cache affinity across a run.
+    body = put_cache_key(body, r)
 
     post(body, url, headers, r, on_event)
   end
@@ -61,44 +64,134 @@ defmodule SwarmCode.Domain.LLM.OpenAI do
            &handle_chunk(&1, &2, on_event, r.provider.name),
            SwarmCode.Domain.LLM.on_retry(on_event),
            &retry_if/1,
-           r.deadline_ms
+           r.deadline_ms,
+           # spec 67 T33 (G41): the row the rate-limit snapshot is filed under.
+           provider_id(r)
          ) do
       # Spec 30 §3: a 200 whose stream carries an `error` object is a failed
       # call, not a short answer. It goes down the same path as a transport
       # error, so a server that names `reasoning_effort` in-band still gets the
       # existing one-shot retry without it.
-      {:ok, %{error: message}} when is_binary(message) ->
-        settle_error(message, body, url, headers, r, on_event)
+      {:ok, %{error: message} = acc} when is_binary(message) ->
+        settle_error(message, body, url, headers, r, on_event, in_band_kind(acc))
 
       {:ok, acc} ->
         {:ok, to_result(acc, r.model)}
 
+      # spec 67 T30 (G42): the transport's kind survives the one-shot retries.
+      {:error, kind, message} ->
+        settle_error(message, body, url, headers, r, on_event, kind)
+
       {:error, message} ->
-        settle_error(message, body, url, headers, r, on_event)
+        settle_error(message, body, url, headers, r, on_event, nil)
     end
   end
 
-  defp settle_error(message, body, url, headers, %Request{} = r, on_event) do
+  defp provider_id(%Request{provider: %{id: id}}) when is_binary(id), do: id
+  defp provider_id(_request), do: nil
+
+  # Spec 51 §6.1: the `code`/`status` of the in-band error object.
+  defp in_band_kind(acc) do
+    SwarmCode.Domain.LLM.Error.classify(
+      status_code(acc[:error_code]),
+      acc[:error_code],
+      acc[:error]
+    )
+  end
+
+  defp status_code(code) when is_integer(code), do: code
+
+  defp status_code(code) when is_binary(code) do
+    case Integer.parse(code) do
+      {status, ""} -> status
+      _other -> nil
+    end
+  end
+
+  defp status_code(_code), do: nil
+
+  defp settle_error(message, body, url, headers, %Request{} = r, on_event, kind) do
     # Older / smaller OpenAI-compatible servers 400 on `reasoning_effort`.
     # Drop the level's keys (spec 45 §3.4 — every key its body added, not only
     # `reasoning_effort`), remember that for this provider and try exactly
     # once more.
     keys = level_keys(r)
 
-    if keys != [] and Enum.any?(keys, &Map.has_key?(body, &1)) and rejected_effort?(message) do
-      remember_no_effort(r.provider)
-      # Spec 43 §1.5 (B2): whatever the first attempt streamed before the error
-      # object must not stay in front of the second answer — the Anthropic
-      # provider resets the same way, and a reset with nothing streamed is a no-op.
-      on_event.({:text_reset})
-      on_event.({:reasoning_reset})
-      post(Map.drop(body, keys), url, headers, r, on_event)
-    else
-      # Spec 51 §6.10: this text becomes the op's `error` and the run's message.
-      # A gateway that echoes the Authorization header back does not have to
-      # have used an `sk-` shaped key for it to be a key.
-      {:error, HTTP.redact(message, [key(r.provider)])}
+    cond do
+      # spec 66 T18: the one-shot shape for a server that does not know
+      # `prompt_cache_key`. It is an optimisation; it never costs a turn.
+      # spec 67 B36: this arm is tested first, and each classifier below only
+      # takes a generic "unknown parameter" when the message names none of the
+      # other fields — a 400 about `prompt_cache_key` used to turn
+      # `reasoning_effort` off for the provider for the whole session.
+      Map.has_key?(body, "prompt_cache_key") and rejected_cache_key?(message, keys) ->
+        remember_no_cache_key(r.provider)
+        # Spec 43 §1.5 (B2): whatever the first attempt streamed before the error
+        # object must not stay in front of the second answer — the Anthropic
+        # provider resets the same way, and a reset with nothing streamed is a no-op.
+        on_event.({:text_reset})
+        on_event.({:reasoning_reset})
+        post(Map.delete(body, "prompt_cache_key"), url, headers, r, on_event)
+
+      keys != [] and Enum.any?(keys, &Map.has_key?(body, &1)) and
+          rejected_effort?(message, keys) ->
+        remember_no_effort(r.provider)
+        on_event.({:text_reset})
+        on_event.({:reasoning_reset})
+        post(Map.drop(body, keys), url, headers, r, on_event)
+
+      true ->
+        # Spec 51 §6.10: this text becomes the op's `error` and the run's message.
+        # A gateway that echoes the Authorization header back does not have to
+        # have used an `sk-` shaped key for it to be a key.
+        text = HTTP.redact(message, [key(r.provider)])
+        {:error, kind || SwarmCode.Domain.LLM.Error.classify(nil, nil, text), text}
     end
+  end
+
+  @doc """
+  spec 66 T18: `prompt_cache_key` keeps one agent's requests on one prefix cache
+  for the whole run. Omitted when the request carries no key, and after a server
+  has once refused it.
+  """
+  @spec put_cache_key(map(), Request.t()) :: map()
+  def put_cache_key(body, %Request{cache_key: key} = r) when is_binary(key) and key != "" do
+    if cache_key?(r.provider), do: Map.put(body, "prompt_cache_key", key), else: body
+  end
+
+  def put_cache_key(body, _request), do: body
+
+  @doc "False once this provider has 400'd on `prompt_cache_key` in this session (spec 67 B37)."
+  defdelegate cache_key?(provider), to: SwarmCode.Domain.LLM.ProviderCaps
+
+  @doc false
+  defdelegate remember_no_cache_key(provider), to: SwarmCode.Domain.LLM.ProviderCaps
+
+  @doc false
+  # `level_keys` are the keys the request's effort level put on the body
+  # (spec 45 §3.4); a message naming one of them is about the level, not the key.
+  def rejected_cache_key?(message, level_keys \\ []) do
+    rejected_field?(message, ["prompt_cache_key"], ["reasoning_effort" | level_keys])
+  end
+
+  # spec 67 B36: "unknown parameter" / "unrecognized" are shared by every field a
+  # server can refuse, so a classifier takes them only when the message names
+  # none of the *other* fields this request may carry. Its own field name
+  # always counts.
+  @generic_rejections ["unknown parameter", "unrecognized"]
+
+  defp rejected_field?(message, fields, other_fields) do
+    text = String.downcase(to_string(message))
+    names? = fn field -> String.contains?(text, field) end
+
+    String.contains?(text, "400") and
+      (Enum.any?(field_names(fields), names?) or
+         (Enum.any?(@generic_rejections, names?) and
+            not Enum.any?(field_names(other_fields), names?)))
+  end
+
+  defp field_names(fields) do
+    for field <- fields, is_binary(field), field != "", do: String.downcase(field)
   end
 
   # Spec 51 §6.1: an OpenAI-compatible gateway answers 200 and then sends
@@ -130,12 +223,10 @@ defmodule SwarmCode.Domain.LLM.OpenAI do
   def put_effort(body, %Request{} = r), do: Efforts.apply(body, r)
 
   @doc false
-  def rejected_effort?(message) do
-    text = String.downcase(to_string(message))
-
-    String.contains?(text, "400") and
-      (String.contains?(text, "reasoning_effort") or String.contains?(text, "unknown parameter") or
-         String.contains?(text, "unrecognized"))
+  # `level_keys` are the keys the request's effort level put on the body
+  # (spec 45 §3.4): a message naming any of them is about the level.
+  def rejected_effort?(message, level_keys \\ []) do
+    rejected_field?(message, ["reasoning_effort" | level_keys], ["prompt_cache_key"])
   end
 
   @doc "False once this provider has 400'd on `reasoning_effort` in this session."
@@ -143,9 +234,6 @@ defmodule SwarmCode.Domain.LLM.OpenAI do
 
   @doc false
   defdelegate remember_no_effort(provider), to: SwarmCode.Domain.LLM.ProviderCaps
-
-  @doc false
-  def reset_caps, do: SwarmCode.Domain.LLM.ProviderCaps.reset()
 
   @impl true
   def list_models(provider) do
@@ -216,11 +304,25 @@ defmodule SwarmCode.Domain.LLM.OpenAI do
     end
   end
 
+  # spec 67 T34 (G35): the Chat Completions `tool` message takes a string, not
+  # content parts — an image result is named rather than carried, so the model
+  # knows a screenshot exists and can ask for it another way.
   defp format_message(%{role: "tool"} = m) do
+    text = Map.get(m, :content) || ""
+
+    text =
+      case Map.get(m, :images) || [] do
+        [] ->
+          text
+
+        images ->
+          String.trim_leading(text <> String.duplicate("\n[image omitted]", length(images)), "\n")
+      end
+
     %{
       "role" => "tool",
       "tool_call_id" => Map.get(m, :tool_call_id),
-      "content" => Map.get(m, :content) || ""
+      "content" => text
     }
   end
 

@@ -12,8 +12,16 @@ defmodule SwarmCode.Domain.Tools do
   @modules [
     SwarmCode.Domain.Tools.ReadFile,
     SwarmCode.Domain.Tools.ListDir,
+    # spec 67 T27 (G36): "where is run_command.ex" had no answer but
+    # `run_command find`, which is an approval in every asking mode and walks
+    # `node_modules`.
+    SwarmCode.Domain.Tools.FindFiles,
+    # spec 70 B5: semantic code navigation via language servers.
+    SwarmCode.Domain.Tools.Lsp,
     SwarmCode.Domain.Tools.WriteFile,
     SwarmCode.Domain.Tools.EditFile,
+    # spec 70 C5: multi-file atomic edit, same edits format as edit_file.
+    SwarmCode.Domain.Tools.EditFiles,
     SwarmCode.Domain.Tools.Grep,
     SwarmCode.Domain.Tools.RunCommand,
     SwarmCode.Domain.Tools.WebSearch,
@@ -24,7 +32,18 @@ defmodule SwarmCode.Domain.Tools do
     SwarmCode.Domain.Tools.GitCommit,
     SwarmCode.Domain.Tools.Remember,
     SwarmCode.Domain.Tools.IntegrateAgent,
-    SwarmCode.Domain.Tools.SpawnAgent
+    SwarmCode.Domain.Tools.SpawnAgent,
+    # spec 67 T29 (G38): a lead could start a child and wait, and nothing else.
+    SwarmCode.Domain.Tools.MessageAgent,
+    # spec 72 C1: drain pending messages from the agent's mailbox.
+    SwarmCode.Domain.Tools.Inbox,
+    # spec 72 C2: block until a message arrives from another agent.
+    SwarmCode.Domain.Tools.WaitForMessage,
+    # spec 72 C4: retrieve full result of a finished sub-agent.
+    SwarmCode.Domain.Tools.AgentResult,
+    # spec 66 T12: renaming and deleting a file, confined and checkpointed.
+    SwarmCode.Domain.Tools.FileOps.MoveFile,
+    SwarmCode.Domain.Tools.FileOps.DeleteFile
   ]
 
   # Interview mode: the assistant and the lead may ask, sub-agents and workers
@@ -49,8 +68,8 @@ defmodule SwarmCode.Domain.Tools do
 
   @max_output 100_000
 
-  @read_only ~w(read_file list_dir grep web_search web_fetch git_status git_diff git_log ask_user
-                submit_plan)
+  @read_only ~w(read_file list_dir find_files lsp grep web_search web_fetch git_status git_diff
+                git_log ask_user submit_plan inbox wait_for_message agent_result)
   # Sakana task 19: `workflow_control` left this list — it mutates live runs, so
   # a plan-mode assistant must not be offered it. Spec 50 §6.3:
   # `workflow_smoke_check` leaves it too. It is read-only, but the only reason a
@@ -69,8 +88,37 @@ defmodule SwarmCode.Domain.Tools do
     Enum.map(@modules, &builtin_ref/1)
   end
 
+  # spec 73 T102: every builtin's name, description, parameters and permission
+  # are constants except `spawn_agent`'s description, which lists the agent
+  # definitions on disk (spec 72 A3) — so the other refs are built once and
+  # kept in `:persistent_term` (one term, one write), and `Tools.for_agent`
+  # inside the RunServer no longer re-runs 25 description/parameters calls per
+  # agent start; the one dynamic ref is built per call as before.
+  @dynamic_ref_modules [SwarmCode.Domain.Tools.SpawnAgent]
+
   @doc false
+  def builtin_ref(mod) when mod in @dynamic_ref_modules, do: build_ref(mod)
+
   def builtin_ref(mod) do
+    case Map.fetch(static_refs(), mod) do
+      {:ok, ref} -> ref
+      :error -> build_ref(mod)
+    end
+  end
+
+  defp static_refs do
+    case :persistent_term.get({__MODULE__, :static_refs}, nil) do
+      nil ->
+        refs = Map.new(@modules -- @dynamic_ref_modules, &{&1, build_ref(&1)})
+        :persistent_term.put({__MODULE__, :static_refs}, refs)
+        refs
+
+      refs ->
+        refs
+    end
+  end
+
+  defp build_ref(mod) do
     %Ref{
       name: mod.name(),
       description: mod.description(),
@@ -136,7 +184,10 @@ defmodule SwarmCode.Domain.Tools do
         # Plan mode never writes. The lead keeps spawn_agent so it can still fan
         # exploration out to sub-agents (which are read-only themselves).
         read_only = Enum.filter(refs, &(&1.read_only? or &1.name in @workflow_read_only))
-        if role == "lead", do: read_only ++ [named(refs, "spawn_agent")], else: read_only
+
+        if role == "lead",
+          do: read_only ++ [named(refs, "spawn_agent"), named(refs, "message_agent")],
+          else: read_only
       else
         refs
       end
@@ -144,11 +195,25 @@ defmodule SwarmCode.Domain.Tools do
     refs
     |> Enum.reject(&is_nil/1)
     |> reject_when(role == "assistant" or depth >= max_depth, "spawn_agent")
+    # spec 67 T29: an agent that cannot spawn has nobody to message.
+    |> reject_when(role == "assistant" or depth >= max_depth, "message_agent")
+    # spec 72 C1: inbox travels with message_agent.
+    |> reject_when(role == "assistant" or depth >= max_depth, "inbox")
+    # spec 72 C2: wait_for_message travels with message_agent.
+    |> reject_when(role == "assistant" or depth >= max_depth, "wait_for_message")
+    # spec 72 C4: agent_result travels with spawn_agent.
+    |> reject_when(role == "assistant" or depth >= max_depth, "agent_result")
     |> reject_when(role == "assistant", "integrate_agent")
     # The Lead delegates: it has no edit tools at all, so it cannot quietly do
     # the whole job itself (spec 10 §7.4).
     |> reject_when(role == "lead", "write_file")
     |> reject_when(role == "lead", "edit_file")
+    # spec 70 C5: edit_files is a write tool too.
+    |> reject_when(role == "lead", "edit_files")
+    # spec 66 T12: the two new write tools are edit tools too — the Lead's
+    # prompt says it has none.
+    |> reject_when(role == "lead", "move_file")
+    |> reject_when(role == "lead", "delete_file")
   end
 
   defp named(refs, name), do: Enum.find(refs, &(&1.name == name))
@@ -174,22 +239,58 @@ defmodule SwarmCode.Domain.Tools do
     extra =
       case capability do
         :read_only -> []
-        :read_write -> ~w(write_file edit_file)
-        :execute -> ~w(write_file edit_file run_command)
-        :all -> ~w(write_file edit_file run_command)
-        _ -> []
+        # spec 66 T12: `move_file`/`delete_file` are the same `:write` class as
+        # `write_file`, so they travel with it.
+        :read_write -> ~w(write_file edit_file move_file delete_file)
+        :execute -> ~w(write_file edit_file move_file delete_file run_command)
+        # spec 73 T96: `:all` keeps every builtin through the short-circuit
+        # below; its own list was a copy of `:execute` nothing consulted.
+        _all_or_unknown -> []
       end
 
     allowed = @read_only ++ extra
 
     builtins =
       builtins()
-      |> Enum.reject(&(&1.name in ~w(spawn_agent integrate_agent remember)))
+      # spec 67 T29: `message_agent` travels with `spawn_agent` — a workflow
+      # worker has no children of its own to talk to.
+      # spec 72 C1: `inbox` travels with `message_agent`.
+      # spec 72 C2: `wait_for_message` travels with `message_agent`.
+      # spec 72 C4: `agent_result` travels with `spawn_agent`.
+      |> Enum.reject(
+        &(&1.name in ~w(spawn_agent message_agent inbox wait_for_message agent_result integrate_agent remember))
+      )
       |> Enum.filter(&(capability == :all or &1.name in allowed))
 
     mcp = if capability in [:all, :execute], do: mcp, else: Enum.filter(mcp, & &1.read_only?)
 
     builtins ++ mcp
+  end
+
+  # spec 72 F4: orchestration tools that an allow-list never strips. The
+  # allow-list restricts work tools (read_file, write_file, grep, …), not the
+  # tools the run needs to coordinate agents and report results.
+  @always_kept_tools MapSet.new(~w(
+    inbox wait_for_message agent_result message_agent ask_user
+    spawn_agent integrate_agent remember structured_output
+  ))
+
+  # spec 72 A4: filter tool refs to only those whose name is in the allow list.
+  @doc """
+  Filter tool refs to only those whose name appears in allow_list.
+  A nil allow_list means no restriction (return all refs).
+  An empty list restricts to orchestration tools only.
+
+  Orchestration tools (#{Enum.sort(@always_kept_tools) |> Enum.join(", ")})
+  are always kept regardless of the allow-list — an allow-list restricts
+  work tools, never the tools the run needs to coordinate.
+  """
+  @spec filter_tools([Ref.t()], [String.t()] | nil) :: [Ref.t()]
+  def filter_tools(refs, nil), do: refs
+
+  def filter_tools(refs, allow_list) do
+    allowed = MapSet.new(allow_list)
+    Enum.filter(refs, &(&1.name in allowed or &1.name in @always_kept_tools))
   end
 
   @doc "The `structured_output` tool that ends an agent with a validated object."
@@ -272,12 +373,14 @@ defmodule SwarmCode.Domain.Tools do
   # "missing required argument" and no way to tell which name was wrong, so it
   # resends the same call (spec 20 review, 2026-08-23). Naming the keys it did
   # send makes the next call correct.
-  defp received(args) when is_map(args) and map_size(args) > 0,
+  # spec 68 T20: promoted to public for shared use from edit_file.ex.
+  @doc false
+  def received(args) when is_map(args) and map_size(args) > 0,
     do:
       " (received: " <>
         (args |> Map.keys() |> Enum.map(&to_string/1) |> Enum.sort() |> Enum.join(", ")) <> ")"
 
-  defp received(_args), do: " (received no arguments)"
+  def received(_args), do: " (received no arguments)"
 
   # The synonyms models reach for most often. A synonym is only moved onto a
   # declared property that is *missing*, and only when the synonym is not itself
@@ -345,21 +448,69 @@ defmodule SwarmCode.Domain.Tools do
     end
   end
 
+  @doc """
+  The marker every truncated tool result carries (spec 61 T5).
+
+  A `tavily_search` with `include_raw_content` returned 931 873 characters and
+  the model was handed the first 100 000 with nothing to say the rest existed —
+  it read a cut-off document as the whole document. The UI keys its "truncated"
+  chip off this same marker. Spec 66 T19 moved it from the end of the text to
+  the middle of it; the marker text itself did not change.
+  """
+  @spec truncation_marker() :: String.t()
+  def truncation_marker, do: "[SwarmCode: output truncated"
+
   @doc false
-  def truncate({:ok, s}) when is_binary(s) do
-    if String.length(s) > max_output() do
-      {:ok, String.slice(s, 0, max_output()) <> "\n…[truncated]"}
+  def truncate({:ok, s}) when is_binary(s), do: {:ok, cut(s)}
+
+  # spec 60 T6: an MCP `isError` body or a crash message is capped like a result.
+  def truncate({:error, s}) when is_binary(s), do: {:error, cut(s)}
+
+  def truncate(other), do: other
+
+  # spec 66 T19: the cut used to keep the first `max` characters and drop the
+  # rest — which is where a compiler, a test runner and a stack trace put the
+  # part that matters. Half the budget from the head, half from the tail, and
+  # the marker says how much of the middle went.
+  defp cut(text) do
+    # spec 67 B8: the last place a tool result can still be invalid UTF-8. A
+    # `read_file` of a PNG used to reach `Req.post(json: …)` as raw bytes and
+    # kill the turn with a `Jason.EncodeError` that named no file; every result
+    # and every error body now goes out encodable, whatever produced it.
+    text = String.replace_invalid(text)
+    max = max_output()
+    total = String.length(text)
+
+    if total > max do
+      head_len = div(max, 2)
+      tail_len = max - head_len
+      head = String.slice(text, 0, head_len)
+      tail = String.slice(text, total - tail_len, tail_len)
+
+      # spec 68 T16: count newlines in the full text and the kept slices with
+      # :binary.matches instead of materializing the omitted middle.
+      total_breaks = length(:binary.matches(text, "\n"))
+      head_breaks = length(:binary.matches(head, "\n"))
+      tail_breaks = length(:binary.matches(tail, "\n"))
+      middle_breaks = total_breaks - head_breaks - tail_breaks
+
+      head <>
+        "\n\n" <>
+        truncation_marker() <>
+        " — #{total - max} of #{total} characters omitted from the middle" <>
+        " (#{middle_breaks} lines)]\n\n" <>
+        tail
     else
-      {:ok, s}
+      text
     end
   end
 
-  # spec 60 T6: an MCP `isError` body or a crash message is capped like a result.
-  def truncate({:error, s}) when is_binary(s) do
-    if String.length(s) > max_output(),
-      do: {:error, String.slice(s, 0, max_output()) <> "\n…[truncated]"},
-      else: {:error, s}
-  end
-
-  def truncate(other), do: other
+  # spec 67 G33: characters alone do not say how much of a log went — 40 lines
+  # of a test report and 40 000 read the same in characters. Codex prints
+  # "Total output lines: M" beside its byte count for the same reason. This is
+  # the number of line breaks inside the part that was dropped.
+  # spec 68 T19: shared clamp/3 for grep, web_fetch, web_search.
+  @doc false
+  def clamp(value, min_v, max_v) when is_integer(value), do: value |> max(min_v) |> min(max_v)
+  def clamp(_value, min_v, _max_v), do: min_v
 end

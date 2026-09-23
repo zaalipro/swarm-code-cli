@@ -27,7 +27,11 @@ defmodule SwarmCode.Domain.Engine.Prompts do
 
     [
       goal_lines(goals, goal),
-      section("Project instructions (AGENTS.md):", opts[:instructions]),
+      # spec 66 T15: several files can be in there now, root first.
+      section(
+        "Project instructions (AGENTS.md; deeper files win over shallower ones for files in their directory):",
+        opts[:instructions]
+      ),
       section(
         "Memory (facts saved earlier — trust them, update them with the remember tool when they change):",
         opts[:memory]
@@ -145,14 +149,10 @@ defmodule SwarmCode.Domain.Engine.Prompts do
 
   defp omitted_line(_count), do: ""
 
-  @doc "The ULTRA MODE instruction (spec 09 §5.8)."
-  def ultra, do: @ultra
-
+  # spec 73 T53: `ultra/0` and `workflow_reference/0` had no callers; `@ultra`
+  # itself is interpolated by `assistant/2` above.
   @doc "The `/create-workflow` authoring instruction (spec 09 §5.8)."
   defdelegate create_workflow(), to: SwarmCode.Domain.Engine.WorkflowPrompts
-
-  @doc "The static workflow API reference the authoring prompt carries."
-  defdelegate workflow_reference(), to: SwarmCode.Domain.Engine.WorkflowPrompts, as: :reference
 
   @doc """
   The bare project preamble, with no goal, memory, mode or tool talk
@@ -161,10 +161,15 @@ defmodule SwarmCode.Domain.Engine.Prompts do
   @spec base_only(Project.t()) :: String.t()
   def base_only(%Project{} = project), do: base(project)
 
+  # spec 73 T54: the four system-prompt builders below read the memoised
+  # `<environment>` block (`environment_cached/1`, 2 s TTL, keyed on id, root
+  # and mode) — `environment/1` costs up to two git subprocesses, and these
+  # ran inside the RunServer's start_agent call, once per spawn, twice with
+  # isolation. The text is identical.
   defp base(%Project{} = project, tools \\ nil) do
     """
     You are SwarmCode, an expert coding assistant working inside the project "#{project.name}" at #{project.root_path}.
-    #{tool_line(tools)}Rules:
+    #{environment_cached(project)}#{tool_line(tools)}Rules:
     - Paths are relative to the project root unless absolute and inside it.
     - Inspect before you change: read the relevant files first, then keep the edit as small as the change needs.
     - Run commands (tests, compilers, formatters) to verify your changes when the task involves code changes.
@@ -174,8 +179,147 @@ defmodule SwarmCode.Domain.Engine.Prompts do
     - A workflow is the user's call, not yours: author or launch one only when the user used /create-workflow or /workflow, or turned Ultra mode on.
     - A swarm is the user's call too — and the user asking in prose for sub-agents, parallel agents or "N agents" is that call.
     - Deliver what the user asked for, at the scope they intended: make routine judgment calls yourself, and where you think the ask is mistaken say so in a sentence and carry on with it. Keep the reply to the length the question needs, and close by saying what you did, which files changed, and how you verified it.
+    - The <environment> block above is the truth about this machine; do not guess the date, the branch or the shell.
     """
   end
+
+  # spec 67 T26 (G29): `environment/1` is now built once per think step, not
+  # once per run, and `branch/1` is two `stat`s and up to two `git` subprocesses.
+  # The block is memoised per project row, root and approval mode, so a mode
+  # switch is seen at once (a different key) and a branch switch within this
+  # window. Filed under the `:project` tag, so `Projects.broadcast/0` drops it
+  # too; `DataCase` clears the whole table around every test.
+  @env_ttl_ms 2_000
+
+  @doc "`environment/1`, memoised for #{@env_ttl_ms} ms (spec 67 T26)."
+  @spec environment_cached(Project.t()) :: String.t()
+  def environment_cached(%Project{} = project) do
+    key = {:project, {:env, project.id, project.root_path, project.approval_mode}}
+    now = System.monotonic_time(:millisecond)
+
+    case SwarmCode.Domain.Cache.get(key) do
+      {block, at} when is_binary(block) and now - at < @env_ttl_ms ->
+        block
+
+      _stale ->
+        block = environment(project)
+        SwarmCode.Domain.Cache.put(key, {block, now})
+        block
+    end
+  end
+
+  @doc """
+  What the model can otherwise only guess: the date, the OS, the shell, the
+  branch, the approval mode and what it may write (spec 66 T16).
+
+  Built from values the caller already has — no run state is threaded through
+  for it. The OS string is resolved once per VM; the branch costs one
+  `git rev-parse` per agent and is left out entirely outside a repository.
+  """
+  @spec environment(Project.t()) :: String.t()
+  def environment(%Project{} = project) do
+    elements =
+      [
+        {"cwd", project.root_path},
+        {"os", os_name()},
+        {"shell", shell_name()},
+        {"current_date", Date.to_iso8601(Date.utc_today())},
+        {"git_branch", branch(project.root_path)},
+        {"approval_mode", project.approval_mode},
+        # T8 (the OS sandbox) was dropped by the owner: commands are not
+        # confined, so the honest answer is that nothing is.
+        {"writable", "unsandboxed"}
+      ]
+      |> Enum.reject(fn {_name, value} -> value in [nil, ""] end)
+      |> Enum.map_join("\n", fn {name, value} -> "  <#{name}>#{value}</#{name}>" end)
+
+    "<environment>\n" <> elements <> "\n</environment>\n"
+  end
+
+  # `branch --show-current` first: `rev-parse --abbrev-ref HEAD` exits 128 in a
+  # repository with no commit yet, which is exactly the state a project the user
+  # just created is in. `rev-parse` is the fallback for a detached HEAD, where
+  # `--show-current` is empty.
+  #
+  # Both are skipped entirely unless a `.git` is actually there: a prompt is
+  # built per agent, and two failing subprocess spawns per agent is a cost a
+  # project that is not a repository should not pay at all.
+  defp branch(root) do
+    if repo?(root) do
+      case first_line(SwarmCode.Domain.Git.run(root, ["branch", "--show-current"])) do
+        nil -> first_line(SwarmCode.Domain.Git.run(root, ["rev-parse", "--abbrev-ref", "HEAD"]))
+        name -> name
+      end
+    end
+  end
+
+  # `.git` is a directory in a checkout and a file in a worktree; both exist.
+  # Six levels of ancestors so a project rooted at a package inside a repository
+  # still reports the branch, at six `stat` calls and no process.
+  defp repo?(root) when is_binary(root) and root != "" do
+    root = Elixir.Path.expand(root)
+
+    1..6
+    |> Enum.reduce_while({root, false}, fn _level, {dir, _found} ->
+      cond do
+        File.exists?(Elixir.Path.join(dir, ".git")) -> {:halt, {dir, true}}
+        Elixir.Path.dirname(dir) == dir -> {:halt, {dir, false}}
+        true -> {:cont, {Elixir.Path.dirname(dir), false}}
+      end
+    end)
+    |> elem(1)
+  end
+
+  defp repo?(_root), do: false
+
+  defp first_line({:ok, out}) do
+    case out |> String.split("\n", parts: 2) |> List.first() |> String.trim() do
+      "" -> nil
+      name -> name
+    end
+  end
+
+  defp first_line({:error, _reason}), do: nil
+
+  defp shell_name do
+    case System.get_env("SHELL") do
+      path when is_binary(path) and path != "" -> Elixir.Path.basename(path)
+      _none -> "sh"
+    end
+  end
+
+  # One `sw_vers` per VM, not per run.
+  defp os_name do
+    case :persistent_term.get({__MODULE__, :os_name}, nil) do
+      nil ->
+        name = detect_os()
+        :persistent_term.put({__MODULE__, :os_name}, name)
+        name
+
+      name ->
+        name
+    end
+  end
+
+  defp detect_os do
+    case :os.type() do
+      {:unix, :darwin} -> "macOS " <> product_version()
+      {:unix, name} -> to_string(name) <> " " <> kernel_version()
+      {:win32, _name} -> "Windows " <> kernel_version()
+      other -> inspect(other)
+    end
+  end
+
+  defp product_version do
+    case System.cmd("sw_vers", ["-productVersion"], stderr_to_stdout: true) do
+      {out, 0} -> String.trim(out)
+      _error -> kernel_version()
+    end
+  rescue
+    _error -> kernel_version()
+  end
+
+  defp kernel_version, do: :os.version() |> Tuple.to_list() |> Enum.join(".")
 
   # Spec 54 §5 (54c H7): the prompt used to name eight tools by hand, and
   # `Tools.for_agent/5` takes five of them away in plan mode, `start_swarm` on a
@@ -200,7 +344,7 @@ defmodule SwarmCode.Domain.Engine.Prompts do
   defp lead_base(%Project{} = project, max_concurrent) do
     """
     You are the Lead of a coding swarm working inside the project "#{project.name}" at #{project.root_path}.
-    Your job: decompose the user's task into independent sub-tasks, delegate them with the spawn_agent tool, then integrate and verify.
+    #{environment_cached(project)}Your job: decompose the user's task into independent sub-tasks, delegate them with the spawn_agent tool, then integrate and verify.
     Rules:
     - First inspect briefly (list_dir, grep, read_file) to understand the layout. Do not do the whole job yourself.
     - Call spawn_agent once per sub-task. Give each sub-agent a short name (max 24 chars), a precise task, the exact files it owns, and the expected output. Call several spawn_agent in the same response when sub-tasks are independent; at most #{max_concurrent} run at once, the rest queue automatically.
@@ -220,7 +364,7 @@ defmodule SwarmCode.Domain.Engine.Prompts do
   defp sub_agent_base(%Project{} = project, name) do
     """
     You are sub-agent "#{name}" in a coding swarm working inside the project "#{project.name}" at #{project.root_path}.
-    Do exactly the task you are given and nothing else.
+    #{environment_cached(project)}Do exactly the task you are given and nothing else.
     Rules:
     - Inspect before you change; keep edits minimal and correct; verify with run_command when relevant.
     - Only touch the files your task gives you.
@@ -248,7 +392,7 @@ defmodule SwarmCode.Domain.Engine.Prompts do
 
     """
     You are a worker agent named "#{name}" in a host-run workflow of SwarmCode, working inside the project "#{project.name}" at #{project.root_path}.
-    You get one self-contained task below and no memory of any conversation. Do the task with your tools, then answer with the final result only. Do not ask questions; if something is impossible say so clearly.
+    #{environment_cached(project)}You get one self-contained task below and no memory of any conversation. Do the task with your tools, then answer with the final result only. Do not ask questions; if something is impossible say so clearly.
     #{Map.get(@capability_notes, capability, @capability_notes.read_only)}
     """ <> suffix(opts)
   end
@@ -284,7 +428,63 @@ defmodule SwarmCode.Domain.Engine.Prompts do
   # for ever. 12 MB raw is 16 MB base64, half the provider's request limit.
   @image_window_bytes 12_000_000
 
+  # spec 66 T17: the summary may be lossy; the user's requests may not. The
+  # constant is Codex's `COMPACT_USER_MESSAGE_MAX_TOKENS`.
+  @verbatim_user_tokens 20_000
+  @verbatim_marker "[Your earlier requests, verbatim — the summary below may have dropped detail from them]"
+
   def history_to_messages(messages) do
+    verbatim_user_messages(messages) ++ do_history_to_messages(messages)
+  end
+
+  @doc "The marker above the verbatim block a compaction keeps (spec 66 T17)."
+  def verbatim_marker, do: @verbatim_marker
+
+  # Only when the window *starts* at a compaction summary: everything the user
+  # asked for before it is behind `compact_floor/1` and would never be sent
+  # again. Newest first until the cap, then back into their original order, then
+  # the summary itself (which the caller's own list already carries).
+  defp verbatim_user_messages([%Message{role: "compact", content: content} = first | _rest])
+       when content != "" do
+    with id when is_binary(id) <- first.conversation_id,
+         position when is_integer(position) <- first.position,
+         [_ | _] = rows <-
+           SwarmCode.Domain.Conversations.list_user_messages_before(
+             id,
+             position,
+             4 * @verbatim_user_tokens
+           ) do
+      rows
+      |> Enum.reduce_while([], fn m, kept ->
+        candidate = [%{role: "user", content: String.trim(m.content)} | kept]
+
+        if SwarmCode.Domain.Engine.Context.estimate_tokens(candidate) > @verbatim_user_tokens,
+          do: {:halt, kept},
+          else: {:cont, candidate}
+      end)
+      |> case do
+        [] ->
+          []
+
+        kept ->
+          # `rows` is newest first, so `kept` is already back in transcript order.
+          [
+            %{
+              role: "user",
+              content:
+                @verbatim_marker <>
+                  "\n\n" <> Enum.map_join(kept, "\n\n---\n\n", & &1.content)
+            }
+          ]
+      end
+    else
+      _none -> []
+    end
+  end
+
+  defp verbatim_user_messages(_messages), do: []
+
+  defp do_history_to_messages(messages) do
     recent = recent_image_ids(messages)
 
     Enum.flat_map(messages, fn

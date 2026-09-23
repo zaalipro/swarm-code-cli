@@ -94,6 +94,9 @@ defmodule SwarmCode.Domain.Search do
       |> Repo.insert_or_update()
 
     with {:ok, provider} <- result do
+      # spec 73 T89: the only writer path (`move/2` comes through here too).
+      SwarmCode.Domain.Cache.delete(:search_providers)
+
       SwarmCode.Domain.PubSub.broadcast(
         SwarmCode.Domain.PubSub,
         "search_providers",
@@ -242,8 +245,13 @@ defmodule SwarmCode.Domain.Search do
 
   # Enabled engines in order. Spec 39 §1.4 (F6): no legacy fallback — an
   # unticked Tavily row means Tavily is off.
+  # spec 73 T89: the rows come through `SwarmCode.Domain.Cache` — every `web_search`
+  # (dozens per second under ultra's 40 workers) read `search_providers` and
+  # the settings row from SQLite, competing with the run's IMMEDIATE writes.
+  # `upsert/2` drops the key on every write.
   defp engines do
-    for row <- list(), row.enabled, row.kind in engine_kinds(), cfg = config(row), do: cfg
+    rows = SwarmCode.Domain.Cache.fetch(:search_providers, &list/0)
+    for row <- rows, row.enabled, row.kind in engine_kinds(), cfg = config(row), do: cfg
   end
 
   @doc """
@@ -301,5 +309,17 @@ defmodule SwarmCode.Domain.Search do
     ]
   end
 
-  defp settings, do: Settings.get()
+  # spec 68 T37: canonical query-string helpers, shared by Brave and Serper
+  @doc "Appends `site:` OR-group for include-domain filtering."
+  def sites(nil), do: ""
+  def sites([]), do: ""
+  def sites(list), do: " (" <> Enum.map_join(list, " OR ", &("site:" <> &1)) <> ")"
+
+  @doc "Appends `-site:` exclusions for domain filtering."
+  def minus_sites(nil), do: ""
+  def minus_sites([]), do: ""
+  def minus_sites(list), do: " " <> Enum.map_join(list, " ", &("-site:" <> &1))
+
+  # spec 73 T89: cached; `Settings.update/2` drops the key.
+  defp settings, do: Settings.get_cached()
 end

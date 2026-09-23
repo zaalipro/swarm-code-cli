@@ -267,6 +267,10 @@ defmodule SwarmCode.Domain.Scheduled do
 
   # spec 60 T39: public for the Scheduler's queued `{:fire, id, scheduled_for}`.
   @doc false
+  # pass54: a task whose `next_run_at` is nil (disabled, one-shot already run)
+  # matched nothing — but the nil was the FIRST argument and crashed the
+  # Scheduler on every boot-queued fire.
+  def same_second?(nil, _scheduled_slot), do: false
   def same_second?(_candidate, nil), do: false
 
   def same_second?(candidate, scheduled_slot) do

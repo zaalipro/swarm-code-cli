@@ -110,8 +110,25 @@ defmodule SwarmCode.Domain.Research.Program do
           started_at: now()
         })
 
-        if index == 1 and is_binary(plan["interpretation"]),
-          do: Research.update_id(ctx.id, %{interpretation: plan["interpretation"]})
+        # Pass 64: the planner names the research (3-6 words) so the list never
+        # shows the question as the title; the reporter's H1 stays the report's.
+        if index == 1 do
+          attrs =
+            %{}
+            |> then(fn a ->
+              if is_binary(plan["interpretation"]),
+                do: Map.put(a, :interpretation, plan["interpretation"]),
+                else: a
+            end)
+            |> then(fn a ->
+              case Research.short_title(plan["title"]) do
+                nil -> a
+                title -> Map.put(a, :title, title)
+              end
+            end)
+
+          if attrs != %{}, do: Research.update_id(ctx.id, attrs)
+        end
 
         {notes, stragglers} = work(ctx, index, lead_id, tasks)
 
@@ -400,16 +417,8 @@ defmodule SwarmCode.Domain.Research.Program do
     |> Enum.max(fn -> 0 end)
   end
 
-  defp median([]), do: 0
-
-  defp median(values) do
-    sorted = Enum.sort(values)
-    middle = div(length(sorted), 2)
-
-    if rem(length(sorted), 2) == 1,
-      do: Enum.at(sorted, middle),
-      else: (Enum.at(sorted, middle - 1) + Enum.at(sorted, middle)) / 2
-  end
+  # spec 68 T35: delegate to the shared Research.median/1, defaulting nil to 0
+  defp median(values), do: SwarmCode.Domain.Research.median(values) || 0
 
   # Spec 48 §4: what a straggler was still doing belongs to the research.
   # `harvest/2` takes whatever has landed without waiting, before a plan is
@@ -516,7 +525,10 @@ defmodule SwarmCode.Domain.Research.Program do
   """
   @spec partial_note(map(), map(), String.t(), non_neg_integer(), :timeout | :no_output) :: map()
   def partial_note(ctx, task, node_id, attempt, reason) do
-    ops = Conversations.child_nodes(ctx.run_id, node_id)
+    # spec 73 T86: the titles without the results (a deep worker's 24 turns
+    # of fetched pages used to be pulled from SQLite per timeout only to be
+    # dropped), and one query for the last llm result this keeps 1 500 of.
+    ops = Conversations.child_ops_summary(ctx.run_id, node_id)
 
     pages =
       for op <- ops,
@@ -526,12 +538,12 @@ defmodule SwarmCode.Domain.Research.Program do
           do: url
 
     text =
-      ops
-      |> Enum.filter(&(&1.op_type == "llm" and is_binary(&1.result) and &1.result != ""))
-      |> List.last()
-      |> case do
-        nil -> nil
-        op -> op.result |> String.replace(~r/\s+/, " ") |> String.trim() |> String.slice(0, 1_500)
+      case Conversations.last_child_result(ctx.run_id, node_id, "llm") do
+        nil ->
+          nil
+
+        result ->
+          result |> String.replace(~r/\s+/, " ") |> String.trim() |> String.slice(0, 1_500)
       end
 
     %{
@@ -603,7 +615,14 @@ defmodule SwarmCode.Domain.Research.Program do
 
   defp report(ctx, notes) do
     sources = sources(notes)
-    File.write(Research.sources_path(ctx.id), Jason.encode_to_iodata!(sources, pretty: true))
+    # spec 73 T87: same-directory atomic replacement — this task is
+    # `brutal_kill`ed by `Server.close/3` on stop or quit, and a truncated
+    # sources.json or result.md was read back as the report.
+    write_output(
+      ctx,
+      Research.sources_path(ctx.id),
+      Jason.encode_to_iodata!(sources, pretty: true)
+    )
 
     node_id =
       start(ctx, %{
@@ -640,10 +659,11 @@ defmodule SwarmCode.Domain.Research.Program do
     if fast?(ctx) do
       # Spec 47 §2.5: nothing wrote the file, so this does — the answer
       # verbatim when it is already the document, the wrapper when it is not.
-      File.write(path, fast_markdown(ctx, answer, sources))
+      write_output(ctx, path, fast_markdown(ctx, answer, sources))
     else
       # A reporter that answered but never called write_file still leaves a file.
-      unless File.exists?(path), do: File.write(path, fallback_markdown(ctx, answer, sources))
+      unless File.exists?(path),
+        do: write_output(ctx, path, fallback_markdown(ctx, answer, sources))
     end
 
     # Spec 48 §2: **every** level renders its report here, in microseconds. The
@@ -661,6 +681,24 @@ defmodule SwarmCode.Domain.Research.Program do
        design_state: if(report_path, do: "rendered"),
        design?: auto_design?(ctx)
      }}
+  end
+
+  # spec 73 T87: every output of a research lands through `AtomicFile`,
+  # confined to the research directory; a refused write is logged, as the
+  # bare `File.write/2` result was ignored before.
+  defp write_output(ctx, path, data) do
+    case SwarmCode.Domain.AtomicFile.replace(Research.dir(ctx.id), path, data) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning(
+          "swarm_code research #{ctx.id}: could not write #{Path.basename(path)}: " <>
+            SwarmCode.Domain.AtomicFile.format_error(reason)
+        )
+
+        :error
+    end
   end
 
   # Spec 48 §2: `research_auto_design` — "deep" designs medium/high/ultra and
@@ -799,17 +837,8 @@ defmodule SwarmCode.Domain.Research.Program do
   end
 
   # A model that answers "4" or 4.0 must not crash the sort (spec 39 §1.3).
-  defp quality(q) when is_integer(q), do: q |> max(0) |> min(5)
-  defp quality(q) when is_float(q), do: quality(round(q))
-
-  defp quality(q) when is_binary(q) do
-    case Integer.parse(q) do
-      {int, _} -> quality(int)
-      :error -> 0
-    end
-  end
-
-  defp quality(_q), do: 0
+  # spec 68 T36: delegate to the shared Research.rating/1
+  defp quality(q), do: SwarmCode.Domain.Research.rating(q)
 
   defp fallback_markdown(ctx, answer, sources) do
     list =

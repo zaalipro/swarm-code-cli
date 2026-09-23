@@ -7,6 +7,7 @@ defmodule SwarmCode.Domain.Workflows.Definition do
   @type t :: %__MODULE__{
           name: String.t(),
           scope: String.t(),
+          project_id: String.t() | nil,
           path: String.t() | nil,
           source: String.t(),
           meta: map(),
@@ -16,6 +17,9 @@ defmodule SwarmCode.Domain.Workflows.Definition do
 
   defstruct name: nil,
             scope: "adhoc",
+            # spec 64 §Data: which project a `project`-scope definition came
+            # from, so `All projects` can group the Library by project.
+            project_id: nil,
             path: nil,
             source: "",
             meta: %{},

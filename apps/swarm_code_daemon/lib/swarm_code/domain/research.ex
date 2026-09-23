@@ -99,14 +99,6 @@ defmodule SwarmCode.Domain.Research do
   def get(id) when is_integer(id), do: Repo.get(Row, id)
   def get(_id), do: nil
 
-  @spec get!(integer() | String.t()) :: Row.t()
-  def get!(id) do
-    case get(id) do
-      nil -> raise Ecto.NoResultsError, queryable: Row
-      research -> research
-    end
-  end
-
   @doc "How many researches are running right now (the rail badge)."
   @spec running_count() :: non_neg_integer()
   def running_count,
@@ -210,8 +202,11 @@ defmodule SwarmCode.Domain.Research do
 
   @doc "A typical round of a level in milliseconds, from the finished history (spec 40 §1.5)."
   @spec round_ms(String.t() | nil) :: pos_integer()
-  def round_ms(level) do
-    case estimate(level) do
+  def round_ms(level), do: round_ms_from_estimate(level, estimate(level))
+
+  # spec 68 T33: factored out so round_ms_by_level can reuse a precomputed estimate map
+  defp round_ms_from_estimate(level, est) do
+    case est do
       %{ms: ms} when is_integer(ms) and ms > 0 -> max(div(ms, Levels.steps(level) + 1), 30_000)
       _other -> if Levels.fast?(level), do: @fast_round_ms, else: @default_round_ms
     end
@@ -219,7 +214,15 @@ defmodule SwarmCode.Domain.Research do
 
   @doc "Every level's typical round, for a page that draws many bars."
   @spec round_ms_by_level() :: %{String.t() => pos_integer()}
-  def round_ms_by_level, do: Map.new(Levels.names(), &{&1, round_ms(&1)})
+  def round_ms_by_level, do: round_ms_by_level(estimates())
+
+  @doc "Derives round_ms from a precomputed estimates map (spec 68 T33)."
+  @spec round_ms_by_level(map()) :: %{String.t() => pos_integer()}
+  def round_ms_by_level(est_map) do
+    Map.new(Levels.names(), fn level ->
+      {level, round_ms_from_estimate(level, Map.get(est_map, level, %{runs: 0}))}
+    end)
+  end
 
   @doc """
   The median cost and wall time of the last eight finished researches of a
@@ -252,9 +255,11 @@ defmodule SwarmCode.Domain.Research do
   @spec estimates() :: %{String.t() => map()}
   def estimates, do: Map.new(Levels.names(), &{&1, estimate(&1)})
 
-  defp median([]), do: nil
+  # spec 68 T35: single public median/1, returning nil for []; Program uses || 0.
+  @doc false
+  def median([]), do: nil
 
-  defp median(values) do
+  def median(values) do
     sorted = Enum.sort(values)
     n = length(sorted)
 
@@ -262,6 +267,22 @@ defmodule SwarmCode.Domain.Research do
       do: Enum.at(sorted, div(n, 2)),
       else: (Enum.at(sorted, div(n, 2) - 1) + Enum.at(sorted, div(n, 2))) / 2
   end
+
+  # spec 68 T36: canonical quality/rating normalization (string/number/nil -> 0..5 int).
+  # Delegates from Program, HtmlRender, ResearchLive and ResearchComponents.
+  @doc false
+  @spec rating(term()) :: 0..5
+  def rating(q) when is_integer(q), do: q |> max(0) |> min(5)
+  def rating(q) when is_float(q), do: rating(round(q))
+
+  def rating(q) when is_binary(q) do
+    case Integer.parse(q) do
+      {int, _} -> rating(int)
+      :error -> 0
+    end
+  end
+
+  def rating(_q), do: 0
 
   @doc "`result.md`, or `{:error, reason}` when it is not there yet."
   @spec read_result(Row.t()) :: {:ok, String.t()} | {:error, String.t()}
@@ -681,10 +702,14 @@ defmodule SwarmCode.Domain.Research do
     end
   end
 
+  # spec 68 T34: byte_size pre-check is O(1); only fall through to String.slice
+  # when the text might actually exceed the limit.
   defp cap(text, limit) do
-    if String.length(text) > limit,
-      do: String.slice(text, 0, limit) <> "\n…[truncated]",
-      else: text
+    if byte_size(text) > limit do
+      String.slice(text, 0, limit) <> "\n…[truncated]"
+    else
+      text
+    end
   end
 
   @doc "True when a research has a report a chat can attach."
@@ -692,34 +717,92 @@ defmodule SwarmCode.Domain.Research do
   def attachable?(%Row{status: "done"} = research), do: File.regular?(result_path(research))
   def attachable?(_research), do: false
 
-  @doc "Finished researches, for the composer's picker."
+  @doc """
+  Finished researches, for the composer's picker.
+
+  spec 73 T83: filtered and ordered in SQL (`list/1`'s order: pinned first,
+  then newest), paged to `@attachable_page` rows and only those are
+  `stat`ed — the picker used to load 200 done rows and `File.regular?` each
+  one on every keystroke inside the LiveView to keep twelve. The page is
+  wider than the twelve the composer shows because rows whose `result.md`
+  is gone drop out after the stat; the attach itself re-checks
+  `attachable?/1`.
+  """
+  @attachable_page 24
+
   @spec attachable(String.t() | nil) :: [Row.t()]
   def attachable(query \\ nil) do
     filter = query |> to_string() |> String.trim() |> String.downcase()
 
-    for research <- list(status: "done", limit: 200),
-        attachable?(research),
-        filter == "" or matches?(research, filter),
-        do: research
+    Row
+    |> where([r], r.status == "done")
+    |> filter_attachable(filter)
+    |> order_by([r], desc: r.pinned_at, desc: r.inserted_at, desc: r.id)
+    |> limit(@attachable_page)
+    |> Repo.all()
+    |> Enum.filter(&attachable?/1)
   end
 
-  defp matches?(research, filter) do
-    to_string(research.id) == filter or
-      String.contains?(String.downcase(research.title || ""), filter) or
-      String.contains?(String.downcase(research.question), filter)
+  # The exact id, or a case-insensitive substring of the title or the
+  # question — what `matches?/2` did in Elixir. `instr(lower(…))` rather than
+  # LIKE, so a typed `%` or `_` is a character, not a wildcard.
+  defp filter_attachable(query, ""), do: query
+
+  defp filter_attachable(query, filter) do
+    query =
+      where(
+        query,
+        [r],
+        fragment("instr(lower(?), ?) > 0", r.title, ^filter) or
+          fragment("instr(lower(?), ?) > 0", r.question, ^filter)
+      )
+
+    case Integer.parse(filter) do
+      {id, ""} -> or_where(query, [r], r.id == ^id)
+      _other -> query
+    end
   end
 
-  @doc "A short title for a question, used until the reporter supplies a better one."
+  @doc """
+  A short title for a question, used until the planner names the research
+  (pass 64). The first seven words with an ellipsis — the list shows the whole
+  question on its second line, so the title never has to.
+  """
   @spec fallback_title(String.t()) :: String.t()
   def fallback_title(question) do
-    question
-    |> to_string()
-    |> String.replace(~r/\s+/, " ")
-    |> String.trim()
-    |> String.slice(0, 60)
-    |> case do
-      "" -> "Untitled research"
-      text -> text
+    words =
+      question
+      |> to_string()
+      |> String.replace(~r/\s+/, " ")
+      |> String.trim()
+      |> String.split(" ", trim: true)
+
+    case words do
+      [] -> "Untitled research"
+      words when length(words) <= 7 -> words |> Enum.join(" ") |> String.slice(0, 60)
+      words -> (words |> Enum.take(7) |> Enum.join(" ") |> String.slice(0, 58)) <> "…"
+    end
+  end
+
+  @doc """
+  The planner's title clamped to a list entry (pass 64): at most six words and
+  48 characters, no trailing full stop, surrounding quotes dropped; nil when
+  the model gave nothing usable so the caller keeps what it has.
+  """
+  @spec short_title(String.t() | nil) :: String.t() | nil
+  def short_title(text) do
+    words =
+      text
+      |> to_string()
+      |> String.replace(~r/\s+/, " ")
+      |> String.trim()
+      |> String.trim("\"")
+      |> String.trim_trailing(".")
+      |> String.split(" ", trim: true)
+
+    case words do
+      [] -> nil
+      words -> words |> Enum.take(6) |> Enum.join(" ") |> String.slice(0, 48) |> String.trim()
     end
   end
 
@@ -818,9 +901,11 @@ defmodule SwarmCode.Domain.Research do
 
   @doc ~S'`"3 rounds × 4 agents · claude-sonnet-4 · high"` — one line for titles (spec 40 §1.3).'
   @spec setup_line(Row.t(), map()) :: String.t()
-  def setup_line(%Row{} = r, settings) do
-    s = setup(r, settings)
+  def setup_line(%Row{} = r, settings), do: r |> setup(settings) |> setup_line()
 
+  @doc "The same line from a `setup/2` map already at hand (spec 73 T84)."
+  @spec setup_line(map()) :: String.t()
+  def setup_line(%{rounds: _, fanout: _, model: _} = s) do
     model =
       s.model <>
         if(s.tiers?, do: " (+tiers)", else: "") <>
@@ -845,8 +930,11 @@ defmodule SwarmCode.Domain.Research do
   defp tier_fields(:reporter, s),
     do: {s.research_reporter_provider_id, s.research_reporter_model, s.research_reporter_effort}
 
+  # spec 73 T84: cached — this runs per list row per render tick (the list
+  # re-renders each second while `@list_progress` moves); `Providers.broadcast/0`
+  # drops the key on any provider write.
   defp resolve(provider_id, model) when is_binary(provider_id) and is_binary(model) do
-    case SwarmCode.Domain.Providers.get(provider_id) do
+    case SwarmCode.Domain.Providers.get_cached(provider_id) do
       nil -> nil
       provider -> %{provider: provider, model: model}
     end

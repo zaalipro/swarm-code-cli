@@ -5,14 +5,14 @@ defmodule SwarmCode.Domain.LLM.Anthropic do
   """
   @behaviour SwarmCode.Domain.LLM.Provider
 
-  alias SwarmCode.Domain.LLM.{Chunks, HTTP, Request, Result, SSE, ToolArgs}
+  alias SwarmCode.Domain.LLM.{Chunks, HTTP, ProviderCaps, Request, Result, SSE, ToolArgs}
 
   @anthropic_version "2023-06-01"
 
   @impl true
   def stream(%Request{} = r, on_event) do
     case attempt(r, on_event) do
-      {:error, message} = error ->
+      {:error, _kind, message} = error ->
         cond do
           # Spec 30 §1.4: the request carried continuation state the server would
           # not take (a trimmed history, a model without extended thinking, an
@@ -25,17 +25,18 @@ defmodule SwarmCode.Domain.LLM.Anthropic do
 
           # Spec 51 §6.4: a gateway in front of the Messages API that does not
           # know `cache_control` 400s on it. Ask once more without the markers,
-          # and remember that for the rest of this op's calls the way
-          # `remember_no_effort/1` does on the OpenAI side.
+          # and remember that for the rest of the session the way
+          # `remember_no_effort/1` does on the OpenAI side (spec 67 B37: the
+          # flag lives in `ProviderCaps`, not in the op task that dies with the call).
           cache_rejected?(message, r) ->
-            Process.put(no_cache_key(r.provider), true)
+            ProviderCaps.remember_no_cache_key(r.provider)
             SwarmCode.Domain.LLM.on_retry(on_event).(1, 1, "prompt cache", true)
             attempt(r, on_event)
 
           # Spec 53b §3: same shape for the server-side fallback beta.
           # A gateway that does not know `fallbacks` must not cost the turn.
           fallback_rejected?(message, r) ->
-            Process.put(no_fallback_key(r.provider), true)
+            ProviderCaps.remember_no_fallbacks(r.provider)
             SwarmCode.Domain.LLM.on_retry(on_event).(1, 1, "refusal fallback", true)
             attempt(r, on_event)
 
@@ -48,13 +49,9 @@ defmodule SwarmCode.Domain.LLM.Anthropic do
     end
   end
 
-  @doc false
   # Spec 51 §6.4: the "this server does not do prompt caching" flag is per
-  # provider row, in the process dictionary of the op task that makes the call.
-  def no_cache_key(%{id: id}), do: {:sc_no_cache, id}
-  def no_cache_key(_provider), do: {:sc_no_cache, nil}
-
-  defp cache?(%Request{provider: provider}), do: Process.get(no_cache_key(provider)) != true
+  # provider row, in `ProviderCaps` (spec 67 B37).
+  defp cache?(%Request{provider: provider}), do: ProviderCaps.cache_key?(provider)
 
   @doc false
   def cache_rejected?(message, %Request{} = r) do
@@ -143,16 +140,32 @@ defmodule SwarmCode.Domain.LLM.Anthropic do
            on_chunk,
            SwarmCode.Domain.LLM.on_retry(on_event),
            &retry_if/1,
-           r.deadline_ms
+           r.deadline_ms,
+           # spec 67 T33 (G41): the row the rate-limit snapshot is filed under.
+           provider_id(r)
          ) do
       # Spec 51 §6.10: this text becomes the op's `error` and the run's message.
       # Redact it with the key the client actually sent, not only with the
       # `sk-`/`Bearer` shapes `redact/1` can guess at.
-      {:ok, %{error: error}} when is_binary(error) -> {:error, redact(error, r)}
-      {:ok, acc} -> {:ok, to_result(acc, r.model)}
-      {:error, message} -> {:error, redact(message, r)}
+      # spec 67 T30 (G42): with the kind the provider's own `error.type` named.
+      {:ok, %{error: error} = acc} when is_binary(error) ->
+        text = redact(error, r)
+        {:error, SwarmCode.Domain.LLM.Error.classify(nil, acc[:error_type], text), text}
+
+      {:ok, acc} ->
+        {:ok, to_result(acc, r.model)}
+
+      {:error, kind, message} ->
+        {:error, kind, redact(message, r)}
+
+      {:error, message} ->
+        text = redact(message, r)
+        {:error, SwarmCode.Domain.LLM.Error.classify(nil, nil, text), text}
     end
   end
+
+  defp provider_id(%Request{provider: %{id: id}}) when is_binary(id), do: id
+  defp provider_id(_request), do: nil
 
   defp redact(message, %Request{} = r), do: HTTP.redact(message, [key(r.provider)])
 
@@ -190,7 +203,11 @@ defmodule SwarmCode.Domain.LLM.Anthropic do
 
   @impl true
   def list_models(provider) do
-    url = base_url(provider) <> "/v1/models"
+    # spec 73 T76: `GET /v1/models` pages at 20 by default (limit 1–1000) and
+    # the catalogue is past 20 ids, so "Fetch models" silently dropped the
+    # oldest snapshots a pricing row or a workflow may be pinned to. One page
+    # of 1 000 covers the catalogue.
+    url = base_url(provider) <> "/v1/models?limit=1000"
     headers = [{"x-api-key", key(provider)}, {"anthropic-version", @anthropic_version}]
 
     case HTTP.get_json(url, headers, provider.name) do
@@ -285,21 +302,16 @@ defmodule SwarmCode.Domain.LLM.Anthropic do
 
   def fallback_family?(_model), do: false
 
-  @doc false
-  # The "this server does not know `fallbacks`" flag, per provider row, in the
-  # process dictionary of the op task — the same shape as `no_cache_key/1`.
-  def no_fallback_key(%{id: id}), do: {:sc_no_fallback, id}
-  def no_fallback_key(_provider), do: {:sc_no_fallback, nil}
-
   @doc """
   Whether this request carries `fallbacks: "default"` (spec 53b §3):
   the provider row's toggle (default on), a model family the API accepts it
-  for, and no 400 about it earlier in this op.
+  for, and no 400 about it earlier in this session (the flag is per provider
+  row in `ProviderCaps`, the same shape as the cache-key one — spec 67 B37).
   """
   @spec fallbacks?(Request.t()) :: boolean()
   def fallbacks?(%Request{provider: provider, model: model}) do
     Map.get(provider || %{}, :fallbacks, true) != false and fallback_family?(model) and
-      Process.get(no_fallback_key(provider)) != true
+      ProviderCaps.fallbacks?(provider)
   end
 
   # A refusal is a 200, not an error — the server re-runs the declined request
@@ -507,13 +519,72 @@ defmodule SwarmCode.Domain.LLM.Anthropic do
     text ++ tool_use
   end
 
+  # spec 67 T34 (G35): an MCP tool result may carry images. The Messages API
+  # takes `text` and `image` blocks inside a `tool_result`, so a Playwright or
+  # Figma screenshot reaches the model instead of the string `[image image/png]`.
+  # Bounded on both axes: at most five images and four megabytes of base64 per
+  # result, with a trailer naming what was left out.
+  @max_result_images 5
+  @max_result_image_bytes 4_000_000
+
   defp tool_result(m) do
     %{
       "type" => "tool_result",
       "tool_use_id" => Map.get(m, :tool_call_id),
-      "content" => Map.get(m, :content) || "",
+      "content" => result_content(m),
       "is_error" => Map.get(m, :is_error) == true
     }
+  end
+
+  defp result_content(m) do
+    text = Map.get(m, :content) || ""
+
+    case Map.get(m, :images) || [] do
+      [] ->
+        text
+
+      images ->
+        {kept, omitted} = take_images(images)
+
+        trailer =
+          if omitted > 0, do: "\n[SwarmCode: #{omitted} further images omitted]", else: ""
+
+        text_blocks =
+          case text <> trailer do
+            "" -> []
+            body -> [%{"type" => "text", "text" => body}]
+          end
+
+        blocks =
+          text_blocks ++
+            for image <- kept do
+              %{
+                "type" => "image",
+                "source" => %{
+                  "type" => "base64",
+                  "media_type" => Map.get(image, :mime) || "image/png",
+                  "data" => Map.get(image, :data) || ""
+                }
+              }
+            end
+
+        if blocks == [], do: text, else: blocks
+    end
+  end
+
+  defp take_images(images) do
+    {kept, _bytes} =
+      images
+      |> Enum.take(@max_result_images)
+      |> Enum.reduce({[], 0}, fn image, {kept, bytes} ->
+        size = byte_size(Map.get(image, :data) || "")
+
+        if bytes + size > @max_result_image_bytes and kept != [],
+          do: {kept, bytes},
+          else: {kept ++ [image], bytes + size}
+      end)
+
+    {kept, length(images) - length(kept)}
   end
 
   defp handle_chunk(data, acc, on_event, name) do

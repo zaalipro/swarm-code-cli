@@ -3,6 +3,7 @@ defmodule SwarmCode.Domain.Tools.Grep do
   @behaviour SwarmCode.Domain.Tools.Tool
 
   alias SwarmCode.Domain.Tools.Path
+  alias SwarmCode.Domain.Tools.Ripgrep
 
   @max_file_size 1_000_000
 
@@ -53,24 +54,76 @@ defmodule SwarmCode.Domain.Tools.Grep do
   def run(args, ctx, progress) do
     with {:ok, abs} <- Path.resolve(ctx.project_root, args["path"] || ".") do
       source = to_string(args["pattern"])
+      max = clamp(args["max_results"] || 100, 1, 500)
 
       case Regex.compile(source, "") do
         {:error, {msg, _}} ->
           {:error, "invalid regex: #{msg}"}
 
         {:ok, re} ->
-          max = clamp(args["max_results"] || 100, 1, 500)
-          files = candidates(abs, args["glob"], ctx.project_root)
-
-          scan(
-            files,
-            {Regex.re_pattern(re), file_filter(source)},
-            max,
-            ctx.project_root,
-            progress
-          )
+          compiled = {Regex.re_pattern(re), file_filter(source)}
+          files = file_candidates(abs, args["glob"], ctx.project_root, source)
+          scan(files, compiled, max, ctx.project_root, progress)
       end
     end
+  end
+
+  # spec 70 C3: true when rg is available and supports --pcre2.
+  defp use_rg?, do: Ripgrep.available?() and Ripgrep.pcre2?()
+
+  # spec 70 G1: when rg is available, narrow the candidate list to files that
+  # contain a content match before the Elixir scanner touches them. rg cannot
+  # restrict matching to the first 4 KB of a line (spec 51 §7.2), so the
+  # scanner handles every line-level contract: 4 KB window, match_limit
+  # backtracking refusal, progress detail, and output formatting.
+  @ignored_globs ~w(_build* .git deps node_modules .elixir_ls .superpowers .DS_Store cover doc)
+
+  defp file_candidates(abs, glob, root, source) do
+    all_files = fn -> candidates(abs, glob, root) end
+
+    if File.dir?(abs) and use_rg?() do
+      case rg_matching_set(source, abs, root) do
+        {:ok, rg_set} when map_size(rg_set) > 0 ->
+          all_files.() |> Enum.filter(&Map.has_key?(rg_set, &1))
+
+        {:ok, _empty} ->
+          []
+
+        :fallback ->
+          all_files.()
+      end
+    else
+      all_files.()
+    end
+  end
+
+  defp rg_matching_set(pattern, abs_path, _root) do
+    rg = Ripgrep.rg_path()
+    skip = Enum.flat_map(@ignored_globs, &["--glob", "!#{&1}"])
+
+    args =
+      ["--pcre2", "--files-with-matches", "--no-follow", "--color", "never"] ++
+        ["--max-filesize", "1M", "--hidden"] ++
+        skip ++ [pattern, abs_path]
+
+    case System.cmd(rg, args,
+           cd: abs_path,
+           env: [{"HOME", System.user_home!()}],
+           stderr_to_stdout: true
+         ) do
+      {output, code} when code in [0, 1] ->
+        set =
+          output
+          |> String.split("\n", trim: true)
+          |> Map.new(&{Elixir.Path.expand(&1), true})
+
+        {:ok, set}
+
+      {_output, _code} ->
+        :fallback
+    end
+  rescue
+    _ -> :fallback
   end
 
   # Spec 51 §7.1: 539 files of this repository are 191 000 lines, and one
@@ -278,6 +331,6 @@ defmodule SwarmCode.Domain.Tools.Grep do
     :binary.match(head, <<0>>) != :nomatch
   end
 
-  defp clamp(value, min_v, max_v) when is_integer(value), do: value |> max(min_v) |> min(max_v)
-  defp clamp(_value, min_v, _max_v), do: min_v
+  # spec 68 T19: delegate to the shared Tools.clamp/3.
+  defp clamp(value, min_v, max_v), do: SwarmCode.Domain.Tools.clamp(value, min_v, max_v)
 end

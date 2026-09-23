@@ -5,6 +5,8 @@ defmodule SwarmCode.Domain.Workflows do
   """
   import Ecto.Query, warn: false, except: [update: 2, update: 3]
 
+  require Logger
+
   alias SwarmCode.Domain.Conversations
   alias SwarmCode.Domain.Conversations.Message
   alias SwarmCode.Domain.Engine.{Events, ProjectContext, RunSupervisor}
@@ -13,7 +15,8 @@ defmodule SwarmCode.Domain.Workflows do
   alias SwarmCode.Domain.{Providers, Settings}
   alias SwarmCode.Domain.Workflows.{Args, Definition, JournalEntry, Run, Smoke}
 
-  @name_re ~r/^[a-z][a-z0-9-]{1,40}$/
+  # spec 68 T28: one definition with \A/\z anchors (the security-critical form)
+  @name_re ~r/\A[a-z][a-z0-9-]{1,40}\z/
   @arg_types [:string, :integer, :boolean, :list, :path, :enum]
 
   # ------------------------------------------------------------------ discovery
@@ -43,7 +46,26 @@ defmodule SwarmCode.Domain.Workflows do
   @doc "Every definition of every scope, including shadowed ones (Library warnings)."
   @spec list_all(map() | nil) :: [Definition.t()]
   def list_all(project \\ nil) do
-    builtins() ++ scope_list(project_dir(project), "project") ++ scope_list(user_dir(), "user")
+    builtins() ++ project_list(project) ++ scope_list(user_dir(), "user")
+  end
+
+  @doc """
+  Spec 64 §Data: the same listing over *every* project — what the Workflows
+  page's Library shows under `All projects`, where a `project`-scope definition
+  has to say which project it came from.
+  """
+  @spec list_all_projects([map()]) :: [Definition.t()]
+  def list_all_projects(projects) when is_list(projects) do
+    builtins() ++ Enum.flat_map(projects, &project_list/1) ++ scope_list(user_dir(), "user")
+  end
+
+  # A project's own definitions, tagged with the project they were read from.
+  defp project_list(nil), do: []
+
+  defp project_list(project) do
+    project_dir(project)
+    |> scope_list("project")
+    |> Enum.map(&%{&1 | project_id: Map.get(project, :id)})
   end
 
   @doc "The built-in definitions, parsed once and cached in `:persistent_term`."
@@ -297,7 +319,6 @@ defmodule SwarmCode.Domain.Workflows do
   # the model-supplied name is the only thing between it and the file system —
   # `name: "../../x"` used to write anywhere. The name is a plain slug and the
   # final path must sit inside its scope directory.
-  @name_re ~r/\A[a-z][a-z0-9-]{1,40}\z/
   @name_error "workflow name must be lowercase letters, digits and dashes"
 
   @doc false
@@ -378,9 +399,21 @@ defmodule SwarmCode.Domain.Workflows do
         {:error, @name_error}
 
       true ->
-        File.rm(path)
-        Events.ui_broadcast({:workflows_changed})
-        :ok
+        # spec 73 T107: the result of `File.rm/1` used to be discarded and the
+        # deletion reported as done — a read-only file or volume came back on
+        # the next listing with no error shown. A file already gone is `:ok`
+        # (nothing changed, nothing to broadcast).
+        case File.rm(path) do
+          :ok ->
+            Events.ui_broadcast({:workflows_changed})
+            :ok
+
+          {:error, :enoent} ->
+            :ok
+
+          {:error, reason} ->
+            {:error, "cannot delete #{path}: #{:file.format_error(reason)}"}
+        end
     end
   end
 
@@ -473,16 +506,6 @@ defmodule SwarmCode.Domain.Workflows do
   @doc "Runs for the dashboard: `%{run: run, wf: wf}` newest first."
   @spec list_runs(atom()) :: [map()]
   def list_runs(filter \\ :active) do
-    statuses =
-      case filter do
-        :active -> @active
-        :waiting -> ~w(waiting_user paused)
-        :interrupted -> ~w(interrupted)
-        :done -> ~w(done)
-        :failed -> ~w(failed stopped)
-        _ -> nil
-      end
-
     query =
       from(w in Run,
         join: r in Conversations.Run,
@@ -493,7 +516,18 @@ defmodule SwarmCode.Domain.Workflows do
         select: %{wf: w, run: r, conversation: c}
       )
 
-    query = if statuses, do: where(query, [w, r], r.status in ^statuses), else: query
+    # spec 68 T29: raise on unknown filter instead of silently loading all rows
+    query =
+      case filter do
+        :all -> query
+        :active -> where(query, [w, r], r.status in ^@active)
+        :waiting -> where(query, [w, r], r.status in ~w(waiting_user paused))
+        :interrupted -> where(query, [w, r], r.status in ~w(interrupted))
+        :done -> where(query, [w, r], r.status in ~w(done))
+        :failed -> where(query, [w, r], r.status in ~w(failed stopped))
+        other -> raise ArgumentError, "unknown workflow run filter: #{inspect(other)}"
+      end
+
     Repo.all(query)
   end
 
@@ -737,14 +771,27 @@ defmodule SwarmCode.Domain.Workflows do
   def settle_start_failure(run, wf, reason) do
     reason = safe_reason(reason)
 
-    {:ok, wf} =
-      update_run(wf, %{
-        pause_kind: "infrastructure",
-        pause_message: "could not start this run: #{reason}"
-      })
+    # spec 73 T108: `update_run/2` answers `{:error, :database_busy}` once
+    # `Repo.retry` gives up; a bare `{:ok, _} =` here raised MatchError inside
+    # the very path meant to settle the run, leaving the row "running" with
+    # no process behind it. The terminal write is best effort: logged, and
+    # the broadcast still goes out.
+    wf =
+      best_effort(
+        update_run(wf, %{
+          pause_kind: "infrastructure",
+          pause_message: "could not start this run: #{reason}"
+        }),
+        wf,
+        "start failure of #{wf.display_name}"
+      )
 
-    {:ok, run} =
-      Conversations.update_run(run, %{status: "failed", finished_at: DateTime.utc_now()})
+    run =
+      best_effort(
+        Conversations.update_run(run, %{status: "failed", finished_at: DateTime.utc_now()}),
+        run,
+        "failed status of #{wf.display_name}"
+      )
 
     ensure_start_failure_message(run, "Workflow failed to start: #{reason}")
 
@@ -784,19 +831,27 @@ defmodule SwarmCode.Domain.Workflows do
       if prior in ["paused", "waiting_user", "interrupted", "stopped"], do: prior, else: nil
 
     if status do
-      {:ok, wf} =
-        update_run(wf, %{
-          pause_kind: wf.pause_kind || "infrastructure",
-          pause_message: wf.pause_message || "could not resume this run: #{reason}"
-        })
+      # spec 73 T108: best effort, as in `settle_start_failure/3`.
+      wf =
+        best_effort(
+          update_run(wf, %{
+            pause_kind: wf.pause_kind || "infrastructure",
+            pause_message: wf.pause_message || "could not resume this run: #{reason}"
+          }),
+          wf,
+          "resume failure of #{wf.display_name}"
+        )
 
       # Re-read: the row was flipped to "running" by the resume, so a changeset
       # built from the stale struct would look like a no-op and never persist.
-      {:ok, _run} =
+      best_effort(
         Conversations.update_run(Conversations.get_run!(run.id), %{
           status: status,
           finished_at: run.finished_at
-        })
+        }),
+        run,
+        "#{status} status of #{wf.display_name}"
+      )
 
       broadcast(run.conversation_id, wf)
       :ok
@@ -853,10 +908,15 @@ defmodule SwarmCode.Domain.Workflows do
       _ ->
         # spec 60 T37: only a run that is still going has anything to pause — the
         # fallback used to flip a finished row to paused and move its finished_at.
+        # spec 73 T43: the run the guard fetched is the one set_status writes.
         with %Run{} = wf <- get_run(run_id),
-             %{status: status} when status in ["running", "waiting_user"] <-
+             %{status: status} = run when status in ["running", "waiting_user"] <-
                Conversations.get_run(run_id) do
-          set_status(wf, "paused", %{pause_kind: "manual", pause_message: "Paused by the user"})
+          set_status(wf, run, "paused", %{
+            pause_kind: "manual",
+            pause_message: "Paused by the user"
+          })
+
           :ok
         else
           nil -> {:error, :not_found}
@@ -868,10 +928,13 @@ defmodule SwarmCode.Domain.Workflows do
   def control(run_id, :stop, _opts) do
     SwarmCode.Domain.Engine.RunServer.stop(run_id)
 
+    # spec 67 T12 (B17): `get_run!/1` for a `runs` row the retention sweep may
+    # already have deleted raised `Ecto.NoResultsError` out of a control call
+    # that has `{:error, :not_found}` in its contract.
     with %Run{} = wf <- get_run(run_id),
-         %{status: status} when status not in ["done", "failed", "stopped"] <-
-           Conversations.get_run!(run_id) do
-      set_status(wf, "stopped", %{})
+         %{status: status} = run when status not in ["done", "failed", "stopped"] <-
+           Conversations.get_run(run_id) do
+      set_status(wf, run, "stopped", %{})
     end
 
     :ok
@@ -879,10 +942,12 @@ defmodule SwarmCode.Domain.Workflows do
 
   def control(run_id, :resume, opts) do
     wf = get_run(run_id)
-    run = wf && Conversations.get_run!(run_id)
+    # spec 67 T12 (B17): a missing `runs` row is `{:error, :not_found}` too, not
+    # an `Ecto.NoResultsError` in the LiveView.
+    run = wf && Conversations.get_run(run_id)
 
     cond do
-      is_nil(wf) ->
+      is_nil(wf) or is_nil(run) ->
         {:error, :not_found}
 
       run.status not in ["paused", "waiting_user", "interrupted", "stopped"] ->
@@ -948,10 +1013,11 @@ defmodule SwarmCode.Domain.Workflows do
   @spec retry_failed(String.t()) :: :ok | {:error, term()}
   def retry_failed(run_id) do
     wf = get_run(run_id)
-    run = wf && Conversations.get_run!(run_id)
+    # spec 68 T21: use get_run (not get_run!) to match control/3 :resume
+    run = wf && Conversations.get_run(run_id)
 
     cond do
-      is_nil(wf) ->
+      is_nil(wf) or is_nil(run) ->
         {:error, :not_found}
 
       run.status == "running" ->
@@ -1041,18 +1107,33 @@ defmodule SwarmCode.Domain.Workflows do
 
   def atomize_args(_meta, _args), do: %{}
 
-  defp set_status(%Run{} = wf, status, attrs) do
-    {:ok, wf} = update_run(wf, attrs)
-    run = Conversations.get_run!(wf.run_id)
+  # spec 73 T43: both callers fetch the engine run with `get_run/1` in their
+  # guards (the spec 67 T12 contract); re-fetching it here with `get_run!/1`
+  # re-opened the raise window on a retention-swept row and cost a query.
+  defp set_status(%Run{} = wf, %Conversations.Run{} = run, status, attrs) do
+    # spec 73 T108: best effort, as in `settle_start_failure/3`.
+    wf = best_effort(update_run(wf, attrs), wf, "#{status} of #{wf.display_name}")
 
-    {:ok, _} =
+    best_effort(
       Conversations.update_run(run, %{
         status: status,
         finished_at: DateTime.utc_now() |> DateTime.truncate(:microsecond)
-      })
+      }),
+      run,
+      "#{status} status of #{wf.display_name}"
+    )
 
     broadcast(wf.conversation_id, wf)
     :ok
+  end
+
+  # spec 73 T108: a settle write that did not land is logged, and the caller
+  # carries on with the row it had — never a MatchError out of a settle path.
+  defp best_effort({:ok, row}, _row, _what), do: row
+
+  defp best_effort({:error, reason}, row, what) do
+    Logger.warning("swarm_code workflows: #{what} was not persisted: #{inspect(reason)}")
+    row
   end
 
   @doc """

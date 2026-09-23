@@ -2,7 +2,8 @@ defmodule SwarmCode.Domain.Search.Serper do
   @moduledoc "Serper — Google SERP as JSON (spec 24 §4.2)."
   @behaviour SwarmCode.Domain.Search.Provider
 
-  alias SwarmCode.Domain.Search.Provider
+  alias SwarmCode.Domain.Search
+  alias SwarmCode.Domain.Search.{Body, Provider}
 
   @name "Serper"
   @default "https://google.serper.dev"
@@ -11,7 +12,9 @@ defmodule SwarmCode.Domain.Search.Serper do
 
   @impl true
   def search(cfg, query, opts) do
-    query = query <> sites(opts[:include_domains]) <> minus_sites(opts[:exclude_domains])
+    # spec 68 T37: shared helpers from Search
+    query =
+      query <> Search.sites(opts[:include_domains]) <> Search.minus_sites(opts[:exclude_domains])
 
     body =
       %{"q" => query, "num" => opts[:max_results] || 5}
@@ -24,24 +27,29 @@ defmodule SwarmCode.Domain.Search.Serper do
         json: body,
         headers: [{"x-api-key", cfg[:api_key] || ""}, {"content-type", "application/json"}],
         retry: false,
-        receive_timeout: opts[:timeout] || 120_000
+        receive_timeout: opts[:timeout] || 120_000,
+        # spec 73 T90: bounded while reading, like the readers.
+        into: Body.collector()
       )
 
     case result do
-      {:ok, %{status: 200, body: %{"organic" => results}}} when is_list(results) ->
-        {:ok,
-         Enum.map(results, fn r ->
-           Provider.result(%{
-             title: r["title"],
-             url: r["link"],
-             content: r["snippet"],
-             score: nil,
-             published: r["date"]
-           })
-         end)}
+      {:ok, %{status: 200} = response} ->
+        case Provider.decode_json(response) do
+          {:ok, %{"organic" => results}} when is_list(results) ->
+            {:ok,
+             Enum.map(results, fn r ->
+               Provider.result(%{
+                 title: r["title"],
+                 url: r["link"],
+                 content: r["snippet"],
+                 score: nil,
+                 published: r["date"]
+               })
+             end)}
 
-      {:ok, %{status: 200}} ->
-        {:ok, []}
+          _other ->
+            {:ok, []}
+        end
 
       {:ok, response} ->
         Provider.error(@name, response)
@@ -50,14 +58,6 @@ defmodule SwarmCode.Domain.Search.Serper do
         Provider.error(@name, reason)
     end
   end
-
-  defp sites(nil), do: ""
-  defp sites([]), do: ""
-  defp sites(list), do: " (" <> Enum.map_join(list, " OR ", &("site:" <> &1)) <> ")"
-
-  defp minus_sites(nil), do: ""
-  defp minus_sites([]), do: ""
-  defp minus_sites(list), do: " " <> Enum.map_join(list, " ", &("-site:" <> &1))
 
   # Google's own recency token.
   defp put_tbs(body, nil), do: body

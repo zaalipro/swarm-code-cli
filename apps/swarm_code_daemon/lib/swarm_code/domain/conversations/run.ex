@@ -55,6 +55,9 @@ defmodule SwarmCode.Domain.Conversations.Run do
     # The card stays in the transcript, folded; the pane, the dock and the LIVE
     # pills drop it.
     field(:superseded_at, :utc_datetime_usec)
+    # spec 67 T30 (G42): why a failed run failed, as an atom-shaped string —
+    # `SwarmCode.Domain.LLM.Error.kinds/0`. nil on every row written before pass 63.
+    field(:error_kind, :string)
 
     belongs_to(:conversation, SwarmCode.Domain.Conversations.Conversation)
 
@@ -64,7 +67,8 @@ defmodule SwarmCode.Domain.Conversations.Run do
   @fields ~w(conversation_id kind status prompt root_node_id
              tokens_in tokens_out cost_usd started_at finished_at interrupted model
              goal_id label seen_at launched_by_run_id consensus consensus_config
-             resumed_from_run_id pruned mode implements_run_id plan_state superseded_at)a
+             resumed_from_run_id pruned mode implements_run_id plan_state superseded_at
+             error_kind)a
 
   def changeset(run, attrs) do
     run

@@ -2,7 +2,7 @@ defmodule SwarmCode.Domain.Search.Tavily do
   @moduledoc "Tavily Search (spec 24 §4.2)."
   @behaviour SwarmCode.Domain.Search.Provider
 
-  alias SwarmCode.Domain.Search.Provider
+  alias SwarmCode.Domain.Search.{Body, Provider}
 
   @name "Tavily"
 
@@ -29,24 +29,29 @@ defmodule SwarmCode.Domain.Search.Tavily do
         json: body,
         headers: [{"authorization", "Bearer " <> (cfg[:api_key] || "")}],
         retry: false,
-        receive_timeout: opts[:timeout] || 120_000
+        receive_timeout: opts[:timeout] || 120_000,
+        # spec 73 T90: bounded while reading, like the readers.
+        into: Body.collector()
       )
 
     case result do
-      {:ok, %{status: 200, body: %{"results" => results}}} when is_list(results) ->
-        {:ok,
-         Enum.map(results, fn r ->
-           Provider.result(%{
-             title: r["title"],
-             url: r["url"],
-             content: r["content"],
-             score: r["score"],
-             published: r["published_date"]
-           })
-         end)}
+      {:ok, %{status: 200} = response} ->
+        case Provider.decode_json(response) do
+          {:ok, %{"results" => results}} when is_list(results) ->
+            {:ok,
+             Enum.map(results, fn r ->
+               Provider.result(%{
+                 title: r["title"],
+                 url: r["url"],
+                 content: r["content"],
+                 score: r["score"],
+                 published: r["published_date"]
+               })
+             end)}
 
-      {:ok, %{status: 200}} ->
-        {:ok, []}
+          _other ->
+            {:ok, []}
+        end
 
       {:ok, response} ->
         Provider.error(@name, response)
