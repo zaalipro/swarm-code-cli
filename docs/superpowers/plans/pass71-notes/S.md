@@ -28,6 +28,7 @@ from main `6e8dad1`.
 | S5 P1 | f85c7f6 | `queued` on the workspace snapshot and metadata; fake parity. |
 | S3 P1 | 327a52b | umask 077: a test proves the release env's umask reaches the VM; dev launchers set it. |
 | S4 P1 | e66dc3c | The exit summary lists every run the quit stopped. |
+| S6 P2 | 5394a6e | Streaming ticks refetch only the rows they name (C9), golden-tested. |
 
 ## S1: request deadlines
 
@@ -121,3 +122,39 @@ launchers (`scripts/dev/run_{saved,plain,live}_session.sh`) now set `umask 077` 
 - `mix test apps/swarm_code_cli/test` once: 1432 tests, 1 failure,
   `plain/session_test` "reader handles charlist devices …", which passes alone with and without
   my changes (load flake, not mine).
+
+## Final verification
+
+- Full umbrella `mise exec -- mix test` (after 5394a6e, no `_build/prod`, `MIX_QUIET` unset):
+  core `146 tests, 0 failures`; daemon `945 tests, 0 failures`; cli
+  `5 properties, 1435 tests, 2 failures`. The two failures are load timing in files outside my set
+  and pass when rerun (28/0): `plain/session_test.exs:233` (reader `:line_too_large` within 2 s)
+  and `ui/session_runtime_test.exs:309` (a `snapshot` call timed out).
+- `mix format --check-formatted` clean; `mix compile --force --warnings-as-errors` clean;
+  `mix swarm_code.provenance.verify` passes. No manifest-listed file edited; no synced
+  `domain/**` file edited.
+- Real session in a sandbox HOME (`/private/tmp/p70cli/p71-S/home`, scratch ailogic copy, release
+  built from this branch, 3 real prompts):
+  - `@READ` completion listed `README.md` first (the files job path, S2).
+  - With a run waiting for approval, select-mode `q` asked "Stop 1 live run and quit?"; after
+    `X` the summary printed `Stopped  1 live run` and `· Use run_command to run: sleep 120 &&
+    echo finished` (S4).
+  - Everything the release wrote under the sandbox is 0600/0700: the DB, the lease DB, the
+    backup and its manifest, `cli.log` and their directories (S3).
+  - The screen session ended with the app's own quit; `_build/prod` removed afterwards.
+
+## Found, not mine / left
+
+- Pre-existing flake: `service/pass70_qa_queue_test.exs` "a prompt queued behind a running turn
+  starts …" fails about 1 run in 6-12 of the whole `service/` directory, on the tree without S6
+  too (2 of 12 in a scratch copy without S6); the queued prompt does not start within 6 s after
+  the first turn is done. 25 further runs of a smaller set did not reproduce it, so I could not
+  capture the cause. Suspect: `drain_queue/1`'s `{:error, _}` branch puts the prompt back and
+  toasts but arms no new watch, so a start refused by a race is never retried. Worth a look by
+  the finisher if it shows up in precommit.
+- `service/persisted_backend_test.exs:1250` (inspector paging) failed once in 12 service runs
+  (items shifted by five): looks like `inserted_at` ties in the fixture; not touched.
+- From pass-70 C, still open: slash commands (`/export` writes a file, `/search` FTS) still run
+  inside the persisted backend's `handle_call`. Same job mechanism would apply; not in this
+  round's list.
+- S6 limitation (documented above): a mid-op checkpoint shows on the op's finishing upsert.
