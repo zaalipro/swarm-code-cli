@@ -438,7 +438,9 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       is_nil(run) or not run_member?(run, scope, state) ->
         {reject(id, :not_allowed), state}
 
-      params["node_id"] != nil and params["node_id"] not in run.node_ids ->
+      # pass70 C2 (rel F2): an approval waits on the **op** node, never on an
+      # agent; the nodes a run is waiting on are admitted beside its agents.
+      params["node_id"] != nil and params["node_id"] not in admitted_nodes(run) ->
         {reject(id, :not_allowed), state}
 
       operation == :approval_resolve and
@@ -446,6 +448,10 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
              run.approval["node_id"] != params["node_id"] or
              run.approval["expected_revision"] != params["expected_revision"]) ->
         {reject(id, :stale_revision), state}
+
+      operation == :approval_resolve and
+          params["decision"] not in offered_decisions(run.approval) ->
+        {reject(id, :not_allowed), state}
 
       run.status in @terminal ->
         {reject(id, :not_allowed), state}
@@ -519,13 +525,54 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     end
   end
 
-  defp control(:approval_resolve, params, run, _),
-    do:
-      Engine.resolve_approval(
-        run.id,
-        run.approval["node_id"],
-        if(params["decision"] == "approve", do: :approve, else: :deny)
-      )
+  # pass70 C2: the five decisions. `approve_run` is the engine's `:always`
+  # (this tool, this run). Before the engine sync there is no `:deny_stop`:
+  # deny, then stop the run. `always_prefix` remembers the family the service
+  # computed for this request (the card's), never one a client names.
+  defp control(:approval_resolve, %{"decision" => decision}, run, _) do
+    node = run.approval["node_id"]
+
+    case decision do
+      "approve" ->
+        Engine.resolve_approval(run.id, node, :approve)
+
+      "approve_run" ->
+        Engine.resolve_approval(run.id, node, :always)
+
+      "deny" ->
+        Engine.resolve_approval(run.id, node, :deny)
+
+      "deny_stop" ->
+        if widened_engine?() do
+          Engine.resolve_approval(run.id, node, :deny_stop)
+        else
+          Engine.resolve_approval(run.id, node, :deny)
+          Engine.stop_run(run.id)
+        end
+
+      "always_prefix" ->
+        family = get_in(run.approval, ["approval", "command_family"])
+
+        # The engine at 6dd8d82 takes the family as a fourth argument; `apply`
+        # keeps this module compiling against the engine before the sync.
+        apply(Engine, :resolve_approval, [run.id, node, :always_prefix, family])
+    end
+  end
+
+  defp admitted_nodes(run), do: run.node_ids ++ Enum.map(run.interactions, & &1["node_id"])
+
+  # A legacy client may send `approve`/`deny` to a card that predates the
+  # decision list; every other decision must be one the card offered.
+  defp offered_decisions(%{"approval" => %{"allowed_decisions" => [_ | _] = offered}}),
+    do: offered
+
+  defp offered_decisions(_), do: ["approve", "deny"]
+
+  # The synced engine (desktop 6dd8d82) resolves `:deny_stop` and
+  # `{:always_prefix, family}`; the pass 53 engine resolves neither.
+  defp widened_engine? do
+    Code.ensure_loaded?(Engine) and function_exported?(Engine, :resolve_approval, 4)
+  end
 
   defp error_code(reason)
        when reason in [
@@ -709,6 +756,24 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   end
 
   defp present?(text), do: is_binary(text) and text != ""
+
+  # pass70 C2 (rel F11): an op stopped while it waited for approval keeps the
+  # progress text "awaiting approval" on its row; a finished op no longer
+  # waits, so the words go and the status speaks.
+  @waiting_words ["awaiting approval", "awaiting answer"]
+
+  defp settle_wait(%{source_kind: "op", status: status} = r)
+       when status in ["done", "stopped", "failed", "interrupted", "cancelled"] do
+    stale? = fn text -> is_binary(text) and String.trim(text) in @waiting_words end
+
+    r
+    |> then(&if stale?.(&1.detail), do: %{&1 | detail: ""}, else: &1)
+    |> then(fn row ->
+      if stale?.(row.text), do: %{row | text: "", text_bytes: 0}, else: row
+    end)
+  end
+
+  defp settle_wait(r), do: r
 
   defp item_kind(%{source_kind: "op", op_type: "llm"}), do: "thinking"
   defp item_kind(%{source_kind: "op"}), do: "tool"
@@ -916,6 +981,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
         rs =
           Enum.map(rs, fn r ->
+            r = settle_wait(r)
+
             base = %{
               id: r.id,
               node_id: r.node_id,
@@ -1086,12 +1153,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         [
           %{
             base
-            | "approval" => %{
-                "tool" => detail[:tool] || "agent operation",
-                "permission" => Atom.to_string(detail[:permission] || :write),
-                "arguments_preview" => to_string(detail[:args] || "{}"),
-                "arguments_detail_ref" => nil
-              },
+            | "approval" => approval_card(detail, p, run, state),
               "allowed_actions" => ["approve", "deny"]
           }
         ]
@@ -1103,6 +1165,113 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         []
     end
   end
+
+  # pass70 C2: the card's facts. After the engine sync the RunServer row
+  # carries `command`, `cwd`, `reason`, `command_family`, `classification`
+  # and `requested_at` (A2); before it they come from the op's arguments.
+  defp approval_card(detail, p, run, state) do
+    tool = bound(detail[:tool], 200) || "agent operation"
+    args = decode_args(detail[:args])
+    command = detail_text(detail, :command) || (tool == "run_command" && args["command"]) || nil
+    classification = classification(detail[:classification])
+    family = detail_text(detail, :command_family)
+    agent = approval_agent(p.node_id, run)
+
+    %{
+      "tool" => tool,
+      "permission" => permission(detail[:permission]),
+      "arguments_preview" => bound(to_string(detail[:args] || "{}"), 65_536) || "{}",
+      "arguments_detail_ref" => nil,
+      "command" => bound(command, 4096),
+      "cwd" => approval_cwd(detail, args, tool, state),
+      "reason" => bound(detail_text(detail, :reason) || args["justification"], 1024),
+      "command_family" => if(classification != "dangerous", do: bound(family, 200)),
+      "classification" => classification,
+      "agent_id" => agent && agent["id"],
+      "agent_name" => agent && bound(agent["name"], 200),
+      "requested_at" => unix_ms(detail[:requested_at]) || unix_ms(p.since),
+      "allowed_decisions" => decisions(classification, family)
+    }
+  end
+
+  defp decisions("dangerous", _family), do: ["approve", "deny", "deny_stop"]
+
+  defp decisions(_classification, family) do
+    prefix =
+      if widened_engine?() and is_binary(family) and String.trim(family) != "",
+        do: ["always_prefix"],
+        else: []
+
+    ["approve", "approve_run"] ++ prefix ++ ["deny", "deny_stop"]
+  end
+
+  defp permission(value) when value in [:read, :write, :execute], do: Atom.to_string(value)
+  defp permission(value) when value in ["read", "write", "execute"], do: value
+  defp permission(_), do: "write"
+
+  defp classification(value) when value in [:safe, :normal, :dangerous], do: Atom.to_string(value)
+  defp classification(value) when value in ["safe", "normal", "dangerous"], do: value
+  defp classification(_), do: "unknown"
+
+  defp detail_text(detail, key) do
+    case detail[key] do
+      value when is_binary(value) and value != "" -> value
+      _ -> nil
+    end
+  end
+
+  defp decode_args(args) when is_binary(args) do
+    case Jason.decode(args) do
+      {:ok, %{} = map} -> map
+      _ -> %{}
+    end
+  end
+
+  defp decode_args(%{} = args), do: args
+  defp decode_args(_), do: %{}
+
+  # The working directory as the user reads it: relative to the project root,
+  # "." for the root itself.
+  defp approval_cwd(detail, args, tool, state) do
+    raw =
+      detail_text(detail, :cwd) ||
+        case args["workdir"] do
+          dir when is_binary(dir) and dir != "" -> dir
+          _ -> if tool == "run_command", do: "."
+        end
+
+    case raw do
+      nil ->
+        nil
+
+      dir ->
+        base = Enum.find(state.roots, &(is_binary(&1) and (dir == &1 or inside?(dir, &1))))
+
+        cond do
+          base == dir -> "."
+          base -> bound(Path.relative_to(dir, base), 1024)
+          true -> bound(dir, 1024)
+        end
+    end
+  end
+
+  defp approval_agent(node_id, run) do
+    agent_id =
+      Enum.find_value(run.records, fn r -> if r.node_id == node_id, do: r.agent_id end)
+
+    Enum.find(run.agents, &(&1["id"] == agent_id))
+  end
+
+  defp unix_ms(value) when is_integer(value) and value > 0, do: value
+  defp unix_ms(%DateTime{} = value), do: DateTime.to_unix(value, :millisecond)
+  defp unix_ms(%NaiveDateTime{} = value), do: ms(value)
+  defp unix_ms(_), do: nil
+
+  defp bound(nil, _), do: nil
+  defp bound(false, _), do: nil
+  defp bound(text, max) when is_binary(text), do: preview(text, max)
+  defp bound(value, max) when is_atom(value), do: bound(Atom.to_string(value), max)
+  defp bound(_, _), do: nil
 
   defp publish_changes(old, state) do
     state = if old.metadata != state.metadata, do: broadcast_metadata(state), else: state
