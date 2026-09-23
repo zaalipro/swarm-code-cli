@@ -13,7 +13,8 @@ Owner E: interaction, sessions, entry points. Branch `p70/E`, worktree
 | E3 | conversation switcher, `/resume` `/new` `/clear` `/approval` `/trust`, model picker by provider | f48378e, 2a7eaac (after merging `p70-C-wire`, 8d7e37e) |
 | E4 | `swarmcode [DIR] [--new\|--continue\|--resume ID] [--model M] [-p PROMPT [--json]] [--plain [--ndjson]] [--help] [--version]`, exit codes 0/1/2/3 | eb99f2a |
 | E5 (rest) | `@path` completion over C8's `files` query; the client's commands in the slash popup, `SlashPalette.rows/0` = 8 | 59953d2 |
-| E7 | README usage (flags, `-p`, `--plain`, exit codes, composer keys); `docs/keybindings.md` checked current | 195e74e |
+| E7 | README usage (flags, `-p`, `--plain`, exit codes, composer keys); `docs/keybindings.md` regenerated | 195e74e, eb81fe2 |
+| E6 | Ctrl-X edits the draft in `$VISUAL`/`$EDITOR` (mouse wheel not done: B10 has not landed) | eb81fe2 |
 
 ### E1 keyboard, as built
 
@@ -128,6 +129,23 @@ Owner E: interaction, sessions, entry points. Branch `p70/E`, worktree
   help, quit) first, each name once, over an older catalogue entry of the same name; an entry the
   catalogue flags `client: true` (C7) replaces the local one. `SlashPalette.rows/0` = 8.
 
+### E6 external editor, as built
+
+- Binding `:external_editor` (Ctrl-X; `:composer`, `:composer_normal`) → `{:external_editor, key}`.
+  The reducer sets `lifecycle: :suspend_requested` (so no frame is drawn, as for Ctrl-Z) and emits
+  `{:edit_externally, key, text}`. The session runtime writes a private copy (0700 dir under
+  `System.tmp_dir!/0`, 0600 `draft.md`), sends the terminal `{:terminal_control, :suspend, gen}`,
+  and once the owner reports `{:terminal_lifecycle, :suspended, …}` runs the editor in a linked
+  `Task` (`SessionRuntime.run_editor/1`: `/bin/sh -c 'exec $SWARM_EDIT_COMMAND "$1" 2>&1'` via a
+  `:nouse_stdio` port, so the editor inherits the VM's stdin/stdout, the terminal; a port child
+  has no `/dev/tty`). The text is read back ≤ 256 KiB (one final newline dropped, UTF-8 checked),
+  the terminal is sent `:resume`, the copy removed, and the reducer gets
+  `{:external_edit_done, key, {:ok, text} | {:error, reason}}` (reasons `Action.external_edit_error?/1`;
+  only the runtime may send it). The draft is replaced as one undoable edit; a failure is a notice.
+  5 s without `:suspended` gives up. The runtime option `:editor` injects the runner in tests.
+- Checked in GNU screen with `VISUAL=vi` on the saved TUI: vi opened on the draft, `:s`/`o`/`:wq`,
+  the TUI came back with the edited two-line draft, Ctrl-Z restored the original, the copy was gone.
+
 ### E5 history half
 
 - Up on an empty draft walks `Reducer.prompt_history/2`: prompts accepted in this session (newest
@@ -199,14 +217,28 @@ Owner E: interaction, sessions, entry points. Branch `p70/E`, worktree
   `:select_mode` (Ctrl-T "Select"), `:interrupt` (Ctrl-C). Select mode (`focus == "main"`, no layer)
   wants the banner `SELECT · j/k move · Enter open · y copy · Esc back`.
 
-- **B (`release/persisted_session.ex`):** please expose the startup as public functions so
-  `Release.Headless` stops keeping a copy: e.g. `PersistedSession.open(root, selection, env) ::
-  {:ok, %{session, source, source_epoch, close: (-> :ok)}} | {:error, reason}` covering RepoLauncher,
-  SessionSelection/SessionConfiguration, PersistedBackend, Service and the Daemon source, plus
-  `close/1`. Headless mirrors your current `launch/1` + `run_ui/2` minus the terminal; any B3/B4/B5
-  change there (StartupError words, `SWARM_MODEL_OVERRIDE`, the global dir) needs the same change in
-  `Release.Headless.open/3` until then. Headless needs `umask 077` from `rel/env.sh.eex` (the product
-  dirs are refused at 0755).
+- **Finisher (B's `with_saved_session/2`, landed on p70/B after E4):** B now exposes
+  `PersistedSession.with_saved_session(options, fun)` (storage, lease, log file, selection, provider,
+  boot recovery; `fun.(%{project, conversation, notice})`; returns `{:ok, result} | {:error,
+  failure}`) and `report/1`. After merging B, replace the storage half of `Release.Headless` with it
+  and keep only the service half (`run_session/2`, which already takes that session map):
+
+  ```elixir
+  # Release.Headless.run/2, after the usage checks
+  selection = case conversation do nil -> :latest; "latest" -> :latest; "new" -> :new; id -> id end
+
+  case PersistedSession.with_saved_session(
+         [project_root: root, conversation: selection],
+         &run_session(&1, mode)
+       ) do
+    {:ok, code} -> code
+    {:error, failure} -> PersistedSession.report(failure)
+  end
+  ```
+
+  and drop `start_applications/0`, `logs_to_stderr/0` (B routes Logger to the log file), `open/3`,
+  `session/2`, `close_owned_runtime/1` and `refusal/1`. Until then Headless mirrors the old
+  `launch/1` (it needs `umask 077` from `rel/env.sh.eex`: product dirs are refused at 0755).
 - **B (B3 logging):** Headless swaps the console handler to stderr at `:warning`; a file handler you
   add is left alone. The TUI still printed `[notice] Application swarm_code_daemon exited: :stopped`
   onto the terminal at close.
@@ -235,4 +267,7 @@ None.
 
 ## Left
 
-- E6 (P2): see below.
+- Mouse wheel (E6's second half): B10 (SGR mouse decoded to input events) has not landed; nothing to
+  bind yet. The copy key `y` waits on B10's `{:terminal_copy, …}` too.
+- `Release.Headless` storage half → `PersistedSession.with_saved_session/2` after merging B (above).
+- D draws the 8-row popups and the new approval keys (requests above).
