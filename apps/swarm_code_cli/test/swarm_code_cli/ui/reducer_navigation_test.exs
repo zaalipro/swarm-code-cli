@@ -246,6 +246,21 @@ defmodule SwarmCodeCLI.UI.ReducerNavigationTest do
     assert back.scrolls == activity.scrolls
   end
 
+  # pass71 F10 (review R8): /resume opened a conversation at its first prompt
+  # because the scroll kept the old conversation's anchor.
+  test "opening another conversation follows its tail; Back restores the old scroll" do
+    state = initial()
+    scrolled = %Scroll{follow?: false, anchor: {"old-item", 0, :top}}
+    state = %{state | scrolls: %{state.scrolls | main: scrolled}}
+
+    {other, _} = Reducer.update(state, {:navigate, {:conversation, "other"}})
+    assert other.scrolls.main.follow?
+    assert other.scrolls.main.anchor == nil
+
+    {back, _} = Reducer.update(other, :back)
+    assert back.scrolls.main == scrolled
+  end
+
   test "dirty exit uses complete predicate with safe Cancel; clean whitespace exits" do
     state = initial()
     {clean, _} = Reducer.update(state, {:editor, {"c", :main}, {:insert, "  "}})

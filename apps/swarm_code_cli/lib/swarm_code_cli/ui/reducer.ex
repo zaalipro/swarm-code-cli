@@ -1361,13 +1361,17 @@ defmodule SwarmCodeCLI.UI.Reducer do
         :expansions
       ])
 
+    # pass71 F10 (review R8): a conversation opened forward follows its tail;
+    # the old one's anchor named items the new one does not have, so it opened
+    # at the first prompt. `:back` restores the saved scrolls.
     state =
       if save?,
         do: %{
           state
           | history: [context | Enum.take(state.history, 31)],
             activity_return:
-              if(state.destination == :activity, do: context, else: state.activity_return)
+              if(state.destination == :activity, do: context, else: state.activity_return),
+            scrolls: Map.put(state.scrolls, :main, SwarmCodeCLI.UI.Scroll.new())
         },
         else: state
 
