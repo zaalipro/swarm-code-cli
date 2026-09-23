@@ -129,8 +129,12 @@ defmodule SwarmCode.Domain.FeatureCatalogTest do
   test "Git and checkpoint reads derive project from scope", c do
     System.cmd("git", ["init", "--quiet", c.project.root_path])
     File.write!(Path.join(c.project.root_path, "new.txt"), "hello")
-    assert {:ok, page} = FeatureCatalog.query(:changes, c.scope)
+    project = %Scope{kind: :project, id: c.project.id, generation: 0}
+    assert {:ok, page} = FeatureCatalog.query(:changes, project)
     assert Enum.any?(page.items, &(&1.title == "new.txt"))
+    # pass70 C8: a conversation's Changes are what its runs changed, not the
+    # working tree.
+    assert {:ok, %{items: []}} = FeatureCatalog.query(:changes, c.scope)
     assert {:ok, %{items: []}} = FeatureCatalog.query(:checkpoints, c.scope)
   end
 

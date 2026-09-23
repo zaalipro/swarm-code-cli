@@ -87,7 +87,13 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         # the projected runs left running in the background.
         agent_models: %{},
         background: %{},
-        background_tick: nil
+        background_tick: nil,
+        # pass70 C8: unified diffs being paged, and what each finished run
+        # changed per file (line counts, created/modified/deleted).
+        diff_cache: %{},
+        diff_order: [],
+        change_facts: %{},
+        file_index: nil
       }
 
       {:ok, reload(state)}
@@ -462,6 +468,45 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     end
   end
 
+  # pass70 C8: `@path` completion over the project's files (the index is
+  # walked at most every 30 s and kept while it is fresh).
+  defp execute(%{operation: :feature_query, params: %{"feature" => "files"} = p}, _, id, state) do
+    {paths, state} = file_index(state)
+    items = SwarmCode.Domain.FeatureCatalog.file_matches(paths, p["id"], p["page_size"])
+
+    body = %{
+      "feature" => "files",
+      "title" => "Files",
+      "description" => "Files of the project",
+      "items" =>
+        Enum.map(items, fn item ->
+          %{
+            "id" => item.id,
+            "title" => item.title,
+            "subtitle" => item.subtitle,
+            "status" => item.status,
+            "detail" => item.detail,
+            "actions" => [],
+            "form" => nil,
+            "matches" => item.matches
+          }
+        end),
+      "state" => "idle",
+      "before_cursor" => nil,
+      "after_cursor" => nil,
+      "request_id" => id,
+      "error" => nil,
+      "presence" => "covered",
+      "covered_ids" => Enum.map(items, & &1.id),
+      "through_sequence" => state.revision
+    }
+
+    case fit("library_snapshot", body, p["byte_limit"]) do
+      {:ok, kind, body} -> {result(kind, body), state}
+      {:error, code} -> {wire_error(code), state}
+    end
+  end
+
   defp execute(%{operation: operation} = request, scope, id, state)
        when operation in [:feature_query, :feature_command] do
     scoped = feature_scope(scope, state)
@@ -469,7 +514,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   end
 
   defp execute(%{operation: :detail, params: params}, scope, id, state) do
-    next = refresh(state)
+    next = state |> refresh() |> warm_diff(params["detail_ref"], scope)
     {result("detail_window", detail(params, scope, id, next)), next}
   end
 
@@ -681,7 +726,10 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
           metadata: nil,
           research_ids: [],
           attachment_ids: CommandLedger.staged_attachments(state.opts[:project_id], id),
-          refresh_pending: false
+          refresh_pending: false,
+          diff_cache: %{},
+          diff_order: [],
+          change_facts: %{}
       })
     end
   end
@@ -1265,12 +1313,18 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   defp item_kind(%{source_kind: "error"}), do: "error"
   defp item_kind(_), do: "system"
 
-  defp tool_call(%{source_kind: "op", op_type: type} = r)
+  defp tool_call(%{source_kind: "op", op_type: type} = r, op_facts)
        when is_binary(type) and type != "llm" do
     started = ms(r.started_at)
     finished = ms(r.finished_at)
+    diff = op_facts[r.id]
 
     %{
+      # pass70 C8: an edit of a finished run says what it changed and where
+      # its diff is; line counts and the diff wait until the run is over.
+      "added" => diff && diff.added,
+      "removed" => diff && diff.removed,
+      "diff_ref" => diff && %{"id" => r.id <> ":diff", "total_bytes" => diff.total},
       "name" => clip(type, 200),
       "title" => clip(r.title, 200) || "",
       "detail" => clip(r.detail, 200) || "",
@@ -1283,7 +1337,83 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     }
   end
 
-  defp tool_call(_), do: nil
+  defp tool_call(_, _), do: nil
+
+  # pass70 C8: per checkpoint of a finished run, what `FeatureCatalog.change_diff/2`
+  # says it changed (counts, file state, the diff's size). Computed once per
+  # checkpoint, at most 50 per projection, kept for the checkpoints shown.
+  @facts_per_reload 50
+
+  defp change_facts(cache, checkpoints, terminal, conversation) do
+    finished = MapSet.new(terminal)
+    shown = Enum.filter(checkpoints, &MapSet.member?(finished, &1.run_id))
+
+    {facts, _budget} =
+      Enum.reduce(shown, {%{}, @facts_per_reload}, fn c, {acc, budget} ->
+        case Map.fetch(cache, c.id) do
+          {:ok, facts} ->
+            {Map.put(acc, c.id, facts), budget}
+
+          :error when budget > 0 ->
+            case SwarmCode.Domain.FeatureCatalog.change_diff(conversation, c.id) do
+              {:ok, diff} ->
+                {Map.put(acc, c.id, %{
+                   added: diff.added,
+                   removed: diff.removed,
+                   file_state: diff.file_state,
+                   total: byte_size(diff.text)
+                 }), budget - 1}
+
+              _ ->
+                {acc, budget - 1}
+            end
+
+          :error ->
+            {acc, budget}
+        end
+      end)
+
+    facts
+  end
+
+  # An op's diff is its checkpoints' diffs joined by a newline, oldest first
+  # (`FeatureCatalog.op_diff/2`); known when every one of them is.
+  defp op_diff_facts(checkpoints, facts) do
+    checkpoints
+    |> Enum.filter(& &1.node_id)
+    |> Enum.group_by(& &1.node_id)
+    |> Enum.flat_map(fn {node_id, cs} ->
+      cs =
+        Enum.sort_by(cs, &{&1.inserted_at, &1.id}, fn {a, x}, {b, y} ->
+          case DateTime.compare(a, b) do
+            :lt -> true
+            :gt -> false
+            :eq -> x <= y
+          end
+        end)
+
+      known = Enum.map(cs, &facts[&1.id])
+
+      if length(cs) <= 20 and Enum.all?(known) do
+        [
+          {node_id,
+           %{
+             added: sum_known(known, :added),
+             removed: sum_known(known, :removed),
+             total: Enum.sum(Enum.map(known, & &1.total)) + length(known) - 1
+           }}
+        ]
+      else
+        []
+      end
+    end)
+    |> Map.new()
+  end
+
+  defp sum_known(known, key) do
+    if Enum.all?(known, &is_integer(Map.get(&1, key))),
+      do: Enum.sum(Enum.map(known, &Map.get(&1, key)))
+  end
 
   @file_ops ~w(read_file edit_file write_file list_dir)
 
@@ -1300,6 +1430,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   defp op_files(_, _), do: []
 
   defp change_body(c, state) do
+    facts = state.change_facts[c.id]
+
     %{
       "id" => c.id,
       "run_id" => c.run_id,
@@ -1307,7 +1439,14 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       "path" => change_path(c.path, c.workspace_path, state.roots),
       "restorable" => c.restorable == true,
       "at" => ms(c.inserted_at) || 0,
-      "revision" => stamp(c.inserted_at)
+      "revision" => stamp(c.inserted_at) + if(facts, do: 1, else: 0),
+      # pass70 C8: the op that made it and, once its run is over, what it
+      # changed and where its diff is.
+      "op_id" => c.node_id,
+      "file_state" => (facts && facts.file_state) || "unknown",
+      "added" => facts && facts.added,
+      "removed" => facts && facts.removed,
+      "diff_ref" => facts && %{"id" => c.id <> ":diff", "total_bytes" => facts.total}
     }
   end
 
@@ -1426,6 +1565,13 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     grouped_agents = Enum.group_by(agents, & &1.run_id)
     ops = PersistedProjection.running_ops(conv, ids)
     checkpoints = PersistedProjection.checkpoints(conv, ids)
+
+    terminal =
+      for row <- rows, row.status in ["done", "stopped", "failed", "interrupted"], do: row.id
+
+    facts = change_facts(state.change_facts, checkpoints, terminal, conv)
+    state = %{state | change_facts: facts}
+    op_facts = op_diff_facts(checkpoints, facts)
     checkpoint_counts = PersistedProjection.checkpoint_counts(conv, ids)
 
     runs =
@@ -1481,7 +1627,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
               reasoning_bytes: r.reasoning_bytes,
               attachments: Map.get(r, :attachments, []),
               kind: item_kind(r),
-              tool: tool_call(r),
+              tool: tool_call(r, op_facts),
               agent_id: r.agent_id,
               tokens_in: r.tokens_in || 0,
               tokens_out: r.tokens_out || 0,
@@ -2463,6 +2609,24 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
                 params["bytes"]
               )
 
+        # pass70 C8: an edit's or a change's unified diff, cut into windows.
+        [entity_id, "diff"] ->
+          case cached_diff(state, entity_id, scope) do
+            {:ok, text} ->
+              %{
+                text:
+                  binary_part(
+                    text,
+                    min(offset, byte_size(text)),
+                    max(min(params["bytes"], byte_size(text) - offset), 0)
+                  ),
+                total: byte_size(text)
+              }
+
+            _ ->
+              nil
+          end
+
         _ ->
           nil
       end
@@ -2484,6 +2648,88 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
       _ ->
         base
+    end
+  end
+
+  @file_index_ms 30_000
+
+  defp file_index(%{file_index: {at, paths}} = state) when is_list(paths) do
+    if System.monotonic_time(:millisecond) - at < @file_index_ms,
+      do: {paths, state},
+      else: file_index(%{state | file_index: nil})
+  end
+
+  defp file_index(state) do
+    {paths, _truncated?} = SwarmCode.Domain.FeatureCatalog.file_index(state.opts[:project_root])
+    {paths, %{state | file_index: {System.monotonic_time(:millisecond), paths}}}
+  end
+
+  # A diff is computed once and paged from memory: at most 8 of them and
+  # 4 MB, the oldest dropped first (and computed again when asked again).
+  @diff_cache_entries 8
+  @diff_cache_bytes 4_000_000
+
+  defp warm_diff(state, ref, scope) when is_binary(ref) do
+    with [id, "diff"] <- String.split(ref, ":", parts: 2),
+         false <- Map.has_key?(state.diff_cache, {id, scope.kind, scope.id}),
+         {:ok, text} <- diff_text(id, scope, state) do
+      key = {id, scope.kind, scope.id}
+      order = state.diff_order ++ [key]
+      cache = Map.put(state.diff_cache, key, text)
+      {cache, order} = trim_diffs(cache, order)
+      %{state | diff_cache: cache, diff_order: order}
+    else
+      _ -> state
+    end
+  end
+
+  defp warm_diff(state, _ref, _scope), do: state
+
+  defp trim_diffs(cache, [oldest | rest] = order) do
+    bytes = cache |> Map.values() |> Enum.map(&byte_size/1) |> Enum.sum()
+
+    if length(order) > @diff_cache_entries or (bytes > @diff_cache_bytes and rest != []),
+      do: trim_diffs(Map.delete(cache, oldest), rest),
+      else: {cache, order}
+  end
+
+  defp trim_diffs(cache, []), do: {cache, []}
+
+  defp cached_diff(state, id, scope) do
+    case Map.fetch(state.diff_cache, {id, scope.kind, scope.id}) do
+      {:ok, text} -> {:ok, text}
+      :error -> :error
+    end
+  end
+
+  # A checkpoint id (a change) or an op id (an edit): its diff, when it belongs
+  # to this conversation (and to the run a run-scoped inspector shows).
+  defp diff_text(id, scope, state) do
+    conversation = state.opts[:conversation_id]
+
+    with true <- uuid?(id),
+         {:ok, run_id, diff} <- change_or_op_diff(conversation, id),
+         true <- scope.kind != :run or scope.id == run_id do
+      {:ok, diff.text}
+    else
+      _ -> :error
+    end
+  end
+
+  defp change_or_op_diff(conversation, id) do
+    alias SwarmCode.Domain.FeatureCatalog
+
+    case SwarmCode.Domain.Checkpoints.get(id) do
+      %{conversation_id: ^conversation, run_id: run_id} ->
+        with {:ok, diff} <- FeatureCatalog.change_diff(conversation, id), do: {:ok, run_id, diff}
+
+      nil ->
+        with %{run_id: run_id} <- Conversations.get_node(id),
+             {:ok, diff} <- FeatureCatalog.op_diff(conversation, id),
+             do: {:ok, run_id, diff}
+
+      _ ->
+        :error
     end
   end
 

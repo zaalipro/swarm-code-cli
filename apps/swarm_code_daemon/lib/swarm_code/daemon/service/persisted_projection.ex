@@ -443,10 +443,13 @@ defmodule SwarmCode.Daemon.Service.PersistedProjection do
       Repo.one(
         from([n, r] in n,
           select: %{
+            # pass70 C8 (ux 2.5): exactly the text `records/5` measured for
+            # the item's `detail_ref` (`text_bytes`); the name it used to
+            # prepend made every total differ, and the client waited forever
+            # for a window of the size it was promised.
             text:
               fragment(
-                "substr(cast(coalesce(?, '') || char(10) || coalesce(?, ?, '') || char(10) || coalesce(?, '') as blob), ?, ?)",
-                n.name,
+                "substr(cast(trim(coalesce(?, ?, '') || char(10) || coalesce(?, ''), char(10)) as blob), ?, ?)",
                 n.result,
                 n.detail,
                 n.error,
@@ -455,8 +458,7 @@ defmodule SwarmCode.Daemon.Service.PersistedProjection do
               ),
             total:
               fragment(
-                "length(cast(coalesce(?, '') || char(10) || coalesce(?, ?, '') || char(10) || coalesce(?, '') as blob))",
-                n.name,
+                "length(cast(trim(coalesce(?, ?, '') || char(10) || coalesce(?, ''), char(10)) as blob))",
                 n.result,
                 n.detail,
                 n.error

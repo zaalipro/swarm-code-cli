@@ -345,6 +345,95 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Session do
      deltas ++ [toast(request_id, :success, "Project", text, nil, nil)], [session.current]}
   end
 
+  @files ~w(README.md mix.exs lib/swarm_code/repo.ex lib/swarm_code/accounts/user.ex
+             lib/swarm_code/accounts/session.ex test/swarm_code/repo_test.exs
+             test/swarm_code/accounts/user_test.exs config/runtime.exs)
+
+  @doc """
+  pass70 C8: `@path` completion over a synthetic project: the paths that
+  contain the query's characters in order, fewest skipped first, with the
+  grapheme indices they matched (the service ranks with `FuzzyMatch`).
+  """
+  def files(script, %{kind: {:feature_query, :files, query, _, size, _}, request_id: id}) do
+    ranked =
+      case query do
+        nil ->
+          Enum.map(Enum.sort_by(@files, &{length(Path.split(&1)), &1}), &{&1, []})
+
+        query ->
+          for path <- @files, matches = subsequence(path, query), matches != nil do
+            {path, matches}
+          end
+          |> Enum.sort_by(fn {path, m} -> {List.last(m) - hd(m), byte_size(path), path} end)
+      end
+      |> Enum.take(size)
+
+    items =
+      Enum.map(ranked, fn {path, matches} ->
+        %DTO.LibraryItem{
+          id: path,
+          title: path,
+          subtitle: Path.dirname(path),
+          status: "file",
+          detail: "",
+          matches: matches,
+          actions: []
+        }
+      end)
+
+    {:ok,
+     %DTO.LibrarySnapshot{
+       feature: :files,
+       title: "Files",
+       description: "Files of the project",
+       items: items,
+       request_id: id,
+       covered_ids: Enum.map(items, & &1.id),
+       through_sequence: script.sequence
+     }}
+  end
+
+  defp subsequence(path, query) do
+    wanted = query |> String.downcase() |> String.graphemes()
+
+    {left, found} =
+      path
+      |> String.graphemes()
+      |> Enum.with_index()
+      |> Enum.reduce({wanted, []}, fn
+        _, {[], acc} ->
+          {[], acc}
+
+        {g, i}, {[q | rest], acc} ->
+          if String.downcase(g) == q, do: {rest, [i | acc]}, else: {[q | rest], acc}
+      end)
+
+    if left == [] and found != [], do: highlight(path, wanted, Enum.reverse(found))
+  end
+
+  # The query as one piece when the path has it (file name first), like the
+  # service.
+  defp highlight(path, wanted, leftmost) do
+    graphemes = path |> String.downcase() |> String.graphemes()
+    base = length(graphemes) - length(String.graphemes(Path.basename(path)))
+
+    case piece(graphemes, wanted, base) || piece(graphemes, wanted, 0) do
+      nil -> leftmost
+      start -> Enum.to_list(start..(start + length(wanted) - 1))
+    end
+  end
+
+  defp piece(graphemes, wanted, from) do
+    graphemes
+    |> Enum.drop(from)
+    |> Enum.chunk_every(length(wanted), 1, :discard)
+    |> Enum.find_index(&(&1 == wanted))
+    |> case do
+      nil -> nil
+      i -> from + i
+    end
+  end
+
   @doc """
   pass70 C7: the session slash commands the demo answers the way the
   persisted service does (`CommandDispatcher`): `{:ok, script, deltas,

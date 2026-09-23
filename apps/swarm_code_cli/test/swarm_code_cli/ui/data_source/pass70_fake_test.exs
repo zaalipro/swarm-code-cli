@@ -298,6 +298,37 @@ defmodule SwarmCodeCLI.UI.DataSource.Pass70FakeTest do
     assert %DTO.ConversationList{current_id: ^new_id} = list(pid, "list-s")
   end
 
+  test "@path completion ranks the demo project's files (C8)" do
+    pid = source()
+
+    assert %DTO.LibrarySnapshot{feature: :files, items: [best | _]} =
+             reply(
+               pid,
+               request(
+                 "files-1",
+                 {:feature_query, :files, "repo", nil, 20, 65_536},
+                 {:feature, :files},
+                 :library_snapshot
+               )
+             )
+
+    assert best.title == "lib/swarm_code/repo.ex"
+    assert best.matches == [15, 16, 17, 18]
+
+    assert %DTO.LibrarySnapshot{items: [first | _]} =
+             reply(
+               pid,
+               request(
+                 "files-2",
+                 {:feature_query, :files, nil, nil, 3, 65_536},
+                 {:feature, :files},
+                 :library_snapshot
+               )
+             )
+
+    assert first.title == "README.md"
+  end
+
   test "deny and stop stops the run" do
     pid = source()
     assert :ok = Source.advance(pid, "catalogue-activity")

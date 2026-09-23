@@ -203,7 +203,11 @@ defmodule SwarmCode.Daemon.Service.WireContractTest do
              "finished_at" => DateTime.to_unix(c.t1, :millisecond) + 400,
              "duration_ms" => 400,
              "result_bytes" => byte_size("lib/a.ex:1\nlib/b.ex:2\nlib/c.ex:3"),
-             "files" => []
+             "files" => [],
+             # pass70 C8: a grep changes no file.
+             "added" => nil,
+             "removed" => nil,
+             "diff_ref" => nil
            }
 
     edit = items[c.edit.id]
@@ -320,7 +324,14 @@ defmodule SwarmCode.Daemon.Service.WireContractTest do
              "path" => "lib/x.ex",
              "restorable" => true,
              "at" => DateTime.to_unix(c.worktree_checkpoint.inserted_at, :millisecond),
-             "revision" => DateTime.to_unix(c.worktree_checkpoint.inserted_at, :microsecond)
+             "revision" => DateTime.to_unix(c.worktree_checkpoint.inserted_at, :microsecond),
+             # pass70 C8: the edit that made it; the run is still running, so
+             # its counts and diff wait.
+             "op_id" => c.edit.id,
+             "file_state" => "unknown",
+             "added" => nil,
+             "removed" => nil,
+             "diff_ref" => nil
            }
 
     assert project_change["id"] == c.project_checkpoint.id
