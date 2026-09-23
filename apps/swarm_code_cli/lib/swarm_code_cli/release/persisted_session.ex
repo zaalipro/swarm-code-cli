@@ -129,6 +129,13 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
   @doc "Prints a failure (two lines and the log path) on stderr and returns its exit status."
   @spec report(failure()) :: non_neg_integer()
   def report(%{status: status, message: message, action: action}) do
+    # A sentence that names swarmcode itself is not prefixed twice (pass70 F14).
+    message =
+      case message do
+        "swarmcode " <> rest -> rest
+        message -> message
+      end
+
     lines =
       ["swarmcode: " <> message] ++
         if(action != "", do: ["  " <> action], else: []) ++
@@ -680,7 +687,7 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
        "Quit the SwarmCode app, then run swarmcode again."}
 
   defp startup_words(:data_lease_held, _error, boot),
-    do: {lease_holder(boot), "Close it first (q, then y if it asks), then run swarmcode again."}
+    do: {lease_holder(boot), "Close it first (Ctrl-C twice, and once more if it asks), then run swarmcode again."}
 
   # The allowlist's two refusals (pass70 D2: an upgrade only the app makes, a
   # database from a newer app) already say what to do; any other schema

@@ -22,6 +22,12 @@ defmodule SwarmCodeCLI.Release.PersistedSessionTest do
     assert second == "  Quit it."
   end
 
+  test "a sentence that names swarmcode is not prefixed twice" do
+    failure = %{status: 3, message: "swarmcode could not start.", action: "Reinstall swarmcode."}
+    output = capture_io(:stderr, fn -> assert PersistedSession.report(failure) == 3 end)
+    assert hd(String.split(output, "\n")) == "swarmcode: could not start."
+  end
+
   test "the private log lives in the platform's state directory" do
     path = PersistedSession.log_path()
     assert Path.basename(path) == "cli.log"
