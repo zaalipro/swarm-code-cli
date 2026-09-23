@@ -12,7 +12,7 @@ defmodule SwarmCode.Daemon.Shutdown do
   """
   require Logger
 
-  alias SwarmCode.Domain.{Engine, Workflows}
+  alias SwarmCode.Domain.{Conversations, Engine, Workflows}
   alias SwarmCode.Domain.Tools.BackgroundProcs
 
   @runtime SwarmCode.Domain.Runtime
@@ -26,9 +26,16 @@ defmodule SwarmCode.Daemon.Shutdown do
   @flush_step_ms 100
   @teardown_ms 5_000
 
+  @typedoc """
+  `stopped_runs` (pass71 S4): the runs the quit stopped, oldest first, each
+  `%{id, kind, title}` (`title` is the run's label, else its prompt; either
+  may be nil). `stopped` is their count.
+  """
+  @type stopped_run :: %{id: binary(), kind: binary() | nil, title: binary() | nil}
   @type result :: %{
           paused: non_neg_integer(),
           stopped: non_neg_integer(),
+          stopped_runs: [stopped_run()],
           reaped: non_neg_integer()
         }
 
@@ -39,14 +46,19 @@ defmodule SwarmCode.Daemon.Shutdown do
   @spec run(keyword()) :: result()
   def run(opts \\ []) do
     paused = step(:pause_workflows, &pause_workflows/0, 0)
-    stopped = step(:stop_runs, &stop_runs/0, 0)
+    stopped_runs = step(:stop_runs, &stop_runs/0, [])
     reaped = step(:reap_background_commands, &reap_survivors/0, 0)
     step(:wait_for_flush, fn -> wait_for_flush(Keyword.get(opts, :flush_ms, @flush_ms)) end, :ok)
 
     if Keyword.get(opts, :teardown, true),
       do: teardown(Keyword.get(opts, :teardown_ms, @teardown_ms))
 
-    %{paused: paused, stopped: stopped, reaped: reaped}
+    %{
+      paused: paused,
+      stopped: length(stopped_runs),
+      stopped_runs: stopped_runs,
+      reaped: reaped
+    }
   end
 
   # The workflows a quit pauses: an active row with a live runner.
@@ -61,11 +73,35 @@ defmodule SwarmCode.Daemon.Shutdown do
     length(active)
   end
 
+  # The runs are described before they stop, while their rows say running.
   defp stop_runs do
-    running = Engine.running_run_ids()
+    running = Engine.running_run_ids() |> Enum.map(&describe_run/1) |> Enum.sort_by(& &1.at)
     Engine.stop_all()
-    length(running)
+    Enum.map(running, &Map.delete(&1, :at))
   end
+
+  defp describe_run(id) do
+    case Conversations.get_run(id) do
+      %{} = run ->
+        %{
+          id: id,
+          kind: run.kind,
+          title: text(run.label) || text(run.prompt),
+          at: run.inserted_at && DateTime.to_unix(run.inserted_at, :microsecond)
+        }
+
+      nil ->
+        %{id: id, kind: nil, title: nil, at: nil}
+    end
+  rescue
+    _ -> %{id: id, kind: nil, title: nil, at: nil}
+  end
+
+  defp text(value) when is_binary(value) do
+    if String.trim(value) == "", do: nil, else: value
+  end
+
+  defp text(_), do: nil
 
   # Spec 67 G30: a command that yielded or was left running with `&` belongs to
   # a run that may be long over; nothing else would ever stop it.

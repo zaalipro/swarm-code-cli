@@ -31,6 +31,69 @@ defmodule SwarmCode.Daemon.ShutdownTest do
     assert BackgroundProcs.list(run_id) == []
   end
 
+  # pass71 S4: the exit summary lists what the quit stopped, so the result
+  # names each live run (label, else prompt) and not only their count.
+  test "quit reports every run it stopped, with its title and kind" do
+    alias SwarmCode.Domain.{Conversations, Projects}
+    root = Path.join(System.tmp_dir!(), "shutdown-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(root)
+    on_exit(fn -> File.rm_rf!(root) end)
+    {:ok, project} = Projects.create(%{name: "Quit", root_path: root})
+    {:ok, conv} = Conversations.create(project.id)
+
+    runs =
+      for {kind, prompt, label} <- [
+            {"chat", "Fix the login test\nand more", nil},
+            {"swarm", "ignored prompt", "Research caching"}
+          ] do
+        {:ok, run} =
+          Conversations.create_run(%{
+            conversation_id: conv.id,
+            kind: kind,
+            prompt: prompt,
+            label: label,
+            status: "running",
+            started_at: DateTime.utc_now()
+          })
+
+        server = fake_run_server(run.id, {conv.id, kind})
+        {run, server}
+      end
+
+    assert %{stopped: 2, stopped_runs: stopped} = Shutdown.run(teardown: false, flush_ms: 0)
+
+    assert Enum.sort(Enum.map(stopped, &{&1.kind, &1.title})) == [
+             {"chat", "Fix the login test\nand more"},
+             {"swarm", "Research caching"}
+           ]
+
+    for {run, server} <- runs do
+      assert Enum.any?(stopped, &(&1.id == run.id))
+      assert_receive {:stopped, ^server}
+    end
+  end
+
+  # Stands in for a RunServer: registered like one, it answers `:stop`.
+  defp fake_run_server(run_id, value) do
+    test = self()
+    parent = self()
+
+    pid =
+      spawn_link(fn ->
+        {:ok, _} = Registry.register(SwarmCode.Domain.Registry, {:run, run_id}, value)
+        send(parent, {:registered, self()})
+
+        receive do
+          {:"$gen_call", from, :stop} ->
+            GenServer.reply(from, :ok)
+            send(test, {:stopped, self()})
+        end
+      end)
+
+    assert_receive {:registered, ^pid}
+    pid
+  end
+
   defp alive?(os_pid) do
     match?(
       {_, 0},
