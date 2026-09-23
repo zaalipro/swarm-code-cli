@@ -9,16 +9,27 @@ import shlex
 import sqlite3
 import subprocess
 import tempfile
+import select
 import threading
+import time
 import unittest
 from test_terminal_demo_pty import Demo, ROOT
 
 OVERRIDES = ('SWARM_PROVIDER SWARM_MODEL SWARM_BASE_URL OPENAI_MODEL ANTHROPIC_MODEL '
              'OPENAI_BASE_URL ANTHROPIC_BASE_URL OPENAI_API_KEY ANTHROPIC_API_KEY SWARM_API_KEY '
-             'SWARM_CONVERSATION SWARM_PERSISTED')
+             'SWARM_CONVERSATION SWARM_PERSISTED SWARM_MODEL_OVERRIDE SWARM_ENV_FILE '
+             # The desktop's seeded provider reads its key from the
+             # environment; a real key would make it usable and send the
+             # fixture prompt to a real model instead of this test's server.
+             'LLMOTIONS_API_KEY')
 
 
 class SavedSession(unittest.TestCase):
+    def settle(self, terminal, seconds):
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            terminal.pump()
+
     def test_saved_prompt_response_and_provider_resume_on_second_vm(self):
         requests = []
 
@@ -91,13 +102,19 @@ SwarmCode.Development.PersistedSession.run_for_test(boot)
             for phase, wrapper in enumerate(wrappers):
                 terminal = Demo(launcher=wrapper)
                 try:
-                    terminal.wait_for(b'Focus: composer', timeout=120)
-                    # The SAVED · DEV launcher banner is the title lead only until
-                    # the workspace snapshot arrives; shell.ex then leads with
-                    # the project name, so wait for the actually-rendered banner
-                    # (phase 0 starts in Build mode, phase 1 resumes in Plan).
-                    mode = 'Build' if phase == 0 else 'Plan'
-                    terminal.wait_for(f'project · {mode} · pty-fixture'.encode())
+                    # pass70 (D4, D5): no focus names on screen and the view
+                    # opens composer-first, so the composer's placeholder and
+                    # the status line (mode · approval · model) are the
+                    # markers; phase 0 starts in Build, phase 1 resumes in Plan.
+                    terminal.wait_for(b'Type a message', timeout=120)
+                    if phase == 0:
+                        # D3: SWARM_* names the provider only on a first run,
+                        # and says so once (a toast over the status line).
+                        terminal.wait_for(b'First run: added the provider')
+                        first_run_seen = time.monotonic()
+                    else:
+                        terminal.wait_for(b'Plan')
+                        terminal.wait_for(b'pty-fixture')
                     self.assertNotIn(b'FAKE', terminal.screen())
                     terminal.descendants()
                     match = re.search(rb'conversation ([0-9a-f-]{36})', terminal.output)
@@ -117,37 +134,41 @@ SwarmCode.Development.PersistedSession.run_for_test(boot)
                         terminal.wait_for(b'Conversation goal')
                         terminal.wait_for(b'No goal is set')
                         terminal.capture('saved-goal-report')
+                        # Esc closes the report; letters type again.
                         terminal.send(b'\x1b')
-                        terminal.wait_for(b'Focus: composer')
+                        self.settle(terminal, .5)
                         terminal.send(b'\x1b[200~/plan\x1b[201~\r')
                         terminal.wait_for(b'Plan mode enabled')
-                        terminal.wait_for('project · Plan · pty-fixture'.encode())
                         terminal.capture('saved-plan-mode')
                         terminal.send(b'\x1b[200~/rewind\x1b[201~\r')
-                        terminal.wait_for(b'Checkpoints')
+                        terminal.wait_for(b'heckpoint')
+                        terminal.capture('saved-rewind')
                         terminal.send(b'\x1b')
-                        terminal.wait_for(b'Focus: composer')
+                        # The first-run toast lasts 8 s; after it the status
+                        # line reads the mode and the model again.
+                        self.settle(terminal, max(0, 8.5 - (time.monotonic() - first_run_seen)))
+                        # Ctrl-T selects the transcript's newest row; Esc hands
+                        # the keyboard back to the composer.
+                        terminal.send(b'\x14')
+                        self.settle(terminal, .5)
                         terminal.send(b'\x1b')
-                        terminal.wait_for(b'Focus: main')
-                        # Shift-Tab used to walk focus to the (since-removed)
-                        # navigator dock; the focus graph is now main, inspector
-                        # and composer only, so Shift-Tab from main wraps to the
-                        # composer's editor.
-                        terminal.send(b'\x1b[Z')
-                        terminal.wait_for(b'Focus: composer')
-                        terminal.send(b'\x1b')
-                        terminal.wait_for(b'Focus: main')
+                        self.settle(terminal, .5)
                         terminal.wait_for(b'Saved terminal verified.')
+                        terminal.wait_for(b'pty-fixture')
+                        terminal.wait_for(b'Plan')
                         terminal.capture('saved-run-navigation')
                         self.assertNotIn(b'Page error', terminal.screen())
-                        terminal.send(b'\x1b')
-                        terminal.wait_for('project · Plan · pty-fixture'.encode())
-                    # q is text while the composer is focused; leave the editor
-                    # first, matching the footer's explicit Esc Back hint.
-                    if b'Focus: composer' in terminal.screen():
-                        terminal.send(b'\x1b')
-                        terminal.wait_for(b'Focus: main')
-                    terminal.send(b'q')
+                    # Ctrl-C closes a layer or clears the draft; a second press
+                    # within 1.5 s quits (letters type into the composer).
+                    for _ in range(8):
+                        if terminal.status is not None:
+                            break
+                        terminal.send(b'\x03')
+                        end = time.monotonic() + .3
+                        while time.monotonic() < end and terminal.status is None:
+                            terminal.pump()
+                            if select.select([terminal.meta], [], [], 0)[0]:
+                                terminal.status = int(terminal.meta.readline())
                     terminal.finish()
                     # A clean close is silent; a bounded, unconfirmed one says so.
                     self.assertNotIn(b'handle still pending', terminal.output)
@@ -165,7 +186,7 @@ SwarmCode.Development.PersistedSession.run_for_test(boot)
                 self.assertIn(('Remember saved terminal',), messages)
                 self.assertIn(('Saved terminal verified.',), messages)
                 self.assertEqual(database.execute('SELECT count(*) FROM conversations').fetchone()[0], 1)
-                self.assertEqual(database.execute('SELECT count(*) FROM schema_migrations').fetchone()[0], 46)
+                self.assertEqual(database.execute('SELECT count(*) FROM schema_migrations').fetchone()[0], 57)
             database.close()
 
 

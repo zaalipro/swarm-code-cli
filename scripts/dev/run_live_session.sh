@@ -28,7 +28,7 @@ conversation, and preserves history across restart. Set SWARM_CONVERSATION to a
 conversation UUID to select one, or leave it unset to resume the latest.
 
 First build: scripts/dev/check_terminal_port.sh
-Keys: Tab focus, Enter send, Escape return, Ctrl-P switcher, q exit.
+Keys: type to write; Enter sends, Esc stops a turn, Ctrl-C twice quits, Ctrl-P palette.
 Visual companion: Ctrl-P, "Open visual companion" (SWARM_COMPANION=0 disables).
 Sessions are unsaved; tools can modify the selected project's files.
 HELP

@@ -15,7 +15,7 @@ only. SWARM_* settings create a provider only when none exists yet.
 Logs: ~/Library/Logs/SwarmCode/cli.log (XDG state dir on Linux).
 
 First build: scripts/dev/check_terminal_port.sh
-Keys: Tab focus, Enter send, Escape return, Ctrl-P switcher, q exit.
+Keys: type to write; Enter sends, Esc stops a turn, Ctrl-C twice quits, Ctrl-P palette.
 Visual companion: Ctrl-P, "Open visual companion" (SWARM_COMPANION=0 disables).
 HELP
   exit 0

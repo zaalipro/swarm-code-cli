@@ -634,7 +634,7 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
   defp terminal_port! do
     executable =
       System.get_env("SWARM_TERMINAL_PORT") ||
-        Path.expand("../../_build/terminal-port/debug/swarm-terminal-port", __DIR__)
+        Path.expand("../../../../../_build/terminal-port/debug/swarm-terminal-port", __DIR__)
 
     if File.regular?(executable),
       do: executable,
@@ -687,7 +687,9 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
        "Quit the SwarmCode app, then run swarmcode again."}
 
   defp startup_words(:data_lease_held, _error, boot),
-    do: {lease_holder(boot), "Close it first (Ctrl-C twice, and once more if it asks), then run swarmcode again."}
+    do:
+      {lease_holder(boot),
+       "Close it first (Ctrl-C twice, and once more if it asks), then run swarmcode again."}
 
   # The allowlist's two refusals (pass70 D2: an upgrade only the app makes, a
   # database from a newer app) already say what to do; any other schema
