@@ -29,7 +29,8 @@ print(json.dumps({key: os.environ.get(key) == value for key, value in expected.i
 ''')
             mise.chmod(0o700)
             env = {key: value for key, value in os.environ.items()
-                   if not key.startswith(('SWARM_', 'OPENAI_', 'ANTHROPIC_'))}
+                   if not key.startswith(('SWARM_', 'OPENAI_', 'ANTHROPIC_'))
+                   and key not in ('GITHUB_ACCESS_TOKEN', 'NPMJS_ACCESS_TOKEN', 'LINEAR_API_KEY')}
             env.update(PATH=str(fixture) + os.pathsep + env['PATH'],
                        SWARM_ENV_FILE=str(secrets),
                        SWARM_TEST_EXPECTED=json.dumps(expected))
@@ -61,6 +62,18 @@ print(json.dumps({key: os.environ.get(key) == value for key, value in expected.i
         self.launch('SWARM_API_KEY=fixture-key\nSWARM_MODEL=file-model\n',
                     {'SWARM_API_KEY': '', 'SWARM_MODEL': 'local-model'},
                     {'SWARM_API_KEY': '', 'SWARM_MODEL': 'local-model'})
+
+    def test_only_provider_variables_leave_the_private_file(self):
+        # pass70 B4 (rel F5): other secrets in the file never reach the VM.
+        self.launch('OPENAI_API_KEY=fixture-key\nSWARM_MODEL=file-model\n'
+                    'GITHUB_ACCESS_TOKEN=gh-secret\nexport NPMJS_ACCESS_TOKEN=npm-secret\n'
+                    'LINEAR_API_KEY="linear secret"\nSWARM_MODEL_OVERRIDE=file/override\n'
+                    'ANTHROPIC_BASE_URL="http://localhost:9/v1"\n',
+                    {},
+                    {'OPENAI_API_KEY': 'fixture-key', 'SWARM_MODEL': 'file-model',
+                     'ANTHROPIC_BASE_URL': 'http://localhost:9/v1',
+                     'GITHUB_ACCESS_TOKEN': None, 'NPMJS_ACCESS_TOKEN': None,
+                     'LINEAR_API_KEY': None, 'SWARM_MODEL_OVERRIDE': None})
 
     def test_exported_provider_key_skips_private_file(self):
         self.launch('OPENAI_API_KEY=file-key\nSWARM_MODEL=file-model\n',

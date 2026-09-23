@@ -1,5 +1,12 @@
 #!/usr/bin/env bash
-# Sourced by development launchers. Never print or persist private settings.
+# Sourced by the launchers (and copied into the release as bin/load_provider_env.sh).
+# Never print or persist private settings.
+#
+# pass70 B4 (rel F5): only provider variables leave the environment file. The
+# file is evaluated in a clean child shell and just SWARM_*, OPENAI_* and
+# ANTHROPIC_* come back, so a GitHub, npm or Linear token in ~/.secrets never
+# reaches the BEAM, and therefore never a model-run shell command.
+# SWARM_MODEL_OVERRIDE is set only by `swarmcode --model` and is never loaded.
 swarm_load_provider_env() {
   # Presence matters: an explicitly empty key selects unauthenticated local APIs.
   if [[ ${SWARM_API_KEY+x} || ${OPENAI_API_KEY+x} || ${ANTHROPIC_API_KEY+x} ]]; then
@@ -15,27 +22,31 @@ swarm_load_provider_env() {
     return 0
   fi
 
-  local swarm_env_names=() swarm_env_values=()
-  local swarm_env_name swarm_env_index=0 swarm_env_autoexport=0
-  while IFS= read -r swarm_env_name; do
+  local swarm_env_name swarm_env_value
+  # Shell exports win over the file: only unset names are taken from it.
+  while IFS= read -r -d '' swarm_env_name && IFS= read -r -d '' swarm_env_value; do
     case "$swarm_env_name" in
-      SWARM_*|OPENAI_*|ANTHROPIC_*)
-        swarm_env_names+=("$swarm_env_name")
-        swarm_env_values+=("${!swarm_env_name}")
-        ;;
+      SWARM_MODEL_OVERRIDE) continue ;;
+      SWARM_*|OPENAI_*|ANTHROPIC_*) ;;
+      *) continue ;;
     esac
-  done < <(compgen -e)
-
-  [[ $- == *a* ]] && swarm_env_autoexport=1
-  set -a
-  # shellcheck disable=SC1090
-  source "$swarm_env_path"
-  for swarm_env_name in "${swarm_env_names[@]}"; do
-    printf -v "$swarm_env_name" '%s' "${swarm_env_values[$swarm_env_index]}"
-    export "$swarm_env_name"
-    swarm_env_index=$((swarm_env_index + 1))
-  done
-  if [[ $swarm_env_autoexport == 0 ]]; then set +a; fi
+    [[ $swarm_env_name =~ ^[A-Z_][A-Z0-9_]*$ ]] || continue
+    if [[ -z ${!swarm_env_name+x} ]]; then
+      printf -v "$swarm_env_name" '%s' "$swarm_env_value"
+      export "$swarm_env_name"
+    fi
+  done < <(
+    env -i HOME="$HOME" PATH="$PATH" bash --noprofile --norc -c '
+      set -a
+      # shellcheck disable=SC1090
+      source "$1" >/dev/null 2>&1 </dev/null
+      for name in $(compgen -e); do
+        case "$name" in
+          SWARM_*|OPENAI_*|ANTHROPIC_*) printf "%s\0%s\0" "$name" "${!name}" ;;
+        esac
+      done
+    ' swarm-env "$swarm_env_path"
+  )
 }
 
 swarm_load_provider_env
