@@ -100,4 +100,13 @@ defmodule SwarmCodeCLI.Release.PersistedSessionTest do
     assert PersistedSession.resume_command("/p/x", nil) == "swarmcode /p/x --continue"
     assert PersistedSession.resume_command(here, "not-an-id") == "swarmcode --continue"
   end
+
+  # pass71 F19 (review R17): an unknown --model says which model it was.
+  test "an unknown model is named" do
+    assert PersistedSession.unknown_model_words("gpt-9-turbo") ==
+             ~s(No provider offers the model "gpt-9-turbo".)
+
+    assert PersistedSession.unknown_model_words(nil) ==
+             "No provider offers the model given with --model."
+  end
 end

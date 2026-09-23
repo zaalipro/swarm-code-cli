@@ -578,6 +578,14 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
     "#{length(files)} · " <> Enum.join(names, ", ") <> if(rest > 0, do: ", +#{rest}", else: "")
   end
 
+  @doc false
+  def unknown_model_words(model) do
+    case one_line(model) do
+      nil -> "No provider offers the model given with --model."
+      name -> "No provider offers the model " <> inspect(String.slice(name, 0, 120)) <> "."
+    end
+  end
+
   # pass71 F18 (review R20): the hint names this conversation; `--continue`
   # opened whichever was newest by then (a later `-p` one, another window's).
   @doc false
@@ -795,11 +803,12 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
         "Add one in SwarmCode Settings, or set SWARM_MODEL, SWARM_BASE_URL and SWARM_API_KEY in ~/.secrets."
       )
 
+  # pass71 F19 (review R17): the sentence names the model that was given.
   defp session_failure(:unknown_model, _),
     do:
       failure(
         @exit_usage,
-        "No provider offers the model given with --model.",
+        unknown_model_words(System.get_env("SWARM_MODEL_OVERRIDE")),
         "Use a model from /model, or provider/model."
       )
 
