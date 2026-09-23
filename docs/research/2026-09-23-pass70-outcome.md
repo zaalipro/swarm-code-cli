@@ -7,9 +7,9 @@ was rendered to PNG with a small VT emulator (`/private/tmp/p70cli/qa/vt.py`). 1
 real prompts were used, all on `deepseek-v4-pro`. Every screen session was closed through the TUI's
 own quit path. Nothing touched `~/Library/Application Support/SwarmCode`.
 
-Eighteen defects were found by using it and fixed on the branch (Q1 to Q18, plus Q19 for the
-`--resume` sentence and two stale test warnings), each with a regression test that fails without the
-fix.
+Using it turned up eighteen defects, all fixed on the branch as Q1 to Q18. Q19 fixes the
+`--resume` sentence and two stale test warnings. Q21 tightens Q13 after review. Each fix has a
+regression test that fails without it.
 
 ## What the owner will notice
 
@@ -110,6 +110,7 @@ from the emulator's font, not from the terminal.
 | 49ca17d Q17 | A picker detail keeps one cell before the border |
 | b859f93 Q18 | Enter typed ahead during start-up is Enter, not a Ctrl-J line break (terminal port) |
 | a3dcd94 Q19 | `--resume` with a short id says a whole id is needed and where to find one; two stale test warnings removed |
+| 8524a71 Q21 | Q13's header check lets a path it cannot read go on to the probe, so an unreadable database is not called a stray file |
 
 ## Still open, and why
 
