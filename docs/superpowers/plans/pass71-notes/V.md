@@ -74,3 +74,19 @@ None (all edits under `apps/swarm_code_cli/lib/swarm_code_cli/{ui,demo}` and tes
   persisted backend does not send it yet (request S-1). The session was quit with Ctrl-C twice
   (EXIT=0) and the screen closed; `_build/prod` removed afterwards.
 - `/private/tmp/p70cli/p71-V/svg2png.py` now also reads vt.py's `rgb(…)` fills.
+- Full umbrella `mise exec -- mix test` once (at 516da39, `_build/prod` removed, `MIX_QUIET`
+  unset): swarm_code_core 146 tests, 0 failures; swarm_code_daemon 932 tests, 0 failures;
+  swarm_code_cli 5 properties, 1452 tests, 2 failures, both timing assertions under load
+  (`plain/session_test.exs:233`, 2000 ms `assert_receive`; `ui/pass70_qa_typing_test.exs:76`,
+  100 ms `assert_receive {:draw, …}`); both files pass alone three times in a row (13 tests,
+  0 failures each). `mix format --check-formatted` and `mix compile --warnings-as-errors` clean.
+
+## Left
+
+- Wiring (requests I-1, I-2/S-2, S-1 above): until then `/diff` below the docking width still
+  only sets the hidden tab, the light theme is reachable only through `Paint.Options`, and real
+  edits show `+N −M` without a hunk.
+- The real session under GNU screen drew at the measured tier even with `TERM=xterm-ghostty
+  COLORTERM=truecolor` (the composer kept its `▐` gutter, rails were gaps): worth a look by the
+  owner of the capability probe's inputs (the launcher); in ghostty itself the rich tier applies.
+- ANSI-16 light mode keeps the terminal's colours (only truecolor and 256 colours are remapped).
