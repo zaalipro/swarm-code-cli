@@ -238,13 +238,40 @@ defmodule SwarmCodeCLI.UI.Projector.Composer do
         policy: state.capabilities.ambiguous_width
       })
 
-    row(
-      [{String.duplicate(hairline, max(1, width)), tint(:text_ghost, state)}],
-      [],
-      nil,
-      state,
-      width
-    )
+    # pass71 V5: prompts waiting behind the live turn are counted on the rule,
+    # near its right end, until they start.
+    label =
+      case queued(state) do
+        0 -> nil
+        n -> " #{n} queued "
+      end
+
+    tail = 2
+    label_cells = if label, do: Width.cells(label, state.capabilities.ambiguous_width), else: 0
+
+    segments =
+      if label && width >= label_cells + tail + 8,
+        do: [
+          {String.duplicate(hairline, width - label_cells - tail), tint(:text_ghost, state)},
+          {label, tint(:warning, state, [:bold])},
+          {String.duplicate(hairline, tail), tint(:text_ghost, state)}
+        ],
+        else: [{String.duplicate(hairline, max(1, width)), tint(:text_ghost, state)}]
+
+    row(segments, [], nil, state, width)
+  end
+
+  @doc """
+  How many prompts of the open conversation wait behind its live turn: the
+  workspace snapshot's `queued` (pass71 S5), `0` when unknown.
+  """
+  def queued(state) do
+    snapshot = state.read_model.snapshots |> Map.get(:workspace)
+
+    case snapshot && Map.get(snapshot, :queued, 0) do
+      n when is_integer(n) and n > 0 -> n
+      _ -> 0
+    end
   end
 
   @doc """

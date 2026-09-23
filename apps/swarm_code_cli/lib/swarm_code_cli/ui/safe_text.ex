@@ -729,22 +729,22 @@ defmodule SwarmCodeCLI.UI.SafeText do
     do: "Page error — Retry via Help"
 
   def value(%{__struct__: __MODULE__, token: :accepted} = text) when map_size(text) == 2,
-    do: "ACCEPTED"
+    do: "Accepted"
 
   def value(%{__struct__: __MODULE__, token: :needs_input} = text) when map_size(text) == 2,
-    do: "NEEDS INPUT"
+    do: "Needs input"
 
   def value(%{__struct__: __MODULE__, token: :rejected} = text) when map_size(text) == 2,
-    do: "REJECTED"
+    do: "Rejected"
 
   def value(%{__struct__: __MODULE__, token: :deadline_exceeded} = text) when map_size(text) == 2,
-    do: "DEADLINE EXCEEDED"
+    do: "Deadline exceeded"
 
   def value(%{__struct__: __MODULE__, token: :outcome_unknown} = text) when map_size(text) == 2,
-    do: "OUTCOME UNKNOWN"
+    do: "Outcome unknown"
 
   def value(%{__struct__: __MODULE__, token: :revision_conflict} = text) when map_size(text) == 2,
-    do: "REVISION CONFLICT"
+    do: "Revision conflict"
 
   def value(%{__struct__: __MODULE__, token: :fake_banner} = text) when map_size(text) == 2,
     do: "FAKE DEMO — NO USER DATA"

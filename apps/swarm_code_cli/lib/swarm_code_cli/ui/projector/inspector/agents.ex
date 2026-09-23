@@ -49,7 +49,7 @@ defmodule SwarmCodeCLI.UI.Projector.Inspector.Agents do
     [lead | subs] = Hive.lanes_for(state, run)
 
     if compact?(run, subs),
-      do: compact(state, run, lead, width, height),
+      do: compact(state, run, lead, width, height, opts),
       else: hive(state, run, lead, subs, width, height, opts)
   end
 
@@ -92,8 +92,8 @@ defmodule SwarmCodeCLI.UI.Projector.Inspector.Agents do
 
   # The run card, what waits on you, then the files the turn changed; never
   # the per-step operations, which the transcript already shows in place.
-  defp compact(state, run, lead, width, height) do
-    {card, card_rows} = run_card(state, run, lead, width)
+  defp compact(state, run, lead, width, height, opts) do
+    {card, card_rows} = run_card(state, run, lead, width, opts)
     card = if card_rows <= height, do: card, else: []
     left = height - if(card == [], do: 0, else: card_rows)
 
@@ -110,7 +110,7 @@ defmodule SwarmCodeCLI.UI.Projector.Inspector.Agents do
 
   # `✳ assistant                 ● done`, the model, then the facts two by two:
   # elapsed, tokens, cost and files changed, each only when known.
-  defp run_card(state, run, lead, width) do
+  defp run_card(state, run, lead, width, opts) do
     # One cell of right padding keeps the status off the pane's edge.
     inner = max(0, width - 3)
     role = Hive.lane_role(lead, 0)
@@ -141,12 +141,43 @@ defmodule SwarmCodeCLI.UI.Projector.Inspector.Agents do
     model = subtitle(run, lead, state)
 
     rows =
-      [two_sided(state, inner, name, status)] ++
+      [name_row(state, run, lead, inner, name, status, opts)] ++
         if(model != "", do: [%Block.RichText{spans: [faint(model, inner, state)]}], else: []) ++
         fact_rows(run_facts(state, run, lead), inner, state) ++ error_row(run, inner, state)
 
     {[%Block.Surface{blocks: rows, tone: :card, accent: role, edges: :half}],
      length(rows) + @card_edges}
+  end
+
+  # The name and the status; an agent that may be stopped offers `stop`
+  # between them, as the hive's lead card does.
+  defp name_row(state, run, lead, inner, name, status, opts) do
+    if Keyword.get(opts, :stop?, true) and Support.allowed?(state, lead, :stop_agent) and
+         lead.id != run.id do
+      stop = "stop"
+      stop_width = Hive.measure(stop, state)
+      # The deck puts two cells between its items.
+      left_width = max(0, inner - stop_width - cells(status, state) - 4)
+
+      %Block.ActionDeck{
+        actions: [
+          %Block.RichText{spans: [pad_spans(name, left_width, state)]},
+          Support.action(
+            Density.safe(stop, state, stop_width),
+            {:intent, {:stop_agent, lead.run_id, lead.id, lead.revision}},
+            Theme.style(:text_muted, state.capabilities)
+          ),
+          %Block.RichText{spans: status}
+        ]
+      }
+    else
+      two_sided(state, inner, name, status)
+    end
+  end
+
+  defp pad_spans(spans, width, state) do
+    text = Enum.map_join(clip_spans(spans, width, state), &SafeText.value(&1.text))
+    %{hd(spans) | text: Density.safe(RunRow.pad(text, width, state), state, width)}
   end
 
   defp run_facts(state, run, lead) do

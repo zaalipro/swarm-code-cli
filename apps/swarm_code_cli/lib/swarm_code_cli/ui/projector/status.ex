@@ -605,10 +605,11 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
           Atom.to_string(kind)
 
         _ ->
-          "ERROR"
+          "error"
       end
 
-    label = label |> String.replace("_", " ") |> String.upcase()
+    # pass71 V5: sentence case, like every other status fact.
+    label = label |> String.replace("_", " ") |> sentence()
     [%Block.Notice{text: Density.safe(label, state, width), severity: :error}]
   end
 

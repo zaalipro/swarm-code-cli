@@ -57,7 +57,7 @@ defmodule SwarmCodeCLI.UI.HelpSheetTest do
     test "the vim NORMAL sheet leads with the vim group" do
       state = help_over(:composer_normal, {120, 30})
       rows = check_sheet(state, :composer_normal)
-      assert hd(rows) == "VIM"
+      assert hd(rows) == "Vim"
       assert Enum.any?(rows, &key_row?(&1, "1-9"))
     end
   end
