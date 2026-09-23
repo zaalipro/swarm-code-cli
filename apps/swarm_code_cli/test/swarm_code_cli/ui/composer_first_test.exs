@@ -62,7 +62,7 @@ defmodule SwarmCodeCLI.UI.ComposerFirstTest do
     }
   end
 
-  defp initial(runs, interactions \\ [], transcript \\ []) do
+  defp initial(runs, interactions, transcript \\ []) do
     size = %Size{columns: 150, rows: 40}
 
     {state, _} =

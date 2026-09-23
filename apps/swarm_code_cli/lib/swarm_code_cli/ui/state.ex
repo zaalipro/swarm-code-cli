@@ -34,6 +34,9 @@ defmodule SwarmCodeCLI.UI.State do
     # The project's conversations as the last `conversation_list` answered
     # (a `DTO.ConversationList`), for the palette and `/resume`.
     conversations: nil,
+    # The composer's `@path` list (`Reducer.PathCompletion`), nil when the
+    # caret ends no `@` token.
+    path_completion: nil,
     library: nil,
     feature_form: nil,
     banner: nil,

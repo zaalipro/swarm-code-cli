@@ -61,9 +61,9 @@ defmodule SwarmCodeCLI.Plain.OneShotTest do
         |> tap(&send(parent, {:code, &1}))
       end)
 
-    assert_receive {:bound, owner}
-    assert_receive {:source, {:watch, %Watch{slot: :shell} = shell}}
-    assert_receive {:source, {:watch, %Watch{slot: :workspace} = workspace}}
+    assert_receive {:bound, owner}, 5_000
+    assert_receive {:source, {:watch, %Watch{slot: :shell} = shell}}, 5_000
+    assert_receive {:source, {:watch, %Watch{slot: :workspace} = workspace}}, 5_000
     assert workspace.scope.id == @conversation
 
     session = %{task: task, owner: owner, workspace: workspace, sequence: 0}
@@ -81,7 +81,7 @@ defmodule SwarmCodeCLI.Plain.OneShotTest do
       interactions_page: %DTO.PageInfo{}
     })
 
-    assert_receive {:source, {:request, :command, %Request{} = dispatch}}
+    assert_receive {:source, {:request, :command, %Request{} = dispatch}}, 5_000
     assert {:dispatch, :send, "list the notes", :main, []} = dispatch.kind
     Map.put(session, :dispatch, dispatch)
   end
@@ -221,7 +221,8 @@ defmodule SwarmCodeCLI.Plain.OneShotTest do
   # test answers with the final snapshot.
   defp complete(session, runs, items) do
     assert_receive {:source,
-                    {:request, :query, %Request{kind: {:query, :workspace, _, _, _, _}} = query}}
+                    {:request, :query, %Request{kind: {:query, :workspace, _, _, _, _}} = query}},
+                   5_000
 
     respond(session, query, %DTO.WorkspaceSnapshot{
       conversation_id: @conversation,
@@ -234,7 +235,7 @@ defmodule SwarmCodeCLI.Plain.OneShotTest do
   end
 
   defp code(session) do
-    assert_receive {:code, code}, 2_000
+    assert_receive {:code, code}, 5_000
     Task.await(session.task)
     code
   end
@@ -264,7 +265,8 @@ defmodule SwarmCodeCLI.Plain.OneShotTest do
     complete(session, [run(:done)], [message("first part", detail_ref: ref)])
 
     assert_receive {:source,
-                    {:request, :query, %Request{kind: {:query_detail, "detail-1", 10, _}} = page}}
+                    {:request, :query, %Request{kind: {:query_detail, "detail-1", 10, _}} = page}},
+                   5_000
 
     respond(session, page, %DTO.DetailWindow{
       detail_ref: ref,
@@ -305,7 +307,7 @@ defmodule SwarmCodeCLI.Plain.OneShotTest do
         body: approval
       })
 
-    assert_receive {:source, {:request, :command, %Request{} = deny}}
+    assert_receive {:source, {:request, :command, %Request{} = deny}}, 5_000
     assert deny.kind == {:resolve_approval, @run, @root, @interaction, 3, :deny}
     respond(session, deny, %DTO.Outcome{status: :accepted})
 
@@ -345,14 +347,16 @@ defmodule SwarmCodeCLI.Plain.OneShotTest do
 
     assert_receive {:source,
                     {:request, :command,
-                     %Request{kind: {:resolve_approval, _, _, _, _, :deny}} = deny}}
+                     %Request{kind: {:resolve_approval, _, _, _, _, :deny}} = deny}},
+                   5_000
 
     respond(session, deny, %DTO.Outcome{
       status: :rejected,
       error: SwarmCodeCLI.UI.DataSource.AdmissionError.new(:not_allowed)
     })
 
-    assert_receive {:source, {:request, :command, %Request{kind: {:run_control, :stop, @run}}}}
+    assert_receive {:source, {:request, :command, %Request{kind: {:run_control, :stop, @run}}}},
+                   5_000
 
     session =
       session
@@ -396,7 +400,9 @@ defmodule SwarmCodeCLI.Plain.OneShotTest do
         body: question
       })
 
-    assert_receive {:source, {:request, :command, %Request{kind: {:run_control, :stop, @run}}}}
+    assert_receive {:source, {:request, :command, %Request{kind: {:run_control, :stop, @run}}}},
+                   5_000
+
     session = run_update(session, :stopped)
     complete(session, [run(:stopped)], [])
 

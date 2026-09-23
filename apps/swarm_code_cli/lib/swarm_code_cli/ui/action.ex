@@ -80,6 +80,8 @@ defmodule SwarmCodeCLI.UI.Action do
              :help | :quit | :new | :resume | :conversations | :queue | :approval | :trust}
           | {:open_conversation, binary()}
           | :new_conversation
+          | {:complete_path, binary()}
+          | :dismiss_completion
           | {:toggle_dock, :inspector}
           | {:set_tab, :agents | :timeline | :changes}
           | {:select_agent, binary()}
@@ -184,6 +186,11 @@ defmodule SwarmCodeCLI.UI.Action do
 
   def validate({:open_conversation, id} = action), do: valid_action(action, Intent.valid_id?(id))
   def validate(:new_conversation), do: {:ok, :new_conversation}
+
+  # `@path` completion: a path is one of the rows the service sent, bounded
+  # like any id; the reducer checks it is one of them.
+  def validate({:complete_path, path} = action), do: valid_action(action, Intent.valid_id?(path))
+  def validate(:dismiss_completion), do: {:ok, :dismiss_completion}
 
   def validate({:toggle_dock, dock} = action),
     do: valid_action(action, dock == :inspector)

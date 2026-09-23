@@ -36,10 +36,27 @@ defmodule SwarmCodeCLI.UI.SlashPaletteTest do
 
   test "palette exposes every builtin with description and follows registry ranking" do
     entries = SlashPalette.entries(state("/"))
-    assert length(entries) == 19
+    names = Enum.map(entries, & &1.name)
+    assert names == Enum.uniq(names)
+
+    # Every command of the service's catalogue, and the client's own.
+    for %{name: name} <- SwarmCode.Commands.catalogue("/"), do: assert(name in names)
+    for name <- ~w(new resume approval trust queue help quit), do: assert(name in names)
+
     assert Enum.all?(entries, &(is_binary(&1.desc) and &1.desc != ""))
     assert Enum.map(SlashPalette.entries(state("/research")), & &1.name) == ["deep_research"]
     assert SlashPalette.entries(state("/ese")) == []
+  end
+
+  test "the session basics are listed first, the client's /resume over the old one" do
+    assert ["new", "resume", "approval" | _] =
+             Enum.map(SlashPalette.entries(state("/")), & &1.name)
+
+    [resume | _] = SlashPalette.entries(state("/res"))
+    assert resume.name == "resume"
+    assert resume.desc =~ "conversation"
+    assert Enum.count(SlashPalette.entries(state("/res")), &(&1.name == "resume")) == 1
+    assert SlashPalette.rows() == 8
   end
 
   test "palette only opens for a focused command token at the end of an unselected draft" do
@@ -56,19 +73,21 @@ defmodule SwarmCodeCLI.UI.SlashPaletteTest do
 
   test "up down wrap selection and Tab accepts without executing" do
     original = state("/")
+    [_first, second | _] = entries = SlashPalette.entries(original)
     assert {:ok, {:move, :next}} = Keymap.resolve(Input.key(:down), original, %{})
     {selected, []} = Reducer.update(original, {:move, :next})
-    assert SlashPalette.selected(selected).name == "goal"
-    assert {:ok, {:complete_command, "goal"}} = Keymap.resolve(Input.key(:tab), selected, %{})
-    {completed, effects} = Reducer.update(selected, {:complete_command, "goal"})
+    assert SlashPalette.selected(selected).name == second.name
+    name = second.name
+    assert {:ok, {:complete_command, ^name}} = Keymap.resolve(Input.key(:tab), selected, %{})
+    {completed, effects} = Reducer.update(selected, {:complete_command, name})
     assert Enum.all?(effects, &match?({:cancel_timer, _}, &1))
-    assert Editor.text(Drafts.fetch(completed.drafts, {"c", :main}).editor) == "/goal "
+    assert Editor.text(Drafts.fetch(completed.drafts, {"c", :main}).editor) == "/#{name} "
     assert SlashPalette.entries(completed) == []
     assert completed.focus == "composer"
     {undone, _} = Reducer.update(completed, {:editor, {"c", :main}, :undo})
     assert Editor.text(Drafts.fetch(undone.drafts, {"c", :main}).editor) == "/"
     {last, []} = Reducer.update(original, {:move, :previous})
-    assert SlashPalette.selected(last).name == "compact"
+    assert SlashPalette.selected(last).name == List.last(entries).name
   end
 
   test "completion validates registry membership and current matching token" do

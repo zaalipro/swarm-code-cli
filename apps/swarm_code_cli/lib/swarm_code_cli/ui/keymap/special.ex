@@ -15,6 +15,7 @@ defmodule SwarmCodeCLI.UI.Keymap.Special do
 
   alias SwarmCodeCLI.UI.{Keymap, Layout, SlashPalette, State, Switcher}
   alias SwarmCodeCLI.UI.Keymap.Bindings
+  alias SwarmCodeCLI.UI.Reducer.PathCompletion
   alias SwarmCodeCLI.UI.Projector.RunsDashboard
 
   @type key :: {term(), [atom()]}
@@ -61,6 +62,7 @@ defmodule SwarmCodeCLI.UI.Keymap.Special do
   def run(:escape, _key, state, _table) do
     cond do
       filtering?(state) -> ok({:dashboard_filter, :clear})
+      PathCompletion.open?(state) -> ok(:dismiss_completion)
       state.layers != [] -> ok(:close_top_layer)
       state.focus in ["main", "inspector"] -> ok({:focus_region, "composer"})
       true -> ok({:interrupt, :escape})
@@ -104,9 +106,10 @@ defmodule SwarmCodeCLI.UI.Keymap.Special do
   # command, queues the draft while a turn runs (the non-Alt queue path), and
   # otherwise does nothing.
   def run(:focus_next, _key, %{focus: "composer", layers: []} = state, table) do
-    case SlashPalette.selected(state) do
-      %{name: name} -> ok({:complete_command, name})
-      nil -> if Keymap.live_turn(state), do: run(:queue, nil, state, table), else: :ignore
+    case {PathCompletion.selected(state), SlashPalette.selected(state)} do
+      {%{id: path}, _} -> ok({:complete_path, path})
+      {nil, %{name: name}} -> ok({:complete_command, name})
+      _ -> if Keymap.live_turn(state), do: run(:queue, nil, state, table), else: :ignore
     end
   end
 
@@ -472,7 +475,7 @@ defmodule SwarmCodeCLI.UI.Keymap.Special do
   # the caret, or the selection of an open slash list.
   defp composer_line(state, direction, movement) do
     cond do
-      SlashPalette.open?(state) -> ok({:move, direction})
+      SlashPalette.open?(state) or PathCompletion.open?(state) -> ok({:move, direction})
       history?(state, direction) -> ok({:history, direction})
       true -> Keymap.edit(state, {:move, movement})
     end

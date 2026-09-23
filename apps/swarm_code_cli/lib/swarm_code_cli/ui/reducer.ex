@@ -21,7 +21,7 @@ defmodule SwarmCodeCLI.UI.Reducer do
   alias SwarmCodeCLI.UI.Projector.RunRow
   alias SwarmCodeCLI.UI.Vim
   alias SwarmCodeCLI.UI.SlashPalette
-  alias SwarmCodeCLI.UI.Reducer.{Watch, Commands, Pages, Editing, Details}
+  alias SwarmCodeCLI.UI.Reducer.{Watch, Commands, Pages, Editing, Details, PathCompletion}
   alias SwarmCodeCLI.UI.DataSource.DTO.Outcome
   alias SwarmCodeCLI.UI.Projector.{RunPalette, RunsDashboard}
   alias SwarmCodeCLI.UI.DataSource.{DTO, Request}
@@ -521,12 +521,16 @@ defmodule SwarmCodeCLI.UI.Reducer do
   end
 
   defp transition(state, {:move, direction}) do
-    if SlashPalette.open?(state),
-      do: {SlashPalette.move(state, direction), []},
-      else: Pages.move(state, direction)
+    cond do
+      SlashPalette.open?(state) -> {SlashPalette.move(state, direction), []}
+      PathCompletion.open?(state) -> {PathCompletion.move(state, direction), []}
+      true -> Pages.move(state, direction)
+    end
   end
 
   defp transition(state, {:complete_command, name}), do: SlashPalette.complete(state, name)
+  defp transition(state, {:complete_path, path}), do: PathCompletion.complete(state, path)
+  defp transition(state, :dismiss_completion), do: PathCompletion.dismiss(state)
   defp transition(state, {:scroll, region, operation}), do: Pages.scroll(state, region, operation)
 
   defp transition(state, {:retry_page, slot, direction}),
@@ -650,7 +654,13 @@ defmodule SwarmCodeCLI.UI.Reducer do
          do: clear_vim_prefix(next),
          else: next
 
-    {next, effects}
+    # An `@` token at the caret asks the project for its paths.
+    if kind == :editor and next != state do
+      {next, completion} = PathCompletion.sync(next)
+      {next, effects ++ completion}
+    else
+      {next, effects}
+    end
   end
 
   defp transition(state, {:select_option, id, option_id}) do
@@ -978,7 +988,9 @@ defmodule SwarmCodeCLI.UI.Reducer do
       when scope == delivery.scope and generation == delivery.generation ->
         case {request.expected_response, delivery.body} do
           {:library_snapshot, body} ->
-            SwarmCodeCLI.UI.Library.response(state, request, body)
+            if PathCompletion.owns?(state, request),
+              do: PathCompletion.response(state, request, body),
+              else: SwarmCodeCLI.UI.Library.response(state, request, body)
 
           {:outcome, %Outcome{request_id: id} = outcome} when id == delivery.request_id ->
             cond do
