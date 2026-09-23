@@ -1199,8 +1199,25 @@ defmodule SwarmCodeCLI.UI.Reducer do
 
   # `/diff` (pass70 F16): the service answers "navigate to changes"; the
   # inspector's changes tab is that view.
-  defp show_feedback(state, :navigate, %{feature: :changes}, _),
-    do: transition(state, {:set_tab, :changes})
+  # pass71 F3 (V's request I-1): below the docking width there is no
+  # inspector to switch, so the run's changes open as a dialog (V draws
+  # `{:run_inspector, run, :changes}` as one) on the current run.
+  defp show_feedback(state, :navigate, %{feature: :changes}, _) do
+    docked? =
+      state.size &&
+        Map.has_key?(
+          SwarmCodeCLI.UI.Layout.calculate(state.size, state.preferences).rects,
+          :inspector
+        )
+
+    case {docked?, SwarmCodeCLI.UI.Projector.Support.run(state)} do
+      {false, %{id: run_id}} ->
+        transition(state, {:open_layer, {:run_inspector, run_id, :changes}})
+
+      _ ->
+        transition(state, {:set_tab, :changes})
+    end
+  end
 
   defp show_feedback(state, :report, feedback, id) do
     transition(%{state | command_report: feedback}, {:open_layer, {:command_report, id}})

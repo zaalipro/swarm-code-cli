@@ -40,6 +40,25 @@ defmodule SwarmCodeCLI.UI.CommandFeedbackTest do
     assert shown.layers == []
   end
 
+  # pass71 F3 (V's request I-1): at 80 columns there is no inspector, so
+  # `/diff` opened nothing; it now opens the current run's changes dialog.
+  test "diff below the docking width opens the run's changes as a dialog" do
+    {state, request} = pending("/diff")
+    size = %Size{columns: 80, rows: 24}
+    run = %DTO.RunSummary{id: "r1", conversation_id: "c", created_sequence: 1}
+
+    state =
+      %{state | size: size, capabilities: %{state.capabilities | size: size}}
+      |> put_in([Access.key(:read_model), Access.key(:runs), "r1"], run)
+
+    {shown, _effects} =
+      Reducer.update(state, {:data, response(request, :navigate, "", :changes)})
+
+    assert [{:run_inspector, "r1", :changes} | _] = shown.layers
+    {scene, _} = Projector.project(shown)
+    assert scene.overlay != nil
+  end
+
   test "late feedback settles the old command without opening a report over another conversation" do
     {state, request} = pending("/goal")
     {away, _} = Reducer.update(state, {:navigate, {:conversation, "other"}})
