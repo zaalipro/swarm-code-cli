@@ -31,6 +31,9 @@ defmodule SwarmCodeCLI.UI.State do
     prompt_history: %{},
     # {draft key, index into that conversation's history, the draft it replaced}.
     history_cursor: nil,
+    # The project's conversations as the last `conversation_list` answered
+    # (a `DTO.ConversationList`), for the palette and `/resume`.
+    conversations: nil,
     library: nil,
     feature_form: nil,
     banner: nil,

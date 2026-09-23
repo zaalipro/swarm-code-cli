@@ -20,7 +20,9 @@ defmodule SwarmCodeCLI.UI.ModelPicker do
           id: binary(),
           model: binary(),
           provider: binary(),
+          provider_id: binary(),
           current?: boolean(),
+          first_in_group?: boolean(),
           intent: SwarmCodeCLI.UI.Intent.t()
         }
 
@@ -98,21 +100,56 @@ defmodule SwarmCodeCLI.UI.ModelPicker do
     do: state.field_editors |> FieldEditors.fetch(field_key(layer)) |> Editor.text()
 
   @doc """
-  The rows the query leaves, in snapshot order. A row matches when the query
-  is a case-insensitive substring of its model or of its provider; an empty
-  query keeps every row.
+  The provider that serves the current model, when the snapshot names it
+  (`chat_provider`, pass70 C1). Only the chat model has one.
+  """
+  @spec current_provider(State.t(), target()) :: binary() | nil
+  def current_provider(state, :chat) do
+    case workspace(state) do
+      nil -> nil
+      workspace -> Map.get(workspace, :chat_provider)
+    end
+  end
+
+  def current_provider(_state, :swarm), do: nil
+
+  @doc """
+  The rows the query leaves, grouped by provider in the daemon's order, each
+  group's models in the daemon's order. A row matches when the query is a case-insensitive
+  substring of its model or of its provider; an empty query keeps every row.
+  `first_in_group?` marks where a surface draws the provider heading;
+  `current?` the model in use (on its own provider when the snapshot says
+  which).
   """
   @spec rows(State.t(), layer()) :: [row()]
   def rows(state, {:model_picker, target, _id} = layer) do
     query = state |> query(layer) |> String.trim() |> String.downcase()
     current = current(state, target)
+    provider = current_provider(state, target)
 
-    for option <- options(state), matches?(option, query) do
+    matching = for option <- options(state), matches?(option, query), do: option
+
+    current? = fn option ->
+      option.model == current and (provider in [nil, ""] or option.provider == provider)
+    end
+
+    by_provider = Enum.group_by(matching, & &1.provider_id)
+
+    groups =
+      matching
+      |> Enum.map(& &1.provider_id)
+      |> Enum.uniq()
+      |> Enum.map(&Map.fetch!(by_provider, &1))
+
+    for group <- groups,
+        {option, index} <- Enum.with_index(group) do
       %{
         id: row_id(option),
         model: option.model,
         provider: option.provider,
-        current?: option.model == current,
+        provider_id: option.provider_id,
+        current?: current?.(option),
+        first_in_group?: index == 0,
         intent: {:dispatch, :send, command(target, option.provider_id, option.model), :main, []}
       }
     end

@@ -76,7 +76,10 @@ defmodule SwarmCodeCLI.UI.Action do
           | {:compose, binary()}
           | {:history, :previous | :next}
           | :copy_selection
-          | {:slash_local, :help | :quit | :new | :resume | :conversations | :queue}
+          | {:slash_local,
+             :help | :quit | :new | :resume | :conversations | :queue | :approval | :trust}
+          | {:open_conversation, binary()}
+          | :new_conversation
           | {:toggle_dock, :inspector}
           | {:set_tab, :agents | :timeline | :changes}
           | {:select_agent, binary()}
@@ -173,7 +176,14 @@ defmodule SwarmCodeCLI.UI.Action do
     do: valid_action(action, direction in [:previous, :next])
 
   def validate({:slash_local, command} = action),
-    do: valid_action(action, command in [:help, :quit, :new, :resume, :conversations, :queue])
+    do:
+      valid_action(
+        action,
+        command in [:help, :quit, :new, :resume, :conversations, :queue, :approval, :trust]
+      )
+
+  def validate({:open_conversation, id} = action), do: valid_action(action, Intent.valid_id?(id))
+  def validate(:new_conversation), do: {:ok, :new_conversation}
 
   def validate({:toggle_dock, dock} = action),
     do: valid_action(action, dock == :inspector)

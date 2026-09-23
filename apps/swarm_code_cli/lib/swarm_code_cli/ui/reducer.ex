@@ -24,7 +24,7 @@ defmodule SwarmCodeCLI.UI.Reducer do
   alias SwarmCodeCLI.UI.Reducer.{Watch, Commands, Pages, Editing, Details}
   alias SwarmCodeCLI.UI.DataSource.DTO.Outcome
   alias SwarmCodeCLI.UI.Projector.{RunPalette, RunsDashboard}
-  alias SwarmCodeCLI.UI.DataSource.DTO
+  alias SwarmCodeCLI.UI.DataSource.{DTO, Request}
 
   # The query is drawn on the dashboard header line beside the counts, so it is
   # bounded rather than allowed to grow with every keystroke.
@@ -238,6 +238,25 @@ defmodule SwarmCodeCLI.UI.Reducer do
   end
 
   defp transition(state, {:history, direction}), do: history(state, direction)
+
+  # A pick in the palette or /resume: the service switches its conversation,
+  # and the accepted outcome moves the view (settle_command).
+  defp transition(state, {:open_conversation, id}) do
+    {state, closed} = close_switcher(state)
+
+    if state.destination == {:conversation, id} do
+      {state, closed}
+    else
+      {state, sent} = service_request(state, {:conversation_open, id}, {:conversation, :open})
+      {state, closed ++ sent}
+    end
+  end
+
+  defp transition(state, :new_conversation) do
+    {state, closed} = close_switcher(state)
+    {state, sent} = service_request(state, {:conversation_new}, {:conversation, :new})
+    {state, closed ++ sent}
+  end
 
   defp transition(state, {:slash_local, command}), do: slash_local(state, command)
 
@@ -836,47 +855,13 @@ defmodule SwarmCodeCLI.UI.Reducer do
      }, effects}
   end
 
-  defp transition(state, {:open_layer, layer}) do
-    {preview, advanced} = State.next_id(state, :layer)
-
-    state =
-      if match?({_, ^preview}, layer) or match?({_, _, ^preview}, layer),
-        do: advanced,
-        else: state
-
-    # The bare `/model` in the composer is the picker's opener, not a message:
-    # once the picker is up the composer has nothing left to send.
-    state =
-      if match?({:model_picker, _, _}, layer), do: clear_opener_draft(state), else: state
-
-    state =
-      if match?({:approval, _}, layer) or match?({:command_report, _}, layer),
-        do: %{state | selection: Map.delete(state.selection, "dialog_scroll")},
-        else: state
-
-    next = %{
-      push_layer_context(state)
-      | layers: [layer | state.layers],
-        hidden_focus: state.focus
-    }
-
-    focus =
-      cond do
-        match?({:unsent_changes, _}, layer) or match?({:approval, _}, layer) or
-          match?({:question, _}, layer) or match?({:confirm_intent, _}, layer) ->
-          "cancel"
-
-        # The palette is a switcher: it opens on the run you are looking at, not
-        # on the top of its own list.
-        match?({:run_palette, _}, layer) ->
-          RunPalette.initial_focus(next)
-
-        true ->
-          List.first(focus_graph(next))
-      end
-
-    {%{next | focus: focus}, []}
+  defp transition(state, {:open_layer, {:switcher, _} = layer}) do
+    {state, opened} = open_plain_layer(state, layer)
+    {state, listed} = request_conversations(state)
+    {state, opened ++ listed}
   end
+
+  defp transition(state, {:open_layer, layer}), do: open_plain_layer(state, layer)
 
   # The runs filter is a plain query string in `selection`, not a field editor:
   # neither run view carries a cursor or a selection, so a keystroke is an
@@ -1013,6 +998,13 @@ defmodule SwarmCodeCLI.UI.Reducer do
           {:detail_window, body} ->
             Details.response(state, request, body)
 
+          {:conversation_list, %DTO.ConversationList{} = body} ->
+            state = %{state | requests: Map.delete(state.requests, delivery.request_id)}
+
+            if body.state == :error,
+              do: {state, []},
+              else: {%{state | conversations: body}, []}
+
           {:watch_snapshot, _} ->
             {state, []}
 
@@ -1047,6 +1039,13 @@ defmodule SwarmCodeCLI.UI.Reducer do
   defp transition(state, {:quit_confirmed, :detach}), do: {state, []}
   defp transition(state, {:presenter_handoff_confirmed, :plain}), do: {state, []}
 
+  defp settle_command(state, %{origin: {kind, _}} = request, outcome)
+       when kind in [:conversation, :project] do
+    {settled, effects} = Commands.settle(state, request, outcome)
+    {settled, more} = settle_service(settled, request, outcome)
+    {settled, effects ++ more}
+  end
+
   defp settle_command(state, request, outcome) do
     {settled, effects} = Commands.settle(state, request, outcome)
     settled = remember_prompt(settled, request, outcome)
@@ -1060,6 +1059,46 @@ defmodule SwarmCodeCLI.UI.Reducer do
       _ ->
         {settled, effects}
     end
+  end
+
+  # An accepted open or new has switched the service's conversation: the view
+  # follows it. A refusal says so; project updates show the service's words.
+  defp settle_service(state, %{kind: {:conversation_open, id}}, %Outcome{status: :accepted}),
+    do: navigate_conversation(state, id)
+
+  defp settle_service(state, %{kind: {:conversation_new}}, %Outcome{
+         status: :accepted,
+         identifiers: [id | _]
+       }),
+       do: navigate_conversation(state, id)
+
+  defp settle_service(state, %{kind: {:project_update, _, _}}, %Outcome{
+         status: :accepted,
+         feedback: %{text: text}
+       })
+       when is_binary(text),
+       do: {%{state | notice: {:command_feedback, text}}, []}
+
+  defp settle_service(state, %{kind: kind}, %Outcome{status: status})
+       when status != :accepted do
+    words =
+      case kind do
+        {:conversation_open, _} -> "That conversation could not be opened."
+        {:conversation_new} -> "A new conversation could not be started."
+        {:project_update, _, _} -> "The project setting did not change."
+        _ -> nil
+      end
+
+    if words, do: {%{state | notice: {:command_feedback, words}}, []}, else: {state, []}
+  end
+
+  defp settle_service(state, _request, _outcome), do: {state, []}
+
+  defp navigate_conversation(state, id) do
+    {state, effects} = transition(state, {:navigate, {:conversation, id}})
+    # The list's "current" mark moved with it.
+    {state, listed} = request_conversations(state)
+    {%{state | focus: "composer", hidden_focus: nil}, effects ++ listed}
   end
 
   defp show_feedback(state, :navigate, %{feature: feature}, _)
@@ -1402,6 +1441,48 @@ defmodule SwarmCodeCLI.UI.Reducer do
         ]
     }
 
+  defp open_plain_layer(state, layer) do
+    {preview, advanced} = State.next_id(state, :layer)
+
+    state =
+      if match?({_, ^preview}, layer) or match?({_, _, ^preview}, layer),
+        do: advanced,
+        else: state
+
+    # The bare `/model` in the composer is the picker's opener, not a message:
+    # once the picker is up the composer has nothing left to send.
+    state =
+      if match?({:model_picker, _, _}, layer), do: clear_opener_draft(state), else: state
+
+    state =
+      if match?({:approval, _}, layer) or match?({:command_report, _}, layer),
+        do: %{state | selection: Map.delete(state.selection, "dialog_scroll")},
+        else: state
+
+    next = %{
+      push_layer_context(state)
+      | layers: [layer | state.layers],
+        hidden_focus: state.focus
+    }
+
+    focus =
+      cond do
+        match?({:unsent_changes, _}, layer) or match?({:approval, _}, layer) or
+          match?({:question, _}, layer) or match?({:confirm_intent, _}, layer) ->
+          "cancel"
+
+        # The palette is a switcher: it opens on the run you are looking at, not
+        # on the top of its own list.
+        match?({:run_palette, _}, layer) ->
+          RunPalette.initial_focus(next)
+
+        true ->
+          List.first(focus_graph(next))
+      end
+
+    {%{next | focus: focus}, []}
+  end
+
   # ------------------------------------------------- interrupt and quit
 
   defp stop_turn(state, run_id) do
@@ -1695,8 +1776,131 @@ defmodule SwarmCodeCLI.UI.Reducer do
     end
   end
 
-  defp slash_local(state, command) when command in [:new, :resume, :conversations] do
-    {%{state | notice: {:command_feedback, "Conversation switching is not available yet."}}, []}
+  defp slash_local(state, :new) do
+    {state, cleared} = clear_command_draft(state)
+    {state, sent} = transition(state, :new_conversation)
+    {state, cleared ++ sent}
+  end
+
+  # /resume and /conversations open the palette on its conversation list:
+  # the query starts at "#", which keeps conversations and runs.
+  defp slash_local(state, command) when command in [:resume, :conversations] do
+    {state, cleared} = clear_command_draft(state)
+    layer = SwarmCodeCLI.UI.Switcher.open(state, state.focus)
+    {state, opened} = transition(state, {:open_layer, layer})
+
+    {state, typed} =
+      case SwarmCodeCLI.UI.Switcher.field_key(layer) do
+        nil -> {state, []}
+        key -> Editing.apply(state, :field_editor, key, {:insert, "#"})
+      end
+
+    {state, cleared ++ opened ++ typed}
+  end
+
+  # /approval read-only | auto | full sets the project's approval mode, as
+  # the desktop's selector does; without an argument it says what it is.
+  defp slash_local(state, :approval) do
+    argument =
+      state
+      |> Keymap.draft_text()
+      |> String.trim()
+      |> String.replace_prefix("/approval", "")
+      |> String.trim()
+      |> String.downcase()
+
+    case approval_mode(argument) do
+      nil when argument == "" ->
+        current =
+          case Map.get(state.read_model.snapshots, :workspace) do
+            %{} = workspace -> Map.get(workspace, :approval_mode)
+            _ -> nil
+          end
+
+        {%{state | notice: {:command_feedback, approval_words(current)}}, []}
+
+      nil ->
+        {%{
+           state
+           | notice: {:command_feedback, "Approval is read-only, auto or full: /approval auto."}
+         }, []}
+
+      mode ->
+        {state, cleared} = clear_command_draft(state)
+        {state, sent} = service_request(state, {:project_update, mode, nil}, {:project, :update})
+        {state, cleared ++ sent}
+    end
+  end
+
+  defp slash_local(state, :trust) do
+    {state, cleared} = clear_command_draft(state)
+    {state, sent} = service_request(state, {:project_update, nil, true}, {:project, :update})
+    {state, cleared ++ sent}
+  end
+
+  defp approval_mode(value) when value in ["read-only", "readonly", "read_only", "ro"],
+    do: :read_only
+
+  defp approval_mode("auto"), do: :auto
+
+  defp approval_mode(value) when value in ["full", "full-access", "full_access"],
+    do: :full_access
+
+  defp approval_mode(_value), do: nil
+
+  defp approval_words(:read_only),
+    do: "Approval: read-only. Nothing is written or run without you. /approval auto to change."
+
+  defp approval_words(:auto),
+    do: "Approval: auto. Edits go ahead; commands ask first. /approval full or read-only."
+
+  defp approval_words(:full_access),
+    do: "Approval: full access. Nothing asks first. /approval auto to change."
+
+  defp approval_words(_),
+    do: "Approval mode: read-only, auto or full. /approval auto to set it."
+
+  # ------------------------------------------ requests that are not intents
+
+  # Conversation and project operations are service requests of their own
+  # (pass70 C1), sent in the shell watch's scope, which the service accepts
+  # for all of them.
+  defp service_request(state, kind, origin) do
+    watch = Map.get(state.watches, :shell)
+
+    expected =
+      if match?({:conversation_list, _, _, _}, kind), do: :conversation_list, else: :outcome
+
+    with %{status: :ready, scope: scope, generation: generation} <- watch,
+         {id, state} = State.next_id(state, :request),
+         {:ok, request} <-
+           Request.validate(%Request{
+             request_id: id,
+             kind: kind,
+             scope: scope,
+             generation: generation,
+             origin: origin,
+             deadline: state.now + state.deadline_ms,
+             expected_response: expected
+           }) do
+      effect = if expected == :outcome, do: :command, else: :query
+      {%{state | requests: Map.put(state.requests, id, request)}, [{effect, request}]}
+    else
+      _ ->
+        {%{state | notice: {:command_feedback, "The session is not connected yet."}}, []}
+    end
+  end
+
+  # One list request at a time; the palette shows the last answer meanwhile.
+  defp request_conversations(state) do
+    in_flight =
+      Enum.any?(state.requests, fn {_, request} ->
+        request.origin == {:conversation, :list}
+      end)
+
+    if in_flight or not match?(%{status: :ready}, Map.get(state.watches, :shell)),
+      do: {state, []},
+      else: service_request(state, {:conversation_list, nil, 50, 262_144}, {:conversation, :list})
   end
 
   defp clear_command_draft(state) do

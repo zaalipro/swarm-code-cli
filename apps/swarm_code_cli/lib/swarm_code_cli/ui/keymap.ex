@@ -97,7 +97,7 @@ defmodule SwarmCodeCLI.UI.Keymap do
   @doc """
   The slash commands the client answers itself, from the draft's text: a bare
   `/help`, `/quit` (`/exit`), `/new` (`/clear`), `/resume`, `/conversations`,
-  and `/queue` with or without its message.
+  `/trust`, and `/queue` and `/approval` with or without their argument.
   """
   @spec local_command(binary()) :: atom() | nil
   def local_command(text) when is_binary(text) do
@@ -105,12 +105,16 @@ defmodule SwarmCodeCLI.UI.Keymap do
 
     cond do
       Map.has_key?(@local_commands, trimmed) -> Map.fetch!(@local_commands, trimmed)
-      trimmed == "/queue" or String.starts_with?(trimmed, "/queue ") -> :queue
+      command?(trimmed, "/queue") -> :queue
+      command?(trimmed, "/approval") -> :approval
+      trimmed == "/trust" -> :trust
       true -> nil
     end
   end
 
   def local_command(_text), do: nil
+
+  defp command?(text, name), do: text == name or String.starts_with?(text, name <> " ")
 
   defp invoke({:intent, intent}, state) do
     if destructive?(intent) and not match?([{:confirm_intent, ^intent} | _], state.layers),

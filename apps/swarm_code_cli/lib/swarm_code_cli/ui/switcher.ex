@@ -1,6 +1,9 @@
 defmodule SwarmCodeCLI.UI.Switcher.Entry do
   @moduledoc "Stable switcher catalogue row with a stored semantic target."
-  defstruct [:id, :label, :kind, :target, recent?: false]
+  # `title` and `detail` are the two halves of `label` ("Fix login" and
+  # "3 runs · live") for a surface that draws them apart; `current?` marks the
+  # conversation or model in use.
+  defstruct [:id, :label, :kind, :target, :title, :detail, recent?: false, current?: false]
   @type t :: %__MODULE__{}
 end
 
@@ -32,7 +35,8 @@ defmodule SwarmCodeCLI.UI.Switcher do
     local = [
       entry("Activity", :action, {:local, {:navigate, :activity}}, true),
       entry("Help", :action, {:local, {:open_layer, :help}}, true),
-      entry("Detach", :action, {:local, {:quit_requested, :detach}}),
+      entry("Quit", :action, {:local, {:quit_requested, :detach}}),
+      entry("New conversation", :conversation, {:local, :new_conversation}),
       entry("Plain presenter", :action, {:local, {:presenter_handoff_requested, :plain}}),
       entry("Toggle Inspector", :action, {:local, {:toggle_dock, :inspector}}),
       entry("Open visual companion", :action, {:local, :open_companion}),
@@ -50,9 +54,6 @@ defmodule SwarmCodeCLI.UI.Switcher do
             )
 
     runs = state.read_model.runs |> Map.values() |> Enum.sort_by(& &1.id)
-
-    conversations =
-      runs |> Enum.map(& &1.conversation_id) |> Enum.reject(&is_nil/1) |> Enum.uniq()
 
     libraries =
       if state.banner in [:live_banner, :persisted_banner] do
@@ -72,11 +73,58 @@ defmodule SwarmCodeCLI.UI.Switcher do
       libraries ++
       local_entries(state) ++
       domain_entries(state) ++
-      Enum.map(
-        conversations,
-        &entry("Conversation " <> &1, :conversation, {:local, {:navigate, {:conversation, &1}}})
-      ) ++ Enum.map(runs, &entry("Run " <> &1.id, :run, {:local, {:navigate, {:run, &1.id}}}))
+      conversation_entries(state) ++
+      Enum.map(runs, &entry(run_label(&1), :run, {:local, {:navigate, {:run, &1.id}}}))
   end
+
+  # The project's conversations by title, newest first, as the service listed
+  # them; the one on screen is marked rather than offered as a switch.
+  defp conversation_entries(%{conversations: %{items: items}}) when is_list(items) do
+    Enum.map(items, fn item ->
+      title = conversation_title(item)
+      detail = conversation_detail(item)
+
+      %{
+        entry(title <> " · " <> detail, :conversation, {:local, {:open_conversation, item.id}})
+        | title: title,
+          detail: detail,
+          current?: item.current == true
+      }
+    end)
+  end
+
+  defp conversation_entries(_state), do: []
+
+  defp conversation_title(%{title: title}) when is_binary(title) do
+    case String.trim(title) do
+      "" -> "Untitled conversation"
+      trimmed -> trimmed
+    end
+  end
+
+  defp conversation_title(_item), do: "Untitled conversation"
+
+  defp conversation_detail(item) do
+    runs =
+      case item.run_count do
+        1 -> "1 run"
+        count -> "#{count} runs"
+      end
+
+    [
+      runs,
+      if(item.live, do: "live"),
+      if(is_integer(item.waiting) and item.waiting > 0, do: "#{item.waiting} waiting"),
+      if(item.current, do: "open")
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join(" · ")
+  end
+
+  defp run_label(%{title: title}) when is_binary(title) and title != "",
+    do: "Run: " <> String.trim(title)
+
+  defp run_label(_run), do: "Run: untitled"
 
   def entries(state, table \\ %{}) do
     intents =
