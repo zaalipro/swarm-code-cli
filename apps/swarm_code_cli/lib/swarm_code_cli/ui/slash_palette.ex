@@ -5,17 +5,76 @@ defmodule SwarmCodeCLI.UI.SlashPalette do
   alias SwarmCodeCLI.UI.{Drafts, Editor, State}
   alias SwarmCodeCLI.UI.Reducer.Editing
 
+  # The popup above the composer shows this many rows and scrolls within them.
+  @rows 8
+
+  # The commands the client answers itself (`Keymap.local_command/1`). The
+  # service's catalogue lists them too once it flags them `client: true`
+  # (pass70 C7); until then, and over an older entry of the same name (the
+  # catalogue's `resume` used to resume a run), these are the ones shown.
+  @local [
+    %{name: "new", args: "", desc: "Start a new conversation; this one stays saved"},
+    %{name: "resume", args: "", desc: "Open a saved conversation (pick one)"},
+    %{
+      name: "approval",
+      args: "[read-only|auto|full]",
+      desc: "How much agents may do without asking"
+    },
+    %{name: "trust", args: "", desc: "Trust this project: read its AGENTS.md and allow edits"},
+    %{name: "queue", args: "<text>", desc: "Send this after the running turn"},
+    %{name: "help", args: "", desc: "List the commands and the keys"},
+    %{name: "quit", args: "", desc: "Leave SwarmCode; running work of this session stops"}
+  ]
+  @local_names Enum.map(@local, & &1.name)
+
+  @doc "Rows of the popup above the composer (pass 70 E5); `visible(state, rows())`."
+  def rows, do: @rows
+
   @doc "Validate a canonical builtin name without accepting input arguments or dynamic atoms."
   def valid_name?(name) do
     is_binary(name) and byte_size(name) <= 256 and String.valid?(name) and
-      Enum.any?(Commands.catalogue(), &(&1.name == name))
+      (name in @local_names or Enum.any?(Commands.catalogue(), &(&1.name == name)))
   end
 
   @doc "Suggestions only apply to the entire first token, with the caret at its end."
   def entries(state) do
     case context(state) do
       nil -> []
-      {_key, query} -> Commands.catalogue(query)
+      {_key, query} -> catalogue(query)
+    end
+  end
+
+  @doc """
+  The service's commands and the client's own for `query` (`"/"`, `"/re"`):
+  best match first, the client's first among equals, each name once.
+  """
+  def catalogue(query) do
+    remote = Commands.catalogue(query)
+    flagged = for item <- remote, Map.get(item, :client) == true, do: item.name
+    needle = query |> String.trim_leading("/") |> String.downcase()
+
+    local =
+      for item <- @local,
+          item.name not in flagged,
+          score(item.name, needle) != nil,
+          do: Map.merge(item, %{scope: nil, kind: :builtin, client: true})
+
+    names = Enum.map(local, & &1.name)
+
+    (local ++ Enum.reject(remote, &(&1.name in names)))
+    |> Enum.with_index()
+    |> Enum.sort_by(fn {item, index} -> {score(item.name, needle), index} end)
+    |> Enum.map(&elem(&1, 0))
+  end
+
+  # The catalogue's own ranking: a prefix of the name, then of one of its parts.
+  defp score(_name, ""), do: 0
+
+  defp score(name, needle) do
+    cond do
+      String.starts_with?(name, needle) -> 0
+      Enum.any?(String.split(name, ["-", "_", "."]), &String.starts_with?(&1, needle)) -> 1
+      true -> nil
     end
   end
 

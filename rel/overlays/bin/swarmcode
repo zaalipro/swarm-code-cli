@@ -5,29 +5,51 @@
 # default) with the same environment rules as the development launchers:
 # provider settings come from the shell, or from ~/.secrets (SWARM_ENV_FILE)
 # when no provider key is exported.
+#
+# The full-screen view starts the release; `-p` and `--plain` evaluate
+# SwarmCodeCLI.Release.main/1 with only their own flags, after the choices
+# below have been exported. Exit codes: 0 done, 1 the run failed, 2 usage,
+# 3 startup refused.
 set -euo pipefail
 
 usage() {
   cat <<'HELP'
-Usage: swarmcode [DIR]        open the saved session for DIR (default: the current directory)
-       swarmcode --help
+Usage: swarmcode [DIR] [--new | --continue | --resume ID] [--model M]
+                 [-p PROMPT [--json]] [--plain [--ndjson]] [--help] [--version]
 
-SWARM_PROJECT_ROOT is ignored; name the directory instead.
+Opens the saved session for DIR (default: the current directory).
+
+  --new           start a new conversation
+  --continue, -c  continue the latest conversation (the default)
+  --resume ID     open the conversation with this id
+  --model M       use model M (or provider/model) for this session only
+  -p PROMPT       run one turn without the full-screen view, print the answer and
+                  exit; approvals nobody can give are denied and said on stderr.
+                  PROMPT - reads the prompt from stdin
+  --json          with -p: print one JSON object instead of the streamed answer
+  --plain         line-by-line presenter for pipes, CI and SSH (type `help`);
+                  chosen by itself when stdin or stdout is not a terminal
+  --ndjson        with --plain: one JSON record per line
+  --help, -h      this text
+  --version, -V   the version
+
+Exit codes: 0 done, 1 the run failed, 2 usage, 3 startup refused.
 
 Provider settings (shell exports win; otherwise loaded from ~/.secrets or SWARM_ENV_FILE):
-  SWARM_MODEL          model id (required)
+  SWARM_MODEL          model id (first run, when the app has no provider yet)
   SWARM_BASE_URL       endpoint; OpenAI-compatible URLs include /v1
   SWARM_API_KEY        or OPENAI_API_KEY / ANTHROPIC_API_KEY
   SWARM_PROVIDER       openai (default) or anthropic
   SWARM_EFFORT         reasoning effort key
 
 Session:
-  SWARM_CONVERSATION   latest (default), new, or a conversation UUID
-  SWARM_APPROVAL       ask (default), read-only, or auto
+  SWARM_CONVERSATION   latest (default), new, or a conversation id (the flags win)
   SWARM_KEYMAP=vim     vim keys in the composer
   SWARM_COMPANION=0    do not serve the visual companion
 
-Keys: Ctrl-P palette (also "Open visual companion"), ? every key, q quit.
+Keys: type to write; Enter sends, Esc stops a turn, Ctrl-C twice quits,
+Ctrl-P palette (also /resume, /new, /model, /approval), Ctrl-T select, ? every key.
+SWARM_PROJECT_ROOT is ignored; name the directory instead.
 HELP
 }
 
@@ -38,17 +60,93 @@ if command -v readlink >/dev/null 2>&1; then
 fi
 root=$(CDPATH= cd -- "$(dirname -- "$self")/.." && pwd)
 
-project=""
-case "${1:-}" in
-  "") ;;
-  --help | -h) usage; exit 0 ;;
-  -*) echo "swarmcode: unknown option '$1'. Run 'swarmcode --help'." >&2; exit 2 ;;
-  *) project="$1" ;;
-esac
-if [[ $# -gt 1 ]]; then
-  echo "swarmcode: too many arguments. Run 'swarmcode --help'." >&2
+version() {
+  local data="$root/releases/start_erl.data" erts="" vsn=""
+  if [[ -r "$data" ]]; then
+    read -r erts vsn <"$data" || true
+  fi
+  echo "swarmcode ${vsn:-unknown}"
+}
+
+die_usage() {
+  echo "swarmcode: $1 Run 'swarmcode --help'." >&2
   exit 2
+}
+
+project=""
+project_set=0
+conversation=""
+model=""
+model_set=0
+prompt=""
+prompt_set=0
+json=0
+plain=0
+ndjson=0
+seen=" "
+
+once() {
+  case "$seen" in
+    *" $1 "*) die_usage "$1 is given twice." ;;
+  esac
+  seen="$seen$1 "
+}
+
+set_conversation() {
+  [[ -z "$conversation" ]] || die_usage "choose one of --new, --continue and --resume."
+  conversation="$1"
+}
+
+set_project() {
+  [[ $project_set -eq 0 ]] || die_usage "name one directory at most."
+  project="$1"
+  project_set=1
+}
+
+needs_value() {
+  [[ $2 -ge 2 && "$3" != "--" ]] || die_usage "$1 needs a value."
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --help | -h) usage; exit 0 ;;
+    --version | -V) version; exit 0 ;;
+    --new) set_conversation new ;;
+    --continue | -c) set_conversation latest ;;
+    --resume | -r) needs_value "$1" $# "${2:-}"; set_conversation "$2"; shift ;;
+    --resume=*) set_conversation "${1#--resume=}" ;;
+    --model | -m) needs_value "$1" $# "${2:-}"; once --model; model="$2"; model_set=1; shift ;;
+    --model=*) once --model; model="${1#--model=}"; model_set=1 ;;
+    -p | --prompt | --print) needs_value "$1" $# "${2:-}"; once -p; prompt="$2"; prompt_set=1; shift ;;
+    --prompt=*) once -p; prompt="${1#--prompt=}"; prompt_set=1 ;;
+    --json) once --json; json=1 ;;
+    --plain) once --plain; plain=1 ;;
+    --ndjson) once --ndjson; ndjson=1 ;;
+    --)
+      shift
+      while [[ $# -gt 0 ]]; do set_project "$1"; shift; done
+      break
+      ;;
+    -?*) die_usage "unknown option '$1'." ;;
+    *) set_project "$1" ;;
+  esac
+  shift
+done
+
+[[ $json -eq 0 || $prompt_set -eq 1 ]] || die_usage "--json goes with -p."
+[[ $ndjson -eq 0 || $plain -eq 1 ]] || die_usage "--ndjson goes with --plain."
+[[ $plain -eq 0 || $prompt_set -eq 0 ]] || die_usage "-p and --plain do not go together."
+if [[ $model_set -eq 1 && -z "${model//[[:space:]]/}" ]]; then
+  die_usage "--model needs a model name."
 fi
+if [[ $prompt_set -eq 1 && -z "${prompt//[[:space:]]/}" ]]; then
+  die_usage "-p needs a prompt."
+fi
+uuid='^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+case "$conversation" in
+  "" | new | latest) ;;
+  *) [[ "$conversation" =~ $uuid ]] || die_usage "--resume needs a conversation id." ;;
+esac
 
 # The project is the directory named on the command line, else where the
 # command was run. SWARM_PROJECT_ROOT is deliberately ignored: shells that
@@ -56,7 +154,7 @@ fi
 # the same project from every directory would be useless. Name the directory.
 # shellcheck source=/dev/null
 . "$root/bin/load_provider_env.sh"
-if [[ -n "$project" ]]; then
+if [[ $project_set -eq 1 ]]; then
   root_dir="$project"
 else
   root_dir="$PWD"
@@ -68,5 +166,33 @@ fi
 SWARM_PROJECT_ROOT=$(cd -- "$root_dir" && pwd)
 export SWARM_PROJECT_ROOT
 export SWARM_TERMINAL_PORT="${SWARM_TERMINAL_PORT:-$root/bin/swarm-terminal-port}"
+if [[ -n "$conversation" ]]; then
+  export SWARM_CONVERSATION="$conversation"
+fi
+# A session's model override comes from --model alone: an export left in a
+# shell or an environment file never changes which model answers.
+if [[ $model_set -eq 1 ]]; then
+  export SWARM_MODEL_OVERRIDE="$model"
+else
+  unset SWARM_MODEL_OVERRIDE
+fi
+unset SWARM_RELEASE_TUI
+
+headless() {
+  exec "$root/bin/swarm_code_cli" eval 'SwarmCodeCLI.Release.main(System.argv())' "$@"
+}
+
+if [[ $prompt_set -eq 1 ]]; then
+  if [[ $json -eq 1 ]]; then headless -p "$prompt" --json; else headless -p "$prompt"; fi
+fi
+
+if [[ $plain -eq 0 ]] && ! [[ -t 0 && -t 1 && "${TERM:-dumb}" != "dumb" ]]; then
+  echo "swarmcode: not a terminal, so the plain presenter answers (--plain)." >&2
+  plain=1
+fi
+if [[ $plain -eq 1 ]]; then
+  if [[ $ndjson -eq 1 ]]; then headless --plain --ndjson; else headless --plain; fi
+fi
+
 export SWARM_RELEASE_TUI=1
 exec "$root/bin/swarm_code_cli" start

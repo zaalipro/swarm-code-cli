@@ -16,18 +16,40 @@ defmodule SwarmCodeCLI.UI.Reducer do
   }
 
   alias SwarmCodeCLI.UI.Layout.Preferences
+  alias SwarmCodeCLI.UI.Keymap
   alias SwarmCodeCLI.UI.Keymap.Bindings
   alias SwarmCodeCLI.UI.Projector.RunRow
   alias SwarmCodeCLI.UI.Vim
   alias SwarmCodeCLI.UI.SlashPalette
-  alias SwarmCodeCLI.UI.Reducer.{Watch, Commands, Pages, Editing, Details}
+  alias SwarmCodeCLI.UI.Reducer.{Watch, Commands, Pages, Editing, Details, PathCompletion}
   alias SwarmCodeCLI.UI.DataSource.DTO.Outcome
   alias SwarmCodeCLI.UI.Projector.{RunPalette, RunsDashboard}
-  alias SwarmCodeCLI.UI.DataSource.DTO
+  alias SwarmCodeCLI.UI.DataSource.{DTO, Request}
 
   # The query is drawn on the dashboard header line beside the counts, so it is
   # bounded rather than allowed to grow with every keystroke.
   @max_filter_length 64
+
+  # A second Ctrl-C within this window quits.
+  @quit_window_ms 1_500
+  # An approval or question that opened by itself takes keys only after the
+  # user has paused typing this long.
+  @grace_ms 700
+  # The run states a quit has to stop.
+  @live_states [
+    :queued,
+    :running,
+    :streaming,
+    :waiting_question,
+    :waiting_approval,
+    :paused,
+    :retrying
+  ]
+  # Prompt history: per conversation, newest first.
+  @history_limit 100
+  @history_conversations 16
+  @history_max_bytes 65_536
+  @dismissed_limit 64
 
   @spec init(Init.t()) :: {State.t(), [SwarmCodeCLI.UI.Effect.t()]}
   def init(%Init{} = init) do
@@ -65,6 +87,7 @@ defmodule SwarmCodeCLI.UI.Reducer do
     case Action.validate(action) do
       {:ok, action} ->
         {next, effects} = transition(state, action)
+        {next, effects} = sync_interactions(next, effects, action)
         next = repair_switcher(state, next)
         Enum.each(effects, &SwarmCodeCLI.UI.Effect.validate!/1)
 
@@ -78,6 +101,164 @@ defmodule SwarmCodeCLI.UI.Reducer do
   end
 
   defp transition(state, :boot), do: {state, []}
+
+  # ------------------------------------------------ the composer-first keys
+
+  # Esc in the composer stops the turn that is generating, and nothing else.
+  defp transition(state, {:interrupt, :escape}) do
+    case Keymap.live_turn(state) do
+      %{id: id, allowed_actions: actions} = _turn ->
+        if :stop in actions, do: stop_turn(state, id), else: {state, []}
+
+      nil ->
+        {state, []}
+    end
+  end
+
+  # Ctrl-C: a second press inside the window quits (asking first when runs are
+  # live, and confirming that question when it is already on screen); the
+  # first press closes a layer, else clears the draft, else stops the turn,
+  # and arms the second.
+  defp transition(%{layers: [{:unsent_changes, kind} | _], exit_pending: kind} = state, {
+         :interrupt,
+         :ctrl_c
+       }),
+       do: finish_exit(disarm_quit(state), kind)
+
+  defp transition(%{quit_armed: armed} = state, {:interrupt, :ctrl_c}) when not is_nil(armed) do
+    {state, effects} = exit_requested(disarm_quit(state), :detach)
+    {state, [{:cancel_timer, armed} | effects]}
+  end
+
+  defp transition(state, {:interrupt, :ctrl_c}) do
+    turn = Keymap.live_turn(state, @live_states)
+    key = State.current_draft_key(state)
+
+    {state, effects} =
+      cond do
+        state.layers != [] ->
+          transition(state, :close_top_layer)
+
+        key != nil and Keymap.draft_text(state) != "" ->
+          {state, a} = Editing.apply(state, :editor, key, :select_all)
+          {state, b} = Editing.apply(state, :editor, key, :delete_backward)
+          {%{state | history_cursor: nil}, a ++ b}
+
+        turn != nil and :stop in turn.allowed_actions ->
+          stop_turn(state, turn.id)
+
+        true ->
+          {state, []}
+      end
+
+    {state, armed} = arm_quit(state)
+    {state, effects ++ armed}
+  end
+
+  defp transition(%{quit_armed: id} = state, {:timer_fired, id}) do
+    state = disarm_quit(state)
+
+    state =
+      if state.notice == {:command_feedback, quit_hint()},
+        do: %{state | notice: nil},
+        else: state
+
+    {state, []}
+  end
+
+  defp transition(%{interaction_grace: id} = state, {:timer_fired, id}),
+    do: {%{state | interaction_grace: nil}, []}
+
+  # Select mode is the transcript (or inspector) holding the focus: j/k move,
+  # Enter opens, y copies, Esc or Ctrl-T hands back to the composer.
+  defp transition(%{focus: focus} = state, :select_mode) when focus in ["main", "inspector"],
+    do: transition(state, {:focus_region, "composer"})
+
+  defp transition(%{layers: []} = state, :select_mode) do
+    {next, effects} = transition(state, {:focus_region, "main"})
+
+    if next.focus == "main" do
+      ids =
+        Map.get(
+          next.read_model.order,
+          if(next.destination == :activity, do: :activity, else: :workspace),
+          []
+        )
+
+      next =
+        if Map.get(next.selection, "main") in ids or ids == [],
+          do: next,
+          else: %{next | selection: Map.put(next.selection, "main", List.last(ids))}
+
+      {next, effects}
+    else
+      {next, effects}
+    end
+  end
+
+  defp transition(state, :select_mode), do: {state, []}
+
+  # A printable key select mode does not use goes back to the composer.
+  defp transition(state, {:compose, text}) do
+    {state, focused} =
+      if state.keymap == :vim,
+        do: transition(state, {:vim, {:mode, :insert}}),
+        else: transition(state, {:focus_region, "composer"})
+
+    case {state.focus, State.current_draft_key(state)} do
+      {"composer", key} when not is_nil(key) ->
+        {state, typed} = transition(state, {:editor, key, {:insert, text}})
+        {state, focused ++ typed}
+
+      _ ->
+        {state, focused}
+    end
+  end
+
+  defp transition(state, :copy_selection) do
+    id = Map.get(state.selection, state.focus)
+
+    text =
+      case id && SwarmCodeCLI.UI.ReadModel.transcript_item(state.read_model, id) do
+        %{text: text} when is_binary(text) and text != "" -> text
+        _ -> nil
+      end
+
+    cond do
+      text == nil ->
+        {%{state | notice: {:command_feedback, "Nothing to copy here."}}, []}
+
+      byte_size(text) > SwarmCodeCLI.UI.Effect.max_copy_bytes() ->
+        {%{state | notice: {:command_feedback, "Too long to copy; open it with o instead."}}, []}
+
+      true ->
+        # The runtime says "Copied" once the terminal acknowledges it.
+        {state, [{:copy, text}]}
+    end
+  end
+
+  defp transition(state, {:history, direction}), do: history(state, direction)
+
+  # A pick in the palette or /resume: the service switches its conversation,
+  # and the accepted outcome moves the view (settle_command).
+  defp transition(state, {:open_conversation, id}) do
+    {state, closed} = close_switcher(state)
+
+    if state.destination == {:conversation, id} do
+      {state, closed}
+    else
+      {state, sent} = service_request(state, {:conversation_open, id}, {:conversation, :open})
+      {state, closed ++ sent}
+    end
+  end
+
+  defp transition(state, :new_conversation) do
+    {state, closed} = close_switcher(state)
+    {state, sent} = service_request(state, {:conversation_new}, {:conversation, :new})
+    {state, closed ++ sent}
+  end
+
+  defp transition(state, {:slash_local, command}), do: slash_local(state, command)
 
   defp transition(state, :editor_detach_notice),
     do:
@@ -253,20 +434,20 @@ defmodule SwarmCodeCLI.UI.Reducer do
           {%{state | lifecycle: :running}, [{:terminal_control, :resume}]}
 
         :closing ->
-          exit_requested(state, :detach)
+          exit_requested(state, :detach, false)
       end
     end
   end
 
   defp transition(state, {:terminal_failed, generation, error}) do
     if generation == state.terminal_generation,
-      do: exit_requested(%{state | notice: {:terminal_error, error}}, :plain),
+      do: exit_requested(%{state | notice: {:terminal_error, error}}, :plain, false),
       else: {state, []}
   end
 
   defp transition(state, {:draw_result, _, revision, result}) do
     if revision == state.revision and result != :ok,
-      do: exit_requested(%{state | notice: result}, :plain),
+      do: exit_requested(%{state | notice: result}, :plain, false),
       else: {state, []}
   end
 
@@ -340,12 +521,47 @@ defmodule SwarmCodeCLI.UI.Reducer do
   end
 
   defp transition(state, {:move, direction}) do
-    if SlashPalette.open?(state),
-      do: {SlashPalette.move(state, direction), []},
-      else: Pages.move(state, direction)
+    cond do
+      SlashPalette.open?(state) -> {SlashPalette.move(state, direction), []}
+      PathCompletion.open?(state) -> {PathCompletion.move(state, direction), []}
+      true -> Pages.move(state, direction)
+    end
   end
 
   defp transition(state, {:complete_command, name}), do: SlashPalette.complete(state, name)
+  defp transition(state, {:complete_path, path}), do: PathCompletion.complete(state, path)
+
+  # Ctrl-X. The terminal steps aside exactly as for Ctrl-Z (no frame is drawn
+  # while it does); the session runtime runs the editor and answers.
+  defp transition(%{lifecycle: :running} = state, {:external_editor, key}) do
+    if key == State.current_draft_key(state) do
+      text = Editor.text(Drafts.fetch(state.drafts, key).editor)
+      {%{state | lifecycle: :suspend_requested}, [{:edit_externally, key, text}]}
+    else
+      {state, []}
+    end
+  end
+
+  defp transition(state, {:external_editor, _}), do: {state, []}
+
+  # The edited text replaces the draft as one undoable edit; the terminal's
+  # own `:resumed` brings the lifecycle back when it was suspended.
+  defp transition(state, {:external_edit_done, key, result}) do
+    state =
+      if state.lifecycle == :suspend_requested, do: %{state | lifecycle: :running}, else: state
+
+    case result do
+      {:ok, text} ->
+        if text == Editor.text(Drafts.fetch(state.drafts, key).editor),
+          do: {state, []},
+          else: replace_draft(%{state | history_cursor: nil}, key, text)
+
+      {:error, reason} ->
+        {%{state | notice: {:command_feedback, external_edit_words(reason)}}, []}
+    end
+  end
+
+  defp transition(state, :dismiss_completion), do: PathCompletion.dismiss(state)
   defp transition(state, {:scroll, region, operation}), do: Pages.scroll(state, region, operation)
 
   defp transition(state, {:retry_page, slot, direction}),
@@ -447,6 +663,19 @@ defmodule SwarmCodeCLI.UI.Reducer do
     {next, effects} = Editing.apply(state, kind, key, operation)
     next = if kind == :editor and next != state, do: %{next | slash_palette: nil}, else: next
 
+    # Editing a recalled prompt makes it the draft: Up moves the caret again.
+    next =
+      if kind == :editor and next.drafts != state.drafts and
+           not match?({:undo_boundary, _}, operation),
+         do: %{next | history_cursor: nil},
+         else: next
+
+    # Typing while an approval has just opened keeps the approval waiting.
+    {next, effects} =
+      if kind == :editor and next.interaction_grace != nil and next.drafts != state.drafts,
+        do: restart_grace(next, effects),
+        else: {next, effects}
+
     # A completed edit is the end of any vim command, so the operator and count
     # that led to it are spent. An undo boundary is the editor's own timer, not
     # a key, and must not swallow a prefix the user is still typing.
@@ -456,7 +685,13 @@ defmodule SwarmCodeCLI.UI.Reducer do
          do: clear_vim_prefix(next),
          else: next
 
-    {next, effects}
+    # An `@` token at the caret asks the project for its paths.
+    if kind == :editor and next != state do
+      {next, completion} = PathCompletion.sync(next)
+      {next, effects ++ completion}
+    else
+      {next, effects}
+    end
   end
 
   defp transition(state, {:select_option, id, option_id}) do
@@ -514,12 +749,15 @@ defmodule SwarmCodeCLI.UI.Reducer do
   defp transition(%{layers: layers} = state, {:open_layer, _}) when length(layers) >= 32,
     do: {%{state | notice: :layer_capacity_reached}, []}
 
-  # Jumping to something that waits on the user: go to its run, then open its
-  # dialog on top. A dialog already open for another interaction is closed
-  # first, or the walk would stack dialogs the user then has to unwind.
+  # Jumping to something that waits on the user opens its card over what is
+  # on screen. Only an interaction of another conversation navigates first,
+  # to its run, because the conversation in view cannot answer for it. A card
+  # already open for another interaction is closed first, or the walk would
+  # stack cards the user then has to unwind.
   defp transition(state, {:open_interaction, id}) do
     case Map.get(state.read_model.interactions, id) do
-      %{state: :pending, kind: kind, run_id: run_id} when kind in [:question, :approval] ->
+      %{state: :pending, kind: kind, run_id: run_id} = item
+      when kind in [:question, :approval] ->
         {state, closed} =
           case state.layers do
             [{top, _} | _] when top in [:question, :approval] ->
@@ -530,11 +768,12 @@ defmodule SwarmCodeCLI.UI.Reducer do
           end
 
         {state, moved} =
-          if state.destination == {:run, run_id},
+          if in_view?(state, item),
             do: {state, []},
             else: transition(state, {:navigate, {:run, run_id}})
 
         {state, opened} = transition(state, {:open_layer, {kind, id}})
+        state = %{state | auto_opened: nil, interaction_grace: nil}
         {state, closed ++ moved ++ opened}
 
       _ ->
@@ -657,47 +896,13 @@ defmodule SwarmCodeCLI.UI.Reducer do
      }, effects}
   end
 
-  defp transition(state, {:open_layer, layer}) do
-    {preview, advanced} = State.next_id(state, :layer)
-
-    state =
-      if match?({_, ^preview}, layer) or match?({_, _, ^preview}, layer),
-        do: advanced,
-        else: state
-
-    # The bare `/model` in the composer is the picker's opener, not a message:
-    # once the picker is up the composer has nothing left to send.
-    state =
-      if match?({:model_picker, _, _}, layer), do: clear_opener_draft(state), else: state
-
-    state =
-      if match?({:approval, _}, layer) or match?({:command_report, _}, layer),
-        do: %{state | selection: Map.delete(state.selection, "dialog_scroll")},
-        else: state
-
-    next = %{
-      push_layer_context(state)
-      | layers: [layer | state.layers],
-        hidden_focus: state.focus
-    }
-
-    focus =
-      cond do
-        match?({:unsent_changes, _}, layer) or match?({:approval, _}, layer) or
-          match?({:question, _}, layer) or match?({:confirm_intent, _}, layer) ->
-          "cancel"
-
-        # The palette is a switcher: it opens on the run you are looking at, not
-        # on the top of its own list.
-        match?({:run_palette, _}, layer) ->
-          RunPalette.initial_focus(next)
-
-        true ->
-          List.first(focus_graph(next))
-      end
-
-    {%{next | focus: focus}, []}
+  defp transition(state, {:open_layer, {:switcher, _} = layer}) do
+    {state, opened} = open_plain_layer(state, layer)
+    {state, listed} = request_conversations(state)
+    {state, opened ++ listed}
   end
+
+  defp transition(state, {:open_layer, layer}), do: open_plain_layer(state, layer)
 
   # The runs filter is a plain query string in `selection`, not a field editor:
   # neither run view carries a cursor or a selection, so a keystroke is an
@@ -726,6 +931,7 @@ defmodule SwarmCodeCLI.UI.Reducer do
 
   defp transition(%{layers: [layer | rest]} = state, :close_top_layer) do
     state = if match?({:library, _}, layer), do: SwarmCodeCLI.UI.Library.close(state), else: state
+    state = dismiss(state, layer)
 
     state =
       if match?({:command_report, _}, layer), do: %{state | command_report: nil}, else: state
@@ -813,7 +1019,9 @@ defmodule SwarmCodeCLI.UI.Reducer do
       when scope == delivery.scope and generation == delivery.generation ->
         case {request.expected_response, delivery.body} do
           {:library_snapshot, body} ->
-            SwarmCodeCLI.UI.Library.response(state, request, body)
+            if PathCompletion.owns?(state, request),
+              do: PathCompletion.response(state, request, body),
+              else: SwarmCodeCLI.UI.Library.response(state, request, body)
 
           {:outcome, %Outcome{request_id: id} = outcome} when id == delivery.request_id ->
             cond do
@@ -832,6 +1040,13 @@ defmodule SwarmCodeCLI.UI.Reducer do
 
           {:detail_window, body} ->
             Details.response(state, request, body)
+
+          {:conversation_list, %DTO.ConversationList{} = body} ->
+            state = %{state | requests: Map.delete(state.requests, delivery.request_id)}
+
+            if body.state == :error,
+              do: {state, []},
+              else: {%{state | conversations: body}, []}
 
           {:watch_snapshot, _} ->
             {state, []}
@@ -867,8 +1082,16 @@ defmodule SwarmCodeCLI.UI.Reducer do
   defp transition(state, {:quit_confirmed, :detach}), do: {state, []}
   defp transition(state, {:presenter_handoff_confirmed, :plain}), do: {state, []}
 
+  defp settle_command(state, %{origin: {kind, _}} = request, outcome)
+       when kind in [:conversation, :project] do
+    {settled, effects} = Commands.settle(state, request, outcome)
+    {settled, more} = settle_service(settled, request, outcome)
+    {settled, effects ++ more}
+  end
+
   defp settle_command(state, request, outcome) do
     {settled, effects} = Commands.settle(state, request, outcome)
+    settled = remember_prompt(settled, request, outcome)
 
     case {outcome.status, outcome.feedback, request.origin, State.current_draft_key(state)} do
       {:accepted, %{kind: kind} = feedback, {:draft, {conversation, _}}, {conversation, _}}
@@ -879,6 +1102,46 @@ defmodule SwarmCodeCLI.UI.Reducer do
       _ ->
         {settled, effects}
     end
+  end
+
+  # An accepted open or new has switched the service's conversation: the view
+  # follows it. A refusal says so; project updates show the service's words.
+  defp settle_service(state, %{kind: {:conversation_open, id}}, %Outcome{status: :accepted}),
+    do: navigate_conversation(state, id)
+
+  defp settle_service(state, %{kind: {:conversation_new}}, %Outcome{
+         status: :accepted,
+         identifiers: [id | _]
+       }),
+       do: navigate_conversation(state, id)
+
+  defp settle_service(state, %{kind: {:project_update, _, _}}, %Outcome{
+         status: :accepted,
+         feedback: %{text: text}
+       })
+       when is_binary(text),
+       do: {%{state | notice: {:command_feedback, text}}, []}
+
+  defp settle_service(state, %{kind: kind}, %Outcome{status: status})
+       when status != :accepted do
+    words =
+      case kind do
+        {:conversation_open, _} -> "That conversation could not be opened."
+        {:conversation_new} -> "A new conversation could not be started."
+        {:project_update, _, _} -> "The project setting did not change."
+        _ -> nil
+      end
+
+    if words, do: {%{state | notice: {:command_feedback, words}}, []}, else: {state, []}
+  end
+
+  defp settle_service(state, _request, _outcome), do: {state, []}
+
+  defp navigate_conversation(state, id) do
+    {state, effects} = transition(state, {:navigate, {:conversation, id}})
+    # The list's "current" mark moved with it.
+    {state, listed} = request_conversations(state)
+    {%{state | focus: "composer", hidden_focus: nil}, effects ++ listed}
   end
 
   defp show_feedback(state, :navigate, %{feature: feature}, _)
@@ -1055,20 +1318,36 @@ defmodule SwarmCodeCLI.UI.Reducer do
   defp open_destination(state, :activity), do: Watch.open(state, :activity, :global, nil)
   defp open_destination(state, {kind, id}), do: Watch.open(state, :workspace, kind, id)
 
-  defp exit_requested(state, kind) do
-    if State.dirty?(state) do
+  # A quit the user asked for confirms unsent work and live runs: the release
+  # stops every run it owns on the way out. A terminal that failed or is
+  # closing only confirms unsent work, as before.
+  defp exit_requested(state, kind, count_live? \\ true) do
+    live = if count_live?, do: live_run_count(state), else: 0
+
+    if State.dirty?(state) or live > 0 do
       layer = {:unsent_changes, kind}
       state = if List.first(state.layers) == layer, do: state, else: push_layer_context(state)
 
       layers =
         if List.first(state.layers) == layer, do: state.layers, else: [layer | state.layers]
 
-      {%{state | exit_pending: kind, layers: layers, hidden_focus: state.focus, focus: "cancel"},
-       []}
+      {%{
+         state
+         | exit_pending: kind,
+           quit_live_runs: live,
+           layers: layers,
+           hidden_focus: state.focus,
+           focus: "cancel"
+       }, []}
     else
       finish_exit(state, kind)
     end
   end
+
+  @doc "The runs a quit would stop: every run in view that has not finished."
+  @spec live_run_count(State.t()) :: non_neg_integer()
+  def live_run_count(state),
+    do: Enum.count(state.read_model.runs, fn {_, run} -> run.state in @live_states end)
 
   defp repair_switcher(old, %{layers: [{kind, _} = layer | _]} = next)
        when kind in [:switcher, :action_menu, :region_filter] do
@@ -1204,6 +1483,492 @@ defmodule SwarmCodeCLI.UI.Reducer do
           %{focus: state.focus, hidden_focus: state.hidden_focus} | state.layer_contexts
         ]
     }
+
+  defp open_plain_layer(state, layer) do
+    {preview, advanced} = State.next_id(state, :layer)
+
+    state =
+      if match?({_, ^preview}, layer) or match?({_, _, ^preview}, layer),
+        do: advanced,
+        else: state
+
+    # The bare `/model` in the composer is the picker's opener, not a message:
+    # once the picker is up the composer has nothing left to send.
+    state =
+      if match?({:model_picker, _, _}, layer), do: clear_opener_draft(state), else: state
+
+    state =
+      if match?({:approval, _}, layer) or match?({:command_report, _}, layer),
+        do: %{state | selection: Map.delete(state.selection, "dialog_scroll")},
+        else: state
+
+    next = %{
+      push_layer_context(state)
+      | layers: [layer | state.layers],
+        hidden_focus: state.focus
+    }
+
+    focus =
+      cond do
+        match?({:unsent_changes, _}, layer) or match?({:approval, _}, layer) or
+          match?({:question, _}, layer) or match?({:confirm_intent, _}, layer) ->
+          "cancel"
+
+        # The palette is a switcher: it opens on the run you are looking at, not
+        # on the top of its own list.
+        match?({:run_palette, _}, layer) ->
+          RunPalette.initial_focus(next)
+
+        true ->
+          List.first(focus_graph(next))
+      end
+
+    {%{next | focus: focus}, []}
+  end
+
+  # ------------------------------------------------- interrupt and quit
+
+  defp stop_turn(state, run_id) do
+    {id, _} = State.next_id(state, :request)
+    {next, effects} = invoke_intent(state, {:run_control, :stop, run_id}, id)
+
+    if effects == [],
+      do: {next, effects},
+      else: {%{next | notice: {:command_feedback, "Stopping the turn."}}, effects}
+  end
+
+  defp arm_quit(state) do
+    {id, state} = State.next_id(state, :timer)
+    cancel = if state.quit_armed, do: [{:cancel_timer, state.quit_armed}], else: []
+
+    notice =
+      case state.notice do
+        {:command_feedback, "Stopping the turn."} -> state.notice
+        _ -> {:command_feedback, quit_hint()}
+      end
+
+    {%{state | quit_armed: id, notice: notice},
+     cancel ++ [{:start_timer, id, @quit_window_ms, {:timer_fired, id}}]}
+  end
+
+  defp disarm_quit(state), do: %{state | quit_armed: nil}
+
+  defp quit_hint, do: "Press Ctrl-C again to quit."
+
+  # --------------------------------------- approvals and questions in view
+
+  # Whether an interaction belongs to what is on screen: its conversation, or
+  # the run the view is scoped to.
+  defp in_view?(state, item) do
+    case state.destination do
+      {:conversation, id} -> item.conversation_id == id
+      {:run, id} -> item.run_id == id
+      _ -> false
+    end
+  end
+
+  # After every transition: a card whose interaction is no longer pending
+  # closes by itself, and when nothing is open the first pending approval or
+  # question of the conversation in view opens by itself, over the composer's
+  # draft, which it leaves exactly as it was.
+  defp sync_interactions(state, effects, action) do
+    {state, effects} = close_settled(state, effects)
+
+    if auto_open?(state, action) do
+      case next_in_view(state) do
+        nil ->
+          {state, effects}
+
+        item ->
+          {opened, more} = transition(state, {:open_layer, {item.kind, item.id}})
+          {opened, grace} = start_grace(%{opened | auto_opened: item.id})
+          {opened, effects ++ more ++ grace}
+      end
+    else
+      {state, effects}
+    end
+  end
+
+  # A card closes by itself when its interaction stopped waiting, and a card
+  # that opened by itself also closes when the view moved away from it.
+  defp close_settled(%{layers: [{kind, id} | _]} = state, effects)
+       when kind in [:approval, :question] do
+    case Map.get(state.read_model.interactions, id) do
+      %{state: :pending} = item ->
+        if state.auto_opened != id or in_view?(state, item),
+          do: {state, effects},
+          else: close_card(state, effects, id)
+
+      _ ->
+        close_card(state, effects, id)
+    end
+  end
+
+  defp close_settled(state, effects), do: {state, effects}
+
+  # Closing a card for the user is not the user putting it aside: it is not
+  # dismissed, and comes back when its conversation is in view again.
+  defp close_card(state, effects, id) do
+    {closed, more} = transition(state, :close_top_layer)
+
+    closed = %{
+      closed
+      | dismissed_interactions: state.dismissed_interactions,
+        auto_opened: if(closed.auto_opened == id, do: nil, else: closed.auto_opened),
+        interaction_grace: nil
+    }
+
+    {closed, effects ++ more}
+  end
+
+  # Only data, a closed layer or a navigation can make something newly
+  # waiting; a keystroke that opened nothing must not.
+  defp auto_open?(%{layers: [], lifecycle: :running} = state, action) do
+    (match?({:data, %{kind: kind}} when kind != :response, action) or
+       action in [:close_top_layer, :boot] or match?({:navigate, _}, action)) and
+      state.focus in ["composer", "main", "inspector"] and
+      Layout.calculate(state.size, state.preferences).mutations_visible?
+  end
+
+  defp auto_open?(_state, _action), do: false
+
+  defp next_in_view(state) do
+    state.read_model.interactions
+    |> Map.values()
+    |> Enum.filter(
+      &(&1.state == :pending and &1.kind in [:approval, :question] and in_view?(state, &1) and
+          {&1.id, &1.expected_revision} not in state.dismissed_interactions)
+    )
+    |> Enum.min_by(&{&1.created_at, &1.id}, fn -> nil end)
+  end
+
+  # Esc on a card that is still pending puts it aside: it does not reopen by
+  # itself until its revision moves. Ctrl-N brings it back on purpose.
+  defp dismiss(state, {kind, id}) when kind in [:approval, :question] do
+    case Map.get(state.read_model.interactions, id) do
+      %{state: :pending, expected_revision: revision} ->
+        dismissed =
+          [{id, revision} | List.delete(state.dismissed_interactions, {id, revision})]
+          |> Enum.take(@dismissed_limit)
+
+        %{state | dismissed_interactions: dismissed, auto_opened: nil, interaction_grace: nil}
+
+      _ ->
+        %{state | auto_opened: nil, interaction_grace: nil}
+    end
+  end
+
+  defp dismiss(state, _layer), do: state
+
+  defp start_grace(state) do
+    {id, state} = State.next_id(state, :timer)
+    cancel = if state.interaction_grace, do: [{:cancel_timer, state.interaction_grace}], else: []
+
+    {%{state | interaction_grace: id},
+     cancel ++ [{:start_timer, id, @grace_ms, {:timer_fired, id}}]}
+  end
+
+  defp restart_grace(state, effects) do
+    {state, more} = start_grace(state)
+    {state, effects ++ more}
+  end
+
+  # ------------------------------------------------------ prompt history
+
+  defp remember_prompt(state, %{origin: {:draft, {conversation, _}}, kind: kind}, %Outcome{
+         status: :accepted
+       })
+       when elem(kind, 0) in [:dispatch, :steer] do
+    text =
+      case kind do
+        {:dispatch, _, text, _, _} -> text
+        {:steer, _, _, text, _} -> text
+      end
+
+    if byte_size(text) > @history_max_bytes or String.trim(text) == "" do
+      state
+    else
+      sent = [text | List.delete(Map.get(state.prompt_history, conversation, []), text)]
+
+      history =
+        state.prompt_history
+        |> Map.put(conversation, Enum.take(sent, @history_limit))
+        |> bound_history(conversation)
+
+      %{state | prompt_history: history, history_cursor: nil}
+    end
+  end
+
+  defp remember_prompt(state, _request, _outcome), do: state
+
+  # At most @history_conversations conversations keep a history; the one just
+  # written stays, and the others go smallest first.
+  defp bound_history(history, _keep) when map_size(history) <= @history_conversations,
+    do: history
+
+  defp bound_history(history, keep) do
+    {drop, _} =
+      history
+      |> Map.delete(keep)
+      |> Enum.min_by(fn {_, prompts} -> length(prompts) end)
+
+    bound_history(Map.delete(history, drop), keep)
+  end
+
+  @doc """
+  The prompts Up walks through in a conversation, newest first: what this
+  session sent, then the user turns the transcript already holds.
+  """
+  @spec prompt_history(State.t(), binary()) :: [binary()]
+  def prompt_history(state, conversation) do
+    typed =
+      state.read_model.transcript
+      |> Map.values()
+      |> Enum.filter(
+        &(&1.role == :user and &1.conversation_id == conversation and is_nil(&1.detail_ref) and
+            &1.state != :superseded and String.trim(&1.text) != "")
+      )
+      |> Enum.sort_by(&{&1.at, &1.created_sequence}, :desc)
+      |> Enum.map(& &1.text)
+
+    Enum.uniq(Map.get(state.prompt_history, conversation, []) ++ typed)
+    |> Enum.take(@history_limit)
+  end
+
+  defp history(state, direction) do
+    with {conversation, _} = key <- State.current_draft_key(state),
+         prompts when prompts != [] <- prompt_history(state, conversation) do
+      current = Keymap.draft_text(state)
+
+      {index, saved} =
+        case state.history_cursor do
+          {^key, index, saved} -> {index, saved}
+          _ -> {-1, current}
+        end
+
+      target = if direction == :previous, do: index + 1, else: index - 1
+
+      cond do
+        target >= length(prompts) ->
+          {state, []}
+
+        target < 0 ->
+          {state, effects} = replace_draft(state, key, saved)
+          {%{state | history_cursor: nil}, effects}
+
+        true ->
+          {state, effects} = replace_draft(state, key, Enum.at(prompts, target))
+          {%{state | history_cursor: {key, target, saved}}, effects}
+      end
+    else
+      _ -> {state, []}
+    end
+  end
+
+  # One undoable replacement of the draft's text, like a slash completion.
+  defp replace_draft(state, key, text) do
+    {state, a} = Editing.apply(state, :editor, key, :select_all)
+
+    {state, b} =
+      if text == "",
+        do: Editing.apply(state, :editor, key, :delete_backward),
+        else: Editing.apply(state, :editor, key, {:paste, text})
+
+    {%{state | slash_palette: nil}, a ++ b}
+  end
+
+  defp external_edit_words({:exit, status}),
+    do: "The editor exited with status #{status}; the draft is unchanged."
+
+  defp external_edit_words(:too_large),
+    do: "The edited text is over 256 KiB; the draft is unchanged."
+
+  defp external_edit_words(:not_utf8),
+    do: "The edited text is not UTF-8; the draft is unchanged."
+
+  defp external_edit_words(:terminal),
+    do: "The terminal could not step aside for the editor."
+
+  defp external_edit_words(:busy), do: "The editor is already open."
+
+  defp external_edit_words(:unavailable),
+    do: "No editor could be started; set $VISUAL or $EDITOR."
+
+  # ------------------------------------------------- client slash commands
+
+  defp slash_local(state, :help) do
+    {state, cleared} = clear_command_draft(state)
+    {state, opened} = transition(state, {:open_layer, :help})
+    {state, cleared ++ opened}
+  end
+
+  defp slash_local(state, :quit) do
+    {state, cleared} = clear_command_draft(state)
+    {state, exited} = exit_requested(state, :detach)
+    {state, cleared ++ exited}
+  end
+
+  # `/queue text` queues the text behind the running turn: the draft becomes
+  # the text, then goes out exactly as Alt-Enter would send it.
+  defp slash_local(state, :queue) do
+    key = State.current_draft_key(state)
+    text = Keymap.draft_text(state)
+    rest = text |> String.replace_prefix("/queue", "") |> String.trim_leading()
+
+    cond do
+      key == nil ->
+        {state, []}
+
+      String.trim(rest) == "" ->
+        {%{state | notice: {:command_feedback, "Type the message after /queue."}}, []}
+
+      true ->
+        {state, replaced} = replace_draft(state, key, rest)
+
+        case Keymap.draft_dispatch(state, :queue) do
+          {:ok, {:invoke, intent, id}} ->
+            {state, sent} = invoke_intent(state, intent, id)
+            {state, replaced ++ sent}
+
+          _ ->
+            {state, replaced}
+        end
+    end
+  end
+
+  defp slash_local(state, :new) do
+    {state, cleared} = clear_command_draft(state)
+    {state, sent} = transition(state, :new_conversation)
+    {state, cleared ++ sent}
+  end
+
+  # /resume and /conversations open the palette on its conversation list:
+  # the query starts at "#", which keeps conversations and runs.
+  defp slash_local(state, command) when command in [:resume, :conversations] do
+    {state, cleared} = clear_command_draft(state)
+    layer = SwarmCodeCLI.UI.Switcher.open(state, state.focus)
+    {state, opened} = transition(state, {:open_layer, layer})
+
+    {state, typed} =
+      case SwarmCodeCLI.UI.Switcher.field_key(layer) do
+        nil -> {state, []}
+        key -> Editing.apply(state, :field_editor, key, {:insert, "#"})
+      end
+
+    {state, cleared ++ opened ++ typed}
+  end
+
+  # /approval read-only | auto | full sets the project's approval mode, as
+  # the desktop's selector does; without an argument it says what it is.
+  defp slash_local(state, :approval) do
+    argument =
+      state
+      |> Keymap.draft_text()
+      |> String.trim()
+      |> String.replace_prefix("/approval", "")
+      |> String.trim()
+      |> String.downcase()
+
+    case approval_mode(argument) do
+      nil when argument == "" ->
+        current =
+          case Map.get(state.read_model.snapshots, :workspace) do
+            %{} = workspace -> Map.get(workspace, :approval_mode)
+            _ -> nil
+          end
+
+        {%{state | notice: {:command_feedback, approval_words(current)}}, []}
+
+      nil ->
+        {%{
+           state
+           | notice: {:command_feedback, "Approval is read-only, auto or full: /approval auto."}
+         }, []}
+
+      mode ->
+        {state, cleared} = clear_command_draft(state)
+        {state, sent} = service_request(state, {:project_update, mode, nil}, {:project, :update})
+        {state, cleared ++ sent}
+    end
+  end
+
+  defp slash_local(state, :trust) do
+    {state, cleared} = clear_command_draft(state)
+    {state, sent} = service_request(state, {:project_update, nil, true}, {:project, :update})
+    {state, cleared ++ sent}
+  end
+
+  defp approval_mode(value) when value in ["read-only", "readonly", "read_only", "ro"],
+    do: :read_only
+
+  defp approval_mode("auto"), do: :auto
+
+  defp approval_mode(value) when value in ["full", "full-access", "full_access"],
+    do: :full_access
+
+  defp approval_mode(_value), do: nil
+
+  defp approval_words(:read_only),
+    do: "Approval: read-only. Nothing is written or run without you. /approval auto to change."
+
+  defp approval_words(:auto),
+    do: "Approval: auto. Edits go ahead; commands ask first. /approval full or read-only."
+
+  defp approval_words(:full_access),
+    do: "Approval: full access. Nothing asks first. /approval auto to change."
+
+  defp approval_words(_),
+    do: "Approval mode: read-only, auto or full. /approval auto to set it."
+
+  # ------------------------------------------ requests that are not intents
+
+  # Conversation and project operations are service requests of their own
+  # (pass70 C1), sent in the shell watch's scope, which the service accepts
+  # for all of them.
+  defp service_request(state, kind, origin) do
+    watch = Map.get(state.watches, :shell)
+
+    expected =
+      if match?({:conversation_list, _, _, _}, kind), do: :conversation_list, else: :outcome
+
+    with %{status: :ready, scope: scope, generation: generation} <- watch,
+         {id, state} = State.next_id(state, :request),
+         {:ok, request} <-
+           Request.validate(%Request{
+             request_id: id,
+             kind: kind,
+             scope: scope,
+             generation: generation,
+             origin: origin,
+             deadline: state.now + state.deadline_ms,
+             expected_response: expected
+           }) do
+      effect = if expected == :outcome, do: :command, else: :query
+      {%{state | requests: Map.put(state.requests, id, request)}, [{effect, request}]}
+    else
+      _ ->
+        {%{state | notice: {:command_feedback, "The session is not connected yet."}}, []}
+    end
+  end
+
+  # One list request at a time; the palette shows the last answer meanwhile.
+  defp request_conversations(state) do
+    in_flight =
+      Enum.any?(state.requests, fn {_, request} ->
+        request.origin == {:conversation, :list}
+      end)
+
+    if in_flight or not match?(%{status: :ready}, Map.get(state.watches, :shell)),
+      do: {state, []},
+      else: service_request(state, {:conversation_list, nil, 50, 262_144}, {:conversation, :list})
+  end
+
+  defp clear_command_draft(state) do
+    case State.current_draft_key(state) do
+      nil -> {state, []}
+      key -> replace_draft(state, key, "")
+    end
+  end
 
   defp finish_exit(state, :detach),
     do: {%{state | lifecycle: :closing, exit_pending: nil}, [{:detach, 0}]}

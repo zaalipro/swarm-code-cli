@@ -109,7 +109,7 @@ defmodule SwarmCodeCLI.UI.SessionRuntimeTest do
     assert {:ok, scene} = SceneSlot.fetch(tid, revision)
 
     assert SwarmCodeCLI.UI.SafeText.value(hd(hd(scene.regions).blocks).text) ==
-             "DETACHED — RUNS CONTINUE"
+             "Closing SwarmCode."
 
     monitor = Process.monitor(runtime)
     send(runtime, {:draw_result, token, revision, :ok})
@@ -365,7 +365,11 @@ defmodule SwarmCodeCLI.UI.SessionRuntimeTest do
     {:ok, _} = SessionRuntime.register_terminal(runtime, self(), 0, caps)
     ready(runtime)
     {old_token, old_revision} = paint(runtime)
+    # The script's runs are live, so q asks first; y stops them and quits.
     SessionRuntime.input(runtime, {:text_fragment, :press, "q", []})
+    assert SessionRuntime.status(runtime).phase == :running
+    assert SessionRuntime.snapshot(runtime).quit_live_runs > 0
+    SessionRuntime.input(runtime, {:text_fragment, :press, "y", []})
     assert SessionRuntime.status(runtime).phase == :closing
     refute_receive {:draw, _, _}, 0
     send(runtime, {:draw_result, old_token, old_revision, :ok})
@@ -388,6 +392,7 @@ defmodule SwarmCodeCLI.UI.SessionRuntimeTest do
 
     ready(runtime)
     SessionRuntime.input(runtime, {:text_fragment, :press, "P", []})
+    SessionRuntime.input(runtime, {:text_fragment, :press, "y", []})
     assert_receive {:renderer_draw, ^renderer, _, _, :ok}
     SwarmCodeCLI.Test.RendererFake.settle(renderer)
     assert_receive {:renderer_shutdown, ^renderer}
@@ -420,6 +425,11 @@ defmodule SwarmCodeCLI.UI.SessionRuntimeTest do
     second = make_ref()
     third = make_ref()
     send(runtime, {:"$gen_call", {self(), first}, {:action, {:quit_requested, :detach}}})
+    # The script's runs are live: the quit asks, and y confirms it.
+    send(
+      runtime,
+      {:"$gen_call", {self(), make_ref()}, {:input, {:text_fragment, :press, "y", []}}}
+    )
 
     send(
       runtime,

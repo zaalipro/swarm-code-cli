@@ -14,6 +14,29 @@ defmodule SwarmCodeCLI.UI.State do
     :detail,
     :slash_palette,
     command_report: nil,
+    # pass70-E fields: the composer-first keyboard, approvals and history.
+    # The id of the running "press Ctrl-C again to quit" timer, nil when unarmed.
+    quit_armed: nil,
+    # Live runs the quit confirmation is about; the dialog says "Stop N live
+    # runs and quit?" when this is above zero.
+    quit_live_runs: 0,
+    # While an approval or question has just opened by itself, keys keep typing
+    # into the draft until the user pauses; this is that pause's timer id.
+    interaction_grace: nil,
+    # The pending interaction the reducer opened by itself, so Esc can dismiss
+    # it without it popping straight back up.
+    auto_opened: nil,
+    dismissed_interactions: [],
+    # Sent prompts per conversation, newest first, for Up on an empty draft.
+    prompt_history: %{},
+    # {draft key, index into that conversation's history, the draft it replaced}.
+    history_cursor: nil,
+    # The project's conversations as the last `conversation_list` answered
+    # (a `DTO.ConversationList`), for the palette and `/resume`.
+    conversations: nil,
+    # The composer's `@path` list (`Reducer.PathCompletion`), nil when the
+    # caret ends no `@` token.
+    path_completion: nil,
     library: nil,
     feature_form: nil,
     banner: nil,

@@ -11,12 +11,29 @@ defmodule SwarmCodeCLI.UI.ReadModel do
             activity: %{},
             changes: %{},
             verdicts: %{},
+            # pass70: background commands (per run, with their snapshots),
+            # provider rate limits (by provider id, from the shell) and the
+            # newest toasts (transient, no snapshot).
+            background: %{},
+            rate_limits: %{},
+            toasts: [],
             order: %{},
             coverage: %{},
             chunks: %ChunkDeque{}
 
   @type t :: %__MODULE__{}
-  @tables [:runs, :transcript, :agents, :interactions, :activity, :changes, :verdicts]
+  @tables [
+    :runs,
+    :transcript,
+    :agents,
+    :interactions,
+    :activity,
+    :changes,
+    :verdicts,
+    :background
+  ]
+  @toast_limit 16
+  @rate_limit_limit 32
 
   def snapshot(model, slot, body) do
     incoming = install(%__MODULE__{}, slot, body)
@@ -138,7 +155,8 @@ defmodule SwarmCodeCLI.UI.ReadModel do
              :interaction_upsert,
              :activity_upsert,
              :change_upsert,
-             :verdict_upsert
+             :verdict_upsert,
+             :background_upsert
            ] do
     field =
       case kind do
@@ -149,6 +167,7 @@ defmodule SwarmCodeCLI.UI.ReadModel do
         :activity_upsert -> :activity
         :change_upsert -> :changes
         :verdict_upsert -> :verdicts
+        :background_upsert -> :background
       end
 
     table = Map.fetch!(model, field)
@@ -180,13 +199,20 @@ defmodule SwarmCodeCLI.UI.ReadModel do
   end
 
   def delta(model, slot, %Delta{kind: kind, entity_id: id})
-      when kind in [:transcript_remove, :interaction_remove, :activity_remove, :change_remove] do
+      when kind in [
+             :transcript_remove,
+             :interaction_remove,
+             :activity_remove,
+             :change_remove,
+             :background_remove
+           ] do
     field =
       case kind do
         :transcript_remove -> :transcript
         :interaction_remove -> :interactions
         :activity_remove -> :activity
         :change_remove -> :changes
+        :background_remove -> :background
       end
 
     model = Map.update!(model, field, &Map.delete(&1, id))
@@ -235,6 +261,38 @@ defmodule SwarmCodeCLI.UI.ReadModel do
     end
   end
 
+  # A toast has no snapshot: the newest few are kept, newest first, one per id.
+  def delta(model, _slot, %Delta{kind: :toast, body: %DTO.Toast{} = toast}) do
+    toasts =
+      [toast | Enum.reject(model.toasts, &(&1.id == toast.id))]
+      |> Enum.take(@toast_limit)
+
+    {:ok, %{model | toasts: toasts}, [], []}
+  end
+
+  def delta(model, _slot, %Delta{kind: :rate_limit, body: %DTO.RateLimit{} = limit}) do
+    limits = model.rate_limits
+
+    cond do
+      not Map.has_key?(limits, limit.provider_id) and map_size(limits) >= @rate_limit_limit ->
+        {:error, :snapshot_required}
+
+      Map.has_key?(limits, limit.provider_id) and
+          limits[limit.provider_id].revision > limit.revision ->
+        {:ok, model, [], []}
+
+      true ->
+        {:ok, %{model | rate_limits: Map.put(limits, limit.provider_id, limit)}, [], []}
+    end
+  end
+
+  # Metadata only ever describes the workspace's conversation; anywhere else
+  # there is nothing it could update.
+  def delta(model, _slot, %Delta{kind: :workspace_metadata}), do: {:ok, model, [], []}
+
+  # A newer daemon's delta this client does not know is not a crash.
+  def delta(model, _slot, %Delta{}), do: {:ok, model, [], []}
+
   defp install(model, slot, body) do
     runs =
       case body do
@@ -266,6 +324,20 @@ defmodule SwarmCodeCLI.UI.ReadModel do
 
     changes = Map.get(body, :changes, [])
     verdicts = Map.get(body, :verdicts, [])
+    background = Map.get(body, :background, []) || []
+
+    model =
+      case Map.get(body, :rate_limits) do
+        limits when is_list(limits) and slot == :shell ->
+          %{
+            model
+            | rate_limits:
+                limits |> Enum.take(@rate_limit_limit) |> Map.new(&{&1.provider_id, &1})
+          }
+
+        _ ->
+          model
+      end
 
     coverage = %{
       runs: Enum.map(runs, & &1.id),
@@ -274,7 +346,8 @@ defmodule SwarmCodeCLI.UI.ReadModel do
       agents: Enum.map(Map.get(body, :agents, []), & &1.id),
       interactions: Enum.map(interactions, & &1.id),
       changes: Enum.map(changes, & &1.id),
-      verdicts: Enum.map(verdicts, & &1.id)
+      verdicts: Enum.map(verdicts, & &1.id),
+      background: Enum.map(background, & &1.id)
     }
 
     model = %{model | coverage: Map.put(model.coverage, slot, coverage)}
@@ -287,6 +360,7 @@ defmodule SwarmCodeCLI.UI.ReadModel do
     |> put_rows(:interactions, interactions)
     |> put_rows(:changes, changes)
     |> put_rows(:verdicts, verdicts)
+    |> put_rows(:background, background)
     |> Map.update!(:order, &Map.put(&1, slot, Enum.map(rows, fn row -> row.id end)))
   end
 

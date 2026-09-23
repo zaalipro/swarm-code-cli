@@ -159,6 +159,9 @@ defmodule SwarmCodeCLI.UI.EffectRunner do
 
       :library_snapshot ->
         struct!(DTO.LibrarySnapshot, attrs ++ [feature: elem(request.kind, 1)])
+
+      :conversation_list ->
+        struct!(DTO.ConversationList, attrs)
     end
   end
 

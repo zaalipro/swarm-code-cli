@@ -15,7 +15,7 @@ defmodule SwarmCodeCLI.UI.VimTest do
   @table %{"send" => {:intent, @send}}
 
   describe "entering and leaving the modes" do
-    test "i from the transcript focuses the composer in INSERT; Esc walks back out" do
+    test "i from the transcript focuses the composer in INSERT; Esc never leaves the composer" do
       state = boot()
       assert state.focus == "main"
 
@@ -29,7 +29,13 @@ defmodule SwarmCodeCLI.UI.VimTest do
       assert state.vim.mode == :normal
       assert Context.of(state) == :composer_normal
 
+      # A bare NORMAL Esc would stop a streaming turn; the caret stays put.
       state = press(state, {:key, :escape})
+      assert state.focus == "composer"
+      assert Context.of(state) == :composer_normal
+
+      # Ctrl-T is the way out to select mode.
+      state = press(state, {:ctrl, "t"})
       assert state.focus == "main"
       assert Context.of(state) == :main
     end
@@ -79,7 +85,8 @@ defmodule SwarmCodeCLI.UI.VimTest do
       assert text(state) == "x"
 
       state = press(state, {:key, :escape})
-      assert state.focus == "main"
+      assert state.focus == "composer"
+      assert text(state) == "x"
     end
 
     test "an unknown NORMAL key is ignored and never types" do

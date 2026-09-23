@@ -62,11 +62,32 @@ creates or migrates the database through guarded startup and refuses an active
 desktop or incompatible database. On macOS, quit the desktop before starting
 saved mode and exit the CLI before reopening the desktop; they share storage.
 
-Conversation sessions open with the composer ready for typing. Tab focuses the
-next region, Enter sends, Escape returns to the main view, and `q` exits outside
-the editor. The saved title says `SAVED · DEV`; the live title says
-`LIVE · UNSAVED`. Exiting either development launcher stops its owned runs. The
-saved launcher performs guarded admission before accessing shared storage.
+Conversation sessions open with the composer ready for typing, and the keys
+stay with the composer (the full table is `docs/keybindings.md`, `?` in the
+TUI):
+
+| Key | In the composer |
+| --- | --- |
+| letters | always type |
+| Enter | send |
+| Ctrl-O, Shift-Enter | new line |
+| Esc | stop the turn that is streaming; close the top dialog or list first |
+| Ctrl-C | close a dialog, else clear the draft (Ctrl-Z brings it back), else stop the turn; twice in 1.5 s quits (it asks when runs are live) |
+| Tab | complete a `/command` or an `@path`; while a turn runs, queue the draft |
+| Up / Down on an empty draft | walk the prompts sent in this conversation |
+| PgUp / PgDn, Ctrl-U / Ctrl-D (empty draft) | scroll the transcript |
+| Ctrl-T | select mode: `j`/`k` move, Enter opens, `y` copies, Esc or Ctrl-T back |
+| Ctrl-P | palette: conversations, runs, features, the model |
+| Ctrl-N | the next approval or question waiting |
+| `y` `Y` `A` `d` `D` `n` | on an approval: once, this run, always this command family, deny, deny and stop, next |
+
+An approval or a question opens over the conversation by itself; for a moment
+after it opens, keys keep typing into the draft, so a sentence is never
+answered by accident. The client answers some slash commands itself: `/new`
+(`/clear`), `/resume` (pick a conversation), `/approval read-only|auto|full`,
+`/trust`, `/queue <text>`, `/help` and `/quit`; typing `/` lists every command
+above the composer. Exiting either development launcher stops its owned runs.
+The saved launcher performs guarded admission before accessing shared storage.
 
 To assemble a checked BEAM release, including the native terminal-port gate:
 
@@ -75,14 +96,11 @@ scripts/dev/build_release.sh
 ```
 
 The release is written to `_build/prod/rel/swarm_code_cli` and includes the
-native terminal helper plus a `swarm-code` launcher:
+native terminal helper plus the `swarmcode` launcher described below:
 
 ```sh
-_build/prod/rel/swarm_code_cli/bin/swarm-code tui
+_build/prod/rel/swarm_code_cli/bin/swarmcode --help
 ```
-
-The release launcher uses the same `SWARM_PROJECT_ROOT`, `SWARM_CONVERSATION`,
-and provider variables as the saved development session.
 
 ### Install as `swarmcode`
 
@@ -90,6 +108,34 @@ and provider variables as the saved development session.
 scripts/install.sh
 swarmcode            # the saved session for the current directory
 swarmcode ~/dev/app  # or for a named project
+```
+
+```text
+swarmcode [DIR] [--new | --continue | --resume ID] [--model M]
+          [-p PROMPT [--json]] [--plain [--ndjson]] [--help] [--version]
+```
+
+- `--new` starts a conversation, `--continue` (`-c`, the default) opens the
+  latest, `--resume ID` a given one; `/resume` in the TUI picks one by title.
+- `--model M` (or `provider/model`) answers with another model for this session
+  only; nothing is written to the providers or the conversation.
+- `-p PROMPT` runs one turn without the full-screen view and prints the answer
+  as it streams (`-p -` reads the prompt from stdin). The project's approval mode
+  applies; anything that would still need a person is denied, and a line on
+  stderr says what. A question stops the run. `--json` prints one object at the
+  end instead: `conversation_id`, `run_id`, `state`, `text`, `error`, `denied`,
+  `exit_code`.
+- `--plain` is the line presenter for pipes, CI and SSH (one command per line,
+  `help` lists them); it is chosen by itself when stdin or stdout is not a
+  terminal. `--ndjson` prints one JSON record per line.
+- Exit codes: `0` done, `1` the run failed or was stopped, `2` usage, `3`
+  startup refused (another instance holds the database, no provider, an
+  incompatible schema: one line says which).
+
+```sh
+swarmcode -p "summarise the open TODOs in lib/" > todos.md
+swarmcode --new -p "run the tests and fix what fails" --json | jq .state
+swarmcode -p - --model anthropic/claude-sonnet < review-request.md
 ```
 
 The installer builds the release, copies it to `~/.local/share/swarmcode`, and
@@ -119,8 +165,10 @@ model ID. Local OpenAI-compatible servers can use an empty `SWARM_API_KEY`.
 
 Saved slash commands are parsed and dispatched through the typed service boundary.
 `/swarm`, `/goal`, `/plan`, `/review`, `/effort`, `/swarm_effort`, `/rewind`,
-`/stop`, `/resume`, `/workflow`, `/workflows`, `/create-workflow`, `/ultra`,
-`/consensus`, `/deep_research`, and `/compact` have daemon execution mappings.
+`/stop`, `/workflow`, `/workflows`, `/create-workflow`, `/ultra`,
+`/consensus`, `/deep_research`, and `/compact` have daemon execution mappings;
+`/new`, `/resume`, `/approval`, `/trust`, `/queue`, `/help` and `/quit` are
+answered by the client.
 `/attach <image-path>` stages a confined project image for the next saved
 message; the attachment is consumed when that message starts.
 Advanced flows still require full end-to-end acceptance. The unsaved launcher

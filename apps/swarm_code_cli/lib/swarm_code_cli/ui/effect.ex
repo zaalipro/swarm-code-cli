@@ -2,7 +2,7 @@ defmodule SwarmCodeCLI.UI.Effect do
   @moduledoc "The exhaustive declarative reducer effect vocabulary."
 
   alias SwarmCodeCLI.UI.DataSource.{Request, Watch}
-  alias SwarmCodeCLI.UI.{Action, Intent, SafeText}
+  alias SwarmCodeCLI.UI.{Action, DraftKey, Intent, SafeText}
 
   @type t ::
           {:watch, Watch.t()}
@@ -17,7 +17,16 @@ defmodule SwarmCodeCLI.UI.Effect do
           | {:bell, :needs_you}
           | {:presenter_handoff, :plain}
           | {:companion, :open}
+          | {:copy, binary()}
+          | {:edit_externally, DraftKey.t(), binary()}
           | {:detach, non_neg_integer()}
+
+  # What select mode's `y` may put on the clipboard in one OSC 52 write.
+  @max_copy_bytes 262_144
+
+  @doc "The largest text a copy effect carries."
+  @spec max_copy_bytes() :: pos_integer()
+  def max_copy_bytes, do: @max_copy_bytes
 
   @spec validate(term()) :: {:ok, t()} | {:error, :invalid_effect}
   def validate({:watch, watch} = effect),
@@ -59,6 +68,24 @@ defmodule SwarmCodeCLI.UI.Effect do
   def validate({:bell, :needs_you} = effect), do: {:ok, effect}
   def validate({:presenter_handoff, :plain} = effect), do: {:ok, effect}
   def validate({:companion, :open} = effect), do: {:ok, effect}
+
+  def validate({:copy, text} = effect),
+    do:
+      valid_effect(
+        effect,
+        is_binary(text) and text != "" and byte_size(text) <= @max_copy_bytes and
+          String.valid?(text)
+      )
+
+  # Ctrl-X: the session runtime suspends the terminal, runs $VISUAL/$EDITOR
+  # on a private copy of the draft and answers `{:external_edit_done, …}`.
+  def validate({:edit_externally, key, text} = effect),
+    do:
+      valid_effect(
+        effect,
+        match?({:ok, _}, DraftKey.validate(key)) and is_binary(text) and
+          byte_size(text) <= @max_copy_bytes and String.valid?(text)
+      )
 
   def validate({:detach, exit_status} = effect),
     do: valid_effect(effect, is_integer(exit_status) and exit_status >= 0)

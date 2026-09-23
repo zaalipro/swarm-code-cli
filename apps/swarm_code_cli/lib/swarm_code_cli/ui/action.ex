@@ -71,6 +71,19 @@ defmodule SwarmCodeCLI.UI.Action do
           | :open_companion
           | :nothing_waiting
           | {:open_interaction, binary()}
+          | {:interrupt, :escape | :ctrl_c}
+          | :select_mode
+          | {:compose, binary()}
+          | {:history, :previous | :next}
+          | :copy_selection
+          | {:slash_local,
+             :help | :quit | :new | :resume | :conversations | :queue | :approval | :trust}
+          | {:open_conversation, binary()}
+          | :new_conversation
+          | {:complete_path, binary()}
+          | :dismiss_completion
+          | {:external_editor, DraftKey.t()}
+          | {:external_edit_done, DraftKey.t(), {:ok, binary()} | {:error, external_edit_error()}}
           | {:toggle_dock, :inspector}
           | {:set_tab, :agents | :timeline | :changes}
           | {:select_agent, binary()}
@@ -149,6 +162,58 @@ defmodule SwarmCodeCLI.UI.Action do
 
   def validate({:open_interaction, id} = action),
     do: valid_action(action, SwarmCodeCLI.UI.Intent.valid_id?(id))
+
+  # Esc and Ctrl-C both stop the turn in view; which key asked decides what
+  # else happens (Ctrl-C clears a draft first and arms the second-press quit).
+  def validate({:interrupt, source} = action),
+    do: valid_action(action, source in [:escape, :ctrl_c])
+
+  def validate(:select_mode), do: {:ok, :select_mode}
+  def validate(:copy_selection), do: {:ok, :copy_selection}
+
+  # A printable key pressed in select mode leaves it and types: one fragment,
+  # bounded like any editor insert.
+  def validate({:compose, text} = action),
+    do: valid_action(action, match?({:ok, _}, Operation.validate({:insert, text})))
+
+  def validate({:history, direction} = action),
+    do: valid_action(action, direction in [:previous, :next])
+
+  def validate({:slash_local, command} = action),
+    do:
+      valid_action(
+        action,
+        command in [:help, :quit, :new, :resume, :conversations, :queue, :approval, :trust]
+      )
+
+  def validate({:open_conversation, id} = action), do: valid_action(action, Intent.valid_id?(id))
+  def validate(:new_conversation), do: {:ok, :new_conversation}
+
+  # `@path` completion: a path is one of the rows the service sent, bounded
+  # like any id; the reducer checks it is one of them.
+  def validate({:complete_path, path} = action), do: valid_action(action, Intent.valid_id?(path))
+  def validate(:dismiss_completion), do: {:ok, :dismiss_completion}
+
+  # Ctrl-X: the draft goes to $VISUAL/$EDITOR. The session runtime answers
+  # with the edited text (bounded like a paste) or one of a closed set of
+  # reasons; only the runtime itself sends the answer.
+  def validate({:external_editor, key} = action),
+    do: valid_action(action, match?({:ok, _}, DraftKey.validate(key)))
+
+  def validate({:external_edit_done, key, {:ok, text}} = action),
+    do:
+      valid_action(
+        action,
+        match?({:ok, _}, DraftKey.validate(key)) and
+          (text == "" or match?({:ok, _}, Operation.validate({:paste, text})))
+      )
+
+  def validate({:external_edit_done, key, {:error, reason}} = action),
+    do:
+      valid_action(
+        action,
+        match?({:ok, _}, DraftKey.validate(key)) and external_edit_error?(reason)
+      )
 
   def validate({:toggle_dock, dock} = action),
     do: valid_action(action, dock == :inspector)
@@ -423,4 +488,14 @@ defmodule SwarmCodeCLI.UI.Action do
   defp non_negative_integer?(value), do: is_integer(value) and value >= 0
   defp valid_action(action, true), do: {:ok, action}
   defp valid_action(_action, false), do: {:error, :invalid_action}
+
+  @external_edit_errors [:unavailable, :too_large, :not_utf8, :terminal, :busy]
+
+  @typedoc "Why an external edit left the draft as it was."
+  @type external_edit_error ::
+          :unavailable | :too_large | :not_utf8 | :terminal | :busy | {:exit, 1..255}
+
+  @doc "True for a reason the runtime may report for an external edit."
+  def external_edit_error?({:exit, status}), do: is_integer(status) and status in 1..255
+  def external_edit_error?(reason), do: reason in @external_edit_errors
 end

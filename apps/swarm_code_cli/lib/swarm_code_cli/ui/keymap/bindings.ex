@@ -107,7 +107,7 @@ defmodule SwarmCodeCLI.UI.Keymap.Bindings do
       contexts: [:global],
       group: :layers,
       label: "Palette",
-      help: "Command palette; the same chord closes it",
+      help: "Command palette; pressed again it keeps the palette and its query",
       hint: 7
     },
     %Binding{
@@ -142,15 +142,18 @@ defmodule SwarmCodeCLI.UI.Keymap.Bindings do
       help: "Show or hide the inspector dock",
       hint: 2
     },
+    # Ctrl-C never ends the session by itself: it clears the draft, else stops
+    # the turn in view, and only a second press within 1.5 s quits (asking
+    # first when runs are still live).
     %Binding{
-      id: :detach,
+      id: :interrupt,
       keys: [{"c", [:control]}],
-      action: {:special, :detach},
+      action: {:special, :interrupt},
       contexts: [:global],
       group: :session,
-      label: "Detach",
-      help: "Detach from the session and leave it running",
-      hint: 0
+      label: "Interrupt",
+      help: "Clear the draft, else stop the turn; press twice to quit",
+      hint: [composer: 2]
     },
     %Binding{
       id: :close_or_quit,
@@ -159,19 +162,31 @@ defmodule SwarmCodeCLI.UI.Keymap.Bindings do
       contexts: [:main, :inspector, :dialog, :picker],
       group: :session,
       label: "Close/Quit",
-      help: "Close the top layer; with none open, quit",
+      help: "Close the top layer; in select mode with none open, quit",
       hint: [main: 4, inspector: 4, dialog: 4]
     },
-    # Never hinted where it declines: in main with nothing open it does nothing.
+    # Esc never moves focus out of the composer: there it stops a streaming
+    # turn. Everywhere else it steps out one level: a layer closes, a vim
+    # mode ends, select mode hands back to the composer.
     %Binding{
       id: :escape,
       keys: [{:escape, []}],
       action: {:special, :escape},
-      contexts: [:global],
+      contexts: [:composer_normal, :composer_visual, :main, :inspector, :picker, :field, :dialog],
       group: :session,
       label: "Back out",
-      help: "Step out one level; never navigates history",
-      hint: [composer: 8, composer_normal: 7, composer_visual: 8, dialog: 6, picker: 5]
+      help: "Close the top layer, end a vim mode, or leave select mode",
+      hint: [composer_normal: 7, composer_visual: 8, dialog: 6, picker: 5, main: 6, inspector: 6]
+    },
+    %Binding{
+      id: :interrupt_turn,
+      keys: [{:escape, []}],
+      action: {:special, :escape},
+      contexts: [:composer],
+      group: :session,
+      label: "Interrupt",
+      help: "Stop the turn that is streaming; the draft stays",
+      hint: [composer: 8]
     },
     %Binding{
       id: :back,
@@ -198,26 +213,47 @@ defmodule SwarmCodeCLI.UI.Keymap.Bindings do
     # Focus
     # ------------------------------------------------------------------
     %Binding{
+      id: :complete,
+      keys: [{:tab, []}],
+      action: {:special, :focus_next},
+      contexts: [:composer],
+      group: :edit,
+      label: "Complete",
+      help: "Complete a slash command; while a turn runs, queue the draft behind it",
+      hint: [composer: 5],
+      repeat: true
+    },
+    %Binding{
       id: :focus_next,
       keys: [{:tab, []}],
       action: {:special, :focus_next},
-      contexts: [:global],
+      contexts: [:composer_normal, :composer_visual, :main, :inspector, :picker, :field, :dialog],
       group: :focus,
       label: "Next",
-      help: "Move focus on; from the transcript, into the composer",
-      hint: [composer: 5, main: 2, inspector: 2, dialog: 1],
+      help: "Move focus on; from select mode, back into the composer",
+      hint: [main: 2, inspector: 2, dialog: 1],
       repeat: true
     },
     %Binding{
       id: :focus_previous,
       keys: [{:tab, [:shift]}, {:back_tab, []}],
       action: {:focus_cycle, :previous},
-      contexts: [:global],
+      contexts: [:main, :inspector, :picker, :field, :dialog],
       group: :focus,
       label: "Previous",
       help: "Move focus back",
       hint: 0,
       repeat: true
+    },
+    %Binding{
+      id: :select_mode,
+      keys: [{"t", [:control]}],
+      action: {:special, :select_mode},
+      contexts: [:composer, :composer_normal, :composer_visual, :main, :inspector],
+      group: :focus,
+      label: "Select",
+      help: "Select mode: j/k move, Enter open, y copy, Esc back to typing",
+      hint: [composer: 3, composer_normal: 1, main: 7, inspector: 5]
     },
     %Binding{
       id: :focus_composer,
@@ -394,6 +430,16 @@ defmodule SwarmCodeCLI.UI.Keymap.Bindings do
       hint: 2
     },
     %Binding{
+      id: :copy_selected,
+      keys: [{"y", []}],
+      action: {:special, :copy_selected},
+      contexts: [:main, :inspector],
+      group: :act,
+      label: "Copy",
+      help: "Copy the selected item's text to the clipboard",
+      hint: 2
+    },
+    %Binding{
       id: :open_detail,
       keys: [{"o", []}],
       action: {:special, :open_detail},
@@ -455,7 +501,7 @@ defmodule SwarmCodeCLI.UI.Keymap.Bindings do
       id: :scroll_page_down,
       keys: [{:page_down, []}],
       action: {:special, :scroll_page_down},
-      contexts: [:main, :inspector],
+      contexts: [:main, :inspector, :composer, :composer_normal, :composer_visual],
       group: :navigate,
       label: "Page down",
       help: "Scroll one page down",
@@ -466,7 +512,7 @@ defmodule SwarmCodeCLI.UI.Keymap.Bindings do
       id: :scroll_page_up,
       keys: [{:page_up, []}],
       action: {:special, :scroll_page_up},
-      contexts: [:main, :inspector],
+      contexts: [:main, :inspector, :composer, :composer_normal, :composer_visual],
       group: :navigate,
       label: "Page up",
       help: "Scroll one page up",
@@ -754,6 +800,18 @@ defmodule SwarmCodeCLI.UI.Keymap.Bindings do
       help: "Open the next approval or question waiting on you, across every run",
       hint: 1
     },
+    # The composer's way to the next approval or question: a chord, because a
+    # bare "n" there is typing.
+    %Binding{
+      id: :next_need_chord,
+      keys: [{"n", [:control]}],
+      action: {:special, :next_need},
+      contexts: [:composer, :composer_normal, :composer_visual],
+      group: :act,
+      label: "Waiting",
+      help: "Open the next approval or question waiting on you",
+      hint: [composer: 4, composer_normal: 3]
+    },
     %Binding{
       id: :previous_need,
       keys: [{"N", []}],
@@ -764,6 +822,21 @@ defmodule SwarmCodeCLI.UI.Keymap.Bindings do
       help: "Open the previous approval or question waiting on you",
       hint: 0
     },
+    # An approval reads y once · Y this run · A always "<family>" · d deny ·
+    # D deny & stop · n next. On a yes/no confirmation "y" and "n" are yes and
+    # no; the same two keys, one special each.
+    %Binding{
+      id: :confirm_yes,
+      keys: [{"y", []}],
+      action: {:special, :confirm_yes},
+      contexts: [:dialog],
+      group: :act,
+      label: "Yes",
+      help: "Confirm: yes; on an approval, allow it once",
+      hint: 3
+    },
+    # The older spelling of "allow once", kept so a card that still names
+    # :approve keeps its key.
     %Binding{
       id: :approve,
       keys: [{"a", []}],
@@ -771,17 +844,17 @@ defmodule SwarmCodeCLI.UI.Keymap.Bindings do
       contexts: [:dialog],
       group: :act,
       label: "Approve",
-      help: "Approve the pending request",
-      hint: 3
+      help: "Allow the pending request once (same as y)",
+      hint: 0
     },
     %Binding{
-      id: :deny,
-      keys: [{"d", []}],
-      action: {:special, :deny},
+      id: :approve_run,
+      keys: [{"Y", []}],
+      action: {:special, :approve_run},
       contexts: [:dialog],
       group: :act,
-      label: "Deny",
-      help: "Deny the pending request",
+      label: "This run",
+      help: "Allow it for the rest of this run",
       hint: 2
     },
     %Binding{
@@ -791,18 +864,28 @@ defmodule SwarmCodeCLI.UI.Keymap.Bindings do
       contexts: [:dialog],
       group: :act,
       label: "Always",
-      help: "Approve this request and ones like it",
-      hint: 0
+      help: "Always allow commands of this family in the project",
+      hint: 1
     },
     %Binding{
-      id: :confirm_yes,
-      keys: [{"y", []}],
-      action: {:special, :confirm_yes},
+      id: :deny,
+      keys: [{"d", []}],
+      action: {:special, :deny},
       contexts: [:dialog],
       group: :act,
-      label: "Yes",
-      help: "Confirm: yes",
+      label: "Deny",
+      help: "Deny the pending request; the run goes on without it",
       hint: 2
+    },
+    %Binding{
+      id: :deny_stop,
+      keys: [{"D", []}],
+      action: {:special, :deny_stop},
+      contexts: [:dialog],
+      group: :act,
+      label: "Deny, stop",
+      help: "Deny the pending request and stop the run",
+      hint: 1
     },
     %Binding{
       id: :confirm_no,
@@ -811,7 +894,7 @@ defmodule SwarmCodeCLI.UI.Keymap.Bindings do
       contexts: [:dialog],
       group: :act,
       label: "No",
-      help: "Confirm: no, close without doing it",
+      help: "Confirm: no; on an approval or question, the next one waiting",
       hint: 1
     },
     %Binding{
@@ -876,13 +959,22 @@ defmodule SwarmCodeCLI.UI.Keymap.Bindings do
     # ------------------------------------------------------------------
     %Binding{
       id: :composer_newline,
-      keys: [{"o", [:control]}, {:enter, [:shift]}],
+      keys: [{"o", [:control]}, {"j", [:control]}, {:enter, [:shift]}],
       action: {:special, :composer_newline},
       contexts: [:composer, :field],
       group: :edit,
       label: "Newline",
-      help: "Insert a line break without sending",
+      help: "Insert a line break without sending (Ctrl-O or Ctrl-J)",
       hint: 7
+    },
+    %Binding{
+      id: :external_editor,
+      keys: [{"x", [:control]}],
+      action: {:special, :external_editor},
+      contexts: [:composer, :composer_normal],
+      group: :edit,
+      label: "Editor",
+      help: "Edit the draft in $VISUAL or $EDITOR; saving and quitting brings it back"
     },
     %Binding{
       id: :composer_up,
@@ -891,7 +983,7 @@ defmodule SwarmCodeCLI.UI.Keymap.Bindings do
       contexts: [:composer],
       group: :edit,
       label: "Up",
-      help: "Up a line, or up the slash-command list",
+      help: "Up a line; on an empty draft, the previous prompt; up the slash list",
       hint: 0,
       repeat: true
     },
@@ -902,7 +994,7 @@ defmodule SwarmCodeCLI.UI.Keymap.Bindings do
       contexts: [:composer],
       group: :edit,
       label: "Down",
-      help: "Down a line, or down the slash-command list",
+      help: "Down a line; back towards the draft in prompt history; down the slash list",
       hint: 0,
       repeat: true
     },
@@ -943,10 +1035,34 @@ defmodule SwarmCodeCLI.UI.Keymap.Bindings do
       id: :composer_delete_line_start,
       keys: [{"u", [:control]}],
       action: {:editor_op, {:delete, :line_start}},
-      contexts: [:composer, :field],
+      contexts: [:field],
       group: :edit,
       label: "Del to start",
       help: "Delete back to the start of the line",
+      hint: 0,
+      repeat: true
+    },
+    # Readline's Ctrl-U in the composer, except that on an empty draft (where
+    # it would delete nothing) it and Ctrl-D scroll the transcript half a page.
+    %Binding{
+      id: :composer_half_up,
+      keys: [{"u", [:control]}],
+      action: {:special, :composer_half_up},
+      contexts: [:composer],
+      group: :edit,
+      label: "Del to start",
+      help: "Delete back to the start of the line; on an empty draft, scroll up",
+      hint: 0,
+      repeat: true
+    },
+    %Binding{
+      id: :composer_half_down,
+      keys: [{"d", [:control]}],
+      action: {:special, :composer_half_down},
+      contexts: [:composer],
+      group: :navigate,
+      label: "Half down",
+      help: "On an empty draft, scroll the transcript half a page down",
       hint: 0,
       repeat: true
     },

@@ -22,7 +22,18 @@ defmodule SwarmCodeCLI.UI.Keymap do
   `Ctrl-Z`.
   """
 
-  alias SwarmCodeCLI.UI.{Action, Input, Layout, ModelPicker, Question, State, Switcher}
+  alias SwarmCodeCLI.UI.{
+    Action,
+    Drafts,
+    Editor,
+    Input,
+    Layout,
+    ModelPicker,
+    Question,
+    State,
+    Switcher
+  }
+
   alias SwarmCodeCLI.UI.Keymap.{Bindings, Context, Special}
 
   @spec resolve(term(), map(), map()) :: {:ok, Action.t()} | :ignore
@@ -49,12 +60,14 @@ defmodule SwarmCodeCLI.UI.Keymap do
 
         # A bare `/model` or `/swarm_model` has nothing to send yet: it opens
         # the picker, whichever surface pressed Send. The reducer clears the
-        # draft as the layer opens.
+        # draft as the layer opens. The session's own commands (/help, /quit,
+        # /new, /resume, /queue …) never reach the daemon either.
         {:intent, {:dispatch, :send, text, :main, []}} = target
         when is_binary(text) ->
-          case ModelPicker.opener(text) do
-            nil -> invoke(target, state)
-            picker -> result({:open_layer, ModelPicker.open(state, picker)})
+          case {local_command(text), ModelPicker.opener(text)} do
+            {command, _} when not is_nil(command) -> result({:slash_local, command})
+            {nil, nil} -> invoke(target, state)
+            {nil, picker} -> result({:open_layer, ModelPicker.open(state, picker)})
           end
 
         {:local, action} ->
@@ -70,6 +83,38 @@ defmodule SwarmCodeCLI.UI.Keymap do
       :ignore
     end
   end
+
+  @local_commands %{
+    "/help" => :help,
+    "/quit" => :quit,
+    "/exit" => :quit,
+    "/new" => :new,
+    "/clear" => :new,
+    "/resume" => :resume,
+    "/conversations" => :conversations
+  }
+
+  @doc """
+  The slash commands the client answers itself, from the draft's text: a bare
+  `/help`, `/quit` (`/exit`), `/new` (`/clear`), `/resume`, `/conversations`,
+  `/trust`, and `/queue` and `/approval` with or without their argument.
+  """
+  @spec local_command(binary()) :: atom() | nil
+  def local_command(text) when is_binary(text) do
+    trimmed = String.trim(text)
+
+    cond do
+      Map.has_key?(@local_commands, trimmed) -> Map.fetch!(@local_commands, trimmed)
+      command?(trimmed, "/queue") -> :queue
+      command?(trimmed, "/approval") -> :approval
+      trimmed == "/trust" -> :trust
+      true -> nil
+    end
+  end
+
+  def local_command(_text), do: nil
+
+  defp command?(text, name), do: text == name or String.starts_with?(text, name <> " ")
 
   defp invoke({:intent, intent}, state) do
     if destructive?(intent) and not match?([{:confirm_intent, ^intent} | _], state.layers),
@@ -91,7 +136,10 @@ defmodule SwarmCodeCLI.UI.Keymap do
 
   defp route({:resize, size}, _, _), do: result({:resize, size})
   defp route({:rejected, reason}, _, _), do: result({:input_rejected, reason})
-  defp route({:paste, text}, state, _), do: edit(state, {:paste, text})
+
+  defp route({:paste, text}, state, _) do
+    if grace?(state), do: draft_edit(state, {:paste, text}), else: edit(state, {:paste, text})
+  end
 
   defp route({:key, phase, code, mods}, state, table),
     do: dispatch(code, Enum.sort(mods), phase, state, table)
@@ -112,6 +160,9 @@ defmodule SwarmCodeCLI.UI.Keymap do
       tiny_unsent?(state) ->
         tiny_exit(code, mods, phase, state)
 
+      grace?(state) ->
+        grace(code, mods, state)
+
       true ->
         context = Context.of(state)
 
@@ -121,6 +172,9 @@ defmodule SwarmCodeCLI.UI.Keymap do
 
           binding ->
             case bind(binding, {code, mods}, phase, state, table) do
+              # A key select mode uses but that declined here (a held "x", "]"
+              # with no inspector) is not typing either.
+              :ignore when context in [:main, :inspector] -> :ignore
               :ignore -> fallthrough(context, code, mods, state)
               resolved -> resolved
             end
@@ -144,6 +198,13 @@ defmodule SwarmCodeCLI.UI.Keymap do
     do: editor_fallthrough(code, mods, state)
 
   defp fallthrough(:picker, code, mods, state), do: picker_fallthrough(code, mods, state)
+
+  # Select mode is a mode, not a trap: a printable key it does not use goes
+  # back to the composer and types there.
+  defp fallthrough(context, code, [], %{layers: []})
+       when context in [:main, :inspector] and is_binary(code),
+       do: result({:compose, code})
+
   defp fallthrough(_context, _code, _mods, _state), do: :ignore
 
   defp editor_fallthrough(code, mods, state) do
@@ -193,6 +254,30 @@ defmodule SwarmCodeCLI.UI.Keymap do
       end
 
     if movement, do: {if(:shift in mods, do: :extend_selection, else: :move), movement}
+  end
+
+  # ------------------------------------------------------------ grace window
+
+  # An approval or question that opened by itself does not take the keys that
+  # were already on their way to the draft: until the user pauses, printable
+  # keys and Backspace keep typing underneath it, Esc dismisses it, and
+  # everything else (Enter above all) waits.
+  defp grace?(%{interaction_grace: grace, auto_opened: id, layers: [{kind, id} | _]})
+       when not is_nil(grace) and kind in [:approval, :question],
+       do: true
+
+  defp grace?(_state), do: false
+
+  defp grace(:escape, [], _state), do: result(:close_top_layer)
+  defp grace(:backspace, [], state), do: draft_edit(state, :delete_backward)
+  defp grace(code, [], state) when is_binary(code), do: draft_edit(state, {:insert, code})
+  defp grace(_code, _mods, _state), do: :ignore
+
+  defp draft_edit(state, operation) do
+    case State.current_draft_key(state) do
+      nil -> :ignore
+      key -> result({:editor, key, operation})
+    end
   end
 
   # ------------------------------------------------------- tiny exit escape
@@ -369,25 +454,65 @@ defmodule SwarmCodeCLI.UI.Keymap do
     end
   end
 
-  def approval_key(code, %{layers: [{:approval, id} | _]} = state, table) do
-    decision =
+  # Each approval key, and each control a surface draws for it, names a
+  # decision. The intent is built from the pending interaction itself rather
+  # than looked up among drawn targets, so the keys work wherever the card is
+  # drawn; the reducer still authorizes it against the interaction's own
+  # allowed decisions, and the daemon compares-and-sets.
+  def approval_key(code, %{layers: [{:approval, id} | _]} = state, _table) do
+    wanted =
       case code do
-        value when value in ["a", "approve"] -> :approve
+        value when value in ["y", "a", "approve"] -> :approve
+        value when value in ["Y", "approve_run"] -> :approve_run
+        value when value in ["A", "always_allow", "always_prefix"] -> :always
         value when value in ["d", "deny"] -> :deny
-        value when value in ["A", "always_allow"] -> :always_allow
+        value when value in ["D", "deny_stop"] -> :deny_stop
         _ -> nil
       end
 
-    if decision do
-      find_target(state, table, fn target ->
-        match?({:intent, {:resolve_approval, _, _, ^id, _, ^decision}}, target)
-      end)
+    with true <- wanted != nil,
+         %{kind: :approval, state: :pending} = item <- state.read_model.interactions[id],
+         decision when not is_nil(decision) <- decision(item, wanted) do
+      result(
+        {:invoke,
+         {:resolve_approval, item.run_id, item.node_id, item.id, item.expected_revision,
+          decision}, elem(State.next_id(state, :request), 0)}
+      )
     else
-      :ignore
+      _ -> :ignore
     end
   end
 
   def approval_key(_code, _state, _table), do: :ignore
+
+  @doc """
+  The decisions an approval offers, in key order.
+
+  `allowed_decisions` when the source sends it (on the interaction or its
+  approval), otherwise the older permissions: approve, deny and always allow.
+  """
+  @spec decisions(map()) :: [atom()]
+  def decisions(item) do
+    explicit =
+      Map.get(item, :allowed_decisions) ||
+        (is_map(item.approval) && Map.get(item.approval, :allowed_decisions))
+
+    if is_list(explicit) and explicit != [],
+      do: explicit,
+      else: Enum.filter([:approve, :deny, :always_allow], &(&1 in item.allowed_actions))
+  end
+
+  defp decision(item, wanted) do
+    offered = decisions(item)
+
+    case wanted do
+      :always ->
+        Enum.find([:always_prefix, :always_allow], &(&1 in offered))
+
+      wanted ->
+        if wanted in offered, do: wanted
+    end
+  end
 
   # -------------------------------------------------------------- editors
 
@@ -476,6 +601,62 @@ defmodule SwarmCodeCLI.UI.Keymap do
     |> case do
       nil -> :ignore
       {_, target} -> activate(target, state, table)
+    end
+  end
+
+  # ------------------------------------------------------------ the turn
+
+  @doc """
+  The turn in view: the newest top-level run of the conversation on screen
+  whose state is one of `states` and which may be stopped.
+
+  A run launched by another run (a swarm the chat agent started) is not the
+  turn; stopping it takes an explicit Stop.
+  """
+  @spec live_turn(map(), [atom()]) :: map() | nil
+  def live_turn(
+        state,
+        states \\ [:queued, :running, :streaming, :retrying]
+      ) do
+    case State.current_draft_key(state) do
+      {conversation, _} ->
+        state.read_model.runs
+        |> Map.values()
+        |> Enum.filter(
+          &(&1.conversation_id == conversation and is_nil(&1.parent_run_id) and
+              &1.state in states)
+        )
+        |> Enum.max_by(&{&1.started_at || 0, &1.created_sequence}, fn -> nil end)
+
+      _ ->
+        nil
+    end
+  end
+
+  @doc "The current draft's text, or `\"\"` when no draft is in view."
+  @spec draft_text(map()) :: binary()
+  def draft_text(state) do
+    case State.current_draft_key(state) do
+      nil -> ""
+      key -> Editor.text(Drafts.fetch(state.drafts, key).editor)
+    end
+  end
+
+  @doc "The current draft as a send or queue intent, invoked with a fresh request id."
+  def draft_dispatch(state, operation) when operation in [:send, :queue] do
+    with key when not is_nil(key) <- State.current_draft_key(state),
+         draft = Drafts.fetch(state.drafts, key),
+         text = Editor.text(draft.editor),
+         true <- String.trim(text) != "" do
+      target = if draft.target == :none, do: :main, else: draft.target
+      refs = Enum.map(draft.attachments, & &1.reference)
+
+      result(
+        {:invoke, {:dispatch, operation, text, target, refs},
+         elem(State.next_id(state, :request), 0)}
+      )
+    else
+      _ -> :ignore
     end
   end
 
