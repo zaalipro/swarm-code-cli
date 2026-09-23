@@ -177,8 +177,8 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
 
     try do
       with :ok <- await_storage(launcher, boot),
+           :ok <- boot_runtime(),
            {:ok, session} <- open_session(root, selection) do
-        boot_runtime()
         fun.(session)
       end
     after
@@ -206,13 +206,11 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
     end)
   end
 
-  # B6: desktop bootstrap parity once the synced domain lands (Daemon.Boot).
+  # B6: the desktop's boot recovery (interrupted runs, seeded providers, MCP
+  # servers, research sweep, attachment prune) before the first snapshot. It
+  # never stops the session; each step logs its own failure.
   defp boot_runtime do
-    if Code.ensure_loaded?(SwarmCode.Daemon.Boot) and
-         function_exported?(SwarmCode.Daemon.Boot, :run, 0) do
-      apply(SwarmCode.Daemon.Boot, :run, [])
-    end
-
+    query_worker(fn -> SwarmCode.Daemon.Boot.run() end)
     :ok
   catch
     kind, reason ->
@@ -348,32 +346,25 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
 
   ## Close
 
+  # B6: the desktop's quit (pause workflows, stop runs, kill commands the runs
+  # left running, flush, stop runs/research/MCP/LSP subtrees). Idempotent.
+  # Returns how many live runs it stopped.
   defp stop_live_runs do
-    live = safe_running_run_ids()
-
     if Process.whereis(SwarmCode.Domain.Registry) do
-      if Code.ensure_loaded?(SwarmCode.Daemon.Shutdown) and
-           function_exported?(SwarmCode.Daemon.Shutdown, :run, 0) do
-        apply(SwarmCode.Daemon.Shutdown, :run, [])
-      else
-        query_worker(fn -> SwarmCode.Domain.Engine.stop_all() end)
-      end
-    end
+      %{stopped: stopped} =
+        fun_with_deadline(fn -> SwarmCode.Daemon.Shutdown.run() end, 60_000)
 
-    length(live)
+      stopped
+    else
+      0
+    end
   catch
     kind, reason ->
       Logger.error("stopping live runs failed: #{Exception.format(kind, reason)}")
       0
   end
 
-  defp safe_running_run_ids do
-    if Process.whereis(SwarmCode.Domain.Registry),
-      do: SwarmCode.Domain.Engine.running_run_ids(),
-      else: []
-  catch
-    _, _ -> []
-  end
+  defp fun_with_deadline(fun, timeout), do: fun |> Task.async() |> Task.await(timeout)
 
   defp close_owned_runtime(launcher) do
     if Process.whereis(SwarmCode.Domain.Registry) do
