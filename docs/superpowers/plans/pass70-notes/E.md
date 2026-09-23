@@ -264,6 +264,19 @@ None.
   service (refused on p70/E, see C2), Esc puts it aside and Ctrl-N brings it back, Ctrl-C stops the
   waiting turn ("Stopping the turn."), `/resume` opens the palette on `#` (and ended the session on
   p70/E alone, see the merge-order note).
+- Full umbrella `mix test` (the other owners' suites were running on the same machine at the same time):
+  core 130 tests, 0 failures; daemon 610 tests, 2 failures; cli 5 properties, 1274 tests, 2 failures (EXIT=2).
+  Each failure passes when rerun on its own:
+  - daemon `backup/gate_test.exs` "requester death after manifest temp sync…" and "…after the manifest
+    commit link…": `assert_receive` 5 s timeouts under load (the daemon suite took 736 s). Rerun alone:
+    55 tests, 0 failures. No daemon file is changed on p70/E beyond the merged C1 wire tag.
+  - cli `ui/live_presentation_test.exs:134` hit the 60 s ExUnit timeout under load (not E's file); passes
+    alone.
+  - cli `plain/one_shot_test.exs:262` (the restart test added while the suite ran) ran against the beam
+    compiled before its fix; after recompiling, one_shot + live_presentation: 18 tests, 0 failures.
+- `mix format --check-formatted`: clean. `mix compile --warnings-as-errors`: clean. Test-file warnings
+  already on main (`ui/projector_test.exs:111` unused `scene`, `ui/feature_form_test.exs` unused
+  `Editor` alias and `field/3` default) are left as they are.
 
 ## Left
 

@@ -339,7 +339,9 @@ defmodule SwarmCodeCLI.Plain.OneShot do
 
       true ->
         state = say(state, "the answer restarted.")
-        state = %{state | texts: Map.put(state.texts, id, "")}
+        # The new attempt starts on a line of its own in the output too.
+        if state.format == :text and state.mid_line?, do: write(state.output, "\n")
+        state = %{state | texts: Map.put(state.texts, id, ""), mid_line?: false}
         write_answer(%{state | last_written: nil}, id, text)
     end
   end

@@ -259,6 +259,30 @@ defmodule SwarmCodeCLI.Plain.OneShotTest do
     assert text(context.error) == ""
   end
 
+  test "a restarted attempt is said on stderr and starts on a line of its own", context do
+    session =
+      start(context)
+      |> accept()
+      |> upsert(message(""))
+      |> stream("First try that")
+      |> delta(%Delta{
+        kind: :stream_reset,
+        entity_id: @message,
+        run_id: @run,
+        conversation_id: @conversation,
+        channel: :text,
+        attempt_id: "attempt-2",
+        text: "Second try."
+      })
+      |> run_update(:done)
+
+    complete(session, [run(:done)], [message("Second try.", attempt_id: "attempt-2")])
+
+    assert code(session) == 0
+    assert text(context.output) == "First try that\nSecond try.\n"
+    assert text(context.error) =~ "swarmcode: the answer restarted."
+  end
+
   test "an answer longer than its preview is finished from its detail", context do
     session = start(context) |> accept() |> run_update(:done)
     ref = %DTO.DetailRef{id: "detail-1", total_bytes: 19}
