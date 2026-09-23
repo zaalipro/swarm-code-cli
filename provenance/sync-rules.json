@@ -99,10 +99,30 @@
       "rewrite": true,
       "format": true,
       "files": [
+        "atomic_file_test.exs",
+        "commands_test.exs",
         "engine/consensus_test.exs",
         "engine/context_test.exs",
+        "engine/pass60_prompts_test.exs",
         "engine/policy_test.exs",
-        "engine/prompts_test.exs"
+        "engine/project_context_test.exs",
+        "engine/prompts_test.exs",
+        "git_test.exs",
+        "llm/chunks_test.exs",
+        "llm/sse_test.exs",
+        "llm/tool_args_test.exs",
+        "pricing_test.exs",
+        "projects/workspace_test.exs",
+        "research/levels_test.exs",
+        "scheduler/cron_test.exs",
+        "scheduler/next_test.exs",
+        "skills_test.exs",
+        "tools/git_tools_test.exs",
+        "tools/polish53_tools_test.exs",
+        "tools/polish60_command_safety_test.exs",
+        "tools/polish62_command_safety_test.exs",
+        "workflows/host_test.exs",
+        "workflows/panel_bound_test.exs"
       ]
     }
   ],

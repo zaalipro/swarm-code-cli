@@ -94,10 +94,10 @@ defmodule SwarmCode.Governance.ProvenanceSync do
 
       extra_errors =
         for entry <- ledger.entries,
-            synced?(rules, entry),
+            owning_mapping(rules, entry) != nil,
             not MapSet.member?(target_paths, entry["upstream_path"]),
             do:
-              "#{entry["destination"]}: #{entry["upstream_path"]} is not upstream at #{Git.short(sha)}"
+              "#{entry["destination"]}: #{entry["upstream_path"]} is not synced at #{Git.short(sha)} (gone upstream or dropped from the rules); rerun the sync"
 
       stale_patch_errors =
         for patch <- patch_destinations(root),
@@ -171,6 +171,27 @@ defmodule SwarmCode.Governance.ProvenanceSync do
       nil -> false
       mapping -> Rules.destination(mapping, entry["upstream_path"]) == entry["destination"]
     end
+  end
+
+  # The mapping that placed this entry where it is, selected by the rules or
+  # not: a file dropped from a `files` list or newly excluded is still the
+  # sync's to remove. Entries no mapping places (the frozen copies) are nil.
+  defp owning_mapping(rules, entry) do
+    Rules.mapping_for(rules, entry["upstream_path"])
+    |> case do
+      %Rules.Mapping{} = mapping ->
+        if Rules.destination(mapping, entry["upstream_path"]) == entry["destination"],
+          do: mapping
+
+      nil ->
+        nil
+    end
+    |> Kernel.||(
+      Enum.find(rules.mappings, fn mapping ->
+        String.starts_with?(entry["upstream_path"], mapping.upstream) and
+          Rules.destination(mapping, entry["upstream_path"]) == entry["destination"]
+      end)
+    )
   end
 
   defp clean(_upstream, true), do: :ok
@@ -280,10 +301,11 @@ defmodule SwarmCode.Governance.ProvenanceSync do
 
     ledger.entries
     |> Enum.filter(
-      &(synced?(rules, &1) and not MapSet.member?(target_paths, &1["upstream_path"]))
+      &(owning_mapping(rules, &1) != nil and
+          not MapSet.member?(target_paths, &1["upstream_path"]))
     )
     |> async(fn entry ->
-      mapping = Rules.mapping_for(rules, entry["upstream_path"])
+      mapping = owning_mapping(rules, entry)
 
       with {:ok, base} <- base(rules, upstream, entry, mapping, formatter) do
         case File.read(Path.join(root, entry["destination"])) do

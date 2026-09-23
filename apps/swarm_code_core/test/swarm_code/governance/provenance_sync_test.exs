@@ -261,6 +261,29 @@ defmodule SwarmCode.Governance.ProvenanceSyncTest do
       assert :ok = check(ctx)
     end
 
+    test "a file dropped from the rules is removed like one deleted upstream", ctx do
+      {:ok, _} = sync(ctx, ctx.commit_a)
+      beta = @domain <> "beta.ex"
+      rules = ctx.root |> Path.join(Rules.relative_path()) |> File.read!() |> Jason.decode!()
+
+      File.write!(
+        Path.join(ctx.root, Rules.relative_path()),
+        Jason.encode!(Map.update!(rules, "exclude", &["lib/swarm_code/beta.ex" | &1]),
+          pretty: true
+        )
+      )
+
+      assert {:error, errors} = check(ctx)
+      assert Enum.any?(errors, &(&1 =~ "#{beta}: lib/swarm_code/beta.ex is not synced at"))
+
+      assert {:ok, %{removed: [^beta]}} = sync(ctx, ctx.commit_a)
+      refute File.exists?(Path.join(ctx.root, beta))
+      {:ok, %{entries: entries}} = Ledger.load(ctx.root)
+      refute Enum.any?(entries, &(&1["destination"] == beta))
+      assert hd(entries) == ctx.frozen
+      assert :ok = check(ctx)
+    end
+
     test "a new upstream file landing on a CLI-local file stops before writing", ctx do
       {:ok, _} = sync(ctx, ctx.commit_a)
       File.write!(Path.join(ctx.root, @domain <> "gamma.ex"), "cli-local\n")
