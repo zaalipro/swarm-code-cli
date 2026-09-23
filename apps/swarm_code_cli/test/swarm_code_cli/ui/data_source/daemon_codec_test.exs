@@ -233,9 +233,33 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.CodecTest do
     assert message.body["node_id"] == node
     assert message.body["expected_revision"] == 7
 
-    assert {:error, %AdmissionError{code: :not_allowed}} =
+    # pass70 C1: the legacy `:always_allow` is `approve_run` on the wire; the
+    # widened decisions travel as their own words.
+    assert {:ok, message} =
              Codec.request(
                %{approval | kind: {:resolve_approval, run, node, interaction, 7, :always_allow}},
+               @wire,
+               @nonce,
+               1_000
+             )
+
+    assert message.body["decision"] == "approve_run"
+
+    for decision <- [:approve_run, :always_prefix, :deny, :deny_stop] do
+      assert {:ok, message} =
+               Codec.request(
+                 %{approval | kind: {:resolve_approval, run, node, interaction, 7, decision}},
+                 @wire,
+                 @nonce,
+                 1_000
+               )
+
+      assert message.body["decision"] == Atom.to_string(decision)
+    end
+
+    assert {:error, %AdmissionError{}} =
+             Codec.request(
+               %{approval | kind: {:resolve_approval, run, node, interaction, 7, :always}},
                @wire,
                @nonce,
                1_000

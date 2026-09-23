@@ -17,6 +17,10 @@ defmodule SwarmCode.Protocol.ServiceHandshake do
     "detail" => :detail,
     "watch" => :watch,
     "conversation.open" => :conversation_open,
+    "conversation.list" => :conversation_list,
+    "conversation.new" => :conversation_new,
+    "mark_seen" => :mark_seen,
+    "project.update" => :project_update,
     "dispatch.send" => :dispatch_send,
     "run.pause" => :run_pause,
     "run.continue" => :run_continue,
@@ -37,6 +41,10 @@ defmodule SwarmCode.Protocol.ServiceHandshake do
             | :detail
             | :watch
             | :conversation_open
+            | :conversation_list
+            | :conversation_new
+            | :mark_seen
+            | :project_update
             | :dispatch_send
             | :run_pause
             | :run_continue

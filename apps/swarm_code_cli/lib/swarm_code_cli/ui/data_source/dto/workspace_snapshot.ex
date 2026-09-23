@@ -14,7 +14,15 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.WorkspaceSnapshot do
       models: [],
       changes: [],
       verdicts: [],
-      agents: []
+      agents: [],
+      approval_mode: nil,
+      trusted: nil,
+      chat_provider: nil,
+      context_used: nil,
+      context_window: nil,
+      cost_usd: nil,
+      title: nil,
+      background: []
     ],
     fields: [
       project: {:optional, {:text, 200}},
@@ -22,6 +30,19 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.WorkspaceSnapshot do
       agents: {:list, {:dto, SwarmCodeCLI.UI.DataSource.DTO.AgentSummary}},
       changes: {:list, {:dto, SwarmCodeCLI.UI.DataSource.DTO.Change}},
       verdicts: {:list, {:dto, SwarmCodeCLI.UI.DataSource.DTO.Verdict}},
+      # pass70 C1: the project's approval mode (`read_only | auto |
+      # full_access`) and trust (nil when the domain has no trust), the chat
+      # model's provider name, the context gauge (tokens the next turn starts
+      # from / the model's window), the conversation's total spend, its title,
+      # and the background commands of the shown runs.
+      approval_mode: {:optional, {:enum, [:read_only, :auto, :full_access]}},
+      trusted: {:optional, :boolean},
+      chat_provider: {:optional, {:text, 200}},
+      context_used: {:optional, :count},
+      context_window: {:optional, :count},
+      cost_usd: {:optional, :float},
+      title: {:optional, {:text, 256}},
+      background: {:list, {:dto, SwarmCodeCLI.UI.DataSource.DTO.BackgroundCommand}},
       allowed_actions: :actions,
       revision: :revision,
       seen_revision: :revision,
@@ -51,6 +72,14 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.WorkspaceSnapshot do
       agents: [],
       changes: [],
       verdicts: [],
+      approval_mode: nil,
+      trusted: nil,
+      chat_provider: nil,
+      context_used: nil,
+      context_window: nil,
+      cost_usd: nil,
+      title: nil,
+      background: [],
       allowed_actions: [],
       revision: 0,
       seen_revision: 0,
