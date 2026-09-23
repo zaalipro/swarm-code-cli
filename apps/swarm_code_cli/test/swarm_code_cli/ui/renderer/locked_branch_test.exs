@@ -24,8 +24,9 @@ defmodule SwarmCodeCLI.UI.Renderer.LockedBranchTest do
     assert audit.runtime_sha256 ==
              "4034cb544dee1c82d8b95d66a402133e013c6b87f78ac5a26e3fba4a2fe5527b"
 
+    # pass70 B7: `umask 077` and `RELEASE_DISTRIBUTION=none`.
     assert audit.rel_env_sha256 ==
-             "b448cbb5bddf63c68cc7296d0873b632d1706487b487e4b3b8c25ddbc9086000"
+             "3f0ed89ca4311878c71a71a540e97d14311c9531727f8b8edb7d4313607022a6"
 
     assert audit.test_helper_sha256 ==
              "b086ec47f0c6c7aaeb4cffca5ae5243dd05e0dc96ab761ced93325d5315f4b12"
