@@ -432,8 +432,14 @@ defmodule SwarmCodeCLI.UI.Paint.ProjectorTest do
       chrome = Enum.take_while(main.blocks, &(not is_struct(&1, Block.VirtualList)))
       assert {:ok, height} = Metrics.height(chrome, main.rect.width, %Options{}, 200, policy)
 
+      # The approval card takes its rows from the bottom of main.
+      %{growth: card} =
+        SwarmCodeCLI.UI.Projector.ApprovalCard.layout(state, main.rect.width)
+
+      assert card > 0
+
       assert Workspace.content_height(state, main.rect, scene.layout_class) ==
-               max(0, main.rect.height - height)
+               max(0, main.rect.height - height - card)
     end
   end
 

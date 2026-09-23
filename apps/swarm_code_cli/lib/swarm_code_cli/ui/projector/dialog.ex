@@ -17,6 +17,7 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
   alias SwarmCodeCLI.UI.Paint.{Metrics, Options}
 
   alias SwarmCodeCLI.UI.Projector.{
+    ApprovalCard,
     Composer,
     Density,
     KeyLabel,
@@ -39,7 +40,34 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
   def project(%{layers: [{:run_palette, _} | _]} = state, class, _background),
     do: RunPalette.dialog(state, class)
 
-  def project(state, class, background) do
+  # An approval drawn in the composer slot is not a modal (the projector draws
+  # no overlay for it), but the reducer still pages its body through this
+  # geometry, so here it is the card's own window.
+  def project(%{layers: [{:approval, _} | _]} = state, class, background) do
+    layout = SwarmCodeCLI.UI.Layout.calculate(state.size, state.preferences)
+
+    with %{width: width} = rect <- Map.get(layout.rects, :composer),
+         id when is_binary(id) <- Composer.opened_approval(state),
+         %{window: {first, shown, total}} <- ApprovalCard.layout(state, width) do
+      %Dialog{
+        id: "dialog",
+        rect: rect,
+        title:
+          Density.safe(ApprovalCard.title(state.read_model.interactions[id], state), state, 80),
+        blocks: [],
+        focused_control_id: state.focus,
+        body_scroll: first,
+        body_visible_range: {first, first + shown},
+        body_total_count: total
+      }
+    else
+      _ -> modal(state, class, background)
+    end
+  end
+
+  def project(state, class, background), do: modal(state, class, background)
+
+  defp modal(state, class, background) do
     layer = hd(state.layers)
     rect = rectangle(layer, state.size, class)
 

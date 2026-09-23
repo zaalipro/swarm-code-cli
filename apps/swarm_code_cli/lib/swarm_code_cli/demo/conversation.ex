@@ -11,6 +11,8 @@ defmodule SwarmCodeCLI.Demo.Conversation do
     * `:first_reply` — one finished chat turn: a sentence, three tool calls, then a
       markdown answer with headings, a list, a table and an elixir code block.
     * `:approval` — the first turn plus a second one waiting on a shell command.
+    * `:approval_edit` — the first turn plus a second one waiting on a file change
+      long enough to grow the approval card into main.
     * `:swarm` — a lead with three workers, one waiting on a command.
     * `:long` — five runs, an 80-line reply and a 21-call run.
     * `:failed_workflow` — ten runs ending in a failed 14-agent workflow, the shape
@@ -25,7 +27,8 @@ defmodule SwarmCodeCLI.Demo.Conversation do
   @conversation "demo-conversation"
   @model "deepseek-v4.1-flash"
 
-  @type scene :: :first_reply | :approval | :swarm | :long | :failed_workflow | :empty
+  @type scene ::
+          :first_reply | :approval | :approval_edit | :swarm | :long | :failed_workflow | :empty
 
   @spec clock() :: pos_integer()
   def clock, do: @clock
@@ -73,6 +76,12 @@ defmodule SwarmCodeCLI.Demo.Conversation do
       mode: :build,
       chat_model: @model,
       swarm_model: @model,
+      chat_provider: "llmotions",
+      approval_mode: :auto,
+      trusted: true,
+      context_used: 19_400,
+      context_window: 128_000,
+      cost_usd: runs |> Enum.map(&(&1.cost_usd || 0)) |> Enum.sum(),
       allowed_actions: [:send, :queue, :mark_seen],
       runs: runs,
       models: [
@@ -95,6 +104,12 @@ defmodule SwarmCodeCLI.Demo.Conversation do
   defp build(:approval) do
     {first, first_items} = first_reply(1, -600_000)
     {second, second_items, interaction} = waiting_turn(2, -60_000)
+    {[first, second], first_items ++ second_items, [], [interaction]}
+  end
+
+  defp build(:approval_edit) do
+    {first, first_items} = first_reply(1, -600_000)
+    {second, second_items, interaction} = waiting_edit(2, -60_000)
     {[first, second], first_items ++ second_items, [], [interaction]}
   end
 
@@ -248,11 +263,80 @@ defmodule SwarmCodeCLI.Demo.Conversation do
       approval: %DTO.Approval{
         tool: "run_command",
         permission: :execute,
-        arguments_preview: ~s({"command":"ls -la notes"})
+        arguments_preview: ~s({"command":"ls -la notes","workdir":"."}),
+        command: "ls -la notes",
+        cwd: ".",
+        reason: "Show the new file beside the other notes",
+        command_family: "ls",
+        classification: :safe,
+        agent_name: "assistant",
+        allowed_decisions: [:approve, :approve_run, :always_prefix, :deny, :deny_stop]
       },
       allowed_actions: [:approve, :always_allow, :deny],
       urgency: :high,
       created_at: @clock + start + 2_500
+    }
+
+    {run, items, interaction}
+  end
+
+  # A turn waiting on a file change long enough to grow the card into main.
+  defp waiting_edit(n, start) do
+    prompt = "Rename the ticket guard to authorize/2 and keep the old name as a deprecated alias"
+
+    run =
+      run(n, :chat, "Rename the ticket guard", :waiting_approval, start, nil, needs: 1)
+
+    sentence = "I'll rename the guard and keep a deprecated alias."
+
+    items = [
+      user(run, 0, start, prompt),
+      message(run, 1, start + 200, sentence, state: :waiting_approval),
+      step(run, 2, start + 400, sentence, 2_100),
+      tool(run, 3, start + 2_600, "read_file", "read lib/tickets/guard.ex", "48 lines", 9,
+        files: ["lib/tickets/guard.ex"]
+      ),
+      tool(
+        run,
+        4,
+        start + 2_800,
+        "edit_file",
+        "edit lib/tickets/guard.ex",
+        "awaiting approval",
+        nil,
+        status: :waiting_approval
+      )
+    ]
+
+    old = "  def check(actor, ticket) do\n    Policy.allowed?(actor, :transition, ticket)\n  end"
+
+    new =
+      "  def authorize(actor, ticket) do\n    Policy.allowed?(actor, :transition, ticket)\n  end\n\n" <>
+        "  @deprecated \"Use authorize/2\"\n  def check(actor, ticket), do: authorize(actor, ticket)"
+
+    arguments =
+      Jason.encode!(%{"path" => "lib/tickets/guard.ex", "old_string" => old, "new_string" => new})
+
+    interaction = %DTO.PendingInteraction{
+      id: "demo-approval-#{n}",
+      run_id: run.id,
+      node_id: node_id(run, 4),
+      conversation_id: @conversation,
+      kind: :approval,
+      expected_revision: 2,
+      state: :pending,
+      approval: %DTO.Approval{
+        tool: "edit_file",
+        permission: :write,
+        arguments_preview: arguments,
+        reason: "Rename without breaking the two callers in lib/tickets",
+        classification: :normal,
+        agent_name: "assistant",
+        allowed_decisions: [:approve, :approve_run, :deny, :deny_stop]
+      },
+      allowed_actions: [:approve, :deny],
+      urgency: :high,
+      created_at: @clock + start + 2_800
     }
 
     {run, items, interaction}

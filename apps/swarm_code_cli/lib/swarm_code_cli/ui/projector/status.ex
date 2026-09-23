@@ -102,12 +102,9 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
       end
 
     trust =
-      case workspace && Map.get(workspace, :trust) do
-        value when value in [false, :untrusted, "untrusted"] ->
-          {"untrusted", tint(:plain, state, :warning, [])}
-
-        _ ->
-          nil
+      case workspace && Map.get(workspace, :trusted) do
+        false -> {"untrusted", tint(:plain, state, :warning, [])}
+        _ -> nil
       end
 
     chat_model = workspace && Map.get(workspace, :chat_model)
@@ -128,7 +125,7 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
         do: {"agents " <> swarm_model, tint(:plain, state, :text_faint, [])}
 
     context = context_words(state, run, workspace)
-    cost = cost_words(state)
+    cost = cost_words(state, workspace)
 
     waiting =
       case waiting_count(state) do
@@ -171,17 +168,29 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
   # The context the last model step used: the newest item of the run in view
   # that reports input tokens, against the model's window when it is known.
   defp context_words(state, run, workspace) do
+    used = workspace && Map.get(workspace, :context_used)
+
     tokens =
-      if run do
-        state.read_model.transcript
-        |> Map.values()
-        |> Enum.filter(&(&1.run_id == run.id and is_integer(&1.tokens_in) and &1.tokens_in > 0))
-        |> Enum.max_by(&{&1.at || 0, &1.created_sequence}, fn -> nil end)
-        |> then(&(&1 && &1.tokens_in))
+      if is_integer(used) and used > 0 do
+        used
+      else
+        run_context(state, run)
       end
 
-    window = workspace && Map.get(workspace, :context_window)
+    context_gauge(tokens, workspace && Map.get(workspace, :context_window), state)
+  end
 
+  defp run_context(state, run) do
+    if run do
+      state.read_model.transcript
+      |> Map.values()
+      |> Enum.filter(&(&1.run_id == run.id and is_integer(&1.tokens_in) and &1.tokens_in > 0))
+      |> Enum.max_by(&{&1.at || 0, &1.created_sequence}, fn -> nil end)
+      |> then(&(&1 && &1.tokens_in))
+    end
+  end
+
+  defp context_gauge(tokens, window, state) do
     cond do
       is_nil(tokens) ->
         nil
@@ -203,8 +212,19 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
     end
   end
 
-  # What the conversation in view has cost so far.
-  defp cost_words(state) do
+  # What the conversation in view has cost so far: the daemon's total when it
+  # says one, else the sum of the runs in view.
+  defp cost_words(state, workspace) do
+    case workspace && Map.get(workspace, :cost_usd) do
+      cost when is_number(cost) and cost > 0 ->
+        {money(cost), tint(:plain, state, :text_muted, [])}
+
+      _ ->
+        runs_cost(state)
+    end
+  end
+
+  defp runs_cost(state) do
     runs =
       case state.destination do
         {:conversation, id} ->

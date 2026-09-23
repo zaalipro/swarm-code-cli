@@ -358,17 +358,17 @@ defmodule SwarmCodeCLI.UI.ShellAwarenessTest do
 
       {scene, actions} = Projector.project(state)
       assert scene.overlay == nil
-      composer = Enum.find(scene.regions, &(&1.role == :composer))
-      words = composer |> texts() |> Enum.join("\n")
       pixels = screen(state)
 
+      # The card sits right above the composer: the title and the command at
+      # the bottom of main, the keys on the row above the draft.
       assert pixels =~ "scout-1 wants to run a command"
-      assert words =~ "$ mix test --failed"
-      assert words =~ "runs on your machine, in the project"
-      assert words =~ "y"
-      assert words =~ " once"
-      assert words =~ " always “mix”"
-      assert words =~ " deny"
+      assert pixels =~ "$ mix test --failed"
+      assert pixels =~ "runs on your machine, in the project"
+      assert pixels =~ "y once"
+      assert pixels =~ "A for this run"
+      assert pixels =~ "d deny"
+      assert pixels =~ "Type a message"
 
       assert Enum.any?(
                Map.values(actions),

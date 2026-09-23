@@ -358,8 +358,8 @@ defmodule SwarmCodeCLI.UI.ProjectorTest do
     # The approval itself is drawn in the composer slot, not as a modal.
     {scene, _} = Projector.project(%{state | layers: [{:approval, "approval"}], focus: "cancel"})
     assert scene.overlay == nil
-    composer = Enum.find(scene.regions, &(&1.role == :composer))
-    assert Enum.join(texts(composer.blocks), "") =~ "once"
+    edge = Enum.find(scene.regions, &(&1.role == :activity))
+    assert Enum.join(texts(edge.blocks), "") =~ "once"
 
     {scene, _} =
       Projector.project(%{state | layers: [{:unsent_changes, :detach}], focus: "confirm"})

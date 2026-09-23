@@ -34,25 +34,21 @@ defmodule SwarmCodeCLI.UI.LivePresentationTest do
     end
   end
 
-  test "approval dialog shows actual sanitized arguments and opens the full immutable detail" do
+  test "the approval card shows actual sanitized arguments and opens the full immutable detail" do
     state = fixture()
     item = approval!()
     state = put_in(state.read_model.interactions[item.id], item)
     state = %{state | layers: [{:approval, item.id}], focus: "cancel"}
     {scene, actions} = Projector.project(state)
     assert Scene.validate(scene) == :ok
-    rendered = Enum.join(texts(scene.overlay), " ")
-    assert rendered =~ "Tool: run command"
+
+    # The card is drawn above the composer, not as a modal.
+    assert scene.overlay == nil
+    rendered = card_text(scene)
+    assert rendered =~ "wants to run a command"
     assert rendered =~ "mix test"
     refute rendered =~ "\e"
     assert {:local, {:open_detail, "fixture-run", "approval-args"}} in Map.values(actions)
-
-    focused = %{state | focus: "approval_details"}
-    {focused_scene, actions} = Projector.project(focused)
-    assert focused_scene.overlay.focused_control_id == "approval_details"
-
-    assert {:ok, {:open_detail, "fixture-run", "approval-args"}} =
-             Keymap.resolve(Input.key(:enter), focused, actions)
 
     assert Reducer.update(state, {:open_detail, "another-run", "approval-args"}) == {state, []}
 
@@ -83,25 +79,26 @@ defmodule SwarmCodeCLI.UI.LivePresentationTest do
 
     state = put_in(state.read_model.interactions[item.id], item)
     {state, _} = Reducer.update(state, {:open_layer, {:approval, item.id}})
-    assert state.focus == "cancel"
 
-    {scene, table} = Projector.project(state)
+    {_scene, table} = Projector.project(state)
+    {first, shown, total} = window(state)
+    assert first == 0 and shown < total
+
     assert {:ok, action} = Keymap.resolve(Input.key(:page_down), state, table)
     {next, []} = Reducer.update(state, action)
-    {next_scene, _} = Projector.project(next)
-    assert next_scene.overlay.body_scroll > scene.overlay.body_scroll
+    assert elem(window(next), 0) > 0
 
-    {_last, content} =
-      Enum.reduce(1..10, {state, ""}, fn _, {current, content} ->
+    {last, content} =
+      Enum.reduce(1..20, {state, ""}, fn _, {current, content} ->
         {scene, table} = Projector.project(current)
         assert {:ok, action} = Keymap.resolve(Input.key(:page_down), current, table)
         {next, []} = Reducer.update(current, action)
-        {next, content <> Enum.join(texts(scene.overlay.blocks), "")}
+        {next, content <> card_text(scene)}
       end)
 
     assert content =~ "MIDDLE_MARKER"
-    {back, []} = Reducer.update(next, {:scroll, "dialog", :first})
-    assert elem(Projector.project(back), 0).overlay.body_scroll == 0
+    {back, []} = Reducer.update(last, {:scroll, "dialog", :first})
+    assert elem(window(back), 0) == 0
   end
 
   test "plain approval includes tool arguments and offers the scoped full detail command" do
@@ -150,19 +147,18 @@ defmodule SwarmCodeCLI.UI.LivePresentationTest do
       state = put_in(state.read_model.interactions[item.id], item)
       {state, _} = Reducer.update(state, {:open_layer, {:approval, item.id}})
       {first, actions} = Projector.project(state)
-      assert Enum.join(texts(first.overlay.blocks), "") =~ "HEAD_MARKER"
+      assert card_text(first) =~ "HEAD_MARKER"
+      {_, shown, _} = window(state)
+
       assert {:ok, next_action} = Keymap.resolve(Input.key(:page_down), state, actions)
       {next, []} = Reducer.update(state, next_action)
-      {middle, _} = Projector.project(next)
-
-      assert elem(middle.overlay.body_visible_range, 0) ==
-               elem(first.overlay.body_visible_range, 1)
+      assert elem(window(next), 0) == shown
 
       assert {:ok, end_action} = Keymap.resolve(Input.key(:end), state, actions)
       {last, []} = Reducer.update(state, end_action)
       {scene, _} = Projector.project(last)
       assert Scene.validate(scene) == :ok
-      assert Enum.join(texts(scene.overlay.blocks), "") =~ "TAIL_MARKER"
+      assert card_text(scene) =~ "TAIL_MARKER"
     end
   end
 
@@ -244,6 +240,18 @@ defmodule SwarmCodeCLI.UI.LivePresentationTest do
       assert {:ok, {:local, {:open_detail, "fixture-run", ^ref}}} =
                Command.parse("detail " <> ref, presenter, presenter.scope)
     end
+  end
+
+  # The approval card's words: the rows it grew into main and its keys row.
+  defp card_text(scene) do
+    scene.regions
+    |> Enum.filter(&(&1.role in [:main, :activity]))
+    |> Enum.map_join("", &Enum.join(texts(&1.blocks), ""))
+  end
+
+  defp window(state) do
+    width = SwarmCodeCLI.UI.Layout.calculate(state.size, state.preferences).rects.composer.width
+    SwarmCodeCLI.UI.Projector.ApprovalCard.layout(state, width).window
   end
 
   defp approval! do

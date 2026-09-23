@@ -8,7 +8,7 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
   alias SwarmCodeCLI.UI.{SafeText, SlashPalette, Theme}
   alias SwarmCodeCLI.UI.Scene.{Block, Span}
   alias SwarmCodeCLI.UI.Paint.{Metrics, Options}
-  alias SwarmCodeCLI.UI.Projector.{Composer, Density, RunRow, Support}
+  alias SwarmCodeCLI.UI.Projector.{ApprovalCard, Composer, Density, RunRow, Support}
   alias SwarmCodeCLI.UI.Projector.Workspace.Turns
 
   @enter_key SwarmCodeCLI.UI.Projector.KeyLabel.primary(
@@ -43,11 +43,18 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
     head ++ content ++ filler ++ popup
   end
 
-  # The slash popup sits at the bottom of main, on the composer it completes.
+  # What sits at the bottom of main, on the composer: the rows an approval
+  # card grew into main, else the slash popup completing the draft.
   defp popup(state, rect) do
-    if SlashPalette.open?(state) and state.layers == [],
-      do: Enum.take(Composer.slash_popup(state, rect.width), max(0, rect.height - 4)),
-      else: []
+    case ApprovalCard.layout(state, rect.width) do
+      %{rows: rows, growth: growth} ->
+        rows |> Enum.take(growth) |> Composer.card_blocks(state, rect.width)
+
+      nil ->
+        if SlashPalette.open?(state) and state.layers == [],
+          do: Enum.take(Composer.slash_popup(state, rect.width), max(0, rect.height - 4)),
+          else: []
+    end
   end
 
   defp painted_rows([%Block.VirtualList{items: items}]),
@@ -419,8 +426,26 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
   defp slot_decisions(state) do
     case Composer.waiting_approvals(state) do
       [item | _] ->
-        for {_decision, _key, words, target} <- Composer.approval_decisions(state, item),
-            do: Support.action(Density.safe(words, state, 40), target)
+        decisions =
+          for {_decision, _key, words, target} <- Composer.approval_decisions(state, item),
+              do: Support.action(Density.safe(words, state, 40), target)
+
+        # The whole arguments, when the preview is only their start.
+        full =
+          case item.approval && item.approval.arguments_detail_ref do
+            %{id: ref} ->
+              [
+                Support.action(
+                  Density.safe("Full arguments", state, 40),
+                  {:local, {:open_detail, item.run_id, ref}}
+                )
+              ]
+
+            _ ->
+              []
+          end
+
+        decisions ++ full
 
       [] ->
         []

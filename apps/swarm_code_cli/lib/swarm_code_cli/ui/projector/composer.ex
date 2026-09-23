@@ -1,7 +1,6 @@
 defmodule SwarmCodeCLI.UI.Projector.Composer do
   @moduledoc false
   alias SwarmCodeCLI.UI.{
-    ActionTarget,
     Drafts,
     Editor,
     Intent,
@@ -14,7 +13,7 @@ defmodule SwarmCodeCLI.UI.Projector.Composer do
 
   alias SwarmCodeCLI.UI.SafeText.Limits
   alias SwarmCodeCLI.UI.Scene.{Block, Cursor, Span}
-  alias SwarmCodeCLI.UI.Projector.{Density, Markdown, RunRow, Support}
+  alias SwarmCodeCLI.UI.Projector.{ApprovalCard, Density, Markdown, RunRow, Support}
 
   def mode_label(state) do
     workspace = Map.get(state.read_model.snapshots, :workspace)
@@ -206,120 +205,28 @@ defmodule SwarmCodeCLI.UI.Projector.Composer do
     end
   end
 
-  # Decisions in the order the keys are read, with the key that makes each.
-  @decisions [
-    {:approve, "y", "once"},
-    {:approve_run, "Y", "this run"},
-    {:always_prefix, "A", "always"},
-    {:always_allow, "A", "always"},
-    {:deny, "d", "deny"},
-    {:deny_stop, "D", "deny & stop"}
-  ]
+  @doc "See `ApprovalCard.decisions/2`."
+  defdelegate approval_decisions(state, item), to: ApprovalCard, as: :decisions
+
+  @doc "See `ApprovalCard.facts/1`."
+  defdelegate approval_facts(item), to: ApprovalCard, as: :facts
+
+  @doc "See `ApprovalCard.title/2`."
+  defdelegate approval_title(item, state), to: ApprovalCard, as: :title
 
   @doc """
-  The decisions the card offers for `item`: `{decision, key, words, target}`
-  for each one the daemon allows and the client can express, in key order.
+  The row above the composer: the approval card's keys (the rest of the card
+  is at the bottom of main), else a quiet hairline.
   """
-  def approval_decisions(state, item) do
-    allowed =
-      Map.get(item, :allowed_decisions) ||
-        (is_map(item.approval) && Map.get(item.approval, :allowed_decisions)) ||
-        item.allowed_actions || []
-
-    # A decision the daemon already accepted stays off until the interaction
-    # moves to a new revision.
-    accepted? =
-      match?(
-        {:settled, _, :accepted},
-        Map.get(state.mutations, {:interaction, item.id, item.expected_revision})
-      )
-
-    @decisions
-    |> Enum.filter(fn {decision, _, _} -> decision in allowed end)
-    |> Enum.uniq_by(fn {_, key, _} -> key end)
-    |> Enum.flat_map(fn {decision, key, words} ->
-      target =
-        {:intent,
-         {:resolve_approval, item.run_id, item.node_id, item.id, item.expected_revision, decision}}
-
-      if not accepted? and not Support.pending?(state, item) and
-           match?({:ok, _}, ActionTarget.validate(target)),
-         do: [{decision, key, words, target}],
-         else: []
-    end)
-  end
-
-  @doc "The command an approval would run, its family and where, from the daemon's facts."
-  def approval_facts(item) do
-    approval = item.approval || %{}
-    preview = Map.get(approval, :arguments_preview, "") || ""
-    arguments = decode(preview)
-
-    tool = Map.get(item, :tool) || Map.get(approval, :tool) || ""
-
-    # A command tool whose preview is not JSON previews the command itself.
-    command =
-      first_present([
-        Map.get(item, :command),
-        Map.get(approval, :command),
-        arguments["command"],
-        arguments["cmd"],
-        if(tool == "run_command" and arguments == %{}, do: compact_preview(preview))
-      ])
-
-    path = first_present([arguments["path"], arguments["file_path"]])
-
-    %{
-      tool: tool,
-      permission: Map.get(approval, :permission),
-      command: command,
-      path: path,
-      subject: command || path || compact_preview(preview),
-      cwd: first_present([Map.get(item, :cwd), Map.get(approval, :cwd)]),
-      reason: first_present([Map.get(item, :reason), Map.get(approval, :reason)]),
-      family:
-        first_present([Map.get(item, :command_family), Map.get(approval, :command_family)]) ||
-          (command && command |> String.split(" ", parts: 2) |> hd()),
-      classification:
-        first_present([Map.get(item, :classification), Map.get(approval, :classification)])
-    }
-  end
-
-  defp decode(preview) do
-    case Jason.decode(preview) do
-      {:ok, %{} = map} -> map
-      _ -> %{}
-    end
-  end
-
-  defp compact_preview(preview), do: preview |> String.replace(~r/\s+/, " ") |> String.trim()
-
-  defp first_present(values),
-    do: Enum.find(values, &(is_binary(&1) and String.trim(&1) != ""))
-
-  @doc "The row above the composer: a hairline, or the approval's title."
   def edge(state, rect) do
     width = rect.width
 
-    case waiting_approvals(state) do
-      [item | rest] ->
-        title = approval_title(item, state)
-        count = if rest == [], do: nil, else: "1 of #{length(rest) + 1} waiting"
-        mark = SafeText.value(Support.glyph(:waiting, state))
+    case ApprovalCard.layout(state, width) do
+      %{rows: rows, growth: growth} ->
+        {left, right} = Enum.at(rows, growth)
+        row(left, right, if(growth == 0, do: :approval, else: :approval_body), state, width)
 
-        row(
-          [
-            {rail(state), tint(:warning, state)},
-            {" " <> mark <> " ", tint(:warning, state, [:bold])},
-            {title, tint(:text_primary, state, [:bold])}
-          ],
-          if(count, do: [{count, tint(:warning, state)}], else: []),
-          :approval,
-          state,
-          width
-        )
-
-      [] ->
+      nil ->
         hairline =
           Markdown.hairline(%{
             ascii?: state.capabilities.ascii?,
@@ -336,196 +243,20 @@ defmodule SwarmCodeCLI.UI.Projector.Composer do
     end
   end
 
-  @doc "\"scout-1 wants to run a command\"."
-  def approval_title(item, state) do
-    agent =
-      state.read_model.agents
-      |> Map.get(item.node_id)
-      |> then(fn
-        %{name: name} when is_binary(name) and name != "" -> name
-        _ -> agent_of_node(state, item) || default_speaker(state, item)
-      end)
-
-    agent <> " wants to " <> verb(approval_facts(item))
+  @doc """
+  The card's rows at `width` cells: the title on the warning tint, the rest
+  on the quiet card surface, so a long body reads as a card, not an alarm.
+  """
+  def card_blocks(rows, state, width) do
+    rows
+    |> Enum.with_index()
+    |> Enum.map(fn {{left, right}, index} ->
+      row(left, right, if(index == 0, do: :approval, else: :approval_body), state, width)
+    end)
   end
 
-  defp default_speaker(state, item) do
-    case Map.get(state.read_model.runs, item.run_id) do
-      %{kind: :chat} -> "The assistant"
-      _ -> "An agent"
-    end
-  end
-
-  # An approval sits on the op node; its agent is the transcript item's.
-  defp agent_of_node(state, item) do
-    state.read_model.transcript
-    |> Map.values()
-    |> Enum.find(&(&1.node_id == item.node_id))
-    |> case do
-      %{agent_id: id} when is_binary(id) ->
-        case Map.get(state.read_model.agents, id) do
-          %{name: name} when is_binary(name) and name != "" -> name
-          _ -> nil
-        end
-
-      _ ->
-        nil
-    end
-  end
-
-  defp verb(%{tool: "run_command"}), do: "run a command"
-
-  defp verb(%{tool: tool}) when tool in ["edit_file", "write_file", "edit_files"],
-    do: "change a file"
-
-  defp verb(%{tool: "delete_file"}), do: "delete a file"
-  defp verb(%{tool: tool, permission: :execute}) when tool != "", do: "run " <> words(tool)
-  defp verb(%{tool: tool}) when tool != "", do: "use " <> words(tool)
-  defp verb(_), do: "do something that needs your permission"
-
-  defp words(tool), do: String.replace(tool, "_", " ")
-
-  def project(state, rect) do
-    case waiting_approvals(state) do
-      [item | rest] -> {approval_card(item, rest, state, rect), nil}
-      [] -> draft_blocks(state, rect)
-    end
-  end
-
-  # The approval card: what would run, where and why, and the keys.
-  defp approval_card(item, rest, state, rect) do
-    facts = approval_facts(item)
-    width = rect.width
-    policy = state.capabilities.ambiguous_width
-
-    subject =
-      cond do
-        facts.command -> "$ " <> facts.command
-        facts.path -> facts.path
-        true -> facts.subject
-      end
-
-    where =
-      [
-        facts.cwd && "in " <> home(facts.cwd),
-        facts.classification,
-        facts.reason && quoted(facts.reason, state),
-        facts.permission == :write && "changes files in the project"
-      ]
-      |> Enum.reject(&(&1 in [nil, false, ""]))
-
-    where = if where == [], do: [permission_words(facts.permission)], else: where
-
-    keys =
-      state
-      |> approval_decisions(item)
-      |> Enum.map(fn {decision, key, words, _target} ->
-        words =
-          if decision in [:always_prefix, :always_allow] and facts.family,
-            do: words <> " " <> quoted(facts.family, state),
-            else: words
-
-        {key, words, focused_decision?(state, decision)}
-      end)
-
-    keys = if rest == [], do: keys, else: keys ++ [{"n", "next", false}]
-
-    # The decision the arrows rest on sits on a chip; the others are plain.
-    key_spans =
-      keys
-      |> Enum.map(fn
-        {key, words, true} ->
-          on = Theme.style(:on_warn, state.capabilities)
-          chip = %{tint(:text_primary, state, [:bold]) | foreground: on.foreground}
-          chip = %{chip | background: on.background}
-
-          # Monochrome has no chip colour, so the focus is spelled in brackets.
-          if state.capabilities.color_mode == :monochrome,
-            do: [{"[" <> key <> " " <> words <> "]", chip}],
-            else: [{" " <> key <> " " <> words <> " ", chip}]
-
-        {key, words, false} ->
-          [{key, tint(:key, state, [:bold])}, {" " <> words, tint(:text_muted, state)}]
-      end)
-      |> Enum.intersperse([{"   ", tint(:text_muted, state)}])
-      |> List.flatten()
-
-    subject_lines =
-      subject
-      |> Density.safe(state, 4_000)
-      |> SafeText.value()
-      |> Width.wrap(max(1, width - 4), policy)
-
-    body_rows = max(1, rect.height - 2)
-    shown = Enum.take(subject_lines, body_rows)
-
-    subject_rows =
-      Enum.map(shown, fn line ->
-        row(
-          [
-            {rail(state), tint(:warning, state)},
-            {"   " <> line, tint(:text_primary, state, [:bold])}
-          ],
-          [],
-          :approval,
-          state,
-          width
-        )
-      end)
-
-    rows =
-      subject_rows ++
-        if(rect.height - length(shown) >= 2,
-          do: [
-            row(
-              [
-                {rail(state), tint(:warning, state)},
-                {"   " <> Enum.join(where, " · "), tint(:text_muted, state)}
-              ],
-              [],
-              :approval,
-              state,
-              width
-            )
-          ],
-          else: []
-        ) ++
-        [
-          row(
-            [{rail(state), tint(:warning, state)}, {"   ", tint(:text_muted, state)} | key_spans],
-            [],
-            :approval,
-            state,
-            width
-          )
-        ]
-
-    Enum.take(rows, -max(1, rect.height))
-  end
-
-  # The focus ids E's keymap gives the card's decisions (`Keymap.approval_key/3`).
-  defp focused_decision?(state, decision) do
-    Map.get(state, :layers, []) != [] and state.focus == Atom.to_string(decision)
-  end
-
-  defp permission_words(:execute), do: "runs on your machine, in the project"
-  defp permission_words(:write), do: "changes files in the project"
-  defp permission_words(_), do: "needs your permission"
-
-  defp home(path) do
-    case System.user_home() do
-      home when is_binary(home) and home != "" ->
-        if String.starts_with?(path, home),
-          do: "~" <> String.replace_prefix(path, home, ""),
-          else: path
-
-      _ ->
-        path
-    end
-  end
-
-  defp quoted(text, %{capabilities: %{ascii?: true}}), do: "\"" <> text <> "\""
-  defp quoted(text, _state), do: "“" <> text <> "”"
+  # The draft is always drawn: an approval sits on the rows above it.
+  def project(state, rect), do: draft_blocks(state, rect)
 
   # The draft, on the same card surface a sent prompt gets in the transcript.
   defp draft_blocks(state, rect) do
@@ -725,11 +456,10 @@ defmodule SwarmCodeCLI.UI.Projector.Composer do
   end
 
   defp surface_color(:approval, state), do: Theme.style(:chip_warn, state.capabilities).background
+  defp surface_color(:approval_body, state), do: Theme.style(:card, state.capabilities).background
   defp surface_color(:card, state), do: Theme.style(:hover, state.capabilities).background
   defp surface_color(:hover, state), do: Theme.style(:hover, state.capabilities).background
   defp surface_color(:popover, state), do: Theme.style(:popover, state.capabilities).background
-
-  defp rail(state), do: SafeText.value(Support.glyph(:stripe, state))
 
   defp tint(role, state, modifiers \\ []),
     do: %{RunRow.tinted(role, state) | background: nil, modifiers: modifiers}
