@@ -112,11 +112,12 @@ class LiveDemo(unittest.TestCase):
     # text. Ctrl-C closes a layer, clears the draft or stops the turn, and
     # none of those arms the quit (pass71 R1); two idle presses within 1.5 s
     # quit (a third confirms "Stop N live runs and quit?"). `quit` presses it
-    # until the demo exits.
+    # until the demo exits (the demo has several live turns, and each press
+    # stops one before an idle press can arm the quit).
     def settle(self,d,seconds):
         end=time.monotonic()+seconds
         while time.monotonic()<end: d.pump()
-    def quit(self,d,presses=8):
+    def quit(self,d,presses=14):
         for _ in range(presses):
             if d.status is not None: break
             d.send(b'\x03')
