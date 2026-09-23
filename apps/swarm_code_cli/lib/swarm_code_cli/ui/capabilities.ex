@@ -53,7 +53,9 @@ defmodule SwarmCodeCLI.UI.Capabilities do
           enhanced_keys: feature_state(),
           focus: feature_state(),
           paste: feature_state(),
-          mouse: :unavailable,
+          # pass70 B10: `:best_effort` when the owner asked for SGR wheel reports
+          # (SWARM_MOUSE=1); clicks are never delivered.
+          mouse: :unavailable | :best_effort,
           alternate_screen: feature_state(),
           paste_preallocation_bound?: boolean(),
           glyph_tier: glyph_tier()
@@ -244,7 +246,7 @@ defmodule SwarmCodeCLI.UI.Capabilities do
 
     validate_member!(options, :color_mode, [:truecolor, :ansi256, :ansi16, :monochrome])
     validate_member!(options, :ambiguous_width, [:narrow, :wide])
-    validate_member!(options, :mouse, [:unavailable])
+    validate_member!(options, :mouse, [:unavailable, :best_effort])
     validate_member!(options, :glyph_tier, [:measured, :rich])
 
     Enum.each(@boolean_options, &validate_member!(options, &1, [true, false]))

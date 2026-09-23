@@ -477,7 +477,8 @@ defmodule SwarmCodeCLI.UI.Action do
       boolean?(capabilities.stdin_tty?) and boolean?(capabilities.stdout_tty?) and
       boolean?(capabilities.full_screen?) and feature?(capabilities.enhanced_keys) and
       feature?(capabilities.focus) and feature?(capabilities.paste) and
-      capabilities.mouse == :unavailable and feature?(capabilities.alternate_screen) and
+      capabilities.mouse in [:unavailable, :best_effort] and
+      feature?(capabilities.alternate_screen) and
       boolean?(capabilities.paste_preallocation_bound?) and
       capabilities.glyph_tier in [:measured, :rich]
   end

@@ -455,5 +455,9 @@ defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.OwnerTest do
     record(owner, <<1, 16, 1::64, 80::16, 24::16, 22>>)
     assert_receive {:registered, ^owner, 1, caps}
     assert caps.mouse == :best_effort
+    # pass70 F: the real runtime validates these capabilities when the terminal
+    # registers; a closed set without :best_effort closed every SWARM_MOUSE=1
+    # session at bind.
+    assert {:ok, _} = SwarmCodeCLI.UI.Action.validate({:terminal_capabilities, 1, caps})
   end
 end
