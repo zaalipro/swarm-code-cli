@@ -102,7 +102,7 @@ defmodule SwarmCodeCLI.UI.Projector.Inspector.Agents do
 
     changes =
       if left >= 3,
-        do: [Hive.blank(state) | Changes.tab(state, run, width, left - 1)],
+        do: [Hive.blank(state) | Changes.tab(state, run, width, left - 1, solo: true)],
         else: []
 
     card ++ waiting ++ changes

@@ -25,18 +25,27 @@ defmodule SwarmCodeCLI.UI.Projector.Inspector.Changes do
   # The file-state letter and its gap.
   @mark_width 2
 
-  @doc "The tab's rows, budgeted to `width` and capped at `height`."
-  def tab(state, run, width, height) do
+  @doc """
+  The tab's rows, budgeted to `width` and capped at `height`. `solo: true`
+  (pass71 V1, the compact run card's ledger) leaves out who wrote each file:
+  one agent wrote them all.
+  """
+  def tab(state, run, width, height, opts \\ []) do
     changes = changes(state, run)
+    solo? = Keyword.get(opts, :solo, false)
     agents = agents(state, run)
 
     header =
-      [header(changes, agents, state, width)] ++ blast_radius(changes, agents, state, width)
+      [header(changes, if(solo?, do: :solo, else: agents), state, width)] ++
+        blast_radius(changes, agents, state, width)
 
     body =
       case changes do
-        [] -> [Support.text(empty_words(run), state, width)]
-        changes -> rows(changes, agents, state, width, max(0, height - length(header) - 1))
+        [] ->
+          [Support.text(empty_words(run), state, width)]
+
+        changes ->
+          rows(changes, agents, state, width, max(0, height - length(header) - 1), solo?)
       end
 
     Enum.take(header ++ [Hive.blank(state) | body], max(0, height))
@@ -97,7 +106,12 @@ defmodule SwarmCodeCLI.UI.Projector.Inspector.Changes do
     authors =
       changes |> Enum.map(& &1.agent_id) |> Enum.reject(&is_nil/1) |> Enum.uniq() |> length()
 
-    authors = max(authors, if(changes != [] and agents == [], do: 1, else: 0))
+    authors =
+      cond do
+        agents == :solo -> 0
+        changes != [] and agents == [] -> max(authors, 1)
+        true -> authors
+      end
 
     # A zero is never shown: an empty ledger is headed "Changes" alone.
     parts =
@@ -165,12 +179,19 @@ defmodule SwarmCodeCLI.UI.Projector.Inspector.Changes do
 
   defp minus(state), do: if(state.capabilities.ascii?, do: "-", else: "−")
 
-  defp rows(changes, agents, state, width, height) do
+  defp rows(changes, agents, state, width, height, solo?) do
     chip_width =
-      changes
-      |> Enum.map(&Hive.measure(agent_name(&1.agent_id, agents), state))
-      |> Enum.max(fn -> 0 end)
-      |> min(@max_chip)
+      if solo?,
+        do: 0,
+        else:
+          changes
+          |> Enum.map(&Hive.measure(agent_name(&1.agent_id, agents), state))
+          |> Enum.max(fn -> 0 end)
+          |> min(@max_chip)
+
+    # The chip's cell count plus the gap after the path, which stays when
+    # there is no chip.
+    chip_cost = chip_width + 1
 
     counts_width =
       changes
@@ -187,7 +208,7 @@ defmodule SwarmCodeCLI.UI.Projector.Inspector.Changes do
         else: 0
 
     fixed =
-      mark_width + counts_cost + (chip_width + 1) + (restorable_width + 1) + (@time_width + 1)
+      mark_width + counts_cost + chip_cost + (restorable_width + 1) + (@time_width + 1)
 
     # Too narrow for every column: the restorable mark goes first, then the
     # line counts; the path and the chip are what matter.
@@ -200,7 +221,7 @@ defmodule SwarmCodeCLI.UI.Projector.Inspector.Changes do
           {0, counts_width, width - (fixed - restorable_width - 1)}
 
         true ->
-          {0, 0, max(0, width - mark_width - (chip_width + 1) - (@time_width + 1))}
+          {0, 0, max(0, width - mark_width - chip_cost - (@time_width + 1))}
       end
 
     overlapping = changes |> overlaps(agents) |> Enum.map(&elem(&1, 0)) |> MapSet.new()
@@ -289,12 +310,7 @@ defmodule SwarmCodeCLI.UI.Projector.Inspector.Changes do
       mark(change, state, mark_width) ++
         [%Span{text: path, style: path_style}, RunRow.gap(1, state)] ++
         counts(change, state, counts_width) ++
-        [
-          %Span{
-            text: Hive.fit(agent_name(change.agent_id, agents), chip_width, state),
-            style: chip_style
-          }
-        ] ++
+        chip(change, agents, chip_width, chip_style, state) ++
         restorable(change, state, restorable_width) ++
         [
           RunRow.gap(1, state),
@@ -317,6 +333,11 @@ defmodule SwarmCodeCLI.UI.Projector.Inspector.Changes do
 
     Support.action_spans(spans, target)
   end
+
+  defp chip(_change, _agents, 0, _style, _state), do: []
+
+  defp chip(change, agents, width, style, state),
+    do: [%Span{text: Hive.fit(agent_name(change.agent_id, agents), width, state), style: style}]
 
   @doc false
   def fit_path(path, width, policy) do

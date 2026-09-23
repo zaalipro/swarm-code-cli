@@ -281,7 +281,11 @@ defmodule SwarmCodeCLI.UI.InspectorCardsTest do
 
       assert Enum.any?(rows, &(&1 =~ ~r/files +1$/))
       assert Enum.any?(rows, &String.starts_with?(&1, "Changes · 1 file · +5 −1"))
-      assert Enum.any?(rows, &(&1 =~ ~r/^M lib\/tickets\/guard\.ex +\+5 −1/))
+      # One agent wrote everything: no author column, and the row keeps its time.
+      row = Enum.find(rows, &String.starts_with?(&1, "M lib/tickets/guard.ex"))
+      assert row =~ ~r/^M lib\/tickets\/guard\.ex +\+5 −1 .* \d\d:\d\d$/
+      refute row =~ "assistant"
+      refute Enum.any?(rows, &String.contains?(&1, "1 agent"))
     end
 
     test "a chat turn that spawned sub-agents keeps the full hive" do
