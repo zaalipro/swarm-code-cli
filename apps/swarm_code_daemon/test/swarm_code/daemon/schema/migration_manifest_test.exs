@@ -39,32 +39,30 @@ defmodule SwarmCode.Daemon.Schema.MigrationManifestTest do
            } = List.last(manifest.migrations)
   end
 
-  test "the default contract covers the current 53-migration desktop" do
+  test "the default contract covers the current 57-migration desktop" do
     manifest = MigrationManifest.load!()
-    assert manifest.contract == "desktop-ccb1973"
-    assert manifest.upstream_commit == "ccb19732c7225a6bc88556f8f743bab7bda41a5b"
-    assert length(manifest.migrations) == 53
+    assert manifest.contract == "desktop-6dd8d82"
+    assert manifest.upstream_commit == "6dd8d82ef29f9a6608b942259e1801846bb87ed9"
+    assert length(manifest.migrations) == 57
 
     assert manifest.migration_set_sha256 ==
-             "16c5bb6d88c007fad7042c6f13afa65455a8a6157e2e86c25d68748d7c984e82"
+             "4c0a8ec7fa4ca33aba4ca17ee300b98e1be008e165e7ff18f69d05943137e23f"
 
     assert %MigrationManifest.Entry{
-             version: 20_261_015_000_003,
-             filename: "20261015000003_sub_agent_timeout.exs",
-             source_sha256: "df5bacfee3402e35dcc7c6f1b3a4c944f9ff4359c1920be865b00fe02beb653b"
+             version: 20_261_017_000_004,
+             filename: "20261017000004_isolation_backend.exs",
+             source_sha256: "0051949533fe1318fe94b08f557b4db4b526641ff947fe117f4237e714c8fd16"
            } = List.last(manifest.migrations)
 
     legacy = MigrationManifest.load!(default_manifest_path())
     assert Enum.take(manifest.migrations, 43) == legacy.migrations
 
-    previous =
-      MigrationManifest.load!(
-        default_manifest_path()
-        |> Path.dirname()
-        |> Path.join("desktop-fb1b4ff.json")
-      )
+    for {name, count} <- [{"desktop-fb1b4ff.json", 46}, {"desktop-ccb1973.json", 53}] do
+      previous =
+        MigrationManifest.load!(default_manifest_path() |> Path.dirname() |> Path.join(name))
 
-    assert Enum.take(manifest.migrations, 46) == previous.migrations
+      assert Enum.take(manifest.migrations, count) == previous.migrations
+    end
   end
 
   test "rejects an unknown or mixed source contract even when field shapes are canonical" do

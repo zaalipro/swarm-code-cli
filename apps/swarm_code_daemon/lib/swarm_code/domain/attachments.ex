@@ -24,7 +24,6 @@ defmodule SwarmCode.Domain.Attachments do
 
   def max_bytes, do: @max_bytes
   def max_per_message, do: @max_per_message
-  def mimes, do: Map.keys(@mimes)
 
   def dir, do: Workspace.attachments_dir()
 
@@ -297,8 +296,14 @@ defmodule SwarmCode.Domain.Attachments do
 
   @doc "Deletes old upload files which no persisted message references."
   def prune_abandoned(now \\ DateTime.utc_now(), older_than_hours \\ 24) do
+    # spec 68 T17: filter in SQL to skip rows with nil/empty attachments.
     referenced =
-      Repo.all(from(m in Message, select: m.attachments))
+      Repo.all(
+        from(m in Message,
+          where: not is_nil(m.attachments),
+          select: m.attachments
+        )
+      )
       |> List.flatten()
       |> Enum.map(&Map.get(&1, "id"))
       |> Enum.reject(&is_nil/1)

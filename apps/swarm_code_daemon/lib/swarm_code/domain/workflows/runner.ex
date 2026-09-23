@@ -468,11 +468,12 @@ defmodule SwarmCode.Domain.Workflows.Runner do
       "text" => String.slice(text, 0, 500)
     }
 
-    %{state | pending_logs: state.pending_logs ++ [line]} |> maybe_write_logs()
+    # spec 68 T31: prepend to avoid O(n^2) list append; reversed in write_logs
+    %{state | pending_logs: [line | state.pending_logs]} |> maybe_write_logs()
   end
 
-  defp maybe_write_logs(%{pending_logs: []} = state), do: state
-
+  # spec 68 T31: the empty-list clause is unreachable because log_line always
+  # prepends before calling this; kept only in write_logs/1 which the timer hits.
   defp maybe_write_logs(state) do
     if now_ms() - state.logs_written_at >= @log_write_ms do
       write_logs(state)
@@ -489,7 +490,8 @@ defmodule SwarmCode.Domain.Workflows.Runner do
   def write_logs(%{pending_logs: []} = state), do: cancel_log_timer(state)
 
   def write_logs(state) do
-    logs = Enum.take(state.wf.logs ++ state.pending_logs, -@max_logs)
+    # spec 68 T31: reverse the prepend-accumulated pending_logs before persisting
+    logs = Enum.take(state.wf.logs ++ Enum.reverse(state.pending_logs), -@max_logs)
 
     state
     |> cancel_log_timer()

@@ -33,6 +33,10 @@ defmodule SwarmCode.Domain.Tools.Remember do
   @impl true
   def permission(_args), do: :write
 
+  # spec 66 T20: two appends to one MEMORY.md in one response would interleave.
+  @impl true
+  def parallel?, do: false
+
   @impl true
   def title(args), do: "remember: " <> String.slice(to_string(args["text"] || ""), 0, 40)
 

@@ -43,6 +43,8 @@ defmodule SwarmCode.Domain.Providers do
   def update(%Provider{} = provider, attrs) do
     case provider |> Provider.changeset(attrs) |> Repo.update() do
       {:ok, provider} ->
+        # spec 73 T82: an edited row starts over on what it was seen to reject.
+        LLM.ProviderCaps.forget(provider)
         broadcast()
         {:ok, provider}
 
@@ -68,6 +70,8 @@ defmodule SwarmCode.Domain.Providers do
 
   def delete(%Provider{} = provider) do
     {:ok, provider} = Repo.delete(provider)
+    # spec 73 T82
+    LLM.ProviderCaps.forget(provider)
 
     settings = Settings.get()
 

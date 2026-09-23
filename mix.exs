@@ -37,6 +37,7 @@ defmodule SwarmCodeCLI.MixProject do
         "deps.unlock --check-unused",
         "test",
         "swarm_code.provenance.verify",
+        "swarm_code.provenance.sync --check",
         &verify_schema_snapshot/1,
         &verify_unicode/1
       ]

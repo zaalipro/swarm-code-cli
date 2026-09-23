@@ -2,7 +2,8 @@ defmodule SwarmCode.Domain.Search.Brave do
   @moduledoc "Brave Search (spec 24 §4.2)."
   @behaviour SwarmCode.Domain.Search.Provider
 
-  alias SwarmCode.Domain.Search.Provider
+  alias SwarmCode.Domain.Search
+  alias SwarmCode.Domain.Search.{Body, Provider}
 
   @name "Brave"
   @default "https://api.search.brave.com/res/v1"
@@ -12,7 +13,9 @@ defmodule SwarmCode.Domain.Search.Brave do
   @impl true
   def search(cfg, query, opts) do
     # Brave has no domain filters; `site:` in the query is the documented way.
-    query = query <> sites(opts[:include_domains]) <> minus_sites(opts[:exclude_domains])
+    # spec 68 T37: shared helpers from Search
+    query =
+      query <> Search.sites(opts[:include_domains]) <> Search.minus_sites(opts[:exclude_domains])
 
     params =
       [q: query, count: opts[:max_results] || 5]
@@ -30,24 +33,29 @@ defmodule SwarmCode.Domain.Search.Brave do
           {"accept", "application/json"}
         ],
         retry: false,
-        receive_timeout: opts[:timeout] || 120_000
+        receive_timeout: opts[:timeout] || 120_000,
+        # spec 73 T90: bounded while reading, like the readers.
+        into: Body.collector()
       )
 
     case result do
-      {:ok, %{status: 200, body: %{"web" => %{"results" => results}}}} when is_list(results) ->
-        {:ok,
-         Enum.map(results, fn r ->
-           Provider.result(%{
-             title: r["title"],
-             url: r["url"],
-             content: r["description"],
-             score: nil,
-             published: r["age"]
-           })
-         end)}
+      {:ok, %{status: 200} = response} ->
+        case Provider.decode_json(response) do
+          {:ok, %{"web" => %{"results" => results}}} when is_list(results) ->
+            {:ok,
+             Enum.map(results, fn r ->
+               Provider.result(%{
+                 title: r["title"],
+                 url: r["url"],
+                 content: r["description"],
+                 score: nil,
+                 published: r["age"]
+               })
+             end)}
 
-      {:ok, %{status: 200}} ->
-        {:ok, []}
+          _other ->
+            {:ok, []}
+        end
 
       {:ok, response} ->
         Provider.error(@name, response)
@@ -56,14 +64,6 @@ defmodule SwarmCode.Domain.Search.Brave do
         Provider.error(@name, reason)
     end
   end
-
-  defp sites(nil), do: ""
-  defp sites([]), do: ""
-  defp sites(list), do: " (" <> Enum.map_join(list, " OR ", &("site:" <> &1)) <> ")"
-
-  defp minus_sites(nil), do: ""
-  defp minus_sites([]), do: ""
-  defp minus_sites(list), do: " " <> Enum.map_join(list, " ", &("-site:" <> &1))
 
   # Brave takes a coarse bucket, not a day count.
   defp put_freshness(params, nil), do: params

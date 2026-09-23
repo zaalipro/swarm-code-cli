@@ -27,6 +27,9 @@ defmodule SwarmCode.Domain.Conversations.Node do
     field(:detail, :string)
     field(:result, :string)
     field(:error, :string)
+    # spec 67 T30 (G42): why it failed, as an atom-shaped string —
+    # `SwarmCode.Domain.LLM.Error.kinds/0`. nil on every row written before pass 63.
+    field(:error_kind, :string)
     field(:tokens_in, :integer, default: 0)
     field(:tokens_out, :integer, default: 0)
     # Spec 53b §5: the two parts of `tokens_in` that were not billed at the
@@ -54,6 +57,16 @@ defmodule SwarmCode.Domain.Conversations.Node do
     # `Operation.start/3`; nil for `llm` ops and for rows older than pass 39.
     field(:input, :string)
     field(:pid, :any, virtual: true)
+    # spec 72 F5 (R10): the model the agent is on, set by RunServer at start and
+    # on a prewalk switch, for the agent card and inspector chips. Virtual: the
+    # pass added no column, and `struct/2` silently dropped the key before —
+    # the chip never rendered. Lives as long as the run does.
+    field(:model, :string, virtual: true)
+    # spec 66 T5: the command family the approval card's fourth pill would
+    # remember, set by `RunServer` while the node waits. Virtual: it is derived
+    # from `input`, it only exists for the seconds the card is on screen, and a
+    # reload simply falls back to the three pills.
+    field(:approval_prefix, :string, virtual: true)
 
     belongs_to(:run, SwarmCode.Domain.Conversations.Run)
 
@@ -63,7 +76,7 @@ defmodule SwarmCode.Domain.Conversations.Node do
   @type t :: %__MODULE__{}
 
   @fields ~w(id run_id parent_id kind op_type name role title status progress detail result
-             error tokens_in tokens_out cache_read cache_write cost_usd depth turn max_turns
+             error error_kind tokens_in tokens_out cache_read cache_write cost_usd depth turn max_turns
              position started_at finished_at workspace_path branch base_sha changes_stat
              integrated phase group prompt input)a
 

@@ -17,6 +17,8 @@ defmodule SwarmCode.Domain.LLM.HTTP do
   # 400/401/403/404/422 and model refusals come straight back.
   require Logger
 
+  alias SwarmCode.Domain.LLM.Error
+
   @max_attempts 5
   @retry_delays [1_000, 4_000, 15_000, 60_000]
   @retry_statuses [408, 409, 425, 429]
@@ -65,8 +67,9 @@ defmodule SwarmCode.Domain.LLM.HTTP do
           on_chunk,
           on_retry | nil,
           retry_if | nil,
-          pos_integer()
-        ) :: {:ok, term()} | {:error, String.t()}
+          pos_integer() | nil,
+          String.t() | nil
+        ) :: {:ok, term()} | {:error, atom(), String.t()}
   def stream_post(
         url,
         headers,
@@ -76,8 +79,12 @@ defmodule SwarmCode.Domain.LLM.HTTP do
         on_chunk,
         on_retry \\ nil,
         retry_if \\ nil,
-        deadline_ms \\ default_deadline_ms()
+        deadline_ms \\ nil,
+        provider_id \\ nil
       ) do
+    # spec 67 G46: a nil deadline (the `%Request{}` default) is resolved here,
+    # when the call is made, so `:llm_deadline_ms` set after boot is honoured.
+    deadline_ms = deadline_ms || default_deadline_ms()
     started = System.monotonic_time(:millisecond)
     clock = {started, started + deadline_ms}
 
@@ -91,7 +98,8 @@ defmodule SwarmCode.Domain.LLM.HTTP do
       on_retry,
       retry_if || (&always_ok/1),
       clock,
-      1
+      1,
+      provider_id
     )
   end
 
@@ -129,7 +137,19 @@ defmodule SwarmCode.Domain.LLM.HTTP do
   defp origin(%URI{scheme: s, host: h, port: p}), do: {s, h, p || URI.default_port(s || "http")}
   defp origin_text(%URI{} = u), do: "#{u.scheme}://#{u.host}:#{elem(origin(u), 2)}"
 
-  defp do_stream(url, headers, body, name, init_acc, on_chunk, on_retry, retry_if, clock, attempt) do
+  defp do_stream(
+         url,
+         headers,
+         body,
+         name,
+         init_acc,
+         on_chunk,
+         on_retry,
+         retry_if,
+         clock,
+         attempt,
+         provider_id
+       ) do
     Process.delete(@got_chunk_key)
     {started, deadline} = clock
 
@@ -183,12 +203,14 @@ defmodule SwarmCode.Domain.LLM.HTTP do
 
       cond do
         attempt >= max_attempts ->
-          {:error, "#{name} request failed after #{max_attempts} attempts: " <> message}
+          text = "#{name} request failed after #{max_attempts} attempts: " <> message
+          {:error, Error.classify(nil, reason, text), text}
 
         # Spec 51 §6.2 (c): a retry that would land past the deadline is not a
         # retry, it is a hang the caller cannot see the end of.
         now + planned > deadline ->
-          {:error, "#{name} gave up after #{div(now - started, 1000)} s: " <> message}
+          text = "#{name} gave up after #{div(now - started, 1000)} s: " <> message
+          {:error, Error.classify(nil, reason, text), text}
 
         true ->
           notify(on_retry, attempt + 1, reason, max_attempts)
@@ -204,10 +226,14 @@ defmodule SwarmCode.Domain.LLM.HTTP do
             on_retry,
             retry_if,
             clock,
-            attempt + 1
+            attempt + 1,
+            provider_id
           )
       end
     end
+
+    # spec 67 T33 (G41): every response says how much of the window is left.
+    with {:ok, %Req.Response{} = resp} <- result, do: capture_rate_limit(resp, provider_id)
 
     case result do
       {:ok, %Req.Response{status: 200, private: %{past_deadline: true}} = resp} ->
@@ -234,7 +260,9 @@ defmodule SwarmCode.Domain.LLM.HTTP do
         retry.("server", "HTTP #{status}", retry_after_ms(resp), attempts())
 
       {:ok, %Req.Response{status: status} = resp} ->
-        {:error, status_message(status, name, Map.get(resp.private, :err_body, ""))}
+        body = Map.get(resp.private, :err_body, "")
+        text = status_message(status, name, body)
+        {:error, Error.classify(status, nil, text <> " " <> to_string(body)), text}
 
       {:error, exception} ->
         retry.("network", Exception.message(exception), nil, max_for(exception))
@@ -243,6 +271,156 @@ defmodule SwarmCode.Domain.LLM.HTTP do
 
   defp receive_timeout(deadline) do
     min(120_000, max(deadline - System.monotonic_time(:millisecond), 1_000))
+  end
+
+  ## ------------------------------------------------ rate limits (spec 67 T33)
+
+  # spec 67 T33 (G41): both APIs say on every response how much of the window is
+  # gone and when it refills, and SwarmCode read only `retry-after`, only to
+  # raise a backoff floor — so the first sign of a limit was a 429 mid-run.
+  #
+  # Three shapes are understood: a used-percent header (`…-used-percent`, what
+  # Codex reads), Anthropic's `anthropic-ratelimit-<scope>-{limit,remaining,reset}`
+  # and the OpenAI-compatible `x-ratelimit-{limit,remaining,reset}-<scope>`. The
+  # scope that is *most* used wins, because that is the one that will 429.
+  @doc false
+  @spec capture_rate_limit(Req.Response.t(), String.t() | nil) :: map() | nil
+  def capture_rate_limit(_resp, nil), do: nil
+
+  def capture_rate_limit(%Req.Response{headers: headers}, provider_id) when is_map(headers) do
+    case rate_limit_snapshot(headers) do
+      nil ->
+        nil
+
+      snapshot ->
+        SwarmCode.Domain.Cache.put({:rate_limit, provider_id}, snapshot)
+        SwarmCode.Domain.Engine.Events.ui_broadcast({:rate_limit, provider_id, snapshot})
+        snapshot
+    end
+  end
+
+  def capture_rate_limit(_resp, _provider_id), do: nil
+
+  @doc false
+  @spec rate_limit_snapshot(map()) :: map() | nil
+  def rate_limit_snapshot(headers) do
+    values = for {name, value} <- headers, into: %{}, do: {String.downcase(name), first(value)}
+
+    values
+    |> scopes()
+    |> Enum.map(&scope_snapshot(values, &1))
+    |> Enum.reject(&is_nil/1)
+    |> Enum.max_by(& &1.used_percent, fn -> nil end)
+  end
+
+  defp first([value | _]), do: to_string(value)
+  defp first(value), do: to_string(value)
+
+  @rate_prefixes ~w(anthropic-ratelimit x-ratelimit)
+
+  # Every `<scope>` the headers speak about, in either naming order.
+  defp scopes(values) do
+    for {name, _value} <- values,
+        prefix <- @rate_prefixes,
+        String.starts_with?(name, prefix <> "-"),
+        rest = String.replace_prefix(name, prefix <> "-", ""),
+        scope = scope_of(rest),
+        scope != nil,
+        uniq: true,
+        do: {prefix, scope}
+  end
+
+  defp scope_of(rest) do
+    cond do
+      String.ends_with?(rest, "-used-percent") -> String.replace_suffix(rest, "-used-percent", "")
+      String.ends_with?(rest, "-reset-at") -> String.replace_suffix(rest, "-reset-at", "")
+      String.ends_with?(rest, "-limit") -> String.replace_suffix(rest, "-limit", "")
+      String.ends_with?(rest, "-remaining") -> String.replace_suffix(rest, "-remaining", "")
+      String.ends_with?(rest, "-reset") -> String.replace_suffix(rest, "-reset", "")
+      String.starts_with?(rest, "limit-") -> String.replace_prefix(rest, "limit-", "")
+      String.starts_with?(rest, "remaining-") -> String.replace_prefix(rest, "remaining-", "")
+      String.starts_with?(rest, "reset-") -> String.replace_prefix(rest, "reset-", "")
+      true -> nil
+    end
+  end
+
+  defp scope_snapshot(values, {prefix, scope}) do
+    used =
+      case number(values["#{prefix}-#{scope}-used-percent"]) do
+        nil -> percent_of(values, prefix, scope)
+        percent -> percent
+      end
+
+    if used do
+      %{
+        used_percent: min(max(used, 0.0), 100.0),
+        resets_at: reset_at(values, prefix, scope),
+        scope: scope
+      }
+    end
+  end
+
+  defp percent_of(values, prefix, scope) do
+    limit = number(values["#{prefix}-#{scope}-limit"] || values["#{prefix}-limit-#{scope}"])
+
+    remaining =
+      number(values["#{prefix}-#{scope}-remaining"] || values["#{prefix}-remaining-#{scope}"])
+
+    if is_number(limit) and is_number(remaining) and limit > 0,
+      do: (limit - remaining) / limit * 100.0
+  end
+
+  defp reset_at(values, prefix, scope) do
+    raw =
+      values["#{prefix}-#{scope}-reset-at"] || values["#{prefix}-#{scope}-reset"] ||
+        values["#{prefix}-reset-#{scope}"]
+
+    parse_reset(raw)
+  end
+
+  # An absolute instant (Anthropic sends RFC 3339) or a duration from now
+  # (`6m0s`, `30s`, `120`, `500ms` — the OpenAI-compatible shape).
+  defp parse_reset(nil), do: nil
+
+  defp parse_reset(raw) do
+    case DateTime.from_iso8601(raw) do
+      {:ok, at, _offset} -> at
+      _error -> duration_from_now(raw)
+    end
+  end
+
+  defp duration_from_now(raw) do
+    seconds =
+      ~r/(\d+(?:\.\d+)?)(ms|s|m|h)?/
+      |> Regex.scan(raw)
+      |> Enum.reduce(nil, fn
+        [_all, number], acc -> add_seconds(acc, number, "s")
+        [_all, number, unit], acc -> add_seconds(acc, number, unit)
+        _other, acc -> acc
+      end)
+
+    if seconds, do: DateTime.add(DateTime.utc_now(), round(seconds * 1000), :millisecond)
+  end
+
+  defp add_seconds(acc, number, unit) do
+    case Float.parse(number) do
+      {value, _rest} -> (acc || 0) + value * unit_seconds(unit)
+      :error -> acc
+    end
+  end
+
+  defp unit_seconds("ms"), do: 0.001
+  defp unit_seconds("m"), do: 60
+  defp unit_seconds("h"), do: 3_600
+  defp unit_seconds(_other), do: 1
+
+  defp number(nil), do: nil
+
+  defp number(value) do
+    case Float.parse(to_string(value)) do
+      {number, _rest} -> number
+      :error -> nil
+    end
   end
 
   # Spec 51 §6.2 (a): the provider's own `retry-after`, in milliseconds.

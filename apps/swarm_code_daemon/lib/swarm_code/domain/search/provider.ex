@@ -46,6 +46,22 @@ defmodule SwarmCode.Domain.Search.Provider do
   def error(name, other),
     do: {:error, "#{name} request failed: " <> String.slice(inspect(other), 0, 200)}
 
+  @doc """
+  The JSON a bounded response carried (spec 73 T90): the engines collect
+  through `Body.collector/0` like the readers, so a proxy or a misbehaving
+  endpoint behind a custom `base_url` cannot make an op task buffer and decode
+  an arbitrarily large body. `:error` for a refused, truncated or non-JSON body.
+  """
+  @spec decode_json(Req.Response.t()) :: {:ok, term()} | :error
+  def decode_json(response) do
+    with {:ok, body} <- SwarmCode.Domain.Search.Body.read(response),
+         {:ok, json} <- Jason.decode(body) do
+      {:ok, json}
+    else
+      _other -> :error
+    end
+  end
+
   @doc "A result map with every key present, whatever the wire gave us."
   @spec result(map()) :: result()
   def result(fields) do

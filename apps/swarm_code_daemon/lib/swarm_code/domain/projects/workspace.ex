@@ -20,10 +20,6 @@ defmodule SwarmCode.Domain.Projects.Workspace do
   @spec worktrees_dir(String.t()) :: String.t()
   def worktrees_dir(root), do: Path.join(dir(root), "worktrees")
 
-  @doc "Spec 45 §6.2: where a consensus run's `write_spec` files land."
-  @spec specs_dir(String.t()) :: String.t()
-  def specs_dir(root), do: Path.join(dir(root), "specs")
-
   @doc """
   Creates `<root>/.swarm_code` and, in a git repo, makes git ignore it through
   `.git/info/exclude` (no change to the user's own .gitignore).
@@ -32,7 +28,15 @@ defmodule SwarmCode.Domain.Projects.Workspace do
   def ensure!(root) do
     path = dir(root)
     File.mkdir_p(path)
-    if Git.repo?(root), do: Git.exclude!(root, @dir <> "/")
+
+    if Git.repo?(root) do
+      Git.exclude!(root, @dir <> "/")
+      # spec 72 R5: the isolation ownership marker sits at the root of every
+      # worktree and clone, which share this exclude file — without the line
+      # it went into every agent commit and delta patch.
+      Git.exclude!(root, SwarmCode.Domain.Engine.Isolation.Ownership.marker_file())
+    end
+
     path
   end
 

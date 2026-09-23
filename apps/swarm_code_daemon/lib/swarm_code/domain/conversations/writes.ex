@@ -56,6 +56,62 @@ defmodule SwarmCode.Domain.Conversations.Writes do
     end
   end
 
+  @doc """
+  `create_turn/4` around a user row that is already in the transcript
+  (spec 67 T9).
+
+  An automatic compaction stores the typed message before the compact run
+  starts and chains the chat turn onto it, so by the time the run row exists the
+  user row is minutes old and only needs its `run_id`. Same transaction, same
+  retry, same broadcasts — except the user row, which every window already has.
+  """
+  @spec resume_turn(String.t(), Message.t(), map(), map()) ::
+          {:ok, %{user: Message.t(), assistant: Message.t() | nil, run: Run.t()}}
+          | {:error, :database_busy | {:invalid_message, Ecto.Changeset.t()} | Ecto.Changeset.t()}
+  def resume_turn(conversation_id, %Message{} = user, assistant_attrs, run_attrs) do
+    result =
+      Repo.retry(:create_turn, fn ->
+        Repo.transaction(
+          fn ->
+            with {:ok, run} <- Conversations.insert_run_row(run_attrs),
+                 {:ok, user} <- link_message(user, run.id),
+                 {:ok, assistant} <- insert_or_nil(conversation_id, assistant_attrs, run.id) do
+              %{user: user, assistant: assistant, run: run}
+            else
+              {:error, reason} -> Repo.rollback(reason)
+            end
+          end,
+          mode: :immediate
+        )
+      end)
+
+    case result do
+      {:ok, %{user: user, assistant: assistant, run: run} = turn} ->
+        Conversations.broadcast(conversation_id, {:message_updated, user})
+        if assistant, do: Conversations.broadcast(conversation_id, {:message_created, assistant})
+        Conversations.broadcast_run_created(run)
+        {:ok, turn}
+
+      {:error, :database_busy} ->
+        {:error, :database_busy}
+
+      {:error, {:invalid_message, _} = reason} ->
+        {:error, reason}
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        {:error, changeset}
+    end
+  end
+
+  # Silent inside the transaction, like every other write here; the
+  # `message_updated` event goes out after the commit.
+  defp link_message(%Message{} = message, run_id) do
+    case message |> Message.changeset(%{run_id: run_id}) |> Repo.update() do
+      {:ok, updated} -> {:ok, updated}
+      {:error, changeset} -> {:error, {:invalid_message, changeset}}
+    end
+  end
+
   defp insert_or_nil(_conversation_id, nil, _run_id), do: {:ok, nil}
 
   defp insert_or_nil(conversation_id, attrs, run_id) do
