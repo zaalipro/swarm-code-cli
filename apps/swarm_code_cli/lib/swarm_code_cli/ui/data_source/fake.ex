@@ -445,6 +445,12 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake do
 
       :detail_window ->
         struct!(DTO.DetailWindow, attrs ++ [offset: elem(req.kind, 2)])
+
+      :conversation_list ->
+        struct!(DTO.ConversationList, attrs)
+
+      :library_snapshot ->
+        struct!(DTO.LibrarySnapshot, attrs ++ [feature: elem(req.kind, 1)])
     end
   end
 
@@ -530,6 +536,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake do
   end
 
   defp relevant?(_, %{kind: k}) when k in [:counts_update, :connection], do: true
+  # pass70 C1: toasts and rate limits belong to the shell watch alone.
+  defp relevant?(%{slot: slot}, %{kind: k}) when k in [:toast, :rate_limit], do: slot == :shell
   defp relevant?(%{scope: %{kind: :global}}, _), do: true
   defp relevant?(%{scope: %{kind: :run, id: id}}, d), do: d.run_id == id
   defp relevant?(%{scope: %{kind: :conversation, id: id}}, d), do: d.conversation_id == id
@@ -603,6 +611,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake do
       (is_nil(page.run) or scoped_item?(scope, page.run)) and
         Enum.all?(page.agents ++ page.transcript.items, &scoped_item?(scope, &1))
 
+  defp scoped_body?(_scope, %DTO.ConversationList{}), do: true
+  defp scoped_body?(_scope, %DTO.LibrarySnapshot{}), do: true
   defp scoped_body?(scope, %{items: items}), do: Enum.all?(items, &scoped_item?(scope, &1))
   defp scoped_body?(_, _), do: true
   defp scoped_item?(%{kind: :global}, _), do: true
@@ -649,6 +659,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake do
   defp response?(:run_detail_snapshot, body), do: snapshot?(:inspector, body)
   defp response?(:transcript_window, body), do: match?(%DTO.TranscriptWindow{}, body)
   defp response?(:pending_interactions, body), do: match?(%DTO.PendingInteractionWindow{}, body)
+  defp response?(:conversation_list, body), do: match?(%DTO.ConversationList{}, body)
+  defp response?(:library_snapshot, body), do: match?(%DTO.LibrarySnapshot{}, body)
   defp response?(_, _), do: false
 
   defp valid_resync(s, %Request{kind: {:resync_watch, ref}} = req) do

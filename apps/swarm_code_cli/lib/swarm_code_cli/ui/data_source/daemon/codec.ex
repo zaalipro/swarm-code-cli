@@ -12,7 +12,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
     "run_detail_snapshot" => {:run_detail_snapshot, DTO.RunDetailSnapshot},
     "pending_interactions" => {:pending_interactions, DTO.PendingInteractionWindow},
     "detail_window" => {:detail_window, DTO.DetailWindow},
-    "library_snapshot" => {:library_snapshot, DTO.LibrarySnapshot}
+    "library_snapshot" => {:library_snapshot, DTO.LibrarySnapshot},
+    "conversation_list" => {:conversation_list, DTO.ConversationList}
   }
 
   @watch_bodies %{
@@ -36,9 +37,40 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
       :verdicts,
       :agents,
       :project,
-      :models
+      :models,
+      :approval_mode,
+      :trusted,
+      :chat_provider,
+      :context_used,
+      :context_window,
+      :cost_usd,
+      :title,
+      :background
     ],
-    DTO.WorkspaceMetadata => [:project, :models],
+    DTO.WorkspaceMetadata => [
+      :project,
+      :models,
+      :approval_mode,
+      :trusted,
+      :chat_provider,
+      :context_used,
+      :context_window,
+      :cost_usd,
+      :title
+    ],
+    DTO.ShellSnapshot => [:rate_limits],
+    DTO.Approval => [
+      :command,
+      :cwd,
+      :reason,
+      :command_family,
+      :classification,
+      :agent_id,
+      :agent_name,
+      :requested_at,
+      :allowed_decisions
+    ],
+    DTO.LibraryItem => [:matches],
     DTO.TranscriptItem => [:kind, :tool, :agent_id, :tokens_in, :tokens_out, :at],
     DTO.AgentSummary => [
       :name,
@@ -54,7 +86,13 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
       :parent_id,
       :depth,
       :changes_stat,
-      :error
+      :error,
+      :model,
+      :provider_name,
+      :stop_reason,
+      :error_kind,
+      :stop_label,
+      :retry_at
     ],
     DTO.RunSummary => [
       :tokens_in,
@@ -68,7 +106,12 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
       :started_at,
       :finished_at,
       :consensus,
-      :error
+      :error,
+      :stop_reason,
+      :error_kind,
+      :stop_label,
+      :provider_name,
+      :retry_at
     ],
     DTO.ToolCall => [
       :title,
@@ -78,9 +121,23 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
       :finished_at,
       :duration_ms,
       :result_bytes,
-      :files
+      :files,
+      :added,
+      :removed,
+      :diff_ref,
+      :exit_code,
+      :background
     ],
-    DTO.Change => [:agent_id, :restorable, :at],
+    DTO.Change => [
+      :agent_id,
+      :restorable,
+      :at,
+      :op_id,
+      :file_state,
+      :added,
+      :removed,
+      :diff_ref
+    ],
     DTO.Verdict => [:round, :status, :checks, :summary],
     DTO.VerdictCheck => [:ok, :note]
   }
@@ -235,7 +292,10 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
 
   defp page_sizes?(_, _), do: true
 
-  defp scoped_delta?(_, %Delta{kind: kind}) when kind in [:counts_update, :connection], do: true
+  defp scoped_delta?(_, %Delta{kind: kind})
+       when kind in [:counts_update, :connection, :toast, :rate_limit],
+       do: true
+
   defp scoped_delta?(%{kind: :global}, %Delta{kind: :workspace_metadata}), do: false
   defp scoped_delta?(%{kind: :project}, %Delta{kind: :workspace_metadata}), do: false
   defp scoped_delta?(%{kind: kind}, _) when kind in [:global, :project], do: true
@@ -318,6 +378,40 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
 
   defp request_body({:resync_watch, ref}), do: {:ok, %{"op" => "resync", "watch_ref" => ref}}
 
+  defp request_body({:conversation_list, cursor, size, bytes}),
+    do:
+      {:ok,
+       %{
+         "op" => "conversation.list",
+         "cursor" => cursor,
+         "page_size" => size,
+         "byte_limit" => bytes
+       }}
+
+  defp request_body({:conversation_new}), do: {:ok, %{"op" => "conversation.new"}}
+
+  defp request_body({:conversation_open, id}),
+    do: {:ok, %{"op" => "conversation.open", "conversation_id" => id}}
+
+  defp request_body({:project_update, mode, trusted}),
+    do:
+      {:ok,
+       %{
+         "op" => "project.update",
+         "approval_mode" => if(mode, do: Atom.to_string(mode)),
+         "trusted" => trusted
+       }}
+
+  defp request_body({:mark_seen, kind, id, revision}),
+    do:
+      {:ok,
+       %{
+         "op" => "mark_seen",
+         "kind" => Atom.to_string(kind),
+         "id" => id,
+         "revision" => revision
+       }}
+
   defp request_body({:feature_command, feature, action, id, attrs}),
     do:
       {:ok,
@@ -378,8 +472,12 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
          "attachment_refs" => attachments
        }}
 
+  # `:always_allow` is the legacy name of `:approve_run` (this tool, this run).
+  defp request_body({:resolve_approval, run, node, interaction, revision, :always_allow}),
+    do: request_body({:resolve_approval, run, node, interaction, revision, :approve_run})
+
   defp request_body({:resolve_approval, run, node, interaction, revision, decision})
-       when decision in [:approve, :deny],
+       when decision in [:approve, :approve_run, :always_prefix, :deny, :deny_stop],
        do:
          {:ok,
           %{
@@ -537,6 +635,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
         Enum.all?(page.agents ++ page.transcript.items, &scoped_item?(scope, &1))
 
   defp scoped_body?(_scope, %DTO.LibrarySnapshot{}), do: true
+  # The project's conversations: membership is the service's to resolve.
+  defp scoped_body?(_scope, %DTO.ConversationList{}), do: true
   defp scoped_body?(scope, %{items: items}), do: Enum.all?(items, &scoped_item?(scope, &1))
   defp scoped_body?(_, _), do: true
   defp scoped_item?(%{kind: :global}, _), do: true

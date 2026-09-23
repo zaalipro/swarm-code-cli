@@ -13,6 +13,10 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   alias SwarmCode.Protocol.ServiceRequest
   alias SwarmCode.Domain.Engine.{Events, Questions, RunServer}
   @max_models 400
+  # pass70 C8: finished-run checkpoints whose change facts a reload computes.
+  @facts_per_reload 50
+  # Operations that read: never ledgered, answered with a typed error.
+  @reads [:query, :detail, :feature_query, :conversation_list]
   @terminal [:completed, :failed, :cancelled, :interrupted]
   alias SwarmCode.Daemon.Service.{CommandDispatcher, PersistedProjection, CommandLedger}
 
@@ -42,8 +46,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
          %{project_id: project_id} <- Conversations.get(opts[:conversation_id]),
          true <- project_id == opts[:project_id],
          %{root_path: project_root} <- Projects.get!(project_id),
-         {:ok, root} <- SwarmCode.Tools.Path.real_path(opts[:project_root]),
-         {:ok, ^root} <- SwarmCode.Tools.Path.real_path(project_root),
+         {:ok, root} <- SwarmCode.Domain.Tools.Path.real_path(opts[:project_root]),
+         {:ok, ^root} <- SwarmCode.Domain.Tools.Path.real_path(project_root),
          true <- File.dir?(root) do
       :ok = CommandLedger.ensure!()
 
@@ -52,6 +56,9 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
       Events.subscribe(opts[:conversation_id])
       Events.ui_subscribe()
+      # pass70 C5 (arch F10): what happens outside this conversation.
+      SwarmCode.Domain.PubSub.subscribe(SwarmCode.Domain.PubSub, "notifications")
+      SwarmCode.Domain.MCP.subscribe()
 
       state = %{
         opts: Keyword.put(opts, :project_root, root),
@@ -70,7 +77,25 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         repo_monitor: Process.monitor(Process.whereis(Repo)),
         streams: %{},
         changes: %{},
-        verdicts: %{}
+        verdicts: %{},
+        # pass70 C5: the waits already told about (so a toast fires once per
+        # new wait elsewhere), the providers' last rate-limit windows, and the
+        # MCP servers that failed (so their recovery is told too).
+        waiting_seen: MapSet.new(Questions.list(), & &1.conversation_id),
+        rate_limits: %{},
+        mcp_failed: MapSet.new(),
+        # pass70 C6: an agent's model is a virtual node field the RunServer
+        # broadcasts and never stores; kept for the agents projected. And what
+        # the projected runs left running in the background.
+        agent_models: %{},
+        background: %{},
+        background_tick: nil,
+        # pass70 C8: unified diffs being paged, and what each finished run
+        # changed per file (line counts, created/modified/deleted).
+        diff_cache: %{},
+        diff_order: [],
+        change_facts: %{},
+        file_index: nil
       }
 
       {:ok, reload(state)}
@@ -88,7 +113,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     else
       _ ->
         response =
-          if Map.get(request, :operation) in [:query, :detail, :feature_query],
+          if Map.get(request, :operation) in @reads,
             do: wire_error(:not_allowed),
             else: reject(id, :not_allowed)
 
@@ -201,6 +226,56 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     {:noreply, publish_changes(state, next)}
   end
 
+  # pass70 C5 (arch F10): the domain's own notices become toasts on the shell
+  # watch. "Waiting" comes from `:waiting_changed` instead, which knows the
+  # conversation.
+  def handle_info({:notification, kind, message}, state) when is_binary(message) do
+    case kind do
+      :finished -> {:noreply, toast(state, "success", "Finished", message, nil)}
+      :info -> {:noreply, toast(state, "info", "SwarmCode", message, nil)}
+      _waiting -> {:noreply, state}
+    end
+  end
+
+  def handle_info({:toast, text}, state) when is_binary(text),
+    do: {:noreply, toast(state, "info", "SwarmCode", text, nil)}
+
+  def handle_info({:waiting_changed}, state),
+    do: {:noreply, schedule_refresh(waiting_elsewhere(state))}
+
+  # Runs of this conversation may be research or workflow runs; the library
+  # itself is read on demand, so a changed workflow file needs no delta.
+  def handle_info({event}, state)
+      when event in [:research_runs_changed, :workflow_runs_changed, :workflows_changed],
+      do: {:noreply, schedule_refresh(state)}
+
+  def handle_info({:rate_limit, provider_id, snapshot}, state)
+      when is_binary(provider_id) and is_map(snapshot),
+      do: {:noreply, rate_limit(state, provider_id, snapshot)}
+
+  def handle_info({:mcp_status, server_id, status}, state),
+    do: {:noreply, mcp_status(state, server_id, status)}
+
+  # pass70 C6: the models of the agents a run just registered or switched.
+  def handle_info({:nodes_upsert, _run_id, nodes} = event, state) when is_list(nodes) do
+    models =
+      for %{kind: "agent", id: id, model: model} <- nodes,
+          is_binary(id) and is_binary(model) and model != "",
+          into: state.agent_models,
+          do: {id, model}
+
+    handle_info({:projection_event, event}, %{state | agent_models: models})
+  end
+
+  # A background command ends without an event: while any is listed, look
+  # again every few seconds.
+  def handle_info(:background_tick, state) do
+    next = reload(%{state | background_tick: nil})
+    {:noreply, publish_changes(state, next)}
+  end
+
+  def handle_info({:projection_event, _event}, state), do: {:noreply, schedule_refresh(state)}
+
   def handle_info(event, state) when is_tuple(event) do
     if elem(event, 0) in [
          :run_created,
@@ -219,9 +294,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
          :waiting_changed,
          :workflow_updated,
          :conversation_updated
-       ] and not state.refresh_pending do
-      Process.send_after(self(), :refresh_projection, 20)
-      {:noreply, %{state | refresh_pending: true}}
+       ] do
+      {:noreply, schedule_refresh(state)}
     else
       {:noreply, state}
     end
@@ -236,7 +310,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     do: %{status | state: %{mode: :persisted, runs: map_size(status.state.runs)}}
 
   defp admit_request(id, scope, request, state) do
-    command? = Map.get(request, :operation) not in [:query, :detail, :feature_query]
+    command? = Map.get(request, :operation) not in @reads
 
     fingerprint =
       :crypto.hash(
@@ -258,7 +332,9 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         {:reply, reject(id, :request_conflict), state}
 
       true ->
-        durable = command? and request.operation not in [:conversation_open]
+        # Opening a conversation and marking something seen are idempotent
+        # and ledger nothing; creating one or changing the project does.
+        durable = command? and request.operation not in [:conversation_open, :mark_seen]
 
         admission =
           if durable,
@@ -353,6 +429,30 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       {:ok, %{type: :navigate, destination: :workflows}} ->
         {accepted(id, [], navigation_feedback(:workflows)), state}
 
+      # pass70 C7: `/new`, `/clear`, `/resume <which>` switch this service to
+      # the conversation (identifiers: [its id]); the client re-scopes.
+      {:ok, %{type: :conversation, conversation_id: target}} ->
+        {accepted(id, [target], navigation_feedback(:conversations)),
+         switch_conversation(state, target)}
+
+      {:ok, %{type: :navigate, destination: destination}}
+      when destination in [:conversations, :changes] ->
+        {accepted(id, [], navigation_feedback(destination)), state}
+
+      {:ok, %{type: :report, title: title, text: text}} ->
+        {accepted(id, [], report_feedback(title, text)), state}
+
+      {:ok, %{type: :project, project_id: project_id, text: text}} ->
+        state = state |> refresh() |> toast("success", "Project", text, nil)
+
+        {accepted(id, [project_id], %{
+           "kind" => "notice",
+           "feature" => nil,
+           "title" => "Project",
+           "text" => text,
+           "conversation_id" => nil
+         }), state}
+
       {:ok, _selection} ->
         {reject(id, :not_allowed), state}
 
@@ -370,6 +470,45 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     end
   end
 
+  # pass70 C8: `@path` completion over the project's files (the index is
+  # walked at most every 30 s and kept while it is fresh).
+  defp execute(%{operation: :feature_query, params: %{"feature" => "files"} = p}, _, id, state) do
+    {paths, state} = file_index(state)
+    items = SwarmCode.Domain.FeatureCatalog.file_matches(paths, p["id"], p["page_size"])
+
+    body = %{
+      "feature" => "files",
+      "title" => "Files",
+      "description" => "Files of the project",
+      "items" =>
+        Enum.map(items, fn item ->
+          %{
+            "id" => item.id,
+            "title" => item.title,
+            "subtitle" => item.subtitle,
+            "status" => item.status,
+            "detail" => item.detail,
+            "actions" => [],
+            "form" => nil,
+            "matches" => item.matches
+          }
+        end),
+      "state" => "idle",
+      "before_cursor" => nil,
+      "after_cursor" => nil,
+      "request_id" => id,
+      "error" => nil,
+      "presence" => "covered",
+      "covered_ids" => Enum.map(items, & &1.id),
+      "through_sequence" => state.revision
+    }
+
+    case fit("library_snapshot", body, p["byte_limit"]) do
+      {:ok, kind, body} -> {result(kind, body), state}
+      {:error, code} -> {wire_error(code), state}
+    end
+  end
+
   defp execute(%{operation: operation} = request, scope, id, state)
        when operation in [:feature_query, :feature_command] do
     scoped = feature_scope(scope, state)
@@ -377,14 +516,101 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   end
 
   defp execute(%{operation: :detail, params: params}, scope, id, state) do
-    next = refresh(state)
+    next = state |> refresh() |> warm_diff(params["detail_ref"], scope)
     {result("detail_window", detail(params, scope, id, next)), next}
   end
 
+  # pass70 C3 (arch F7): any conversation of the admitted project opens in
+  # place; the service re-subscribes and re-projects, and its global watches
+  # re-snapshot. `nil` is the one already open.
   defp execute(%{operation: :conversation_open, params: params}, _scope, id, state) do
-    if params["conversation_id"] in [nil, state.opts[:conversation_id]],
-      do: {accepted(id, [state.opts[:conversation_id]]), state},
-      else: {reject(id, :not_allowed), state}
+    target = params["conversation_id"] || state.opts[:conversation_id]
+    project = state.opts[:project_id]
+
+    case Conversations.get(target) do
+      %{project_id: ^project} ->
+        {accepted(id, [target]), switch_conversation(state, target)}
+
+      _ ->
+        {reject(id, :not_allowed), state}
+    end
+  end
+
+  # Create and open: the new conversation is where the next prompt goes.
+  defp execute(%{operation: :conversation_new}, _scope, id, state) do
+    case Conversations.create(state.opts[:project_id]) do
+      {:ok, conversation} ->
+        {accepted(id, [conversation.id]), switch_conversation(state, conversation.id)}
+
+      {:error, _} ->
+        {reject(id, :not_allowed), state}
+    end
+  end
+
+  defp execute(%{operation: :conversation_list, params: params}, _scope, id, state) do
+    case PersistedProjection.conversations(
+           state.opts[:project_id],
+           params["cursor"],
+           params["page_size"]
+         ) do
+      {:ok, rows, more?} ->
+        body = conversation_list(rows, more?, params["cursor"], id, state)
+
+        case fit("conversation_list", body, params["byte_limit"]) do
+          {:ok, kind, body} -> {result(kind, body), state}
+          {:error, code} -> {wire_error(code), state}
+        end
+
+      {:error, code} ->
+        {wire_error(code), state}
+    end
+  end
+
+  # pass70 C2 (arch F12): the project's approval mode and trust, the
+  # desktop's own (`Projects.trust/1` stamps `trusted_at` and lifts a
+  # read-only project to `auto`).
+  defp execute(%{operation: :project_update, params: params}, _scope, id, state) do
+    project = Projects.get!(state.opts[:project_id])
+
+    with {:ok, project} <- trust_project(project, params["trusted"]),
+         {:ok, project} <- set_mode(project, params["approval_mode"]) do
+      text = project_notice(project, params)
+      state = refresh(state)
+      state = toast(state, "success", "Project", text, nil)
+
+      {accepted(id, [project.id], %{
+         "kind" => "notice",
+         "feature" => nil,
+         "title" => "Project",
+         "text" => text,
+         "conversation_id" => nil
+       }), state}
+    else
+      _ -> {reject(id, :invalid_request), state}
+    end
+  end
+
+  defp execute(%{operation: :mark_seen, params: params}, scope, id, state) do
+    target = params["id"]
+
+    result =
+      case params["kind"] do
+        "conversation" ->
+          if target == state.opts[:conversation_id],
+            do: Conversations.mark_seen(target),
+            else: {:error, :not_allowed}
+
+        _run_or_activity ->
+          case state.runs[target] do
+            nil -> {:error, :not_allowed}
+            run -> if run_member?(run, scope, state), do: Conversations.mark_run_seen(run.id)
+          end
+      end
+
+    case result do
+      {:ok, _} -> {accepted(id, [target]), refresh(state)}
+      _ -> {reject(id, :not_allowed), state}
+    end
   end
 
   defp execute(%{operation: :question_answer, params: p}, scope, id, state) do
@@ -438,7 +664,9 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       is_nil(run) or not run_member?(run, scope, state) ->
         {reject(id, :not_allowed), state}
 
-      params["node_id"] != nil and params["node_id"] not in run.node_ids ->
+      # pass70 C2 (rel F2): an approval waits on the **op** node, never on an
+      # agent; the nodes a run is waiting on are admitted beside its agents.
+      params["node_id"] != nil and params["node_id"] not in admitted_nodes(run) ->
         {reject(id, :not_allowed), state}
 
       operation == :approval_resolve and
@@ -446,6 +674,10 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
              run.approval["node_id"] != params["node_id"] or
              run.approval["expected_revision"] != params["expected_revision"]) ->
         {reject(id, :stale_revision), state}
+
+      operation == :approval_resolve and
+          params["decision"] not in offered_decisions(run.approval) ->
+        {reject(id, :not_allowed), state}
 
       run.status in @terminal ->
         {reject(id, :not_allowed), state}
@@ -462,6 +694,295 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   end
 
   defp execute(_, _, id, state), do: {reject(id, :not_allowed), state}
+
+  defp switch_conversation(state, id) do
+    if id == state.opts[:conversation_id] do
+      state
+    else
+      Events.unsubscribe(state.opts[:conversation_id])
+      Events.subscribe(id)
+
+      # Watches of the whole project (the shell, the activity list) now show
+      # another conversation: they re-snapshot. Watches of the old
+      # conversation hear nothing more; their client re-scopes them.
+      watches =
+        Enum.reduce(state.watches, state.watches, fn {{connection, ref} = key, entry}, acc ->
+          if entry.scope.kind in [:global, :project] do
+            send(connection, {:service_resync, self(), ref})
+            Process.demonitor(entry.monitor, [:flush])
+            Map.delete(acc, key)
+          else
+            acc
+          end
+        end)
+
+      reload(%{
+        state
+        | opts: Keyword.put(state.opts, :conversation_id, id),
+          watches: watches,
+          runs: %{},
+          order: [],
+          streams: %{},
+          changes: %{},
+          verdicts: %{},
+          metadata: nil,
+          research_ids: [],
+          attachment_ids: CommandLedger.staged_attachments(state.opts[:project_id], id),
+          refresh_pending: false,
+          diff_cache: %{},
+          diff_order: [],
+          change_facts: %{}
+      })
+    end
+  end
+
+  defp conversation_list(rows, more?, cursor, id, state) do
+    # The conversations with a running run: one registry select.
+    live =
+      MapSet.new(
+        Registry.select(SwarmCode.Domain.Registry, [{{{:run, :_}, :_, {:"$1", :_}}, [], [:"$1"]}])
+      )
+
+    waiting =
+      Questions.list()
+      |> Enum.frequencies_by(& &1.conversation_id)
+
+    current = state.opts[:conversation_id]
+
+    items =
+      Enum.map(rows, fn row ->
+        {runs, finished} = row.stats
+
+        %{
+          "id" => row.id,
+          "title" => preview(row.title || "", 256),
+          "created_at" => ms(row.inserted_at) || 0,
+          "updated_at" => ms(row.updated_at) || 0,
+          "run_count" => runs,
+          "live" => MapSet.member?(live, row.id),
+          "waiting" => Map.get(waiting, row.id, 0),
+          "unread" => unread?(row.last_seen_at, finished),
+          "current" => row.id == current
+        }
+      end)
+
+    %{
+      "project" => project_label(state.opts[:project_id]),
+      "current_id" => current,
+      "items" => items,
+      "state" => "idle",
+      "before_cursor" => if(cursor && items != [], do: hd(items)["id"]),
+      "after_cursor" => if(more? and items != [], do: List.last(items)["id"]),
+      "request_id" => id,
+      "error" => nil,
+      "presence" => if(cursor || more?, do: "off_window", else: "covered"),
+      "covered_ids" => Enum.map(items, & &1["id"]),
+      "through_sequence" => 0
+    }
+  end
+
+  defp unread?(_seen, nil), do: false
+  defp unread?(nil, _finished), do: true
+
+  defp unread?(seen, finished) do
+    case {ms(seen), ms(finished)} do
+      {seen, finished} when is_integer(seen) and is_integer(finished) -> finished > seen
+      _ -> false
+    end
+  end
+
+  defp project_label(project_id) do
+    case Projects.get(project_id) do
+      %{} = project -> project_name(%{project: project})
+      _ -> nil
+    end
+  end
+
+  defp trust_project(project, true), do: Projects.trust(project)
+
+  defp trust_project(project, _), do: {:ok, project}
+
+  defp set_mode(project, mode) when mode in ["read_only", "auto", "full_access"],
+    do: Projects.update(project, %{approval_mode: mode})
+
+  defp set_mode(project, _), do: {:ok, project}
+
+  defp project_notice(project, %{"approval_mode" => mode}) when is_binary(mode),
+    do: "Approval mode: " <> mode_words(project.approval_mode)
+
+  defp project_notice(project, _),
+    do: "Project trusted; approval mode " <> mode_words(project.approval_mode)
+
+  defp mode_words("read_only"), do: "read-only"
+  defp mode_words("full_access"), do: "full access"
+  defp mode_words(mode), do: to_string(mode)
+
+  # pass70 C1: a transient notice for the shell watch.
+  defp toast(state, level, title, text, run_id, conversation_id \\ nil) do
+    toast_id = Ecto.UUID.generate()
+    revision = state.revision + 1
+
+    broadcast(%{state | revision: revision}, %{
+      "kind" => "toast",
+      "entity_id" => toast_id,
+      "run_id" => nil,
+      "conversation_id" => nil,
+      "channel" => nil,
+      "attempt_id" => nil,
+      "text" => nil,
+      "body" => %{
+        "id" => toast_id,
+        "level" => level,
+        "title" => preview(title, 200),
+        "text" => preview(text, 1024),
+        "run_id" => run_id,
+        "conversation_id" => conversation_id,
+        "at" => System.system_time(:millisecond),
+        "revision" => revision
+      },
+      "sequence" => 0,
+      "revision" => revision
+    })
+  end
+
+  defp schedule_refresh(%{refresh_pending: true} = state), do: state
+
+  defp schedule_refresh(state) do
+    Process.send_after(self(), :refresh_projection, 20)
+    %{state | refresh_pending: true}
+  end
+
+  # One toast when another conversation starts waiting (not per request: a
+  # conversation already waiting is already told).
+  defp waiting_elsewhere(state) do
+    waits = Questions.list() |> Enum.take(200)
+    current = state.opts[:conversation_id]
+
+    fresh =
+      waits
+      |> Enum.reject(fn wait ->
+        wait.conversation_id == current or
+          MapSet.member?(state.waiting_seen, wait.conversation_id)
+      end)
+      |> Enum.uniq_by(& &1.conversation_id)
+
+    state = %{state | waiting_seen: MapSet.new(waits, & &1.conversation_id)}
+
+    Enum.reduce(fresh, state, fn wait, acc ->
+      what = if wait.kind == :approval, do: "an approval", else: "an answer"
+
+      toast(
+        acc,
+        "waiting",
+        "Waiting for you",
+        conversation_title(wait.conversation_id) <> " needs " <> what,
+        wait.run_id,
+        wait.conversation_id
+      )
+    end)
+  end
+
+  defp conversation_title(id) do
+    case Conversations.get(id) do
+      %{title: title} when is_binary(title) and title != "" -> preview(title, 120)
+      _ -> "Another conversation"
+    end
+  end
+
+  # pass70 C5/C6: a provider's rate-limit window (the synced engine reports
+  # one per response). One per provider, on the shell watch and its snapshot.
+  defp rate_limit(state, provider_id, snapshot) do
+    used = Map.get(snapshot, :used_percent)
+
+    if is_number(used) and
+         (Map.has_key?(state.rate_limits, provider_id) or
+            map_size(state.rate_limits) < 100) do
+      revision = state.revision + 1
+
+      body = %{
+        "provider_id" => provider_id,
+        "provider" => rate_provider(provider_id),
+        "scope" => preview(to_string(Map.get(snapshot, :scope) || ""), 64),
+        "used_percent" => min(max(used * 1.0, 0.0), 100.0),
+        "resets_at" => ms(Map.get(snapshot, :resets_at)),
+        "retry_at" => ms(Map.get(snapshot, :retry_at)),
+        "revision" => revision
+      }
+
+      same? =
+        Map.delete(state.rate_limits[provider_id] || %{}, "revision") ==
+          Map.delete(body, "revision")
+
+      if same? do
+        state
+      else
+        state = %{
+          state
+          | revision: revision,
+            rate_limits: Map.put(state.rate_limits, provider_id, body)
+        }
+
+        broadcast(state, %{
+          "kind" => "rate_limit",
+          "entity_id" => provider_id,
+          "run_id" => nil,
+          "conversation_id" => nil,
+          "channel" => nil,
+          "attempt_id" => nil,
+          "text" => nil,
+          "body" => body,
+          "sequence" => 0,
+          "revision" => revision
+        })
+      end
+    else
+      state
+    end
+  end
+
+  defp rate_provider(id) do
+    case SwarmCode.Domain.Providers.get_cached(id) do
+      %{name: name} when is_binary(name) -> preview(name, 200)
+      _ -> ""
+    end
+  rescue
+    _ -> ""
+  end
+
+  # MCP: a failure is told once, and so is the recovery after it.
+  defp mcp_status(state, server_id, {:error, reason}) do
+    if MapSet.member?(state.mcp_failed, server_id) do
+      state
+    else
+      text = mcp_name(server_id) <> ": " <> preview(to_string_safe(reason), 400)
+      state = %{state | mcp_failed: MapSet.put(state.mcp_failed, server_id)}
+      toast(state, "warning", "MCP server failed", text, nil)
+    end
+  end
+
+  defp mcp_status(state, server_id, :ready) do
+    if MapSet.member?(state.mcp_failed, server_id) do
+      state = %{state | mcp_failed: MapSet.delete(state.mcp_failed, server_id)}
+      toast(state, "success", "MCP server ready", mcp_name(server_id), nil)
+    else
+      state
+    end
+  end
+
+  defp mcp_status(state, _server_id, _status), do: state
+
+  defp mcp_name(id) do
+    case SwarmCode.Domain.MCP.get(id) do
+      %{name: name} when is_binary(name) and name != "" -> preview(name, 120)
+      _ -> "MCP server"
+    end
+  rescue
+    _ -> "MCP server"
+  end
+
+  defp to_string_safe(value) when is_binary(value), do: value
+  defp to_string_safe(value) when is_atom(value), do: Atom.to_string(value)
+  defp to_string_safe(value), do: inspect(value, limit: 20, printable_limit: 400)
 
   defp unknown_outcome(id),
     do:
@@ -519,13 +1040,41 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     end
   end
 
-  defp control(:approval_resolve, params, run, _),
-    do:
-      Engine.resolve_approval(
-        run.id,
-        run.approval["node_id"],
-        if(params["decision"] == "approve", do: :approve, else: :deny)
-      )
+  # pass70 C2: the five decisions (engine 6dd8d82). `approve_run` is the
+  # engine's `:always` (this tool, this run); `deny_stop` denies and stops the
+  # run. `always_prefix` remembers the family the service computed for this
+  # request (the card's), never one a client names; the RunServer uses the
+  # node's own prefix anyway.
+  defp control(:approval_resolve, %{"decision" => decision}, run, _) do
+    node = run.approval["node_id"]
+
+    case decision do
+      "approve" ->
+        Engine.resolve_approval(run.id, node, :approve)
+
+      "approve_run" ->
+        Engine.resolve_approval(run.id, node, :always)
+
+      "deny" ->
+        Engine.resolve_approval(run.id, node, :deny)
+
+      "deny_stop" ->
+        Engine.resolve_approval(run.id, node, :deny_stop)
+
+      "always_prefix" ->
+        family = get_in(run.approval, ["approval", "command_family"])
+        Engine.resolve_approval(run.id, node, :always_prefix, family)
+    end
+  end
+
+  defp admitted_nodes(run), do: run.node_ids ++ Enum.map(run.interactions, & &1["node_id"])
+
+  # A legacy client may send `approve`/`deny` to a card that predates the
+  # decision list; every other decision must be one the card offered.
+  defp offered_decisions(%{"approval" => %{"allowed_decisions" => [_ | _] = offered}}),
+    do: offered
+
+  defp offered_decisions(_), do: ["approve", "deny"]
 
   defp error_code(reason)
        when reason in [
@@ -648,8 +1197,9 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   # `ops` is `%{agent_id => newest open op}`; an agent's step is that op's
   # title (a tool call reads "grep Bootstrap|…", a think reads "thinking"),
   # else its status word.
-  defp agent_summary(n, ops) do
+  defp agent_summary(n, ops, models) do
     status = normalize_node_status(n.status)
+    stop = stop_facts(n.status, Map.get(n, :error_kind))
 
     step =
       case ops[n.id] do
@@ -678,8 +1228,39 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       "parent_id" => n.parent_id,
       "depth" => n.depth || 0,
       "changes_stat" => clip(n.changes_stat, 200),
-      "error" => if(present?(n.error), do: clip(n.error, 200))
+      "error" => if(present?(n.error), do: clip(n.error, 200)),
+      "model" => clip(models[n.id], 200)
     }
+    |> Map.merge(stop)
+  end
+
+  # pass70 C6 (arch F16): why a run or an agent stopped, as the synced domain
+  # records it (`error_kind` holds a provider error kind or an orchestration
+  # stop reason, `LLM.Error`), with the desktop's chip label. A run the user
+  # stopped carries no kind: its reason is `user_stopped`.
+  defp stop_facts(status, kind) do
+    error = SwarmCode.Domain.LLM.Error
+
+    {reason, error_kind} =
+      cond do
+        is_binary(kind) and error.stop_reason?(known_atom(kind)) -> {kind, nil}
+        is_binary(kind) and error.kind?(known_atom(kind)) -> {nil, kind}
+        status == "stopped" -> {"user_stopped", nil}
+        true -> {nil, nil}
+      end
+
+    %{
+      "stop_reason" => reason,
+      "error_kind" => error_kind,
+      "stop_label" => error.stop_reason_label(reason || error_kind)
+    }
+  end
+
+  # Only atoms that already exist: a kind written by a newer desktop is text.
+  defp known_atom(text) do
+    String.to_existing_atom(text)
+  rescue
+    ArgumentError -> nil
   end
 
   defp agent_role(%{role: "worker", name: "Judge" <> _}), do: "judge"
@@ -710,18 +1291,42 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
   defp present?(text), do: is_binary(text) and text != ""
 
+  # pass70 C2 (rel F11): an op stopped while it waited for approval keeps the
+  # progress text "awaiting approval" on its row; a finished op no longer
+  # waits, so the words go and the status speaks.
+  @waiting_words ["awaiting approval", "awaiting answer"]
+
+  defp settle_wait(%{source_kind: "op", status: status} = r)
+       when status in ["done", "stopped", "failed", "interrupted", "cancelled"] do
+    stale? = fn text -> is_binary(text) and String.trim(text) in @waiting_words end
+
+    r
+    |> then(&if stale?.(&1.detail), do: %{&1 | detail: ""}, else: &1)
+    |> then(fn row ->
+      if stale?.(row.text), do: %{row | text: "", text_bytes: 0}, else: row
+    end)
+  end
+
+  defp settle_wait(r), do: r
+
   defp item_kind(%{source_kind: "op", op_type: "llm"}), do: "thinking"
   defp item_kind(%{source_kind: "op"}), do: "tool"
   defp item_kind(%{source_kind: kind}) when kind in ["user", "assistant", "agent"], do: "text"
   defp item_kind(%{source_kind: "error"}), do: "error"
   defp item_kind(_), do: "system"
 
-  defp tool_call(%{source_kind: "op", op_type: type} = r)
+  defp tool_call(%{source_kind: "op", op_type: type} = r, op_facts)
        when is_binary(type) and type != "llm" do
     started = ms(r.started_at)
     finished = ms(r.finished_at)
+    diff = op_facts[r.id]
 
     %{
+      # pass70 C8: an edit of a finished run says what it changed and where
+      # its diff is; line counts and the diff wait until the run is over.
+      "added" => diff && diff.added,
+      "removed" => diff && diff.removed,
+      "diff_ref" => diff && %{"id" => r.id <> ":diff", "total_bytes" => diff.total},
       "name" => clip(type, 200),
       "title" => clip(r.title, 200) || "",
       "detail" => clip(r.detail, 200) || "",
@@ -734,7 +1339,81 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     }
   end
 
-  defp tool_call(_), do: nil
+  defp tool_call(_, _), do: nil
+
+  # pass70 C8: per checkpoint of a finished run, what `FeatureCatalog.change_diff/2`
+  # says it changed (counts, file state, the diff's size). Computed once per
+  # checkpoint, at most `budget` per projection, kept for the checkpoints shown.
+  defp change_facts(cache, checkpoints, terminal, conversation, budget) do
+    finished = MapSet.new(terminal)
+    shown = Enum.filter(checkpoints, &MapSet.member?(finished, &1.run_id))
+
+    {facts, _budget} =
+      Enum.reduce(shown, {%{}, budget}, fn c, {acc, budget} ->
+        case Map.fetch(cache, c.id) do
+          {:ok, facts} ->
+            {Map.put(acc, c.id, facts), budget}
+
+          :error when budget > 0 ->
+            case SwarmCode.Domain.FeatureCatalog.change_diff(conversation, c.id) do
+              {:ok, diff} ->
+                {Map.put(acc, c.id, %{
+                   added: diff.added,
+                   removed: diff.removed,
+                   file_state: diff.file_state,
+                   total: byte_size(diff.text)
+                 }), budget - 1}
+
+              _ ->
+                {acc, budget - 1}
+            end
+
+          :error ->
+            {acc, budget}
+        end
+      end)
+
+    facts
+  end
+
+  # An op's diff is its checkpoints' diffs joined by a newline, oldest first
+  # (`FeatureCatalog.op_diff/2`); known when every one of them is.
+  defp op_diff_facts(checkpoints, facts) do
+    checkpoints
+    |> Enum.filter(& &1.node_id)
+    |> Enum.group_by(& &1.node_id)
+    |> Enum.flat_map(fn {node_id, cs} ->
+      cs =
+        Enum.sort_by(cs, &{&1.inserted_at, &1.id}, fn {a, x}, {b, y} ->
+          case DateTime.compare(a, b) do
+            :lt -> true
+            :gt -> false
+            :eq -> x <= y
+          end
+        end)
+
+      known = Enum.map(cs, &facts[&1.id])
+
+      if length(cs) <= 20 and Enum.all?(known) do
+        [
+          {node_id,
+           %{
+             added: sum_known(known, :added),
+             removed: sum_known(known, :removed),
+             total: Enum.sum(Enum.map(known, & &1.total)) + length(known) - 1
+           }}
+        ]
+      else
+        []
+      end
+    end)
+    |> Map.new()
+  end
+
+  defp sum_known(known, key) do
+    if Enum.all?(known, &is_integer(Map.get(&1, key))),
+      do: Enum.sum(Enum.map(known, &Map.get(&1, key)))
+  end
 
   @file_ops ~w(read_file edit_file write_file list_dir)
 
@@ -751,6 +1430,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   defp op_files(_, _), do: []
 
   defp change_body(c, state) do
+    facts = state.change_facts[c.id]
+
     %{
       "id" => c.id,
       "run_id" => c.run_id,
@@ -758,7 +1439,14 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       "path" => change_path(c.path, c.workspace_path, state.roots),
       "restorable" => c.restorable == true,
       "at" => ms(c.inserted_at) || 0,
-      "revision" => stamp(c.inserted_at)
+      "revision" => stamp(c.inserted_at) + if(facts, do: 1, else: 0),
+      # pass70 C8: the op that made it and, once its run is over, what it
+      # changed and where its diff is.
+      "op_id" => c.node_id,
+      "file_state" => (facts && facts.file_state) || "unknown",
+      "added" => facts && facts.added,
+      "removed" => facts && facts.removed,
+      "diff_ref" => facts && %{"id" => c.id <> ":diff", "total_bytes" => facts.total}
     }
   end
 
@@ -866,10 +1554,12 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     {:ok, records, _, _} = PersistedProjection.records(conv, nil, nil, "before", 200)
     ids = Enum.map(rows, & &1.id)
     agents = PersistedProjection.agents(conv, ids)
-    build_projection(state, rows, records, agents)
+    build_projection(state, rows, records, agents, @facts_per_reload)
   end
 
-  defp build_projection(state, rows, records, agents) do
+  # `facts_budget`: how many finished-run checkpoints may have their change
+  # facts computed now — the reload's; a query's page reuses what it has.
+  defp build_projection(state, rows, records, agents, facts_budget \\ 0) do
     conv = state.opts[:conversation_id]
     ids = Enum.map(rows, & &1.id)
     pending = Questions.list(conv) |> Enum.take(200)
@@ -877,6 +1567,13 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     grouped_agents = Enum.group_by(agents, & &1.run_id)
     ops = PersistedProjection.running_ops(conv, ids)
     checkpoints = PersistedProjection.checkpoints(conv, ids)
+
+    terminal =
+      for row <- rows, row.status in ["done", "stopped", "failed", "interrupted"], do: row.id
+
+    facts = change_facts(state.change_facts, checkpoints, terminal, conv, facts_budget)
+    state = %{state | change_facts: facts}
+    op_facts = op_diff_facts(checkpoints, facts)
     checkpoint_counts = PersistedProjection.checkpoint_counts(conv, ids)
 
     runs =
@@ -897,7 +1594,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
           created: stamp(row.inserted_at),
           revision: revision,
           records: [],
-          agents: Enum.map(ns, &agent_summary(&1, ops)),
+          agents: Enum.map(ns, &agent_summary(&1, ops, state.agent_models)),
           node_ids: Enum.map(ns, & &1.id),
           approval: nil,
           interactions: [],
@@ -911,11 +1608,14 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
           started_at: ms(row.started_at),
           finished_at: ms(row.finished_at),
           consensus: row.consensus == true,
-          error: run_error(row, ns)
+          error: run_error(row, ns),
+          stop: stop_facts(row.status, Map.get(row, :error_kind))
         }
 
         rs =
           Enum.map(rs, fn r ->
+            r = settle_wait(r)
+
             base = %{
               id: r.id,
               node_id: r.node_id,
@@ -929,7 +1629,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
               reasoning_bytes: r.reasoning_bytes,
               attachments: Map.get(r, :attachments, []),
               kind: item_kind(r),
-              tool: tool_call(r),
+              tool: tool_call(r, op_facts),
               agent_id: r.agent_id,
               tokens_in: r.tokens_in || 0,
               tokens_out: r.tokens_out || 0,
@@ -981,6 +1681,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         end
       end)
 
+    background = background_bodies(ids)
+
     %{
       state
       | runs: runs,
@@ -989,9 +1691,59 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         revision: revision,
         metadata: metadata,
         changes: Map.new(checkpoints, &{&1.id, change_body(&1, state)}),
-        verdicts: Map.new(verdicts)
+        verdicts: Map.new(verdicts),
+        agent_models: Map.take(state.agent_models, Enum.map(agents, & &1.id)),
+        background: background
     }
+    |> background_tick()
   end
+
+  # pass70 C6: what the projected runs left running (`Tools.BackgroundProcs`,
+  # an ETS table; empty when the runtime has none).
+  defp background_bodies([]), do: %{}
+
+  defp background_bodies(run_ids) do
+    runs = MapSet.new(run_ids)
+
+    SwarmCode.Domain.Tools.BackgroundProcs.list_all()
+    |> Enum.filter(&MapSet.member?(runs, &1.run_id))
+    |> Enum.take(200)
+    |> Map.new(fn entry ->
+      id = "#{entry.run_id}:#{entry.os_pid}"
+
+      {id,
+       %{
+         "id" => id,
+         "run_id" => entry.run_id,
+         "agent_id" => nil,
+         "pid" => entry.os_pid,
+         "command" => preview(to_string(entry.command), 512),
+         "cwd" => nil,
+         "state" => "running",
+         "exit_code" => nil,
+         "started_at" => ms(entry.started_at),
+         "output_bytes" => 0,
+         "revision" => stamp(entry.started_at)
+       }}
+    end)
+  rescue
+    _ -> %{}
+  end
+
+  defp background_for(runs, state) do
+    shown = MapSet.new(runs, & &1.id)
+
+    state.background
+    |> Map.values()
+    |> Enum.filter(&MapSet.member?(shown, &1["run_id"]))
+    |> Enum.sort_by(&{&1["started_at"], &1["id"]})
+  end
+
+  defp background_tick(%{background: background, background_tick: nil} = state)
+       when map_size(background) > 0,
+       do: %{state | background_tick: Process.send_after(self(), :background_tick, 5_000)}
+
+  defp background_tick(state), do: state
 
   # The changes and verdicts of the runs a snapshot shows, newest first.
   defp changes_for(runs, state) do
@@ -1086,12 +1838,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         [
           %{
             base
-            | "approval" => %{
-                "tool" => detail[:tool] || "agent operation",
-                "permission" => Atom.to_string(detail[:permission] || :write),
-                "arguments_preview" => to_string(detail[:args] || "{}"),
-                "arguments_detail_ref" => nil
-              },
+            | "approval" => approval_card(detail, p, run, state),
               "allowed_actions" => ["approve", "deny"]
           }
         ]
@@ -1103,6 +1850,122 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         []
     end
   end
+
+  # pass70 C2: the card's facts. The RunServer row (A2's frozen contract)
+  # carries `command`, `cwd`, `reason`, `command_family`, `classification`,
+  # `allowed_decisions` and `requested_at`; the op's arguments fill in for a
+  # row without them.
+  defp approval_card(detail, p, run, state) do
+    tool = bound(detail[:tool], 200) || "agent operation"
+    args = decode_args(detail[:args])
+    command = detail_text(detail, :command) || (tool == "run_command" && args["command"]) || nil
+    classification = classification(detail[:classification])
+    family = detail_text(detail, :command_family)
+    agent = approval_agent(p.node_id, run)
+
+    %{
+      "tool" => tool,
+      "permission" => permission(detail[:permission]),
+      "arguments_preview" => bound(to_string(detail[:args] || "{}"), 65_536) || "{}",
+      "arguments_detail_ref" => nil,
+      "command" => bound(command, 4096),
+      "cwd" => approval_cwd(detail, args, tool, state),
+      "reason" => bound(detail_text(detail, :reason) || args["justification"], 1024),
+      "command_family" => if(classification != "dangerous", do: bound(family, 200)),
+      "classification" => classification,
+      "agent_id" => agent && agent["id"],
+      "agent_name" => agent && bound(agent["name"], 200),
+      "requested_at" => unix_ms(detail[:requested_at]) || unix_ms(p.since),
+      "allowed_decisions" => decisions(detail[:allowed_decisions], classification, family)
+    }
+  end
+
+  @decisions ~w(approve approve_run always_prefix deny deny_stop)
+
+  # The row's own list when it has one (the RunServer knows what it can do);
+  # `always_prefix` only with a family the card shows.
+  defp decisions([_ | _] = offered, classification, family) do
+    offered = offered |> Enum.map(&to_string/1) |> Enum.filter(&(&1 in @decisions)) |> Enum.uniq()
+    remembered? = classification != "dangerous" and family?(family)
+    if remembered?, do: offered, else: offered -- ["always_prefix"]
+  end
+
+  defp decisions(_none, "dangerous", _family), do: ["approve", "deny", "deny_stop"]
+
+  defp decisions(_none, _classification, family) do
+    prefix = if family?(family), do: ["always_prefix"], else: []
+    ["approve", "approve_run"] ++ prefix ++ ["deny", "deny_stop"]
+  end
+
+  defp family?(text), do: is_binary(text) and String.trim(text) != ""
+
+  defp permission(value) when value in [:read, :write, :execute], do: Atom.to_string(value)
+  defp permission(value) when value in ["read", "write", "execute"], do: value
+  defp permission(_), do: "write"
+
+  defp classification(value) when value in [:safe, :normal, :dangerous], do: Atom.to_string(value)
+  defp classification(value) when value in ["safe", "normal", "dangerous"], do: value
+  defp classification(_), do: "unknown"
+
+  defp detail_text(detail, key) do
+    case detail[key] do
+      value when is_binary(value) and value != "" -> value
+      _ -> nil
+    end
+  end
+
+  defp decode_args(args) when is_binary(args) do
+    case Jason.decode(args) do
+      {:ok, %{} = map} -> map
+      _ -> %{}
+    end
+  end
+
+  defp decode_args(%{} = args), do: args
+  defp decode_args(_), do: %{}
+
+  # The working directory as the user reads it: relative to the project root,
+  # "." for the root itself.
+  defp approval_cwd(detail, args, tool, state) do
+    raw =
+      detail_text(detail, :cwd) ||
+        case args["workdir"] do
+          dir when is_binary(dir) and dir != "" -> dir
+          _ -> if tool == "run_command", do: "."
+        end
+
+    case raw do
+      nil ->
+        nil
+
+      dir ->
+        base = Enum.find(state.roots, &(is_binary(&1) and (dir == &1 or inside?(dir, &1))))
+
+        cond do
+          base == dir -> "."
+          base -> bound(Path.relative_to(dir, base), 1024)
+          true -> bound(dir, 1024)
+        end
+    end
+  end
+
+  defp approval_agent(node_id, run) do
+    agent_id =
+      Enum.find_value(run.records, fn r -> if r.node_id == node_id, do: r.agent_id end)
+
+    Enum.find(run.agents, &(&1["id"] == agent_id))
+  end
+
+  defp unix_ms(value) when is_integer(value) and value > 0, do: value
+  defp unix_ms(%DateTime{} = value), do: DateTime.to_unix(value, :millisecond)
+  defp unix_ms(%NaiveDateTime{} = value), do: ms(value)
+  defp unix_ms(_), do: nil
+
+  defp bound(nil, _), do: nil
+  defp bound(false, _), do: nil
+  defp bound(text, max) when is_binary(text), do: preview(text, max)
+  defp bound(value, max) when is_atom(value), do: bound(Atom.to_string(value), max)
+  defp bound(_, _), do: nil
 
   defp publish_changes(old, state) do
     state = if old.metadata != state.metadata, do: broadcast_metadata(state), else: state
@@ -1182,10 +2045,23 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         broadcast(acc, entity_delta("change_remove", gone["run_id"], id, nil, acc))
       end)
 
-    Enum.reduce(state.verdicts, state, fn {id, body}, acc ->
-      if old.verdicts[id] == body,
-        do: acc,
-        else: broadcast(acc, entity_delta("verdict_upsert", body["run_id"], id, body, acc))
+    state =
+      Enum.reduce(state.verdicts, state, fn {id, body}, acc ->
+        if old.verdicts[id] == body,
+          do: acc,
+          else: broadcast(acc, entity_delta("verdict_upsert", body["run_id"], id, body, acc))
+      end)
+
+    state =
+      Enum.reduce(state.background, state, fn {id, body}, acc ->
+        if old.background[id] == body,
+          do: acc,
+          else: broadcast(acc, entity_delta("background_upsert", body["run_id"], id, body, acc))
+      end)
+
+    Enum.reduce(Map.keys(old.background) -- Map.keys(state.background), state, fn id, acc ->
+      gone = old.background[id]
+      broadcast(acc, entity_delta("background_remove", gone["run_id"], id, nil, acc))
     end)
   end
 
@@ -1254,31 +2130,33 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       end)
 
   defp summary(run, state),
-    do: %{
-      "created_sequence" => run.created,
-      "parent_run_id" => run.parent_run_id,
-      "seen_revision" => 0,
-      "id" => run.id,
-      "conversation_id" => state.opts[:conversation_id],
-      "kind" => run.kind,
-      "title" => preview(run.prompt, 256),
-      "revision" => run.revision,
-      "state" => status(run.status),
-      "allowed_actions" => actions(run),
-      "progress" => nil,
-      "tokens_in" => run.tokens_in,
-      "tokens_out" => run.tokens_out,
-      "cost_usd" => run.cost_usd,
-      "model" => run.model,
-      "agents_total" => run.agents_total,
-      "agents_running" => run.agents_running,
-      "needs" => length(run.interactions),
-      "changes" => run.changes_count,
-      "started_at" => run.started_at,
-      "finished_at" => run.finished_at,
-      "consensus" => run.consensus,
-      "error" => run.error
-    }
+    do:
+      %{
+        "created_sequence" => run.created,
+        "parent_run_id" => run.parent_run_id,
+        "seen_revision" => 0,
+        "id" => run.id,
+        "conversation_id" => state.opts[:conversation_id],
+        "kind" => run.kind,
+        "title" => preview(run.prompt, 256),
+        "revision" => run.revision,
+        "state" => status(run.status),
+        "allowed_actions" => actions(run),
+        "progress" => nil,
+        "tokens_in" => run.tokens_in,
+        "tokens_out" => run.tokens_out,
+        "cost_usd" => run.cost_usd,
+        "model" => run.model,
+        "agents_total" => run.agents_total,
+        "agents_running" => run.agents_running,
+        "needs" => length(run.interactions),
+        "changes" => run.changes_count,
+        "started_at" => run.started_at,
+        "finished_at" => run.finished_at,
+        "consensus" => run.consensus,
+        "error" => run.error
+      }
+      |> Map.merge(run.stop)
 
   defp member?(_, %{kind: :global, id: nil}), do: true
   defp member?(state, %{kind: :project, id: id}), do: id == state.opts[:project_id]
@@ -1327,10 +2205,35 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         member?(state, entry.scope) and
           (entry.scope.kind != :run or entry.scope.id == delta["run_id"]) and
           case entry.slot do
-            "shell" -> delta["kind"] == "run_update"
-            "activity" -> delta["kind"] == "activity_upsert"
-            "workspace" -> delta["kind"] != "activity_upsert"
-            _ -> delta["kind"] not in ["activity_upsert", "workspace_metadata"]
+            # pass70 C1: toasts and rate limits reach the shell watch alone.
+            "shell" ->
+              delta["kind"] in ["run_update", "toast", "rate_limit"]
+
+            "activity" ->
+              delta["kind"] == "activity_upsert"
+
+            "workspace" ->
+              delta["kind"] not in ["activity_upsert", "toast", "rate_limit"]
+
+            # pass70 C6: background commands belong to the workspace and the
+            # run inspector, not to the transcript or pending windows.
+            "inspector" ->
+              delta["kind"] not in [
+                "activity_upsert",
+                "workspace_metadata",
+                "toast",
+                "rate_limit"
+              ]
+
+            _ ->
+              delta["kind"] not in [
+                "activity_upsert",
+                "workspace_metadata",
+                "toast",
+                "rate_limit",
+                "background_upsert",
+                "background_remove"
+              ]
           end
 
       if relevant do
@@ -1464,6 +2367,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
           case slot do
             "shell" ->
               Map.merge(base, %{
+                "rate_limits" =>
+                  state.rate_limits |> Map.values() |> Enum.sort_by(& &1["provider"]),
                 "runs" => selected,
                 "connection" => %{
                   "state" => "connected",
@@ -1485,7 +2390,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
                 "interactions" => Enum.take(pending, limit),
                 "changes" => changes_for(runs, state),
                 "verdicts" => verdicts_for(runs, state),
-                "agents" => Enum.flat_map(runs, & &1.agents) |> Enum.take(limit)
+                "agents" => Enum.flat_map(runs, & &1.agents) |> Enum.take(limit),
+                "background" => background_for(runs, state)
               })
               |> Map.merge(state.metadata)
 
@@ -1522,6 +2428,9 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   defp workspace_mode(_), do: "build"
 
   defp workspace_metadata(conversation) do
+    chat = SwarmCode.Domain.Providers.effective_model(conversation, :chat)
+    totals = PersistedProjection.conversation_totals(conversation.id)
+
     %{
       "conversation_id" => conversation.id,
       "mode" => workspace_mode(conversation),
@@ -1530,9 +2439,39 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       "swarm_model" => effective_model_name(conversation, :swarm),
       "effort" => conversation.effort,
       "swarm_effort" => conversation.swarm_effort,
-      "models" => model_options()
+      "models" => model_options(),
+      # pass70 C1/C2: the status line's facts.
+      "approval_mode" => approval_mode(conversation),
+      "trusted" => trusted(conversation),
+      "chat_provider" => provider_name(chat),
+      "context_used" => totals.context_used,
+      "context_window" => context_window(chat),
+      "cost_usd" => totals.cost_usd,
+      "title" => if(is_binary(conversation.title), do: preview(conversation.title, 256))
     }
   end
+
+  defp approval_mode(%{project: %{approval_mode: mode}})
+       when mode in ["read_only", "auto", "full_access"],
+       do: mode
+
+  defp approval_mode(_), do: nil
+
+  defp trusted(%{project: %{} = project}), do: Projects.trusted?(project)
+  defp trusted(_), do: nil
+
+  defp provider_name({:ok, %{provider: %{name: name}}}) when is_binary(name) and name != "",
+    do: preview(name, 200)
+
+  defp provider_name(_), do: nil
+
+  # The window the harness works in: the point where `Context.trim/2` starts
+  # dropping history (75 % of the model's configured window, or the default
+  # budget for its family).
+  defp context_window({:ok, %{model: model}}) when is_binary(model),
+    do: SwarmCode.Domain.Engine.Context.budget(model, SwarmCode.Domain.Settings.get_cached())
+
+  defp context_window(_), do: nil
 
   defp project_name(%{project: %{name: name}}) when is_binary(name) and name != "",
     do: preview(name, 200)
@@ -1672,6 +2611,24 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
                 params["bytes"]
               )
 
+        # pass70 C8: an edit's or a change's unified diff, cut into windows.
+        [entity_id, "diff"] ->
+          case cached_diff(state, entity_id, scope) do
+            {:ok, text} ->
+              %{
+                text:
+                  binary_part(
+                    text,
+                    min(offset, byte_size(text)),
+                    max(min(params["bytes"], byte_size(text) - offset), 0)
+                  ),
+                total: byte_size(text)
+              }
+
+            _ ->
+              nil
+          end
+
         _ ->
           nil
       end
@@ -1693,6 +2650,88 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
       _ ->
         base
+    end
+  end
+
+  @file_index_ms 30_000
+
+  defp file_index(%{file_index: {at, paths}} = state) when is_list(paths) do
+    if System.monotonic_time(:millisecond) - at < @file_index_ms,
+      do: {paths, state},
+      else: file_index(%{state | file_index: nil})
+  end
+
+  defp file_index(state) do
+    {paths, _truncated?} = SwarmCode.Domain.FeatureCatalog.file_index(state.opts[:project_root])
+    {paths, %{state | file_index: {System.monotonic_time(:millisecond), paths}}}
+  end
+
+  # A diff is computed once and paged from memory: at most 8 of them and
+  # 4 MB, the oldest dropped first (and computed again when asked again).
+  @diff_cache_entries 8
+  @diff_cache_bytes 4_000_000
+
+  defp warm_diff(state, ref, scope) when is_binary(ref) do
+    with [id, "diff"] <- String.split(ref, ":", parts: 2),
+         false <- Map.has_key?(state.diff_cache, {id, scope.kind, scope.id}),
+         {:ok, text} <- diff_text(id, scope, state) do
+      key = {id, scope.kind, scope.id}
+      order = state.diff_order ++ [key]
+      cache = Map.put(state.diff_cache, key, text)
+      {cache, order} = trim_diffs(cache, order)
+      %{state | diff_cache: cache, diff_order: order}
+    else
+      _ -> state
+    end
+  end
+
+  defp warm_diff(state, _ref, _scope), do: state
+
+  defp trim_diffs(cache, [oldest | rest] = order) do
+    bytes = cache |> Map.values() |> Enum.map(&byte_size/1) |> Enum.sum()
+
+    if length(order) > @diff_cache_entries or (bytes > @diff_cache_bytes and rest != []),
+      do: trim_diffs(Map.delete(cache, oldest), rest),
+      else: {cache, order}
+  end
+
+  defp trim_diffs(cache, []), do: {cache, []}
+
+  defp cached_diff(state, id, scope) do
+    case Map.fetch(state.diff_cache, {id, scope.kind, scope.id}) do
+      {:ok, text} -> {:ok, text}
+      :error -> :error
+    end
+  end
+
+  # A checkpoint id (a change) or an op id (an edit): its diff, when it belongs
+  # to this conversation (and to the run a run-scoped inspector shows).
+  defp diff_text(id, scope, state) do
+    conversation = state.opts[:conversation_id]
+
+    with true <- uuid?(id),
+         {:ok, run_id, diff} <- change_or_op_diff(conversation, id),
+         true <- scope.kind != :run or scope.id == run_id do
+      {:ok, diff.text}
+    else
+      _ -> :error
+    end
+  end
+
+  defp change_or_op_diff(conversation, id) do
+    alias SwarmCode.Domain.FeatureCatalog
+
+    case SwarmCode.Domain.Checkpoints.get(id) do
+      %{conversation_id: ^conversation, run_id: run_id} ->
+        with {:ok, diff} <- FeatureCatalog.change_diff(conversation, id), do: {:ok, run_id, diff}
+
+      nil ->
+        with %{run_id: run_id} <- Conversations.get_node(id),
+             {:ok, diff} <- FeatureCatalog.op_diff(conversation, id),
+             do: {:ok, run_id, diff}
+
+      _ ->
+        :error
     end
   end
 
@@ -1737,6 +2776,15 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       "feature" => Atom.to_string(feature),
       "title" => "",
       "text" => "",
+      "conversation_id" => nil
+    }
+
+  defp report_feedback(title, text),
+    do: %{
+      "kind" => "report",
+      "feature" => nil,
+      "title" => preview(title, 200),
+      "text" => if(text == "", do: " ", else: preview(text, 60_000)),
       "conversation_id" => nil
     }
 

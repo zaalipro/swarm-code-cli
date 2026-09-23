@@ -4,7 +4,7 @@ defmodule SwarmCode.CommandsTest do
 
   test "catalogue exposes all builtins" do
     assert Enum.map(Commands.catalogue(), & &1.name) ==
-             ~w(swarm goal plan review effort swarm_effort model swarm_model rewind stop resume workflow workflows create-workflow ultra consensus deep_research attach compact)
+             ~w(swarm goal plan review effort swarm_effort model swarm_model rewind stop workflow workflows create-workflow ultra consensus deep_research attach compact new clear resume resume-run approval trust diff cost search export agents help quit)
   end
 
   test "catalogue ranking" do
@@ -220,7 +220,7 @@ defmodule SwarmCode.CommandsTest do
           {"/review", :review_changes},
           {"/rewind", :select_rewind},
           {"/stop", :stop_all},
-          {"/resume", :resume_last},
+          {"/resume-run", :resume_last},
           {"/workflows", :open_workflows},
           {"/deep_research", :select_research},
           {"/deep_research 12", :attach_research},
@@ -231,8 +231,70 @@ defmodule SwarmCode.CommandsTest do
   end
 
   test "no argument commands reject trailing arguments" do
-    for name <- ~w(plan review rewind stop resume workflows) do
+    for name <-
+          ~w(plan review rewind stop resume-run workflows new clear trust diff cost agents help quit) do
       assert {:error, %{type: :unexpected_argument}} = Commands.parse("/#{name} extra")
+    end
+  end
+
+  describe "pass70 C7 session commands" do
+    test "client-performed commands are flagged in the catalogue and when parsed" do
+      flagged = for %{client: true, name: name} <- Commands.catalogue(), do: name
+      assert Enum.sort(flagged) == ~w(clear diff help new quit resume)
+      assert Commands.client?("new") and not Commands.client?("cost")
+
+      for {text, action} <- [
+            {"/new", :new_conversation},
+            {"/clear", :new_conversation},
+            {"/resume", :select_conversation},
+            {"/diff", :show_changes},
+            {"/help", :help},
+            {"/quit", :quit}
+          ] do
+        assert {:ok, %{kind: :builtin, action: ^action, client: true}} = Commands.parse(text)
+      end
+
+      # Workflows and custom commands are never the client's.
+      assert [%{client: false}] = Commands.catalogue("/nightly", workflows: [%{name: "nightly"}])
+    end
+
+    test "resume with a target needs the service" do
+      assert {:ok, %{action: :open_conversation, conversation: "auth review", client: false}} =
+               Commands.parse("/resume auth review")
+
+      assert {:error, %{type: :invalid_argument}} = Commands.parse("/resume a\u0001b")
+    end
+
+    test "service commands parse their arguments" do
+      assert {:ok, %{action: :show_approval}} = Commands.parse("/approval")
+
+      for {word, mode} <- [{"read-only", :read_only}, {"AUTO", :auto}, {"full", :full_access}] do
+        assert {:ok, %{action: :set_approval, approval_mode: ^mode}} =
+                 Commands.parse("/approval " <> word)
+      end
+
+      assert {:error, %{type: :invalid_argument}} = Commands.parse("/approval yolo")
+      assert {:ok, %{action: :trust_project}} = Commands.parse("/trust")
+      assert {:ok, %{action: :show_cost}} = Commands.parse("/cost")
+      assert {:ok, %{action: :list_agents}} = Commands.parse("/agents")
+      assert {:ok, %{action: :search, query: "parser bug"}} = Commands.parse("/search parser bug")
+      assert {:error, %{type: :missing_argument}} = Commands.parse("/search")
+      assert {:ok, %{action: :export, path: nil}} = Commands.parse("/export")
+      assert {:ok, %{action: :export, path: "notes/t.md"}} = Commands.parse("/export notes/t.md")
+
+      for %{name: name} = item <- Commands.catalogue(),
+          name in ~w(approval trust cost search export agents) do
+        refute item.client
+      end
+    end
+
+    test "the palette finds the session commands by prefix" do
+      assert hd(Commands.catalogue("/ne")).name == "new"
+
+      assert Enum.map(Commands.catalogue("/res"), & &1.name) ==
+               ["resume", "resume-run", "deep_research"]
+
+      assert hd(Commands.catalogue("/q")).name == "quit"
     end
   end
 

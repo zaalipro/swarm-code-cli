@@ -7,6 +7,9 @@ defmodule SwarmCode.Daemon.Service.Connection do
   alias SwarmCode.Protocol.{Frame, FrameDecoder, Message, ServiceHandshake, ServiceRequest}
 
   @limit 32
+  # A client that leaves a frame half written is given this long. Our client
+  # writes each frame in one send, so only a broken peer trips it.
+  @partial_ms 2_000
 
   def start_link(config), do: GenServer.start_link(__MODULE__, config)
 
@@ -70,14 +73,15 @@ defmodule SwarmCode.Daemon.Service.Connection do
           {:error, %{"op" => "error"} = body} ->
             reply(state, message, :error, body)
 
-          {:indeterminate, _reason} ->
-            # The backend call may have reached a mutation before its caller
-            # failed.  Closing lets the client settle the command as unknown.
-            {:stop, :normal, state}
+          {:indeterminate, reason} ->
+            # pass70 C4: the backend call may have reached a mutation before
+            # its caller failed. The request settles as unknown (a command) or
+            # failed (a read); the connection and its watches stay.
+            fail_request(state, message, reason)
 
           _ ->
             # An untyped backend failure proves no particular mutation outcome.
-            {:stop, :normal, state}
+            fail_request(state, message, :untyped)
         end
     end
   end
@@ -112,12 +116,9 @@ defmodule SwarmCode.Daemon.Service.Connection do
             {:stop, :normal, state}
 
           false ->
-            closing(
-              "a watch fell too far behind (#{length(entry.in_flight)} frames, " <>
-                "#{entry.bytes} bytes unacknowledged)"
-            )
-
-            {:stop, :normal, state}
+            # pass70 C4: a slow consumer loses this watch's backlog, never the
+            # connection: the client re-snapshots the watch.
+            {:noreply, require_snapshot(state, ref, "overflow")}
 
           _ ->
             closing("a delta could not be sent")
@@ -129,19 +130,32 @@ defmodule SwarmCode.Daemon.Service.Connection do
     end
   end
 
+  # pass70 C4: the backend dropped a watch's queue (overflow) or its content
+  # changed wholesale (another conversation opened); the client re-snapshots.
   def handle_info({:service_overflow, backend, ref}, %{config: %{backend: backend}} = state) do
-    if Map.has_key?(state.watches, ref), do: {:stop, :normal, state}, else: {:noreply, state}
+    if Map.has_key?(state.watches, ref),
+      do: {:noreply, require_snapshot(state, ref, "overflow", false)},
+      else: {:noreply, state}
+  end
+
+  def handle_info({:service_resync, backend, ref}, %{config: %{backend: backend}} = state) do
+    if Map.has_key?(state.watches, ref),
+      do: {:noreply, require_snapshot(state, ref, "epoch_changed", false)},
+      else: {:noreply, state}
   end
 
   def handle_info({:request_timeout, ref}, state) do
-    case state.requests[ref] do
-      nil ->
+    case Map.pop(state.requests, ref) do
+      {nil, _} ->
         {:noreply, state}
 
-      %{task: task, message: message} ->
+      {%{task: task, message: message}, requests} ->
+        # pass70 C4 (rel F4): one slow request fails alone; the connection
+        # and every other request and watch carry on.
         Task.Supervisor.terminate_child(state.workers, task.pid)
-        closing("a request timed out (#{describe(message)})")
-        {:stop, :normal, state}
+        Process.demonitor(ref, [:flush])
+        Logger.warning("SwarmCode daemon: a request timed out (#{describe(message)})")
+        fail_request(%{state | requests: requests}, message, :deadline)
     end
   end
 
@@ -162,12 +176,15 @@ defmodule SwarmCode.Daemon.Service.Connection do
 
   def handle_info({:DOWN, ref, :process, _, reason}, state)
       when is_map_key(state.requests, ref) do
-    closing(
-      "a request worker died (#{describe(state.requests[ref].message)}): " <>
+    {%{message: message, timer: timer}, requests} = Map.pop(state.requests, ref)
+    Process.cancel_timer(timer)
+
+    Logger.warning(
+      "SwarmCode daemon: a request worker died (#{describe(message)}): " <>
         inspect(reason, limit: 40, printable_limit: 300)
     )
 
-    {:stop, :normal, state}
+    fail_request(%{state | requests: requests}, message, :worker_down)
   end
 
   def handle_info({:tcp_closed, _socket}, state), do: {:stop, :normal, state}
@@ -331,7 +348,17 @@ defmodule SwarmCode.Daemon.Service.Connection do
         :question_answer ->
           :question_answer
 
-        op when op in [:query, :detail, :watch, :conversation_open] ->
+        op
+        when op in [
+               :query,
+               :detail,
+               :watch,
+               :conversation_open,
+               :conversation_list,
+               :conversation_new,
+               :mark_seen,
+               :project_update
+             ] ->
           operation
 
         op when op in [:ack, :unwatch, :resync] ->
@@ -458,6 +485,87 @@ defmodule SwarmCode.Daemon.Service.Connection do
     end
   end
 
+  @messages %{
+    "deadline_expired" => "request deadline has expired",
+    "source_unavailable" => "data source is unavailable"
+  }
+
+  # pass70 C4: settle one request without closing the connection. A command
+  # may have reached its mutation, so it reads `outcome_unknown` (the client
+  # refreshes); a read fails with a typed error. A watch that never became
+  # ready is dropped and its client is told to re-snapshot.
+  defp fail_request(state, %Message{body: body} = message, reason) do
+    operation =
+      case ServiceRequest.decode(body, message.scope) do
+        {:ok, request} -> request.operation
+        _ -> nil
+      end
+
+    code = if reason == :deadline, do: "deadline_expired", else: "source_unavailable"
+
+    cond do
+      # A watch has no reply frame but its snapshot: the client re-watches.
+      operation == :watch ->
+        {:noreply, require_snapshot(state, body["watch_ref"], "overflow")}
+
+      operation in [:query, :detail, :feature_query, :conversation_list, nil] ->
+        {:noreply, error_reply(state, message, code)}
+
+      true ->
+        value = %{
+          "status" => "outcome_unknown",
+          "request_id" => message.request_id,
+          "identifiers" => [],
+          "interaction" => nil,
+          "error" => %{
+            "code" => "source_unavailable",
+            "message" => @messages["source_unavailable"]
+          },
+          "corrective_action" => "refresh"
+        }
+
+        case write(state, %{
+               message
+               | type: :response,
+                 body: %{"op" => "result", "response_kind" => "outcome", "value" => value}
+             }) do
+          :ok -> {:noreply, state}
+          _ -> {:stop, :normal, state}
+        end
+    end
+  end
+
+  defp error_reply(state, message, code) do
+    body = %{"op" => "error", "code" => code, "message" => @messages[code]}
+    _ = write(state, %{message | type: :error, body: body})
+    state
+  end
+
+  # The client re-watches on `snapshot_required`; its backlog here is gone.
+  defp require_snapshot(state, ref, reason, unwatch? \\ true) do
+    case state.watches[ref] do
+      %{scope: scope} = entry ->
+        if unwatch?, do: send(state.config.backend, {:service_unwatch, self(), ref})
+
+        message = %Message{
+          version: 1,
+          type: :snapshot_required,
+          request_id: nil,
+          nonce: state.config.nonce,
+          scope: scope,
+          sequence: Map.get(entry, :sequence, 0) + 1,
+          occurred_at: DateTime.to_iso8601(DateTime.utc_now()),
+          body: %{"op" => "snapshot_required", "watch_ref" => ref, "reason" => reason}
+        }
+
+        _ = write(state, message)
+        %{state | watches: Map.delete(state.watches, ref)}
+
+      _ ->
+        state
+    end
+  end
+
   defp event(scope, nonce, sequence, body),
     do: %Message{
       version: 1,
@@ -491,7 +599,7 @@ defmodule SwarmCode.Daemon.Service.Connection do
 
   defp arm_partial(%{partial_timer: nil} = state, false) do
     token = make_ref()
-    timer = Process.send_after(self(), {:partial_timeout, token}, 2_000)
+    timer = Process.send_after(self(), {:partial_timeout, token}, @partial_ms)
     %{state | partial_timer: {timer, token}}
   end
 

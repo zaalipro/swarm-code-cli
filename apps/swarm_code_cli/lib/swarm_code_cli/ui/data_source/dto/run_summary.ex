@@ -16,7 +16,12 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.RunSummary do
       started_at: nil,
       finished_at: nil,
       consensus: false,
-      error: nil
+      error: nil,
+      stop_reason: nil,
+      error_kind: nil,
+      stop_label: nil,
+      provider_name: nil,
+      retry_at: nil
     ],
     fields: [
       tokens_in: :count,
@@ -31,6 +36,14 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.RunSummary do
       finished_at: {:optional, :count},
       consensus: :boolean,
       error: {:optional, {:text, 200}},
+      # pass70 C1: why the run stopped or failed (`SwarmCode.LLM.Error` kinds
+      # and orchestration stop reasons, as words), the human label for it, the
+      # provider that served `model`, and when a rate-limited request retries.
+      stop_reason: {:optional, {:text, 64}},
+      error_kind: {:optional, {:text, 64}},
+      stop_label: {:optional, {:text, 64}},
+      provider_name: {:optional, {:text, 200}},
+      retry_at: {:optional, :count},
       created_sequence: :revision,
       parent_run_id: {:optional, :id},
       seen_revision: :revision,
@@ -71,6 +84,11 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.RunSummary do
       finished_at: nil,
       consensus: false,
       error: nil,
+      stop_reason: nil,
+      error_kind: nil,
+      stop_label: nil,
+      provider_name: nil,
+      retry_at: nil,
       created_sequence: 0,
       parent_run_id: nil,
       seen_revision: 0,

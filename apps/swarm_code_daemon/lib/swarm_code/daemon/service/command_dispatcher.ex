@@ -7,15 +7,22 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
   alias SwarmCode.Commands
 
   alias SwarmCode.Domain.{
+    Agents,
+    AtomicFile,
     Checkpoints,
     Conversations,
     Engine,
     Attachments,
+    Projects,
     Providers,
+    Repo,
     Research,
     Settings,
     Workflows
   }
+
+  alias SwarmCode.Domain.Conversations.{Conversation, Export, Run}
+  import Ecto.Query, only: [from: 2]
 
   @allowed [:custom, :workflows, :efforts, :swarm_efforts, :attachments, :research_ids]
   @errors [
@@ -44,8 +51,12 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
     :conversation_not_found,
     :invalid_request,
     :ambiguous_run,
-    :unknown_model
+    :unknown_model,
+    :ambiguous_conversation,
+    :client_only
   ]
+  # A report is read in a dialog: bounded like the goal report.
+  @report_bytes 60_000
   @review_prompt "Review the current uncommitted changes: call git_status and git_diff, then " <>
                    "report problems with file:line references ordered by severity, and suggest " <>
                    "concrete fixes. Do not modify files."
@@ -75,7 +86,9 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
             execute(
               conv,
               command,
-              Keyword.put(opts, :resolved_workflows, parser_opts[:workflows])
+              opts
+              |> Keyword.put(:resolved_workflows, parser_opts[:workflows])
+              |> Keyword.put(:resolved_custom, parser_opts[:custom])
             )
             |> normalize_result()
 
@@ -333,10 +346,10 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
   defp execute(conv, %{action: :attach_file} = cmd, opts) do
     path = Path.expand(cmd.path, conv.project.root_path)
 
-    with {:ok, root} <- SwarmCode.Tools.Path.real_path(conv.project.root_path),
+    with {:ok, root} <- SwarmCode.Domain.Tools.Path.real_path(conv.project.root_path),
          true <- length(attachments(opts)) < Attachments.max_per_message(),
-         {:ok, real} <- SwarmCode.Tools.Path.real_path(path),
-         true <- SwarmCode.Tools.Path.confined?(root, real),
+         {:ok, real} <- SwarmCode.Domain.Tools.Path.real_path(path),
+         true <- SwarmCode.Domain.Tools.Path.confined?(root, real),
          mime when mime in ["image/png", "image/jpeg", "image/gif", "image/webp"] <-
            mime_for(real),
          {:ok, binary} <- read_image(root, real),
@@ -406,6 +419,319 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
         run_id: wf.run_id
       })
     end
+  end
+
+  # pass70 C7: the session basics. `/new`, `/clear` and `/resume <which>`
+  # answer `:conversation` — the persisted service switches to it; `/resume`
+  # alone, `/diff` ask the client to navigate; the rest are reports.
+  defp execute(conv, %{action: :new_conversation} = cmd, _) do
+    with {:ok, new} <- Conversations.create(conv.project_id),
+         do: result(conv, cmd.name, :conversation, %{conversation_id: new.id, created: true})
+  end
+
+  defp execute(conv, %{action: :select_conversation} = cmd, _),
+    do: result(conv, cmd.name, :navigate, %{destination: :conversations})
+
+  defp execute(conv, %{action: :open_conversation} = cmd, _) do
+    with {:ok, target} <- find_conversation(conv, cmd.conversation),
+         do: result(conv, cmd.name, :conversation, %{conversation_id: target, created: false})
+  end
+
+  defp execute(conv, %{action: :show_changes} = cmd, _),
+    do: result(conv, cmd.name, :navigate, %{destination: :changes})
+
+  defp execute(conv, %{action: :show_approval} = cmd, _) do
+    project = Projects.get!(conv.project_id)
+    families = Map.get(project, :auto_approve_prefixes) || []
+
+    text =
+      [
+        "Approval mode: " <> mode_words(project.approval_mode),
+        "Trusted: " <> if(Projects.trusted?(project), do: "yes", else: "no"),
+        "",
+        mode_meaning(project.approval_mode),
+        if(families != [],
+          do:
+            "\nAlways allowed: " <>
+              Enum.map_join(Enum.take(families, 50), ", ", &("`" <> &1 <> "`"))
+        ),
+        "\nChange it with /approval read-only, /approval auto or /approval full."
+      ]
+      |> Enum.reject(&is_nil/1)
+      |> Enum.join("\n")
+
+    report(conv, cmd.name, "Approvals", text)
+  end
+
+  defp execute(conv, %{action: :set_approval} = cmd, _) do
+    mode = Atom.to_string(cmd.approval_mode)
+
+    with {:ok, project} <-
+           Projects.update(Projects.get!(conv.project_id), %{approval_mode: mode}),
+         do:
+           result(conv, cmd.name, :project, %{
+             project_id: project.id,
+             text: "Approval mode: " <> mode_words(project.approval_mode)
+           })
+  end
+
+  defp execute(conv, %{action: :trust_project} = cmd, _) do
+    with {:ok, project} <- Projects.trust(Projects.get!(conv.project_id)),
+         do:
+           result(conv, cmd.name, :project, %{
+             project_id: project.id,
+             text: "Project trusted; approval mode " <> mode_words(project.approval_mode)
+           })
+  end
+
+  defp execute(conv, %{action: :show_cost} = cmd, _) do
+    rows =
+      Repo.all(
+        from(r in Run,
+          where: r.conversation_id == ^conv.id,
+          group_by: r.model,
+          order_by: [desc: sum(r.cost_usd)],
+          limit: 50,
+          select: {r.model, count(r.id), sum(r.tokens_in), sum(r.tokens_out), sum(r.cost_usd)}
+        )
+      )
+
+    {runs, tokens_in, tokens_out, cost} =
+      Enum.reduce(rows, {0, 0, 0, 0.0}, fn {_, n, i, o, c}, {rn, ri, ro, rc} ->
+        {rn + n, ri + (i || 0), ro + (o || 0), rc + (c || 0.0)}
+      end)
+
+    lines =
+      Enum.map(rows, fn {model, n, i, o, c} ->
+        "- #{model || "unknown model"}: #{n} run#{if n == 1, do: "", else: "s"}, " <>
+          "#{tokens(i)} in, #{tokens(o)} out, #{usd(c)}"
+      end)
+
+    text =
+      Enum.join(
+        [
+          "#{usd(cost)} for #{runs} run#{if runs == 1, do: "", else: "s"}: " <>
+            "#{tokens(tokens_in)} tokens in, #{tokens(tokens_out)} out."
+          | if(lines == [], do: [], else: ["" | lines])
+        ],
+        "\n"
+      )
+
+    report(conv, cmd.name, "Cost of this conversation", text)
+  end
+
+  defp execute(conv, %{action: :search} = cmd, _) do
+    hits = Conversations.search(cmd.query, limit: 20)
+    ids = Enum.map(hits, & &1.conversation_id)
+
+    projects =
+      Map.new(
+        Repo.all(from(c in Conversation, where: c.id in ^ids, select: {c.id, c.project_id}))
+      )
+
+    here = Enum.filter(hits, &(projects[&1.conversation_id] == conv.project_id))
+    elsewhere = length(hits) - length(here)
+
+    text =
+      case here do
+        [] ->
+          "Nothing in this project's conversations matches “#{cmd.query}”."
+
+        _ ->
+          Enum.map_join(here, "\n\n", fn hit ->
+            "**#{clip(hit.title)}**#{if hit.conversation_id == conv.id, do: " (open)", else: ""}\n" <>
+              clip(hit.snippet) <>
+              "\n/resume " <> String.slice(hit.conversation_id, 0, 8)
+          end)
+      end
+
+    text =
+      if elsewhere > 0,
+        do: text <> "\n\n#{elsewhere} more in other projects.",
+        else: text
+
+    report(conv, cmd.name, "Search: " <> clip(cmd.query), text)
+  end
+
+  defp execute(conv, %{action: :export} = cmd, _) do
+    with {:ok, root, path} <- export_target(conv, cmd.path),
+         :ok <- AtomicFile.replace(root, path, Export.to_markdown(conv.id)) do
+      report(conv, cmd.name, "Exported", "Wrote this conversation to\n" <> path)
+    else
+      {:error, reason} when reason in @errors -> {:error, reason}
+      _ -> {:error, :invalid_argument}
+    end
+  end
+
+  defp execute(conv, %{action: :list_agents} = cmd, _) do
+    definitions = Agents.list(conv.project.root_path) |> Enum.take(100)
+
+    text =
+      case definitions do
+        [] ->
+          "No agent definitions. Add markdown files to .swarm_code/agents/ in the project."
+
+        _ ->
+          Enum.map_join(definitions, "\n", fn agent ->
+            "- **#{clip(agent.name)}** (#{agent.source})" <>
+              if(agent.model, do: " · " <> clip(agent.model), else: "") <>
+              if(agent.description, do: " — " <> clip(agent.description), else: "")
+          end)
+      end
+
+    report(conv, cmd.name, "Agents", text)
+  end
+
+  defp execute(conv, %{action: :help} = cmd, opts) do
+    entries =
+      Commands.catalogue("/",
+        custom: opts[:resolved_custom] || [],
+        workflows: opts[:resolved_workflows] || []
+      )
+
+    text =
+      Enum.map_join(entries, "\n", fn entry ->
+        args = if entry.args in [nil, ""], do: "", else: " " <> entry.args
+        "/#{entry.name}#{args} — #{entry.desc}"
+      end)
+
+    report(conv, cmd.name, "Commands", text)
+  end
+
+  # Leaving is the terminal's to do; a service cannot quit its client.
+  defp execute(_conv, %{action: :quit}, _), do: {:error, :client_only}
+
+  defp report(conv, command, title, text) do
+    text = if byte_size(text) > @report_bytes, do: clip_bytes(text, @report_bytes), else: text
+    result(conv, command, :report, %{title: title, text: text})
+  end
+
+  # Within the open project only: a full id, an id prefix (4+ characters) or
+  # words of a title, newest first.
+  defp find_conversation(conv, target) do
+    needle = String.downcase(String.trim(target))
+
+    candidates =
+      Repo.all(
+        from(c in Conversation,
+          where: c.project_id == ^conv.project_id and is_nil(c.research_id),
+          order_by: [desc: c.updated_at, desc: c.id],
+          limit: 2_000,
+          select: {c.id, c.title}
+        )
+      )
+
+    by_id =
+      Enum.filter(candidates, fn {id, _} ->
+        id == needle or (byte_size(needle) >= 4 and String.starts_with?(id, needle))
+      end)
+
+    matches =
+      if by_id != [],
+        do: by_id,
+        else:
+          Enum.filter(candidates, fn {_, title} ->
+            String.contains?(String.downcase(title || ""), needle)
+          end)
+
+    case matches do
+      [{id, _}] -> {:ok, id}
+      [] -> {:error, :not_found}
+      [{id, title} | rest] -> exact_title(id, title, rest, needle)
+    end
+  end
+
+  defp exact_title(id, title, rest, needle) do
+    exact = Enum.filter([{id, title} | rest], fn {_, t} -> String.downcase(t || "") == needle end)
+
+    case exact do
+      [{id, _}] -> {:ok, id}
+      _ -> {:error, :ambiguous_conversation}
+    end
+  end
+
+  # No file named: `~/Downloads` (or the `:export_dir` setting) when there is
+  # one, else the project root, as `<title>_<date>.md`, never over an existing
+  # file. A named file is inside the project.
+  defp export_target(conv, nil) do
+    downloads =
+      Application.get_env(:swarm_code_daemon, :export_dir) ||
+        if home = System.user_home(), do: Path.join(home, "Downloads")
+
+    root = if downloads && File.dir?(downloads), do: downloads, else: conv.project.root_path
+    {:ok, root, unique(Path.join(root, export_name(conv)))}
+  end
+
+  defp export_target(conv, path) do
+    root = conv.project.root_path
+    expanded = Path.expand(path, root)
+    expanded = if File.dir?(expanded), do: Path.join(expanded, export_name(conv)), else: expanded
+
+    if SwarmCode.Domain.Tools.Path.confined?(root, Path.dirname(expanded)) and
+         Path.extname(expanded) in [".md", ".markdown", ".txt"],
+       do: {:ok, root, unique(expanded)},
+       else: {:error, :invalid_argument}
+  end
+
+  defp export_name(conv) do
+    slug =
+      (conv.title || "untitled")
+      |> String.downcase()
+      |> String.replace(~r/[^\w]+/u, "-")
+      |> String.trim("-")
+      |> String.slice(0, 60)
+
+    "#{if slug == "", do: "conversation", else: slug}_#{Date.to_iso8601(Date.utc_today())}.md"
+  end
+
+  defp unique(path, n \\ 1) do
+    candidate =
+      if n == 1,
+        do: path,
+        else: Path.rootname(path) <> "-#{n}" <> Path.extname(path)
+
+    if File.exists?(candidate) and n < 100, do: unique(path, n + 1), else: candidate
+  end
+
+  defp mode_words("read_only"), do: "read-only"
+  defp mode_words("full_access"), do: "full access"
+  defp mode_words(mode), do: to_string(mode)
+
+  defp mode_meaning("read_only"),
+    do: "Agents read and search; every write and command waits for you."
+
+  defp mode_meaning("auto"),
+    do: "Agents edit files; commands that are not read-only wait for you."
+
+  defp mode_meaning("full_access"),
+    do: "Agents edit and run commands without asking; dangerous commands still wait."
+
+  defp mode_meaning(_), do: ""
+
+  defp tokens(nil), do: "0"
+
+  defp tokens(n) when n >= 1_000_000,
+    do: :erlang.float_to_binary(n / 1_000_000, decimals: 1) <> "M"
+
+  defp tokens(n) when n >= 1_000, do: :erlang.float_to_binary(n / 1_000, decimals: 1) <> "k"
+  defp tokens(n), do: Integer.to_string(n)
+
+  defp usd(nil), do: "$0.00"
+  defp usd(c) when c < 0.01 and c > 0, do: "<$0.01"
+  defp usd(c), do: "$" <> :erlang.float_to_binary(c * 1.0, decimals: 2)
+
+  defp clip_bytes(text, max) do
+    text
+    |> String.graphemes()
+    |> Enum.reduce_while({[], 0}, fn g, {acc, size} ->
+      if size + byte_size(g) <= max - 3,
+        do: {:cont, {[g | acc], size + byte_size(g)}},
+        else: {:halt, {acc, size}}
+    end)
+    |> elem(0)
+    |> Enum.reverse()
+    |> Enum.join()
+    |> Kernel.<>("…")
   end
 
   defp resolve_model(conv, target, arg) do
@@ -553,7 +879,7 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
              true <-
                elem(actual, 2) == :regular and elem(actual, 11) == expected.inode and
                  elem(actual, 9) == expected.major_device,
-             true <- SwarmCode.Tools.Path.confined?(root, path),
+             true <- SwarmCode.Domain.Tools.Path.confined?(root, path),
              {:ok, data} <- :file.read(io, Attachments.max_bytes() + 1),
              true <- byte_size(data) <= Attachments.max_bytes() do
           {:ok, data}

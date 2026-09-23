@@ -7,6 +7,8 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.LibraryItem do
       subtitle: :text,
       status: :text,
       detail: :text,
+      # pass70 C1: grapheme indices of `title` a fuzzy query matched (`files`).
+      matches: {:list, :count},
       form: {:optional, {:dto, SwarmCodeCLI.UI.DataSource.DTO.FeatureForm}},
       actions:
         {:list,
@@ -30,6 +32,15 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.LibraryItem do
             :clear
           ]}}
     ],
-    wire_defaults: [form: nil],
-    defaults: [id: nil, title: "", subtitle: "", status: "", detail: "", form: nil, actions: []]
+    wire_defaults: [form: nil, matches: []],
+    defaults: [
+      id: nil,
+      title: "",
+      subtitle: "",
+      status: "",
+      detail: "",
+      matches: [],
+      form: nil,
+      actions: []
+    ]
 end

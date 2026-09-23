@@ -7,15 +7,21 @@ defmodule SwarmCode.Domain.FeatureCatalog do
   alias SwarmCode.Domain.{
     Checkpoints,
     Conversations,
+    FuzzyMatch,
     Git,
     MCP,
     Memory,
     Projects,
+    Repo,
     Research,
     Scheduled,
     Settings,
     Workflows
   }
+
+  alias SwarmCode.Domain.Checkpoints.Checkpoint
+  alias SwarmCode.Governance.ProvenanceSync.UnifiedDiff
+  import Ecto.Query, only: [from: 2]
 
   alias SwarmCode.Protocol.Scope
 
@@ -315,6 +321,270 @@ defmodule SwarmCode.Domain.FeatureCatalog do
   end
 
   # Query projections are deliberately explicit; never serialize entire schemas.
+  # ------------------------------------------------ pass70 C8: diffs, @path
+
+  @diff_bytes 2_000_000
+  @diff_lines 20_000
+
+  @doc """
+  One checkpoint's change as a unified diff: `{:ok, %{path, text, added,
+  removed, file_state}}` for a checkpoint of `conversation_id`. The before
+  side is what the checkpoint recorded; the after side is the next checkpoint
+  of the same path in the conversation, else the file on disk now (desktop
+  `Checkpoints.run_diff/1`'s rule).
+  """
+  @spec change_diff(binary(), binary()) :: {:ok, map()} | {:error, atom()}
+  def change_diff(conversation_id, checkpoint_id) do
+    with :ok <- uuid(checkpoint_id),
+         %Checkpoint{conversation_id: ^conversation_id} = c <- Checkpoints.get(checkpoint_id),
+         %{} = conversation <- Conversations.get(conversation_id) do
+      root = (Projects.get(conversation.project_id) || %{root_path: nil}).root_path
+      before = if c.restorable, do: c.previous_content
+      after_ = after_content(c)
+      label = relative(c.path, root)
+
+      file_state =
+        cond do
+          not c.restorable -> "unknown"
+          is_nil(before) -> "created"
+          is_nil(after_) -> "deleted"
+          true -> "modified"
+        end
+
+      {:ok, diff_text(label, before, after_, file_state, c.restorable)}
+    else
+      _ -> {:error, :not_found}
+    end
+  end
+
+  @doc "The diffs of the files one op changed (an edit's own checkpoints), joined."
+  @spec op_diff(binary(), binary()) :: {:ok, map()} | {:error, atom()}
+  def op_diff(conversation_id, op_id) do
+    with :ok <- uuid(op_id) do
+      ids =
+        Repo.all(
+          from(c in Checkpoint,
+            where: c.conversation_id == ^conversation_id and c.node_id == ^op_id,
+            order_by: [asc: c.inserted_at, asc: c.id],
+            limit: 20,
+            select: c.id
+          )
+        )
+
+      diffs =
+        Enum.flat_map(ids, fn id ->
+          case change_diff(conversation_id, id) do
+            {:ok, diff} -> [diff]
+            _ -> []
+          end
+        end)
+
+      case diffs do
+        [] ->
+          {:error, :not_found}
+
+        diffs ->
+          {:ok,
+           %{
+             text: Enum.map_join(diffs, "\n", & &1.text),
+             added: sum_counts(diffs, :added),
+             removed: sum_counts(diffs, :removed)
+           }}
+      end
+    end
+  end
+
+  defp sum_counts(diffs, key) do
+    if Enum.all?(diffs, &is_integer(Map.get(&1, key))),
+      do: Enum.sum(Enum.map(diffs, &Map.get(&1, key)))
+  end
+
+  defp diff_text(label, _before, _after, "unknown", false),
+    do: %{
+      path: label,
+      file_state: "unknown",
+      added: nil,
+      removed: nil,
+      text:
+        "--- a/#{label}\n+++ b/#{label}\n" <>
+          "(the content before this change was not recorded: too large or not text)\n"
+    }
+
+  defp diff_text(label, before, after_, file_state, _restorable) do
+    old = before || ""
+    new = after_ || ""
+
+    if byte_size(old) + byte_size(new) > @diff_bytes or
+         line_count(old) + line_count(new) > @diff_lines do
+      %{
+        path: label,
+        file_state: file_state,
+        added: nil,
+        removed: nil,
+        text: "--- a/#{label}\n+++ b/#{label}\n(too large to show as a diff)\n"
+      }
+    else
+      text = UnifiedDiff.diff(old, new, label, label)
+      {added, removed} = diff_counts(text)
+
+      %{
+        path: label,
+        file_state: file_state,
+        added: added,
+        removed: removed,
+        text: if(text == "", do: "--- a/#{label}\n+++ b/#{label}\n(no change)\n", else: text)
+      }
+    end
+  end
+
+  defp line_count(text), do: length(:binary.matches(text, "\n"))
+
+  defp diff_counts(text) do
+    text
+    |> String.split("\n")
+    |> Enum.reduce({0, 0}, fn
+      "+++" <> _, acc -> acc
+      "---" <> _, acc -> acc
+      "+" <> _, {a, r} -> {a + 1, r}
+      "-" <> _, {a, r} -> {a, r + 1}
+      _, acc -> acc
+    end)
+  end
+
+  defp after_content(c) do
+    next =
+      Repo.one(
+        from(x in Checkpoint,
+          where:
+            x.conversation_id == ^c.conversation_id and x.path == ^c.path and
+              x.inserted_at > ^c.inserted_at and x.restorable == true,
+          order_by: [asc: x.inserted_at, asc: x.id],
+          limit: 1,
+          select: {x.previous_content}
+        )
+      )
+
+    case next do
+      {content} -> content
+      nil -> disk_content(c.path)
+    end
+  end
+
+  defp disk_content(path) do
+    with {:ok, %{type: :regular, size: size}} when size <= @diff_bytes <- File.lstat(path),
+         {:ok, content} <- File.read(path),
+         true <- String.valid?(content) do
+      content
+    else
+      _ -> nil
+    end
+  end
+
+  defp relative(path, root) when is_binary(path) and is_binary(root) do
+    base = String.trim_trailing(root, "/") <> "/"
+    if String.starts_with?(path, base), do: Path.relative_to(path, root), else: path
+  end
+
+  defp relative(path, _root), do: to_string(path)
+
+  @files_max 50_000
+
+  @doc """
+  The project's files for `@path` completion: relative paths of the confined,
+  `.gitignore`-aware walk (desktop spec 70 E5), at most #{@files_max}, and
+  whether the walk had more.
+  """
+  @spec file_index(binary()) :: {[binary()], boolean()}
+  def file_index(root) do
+    {kept, rest} =
+      root
+      |> SwarmCode.Domain.Tools.Path.walk(".", dot: false)
+      |> Enum.split(@files_max)
+
+    {Enum.map(kept, &Path.relative_to(&1, root)), rest != []}
+  end
+
+  @doc """
+  The `limit` best paths for `query` (`SwarmCode.Domain.FuzzyMatch`), each
+  with the grapheme indices it matched; no query lists the shallowest first.
+  """
+  @spec file_matches([binary()], binary() | nil, pos_integer()) :: [map()]
+  def file_matches(paths, query, limit) when query in [nil, ""] do
+    paths
+    |> Enum.sort_by(&{length(Path.split(&1)), &1})
+    |> Enum.take(limit)
+    |> Enum.map(&file_item(&1, []))
+  end
+
+  def file_matches(paths, query, limit) do
+    paths
+    |> Enum.flat_map(fn path ->
+      case FuzzyMatch.score(path, query) do
+        {:match, score} -> [{path, score}]
+        :no_match -> []
+      end
+    end)
+    |> Enum.sort_by(fn {path, score} -> {-score, byte_size(path), path} end)
+    |> Enum.take(limit)
+    |> Enum.map(fn {path, _} -> file_item(path, matched(path, query)) end)
+  end
+
+  defp file_item(path, matches),
+    do: %{
+      id: clip(path, 256),
+      title: clip(path, 256),
+      subtitle: clip(Path.dirname(path), 512),
+      status: "file",
+      detail: "",
+      actions: [],
+      form: nil,
+      matches: Enum.filter(matches, &(&1 < 256))
+    }
+
+  # What to highlight, in graphemes: the query as one piece when the path
+  # has it (in the file name first), else the leftmost walk
+  # `FuzzyMatch.score/2` takes.
+  defp matched(path, query) do
+    wanted = query |> String.downcase() |> String.graphemes()
+    graphemes = path |> String.downcase() |> String.graphemes()
+    base = length(graphemes) - length(String.graphemes(Path.basename(path)))
+
+    case contiguous(graphemes, wanted, base) || contiguous(graphemes, wanted, 0) do
+      nil -> leftmost(path, wanted)
+      start -> Enum.to_list(start..(start + length(wanted) - 1))
+    end
+  end
+
+  defp contiguous(graphemes, wanted, from) do
+    n = length(wanted)
+
+    graphemes
+    |> Enum.drop(from)
+    |> Enum.chunk_every(n, 1, :discard)
+    |> Enum.find_index(&(&1 == wanted))
+    |> case do
+      nil -> nil
+      i -> from + i
+    end
+  end
+
+  defp leftmost(path, wanted) do
+    path
+    |> String.graphemes()
+    |> Enum.with_index()
+    |> Enum.reduce_while({wanted, []}, fn
+      _, {[], acc} ->
+        {:halt, {[], acc}}
+
+      {g, i}, {[q | rest], acc} ->
+        if String.downcase(g) == q,
+          do: {:cont, {rest, [i | acc]}},
+          else: {:cont, {[q | rest], acc}}
+    end)
+    |> elem(1)
+    |> Enum.reverse()
+  end
+
   defp query_rows(:workflows, ctx, _opts) do
     definitions =
       Enum.map(Workflows.list(ctx.project), fn w ->
@@ -454,6 +724,58 @@ defmodule SwarmCode.Domain.FeatureCatalog do
 
   defp query_rows(:changes, %{project: nil}, _), do: {:error, :invalid_scope}
 
+  # pass70 C8 (ux 2.5): in a conversation (or one of its runs) Changes are the
+  # files its runs changed, from their checkpoints, newest first, each with
+  # its unified diff when it is the one asked for. The project's Git tree is
+  # what the project scope shows.
+  defp query_rows(:changes, %{conversation: %{id: conversation_id}} = ctx, opts) do
+    rows =
+      Repo.all(
+        from(c in Checkpoint,
+          join: r in SwarmCode.Domain.Conversations.Run,
+          on: r.id == c.run_id,
+          where: c.conversation_id == ^conversation_id,
+          order_by: [desc: c.inserted_at, desc: c.id],
+          limit: 200,
+          select: %{
+            id: c.id,
+            run_id: c.run_id,
+            node_id: c.node_id,
+            path: c.path,
+            restorable: c.restorable,
+            prior: not is_nil(c.previous_content),
+            prompt: fragment("substr(coalesce(?, ?, ''), 1, 120)", r.label, r.prompt)
+          }
+        )
+      )
+
+    rows = if ctx.run_id, do: Enum.filter(rows, &(&1.run_id == ctx.run_id)), else: rows
+    root = ctx.project.root_path
+
+    {:ok,
+     Enum.map(rows, fn c ->
+       detail =
+         if opts[:id] == c.id do
+           case change_diff(conversation_id, c.id) do
+             {:ok, diff} -> diff.text
+             _ -> ""
+           end
+         else
+           ""
+         end
+
+       %{
+         id: c.id,
+         title: clip(relative(c.path, root), 256),
+         subtitle: clip(c.prompt || "", 512),
+         status: if(c.restorable and not c.prior, do: "created", else: "changed"),
+         detail: clip(detail, 60_000),
+         actions: [:restore],
+         form: nil
+       }
+     end)}
+  end
+
   defp query_rows(:changes, ctx, opts) do
     with :ok <- git_root(ctx.project.root_path) do
       {:ok,
@@ -537,7 +859,9 @@ defmodule SwarmCode.Domain.FeatureCatalog do
 
   defp feature_scope(_, _), do: :ok
 
-  defp empty_context, do: %{project: nil, conversation: nil, research_id: nil, schedule_id: nil}
+  defp empty_context,
+    do: %{project: nil, conversation: nil, research_id: nil, schedule_id: nil, run_id: nil}
+
   defp scope_context(%{kind: :global, id: nil}), do: {:ok, empty_context()}
 
   defp scope_context(%{kind: :project, id: id}) do
@@ -551,7 +875,8 @@ defmodule SwarmCode.Domain.FeatureCatalog do
 
   defp scope_context(%{kind: kind, id: id}) when kind in [:run, :workflow] do
     with {:ok, r} <- fetch_uuid(id, &Conversations.get_run/1),
-         do: scope_context(%{kind: :conversation, id: r.conversation_id})
+         {:ok, ctx} <- scope_context(%{kind: :conversation, id: r.conversation_id}),
+         do: {:ok, %{ctx | run_id: r.id}}
   end
 
   defp scope_context(%{kind: :research, id: id}) do
@@ -1039,7 +1364,7 @@ defmodule SwarmCode.Domain.FeatureCatalog do
   defp description(:schedules), do: "Scheduled tasks"
   defp description(:settings), do: "Application defaults"
   defp description(:usage), do: "Recorded token usage and cost"
-  defp description(:changes), do: "Project Git changes"
+  defp description(:changes), do: "Files changed, with their diffs"
   defp description(:checkpoints), do: "Conversation file checkpoints"
   defp description(:mcp), do: "MCP server metadata"
   defp description(:memory), do: "Project and global memory files"

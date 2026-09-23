@@ -15,7 +15,13 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.AgentSummary do
       parent_id: nil,
       depth: 0,
       changes_stat: nil,
-      error: nil
+      error: nil,
+      model: nil,
+      provider_name: nil,
+      stop_reason: nil,
+      error_kind: nil,
+      stop_label: nil,
+      retry_at: nil
     ],
     fields: [
       name: {:text, 200},
@@ -32,6 +38,14 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.AgentSummary do
       depth: :count,
       changes_stat: {:optional, {:text, 200}},
       error: {:optional, {:text, 200}},
+      # pass70 C1: the agent's own model and provider, why it stopped, and
+      # when a rate-limited request of it retries (unix ms).
+      model: {:optional, {:text, 200}},
+      provider_name: {:optional, {:text, 200}},
+      stop_reason: {:optional, {:text, 64}},
+      error_kind: {:optional, {:text, 64}},
+      stop_label: {:optional, {:text, 64}},
+      retry_at: {:optional, :count},
       id: :id,
       run_id: :id,
       revision: :revision,
@@ -69,6 +83,12 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.AgentSummary do
       depth: 0,
       changes_stat: nil,
       error: nil,
+      model: nil,
+      provider_name: nil,
+      stop_reason: nil,
+      error_kind: nil,
+      stop_label: nil,
+      retry_at: nil,
       id: nil,
       run_id: nil,
       revision: 0,

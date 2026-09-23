@@ -203,7 +203,11 @@ defmodule SwarmCode.Daemon.Service.WireContractTest do
              "finished_at" => DateTime.to_unix(c.t1, :millisecond) + 400,
              "duration_ms" => 400,
              "result_bytes" => byte_size("lib/a.ex:1\nlib/b.ex:2\nlib/c.ex:3"),
-             "files" => []
+             "files" => [],
+             # pass70 C8: a grep changes no file.
+             "added" => nil,
+             "removed" => nil,
+             "diff_ref" => nil
            }
 
     edit = items[c.edit.id]
@@ -320,7 +324,14 @@ defmodule SwarmCode.Daemon.Service.WireContractTest do
              "path" => "lib/x.ex",
              "restorable" => true,
              "at" => DateTime.to_unix(c.worktree_checkpoint.inserted_at, :millisecond),
-             "revision" => DateTime.to_unix(c.worktree_checkpoint.inserted_at, :microsecond)
+             "revision" => DateTime.to_unix(c.worktree_checkpoint.inserted_at, :microsecond),
+             # pass70 C8: the edit that made it; the run is still running, so
+             # its counts and diff wait.
+             "op_id" => c.edit.id,
+             "file_state" => "unknown",
+             "added" => nil,
+             "removed" => nil,
+             "diff_ref" => nil
            }
 
     assert project_change["id"] == c.project_checkpoint.id
@@ -631,16 +642,16 @@ defmodule SwarmCode.Daemon.Service.WireContractTest do
   defp checkpoint!(c, node_id, path, restorable) do
     Process.sleep(2)
 
-    %Checkpoint{}
+    # The ownership ids come from trusted context, not the cast (desktop spec
+    # 68 T3, synced in pass 70).
+    %Checkpoint{conversation_id: c.run.conversation_id, run_id: c.run.id, node_id: node_id}
     |> Checkpoint.changeset(%{
-      conversation_id: c.run.conversation_id,
-      run_id: c.run.id,
-      node_id: node_id,
       path: path,
       previous_content: "before",
       restorable: restorable,
       inserted_at: DateTime.utc_now() |> DateTime.truncate(:microsecond)
     })
+    |> Checkpoint.validate()
     |> Repo.insert!()
   end
 

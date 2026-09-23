@@ -161,7 +161,70 @@ defmodule SwarmCode.Daemon.Service.ListenerTest do
     send(backend, :done)
   end
 
-  test "backend timeout closes without reporting a definite rejection", %{path: path} do
+  # pass70 C4 (rel F4): a consumer that falls behind loses the watch's backlog,
+  # not the connection — the client is told to re-snapshot that watch.
+  test "a watch that falls behind or overflows asks for a snapshot and keeps the connection",
+       %{path: path} do
+    owner = self()
+    backend = spawn_link(fn -> watch_backend(owner, nil) end)
+
+    start_supervised!(
+      {Service, socket_path: path, nonce: @nonce, source_epoch: @epoch, backend: backend}
+    )
+
+    {:ok, socket} = connect(path)
+    send_frame(socket, hello(@nonce))
+    assert %Message{type: :hello_ok} = receive_frame(socket)
+
+    watch = fn ref ->
+      %{
+        query()
+        | request_id: Ecto.UUID.generate(),
+          body: %{
+            "op" => "watch",
+            "watch_ref" => ref,
+            "slot" => "shell",
+            "page_size" => 20,
+            "byte_limit" => 65536,
+            "timeout_ms" => 1000
+          }
+      }
+    end
+
+    send_frame(socket, watch.("test-watch"))
+    assert %Message{type: :event, body: %{"op" => "watch_ready"}} = receive_frame(socket)
+    assert_receive {:registered, _connection}, 1000
+
+    # Sixteen unacknowledged deltas are in flight; the seventeenth overflows.
+    for _ <- 1..17, do: send(backend, :emit)
+    for _ <- 1..16, do: assert(%Message{type: :event} = receive_frame(socket))
+
+    assert %Message{
+             type: :snapshot_required,
+             body: %{
+               "op" => "snapshot_required",
+               "watch_ref" => "test-watch",
+               "reason" => "overflow"
+             }
+           } = receive_frame(socket)
+
+    assert_receive {:unwatched, _}, 1000
+
+    # The connection is alive: a fresh watch on a fresh reference works, and a
+    # backend-side overflow of it asks for a snapshot again.
+    send_frame(socket, watch.("test-watch-2"))
+    assert %Message{type: :event, body: %{"op" => "watch_ready"}} = receive_frame(socket)
+    send(backend, {:overflow, "test-watch-2"})
+
+    assert %Message{type: :snapshot_required, body: %{"reason" => "overflow"}} =
+             receive_frame(socket)
+
+    send(backend, :done)
+  end
+
+  # pass70 C4 (rel F4): one slow request fails alone; the connection stays.
+  test "a backend timeout fails that read with deadline_expired and keeps the connection",
+       %{path: path} do
     start_supervised!(
       {Service, socket_path: path, nonce: @nonce, source_epoch: @epoch, backend: self()}
     )
@@ -173,8 +236,17 @@ defmodule SwarmCode.Daemon.Service.ListenerTest do
     send_frame(socket, request)
     assert_receive {:"$gen_call", {worker, _}, {:service_request, _, _, _}}, 1000
     monitor = Process.monitor(worker)
-    assert {:error, :closed} = :gen_tcp.recv(socket, 1, 2000)
+
+    assert %Message{type: :error, body: %{"code" => "deadline_expired"}} =
+             receive_frame(socket)
+
     assert_receive {:DOWN, ^monitor, :process, ^worker, _}, 1000
+
+    # The same connection still serves the next request.
+    send_frame(socket, %{query() | request_id: "33333333-3333-4333-8333-333333333333"})
+    assert_receive {:"$gen_call", from, {:service_request, _, _, _}}, 1000
+    GenServer.reply(from, {:error, %{"op" => "error", "code" => "not_allowed", "message" => "x"}})
+    assert %Message{type: :error} = receive_frame(socket)
   end
 
   test "untyped backend command failure never reports rejection", %{path: path} do
@@ -202,7 +274,18 @@ defmodule SwarmCode.Daemon.Service.ListenerTest do
     send_frame(socket, command)
     assert_receive {:"$gen_call", from, {:service_request, _, _, _}}, 1000
     GenServer.reply(from, {:error, :backend_unavailable})
-    assert {:error, :closed} = :gen_tcp.recv(socket, 1, 1000)
+
+    # pass70 C4: the command may have run; it settles as unknown, never as a
+    # rejection, and the connection stays.
+    assert %Message{
+             type: :response,
+             body: %{
+               "response_kind" => "outcome",
+               "value" => %{"status" => "outcome_unknown", "corrective_action" => "refresh"}
+             }
+           } = receive_frame(socket)
+
+    assert {:error, :timeout} = :gen_tcp.recv(socket, 1, 50)
   end
 
   test "unwatch while snapshot is pending does not resurrect a watch", %{path: path} do
@@ -313,6 +396,10 @@ defmodule SwarmCode.Daemon.Service.ListenerTest do
           {:service_delta, self(), "test-watch", %{"kind" => "counts_update", "revision" => 5}}
         )
 
+        watch_backend(owner, connection)
+
+      {:overflow, ref} ->
+        send(connection, {:service_overflow, self(), ref})
         watch_backend(owner, connection)
 
       {:service_credit, conn, "test-watch", 5} ->

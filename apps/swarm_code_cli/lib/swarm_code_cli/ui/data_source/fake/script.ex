@@ -6,7 +6,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
   alias SwarmCode.Protocol.JsonLimits
   alias SwarmCodeCLI.UI.DataSource.{AdmissionError, Delta, DTO, Request}
   alias DTO.Schema
-  alias SwarmCodeCLI.UI.DataSource.Fake.{Compose, Details}
+  alias SwarmCodeCLI.UI.DataSource.Fake.{Compose, Details, Session}
 
   @clock "2026-09-03T12:00:00Z"
   @clock_ms 1_788_436_800_000
@@ -65,7 +65,10 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
             completed: [],
             details: %{},
             commands: %{},
-            conversation_seen: %{}
+            conversation_seen: %{},
+            # pass70 C1: the session-level facts (conversation list, project
+            # approval mode and trust, diffs, background commands, rate limits).
+            session: nil
 
   @type t :: %__MODULE__{
           clock: binary(),
@@ -83,7 +86,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
           completed: [binary()],
           details: map(),
           commands: map(),
-          conversation_seen: %{binary() => non_neg_integer()}
+          conversation_seen: %{binary() => non_neg_integer()},
+          session: Session.t() | nil
         }
   @type snapshot :: t()
   def id(key), do: Map.fetch!(@ids, key)
@@ -147,7 +151,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
           activity: Map.new(Map.values(runs), fn run -> {run.id, activity(run)} end),
           agents: Map.new(hive_agents(), &{&1.id, &1}),
           changes: Map.new(hive_changes(), &{&1.id, &1}),
-          verdicts: Map.new([hive_verdict()], &{&1.id, &1})
+          verdicts: Map.new([hive_verdict()], &{&1.id, &1}),
+          session: Session.initial(@clock_ms, @ids)
       })
     else
       _ -> {:error, AdmissionError.new(:invalid_fixture)}
@@ -210,7 +215,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
         ) and Schema.valid?({:list, {:dto, DTO.StatusEntry}}, script.statuses) and
         Schema.bounded_list?(script.completed, length(@barriers), &(&1 in @barriers)) and
         Enum.uniq(script.completed) == script.completed and canonical_references?(script) and
-        supported_permissions?(script) and canonical_extensions?(script)
+        supported_permissions?(script) and canonical_extensions?(script) and
+        (is_nil(script.session) or Session.valid?(script.session))
 
     if valid, do: {:ok, script}, else: {:error, AdmissionError.new(:invalid_fixture)}
   end
@@ -248,7 +254,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
       Enum.all?(script.conversation_seen, fn {id, revision} ->
         Schema.valid?(:id, id) and Schema.valid?(:revision, revision) and
           revision <= conversation_revision(script, id) and
-          Enum.any?(script.runs, fn {_, run} -> run.conversation_id == id end)
+          (Enum.any?(script.runs, fn {_, run} -> run.conversation_id == id end) or
+             Session.conversation?(script, id))
       end) and
       Enum.all?(script.transcript, fn {_, item} ->
         is_nil(item.detail_ref) or
@@ -277,9 +284,10 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
   end
 
   def workspace_actions(script, %{kind: :conversation, id: id}) do
-    if Enum.any?(script.runs, fn {_, run} -> run.conversation_id == id end),
-      do: [:send, :queue, :mark_seen],
-      else: []
+    if Enum.any?(script.runs, fn {_, run} -> run.conversation_id == id end) or
+         Session.conversation?(script, id),
+       do: [:send, :queue, :mark_seen],
+       else: []
   end
 
   def workspace_actions(_, _), do: []
@@ -473,6 +481,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
       question(:approval, :a1, :node_a1, 11, :normal, @clock_ms + 120_000)
       | kind: :approval,
         question: nil,
+        approval: Session.approval(@clock_ms),
         allowed_actions: [:approve, :deny, :always_allow]
     }
 
@@ -704,6 +713,16 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
         activity: Map.put(script.activity, interaction.id, interaction_activity(interaction))
     }
 
+  defp apply_delta(%Delta{kind: kind} = delta, script)
+       when kind in [
+              :toast,
+              :rate_limit,
+              :background_upsert,
+              :background_remove,
+              :workspace_metadata
+            ],
+       do: Session.apply_delta(delta, script)
+
   defp apply_delta(%Delta{kind: :interaction_remove, entity_id: id}, script) do
     interaction = %{Map.fetch!(script.interactions, id) | state: :resolved, allowed_actions: []}
 
@@ -757,7 +776,15 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
   end
 
   defp command_new(script, request, fingerprint) do
-    with {:ok, prepared, deltas, identifiers} <- prepare_command(script, request) do
+    # pass70 C7: a slash command may answer with feedback (a report, a
+    # navigation) beside its identifiers.
+    prepared =
+      case prepare_command(script, request) do
+        {:ok, prepared, deltas, identifiers} -> {:ok, prepared, deltas, identifiers, nil}
+        other -> other
+      end
+
+    with {:ok, prepared, deltas, identifiers, feedback} <- prepared do
       case apply_deltas(prepared, deltas) do
         {:error, _} = error ->
           error
@@ -766,7 +793,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
           outcome = %DTO.Outcome{
             status: :accepted,
             request_id: request.request_id,
-            identifiers: identifiers
+            identifiers: identifiers,
+            feedback: feedback
           }
 
           next = %{
@@ -790,6 +818,10 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
   defp prepare_command(script, %{kind: kind} = request)
        when elem(kind, 0) in [:dispatch, :steer, :mark_seen],
        do: Compose.prepare(script, request)
+
+  defp prepare_command(script, %{kind: kind} = request)
+       when elem(kind, 0) in [:conversation_new, :conversation_open, :project_update],
+       do: Session.prepare(script, request)
 
   defp prepare_command(script, request) do
     with :ok <- scope_allows(script, request),
@@ -921,7 +953,9 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
 
   defp command_deltas(script, {:resolve_approval, run_id, node_id, id, revision, decision}) do
     with {:ok, q} <- interaction(script, :approval, run_id, node_id, id, revision, decision),
-         do: resolve_interaction(script, q)
+         {:ok, deltas, identifiers} <- resolve_interaction(script, q) do
+      {:ok, deltas ++ Session.decision_facts(script, q, decision), identifiers}
+    end
   end
 
   defp command_deltas(_, _), do: {:error, :not_allowed}
@@ -978,6 +1012,12 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
       :error -> {:error, :invalid_origin}
     end
   end
+
+  # pass70 C1: the widened approval decisions are offered by the approval's own
+  # `allowed_decisions`; the legacy three by `allowed_actions`.
+  defp permission(%DTO.PendingInteraction{approval: %DTO.Approval{} = approval}, action)
+       when action in [:approve_run, :always_prefix, :deny_stop],
+       do: condition(action in approval.allowed_decisions, :not_allowed)
 
   defp permission(item, action), do: condition(action in item.allowed_actions, :not_allowed)
   defp cas(actual, expected), do: condition(actual == expected, :stale_revision)
@@ -1052,6 +1092,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
       agent(:lead, base,
         name: "lead",
         role: :lead,
+        model: "kimi-k2-thinking",
+        provider_name: "llmotions",
         title: "Coordinate the authentication review",
         step: "planning",
         progress: 35,
@@ -1086,6 +1128,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
       agent(:builder_4, base,
         name: "builder-4",
         role: :worker,
+        model: "deepseek-v4-flash",
+        provider_name: "llmotions",
         title: "Harden the token refresh path",
         step: "edit lib/swarm_code/repo.ex",
         progress: 40,
@@ -1133,15 +1177,19 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
   end
 
   defp change(key, agent_id, path, restorable, at, revision),
-    do: %DTO.Change{
-      id: id(key),
-      run_id: id(:a2),
-      agent_id: agent_id,
-      path: path,
-      restorable: restorable,
-      at: at,
-      revision: revision
-    }
+    do:
+      struct!(
+        %DTO.Change{
+          id: id(key),
+          run_id: id(:a2),
+          agent_id: agent_id,
+          path: path,
+          restorable: restorable,
+          at: at,
+          revision: revision
+        },
+        Session.change_facts(id(key), path)
+      )
 
   defp hive_verdict do
     %DTO.Verdict{
@@ -1237,7 +1285,10 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
           finished_at: @clock_ms - 44_100,
           duration_ms: 900,
           result_bytes: 512,
-          files: ["lib/swarm_code/repo.ex"]
+          files: ["lib/swarm_code/repo.ex"],
+          added: 42,
+          removed: 7,
+          diff_ref: Session.diff_ref(id(:node_tool_3))
         },
         "Replaced the refresh guard with an expiry check.",
         at: @clock_ms - 45_000,

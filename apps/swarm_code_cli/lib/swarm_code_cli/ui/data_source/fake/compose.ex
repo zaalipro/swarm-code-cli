@@ -6,6 +6,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Compose do
   def prepare(script, %{kind: {:dispatch, operation, text, target, attachments}} = request) do
     with {:ok, conversation} <- conversation(script, request.scope),
          :ok <- draft_origin(request.origin, conversation),
+         nil <- SwarmCodeCLI.UI.DataSource.Fake.Session.slash(script, request),
          true <- operation in Script.workspace_actions(script, request.scope),
          {:ok, parent, target_kind, target_id} <- target(script, target, conversation) do
       run_id = id(request.request_id, "run")
@@ -128,9 +129,10 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Compose do
     do: if(:mark_seen in item.allowed_actions, do: :ok, else: {:error, :not_allowed})
 
   defp conversation(script, %{kind: :conversation, id: id}) do
-    if Enum.any?(script.runs, fn {_, run} -> run.conversation_id == id end),
-      do: {:ok, id},
-      else: {:error, :invalid_origin}
+    if Enum.any?(script.runs, fn {_, run} -> run.conversation_id == id end) or
+         SwarmCodeCLI.UI.DataSource.Fake.Session.conversation?(script, id),
+       do: {:ok, id},
+       else: {:error, :invalid_origin}
   end
 
   defp conversation(_, _), do: {:error, :invalid_origin}
