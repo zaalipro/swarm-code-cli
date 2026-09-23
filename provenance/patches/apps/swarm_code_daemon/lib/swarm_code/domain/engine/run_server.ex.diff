@@ -1,0 +1,131 @@
+# CLI-local change to lib/swarm_code/engine/run_server.ex at 6dd8d82, after the rewrite
+# rules of provenance/sync-rules.json. Recorded by mix swarm_code.provenance.sync.
+--- a/apps/swarm_code_daemon/lib/swarm_code/domain/engine/run_server.ex
++++ b/apps/swarm_code_daemon/lib/swarm_code/domain/engine/run_server.ex
+@@ -177,11 +177,48 @@
+   def consensus_round(run_id, stage),
+     do: GenServer.call(via(run_id), {:consensus_round, stage}, :infinity)
+ 
++  @doc "Answers one indexed pending question, completing the ask when all are answered."
++  @spec answer_question(
++          String.t(),
++          String.t(),
++          non_neg_integer(),
++          [non_neg_integer()],
++          String.t()
++        ) :: :ok | {:error, :not_running | :stale_question | :invalid_answer}
++  def answer_question(run_id, node_id, index, option_indices, custom \\ "") do
++    try do
++      GenServer.call(
++        via(run_id),
++        {:answer_question, node_id, index, option_indices, custom},
++        30_000
++      )
++    catch
++      :exit, _ -> {:error, :not_running}
++    end
++  end
++
+   @doc "Answers the pending questions of `node_id` (one entry per question)."
+   @spec answer(String.t(), String.t(), [map()]) :: :ok
+   def answer(run_id, node_id, answers),
+     do: GenServer.cast(via(run_id), {:answer, node_id, answers})
+ 
++  @doc """
++  Returns a bounded, transport-safe projection of interactions waiting in this run.
++  A stopped or unknown run returns an empty projection; process internals (pids,
++  callers, timers and credentials) are never included.
++  """
++  @spec pending_interactions(String.t()) :: [map()]
++  def pending_interactions(run_id) when is_binary(run_id) do
++    case GenServer.call(via(run_id), :pending_interactions, 250) do
++      rows when is_list(rows) -> rows
++      _ -> []
++    end
++  catch
++    :exit, _ -> []
++  end
++
++  def pending_interactions(_), do: []
++
+   @doc "The questions waiting for an answer in this run, or `[]`."
+   @spec pending_questions(String.t()) :: [{String.t(), [map()]}]
+   # Spec 43 §1.4: its own call — `get_state/1` copied the whole run (nodes,
+@@ -863,7 +900,8 @@
+           from: from,
+           timer: timer,
+           permission: permission,
+-          safety: safety
++          safety: safety,
++          requested_at: DateTime.utc_now()
+         })
+         # spec 66 T3: the card used to render the node title alone — "run: " and
+         # 60 characters of the command — and `detail` said "awaiting approval".
+@@ -899,7 +937,13 @@
+ 
+     state =
+       state
+-      |> put_in([:questions, node_id], %{from: from, timer: timer, questions: questions})
++      |> put_in([:questions, node_id], %{
++        from: from,
++        timer: timer,
++        questions: questions,
++        answers: %{},
++        requested_at: DateTime.utc_now()
++      })
+       |> put_node(node_id, %{status: "awaiting_answer", detail: first})
+ 
+     SwarmCode.Domain.Engine.Questions.put(state.conversation.id, state.run.id, node_id)
+@@ -1425,6 +1469,52 @@
+ 
+   def handle_call(:get_state, _from, state), do: {:reply, state, state}
+ 
++  def handle_call(:pending_interactions, _from, state) do
++    rows =
++      SwarmCode.Domain.Engine.PendingInteractions.rows(
++        state.approvals,
++        state.questions,
++        state.nodes,
++        # the fixture states of the unit tests carry no project
++        Map.get(Map.get(state, :project) || %{}, :root_path)
++      )
++
++    {:reply, rows, state}
++  end
++
++  def handle_call({:answer_question, node_id, index, option_indices, custom}, _from, state) do
++    with {:ok, entry} <-
++           SwarmCode.Domain.Engine.PendingInteractions.pending_question_entry(
++             state.questions,
++             node_id,
++             index
++           ),
++         {:ok, answer} <-
++           SwarmCode.Domain.Engine.PendingInteractions.validated_answer(
++             entry.questions,
++             index,
++             option_indices,
++             custom
++           ) do
++      answers = Map.put(Map.get(entry, :answers, %{}), index, answer)
++      entry = Map.put(entry, :answers, answers)
++
++      if map_size(answers) == length(entry.questions) do
++        ordered = Enum.map(0..(length(entry.questions) - 1), &Map.fetch!(answers, &1))
++        # Keep the same reply, timer, node, ETS, event and flush behavior as the
++        # existing answer cast. That path owns final interaction settlement.
++        {:noreply, next} = handle_cast({:answer, node_id, ordered}, state)
++        {:reply, :ok, next}
++      else
++        next = put_in(state.questions[node_id], entry)
++        Events.broadcast(state.conversation.id, {:waiting_changed})
++        {:reply, :ok, next}
++      end
++    else
++      error -> {:reply, error, state}
++    end
++  end
++
+   def handle_call(:pending_questions, _from, state) do
+     {:reply, Enum.map(state.questions, fn {node_id, %{questions: qs}} -> {node_id, qs} end),
+      state}

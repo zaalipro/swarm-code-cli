@@ -400,6 +400,9 @@ defmodule SwarmCode.Daemon.Schema.ManifestGenerator do
       SELECT sql
       FROM sqlite_schema
       WHERE name NOT LIKE 'sqlite_%' AND sql IS NOT NULL
+        -- FTS5 creates its shadow tables itself when the virtual table is
+        -- created; replaying their DDL would fail with "already exists".
+        AND name NOT IN (SELECT name FROM pragma_table_list WHERE type = 'shadow')
       ORDER BY
         CASE type
           WHEN 'table' THEN 0

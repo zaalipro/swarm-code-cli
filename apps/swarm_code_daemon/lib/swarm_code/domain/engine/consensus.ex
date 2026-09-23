@@ -891,12 +891,18 @@ defmodule SwarmCode.Domain.Engine.Consensus do
     end
   end
 
+  # spec 73 T36: one capturing pass reduced to `{done, total}` — this runs on
+  # every 100 ms flush while the implementer writes, and two full scans that
+  # each built a match list only to take its length were the wrong shape.
   defp count_tasks(path) do
     case File.read(path) do
       {:ok, text} ->
-        done = length(Regex.scan(~r/^\s*[-*] \[[xX]\]/m, text))
-        open = length(Regex.scan(~r/^\s*[-*] \[ \]/m, text))
-        {done, done + open}
+        ~r/^\s*[-*] \[([ xX])\]/m
+        |> Regex.scan(text, capture: :all_but_first)
+        |> Enum.reduce({0, 0}, fn
+          [" "], {done, total} -> {done, total + 1}
+          [_ticked], {done, total} -> {done + 1, total + 1}
+        end)
 
       _other ->
         {0, 0}

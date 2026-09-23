@@ -251,6 +251,9 @@ defmodule SwarmCode.Domain.Storage do
       total_bytes: files.db + files.wal + files.shm,
       reclaimable_bytes: reclaimable_bytes(),
       free_disk_bytes: free_disk_bytes(),
+      # spec 72 D6: isolation directory stats.
+      isolation_dirs: count_isolation_dirs(),
+      isolation_bytes: isolation_disk_usage(),
       sessions: Repo.aggregate(visible_conversations(), :count, :id),
       kinds: [
         kind(:sessions, "Sessions", messages),
@@ -1138,4 +1141,39 @@ defmodule SwarmCode.Domain.Storage do
 
   defp due?(nil, _now), do: true
   defp due?(last, now), do: DateTime.diff(now, last, :second) >= 86_400
+
+  # spec 72 D6: count isolation directories across all projects.
+  defp count_isolation_dirs do
+    for project <- SwarmCode.Domain.Projects.list(),
+        dir = SwarmCode.Domain.Projects.Workspace.worktrees_dir(project.root_path),
+        File.dir?(dir),
+        {:ok, entries} = File.ls(dir),
+        reduce: 0 do
+      acc -> acc + length(entries)
+    end
+  rescue
+    _ -> 0
+  end
+
+  # spec 72 D6: total disk usage of isolation directories.
+  defp isolation_disk_usage do
+    for project <- SwarmCode.Domain.Projects.list(),
+        dir = SwarmCode.Domain.Projects.Workspace.worktrees_dir(project.root_path),
+        File.dir?(dir),
+        reduce: 0 do
+      acc ->
+        case System.cmd("du", ["-sk", dir], stderr_to_stdout: true) do
+          {out, 0} ->
+            case Integer.parse(out) do
+              {kb, _} -> acc + kb * 1024
+              _ -> acc
+            end
+
+          _ ->
+            acc
+        end
+    end
+  rescue
+    _ -> 0
+  end
 end

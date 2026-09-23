@@ -10,8 +10,11 @@ defmodule SwarmCode.Daemon.FoundationGateTest do
 
   @app_version "0.1.0-dev"
   @backup_operation_id "5cebddf0-68ee-4f79-9129-b17f1ca2d6de"
-  @manifest_sha256 "16c5bb6d88c007fad7042c6f13afa65455a8a6157e2e86c25d68748d7c984e82"
-  @newest_migration 20_261_015_000_003
+  @manifest_sha256 "4c0a8ec7fa4ca33aba4ca17ee300b98e1be008e165e7ff18f69d05943137e23f"
+  @newest_migration 20_261_017_000_004
+  # The installed desktop at pass 63 (the canonical database today): 53
+  # migrations, four behind the pin, all four forward compatible.
+  @desktop_53 20_261_015_000_003
   @now ~U[2026-09-01 12:00:00Z]
 
   test "database fingerprint contract has a canonical distinct absent-path marker" do
@@ -84,7 +87,7 @@ defmodule SwarmCode.Daemon.FoundationGateTest do
     assert ready.identity == identity(root)
     assert ready.schema.status == :ready
     assert ready.backup == nil
-    assert length(ready.schema.applied) == 53
+    assert length(ready.schema.applied) == 57
     assert List.last(ready.schema.applied) == @newest_migration
     owner = CrossAppLease.owner(ready.lease)
     assert owner.schema_epoch == 0
@@ -619,7 +622,7 @@ defmodule SwarmCode.Daemon.FoundationGateTest do
   end
 
   test "migration-required creates and retains one verified artifact, then refuses implementation" do
-    fixture = fixture_database!({:prefix, 20_260_924_000_000})
+    fixture = fixture_database!({:prefix, @desktop_53})
     before = database_state(fixture)
     opts = test_opts(fixture, fn -> :none end)
     backup_dir = Path.join(Path.dirname(fixture), "backups")
@@ -646,14 +649,14 @@ defmodule SwarmCode.Daemon.FoundationGateTest do
     assert database_state(fixture) == before
   end
 
-  test "the legacy 43-migration prefix is backed up before refusing the ten appended migrations" do
-    fixture = fixture_database!({:prefix, 20_260_926_000_000})
+  test "the desktop's 53-migration database is backed up before the four forward migrations" do
+    fixture = fixture_database!({:prefix, @desktop_53})
 
     SchemaFixture.insert_project!(
       fixture,
-      "legacy-project",
+      "desktop-project",
       "Retained project",
-      "/private/legacy"
+      "/private/desktop"
     )
 
     before = database_state(fixture)
@@ -662,16 +665,10 @@ defmodule SwarmCode.Daemon.FoundationGateTest do
     assert decision.status == :migration_required
 
     assert Enum.map(decision.pending, & &1.version) == [
-             20_260_927_000_000,
-             20_260_928_000_000,
-             20_260_929_000_000,
-             20_260_930_000_000,
-             20_261_001_000_000,
-             20_261_001_000_001,
-             20_261_015_000_000,
-             20_261_015_000_001,
-             20_261_015_000_002,
-             20_261_015_000_003
+             20_261_015_000_004,
+             20_261_016_000_001,
+             20_261_016_000_002,
+             20_261_017_000_004
            ]
 
     opts = test_opts(fixture, fn -> :none end)
@@ -683,7 +680,7 @@ defmodule SwarmCode.Daemon.FoundationGateTest do
     backup = Path.join(backup_dir, @backup_operation_id <> ".sqlite3")
     backup_manifest = File.read!(Path.join(backup_dir, @backup_operation_id <> ".manifest.json"))
     assert {:ok, decoded} = SwarmCode.Daemon.Backup.Manifest.decode(backup_manifest)
-    assert length(decoded["migrations"]) == 43
+    assert length(decoded["migrations"]) == 53
     assert decoded["migrations"] == decision.applied
     assert decoded["independent_restore"]["migrations"] == decision.applied
     assert decoded["independent_restore"]["verified"] == true
@@ -702,7 +699,7 @@ defmodule SwarmCode.Daemon.FoundationGateTest do
                [],
                max_rows: 1
              ) ==
-               [["legacy-project", "Retained project", "/private/legacy"]]
+               [["desktop-project", "Retained project", "/private/desktop"]]
     after
       :ok = Exqlite.Sqlite3.close(conn)
     end
@@ -712,8 +709,39 @@ defmodule SwarmCode.Daemon.FoundationGateTest do
     assert_reacquirable!(opts)
   end
 
+  test "an older desktop database is refused before any backup: the app upgrades it" do
+    for version <- [20_260_924_000_000, 20_260_926_000_000, 20_260_929_000_000] do
+      fixture = fixture_database!({:prefix, version})
+      before = database_state(fixture)
+      opts = test_opts(fixture, fn -> :none end)
+
+      assert {:error, error} = FoundationGate.prepare(opts)
+      assert error.code == :schema_incompatible
+      assert error.message =~ "only the SwarmCode app"
+      assert error.action =~ "Open the SwarmCode app once to upgrade the database"
+      assert File.ls!(Path.join(Path.dirname(fixture), "backups")) == []
+      assert database_state(fixture) == before
+      assert_reacquirable!(opts)
+    end
+  end
+
+  test "a database migrated by a newer desktop is refused unchanged with no backup" do
+    fixture = fixture_database!(:current)
+    SchemaFixture.insert_migration!(fixture, 20_261_101_000_000)
+    before = database_state(fixture)
+    opts = test_opts(fixture, fn -> :none end)
+
+    assert {:error, error} = FoundationGate.prepare(opts)
+    assert error.code == :schema_incompatible
+    assert error.message =~ "newer SwarmCode app"
+    assert error.action =~ "Update swarmcode"
+    assert File.ls!(Path.join(Path.dirname(fixture), "backups")) == []
+    assert database_state(fixture) == before
+    assert_reacquirable!(opts)
+  end
+
   test "backup failure preserves the source and leaves no artifact while releasing the lease" do
-    fixture = fixture_database!({:prefix, 20_260_924_000_000})
+    fixture = fixture_database!({:prefix, @desktop_53})
     before = database_state(fixture)
 
     opts =
@@ -858,7 +886,7 @@ defmodule SwarmCode.Daemon.FoundationGateTest do
 
     assert directory_error.code == :private_directory_failed
 
-    migration_fixture = fixture_database!({:prefix, 20_260_924_000_000})
+    migration_fixture = fixture_database!({:prefix, @desktop_53})
 
     opts =
       test_opts(migration_fixture, fn -> :none end,
@@ -985,7 +1013,7 @@ defmodule SwarmCode.Daemon.FoundationGateTest do
     :swarm_code_daemon
     |> :code.priv_dir()
     |> to_string()
-    |> Path.join("schema/desktop-ccb1973.json")
+    |> Path.join("schema/desktop-6dd8d82.json")
   end
 
   defp private_tmp!(label) do

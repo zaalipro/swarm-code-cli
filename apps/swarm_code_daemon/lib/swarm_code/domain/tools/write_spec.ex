@@ -124,7 +124,14 @@ defmodule SwarmCode.Domain.Tools.WriteSpec do
       {:ok, io} ->
         result = IO.binwrite(io, spec)
         File.close(io)
-        if result == :ok, do: {:ok, path, file}, else: {:error, "cannot write #{file}"}
+
+        # spec 68 T2: remove the partial file on write failure
+        if result == :ok do
+          {:ok, path, file}
+        else
+          File.rm(path)
+          {:error, "cannot write #{file}"}
+        end
 
       {:error, :eexist} ->
         create_exclusive(dir, title, spec, tries - 1)

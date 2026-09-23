@@ -2,7 +2,7 @@ defmodule SwarmCode.Domain.Search.Exa do
   @moduledoc "Exa neural search (spec 24 §4.2)."
   @behaviour SwarmCode.Domain.Search.Provider
 
-  alias SwarmCode.Domain.Search.Provider
+  alias SwarmCode.Domain.Search.{Body, Provider}
 
   @name "Exa"
   @default "https://api.exa.ai"
@@ -28,24 +28,29 @@ defmodule SwarmCode.Domain.Search.Exa do
         json: body,
         headers: [{"x-api-key", cfg[:api_key] || ""}],
         retry: false,
-        receive_timeout: opts[:timeout] || 120_000
+        receive_timeout: opts[:timeout] || 120_000,
+        # spec 73 T90: bounded while reading, like the readers.
+        into: Body.collector()
       )
 
     case result do
-      {:ok, %{status: 200, body: %{"results" => results}}} when is_list(results) ->
-        {:ok,
-         Enum.map(results, fn r ->
-           Provider.result(%{
-             title: r["title"],
-             url: r["url"],
-             content: r["text"] || r["summary"],
-             score: r["score"],
-             published: r["publishedDate"]
-           })
-         end)}
+      {:ok, %{status: 200} = response} ->
+        case Provider.decode_json(response) do
+          {:ok, %{"results" => results}} when is_list(results) ->
+            {:ok,
+             Enum.map(results, fn r ->
+               Provider.result(%{
+                 title: r["title"],
+                 url: r["url"],
+                 content: r["text"] || r["summary"],
+                 score: r["score"],
+                 published: r["publishedDate"]
+               })
+             end)}
 
-      {:ok, %{status: 200}} ->
-        {:ok, []}
+          _other ->
+            {:ok, []}
+        end
 
       {:ok, response} ->
         Provider.error(@name, response)

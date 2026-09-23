@@ -100,4 +100,26 @@ defmodule SwarmCode.Domain.Settings do
   def modes, do: [{"dark", "Dark"}, {"light", "Light"}]
 
   def subscribe, do: SwarmCode.Domain.PubSub.subscribe(SwarmCode.Domain.PubSub, "settings")
+
+  # spec 70 E3: default keybindings map
+  @default_keybindings %{
+    "sidebar" => "meta+b",
+    "new" => "meta+n",
+    "search" => "meta+k",
+    "settings" => "meta+,",
+    "quit" => "meta+q",
+    "side" => "meta+shift+s",
+    "nudge_left" => "shift+alt+ArrowLeft",
+    "nudge_right" => "shift+alt+ArrowRight",
+    "file_finder" => "meta+p"
+  }
+
+  def default_keybindings, do: @default_keybindings
+
+  @doc "Merges the user's overrides onto the defaults; user overrides win."
+  def effective_keybindings(%{keybindings: overrides}) when is_map(overrides) do
+    Map.merge(@default_keybindings, overrides)
+  end
+
+  def effective_keybindings(_settings), do: @default_keybindings
 end

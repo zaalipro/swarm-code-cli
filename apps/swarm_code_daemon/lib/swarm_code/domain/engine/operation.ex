@@ -4,7 +4,8 @@ defmodule SwarmCode.Domain.Engine.Operation do
   Task.Supervisor, with its own node, progress reporting, approval gate and result delivery.
   """
 
-  alias SwarmCode.Domain.Engine.{Policy, RunServer}
+  alias SwarmCode.Domain.Engine.{Policy, RunServer, Telemetry}
+  alias SwarmCode.Domain.Hooks
   alias SwarmCode.Domain.LLM
   alias SwarmCode.Domain.Tools
   alias SwarmCode.Domain.Tools.Ref
@@ -45,8 +46,12 @@ defmodule SwarmCode.Domain.Engine.Operation do
         input: input_of(work)
       })
 
+    # spec 73 T52: the agent node id is `parent_id` — it rides along for the
+    # op's Logger metadata instead of being guessed (as nil) from the owner pid.
     {:ok, _pid} =
-      Task.Supervisor.start_child(ops_sup, fn -> run(owner, run_id, node.id, op_type, work) end)
+      Task.Supervisor.start_child(ops_sup, fn ->
+        run(owner, run_id, parent_id, node.id, op_type, work)
+      end)
 
     {:ok, node.id}
   end
@@ -65,7 +70,7 @@ defmodule SwarmCode.Domain.Engine.Operation do
 
   defp input_of(_work), do: nil
 
-  # A UTF-8-safe byte prefix — the same cut `SwarmCode.Domain.Format.window/2`
+  # A UTF-8-safe byte prefix — the same cut `SwarmCodeWeb.Format.window/2`
   # makes; the engine does not depend on the web layer.
   defp window(text, bytes) when byte_size(text) <= bytes, do: text
   defp window(text, bytes), do: valid_prefix(text, bytes, 0)
@@ -81,8 +86,14 @@ defmodule SwarmCode.Domain.Engine.Operation do
   end
 
   @doc false
-  def run(owner, run_id, id, op_type, work) do
+  def run(owner, run_id, agent_id, id, op_type, work) do
     RunServer.update_node(run_id, id, %{pid: self()})
+
+    # spec 70 E2: structured telemetry — Logger metadata + op span start.
+    Telemetry.put_op_metadata(run_id, agent_id, id)
+
+    tel_start =
+      Telemetry.span_start(Telemetry.op_span(), %{run_id: run_id, op_id: id, op_type: op_type})
 
     # Spec 43 §1.6 (C7): a build printing ten thousand lines used to send ten
     # thousand casts through the RunServer's normaliser; the flush coalesced
@@ -103,7 +114,14 @@ defmodule SwarmCode.Domain.Engine.Operation do
       try do
         do_work(owner, run_id, id, op_type, work, progress)
       rescue
-        e -> {:error, "crashed: " <> Exception.message(e)}
+        e ->
+          Telemetry.span_exception(Telemetry.op_span(), tel_start, :error, e, %{
+            run_id: run_id,
+            op_id: id,
+            op_type: op_type
+          })
+
+          {:error, :bug, "crashed: " <> Exception.message(e)}
       catch
         # Spec 36 §A4 / spec 51 §7.6: a shutdown is the supervisor ending this
         # task, not a failure — the AgentServer that owned it is already gone
@@ -114,8 +132,21 @@ defmodule SwarmCode.Domain.Engine.Operation do
           exit(reason)
 
         kind, value ->
-          {:error, "crashed: #{inspect({kind, value})}"}
+          Telemetry.span_exception(Telemetry.op_span(), tel_start, kind, value, %{
+            run_id: run_id,
+            op_id: id,
+            op_type: op_type
+          })
+
+          {:error, :bug, "crashed: #{inspect({kind, value})}"}
       end
+
+    # spec 70 E2: close the op telemetry span on normal completion.
+    Telemetry.span_stop(Telemetry.op_span(), tel_start, %{
+      run_id: run_id,
+      op_id: id,
+      op_type: op_type
+    })
 
     RunServer.update_node(run_id, id, finalize(result))
     send(owner, {:op_done, id, owner_view(result)})
@@ -180,22 +211,89 @@ defmodule SwarmCode.Domain.Engine.Operation do
   defp do_work(_owner, run_id, id, _op_type, {:tool, %Ref{} = ref, args, ctx}, progress) do
     ctx = Map.put(ctx, :node_id, id)
     permission = Ref.permission(ref, args)
+    safety = safety(ref, args)
 
-    case Policy.decide(current_mode(ctx), permission, MapSet.new()) do
+    # spec 68 T6: removed the vestigial `always` MapSet.new() argument.
+    case Policy.decide(current_mode(ctx), permission, safety) do
       {:deny, msg} ->
         {:error, msg}
 
       :allow ->
-        Tools.run(ref, args, ctx, progress)
+        # spec 70 D3: pre_tool_use hook. spec 73 T6: the ctx `dispatch_tools/2`
+        # builds carries the root as `:project_root`; this read `:root_path`,
+        # which no caller ever set, so `Hooks.run/3` took its nil clause and
+        # neither hook fired from a real run.
+        case Hooks.run(:pre_tool_use, %{tool_name: ref.name, args: args}, ctx[:project_root]) do
+          {:block, reason} -> {:error, "hook blocked: " <> reason}
+          _ -> run_tool(ref, args, ctx, progress)
+        end
 
       :ask ->
-        case RunServer.request_approval(run_id, id, permission) do
-          :approved -> Tools.run(ref, args, ctx, progress)
-          :denied -> {:error, "denied by user"}
-          :timeout -> {:error, "approval timed out after 10 minutes"}
+        case RunServer.request_approval(run_id, id, permission, safety) do
+          :approved ->
+            # spec 70 D3: pre_tool_use hook (spec 73 T6: `:project_root`).
+            case Hooks.run(
+                   :pre_tool_use,
+                   %{tool_name: ref.name, args: args},
+                   ctx[:project_root]
+                 ) do
+              {:block, reason} -> {:error, "hook blocked: " <> reason}
+              _ -> run_tool(ref, args, ctx, progress)
+            end
+
+          :denied ->
+            {:error, "denied by user"}
+
+          :timeout ->
+            {:error, "approval timed out after 10 minutes"}
         end
     end
   end
+
+  # spec 67 T34 (G35): an MCP result's `image` blocks are left in this task's
+  # process dictionary by `MCP.call/4` — `Tools.run/4` hands results back as a
+  # string — and are picked up here so they can ride on the `role: "tool"`
+  # message the agent appends.
+  defp run_tool(ref, args, ctx, progress) do
+    SwarmCode.Domain.MCP.take_images()
+
+    result =
+      case Tools.run(ref, args, ctx, progress) do
+        {:ok, text} ->
+          case SwarmCode.Domain.MCP.take_images() do
+            [] -> {:ok, text}
+            images -> {:ok, text, images}
+          end
+
+        other ->
+          SwarmCode.Domain.MCP.take_images()
+          other
+      end
+
+    # spec 70 D3: post_tool_use hook (fire-and-forget, non-blocking).
+    # spec 70 F1: runs under SwarmCode.Domain.Hooks.TaskSupervisor so it is owned
+    # work, not a detached task. The hook has its own timeout (Hooks.run_one/3
+    # yields + shuts down its inner task) and the operation task is about to
+    # exit anyway, so the supervisor child is short-lived and does not need
+    # linking to the operation.
+    # spec 73 T6: `:project_root`, the key the ctx actually carries.
+    if root = ctx[:project_root] do
+      tool_name = ref.name
+
+      Task.Supervisor.start_child(SwarmCode.Domain.Hooks.TaskSupervisor, fn ->
+        Hooks.run(:post_tool_use, %{tool_name: tool_name, result: :ok}, root)
+      end)
+    end
+
+    result
+  end
+
+  # spec 66 T4: only a shell command has a class; every other tool is `:normal`,
+  # which is the behaviour every mode had before the task.
+  defp safety(%Ref{name: "run_command"}, args),
+    do: SwarmCode.Domain.Tools.CommandSafety.classify(args["command"])
+
+  defp safety(_ref, _args), do: :normal
 
   defp raw_hint(raw) when is_binary(raw) and raw != "" do
     head = if byte_size(raw) > 200, do: binary_part(raw, 0, 200) <> "…", else: raw
@@ -243,6 +341,13 @@ defmodule SwarmCode.Domain.Engine.Operation do
   # The RunServer's `@detail_scan_bytes`; it re-cuts to 160 chars.
   @detail_scan 1_280
 
+  # spec 67 T34 (G35): an MCP result with images. The node row shows the text —
+  # the pixels are the model's, not the transcript's — with a count beside it.
+  defp finalize({:ok, text, images}) when is_list(images) do
+    suffix = if images == [], do: "", else: "\n[#{length(images)} image(s)]"
+    finalize({:ok, to_string(text) <> suffix})
+  end
+
   defp finalize({:ok, text}) do
     text = to_string(text)
 
@@ -255,6 +360,13 @@ defmodule SwarmCode.Domain.Engine.Operation do
     }
   end
 
+  # spec 67 T30 (G42): the kind the provider (or the classifier) named is a
+  # column of its own, so the retry, the pane and any later policy branch on an
+  # atom instead of matching English.
+  defp finalize({:error, kind, msg}) when is_atom(kind) do
+    {:error, msg} |> finalize() |> Map.put(:error_kind, to_string(kind))
+  end
+
   defp finalize({:error, msg}) do
     msg = to_string(msg)
 
@@ -263,6 +375,7 @@ defmodule SwarmCode.Domain.Engine.Operation do
       progress: 100,
       error: own(String.slice(msg, 0, @result_chars), msg),
       detail: own(String.slice(msg, 0, @detail_scan), msg),
+      error_kind: to_string(LLM.Error.classify(nil, nil, msg)),
       finished_at: now()
     }
   end

@@ -6,6 +6,10 @@ defmodule SwarmCode.Domain.Engine.Context do
   # still working with them.
   @keep_recent 8
   @min_compress 200
+  # spec 72 B4: hysteresis for prefix stability. Trim to this fraction of the
+  # budget so the prefix stays stable until the estimate grows back to the
+  # budget. 0.7 means ~30% headroom.
+  @low_water 0.7
   # Spec 51 §6.5: an image whose `:tokens` was never stamped (a steer built by
   # hand, an older persisted turn) is charged the provider's ceiling.
   @image_token_cap 4_784
@@ -17,9 +21,29 @@ defmodule SwarmCode.Domain.Engine.Context do
   @spec budget() :: pos_integer()
   def budget, do: @budget
 
-  @doc "The trim budget for `model` (spec 55 T18, 55a A12): 200 k / 1 M contexts minus the output and headroom."
-  @spec budget(String.t() | nil) :: pos_integer()
-  def budget(model) when is_binary(model) do
+  @doc """
+  The trim budget for `model` (spec 55 T18, 55a A12): 200 k / 1 M contexts minus
+  the output and headroom.
+
+  spec 66 T13: with `settings`, the model's own `context_window` (the optional
+  third number on its `settings.pricing` row) decides instead of the substring
+  test, at 75 % — the remaining quarter is the reply and the estimate error.
+  A model with no row, or a settings struct that is nil, keeps the three cases
+  below exactly as they were.
+  """
+  @spec budget(String.t() | nil, map() | nil) :: pos_integer()
+  def budget(model, settings \\ nil)
+
+  def budget(model, settings) when is_binary(model) do
+    case window(model, settings) do
+      window when is_integer(window) and window > 0 -> trunc(window * 0.75)
+      _none -> default_budget(model)
+    end
+  end
+
+  def budget(_model, _settings), do: @budget
+
+  defp default_budget(model) do
     cond do
       String.contains?(model, "[1m]") -> 900_000
       String.starts_with?(model, "claude") -> 160_000
@@ -27,7 +51,16 @@ defmodule SwarmCode.Domain.Engine.Context do
     end
   end
 
-  def budget(_model), do: @budget
+  @doc "The model's configured context window in tokens, or nil (spec 66 T13)."
+  @spec window(String.t() | nil, map() | nil) :: pos_integer() | nil
+  def window(model, settings) when is_binary(model) and is_map(settings) do
+    case get_in(Map.get(settings, :pricing) || %{}, [model, "context_window"]) do
+      n when is_integer(n) and n > 0 -> n
+      _other -> nil
+    end
+  end
+
+  def window(_model, _settings), do: nil
 
   @doc """
   A conservative token estimate. Sakana task 12: images count too — a multimodal
@@ -88,9 +121,41 @@ defmodule SwarmCode.Domain.Engine.Context do
   time it fires per agent rather than one per request. The documented
   replacement is server-side context editing, which needs a beta this client
   does not send yet.
+
+  spec 72 B4 — hysteresis and prefix stability.
+
+  Between trims the message list prefix is byte-identical: trimming happens
+  only when the estimate exceeds the budget (high-water mark) and trims down
+  to `budget * @low_water` (low-water mark). The gap is the hysteresis band
+  that keeps the provider's KV cache warm.
+
+  Trimming is from the oldest end only, at whole-exchange boundaries. The
+  compress pass replaces old tool results with placeholders; the drop pass
+  removes whole exchanges from the front. Neither pass rewrites messages
+  that are not being removed or compressed — the prefix of untouched
+  messages is byte-identical across calls.
   """
   def trim(messages, budget \\ @budget) do
-    messages |> compress(budget) |> drop_oldest(budget)
+    total = estimate_tokens(messages)
+
+    if total > budget do
+      # spec 72 B4: compress first (idempotent, does not change the prefix).
+      compressed = compress(messages, budget)
+
+      # If compression alone got us under budget, no dropping needed.
+      # If still over, drop_oldest uses the low-water mark so it removes
+      # more on each trim, leaving headroom that keeps the prefix stable
+      # until the next trim event.
+      if estimate_tokens(compressed) > budget do
+        low = trunc(budget * @low_water)
+        drop_oldest(compressed, low)
+      else
+        compressed
+      end
+    else
+      # Even under budget, drop orphan tool results with no matching call.
+      drop_leading_orphans(messages)
+    end
   end
 
   @doc "Replaces the content of old tool messages with a placeholder until under budget."

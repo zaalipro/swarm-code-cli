@@ -78,17 +78,19 @@ defmodule SwarmCode.Domain.Checkpoints do
 
     # spec 55 T16 (55a A17): a busy database refuses the write instead of
     # letting the file go without a rewind point.
+    # spec 68 T3: ownership IDs set via put_change from trusted context.
     case SwarmCode.Domain.Repo.retry(:checkpoint, fn ->
            %Checkpoint{}
            |> Checkpoint.changeset(%{
-             conversation_id: conversation_id,
-             run_id: Map.get(ctx, :run_id),
-             node_id: Map.get(ctx, :node_id),
              path: abs_path,
              previous_content: content,
              restorable: restorable?,
              inserted_at: now()
            })
+           |> Ecto.Changeset.put_change(:conversation_id, conversation_id)
+           |> Ecto.Changeset.put_change(:run_id, Map.get(ctx, :run_id))
+           |> Ecto.Changeset.put_change(:node_id, Map.get(ctx, :node_id))
+           |> Checkpoint.validate()
            |> Repo.insert()
          end) do
       {:error, :database_busy} -> {:error, :database_busy}
@@ -155,6 +157,222 @@ defmodule SwarmCode.Domain.Checkpoints do
 
   @doc "One checkpoint with its content, or nil."
   def get(id), do: Repo.get(Checkpoint, id)
+
+  # ------------------------------------------------------------------ T32: what a run changed
+
+  # 200 files and 2 MB of content: the Changes pane is a list to read, not an
+  # archive, and a swarm run that rewrote a vendored directory must not pull
+  # 60 MB of SQLite into a LiveView's assigns.
+  @run_diff_files 200
+  @run_diff_bytes 2_000_000
+  # Above this many lines a file is counted by line frequency rather than by
+  # `List.myers_difference/2`, which is O(ND) and not worth it for a minified
+  # bundle or a lock file.
+  @myers_lines 20_000
+
+  @doc """
+  What a run changed, from its own checkpoints (spec 67 T32 / G45).
+
+  `[%{path, before, after, added, removed}]`, `before`/`after` nil when the file
+  did not exist on that side. The Changes pane recomputes from live git, so
+  after `git_commit` it shows nothing and an old run's diff was unrecoverable —
+  while every before-content has been in this table the whole time. The after
+  side is the next checkpoint of the same path in the conversation (what the
+  file held when the *next* run first touched it) and, when there is none, what
+  is on disk now.
+
+  Capped at #{@run_diff_files} files and #{@run_diff_bytes} bytes of content,
+  with a trailing `%{omitted: n}` marker when either bites. `[]` for a run with
+  no checkpoints, so a caller can fall back to git.
+  """
+  @spec run_diff(String.t() | nil) :: [map()]
+  def run_diff(run_id) when is_binary(run_id) do
+    # spec 73 T68: the query is limited to the files that can be shown — every
+    # row's content was loaded (500 files × up to 2 MB) to show 200. The
+    # omitted marker comes from a count of distinct paths, so the output is
+    # what it was.
+    rows =
+      from(c in Checkpoint,
+        where: c.run_id == ^run_id,
+        order_by: [asc: c.inserted_at, asc: c.id],
+        limit: @run_diff_files,
+        select: %{
+          path: c.path,
+          previous_content: c.previous_content,
+          restorable: c.restorable,
+          inserted_at: c.inserted_at,
+          conversation_id: c.conversation_id
+        }
+      )
+      |> Repo.all()
+      # `snapshot/2` keeps only the oldest row per (run, path) already; this is
+      # the belt for rows written before spec 51 §1.4.
+      |> Enum.uniq_by(& &1.path)
+
+    case rows do
+      [] -> []
+      rows -> build_run_diff(rows, distinct_paths(run_id, rows))
+    end
+  rescue
+    Ecto.Query.CastError -> []
+  end
+
+  def run_diff(_run_id), do: []
+
+  # Only a page that may have been cut needs the count.
+  defp distinct_paths(_run_id, rows) when length(rows) < @run_diff_files, do: length(rows)
+
+  defp distinct_paths(run_id, _rows) do
+    Repo.one(from(c in Checkpoint, where: c.run_id == ^run_id, select: count(c.path, :distinct)))
+  end
+
+  defp build_run_diff(shown, total) do
+    nexts = next_contents(shown)
+
+    entries =
+      shown
+      |> Enum.reduce_while({[], 0}, fn row, {acc, bytes} ->
+        entry = diff_entry(row, nexts)
+        size = byte_size(entry.before || "") + byte_size(entry.after || "")
+
+        if acc != [] and bytes + size > @run_diff_bytes,
+          do: {:halt, {acc, bytes}},
+          else: {:cont, {[entry | acc], bytes + size}}
+      end)
+      |> elem(0)
+      |> Enum.reverse()
+
+    case total - length(entries) do
+      0 -> entries
+      omitted -> entries ++ [%{omitted: omitted}]
+    end
+  end
+
+  defp diff_entry(row, nexts) do
+    before = content(row)
+    after_ = after_content(row, nexts)
+    {added, removed} = counts(before, after_)
+
+    %{path: row.path, before: before, after: after_, added: added, removed: removed}
+  end
+
+  # A row recorded as unrestorable holds a marker ("[too large]"), never the
+  # file: counting its lines would be a lie, so it reads as "no content".
+  defp content(%{restorable: false}), do: nil
+  defp content(%{previous_content: content}), do: content
+
+  # The content the file had when the run was over: the next checkpoint of the
+  # same path in this conversation recorded exactly that, and when there is none
+  # the file on disk still holds it — a `git commit` in between changes neither.
+  defp after_content(row, nexts) do
+    case Map.fetch(nexts, row.path) do
+      {:ok, content} -> content
+      :error -> disk_content(row.path)
+    end
+  end
+
+  defp disk_content(path) do
+    case File.stat(path) do
+      {:ok, %{size: size}} when size > @max_bytes ->
+        nil
+
+      {:ok, _stat} ->
+        case File.read(path) do
+          {:ok, content} -> if String.valid?(content), do: content
+          _error -> nil
+        end
+
+      _missing ->
+        nil
+    end
+  end
+
+  # spec 73 T68: the later snapshots are listed by id, path and time first;
+  # the content is fetched for exactly the one row per path that is the
+  # "after" side — a conversation with 30 later turns on the same paths
+  # loaded thirty contents per file to use one.
+  defp next_contents([]), do: %{}
+
+  defp next_contents([%{conversation_id: conversation_id} | _] = rows) do
+    paths = Enum.map(rows, & &1.path)
+    oldest = rows |> Enum.map(& &1.inserted_at) |> Enum.min(DateTime)
+
+    later =
+      from(c in Checkpoint,
+        where:
+          c.conversation_id == ^conversation_id and c.path in ^paths and
+            c.inserted_at > ^oldest and c.restorable == true,
+        order_by: [asc: c.inserted_at, asc: c.id],
+        select: %{id: c.id, path: c.path, at: c.inserted_at}
+      )
+      |> Repo.all()
+      |> Enum.group_by(& &1.path)
+
+    chosen =
+      for row <- rows,
+          next =
+            Enum.find(
+              Map.get(later, row.path, []),
+              &(DateTime.compare(&1.at, row.inserted_at) == :gt)
+            ),
+          do: {next.id, row.path}
+
+    case chosen do
+      [] ->
+        %{}
+
+      chosen ->
+        ids = Enum.map(chosen, &elem(&1, 0))
+
+        contents =
+          from(c in Checkpoint, where: c.id in ^ids, select: {c.id, c.previous_content})
+          |> Repo.all()
+          |> Map.new()
+
+        Map.new(chosen, fn {id, path} -> {path, Map.get(contents, id)} end)
+    end
+  end
+
+  defp counts(before, after_) do
+    b = lines(before)
+    a = lines(after_)
+
+    if length(b) + length(a) > @myers_lines, do: rough_counts(b, a), else: myers_counts(b, a)
+  end
+
+  defp lines(nil), do: []
+  defp lines(""), do: []
+  defp lines(text), do: String.split(text, "\n")
+
+  defp myers_counts(b, a) do
+    b
+    |> List.myers_difference(a)
+    |> Enum.reduce({0, 0}, fn
+      {:ins, lines}, {added, removed} -> {added + length(lines), removed}
+      {:del, lines}, {added, removed} -> {added, removed + length(lines)}
+      {:eq, _lines}, acc -> acc
+    end)
+  end
+
+  # Line frequencies: a line that is in the new file more often than in the old
+  # one counts as added, and the other way round. It is what `diff` would say
+  # for a file whose lines are mostly unique, and it is O(n).
+  defp rough_counts(b, a) do
+    before_freq = Enum.frequencies(b)
+    after_freq = Enum.frequencies(a)
+
+    added =
+      Enum.reduce(after_freq, 0, fn {line, n}, sum ->
+        sum + max(n - Map.get(before_freq, line, 0), 0)
+      end)
+
+    removed =
+      Enum.reduce(before_freq, 0, fn {line, n}, sum ->
+        sum + max(n - Map.get(after_freq, line, 0), 0)
+      end)
+
+    {added, removed}
+  end
 
   @doc """
   The conversation's checkpoints grouped by run, newest turn first:

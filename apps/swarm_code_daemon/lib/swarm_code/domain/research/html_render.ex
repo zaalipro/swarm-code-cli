@@ -170,17 +170,23 @@ defmodule SwarmCode.Domain.Research.HtmlRender do
         sources: sources
       )
 
-    File.write!(path, html)
-
-    case File.stat(path) do
-      {:ok, %{size: size}} when size >= @min_bytes ->
+    # spec 73 T87: atomic, confined to the research directory; the size check
+    # stays on the final path.
+    with :ok <- SwarmCode.Domain.AtomicFile.replace(Research.dir(ctx.id), path, html),
+         {:ok, %{size: size}} <- File.stat(path) do
+      if size >= @min_bytes do
         path
-
-      {:ok, %{size: size}} ->
+      else
         Logger.info("swarm_code research #{ctx.id}: the rendered report was only #{size} bytes")
         nil
+      end
+    else
+      {:error, reason} ->
+        Logger.warning(
+          "swarm_code research #{ctx.id}: could not write report.html: " <>
+            SwarmCode.Domain.AtomicFile.format_error(reason)
+        )
 
-      _other ->
         nil
     end
   rescue
@@ -343,17 +349,8 @@ defmodule SwarmCode.Domain.Research.HtmlRender do
     end
   end
 
-  defp quality(q) when is_integer(q), do: q |> max(0) |> min(5)
-  defp quality(q) when is_float(q), do: quality(round(q))
-
-  defp quality(q) when is_binary(q) do
-    case Integer.parse(q) do
-      {int, _rest} -> quality(int)
-      :error -> 0
-    end
-  end
-
-  defp quality(_q), do: 0
+  # spec 68 T36: delegate to the shared Research.rating/1
+  defp quality(q), do: SwarmCode.Domain.Research.rating(q)
 
   defp escape(text),
     do:

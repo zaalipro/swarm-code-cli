@@ -90,6 +90,9 @@ defmodule SwarmCode.Daemon.Schema.Probe do
     rescue
       _error -> {:error, incompatible_error()}
     catch
+      # More migration rows than the pinned contract holds: a newer desktop
+      # migrated this database (pass 70 D2), say so instead of "incompatible".
+      :throw, :migration_rows_ahead -> {:error, SwarmCode.Daemon.Schema.Refusal.database_ahead()}
       _kind, _reason -> {:error, incompatible_error()}
     end
   end
@@ -400,8 +403,7 @@ defmodule SwarmCode.Daemon.Schema.Probe do
   defp reject_migration_overflow!(versions) when length(versions) <= @maximum_migrations,
     do: versions
 
-  defp reject_migration_overflow!(_versions),
-    do: raise(RuntimeError, "migration row limit exceeded")
+  defp reject_migration_overflow!(_versions), do: throw(:migration_rows_ahead)
 
   defp bounded_rows(conn, sql, parameters, maximum_rows) do
     SqliteQuery.rows(conn, sql, parameters, max_rows: maximum_rows)

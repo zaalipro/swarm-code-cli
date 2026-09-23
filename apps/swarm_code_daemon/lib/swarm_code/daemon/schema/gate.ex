@@ -1,7 +1,7 @@
 defmodule SwarmCode.Daemon.Schema.Gate do
   @moduledoc false
 
-  alias SwarmCode.Daemon.Schema.{Binding, MigrationManifest, Probe}
+  alias SwarmCode.Daemon.Schema.{Binding, Contract, MigrationManifest, Probe, Refusal}
   alias SwarmCode.Daemon.StartupError
 
   defmodule Decision do
@@ -57,6 +57,35 @@ defmodule SwarmCode.Daemon.Schema.Gate do
       end
     end
   end
+
+  @doc """
+  Whether the CLI may run a decision's pending migrations itself (arch F15, pass
+  70 D2). Only versions in the contract's `forward_compatible` allowlist may be
+  applied ahead of the installed desktop: they are additive, so an older desktop
+  keeps reading the database. Anything else is the desktop's to run, and the
+  person is told to open the app once. `:ready` and `:new_database` pass.
+  """
+  @spec admit_migration(Decision.t(), MigrationManifest.t()) :: :ok | {:error, StartupError.t()}
+  def admit_migration(
+        %Decision{status: :migration_required, pending: pending},
+        %MigrationManifest{upstream_commit: commit}
+      ) do
+    allowed =
+      case Contract.fetch(commit) do
+        {:ok, contract} -> Map.get(contract, :forward_compatible, [])
+        :error -> []
+      end
+
+    if pending != [] and Enum.all?(pending, &(&1.version in allowed)),
+      do: :ok,
+      else: {:error, Refusal.desktop_upgrade_required()}
+  end
+
+  def admit_migration(%Decision{status: status}, %MigrationManifest{})
+      when status in [:ready, :new_database],
+      do: :ok
+
+  def admit_migration(_decision, _manifest), do: {:error, incompatible_error()}
 
   @doc false
   @spec verify_binding(Path.t(), Binding.t(), non_neg_integer()) ::
@@ -141,9 +170,22 @@ defmodule SwarmCode.Daemon.Schema.Gate do
         {:error, incompatible_error()}
       end
     else
-      {:error, incompatible_error()}
+      if ahead?(probe.migration_versions, expected_versions),
+        do: {:error, Refusal.database_ahead()},
+        else: {:error, incompatible_error()}
     end
   end
+
+  # The database carries a version newer than the manifest's last one: a later
+  # desktop migrated it. An unknown version in the middle is a foreign lineage,
+  # which stays the generic refusal.
+  defp ahead?(applied, [_ | _] = expected) do
+    last = List.last(expected)
+    known = MapSet.new(expected)
+    Enum.any?(applied, &(&1 > last and not MapSet.member?(known, &1)))
+  end
+
+  defp ahead?(_applied, _expected), do: false
 
   defp incompatible_error do
     StartupError.new(

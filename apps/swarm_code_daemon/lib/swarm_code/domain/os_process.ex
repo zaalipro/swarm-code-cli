@@ -122,11 +122,14 @@ defmodule SwarmCode.Domain.OSProcess do
   defp living(pids) do
     case run("ps", ["-o", "pid=", "-p", Enum.map_join(pids, ",", &Integer.to_string/1)]) do
       {out, _status} ->
+        # spec 73 T71: one pid per *line* — stderr is merged, and macOS `ps`
+        # answers a pid past its range with "process id too large: N", whose
+        # N read as a live process when the output was split on whitespace.
         alive =
           out
-          |> String.split(~r/\s+/, trim: true)
-          |> Enum.flat_map(fn text ->
-            case Integer.parse(text) do
+          |> String.split("\n", trim: true)
+          |> Enum.flat_map(fn line ->
+            case Integer.parse(String.trim(line)) do
               {pid, ""} -> [pid]
               _ -> []
             end

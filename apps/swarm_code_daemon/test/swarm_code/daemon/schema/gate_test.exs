@@ -3,16 +3,25 @@ defmodule SwarmCode.Daemon.Schema.GateTest do
 
   alias SwarmCode.Daemon.Schema.{Gate, MigrationManifest, Probe}
 
+  # The four desktop pass-69 migrations after ccb1973: the only ones the CLI may
+  # run ahead of the desktop (the contract's `forward_compatible` allowlist).
+  @forward_compatible [
+    20_261_015_000_004,
+    20_261_016_000_001,
+    20_261_016_000_002,
+    20_261_017_000_004
+  ]
+
   # Migrations the pinned contract appends after the former desktop-fb1b4ff tail.
   @appended_suffix [
-    20_260_930_000_000,
-    20_261_001_000_000,
-    20_261_001_000_001,
-    20_261_015_000_000,
-    20_261_015_000_001,
-    20_261_015_000_002,
-    20_261_015_000_003
-  ]
+                     20_260_930_000_000,
+                     20_261_001_000_000,
+                     20_261_001_000_001,
+                     20_261_015_000_000,
+                     20_261_015_000_001,
+                     20_261_015_000_002,
+                     20_261_015_000_003
+                   ] ++ @forward_compatible
 
   setup do
     manifest = MigrationManifest.load!()
@@ -27,7 +36,7 @@ defmodule SwarmCode.Daemon.Schema.GateTest do
 
     assert {:ok, decision} = Gate.check(database, manifest, "0.1.0-dev")
     assert decision.status == :ready
-    assert List.last(decision.applied) == 20_261_015_000_003
+    assert List.last(decision.applied) == 20_261_017_000_004
     assert decision.pending == []
     assert sha256_file(database) == before
   end
@@ -71,12 +80,97 @@ defmodule SwarmCode.Daemon.Schema.GateTest do
   end
 
   test "the explicit final prefix is the current schema", %{manifest: manifest} do
-    database = SchemaFixture.database!({:prefix, 20_261_015_000_003})
+    database = SchemaFixture.database!({:prefix, 20_261_017_000_004})
 
-    assert {:ok, %{status: :ready, applied: applied}} =
+    assert {:ok, %{status: :ready, applied: applied} = decision} =
              Gate.check(database, manifest, "0.1.0-dev")
 
-    assert length(applied) == 53
+    assert length(applied) == 57
+    assert Gate.admit_migration(decision, manifest) == :ok
+  end
+
+  for {version, pending} <- [
+        {20_261_015_000_003,
+         [20_261_015_000_004, 20_261_016_000_001, 20_261_016_000_002, 20_261_017_000_004]},
+        {20_261_015_000_004, [20_261_016_000_001, 20_261_016_000_002, 20_261_017_000_004]},
+        {20_261_016_000_001, [20_261_016_000_002, 20_261_017_000_004]},
+        {20_261_016_000_002, [20_261_017_000_004]}
+      ] do
+    test "the #{version} prefix may be moved forward by the CLI itself", %{manifest: manifest} do
+      database = SchemaFixture.database!({:prefix, unquote(version)})
+      before = source_bytes(database)
+
+      assert {:ok, %{status: :migration_required, pending: pending} = decision} =
+               Gate.check(database, manifest, "0.1.0-dev")
+
+      assert Enum.map(pending, & &1.version) == unquote(pending)
+      assert Gate.admit_migration(decision, manifest) == :ok
+      assert source_bytes(database) == before
+    end
+  end
+
+  test "a pending migration outside the allowlist is the desktop's to run", %{manifest: manifest} do
+    for version <- [20_260_923_000_000, 20_260_926_000_000, 20_260_929_000_000] do
+      database = SchemaFixture.database!({:prefix, version})
+      before = source_bytes(database)
+
+      assert {:ok, %{status: :migration_required} = decision} =
+               Gate.check(database, manifest, "0.1.0-dev")
+
+      assert {:error, error} = Gate.admit_migration(decision, manifest)
+      assert error.code == :schema_incompatible
+      assert error.action =~ "Open the SwarmCode app once to upgrade the database"
+      refute error.message =~ "backup"
+      assert source_bytes(database) == before
+    end
+  end
+
+  test "a new database may take every migration", %{manifest: manifest} do
+    directory = temporary_directory!()
+
+    assert {:ok, %{status: :new_database} = decision} =
+             Gate.check(Path.join(directory, "absent.db"), manifest, "0.1.0-dev")
+
+    assert Gate.admit_migration(decision, manifest) == :ok
+  end
+
+  test "an allowlist is per contract: an older manifest admits nothing forward", %{
+    manifest: manifest
+  } do
+    previous =
+      :swarm_code_daemon
+      |> :code.priv_dir()
+      |> to_string()
+      |> Path.join("schema/desktop-ccb1973.json")
+      |> MigrationManifest.load!()
+
+    database = SchemaFixture.database!({:prefix, 20_260_929_000_000})
+
+    assert {:ok, %{status: :migration_required} = decision} =
+             Gate.check(database, previous, "0.1.0-dev")
+
+    assert {:error, %{code: :schema_incompatible}} = Gate.admit_migration(decision, previous)
+
+    ready = SchemaFixture.database!({:prefix, 20_261_015_000_003})
+
+    assert {:ok, %{status: :migration_required} = decision} =
+             Gate.check(ready, manifest, "0.1.0-dev")
+
+    assert :ok = Gate.admit_migration(decision, manifest)
+  end
+
+  test "a database a newer desktop migrated is refused as ahead, unchanged", %{manifest: manifest} do
+    # 53 known migrations plus one the manifest has never seen: 54 rows, within
+    # the probe's row ceiling, so the prefix check is what refuses it.
+    database = SchemaFixture.database!({:prefix, 20_261_015_000_003})
+    SchemaFixture.insert_migration!(database, 20_261_101_000_000)
+    before = source_bytes(database)
+
+    assert {:error, error} = Gate.check(database, manifest, "0.1.0-dev")
+    assert error.code == :schema_incompatible
+    assert error.message =~ "newer SwarmCode app"
+    assert error.action =~ "Update swarmcode"
+    assert source_bytes(database) == before
   end
 
   test "a wrong current column shape refuses with source and WAL sidecars unchanged", %{
@@ -104,9 +198,11 @@ defmodule SwarmCode.Daemon.Schema.GateTest do
     _writer = SchemaFixture.open_uncheckpointed_wal!(database)
     before = source_bytes(database)
 
-    assert {:error, %{code: :schema_incompatible}} =
+    assert {:error, %{code: :schema_incompatible} = error} =
              Gate.check(database, manifest, "0.1.0-dev")
 
+    # 58 rows: the probe's ceiling says so before any prefix comparison.
+    assert error.message =~ "newer SwarmCode app"
     assert source_bytes(database) == before
   end
 
@@ -139,7 +235,7 @@ defmodule SwarmCode.Daemon.Schema.GateTest do
     assert {:ok, %{status: :new_database, applied: [], pending: pending}} =
              Gate.check(database, manifest, "0.1.0-dev")
 
-    assert length(pending) == 53
+    assert length(pending) == 57
     refute File.exists?(database)
   end
 
@@ -177,10 +273,10 @@ defmodule SwarmCode.Daemon.Schema.GateTest do
     assert {:ok, probe} = Probe.inspect(database)
     assert probe.application_id == 0
     assert hd(probe.migration_versions) == 20_260_820_000_001
-    assert List.last(probe.migration_versions) == 20_261_015_000_003
+    assert List.last(probe.migration_versions) == 20_261_017_000_004
 
     assert probe.schema_sha256 ==
-             "cd6ee5ce99c4adc8587993eb9b4cf4758e7e4e6c31bc28cc64b3df8395777b82"
+             "a0145e85d9d401c8f95bf724f91d5930694ab6adb487335c7a25857b7a63cc87"
 
     assert probe.quick_check == [["ok"]]
     assert probe.foreign_key_violations == []
@@ -189,12 +285,13 @@ defmodule SwarmCode.Daemon.Schema.GateTest do
     assert sha256_file(database) == before
   end
 
-  test "the probe rejects on the 54th migration row without mutation", %{current: database} do
+  test "the probe rejects on the 58th migration row without mutation", %{current: database} do
     SchemaFixture.insert_migration!(database, 20_990_101_000_000)
     _writer = SchemaFixture.open_uncheckpointed_wal!(database)
     before = source_bytes(database)
 
-    assert {:error, %{code: :schema_incompatible}} = Probe.inspect(database)
+    assert {:error, %{code: :schema_incompatible, message: message}} = Probe.inspect(database)
+    assert message =~ "newer SwarmCode app"
     assert source_bytes(database) == before
   end
 
@@ -208,7 +305,7 @@ defmodule SwarmCode.Daemon.Schema.GateTest do
     wal = File.lstat!(database <> "-wal")
 
     assert {:ok, %{probe: probe, binding: binding}} = Probe.inspect_bound(database)
-    assert length(probe.migration_versions) == 53
+    assert length(probe.migration_versions) == 57
     assert binding.path == database
     assert elem(binding.identity, 3) == main.inode
     assert elem(binding.sidecars["-wal"], 3) == wal.inode

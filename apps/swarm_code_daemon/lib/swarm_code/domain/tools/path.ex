@@ -5,6 +5,76 @@ defmodule SwarmCode.Domain.Tools.Path do
   # class as `_build`, and 7 MB of HTML in this checkout (Blockers → A 44).
   @ignored ~w(.git _build deps node_modules .elixir_ls .superpowers .DS_Store cover doc)
 
+  # spec 66 T11: directories a tool may read but never write. `.git` because a
+  # hook an agent installs runs on the user's next commit, outside every
+  # approval; `.claude` because it configures the harness that is running the
+  # agent.
+  #
+  # The spec's list had `.swarm_code` whole, which would have broken three
+  # things SwarmCode itself asks an agent to do: `write_spec` puts its spec in
+  # `.swarm_code/specs/` and the implementer ticks its boxes with `edit_file`
+  # (spec 45 §6.2), and project skills and commands are files a user can ask the
+  # agent to write. Only the file the memory tool owns is protected inside it.
+  @protected ~w(.git .claude)
+  @protected_files [".swarm_code/MEMORY.md"]
+
+  @doc """
+  `resolve/2` for a tool that is about to **write**: the same confinement, plus
+  a refusal for `@protected` / `@protected_files` (spec 66 T11).
+
+  Reads keep using `resolve/2` — `read_file .git/HEAD` is legitimate.
+
+  spec 67 B6: the test used to run on the lexical relative path only, so
+  `ln -s .git gitlink` inside the root let `write_file gitlink/hooks/pre-commit`
+  install a hook — `resolve/2` accepts it because the real path is still inside
+  the root. Both the lexical path **and** the real path are tested now, and
+  either one being protected is a refusal.
+  """
+  @spec resolve_write(String.t(), String.t()) :: {:ok, String.t()} | {:error, String.t()}
+  def resolve_write(root, path) do
+    with {:ok, abs} <- resolve(root, path) do
+      case Enum.find_value([relative(root, abs), real_relative(root, abs)], &protection(&1)) do
+        nil -> {:ok, abs}
+        {:dir, first} -> {:error, protected_dir_message(first, path)}
+        {:file, rel} -> {:error, protected_file_message(rel, path)}
+      end
+    end
+  end
+
+  # The same relative path with every symlink resolved, on both sides. `nil`
+  # when the links cannot be resolved — the lexical test is then the only one,
+  # exactly as before.
+  defp real_relative(root, abs) do
+    with {:ok, real_root} <- real_path(root),
+         {:ok, real} <- real_path(abs) do
+      relative(real_root, real)
+    else
+      _ -> nil
+    end
+  end
+
+  defp protection(nil), do: nil
+
+  defp protection(rel) do
+    first = rel |> Elixir.Path.split() |> List.first()
+
+    cond do
+      first in @protected -> {:dir, first}
+      rel in @protected_files -> {:file, rel}
+      true -> nil
+    end
+  end
+
+  defp protected_dir_message(first, path),
+    do:
+      "#{first}/ is managed by SwarmCode and git and cannot be written by a tool: " <>
+        to_string(path || "")
+
+  defp protected_file_message(rel, path),
+    do:
+      "#{rel} is the memory tool's own file — use the remember tool instead of writing it: " <>
+        to_string(path || "")
+
   def resolve(root, path) do
     path = to_string(path || "")
     root = Elixir.Path.expand(root)
@@ -141,6 +211,73 @@ defmodule SwarmCode.Domain.Tools.Path do
   @spec ignored_dir?(String.t()) :: boolean()
   def ignored_dir?(name), do: name in @ignored or String.starts_with?(name, "_build")
 
+  # ------------------------------------------------------------------ T27: .gitignore
+
+  # The ignore set is read once per process and then re-read at most every 30 s.
+  # Every tool op is its own Task, so in practice it is one `git ls-files` per
+  # op; the clock is for the long-lived callers (the LiveView's change list),
+  # which would otherwise never see a `.gitignore` the user just edited.
+  @ignore_ttl_ms 30_000
+
+  @doc """
+  True when git ignores `path` under `root` (spec 67 T27 / G36).
+
+  The fixed eight-name prune (`@ignored`) covers this project's own build
+  directories and nothing else: in a Python, Rust or JS checkout `grep` walked
+  `.venv/`, `target/` and `dist/` — thousands of vendored files, and the model
+  reading a copy of a library instead of the source. The project's own
+  `.gitignore` is the list that knows.
+
+  One `SwarmCode.Domain.Git.ignored_paths/1` per root per op, memoised in the process
+  dictionary; a directory it names prunes everything below it, so an ignored
+  tree is never entered. A root that is not a git work tree ignores nothing.
+  """
+  @spec gitignored?(String.t(), String.t()) :: boolean()
+  def gitignored?(root, path) do
+    set = ignore_set(root)
+
+    if map_size(set) == 0 do
+      false
+    else
+      rel = relative(Elixir.Path.expand(root), Elixir.Path.expand(path))
+      rel != "." and ignored_rel?(set, rel)
+    end
+  end
+
+  defp ignored_rel?(set, rel) do
+    rel
+    |> Elixir.Path.split()
+    |> Enum.reduce_while({"", false}, fn segment, {prefix, _} ->
+      prefix = if prefix == "", do: segment, else: prefix <> "/" <> segment
+
+      if Map.has_key?(set, prefix), do: {:halt, {prefix, true}}, else: {:cont, {prefix, false}}
+    end)
+    |> elem(1)
+  end
+
+  @doc "Forgets the memoised ignore set — for a test that has just written a `.gitignore`."
+  @spec forget_ignores(String.t()) :: :ok
+  def forget_ignores(root) do
+    Process.delete({__MODULE__, :ignores, Elixir.Path.expand(root)})
+    :ok
+  end
+
+  defp ignore_set(root) do
+    root = Elixir.Path.expand(root)
+    key = {__MODULE__, :ignores, root}
+    now = System.monotonic_time(:millisecond)
+
+    case Process.get(key) do
+      {set, read_at} when now - read_at < @ignore_ttl_ms ->
+        set
+
+      _stale ->
+        set = Map.new(SwarmCode.Domain.Git.ignored_paths(root), &{&1, true})
+        Process.put(key, {set, now})
+        set
+    end
+  end
+
   @doc """
   The children of `dir` a file tool may see: ignored names dropped first, every
   survivor confined against `real_root` with **one** `real_path/1` call, sorted
@@ -149,18 +286,32 @@ defmodule SwarmCode.Domain.Tools.Path do
   `real_root` is `real_path(root)`, resolved once by the caller (spec 51 §7.1).
   With `dot?` false the dot entries are dropped too (`Path.wildcard/2`'s
   `match_dot: false`).
+
+  spec 67 T27 (G36): what the project's `.gitignore` ignores is dropped here
+  too, so every file tool prunes `.venv/`, `target/` and `dist/` before it walks
+  them. `ignored: true` keeps them — `find_files` offers it as an opt-in.
   """
-  @spec entries(String.t(), String.t(), String.t(), boolean()) :: [
+  @spec entries(String.t(), String.t(), String.t(), boolean(), keyword()) :: [
           {String.t(), :directory | :regular, String.t(), String.t()}
         ]
-  def entries(real_root, root, dir, dot? \\ true) do
+  def entries(real_root, root, dir, dot? \\ true, opts \\ []) do
     case real_path(dir) do
-      {:ok, real_dir} -> entries(real_root, Elixir.Path.expand(root), dir, real_dir, dot?)
-      _error -> []
+      {:ok, real_dir} ->
+        do_entries(
+          real_root,
+          Elixir.Path.expand(root),
+          dir,
+          real_dir,
+          dot?,
+          opts[:ignored] == true
+        )
+
+      _error ->
+        []
     end
   end
 
-  defp entries(real_root, root, dir, real_dir, dot?) do
+  defp do_entries(real_root, root, dir, real_dir, dot?, ignored?) do
     if inside?(real_root, real_dir) do
       case File.ls(dir) do
         {:ok, names} -> names
@@ -168,10 +319,35 @@ defmodule SwarmCode.Domain.Tools.Path do
       end
       |> Enum.reject(&ignored_dir?/1)
       |> Enum.reject(&(not dot? and String.starts_with?(&1, ".")))
+      |> reject_gitignored(root, dir, ignored?)
       |> Enum.sort_by(&String.downcase/1)
       |> Enum.flat_map(&child(real_root, root, dir, real_dir, &1))
     else
       []
+    end
+  end
+
+  defp reject_gitignored(names, _root, _dir, true), do: names
+
+  # One map lookup and one concatenation per entry, and the relative prefix of
+  # the directory is built once — `gitignored?/2`'s two `Path.expand/1`s per
+  # name cost more than the walk they were saving (`polish45a_tools_test:38`
+  # measures `grep` over this repository against a 300 ms budget). The prefix
+  # walk is not needed here: an ignored directory is rejected at its own parent,
+  # so the walk never gets inside one to ask about its children.
+  defp reject_gitignored(names, root, dir, _ignored?) do
+    set = ignore_set(root)
+
+    if map_size(set) == 0 do
+      names
+    else
+      prefix =
+        case relative(root, dir) do
+          "." -> ""
+          rel -> rel <> "/"
+        end
+
+      Enum.reject(names, &Map.has_key?(set, prefix <> &1))
     end
   end
 
@@ -232,6 +408,8 @@ defmodule SwarmCode.Domain.Tools.Path do
       `[...]` behave as in `Path.wildcard/2`; everything else is literal.
     * `:dirs` — also return the directories that match (default `false`).
     * `:dot` — descend into and return dot entries (default `true`).
+    * `:ignored` — also walk what `.gitignore` ignores (default `false`,
+      spec 67 T27).
   """
   @spec walk(String.t(), String.t(), keyword()) :: [String.t()]
   def walk(root, start, opts \\ []) do
@@ -243,7 +421,9 @@ defmodule SwarmCode.Domain.Tools.Path do
     with {:ok, real_root} <- real_path(root),
          {:ok, real_start} <- real_confined(real_root, root, start),
          true <- File.dir?(start) do
-      cfg = {real_root, root, start, matcher, opts[:dirs] == true, Keyword.get(opts, :dot, true)}
+      cfg =
+        {real_root, root, start, matcher, opts[:dirs] == true, Keyword.get(opts, :dot, true),
+         opts[:ignored] == true}
 
       [{start, real_start}]
       |> do_walk(MapSet.new([real_start]), cfg, [])
@@ -256,11 +436,11 @@ defmodule SwarmCode.Domain.Tools.Path do
   defp do_walk([], _seen, _cfg, acc), do: acc
 
   defp do_walk([{dir, real_dir} | rest], seen, cfg, acc) do
-    {real_root, root, start, matcher, dirs?, dot?} = cfg
+    {real_root, root, start, matcher, dirs?, dot?, ignored?} = cfg
 
     {queue, seen, acc} =
       real_root
-      |> entries(root, dir, real_dir, dot?)
+      |> do_entries(root, dir, real_dir, dot?, ignored?)
       |> Enum.reduce({rest, seen, acc}, fn {name, type, full, real}, {queue, seen, acc} ->
         keep? = matches?(matcher, start, full, name)
 

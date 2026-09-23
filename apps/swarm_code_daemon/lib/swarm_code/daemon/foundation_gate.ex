@@ -21,7 +21,7 @@ defmodule SwarmCode.Daemon.FoundationGate do
   alias SwarmCode.Daemon.Schema.MigrationManifest
   alias SwarmCode.Daemon.StartupError
 
-  @manifest_source Path.expand("../../../priv/schema/desktop-ccb1973.json", __DIR__)
+  @manifest_source Path.expand("../../../priv/schema/desktop-6dd8d82.json", __DIR__)
   @external_resource @manifest_source
   @audited_manifest MigrationManifest.load!(@manifest_source)
   @schema_contract %{
@@ -612,7 +612,8 @@ defmodule SwarmCode.Daemon.FoundationGate do
              {:ok, manifest} <- load_manifest(config.manifest_path),
              :ok <- validate_loaded_contract(manifest),
              {:ok, %Decision{} = decision} <-
-               schema_check(paths.database, manifest, config.app_version, identity.uid, config) do
+               schema_check(paths.database, manifest, config.app_version, identity.uid, config),
+             :ok <- Schema.Gate.admit_migration(decision, manifest) do
           finish_decision(decision, lease, paths, identity, fingerprint, config)
         else
           {:error, %StartupError{} = error} -> {:error, error}
