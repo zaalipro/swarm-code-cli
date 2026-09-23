@@ -194,6 +194,14 @@ impl Tty {
         modes
     }
 }
+/// The bytes queued on the terminal and not yet read.
+pub fn pending(fd: RawFd) -> io::Result<usize> {
+    let mut available: libc::c_int = 0;
+    if unsafe { libc::ioctl(fd, libc::FIONREAD, &mut available) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(available.max(0) as usize)
+}
 pub fn size(fd: RawFd) -> io::Result<(u16, u16)> {
     let mut size: libc::winsize = unsafe { std::mem::zeroed() };
     if unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &mut size) } < 0 {

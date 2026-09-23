@@ -565,3 +565,23 @@ fn sgr_wheel_reports_become_events_and_other_mouse_reports_are_consumed() {
         );
     }
 }
+#[test]
+fn cooked_typeahead_enter_is_enter_again() {
+    // pass70 Q17: "/resume⏎" typed while swarmcode started arrives as
+    // "/resume\n" (the shell's ICRNL), split across two reads.
+    let mut first = *b"/res";
+    let mut second = *b"ume\nab\n";
+    let left = typeahead_enter(&mut first, 8);
+    assert_eq!(left, 4);
+    let left = typeahead_enter(&mut second, left);
+    assert_eq!(left, 0);
+    assert_eq!(&first, b"/res");
+    // Only the cooked bytes: the LF typed after raw mode stays Ctrl-J.
+    assert_eq!(&second, b"ume\rab\n");
+
+    let mut p = InputParser::new();
+    let mut events = feed(&mut p, &first);
+    events.extend(feed(&mut p, &second[..4]));
+    assert_eq!(events.last(), Some(&key(Key::Enter)));
+    assert_eq!(events[..events.len() - 1].len(), 7);
+}

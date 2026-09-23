@@ -92,6 +92,8 @@ struct Session<'a> {
     escape_since: Option<Instant>,
     dimensions: (u16, u16),
     pending_resize: Option<(u16, u16)>,
+    // Bytes queued before raw mode began, typed under cooked input (Q17).
+    cooked: usize,
 }
 impl Session<'_> {
     fn send(&mut self, bytes: Vec<u8>) -> Result<(), u8> {
@@ -102,6 +104,9 @@ impl Session<'_> {
     }
     fn activate(&mut self) -> Result<(), u8> {
         guard::modes(self.guard, Some(self.flags)).map_err(|_| 2)?;
+        // Everything queued at this moment was typed before the terminal was
+        // raw (while swarmcode started, or in the shell while suspended).
+        self.cooked = tty::pending(self.tty).unwrap_or(0);
         self.active = true;
         self.painter.invalidate();
         self.dimensions = tty::size(self.tty).map_err(|_| 2)?;
@@ -339,6 +344,8 @@ impl Session<'_> {
                         return Ok(());
                     }
                     Some(n) => {
+                        self.cooked =
+                            crate::input::typeahead_enter(&mut self.input[..n], self.cooked);
                         self.start = 0;
                         self.end = n;
                     }
@@ -358,6 +365,8 @@ impl Session<'_> {
                 match read_fd(self.tty, &mut self.input).map_err(|_| 4)? {
                     Some(0) => return Ok(()),
                     Some(n) => {
+                        self.cooked =
+                            crate::input::typeahead_enter(&mut self.input[..n], self.cooked);
                         self.start = 0;
                         self.end = n;
                     }
@@ -401,6 +410,7 @@ pub fn run(guard: &mut UnixStream, tty: RawFd) -> i32 {
         escape_since: None,
         dimensions: (0, 0),
         pending_resize: None,
+        cooked: 0,
     };
     let result = session.run();
     // This synchronous handshake also handles initialization failure. The guard

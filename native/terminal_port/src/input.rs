@@ -714,3 +714,19 @@ fn decode_csi_u(params: &[u8]) -> Option<Event> {
     };
     Some(key_event(key, phase, mods))
 }
+
+/// pass70 Q17: the bytes typed while swarmcode was still starting went
+/// through the shell's cooked line discipline, whose ICRNL turned Enter's CR
+/// into LF, and a bare LF decodes as Ctrl-J, the composer's newline. So a
+/// prompt typed ahead and sent with Enter landed as a line break in the draft.
+/// Within the first `cooked` bytes read once the terminal is raw, LF is Enter
+/// again. Returns how many cooked bytes are still to come.
+pub fn typeahead_enter(bytes: &mut [u8], cooked: usize) -> usize {
+    let take = bytes.len().min(cooked);
+    for byte in &mut bytes[..take] {
+        if *byte == b'\n' {
+            *byte = b'\r';
+        }
+    }
+    cooked - take
+}
