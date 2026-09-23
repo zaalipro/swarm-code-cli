@@ -10,9 +10,13 @@ available for the verified TUI path.
 The live launcher uses in-memory history. Deterministic demos and a passive
 preview gallery are also available.
 
-Start a saved development session from this checkout with a model available from
-your provider and an API key already set in your environment. The development
-launchers also load `~/.secrets` automatically when no provider key is exported:
+The saved session uses the providers and models of the SwarmCode database, exactly
+like the desktop app: the conversation's own choice, then the default in Settings.
+Environment variables never add provider rows or change a conversation's model.
+Only when the database has no usable provider at all does the first launch create
+one from `SWARM_MODEL`, `SWARM_BASE_URL` and `SWARM_API_KEY`, and it says so. Start
+a saved development session from this checkout (the development launchers load
+`~/.secrets` automatically when no provider key is exported):
 
 ```sh
 scripts/dev/check_terminal_port.sh
@@ -24,7 +28,8 @@ scripts/dev/run_saved_session.sh
 ```
 
 You may keep the same exports in `~/.secrets`; the launcher preserves values
-already exported for `SWARM_*`, `OPENAI_*`, and `ANTHROPIC_*` in the calling shell.
+already exported for `SWARM_*`, `OPENAI_*`, and `ANTHROPIC_*` in the calling shell,
+and loads only those three families from the file (never its other secrets).
 The saved, live, and plain development launchers share this behavior. Set
 `SWARM_ENV_FILE=/path/to/provider.env` to use another shell environment file.
 An exported provider key, including an explicitly empty key for local servers,
@@ -70,7 +75,8 @@ TUI):
 | --- | --- |
 | letters | always type |
 | Enter | send |
-| Ctrl-O, Shift-Enter | new line |
+| Ctrl-O, Ctrl-J, Shift-Enter | new line |
+| Ctrl-X | edit the draft in `$VISUAL` / `$EDITOR` (else `vi`) |
 | Esc | stop the turn that is streaming; close the top dialog or list first |
 | Ctrl-C | close a dialog, else clear the draft (Ctrl-Z brings it back), else stop the turn; twice in 1.5 s quits (it asks when runs are live) |
 | Tab | complete a `/command` or an `@path`; while a turn runs, queue the draft |
@@ -80,13 +86,21 @@ TUI):
 | Ctrl-P | palette: conversations, runs, features, the model |
 | Ctrl-N | the next approval or question waiting |
 | `y` `Y` `A` `d` `D` `n` | on an approval: once, this run, always this command family, deny, deny and stop, next |
+| mouse wheel | scrolls what is under the pointer, only with `SWARM_MOUSE=1` (it turns off the terminal's own text selection) |
 
 An approval or a question opens over the conversation by itself; for a moment
 after it opens, keys keep typing into the draft, so a sentence is never
 answered by accident. The client answers some slash commands itself: `/new`
 (`/clear`), `/resume` (pick a conversation), `/approval read-only|auto|full`,
 `/trust`, `/queue <text>`, `/help` and `/quit`; typing `/` lists every command
-above the composer. Exiting either development launcher stops its owned runs.
+above the composer. The project's approval mode is the desktop's and is always on
+the status line: a new project is read-only until `/trust`; in `auto`, edits and
+safe commands (`ls`, `git status`) run by themselves and other commands ask.
+Quitting stops the session's runs and prints a short summary with the
+`swarmcode --continue` hint. Logs go to `~/Library/Logs/SwarmCode/cli.log`, never
+to the terminal. A second `swarmcode` on the same database exits with status 3
+and one sentence naming the first one's process; a Ctrl-C outside the full-screen
+view (while it starts, during `-p`, after the summary) simply ends the program.
 The saved launcher performs guarded admission before accessing shared storage.
 
 To assemble a checked BEAM release, including the native terminal-port gate:
@@ -149,14 +163,18 @@ canonical database and survive reinstalls.
 
 | Variable | Meaning |
 | --- | --- |
-| `SWARM_PROVIDER` | `openai` (default) or `anthropic` |
-| `SWARM_MODEL` | Required model ID; provider-specific `OPENAI_MODEL` / `ANTHROPIC_MODEL` also work |
-| `SWARM_BASE_URL` | Explicit provider endpoint; OpenAI-compatible URLs include `/v1`, Anthropic URLs omit it. Provider-specific `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL` also work. |
-| `SWARM_API_KEY` | Overrides `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`; may be empty for local servers |
-| `SWARM_PROJECT_ROOT` | Project directory; defaults to the shell's current directory |
-| `SWARM_APPROVAL` | `ask` (default), `read-only`, or `auto` |
-| `SWARM_EFFORT` | Reasoning effort key; defaults to `medium` |
-| `SWARM_ENV_FILE` | Optional shell environment file; defaults to `~/.secrets` for development launchers |
+| `SWARM_PROVIDER` | First run only: `openai` (default) or `anthropic` |
+| `SWARM_MODEL` | First run only (no usable provider in the database): the model ID; `OPENAI_MODEL` / `ANTHROPIC_MODEL` also work |
+| `SWARM_BASE_URL` | First run only: the endpoint; OpenAI-compatible URLs include `/v1`, Anthropic URLs omit it. `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL` also work. |
+| `SWARM_API_KEY` | First run only: overrides `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`; may be empty for local servers |
+| `SWARM_PROJECT_ROOT` | Development launchers: project directory (default: the current directory); `swarmcode` ignores it, name the directory instead |
+| `SWARM_CONVERSATION` | `latest` (default), `new`, or a conversation id; the `swarmcode` flags win |
+| `SWARM_MODEL_OVERRIDE` | Set by `swarmcode --model` only: the session's model, never written |
+| `SWARM_KEYMAP` | `vim` for vim keys in the composer |
+| `SWARM_MOUSE` | `1` for mouse-wheel scrolling |
+| `SWARM_COMPANION` | `0` turns the visual companion off |
+| `SWARM_APPROVAL` | Unsaved live launcher only: `ask` (default), `read-only` or `auto`; saved sessions use the project's approval mode |
+| `SWARM_ENV_FILE` | Optional shell environment file; defaults to `~/.secrets` |
 
 Use `scripts/dev/run_live_session.sh --help` for startup help without building or
 opening the TUI. For Anthropic set `SWARM_PROVIDER=anthropic`,
@@ -166,9 +184,11 @@ model ID. Local OpenAI-compatible servers can use an empty `SWARM_API_KEY`.
 Saved slash commands are parsed and dispatched through the typed service boundary.
 `/swarm`, `/goal`, `/plan`, `/review`, `/effort`, `/swarm_effort`, `/rewind`,
 `/stop`, `/workflow`, `/workflows`, `/create-workflow`, `/ultra`,
-`/consensus`, `/deep_research`, and `/compact` have daemon execution mappings;
-`/new`, `/resume`, `/approval`, `/trust`, `/queue`, `/help` and `/quit` are
-answered by the client.
+`/consensus`, `/deep_research`, `/compact`, `/model`, `/cost`, `/search <words>`
+(this project's conversations), `/export [file]`, `/agents`, `/diff` (the
+inspector's changes tab), `/resume <id or title>` and `/resume-run` have daemon
+execution mappings; `/new` (`/clear`), `/resume` (the picker), `/approval`,
+`/trust`, `/queue`, `/help` and `/quit` are answered by the client.
 `/attach <image-path>` stages a confined project image for the next saved
 message; the attachment is consumed when that message starts.
 Advanced flows still require full end-to-end acceptance. The unsaved launcher
@@ -255,9 +275,11 @@ they do not run a terminal, daemon, or provider. Each export gets a fresh direct
 
 The existing foundation gate covers canonical paths, identity, private directories, leases,
 read-only schema admission, and verified backups. It is not a normal startup path.
-Its current schema contract describes all 46 migrations at desktop `fb1b4ff`;
-the historical 43-migration contract remains available for validation. See the
-[schema audit](docs/evidence/schema/desktop-fb1b4ff.json) for source and replay identities.
+Its current schema contract describes all 57 migrations at desktop `6dd8d82`
+(pass 69); a 53-migration database from desktop pass 63 is backed up and migrated
+through the contract's `forward_compatible` allowlist, and any other pending or
+unknown migration is refused with one sentence. The domain itself is re-derived
+from that commit with `mix swarm_code.provenance.sync` (see AGENTS.md).
 
 - [Approved CLI architecture](docs/superpowers/specs/2026-09-01-swarm-code-cli-design.md)
 - [Foundation safety and macOS residual risk](docs/foundation-safety.md)

@@ -24,7 +24,7 @@ command below says otherwise. Native builds also need `cc` (C11), `python3`, and
 | --- | --- |
 | Fetch deps | `mise exec -- mix setup` |
 | Build the Rust terminal port (required before any real TUI launch or release) | `scripts/dev/check_terminal_port.sh` → `_build/terminal-port/debug/swarm-terminal-port`; also runs `cargo fmt --check`, `cargo test --locked` and the license-manifest check; installs nothing |
-| Full contributor gate | `mise exec -- mix precommit` (runs in `MIX_ENV=test`: format check, `compile --warnings-as-errors`, `deps.unlock --check-unused`, all tests, provenance verify, schema-snapshot check, Unicode source checks) |
+| Full contributor gate | `mise exec -- mix precommit` (runs in `MIX_ENV=test`: format check, `compile --warnings-as-errors`, `deps.unlock --check-unused`, all tests, provenance verify, `provenance.sync --check`, schema-snapshot check, Unicode source checks) |
 | All tests (authoritative, ~15 min, three apps in-process) | `mise exec -- mix test` |
 | One file or one test | `mise exec -- mix test apps/swarm_code_core/test/swarm_code/protocol/chunk_buffer_test.exs:6` |
 | Format | `mise exec -- mix format` |
@@ -37,10 +37,21 @@ command below says otherwise. Native builds also need `cc` (C11), `python3`, and
 | Real unsaved session | `scripts/dev/run_live_session.sh` |
 | Headless session, one command per line on stdin | `scripts/dev/run_plain_session.sh [--ndjson]` |
 | Release / install | `scripts/dev/build_release.sh` → `_build/prod/rel/swarm_code_cli`; `scripts/install.sh` installs `swarmcode` |
+| Packaged entry points | `bin/swarmcode [DIR] [--new\|--continue\|--resume ID] [--model M] [-p PROMPT [--json]] [--plain [--ndjson]]`; the launcher validates flags in bash (usage exits 2 before any VM), the TUI is `bin/swarm_code_cli start` with `SWARM_RELEASE_TUI=1`, `-p`/`--plain` are `bin/swarm_code_cli eval 'SwarmCodeCLI.Release.main(System.argv())' …`. Exit codes 0 done, 1 failed, 2 usage, 3 startup refused |
+| Re-derive the desktop domain | `mise exec -- mix swarm_code.provenance.sync --ref <desktop sha>` (read-only `git` on `~/dev/swarm-code` or `$SWARM_CODE_UPSTREAM`); `--check` verifies (in precommit) |
+| Re-pin a hand-edited ledger file outside the sync mappings | `mise exec -- mix swarm_code.provenance.repin <path> …` |
 
-Provider settings (`SWARM_PROVIDER`, `SWARM_MODEL`, `SWARM_BASE_URL`, `SWARM_API_KEY`, …) come
-from `~/.secrets` (or `SWARM_ENV_FILE`) unless already exported; an exported stale value shadows
-the file. On macOS quit the desktop app before a saved session; they cannot share the database.
+Providers (pass 70, decision D3): the database's providers and the conversation's own choice
+decide the model, exactly like the desktop (`Providers.effective_model/2`). `SWARM_*` never
+create provider rows or rewrite a conversation; only when the database has no usable provider at
+all does the first run create one row from `SWARM_MODEL`/`SWARM_BASE_URL`/`SWARM_API_KEY` and say
+so (a toast in the TUI, a stderr line headless). `swarmcode --model M` (env
+`SWARM_MODEL_OVERRIDE`, set only by the launcher) is an in-memory session override applied at
+each `Engine.start_*`; an explicit `/model` ends it. The launchers load only `SWARM_*`,
+`OPENAI_*` and `ANTHROPIC_*` from `~/.secrets` (or `SWARM_ENV_FILE`), never the whole file, and
+the synced engine scrubs secrets from model-run shells. Logger output goes to
+`~/Library/Logs/SwarmCode/cli.log` (0600, rotated; XDG state on Linux), never to the tty. On
+macOS quit the desktop app before a saved session; they cannot share the database.
 
 ### Test gotchas
 
@@ -69,13 +80,22 @@ Three umbrella apps with deliberate ownership boundaries (`apps/*/mix.exs`):
   handshake/request), `SwarmCode.Commands` the slash-command registry, and
   `SwarmCode.Governance.Provenance` the extraction audit.
 - **`swarm_code_daemon`**: the domain extracted from the desktop app plus the daemon shell.
-  `SwarmCode.Domain.*` is the desktop lineage (Ecto SQLite Repo via vendored `exqlite`,
+  `SwarmCode.Domain.*` is the desktop lineage, re-derived from desktop `6dd8d82` (pass 69) by
+  `mix swarm_code.provenance.sync`; CLI-local files (`domain/runtime.ex`, `paths.ex`,
+  `notifications.ex`, `pub_sub.ex`, `feature_catalog.ex`, `html.ex`,
+  `engine/pending_interactions.ex`) are never synced (Ecto SQLite Repo via vendored `exqlite`,
   conversations, `Engine` with run/agent supervisors, LLM adapters, tools, workflows, research,
   scheduler, MCP, settings). `SwarmCode.Daemon.*` wraps it: `FoundationGate` (canonical paths,
   process identity, private directories, signed macOS desktop detector, `CrossAppLease`, audited
   `Schema.Contract` probe, verified backup gate), `RepoLauncher`, and `Service.*` (owner-only Unix
   socket `Connection`, `RequestRouter`, `CommandDispatcher`, durable `CommandLedger`,
   `PersistedBackend` for saved sessions vs `LiveBackend` for unsaved ones, projections).
+  `Daemon.Boot` is the desktop's `Bootstrap` (interrupted runs, seeded providers, MCP, research
+  sweep, attachment prune, delayed isolation sweep; never the Scheduler, which the desktop
+  owns) and `Daemon.Shutdown` its `Quit` (stop runs, kill background commands, wait for the
+  flush, stop run/research/MCP/LSP subtrees): quitting a session stops its runs.
+  `domain/runtime.ex` starts the domain's children, including `Tools.BackgroundProcs`,
+  `Hooks.TaskSupervisor` (every tool call's post-hook needs it) and `LSP.Supervisor`.
   `Daemon.Runtime.Run` is the transient in-memory runtime the live launcher uses; saved sessions go
   through `Domain.Engine` and the guarded Repo. The socket listener never starts with the
   application; launchers own it. A custom Mix compiler (`:schema_snapshot`, top of
@@ -98,21 +118,41 @@ Invariants that the code base defends and tests pin:
 - Renderer structs and native key names never enter core, the reducer or persisted state.
 - Reducer and projector are pure; clocks, identifiers and external facts come from the owner.
 - Clients never make policy or liveness decisions; approvals are server-side compare-and-set.
+  An approval row (`RunServer.pending_interactions/1`, CLI-local projection) names the waiting
+  **op** node; its decisions are `approve` (`y`), `approve_run` (`Y`, the engine's `:always`),
+  `always_prefix` (`A`, the server's own command family, never the client's), `deny` (`d`) and
+  `deny_stop` (`D`). The project's approval mode and trust are the desktop's: a new project is
+  `read_only` until `/trust`; `/approval read-only|auto|full` changes it. In `auto`, writes and
+  `:safe` commands (`ls`, `git status`) run without asking and other commands ask.
 - Runtime input never selects modules or creates atoms; JSON and text have byte, count and
   nesting ceilings that return errors rather than truncating.
 - The canonical database is never reset, recreated or repaired. An unknown schema fails closed
-  with `StartupError{code: :schema_incompatible}` ("could not pass the read-only schema probe").
-  When the desktop repo gains migrations, re-pin: add a `Schema.Contract` entry for the upstream
-  commit, regenerate with `apps/swarm_code_daemon/priv/schema/generate_manifest.exs` using
-  absolute `--output`/`--fixtures-dir` paths, then update the `FoundationGate` manifest source,
-  the provenance pins and the pinned counts in the daemon schema tests.
+  with `StartupError{code: :schema_incompatible}`. The contract `desktop-6dd8d82` has 57
+  migrations; its `forward_compatible` allowlist lets a 53-migration database (desktop pass 63)
+  be backed up and migrated, and `Schema.Gate.admit_migration/2` refuses any other pending
+  migration ("Open the SwarmCode app once to upgrade the database") or a database ahead of the
+  manifest (`Schema.Refusal` holds both sentences). When the desktop repo gains migrations,
+  re-pin: sync the domain (`mix swarm_code.provenance.sync --ref <sha>`, which brings the
+  migrations), add a `Schema.Contract` entry for the commit, regenerate with
+  `apps/swarm_code_daemon/priv/schema/generate_manifest.exs` using absolute
+  `--output`/`--fixtures-dir` paths, update the `FoundationGate` manifest source and the
+  allowlist, then the pinned counts in the daemon schema tests.
 
 ## Provenance and vendored sources
 
 `provenance/extracted-files.json` lists every file copied from the desktop repo (most of
-`Domain.*`, `llm/`, `tools/`, the migrations, a few tests) with upstream path, commit and hashes.
-`mix swarm_code.provenance.verify` (in precommit) rejects drift, so an edit to a listed file
-must update its manifest entry. `third_party/` and `vendor/exqlite` are pinned copies checked
+`Domain.*`, `llm/`, `tools/`, the migrations, built-in agents/workflows/skills, pure upstream
+tests) with upstream path, commit and hashes. `mix swarm_code.provenance.verify` (in precommit)
+rejects drift. Files under a mapping of `provenance/sync-rules.json` (the pin, the ordered
+namespace rewrite rules, mappings, exclusions) are derived as `format(rewrite(upstream@pin))`
+plus a recorded CLI patch `provenance/patches/<destination>.diff`; after a deliberate edit of
+one, run `mix swarm_code.provenance.sync --ref <pinned sha>` to record the patch, and
+`--check` (in precommit) fails otherwise. A sync to a newer desktop commit 3-way merges patched
+files and stops on a conflict, writing only `<destination>.sync-conflict` (resolve, then rerun
+with `--resolved <destination>`). Ledger entries outside every mapping (the live-runtime copies
+`lib/swarm_code/{llm,tools}`, `daemon/runtime/run.ex`, core `commands.ex`,
+`service/command_dispatcher.ex`, the web shims) are frozen: after editing one, run
+`mix swarm_code.provenance.repin <path>`. `third_party/` and `vendor/exqlite` are pinned copies checked
 by `scripts/dev/sync_unicode_width.exs --check`, `sync_unicode_variants.py --check` and
 `verify_terminal_port_licenses.py`. Hex deps are pinned with `==` and
 `deps.unlock --check-unused` is a gate: do not add packages casually.
@@ -125,6 +165,14 @@ by `scripts/dev/sync_unicode_width.exs --check`, `sync_unicode_variants.py --che
   protocol) are always unavailable. A bare Esc resolves after 40 ms.
 - Letters arrive as `{:text_fragment, …}`, only special keys as `{:key, …}`; keymap tests for
   bare letters must set `focus: "main"` or the letter is treated as typing.
+- The keyboard is composer-first (pass 70, D5): letters always type; Esc stops the streaming
+  turn or closes the top layer and never moves focus; Ctrl-C closes a layer, else clears the
+  draft (Ctrl-Z restores it), else stops the turn, and a second Ctrl-C within 1.5 s quits
+  (asking "Stop N live runs and quit?" when runs are live); `q` closes or quits only in select
+  mode (Ctrl-T), dialogs and pickers. Ctrl-J (the port decodes a bare LF as Ctrl-J) and Ctrl-O insert a
+  newline; Ctrl-X edits the draft in `$VISUAL`/`$EDITOR`. An approval card opens over the
+  conversation by itself with `y Y A d D n`. `SWARM_MOUSE=1` opts into SGR wheel reports (off by
+  default: they disable the terminal's own selection).
 - Measure glyphs with `SwarmCodeCLI.UI.Width.cells/2` under both ambiguous-width policies before
   drawing. Box drawing, half blocks and emoji are ambiguous or wide. Progress is the `▐` tick
   bar, not a solid fill. Colours come from `UI.Theme` (the web app's Carbon tokens); never invent
@@ -132,5 +180,11 @@ by `scripts/dev/sync_unicode_width.exs --check`, `sync_unicode_variants.py --che
 - To drive the real TUI end to end, do not sleep inside the Python pty harness: it stops draining
   the pty and the port dies with fake `:draw`/`:restoration` errors. Use GNU screen
   (`screen -dmS name …`, then `screen -S name -p 0 -X width -w 170 45`, `-X stuff`,
-  `-X hardcopy`), and always quit the TUI with `q` before closing the window.
+  `-X hardcopy`), and always quit the TUI with its own quit path (Ctrl-C twice, and a third time if
+  it asks "Stop N live runs and quit?") before closing the window. The release prints a short exit summary to
+  the main screen after it leaves the alternate screen. `rel/env.sh.eex` starts the VM with
+  `+Bd`, so a Ctrl-C in a cooked terminal (boot, `-p`, the moment after the summary) ends the
+  process instead of opening the Erlang BREAK menu; the locked-branch test pins that file's
+  hash. In screen, `hardcopy` mangles non-ASCII; the `-L` logfile keeps the raw bytes (use it
+  to measure output per keystroke or per reply).
 - The plain launcher closes at stdin EOF, so hold stdin open to see a model reply.
