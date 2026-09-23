@@ -125,6 +125,28 @@ defmodule SwarmCodeCLI.UI.ProjectorShellTablineTest do
       end
     end
 
+    # pass71 F11 (review R12): one conversation of four turns made four tabs
+    # with frozen clocks; a finished chat turn is the transcript's, not a tab.
+    test "finished chat turns take no tab unless they are in view" do
+      state = populated(active: "workflow-1")
+
+      extra = [
+        run("chat-done", :chat, state: :done, created_sequence: 9),
+        run("goal-done", :goal, state: :stopped, created_sequence: 8)
+      ]
+
+      state =
+        update_in(state.read_model.runs, &Map.merge(&1, Map.new(extra, fn r -> {r.id, r} end)))
+
+      ids = Enum.map(Shell.tabline_runs(state), & &1.id)
+      refute "chat-done" in ids
+      refute "goal-done" in ids
+      assert "chat-1" in ids and "research-1" in ids
+
+      in_view = %{state | destination: {:run, "chat-done"}}
+      assert [%{id: "chat-done"} | _] = Shell.tabline_runs(in_view)
+    end
+
     test "the active run leads the row whatever its recency" do
       # chat-1 is the oldest run in the fleet, so recency alone would put it last.
       state = populated(active: "chat-1")

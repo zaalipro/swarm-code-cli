@@ -113,14 +113,17 @@ defmodule SwarmCodeCLI.UI.Projector.W5GaugeIntegrationTest do
 
       run1 = hd(Map.values(state.read_model.runs))
 
+      # pass71 F11: a finished chat turn has no tab of its own any more, so
+      # the second run is a swarm (which keeps one) and the first is live.
       run2 = %{
         run1
         | id: "fixture-run-2",
           title: "Second run for color test",
+          kind: :swarm,
           state: :failed
       }
 
-      state = put_in(state.read_model.runs[run1.id].state, :done)
+      state = put_in(state.read_model.runs[run1.id].state, :running)
       state = put_in(state.read_model.runs[run2.id], run2)
 
       # Add run2 to the shell order

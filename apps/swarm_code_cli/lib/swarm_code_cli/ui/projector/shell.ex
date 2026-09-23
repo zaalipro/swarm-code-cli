@@ -271,7 +271,14 @@ defmodule SwarmCodeCLI.UI.Projector.Shell do
   are not somewhere you can switch back to.
   """
   def tabline_runs(state) do
-    ordered = RunRow.visible(state.read_model.runs, "", RunRow.shell_order(state))
+    # pass71 F11 (review R12): a finished chat or goal turn belongs to the
+    # transcript, not the tab row; four turns made four tabs with frozen
+    # clocks. Live runs, swarms, workflows and the like keep their tabs, and
+    # the run in view always has one (below).
+    ordered =
+      state.read_model.runs
+      |> RunRow.visible("", RunRow.shell_order(state))
+      |> Enum.filter(&tab_worthy?/1)
 
     case active_run_id(state) do
       nil ->
@@ -292,6 +299,21 @@ defmodule SwarmCodeCLI.UI.Projector.Shell do
         end
     end
   end
+
+  @tab_live [
+    :queued,
+    :running,
+    :streaming,
+    :waiting_question,
+    :waiting_approval,
+    :paused,
+    :retrying
+  ]
+
+  defp tab_worthy?(%{kind: kind, state: state}),
+    do: kind not in [:chat, :goal] or state in @tab_live
+
+  defp tab_worthy?(_), do: true
 
   defp active_run_id(state) do
     case Support.run(state) do
