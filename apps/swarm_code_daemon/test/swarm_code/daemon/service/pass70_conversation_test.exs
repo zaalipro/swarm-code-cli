@@ -224,6 +224,33 @@ defmodule SwarmCode.Daemon.Service.Pass70ConversationTest do
              seen(c.backend, "seen", "conversation", c.current.id)
   end
 
+  # pass70 F (D3): the launcher hands the backend the first-run onboarding
+  # sentence; it is told once, as a toast, when the shell watch is ready.
+  test "the first-run notice is one toast on the first shell watch", c do
+    stop_supervised!(Backend)
+
+    backend =
+      start_supervised!(
+        {Backend,
+         mode: :persisted,
+         repo: Repo,
+         project_root: c.project.root_path,
+         project_id: c.project.id,
+         conversation_id: c.current.id,
+         source_epoch: Ecto.UUID.generate(),
+         first_run_notice: "First run: added the provider Local from your SWARM_* settings."}
+      )
+
+    watch!(backend, "workspace", conversation(c.current.id), "workspace")
+    refute_receive {:service_delta, _, _, %{"kind" => "toast"}}, 200
+
+    watch!(backend, "shell", global(), "shell")
+    assert %DTO.Toast{level: :info, title: "First run", text: "First run: added" <> _} = toast!()
+
+    watch!(backend, "shell", global(), "shell-2")
+    refute_receive {:service_delta, _, _, %{"kind" => "toast"}}, 200
+  end
+
   describe "outside the open conversation (C5)" do
     setup c do
       watch!(c.backend, "shell", global(), "shell")

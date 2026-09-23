@@ -14,6 +14,7 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
             [
               SwarmCode.Daemon.FoundationGate.BootConfig,
               SwarmCode.Daemon.Platform.Paths,
+              SwarmCode.Daemon.Schema.Refusal,
               SwarmCode.Daemon.RepoLauncher,
               SwarmCode.Daemon.Service.SessionConfiguration,
               SwarmCode.Daemon.Service.SessionSelection,
@@ -262,7 +263,8 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
           project_root: session.project.root_path,
           project_id: session.project.id,
           conversation_id: conversation_id,
-          source_epoch: source_epoch
+          source_epoch: source_epoch,
+          first_run_notice: session[:notice]
         )
 
       path = Path.join(dir, "s")
@@ -680,10 +682,21 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
   defp startup_words(:data_lease_held, _error, boot),
     do: {lease_holder(boot), "Close it first (q, then y if it asks), then run swarmcode again."}
 
-  defp startup_words(:schema_incompatible, _error, _boot),
-    do:
-      {"Your conversations database comes from a SwarmCode version this swarmcode does not know.",
-       "Update swarmcode, or open the SwarmCode app once to upgrade the database. Nothing was changed."}
+  # The allowlist's two refusals (pass70 D2: an upgrade only the app makes, a
+  # database from a newer app) already say what to do; any other schema
+  # failure gets the general sentence.
+  defp startup_words(:schema_incompatible, error, _boot) do
+    refusals = [
+      SwarmCode.Daemon.Schema.Refusal.desktop_upgrade_required(),
+      SwarmCode.Daemon.Schema.Refusal.database_ahead()
+    ]
+
+    if Enum.any?(refusals, &(&1.message == error.message)),
+      do: {error.message, error.action},
+      else:
+        {"Your conversations database comes from a SwarmCode version this swarmcode does not know.",
+         "Update swarmcode, or open the SwarmCode app once to upgrade the database. Nothing was changed."}
+  end
 
   defp startup_words(code, _error, _boot)
        when code in [:private_directory_failed, :path_resolution_failed, :lease_failed],

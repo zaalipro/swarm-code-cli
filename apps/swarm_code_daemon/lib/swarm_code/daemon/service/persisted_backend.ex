@@ -87,9 +87,9 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         # new wait elsewhere), the providers' last rate-limit windows, and the
         # MCP servers that failed (so their recovery is told too).
         waiting_seen: MapSet.new(Questions.list(), & &1.conversation_id),
-        # pass70 D3: the first-run onboarding sentence, told once as a toast
-        # when the shell watch is ready.
-        first_run_notice: SessionConfiguration.notice(),
+        # pass70 D3: the first-run onboarding sentence the launcher passes in,
+        # told once as a toast when the shell watch is ready.
+        first_run_notice: first_run_notice(opts[:first_run_notice]),
         rate_limits: %{},
         mcp_failed: MapSet.new(),
         # pass70 C6: an agent's model is a virtual node field the RunServer
@@ -828,6 +828,9 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   defp mode_words("read_only"), do: "read-only"
   defp mode_words("full_access"), do: "full access"
   defp mode_words(mode), do: to_string(mode)
+
+  defp first_run_notice(text) when is_binary(text) and text != "", do: preview(text, 1024)
+  defp first_run_notice(_), do: nil
 
   defp first_run_toast(%{first_run_notice: text} = state, "shell") when is_binary(text),
     do: toast(%{state | first_run_notice: nil}, "info", "First run", text, nil)
