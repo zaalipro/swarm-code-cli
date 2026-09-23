@@ -1,8 +1,16 @@
 defmodule SwarmCode.Daemon.RepoLauncher do
   @moduledoc "Owns existing-schema Foundation admission and a private guarded Repo pool."
   use GenServer, restart: :temporary
+  require Logger
   alias SwarmCode.Daemon.{CrossAppLease, FoundationGate}
   alias SwarmCode.Domain.Repo
+
+  # Guarded cleanup is bounded (pass70 B1, rel F1): at most this many 100 ms
+  # attempts, one full-VM garbage collection on the way (unreachable statement
+  # references in other heaps keep native handles open), then a terminal
+  # `:cleanup_unconfirmed` answer instead of an endless retry.
+  @cleanup_attempts 50
+  @cleanup_gc_attempt 10
 
   def start_link(options) do
     if Keyword.keyword?(options) and
@@ -15,7 +23,14 @@ defmodule SwarmCode.Daemon.RepoLauncher do
   end
 
   def await_ready(server, timeout \\ 30_000), do: GenServer.call(server, :await_ready, timeout)
-  def close(server), do: GenServer.call(server, :close, 15_000)
+
+  @doc """
+  Stops the guarded Repo and settles the native lease. Answers `:ok`, or
+  `{:error, :cleanup_unconfirmed}` when a native handle is still pending after
+  the bounded cleanup (committed data is durable either way).
+  """
+  @spec close(GenServer.server()) :: :ok | {:error, :cleanup_unconfirmed}
+  def close(server), do: GenServer.call(server, :close, 20_000)
   def status(server), do: GenServer.call(server, :status)
   def socket_path(server), do: GenServer.call(server, :socket_path)
 
@@ -37,7 +52,8 @@ defmodule SwarmCode.Daemon.RepoLauncher do
        waiters: [],
        closers: [],
        timer: nil,
-       failure: nil
+       failure: nil,
+       cleanup_attempts: 0
      }, {:continue, :prepare}}
   end
 
@@ -168,9 +184,10 @@ defmodule SwarmCode.Daemon.RepoLauncher do
   def handle_call(:socket_path, _from, state), do: {:reply, {:error, :not_ready}, state}
 
   def handle_call(:close, from, state) do
-    state = stop_repo(%{state | phase: :closing, closers: [from | state.closers]})
+    state =
+      stop_repo(%{state | phase: :closing, closers: [from | state.closers], cleanup_attempts: 0})
+
     send(self(), :cleanup)
-    Process.send_after(self(), :cleanup_reply_deadline, 3_000)
     {:noreply, state}
   end
 
@@ -247,23 +264,27 @@ defmodule SwarmCode.Daemon.RepoLauncher do
       else: fail(state, :database_binding_changed)
   end
 
-  def handle_info(:cleanup_reply_deadline, %{phase: :closing} = state) do
-    Enum.each(state.closers, &GenServer.reply(&1, {:error, {:cleanup_pending, self()}}))
-    {:noreply, %{state | closers: []}}
-  end
-
   def handle_info(:cleanup, state) do
     state = stop_repo(state)
+    attempt = state.cleanup_attempts + 1
+    if attempt == @cleanup_gc_attempt, do: collect_garbage()
 
     case if(state.repo == nil, do: settle_lease(state.lease), else: {:error, :cleanup_pending}) do
       :ok ->
         Enum.each(state.closers, &GenServer.reply(&1, :ok))
-        next = %{state | lease: nil, repo: nil, closers: []}
+        next = %{state | lease: nil, repo: nil, closers: [], cleanup_attempts: 0}
+        if state.phase == :closing, do: {:stop, :normal, next}, else: {:noreply, next}
+
+      _ when attempt >= @cleanup_attempts ->
+        # The lease keeps draining on its own once its coordinator is gone.
+        Logger.warning("Guarded storage closed with a native handle still pending.")
+        Enum.each(state.closers, &GenServer.reply(&1, {:error, :cleanup_unconfirmed}))
+        next = %{state | closers: [], cleanup_attempts: attempt}
         if state.phase == :closing, do: {:stop, :normal, next}, else: {:noreply, next}
 
       _ ->
         Process.send_after(self(), :cleanup, 100)
-        {:noreply, state}
+        {:noreply, %{state | cleanup_attempts: attempt}}
     end
   end
 
@@ -341,6 +362,13 @@ defmodule SwarmCode.Daemon.RepoLauncher do
     if Process.whereis(Repo) == nil and Process.register(repo, Repo), do: :ok, else: :error
   rescue
     ArgumentError -> :error
+  end
+
+  # Unreachable statement or connection references in any live heap keep a
+  # native SQLite handle open until that process collects. One pass at cleanup
+  # time is cheap and makes the close deterministic.
+  defp collect_garbage do
+    Enum.each(Process.list(), &:erlang.garbage_collect/1)
   end
 
   defp settle_lease(nil), do: :ok

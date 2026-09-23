@@ -204,18 +204,13 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
     if Process.alive?(launcher) do
       case RepoLauncher.close(launcher) do
         :ok ->
-          IO.puts(:stderr, "SAVED DEV SESSION — closed; guarded storage released.")
+          :ok
 
-        {:error, {:cleanup_pending, _}} ->
-          IO.puts(:stderr, "SAVED DEV SESSION — guarded storage cleanup pending.")
-          monitor = Process.monitor(launcher)
-
-          receive do
-            {:DOWN, ^monitor, :process, ^launcher, :normal} ->
-              IO.puts(:stderr, "SAVED DEV SESSION — pending cleanup released.")
-          after
-            10_000 -> raise_error("Guarded storage cleanup remains pending")
-          end
+        {:error, :cleanup_unconfirmed} ->
+          IO.puts(
+            :stderr,
+            "SwarmCode closed its database with one native handle still pending; saved data is safe."
+          )
 
         other ->
           raise_error("Guarded storage cleanup failed: #{inspect(other)}")

@@ -1665,9 +1665,6 @@ defmodule SwarmCode.Daemon.Backup.Gate do
         {{:error, helper_reason}, _, _} ->
           {:error, {:helper_cleanup, helper_reason}}
 
-        {{:error, _reason}, :ok, :ok} ->
-          {:error, :cleanup_pending}
-
         {_, {:error, parent_reason}, :ok} ->
           {:error, {:parent_cleanup, parent_reason}}
 
