@@ -89,4 +89,15 @@ defmodule SwarmCodeCLI.Release.PersistedSessionTest do
     output = capture_io(:stderr, fn -> assert PersistedSession.run_entry("Elixir.File") == 2 end)
     assert output =~ ~s(swarmcode: this build has no "Elixir.File" mode.)
   end
+
+  # pass71 F18 (review R20): the exit summary's resume hint names the
+  # conversation it closed.
+  test "the resume hint names the conversation" do
+    id = "3e4a58b5-0000-4000-8000-000000000001"
+    here = System.get_env("PWD")
+    assert PersistedSession.resume_command(here, id) == "swarmcode --resume " <> id
+    assert PersistedSession.resume_command("/p/x y", id) == "swarmcode '/p/x y' --resume " <> id
+    assert PersistedSession.resume_command("/p/x", nil) == "swarmcode /p/x --continue"
+    assert PersistedSession.resume_command(here, "not-an-id") == "swarmcode --continue"
+  end
 end

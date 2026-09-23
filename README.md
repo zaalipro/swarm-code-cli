@@ -96,8 +96,8 @@ answered by accident. The client answers some slash commands itself: `/new`
 above the composer. The project's approval mode is the desktop's and is always on
 the status line: a new project is read-only until `/trust`; in `auto`, edits and
 safe commands (`ls`, `git status`) run by themselves and other commands ask.
-Quitting stops the session's runs and prints a short summary with the
-`swarmcode --continue` hint. Logs go to `~/Library/Logs/SwarmCode/cli.log`, never
+Quitting stops the session's runs and prints a short summary that lists the runs
+it stopped and a `swarmcode --resume <id>` hint for the conversation. Logs go to `~/Library/Logs/SwarmCode/cli.log`, never
 to the terminal. A second `swarmcode` on the same database exits with status 3
 and one sentence naming the first one's process; a Ctrl-C outside the full-screen
 view (while it starts, during `-p`, after the summary) simply ends the program.

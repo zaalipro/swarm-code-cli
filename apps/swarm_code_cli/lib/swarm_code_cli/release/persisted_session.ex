@@ -495,12 +495,20 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
           is_binary(path),
           do: Path.relative_to(path, session.project.root_path)
         ),
-      root: session.project.root_path
+      root: session.project.root_path,
+      conversation: id
     }
   rescue
     error ->
       Logger.error("exit summary: #{Exception.message(error)}")
-      %{title: nil, prompt: nil, files: [], root: session.project.root_path}
+
+      %{
+        title: nil,
+        prompt: nil,
+        files: [],
+        root: session.project.root_path,
+        conversation: session.conversation.id
+      }
   end
 
   defp scalar(sql, params) do
@@ -535,7 +543,7 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
         files != [] && "  " <> label.("Files changed") <> files_line(files),
         stopped != [] && "  " <> label.("Stopped") <> stopped_lines(stopped),
         notice && "  " <> label.("Note") <> notice,
-        "  " <> label.("Resume") <> resume_command(summary[:root]),
+        "  " <> label.("Resume") <> resume_command(summary[:root], summary[:conversation]),
         ""
       ]
       |> Enum.filter(&is_binary/1)
@@ -570,12 +578,20 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
     "#{length(files)} · " <> Enum.join(names, ", ") <> if(rest > 0, do: ", +#{rest}", else: "")
   end
 
-  defp resume_command(root) do
+  # pass71 F18 (review R20): the hint names this conversation; `--continue`
+  # opened whichever was newest by then (a later `-p` one, another window's).
+  @doc false
+  def resume_command(root, conversation \\ nil) do
     here = System.get_env("PWD")
 
+    flag =
+      if is_binary(conversation) and conversation =~ ~r/\A[0-9a-fA-F-]{36}\z/,
+        do: "--resume " <> conversation,
+        else: "--continue"
+
     if root == nil or root == here,
-      do: "swarmcode --continue",
-      else: "swarmcode --continue " <> shell_quote(root)
+      do: "swarmcode " <> flag,
+      else: "swarmcode " <> shell_quote(root) <> " " <> flag
   end
 
   defp shell_quote(path) do
