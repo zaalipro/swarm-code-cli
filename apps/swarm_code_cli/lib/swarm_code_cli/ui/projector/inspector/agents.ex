@@ -183,7 +183,7 @@ defmodule SwarmCodeCLI.UI.Projector.Inspector.Agents do
   defp run_facts(state, run, lead) do
     tokens = run_tokens(run, [lead])
     files = state |> Changes.changes(run) |> Enum.map(& &1.path) |> Enum.uniq() |> length()
-    files = max(files, Map.get(run, :changes, 0) || 0)
+    # Counted from the ledger drawn under the card, so the two always agree.
     cost = Map.get(run, :cost_usd)
 
     elapsed =

@@ -89,4 +89,24 @@ defmodule SwarmCodeCLI.UI.Projector.GoldenScenesTest do
       end
     end
   end
+
+  # pass71 V6: what this round changed, at the size that docks the pane.
+  @pass71 %{
+    first_reply: ["run  timeline  changes", "elapsed", "tokens", "Changes", " elixir "],
+    trouble: ["@@ -12,9 +12,13 @@", "429 Too Many Requests", "Changes"],
+    swarm: ["agents", "Current task"]
+  }
+
+  for {scene, texts} <- @pass71, policy <- [:narrow, :wide] do
+    test "pass71 #{scene} at 160x45 (#{policy})" do
+      {_projected, rows} = paint(unquote(scene), {160, 45}, unquote(policy), :truecolor, false)
+      screen = Enum.join(rows, "\n")
+
+      for text <- unquote(texts),
+          do: assert(screen =~ text, "#{unquote(scene)}: no #{inspect(text)}")
+
+      # The per-step operations drawer belongs to the hive, never a one-agent turn.
+      if unquote(scene) != :swarm, do: refute(screen =~ "Operations ·")
+    end
+  end
 end

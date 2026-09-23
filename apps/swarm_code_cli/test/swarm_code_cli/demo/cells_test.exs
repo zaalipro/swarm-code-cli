@@ -17,7 +17,8 @@ defmodule SwarmCodeCLI.Demo.CellsTest do
     assert Path.dirname(directory) == Path.join(@repo, "_build/cell-previews")
     assert files == Enum.sort(files)
     assert length(files) == Cells.file_count()
-    assert length(files) == 23 + 8 * 4 + 2
+    # pass71 V6: six rich conversation previews and three light ones.
+    assert length(files) == 23 + 8 * 4 + 2 + 6 + 3
     assert "index.html" in files
     assert Enum.sort(File.ls!(directory)) == files
 
@@ -50,6 +51,11 @@ defmodule SwarmCodeCLI.Demo.CellsTest do
           ~w(consensus-170x42-truecolor-rich.svg approval-170x42-truecolor-rich.svg swarm-150x30-truecolor-rich.svg) do
       assert name in files
     end
+
+    # pass71 V6: the light previews sit on the Carbon light page.
+    light = assert_svg(Path.join(directory, "light-trouble-160x45-truecolor-rich.svg"), 160, 45)
+    assert light =~ ~s(fill="#f4f3f1")
+    assert "conversation-first-reply-160x45-truecolor-rich.svg" in files
 
     # One <text> per cell, so look for the waiting card's amber "!" rather than a phrase.
     approval = File.read!(Path.join(directory, "approval-170x42-truecolor-rich.svg"))
