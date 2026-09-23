@@ -104,6 +104,26 @@ defmodule SwarmCode.Daemon.Service.LiveBackendTest do
            )
   end
 
+  # pass70 F: the palette asks every backend for the conversation list; the
+  # unsaved session answers the read with a typed error (a command outcome
+  # here made the client close the connection and end the session).
+  test "the conversation list is a read the unsaved session refuses as one", %{
+    backend: backend
+  } do
+    global = %Scope{kind: :global, id: nil, generation: 0}
+
+    list = %SwarmCode.Protocol.ServiceRequest{
+      operation: :conversation_list,
+      timeout_ms: 1000,
+      params: %{"cursor" => nil, "page_size" => 50, "byte_limit" => 65_536}
+    }
+
+    assert {:error, %{"op" => "error", "code" => "not_allowed"}} =
+             request(backend, "list-1", global, list)
+
+    assert Process.alive?(backend)
+  end
+
   test "deduplicates command identity and rejects a conflicting command", %{
     backend: backend,
     scope: scope

@@ -63,9 +63,18 @@ defmodule SwarmCode.Daemon.Service.LiveBackend do
 
   @impl true
   def handle_call({:service_request, id, scope, request}, _, state) do
+    # pass70 F: `conversation_list` is a read (the palette sends it on open);
+    # answering it as a command made the client drop the connection. The
+    # unsaved session has no saved conversations, so it answers not_allowed.
     command? =
       Map.get(request, :operation) in @commands or
-        Map.get(request, :operation) not in [:query, :detail, :resync, :feature_query]
+        Map.get(request, :operation) not in [
+          :query,
+          :detail,
+          :resync,
+          :feature_query,
+          :conversation_list
+        ]
 
     fingerprint = {scope, Map.get(request, :operation), Map.get(request, :params)}
 
@@ -370,6 +379,9 @@ defmodule SwarmCode.Daemon.Service.LiveBackend do
         end
     end
   end
+
+  defp execute(%{operation: :conversation_list}, _scope, _id, state),
+    do: {wire_error(:not_allowed), state}
 
   defp execute(_, _, id, state), do: {reject(id, :not_allowed), state}
 

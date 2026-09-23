@@ -2,8 +2,10 @@
 """Real terminal + socket + HTTP provider smoke test; all state is disposable."""
 import http.server
 import json
+import select
 import tempfile
 import threading
+import time
 import unittest
 from test_terminal_demo_pty import Demo, ROOT
 
@@ -43,7 +45,8 @@ class LiveSession(unittest.TestCase):
                 'SWARM_APPROVAL': 'ask',
             })
             try:
-                terminal.wait_for(b'Focus: composer')
+                # pass70 (D4, D5): no focus names on screen, and the view opens
+                # composer-first, so the banner and a paste are the markers.
                 terminal.wait_for(b'LIVE')
                 self.assertNotIn(b'FAKE', terminal.screen())
                 terminal.descendants()
@@ -54,8 +57,6 @@ class LiveSession(unittest.TestCase):
                 terminal.capture('live-response')
                 self.assertEqual(requests[0]['model'], 'pty-fixture')
                 self.assertEqual(requests[0]['messages'][-1]['content'], 'Verify live terminal')
-                terminal.send(b'\x1b')
-                terminal.wait_for(b'Focus: main')
                 terminal.send(b'\x10')
                 terminal.wait_for(b'Search:')
                 terminal.send(b'Settings')
@@ -63,10 +64,16 @@ class LiveSession(unittest.TestCase):
                 terminal.send(b'\r')
                 terminal.wait_for(b'Unavailable')
                 terminal.capture('live-library-unavailable')
-                terminal.send(b'\x1b')
-                terminal.send(b'\x1b')
-                terminal.wait_for(b'Focus: main')
-                terminal.send(b'q')
+                # Ctrl-C closes the layers, then two presses quit (letters type).
+                for _ in range(8):
+                    if terminal.status is not None:
+                        break
+                    terminal.send(b'\x03')
+                    end = time.monotonic() + .3
+                    while time.monotonic() < end and terminal.status is None:
+                        terminal.pump()
+                        if select.select([terminal.meta], [], [], 0)[0]:
+                            terminal.status = int(terminal.meta.readline())
                 terminal.finish()
             finally:
                 terminal.close()

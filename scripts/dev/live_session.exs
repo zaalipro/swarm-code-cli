@@ -146,7 +146,14 @@ defmodule SwarmCode.Development.LiveSession do
 
         receive do
           {:DOWN, ^owner_monitor, :process, ^owner, :normal} ->
-            :ok
+            # The runtime names a close nobody asked for; say it now that the
+            # terminal is restored.
+            receive do
+              {:session_closed, words} when is_binary(words) ->
+                IO.puts(:stderr, "swarmcode: the session closed because " <> words <> ".")
+            after
+              0 -> :ok
+            end
 
           {:DOWN, ^owner_monitor, :process, ^owner, _} ->
             Mix.raise("Development live terminal failed")
