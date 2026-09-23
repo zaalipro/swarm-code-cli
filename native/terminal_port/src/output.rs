@@ -144,19 +144,62 @@ fn core_color(color: WireColor) -> Color {
     }
 }
 
+/// The SGR state a glyph needs; tracked so a run of equally styled glyphs pays
+/// for its style once.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Pen {
+    fg: Color,
+    bg: Color,
+    modifier: Modifier,
+}
+const DEFAULT_PEN: Pen = Pen {
+    fg: Color::Reset,
+    bg: Color::Reset,
+    modifier: Modifier::empty(),
+};
+const MODIFIERS: [(Modifier, Attribute); 5] = [
+    (Modifier::BOLD, Attribute::Bold),
+    (Modifier::DIM, Attribute::Dim),
+    (Modifier::ITALIC, Attribute::Italic),
+    (Modifier::UNDERLINED, Attribute::Underlined),
+    (Modifier::REVERSED, Attribute::Reverse),
+];
+const SPACES: [u8; 500] = [b' '; 500];
+
+/// What the terminal is known to hold while one frame is written: the pen and
+/// the cursor position. `None` means unknown, so the next glyph states it.
+struct Pencil {
+    pen: Option<Pen>,
+    at: Option<(u16, u16)>,
+}
+
+// pass70 B8 (ux M9): a frame writes only the cells that changed. Each dirty
+// row repaints one span, from the first to the last changed cell widened to
+// whole glyphs of both frames, with one cursor move per span, SGR only when
+// the style changes, and implicit advance across ASCII glyphs whose width is
+// their length. Any other glyph (wide, or non-ASCII whose terminal advance
+// the projector's width policy only declares) reserves its columns with
+// spaces first and re-anchors the cursor after itself. A span whose old
+// glyphs were such glyphs is erased (ECH) before the new ones land, so no
+// half of an old wide glyph survives; a full repaint erases each row (EL).
 fn paint(previous: Option<&Painted>, next: &Painted, writer: &mut impl Write) -> io::Result<()> {
     let buffer = &next.buffer;
-    let full = previous.is_none_or(|p| p.buffer.area != buffer.area);
+    let old = previous
+        .filter(|p| p.buffer.area == buffer.area)
+        .map(|p| &p.buffer);
     let columns = buffer.area.width as usize;
+    let mut pencil = Pencil {
+        pen: None,
+        at: None,
+    };
     let mut painted = false;
     for y in 0..buffer.area.height {
         let start = y as usize * columns;
         let row = &buffer.content[start..start + columns];
-        let dirty =
-            full || previous.is_some_and(|p| p.buffer.content[start..start + columns] != *row);
-        if !dirty {
+        let old_row = old.map(|b| &b.content[start..start + columns]);
+        let Some((from, to)) = span(row, old_row) else {
             continue;
-        }
+        };
         if !painted {
             // DEC private mode 2026: the terminal holds the frame back until the
             // closing sequence, so a partially painted grid is never shown.
@@ -164,31 +207,29 @@ fn paint(previous: Option<&Painted>, next: &Painted, writer: &mut impl Write) ->
             command(writer, Hide)?;
             painted = true;
         }
-        // Clear the whole row before writing any new glyph. Ratatui's ForcedWidth
-        // diff branch does not erase old trailing cells, so never use Buffer::diff.
-        command(writer, SetAttribute(Attribute::Reset))?;
-        command(writer, MoveTo(0, y))?;
-        command(writer, Clear(ClearType::UntilNewLine))?;
-        // Paint every reserved column with its desired style, including reversed
-        // backgrounds. Spaces honor reverse video where ECH/BCE may not.
-        for (x, cell) in row.iter().enumerate() {
-            if let CellDiffOption::ForcedWidth(width) = cell.diff_option {
-                style(writer, cell)?;
-                command(writer, MoveTo(x as u16, y))?;
-                writer.write_all(&[b' '; 500][..width.get() as usize])?;
+        match old_row {
+            None => {
+                // EL erases with the current background: reset it first.
+                set_pen(writer, &mut pencil, DEFAULT_PEN)?;
+                move_to(writer, &mut pencil, 0, y)?;
+                command(writer, Clear(ClearType::UntilNewLine))?;
+            }
+            Some(old_row) => {
+                if old_row[from..to].iter().any(|cell| !exact(cell)) {
+                    move_to(writer, &mut pencil, from as u16, y)?;
+                    write!(writer, "\x1b[{}X", to - from)?;
+                }
             }
         }
-        for (x, cell) in row.iter().enumerate() {
-            if matches!(cell.diff_option, CellDiffOption::ForcedWidth(_)) {
-                style(writer, cell)?;
-                // Every lead uses absolute CUP, even when terminal shaping has a
-                // different advance from the declared reserved width.
-                command(writer, MoveTo(x as u16, y))?;
-                writer.write_all(cell.symbol().as_bytes())?;
-            }
+        let mut x = from;
+        while x < to {
+            let cell = &row[x];
+            let width = lead_width(cell);
+            glyph(writer, &mut pencil, (x as u16, y), width, columns, cell)?;
+            x += width;
         }
     }
-    if painted {
+    if painted && pencil.pen != Some(DEFAULT_PEN) {
         command(writer, SetAttribute(Attribute::Reset))?;
     }
     if painted || previous.is_none_or(|p| p.cursor != next.cursor) {
@@ -219,18 +260,123 @@ fn paint(previous: Option<&Painted>, next: &Painted, writer: &mut impl Write) ->
     Ok(())
 }
 
-fn style(writer: &mut impl Write, cell: &Cell) -> io::Result<()> {
-    command(writer, SetAttribute(Attribute::Reset))?;
-    color(writer, cell.fg, true)?;
-    color(writer, cell.bg, false)?;
-    for (modifier, attribute) in [
-        (Modifier::BOLD, Attribute::Bold),
-        (Modifier::DIM, Attribute::Dim),
-        (Modifier::ITALIC, Attribute::Italic),
-        (Modifier::UNDERLINED, Attribute::Underlined),
-        (Modifier::REVERSED, Attribute::Reverse),
-    ] {
-        if cell.modifier.contains(modifier) {
+/// The columns `[from, to)` of a row to repaint: all of it without a previous
+/// row, else the changed cells widened until both frames have a glyph boundary
+/// at each end. `None` when nothing changed.
+fn span(row: &[Cell], old_row: Option<&[Cell]>) -> Option<(usize, usize)> {
+    let Some(old_row) = old_row else {
+        return Some((0, row.len()));
+    };
+    let first = row.iter().zip(old_row).position(|(a, b)| a != b)?;
+    let last = row.iter().zip(old_row).rposition(|(a, b)| a != b)?;
+    let continuation = |x: usize| {
+        row[x].diff_option == CellDiffOption::Skip || old_row[x].diff_option == CellDiffOption::Skip
+    };
+    let mut from = first;
+    while from > 0 && continuation(from) {
+        from -= 1;
+    }
+    let mut to = last + 1;
+    while to < row.len() && continuation(to) {
+        to += 1;
+    }
+    Some((from, to))
+}
+
+fn lead_width(cell: &Cell) -> usize {
+    match cell.diff_option {
+        CellDiffOption::ForcedWidth(width) => width.get() as usize,
+        _ => 1,
+    }
+}
+
+/// A glyph whose terminal advance is certain: ASCII text exactly as long as
+/// its declared width (the frame decoder already refused control characters).
+fn exact(cell: &Cell) -> bool {
+    match cell.diff_option {
+        CellDiffOption::ForcedWidth(width) => {
+            let text = cell.symbol();
+            text.is_ascii() && text.len() == width.get() as usize
+        }
+        _ => true,
+    }
+}
+
+fn glyph(
+    writer: &mut impl Write,
+    pencil: &mut Pencil,
+    (x, y): (u16, u16),
+    width: usize,
+    columns: usize,
+    cell: &Cell,
+) -> io::Result<()> {
+    set_pen(
+        writer,
+        pencil,
+        Pen {
+            fg: cell.fg,
+            bg: cell.bg,
+            modifier: cell.modifier,
+        },
+    )?;
+    move_to(writer, pencil, x, y)?;
+    let certain = exact(cell);
+    if !certain && width > 1 {
+        // Reserve every declared column with the glyph's own style (spaces
+        // honor reverse video where ECH/BCE may not), then write it over them.
+        writer.write_all(&SPACES[..width])?;
+        pencil.at = None;
+        move_to(writer, pencil, x, y)?;
+    }
+    writer.write_all(cell.symbol().as_bytes())?;
+    // After the last column the cursor waits to wrap; after an uncertain
+    // advance its column is unknown. Either way the next glyph moves first.
+    let end = x as usize + width;
+    pencil.at = (certain && end < columns).then_some((end as u16, y));
+    Ok(())
+}
+
+fn move_to(writer: &mut impl Write, pencil: &mut Pencil, x: u16, y: u16) -> io::Result<()> {
+    if pencil.at != Some((x, y)) {
+        command(writer, MoveTo(x, y))?;
+        pencil.at = Some((x, y));
+    }
+    Ok(())
+}
+
+fn set_pen(writer: &mut impl Write, pencil: &mut Pencil, pen: Pen) -> io::Result<()> {
+    match pencil.pen {
+        Some(current) if current == pen => return Ok(()),
+        // Only added modifiers: change what differs.
+        Some(current) if pen.modifier.contains(current.modifier) => {
+            if current.fg != pen.fg {
+                color(writer, pen.fg, true)?;
+            }
+            if current.bg != pen.bg {
+                color(writer, pen.bg, false)?;
+            }
+            modifiers(writer, pen.modifier.difference(current.modifier))?;
+        }
+        // Unknown, or a modifier to drop: SGR has no portable per-attribute
+        // off for all of them, so start from a reset.
+        _ => {
+            command(writer, SetAttribute(Attribute::Reset))?;
+            if pen.fg != Color::Reset {
+                color(writer, pen.fg, true)?;
+            }
+            if pen.bg != Color::Reset {
+                color(writer, pen.bg, false)?;
+            }
+            modifiers(writer, pen.modifier)?;
+        }
+    }
+    pencil.pen = Some(pen);
+    Ok(())
+}
+
+fn modifiers(writer: &mut impl Write, set: Modifier) -> io::Result<()> {
+    for (modifier, attribute) in MODIFIERS {
+        if set.contains(modifier) {
             command(writer, SetAttribute(attribute))?;
         }
     }
