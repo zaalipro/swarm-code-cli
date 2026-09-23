@@ -13,7 +13,12 @@ defmodule SwarmCodeCLI.UI.DataSource.Delta do
     counts_update: DTO.Counts,
     connection: DTO.Connection,
     change_upsert: DTO.Change,
-    verdict_upsert: DTO.Verdict
+    verdict_upsert: DTO.Verdict,
+    # pass70 C1: `toast` and `rate_limit` reach the shell watch only;
+    # `background_upsert`/`background_remove` travel with the run.
+    toast: DTO.Toast,
+    rate_limit: DTO.RateLimit,
+    background_upsert: DTO.BackgroundCommand
   }
   @kinds Map.keys(@bodies) ++
            [
@@ -23,6 +28,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Delta do
              :interaction_remove,
              :activity_remove,
              :change_remove,
+             :background_remove,
              :snapshot_required
            ]
 
@@ -56,6 +62,10 @@ defmodule SwarmCodeCLI.UI.DataSource.Delta do
           | :change_upsert
           | :change_remove
           | :verdict_upsert
+          | :toast
+          | :rate_limit
+          | :background_upsert
+          | :background_remove
           | :snapshot_required
   @type t :: %__MODULE__{
           kind: kind(),
@@ -76,6 +86,9 @@ defmodule SwarmCodeCLI.UI.DataSource.Delta do
             | DTO.WorkspaceMetadata.t()
             | DTO.Change.t()
             | DTO.Verdict.t()
+            | DTO.Toast.t()
+            | DTO.RateLimit.t()
+            | DTO.BackgroundCommand.t()
             | nil,
           sequence: non_neg_integer(),
           revision: non_neg_integer()
@@ -139,8 +152,16 @@ defmodule SwarmCodeCLI.UI.DataSource.Delta do
   # Changes and verdicts belong to a run; the envelope carries the run's
   # conversation so conversation-scoped watches can route them.
   defp correlated_body?(%{body: %{__struct__: module} = body} = delta)
-       when module in [DTO.Change, DTO.Verdict],
+       when module in [DTO.Change, DTO.Verdict, DTO.BackgroundCommand],
        do: delta.entity_id == body.id and delta.run_id == body.run_id and is_nil(delta.attempt_id)
+
+  # A toast may be about another conversation than the watch's (a run waiting
+  # elsewhere); the envelope routes, the body says what it is about.
+  defp correlated_body?(%{body: %DTO.Toast{} = body} = delta),
+    do: delta.entity_id == body.id and is_nil(delta.attempt_id)
+
+  defp correlated_body?(%{body: %DTO.RateLimit{} = body} = delta),
+    do: delta.entity_id == body.provider_id and is_nil(delta.run_id) and is_nil(delta.attempt_id)
 
   defp correlated_body?(
          %{body: %{id: id, run_id: run_id, conversation_id: conversation_id}} = delta
@@ -164,7 +185,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Delta do
   defp correlated_body?(%{kind: kind} = delta) when kind in [:stream_append, :stream_reset],
     do: Schema.valid?(:id, delta.run_id) and Schema.valid?(:id, delta.conversation_id)
 
-  defp correlated_body?(%{kind: :change_remove} = delta),
+  defp correlated_body?(%{kind: kind} = delta) when kind in [:change_remove, :background_remove],
     do: Schema.valid?(:id, delta.run_id) and is_nil(delta.attempt_id)
 
   defp correlated_body?(%{kind: :workspace_metadata, body: body} = delta),
@@ -188,7 +209,13 @@ defmodule SwarmCodeCLI.UI.DataSource.Delta do
            Schema.valid?(:text, text)
 
   defp valid_body?(%{kind: kind, body: nil, entity_id: id, channel: nil, text: nil})
-       when kind in [:transcript_remove, :interaction_remove, :activity_remove, :change_remove],
+       when kind in [
+              :transcript_remove,
+              :interaction_remove,
+              :activity_remove,
+              :change_remove,
+              :background_remove
+            ],
        do: Schema.valid?(:id, id)
 
   defp valid_body?(%{kind: :snapshot_required, body: nil, channel: nil, text: nil}), do: true
@@ -206,6 +233,9 @@ defmodule SwarmCodeCLI.UI.DataSource.Delta do
         :workspace_metadata -> DTO.WorkspaceMetadata
         :change_upsert -> DTO.Change
         :verdict_upsert -> DTO.Verdict
+        :toast -> DTO.Toast
+        :rate_limit -> DTO.RateLimit
+        :background_upsert -> DTO.BackgroundCommand
         _ -> nil
       end
 

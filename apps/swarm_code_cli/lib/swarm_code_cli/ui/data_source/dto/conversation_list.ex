@@ -1,13 +1,14 @@
-defmodule SwarmCodeCLI.UI.DataSource.DTO.ShellSnapshot do
-  @moduledoc "Bounded, closed ShellSnapshot presentation facts."
+defmodule SwarmCodeCLI.UI.DataSource.DTO.ConversationList do
+  @moduledoc """
+  pass70 C1: a keyset page of the project's conversations, newest first
+  (`conversation_list`). `current_id` is the conversation the session has
+  open; `project` is the project's display name.
+  """
   use SwarmCodeCLI.UI.DataSource.DTO.Schema,
-    wire_defaults: [rate_limits: []],
     fields: [
-      # pass70 C1: every provider's last rate-limit window (`rate_limit` deltas).
-      rate_limits: {:list, {:dto, SwarmCodeCLI.UI.DataSource.DTO.RateLimit}},
-      runs: {:list, {:dto, SwarmCodeCLI.UI.DataSource.DTO.RunSummary}},
-      connection: {:dto, SwarmCodeCLI.UI.DataSource.DTO.Connection},
-      counts: {:dto, SwarmCodeCLI.UI.DataSource.DTO.Counts},
+      project: {:optional, {:text, 200}},
+      current_id: {:optional, :id},
+      items: {:list, {:dto, SwarmCodeCLI.UI.DataSource.DTO.ConversationSummary}},
       state: {:enum, [:idle, :loading_before, :loading_after, :error, :closed, :resyncing]},
       before_cursor: {:optional, :id},
       after_cursor: {:optional, :id},
@@ -18,10 +19,9 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.ShellSnapshot do
       through_sequence: :revision
     ],
     defaults: [
-      rate_limits: [],
-      runs: [],
-      connection: nil,
-      counts: nil,
+      project: nil,
+      current_id: nil,
+      items: [],
       state: :idle,
       before_cursor: nil,
       after_cursor: nil,

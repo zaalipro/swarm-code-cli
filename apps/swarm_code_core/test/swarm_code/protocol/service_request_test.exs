@@ -169,7 +169,12 @@ defmodule SwarmCode.Protocol.ServiceRequestTest do
                scope(:project)
              )
 
-    for kind <- [:global, :conversation, :run], do: invalid(open, scope(kind))
+    # pass70 C1: a conversation opens from the client's shell (global) or
+    # workspace (conversation) scope too; never from a run's.
+    for kind <- [:global, :conversation],
+        do: assert({:ok, _} = ServiceRequest.decode(open, scope(kind)))
+
+    invalid(open, scope(:run))
     {dispatch, _} = example(:dispatch_send)
     for kind <- [:global, :project, :run], do: invalid(dispatch, scope(kind))
 
@@ -196,6 +201,90 @@ defmodule SwarmCode.Protocol.ServiceRequestTest do
 
       if operation != :conversation_open, do: invalid(Map.put(body, key, nil), target_scope)
     end
+  end
+
+  test "pass70 operations: decisions, conversations, seen marks and project settings" do
+    {approval, target_scope} = example(:approval_resolve)
+
+    for decision <- ~w(approve approve_run always_prefix deny deny_stop),
+        do:
+          assert(
+            {:ok, _} =
+              ServiceRequest.decode(Map.put(approval, "decision", decision), target_scope)
+          )
+
+    for decision <- ["always", "always_allow", "prefix", nil],
+        do: invalid(Map.put(approval, "decision", decision), target_scope)
+
+    {list, _} = example(:conversation_list)
+
+    for kind <- [:global, :project, :conversation],
+        do: assert({:ok, _} = ServiceRequest.decode(list, scope(kind)))
+
+    invalid(list, scope(:run))
+
+    assert {:ok, _} =
+             ServiceRequest.decode(Map.put(list, "cursor", @conversation), scope(:global))
+
+    invalid(Map.put(list, "page_size", 201), scope(:global))
+
+    {new, _} = example(:conversation_new)
+    invalid(new, scope(:run))
+    invalid(Map.put(new, "title", "x"), scope(:project))
+
+    {seen, _} = example(:mark_seen)
+
+    for kind <- ~w(conversation run activity),
+        do: assert({:ok, _} = ServiceRequest.decode(Map.put(seen, "kind", kind), scope(:run)))
+
+    invalid(Map.put(seen, "kind", "agent"), scope(:conversation))
+    invalid(Map.put(seen, "id", "opaque"), scope(:conversation))
+    invalid(Map.put(seen, "revision", -1), scope(:conversation))
+
+    {update, _} = example(:project_update)
+
+    for {mode, trusted} <- [{"read_only", nil}, {"full_access", nil}, {nil, true}, {"auto", true}],
+        do:
+          assert(
+            {:ok, _} =
+              ServiceRequest.decode(
+                %{update | "approval_mode" => mode, "trusted" => trusted},
+                scope(:conversation)
+              )
+          )
+
+    for {mode, trusted} <- [{nil, nil}, {"ask", nil}, {nil, false}, {"auto", "yes"}],
+        do: invalid(%{update | "approval_mode" => mode, "trusted" => trusted}, scope(:project))
+
+    invalid(update, scope(:run))
+
+    {query, _} = example(:query)
+
+    feature = %{
+      "op" => "feature.query",
+      "feature" => "files",
+      "id" => "lib/rep",
+      "cursor" => nil,
+      "page_size" => 20,
+      "byte_limit" => 65_536,
+      "timeout_ms" => 5000
+    }
+
+    assert {:ok, _} = ServiceRequest.decode(feature, scope(:conversation))
+
+    invalid(
+      %{
+        "op" => "feature.command",
+        "feature" => "files",
+        "action" => "update",
+        "id" => "x",
+        "attributes" => %{},
+        "timeout_ms" => 5000
+      },
+      scope(:conversation)
+    )
+
+    assert query["op"] == "query"
   end
 
   test "send and steer use their real UTF-8 byte ceilings and preserve text" do
@@ -372,7 +461,17 @@ defmodule SwarmCode.Protocol.ServiceRequestTest do
        scope(:run)},
       {:approval_resolve,
        ~s({"op":"approval.resolve","run_id":"#{@run}","node_id":null,"interaction_id":"#{@interaction}","expected_revision":0,"decision":"approve","timeout_ms":5000}),
-       scope(:run)}
+       scope(:run)},
+      {:conversation_list,
+       ~s({"op":"conversation.list","cursor":null,"page_size":50,"byte_limit":262144,"timeout_ms":5000}),
+       scope(:global)},
+      {:conversation_new, ~s({"op":"conversation.new","timeout_ms":5000}), scope(:conversation)},
+      {:mark_seen,
+       ~s({"op":"mark_seen","kind":"run","id":"#{@run}","revision":4,"timeout_ms":5000}),
+       scope(:conversation)},
+      {:project_update,
+       ~s({"op":"project.update","approval_mode":"auto","trusted":null,"timeout_ms":5000}),
+       scope(:project)}
     ]
   end
 end

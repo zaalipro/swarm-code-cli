@@ -671,6 +671,11 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
   defp request_capability(%{"op" => "run.control", "action" => "stop"}), do: :run_stop
   defp request_capability(%{"op" => "run.steer"}), do: :run_steer
   defp request_capability(%{"op" => "approval.resolve"}), do: :approval_resolve
+  defp request_capability(%{"op" => "conversation.open"}), do: :conversation_open
+  defp request_capability(%{"op" => "conversation.list"}), do: :conversation_list
+  defp request_capability(%{"op" => "conversation.new"}), do: :conversation_new
+  defp request_capability(%{"op" => "mark_seen"}), do: :mark_seen
+  defp request_capability(%{"op" => "project.update"}), do: :project_update
   defp request_capability(_), do: nil
 
   defp expire_requests(state) do
@@ -765,6 +770,9 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
 
         :run_detail_snapshot ->
           struct!(DTO.RunDetailSnapshot, attrs ++ [transcript: %DTO.TranscriptWindow{}])
+
+        :conversation_list ->
+          struct!(DTO.ConversationList, attrs)
       end
 
     %Delivery{

@@ -22,6 +22,10 @@ defmodule SwarmCode.Protocol.ServiceRequest do
           | :resync
           | :cancel
           | :conversation_open
+          | :conversation_list
+          | :conversation_new
+          | :mark_seen
+          | :project_update
           | :dispatch_send
           | :run_control
           | :run_steer
@@ -37,6 +41,11 @@ defmodule SwarmCode.Protocol.ServiceRequest do
         }
 
   @max_counter 9_007_199_254_740_991
+  # pass70 C1: `approve` once, `approve_run` every call of this tool in this
+  # run, `always_prefix` the command family the service computed (never one
+  # the client names), `deny`, and `deny_stop` (deny and stop the run).
+  @decisions ~w(approve approve_run always_prefix deny deny_stop)
+  @features ~w(workflows research schedules settings usage changes checkpoints mcp memory files)
   @request_keys [:__struct__, :operation, :params, :timeout_ms]
   @scope_keys [:__struct__, :kind, :id, :generation]
 
@@ -93,6 +102,10 @@ defmodule SwarmCode.Protocol.ServiceRequest do
   defp decode_operation("resync"), do: :resync
   defp decode_operation("cancel"), do: :cancel
   defp decode_operation("conversation.open"), do: :conversation_open
+  defp decode_operation("conversation.list"), do: :conversation_list
+  defp decode_operation("conversation.new"), do: :conversation_new
+  defp decode_operation("mark_seen"), do: :mark_seen
+  defp decode_operation("project.update"), do: :project_update
   defp decode_operation("dispatch"), do: :dispatch_send
   defp decode_operation("run.control"), do: :run_control
   defp decode_operation("run.steer"), do: :run_steer
@@ -110,6 +123,10 @@ defmodule SwarmCode.Protocol.ServiceRequest do
   defp encode_operation(:resync), do: "resync"
   defp encode_operation(:cancel), do: "cancel"
   defp encode_operation(:conversation_open), do: "conversation.open"
+  defp encode_operation(:conversation_list), do: "conversation.list"
+  defp encode_operation(:conversation_new), do: "conversation.new"
+  defp encode_operation(:mark_seen), do: "mark_seen"
+  defp encode_operation(:project_update), do: "project.update"
   defp encode_operation(:dispatch_send), do: "dispatch"
   defp encode_operation(:run_control), do: "run.control"
   defp encode_operation(:run_steer), do: "run.steer"
@@ -127,6 +144,10 @@ defmodule SwarmCode.Protocol.ServiceRequest do
   defp param_keys(:resync), do: ~w(watch_ref)
   defp param_keys(:cancel), do: ~w(target_request_id)
   defp param_keys(:conversation_open), do: ~w(conversation_id)
+  defp param_keys(:conversation_list), do: ~w(cursor page_size byte_limit)
+  defp param_keys(:conversation_new), do: []
+  defp param_keys(:mark_seen), do: ~w(kind id revision)
+  defp param_keys(:project_update), do: ~w(approval_mode trusted)
   defp param_keys(:dispatch_send), do: ~w(action text target attachment_refs)
   defp param_keys(:run_control), do: ~w(run_id action)
   defp param_keys(:run_steer), do: ~w(run_id node_id text attachment_refs)
@@ -167,9 +188,33 @@ defmodule SwarmCode.Protocol.ServiceRequest do
 
   defp valid_params?(:cancel, params, _scope), do: uuid?(params["target_request_id"])
 
+  # pass70 C1: a conversation is opened, listed or created from any scope the
+  # client holds (its shell is global, its workspace is a conversation); the
+  # service resolves the project from its admitted context.
   defp valid_params?(:conversation_open, params, scope) do
-    scope.kind == :project and
+    scope.kind in [:global, :project, :conversation] and
       (params["conversation_id"] == nil or uuid?(params["conversation_id"]))
+  end
+
+  defp valid_params?(:conversation_list, params, scope) do
+    scope.kind in [:global, :project, :conversation] and
+      (params["cursor"] == nil or reference?(params["cursor"])) and page_bounds?(params)
+  end
+
+  defp valid_params?(:conversation_new, _params, scope),
+    do: scope.kind in [:global, :project, :conversation]
+
+  defp valid_params?(:mark_seen, params, scope) do
+    scope.kind in [:global, :project, :conversation, :run] and
+      params["kind"] in ["conversation", "run", "activity"] and uuid?(params["id"]) and
+      counter?(params["revision"])
+  end
+
+  defp valid_params?(:project_update, params, scope) do
+    scope.kind in [:global, :project, :conversation] and
+      params["approval_mode"] in [nil, "read_only", "auto", "full_access"] and
+      params["trusted"] in [nil, true] and
+      (params["approval_mode"] != nil or params["trusted"] != nil)
   end
 
   defp valid_params?(:dispatch_send, params, scope) do
@@ -191,11 +236,11 @@ defmodule SwarmCode.Protocol.ServiceRequest do
   defp valid_params?(:approval_resolve, params, scope) do
     run_scope?(params["run_id"], scope) and optional_uuid?(params["node_id"]) and
       uuid?(params["interaction_id"]) and counter?(params["expected_revision"]) and
-      params["decision"] in ["approve", "deny"]
+      params["decision"] in @decisions
   end
 
   defp valid_params?(:feature_query, params, scope) do
-    params["feature"] in ~w(workflows research schedules settings usage changes checkpoints mcp memory) and
+    params["feature"] in @features and
       optional_reference?(params["id"]) and
       (params["cursor"] == nil or reference?(params["cursor"])) and
       page_bounds?(params) and
