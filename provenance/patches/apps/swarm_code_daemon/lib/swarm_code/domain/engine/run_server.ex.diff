@@ -76,7 +76,7 @@
        |> put_node(node_id, %{status: "awaiting_answer", detail: first})
  
      SwarmCode.Domain.Engine.Questions.put(state.conversation.id, state.run.id, node_id)
-@@ -1425,6 +1469,51 @@
+@@ -1425,6 +1469,52 @@
  
    def handle_call(:get_state, _from, state), do: {:reply, state, state}
  
@@ -86,7 +86,8 @@
 +        state.approvals,
 +        state.questions,
 +        state.nodes,
-+        state.project.root_path
++        # the fixture states of the unit tests carry no project
++        Map.get(Map.get(state, :project) || %{}, :root_path)
 +      )
 +
 +    {:reply, rows, state}
