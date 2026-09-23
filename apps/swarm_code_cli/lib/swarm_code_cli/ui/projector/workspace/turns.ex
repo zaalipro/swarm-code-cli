@@ -1186,7 +1186,7 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
     do: state.focus == "main" and state.layers == [] and Map.get(state.selection, "main") == id
 
   defp glyph(token, state), do: SafeText.value(Support.glyph(token, state))
-  defp rail_glyph(state), do: glyph(:stripe, state)
+  defp rail_glyph(state), do: SafeText.value(Support.rail(state))
 
   defp ellipsis(%{capabilities: %{ascii?: true}}), do: "..."
   defp ellipsis(_), do: "…"
@@ -1377,7 +1377,7 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
 
   # The rail replaces the row's first cell, which is always indentation.
   defp with_rail([{text, key} | rest], state, policy) do
-    rail = [{glyph(:stripe, state), {:role, :accent, []}}]
+    rail = [{rail_glyph(state), {:role, :accent, []}}]
 
     case Width.take_cells(text, 1, policy) do
       {" ", tail, 1} -> rail ++ if(tail == "", do: rest, else: [{tail, key} | rest])
@@ -1385,7 +1385,7 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
     end
   end
 
-  defp with_rail([], state, _policy), do: [{glyph(:stripe, state), {:role, :accent, []}}]
+  defp with_rail([], state, _policy), do: [{rail_glyph(state), {:role, :accent, []}}]
 
   # Each segment with the background it sits on: the fill from its column
   # onwards, nothing before it.

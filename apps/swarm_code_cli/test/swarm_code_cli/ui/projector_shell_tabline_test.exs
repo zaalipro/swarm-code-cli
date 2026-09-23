@@ -98,7 +98,7 @@ defmodule SwarmCodeCLI.UI.ProjectorShellTablineTest do
       state = populated(active: "workflow-1")
       tab = tab(state, 170, "Release checklist")
 
-      assert text(Enum.at(tab, @stripe)) == SafeText.value(SafeText.chrome(:stripe))
+      assert text(Enum.at(tab, @stripe)) == SafeText.value(Support.rail(state))
 
       assert Enum.at(tab, @stripe).style.foreground ==
                Theme.style(:accent, state.capabilities).foreground
@@ -133,7 +133,7 @@ defmodule SwarmCodeCLI.UI.ProjectorShellTablineTest do
       assert Enum.map(rest, & &1.id) == ["swarm-1", "consensus-1", "research-1", "workflow-1"]
 
       row = state |> painted(170) |> hd()
-      assert String.starts_with?(row, SafeText.value(SafeText.chrome(:stripe)) <> " ")
+      assert String.starts_with?(row, SafeText.value(Support.rail(state)) <> " ")
 
       assert String.contains?(row, "Assistant thread")
     end
@@ -400,10 +400,10 @@ defmodule SwarmCodeCLI.UI.ProjectorShellTablineTest do
       end
 
       dot = SafeText.value(Support.glyph(:dot, state))
-      stripe = SafeText.value(Support.glyph(:stripe, state))
+      stripe = SafeText.value(Support.rail(state))
 
       assert dot == SafeText.value(SafeText.chrome(:dot_ascii))
-      assert stripe == SafeText.value(SafeText.chrome(:stripe_ascii))
+      assert stripe == SafeText.value(SafeText.chrome(:rail_ascii))
       assert text(Enum.at(tab(state, 170, "Swarm auth"), @dot)) == dot
       assert text(Enum.at(tab(state, 170, "Release checklist"), @stripe)) == stripe
 

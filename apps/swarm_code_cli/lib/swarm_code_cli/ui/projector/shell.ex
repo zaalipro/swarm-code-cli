@@ -389,7 +389,7 @@ defmodule SwarmCodeCLI.UI.Projector.Shell do
   # on a blank so the tabs stay on a common grid instead of shifting sideways as
   # the active run changes.
   defp stripe_span(true, surface, state),
-    do: %Span{text: Support.glyph(:stripe, state), style: tint(:accent, surface, state)}
+    do: %Span{text: Support.rail(state), style: tint(:accent, surface, state)}
 
   defp stripe_span(false, surface, state), do: plain_gap(1, state, surface)
 

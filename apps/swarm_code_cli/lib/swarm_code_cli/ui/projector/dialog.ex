@@ -321,7 +321,7 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
 
     if focused? do
       surface = hover(state)
-      rail = SafeText.value(Support.glyph(:stripe, state))
+      rail = SafeText.value(Support.rail(state))
 
       [
         %Span{
@@ -375,7 +375,7 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
 
     rail =
       if focused?,
-        do: {SafeText.value(Support.glyph(:stripe, state)) <> " ", paint.(:accent, [])},
+        do: {SafeText.value(Support.rail(state)) <> " ", paint.(:accent, [])},
         else: {"  ", paint.(:text_primary, [])}
 
     mark =

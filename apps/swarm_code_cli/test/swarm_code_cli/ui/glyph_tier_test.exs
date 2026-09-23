@@ -5,6 +5,7 @@ defmodule SwarmCodeCLI.UI.GlyphTierTest do
 
   @rich [
     :eighth_1,
+    :rail,
     :eighth_2,
     :eighth_3,
     :eighth_4,

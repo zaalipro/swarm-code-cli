@@ -184,6 +184,9 @@ defmodule SwarmCodeCLI.UI.SafeText do
           | :stripe_ascii
           | :stripe_off
           | :stripe_off_ascii
+          | :rail
+          | :rail_gap
+          | :rail_ascii
           | :corner_tl
           | :corner_tl_ascii
           | :corner_tr
@@ -452,6 +455,12 @@ defmodule SwarmCodeCLI.UI.SafeText do
   def chrome(:stripe_ascii), do: %__MODULE__{token: :stripe_ascii}
   def chrome(:stripe_off), do: %__MODULE__{token: :stripe_off}
   def chrome(:stripe_off_ascii), do: %__MODULE__{token: :stripe_off_ascii}
+  # pass71 V1 (R3): the thin rail. `▏` at the rich tier; below it a one-cell
+  # gap, since every thin bar that is one cell under both policies is missing
+  # from common terminal fonts; `|` in ASCII.
+  def chrome(:rail), do: %__MODULE__{token: :rail}
+  def chrome(:rail_gap), do: %__MODULE__{token: :rail_gap}
+  def chrome(:rail_ascii), do: %__MODULE__{token: :rail_ascii}
   def chrome(:corner_tl), do: %__MODULE__{token: :corner_tl}
   def chrome(:corner_tl_ascii), do: %__MODULE__{token: :corner_tl_ascii}
   def chrome(:corner_tr), do: %__MODULE__{token: :corner_tr}
@@ -1130,6 +1139,18 @@ defmodule SwarmCodeCLI.UI.SafeText do
   def value(%{__struct__: __MODULE__, token: :stripe} = text)
       when map_size(text) == 2,
       do: "▐"
+
+  def value(%{__struct__: __MODULE__, token: :rail} = text)
+      when map_size(text) == 2,
+      do: "▏"
+
+  def value(%{__struct__: __MODULE__, token: :rail_gap} = text)
+      when map_size(text) == 2,
+      do: " "
+
+  def value(%{__struct__: __MODULE__, token: :rail_ascii} = text)
+      when map_size(text) == 2,
+      do: "|"
 
   def value(%{__struct__: __MODULE__, token: :stripe_ascii} = text)
       when map_size(text) == 2,

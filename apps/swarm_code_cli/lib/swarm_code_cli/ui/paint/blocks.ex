@@ -159,7 +159,7 @@ defmodule SwarmCodeCLI.UI.Paint.Blocks do
     lines = header ++ sequence(body, inner_ctx, rows - length(header))
 
     if framed? do
-      stripe = if ctx.options.ascii?, do: "|", else: SafeText.value(SafeText.chrome(:stripe))
+      stripe = rail_glyph(ctx)
 
       lines
       |> Enum.map(&card_line(&1, ctx, stripe, role(status_role, ctx), inner_ctx.style))
@@ -352,10 +352,7 @@ defmodule SwarmCodeCLI.UI.Paint.Blocks do
 
     accent_col =
       if accent do
-        accent_glyph =
-          if ctx.options.ascii?,
-            do: "#",
-            else: SafeText.value(SafeText.chrome(:stripe))
+        accent_glyph = rail_glyph(ctx)
 
         [raw(accent_glyph, role(accent, ctx))]
       else
@@ -594,6 +591,13 @@ defmodule SwarmCodeCLI.UI.Paint.Blocks do
   # The rich glyphs are reached only here: never under ASCII, and only when the
   # session's capabilities chose the `:rich` tier (narrow policy, truecolor).
   defp rich?(ctx), do: not ctx.options.ascii? and ctx.options.glyph_tier == :rich
+
+  # pass71 V1 (R3): cards and surfaces carry a thin rail, as
+  # `Projector.Support.rail/1` chooses it for the projectors.
+  defp rail_glyph(%{options: %{ascii?: true}}), do: glyph(:rail_ascii)
+  defp rail_glyph(ctx) when ctx.options.glyph_tier == :rich, do: glyph(:rail)
+  defp rail_glyph(%{options: %{color_mode: :monochrome}}), do: glyph(:stripe)
+  defp rail_glyph(_ctx), do: glyph(:rail_gap)
 
   defp glyph(token), do: SafeText.value(SafeText.chrome(token))
 

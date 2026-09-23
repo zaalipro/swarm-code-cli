@@ -236,9 +236,9 @@ defmodule SwarmCodeCLI.UI.InspectorCardsTest do
     test "the cards degrade to their ASCII twins" do
       rows = rows(:swarm, 170, 34, caps: [ascii?: true])
 
-      assert Enum.at(rows, 3) =~ ~r/^# {6}lead +\* active$/
-      assert Enum.at(rows, 4) =~ ~r/^# {2}o {3}Lead agent · kimi-k2-thinking$/
-      assert Enum.at(rows, 9) == "# " <> String.duplicate("#", 14) <> String.duplicate("-", 26)
+      assert Enum.at(rows, 3) =~ ~r/^\| {6}lead +\* active$/
+      assert Enum.at(rows, 4) =~ ~r/^\| {2}o {3}Lead agent · kimi-k2-thinking$/
+      assert Enum.at(rows, 9) == "| " <> String.duplicate("#", 14) <> String.duplicate("-", 26)
       assert Enum.at(rows, 15) =~ ~r/^> \+ scout-1 {3}grep "Repo\\." {3}####-- {2}3\.9k$/
       assert Enum.at(rows, 18) =~ ~r/^> j judge {5}waiting for you {1}------ {2}1\.2k$/
       refute Enum.any?(rows, &(&1 =~ ~r/[⬢⬡✦⚖⬤▐▬◷⎇›]/u))

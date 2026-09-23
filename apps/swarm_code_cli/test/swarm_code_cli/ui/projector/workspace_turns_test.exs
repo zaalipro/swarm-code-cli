@@ -86,7 +86,7 @@ defmodule SwarmCodeCLI.UI.Projector.WorkspaceTurnsTest do
 
     assert String.starts_with?(
              prompt,
-             "  ▐ Review this synthetic project and explain the next step."
+             "    Review this synthetic project and explain the next step."
            )
 
     assert String.ends_with?(prompt, Turns.clock(you.at))
@@ -312,7 +312,7 @@ defmodule SwarmCodeCLI.UI.Projector.WorkspaceTurnsTest do
 
   test "ASCII terminals get the one-cell twins of every transcript glyph" do
     {rows, _, _, _} = fixture(:swarm, {100, 30}, ascii: true) |> painted()
-    assert String.starts_with?(Enum.at(rows, 0), "  # Review this synthetic project")
+    assert String.starts_with?(Enum.at(rows, 0), "  | Review this synthetic project")
     header = Enum.find(rows, &String.starts_with?(&1, "  S lead"))
     assert String.ends_with?(header, "writing |  23k tok")
     assert index_of(rows, "    + scout-1  | 1 tool")
@@ -373,7 +373,7 @@ defmodule SwarmCodeCLI.UI.Projector.WorkspaceTurnsTest do
     assert hd(Turns.order(ordered)) == "m-later"
 
     {rows, _, _, _} = painted(state)
-    prompt = index_of(rows, "  ▐ the prompt")
+    prompt = index_of(rows, "    the prompt")
     step = index_of(rows, "    Let me look.")
     work = index_of(rows, "    ✓ grep")
     words = index_of(rows, "    the answer")

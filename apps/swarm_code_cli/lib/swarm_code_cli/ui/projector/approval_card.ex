@@ -530,7 +530,7 @@ defmodule SwarmCodeCLI.UI.Projector.ApprovalCard do
   defp quoted(text, %{capabilities: %{ascii?: true}}), do: "\"" <> text <> "\""
   defp quoted(text, _state), do: "“" <> text <> "”"
 
-  defp rail(state), do: SafeText.value(Support.glyph(:stripe, state))
+  defp rail(state), do: SafeText.value(Support.rail(state))
 
   defp tint(role, state, modifiers \\ []),
     do: %{RunRow.tinted(role, state) | background: nil, modifiers: modifiers}

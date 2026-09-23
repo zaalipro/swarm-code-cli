@@ -265,7 +265,13 @@ defmodule SwarmCodeCLI.UI.Projector.Composer do
   # The draft, on the same card surface a sent prompt gets in the transcript.
   defp draft_blocks(state, rect) do
     draft = draft(state)
-    gutter_value = SafeText.value(Support.glyph(:composer_gutter, state))
+    # pass71 V1 (R3): a thin rail where the terminal draws `▏`; below the rich
+    # tier the gutter keeps its stripe, the only focus cue the draft has.
+    gutter_value =
+      if state.capabilities.glyph_tier == :rich and not state.capabilities.ascii?,
+        do: SafeText.value(Support.rail(state)),
+        else: SafeText.value(Support.glyph(:composer_gutter, state))
+
     editor_width = max(1, rect.width - 4)
     focused? = state.focus == "composer" and state.layers == []
     gutter_style = if focused?, do: tint(:accent, state), else: tint(:text_faint, state)
@@ -377,7 +383,7 @@ defmodule SwarmCodeCLI.UI.Projector.Composer do
 
       rail =
         if item.selected?,
-          do: {SafeText.value(Support.glyph(:stripe, state)), tint(:accent, state)},
+          do: {SafeText.value(Support.rail(state)), tint(:accent, state)},
           else: {" ", tint(:text_muted, state)}
 
       args =
@@ -417,7 +423,7 @@ defmodule SwarmCodeCLI.UI.Projector.Composer do
 
       rail =
         if selected?,
-          do: {SafeText.value(Support.glyph(:stripe, state)), tint(:accent, state)},
+          do: {SafeText.value(Support.rail(state)), tint(:accent, state)},
           else: {" ", tint(:text_muted, state)}
 
       pieces =
