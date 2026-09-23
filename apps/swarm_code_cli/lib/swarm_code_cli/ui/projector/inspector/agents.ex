@@ -212,6 +212,10 @@ defmodule SwarmCodeCLI.UI.Projector.Inspector.Agents do
     ]
   end
 
+  # pass70 Q11: a finished agent that used no tool did not use one "yet".
+  @finished [:done, :failed, :stopped, :interrupted, :superseded, :cancelled]
+  defp finished?(agent), do: Map.get(agent, :state) in @finished
+
   defp avatar_token(%{role: :assistant}), do: :assistant_mark
   defp avatar_token(%{role: :judge}), do: :judge
   defp avatar_token(%{role: :lead}), do: :agent_lead
@@ -222,11 +226,24 @@ defmodule SwarmCodeCLI.UI.Projector.Inspector.Agents do
     model = Map.get(run, :model)
 
     case agent.role do
-      :assistant -> join(["Assistant", model])
-      :judge -> join(["Judge", round_words(state, run)])
-      :lead -> join(["Lead agent", model])
-      _ -> join([agent.role |> Atom.to_string() |> String.capitalize(), model])
+      # The name row already says "Assistant"; a second "Assistant ·" under
+      # it only repeated it (pass70 Q11).
+      :assistant ->
+        if assistant_named?(agent), do: model || "Assistant", else: join(["Assistant", model])
+
+      :judge ->
+        join(["Judge", round_words(state, run)])
+
+      :lead ->
+        join(["Lead agent", model])
+
+      _ ->
+        join([agent.role |> Atom.to_string() |> String.capitalize(), model])
     end
+  end
+
+  defp assistant_named?(agent) do
+    agent |> Hive.name() |> to_string() |> String.trim() |> String.downcase() == "assistant"
   end
 
   defp round_words(state, run) do
@@ -288,7 +305,12 @@ defmodule SwarmCodeCLI.UI.Projector.Inspector.Agents do
         %Block.RichText{
           spans: [
             %Span{
-              text: Density.safe("no tools yet", state, inner),
+              text:
+                Density.safe(
+                  if(finished?(lead), do: "no tools used", else: "no tools yet"),
+                  state,
+                  inner
+                ),
               style: Theme.style(:text_ghost, state.capabilities)
             }
           ]
@@ -798,7 +820,12 @@ defmodule SwarmCodeCLI.UI.Projector.Inspector.Agents do
             %Block.RichText{
               spans: [
                 %Span{
-                  text: Density.safe("nothing yet", state, width),
+                  text:
+                    Density.safe(
+                      if(finished?(agent), do: "no operations", else: "nothing yet"),
+                      state,
+                      width
+                    ),
                   style: Theme.style(:text_ghost, state.capabilities)
                 }
               ]

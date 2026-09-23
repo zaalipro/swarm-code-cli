@@ -248,7 +248,8 @@ defmodule SwarmCodeCLI.UI.InspectorCardsTest do
       rows = rows(:chat, 170, 34)
 
       assert Enum.at(rows, 3) =~ ~r/^▐ {6}assistant +⬤ active$/
-      assert Enum.at(rows, 4) =~ ~r/^▐ {2}✳ {3}Assistant · deepseek-v4-pro$/
+      # The name row says assistant; the line under it names the model only.
+      assert Enum.at(rows, 4) =~ ~r/^▐ {2}✳ {3}deepseek-v4-pro$/
       assert Enum.at(rows, 5) =~ ~r/^▐ {6}\d\d:\d\d · 4\.0k tok$/
       assert Enum.at(rows, 10) =~ ~r/^▐ writing +4\.0k tokens$/
       refute Enum.any?(rows, &String.contains?(&1, "Sub-agents"))
@@ -256,6 +257,27 @@ defmodule SwarmCodeCLI.UI.InspectorCardsTest do
       refute Enum.any?(rows, &(&1 =~ ~r/· 0\b/))
       assert Enum.any?(rows, &(&1 =~ ~r/^Operations · assistant$/))
       assert Enum.any?(rows, &(&1 == "nothing yet"))
+    end
+
+    test "a finished assistant that used nothing says so, not \"yet\" (pass70 Q11)" do
+      state = state(:chat, 170, 34)
+      run = Map.values(state.read_model.runs) |> hd()
+
+      agents =
+        Map.new(state.read_model.agents, fn {id, agent} -> {id, %{agent | state: :done}} end)
+
+      state = %{
+        state
+        | read_model: %{
+            state.read_model
+            | runs: %{run.id => %{run | state: :done}},
+              agents: agents,
+              transcript: Map.reject(state.read_model.transcript, fn {_, item} -> item.tool end)
+          }
+      }
+
+      rows = elem(painted(state), 0)
+      refute Enum.any?(rows, &String.contains?(&1, "yet"))
     end
 
     test "a wider dock lays the sub-agents out as two columns of mini cards" do
