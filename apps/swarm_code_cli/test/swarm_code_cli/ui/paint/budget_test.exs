@@ -55,7 +55,7 @@ defmodule SwarmCodeCLI.UI.Paint.BudgetTest do
     tail = %{__struct__: Untrusted}
 
     blocks =
-      Enum.reduce(1..5000, [tail], fn _, acc ->
+      Enum.reduce(1..10_000, [tail], fn _, acc ->
         [%Block.Text{text: SafeText.chrome(:empty)} | acc]
       end)
 

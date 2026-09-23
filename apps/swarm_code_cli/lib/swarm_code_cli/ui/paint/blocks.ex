@@ -55,7 +55,7 @@ defmodule SwarmCodeCLI.UI.Paint.Blocks do
              policy in [:narrow, :wide] do
     if Options.validate(options) != :ok, do: fail(:invalid_scene)
 
-    case Budget.check_display_list(items) do
+    case Budget.check_display_list(items, {width, max_rows}) do
       :ok -> :ok
       {:error, reason} -> fail(reason)
     end
