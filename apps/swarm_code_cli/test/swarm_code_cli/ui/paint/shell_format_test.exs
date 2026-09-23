@@ -72,6 +72,8 @@ defmodule SwarmCodeCLI.UI.Paint.ShellFormatTest do
 
     context
     |> SwarmCodeCLI.UI.Keymap.Bindings.hinted()
+    # The fixture's turn is live, so Esc interrupt leads (pass70 Q16).
+    |> Enum.sort_by(&if(&1.id == :interrupt_turn, do: 0, else: 1))
     |> Enum.flat_map(fn binding ->
       case SwarmCodeCLI.UI.Keymap.Bindings.key_in_context(binding, context) do
         nil ->

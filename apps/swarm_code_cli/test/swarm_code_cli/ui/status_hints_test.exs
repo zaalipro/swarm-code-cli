@@ -80,6 +80,14 @@ defmodule SwarmCodeCLI.UI.StatusHintsTest do
       assert paint_last_row(idle) =~ "send"
     end
 
+    test "while a turn streams Esc interrupt leads, even on a one-hint row (pass70 Q16)" do
+      assert paint_last_row(fixture({170, 40}, "composer")) =~ "Esc interrupt   Enter send"
+
+      narrow = paint_last_row(fixture({80, 24}, "composer"))
+      assert narrow =~ ~r/Esc interrupt\s*$/
+      refute narrow =~ "Enter send"
+    end
+
     test "the strongest hints come first: Send leads the composer" do
       composer = paint_last_row(fixture({170, 40}, "composer"))
       assert composer =~ "send"
@@ -153,6 +161,8 @@ defmodule SwarmCodeCLI.UI.StatusHintsTest do
 
     context
     |> Bindings.hinted()
+    # The fixture's turn is live, so Esc interrupt leads (pass70 Q16).
+    |> Enum.sort_by(&if(&1.id == :interrupt_turn, do: 0, else: 1))
     |> Enum.flat_map(fn binding ->
       case Bindings.key_in_context(binding, context) do
         nil -> []

@@ -531,10 +531,15 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
 
   # The strongest `budget` hints for the context, key then word.
   defp hints(state, context, budget) do
+    live? = SwarmCodeCLI.UI.Keymap.live_turn(state) != nil
+
     context
     |> Bindings.hinted()
     # pass70 Q7: "Esc interrupt" only while there is a turn to interrupt.
-    |> Enum.reject(&(&1.id == :interrupt_turn and SwarmCodeCLI.UI.Keymap.live_turn(state) == nil))
+    |> Enum.reject(&(&1.id == :interrupt_turn and not live?))
+    # Q16: and then first, so the one-hint row of an 80-column terminal says
+    # how to stop the turn rather than "Enter send".
+    |> Enum.sort_by(&if(&1.id == :interrupt_turn, do: 0, else: 1))
     |> Enum.flat_map(fn binding ->
       case Bindings.key_in_context(binding, context) do
         nil -> []
