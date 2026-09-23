@@ -982,9 +982,20 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
   end
 
   defp footer_rows(%{run: %{state: :stopped}} = ctx, _state, _width) do
-    if ctx.answer && String.trim(ctx.residual) != "",
-      do: [spec([{String.duplicate(" ", @body), :plain}, {"stopped", :faint}], nil)],
-      else: [spec([{String.duplicate(" ", @body), :plain}, {"stopped by you", :faint}], nil)]
+    residual = String.trim(ctx.residual || "")
+
+    cond do
+      # pass70 Q6: the engine ends a stopped answer with "_(stopped)_" itself
+      # and the header already says stopped; a third line said it again.
+      ctx.answer && String.ends_with?(residual, "_(stopped)_") ->
+        []
+
+      ctx.answer && residual != "" ->
+        [spec([{String.duplicate(" ", @body), :plain}, {"stopped", :faint}], nil)]
+
+      true ->
+        [spec([{String.duplicate(" ", @body), :plain}, {"stopped by you", :faint}], nil)]
+    end
   end
 
   defp footer_rows(_ctx, _state, _width), do: []

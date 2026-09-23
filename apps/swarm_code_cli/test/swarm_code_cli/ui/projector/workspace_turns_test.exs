@@ -192,6 +192,25 @@ defmodule SwarmCodeCLI.UI.Projector.WorkspaceTurnsTest do
     assert Enum.any?(rows, &(&1 == "    ✕ Failed"))
   end
 
+  test "a stopped answer says stopped once below its words, not twice (pass70 Q6)" do
+    state = fixture(:swarm, {100, 30})
+    run = state.read_model.runs["fixture-run"]
+
+    state =
+      put_in(state.read_model.runs["fixture-run"], %{
+        run
+        | state: :stopped,
+          finished_at: run.started_at + 1_000
+      })
+
+    # The engine appends this to an answer it stopped (run_server.ex).
+    state = replace_item(state, "002", &%{&1 | text: "Half an answer.\n\n_(stopped)_"})
+    {rows, _, _, _} = painted(state)
+
+    assert Enum.any?(rows, &(String.trim(&1) == "(stopped)"))
+    refute Enum.any?(rows, &(String.trim(&1) == "stopped"))
+  end
+
   test "the header says what the turn came to in plain words" do
     state = fixture(:swarm, {100, 30})
 
