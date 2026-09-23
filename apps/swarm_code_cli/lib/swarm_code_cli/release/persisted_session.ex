@@ -315,6 +315,7 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
           data_source: source,
           frame_ms: 33,
           close_ms: 3000,
+          wall_clock: true,
           instruction_sink: self()
         )
 

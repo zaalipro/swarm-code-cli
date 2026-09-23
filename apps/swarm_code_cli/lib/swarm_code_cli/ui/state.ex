@@ -23,6 +23,9 @@ defmodule SwarmCodeCLI.UI.State do
     # While an approval or question has just opened by itself, keys keep typing
     # into the draft until the user pauses; this is that pause's timer id.
     interaction_grace: nil,
+    # pass70 Q2: when the current notice appeared (the owner's clock), so a
+    # feedback line on the status bar can fade; nil without a notice.
+    notice_at: nil,
     # The pending interaction the reducer opened by itself, so Esc can dismiss
     # it without it popping straight back up.
     auto_opened: nil,
@@ -75,6 +78,34 @@ defmodule SwarmCodeCLI.UI.State do
   ]
 
   @type t :: %__MODULE__{}
+
+  # pass70 Q2: how long a feedback line stays on the status bar.
+  @notice_ms 6_000
+
+  @doc "How long a fading notice stays on screen, in milliseconds."
+  def notice_ms, do: @notice_ms
+
+  @doc """
+  The notice the screen shows now: feedback ("Project trusted", "Command
+  rejected: not allowed", "Stopping the turn.") fades `notice_ms/0` after it
+  appeared; the quit hint and errors that need an answer stay.
+  """
+  def shown_notice(%{notice: notice, notice_at: at, now: now}) do
+    if fading?(notice) and is_integer(at) and is_integer(now) and now - at >= @notice_ms,
+      do: nil,
+      else: notice
+  end
+
+  def shown_notice(%{notice: notice}), do: notice
+
+  @doc "Whether the notice on screen is one that fades and has not faded yet."
+  def fading_notice?(state), do: fading?(shown_notice(state))
+
+  defp fading?({:command_feedback, "Press Ctrl-C again to quit."}), do: false
+  defp fading?({:command_feedback, text}) when is_binary(text), do: true
+  defp fading?({kind, _}) when kind in [:command_rejected, :input_rejected], do: true
+  defp fading?(:layer_capacity_reached), do: true
+  defp fading?(_notice), do: false
 
   # The Ctrl-G dashboard keeps its filter query in `selection` under one key that
   # the keymap, the reducer and the dashboard projector all have to agree on, so

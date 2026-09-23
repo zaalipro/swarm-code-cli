@@ -119,7 +119,13 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
        slot: SceneSlot.new(),
        table: %{},
        frame_ms: frame,
-       wall_clock?: init.now == 0,
+       # pass70 Q2: a launcher that reads the clock says so (`wall_clock:
+       # true`); inferring it from a zero `init.now` left the release, which
+       # starts from the real time, on a clock stopped at launch.
+       wall_clock?: Keyword.get(opts, :wall_clock, init.now == 0),
+       # Only a launcher that asked for the wall clock repaints on the clock.
+       ticking?: Keyword.get(opts, :wall_clock, false) == true,
+       clock_timer: nil,
        close_ms: timeout,
        draw: :idle,
        frame_timer: nil,
@@ -215,6 +221,15 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
 
   def handle_info({:binding_timeout, ref}, %{phase: :binding, binding: ref} = state),
     do: {:noreply, begin_shutdown(state, :binding_failed)}
+
+  def handle_info({:clock, id}, %{phase: :running, clock_timer: {id, _}} = state) do
+    state = %{state | clock_timer: nil}
+
+    if time_dependent?(state.ui),
+      do:
+        {:noreply, commit(%{state | ui: %{state.ui | revision: state.ui.revision + 1}}, state.ui)},
+      else: {:noreply, state}
+  end
 
   def handle_info({:frame, id}, %{phase: :running, draw: {:timer, id}} = state),
     do: {:noreply, draw(%{state | draw: :idle, frame_timer: cancel(state.frame_timer)})}
@@ -349,6 +364,9 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
   defp update(%{ui: %{lifecycle: :closing}} = state, _), do: state
 
   defp update(state, action) do
+    # The reducer stamps what it shows with the owner's clock (a notice's
+    # appearance, pass70 Q2), so a wall-clock session reads it first.
+    state = tick(state)
     {ui, emitted} = Reducer.update(state.ui, action)
     next = %{state | ui: ui}
     effects(next, emitted)
@@ -476,7 +494,47 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
     |> pause_frame()
     |> project()
     |> schedule()
+    |> clock()
   end
+
+  # pass70 Q2: what the screen says about time (a live run's elapsed clock, a
+  # toast that fades after a few seconds) changes while nothing else does, so
+  # a wall-clock session repaints once a second while any of it is on screen,
+  # and not at all when idle.
+  @clock_ms 1_000
+  @toast_window_ms 8_000
+  @live_run_states [
+    :queued,
+    :running,
+    :streaming,
+    :waiting_question,
+    :waiting_approval,
+    :paused,
+    :retrying
+  ]
+
+  defp clock(%{ticking?: true, wall_clock?: true, phase: :running, clock_timer: nil} = state) do
+    if time_dependent?(state.ui) do
+      id = make_ref()
+      %{state | clock_timer: {id, Process.send_after(self(), {:clock, id}, @clock_ms)}}
+    else
+      state
+    end
+  end
+
+  defp clock(state), do: state
+
+  @doc false
+  def time_dependent?(%{lifecycle: :running, read_model: model, now: now} = ui) do
+    Enum.any?(model.runs, fn {_, run} -> run.state in @live_run_states end) or
+      SwarmCodeCLI.UI.State.fading_notice?(ui) or
+      case Map.get(model, :toasts, []) do
+        [%{at: at} | _] when is_integer(at) and is_integer(now) -> now - at < @toast_window_ms
+        _ -> false
+      end
+  end
+
+  def time_dependent?(_ui), do: false
 
   # A live session reads the wall clock at every commit, so the tabs' elapsed
   # times move. A scripted session (a demo, a test) was given a fixed clock at
@@ -541,7 +599,15 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
           "Companion is off (SWARM_COMPANION=0)"
       end
 
-    ui = %{state.ui | notice: {:command_feedback, text}, revision: state.ui.revision + 1}
+    state = tick(state)
+
+    ui = %{
+      state.ui
+      | notice: {:command_feedback, text},
+        notice_at: state.ui.now,
+        revision: state.ui.revision + 1
+    }
+
     commit(%{state | ui: ui}, state.ui)
   end
 
@@ -604,7 +670,15 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
           "This terminal cannot take a copy from SwarmCode."
       end
 
-    ui = %{state.ui | notice: {:command_feedback, text}, revision: state.ui.revision + 1}
+    state = tick(state)
+
+    ui = %{
+      state.ui
+      | notice: {:command_feedback, text},
+        notice_at: state.ui.now,
+        revision: state.ui.revision + 1
+    }
+
     commit(%{state | ui: ui, copy: nil}, state.ui)
   end
 

@@ -88,6 +88,7 @@ defmodule SwarmCodeCLI.UI.Reducer do
       {:ok, action} ->
         {next, effects} = transition(state, action)
         {next, effects} = sync_interactions(next, effects, action)
+        next = stamp_notice(state, next)
         next = repair_switcher(state, next)
         Enum.each(effects, &SwarmCodeCLI.UI.Effect.validate!/1)
 
@@ -1555,6 +1556,14 @@ defmodule SwarmCodeCLI.UI.Reducer do
   end
 
   defp disarm_quit(state), do: %{state | quit_armed: nil}
+
+  # pass70 Q2: feedback on the status line ("Project trusted", "Command
+  # rejected", "Stopping the turn.") is a toast, not a banner. The moment it
+  # appears is stamped here; `State.shown_notice/1` stops showing it a few
+  # seconds later instead of leaving it over the key hints until the next one.
+  defp stamp_notice(%{notice: notice}, %{notice: notice} = next), do: next
+  defp stamp_notice(_previous, %{notice: nil} = next), do: %{next | notice_at: nil}
+  defp stamp_notice(_previous, next), do: %{next | notice_at: next.now}
 
   defp quit_hint, do: "Press Ctrl-C again to quit."
 

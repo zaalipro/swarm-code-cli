@@ -458,7 +458,7 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
   # Feedback in words, on the right of the row, instead of the key hints.
   defp toast(state) do
     text_role =
-      case state.notice do
+      case SwarmCodeCLI.UI.State.shown_notice(state) do
         {:command_feedback, text} when is_binary(text) -> {first_line(text), :info}
         nil -> mutation_toast(state) || daemon_toast(state)
         other -> {notice_words(other), :error}
