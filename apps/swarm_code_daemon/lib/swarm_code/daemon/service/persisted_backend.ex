@@ -94,6 +94,14 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         research_ids: [],
         attachment_ids: staged_attachments,
         refresh_pending: false,
+        # pass71 S6: what the armed refresh has to do — a full reload, or only
+        # the runs and nodes a streaming tick touched — the inputs of the last
+        # projection (the rows the targeted refetch replaces), and how many
+        # projections of each kind ran.
+        full_pending: false,
+        partial: nil,
+        inputs: nil,
+        projections: %{full: 0, partial: 0},
         repo_monitor: Process.monitor(Process.whereis(Repo)),
         streams: %{},
         changes: %{},
@@ -299,8 +307,16 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       else: {:noreply, state}
   end
 
+  # pass71 S6: a streaming tick refetches only what it touched; anything
+  # else (or a refresh nobody armed) reloads the whole projection.
   def handle_info(:refresh_projection, state) do
-    next = reload(%{state | refresh_pending: false})
+    cleared = %{state | refresh_pending: false, full_pending: false, partial: nil}
+
+    next =
+      if state.full_pending or state.partial == nil,
+        do: reload(cleared),
+        else: partial_reload(cleared, state.partial)
+
     {:noreply, publish_changes(state, next)}
   end
 
@@ -333,6 +349,24 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
   def handle_info({:mcp_status, server_id, status}, state),
     do: {:noreply, mcp_status(state, server_id, status)}
+
+  # pass71 S6 (C9): a streaming tick (`Node.patch_cols/0`: status while
+  # running, progress, detail, tokens, cost, turn) and the run totals written
+  # in the same flush refresh only the rows they name.
+  def handle_info({:nodes_patch, run_id, patches}, state)
+      when is_binary(run_id) and is_list(patches) do
+    ids = for {id, cols} <- patches, is_binary(id) and is_map(cols), do: id
+    {:noreply, schedule_partial(state, [run_id], ids)}
+  end
+
+  # Only a totals tick (the counters moved, nothing a card keys off did) is
+  # partial; any other run update, or one that changed nothing we hold, is a
+  # signal to reload everything.
+  def handle_info({:run_updated, %{id: run_id} = run}, state) when is_binary(run_id) do
+    if totals_tick?(run, state),
+      do: {:noreply, schedule_partial(state, [run_id], [])},
+      else: {:noreply, schedule_refresh(state)}
+  end
 
   # pass70 C6: the models of the agents a run just registered or switched.
   def handle_info({:nodes_upsert, _run_id, nodes} = event, state) when is_list(nodes) do
@@ -950,6 +984,9 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
           research_ids: [],
           attachment_ids: CommandLedger.staged_attachments(state.opts[:project_id], id),
           refresh_pending: false,
+          full_pending: false,
+          partial: nil,
+          inputs: nil,
           diff_cache: %{},
           diff_order: [],
           change_facts: %{},
@@ -1077,9 +1114,27 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     })
   end
 
-  defp schedule_refresh(%{refresh_pending: true} = state), do: state
+  defp schedule_refresh(state), do: arm_refresh(%{state | full_pending: true, partial: nil})
 
-  defp schedule_refresh(state) do
+  # pass71 S6: a partial refresh accumulates the runs and nodes of the ticks
+  # coalesced into it; a pending full reload already covers them.
+  defp schedule_partial(%{full_pending: true} = state, _runs, _nodes), do: arm_refresh(state)
+
+  defp schedule_partial(state, runs, nodes) do
+    partial = state.partial || %{runs: MapSet.new(), nodes: MapSet.new()}
+
+    arm_refresh(%{
+      state
+      | partial: %{
+          runs: MapSet.union(partial.runs, MapSet.new(runs)),
+          nodes: MapSet.union(partial.nodes, MapSet.new(nodes))
+        }
+    })
+  end
+
+  defp arm_refresh(%{refresh_pending: true} = state), do: state
+
+  defp arm_refresh(state) do
     Process.send_after(self(), :refresh_projection, 20)
     %{state | refresh_pending: true}
   end
@@ -1823,20 +1878,115 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     agents = PersistedProjection.agents(conv, ids)
 
     state
-    |> build_projection(rows, records, agents, true)
+    |> build_projection(rows, records, agents, :reload)
+    |> count_projection(:full)
     |> start_facts_job()
   end
 
-  # `reload?`: the reload records which facts are missing (for the facts
-  # job); a query's page reuses what it has.
-  defp build_projection(state, rows, records, agents, reload? \\ false) do
+  # pass71 S6 (C9): the runs and nodes a streaming tick named are refetched
+  # and replace their rows in the last projection's inputs; the rest (running
+  # ops, checkpoints, their counts) is reused, then projected as a reload
+  # would. It falls back to a full reload when a row is gone, is not in the
+  # projection, or changed anything a tick cannot carry: then the change was
+  # structural and its own event is on its way. Golden-tested against a reload.
+  @run_tick_keys [:tokens_in, :tokens_out, :cost_usd, :model, :updated_at]
+  @agent_tick_keys [:status, :progress, :tokens_in, :tokens_out, :cost_usd, :updated_at]
+  @record_tick_keys [:status, :text, :text_bytes, :detail, :tokens_in, :tokens_out, :updated_at]
+
+  defp partial_reload(%{inputs: nil} = state, _partial), do: reload(state)
+
+  defp partial_reload(%{inputs: inputs} = state, %{runs: runs, nodes: nodes}) do
+    conv = state.opts[:conversation_id]
+    run_ids = MapSet.to_list(runs)
+    agent_ids = for a <- inputs.agents, MapSet.member?(nodes, a.id), do: a.id
+    record_ids = for r <- inputs.records, MapSet.member?(nodes, r.id), do: r.id
+
+    with true <- Enum.all?(run_ids, fn id -> Enum.any?(inputs.rows, &(&1.id == id)) end),
+         {:ok, rows, _, _} <-
+           PersistedProjection.runs(conv, %{kind: :runs, ids: run_ids}, nil, "before", 201),
+         {:ok, rows} <- tick_rows(inputs.rows, rows, @run_tick_keys, length(run_ids)),
+         {:ok, agents} <-
+           tick_rows(
+             inputs.agents,
+             PersistedProjection.agents_by_ids(conv, agent_ids),
+             @agent_tick_keys,
+             length(agent_ids)
+           ),
+         {:ok, records} <-
+           tick_rows(
+             inputs.records,
+             PersistedProjection.records_by_ids(conv, record_ids),
+             @record_tick_keys,
+             length(record_ids)
+           ) do
+      state
+      |> build_projection(rows, records, agents, {:partial, inputs})
+      |> count_projection(:partial)
+      |> start_facts_job()
+    else
+      _ -> reload(state)
+    end
+  end
+
+  # `fresh` (the `expected` rows asked for, all still there) replaces the rows
+  # of `cached` with its ids, in place, when each differs only in `keys`.
+  defp tick_rows(_cached, fresh, _keys, expected) when length(fresh) != expected, do: :error
+
+  defp tick_rows(cached, fresh, keys, _expected) do
+    by_id = Map.new(fresh, &{&1.id, &1})
+
+    matched =
+      Enum.count(cached, fn row ->
+        case by_id[row.id] do
+          nil -> false
+          new -> Map.drop(new, keys) == Map.drop(row, keys)
+        end
+      end)
+
+    if matched == map_size(by_id),
+      do: {:ok, Enum.map(cached, &Map.get(by_id, &1.id, &1))},
+      else: :error
+  end
+
+  defp totals_tick?(run, %{inputs: %{rows: rows}}) do
+    case Enum.find(rows, &(&1.id == run.id)) do
+      nil ->
+        false
+
+      row ->
+        Enum.all?(
+          [:status, :finished_at, :error_kind, :root_node_id, :kind],
+          &(Map.get(run, &1) == Map.get(row, &1))
+        ) and Enum.any?([:tokens_in, :tokens_out, :cost_usd], &(Map.get(run, &1) != row[&1]))
+    end
+  end
+
+  defp totals_tick?(_run, _state), do: false
+
+  defp count_projection(state, kind),
+    do: %{state | projections: Map.update!(state.projections, kind, &(&1 + 1))}
+
+  # `mode`: `:reload` and `{:partial, inputs}` are the service's own
+  # projection (they record which facts are missing, for the facts job, and
+  # keep their inputs); `:page` is a query's page, which reuses what it has.
+  defp build_projection(state, rows, records, agents, mode \\ :page) do
     conv = state.opts[:conversation_id]
     ids = Enum.map(rows, & &1.id)
     pending = Questions.list(conv) |> Enum.take(200)
     grouped_records = Enum.group_by(records, & &1.run_id)
     grouped_agents = Enum.group_by(agents, & &1.run_id)
-    ops = PersistedProjection.running_ops(conv, ids)
-    checkpoints = PersistedProjection.checkpoints(conv, ids)
+
+    {ops, checkpoints, checkpoint_counts} =
+      case mode do
+        {:partial, inputs} ->
+          {inputs.ops, inputs.checkpoints, inputs.checkpoint_counts}
+
+        _ ->
+          {PersistedProjection.running_ops(conv, ids), PersistedProjection.checkpoints(conv, ids),
+           PersistedProjection.checkpoint_counts(conv, ids)}
+      end
+
+    reload? = mode != :page
 
     terminal =
       for row <- rows, row.status in ["done", "stopped", "failed", "interrupted"], do: row.id
@@ -1849,7 +1999,6 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         else: %{state | change_facts: facts}
 
     op_facts = op_diff_facts(checkpoints, facts)
-    checkpoint_counts = PersistedProjection.checkpoint_counts(conv, ids)
 
     runs =
       Map.new(rows, fn row ->
@@ -1968,7 +2117,19 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         changes: Map.new(checkpoints, &{&1.id, change_body(&1, state)}),
         verdicts: Map.new(verdicts),
         agent_models: Map.take(state.agent_models, Enum.map(agents, & &1.id)),
-        background: background
+        background: background,
+        inputs:
+          if(reload?,
+            do: %{
+              rows: rows,
+              records: records,
+              agents: agents,
+              ops: ops,
+              checkpoints: checkpoints,
+              checkpoint_counts: checkpoint_counts
+            },
+            else: state.inputs
+          )
     }
     |> background_tick()
   end
