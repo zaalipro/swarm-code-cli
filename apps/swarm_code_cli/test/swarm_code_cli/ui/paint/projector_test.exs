@@ -669,13 +669,20 @@ defmodule SwarmCodeCLI.UI.Paint.ProjectorTest do
 
     long = %{item | text: "```\n" <> Enum.map_join(1..250, "\n", &"code #{&1}") <> "\n```"}
     state = put_in(state.read_model.transcript[item.id], long)
-    state = put_in(state.scrolls.main.anchor, {item.id, 242, :top})
+    state = put_in(state.scrolls.main.anchor, {item.id, 200, :top})
     assert ScrollMetrics.height(state, :main, item.id) == 252
     {scene, _, plan} = paint(state)
     main = Enum.find(scene.regions, &(&1.role == :main))
-    assert screen(plan) =~ "code 241"
-    assert screen(plan) =~ "code 248"
-    refute screen(plan) =~ "code 240"
+    assert screen(plan) =~ "code 199"
+    assert screen(plan) =~ "code 206"
+    refute screen(plan) =~ "code 198"
+
+    # pass70 Q1: anchored inside the last screen, the view is drawn from the
+    # end (the last row on the bottom edge), not over a blank page.
+    state = put_in(state.scrolls.main.anchor, {item.id, 242, :top})
+    {_scene, _, near_end} = paint(state)
+    assert screen(near_end) =~ "code 250"
+    assert screen(near_end) =~ "code 240"
 
     assert length(Enum.find(main.blocks, &is_struct(&1, Block.VirtualList)).items) <=
              main.rect.height
@@ -689,7 +696,7 @@ defmodule SwarmCodeCLI.UI.Paint.ProjectorTest do
 
       item = %{
         state.read_model.transcript["002"]
-        | text: String.duplicate("Independent permissions stay exact · Unicode 界. ", 30)
+        | text: String.duplicate("Independent permissions stay exact · Unicode 界. ", 200)
       }
 
       # No agents: a worker that has not started would be a queued line of

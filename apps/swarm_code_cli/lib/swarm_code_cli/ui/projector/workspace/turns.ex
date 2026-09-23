@@ -1205,12 +1205,20 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
   scene is bounded by the viewport, never by the length of the conversation.
   """
   def viewport(state, width, height) do
+    scroll = Map.get(state.scrolls, :main)
+    follow? = scroll == nil or scroll.follow? == true
+    viewport(state, width, height, follow?)
+  end
+
+  # pass70 Q1: scrolled so near the end that the rows from the anchor down do
+  # not fill the view, the view is drawn from the end instead, like following:
+  # the last row sits on the bottom edge and nothing is left blank below it.
+  defp viewport(state, width, height, follow?) do
     ids = view_order(state)
     transcript = state.read_model.transcript
     first_run = state |> view_runs() |> List.first()
     scroll = Map.get(state.scrolls, :main)
     anchor = scroll && scroll.anchor
-    follow? = scroll == nil or scroll.follow? == true
 
     index =
       case anchor do
@@ -1221,7 +1229,7 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
     candidates = Enum.with_index(ids)
     candidates = if follow?, do: Enum.reverse(candidates), else: Enum.drop(candidates, index)
 
-    {blocks, _left, first, _cache} =
+    {blocks, left, first, _cache} =
       Enum.reduce_while(candidates, {[], height, index, %{}}, fn
         _, {blocks, left, first, cache} when left <= 0 ->
           {:halt, {blocks, 0, first, cache}}
@@ -1257,8 +1265,14 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
             else: {:cont, {blocks, left, first, cache}}
       end)
 
-    blocks = if follow?, do: blocks, else: Enum.reverse(blocks)
-    {blocks, min(first, length(ids)), length(ids)}
+    hidden_above? = index > 0 or match?({_, line, _} when line > 0, anchor)
+
+    if not follow? and left > 0 and hidden_above? do
+      viewport(state, width, height, true)
+    else
+      blocks = if follow?, do: blocks, else: Enum.reverse(blocks)
+      {blocks, min(first, length(ids)), length(ids)}
+    end
   end
 
   @doc "The visible slice of `rows` as one block, and how many rows it holds."

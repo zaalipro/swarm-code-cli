@@ -244,20 +244,20 @@ defmodule SwarmCodeCLI.UI.ProjectorTest do
           | transcript: Map.new(items, &{&1.id, &1}),
             order: %{workspace: order}
         },
-        scrolls: %{main: %{state.scrolls.main | follow?: false, anchor: {"item-9990", 0, :top}}}
+        scrolls: %{main: %{state.scrolls.main | follow?: false, anchor: {"item-9900", 0, :top}}}
     }
 
     {scene, _} = Projector.project(state)
     main = Enum.find(scene.regions, &(&1.role == :main))
     list = Enum.find(main.blocks, &is_struct(&1, VirtualList))
     assert list.total_count == 10_000
-    assert list.first_index == 9989
+    assert list.first_index == 9899
     assert length(list.items) <= main.rect.height
     # The anchored item is the first thing in the window: its words, with no
     # speaker line repeated above every item of the turn.
     content = list.items |> hd() |> texts() |> Enum.join() |> String.trim()
-    assert String.starts_with?(content, "row 9990")
-    refute texts(list) |> Enum.join() =~ "row 9989"
+    assert String.starts_with?(content, "row 9900")
+    refute texts(list) |> Enum.join() =~ "row 9899"
   end
 
   test "page errors expose scoped retry diagnostics while retaining content" do

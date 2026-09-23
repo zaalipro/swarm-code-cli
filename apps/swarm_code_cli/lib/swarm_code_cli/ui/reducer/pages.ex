@@ -21,15 +21,12 @@ defmodule SwarmCodeCLI.UI.Reducer.Pages do
     ids = ScrollMetrics.order(state, key, slot)
     before = Map.get(state.scrolls, key, %Scroll{})
     height_for = &ScrollMetrics.height(state, key, &1)
+    page_height = max(1, ScrollMetrics.content_height(state, key))
 
     scroll =
-      Scroll.apply(
-        before,
-        operation,
-        ids,
-        max(1, ScrollMetrics.content_height(state, key)),
-        height_for
-      )
+      before
+      |> Scroll.apply(operation, ids, page_height, height_for)
+      |> refollow(operation, ids, page_height, height_for, Map.get(state.pages, slot))
 
     state = %{state | scrolls: Map.put(state.scrolls, key, scroll)}
 
@@ -41,6 +38,42 @@ defmodule SwarmCodeCLI.UI.Reducer.Pages do
   end
 
   def scroll(state, _, _), do: {state, []}
+
+  # pass70 Q1: paging down (PgDn, Ctrl-D) onto the last screen of the
+  # conversation follows the stream again; a line scroll stays exact. Before, PgDn kept the anchor at the top of the view, so
+  # a third press left one line on screen above a blank page, and a prompt
+  # sent from there was drawn below the bottom edge. Only when the loaded
+  # window is the newest one (no page after it) is its end the real end.
+  defp refollow(
+         %Scroll{follow?: false, anchor: {id, line, _}} = scroll,
+         {kind, delta},
+         ids,
+         height,
+         height_for,
+         page
+       )
+       when kind in [:page, :half_page] and delta > 0 do
+    newest? = page == nil or Map.get(page, :after_cursor) == nil
+
+    if newest? and lines_below(ids, id, line, height_for, height) <= height,
+      do: Scroll.apply(scroll, :follow, ids),
+      else: scroll
+  end
+
+  defp refollow(scroll, _operation, _ids, _height, _height_for, _page), do: scroll
+
+  # The rows from the anchor's row to the end, counted only until they pass
+  # `limit`, so a long conversation is never measured in full.
+  defp lines_below(ids, id, line, height_for, limit) do
+    ids
+    |> Enum.drop_while(&(&1 != id))
+    |> Enum.reduce_while({0, true}, fn item, {sum, first?} ->
+      rows = max(1, height_for.(item)) - if(first?, do: line, else: 0)
+      sum = sum + max(rows, 0)
+      if sum > limit, do: {:halt, {sum, false}}, else: {:cont, {sum, false}}
+    end)
+    |> elem(0)
+  end
 
   defp scroll_dialog(state, operation) do
     # The dialog already measures its wrapped body and sticky footer. Use that

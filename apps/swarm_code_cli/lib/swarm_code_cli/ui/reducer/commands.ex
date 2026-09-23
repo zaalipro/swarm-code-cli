@@ -1,6 +1,15 @@
 defmodule SwarmCodeCLI.UI.Reducer.Commands do
   @moduledoc false
-  alias SwarmCodeCLI.UI.{State, Drafts, Editor, RequestResolver, MutationState}
+  alias SwarmCodeCLI.UI.{
+    State,
+    Drafts,
+    Editor,
+    RequestResolver,
+    MutationState,
+    Scroll,
+    OrderedIdSet
+  }
+
   alias SwarmCodeCLI.UI.RequestResolver.Context
   alias SwarmCodeCLI.UI.DataSource.DTO.Outcome
 
@@ -25,13 +34,33 @@ defmodule SwarmCodeCLI.UI.Reducer.Commands do
          state
          | requests: Map.put(state.requests, id, request),
            mutations: Map.put(state.mutations, request.origin, {:pending, id, intent}),
-           drafts: drafts
+           drafts: drafts,
+           scrolls: follow_sent(state.scrolls, intent)
        }, [{:command, request}]}
     else
       true -> {state, []}
       {:error, reason} -> {%{state | notice: {:command_rejected, reason}}, []}
     end
   end
+
+  # pass70 Q1: what you send is what you look at next. A prompt or a steer
+  # sent while the transcript was scrolled up puts the view back on the
+  # stream, where its turn is about to appear.
+  defp follow_sent(scrolls, {kind, _, _, _, _}) when kind in [:dispatch, :steer] do
+    case Map.get(scrolls, :main) do
+      %Scroll{follow?: false} = scroll ->
+        Map.put(scrolls, :main, %{
+          scroll
+          | follow?: true,
+            unseen: OrderedIdSet.clear(scroll.unseen)
+        })
+
+      _ ->
+        scrolls
+    end
+  end
+
+  defp follow_sent(scrolls, _intent), do: scrolls
 
   defp blocked?({kind, _, _}, {:settled, _, :accepted})
        when kind in [:interaction, :run_revision],
