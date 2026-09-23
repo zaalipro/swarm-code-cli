@@ -402,8 +402,9 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
     # pass70 QA: a long title gives way to its detail. The detail ("3 runs ·
     # 5 min ago") is what tells one conversation from the next, and it was
     # the part cut at the border ("11 runs · o"); the title is elided instead,
-    # as long as a readable stretch of it is left.
-    room = width - measure.([rail | mark]) - measure.(detail)
+    # as long as a readable stretch of it is left, and one cell stays clear
+    # before the border as on the rows with a kind at the right.
+    room = width - measure.([rail | mark]) - measure.(detail) - 1
 
     title_text =
       if detail != [] and Width.cells(row.title, policy) > room and room >= 16,

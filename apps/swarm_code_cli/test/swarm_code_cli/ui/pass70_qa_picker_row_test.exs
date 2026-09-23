@@ -128,7 +128,7 @@ defmodule SwarmCodeCLI.UI.Pass70QaPickerRowTest do
       assert Drafts.fetch(state.drafts, {@a, :main}).editor |> SwarmCodeCLI.UI.Editor.text() == ""
 
       [line] = Enum.filter(screen(state), &String.contains?(&1, "Read mix.exs"))
-      assert line =~ "11 runs · open"
+      assert line =~ "11 runs · open │"
       assert line =~ "…"
     end
   end
