@@ -342,9 +342,23 @@ defmodule SwarmCodeCLI.UI.Reducer.Commands do
       | origin: {:interaction, item.id, item.expected_revision},
         active_node_id: item.node_id,
         interaction: {item.kind, item.run_id, item.node_id, item.id, item.expected_revision},
-        allowed_actions: item.allowed_actions
+        allowed_actions: Enum.uniq(item.allowed_actions ++ offered_decisions(item))
     }
   end
+
+  # pass70 F11: the service lists an approval's older permissions (approve,
+  # deny) in `allowed_actions` and the card's decisions in its approval's
+  # `allowed_decisions`; a decision the card offers (A always "<family>")
+  # is authorized by that list. The daemon still compares-and-sets.
+  defp offered_decisions(%{kind: :approval} = item) do
+    explicit =
+      Map.get(item, :allowed_decisions) ||
+        (is_map(item.approval) && Map.get(item.approval, :allowed_decisions))
+
+    if is_list(explicit), do: explicit, else: []
+  end
+
+  defp offered_decisions(_item), do: []
 
   defp interaction_identity(item),
     do:

@@ -371,6 +371,26 @@ defmodule SwarmCodeCLI.UI.ComposerFirstTest do
       end
     end
 
+    test "the service's approval (approve/deny actions, decisions on the card) takes A Y D" do
+      decisions = [:approve, :approve_run, :always_prefix, :deny, :deny_stop]
+      item = approval("a1")
+
+      item = %{
+        item
+        | allowed_actions: [:approve, :deny],
+          approval: %{item.approval | allowed_decisions: decisions, command_family: "ls"}
+      }
+
+      {state, _} = initial([run("r", :waiting_approval)], [item])
+      assert [{:approval, "a1"} | _] = state.layers
+      state = %{state | interaction_grace: nil}
+
+      for {key, decision} <- [{"A", :always_prefix}, {"Y", :approve_run}, {"D", :deny_stop}] do
+        {_, effects} = press(state, letter(key))
+        assert [{:resolve_approval, "r", "op-1", "a1", 5, ^decision}] = commands(effects)
+      end
+    end
+
     test "an older source without allowed_decisions keeps approve, deny and always" do
       {state, _} = initial([run("r", :waiting_approval)], [approval("a1")])
       state = %{state | interaction_grace: nil}
