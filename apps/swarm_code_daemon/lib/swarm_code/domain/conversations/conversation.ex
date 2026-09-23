@@ -43,6 +43,11 @@ defmodule SwarmCode.Domain.Conversations.Conversation do
     # sidebar list filters these out; the Usage page deliberately does not.
     field(:research_id, :integer)
 
+    # spec 67 T9 (B34): raised by `AgentServer.maybe_auto_compact/2` when the
+    # running turn crosses the compaction threshold, honoured (and cleared) by
+    # the next `Engine.start_chat_turn/4` *before* it reserves its rows.
+    field(:compact_due, :boolean, default: false)
+
     belongs_to(:project, SwarmCode.Domain.Projects.Project)
     has_many(:messages, SwarmCode.Domain.Conversations.Message)
     has_many(:runs, SwarmCode.Domain.Conversations.Run)
@@ -78,7 +83,8 @@ defmodule SwarmCode.Domain.Conversations.Conversation do
       :judge_effort,
       :implementer_provider_id,
       :implementer_model,
-      :implementer_effort
+      :implementer_effort,
+      :compact_due
     ])
     |> validate_required([:project_id])
     |> validate_length(:title, max: 120)

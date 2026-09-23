@@ -10,7 +10,6 @@ defmodule SwarmCode.Domain.Search.SearchProvider do
   # Everything but Jina, which has a keyless public endpoint.
   @needs_key ~w(tavily exa brave serper firecrawl)
 
-  def kinds, do: @kinds
   def needs_key?(kind), do: kind in @needs_key
 
   # spec 60 T13: `inspect/1` of a row never prints its key.

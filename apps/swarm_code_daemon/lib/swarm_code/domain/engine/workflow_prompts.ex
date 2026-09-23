@@ -58,8 +58,9 @@ defmodule SwarmCode.Domain.Engine.WorkflowPrompts do
     """
   end
 
-  @doc "The static API reference every authoring turn gets (spec 09 §5.8)."
-  def reference do
+  # The static API reference every authoring turn gets (spec 09 §5.8).
+  # spec 73 T53: read only by `create_workflow/0`.
+  defp reference do
     """
     THE WORKFLOW LANGUAGE
 
@@ -140,8 +141,9 @@ defmodule SwarmCode.Domain.Engine.WorkflowPrompts do
     """
   end
 
-  @doc "The patterns and anti-patterns the procedure teaches."
-  def patterns do
+  # The patterns and anti-patterns the procedure teaches (spec 73 T53: only
+  # `create_workflow/0` reads it).
+  defp patterns do
     """
     PATTERNS to reach for (every real workflow uses several of them):
     - Fan out → adversarially verify → synthesize → write the report from the host:
@@ -180,7 +182,7 @@ defmodule SwarmCode.Domain.Engine.WorkflowPrompts do
     """
   end
 
-  @doc "Two short worked examples (spec 11 §10.4)."
+  @doc "Two short worked examples (spec 11 §10.4); commands_test reads them too."
   def examples do
     """
     EXAMPLE A — shard fan-out review (hunt → refute → synthesize → report):
@@ -319,7 +321,4 @@ defmodule SwarmCode.Domain.Engine.WorkflowPrompts do
                         "Tests: \#{(present?(gate) && String.slice(gate, 0, 400)) || "not run"}"})
     """
   end
-
-  @doc false
-  def example, do: examples()
 end

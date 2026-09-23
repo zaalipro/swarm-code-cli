@@ -84,7 +84,19 @@ defmodule SwarmCode.Domain.Engine.Questions do
   @doc "Pending questions and approvals for one conversation, oldest first."
   @spec list(String.t()) :: [map()]
   def list(conversation_id) do
-    Enum.filter(list(), &(&1.conversation_id == conversation_id))
+    # spec 68 T8: filter at the ETS level instead of tab2list + Enum.filter.
+    @table
+    |> :ets.select([{{:_, :"$1", :_, :_}, [{:==, :"$1", conversation_id}], [:"$_"]}])
+    |> Enum.map(fn {{run_id, node_id}, cid, kind, since} ->
+      %{
+        conversation_id: cid,
+        run_id: run_id,
+        node_id: node_id,
+        kind: kind,
+        since: since
+      }
+    end)
+    |> Enum.sort_by(& &1.since, DateTime)
   rescue
     _ -> []
   catch

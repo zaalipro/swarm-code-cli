@@ -27,12 +27,17 @@ defmodule SwarmCode.Domain.Tools.WriteFile do
   @impl true
   def permission(_args), do: :write
 
+  # spec 66 T20: two writes in one model response are run one after the other.
+  @impl true
+  def parallel?, do: false
+
   @impl true
   def title(args), do: "write " <> (args["path"] || "")
 
   @impl true
   def run(args, ctx, progress) do
-    with {:ok, abs} <- Path.resolve(ctx.project_root, args["path"]) do
+    # spec 66 T11: `.git/`, `.swarm_code/` and `.claude/` are read-only to tools.
+    with {:ok, abs} <- Path.resolve_write(ctx.project_root, args["path"]) do
       rel = Path.relative(ctx.project_root, abs)
       content = args["content"]
       progress.(50, "writing")

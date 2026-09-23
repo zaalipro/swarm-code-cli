@@ -48,9 +48,16 @@ defmodule SwarmCode.Domain.Tools.WebFetch do
       # with the tables and code blocks intact, which is worth far more to a
       # research agent than a stripped DOM. It is never fatal — anything that
       # goes wrong falls straight through to the plain fetch below.
-      case SwarmCode.Domain.Search.read(url, timeout: timeout) do
-        {:ok, text} -> readable(url, text, args, progress)
-        {:error, _reason} -> fetch(url, args, progress, timeout)
+      # spec 73 T105: a localhost, private or link-local address is never
+      # handed to the reader — `http://localhost:4812/…` or an intranet URL
+      # with a token in its query went to the third party first.
+      if private_host?(url) do
+        fetch(url, args, progress, timeout)
+      else
+        case SwarmCode.Domain.Search.read(url, timeout: timeout) do
+          {:ok, text} -> readable(url, text, args, progress)
+          {:error, _reason} -> fetch(url, args, progress, timeout)
+        end
       end
     else
       {:error, "invalid url: #{url}"}
@@ -62,14 +69,16 @@ defmodule SwarmCode.Domain.Tools.WebFetch do
     # Spec 51 §7.4 (M7): a reader is free to hand back a Latin-1 page verbatim.
     text = String.replace_invalid(text)
     max = clamp(args["max_chars"] || 20_000, 100, 100_000)
+    # spec 73 T106: one grapheme walk over a page that can be 4 MB, not three.
+    chars = String.length(text)
 
     body =
-      if String.length(text) > max,
+      if chars > max,
         do: String.slice(text, 0, max) <> "…[truncated]",
         else: text
 
-    progress.(100, "#{String.length(text)} chars")
-    {:ok, "#{url} (markdown, #{String.length(text)} chars)\n#{body}"}
+    progress.(100, "#{chars} chars")
+    {:ok, "#{url} (markdown, #{chars} chars)\n#{body}"}
   end
 
   # Spec 51 §7.4 (M7): the body is streamed into a 4 MB cap and refused up front
@@ -107,14 +116,16 @@ defmodule SwarmCode.Domain.Tools.WebFetch do
         else: String.replace_invalid(raw)
 
     max = clamp(args["max_chars"] || 20_000, 100, 100_000)
+    # spec 73 T106
+    chars = String.length(text)
 
     body =
-      if String.length(text) > max,
+      if chars > max,
         do: String.slice(text, 0, max) <> "…[truncated]",
         else: text
 
-    progress.(100, "#{String.length(text)} chars")
-    {:ok, "#{url} (#{ct}, #{String.length(text)} chars)\n#{body}"}
+    progress.(100, "#{chars} chars")
+    {:ok, "#{url} (#{ct}, #{chars} chars)\n#{body}"}
   end
 
   # Spec 51 §7.4 (M7): `~r/\s+/u` raised `ArgumentError` on a page that is not
@@ -139,6 +150,59 @@ defmodule SwarmCode.Domain.Tools.WebFetch do
     end
   end
 
-  defp clamp(value, min_v, max_v) when is_integer(value), do: value |> max(min_v) |> min(max_v)
-  defp clamp(_value, min_v, _max_v), do: min_v
+  # spec 73 T105: the host literal alone — localhost and its subdomains,
+  # `.local`/`.internal`/`.home.arpa`, loopback, RFC 1918, link-local, IPv6
+  # unique-local/link-local and their IPv4-mapped forms. A URL without a host
+  # counts as private: nothing to send anywhere.
+  @doc false
+  @spec private_host?(String.t()) :: boolean()
+  def private_host?(url) do
+    case host_of(URI.parse(url)) do
+      host when is_binary(host) and host != "" ->
+        host = host |> String.downcase() |> String.trim_trailing(".")
+
+        host == "localhost" or
+          String.ends_with?(host, [".localhost", ".local", ".internal", ".home.arpa"]) or
+          private_ip?(host)
+
+      _no_host ->
+        true
+    end
+  end
+
+  # `URI.parse/1` cuts an IPv6 literal with a zone id (`[fe80::1%25en0]`) at
+  # the `%`; the bracketed authority still holds the whole literal.
+  defp host_of(%URI{authority: authority} = uri) when is_binary(authority) do
+    case Regex.run(~r/(?:^|@)\[([^\]]*)\]/, authority, capture: :all_but_first) do
+      [literal] -> literal
+      _plain -> uri.host
+    end
+  end
+
+  defp host_of(%URI{host: host}), do: host
+
+  defp private_ip?(host) do
+    # A zone id (`fe80::1%en0`, `%25` in a URL) is not part of the address.
+    host = host |> String.split(["%25", "%"], parts: 2) |> hd()
+
+    case :inet.parse_address(String.to_charlist(host)) do
+      {:ok, {10, _, _, _}} -> true
+      {:ok, {127, _, _, _}} -> true
+      {:ok, {169, 254, _, _}} -> true
+      {:ok, {172, b, _, _}} when b in 16..31 -> true
+      {:ok, {192, 168, _, _}} -> true
+      {:ok, {0, _, _, _}} -> true
+      {:ok, {0, 0, 0, 0, 0, 0, 0, 0}} -> true
+      {:ok, {0, 0, 0, 0, 0, 0, 0, 1}} -> true
+      {:ok, {0, 0, 0, 0, 0, 0xFFFF, hi, lo}} -> private_ip?(mapped_v4(hi, lo))
+      {:ok, {a, _, _, _, _, _, _, _}} when a in 0xFC00..0xFDFF -> true
+      {:ok, {a, _, _, _, _, _, _, _}} when a in 0xFE80..0xFEBF -> true
+      _public_or_name -> false
+    end
+  end
+
+  defp mapped_v4(hi, lo), do: "#{div(hi, 256)}.#{rem(hi, 256)}.#{div(lo, 256)}.#{rem(lo, 256)}"
+
+  # spec 68 T19: delegate to the shared Tools.clamp/3.
+  defp clamp(value, min_v, max_v), do: SwarmCode.Domain.Tools.clamp(value, min_v, max_v)
 end

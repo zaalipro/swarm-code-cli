@@ -68,6 +68,6 @@ defmodule SwarmCode.Domain.Tools.WebSearch do
     end
   end
 
-  defp clamp(value, min_v, max_v) when is_integer(value), do: value |> max(min_v) |> min(max_v)
-  defp clamp(_value, min_v, _max_v), do: min_v
+  # spec 68 T19: delegate to the shared Tools.clamp/3.
+  defp clamp(value, min_v, max_v), do: SwarmCode.Domain.Tools.clamp(value, min_v, max_v)
 end

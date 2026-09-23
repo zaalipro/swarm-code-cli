@@ -43,6 +43,12 @@ defmodule SwarmCode.Domain.Projects do
         %Project{}
         |> Project.changeset(%{name: @scratch_name, root_path: root})
         |> Ecto.Changeset.put_change(:scratch, true)
+        # spec 67 T31: the scratch project is SwarmCode's own directory, not a
+        # folder anyone pointed it at — there is nobody to ask for consent, and
+        # a read-only scratch project would make every project-less
+        # conversation useless.
+        |> Ecto.Changeset.put_change(:trusted_at, DateTime.utc_now())
+        |> Ecto.Changeset.put_change(:approval_mode, "auto")
         |> Repo.insert()
         |> case do
           {:ok, project} -> project
@@ -111,9 +117,74 @@ defmodule SwarmCode.Domain.Projects do
 
   def touch(%Project{} = project), do: update(project, %{last_opened_at: DateTime.utc_now()})
 
+  @doc """
+  Whether the user has consented to SwarmCode working in this directory
+  (spec 67 T31 / G44).
+
+  Until then the project is `read_only` and its AGENTS.md is given to no agent:
+  adding `~/Downloads/some-repo` and typing "run the tests" used to run that
+  repository's `npm test` and put its instructions in the system prompt before
+  anybody had agreed to anything.
+  """
+  @spec trusted?(Project.t() | map() | nil) :: boolean()
+  def trusted?(%Project{trusted_at: nil}), do: false
+  def trusted?(%Project{}), do: true
+  def trusted?(%{trusted_at: nil}), do: false
+  def trusted?(%{trusted_at: %DateTime{}}), do: true
+  def trusted?(_other), do: false
+
+  @doc """
+  The composer banner's "Trust and allow edits": stamps `trusted_at` and lifts
+  the project out of `read_only`.
+
+  A project the user has already put in `full_access` keeps it — trusting a
+  directory is consent to write in it, never a downgrade of a choice already
+  made.
+  """
+  @spec trust(Project.t()) :: {:ok, Project.t()} | {:error, Ecto.Changeset.t()}
+  def trust(%Project{} = project) do
+    mode = if project.approval_mode == "full_access", do: "full_access", else: "auto"
+
+    project
+    |> Ecto.Changeset.change(%{trusted_at: DateTime.utc_now(), approval_mode: mode})
+    |> Repo.update()
+    |> case do
+      {:ok, project} ->
+        broadcast()
+        {:ok, project}
+
+      {:error, changeset} ->
+        {:error, changeset}
+    end
+  end
+
+  @doc """
+  Stamps `trusted_at` and nothing else — the migration's backfill in code form,
+  for the scratch project and for a caller that has already decided the mode.
+  """
+  @spec mark_trusted(Project.t()) :: {:ok, Project.t()} | {:error, Ecto.Changeset.t()}
+  def mark_trusted(%Project{trusted_at: %DateTime{}} = project), do: {:ok, project}
+
+  def mark_trusted(%Project{} = project) do
+    project
+    |> Ecto.Changeset.change(%{trusted_at: DateTime.utc_now()})
+    |> Repo.update()
+    |> case do
+      {:ok, project} ->
+        broadcast()
+        {:ok, project}
+
+      {:error, changeset} ->
+        {:error, changeset}
+    end
+  end
+
   def delete(%Project{} = project) do
     ids = Repo.all(from(c in Conversation, where: c.project_id == ^project.id, select: c.id))
     Enum.each(ids, &Engine.stop_all/1)
+    # spec 73 T77: the project's language servers go with it (pass 67 promised
+    # "on project close and on quit"; only quit was wired).
+    SwarmCode.Domain.LSP.stop_project(project.root_path)
     result = Repo.delete(project)
     broadcast()
     result

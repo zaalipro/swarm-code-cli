@@ -33,19 +33,33 @@ defmodule SwarmCode.Domain.Workflows.Canned do
   end
 
   @impl true
-  def handle_call(:result, _from, state), do: {:reply, state, state}
+  def handle_call(:result, _from, state) do
+    # spec 68 T32: reverse the prepend-accumulated lists before returning
+    result = %{
+      state
+      | phases:
+          Enum.reverse(state.phases)
+          |> Enum.map(fn p -> %{p | panels: Enum.reverse(p.panels)} end),
+        trace: Enum.reverse(state.trace),
+        logs: Enum.reverse(state.logs)
+    }
+
+    {:reply, result, state}
+  end
 
   def handle_call({:phase, title}, _from, state) do
+    # spec 68 T32: prepend instead of append
     {:reply, :ok,
      %{
        state
-       | phases: state.phases ++ [%{title: title, agents: 0, panels: []}],
-         trace: state.trace ++ ["phase #{title}"]
+       | phases: [%{title: title, agents: 0, panels: []} | state.phases],
+         trace: ["phase #{title}" | state.trace]
      }}
   end
 
   def handle_call({:log, text}, _from, state) do
-    {:reply, :ok, %{state | logs: state.logs ++ [text]}}
+    # spec 68 T32: prepend instead of append
+    {:reply, :ok, %{state | logs: [text | state.logs]}}
   end
 
   def handle_call(:budget, _from, state) do
@@ -69,7 +83,7 @@ defmodule SwarmCode.Domain.Workflows.Canned do
       state = %{
         state
         | admitted: state.admitted + count,
-          trace: state.trace ++ ["panel #{count}"]
+          trace: ["panel #{count}" | state.trace]
       }
 
       {:reply, {:ok, seq}, add_panel(state, count)}
@@ -88,7 +102,7 @@ defmodule SwarmCode.Domain.Workflows.Canned do
     else
       state = if panel?, do: state, else: add_agent(%{state | admitted: state.admitted + 1})
       value = if opts[:schema], do: Schema.sample(opts[:schema]), else: "ok"
-      {:reply, {:replay, value}, %{state | trace: state.trace ++ ["agent"]}}
+      {:reply, {:replay, value}, %{state | trace: ["agent" | state.trace]}}
     end
   end
 
@@ -113,7 +127,7 @@ defmodule SwarmCode.Domain.Workflows.Canned do
         canned(op)
       end
 
-    {:reply, {:replay, value}, %{state | trace: state.trace ++ ["host #{op}"]}}
+    {:reply, {:replay, value}, %{state | trace: ["host #{op}" | state.trace]}}
   end
 
   def handle_call(:last_error, _from, state), do: {:reply, nil, state}
@@ -141,15 +155,15 @@ defmodule SwarmCode.Domain.Workflows.Canned do
   defp add_agent(state), do: update_phase(state, fn p -> %{p | agents: p.agents + 1} end)
 
   defp add_panel(state, count) do
-    update_phase(state, fn p -> %{p | agents: p.agents + count, panels: p.panels ++ [count]} end)
+    update_phase(state, fn p -> %{p | agents: p.agents + count, panels: [count | p.panels]} end)
   end
 
+  # spec 68 T32: phases are prepended, so the current phase is the head
   defp update_phase(%{phases: []} = state, fun) do
     update_phase(%{state | phases: [%{title: "Run", agents: 0, panels: []}]}, fun)
   end
 
-  defp update_phase(state, fun) do
-    {init, [last]} = Enum.split(state.phases, -1)
-    %{state | phases: init ++ [fun.(last)]}
+  defp update_phase(%{phases: [head | rest]} = state, fun) do
+    %{state | phases: [fun.(head) | rest]}
   end
 end

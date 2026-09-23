@@ -25,6 +25,12 @@ defmodule SwarmCode.Domain.Research.Prompts do
           "description" =>
             "How you read the question: scope, entities, time range, what is out of scope. One paragraph."
         },
+        "title" => %{
+          "type" => "string",
+          "description" =>
+            "3-6 words naming this research as a list entry — a label like " <>
+              "\"Air-cooled bikes under 3,500 rpm\", not the question rephrased, not a sentence"
+        },
         "step_title" => %{
           "type" => "string",
           "description" => "3-6 words naming what this round goes after"
@@ -120,6 +126,8 @@ defmodule SwarmCode.Domain.Research.Prompts do
       queries only slows it down.
     - `interpretation` records how you are reading the question: the entities, the time
       range and what you are treating as out of scope. One short paragraph.
+    - `title` is 3-6 words naming the research for its list entry — a label, not the
+      question rephrased and not a sentence.
 
     Do not research here. Call structured_output once and stop.
     """
@@ -150,6 +158,8 @@ defmodule SwarmCode.Domain.Research.Prompts do
     - `interpretation` records how you are reading the question: the entities, the
       time range and what you are treating as out of scope. Write it even on later
       rounds; only round 1's is kept.
+    - `title` is 3-6 words naming the research for its list entry — a label, not the
+      question rephrased and not a sentence. Only round 1's is kept.
     - You may use web_search yourself to sanity-check that an angle exists before
       you spend an agent on it, but do not do the research here. If you check several
       angles, issue every check as one batch in a single turn — the calls of one turn
@@ -288,11 +298,26 @@ defmodule SwarmCode.Domain.Research.Prompts do
     """
   end
 
+  # spec 73 T88: the callers feed newest-first lists and promise "what gets
+  # cut is the oldest round". The reduce used to skip an overflowing part and
+  # keep scanning, so a large newest note was dropped while smaller older
+  # ones after it were kept — a hole in the most recent round. Now the first
+  # overflow ends the scan, with that part truncated to fill the remainder.
   defp cap(parts, limit) do
     parts
-    |> Enum.reduce({[], 0}, fn part, {kept, size} ->
+    |> Enum.reduce_while({[], 0}, fn part, {kept, size} ->
       length = String.length(part)
-      if size + length > limit, do: {kept, size}, else: {[part | kept], size + length}
+
+      cond do
+        size + length <= limit ->
+          {:cont, {[part | kept], size + length}}
+
+        limit - size > 0 ->
+          {:halt, {[String.slice(part, 0, limit - size) | kept], limit}}
+
+        true ->
+          {:halt, {kept, size}}
+      end
     end)
     |> elem(0)
     |> Enum.reverse()

@@ -5,6 +5,7 @@ defmodule SwarmCode.Domain.Tools.ReadFile do
   alias SwarmCode.Domain.Tools.Path
 
   @chunk 65_536
+  @sniff 8_192
   @max_size 5_000_000
   # Hard cap on what goes back to the model, whatever the line count is.
   @max_chars 40_000
@@ -18,7 +19,8 @@ defmodule SwarmCode.Domain.Tools.ReadFile do
   def description,
     do:
       "Read a text file from the project and return its plain content, without line numbers. " <>
-        "Files over 5 MB are refused and a directory is an error — use list_dir for those. The " <>
+        "Files over 5 MB are refused, a directory is an error — use list_dir for those — and a " <>
+        "binary file is refused rather than returned as bytes. The " <>
         "result is capped at 40 000 characters whatever the line count is, so page through a " <>
         "long file with offset and limit rather than re-reading it whole."
 
@@ -60,8 +62,35 @@ defmodule SwarmCode.Domain.Tools.ReadFile do
           {:error, "file too large: #{rel} (#{size} bytes)"}
 
         {:ok, %{size: size}} ->
-          read_content(abs, rel, size, args, progress)
+          if binary?(abs) do
+            {:error,
+             "#{rel} is a binary file (#{size} bytes) — use run_command with a decoder " <>
+               "(file, strings, xxd, base64) rather than reading it"}
+          else
+            read_content(abs, rel, size, args, progress)
+          end
       end
+    end
+  end
+
+  # spec 67 B8: a PNG used to come back as its raw bytes, which are not valid
+  # UTF-8, and the next provider request died on `Jason.EncodeError` — the turn
+  # ended with a crash instead of "that is a binary file". `Grep.binary?/1` has
+  # sniffed for a NUL byte since spec 13; nothing called it from here.
+  defp binary?(abs) do
+    case File.open(abs, [:read, :binary]) do
+      {:ok, fd} ->
+        try do
+          case IO.binread(fd, @sniff) do
+            data when is_binary(data) -> SwarmCode.Domain.Tools.Grep.binary?(data)
+            _eof_or_error -> false
+          end
+        after
+          File.close(fd)
+        end
+
+      _error ->
+        false
     end
   end
 

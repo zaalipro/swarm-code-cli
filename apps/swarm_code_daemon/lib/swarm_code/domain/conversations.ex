@@ -259,13 +259,7 @@ defmodule SwarmCode.Domain.Conversations do
     )
   end
 
-  @doc "How many conversations a project has."
-  def count_for_project(project_id),
-    do:
-      Repo.aggregate(
-        from(c in Conversation, where: c.project_id == ^project_id and is_nil(c.research_id)),
-        :count
-      )
+  # spec 68 T24: count_for_project/1 removed — zero callers in the codebase.
 
   def latest_for_project(project_id) do
     Repo.one(
@@ -435,6 +429,32 @@ defmodule SwarmCode.Domain.Conversations do
   end
 
   @doc """
+  spec 67 T9 (B34): the running turn asks for a compaction instead of starting
+  one. `AgentServer.maybe_auto_compact/2` raises the flag; the next
+  `Engine.start_chat_turn/4` compacts *before* it reserves its own two rows and
+  clears it again, so a summary can never land above the answer of a turn that
+  is still running.
+
+  A bare `update_all` on purpose: no changeset, no broadcast, no read-back —
+  the flag is engine bookkeeping, not something a window renders.
+  """
+  @spec mark_compact_due(String.t() | Conversation.t()) :: :ok
+  def mark_compact_due(%Conversation{id: id}), do: mark_compact_due(id)
+
+  def mark_compact_due(id) when is_binary(id), do: set_compact_due(id, true)
+
+  @doc "Clears the flag `mark_compact_due/1` raised (spec 67 T9)."
+  @spec clear_compact_due(String.t() | Conversation.t()) :: :ok
+  def clear_compact_due(%Conversation{id: id}), do: clear_compact_due(id)
+
+  def clear_compact_due(id) when is_binary(id), do: set_compact_due(id, false)
+
+  defp set_compact_due(id, value) do
+    Repo.update_all(from(c in Conversation, where: c.id == ^id), set: [compact_due: value])
+    :ok
+  end
+
+  @doc """
   Bumps `updated_at` and broadcasts the row as it is *now* (spec 51 §1.5).
   The RunServer hands in the struct it was given at run start; a rename or a
   mode flip during the run must not snap back when the run finishes, so the
@@ -486,6 +506,21 @@ defmodule SwarmCode.Domain.Conversations do
       from(m in Message,
         where: m.conversation_id == ^conversation_id,
         order_by: [asc: m.position, asc: m.inserted_at]
+      )
+    )
+  end
+
+  # spec 68 T5: targeted query for the assistant message of a specific run,
+  # replacing the unbounded list_messages + Enum.find in compensate_start_failure.
+  @doc false
+  def assistant_message_for_run(conversation_id, run_id) do
+    Repo.one(
+      from(m in Message,
+        where:
+          m.conversation_id == ^conversation_id and
+            m.run_id == ^run_id and
+            m.role == "assistant",
+        limit: 1
       )
     )
   end
@@ -1296,13 +1331,15 @@ defmodule SwarmCode.Domain.Conversations do
     Run |> where([r], r.started_at >= ^first) |> select([r], sum(r.cost_usd)) |> Repo.one()
   end
 
+  # spec 68 T23: single SQL query with ORDER BY + LIMIT 1 instead of loading
+  # every monthly aggregate into Elixir just to find the max.
   defp best_month_cost do
     Run
     |> group_by([r], fragment("strftime('%Y-%m', ?)", r.started_at))
     |> select([r], sum(r.cost_usd))
-    |> Repo.all()
-    |> Enum.reject(&is_nil/1)
-    |> Enum.max(fn -> nil end)
+    |> order_by([r], desc: sum(r.cost_usd))
+    |> limit(1)
+    |> Repo.one()
   end
 
   ## Nodes
@@ -1324,6 +1361,37 @@ defmodule SwarmCode.Domain.Conversations do
         from(n in Node,
           where: n.run_id == ^run_id and n.parent_id == ^parent_id,
           order_by: n.position
+        )
+      )
+
+  @doc """
+  The children of a node without their results (spec 73 T86): `op_type`,
+  `status`, `title` and `position`, in position order — what a summary needs
+  without the result column, which is most of a node row.
+  """
+  @spec child_ops_summary(String.t(), String.t()) :: [map()]
+  def child_ops_summary(run_id, parent_id),
+    do:
+      Repo.all(
+        from(n in Node,
+          where: n.run_id == ^run_id and n.parent_id == ^parent_id,
+          order_by: n.position,
+          select: map(n, [:op_type, :status, :title, :position])
+        )
+      )
+
+  @doc "The non-empty result of the last `op_type` child of a node, or nil (spec 73 T86)."
+  @spec last_child_result(String.t(), String.t(), String.t()) :: String.t() | nil
+  def last_child_result(run_id, parent_id, op_type),
+    do:
+      Repo.one(
+        from(n in Node,
+          where:
+            n.run_id == ^run_id and n.parent_id == ^parent_id and n.op_type == ^op_type and
+              not is_nil(n.result) and n.result != "",
+          order_by: [desc: n.position],
+          limit: 1,
+          select: n.result
         )
       )
 
@@ -1627,7 +1695,8 @@ defmodule SwarmCode.Domain.Conversations do
     # honest end.
     Repo.update_all(
       from(n in Node,
-        where: is_nil(n.finished_at) and n.status in ["done", "failed", "stopped", "skipped"],
+        # spec 68 T25
+        where: is_nil(n.finished_at) and n.status in ["done", "failed", "stopped"],
         update: [set: [finished_at: n.updated_at]]
       ),
       []
@@ -1670,5 +1739,131 @@ defmodule SwarmCode.Domain.Conversations do
       tokens_out: totals[:tokens_out] || 0,
       cost_usd: totals[:cost_usd]
     }
+  end
+
+  @doc """
+  The user's own messages from *behind* a compaction floor, newest first
+  (spec 66 T17).
+
+  `list_history_window/2` stops at the floor, so everything the user actually
+  asked for is only in the summary, in whatever form the compactor left it. This
+  is the companion read that puts their words back: `position < before_position`,
+  user role, non-empty, not superseded, newest first, bounded by `byte_budget`
+  in content bytes and by a row limit derived from it.
+
+  spec 67 T9 (B35): a slash command is not one of the user's requests — it is an
+  instruction to the harness — so `/%` rows are left out. Quoted back at the
+  model they read as orders, and the synthetic `/compact` of an automatic
+  compaction was never typed by anyone.
+  """
+  @spec list_user_messages_before(String.t(), integer(), non_neg_integer()) :: [Message.t()]
+  def list_user_messages_before(conversation_id, before_position, byte_budget)
+      when is_binary(conversation_id) and is_integer(before_position) do
+    byte_budget = max(byte_budget, 0)
+    row_limit = min(div(byte_budget, 16) + 1, 200)
+
+    rows =
+      Repo.all(
+        from(m in Message,
+          where:
+            m.conversation_id == ^conversation_id and m.position < ^before_position and
+              m.role == "user" and m.content != "" and is_nil(m.superseded_at) and
+              not like(m.content, "/%"),
+          order_by: [desc: m.position, desc: m.inserted_at],
+          limit: ^row_limit,
+          select: struct(m, ^@history_fields)
+        )
+      )
+
+    # spec 68 T22: prepend + reverse to avoid O(n^2) list append
+    {kept, _bytes} =
+      Enum.reduce_while(rows, {[], 0}, fn m, {kept, bytes} ->
+        bytes = bytes + byte_size(m.content || "")
+
+        if bytes > byte_budget,
+          do: {:halt, {kept, bytes}},
+          else: {:cont, {[m | kept], bytes}}
+      end)
+
+    Enum.reverse(kept)
+  end
+
+  def list_user_messages_before(_conversation_id, _before_position, _byte_budget), do: []
+
+  # -- spec 70 D5: FTS5 cross-session message search --------------------------
+
+  @doc """
+  Full-text search over message content. Returns conversations whose
+  messages match `query`, newest first, with a snippet of the matching
+  message. Limited to `limit` results (default 20).
+  """
+  # spec 70 D5
+  @spec search(String.t(), keyword()) :: [
+          %{
+            conversation_id: String.t(),
+            title: String.t(),
+            snippet: String.t(),
+            updated_at: String.t() | nil
+          }
+        ]
+  def search(query, opts \\ []) do
+    limit = Keyword.get(opts, :limit, 20)
+    safe_q = sanitize_fts(query)
+
+    if safe_q == "" do
+      []
+    else
+      # spec 70 D5: matches are over-fetched by 4x and deduplicated per
+      # conversation in Elixir, because snippet() cannot ride a GROUP BY.
+      # spec 73 T37/T39: the excerpt is FTS5's own `snippet()` — computed in
+      # SQL over the tokens, so `m.content` (tens to hundreds of KB per
+      # assistant message) never crosses the wire and no byte offset is ever
+      # fed to a grapheme API; the hand-rolled `make_snippet/2` put the
+      # excerpt in the wrong place as soon as a multi-byte character preceded
+      # the hit. Query at hand joins and orders without a subquery, which is
+      # where snippet() is allowed. spec 73 T38: an edited-and-resent turn is
+      # superseded and excluded, as every other history read excludes it.
+      fetch_limit = limit * 4
+
+      sql = """
+      SELECT m.conversation_id, c.title,
+             snippet(messages_fts, 0, '', '', '...', 20), c.updated_at
+      FROM messages_fts
+      JOIN messages m ON m.rowid = messages_fts.rowid
+      JOIN conversations c ON c.id = m.conversation_id
+      WHERE messages_fts MATCH ?1
+        AND c.research_id IS NULL
+        AND m.superseded_at IS NULL
+      ORDER BY rank
+      LIMIT ?2
+      """
+
+      case Repo.query(sql, [safe_q, fetch_limit]) do
+        {:ok, %{rows: rows}} ->
+          rows
+          |> Enum.uniq_by(fn [conv_id | _] -> conv_id end)
+          |> Enum.take(limit)
+          |> Enum.map(fn [id, title, snippet, updated_at] ->
+            %{
+              conversation_id: id,
+              title: title || "Untitled",
+              snippet: snippet || "",
+              updated_at: updated_at
+            }
+          end)
+
+        _ ->
+          []
+      end
+    end
+  end
+
+  defp sanitize_fts(query) do
+    query
+    |> String.replace(~r/[^\w\s]/u, "")
+    |> String.split()
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.map(&("\"" <> &1 <> "\""))
+    |> Enum.join(" ")
   end
 end

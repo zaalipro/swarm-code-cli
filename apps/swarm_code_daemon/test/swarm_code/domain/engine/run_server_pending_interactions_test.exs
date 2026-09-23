@@ -2,6 +2,26 @@ defmodule SwarmCode.Domain.Engine.RunServerPendingInteractionsTest do
   use ExUnit.Case, async: true
   alias SwarmCode.Domain.Engine.RunServer
 
+  # pass 70 contract (docs/superpowers/plans/pass70-notes/A.md): every row has
+  # exactly these keys, approvals and questions alike.
+  @row_keys [
+    :node_id,
+    :agent_id,
+    :kind,
+    :permission,
+    :tool,
+    :args,
+    :command,
+    :cwd,
+    :path,
+    :reason,
+    :command_family,
+    :classification,
+    :allowed_decisions,
+    :requested_at,
+    :questions
+  ]
+
   test "unknown and invalid run handles return no interactions" do
     assert [] = RunServer.pending_interactions(Ecto.UUID.generate())
     assert [] = RunServer.pending_interactions(nil)
@@ -39,8 +59,105 @@ defmodule SwarmCode.Domain.Engine.RunServerPendingInteractionsTest do
     refute row.args =~ "credential"
     assert byte_size(row.args) <= 8192
 
-    assert Map.keys(row) |> Enum.sort() ==
-             Enum.sort([:node_id, :kind, :permission, :tool, :args, :questions])
+    assert Map.keys(row) |> Enum.sort() == Enum.sort(@row_keys)
+  end
+
+  test "an approval row carries the command, where it runs, why, its family and class" do
+    id = Ecto.UUID.generate()
+    agent = Ecto.UUID.generate()
+    asked = ~U[2026-09-23 10:00:00.000000Z]
+
+    input =
+      Jason.encode!(%{
+        "command" => "mix test --only focus",
+        "workdir" => "apps/core",
+        "justification" => "run the focused test"
+      })
+
+    state =
+      state(
+        %{id => %{permission: :execute, safety: :normal, requested_at: asked}},
+        %{},
+        %{
+          id => %{
+            op_type: "run_command",
+            input: input,
+            parent_id: agent,
+            approval_prefix: "mix test"
+          }
+        }
+      )
+
+    assert {:reply, [row], ^state} = RunServer.handle_call(:pending_interactions, nil, state)
+
+    assert %{
+             node_id: ^id,
+             agent_id: ^agent,
+             tool: "run_command",
+             command: "mix test --only focus",
+             cwd: "/work/project/apps/core",
+             path: nil,
+             reason: "run the focused test",
+             command_family: "mix test",
+             classification: :normal,
+             permission: :execute,
+             requested_at: ^asked,
+             allowed_decisions: [:approve, :approve_run, :always_prefix, :deny, :deny_stop]
+           } = row
+
+    assert Map.keys(row) |> Enum.sort() == Enum.sort(@row_keys)
+    assert Jason.encode!(row)
+  end
+
+  test "a dangerous command offers no family; a file tool names its path and the root" do
+    shell = Ecto.UUID.generate()
+    edit = Ecto.UUID.generate()
+
+    state =
+      state(
+        %{
+          shell => %{permission: :execute, safety: :dangerous},
+          edit => %{permission: :write}
+        },
+        %{},
+        %{
+          shell => %{op_type: "run_command", input: Jason.encode!(%{"command" => "rm -rf build"})},
+          edit => %{op_type: "edit_file", input: Jason.encode!(%{"path" => "lib/a.ex"})}
+        }
+      )
+
+    assert {:reply, rows, ^state} = RunServer.handle_call(:pending_interactions, nil, state)
+    by_id = Map.new(rows, &{&1.node_id, &1})
+
+    assert %{
+             classification: :dangerous,
+             command_family: nil,
+             cwd: "/work/project",
+             allowed_decisions: [:approve, :approve_run, :deny, :deny_stop]
+           } = by_id[shell]
+
+    assert %{
+             tool: "edit_file",
+             command: nil,
+             path: "lib/a.ex",
+             cwd: "/work/project",
+             classification: :normal,
+             command_family: nil
+           } = by_id[edit]
+  end
+
+  test "a command raised without a stored class is classified from its text" do
+    id = Ecto.UUID.generate()
+
+    state =
+      state(%{id => %{permission: :execute}}, %{}, %{
+        id => %{op_type: "run_command", input: Jason.encode!(%{"command" => "ls -la"})}
+      })
+
+    assert {:reply, [row], ^state} = RunServer.handle_call(:pending_interactions, nil, state)
+
+    assert row.classification ==
+             SwarmCode.Domain.Tools.CommandSafety.classify("ls -la")
   end
 
   test "questions and options use byte limits and one row per interaction" do
@@ -61,8 +178,11 @@ defmodule SwarmCode.Domain.Engine.RunServerPendingInteractionsTest do
         %{}
       )
 
-    assert {:reply, [%{kind: :question, questions: questions}], ^state} =
+    assert {:reply, [%{kind: :question, questions: questions} = row], ^state} =
              RunServer.handle_call(:pending_interactions, nil, state)
+
+    assert Map.keys(row) |> Enum.sort() == Enum.sort(@row_keys)
+    assert %{allowed_decisions: [], command: nil, cwd: nil, classification: nil} = row
 
     assert length(questions) == 4
 
@@ -117,6 +237,7 @@ defmodule SwarmCode.Domain.Engine.RunServerPendingInteractionsTest do
       approvals: approvals,
       questions: questions,
       nodes: nodes,
+      project: %{root_path: "/work/project"},
       providers: %{secret: "DO NOT COPY"}
     }
 end

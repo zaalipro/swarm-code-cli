@@ -1,0 +1,118 @@
+{
+  "version": 1,
+  "upstream_commit": "6dd8d82ef29f9a6608b942259e1801846bb87ed9",
+  "rewrite_rules": [
+    {
+      "id": "desktop-notify",
+      "pattern": "\\bSwarmCode\\.Desktop\\.(notify|notify_waiting|notify_finished)\\(",
+      "replacement": "SwarmCode.Notifications.\\1("
+    },
+    {
+      "id": "desktop-config-dir",
+      "pattern": "\\bSwarmCode\\.Desktop\\.config_dir\\(\\)",
+      "replacement": "SwarmCode.Paths.config_dir()"
+    },
+    {
+      "id": "web-shims",
+      "pattern": "\\bSwarmCodeWeb\\.(Markdown|MarkdownCache|UIState|Chat)\\b",
+      "replacement": "SwarmCode.\\1"
+    },
+    {
+      "id": "domain-namespace",
+      "pattern": "\\bSwarmCode\\.(?!Domain\\b)([A-Z{])",
+      "replacement": "SwarmCode.Domain.\\1"
+    },
+    {
+      "id": "pubsub-shim",
+      "pattern": "\\bPhoenix\\.PubSub\\.(subscribe|unsubscribe|broadcast|broadcast_from|local_broadcast)\\(",
+      "replacement": "SwarmCode.Domain.PubSub.\\1("
+    },
+    {
+      "id": "otp-app",
+      "pattern": ":swarm_code\\b(?!_)",
+      "replacement": ":swarm_code_daemon"
+    },
+    {
+      "id": "provider-caps-table",
+      "pattern": "@table :swarm_code_provider_caps\\b",
+      "replacement": "@table __MODULE__"
+    },
+    {
+      "id": "phoenix-html-shim",
+      "pattern": "\\bPhoenix\\.HTML\\.",
+      "replacement": "SwarmCode.Domain.HTML."
+    }
+  ],
+  "mappings": [
+    {
+      "upstream": "lib/swarm_code/",
+      "destination": "apps/swarm_code_daemon/lib/swarm_code/domain/",
+      "classification": "source",
+      "rewrite": true,
+      "format": true,
+      "include": ["**/*.ex"]
+    },
+    {
+      "upstream": "priv/repo/migrations/",
+      "destination": "apps/swarm_code_daemon/priv/domain_repo/migrations/",
+      "classification": "source",
+      "rewrite": true,
+      "format": false,
+      "include": ["*.exs"]
+    },
+    {
+      "upstream": "priv/agents/",
+      "destination": "apps/swarm_code_daemon/priv/agents/",
+      "classification": "source",
+      "rewrite": false,
+      "format": false,
+      "include": ["*.md"]
+    },
+    {
+      "upstream": "priv/workflows/",
+      "destination": "apps/swarm_code_daemon/priv/workflows/",
+      "classification": "source",
+      "rewrite": false,
+      "format": false,
+      "include": ["*.exs"]
+    },
+    {
+      "upstream": "priv/skills/",
+      "destination": "apps/swarm_code_daemon/priv/skills/",
+      "classification": "spec",
+      "rewrite": false,
+      "format": false,
+      "include": ["**/*"]
+    },
+    {
+      "upstream": "priv/",
+      "destination": "apps/swarm_code_daemon/priv/",
+      "classification": "spec",
+      "rewrite": false,
+      "format": false,
+      "files": ["spec_master.md"]
+    },
+    {
+      "upstream": "test/swarm_code/",
+      "destination": "apps/swarm_code_daemon/test/swarm_code/domain/",
+      "classification": "test",
+      "rewrite": true,
+      "format": true,
+      "files": [
+        "engine/consensus_test.exs",
+        "engine/context_test.exs",
+        "engine/policy_test.exs",
+        "engine/prompts_test.exs"
+      ]
+    }
+  ],
+  "exclude": [
+    "lib/swarm_code/application.ex",
+    "lib/swarm_code/bootstrap.ex",
+    "lib/swarm_code/desktop.ex",
+    "lib/swarm_code/desktop/**",
+    "lib/swarm_code/menu_bar.ex",
+    "lib/swarm_code/quit.ex",
+    "lib/swarm_code/tray_menu.ex"
+  ]
+}

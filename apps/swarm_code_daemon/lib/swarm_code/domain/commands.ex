@@ -30,8 +30,6 @@ defmodule SwarmCode.Domain.Commands do
   Arguments typed after the command land here: $ARGUMENTS
   """
 
-  def template, do: @template
-
   @doc "Every command visible to `project`; project files override global ones."
   @spec list(map() | nil) :: [t()]
   def list(project \\ nil) do

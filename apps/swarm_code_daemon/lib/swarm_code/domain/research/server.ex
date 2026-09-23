@@ -169,11 +169,14 @@ defmodule SwarmCode.Domain.Research.Server do
   # step, run_id and timings exactly as the real run left them.
   defp boot_row(%{mode: :report}, research, _run, _conversation, _title), do: {:ok, research}
 
-  defp boot_row(_state, research, run, conversation, title) do
+  defp boot_row(_state, research, run, conversation, _title) do
     SwarmCode.Domain.Repo.retry(:research_boot, fn ->
+      # Pass 64: the row keeps no placeholder title — every reader falls back
+      # to `fallback_title/1` — so the planner's name (round 1) or the
+      # reporter's H1 is the first title it gets; `title` labels the run.
       Research.update(research, %{
         status: "running",
-        title: title,
+        title: research.title,
         step: 0,
         run_id: run.id,
         conversation_id: conversation.id,
@@ -419,7 +422,9 @@ defmodule SwarmCode.Domain.Research.Server do
             summary: outcome[:summary] || research.summary,
             sources: outcome[:sources] || research.sources,
             report_path: outcome[:report_path] || research.report_path,
-            title: outcome[:title] || research.title,
+            # Pass 64: the planner's short title stays; the reporter's H1 is
+            # the report's own headline, not the list entry.
+            title: research.title || outcome[:title],
             error: outcome[:error],
             # Spec 48 §2: "rendered" the moment the answer is readable.
             design_state: outcome[:design_state] || research.design_state,

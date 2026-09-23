@@ -33,6 +33,10 @@ defmodule SwarmCode.Domain.Settings.Setting do
     field(:max_concurrent_agents, :integer, default: 4)
     field(:max_agent_depth, :integer, default: 2)
     field(:max_agent_turns, :integer, default: 60)
+    # spec 67 T29 (G38): a sub-agent's wall clock. 0 = wait for ever, which is
+    # what `spawn_agent` did before this task — one stalled child held its lead,
+    # and the lead's own awaiting parent, for the life of the run.
+    field(:sub_agent_timeout_s, :integer, default: 1800)
     field(:command_timeout_ms, :integer, default: 120_000)
     field(:tool_timeout_ms, :integer, default: 120_000)
     field(:worktrees_enabled, :boolean, default: true)
@@ -101,6 +105,23 @@ defmodule SwarmCode.Domain.Settings.Setting do
     field(:storage_retention_days, :integer)
     field(:storage_prune_days, :integer)
     field(:storage_last_cleanup_at, :utc_datetime_usec)
+    # spec 66 T6: Erlang's `{env, …}` extends the BEAM's environment, so every
+    # key the app was launched with reached `env` in the model's shell.
+    field(:shell_env_scrub, :boolean, default: true)
+    field(:shell_env_keep, {:array, :string}, default: ["GITHUB_TOKEN", "GH_TOKEN"])
+    # spec 66 T7: nil = detect the user's `$SHELL`; a login shell is what has
+    # mise/asdf/nvm/brew on `PATH` inside a packaged `.app`.
+    field(:shell_path, :string)
+    field(:shell_login, :boolean, default: true)
+    # spec 70 B4: per-language LSP server command overrides.
+    field(:lsp_servers, :map, default: %{})
+
+    # spec 70 E3: user-configurable keybindings. JSON-encoded map where keys
+    # are action names and values are key-combo strings.
+    field(:keybindings, :map, default: %{})
+
+    # spec 72 D1: isolation backend for sub-agents.
+    field(:isolation_backend, :string, default: "auto")
 
     timestamps(type: :utc_datetime_usec)
   end
@@ -111,7 +132,8 @@ defmodule SwarmCode.Domain.Settings.Setting do
              side_w_2col side_w_3col pane_w composer_h side_composer_h prompt_size
              tavily_api_key
              max_concurrent_agents
-             max_agent_depth max_agent_turns command_timeout_ms tool_timeout_ms worktrees_enabled
+             max_agent_depth max_agent_turns sub_agent_timeout_s
+             command_timeout_ms tool_timeout_ms worktrees_enabled
              default_chat_provider_id
              default_chat_model default_swarm_provider_id default_swarm_model pricing
              sidebar_sections sidebar_show_global_tasks agents_density
@@ -128,7 +150,9 @@ defmodule SwarmCode.Domain.Settings.Setting do
              research_agent_timeout_s research_retry_timeouts research_max_retries
              default_implementer_provider_id default_implementer_model
              default_implementer_effort
-             storage_retention_days storage_prune_days storage_last_cleanup_at)a
+             storage_retention_days storage_prune_days storage_last_cleanup_at
+             shell_env_scrub shell_env_keep shell_path shell_login
+             lsp_servers keybindings isolation_backend)a
 
   # Spec 45 §3.6: a default effort can be a custom key of the default chat
   # provider's list, so the columns take any well-formed key.
@@ -145,6 +169,35 @@ defmodule SwarmCode.Domain.Settings.Setting do
     |> validate_inclusion(:research_level, ["low", "medium", "high", "ultra"])
     |> validate_inclusion(:research_reader, ["web_fetch", "jina", "firecrawl"])
     |> validate_inclusion(:research_auto_design, ["deep", "all", "never"])
+    # spec 72 D1: isolation backend for sub-agents.
+    |> validate_inclusion(:isolation_backend, ~w(auto clone worktree))
+    # spec 66 T7: blank means "detect"; a path that is not a file would silently
+    # fall back to /bin/sh, so it is refused where the user can still see it.
+    |> update_change(:shell_path, fn path ->
+      case String.trim(to_string(path || "")) do
+        "" -> nil
+        trimmed -> trimmed
+      end
+    end)
+    # spec 67 B26: `File.regular?/1` also says yes to `/etc/hosts`, and a shell
+    # that cannot be executed made `Port.open/2` raise `:eacces` on every single
+    # command of the run. The execute bit is part of "is this a shell".
+    |> validate_change(:shell_path, fn :shell_path, path ->
+      cond do
+        SwarmCode.Domain.Tools.RunCommand.executable?(path) -> []
+        File.regular?(path) -> [shell_path: "is not an executable file"]
+        true -> [shell_path: "is not a file on this machine"]
+      end
+    end)
+    # spec 66 T6: names only, no values — `["GITHUB_TOKEN", "GH_TOKEN"]`.
+    |> update_change(:shell_env_keep, fn names ->
+      names
+      |> List.wrap()
+      |> Enum.flat_map(&String.split(to_string(&1), ","))
+      |> Enum.map(&String.trim/1)
+      |> Enum.reject(&(&1 == ""))
+      |> Enum.uniq()
+    end)
     |> validate_inclusion(:consensus_layout, ["stacked", "side"])
     |> validate_inclusion(:bench_layout, ["scales", "rail", "spine", "scorecard"])
     |> validate_number(:research_agent_timeout_s,
@@ -152,6 +205,19 @@ defmodule SwarmCode.Domain.Settings.Setting do
       less_than_or_equal_to: 3600,
       message: "must be between 60 and 3600"
     )
+    # spec 67 T29: 0 is "wait for ever"; anything else is at least a minute,
+    # because a shorter clock kills a sub-agent that is only thinking, and at
+    # most a day.
+    |> validate_number(:sub_agent_timeout_s,
+      greater_than_or_equal_to: 0,
+      less_than_or_equal_to: 86_400,
+      message: "must be 0 (no limit) or between 60 and 86400"
+    )
+    |> validate_change(:sub_agent_timeout_s, fn :sub_agent_timeout_s, seconds ->
+      if seconds == 0 or seconds >= 60,
+        do: [],
+        else: [sub_agent_timeout_s: "must be 0 (no limit) or between 60 and 86400"]
+    end)
     |> validate_number(:research_max_retries,
       greater_than_or_equal_to: 0,
       less_than_or_equal_to: 3,
@@ -239,7 +305,7 @@ defmodule SwarmCode.Domain.Settings.Setting do
       message: "must be between 1000 and 600000"
     )
     |> validate_change(:pricing, fn :pricing, map ->
-      valid? =
+      rates? =
         is_map(map) and
           Enum.all?(map, fn
             {_model, %{"input" => input, "output" => output}} ->
@@ -249,8 +315,87 @@ defmodule SwarmCode.Domain.Settings.Setting do
               false
           end)
 
-      if valid?, do: [], else: [pricing: "must be a number"]
+      cond do
+        not rates? ->
+          [pricing: "must be a number"]
+
+        # spec 66 T13
+        not Enum.all?(map, fn {_model, row} -> context_window?(row) end) ->
+          [pricing: "context_window must be a whole number between 8000 and 2000000"]
+
+        true ->
+          []
+      end
     end)
+    # spec 70 B4: lsp_servers must be a map of string keys to string values.
+    |> validate_change(:lsp_servers, fn :lsp_servers, map ->
+      cond do
+        not is_map(map) ->
+          [lsp_servers: "must be a map"]
+
+        not Enum.all?(map, fn {k, v} -> is_binary(k) and is_binary(v) end) ->
+          [lsp_servers: "every key and value must be a string"]
+
+        true ->
+          []
+      end
+    end)
+    # spec 70 E3: validate keybindings map
+    |> validate_keybindings()
+  end
+
+  # spec 70 E3: the actions the keybindings map may contain.
+  @keybind_actions ~w(sidebar new search settings quit side nudge_left nudge_right file_finder)
+
+  @combo_re ~r"^(meta|ctrl|shift|alt)(\+(meta|ctrl|shift|alt))*\+[a-zA-Z0-9,.;=\-]$"
+
+  defp validate_keybindings(changeset) do
+    validate_change(changeset, :keybindings, fn :keybindings, bindings ->
+      cond do
+        not is_map(bindings) ->
+          [keybindings: "must be a map"]
+
+        not Enum.all?(Map.keys(bindings), &(&1 in @keybind_actions)) ->
+          unknown = Enum.reject(Map.keys(bindings), &(&1 in @keybind_actions))
+          [keybindings: "unknown action: #{Enum.join(unknown, ", ")}"]
+
+        not Enum.all?(Map.values(bindings), &valid_combo?/1) ->
+          [keybindings: "invalid key combo"]
+
+        true ->
+          check_duplicate_combos(bindings)
+      end
+    end)
+  end
+
+  defp valid_combo?("Escape"), do: true
+
+  defp valid_combo?(combo) when is_binary(combo) do
+    # Allow Arrow keys and single-char keys with modifiers
+    Regex.match?(@combo_re, combo) or
+      Regex.match?(
+        ~r/^(meta|ctrl|shift|alt)(\+(meta|ctrl|shift|alt))*\+Arrow(Left|Right|Up|Down)$/,
+        combo
+      )
+  end
+
+  defp valid_combo?(_), do: false
+
+  defp check_duplicate_combos(bindings) do
+    # Merge with defaults to detect cross-map conflicts
+    defaults = SwarmCode.Domain.Settings.default_keybindings()
+    effective = Map.merge(defaults, bindings)
+
+    effective
+    |> Enum.group_by(fn {_action, combo} -> combo end, fn {action, _combo} -> action end)
+    |> Enum.find(fn {_combo, actions} -> length(actions) > 1 end)
+    |> case do
+      {combo, [a1, a2 | _]} ->
+        [keybindings: "conflict: #{a1} and #{a2} are both bound to #{combo}"]
+
+      nil ->
+        []
+    end
   end
 
   defp validate_efforts(changeset) do
@@ -258,4 +403,13 @@ defmodule SwarmCode.Domain.Settings.Setting do
       validate_format(cs, field, SwarmCode.Domain.LLM.Efforts.key_format())
     end)
   end
+
+  # spec 66 T13: a pricing row may carry the model's real context window beside
+  # its rates. Optional; when it is there it is a whole number of tokens in a
+  # range no real model is outside of (`SwarmCode.Domain.Engine.Context.budget/2`
+  # spends 75 % of it).
+  defp context_window?(%{"context_window" => v}),
+    do: is_integer(v) and v >= 8_000 and v <= 2_000_000
+
+  defp context_window?(_row), do: true
 end

@@ -60,6 +60,33 @@ defmodule SwarmCode.Domain.Cache do
     ArgumentError -> fun.()
   end
 
+  @doc """
+  Stores `value` under `key` outright (spec 67 T33).
+
+  `fetch/2` is read-through — it has no way to record something the engine
+  *learned*, like the rate-limit snapshot a response header carried.
+  """
+  @spec put(term(), term()) :: :ok
+  def put(key, value) do
+    :ets.insert(@table, {key, value, gen(key)})
+    :ok
+  rescue
+    ArgumentError -> :ok
+  end
+
+  @doc "The value stored under `key`, or `default`."
+  @spec get(term(), term()) :: term()
+  def get(key, default \\ nil) do
+    gen = gen(key)
+
+    case :ets.lookup(@table, key) do
+      [{^key, value, ^gen}] -> value
+      _other -> default
+    end
+  rescue
+    ArgumentError -> default
+  end
+
   @doc "Drops every key whose first element is `tag` (`:provider`, `:project`)."
   @spec invalidate(atom()) :: :ok
   def invalidate(tag) do

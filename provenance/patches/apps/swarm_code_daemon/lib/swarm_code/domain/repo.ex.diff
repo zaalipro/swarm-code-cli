@@ -1,0 +1,47 @@
+# CLI-local change to lib/swarm_code/repo.ex at 6dd8d82, after the rewrite
+# rules of provenance/sync-rules.json. Recorded by mix swarm_code.provenance.sync.
+--- a/apps/swarm_code_daemon/lib/swarm_code/domain/repo.ex
++++ b/apps/swarm_code_daemon/lib/swarm_code/domain/repo.ex
+@@ -4,9 +4,33 @@
+     adapter: Ecto.Adapters.SQLite3
+ 
+   @database_mode 0o600
++  @fixture_build Mix.env() == :test
+ 
+   @impl true
+   def init(:supervisor, config) do
++    case Keyword.fetch(config, :guarded_repo) do
++      {:ok, {lease, generation}} when is_pid(lease) and is_reference(generation) ->
++        allowed = [:guarded_repo, :name, :otp_app, :pool_size, :timeout, :telemetry_prefix]
++
++        if Enum.all?(Keyword.keys(config), &(&1 in allowed)) and config[:name] == nil do
++          SwarmCode.Daemon.CrossAppLease.admit_repo(lease, generation)
++        else
++          {:error, :guarded_database_required}
++        end
++
++      :error ->
++        if @fixture_build and Keyword.get(config, :domain_fixture, false),
++          do: fixture_config(config),
++          else: {:error, :guarded_database_required}
++
++      _ ->
++        {:error, :guarded_database_required}
++    end
++  end
++
++  def init(:runtime, config), do: {:ok, config}
++
++  defp fixture_config(config) do
+     case config[:database] do
+       path when is_binary(path) and path not in ["", ":memory:"] ->
+         ensure_database_permissions!(path)
+@@ -18,8 +42,6 @@
+     end
+   end
+ 
+-  def init(:runtime, config), do: {:ok, config}
+-
+   @busy_attempts 5
+   @busy_backoff_ms 20..150
+ 

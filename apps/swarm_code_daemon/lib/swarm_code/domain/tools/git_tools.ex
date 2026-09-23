@@ -179,6 +179,10 @@ defmodule SwarmCode.Domain.Tools.GitCommit do
   @impl true
   def permission(_args), do: :write
 
+  # spec 66 T20: a commit must not race a write of the tree it is committing.
+  @impl true
+  def parallel?, do: false
+
   @impl true
   def title(args), do: "git commit: " <> String.slice(to_string(args["message"] || ""), 0, 50)
 

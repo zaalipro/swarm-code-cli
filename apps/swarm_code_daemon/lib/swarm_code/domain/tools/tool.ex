@@ -11,4 +11,16 @@ defmodule SwarmCode.Domain.Tools.Tool do
               ctx :: map(),
               progress :: (0..100 | nil, String.t() -> :ok)
             ) :: {:ok, String.t()} | {:error, String.t()}
+
+  @doc """
+  spec 66 T20: may two calls of this tool (or this tool and any other) run at
+  the same time? Default **true** — today's behaviour, every call in a batch as
+  its own concurrent `Operation`. A tool that returns `false` is run one at a
+  time, in the order the model emitted the calls, because two `edit_file`s of
+  one path in one response used to race through `AtomicFile.replace/3` and one
+  of them silently won.
+  """
+  @callback parallel?() :: boolean()
+
+  @optional_callbacks parallel?: 0
 end

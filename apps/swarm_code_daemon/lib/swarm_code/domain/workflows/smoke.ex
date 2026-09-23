@@ -163,7 +163,8 @@ defmodule SwarmCode.Domain.Workflows.Smoke do
         {:error, problems}
 
       {:ok, cast} ->
-        warnings = lint(definition)
+        # spec 68 T30: lint/1 removed (always returned [])
+        warnings = []
         {:ok, run_canned(definition, cast, warnings, opts)}
     end
   end
@@ -425,48 +426,9 @@ defmodule SwarmCode.Domain.Workflows.Smoke do
 
   defp line(meta), do: Keyword.get(meta, :line, 0)
 
-  @doc """
-  Warning-level lint. Spec 51 §5.13: the non-deterministic calls it used to
-  warn about are errors of `errors/1` now, so a definition that reaches this
-  has none — the shape stays for its callers.
-  """
-  @spec lint(Definition.t()) :: [String.t()]
-  def lint(%Definition{ast: nil}), do: []
-
-  def lint(%Definition{ast: ast}) do
-    walk(ast, fn module, fun, line, acc ->
-      if {module, fun} in @nondeterministic and not caught_by_errors?(module, fun) do
-        [
-          "line #{line}: #{inspect(module)}.#{fun} is not deterministic/side-effecting; " <>
-            "use host(:now)/agents instead"
-          | acc
-        ]
-      else
-        acc
-      end
-    end)
-  end
-
-  # Every listed call is an error now; the predicate keeps the walk honest if
-  # the two lists ever drift apart.
-  defp caught_by_errors?(module, fun), do: {module, fun} in @nondeterministic
-
-  # Every remote call of the program as {module, fun, line}.
-  defp walk(ast, fun) do
-    {_ast, found} =
-      Macro.prewalk(ast, [], fn
-        {{:., _, [{:__aliases__, _, mods}, name]}, meta, _args} = node, acc ->
-          {node, fun.(Module.concat(mods), name, Keyword.get(meta, :line, 0), acc)}
-
-        {{:., _, [module, name]}, meta, _args} = node, acc when is_atom(module) ->
-          {node, fun.(module, name, Keyword.get(meta, :line, 0), acc)}
-
-        node, acc ->
-          {node, acc}
-      end)
-
-    found |> Enum.reverse() |> Enum.uniq()
-  end
+  # spec 68 T30: lint/1, caught_by_errors?/2 and walk/2 removed — lint always
+  # returned [] because caught_by_errors? checked the same @nondeterministic
+  # list the guard already passed. Zero callers remain.
 
   defp phase_warnings(definition, seen) do
     declared = Definition.phase_titles(definition)
