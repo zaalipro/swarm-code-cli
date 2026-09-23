@@ -111,6 +111,7 @@ from the emulator's font, not from the terminal.
 | b859f93 Q18 | Enter typed ahead during start-up is Enter, not a Ctrl-J line break (terminal port) |
 | a3dcd94 Q19 | `--resume` with a short id says a whole id is needed and where to find one; two stale test warnings removed |
 | 8524a71 Q21 | Q13's header check lets a path it cannot read go on to the probe, so an unreadable database is not called a stray file |
+| 01f329f Q23 | The backup gate test's hook waits are 30 s instead of 5 s; the full suite under load timed out once in "requester death after the manifest commit link" |
 
 ## Still open, and why
 
