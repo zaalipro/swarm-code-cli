@@ -135,6 +135,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         # pass70 Q3: monitors on this conversation's running chat runs while
         # prompts are queued behind them (monitor ref => true).
         queue_monitors: %{},
+        queue_retries: 0,
         # pass71 S2: running read jobs (task ref => job), where they run, and
         # the functions that do the slow work (tests inject blocking fakes).
         jobs: %{},
@@ -228,6 +229,13 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   def handle_info({:DOWN, monitor, :process, _, _}, %{queue_monitors: monitors} = state)
       when is_map_key(monitors, monitor),
       do: {:noreply, drain_queue(%{state | queue_monitors: Map.delete(monitors, monitor)})}
+
+  # pass71 F8: a retry of a queued prompt whose start was refused.
+  def handle_info({:drain_queue, conversation_id}, state) do
+    if conversation_id == state.opts[:conversation_id],
+      do: {:noreply, drain_queue(state)},
+      else: {:noreply, state}
+  end
 
   # pass71 S2: a job crashed or was killed without answering.
   def handle_info({:DOWN, ref, :process, _, _}, %{jobs: jobs} = state)
@@ -933,17 +941,41 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
           {:ok, text, conversation} ->
             case Engine.start_chat_turn(SessionConfiguration.overlay(conversation), text, []) do
               {:ok, _} ->
-                refresh(state)
+                refresh(%{state | queue_retries: 0})
 
               {:error, _} ->
                 Conversations.set_queued(conversation, [text | conversation.queued || []])
-                toast(state, "error", "Queue", "The queued prompt could not start.", nil)
+                retry_queue(state)
             end
 
-          _ ->
+          {:error, _busy} ->
+            retry_queue(state)
+
+          _empty ->
             state
         end
     end
+  end
+
+  # pass71 F8: a start refused by a passing condition (a busy database under
+  # load, the engine still tearing down the turn before) put the prompt back
+  # and armed nothing, so it waited for ever; it is retried a few times first.
+  @queue_retry_ms 250
+  @queue_retries 8
+
+  defp retry_queue(%{queue_retries: n} = state) when n < @queue_retries do
+    Process.send_after(self(), {:drain_queue, state.opts[:conversation_id]}, @queue_retry_ms)
+    %{state | queue_retries: n + 1}
+  end
+
+  defp retry_queue(state) do
+    toast(
+      %{state | queue_retries: 0},
+      "error",
+      "Queue",
+      "The queued prompt could not start.",
+      nil
+    )
   end
 
   defp switch_conversation(state, id) do

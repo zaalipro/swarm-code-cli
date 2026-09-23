@@ -225,6 +225,23 @@ defmodule SwarmCode.Daemon.Service.Pass70QaQueueTest do
     assert eventually(fn -> queued_count(c) == 0 end)
   end
 
+  # pass71 F8: a refused start put the prompt back and armed nothing, so it
+  # waited for ever (the flake S saw under load). It is retried, then the
+  # user is told, and the prompt stays queued.
+  test "a queued prompt whose start is refused is retried, then reported", c do
+    {:ok, conversation} = Conversations.set_queued(c.conversation, ["Never starts"])
+    # No provider: every start is refused with :not_configured.
+    {:ok, _} = Conversations.update(conversation, %{chat_provider_id: nil, chat_model: nil})
+    refute Engine.chat_running?(c.conversation.id)
+
+    send(c.backend, {:drain_queue, c.conversation.id})
+
+    assert eventually(fn -> :sys.get_state(c.backend).queue_retries > 0 end)
+    assert eventually(fn -> :sys.get_state(c.backend).queue_retries == 0 end)
+    assert Conversations.get(c.conversation.id).queued == ["Never starts"]
+    assert Conversations.list_runs(c.conversation.id) == []
+  end
+
   test "with no turn running, a queued prompt is an ordinary send", c do
     {_run, approval} = start_turn(c, "touch pass70-first.txt")
     run = approval["run_id"]
