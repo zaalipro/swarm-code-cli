@@ -142,9 +142,10 @@ defmodule SwarmCodeCLI.UI.Keymap.Bindings do
       help: "Show or hide the inspector dock",
       hint: 2
     },
-    # Ctrl-C never ends the session by itself: it clears the draft, else stops
-    # the turn in view, and only a second press within 1.5 s quits (asking
-    # first when runs are still live).
+    # Ctrl-C never ends the session by itself: it closes a layer, else clears
+    # the draft, else stops the turn in view (or the one Enter just sent), and
+    # such a press never arms the quit. Only two presses within 1.5 s that
+    # have nothing else to do quit (asking first when runs are still live).
     %Binding{
       id: :interrupt,
       keys: [{"c", [:control]}],
@@ -152,7 +153,7 @@ defmodule SwarmCodeCLI.UI.Keymap.Bindings do
       contexts: [:global],
       group: :session,
       label: "Interrupt",
-      help: "Clear the draft, else stop the turn; press twice to quit",
+      help: "Clear the draft, else stop the turn; twice with nothing to stop quits",
       hint: [composer: 2]
     },
     %Binding{
@@ -614,7 +615,7 @@ defmodule SwarmCodeCLI.UI.Keymap.Bindings do
       contexts: [:composer, :composer_normal, :composer_visual],
       group: :act,
       label: "Send",
-      help: "Send the draft (in every vim mode)",
+      help: "Send the draft (in every vim mode); while loading, it sends once ready",
       hint: 9
     },
     %Binding{

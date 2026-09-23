@@ -74,11 +74,11 @@ TUI):
 | Key | In the composer |
 | --- | --- |
 | letters | always type |
-| Enter | send |
+| Enter | send; pressed while the conversation loads, it sends once it has loaded (unless the draft changed) |
 | Ctrl-O, Ctrl-J, Shift-Enter | new line |
 | Ctrl-X | edit the draft in `$VISUAL` / `$EDITOR` (else `vi`) |
-| Esc | stop the turn that is streaming; close the top dialog or list first |
-| Ctrl-C | close a dialog, else clear the draft (Ctrl-Z brings it back), else stop the turn; twice in 1.5 s quits (it asks when runs are live) |
+| Esc | stop the turn that is streaming (or was just sent); close the top dialog or list first |
+| Ctrl-C | close a dialog, else clear the draft (Ctrl-Z brings it back), else stop the turn (also the one Enter has just sent); a press that did one of these never quits. With nothing left to do, twice in 1.5 s quits (it asks when runs are live) |
 | Tab | complete a `/command` or an `@path`; while a turn runs, queue the draft |
 | Up / Down on an empty draft | walk the prompts sent in this conversation |
 | PgUp / PgDn, Ctrl-U / Ctrl-D (empty draft) | scroll the transcript |
