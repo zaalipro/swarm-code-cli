@@ -118,7 +118,11 @@ None (every edited path checked against `provenance/extracted-files.json` destin
 - New tests: `ui/projector/signals_test.exs` (15, D6), `ui/projector/pickers_test.exs` (7),
   `ui/projector/swarm_chrome_test.exs` (5), `ui/projector/golden_scenes_test.exs` (64: 8 scenes ×
   4 sizes × 2 policies, each in colour and monochrome ASCII), ledger/companion additions.
+- Full umbrella `mise exec -- mix test` (once, at c57dac4): swarm_code_core 130 tests, 0 failures;
+  swarm_code_daemon 610 tests, 0 failures; swarm_code_cli 5 properties, 1301 tests, 0 failures.
 - `mix format --check-formatted` and `mix compile --warnings-as-errors` clean.
+- `git merge-tree --write-tree HEAD p70/{A,B,C,E,integrate}`: no conflicts with any other
+  owner's branch at the time of writing.
 - PNGs rendered through `Paint` → SVG → PNG and read while iterating, in
   `/private/tmp/p70cli/p70-D/shots/`: before-{first_reply,approval,swarm}.png (main before pass
   70); v5/v6 (approval card), v7/v7x-trouble-120x40 (D6), v8pal/v8mp (palette, model picker),
