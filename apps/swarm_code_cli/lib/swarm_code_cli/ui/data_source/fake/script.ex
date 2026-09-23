@@ -776,7 +776,15 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
   end
 
   defp command_new(script, request, fingerprint) do
-    with {:ok, prepared, deltas, identifiers} <- prepare_command(script, request) do
+    # pass70 C7: a slash command may answer with feedback (a report, a
+    # navigation) beside its identifiers.
+    prepared =
+      case prepare_command(script, request) do
+        {:ok, prepared, deltas, identifiers} -> {:ok, prepared, deltas, identifiers, nil}
+        other -> other
+      end
+
+    with {:ok, prepared, deltas, identifiers, feedback} <- prepared do
       case apply_deltas(prepared, deltas) do
         {:error, _} = error ->
           error
@@ -785,7 +793,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
           outcome = %DTO.Outcome{
             status: :accepted,
             request_id: request.request_id,
-            identifiers: identifiers
+            identifiers: identifiers,
+            feedback: feedback
           }
 
           next = %{

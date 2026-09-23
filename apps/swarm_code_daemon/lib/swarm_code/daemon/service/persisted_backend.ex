@@ -421,6 +421,30 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       {:ok, %{type: :navigate, destination: :workflows}} ->
         {accepted(id, [], navigation_feedback(:workflows)), state}
 
+      # pass70 C7: `/new`, `/clear`, `/resume <which>` switch this service to
+      # the conversation (identifiers: [its id]); the client re-scopes.
+      {:ok, %{type: :conversation, conversation_id: target}} ->
+        {accepted(id, [target], navigation_feedback(:conversations)),
+         switch_conversation(state, target)}
+
+      {:ok, %{type: :navigate, destination: destination}}
+      when destination in [:conversations, :changes] ->
+        {accepted(id, [], navigation_feedback(destination)), state}
+
+      {:ok, %{type: :report, title: title, text: text}} ->
+        {accepted(id, [], report_feedback(title, text)), state}
+
+      {:ok, %{type: :project, project_id: project_id, text: text}} ->
+        state = state |> refresh() |> toast("success", "Project", text, nil)
+
+        {accepted(id, [project_id], %{
+           "kind" => "notice",
+           "feature" => nil,
+           "title" => "Project",
+           "text" => text,
+           "conversation_id" => nil
+         }), state}
+
       {:ok, _selection} ->
         {reject(id, :not_allowed), state}
 
@@ -2504,6 +2528,15 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       "feature" => Atom.to_string(feature),
       "title" => "",
       "text" => "",
+      "conversation_id" => nil
+    }
+
+  defp report_feedback(title, text),
+    do: %{
+      "kind" => "report",
+      "feature" => nil,
+      "title" => preview(title, 200),
+      "text" => if(text == "", do: " ", else: preview(text, 60_000)),
       "conversation_id" => nil
     }
 

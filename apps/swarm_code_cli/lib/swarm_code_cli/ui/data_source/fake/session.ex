@@ -345,6 +345,137 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Session do
      deltas ++ [toast(request_id, :success, "Project", text, nil, nil)], [session.current]}
   end
 
+  @doc """
+  pass70 C7: the session slash commands the demo answers the way the
+  persisted service does (`CommandDispatcher`): `{:ok, script, deltas,
+  identifiers, feedback}`, an error, or nil for text that is not one of them
+  (it stays a prompt, as every other slash command does in the demo).
+  """
+  def slash(%{session: %__MODULE__{}} = script, %{kind: {:dispatch, :send, text, _, _}} = request) do
+    case SwarmCode.Commands.parse(text) do
+      {:ok, %{action: action} = command} -> slash_command(script, request, action, command)
+      _ -> nil
+    end
+  end
+
+  def slash(_script, _request), do: nil
+
+  defp slash_command(script, request, :new_conversation, _),
+    do:
+      with_feedback(
+        prepare(script, %{request | kind: {:conversation_new}}),
+        navigate(:conversations)
+      )
+
+  defp slash_command(script, _request, :select_conversation, _),
+    do: {:ok, script, [], [], navigate(:conversations)}
+
+  defp slash_command(script, request, :open_conversation, %{conversation: target}) do
+    needle = String.downcase(target)
+
+    matches =
+      script.session.conversations
+      |> Map.values()
+      |> Enum.filter(fn row ->
+        String.starts_with?(row.id, needle) or
+          String.contains?(String.downcase(row.title), needle)
+      end)
+
+    case matches do
+      [row] ->
+        with_feedback(
+          prepare(script, %{request | kind: {:conversation_open, row.id}}),
+          navigate(:conversations)
+        )
+
+      _ ->
+        {:error, :not_allowed}
+    end
+  end
+
+  defp slash_command(script, _request, :show_changes, _),
+    do: {:ok, script, [], [], navigate(:changes)}
+
+  defp slash_command(script, _request, :show_approval, _) do
+    session = script.session
+
+    report(
+      script,
+      "Approvals",
+      "Approval mode: #{mode_label(session.approval_mode)}\nTrusted: " <>
+        if(session.trusted, do: "yes", else: "no")
+    )
+  end
+
+  defp slash_command(script, request, :set_approval, %{approval_mode: mode}),
+    do: project_command(script, request, {:project_update, mode, nil})
+
+  defp slash_command(script, request, :trust_project, _),
+    do: project_command(script, request, {:project_update, nil, true})
+
+  defp slash_command(script, _request, :show_cost, _) do
+    total = cost(script, script.session.current)
+    report(script, "Cost of this conversation", "$#{:erlang.float_to_binary(total, decimals: 2)}")
+  end
+
+  defp slash_command(script, _request, :search, %{query: query}) do
+    needle = String.downcase(query)
+
+    hits =
+      for row <- Map.values(script.session.conversations),
+          String.contains?(String.downcase(row.title), needle),
+          do: "**#{row.title}**\n/resume " <> String.slice(row.id, 0, 8)
+
+    text =
+      if hits == [],
+        do: "Nothing in this project's conversations matches “#{query}”.",
+        else: Enum.join(Enum.sort(hits), "\n\n")
+
+    report(script, "Search: " <> query, text)
+  end
+
+  defp slash_command(script, _request, :export, _),
+    do:
+      report(script, "Exported", "The demo keeps its transcript in memory; nothing was written.")
+
+  defp slash_command(script, _request, :list_agents, _),
+    do: report(script, "Agents", "- **reviewer** (bundled) — reads a diff and reports problems")
+
+  defp slash_command(script, _request, :help, _) do
+    text =
+      Enum.map_join(SwarmCode.Commands.catalogue(), "\n", fn entry ->
+        "/#{entry.name}#{if entry.args == "", do: "", else: " " <> entry.args} — #{entry.desc}"
+      end)
+
+    report(script, "Commands", text)
+  end
+
+  defp slash_command(_script, _request, :quit, _), do: {:error, :not_allowed}
+  defp slash_command(_script, _request, _action, _command), do: nil
+
+  defp project_command(script, request, kind) do
+    with {:ok, next, deltas, ids} <- prepare(script, %{request | kind: kind}) do
+      text =
+        Enum.find_value(deltas, fn
+          %Delta{kind: :toast, body: %{text: text}} -> text
+          _ -> nil
+        end)
+
+      {:ok, next, deltas, ids,
+       %DTO.Feedback{kind: :notice, title: "Project", text: text || "Project updated"}}
+    end
+  end
+
+  defp with_feedback({:ok, script, deltas, ids}, feedback),
+    do: {:ok, script, deltas, ids, feedback}
+
+  defp with_feedback(error, _feedback), do: error
+
+  defp navigate(feature), do: %DTO.Feedback{kind: :navigate, feature: feature}
+
+  defp report(script, title, text),
+    do: {:ok, script, [], [], %DTO.Feedback{kind: :report, title: title, text: text}}
+
   defp mode_label(:read_only), do: "read-only"
   defp mode_label(:auto), do: "auto"
   defp mode_label(:full_access), do: "full access"

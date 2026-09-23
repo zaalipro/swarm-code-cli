@@ -22,7 +22,6 @@ defmodule SwarmCode.Commands do
     {"swarm_model", "<model | provider_id|model>", "Switch the model the sub agents use"},
     {"rewind", "", "Restore files to how they were before an earlier turn"},
     {"stop", "", "Stop everything running in this conversation"},
-    {"resume", "", "Resume the last stopped run of this conversation"},
     {"workflow", "<name> [key=value…] | pause|resume|stop|save <run>",
      "Launch or control a workflow run"},
     {"workflows", "", "Open the workflow dashboard"},
@@ -31,8 +30,38 @@ defmodule SwarmCode.Commands do
     {"consensus", "[task]", "Run this turn as a judged plan"},
     {"deep_research", "[id]", "Attach a finished deep research to this message"},
     {"attach", "<image-path>", "Stage an image file for the next message"},
-    {"compact", "[focus]", "Summarise the conversation so far and continue from the summary"}
+    {"compact", "[focus]", "Summarise the conversation so far and continue from the summary"},
+    # pass70 C7: the session basics.
+    {"new", "", "Start a new conversation; this one stays saved"},
+    {"clear", "", "Clear the screen: start a new conversation, this one stays saved"},
+    {"resume", "[conversation]", "Open a saved conversation (no argument: pick one)"},
+    # Was `/resume` before pass 70; `/resume` opens a conversation now.
+    {"resume-run", "", "Resume the last stopped run of this conversation"},
+    {"approval", "[read-only|auto|full]", "How much agents may do without asking"},
+    {"trust", "", "Trust this project: read its AGENTS.md and allow edits"},
+    {"diff", "", "The files this conversation changed, with their diffs"},
+    {"cost", "", "Tokens and cost of this conversation, by model"},
+    {"search", "<words>", "Search the messages of every conversation"},
+    {"export", "[file]", "Write this conversation as Markdown"},
+    {"agents", "", "The agent definitions a swarm can use"},
+    {"help", "", "List the commands and the keys"},
+    {"quit", "", "Leave SwarmCode; running work of this session stops"}
   ]
+
+  # pass70 C7: commands the terminal client performs itself (its reducer
+  # handles them without a round trip; the service answers them too, for a
+  # client that sends them anyway). `resume` is the client's only without an
+  # argument (the conversation picker).
+  @client ~w(new clear resume diff help quit)
+  @approval_modes %{
+    "read-only" => :read_only,
+    "read_only" => :read_only,
+    "readonly" => :read_only,
+    "auto" => :auto,
+    "full" => :full_access,
+    "full-access" => :full_access,
+    "full_access" => :full_access
+  }
 
   @max_text 262_144
   @max_label 256
@@ -59,8 +88,16 @@ defmodule SwarmCode.Commands do
     "review" => :review_changes,
     "rewind" => :select_rewind,
     "stop" => :stop_all,
-    "resume" => :resume_last,
-    "workflows" => :open_workflows
+    "resume-run" => :resume_last,
+    "workflows" => :open_workflows,
+    "new" => :new_conversation,
+    "clear" => :new_conversation,
+    "trust" => :trust_project,
+    "diff" => :show_changes,
+    "cost" => :show_cost,
+    "agents" => :list_agents,
+    "help" => :help,
+    "quit" => :quit
   }
 
   @type error :: %{required(:type) => atom()}
@@ -69,6 +106,12 @@ defmodule SwarmCode.Commands do
           required(:kind) => atom(),
           required(:action) => atom()
         }
+
+  @doc """
+  True for a builtin the terminal client performs itself (pass70 C7): its
+  catalogue entry and its parse result carry `client: true`.
+  """
+  def client?(name), do: name in @client
 
   @doc "The six composer modes in web menu order, with label, glyph, hint and icon."
   def modes, do: @modes
@@ -274,6 +317,42 @@ defmodule SwarmCode.Commands do
 
   defp parse_known(%{name: "compact"} = item, focus, _), do: ok(item, :compact, %{focus: focus})
 
+  defp parse_known(%{name: "resume"} = item, "", _),
+    do: ok(item, :select_conversation, %{client: true})
+
+  # A conversation id, an id prefix or words of its title; the service
+  # resolves it within the open project. Named, it needs the service.
+  defp parse_known(%{name: "resume"} = item, target, _) do
+    if valid_text?(target, @max_label) and not Regex.match?(~r/\p{Cc}/u, target),
+      do: ok(item, :open_conversation, %{conversation: target, client: false}),
+      else: error(:invalid_argument)
+  end
+
+  defp parse_known(%{name: "approval"} = item, "", _), do: ok(item, :show_approval)
+
+  defp parse_known(%{name: "approval"} = item, mode, _) do
+    case Map.get(@approval_modes, String.downcase(mode)) do
+      nil -> error(:invalid_argument)
+      atom -> ok(item, :set_approval, %{approval_mode: atom})
+    end
+  end
+
+  defp parse_known(%{name: "search"}, "", _), do: error(:missing_argument)
+
+  defp parse_known(%{name: "search"} = item, query, _) do
+    if valid_text?(query, 1_024),
+      do: ok(item, :search, %{query: query}),
+      else: error(:invalid_argument)
+  end
+
+  defp parse_known(%{name: "export"} = item, "", _), do: ok(item, :export, %{path: nil})
+
+  defp parse_known(%{name: "export"} = item, path, _) do
+    if valid_text?(path, 4096) and not Regex.match?(~r/\p{Cc}/u, path),
+      do: ok(item, :export, %{path: path}),
+      else: error(:invalid_argument)
+  end
+
   defp parse_known(%{name: name} = item, args, _) when is_map_key(@no_args, name) do
     if args == "", do: ok(item, Map.fetch!(@no_args, name)), else: error(:unexpected_argument)
   end
@@ -395,7 +474,7 @@ defmodule SwarmCode.Commands do
   defp registry(opts) do
     builtins =
       Enum.map(@builtins, fn {name, args, desc} ->
-        %{name: name, args: args, desc: desc, scope: nil, kind: :builtin}
+        %{name: name, args: args, desc: desc, scope: nil, kind: :builtin, client: client?(name)}
       end)
 
     workflows = dynamic(Keyword.get(opts, :workflows, []), :workflow)
@@ -428,7 +507,8 @@ defmodule SwarmCode.Commands do
         definition: entry,
         desc: if(valid_text?(desc, @max_label), do: desc, else: ""),
         scope: scope_atom(value(entry, :scope)),
-        args: args_hint(entry, kind)
+        args: args_hint(entry, kind),
+        client: false
       }
     end)
   end
@@ -514,8 +594,16 @@ defmodule SwarmCode.Commands do
     end
   end
 
-  defp ok(item, action, fields \\ %{}),
-    do: {:ok, Map.merge(%{name: item.name, kind: item.kind, action: action}, fields)}
+  defp ok(item, action, fields \\ %{}) do
+    base = %{name: item.name, kind: item.kind, action: action}
+
+    base =
+      if client?(item.name) and item.kind == :builtin,
+        do: Map.put(base, :client, true),
+        else: base
+
+    {:ok, Map.merge(base, fields)}
+  end
 
   defp error(type), do: {:error, %{type: type}}
   defp rank(items, ""), do: items

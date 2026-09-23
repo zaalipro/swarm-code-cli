@@ -6,6 +6,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Compose do
   def prepare(script, %{kind: {:dispatch, operation, text, target, attachments}} = request) do
     with {:ok, conversation} <- conversation(script, request.scope),
          :ok <- draft_origin(request.origin, conversation),
+         nil <- SwarmCodeCLI.UI.DataSource.Fake.Session.slash(script, request),
          true <- operation in Script.workspace_actions(script, request.scope),
          {:ok, parent, target_kind, target_id} <- target(script, target, conversation) do
       run_id = id(request.request_id, "run")

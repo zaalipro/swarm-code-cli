@@ -16,7 +16,10 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.Feedback do
             :checkpoints,
             :mcp,
             :memory,
-            :files
+            :files,
+            # pass70 C7: the conversation picker (identifiers empty) or the
+            # conversation the service switched to (identifiers [its id]).
+            :conversations
           ]}},
       title: :text,
       text: :text,

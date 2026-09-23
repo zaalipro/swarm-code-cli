@@ -259,6 +259,45 @@ defmodule SwarmCodeCLI.UI.DataSource.Pass70FakeTest do
     assert {:error, %AdmissionError{code: :not_allowed}} = resolve.("deny-1", :deny_stop)
   end
 
+  test "the session slash commands answer like the service (C7)" do
+    pid = source()
+
+    send = fn id, text ->
+      request(id, {:dispatch, :send, text, :main, []}, {:draft, {Script.id(:a), :main}}, :outcome)
+    end
+
+    assert %DTO.Outcome{
+             identifiers: [],
+             feedback: %DTO.Feedback{kind: :navigate, feature: :conversations}
+           } =
+             reply(pid, send.("s-1", "/resume"))
+
+    assert %DTO.Outcome{feedback: %DTO.Feedback{kind: :report, title: "Commands", text: help}} =
+             reply(pid, send.("s-2", "/help"))
+
+    assert help =~ "/new — Start a new conversation"
+
+    assert %DTO.Outcome{
+             feedback: %DTO.Feedback{kind: :notice, text: "Approval mode: full access"}
+           } =
+             reply(pid, send.("s-3", "/approval full"))
+
+    assert %DTO.Outcome{feedback: %DTO.Feedback{kind: :navigate, feature: :changes}} =
+             reply(pid, send.("s-4", "/diff"))
+
+    assert {:error, %AdmissionError{code: :not_allowed}} =
+             Source.request(pid, "client", send.("s-5", "/quit"))
+
+    # Any other slash command is still a prompt in the demo.
+    assert %DTO.Outcome{status: :accepted, feedback: nil, identifiers: [_run | _]} =
+             reply(pid, send.("s-6", "/plan"))
+
+    assert %DTO.Outcome{identifiers: [new_id], feedback: %DTO.Feedback{feature: :conversations}} =
+             reply(pid, send.("s-7", "/new"))
+
+    assert %DTO.ConversationList{current_id: ^new_id} = list(pid, "list-s")
+  end
+
   test "deny and stop stops the run" do
     pid = source()
     assert :ok = Source.advance(pid, "catalogue-activity")

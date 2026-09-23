@@ -193,7 +193,7 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcherTest do
     assert Conversations.get!(c.id).mode == "plan"
     assert {:error, :not_configured} = Dispatcher.dispatch(c.id, "/compact")
     assert {:error, :nothing_to_stop} = Dispatcher.dispatch(c.id, "/stop")
-    assert {:error, :not_resumable} = Dispatcher.dispatch(c.id, "/resume")
+    assert {:error, :not_resumable} = Dispatcher.dispatch(c.id, "/resume-run")
   end
 
   test "research attachment requires an existing finished report", %{conversation: c} do
