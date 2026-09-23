@@ -38,6 +38,11 @@ defmodule SwarmCode.Daemon.Service.PersistedBackendTest do
 
     Application.put_env(:swarm_code_daemon, :domain_config_dir, Path.join(path, "config"))
 
+    # Tool post-hooks run under this supervisor (engine 6dd8d82); the persisted
+    # runtime starts it (owner B), a bare test does it here.
+    unless Process.whereis(SwarmCode.Domain.Hooks.TaskSupervisor),
+      do: start_supervised!({Task.Supervisor, name: SwarmCode.Domain.Hooks.TaskSupervisor})
+
     on_exit(fn ->
       Cache.clear()
 

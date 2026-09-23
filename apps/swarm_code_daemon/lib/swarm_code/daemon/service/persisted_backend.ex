@@ -948,10 +948,11 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     end
   end
 
-  # pass70 C2: the five decisions. `approve_run` is the engine's `:always`
-  # (this tool, this run). Before the engine sync there is no `:deny_stop`:
-  # deny, then stop the run. `always_prefix` remembers the family the service
-  # computed for this request (the card's), never one a client names.
+  # pass70 C2: the five decisions (engine 6dd8d82). `approve_run` is the
+  # engine's `:always` (this tool, this run); `deny_stop` denies and stops the
+  # run. `always_prefix` remembers the family the service computed for this
+  # request (the card's), never one a client names; the RunServer uses the
+  # node's own prefix anyway.
   defp control(:approval_resolve, %{"decision" => decision}, run, _) do
     node = run.approval["node_id"]
 
@@ -966,19 +967,11 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         Engine.resolve_approval(run.id, node, :deny)
 
       "deny_stop" ->
-        if widened_engine?() do
-          Engine.resolve_approval(run.id, node, :deny_stop)
-        else
-          Engine.resolve_approval(run.id, node, :deny)
-          Engine.stop_run(run.id)
-        end
+        Engine.resolve_approval(run.id, node, :deny_stop)
 
       "always_prefix" ->
         family = get_in(run.approval, ["approval", "command_family"])
-
-        # The engine at 6dd8d82 takes the family as a fourth argument; `apply`
-        # keeps this module compiling against the engine before the sync.
-        apply(Engine, :resolve_approval, [run.id, node, :always_prefix, family])
+        Engine.resolve_approval(run.id, node, :always_prefix, family)
     end
   end
 
@@ -990,12 +983,6 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     do: offered
 
   defp offered_decisions(_), do: ["approve", "deny"]
-
-  # The synced engine (desktop 6dd8d82) resolves `:deny_stop` and
-  # `{:always_prefix, family}`; the pass 53 engine resolves neither.
-  defp widened_engine? do
-    Code.ensure_loaded?(Engine) and function_exported?(Engine, :resolve_approval, 4)
-  end
 
   defp error_code(reason)
        when reason in [
@@ -1589,9 +1576,10 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     end
   end
 
-  # pass70 C2: the card's facts. After the engine sync the RunServer row
-  # carries `command`, `cwd`, `reason`, `command_family`, `classification`
-  # and `requested_at` (A2); before it they come from the op's arguments.
+  # pass70 C2: the card's facts. The RunServer row (A2's frozen contract)
+  # carries `command`, `cwd`, `reason`, `command_family`, `classification`,
+  # `allowed_decisions` and `requested_at`; the op's arguments fill in for a
+  # row without them.
   defp approval_card(detail, p, run, state) do
     tool = bound(detail[:tool], 200) || "agent operation"
     args = decode_args(detail[:args])
@@ -1613,20 +1601,28 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       "agent_id" => agent && agent["id"],
       "agent_name" => agent && bound(agent["name"], 200),
       "requested_at" => unix_ms(detail[:requested_at]) || unix_ms(p.since),
-      "allowed_decisions" => decisions(classification, family)
+      "allowed_decisions" => decisions(detail[:allowed_decisions], classification, family)
     }
   end
 
-  defp decisions("dangerous", _family), do: ["approve", "deny", "deny_stop"]
+  @decisions ~w(approve approve_run always_prefix deny deny_stop)
 
-  defp decisions(_classification, family) do
-    prefix =
-      if widened_engine?() and is_binary(family) and String.trim(family) != "",
-        do: ["always_prefix"],
-        else: []
+  # The row's own list when it has one (the RunServer knows what it can do);
+  # `always_prefix` only with a family the card shows.
+  defp decisions([_ | _] = offered, classification, family) do
+    offered = offered |> Enum.map(&to_string/1) |> Enum.filter(&(&1 in @decisions)) |> Enum.uniq()
+    remembered? = classification != "dangerous" and family?(family)
+    if remembered?, do: offered, else: offered -- ["always_prefix"]
+  end
 
+  defp decisions(_none, "dangerous", _family), do: ["approve", "deny", "deny_stop"]
+
+  defp decisions(_none, _classification, family) do
+    prefix = if family?(family), do: ["always_prefix"], else: []
     ["approve", "approve_run"] ++ prefix ++ ["deny", "deny_stop"]
   end
+
+  defp family?(text), do: is_binary(text) and String.trim(text) != ""
 
   defp permission(value) when value in [:read, :write, :execute], do: Atom.to_string(value)
   defp permission(value) when value in ["read", "write", "execute"], do: value

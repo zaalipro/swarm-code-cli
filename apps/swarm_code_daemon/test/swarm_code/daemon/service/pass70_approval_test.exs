@@ -40,6 +40,11 @@ defmodule SwarmCode.Daemon.Service.Pass70ApprovalTest do
       File.rm_rf!(path)
     end)
 
+    # Tool post-hooks run under this supervisor; the persisted runtime starts
+    # it (owner B), a bare test does it here.
+    unless Process.whereis(SwarmCode.Domain.Hooks.TaskSupervisor),
+      do: start_supervised!({Task.Supervisor, name: SwarmCode.Domain.Hooks.TaskSupervisor})
+
     start_supervised!(
       {Repo,
        database: Path.join(path, "fixture.db"),
@@ -58,13 +63,16 @@ defmodule SwarmCode.Daemon.Service.Pass70ApprovalTest do
     )
 
     {:ok, project} = Projects.create(%{name: "Approvals", root_path: root})
-    # `auto` asks for every shell command (and a synced engine creates new
-    # projects read-only), so the mode is explicit.
+    # `auto` asks for every shell command that is not read-only (`touch` is
+    # `:normal`, `echo` would be `:safe` and run unasked), and the synced
+    # engine creates new projects read-only, so the mode is explicit.
     {:ok, project} = Projects.update(project, %{approval_mode: "auto"})
     %{project: project, root: root}
   end
 
   setup c do
+    # A remembered family ("touch") would approve the next test's command.
+    {:ok, _} = Projects.update(Projects.get(c.project.id), %{auto_approve_prefixes: []})
     Cache.clear()
     {:ok, conv} = Conversations.create(c.project.id)
 
@@ -170,7 +178,7 @@ defmodule SwarmCode.Daemon.Service.Pass70ApprovalTest do
   end
 
   test "a real op-node approval is projected as a card and approving it finishes the run", c do
-    {run, approval} = start_turn(c, "echo pass70-approved")
+    {run, approval} = start_turn(c, "touch pass70-approved.txt")
 
     assert {:ok, %DTO.PendingInteraction{approval: %DTO.Approval{} = card}} =
              DTO.PendingInteraction.decode(approval)
@@ -182,7 +190,7 @@ defmodule SwarmCode.Daemon.Service.Pass70ApprovalTest do
     refute approval["node_id"] in Enum.map(agents, & &1.id)
 
     assert {card.tool, card.permission, card.command} ==
-             {"run_command", :execute, "echo pass70-approved"}
+             {"run_command", :execute, "touch pass70-approved.txt"}
 
     assert {card.cwd, card.reason} == {".", "Print a marker for the test."}
     assert card.agent_id == op.parent_id
@@ -201,7 +209,7 @@ defmodule SwarmCode.Daemon.Service.Pass70ApprovalTest do
   end
 
   test "deny and stop settles the request, stops the run and leaves no waiting words", c do
-    {run, approval} = start_turn(c, "echo pass70-denied")
+    {run, approval} = start_turn(c, "touch pass70-denied.txt")
 
     assert {:ok, %{"value" => %{"status" => "accepted"}}} =
              resolve(c, "deny-stop", run, approval, "deny_stop")
@@ -218,7 +226,7 @@ defmodule SwarmCode.Daemon.Service.Pass70ApprovalTest do
   end
 
   test "a run stopped while it waits no longer reads awaiting approval (rel F11)", c do
-    {run, _approval} = start_turn(c, "echo pass70-stopped")
+    {run, _approval} = start_turn(c, "touch pass70-stopped.txt")
 
     assert {:ok, %{"value" => %{"status" => "accepted"}}} =
              request(c.backend, "stop", c.scope, %ServiceRequest{
@@ -239,17 +247,32 @@ defmodule SwarmCode.Daemon.Service.Pass70ApprovalTest do
     refute item["tool"]["detail"] =~ "awaiting"
   end
 
-  test "a decision the card does not offer is refused", c do
-    {run, approval} = start_turn(c, "echo pass70-offered")
-    offered = approval["approval"]["allowed_decisions"]
+  test "always allowing a command family remembers it on the project", c do
+    {run, approval} = start_turn(c, "touch pass70-family.txt")
+    card = approval["approval"]
 
-    unless "always_prefix" in offered do
-      assert {:ok, %{"value" => %{"status" => "rejected", "error" => %{"code" => "not_allowed"}}}} =
-               resolve(c, "prefix", run, approval, "always_prefix")
-    end
+    assert {card["command_family"], card["classification"]} == {"touch", "normal"}
+    assert "always_prefix" in card["allowed_decisions"]
 
     assert {:ok, %{"value" => %{"status" => "accepted"}}} =
-             resolve(c, "run-wide", run, approval, "approve_run")
+             resolve(c, "prefix", run, approval, "always_prefix")
+
+    assert eventually(fn -> Conversations.get_run(run).status == "done" end)
+    assert "touch" in Projects.get(c.project.id).auto_approve_prefixes
+  end
+
+  test "a dangerous command offers no family and refuses always_prefix", c do
+    {run, approval} = start_turn(c, "rm -rf pass70-build")
+    card = approval["approval"]
+
+    assert {card["command_family"], card["classification"]} == {nil, "dangerous"}
+    refute "always_prefix" in card["allowed_decisions"]
+
+    assert {:ok, %{"value" => %{"status" => "rejected", "error" => %{"code" => "not_allowed"}}}} =
+             resolve(c, "prefix", run, approval, "always_prefix")
+
+    assert {:ok, %{"value" => %{"status" => "accepted"}}} =
+             resolve(c, "deny", run, approval, "deny")
 
     assert eventually(fn -> Conversations.get_run(run).status == "done" end)
   end

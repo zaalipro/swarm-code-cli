@@ -631,16 +631,16 @@ defmodule SwarmCode.Daemon.Service.WireContractTest do
   defp checkpoint!(c, node_id, path, restorable) do
     Process.sleep(2)
 
-    %Checkpoint{}
+    # The ownership ids come from trusted context, not the cast (desktop spec
+    # 68 T3, synced in pass 70).
+    %Checkpoint{conversation_id: c.run.conversation_id, run_id: c.run.id, node_id: node_id}
     |> Checkpoint.changeset(%{
-      conversation_id: c.run.conversation_id,
-      run_id: c.run.id,
-      node_id: node_id,
       path: path,
       previous_content: "before",
       restorable: restorable,
       inserted_at: DateTime.utc_now() |> DateTime.truncate(:microsecond)
     })
+    |> Checkpoint.validate()
     |> Repo.insert!()
   end
 
