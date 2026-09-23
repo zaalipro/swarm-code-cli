@@ -147,7 +147,8 @@ defmodule SwarmCodeCLI.UI.Projector.SignalsTest do
 
       assert status =~ "Build · read-only · untrusted"
       assert status =~ "llmotions limited · 42s"
-      assert status =~ ~r/send +Esc back out$/
+      # E1: in the composer Esc interrupts the turn (it never moves focus).
+      assert status =~ ~r/send +Esc interrupt$/
     end
 
     test "on a wide row the background command and the spend are there too" do

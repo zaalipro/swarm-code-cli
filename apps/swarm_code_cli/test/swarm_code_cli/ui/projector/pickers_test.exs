@@ -81,7 +81,8 @@ defmodule SwarmCodeCLI.UI.Projector.PickersTest do
     test "entries that are not actions say what they are" do
       state = scene(:first_reply, {120, 36}) |> palette("#")
       {rows, _scene, _table, _plan} = screen(state)
-      assert Enum.any?(rows, &(&1 =~ ~r/Run .* run │/)), Enum.join(rows, "\n")
+      # E3 labels run entries "Run: <title>"; the kind sits right-aligned.
+      assert Enum.any?(rows, &(&1 =~ ~r/Run: .* run │/)), Enum.join(rows, "\n")
     end
 
     test "the box is as tall as its rows" do

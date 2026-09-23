@@ -50,14 +50,17 @@ defmodule SwarmCodeCLI.UI.SlashPalette do
   """
   def catalogue(query) do
     remote = Commands.catalogue(query)
-    flagged = for item <- remote, Map.get(item, :client) == true, do: item.name
+    flagged = for item <- remote, Map.get(item, :client) == true, into: %{}, do: {item.name, item}
     needle = query |> String.trim_leading("/") |> String.downcase()
 
+    # The client's commands keep their place at the top; an entry the catalogue
+    # flags `client: true` (pass70 C7) lends its words but not its position.
     local =
-      for item <- @local,
-          item.name not in flagged,
-          score(item.name, needle) != nil,
-          do: Map.merge(item, %{scope: nil, kind: :builtin, client: true})
+      for item <- @local, score(item.name, needle) != nil do
+        Map.get_lazy(flagged, item.name, fn ->
+          Map.merge(item, %{scope: nil, kind: :builtin, client: true})
+        end)
+      end
 
     names = Enum.map(local, & &1.name)
 
