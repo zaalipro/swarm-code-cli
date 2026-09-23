@@ -84,7 +84,9 @@ defmodule SwarmCodeCLI.UI.Paint.Scene do
   defp dialog(dialog, ctx) do
     rect = dialog.rect
     style = resolve(:card, ctx.base, ctx.options)
-    ctx = fill(ctx, rect, style) |> border(rect, resolve(:border, style, ctx.options))
+    # A dialog floats over the transcript, so its frame is drawn a step
+    # brighter than a panel's hairline: the ghost text colour, not the border.
+    ctx = fill(ctx, rect, style) |> border(rect, resolve(:text_ghost, style, ctx.options))
 
     inner = %Rect{
       x: rect.x + min(1, rect.width),

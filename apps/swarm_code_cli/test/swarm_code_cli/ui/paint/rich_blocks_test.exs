@@ -171,7 +171,7 @@ defmodule SwarmCodeCLI.UI.Paint.RichBlocksTest do
       assert Enum.all?(line, fn {_, _, bg} -> bg == {:rgb, 60, 60, 59} end)
     end
 
-    test "measured paints :smooth as ticks and ignores the gradient" do
+    test "measured paints :smooth as a line of gauge rectangles and ignores the gradient" do
       [line] =
         lines(
           [%Block.Gauge{tone: :accent, value: 30, maximum: 100, style: :smooth}],
@@ -179,7 +179,8 @@ defmodule SwarmCodeCLI.UI.Paint.RichBlocksTest do
           :measured
         )
 
-      assert text(line) == String.duplicate(t(:stripe), 3) <> String.duplicate(t(:stripe_off), 7)
+      assert text(line) ==
+               String.duplicate(t(:gauge_on), 3) <> String.duplicate(t(:gauge_off), 7)
 
       [line] =
         lines(

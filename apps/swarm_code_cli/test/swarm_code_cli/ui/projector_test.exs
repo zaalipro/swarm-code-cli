@@ -51,7 +51,7 @@ defmodule SwarmCodeCLI.UI.ProjectorTest do
         refute joined =~ "NEEDS"
         refute joined =~ "Target: Main"
         refute joined =~ "Validation: none"
-        assert joined =~ "Focus"
+        refute joined =~ "Focus:"
       else
         assert length(scene.regions) == 1
         assert length(hd(scene.regions).blocks) <= min(r, 4)
@@ -74,10 +74,12 @@ defmodule SwarmCodeCLI.UI.ProjectorTest do
     state = put_in(state.read_model.snapshots[:workspace], workspace)
     {scene, _} = Projector.project(state)
     title = hd(Enum.filter(scene.regions, &(&1.role == :title)))
-    rendered = Enum.join(texts(title), " ")
+    status = hd(Enum.filter(scene.regions, &(&1.role == :status)))
+    assert SafeText.value(title.label) == "Plan"
+    rendered = Enum.join(texts(status.blocks), " ")
     assert rendered =~ "Plan"
     assert rendered =~ "planner-fixture"
-    refute rendered =~ "· Build"
+    refute rendered =~ "Build"
     refute Enum.join(texts(scene), " ") =~ "Composer · Build"
   end
 
@@ -108,7 +110,7 @@ defmodule SwarmCodeCLI.UI.ProjectorTest do
         ] do
       current = %{run | state: status, allowed_actions: permissions, revision: 7}
       next = put_in(state.read_model.runs[run.id], current)
-      {scene, actions} = Projector.project(next)
+      {_scene, actions} = Projector.project(next)
       target = {:intent, {:retry_run, run.id, 7}}
       assert target in Map.values(actions) == enabled
 
@@ -146,7 +148,8 @@ defmodule SwarmCodeCLI.UI.ProjectorTest do
     assert {:local, {:open_layer, :help}} in Map.values(actions)
     assert {:local, {:quit_requested, :detach}} in Map.values(actions)
     assert {:local, {:presenter_handoff_requested, :plain}} in Map.values(actions)
-    assert Enum.join(texts(scene), " ") =~ "Resize help"
+    status = Enum.find(scene.regions, &(&1.role == :status))
+    assert Enum.join(texts(status.blocks), "") =~ "Build"
     refute Enum.any?(Map.values(actions), &match?({:intent, _}, &1))
   end
 
@@ -191,7 +194,7 @@ defmodule SwarmCodeCLI.UI.ProjectorTest do
       end)
 
     {scene, actions} = Projector.project(state)
-    assert Enum.join(texts(scene), " ") =~ "LAUNCHED BY SUPERSEDED TURN"
+    assert Enum.join(texts(scene), " ") =~ "Launched by a superseded turn"
     refute {:intent, {:run_control, :stop, "fixture-run"}} in Map.values(actions)
   end
 
@@ -250,11 +253,10 @@ defmodule SwarmCodeCLI.UI.ProjectorTest do
     assert list.total_count == 10_000
     assert list.first_index == 9989
     assert length(list.items) <= main.rect.height
-    # The anchored item opens with a blank row and its speaker line, then its
-    # text. Pin that sequence so the window is still proven to start there.
+    # The anchored item is the first thing in the window: its words, with no
+    # speaker line repeated above every item of the turn.
     content = list.items |> hd() |> texts() |> Enum.join() |> String.trim()
-    assert String.starts_with?(content, "assistant")
-    assert content =~ "\n  row 9990"
+    assert String.starts_with?(content, "row 9990")
     refute texts(list) |> Enum.join() =~ "row 9989"
   end
 
@@ -271,7 +273,10 @@ defmodule SwarmCodeCLI.UI.ProjectorTest do
     {scene, actions} = Projector.project(state)
     assert {:local, {:retry_page, :workspace, :before}} in Map.values(actions)
     assert {:local, {:open_layer, :help}} in Map.values(actions)
-    assert Enum.join(texts(scene), " ") =~ "Page error"
+    assert Enum.join(texts(scene), " ") =~ "older messages did not load"
+
+    main = Enum.find(scene.regions, &(&1.role == :main))
+    assert Enum.any?(main.blocks, &is_struct(&1, Scene.Block.VirtualList))
   end
 
   test "untrusted single-line labels cannot add rows and policy controls cell clipping" do
@@ -350,8 +355,11 @@ defmodule SwarmCodeCLI.UI.ProjectorTest do
     state =
       fixture() |> put_in([Access.key(:read_model), Access.key(:interactions), "approval"], item)
 
+    # The approval itself is drawn in the composer slot, not as a modal.
     {scene, _} = Projector.project(%{state | layers: [{:approval, "approval"}], focus: "cancel"})
-    assert scene.overlay.focused_control_id == "cancel"
+    assert scene.overlay == nil
+    edge = Enum.find(scene.regions, &(&1.role == :activity))
+    assert Enum.join(texts(edge.blocks), "") =~ "once"
 
     {scene, _} =
       Projector.project(%{state | layers: [{:unsent_changes, :detach}], focus: "confirm"})
@@ -598,7 +606,7 @@ defmodule SwarmCodeCLI.UI.ProjectorTest do
     state = %{fixture() | destination: {:conversation, "different"}}
     {scene, actions} = Projector.project(state)
     refute {:intent, {:run_control, :stop, "fixture-run"}} in Map.values(actions)
-    assert Enum.join(texts(scene), " ") =~ "READY TO BUILD"
+    assert Enum.join(texts(scene), " ") =~ "Ready to build"
     refute Enum.join(texts(scene), " ") =~ "EMPTY"
   end
 
@@ -633,14 +641,13 @@ defmodule SwarmCodeCLI.UI.ProjectorTest do
   test "operational error notice survives compressed projection" do
     state = %{fixture(50, 14) | notice: {:input_rejected, :paste_too_large}}
     {scene, _} = Projector.project(state)
-    assert Enum.join(texts(scene), " ") =~ "INPUT REJECTED"
-    assert Enum.join(texts(scene), " ") =~ "PASTE TOO LARGE"
+    assert Enum.join(texts(scene), " ") =~ "Input rejected: paste too large"
   end
 
   test "resyncing watch keeps transcript with scoped recovery chrome" do
     state = %{fixture() | watches: %{workspace: %SwarmCodeCLI.UI.WatchState{status: :resyncing}}}
     {scene, actions} = Projector.project(state)
-    assert Enum.join(texts(scene), " ") =~ "workspace · RESYNCING"
+    assert Enum.join(texts(scene), " ") =~ "reconnecting"
     assert {:local, {:retry_page, :workspace, :after}} in Map.values(actions)
 
     assert Enum.any?(
@@ -733,12 +740,12 @@ defmodule SwarmCodeCLI.UI.ProjectorTest do
     main = Enum.find(scene.regions, &(&1.role == :main))
     assert main.rect.x == 0
     assert main.rect.width == 100
-    assert main.rect.y == 2
+    assert main.rect.y == 1
 
     # Every run is still accounted for on the one-line tab row: the ones that fit
     # are tabs, the rest are the +N remainder.
-    tabline = Enum.find(scene.regions, &(&1.role == :tabline))
-    assert tabline.rect == %SwarmCodeCLI.UI.Scene.Rect{x: 0, y: 1, width: 100, height: 1}
+    title = Enum.find(scene.regions, &(&1.role == :title))
+    assert title.rect == %SwarmCodeCLI.UI.Scene.Rect{x: 0, y: 0, width: 100, height: 1}
     {shown, overflow, _hint} = Shell.tabline_plan(stale, 100)
     assert shown != []
     assert length(shown) + overflow == 60

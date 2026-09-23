@@ -73,7 +73,7 @@ defmodule SwarmCodeCLI.UI.ProjectorModeTest do
     refute Enum.any?(texts, &String.contains?(&1, "→"))
   end
 
-  test "consensus mode uses section_heading for PLAN and CHANGES labels" do
+  test "consensus mode uses section_heading for the Plan and Changes labels" do
     transcript = %{
       "t1" => %{run_id: "run-1", role: :tool, text: "plan details here"},
       "t2" => %{run_id: "run-1", role: :tool, text: "change details here"}
@@ -94,20 +94,20 @@ defmodule SwarmCodeCLI.UI.ProjectorModeTest do
         _ -> []
       end)
 
-    # PLAN and CHANGES should be section headings with bold modifier
+    # Plan and Changes should be section headings with bold modifier
     plan_span =
       Enum.find(spans, fn span ->
-        SwarmCodeCLI.UI.SafeText.value(span.text) == "PLAN" and :bold in span.style.modifiers
+        SwarmCodeCLI.UI.SafeText.value(span.text) == "Plan" and :bold in span.style.modifiers
       end)
 
-    assert plan_span, "PLAN section heading should be bold"
+    assert plan_span, "Plan section heading should be bold"
 
     changes_span =
       Enum.find(spans, fn span ->
-        SwarmCodeCLI.UI.SafeText.value(span.text) == "CHANGES" and :bold in span.style.modifiers
+        SwarmCodeCLI.UI.SafeText.value(span.text) == "Changes" and :bold in span.style.modifiers
       end)
 
-    assert changes_span, "CHANGES section heading should be bold"
+    assert changes_span, "Changes section heading should be bold"
 
     # Pinned strings must survive
     all_text =
@@ -178,39 +178,32 @@ defmodule SwarmCodeCLI.UI.ProjectorModeTest do
       revision: 1
     }
 
+    # The plan gate is keyboard actions now (the approval itself is the card in
+    # the composer slot): its labels reach the palette, never a deck row.
+    labels = fn state ->
+      state
+      |> SwarmCodeCLI.UI.Projector.Workspace.keyboard_actions(:medium)
+      |> Enum.flat_map(fn
+        {:projector_action, label, _target} -> [SwarmCodeCLI.UI.SafeText.value(label)]
+        _ -> []
+      end)
+    end
+
+    assert "Approve" in labels.(state)
+    assert "Decline" in labels.(state)
+
     {scene, _} = SwarmCodeCLI.UI.Projector.project(state)
     main = Enum.find(scene.regions, &(&1.role == :main))
-
-    # Find all blocks recursively
-    all_blocks = collect_blocks(main.blocks)
-
-    # Plan gate actions should be present (at least 2 decks: run actions + plan gate)
-    decks = Enum.filter(all_blocks, &is_struct(&1, Block.ActionDeck))
-    assert length(decks) >= 2, "Should have run action deck + plan gate deck"
+    refute Enum.any?(collect_blocks(main.blocks), &is_struct(&1, Block.ActionDeck))
 
     # Now test without :approve/:deny - gate should NOT appear
     run_no_gate = %{run | allowed_actions: [:send]}
-    model_no_gate = %{model | runs: %{run.id => run_no_gate}}
-    state_no_gate = %{state | read_model: model_no_gate}
-    {scene2, _} = SwarmCodeCLI.UI.Projector.project(state_no_gate)
-    main2 = Enum.find(scene2.regions, &(&1.role == :main))
-    all_blocks2 = collect_blocks(main2.blocks)
+    state_no_gate = %{state | read_model: %{model | runs: %{run.id => run_no_gate}}}
 
-    # Count total actions - should not include Approve/Decline/Revise
-    decks2 = Enum.filter(all_blocks2, &is_struct(&1, Block.ActionDeck))
-
-    all_actions =
-      Enum.flat_map(decks2, fn deck ->
-        Enum.map(deck.actions, fn
-          %Block.Text{text: text} -> SwarmCodeCLI.UI.SafeText.value(text)
-          other -> inspect(other)
-        end)
-      end)
-
-    refute Enum.any?(all_actions, &(&1 == "Approve")),
+    refute "Approve" in labels.(state_no_gate),
            "Approve should not appear without :approve permission"
 
-    refute Enum.any?(all_actions, &(&1 == "Decline")),
+    refute "Decline" in labels.(state_no_gate),
            "Decline should not appear without :deny permission"
   end
 

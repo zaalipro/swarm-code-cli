@@ -131,16 +131,17 @@ defmodule SwarmCodeCLI.UI.SlashPaletteTest do
       original = state("/sw")
       rect = %Rect{x: 2, y: 4, width: width, height: height}
       {blocks, cursor} = Composer.project(original, rect)
-      assert %Block.Composer{} = hd(blocks)
-      # +2 accounts for the 2-cell composer gutter
-      assert cursor.x == 7 and cursor.y == 4
+      # The draft is a card row: the rail and two cells, then the text.
+      assert %Block.RichText{spans: spans} = hd(blocks)
+      assert Enum.map_join(spans, &SafeText.value(&1.text)) =~ "/sw"
+      # +3 accounts for the rail and the two cells after it
+      assert cursor.x == 8 and cursor.y == 4
       assert length(blocks) <= height
 
-      for %Block.Text{text: safe} <- blocks do
-        assert Width.cells(SafeText.value(safe), :narrow) <= width
+      for %Block.RichText{spans: spans} <- blocks do
+        cells = Enum.reduce(spans, 0, &(Width.cells(SafeText.value(&1.text), :narrow) + &2))
+        assert cells <= width
       end
-
-      if height > 1, do: assert(Enum.any?(blocks, &match?(%Block.Text{}, &1)))
     end
   end
 end

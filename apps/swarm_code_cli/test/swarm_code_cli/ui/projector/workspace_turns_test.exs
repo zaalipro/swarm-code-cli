@@ -1,9 +1,10 @@
 defmodule SwarmCodeCLI.UI.Projector.WorkspaceTurnsTest do
   @moduledoc """
-  Painted-grid proof of the main transcript's shape: speaker lines with the
-  streaming caret, tool one-liners collapsed and expanded, the thinking line,
-  the error item, the run card's word-boundary title and plain-words state,
-  the "Waiting for you" line, and the narrow 100-column layout.
+  Painted-grid proof of the main transcript's shape (ux M1): the prompt on a
+  card, one header row per turn saying what it is doing, a worker per lane
+  line that expands in place, model steps that take no row until opened,
+  tool rows with their summary and duration, the answer after the work, the
+  failed run's error card, and the narrow layouts at both width policies.
   """
   use ExUnit.Case, async: true
 
@@ -76,80 +77,86 @@ defmodule SwarmCodeCLI.UI.Projector.WorkspaceTurnsTest do
   defp glyph(token, state),
     do: SwarmCodeCLI.UI.SafeText.value(SwarmCodeCLI.UI.Projector.Support.glyph(token, state))
 
-  test "a streaming turn paints its speaker line with the agent's step and the caret" do
-    {rows, _, _, _} = fixture(:swarm, {100, 30}) |> painted()
-    at = index_of(rows, "  lead")
+  test "the prompt is a card with its time, then the turn's one header row" do
+    state = fixture(:swarm, {100, 30})
+    {rows, _, _, _} = painted(state)
+    you = state.read_model.transcript["001"]
 
-    # Text starts at column 2: no gutter, the name at cell 2, the prose under it.
-    assert Enum.at(rows, at) == "  lead · planning ▮"
-    assert Enum.at(rows, at - 1) == ""
+    prompt = Enum.at(rows, 0)
 
     assert String.starts_with?(
-             Enum.at(rows, at + 1),
-             "  Five numbered lanes share a bounded view."
+             prompt,
+             "  ▐ Review this synthetic project and explain the next step."
            )
 
-    # The finished turns carry the local time of `at` instead of a step.
-    you = fixture(:swarm, {100, 30}).read_model.transcript["001"]
-    assert Enum.at(rows, index_of(rows, "  you")) == "  you · " <> Turns.clock(you.at)
-    refute Enum.at(rows, index_of(rows, "  you")) =~ "▮"
+    assert String.ends_with?(prompt, Turns.clock(you.at))
+
+    assert Enum.at(rows, 1) == ""
+
+    header = Enum.at(rows, 2)
+    assert String.starts_with?(header, "  ⋔ lead  kimi-k2-thinking")
+    assert String.ends_with?(header, "writing ▮  23k tok")
   end
 
-  test "tool calls collapse to one-liners in a burst, two cells under the speaker lines" do
+  test "workers collapse to one lane line each, and a failure shows on its lane" do
     {rows, _, _, _} = fixture(:swarm, {100, 30}) |> painted()
-    at = index_of(rows, "    ▸ scout-1")
+    at = index_of(rows, "    ✦ scout-1")
 
     assert Enum.slice(rows, at, 4) == [
-             "    ▸ scout-1  grep \"Repo\\.\"  lib/ test/ · 41 hits  0.4s ✓",
-             "    ▸ scout-2  read test/session_test.exs  218 lines  0.1s ✓",
-             "    ▸ lead  thinking",
-             "    ▸ builder-4  edit lib/swarm_code/repo.ex  +42 −7 ▮"
+             "    ✦ scout-1  ▮ 1 tool",
+             "    ✦ scout-2  ▮ 1 tool",
+             "    ✦ builder-4  ▮ 1 tool  run_command failed: mix test exited with status 1 (2 failures).",
+             "    ⬡ judge  needs answer"
            ]
 
-    # One blank row on either side of the burst and none inside it.
-    assert Enum.at(rows, at - 1) == ""
+    # The lead's words follow its workers, after one blank row.
     assert Enum.at(rows, at + 4) == ""
+
+    assert String.starts_with?(
+             Enum.at(rows, at + 5),
+             "    Five numbered lanes share a bounded view."
+           )
+
     assert Enum.all?(rows, &(String.length(&1) <= 100))
   end
 
-  test "an expanded tool shows the first five result lines and counts the rest" do
+  test "an expanded lane shows its calls, the first five result lines and counts the rest" do
     state =
       fixture(:swarm, {100, 30})
       |> replace_item("005", &%{&1 | text: lines(8)})
       |> Map.put(:expansions, MapSet.new(["005"]))
 
     {rows, _, _, _} = painted(state)
-    at = index_of(rows, "    ▾ scout-1")
+    at = index_of(rows, "    ✦ scout-1")
 
-    assert Enum.slice(rows, at, 7) == [
-             "    ▾ scout-1  grep \"Repo\\.\"  lib/ test/ · 41 hits  0.4s ✓",
-             "      result line 1",
-             "      result line 2",
-             "      result line 3",
-             "      result line 4",
-             "      result line 5",
-             "      … 3 more  (Enter opens)"
+    assert Enum.at(rows, at + 1) =~ ~r/^      ✓ grep  "Repo\\\."\s+lib\/ test\/ · 41 hits  0\.4s$/
+
+    assert Enum.slice(rows, at + 2, 6) == [
+             "        result line 1",
+             "        result line 2",
+             "        result line 3",
+             "        result line 4",
+             "        result line 5",
+             "        … 3 more  (Enter opens)"
            ]
 
-    # Collapsing again through the same expansion set restores the one-liner.
+    # Collapsing again through the same expansion set restores the lane line.
     {collapsed, _, _, _} = painted(%{state | expansions: MapSet.new()})
-    assert index_of(collapsed, "    ▸ scout-1")
+    assert index_of(collapsed, "    ✦ scout-1")
     refute Enum.any?(collapsed, &(&1 =~ "result line"))
   end
 
-  test "a thinking item is one dim line with its duration and expands to the thought" do
+  test "a model step takes no row until it is opened, then says it thought and for how long" do
     tool = %DTO.ToolCall{name: "llm", title: "thinking", status: :done, duration_ms: 12_000}
-
-    state =
-      fixture(:swarm, {100, 30})
-      |> replace_item("007", &%{&1 | tool: tool})
+    state = fixture(:swarm, {100, 30}) |> replace_item("007", &%{&1 | tool: tool})
 
     {rows, _, _, _} = painted(state)
-    assert Enum.at(rows, index_of(rows, "    ▸ lead")) == "    ▸ lead  thinking · 12s"
+    refute Enum.any?(rows, &(&1 =~ "thought"))
+    refute Enum.any?(rows, &(&1 =~ "The refresh path"))
 
     {rows, scene, _, _} = painted(%{state | expansions: MapSet.new(["007"])})
-    at = index_of(rows, "    ▾ lead")
-    assert Enum.at(rows, at) == "    ▾ lead  thinking · 12s"
+    at = index_of(rows, "    " <> glyph(:expanded, state) <> " thought")
+    assert Enum.at(rows, at) == "    ▾ thought · 12s"
 
     assert String.starts_with?(
              Enum.at(rows, at + 1),
@@ -157,88 +164,55 @@ defmodule SwarmCodeCLI.UI.Projector.WorkspaceTurnsTest do
            )
 
     # The line is faint: the theme's text_faint colour, no prefix cue.
-    list = scene.regions |> Enum.find(&(&1.role == :main)) |> Map.fetch!(:blocks)
-    list = Enum.find(list, &is_struct(&1, Block.VirtualList))
     faint = Theme.style(:text_faint, state.capabilities).foreground
-
-    thinking =
-      Enum.find(list.items, fn block ->
-        Enum.any?(block.spans, &(SwarmCodeCLI.UI.SafeText.value(&1.text) =~ "thinking"))
-      end)
-
-    span = Enum.find(thinking.spans, &(SwarmCodeCLI.UI.SafeText.value(&1.text) =~ "thinking"))
+    span = find_span(scene, "thought")
     assert span.style.foreground == faint
     assert span.style.prefix == nil
   end
 
-  test "an error item paints in the error role with its message" do
+  test "a failed run ends in an error card that says what to do next" do
     state = fixture(:swarm, {100, 30})
-    error = state.read_model.transcript["009"]
+    run = state.read_model.runs["fixture-run"]
+    run = %{run | state: :failed, error: "mix test failed", finished_at: run.started_at + 134_000}
+    state = put_in(state.read_model.runs["fixture-run"], run)
     {rows, scene, _, _} = painted(state)
-    at = index_of(rows, "  ✕ builder-4")
 
-    assert Enum.at(rows, at) == "  ✕ builder-4 · " <> Turns.clock(error.at)
-
-    assert Enum.at(rows, at + 1) ==
-             "  run_command failed: mix test exited with status 1 (2 failures)."
-
+    at = index_of(rows, "    ✕ Failed")
+    assert Enum.at(rows, at) == "    ✕ Failed · mix test failed"
+    assert Enum.at(rows, at + 1) == "      retry from the palette · /model to switch model"
     assert Enum.at(rows, at - 1) == ""
 
-    list = scene.regions |> Enum.find(&(&1.role == :main)) |> Map.fetch!(:blocks)
-    list = Enum.find(list, &is_struct(&1, Block.VirtualList))
     red = Theme.style(:error, state.capabilities).foreground
+    span = find_span(scene, "Failed · mix test failed")
+    assert span.style.foreground == red
+    assert span.style.prefix == nil
 
-    block =
-      Enum.find(list.items, fn block ->
-        Enum.any?(block.spans, &(SwarmCodeCLI.UI.SafeText.value(&1.text) =~ "run_command"))
-      end)
-
-    # The name and the message are red; only the time between them is faint.
-    for needle <- ["builder-4", "run_command failed"] do
-      span = Enum.find(block.spans, &(SwarmCodeCLI.UI.SafeText.value(&1.text) =~ needle))
-      assert span.style.foreground == red
-      assert span.style.prefix == nil
-    end
+    # With no reason from the daemon the card does not invent one.
+    {rows, _, _, _} = painted(put_in(state.read_model.runs["fixture-run"].error, nil))
+    assert Enum.any?(rows, &(&1 == "    ✕ Failed"))
   end
 
-  test "the run headline cuts a long title on a word boundary and says its state in plain words" do
-    title =
-      "Read only application analysis of the authentication, session and billing layers " <>
-        "for the quarterly architecture review"
-
+  test "the header says what the turn came to in plain words" do
     state = fixture(:swarm, {100, 30})
-    state = put_in(state.read_model.runs["fixture-run"].title, title)
-    {rows, _, _, _} = painted(state)
 
-    row = Enum.find(rows, &String.contains?(&1, "running · 5 agents"))
-    assert row, "no headline row"
-    [_, shown] = Regex.run(~r/^\S (.*?) {2,}running · 5 agents\s*$/u, row)
-    assert String.ends_with?(shown, "…")
-    kept = String.trim_trailing(shown, "…")
-    assert String.starts_with?(title, kept)
-    assert String.at(title, String.length(kept)) == " "
-    refute String.ends_with?(kept, " ")
-
-    # The state follows the title on the same row, in plain words.
     for {run_state, words} <- [
-          {:stopped, "stopped by you"},
+          {:stopped, "stopped  2m 14s · 23k tok"},
           {:waiting_question, "waiting for you"},
           {:waiting_approval, "waiting for you"},
-          {:done, "done · 02:14"}
+          {:done, "2m 14s · 23k tok"},
+          {:failed, "failed  2m 14s · 23k tok"}
         ] do
       run = state.read_model.runs["fixture-run"]
-      run = %{run | state: run_state, finished_at: run.started_at + 134_000, agents_total: 3}
+      run = %{run | state: run_state, finished_at: run.started_at + 134_000}
       {rows, _, _, _} = painted(put_in(state.read_model.runs["fixture-run"], run))
-      assert Enum.any?(rows, &String.contains?(&1, "  " <> words)), "#{run_state} lacks #{words}"
+      header = Enum.find(rows, &String.starts_with?(&1, "  ⋔ lead"))
+      assert String.ends_with?(header, "  " <> words), "#{run_state}: #{header}"
     end
 
-    short = put_in(state.read_model.runs["fixture-run"].title, "Short title")
-    {rows, _, _, _} = painted(short)
-    assert Enum.any?(rows, &(&1 =~ ~r/^\S Short title {2,}running · 5 agents\s*$/u))
-    refute Enum.any?(rows, &String.contains?(&1, "STREAMING"))
+    refute Enum.any?(elem(painted(state), 0), &String.contains?(&1, "STREAMING"))
   end
 
-  test "full-text actions are labelled by what they open, one per kind" do
+  test "full-text actions stay on the keyboard, labelled by what they open" do
     ref = %DTO.DetailRef{id: "detail", total_bytes: 40_000}
 
     state =
@@ -247,25 +221,15 @@ defmodule SwarmCodeCLI.UI.Projector.WorkspaceTurnsTest do
       |> replace_item("002", &%{&1 | detail_ref: ref})
 
     {rows, _, table, _} = painted(state)
-    deck = Enum.find(rows, &(&1 =~ "Full "))
-    assert deck =~ "Full reply"
-    refute deck =~ "Full text"
-    refute deck =~ "Full prompt"
-    assert length(String.split(deck, "Full ")) - 1 == 1
+    refute Enum.any?(rows, &(&1 =~ "Full "))
     assert {:local, {:open_detail, "fixture-run", "detail"}} in Map.values(table)
-
-    # With only the prompt carrying a detail, the one action says so.
-    prompt_only = replace_item(state, "002", &%{&1 | detail_ref: nil})
-    {rows, _, _, _} = painted(prompt_only)
-    assert Enum.any?(rows, &(&1 =~ "Full prompt"))
-    refute Enum.any?(rows, &(&1 =~ "Full reply"))
   end
 
-  test "waiting for you is counted in plain words above the composer facts, or absent" do
+  test "what waits on you is counted on the status row, never above the transcript" do
     state = fixture(:chat, {100, 30})
-    {rows, _, _, _} = painted(state)
-    refute Enum.any?(rows, &(&1 =~ "NEEDS"))
+    {rows, _, _, plan} = painted(state)
     refute Enum.any?(rows, &(&1 =~ "Waiting for you"))
+    refute row(plan, 29, 0, 100) =~ "waiting"
 
     pending = %DTO.PendingInteraction{
       id: "pending",
@@ -275,9 +239,9 @@ defmodule SwarmCodeCLI.UI.Projector.WorkspaceTurnsTest do
       allowed_actions: []
     }
 
-    {rows, _, _, _} = painted(put_in(state.read_model.interactions[pending.id], pending))
-    assert hd(rows) == "Waiting for you · 1"
-    refute Enum.any?(rows, &(&1 =~ "NEEDS 1"))
+    {rows, _, _, plan} = painted(put_in(state.read_model.interactions[pending.id], pending))
+    refute Enum.any?(rows, &(&1 =~ "Waiting for you"))
+    assert row(plan, 29, 0, 100) =~ "1 waiting"
   end
 
   test "the narrow 100-column layout keeps every row inside the rect at both width policies" do
@@ -286,9 +250,9 @@ defmodule SwarmCodeCLI.UI.Projector.WorkspaceTurnsTest do
       main = Enum.find(scene.regions, &(&1.role == :main))
       assert main.rect.width == 100
       assert Enum.all?(rows, &(SwarmCodeCLI.UI.Width.cells(&1, policy) <= 100))
-      assert index_of(rows, "  you · ")
-      assert index_of(rows, "    ▸ scout-1  grep")
-      assert index_of(rows, "  lead · planning")
+      assert Enum.any?(rows, &(&1 =~ "Review this synthetic project"))
+      assert index_of(rows, "    ✦ scout-1")
+      assert index_of(rows, "  ⋔ lead")
     end
   end
 
@@ -296,44 +260,44 @@ defmodule SwarmCodeCLI.UI.Projector.WorkspaceTurnsTest do
     {scene, _, plan} = fixture(:swarm, {170, 40}) |> paint()
     main = Enum.find(scene.regions, &(&1.role == :main))
     rows = main_rows(plan, scene)
-    at = index_of(rows, "  lead · planning")
-    assert String.slice(Enum.at(rows, at), 0, 2) == "  "
-    assert row(plan, main.rect.y + at, main.rect.x + 2, 4) == "lead"
+    at = index_of(rows, "  ⋔ lead")
+    assert row(plan, main.rect.y + at, main.rect.x, 2) == "  "
+    assert row(plan, main.rect.y + at, main.rect.x + 4, 4) == "lead"
   end
 
   test "scroll metrics count exactly the rows the transcript paints" do
     state = fixture(:swarm, {100, 40})
-    {scene, _, _} = paint(state)
-    main = Enum.find(scene.regions, &(&1.role == :main))
-    list = Enum.find(main.blocks, &is_struct(&1, Block.VirtualList))
-    ids = state.read_model.order.workspace
-    assert list.total_count == length(ids)
 
-    metric = ids |> Enum.map(&ScrollMetrics.height(state, :main, &1)) |> Enum.sum()
-    assert Metrics.height(list, main.rect.width) == {:ok, metric}
+    expanded =
+      %{state | expansions: MapSet.new(["005", "007"])}
+      |> replace_item("005", &%{&1 | text: lines(8)})
 
-    # An expansion changes both sides by the same rows.
-    expanded = %{state | expansions: MapSet.new(["005"])}
-    expanded = replace_item(expanded, "005", &%{&1 | text: lines(8)})
-    {scene, _, _} = paint(expanded)
-    main = Enum.find(scene.regions, &(&1.role == :main))
-    list = Enum.find(main.blocks, &is_struct(&1, Block.VirtualList))
+    for state <- [state, expanded] do
+      {scene, _, _} = paint(state)
+      main = Enum.find(scene.regions, &(&1.role == :main))
+      list = Enum.find(main.blocks, &is_struct(&1, Block.VirtualList))
+      ids = state.read_model.order.workspace
+      assert list.total_count == length(ids)
 
+      metric = ids |> Enum.map(&ScrollMetrics.height(state, :main, &1)) |> Enum.sum()
+      assert Metrics.height(list, main.rect.width) == {:ok, metric}
+    end
+
+    # An expansion grows the lane it opens, and nothing else.
     assert ScrollMetrics.height(expanded, :main, "005") ==
-             ScrollMetrics.height(state, :main, "005") + 6
+             ScrollMetrics.height(state, :main, "005") + 7
 
-    assert Metrics.height(list, main.rect.width) == {:ok, metric + 6}
+    assert ScrollMetrics.height(expanded, :main, "006") ==
+             ScrollMetrics.height(state, :main, "006")
   end
 
   test "ASCII terminals get the one-cell twins of every transcript glyph" do
     {rows, _, _, _} = fixture(:swarm, {100, 30}, ascii: true) |> painted()
-    assert Enum.at(rows, index_of(rows, "  lead")) == "  lead · planning |"
-
-    assert Enum.at(rows, index_of(rows, "    > scout-1")) ==
-             "    > scout-1  grep \"Repo\\.\"  lib/ test/ · 41 hits  0.4s +"
-
-    assert index_of(rows, "  x builder-4 · ")
-    assert Enum.at(rows, index_of(rows, "    > builder-4")) =~ "+42 −7 |"
+    assert String.starts_with?(Enum.at(rows, 0), "  # Review this synthetic project")
+    header = Enum.find(rows, &String.starts_with?(&1, "  S lead"))
+    assert String.ends_with?(header, "writing |  23k tok")
+    assert index_of(rows, "    + scout-1  | 1 tool")
+    assert index_of(rows, "    o judge  needs answer")
 
     expanded =
       fixture(:swarm, {100, 30}, ascii: true)
@@ -341,8 +305,11 @@ defmodule SwarmCodeCLI.UI.Projector.WorkspaceTurnsTest do
       |> Map.put(:expansions, MapSet.new(["005"]))
 
     {rows, _, _, _} = painted(expanded)
-    assert index_of(rows, "    v scout-1")
-    assert Enum.any?(rows, &(&1 == "      ... 3 more  (Enter opens)"))
+    assert Enum.any?(rows, &(&1 == "        ... 3 more  (Enter opens)"))
+
+    for row <- rows, glyph <- ["▐", "✦", "▮", "✓", "⋔"] do
+      refute row =~ glyph, "#{glyph} in ASCII row #{row}"
+    end
   end
 
   test "a run reads as prompt, work, then words, whatever order the daemon created them in" do
@@ -357,7 +324,10 @@ defmodule SwarmCodeCLI.UI.Projector.WorkspaceTurnsTest do
       )
     end
 
-    # A chat turn creates the answer before the agent and its calls.
+    grep = %DTO.ToolCall{name: "grep", title: "grep Repo", detail: "3 hits", status: :done}
+
+    # A chat turn creates the answer before the model steps and calls, and
+    # each step's text is what that step said: the start of the answer.
     items = [
       item.("m-user", role: :user, kind: :text, created_sequence: 1, text: "the prompt"),
       item.("m-answer",
@@ -365,34 +335,34 @@ defmodule SwarmCodeCLI.UI.Projector.WorkspaceTurnsTest do
         kind: :text,
         created_sequence: 2,
         state: :streaming,
-        text: "the answer"
+        text: "Let me look.\n\nthe answer"
       ),
-      item.(root, node_id: root, role: :assistant, kind: :text, created_sequence: 3, text: ""),
-      item.("op-think", role: :tool, kind: :thinking, created_sequence: 4),
-      item.("op-grep", role: :tool, kind: :tool, created_sequence: 5)
+      item.("op-think", role: :tool, kind: :thinking, created_sequence: 3, text: "Let me look."),
+      item.("op-grep", role: :tool, kind: :tool, created_sequence: 4, tool: grep)
     ]
 
     state = put_in(state.read_model.transcript, Map.new(items, &{&1.id, &1}))
     state = put_in(state.read_model.order[:workspace], Enum.map(items, & &1.id))
 
-    assert Turns.order(state) == ["m-user", root, "op-think", "op-grep", "m-answer"]
+    # The order is the daemon's; the rows put the words where they were said.
+    assert Turns.order(state) == ["m-user", "m-answer", "op-think", "op-grep"]
 
     # A second run keeps its place after the first, whatever its items rank.
-    later = item.("m-later", run_id: "run-later", role: :user, kind: :text, created_sequence: 9)
-    state = put_in(state.read_model.transcript["m-later"], later)
-    state = put_in(state.read_model.order[:workspace], Enum.map(items, & &1.id) ++ ["m-later"])
-    assert List.last(Turns.order(state)) == "m-later"
+    later = item.("m-later", run_id: "run-later", role: :user, kind: :text, created_sequence: 0)
+    ordered = put_in(state.read_model.transcript["m-later"], later)
+    ordered = put_in(ordered.read_model.order[:workspace], ["m-later" | Enum.map(items, & &1.id)])
+    assert hd(Turns.order(ordered)) == "m-later"
 
     {rows, _, _, _} = painted(state)
-    prompt = index_of(rows, "  you")
-    work = Enum.find_index(rows, &String.starts_with?(&1, "    " <> glyph(:collapsed, state)))
-    # The answer's body ("t") paints after the calls; the lead's own line,
-    # empty as it is, opens the work above them.
-    words = Enum.find_index(rows, &(&1 == "  the answer"))
-    assert prompt && work && words, "rows: " <> inspect(Enum.take(rows, 14))
+    prompt = index_of(rows, "  ▐ the prompt")
+    step = index_of(rows, "    Let me look.")
+    work = index_of(rows, "    ✓ grep")
+    words = index_of(rows, "    the answer")
+    assert prompt && step && work && words, "rows: " <> inspect(Enum.take(rows, 14))
+    assert prompt < step and step < work and work < words, inspect(Enum.take(rows, 14))
 
-    assert prompt < work and work < words,
-           inspect({prompt, work, words}) <> " rows: " <> inspect(Enum.take(rows, 16))
+    # Nothing is said twice.
+    assert Enum.count(rows, &(&1 =~ "Let me look.")) == 1
   end
 
   test "durations and byte counts read as people write them" do
@@ -401,6 +371,9 @@ defmodule SwarmCodeCLI.UI.Projector.WorkspaceTurnsTest do
     assert Turns.duration_text(12_000) == "12s"
     assert Turns.duration_text(62_000) == "1m 02s"
     assert Turns.duration_text(3_720_000) == "1h 02m"
+    assert Turns.compact(940) == "940"
+    assert Turns.compact(19_400) == "19k"
+    assert Turns.compact(1_200_000) == "1.2M"
 
     # A tool with no detail falls back to the size of its result.
     tool = %DTO.ToolCall{
@@ -411,12 +384,22 @@ defmodule SwarmCodeCLI.UI.Projector.WorkspaceTurnsTest do
       duration_ms: 400
     }
 
-    state = fixture(:swarm, {100, 30}) |> replace_item("005", &%{&1 | tool: tool})
+    state =
+      fixture(:swarm, {100, 30})
+      |> replace_item("005", &%{&1 | tool: tool, agent_id: "agent-1"})
+
     {rows, _, _, _} = painted(state)
-
-    assert Enum.at(rows, index_of(rows, "    ▸ scout-1")) ==
-             "    ▸ scout-1  read big.log  2.1 kB  0.4s ✓"
-
+    row = Enum.at(rows, index_of(rows, "    ✓ read"))
+    assert row =~ ~r/^    ✓ read  big\.log\s+2\.1 kB  0\.4s$/
     assert @clock_ms > 0
+  end
+
+  defp find_span(scene, needle) do
+    list = scene.regions |> Enum.find(&(&1.role == :main)) |> Map.fetch!(:blocks)
+    list = Enum.find(list, &is_struct(&1, Block.VirtualList))
+
+    list.items
+    |> Enum.flat_map(& &1.spans)
+    |> Enum.find(&(SwarmCodeCLI.UI.SafeText.value(&1.text) =~ needle))
   end
 end

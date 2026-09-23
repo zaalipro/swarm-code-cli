@@ -16,7 +16,8 @@ defmodule SwarmCodeCLI.Demo.CellsTest do
 
     assert Path.dirname(directory) == Path.join(@repo, "_build/cell-previews")
     assert files == Enum.sort(files)
-    assert length(files) == 23
+    assert length(files) == Cells.file_count()
+    assert length(files) == 23 + 8 * 4 + 2
     assert "index.html" in files
     assert Enum.sort(File.ls!(directory)) == files
 
@@ -50,9 +51,23 @@ defmodule SwarmCodeCLI.Demo.CellsTest do
       assert name in files
     end
 
-    # One <text> per cell, so look for the waiting card's amber "?" rather than a phrase.
+    # One <text> per cell, so look for the waiting card's amber "!" rather than a phrase.
     approval = File.read!(Path.join(directory, "approval-170x42-truecolor-rich.svg"))
-    assert approval =~ ~r/fill="#f5b400"[^>]*>\?<\/text>/
+    assert approval =~ ~r/fill="#f5b400"[^>]*>!<\/text>/
+
+    # pass70 D8: every conversation scene at the four golden sizes.
+    for scene <- SwarmCodeCLI.Demo.Conversation.scenes(),
+        {columns, rows} <- [{160, 45}, {120, 36}, {90, 30}, {80, 24}] do
+      name = "conversation-#{String.replace(Atom.to_string(scene), "_", "-")}"
+      filename = "#{name}-#{columns}x#{rows}-truecolor.svg"
+      assert filename in files
+      assert_svg(Path.join(directory, filename), columns, rows)
+    end
+
+    for name <-
+          ~w(conversation-palette-120x36-truecolor.svg conversation-model-picker-120x36-truecolor.svg) do
+      assert name in files
+    end
 
     html = File.read!(Path.join(directory, "index.html"))
     assert html =~ "FAKE DEMO"
@@ -96,9 +111,10 @@ defmodule SwarmCodeCLI.Demo.CellsTest do
 
   test "real child-project command exports files and rejects arguments and umbrella invocation" do
     {output, 0} = System.cmd("mix", ["swarm_code.demo.cells"], cd: @child, stderr_to_stdout: true)
-    [_, directory] = Regex.run(~r/Cell previews: (.+) \(23 files\)/, output)
+    count = Cells.file_count()
+    [_, directory] = Regex.run(~r/Cell previews: (.+) \(#{count} files\)/, output)
     on_exit(fn -> File.rm_rf!(directory) end)
-    assert length(File.ls!(directory)) == 23
+    assert length(File.ls!(directory)) == count
     assert_svg(Path.join(directory, "chat-80x24-truecolor.svg"), 80, 24)
 
     {unknown, status} =

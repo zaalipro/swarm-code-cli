@@ -40,9 +40,9 @@ defmodule SwarmCodeCLI.UI.Projector.W5GaugeIntegrationTest do
   defp texts(_), do: []
 
   describe "the run headline" do
-    # The main pane no longer carries a run card with a gauge: the run's state
-    # is one row of plain words under the tabs, and progress lives on the tab
-    # row and in the hive's lanes. Nothing in main invents a percentage.
+    # The main pane no longer carries a run card with a gauge: the turn's
+    # header says what it is doing in plain words, and progress lives on the
+    # tab row and in the hive's lanes. Nothing in main invents a percentage.
     test "a running run shows its state in words, not a gauge in main" do
       state = fixture(:chat, %Size{columns: 150, rows: 30})
       run = hd(Map.values(state.read_model.runs))
@@ -55,7 +55,7 @@ defmodule SwarmCodeCLI.UI.Projector.W5GaugeIntegrationTest do
       assert find_blocks(main, &match?(%Block.Gauge{}, &1)) == []
       assert find_blocks(main, &match?(%Block.Progress{}, &1)) == []
       assert find_blocks(main, &match?(%Block.RunCard{}, &1)) == []
-      assert Enum.join(texts(main), " ") =~ "running"
+      assert Enum.join(texts(main), " ") =~ ~r/writing|thinking|running/
     end
 
     test "an unknown progress invents no percentage" do
@@ -77,7 +77,7 @@ defmodule SwarmCodeCLI.UI.Projector.W5GaugeIntegrationTest do
       state = fixture(:chat, %Size{columns: 150, rows: 30}, ascii?: false)
       title = paint_row_0(state)
 
-      assert title =~ "⬢ SWARMCODE  "
+      assert String.starts_with?(title, " ⬢ FAKE DEMO — NO USER DATA")
     end
 
     test "painted title row degrades the logo mark to its ASCII twin in ASCII mode" do
@@ -85,7 +85,7 @@ defmodule SwarmCodeCLI.UI.Projector.W5GaugeIntegrationTest do
       title = paint_row_0(state)
 
       refute title =~ "⬢", "Unicode logo must not survive into ASCII mode"
-      assert title =~ "# SWARMCODE  "
+      assert String.starts_with?(title, " # FAKE DEMO — NO USER DATA")
     end
 
     test "title region spans still carry the logo mark in the accent-bold wordmark style" do
@@ -98,7 +98,7 @@ defmodule SwarmCodeCLI.UI.Projector.W5GaugeIntegrationTest do
       assert rendered =~ "⬢"
 
       %Block.RichText{spans: [logo_span | _]} = hd(title_region.blocks)
-      assert SafeText.value(logo_span.text) == "⬢"
+      assert String.trim(SafeText.value(logo_span.text)) == "⬢"
       assert :bold in logo_span.style.modifiers
     end
   end
@@ -129,7 +129,7 @@ defmodule SwarmCodeCLI.UI.Projector.W5GaugeIntegrationTest do
       {scene, _} = Projector.project(state)
 
       refute Enum.any?(scene.regions, &(&1.role == :navigator))
-      tabline = Enum.find(scene.regions, &(&1.role == :tabline))
+      tabline = Enum.find(scene.regions, &(&1.role == :title))
       assert tabline
 
       dot = SafeText.value(SafeText.chrome(:dot))

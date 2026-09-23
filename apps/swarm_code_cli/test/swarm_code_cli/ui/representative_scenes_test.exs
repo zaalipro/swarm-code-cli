@@ -15,7 +15,7 @@ defmodule SwarmCodeCLI.UI.RepresentativeScenesTest do
           chat: ["The workspace is ready", "synthetic changes"],
           swarm: ["Five numbered lanes", "⚖ judge", "waiting for you"],
           consensus: ["Consensus", "Docket 01", "Ledger:"],
-          research: ["Research report", "Synthetic source", "Fixture notes"]
+          research: ["Static research report", "Synthetic source", "Fixture notes"]
         ] do
       state = Fixtures.representative(kind, %Size{columns: 170, rows: 34}, struct(Capabilities))
       {scene, _} = Projector.project(state)
@@ -35,21 +35,26 @@ defmodule SwarmCodeCLI.UI.RepresentativeScenesTest do
 
       for text <- evidence, do: assert(pixels =~ text)
 
-      # Editorial turn labels (decision 15): chat has few enough items for all to be visible
-      if kind == :chat do
-        assert pixels =~ "you · "
-        assert pixels =~ "assistant · "
-      end
+      # The prompt is a card and the turn has one header row (ux M3); the turn
+      # is spoken by the run's agent when the hive names one (the swarm lead),
+      # and by "assistant" otherwise.
+      assert pixels =~ "Review this synthetic project"
+      refute pixels =~ "you · "
 
-      # The assistant turn is spoken by the run's agent when the hive names one
-      # (the swarm lead), and by "assistant" otherwise.
-      assert pixels =~ if(kind == :swarm, do: "lead · ", else: "assistant · ")
+      speaker =
+        case kind do
+          :swarm -> "lead  "
+          :chat -> "assistant  "
+          other -> Atom.to_string(other) <> "  "
+        end
+
+      assert pixels =~ speaker
 
       main = Enum.find(scene.regions, &(&1.role == :main))
       assert Enum.count(main.blocks, &is_struct(&1, Block.RunCard)) == 0
 
       if kind in [:consensus, :research] do
-        heading = if kind == :consensus, do: "Consensus", else: "Research report"
+        heading = Atom.to_string(kind)
 
         assert Enum.any?(blocks(main), fn
                  %Scene.Span{text: text, style: style} ->

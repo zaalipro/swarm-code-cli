@@ -14,7 +14,13 @@ defmodule SwarmCodeCLI.UI.Paint.Budget do
     Color
   }
 
-  @max_nodes 4096
+  # The node ceiling grows with the terminal: a scene is a few styled spans per
+  # visible cell, so a fixed ceiling that fits 160x45 is exceeded by the same
+  # conversation at 250x70 (rel F3). `@base_nodes` covers the fixed chrome and
+  # `@nodes_per_cell` the worst row the projectors emit (one span per cell, a
+  # dialog over the background), so an admitted size can always be drawn.
+  @base_nodes 4096
+  @nodes_per_cell 12
   @max_bytes 4_194_304
   @max_depth 32
   @max_structural_depth 128
@@ -31,7 +37,7 @@ defmodule SwarmCodeCLI.UI.Paint.Budget do
 
   def limits,
     do: %{
-      nodes: @max_nodes,
+      nodes: @base_nodes,
       bytes: @max_bytes,
       depth: @max_depth,
       regions: @max_regions,
@@ -49,20 +55,29 @@ defmodule SwarmCodeCLI.UI.Paint.Budget do
     _ -> {:error, :invalid_scene}
   end
 
+  @doc "The structural node ceiling for a scene of `columns` x `rows` cells."
+  def node_limit(columns, rows)
+      when is_integer(columns) and columns >= 0 and is_integer(rows) and rows >= 0,
+      do: @base_nodes + @nodes_per_cell * min(columns * rows, 100_000)
+
+  def node_limit(_, _), do: @base_nodes
+
   @doc false
-  def check_display_list(items) when is_list(items) do
-    case walk(items, 0, 0, %{nodes: 0, bytes: 0, actions: 0}) do
+  def check_display_list(items, cells \\ {0, 0})
+
+  def check_display_list(items, {columns, rows}) when is_list(items) do
+    case walk(items, 0, 0, counter(node_limit(columns, rows))) do
       {:ok, _} -> :ok
       error -> error
     end
   end
 
-  def check_display_list(_), do: {:error, :invalid_scene}
+  def check_display_list(_, _), do: {:error, :invalid_scene}
 
   def check(%Scene{size: size, regions: regions} = scene) do
     with :ok <- size(size),
          :ok <- list_limit(regions, @max_regions),
-         {:ok, _} <- walk(scene, 0, 0, %{nodes: 0, bytes: 0, actions: 0}) do
+         {:ok, _} <- walk(scene, 0, 0, counter(node_limit(size.columns, size.rows))) do
       :ok
     end
   end
@@ -171,7 +186,9 @@ defmodule SwarmCodeCLI.UI.Paint.Budget do
 
   defp walk_list(_, _, _, _), do: {:error, :invalid_scene}
 
-  defp count_node(%{nodes: count}) when count >= @max_nodes, do: {:error, :capacity_exceeded}
+  defp counter(max), do: %{nodes: 0, bytes: 0, actions: 0, max: max}
+
+  defp count_node(%{nodes: count, max: max}) when count >= max, do: {:error, :capacity_exceeded}
   defp count_node(count), do: {:ok, %{count | nodes: count.nodes + 1}}
 
   defp action(:action_id, value, %{actions: actions} = count) when is_binary(value) do

@@ -66,7 +66,7 @@ defmodule SwarmCodeCLI.UI.Projector.RunsDashboard do
     %Dialog{
       id: "runs_dashboard",
       rect: rect,
-      title: Density.safe("ALL RUNS", state, max(0, rect.width - 4)),
+      title: Density.safe("All runs", state, max(0, rect.width - 4)),
       blocks: blocks(state, body_width(rect), window),
       footer: footer(state, body_width(rect)),
       focused_control_id: focused_run_id(state),
@@ -274,24 +274,26 @@ defmodule SwarmCodeCLI.UI.Projector.RunsDashboard do
   defp kind_order(:ultra), do: 6
   defp kind_order(_), do: 99
 
-  defp kind_label(:assistant), do: "ASSISTANT"
-  defp kind_label(:goal), do: "GOALS"
-  defp kind_label(:swarm), do: "SWARMS"
-  defp kind_label(:workflow), do: "WORKFLOWS"
-  defp kind_label(:research), do: "DEEP RESEARCH"
-  defp kind_label(:consensus_judge), do: "CONSENSUS"
-  defp kind_label(:ultra), do: "ULTRA"
-  defp kind_label(_), do: "OTHER"
+  defp kind_label(:assistant), do: "Assistant"
+  defp kind_label(:goal), do: "Goals"
+  defp kind_label(:swarm), do: "Swarms"
+  defp kind_label(:workflow), do: "Workflows"
+  defp kind_label(:research), do: "Deep research"
+  defp kind_label(:consensus_judge), do: "Consensus"
+  defp kind_label(:ultra), do: "Ultra"
+  defp kind_label(_), do: "Other"
 
   # Every measurement here is in terminal cells under the state's own
   # ambiguous-width policy. `Density.safe/4` treats its number as a cell budget,
   # so a character count would elide "3 runs · 1 live" mid-word under :wide,
   # where U+00B7 MIDDLE DOT is two cells wide.
   defp render_header(state, width, entries) do
-    live = Enum.count(entries, &(&1.state in [:running, :streaming]))
-    summary = "#{length(entries)} runs · #{live} live"
+    # A run waiting on you, paused or queued is still live (ux: "3 runs · 0 live"
+    # while a swarm waited on an approval).
+    live = Enum.count(entries, &Words.live?(&1.state))
+    summary = Words.count(length(entries), "run", "runs") <> " · #{live} live"
 
-    # Two cells of margin either side, "ALL RUNS" and the two cells after it.
+    # Two cells of margin either side, "All runs" and the two cells after it.
     spare = max(0, width - 14)
     summary_width = min(cells(summary, state), spare)
 
@@ -309,7 +311,7 @@ defmodule SwarmCodeCLI.UI.Projector.RunsDashboard do
     %Block.RichText{
       spans: [
         %Span{text: Density.safe("  ", state, 2), style: plain_style},
-        %Span{text: Density.safe("ALL RUNS", state, 8), style: title_style},
+        %Span{text: Density.safe("All runs", state, 8), style: title_style},
         %Span{text: Density.safe("  ", state, 2), style: plain_style},
         %Span{text: Density.safe(summary, state, summary_width), style: faint},
         %Span{

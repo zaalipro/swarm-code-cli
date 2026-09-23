@@ -2,12 +2,14 @@ defmodule SwarmCodeCLI.UI.Projector.Inspector.Changes do
   @moduledoc """
   The changes tab: the ledger of every file an agent touched in the run.
 
-  One row per checkpoint — the path, the agent that wrote it in its lane
-  colour, whether it can be restored, and when — under a header that counts
-  files and agents. When two agents touched the same path the ledger says so
-  in the warning colour before the rows: overlapping edits are the swarm's own
-  failure mode and nothing else on screen shows them. Every row opens the
-  checkpoints library, the existing route to a checkpoint.
+  One row per checkpoint — what happened to the file (A created, M modified,
+  D deleted), the path, the lines it added and removed, the agent that wrote
+  it in its lane colour, whether it can be restored, and when — under a
+  header that counts files, lines and agents. When two agents touched the same
+  path the ledger says so in the warning colour before the rows: overlapping
+  edits are the swarm's own failure mode and nothing else on screen shows
+  them. A row with a diff opens it; any other row opens the checkpoints
+  library, the existing route to a checkpoint.
   """
   alias SwarmCodeCLI.UI.{Theme, Width}
   alias SwarmCodeCLI.UI.Scene.{Block, Span}
@@ -20,6 +22,8 @@ defmodule SwarmCodeCLI.UI.Projector.Inspector.Changes do
   # Below this width the restorable column is a one-cell mark, not the word.
   @word_width 56
   @min_path 12
+  # The file-state letter and its gap.
+  @mark_width 2
 
   @doc "The tab's rows, budgeted to `width` and capped at `height`."
   def tab(state, run, width, height) do
@@ -89,10 +93,11 @@ defmodule SwarmCodeCLI.UI.Projector.Inspector.Changes do
 
     authors = max(authors, if(changes != [] and agents == [], do: 1, else: 0))
 
-    # A zero is never shown: an empty ledger is headed "CHANGES" alone.
+    # A zero is never shown: an empty ledger is headed "Changes" alone.
     parts =
-      ["CHANGES"] ++
+      ["Changes"] ++
         if(files > 0, do: [Words.count(files, "file", "files")], else: []) ++
+        lines(changes, state) ++
         if(authors > 0, do: [Words.count(authors, "agent", "agents")], else: [])
 
     Support.section_heading(Enum.join(parts, " · "), state, width)
@@ -137,6 +142,23 @@ defmodule SwarmCodeCLI.UI.Projector.Inspector.Changes do
     end
   end
 
+  # "+42 −7" over the whole ledger, when the daemon counted any lines.
+  defp lines(changes, state) do
+    counted = Enum.filter(changes, &(is_integer(added(&1)) or is_integer(removed(&1))))
+
+    if counted == [],
+      do: [],
+      else: [
+        "+#{counted |> Enum.map(&(added(&1) || 0)) |> Enum.sum()} " <>
+          minus(state) <> "#{counted |> Enum.map(&(removed(&1) || 0)) |> Enum.sum()}"
+      ]
+  end
+
+  defp added(change), do: Map.get(change, :added)
+  defp removed(change), do: Map.get(change, :removed)
+
+  defp minus(state), do: if(state.capabilities.ascii?, do: "-", else: "−")
+
   defp rows(changes, agents, state, width, height) do
     chip_width =
       changes
@@ -144,23 +166,101 @@ defmodule SwarmCodeCLI.UI.Projector.Inspector.Changes do
       |> Enum.max(fn -> 0 end)
       |> min(@max_chip)
 
-    restorable_width = if width >= @word_width, do: Hive.measure(@restorable_word, state), else: 1
-    path_width = width - (chip_width + 1) - (restorable_width + 1) - (@time_width + 1)
+    counts_width =
+      changes
+      |> Enum.map(&Hive.measure(counts_text(&1, state), state))
+      |> Enum.max(fn -> 0 end)
 
-    # Too narrow for every column: the path and the chip are what matter.
-    {restorable_width, path_width} =
-      if path_width >= @min_path,
-        do: {restorable_width, path_width},
-        else: {0, max(0, width - (chip_width + 1) - (@time_width + 1))}
+    restorable_width = if width >= @word_width, do: Hive.measure(@restorable_word, state), else: 1
+    counts_cost = if counts_width > 0, do: counts_width + 1, else: 0
+
+    # A ledger that knows no file states (an older daemon) has no letter column.
+    mark_width =
+      if Enum.any?(changes, &(Map.get(&1, :file_state) in [:created, :modified, :deleted])),
+        do: @mark_width,
+        else: 0
+
+    fixed =
+      mark_width + counts_cost + (chip_width + 1) + (restorable_width + 1) + (@time_width + 1)
+
+    # Too narrow for every column: the restorable mark goes first, then the
+    # line counts; the path and the chip are what matter.
+    {restorable_width, counts_width, path_width} =
+      cond do
+        width - fixed >= @min_path ->
+          {restorable_width, counts_width, width - fixed}
+
+        width - (fixed - restorable_width - 1) >= @min_path ->
+          {0, counts_width, width - (fixed - restorable_width - 1)}
+
+        true ->
+          {0, 0, max(0, width - mark_width - (chip_width + 1) - (@time_width + 1))}
+      end
 
     overlapping = changes |> overlaps(agents) |> Enum.map(&elem(&1, 0)) |> MapSet.new()
+    widths = {mark_width, path_width, counts_width, chip_width, restorable_width}
 
     changes
     |> Enum.take(max(0, height))
-    |> Enum.map(&row(&1, agents, overlapping, state, path_width, chip_width, restorable_width))
+    |> Enum.map(&row(&1, agents, overlapping, state, widths))
   end
 
-  defp row(change, agents, overlapping, state, path_width, chip_width, restorable_width) do
+  defp counts_text(change, state) do
+    case {added(change), removed(change)} do
+      {nil, nil} -> ""
+      {a, r} -> "+#{a || 0} " <> minus(state) <> "#{r || 0}"
+    end
+  end
+
+  # What happened to the file, as git says it, in one cell.
+  defp mark(_change, _state, 0), do: []
+
+  defp mark(change, state, _width) do
+    {letter, role} =
+      case Map.get(change, :file_state) do
+        :created -> {"A", :success}
+        :modified -> {"M", :info}
+        :deleted -> {"D", :error}
+        _ -> {" ", :text_faint}
+      end
+
+    [
+      %Span{text: Density.safe(letter, state, 1), style: RunRow.tinted(role, state)},
+      RunRow.gap(1, state)
+    ]
+  end
+
+  defp counts(_change, _state, 0), do: []
+
+  defp counts(change, state, width) do
+    text = counts_text(change, state)
+
+    pad =
+      Density.safe(String.duplicate(" ", max(0, width - Hive.measure(text, state))), state, width)
+
+    spans =
+      case {added(change), removed(change)} do
+        {nil, nil} ->
+          []
+
+        {a, r} ->
+          [
+            %Span{
+              text: Density.safe("+#{a || 0}", state, width),
+              style: RunRow.tinted(:success, state)
+            },
+            %Span{
+              text: Density.safe(" " <> minus(state) <> "#{r || 0}", state, width),
+              style: RunRow.tinted(:error, state)
+            }
+          ]
+      end
+
+    [%Span{text: pad, style: RunRow.tinted(:text_faint, state)} | spans] ++ [RunRow.gap(1, state)]
+  end
+
+  defp row(change, agents, overlapping, state, widths) do
+    {mark_width, path_width, counts_width, chip_width, restorable_width} = widths
     index = Enum.find_index(agents, &(&1.id == change.agent_id))
     agent = if index, do: Enum.at(agents, index)
     role = if agent, do: Hive.lane_role(agent, index), else: :text_muted
@@ -171,22 +271,24 @@ defmodule SwarmCodeCLI.UI.Projector.Inspector.Changes do
         do: RunRow.tinted(:warning, state),
         else: Theme.style(:text_primary, state.capabilities)
 
-    # Paths are elided in the middle so the file name survives: `lib/…/repo.ex`.
+    # Paths lose whole directories from the middle so the file name survives:
+    # `lib/…/repo.ex`.
     path =
       change.path
-      |> Width.elide(path_width, :middle, state.capabilities.ambiguous_width)
+      |> fit_path(path_width, state.capabilities.ambiguous_width)
       |> RunRow.pad(path_width, state)
       |> Density.safe(state, path_width)
 
     spans =
-      [
-        %Span{text: path, style: path_style},
-        RunRow.gap(1, state),
-        %Span{
-          text: Hive.fit(agent_name(change.agent_id, agents), chip_width, state),
-          style: chip_style
-        }
-      ] ++
+      mark(change, state, mark_width) ++
+        [%Span{text: path, style: path_style}, RunRow.gap(1, state)] ++
+        counts(change, state, counts_width) ++
+        [
+          %Span{
+            text: Hive.fit(agent_name(change.agent_id, agents), chip_width, state),
+            style: chip_style
+          }
+        ] ++
         restorable(change, state, restorable_width) ++
         [
           RunRow.gap(1, state),
@@ -201,7 +303,35 @@ defmodule SwarmCodeCLI.UI.Projector.Inspector.Changes do
           }
         ]
 
-    Support.action_spans(spans, {:local, {:open_layer, {:library, :checkpoints}}})
+    target =
+      case Map.get(change, :diff_ref) do
+        %{id: ref} when is_binary(ref) -> {:local, {:open_detail, change.run_id, ref}}
+        _ -> {:local, {:open_layer, {:library, :checkpoints}}}
+      end
+
+    Support.action_spans(spans, target)
+  end
+
+  @doc false
+  def fit_path(path, width, policy) do
+    if Width.cells(path, policy) <= width do
+      path
+    else
+      [first | rest] = segments = String.split(path, "/")
+      name = List.last(segments)
+
+      tails =
+        if length(segments) > 2,
+          do:
+            for(
+              k <- (length(rest) - 1)..1//-1,
+              do: first <> "/…/" <> Enum.join(Enum.take(rest, -k), "/")
+            ),
+          else: []
+
+      Enum.find(tails ++ ["…/" <> name], &(Width.cells(&1, policy) <= width)) ||
+        Width.elide(name, width, :middle, policy)
+    end
   end
 
   defp restorable(_change, _state, 0), do: []

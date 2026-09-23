@@ -483,7 +483,7 @@ defmodule SwarmCodeCLI.UI.ReducerNavigationTest do
       main = Enum.find(scene.regions, &(&1.role == :main))
       inspector = Enum.find(scene.regions, &(&1.role == :inspector))
       assert inspector.rect.x - 1 == 107
-      assert main.rect == %Rect{x: 0, y: 2, width: 107, height: 33}
+      assert main.rect == %Rect{x: 0, y: 1, width: 107, height: 34}
       assert main.rect.x == div(107 - main.rect.width, 2)
 
       docked =
@@ -493,7 +493,7 @@ defmodule SwarmCodeCLI.UI.ReducerNavigationTest do
             do: {region.role, region.rect}
 
       assert docked == [], "a pane is docked to the left of main: #{inspect(docked)}"
-      assert Enum.find(scene.regions, &(&1.role == :tabline)).rect.y == 1
+      assert Enum.find(scene.regions, &(&1.role == :title)).rect.y == 0
 
       assert {:ok, plan} = Paint.build(scene, %Options{color_mode: :truecolor})
       assert :ok = Plan.validate(plan)

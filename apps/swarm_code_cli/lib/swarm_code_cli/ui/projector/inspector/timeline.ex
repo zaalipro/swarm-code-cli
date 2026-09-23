@@ -18,11 +18,11 @@ defmodule SwarmCodeCLI.UI.Projector.Inspector.Timeline do
   def tab(state, run, width, height) do
     events = events(state, run)
 
-    # A zero is never shown: an empty timeline is headed "TIMELINE" alone.
+    # A zero is never shown: an empty timeline is headed "Timeline" alone.
     title =
       case events do
-        [] -> "TIMELINE"
-        events -> "TIMELINE · " <> Words.count(length(events), "event", "events")
+        [] -> "Timeline"
+        events -> "Timeline · " <> Words.count(length(events), "event", "events")
       end
 
     header = Support.section_heading(title, state, width)

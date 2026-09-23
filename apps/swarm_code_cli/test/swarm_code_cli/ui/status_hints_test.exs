@@ -1,7 +1,9 @@
 defmodule SwarmCodeCLI.UI.StatusHintsTest do
   @moduledoc """
-  The status row reads its hints off the binding table: as many as the layout
-  class allows, never wider than the row, and led by the vim mode when vim is on.
+  The status row (ux M5) says what the session is set to on the left and, on
+  the right, the two keys worth a reminder in this context (one on narrow
+  rows), read off the binding table. It never overflows, never names a focus
+  and leads with the vim mode when vim is on.
   """
   use ExUnit.Case, async: true
 
@@ -19,48 +21,73 @@ defmodule SwarmCodeCLI.UI.StatusHintsTest do
 
   alias SwarmCodeCLI.UI.Keymap.{Bindings, Context}
   alias SwarmCodeCLI.UI.Paint.{Options, Plan}
-  alias SwarmCodeCLI.UI.Projector.{Density, KeyLabel, Shell, Status}
+  alias SwarmCodeCLI.UI.Projector.{KeyLabel, Shell, Status}
 
   @sizes [{170, 40}, {150, 30}, {120, 30}, {80, 24}, {50, 16}, {50, 14}]
 
   describe "hints" do
-    for {columns, rows} <- @sizes, focus <- ["main", "composer"] do
-      test "#{focus} at #{columns}x#{rows}: budget plus one, and the row never overflows" do
+    for {columns, rows} <- @sizes, focus <- ["composer"] do
+      test "#{focus} at #{columns}x#{rows}: the strongest hints, and the row never overflows" do
         state = fixture({unquote(columns), unquote(rows)}, unquote(focus))
         class = Layout.classify(state.size)
         [%{spans: spans}] = Status.project(state, class, state.size.columns)
-        context = Context.of(state)
-
         assert cells(spans, state) <= state.size.columns
 
-        expected = min(Density.budget(class).bindings + 1, length(Bindings.hinted(context)))
-        assert Enum.count(spans, &(&1.style.role == :key)) == expected
+        budget = if class in [:xl, :wide, :medium], do: 2, else: 1
+        pairs = hint_pairs(state)
+        row = paint_last_row(state)
+
+        for pair <- Enum.take(pairs, budget), do: assert(row =~ pair)
+        for pair <- Enum.drop(pairs, budget), do: refute(row =~ pair)
       end
     end
 
     test "every hinted key is one the resolver routes in that context" do
       state = fixture({170, 40}, "composer")
-      [%{spans: spans}] = Status.project(state, :xl, 170)
-      keys = spans |> Enum.filter(&(&1.style.role == :key)) |> Enum.map(&SafeText.value(&1.text))
+      row = paint_last_row(state)
 
       # ? types in the composer, so help is hinted as F1 there or not at all.
-      refute "?" in keys
+      refute row =~ "? "
 
-      for key <- keys do
-        assert Enum.any?(Bindings.hinted(:composer), fn binding ->
-                 KeyLabel.label(Bindings.key_in_context(binding, :composer)) == key
-               end)
+      assert Enum.any?(hint_pairs(state), &(row =~ &1))
+    end
+
+    for {columns, rows} <- @sizes do
+      test "select mode at #{columns}x#{rows}: SELECT leads, its keys follow, nothing overflows" do
+        state = fixture({unquote(columns), unquote(rows)}, "main")
+        class = Layout.classify(state.size)
+        [%{spans: spans}] = Status.project(state, class, state.size.columns)
+        assert cells(spans, state) <= state.size.columns
+
+        row = paint_last_row(state)
+        assert String.starts_with?(row, " SELECT  Build")
+
+        down = :move_next |> Bindings.keys_for() |> hd() |> KeyLabel.label()
+        up = :move_previous |> Bindings.keys_for() |> hd() |> KeyLabel.label()
+        assert row =~ down <> "/" <> up <> " move"
+        assert row =~ "Enter open"
+        assert row =~ "Esc back"
       end
     end
 
-    test "the strongest hints come first: Send leads the composer, Compose leads main" do
-      composer = fixture({170, 40}, "composer")
-      [%{spans: spans}] = Status.project(composer, :xl, 170)
-      assert hd(labels(spans)) == "Send"
+    test "the strongest hints come first: Send leads the composer" do
+      composer = paint_last_row(fixture({170, 40}, "composer"))
+      assert composer =~ "send"
+    end
 
-      main = fixture({170, 40}, "main")
-      [%{spans: spans}] = Status.project(main, :xl, 170)
-      assert hd(labels(spans)) == "Compose"
+    test "the row never names a focus or carries a cue prefix in colour" do
+      for focus <- ["main", "composer"] do
+        row = paint_last_row(fixture({120, 30}, focus))
+        refute row =~ "Focus"
+        refute row =~ "KEY"
+        refute row =~ ">"
+      end
+    end
+
+    test "the left side is the session's mode, then its facts, joined by quiet dots" do
+      row = paint_last_row(fixture({170, 40}, "composer"))
+      assert String.starts_with?(row, " Build")
+      assert row =~ " · "
     end
   end
 
@@ -73,37 +100,34 @@ defmodule SwarmCodeCLI.UI.StatusHintsTest do
       }
 
       row = paint_last_row(state)
-      assert String.starts_with?(row, "NORMAL 2d  ")
+      assert String.starts_with?(row, " NORMAL 2d  ")
 
       insert = %{state | vim: %Vim{mode: :insert}}
-      assert String.starts_with?(paint_last_row(insert), "INSERT  ")
+      assert String.starts_with?(paint_last_row(insert), " INSERT  ")
 
       visual = %{state | vim: %Vim{mode: :visual}}
-      assert String.starts_with?(paint_last_row(visual), "VISUAL  ")
+      assert String.starts_with?(paint_last_row(visual), " VISUAL  ")
     end
 
-    test "the mode word is styled without a role cue, so it prints once" do
+    test "the mode word is bold and styled without a role cue, so it prints once" do
       state = %{fixture({120, 30}, "composer") | keymap: :vim, vim: %Vim{mode: :normal}}
-      [%{spans: [mode | _]}] = Status.project(state, :medium, 120)
+      [%{spans: [_gap, mode | _]}] = Status.project(state, :medium, 120)
       assert SafeText.value(mode.text) == "NORMAL"
       assert mode.style.role == :plain
       assert :bold in mode.style.modifiers
     end
 
-    test "with the default keymap the row still says Focus" do
+    test "with the default keymap the row leads with the session's mode" do
       state = fixture({120, 30}, "composer")
-      assert String.starts_with?(paint_last_row(state), "Focus: composer  ")
+      assert String.starts_with?(paint_last_row(state), " Build")
     end
   end
 
   describe "the tab row hint" do
-    test "spells the three chords the table binds" do
+    test "spells the run switcher's chord from the table" do
       state = fixture({170, 40}, "main")
       {_shown, _overflow, hint} = Shell.tabline_plan(state, 170)
-
-      for id <- [:run_palette, :runs_dashboard, :command_palette] do
-        assert String.contains?(hint, KeyLabel.primary(Bindings.fetch(id)))
-      end
+      assert String.contains?(hint, KeyLabel.primary(Bindings.fetch(:run_palette)))
     end
   end
 
@@ -114,16 +138,23 @@ defmodule SwarmCodeCLI.UI.StatusHintsTest do
     %{Fixtures.representative(:chat, size, %Capabilities{size: size}) | focus: focus}
   end
 
+  defp hint_pairs(state) do
+    context = Context.of(state)
+
+    context
+    |> Bindings.hinted()
+    |> Enum.flat_map(fn binding ->
+      case Bindings.key_in_context(binding, context) do
+        nil -> []
+        key -> [KeyLabel.label(key, false) <> " " <> String.downcase(binding.label)]
+      end
+    end)
+  end
+
   defp cells(spans, state) do
     Enum.reduce(spans, 0, fn span, sum ->
       sum + Width.cells(SafeText.value(span.text), state.capabilities.ambiguous_width)
     end)
-  end
-
-  defp labels(spans) do
-    spans
-    |> Enum.filter(&(&1.style.role == :text_muted))
-    |> Enum.map(&String.trim(SafeText.value(&1.text)))
   end
 
   defp paint_last_row(state) do

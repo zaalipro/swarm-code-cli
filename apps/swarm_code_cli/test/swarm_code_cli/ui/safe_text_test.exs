@@ -188,7 +188,7 @@ defmodule SwarmCodeCLI.UI.SafeTextTest do
     alias SwarmCodeCLI.UI.Width
 
     tokens = [
-      {:swarmcode_wordmark, "SWARMCODE"},
+      {:swarmcode_wordmark, "SwarmCode"},
       {:workspace_label, "WORKSPACE"},
       {:nav_conversation, "Conversation"},
       {:nav_activity, "Activity"},

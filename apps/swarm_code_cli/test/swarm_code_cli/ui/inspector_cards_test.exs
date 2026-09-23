@@ -128,27 +128,27 @@ defmodule SwarmCodeCLI.UI.InspectorCardsTest do
 
       # The lead card: corners, head, the avatar rows, chips, divider, task, gauge, foot.
       assert Enum.at(rows, 1) =~ ~r/^▗ +▖$/
-      assert Enum.at(rows, 2) =~ ~r/^▐ AGENT +stop$/
-      assert Enum.at(rows, 3) =~ ~r/^▐ {6}lead +⬤ ACTIVE$/
-      assert Enum.at(rows, 4) =~ ~r/^▐ {2}⬡ {3}LEAD AGENT · kimi-k2-thinking$/
+      assert Enum.at(rows, 2) =~ ~r/^▐ Agent +stop$/
+      assert Enum.at(rows, 3) =~ ~r/^▐ {6}lead +⬤ active$/
+      assert Enum.at(rows, 4) =~ ~r/^▐ {2}⬡ {3}Lead agent · kimi-k2-thinking$/
       assert Enum.at(rows, 5) =~ ~r/^▐ {6}4 sub-agents · \d\d:\d\d · 22k tok$/
       assert Enum.at(rows, 6) == "▐ no tools yet"
       assert Enum.at(rows, 7) == "▐ " <> String.duplicate("▬", 40)
-      assert Enum.at(rows, 8) =~ ~r/^▐ CURRENT TASK +35%$/
-      assert Enum.at(rows, 9) == "▐ " <> String.duplicate("▐", 40)
-      assert Enum.at(rows, 10) =~ ~r/^▐ planning +LEAD 7\.6k · SUBS 15k$/
+      assert Enum.at(rows, 8) =~ ~r/^▐ Current task +35%$/
+      assert Enum.at(rows, 9) =~ ~r/^▐ (▬)+(▭)+$/u
+      assert Enum.at(rows, 10) =~ ~r/^▐ planning +lead 7\.6k · subs 15k$/
       assert Enum.at(rows, 11) == "▐ ◷ lanes  ⎇ diff"
       assert Enum.at(rows, 12) =~ ~r/^▝ +▘$/
 
       # The sub-agents, one row each at the default 42-cell dock.
-      assert Enum.at(rows, 14) =~ ~r/^SUB-AGENTS +1 waiting$/
+      assert Enum.at(rows, 14) =~ ~r/^Sub-agents +1 waiting$/
       assert Enum.at(rows, 15) =~ ~r/^› ✦ scout-1 {3}grep "Repo\\." {3}▐▐▐▐▐▐ {2}3\.9k$/
       assert Enum.at(rows, 16) =~ ~r/^› ✦ scout-2 {3}read test\/sess… {1}▐▐▐▐▐▐ {2}3\.5k$/
       assert Enum.at(rows, 17) =~ ~r/^› ✦ builder-4 edit lib\/swarm… {1}▐▐▐▐▐▐ {2}6\.7k$/
       assert Enum.at(rows, 18) =~ ~r/^› ⚖ judge {5}waiting for you {1}▐▐▐▐▐▐ {2}1\.2k$/
 
       # The drawer follows the newest running sub-agent.
-      assert Enum.at(rows, 20) =~ ~r/^OPERATIONS · builder-4 +2 ops$/
+      assert Enum.at(rows, 20) =~ ~r/^Operations · builder-4 +2 ops$/
       assert Enum.at(rows, 21) =~ ~r/^✎ edit_file +\+42 −7 +active$/
       assert Enum.at(rows, 22) =~ ~r/^✕ error {5}run_command failed: … {2}failed$/
 
@@ -177,7 +177,7 @@ defmodule SwarmCodeCLI.UI.InspectorCardsTest do
       assert state.tabs.agent == "agent-2"
       {rows, _, _, _} = painted(state)
 
-      assert Enum.any?(rows, &(&1 =~ ~r/^OPERATIONS · scout-1 +1 op$/))
+      assert Enum.any?(rows, &(&1 =~ ~r/^Operations · scout-1 +1 op$/))
       assert Enum.any?(rows, &(&1 =~ ~r/^⌕ grep lib\/ test\/ · 41 hits +done {2}400ms$/))
     end
 
@@ -187,7 +187,7 @@ defmodule SwarmCodeCLI.UI.InspectorCardsTest do
 
       assert foreground(plan, rect, rows, "waiting for you") == @warning
       assert foreground(plan, rect, rows, "⚖ judge") == @warning
-      assert foreground(plan, rect, rows, "ACTIVE") == {:rgb, 61, 220, 90}
+      assert foreground(plan, rect, rows, "active") == {:rgb, 61, 220, 90}
       refute Enum.any?(rows, &String.contains?(&1, "NEEDS ANSWER"))
     end
 
@@ -205,7 +205,7 @@ defmodule SwarmCodeCLI.UI.InspectorCardsTest do
       assert Enum.any?(rows, &(&1 =~ ~r/^› ✦ builder-4 mix test exite…/))
       assert Enum.any?(rows, &(&1 =~ ~r/^› ⚖ judge {5}waiting for you /))
       assert foreground(plan, rect, rows, "mix test exite") == {:rgb, 255, 77, 79}
-      assert Enum.any?(rows, &(&1 =~ ~r/^SUB-AGENTS +1 waiting · 1 failed$/))
+      assert Enum.any?(rows, &(&1 =~ ~r/^Sub-agents +1 waiting · 1 failed$/))
     end
 
     test "the lead's chips name the tools it used, three at most and then a count" do
@@ -236,8 +236,8 @@ defmodule SwarmCodeCLI.UI.InspectorCardsTest do
     test "the cards degrade to their ASCII twins" do
       rows = rows(:swarm, 170, 34, caps: [ascii?: true])
 
-      assert Enum.at(rows, 3) =~ ~r/^# {6}lead +\* ACTIVE$/
-      assert Enum.at(rows, 4) =~ ~r/^# {2}o {3}LEAD AGENT · kimi-k2-thinking$/
+      assert Enum.at(rows, 3) =~ ~r/^# {6}lead +\* active$/
+      assert Enum.at(rows, 4) =~ ~r/^# {2}o {3}Lead agent · kimi-k2-thinking$/
       assert Enum.at(rows, 9) == "# " <> String.duplicate("#", 14) <> String.duplicate("-", 26)
       assert Enum.at(rows, 15) =~ ~r/^> \+ scout-1 {3}grep "Repo\\." {3}####-- {2}3\.9k$/
       assert Enum.at(rows, 18) =~ ~r/^> j judge {5}waiting for you {1}------ {2}1\.2k$/
@@ -247,14 +247,14 @@ defmodule SwarmCodeCLI.UI.InspectorCardsTest do
     test "a run with no agents draws the assistant as the lead card with no sub-agents" do
       rows = rows(:chat, 170, 34)
 
-      assert Enum.at(rows, 3) =~ ~r/^▐ {6}assistant +⬤ ACTIVE$/
-      assert Enum.at(rows, 4) =~ ~r/^▐ {2}✳ {3}ASSISTANT · deepseek-v4-pro$/
+      assert Enum.at(rows, 3) =~ ~r/^▐ {6}assistant +⬤ active$/
+      assert Enum.at(rows, 4) =~ ~r/^▐ {2}✳ {3}Assistant · deepseek-v4-pro$/
       assert Enum.at(rows, 5) =~ ~r/^▐ {6}\d\d:\d\d · 4\.0k tok$/
-      assert Enum.at(rows, 10) =~ ~r/^▐ writing +4\.0k TOKENS$/
-      refute Enum.any?(rows, &String.contains?(&1, "SUB-AGENTS"))
+      assert Enum.at(rows, 10) =~ ~r/^▐ writing +4\.0k tokens$/
+      refute Enum.any?(rows, &String.contains?(&1, "Sub-agents"))
       refute Enum.any?(rows, &String.contains?(&1, "stop"))
       refute Enum.any?(rows, &(&1 =~ ~r/· 0\b/))
-      assert Enum.any?(rows, &(&1 =~ ~r/^OPERATIONS · assistant$/))
+      assert Enum.any?(rows, &(&1 =~ ~r/^Operations · assistant$/))
       assert Enum.any?(rows, &(&1 == "nothing yet"))
     end
 
@@ -266,10 +266,10 @@ defmodule SwarmCodeCLI.UI.InspectorCardsTest do
       assert rect.width == 56
       assert Enum.any?(rows, &(&1 =~ ~r/^▗ +▖ ▗ +▖$/))
       assert Enum.any?(rows, &(&1 =~ ~r/^▐ ✦ scout-1 +⬤ ▐ ✦ scout-2 +⬤$/))
-      assert Enum.any?(rows, &(&1 =~ ~r/^▐ SUB · D1 +▐ SUB · D1$/))
-      assert Enum.any?(rows, &(&1 =~ ~r/^▐ 3\.9k TOK +1 op ▐ 3\.5k TOK +1 op$/))
+      assert Enum.any?(rows, &(&1 =~ ~r/^▐ sub +▐ sub$/))
+      assert Enum.any?(rows, &(&1 =~ ~r/^▐ 3\.9k tok +1 op ▐ 3\.5k tok +1 op$/))
       assert Enum.any?(rows, &(&1 =~ ~r/^▐ ✦ builder-4 +⬤ ▐ ⚖ judge +!$/))
-      assert Enum.any?(rows, &(&1 =~ ~r/^▐ SUB · D1 +▐ JUDGE · D1 · QUESTION$/))
+      assert Enum.any?(rows, &(&1 =~ ~r/^▐ sub +▐ judge · question$/))
 
       for id <- ~w(agent-2 agent-3 agent-4 agent-5) do
         assert length(targets(table, {:local, {:select_agent, id}})) == 1, id
@@ -282,12 +282,12 @@ defmodule SwarmCodeCLI.UI.InspectorCardsTest do
       {rows, _, _, _} = painted(state)
 
       lane = Enum.find_index(rows, &String.starts_with?(&1, "› ✦ scout-2"))
-      assert Enum.at(rows, lane + 1) == "LAUNCHED BY SUPERSEDED TURN"
+      assert Enum.at(rows, lane + 1) == "Launched by a superseded turn"
 
       wide = %{state | preferences: %{state.preferences | inspector_width: 56}}
       {rows, _, _, _} = painted(wide)
       # scout-2 sits in the right column, so the phrase is elided to the card's 25 cells.
-      assert Enum.any?(rows, &(&1 =~ ~r/▐ 3\.9k TOK +1 op ▐ LAUNCHED BY SUPERSEDED T…$/))
+      assert Enum.any?(rows, &(&1 =~ ~r/▐ 3\.9k tok +1 op ▐ Launched by a superseded…$/))
     end
 
     test "a short region keeps the lead card whole and never cuts a card in the middle" do
@@ -300,7 +300,7 @@ defmodule SwarmCodeCLI.UI.InspectorCardsTest do
       assert length(docked) >= 2
 
       for rows <- docked do
-        assert Enum.at(rows, 2) =~ ~r/^▐ AGENT +stop$/
+        assert Enum.at(rows, 2) =~ ~r/^▐ Agent +stop$/
         tops = Enum.count(rows, &(&1 =~ ~r/^▗ +▖$/))
         bottoms = Enum.count(rows, &(&1 =~ ~r/^▝ +▘$/))
         assert tops == bottoms and tops >= 1
@@ -343,9 +343,9 @@ defmodule SwarmCodeCLI.UI.InspectorCardsTest do
       {rows, table, _, _} = painted(state)
 
       assert Enum.at(rows, 13) =~ ~r/^▗ +▖$/
-      assert Enum.at(rows, 14) == "▐ ? judge wants to run a command"
-      assert Enum.at(rows, 15) == "▐ mix ecto.migrate"
-      assert Enum.at(rows, 16) == "▐ runs a command · needs your permission"
+      assert Enum.at(rows, 14) == "▐ ! judge wants to run a command"
+      assert Enum.at(rows, 15) == "▐ $ mix ecto.migrate"
+      assert Enum.at(rows, 16) == "▐ decide in the composer below"
       assert length(targets(table, {:local, {:open_interaction, "ask-1"}})) == 1
     end
   end
@@ -354,7 +354,7 @@ defmodule SwarmCodeCLI.UI.InspectorCardsTest do
     test "the thread tab of a consensus run shows the newest verdict below the hive" do
       rows = rows(:consensus, 170, 34)
 
-      v = Enum.find_index(rows, &(&1 == "VERDICT · round 1 · done"))
+      v = Enum.find_index(rows, &(&1 == "Verdict · round 1 · done"))
       assert v, "no verdict row"
       assert Enum.at(rows, v + 1) =~ ~r/^✓ tests_pass {6}142 tests, 0 failures$/
       assert Enum.at(rows, v + 2) =~ ~r/^✓ no_regressions  auth paths unchanged$/
@@ -362,7 +362,7 @@ defmodule SwarmCodeCLI.UI.InspectorCardsTest do
       assert Enum.at(rows, v + 3) =~ ~r/^✕ docs_updated {4}architecture.md still d…$/
       assert Enum.at(rows, v + 4) =~ ~r/^— style {11}not evaluated$/
       assert Enum.at(rows, v + 5) =~ ~r/^Two of three proposals meet the bar/
-      assert Enum.find_index(rows, &String.starts_with?(&1, "▐ AGENT")) < v
+      assert Enum.find_index(rows, &String.starts_with?(&1, "▐ Agent")) < v
     end
 
     test "the newest round wins" do
@@ -380,7 +380,7 @@ defmodule SwarmCodeCLI.UI.InspectorCardsTest do
       state = put_in(state.read_model.verdicts, %{"judge-1" => older, "judge-2" => newer})
       {rows, _, _, _} = painted(state)
 
-      v = Enum.find_index(rows, &(&1 == "VERDICT · round 2 · done"))
+      v = Enum.find_index(rows, &(&1 == "Verdict · round 2 · done"))
       assert v, "no verdict row"
       assert Enum.at(rows, v + 1) =~ ~r/^✓ docs_updated  docs landed$/
       refute Enum.any?(rows, &String.contains?(&1, "142 tests"))
@@ -403,21 +403,21 @@ defmodule SwarmCodeCLI.UI.InspectorCardsTest do
       state = put_in(state.read_model.agents, %{"judge-agent" => judge})
       {rows, _, _, _} = painted(state)
 
-      v = Enum.find_index(rows, &(&1 == "VERDICT"))
+      v = Enum.find_index(rows, &(&1 == "Verdict"))
       assert v, "no verdict row"
       assert Enum.at(rows, v + 1) == "No verdict yet · judge running"
-      assert Enum.any?(rows, &(&1 =~ ~r/^▐ {6}judge +⬤ ACTIVE$/))
+      assert Enum.any?(rows, &(&1 =~ ~r/^▐ {6}judge +⬤ active$/))
       assert Enum.any?(rows, &(&1 =~ ~r/^▐ reading proposal B/))
     end
 
     test "the agents tab of a consensus run carries the verdict card below the hive; the other tabs do not" do
       rows = rows(:consensus, 170, 34, tab: :agents)
-      lead = Enum.find_index(rows, &(&1 =~ ~r/^▐ AGENT/))
-      verdict = Enum.find_index(rows, &String.starts_with?(&1, "VERDICT"))
+      lead = Enum.find_index(rows, &(&1 =~ ~r/^▐ Agent/))
+      verdict = Enum.find_index(rows, &String.starts_with?(&1, "Verdict"))
       assert lead && verdict && verdict > lead
 
       for tab <- [:timeline, :changes] do
-        refute Enum.any?(rows(:consensus, 170, 34, tab: tab), &String.contains?(&1, "VERDICT"))
+        refute Enum.any?(rows(:consensus, 170, 34, tab: tab), &String.contains?(&1, "Verdict"))
       end
     end
   end
@@ -426,12 +426,12 @@ defmodule SwarmCodeCLI.UI.InspectorCardsTest do
     test "lists the run's files with the agent chip, the restorable mark and the time" do
       {rows, table, _plan, _rect} = :swarm |> state(170, 34, tab: :changes) |> painted()
 
-      assert Enum.at(rows, 1) == "CHANGES · 3 files · 2 agents"
+      assert Enum.at(rows, 1) == "Changes · 3 files · 2 agents"
       assert Enum.at(rows, 2) == ""
       # Newest first; a change nobody can restore has a blank where the mark goes.
       assert Enum.at(rows, 3) =~ ~r/^docs\/architecture\.md +lead {8}\d\d:\d\d$/
-      # A path longer than its column is elided in the middle, keeping the file name.
-      assert Enum.at(rows, 4) =~ ~r/^test\/swarm_…epo_test\.exs builder-4 ✓ \d\d:\d\d$/
+      # A path longer than its column loses whole directories, keeping the file name.
+      assert Enum.at(rows, 4) =~ ~r/^test\/…\/repo_test\.exs +builder-4 ✓ \d\d:\d\d$/
       assert Enum.at(rows, 5) =~ ~r/^lib\/swarm_code\/repo\.ex +builder-4 ✓ \d\d:\d\d$/
 
       assert length(targets(table, {:local, {:open_layer, {:library, :checkpoints}}})) == 3
@@ -453,7 +453,7 @@ defmodule SwarmCodeCLI.UI.InspectorCardsTest do
       state = put_in(state.read_model.changes["change-4"], overlap)
       {rows, _table, plan, rect} = painted(state, :truecolor)
 
-      assert Enum.at(rows, 1) == "CHANGES · 3 files · 3 agents"
+      assert Enum.at(rows, 1) == "Changes · 3 files · 3 agents"
       # The full line — the path and both names — does not fit 42 cells, so the
       # counts stand in and the overlapping rows carry the warning colour.
       assert Enum.at(rows, 2) == "Blast radius · 1 file · 2 agents"
@@ -464,11 +464,41 @@ defmodule SwarmCodeCLI.UI.InspectorCardsTest do
       assert foreground(plan, rect, rows, "docs/architecture.md") == {:rgb, 243, 242, 240}
     end
 
+    test "file states and line counts: a letter, +N −M, and the row opens the diff" do
+      state = state(:swarm, 170, 34, tab: :changes)
+
+      state =
+        state
+        |> update_in([Access.key!(:read_model), Access.key!(:changes), "change-1"], fn change ->
+          %{
+            change
+            | file_state: :modified,
+              added: 12,
+              removed: 3,
+              diff_ref: %DTO.DetailRef{id: "cp-1:diff", total_bytes: 900}
+          }
+        end)
+        |> update_in([Access.key!(:read_model), Access.key!(:changes), "change-2"], fn change ->
+          %{change | file_state: :created, added: 40, removed: 0}
+        end)
+
+      {rows, table, _plan, _rect} = painted(state)
+
+      assert Enum.at(rows, 1) == "Changes · 3 files · +52 −3 · 2 agents"
+
+      assert Enum.at(rows, 4) =~
+               ~r/^A …\/repo_test\.exs \+40 −0 builder-4 ✓ \d\d:\d\d$/
+
+      assert Enum.at(rows, 5) =~ ~r/^M lib\/…\/repo\.ex +\+12 −3 builder-4 ✓ \d\d:\d\d$/
+      assert length(targets(table, {:local, {:open_detail, @run, "cp-1:diff"}})) == 1
+      assert length(targets(table, {:local, {:open_layer, {:library, :checkpoints}}})) == 2
+    end
+
     test "with nothing changed the tab says so" do
       state = state(:chat, 170, 34, tab: :changes)
       {rows, _, _, _} = painted(state)
 
-      assert Enum.at(rows, 1) == "CHANGES"
+      assert Enum.at(rows, 1) == "Changes"
       assert "No files changed yet" in rows
       refute Enum.any?(rows, &String.contains?(&1, "0 files"))
     end
@@ -478,7 +508,7 @@ defmodule SwarmCodeCLI.UI.InspectorCardsTest do
     test "lists the run's events oldest first with time, agent, kind and text" do
       rows = rows(:swarm, 170, 34, tab: :timeline)
 
-      assert Enum.at(rows, 1) == "TIMELINE · 7 events"
+      assert Enum.at(rows, 1) == "Timeline · 7 events"
       # 42 cells: the time, the widest name, the widest kind word, then the text.
       assert Enum.at(rows, 2) =~ ~r/^\d\d:\d\d you {7}text {4}Review this synth…$/
       assert Enum.at(rows, 3) =~ ~r/^\d\d:\d\d scout-1 {3}tool {4}grep "Repo\\."$/

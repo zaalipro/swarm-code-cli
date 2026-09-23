@@ -60,8 +60,11 @@ defmodule SwarmCodeCLI.UI.ThemeTest do
   end
 
   test "surface and selection backgrounds degrade without assuming numeric ANSI palettes" do
+    # The canvas is the terminal's own background (ux M11): no colour at all.
+    for mode <- [:truecolor, :ansi256, :ansi16, :monochrome],
+        do: assert(Theme.style(:canvas, caps(mode)).background == nil)
+
     for {role, rgb, index, ansi} <- [
-          {:canvas, 20, 233, :black},
           {:surface, 25, 234, :black},
           {:card, 30, 235, :bright_black}
         ] do
@@ -106,15 +109,23 @@ defmodule SwarmCodeCLI.UI.ThemeTest do
                SafeText.value(prefix)
              end) == ~w(A G S W R C U)
 
+      # The identity is spelled on screen only where colour cannot carry it
+      # (ux M6): monochrome keeps the prefix, colour modes draw none.
       assert Enum.map(1..5, fn lane ->
                {prefix, role} = Theme.agent_lane(lane)
-               assert SafeText.value(Theme.style(role, caps(mode)).prefix) == "A#{lane}"
+               shown = Theme.style(role, caps(mode)).prefix
+
+               if mode == :monochrome,
+                 do: assert(SafeText.value(shown) == "A#{lane}"),
+                 else: assert(shown == nil)
+
                SafeText.value(prefix)
              end) == ~w(A1 A2 A3 A4 A5)
 
       for kind <- kinds do
         {prefix, role} = Theme.run_kind(kind)
-        assert Theme.style(role, caps(mode)).prefix == prefix
+        expected = if mode == :monochrome, do: prefix, else: nil
+        assert Theme.style(role, caps(mode)).prefix == expected
       end
     end
 

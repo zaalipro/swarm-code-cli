@@ -2,7 +2,7 @@ defmodule SwarmCodeCLI.UI.Projector do
   @moduledoc "Pure renderer-neutral projection. Source permissions remain behind opaque action IDs."
   alias SwarmCodeCLI.UI.{ActionTarget, Layout, SafeText, Scene, State}
   alias SwarmCodeCLI.UI.Scene.Region
-  alias SwarmCodeCLI.UI.Projector.{Density, Dialog, Shell, Support}
+  alias SwarmCodeCLI.UI.Projector.{Composer, Density, Dialog, Shell, Support, Workspace}
   @spec project(State.t()) :: {Scene.t(), %{binary() => ActionTarget.t()}}
   def project(state) do
     layout = Layout.calculate(state.size, state.preferences)
@@ -22,7 +22,25 @@ defmodule SwarmCodeCLI.UI.Projector do
       {scene, background} =
         Support.finalize(%{scene | regions: regions, cursor: cursor}, state.revision)
 
-      overlay = Dialog.project(state, layout.class, background)
+      # The actions the keys reach without a drawn control (see
+      # `Workspace.keyboard_actions/2`) join the background table under their
+      # own path, so their ids never collide with a drawn block's.
+      {_hidden, keyboard} =
+        Support.finalize(
+          %{keyboard: Workspace.keyboard_actions(state, layout.class)},
+          state.revision
+        )
+
+      background = Map.merge(keyboard, background)
+
+      # An approval opened as the top layer is drawn in the composer slot, so
+      # the conversation stays in view; only a layout with no composer falls
+      # back to the modal card.
+      overlay =
+        if Map.has_key?(layout.rects, :composer) and Composer.opened_approval(state),
+          do: nil,
+          else: Dialog.project(state, layout.class, background)
+
       # While a modal owns focus its background actions are not activatable.
       if overlay do
         {overlay, table} = Support.finalize(overlay, state.revision)

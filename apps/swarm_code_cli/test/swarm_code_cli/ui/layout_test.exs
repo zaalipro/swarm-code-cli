@@ -33,12 +33,13 @@ defmodule SwarmCodeCLI.UI.LayoutTest do
 
   test "wide shell matches desktop navigation transcript and inspector hierarchy" do
     layout = Layout.calculate(size(150, 30), Preferences.new())
-    # The navigator dock is gone; row 1 is the tab row and main starts at column 0.
+    # The navigator dock is gone and the run tabs share the title row (ux M5):
+    # main starts at column 0 on row 1.
     refute Map.has_key?(layout.rects, :navigator)
+    refute Map.has_key?(layout.rects, :tabline)
     assert layout.rects.title == %Rect{x: 0, y: 0, width: 150, height: 1}
-    assert layout.rects.tabline == %Rect{x: 0, y: 1, width: 150, height: 1}
-    assert layout.rects.inspector == %Rect{x: 108, y: 2, width: 42, height: 27}
-    assert layout.rects.main == %Rect{x: 0, y: 2, width: 107, height: 23}
+    assert layout.rects.inspector == %Rect{x: 108, y: 1, width: 42, height: 28}
+    assert layout.rects.main == %Rect{x: 0, y: 1, width: 107, height: 24}
     assert layout.rects.activity == %Rect{x: 0, y: 25, width: 107, height: 1}
     assert layout.rects.composer == %Rect{x: 0, y: 26, width: 107, height: 3}
     assert layout.rects.status == %Rect{x: 0, y: 29, width: 150, height: 1}
@@ -51,8 +52,8 @@ defmodule SwarmCodeCLI.UI.LayoutTest do
     assert band == 80 + 26 + 1
     assert layout.rects.main.width == band
     assert layout.rects.main.x == 0
-    # Rows in order: 0 title, 1 tabline, main, activity, composer, 29 status.
-    assert layout.rects.main.y == layout.rects.tabline.y + 1
+    # Rows in order: 0 title and tabs, main, activity, composer, 29 status.
+    assert layout.rects.main.y == layout.rects.title.y + 1
 
     assert layout.rects.activity.y == layout.rects.main.y + layout.rects.main.height
     assert layout.rects.composer.y == layout.rects.activity.y + layout.rects.activity.height
@@ -72,7 +73,7 @@ defmodule SwarmCodeCLI.UI.LayoutTest do
     assert wide.rects.inspector.width == 56
     # No navigator at any class now, so main takes what the dock used to hold.
     refute Map.has_key?(wide.rects, :navigator)
-    assert wide.rects.main == %Rect{x: 0, y: 2, width: 93, height: 23}
+    assert wide.rects.main == %Rect{x: 0, y: 1, width: 93, height: 24}
 
     # `:none` is the named absence of a dock — the value `:navigator` used to
     # hold, now that it no longer points at a deleted pane — and it is the
@@ -85,7 +86,7 @@ defmodule SwarmCodeCLI.UI.LayoutTest do
     refute Map.has_key?(none.rects, :inspector)
     assert none.rects.main.x == 0
     assert none.rects.main.width == 100
-    assert none.rects.tabline == %Rect{x: 0, y: 1, width: 100, height: 1}
+    assert none.rects.title == %Rect{x: 0, y: 0, width: 100, height: 1}
     assert Layout.calculate(size(100, 24), Preferences.new()).rects == none.rects
 
     # And Ctrl-B docks the inspector a medium terminal can still hold.
@@ -97,17 +98,17 @@ defmodule SwarmCodeCLI.UI.LayoutTest do
     # Nothing is docked on the left, and there is no centred reading measure:
     # main starts at column 0 and keeps every column up to the inspector's gap.
     for {columns, rows, preferences, expected} <- [
-          {104, 24, Preferences.new(), %Rect{x: 0, y: 2, width: 104, height: 17}},
-          {103, 24, Preferences.new(), %Rect{x: 0, y: 2, width: 103, height: 17}},
-          {100, 24, Preferences.new(), %Rect{x: 0, y: 2, width: 100, height: 17}},
-          {80, 24, Preferences.new(), %Rect{x: 0, y: 2, width: 80, height: 17}},
-          {72, 20, Preferences.new(), %Rect{x: 0, y: 2, width: 72, height: 13}},
-          {50, 16, Preferences.new(), %Rect{x: 0, y: 2, width: 50, height: 11}},
+          {104, 24, Preferences.new(), %Rect{x: 0, y: 1, width: 104, height: 18}},
+          {103, 24, Preferences.new(), %Rect{x: 0, y: 1, width: 103, height: 18}},
+          {100, 24, Preferences.new(), %Rect{x: 0, y: 1, width: 100, height: 18}},
+          {80, 24, Preferences.new(), %Rect{x: 0, y: 1, width: 80, height: 18}},
+          {72, 20, Preferences.new(), %Rect{x: 0, y: 1, width: 72, height: 14}},
+          {50, 16, Preferences.new(), %Rect{x: 0, y: 1, width: 50, height: 12}},
           # xl: a 42-cell inspector and its gap column leave a 127-cell band.
-          {170, 34, Preferences.new(), %Rect{x: 0, y: 2, width: 127, height: 27}},
+          {170, 34, Preferences.new(), %Rect{x: 0, y: 1, width: 127, height: 28}},
           # A 56-cell inspector at 150 columns leaves 93, under the measure.
           {150, 30, Preferences.new(inspector_width: 56),
-           %Rect{x: 0, y: 2, width: 93, height: 23}}
+           %Rect{x: 0, y: 1, width: 93, height: 24}}
         ] do
       rects = Layout.calculate(size(columns, rows), preferences).rects
       assert rects.main == expected, "main at #{columns}x#{rows}"
@@ -192,7 +193,7 @@ defmodule SwarmCodeCLI.UI.LayoutTest do
     nudged = Layout.calculate(size(150, 30), changed).rects
     assert nudged.inspector.width == 40
     assert nudged.inspector.x - 1 == 109
-    assert nudged.main == %Rect{x: 0, y: 2, width: 109, height: 23}
+    assert nudged.main == %Rect{x: 0, y: 1, width: 109, height: 24}
 
     # Effective clamping still leaves the stored preference alone on the pane
     # that is drawn: 50 columns requested, 49 granted at 100 columns.

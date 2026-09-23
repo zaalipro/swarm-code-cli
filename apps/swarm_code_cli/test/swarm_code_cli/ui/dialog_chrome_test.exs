@@ -1,8 +1,10 @@
 defmodule SwarmCodeCLI.UI.DialogChromeTest do
   @moduledoc """
-  Cell-level assertions for dialog chrome: title padding, FOCUS > prefix,
-  and pinned strings across switcher, question, approval, and unsent-changes
-  dialogs at 120x40 and 80x24, in both truecolor and ASCII modes.
+  Cell-level assertions for dialog chrome: title padding, the focus cue (the
+  accent rail on the hover surface in colour, `FOCUS >` only in monochrome)
+  and pinned strings across the switcher, question and unsent-changes
+  dialogs at 120x40 and 80x24, in Unicode and ASCII; and the approval, which
+  is drawn in the composer slot instead of a modal.
   """
   use ExUnit.Case, async: true
 
@@ -11,8 +13,12 @@ defmodule SwarmCodeCLI.UI.DialogChromeTest do
     Fixtures,
     Paint,
     Projector,
-    Size
+    SafeText,
+    Size,
+    Theme
   }
+
+  alias SwarmCodeCLI.UI.Projector.Support
 
   alias SwarmCodeCLI.UI.Paint.{Options, Plan}
 
@@ -62,56 +68,78 @@ defmodule SwarmCodeCLI.UI.DialogChromeTest do
 
   defp focus_count(plan), do: length(String.split(screen(plan), "FOCUS >")) - 1
 
+  # Rows inside the dialog whose first cell after the border is the rail.
+  defp rail_rows(plan, scene, state) do
+    rail = SafeText.value(Support.glyph(:stripe, state))
+    rect = scene.overlay.rect
+
+    Enum.count((rect.y + 1)..(rect.y + rect.height - 2), fn y ->
+      row(plan, y, rect.x + 1, 1) == rail
+    end)
+  end
+
+  defp background(plan, x, y) do
+    case Plan.cell(plan, x, y) do
+      {:glyph, _, _, index} -> elem(plan.palette, index).background
+      _ -> nil
+    end
+  end
+
   # At narrow/small sizes the dialog fills the screen and the status bar is
-  # behind the dialog border.  Only assert Focus: on the last row when the
-  # dialog does NOT span the full screen height.
+  # behind the dialog border.  Only assert the status row when the dialog
+  # does NOT span the full screen height.
   defp assert_status_bar_when_visible(plan, scene) do
     rect = scene.overlay.rect
 
     if rect.y > 0 or rect.height < plan.size.rows do
       last_row = row(plan, plan.size.rows - 1)
-      assert last_row =~ "Focus:"
+      assert String.starts_with?(last_row, " Build")
     end
   end
 
   # ── switcher ─────────────────────────────────────────────────────────────
 
   describe "switcher dialog" do
-    for {cols, rows} <- @sizes,
-        {color, ascii} <- [{:truecolor, false}, {:truecolor, true}] do
-      @tag size: {cols, rows}, ascii: ascii
-      test "title padding and FOCUS > at #{cols}x#{rows} ascii=#{ascii}" do
-        state = fixture({unquote(cols), unquote(rows)}, unquote(color), unquote(ascii))
+    for {cols, rows} <- @sizes, ascii <- [false, true] do
+      test "title padding and no focus words at #{cols}x#{rows} ascii=#{ascii}" do
+        state = fixture({unquote(cols), unquote(rows)}, :truecolor, unquote(ascii))
         state = %{state | layers: [{:switcher, "layer-1"}], focus: "query"}
         {scene, _table, plan} = paint(state)
 
         assert scene.overlay != nil
-        full = screen(plan)
-
-        # Title must contain "Search:" (PTY invariant)
         title_row = row(plan, scene.overlay.rect.y)
-        assert title_row =~ "Search:"
-
-        # Title row has padding: space before "Search:"
         assert title_row =~ " Search:"
-
-        # When focus is on "query", no option row gets FOCUS > but there is
-        # no spurious occurrence either, so count is 0 or 1.
-        assert focus_count(plan) <= 1
-
-        # Footer contains "Cancel"
-        assert full =~ "Cancel"
-
-        # Status bar (only visible when dialog does not fill entire screen)
+        assert focus_count(plan) == 0
+        assert screen(plan) =~ "Cancel"
         assert_status_bar_when_visible(plan, scene)
       end
     end
 
-    test "switcher with selected option shows exactly one FOCUS >" do
+    test "a selected option is one rail row on the hover surface in colour" do
       state = fixture({120, 40})
       entries = SwarmCodeCLI.UI.Switcher.visible(state, %{})
-      first_id = if entries != [], do: hd(entries).id, else: "cancel"
-      state = %{state | layers: [{:switcher, "layer-1"}], focus: first_id}
+      state = %{state | layers: [{:switcher, "layer-1"}], focus: hd(entries).id}
+      {scene, _table, plan} = paint(state)
+
+      assert focus_count(plan) == 0
+      assert rail_rows(plan, scene, state) == 1
+
+      rect = scene.overlay.rect
+
+      y =
+        Enum.find(
+          (rect.y + 1)..(rect.y + rect.height - 2),
+          &(row(plan, &1, rect.x + 1, 1) == "▐")
+        )
+
+      assert background(plan, rect.x + 4, y) ==
+               Theme.style(:hover, state.capabilities).background.value
+    end
+
+    test "monochrome spells the focus once, in words" do
+      state = fixture({120, 40}, :monochrome, true)
+      entries = SwarmCodeCLI.UI.Switcher.visible(state, %{})
+      state = %{state | layers: [{:switcher, "layer-1"}], focus: hd(entries).id}
       {_scene, _table, plan} = paint(state)
       assert focus_count(plan) == 1
     end
@@ -143,13 +171,11 @@ defmodule SwarmCodeCLI.UI.DialogChromeTest do
       {:ok, interaction: interaction}
     end
 
-    for {cols, rows} <- @sizes,
-        {color, ascii} <- [{:truecolor, false}, {:truecolor, true}] do
-      @tag size: {cols, rows}, ascii: ascii
-      test "title padding and FOCUS > at #{cols}x#{rows} ascii=#{ascii}", %{
+    for {cols, rows} <- @sizes, ascii <- [false, true] do
+      test "title padding and one focused option at #{cols}x#{rows} ascii=#{ascii}", %{
         interaction: interaction
       } do
-        state = fixture({unquote(cols), unquote(rows)}, unquote(color), unquote(ascii))
+        state = fixture({unquote(cols), unquote(rows)}, :truecolor, unquote(ascii))
         state = put_in(state.read_model.interactions[interaction.id], interaction)
         state = %{state | layers: [{:question, interaction.id}], focus: "opt-1"}
         {scene, _table, plan} = paint(state)
@@ -157,30 +183,31 @@ defmodule SwarmCodeCLI.UI.DialogChromeTest do
         assert scene.overlay != nil
         full = screen(plan)
 
-        # Title has padding
-        title_row = row(plan, scene.overlay.rect.y)
-        assert title_row =~ " Question "
+        assert row(plan, scene.overlay.rect.y) =~ " Question "
+        assert focus_count(plan) == 0
+        assert rail_rows(plan, scene, state) == 1
 
-        # Exactly one FOCUS >
-        assert focus_count(plan) == 1
-
-        # Option format preserved: "Option N"
         assert full =~ "Option 1"
         assert full =~ "Option 2"
-
-        # Footer: "Cancel" and "item N of M"
         assert full =~ "Cancel"
         assert full =~ "item 1 of"
 
-        # Status bar when visible
         assert_status_bar_when_visible(plan, scene)
       end
+    end
+
+    test "monochrome marks the focused option with FOCUS > once", %{interaction: interaction} do
+      state = fixture({120, 40}, :monochrome, true)
+      state = put_in(state.read_model.interactions[interaction.id], interaction)
+      state = %{state | layers: [{:question, interaction.id}], focus: "opt-1"}
+      {_scene, _table, plan} = paint(state)
+      assert focus_count(plan) == 1
     end
   end
 
   # ── approval ─────────────────────────────────────────────────────────────
 
-  describe "approval dialog" do
+  describe "approval in the composer slot" do
     setup do
       interaction = %PendingInteraction{
         id: "test-approval",
@@ -201,69 +228,88 @@ defmodule SwarmCodeCLI.UI.DialogChromeTest do
       {:ok, interaction: interaction}
     end
 
-    for {cols, rows} <- @sizes,
-        {color, ascii} <- [{:truecolor, false}, {:truecolor, true}] do
-      @tag size: {cols, rows}, ascii: ascii
-      test "title padding and FOCUS > at #{cols}x#{rows} ascii=#{ascii}", %{
-        interaction: interaction
-      } do
-        state = fixture({unquote(cols), unquote(rows)}, unquote(color), unquote(ascii))
+    for {cols, rows} <- @sizes, ascii <- [false, true] do
+      test "the opened approval keeps the conversation in view at #{cols}x#{rows} ascii=#{ascii}",
+           %{interaction: interaction} do
+        state = fixture({unquote(cols), unquote(rows)}, :truecolor, unquote(ascii))
         state = put_in(state.read_model.interactions[interaction.id], interaction)
         state = %{state | layers: [{:approval, interaction.id}], focus: "approve"}
-        {scene, _table, plan} = paint(state)
+        {scene, table, plan} = paint(state)
 
-        assert scene.overlay != nil
+        assert scene.overlay == nil
         full = screen(plan)
 
-        # Title has padding — the approval card is titled by who wants what
-        title_row = row(plan, scene.overlay.rect.y)
-        assert title_row =~ " The agent wants to change a file "
+        assert full =~ "Review this synthetic project"
+        assert full =~ "The assistant wants to change a file"
+        assert full =~ "lib/auth/session.ex"
+        assert full =~ "y once"
+        # The legacy :always_allow is what the service reads as "for this run".
+        assert full =~ "A for this run"
+        assert full =~ "d deny"
+        assert focus_count(plan) == 0
+        assert row(plan, plan.size.rows - 1) =~ "1 waiting"
 
-        # Exactly one FOCUS >
-        assert focus_count(plan) == 1
+        for decision <- [:approve, :always_allow, :deny] do
+          target =
+            {:intent,
+             {:resolve_approval, "fixture-run", "test-approval-node", "test-approval", 3,
+              decision}}
 
-        # Approval options preserved
-        assert full =~ "Approve"
-        assert full =~ "Deny"
-        assert full =~ "Always allow"
-
-        # Footer: "Cancel" and "PgUp/PgDn: scroll arguments"
-        assert full =~ "Cancel"
-        assert full =~ "PgUp/PgDn: scroll arguments"
-
-        # Status bar when visible
-        assert_status_bar_when_visible(plan, scene)
+          assert target in Map.values(table)
+        end
       end
+    end
+
+    test "the focused decision sits on the warning chip", %{interaction: interaction} do
+      state = fixture({120, 40})
+      state = put_in(state.read_model.interactions[interaction.id], interaction)
+      state = %{state | layers: [{:approval, interaction.id}], focus: "deny"}
+      {_scene, _table, plan} = paint(state)
+
+      y = Enum.find(0..(plan.size.rows - 1), &(row(plan, &1) =~ "d deny"))
+      {x, _} = :binary.match(row(plan, y), "d deny")
+      chip = Theme.style(:on_warn, state.capabilities).background.value
+      assert background(plan, x, y) == chip
+      refute background(plan, x - 12, y) == chip
+    end
+
+    test "monochrome brackets the focused decision", %{interaction: interaction} do
+      state = fixture({120, 40}, :monochrome, true)
+      state = put_in(state.read_model.interactions[interaction.id], interaction)
+      state = %{state | layers: [{:approval, interaction.id}], focus: "approve"}
+      {_scene, _table, plan} = paint(state)
+      assert screen(plan) =~ "[y once]"
     end
   end
 
   # ── unsent changes ───────────────────────────────────────────────────────
 
   describe "unsent-changes dialog" do
-    for {cols, rows} <- @sizes,
-        {color, ascii} <- [{:truecolor, false}, {:truecolor, true}] do
-      @tag size: {cols, rows}, ascii: ascii
-      test "title padding and FOCUS > at #{cols}x#{rows} ascii=#{ascii}" do
-        state = fixture({unquote(cols), unquote(rows)}, unquote(color), unquote(ascii))
+    for {cols, rows} <- @sizes, ascii <- [false, true] do
+      test "title padding and the focused control at #{cols}x#{rows} ascii=#{ascii}" do
+        state = fixture({unquote(cols), unquote(rows)}, :truecolor, unquote(ascii))
         state = %{state | layers: [{:unsent_changes, :detach}], focus: "cancel"}
         {scene, _table, plan} = paint(state)
 
         assert scene.overlay != nil
-        full = screen(plan)
-
-        # Title has padding — "UNSENT CHANGES" pinned string preserved
-        title_row = row(plan, scene.overlay.rect.y)
-        assert title_row =~ " UNSENT CHANGES "
-
-        # Exactly one FOCUS >
-        assert focus_count(plan) == 1
-
+        assert row(plan, scene.overlay.rect.y) =~ " UNSENT CHANGES "
+        assert focus_count(plan) == 0
         # "CANCEL" pinned string preserved (from chrome(:cancel_exit) = "Esc CANCEL")
-        assert full =~ "CANCEL"
-
-        # Status bar when visible
+        assert screen(plan) =~ "CANCEL"
         assert_status_bar_when_visible(plan, scene)
       end
+    end
+
+    test "quitting with live runs asks about the runs" do
+      state = fixture({120, 40})
+
+      state =
+        %{state | layers: [{:unsent_changes, :detach}], focus: "cancel"}
+        |> Map.put(:quit_live_runs, 2)
+
+      {scene, _table, plan} = paint(state)
+      assert row(plan, scene.overlay.rect.y) =~ " Stop 2 live runs and quit? "
+      assert screen(plan) =~ "They stop when SwarmCode quits."
     end
   end
 
