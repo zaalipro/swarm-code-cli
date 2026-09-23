@@ -24,7 +24,8 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
     RunPalette,
     RunRow,
     RunsDashboard,
-    Support
+    Support,
+    Syntax
   }
 
   def project(state, class, background \\ %{})
@@ -132,6 +133,7 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
 
     footer = [overflow | footer]
     {measured_footer, _} = Support.finalize(footer, state.revision)
+    diff? = diff_layer?(layer, state)
 
     paint_options = %Options{
       color_mode: state.capabilities.color_mode,
@@ -217,7 +219,14 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
               true -> %Block.Text{text: text}
             end
           else
-            spans = option_spans(text, id == focus and not footer_focus?, state, rect.width - 2)
+            spans =
+              option_spans(
+                text,
+                id == focus and not footer_focus?,
+                state,
+                rect.width - 2,
+                line_role(diff?, text)
+              )
 
             if action && first?,
               do: Support.action_spans(spans, action),
@@ -240,9 +249,44 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
     }
   end
 
+  # What a detail is, from its ref's suffix (`<id>:diff`, `<id>:reasoning`).
+  defp detail_words(ref) when is_binary(ref) do
+    cond do
+      String.ends_with?(ref, ":diff") -> "Diff"
+      String.ends_with?(ref, ":reasoning") -> "Reasoning"
+      String.ends_with?(ref, ":arguments") -> "Arguments"
+      true -> "Full text"
+    end
+  end
+
+  defp detail_words(_ref), do: "Full text"
+
+  # A diff reads in its colours: the detail of a `…:diff` ref, or of text that
+  # is a unified diff, and the Changes feature's git diff.
+  defp diff_layer?({:detail, _run, ref}, state) do
+    (is_binary(ref) and String.ends_with?(ref, ":diff")) or
+      match?(%{window: %{text: "diff --git" <> _}}, state.detail) or
+      match?(%{window: %{text: "@@ " <> _}}, state.detail)
+  end
+
+  defp diff_layer?({:library, :changes}, _state), do: true
+  defp diff_layer?(_layer, _state), do: false
+
+  defp line_role(false, _text), do: :text_primary
+
+  defp line_role(true, text) do
+    case text |> SafeText.value() |> Syntax.line(:diff) do
+      [{_, :add}] -> :success
+      [{_, :del}] -> :error
+      [{_, :hunk}] -> :info
+      [{_, :meta}] -> :text_muted
+      _ -> :text_primary
+    end
+  end
+
   # One option row in colour: two cells of rail (the accent stripe when
   # focused), the text, and for the focused row the hover surface to the edge.
-  defp option_spans(text, focused?, state, width) do
+  defp option_spans(text, focused?, state, width, role) do
     policy = state.capabilities.ambiguous_width
     used = Width.cells(SafeText.value(text), policy) + 2
 
@@ -267,7 +311,7 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
     else
       [
         %Span{text: Density.safe("  ", state, 2), style: RunRow.tinted(:text_primary, state)},
-        %Span{text: text, style: RunRow.tinted(:text_primary, state)}
+        %Span{text: text, style: RunRow.tinted(role, state)}
       ]
     end
   end
@@ -447,7 +491,9 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
         next ++ [control("cancel", SafeText.chrome(:cancel), {:local, :close_top_layer})]
 
     offset = if window, do: window.offset, else: 0
-    title = Density.safe("Detail · byte #{offset}", state, rect.width - 2)
+    words = detail_words(elem(hd(state.layers), 2))
+    words = if offset > 0, do: words <> " · continued", else: words
+    title = Density.safe(words, state, rect.width - 2)
 
     {title, options, footer,
      if(state.focus in ["cancel", "next", "previous"], do: state.focus, else: "dialog")}

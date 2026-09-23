@@ -27,14 +27,27 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
     context = Context.of(state)
     budget = if class in [:xl, :wide, :medium], do: 2, else: 1
 
-    left = vim_spans(state, context) ++ facts(state, class)
+    lead = [gap(" ", state)] ++ vim_spans(state, context)
+    lead_cells = cells(lead, policy)
+    parts = facts(state, class)
     toast = toast(state)
     right = toast || hints(state, context, budget)
-
-    left = [gap(" ", state)] ++ left
     right = if right == [], do: [], else: right ++ [gap(" ", state)]
-    left_cells = cells(left, policy)
+
+    # The hints give way before the facts that matter most (mode, waiting,
+    # a rate limit, the connection); the other facts give way to the hints,
+    # least useful first, rather than being cut mid-word at the edge.
+    right =
+      if toast == nil and right != [] and
+           lead_cells + cells(render(essential(parts), state), policy) + cells(right, policy) + 2 >
+             width,
+         do: [],
+         else: right
+
     right_cells = cells(right, policy)
+    room = if right == [], do: width - lead_cells, else: width - lead_cells - right_cells - 2
+    left = lead ++ render(fit(parts, room, policy, state), state)
+    left_cells = cells(left, policy)
 
     spans =
       cond do
@@ -134,15 +147,61 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
       end
 
     connection = connection(state)
+    limit = rate_limit(state)
+    background = background(state)
 
+    # {rank, fact}: the higher the rank, the longer a fact holds its place
+    # when the row is short.
     parts =
       if class in [:narrow, :small, :compressed_small],
-        do: [mode, approval, model, waiting, connection],
-        else: [mode, approval, trust, model, agents, context, cost, waiting, connection]
+        do: [
+          {100, mode},
+          {70, approval},
+          {60, model},
+          {90, waiting},
+          {85, limit},
+          {95, connection}
+        ],
+        else: [
+          {100, mode},
+          {70, approval},
+          {65, trust},
+          {60, model},
+          {20, agents},
+          {50, context},
+          {40, cost},
+          {45, background},
+          {90, waiting},
+          {85, limit},
+          {95, connection}
+        ]
 
+    Enum.reject(parts, &is_nil(elem(&1, 1)))
+  end
+
+  defp essential(parts), do: Enum.filter(parts, &(elem(&1, 0) >= 85))
+
+  # Drop the lowest-ranked fact (the rightmost of equals) until the row fits.
+  defp fit(parts, room, policy, state) do
+    if length(parts) <= 1 or cells(render(parts, state), policy) <= room do
+      parts
+    else
+      {rank, _} = Enum.min_by(parts, &elem(&1, 0))
+
+      index =
+        parts
+        |> Enum.with_index()
+        |> Enum.filter(&(elem(elem(&1, 0), 0) == rank))
+        |> List.last()
+        |> elem(1)
+
+      parts |> List.delete_at(index) |> fit(room, policy, state)
+    end
+  end
+
+  defp render(parts, state) do
     parts
-    |> Enum.reject(&is_nil/1)
-    |> Enum.map(fn {text, style} -> span(text, style, state) end)
+    |> Enum.map(fn {_rank, {text, style}} -> span(text, style, state) end)
     |> Enum.intersperse(span(" · ", tint(:plain, state, :text_ghost, []), state))
   end
 
@@ -275,12 +334,86 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
 
   defp error(state), do: tint(:plain, state, :error, [])
 
+  # A provider that limited us: its countdown while the daemon waits, else a
+  # warning once a window is nearly spent (C1 rate limits, kept by E's read
+  # model under `rate_limits`).
+  defp rate_limit(state) do
+    now = Map.get(state, :now)
+    limits = rate_limits(state)
+
+    waiting =
+      Enum.find(limits, fn limit ->
+        is_integer(Map.get(limit, :retry_at)) and is_integer(now) and limit.retry_at > now
+      end)
+
+    busy =
+      limits
+      |> Enum.filter(&(is_number(Map.get(&1, :used_percent)) and &1.used_percent >= 80))
+      |> Enum.max_by(& &1.used_percent, fn -> nil end)
+
+    cond do
+      waiting ->
+        {provider_name(waiting) <> " limited · " <> Turns.duration_text(waiting.retry_at - now),
+         tint(:plain, state, :warning, [:bold])}
+
+      busy ->
+        {provider_name(busy) <> " " <> Integer.to_string(round(busy.used_percent)) <> "%",
+         tint(:plain, state, :warning, [])}
+
+      true ->
+        nil
+    end
+  end
+
+  # E's live map by provider wins over the shell snapshot's list.
+  defp rate_limits(state) do
+    live = Map.get(state.read_model, :rate_limits, %{})
+    shell = Map.get(state.read_model.snapshots, :shell)
+    listed = if shell, do: Map.get(shell, :rate_limits, []), else: []
+
+    listed
+    |> Enum.reject(&Map.has_key?(live, Map.get(&1, :provider_id)))
+    |> Enum.concat(Map.values(live))
+  end
+
+  defp provider_name(limit) do
+    case Map.get(limit, :provider) do
+      name when is_binary(name) and name != "" -> name
+      _ -> "provider"
+    end
+  end
+
+  # Commands an agent handed to the background and that still run.
+  defp background(state) do
+    live = Map.get(state.read_model, :background, %{})
+    workspace = Map.get(state.read_model.snapshots, :workspace)
+
+    commands =
+      if map_size(live) > 0 or is_nil(workspace),
+        do: Map.values(live),
+        else: Map.get(workspace, :background, [])
+
+    running = Enum.filter(commands, &(Map.get(&1, :state) == :running))
+
+    case running do
+      [] ->
+        nil
+
+      [one] ->
+        command = one |> Map.get(:command, "") |> to_string() |> String.split("\n") |> hd()
+        {"bg " <> command, tint(:plain, state, :info, [])}
+
+      many ->
+        {"#{length(many)} in background", tint(:plain, state, :info, [])}
+    end
+  end
+
   # Feedback in words, on the right of the row, instead of the key hints.
   defp toast(state) do
     text_role =
       case state.notice do
         {:command_feedback, text} when is_binary(text) -> {first_line(text), :info}
-        nil -> mutation_toast(state)
+        nil -> mutation_toast(state) || daemon_toast(state)
         other -> {notice_words(other), :error}
       end
 
@@ -291,6 +424,34 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
   end
 
   defp first_line(text), do: text |> String.split(["\r\n", "\n"], parts: 2) |> hd()
+
+  # The daemon's newest toast (C1, kept by E's read model), for a few seconds.
+  @toast_ms 8_000
+
+  defp daemon_toast(state) do
+    now = Map.get(state, :now)
+
+    case Map.get(state.read_model, :toasts, []) do
+      [%{at: at} = toast | _] when is_integer(at) and is_integer(now) and now - at < @toast_ms ->
+        title = Map.get(toast, :title) || ""
+        text = Map.get(toast, :text) || ""
+        words = if text == "", do: title, else: title <> " · " <> first_line(text)
+
+        role =
+          case Map.get(toast, :level) do
+            :success -> :success
+            :waiting -> :warning
+            :warning -> :warning
+            :error -> :error
+            _ -> :info
+          end
+
+        if words == "", do: nil, else: {words, role}
+
+      _ ->
+        nil
+    end
+  end
 
   defp notice_words({kind, reason}) when is_atom(kind) and is_atom(reason),
     do: sentence(Atom.to_string(kind) <> ": " <> Atom.to_string(reason))

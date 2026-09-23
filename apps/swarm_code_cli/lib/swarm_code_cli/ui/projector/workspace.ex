@@ -100,7 +100,34 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
     facts = Composer.facts(state, rect.width)
     panel = if run, do: mode_panel(state, run, rect.width, class), else: []
     panel = if panel == [], do: [], else: panel ++ [Support.text(" ", state, rect.width)]
-    facts ++ panel
+    facts ++ trust_banner(state, rect.width) ++ panel
+  end
+
+  # A project the user has not trusted runs read-only (pass 63 trust): say so
+  # once, above the conversation, with the command that changes it.
+  defp trust_banner(state, width) do
+    workspace = Map.get(state.read_model.snapshots, :workspace)
+
+    if workspace && Map.get(workspace, :trusted) == false do
+      warn = %{RunRow.tinted(:warning, state) | modifiers: [:bold]}
+      text = RunRow.tinted(:text_muted, state)
+      key = %{RunRow.tinted(:key, state) | modifiers: [:bold]}
+
+      spans =
+        [
+          {"  ! ", warn},
+          {"This project is not trusted, so SwarmCode only reads it. ", text},
+          {"/trust", key},
+          {" trusts it.", text}
+        ]
+        |> Enum.map(fn {words, style} ->
+          %Span{text: Density.safe(words, state, width), style: style}
+        end)
+
+      [%Block.RichText{spans: spans}, Support.text(" ", state, width)]
+    else
+      []
+    end
   end
 
   @doc """
@@ -377,8 +404,28 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
         nil -> []
       end
 
-    Enum.map(text ++ reasoning, fn {label, item} ->
-      ref = if label == "Full reasoning", do: item.reasoning_detail_ref, else: item.detail_ref
+    # The selected edit's diff, else the newest one in the conversation.
+    selected = Map.get(state.selection, "main")
+
+    edits =
+      state.read_model.transcript
+      |> Map.values()
+      |> Enum.filter(&match?(%{tool: %{diff_ref: %{id: id}}} when is_binary(id), &1))
+      |> Enum.sort_by(&{&1.created_sequence, &1.id}, :desc)
+
+    diff =
+      case Enum.find(edits, &(&1.id == selected)) || List.first(edits) do
+        nil -> []
+        item -> [{"Open diff", item}]
+      end
+
+    Enum.map(text ++ reasoning ++ diff, fn {label, item} ->
+      ref =
+        case label do
+          "Full reasoning" -> item.reasoning_detail_ref
+          "Open diff" -> item.tool.diff_ref
+          _ -> item.detail_ref
+        end
 
       Support.action(
         Density.safe(label, state, 40),

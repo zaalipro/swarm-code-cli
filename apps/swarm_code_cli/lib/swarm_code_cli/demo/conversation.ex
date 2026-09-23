@@ -17,6 +17,9 @@ defmodule SwarmCodeCLI.Demo.Conversation do
     * `:long` — five runs, an 80-line reply and a 21-call run.
     * `:failed_workflow` — ten runs ending in a failed 14-agent workflow, the shape
       of the conversation that crashed the run palette.
+    * `:trouble` — an untrusted project: an edit with its diff, a failing test
+      command, a server left in the background, and a turn the provider
+      rate-limited, retrying in 42 seconds.
     * `:empty` — a conversation with no runs yet.
   """
   alias SwarmCodeCLI.UI.{Capabilities, Draft, Drafts, Editor, ReadModel, Size, State}
@@ -28,7 +31,14 @@ defmodule SwarmCodeCLI.Demo.Conversation do
   @model "deepseek-v4.1-flash"
 
   @type scene ::
-          :first_reply | :approval | :approval_edit | :swarm | :long | :failed_workflow | :empty
+          :first_reply
+          | :approval
+          | :approval_edit
+          | :swarm
+          | :long
+          | :failed_workflow
+          | :trouble
+          | :empty
 
   @spec clock() :: pos_integer()
   def clock, do: @clock
@@ -51,6 +61,8 @@ defmodule SwarmCodeCLI.Demo.Conversation do
       },
       snapshots: %{workspace: workspace(runs)}
     }
+
+    model = decorate(scene, model)
 
     editor = Editor.new(ambiguous_width: capabilities.ambiguous_width)
     draft = Draft.new({@conversation, :main}, editor)
@@ -91,6 +103,78 @@ defmodule SwarmCodeCLI.Demo.Conversation do
       ]
     }
   end
+
+  # What a scene adds beyond runs and items: trust, background commands, rate
+  # limits and the changes ledger, as the daemon's snapshots carry them.
+  defp decorate(:trouble, model) do
+    workspace = %{
+      model.snapshots.workspace
+      | trusted: false,
+        approval_mode: :read_only,
+        background: [
+          %DTO.BackgroundCommand{
+            id: "demo-bg-1",
+            run_id: "demo-run-2",
+            pid: 48_211,
+            command: "mix phx.server",
+            cwd: ".",
+            state: :running,
+            started_at: @clock - 200_000,
+            output_bytes: 18_400
+          }
+        ]
+    }
+
+    shell = %DTO.ShellSnapshot{
+      rate_limits: [
+        %DTO.RateLimit{
+          provider_id: "p1",
+          provider: "llmotions",
+          scope: "requests",
+          used_percent: 100.0,
+          retry_at: @clock + 42_000
+        }
+      ]
+    }
+
+    changes = %{
+      "demo-change-1" => %DTO.Change{
+        id: "demo-change-1",
+        run_id: "demo-run-2",
+        agent_id: nil,
+        path: "lib/tickets/guard.ex",
+        restorable: true,
+        at: @clock - 190_000,
+        op_id: "demo-run-2-node-4",
+        file_state: :modified,
+        added: 5,
+        removed: 1,
+        diff_ref: %DTO.DetailRef{id: "demo-checkpoint-1:diff", total_bytes: 420},
+        revision: 1
+      },
+      "demo-change-2" => %DTO.Change{
+        id: "demo-change-2",
+        run_id: "demo-run-2",
+        agent_id: nil,
+        path: "test/tickets/guard_test.exs",
+        restorable: true,
+        at: @clock - 185_000,
+        op_id: "demo-run-2-node-5",
+        file_state: :created,
+        added: 18,
+        removed: 0,
+        revision: 1
+      }
+    }
+
+    %{
+      model
+      | snapshots: %{model.snapshots | workspace: workspace} |> Map.put(:shell, shell),
+        changes: changes
+    }
+  end
+
+  defp decorate(_scene, model), do: model
 
   # --- scenes -----------------------------------------------------------------
 
@@ -135,6 +219,13 @@ defmodule SwarmCodeCLI.Demo.Conversation do
       end)
 
     {runs, items, [], []}
+  end
+
+  defp build(:trouble) do
+    {first, first_items} = first_reply(1, -900_000)
+    {second, second_items} = edit_turn(2, -240_000)
+    {third, third_items} = limited_turn(3, -60_000)
+    {[first, second, third], first_items ++ second_items ++ third_items, [], []}
   end
 
   defp build(:failed_workflow) do
@@ -340,6 +431,97 @@ defmodule SwarmCodeCLI.Demo.Conversation do
     }
 
     {run, items, interaction}
+  end
+
+  @guard_diff """
+  diff --git a/lib/tickets/guard.ex b/lib/tickets/guard.ex
+  --- a/lib/tickets/guard.ex
+  +++ b/lib/tickets/guard.ex
+  @@ -12,9 +12,13 @@ defmodule Tickets.Guard do
+     alias Tickets.Policy
+
+  -  def check(actor, ticket) do
+  +  def authorize(actor, ticket) do
+       Policy.allowed?(actor, :transition, ticket)
+     end
+  +
+  +  @deprecated "Use authorize/2"
+  +  def check(actor, ticket), do: authorize(actor, ticket)
+  +
+     def owner?(actor, ticket), do: ticket.owner_id == actor.id
+  """
+
+  @test_failure """
+  ..........F
+
+    1) test authorize/2 lets the owner move the ticket (Tickets.GuardTest)
+       test/tickets/guard_test.exs:14
+       ** (UndefinedFunctionError) function Tickets.Guard.authorize/2 is undefined
+
+  Finished in 0.4 seconds (0.3s async, 0.1s sync)
+  11 tests, 1 failure
+  """
+
+  defp edit_turn(n, start) do
+    run = run(n, :chat, "Rename the ticket guard", :done, start, 38_000)
+    sentence = "I'll rename the guard, keep a deprecated alias and run the guard tests."
+
+    items = [
+      user(run, 0, start, "Rename the ticket guard to authorize/2 and run its tests"),
+      message(
+        run,
+        1,
+        start + 200,
+        sentence <>
+          "\n\nRenamed `check/2` to `authorize/2` in `lib/tickets/guard.ex` and kept `check/2` " <>
+          "as a deprecated alias. One guard test still fails until the recompiled module loads; " <>
+          "the dev server is running in the background so you can try it.",
+        tokens_in: 21_300,
+        tokens_out: 1_210
+      ),
+      step(run, 2, start + 400, sentence, 2_400),
+      tool(run, 3, start + 2_800, "read_file", "read lib/tickets/guard.ex", "48 lines", 9,
+        files: ["lib/tickets/guard.ex"]
+      ),
+      tool(run, 4, start + 3_000, "edit_file", "edit lib/tickets/guard.ex", "+5 −1", 14,
+        files: ["lib/tickets/guard.ex"],
+        text: String.trim_trailing(@guard_diff),
+        tool_fields: [
+          added: 5,
+          removed: 1,
+          diff_ref: %DTO.DetailRef{id: "demo-run-#{n}-node-4:diff", total_bytes: 420}
+        ]
+      ),
+      tool(run, 5, start + 3_400, "run_command", "run mix test test/tickets", "", 6_200,
+        text: String.trim_trailing(@test_failure),
+        tool_fields: [exit_code: 2]
+      ),
+      tool(run, 6, start + 10_000, "run_command", "run mix phx.server", "", 10_000,
+        tool_fields: [background: true]
+      )
+    ]
+
+    {run, items}
+  end
+
+  defp limited_turn(n, start) do
+    run =
+      run(n, :chat, "Now update the callers", :failed, start, 4_000,
+        error: "429 Too Many Requests",
+        error_kind: "rate_limit",
+        stop_label: "rate limit",
+        provider_name: "llmotions",
+        retry_at: @clock + 42_000,
+        tokens_in: 900,
+        tokens_out: 0
+      )
+
+    items = [
+      user(run, 0, start, "Now update the two callers in lib/tickets to use authorize/2"),
+      step(run, 1, start + 200, "", 3_800, state: :failed)
+    ]
+
+    {run, items}
   end
 
   defp long_reply(n, start, lines) do
@@ -640,7 +822,8 @@ defmodule SwarmCodeCLI.Demo.Conversation do
     status = Keyword.get(extra, :status, :done)
     files = Keyword.get(extra, :files, [])
     text = Keyword.get(extra, :text, "")
-    fields = Keyword.drop(extra, [:status, :files, :text])
+    tool_fields = Keyword.get(extra, :tool_fields, [])
+    fields = Keyword.drop(extra, [:status, :files, :text, :tool_fields])
 
     item(
       run,
@@ -651,17 +834,21 @@ defmodule SwarmCodeCLI.Demo.Conversation do
         kind: :tool,
         state: status,
         text: text,
-        tool: %DTO.ToolCall{
-          name: name,
-          title: title,
-          detail: detail,
-          status: status,
-          started_at: @clock + at,
-          finished_at: if(duration, do: @clock + at + duration),
-          duration_ms: duration,
-          result_bytes: byte_size(text),
-          files: files
-        }
+        tool:
+          struct!(
+            %DTO.ToolCall{
+              name: name,
+              title: title,
+              detail: detail,
+              status: status,
+              started_at: @clock + at,
+              finished_at: if(duration, do: @clock + at + duration),
+              duration_ms: duration,
+              result_bytes: byte_size(text),
+              files: files
+            },
+            tool_fields
+          )
       ] ++ fields
     )
   end

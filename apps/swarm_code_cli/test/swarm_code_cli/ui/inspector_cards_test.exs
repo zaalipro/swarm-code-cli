@@ -426,12 +426,12 @@ defmodule SwarmCodeCLI.UI.InspectorCardsTest do
     test "lists the run's files with the agent chip, the restorable mark and the time" do
       {rows, table, _plan, _rect} = :swarm |> state(170, 34, tab: :changes) |> painted()
 
-      assert Enum.at(rows, 1) == "CHANGES · 3 files · 2 agents"
+      assert Enum.at(rows, 1) == "Changes · 3 files · 2 agents"
       assert Enum.at(rows, 2) == ""
       # Newest first; a change nobody can restore has a blank where the mark goes.
       assert Enum.at(rows, 3) =~ ~r/^docs\/architecture\.md +lead {8}\d\d:\d\d$/
-      # A path longer than its column is elided in the middle, keeping the file name.
-      assert Enum.at(rows, 4) =~ ~r/^test\/swarm_…epo_test\.exs builder-4 ✓ \d\d:\d\d$/
+      # A path longer than its column loses whole directories, keeping the file name.
+      assert Enum.at(rows, 4) =~ ~r/^test\/…\/repo_test\.exs +builder-4 ✓ \d\d:\d\d$/
       assert Enum.at(rows, 5) =~ ~r/^lib\/swarm_code\/repo\.ex +builder-4 ✓ \d\d:\d\d$/
 
       assert length(targets(table, {:local, {:open_layer, {:library, :checkpoints}}})) == 3
@@ -453,7 +453,7 @@ defmodule SwarmCodeCLI.UI.InspectorCardsTest do
       state = put_in(state.read_model.changes["change-4"], overlap)
       {rows, _table, plan, rect} = painted(state, :truecolor)
 
-      assert Enum.at(rows, 1) == "CHANGES · 3 files · 3 agents"
+      assert Enum.at(rows, 1) == "Changes · 3 files · 3 agents"
       # The full line — the path and both names — does not fit 42 cells, so the
       # counts stand in and the overlapping rows carry the warning colour.
       assert Enum.at(rows, 2) == "Blast radius · 1 file · 2 agents"
@@ -464,11 +464,41 @@ defmodule SwarmCodeCLI.UI.InspectorCardsTest do
       assert foreground(plan, rect, rows, "docs/architecture.md") == {:rgb, 243, 242, 240}
     end
 
+    test "file states and line counts: a letter, +N −M, and the row opens the diff" do
+      state = state(:swarm, 170, 34, tab: :changes)
+
+      state =
+        state
+        |> update_in([Access.key!(:read_model), Access.key!(:changes), "change-1"], fn change ->
+          %{
+            change
+            | file_state: :modified,
+              added: 12,
+              removed: 3,
+              diff_ref: %DTO.DetailRef{id: "cp-1:diff", total_bytes: 900}
+          }
+        end)
+        |> update_in([Access.key!(:read_model), Access.key!(:changes), "change-2"], fn change ->
+          %{change | file_state: :created, added: 40, removed: 0}
+        end)
+
+      {rows, table, _plan, _rect} = painted(state)
+
+      assert Enum.at(rows, 1) == "Changes · 3 files · +52 −3 · 2 agents"
+
+      assert Enum.at(rows, 4) =~
+               ~r/^A …\/repo_test\.exs \+40 −0 builder-4 ✓ \d\d:\d\d$/
+
+      assert Enum.at(rows, 5) =~ ~r/^M lib\/…\/repo\.ex +\+12 −3 builder-4 ✓ \d\d:\d\d$/
+      assert length(targets(table, {:local, {:open_detail, @run, "cp-1:diff"}})) == 1
+      assert length(targets(table, {:local, {:open_layer, {:library, :checkpoints}}})) == 2
+    end
+
     test "with nothing changed the tab says so" do
       state = state(:chat, 170, 34, tab: :changes)
       {rows, _, _, _} = painted(state)
 
-      assert Enum.at(rows, 1) == "CHANGES"
+      assert Enum.at(rows, 1) == "Changes"
       assert "No files changed yet" in rows
       refute Enum.any?(rows, &String.contains?(&1, "0 files"))
     end

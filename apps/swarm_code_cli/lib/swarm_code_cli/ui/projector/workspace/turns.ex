@@ -436,15 +436,34 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
         [{"paused", {:role, :warning, []}}] ++ spend(run, state, true)
 
       run.state == :failed ->
-        [{"failed", {:role, :error, [:bold]}}] ++ spend(run, state, true)
+        [{"failed", {:role, :error, [:bold]}}] ++ stop_chip(run) ++ spend(run, state, true)
 
       run.state in [:stopped, :interrupted] ->
-        [{Atom.to_string(run.state), :muted}] ++ spend(run, state, true)
+        [{Atom.to_string(run.state), :muted}] ++ stop_chip(run) ++ spend(run, state, true)
 
       true ->
-        spend(run, state, false)
+        case stop_chip(run) do
+          [] -> spend(run, state, false)
+          chip -> tl_space(chip) ++ spend(run, state, true)
+        end
     end
   end
+
+  # Why a turn ended, when that is news: "turn limit", "rate limit". A turn
+  # that simply finished says nothing more than its time.
+  @quiet_stops ["", "done", "completed", "complete", "finished", "end turn", "end_turn", "stop"]
+
+  defp stop_chip(run) do
+    label = Map.get(run, :stop_label)
+
+    if is_binary(label) and String.downcase(String.trim(label)) not in @quiet_stops and
+         String.downcase(label) != Atom.to_string(run.state),
+       do: [{"  " <> label, {:role, :warning, []}}],
+       else: []
+  end
+
+  defp tl_space([{"  " <> text, style} | rest]), do: [{text, style} | rest]
+  defp tl_space(chip), do: chip
 
   defp spend(run, state, leading?) do
     tokens = (run.tokens_in || 0) + (run.tokens_out || 0)
@@ -516,12 +535,20 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
   defp tool_rows(item, state, width, indent \\ @body) do
     tool = item.tool || %DTO.ToolCall{}
     status = if item.tool, do: tool.status, else: item.state
+    # A command that ran but exited non-zero failed, as far as the reader cares.
+    code = Map.get(tool, :exit_code)
+    status = if status == :done and is_integer(code) and code != 0, do: :failed, else: status
     {mark, mark_style} = status_mark(status, state)
     verb = verb(tool)
     target = target(tool, verb)
 
-    counts = edit_counts(item, tool)
-    summary = if counts == [], do: summary_line(tool) || bytes(tool.result_bytes), else: nil
+    counts = edit_counts(item, tool, state)
+
+    summary =
+      if counts == [],
+        do: summary_line(tool) || last_line(item, tool) || bytes(tool.result_bytes),
+        else: nil
+
     duration = tool_duration(tool, state)
 
     right =
@@ -530,6 +557,7 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
           do: [{Density.safe(summary, state, @summary_cells) |> SafeText.value(), :muted}],
           else: []
         ) ++
+        exit_words(tool) ++
         if(duration, do: [{"  " <> duration, :faint}], else: [])
 
     left = [
@@ -541,9 +569,80 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
     ]
 
     expanded? = MapSet.member?(state.expansions, item.id)
-    body = if expanded?, do: preview(item.text, :muted, state, width, indent + 2), else: []
+
+    body =
+      cond do
+        not expanded? -> []
+        diff?(item.text) -> diff_preview(item.text, tool, state, width, indent + 2)
+        true -> preview(item.text, :muted, state, width, indent + 2)
+      end
+
     [spec(left ++ [{:right, right}], nil) | body]
   end
+
+  # A command that failed says its exit code; one handed to the background
+  # says so, since its output keeps arriving after the row.
+  defp exit_words(tool) do
+    code = Map.get(tool, :exit_code)
+
+    cond do
+      Map.get(tool, :background) == true -> [{"  background", {:role, :info, []}}]
+      is_integer(code) and code != 0 -> [{"  exit #{code}", {:role, :error, []}}]
+      true -> []
+    end
+  end
+
+  defp diff?(text) when is_binary(text),
+    do: String.contains?(text, "\n@@ ") or String.starts_with?(text, "@@ ")
+
+  defp diff?(_), do: false
+
+  @diff_preview 12
+
+  # An edit's diff, opened in place: hunks in the diff colours, the first
+  # dozen lines, and how to read the rest.
+  defp diff_preview(text, tool, state, width, indent) do
+    policy = state.capabilities.ambiguous_width
+    inner = max(1, width - indent - 1)
+    pad = String.duplicate(" ", indent)
+
+    lines =
+      text
+      |> admitted(state)
+      |> String.trim_trailing("\n")
+      |> String.split(["\r\n", "\n"])
+      |> Enum.reject(
+        &(String.starts_with?(&1, "--- ") or String.starts_with?(&1, "+++ ") or
+            String.starts_with?(&1, "diff --git ") or String.starts_with?(&1, "index "))
+      )
+
+    shown = Enum.take(lines, @diff_preview)
+    more = length(lines) - length(shown)
+
+    rows =
+      for line <- shown do
+        {head, _rest, _cells} = Width.take_cells(line, inner, policy)
+        [{piece, kind}] = SwarmCodeCLI.UI.Projector.Syntax.line(head, :diff) |> fallback(head)
+        spec([{pad, :plain}, {piece, {:syntax, kind}}], {indent, :code_card})
+      end
+
+    hint =
+      cond do
+        more > 0 and Map.get(tool, :diff_ref) ->
+          "#{ellipsis(state)} #{more} more  (the diff opens in full)"
+
+        more > 0 ->
+          "#{ellipsis(state)} #{more} more  (Enter opens)"
+
+        true ->
+          nil
+      end
+
+    if hint, do: rows ++ [spec([{pad, :plain}, {hint, :faint}], nil)], else: rows
+  end
+
+  defp fallback([], head), do: [{head, :plain}]
+  defp fallback(tokens, _head), do: tokens
 
   defp pad_verb(verb) do
     if String.length(verb) >= @verb_cells,
@@ -576,7 +675,7 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
   end
 
   # `+3 −1` for an edit, from the counts the daemon sends or its `+N −M` detail.
-  defp edit_counts(item, tool) do
+  defp edit_counts(item, tool, state) do
     added = Map.get(item, :added) || Map.get(tool, :added)
     removed = Map.get(item, :removed) || Map.get(tool, :removed)
 
@@ -591,7 +690,10 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
       end
 
     if is_integer(added),
-      do: [{"+#{added}", {:role, :success, []}}, {" −#{removed}", {:role, :error, []}}],
+      do: [
+        {"+#{added}", {:role, :success, []}},
+        {if(state.capabilities.ascii?, do: " -", else: " −") <> "#{removed}", {:role, :error, []}}
+      ],
       else: []
   end
 
@@ -622,6 +724,25 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
         detail
     end
   end
+
+  # A command's verdict is usually its last line ("11 tests, 1 failure"); a
+  # read's is not, so only commands say it.
+  defp last_line(%{text: text}, %{name: name})
+       when is_binary(text) and text != "" and name in ["run_command", "bash", "shell"] do
+    tail = binary_part(text, max(0, byte_size(text) - 512), min(byte_size(text), 512))
+
+    tail
+    |> String.split(["\r\n", "\n"])
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+    |> List.last()
+    |> case do
+      nil -> nil
+      line -> if String.valid?(line), do: line, else: nil
+    end
+  end
+
+  defp last_line(_item, _tool), do: nil
 
   # --- workers ------------------------------------------------------------------------------------
 
@@ -827,8 +948,10 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
   defp footer_rows(%{run: %{state: :failed} = run}, state, width) do
     inner = max(1, width - @body - 3)
 
+    reason = present(run.error) || present(Map.get(run, :stop_label))
+
     lines =
-      case present(run.error) do
+      case reason do
         nil -> "Failed"
         reason -> "Failed · " <> reason
       end
@@ -851,10 +974,7 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
 
     hint =
       spec(
-        [
-          {String.duplicate(" ", @body), :plain},
-          {"  retry from the palette · /model to switch model", :faint}
-        ],
+        [{String.duplicate(" ", @body), :plain}, {"  " <> next_step(run, state), :faint}],
         {@body, :error_card}
       )
 
@@ -868,6 +988,34 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
   end
 
   defp footer_rows(_ctx, _state, _width), do: []
+
+  # What to do about a failed turn: wait for the retry the daemon scheduled,
+  # or retry it and perhaps switch model.
+  defp next_step(run, state) do
+    retry_at = Map.get(run, :retry_at)
+    now = Map.get(state, :now)
+    provider = present(Map.get(run, :provider_name))
+
+    cond do
+      is_integer(retry_at) and is_integer(now) and retry_at > now ->
+        "retrying in " <>
+          duration_text(retry_at - now) <> if(provider, do: " · " <> provider, else: "")
+
+      true ->
+        by = if provider, do: " by " <> provider, else: ""
+
+        case Map.get(run, :error_kind) do
+          "rate_limit" -> "rate limited" <> by <> " · retry in a moment · /model to switch"
+          "usage_limit" -> "out of quota" <> by <> " · /model to switch model"
+          "overloaded" -> "provider busy · retry from the palette · /model to switch"
+          "unauthorized" -> "the key was refused · check the provider in settings"
+          "context_overflow" -> "too long for the model · /compact, then retry"
+          "network" -> "connection dropped · retry from the palette"
+          "timeout" -> "timed out · retry from the palette"
+          _ -> "retry from the palette · /model to switch model"
+        end
+    end
+  end
 
   # --- errors, previews, prose -----------------------------------------------------------------------
 

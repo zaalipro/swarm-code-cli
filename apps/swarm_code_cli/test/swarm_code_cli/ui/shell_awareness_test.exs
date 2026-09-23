@@ -84,13 +84,6 @@ defmodule SwarmCodeCLI.UI.ShellAwarenessTest do
     %{state | destination: {:run, first.id}, watches: watches}
   end
 
-  defp texts(%SafeText{} = t), do: [SafeText.value(t)]
-  defp texts(%{__struct__: _} = t), do: t |> Map.from_struct() |> texts()
-  defp texts(m) when is_map(m), do: m |> Map.values() |> texts()
-  defp texts(l) when is_list(l), do: Enum.flat_map(l, &texts/1)
-  defp texts(t) when is_tuple(t), do: t |> Tuple.to_list() |> texts()
-  defp texts(_), do: []
-
   defp screen(state) do
     {scene, _} = Projector.project(state)
     {:ok, plan} = Paint.build(scene, %Options{color_mode: :truecolor})
