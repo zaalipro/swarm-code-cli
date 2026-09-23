@@ -15,6 +15,19 @@ defmodule SwarmCodeCLI.UI.ScrollMetrics do
 
   def content_height(state, region), do: max(1, viewport(state, region).height)
 
+  # The ids a region scrolls over, in drawn order. The main transcript is
+  # painted in Workspace.Turns' view order (runs grouped, superseded runs left
+  # out), which differs from the daemon's order when runs interleave, so line
+  # scrolling walks that order (pass70 F, D's request).
+  def order(state, :main, :workspace) do
+    case Turns.view_order(state) do
+      [] -> Map.get(state.read_model.order, :workspace, [])
+      ids -> ids
+    end
+  end
+
+  def order(state, _region, slot), do: Map.get(state.read_model.order, slot, [])
+
   # The shell run list has no region of its own any more, but the reducer still
   # keeps its cursor under `:navigator`; its rows are one line each.
   def height(_, :navigator, _), do: 1

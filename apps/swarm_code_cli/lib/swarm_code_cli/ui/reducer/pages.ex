@@ -18,7 +18,7 @@ defmodule SwarmCodeCLI.UI.Reducer.Pages do
   def scroll(state, region, operation) when region in ["main", "inspector"] do
     key = region_key(region)
     slot = slot(state, key)
-    ids = Map.get(state.read_model.order, slot, [])
+    ids = ScrollMetrics.order(state, key, slot)
     before = Map.get(state.scrolls, key, %Scroll{})
     height_for = &ScrollMetrics.height(state, key, &1)
 
@@ -72,7 +72,7 @@ defmodule SwarmCodeCLI.UI.Reducer.Pages do
   def move(state, direction) do
     region = region_key(state.focus)
     slot = slot(state, region)
-    ids = Map.get(state.read_model.order, slot, [])
+    ids = ScrollMetrics.order(state, region, slot)
     key = Atom.to_string(region)
     current = Map.get(state.selection, key)
     index = Enum.find_index(ids, &(&1 == current)) || -1
