@@ -1126,8 +1126,10 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
 
   defp footer_rows(_ctx, _state, _width), do: []
 
-  defp stop_said?(%{kind: :text, role: role, text: text})
-       when role != :user and is_binary(text),
+  # The swarm's own message has the `swarm` role, which arrives as a
+  # `:system` item.
+  defp stop_said?(%{kind: kind, role: role, text: text})
+       when kind in [:text, :system] and role != :user and is_binary(text),
        do: text |> String.trim() |> String.ends_with?("stopped by user.")
 
   defp stop_said?(_item), do: false

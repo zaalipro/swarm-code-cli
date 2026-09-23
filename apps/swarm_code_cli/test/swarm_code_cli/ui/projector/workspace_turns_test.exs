@@ -272,7 +272,11 @@ defmodule SwarmCodeCLI.UI.Projector.WorkspaceTurnsTest do
     state =
       state
       |> replace_item("006", &%{&1 | kind: :text, role: :assistant, tool: nil, text: report})
-      |> replace_item("007", &%{&1 | kind: :text, text: "Swarm stopped by user.", reasoning: ""})
+      # As the daemon sends it: the `swarm` message is a `:system` item.
+      |> replace_item(
+        "007",
+        &%{&1 | kind: :system, text: "Swarm stopped by user.", reasoning: ""}
+      )
       |> put_in(
         [Access.key(:read_model), Access.key(:agents), "agent-3", Access.key(:state)],
         :done
