@@ -126,10 +126,11 @@ defmodule SwarmCodeCLI.UI.ModelPickerTest do
       {state, layer} = open_picker(ready(), "  /swarm_model ")
       assert {:model_picker, :swarm, _} = layer
       rows = ModelPicker.rows(state, layer)
-      assert Enum.map(rows, & &1.current?) == [false, false, false, true]
+      # The model in use's provider (Beta) is listed first (pass70 Q5).
+      assert Enum.map(rows, & &1.current?) == [false, true, false, false]
 
       assert hd(rows).intent ==
-               {:dispatch, :send, "/swarm_model " <> @alpha <> "|gpt-5.5", :main, []}
+               {:dispatch, :send, "/swarm_model " <> @beta <> "|shared-model", :main, []}
     end
 
     test "/model with an argument is sent as an ordinary command, not intercepted" do
@@ -195,6 +196,16 @@ defmodule SwarmCodeCLI.UI.ModelPickerTest do
       assert draft_text(settled) == ""
       assert settled.mutations[{:draft, {"c", :main}}] == {:settled, id, :accepted}
       assert ModelPicker.field_key(layer) not in Map.keys(settled.field_editors.entries)
+    end
+
+    test "the provider of the model in use is listed first" do
+      {state, layer} = open_picker(ready(), "/swarm_model")
+
+      assert [%{provider: "Beta", current?: false}, %{provider: "Beta", current?: true} | rest] =
+               ModelPicker.rows(state, layer)
+
+      assert Enum.map(rest, & &1.provider) == ["Alpha", "Alpha"]
+      assert Enum.filter(rest, & &1.first_in_group?) |> length() == 1
     end
 
     test "Enter on the query picks the first row the filter leaves" do

@@ -114,8 +114,8 @@ defmodule SwarmCodeCLI.UI.ModelPicker do
   def current_provider(_state, :swarm), do: nil
 
   @doc """
-  The rows the query leaves, grouped by provider in the daemon's order, each
-  group's models in the daemon's order. A row matches when the query is a case-insensitive
+  The rows the query leaves, grouped by provider in the daemon's order (the
+  current model's provider first), each group's models in the daemon's order. A row matches when the query is a case-insensitive
   substring of its model or of its provider; an empty query keeps every row.
   `first_in_group?` marks where a surface draws the provider heading;
   `current?` the model in use (on its own provider when the snapshot says
@@ -135,11 +135,15 @@ defmodule SwarmCodeCLI.UI.ModelPicker do
 
     by_provider = Enum.group_by(matching, & &1.provider_id)
 
+    # pass70 Q5: the provider of the model in use comes first, so the marked
+    # row is on the first screen of a long list (the owner's database lists
+    # 145 models, the one in use far below the fold).
     groups =
       matching
       |> Enum.map(& &1.provider_id)
       |> Enum.uniq()
       |> Enum.map(&Map.fetch!(by_provider, &1))
+      |> Enum.sort_by(fn group -> if Enum.any?(group, current?), do: 0, else: 1 end)
 
     for group <- groups,
         {option, index} <- Enum.with_index(group) do
