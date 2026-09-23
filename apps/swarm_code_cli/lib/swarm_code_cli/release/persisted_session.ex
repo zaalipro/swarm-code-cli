@@ -46,16 +46,15 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
   @spec run() :: non_neg_integer()
   def run, do: main(nil, label: :release)
 
-  # The packaged entry points a release may run, chosen by `SWARM_RELEASE_MODE`
+  # The packaged entry points a release may start, chosen by `SWARM_RELEASE_MODE`
   # from this fixed table (runtime input never names a module). `tui` is the
   # default whenever `SWARM_RELEASE_TUI=1`. Each entry returns the exit status.
-  # The table lives here, under `release/`, the one CLI directory allowed to
-  # look modules up at run time (the UI architecture test).
-  @entries %{
-    "tui" => {__MODULE__, :run},
-    "headless" => {SwarmCodeCLI.Release.Headless, :run},
-    "plain" => {SwarmCodeCLI.Release.Headless, :run_plain}
-  }
+  # The headless modes (`-p`, `--plain`) do not start the release: the
+  # launcher evaluates `SwarmCodeCLI.Release.main/1`, which opens the session
+  # through `with_saved_session/2`. The table lives here, under `release/`,
+  # the one CLI directory allowed to look modules up at run time (the UI
+  # architecture test).
+  @entries %{"tui" => {__MODULE__, :run}}
 
   @doc "Runs the release entry named by `SWARM_RELEASE_MODE`; returns the exit status."
   @spec run_entry(String.t()) :: non_neg_integer()
@@ -332,7 +331,20 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
 
       receive do
         {:DOWN, ^owner_monitor, :process, ^owner, :normal} ->
-          :ok
+          # The runtime names a close nobody asked for (the daemon connection
+          # went away, a frame could not be drawn); it is reported now that
+          # the terminal is restored.
+          receive do
+            {:session_closed, words} when is_binary(words) ->
+              {:failed,
+               failure(
+                 @exit_failure,
+                 "The session closed because " <> words <> ".",
+                 "Run swarmcode again; your conversation is saved."
+               )}
+          after
+            0 -> :ok
+          end
 
         {:DOWN, ^owner_monitor, :process, ^owner, reason} ->
           Logger.error("terminal owner stopped: #{inspect(reason)}")
