@@ -45,7 +45,7 @@ defmodule SwarmCodeCLI.UI.ConversationsTest do
     state
   end
 
-  defp workspace(id, extra \\ []) do
+  defp workspace(id, extra) do
     struct!(
       %DTO.WorkspaceSnapshot{
         conversation_id: id,
@@ -145,6 +145,28 @@ defmodule SwarmCodeCLI.UI.ConversationsTest do
     refute Enum.any?(labels, &String.contains?(&1, @a))
   end
 
+  test "the palette keeps the service's order, the open one last before New conversation" do
+    {state, effects} = send_draft(ready(), "/resume")
+    [request] = for {:query, request} <- effects, do: request
+
+    newest_first = %DTO.ConversationList{
+      project: "ailogic",
+      current_id: @a,
+      items: [
+        %DTO.ConversationSummary{id: @b, title: "Zebra migration", run_count: 1},
+        %DTO.ConversationSummary{id: @a, title: "Alpha review", run_count: 2, current: true}
+      ]
+    }
+
+    {state, []} = respond(state, request, newest_first)
+
+    titles =
+      for %{kind: :conversation} = entry <- Switcher.visible(state),
+          do: entry.title || entry.label
+
+    assert ["Zebra migration", "Alpha review", "New conversation"] = titles
+  end
+
   test "a picked conversation switches the service, then the view follows" do
     {state, effects} = Reducer.update(ready(), {:open_layer, Switcher.open(ready(), "main")})
     [list_request] = for {:query, request} <- effects, do: request
@@ -219,13 +241,13 @@ defmodule SwarmCodeCLI.UI.ConversationsTest do
     assert request.origin == {:project, :update}
   end
 
-  test "Enter on the /resume query picks the first conversation" do
+  test "Enter on the /resume query opens the newest other conversation" do
     {state, effects} = send_draft(ready(), "/resume")
     [request] = for {:query, request} <- effects, do: request
     {state, _} = respond(state, request, list())
     table = Map.new(Switcher.visible(state), &{&1.id, &1.target})
 
-    assert {:ok, {:open_conversation, @a}} = Keymap.resolve(Input.key(:enter), state, table)
+    assert {:ok, {:open_conversation, @b}} = Keymap.resolve(Input.key(:enter), state, table)
   end
 
   describe "the model picker" do

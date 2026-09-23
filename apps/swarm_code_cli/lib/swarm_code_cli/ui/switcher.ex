@@ -3,7 +3,20 @@ defmodule SwarmCodeCLI.UI.Switcher.Entry do
   # `title` and `detail` are the two halves of `label` ("Fix login" and
   # "3 runs · live") for a surface that draws them apart; `current?` marks the
   # conversation or model in use.
-  defstruct [:id, :label, :kind, :target, :title, :detail, recent?: false, current?: false]
+  # `order` keeps a source's own order among equally good matches (the
+  # service lists conversations newest first); 0 for everything else.
+  defstruct [
+    :id,
+    :label,
+    :kind,
+    :target,
+    :title,
+    :detail,
+    recent?: false,
+    current?: false,
+    order: 0
+  ]
+
   @type t :: %__MODULE__{}
 end
 
@@ -79,8 +92,15 @@ defmodule SwarmCodeCLI.UI.Switcher do
 
   # The project's conversations by title, newest first, as the service listed
   # them; the one on screen is marked rather than offered as a switch.
+  # The others come first in the service's order (newest first), then the
+  # one on screen, then "New conversation": Enter after /resume opens the
+  # most recent other conversation.
   defp conversation_entries(%{conversations: %{items: items}}) when is_list(items) do
-    Enum.map(items, fn item ->
+    {current, others} = Enum.split_with(items, &(&1.current == true))
+
+    (others ++ current)
+    |> Enum.with_index(-1_000)
+    |> Enum.map(fn {item, order} ->
       title = conversation_title(item)
       detail = conversation_detail(item)
 
@@ -88,7 +108,8 @@ defmodule SwarmCodeCLI.UI.Switcher do
         entry(title <> " · " <> detail, :conversation, {:local, {:open_conversation, item.id}})
         | title: title,
           detail: detail,
-          current?: item.current == true
+          current?: item.current == true,
+          order: order
       }
     end)
   end
@@ -191,7 +212,8 @@ defmodule SwarmCodeCLI.UI.Switcher do
       if is_nil(score),
         do: [],
         else: [
-          {{score, Enum.find_index(@kinds, &(&1 == entry.kind)) || 99, label, entry.id}, entry}
+          {{score, Enum.find_index(@kinds, &(&1 == entry.kind)) || 99, entry.order, label,
+            entry.id}, entry}
         ]
     end)
     |> Enum.sort_by(&elem(&1, 0))
