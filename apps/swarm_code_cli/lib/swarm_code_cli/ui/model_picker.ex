@@ -137,13 +137,16 @@ defmodule SwarmCodeCLI.UI.ModelPicker do
 
     # pass70 Q5: the provider of the model in use comes first, so the marked
     # row is on the first screen of a long list (the owner's database lists
-    # 145 models, the one in use far below the fold).
+    # 145 models, the one in use far below the fold). Q15: and the model in
+    # use heads its group, since one provider alone lists 140 of them.
+    first = fn rows, first? -> Enum.sort_by(rows, &if(first?.(&1), do: 0, else: 1)) end
+
     groups =
       matching
       |> Enum.map(& &1.provider_id)
       |> Enum.uniq()
-      |> Enum.map(&Map.fetch!(by_provider, &1))
-      |> Enum.sort_by(fn group -> if Enum.any?(group, current?), do: 0, else: 1 end)
+      |> Enum.map(&first.(Map.fetch!(by_provider, &1), current?))
+      |> first.(&Enum.any?(&1, current?))
 
     for group <- groups,
         {option, index} <- Enum.with_index(group) do

@@ -126,11 +126,12 @@ defmodule SwarmCodeCLI.UI.ModelPickerTest do
       {state, layer} = open_picker(ready(), "  /swarm_model ")
       assert {:model_picker, :swarm, _} = layer
       rows = ModelPicker.rows(state, layer)
-      # The model in use's provider (Beta) is listed first (pass70 Q5).
-      assert Enum.map(rows, & &1.current?) == [false, true, false, false]
+      # The model in use's provider (Beta) is listed first (pass70 Q5), and
+      # the model in use first in it (Q15).
+      assert Enum.map(rows, & &1.current?) == [true, false, false, false]
 
       assert hd(rows).intent ==
-               {:dispatch, :send, "/swarm_model " <> @beta <> "|shared-model", :main, []}
+               {:dispatch, :send, "/swarm_model " <> @beta <> "|beta-mini", :main, []}
     end
 
     test "/model with an argument is sent as an ordinary command, not intercepted" do
@@ -198,11 +199,15 @@ defmodule SwarmCodeCLI.UI.ModelPickerTest do
       assert ModelPicker.field_key(layer) not in Map.keys(settled.field_editors.entries)
     end
 
-    test "the provider of the model in use is listed first" do
+    test "the provider of the model in use is listed first, the model in use at its head" do
       {state, layer} = open_picker(ready(), "/swarm_model")
 
-      assert [%{provider: "Beta", current?: false}, %{provider: "Beta", current?: true} | rest] =
-               ModelPicker.rows(state, layer)
+      # pass70 Q15: the marked row is the first row, not the second of a
+      # provider that may list 140 models.
+      assert [
+               %{provider: "Beta", model: "beta-mini", current?: true, first_in_group?: true},
+               %{provider: "Beta", model: "shared-model", current?: false} | rest
+             ] = ModelPicker.rows(state, layer)
 
       assert Enum.map(rest, & &1.provider) == ["Alpha", "Alpha"]
       assert Enum.filter(rest, & &1.first_in_group?) |> length() == 1
