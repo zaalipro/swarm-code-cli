@@ -139,6 +139,16 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
     footer = if height >= 8, do: footer, else: []
     room = max(0, height - length(footer))
 
+    # pass73 T9 (K's `panel_scroll`, the wheel over the panel): the drawn
+    # rows scroll by what the wheel asked, as far as the overflow goes; the
+    # needs-you band stays pinned (R3).
+    drawn = Enum.count(rows, &(elem(&1, 0) != nil))
+
+    skip =
+      min(max(0, Map.get(ctx.state, :panel_scroll, 0) || 0), max(0, drawn - max(room - 1, 0)))
+
+    rows = scrolled(rows, skip)
+
     {kept, _} =
       Enum.reduce_while(rows, {[], 0}, fn r, {acc, n} ->
         cond do
@@ -158,10 +168,28 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
       end)
 
     words =
-      if left > 0, do: "+#{left} more · Ctrl-G all runs", else: "more below · Ctrl-G all runs"
+      cond do
+        left > 0 and skip > 0 -> "+#{left} more · more above · Ctrl-G all runs"
+        left > 0 -> "+#{left} more · Ctrl-G all runs"
+        skip > 0 -> "more above · Ctrl-G all runs"
+        true -> "more below · Ctrl-G all runs"
+      end
 
     more = if room >= 1, do: [row(ctx, [{words, :text_faint}], [])], else: []
     kept ++ more ++ footer
+  end
+
+  defp scrolled(rows, 0), do: rows
+
+  defp scrolled(rows, skip) do
+    {kept, _} =
+      Enum.flat_map_reduce(rows, skip, fn {block, _target, opts} = row, left ->
+        if left == 0 or block == nil or Keyword.get(opts, :band, false),
+          do: {[row], left},
+          else: {[], left - 1}
+      end)
+
+    kept
   end
 
   # Where the band goes (R3, D2): under the run's header when one run is
