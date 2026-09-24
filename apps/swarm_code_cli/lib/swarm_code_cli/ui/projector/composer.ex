@@ -227,13 +227,19 @@ defmodule SwarmCodeCLI.UI.Projector.Composer do
   defdelegate approval_title(item, state), to: ApprovalCard, as: :title
 
   @doc """
-  The row above the composer: the approval card's keys (the rest of the card
-  is at the bottom of main), else a quiet hairline.
+  The row above the composer. pass73 T7 (V1): the approval card is drawn
+  whole at the bottom of main with a blank row under it, so the edge row
+  stays the composer's own (the hive strip or the hairline); the "workflow"
+  hint never takes it from a card. Without a card: the workflow hint, else
+  the hive strip, else a quiet hairline.
   """
   def edge(state, rect) do
     width = rect.width
 
     case ApprovalCard.layout(state, width) do
+      %{edge: :composer} ->
+        HiveStrip.block(state, width) || hairline(state, width)
+
       %{rows: rows, growth: growth} ->
         {left, right} = Enum.at(rows, growth)
         row(left, right, if(growth == 0, do: :approval, else: :approval_body), state, width)
@@ -329,18 +335,6 @@ defmodule SwarmCodeCLI.UI.Projector.Composer do
       n when is_integer(n) and n > 0 -> n
       _ -> 0
     end
-  end
-
-  @doc """
-  The card's rows at `width` cells: the title on the warning tint, the rest
-  on the quiet card surface, so a long body reads as a card, not an alarm.
-  """
-  def card_blocks(rows, state, width) do
-    rows
-    |> Enum.with_index()
-    |> Enum.map(fn {{left, right}, index} ->
-      row(left, right, if(index == 0, do: :approval, else: :approval_body), state, width)
-    end)
   end
 
   # The draft is always drawn: an approval sits on the rows above it.
