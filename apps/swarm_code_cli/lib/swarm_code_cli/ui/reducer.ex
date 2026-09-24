@@ -1822,11 +1822,13 @@ defmodule SwarmCodeCLI.UI.Reducer do
   end
 
   # pass73 S (request K1): a refused steer from the overlay says the
-  # service's words (`Outcome.reason`, read with `Map.get` until S is
-  # merged); a refused send says them through `Reducer.Deliveries`.
-  defp steer_refusal(state, %{kind: {:steer, _, _, _, _}}, %{status: status} = outcome)
-       when status != :accepted do
-    case Map.get(outcome, :reason) do
+  # service's words (`Outcome.reason`); a refused send says them through
+  # `Reducer.Deliveries`. pass73 finisher: so does every other refused
+  # request (a stop, a retry, an approval answer), instead of the notice it
+  # set while it was on its way ("Stopping the turn.").
+  defp steer_refusal(state, %{kind: kind}, %{status: status} = outcome)
+       when status != :accepted and elem(kind, 0) != :dispatch do
+    case outcome.reason do
       %{text: text} when is_binary(text) ->
         if String.trim(text) == "",
           do: state,
@@ -2618,7 +2620,9 @@ defmodule SwarmCodeCLI.UI.Reducer do
 
           from ->
             notice = %{conversation_id: conversation, from: from, to: to, at: next.now}
-            words = "Approvals: " <> mode_words(from) <> " → " <> mode_words(to)
+            # pass73 (V2's request K-5): the toast adds what the new mode
+            # means; the transcript notice (V1) is the short form.
+            words = SwarmCodeCLI.UI.Projector.Status.policy_words(from, to, true)
 
             %{
               next
@@ -2637,13 +2641,9 @@ defmodule SwarmCodeCLI.UI.Reducer do
 
   defp recent_policy_words(%{policy_notices: [%{at: at, from: from, to: to} | _], now: now})
        when is_integer(at) and is_integer(now) and now - at <= @policy_recent_ms,
-       do: "Approvals: " <> mode_words(from) <> " → " <> mode_words(to)
+       do: SwarmCodeCLI.UI.Projector.Status.policy_words(from, to, true)
 
   defp recent_policy_words(_state), do: nil
-
-  defp mode_words(:read_only), do: "read-only"
-  defp mode_words(:auto), do: "auto"
-  defp mode_words(:full_access), do: "full access"
 
   # ------------------------------------------ requests that are not intents
 

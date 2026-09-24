@@ -99,7 +99,8 @@ defmodule SwarmCodeCLI.UI.Reducer.Commands do
       | drafts: drafts,
         requests: Map.delete(state.requests, request.request_id),
         mutations:
-          Map.put(state.mutations, request.origin, {:settled, request.request_id, outcome.status})
+          Map.put(state.mutations, request.origin, {:settled, request.request_id, outcome.status}),
+        mutation_reasons: mutation_reasons(state, request.origin, outcome)
     }
 
     state =
@@ -120,6 +121,33 @@ defmodule SwarmCodeCLI.UI.Reducer.Commands do
 
     {state, []}
   end
+
+  # pass73 (V2's request K-1): why a settled mutation was not carried out,
+  # for the status row's toast (`Status.refusal_words/2`): the daemon's own
+  # sentence when it gave one (S's `Outcome.reason`), else its admission
+  # code. An accepted mutation forgets it.
+  defp mutation_reasons(state, origin, %Outcome{status: status} = outcome)
+       when status != :accepted do
+    reasons = Map.get(state, :mutation_reasons, %{})
+
+    case refusal(outcome) do
+      nil -> Map.delete(reasons, origin)
+      reason -> Map.put(reasons, origin, reason)
+    end
+  end
+
+  defp mutation_reasons(state, origin, _outcome),
+    do: Map.delete(Map.get(state, :mutation_reasons, %{}), origin)
+
+  defp refusal(%Outcome{reason: %{text: text}} = outcome) when is_binary(text) do
+    case String.trim(text) do
+      "" -> refusal(%{outcome | reason: nil})
+      words -> words
+    end
+  end
+
+  defp refusal(%Outcome{error: %{code: code}}) when not is_nil(code), do: code
+  defp refusal(_outcome), do: nil
 
   def context(state, intent) do
     inspector = Enum.find(state.layers, &match?({:run_inspector, _, _}, &1))

@@ -79,11 +79,11 @@ defmodule SwarmCodeCLI.UI.Pass73DeliveryTest do
     {state, _} =
       outcome(state, request, :rejected, [], error: AdmissionError.new(:capacity_exceeded))
 
-    assert [%{status: :refused, reason: "the daemon is busy"}] = state.deliveries
+    assert [%{status: :refused, reason: "SwarmCode is busy"}] = state.deliveries
 
     {state, request} = sent(ready(), "hello")
     {state, _} = outcome(state, request, :deadline_exceeded, [])
-    assert [%{status: :refused, reason: "the daemon did not answer in time"}] = state.deliveries
+    assert [%{status: :refused, reason: "SwarmCode did not answer in time"}] = state.deliveries
   end
 
   test "Enter again before the daemon answers says it is still sending" do
@@ -196,7 +196,9 @@ defmodule SwarmCodeCLI.UI.Pass73DeliveryTest do
 
       {state, _} = metadata(state, :full_access, 5)
       assert [%{from: :auto, to: :full_access, conversation_id: "c"}] = state.policy_notices
-      assert state.notice == {:command_feedback, "Approvals: auto → full access"}
+
+      assert state.notice ==
+               {:command_feedback, "Approvals: auto → full access · nothing asks first"}
 
       # The same mode again is not a change.
       {state, _} = metadata(state, :full_access, 6)
@@ -204,14 +206,20 @@ defmodule SwarmCodeCLI.UI.Pass73DeliveryTest do
 
       {state, _} = metadata(state, :read_only, 7)
       assert [%{from: :full_access, to: :read_only} | _] = state.policy_notices
-      assert state.notice == {:command_feedback, "Approvals: full access → read-only"}
+
+      assert state.notice ==
+               {:command_feedback,
+                "Approvals: full access → read-only · nothing is written or run without you"}
     end
 
     test "a change that arrives with a fresh snapshot is noticed too" do
       state = ready([], snapshot: %{approval_mode: :read_only})
       {state, _} = watch_ready(state, [], %{approval_mode: :auto}, 9)
       assert [%{from: :read_only, to: :auto}] = state.policy_notices
-      assert state.notice == {:command_feedback, "Approvals: read-only → auto"}
+
+      assert state.notice ==
+               {:command_feedback,
+                "Approvals: read-only → auto · edits go ahead, commands ask first"}
     end
 
     test "the service's answer after the change keeps the change's words" do
@@ -229,7 +237,8 @@ defmodule SwarmCodeCLI.UI.Pass73DeliveryTest do
           }
         )
 
-      assert state.notice == {:command_feedback, "Approvals: auto → full access"}
+      assert state.notice ==
+               {:command_feedback, "Approvals: auto → full access · nothing asks first"}
     end
 
     test "the first snapshot is not a change" do
