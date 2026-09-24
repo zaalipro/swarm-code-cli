@@ -512,22 +512,116 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
   end
 
   defp mutation_toast(state) do
+    reasons = Map.get(state, :mutation_reasons) || %{}
+
     state.mutations
     |> Enum.sort_by(&elem(&1, 0))
     |> Enum.reverse()
-    |> Enum.find_value(fn {_origin, mutation} ->
+    |> Enum.find_value(fn {origin, mutation} ->
       case mutation do
-        {:pending, _, _} -> {"Sending…", :info}
-        {:settled, _, :rejected} -> {"The daemon refused that request", :error}
-        {:settled, _, :deadline_exceeded} -> {"That request timed out", :error}
-        {:settled, _, :revision_conflict} -> {"That changed meanwhile; try again", :warning}
-        {:settled, _, :outcome_unknown} -> {"Not sure that went through", :warning}
-        {:settled, _, :needs_input} -> {"That needs your input", :warning}
-        {:settled, _, :interrupted} -> {"Interrupted", :warning}
-        _ -> nil
+        {:pending, _, _} ->
+          {"Sending…", :info}
+
+        {:settled, _, :rejected} ->
+          {refusal_words(origin, Map.get(reasons, origin)), :error}
+
+        {:settled, _, :deadline_exceeded} ->
+          {refusal_words(origin, :deadline_expired), :error}
+
+        {:settled, _, :revision_conflict} ->
+          {refusal_words(origin, :stale_revision), :warning}
+
+        {:settled, _, :outcome_unknown} ->
+          {"Not sure that went through · check the transcript before sending again", :warning}
+
+        {:settled, _, :needs_input} ->
+          {"That needs your answer first · Ctrl-N opens what waits", :warning}
+
+        {:settled, _, :interrupted} ->
+          {"Interrupted · nothing more was done", :warning}
+
+        _ ->
+          nil
       end
     end)
   end
+
+  @doc """
+  pass73 T3/T8: a request SwarmCode did not carry out, in words that say why
+  and what to do, never "The daemon refused that request". `origin` names
+  what was asked (a draft is "Not sent", an approval or question answer "Not
+  answered", anything else "Not done"); `reason` is the typed refusal the
+  daemon gave (an `AdmissionError` code, a `%{code: …}` or `%{reason: …}`
+  map, or the words themselves), nil when it gave none.
+  """
+  @spec refusal_words(term(), term()) :: binary()
+  def refusal_words(origin, reason) do
+    lead =
+      case origin do
+        {:draft, _} -> "Not sent"
+        {:interaction, _, _} -> "Not answered"
+        _ -> "Not done"
+      end
+
+    case refusal_reason(reason) do
+      {why, todo} -> lead <> ": " <> why <> " · " <> todo
+      words when is_binary(words) -> lead <> ": " <> words
+    end
+  end
+
+  defp refusal_reason(%{words: words}) when is_binary(words) and words != "",
+    do: refusal_reason(words)
+
+  defp refusal_reason(%{reason: reason}) when reason != nil, do: refusal_reason(reason)
+  defp refusal_reason(%{code: code}) when code != nil, do: refusal_reason(code)
+
+  defp refusal_reason(code) when code in [:not_allowed, "not_allowed"],
+    do: {"that is not allowed right now", "Ctrl-G shows what runs; try again when it ends"}
+
+  defp refusal_reason(code) when code in [:stale_revision, "stale_revision", :revision_conflict],
+    do: {"it changed meanwhile", "look at it again and retry"}
+
+  defp refusal_reason(code) when code in [:capacity_exceeded, "capacity_exceeded"],
+    do: {"too much is in flight at once", "wait a moment and send it again"}
+
+  defp refusal_reason(code) when code in [:deadline_expired, "deadline_expired"],
+    do: {"SwarmCode took too long to answer", "send it again"}
+
+  defp refusal_reason(code)
+       when code in [:source_unavailable, :closed, :not_bound, "source_unavailable", "closed"],
+       do: {"the connection to SwarmCode is down", "it reconnects by itself; send it again then"}
+
+  defp refusal_reason(code)
+       when code in [:request_conflict, :duplicate_watch, "request_conflict", "duplicate_watch"],
+       do: {"the same request is already on its way", "wait for its answer"}
+
+  defp refusal_reason(code)
+       when code in [:invalid_request, :invalid_intent, :invalid_origin, "invalid_request"],
+       do: {"SwarmCode could not read the request", "nothing changed; edit it and try again"}
+
+  # pass73 S (typed refusal reasons on the wire), as far as the words go.
+  defp refusal_reason(code) when code in [:untrusted, "untrusted", :project_untrusted],
+    do: {"the project is not trusted", "/trust trusts it"}
+
+  defp refusal_reason(code) when code in [:read_only, "read_only"],
+    do: {"approvals are read-only", "/approval auto lets edits go ahead"}
+
+  defp refusal_reason(code) when code in [:no_provider, "no_provider"],
+    do: {"no model provider is set up", "add one in the desktop app's settings"}
+
+  defp refusal_reason(code) when code in [:not_found, "not_found", :gone, "gone"],
+    do: {"it no longer exists", "Ctrl-G shows the runs that do"}
+
+  # Words the daemon (or K's delivery) already put together.
+  defp refusal_reason(words) when is_binary(words) and words != "" do
+    if Regex.match?(~r/^[a-z]+(_[a-z]+)+$/, words),
+      # A code this client does not know yet: its words, and the way to more.
+      do: {String.replace(words, "_", " "), "try again, or see cli.log for why"},
+      else: words |> String.split(["\r\n", "\n"], parts: 2) |> hd() |> String.trim()
+  end
+
+  defp refusal_reason(_unknown),
+    do: {"SwarmCode turned it down", "try again, or see cli.log for why"}
 
   # The strongest `budget` hints for the context, key then word.
   #
