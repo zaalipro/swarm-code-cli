@@ -755,42 +755,7 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
   `SwarmCodeCLI.UI.Composer.enter_action/1`
   (`:send | :steer | :queue | :run_command | :complete | :none`).
   """
-  def enter_action(state) do
-    # Until K's module is merged, the same rule read off the state here.
-    composer = Module.concat(SwarmCodeCLI.UI, Composer)
-
-    if Code.ensure_loaded?(composer) and function_exported?(composer, :enter_action, 1),
-      do: composer.enter_action(state),
-      else: interim_enter_action(state)
-  end
-
-  defp interim_enter_action(state) do
-    text = SwarmCodeCLI.UI.Keymap.draft_text(state)
-
-    cond do
-      String.trim(text) == "" -> :none
-      SlashPalette.open?(state) -> palette_action(state, text)
-      String.starts_with?(text, "/") -> :run_command
-      SwarmCodeCLI.UI.Keymap.live_turn(state) != nil -> :steer
-      true -> :send
-    end
-  end
-
-  defp palette_action(state, text) do
-    case SlashPalette.selected(state) do
-      %{name: name} = item when is_binary(name) ->
-        args = Map.get(item, :args)
-
-        cond do
-          String.trim(text) == "/" <> name -> :run_command
-          is_binary(args) and args != "" -> :complete
-          true -> :run_command
-        end
-
-      _ ->
-        :run_command
-    end
-  end
+  def enter_action(state), do: SwarmCodeCLI.UI.Composer.enter_action(state)
 
   @doc "The word the status row gives each Enter action; nil hides the hint."
   def enter_words(:send), do: "send"
@@ -802,23 +767,17 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
 
   @doc """
   pass73 T6: what Esc does in the composer now, in words, or nil when it does
-  nothing. It mirrors `Keymap.Special.run(:escape, …)`: an open `@path` list
-  closes; else the live turn of this conversation stops when the daemon
-  allows it, named by its agent ("stop Workflow author").
+  nothing (K's `Composer.esc_action/1`): an open `@path` list closes; else the
+  live turn of this conversation stops when the daemon allows it, named by
+  its agent ("stop Workflow author").
   """
   def esc_words(state) do
-    cond do
-      SwarmCodeCLI.UI.Reducer.PathCompletion.open?(state) ->
-        "close"
-
-      true ->
-        case SwarmCodeCLI.UI.Keymap.live_turn(state) do
-          %{allowed_actions: actions} = turn ->
-            if :stop in (actions || []), do: "stop " <> turn_agent_name(state, turn)
-
-          _ ->
-            nil
-        end
+    case SwarmCodeCLI.UI.Composer.esc_action(state) do
+      {:stop, turn} -> "stop " <> turn_agent_name(state, turn)
+      :dismiss_completion -> "close"
+      :close_layer -> "close"
+      :close_overlay -> "back"
+      :none -> nil
     end
   end
 
