@@ -15,6 +15,8 @@ defmodule SwarmCodeCLI.UI.Keymap.Context do
   | `:picker` | the top layer searches or lists: switcher, run palette, runs dashboard, go-to, action menu, region filter, model picker |
   | `:field` | any other layer whose focus is a text field |
   | `:dialog` | any other layer |
+  | `:hint` | hint mode (Ctrl-F), no layer |
+  | `:overlay` | the agent overlay is open, no layer |
 
   A picker is a picker before it is a field: its query *is* the layer, and its
   keys (Ctrl-N, Home, the opening chord) have to beat the field editor's.
@@ -51,6 +53,10 @@ defmodule SwarmCodeCLI.UI.Keymap.Context do
     end
   end
 
+  # pass72: hint mode reads its badge keys before anything under it, and the
+  # agent overlay covers the chat until Esc.
+  def of(%{hint: %{}}), do: :hint
+  def of(%{overlay: %{}}), do: :overlay
   def of(%{focus: "composer"} = state), do: composer(state)
   def of(%{focus: "inspector"}), do: :inspector
   def of(_state), do: :main

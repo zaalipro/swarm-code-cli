@@ -153,7 +153,8 @@ defmodule SwarmCodeCLI.UI.Keymap do
   @doc """
   The slash commands the client answers itself, from the draft's text: a bare
   `/help`, `/quit` (`/exit`), `/new` (`/clear`), `/resume`, `/conversations`,
-  `/trust`, and `/queue` and `/approval` with or without their argument.
+  `/trust`, and `/queue`, `/approval` and `/panel` with or without their
+  argument.
   """
   @spec local_command(binary()) :: atom() | nil
   def local_command(text) when is_binary(text) do
@@ -163,6 +164,7 @@ defmodule SwarmCodeCLI.UI.Keymap do
       Map.has_key?(@local_commands, trimmed) -> Map.fetch!(@local_commands, trimmed)
       command?(trimmed, "/queue") -> :queue
       command?(trimmed, "/approval") -> :approval
+      command?(trimmed, "/panel") -> :panel
       trimmed == "/trust" -> :trust
       true -> nil
     end
@@ -200,6 +202,11 @@ defmodule SwarmCodeCLI.UI.Keymap do
   defp route({:paste, text}, state, _) do
     if grace?(state), do: draft_edit(state, {:paste, text}), else: edit(state, {:paste, text})
   end
+
+  # Ctrl-Space reaches the port as NUL (pass72, K1): it is the chord the
+  # table names Ctrl-Space.
+  defp route({:key, phase, :null, mods}, state, table),
+    do: dispatch(" ", Enum.sort([:control | mods -- [:control]]), phase, state, table)
 
   defp route({:key, phase, code, mods}, state, table),
     do: dispatch(code, Enum.sort(mods), phase, state, table)
@@ -259,8 +266,16 @@ defmodule SwarmCodeCLI.UI.Keymap do
     end
   end
 
-  defp fallthrough(context, code, mods, state) when context in [:composer, :field],
+  defp fallthrough(context, code, mods, state) when context in [:composer, :field, :overlay],
     do: editor_fallthrough(code, mods, state)
+
+  # Hint mode takes every key: a printable one that is no badge ends it (the
+  # reducer says nothing matched), anything else simply ends it. A hint key
+  # never reaches the composer or an approval.
+  defp fallthrough(:hint, code, [], _state) when is_binary(code),
+    do: result({:hint, {:key, code}})
+
+  defp fallthrough(:hint, _code, _mods, _state), do: result({:hint, :cancel})
 
   defp fallthrough(:picker, code, mods, state), do: picker_fallthrough(code, mods, state)
 
@@ -708,6 +723,9 @@ defmodule SwarmCodeCLI.UI.Keymap do
         nil
     end
   end
+
+  # The agent overlay's composer takes the typing wherever its focus ring is.
+  def editor_context(%{overlay: %{draft_key: key}}) when not is_nil(key), do: {:editor, key}
 
   def editor_context(%{focus: "composer"} = state) do
     case State.current_draft_key(state) do

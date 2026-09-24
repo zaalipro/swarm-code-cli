@@ -17,7 +17,9 @@ defmodule SwarmCodeCLI.UI.Keymap.Docs do
     composer_visual: "Composer, vim VISUAL",
     picker: "Pickers: command palette, run palette, runs dashboard, go-to",
     dialog: "Dialogs",
-    field: "Text fields inside dialogs"
+    field: "Text fields inside dialogs",
+    overlay: "Agent overlay",
+    hint: "Hint mode (Ctrl-F)"
   ]
 
   @groups [

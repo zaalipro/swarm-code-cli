@@ -13,7 +13,9 @@ defmodule SwarmCodeCLI.UI.Init do
     id_sequence: 0,
     terminal_generation: 0,
     banner: nil,
-    keymap: :default
+    keymap: :default,
+    # pass72-O: the side panel's mode as the preferences file had it.
+    panel_mode: :full
   ]
 
   @type t :: %__MODULE__{}

@@ -20,6 +20,7 @@ defmodule SwarmCodeCLI.UI.Effect do
           | {:copy, binary()}
           | {:edit_externally, DraftKey.t(), binary()}
           | {:detach, non_neg_integer()}
+          | {:save_preferences, %{panel_mode: :full | :compact | :hidden}}
 
   # What select mode's `y` may put on the clipboard in one OSC 52 write.
   @max_copy_bytes 262_144
@@ -89,6 +90,11 @@ defmodule SwarmCodeCLI.UI.Effect do
 
   def validate({:detach, exit_status} = effect),
     do: valid_effect(effect, is_integer(exit_status) and exit_status >= 0)
+
+  # pass72-O: the session writes the CLI preferences file (the side panel's
+  # mode) in work it owns; the reducer only says what changed.
+  def validate({:save_preferences, %{panel_mode: mode} = preferences} = effect),
+    do: valid_effect(effect, map_size(preferences) == 1 and mode in [:full, :compact, :hidden])
 
   def validate(_effect), do: {:error, :invalid_effect}
 

@@ -30,6 +30,7 @@ the command palette).
 
 | Keys | Does |
 |---|---|
+| `Ctrl-F` / `Ctrl-Space` | Hint mode: a letter opens an agent, a digit a run (not forward-char: Right moves the caret) |
 | `Alt-1` | Switch to the first run tab as drawn |
 | `Alt-2` | Switch to the second run tab as drawn |
 | `Alt-3` | Switch to the third run tab as drawn |
@@ -50,7 +51,7 @@ the command palette).
 | `Ctrl-P` | Command palette; pressed again it keeps the palette and its query |
 | `Ctrl-G` | Runs dashboard; the same chord closes it |
 | `Ctrl-R` | Run palette; the same chord closes it |
-| `Ctrl-B` / `Alt-I` | Show or hide the inspector dock |
+| `Ctrl-B` / `Alt-I` | Side panel: full, compact, hidden (strip or off under 120 columns) |
 | `Alt-H` / `Alt-Shift-H` / `Ctrl-Alt-H` / `Ctrl-Alt-Shift-H` | Narrow the inspector dock (add Ctrl for a bigger step) |
 | `Alt-L` / `Alt-Shift-L` / `Ctrl-Alt-L` / `Ctrl-Alt-Shift-L` | Widen the inspector dock (add Ctrl for a bigger step) |
 | `Alt-0` / `Alt-Shift-0` / `Ctrl-Alt-0` / `Ctrl-Alt-Shift-0` | Reset the inspector dock to its default width |
@@ -141,6 +142,7 @@ the command palette).
 
 | Keys | Does |
 |---|---|
+| `Ctrl-F` / `Ctrl-Space` | Hint mode: a letter opens an agent, a digit a run (not forward-char: Right moves the caret) |
 | `Alt-1` | Switch to the first run tab as drawn |
 | `Alt-2` | Switch to the second run tab as drawn |
 | `Alt-3` | Switch to the third run tab as drawn |
@@ -162,7 +164,7 @@ the command palette).
 |---|---|
 | `Ctrl-P` | Command palette; pressed again it keeps the palette and its query |
 | `Ctrl-G` | Runs dashboard; the same chord closes it |
-| `Ctrl-B` / `Alt-I` | Show or hide the inspector dock |
+| `Ctrl-B` / `Alt-I` | Side panel: full, compact, hidden (strip or off under 120 columns) |
 | `Alt-H` / `Alt-Shift-H` / `Ctrl-Alt-H` / `Ctrl-Alt-Shift-H` | Narrow the inspector dock (add Ctrl for a bigger step) |
 | `Alt-L` / `Alt-Shift-L` / `Ctrl-Alt-L` / `Ctrl-Alt-Shift-L` | Widen the inspector dock (add Ctrl for a bigger step) |
 | `Alt-0` / `Alt-Shift-0` / `Ctrl-Alt-0` / `Ctrl-Alt-Shift-0` | Reset the inspector dock to its default width |
@@ -222,6 +224,7 @@ the command palette).
 
 | Keys | Does |
 |---|---|
+| `Ctrl-F` / `Ctrl-Space` | Hint mode: a letter opens an agent, a digit a run (not forward-char: Right moves the caret) |
 | `Alt-1` | Switch to the first run tab as drawn |
 | `Alt-2` | Switch to the second run tab as drawn |
 | `Alt-3` | Switch to the third run tab as drawn |
@@ -243,7 +246,7 @@ the command palette).
 |---|---|
 | `Ctrl-P` | Command palette; pressed again it keeps the palette and its query |
 | `Ctrl-G` | Runs dashboard; the same chord closes it |
-| `Ctrl-B` / `Alt-I` | Show or hide the inspector dock |
+| `Ctrl-B` / `Alt-I` | Side panel: full, compact, hidden (strip or off under 120 columns) |
 | `Alt-H` / `Alt-Shift-H` / `Ctrl-Alt-H` / `Ctrl-Alt-Shift-H` | Narrow the inspector dock (add Ctrl for a bigger step) |
 | `Alt-L` / `Alt-Shift-L` / `Ctrl-Alt-L` / `Ctrl-Alt-Shift-L` | Widen the inspector dock (add Ctrl for a bigger step) |
 | `Alt-0` / `Alt-Shift-0` / `Ctrl-Alt-0` / `Ctrl-Alt-Shift-0` | Reset the inspector dock to its default width |
@@ -291,6 +294,7 @@ the command palette).
 
 | Keys | Does |
 |---|---|
+| `Ctrl-F` / `Ctrl-Space` | Hint mode: a letter opens an agent, a digit a run (not forward-char: Right moves the caret) |
 | `Alt-1` | Switch to the first run tab as drawn |
 | `Alt-2` | Switch to the second run tab as drawn |
 | `Alt-3` | Switch to the third run tab as drawn |
@@ -321,7 +325,7 @@ the command palette).
 | `Ctrl-P` | Command palette; pressed again it keeps the palette and its query |
 | `Ctrl-G` | Runs dashboard; the same chord closes it |
 | `Ctrl-R` | Run palette; the same chord closes it |
-| `Ctrl-B` / `Alt-I` | Show or hide the inspector dock |
+| `Ctrl-B` / `Alt-I` | Side panel: full, compact, hidden (strip or off under 120 columns) |
 | `Alt-H` / `Alt-Shift-H` / `Ctrl-Alt-H` / `Ctrl-Alt-Shift-H` | Narrow the inspector dock (add Ctrl for a bigger step) |
 | `Alt-L` / `Alt-Shift-L` / `Ctrl-Alt-L` / `Ctrl-Alt-Shift-L` | Widen the inspector dock (add Ctrl for a bigger step) |
 | `Alt-0` / `Alt-Shift-0` / `Ctrl-Alt-0` / `Ctrl-Alt-Shift-0` | Reset the inspector dock to its default width |
@@ -371,6 +375,7 @@ the command palette).
 
 | Keys | Does |
 |---|---|
+| `Ctrl-F` / `Ctrl-Space` | Hint mode: a letter opens an agent, a digit a run (not forward-char: Right moves the caret) |
 | `Alt-1` | Switch to the first run tab as drawn |
 | `Alt-2` | Switch to the second run tab as drawn |
 | `Alt-3` | Switch to the third run tab as drawn |
@@ -401,7 +406,7 @@ the command palette).
 | `Ctrl-P` | Command palette; pressed again it keeps the palette and its query |
 | `Ctrl-G` | Runs dashboard; the same chord closes it |
 | `Ctrl-R` | Run palette; the same chord closes it |
-| `Ctrl-B` / `Alt-I` | Show or hide the inspector dock |
+| `Ctrl-B` / `Alt-I` | Side panel: full, compact, hidden (strip or off under 120 columns) |
 | `Alt-H` / `Alt-Shift-H` / `Ctrl-Alt-H` / `Ctrl-Alt-Shift-H` | Narrow the inspector dock (add Ctrl for a bigger step) |
 | `Alt-L` / `Alt-Shift-L` / `Ctrl-Alt-L` / `Ctrl-Alt-Shift-L` | Widen the inspector dock (add Ctrl for a bigger step) |
 | `Alt-0` / `Alt-Shift-0` / `Ctrl-Alt-0` / `Ctrl-Alt-Shift-0` | Reset the inspector dock to its default width |
@@ -463,7 +468,7 @@ the command palette).
 | `Ctrl-P` | Command palette; pressed again it keeps the palette and its query |
 | `Ctrl-G` | Runs dashboard; the same chord closes it |
 | `Ctrl-R` | Run palette; the same chord closes it |
-| `Ctrl-B` / `Alt-I` | Show or hide the inspector dock |
+| `Ctrl-B` / `Alt-I` | Side panel: full, compact, hidden (strip or off under 120 columns) |
 | `Alt-H` / `Alt-Shift-H` / `Ctrl-Alt-H` / `Ctrl-Alt-Shift-H` | Narrow the inspector dock (add Ctrl for a bigger step) |
 | `Alt-L` / `Alt-Shift-L` / `Ctrl-Alt-L` / `Ctrl-Alt-Shift-L` | Widen the inspector dock (add Ctrl for a bigger step) |
 | `Alt-0` / `Alt-Shift-0` / `Ctrl-Alt-0` / `Ctrl-Alt-Shift-0` | Reset the inspector dock to its default width |
@@ -509,7 +514,7 @@ the command palette).
 | `Ctrl-P` | Command palette; pressed again it keeps the palette and its query |
 | `Ctrl-G` | Runs dashboard; the same chord closes it |
 | `Ctrl-R` | Run palette; the same chord closes it |
-| `Ctrl-B` / `Alt-I` | Show or hide the inspector dock |
+| `Ctrl-B` / `Alt-I` | Side panel: full, compact, hidden (strip or off under 120 columns) |
 | `Alt-H` / `Alt-Shift-H` / `Ctrl-Alt-H` / `Ctrl-Alt-Shift-H` | Narrow the inspector dock (add Ctrl for a bigger step) |
 | `Alt-L` / `Alt-Shift-L` / `Ctrl-Alt-L` / `Ctrl-Alt-Shift-L` | Widen the inspector dock (add Ctrl for a bigger step) |
 | `Alt-0` / `Alt-Shift-0` / `Ctrl-Alt-0` / `Ctrl-Alt-Shift-0` | Reset the inspector dock to its default width |
@@ -592,7 +597,7 @@ the command palette).
 | `Ctrl-P` | Command palette; pressed again it keeps the palette and its query |
 | `Ctrl-G` | Runs dashboard; the same chord closes it |
 | `Ctrl-R` | Run palette; the same chord closes it |
-| `Ctrl-B` / `Alt-I` | Show or hide the inspector dock |
+| `Ctrl-B` / `Alt-I` | Side panel: full, compact, hidden (strip or off under 120 columns) |
 | `Alt-H` / `Alt-Shift-H` / `Ctrl-Alt-H` / `Ctrl-Alt-Shift-H` | Narrow the inspector dock (add Ctrl for a bigger step) |
 | `Alt-L` / `Alt-Shift-L` / `Ctrl-Alt-L` / `Ctrl-Alt-Shift-L` | Widen the inspector dock (add Ctrl for a bigger step) |
 | `Alt-0` / `Alt-Shift-0` / `Ctrl-Alt-0` / `Ctrl-Alt-Shift-0` | Reset the inspector dock to its default width |
@@ -605,3 +610,117 @@ the command palette).
 | `Ctrl-C` | Clear the draft, else stop the turn; twice with nothing to stop quits |
 | `q` | Close the top layer; in select mode with none open, quit |
 | `Esc` | Close the top layer, end a vim mode, or leave select mode |
+
+## Agent overlay
+
+### Navigate
+
+| Keys | Does |
+|---|---|
+| `]` | The next agent in panel order, wrapping (types while the composer has text) |
+| `[` | The previous agent in panel order, wrapping |
+| `↓` | Next group of the activity |
+| `↑` | Previous group of the activity |
+| `PgDn` | Scroll the activity a page down |
+| `PgUp` | Scroll the activity a page up |
+
+### Focus
+
+| Keys | Does |
+|---|---|
+| `Tab` | Focus the band, the activity, the composer (and the pages under 120 columns) |
+| `Shift-Tab` | Move the overlay's focus back |
+
+### Runs
+
+| Keys | Does |
+|---|---|
+| `Ctrl-F` / `Ctrl-Space` | Hint mode: a letter opens an agent, a digit a run (not forward-char: Right moves the caret) |
+| `Alt-1` | Switch to the first run tab as drawn |
+| `Alt-2` | Switch to the second run tab as drawn |
+| `Alt-3` | Switch to the third run tab as drawn |
+| `Alt-4` | Switch to the fourth run tab as drawn |
+
+### Act
+
+| Keys | Does |
+|---|---|
+| `o` | Show every raw operation instead of the grouped activity, and back |
+| `y` / `a` / `Y` / `A` / `d` / `D` / `n` | y/a once, Y this run, A always the family, d deny, D deny + stop, n next; only while the composer is empty |
+| `Enter` | In the composer, steer only this agent; on a group, expand it; on the band, the card |
+| `Alt-Enter` | Queue the draft instead of sending it |
+| `Ctrl-N` | Open the next approval or question waiting on you |
+
+### Layers
+
+| Keys | Does |
+|---|---|
+| `Ctrl-P` | Command palette; pressed again it keeps the palette and its query |
+| `Ctrl-G` | Runs dashboard; the same chord closes it |
+| `Ctrl-B` / `Alt-I` | Side panel: full, compact, hidden (strip or off under 120 columns) |
+| `Alt-H` / `Alt-Shift-H` / `Ctrl-Alt-H` / `Ctrl-Alt-Shift-H` | Narrow the inspector dock (add Ctrl for a bigger step) |
+| `Alt-L` / `Alt-Shift-L` / `Ctrl-Alt-L` / `Ctrl-Alt-Shift-L` | Widen the inspector dock (add Ctrl for a bigger step) |
+| `Alt-0` / `Alt-Shift-0` / `Ctrl-Alt-0` / `Ctrl-Alt-Shift-0` | Reset the inspector dock to its default width |
+
+### Edit
+
+| Keys | Does |
+|---|---|
+| `Ctrl-O` / `Ctrl-J` / `Shift-Enter` | Insert a line break without sending (Ctrl-O or Ctrl-J) |
+| `Ctrl-X` | Edit the draft in $VISUAL or $EDITOR; saving and quitting brings it back |
+| `Ctrl-A` | Move to the start of the line |
+| `Ctrl-E` | Move to the end of the line |
+| `Ctrl-W` | Delete the word before the cursor |
+| `Ctrl-Z` | Undo the last edit |
+| `Ctrl-Shift-Z` | Redo (needs a terminal that reports Ctrl-Shift) |
+
+### Session
+
+| Keys | Does |
+|---|---|
+| `F1` | The keyboard help sheet; the same key closes it |
+| `Esc` | Back to the chat, at the same scroll and with the same draft |
+| `Ctrl-C` | Clear the draft, else stop the turn; twice with nothing to stop quits |
+
+## Hint mode (Ctrl-F)
+
+### Runs
+
+| Keys | Does |
+|---|---|
+| `Ctrl-F` / `Ctrl-Space` | Pressed again: the next request waiting on you (as Ctrl-N) |
+| `s` / `f` / `g` / `h` / `j` / `k` / `l` / `w` / `e` / `r` / `t` / `u` / `i` / `o` / `p` | Open the agent with this badge in the overlay (two letters past 15 agents) |
+| `1` / `2` / `3` / `4` / `5` / `6` / `7` / `8` / `9` | Show the run with this number in the chat |
+| `0` | The runs dashboard (as Ctrl-G) |
+| `Alt-1` | Switch to the first run tab as drawn |
+| `Alt-2` | Switch to the second run tab as drawn |
+| `Alt-3` | Switch to the third run tab as drawn |
+| `Alt-4` | Switch to the fourth run tab as drawn |
+| `]` | Next inspector tab while the inspector is visible |
+| `[` | Previous inspector tab while the inspector is visible |
+
+### Act
+
+| Keys | Does |
+|---|---|
+| `Alt-Enter` | Queue the draft instead of sending it |
+
+### Layers
+
+| Keys | Does |
+|---|---|
+| `Ctrl-P` | Command palette; pressed again it keeps the palette and its query |
+| `Ctrl-G` | Runs dashboard; the same chord closes it |
+| `Ctrl-B` / `Alt-I` | Side panel: full, compact, hidden (strip or off under 120 columns) |
+| `Alt-H` / `Alt-Shift-H` / `Ctrl-Alt-H` / `Ctrl-Alt-Shift-H` | Narrow the inspector dock (add Ctrl for a bigger step) |
+| `Alt-L` / `Alt-Shift-L` / `Ctrl-Alt-L` / `Ctrl-Alt-Shift-L` | Widen the inspector dock (add Ctrl for a bigger step) |
+| `Alt-0` / `Alt-Shift-0` / `Ctrl-Alt-0` / `Ctrl-Alt-Shift-0` | Reset the inspector dock to its default width |
+
+### Session
+
+| Keys | Does |
+|---|---|
+| `?` / `F1` | The keyboard help sheet; the same key closes it |
+| `Esc` | Leave hint mode; hint keys never answer a request |
+| `Backspace` | Take back the first letter of a two-letter badge |
+| `Ctrl-C` | Clear the draft, else stop the turn; twice with nothing to stop quits |

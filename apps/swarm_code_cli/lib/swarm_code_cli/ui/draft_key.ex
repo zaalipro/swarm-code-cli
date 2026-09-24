@@ -3,14 +3,18 @@ defmodule SwarmCodeCLI.UI.DraftKey do
 
   alias SwarmCodeCLI.UI.Intent
 
-  @type t :: {binary(), :main | {:thread, binary()} | {:edit, binary()}}
+  # `{:agent, node_id}` (pass 72) is the agent overlay's composer: what it
+  # steers goes to that one agent.
+  @type t ::
+          {binary(), :main | {:thread, binary()} | {:edit, binary()} | {:agent, binary()}}
 
   @spec validate(term()) :: {:ok, t()} | {:error, :invalid_draft_key}
   def validate({conversation_id, :main} = key) do
     if Intent.valid_id?(conversation_id), do: {:ok, key}, else: {:error, :invalid_draft_key}
   end
 
-  def validate({conversation_id, {kind, subject_id}} = key) when kind in [:thread, :edit] do
+  def validate({conversation_id, {kind, subject_id}} = key)
+      when kind in [:thread, :edit, :agent] do
     if Intent.valid_id?(conversation_id) and Intent.valid_id?(subject_id),
       do: {:ok, key},
       else: {:error, :invalid_draft_key}

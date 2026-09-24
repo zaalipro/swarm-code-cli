@@ -189,9 +189,9 @@ defmodule SwarmCodeCLI.UI.KeymapTest do
     test "Ctrl chords reach through a modal's text field; bare letters do not" do
       modal = %{state() | layers: [{:switcher, "s"}], focus: "query"}
 
-      # Ctrl-B is a global chord: it toggles the dock from every context.
+      # Ctrl-B is a global chord: it cycles the side panel from every context.
       assert Keymap.resolve(letter("b", [:control]), modal, %{}) ==
-               {:ok, {:toggle_dock, :inspector}}
+               {:ok, {:panel_mode, :cycle}}
 
       # "?" is a printable key, so inside a field it is typing, not help.
       assert {:ok, {:field_editor, _, {:insert, "?"}}} = Keymap.resolve(letter("?"), modal, %{})

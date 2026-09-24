@@ -341,6 +341,35 @@ defmodule SwarmCodeCLI.UI.Keymap.Special do
     end
   end
 
+  # ------------------------------------------------------- pass72: hints
+
+  # A badge letter, a run digit or `0` (the runs dashboard): the reducer holds
+  # the labels and decides.
+  def run(:hint_key, {code, _mods}, _state, _table), do: ok({:hint, {:key, code}})
+
+  # The overlay's letters act only while its composer is empty (K4, K5);
+  # with text in it they type. `y a Y A d D n` also need a request waiting on
+  # this agent, or they start a steer like any other letter; `o [ ]` act
+  # from the band and the activity, and type once Tab has put the focus in
+  # the composer.
+  def run(:overlay_letter, {code, []}, %{overlay: %{} = overlay} = state, _table) do
+    empty? = Keymap.draft_text(state) == ""
+    composer? = overlay.focus == :composer
+    waiting? = SwarmCodeCLI.UI.Reducer.Overlay.request(state) != nil
+
+    cond do
+      not empty? -> :ignore
+      code in ~w(y a Y A d D n) and waiting? -> ok({:overlay, {:answer, code}})
+      code in ~w(y a Y A d D n) or composer? -> :ignore
+      code == "]" -> ok({:overlay, {:step, :next}})
+      code == "[" -> ok({:overlay, {:step, :previous}})
+      code == "o" -> ok({:overlay, :raw_ops})
+      true -> :ignore
+    end
+  end
+
+  def run(:overlay_letter, _key, _state, _table), do: :ignore
+
   # ---------------------------------------------------------------- fields
 
   def run(name, _key, state, _table) when name in [:field_left, :field_right] do
