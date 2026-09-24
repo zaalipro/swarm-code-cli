@@ -14,7 +14,7 @@ defmodule SwarmCodeCLI.UI.Layout.Preferences do
   no pane reads it.
   """
   defstruct navigator_width: 26,
-            inspector_width: 42,
+            inspector_width: 46,
             composer_height: 3,
             activity_height: 1,
             medium_dock: :none
@@ -47,7 +47,7 @@ defmodule SwarmCodeCLI.UI.Layout.Preferences do
   end
 
   def reset(preferences, :navigator), do: %{validate!(preferences) | navigator_width: 26}
-  def reset(preferences, :inspector), do: %{validate!(preferences) | inspector_width: 42}
+  def reset(preferences, :inspector), do: %{validate!(preferences) | inspector_width: 46}
 
   def preset(preferences, pane, preset) when pane in [:navigator, :inspector] do
     Map.put(validate!(preferences), width_key(pane), preset_width(pane, preset))

@@ -19,6 +19,14 @@ defmodule SwarmCodeCLI.UI.Projector.Inspector do
   alias SwarmCodeCLI.UI.Projector.Inspector.{Agents, Changes, Hive, Timeline}
 
   def project(state, rect, class) do
+    case tab(state) do
+      # pass72: the agents tab is the side panel (direction D), with no strip.
+      :agents -> SwarmCodeCLI.UI.Projector.Panel.project(state, rect, class)
+      _ -> tabbed(state, rect, class)
+    end
+  end
+
+  defp tabbed(state, rect, class) do
     run = Support.run(state)
     tab = tab(state)
     width = rect.width

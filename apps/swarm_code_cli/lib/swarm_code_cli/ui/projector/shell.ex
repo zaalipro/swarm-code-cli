@@ -18,7 +18,7 @@ defmodule SwarmCodeCLI.UI.Projector.Shell do
   # The navigator dock is gone. Its job — showing what is running and getting you
   # there — belongs to the tab row on row 1, the Ctrl-G dashboard and Ctrl-P, so
   # the shell projects no left dock and main takes the reclaimed width.
-  @order [:title, :main, :inspector, :activity, :composer, :status]
+  @order [:title, :tabline, :main, :inspector, :activity, :composer, :status]
   def project(state, layout) do
     layout = without_idle_inspector(state, layout)
 
@@ -81,6 +81,16 @@ defmodule SwarmCodeCLI.UI.Projector.Shell do
     end
   end
 
+  defp without_idle_inspector(state, %{rects: %{tabline: strip, main: main} = rects} = layout) do
+    if SwarmCodeCLI.UI.Projector.Panel.Model.runs(state) == [] do
+      rects = rects |> Map.delete(:tabline)
+      rects = %{rects | main: %{main | y: strip.y, height: main.height + strip.height}}
+      %{layout | rects: rects}
+    else
+      layout
+    end
+  end
+
   defp without_idle_inspector(_state, layout), do: layout
 
   defp blocks(:title, state, rect, class) do
@@ -133,6 +143,11 @@ defmodule SwarmCodeCLI.UI.Projector.Shell do
   end
 
   defp blocks(:main, state, rect, class), do: {Workspace.project(state, rect, class), nil}
+
+  # pass72 R17: under 120 columns the side panel is this one-row strip.
+  defp blocks(:tabline, state, rect, _class),
+    do: {SwarmCodeCLI.UI.Projector.Strip.project(state, rect.width), nil}
+
   defp blocks(:inspector, state, rect, class), do: {Inspector.project(state, rect, class), nil}
 
   defp blocks(:composer, state, rect, _), do: Composer.project(state, rect)

@@ -45,7 +45,7 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
   # no overlay for it), but the reducer still pages its body through this
   # geometry, so here it is the card's own window.
   def project(%{layers: [{:approval, _} | _]} = state, class, background) do
-    layout = SwarmCodeCLI.UI.Layout.calculate(state.size, state.preferences)
+    layout = SwarmCodeCLI.UI.Layout.for_state(state)
 
     with %{width: width} = rect <- Map.get(layout.rects, :composer),
          id when is_binary(id) <- Composer.opened_approval(state),
