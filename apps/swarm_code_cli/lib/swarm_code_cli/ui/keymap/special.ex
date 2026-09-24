@@ -240,7 +240,7 @@ defmodule SwarmCodeCLI.UI.Keymap.Special do
   # as one deferred send the reducer replays once the watch is ready (R2).
   def run(:activate, _key, %{focus: "composer"} = state, table) do
     case Keymap.find_target(state, table, &match?({:intent, {:dispatch, :send, _, _, _}}, &1)) do
-      :ignore -> if Keymap.deferrable_send?(state), do: ok(:defer_send), else: :ignore
+      :ignore -> unsent(state)
       resolved -> resolved
     end
   end
@@ -575,6 +575,21 @@ defmodule SwarmCodeCLI.UI.Keymap.Special do
     case Enum.find(Bindings.jump_rows(), fn {id, _, _} -> id == focus end) do
       {_, _, action} -> action
       nil -> nil
+    end
+  end
+
+  # pass72 G1 (QA Q1): Enter with a draft never does nothing silently. A run
+  # view has no Send target; it says so and names the way back to the chat.
+  defp unsent(state) do
+    cond do
+      Keymap.deferrable_send?(state) ->
+        ok(:defer_send)
+
+      match?({:run, _}, state.destination) and String.trim(Keymap.draft_text(state)) != "" ->
+        ok(:send_unavailable)
+
+      true ->
+        :ignore
     end
   end
 end

@@ -166,8 +166,10 @@ defmodule SwarmCodeCLI.UI.Reducer do
         transition(%{state | hint: nil}, {:overlay_open, run, node})
 
       {:target, {:run, run}} ->
-        # P10: a run picked in the panel is shown in the chat.
-        transition(Overlay.close(%{state | hint: nil}), {:navigate, {:run, run}})
+        # P10: a run picked in the panel is shown in the chat. pass72 G1 (QA
+        # Q1): the chat stays the destination (a run view has no composer
+        # target) and the transcript scrolls to the run's first item.
+        reveal_run(Overlay.close(%{state | hint: nil}), run)
 
       :prefix ->
         {%{state | hint: %{hint | typed: typed}}, []}
@@ -1019,6 +1021,16 @@ defmodule SwarmCodeCLI.UI.Reducer do
       _ ->
         transition(state, :nothing_waiting)
     end
+  end
+
+  defp transition(state, :send_unavailable) do
+    {:ok, text} =
+      SafeText.external(
+        "This run view sends nothing; Alt-Left goes back to the chat.",
+        SafeText.Limits.content()
+      )
+
+    {%{state | notice: {:command_feedback, SafeText.value(text)}}, [{:announce, text}]}
   end
 
   defp transition(state, :nothing_waiting) do
@@ -2539,5 +2551,32 @@ defmodule SwarmCodeCLI.UI.Reducer do
   defp feedback(state, text) do
     {:ok, safe} = SafeText.external(text, SafeText.Limits.content())
     {%{state | notice: {:command_feedback, SafeText.value(safe)}}, []}
+  end
+
+  defp reveal_run(state, run) do
+    ids = SwarmCodeCLI.UI.ScrollMetrics.order(state, :main, :workspace)
+    transcript = state.read_model.transcript
+
+    case Enum.find(ids, &match?(%{run_id: ^run}, Map.get(transcript, &1))) do
+      nil ->
+        case Map.get(state.read_model.runs, run) do
+          %{conversation_id: conversation} when is_binary(conversation) ->
+            if state.destination == {:conversation, conversation},
+              do: feedback(state, "That run has nothing in the chat yet."),
+              else: transition(state, {:navigate, {:conversation, conversation}})
+
+          _ ->
+            feedback(state, "That run is not in this chat.")
+        end
+
+      id ->
+        scroll = %{
+          Map.get(state.scrolls, :main, %SwarmCodeCLI.UI.Scroll{})
+          | anchor: {id, 0, :top},
+            follow?: false
+        }
+
+        {%{state | scrolls: Map.put(state.scrolls, :main, scroll)}, []}
+    end
   end
 end

@@ -70,6 +70,7 @@ defmodule SwarmCodeCLI.UI.Action do
           | :editor_detach_notice
           | :open_companion
           | :nothing_waiting
+          | :send_unavailable
           | {:open_interaction, binary()}
           | {:interrupt, :escape | :ctrl_c}
           | :select_mode
@@ -177,7 +178,8 @@ defmodule SwarmCodeCLI.UI.Action do
              :close_top_layer,
              :editor_detach_notice,
              :open_companion,
-             :nothing_waiting
+             :nothing_waiting,
+             :send_unavailable
            ],
       do: {:ok, action}
 

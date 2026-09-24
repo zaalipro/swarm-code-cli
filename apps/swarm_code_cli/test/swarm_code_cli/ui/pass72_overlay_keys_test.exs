@@ -95,7 +95,7 @@ defmodule SwarmCodeCLI.UI.Pass72OverlayKeysTest do
       runs: Keyword.get(opts, :runs, [run("r1", :running)]),
       agents: Keyword.get(opts, :agents, swarm_agents()),
       interactions: Keyword.get(opts, :interactions, []),
-      transcript: %DTO.TranscriptWindow{items: []},
+      transcript: %DTO.TranscriptWindow{items: Keyword.get(opts, :items, [])},
       runs_page: %DTO.PageInfo{},
       interactions_page: %DTO.PageInfo{}
     }
@@ -211,12 +211,49 @@ defmodule SwarmCodeCLI.UI.Pass72OverlayKeysTest do
     end
 
     test "a digit shows its run in the chat; 0 opens the runs dashboard" do
-      state = ready(runs: [run("r1", :running), run("r2", :running, title: "api")])
+      items =
+        for {id, run} <- [{"t1", "r1"}, {"t2", "r2"}, {"t3", "r2"}] do
+          %DTO.TranscriptItem{
+            id: id,
+            run_id: run,
+            conversation_id: "c",
+            node_id: "n-" <> id,
+            attempt_id: "at",
+            text: id
+          }
+        end
+
+      state = ready(runs: [run("r1", :running), run("r2", :running, title: "api")], items: items)
       state = press!(state, ctrl("f"))
       label = Enum.find_value(state.hint.labels, fn {l, t} -> if t == {:run, "r2"}, do: l end)
-      assert state |> press!(letter(label)) |> Map.get(:destination) == {:run, "r2"}
+      shown = press!(state, letter(label))
+
+      # pass72 G1 (QA Q1): the chat stays the destination and scrolls to the
+      # run's first item; a run view would leave Enter with nothing to send.
+      assert shown.destination == {:conversation, "c"}
+      assert shown.hint == nil
+      assert {"t2", 0, :top} = shown.scrolls.main.anchor
+      refute shown.scrolls.main.follow?
+
+      typed = type(shown, "still sends")
+      {_, table} = Projector.project(typed)
+      {:ok, action} = Keymap.resolve(key(:enter), typed, table)
+      {_, effects} = Reducer.update(typed, action)
+      assert [{:dispatch, :send, "still sends", :main, []}] = commands(effects)
 
       assert [{:runs_dashboard, _} | _] = state |> press!(letter("0")) |> Map.get(:layers)
+    end
+
+    test "Enter in a run view says why nothing was sent" do
+      # A run view watches the run, not the conversation: no Send target.
+      state = %{ready() | destination: {:run, "r1"}}
+      state = update_in(state.read_model.snapshots, &Map.delete(&1, :workspace))
+      state = type(state, "hello")
+      {_, table} = Projector.project(state)
+      {:ok, action} = Keymap.resolve(key(:enter), state, table)
+      {state, _} = Reducer.update(state, action)
+      assert {:command_feedback, text} = state.notice
+      assert text =~ "Alt-Left"
     end
 
     test "past fifteen agents a label takes two letters; Backspace takes one back" do
