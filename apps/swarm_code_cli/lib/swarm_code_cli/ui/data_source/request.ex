@@ -27,6 +27,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Request do
           | :detail_window
           | :library_snapshot
           | :conversation_list
+          | :agent_detail
   @type query_kind :: :shell | :workspace | :transcript | :activity | :inspector | :pending
   @features [
     :workflows,
@@ -54,6 +55,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Request do
           | {:conversation_open, binary()}
           | {:project_update, :read_only | :auto | :full_access | nil, true | nil}
           | {:resolve_approval, binary(), binary(), binary(), non_neg_integer(), decision()}
+          | {:agent_detail, binary(), binary()}
   @typedoc """
   pass70 C1: `:approve` once, `:approve_run` every call of this tool in this
   run (`:always_allow` is its legacy name), `:always_prefix` the command
@@ -135,6 +137,9 @@ defmodule SwarmCodeCLI.UI.DataSource.Request do
       (is_nil(cursor) or Intent.valid_id?(cursor)) and is_integer(size) and size in 1..200 and
         is_integer(bytes) and bytes in 1..1_048_576
 
+  # pass72 S: one agent's detail for the overlay (origin `{:query, :agent_detail}`).
+  defp valid_kind?({:agent_detail, run_id, node_id}), do: uuid?(run_id) and uuid?(node_id)
+
   defp valid_kind?({:conversation_new}), do: true
   defp valid_kind?({:conversation_open, id}), do: uuid?(id)
 
@@ -173,7 +178,17 @@ defmodule SwarmCodeCLI.UI.DataSource.Request do
   defp valid_kind?(kind), do: Intent.valid?(kind)
 
   defp valid_origin?({:query, slot}),
-    do: slot in [:shell, :workspace, :transcript, :activity, :inspector, :pending, :detail]
+    do:
+      slot in [
+        :shell,
+        :workspace,
+        :transcript,
+        :activity,
+        :inspector,
+        :pending,
+        :detail,
+        :agent_detail
+      ]
 
   defp valid_origin?({:feature, feature}), do: feature in @features
   defp valid_origin?({:feature_form, feature}), do: feature in @features
@@ -190,6 +205,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Request do
     do: response == :library_snapshot
 
   defp valid_response?({:resync_watch, _}, response), do: response == :watch_snapshot
+  defp valid_response?({:agent_detail, _, _}, response), do: response == :agent_detail
 
   defp valid_response?({:conversation_list, _, _, _}, response),
     do: response == :conversation_list
@@ -213,6 +229,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Request do
 
   defp correlated_kind_origin?({:query_detail, _, _, _}, {:query, :detail}), do: true
   defp correlated_kind_origin?({:resync_watch, ref}, {:watch, ref}), do: true
+  defp correlated_kind_origin?({:agent_detail, _, _}, {:query, :agent_detail}), do: true
 
   defp correlated_kind_origin?({:conversation_list, _, _, _}, {:conversation, :list}),
     do: true

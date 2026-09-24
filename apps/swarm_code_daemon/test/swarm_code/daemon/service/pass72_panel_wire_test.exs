@@ -142,6 +142,64 @@ defmodule SwarmCode.Daemon.Service.Pass72PanelWireTest do
            ] = workflow.phases
   end
 
+  test "an agent's detail: brief, grouped activity, raw operations, life lane and files", c do
+    assert {:ok, %{"response_kind" => "agent_detail", "value" => value}} =
+             agent_detail(c.backend, c.scope, c.run.id, c.web.id)
+
+    assert {:ok, detail} = DTO.AgentDetail.decode(value)
+
+    assert {detail.state, detail.name, detail.role, detail.panel_state} ==
+             {:idle, "web-review", :sub, :working}
+
+    assert detail.parent_name == "Lead"
+    assert detail.brief == ""
+
+    assert Enum.map(detail.activity, &{&1.kind, &1.title}) == [
+             {:think, "thought"},
+             {:read, "read 1 file"},
+             {:edit, "edited lib/app.ex"},
+             {:command, "ran mix compile"},
+             {:command, "ran mix test test/app_test.exs"}
+           ]
+
+    assert Enum.at(detail.activity, 3).quote == "Generated app"
+    assert List.last(detail.activity).state == :running
+    assert length(detail.operations) == 5
+    assert detail.files_read == ["lib/app.ex"]
+    assert detail.files_changed == ["lib/app.ex"]
+    assert detail.life_started_at == DateTime.to_unix(c.t0, :millisecond)
+    assert detail.life_bucket_ms == 1_000 and length(detail.life) == 35
+    assert detail.think_ms == 4_000
+    assert {detail.tokens_in, detail.tokens_out} == {1_200, 300}
+
+    for text <- [detail.now | detail.files_read ++ Enum.map(detail.operations, & &1.title)] do
+      refute text =~ "worktrees"
+    end
+  end
+
+  test "a finished reviewer's detail lists its numbered findings with severity and ref", c do
+    assert {:ok, %{"value" => value}} = agent_detail(c.backend, c.scope, c.run.id, c.data.id)
+    assert {:ok, detail} = DTO.AgentDetail.decode(value)
+
+    assert [
+             %DTO.Finding{n: 1, severity: :high, ref: "lib/app/run_server.ex:88"} = first,
+             %DTO.Finding{n: 2, severity: :low, ref: "lib/app/flush.ex:12"}
+           ] = detail.findings
+
+    assert first.text =~ "a stop during a flush loses the last batch"
+    assert detail.result =~ "## Findings"
+    refute detail.result =~ "worktrees"
+    assert detail.finished_at == DateTime.to_unix(c.t0, :millisecond) + 40_000
+  end
+
+  test "an agent of another run, or not an agent, is not allowed", c do
+    assert {:error, %{"code" => "not_allowed"}} =
+             agent_detail(c.backend, c.scope, c.consensus.id, c.web.id)
+
+    assert {:error, %{"code" => "not_allowed"}} =
+             agent_detail(c.backend, c.scope, c.run.id, Ecto.UUID.generate())
+  end
+
   test "the facts are a function of the database: a second projection publishes the same bodies",
        c do
     assert {:ok, %{"value" => first}} = query(c.backend, c.scope, "workspace")
@@ -205,7 +263,9 @@ defmodule SwarmCode.Daemon.Service.Pass72PanelWireTest do
         depth: 1,
         result:
           "## Summary\n\nFlushes can race the stop in `lib/app/run_server.ex:88`. " <>
-            "The fix is in #{worktree}/lib/app/flush.ex:12.",
+            "The fix is in #{worktree}/lib/app/flush.ex:12.\n\n## Findings\n\n" <>
+            "1. **High:** a stop during a flush loses the last batch (lib/app/run_server.ex:88).\n" <>
+            "2. Minor: the flush timer is never cancelled. See lib/app/flush.ex:12.\n",
         started_at: t0,
         finished_at: at.(40)
       })
@@ -216,6 +276,18 @@ defmodule SwarmCode.Daemon.Service.Pass72PanelWireTest do
     op!(run, web, "llm", "thinking", at.(0), at.(4), "done")
     op!(run, web, "read_file", "read #{worktree}/lib/app.ex", at.(5), at.(6), "done")
     write = op!(run, web, "edit_file", "edit lib/app.ex", at.(10), at.(14), "done")
+
+    node!(%{
+      run_id: run.id,
+      parent_id: web.id,
+      kind: "op",
+      op_type: "run_command",
+      title: "run: mix compile",
+      status: "done",
+      result: "Compiling 3 files\nGenerated app\n\n",
+      started_at: at.(15),
+      finished_at: at.(20)
+    })
 
     op!(
       run,
@@ -350,6 +422,19 @@ defmodule SwarmCode.Daemon.Service.Pass72PanelWireTest do
     |> Checkpoint.validate()
     |> Repo.insert!()
   end
+
+  defp agent_detail(backend, scope, run_id, node_id),
+    do:
+      GenServer.call(
+        backend,
+        {:service_request, "detail-#{System.unique_integer([:positive])}", scope,
+         %ServiceRequest{
+           operation: :agent_detail,
+           timeout_ms: 5000,
+           params: %{"run_id" => run_id, "node_id" => node_id}
+         }},
+        30000
+      )
 
   defp query(backend, scope, slot),
     do:

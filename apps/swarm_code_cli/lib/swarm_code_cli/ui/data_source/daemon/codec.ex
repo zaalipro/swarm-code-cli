@@ -13,7 +13,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
     "pending_interactions" => {:pending_interactions, DTO.PendingInteractionWindow},
     "detail_window" => {:detail_window, DTO.DetailWindow},
     "library_snapshot" => {:library_snapshot, DTO.LibrarySnapshot},
-    "conversation_list" => {:conversation_list, DTO.ConversationList}
+    "conversation_list" => {:conversation_list, DTO.ConversationList},
+    "agent_detail" => {:agent_detail, DTO.AgentDetail}
   }
 
   @watch_bodies %{
@@ -407,6 +408,9 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
 
   defp request_body({:resync_watch, ref}), do: {:ok, %{"op" => "resync", "watch_ref" => ref}}
 
+  defp request_body({:agent_detail, run_id, node_id}),
+    do: {:ok, %{"op" => "agent.detail", "run_id" => run_id, "node_id" => node_id}}
+
   defp request_body({:conversation_list, cursor, size, bytes}),
     do:
       {:ok,
@@ -664,6 +668,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
       (is_nil(page.run) or scoped_item?(scope, page.run)) and
         Enum.all?(page.agents ++ page.transcript.items, &scoped_item?(scope, &1))
 
+  defp scoped_body?(%{kind: :run, id: id}, %DTO.AgentDetail{run_id: run_id}), do: run_id == id
+  defp scoped_body?(_scope, %DTO.AgentDetail{}), do: true
   defp scoped_body?(_scope, %DTO.LibrarySnapshot{}), do: true
   # The project's conversations: membership is the service's to resolve.
   defp scoped_body?(_scope, %DTO.ConversationList{}), do: true
@@ -711,6 +717,12 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
        do:
          body.feature == feature and length(body.items) <= size and
            byte_size(Jason.encode!(wire_value(body))) <= bytes
+
+  defp response_matches?(
+         %Request{kind: {:agent_detail, run_id, node_id}},
+         %DTO.AgentDetail{} = b
+       ),
+       do: b.state == :error or (b.run_id == run_id and b.agent_id == node_id)
 
   defp response_matches?(_, _), do: true
 

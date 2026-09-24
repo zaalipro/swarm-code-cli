@@ -73,7 +73,8 @@ defmodule SwarmCode.Daemon.Service.LiveBackend do
           :detail,
           :resync,
           :feature_query,
-          :conversation_list
+          :conversation_list,
+          :agent_detail
         ]
 
     fingerprint = {scope, Map.get(request, :operation), Map.get(request, :params)}
@@ -381,6 +382,10 @@ defmodule SwarmCode.Daemon.Service.LiveBackend do
   end
 
   defp execute(%{operation: :conversation_list}, _scope, _id, state),
+    do: {wire_error(:not_allowed), state}
+
+  # pass72 S: the unsaved runtime keeps no operation rows to detail.
+  defp execute(%{operation: :agent_detail}, _scope, _id, state),
     do: {wire_error(:not_allowed), state}
 
   defp execute(_, _, id, state), do: {reject(id, :not_allowed), state}

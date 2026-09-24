@@ -324,6 +324,117 @@ defmodule SwarmCode.Daemon.Service.PersistedProjection do
     )
   end
 
+  @doc """
+  pass72 S: what the agent overlay reads for one agent of a run of the
+  conversation: `{:ok, %{agent, run, ops, changed, siblings}}` or `:error` when
+  the node is not an agent of that run. `ops` are the agent's newest 400
+  operations, oldest first, with the head of each detail and the tail of each
+  result (a command's last output line); `changed` the files it wrote.
+  """
+  def agent_detail(conversation, run_id, node_id) do
+    agent =
+      Repo.one(
+        from(n in Node,
+          join: r in Run,
+          on: r.id == n.run_id,
+          where:
+            r.conversation_id == ^conversation and r.id == ^run_id and n.id == ^node_id and
+              n.kind == "agent",
+          select: %{
+            id: n.id,
+            run_id: n.run_id,
+            name: n.name,
+            role: n.role,
+            title: n.title,
+            status: n.status,
+            parent_id: n.parent_id,
+            depth: n.depth,
+            tokens_in: n.tokens_in,
+            tokens_out: n.tokens_out,
+            cost_usd: n.cost_usd,
+            turn: n.turn,
+            max_turns: n.max_turns,
+            started_at: n.started_at,
+            finished_at: n.finished_at,
+            workspace_path: n.workspace_path,
+            changes_stat: n.changes_stat,
+            error: fragment("substr(coalesce(?, ''), 1, 400)", n.error),
+            prompt: fragment("substr(coalesce(?, ''), 1, 4096)", n.prompt),
+            result: fragment("substr(coalesce(?, ''), 1, 8192)", n.result),
+            result_bytes: fragment("length(cast(coalesce(?, '') as blob))", n.result),
+            result_head:
+              fragment(
+                "case when ? = 'done' then substr(?, 1, 4096) else null end",
+                n.status,
+                n.result
+              )
+          }
+        )
+      )
+
+    if agent do
+      run =
+        Repo.one(
+          from(r in Run,
+            where: r.id == ^run_id,
+            select: %{id: r.id, root_node_id: r.root_node_id, model: r.model, status: r.status}
+          )
+        )
+
+      ops =
+        Repo.all(
+          from(n in Node,
+            where: n.run_id == ^run_id and n.parent_id == ^node_id and n.kind == "op",
+            order_by: [desc: n.started_at, desc: n.inserted_at, desc: n.id],
+            limit: 400,
+            select: %{
+              id: n.id,
+              parent_id: n.parent_id,
+              op_type: n.op_type,
+              status: n.status,
+              title: fragment("substr(coalesce(?, ''), 1, 200)", n.title),
+              detail: fragment("substr(coalesce(?, ''), 1, 1280)", n.detail),
+              result: fragment("substr(coalesce(?, ''), 1, 1024)", n.result),
+              tail: fragment("substr(coalesce(?, ''), -400)", n.result),
+              tokens_in: n.tokens_in,
+              started_at: n.started_at,
+              finished_at: n.finished_at
+            }
+          )
+        )
+        |> Enum.reverse()
+
+      changed =
+        Repo.all(
+          from(c in Checkpoint,
+            join: n in Node,
+            on: n.id == c.node_id,
+            where:
+              c.conversation_id == ^conversation and c.run_id == ^run_id and
+                (n.id == ^node_id or n.parent_id == ^node_id),
+            group_by: c.path,
+            order_by: [asc: min(c.inserted_at)],
+            limit: 50,
+            select: c.path
+          )
+        )
+
+      siblings =
+        Repo.all(
+          from(n in Node,
+            where: n.run_id == ^run_id and n.kind == "agent",
+            order_by: [asc: n.inserted_at, asc: n.id],
+            limit: 200,
+            select: %{id: n.id, name: n.name, parent_id: n.parent_id, status: n.status}
+          )
+        )
+
+      {:ok, %{agent: agent, run: run, ops: ops, changed: changed, siblings: siblings}}
+    else
+      :error
+    end
+  end
+
   @doc "pass72 S: how many distinct files each agent of the runs `ids` wrote: `%{agent_id => n}`."
   def files_changed(_conversation, []), do: %{}
 

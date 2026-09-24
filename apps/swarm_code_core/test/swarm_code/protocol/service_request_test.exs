@@ -21,6 +21,25 @@ defmodule SwarmCode.Protocol.ServiceRequestTest do
     end
   end
 
+  test "pass72 S: agent.detail names a run in scope and a node uuid, nothing else" do
+    body = %{
+      "op" => "agent.detail",
+      "run_id" => @run,
+      "node_id" => @interaction,
+      "timeout_ms" => 5000
+    }
+
+    assert {:ok, %ServiceRequest{operation: :agent_detail}} =
+             ServiceRequest.decode(body, scope(:conversation))
+
+    assert {:ok, _} = ServiceRequest.decode(body, scope(:run))
+    invalid(Map.put(body, "node_id", "node"), scope(:conversation))
+    invalid(Map.put(body, "node_id", nil), scope(:conversation))
+    invalid(Map.put(body, "extra", 1), scope(:conversation))
+    invalid(body, %{scope(:run) | id: @conversation})
+    invalid(body, scope(:global))
+  end
+
   test "literal v1 envelope yields a closed workspace request without changing the envelope" do
     json =
       ~s({"v":1,"type":"request","request_id":"#{@project}","nonce":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","scope":{"kind":"conversation","id":"#{@conversation}","generation":3},"sequence":null,"occurred_at":null,"body":{"op":"query","slot":"workspace","cursor":null,"direction":"after","page_size":50,"byte_limit":262144,"timeout_ms":5000}})
@@ -476,7 +495,11 @@ defmodule SwarmCode.Protocol.ServiceRequestTest do
        scope(:conversation)},
       {:project_update,
        ~s({"op":"project.update","approval_mode":"auto","trusted":null,"timeout_ms":5000}),
-       scope(:project)}
+       scope(:project)},
+      # pass72 S: one agent's detail for the overlay.
+      {:agent_detail,
+       ~s({"op":"agent.detail","run_id":"#{@run}","node_id":"#{@interaction}","timeout_ms":5000}),
+       scope(:run)}
     ]
   end
 end

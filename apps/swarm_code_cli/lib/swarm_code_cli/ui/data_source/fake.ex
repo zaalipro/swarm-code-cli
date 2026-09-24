@@ -451,6 +451,9 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake do
 
       :library_snapshot ->
         struct!(DTO.LibrarySnapshot, attrs ++ [feature: elem(req.kind, 1)])
+
+      :agent_detail ->
+        struct!(DTO.AgentDetail, attrs)
     end
   end
 
@@ -661,6 +664,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake do
   defp response?(:pending_interactions, body), do: match?(%DTO.PendingInteractionWindow{}, body)
   defp response?(:conversation_list, body), do: match?(%DTO.ConversationList{}, body)
   defp response?(:library_snapshot, body), do: match?(%DTO.LibrarySnapshot{}, body)
+  defp response?(:agent_detail, body), do: match?(%DTO.AgentDetail{}, body)
   defp response?(_, _), do: false
 
   defp valid_resync(s, %Request{kind: {:resync_watch, ref}} = req) do
