@@ -288,6 +288,17 @@ defmodule SwarmCodeCLI.UI.Keymap.Bindings do
       hint: [overlay: 5]
     },
     %Binding{
+      id: :overlay_stop_agent,
+      keys: [{"x", []}],
+      action: {:special, :overlay_letter},
+      contexts: [:overlay],
+      group: :act,
+      label: "Stop agent",
+      help:
+        "Stop the agent the overlay shows (asks to confirm); only while the composer is empty",
+      hint: 0
+    },
+    %Binding{
       id: :overlay_answer,
       keys: Enum.map(~w(y a Y A d D n), &{&1, []}),
       action: {:special, :overlay_letter},

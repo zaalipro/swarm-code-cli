@@ -133,7 +133,9 @@ defmodule SwarmCodeCLI.UI.BindingsTest do
       #   the resize chords need the inspector focused, the only dock left;
       #   "3".."9" with only two options on the question;
       #   vim's x and X on the fixture's empty draft line have nothing to
-      #   delete (x at a line end would otherwise join lines).
+      #   delete (x at a line end would otherwise join lines);
+      #   the overlay's x stops its agent only when the projector keeps a stop
+      #   action for it, and the fixture's table has none.
       assert Enum.sort(declining) ==
                Enum.sort(
                  [
@@ -142,6 +144,7 @@ defmodule SwarmCodeCLI.UI.BindingsTest do
                    {:composer_newline, :composer},
                    {:composer_newline, :field},
                    {:composer_newline, :overlay},
+                   {:overlay_stop_agent, :overlay},
                    {:question_option, :dialog},
                    {:vim_delete_char, :composer_normal},
                    {:vim_delete_char_back, :composer_normal}

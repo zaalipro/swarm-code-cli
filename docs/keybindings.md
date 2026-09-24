@@ -646,6 +646,7 @@ the command palette).
 | Keys | Does |
 |---|---|
 | `o` | Show every raw operation instead of the grouped activity, and back |
+| `x` | Stop the agent the overlay shows (asks to confirm); only while the composer is empty |
 | `y` / `a` / `Y` / `A` / `d` / `D` / `n` | y/a once, Y this run, A always the family, d deny, D deny + stop, n next; only while the composer is empty |
 | `Enter` | In the composer, steer only this agent; on a group, expand it; on the band, the card |
 | `Alt-Enter` | Queue the draft instead of sending it |

@@ -361,7 +361,7 @@ defmodule SwarmCodeCLI.UI.Keymap.Special do
   # this agent, or they start a steer like any other letter; `o [ ]` act
   # from the band and the activity, and type once Tab has put the focus in
   # the composer.
-  def run(:overlay_letter, {code, []}, %{overlay: %{} = overlay} = state, _table) do
+  def run(:overlay_letter, {code, []}, %{overlay: %{} = overlay} = state, table) do
     empty? = Keymap.draft_text(state) == ""
     composer? = overlay.focus == :composer
     waiting? = SwarmCodeCLI.UI.Reducer.Overlay.request(state) != nil
@@ -373,6 +373,7 @@ defmodule SwarmCodeCLI.UI.Keymap.Special do
       code == "]" -> ok({:overlay, {:step, :next}})
       code == "[" -> ok({:overlay, {:step, :previous}})
       code == "o" -> ok({:overlay, :raw_ops})
+      code == "x" -> stop_overlay_agent(overlay, state, table)
       true -> :ignore
     end
   end
@@ -414,6 +415,15 @@ defmodule SwarmCodeCLI.UI.Keymap.Special do
   end
 
   # ----------------------------------------------------------------- guts
+  # `x` stops the agent the overlay shows through the undrawn keyboard action
+  # the projector keeps for it (it asks to confirm, like every stop).
+  defp stop_overlay_agent(%{run_id: run_id, node_id: node_id}, state, table) do
+    Keymap.find_target(
+      state,
+      table,
+      &match?({:intent, {:stop_agent, ^run_id, ^node_id, _}}, &1)
+    )
+  end
 
   defp waiting_step(state, step) do
     waiting = waiting_ids(state)

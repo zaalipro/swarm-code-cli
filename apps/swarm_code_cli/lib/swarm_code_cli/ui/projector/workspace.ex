@@ -200,9 +200,30 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
         seen_actions(state) ++
         detail_actions(state) ++
         recovery_actions(state, class) ++
-        if(run, do: plan_gate_actions(state, run) ++ agent_stop_actions(state, run), else: [])
+        if(run, do: plan_gate_actions(state, run) ++ agent_stop_actions(state, run), else: []) ++
+        overlay_stop_actions(state, run)
     end
   end
+
+  # pass72 F: the agent overlay's `x` stops the agent it shows, which may sit
+  # in a run other than the one in view.
+  defp overlay_stop_actions(%{overlay: %{run_id: run_id, node_id: node_id}} = state, run)
+       when is_binary(run_id) and is_binary(node_id) do
+    if run && run.id == run_id do
+      []
+    else
+      for agent <- SwarmCodeCLI.UI.Projector.Inspector.Hive.agents(state, run_id),
+          agent.id == node_id and agent.id != run_id,
+          Support.allowed?(state, agent, :stop_agent),
+          do:
+            Support.action(
+              SafeText.chrome(:stop),
+              {:intent, {:stop_agent, run_id, agent.id, agent.revision}}
+            )
+    end
+  end
+
+  defp overlay_stop_actions(_state, _run), do: []
 
   # pass72: the side panel draws no controls (P1), so stopping one agent of the
   # run in view stays reachable from the keys (the palette, the agent overlay)
