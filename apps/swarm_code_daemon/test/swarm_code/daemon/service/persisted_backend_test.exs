@@ -573,6 +573,47 @@ defmodule SwarmCode.Daemon.Service.PersistedBackendTest do
     Task.await(writer, 60_000)
   end
 
+  # pass72 F (live): one delta per credit made each wait for a UI frame; a
+  # busy swarm overflowed the queue and the watch resynced every few seconds.
+  test "a ready watch sends a window of deltas ahead of the credit", c do
+    watch = %ServiceRequest{
+      operation: :watch,
+      timeout_ms: 5000,
+      params: %{
+        "watch_ref" => "window",
+        "slot" => "workspace",
+        "page_size" => 50,
+        "byte_limit" => 262_144
+      }
+    }
+
+    assert {:watch, 0, _, "workspace_snapshot", _} =
+             GenServer.call(c.backend, {:service_watch, self(), "watch", c.scope, watch})
+
+    for i <- 1..3 do
+      {:ok, run} =
+        Conversations.create_run(%{
+          conversation_id: c.conversation.id,
+          kind: "chat",
+          prompt: "Window #{i}",
+          status: "done",
+          started_at: DateTime.utc_now()
+        })
+
+      SwarmCode.Domain.Engine.Events.broadcast(c.conversation.id, {:run_updated, run})
+    end
+
+    send(c.backend, {:service_ready, self(), "window"})
+
+    sequences =
+      for _ <- 1..3 do
+        assert_receive {:service_delta, _, "window", delta}, 5000
+        delta["sequence"]
+      end
+
+    assert sequences == [1, 2, 3]
+  end
+
   test "watch receives typed deltas with credit and foreign controls are rejected", c do
     watch = %ServiceRequest{
       operation: :watch,

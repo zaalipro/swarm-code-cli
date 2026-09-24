@@ -2952,22 +2952,34 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     end)
   end
 
+  # pass72 F: up to @watch_window deltas ride ahead of the client's credit
+  # (the connection allows 16 frames and 512 KiB in flight). One at a time made
+  # every delta wait for a whole UI frame, so a busy swarm filled the 128-delta
+  # queue in seconds and the watch fell into a loop of overflow resyncs, each a
+  # full snapshot. A big delta still goes alone.
+  @watch_window 8
+  @window_delta_bytes 32_768
+
   defp flush(state, {connection, ref} = key) do
     case state.watches[key] do
-      %{ready: true, sequence: sequence, acked: sequence} = entry ->
+      %{ready: true, sequence: sequence, acked: acked} = entry
+      when sequence - acked < @watch_window ->
         case :queue.out(entry.queue) do
-          {{:value, {delta, size}}, queue} ->
+          {{:value, {delta, size}}, queue}
+          when sequence == acked or size <= @window_delta_bytes ->
             send(
               connection,
               {:service_delta, self(), ref, Map.put(delta, "sequence", sequence + 1)}
             )
 
-            put_in(state.watches[key], %{
+            state
+            |> put_in([Access.key(:watches), key], %{
               entry
               | sequence: sequence + 1,
                 queue: queue,
                 bytes: entry.bytes - size
             })
+            |> flush(key)
 
           _ ->
             state
