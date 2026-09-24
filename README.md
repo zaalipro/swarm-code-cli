@@ -74,7 +74,8 @@ TUI):
 | Key | In the composer |
 | --- | --- |
 | letters | always type |
-| Enter | send; pressed while the conversation loads, it sends once it has loaded (unless the draft changed) |
+| Enter | send; pressed while the conversation loads, it sends once it has loaded (unless the draft changed). While this conversation's chat turn runs, a message goes to that turn (marked "→ to the running turn") or waits behind it ("queued"); a `/swarm`, `/plan`, `/consensus` or workflow starts at once beside it. On the `/` list Enter takes the highlighted command like Tab: one without an argument runs (`/com` Enter runs `/compact`), one that needs text waits after `/<name> ` (`/consens` Enter) |
+| Ctrl-S | a message that names a *workflow* (the word is highlighted, outside backticks) goes as `/create-workflow <text>`; Ctrl-S sends that one as a plain message |
 | Ctrl-O, Ctrl-J, Shift-Enter | new line |
 | Ctrl-X | edit the draft in `$VISUAL` / `$EDITOR` (else `vi`) |
 | Esc | stop the turn that is streaming (or was just sent); close the top dialog or list first |
@@ -88,7 +89,7 @@ TUI):
 | Ctrl-F (or Ctrl-Space) | hint mode: a badge before every agent in the side panel; its letter opens that agent's overlay, a digit shows a run (`0` all runs), Ctrl-F again is Ctrl-N, Esc cancels. Hint keys never answer a request; Ctrl-F also works over an approval card, and the letter opens the overlay whose band answers it. Ctrl-F is not forward-char; Right moves the caret |
 | Ctrl-B | the side panel: full, compact, hidden (under 120 columns: the strip or off); `/panel full\|compact\|hidden` sets it, and the choice is kept in `cli.json` beside the database |
 | `y` `Y` `A` `d` `D` `n` | on an approval: once, this run, always this command family, deny, deny and stop, next |
-| mouse wheel | scrolls what is under the pointer, only with `SWARM_MOUSE=1` (it turns off the terminal's own text selection) |
+| mouse wheel | scrolls the pane under the pointer: the transcript, the side panel, the agent overlay, the pager (three lines a notch). On by default; Shift-drag (Option-drag in Terminal.app and iTerm2) still selects text, and `/mouse off` (kept in `cli.json`; `SWARM_MOUSE=0\|1` overrides it) gives the terminal its own selection back |
 
 The agent overlay (a badge letter, or Enter on an agent in select mode) shows
 one agent full screen: its request with the approval keys, its life on a time
@@ -102,9 +103,14 @@ act only while the overlay's composer is empty.
 An approval or a question opens over the conversation by itself; for a moment
 after it opens, keys keep typing into the draft, so a sentence is never
 answered by accident. The client answers some slash commands itself: `/new`
-(`/clear`), `/resume` (pick a conversation), `/approval read-only|auto|full`,
-`/panel full|compact|hidden`, `/trust`, `/queue <text>`, `/help` and `/quit`; typing `/` lists every command
-above the composer. The project's approval mode is the desktop's and is always on
+(`/clear`), `/resume` (pick a conversation), `/approval read-only|auto|full`
+(bare: a picker of the three, the current one checked; every change of the mode,
+from here or anywhere, is said in the chat as "Approvals: auto → full access"),
+`/panel full|compact|hidden`, `/diff [on|off]` (tool rows with or without their
+diffs and previews), `/theme [dark|light]` (switches at once; `SWARM_THEME` still
+wins at the next launch), `/mouse [on|off]`, `/trust`, `/queue <text>`, `/help`
+and `/quit`; `/panel`, `/diff`, `/theme` and `/mouse` are kept in `cli.json`.
+Typing `/` lists every command above the composer. The project's approval mode is the desktop's and is always on
 the status line: a new project is read-only until `/trust`; in `auto`, edits and
 safe commands (`ls`, `git status`) run by themselves and other commands ask.
 Quitting stops the session's runs and prints a short summary that lists the runs
@@ -198,10 +204,10 @@ Saved slash commands are parsed and dispatched through the typed service boundar
 `/swarm`, `/goal`, `/plan`, `/review`, `/effort`, `/swarm_effort`, `/rewind`,
 `/stop`, `/workflow`, `/workflows`, `/create-workflow`, `/ultra`,
 `/consensus`, `/deep_research`, `/compact`, `/model`, `/cost`, `/search <words>`
-(this project's conversations), `/export [file]`, `/agents`, `/diff` (the
-inspector's changes tab), `/resume <id or title>` and `/resume-run` have daemon
-execution mappings; `/new` (`/clear`), `/resume` (the picker), `/approval`,
-`/trust`, `/queue`, `/help` and `/quit` are answered by the client.
+(this project's conversations), `/export [file]`, `/agents`, `/resume <id or title>`
+and `/resume-run` have daemon execution mappings; `/new` (`/clear`), `/resume`
+(the picker), `/approval`, `/trust`, `/queue`, `/panel`, `/diff`, `/theme`,
+`/mouse`, `/help` and `/quit` are answered by the client.
 `/attach <image-path>` stages a confined project image for the next saved
 message; the attachment is consumed when that message starts.
 Advanced flows still require full end-to-end acceptance. The unsaved launcher

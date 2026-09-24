@@ -118,8 +118,7 @@ defmodule SwarmCodeCLI.UI.Reducer.Deliveries do
 
   defp said?(_feedback, _titles, _openings), do: false
 
-  # The daemon's own words when it gave a sentence (pass73 S: typed refusal
-  # reasons), else the words for the admission code.
+  # The words for the outcome's status or admission code.
   defp reason(%{status: status}) when status in [:deadline_exceeded, :outcome_unknown],
     do: "the daemon did not answer in time"
 
