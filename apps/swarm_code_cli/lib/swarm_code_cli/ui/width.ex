@@ -105,8 +105,11 @@ defmodule SwarmCodeCLI.UI.Width do
         {prefix, "", used}
 
       {grapheme, tail} ->
+        # pass72 G14 (QA Q7): a grapheme's cells do not depend on the one
+        # after it, so the prefix is measured one grapheme at a time, not
+        # again from its start for every grapheme (quadratic on a long line).
         candidate = prefix <> grapheme
-        candidate_width = cells(candidate, ambiguous)
+        candidate_width = used + cells(grapheme, ambiguous)
 
         if candidate_width <= limit,
           do: take_prefix(tail, limit, ambiguous, candidate, candidate_width),

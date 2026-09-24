@@ -1490,6 +1490,68 @@ defmodule SwarmCode.Daemon.Service.PersistedBackendTest do
     assert_receive {:service_overflow, _, "stream"}, 1000
   end
 
+  # pass72 G14 (QA Q7): a chat stream next to a swarm filled the queue with
+  # appends while the client drew a frame, and the watch resynced.
+  test "queued appends to one stream join, in order, instead of overflowing", c do
+    {:ok, run} =
+      Conversations.create_run(%{
+        conversation_id: c.conversation.id,
+        kind: "chat",
+        started_at: DateTime.utc_now()
+      })
+
+    {:ok, message} =
+      Conversations.create_message(%{
+        conversation_id: c.conversation.id,
+        run_id: run.id,
+        role: "assistant",
+        content: ""
+      })
+
+    query(c.backend, c.scope, "workspace")
+
+    request = %ServiceRequest{
+      operation: :watch,
+      timeout_ms: 5000,
+      params: %{
+        "watch_ref" => "join",
+        "slot" => "workspace",
+        "page_size" => 50,
+        "byte_limit" => 262_144
+      }
+    }
+
+    assert {:watch, 0, _, "workspace_snapshot", _} =
+             GenServer.call(c.backend, {:service_watch, self(), "join", c.scope, request})
+
+    send(c.backend, {:service_ready, self(), "join"})
+    tokens = for i <- 1..400, do: "t#{i} "
+    for token <- tokens, do: send(c.backend, {:assistant_delta, message.id, token})
+    :sys.get_state(c.backend)
+    refute_received {:service_overflow, _, "join"}
+
+    text = collect_appends(c.backend, "join", message.id, "", 0)
+    assert text == Enum.join(tokens)
+  end
+
+  defp collect_appends(backend, ref, id, text, acked) do
+    receive do
+      {:service_delta, _, ^ref, %{"sequence" => sequence} = delta} ->
+        text =
+          if delta["kind"] == "stream_append" and delta["entity_id"] == id,
+            do: text <> delta["text"],
+            else: text
+
+        send(backend, {:service_credit, self(), ref, sequence})
+        collect_appends(backend, ref, id, text, max(acked, sequence))
+
+      {:service_overflow, _, ^ref} ->
+        flunk("the watch overflowed")
+    after
+      500 -> text
+    end
+  end
+
   test "run inspector pages older persisted message records with transcript cursors", c do
     {:ok, run} =
       Conversations.create_run(%{

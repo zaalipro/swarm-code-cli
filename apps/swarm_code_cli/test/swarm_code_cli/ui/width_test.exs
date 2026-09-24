@@ -161,4 +161,48 @@ defmodule SwarmCodeCLI.UI.WidthTest do
     {:reductions, after_count} = Process.info(self(), :reductions)
     {result, after_count - before}
   end
+
+  # pass72 G14 (QA Q7): take_cells measures one grapheme at a time; it must
+  # cut exactly where measuring the whole prefix again did, for every vector,
+  # every joined pair of vectors, every limit and both policies.
+  test "take_cells cuts where the whole-prefix measure cut" do
+    texts = Enum.map(WidthFixtures.vectors(), & &1["text"])
+    pairs = for a <- Enum.take(texts, 40), b <- Enum.take(texts, 40), do: a <> b
+
+    for text <- texts ++ pairs, policy <- [:narrow, :wide], limit <- 0..8 do
+      assert Width.take_cells(text, limit, policy) == reference(text, limit, policy, "", 0),
+             inspect({text, limit, policy})
+    end
+  end
+
+  test "take_cells is linear in the text it takes (it was quadratic)" do
+    text = String.duplicate("abcde fghij ", 400)
+    short = reductions(fn -> Width.take_cells(String.slice(text, 0, 2000), 2000, :narrow) end)
+    long = reductions(fn -> Width.take_cells(String.slice(text, 0, 4000), 4000, :narrow) end)
+    assert long < 3 * short
+    assert long < 1_000_000
+  end
+
+  defp reductions(fun) do
+    fun.()
+    {:reductions, before} = Process.info(self(), :reductions)
+    fun.()
+    {:reductions, after_count} = Process.info(self(), :reductions)
+    after_count - before
+  end
+
+  defp reference(remaining, limit, policy, prefix, used) do
+    case String.next_grapheme(remaining) do
+      nil ->
+        {prefix, "", used}
+
+      {grapheme, tail} ->
+        candidate = prefix <> grapheme
+        width = Width.cells(candidate, policy)
+
+        if width <= limit,
+          do: reference(tail, limit, policy, candidate, width),
+          else: {prefix, remaining, used}
+    end
+  end
 end

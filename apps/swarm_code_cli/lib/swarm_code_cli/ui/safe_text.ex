@@ -1753,7 +1753,24 @@ defmodule SwarmCodeCLI.UI.SafeText do
   defp valid_flag_tags?(_), do: false
 
   defp hex(cp), do: cp |> Integer.to_string(16) |> String.pad_leading(4, "0")
-  defp mark?(cp), do: Regex.match?(@mark_regex, <<cp::utf8>>)
+  # pass72 G14 (QA Q7): on OTP 28 a `~r` module attribute is compiled again
+  # on every use, and this ran for every character of every frame (about a
+  # third of the overlay's projection). No mark is below U+0300; the rest use
+  # a regex compiled once per VM.
+  defp mark?(cp) when cp < 0x300, do: false
+  defp mark?(cp), do: Regex.match?(mark_regex(), <<cp::utf8>>)
+
+  defp mark_regex do
+    case :persistent_term.get({__MODULE__, :mark_regex}, nil) do
+      nil ->
+        regex = Regex.compile!(@mark_regex.source, @mark_regex.opts)
+        :persistent_term.put({__MODULE__, :mark_regex}, regex)
+        regex
+
+      regex ->
+        regex
+    end
+  end
 
   defp variation?(cp),
     do: cp in [0x180B, 0x180C, 0x180D, 0x180F] or cp in 0xFE00..0xFE0F or cp in 0xE0100..0xE01EF

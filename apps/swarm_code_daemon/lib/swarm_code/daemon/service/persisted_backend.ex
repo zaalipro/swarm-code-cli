@@ -2940,41 +2940,78 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
                      end))
           end)
 
+        # pass72 G14 (QA Q7): an append to a stream whose newest queued event
+        # is an append of the same channel and attempt joins it (the text in
+        # order, the newer revision): a chat stream next to a swarm filled
+        # the queue with appends (115 of 128) and forced a resync.
+        {pending, merged?} = join_append(pending, delta)
+
         entry = %{
           entry
           | queue: :queue.from_list(pending),
             bytes: Enum.reduce(pending, 0, fn {_, bytes}, n -> n + bytes end)
         }
 
-        if :queue.len(entry.queue) >= 128 or entry.bytes + size > 1_048_576 or size > 131_072 or
-             (is_binary(delta["text"]) and byte_size(delta["text"]) > 65_536) do
-          {connection, ref} = key
-          # pass72 F: what filled the queue, by kind (never a payload).
-          kinds =
-            entry.queue
-            |> :queue.to_list()
-            |> Enum.frequencies_by(fn {queued, _} -> queued["kind"] end)
-
-          Logger.info(
-            "watch queue overflow: #{:queue.len(entry.queue)} deltas, #{entry.bytes} bytes, " <>
-              "next #{size} bytes, #{inspect(kinds)}"
-          )
-
-          send(connection, {:service_overflow, self(), ref})
-          unwatch(acc, key)
-        else
-          entry = %{
-            entry
-            | queue: :queue.in({delta, size}, entry.queue),
-              bytes: entry.bytes + size
-          }
-
+        if merged? do
           flush(put_in(acc.watches[key], entry), key)
+        else
+          enqueue_delta(acc, key, entry, delta, size)
         end
       else
         acc
       end
     end)
+  end
+
+  @join_bytes 16_384
+
+  defp join_append(pending, %{"kind" => "stream_append", "entity_id" => id} = delta) do
+    index =
+      pending
+      |> Enum.with_index()
+      |> Enum.filter(fn {{old, _}, _} -> old["entity_id"] == id end)
+      |> List.last()
+
+    with {{%{"kind" => "stream_append", "text" => old_text} = old, _}, at}
+         when is_binary(old_text) <- index,
+         %{"text" => text} when is_binary(text) <- delta,
+         true <- old["channel"] == delta["channel"] and old["attempt_id"] == delta["attempt_id"],
+         true <- byte_size(old_text) + byte_size(text) <= @join_bytes do
+      joined = %{old | "text" => old_text <> text, "revision" => delta["revision"]}
+      {List.replace_at(pending, at, {joined, byte_size(Jason.encode!(joined))}), true}
+    else
+      _ -> {pending, false}
+    end
+  end
+
+  defp join_append(pending, _delta), do: {pending, false}
+
+  defp enqueue_delta(acc, key, entry, delta, size) do
+    if :queue.len(entry.queue) >= 128 or entry.bytes + size > 1_048_576 or size > 131_072 or
+         (is_binary(delta["text"]) and byte_size(delta["text"]) > 65_536) do
+      {connection, ref} = key
+      # pass72 F: what filled the queue, by kind (never a payload).
+      kinds =
+        entry.queue
+        |> :queue.to_list()
+        |> Enum.frequencies_by(fn {queued, _} -> queued["kind"] end)
+
+      Logger.info(
+        "watch queue overflow: #{:queue.len(entry.queue)} deltas, #{entry.bytes} bytes, " <>
+          "next #{size} bytes, #{inspect(kinds)}"
+      )
+
+      send(connection, {:service_overflow, self(), ref})
+      unwatch(acc, key)
+    else
+      entry = %{
+        entry
+        | queue: :queue.in({delta, size}, entry.queue),
+          bytes: entry.bytes + size
+      }
+
+      flush(put_in(acc.watches[key], entry), key)
+    end
   end
 
   # pass72 F: up to @watch_window deltas ride ahead of the client's credit
