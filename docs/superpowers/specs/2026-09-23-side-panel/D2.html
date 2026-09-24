@@ -1,0 +1,632 @@
+<p class="dir-concept">Constellation with a pulse. B's typographic tree and mode shapes are the body, C's honest activity lane is the pulse, and A's pinned needs-you band and numbered findings are the voice. Every agent gets two rows: glyph, name, state word and elapsed · tokens, then a 12-cell lane of its last 60 seconds (▂ think ▅ tools █ write ▒ waiting on you) and one human sentence. When it finishes, the lane gives way to its finding and the file:line behind it. One amber band under the header carries the literal request and ^N. The run the chat shows gets the accent ▌ and the words 'in chat'. No ETA, no per-agent percentage and no operations: those live in the overlay.</p>
+<p class="dir-keys">^F (or ^Space where the terminal delivers it) shows the hints. Badges replace the tree connector and the state glyph stays. Agents that need you get the first letters, then s d f g h j k l, then w e r t u i o p. y a d n q never become badges. Digits 1-9 pick a run. ^F again = ^N, the next thing waiting on you. Esc cancels. Hints never answer anything. Overlay: Esc goes back to the exact chat scroll and draft, [ ] step through agents in panel order, Tab moves focus between band, activity and composer, Enter expands a group or sends a steer to this agent only, and o shows raw operations. Approvals use the existing grammar where the request is shown: y/a once, Y this run, A always, d deny, D deny + stop, n next. They work only while the composer is empty. ^B cycles full → compact → hidden (strip → off under 120 columns). /panel sets the mode and the choice persists.</p>
+<div class="mk" data-mode="chat" data-view="full" data-frame="1"><div class="mk-h">Full · chat · one agent block with its lane; what it said, what it produced, the context gauge, and earlier runs in this chat</div><pre class="term">
+ <span class="ac">▌</span><span class="tp">✳</span> <span class="tp b">fix the flaky retry test</span> <span class="tm">· in chat</span>  <span class="tm">00:42</span> 
+   <span class="tf">auto · opus-5 · 12k · $0.03</span>                
+                                              
+ <span class="tp">●</span> <span class="tp">Assistant</span>          <span class="tm">working</span>      <span class="tf">0:42 · 12k</span> 
+ <span class="tg"> </span> <span class="tm">▂▂</span><span class="tp">▅▅▅</span><span class="tm">▂</span><span class="tp">▅█▅▅█▅</span> <span class="tp">editing agent_server_test.exs</span> 
+                                              
+ <span class="tm">it said</span>                                      
+   <span class="tm">“the flake is a timer race, not a retry</span>    
+   <span class="tm"> bug; swapping sleep(50) for a monitor”</span>    
+   <span class="tf">said at 0:31, shown in the chat above</span>      
+                                              
+ <span class="tm">produced</span>                             <span class="tf">2 files</span> 
+   <span class="tp">agent_server_test.exs</span>               <span class="ok">+12</span> <span class="er">−3</span> 
+   <span class="tp">support/fake_clock.ex</span>                <span class="ok">+4</span> <span class="er">−1</span> 
+   <span class="tf">no approvals needed · auto mode</span>            
+                                              
+ <span class="tm">context</span>                          <span class="tf">26k of 200k</span> 
+   <span class="tm">▰▰</span><span class="tg">▱▱▱▱▱▱▱▱▱▱▱▱▱▱</span>                           
+                                              
+ <span class="tm">earlier in this chat</span>                         
+   <span class="ok">✓</span> <span class="tm">✳</span> <span class="tm">hi mate</span>                          <span class="tf">00:06</span> 
+   <span class="ok">✓</span> <span class="sw">⋔</span> <span class="tm">architecture review</span> <span class="tf">· 4 found</span>    <span class="tf">03:02</span> 
+                                              
+                                              
+                                              
+                                              
+                                              
+ <span class="tf">last 60 s</span>  <span class="tm">▂</span><span class="tf"> think </span><span class="tp">▅</span><span class="tf"> tools </span><span class="tp">█</span><span class="tf"> write </span><span class="wa">▒</span><span class="tf"> you</span>     
+ <span class="tg">────────────────────────────────────────────</span> 
+ <span class="tm">^F</span> <span class="tf">agents</span>  <span class="tm">^N</span> <span class="tf">needs you</span>  <span class="tm">^B</span> <span class="tf">panel</span>       <span class="tf">full</span> 
+</pre></div>
+<div class="mk" data-mode="swarm" data-view="full" data-frame="1"><div class="mk-h">Full · swarm · 02:10 · Lead first with no hexagon, 2 rows per agent, a 60 s lane plus one sentence; the whole team fits in 13 rows</div><pre class="term">
+ <span class="ac">▌</span><span class="sw">⋔</span> <span class="tp b">architecture review</span> <span class="tm">· in chat</span>       <span class="tm">02:10</span> 
+   <span class="tf">read-only · 4 × *-review · 57k · $0.13</span>     
+                                              
+ <span class="tm">◌</span> <span class="tp">Lead</span>               <span class="tm">waiting</span>       <span class="tf">2:10 · 9k</span> 
+ <span class="tg">│</span> <span class="tm">▂</span><span class="tg">····</span><span class="tm">▂</span><span class="tg">····</span><span class="tm">▂</span><span class="tg">·</span> <span class="tp">coordinating 4 reviewers</span>      
+ <span class="tg">├</span> <span class="tp">●</span> <span class="l1">engine-lifecycle</span> <span class="tm">working</span>      <span class="tf">1:40 · 14k</span> 
+ <span class="tg">│</span> <span class="l1">▅▅</span><span class="tm">▂</span><span class="l1">▅▅▅▅▅</span><span class="tm">▂</span><span class="l1">▅▅▅</span> <span class="tp">reading RunServer's stop path</span> 
+ <span class="tg">├</span> <span class="tp">◐</span> <span class="l2">data-persistence</span> <span class="tm">thinking</span>     <span class="tf">1:40 · 10k</span> 
+ <span class="tg">│</span> <span class="tm">▂▂</span><span class="l2">▅</span><span class="tm">▂▂▂▂▂▂▂▂▂</span> <span class="tp">weighing flush vs retry</span>       
+ <span class="tg">├</span> <span class="tp">●</span> <span class="l3">llm-tools</span>        <span class="tm">working</span>       <span class="tf">1:40 · 8k</span> 
+ <span class="tg">│</span> <span class="l3">▅▅</span><span class="tm">▂▂</span><span class="l3">▅▅▅▅▅</span><span class="tm">▂</span><span class="l3">▅▅</span> <span class="tp">checking Fake provider paths</span>  
+ <span class="tg">╰</span> <span class="tp">●</span> <span class="l4">web-ui-desktop</span>   <span class="tm">working</span>      <span class="tf">1:40 · 16k</span> 
+ <span class="tg"> </span> <span class="l4">▅▅▅</span><span class="tm">▂</span><span class="l4">▅</span><span class="tm">▂</span><span class="l4">▅▅▅▅▅▅</span> <span class="tp">reading LiveView key hooks</span>    
+                                              
+ <span class="tm">reported</span>  <span class="tg">▱▱▱▱</span>  <span class="tp">0 of 4</span>             <span class="tf">4 working</span> 
+           <span class="tf">the Lead reports when all 4 are in</span> 
+                                              
+                                              
+                                              
+                                              
+                                              
+                                              
+                                              
+                                              
+                                              
+                                              
+                                              
+ <span class="tf">last 60 s</span>  <span class="tm">▂</span><span class="tf"> think </span><span class="tp">▅</span><span class="tf"> tools </span><span class="tp">█</span><span class="tf"> write </span><span class="wa">▒</span><span class="tf"> you</span>     
+ <span class="tg">────────────────────────────────────────────</span> 
+ <span class="tm">^F</span> <span class="tf">agents</span>  <span class="tm">^N</span> <span class="tf">needs you</span>  <span class="tm">^B</span> <span class="tf">panel</span>       <span class="tf">full</span> 
+</pre></div>
+<div class="mk" data-mode="swarm" data-view="full" data-frame="2"><div class="mk-h">Full · swarm · 02:14 · the band shows the literal command and ^N; web’s lane ends in ▒; llm’s lane gives way to its finding + file:line</div><pre class="term">
+ <span class="ac">▌</span><span class="sw">⋔</span> <span class="tp b">architecture review</span> <span class="tm">· in chat</span>       <span class="tm">02:14</span> 
+   <span class="tf">read-only · 4 × *-review · 65k · $0.15</span>     
+                                              
+<span class="card"> <span class="wa b">! NEEDS YOU</span> <span class="tm">·</span> <span class="l4">web-ui-desktop</span>       <span class="tm">1 waiting</span> </span>
+<span class="card">   <span class="tp b">mix test test/swarm_code_web/live</span>          </span>
+<span class="card">   <span class="tm">run a command · read-only asks</span>   <span class="tp b">^N</span> <span class="tm">answer</span> </span>
+                                              
+ <span class="tm">◌</span> <span class="tp">Lead</span>               <span class="tm">waiting</span>       <span class="tf">2:14 · 9k</span> 
+ <span class="tg">│</span> <span class="tg">····</span><span class="tm">▂</span><span class="tg">·····</span><span class="tm">▂</span><span class="tg">·</span> <span class="tp">waiting on 3 reviewers</span>        
+ <span class="tg">├</span> <span class="tp">●</span> <span class="l1">engine-lifecycle</span> <span class="tm">working</span>      <span class="tf">1:44 · 16k</span> 
+ <span class="tg">│</span> <span class="l1">▅▅▅▅</span><span class="tm">▂</span><span class="l1">▅▅▅▅▅</span><span class="tm">▂▂</span> <span class="tp">tracing where stop is saved</span>   
+ <span class="tg">├</span> <span class="tp">◐</span> <span class="l2">data-persistence</span> <span class="tm">thinking</span>     <span class="tf">1:44 · 12k</span> 
+ <span class="tg">│</span> <span class="tm">▂▂▂</span><span class="l2">▅</span><span class="tm">▂▂▂▂</span><span class="l2">▅</span><span class="tm">▂▂▂</span> <span class="tp">weighing flush vs retry order</span> 
+ <span class="tg">├</span> <span class="ok">✓</span> <span class="l3">llm-tools</span>        <span class="ok">done</span>          <span class="tf">1:30 · 9k</span> 
+ <span class="tg">│</span> <span class="ok">»</span> <span class="tp">Fake provider never reaches the</span>          
+ <span class="tg">│</span>   <span class="tp">refusal branch</span> <span class="tf">· fake.ex:88 +1</span>           
+ <span class="tg">╰</span> <span class="wa b">!</span> <span class="l4">web-ui-desktop</span>   <span class="wa b">needs you</span>    <span class="tf">1:44 · 19k</span> 
+ <span class="tg"> </span> <span class="l4">▅▅</span><span class="tm">▂</span><span class="l4">▅▅▅▅▅</span><span class="wa">▒▒▒▒</span> <span class="wa">wants to run a command</span>        
+                                              
+ <span class="tm">reported</span>  <span class="ok">▰</span><span class="tg">▱▱▱</span>  <span class="tp">1 of 4</span>           <span class="wa">1 needs you</span> 
+           <span class="tf">web-ui-desktop is paused on you</span>    
+                                              
+                                              
+                                              
+                                              
+                                              
+                                              
+ <span class="tf">last 60 s</span>  <span class="tm">▂</span><span class="tf"> think </span><span class="tp">▅</span><span class="tf"> tools </span><span class="tp">█</span><span class="tf"> write </span><span class="wa">▒</span><span class="tf"> you</span>     
+ <span class="tg">────────────────────────────────────────────</span> 
+ <span class="tm">^F</span> <span class="tf">agents</span>  <span class="tm">^N</span> <span class="tf">needs you</span>  <span class="tm">^B</span> <span class="tf">panel</span>       <span class="tf">full</span> 
+</pre></div>
+<div class="mk" data-mode="swarm" data-view="full" data-frame="3"><div class="mk-h">Full · swarm · 02:31 · band gone (0 rows); three findings with file:line; data keeps writing; reported 3 of 4 instead of an ETA</div><pre class="term">
+ <span class="ac">▌</span><span class="sw">⋔</span> <span class="tp b">architecture review</span> <span class="tm">· in chat</span>       <span class="tm">02:31</span> 
+   <span class="tf">read-only · 4 × *-review · 79k · $0.18</span>     
+                                              
+ <span class="tp">●</span> <span class="tp">Lead</span>               <span class="tm">working</span>      <span class="tf">2:31 · 13k</span> 
+ <span class="tg">│</span> <span class="tm">▂</span><span class="tg">··</span><span class="tm">▂▂▂</span><span class="tp">▅</span><span class="tm">▂▂▂▂▂</span> <span class="tp">merging 3 of 4 findings</span>       
+ <span class="tg">├</span> <span class="ok">✓</span> <span class="l1">engine-lifecycle</span> <span class="ok">done</span>         <span class="tf">1:52 · 19k</span> 
+ <span class="tg">│</span> <span class="ok">»</span> <span class="tp">stop reason read before the flush</span>        
+ <span class="tg">│</span>   <span class="tf">run_server.ex:214 +1</span>                     
+ <span class="tg">├</span> <span class="tp">●</span> <span class="l2">data-persistence</span> <span class="tm">working</span>      <span class="tf">2:01 · 15k</span> 
+ <span class="tg">│</span> <span class="tm">▂▂▂▂▂▂</span><span class="l2">▅</span><span class="tm">▂▂▂▂▂</span> <span class="tp">writing its summary</span>           
+ <span class="tg">├</span> <span class="ok">✓</span> <span class="l3">llm-tools</span>        <span class="ok">done</span>          <span class="tf">1:30 · 9k</span> 
+ <span class="tg">│</span> <span class="ok">»</span> <span class="tp">Fake provider never reaches the</span>          
+ <span class="tg">│</span>   <span class="tp">refusal branch</span> <span class="tf">· fake.ex:88 +1</span>           
+ <span class="tg">╰</span> <span class="ok">✓</span> <span class="l4">web-ui-desktop</span>   <span class="ok">done</span>         <span class="tf">1:58 · 23k</span> 
+ <span class="tg"> </span> <span class="ok">»</span> <span class="tp">three key routers fire Esc twice</span>         
+ <span class="tg"> </span>   <span class="tf">hooks.js:412 +2</span>                          
+                                              
+ <span class="tm">reported</span>  <span class="ok">▰▰▰</span><span class="tg">▱</span>  <span class="tp">3 of 4</span>             <span class="tf">2 working</span> 
+           <span class="tf">the Lead reports once data is in</span>   
+                                              
+                                              
+                                              
+                                              
+                                              
+                                              
+                                              
+                                              
+ <span class="tf">last 60 s</span>  <span class="tm">▂</span><span class="tf"> think </span><span class="tp">▅</span><span class="tf"> tools </span><span class="tp">█</span><span class="tf"> write </span><span class="wa">▒</span><span class="tf"> you</span>     
+ <span class="tg">────────────────────────────────────────────</span> 
+ <span class="tm">^F</span> <span class="tf">agents</span>  <span class="tm">^N</span> <span class="tf">needs you</span>  <span class="tm">^B</span> <span class="tf">panel</span>       <span class="tf">full</span> 
+</pre></div>
+<div class="mk" data-mode="workflow" data-view="full" data-frame="1"><div class="mk-h">Full · workflow · pipeline on top, the live phase’s steps as agent blocks; the failed step says its retry honestly</div><pre class="term">
+ <span class="ac">▌</span><span class="wf">⧉</span> <span class="tp b">ship retry</span> <span class="tm">· in chat</span>                <span class="tm">04:12</span> 
+   <span class="tf">workflow · auto · 5 phases · 58k · $0.41</span>   
+                                              
+   <span class="tm">scan   plan   implement   verify  report</span>   
+   <span class="ok">✓</span><span class="tg">──────</span><span class="ok">✓</span><span class="tg">──────</span><span class="tp b">●</span><span class="tg">───────────</span><span class="tf">○</span><span class="tg">───────</span><span class="tf">○</span>        
+                                              
+ <span class="tm">implement</span>                <span class="tf">3 steps in parallel</span> 
+ <span class="ok">✓</span> <span class="l1">migrate</span>            <span class="ok">done</span>          <span class="tf">0:48 · 6k</span> 
+ <span class="tg">│</span> <span class="ok">»</span> <span class="tp">added an attempts column to jobs</span>         
+ <span class="tg">│</span>   <span class="tf">+18 in 1 file</span>                            
+ <span class="er">✗</span> <span class="l2">retry-tests</span>        <span class="er">failed</span>        <span class="tf">1:10 · 9k</span> 
+ <span class="tg">│</span> <span class="l2">▅▅▅▅</span><span class="tm">▂</span><span class="l2">▅▅▅▅</span><span class="er">✗</span><span class="tg">··</span> <span class="er">double charge on replay</span>       
+ <span class="tg">│</span>              <span class="tm">retry 2 of 3 starts in 8 s</span>    
+ <span class="tp">●</span> <span class="l3">client</span>             <span class="tm">working</span>      <span class="tf">1:20 · 11k</span> 
+ <span class="tg"> </span> <span class="l3">▅▅█▅▅</span><span class="tm">▂</span><span class="l3">▅██▅</span><span class="tm">▂</span><span class="l3">▅</span> <span class="tp">wiring backoff into Req calls</span> 
+                                              
+ <span class="tm">phases</span>                           <span class="tf">2 of 5 done</span> 
+   <span class="ok">▰▰</span><span class="tg">▱▱▱</span>                                      
+                                              
+ <span class="tm">produced so far</span>                      <span class="tf">2 files</span> 
+   <span class="tp">migrations/…_add_attempts.exs</span>       <span class="ok">+18</span>    
+   <span class="tp">lib/jobs/retry.ex</span>                   <span class="ok">+42</span> <span class="er">−7</span> 
+                                              
+ <span class="tm">next</span>                                         
+   <span class="tf">verify starts when all 3 steps end</span>         
+                                              
+                                              
+ <span class="tf">last 60 s</span>  <span class="tm">▂</span><span class="tf"> think </span><span class="tp">▅</span><span class="tf"> tools </span><span class="tp">█</span><span class="tf"> write </span><span class="wa">▒</span><span class="tf"> you</span>     
+ <span class="tg">────────────────────────────────────────────</span> 
+ <span class="tm">^F</span> <span class="tf">agents</span>  <span class="tm">^N</span> <span class="tf">needs you</span>  <span class="tm">^B</span> <span class="tf">panel</span>       <span class="tf">full</span> 
+</pre></div>
+<div class="mk" data-mode="goal" data-view="full" data-frame="1"><div class="mk-h">Full · goal · iteration rail with the judge verdicts, criteria met/total with “met in it N”, the last verdict quoted</div><pre class="term">
+ <span class="ac">▌</span><span class="gl">◉</span> <span class="tp b">suite green</span> <span class="tm">· in chat</span>               <span class="tm">11:40</span> 
+   <span class="tf">goal · auto · limit 5 iterations · $0.62</span>   
+                                              
+ <span class="tm">iterations</span>                            <span class="tf">3 of 5</span> 
+   <span class="er">✗</span><span class="tg">──────</span><span class="er">✗</span><span class="tg">──────</span><span class="tp b">◐</span><span class="tg">──────</span><span class="tf">○</span><span class="tg">──────</span><span class="tf">○</span>              
+   <span class="tf">1      2      3      4      5</span>              
+   <span class="tf">judge: not met · not met · …</span>               
+                                              
+ <span class="tp">◐</span> <span class="gl">goal agent</span>         <span class="tm">thinking</span>     <span class="tf">3:05 · 22k</span> 
+ <span class="tg"> </span> <span class="tm">▂▂</span><span class="gl">▅▅▅</span><span class="tm">▂▂▂▂▂▂▂</span> <span class="tp">why retry_test times out</span>      
+                                              
+ <span class="tm">criteria</span>                          <span class="tf">2 of 4 met</span> 
+   <span class="ok">▰▰</span><span class="tg">▱▱</span>                                       
+   <span class="ok">✓</span> <span class="tp">core suite passes</span>            <span class="tf">met in it 1</span> 
+   <span class="ok">✓</span> <span class="tp">no compile warnings</span>          <span class="tf">met in it 2</span> 
+   <span class="tf">○</span> <span class="tp">web suite passes</span>                         
+   <span class="tf">○</span> <span class="tp">credo --strict is clean</span>                  
+                                              
+ <span class="tm">last verdict</span>                     <span class="tf">iteration 2</span> 
+   <span class="tm">“core is green; the web suite still fails</span>  
+   <span class="tm"> in retry_test on timeouts, not asserts”</span>   
+                                              
+ <span class="tm">produced</span>                   <span class="tf">3 files · +61 −22</span> 
+                                              
+                                              
+                                              
+                                              
+ <span class="tf">last 60 s</span>  <span class="tm">▂</span><span class="tf"> think </span><span class="tp">▅</span><span class="tf"> tools </span><span class="tp">█</span><span class="tf"> write </span><span class="wa">▒</span><span class="tf"> you</span>     
+ <span class="tg">────────────────────────────────────────────</span> 
+ <span class="tm">^F</span> <span class="tf">agents</span>  <span class="tm">^N</span> <span class="tf">needs you</span>  <span class="tm">^B</span> <span class="tf">panel</span>       <span class="tf">full</span> 
+</pre></div>
+<div class="mk" data-mode="plan" data-view="full" data-frame="1"><div class="mk-h">Full · plan · the open question is the needs-you band; the step spine has no invented total; the gate names where you answer</div><pre class="term">
+ <span class="ac">▌</span><span class="tp">✳</span> <span class="tp b">rate limits for the API</span> <span class="tm">· in chat</span>   <span class="tm">03:20</span> 
+   <span class="tf">plan · read-only · opus-5 · 31k · $0.08</span>    
+                                              
+<span class="card"> <span class="wa b">! NEEDS YOU</span> <span class="tm">·</span> <span class="tp">Planner asks</span>         <span class="tm">1 waiting</span> </span>
+<span class="card">   <span class="tp b">limit per API key, or per client IP?</span>       </span>
+<span class="card">   <span class="tm">the next steps depend on it</span>      <span class="tp b">^N</span> <span class="tm">answer</span> </span>
+                                              
+ <span class="wa b">!</span> <span class="tp">Planner</span>            <span class="wa b">needs you</span>    <span class="tf">3:20 · 31k</span> 
+ <span class="tg"> </span> <span class="tm">▂</span><span class="tp">▅▅</span><span class="tm">▂▂▂</span><span class="tp">▅▅</span><span class="tm">▂</span><span class="wa">▒▒▒</span> <span class="wa">waiting for your answer</span>       
+                                              
+ <span class="tm">steps drafted</span>                       <span class="tf">4 so far</span> 
+   <span class="ok">1</span> <span class="tg">│</span> <span class="tp">a RateLimit plug before auth</span>           
+   <span class="ok">2</span> <span class="tg">│</span> <span class="tp">buckets in ETS, one per key</span>            
+   <span class="ok">3</span> <span class="tg">│</span> <span class="tp">429 with a Retry-After header</span>          
+   <span class="wa">4</span> <span class="tg">│</span> <span class="wa">bucket key: open question</span>              
+     <span class="tg">╵</span>                                        
+   <span class="tf">touches 5 files · no migration</span>             
+                                              
+ <span class="tg">╭──────────────────────────────────────────╮</span> 
+ <span class="tg">│</span> <span class="tm">gate</span> <span class="tf">· opens when the plan is done</span>       <span class="tg">│</span> 
+ <span class="tg">│</span> <span class="tp">run it</span><span class="tf"> · </span><span class="tp">edit</span><span class="tf"> · </span><span class="tp">discard</span><span class="tf"> in the chat card</span> <span class="tg">│</span> 
+ <span class="tg">╰──────────────────────────────────────────╯</span> 
+                                              
+                                              
+                                              
+                                              
+                                              
+ <span class="tf">last 60 s</span>  <span class="tm">▂</span><span class="tf"> think </span><span class="tp">▅</span><span class="tf"> tools </span><span class="tp">█</span><span class="tf"> write </span><span class="wa">▒</span><span class="tf"> you</span>     
+ <span class="tg">────────────────────────────────────────────</span> 
+ <span class="tm">^F</span> <span class="tf">agents</span>  <span class="tm">^N</span> <span class="tf">needs you</span>  <span class="tm">^B</span> <span class="tf">panel</span>       <span class="tf">full</span> 
+</pre></div>
+<div class="mk" data-mode="research" data-view="full" data-frame="1"><div class="mk-h">Full · research · found › read › used funnel, where it read, report sections, one live quoted line</div><pre class="term">
+ <span class="ac">▌</span><span class="rs">⌕</span> <span class="tp b">Req vs Finch pooling</span> <span class="tm">· in chat</span>      <span class="tm">02:48</span> 
+   <span class="tf">research · deep · 3 agents · 44k · $0.11</span>   
+                                              
+ <span class="tm">sources</span>                                      
+   <span class="tm">found</span>  <span class="rs">▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</span>  <span class="tp">24</span>        
+   <span class="tm">read </span>  <span class="rs">▰▰▰▰▰▰▰▰▰▰▰</span>               <span class="tp">11</span>        
+   <span class="tm">used </span>  <span class="rs">▰▰▰▰▰▰</span>                    <span class="tp"> 6</span>        
+   <span class="tf">read in</span> <span class="tm">hexdocs</span> <span class="rs">●●●</span>  <span class="tm">github</span> <span class="rs">●●</span>  <span class="tm">blogs</span> <span class="rs">●</span><span class="tg">○</span>   
+                                              
+ <span class="tp">●</span> <span class="tp">Lead</span>               <span class="tm">working</span>      <span class="tf">2:48 · 20k</span> 
+ <span class="tg">│</span> <span class="tm">▂▂</span><span class="tp">███</span><span class="tm">▂</span><span class="tp">████</span><span class="tm">▂</span><span class="tp">█</span> <span class="tp">writing § 3 of the report</span>     
+ <span class="tg">├</span> <span class="ok">✓</span> <span class="l1">reader-docs</span>      <span class="ok">done</span>         <span class="tf">1:30 · 12k</span> 
+ <span class="tg">│</span> <span class="ok">»</span> <span class="tp">NimblePool is gone from Req</span>              
+ <span class="tg">│</span>   <span class="tf">3 sources</span>                                
+ <span class="tg">╰</span> <span class="tp">●</span> <span class="l2">reader-code</span>      <span class="tm">working</span>      <span class="tf">1:52 · 12k</span> 
+ <span class="tg"> </span> <span class="l2">▅▅▅</span><span class="tm">▂</span><span class="l2">▅▅▅▅▅▅</span><span class="tm">▂</span><span class="l2">▅</span> <span class="tp">reading Finch pool_manager.ex</span> 
+                                              
+ <span class="tm">report</span>                       <span class="tf">2 of 4 sections</span> 
+   <span class="ok">✓</span> <span class="tp">what Req pools by default</span>                
+   <span class="ok">✓</span> <span class="tp">sizing a Finch pool</span>                      
+   <span class="tp b">●</span> <span class="tp">when to share one pool</span>                   
+   <span class="tf">○</span> <span class="tm">recommendation</span>                           
+   <span class="tm">“one pool per host is the default; share</span>   
+   <span class="tm"> only when hosts repeat…”</span> <span class="tf">§ 3, live</span>        
+                                              
+                                              
+                                              
+ <span class="tf">last 60 s</span>  <span class="tm">▂</span><span class="tf"> think </span><span class="tp">▅</span><span class="tf"> tools </span><span class="tp">█</span><span class="tf"> write </span><span class="wa">▒</span><span class="tf"> you</span>     
+ <span class="tg">────────────────────────────────────────────</span> 
+ <span class="tm">^F</span> <span class="tf">agents</span>  <span class="tm">^N</span> <span class="tf">needs you</span>  <span class="tm">^B</span> <span class="tf">panel</span>       <span class="tf">full</span> 
+</pre></div>
+<div class="mk" data-mode="consensus" data-view="full" data-frame="1"><div class="mk-h">Full · consensus · positions as letters, rails converge on the judge, “gpt moved B › A”, agreement as 2 of 3 plus the judge’s own figure</div><pre class="term">
+ <span class="ac">▌</span><span class="cj">⚖</span> <span class="tp b">should runs own worktrees?</span> <span class="tm">· in chat</span>      
+   <span class="tf">consensus · 3 models · 38k · $0.22</span>   <span class="tm">03:10</span> 
+                                              
+ <span class="tm">positions</span>                                    
+   <span class="tp b">A</span>  <span class="tp">yes, one worktree per writer run</span>        
+   <span class="tp b">B</span>  <span class="tp">only when 2+ agents write</span>               
+   <span class="tp b">C</span>  <span class="tp">no, checkpoints are enough</span>              
+                                              
+   <span class="tf">        round 1   round 2   round 3</span>        
+   <span class="l1">opus  </span>   <span class="tp">A</span><span class="tg"> ──────── </span><span class="tp">A</span><span class="tg"> ────╮</span>                
+   <span class="l2">gpt   </span>   <span class="tp">B</span><span class="tg"> ──────── </span><span class="tp">A</span><span class="tg"> ────┼──▸ </span><span class="tm">judge</span>       
+   <span class="l3">gemini</span>   <span class="tp">C</span><span class="tg"> ──────── </span><span class="tf">…</span><span class="tg"> ────╯</span>                
+   <span class="tf">                   gpt moved B › A</span>         
+                                              
+ <span class="tm">◌</span> <span class="l1">opus</span>               <span class="tm">waiting</span>       <span class="tf">3:10 · 9k</span> 
+ <span class="tg">│</span> <span class="tm">▂▂▂▂</span><span class="l1">▅▅</span><span class="tg">······</span> <span class="tp">holds A, waits for round 3</span>    
+ <span class="tm">◌</span> <span class="l2">gpt</span>                <span class="tm">waiting</span>      <span class="tf">3:10 · 10k</span> 
+ <span class="tg">│</span> <span class="tm">▂▂▂</span><span class="l2">▅▅</span><span class="tm">▂▂</span><span class="tg">·····</span> <span class="tp">moved to A this round</span>         
+ <span class="tp">◐</span> <span class="l3">gemini</span>             <span class="tm">thinking</span>     <span class="tf">3:10 · 11k</span> 
+ <span class="tg"> </span> <span class="tm">▂▂▂▂▂▂▂▂▂▂▂▂</span> <span class="tp">restating C against A</span>         
+                                              
+ <span class="tm">agreement</span>            <span class="tf">2 of 3 on A · judge 62%</span> 
+   <span class="tf">what moved gpt, quoting opus:</span>              
+   <span class="tm">“a crash mid-merge leaves git dirty, and</span>   
+   <span class="tm"> checkpoints cannot undo that”</span>             
+                                              
+                                              
+ <span class="tf">last 60 s</span>  <span class="tm">▂</span><span class="tf"> think </span><span class="tp">▅</span><span class="tf"> tools </span><span class="tp">█</span><span class="tf"> write </span><span class="wa">▒</span><span class="tf"> you</span>     
+ <span class="tg">────────────────────────────────────────────</span> 
+ <span class="tm">^F</span> <span class="tf">agents</span>  <span class="tm">^N</span> <span class="tf">needs you</span>  <span class="tm">^B</span> <span class="tf">panel</span>       <span class="tf">full</span> 
+</pre></div>
+<div class="mk" data-mode="swarm" data-view="compact" data-frame="2"><div class="mk-h">Compact · swarm · 02:14 · 1 row per agent with short names and an 8-cell lane; web’s row names the action</div><pre class="term">
+ <span class="tm">2 runs · 5 agents · 4 live · $0.15</span>           
+                                              
+<span class="card"> <span class="wa b">! 1 NEEDS YOU</span>                      <span class="tp b">^N</span> <span class="tm">answer</span> </span>
+<span class="card">   <span class="l4">web</span>    <span class="tp">mix test test/swarm_code_web/live</span>   </span>
+                                              
+ <span class="ac">▌</span><span class="sw">⋔</span> <span class="tp b">architecture review</span> <span class="tm">· in chat</span> <span class="tm">1/4 · 02:14</span> 
+   <span class="tm">◌</span> <span class="tp">Lead</span>    <span class="tg">····</span><span class="tm">▂</span><span class="tg">···</span> <span class="tp">waiting on 3 reviewers</span>  
+   <span class="tp">●</span> <span class="l1">engine</span>  <span class="l1">▅▅</span><span class="tm">▂</span><span class="l1">▅▅▅▅▅</span> <span class="tp">tracing where stop is…</span>  
+   <span class="tp">◐</span> <span class="l2">data</span>    <span class="tm">▂▂▂</span><span class="l2">▅</span><span class="tm">▂▂▂</span><span class="l2">▅</span> <span class="tp">weighing flush vs retry</span> 
+   <span class="ok">✓</span> <span class="l3">llm</span>     <span class="tp">» Fake provider never reaches…</span>   
+   <span class="wa b">!</span> <span class="l4">web</span>     <span class="l4">▅▅▅▅</span><span class="wa">▒▒▒▒</span> <span class="wa">approve: mix test …/live</span>
+   <span class="tf">names drop -review</span>                         
+                                              
+  <span class="tm">✳</span> <span class="tp">hi mate</span>                           <span class="tm">✓ 00:06</span> 
+                                              
+                                              
+                                              
+                                              
+                                              
+                                              
+                                              
+                                              
+                                              
+                                              
+                                              
+                                              
+                                              
+ <span class="tf">compact: 1 row per agent · 8-cell lane = 60 s</span>
+ <span class="tg">────────────────────────────────────────────</span> 
+ <span class="tm">^F</span> <span class="tf">agents</span>  <span class="tm">^N</span> <span class="tf">needs you</span>  <span class="tm">^B</span> <span class="tf">panel</span>    <span class="tf">compact</span> 
+</pre></div>
+<div class="mk" data-mode="heavy" data-view="full" data-frame="1"><div class="mk-h">Full · heavy · 5 runs · the in-chat swarm unfolds, the four others fold to an orbit line and their most important sentence</div><pre class="term">
+ <span class="tp">5 runs</span><span class="tf"> · 17 agents · 14 live · $1.82</span>         
+<span class="card"> <span class="wa b">! 2 NEED YOU · oldest first</span>        <span class="tp b">^N</span> <span class="tm">answer</span> </span>
+<span class="card">   <span class="l4">web</span>    <span class="tp">mix test test/swarm_code_web/live</span>   </span>
+<span class="card">   <span class="l5">plug</span>   <span class="tp">edit lib/api/plug.ex</span>                </span>
+                                              
+ <span class="ac">▌</span><span class="sw">⋔</span> <span class="tp b">architecture review</span> <span class="tm">· in chat</span>       <span class="tm">02:14</span> 
+   <span class="tf">read-only · 4 × *-review · 65k · $0.15</span>     
+ <span class="tm">◌</span> <span class="tp">Lead</span>               <span class="tm">waiting</span>       <span class="tf">2:14 · 9k</span> 
+ <span class="tg">│</span> <span class="tg">····</span><span class="tm">▂</span><span class="tg">·····</span><span class="tm">▂</span><span class="tg">·</span> <span class="tp">waiting on 3 reviewers</span>        
+ <span class="tg">├</span> <span class="tp">●</span> <span class="l1">engine-lifecycle</span> <span class="tm">working</span>      <span class="tf">1:44 · 16k</span> 
+ <span class="tg">│</span> <span class="l1">▅▅▅▅</span><span class="tm">▂</span><span class="l1">▅▅▅▅▅</span><span class="tm">▂▂</span> <span class="tp">tracing where stop is saved</span>   
+ <span class="tg">├</span> <span class="tp">◐</span> <span class="l2">data-persistence</span> <span class="tm">thinking</span>     <span class="tf">1:44 · 12k</span> 
+ <span class="tg">│</span> <span class="tm">▂▂▂</span><span class="l2">▅</span><span class="tm">▂▂▂▂</span><span class="l2">▅</span><span class="tm">▂▂▂</span> <span class="tp">weighing flush vs retry order</span> 
+ <span class="tg">├</span> <span class="ok">✓</span> <span class="l3">llm-tools</span>        <span class="tp">» Fake provider never…</span>  
+ <span class="tg">╰</span> <span class="wa b">!</span> <span class="l4">web-ui-desktop</span>   <span class="wa b">needs you</span>    <span class="tf">1:44 · 19k</span> 
+ <span class="tg"> </span> <span class="l4">▅▅</span><span class="tm">▂</span><span class="l4">▅▅▅▅▅</span><span class="wa">▒▒▒▒</span> <span class="wa">wants to run a command</span>        
+                                              
+  <span class="sw">⋔</span> <span class="tp">api hardening</span>  <span class="tp">●</span><span class="tp">●</span><span class="tp">◐</span><span class="wa b">!</span>           <span class="tm">0/3 · 05:02</span> 
+    <span class="wa">! plug</span> <span class="tm">wants to edit a file</span>               
+  <span class="gl">◉</span> <span class="tp">suite green</span>  <span class="er">✗✗</span><span class="tp">◐</span><span class="tf">○○</span>         <span class="tm">it 3/5 · 11:40</span> 
+    <span class="tm">2 of 4 criteria met · why retry_test…</span>     
+  <span class="cj">⚖</span> <span class="tp">runs own worktrees?</span>  <span class="tm">◌◌</span><span class="tp">◐</span>    <span class="tm">r 2/3 · 03:10</span> 
+    <span class="tm">2 of 3 on A · judge 62% · gpt B › A</span>       
+  <span class="wf">⧉</span> <span class="tp">ship retry</span>  <span class="ok">✓✓</span><span class="tp">●</span><span class="tf">○○</span>             <span class="tm">3/5 · 04:12</span> 
+    <span class="er">✗ retry-tests failed</span><span class="tm"> · retry in 8 s</span>       
+                                              
+                                              
+                                              
+ <span class="tg">────────────────────────────────────────────</span> 
+ <span class="tm">^F</span> <span class="tf">+ 2-5 unfolds a run</span>  <span class="tm">^N</span> <span class="tf">next</span>         <span class="tf">full</span> 
+</pre></div>
+<div class="mk" data-mode="heavy" data-view="compact" data-frame="1"><div class="mk-h">Compact · heavy · 5 runs, 17 agents in 27 rows; 2 need you in one band, oldest first; done steps fold into the run header</div><pre class="term">
+ <span class="tp">5 runs</span><span class="tf"> · 17 agents · 14 live · $1.82</span>         
+<span class="card"> <span class="wa b">! 2 NEED YOU · oldest first</span>        <span class="tp b">^N</span> <span class="tm">answer</span> </span>
+<span class="card">   <span class="l4">web</span>    <span class="tp">mix test test/swarm_code_web/live</span>   </span>
+<span class="card">   <span class="l5">plug</span>   <span class="tp">edit lib/api/plug.ex</span>                </span>
+ <span class="ac">▌</span><span class="sw">⋔</span> <span class="tp b">architecture review</span> <span class="tm">· in chat</span> <span class="tm">1/4 · 02:14</span> 
+   <span class="tm">◌</span> <span class="tp">Lead</span>    <span class="tg">····</span><span class="tm">▂</span><span class="tg">···</span> <span class="tp">waiting on 3 reviewers</span>  
+   <span class="tp">●</span> <span class="l1">engine</span>  <span class="l1">▅▅</span><span class="tm">▂</span><span class="l1">▅▅▅▅▅</span> <span class="tp">tracing where stop is…</span>  
+   <span class="tp">◐</span> <span class="l2">data</span>    <span class="tm">▂▂▂</span><span class="l2">▅</span><span class="tm">▂▂▂</span><span class="l2">▅</span> <span class="tp">weighing flush vs retry</span> 
+   <span class="ok">✓</span> <span class="l3">llm</span>     <span class="tp">» Fake provider never reaches…</span>   
+   <span class="wa b">!</span> <span class="l4">web</span>     <span class="l4">▅▅▅▅</span><span class="wa">▒▒▒▒</span> <span class="wa">approve: mix test …/live</span>
+  <span class="sw">⋔</span> <span class="tp">api hardening</span>                 <span class="tm">0/3 · 05:02</span> 
+   <span class="tp">●</span> <span class="tp">Lead</span>    <span class="tm">▂</span><span class="tg">··</span><span class="tm">▂</span><span class="tg">··</span><span class="tm">▂</span><span class="tg">·</span> <span class="tp">waiting on 3 workers</span>    
+   <span class="tp">●</span> <span class="l1">auth</span>    <span class="l1">▅▅▅</span><span class="tm">▂</span><span class="l1">▅▅▅█</span> <span class="tp">adding token expiry…</span>    
+   <span class="tp">◐</span> <span class="l2">limits</span>  <span class="tm">▂▂▂</span><span class="l2">▅</span><span class="tm">▂▂▂▂</span> <span class="tp">choosing a bucket size</span>  
+   <span class="wa b">!</span> <span class="l5">plug</span>    <span class="l5">▅█▅▅█</span><span class="wa">▒▒▒</span> <span class="wa">approve: edit…</span>          
+  <span class="gl">◉</span> <span class="tp">suite green</span>              <span class="tm">it 3/5 · 2/4 met</span> 
+   <span class="tp">◐</span> <span class="gl">goal</span>    <span class="tm">▂▂</span><span class="gl">▅▅▅</span><span class="tm">▂▂▂</span> <span class="tp">why retry_test times out</span>
+  <span class="cj">⚖</span> <span class="tp">runs own worktrees?</span>   <span class="tm">r 2/3 · 2 of 3 on A</span> 
+   <span class="tm">◌</span> <span class="l1">opus</span>    <span class="tm">▂</span><span class="l1">▅▅▅</span><span class="tg">····</span> <span class="tp">holds A</span>                 
+   <span class="tm">◌</span> <span class="l2">gpt</span>     <span class="tm">▂</span><span class="l2">▅▅</span><span class="tm">▂</span><span class="tg">····</span> <span class="tp">moved B › A</span>             
+   <span class="tp">◐</span> <span class="l3">gemini</span>  <span class="tm">▂▂▂▂▂▂▂▂</span> <span class="tp">restating C against A</span>   
+   <span class="tf">○</span> <span class="tm">judge</span>   <span class="tg">········</span> <span class="tp">scores after round 3</span>    
+  <span class="wf">⧉</span> <span class="tp">ship retry</span>             <span class="tm">✓1 · implement 3/5</span> 
+   <span class="er">✗</span> <span class="l2">tests</span>   <span class="l2">▅▅▅</span><span class="er">✗</span><span class="tg">····</span> <span class="er">failed · retry in 8 s</span>   
+   <span class="tp">●</span> <span class="l3">client</span>  <span class="l3">▅██▅▅</span><span class="tm">▂</span><span class="l3">▅█</span> <span class="tp">wiring backoff into Req</span> 
+                                              
+                                              
+                                              
+ <span class="tg">────────────────────────────────────────────</span> 
+ <span class="tm">^F</span> <span class="tf">agents</span>  <span class="tm">^N</span> <span class="tf">needs you</span>  <span class="tm">^B</span> <span class="tf">panel</span>    <span class="tf">compact</span> 
+</pre></div>
+<div class="mk" data-mode="heavy" data-view="hint" data-frame="1"><div class="mk-h">Hint · heavy · after ^F the badges replace the tree connectors, glyphs keep their state, and the band stays lit with its own badges s d</div><pre class="term">
+ <span class="tf">5 runs · 17 agents · 14 live · $1.82</span>         
+<span class="card"> <span class="wa b">! 2 NEED YOU · oldest first</span>         <span class="tp b">^F</span> <span class="tm">again</span> </span>
+<span class="card"> <span class="key"> s </span> <span class="l4">web</span>    <span class="tp">mix test test/swarm_code_web/live</span> </span>
+<span class="card"> <span class="key"> d </span> <span class="l5">plug</span>   <span class="tp">edit lib/api/plug.ex</span>              </span>
+ <span class="key"> 1 </span> <span class="ac">▌</span><span class="sw">⋔</span> <span class="tf">architecture review</span> <span class="tf">· in chat</span>         
+ <span class="key"> f </span> <span class="tm">◌</span> <span class="tf">Lead   </span> <span class="tf">····▂···</span> <span class="tf">waiting on 3…</span>         
+ <span class="key"> g </span> <span class="tp">●</span> <span class="tf">engine </span> <span class="tf">▅▅▂▅▅▅▅▅</span> <span class="tf">tracing where stop…</span>   
+ <span class="key"> h </span> <span class="tp">◐</span> <span class="tf">data   </span> <span class="tf">▂▂▂▅▂▂▂▅</span> <span class="tf">weighing flush vs…</span>    
+ <span class="key"> j </span> <span class="ok">✓</span> <span class="tf">llm    </span> <span class="tf">» Fake provider never…</span>         
+ <span class="key"> s </span> <span class="wa b">!</span> <span class="tf">web    </span> <span class="tf">▅▅▅▅</span><span class="wa">▒▒▒▒</span> <span class="wa">approve: mix test…</span>    
+ <span class="key"> 2 </span>  <span class="sw">⋔</span> <span class="tf">api hardening</span>                         
+ <span class="key"> k </span> <span class="tp">●</span> <span class="tf">Lead   </span> <span class="tf">▂··▂··▂·</span> <span class="tf">waiting on 3 workers</span>  
+ <span class="key"> l </span> <span class="tp">●</span> <span class="tf">auth   </span> <span class="tf">▅▅▅▂▅▅▅█</span> <span class="tf">adding token…</span>         
+ <span class="key"> w </span> <span class="tp">◐</span> <span class="tf">limits </span> <span class="tf">▂▂▂▅▂▂▂▂</span> <span class="tf">choosing a bucket…</span>    
+ <span class="key"> d </span> <span class="wa b">!</span> <span class="tf">plug   </span> <span class="tf">▅█▅▅█</span><span class="wa">▒▒▒</span> <span class="wa">approve: edit…</span>        
+ <span class="key"> 3 </span>  <span class="gl">◉</span> <span class="tf">suite green</span>                           
+ <span class="key"> e </span> <span class="tp">◐</span> <span class="tf">goal   </span> <span class="tf">▂▂▅▅▅▂▂▂</span> <span class="tf">why retry_test…</span>       
+ <span class="key"> 4 </span>  <span class="cj">⚖</span> <span class="tf">runs own worktrees?</span>                   
+ <span class="key"> r </span> <span class="tm">◌</span> <span class="tf">opus   </span> <span class="tf">▂▅▅▅····</span> <span class="tf">holds A</span>               
+ <span class="key"> t </span> <span class="tm">◌</span> <span class="tf">gpt    </span> <span class="tf">▂▅▅▂····</span> <span class="tf">moved B › A</span>           
+ <span class="key"> u </span> <span class="tp">◐</span> <span class="tf">gemini </span> <span class="tf">▂▂▂▂▂▂▂▂</span> <span class="tf">restating C…</span>          
+ <span class="key"> i </span> <span class="tf">○</span> <span class="tf">judge  </span> <span class="tf">········</span> <span class="tf">scores after round 3</span>  
+ <span class="key"> 5 </span>  <span class="wf">⧉</span> <span class="tf">ship retry</span>                            
+ <span class="key"> o </span> <span class="er">✗</span> <span class="tf">tests  </span> <span class="tf">▅▅▅✗····</span> <span class="tf">failed · retry in…</span>    
+ <span class="key"> p </span> <span class="tp">●</span> <span class="tf">client </span> <span class="tf">▅██▅▅▂▅█</span> <span class="tf">wiring backoff…</span>       
+                                              
+                                              
+                                              
+ <span class="tg">────────────────────────────────────────────</span> 
+ <span class="tp">s-p</span> <span class="tf">open ·</span> <span class="tp">1-5</span> <span class="tf">run ·</span> <span class="tp">^F</span> <span class="tf">again = ^N</span>       <span class="tp">Esc</span> 
+</pre></div>
+<div class="mk" data-mode="swarm" data-view="hint" data-frame="2"><div class="mk-h">Hint · swarm · 02:14 · s goes to the agent that needs you, then d f g h in panel order; digit 1 = the run</div><pre class="term">
+ <span class="key"> 1 </span> <span class="ac">▌</span><span class="sw">⋔</span> <span class="tf">architecture review · in chat</span>   <span class="tf">02:14</span> 
+       <span class="tf">read-only · 4 × *-review · 65k · $0.15</span> 
+                                              
+<span class="card"> <span class="wa b">! NEEDS YOU</span> <span class="tm">·</span> <span class="l4">web-ui-desktop</span>       <span class="tm">1 waiting</span> </span>
+<span class="card"> <span class="key"> s </span> <span class="tp b">mix test test/swarm_code_web/live</span>        </span>
+<span class="card">   <span class="tm">run a command · read-only asks</span>    <span class="tp b">^F</span> <span class="tm">again</span> </span>
+                                              
+ <span class="key"> d </span> <span class="tm">◌</span> <span class="tf">Lead</span>             <span class="tf">waiting</span>               
+      <span class="tf">····▂·····▂·</span> <span class="tf">waiting on 3 reviewers</span>     
+ <span class="key"> f </span> <span class="tp">●</span> <span class="tf">engine-lifecycle</span> <span class="tf">working</span>               
+      <span class="tf">▅▅▅▅▂▅▅▅▅▅▂▂</span> <span class="tf">tracing where stop is…</span>     
+ <span class="key"> g </span> <span class="tp">◐</span> <span class="tf">data-persistence</span> <span class="tf">thinking</span>              
+      <span class="tf">▂▂▂▅▂▂▂▂▅▂▂▂</span> <span class="tf">weighing flush vs retry…</span>   
+ <span class="key"> h </span> <span class="ok">✓</span> <span class="tf">llm-tools</span>        <span class="tf">done</span>                  
+      <span class="tf">» Fake provider never reaches the…</span>      
+ <span class="key"> s </span> <span class="wa b">!</span> <span class="tf">web-ui-desktop</span>   <span class="wa b">needs you</span>             
+      <span class="tf">▅▅▂▅▅▅▅▅</span><span class="wa">▒▒▒▒</span> <span class="tf">wants to run a command</span>     
+                                              
+ <span class="tf">reported  ▰▱▱▱  1 of 4</span>           <span class="wa">1 needs you</span> 
+           <span class="tf">hint keys never answer a request</span>   
+                                              
+                                              
+                                              
+                                              
+                                              
+                                              
+                                              
+ <span class="tf">the band stays lit; state glyphs stay</span>        
+ <span class="tg">────────────────────────────────────────────</span> 
+ <span class="tp">s-h</span> <span class="tf">open</span> <span class="tg">·</span> <span class="tp">1</span> <span class="tf">run</span> <span class="tg">·</span> <span class="tp">^F</span> <span class="tf">again: needs you</span>   <span class="tp">Esc</span> 
+</pre></div>
+<div class="mk" data-mode="swarm" data-view="overlay" data-frame="1"><div class="mk-h">Overlay · web-ui-desktop · run 01:40 · its life lane with story brackets; brief and what it is looking for; grouped activity with its own words</div><pre class="term">
+<span class="surf"> <span class="sw">⋔</span> <span class="tm">architecture review</span> <span class="tf">›</span> <span class="l4 b">web-ui-desktop-review</span>  <span class="tp">● working</span>               <span class="tp b">[</span><span class="tf"> ‹ </span><span class="l3">llm-tools</span>    <span class="tm">◌</span> <span class="tp">●</span> <span class="tp">◐</span> <span class="tp">●</span> <span class="l4 b">●</span>    <span class="tp">Lead</span><span class="tf"> › </span><span class="tp b">]</span>                  <span class="tf">run 01:40</span>   <span class="tp b">Esc</span> <span class="tm">back to chat</span>    </span>
+ <span class="tm">reviewer · read-only · deepseek-v4-pro · started by Lead at 18:42:30 · 5th of 5 in the swarm</span>                                                <span class="tp">1:10 · 12k · $0.03</span> 
+<span class="tg">────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</span>
+                                                                                                                                                                
+  <span class="tm">LIFE</span>  <span class="tf">┬0:00                         ┬0:30                         ┬1:00                         ┬1:30                         2:00</span>  <span class="tf">one cell = 1 s</span>            
+        <span class="tm">▂▂▂▂▂▂</span><span class="l4">▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅</span><span class="tm">▂▂▂▂</span><span class="l4">▅▅▅▅▅▅▅▅▅▅▅▅▅▅</span><span class="tm">▂▂▂▂▂▂▂▂</span><span class="l4">▅▅▅▅</span><span class="tm">▂▂▂▂</span><span class="tp b">▏</span>                                                       <span class="tm">▂</span><span class="tf"> think </span><span class="l4">▅</span><span class="tf"> tools </span><span class="wa">▒</span><span class="tf"> on you</span>  
+        <span class="tf">      └────read the LiveView files─────┘ └──searched Esc─┘ └─thought─┘                                                      </span>  <span class="tf">thought 22 s of 1:10</span>      
+                                                                                                                                                                
+  <span class="tm">BRIEF</span> <span class="tf">· from Lead</span>                                 <span class="tg">│</span>   <span class="tm">ACTIVITY</span> <span class="tf">· said and did · 24 steps, grouped</span>      <span class="tp">o</span> <span class="tf">raw</span>  <span class="tg">│</span>  <span class="tm">WHERE IT SITS</span>                                
+  <span class="tp">Review the web UI and the desktop shell for</span>       <span class="tg">│</span>   <span class="tf">›</span> <span class="tp">“I’ll start from the LiveView and its hooks.”</span> <span class="tf">said</span>    <span class="tg">│</span>  <span class="tm">◌</span> <span class="tp">Lead</span>                                       
+  <span class="tp">architecture problems: who owns each hook,</span>        <span class="tg">│</span>   <span class="tf">▾</span> <span class="tp">read 14 files</span>                                 <span class="tm">  0:38</span>  <span class="tg">│</span>  <span class="tg">├</span> <span class="tp">●</span> <span class="l1">engine-lifecycle</span>                         
+  <span class="tp">LiveView state across remounts, dialogs and</span>       <span class="tg">│</span>     <span class="tm">workspace_live.ex · workspace_live.html.heex</span>          <span class="tg">│</span>  <span class="tg">├</span> <span class="tp">◐</span> <span class="l2">data-persistence</span>                         
+  <span class="tp">focus. Read only. Report your top findings</span>        <span class="tg">│</span>     <span class="tm">chat.ex · side_chat.ex · frame.ex</span>                     <span class="tg">│</span>  <span class="tg">├</span> <span class="tp">●</span> <span class="l3">llm-tools</span>                                
+  <span class="tp">with the files they live in.</span>                      <span class="tg">│</span>     <span class="tm">hooks.js · app.js</span> <span class="tf">+ 7 more</span>                            <span class="tg">│</span>  <span class="tg">╰</span> <span class="tp">●</span> <span class="l4 b">web-ui-desktop</span>  <span class="tf">‹ you are here</span>           
+                                                    <span class="tg">│</span>   <span class="tf">▸</span> <span class="tp">searched 3 patterns · 41 hits in 9 files</span>      <span class="tm">  0:06</span>  <span class="tg">│</span>                                               
+  <span class="tm">LOOKING FOR</span> <span class="tf">· its latest thought</span>                  <span class="tg">│</span>     <span class="tf">“phx-window-keydown”  “Escape”  “inert”</span>               <span class="tg">│</span>  <span class="tm">FILES</span>                                        
+  <span class="tp">who owns Esc and focus in dialogs, and</span>            <span class="tg">│</span>   <span class="tf">▸</span> <span class="tp">thought 4 times</span>                               <span class="tm">  0:22</span>  <span class="tg">│</span>  <span class="tp">14</span> <span class="tf">read</span>   <span class="tp">3</span> <span class="tf">searched</span>   <span class="tp">0</span> <span class="tf">changed</span>             
+  <span class="tp">whether any hook outlives its element</span>             <span class="tg">│</span>     <span class="tm">“Esc is handled in three places. Which wins?”</span>         <span class="tg">│</span>                                               
+                                                    <span class="tg">│</span>                                                           <span class="tg">│</span>  <span class="tm">TOKENS</span>                 <span class="tp">11 204 in · 820 out</span>   
+  <span class="tm">FINDINGS</span>                                          <span class="tg">│</span>   <span class="tp">●</span> <span class="tp">now</span> <span class="tm">reading components/frame.ex for focus return</span>      <span class="tg">│</span>  <span class="tm">CONTEXT</span>                        <span class="tp">12k</span><span class="tf"> of 128k</span>   
+  <span class="tf">none yet · the Lead gets them when it ends</span>        <span class="tg">│</span>                                                           <span class="tg">│</span>  <span class="tm">▰▰</span><span class="tg">▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱</span>                     
+                                                    <span class="tg">│</span>                                                           <span class="tg">│</span>  <span class="tm">BUDGET</span>                            <span class="tf">none set</span>   
+                                                    <span class="tg">│</span>                                                           <span class="tg">│</span>                                               
+                                                    <span class="tg">│</span>                                                           <span class="tg">│</span>                                               
+                                                    <span class="tg">│</span>                                                           <span class="tg">│</span>                                               
+                                                    <span class="tg">│</span>                                                           <span class="tg">│</span>                                               
+                                                    <span class="tg">│</span>                                                           <span class="tg">│</span>                                               
+                                                    <span class="tg">│</span>                                                           <span class="tg">│</span>                                               
+                                                    <span class="tg">│</span>                                                           <span class="tg">│</span>                                               
+                                                    <span class="tg">│</span>                                                           <span class="tg">│</span>                                               
+                                                    <span class="tg">│</span>                                                           <span class="tg">│</span>                                               
+                                                    <span class="tg">│</span>                                                           <span class="tg">│</span>                                               
+<span class="tg">────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</span>
+ <span class="ac">▍</span><span class="tf">steer web-ui-desktop only, e.g. “check the flyout too”</span>                                                                                                        
+                                                                                                                                                                
+ <span class="tp">Esc</span> <span class="tf">back to chat</span>    <span class="tp">[ ]</span> <span class="tf">agents</span>    <span class="tp">Tab</span> <span class="tf">band · activity · composer</span>    <span class="tp">Enter</span> <span class="tf">expand a group / send</span>    <span class="tp">o</span> <span class="tf">raw operations</span>    <span class="tp">^F</span> <span class="tf">hints</span>                  <span class="tf">agent overlay </span>
+</pre></div>
+<div class="mk" data-mode="swarm" data-view="overlay" data-frame="2"><div class="mk-h">Overlay · 02:14 · the band on top carries the real approval grammar; the same request also sits in time order in the activity</div><pre class="term">
+<span class="surf"> <span class="sw">⋔</span> <span class="tm">architecture review</span> <span class="tf">›</span> <span class="l4 b">web-ui-desktop-review</span>  <span class="c-wa"> ! needs you </span>           <span class="tp b">[</span><span class="tf"> ‹ </span><span class="l3">llm-tools</span>    <span class="tm">◌</span> <span class="tp">●</span> <span class="tp">◐</span> <span class="ok">✓</span> <span class="wa b">!</span>    <span class="tp">Lead</span><span class="tf"> › </span><span class="tp b">]</span>                  <span class="tf">run 02:14</span>   <span class="tp b">Esc</span> <span class="tm">back to chat</span>    </span>
+ <span class="tm">reviewer · read-only · deepseek-v4-pro · started by Lead at 18:42:30 · 5th of 5 in the swarm</span>                                                <span class="tp">1:44 · 19k · $0.04</span> 
+<span class="tg">────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</span>
+<span class="card">  <span class="wa b">! NEEDS YOU</span>   <span class="tp">web-ui-desktop wants to run a command</span>   <span class="tm">read-only run, so every command asks first</span>                        <span class="tm">asked 12 s ago · 1 waiting</span>            </span>
+<span class="card">    <span class="tf">$</span> <span class="tp b">mix test test/swarm_code_web/live</span>                                                                                                                         </span>
+<span class="card">    <span class="tp b">y</span><span class="tm"> once</span>    <span class="tp b">Y</span><span class="tm"> this run</span>    <span class="tp b">A</span><span class="tm"> always “mix test”</span>    <span class="tp b">d</span><span class="tm"> deny</span>    <span class="tp b">D</span><span class="tm"> deny + stop</span>    <span class="tp b">n</span><span class="tm"> next</span>                    <span class="tf">letters answer while the composer is empty</span>              </span>
+                                                                                                                                                                
+  <span class="tm">LIFE</span>  <span class="tf">┬0:00                         ┬0:30                         ┬1:00                         ┬1:30                         2:00</span>  <span class="tf">one cell = 1 s</span>            
+        <span class="tm">▂▂▂▂▂▂</span><span class="l4">▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅</span><span class="tm">▂▂▂▂</span><span class="l4">▅▅▅▅▅▅▅▅▅▅▅▅▅▅</span><span class="tm">▂▂▂▂▂▂▂▂</span><span class="l4">▅▅▅▅</span><span class="tm">▂▂▂▂▂▂</span><span class="l4">▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅</span><span class="wa">▒▒▒▒▒▒▒▒▒▒▒▒</span><span class="tp b">▏</span>                     <span class="tm">▂</span><span class="tf"> think </span><span class="l4">▅</span><span class="tf"> tools </span><span class="wa">▒</span><span class="tf"> on you</span>  
+        <span class="tf">      └────read the LiveView files─────┘ └──searched Esc─┘ └─thought─┘ └read dialog tests─┘ └─asks you─┘                    </span>  <span class="tf">thought 28 s of 1:44</span>      
+                                                                                                                                                                
+  <span class="tm">BRIEF</span> <span class="tf">· from Lead</span>                                 <span class="tg">│</span>   <span class="tm">ACTIVITY</span> <span class="tf">· said and did · 33 steps, grouped</span>      <span class="tp">o</span> <span class="tf">raw</span>  <span class="tg">│</span>  <span class="tm">WHERE IT SITS</span>                                
+  <span class="tp">Review the web UI and the desktop shell for</span>       <span class="tg">│</span>   <span class="tf">›</span> <span class="tp">“I’ll start from the LiveView and its hooks.”</span> <span class="tf">said</span>    <span class="tg">│</span>  <span class="tm">◌</span> <span class="tp">Lead</span>                                       
+  <span class="tp">architecture problems: who owns each hook,</span>        <span class="tg">│</span>   <span class="tf">▾</span> <span class="tp">read 14 files</span>                                 <span class="tm">  0:38</span>  <span class="tg">│</span>  <span class="tg">├</span> <span class="tp">●</span> <span class="l1">engine-lifecycle</span>                         
+  <span class="tp">LiveView state across remounts, dialogs and</span>       <span class="tg">│</span>     <span class="tm">workspace_live.ex · workspace_live.html.heex</span>          <span class="tg">│</span>  <span class="tg">├</span> <span class="tp">◐</span> <span class="l2">data-persistence</span>                         
+  <span class="tp">focus. Read only. Report your top findings</span>        <span class="tg">│</span>     <span class="tm">chat.ex · side_chat.ex · frame.ex</span>                     <span class="tg">│</span>  <span class="tg">├</span> <span class="ok">✓</span> <span class="l3">llm-tools</span>                                
+  <span class="tp">with the files they live in.</span>                      <span class="tg">│</span>     <span class="tm">hooks.js · app.js</span> <span class="tf">+ 7 more</span>                            <span class="tg">│</span>  <span class="tg">╰</span> <span class="wa b">!</span> <span class="l4 b">web-ui-desktop</span>  <span class="tf">‹ you are here</span>           
+                                                    <span class="tg">│</span>   <span class="tf">▸</span> <span class="tp">searched 3 patterns · 41 hits in 9 files</span>      <span class="tm">  0:06</span>  <span class="tg">│</span>                                               
+  <span class="tm">WHY IT ASKS</span> <span class="tf">· in its words</span>                        <span class="tg">│</span>     <span class="tf">“phx-window-keydown”  “Escape”  “inert”</span>               <span class="tg">│</span>  <span class="tm">FILES</span>                                        
+  <span class="tm">“Esc looks like it fires twice in three</span>           <span class="tg">│</span>   <span class="tf">▸</span> <span class="tp">thought 4 times</span>                               <span class="tm">  0:22</span>  <span class="tg">│</span>  <span class="tp">20</span> <span class="tf">read</span>   <span class="tp">3</span> <span class="tf">searched</span>   <span class="tp">0</span> <span class="tf">changed</span>             
+  <span class="tm"> dialogs. The live tests should show it;</span>          <span class="tg">│</span>     <span class="tm">“Esc is handled in three places. Which wins?”</span>         <span class="tg">│</span>                                               
+  <span class="tm"> I want to run them before I report it.”</span>          <span class="tg">│</span>   <span class="tf">▸</span> <span class="tp">read 6 dialog tests</span>                           <span class="tm">  0:20</span>  <span class="tg">│</span>  <span class="tm">TOKENS</span>               <span class="tp">17 930 in · 1 140 out</span>   
+                                                    <span class="tg">│</span>     <span class="tm">dialog_focus_test.exs · flyout_test.exs +4</span>            <span class="tg">│</span>  <span class="tm">CONTEXT</span>                        <span class="tp">19k</span><span class="tf"> of 128k</span>   
+  <span class="tm">FINDINGS</span>                                          <span class="tg">│</span>                                                           <span class="tg">│</span>  <span class="tm">▰▰▰</span><span class="tg">▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱</span>                     
+  <span class="tf">none yet · the Lead gets them when it ends</span>        <span class="tg">│</span>   <span class="wa b">!</span> <span class="wa">asked to run</span> <span class="tp">mix test …/web/live</span>      <span class="wa">waiting 12 s</span>    <span class="tg">│</span>  <span class="tm">BUDGET</span>                            <span class="tf">none set</span>   
+                                                    <span class="tg">│</span>                                                           <span class="tg">│</span>                                               
+                                                    <span class="tg">│</span>                                                           <span class="tg">│</span>                                               
+                                                    <span class="tg">│</span>                                                           <span class="tg">│</span>                                               
+                                                    <span class="tg">│</span>                                                           <span class="tg">│</span>                                               
+                                                    <span class="tg">│</span>                                                           <span class="tg">│</span>                                               
+                                                    <span class="tg">│</span>                                                           <span class="tg">│</span>                                               
+                                                    <span class="tg">│</span>                                                           <span class="tg">│</span>                                               
+<span class="tg">────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</span>
+ <span class="ac">▍</span><span class="tf">reply to web-ui-desktop, or steer it · y Y A d D n answer while this is empty</span>                                                                                 
+                                                                                                                                                                
+ <span class="tp">Esc</span> <span class="tf">back to chat</span>    <span class="tp">[ ]</span> <span class="tf">agents</span>    <span class="tp">Tab</span> <span class="tf">band · activity · composer</span>    <span class="tp">Enter</span> <span class="tf">expand a group / send</span>    <span class="tp">o</span> <span class="tf">raw operations</span>    <span class="tp">^F</span> <span class="tf">hints</span>                  <span class="tf">agent overlay </span>
+</pre></div>
+<div class="mk" data-mode="swarm" data-view="overlay" data-frame="3"><div class="mk-h">Overlay · 02:31 · numbered finding with severity and file:line, the test run’s own last line, 0 files changed (read-only)</div><pre class="term">
+<span class="surf"> <span class="sw">⋔</span> <span class="tm">architecture review</span> <span class="tf">›</span> <span class="l4 b">web-ui-desktop-review</span>  <span class="ok">✓ done</span>                  <span class="tp b">[</span><span class="tf"> ‹ </span><span class="l3">llm-tools</span>    <span class="tp">●</span> <span class="ok">✓</span> <span class="tp">●</span> <span class="ok">✓</span> <span class="ok">✓</span>    <span class="tp">Lead</span><span class="tf"> › </span><span class="tp b">]</span>                  <span class="tf">run 02:31</span>   <span class="tp b">Esc</span> <span class="tm">back to chat</span>    </span>
+ <span class="tm">reviewer · read-only · deepseek-v4-pro · started by Lead at 18:42:30 · 5th of 5 in the swarm</span>                                                <span class="tp">1:58 · 23k · $0.05</span> 
+<span class="tg">────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</span>
+                                                                                                                                                                
+  <span class="tm">LIFE</span>  <span class="tf">┬0:00                         ┬0:30                         ┬1:00                         ┬1:30                         2:00</span>  <span class="tf">one cell = 1 s</span>            
+        <span class="tm">▂▂▂▂▂▂</span><span class="l4">▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅</span><span class="tm">▂▂▂▂</span><span class="l4">▅▅▅▅▅▅▅▅▅▅▅▅▅▅</span><span class="tm">▂▂▂▂▂▂▂▂</span><span class="l4">▅▅▅▅</span><span class="tm">▂▂▂▂▂▂</span><span class="l4">▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅</span><span class="wa">▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒</span><span class="l4">▅▅▅▅▅▅</span><span class="tm">▂▂▂▂▂</span><span class="ok"> ✓</span>      <span class="tm">▂</span><span class="tf"> think </span><span class="l4">▅</span><span class="tf"> tools </span><span class="wa">▒</span><span class="tf"> on you</span>  
+        <span class="tf">      └────read the LiveView files─────┘ └──searched Esc─┘ └─thought─┘ └read dialog tests─┘ └───asks you──┘└ran tests┘      </span>  <span class="tf">thought 33 s of 1:58</span>      
+                                                                                                                                                                
+  <span class="tm">BRIEF</span> <span class="tf">· from Lead</span>                                 <span class="tg">│</span>   <span class="tm">ACTIVITY</span> <span class="tf">· said and did · 36 steps, grouped</span>      <span class="tp">o</span> <span class="tf">raw</span>  <span class="tg">│</span>  <span class="tm">WHERE IT SITS</span>                                
+  <span class="tp">Review the web UI and the desktop shell for</span>       <span class="tg">│</span>   <span class="tf">›</span> <span class="tp">“I’ll start from the LiveView and its hooks.”</span> <span class="tf">said</span>    <span class="tg">│</span>  <span class="tm">◌</span> <span class="tp">Lead</span>                                       
+  <span class="tp">architecture problems: who owns each hook,…</span> <span class="tf">Enter</span> <span class="tg">│</span>   <span class="tf">▾</span> <span class="tp">read 14 files</span>                                 <span class="tm">  0:38</span>  <span class="tg">│</span>  <span class="tg">├</span> <span class="ok">✓</span> <span class="l1">engine-lifecycle</span>                         
+                                                    <span class="tg">│</span>     <span class="tm">workspace_live.ex · workspace_live.html.heex</span>          <span class="tg">│</span>  <span class="tg">├</span> <span class="tp">●</span> <span class="l2">data-persistence</span>                         
+  <span class="tm">FINDING</span> <span class="tf">· sent to Lead at 02:31</span>                   <span class="tg">│</span>     <span class="tm">chat.ex · side_chat.ex · frame.ex</span>                     <span class="tg">│</span>  <span class="tg">├</span> <span class="ok">✓</span> <span class="l3">llm-tools</span>                                
+  <span class="wa b">1</span> <span class="c-wa"> major </span> <span class="tp b">three key routers fire Esc twice</span>        <span class="tg">│</span>     <span class="tm">hooks.js · app.js</span> <span class="tf">+ 7 more</span>                            <span class="tg">│</span>  <span class="tg">╰</span> <span class="ok">✓</span> <span class="l4 b">web-ui-desktop</span>  <span class="tf">‹ you are here</span>           
+    <span class="in">assets/js/hooks.js:412</span>     <span class="tf">Composer keydown</span>     <span class="tg">│</span>   <span class="tf">▸</span> <span class="tp">searched 3 patterns · 41 hits in 9 files</span>      <span class="tm">  0:06</span>  <span class="tg">│</span>                                               
+    <span class="in">assets/js/app.js:88</span>        <span class="tf">window keydown</span>       <span class="tg">│</span>     <span class="tf">“phx-window-keydown”  “Escape”  “inert”</span>               <span class="tg">│</span>  <span class="tm">FILES</span>                                        
+    <span class="in">workspace_live.ex:1733</span>     <span class="tf">handle_event esc</span>     <span class="tg">│</span>   <span class="tf">▸</span> <span class="tp">thought 4 times</span>                               <span class="tm">  0:22</span>  <span class="tg">│</span>  <span class="tp">20</span> <span class="tf">read</span>   <span class="tp">3</span> <span class="tf">searched</span>   <span class="tp">0</span> <span class="tf">changed</span>             
+    <span class="tm">one Esc closes the dialog and the flyout</span>        <span class="tg">│</span>     <span class="tm">“Esc is handled in three places. Which wins?”</span>         <span class="tg">│</span>                                               
+    <span class="tm">behind it; the tests below catch it</span>             <span class="tg">│</span>   <span class="tf">▸</span> <span class="tp">read 6 dialog tests</span>                           <span class="tm">  0:20</span>  <span class="tg">│</span>  <span class="tm">TOKENS</span>               <span class="tp">21 460 in · 1 690 out</span>   
+    <span class="tf">evidence</span> <span class="in">dialog_focus_test.exs:57, :91</span>          <span class="tg">│</span>     <span class="tm">dialog_focus_test.exs · flyout_test.exs +4</span>            <span class="tg">│</span>  <span class="tm">CONTEXT</span>                        <span class="tp">23k</span><span class="tf"> of 128k</span>   
+                                                    <span class="tg">│</span>   <span class="ok">✓</span> <span class="tm">you allowed it once at 02:17</span>                          <span class="tg">│</span>  <span class="tm">▰▰▰▰</span><span class="tg">▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱</span>                     
+  <span class="tm">CHANGES</span>                                           <span class="tg">│</span>   <span class="tf">✓</span> <span class="tp">ran mix test test/swarm_code_web/live</span>         <span class="tm">  0:06</span>  <span class="tg">│</span>  <span class="tm">BUDGET</span>                            <span class="tf">none set</span>   
+  <span class="tp">0 files changed</span> <span class="tf">· read-only run</span>                   <span class="tg">│</span>     <span class="tp">212 tests, 2 failures</span> <span class="tf">· its last line</span>                 <span class="tg">│</span>                                               
+                                                    <span class="tg">│</span>     <span class="er">dialog_focus_test.exs:57</span><span class="tf"> · </span><span class="er">:91</span>                        <span class="tg">│</span>                                               
+                                                    <span class="tg">│</span>   <span class="tf">›</span> <span class="tp">“Confirmed: Esc fires twice. Reporting.”</span> <span class="tf">said</span>         <span class="tg">│</span>                                               
+                                                    <span class="tg">│</span>   <span class="tf">✓</span> <span class="tp">reported its finding to Lead</span>                  <span class="tm">  0:05</span>  <span class="tg">│</span>                                               
+                                                    <span class="tg">│</span>                                                           <span class="tg">│</span>                                               
+                                                    <span class="tg">│</span>                                                           <span class="tg">│</span>                                               
+                                                    <span class="tg">│</span>                                                           <span class="tg">│</span>                                               
+                                                    <span class="tg">│</span>                                                           <span class="tg">│</span>                                               
+                                                    <span class="tg">│</span>                                                           <span class="tg">│</span>                                               
+                                                    <span class="tg">│</span>                                                           <span class="tg">│</span>                                               
+<span class="tg">────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</span>
+ <span class="ac">▍</span><span class="tf">it has finished · a message here starts a follow-up for this agent</span>                                                                                            
+                                                                                                                                                                
+ <span class="tp">Esc</span> <span class="tf">back to chat</span>    <span class="tp">[ ]</span> <span class="tf">agents</span>    <span class="tp">Tab</span> <span class="tf">band · activity · composer</span>    <span class="tp">Enter</span> <span class="tf">expand a group / send</span>    <span class="tp">o</span> <span class="tf">raw operations</span>    <span class="tp">^F</span> <span class="tf">hints</span>                  <span class="tf">agent overlay </span>
+</pre></div>
+<div class="mk" data-mode="swarm" data-view="terminal" data-frame="2"><div class="mk-h">Terminal · 160 × 36 · 02:14 · the transcript has one line per agent (no duplicate spawn rows) and the approval card inline; the panel mirrors it</div><pre class="term">
+<span class="surf"> <span class="tp b">swarm-code</span>   <span class="ac">▌</span><span class="sw">⋔</span> <span class="tp">architecture review</span> <span class="tm">02:14</span> <span class="wa b">!</span>   <span class="tf">✳ hi mate 00:06</span>                                                                                          <span class="tf">^R runs</span> </span>
+ <span class="wa">!</span> <span class="tm">This project is not trusted, so SwarmCode only reads it.</span> <span class="in">/trust</span> <span class="tm">trusts it.</span>                                     <span class="surf"> <span class="ac">▌</span><span class="sw">⋔</span> <span class="tp b">architecture review</span> <span class="tm">· in chat</span>       <span class="tm">02:14</span> </span>
+                                                                                                                  <span class="surf">   <span class="tf">read-only · 4 × *-review · 65k · $0.15</span>     </span>
+<span class="card"> <span class="tm">▎</span><span class="tp">hi mate</span>                                                                                                   <span class="tf">18:41</span> </span><span class="surf">                                              </span>
+                                                                                                                  <span class="card"> <span class="wa b">! NEEDS YOU</span> <span class="tm">·</span> <span class="l4">web-ui-desktop</span>       <span class="tm">1 waiting</span> </span>
+ <span class="tp">✳</span> <span class="tp b">Assistant</span> <span class="tf">deepseek-v4-pro</span>                                                                            <span class="tf">6.2s · 7k</span> <span class="card">   <span class="tp b">mix test test/swarm_code_web/live</span>          </span>
+   <span class="tp">Hey mate! What can I help you with in the swarm-code project today?</span>                                            <span class="card">   <span class="tm">run a command · read-only asks</span>   <span class="tp b">^N</span> <span class="tm">answer</span> </span>
+                                                                                                                  <span class="surf">                                              </span>
+<span class="card"> <span class="tm">▎</span><span class="tp">/swarm review the architecture with 4 read-only sub-agents</span>                                                <span class="tf">18:42</span> </span><span class="surf"> <span class="tm">◌</span> <span class="tp">Lead</span>               <span class="tm">waiting</span>       <span class="tf">2:14 · 9k</span> </span>
+                                                                                                                  <span class="surf"> <span class="tg">│</span> <span class="tg">····</span><span class="tm">▂</span><span class="tg">·····</span><span class="tm">▂</span><span class="tg">·</span> <span class="tp">waiting on 3 reviewers</span>        </span>
+ <span class="ac">▌</span><span class="sw">⋔</span> <span class="tp b">Lead</span> <span class="tf">deepseek-v4-pro · swarm of 4, read-only</span>                                  <span class="tm">◌ waiting</span> <span class="tf">· 02:14 · 65k · $0.15</span> <span class="surf"> <span class="tg">├</span> <span class="tp">●</span> <span class="l1">engine-lifecycle</span> <span class="tm">working</span>      <span class="tf">1:44 · 16k</span> </span>
+   <span class="ok">✓</span> <span class="tm">explored the project</span> <span class="tf">· read mix.exs, application.ex, engine.ex, AGENTS.md</span> <span class="tf">▸</span>                                  <span class="surf"> <span class="tg">│</span> <span class="l1">▅▅▅▅</span><span class="tm">▂</span><span class="l1">▅▅▅▅▅</span><span class="tm">▂▂</span> <span class="tp">tracing where stop is saved</span>   </span>
+   <span class="ok">✓</span> <span class="tm">split the review into four areas and started a reviewer for each</span>                                             <span class="surf"> <span class="tg">├</span> <span class="tp">◐</span> <span class="l2">data-persistence</span> <span class="tm">thinking</span>     <span class="tf">1:44 · 12k</span> </span>
+                                                                                                                  <span class="surf"> <span class="tg">│</span> <span class="tm">▂▂▂</span><span class="l2">▅</span><span class="tm">▂▂▂▂</span><span class="l2">▅</span><span class="tm">▂▂▂</span> <span class="tp">weighing flush vs retry order</span> </span>
+   <span class="tg">├</span> <span class="tp">●</span> <span class="l1">engine-lifecycle</span>  <span class="tm">working</span>    <span class="tp">tracing where stop is saved</span>                                        <span class="tf">1:44 · 16k</span> <span class="surf"> <span class="tg">├</span> <span class="ok">✓</span> <span class="l3">llm-tools</span>        <span class="ok">done</span>          <span class="tf">1:30 · 9k</span> </span>
+   <span class="tg">├</span> <span class="tp">◐</span> <span class="l2">data-persistence</span>  <span class="tm">thinking</span>   <span class="tp">weighing flush vs retry order</span>                                      <span class="tf">1:44 · 12k</span> <span class="surf"> <span class="tg">│</span> <span class="ok">»</span> <span class="tp">Fake provider never reaches the</span>          </span>
+   <span class="tg">├</span> <span class="ok">✓</span> <span class="l3">llm-tools</span>         <span class="ok">done</span>       <span class="tp">» Fake provider never reaches the refusal branch</span> <span class="tf">fake.ex:88</span>         <span class="tf">1:30 · 9k</span> <span class="surf"> <span class="tg">│</span>   <span class="tp">refusal branch</span> <span class="tf">· fake.ex:88 +1</span>           </span>
+   <span class="tg">╰</span> <span class="wa b">!</span> <span class="l4">web-ui-desktop</span>    <span class="wa b">needs you</span>  <span class="wa">wants to run a command</span>                                             <span class="tf">1:44 · 19k</span> <span class="surf"> <span class="tg">╰</span> <span class="wa b">!</span> <span class="l4">web-ui-desktop</span>   <span class="wa b">needs you</span>    <span class="tf">1:44 · 19k</span> </span>
+       <span class="wa">╭─</span><span class="wa b"> web-ui-desktop wants to run a command </span><span class="wa">──────────────────────────────────────────────────╮</span>               <span class="surf"> <span class="tg"> </span> <span class="l4">▅▅</span><span class="tm">▂</span><span class="l4">▅▅▅▅▅</span><span class="wa">▒▒▒▒</span> <span class="wa">wants to run a command</span>        </span>
+       <span class="wa">│</span> <span class="tf">$</span> <span class="tp b">mix test test/swarm_code_web/live</span>                                                      <span class="wa">│</span>               <span class="surf">                                              </span>
+       <span class="wa">│</span> <span class="tm">read-only run, so every command asks first</span>                                               <span class="wa">│</span>               <span class="surf"> <span class="tm">reported</span>  <span class="ok">▰</span><span class="tg">▱▱▱</span>  <span class="tp">1 of 4</span>           <span class="wa">1 needs you</span> </span>
+       <span class="wa">│</span> <span class="tp b">y</span><span class="tm"> once  </span><span class="tp b">Y</span><span class="tm"> this run  </span><span class="tp b">A</span><span class="tm"> always “mix test”  </span><span class="tp b">d</span><span class="tm"> deny  </span><span class="tp b">D</span><span class="tm"> deny + stop  </span><span class="tp b">n</span><span class="tm"> next</span>                   <span class="wa">│</span>               <span class="surf">           <span class="tf">web-ui-desktop is paused on you</span>    </span>
+       <span class="wa">│</span> <span class="tp b">^N</span><span class="tf"> focuses this card · </span><span class="tp b">^F s</span><span class="tf"> opens the agent</span>                                              <span class="wa">│</span>               <span class="surf">                                              </span>
+       <span class="wa">╰──────────────────────────────────────────────────────────────────────────────────────────╯</span>               <span class="surf">                                              </span>
+                                                                                                                  <span class="surf">                                              </span>
+   <span class="tf">one line per agent, same glyph, word and sentence as the panel · ^F then a letter opens its overlay</span>            <span class="surf">                                              </span>
+                                                                                                                  <span class="surf">                                              </span>
+                                                                                                                  <span class="surf">                                              </span>
+                                                                                                                  <span class="surf">                                              </span>
+                                                                                                                  <span class="surf">                                              </span>
+                                                                                                                  <span class="surf">                                              </span>
+<span class="tg">──────────────────────────────────────────────────────────────────────────────────────────────────────────────────</span><span class="surf">                                              </span>
+ <span class="ac">▍</span><span class="tf">Type a message, or / for commands…</span>                                                                              <span class="surf"> <span class="tf">last 60 s</span>  <span class="tm">▂</span><span class="tf"> think </span><span class="tp">▅</span><span class="tf"> tools </span><span class="tp">█</span><span class="tf"> write </span><span class="wa">▒</span><span class="tf"> you</span>     </span>
+                                                                                                                  <span class="surf"> <span class="tg">────────────────────────────────────────────</span> </span>
+                                                                                                                  <span class="surf"> <span class="tm">^F</span> <span class="tf">agents</span>  <span class="tm">^N</span> <span class="tf">needs you</span>  <span class="tm">^B</span> <span class="tf">panel</span>       <span class="tf">full</span> </span>
+<span class="surf"> <span class="tp b">Build</span> <span class="tf">·</span> <span class="in">read-only</span> <span class="tf">·</span> <span class="wa">untrusted</span> <span class="tf">·</span> <span class="tm">deepseek-v4-pro</span> <span class="tf">·</span> <span class="tm">ctx</span> <span class="tm">▰▰</span><span class="tg">▱▱▱▱▱▱</span> <span class="tm">26k/120k</span> <span class="tf">·</span> <span class="tm">$0.15</span>                           <span class="tm">^F</span> <span class="tf">agents</span>  <span class="tm">^N</span> <span class="tf">needs you</span>   <span class="in">Esc</span> <span class="tf">interrupt</span>   <span class="in">Enter</span> <span class="tf">send</span> </span>
+</pre></div>
+<div class="mk" data-mode="swarm" data-view="narrow" data-frame="2"><div class="mk-h">Narrow · 100 × 28 · under 120 columns the panel is one strip ending in “! 1 needs you ^N”; the transcript is unchanged</div><pre class="term">
+<span class="surf"> <span class="tp b">swarm-code</span>   <span class="ac">▌</span><span class="sw">⋔</span> <span class="tp">architecture review</span> <span class="tm">02:14</span> <span class="wa b">!</span>   <span class="tf">✳ hi mate 00:06</span>                              <span class="tf">^R runs</span> </span>
+<span class="surf"> <span class="ac">▌</span><span class="sw">⋔</span> <span class="tp">review</span> <span class="tm">1/4</span> <span class="tg">·</span> <span class="tm">Lead</span><span class="tm">◌</span> <span class="l1">engine</span><span class="tp">●</span> <span class="l2">data</span><span class="tp">◐</span> <span class="l3">llm</span><span class="ok">✓</span> <span class="l4">web</span><span class="wa b">!</span>   <span class="tf">+1 run ✳</span>                        <span class="c-wa"> ! 1 needs you ^N </span> </span>
+<span class="tg">────────────────────────────────────────────────────────────────────────────────────────────────────</span>
+<span class="card"> <span class="tm">▎</span><span class="tp">/swarm review the architecture with 4 read-only sub-agents</span>                                  <span class="tf">18:42</span> </span>
+                                                                                                    
+ <span class="ac">▌</span><span class="sw">⋔</span> <span class="tp b">Lead</span> <span class="tf">swarm of 4, read-only</span>                                            <span class="tm">◌ waiting</span> <span class="tf">· 02:14 · $0.15</span> 
+   <span class="ok">✓</span> <span class="tm">explored the project</span> <span class="tf">· read mix.exs, application.ex, engine.ex +1</span> <span class="tf">▸</span>                            
+   <span class="ok">✓</span> <span class="tm">split the review into four areas and started a reviewer for each</span>                               
+                                                                                                    
+   <span class="tg">├</span> <span class="tp">●</span> <span class="l1">engine</span>  <span class="tm">working</span>    <span class="tp">tracing where stop is saved</span>                                    <span class="tf">1:44 · 16k</span> 
+   <span class="tg">├</span> <span class="tp">◐</span> <span class="l2">data</span>    <span class="tm">thinking</span>   <span class="tp">weighing flush vs retry order</span>                                  <span class="tf">1:44 · 12k</span> 
+   <span class="tg">├</span> <span class="ok">✓</span> <span class="l3">llm</span>     <span class="ok">done</span>       <span class="tp">» Fake provider never reaches the refusal branch</span> <span class="tf">fake.ex:88</span>     <span class="tf">1:30 · 9k</span> 
+   <span class="tg">╰</span> <span class="wa b">!</span> <span class="l4">web</span>     <span class="wa b">needs you</span>  <span class="wa">wants to run a command</span>                                         <span class="tf">1:44 · 19k</span> 
+       <span class="wa">╭─</span><span class="wa b"> web-ui-desktop wants to run a command </span><span class="wa">──────────────────────────────────────────────╮</span>     
+       <span class="wa">│</span> <span class="tf">$</span> <span class="tp b">mix test test/swarm_code_web/live</span>                                                  <span class="wa">│</span>     
+       <span class="wa">│</span> <span class="tm">read-only run, so every command asks first</span>                                           <span class="wa">│</span>     
+       <span class="wa">│</span> <span class="tp b">y</span><span class="tm"> once  </span><span class="tp b">Y</span><span class="tm"> this run  </span><span class="tp b">A</span><span class="tm"> always “mix test”  </span><span class="tp b">d</span><span class="tm"> deny  </span><span class="tp b">D</span><span class="tm"> deny + stop  </span><span class="tp b">n</span><span class="tm"> next</span>               <span class="wa">│</span>     
+       <span class="wa">│</span> <span class="tp b">^N</span><span class="tf"> focuses this card · </span><span class="tp b">^F s</span><span class="tf"> opens the agent</span>                                          <span class="wa">│</span>     
+       <span class="wa">╰──────────────────────────────────────────────────────────────────────────────────────╯</span>     
+                                                                                                    
+   <span class="tf">under 120 columns the panel folds into the strip above; ^B hides it · ^F drops a hint sheet</span>      
+   <span class="tf">from the strip and the overlay stacks its columns as Tab pages</span>                                   
+                                                                                                    
+                                                                                                    
+<span class="tg">────────────────────────────────────────────────────────────────────────────────────────────────────</span>
+ <span class="ac">▍</span><span class="tf">Type a message, or / for commands…</span>                                                                
+                                                                                                    
+<span class="surf"> <span class="tp b">Build</span> <span class="tf">·</span> <span class="in">read-only</span> <span class="tf">·</span> <span class="tm">deepseek-v4-pro</span> <span class="tf">·</span> <span class="tm">$0.15</span>                   <span class="tm">^F</span> <span class="tf">agents</span>  <span class="tm">^N</span> <span class="tf">needs you</span>   <span class="in">Enter</span> <span class="tf">send</span> </span>
+</pre></div>
