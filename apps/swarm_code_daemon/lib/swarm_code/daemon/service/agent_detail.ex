@@ -242,7 +242,7 @@ defmodule SwarmCode.Daemon.Service.AgentDetail do
         :search -> {"searched #{count(items, n, "pattern")}", nil}
         :explore -> {"explored " <> Enum.map_join(Enum.take(items, 3), ", ", &place/1), nil}
         :think -> {if(n == 1, do: "thought", else: "thought ×#{n}"), thought(ops, roots)}
-        :command -> {"ran " <> (List.first(items) || "a command"), last_line(last.tail)}
+        :command -> command(last, List.first(items) || "a command")
         :edit -> {PanelFacts.doing(last, roots) |> past(), nil}
         :web -> {"looked on the web ×#{n}", nil}
         :agents -> {agents_title(ops, roots), nil}
@@ -252,6 +252,35 @@ defmodule SwarmCode.Daemon.Service.AgentDetail do
 
     base(kind, ops, title, items)
     |> Map.put("quote", quote && PanelFacts.clip(quote, 400))
+  end
+
+  # pass72 G7 (QA Q8): a command says what became of it: asked, running,
+  # blocked, denied, stopped, failed, or ran with its last output line.
+  defp command(op, command) do
+    error = Map.get(op, :error) || ""
+
+    cond do
+      op.status in @waiting_you ->
+        {"asked to run " <> command, "waiting for your answer"}
+
+      op.status in @open ->
+        {"running " <> command, last_line(Map.get(op, :tail))}
+
+      op.status == "failed" and String.starts_with?(error, "blocked") ->
+        {"blocked: " <> command, PanelFacts.clip(error, 400)}
+
+      op.status == "failed" and String.contains?(error, "denied") ->
+        {"you denied " <> command, nil}
+
+      op.status == "stopped" ->
+        {"stopped " <> command, nil}
+
+      op.status == "failed" and error != "" ->
+        {"failed: " <> command, PanelFacts.clip(PanelFacts.scrub(error, []), 400)}
+
+      true ->
+        {"ran " <> command, last_line(Map.get(op, :tail))}
+    end
   end
 
   defp base(kind, ops, title, items) do

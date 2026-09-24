@@ -180,7 +180,8 @@ defmodule SwarmCode.Daemon.Service.Pass72PanelWireTest do
              {:read, "read 1 file"},
              {:edit, "edited lib/app.ex"},
              {:command, "ran mix compile"},
-             {:command, "ran mix test test/app_test.exs"}
+             # pass72 G7: the command is still running.
+             {:command, "running mix test test/app_test.exs"}
            ]
 
     assert Enum.at(detail.activity, 3).quote == "Generated app"

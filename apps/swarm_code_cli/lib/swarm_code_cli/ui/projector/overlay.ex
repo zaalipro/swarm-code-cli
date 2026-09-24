@@ -31,8 +31,9 @@ defmodule SwarmCodeCLI.UI.Projector.Overlay do
   alias SwarmCodeCLI.UI.Reducer.Overlay, as: OverlayState
   alias SwarmCodeCLI.UI.Scene.{Block, Cursor, Rect, Region, Span}
 
-  @read ~w(read_file list_dir glob view read ls)
-  @search ~w(grep search ripgrep find rg code_search)
+  @read ~w(read_file glob view read)
+  @search ~w(grep search ripgrep find rg code_search find_files)
+  @explore ~w(list_dir ls git_status git_log git_diff lsp)
   @command ~w(run_command bash shell exec command)
   @write ~w(write_file edit_file edit write edit_files apply_patch multi_edit create_file)
   @spawn ~w(spawn_agent spawn start_swarm)
@@ -213,9 +214,14 @@ defmodule SwarmCodeCLI.UI.Projector.Overlay do
       nil,
       fn {class, item}, acc ->
         case acc do
-          {^class, items} when class not in [:said, :error] -> {:cont, {class, [item | items]}}
-          nil -> {:cont, {class, [item]}}
-          done -> {:cont, done, {class, [item]}}
+          {^class, items} when class not in [:said, :error, :command] ->
+            {:cont, {class, [item | items]}}
+
+          nil ->
+            {:cont, {class, [item]}}
+
+          done ->
+            {:cont, done, {class, [item]}}
         end
       end,
       fn
@@ -233,6 +239,7 @@ defmodule SwarmCodeCLI.UI.Projector.Overlay do
   defp class(%{kind: :text, role: :assistant, text: text}) when text != "", do: :said
   defp class(%{kind: :tool, tool: %{name: name}}) when name in @read, do: :read
   defp class(%{kind: :tool, tool: %{name: name}}) when name in @search, do: :search
+  defp class(%{kind: :tool, tool: %{name: name}}) when name in @explore, do: :explore
   defp class(%{kind: :tool, tool: %{name: name}}) when name in @command, do: :command
   defp class(%{kind: :tool, tool: %{name: name}}) when name in @write, do: :edit
   defp class(%{kind: :tool, tool: %{name: name}}) when name in @spawn, do: :spawn
@@ -286,13 +293,40 @@ defmodule SwarmCodeCLI.UI.Projector.Overlay do
     {title, if(latest == "", do: [], else: [quoted(latest)])}
   end
 
+  # pass72 G7 (QA Q8): a command says what became of it, never "ran" for
+  # one that waits on you or was blocked; the tool's "run: " is not repeated.
   defp describe(:command, [item]) do
-    {"ran " <> tool_words(item), command_lines(item)}
+    words = command_words(item)
+
+    case item.tool.status do
+      :waiting_approval ->
+        {"asked to run " <> words, ["waiting for your answer"]}
+
+      status when status in [:running, :streaming, :retrying, :queued] ->
+        {"running " <> words, []}
+
+      :stopped ->
+        {"stopped " <> words, []}
+
+      :interrupted ->
+        {"stopped " <> words, []}
+
+      :failed ->
+        {"failed: " <> words, failed_lines(item)}
+
+      _ ->
+        {"ran " <> words, command_lines(item)}
+    end
   end
 
   defp describe(:command, items) do
     last = List.last(items)
-    {"ran #{length(items)} commands", [tool_words(last) | command_lines(last)]}
+    {"ran #{length(items)} commands", [command_words(last) | command_lines(last)]}
+  end
+
+  defp describe(:explore, items) do
+    places = items |> Enum.map(&explore_words/1) |> Enum.uniq()
+    {"looked around: " <> Enum.join(Enum.take(places, 3), ", "), []}
   end
 
   defp describe(:edit, items) do
@@ -316,9 +350,42 @@ defmodule SwarmCodeCLI.UI.Projector.Overlay do
   defp describe(:error, [item]), do: {"failed", [sentence(item.text)]}
 
   defp describe(:tool, items) do
-    names = items |> Enum.map(& &1.tool.name) |> Enum.uniq() |> Enum.join(", ")
+    names = items |> Enum.map(&humanize(&1.tool.name)) |> Enum.uniq() |> Enum.join(", ")
     {"used " <> names <> if(length(items) > 1, do: " ×#{length(items)}", else: ""), []}
   end
+
+  defp command_words(item) do
+    case tool_words(item) do
+      "run: " <> command -> command
+      words -> words
+    end
+  end
+
+  defp failed_lines(%{tool: tool} = item) do
+    detail = if is_binary(tool.detail), do: String.trim(tool.detail), else: ""
+
+    cond do
+      detail != "" and detail != tool.title -> [detail]
+      true -> command_lines(item)
+    end
+  end
+
+  defp explore_words(%{tool: %{name: name}} = item) do
+    case {name, tool_words(item)} do
+      {"git_status", _} -> "git status"
+      {"git_log", _} -> "the git log"
+      {"git_diff", _} -> "the git diff"
+      {"lsp", _} -> "the language server"
+      {_, words} -> String.replace(words, ~r/^(list|ls)\s+/u, "") |> place()
+    end
+  end
+
+  defp place(""), do: "the project"
+  defp place("."), do: "the project"
+  defp place("./"), do: "the project"
+  defp place(path), do: path
+
+  defp humanize(name), do: name |> String.replace(~r/[_.]+/u, " ") |> String.trim()
 
   defp files(%{tool: %{files: [_ | _] = files}}), do: files
   defp files(%{tool: %{title: title}}) when is_binary(title) and title != "", do: [title]
@@ -722,7 +789,7 @@ defmodule SwarmCodeCLI.UI.Projector.Overlay do
     case class(item) do
       :thought -> :think
       :edit -> :write
-      class when class in [:read, :search, :command, :spawn, :web, :tool] -> :tools
+      class when class in [:read, :search, :explore, :command, :spawn, :web, :tool] -> :tools
       _ -> nil
     end
   end

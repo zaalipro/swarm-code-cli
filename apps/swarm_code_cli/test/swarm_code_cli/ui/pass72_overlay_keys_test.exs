@@ -529,6 +529,42 @@ defmodule SwarmCodeCLI.UI.Pass72OverlayKeysTest do
       assert {_, [{:query, _}]} = Overlay.request_detail(old, false)
     end
 
+    test "regression (QA Q8): without a detail, a command waiting on you is asked, not ran" do
+      tool = fn id, name, title, status, at ->
+        %DTO.TranscriptItem{
+          id: id,
+          run_id: "r1",
+          conversation_id: "c",
+          node_id: "op-" <> id,
+          agent_id: "web",
+          attempt_id: "at",
+          kind: :tool,
+          role: :assistant,
+          at: at,
+          tool: %DTO.ToolCall{name: name, title: title, status: status}
+        }
+      end
+
+      items = [
+        tool.("t1", "find_files", "find *.ex", :done, 1),
+        tool.("t2", "list_dir", "list .", :done, 2),
+        tool.("t3", "run_command", "run: MIX_TEST_PARTITION=2 mix test", :failed, 3),
+        tool.("t4", "run_command", "run: mix test test/web", :waiting_approval, 4)
+      ]
+
+      state = ready(items: items) |> Reducer.update({:overlay_open, "r1", "web"}) |> elem(0)
+      titles = state |> Projector.Overlay.groups() |> Enum.map(& &1.title)
+
+      assert titles == [
+               "searched 1 pattern",
+               "looked around: the project",
+               "failed: MIX_TEST_PARTITION=2 mix test",
+               "asked to run mix test test/web"
+             ]
+
+      refute Enum.any?(titles, &(&1 =~ "run:" or &1 =~ "find_files"))
+    end
+
     test "only the answer to the overlay's own request is kept, and it is what the overlay shows" do
       state = ready() |> Reducer.update({:overlay_open, "r1", "web"}) |> elem(0)
       overlay = %{state.overlay | detail_request: "req-1"}

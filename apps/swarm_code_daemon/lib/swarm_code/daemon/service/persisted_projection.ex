@@ -401,6 +401,7 @@ defmodule SwarmCode.Daemon.Service.PersistedProjection do
               detail: fragment("substr(coalesce(?, ''), 1, 1280)", n.detail),
               result: fragment("substr(coalesce(?, ''), 1, 1024)", n.result),
               tail: fragment("substr(coalesce(?, ''), -400)", n.result),
+              error: fragment("substr(coalesce(?, ''), 1, 200)", n.error),
               tokens_in: n.tokens_in,
               started_at: n.started_at,
               finished_at: n.finished_at

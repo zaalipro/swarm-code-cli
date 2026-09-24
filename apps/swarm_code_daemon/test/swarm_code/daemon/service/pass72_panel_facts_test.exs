@@ -483,6 +483,32 @@ defmodule SwarmCode.Daemon.Service.Pass72PanelFactsTest do
       assert life |> Enum.drop(12) |> Enum.all?(&(&1 == "wait_you")), inspect(life)
     end
 
+    test "regression (QA Q8): a command says asked, blocked, denied or ran, once" do
+      ops = [
+        op("run_command", "run: mix test", 0, 1, %{tail: "3 tests, 0 failures\n"}),
+        op("run_command", "run: echo hi", 2, 3, %{
+          status: "failed",
+          error: "blocked by Read-only approval mode",
+          tail: ""
+        }),
+        op("run_command", "run: rm -rf tmp", 4, 5, %{
+          status: "failed",
+          error: "denied by user",
+          tail: ""
+        }),
+        op("run_command", "run: mix compile", 6, nil, %{status: "awaiting_approval", tail: ""})
+      ]
+
+      activity = detail(agent(), ops, now: t0_ms() + 10_000)["activity"]
+
+      assert Enum.map(activity, &{&1["title"], &1["quote"]}) == [
+               {"ran mix test", "3 tests, 0 failures"},
+               {"blocked: echo hi", "blocked by Read-only approval mode"},
+               {"you denied rm -rf tmp", nil},
+               {"asked to run mix compile", "waiting for your answer"}
+             ]
+    end
+
     test "regression (QA Q5): a workflow step's thinking fills its life" do
       ops =
         for {from, to} <- [{0, 16}, {17, 29}, {30, 36}, {37, 58}, {59, 104}], reduce: [] do
