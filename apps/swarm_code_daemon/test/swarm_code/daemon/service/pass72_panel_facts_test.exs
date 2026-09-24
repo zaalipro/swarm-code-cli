@@ -102,6 +102,38 @@ defmodule SwarmCode.Daemon.Service.Pass72PanelFactsTest do
       assert facts(agent(), [llm])["now"] == "working"
     end
 
+    test "regression (QA Q13): narration is not the sentence" do
+      think = fn text -> op("llm", "thinking", 40, nil, %{detail: text}) end
+
+      assert facts(agent(), [think.("Let me start by exploring the repository structure.")])[
+               "now"
+             ] ==
+               "exploring the repository structure."
+
+      assert facts(agent(), [think.("Now let me read the router. ")])["now"] ==
+               "reading the router."
+
+      assert facts(agent(), [think.("I'll check the plug tests.")])["now"] ==
+               "checking the plug tests."
+
+      # Nothing said: the newest tool within 30 s, else "thinking".
+      read = op("read_file", "read lib/app/router.ex", 30, 31)
+
+      assert facts(agent(), [think.("I have enough information."), read])["now"] ==
+               "reading lib/app/router.ex"
+
+      assert facts(agent(), [think.("I have enough information.")])["now"] == "thinking"
+
+      # A list after a colon is not a sentence that ends at "1.".
+      done =
+        op("llm", "thinking", 10, 20, %{
+          detail: "Two parts matter here: 1. The plug. 2. The router."
+        })
+
+      open = op("llm", "thinking", 21, nil, %{detail: ""})
+      refute facts(agent(), [open, done])["now"] =~ ": 1."
+    end
+
     test "a lead blocked on spawned agents waits, and counts them" do
       spawns =
         for {n, i} <- Enum.with_index(~w(data llm web)),

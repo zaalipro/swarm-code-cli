@@ -195,15 +195,108 @@ defmodule SwarmCode.Daemon.Service.PanelFacts do
   # The newest reasoning: an open think streams its tail (its last complete
   # sentence is the freshest), a finished one keeps its opening. A think that
   # has not said a sentence yet falls back to the one before it.
+  #
+  # pass72 G12 (QA Q13): the model's narration is not a sentence for the
+  # panel. "Let me start by exploring the repository" reads "exploring the
+  # repository"; "I have enough information." and "The user wants…" say
+  # nothing, so the newest tool the agent used (within 30 s) or "thinking"
+  # stands in. Only the newest three thoughts are read, so an old one does not
+  # come back.
+  @recent_tool_ms 30_000
+
   defp thought(ops, roots) do
-    ops
-    |> newest_first()
-    |> Enum.filter(&(&1.op_type == "llm"))
-    |> Enum.find_value("thinking", fn op ->
-      if op.status in @open,
-        do: last_sentence(op.detail, roots),
-        else: first_sentence(op.detail, roots)
+    newest = newest_first(ops)
+
+    thoughts =
+      newest
+      |> Enum.filter(&(&1.op_type == "llm"))
+      |> Enum.take(3)
+      |> Enum.find_value(fn op ->
+        if op.status in @open,
+          do: open_thought(op.detail, roots),
+          else: op.detail |> first_sentence(roots) |> plain_now()
+      end)
+
+    thoughts || recent_tool(newest, roots) || "thinking"
+  end
+
+  defp open_thought(text, roots) when is_binary(text) do
+    text
+    |> String.split(~r/(?<=[.!?])\s+/u)
+    |> Enum.map(&plain_line/1)
+    |> Enum.filter(&(String.length(&1) >= 8 and String.match?(&1, ~r/[.!?]$/u)))
+    |> Enum.reverse()
+    |> Enum.find_value(fn line ->
+      line |> scrub(roots) |> plain_now() |> then(&(&1 && clip(&1, @now_bytes)))
     end)
+  end
+
+  defp open_thought(_, _), do: nil
+
+  defp recent_tool([latest | _] = newest, roots) do
+    at = ms(latest.finished_at) || ms(latest.started_at) || 0
+
+    Enum.find_value(newest, fn op ->
+      finished = ms(op.finished_at) || ms(op.started_at) || 0
+
+      if op.op_type not in @think and op.op_type not in @others and
+           at - finished <= @recent_tool_ms,
+         do: doing(op, roots)
+    end)
+  end
+
+  defp recent_tool([], _roots), do: nil
+
+  @narration ~r/^(?:(?:now|ok(?:ay)?|alright|so|great|good|perfect|next)[,!.:]?\s+)*(?:let me|let's|let us|i(?:'ll| will| need to| should| want to| am going to|'m going to| can now| can))\s+(?:(?:start|begin|first|also|now|then|quickly|go ahead and|try to|take a (?:quick |closer )?look (?=at))\s*(?:by|with|and)?\s+)*/iu
+  @empty ~r/^(?:(?:now|ok(?:ay)?|alright|so|great|good|perfect)[,!.:]?\s*)*(?:i have\b|i've\b|i now have\b|i got\b|i think\b|i see\b|that's\b|this is\b|the user\b|the task is\b|done\b|good\b|great\b|perfect\b|ok(?:ay)?\b|alright\b|two things\b|here's\b)/iu
+
+  @doc false
+  def plain_now(nil), do: nil
+
+  def plain_now(sentence) when is_binary(sentence) do
+    cond do
+      Regex.match?(@narration, sentence) ->
+        rest = Regex.replace(@narration, sentence, "", global: false)
+
+        phrase =
+          case String.split(rest, " ", parts: 2) do
+            [verb, tail] when verb != "" -> String.trim(gerund(verb) <> " " <> tail)
+            _ -> ""
+          end
+
+        if String.length(phrase) >= 8, do: phrase
+
+      Regex.match?(@empty, sentence) ->
+        nil
+
+      true ->
+        sentence
+    end
+  end
+
+  # "explore" → "exploring", "run" → "running", "look" → "looking".
+  defp gerund(word) do
+    lower = String.downcase(word)
+
+    cond do
+      String.ends_with?(lower, "ing") ->
+        lower
+
+      lower in ~w(be see) ->
+        lower <> "ing"
+
+      String.ends_with?(lower, "ie") ->
+        String.slice(lower, 0..-3//1) <> "ying"
+
+      String.ends_with?(lower, "e") and not String.ends_with?(lower, "ee") ->
+        String.slice(lower, 0..-2//1) <> "ing"
+
+      Regex.match?(~r/^[^aeiou]*[aeiou][b-df-hj-np-tvz]$/u, lower) ->
+        lower <> String.last(lower) <> "ing"
+
+      true ->
+        lower <> "ing"
+    end
   end
 
   defp working(ops, roots) do
@@ -784,20 +877,6 @@ defmodule SwarmCode.Daemon.Service.PanelFacts do
 
   def first_sentence(_, _, _), do: nil
 
-  defp last_sentence(text, roots) when is_binary(text) do
-    text
-    |> String.split(~r/(?<=[.!?])\s+/u)
-    |> Enum.map(&plain_line/1)
-    |> Enum.filter(&(String.length(&1) >= 8 and String.match?(&1, ~r/[.!?]$/u)))
-    |> List.last()
-    |> case do
-      nil -> nil
-      line -> line |> scrub(roots) |> blank_nil() |> then(&(&1 && clip(&1, @now_bytes)))
-    end
-  end
-
-  defp last_sentence(_, _), do: nil
-
   # A heading, a rule or a bold-only label names a section; it is no finding.
   defp heading?(line) do
     line = String.trim(line)
@@ -813,10 +892,19 @@ defmodule SwarmCode.Daemon.Service.PanelFacts do
     |> String.trim()
   end
 
+  # pass72 G12 (QA Q13): "…going on here: 1. The first…" is a list, not a
+  # sentence that ends at "1.": the head stops before the colon.
   defp sentence_head(line) do
-    case Regex.run(~r/^(.+?[.!?])(?:\s|$)/u, line) do
-      [_, head] -> head
-      _ -> line
+    case Regex.run(~r/^(.+?)(?<![\s(]\d)(?<![\s(]\d\d)([.!?])(?:\s|$)/u, line) do
+      [_, head, mark] -> list_head(head <> mark, line)
+      _ -> list_head(line, line)
+    end
+  end
+
+  defp list_head(head, line) do
+    case Regex.run(~r/^(.+?):\s+\d{1,2}[.)]\s/u, line) do
+      [_, before] when byte_size(before) < byte_size(head) -> before
+      _ -> head
     end
   end
 
