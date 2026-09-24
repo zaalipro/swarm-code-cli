@@ -156,7 +156,7 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Model do
         {view, if(lead?, do: index, else: index + 1)}
       end)
 
-    views
+    distinct_shorts(views)
   end
 
   defp lead?(%{role: role}), do: role in [:lead, :assistant]
@@ -658,23 +658,37 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Model do
   # ---------------------------------------------------------------- names
 
   @doc """
-  The prefix and suffix every sibling shares (R14), as `{prefix, suffix}`;
-  only a hyphenated affix of two or more siblings counts, and never one that
-  would leave a name empty.
+  The prefix and suffix every sibling shares (R14), as `{prefix, suffix}`.
+  An affix ends (prefix) or starts (suffix) at a `-`, `:`, `_` or space
+  (`reviewer-*`, `review:*`, `*-review`), counts only for three or more
+  siblings (D2's research frame keeps `reader-docs` and `reader-code`), and
+  never leaves a name empty. pass72 G3 (QA Q3): the shared
+  prefix is dropped too, so `reviewer-plugs` and `reviewer-auth` read
+  `plugs` and `auth` instead of two identical `reviewer` rows.
   """
   def affixes(names) when length(names) < 3, do: {"", ""}
 
-  # Only the shared suffix is dropped (`*-review`); a shared prefix names the
-  # kind of worker ("reader-docs", "reader-code") and stays.
   def affixes(names) do
-    suffix = common(Enum.map(names, &(String.split(&1, "-") |> Enum.reverse())))
-    prefix = []
-    suffix = if suffix == [], do: "", else: "-" <> (suffix |> Enum.reverse() |> Enum.join("-"))
-    prefix = if prefix == [], do: "", else: Enum.join(prefix, "-") <> "-"
+    prefix = names |> Enum.map(&Regex.split(~r/(?<=[-:_ ])/u, &1)) |> common() |> Enum.join()
 
-    if Enum.any?(names, &(byte_size(&1) <= byte_size(prefix) + byte_size(suffix))),
-      do: {"", ""},
-      else: {prefix, suffix}
+    suffix =
+      names
+      |> Enum.map(&(Regex.split(~r/(?=[-:_ ])/u, &1) |> Enum.reverse()))
+      |> common()
+      |> Enum.reverse()
+      |> Enum.join()
+
+    cond do
+      Enum.any?(names, &(byte_size(&1) <= byte_size(prefix) + byte_size(suffix))) ->
+        {"", ""}
+
+      names |> Enum.map(&trim(&1, {prefix, suffix})) |> Enum.uniq() |> length() <
+          length(Enum.uniq(names)) ->
+        {"", ""}
+
+      true ->
+        {prefix, suffix}
+    end
   end
 
   defp common([first | rest]) do
@@ -695,12 +709,37 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Model do
 
   @doc "A short name of at most 8 cells for the compact row (P6, R14)."
   def short(name) do
-    first = name |> String.split(["-", " ", "_"], trim: true) |> List.first() || name
+    first = name |> String.split(["-", " ", "_", ":"], trim: true) |> List.first() || name
 
     cond do
       String.length(name) <= 8 -> name
-      String.length(first) <= 8 -> first
+      String.length(first) <= 8 and String.length(first) >= 3 -> first
       true -> String.slice(name, 0, 7) <> "…"
+    end
+  end
+
+  # pass72 G3 (QA Q3): siblings whose short names collide keep what tells
+  # them apart: the last segment, else the name cut at 7 cells.
+  defp distinct_shorts(views) do
+    dupes =
+      views
+      |> Enum.frequencies_by(& &1.short)
+      |> Enum.filter(fn {_, n} -> n > 1 end)
+      |> MapSet.new(&elem(&1, 0))
+
+    Enum.map(views, fn view ->
+      if MapSet.member?(dupes, view.short),
+        do: %{view | short: last_short(view.display)},
+        else: view
+    end)
+  end
+
+  defp last_short(name) do
+    last = name |> String.split(["-", " ", "_", ":"], trim: true) |> List.last() || name
+
+    cond do
+      String.length(last) <= 8 and String.length(last) >= 3 -> last
+      true -> String.slice(last, 0, 7) <> "…"
     end
   end
 

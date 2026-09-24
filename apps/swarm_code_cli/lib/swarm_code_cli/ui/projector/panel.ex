@@ -331,6 +331,13 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
 
     head = row(ctx, [{title, :warning, [:bold]}], right, band: true, background: :card)
 
+    # pass72 G3 (QA Q3): the band's name column fits the short names (≤ 8).
+    name_w =
+      shown
+      |> Enum.map(fn {_, _, view} -> Draw.cells((view && view.short) || "Lead", ctx.state) end)
+      |> Enum.max(fn -> 4 end)
+      |> min(8)
+
     items =
       Enum.map(shown, fn {ask, _run, view} ->
         short = (view && view.short) || "Lead"
@@ -342,7 +349,7 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
           ctx,
           lead ++
             [
-              {Draw.pad_to(short, 6, ctx.state), role},
+              {Draw.pad_to(short, name_w, ctx.state), role},
               {" ", :plain},
               {ask.text, :text_primary}
             ],
@@ -576,7 +583,9 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
     widest = subs |> Enum.map(&Draw.cells(&1.display, state)) |> Enum.max(fn -> 4 end)
     prefix = if tree?, do: 4, else: 2
     meta = views |> Enum.map(&Draw.cells(meta(&1) || "", state)) |> Enum.max(fn -> 0 end)
-    cap = ctx.width - 2 - prefix - 1 - 9 - 1 - meta
+    # pass72 G3 (QA Q3): the widest state word shown, not "needs you" always.
+    word = views |> Enum.map(&Draw.cells(Model.word(&1.state), state)) |> Enum.max(fn -> 4 end)
+    cap = ctx.width - 2 - prefix - 1 - word - 1 - meta
     column = @word_column - prefix - 1
     widest |> max(column) |> min(max(4, cap))
   end

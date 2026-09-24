@@ -107,8 +107,8 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Shapes do
     n = length(subs)
 
     case Model.affixes(Enum.map(subs, & &1.name)) do
-      {_prefix, "-" <> _ = suffix} when n > 1 ->
-        "#{n} #{Panel.g(ctx, :times)} *#{suffix}"
+      {prefix, suffix} when n > 1 and (prefix != "" or suffix != "") ->
+        "#{n} #{Panel.g(ctx, :times)} #{prefix}*#{suffix}"
 
       _ when n > 0 ->
         Panel.count(n, "agent", "agents")
@@ -777,8 +777,11 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Shapes do
     subs = Enum.reject(views, &(&1.role in [:lead, :assistant]))
 
     case Model.affixes(Enum.map(subs, & &1.name)) do
-      {_, "-" <> _ = suffix} -> [Panel.row(ctx, [{"  names drop " <> suffix, :text_faint}])]
-      _ -> []
+      {"", ""} ->
+        []
+
+      {prefix, suffix} ->
+        [Panel.row(ctx, [{"  names drop " <> prefix <> "*" <> suffix, :text_faint}])]
     end
   end
 

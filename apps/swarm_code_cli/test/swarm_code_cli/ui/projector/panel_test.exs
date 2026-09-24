@@ -157,6 +157,59 @@ defmodule SwarmCodeCLI.UI.Projector.PanelTest do
     refute text =~ "engine-lifec…"
   end
 
+  defp renamed(scene, names, opts) do
+    state = state(scene, 160, 45, opts)
+    model = state.read_model
+
+    agents =
+      Map.new(model.agents, fn {id, a} -> {id, %{a | name: Map.get(names, a.name, a.name)}} end)
+
+    %{state | read_model: %{model | agents: agents}}
+  end
+
+  test "regression (QA Q3): a shared prefix is dropped too, and the rows stay distinct" do
+    names = %{
+      "engine-lifecycle-review" => "reviewer-controllers",
+      "data-persistence-review" => "reviewer-plugs-auth",
+      "llm-tools-review" => "reviewer-liveviews",
+      "web-ui-desktop-review" => "reviewer-accounts"
+    }
+
+    full = :panel_swarm_2 |> renamed(names, []) |> panel_text() |> Enum.join("\n")
+    IO.puts(full)
+    assert full =~ "4 × reviewer-*"
+    assert full =~ "├ ● controllers"
+    assert full =~ ~r/╰ ! accounts +needs you/
+    refute full =~ "reviewer…"
+
+    compact = :panel_swarm_2 |> renamed(names, panel: :compact) |> panel_text()
+    rows = Enum.filter(compact, &(&1 =~ ~r/^\s+[●◐◌!✓✗] \S/u))
+    shorts = Enum.map(rows, &(Regex.run(~r/^\s+\S (\S+)/u, &1) |> List.last()))
+    assert length(shorts) >= 4
+    assert shorts == Enum.uniq(shorts), Enum.join(compact, "\n")
+    assert Enum.join(compact, "\n") =~ "names drop reviewer-*"
+  end
+
+  test "regression (QA Q3): workflow step names split on ':' and the band keeps 8 cells" do
+    names = %{
+      "engine-lifecycle-review" => "review:correctness",
+      "data-persistence-review" => "review:security",
+      "llm-tools-review" => "review:performance",
+      "web-ui-desktop-review" => "review:maintainability"
+    }
+
+    compact = :panel_swarm_2 |> renamed(names, panel: :compact) |> panel_text()
+    text = Enum.join(compact, "\n")
+    refute text =~ "review:…"
+    IO.puts(text)
+    assert text =~ ~r/! maintai… +\S/u
+    assert text =~ ~r/correct… |correctness/u
+
+    full = :panel_swarm_2 |> renamed(names, []) |> panel_text() |> Enum.join("\n")
+    assert full =~ "maintainability"
+    refute full =~ "review:ma…"
+  end
+
   # --------------------------------------------------------- the frames
 
   test "swarm frame 2: header, the band with the literal command and ^N, the tree, the gauge" do
