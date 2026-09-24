@@ -38,7 +38,7 @@ defmodule SwarmCodeCLI.UI.Projector.Pass71ChromeTest do
     state = state(:first_reply, {120, 36})
     {rows, _} = screen(queued(state, 2))
     rule = Enum.find(rows, &(&1 =~ "queued"))
-    assert rule =~ ~r/─+ 2 queued ──$/
+    assert rule =~ ~r/─+ 2 queued ──\s*$/
 
     {rows, _} = screen(queued(state, 0))
     refute Enum.any?(rows, &(&1 =~ "queued"))

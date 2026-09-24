@@ -5,7 +5,7 @@ defmodule SwarmCodeCLI.UI.Projector do
   alias SwarmCodeCLI.UI.Projector.{Composer, Density, Dialog, Shell, Support, Workspace}
   @spec project(State.t()) :: {Scene.t(), %{binary() => ActionTarget.t()}}
   def project(state) do
-    layout = Layout.calculate(state.size, state.preferences)
+    layout = Layout.for_state(state)
 
     scene = %Scene{
       size: state.size,

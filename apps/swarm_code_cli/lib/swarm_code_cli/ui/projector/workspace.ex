@@ -150,10 +150,17 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
       text = RunRow.tinted(:text_muted, state)
       key = %{RunRow.tinted(:key, state) | modifiers: [:bold]}
 
+      # pass72: beside the docked panel main can be 73 columns; the short
+      # form keeps the command on the row.
+      words =
+        if width >= 80,
+          do: "This project is not trusted, so SwarmCode only reads it. ",
+          else: "This project is not trusted: read only. "
+
       spans =
         [
           {"  ! ", warn},
-          {"This project is not trusted, so SwarmCode only reads it. ", text},
+          {words, text},
           {"/trust", key},
           {" trusts it.", text}
         ]
@@ -192,8 +199,23 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
         slot_decisions(state) ++
         seen_actions(state) ++
         detail_actions(state) ++
-        recovery_actions(state, class) ++ if(run, do: plan_gate_actions(state, run), else: [])
+        recovery_actions(state, class) ++
+        if(run, do: plan_gate_actions(state, run) ++ agent_stop_actions(state, run), else: [])
     end
+  end
+
+  # pass72: the side panel draws no controls (P1), so stopping one agent of the
+  # run in view stays reachable from the keys (the palette, the agent overlay)
+  # through these undrawn actions, each only where the daemon allows it.
+  defp agent_stop_actions(state, run) do
+    for agent <- SwarmCodeCLI.UI.Projector.Inspector.Hive.agents(state, run.id),
+        agent.id != run.id,
+        Support.allowed?(state, agent, :stop_agent),
+        do:
+          Support.action(
+            SafeText.chrome(:stop),
+            {:intent, {:stop_agent, run.id, agent.id, agent.revision}}
+          )
   end
 
   # An empty conversation: what this is, the three keys that start everything,

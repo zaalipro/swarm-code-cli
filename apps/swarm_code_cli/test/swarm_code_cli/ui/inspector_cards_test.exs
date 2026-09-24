@@ -5,7 +5,7 @@ defmodule SwarmCodeCLI.UI.InspectorCardsTest do
   170x34 (xl) and 150x30 (wide), in colour, monochrome and ASCII.
   """
   use ExUnit.Case, async: true
-  alias SwarmCodeCLI.UI.{Capabilities, Fixtures, Paint, Projector, Reducer, Scene, Size}
+  alias SwarmCodeCLI.UI.{Capabilities, Fixtures, Paint, Projector, Scene, Size}
   alias SwarmCodeCLI.UI.Paint.{Options, Plan}
   alias SwarmCodeCLI.UI.DataSource.DTO
   alias SwarmCodeCLI.UI.Projector.Inspector.Words
@@ -67,11 +67,6 @@ defmodule SwarmCodeCLI.UI.InspectorCardsTest do
 
   defp targets(table, target), do: for({id, ^target} <- table, do: id)
 
-  defp dock?(state) do
-    {scene, _table} = Projector.project(state)
-    Enum.any?(scene.regions, &(&1.role == :inspector))
-  end
-
   # The background of the first cell of `text` on the row that contains it.
   defp background(plan, rect, rows, text) do
     y = Enum.find_index(rows, &String.contains?(&1, text))
@@ -91,19 +86,14 @@ defmodule SwarmCodeCLI.UI.InspectorCardsTest do
   end
 
   describe "tab strip" do
-    test "the first row names the three tabs, each name is clickable, and the waiting count follows agents" do
-      {rows, table, _plan, _rect} = :swarm |> state(170, 34) |> painted()
+    test "timeline and changes carry the strip: three clickable names and the waiting count" do
+      {rows, table, _plan, _rect} = :swarm |> state(170, 34, tab: :timeline) |> painted()
 
-      # The swarm fixture has one interaction waiting on you.
+      # The swarm fixture has one agent waiting on you.
       assert hd(rows) == "agents   1   timeline  changes"
-
-      # The strip names every tab once; the lead card's foot offers the other two again.
       assert length(targets(table, {:local, {:set_tab, :agents}})) == 1
-      assert length(targets(table, {:local, {:set_tab, :timeline}})) == 2
-      assert length(targets(table, {:local, {:set_tab, :changes}})) == 2
-
-      # pass71 V1: a single-agent turn's first tab is its run card.
-      assert hd(rows(:chat, 170, 34)) == "run  timeline  changes"
+      assert length(targets(table, {:local, {:set_tab, :timeline}})) == 1
+      assert length(targets(table, {:local, {:set_tab, :changes}})) == 1
     end
 
     test "the current tab is lit on the hover surface and the count is amber" do
@@ -115,84 +105,39 @@ defmodule SwarmCodeCLI.UI.InspectorCardsTest do
       assert background(plan, rect, rows, " 1 ") == @warning
     end
 
-    test "older tab spellings and unknown values fall back to the agents tab" do
-      for tab <- [:thread, :overview, :nonsense] do
-        assert :swarm |> state(170, 34, tab: tab) |> painted() |> elem(0) |> hd() ==
-                 "agents   1   timeline  changes"
+    test "pass72: the agents tab is the side panel, with no strip; older spellings land on it" do
+      for tab <- [nil, :agents, :thread, :overview, :nonsense] do
+        rows = rows(:swarm, 170, 34, tab: tab)
+        assert hd(rows) =~ ~r/^ .⋔ Swarm · independent agen… · in chat 05:00$/u
+        refute Enum.any?(rows, &(&1 =~ "timeline  changes"))
       end
     end
   end
 
-  describe "agent cards" do
-    test "the agents tab paints the lead card, the sub-agent rows and the operations drawer" do
+  # pass72: the agents tab is the D side panel (`Projector.Panel`; its frames
+  # are pinned in `projector/panel_test.exs`). These keep the pass-70 card
+  # behaviours that still apply, on the representative fixtures.
+  describe "the side panel on the representative fixtures" do
+    test "the lead first, then its agents as a two-level tree, and no operations" do
       rows = rows(:swarm, 170, 34)
 
-      # The lead card: corners, head, the avatar rows, chips, divider, task, gauge, foot.
-      assert Enum.at(rows, 1) =~ ~r/^▗ +▖$/
-      assert Enum.at(rows, 2) =~ ~r/^▐ Agent +stop$/
-      assert Enum.at(rows, 3) =~ ~r/^▐ {6}lead +⬤ active$/
-      assert Enum.at(rows, 4) =~ ~r/^▐ {2}⬡ {3}Lead agent · kimi-k2-thinking$/
-      assert Enum.at(rows, 5) =~ ~r/^▐ {6}4 sub-agents · \d\d:\d\d · 22k tok$/
-      assert Enum.at(rows, 6) == "▐ no tools yet"
-      assert Enum.at(rows, 7) == "▐ " <> String.duplicate("▬", 40)
-      assert Enum.at(rows, 8) =~ ~r/^▐ Current task +35%$/
-      assert Enum.at(rows, 9) =~ ~r/^▐ (▬)+(▭)+$/u
-      assert Enum.at(rows, 10) =~ ~r/^▐ planning +lead 7\.6k · subs 15k$/
-      assert Enum.at(rows, 11) == "▐ ◷ lanes  ⎇ diff"
-      assert Enum.at(rows, 12) =~ ~r/^▝ +▘$/
-
-      # The sub-agents, one row each at the default 42-cell dock.
-      assert Enum.at(rows, 14) =~ ~r/^Sub-agents +1 waiting$/
-      assert Enum.at(rows, 15) =~ ~r/^› ✦ scout-1 {3}grep "Repo\\." {3}▐▐▐▐▐▐ {2}3\.9k$/
-      assert Enum.at(rows, 16) =~ ~r/^› ✦ scout-2 {3}read test\/sess… {1}▐▐▐▐▐▐ {2}3\.5k$/
-      assert Enum.at(rows, 17) =~ ~r/^› ✦ builder-4 edit lib\/swarm… {1}▐▐▐▐▐▐ {2}6\.7k$/
-      assert Enum.at(rows, 18) =~ ~r/^› ⚖ judge {5}waiting for you {1}▐▐▐▐▐▐ {2}1\.2k$/
-
-      # The drawer follows the newest running sub-agent.
-      assert Enum.at(rows, 20) =~ ~r/^Operations · builder-4 +2 ops$/
-      assert Enum.at(rows, 21) =~ ~r/^✎ edit_file +\+42 −7 +active$/
-      assert Enum.at(rows, 22) =~ ~r/^✕ error {5}run_command failed: … {2}failed$/
-
-      refute Enum.any?(rows, &String.contains?(&1, "HIVE"))
-      refute Enum.any?(rows, &(&1 =~ ~r/· 0\b/))
+      assert Enum.any?(rows, &(&1 =~ ~r/^ ⦁ Lead +working +4:45 · 8k$/))
+      assert Enum.any?(rows, &(&1 =~ ~r/^ ⊢ ⦁ scout-1 +working +4:40 · 4k$/))
+      assert Enum.any?(rows, &(&1 =~ ~r/^ ⎣ ! judge +needs you +4:25 · 1k$/))
+      assert Enum.any?(rows, &(&1 =~ ~r/^ reported  ▱▱▱▱  0 of 4 +1 needs you$/))
+      refute Enum.any?(rows, &(&1 =~ ~r/Operations|Current task|active/))
     end
 
-    test "every sub-agent row selects it, the lead offers stop, and the foot switches tabs" do
-      state = state(:swarm, 170, 34)
-      {_rows, table, _plan, _rect} = painted(state)
-
-      for id <- ~w(agent-2 agent-3 agent-4 agent-5) do
-        assert length(targets(table, {:local, {:select_agent, id}})) == 1, id
-      end
-
-      assert targets(table, {:local, {:select_agent, "agent-1"}}) == []
-      assert length(targets(table, {:intent, {:stop_agent, @run, "agent-1", 1}})) == 1
-      # One on the strip and one on the card's foot.
-      assert length(targets(table, {:local, {:set_tab, :timeline}})) == 2
-      assert length(targets(table, {:local, {:set_tab, :changes}})) == 2
-    end
-
-    test "selecting an agent moves the drawer to it" do
-      state = state(:swarm, 170, 34)
-      {state, []} = Reducer.update(state, {:select_agent, "agent-2"})
-      assert state.tabs.agent == "agent-2"
-      {rows, _, _, _} = painted(state)
-
-      assert Enum.any?(rows, &(&1 =~ ~r/^Operations · scout-1 +1 op$/))
-      assert Enum.any?(rows, &(&1 =~ ~r/^⌕ grep lib\/ test\/ · 41 hits +done {2}400ms$/))
-    end
-
-    test "a waiting agent is painted in the warning colour and the lead's status is green" do
+    test "a waiting agent is painted in the warning colour" do
       state = state(:swarm, 170, 34, caps: [color_mode: :truecolor])
       {rows, _table, plan, rect} = painted(state, :truecolor)
 
-      assert foreground(plan, rect, rows, "waiting for you") == @warning
-      assert foreground(plan, rect, rows, "⚖ judge") == @warning
-      assert foreground(plan, rect, rows, "active") == {:rgb, 61, 220, 90}
+      assert foreground(plan, rect, rows, "needs you") == @warning
+      assert foreground(plan, rect, rows, "waiting for your answer") == @warning
       refute Enum.any?(rows, &String.contains?(&1, "NEEDS ANSWER"))
     end
 
-    test "a failed sub-agent carries its error in the error colour and a cross in the heading" do
+    test "a failed agent carries its error in the error colour and a cross" do
       state = state(:swarm, 170, 34, caps: [color_mode: :truecolor])
 
       state =
@@ -203,242 +148,64 @@ defmodule SwarmCodeCLI.UI.InspectorCardsTest do
         })
 
       {rows, _table, plan, rect} = painted(state, :truecolor)
-      assert Enum.any?(rows, &(&1 =~ ~r/^› ✦ builder-4 mix test exite…/))
-      assert Enum.any?(rows, &(&1 =~ ~r/^› ⚖ judge {5}waiting for you /))
-      assert foreground(plan, rect, rows, "mix test exite") == {:rgb, 255, 77, 79}
-      assert Enum.any?(rows, &(&1 =~ ~r/^Sub-agents +1 waiting · 1 failed$/))
+      assert Enum.any?(rows, &(&1 =~ ~r/^ ⊢ ✗ builder-4 +failed/))
+      assert foreground(plan, rect, rows, "mix test exited") == {:rgb, 255, 77, 79}
     end
 
-    test "the lead's chips name the tools it used, three at most and then a count" do
+    test "a child of a superseded turn keeps the catalogue's exact words" do
       state = state(:swarm, 170, 34)
-      items = state.read_model.transcript
-      base = Map.fetch!(items, "005")
+      state = put_in(state.read_model.agents["agent-3"].launched_by_superseded, true)
+      rows = painted(state) |> elem(0)
 
-      extra =
-        for {name, n} <- [{"grep", 1}, {"read_file", 2}, {"run_command", 3}, {"web_search", 4}],
-            into: %{} do
-          id = "lead-tool-#{n}"
+      lane = Enum.find_index(rows, &(&1 =~ "scout-2"))
+      assert Enum.at(rows, lane + 1) =~ "Launched by a superseded turn"
+    end
 
-          {id,
-           %{
-             base
-             | id: id,
-               agent_id: "agent-1",
-               at: base.at + n,
-               tool: %{base.tool | name: name}
-           }}
-        end
+    test "a stopped agent says so in words, never STOPPED alone" do
+      state = state(:swarm, 170, 34)
+      state = put_in(state.read_model.agents["agent-2"].state, :stopped)
+      state = put_in(state.read_model.agents["agent-2"].step, "")
+      rows = painted(state) |> elem(0)
 
-      state = put_in(state.read_model.transcript, Map.merge(items, extra))
-      {rows, _, _, _} = painted(state)
-      assert Enum.at(rows, 6) == "▐  grep   read_file   run_command   +1"
+      assert Enum.any?(rows, &(&1 =~ ~r/^ ⊢ ✗ scout-1 +stopped/))
+      refute Enum.any?(rows, &String.contains?(&1, "STOPPED"))
+      assert Words.state(:stopped) == "stopped by you"
     end
 
     test "the cards degrade to their ASCII twins" do
       rows = rows(:swarm, 170, 34, caps: [ascii?: true])
 
-      assert Enum.at(rows, 3) =~ ~r/^\| {6}lead +\* active$/
-      assert Enum.at(rows, 4) =~ ~r/^\| {2}o {3}Lead agent · kimi-k2-thinking$/
-      assert Enum.at(rows, 9) == "| " <> String.duplicate("#", 14) <> String.duplicate("-", 26)
-      assert Enum.at(rows, 15) =~ ~r/^> \+ scout-1 {3}grep "Repo\\." {3}####-- {2}3\.9k$/
-      assert Enum.at(rows, 18) =~ ~r/^> j judge {5}waiting for you {1}------ {2}1\.2k$/
-      refute Enum.any?(rows, &(&1 =~ ~r/[⬢⬡✦⚖⬤▐▬◷⎇›]/u))
-    end
+      assert Enum.any?(rows, &(&1 =~ ~r/^ \* Lead +working/))
+      assert Enum.any?(rows, &(&1 =~ ~r/^ \| \* scout-1 +working/))
+      assert Enum.any?(rows, &(&1 =~ ~r/^ ` ! judge +needs you/))
 
-    # pass71 V1 (R3): a single-agent turn earns its columns with a compact run
-    # card and the changes it made, never the per-step operations.
-    test "a single-agent chat turn shows the compact run card and its changes" do
-      rows = rows(:chat, 170, 34)
-
-      assert Enum.at(rows, 2) =~ ~r/^▐ ✳ assistant +⬤ active$/
-      assert Enum.at(rows, 3) == "▐ deepseek-v4-pro"
-      assert Enum.at(rows, 4) =~ ~r/^▐ elapsed 5m 00s +tokens  4k$/
-      assert Enum.at(rows, 5) =~ ~r/^▐ cost    \$0\.02$/
-      assert Enum.member?(rows, "Changes")
-      assert Enum.member?(rows, "No files changed yet")
-      refute Enum.any?(rows, &String.contains?(&1, "Operations"))
-      refute Enum.any?(rows, &String.contains?(&1, "Current task"))
-      refute Enum.any?(rows, &String.contains?(&1, "Sub-agents"))
-      refute Enum.any?(rows, &String.contains?(&1, "stop"))
-    end
-
-    test "the compact card lists the turn's changes and counts its files" do
-      state = state(:chat, 170, 34)
-
-      change = %DTO.Change{
-        id: "c1",
-        run_id: @run,
-        path: "lib/tickets/guard.ex",
-        at: @now - 1_000,
-        restorable: true,
-        file_state: :modified,
-        added: 5,
-        removed: 1
-      }
-
-      state = put_in(state.read_model.changes, %{"c1" => change})
-      {rows, _table, _plan, _rect} = painted(state)
-
-      assert Enum.any?(rows, &(&1 =~ ~r/files +1$/))
-      assert Enum.any?(rows, &String.starts_with?(&1, "Changes · 1 file · +5 −1"))
-      # One agent wrote everything: no author column, and the row keeps its time.
-      row = Enum.find(rows, &String.starts_with?(&1, "M lib/tickets/guard.ex"))
-      assert row =~ ~r/^M lib\/tickets\/guard\.ex +\+5 −1 .* \d\d:\d\d$/
-      refute row =~ "assistant"
-      refute Enum.any?(rows, &String.contains?(&1, "1 agent"))
-    end
-
-    test "a chat turn that spawned sub-agents keeps the full hive" do
-      state = state(:chat, 170, 34)
-
-      sub = %DTO.AgentSummary{
-        id: "sub-1",
-        run_id: @run,
-        revision: 1,
-        state: :running,
-        name: "scout-1",
-        role: :worker,
-        depth: 1,
-        step: "grep",
-        tokens_in: 10,
-        tokens_out: 10,
-        started_at: @now - 2_000
-      }
-
-      lead = %DTO.AgentSummary{sub | id: "lead-1", name: "lead", role: :lead, depth: 0}
-      state = put_in(state.read_model.agents, %{"sub-1" => sub, "lead-1" => lead})
-      {rows, _table, _plan, _rect} = painted(state)
-
-      assert hd(rows) == "agents  timeline  changes"
-      assert Enum.any?(rows, &String.contains?(&1, "Current task"))
-    end
-
-    test "a finished assistant that used nothing says so, not \"yet\" (pass70 Q11)" do
-      state = state(:chat, 170, 34)
-      run = Map.values(state.read_model.runs) |> hd()
-
-      agents =
-        Map.new(state.read_model.agents, fn {id, agent} -> {id, %{agent | state: :done}} end)
-
-      state = %{
-        state
-        | read_model: %{
-            state.read_model
-            | runs: %{run.id => %{run | state: :done}},
-              agents: agents,
-              transcript: Map.reject(state.read_model.transcript, fn {_, item} -> item.tool end)
-          }
-      }
-
-      rows = elem(painted(state), 0)
-      refute Enum.any?(rows, &String.contains?(&1, "yet"))
-    end
-
-    test "a wider dock lays the sub-agents out as two columns of mini cards" do
-      state = state(:swarm, 170, 34)
-      state = %{state | preferences: %{state.preferences | inspector_width: 56}}
-      {rows, table, _, rect} = painted(state)
-
-      assert rect.width == 56
-      assert Enum.any?(rows, &(&1 =~ ~r/^▗ +▖ ▗ +▖$/))
-      assert Enum.any?(rows, &(&1 =~ ~r/^▐ ✦ scout-1 +⬤ ▐ ✦ scout-2 +⬤$/))
-      assert Enum.any?(rows, &(&1 =~ ~r/^▐ sub +▐ sub$/))
-      assert Enum.any?(rows, &(&1 =~ ~r/^▐ 3\.9k tok +1 op ▐ 3\.5k tok +1 op$/))
-      assert Enum.any?(rows, &(&1 =~ ~r/^▐ ✦ builder-4 +⬤ ▐ ⚖ judge +!$/))
-      assert Enum.any?(rows, &(&1 =~ ~r/^▐ sub +▐ judge · question$/))
-
-      for id <- ~w(agent-2 agent-3 agent-4 agent-5) do
-        assert length(targets(table, {:local, {:select_agent, id}})) == 1, id
+      for row <- rows do
+        assert String.replace(row, ["·", "…"], "") =~ ~r/^[\x20-\x7e]*$/, inspect(row)
       end
     end
 
-    test "a child of a superseded turn keeps the catalogue's exact words, as a row or on its card" do
-      state = state(:swarm, 170, 34)
-      state = put_in(state.read_model.agents["agent-3"].launched_by_superseded, true)
-      {rows, _, _, _} = painted(state)
+    test "a short region cuts whole rows and says how many agents are left out" do
+      for {cols, lines} <- [{150, 16}, {170, 14}] do
+        rows = rows(:swarm, cols, lines)
+        assert length(rows) == lines - 2
 
-      lane = Enum.find_index(rows, &String.starts_with?(&1, "› ✦ scout-2"))
-      assert Enum.at(rows, lane + 1) == "Launched by a superseded turn"
-
-      wide = %{state | preferences: %{state.preferences | inspector_width: 56}}
-      {rows, _, _, _} = painted(wide)
-      # scout-2 sits in the right column, so the phrase is elided to the card's 25 cells.
-      assert Enum.any?(rows, &(&1 =~ ~r/▐ 3\.9k tok +1 op ▐ Launched by a superseded…$/))
-    end
-
-    test "a short region keeps the lead card whole and never cuts a card in the middle" do
-      docked =
-        for {cols, lines} <- [{150, 30}, {170, 30}, {170, 32}, {200, 30}, {130, 34}],
-            state = state(:swarm, cols, lines),
-            dock?(state),
-            do: painted(state) |> elem(0)
-
-      assert length(docked) >= 2
-
-      for rows <- docked do
-        assert Enum.at(rows, 2) =~ ~r/^▐ Agent +stop$/
-        tops = Enum.count(rows, &(&1 =~ ~r/^▗ +▖$/))
-        bottoms = Enum.count(rows, &(&1 =~ ~r/^▝ +▘$/))
-        assert tops == bottoms and tops >= 1
+        assert Enum.any?(rows, &(&1 =~ ~r/more · Ctrl-G all runs/)) or
+                 Enum.any?(rows, &(&1 =~ "judge"))
       end
-    end
-
-    test "a stopped sub-agent says so in words, never STOPPED alone" do
-      state = state(:swarm, 170, 34)
-      state = put_in(state.read_model.agents["agent-2"].state, :stopped)
-      state = put_in(state.read_model.agents["agent-2"].step, "")
-      {rows, _, _, _} = painted(state)
-
-      assert Enum.any?(rows, &(&1 =~ ~r/^› ✦ scout-1 {3}stopped by you/))
-      refute Enum.any?(rows, &String.contains?(&1, "STOPPED"))
-      assert Words.state(:stopped) == "stopped by you"
-    end
-
-    test "a pending interaction draws the waiting card under the lead, and its head opens it" do
-      state = state(:swarm, 170, 34)
-
-      interaction = %SwarmCodeCLI.UI.DataSource.DTO.PendingInteraction{
-        id: "ask-1",
-        run_id: @run,
-        node_id: "agent-5",
-        conversation_id: "fixture-conversation",
-        kind: :approval,
-        expected_revision: 5,
-        state: :pending,
-        approval: %SwarmCodeCLI.UI.DataSource.DTO.Approval{
-          tool: "run_command",
-          permission: :execute,
-          arguments_preview: "mix ecto.migrate"
-        },
-        allowed_actions: [:approve, :deny],
-        urgency: :high,
-        created_at: @now - 1_000
-      }
-
-      state = put_in(state.read_model.interactions, %{"ask-1" => interaction})
-      {rows, table, _, _} = painted(state)
-
-      assert Enum.at(rows, 13) =~ ~r/^▗ +▖$/
-      assert Enum.at(rows, 14) == "▐ ! judge wants to run a command"
-      assert Enum.at(rows, 15) == "▐ $ mix ecto.migrate"
-      assert Enum.at(rows, 16) == "▐ decide in the composer below"
-      assert length(targets(table, {:local, {:open_interaction, "ask-1"}})) == 1
     end
   end
 
-  describe "verdict card" do
-    test "the thread tab of a consensus run shows the newest verdict below the hive" do
+  describe "the verdict of a judged run" do
+    test "a consensus run shows the newest verdict's checks as criteria and the judge's words" do
       rows = rows(:consensus, 170, 34)
 
-      v = Enum.find_index(rows, &(&1 == "Verdict · round 1 · done"))
-      assert v, "no verdict row"
-      assert Enum.at(rows, v + 1) =~ ~r/^✓ tests_pass {6}142 tests, 0 failures$/
-      assert Enum.at(rows, v + 2) =~ ~r/^✓ no_regressions  auth paths unchanged$/
-      # The panel is 42 cells wide, so the longest note is elided.
-      assert Enum.at(rows, v + 3) =~ ~r/^✕ docs_updated {4}architecture.md still d…$/
-      assert Enum.at(rows, v + 4) =~ ~r/^— style {11}not evaluated$/
-      assert Enum.at(rows, v + 5) =~ ~r/^Two of three proposals meet the bar/
-      assert Enum.find_index(rows, &String.starts_with?(&1, "▐ Agent")) < v
+      v = Enum.find_index(rows, &(&1 =~ ~r/^ criteria +2 of 4 met$/))
+      assert v, "no criteria row"
+      assert Enum.at(rows, v + 2) =~ ~r/^   ✓ tests_pass +142 tests, 0 failures$/
+      assert Enum.at(rows, v + 3) =~ ~r/^   ✓ no_regressions +auth paths unchanged$/
+      assert Enum.at(rows, v + 4) =~ ~r/^   ✗ docs_updated +architecture.md still draft$/
+      assert Enum.at(rows, v + 5) =~ ~r/^   ⚬ style +not evaluated$/
+      assert Enum.any?(rows, &(&1 =~ "Two of three proposals meet the bar"))
     end
 
     test "the newest round wins" do
@@ -456,44 +223,14 @@ defmodule SwarmCodeCLI.UI.InspectorCardsTest do
       state = put_in(state.read_model.verdicts, %{"judge-1" => older, "judge-2" => newer})
       {rows, _, _, _} = painted(state)
 
-      v = Enum.find_index(rows, &(&1 == "Verdict · round 2 · done"))
-      assert v, "no verdict row"
-      assert Enum.at(rows, v + 1) =~ ~r/^✓ docs_updated  docs landed$/
+      assert Enum.any?(rows, &(&1 =~ ~r/^   ✓ docs_updated +docs landed$/))
+      assert Enum.any?(rows, &(&1 =~ "All three proposals meet the bar."))
       refute Enum.any?(rows, &String.contains?(&1, "142 tests"))
     end
 
-    test "with no verdict yet the card says so and what the judge is doing" do
-      state = state(:consensus, 170, 34)
-
-      judge = %DTO.AgentSummary{
-        id: "judge-agent",
-        run_id: @run,
-        revision: 1,
-        state: :running,
-        name: "judge",
-        role: :judge,
-        step: "reading proposal B"
-      }
-
-      state = put_in(state.read_model.verdicts, %{})
-      state = put_in(state.read_model.agents, %{"judge-agent" => judge})
-      {rows, _, _, _} = painted(state)
-
-      v = Enum.find_index(rows, &(&1 == "Verdict"))
-      assert v, "no verdict row"
-      assert Enum.at(rows, v + 1) == "No verdict yet · judge running"
-      assert Enum.any?(rows, &(&1 =~ ~r/^▐ {6}judge +⬤ active$/))
-      assert Enum.any?(rows, &(&1 =~ ~r/^▐ reading proposal B/))
-    end
-
-    test "the agents tab of a consensus run carries the verdict card below the hive; the other tabs do not" do
-      rows = rows(:consensus, 170, 34, tab: :agents)
-      lead = Enum.find_index(rows, &(&1 =~ ~r/^▐ Agent/))
-      verdict = Enum.find_index(rows, &String.starts_with?(&1, "Verdict"))
-      assert lead && verdict && verdict > lead
-
+    test "only the agents tab carries it" do
       for tab <- [:timeline, :changes] do
-        refute Enum.any?(rows(:consensus, 170, 34, tab: tab), &String.contains?(&1, "Verdict"))
+        refute Enum.any?(rows(:consensus, 170, 34, tab: tab), &String.contains?(&1, "criteria"))
       end
     end
   end
@@ -563,7 +300,7 @@ defmodule SwarmCodeCLI.UI.InspectorCardsTest do
       assert Enum.at(rows, 1) == "Changes · 3 files · +52 −3 · 2 agents"
 
       assert Enum.at(rows, 4) =~
-               ~r/^A …\/repo_test\.exs \+40 −0 builder-4 ✓ \d\d:\d\d$/
+               ~r/^A …\/repo_test\.exs +\+40 −0 builder-4 ✓ \d\d:\d\d$/
 
       assert Enum.at(rows, 5) =~ ~r/^M lib\/…\/repo\.ex +\+12 −3 builder-4 ✓ \d\d:\d\d$/
       assert length(targets(table, {:local, {:open_detail, @run, "cp-1:diff"}})) == 1
@@ -585,11 +322,11 @@ defmodule SwarmCodeCLI.UI.InspectorCardsTest do
       rows = rows(:swarm, 170, 34, tab: :timeline)
 
       assert Enum.at(rows, 1) == "Timeline · 7 events"
-      # 42 cells: the time, the widest name, the widest kind word, then the text.
-      assert Enum.at(rows, 2) =~ ~r/^\d\d:\d\d you {7}text {4}Review this synth…$/
+      # 46 cells: the time, the widest name, the widest kind word, then the text.
+      assert Enum.at(rows, 2) =~ ~r/^\d\d:\d\d you {7}text {4}Review this synthetic…$/
       assert Enum.at(rows, 3) =~ ~r/^\d\d:\d\d scout-1 {3}tool {4}grep "Repo\\."$/
       assert Enum.at(rows, 5) =~ ~r/^\d\d:\d\d lead {6}thought The refresh path/
-      assert Enum.at(rows, 7) =~ ~r/^\d\d:\d\d builder-4 error {3}run_command faile…$/
+      assert Enum.at(rows, 7) =~ ~r/^\d\d:\d\d builder-4 error {3}run_command failed: m…$/
       # The lead's streaming summary is the newest turn, so it is last.
       assert Enum.at(rows, 8) =~ ~r/^\d\d:\d\d lead {6}text {4}/
       assert Enum.at(rows, 9) == ""

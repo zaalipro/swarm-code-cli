@@ -98,16 +98,25 @@ defmodule SwarmCodeCLI.UI.Projector.WorkspaceTurnsTest do
     assert String.ends_with?(header, "writing ▮  23k tok")
   end
 
+  # pass72 D9: one line per agent, with the panel's glyph, state word and
+  # sentence, a tree connector, and its elapsed and tokens on the right.
   test "workers collapse to one lane line each, and a failure shows on its lane" do
     {rows, _, _, _} = fixture(:swarm, {100, 30}) |> painted()
-    at = index_of(rows, "    ✦ scout-1")
+    at = index_of(rows, "    ⊢ ⦁ scout-1")
+    [scout1, scout2, builder, judge] = Enum.slice(rows, at, 4)
 
-    assert Enum.slice(rows, at, 4) == [
-             "    ✦ scout-1  ▮ 1 tool",
-             "    ✦ scout-2  ▮ 1 tool",
-             "    ✦ builder-4  ▮ 1 tool  run_command failed: mix test exited with status 1 (2 failures).",
-             "    ⬡ judge  needs answer"
-           ]
+    assert scout1 =~ ~r/^    ⊢ ⦁ scout-1 +working +grep "Repo\\."/
+    assert scout2 =~ ~r/^    ⊢ ⦁ scout-2 +working +read test\/session_test.exs/
+
+    assert builder =~
+             ~r/^    ⊢ ⦁ builder-4 +working +run_command failed: mix test exited with status 1/
+
+    assert judge =~ ~r/^    ⎣ ! judge +needs you /
+
+    # One line per agent (the owner's duplicate spawn/lane rows).
+    for name <- ["scout-1", "scout-2", "builder-4", "judge"] do
+      assert Enum.count(rows, &(&1 =~ name)) == 1, name
+    end
 
     # The lead's words follow its workers, after one blank row.
     assert Enum.at(rows, at + 4) == ""
@@ -129,7 +138,7 @@ defmodule SwarmCodeCLI.UI.Projector.WorkspaceTurnsTest do
       |> Map.put(:expansions, MapSet.new(["005"]))
 
     {rows, _, _, _} = painted(state)
-    at = index_of(rows, "    ✦ scout-1")
+    at = index_of(rows, "    ⊢ ⦁ scout-1")
 
     assert Enum.at(rows, at + 1) =~ ~r/^      ✓ grep  "Repo\\\."\s+lib\/ test\/ · 41 hits  0\.4s$/
 
@@ -138,7 +147,7 @@ defmodule SwarmCodeCLI.UI.Projector.WorkspaceTurnsTest do
 
     # Collapsing again through the same expansion set restores the lane line.
     {collapsed, _, _, _} = painted(%{state | expansions: MapSet.new()})
-    assert index_of(collapsed, "    ✦ scout-1")
+    assert index_of(collapsed, "    ⊢ ⦁ scout-1")
     refute Enum.any?(collapsed, &(&1 =~ "result line"))
   end
 
@@ -394,7 +403,7 @@ defmodule SwarmCodeCLI.UI.Projector.WorkspaceTurnsTest do
       assert main.rect.width == 100
       assert Enum.all?(rows, &(SwarmCodeCLI.UI.Width.cells(&1, policy) <= 100))
       assert Enum.any?(rows, &(&1 =~ "Review this synthetic project"))
-      assert index_of(rows, "    ✦ scout-1")
+      assert index_of(rows, "    ⊢ ⦁ scout-1")
       assert index_of(rows, "  ⋔ lead")
     end
   end
@@ -439,8 +448,8 @@ defmodule SwarmCodeCLI.UI.Projector.WorkspaceTurnsTest do
     assert String.starts_with?(Enum.at(rows, 0), "  | Review this synthetic project")
     header = Enum.find(rows, &String.starts_with?(&1, "  S lead"))
     assert String.ends_with?(header, "writing |  23k tok")
-    assert index_of(rows, "    + scout-1  | 1 tool")
-    assert index_of(rows, "    o judge  needs answer")
+    assert index_of(rows, "    | * scout-1    working")
+    assert index_of(rows, "    ` ! judge      needs you")
 
     expanded =
       fixture(:swarm, {100, 30}, ascii: true)

@@ -90,11 +90,12 @@ defmodule SwarmCodeCLI.UI.Projector.GoldenScenesTest do
     end
   end
 
-  # pass71 V6: what this round changed, at the size that docks the pane.
+  # pass71 V6, redrawn by pass72: what the docked side panel says about the
+  # conversation scenes (the panel is direction D, not the pass-71 cards).
   @pass71 %{
-    first_reply: ["run  timeline  changes", "elapsed", "tokens", "Changes", " elixir "],
-    trouble: ["@@ -12,9 +12,13 @@", "429 Too Many Requests", "Changes"],
-    swarm: ["agents", "Current task"]
+    first_reply: ["✳ Read mix.exs", "· in chat", "✓ Assistant", "context", " elixir "],
+    trouble: ["@@ -12,9 +12,13 @@", "429 Too Many Requests", "earlier in this chat"],
+    swarm: ["worker-a-accounts", "reported", "! NEEDS YOU · worker-b-live"]
   }
 
   for {scene, texts} <- @pass71, policy <- [:narrow, :wide] do
@@ -105,8 +106,85 @@ defmodule SwarmCodeCLI.UI.Projector.GoldenScenesTest do
       for text <- unquote(texts),
           do: assert(screen =~ text, "#{unquote(scene)}: no #{inspect(text)}")
 
-      # The per-step operations drawer belongs to the hive, never a one-agent turn.
-      if unquote(scene) != :swarm, do: refute(screen =~ "Operations ·")
+      # pass72 P1: no operations anywhere in the panel.
+      refute screen =~ "Operations ·"
+      refute screen =~ "Current task"
+    end
+  end
+
+  # pass72: the side panel's own scenes (`Demo.Panel`, the D2 mockups) at the
+  # four golden sizes, both width policies, in colour and in monochrome ASCII,
+  # full and compact: a valid plan with no diagnostics, the run on screen
+  # (docked from 120 columns, the strip under it), and at least 17
+  # transcript rows at 80x24.
+  alias SwarmCodeCLI.Demo.Panel, as: PanelScenes
+
+  @panel_evidence %{
+    panel_chat: {"fix the flaky retry test", ["Assistant", "context"]},
+    panel_swarm_1: {"architecture review", ["engine-lifecycle", "reported"]},
+    panel_swarm_2: {"architecture review", ["NEEDS YOU", "mix test test/swarm_code_web/live"]},
+    panel_swarm_3: {"architecture review", ["stop reason read before the flush"]},
+    panel_workflow: {"ship retry", ["implement", "retry-tests"]},
+    panel_goal: {"suite green", ["criteria", "goal agent"]},
+    panel_plan: {"rate limits for the API", ["NEEDS YOU", "limit per API key"]},
+    panel_research: {"Req vs Finch pooling", ["sources", "reader-code"]},
+    panel_consensus: {"should runs own worktrees?", ["positions", "gemini"]},
+    panel_heavy: {"architecture review", ["5 runs", "NEED YOU"]}
+  }
+
+  defp paint_panel(scene, {columns, rows}, policy, mode, ascii?, panel) do
+    size = %Size{columns: columns, rows: rows}
+    caps = %Capabilities{size: size, ambiguous_width: policy, color_mode: mode, ascii?: ascii?}
+    state = scene |> PanelScenes.state(size, caps) |> Map.put(:panel_mode, panel)
+    {projected, _table} = Projector.project(state)
+    assert Scene.validate(projected) == :ok
+    assert {:ok, plan} = Paint.build(projected, %Options{color_mode: mode, ascii?: ascii?})
+    assert :ok = Plan.validate(plan)
+    assert plan.diagnostics == []
+
+    rows =
+      for y <- 0..(rows - 1) do
+        for x <- 0..(columns - 1), reduce: "" do
+          acc ->
+            case Plan.cell(plan, x, y) do
+              {:glyph, glyph, _, _} -> acc <> glyph
+              _ -> acc
+            end
+        end
+      end
+
+    {projected, rows}
+  end
+
+  for scene <- PanelScenes.scenes(), {columns, rows} <- @sizes, policy <- [:narrow, :wide] do
+    test "pass72 #{scene} at #{columns}x#{rows} (#{policy})" do
+      scene = unquote(scene)
+      size = {unquote(columns), unquote(rows)}
+      {title, docked} = Map.fetch!(@panel_evidence, scene)
+
+      for {mode, ascii?} <- [truecolor: false, monochrome: true], panel <- [:full, :compact] do
+        {projected, rows} = paint_panel(scene, size, unquote(policy), mode, ascii?, panel)
+        screen = Enum.join(rows, "\n")
+        label = "#{scene} #{inspect(size)} #{mode} #{panel}"
+
+        assert screen =~ title, "#{label}: no #{inspect(title)}"
+
+        # The kind's sections are the full panel's; compact keeps the rows.
+        if elem(size, 0) >= 120 and panel == :full do
+          for text <- docked, do: assert(screen =~ text, "#{label}: no #{inspect(text)}")
+        else
+          # The strip (R17) sits on row 1.
+          if elem(size, 0) < 120, do: assert(Enum.at(rows, 1) =~ title)
+        end
+
+        if ascii? do
+          leaked = Regex.scan(~r/[^\x00-\x7F·…]/u, screen) |> List.flatten() |> Enum.uniq()
+          assert leaked == [], "#{label} leaks #{inspect(leaked)}"
+        end
+
+        main = Enum.find(projected.regions, &(&1.role == :main))
+        if size == {80, 24}, do: assert(main.rect.height >= 17)
+      end
     end
   end
 end

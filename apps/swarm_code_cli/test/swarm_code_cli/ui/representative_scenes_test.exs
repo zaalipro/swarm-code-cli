@@ -13,7 +13,7 @@ defmodule SwarmCodeCLI.UI.RepresentativeScenesTest do
   test "four fixed surfaces use distinct semantic evidence and bounded windows" do
     for {kind, evidence} <- [
           chat: ["The workspace is ready", "synthetic changes"],
-          swarm: ["Five numbered lanes", "⚖ judge", "waiting for you"],
+          swarm: ["Five numbered lanes", "judge", "waiting for your answer"],
           consensus: ["Consensus", "Docket 01", "Ledger:"],
           research: ["Static research report", "Synthetic source", "Fixture notes"]
         ] do

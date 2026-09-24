@@ -38,18 +38,18 @@ defmodule SwarmCodeCLI.UI.LayoutTest do
     refute Map.has_key?(layout.rects, :navigator)
     refute Map.has_key?(layout.rects, :tabline)
     assert layout.rects.title == %Rect{x: 0, y: 0, width: 150, height: 1}
-    assert layout.rects.inspector == %Rect{x: 108, y: 1, width: 42, height: 28}
-    assert layout.rects.main == %Rect{x: 0, y: 1, width: 107, height: 24}
-    assert layout.rects.activity == %Rect{x: 0, y: 25, width: 107, height: 1}
-    assert layout.rects.composer == %Rect{x: 0, y: 26, width: 107, height: 3}
+    # pass72 R13: the side panel is 46 columns (44 content columns).
+    assert layout.rects.inspector == %Rect{x: 104, y: 1, width: 46, height: 28}
+    assert layout.rects.main == %Rect{x: 0, y: 1, width: 103, height: 24}
+    assert layout.rects.activity == %Rect{x: 0, y: 25, width: 103, height: 1}
+    assert layout.rects.composer == %Rect{x: 0, y: 26, width: 103, height: 3}
     assert layout.rects.status == %Rect{x: 0, y: 29, width: 150, height: 1}
     assert layout.mutations_visible?
 
-    # Main's band is still exactly the old 80 columns plus the navigator's 26 and
-    # its gap: it runs from column 0 to the inspector's gap column, and main is
+    # Main's band runs from column 0 to the panel's gap column, and main is
     # flush left and takes all of it.
     band = layout.rects.inspector.x - 1
-    assert band == 80 + 26 + 1
+    assert band == 150 - 46 - 1
     assert layout.rects.main.width == band
     assert layout.rects.main.x == 0
     # Rows in order: 0 title and tabs, main, activity, composer, 29 status.
@@ -62,50 +62,59 @@ defmodule SwarmCodeCLI.UI.LayoutTest do
              layout.rects.composer.y + layout.rects.composer.height
   end
 
-  test "medium docks exactly one pane and shrinking never overwrites preferred widths" do
+  test "pass72 P6: from 120 columns the panel docks, under 120 it is the strip, hidden is neither" do
     preferences = Preferences.new(inspector_width: 56, medium_dock: :inspector)
+
+    # Under 120 columns nothing docks, whatever `medium_dock` says: the panel is
+    # a one-row strip under the title and main starts under it.
     medium = Layout.calculate(size(100, 24), preferences)
-    assert medium.rects.main.width == 50
-    assert medium.rects.inspector.width == 49
+    refute Map.has_key?(medium.rects, :inspector)
     refute Map.has_key?(medium.rects, :navigator)
+    assert medium.rects.tabline == %Rect{x: 0, y: 1, width: 100, height: 1}
+    assert medium.rects.main == %Rect{x: 0, y: 2, width: 100, height: 17}
     assert medium.preferences == preferences
+
+    hidden = Layout.calculate(size(100, 24), preferences, :hidden)
+    refute Map.has_key?(hidden.rects, :tabline)
+    assert hidden.rects.main == %Rect{x: 0, y: 1, width: 100, height: 18}
+
+    # From 120 columns full and compact dock the panel; the stored width is kept.
     wide = Layout.calculate(size(150, 30), medium.preferences)
     assert wide.rects.inspector.width == 56
-    # No navigator at any class now, so main takes what the dock used to hold.
-    refute Map.has_key?(wide.rects, :navigator)
+    refute Map.has_key?(wide.rects, :tabline)
     assert wide.rects.main == %Rect{x: 0, y: 1, width: 93, height: 24}
+    assert Layout.calculate(size(150, 30), preferences, :compact).rects == wide.rects
 
-    # `:none` is the named absence of a dock — the value `:navigator` used to
-    # hold, now that it no longer points at a deleted pane — and it is the
-    # default, so a stock medium terminal gives main the whole width.
+    at_120 = Layout.calculate(size(120, 36), Preferences.new())
+    assert at_120.rects.inspector == %Rect{x: 74, y: 1, width: 46, height: 34}
+    assert at_120.rects.main.width == 73
+
+    off = Layout.calculate(size(150, 30), preferences, :hidden)
+    refute Map.has_key?(off.rects, :inspector)
+    assert off.rects.main.width == 150
+
+    # `:none` is still the default and `:navigator` still invalid.
     assert Preferences.new().medium_dock == :none
     assert_raise ArgumentError, fn -> Preferences.new(medium_dock: :navigator) end
 
-    none = Layout.calculate(size(100, 24), %{preferences | medium_dock: :none})
-    refute Map.has_key?(none.rects, :navigator)
-    refute Map.has_key?(none.rects, :inspector)
-    assert none.rects.main.x == 0
-    assert none.rects.main.width == 100
-    assert none.rects.title == %Rect{x: 0, y: 0, width: 100, height: 1}
-    assert Layout.calculate(size(100, 24), Preferences.new()).rects == none.rects
-
-    # And Ctrl-B docks the inspector a medium terminal can still hold.
-    assert Layout.calculate(size(100, 24), %{preferences | medium_dock: :inspector}).rects
-           |> Map.has_key?(:inspector)
+    # A state without a panel mode lays out as full.
+    assert Layout.for_state(%{size: size(100, 24), preferences: preferences}).rects ==
+             medium.rects
   end
 
   test "main is flush left and takes the whole band at every width" do
     # Nothing is docked on the left, and there is no centred reading measure:
     # main starts at column 0 and keeps every column up to the inspector's gap.
     for {columns, rows, preferences, expected} <- [
-          {104, 24, Preferences.new(), %Rect{x: 0, y: 1, width: 104, height: 18}},
-          {103, 24, Preferences.new(), %Rect{x: 0, y: 1, width: 103, height: 18}},
-          {100, 24, Preferences.new(), %Rect{x: 0, y: 1, width: 100, height: 18}},
-          {80, 24, Preferences.new(), %Rect{x: 0, y: 1, width: 80, height: 18}},
-          {72, 20, Preferences.new(), %Rect{x: 0, y: 1, width: 72, height: 14}},
-          {50, 16, Preferences.new(), %Rect{x: 0, y: 1, width: 50, height: 12}},
-          # xl: a 42-cell inspector and its gap column leave a 127-cell band.
-          {170, 34, Preferences.new(), %Rect{x: 0, y: 1, width: 127, height: 28}},
+          # Under 120 columns the panel's strip (pass72 R17) takes row 1.
+          {104, 24, Preferences.new(), %Rect{x: 0, y: 2, width: 104, height: 17}},
+          {103, 24, Preferences.new(), %Rect{x: 0, y: 2, width: 103, height: 17}},
+          {100, 24, Preferences.new(), %Rect{x: 0, y: 2, width: 100, height: 17}},
+          {80, 24, Preferences.new(), %Rect{x: 0, y: 2, width: 80, height: 17}},
+          {72, 20, Preferences.new(), %Rect{x: 0, y: 2, width: 72, height: 13}},
+          {50, 16, Preferences.new(), %Rect{x: 0, y: 2, width: 50, height: 11}},
+          # xl: a 46-cell panel and its gap column leave a 123-cell band.
+          {170, 34, Preferences.new(), %Rect{x: 0, y: 1, width: 123, height: 28}},
           # A 56-cell inspector at 150 columns leaves 93, under the measure.
           {150, 30, Preferences.new(inspector_width: 56),
            %Rect{x: 0, y: 1, width: 93, height: 24}}
@@ -182,24 +191,25 @@ defmodule SwarmCodeCLI.UI.LayoutTest do
     preferences = Preferences.new()
     changed = preferences |> Preferences.nudge(:navigator, 8) |> Preferences.nudge(:inspector, -2)
     assert changed.navigator_width == 34
-    assert changed.inspector_width == 40
+    assert changed.inspector_width == 44
     # The navigator preference is still carried and reset-able, but no pane reads
     # it any more, so the width it asks for is never drawn.
     refute Map.has_key?(Layout.calculate(size(150, 30), changed).rects, :navigator)
 
     # The 34 columns the navigator preference asks for are deducted from nothing:
-    # main's band still runs from column 0 to the 40-cell inspector's gap, which
-    # is 109 columns, and main takes all of them.
+    # main's band still runs from column 0 to the 44-cell panel's gap, which
+    # is 105 columns, and main takes all of them.
     nudged = Layout.calculate(size(150, 30), changed).rects
-    assert nudged.inspector.width == 40
-    assert nudged.inspector.x - 1 == 109
-    assert nudged.main == %Rect{x: 0, y: 1, width: 109, height: 24}
+    assert nudged.inspector.width == 44
+    assert nudged.inspector.x - 1 == 105
+    assert nudged.main == %Rect{x: 0, y: 1, width: 105, height: 24}
 
     # Effective clamping still leaves the stored preference alone on the pane
-    # that is drawn: 50 columns requested, 49 granted at 100 columns.
-    docked = Preferences.new(inspector_width: 50, medium_dock: :inspector)
-    assert Layout.calculate(size(100, 24), docked).rects.inspector.width == 49
-    assert docked.inspector_width == 50
+    # that is drawn: 56 columns requested and granted at 120 columns, none at 100.
+    docked = Preferences.new(inspector_width: 56)
+    assert Layout.calculate(size(120, 24), docked).rects.inspector.width == 56
+    assert Layout.calculate(size(100, 24), docked).rects[:inspector] == nil
+    assert docked.inspector_width == 56
     assert Preferences.reset(changed, :navigator).navigator_width == 26
     assert Preferences.preset(changed, :inspector, :balanced).inspector_width == 46
     assert_raise FunctionClauseError, fn -> Preferences.nudge(changed, :inspector, 3) end

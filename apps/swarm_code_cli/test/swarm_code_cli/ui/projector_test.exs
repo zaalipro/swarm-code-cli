@@ -740,7 +740,8 @@ defmodule SwarmCodeCLI.UI.ProjectorTest do
     main = Enum.find(scene.regions, &(&1.role == :main))
     assert main.rect.x == 0
     assert main.rect.width == 100
-    assert main.rect.y == 1
+    # pass72 R17: under 120 columns row 1 is the side panel's strip.
+    assert main.rect.y == 2
 
     # Every run is still accounted for on the one-line tab row: the ones that fit
     # are tabs, the rest are the +N remainder.

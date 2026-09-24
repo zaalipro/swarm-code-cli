@@ -40,6 +40,8 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
   alias SwarmCodeCLI.UI.DataSource.DTO
   alias SwarmCodeCLI.UI.Scene.{Block, Span}
   alias SwarmCodeCLI.UI.Projector.{Density, Markdown, RunRow, Support}
+  alias SwarmCodeCLI.UI.Projector.Panel.Model
+  alias SwarmCodeCLI.UI.Projector.Panel.Glyph, as: PanelGlyph
 
   @margin 2
   @body 4
@@ -494,6 +496,17 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
   defp lead_rows(%{kind: :thinking} = item, ctx, state, width),
     do: step_rows(item, ctx, state, width)
 
+  # pass72 D9 (owner bug): a spawn and its agent's line were two rows for one
+  # agent; the agent's line stays, the spawn row goes unless it failed.
+  defp lead_rows(
+         %{kind: :tool, tool: %{name: "spawn_agent", status: status}},
+         ctx,
+         _state,
+         _width
+       )
+       when status != :failed and map_size(ctx.workers) > 0,
+       do: []
+
   defp lead_rows(%{kind: :tool} = item, _ctx, state, width), do: tool_rows(item, state, width)
   defp lead_rows(%{kind: :error} = item, _ctx, state, width), do: error_rows(item, state, width)
 
@@ -879,87 +892,119 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
     end
   end
 
+  # pass72 D9: one line per agent inside the lead's block, with the panel's
+  # own glyph, state word and sentence (`Panel.Model`), its elapsed and
+  # tokens on the right, and no isolation or branch text:
+  #
+  #   ├ ● engine-lifecycle  working    tracing where stop is saved   1:44 · 16k
   defp lane_line(agent, agent_id, items, ctx, state) do
     lane = lane(agent, ctx, state)
-    name = (agent && present(agent.name)) || "worker"
-    status = (agent && agent.state) || items |> List.last() |> then(&(&1 && &1.state))
-    {mark, mark_style} = status_mark(status, state)
-    tools = Enum.count(items, &(&1.kind == :tool))
+    view = panel_view(ctx, agent_id, state)
+    name = (view && view.display) || (agent && present(agent.name)) || "worker"
+    p3 = (view && view.state) || lane_state(agent, items)
+    {sentence, sentence_role} = if view, do: Model.sentence(view, state), else: {"", :text_muted}
 
-    report =
-      items
-      |> Enum.filter(&(&1.kind == :text and &1.role != :user))
-      |> List.last()
-      |> then(&(&1 && first_line(admitted(&1.text, state))))
-
-    waiting =
-      Enum.find(items, &(&1.kind == :tool and &1.state in [:waiting_approval, :waiting_question]))
-
+    # A failed call the agent has not moved past stays on its line (R2).
     failure =
       items
       |> Enum.filter(&(&1.kind == :error))
       |> List.last()
       |> then(&(&1 && first_line(admitted(&1.text, state))))
 
-    duration = agent && agent_duration(agent, state)
-
-    facts =
+    {sentence, sentence_role} =
       cond do
-        waiting ->
-          [
-            {"waiting · " <>
-               target(waiting.tool || %DTO.ToolCall{}, verb(waiting.tool || %DTO.ToolCall{})),
-             {:role, :warning, []}}
-          ]
+        p3 == :done and view != nil and view.finding != nil ->
+          refs = List.first(view.refs)
+          finding = view.finding <> if(refs, do: " " <> refs, else: "")
+          {PanelGlyph.get(:finding, state) <> " " <> finding, sentence_role}
+
+        failure != nil and p3 not in [:done, :needs_you] ->
+          {failure, :error}
 
         true ->
-          words =
-            [duration, if(tools > 0, do: "#{tools} tool" <> if(tools == 1, do: "", else: "s"))]
-            |> Enum.reject(&is_nil/1)
-            |> Enum.join(" · ")
-
-          said =
-            cond do
-              failure -> [{"  " <> failure, {:role, :error, []}}]
-              report -> [{"  " <> quoted(report, state), :muted}]
-              true -> []
-            end
-
-          [{words, :faint}] ++ said
+          {sentence, sentence_role}
       end
 
-    glyph = SafeText.value(Support.glyph(:agent_sub, state))
-    _ = agent_id
+    order = worker_order(ctx) ++ Enum.map(queued_workers(ctx, state), & &1.id)
+    last? = List.last(order) == agent_id
+    connector = PanelGlyph.get(if(last?, do: :elbow, else: :tee), state)
+    name_w = worker_name_width(ctx, state)
+    duration = view && view.elapsed && view.elapsed >= 1_000 && Model.short_clock(view.elapsed)
+    tokens = agent && Model.tokens(Model.token_count(agent))
+    meta = [duration, tokens] |> Enum.reject(&(&1 in [nil, false])) |> Enum.join(" · ")
+    glyph_mods = if p3 == :needs_you, do: [:bold], else: []
 
     spec(
       [
         {String.duplicate(" ", @body), :plain},
-        {glyph, {:role, lane, [:bold]}},
+        {connector, {:role, :text_ghost, []}},
         {" ", :text},
-        {name, {:role, lane, [:bold]}},
-        {"  ", :text},
-        {mark, mark_style},
-        {" ", :text}
-      ] ++ facts,
+        {PanelGlyph.get(p3, state), {:role, Model.glyph_role(p3), glyph_mods}},
+        {" ", :text},
+        {pad_cells(name, name_w, state), {:role, lane, []}},
+        {" ", :text},
+        {pad_cells(Model.word(p3), 11, state), {:role, word_role(p3), glyph_mods}},
+        {sentence, sentence_style(sentence_role, p3)},
+        {:right, if(meta != "", do: [{meta, :faint}], else: [])}
+      ],
       nil
     )
   end
 
-  defp quoted(text, state) do
-    open = if state.capabilities.ascii?, do: "\"", else: "“"
-    close = if state.capabilities.ascii?, do: "\"", else: "”"
-    open <> text <> close
+  defp panel_view(%{run: run}, agent_id, state) when is_map(run) do
+    state |> Model.agents(run) |> Enum.find(&(&1.id == agent_id))
   end
 
-  defp agent_duration(%{started_at: s, finished_at: f}, _state)
-       when is_integer(s) and is_integer(f) and f >= s,
-       do: duration_text(f - s)
+  defp panel_view(_ctx, _agent_id, _state), do: nil
 
-  defp agent_duration(%{started_at: s, state: agent_state}, %{now: now})
-       when is_integer(s) and s > 0 and is_integer(now) and now > s and agent_state in @live,
-       do: duration_text(now - s)
+  defp lane_state(nil, items) do
+    case items |> List.last() |> then(&(&1 && &1.state)) do
+      :done -> :done
+      :failed -> :failed
+      s when s in [:waiting_approval, :waiting_question] -> :needs_you
+      _ -> :working
+    end
+  end
 
-  defp agent_duration(_, _), do: nil
+  defp lane_state(agent, _items), do: Model.p3_state(agent, [agent])
+
+  defp word_role(:needs_you), do: :warning
+  defp word_role(p3), do: Model.word_role(p3)
+
+  defp sentence_style(:warning, _p3), do: {:role, :warning, []}
+  defp sentence_style(:error, _p3), do: {:role, :error, []}
+  defp sentence_style(_role, :done), do: :muted
+  defp sentence_style(_role, _p3), do: :text
+
+  # Workers in the order their lines appear.
+  defp worker_order(ctx) do
+    ctx.items
+    |> Enum.filter(&Map.has_key?(ctx.worker_ids, &1.id))
+    |> Enum.map(&Map.fetch!(ctx.worker_ids, &1.id))
+  end
+
+  defp worker_name_width(ctx, state) do
+    views =
+      case ctx.run do
+        run when is_map(run) -> Model.agents(state, run)
+        _ -> []
+      end
+
+    shown = MapSet.new(worker_order(ctx) ++ Enum.map(queued_workers(ctx, state), & &1.id))
+
+    views
+    |> Enum.filter(&MapSet.member?(shown, &1.id))
+    |> Enum.map(&Width.cells(&1.display, state.capabilities.ambiguous_width))
+    |> Enum.max(fn -> 8 end)
+    |> min(24)
+    |> Kernel.+(1)
+  end
+
+  defp pad_cells(text, n, state) do
+    policy = state.capabilities.ambiguous_width
+    text = if Width.cells(text, policy) > n, do: Width.elide(text, n, :middle, policy), else: text
+    text <> String.duplicate(" ", max(0, n - Width.cells(text, policy)))
+  end
 
   defp lane(nil, _ctx, _state), do: :agent_lane_1
 
@@ -985,7 +1030,14 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
     queued ++ answer ++ footer
   end
 
+  # Workers that have not started yet close the list in the same one-line form.
   defp queued_rows(ctx, state) do
+    ctx
+    |> queued_workers(state)
+    |> Enum.map(&lane_line(&1, &1.id, [], ctx, state))
+  end
+
+  defp queued_workers(ctx, state) do
     state.read_model.agents
     |> Map.values()
     |> Enum.filter(fn agent ->
@@ -993,21 +1045,6 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
         not Map.has_key?(ctx.first_by_worker, agent.id)
     end)
     |> Enum.sort_by(&{&1.started_at || 0, &1.id})
-    |> Enum.map(fn agent ->
-      glyph = SafeText.value(Support.glyph(:agent_lead, state))
-      word = agent.state |> Theme.status() |> elem(0) |> SafeText.value() |> String.downcase()
-
-      spec(
-        [
-          {String.duplicate(" ", @body), :plain},
-          {glyph, :faint},
-          {" ", :text},
-          {agent.name || "worker", :muted},
-          {"  " <> word, :faint}
-        ],
-        nil
-      )
-    end)
   end
 
   defp answer_rows(%{answer: nil}, _state, _width), do: []

@@ -2,23 +2,32 @@ defmodule SwarmCodeCLI.UI.Projector.Inspector do
   @moduledoc """
   The docked inspector: three tabs over the run you are looking at.
 
-    * agents — the lead card, what waits on you, the verdict of a judged run,
-      the sub-agent cards and the operations of the selected agent;
+    * agents — the side panel (pass72 direction D, `Projector.Panel`), the
+      default, drawn with no strip: the panel is a picture of the chat;
     * timeline — the run's transcript as a list of events;
     * changes — the ledger of files the run's agents touched.
 
-  `[` and `]` rotate the tabs; the strip on the first row names them and each
-  name is clickable. When the run waits on you the strip carries the count in
-  an amber pill after `agents`. Every tab budgets its rows to the region's
-  width and stops at its height, since the region does not scroll.
+  `[` and `]` rotate the tabs. On timeline and changes the strip on the first
+  row names the three tabs and each name is clickable; when the run waits on
+  you it carries the count in an amber pill after `agents`. Every tab budgets
+  its rows to the region's width and stops at its height, since the region
+  does not scroll.
   """
   alias SwarmCodeCLI.UI.Theme
   alias SwarmCodeCLI.UI.Keymap.Bindings
   alias SwarmCodeCLI.UI.Scene.{Block, Span}
   alias SwarmCodeCLI.UI.Projector.{Density, RunRow, Support}
-  alias SwarmCodeCLI.UI.Projector.Inspector.{Agents, Changes, Hive, Timeline}
+  alias SwarmCodeCLI.UI.Projector.Inspector.{Changes, Hive, Timeline}
 
   def project(state, rect, class) do
+    case tab(state) do
+      # pass72: the agents tab is the side panel (direction D), with no strip.
+      :agents -> SwarmCodeCLI.UI.Projector.Panel.project(state, rect, class)
+      _ -> tabbed(state, rect, class)
+    end
+  end
+
+  defp tabbed(state, rect, class) do
     run = Support.run(state)
     tab = tab(state)
     width = rect.width
@@ -48,7 +57,10 @@ defmodule SwarmCodeCLI.UI.Projector.Inspector do
     end
   end
 
-  defp agents(state, run, width, height, opts), do: Agents.tab(state, run, width, height, opts)
+  # The strip is drawn only on the timeline and changes tabs; the agents tab
+  # is the side panel itself.
+  defp agents(state, _run, width, height, _opts),
+    do: SwarmCodeCLI.UI.Projector.Panel.project(state, %{width: width, height: height}, nil)
 
   # One clickable name per tab, the current one lit on the hover surface, and
   # the count of what waits on you as an amber pill after `agents`. The deck
@@ -68,11 +80,7 @@ defmodule SwarmCodeCLI.UI.Projector.Inspector do
             },
             else: Theme.style(:text_faint, caps)
 
-        # pass71 V1: a single-agent turn's first tab is its run card.
-        label =
-          if tab == :agents and Agents.compact?(state, run),
-            do: "run",
-            else: Atom.to_string(tab)
+        label = Atom.to_string(tab)
 
         action =
           Support.action(Density.safe(label, state, width), {:local, {:set_tab, tab}}, style)

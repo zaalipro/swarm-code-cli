@@ -491,9 +491,10 @@ defmodule SwarmCodeCLI.UI.Paint.ProjectorTest do
           &row(plan, &1, main.rect.x, main.rect.width)
         )
 
-      # The run is named once, on its tab; main never repeats it, and its
+      # The run is named once on its tab and once on the side panel's strip
+      # (pass72 R17, row 1 under 120 columns); main never repeats it, and its
       # controls are on the keys, where the palette lists them.
-      assert length(String.split(screen(plan), "Streaming conversation")) - 1 == 1
+      assert length(String.split(screen(plan), "Streaming conversation")) - 1 == 2
       refute pixels =~ "Streaming conversation"
       refute pixels =~ "RUNNING STREAMING"
 
@@ -550,31 +551,30 @@ defmodule SwarmCodeCLI.UI.Paint.ProjectorTest do
     end
   end
 
-  test "inspector rows name every sub-agent once and select it; the lead heads the card" do
+  # pass72: the side panel names every agent once, the lead first at the top
+  # of its tree; its rows are a picture, not controls (P1), so the hint keys
+  # and the agent overlay (owner O) reach an agent, not a click on its row.
+  test "the side panel names every sub-agent once and the lead heads the tree" do
     for color <- [:truecolor, :monochrome], policy <- [:narrow, :wide] do
       state = fixture(:swarm, {160, 50}, policy, color)
-      {scene, table, plan} = paint(state)
+      {scene, _table, plan} = paint(state)
       inspector = Enum.find(scene.regions, &(&1.role == :inspector))
       agents = Map.values(state.read_model.agents)
-      lead = Enum.find(agents, &(&1.role == :lead))
 
       rows =
-        for {id, {:local, {:select_agent, agent_id}}} <- table do
-          [rect | _] = plan.actions[id]
-          {agent_id, row(plan, rect.y, inspector.rect.x, inspector.rect.width)}
-        end
+        for y <- inspector.rect.y..(inspector.rect.y + inspector.rect.height - 1),
+            do: row(plan, y, inspector.rect.x, inspector.rect.width)
 
-      assert length(rows) == length(agents) - 1
+      words = "(working|thinking|waiting|needs you|done|failed|stopped|queued|paused)"
 
-      for agent <- agents, agent.id != lead.id do
-        assert Enum.count(rows, fn {id, text} ->
-                 id == agent.id and String.contains?(text, agent.name <> " ")
-               end) == 1
+      for agent <- agents, agent.role != :lead do
+        name_row = Regex.compile!(" " <> Regex.escape(agent.name) <> " +" <> words)
+        assert Enum.count(rows, &(&1 =~ name_row)) == 1, agent.name
       end
 
-      # The lead is the card: its name on the row under the head, no row of its own.
-      assert row(plan, inspector.rect.y + 3, inspector.rect.x, inspector.rect.width) =~ lead.name
-      refute Enum.any?(rows, fn {id, _} -> id == lead.id end)
+      lead_row = Enum.find_index(rows, &(&1 =~ ~r/ Lead +/))
+      first_sub = Enum.find_index(rows, &(&1 =~ "scout-1"))
+      assert lead_row && first_sub && lead_row < first_sub
     end
   end
 
