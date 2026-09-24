@@ -395,8 +395,24 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
 
     # One blank row before every run but the first one on screen.
     lead = if item.id == ctx.first_id and not ctx.view_first?, do: [blank()], else: []
-    lead ++ rows
+    lead ++ rows ++ steer_rows(item, state)
   end
+
+  # pass72 G11 (QA Q12): a steer sent from the agent overlay says whom it
+  # went to, under the message.
+  defp steer_rows(%{run_id: run, text: text}, state) when is_binary(text) do
+    trimmed = String.trim(text)
+
+    case Enum.find(Map.get(state, :steers, []), &match?({^run, ^trimmed, _, _}, &1)) do
+      {_, _, _, name} ->
+        [spec([{String.duplicate(" ", @body + 2), :plain}, {"steered to " <> name, :faint}], nil)]
+
+      nil ->
+        []
+    end
+  end
+
+  defp steer_rows(_item, _state), do: []
 
   # A blank line in the prompt stays a blank row, and a wrapped continuation
   # starts at the card's left edge rather than on the space it broke at.

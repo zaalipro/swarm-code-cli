@@ -318,6 +318,33 @@ defmodule SwarmCodeCLI.UI.Pass72OverlayKeysTest do
       assert Keymap.draft_text(state) == "half a thought"
     end
 
+    test "regression (QA Q12): a steer is echoed in the overlay and marked in the chat" do
+      state = ready() |> Reducer.update({:overlay_open, "r1", "engine"}) |> elem(0)
+      state = type(state, "check the flyout too")
+      {state, effects} = press(state, key(:enter))
+      assert [{:steer, "r1", "engine", "check the flyout too", []}] = commands(effects)
+
+      rows = screen_rows(state) |> Enum.join("\n")
+      assert rows =~ "you: “check the flyout too.”" or rows =~ "you: “check the flyout too”"
+
+      # The daemon records it as a plain user message of the run.
+      message = %DTO.TranscriptItem{
+        id: "steer-1",
+        run_id: "r1",
+        conversation_id: "c",
+        node_id: "m1",
+        attempt_id: "at",
+        role: :user,
+        kind: :text,
+        text: "check the flyout too"
+      }
+
+      state = press!(state, key(:escape))
+      state = put_in(state.read_model.transcript["steer-1"], message)
+      state = update_in(state.read_model.order[:workspace], &((&1 || []) ++ ["steer-1"]))
+      assert screen_rows(state) |> Enum.join("\n") =~ "steered to engine-lifecycle"
+    end
+
     test "typed text types; the overlay's draft is its own" do
       state = ready() |> Reducer.update({:overlay_open, "r1", "data"}) |> elem(0)
       # From the activity `o` is the raw operations; any other letter types.

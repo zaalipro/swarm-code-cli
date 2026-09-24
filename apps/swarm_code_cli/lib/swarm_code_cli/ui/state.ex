@@ -62,6 +62,11 @@ defmodule SwarmCodeCLI.UI.State do
     # | :composer, raw_ops?, page, restore: %{scroll, draft}} (see
     # `UI.Reducer.Overlay`).
     overlay: nil,
+    # pass72 G11 (QA Q12): steers sent from the overlay, newest first, as
+    # {run_id, text, node_id, agent name} (at most 50), so the transcript can
+    # mark a steer "→ agent" and the overlay can echo it. The daemon records
+    # a steer as a plain user message of the run.
+    steers: [],
     library: nil,
     feature_form: nil,
     banner: nil,

@@ -125,7 +125,29 @@ defmodule SwarmCodeCLI.UI.Projector.Overlay do
       [_ | _] = activity -> activity |> Enum.with_index() |> Enum.map(&detail_group/1)
       _ -> derived_groups(state)
     end
+    |> Kernel.++(steer_groups(state))
   end
+
+  # pass72 G11 (QA Q12): what the user steered this agent with, from here.
+  defp steer_groups(%{overlay: %{run_id: run, node_id: node}} = state) do
+    state
+    |> Map.get(:steers, [])
+    |> Enum.filter(&match?({^run, _, ^node, _}, &1))
+    |> Enum.reverse()
+    |> Enum.with_index()
+    |> Enum.map(fn {{_, text, _, _}, index} ->
+      %{
+        key: "steer:#{index}",
+        class: :steer,
+        items: [],
+        title: "you steered it",
+        details: [quoted(sentence(text))],
+        duration_ms: nil
+      }
+    end)
+  end
+
+  defp steer_groups(_state), do: []
 
   @detail_class %{
     read: :read,
@@ -1140,6 +1162,7 @@ defmodule SwarmCodeCLI.UI.Projector.Overlay do
       {role, marker} =
         case group.class do
           :said -> {:text_primary, "›"}
+          :steer -> {:accent, "›"}
           :error -> {:error, "✗"}
           :ask -> {:warning, "!"}
           :edit -> {:success, arrow}
@@ -1160,6 +1183,13 @@ defmodule SwarmCodeCLI.UI.Projector.Overlay do
               {" said", st(state, :text_faint)}
             ]
 
+          :steer ->
+            [
+              {marker <> " ", st(state, :text_faint)},
+              {"you: ", st(state, :accent)},
+              {hd(group.details), st(state, :text_primary)}
+            ]
+
           _ ->
             [{marker <> " ", st(state, :text_faint)}, {group.title, st(state, role)}]
         end
@@ -1168,7 +1198,7 @@ defmodule SwarmCodeCLI.UI.Projector.Overlay do
 
       details =
         cond do
-          group.class == :said ->
+          group.class in [:said, :steer] ->
             []
 
           open? ->

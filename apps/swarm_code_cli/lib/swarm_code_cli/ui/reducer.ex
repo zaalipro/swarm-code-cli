@@ -238,8 +238,22 @@ defmodule SwarmCodeCLI.UI.Reducer do
     case overlay.focus do
       :composer ->
         case Overlay.steer(state) do
-          nil -> {state, []}
-          intent -> transition(state, {:invoke, intent, elem(State.next_id(state, :request), 0)})
+          nil ->
+            {state, []}
+
+          {:steer, run, node, text, _} = intent ->
+            name =
+              case Map.get(state.read_model.agents, node) do
+                %{name: name} when is_binary(name) and name != "" -> name
+                _ -> "the agent"
+              end
+
+            steers = Enum.take([{run, String.trim(text), node, name} | state.steers], 50)
+
+            transition(
+              %{state | steers: steers},
+              {:invoke, intent, elem(State.next_id(state, :request), 0)}
+            )
         end
 
       :band ->
