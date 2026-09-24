@@ -452,12 +452,13 @@ defmodule SwarmCode.Daemon.Service.PanelFacts do
   # The literal request: the command itself, else the tool and its path.
   defp approval_text(card, roots) do
     args = decode(card["arguments_preview"])
+    command = card["command"] || (card["tool"] == "run_command" && args["command"])
 
     cond do
       # The command is the literal request the user answers: kept whole,
       # only its control characters and runs of whitespace fold to spaces.
-      is_binary(card["command"]) and card["command"] != "" ->
-        literal(card["command"])
+      is_binary(command) and command != "" ->
+        literal(command)
 
       is_binary(args["path"]) ->
         (verb(card["tool"]) <> " " <> scrub(args["path"], roots)) |> String.trim()

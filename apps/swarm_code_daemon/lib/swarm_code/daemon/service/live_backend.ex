@@ -751,6 +751,54 @@ defmodule SwarmCode.Daemon.Service.LiveBackend do
       "changes_stat" => nil,
       "error" => nil
     }
+    |> Map.merge(panel_agent(run, open))
+  end
+
+  # pass72 S: the side panel's facts for the one synthesized assistant. The
+  # unsaved runtime keeps no op timings, so there is no lane (P4 draws none).
+  defp panel_agent(run, open) do
+    state =
+      cond do
+        run.approval -> "needs_you"
+        run.status == :completed -> "done"
+        run.status == :failed -> "failed"
+        run.status in [:cancelled, :interrupted] -> "stopped"
+        run.status == :paused -> "paused"
+        run.status == :queued -> "queued"
+        open -> "working"
+        true -> "thinking"
+      end
+
+    now =
+      case state do
+        "needs_you" ->
+          "wants to use " <> String.replace(to_string(run.approval["approval"]["tool"]), "_", " ")
+
+        "working" ->
+          "using " <> String.replace(to_string(open.tool), "_", " ")
+
+        "done" ->
+          "done"
+
+        other ->
+          String.replace(other, "_", " ")
+      end
+
+    %{
+      "panel_state" => state,
+      "now" => SwarmCode.Daemon.Service.PanelFacts.clip(now, 80),
+      "lane" => [],
+      "lane_at" => nil,
+      "lane_now" => "idle",
+      "finding" => nil,
+      "finding_refs" => [],
+      "files_changed" => 0,
+      "elapsed_ms" =>
+        if(is_integer(run.finished_at) and is_integer(run.at),
+          do: max(run.finished_at - run.at, 0)
+        ),
+      "tokens" => 0
+    }
   end
 
   defp page(items, nil, _direction, limit) do
@@ -821,7 +869,15 @@ defmodule SwarmCode.Daemon.Service.LiveBackend do
       "started_at" => run.at,
       "finished_at" => run.finished_at,
       "consensus" => false,
-      "error" => nil
+      "error" => nil,
+      # pass72 S: the band's entry for the one pending approval.
+      "needs_you" =>
+        SwarmCode.Daemon.Service.PanelFacts.needs_you(
+          List.wrap(run.approval),
+          %{run.node_id => %{"id" => run.node_id, "name" => "Assistant"}},
+          %{},
+          []
+        )
     }
 
   defp transcript(run, state) do
