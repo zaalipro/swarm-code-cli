@@ -896,27 +896,35 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
     with :ok <- File.mkdir_p(dir),
          :ok <- File.chmod(dir, 0o700),
          :ok <- touch_private(path) do
-      config = %{
-        file: String.to_charlist(path),
-        max_no_bytes: @log_bytes,
-        max_no_files: @log_files
-      }
-
-      handler = %{
-        config: config,
-        level: :info,
-        formatter: Logger.default_formatter(colors: [enabled: false])
-      }
-
       _ = :logger.remove_handler(:default)
 
-      case :logger.add_handler(:default, :logger_std_h, handler) do
+      case :logger.add_handler(:default, :logger_std_h, log_handler(path)) do
         :ok -> :ok
         {:error, _} -> quiet_console()
       end
     else
       _ -> quiet_console()
     end
+  end
+
+  # pass72 F: the filters are explicit. A handler added as `:default` without
+  # them gets OTP's default-handler filters (`filter_default: :stop`, log only
+  # the otp/sasl domains), which dropped every `Logger` call of the app (domain
+  # `[:elixir]`) and left cli.log with nothing but OTP reports, so a session
+  # that closed on "the daemon connection closed" never said why.
+  @doc false
+  def log_handler(path) do
+    %{
+      config: %{
+        file: String.to_charlist(path),
+        max_no_bytes: @log_bytes,
+        max_no_files: @log_files
+      },
+      level: :info,
+      filter_default: :log,
+      filters: [remote_gl: {&:logger_filters.remote_gl/2, :stop}],
+      formatter: Logger.default_formatter(colors: [enabled: false])
+    }
   end
 
   # Without a log file nothing may reach the terminal either.

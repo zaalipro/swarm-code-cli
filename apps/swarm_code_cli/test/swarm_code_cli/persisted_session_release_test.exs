@@ -79,6 +79,29 @@ defmodule SwarmCodeCLI.Release.PersistedSessionTest do
         )
   end
 
+  # pass72 F: the cli.log handler dropped every app `Logger` call (OTP's
+  # default-handler filters keep only the otp/sasl domains), so a session that
+  # closed on "the daemon connection closed" had no reason in the log.
+  @tag :tmp_dir
+  test "the cli.log handler keeps the app's own Logger messages", %{tmp_dir: dir} do
+    path = Path.join(dir, "cli.log")
+    handler = PersistedSession.log_handler(path)
+    assert handler.filter_default == :log
+    refute Enum.any?(handler.filters, fn {id, _} -> id in [:domain, :no_domain] end)
+
+    id = :pass72_cli_log_test
+    :ok = :logger.add_handler(id, :logger_std_h, handler)
+
+    try do
+      require Logger
+      Logger.warning("pass72 cli.log probe")
+      :ok = :logger_std_h.filesync(id)
+      assert File.read!(path) =~ "[warning] pass72 cli.log probe"
+    after
+      :logger.remove_handler(id)
+    end
+  end
+
   test "the test runner entry refuses outside MIX_ENV=test only" do
     # In the test build the guard passes and the terminal check answers.
     output = capture_io(:stderr, fn -> assert PersistedSession.run_for_test([]) == 2 end)
