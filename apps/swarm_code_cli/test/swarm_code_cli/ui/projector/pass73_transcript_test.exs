@@ -259,6 +259,41 @@ defmodule SwarmCodeCLI.UI.Projector.Pass73TranscriptTest do
       assert_heights(state)
     end
 
+    test "a steer inside the run stands apart: a blank row above it, one below its mark" do
+      # Seen live: the steered message sat on the row under "! run sleep 1 …"
+      # and the work after it began on the row under its mark.
+      state = Pass73Scenes.screenshot_11(160, 45)
+
+      state =
+        state
+        |> chat_item(
+          text: "also check the admin plans",
+          target_kind: :steer,
+          target_id: Pass73Scenes.chat_id()
+        )
+        |> chat_item(
+          id: "demo-panel-run-81-item-81006",
+          node_id: "n-81006",
+          created_sequence: 81_006,
+          role: :assistant,
+          kind: :text,
+          agent_id: "agent-81-1",
+          state: :streaming,
+          text: "Adding the admin plans to the scan.",
+          at: state.now - 2_000
+        )
+
+      rows = main_rows(state)
+      at = find(rows, ~r/▏ also check the admin plans/)
+      assert at, Enum.join(rows, "\n")
+      assert Enum.at(rows, at - 1) == "", Enum.join(rows, "\n")
+      refute Enum.at(rows, at - 2) == "", Enum.join(rows, "\n")
+      assert Enum.at(rows, at + 1) =~ ~r/^ +→ to the running turn/
+      assert Enum.at(rows, at + 2) == "", Enum.join(rows, "\n")
+      assert Enum.at(rows, at + 3) =~ "Adding the admin plans to the scan."
+      assert_heights(state)
+    end
+
     test "K's delivery marked :steered marks the message before the wire says so" do
       state =
         Pass73Scenes.screenshot_11(160, 45)

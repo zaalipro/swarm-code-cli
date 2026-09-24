@@ -468,9 +468,13 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
         spec(segs, {@margin, :user_card})
       end)
 
-    # One blank row before every run but the first one on screen.
-    lead = if item.id == ctx.first_id and not ctx.view_first?, do: [blank()], else: []
-    lead ++ rows ++ steer_rows(item, state) ++ steered_rows(item, state)
+    # One blank row before every run but the first one on screen. pass73 T3:
+    # a message inside a run (a steer) stands apart from the work around it,
+    # a blank row above and one below unless it ends the run.
+    lead = if item.id == ctx.first_id and ctx.view_first?, do: [], else: [blank()]
+
+    trail = if item.id in [ctx.first_id, ctx.last_id], do: [], else: [blank()]
+    lead ++ rows ++ steer_rows(item, state) ++ steered_rows(item, state) ++ trail
   end
 
   # pass73 T5: the keyword spans of the message (K's `WorkflowKeyword`),
