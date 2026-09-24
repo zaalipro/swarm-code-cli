@@ -614,6 +614,79 @@ defmodule SwarmCode.Daemon.Service.PersistedBackendTest do
     assert sequences == [1, 2, 3]
   end
 
+  # pass72 F (live): every item of a changed run went out as a node_upsert on
+  # each tick; past 128 items that overflowed the watch queue at once and the
+  # session resynced every few seconds.
+  test "a run that changes re-sends only the transcript items that changed", c do
+    {:ok, run} =
+      Conversations.create_run(%{
+        conversation_id: c.conversation.id,
+        kind: "swarm",
+        prompt: "Review",
+        status: "running",
+        started_at: DateTime.utc_now()
+      })
+
+    {:ok, lead} =
+      Conversations.insert_node(%{run_id: run.id, kind: "agent", status: "running", role: "lead"})
+
+    {:ok, _} = Conversations.update_run(run, %{root_node_id: lead.id})
+
+    ops =
+      for i <- 1..6 do
+        {:ok, op} =
+          Conversations.insert_node(%{
+            run_id: run.id,
+            parent_id: lead.id,
+            kind: "op",
+            op_type: "read_file",
+            title: "read lib/f#{i}.ex",
+            status: "done",
+            started_at: DateTime.add(DateTime.utc_now(), -60 + i, :second),
+            finished_at: DateTime.add(DateTime.utc_now(), -59 + i, :second)
+          })
+
+        op
+      end
+
+    watch = %ServiceRequest{
+      operation: :watch,
+      timeout_ms: 5000,
+      params: %{
+        "watch_ref" => "items",
+        "slot" => "workspace",
+        "page_size" => 50,
+        "byte_limit" => 262_144
+      }
+    }
+
+    send(c.backend, {:projection_event, :seed})
+    :sys.get_state(c.backend)
+
+    assert {:watch, 0, _, "workspace_snapshot", _} =
+             GenServer.call(c.backend, {:service_watch, self(), "watch", c.scope, watch})
+
+    send(c.backend, {:service_ready, self(), "items"})
+    drain(c.backend, "items")
+
+    {:ok, _} =
+      Conversations.insert_node(%{
+        run_id: run.id,
+        parent_id: lead.id,
+        kind: "op",
+        op_type: "grep",
+        title: "grep Escape",
+        status: "running",
+        started_at: DateTime.utc_now()
+      })
+
+    send(c.backend, {:projection_event, :tick})
+    upserts = for %{"kind" => "node_upsert"} = d <- drain(c.backend, "items"), do: d["entity_id"]
+
+    assert upserts != []
+    refute Enum.any?(ops, &(&1.id in upserts))
+  end
+
   test "watch receives typed deltas with credit and foreign controls are rejected", c do
     watch = %ServiceRequest{
       operation: :watch,
@@ -1300,18 +1373,35 @@ defmodule SwarmCode.Daemon.Service.PersistedBackendTest do
     message
   end
 
-  defp receive_text(_, _, _, 0), do: false
+  # The client sees `text` either as an item's body or as the appends its
+  # stream carried (pass72 F: an unchanged item is no longer re-sent on every
+  # tick, so streamed text may arrive only as appends).
+  defp receive_text(backend, ref, text, attempts, streamed \\ %{})
+  defp receive_text(_, _, _, 0, _), do: false
 
-  defp receive_text(backend, ref, text, attempts) do
+  defp receive_text(backend, ref, text, attempts, streamed) do
     receive do
       {:service_delta, ^backend, ^ref, delta} ->
         send(backend, {:service_credit, self(), ref, delta["sequence"]})
 
-        if get_in(delta, ["body", "text"]) == text,
+        streamed =
+          case delta do
+            %{"kind" => "stream_append", "entity_id" => id, "text" => chunk}
+            when is_binary(chunk) ->
+              Map.update(streamed, id, chunk, &(&1 <> chunk))
+
+            %{"kind" => "stream_reset", "entity_id" => id} ->
+              Map.put(streamed, id, delta["text"] || "")
+
+            _ ->
+              streamed
+          end
+
+        if get_in(delta, ["body", "text"]) == text or text in Map.values(streamed),
           do: true,
-          else: receive_text(backend, ref, text, attempts - 1)
+          else: receive_text(backend, ref, text, attempts - 1, streamed)
     after
-      100 -> receive_text(backend, ref, text, attempts - 1)
+      100 -> receive_text(backend, ref, text, attempts - 1, streamed)
     end
   end
 
@@ -1580,4 +1670,15 @@ defmodule SwarmCode.Daemon.Service.PersistedBackendTest do
             eventually(fun, n - 1)
           )
       )
+
+  # Every delta the watch sends until it is quiet, crediting each one.
+  defp drain(backend, ref, acc \\ []) do
+    receive do
+      {:service_delta, _, ^ref, delta} ->
+        send(backend, {:service_credit, self(), ref, delta["sequence"]})
+        drain(backend, ref, [delta | acc])
+    after
+      500 -> Enum.reverse(acc)
+    end
+  end
 end

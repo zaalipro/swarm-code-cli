@@ -1,4 +1,6 @@
 defmodule SwarmCode.Daemon.Service.PersistedBackend do
+  require Logger
+
   @moduledoc """
   Typed service over an already admitted, running Domain Repo. This module never
   starts storage or opens a database pathname. Engine runs outlive this view;
@@ -2588,9 +2590,20 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
             broadcast(a, delta("transcript_remove", run, record_id, nil))
           end)
 
+        # pass72 F: only the items that changed. Every item of a changed run
+        # went out on every tick; a swarm with more than 128 items then
+        # overflowed the watch queue at once and the client resynced every few
+        # seconds (a 470 KB snapshot each time).
+        published =
+          if previous,
+            do: Map.new(transcript(previous, old), &{&1["id"], &1}),
+            else: %{}
+
         acc =
           Enum.reduce(transcript(run, acc), acc, fn body, a ->
-            broadcast(a, delta("node_upsert", run, body["id"], body))
+            if published[body["id"]] == body,
+              do: a,
+              else: broadcast(a, delta("node_upsert", run, body["id"], body))
           end)
 
         acc = broadcast(acc, delta("activity_upsert", run, run.id, activity(run, acc)))
@@ -2935,6 +2948,17 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         if :queue.len(entry.queue) >= 128 or entry.bytes + size > 1_048_576 or size > 131_072 or
              (is_binary(delta["text"]) and byte_size(delta["text"]) > 65_536) do
           {connection, ref} = key
+          # pass72 F: what filled the queue, by kind (never a payload).
+          kinds =
+            entry.queue
+            |> :queue.to_list()
+            |> Enum.frequencies_by(fn {queued, _} -> queued["kind"] end)
+
+          Logger.info(
+            "watch queue overflow: #{:queue.len(entry.queue)} deltas, #{entry.bytes} bytes, " <>
+              "next #{size} bytes, #{inspect(kinds)}"
+          )
+
           send(connection, {:service_overflow, self(), ref})
           unwatch(acc, key)
         else
