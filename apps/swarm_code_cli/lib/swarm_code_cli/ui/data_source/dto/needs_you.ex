@@ -9,7 +9,14 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.NeedsYou do
   belongs to. Oldest first on the run summary.
   """
   use SwarmCodeCLI.UI.DataSource.DTO.Schema,
-    wire_defaults: [agent_id: nil, node_id: nil, agent_name: "", reason: "", requested_at: 0],
+    wire_defaults: [
+      agent_id: nil,
+      node_id: nil,
+      agent_name: "",
+      reason: "",
+      requested_at: 0,
+      tool: nil
+    ],
     fields: [
       agent_id: {:optional, :id},
       node_id: {:optional, :id},
@@ -17,7 +24,10 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.NeedsYou do
       kind: {:enum, [:approval, :question, :gate]},
       text: {:text, 1024},
       reason: {:text, 512},
-      requested_at: :count
+      requested_at: :count,
+      # pass72 G19 (QA Q19): the approval's tool, so the panel says "wants to
+      # use workflow control" rather than "wants to run a command".
+      tool: {:optional, {:text, 64}}
     ],
     defaults: [
       agent_id: nil,
@@ -26,7 +36,8 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.NeedsYou do
       kind: :approval,
       text: "",
       reason: "",
-      requested_at: 0
+      requested_at: 0,
+      tool: nil
     ]
 
   alias SwarmCodeCLI.UI.DataSource.DTO
@@ -47,7 +58,8 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.NeedsYou do
           kind: :approval,
           text: clip(a.command || a.tool, 1024),
           reason: clip(a.reason || "", 512),
-          requested_at: a.requested_at || i.created_at
+          requested_at: a.requested_at || i.created_at,
+          tool: a.tool && clip(a.tool, 64)
         }
 
       %{kind: :question, question: %DTO.Question{} = q} ->

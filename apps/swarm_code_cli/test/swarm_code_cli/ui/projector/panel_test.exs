@@ -427,6 +427,35 @@ defmodule SwarmCodeCLI.UI.Projector.PanelTest do
     end
   end
 
+  test "regression (QA Q19): a tool approval says its tool, and the band's reason fits" do
+    st = state(:panel_swarm_2, 160, 45)
+    run = st.read_model.runs["demo-panel-run-80"]
+
+    entry = %SwarmCodeCLI.UI.DataSource.DTO.NeedsYou{
+      agent_id: "agent-80-5",
+      node_id: "demo-op-80",
+      agent_name: "web-ui-desktop-review",
+      kind: :approval,
+      text: "workflow control",
+      reason: "",
+      requested_at: 1,
+      tool: "workflow_control"
+    }
+
+    model = st.read_model
+    model = %{model | runs: Map.put(model.runs, run.id, %{run | needs_you: [entry]})}
+
+    workspace =
+      model.snapshots |> Map.get(:workspace) |> Map.put(:approval_mode, :auto)
+
+    model = %{model | snapshots: Map.put(model.snapshots, :workspace, workspace)}
+    text = %{st | read_model: model} |> panel_text() |> Enum.join("\n")
+
+    assert text =~ "wants to use workflow control"
+    refute text =~ "wants to run a command"
+    assert text =~ ~r/use workflow control · auto asks +\^N answer/
+  end
+
   test "PanelOrder: runs and agents in display order; a folded run keeps its needs-you agent" do
     entries = PanelOrder.entries(state(:panel_swarm_2, 160, 45))
 

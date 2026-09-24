@@ -712,7 +712,8 @@ defmodule SwarmCode.Daemon.Service.PanelFacts do
       "kind" => "approval",
       "text" => clip(approval_text(card, roots), 1024),
       "reason" => clip(scrub(card["reason"] || "", roots), 512),
-      "requested_at" => card["requested_at"] || i["created_at"] || 0
+      "requested_at" => card["requested_at"] || i["created_at"] || 0,
+      "tool" => (is_binary(card["tool"]) && clip(card["tool"], 64)) || nil
     }
   end
 

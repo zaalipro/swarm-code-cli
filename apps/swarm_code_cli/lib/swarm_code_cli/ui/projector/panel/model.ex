@@ -588,17 +588,27 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Model do
       id: Map.get(entry, :node_id) || Map.get(entry, :agent_id) || text,
       kind: kind,
       text: text,
-      verb: wire_verb(kind, text),
+      verb: wire_verb(kind, text, Map.get(entry, :tool)),
       agent_id: Map.get(entry, :agent_id),
       node_id: Map.get(entry, :node_id),
       at: Map.get(entry, :requested_at) || 0
     }
   end
 
-  defp wire_verb(:question, _text), do: :question
-  defp wire_verb(:gate, _text), do: :question
-  defp wire_verb(_kind, "edit " <> _), do: :edit
-  defp wire_verb(_kind, _text), do: :command
+  defp wire_verb(:question, _text, _tool), do: :question
+  defp wire_verb(:gate, _text, _tool), do: :question
+  defp wire_verb(_kind, _text, "run_command"), do: :command
+
+  defp wire_verb(_kind, _text, tool) when tool in ["edit_file", "write_file", "edit_files"],
+    do: :edit
+
+  defp wire_verb(_kind, _text, tool) when is_binary(tool) and tool != "",
+    do: {:tool, humanize(tool)}
+
+  defp wire_verb(_kind, "edit " <> _, _tool), do: :edit
+  defp wire_verb(_kind, _text, _tool), do: :command
+
+  defp humanize(tool), do: tool |> String.replace(~r/[_.]+/u, " ") |> String.trim()
 
   defp from_interaction(interaction) do
     tool = interaction.approval && interaction.approval.tool
@@ -608,7 +618,7 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Model do
         interaction.kind == :question -> :question
         tool == "run_command" -> :command
         tool in ["edit_file", "write_file", "edit_files"] -> :edit
-        is_binary(tool) and tool != "" -> {:tool, tool}
+        is_binary(tool) and tool != "" -> {:tool, humanize(tool)}
         true -> :command
       end
 

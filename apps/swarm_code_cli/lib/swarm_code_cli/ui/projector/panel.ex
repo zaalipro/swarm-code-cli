@@ -402,7 +402,8 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
 
     case approval_mode(ctx.state) do
       :read_only -> verb <> " · read-only asks"
-      :auto -> verb <> " · auto asks for this"
+      # pass72 G19 (QA Q19): short enough to stand beside "^N answer".
+      :auto -> verb <> " · auto asks"
       _ -> verb
     end
   end
