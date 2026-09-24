@@ -314,6 +314,61 @@ defmodule SwarmCodeCLI.UI.Projector.WorkspaceTurnsTest do
     assert Enum.count(rows, &(&1 =~ "stopped by")) == 1
   end
 
+  # pass72 G9 (QA Q10): the stop notice closes the Lead's block after its
+  # last agent line, even when that agent's first item came after it.
+  test "regression: a stopped swarm draws every agent line before the stop notice" do
+    state =
+      fixture(:swarm, {120, 40})
+      |> replace_item(
+        "007",
+        &%{&1 | kind: :system, text: "Swarm stopped by user.", reasoning: ""}
+      )
+      |> put_in(
+        [Access.key(:read_model), Access.key(:runs), "fixture-run", Access.key(:state)],
+        :stopped
+      )
+
+    {rows, _, _, _} = painted(state)
+    builder = Enum.find_index(rows, &(&1 =~ "builder-4"))
+    stop = Enum.find_index(rows, &(&1 =~ "Swarm stopped by user."))
+    assert builder && stop && builder < stop, Enum.join(rows, "\n")
+    assert Enum.count(rows, &(&1 =~ "builder-4")) == 1
+  end
+
+  test "regression (QA Q10): an ask's row says its question once" do
+    state = fixture(:chat, {160, 40})
+    run = SwarmCodeCLI.UI.Projector.Support.run(state)
+    question = "The swarm slot is taken. Wait?"
+
+    ask = %DTO.ToolCall{name: "ask_user", title: question, detail: question, status: :done}
+
+    items = [
+      %DTO.TranscriptItem{
+        id: "u",
+        run_id: run.id,
+        node_id: "n",
+        role: :user,
+        kind: :text,
+        text: "go"
+      },
+      %DTO.TranscriptItem{
+        id: "a",
+        run_id: run.id,
+        node_id: "n",
+        role: :tool,
+        kind: :tool,
+        tool: ask
+      }
+    ]
+
+    state = put_in(state.read_model.transcript, Map.new(items, &{&1.id, &1}))
+    state = put_in(state.read_model.order[:workspace], ["u", "a"])
+    {rows, _, _, _} = painted(state)
+    row = Enum.find(rows, &(&1 =~ "The swarm slot"))
+    assert row, Enum.join(rows, "\n")
+    assert length(String.split(row, "The swarm slot")) == 2, row
+  end
+
   test "a failed run ends in an error card that says what to do next" do
     state = fixture(:swarm, {100, 30})
     run = state.read_model.runs["fixture-run"]
@@ -526,6 +581,23 @@ defmodule SwarmCodeCLI.UI.Projector.WorkspaceTurnsTest do
 
     # Nothing is said twice.
     assert Enum.count(rows, &(&1 =~ "Let me look.")) == 1
+
+    # pass72 G9 (QA Q10): a second step still streaming ahead of the answer
+    # keeps the first step's words above its call instead of folding both
+    # steps' words to the end.
+    second = item.("op-think-2", role: :tool, kind: :thinking, created_sequence: 5, text: "")
+    second = %{second | text: "Now the second part is here."}
+    answer = %{hd(tl(items)) | text: "Let me look.\n\nNow the sec"}
+    items = [hd(items), answer | tl(tl(items))] ++ [second]
+    state = put_in(state.read_model.transcript, Map.new(items, &{&1.id, &1}))
+    state = put_in(state.read_model.order[:workspace], Enum.map(items, & &1.id))
+
+    {rows, _, _, _} = painted(state)
+    step = index_of(rows, "    Let me look.")
+    work = index_of(rows, "    ✓ grep")
+    next = index_of(rows, "    Now the second part is here.")
+    assert (step && work && next && step < work) and work < next, Enum.join(rows, "\n")
+    assert Enum.count(rows, &(&1 =~ "Now the sec")) == 1
   end
 
   test "durations and byte counts read as people write them" do

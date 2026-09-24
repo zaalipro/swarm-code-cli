@@ -193,10 +193,17 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
       |> Enum.filter(worker?)
       |> Enum.reduce(%{}, fn item, acc -> Map.put_new(acc, item.agent_id, item.id) end)
 
+    # pass72 G9 (QA Q10): a worker whose first item came after the swarm's
+    # stop notice still draws its line above that notice, the Lead's block
+    # closing after its last agent.
+    {late, before_notice} = late_workers(items, first_by_worker)
+
     %{
       run: run,
       run_id: run_id,
       items: items,
+      late: late,
+      before_notice: before_notice,
       first_id: items |> List.first() |> then(&(&1 && &1.id)),
       last_id: items |> List.last() |> then(&(&1 && &1.id)),
       answer: answer,
@@ -209,6 +216,25 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
       lead_tools: Enum.filter(lead_work, &(&1.kind == :tool)),
       view_first?: false
     }
+  end
+
+  defp late_workers(items, first_by_worker) do
+    case Enum.find_index(items, &stop_said?/1) do
+      nil ->
+        {MapSet.new(), %{}}
+
+      index ->
+        notice = Enum.at(items, index)
+        firsts = MapSet.new(Map.values(first_by_worker))
+
+        late =
+          items
+          |> Enum.drop(index + 1)
+          |> Enum.map(& &1.id)
+          |> Enum.filter(&MapSet.member?(firsts, &1))
+
+        {MapSet.new(late), if(late == [], do: %{}, else: %{notice.id => late})}
+    end
   end
 
   defp worker?(%{agent_id: id}, agents) when is_binary(id) do
@@ -239,6 +265,17 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
 
         String.starts_with?(rest, said) ->
           {:cont, {Map.put(shown, step.id, said), cut(rest, said)}}
+
+        # pass72 G9 (QA Q10): the answer streams behind its newest step, so
+        # an answer that is the start of a step's words is that step still
+        # being written, not a mismatch that folds every step to the end.
+        rest != "" and String.starts_with?(said, rest) ->
+          {:halt, {Map.put(shown, step.id, said), ""}}
+
+        # A step the answer does not start with keeps the steps before it in
+        # place; the answer shows the rest whole, so nothing is dropped.
+        map_size(shown) > 0 ->
+          {:halt, {shown, rest}}
 
         true ->
           {:halt, {%{}, text}}
@@ -281,12 +318,27 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
   end
 
   defp item_rows(item, ctx, state, width) do
+    late = Map.get(ctx, :late, MapSet.new())
+
     own =
       cond do
-        item.role == :user -> user_rows(item, ctx, state, width)
-        Map.has_key?(ctx.worker_ids, item.id) -> lane_rows(item, ctx, state, width)
-        worker_item?(item, ctx) -> worker_detail_rows(item, ctx, state, width)
-        true -> lead_rows(item, ctx, state, width)
+        item.role == :user ->
+          user_rows(item, ctx, state, width)
+
+        MapSet.member?(late, item.id) ->
+          []
+
+        Map.has_key?(ctx.worker_ids, item.id) ->
+          lane_rows(item, ctx, state, width)
+
+        worker_item?(item, ctx) ->
+          worker_detail_rows(item, ctx, state, width)
+
+        true ->
+          Enum.flat_map(
+            Map.get(Map.get(ctx, :before_notice, %{}), item.id, []),
+            &lane_rows(Enum.find(ctx.items, fn i -> i.id == &1 end), ctx, state, width)
+          ) ++ lead_rows(item, ctx, state, width)
       end
 
     header = if item.id == ctx.header_id, do: header_rows(ctx, state, width), else: []
@@ -296,6 +348,13 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
     # rows; the answer and the footer close the run after the last item.
     if item.role == :user, do: own ++ header ++ tail, else: header ++ own ++ tail
   end
+
+  defp repeats?(summary, target) when is_binary(summary) and is_binary(target) do
+    head = summary |> String.trim() |> String.trim_trailing("…") |> String.trim()
+    head != "" and String.starts_with?(String.trim(target), head)
+  end
+
+  defp repeats?(_summary, _target), do: false
 
   defp worker_item?(item, ctx),
     do: is_binary(item.agent_id) and Map.has_key?(ctx.first_by_worker, item.agent_id)
@@ -577,6 +636,10 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
         pending? and poll?(tool) -> "still running"
         true -> summary_line(tool) || last_line(item, tool) || bytes(tool.result_bytes)
       end
+
+    # pass72 G9 (QA Q10): a summary that only repeats the target (an ask's
+    # question) is said once.
+    summary = if repeats?(summary, target), do: nil, else: summary
 
     duration = tool_duration(tool, state)
 
