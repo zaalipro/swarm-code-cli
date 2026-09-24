@@ -31,6 +31,8 @@ defmodule SwarmCode.Daemon.Service.PersistedProjection do
           launched_by_run_id: r.launched_by_run_id,
           consensus: r.consensus,
           goal_id: r.goal_id,
+          # pass72 S: a consensus run's configured rounds (D4).
+          consensus_rounds: fragment("json_extract(?, '$.rounds')", r.consensus_config),
           tokens_in: r.tokens_in,
           tokens_out: r.tokens_out,
           cost_usd: r.cost_usd,
@@ -132,10 +134,14 @@ defmodule SwarmCode.Daemon.Service.PersistedProjection do
           # What the node produced, never its name: the client draws the
           # speaker line from the agent the item belongs to, so a name in the
           # body was a lead called "Lead" over three blank rows.
+          # pass72 S: an agent's `detail` "isolated in <branch>" is the
+          # engine's bookkeeping, never what the agent produced (the owner saw
+          # the branch name as an agent's line): it is not the item's text.
           text:
             fragment(
-              "substr(trim(coalesce(?, ?, '') || char(10) || coalesce(?, ''), char(10)), 1, case when ? = 'agent' then 8192 else 2048 end)",
+              "substr(trim(coalesce(?, case when ? like 'isolated in %' then null else ? end, '') || char(10) || coalesce(?, ''), char(10)), 1, case when ? = 'agent' then 8192 else 2048 end)",
               n.result,
+              n.detail,
               n.detail,
               n.error,
               n.kind
@@ -147,8 +153,9 @@ defmodule SwarmCode.Daemon.Service.PersistedProjection do
           updated_at: n.updated_at,
           text_bytes:
             fragment(
-              "length(cast(trim(coalesce(?, ?, '') || char(10) || coalesce(?, ''), char(10)) as blob))",
+              "length(cast(trim(coalesce(?, case when ? like 'isolated in %' then null else ? end, '') || char(10) || coalesce(?, ''), char(10)) as blob))",
               n.result,
+              n.detail,
               n.detail,
               n.error
             ),
@@ -251,9 +258,262 @@ defmodule SwarmCode.Daemon.Service.PersistedProjection do
         error_kind: n.error_kind,
         # Only a judge's result is read (its verdict JSON); everyone else's
         # stays in the database.
-        result: fragment("case when ? like 'Judge%' then ? else null end", n.name, n.result)
+        result: fragment("case when ? like 'Judge%' then ? else null end", n.name, n.result),
+        # pass72 S: the head of a finished agent's result (its finding and
+        # the `path:line` it cites), its workflow phase, and its worktree (a
+        # prefix the panel's sentences strip).
+        result_head:
+          fragment(
+            "case when ? = 'done' then substr(?, 1, 4096) else null end",
+            n.status,
+            n.result
+          ),
+        phase: n.phase,
+        workspace_path: n.workspace_path
       }
     )
+  end
+
+  @doc """
+  pass72 S: the operations the side panel reads for the agents of the live runs
+  `ids`: each agent's newest 64 and every open one, newest first. The
+  detail (an llm op's reasoning) is cut to 1 280 bytes. Clock-free, so a
+  projection is a function of the database alone.
+  """
+  @panel_ops_per_agent 64
+
+  def panel_ops(_conversation, []), do: []
+
+  def panel_ops(conversation, ids) do
+    ranked =
+      from(n in Node,
+        join: r in Run,
+        on: r.id == n.run_id,
+        where: r.conversation_id == ^conversation and n.run_id in ^ids and n.kind == "op",
+        select: %{
+          id: n.id,
+          run_id: n.run_id,
+          parent_id: n.parent_id,
+          op_type: n.op_type,
+          status: n.status,
+          title: fragment("substr(coalesce(?, ''), 1, 200)", n.title),
+          detail: fragment("substr(coalesce(?, ''), 1, 1280)", n.detail),
+          started_at: n.started_at,
+          finished_at: n.finished_at,
+          inserted_at: n.inserted_at,
+          rank:
+            over(row_number(),
+              partition_by: n.parent_id,
+              order_by: [desc: n.started_at, desc: n.inserted_at, desc: n.id]
+            )
+        }
+      )
+
+    Repo.all(
+      from(o in subquery(ranked),
+        where: o.rank <= ^@panel_ops_per_agent or o.status in ^@open_ops,
+        order_by: [desc: o.started_at, desc: o.inserted_at, desc: o.id],
+        limit: 4000,
+        select: %{
+          id: o.id,
+          run_id: o.run_id,
+          parent_id: o.parent_id,
+          op_type: o.op_type,
+          status: o.status,
+          title: o.title,
+          detail: o.detail,
+          started_at: o.started_at,
+          finished_at: o.finished_at
+        }
+      )
+    )
+  end
+
+  @doc """
+  pass72 S: what the agent overlay reads for one agent of a run of the
+  conversation: `{:ok, %{agent, run, ops, changed, siblings}}` or `:error` when
+  the node is not an agent of that run. `ops` are the agent's newest 400
+  operations, oldest first, with the head of each detail and the tail of each
+  result (a command's last output line); `changed` the files it wrote.
+  """
+  def agent_detail(conversation, run_id, node_id) do
+    agent =
+      Repo.one(
+        from(n in Node,
+          join: r in Run,
+          on: r.id == n.run_id,
+          where:
+            r.conversation_id == ^conversation and r.id == ^run_id and n.id == ^node_id and
+              n.kind == "agent",
+          select: %{
+            id: n.id,
+            run_id: n.run_id,
+            name: n.name,
+            role: n.role,
+            title: n.title,
+            status: n.status,
+            parent_id: n.parent_id,
+            depth: n.depth,
+            tokens_in: n.tokens_in,
+            tokens_out: n.tokens_out,
+            cost_usd: n.cost_usd,
+            turn: n.turn,
+            max_turns: n.max_turns,
+            started_at: n.started_at,
+            finished_at: n.finished_at,
+            workspace_path: n.workspace_path,
+            changes_stat: n.changes_stat,
+            error: fragment("substr(coalesce(?, ''), 1, 400)", n.error),
+            prompt: fragment("substr(coalesce(?, ''), 1, 4096)", n.prompt),
+            result: fragment("substr(coalesce(?, ''), 1, 8192)", n.result),
+            result_bytes: fragment("length(cast(coalesce(?, '') as blob))", n.result),
+            result_head:
+              fragment(
+                "case when ? = 'done' then substr(?, 1, 4096) else null end",
+                n.status,
+                n.result
+              )
+          }
+        )
+      )
+
+    if agent do
+      run =
+        Repo.one(
+          from(r in Run,
+            where: r.id == ^run_id,
+            select: %{id: r.id, root_node_id: r.root_node_id, model: r.model, status: r.status}
+          )
+        )
+
+      ops =
+        Repo.all(
+          from(n in Node,
+            where: n.run_id == ^run_id and n.parent_id == ^node_id and n.kind == "op",
+            order_by: [desc: n.started_at, desc: n.inserted_at, desc: n.id],
+            limit: 400,
+            select: %{
+              id: n.id,
+              parent_id: n.parent_id,
+              op_type: n.op_type,
+              status: n.status,
+              title: fragment("substr(coalesce(?, ''), 1, 200)", n.title),
+              detail: fragment("substr(coalesce(?, ''), 1, 1280)", n.detail),
+              result: fragment("substr(coalesce(?, ''), 1, 1024)", n.result),
+              tail: fragment("substr(coalesce(?, ''), -400)", n.result),
+              tokens_in: n.tokens_in,
+              started_at: n.started_at,
+              finished_at: n.finished_at
+            }
+          )
+        )
+        |> Enum.reverse()
+
+      changed =
+        Repo.all(
+          from(c in Checkpoint,
+            join: n in Node,
+            on: n.id == c.node_id,
+            where:
+              c.conversation_id == ^conversation and c.run_id == ^run_id and
+                (n.id == ^node_id or n.parent_id == ^node_id),
+            group_by: c.path,
+            order_by: [asc: min(c.inserted_at)],
+            limit: 50,
+            select: c.path
+          )
+        )
+
+      siblings =
+        Repo.all(
+          from(n in Node,
+            where: n.run_id == ^run_id and n.kind == "agent",
+            order_by: [asc: n.inserted_at, asc: n.id],
+            limit: 200,
+            select: %{id: n.id, name: n.name, parent_id: n.parent_id, status: n.status}
+          )
+        )
+
+      {:ok, %{agent: agent, run: run, ops: ops, changed: changed, siblings: siblings}}
+    else
+      :error
+    end
+  end
+
+  @doc "pass72 S: how many distinct files each agent of the runs `ids` wrote: `%{agent_id => n}`."
+  def files_changed(_conversation, []), do: %{}
+
+  def files_changed(conversation, ids) do
+    Repo.all(
+      from(c in Checkpoint,
+        join: n in Node,
+        on: n.id == c.node_id,
+        where: c.conversation_id == ^conversation and c.run_id in ^ids,
+        group_by: fragment("case when ? = 'agent' then ? else ? end", n.kind, n.id, n.parent_id),
+        select:
+          {fragment("case when ? = 'agent' then ? else ? end", n.kind, n.id, n.parent_id),
+           count(c.path, :distinct)}
+      )
+    )
+    |> Enum.reject(fn {agent, _} -> is_nil(agent) end)
+    |> Map.new()
+  end
+
+  @doc "pass72 S: `%{run_id => %{phases, phase}}` for the workflow runs among `ids`."
+  def workflow_phases([]), do: %{}
+
+  def workflow_phases(ids) do
+    Repo.all(
+      from(w in SwarmCode.Domain.Workflows.Run,
+        where: w.run_id in ^ids,
+        select: {w.run_id, %{phases: w.phases, phase: w.phase}}
+      )
+    )
+    |> Map.new()
+  end
+
+  @doc """
+  pass72 S: for the goal runs among `rows`, `%{run_id => %{iteration,
+  iterations, status}}`: the run's place among its goal's runs (oldest first),
+  how many runs the goal has had, and the goal's status.
+  """
+  def goal_facts(rows) do
+    goal_ids = rows |> Enum.map(& &1.goal_id) |> Enum.filter(&is_binary/1) |> Enum.uniq()
+
+    if goal_ids == [] do
+      %{}
+    else
+      runs =
+        Repo.all(
+          from(r in Run,
+            where: r.goal_id in ^goal_ids,
+            order_by: [asc: r.inserted_at, asc: r.id],
+            select: {r.goal_id, r.id}
+          )
+        )
+        |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
+
+      status =
+        Repo.all(
+          from(g in SwarmCode.Domain.Conversations.Goal,
+            where: g.id in ^goal_ids,
+            select: {g.id, g.status}
+          )
+        )
+        |> Map.new()
+
+      for row <- rows, is_binary(row.goal_id), into: %{} do
+        ids = Map.get(runs, row.goal_id, [])
+        index = Enum.find_index(ids, &(&1 == row.id))
+
+        {row.id,
+         %{
+           iteration: index && index + 1,
+           iterations: length(ids),
+           status: status[row.goal_id]
+         }}
+      end
+    end
   end
 
   @doc "The newest still-open op per agent of `ids`: `%{agent_id => op}`."
@@ -482,8 +742,9 @@ defmodule SwarmCode.Daemon.Service.PersistedProjection do
             # for a window of the size it was promised.
             text:
               fragment(
-                "substr(cast(trim(coalesce(?, ?, '') || char(10) || coalesce(?, ''), char(10)) as blob), ?, ?)",
+                "substr(cast(trim(coalesce(?, case when ? like 'isolated in %' then null else ? end, '') || char(10) || coalesce(?, ''), char(10)) as blob), ?, ?)",
                 n.result,
+                n.detail,
                 n.detail,
                 n.error,
                 ^(offset + 1),
@@ -491,8 +752,9 @@ defmodule SwarmCode.Daemon.Service.PersistedProjection do
               ),
             total:
               fragment(
-                "length(cast(trim(coalesce(?, ?, '') || char(10) || coalesce(?, ''), char(10)) as blob))",
+                "length(cast(trim(coalesce(?, case when ? like 'isolated in %' then null else ? end, '') || char(10) || coalesce(?, ''), char(10)) as blob))",
                 n.result,
+                n.detail,
                 n.detail,
                 n.error
               )

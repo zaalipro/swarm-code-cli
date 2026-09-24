@@ -21,7 +21,18 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.RunSummary do
       error_kind: nil,
       stop_label: nil,
       provider_name: nil,
-      retry_at: nil
+      retry_at: nil,
+      needs_you: [],
+      reported: 0,
+      total: 0,
+      phases: [],
+      phase: nil,
+      goal_iteration: nil,
+      goal_iterations: nil,
+      goal_status: nil,
+      round: nil,
+      rounds: nil,
+      verdict: nil
     ],
     fields: [
       tokens_in: :count,
@@ -44,6 +55,23 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.RunSummary do
       stop_label: {:optional, {:text, 64}},
       provider_name: {:optional, {:text, 200}},
       retry_at: {:optional, :count},
+      # pass72 S (plan P2, D4): what waits on the user, oldest first, with the
+      # literal request; `reported` of `total` sub-agents finished (swarms);
+      # a workflow's declared `phases` and current `phase`; a goal run's
+      # iteration among the goal's runs so far and the goal's status; a
+      # consensus run's judged `round` of `rounds`; the last judge `verdict`
+      # summary. Absent (nil / []) when the domain does not record it.
+      needs_you: {:list, {:dto, SwarmCodeCLI.UI.DataSource.DTO.NeedsYou}},
+      reported: :count,
+      total: :count,
+      phases: {:list, {:dto, SwarmCodeCLI.UI.DataSource.DTO.Phase}},
+      phase: {:optional, {:text, 120}},
+      goal_iteration: {:optional, :count},
+      goal_iterations: {:optional, :count},
+      goal_status: {:optional, {:text, 32}},
+      round: {:optional, :count},
+      rounds: {:optional, :count},
+      verdict: {:optional, {:text, 400}},
       created_sequence: :revision,
       parent_run_id: {:optional, :id},
       seen_revision: :revision,
@@ -89,6 +117,17 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.RunSummary do
       stop_label: nil,
       provider_name: nil,
       retry_at: nil,
+      needs_you: [],
+      reported: 0,
+      total: 0,
+      phases: [],
+      phase: nil,
+      goal_iteration: nil,
+      goal_iterations: nil,
+      goal_status: nil,
+      round: nil,
+      rounds: nil,
+      verdict: nil,
       created_sequence: 0,
       parent_run_id: nil,
       seen_revision: 0,

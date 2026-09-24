@@ -13,7 +13,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
     "pending_interactions" => {:pending_interactions, DTO.PendingInteractionWindow},
     "detail_window" => {:detail_window, DTO.DetailWindow},
     "library_snapshot" => {:library_snapshot, DTO.LibrarySnapshot},
-    "conversation_list" => {:conversation_list, DTO.ConversationList}
+    "conversation_list" => {:conversation_list, DTO.ConversationList},
+    "agent_detail" => {:agent_detail, DTO.AgentDetail}
   }
 
   @watch_bodies %{
@@ -94,7 +95,18 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
       :stop_reason,
       :error_kind,
       :stop_label,
-      :retry_at
+      :retry_at,
+      # pass72 S: the side panel's agent facts.
+      :panel_state,
+      :now,
+      :lane,
+      :lane_at,
+      :lane_now,
+      :finding,
+      :finding_refs,
+      :files_changed,
+      :elapsed_ms,
+      :tokens
     ],
     DTO.RunSummary => [
       :tokens_in,
@@ -113,7 +125,19 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
       :error_kind,
       :stop_label,
       :provider_name,
-      :retry_at
+      :retry_at,
+      # pass72 S: the side panel's run facts.
+      :needs_you,
+      :reported,
+      :total,
+      :phases,
+      :phase,
+      :goal_iteration,
+      :goal_iterations,
+      :goal_status,
+      :round,
+      :rounds,
+      :verdict
     ],
     DTO.ToolCall => [
       :title,
@@ -143,7 +167,9 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
       :diff_ref
     ],
     DTO.Verdict => [:round, :status, :checks, :summary],
-    DTO.VerdictCheck => [:ok, :note]
+    DTO.VerdictCheck => [:ok, :note],
+    DTO.NeedsYou => [:agent_id, :node_id, :agent_name, :reason, :requested_at],
+    DTO.Phase => [:agent_count, :live, :done]
   }
 
   def watch_request(watch, wire_id, nonce, timeout_ms) do
@@ -381,6 +407,9 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
        }}
 
   defp request_body({:resync_watch, ref}), do: {:ok, %{"op" => "resync", "watch_ref" => ref}}
+
+  defp request_body({:agent_detail, run_id, node_id}),
+    do: {:ok, %{"op" => "agent.detail", "run_id" => run_id, "node_id" => node_id}}
 
   defp request_body({:conversation_list, cursor, size, bytes}),
     do:
@@ -639,6 +668,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
       (is_nil(page.run) or scoped_item?(scope, page.run)) and
         Enum.all?(page.agents ++ page.transcript.items, &scoped_item?(scope, &1))
 
+  defp scoped_body?(%{kind: :run, id: id}, %DTO.AgentDetail{run_id: run_id}), do: run_id == id
+  defp scoped_body?(_scope, %DTO.AgentDetail{}), do: true
   defp scoped_body?(_scope, %DTO.LibrarySnapshot{}), do: true
   # The project's conversations: membership is the service's to resolve.
   defp scoped_body?(_scope, %DTO.ConversationList{}), do: true
@@ -686,6 +717,12 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
        do:
          body.feature == feature and length(body.items) <= size and
            byte_size(Jason.encode!(wire_value(body))) <= bytes
+
+  defp response_matches?(
+         %Request{kind: {:agent_detail, run_id, node_id}},
+         %DTO.AgentDetail{} = b
+       ),
+       do: b.state == :error or (b.run_id == run_id and b.agent_id == node_id)
 
   defp response_matches?(_, _), do: true
 

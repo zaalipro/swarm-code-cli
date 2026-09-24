@@ -339,7 +339,7 @@ defmodule SwarmCode.Daemon.Service.Connection do
   defp capability?(%ServiceRequest{operation: operation, params: params}, state) do
     capability =
       case operation do
-        :feature_query ->
+        op when op in [:feature_query, :agent_detail] ->
           :query
 
         :feature_command ->
@@ -508,7 +508,7 @@ defmodule SwarmCode.Daemon.Service.Connection do
       operation == :watch ->
         {:noreply, require_snapshot(state, body["watch_ref"], "overflow")}
 
-      operation in [:query, :detail, :feature_query, :conversation_list, nil] ->
+      operation in [:query, :detail, :feature_query, :conversation_list, :agent_detail, nil] ->
         {:noreply, error_reply(state, message, code)}
 
       true ->
