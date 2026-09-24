@@ -94,6 +94,8 @@ VM from the first, failed 80x24 start; I killed that one by its pid.
 | F18 1be246a | A changed run re-sends only the transcript items that changed. Before, every item went out on every refresh, about 10 a second. |
 | F19 28c1cb1 | A narrated report opening gives way to the first numbered finding. |
 | F20 6ff30f1 | AGENTS.md and README: the panel facts, the watch flow control, the `cli.log` lines, Ctrl-F over a card. |
+| F21 6fe73cf | This report. |
+| F22 92a22a9 | ExUnit `tmp_dir` output is no longer tracked. O's preference tests and F12's log test had left files in `apps/swarm_code_cli/tmp`; they are now ignored by `.gitignore`. |
 
 Each bug fix has a regression test:
 
@@ -178,5 +180,21 @@ documentation and tests.
 
 ## Precommit
 
-See the final line of the finisher's structured report (the umbrella test counts are recorded
-there).
+I ran `mise exec -- mix precommit` twice on this branch, with `_build/prod` removed.
+
+- The format check, `compile --warnings-as-errors` and `deps.unlock --check-unused` passed.
+- Tests, second run (on F21):
+  - core: 147 tests, 0 failures
+  - daemon: 982 tests, 0 failures
+  - cli: 1630 tests + 7 properties, 1 failure
+- `provenance.verify`, `provenance.sync --check`, the schema snapshot and the Unicode checks
+  passed.
+
+The one cli failure was `Plain.SessionTest` "reader handles charlist devices…", which waits 2 s for
+a reader under full-suite load. O saw the same flake, and this pass does not touch `plain/`. It
+passes alone three times out of three.
+
+The first run failed the same test plus `ThreeRunScenarioTest`, which asserts on a scroll snapshot
+under load. It also passes alone three times out of three.
+
+Because of the flaky test, the precommit gate did not pass cleanly in either run.
