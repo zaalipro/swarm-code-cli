@@ -321,8 +321,15 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
     end
   end
 
+  # pass73 T11: the daemon logs its own reason beside this line (same
+  # cli.log); the client's side of the moment is its queue and requests.
   def handle_info({:tcp_closed, socket}, %{socket: socket} = state) do
-    Logger.warning("SwarmCode: the daemon closed the connection.")
+    Logger.warning(
+      "SwarmCode: the daemon closed the connection (#{state.delivery_count} deliveries queued, " <>
+        "#{length(state.backlog)} read and waiting, #{map_size(state.requests)} requests and " <>
+        "#{map_size(state.watches)} watches open)."
+    )
+
     {:noreply, shutdown(state)}
   end
 

@@ -618,6 +618,27 @@ defmodule SwarmCodeCLI.UI.DataSource.DaemonTest do
     assert :ok = DataSource.close(client)
   end
 
+  # pass73 T11: a closed session's log shows the client's side of the moment.
+  test "a connection the daemon closes is logged with the client's queue and requests" do
+    {client, _server} = connected!()
+
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        assert :ok = DataSource.command(client, command_request("closing", "disconnect"))
+
+        assert_receive {:swarm_code_ui_data, @epoch, receipt,
+                        %Delivery{body: %DTO.Outcome{status: :outcome_unknown}}},
+                       1_000
+
+        assert :ok = DataSource.consume(client, receipt, :applied)
+        assert_receive {:swarm_code_ui_closed, ^client, @epoch}, 1_000
+      end)
+
+    assert log =~
+             "SwarmCode: the daemon closed the connection (0 deliveries queued, 0 read and waiting, " <>
+               "1 requests and 0 watches open)."
+  end
+
   # pass73 T3/T8: request ids were never forgotten, and the 257th request of a
   # session (queries, overlay details, file completions, sends) was refused for
   # good: "The daemon refused that request" on every later command.
