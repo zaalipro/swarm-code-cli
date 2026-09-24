@@ -43,7 +43,7 @@ defmodule SwarmCodeCLI.UI.Projector.Strip do
       chat_id: chat && chat.id,
       views: views,
       needs: needs,
-      hint?: is_map(Map.get(state, :hint)),
+      hint?: is_map(state.hint),
       labels: labels(state)
     }
 
@@ -114,7 +114,7 @@ defmodule SwarmCodeCLI.UI.Projector.Strip do
   end
 
   defp labels(state) do
-    case Map.get(state, :hint) do
+    case state.hint do
       %{labels: labels} when is_map(labels) -> Map.new(labels, fn {l, t} -> {hint_key(t), l} end)
       _ -> %{}
     end

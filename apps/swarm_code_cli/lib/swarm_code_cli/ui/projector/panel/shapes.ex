@@ -150,7 +150,7 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Shapes do
         end
 
       :consensus_judge ->
-        case {Map.get(run, :round), Map.get(run, :rounds)} do
+        case {run.round, run.rounds} do
           {r, n} when is_integer(r) and is_integer(n) -> "r #{r}/#{n}"
           _ -> nil
         end
@@ -164,7 +164,7 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Shapes do
   def reported(run, views) do
     subs = Enum.reject(views, &(&1.role in [:lead, :assistant]))
 
-    case {Map.get(run, :reported), Map.get(run, :total)} do
+    case {run.reported, run.total} do
       {r, t} when is_integer(r) and is_integer(t) and t > 0 ->
         {r, t}
 
@@ -187,7 +187,7 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Shapes do
   end
 
   defp phases(run) do
-    case Map.get(run, :phases) do
+    case run.phases do
       list when is_list(list) ->
         Enum.flat_map(list, fn
           %{name: name, state: st} when is_binary(name) -> [%{name: name, state: st}]
@@ -295,7 +295,7 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Shapes do
   # Owner S's goal facts: this run's place among the goal's runs (the domain
   # records no maximum, so there is no rail to draw).
   defp wire_iteration(ctx, run) do
-    case {Map.get(run, :goal_iteration), Map.get(run, :goal_iterations)} do
+    case {run.goal_iteration, run.goal_iterations} do
       {i, n} when is_integer(i) and is_integer(n) and n >= i ->
         [
           Panel.row(ctx, [{"iteration", :text_muted}], [{"#{i} of #{n} so far", :text_faint}]),
@@ -707,7 +707,7 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Shapes do
 
     summary = with %{summary: text} <- verdict_of(ctx, run), do: text
 
-    case Model.present(Map.get(run, :verdict)) || Model.present(summary) do
+    case Model.present(run.verdict) || Model.present(summary) do
       nil -> []
       _text when goal_quoted? -> []
       text -> [Panel.blank(ctx), Panel.row(ctx, [{title, :text_muted}])] ++ quoted(ctx, text)

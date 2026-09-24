@@ -948,9 +948,9 @@ defmodule SwarmCodeCLI.UI.Projector.Overlay do
         []
 
       _ ->
-        case Map.get(agent, :finding) do
+        case agent.finding do
           text when is_binary(text) and text != "" ->
-            refs = Map.get(agent, :finding_refs) || []
+            refs = agent.finding_refs || []
             [%{text: text, ref: Enum.join(refs, "  "), severity: nil}]
 
           _ ->
@@ -1194,8 +1194,8 @@ defmodule SwarmCodeCLI.UI.Projector.Overlay do
       agent.state not in [:running, :streaming, :retrying] ->
         ""
 
-      first_text([Map.get(detail(state), :now), Map.get(agent, :now)]) != "" ->
-        first_text([Map.get(detail(state), :now), Map.get(agent, :now)])
+      first_text([Map.get(detail(state), :now), agent.now]) != "" ->
+        first_text([Map.get(detail(state), :now), agent.now])
 
       is_binary(agent.step) and agent.step != "" ->
         agent.step
@@ -1638,7 +1638,7 @@ defmodule SwarmCodeCLI.UI.Projector.Overlay do
   # Owner S's summary names the P3 state (`panel_state`, or `state` once it is
   # one of them); otherwise it follows from the run-state enum.
   defp p3(agent) do
-    case {Map.get(agent, :panel_state), agent.state} do
+    case {agent.panel_state, agent.state} do
       {state, _} when state in @p3 -> state
       {_, state} when state in @p3 -> state
       {_, state} when state in [:running, :streaming, :retrying] -> :working

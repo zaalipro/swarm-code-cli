@@ -127,7 +127,7 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Model do
   defp pad2(n), do: n |> Integer.to_string() |> String.pad_leading(2, "0")
 
   defp tokens_of(agent) do
-    case Map.get(agent, :tokens) do
+    case agent.tokens do
       n when is_integer(n) and n > 0 -> n
       _ -> token_count(agent)
     end
@@ -201,7 +201,7 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Model do
       now: now(agent),
       finding: finding(agent, state),
       refs: refs(agent, state),
-      files_changed: Map.get(agent, :files_changed),
+      files_changed: agent.files_changed,
       error: present(agent.error),
       retry_at: Map.get(agent, :retry_at),
       elapsed: Lane.elapsed_ms(agent, state.now) || elapsed(agent, state),
@@ -236,7 +236,7 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Model do
   in flight is `:thinking`, tools are `:working`.
   """
   def p3_state(agent, lanes, asks \\ []) do
-    explicit = Map.get(agent, :activity) || Map.get(agent, :panel_state)
+    explicit = Map.get(agent, :activity) || agent.panel_state
 
     # The wire's own P3 state wins (owner S); `:working` is also its default,
     # so it is trusted only while the agent really runs.
@@ -415,7 +415,7 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Model do
       if Map.get(agent, :launched_by_superseded, false),
         do: SwarmCodeCLI.UI.SafeText.value(SwarmCodeCLI.UI.SafeText.chrome(:superseded_child))
 
-    [superseded, Map.get(agent, :now), agent.step]
+    [superseded, agent.now, agent.step]
     |> Enum.map(&present/1)
     |> Enum.find(&sentence?/1)
     |> then(&(&1 && first_line(&1)))
@@ -437,7 +437,7 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Model do
 
   @doc "The agent's finding: the wire's, else the first sentence of its last report."
   def finding(agent, state) do
-    case present(Map.get(agent, :finding)) do
+    case present(agent.finding) do
       nil -> agent |> reports(state) |> Enum.find_value(&first_sentence/1)
       text -> first_line(text)
     end
@@ -445,7 +445,7 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Model do
 
   @doc "Up to five `path:line` references (the wire's, else parsed from the report)."
   def refs(agent, state) do
-    case Map.get(agent, :finding_refs) do
+    case agent.finding_refs do
       [_ | _] = refs -> Enum.take(refs, 5)
       _ -> agent |> reports(state) |> Enum.find(&first_sentence/1) |> parse_refs()
     end
@@ -533,7 +533,7 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Model do
   none (the row then carries only the sentence: an unknown lane is not drawn).
   """
   def lane(agent, now \\ nil) do
-    cells = if is_list(Map.get(agent, :lane)), do: Lane.window(agent, now, 12), else: []
+    cells = if is_list(agent.lane), do: Lane.window(agent, now, 12), else: []
 
     case cells do
       cells when is_list(cells) and cells != [] -> Enum.map(cells, &lane_kind/1)
@@ -567,7 +567,7 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Model do
   entries) when it has any, else the run's pending interactions.
   """
   def pending(state, run) do
-    case Map.get(run, :needs_you) do
+    case run.needs_you do
       [_ | _] = wire ->
         wire |> Enum.map(&from_wire/1) |> Enum.sort_by(&{&1.at, &1.id})
 

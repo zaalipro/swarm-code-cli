@@ -56,7 +56,7 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
 
   @doc "The panel mode the state asks for (owner O's `panel_mode`), `:full` by default."
   def mode(state) do
-    case Map.get(state, :panel_mode, :full) do
+    case state.panel_mode do
       :compact -> :compact
       _ -> :full
     end
@@ -86,7 +86,7 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
     views = Map.new(runs, &{&1.id, Model.agents(state, &1)})
     needs = Model.needs(state, runs, views)
 
-    hint = Map.get(state, :hint)
+    hint = state.hint
 
     labels =
       case hint do
