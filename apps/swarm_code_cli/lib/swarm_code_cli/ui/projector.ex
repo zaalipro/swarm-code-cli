@@ -19,12 +19,6 @@ defmodule SwarmCodeCLI.UI.Projector do
     else
       {regions, cursor} = Shell.project(state, layout)
 
-      {regions, cursor} =
-        case SwarmCodeCLI.UI.Projector.Overlay.project(state, layout) do
-          nil -> {regions, cursor}
-          covered -> covered
-        end
-
       {scene, background} =
         Support.finalize(%{scene | regions: regions, cursor: cursor}, state.revision)
 

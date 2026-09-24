@@ -63,10 +63,14 @@ defmodule SwarmCodeCLI.UI.Keymap do
 
   def typing?(_input, _state), do: false
 
+  # The agent overlay's composer types the same way (pass72): its own
+  # letters (`o [ ] y a …`) are bindings and take the full path.
   defp plain_typing?(code, mods, phase, state) do
-    mods == [] and Context.of(state) == :composer and not tiny_unsent?(state) and
+    context = Context.of(state)
+
+    mods == [] and context in [:composer, :overlay] and not tiny_unsent?(state) and
       not confirm_exit?(code, mods, phase, state) and not grace?(state) and
-      Bindings.lookup(:composer, code, mods) == nil and
+      Bindings.lookup(context, code, mods) == nil and
       match?({:ok, _}, Input.validate(input_of(code, phase)))
   end
 
