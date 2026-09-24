@@ -34,8 +34,9 @@ defmodule SwarmCodeCLI.UI.Projector.HiveStrip do
   end
 
   defp docked?(state) do
-    layout = Layout.calculate(state.size, state.preferences)
-    Map.has_key?(layout.rects, :inspector)
+    # pass72: the side panel or its strip (R17) already shows the swarm.
+    layout = Layout.for_state(state)
+    Map.has_key?(layout.rects, :inspector) or Map.has_key?(layout.rects, :tabline)
   end
 
   defp draw(run, agents, state, width) do

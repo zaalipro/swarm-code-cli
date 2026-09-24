@@ -151,10 +151,12 @@ defmodule SwarmCodeCLI.UI.Paint.Scene do
   defp hairline(region, ctx, surface) do
     rect = region.rect
 
+    # pass72 R13: no full-height rule beside the side panel; its surface is
+    # the edge. Without colour (no surface shows) the hairline stays.
     gap_col =
       case region.role do
         :navigator -> rect.x + rect.width
-        :inspector -> rect.x - 1
+        :inspector when ctx.options.color_mode == :monochrome -> rect.x - 1
         _ -> nil
       end
 

@@ -325,7 +325,7 @@ defmodule SwarmCodeCLI.UI.Projector.ApprovalCard do
     * `window` — `{first, shown, total}` body lines, for paging.
   """
   def layout(state, width) do
-    layout = Layout.calculate(state.size, state.preferences)
+    layout = Layout.for_state(state)
 
     with %{} <- Map.get(layout.rects, :composer),
          [item | rest] <- waiting(state) do
