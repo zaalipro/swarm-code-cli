@@ -618,6 +618,141 @@ defmodule SwarmCodeCLI.UI.DataSource.DaemonTest do
     assert :ok = DataSource.close(client)
   end
 
+  # pass73 T11: a closed session's log shows the client's side of the moment.
+  test "a connection the daemon closes is logged with the client's queue and requests" do
+    {client, _server} = connected!()
+
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        assert :ok = DataSource.command(client, command_request("closing", "disconnect"))
+
+        assert_receive {:swarm_code_ui_data, @epoch, receipt,
+                        %Delivery{body: %DTO.Outcome{status: :outcome_unknown}}},
+                       1_000
+
+        assert :ok = DataSource.consume(client, receipt, :applied)
+        assert_receive {:swarm_code_ui_closed, ^client, @epoch}, 1_000
+      end)
+
+    assert log =~
+             "SwarmCode: the daemon closed the connection (0 deliveries queued, 0 read and waiting, " <>
+               "1 requests and 0 watches open)."
+  end
+
+  # pass73 T3/T8: request ids were never forgotten, and the 257th request of a
+  # session (queries, overlay details, file completions, sends) was refused for
+  # good: "The daemon refused that request" on every later command.
+  test "a session keeps its requests going past 256" do
+    {client, server} = connected!()
+
+    for n <- 1..300 do
+      id = "query-#{n}"
+      assert :ok = DataSource.query(client, query_request(id))
+      assert_receive {:request, ^server, %Message{body: %{"op" => "query"}}}, 2_000
+
+      assert_receive {:swarm_code_ui_data, @epoch, receipt, %Delivery{request_id: ^id}}, 2_000
+      assert :ok = DataSource.consume(client, receipt, :applied)
+    end
+
+    assert :ok = DataSource.command(client, command_request("after-300", "fix"))
+
+    assert_receive {:swarm_code_ui_data, @epoch, receipt,
+                    %Delivery{body: %DTO.Outcome{status: :accepted, request_id: "after-300"}}},
+                   2_000
+
+    assert :ok = DataSource.consume(client, receipt, :applied)
+    assert :ok = DataSource.close(client)
+  end
+
+  # pass73 T11: one read can carry more frames than the 32-slot delivery queue
+  # (four watches each run eight deltas ahead). The frames past the queue were
+  # "rejected" and the client closed the session itself; they now wait, read
+  # but not admitted, until the owner makes room.
+  test "a burst of more frames than the delivery queue holds arrives whole and in order" do
+    {client, server} = connected!()
+
+    assert :ok =
+             DataSource.watch(client, %Watch{
+               watch_ref: "burst",
+               slot: :workspace,
+               scope: @scope,
+               generation: 0,
+               page_size: 20,
+               byte_limit: 65_536
+             })
+
+    assert_receive {:burst_sent, ^server}, 1_000
+    assert_receive {:swarm_code_ui_data, @epoch, ready, %Delivery{kind: :watch_ready}}, 1_000
+    assert queue_full_within?(client, 100)
+    assert :ok = DataSource.consume(client, ready, :applied)
+
+    for seq <- 2..41 do
+      assert_receive {:swarm_code_ui_data, @epoch, receipt,
+                      %Delivery{kind: :delta, watch_ref: "burst", sequence: ^seq}},
+                     1_000
+
+      assert :ok = DataSource.consume(client, receipt, :applied)
+    end
+
+    assert :sys.get_state(client).phase == :bound
+    assert :ok = DataSource.close(client)
+  end
+
+  # pass73 T3/T8: a full delivery queue refused new requests
+  # ("capacity_exceeded" → "The daemon refused that request") while a busy
+  # swarm streamed. A command is admitted; its outcome waits its turn.
+  test "a command is admitted while the delivery queue is full" do
+    {client, server} = connected!()
+
+    assert :ok =
+             DataSource.watch(client, %Watch{
+               watch_ref: "burst",
+               slot: :workspace,
+               scope: @scope,
+               generation: 0,
+               page_size: 20,
+               byte_limit: 65_536
+             })
+
+    assert_receive {:burst_sent, ^server}, 1_000
+    assert_receive {:swarm_code_ui_data, @epoch, ready, %Delivery{kind: :watch_ready}}, 1_000
+    assert queue_full_within?(client, 100)
+    assert :ok = DataSource.command(client, command_request("while-full", "fix"))
+    assert_receive {:request, ^server, %Message{body: %{"op" => "dispatch"}}}, 1_000
+    assert :ok = DataSource.consume(client, ready, :applied)
+
+    outcome =
+      Enum.reduce_while(1..60, nil, fn _, _ ->
+        assert_receive {:swarm_code_ui_data, @epoch, receipt, delivery}, 1_000
+        assert :ok = DataSource.consume(client, receipt, :applied)
+
+        case delivery.body do
+          %DTO.Outcome{} = outcome -> {:halt, outcome}
+          _ -> {:cont, nil}
+        end
+      end)
+
+    assert %DTO.Outcome{status: :accepted, request_id: "while-full"} = outcome
+    assert :ok = DataSource.close(client)
+  end
+
+  # The client reads until its 32-slot queue is full, never past it.
+  defp queue_full_within?(_client, 0), do: false
+
+  defp queue_full_within?(client, tries) do
+    state = :sys.get_state(client)
+    assert state.delivery_count <= 32
+
+    if state.delivery_count == 32 do
+      true
+    else
+      receive do
+      after
+        10 -> queue_full_within?(client, tries - 1)
+      end
+    end
+  end
+
   # The deadline timer is real; poll the client's phase at its own pace.
   defp closed_within?(_client, 0), do: false
 
@@ -704,6 +839,17 @@ defmodule SwarmCodeCLI.UI.DataSource.DaemonTest do
             "watch" ->
               send(test, {:request, self(), message})
 
+              # pass73 T11: a snapshot and forty deltas in one socket write,
+              # so one read hands the client more frames than its queue holds.
+              if message.body["watch_ref"] == "burst" do
+                frames =
+                  [snapshot_for(message) | Enum.map(2..41, &burst_delta(message, &1))]
+                  |> Enum.map(fn frame -> IO.iodata_to_binary(Frame.encode!(frame)) end)
+
+                :ok = :socket.send(socket, IO.iodata_to_binary(frames))
+                send(test, {:burst_sent, self()})
+              end
+
               if message.body["watch_ref"] == "saturation" do
                 send_frame(socket, snapshot_for(message))
 
@@ -745,7 +891,7 @@ defmodule SwarmCodeCLI.UI.DataSource.DaemonTest do
                   })
                 end
 
-                if message.body["watch_ref"] == "resync-me" do
+                if message.body["watch_ref"] in ["resync-me", "burst"] do
                   :ok
                 else
                   if message.body["watch_ref"] == "workspace-1" do
@@ -1058,6 +1204,21 @@ defmodule SwarmCodeCLI.UI.DataSource.DaemonTest do
             "sequence" => 2,
             "revision" => 2
           }
+        }
+    }
+  end
+
+  defp burst_delta(request, seq) do
+    value = delta()
+
+    %{
+      value
+      | scope: request.scope,
+        sequence: seq,
+        body: %{
+          value.body
+          | "watch_ref" => request.body["watch_ref"],
+            "value" => %{value.body["value"] | "sequence" => seq, "revision" => seq}
         }
     }
   end

@@ -29,7 +29,12 @@ defmodule SwarmCode.Daemon.Service do
              active: false,
              packet: :raw,
              backlog: 16,
-             send_timeout: 2000,
+             # pass73 T11: a Unix socket here buffers 8 KB each way, so a
+             # client that pauses reading (its delivery queue full while the
+             # terminal draws a big snapshot) blocks the next write at once.
+             # Two seconds closed live sessions; the client itself allows its
+             # owner thirty seconds per delivery, so the daemon waits longer.
+             send_timeout: 45_000,
              send_timeout_close: true
            ]) do
       case File.lstat(opts[:socket_path]) do

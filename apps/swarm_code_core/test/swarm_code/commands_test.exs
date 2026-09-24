@@ -232,9 +232,18 @@ defmodule SwarmCode.CommandsTest do
 
   test "no argument commands reject trailing arguments" do
     for name <-
-          ~w(plan review rewind stop resume-run workflows new clear trust diff cost agents help quit) do
+          ~w(review rewind stop resume-run workflows new clear trust diff cost agents help quit) do
       assert {:error, %{type: :unexpected_argument}} = Commands.parse("/#{name} extra")
     end
+  end
+
+  # pass73 T3/T8: `/plan …` was refused ("The daemon refused that request");
+  # with a task it is a planner run of its own, bare it still toggles the mode.
+  test "/plan with a task starts a planner turn, bare /plan toggles" do
+    assert {:ok, %{action: :start_turn, mode: :plan, task: "ship the retry fix"}} =
+             Commands.parse("/plan ship the retry fix")
+
+    assert {:ok, %{action: :toggle_mode, mode: :plan}} = Commands.parse("/plan")
   end
 
   describe "pass70 C7 session commands" do

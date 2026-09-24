@@ -26,9 +26,18 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
 
   @max_watches 16
   @max_controls 256
+  # pass73 T3/T8: requests in flight, counted apart from the delivery queue.
+  # A full queue (a busy swarm streaming) used to refuse every new request.
+  @max_requests 32
+  # The delivery queue's budget. It gates reading (pass73 T11): frames already
+  # read past it wait, decoded but not admitted, instead of closing the session.
   @max_deliveries 32
   @max_wire_bytes 1_048_576
   @max_decoded_bytes 2_097_152
+  # pass73 T3/T8: identities are refused when reused while recent. A lifetime
+  # budget of 256 refused every request after the 256th of a session.
+  @recent_requests 256
+  @recent_watches 256
   # pass70 C4 (rel F4): watch, control and consume deadlines. One second
   # closed the session on any stall of the daemon (a busy SQLite writer, a GC,
   # a big snapshot); thirty is the command deadline the UI already uses.
@@ -74,6 +83,9 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
          timer: nil,
          decoder: FrameDecoder.new(),
          partial_since: nil,
+         # pass73 T11: when this source stopped reading for backpressure; a
+         # half-read frame does not age while the pause is ours.
+         paused_at: nil,
          capabilities: [],
          frame_limit: @max_wire_bytes,
          watches: %{},
@@ -81,12 +93,15 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
          # wire under a fresh reference; the UI keeps its own.
          wire_refs: %{},
          rewatches: 0,
-         used_watches: MapSet.new(),
+         used_watches: recent(),
          controls: %{},
          requests: %{},
-         used_requests: MapSet.new(),
+         used_requests: recent(),
          retired_requests: %{},
          queue: :queue.new(),
+         # pass73 T11: messages read from the socket while the delivery queue
+         # was at its budget, in order; admitted as the owner makes room.
+         backlog: [],
          receipt: nil,
          delivery_count: 0,
          wire_bytes: 0,
@@ -151,7 +166,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
 
         case credit(state, item) do
           {:ok, next} ->
-            {:reply, :ok, next |> dispatch_next() |> arm()}
+            {:reply, :ok, next |> admit_backlog() |> dispatch_next() |> arm()}
 
           :error ->
             {:reply, {:error, AdmissionError.new(:source_unavailable)},
@@ -172,8 +187,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
   def handle_call({:watch, value}, _from, state) do
     with {:ok, watch} <- Watch.validate(value),
          true <- :watch in state.capabilities,
-         false <- MapSet.member?(state.used_watches, watch.watch_ref),
-         true <- map_size(state.watches) < @max_watches and MapSet.size(state.used_watches) < 256,
+         false <- recent?(state.used_watches, watch.watch_ref),
+         true <- map_size(state.watches) < @max_watches,
          {:ok, message} <- Codec.watch_request(watch, uuid(), state.nonce, state.timeout),
          :ok <- write(state, message) do
       entry = %{
@@ -191,7 +206,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
          state
          | watches: Map.put(state.watches, watch.watch_ref, entry),
            wire_refs: Map.put(state.wire_refs, watch.watch_ref, watch.watch_ref),
-           used_watches: MapSet.put(state.used_watches, watch.watch_ref)
+           used_watches: remember(state.used_watches, watch.watch_ref, @recent_watches)
        }}
     else
       _ -> failure(:invalid_watch, state)
@@ -238,15 +253,11 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
          true <- kind == :command == (request.expected_response == :outcome),
          :ok <-
            admit_check(
-             not MapSet.member?(state.used_requests, request.request_id),
+             not recent?(state.used_requests, request.request_id) and
+               not in_flight?(state, request.request_id),
              :request_conflict
            ),
-         :ok <-
-           admit_check(
-             MapSet.size(state.used_requests) < 256 and
-               map_size(state.requests) + state.delivery_count < @max_deliveries,
-             :capacity_exceeded
-           ),
+         :ok <- admit_check(map_size(state.requests) < @max_requests, :capacity_exceeded),
          wall = state.clock.(:system),
          {:ok, message} <-
            Codec.request(request, wire_id(state.epoch, request.request_id), state.nonce, wall),
@@ -262,7 +273,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
       next = %{
         state
         | requests: Map.put(state.requests, message.request_id, entry),
-          used_requests: MapSet.put(state.used_requests, request.request_id)
+          used_requests: remember(state.used_requests, request.request_id, @recent_requests)
       }
 
       # Once a socket write is attempted a mutation may have reached the daemon.
@@ -292,16 +303,12 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
             else: state.partial_since || now(state)
 
         next =
-          Enum.reduce_while(
-            messages,
-            %{state | decoder: decoder, partial_since: partial},
-            fn message, acc ->
-              case receive_message(message, acc) do
-                {:ok, next} -> {:cont, next}
-                :error -> {:halt, lost(acc, "a daemon message broke the protocol")}
-              end
-            end
-          )
+          admit_backlog(%{
+            state
+            | decoder: decoder,
+              partial_since: partial,
+              backlog: state.backlog ++ messages
+          })
 
         {:noreply, next |> dispatch_next() |> arm()}
 
@@ -314,8 +321,15 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
     end
   end
 
+  # pass73 T11: the daemon logs its own reason beside this line (same
+  # cli.log); the client's side of the moment is its queue and requests.
   def handle_info({:tcp_closed, socket}, %{socket: socket} = state) do
-    Logger.warning("SwarmCode: the daemon closed the connection.")
+    Logger.warning(
+      "SwarmCode: the daemon closed the connection (#{state.delivery_count} deliveries queued, " <>
+        "#{length(state.backlog)} read and waiting, #{map_size(state.requests)} requests and " <>
+        "#{map_size(state.watches)} watches open)."
+    )
+
     {:noreply, shutdown(state)}
   end
 
@@ -330,7 +344,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
 
   def handle_info({:deadline, token}, %{timer: {_, token}, phase: :bound} = state) do
     expired =
-      (state.partial_since != nil and now(state) - state.partial_since >= state.timeout) or
+      partial_expired?(state, now(state)) or
         Enum.any?(state.controls, fn {_, control} -> control.deadline <= now(state) end) or
         (state.receipt != nil and state.receipt.deadline <= now(state))
 
@@ -448,10 +462,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
          {:ok, frame} <- Frame.encode(message),
          bytes = IO.iodata_length(frame),
          delivery = ui_delivery(delivery, ref, entry.offset),
-         decoded = :erlang.external_size(delivery),
-         true <- state.delivery_count < @max_deliveries,
-         true <- bytes + state.wire_bytes <= @max_wire_bytes,
-         true <- decoded + state.decoded_bytes <= @max_decoded_bytes do
+         decoded = :erlang.external_size(delivery) do
       sequence = message.sequence
       entry = %{entry | phase: :ready, sequence: sequence}
 
@@ -695,15 +706,44 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
 
   defp shift_watermark(value, _offset), do: value
 
+  # pass73 T11: read-side backpressure. One read can carry many frames; they
+  # are admitted while the queue has room and the rest wait here, in order,
+  # until the owner consumes a delivery. The overshoot is at most one frame.
+  defp admit_backlog(%{phase: :bound, backlog: [message | rest]} = state) do
+    if room?(state) do
+      case receive_message(message, %{state | backlog: rest}) do
+        {:ok, next} -> admit_backlog(next)
+        :error -> lost(state, "a daemon message broke the protocol")
+      end
+    else
+      state
+    end
+  end
+
+  defp admit_backlog(%{phase: :binding, backlog: [message | rest]} = state) do
+    case receive_message(message, %{state | backlog: rest}) do
+      {:ok, next} -> admit_backlog(next)
+      :error -> lost(state, "the daemon's hello broke the protocol")
+    end
+  end
+
+  defp admit_backlog(state), do: state
+
+  defp room?(state),
+    do:
+      state.delivery_count < @max_deliveries and state.wire_bytes < @max_wire_bytes and
+        state.decoded_bytes < @max_decoded_bytes
+
   defp arm(%{phase: :bound, socket: socket} = state) do
-    if state.delivery_count < @max_deliveries and state.wire_bytes < @max_wire_bytes and
-         state.decoded_bytes < @max_decoded_bytes do
+    if state.backlog == [] and room?(state) do
+      state = resume_partial_clock(state)
+
       case :inet.setopts(socket, active: :once) do
         :ok -> state
         _ -> shutdown(state)
       end
     else
-      state
+      %{state | paused_at: state.paused_at || now(state)}
     end
   end
 
@@ -715,6 +755,18 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
   end
 
   defp arm(state), do: state
+
+  defp resume_partial_clock(%{paused_at: nil} = state), do: state
+
+  defp resume_partial_clock(%{paused_at: at, partial_since: since} = state) do
+    since = if since, do: since + (now(state) - at)
+    %{state | paused_at: nil, partial_since: since}
+  end
+
+  defp partial_expired?(state, t),
+    do:
+      state.paused_at == nil and state.partial_since != nil and
+        t - state.partial_since >= state.timeout
 
   # pass72 F (P's request 3): a connection the client closes itself says why
   # in cli.log (a shape, never a payload), so a session that ends with "the
@@ -728,7 +780,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
     t = now(state)
 
     [
-      (state.partial_since != nil and t - state.partial_since >= state.timeout) &&
+      partial_expired?(state, t) &&
         "a partial frame waited too long",
       Enum.any?(state.controls, fn {_, control} -> control.deadline <= t end) &&
         "a control request got no answer",
@@ -742,6 +794,24 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
   defp shutdown(%{phase: :closed} = state), do: state
 
   defp shutdown(state) do
+    # pass73 T11: replies already read but still waiting for room carry real
+    # outcomes; they settle their requests before anything else. Waiting
+    # deltas go, like queued ones: the next connection re-snapshots.
+    {replies, state} =
+      {Enum.filter(state.backlog, &(&1.type in [:response, :error])), %{state | backlog: []}}
+
+    state =
+      Enum.reduce(replies, state, fn message, acc ->
+        case receive_message(message, acc) do
+          {:ok, next} -> next
+          :error -> acc
+        end
+      end)
+
+    if state.phase == :closed, do: state, else: close_now(state)
+  end
+
+  defp close_now(state) do
     if state.socket, do: :gen_tcp.close(state.socket)
     cancel_timer(state.timer)
     if state.owner_monitor, do: Process.demonitor(state.owner_monitor, [:flush])
@@ -857,6 +927,26 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
   defp default_clock(:monotonic), do: System.monotonic_time(:millisecond)
   defp admit_check(true, _), do: :ok
   defp admit_check(false, code), do: {:error, AdmissionError.new(code)}
+
+  defp in_flight?(state, request_id),
+    do: Enum.any?(state.requests, fn {_, entry} -> entry.request.request_id == request_id end)
+
+  # A bounded window of recent identities: the oldest leaves as a new one
+  # comes in, so a long session never runs out (pass73 T3/T8).
+  defp recent, do: %{set: MapSet.new(), order: :queue.new()}
+  defp recent?(%{set: set}, id), do: MapSet.member?(set, id)
+
+  defp remember(%{set: set, order: order} = window, id, limit) do
+    window = %{window | set: MapSet.put(set, id), order: :queue.in(id, order)}
+
+    if MapSet.size(window.set) > limit do
+      {{:value, oldest}, order} = :queue.out(window.order)
+      %{window | set: MapSet.delete(window.set, oldest), order: order}
+    else
+      window
+    end
+  end
+
   defp request_capability(%{"op" => "query"}), do: :query
   defp request_capability(%{"op" => "feature.query"}), do: :query
   defp request_capability(%{"op" => "agent.detail"}), do: :query
@@ -897,12 +987,15 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
     end)
   end
 
+  # Inbound deliveries are admitted only while the queue has room (see
+  # `admit_backlog/1`); local settlements (a deadline, a closed connection)
+  # are at most one per request in flight. Neither is refused for space: a
+  # refused settlement used to close the session ("the delivery queue is
+  # full") or lose a command's outcome.
   defp queue_delivery(state, delivery, wire_bytes) do
     decoded = :erlang.external_size(delivery)
 
-    if match?({:ok, _}, Delivery.validate(delivery)) and state.delivery_count < @max_deliveries and
-         wire_bytes + state.wire_bytes <= @max_wire_bytes and
-         decoded + state.decoded_bytes <= @max_decoded_bytes do
+    if match?({:ok, _}, Delivery.validate(delivery)) do
       item = %{delivery: delivery, wire_bytes: wire_bytes, decoded_bytes: decoded}
 
       {:ok,

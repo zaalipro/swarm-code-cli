@@ -21,6 +21,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   so is every job when the service stops. At most 8 jobs run at once.
   """
   use GenServer
+  import Ecto.Query, only: [from: 2]
   alias SwarmCode.Domain.{Attachments, Conversations, Engine, Projects, Repo}
   alias SwarmCode.Protocol.ServiceRequest
   alias SwarmCode.Domain.Engine.{Events, Questions, RunServer}
@@ -93,6 +94,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         order: [],
         watches: %{},
         requests: %{},
+        request_order: :queue.new(),
         revision: 0,
         metadata: nil,
         research_ids: [],
@@ -464,9 +466,6 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       |> Base.encode16(case: :lower)
 
     cond do
-      command? and map_size(state.requests) >= 4096 and not Map.has_key?(state.requests, id) ->
-        {:reply, reject(id, :capacity_exceeded), state}
-
       command? and match?({^fingerprint, _}, state.requests[id]) ->
         {:reply, elem(state.requests[id], 1), state}
 
@@ -513,7 +512,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
                 if durable, do: CommandLedger.complete(state.opts[:project_id], id, response)
 
                 next =
-                  if command?, do: put_in(next.requests[id], {fingerprint, response}), else: next
+                  if command?, do: remember_response(next, id, fingerprint, response), else: next
 
                 {:reply, response, next}
             end
@@ -521,25 +520,57 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     end
   end
 
-  # pass70 Q3: Tab (or Alt-Enter, or /queue) while a turn runs puts the prompt
-  # on the conversation's queue, the desktop's own `conversations.queued`; it
-  # starts when the running chat turn ends. With no chat turn running it is an
-  # ordinary send. A slash command or an attachment is never queued.
+  # Commands that change the conversation's history wait for its running turn
+  # (a summary written mid-turn would land above the turn's answer).
+  @waits_for_turn ["compact"]
+
+  # The in-memory response cache (the durable ledger replays the rest). pass73
+  # T3/T8: it refused every command after the 4,096th of a session; the
+  # oldest answer now leaves as a new one comes in.
+  @cached_responses 4096
+
+  defp remember_response(state, id, fingerprint, response) do
+    order =
+      if Map.has_key?(state.requests, id),
+        do: state.request_order,
+        else: :queue.in(id, state.request_order)
+
+    state = %{
+      state
+      | requests: Map.put(state.requests, id, {fingerprint, response}),
+        request_order: order
+    }
+
+    if map_size(state.requests) > @cached_responses do
+      {{:value, oldest}, order} = :queue.out(state.request_order)
+      %{state | requests: Map.delete(state.requests, oldest), request_order: order}
+    else
+      state
+    end
+  end
+
+  # pass73 T3/T8: nothing is refused because work runs. A plain message while
+  # this conversation's chat turn runs steers that turn (it joins the turn
+  # before its next model call); one that cannot steer, one sent while a
+  # compaction runs, and `/compact` itself wait on the conversation's queue
+  # (the desktop's `conversations.queued`) and start when the turn ends; every
+  # run-launching command starts at once beside the live runs. The outcome
+  # says which (`disposition`: started | steered | queued), and a refusal that
+  # remains carries its reason in words (`reason`).
+  #
+  # Tab (or Alt-Enter, or /queue) asks for the queue explicitly (pass70 Q3);
+  # with nothing running it is an ordinary send.
   defp execute(
          %{operation: :dispatch_send, params: %{"action" => "queue"} = params},
          scope,
          id,
          state
        ) do
-    conversation_id = state.opts[:conversation_id]
-    text = params["text"]
-
     cond do
-      String.starts_with?(String.trim_leading(text), "/") or params["attachment_refs"] != [] or
-          state.attachment_ids != [] ->
-        {reject(id, :not_allowed), state}
+      params["attachment_refs"] != [] or state.attachment_ids != [] ->
+        {refuse(id, :attachments_not_queued), state}
 
-      not Engine.chat_running?(conversation_id) ->
+      turn_runs(state.opts[:conversation_id]) == [] ->
         execute(
           %{operation: :dispatch_send, params: %{params | "action" => "send"}},
           scope,
@@ -548,120 +579,32 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         )
 
       true ->
-        conversation = Conversations.get!(conversation_id)
-
-        case Conversations.set_queued(conversation, (conversation.queued || []) ++ [text]) do
-          {:ok, updated} ->
-            count = length(updated.queued)
-
-            text =
-              if count == 1,
-                do: "Queued; it starts when this turn ends.",
-                else: "Queued; #{count} prompts wait for this turn to end."
-
-            {accepted(id, [conversation_id], %{
-               "kind" => "notice",
-               "feature" => nil,
-               "title" => "Queue",
-               "text" => text,
-               "conversation_id" => nil
-             }), watch_queue(state)}
-
-          _ ->
-            {reject(id, :not_allowed), state}
-        end
+        enqueue(state, id, params["text"])
     end
   end
 
   defp execute(%{operation: :dispatch_send, params: params}, _scope, id, state) do
     text = params["text"]
+    conversation_id = state.opts[:conversation_id]
+    command = command_name(text)
 
-    answer =
-      with {:ok, attachments} <-
-             attachment_payloads(Enum.uniq(state.attachment_ids ++ params["attachment_refs"])) do
-        if String.starts_with?(String.trim_leading(text), "/") do
-          CommandDispatcher.dispatch(state.opts[:conversation_id], text,
-            research_ids: state.research_ids,
-            attachments: attachments
-          )
-        else
-          Engine.start_chat_turn(
-            SessionConfiguration.overlay(Conversations.get!(state.opts[:conversation_id])),
-            text,
-            attachments,
-            research_ids: state.research_ids
-          )
-        end
-      end
+    cond do
+      command in @waits_for_turn and turn_runs(conversation_id) != [] ->
+        enqueue(state, id, text)
 
-    case answer do
-      {:ok, run_id} when is_binary(run_id) ->
-        consume_staged(state, state.attachment_ids)
-        {accepted(id, [run_id]), refresh(%{state | research_ids: [], attachment_ids: []})}
+      command != nil ->
+        send_command(state, id, params)
 
-      {:ok, %{type: :started, run_id: run_id}} ->
-        consume_staged(state, state.attachment_ids)
-        {accepted(id, [run_id]), refresh(%{state | research_ids: [], attachment_ids: []})}
+      chat_runs(conversation_id) != [] ->
+        steer_or_queue(state, id, params)
 
-      {:ok, %{type: :attached, research_id: research_id}} ->
-        {accepted(id, []), %{state | research_ids: Enum.uniq([research_id | state.research_ids])}}
+      turn_runs(conversation_id) != [] and params["attachment_refs"] == [] and
+          state.attachment_ids == [] ->
+        # A compaction is running: the message waits for its summary.
+        enqueue(state, id, text)
 
-      {:ok, %{type: :attachment_staged, attachment: %{"id" => attachment_id}}} ->
-        :ok =
-          CommandLedger.stage_attachment(
-            state.opts[:project_id],
-            state.opts[:conversation_id],
-            attachment_id
-          )
-
-        {accepted(id, [attachment_id]),
-         %{state | attachment_ids: Enum.uniq([attachment_id | state.attachment_ids])}}
-
-      {:ok, %{type: :updated, mode: mode}} ->
-        {accepted(id, [state.opts[:conversation_id]], notice_feedback(mode)), refresh(state)}
-
-      {:ok, %{type: type}} when type in [:updated, :stopped, :controlled, :saved] ->
-        {accepted(id, [state.opts[:conversation_id]]), refresh(state)}
-
-      {:ok, %{type: :select, subject: :goal, goal: goal}} ->
-        feedback = goal_feedback(state.opts[:conversation_id], goal)
-        {accepted(id, [], feedback), state}
-
-      {:ok, %{type: :select, subject: subject}} when subject in [:rewind, :research] ->
-        {accepted(id, [], navigation_feedback(subject)), state}
-
-      {:ok, %{type: :navigate, destination: :workflows}} ->
-        {accepted(id, [], navigation_feedback(:workflows)), state}
-
-      # pass70 C7: `/new`, `/clear`, `/resume <which>` switch this service to
-      # the conversation (identifiers: [its id]); the client re-scopes.
-      {:ok, %{type: :conversation, conversation_id: target}} ->
-        {accepted(id, [target], navigation_feedback(:conversations)),
-         switch_conversation(state, target)}
-
-      {:ok, %{type: :navigate, destination: destination}}
-      when destination in [:conversations, :changes] ->
-        {accepted(id, [], navigation_feedback(destination)), state}
-
-      {:ok, %{type: :report, title: title, text: text}} ->
-        {accepted(id, [], report_feedback(title, text)), state}
-
-      {:ok, %{type: :project, project_id: project_id, text: text}} ->
-        state = state |> refresh() |> toast("success", "Project", text, nil)
-
-        {accepted(id, [project_id], %{
-           "kind" => "notice",
-           "feature" => nil,
-           "title" => "Project",
-           "text" => text,
-           "conversation_id" => nil
-         }), state}
-
-      {:ok, _selection} ->
-        {reject(id, :not_allowed), state}
-
-      {:error, reason} ->
-        {reject(id, error_code(reason)), state}
+      true ->
+        start_turn(state, id, params)
     end
   end
 
@@ -944,14 +887,16 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         },
         else: run
 
+    op = Atom.to_string(operation)
+
     cond do
       is_nil(run) or not run_member?(run, scope, state) ->
-        {reject(id, :not_allowed), state}
+        {refuse(id, :run_not_found, "", op), state}
 
       # pass70 C2 (rel F2): an approval waits on the **op** node, never on an
       # agent; the nodes a run is waiting on are admitted beside its agents.
       params["node_id"] != nil and params["node_id"] not in admitted_nodes(run) ->
-        {reject(id, :not_allowed), state}
+        {refuse(id, :agent_not_found, "", op), state}
 
       operation == :approval_resolve and
           (is_nil(run.approval) or run.approval["id"] != params["interaction_id"] or
@@ -961,10 +906,16 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
       operation == :approval_resolve and
           params["decision"] not in offered_decisions(run.approval) ->
-        {reject(id, :not_allowed), state}
+        {refuse(id, :decision_not_offered, "", op), state}
+
+      # pass73 T3/T8: a second Ctrl-C or Esc reaches a run the first already
+      # ended; what it asks for is done, so it is not refused.
+      run.status in @terminal and operation == :run_control and params["action"] == "stop" ->
+        {accepted(id, [run.id], notice("Stop", "That run had already finished.")), state}
 
       run.status in @terminal ->
-        {reject(id, :not_allowed), state}
+        reason = if operation == :run_steer, do: :steer_finished, else: :run_finished
+        {refuse(id, reason, "", op), state}
 
       true ->
         answer = control(operation, params, run, state)
@@ -972,22 +923,228 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         case answer do
           :ok -> {accepted(id, [run.id]), state}
           {:ok, _} -> {accepted(id, [run.id]), state}
-          _ -> {reject(id, :not_allowed), state}
+          {:error, reason} when is_atom(reason) -> {refuse(id, reason, "", op), state}
+          _ -> {refuse(id, :operation_failed, "", op), state}
         end
     end
   end
 
   defp execute(_, _, id, state), do: {reject(id, :not_allowed), state}
 
-  # The pids of this conversation's running chat runs, each monitored once.
-  defp watch_queue(state) do
-    conversation_id = state.opts[:conversation_id]
+  defp command_name(text) do
+    case String.trim_leading(text) do
+      "/" <> rest ->
+        rest |> String.split(~r/\s/u, parts: 2) |> hd() |> String.downcase()
 
-    pids =
-      Registry.select(SwarmCode.Domain.Registry, [
-        {{{:run, :_}, :"$1", {:"$2", :"$3"}},
-         [{:==, :"$2", conversation_id}, {:==, :"$3", "chat"}], [:"$1"]}
-      ])
+      _ ->
+        nil
+    end
+  end
+
+  # The running runs of this conversation of the given kinds, from the
+  # registry (the truth about what runs): {id, pid}.
+  defp runs_of(conversation_id, kinds) do
+    Registry.select(SwarmCode.Domain.Registry, [
+      {{{:run, :"$1"}, :"$2", {:"$3", :"$4"}}, [{:==, :"$3", conversation_id}],
+       [{{:"$1", :"$2", :"$4"}}]}
+    ])
+    |> Enum.filter(fn {_id, _pid, kind} -> kind in kinds end)
+    |> Enum.map(fn {id, pid, _kind} -> {id, pid} end)
+  end
+
+  defp chat_runs(conversation_id), do: runs_of(conversation_id, ["chat"])
+  # A turn is what a queued prompt waits behind: a chat turn or a compaction.
+  defp turn_runs(conversation_id), do: runs_of(conversation_id, ["chat", "compact"])
+
+  # The newest of the running chat runs is the turn a message steers.
+  defp newest_run([{id, _}]), do: id
+
+  defp newest_run(runs) do
+    ids = Enum.map(runs, &elem(&1, 0))
+
+    Repo.one(
+      from(r in SwarmCode.Domain.Conversations.Run,
+        where: r.id in ^ids,
+        order_by: [desc: r.started_at, desc: r.inserted_at],
+        limit: 1,
+        select: r.id
+      )
+    ) || hd(ids)
+  end
+
+  defp steer_or_queue(state, id, params) do
+    conversation_id = state.opts[:conversation_id]
+    text = params["text"]
+    refs = Enum.uniq(state.attachment_ids ++ params["attachment_refs"])
+
+    case attachment_payloads(refs) do
+      {:ok, attachments} ->
+        target = newest_run(chat_runs(conversation_id))
+
+        case Engine.steer(conversation_id, text, attachments, run_id: target) do
+          :ok ->
+            consume_staged(state, state.attachment_ids)
+
+            {accepted(id, [target], notice("Steer", "Sent to the running turn."), "steered"),
+             refresh(%{state | attachment_ids: []})}
+
+          {:error, _not_running} ->
+            # The turn finished between the check and the steer: the message
+            # waits for the turn's end, or (with images, which cannot wait)
+            # starts its own turn.
+            if refs == [] and turn_runs(conversation_id) != [],
+              do: enqueue(state, id, text),
+              else: start_turn(state, id, params)
+        end
+
+      {:error, reason} ->
+        {refuse(id, reason, text), state}
+    end
+  end
+
+  defp start_turn(state, id, params) do
+    text = params["text"]
+
+    answer =
+      with {:ok, attachments} <-
+             attachment_payloads(Enum.uniq(state.attachment_ids ++ params["attachment_refs"])) do
+        Engine.start_chat_turn(
+          SessionConfiguration.overlay(Conversations.get!(state.opts[:conversation_id])),
+          text,
+          attachments,
+          research_ids: state.research_ids
+        )
+      end
+
+    settle_send(answer, id, text, state)
+  end
+
+  defp send_command(state, id, params) do
+    text = params["text"]
+
+    answer =
+      with {:ok, attachments} <-
+             attachment_payloads(Enum.uniq(state.attachment_ids ++ params["attachment_refs"])) do
+        CommandDispatcher.dispatch(state.opts[:conversation_id], text,
+          research_ids: state.research_ids,
+          attachments: attachments
+        )
+      end
+
+    settle_send(answer, id, text, state)
+  end
+
+  defp settle_send(answer, id, text, state) do
+    case answer do
+      {:ok, run_id} when is_binary(run_id) ->
+        consume_staged(state, state.attachment_ids)
+
+        {accepted(id, [run_id], nil, "started"),
+         refresh(%{state | research_ids: [], attachment_ids: []})}
+
+      {:ok, %{type: :started, run_id: run_id}} ->
+        consume_staged(state, state.attachment_ids)
+
+        {accepted(id, [run_id], nil, "started"),
+         refresh(%{state | research_ids: [], attachment_ids: []})}
+
+      {:ok, %{type: :attached, research_id: research_id}} ->
+        {accepted(id, []), %{state | research_ids: Enum.uniq([research_id | state.research_ids])}}
+
+      {:ok, %{type: :attachment_staged, attachment: %{"id" => attachment_id}}} ->
+        :ok =
+          CommandLedger.stage_attachment(
+            state.opts[:project_id],
+            state.opts[:conversation_id],
+            attachment_id
+          )
+
+        {accepted(id, [attachment_id]),
+         %{state | attachment_ids: Enum.uniq([attachment_id | state.attachment_ids])}}
+
+      {:ok, %{type: :updated, mode: mode}} ->
+        {accepted(id, [state.opts[:conversation_id]], notice_feedback(mode)), refresh(state)}
+
+      {:ok, %{type: type}} when type in [:updated, :stopped, :controlled, :saved] ->
+        {accepted(id, [state.opts[:conversation_id]]), refresh(state)}
+
+      {:ok, %{type: :select, subject: :goal, goal: goal}} ->
+        feedback = goal_feedback(state.opts[:conversation_id], goal)
+        {accepted(id, [], feedback), state}
+
+      {:ok, %{type: :select, subject: subject}} when subject in [:rewind, :research] ->
+        {accepted(id, [], navigation_feedback(subject)), state}
+
+      {:ok, %{type: :navigate, destination: :workflows}} ->
+        {accepted(id, [], navigation_feedback(:workflows)), state}
+
+      # pass70 C7: `/new`, `/clear`, `/resume <which>` switch this service to
+      # the conversation (identifiers: [its id]); the client re-scopes.
+      {:ok, %{type: :conversation, conversation_id: target}} ->
+        {accepted(id, [target], navigation_feedback(:conversations)),
+         switch_conversation(state, target)}
+
+      {:ok, %{type: :navigate, destination: destination}}
+      when destination in [:conversations, :changes] ->
+        {accepted(id, [], navigation_feedback(destination)), state}
+
+      {:ok, %{type: :report, title: title, text: text}} ->
+        {accepted(id, [], report_feedback(title, text)), state}
+
+      {:ok, %{type: :project, project_id: project_id, text: text}} ->
+        state = state |> refresh() |> toast("success", "Project", text, nil)
+        {accepted(id, [project_id], notice("Project", text)), state}
+
+      {:ok, _selection} ->
+        {refuse(id, :client_only, text), state}
+
+      {:error, reason} ->
+        {refuse(id, reason, text), state}
+    end
+  end
+
+  # pass73 T3/T8: a prompt or a conversation-level command waits for the
+  # running turn on the conversation's own queue; it starts when that ends.
+  defp enqueue(state, id, text) do
+    conversation_id = state.opts[:conversation_id]
+    conversation = Conversations.get!(conversation_id)
+
+    case Conversations.set_queued(conversation, (conversation.queued || []) ++ [text]) do
+      {:ok, updated} ->
+        count = length(updated.queued)
+
+        words =
+          if count == 1,
+            do: "Queued · sends after the running turn",
+            else: "Queued (#{count} waiting) · sends after the running turn"
+
+        # pass73 S11: a queued send started no run, so it names none. Clients
+        # read the first identifier of an accepted send as the run it
+        # started: the terminal aimed Ctrl-C at the conversation id, and a
+        # one-shot waited for that "run" to finish.
+        {accepted(id, [], notice("Queue", words), "queued"), state |> watch_queue() |> refresh()}
+
+      {:error, :database_busy} ->
+        {refuse(id, :database_busy, text), state}
+
+      _ ->
+        {refuse(id, :operation_failed, text), state}
+    end
+  end
+
+  defp notice(title, text),
+    do: %{
+      "kind" => "notice",
+      "feature" => nil,
+      "title" => title,
+      "text" => text,
+      "conversation_id" => nil
+    }
+
+  # The pids of this conversation's running turns (chat turns and
+  # compactions, pass73), each monitored once.
+  defp watch_queue(state) do
+    pids = state.opts[:conversation_id] |> turn_runs() |> Enum.map(&elem(&1, 1))
 
     monitors =
       Enum.reduce(pids, state.queue_monitors, fn pid, acc ->
@@ -1000,33 +1157,55 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   end
 
   # Takes the queue's head (the desktop's IMMEDIATE pop, so a desktop window
-  # on the same conversation cannot start it twice) and starts it as a chat
-  # turn; still running, it waits for the next turn to end.
+  # on the same conversation cannot start it twice) and starts it: a prompt
+  # as a chat turn, a command (pass73: `/compact`, or anything sent with
+  # /queue) through the dispatcher. While a turn runs it waits for its end;
+  # after a command that runs no turn the next item starts at once.
   defp drain_queue(state) do
     conversation_id = state.opts[:conversation_id]
 
-    cond do
-      Engine.chat_running?(conversation_id) ->
-        watch_queue(state)
+    if turn_runs(conversation_id) != [] do
+      watch_queue(state)
+    else
+      case Conversations.pop_queued(conversation_id) do
+        {:ok, text, conversation} ->
+          case start_queued(conversation, text) do
+            {:ok, _} ->
+              drain_queue(refresh(%{state | queue_retries: 0}))
 
-      true ->
-        case Conversations.pop_queued(conversation_id) do
-          {:ok, text, conversation} ->
-            case Engine.start_chat_turn(SessionConfiguration.overlay(conversation), text, []) do
-              {:ok, _} ->
-                refresh(%{state | queue_retries: 0})
+            {:error, reason} when reason in [:database_busy, :operation_failed] ->
+              Conversations.set_queued(conversation, [text | conversation.queued || []])
+              retry_queue(state)
 
-              {:error, _} ->
-                Conversations.set_queued(conversation, [text | conversation.queued || []])
-                retry_queue(state)
-            end
+            {:error, reason} ->
+              # It can never start (nothing to compact, an unknown command):
+              # it leaves the queue, and the toast says why.
+              {_code, words} = refusal(reason, text)
 
-          {:error, _busy} ->
-            retry_queue(state)
+              state
+              |> toast("error", "Queue", "A queued message did not start: " <> words, nil)
+              |> refresh()
+              |> drain_queue()
+          end
 
-          _empty ->
-            state
-        end
+        {:error, _busy} ->
+          retry_queue(state)
+
+        _empty ->
+          state
+      end
+    end
+  end
+
+  defp start_queued(conversation, text) do
+    if command_name(text) != nil do
+      CommandDispatcher.dispatch(conversation.id, text, research_ids: [], attachments: [])
+    else
+      # A prompt is never dropped: any failure puts it back to be retried.
+      case Engine.start_chat_turn(SessionConfiguration.overlay(conversation), text, []) do
+        {:ok, _} = ok -> ok
+        {:error, _} -> {:error, :operation_failed}
+      end
     end
   end
 
@@ -2227,7 +2406,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
               agent_id: r.agent_id,
               tokens_in: r.tokens_in || 0,
               tokens_out: r.tokens_out || 0,
-              at: ms(r.started_at) || ms(r.inserted_at) || 0
+              at: ms(r.started_at) || ms(r.inserted_at) || 0,
+              steer: Map.get(r, :steer) in [1, true]
             }
 
             case state.streams[r.id] do
@@ -2735,6 +2915,9 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         |> Map.put("attachment_refs", attachment_ids(Map.get(row, :attachments, [])))
         |> Map.put("created_sequence", row.created)
         |> Map.merge(%{
+          # pass73 T3/T8: a message the running turn took in says so.
+          "target_kind" => if(Map.get(row, :steer), do: "steer", else: "main"),
+          "target_id" => if(Map.get(row, :steer), do: run.id),
           "kind" => row.kind,
           "tool" => row.tool,
           "agent_id" => row.agent_id,
@@ -3224,7 +3407,11 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       "cost_usd" => totals.cost_usd,
       "title" => if(is_binary(conversation.title), do: preview(conversation.title, 256)),
       # pass71 S5: the prompts waiting behind the live turn (`conversations.queued`).
-      "queued" => length(conversation.queued || [])
+      "queued" => length(conversation.queued || []),
+      # pass73 T3/T8: and what they say, so the terminal can show where each
+      # send went (bounded: the oldest 20, 2 KB each).
+      "queued_texts" =>
+        conversation.queued |> List.wrap() |> Enum.take(20) |> Enum.map(&preview(&1, 2048))
     }
   end
 
@@ -3571,10 +3758,25 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   defp result(kind, body),
     do: {:ok, %{"op" => "result", "response_kind" => kind, "value" => body}}
 
-  defp accepted(id, ids, feedback \\ nil), do: outcome(id, "accepted", ids, nil, feedback)
+  defp accepted(id, ids, feedback \\ nil, disposition \\ nil),
+    do: outcome(id, "accepted", ids, nil, feedback, disposition, nil)
+
   defp reject(id, code), do: outcome(id, "rejected", [], error(code))
 
-  defp outcome(id, status, ids, error, feedback \\ nil),
+  # pass73 T3/T8: a refused command says why and what to do, in words. The
+  # error keeps the closed wire code; `reason` carries the service's own
+  # reason and the sentence the terminal shows. cli.log names the reason.
+  defp refuse(id, reason, text \\ "", op \\ "dispatch") do
+    {code, words} = refusal(reason, text)
+    Logger.info("SwarmCode daemon refused a command (#{op}): #{code}")
+
+    outcome(id, "rejected", [], error(error_code(reason)), nil, nil, %{
+      "code" => code,
+      "text" => words
+    })
+  end
+
+  defp outcome(id, status, ids, error, feedback \\ nil, disposition \\ nil, reason \\ nil),
     do:
       result("outcome", %{
         "status" => status,
@@ -3583,8 +3785,74 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         "interaction" => nil,
         "feedback" => feedback,
         "error" => error,
-        "corrective_action" => "none"
+        "corrective_action" => "none",
+        "disposition" => disposition,
+        "reason" => reason
       })
+
+  @refusals %{
+    nothing_to_compact: "Nothing to compact yet: this conversation has no history to summarise.",
+    not_configured: "No model is set up for this conversation; choose one with /model.",
+    no_project: "This conversation's project is gone; open another with /resume.",
+    database_busy: "The database was busy; send it again.",
+    nothing_to_stop: "Nothing is running in this conversation.",
+    not_resumable: "Only a stopped, failed or interrupted run can be resumed.",
+    not_running: "That run is not running any more.",
+    not_paused: "That run is not paused.",
+    not_found: "That was not found.",
+    conversation_not_found: "No such conversation; /resume lists them.",
+    ambiguous_run: "More than one run matches; name it more precisely.",
+    ambiguous_conversation: "More than one conversation matches; name it more precisely.",
+    unknown_model: "No provider lists that model; /model with no argument shows the choices.",
+    invalid_effort: "That effort level is not offered for this model.",
+    invalid_budget: "That budget is not a number this command takes.",
+    budget_too_low: "That budget is too low to start.",
+    input_too_large: "That message is too long to send.",
+    expansion_too_large: "That command's text grows too long once expanded.",
+    not_attachable: "That file cannot be attached; images up to 6 MB can.",
+    unknown_workflow: "No workflow by that name; /workflows lists them.",
+    invalid_workflow_arguments: "The workflow's arguments did not fit; /workflows shows them.",
+    attachments_not_queued:
+      "An image cannot wait on the queue; send it without Tab and it goes to the running turn.",
+    client_only: "That command works in the terminal itself; send it there.",
+    too_many_attachments: "At most four images go with one message.",
+    operation_failed: "That did not work; cli.log has the details.",
+    run_not_found: "That run is not in this conversation any more.",
+    agent_not_found: "That agent is not part of this run any more.",
+    decision_not_offered: "That answer is not offered for this request.",
+    run_finished: "That run has already finished.",
+    steer_finished: "That run has finished; send the message in the chat to start a new turn.",
+    finished: "That run has already finished."
+  }
+
+  defp refusal(reason, text) when is_atom(reason) do
+    name = command_name(text || "")
+    words = Map.get(@refusals, reason) || command_words(reason, name)
+    {Atom.to_string(reason), words}
+  end
+
+  defp refusal(_reason, text), do: refusal(:operation_failed, text)
+
+  defp command_words(:missing_argument, name) when is_binary(name),
+    do: "/#{name} needs #{usage(name) || "an argument"}."
+
+  defp command_words(:unexpected_argument, name) when is_binary(name),
+    do: "/#{name} takes no argument; send /#{name} alone."
+
+  defp command_words(:invalid_argument, name) when is_binary(name),
+    do: "/#{name} does not take that; it takes #{usage(name) || "something else"}."
+
+  defp command_words(:unknown_command, name) when is_binary(name),
+    do: "There is no /#{name}; /help lists the commands."
+
+  defp command_words(_, _), do: "That could not be done."
+
+  defp usage(name) do
+    case Enum.find(SwarmCode.Commands.catalogue("/" <> name), &(&1.name == name)) do
+      %{args: args} when is_binary(args) and args != "" -> args
+      _ -> nil
+    end
+  end
 
   defp navigation_feedback(:rewind), do: navigation_feedback(:checkpoints)
 
