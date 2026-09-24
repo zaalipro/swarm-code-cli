@@ -245,6 +245,9 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Model do
         (explicit != :working or agent.state in [:running, :retrying])
 
     cond do
+      # A request that waits on the user wins over a live wire state (the
+      # wire's default `:working` can lag the pending interaction).
+      asks != [] and explicit not in [:done, :failed, :stopped] -> :needs_you
       trusted? -> explicit
       asks != [] -> :needs_you
       Words.waiting?(agent.state) -> :needs_you

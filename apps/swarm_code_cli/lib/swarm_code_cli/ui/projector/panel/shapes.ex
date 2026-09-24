@@ -169,7 +169,7 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Shapes do
         {r, t}
 
       _ ->
-        {Enum.count(subs, &(&1.state in [:done, :failed, :stopped])), length(subs)}
+        {Enum.count(subs, &(&1.state == :done)), length(subs)}
     end
   end
 
@@ -398,15 +398,9 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Shapes do
 
   # `reported  ▰▱▱▱  1 of 4        1 needs you` and what the lead waits for.
   defp swarm_foot(ctx, run, views) do
+    # Reported = came back with a result (`:done`), on the wire and here.
     {reported, total} = reported(run, views)
     ended = if run.state in [:stopped, :failed], do: run.state
-
-    # A stopped or failed swarm: the wire counts every ended agent as
-    # finished, but only the ones that are done reported anything.
-    reported =
-      if ended,
-        do: Enum.count(views, &(&1.role not in [:lead, :assistant] and &1.state == :done)),
-        else: reported
 
     if total == 0 do
       []
