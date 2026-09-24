@@ -94,7 +94,7 @@ defmodule SwarmCodeCLI.UI.Projector.WorkspaceTurnsTest do
     assert Enum.at(rows, 1) == ""
 
     header = Enum.at(rows, 2)
-    assert String.starts_with?(header, "  ⋔ lead  kimi-k2-thinking")
+    assert String.starts_with?(header, "  ⋔ Lead  kimi-k2-thinking")
     assert String.ends_with?(header, "writing ▮  23k tok")
   end
 
@@ -423,7 +423,7 @@ defmodule SwarmCodeCLI.UI.Projector.WorkspaceTurnsTest do
       run = state.read_model.runs["fixture-run"]
       run = %{run | state: run_state, finished_at: run.started_at + 134_000}
       {rows, _, _, _} = painted(put_in(state.read_model.runs["fixture-run"], run))
-      header = Enum.find(rows, &String.starts_with?(&1, "  ⋔ lead"))
+      header = Enum.find(rows, &String.starts_with?(&1, "  ⋔ Lead"))
       assert String.ends_with?(header, "  " <> words), "#{run_state}: #{header}"
     end
 
@@ -470,7 +470,7 @@ defmodule SwarmCodeCLI.UI.Projector.WorkspaceTurnsTest do
       assert Enum.all?(rows, &(SwarmCodeCLI.UI.Width.cells(&1, policy) <= 100))
       assert Enum.any?(rows, &(&1 =~ "Review this synthetic project"))
       assert index_of(rows, "    ⊢ ⦁ scout-1")
-      assert index_of(rows, "  ⋔ lead")
+      assert index_of(rows, "  ⋔ Lead")
     end
   end
 
@@ -478,9 +478,9 @@ defmodule SwarmCodeCLI.UI.Projector.WorkspaceTurnsTest do
     {scene, _, plan} = fixture(:swarm, {170, 40}) |> paint()
     main = Enum.find(scene.regions, &(&1.role == :main))
     rows = main_rows(plan, scene)
-    at = index_of(rows, "  ⋔ lead")
+    at = index_of(rows, "  ⋔ Lead")
     assert row(plan, main.rect.y + at, main.rect.x, 2) == "  "
-    assert row(plan, main.rect.y + at, main.rect.x + 4, 4) == "lead"
+    assert row(plan, main.rect.y + at, main.rect.x + 4, 4) == "Lead"
   end
 
   test "scroll metrics count exactly the rows the transcript paints" do
@@ -512,7 +512,7 @@ defmodule SwarmCodeCLI.UI.Projector.WorkspaceTurnsTest do
   test "ASCII terminals get the one-cell twins of every transcript glyph" do
     {rows, _, _, _} = fixture(:swarm, {100, 30}, ascii: true) |> painted()
     assert String.starts_with?(Enum.at(rows, 0), "  | Review this synthetic project")
-    header = Enum.find(rows, &String.starts_with?(&1, "  S lead"))
+    header = Enum.find(rows, &String.starts_with?(&1, "  S Lead"))
     assert String.ends_with?(header, "writing |  23k tok")
     assert index_of(rows, "    | * scout-1    working")
     assert index_of(rows, "    ` ! judge      needs you")

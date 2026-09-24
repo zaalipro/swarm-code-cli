@@ -189,7 +189,7 @@ defmodule SwarmCodeCLI.UI.Projector.PanelTest do
     assert Enum.join(compact, "\n") =~ "names drop reviewer-*"
   end
 
-  test "regression (QA Q3): workflow step names split on ':' and the band keeps 8 cells" do
+  test "regression (QA Q3): workflow step names split on ':'; band, row and panel agree" do
     names = %{
       "engine-lifecycle-review" => "review:correctness",
       "data-persistence-review" => "review:security",
@@ -200,8 +200,10 @@ defmodule SwarmCodeCLI.UI.Projector.PanelTest do
     compact = :panel_swarm_2 |> renamed(names, panel: :compact) |> panel_text()
     text = Enum.join(compact, "\n")
     refute text =~ "review:…"
-    assert text =~ ~r/! maintai… +\S/u
-    assert text =~ ~r/correct… |correctness/u
+    # pass73 T10: the band and the row say the same whole name.
+    assert text =~ ~r/! maintainability +\S/u
+    assert text =~ ~r/^ +maintainability +\S/mu
+    assert text =~ ~r/correctness /u
 
     full = :panel_swarm_2 |> renamed(names, []) |> panel_text() |> Enum.join("\n")
     assert full =~ "maintainability"
@@ -306,15 +308,17 @@ defmodule SwarmCodeCLI.UI.Projector.PanelTest do
     assert text =~ "Compiles source files"
   end
 
-  test "compact: one row per agent with short names, an 8-cell lane and the action" do
+  test "compact: one row per agent with its one name, an 8-cell lane and the action" do
     rows = :panel_swarm_2 |> state(160, 45, panel: :compact) |> panel_text()
     text = Enum.join(rows, "\n")
 
     assert text =~ "! 1 NEEDS YOU"
     assert text =~ ~r/▌⋔ architecture review · in chat 1\/4 · 02:14/
-    assert text =~ ~r/● engine +▂▅▅▅▅▅▂▂ tracing/
-    assert text =~ ~r/! web +▅▅▅▅▒▒▒▒ approve: mix test/
-    assert text =~ ~r/✓ llm +» Fake provider/
+    # pass73 T10: the full panel's name, never a shorter word for the agent.
+    assert text =~ ~r/● engine-lifecycle +▂▅▅▅▅▅▂▂ tracing/
+    assert text =~ ~r/! web-ui-desktop +▅▅▅▅▒▒▒▒ approve: mix/
+    assert text =~ ~r/✓ llm-tools +» Fake provider/
+    assert text =~ ~r/^ +web-ui-desktop mix test/m
     assert List.last(rows) =~ "compact"
   end
 
@@ -483,7 +487,10 @@ defmodule SwarmCodeCLI.UI.Projector.PanelTest do
     assert rects.tabline.y == 1 and rects.tabline.height == 1
 
     strip = st |> screen() |> Enum.at(1) |> String.trim_trailing()
-    assert strip =~ "▌⋔ architecture review 1/4 · Lead◌ engine● data◐ llm✓ web!"
+    # pass73 T10: the one names, cut at their ends to share the row.
+    assert strip =~
+             "▌⋔ architecture review 1/4 · Lead◌ engine-li…● data-pers…◐ llm-tools✓ web-ui-d…!"
+
     assert strip =~ ~r/! 1 needs you \^N$/
 
     assert [{:run, _} | agents] = PanelOrder.entries(st)

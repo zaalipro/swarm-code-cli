@@ -27,6 +27,7 @@ defmodule SwarmCodeCLI.UI.Projector.Overlay do
 
   alias SwarmCodeCLI.UI.{Drafts, Keymap, SafeText, Theme, Width}
   alias SwarmCodeCLI.UI.Projector.{Density, Support}
+  alias SwarmCodeCLI.UI.Projector.Panel.Name
   alias SwarmCodeCLI.UI.Reducer.Hint
   alias SwarmCodeCLI.UI.Reducer.Overlay, as: OverlayState
   alias SwarmCodeCLI.UI.Scene.{Block, Cursor, Rect, Region, Span}
@@ -495,7 +496,7 @@ defmodule SwarmCodeCLI.UI.Projector.Overlay do
   defp header(state, run, agent, width) do
     {mark_token, mark_role} = run_mark(run)
     {glyph, word, role} = agent_state(state, agent)
-    name = agent_name(agent)
+    name = agent_name(state, agent)
 
     wide? = width >= 140
     rail = neighbours(state, agent, wide?)
@@ -558,7 +559,9 @@ defmodule SwarmCodeCLI.UI.Projector.Overlay do
         end)
 
       {prev, next} =
-        if names?, do: {" " <> short(prev) <> "  ", " " <> short(next)}, else: {" ", ""}
+        if names?,
+          do: {" " <> short(state, prev) <> "  ", " " <> short(state, next)},
+          else: {" ", ""}
 
       [{"[ ‹" <> prev, st(state, :text_faint)}] ++
         orbs ++ [{next <> " › ]", st(state, :text_faint)}]
@@ -638,7 +641,7 @@ defmodule SwarmCodeCLI.UI.Projector.Overlay do
         [
           {if(focus?, do: one_cell(state, "▌", "|"), else: " "), st(state, :accent)},
           {"! NEEDS YOU", bold(state, :warning)},
-          {"   " <> agent_name(agent) <> verb, st(state, :text_primary)},
+          {"   " <> agent_name(state, agent) <> verb, st(state, :text_primary)},
           {if(reason == "", do: "", else: "   " <> reason), st(state, :text_muted)}
         ],
         [{age <> "#{waiting} waiting ", st(state, :text_faint)}],
@@ -674,7 +677,7 @@ defmodule SwarmCodeCLI.UI.Projector.Overlay do
         [
           {if(focus?, do: one_cell(state, "▌", "|"), else: " "), st(state, :accent)},
           {"? ASKS YOU", bold(state, :warning)},
-          {"   " <> agent_name(agent) <> " has a question", st(state, :text_primary)}
+          {"   " <> agent_name(state, agent) <> " has a question", st(state, :text_primary)}
         ],
         width
       )
@@ -1374,7 +1377,7 @@ defmodule SwarmCodeCLI.UI.Projector.Overlay do
         [
           {connector, st(state, :border)},
           {glyph <> " ", st(state, role)},
-          {agent_name(current),
+          {agent_name(state, current),
            if(current.id == agent.id,
              do: bold(state, lane_role(state, current)),
              else: st(state, :text_muted)
@@ -1488,7 +1491,7 @@ defmodule SwarmCodeCLI.UI.Projector.Overlay do
 
   defp composer(state, width) do
     agent = OverlayState.agent(state)
-    name = if agent, do: agent_name(agent), else: "this agent"
+    name = if agent, do: agent_name(state, agent), else: "this agent"
     focus? = state.overlay.focus == :composer
     key = OverlayState.draft_key(state)
     editor = Drafts.fetch(state.drafts, key).editor
@@ -1795,17 +1798,11 @@ defmodule SwarmCodeCLI.UI.Projector.Overlay do
     end
   end
 
-  defp agent_name(agent) do
-    case agent.name do
-      name when is_binary(name) and name != "" -> name
-      _ -> if agent.role == :lead, do: "Lead", else: "agent"
-    end
-  end
+  # pass73 T10: the agent's one name (`Panel.Name`), as the panel, the band,
+  # the card and the transcript say it.
+  defp agent_name(state, agent), do: Name.of(state, agent)
 
-  defp short(agent) do
-    name = agent_name(agent)
-    if String.length(name) > 16, do: String.slice(name, 0, 15) <> "…", else: name
-  end
+  defp short(state, agent), do: Name.fit(agent_name(state, agent), 16, state)
 
   defp lane_role(state, agent) do
     index =

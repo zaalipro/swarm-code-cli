@@ -11,6 +11,7 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Model do
   """
   alias SwarmCodeCLI.UI.DataSource.Lane
   alias SwarmCodeCLI.UI.Projector.Support
+  alias SwarmCodeCLI.UI.Projector.Panel.Name
   alias SwarmCodeCLI.UI.Projector.Inspector.{Hive, Words}
 
   @p3 [:working, :thinking, :waiting, :needs_you, :done, :failed, :queued, :paused, :stopped]
@@ -156,7 +157,7 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Model do
         {view, if(lead?, do: index, else: index + 1)}
       end)
 
-    distinct_shorts(views)
+    views
   end
 
   defp lead?(%{role: role}), do: role in [:lead, :assistant]
@@ -180,14 +181,13 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Model do
     asks = Enum.filter(pending, &asks_for?(&1, agent, lanes))
     p3 = p3_state(agent, lanes, asks)
     name = Hive.name(agent)
-    trimmed = trim(name, affixes)
 
     %{
       id: agent.id,
       run_id: run.id,
       name: name,
-      display: display_name(agent, trimmed),
-      short: short(display_name(agent, trimmed)),
+      # pass73 T10: one name everywhere (`Panel.Name`); narrow rows cut it.
+      display: Name.display(agent, affixes, run),
       role: agent.role,
       depth: Map.get(agent, :depth, 0),
       parent_id: Map.get(agent, :parent_id),
@@ -209,10 +209,6 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Model do
       cost: Map.get(agent, :cost_usd)
     }
   end
-
-  defp display_name(%{role: :assistant}, _trimmed), do: "Assistant"
-  defp display_name(%{role: :lead}, _trimmed), do: "Lead"
-  defp display_name(_agent, trimmed), do: trimmed
 
   # Name colours (R11): lane colours for agents only; the lead and the one
   # assistant in text weight, the judge in its own role.
@@ -347,8 +343,11 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Model do
   def request(%{kind: :question, question: %{prompt: prompt}}) when is_binary(prompt),
     do: first_line(prompt)
 
+  # pass73 T10: a command is one line here, flattened, however many lines it
+  # has (the owner's `curl … | python3 -c "` ran across four band rows); the
+  # card and the overlay show it whole.
   def request(%{approval: %{command: command}}) when is_binary(command) and command != "",
-    do: first_line(command)
+    do: flat(command)
 
   def request(%{approval: %{tool: tool, arguments_preview: preview}})
       when tool in ["edit_file", "write_file", "edit_files"],
@@ -356,9 +355,16 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Model do
 
   def request(%{approval: %{tool: "run_command", arguments_preview: preview}})
       when is_binary(preview) do
-    case Regex.run(~r/"command"\s*:\s*"((?:[^"\\]|\\.)*)"/, preview) do
-      [_, command] -> command |> String.replace(~s(\\"), ~s(")) |> first_line()
-      _ -> first_line(preview)
+    case Jason.decode(preview) do
+      {:ok, %{"command" => command}} when is_binary(command) ->
+        flat(command)
+
+      _ ->
+        # The closing quote may be past the preview's cut.
+        case Regex.run(~r/"command"\s*:\s*"((?:[^"\\]|\\.)*)/, preview) do
+          [_, command] -> command |> unescape() |> flat()
+          _ -> flat(preview)
+        end
     end
   end
 
@@ -367,6 +373,23 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Model do
 
   def request(%{text: text}) when is_binary(text), do: first_line(text)
   def request(_), do: ""
+
+  @doc "`text` on one line: its lines joined by a space, runs of blanks as one."
+  def flat(text) when is_binary(text),
+    do: text |> String.replace(~r/\s+/u, " ") |> String.trim()
+
+  def flat(_), do: ""
+
+  # A JSON string cut by the preview's byte limit does not decode; its
+  # escapes are read here so the band never shows `\n` for a line break.
+  defp unescape(text) do
+    Regex.replace(~r/\\(["\\\/nrt])/, text, fn
+      _, "n" -> "\n"
+      _, "r" -> "\n"
+      _, "t" -> " "
+      _, other -> other
+    end)
+  end
 
   defp path_of(preview) when is_binary(preview) do
     case Regex.run(~r/"(?:path|file_path|file)"\s*:\s*"([^"]+)"/, preview) do
@@ -582,8 +605,9 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Model do
   end
 
   defp from_wire(entry) do
-    text = first_line(Map.get(entry, :text) || "")
     kind = Map.get(entry, :kind, :approval)
+    raw = Map.get(entry, :text) || ""
+    text = if kind in [:question, :gate], do: first_line(raw), else: flat(raw)
 
     %{
       id: Map.get(entry, :node_id) || Map.get(entry, :agent_id) || text,
@@ -693,7 +717,7 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Model do
       Enum.any?(names, &(byte_size(&1) <= byte_size(prefix) + byte_size(suffix))) ->
         {"", ""}
 
-      names |> Enum.map(&trim(&1, {prefix, suffix})) |> Enum.uniq() |> length() <
+      names |> Enum.map(&Name.trim(&1, {prefix, suffix})) |> Enum.uniq() |> length() <
           length(Enum.uniq(names)) ->
         {"", ""}
 
@@ -711,48 +735,6 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Model do
   end
 
   defp min_len(lists), do: lists |> Enum.map(&length/1) |> Enum.min()
-
-  defp trim(name, {prefix, suffix}) do
-    name
-    |> then(&if(prefix != "", do: String.replace_prefix(&1, prefix, ""), else: &1))
-    |> then(&if(suffix != "", do: String.replace_suffix(&1, suffix, ""), else: &1))
-  end
-
-  @doc "A short name of at most 8 cells for the compact row (P6, R14)."
-  def short(name) do
-    first = name |> String.split(["-", " ", "_", ":"], trim: true) |> List.first() || name
-
-    cond do
-      String.length(name) <= 8 -> name
-      String.length(first) <= 8 and String.length(first) >= 3 -> first
-      true -> String.slice(name, 0, 7) <> "…"
-    end
-  end
-
-  # pass72 G3 (QA Q3): siblings whose short names collide keep what tells
-  # them apart: the last segment, else the name cut at 7 cells.
-  defp distinct_shorts(views) do
-    dupes =
-      views
-      |> Enum.frequencies_by(& &1.short)
-      |> Enum.filter(fn {_, n} -> n > 1 end)
-      |> MapSet.new(&elem(&1, 0))
-
-    Enum.map(views, fn view ->
-      if MapSet.member?(dupes, view.short),
-        do: %{view | short: last_short(view.display)},
-        else: view
-    end)
-  end
-
-  defp last_short(name) do
-    last = name |> String.split(["-", " ", "_", ":"], trim: true) |> List.last() || name
-
-    cond do
-      String.length(last) <= 8 and String.length(last) >= 3 -> last
-      true -> String.slice(last, 0, 7) <> "…"
-    end
-  end
 
   # ------------------------------------------------------------- helpers
 

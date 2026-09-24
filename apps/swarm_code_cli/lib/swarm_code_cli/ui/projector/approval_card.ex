@@ -21,6 +21,7 @@ defmodule SwarmCodeCLI.UI.Projector.ApprovalCard do
   """
   alias SwarmCodeCLI.UI.{ActionTarget, Layout, SafeText, Width}
   alias SwarmCodeCLI.UI.Projector.{RunRow, Support}
+  alias SwarmCodeCLI.UI.Projector.Panel.Name
 
   # Decisions in the order the keys are read, with the key that makes each.
   # `:always_allow` is the legacy name the service reads as "for this run"
@@ -132,17 +133,21 @@ defmodule SwarmCodeCLI.UI.Projector.ApprovalCard do
   defp first_present(values), do: Enum.find(values, &(is_binary(&1) and String.trim(&1) != ""))
 
   @doc "\"scout-1 wants to run a command\": the asking agent by name, else the plainest true thing."
-  def title(item, state) do
-    facts = facts(item)
+  def title(item, state), do: who(item, state) <> " wants to " <> verb(facts(item))
 
-    who =
-      facts.agent ||
-        case Map.get(state.read_model.agents, item.node_id) do
-          %{name: name} when is_binary(name) and name != "" -> name
-          _ -> agent_of_node(state, item) || default_speaker(state, item)
-        end
+  @doc """
+  Who asks, by the one name the panel, the band and the overlay use
+  (`Panel.Name`, pass73 T10): the approval's own agent, else the agent of
+  the waiting op, else the plainest true thing.
+  """
+  def who(item, state) do
+    approval = item.approval || %{}
+    agent_id = Map.get(approval, :agent_id)
+    fallback = first_present([Map.get(approval, :agent_name)])
 
-    who <> " wants to " <> verb(facts)
+    Name.for_node(state, item.run_id, agent_id, fallback) ||
+      Name.for_node(state, item.run_id, item.node_id) ||
+      agent_of_node(state, item) || default_speaker(state, item)
   end
 
   defp default_speaker(state, item) do
@@ -160,7 +165,7 @@ defmodule SwarmCodeCLI.UI.Projector.ApprovalCard do
     |> case do
       %{agent_id: id} when is_binary(id) ->
         case Map.get(state.read_model.agents, id) do
-          %{name: name} when is_binary(name) and name != "" -> name
+          %{} = agent -> Name.of(state, agent)
           _ -> nil
         end
 

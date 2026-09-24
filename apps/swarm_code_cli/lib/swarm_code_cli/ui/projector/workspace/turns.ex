@@ -40,7 +40,7 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
   alias SwarmCodeCLI.UI.DataSource.DTO
   alias SwarmCodeCLI.UI.Scene.{Block, Span}
   alias SwarmCodeCLI.UI.Projector.{Density, Markdown, RunRow, Support}
-  alias SwarmCodeCLI.UI.Projector.Panel.Model
+  alias SwarmCodeCLI.UI.Projector.Panel.{Model, Name}
   alias SwarmCodeCLI.UI.Projector.Panel.Glyph, as: PanelGlyph
 
   @margin 2
@@ -404,7 +404,9 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
     trimmed = String.trim(text)
 
     case Enum.find(Map.get(state, :steers, []), &match?({^run, ^trimmed, _, _}, &1)) do
-      {_, _, _, name} ->
+      {_, _, node, name} ->
+        # pass73 T10: by the agent's one name, as the panel says it.
+        name = Name.for_node(state, run, node, name) || name
         [spec([{String.duplicate(" ", @body + 2), :plain}, {"steered to " <> name, :faint}], nil)]
 
       nil ->
@@ -433,11 +435,7 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
     {_letter, kind_role} = Theme.run_kind(kind)
     mark = SafeText.value(Support.glyph(Theme.run_mark(kind), state))
 
-    name =
-      case ctx.answer && agent(ctx.answer, state) do
-        %{name: name} when is_binary(name) and name != "" -> name
-        _ -> lead_name(ctx, state)
-      end
+    name = speaker(ctx, state)
 
     model = run && present(run.model)
 
@@ -455,25 +453,32 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
     blank_before ++ [spec(left ++ [{:right, right}], nil)]
   end
 
-  defp lead_name(ctx, state) do
+  # pass73 T10: the turn is spoken by its agent under its one name
+  # (`Panel.Name`): "Lead", or a chat turn's role label ("Workflow author"
+  # for a `/create-workflow` turn, where it used to say "assistant").
+  defp speaker(ctx, state) do
+    answering =
+      case ctx.answer && agent(ctx.answer, state) do
+        %{role: role} = agent when role in [:lead, :assistant] -> agent
+        _ -> nil
+      end
+
     lead =
-      state.read_model.agents
-      |> Map.values()
-      |> Enum.find(&(&1.run_id == ctx.run_id and &1.role in [:lead, :assistant]))
+      answering ||
+        state.read_model.agents
+        |> Map.values()
+        |> Enum.find(&(&1.run_id == ctx.run_id and &1.role in [:lead, :assistant]))
 
-    case lead do
-      %{name: name} when is_binary(name) and name != "" ->
-        String.downcase(name)
+    cond do
+      lead ->
+        Name.of(state, lead)
 
-      _ ->
-        # With no named lead the turn is spoken by what it is.
-        case ctx.run && ctx.run.kind do
-          kind when kind in [:consensus, :research, :workflow, :goal, :ultra] ->
-            Atom.to_string(kind)
+      # With no agent the turn is spoken by what it is.
+      (kind = ctx.run && ctx.run.kind) in [:consensus, :research, :workflow, :goal, :ultra] ->
+        Atom.to_string(kind)
 
-          _ ->
-            "assistant"
-        end
+      true ->
+        Name.role_label(%{}, ctx.run)
     end
   end
 
@@ -1288,8 +1293,11 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
 
     name =
       case agent(item, state) do
-        %{name: name} when is_binary(name) and name != "" -> name <> " · "
-        _ -> ""
+        %{name: name} = agent when is_binary(name) and name != "" ->
+          Name.of(state, agent) <> " · "
+
+        _ ->
+          ""
       end
 
     (name <> (item.text || ""))
