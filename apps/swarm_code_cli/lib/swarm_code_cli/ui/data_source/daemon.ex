@@ -430,6 +430,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
          true <- message.scope == watch.scope,
          {:ok, next} <- rewatch(state, ui),
          {:ok, next} <- queue_delivery(next, resyncing(watch), 0) do
+      # pass72 F: a resync is rare and costly; cli.log says when and why.
+      Logger.info("SwarmCode: the daemon asked for a fresh #{watch.slot} snapshot (#{reason})")
       {:ok, next}
     else
       _ -> :error
