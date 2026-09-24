@@ -1118,8 +1118,11 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
             do: "Queued · sends after the running turn",
             else: "Queued (#{count} waiting) · sends after the running turn"
 
-        {accepted(id, [conversation_id], notice("Queue", words), "queued"),
-         state |> watch_queue() |> refresh()}
+        # pass73 S11: a queued send started no run, so it names none. Clients
+        # read the first identifier of an accepted send as the run it
+        # started: the terminal aimed Ctrl-C at the conversation id, and a
+        # one-shot waited for that "run" to finish.
+        {accepted(id, [], notice("Queue", words), "queued"), state |> watch_queue() |> refresh()}
 
       {:error, :database_busy} ->
         {refuse(id, :database_busy, text), state}

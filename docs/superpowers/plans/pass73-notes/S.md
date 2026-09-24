@@ -54,7 +54,7 @@ These rules follow the desktop domain. `Engine.start_*` never blocks on a runnin
 `dispatch` with `action: "send"` as follows:
 
 1. `/compact` while a chat turn or a compaction runs goes on the conversation's queue:
-   `disposition: queued`.
+   `disposition: queued`, `identifiers: []` (a queued send starts no run, so it names none).
 2. Any other slash command runs at once, beside the live runs. Run-launching commands give
    `disposition: started` with `identifiers: [run_id]`. This covers `/swarm`, `/consensus <task>`,
    `/create-workflow`, `/workflow`, `/goal`, `/review`, `/resume-run`, and now `/plan <task>`
@@ -98,6 +98,11 @@ toast in words. A prompt is never dropped; its failures are retried.
   `decision_not_offered`, `run_finished`, `steer_finished` ("That run has finished; send the
   message in the chat to start a new turn."), `not_running`, `not_paused`. cli.log logs each one
   as `SwarmCode daemon refused a command (<op>): <code>`.
+- A queued send (pass73 S11) answers `identifiers: []`. Before, it named the conversation id,
+  and every client read that as the run the send started. The terminal's `note_sent_turn/3`
+  kept `sent_turn: {conversation, conversation_id}`, which the read model never shows. The next
+  Ctrl-C then said "Stopping the turn." and did nothing, and only a later press armed the quit. A
+  one-shot `exec` would have waited for that "run" to finish.
 - `DTO.TranscriptItem.target_kind == :steer` with `target_id` set to the run: a user message
   the running turn took in, whether it came from the chat or from the overlay's steer.
 - `DTO.WorkspaceSnapshot.queued_texts` and `DTO.WorkspaceMetadata.queued_texts`: `[String.t()]`,
@@ -141,6 +146,26 @@ toast in words. A prompt is never dropped; its failures are retried.
 3. Keep the steered and queued marks for the sent message from `outcome.disposition`
    (`:steered` / `:queued`). The durable facts come from the transcript (`target_kind: :steer`)
    and `queued_texts`.
+4. `note_sent_turn/3` (reducer.ex, about line 1957) takes the first identifier of any accepted
+   send as the run the send started. Since S11 a queued send names none, so that is safe again.
+   A steered send names the running turn, which is already in the read model, so no `sent_turn`
+   is kept. To make the rule explicit, match only `disposition` `nil` or `:started`:
+   ```elixir
+   %Outcome{status: :accepted, identifiers: [run_id | _]} = outcome
+   when outcome.disposition in [nil, :started]
+   ```
+   Use `Map.get(outcome, :disposition)` in a body check until S is merged.
+5. Seen in the sandbox live check and not explained in S's files: after the first Ctrl-C
+   stopped a swarm of 5, further Ctrl-C presses each showed "The daemon refused that request",
+   and the quit never armed; `/quit` worked. At that point the header already drew the swarm as
+   stopped, and every run in the database was terminal. The refusal was a stop of the finished
+   swarm; since S10 the daemon accepts it with "That run had already finished.". If
+   `Keymap.live_turn(state, @live_states)` still returns a run there, every press sends a stop
+   and never reaches `:idle`, so the quit never arms. Please check which run it returns once the
+   header shows none live. The candidates are a run held in `:paused`, `:waiting_question` or
+   `:waiting_approval`, which `@live_states` counts but the header may draw differently. From
+   now on, cli.log names each refusal (`SwarmCode daemon refused a command (run_control):
+   <code>`).
 
 ### V1 (transcript)
 

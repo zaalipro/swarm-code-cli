@@ -195,6 +195,9 @@ defmodule SwarmCode.Daemon.Service.Pass73SendRoutingTest do
 
     assert {:ok, %{"value" => value}} = request(c, "compact", send_request("/compact"))
     assert %{"status" => "accepted", "disposition" => "queued"} = value
+    # It started no run, so it names none (the terminal stopped the
+    # conversation id on Ctrl-C, and a one-shot waited for it).
+    assert value["identifiers"] == []
     assert value["feedback"]["text"] == "Queued · sends after the running turn"
     assert Conversations.get(c.conversation.id).queued == ["/compact"]
     assert [%{id: ^run}] = Conversations.list_runs(c.conversation.id)

@@ -22,7 +22,7 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.Outcome do
       # pass73 T3/T8: where an accepted send went. `started`: a new run
       # (identifiers: its id); `steered`: into the running chat turn
       # (identifiers: that run's id); `queued`: on the conversation's queue,
-      # it starts when the running turn ends (identifiers: the conversation).
+      # it starts when the running turn ends (identifiers: none).
       disposition: {:optional, {:enum, [:started, :steered, :queued]}},
       # pass73 T3/T8: why a command was refused, in words (rejected only).
       reason: {:optional, {:dto, SwarmCodeCLI.UI.DataSource.DTO.Refusal}}
