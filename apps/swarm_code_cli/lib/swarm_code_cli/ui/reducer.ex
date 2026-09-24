@@ -121,6 +121,12 @@ defmodule SwarmCodeCLI.UI.Reducer do
   defp transition(state, {:panel_preferences_loaded, mode}),
     do: {%{state | panel_mode: mode}, []}
 
+  # pass72 F: over a dialog, hint mode opens only from a request card (D9:
+  # "^F <letter> opens the agent"); the other dialogs keep Ctrl-F inert.
+  defp transition(%{layers: [layer | _]} = state, {:hint, :open})
+       when not is_tuple(layer) or elem(layer, 0) not in [:approval, :question],
+       do: {state, []}
+
   defp transition(state, {:hint, :open}) do
     case Hints.open(state) do
       nil -> feedback(state, "Nothing in the panel to open.")
@@ -169,6 +175,15 @@ defmodule SwarmCodeCLI.UI.Reducer do
       :none ->
         {%{state | hint: nil}, []}
     end
+  end
+
+  # The overlay's band carries the request, so a request card on top gives
+  # way (closed the way Esc closes it) before the overlay covers the chat.
+  defp transition(%{layers: [{kind, _} | _]} = state, {:overlay_open, run, node})
+       when kind in [:approval, :question] do
+    {state, effects} = transition(state, :close_top_layer)
+    {state, more} = transition(state, {:overlay_open, run, node})
+    {state, effects ++ more}
   end
 
   defp transition(state, {:overlay_open, run, node}) do
@@ -2484,6 +2499,11 @@ defmodule SwarmCodeCLI.UI.Reducer do
 
   defp hint_neutral?(action),
     do: action == :boot or (is_tuple(action) and elem(action, 0) in @hint_neutral)
+
+  # A request card may sit under hint mode (pass72 F: Ctrl-F over the card).
+  defp drop_hint_under_layer(%{hint: %{}, layers: [{kind, _} | _]} = state)
+       when kind in [:approval, :question],
+       do: state
 
   defp drop_hint_under_layer(%{hint: %{}, layers: [_ | _]} = state), do: %{state | hint: nil}
   defp drop_hint_under_layer(state), do: state

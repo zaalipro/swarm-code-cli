@@ -45,6 +45,11 @@ defmodule SwarmCodeCLI.UI.Keymap.Context do
   def picker?(_layer), do: false
 
   @spec of(map()) :: atom()
+  # pass72 F: hint mode opens over a request card (the approval card and the
+  # question dialog, the layers a needs-you agent raises), so its badge keys
+  # are read before the layer under it.
+  def of(%{hint: %{}}), do: :hint
+
   def of(%{layers: [layer | _]} = state) do
     cond do
       picker?(layer) -> :picker
@@ -55,7 +60,6 @@ defmodule SwarmCodeCLI.UI.Keymap.Context do
 
   # pass72: hint mode reads its badge keys before anything under it, and the
   # agent overlay covers the chat until Esc.
-  def of(%{hint: %{}}), do: :hint
   def of(%{overlay: %{}}), do: :overlay
   def of(%{focus: "composer"} = state), do: composer(state)
   def of(%{focus: "inspector"}), do: :inspector

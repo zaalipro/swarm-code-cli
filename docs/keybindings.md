@@ -567,6 +567,7 @@ the command palette).
 
 | Keys | Does |
 |---|---|
+| `Ctrl-F` / `Ctrl-Space` | Hint mode: a letter opens an agent, a digit a run (not forward-char: Right moves the caret) |
 | `Alt-1` | Switch to the first run tab as drawn |
 | `Alt-2` | Switch to the second run tab as drawn |
 | `Alt-3` | Switch to the third run tab as drawn |

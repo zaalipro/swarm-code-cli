@@ -155,7 +155,16 @@ defmodule SwarmCodeCLI.UI.Keymap.Bindings do
       id: :hint_mode,
       keys: [{"f", [:control]}, {" ", [:control]}],
       action: {:hint, :open},
-      contexts: [:composer, :composer_normal, :composer_visual, :main, :inspector, :overlay],
+      # :dialog only over a request card (the reducer ignores it elsewhere).
+      contexts: [
+        :composer,
+        :composer_normal,
+        :composer_visual,
+        :main,
+        :inspector,
+        :overlay,
+        :dialog
+      ],
       group: :runs,
       label: "Hints",
       help:

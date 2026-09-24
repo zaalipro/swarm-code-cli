@@ -107,7 +107,7 @@ defmodule SwarmCodeCLI.UI.Pass72FinisherTest do
     body = %DTO.WorkspaceSnapshot{
       conversation_id: "c",
       allowed_actions: [:send, :queue],
-      runs: [run("r1", :running)],
+      runs: [run("r1", Keyword.get(opts, :run_state, :running))],
       agents: agents(),
       interactions: Keyword.get(opts, :interactions, []),
       transcript: %DTO.TranscriptWindow{items: []},
@@ -228,6 +228,46 @@ defmodule SwarmCodeCLI.UI.Pass72FinisherTest do
     row = state |> painted() |> Enum.find(&(&1 =~ "Side panel: next shape"))
     assert row, "the palette has no side-panel row"
     assert row =~ ~r/(\^|Ctrl-)B/
+  end
+
+  # Live run (pass72 F): the approval card a worker raises is a layer, so
+  # Ctrl-F read the dialog's keys and did nothing; O's tests cleared the layer.
+  test "Ctrl-F over the approval card: badges, the letter opens the overlay, y answers" do
+    state = ready(interactions: [approval("web")], run_state: :waiting_approval)
+    assert [{:approval, "a1"} | _] = state.layers
+
+    state = press(state, Input.text_fragment(:press, "f", [:control]))
+    assert state.hint.labels["s"] == {:agent, "r1", "web"}
+    # After the card's typing grace, from the dialog context itself.
+    later =
+      press(
+        %{state | hint: nil, interaction_grace: nil},
+        Input.text_fragment(:press, "f", [:control])
+      )
+
+    assert later.hint == state.hint
+
+    state = press(state, Input.text_fragment(:press, "s", []))
+    assert state.hint == nil
+    assert state.overlay.node_id == "web"
+    refute Enum.any?(state.layers, &match?({:approval, _}, &1))
+    assert Keymap.Context.of(state) == :overlay
+
+    {_scene, table} = Projector.project(state)
+    {:ok, action} = Keymap.resolve(Input.text_fragment(:press, "y", []), state, table)
+    {_state, effects} = Reducer.update(state, action)
+
+    assert [{:resolve_approval, "r1", "op-a1", "a1", 5, :approve}] =
+             for({:command, request} <- effects, do: request.kind)
+  end
+
+  test "Ctrl-F stays inert over a dialog that is not a request card" do
+    {state, _} = Reducer.update(ready(), {:open_layer, :help})
+    assert [layer | _] = state.layers
+    assert Keymap.Context.of(state) == :dialog, inspect(layer)
+    next = press(state, Input.text_fragment(:press, "f", [:control]))
+    assert next.hint == nil
+    assert next.layers == state.layers
   end
 
   defp painted(state) do

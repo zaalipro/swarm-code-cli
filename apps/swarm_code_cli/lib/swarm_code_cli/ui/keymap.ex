@@ -346,6 +346,9 @@ defmodule SwarmCodeCLI.UI.Keymap do
   # were already on their way to the draft: until the user pauses, printable
   # keys and Backspace keep typing underneath it, Esc dismisses it, and
   # everything else (Enter above all) waits.
+  # Hint mode, opened over the card, reads its own keys (pass72 F).
+  defp grace?(%{hint: %{}}), do: false
+
   defp grace?(%{interaction_grace: grace, auto_opened: id, layers: [{kind, id} | _]})
        when not is_nil(grace) and kind in [:approval, :question],
        do: true
@@ -355,6 +358,15 @@ defmodule SwarmCodeCLI.UI.Keymap do
   defp grace(:escape, [], _state), do: result(:close_top_layer)
   defp grace(:backspace, [], state), do: draft_edit(state, :delete_backward)
   defp grace(code, [], state) when is_binary(code), do: draft_edit(state, {:insert, code})
+  # pass72 F: the hint chord is deliberate and its keys never answer, so it
+  # opens hint mode over a card that has just appeared, as it does later.
+  defp grace(code, mods, _state) when mods != [] do
+    case Bindings.lookup(:composer, code, mods) do
+      %{id: :hint_mode, action: action} -> result(action)
+      _ -> :ignore
+    end
+  end
+
   defp grace(_code, _mods, _state), do: :ignore
 
   defp draft_edit(state, operation) do
