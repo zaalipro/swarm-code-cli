@@ -49,13 +49,14 @@ defmodule SwarmCode.Daemon.Service.AgentDetail do
   @doc """
   The wire body. `rows` is `PersistedProjection.agent_detail/3`'s map; `opts`:
   `:request_id`, `:roots`, `:interactions` (this agent's pending interaction
-  wire maps), `:model`, `:context_window`.
+  wire maps), `:model`, `:context_window`, `:now` (the clock in ms, which a
+  live agent's life runs to while an operation is open).
   """
   def build(%{agent: n, ops: ops} = rows, opts) do
     roots = Enum.filter([n.workspace_path | opts[:roots] || []], &is_binary/1)
     interactions = opts[:interactions] || []
     facts = PanelFacts.agent(n, ops, roots: roots, interactions: interactions)
-    {life, life_start, bucket} = life(n, ops)
+    {life, life_start, bucket} = life(n, ops, opts[:now])
     parent = Enum.find(rows.siblings, &(&1.id == n.parent_id))
 
     %{
@@ -90,7 +91,7 @@ defmodule SwarmCode.Daemon.Service.AgentDetail do
       "life" => Enum.map(life, &Atom.to_string/1),
       "life_started_at" => life_start,
       "life_bucket_ms" => bucket,
-      "think_ms" => think_ms(ops, life_end(n, ops)),
+      "think_ms" => think_ms(ops, life_end(n, ops, opts[:now])),
       "files_read" => files(ops, ["read_file"], roots),
       "files_searched" => files(ops, ["grep", "find_files"], roots),
       "files_changed" =>
@@ -368,11 +369,11 @@ defmodule SwarmCode.Daemon.Service.AgentDetail do
   ## ------------------------------------------------------------------ life
 
   # The whole life on an absolute axis: at most 120 buckets of whole seconds.
-  defp life(n, ops) do
+  defp life(n, ops, now) do
     start =
       PanelFacts.ms(n.started_at) || ops |> Enum.map(&PanelFacts.ms(&1.started_at)) |> min_int()
 
-    finish = life_end(n, ops)
+    finish = life_end(n, ops, now)
 
     if is_integer(start) and is_integer(finish) and finish > start do
       span = finish - start
@@ -385,10 +386,20 @@ defmodule SwarmCode.Daemon.Service.AgentDetail do
     end
   end
 
-  defp life_end(n, ops) do
+  # pass72 G6 (QA Q5): a live agent's life runs to the caller's clock while
+  # an operation is open, so a wait on you is drawn (▒) for as long as it
+  # lasts rather than ending where the wait began.
+  defp life_end(n, ops, now) do
     case PanelFacts.ms(n.finished_at) do
-      nil -> PanelFacts.anchor(ops)
-      finish -> finish
+      nil ->
+        anchor = PanelFacts.anchor(ops)
+
+        if is_integer(now) and is_integer(anchor) and Enum.any?(ops, &(&1.status in @open)),
+          do: max(anchor, now),
+          else: anchor
+
+      finish ->
+        finish
     end
   end
 

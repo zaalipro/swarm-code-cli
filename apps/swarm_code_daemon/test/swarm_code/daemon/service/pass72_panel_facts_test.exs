@@ -446,6 +446,60 @@ defmodule SwarmCode.Daemon.Service.Pass72PanelFactsTest do
     end
   end
 
+  describe "detail life" do
+    alias SwarmCode.Daemon.Service.AgentDetail
+
+    defp detail(n, ops, opts) do
+      n =
+        Map.merge(
+          %{
+            run_id: "r1",
+            role: "worker",
+            title: "",
+            parent_id: nil,
+            depth: 1,
+            cost_usd: nil,
+            turn: nil,
+            max_turns: nil,
+            changes_stat: nil,
+            prompt: "Review it.",
+            result: nil,
+            result_bytes: 0
+          },
+          n
+        )
+
+      AgentDetail.build(%{agent: n, ops: ops, siblings: [], changed: []}, opts)
+    end
+
+    test "regression (QA Q5): a wait on you is drawn to the clock while it lasts" do
+      ops = [
+        op("llm", "think", 0, 10),
+        op("run_command", "run: mix test", 10, nil, %{status: "awaiting_approval", tail: ""})
+      ]
+
+      life = detail(agent(), ops, now: t0_ms() + 40_000)["life"]
+      assert length(life) >= 38
+      assert life |> Enum.drop(12) |> Enum.all?(&(&1 == "wait_you")), inspect(life)
+    end
+
+    test "regression (QA Q5): a workflow step's thinking fills its life" do
+      ops =
+        for {from, to} <- [{0, 16}, {17, 29}, {30, 36}, {37, 58}, {59, 104}], reduce: [] do
+          acc ->
+            [
+              op("llm", "think", from, to, %{result: nil}),
+              op("read_file", "read lib/a.ex", to, to + 0.05) | acc
+            ]
+        end
+
+      done = agent(%{status: "done", finished_at: at(105)})
+      life = detail(done, ops, now: t0_ms() + 500_000)["life"]
+      think = Enum.count(life, &(&1 == "think"))
+      assert think >= div(length(life) * 9, 10), inspect(life)
+    end
+  end
+
   describe "detail findings" do
     alias SwarmCode.Daemon.Service.AgentDetail
 

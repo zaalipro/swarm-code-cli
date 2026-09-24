@@ -102,8 +102,8 @@ defmodule SwarmCodeCLI.UI.Reducer.Overlay do
 
   def request_detail(%{overlay: %{} = overlay} = state, force?) do
     watch = Map.get(state.watches, :workspace)
-    in_flight = Map.get(overlay, :detail_request)
     asked_at = Map.get(overlay, :detail_at)
+    in_flight = live_request(state, Map.get(overlay, :detail_request), watch, asked_at)
 
     recent? =
       not force? and is_integer(asked_at) and state.now - asked_at < @detail_every_ms
@@ -122,16 +122,38 @@ defmodule SwarmCodeCLI.UI.Reducer.Overlay do
              deadline: state.now + state.deadline_ms,
              expected_response: :agent_detail
            }) do
+      stale = Map.get(overlay, :detail_request)
       overlay = Map.merge(overlay, %{detail_request: id, detail_at: state.now})
+      requests = next.requests |> Map.delete(stale) |> Map.put(id, request)
 
-      {%{next | overlay: overlay, requests: Map.put(next.requests, id, request)},
-       [{:query, request}]}
+      {%{next | overlay: overlay, requests: requests}, [{:query, request}]}
     else
       _ -> {state, []}
     end
   end
 
   def request_detail(state, _force?), do: {state, []}
+
+  # pass72 G6 (QA Q5/Q8): a request whose answer can no longer arrive — the
+  # watch resynced to a new generation (its answer is dropped as stale), the
+  # request left the table, or it is older than the deadline — no longer
+  # blocks the next one. Before, one lost answer left the overlay on the read
+  # model's guesses ("used find_files", an idle life) for as long as it was up.
+  @detail_stale_ms 10_000
+
+  defp live_request(_state, nil, _watch, _asked_at), do: nil
+
+  defp live_request(state, id, watch, asked_at) do
+    case Map.get(state.requests, id) do
+      %{generation: generation} ->
+        fresh? = is_integer(asked_at) and state.now - asked_at < @detail_stale_ms
+
+        if fresh? and match?(%{generation: ^generation}, watch), do: id, else: nil
+
+      _ ->
+        nil
+    end
+  end
 
   @doc "Keeps an agent detail that answers the overlay's own request; drops a stale one."
   def detail_response(%{overlay: overlay} = state, request, body) do

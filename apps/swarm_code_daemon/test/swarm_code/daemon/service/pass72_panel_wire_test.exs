@@ -189,7 +189,9 @@ defmodule SwarmCode.Daemon.Service.Pass72PanelWireTest do
     assert detail.files_read == ["lib/app.ex"]
     assert detail.files_changed == ["lib/app.ex"]
     assert detail.life_started_at == DateTime.to_unix(c.t0, :millisecond)
-    assert detail.life_bucket_ms == 1_000 and length(detail.life) == 35
+    # pass72 G6: the command is still running, so the life runs to the clock.
+    assert rem(detail.life_bucket_ms, 1_000) == 0 and length(detail.life) <= 120
+    assert List.last(detail.life) == :tools
     assert detail.think_ms == 4_000
     assert {detail.tokens_in, detail.tokens_out} == {1_200, 300}
 

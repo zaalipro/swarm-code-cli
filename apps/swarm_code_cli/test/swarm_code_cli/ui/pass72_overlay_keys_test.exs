@@ -497,6 +497,38 @@ defmodule SwarmCodeCLI.UI.Pass72OverlayKeysTest do
       end)
     end
 
+    test "regression (QA Q5): a request whose answer cannot arrive does not block the next" do
+      run_id = "7d0f2f9e-3b1c-4c55-9a55-2f1c0e6a0001"
+      node = "7d0f2f9e-3b1c-4c55-9a55-2f1c0e6a0002"
+
+      {state, effects} =
+        ready(
+          runs: [run(run_id, :running)],
+          agents: [agent(node, run_id, role: :lead, parent: nil, name: "Lead")]
+        )
+        |> Reducer.update({:overlay_open, run_id, node})
+
+      assert [{:query, %{kind: {:agent_detail, ^run_id, ^node}}}] = effects
+      first = state.overlay.detail_request
+
+      # In flight and fresh: no second request.
+      later = %{state | now: state.now + 3_000}
+      assert {_, []} = Overlay.request_detail(later, false)
+
+      # The watch resynced: the first answer will be dropped as stale.
+      watch = later.watches.workspace
+      generation = watch.generation + 1
+      watch = %{watch | generation: generation, scope: %{watch.scope | generation: generation}}
+      resynced = %{later | watches: %{later.watches | workspace: watch}}
+      {next, [{:query, request}]} = Overlay.request_detail(resynced, false)
+      assert request.generation == watch.generation
+      refute Map.has_key?(next.requests, first)
+
+      # Past the deadline, even in the same generation.
+      old = %{state | now: state.now + 11_000}
+      assert {_, [{:query, _}]} = Overlay.request_detail(old, false)
+    end
+
     test "only the answer to the overlay's own request is kept, and it is what the overlay shows" do
       state = ready() |> Reducer.update({:overlay_open, "r1", "web"}) |> elem(0)
       overlay = %{state.overlay | detail_request: "req-1"}

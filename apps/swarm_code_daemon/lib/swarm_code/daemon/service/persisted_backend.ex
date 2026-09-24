@@ -751,7 +751,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
                 roots: roots,
                 interactions: mine,
                 model: model,
-                context_window: if(is_integer(window) and window > 0, do: window)
+                context_window: if(is_integer(window) and window > 0, do: window),
+                now: System.os_time(:millisecond)
               )
 
             result("agent_detail", body)
