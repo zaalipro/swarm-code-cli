@@ -377,6 +377,17 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.CodecTest do
 
     assert {:error, %AdmissionError{code: :invalid_request}} =
              Codec.event(%{event | scope: scope}, %{watch | slot: :shell, scope: scope}, @nonce)
+
+    # pass72 F: a rejected event names the check it failed in cli.log (a real
+    # session closed on "a daemon message broke the protocol" with no reason).
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        assert {:error, %AdmissionError{code: :invalid_request}} =
+                 Codec.event(put_in(event.body["watch_ref"], "other"), watch, @nonce)
+      end)
+
+    assert log =~ "event rejected: watch_ref"
+    refute log =~ "planner"
   end
 
   test "detail responses match requested reference offset and byte limit" do

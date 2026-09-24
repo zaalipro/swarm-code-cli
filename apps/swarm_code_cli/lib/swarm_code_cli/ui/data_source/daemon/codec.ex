@@ -1,5 +1,6 @@
 defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
   @moduledoc "Pure translation of typed requests, replies and watch events; owns no transport or credit."
+  require Logger
   alias SwarmCode.Protocol.{Frame, Message, ServiceRequest}
   alias SwarmCodeCLI.UI.DataSource.{AdmissionError, Delta, Delivery, DTO, Request, Watch}
 
@@ -195,16 +196,22 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
 
   @doc "Validate event correlation and content. The adapter owns sequence/epoch transitions and ACKs."
   def event(message, watch, nonce) do
-    with {:ok, watch} <- Watch.validate(watch),
-         {:ok, _} <- ServiceRequest.decode(watch_body(watch, 1), watch.scope),
-         {:ok, _} <- Frame.encode(message),
-         true <-
-           message.request_id == nil and message.nonce == nonce and message.scope == watch.scope,
-         true <- is_integer(message.sequence),
-         true <- message.body["watch_ref"] == watch.watch_ref do
+    with {:watch, {:ok, watch}} <- {:watch, Watch.validate(watch)},
+         {:watch_body, {:ok, _}} <-
+           {:watch_body, ServiceRequest.decode(watch_body(watch, 1), watch.scope)},
+         {:frame, {:ok, _}} <- {:frame, Frame.encode(message)},
+         {:envelope, true} <-
+           {:envelope,
+            message.request_id == nil and message.nonce == nonce and
+              message.scope == watch.scope},
+         {:sequence, true} <- {:sequence, is_integer(message.sequence)},
+         {:watch_ref, true} <- {:watch_ref, message.body["watch_ref"] == watch.watch_ref} do
       event_body(message, watch)
     else
-      _ -> invalid()
+      # pass72 F: which envelope check failed, never the payload.
+      {step, _} ->
+        Logger.warning("SwarmCode: event rejected: #{step}")
+        invalid()
     end
   end
 
@@ -248,7 +255,15 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
          true <- page_sizes?(dto, watch.page_size) do
       watch_delivery(watch, :watch_ready, dto, revision, nil)
     else
-      _ -> invalid()
+      _ ->
+        # pass72 F: a rejected snapshot closes the session; the log names the
+        # check it failed (never the payload), so the close can be fixed.
+        Logger.warning(
+          "SwarmCode: watch_ready rejected: " <>
+            rejected_step(message, watch, kind, value, revision)
+        )
+
+        invalid()
     end
   end
 
@@ -736,4 +751,62 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
   defp not_expired(deadline, now) when deadline > now, do: :ok
   defp not_expired(_, _), do: {:error, AdmissionError.new(:deadline_expired)}
   defp invalid, do: {:error, AdmissionError.new(:invalid_request)}
+
+  @doc false
+  def rejected_step(message, watch, kind, value, revision) do
+    with {:kind, true} <- {:kind, @watch_bodies[wire_slot(watch)] == kind},
+         {:module, {_expected, module}} <- {:module, @responses[kind]},
+         {:decode, {:ok, dto}} <- {:decode, module.decode(value)},
+         {:shape, true} <- {:shape, exact_wire_shape?(dto, value)},
+         {:identities, {:ok, ^dto}} <- {:identities, restore_identities(dto, nil, nil)},
+         {:scope, true} <- {:scope, scoped_body?(watch.scope, dto)},
+         {:watermark, true} <- {:watermark, watermark_matches?(dto, message.sequence)},
+         {:revision, true} <- {:revision, body_revision?(dto, revision)},
+         {:encode, {:ok, bytes}} <- {:encode, Jason.encode(value)},
+         {:bytes, true} <- {:bytes, byte_size(bytes) <= watch.byte_limit},
+         {:pages, true} <- {:pages, page_sizes?(dto, watch.page_size)} do
+      "none"
+    else
+      {:shape, false} -> "shape " <> shape_miss(value, kind)
+      {step, _} -> Atom.to_string(step)
+    end
+  end
+
+  # The first struct whose wire keys differ, by key name only.
+  defp shape_miss(value, kind) do
+    case @responses[kind] do
+      {_expected, module} ->
+        case module.decode(value) do
+          {:ok, dto} -> first_shape_miss(dto, value) || "?"
+          _ -> "?"
+        end
+
+      _ ->
+        "?"
+    end
+  end
+
+  defp first_shape_miss(%{__struct__: module} = dto, wire) when is_map(wire) do
+    fields = Map.from_struct(dto)
+    wire = with_optional_wire_keys(module, wire)
+    names = MapSet.new(Map.keys(fields), &Atom.to_string/1)
+    extra = wire |> Map.keys() |> Enum.reject(&MapSet.member?(names, &1))
+    missing = names |> Enum.reject(&Map.has_key?(wire, &1))
+
+    if extra != [] or missing != [] do
+      "#{inspect(module)} extra #{inspect(extra)} missing #{inspect(missing)}"
+    else
+      Enum.find_value(fields, fn {key, value} ->
+        first_shape_miss(value, Map.get(wire, Atom.to_string(key)))
+      end)
+    end
+  end
+
+  defp first_shape_miss(values, wires) when is_list(values) and is_list(wires) do
+    if length(values) != length(wires),
+      do: "list length",
+      else: Enum.find_value(Enum.zip(values, wires), fn {a, b} -> first_shape_miss(a, b) end)
+  end
+
+  defp first_shape_miss(_, _), do: nil
 end
