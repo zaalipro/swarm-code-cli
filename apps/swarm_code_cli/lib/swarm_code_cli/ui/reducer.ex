@@ -24,7 +24,7 @@ defmodule SwarmCodeCLI.UI.Reducer do
   alias SwarmCodeCLI.UI.Reducer.{Watch, Commands, Pages, Editing, Details, PathCompletion}
   alias SwarmCodeCLI.UI.Reducer.Hint, as: Hints
   alias SwarmCodeCLI.UI.Reducer.Overlay
-  alias SwarmCodeCLI.UI.Reducer.Display
+  alias SwarmCodeCLI.UI.Reducer.{Deliveries, Display}
   alias SwarmCodeCLI.UI.WorkflowKeyword
   alias SwarmCodeCLI.UI.Hint
   alias SwarmCodeCLI.UI.DataSource.DTO.Outcome
@@ -99,6 +99,7 @@ defmodule SwarmCodeCLI.UI.Reducer do
         {next, effects} = replay_deferred(next, effects)
         {next, effects} = track_sent_turn(next, effects)
         {next, effects} = sync_interactions(next, effects, action)
+        next = note_policy_change(state, next)
         next = stamp_notice(state, next)
         next = repair_switcher(state, next)
         Enum.each(effects, &SwarmCodeCLI.UI.Effect.validate!/1)
@@ -129,9 +130,14 @@ defmodule SwarmCodeCLI.UI.Reducer do
   defp transition(state, {:mouse, value}), do: Display.set(state, :mouse, value)
   defp transition(state, {:preferences_loaded, loaded}), do: Display.loaded(state, loaded)
 
-  # pass73-K T7: a row of the /approval picker sets the project's mode.
-  defp transition(state, {:approval_mode, mode}),
-    do: service_request(state, {:project_update, mode, nil}, {:project, :update})
+  # pass73-K T7: a row of the /approval picker sets the project's mode; the
+  # picker closes, and the change is announced once the project says so
+  # (`note_policy_change/2`).
+  defp transition(state, {:approval_mode, mode}) do
+    {state, closed} = close_switcher(state)
+    {state, sent} = service_request(state, {:project_update, mode, nil}, {:project, :update})
+    {state, closed ++ sent}
+  end
 
   # pass73-K T4: Enter on the palette's highlighted command that takes no
   # argument writes it and runs it, as if it had been typed whole.
@@ -265,6 +271,14 @@ defmodule SwarmCodeCLI.UI.Reducer do
       nil -> {state, []}
       agent -> transition(state, {:overlay_open, agent.run_id, agent.id})
     end
+  end
+
+  # pass73 T9: the wheel moves the overlay's activity by lines and leaves
+  # the focus where it is (the wheel never moves focus).
+  defp transition(%{overlay: overlay} = state, {:overlay, {:scroll, lines}}) do
+    rows = SwarmCodeCLI.UI.Projector.Overlay.cursor_rows(state)
+    cursor = (overlay.cursor + lines) |> min(max(rows - 1, 0)) |> max(0)
+    {%{state | overlay: %{overlay | cursor: cursor}}, []}
   end
 
   defp transition(%{overlay: overlay} = state, {:overlay, {:move, direction}}) do
@@ -1438,6 +1452,7 @@ defmodule SwarmCodeCLI.UI.Reducer do
     {settled, effects} = Commands.settle(state, request, outcome)
     settled = remember_prompt(settled, request, outcome)
     settled = note_sent_turn(settled, request, outcome)
+    settled = Deliveries.settled(settled, request, outcome)
 
     case {outcome.status, outcome.feedback, request.origin, State.current_draft_key(state)} do
       {:accepted, %{kind: kind} = feedback, {:draft, {conversation, _}}, {conversation, _}}
@@ -1769,10 +1784,15 @@ defmodule SwarmCodeCLI.UI.Reducer do
     end
   end
 
+  # pass73 T3/T8: every dispatch that leaves is recorded until the daemon
+  # says where it went (`Reducer.Deliveries`).
   defp invoke_intent(state, intent, id) do
-    if Layout.for_state(state).mutations_visible?,
-      do: Commands.invoke(state, intent, id),
-      else: {state, []}
+    if Layout.for_state(state).mutations_visible? do
+      {state, effects} = Commands.invoke(state, intent, id)
+      {Deliveries.sent(state, effects), effects}
+    else
+      {state, []}
+    end
   end
 
   # The draft takes the picked command when it is empty or already holds it;
@@ -2407,14 +2427,28 @@ defmodule SwarmCodeCLI.UI.Reducer do
       |> String.downcase()
 
     case approval_mode(argument) do
+      # pass73 T7: without an argument, a small picker of the three modes
+      # with the current one checked (the palette, narrowed to them).
       nil when argument == "" ->
-        current =
-          case Map.get(state.read_model.snapshots, :workspace) do
-            %{} = workspace -> Map.get(workspace, :approval_mode)
-            _ -> nil
+        {state, cleared} = clear_command_draft(state)
+        layer = SwarmCodeCLI.UI.Switcher.open(state, state.focus)
+        {state, opened} = transition(state, {:open_layer, layer})
+
+        {state, typed} =
+          case SwarmCodeCLI.UI.Switcher.field_key(layer) do
+            nil ->
+              {state, []}
+
+            key ->
+              Editing.apply(
+                state,
+                :field_editor,
+                key,
+                {:insert, SwarmCodeCLI.UI.Switcher.approval_query()}
+              )
           end
 
-        {%{state | notice: {:command_feedback, approval_words(current)}}, []}
+        {state, cleared ++ opened ++ typed}
 
       nil ->
         {%{
@@ -2489,17 +2523,31 @@ defmodule SwarmCodeCLI.UI.Reducer do
 
   defp approval_mode(_value), do: nil
 
-  defp approval_words(:read_only),
-    do: "Approval: read-only. Nothing is written or run without you. /approval auto to change."
+  # pass73 T7: however the project's approval mode changes (this session's
+  # /approval or picker, the desktop, another client), the change is said in
+  # the transcript ("Approvals: auto → full access", `policy_notices`) and as
+  # a toast, once, when the workspace shows the new mode.
+  defp note_policy_change(before, next) do
+    with %{conversation_id: conversation, approval_mode: from} when not is_nil(from) <-
+           Map.get(before.read_model.snapshots, :workspace),
+         %{conversation_id: ^conversation, approval_mode: to} when not is_nil(to) and to != from <-
+           Map.get(next.read_model.snapshots, :workspace) do
+      notice = %{conversation_id: conversation, from: from, to: to, at: next.now}
+      words = "Approvals: " <> mode_words(from) <> " → " <> mode_words(to)
 
-  defp approval_words(:auto),
-    do: "Approval: auto. Edits go ahead; commands ask first. /approval full or read-only."
+      %{
+        next
+        | policy_notices: Enum.take([notice | next.policy_notices], 20),
+          notice: {:command_feedback, words}
+      }
+    else
+      _ -> next
+    end
+  end
 
-  defp approval_words(:full_access),
-    do: "Approval: full access. Nothing asks first. /approval auto to change."
-
-  defp approval_words(_),
-    do: "Approval mode: read-only, auto or full. /approval auto to set it."
+  defp mode_words(:read_only), do: "read-only"
+  defp mode_words(:auto), do: "auto"
+  defp mode_words(:full_access), do: "full access"
 
   # ------------------------------------------ requests that are not intents
 
