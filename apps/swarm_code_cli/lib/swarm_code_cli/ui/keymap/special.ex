@@ -245,6 +245,15 @@ defmodule SwarmCodeCLI.UI.Keymap.Special do
     end
   end
 
+  # pass72 (P8): Enter on an agent selected in the side panel opens its
+  # overlay.
+  def run(:activate, _key, %{focus: "inspector"} = state, table) do
+    case Map.get(state.read_model.agents, Map.get(state.selection, "inspector")) do
+      %{id: id, run_id: run} -> ok({:overlay_open, run, id})
+      _ -> Keymap.content_activate(state, table)
+    end
+  end
+
   def run(:activate, _key, state, table), do: Keymap.content_activate(state, table)
 
   # Enter in the composer, under its own name so the surfaces can say "Send".

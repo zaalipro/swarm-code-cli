@@ -236,14 +236,11 @@ defmodule SwarmCodeCLI.UI.KeymapTest do
     end
 
     test "[ and ] move inspector tabs whenever the inspector is on screen" do
-      # 120x40 is :medium, which docks the inspector only when asked to.
-      undocked = main()
+      # pass72: from 120 columns the side panel is docked unless it is hidden.
+      undocked = %{main() | panel_mode: :hidden}
       assert Keymap.resolve(letter("]"), undocked, %{}) == :ignore
 
-      docked = %{
-        undocked
-        | preferences: %{undocked.preferences | medium_dock: :inspector}
-      }
+      docked = %{undocked | panel_mode: :full}
 
       assert Keymap.resolve(letter("]"), docked, %{}) == {:ok, {:inspector_tab, :next}}
       assert Keymap.resolve(letter("["), docked, %{}) == {:ok, {:inspector_tab, :previous}}
