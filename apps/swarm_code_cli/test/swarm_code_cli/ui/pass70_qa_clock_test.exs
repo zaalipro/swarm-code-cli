@@ -43,7 +43,7 @@ defmodule SwarmCodeCLI.UI.Pass70QaClockTest do
       later = %{state | now: 1_000_000 + State.notice_ms()}
       assert status_text(state) =~ "Type the message after /queue."
       refute status_text(later) =~ "Type the message after /queue."
-      assert status_text(later) =~ "send"
+      assert status_text(later) =~ "Ctrl-P palette"
     end
 
     test "a rejected command fades too, without any effect from the reducer" do

@@ -8,12 +8,24 @@ defmodule SwarmCodeCLI.UI.Projector.Composer do
     SlashPalette,
     State,
     Theme,
-    Width
+    Width,
+    WorkflowKeyword
   }
+
+  alias SwarmCodeCLI.UI.Keymap.Bindings
 
   alias SwarmCodeCLI.UI.SafeText.Limits
   alias SwarmCodeCLI.UI.Scene.{Block, Cursor, Span}
-  alias SwarmCodeCLI.UI.Projector.{ApprovalCard, Density, HiveStrip, Markdown, RunRow, Support}
+
+  alias SwarmCodeCLI.UI.Projector.{
+    ApprovalCard,
+    Density,
+    HiveStrip,
+    KeyLabel,
+    Markdown,
+    RunRow,
+    Support
+  }
 
   def mode_label(state) do
     workspace = Map.get(state.read_model.snapshots, :workspace)
@@ -227,7 +239,52 @@ defmodule SwarmCodeCLI.UI.Projector.Composer do
         row(left, right, if(growth == 0, do: :approval, else: :approval_body), state, width)
 
       nil ->
-        HiveStrip.block(state, width) || hairline(state, width)
+        workflow_hint(state, width) || HiveStrip.block(state, width) || hairline(state, width)
+    end
+  end
+
+  @doc """
+  pass73 T5: while the draft names "workflow" and Enter would send it as
+  `/create-workflow`, the row above the composer says so, and which key
+  sends it as a plain message instead:
+  `workflow · sends as /create-workflow · ^S plain message`. Nil otherwise.
+  """
+  def workflow_hint(state, width) do
+    text = draft_text(state)
+
+    with true <- text != "",
+         :run_command <- SwarmCodeCLI.UI.Composer.enter_action(state),
+         true <- WorkflowKeyword.routes?(text),
+         %{} = binding <- Bindings.fetch(:send_plain),
+         key when key != nil <- Bindings.key_in_context(binding, :composer) do
+      label = KeyLabel.label(key, state.capabilities.ascii?)
+      dot = if state.capabilities.ascii?, do: "-", else: "·"
+      faint = tint(:text_faint, state)
+
+      row(
+        [
+          {"  ", faint},
+          {"workflow", tint(:run_workflow, state, [:bold])},
+          {" " <> dot <> " sends as ", faint},
+          {"/create-workflow", tint(:text_muted, state)},
+          {" " <> dot <> " ", faint},
+          {label, tint(:key, state, [:bold])},
+          {" plain message", faint}
+        ],
+        [],
+        nil,
+        state,
+        width
+      )
+    else
+      _ -> nil
+    end
+  end
+
+  defp draft_text(state) do
+    case draft(state) do
+      nil -> ""
+      draft -> Editor.text(draft.editor)
     end
   end
 
@@ -327,13 +384,12 @@ defmodule SwarmCodeCLI.UI.Projector.Composer do
       prefix_lines = Width.wrap(before, editor_width, policy)
       caret_row = max(0, length(prefix_lines) - 1)
       first = max(0, caret_row - max(0, editor_height - 1))
-      visible_lines = lines |> Enum.drop(first) |> Enum.take(editor_height)
 
       text_rows =
         if slice.text == "" do
           [[{placeholder_text(state), tint(:text_faint, state)}]]
         else
-          Enum.map(visible_lines, &[{&1, tint(:text_primary, state)}])
+          keyword_rows(lines, first, editor_height, draft, slice, state)
         end
 
       rows =
@@ -390,6 +446,70 @@ defmodule SwarmCodeCLI.UI.Projector.Composer do
     end
   end
 
+  # pass73 T5: the word "workflow" (K's `WorkflowKeyword`: whole word, outside
+  # backticks, not in a slash command) is drawn in the workflow colour, bold,
+  # in the composer. The keyword spans are found on the whole draft; the
+  # drawn lines are the escaped, wrapped visible slice, so each raw
+  # "workflow" letter run in the slice is matched, in order, to the same run
+  # in the lines (escaping never makes or splits those letters). When the two
+  # counts differ (a run cut by the wrap) the lines are drawn plain.
+  @letters ~r/workflows?/i
+
+  defp keyword_rows(lines, first, height, draft, slice, state) do
+    plain = tint(:text_primary, state)
+    keyword = tint(:run_workflow, state, [:bold])
+    visible = lines |> Enum.drop(first) |> Enum.take(height)
+    flags = keyword_flags(Editor.text(draft.editor), slice)
+    count = fn some -> Enum.reduce(some, 0, &(&2 + length(Regex.scan(@letters, &1)))) end
+
+    if Enum.any?(flags) and count.(lines) == length(flags) do
+      {rows, _} =
+        Enum.map_reduce(visible, Enum.drop(flags, count.(Enum.take(lines, first))), fn line,
+                                                                                       flags ->
+          split_line(line, flags, plain, keyword)
+        end)
+
+      rows
+    else
+      Enum.map(visible, &[{&1, plain}])
+    end
+  end
+
+  # One flag per raw letter run of the slice, in order: whether it is a keyword.
+  defp keyword_flags(text, slice) do
+    starts =
+      text
+      |> WorkflowKeyword.grapheme_spans()
+      |> MapSet.new(fn {at, _count} -> at - slice.start end)
+
+    @letters
+    |> Regex.scan(slice.text, return: :index)
+    |> Enum.map(fn [{byte, _}] ->
+      MapSet.member?(starts, String.length(binary_part(slice.text, 0, byte)))
+    end)
+  end
+
+  defp split_line(line, flags, plain, keyword) do
+    matches = Regex.scan(@letters, line, return: :index)
+
+    {segments, at, flags} =
+      Enum.reduce(matches, {[], 0, flags}, fn [{start, length}], {acc, at, flags} ->
+        {flag, rest} =
+          case flags do
+            [flag | rest] -> {flag, rest}
+            [] -> {false, []}
+          end
+
+        before = if start > at, do: [{binary_part(line, at, start - at), plain}], else: []
+        word = [{binary_part(line, start, length), if(flag, do: keyword, else: plain)}]
+        {acc ++ before ++ word, start + length, rest}
+      end)
+
+    tail = byte_size(line) - at
+    segments = if tail > 0, do: segments ++ [{binary_part(line, at, tail), plain}], else: segments
+    {if(segments == [], do: [{line, plain}], else: segments), flags}
+  end
+
   defp placeholder_text(state) do
     state |> placeholder(200) |> SafeText.value()
   end
@@ -401,6 +521,15 @@ defmodule SwarmCodeCLI.UI.Projector.Composer do
   """
   def slash_popup(state, width) do
     suggestions = SlashPalette.visible(state, 8)
+
+    # pass73 T4/T6: the selected row says what Enter does with it now (runs a
+    # bare command, completes one that waits for its argument).
+    enter =
+      case SwarmCodeCLI.UI.Projector.Status.enter_action(state) do
+        :run_command -> " run"
+        :complete -> " complete"
+        _ -> nil
+      end
 
     Enum.map(suggestions, fn item ->
       name_style =
@@ -422,10 +551,16 @@ defmodule SwarmCodeCLI.UI.Projector.Composer do
       row(
         [rail, {"  /" <> item.name, name_style}] ++
           args ++ [{"   " <> (item.desc || ""), tint(:text_muted, state)}],
-        if(item.selected?,
-          do: [{"Tab", tint(:key, state, [:bold])}, {" complete", tint(:text_faint, state)}],
-          else: []
-        ),
+        cond do
+          item.selected? and enter != nil ->
+            [{"Enter", tint(:key, state, [:bold])}, {enter, tint(:text_faint, state)}]
+
+          item.selected? ->
+            [{"Tab", tint(:key, state, [:bold])}, {" complete", tint(:text_faint, state)}]
+
+          true ->
+            []
+        end,
         if(item.selected?, do: :hover, else: :popover),
         state,
         width

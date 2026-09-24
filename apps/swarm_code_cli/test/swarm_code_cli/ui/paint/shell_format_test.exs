@@ -68,24 +68,9 @@ defmodule SwarmCodeCLI.UI.Paint.ShellFormatTest do
   # model, tokens and cost live on the status line.
   # "Key label" pairs the status row may show, strongest first.
   defp hints(state) do
-    context = SwarmCodeCLI.UI.Keymap.Context.of(state)
-
-    context
-    |> SwarmCodeCLI.UI.Keymap.Bindings.hinted()
-    # The fixture's turn is live, so Esc interrupt leads (pass70 Q16).
-    |> Enum.sort_by(&if(&1.id == :interrupt_turn, do: 0, else: 1))
-    |> Enum.flat_map(fn binding ->
-      case SwarmCodeCLI.UI.Keymap.Bindings.key_in_context(binding, context) do
-        nil ->
-          []
-
-        key ->
-          [
-            SwarmCodeCLI.UI.Projector.KeyLabel.label(key, false) <>
-              " " <> String.downcase(binding.label)
-          ]
-      end
-    end)
+    state
+    |> SwarmCodeCLI.UI.Projector.Status.composer_hints()
+    |> Enum.map(fn {key, words} -> key <> " " <> words end)
   end
 
   describe "title bar (row 0)" do
@@ -158,8 +143,10 @@ defmodule SwarmCodeCLI.UI.Paint.ShellFormatTest do
       state = fixture(:chat, {170, 34})
       plan = paint(state)
       status = row(plan, 33)
-      {enter, _} = :binary.match(status, "Enter")
-      assert :bold in cell_style(plan, enter, 33).modifiers
+      # The fixture's turn streams, so Esc leads the hints (pass73 T6).
+      {esc, _} = :binary.match(status, "Esc")
+      assert :bold in cell_style(plan, esc, 33).modifiers
+      refute :bold in cell_style(plan, esc + 4, 33).modifiers
     end
 
     test "xl and medium show two hints for composer focus" do

@@ -247,6 +247,22 @@ defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.Owner do
     {:noreply, next}
   end
 
+  # pass73 T2/T9 (K's `{:terminal_preferences, …}` effect, sent by the
+  # session runtime): the theme applies from the next frame; wheel reports go
+  # on or off through the port's mode command, and the flags change only when
+  # the port took it, so the `ready` of a later resume agrees with them.
+  defp dispatch({:terminal_preferences, preferences}, state) when is_map(preferences) do
+    state = retheme(state, Map.get(preferences, :theme))
+
+    state =
+      case Map.get(preferences, :mouse?) do
+        on? when is_boolean(on?) -> set_mouse(state, on?)
+        _ -> state
+      end
+
+    {:noreply, state}
+  end
+
   defp dispatch({:plain_instruction, "Rerun with --plain"}, %{phase: :restored} = state) do
     IO.puts(
       "Run (cd apps/swarm_code_cli && MIX_QUIET=1 mise exec -- mix swarm_code.demo.plain --script complete)"
@@ -276,6 +292,31 @@ defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.Owner do
   end
 
   defp copy_text(state, _text), do: {{:error, :unavailable}, state}
+
+  defp set_mouse(%{port: port} = state, on?) when port != nil do
+    if Map.get(state.flags, :mouse?, false) == on? do
+      state
+    else
+      token = state.counter + 1
+      {:ok, bytes} = Wire.mouse(1, token, on?)
+
+      if Port.command(port, bytes, [:nosuspend]) do
+        Logger.info("terminal wheel reports #{if on?, do: "on", else: "off"}")
+
+        %{
+          state
+          | counter: token,
+            flags: Map.put(state.flags, :mouse?, on?),
+            caps: %{state.caps | mouse: feature(on?)}
+        }
+      else
+        Logger.info("terminal wheel report change dropped: the terminal was busy")
+        state
+      end
+    end
+  end
+
+  defp set_mouse(state, _on?), do: state
 
   defp record({:resume_needed, 1}, %{phase: :running} = state) do
     if state.pending && not state.pending_replied? do
@@ -502,6 +543,17 @@ defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.Owner do
         {error, state}
     end
   end
+
+  # pass73 T2: `/theme` switches the palette live. A change drops the kept
+  # frame, whose palette is the old theme's, so a degraded frame can never
+  # repaint old colours; the port diffs cells by colour, so the next frame
+  # (the runtime draws the state that changed) repaints every cell.
+  defp retheme(state, theme) when theme in [:dark, :light] and theme != state.theme do
+    Logger.info("terminal theme switched to #{theme}")
+    %{state | theme: theme, last_plan: nil}
+  end
+
+  defp retheme(state, _theme), do: state
 
   defp encode(build, sequence) do
     with {:ok, plan} <- build.(),

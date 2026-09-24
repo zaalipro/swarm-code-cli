@@ -46,7 +46,7 @@ defmodule SwarmCodeCLI.UI.StatusHintsTest do
       state = fixture({170, 40}, "composer")
       row = paint_last_row(state)
 
-      # ? types in the composer, so help is hinted as F1 there or not at all.
+      # ? types in the composer, so help is never hinted as ? there.
       refute row =~ "? "
 
       assert Enum.any?(hint_pairs(state), &(row =~ &1))
@@ -70,27 +70,33 @@ defmodule SwarmCodeCLI.UI.StatusHintsTest do
       end
     end
 
-    test "Esc interrupt is offered only while a turn streams (pass70 Q7)" do
+    test "Esc is hinted only while it can stop a turn, and names what it stops (pass73 T6)" do
       state = fixture({170, 40}, "composer")
-      assert paint_last_row(state) =~ "Esc interrupt"
+      assert paint_last_row(state) =~ "Esc stop the turn"
 
       runs = Map.new(state.read_model.runs, fn {id, run} -> {id, %{run | state: :done}} end)
       idle = put_in(state.read_model.runs, runs)
-      refute paint_last_row(idle) =~ "interrupt"
-      assert paint_last_row(idle) =~ "send"
+      refute paint_last_row(idle) =~ "Esc"
+
+      # A turn the daemon does not let the user stop gets no Esc hint either.
+      unstoppable =
+        Map.new(state.read_model.runs, fn {id, run} -> {id, %{run | allowed_actions: [:send]}} end)
+
+      refute paint_last_row(put_in(state.read_model.runs, unstoppable)) =~ "Esc"
     end
 
-    test "while a turn streams Esc interrupt leads, even on a one-hint row (pass70 Q16)" do
-      assert paint_last_row(fixture({170, 40}, "composer")) =~ "Esc interrupt   Enter send"
+    test "while a turn streams its Esc hint leads, even on a one-hint row (pass70 Q16)" do
+      assert paint_last_row(fixture({170, 40}, "composer")) =~ ~r/Esc stop the turn   \S/
 
       narrow = paint_last_row(fixture({80, 24}, "composer"))
-      assert narrow =~ ~r/Esc interrupt\s*$/
-      refute narrow =~ "Enter send"
+      assert narrow =~ ~r/Esc stop the turn\s*$/
     end
 
-    test "the strongest hints come first: Send leads the composer" do
-      composer = paint_last_row(fixture({170, 40}, "composer"))
-      assert composer =~ "send"
+    test "Enter is hinted only when the composer has text (pass73 T6)" do
+      state = fixture({170, 40}, "composer")
+      refute paint_last_row(state) =~ "Enter"
+
+      assert paint_last_row(typed(state, "hello")) =~ ~r/Enter (steer|send)/
     end
 
     test "the row never names a focus or carries a cue prefix in colour" do
@@ -157,18 +163,17 @@ defmodule SwarmCodeCLI.UI.StatusHintsTest do
   end
 
   defp hint_pairs(state) do
-    context = Context.of(state)
+    state
+    |> Status.composer_hints()
+    |> Enum.map(fn {key, words} -> key <> " " <> words end)
+  end
 
-    context
-    |> Bindings.hinted()
-    # The fixture's turn is live, so Esc interrupt leads (pass70 Q16).
-    |> Enum.sort_by(&if(&1.id == :interrupt_turn, do: 0, else: 1))
-    |> Enum.flat_map(fn binding ->
-      case Bindings.key_in_context(binding, context) do
-        nil -> []
-        key -> [KeyLabel.label(key, false) <> " " <> String.downcase(binding.label)]
-      end
-    end)
+  defp typed(state, text) do
+    alias SwarmCodeCLI.UI.{Drafts, Editor, State}
+    key = State.current_draft_key(state)
+    draft = Drafts.fetch(state.drafts, key)
+    {:ok, editor} = Editor.apply(draft.editor, {:insert, text})
+    %{state | drafts: Drafts.put(state.drafts, %{draft | editor: editor})}
   end
 
   defp cells(spans, state) do
