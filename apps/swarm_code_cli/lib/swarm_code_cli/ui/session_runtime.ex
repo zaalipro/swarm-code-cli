@@ -726,7 +726,7 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
   defp local_effect(%{terminal: terminal} = state, {:terminal_preferences, preferences})
        when is_pid(terminal) do
     send(terminal, {:terminal_preferences, preferences})
-    commit(%{state | ui: %{state.ui | revision: state.ui.revision + 1}}, state)
+    commit(%{state | ui: %{state.ui | revision: state.ui.revision + 1}}, state.ui)
   end
 
   # Announcements already live in the safe Scene; no text is sent to terminal state.
