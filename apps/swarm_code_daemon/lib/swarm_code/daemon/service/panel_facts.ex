@@ -386,7 +386,7 @@ defmodule SwarmCode.Daemon.Service.PanelFacts do
 
   @doc "The first sentence of an agent's result (≤ 160 bytes), else nil."
   def finding(result, roots \\ []) do
-    case first_sentence(result, roots(roots), @finding_bytes + 40) do
+    case first_sentence(without_engine_notes(result), roots(roots), @finding_bytes + 40) do
       nil ->
         nil
 
@@ -402,6 +402,23 @@ defmodule SwarmCode.Daemon.Service.PanelFacts do
         |> then(&(&1 && clip(&1, @finding_bytes)))
     end
   end
+
+  # The engine appends its own notes to a worker's report ("[Changes on branch
+  # swarm/… (…). Integrate them …]", "[No file changes.]", "Delta patch
+  # captured: …"); they are not what the agent found (pass72 F, P's request 2).
+  defp without_engine_notes(result) when is_binary(result) do
+    result
+    |> String.split(~r/\r?\n/u)
+    |> Enum.reject(fn line ->
+      line = String.trim(line)
+
+      String.starts_with?(line, ["[Changes on branch ", "[No file changes.]"]) or
+        String.starts_with?(line, "Delta patch captured")
+    end)
+    |> Enum.join("\n")
+  end
+
+  defp without_engine_notes(result), do: result
 
   @doc "Up to five `path:line` references cited by a result, in order, unique."
   def finding_refs(result, roots \\ [])

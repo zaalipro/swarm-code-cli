@@ -2765,7 +2765,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     facts = %{
       "needs_you" =>
         PanelFacts.needs_you(interactions, Map.new(agents, &{&1["id"], &1}), panel.parents, roots),
-      "reported" => Enum.count(subs, &(&1.status in ["done", "failed", "stopped"])),
+      # Reported = came back with a result; a stopped or failed agent did not.
+      "reported" => Enum.count(subs, &(&1.status == "done")),
       "total" => length(subs),
       "phases" => PanelFacts.phases(panel.workflows[row.id] || %{}, ns, row.status),
       "phase" => panel.workflows[row.id] && clip(panel.workflows[row.id].phase, 120),

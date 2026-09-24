@@ -180,6 +180,30 @@ defmodule SwarmCode.Daemon.Service.Pass72PanelFactsTest do
       assert facts(done, [])["finding"] == "lib/a.ex:51 — casts :role from attrs."
     end
 
+    # pass72 F (P's request 2): the engine's notes on a worker's report are
+    # not its finding.
+    test "a finding skips the engine's branch and patch notes" do
+      done =
+        agent(%{
+          status: "done",
+          result_head:
+            "Done.\n\n[Changes on branch swarm/2404157a/web-review (2 files changed). " <>
+              "Integrate them with the integrate_agent tool when they are good.]\n" <>
+              "Delta patch captured: 812 bytes, 2 files changed"
+        })
+
+      assert facts(done, [])["finding"] == nil
+      refute facts(done, [])["now"] =~ "swarm/"
+
+      found =
+        agent(%{
+          status: "done",
+          result_head: "[No file changes.]\nThe flush can race the stop in lib/a.ex:9."
+        })
+
+      assert facts(found, [])["finding"] == "The flush can race the stop in lib/a.ex:9."
+    end
+
     test "queued, paused and stopped say so; tokens add up" do
       assert facts(agent(%{status: "queued"}), [])["now"] == "queued"
       assert facts(agent(%{status: "paused"}), [])["panel_state"] == "paused"

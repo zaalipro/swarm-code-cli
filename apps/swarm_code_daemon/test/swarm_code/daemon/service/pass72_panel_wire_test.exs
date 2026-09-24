@@ -115,6 +115,27 @@ defmodule SwarmCode.Daemon.Service.Pass72PanelWireTest do
     end
   end
 
+  # pass72 F (P's request 1): a stopped swarm arrived as "4 of 4 reported".
+  test "reported counts only agents that came back with a result", c do
+    node!(%{
+      run_id: c.run.id,
+      parent_id: c.lead.id,
+      kind: "agent",
+      role: "sub",
+      name: "cfg-review",
+      status: "stopped",
+      depth: 1,
+      started_at: c.t0,
+      finished_at: DateTime.add(c.t0, 9, :second)
+    })
+
+    Cache.clear()
+    assert {:ok, %{"value" => workspace}} = query(c.backend, c.scope, "workspace")
+    assert {:ok, snapshot} = DTO.WorkspaceSnapshot.decode(workspace)
+    swarm = Enum.find(snapshot.runs, &(&1.id == c.run.id))
+    assert {swarm.reported, swarm.total} == {1, 3}
+  end
+
   test "runs carry reported of total, consensus rounds, goal iterations and phases", c do
     assert {:ok, %{"value" => workspace}} = query(c.backend, c.scope, "workspace")
     assert {:ok, snapshot} = DTO.WorkspaceSnapshot.decode(workspace)
