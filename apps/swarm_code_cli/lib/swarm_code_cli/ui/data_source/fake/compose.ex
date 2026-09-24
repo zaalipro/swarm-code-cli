@@ -56,10 +56,13 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Compose do
     with %DTO.RunSummary{} = run <- Map.get(script.runs, run_id),
          true <- in_scope?(request.scope, run),
          :ok <- draft_origin(request.origin, run.conversation_id),
+         # pass72 S: the overlay steers one agent of the run by its id, as the
+         # daemon admits any agent of the run; a transcript node still works.
          true <-
-           Enum.any?(script.transcript, fn {_, item} ->
-             item.run_id == run_id and item.node_id == node_id
-           end),
+           match?(%DTO.AgentSummary{run_id: ^run_id}, Map.get(script.agents, node_id)) or
+             Enum.any?(script.transcript, fn {_, item} ->
+               item.run_id == run_id and item.node_id == node_id
+             end),
          :ok <- active_permission(run) do
       item_id = id(request.request_id, "user")
 

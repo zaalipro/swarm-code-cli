@@ -399,6 +399,28 @@ defmodule SwarmCodeCLI.UI.DataSource.Pass72PanelWireTest do
                )
     end
 
+    test "the overlay composer steers only its agent: run.steer names the node" do
+      request = %Request{
+        request_id: "local-3",
+        kind: {:steer, @run, @node, "check the Esc path only", []},
+        scope: @scope,
+        generation: 2,
+        origin: {:draft, {@conversation, {:thread, @node}}},
+        deadline: 5_000,
+        expected_response: :outcome
+      }
+
+      assert {:ok, message} = Codec.request(request, @wire, @nonce, 0)
+
+      assert Map.drop(message.body, ["timeout_ms"]) == %{
+               "op" => "run.steer",
+               "run_id" => @run,
+               "node_id" => @node,
+               "text" => "check the Esc path only",
+               "attachment_refs" => []
+             }
+    end
+
     test "the fake answers with the agent's synthetic detail, and refuses a stranger" do
       {:ok, script} = Script.decode(fixture())
       pid = start_supervised!({Source, script: script, source_epoch: "epoch-1"})
