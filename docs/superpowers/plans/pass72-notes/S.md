@@ -107,14 +107,48 @@ The fake now admits an agent id of the run as a steer target too.
 
 ## Tasks
 
-- S1 wire contract + fake parity (tag `p72-S-wire`): `436737d`, notes `db2f541`.
-- S2 needs_you with the literal approval/question text: in S1 (`PanelFacts.needs_you/4`, the
-  persisted and the unsaved backends, the fake from its pending interactions): done.
-- S3 lane buckets from stored operations: in S1 (`PanelFacts.lane/4`, anchored at the last recorded
-  event; `Lane.window/3` rolls it on the client): done.
-- S4 now/finding/finding_refs, scrubbed of ids/branches/worktrees: in S1: done.
-- S5 agent detail request: `baa0525`: done.
-- S6 single-agent steering: `1a9e8a5` (verified path + fake + codec test): done.
+| id | what | commits | status |
+| --- | --- | --- | --- |
+| S1 | wire contract (agent + run panel facts, `NeedsYou`, `Phase`, `Lane`), persisted backend, fake parity; tag `p72-S-wire` | `436737d`, notes `db2f541` | done |
+| S2 | needs_you with the literal approval command / edit path / question prompt, oldest first (persisted, unsaved runtime `bc7f622`, fake) | `436737d`, `bc7f622` | done |
+| S3 | lane buckets from stored operations (12 × 5 s, dominant kind, anchored at the last recorded event; client roll `Lane.window/3`) | `436737d` | done |
+| S4 | now / finding / finding_refs in plain words, scrubbed of ids, branches and worktree paths; the transcript's agent text drops "isolated in <branch>" (the owner's bug, at the source) | `436737d`, `7a4b91d`, `22f5a42` | done |
+| S5 | agent detail request `agent.detail` → `DTO.AgentDetail` (core op, connection capability, persisted job, unsaved not_allowed, CLI Request/Codec/Delivery/Daemon, fake) | `baa0525`, `7a4b91d` | done |
+| S6 | single-agent steering: the existing `run.steer` + `node_id` path, verified in code; fake admits an agent id; codec test | `1a9e8a5` | done (not exercised live: no UI issues it yet) |
+
+Tests added: `apps/swarm_code_daemon/test/swarm_code/daemon/service/pass72_panel_facts_test.exs`
+(derivations from seeded nodes/ops: state, sentence, lane, finding, refs, scrub, band, phases, detail
+findings), `…/pass72_panel_wire_test.exs` (persisted backend on a fixture DB: agent/run facts, goal,
+consensus, workflow phases, agent detail job, not_allowed, transcript text, determinism),
+`apps/swarm_code_cli/test/swarm_code_cli/ui/data_source/pass72_panel_wire_test.exs` (JSON round
+trip snapshot + delta + older daemon + bounds, `Lane`, agent detail request/response/refusal, steer
+body, fake parity incl. the band from a pending approval and the fake's agent detail), and the
+`agent.detail` case in `apps/swarm_code_core/test/swarm_code/protocol/service_request_test.exs`.
+
+## Verification
+
+- Full umbrella `mix test` once (no `_build/prod`, load average ~40 from three owners): core 147/0,
+  CLI 1500 tests + 5 properties/0, daemon 976/5 — the 5 are `backup/gate_test.exs` timing cases;
+  rerun alone: 55/0. `mix format --check-formatted` clean; `compile --warnings-as-errors` clean.
+- Focused suites green: core (147), daemon service (170), CLI data_source (206+).
+- `mix swarm_code.provenance.sync --check` and `provenance.verify` green: no synced domain file
+  changed (only `daemon/service/*`, core `service_request.ex`, CLI `data_source/**`).
+- Real sandbox (release build, sandbox HOME, scratch `ailogic` copy, deepseek-v4-pro), 2 real
+  prompts: `/swarm` of 3 read-only reviewers, twice. The facts were printed from a copy of the
+  sandbox DB with the daemon's own code (`/Users/zaali/.cache/p70cli/p72-S/facts.exs`): Lead
+  `waiting | waiting on 3 agents`; reviewers `thinking` with their latest thought ("Let me read the
+  key test files."), lanes `·······▂▂▂▂▂` (thinks dominate: reads last milliseconds, so they rarely
+  win a 5 s cell — honest, per R7); done: `finding` = the first finding sentence with the severity
+  label lifted out, `finding_refs` = the cited `path:line`s; detail: 6 table findings for the Lead,
+  2 numbered findings with severity for each reviewer, grouped activity ("read 4 files", "searched 2
+  patterns", "thought — Let me analyze these files for findings."), life lanes, think time, context.
+  No sentence carried an id, a branch or a worktree path.
+- Observation (run 1): the session closed at 5:41 with "the daemon connection closed" and nothing
+  in `cli.log` but the application stop; during that run I was copying the live sandbox DB with
+  `sqlite3 .backup` every 10 s. Run 2, with no DB access during the run, completed normally. Not
+  reproduced; worth one check by QA (it may be the external reader, it may be something else).
+- Not verified live: the overlay issuing `agent.detail` and a single-agent steer (O's UI does not
+  exist on this branch); both paths are covered by the tests above.
 
 ## Requests for others
 
@@ -127,11 +161,19 @@ The fake now admits an agent id of the run as a steer target too.
 - **O, reducer:** the `{:agent_detail, %DTO.AgentDetail{}}` response (reducer.ex ~1068 matches
   `{request.expected_response, delivery.body}`) is new; store it for the overlay keyed by
   `{run_id, agent_id}` and ignore a stale one (request id / generation). Answer band items through
-  the run's `PendingInteraction` whose `node_id` equals `NeedsYou.node_id`.
+  the run's `PendingInteraction` whose `node_id` equals `NeedsYou.node_id`. The overlay composer's
+  steer: `{:steer, run_id, node_id, text, []}` with origin `{:draft, {conversation_id, {:thread,
+  node_id}}}`.
 - **P:** the state is `panel_state` (not `state`); the lane to draw is
   `Lane.window(agent, now_ms, 12 | 8)` (not `agent.lane` directly); a workflow phase's size is
-  `agent_count`. `:stopped` exists (user-stopped, not failed).
+  `agent_count`; `:stopped` exists (user-stopped, not failed). Transcript agent lines (P9) should
+  use `now`/`panel_state` like the panel; the item text no longer carries "isolated in …" either.
 
 ## What is left
 
-See the task list above.
+- Omitted because the domain does not record them (P5): workflow retry count/deadline, goal
+  criteria with "met in" and a maximum iteration count, consensus positions / `moved_from` /
+  "k of n on X", research found/read/used/domains/sections, search hit counts, a token budget.
+  `NeedsYou.kind :gate` (workflow gates) is reserved and not emitted: a gate is answered through the
+  workflow feature, not the run's pending interactions.
+- Live check of `agent.detail` and single-agent steering once O's overlay is merged.
