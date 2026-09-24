@@ -318,7 +318,7 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
         {:swarm_code_ui_closed, source, epoch},
         %{data_source: source, ui: %{source_epoch: epoch}} = state
       ),
-      do: {:noreply, begin_shutdown(state, :source_unavailable)}
+      do: {:noreply, source_lost(state, "the data source announced it closed")}
 
   def handle_info({:swarm_code_ui_data, _, receipt, _} = envelope, %{phase: :running} = state) do
     case DataBridge.normalize(envelope, state.ui.source_epoch) do
@@ -327,7 +327,7 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
 
         case consume(state.data_source, receipt, :applied) do
           :ok -> {:noreply, next}
-          _ -> {:noreply, begin_shutdown(next, :source_unavailable)}
+          other -> {:noreply, source_lost(next, "consume answered #{inspect(other, limit: 8)}")}
         end
 
       _ ->
@@ -362,7 +362,7 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
         {:stop, :normal, next}
 
       monitor == state.source_monitor ->
-        {:noreply, begin_shutdown(state, :source_unavailable)}
+        {:noreply, source_lost(state, "the data source process went down")}
 
       state.binder != nil and monitor == elem(state.binder, 1) ->
         {:noreply, begin_shutdown(state, :binding_failed)}
@@ -390,8 +390,22 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
   defp consume(source, receipt, disposition) do
     DataSource.consume(source, receipt, disposition)
   catch
-    :exit, _ -> {:error, :source_unavailable}
+    :exit, reason -> {:error, {:exit, exit_kind(reason)}}
   end
+
+  # pass72 F (P's request 3): a session that closes because the data source
+  # went away says why in cli.log; the reason is a shape, never a payload.
+  defp source_lost(state, why) do
+    Logger.warning("data source lost: " <> why)
+    begin_shutdown(state, :source_unavailable)
+  end
+
+  defp exit_kind({:timeout, _}), do: :timeout
+  defp exit_kind({:noproc, _}), do: :noproc
+  defp exit_kind({:nodedown, _}), do: :nodedown
+  defp exit_kind({reason, _}) when is_atom(reason), do: reason
+  defp exit_kind(reason) when is_atom(reason), do: reason
+  defp exit_kind(_), do: :other
 
   defp update(%{ui: %{lifecycle: :closing}} = state, _), do: state
 

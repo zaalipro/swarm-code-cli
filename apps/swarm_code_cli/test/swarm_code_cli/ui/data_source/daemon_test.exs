@@ -363,6 +363,50 @@ defmodule SwarmCodeCLI.UI.DataSource.DaemonTest do
     assert :ok = DataSource.close(client)
   end
 
+  # pass72 F (P's request 3): a real session closed with "the daemon connection
+  # closed" and nothing in cli.log; the client now logs why it closes.
+  test "a delivery the owner never consumes closes the connection and says why" do
+    clock = start_supervised!({Agent, fn -> %{system: 1_790_000_000_000, monotonic: 0} end})
+    tick = fn kind -> Agent.get(clock, &Map.fetch!(&1, kind)) end
+
+    path = socket_path!()
+    {listener, _server} = socket_server(path, self())
+    on_exit(fn -> close_socket(listener, path) end)
+
+    {:ok, client} =
+      SwarmCodeCLI.UI.DataSource.Daemon.start_link(
+        socket_path: path,
+        nonce: @nonce,
+        source_epoch: @epoch,
+        timeout: 200,
+        clock: tick
+      )
+
+    assert {:ok, "bind-1"} = DataSource.bind_owner(client, self(), "bind-1")
+
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        assert :ok =
+                 DataSource.watch(client, %Watch{
+                   watch_ref: "workspace-1",
+                   slot: :workspace,
+                   scope: @scope,
+                   generation: 0,
+                   page_size: 1,
+                   byte_limit: 65_536
+                 })
+
+        assert_receive {:swarm_code_ui_data, @epoch, _receipt, %Delivery{kind: :watch_ready}},
+                       1_000
+
+        Agent.update(clock, &Map.update!(&1, :monotonic, fn v -> v + 10_000 end))
+        assert closed_within?(client, 100)
+      end)
+
+    assert log =~ "closing the daemon connection: deadline:"
+    assert log =~ "the session did not consume a delivery in time"
+  end
+
   test "wrong-nonce command error is an unknown outcome rather than trusted remote refusal" do
     {client, _server} = connected!()
     assert :ok = DataSource.command(client, command_request("bad-reply", "wrong-nonce"))
@@ -572,6 +616,20 @@ defmodule SwarmCodeCLI.UI.DataSource.DaemonTest do
 
     assert body.through_sequence == 3
     assert :ok = DataSource.close(client)
+  end
+
+  # The deadline timer is real; poll the client's phase at its own pace.
+  defp closed_within?(_client, 0), do: false
+
+  defp closed_within?(client, tries) do
+    if :sys.get_state(client).phase == :closed do
+      true
+    else
+      receive do
+      after
+        20 -> closed_within?(client, tries - 1)
+      end
+    end
   end
 
   defp connected!(epoch \\ @epoch) do

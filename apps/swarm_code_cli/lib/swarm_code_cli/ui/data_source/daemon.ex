@@ -150,8 +150,12 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
         state = release_receipt(state, item)
 
         case credit(state, item) do
-          {:ok, next} -> {:reply, :ok, next |> dispatch_next() |> arm()}
-          :error -> {:reply, {:error, AdmissionError.new(:source_unavailable)}, shutdown(state)}
+          {:ok, next} ->
+            {:reply, :ok, next |> dispatch_next() |> arm()}
+
+          :error ->
+            {:reply, {:error, AdmissionError.new(:source_unavailable)},
+             lost(state, "no credit for the next delivery")}
         end
 
       %{token: ^token} when caller == state.owner and disposition == :discarded ->
@@ -294,7 +298,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
             fn message, acc ->
               case receive_message(message, acc) do
                 {:ok, next} -> {:cont, next}
-                :error -> {:halt, shutdown(acc)}
+                :error -> {:halt, lost(acc, "a daemon message broke the protocol")}
               end
             end
           )
@@ -315,8 +319,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
     {:noreply, shutdown(state)}
   end
 
-  def handle_info({:tcp_error, socket, _}, %{socket: socket} = state),
-    do: {:noreply, shutdown(state)}
+  def handle_info({:tcp_error, socket, reason}, %{socket: socket} = state),
+    do: {:noreply, lost(state, "socket error #{inspect(reason, limit: 4)}")}
 
   def handle_info({:DOWN, monitor, :process, _, _}, %{owner_monitor: monitor} = state),
     do: {:noreply, shutdown(state)}
@@ -331,7 +335,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
         (state.receipt != nil and state.receipt.deadline <= now(state))
 
     if expired do
-      {:noreply, shutdown(state)}
+      {:noreply, lost(state, "deadline: " <> expired_words(state))}
     else
       next = expire_requests(state)
       {:noreply, next |> dispatch_next() |> schedule_tick()}
@@ -710,6 +714,29 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
 
   defp arm(state), do: state
 
+  # pass72 F (P's request 3): a connection the client closes itself says why
+  # in cli.log (a shape, never a payload), so a session that ends with "the
+  # daemon connection closed" can be traced.
+  defp lost(state, why) do
+    Logger.warning("SwarmCode: closing the daemon connection: " <> why)
+    shutdown(state)
+  end
+
+  defp expired_words(state) do
+    t = now(state)
+
+    [
+      (state.partial_since != nil and t - state.partial_since >= state.timeout) &&
+        "a partial frame waited too long",
+      Enum.any?(state.controls, fn {_, control} -> control.deadline <= t end) &&
+        "a control request got no answer",
+      (state.receipt != nil and state.receipt.deadline <= t) &&
+        "the session did not consume a delivery in time"
+    ]
+    |> Enum.filter(&is_binary/1)
+    |> Enum.join(", ")
+  end
+
   defp shutdown(%{phase: :closed} = state), do: state
 
   defp shutdown(state) do
@@ -863,7 +890,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
 
       case queue_delivery(next, delivery, 0) do
         {:ok, result} -> result
-        :error -> shutdown(next)
+        :error -> lost(next, "the delivery queue is full")
       end
     end)
   end
