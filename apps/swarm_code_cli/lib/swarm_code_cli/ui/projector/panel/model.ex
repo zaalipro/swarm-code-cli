@@ -673,6 +673,25 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Model do
   end
 
   @doc """
+  Of the agents in `views` waiting on you, the one whose ask is oldest: the
+  one the band lists first and the approval card opens on (pass73 T10), not
+  the first in the tree. `nil` when none waits.
+  """
+  def first_waiting(views) do
+    case Enum.filter(views, & &1.needs_you?) do
+      [] -> nil
+      waiting -> Enum.min_by(waiting, &ask_age/1)
+    end
+  end
+
+  defp ask_age(view) do
+    case Map.get(view, :asks, []) do
+      [] -> {1, nil}
+      asks -> {0, asks |> Enum.map(&{&1.at, &1.id}) |> Enum.min()}
+    end
+  end
+
+  @doc """
   Everything waiting on you across `runs`, oldest first: `{interaction, run,
   agent view}` (the agent may be nil when the read model does not hold it).
   """

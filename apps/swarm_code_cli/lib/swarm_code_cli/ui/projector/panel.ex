@@ -959,7 +959,7 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
     state = ctx.state
 
     cond do
-      v = Enum.find(views, & &1.needs_you?) ->
+      v = Model.first_waiting(views) ->
         [{"! " <> v.display, :warning}, {" " <> elem(Model.sentence(v, state), 0), :text_muted}]
 
       v = Enum.find(views, &(&1.state == :failed)) ->

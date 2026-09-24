@@ -142,6 +142,56 @@ defmodule SwarmCodeCLI.UI.Projector.Pass73NamesTest do
     refute Enum.join(rows, "\n") =~ "Assistant"
   end
 
+  test "two waiting: the swarm footer names the agent the band and the card lead with" do
+    # Seen live: the band and the card opened on the oldest ask, the footer
+    # said the first waiting agent in the tree was "paused on you".
+    state = Pass73Scenes.screenshot_11(160, 45)
+    model = state.read_model
+    newer = model.interactions["demo-approval-80"]
+
+    older = %{
+      newer
+      | id: "demo-approval-79",
+        node_id: "demo-op-79",
+        created_at: state.now - 30_000,
+        approval: %{
+          newer.approval
+          | agent_id: "agent-80-4",
+            agent_name: "review-security-plan",
+            command: "ls lib",
+            arguments_preview: ~S<{"command":"ls lib"}>
+        }
+    }
+
+    security =
+      %{model.agents["agent-80-4"] | state: :waiting_approval}
+      |> Map.put(:panel_state, :needs_you)
+
+    model = %{
+      model
+      | interactions: Map.put(model.interactions, older.id, older),
+        agents: Map.put(model.agents, security.id, security)
+    }
+
+    state = %{state | read_model: model}
+    rows = screen(state)
+    panel_rows = region(rows, state, :inspector)
+    panel = Enum.join(panel_rows, "\n")
+
+    assert [first, _] = Enum.filter(panel_rows, &(&1 =~ ~r/ls lib|curl/)), panel
+    assert first =~ "security-plan"
+    assert Enum.join(rows, "\n") =~ "security-plan wants to run a command"
+    # The swarm's row under the run in chat names the same agent.
+    assert panel =~ "! security-plan wants to run a command", panel
+    refute panel =~ "angular-plan wants to"
+
+    # With the swarm in view, its footer does too.
+    state = %{state | destination: {:run, Pass73Scenes.swarm_id()}}
+    panel = state |> screen() |> region(state, :inspector) |> Enum.join("\n")
+    assert panel =~ "security-plan is paused on", panel
+    refute panel =~ "angular-plan is paused on"
+  end
+
   test "a chat turn's role label: the node's own name, the run's title, else Assistant" do
     assert Name.role_label(%{name: "Planner"}, nil) == "Planner"
 
