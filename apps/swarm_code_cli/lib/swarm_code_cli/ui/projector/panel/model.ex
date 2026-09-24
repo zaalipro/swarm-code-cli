@@ -435,7 +435,7 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Model do
   @doc "The agent's finding: the wire's, else the first sentence of its last report."
   def finding(agent, state) do
     case present(Map.get(agent, :finding)) do
-      nil -> report(agent, state) |> first_sentence()
+      nil -> agent |> reports(state) |> Enum.find_value(&first_sentence/1)
       text -> first_line(text)
     end
   end
@@ -444,7 +444,7 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Model do
   def refs(agent, state) do
     case Map.get(agent, :finding_refs) do
       [_ | _] = refs -> Enum.take(refs, 5)
-      _ -> parse_refs(report(agent, state))
+      _ -> agent |> reports(state) |> Enum.find(&first_sentence/1) |> parse_refs()
     end
   end
 
@@ -461,29 +461,24 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Model do
   end
 
   # A chat turn's one assistant stands for the run: its report is the answer.
-  defp report(%{state: :done, id: id, role: :assistant}, state) do
+  # The agent's last three texts, newest first: the newest can be only the
+  # branch notice the engine appends to a worker's report.
+  defp reports(%{state: :done, id: id, role: :assistant}, state),
+    do: texts(state, &(&1.run_id == id and &1.role == :assistant))
+
+  defp reports(%{state: :done, id: id}, state),
+    do: texts(state, &(Map.get(&1, :agent_id) == id and &1.role != :user))
+
+  defp reports(_agent, _state), do: []
+
+  defp texts(state, keep?) do
     state.read_model.transcript
     |> Map.values()
-    |> Enum.filter(&(&1.run_id == id and &1.kind == :text and &1.role == :assistant))
-    |> Enum.max_by(&{&1.created_sequence, &1.id}, fn -> nil end)
-    |> case do
-      %{text: text} when is_binary(text) -> text
-      _ -> nil
-    end
+    |> Enum.filter(&(&1.kind == :text and is_binary(&1.text) and keep?.(&1)))
+    |> Enum.sort_by(&{&1.created_sequence, &1.id}, :desc)
+    |> Enum.take(3)
+    |> Enum.map(& &1.text)
   end
-
-  defp report(%{state: :done, id: id}, state) do
-    state.read_model.transcript
-    |> Map.values()
-    |> Enum.filter(&(Map.get(&1, :agent_id) == id and &1.kind == :text and &1.role != :user))
-    |> Enum.max_by(&{&1.created_sequence, &1.id}, fn -> nil end)
-    |> case do
-      %{text: text} when is_binary(text) -> text
-      _ -> nil
-    end
-  end
-
-  defp report(_agent, _state), do: nil
 
   defp first_sentence(text), do: sentences(text, 1)
 
@@ -499,12 +494,18 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Model do
     |> String.replace(~r/[#*`>]+/, " ")
     |> String.split(["\n\n"], trim: true)
     |> Enum.map(&String.trim/1)
-    |> Enum.find(&(&1 != "" and sentence?(&1)))
+    |> Enum.reject(&(&1 == "" or notice?(&1) or not sentence?(&1)))
     |> case do
-      nil ->
+      [] ->
         nil
 
-      para ->
+      # "The first line is:" says nothing without what follows it.
+      [para, next | _] when binary_part(para, byte_size(para) - 1, 1) == ":" ->
+        (para <> " " <> next)
+        |> String.replace(~r/\s+/, " ")
+        |> String.slice(0, 160)
+
+      [para | _] ->
         para
         |> String.replace(~r/\s+/, " ")
         |> String.split(~r/(?<=[.!?])\s/)
@@ -515,6 +516,11 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Model do
         |> String.slice(0, 160)
     end
   end
+
+  # The engine's own notices in a worker's report ("[Changes on branch
+  # swarm/…]", "Delta patch captured: …") are not what the agent found.
+  defp notice?(para),
+    do: String.starts_with?(para, "[") or String.starts_with?(para, "Delta patch captured")
 
   # ---------------------------------------------------------------- lanes
 

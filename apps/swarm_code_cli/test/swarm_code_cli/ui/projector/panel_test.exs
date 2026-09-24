@@ -213,6 +213,45 @@ defmodule SwarmCodeCLI.UI.Projector.PanelTest do
     assert text =~ "3 of 4"
   end
 
+  test "regression: a worker's finding skips the engine's branch notice (real run, pass72)" do
+    state = state(:panel_swarm_3, 160, 45)
+    model = state.read_model
+    {id, agent} = Enum.find(model.agents, fn {_, a} -> a.name == "llm-tools-review" end)
+    agent = %{agent | finding: nil, finding_refs: []}
+
+    report = %SwarmCodeCLI.UI.DataSource.DTO.TranscriptItem{
+      id: "notice-1",
+      run_id: agent.run_id,
+      conversation_id: "c",
+      node_id: "notice-node",
+      agent_id: id,
+      revision: 1,
+      role: :assistant,
+      kind: :text,
+      state: :done,
+      text:
+        "The first line of `mix help compile` output is:\n\n**Compiles source files**\n\n" <>
+          "[Changes on branch swarm/f57efad4/run-mix-help-a7aff23e (65 files changed, " <>
+          "+299 -17711). Integrate them with the integrate_agent tool when they are good.]\n" <>
+          "Delta patch captured: 624204 bytes, 65 files changed",
+      reasoning: "",
+      created_sequence: 99_999,
+      at: 0
+    }
+
+    model = %{
+      model
+      | agents: Map.put(model.agents, id, agent),
+        transcript: Map.put(model.transcript, report.id, report)
+    }
+
+    text = %{state | read_model: model} |> panel_text() |> Enum.join("\n")
+
+    refute text =~ "Changes on branch"
+    assert text =~ "» The first line of mix help compile"
+    assert text =~ "Compiles source files"
+  end
+
   test "compact: one row per agent with short names, an 8-cell lane and the action" do
     rows = :panel_swarm_2 |> state(160, 45, panel: :compact) |> panel_text()
     text = Enum.join(rows, "\n")
