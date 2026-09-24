@@ -309,6 +309,29 @@ defmodule SwarmCodeCLI.UI.Projector.PanelTest do
     assert text =~ "Esc"
   end
 
+  # pass72 F: the finisher's seam fix. `Hint.labels/1` names agents as
+  # `{:agent, run, node}` (no needs-you flag); the panel keyed its badges on the
+  # four-element entry, so real hint mode drew no agent badge at all.
+  test "hint mode with Hint.labels/1 over PanelOrder draws every agent's badge" do
+    st = state(:panel_swarm_2, 160, 45)
+    labels = st |> PanelOrder.entries() |> SwarmCodeCLI.UI.Hint.labels()
+    web = SwarmCodeCLI.UI.Hint.label_for(labels, {:agent, "demo-panel-run-80", "agent-80-5"})
+    lead = SwarmCodeCLI.UI.Hint.label_for(labels, {:agent, "demo-panel-run-80", "agent-80-1"})
+    assert web && lead
+
+    text = st |> Map.put(:hint, %{labels: labels, typed: ""}) |> panel_text() |> Enum.join("\n")
+
+    assert text =~ " #{lead}  ◌ Lead"
+    assert text =~ " #{web}  ! web-ui-desktop"
+    assert text =~ " 1  ▌⋔ architecture review"
+
+    narrow = state(:panel_swarm_2, 100, 28)
+    nlabels = narrow |> PanelOrder.entries() |> SwarmCodeCLI.UI.Hint.labels()
+    strip = narrow |> Map.put(:hint, %{labels: nlabels, typed: ""}) |> screen() |> Enum.at(1)
+    nweb = SwarmCodeCLI.UI.Hint.label_for(nlabels, {:agent, "demo-panel-run-80", "agent-80-5"})
+    assert strip =~ nweb <> "  web"
+  end
+
   test "PanelOrder: runs and agents in display order; a folded run keeps its needs-you agent" do
     entries = PanelOrder.entries(state(:panel_swarm_2, 160, 45))
 

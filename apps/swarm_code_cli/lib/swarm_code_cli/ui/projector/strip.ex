@@ -62,7 +62,7 @@ defmodule SwarmCodeCLI.UI.Projector.Strip do
     agent_segments =
       agents
       |> Enum.flat_map(fn view ->
-        badge = Map.get(ctx.labels, {:agent, view.run_id, view.id, view.needs_you?})
+        badge = Map.get(ctx.labels, {:agent, view.run_id, view.id})
 
         badge_seg =
           if badge,
@@ -115,8 +115,13 @@ defmodule SwarmCodeCLI.UI.Projector.Strip do
 
   defp labels(state) do
     case Map.get(state, :hint) do
-      %{labels: labels} when is_map(labels) -> Map.new(labels, fn {l, t} -> {t, l} end)
+      %{labels: labels} when is_map(labels) -> Map.new(labels, fn {l, t} -> {hint_key(t), l} end)
       _ -> %{}
     end
   end
+
+  # Hint targets (owner O's `Hint.labels/1`) name an agent as `{:agent, run, node}`;
+  # the drawn entries carry the needs-you flag as well. Badges key on the former.
+  defp hint_key({:agent, run, node, _needs?}), do: {:agent, run, node}
+  defp hint_key(target), do: target
 end

@@ -90,8 +90,11 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
 
     labels =
       case hint do
-        %{labels: labels} when is_map(labels) -> Map.new(labels, fn {l, t} -> {t, l} end)
-        _ -> %{}
+        %{labels: labels} when is_map(labels) ->
+          Map.new(labels, fn {l, t} -> {hint_key(t), l} end)
+
+        _ ->
+          %{}
       end
 
     %{
@@ -398,7 +401,7 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
   defp badge_for(_ctx, nil), do: nil
 
   defp badge_for(ctx, view),
-    do: Map.get(ctx.labels, {:agent, view.run_id, view.id, view.needs_you?})
+    do: Map.get(ctx.labels, {:agent, view.run_id, view.id})
 
   defp run_badge(%{hint?: false}, _run), do: nil
   defp run_badge(ctx, run), do: Map.get(ctx.labels, {:run, run.id})
@@ -1084,4 +1087,9 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
 
   @doc false
   def changes(ctx, run), do: Changes.changes(ctx.state, run)
+
+  # Hint targets (owner O's `Hint.labels/1`) name an agent as `{:agent, run, node}`;
+  # the drawn entries carry the needs-you flag as well. Badges key on the former.
+  defp hint_key({:agent, run, node, _needs?}), do: {:agent, run, node}
+  defp hint_key(target), do: target
 end
