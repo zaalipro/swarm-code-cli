@@ -120,7 +120,17 @@ defmodule SwarmCode.Daemon.Service.PersistedProjection do
           finished_at: m.inserted_at,
           tokens_in: m.tokens_in,
           tokens_out: m.tokens_out,
-          result_bytes: fragment("0")
+          result_bytes: fragment("0"),
+          # pass73 T3/T8: a steer is a user message the running turn took in
+          # (`Engine.steer/4` stores it against the run it steers).
+          steer:
+            fragment(
+              "case when ? = 'user' and ? is not null and ? = ? then 1 else 0 end",
+              m.role,
+              m.reply_to_run_id,
+              m.reply_to_run_id,
+              m.run_id
+            )
         }
       )
 
@@ -171,7 +181,8 @@ defmodule SwarmCode.Daemon.Service.PersistedProjection do
           finished_at: n.finished_at,
           tokens_in: n.tokens_in,
           tokens_out: n.tokens_out,
-          result_bytes: fragment("length(cast(coalesce(?, '') as blob))", n.result)
+          result_bytes: fragment("length(cast(coalesce(?, '') as blob))", n.result),
+          steer: fragment("0")
         }
       )
 

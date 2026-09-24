@@ -29,6 +29,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
   # frozen, filled from each DTO's wire defaults. Legacy fixture-only defaults
   # (`allowed_actions`, `created_sequence`, ...) stay mandatory on the wire.
   @optional_wire_keys %{
+    # pass73 T3/T8: outcomes the durable ledger saved before these existed.
+    DTO.Outcome => [:disposition, :reason],
     DTO.WorkspaceSnapshot => [
       :mode,
       :chat_model,
@@ -48,7 +50,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
       :cost_usd,
       :title,
       :background,
-      :queued
+      :queued,
+      :queued_texts
     ],
     DTO.WorkspaceMetadata => [
       :project,
@@ -60,7 +63,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
       :context_window,
       :cost_usd,
       :title,
-      :queued
+      :queued,
+      :queued_texts
     ],
     DTO.ShellSnapshot => [:rate_limits],
     DTO.Approval => [

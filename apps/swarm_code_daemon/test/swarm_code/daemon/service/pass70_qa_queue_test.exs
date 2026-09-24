@@ -255,13 +255,15 @@ defmodule SwarmCode.Daemon.Service.Pass70QaQueueTest do
     assert Conversations.get(c.conversation.id).queued == []
   end
 
-  test "a slash command is never queued", c do
+  # pass73 T3/T8 (the owner's rule replaces pass70's "a slash command is never
+  # queued"): a command sent to the queue waits for the turn like a prompt.
+  test "a slash command sent to the queue waits for the running turn", c do
     {_run, _approval} = start_turn(c, "touch pass70-slash.txt")
 
-    assert {:ok, %{"value" => %{"status" => "rejected"}}} =
-             request(c.backend, "queue-slash", c.scope, queue_request("/model"))
+    assert {:ok, %{"value" => %{"status" => "accepted", "disposition" => "queued"}}} =
+             request(c.backend, "queue-slash", c.scope, queue_request("/model fixture"))
 
-    assert Conversations.get(c.conversation.id).queued == []
+    assert Conversations.get(c.conversation.id).queued == ["/model fixture"]
   end
 
   defp send_request(text),
