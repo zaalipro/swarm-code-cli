@@ -851,6 +851,20 @@ defmodule SwarmCodeCLI.UI.Reducer do
   end
 
   defp transition(state, {:complete_command, name}), do: SlashPalette.complete(state, name)
+
+  # pass73 finisher (V1's request K1): Enter on the approval card, with the
+  # draft blank, shows every line of its command ("… N more lines · Enter
+  # shows all"; PgUp/PgDn page it), and Enter again folds it back.
+  defp transition(%{layers: [{:approval, id} | _]} = state, {:approval_show_all, id}) do
+    selection =
+      if Map.get(state.selection, "approval_all") == id,
+        do: Map.delete(state.selection, "approval_all"),
+        else: Map.put(state.selection, "approval_all", id)
+
+    {%{state | selection: Map.delete(selection, "dialog_scroll")}, []}
+  end
+
+  defp transition(state, {:approval_show_all, _id}), do: {state, []}
   defp transition(state, {:complete_path, path}), do: PathCompletion.complete(state, path)
 
   # Ctrl-X. The terminal steps aside exactly as for Ctrl-Z (no frame is drawn

@@ -12,11 +12,19 @@ defmodule SwarmCodeCLI.UI.Composer do
     * `:run_command`: Enter runs a command: an exact slash command, the
       palette's highlighted command that takes no argument (T4), or a
       message that names "workflow" and goes as `/create-workflow` (T5).
-    * `:steer`: a plain message goes to this conversation's running chat turn
-      (T3), or the agent overlay's composer steers its agent.
-    * `:queue`: the message (or `/compact`) waits for the running chat
-      turn to end.
+    * `:steer`: a plain message goes to this conversation's live chat turn
+      (T3), paused or not started yet included (the daemon hands it to the
+      turn's root agent, which reads it when it goes on), or the agent
+      overlay's composer steers its agent.
+    * `:queue`: `/compact` waits for the running chat turn to end.
     * `:send`: a plain message starts a turn.
+    * `:show_all`: the approval card is on top and the draft is blank: Enter
+      shows every line of the command the card cut, or folds it back
+      (pass73 finisher, V1's request K1).
+
+  pass73 finisher: under an approval card that opened by itself, a draft
+  with text is still the composer's (`Keymap.typing_under_card?/1`), so
+  Enter does with it what it does without the card.
 
   The daemon has the last word: it may still queue a message the client
   expected to steer, and the transcript shows what actually happened.
@@ -24,12 +32,15 @@ defmodule SwarmCodeCLI.UI.Composer do
 
   alias SwarmCodeCLI.UI.{Drafts, Editor, Keymap, SlashPalette, State, WorkflowKeyword}
 
-  @type enter_action :: :send | :steer | :queue | :run_command | :complete | :none
+  @type enter_action ::
+          :send | :steer | :queue | :run_command | :complete | :show_all | :none
   @type esc_action ::
           {:stop, map()} | :close_layer | :close_overlay | :dismiss_completion | :none
 
-  # The chat turn takes a steer while it is working; before it starts, or
-  # while it is paused, the message waits its turn instead.
+  # The chat turn takes a steer while it is live. pass73 finisher (S's
+  # request K2): a paused or not yet started turn is steered too, as the
+  # daemon does (`Engine.steer/4` reaches every registered chat run; the root
+  # agent reads the message when the turn goes on).
   @steerable [:running, :streaming, :waiting_question, :waiting_approval, :retrying]
   @waiting [:queued, :paused]
 
@@ -44,13 +55,19 @@ defmodule SwarmCodeCLI.UI.Composer do
     text = draft_text(state)
 
     cond do
-      String.trim(text) == "" -> :none
+      String.trim(text) == "" -> blank_action(state)
       Map.get(state, :overlay) != nil -> :steer
+      Keymap.typing_under_card?(state) -> composer_action(state, text)
       Map.get(state, :layers, []) != [] -> :none
       Map.get(state, :focus) != "composer" -> :none
       true -> composer_action(state, text)
     end
   end
+
+  defp blank_action(%{layers: [{:approval, id} | _]} = state) when is_binary(id),
+    do: if(Keymap.show_all?(state, id), do: :show_all, else: :none)
+
+  defp blank_action(_state), do: :none
 
   @doc """
   What Esc does now: `{:stop, run}` stops the turn in view (the run summary,
@@ -152,8 +169,7 @@ defmodule SwarmCodeCLI.UI.Composer do
   defp message_action(state) do
     case chat_turn(state) do
       nil -> :send
-      %{state: run_state} when run_state in @steerable -> :steer
-      _waiting -> :queue
+      _live -> :steer
     end
   end
 

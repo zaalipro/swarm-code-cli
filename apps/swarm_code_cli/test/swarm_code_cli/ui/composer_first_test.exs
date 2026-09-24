@@ -451,8 +451,46 @@ defmodule SwarmCodeCLI.UI.ComposerFirstTest do
 
       {_, effects} = press(state, letter("A"))
       assert [{:resolve_approval, _, _, _, _, :always_allow}] = commands(effects)
-      assert {_, []} = press(state, letter("Y"))
-      assert {_, []} = press(state, letter("D"))
+
+      # pass73 finisher (V1's request K3): a letter the card does not offer
+      # decides nothing; on a card that opened by itself it types.
+      for key <- ["Y", "D"] do
+        {typed, effects} = press(state, letter(key))
+        assert commands(effects) == []
+        assert text(typed) == key
+        assert [{:approval, "a1"} | _] = typed.layers
+      end
+    end
+
+    # pass73 finisher (V1's request K3, seen live): "Also add …" typed at a
+    # card that offers no "always" keeps its "A" and the card stays open.
+    test "a sentence typed at a card that does not offer its first letter keeps it" do
+      decisions = [:approve, :approve_run, :deny, :deny_stop]
+      {state, _} = initial([run("r", :waiting_approval)], [approval("a1")])
+      state = %{with_decisions(state, "a1", decisions) | interaction_grace: nil}
+
+      {state, effects} =
+        Enum.reduce(String.graphemes("Also add"), {state, []}, fn letter_key, {st, acc} ->
+          {next, more} = press(st, letter(letter_key))
+          {next, acc ++ more}
+        end)
+
+      assert commands(effects) == []
+      assert text(state) == "Also add"
+      assert [{:approval, "a1"} | _] = state.layers
+    end
+
+    # pass73 finisher: Enter under a card that opened by itself sends the
+    # draft typed there (here it steers the waiting turn); the card stays.
+    test "Enter with a draft under a card that opened by itself sends it" do
+      {state, _} = initial([run("r", :waiting_approval)], [approval("a1")])
+      state = %{state | interaction_grace: nil}
+      state = type(state, "use the staging db")
+      assert SwarmCodeCLI.UI.Composer.enter_action(state) == :steer
+
+      {sent, effects} = press(state, Input.key(:enter))
+      assert [{:dispatch, :send, "use the staging db", :main, []}] = commands(effects)
+      assert [{:approval, "a1"} | _] = sent.layers
     end
 
     test "Esc puts it aside until Ctrl-N; a settled one closes by itself" do

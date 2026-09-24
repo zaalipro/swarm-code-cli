@@ -159,6 +159,9 @@ defmodule SwarmCodeCLI.UI.Action do
              | {:nudge, -8 | -2 | 2 | 8}}
           | {:composer_height, :reset | {:nudge, -1 | 1}}
           | {:complete_command, binary()}
+          # pass73 finisher (V1's request K1): Enter on an approval card with a
+          # blank draft shows every command line, or folds them back.
+          | {:approval_show_all, binary()}
           | {:library_page, :next | :previous | :refresh}
           | {:library_command, atom(), binary(), atom()}
           | {:library_select, binary()}
@@ -537,6 +540,8 @@ defmodule SwarmCodeCLI.UI.Action do
 
   def validate({:complete_command, name} = action),
     do: valid_action(action, SwarmCodeCLI.UI.SlashPalette.valid_name?(name))
+
+  def validate({:approval_show_all, id} = action), do: valid_action(action, Intent.valid_id?(id))
 
   def validate({:presenter_handoff_requested, :plain} = action), do: {:ok, action}
   def validate({:presenter_handoff_confirmed, :plain} = action), do: {:ok, action}

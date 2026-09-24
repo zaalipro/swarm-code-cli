@@ -695,15 +695,25 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
 
   # An approval or a question card: its own keys are on the card; the row
   # says what Esc does to it (sets it aside until ^N brings it back).
+  # pass73 finisher: Enter first when it does something here: it sends the
+  # draft typed under a card that opened by itself ("Enter steer"), or shows
+  # the whole command the card cut ("Enter show all").
   defp hints(%{layers: [{kind, _} | _]} = state, :dialog, budget)
        when kind in [:approval, :question] do
     ascii? = state.capabilities.ascii?
 
-    [
-      {:escape, "later"},
-      {:next_need, "next"},
-      {:help, "keys"}
-    ]
+    enter =
+      case enter_words(enter_action(state)) do
+        nil -> []
+        words -> [{:activate, words}]
+      end
+
+    (enter ++
+       [
+         {:escape, "later"},
+         {:next_need, "next"},
+         {:help, "keys"}
+       ])
     |> Enum.flat_map(fn {id, words} ->
       with %{} = binding <- Bindings.fetch(id),
            key when key != nil <- Bindings.key_in_context(binding, :dialog) do
@@ -818,6 +828,7 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
   def enter_words(:queue), do: "queue"
   def enter_words(:run_command), do: "run"
   def enter_words(:complete), do: "complete"
+  def enter_words(:show_all), do: "show all"
   def enter_words(_), do: nil
 
   @doc """

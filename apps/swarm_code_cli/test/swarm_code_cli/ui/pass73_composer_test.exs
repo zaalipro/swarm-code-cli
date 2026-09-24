@@ -20,7 +20,9 @@ defmodule SwarmCodeCLI.UI.Pass73ComposerTest do
     assert Composer.enter_action(type(ready([swarm]), "hello")) == :send
   end
 
-  test "a plain message steers the running chat turn, and waits for one not started" do
+  # pass73 finisher (S's request K2): the daemon steers every registered
+  # chat run, a paused or not yet started one included, so the hint says so.
+  test "a plain message steers the live chat turn, paused or not started yet too" do
     for run_state <- [:running, :streaming, :waiting_approval, :waiting_question, :retrying] do
       state = ready([run("t", run_state)]) |> type("also check the tests")
       assert Composer.enter_action(state) == :steer, inspect(run_state)
@@ -28,7 +30,7 @@ defmodule SwarmCodeCLI.UI.Pass73ComposerTest do
 
     for run_state <- [:queued, :paused] do
       state = ready([run("t", run_state)]) |> type("later")
-      assert Composer.enter_action(state) == :queue, inspect(run_state)
+      assert Composer.enter_action(state) == :steer, inspect(run_state)
     end
 
     # A finished turn is not the turn.

@@ -257,6 +257,11 @@ defmodule SwarmCodeCLI.UI.Keymap do
       typing_over_card?(code, mods, state) ->
         draft_edit(state, if(code == :backspace, do: :delete_backward, else: {:insert, code}))
 
+      # pass73 finisher: Enter under a card that opened by itself sends the
+      # draft typed there (steers the turn, starts a run…); the card stays.
+      sending_under_card?(code, mods, state) ->
+        draft_send(state)
+
       true ->
         context = Context.of(state)
 
@@ -388,12 +393,13 @@ defmodule SwarmCodeCLI.UI.Keymap do
   defp grace(_code, _mods, _state), do: :ignore
 
   # pass72 G10 (QA Q11): a card that opened by itself answers only to its
-  # own keys (y Y A d D n) while the draft is empty. Any other character, or
-  # any character once the draft has text, types into the composer under the
-  # card, where the user sees it; "abc" used to approve a command with its
-  # "a". A card the user focused (^N, a badge) keeps the whole grammar.
-  @card_answers ~w(y Y A d D n)
-
+  # own keys while the draft is empty. Any other character, or any character
+  # once the draft has text, types into the composer under the card, where
+  # the user sees it; "abc" used to approve a command with its "a". A card
+  # the user focused (^N, a badge) keeps the whole grammar. pass73 finisher
+  # (V1's request K3): its own keys are the decisions it offers (`n` walks to
+  # the next one), so the "A" of "Also add …" types when the card offers no
+  # "always".
   defp typing_over_card?(_code, _mods, %{hint: %{}}), do: false
 
   defp typing_over_card?(code, mods, %{auto_opened: id, layers: [{:approval, id} | _]} = state)
@@ -405,11 +411,49 @@ defmodule SwarmCodeCLI.UI.Keymap do
       not is_binary(code) -> false
       not String.printable?(code) or String.length(code) != 1 or code == " " -> typing?
       typing? -> true
-      true -> code not in @card_answers
+      true -> code not in card_answers(state, id)
     end
   end
 
   defp typing_over_card?(_code, _mods, _state), do: false
+
+  # The letters a pending approval answers to: one per decision it offers.
+  defp card_answers(state, id) do
+    case Map.get(state.read_model.interactions, id) do
+      %{kind: :approval} = item ->
+        offered = decisions(item)
+
+        [
+          {"y", :approve in offered},
+          {"Y", :approve_run in offered},
+          {"A", :always_prefix in offered or :always_allow in offered},
+          {"d", :deny in offered},
+          {"D", :deny_stop in offered},
+          {"n", true}
+        ]
+        |> Enum.flat_map(fn {key, offered?} -> if offered?, do: [key], else: [] end)
+
+      _ ->
+        ["n"]
+    end
+  end
+
+  @doc """
+  pass73 finisher: whether Enter sends the composer's draft although an
+  approval card is open: the card opened by itself (the user did not focus
+  it) and the draft under it holds text. The card stays open.
+  """
+  @spec typing_under_card?(map()) :: boolean()
+  def typing_under_card?(%{hint: %{}}), do: false
+
+  def typing_under_card?(%{auto_opened: id, layers: [{:approval, id} | _]} = state)
+      when not is_nil(id),
+      do: String.trim(draft_text(state)) != ""
+
+  def typing_under_card?(_state), do: false
+
+  defp sending_under_card?(:enter, [], state), do: typing_under_card?(state)
+  defp sending_under_card?(_code, _mods, _state), do: false
 
   defp draft_edit(state, operation) do
     case State.current_draft_key(state) do
@@ -513,10 +557,41 @@ defmodule SwarmCodeCLI.UI.Keymap do
   # ------------------------------------------------------------- activation
 
   @doc false
-  def modal_activate(_, %{focus: focus}, _) when focus in ["cancel", "close"],
+  # pass73 finisher (V1's request K1): Enter on the approval card with the
+  # draft blank shows every line of a command the card cut ("… N more lines
+  # · Enter shows all"), and folds it back once shown.
+  def modal_activate({:approval, id}, state, table) when is_binary(id) do
+    if show_all?(state, id),
+      do: result({:approval_show_all, id}),
+      else: modal_focus_activate({:approval, id}, state, table)
+  end
+
+  def modal_activate(layer, state, table), do: modal_focus_activate(layer, state, table)
+
+  @doc """
+  pass73 finisher: whether Enter on the open approval card `id` shows (or
+  folds back) its whole command: the draft is blank, and the card cut lines
+  or already shows them all.
+  """
+  @spec show_all?(map(), binary()) :: boolean()
+  def show_all?(state, id) do
+    with [{:approval, ^id} | _] <- state.layers,
+         "" <- String.trim(draft_text(state)),
+         %{} = item <- Map.get(state.read_model.interactions, id),
+         %{} <- state.size do
+      width = Layout.for_state(state).rects.main.width
+
+      SwarmCodeCLI.UI.Projector.ApprovalCard.expanded?(state, item) or
+        SwarmCodeCLI.UI.Projector.ApprovalCard.hidden_lines(state, width) > 0
+    else
+      _ -> false
+    end
+  end
+
+  defp modal_focus_activate(_, %{focus: focus}, _) when focus in ["cancel", "close"],
     do: result(:close_top_layer)
 
-  def modal_activate({:unsent_changes, kind}, %{focus: "confirm"} = state, table) do
+  defp modal_focus_activate({:unsent_changes, kind}, %{focus: "confirm"} = state, table) do
     target =
       if kind == :plain,
         do: {:presenter_handoff_confirmed, :plain},
@@ -525,10 +600,10 @@ defmodule SwarmCodeCLI.UI.Keymap do
     activate({:local, target}, state, table)
   end
 
-  def modal_activate({:confirm_intent, intent}, %{focus: "confirm"} = state, table),
+  defp modal_focus_activate({:confirm_intent, intent}, %{focus: "confirm"} = state, table),
     do: activate({:intent, intent}, state, table)
 
-  def modal_activate({:question, id}, state, table) do
+  defp modal_focus_activate({:question, id}, state, table) do
     case Map.get(state.read_model.interactions, id) do
       nil ->
         :ignore
@@ -544,45 +619,47 @@ defmodule SwarmCodeCLI.UI.Keymap do
     end
   end
 
-  def modal_activate({:approval, _}, state, table),
+  defp modal_focus_activate({:approval, _}, state, table),
     do: approval_key(state.focus, state, table)
 
-  def modal_activate({:library, _}, %{focus: focus} = state, _) do
+  defp modal_focus_activate({:library, _}, %{focus: focus} = state, _) do
     case SwarmCodeCLI.UI.Library.activation(state, focus) do
       nil -> :ignore
       action -> result(action)
     end
   end
 
-  def modal_activate({:research_form, _}, %{focus: "start"}, _), do: result(:research_start)
+  defp modal_focus_activate({:research_form, _}, %{focus: "start"}, _),
+    do: result(:research_start)
 
-  def modal_activate({:research_form, _}, %{focus: focus}, _)
-      when focus in ["low", "medium", "high", "ultra"],
-      do: result({:research_depth, String.to_atom(focus)})
+  defp modal_focus_activate({:research_form, _}, %{focus: focus}, _)
+       when focus in ["low", "medium", "high", "ultra"],
+       do: result({:research_depth, String.to_atom(focus)})
 
-  def modal_activate({:research_form, _}, _, _), do: :ignore
+  defp modal_focus_activate({:research_form, _}, _, _), do: :ignore
 
-  def modal_activate({:feature_form, _, _}, %{focus: "submit"}, _), do: result(:feature_submit)
+  defp modal_focus_activate({:feature_form, _, _}, %{focus: "submit"}, _),
+    do: result(:feature_submit)
 
-  def modal_activate({:feature_form, _, _}, %{focus: "field:" <> key} = state, _),
+  defp modal_focus_activate({:feature_form, _, _}, %{focus: "field:" <> key} = state, _),
     do:
       if(SwarmCodeCLI.UI.FeatureForm.choice?(state, key),
         do: result({:feature_cycle, key, 1}),
         else: :ignore
       )
 
-  def modal_activate({:feature_form, _, _}, _, _), do: :ignore
+  defp modal_focus_activate({:feature_form, _, _}, _, _), do: :ignore
 
   # The go-to popup's rows come from the table, so Enter on one does exactly
   # what its letter does.
-  def modal_activate({:jump, _}, state, table) do
+  defp modal_focus_activate({:jump, _}, state, table) do
     case Special.jump_action(state.focus) do
       nil -> :ignore
       action -> activate({:local, action}, state, table)
     end
   end
 
-  def modal_activate({kind, _}, state, table) when kind in [:switcher, :action_menu] do
+  defp modal_focus_activate({kind, _}, state, table) when kind in [:switcher, :action_menu] do
     entries = Switcher.visible(state, table)
 
     entry =
@@ -594,7 +671,7 @@ defmodule SwarmCodeCLI.UI.Keymap do
 
   # A picker row carries the command it sends; Enter on the query picks the
   # first row the query leaves, as in the switcher.
-  def modal_activate({:model_picker, _, _} = layer, state, table) do
+  defp modal_focus_activate({:model_picker, _, _} = layer, state, table) do
     rows = ModelPicker.rows(state, layer)
 
     row =
@@ -603,19 +680,19 @@ defmodule SwarmCodeCLI.UI.Keymap do
     if row, do: activate({:intent, row.intent}, state, table), else: :ignore
   end
 
-  def modal_activate({kind, _}, state, table)
-      when kind in [:runs_dashboard, :run_palette] do
+  defp modal_focus_activate({kind, _}, state, table)
+       when kind in [:runs_dashboard, :run_palette] do
     if Map.has_key?(state.read_model.runs, state.focus),
       do: activate({:local, {:navigate, {:run, state.focus}}}, state, table),
       else: :ignore
   end
 
-  def modal_activate({:run_inspector, run_id, _}, state, table) do
+  defp modal_focus_activate({:run_inspector, run_id, _}, state, table) do
     agent_id = state.focus
     find_target(state, table, &match?({:intent, {:stop_agent, ^run_id, ^agent_id, _}}, &1))
   end
 
-  def modal_activate({:detail, _, _}, state, table) do
+  defp modal_focus_activate({:detail, _, _}, state, table) do
     direction =
       case state.focus do
         "next" -> :next
@@ -626,7 +703,7 @@ defmodule SwarmCodeCLI.UI.Keymap do
     if direction, do: activate({:local, {:detail_page, direction}}, state, table), else: :ignore
   end
 
-  def modal_activate(_, _, _), do: :ignore
+  defp modal_focus_activate(_, _, _), do: :ignore
 
   @doc false
   def content_activate(state, table) do
