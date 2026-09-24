@@ -132,4 +132,17 @@ defmodule SwarmCodeCLI.Release.PersistedSessionTest do
     assert PersistedSession.unknown_model_words(nil) ==
              "No provider offers the model given with --model."
   end
+
+  # pass72 G17 (QA Q17): after a hang-up the closing words went to a
+  # terminal that no longer answered, and the VM never stopped.
+  test "the closing words never wait on a terminal that is gone" do
+    silent = spawn(fn -> receive do: (:never -> :ok) end)
+
+    {micros, result} =
+      :timer.tc(fn -> SwarmCodeCLI.Release.PersistedSession.say(silent, "bye", 200) end)
+
+    assert result == :timeout
+    assert micros < 1_000_000
+    Process.exit(silent, :kill)
+  end
 end

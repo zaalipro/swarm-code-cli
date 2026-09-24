@@ -35,6 +35,15 @@ defmodule SwarmCodeCLI.Application do
           1
       end
 
-    System.stop(if(is_integer(status) and status in 0..255, do: status, else: 1))
+    status = if(is_integer(status) and status in 0..255, do: status, else: 1)
+
+    # pass72 G17 (QA Q17): after a hang-up a graceful stop could wait on the
+    # lost terminal forever and the VM stayed up; it halts after 10 s.
+    spawn(fn ->
+      Process.sleep(10_000)
+      System.halt(status)
+    end)
+
+    System.stop(status)
   end
 end

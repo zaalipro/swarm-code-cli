@@ -144,8 +144,27 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
           else: []
         )
 
-    IO.puts(:stderr, Enum.join(lines, "\n"))
+    say(:stderr, Enum.join(lines, "\n"))
     status
+  end
+
+  @doc """
+  pass72 G17 (QA Q17): writes the closing words, but never waits more than
+  `timeout` for the terminal. After a hang-up the terminal is gone ("Writer
+  crashed (:eio)") and a write could block forever, so the VM never stopped.
+  """
+  @spec say(:stdio | :stderr | pid(), iodata(), non_neg_integer()) :: :ok | :timeout
+  def say(device, text, timeout \\ 2_000) do
+    {pid, ref} = spawn_monitor(fn -> IO.puts(device, text) end)
+
+    receive do
+      {:DOWN, ^ref, :process, ^pid, _} -> :ok
+    after
+      timeout ->
+        Process.demonitor(ref, [:flush])
+        Process.exit(pid, :kill)
+        :timeout
+    end
   end
 
   @doc "The private log file: `~/Library/Logs/SwarmCode/cli.log` on macOS, XDG state on Linux."
@@ -461,7 +480,7 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
           :ok
 
         {:error, :cleanup_unconfirmed} ->
-          IO.puts(
+          say(
             :stderr,
             "SwarmCode closed its database with one native handle still pending; saved data is safe."
           )
@@ -565,7 +584,7 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
       ]
       |> Enum.filter(&is_binary/1)
 
-    IO.puts(Enum.join(lines, "\n"))
+    say(:stdio, Enum.join(lines, "\n"))
   end
 
   # pass71 S4 (R1): every run the quit stopped, one per line under the count.
