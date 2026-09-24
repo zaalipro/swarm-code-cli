@@ -76,7 +76,7 @@ defmodule SwarmCodeCLI.UI.Pass72PreferencesRuntimeTest do
     assert SessionRuntime.snapshot(runtime).panel_mode == :hidden
 
     settle(runtime)
-    assert Preferences.read(path) == %{panel_mode: :hidden}
+    assert Preferences.read(path) == %{Preferences.defaults() | panel_mode: :hidden}
 
     assert File.stat!(path).mode |> Bitwise.band(0o777) == 0o600
   end

@@ -67,6 +67,27 @@ defmodule SwarmCodeCLI.UI.State do
     # mark a steer "→ agent" and the overlay can echo it. The daemon records
     # a steer as a plain user message of the run.
     steers: [],
+    # pass73-K fields (published with the tag `p73-K-keyword`).
+    # T1: tool rows show their diffs, previews and output tails (`/diff`).
+    show_diffs: true,
+    # T2: the painted theme (`/theme`); the port owner repaints on a change.
+    theme_mode: :dark,
+    # T2: `SWARM_THEME` named a theme at launch, so it wins at the next one.
+    theme_env: nil,
+    # T9: the terminal sends wheel reports (`/mouse`); off restores the
+    # terminal's own click-and-drag selection.
+    mouse?: true,
+    # T3/T8: what became of the messages sent from the main composer, newest
+    # first (at most 50): %{id, conversation_id, run_id, text, status, at}
+    # with status :sending (not answered yet), :steered (went to the running
+    # turn `run_id`), :queued (waits for the running turn), :started (began
+    # run `run_id`) or :refused (with `reason`, the words why). `text` is
+    # trimmed, as the transcript's user message shows it.
+    deliveries: [],
+    # T7: approval-policy changes observed on the project, newest first (at
+    # most 20): %{conversation_id, from, to, at}; the transcript prints
+    # "Approvals: auto → full access" at `at`.
+    policy_notices: [],
     library: nil,
     feature_form: nil,
     banner: nil,

@@ -87,7 +87,20 @@ defmodule SwarmCodeCLI.UI.Action do
              | :queue
              | :approval
              | :trust
-             | :panel}
+             | :panel
+             | :diff
+             | :theme
+             | :mouse}
+          # pass73-K: Enter on the palette runs its command (T4); the opt-out
+          # key sends a "workflow" message as it is (T5); /diff, /theme and
+          # /mouse (T1, T2, T9) and the /approval picker's rows (T7).
+          | {:run_command, binary()}
+          | :send_plain
+          | {:show_diffs, boolean() | :toggle}
+          | {:theme_mode, :dark | :light | :toggle}
+          | {:mouse, boolean() | :toggle}
+          | {:approval_mode, :read_only | :auto | :full_access}
+          | {:preferences_loaded, map()}
           | {:open_conversation, binary()}
           | :new_conversation
           | {:complete_path, binary()}
@@ -219,8 +232,41 @@ defmodule SwarmCodeCLI.UI.Action do
           :queue,
           :approval,
           :trust,
-          :panel
+          :panel,
+          :diff,
+          :theme,
+          :mouse
         ]
+      )
+
+  def validate({:run_command, name} = action),
+    do: valid_action(action, SwarmCodeCLI.UI.SlashPalette.valid_name?(name))
+
+  def validate(:send_plain), do: {:ok, :send_plain}
+
+  def validate({:show_diffs, value} = action),
+    do: valid_action(action, is_boolean(value) or value == :toggle)
+
+  def validate({:theme_mode, value} = action),
+    do: valid_action(action, value in [:dark, :light, :toggle])
+
+  def validate({:mouse, value} = action),
+    do: valid_action(action, is_boolean(value) or value == :toggle)
+
+  def validate({:approval_mode, mode} = action),
+    do: valid_action(action, mode in [:read_only, :auto, :full_access])
+
+  # The runtime read cli.json: the keys it holds beside the panel's mode.
+  def validate({:preferences_loaded, loaded} = action) when is_map(loaded),
+    do:
+      valid_action(
+        action,
+        Enum.all?(loaded, fn
+          {:show_diffs, value} -> is_boolean(value)
+          {:theme, value} -> value in [nil, :dark, :light]
+          {:mouse?, value} -> is_boolean(value)
+          _ -> false
+        end)
       )
 
   def validate({:open_conversation, id} = action), do: valid_action(action, Intent.valid_id?(id))

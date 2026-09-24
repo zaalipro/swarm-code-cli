@@ -31,7 +31,8 @@ defmodule SwarmCodeCLI.UI.Keymap do
     ModelPicker,
     Question,
     State,
-    Switcher
+    Switcher,
+    WorkflowKeyword
   }
 
   alias SwarmCodeCLI.UI.Keymap.{Bindings, Context, Special}
@@ -119,12 +120,23 @@ defmodule SwarmCodeCLI.UI.Keymap do
        when is_binary(text) do
     case {local_command(text), ModelPicker.opener(text)} do
       {command, _} when not is_nil(command) -> result({:slash_local, command})
-      {nil, nil} -> invoke(target, state)
+      {nil, nil} -> invoke(workflow_route(target), state)
       {nil, picker} -> result({:open_layer, ModelPicker.open(state, picker)})
     end
   end
 
   defp send_target(target, state), do: invoke(target, state)
+
+  # pass73 T5: a message that names a workflow (`WorkflowKeyword`) goes as
+  # `/create-workflow <text>`; the opt-out key (`:send_plain`) skips this.
+  defp workflow_route({:intent, {:dispatch, :send, text, :main, []}} = target) do
+    routed = {:dispatch, :send, WorkflowKeyword.command(text), :main, []}
+
+    if WorkflowKeyword.routes?(text) and
+         match?({:ok, _}, SwarmCodeCLI.UI.Intent.validate(routed)),
+       do: {:intent, routed},
+       else: target
+  end
 
   @doc """
   Whether an Enter that found no Send target should wait for the workspace:
@@ -157,8 +169,8 @@ defmodule SwarmCodeCLI.UI.Keymap do
   @doc """
   The slash commands the client answers itself, from the draft's text: a bare
   `/help`, `/quit` (`/exit`), `/new` (`/clear`), `/resume`, `/conversations`,
-  `/trust`, and `/queue`, `/approval` and `/panel` with or without their
-  argument.
+  `/trust`, and `/queue`, `/approval`, `/panel`, `/diff`, `/theme` and
+  `/mouse` with or without their argument.
   """
   @spec local_command(binary()) :: atom() | nil
   def local_command(text) when is_binary(text) do
@@ -169,6 +181,9 @@ defmodule SwarmCodeCLI.UI.Keymap do
       command?(trimmed, "/queue") -> :queue
       command?(trimmed, "/approval") -> :approval
       command?(trimmed, "/panel") -> :panel
+      command?(trimmed, "/diff") -> :diff
+      command?(trimmed, "/theme") -> :theme
+      command?(trimmed, "/mouse") -> :mouse
       trimmed == "/trust" -> :trust
       true -> nil
     end

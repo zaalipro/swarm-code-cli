@@ -190,11 +190,22 @@ defmodule SwarmCodeCLI.UI.RequestResolver do
        ),
        do: actual != expected
 
-  defp valid_origin?({:dispatch, _operation, text, target, attachments}, context) do
+  defp valid_origin?({:dispatch, operation, text, target, attachments}, context) do
     match?({:draft, _key}, context.origin) and scope_current?(context) and
-      no_active_subject?(context) and context.editor_text == text and
+      no_active_subject?(context) and dispatched_text?(operation, text, context.editor_text) and
       context.dispatch_target == target and context.attachment_refs == attachments
   end
+
+  # The draft as typed, or (pass73 T5) the draft that names a workflow sent
+  # as `/create-workflow <draft>`, derived here from the editor's own text.
+  defp dispatched_text?(_operation, text, text), do: true
+
+  defp dispatched_text?(:send, text, editor_text),
+    do:
+      SwarmCodeCLI.UI.WorkflowKeyword.routes?(editor_text) and
+        text == SwarmCodeCLI.UI.WorkflowKeyword.command(editor_text)
+
+  defp dispatched_text?(_operation, _text, _editor_text), do: false
 
   defp valid_origin?({:steer, run_id, node_id, text, attachments}, context) do
     match?({:draft, _key}, context.origin) and scope_current?(context) and
