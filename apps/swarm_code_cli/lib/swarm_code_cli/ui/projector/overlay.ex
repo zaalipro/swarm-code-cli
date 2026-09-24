@@ -497,16 +497,6 @@ defmodule SwarmCodeCLI.UI.Projector.Overlay do
     {glyph, word, role} = agent_state(state, agent)
     name = agent_name(agent)
 
-    left = [
-      {" ", st(state, :text_primary)},
-      {Support.glyph(mark_token, state), st(state, mark_role)},
-      {" " <> title(run) <> " › ", st(state, :text_muted)},
-      {name, bold(state, lane_role(state, agent))},
-      {"  ", st(state, :text_primary)},
-      {glyph, st(state, role)},
-      {" " <> word, st(state, role)}
-    ]
-
     wide? = width >= 140
     rail = neighbours(state, agent, wide?)
 
@@ -515,7 +505,38 @@ defmodule SwarmCodeCLI.UI.Projector.Overlay do
         do: rail ++ [{"      Esc back to chat ", st(state, :text_faint)}],
         else: rail ++ [{" ", st(state, :text_faint)}]
 
-    [spread(state, left, right, width)]
+    # pass72 G13 (QA Q14): the run title gives way first; the agent's name
+    # and state word stay whole, and the rail gives way before them.
+    who = [
+      {name, bold(state, lane_role(state, agent))},
+      {"  ", st(state, :text_primary)},
+      {glyph, st(state, role)},
+      {" " <> word, st(state, role)}
+    ]
+
+    mark = [
+      {" ", st(state, :text_primary)},
+      {Support.glyph(mark_token, state), st(state, mark_role)}
+    ]
+
+    fixed = cells(state, mark ++ who) + 4
+
+    right =
+      if fixed + cells(state, right) + 1 > width, do: [{" ", st(state, :text_faint)}], else: right
+
+    room = width - fixed - cells(state, right) - 1
+    policy = state.capabilities.ambiguous_width
+
+    crumb =
+      cond do
+        room >= 6 ->
+          [{" " <> elide_cells(title(run), room, policy) <> " › ", st(state, :text_muted)}]
+
+        true ->
+          [{" ", st(state, :text_muted)}]
+      end
+
+    [spread(state, mark ++ crumb ++ who, right, width)]
   end
 
   defp neighbours(state, agent, names?) do
@@ -560,8 +581,23 @@ defmodule SwarmCodeCLI.UI.Projector.Overlay do
       |> Enum.reject(&(&1 in [nil, ""]))
       |> Enum.join(" · ")
 
+    # pass72 G13 (QA Q14): D8's run clock.
+    run_clock =
+      case Map.get(run, :started_at) do
+        at when is_integer(at) and at > 0 ->
+          "run " <> clock(max((Map.get(run, :finished_at) || state.now) - at, 0))
+
+        _ ->
+          nil
+      end
+
     figures =
-      [elapsed(state, agent), tokens_k(agent.tokens_in + agent.tokens_out), cost(agent.cost_usd)]
+      [
+        run_clock,
+        elapsed(state, agent),
+        tokens_k(agent.tokens_in + agent.tokens_out),
+        cost(agent.cost_usd)
+      ]
       |> Enum.reject(&is_nil/1)
       |> Enum.join(" · ")
 
@@ -1794,10 +1830,19 @@ defmodule SwarmCodeCLI.UI.Projector.Overlay do
     {Theme.run_mark(kind), elem(Theme.run_kind(kind), 1)}
   end
 
+  defp elide_cells(text, room, policy) do
+    if Width.cells(text, policy) <= room do
+      text
+    else
+      {kept, _rest, _} = Width.take_cells(text, max(room - 1, 1), policy)
+      String.trim_trailing(kept) <> "…"
+    end
+  end
+
   defp title(run) do
-    case Map.get(run, :title) do
-      title when is_binary(title) and title != "" -> title
-      _ -> Atom.to_string(run.kind)
+    case SwarmCodeCLI.UI.Projector.Panel.Model.title(run) do
+      "" -> Atom.to_string(run.kind)
+      title -> title
     end
   end
 

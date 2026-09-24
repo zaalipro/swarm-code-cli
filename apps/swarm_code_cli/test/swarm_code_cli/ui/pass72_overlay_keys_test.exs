@@ -345,6 +345,28 @@ defmodule SwarmCodeCLI.UI.Pass72OverlayKeysTest do
       assert screen_rows(state) |> Enum.join("\n") =~ "steered to engine-lifecycle"
     end
 
+    test "regression (QA Q14, Q25): a long run title gives way; the name, state and run clock stay" do
+      title =
+        "/review-changes base= dimensions=correctness,security,performance,maintainability " <>
+          "focus= scope=the whole project and everything around it"
+
+      for columns <- [160, 100] do
+        state =
+          ready(
+            size: %Size{columns: columns, rows: 36},
+            runs: [run("r1", :running, title: title)]
+          )
+          |> Reducer.update({:overlay_open, "r1", "data"})
+          |> elem(0)
+
+        [header, meta | _] = screen_rows(state)
+        assert header =~ "data-persistence  ● working", "#{columns}: " <> header
+        assert header =~ "…"
+        refute header =~ "base="
+        assert meta =~ ~r/run \d+:\d\d/, meta
+      end
+    end
+
     test "typed text types; the overlay's draft is its own" do
       state = ready() |> Reducer.update({:overlay_open, "r1", "data"}) |> elem(0)
       # From the activity `o` is the raw operations; any other letter types.

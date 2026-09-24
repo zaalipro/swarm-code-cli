@@ -53,7 +53,7 @@ defmodule SwarmCodeCLI.UI.Projector.Strip do
       [
         if(in_chat?, do: {Panel.g(ctx, :in_chat), :accent}, else: {" ", :plain}),
         {Draw.mark(Model.kind(run), state), Model.kind_role(run)},
-        {" " <> Draw.elide(Model.first_line(run.title), 28, state), :text_primary, [:bold]},
+        {" " <> Draw.elide(Model.title(run), 28, state), :text_primary, [:bold]},
         ratio && {" " <> ratio, :text_muted},
         agents != [] && {" · ", :text_ghost}
       ]

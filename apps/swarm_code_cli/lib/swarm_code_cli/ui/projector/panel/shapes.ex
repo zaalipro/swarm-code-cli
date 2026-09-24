@@ -759,7 +759,7 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Shapes do
                 {"  " <> mark, role},
                 {" ", :plain},
                 {Draw.mark(Model.kind(run), state), Model.kind_role(run)},
-                {" " <> Model.first_line(run.title), :text_muted}
+                {" " <> Model.title(run), :text_muted}
               ],
               [{clock || "", :text_faint}]
             )

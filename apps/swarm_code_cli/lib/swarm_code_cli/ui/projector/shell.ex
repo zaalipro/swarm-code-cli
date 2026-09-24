@@ -436,7 +436,12 @@ defmodule SwarmCodeCLI.UI.Projector.Shell do
   # a title that is one long word still shows most of that word.
   defp tab_title(run, state) do
     policy = state.capabilities.ambiguous_width
-    title = run.title |> Density.safe(state, @tab_title * 4) |> SafeText.value()
+
+    title =
+      run
+      |> SwarmCodeCLI.UI.Projector.Panel.Model.title()
+      |> Density.safe(state, @tab_title * 4)
+      |> SafeText.value()
 
     if Width.cells(title, policy) <= @tab_title do
       Density.safe(title, state, @tab_title)

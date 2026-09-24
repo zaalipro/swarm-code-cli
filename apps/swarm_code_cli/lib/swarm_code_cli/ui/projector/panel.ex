@@ -510,7 +510,7 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
     in_chat = if in_chat?, do: Draw.cells(" · in chat", state), else: 0
     right_cells = if is_binary(right) and right != "", do: Draw.cells(right, state) + 1, else: 0
     room = ctx.width - 2 - lead_cells - 3 - in_chat - right_cells
-    Draw.elide(Model.first_line(run.title), max(4, room), state)
+    Draw.elide(Model.title(run), max(4, room), state)
   end
 
   defp right_text([{text, _role}]), do: text
@@ -891,7 +891,7 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
           [
             {Draw.mark(Model.kind(run), state), Model.kind_role(run)},
             {" ", :plain},
-            {Model.first_line(run.title), if(ctx.hint?, do: :text_faint, else: :text_primary)},
+            {Model.title(run), if(ctx.hint?, do: :text_faint, else: :text_primary)},
             {"  ", :plain}
           ] ++ glyphs,
         right
@@ -960,7 +960,7 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
           {" ", :plain},
           {Draw.mark(Model.kind(run), state), :text_muted},
           {" ", :plain},
-          {Model.first_line(run.title), :text_primary}
+          {Model.title(run), :text_primary}
         ],
         [{mark, role}, {" " <> (clock || ""), :text_muted}]
       )

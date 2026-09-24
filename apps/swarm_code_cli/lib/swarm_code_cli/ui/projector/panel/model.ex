@@ -745,6 +745,21 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Model do
 
   # ------------------------------------------------------------- helpers
 
+  @doc """
+  A run's title on one line, without the empty parameters a workflow's
+  command line carries (`/review-changes base= dimensions=a,b` reads
+  `/review-changes dimensions=a,b`; pass72 G13, QA Q25).
+  """
+  def title(%{title: title}) when is_binary(title) do
+    title
+    |> first_line()
+    |> String.replace(~r/(?:^|\s)[\w\-]+=(?=\s|$)/u, "")
+    |> String.replace(~r/\s{2,}/u, " ")
+    |> String.trim()
+  end
+
+  def title(_run), do: ""
+
   @doc "The first line of `text`, trimmed."
   def first_line(text) when is_binary(text),
     do: text |> String.split(["\r\n", "\n"], parts: 2) |> hd() |> String.trim()
