@@ -37,6 +37,26 @@ defmodule SwarmCodeCLI.UI.Pass73RefusalWordsTest do
     assert status(state) =~ "Not sent: the project is gone"
   end
 
+  test "K's refused delivery of this conversation gives the words when the outcome has none" do
+    state = refused(base(), :rejected)
+    {conversation, _} = State.current_draft_key(state)
+
+    state =
+      Map.put(state, :deliveries, [
+        %{
+          id: "d1",
+          conversation_id: conversation,
+          run_id: nil,
+          text: "hi",
+          status: :refused,
+          at: 1,
+          reason: "the conversation was deleted"
+        }
+      ])
+
+    assert status(state) =~ "Not sent: the conversation was deleted"
+  end
+
   test "every outcome that did not go through reads as a sentence with a next step" do
     for outcome <- [:rejected, :deadline_exceeded, :revision_conflict, :outcome_unknown] do
       row = status(refused(base(), outcome))
@@ -73,6 +93,20 @@ defmodule SwarmCodeCLI.UI.Pass73RefusalWordsTest do
 
     assert Status.refusal_words({:run, "r"}, "untrusted") ==
              "Not done: the project is not trusted · /trust trusts it"
+  end
+
+  describe "the approval-policy change (T7)" do
+    test "names both modes the way the status row does" do
+      assert Status.policy_words(:auto, :full_access) == "Approvals: auto → full access"
+      assert Status.policy_words(:read_only, :auto) == "Approvals: read-only → auto"
+      assert Status.policy_words(nil, "read_only") == "Approvals: read-only"
+
+      assert Status.policy_words(:auto, :full_access, true) ==
+               "Approvals: auto → full access · nothing asks first"
+
+      assert Status.policy_words(:full_access, :auto, true) ==
+               "Approvals: full access → auto · edits go ahead, commands ask first"
+    end
   end
 
   defp base do

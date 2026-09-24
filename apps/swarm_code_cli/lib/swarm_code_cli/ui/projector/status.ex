@@ -523,7 +523,8 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
           {"Sending…", :info}
 
         {:settled, _, :rejected} ->
-          {refusal_words(origin, Map.get(reasons, origin)), :error}
+          {refusal_words(origin, Map.get(reasons, origin) || delivery_reason(state, origin)),
+           :error}
 
         {:settled, _, :deadline_exceeded} ->
           {refusal_words(origin, :deadline_expired), :error}
@@ -544,6 +545,60 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
           nil
       end
     end)
+  end
+
+  # K's `State.deliveries` (pass73 T3/T8): the newest refused send of this
+  # draft's conversation carries the words why.
+  defp delivery_reason(state, {:draft, {conversation, _}}) do
+    state
+    |> Map.get(:deliveries, [])
+    |> Enum.find_value(fn
+      %{conversation_id: ^conversation, status: :refused, reason: reason}
+      when is_binary(reason) and reason != "" ->
+        reason
+
+      _ ->
+        nil
+    end)
+  end
+
+  defp delivery_reason(_state, _origin), do: nil
+
+  @doc """
+  pass73 T7: the words of an approval-policy change, for the transcript
+  notice and the toast alike: `"Approvals: auto → full access"`, with what
+  the new mode means after a middle dot when `detail?`. `from` may be nil
+  (the first mode seen). The modes read as on the status row.
+  """
+  @spec policy_words(atom() | binary() | nil, atom() | binary(), boolean()) :: binary()
+  def policy_words(from, to, detail? \\ false) do
+    head =
+      case mode_word(from) do
+        nil -> "Approvals: " <> mode_word(to)
+        word -> "Approvals: " <> word <> " → " <> mode_word(to)
+      end
+
+    if detail?, do: head <> " · " <> mode_detail(to), else: head
+  end
+
+  defp mode_word(nil), do: nil
+
+  defp mode_word(mode) do
+    case to_string(mode) do
+      m when m in ["read_only", "read-only", "readonly"] -> "read-only"
+      "auto" -> "auto"
+      m when m in ["full", "full_access", "full-access"] -> "full access"
+      other -> String.replace(other, "_", " ")
+    end
+  end
+
+  defp mode_detail(mode) do
+    case mode_word(mode) do
+      "read-only" -> "nothing is written or run without you"
+      "auto" -> "edits go ahead, commands ask first"
+      "full access" -> "nothing asks first"
+      _ -> "/approval shows the modes"
+    end
   end
 
   @doc """
