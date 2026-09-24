@@ -402,6 +402,15 @@ defmodule SwarmCodeCLI.UI.Projector.Composer do
   def slash_popup(state, width) do
     suggestions = SlashPalette.visible(state, 8)
 
+    # pass73 T4/T6: the selected row says what Enter does with it now (runs a
+    # bare command, completes one that waits for its argument).
+    enter =
+      case SwarmCodeCLI.UI.Projector.Status.enter_action(state) do
+        :run_command -> " run"
+        :complete -> " complete"
+        _ -> nil
+      end
+
     Enum.map(suggestions, fn item ->
       name_style =
         if item.selected?,
@@ -422,10 +431,16 @@ defmodule SwarmCodeCLI.UI.Projector.Composer do
       row(
         [rail, {"  /" <> item.name, name_style}] ++
           args ++ [{"   " <> (item.desc || ""), tint(:text_muted, state)}],
-        if(item.selected?,
-          do: [{"Tab", tint(:key, state, [:bold])}, {" complete", tint(:text_faint, state)}],
-          else: []
-        ),
+        cond do
+          item.selected? and enter != nil ->
+            [{"Enter", tint(:key, state, [:bold])}, {enter, tint(:text_faint, state)}]
+
+          item.selected? ->
+            [{"Tab", tint(:key, state, [:bold])}, {" complete", tint(:text_faint, state)}]
+
+          true ->
+            []
+        end,
         if(item.selected?, do: :hover, else: :popover),
         state,
         width

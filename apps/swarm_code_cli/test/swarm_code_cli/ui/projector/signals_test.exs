@@ -196,9 +196,11 @@ defmodule SwarmCodeCLI.UI.Projector.SignalsTest do
 
       assert status =~ "Build · read-only · untrusted"
       assert status =~ "llmotions limited · 42s"
-      # E1: in the composer Esc interrupts the turn (it never moves focus).
-      # No turn is streaming, so the second hint is the palette (pass70 Q7).
-      assert status =~ ~r/send +Ctrl-P palette$/
+      # pass73 T6: no turn streams and the composer is empty, so neither
+      # Esc nor Enter is hinted; the keys that work now are.
+      assert status =~ ~r/Ctrl-P palette +Ctrl-F hints$/
+      refute status =~ "Esc"
+      refute status =~ "Enter"
     end
 
     test "on a wide row the background command and the spend are there too" do

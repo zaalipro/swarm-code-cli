@@ -14,7 +14,7 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
   so a rebind can never leave the row advertising a key that does something
   else. Nothing on this row is an id, a focus name or a cue prefix.
   """
-  alias SwarmCodeCLI.UI.{SafeText, Width}
+  alias SwarmCodeCLI.UI.{SafeText, SlashPalette, Width}
   alias SwarmCodeCLI.UI.Keymap.{Bindings, Context}
   alias SwarmCodeCLI.UI.Scene.{Block, Span}
   alias SwarmCodeCLI.UI.Projector.{Composer, Density, KeyLabel, RunRow, Support}
@@ -530,6 +530,43 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
   end
 
   # The strongest `budget` hints for the context, key then word.
+  #
+  # pass73 T6: the composer's hints are true at this moment. Enter is hinted
+  # only when the composer has text, and names what Enter does now (send,
+  # steer, queue, run, complete: `Composer.enter_action/1`); Esc only when it
+  # does something now, and names it ("Esc stop Workflow author"). The other
+  # keys follow only where they work: Tab while the slash palette is open,
+  # Ctrl-F while the panel has something to open, Ctrl-C "clear" over a draft.
+  defp hints(state, :composer, budget) do
+    state
+    |> composer_hints()
+    |> Enum.take(budget)
+    |> hint_spans(state)
+  end
+
+  # An approval or a question card: its own keys are on the card; the row
+  # says what Esc does to it (sets it aside until ^N brings it back).
+  defp hints(%{layers: [{kind, _} | _]} = state, :dialog, budget)
+       when kind in [:approval, :question] do
+    ascii? = state.capabilities.ascii?
+
+    [
+      {:escape, "later"},
+      {:next_need, "next"},
+      {:help, "keys"}
+    ]
+    |> Enum.flat_map(fn {id, words} ->
+      with %{} = binding <- Bindings.fetch(id),
+           key when key != nil <- Bindings.key_in_context(binding, :dialog) do
+        [{KeyLabel.label(key, ascii?), words}]
+      else
+        _ -> []
+      end
+    end)
+    |> Enum.take(budget)
+    |> hint_spans(state)
+  end
+
   defp hints(state, context, budget) do
     live? = SwarmCodeCLI.UI.Keymap.live_turn(state) != nil
 
@@ -543,18 +580,189 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
     |> Enum.flat_map(fn binding ->
       case Bindings.key_in_context(binding, context) do
         nil -> []
-        key -> [{KeyLabel.label(key, state.capabilities.ascii?), binding.label}]
+        key -> [{KeyLabel.label(key, state.capabilities.ascii?), String.downcase(binding.label)}]
       end
     end)
     |> Enum.take(budget)
+    |> hint_spans(state)
+  end
+
+  defp hint_spans(pairs, state) do
+    pairs
     |> Enum.map(fn {key, label} ->
       [
         span(key, tint(:plain, state, :key, [:bold]), state),
-        span(" " <> String.downcase(label), tint(:plain, state, :text_faint, []), state)
+        span(" " <> label, tint(:plain, state, :text_faint, []), state)
       ]
     end)
     |> Enum.intersperse([gap("   ", state)])
     |> List.flatten()
+  end
+
+  @doc """
+  pass73 T6: the composer's key hints, strongest first, as `{key, words}`:
+  what Esc does now, what Enter does now, then the keys that work in this
+  state. Pure; the status row takes as many as fit.
+  """
+  def composer_hints(state) do
+    ascii? = state.capabilities.ascii?
+    text = SwarmCodeCLI.UI.Keymap.draft_text(state)
+    key = fn id -> composer_key(id, ascii?) end
+
+    esc =
+      case esc_words(state) do
+        nil -> []
+        words -> with(k when k != nil <- key.(:interrupt_turn), do: [{k, words}], else: (_ -> []))
+      end
+
+    enter =
+      case enter_words(enter_action(state)) do
+        nil -> []
+        _ when text == "" -> []
+        words -> with(k when k != nil <- key.(:send), do: [{k, words}], else: (_ -> []))
+      end
+
+    palette? = SlashPalette.open?(state)
+
+    rest =
+      [
+        {:next_need_chord, if(waiting_count(state) > 0, do: "waiting")},
+        {:complete, if(palette? and enter_action(state) != :complete, do: "complete")},
+        {:command_palette, "palette"},
+        {:hint_mode, if(SwarmCodeCLI.UI.Reducer.Hint.open(state) != nil, do: "hints")},
+        {:interrupt, if(text != "", do: "clear")},
+        {:select_mode, "select"}
+      ]
+      |> Enum.flat_map(fn
+        {_id, nil} ->
+          []
+
+        {id, words} ->
+          case key.(id) do
+            nil -> []
+            k -> [{k, words}]
+          end
+      end)
+
+    esc ++ enter ++ rest
+  end
+
+  defp composer_key(id, ascii?) do
+    with %{} = binding <- Bindings.fetch(id),
+         key when key != nil <- Bindings.key_in_context(binding, :composer) do
+      KeyLabel.label(key, ascii?)
+    else
+      _ -> nil
+    end
+  end
+
+  @doc """
+  pass73 T6: what Enter does with the draft now, from K's
+  `SwarmCodeCLI.UI.Composer.enter_action/1`
+  (`:send | :steer | :queue | :run_command | :complete | :none`).
+  """
+  def enter_action(state) do
+    # Until K's module is merged, the same rule read off the state here.
+    composer = Module.concat(SwarmCodeCLI.UI, Composer)
+
+    if Code.ensure_loaded?(composer) and function_exported?(composer, :enter_action, 1),
+      do: composer.enter_action(state),
+      else: interim_enter_action(state)
+  end
+
+  defp interim_enter_action(state) do
+    text = SwarmCodeCLI.UI.Keymap.draft_text(state)
+
+    cond do
+      String.trim(text) == "" -> :none
+      SlashPalette.open?(state) -> palette_action(state, text)
+      String.starts_with?(text, "/") -> :run_command
+      SwarmCodeCLI.UI.Keymap.live_turn(state) != nil -> :steer
+      true -> :send
+    end
+  end
+
+  defp palette_action(state, text) do
+    case SlashPalette.selected(state) do
+      %{name: name} = item when is_binary(name) ->
+        args = Map.get(item, :args)
+
+        cond do
+          String.trim(text) == "/" <> name -> :run_command
+          is_binary(args) and args != "" -> :complete
+          true -> :run_command
+        end
+
+      _ ->
+        :run_command
+    end
+  end
+
+  @doc "The word the status row gives each Enter action; nil hides the hint."
+  def enter_words(:send), do: "send"
+  def enter_words(:steer), do: "steer"
+  def enter_words(:queue), do: "queue"
+  def enter_words(:run_command), do: "run"
+  def enter_words(:complete), do: "complete"
+  def enter_words(_), do: nil
+
+  @doc """
+  pass73 T6: what Esc does in the composer now, in words, or nil when it does
+  nothing. It mirrors `Keymap.Special.run(:escape, …)`: an open `@path` list
+  closes; else the live turn of this conversation stops when the daemon
+  allows it, named by its agent ("stop Workflow author").
+  """
+  def esc_words(state) do
+    cond do
+      SwarmCodeCLI.UI.Reducer.PathCompletion.open?(state) ->
+        "close"
+
+      true ->
+        case SwarmCodeCLI.UI.Keymap.live_turn(state) do
+          %{allowed_actions: actions} = turn ->
+            if :stop in (actions || []), do: "stop " <> turn_agent_name(state, turn)
+
+          _ ->
+            nil
+        end
+    end
+  end
+
+  @agent_name_cells 24
+
+  # The live turn's own agent (its root node): "Workflow author", "Planner",
+  # "Assistant"; the run's kind when no agent row has arrived yet.
+  defp turn_agent_name(state, turn) do
+    policy = state.capabilities.ambiguous_width
+
+    name =
+      state.read_model.agents
+      |> Map.values()
+      |> Enum.filter(&(Map.get(&1, :run_id) == turn.id))
+      |> Enum.sort_by(&{Map.get(&1, :depth) || 0, if(Map.get(&1, :parent_id), do: 1, else: 0)})
+      |> List.first()
+      |> case do
+        %{name: name} when is_binary(name) and name != "" -> name
+        _ -> nil
+      end
+
+    name =
+      name ||
+        case turn.kind do
+          :workflow -> "the workflow"
+          :swarm -> "the swarm"
+          _ -> "the turn"
+        end
+
+    name = name |> String.split(["\r\n", "\n"], parts: 2) |> hd() |> String.trim()
+
+    if Width.cells(name, policy) > @agent_name_cells do
+      {taken, _, _} = Width.take_cells(name, @agent_name_cells - 1, policy)
+      taken = String.trim_trailing(taken)
+      taken <> if(state.capabilities.ascii?, do: "~", else: "…")
+    else
+      name
+    end
   end
 
   defp span(text, style, state), do: %Span{text: Density.safe(text, state, 200), style: style}
