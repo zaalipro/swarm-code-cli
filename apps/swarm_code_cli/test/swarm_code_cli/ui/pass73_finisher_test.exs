@@ -10,7 +10,7 @@ defmodule SwarmCodeCLI.UI.Pass73FinisherTest do
     only: [ready: 1, run: 2, run: 3, press: 2, paste: 2, send: 1, requests: 1]
 
   alias SwarmCodeCLI.Test.Pass73Scenes
-  alias SwarmCodeCLI.UI.{Composer, Input, Keymap, Layout, Reducer}
+  alias SwarmCodeCLI.UI.{Composer, Input, Keymap, Layout, Reducer, SafeText}
   alias SwarmCodeCLI.UI.DataSource.{AdmissionError, DTO, Delivery}
   alias SwarmCodeCLI.UI.Projector.{ApprovalCard, Status}
 
@@ -171,6 +171,29 @@ defmodule SwarmCodeCLI.UI.Pass73FinisherTest do
       assert request.origin == origin
       {state, _} = answer(state, request, status: :accepted, identifiers: ["t"])
       refute Map.has_key?(state.mutation_reasons, origin)
+    end
+  end
+
+  describe "the live check's findings" do
+    # `/com` Enter runs `/compact`, which the daemon queues behind the live
+    # chat turn; the hint said "Enter run" while the transcript said queued.
+    test "the palette's /compact behind a live chat turn is hinted as a queue" do
+      state = ready([run("t", :streaming)]) |> paste("/com")
+      assert SwarmCodeCLI.UI.SlashPalette.enter_completion(state) == {:run, "compact"}
+      assert Composer.enter_action(state) == :queue
+
+      idle = ready([]) |> paste("/com")
+      assert Composer.enter_action(idle) == :run_command
+    end
+
+    # The picker's title echoed its query ("Actions: approvals:").
+    test "the /approval picker is titled by what it chooses" do
+      {state, _} = ready([]) |> paste("/approval") |> send()
+      assert [{:switcher, _} | _] = state.layers
+      {scene, _} = SwarmCodeCLI.UI.Projector.project(state)
+      assert %SwarmCodeCLI.UI.Scene.Dialog{title: title} = scene.overlay
+      assert SafeText.value(title) =~ "Approvals · who asks before what runs"
+      refute SafeText.value(title) =~ "Actions: approvals:"
     end
   end
 

@@ -1082,6 +1082,9 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
   # the prefix ("Search: #" after /resume).
   defp switcher_title("#" <> query), do: "Conversations: " <> query
   defp switcher_title("/" <> query), do: "Commands: " <> query
+  # pass73 finisher: the /approval picker's rows are a query of their own
+  # (`Switcher.approval_query/0`); its title is what it chooses.
+  defp switcher_title(">approvals:" <> _), do: "Approvals · who asks before what runs"
   defp switcher_title(">" <> query), do: "Actions: " <> query
   defp switcher_title("@" <> query), do: "Projects: " <> query
   defp switcher_title(query), do: "Search: " <> query

@@ -156,8 +156,10 @@ defmodule SwarmCodeCLI.UI.Composer do
       {:complete, _name} ->
         :complete
 
-      {:run, _name} ->
-        :run_command
+      # pass73 finisher: `/com` Enter runs `/compact`, which the daemon queues
+      # behind a live chat turn, so the hint says "queue" then too.
+      {:run, name} ->
+        if name in @after_turn and chat_turn(state) != nil, do: :queue, else: :run_command
 
       nil ->
         if after_turn_command?(text) and chat_turn(state) != nil,
