@@ -4,6 +4,7 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
   Never starts a Repo or bypasses its production gate. Selection/navigation
   results ask the presenter to act; they do not claim a selection was performed.
   """
+  require Logger
   alias SwarmCode.Commands
   alias SwarmCode.Daemon.Service.SessionConfiguration
 
@@ -242,6 +243,22 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
       :error ->
         {:error, :unknown_model}
     end
+  end
+
+  # pass73 T3/T8: `/plan <task>` plans this task now, as a run of its own
+  # beside the live ones. The conversation keeps its mode: a run remembers the
+  # mode it ran in (Spec 50 §4), so the planner's gate asks this run.
+  defp execute(conv, %{action: :start_turn, mode: :plan} = cmd, opts) do
+    started(
+      conv,
+      cmd.name,
+      Engine.start_chat_turn(
+        %{SessionConfiguration.overlay(conv) | mode: "plan"},
+        cmd.task,
+        attachments(opts),
+        research_ids: research_ids(opts)
+      )
+    )
   end
 
   defp execute(conv, %{action: :start_turn, mode: :consensus} = cmd, opts) do
@@ -860,7 +877,18 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
   defp normalize_result(_), do: {:error, :operation_failed}
   defp failure(reason) when reason in @errors, do: {:error, reason}
   defp failure(:invalid_workflow_arguments), do: {:error, :invalid_workflow_arguments}
-  defp failure(_), do: {:error, :operation_failed}
+
+  # pass73 T3/T8: an unexpected failure is still refused, but cli.log names its
+  # shape (a tag, never a changeset's text) so the next report is diagnosable.
+  defp failure(reason) do
+    Logger.warning("SwarmCode daemon: a command failed: " <> failure_shape(reason))
+    {:error, :operation_failed}
+  end
+
+  defp failure_shape(reason) when is_atom(reason), do: Atom.to_string(reason)
+  defp failure_shape({tag, _}) when is_atom(tag), do: Atom.to_string(tag)
+  defp failure_shape({tag, _, _}) when is_atom(tag), do: Atom.to_string(tag)
+  defp failure_shape(_), do: "unrecognised"
   defp attachments(opts), do: Keyword.get(opts, :attachments, [])
   defp research_ids(opts), do: Keyword.get(opts, :research_ids, [])
 

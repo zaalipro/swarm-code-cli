@@ -13,7 +13,8 @@ defmodule SwarmCode.Commands do
   @builtins [
     {"swarm", "<task>", "Start a swarm of agents on a task"},
     {"goal", "<text>", "Set the conversation goal every agent keeps in mind"},
-    {"plan", "", "Toggle plan mode — read-only, produces a step-by-step plan"},
+    {"plan", "[task]",
+     "Toggle plan mode; with a task, plan it now as a read-only run beside the others"},
     {"review", "", "Review the uncommitted changes and report problems"},
     {"effort", "<low|medium|high|max>", "Reasoning effort of this conversation's chat model"},
     {"swarm_effort", "<low|medium|high|max>",
@@ -274,7 +275,10 @@ defmodule SwarmCode.Commands do
     do: ok(item, :pursue_goal, %{mode: :goal, text: text, execution: :chat})
 
   defp parse_known(%{name: "plan"} = item, "", _), do: ok(item, :toggle_mode, %{mode: :plan})
-  defp parse_known(%{name: "plan"}, _, _), do: error(:unexpected_argument)
+  # pass73 T3/T8: `/plan <task>` is a run of its own (a planner turn), started
+  # at once like `/consensus <task>`; it used to be refused as an argument.
+  defp parse_known(%{name: "plan"} = item, task, _),
+    do: ok(item, :start_turn, %{mode: :plan, task: task})
 
   defp parse_known(%{name: "ultra"} = item, args, _) do
     case String.downcase(args) do
