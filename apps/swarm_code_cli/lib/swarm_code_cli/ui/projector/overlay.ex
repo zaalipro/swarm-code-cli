@@ -864,7 +864,10 @@ defmodule SwarmCodeCLI.UI.Projector.Overlay do
       end
 
     looking =
-      case latest_thought(state) do
+      case if(agent.state in [:running, :streaming, :retrying],
+             do: latest_thought(state),
+             else: ""
+           ) do
         "" ->
           []
 
@@ -935,9 +938,14 @@ defmodule SwarmCodeCLI.UI.Projector.Overlay do
   defp first_text(values), do: Enum.find(values, "", &(is_binary(&1) and String.trim(&1) != ""))
 
   defp findings(state, agent) do
-    case Map.get(detail(state), :findings) do
+    detail = detail(state)
+
+    case Map.get(detail, :findings) do
       [_ | _] = findings ->
         Enum.map(findings, &normalize_finding/1)
+
+      _ when map_size(detail) > 0 ->
+        []
 
       _ ->
         case Map.get(agent, :finding) do
@@ -1551,10 +1559,32 @@ defmodule SwarmCodeCLI.UI.Projector.Overlay do
       else: [{text, bold(state, :text_faint)}]
   end
 
+  # Word wrap; a word longer than the line is cut where it must be.
   defp wrap(text, state, width) do
+    policy = state.capabilities.ambiguous_width
+    width = max(1, width)
+
     text
     |> flat()
-    |> Width.wrap(max(1, width), state.capabilities.ambiguous_width)
+    |> String.split(" ", trim: true)
+    |> Enum.reduce({[], "", 0}, fn word, {lines, line, used} ->
+      cells = Width.cells(word, policy)
+
+      cond do
+        used == 0 and cells <= width -> {lines, word, cells}
+        used + 1 + cells <= width -> {lines, line <> " " <> word, used + 1 + cells}
+        cells <= width -> {[line | lines], word, cells}
+        true -> long_word(word, width, policy, if(used == 0, do: lines, else: [line | lines]))
+      end
+    end)
+    |> then(fn {lines, line, used} -> if used == 0, do: lines, else: [line | lines] end)
+    |> Enum.reverse()
+  end
+
+  defp long_word(word, width, policy, lines) do
+    pieces = Width.wrap(word, width, policy)
+    last = List.last(pieces)
+    {Enum.reverse(Enum.drop(pieces, -1)) ++ lines, last, Width.cells(last, policy)}
   end
 
   # Rows are measured to the cell, so monochrome's cue prefixes are left out:

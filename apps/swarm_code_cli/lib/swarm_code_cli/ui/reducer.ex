@@ -2460,10 +2460,9 @@ defmodule SwarmCodeCLI.UI.Reducer do
 
   defp leave_modes(state, action) do
     state =
-      if state.hint != nil and not (is_tuple(action) and elem(action, 0) in @hint_neutral) and
-           action != :boot,
-         do: %{state | hint: nil},
-         else: state
+      if state.hint != nil and not hint_neutral?(action),
+        do: %{state | hint: nil},
+        else: state
 
     # Going somewhere else leaves the agent overlay the way Esc does.
     case action do
@@ -2477,6 +2476,14 @@ defmodule SwarmCodeCLI.UI.Reducer do
         state
     end
   end
+
+  # An editor's undo boundary arrives from its timer a second after typing
+  # stopped; it is not the user doing something.
+  defp hint_neutral?({kind, _key, {:undo_boundary, _}}) when kind in [:editor, :field_editor],
+    do: true
+
+  defp hint_neutral?(action),
+    do: action == :boot or (is_tuple(action) and elem(action, 0) in @hint_neutral)
 
   defp drop_hint_under_layer(%{hint: %{}, layers: [_ | _]} = state), do: %{state | hint: nil}
   defp drop_hint_under_layer(state), do: state

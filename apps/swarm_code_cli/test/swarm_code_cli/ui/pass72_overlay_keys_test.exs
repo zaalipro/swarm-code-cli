@@ -156,6 +156,19 @@ defmodule SwarmCodeCLI.UI.Pass72OverlayKeysTest do
       assert %{run_id: "r1", node_id: "engine", focus: :activity} = state.overlay
     end
 
+    test "the draft's undo boundary, a second after typing, does not end hint mode" do
+      state = ready()
+      {state, effects} = press(state, letter("h"))
+
+      {:start_timer, _id, _ms, boundary} =
+        Enum.find(effects, &match?({:start_timer, _, _, _}, &1))
+
+      state = press!(state, ctrl("f"))
+      {state, _} = Reducer.update(state, boundary)
+      assert state.hint != nil
+      assert press!(state, letter("f")).overlay.node_id == "engine"
+    end
+
     test "Ctrl-Space (NUL) is the same leader" do
       state = ready()
       assert {:ok, {:hint, :open}} = Keymap.resolve(Input.key(:null), state, %{})
