@@ -117,6 +117,19 @@ toast in words. A prompt is never dropped; its failures are retried.
      compaction is live.
    - `:run_command` for other slash commands.
    - `:send` otherwise.
+   Differences from `Composer.enter_action/1` at tag `p73-K-keyword` (ef2239b), where the
+   daemon will do something else:
+   - `@after_turn ~w(compact rewind)`: the daemon runs `/rewind` at once. It only opens the
+     checkpoint picker (a selection), and a queued selection would have nowhere to open. Please
+     drop `rewind`.
+   - A chat turn that is `:paused` or `:queued`: the daemon steers it. Registered runs include
+     paused ones, and `Engine.steer/4` hands the message to the root agent, which reads it when
+     the turn resumes. The client says `:queue`. Please treat these states as `:steer`, or accept
+     that the daemon's `disposition: :steered` corrects the mark.
+   - A plain message while only a compaction runs: the daemon queues it, so the next turn reads
+     the summary. A compaction is presented as `kind: :chat` (`presentation_kind/1`), so the
+     client predicts `:steer`. That is rare and short-lived. The outcome's
+     `disposition: :queued` is the truth; no client change is needed.
 3. Keep the steered and queued marks for the sent message from `outcome.disposition`
    (`:steered` / `:queued`). The durable facts come from the transcript (`target_kind: :steer`)
    and `queued_texts`.
