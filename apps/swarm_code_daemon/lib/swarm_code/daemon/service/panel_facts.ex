@@ -384,9 +384,28 @@ defmodule SwarmCode.Daemon.Service.PanelFacts do
 
   ## ---------------------------------------------------------------- finding
 
-  @doc "The first sentence of an agent's result (≤ 160 bytes), else nil."
+  @doc """
+  What an agent found (≤ 160 bytes): its first numbered finding when the result
+  lists them, else the result's first sentence, else nil.
+  """
   def finding(result, roots \\ []) do
-    case first_sentence(without_engine_notes(result), roots(roots), @finding_bytes + 40) do
+    result = without_engine_notes(result)
+
+    # pass72 F (live): reports often open with narration ("I've reviewed the
+    # web layer.") and list the findings below. An opening sentence that cites
+    # no `path:line` gives way to the first numbered finding.
+    opening = first_sentence(result, roots(roots), @finding_bytes + 40)
+
+    first =
+      with true <- is_binary(opening) and finding_refs(opening, roots) == [],
+           [%{"text" => text} | _] when is_binary(text) and text != "" <-
+             SwarmCode.Daemon.Service.AgentDetail.findings(result, roots(roots)) do
+        text
+      else
+        _ -> result
+      end
+
+    case first_sentence(first, roots(roots), @finding_bytes + 40) do
       nil ->
         nil
 

@@ -204,6 +204,30 @@ defmodule SwarmCode.Daemon.Service.Pass72PanelFactsTest do
       assert facts(found, [])["finding"] == "The flush can race the stop in lib/a.ex:9."
     end
 
+    # pass72 F (live): the real reports opened with narration; the panel said
+    # "I've reviewed the core business logic modules." for every reviewer.
+    test "a narrated opening gives way to the first numbered finding" do
+      done =
+        agent(%{
+          status: "done",
+          result_head:
+            "I've reviewed the core business logic modules.\n\n## Findings\n\n" <>
+              "1. **High:** the runner retries forever on a 500 (lib/ailogic/automations/runner.ex:127).\n" <>
+              "2. Low: a TODO in lib/ailogic/audit.ex:12.\n"
+        })
+
+      assert facts(done, [])["finding"] ==
+               "the runner retries forever on a 500 (lib/ailogic/automations/runner.ex:127)."
+
+      cited =
+        agent(%{
+          status: "done",
+          result_head: "The flush races the stop in lib/a.ex:9.\n\n1. Other."
+        })
+
+      assert facts(cited, [])["finding"] == "The flush races the stop in lib/a.ex:9."
+    end
+
     test "queued, paused and stopped say so; tokens add up" do
       assert facts(agent(%{status: "queued"}), [])["now"] == "queued"
       assert facts(agent(%{status: "paused"}), [])["panel_state"] == "paused"
