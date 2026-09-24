@@ -78,10 +78,17 @@ defmodule SwarmCodeCLI.Demo.Cells do
   # pass72: the side panel's scenes (`Demo.Panel`, the D2 mockups) at the four
   # golden sizes, rich and in monochrome ASCII; compact and hint mode for the
   # swarm and the heavy load.
-  @panel for scene <- SwarmCodeCLI.Demo.Panel.scenes(),
-             size <- @golden_sizes,
-             {mode, ascii?, tier} <- [{:truecolor, false, :rich}, {:monochrome, true, :measured}],
-             do: {{:panel, scene, :full}, size, mode, ascii?, tier}
+  # Every scene at every size in colour; the ASCII twin at 160x45 only (the
+  # golden tests hold the ASCII of every size, and each file costs a render).
+  @panel for(
+           scene <- SwarmCodeCLI.Demo.Panel.scenes(),
+           size <- @golden_sizes,
+           do: {{:panel, scene, :full}, size, :truecolor, false, :rich}
+         ) ++
+           for(
+             scene <- SwarmCodeCLI.Demo.Panel.scenes(),
+             do: {{:panel, scene, :full}, {160, 45}, :monochrome, true, :measured}
+           )
   @panel_modes for scene <- [:panel_swarm_2, :panel_heavy],
                    size <- [{160, 45}, {120, 36}],
                    kind <- [{:panel, scene, :compact}, {:panel_hint, scene, :compact}],

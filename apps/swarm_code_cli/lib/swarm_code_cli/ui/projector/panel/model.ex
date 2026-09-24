@@ -391,6 +391,9 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Model do
 
   # With no words of its own the row says only what is not already the state
   # word; `""` leaves the sentence out.
+  # A stopped agent's last `now` is no longer true, so it is not shown.
+  defp now_sentence(%{state: :stopped}), do: "stopped before it finished"
+
   defp now_sentence(view) do
     view.now ||
       case view.state do

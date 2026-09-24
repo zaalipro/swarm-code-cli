@@ -399,6 +399,14 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Shapes do
   # `reported  ▰▱▱▱  1 of 4        1 needs you` and what the lead waits for.
   defp swarm_foot(ctx, run, views) do
     {reported, total} = reported(run, views)
+    ended = if run.state in [:stopped, :failed], do: run.state
+
+    # A stopped or failed swarm: the wire counts every ended agent as
+    # finished, but only the ones that are done reported anything.
+    reported =
+      if ended,
+        do: Enum.count(views, &(&1.role not in [:lead, :assistant] and &1.state == :done)),
+        else: reported
 
     if total == 0 do
       []
@@ -417,6 +425,7 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Shapes do
 
       right =
         cond do
+          ended -> []
           waiting != [] -> [{"#{length(waiting)} needs you", :warning}]
           working > 0 -> [{"#{working} working", :text_faint}]
           true -> []
@@ -424,6 +433,9 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Shapes do
 
       why =
         cond do
+          ended == :stopped -> "stopped before the merge"
+          ended == :failed -> "failed before the merge"
+          run.state == :done -> "the Lead merged the findings"
           waiting != [] -> hd(waiting).display <> " is paused on you"
           reported == total -> "the Lead is merging the findings"
           length(left) == 1 -> "the Lead reports once #{hd(left).display} is in"

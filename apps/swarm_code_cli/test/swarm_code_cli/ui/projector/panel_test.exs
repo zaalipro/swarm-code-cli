@@ -189,6 +189,30 @@ defmodule SwarmCodeCLI.UI.Projector.PanelTest do
     assert text =~ "3 of 4"
   end
 
+  test "regression: a stopped swarm counts only done agents and never says the Lead is merging" do
+    state = state(:panel_swarm_3, 160, 45)
+    model = state.read_model
+    run_id = Projector.Support.run(state).id
+
+    stopped = fn
+      %{state: :done} = agent -> agent
+      agent -> %{agent | state: :stopped, panel_state: :stopped}
+    end
+
+    model = %{
+      model
+      | runs: Map.update!(model.runs, run_id, &%{&1 | state: :stopped}),
+        agents: Map.new(model.agents, fn {id, a} -> {id, stopped.(a)} end)
+    }
+
+    text = %{state | read_model: model} |> panel_text() |> Enum.join("\n")
+
+    refute text =~ "is merging"
+    assert text =~ "stopped before the merge"
+    refute text =~ "weighing flush vs retry order"
+    assert text =~ "3 of 4"
+  end
+
   test "compact: one row per agent with short names, an 8-cell lane and the action" do
     rows = :panel_swarm_2 |> state(160, 45, panel: :compact) |> panel_text()
     text = Enum.join(rows, "\n")

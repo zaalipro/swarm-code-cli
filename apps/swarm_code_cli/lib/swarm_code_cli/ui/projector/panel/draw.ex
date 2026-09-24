@@ -9,6 +9,7 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Draw do
   background role (`:card` for the needs-you band) fills the whole row.
   """
   alias SwarmCodeCLI.UI.{SafeText, Theme, Width}
+  alias SwarmCodeCLI.UI.SafeText.Limits
   alias SwarmCodeCLI.UI.Scene.{Block, Span}
   alias SwarmCodeCLI.UI.Projector.Density
   alias SwarmCodeCLI.UI.Projector.Panel.Glyph
@@ -54,15 +55,15 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Draw do
     bg = Keyword.get(opts, :background)
     margin = Keyword.get(opts, :margin, 1)
     inner = max(0, width - 2 * margin)
-    right = normalize(right)
-    right_cells = Enum.reduce(right, 0, fn {t, _, _}, acc -> acc + cells(t, state) end)
+    right = normalize(right, state)
+    right_cells = Enum.reduce(right, 0, fn {t, _, _, _}, acc -> acc + cells(t, state) end)
 
     {right, right_cells} =
       if right_cells > inner, do: {[], 0}, else: {right, right_cells}
 
     gap = if right == [], do: 0, else: 1
     room = max(0, inner - right_cells - gap)
-    {left, left_cells} = fit(normalize(left), room, state)
+    {left, left_cells} = fit(normalize(left, state), room, state)
     fill = inner - left_cells - right_cells
 
     spans =
@@ -85,16 +86,17 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Draw do
 
   @doc "Takes segments while they fit `room` cells, eliding the one that does not."
   def fit(segments, room, state) do
-    Enum.reduce_while(segments, {[], 0}, fn {text, role, mods}, {acc, used} ->
+    Enum.reduce_while(segments, {[], 0}, fn {text, role, mods, safe}, {acc, used} ->
       c = cells(text, state)
 
       cond do
         used + c <= room ->
-          {:cont, {[{text, role, mods} | acc], used + c}}
+          {:cont, {[{text, role, mods, safe} | acc], used + c}}
 
         room - used >= 1 ->
-          elided = text |> Density.safe(state, room - used) |> SafeText.value()
-          {:halt, {[{elided, role, mods} | acc], used + cells(elided, state)}}
+          elided = Density.safe(safe, state, room - used)
+          text = SafeText.value(elided)
+          {:halt, {[{text, role, mods, elided} | acc], used + cells(text, state)}}
 
         true ->
           {:halt, {acc, used}}
@@ -152,7 +154,11 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Draw do
     |> Enum.reverse()
   end
 
-  defp normalize(segments) do
+  # Every segment is made safe once, before it is measured (a control byte
+  # shown as an escape is wider than the byte), and that safe text is the
+  # span's: sanitising costs microseconds per grapheme, and a panel draws
+  # hundreds of segments a frame.
+  defp normalize(segments, state) do
     segments
     |> Enum.reject(&is_nil/1)
     |> Enum.map(fn
@@ -160,20 +166,31 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Draw do
       {text, role, mods} -> {text, role, mods}
     end)
     |> Enum.reject(fn {text, _, _} -> text == "" end)
+    |> Enum.map(fn {text, role, mods} ->
+      safe = safe(text, state)
+      {SafeText.value(safe), role, mods, safe}
+    end)
+    |> Enum.reject(fn {text, _, _, _} -> text == "" end)
   end
 
-  defp span({text, role, mods}, state, bg) do
-    %Span{
-      text: Density.safe(text, state, max(1, cells(text, state))),
-      style: style(role, state, mods, bg)
-    }
+  defp safe(text, state) do
+    limits = %{Limits.content() | ambiguous_width: state.capabilities.ambiguous_width}
+    text |> String.replace(["\r\n", "\n", "\r"], " ") |> Density.external(limits)
   end
+
+  defp span({_text, role, mods, safe}, state, bg),
+    do: %Span{text: safe, style: style(role, state, mods, bg)}
+
+  # Runs of spaces, made safe once at compile time.
+  @spaces Map.new(1..256, fn n ->
+            {n, Density.external(String.duplicate(" ", n), Limits.content())}
+          end)
 
   defp pad(n, _state, _bg) when n <= 0, do: nil
 
   defp pad(n, state, bg),
-    do: %Span{
-      text: Density.safe(String.duplicate(" ", n), state, n),
-      style: style(:plain, state, [], bg)
-    }
+    do: %Span{text: spaces(n, state), style: style(:plain, state, [], bg)}
+
+  defp spaces(n, _state) when n <= 256, do: Map.fetch!(@spaces, n)
+  defp spaces(n, state), do: safe(String.duplicate(" ", n), state)
 end

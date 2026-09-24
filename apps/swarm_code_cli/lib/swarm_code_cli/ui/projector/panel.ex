@@ -111,13 +111,16 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
 
   # Candidates from the richest to the most folded; the first that fits wins,
   # and the last one is cut to the height with a count of what is left out.
+  # Each candidate is a function, built only when the richer ones did not
+  # fit: most frames stop at the first.
   defp layout(ctx, height) do
     all = candidates(ctx)
 
-    Enum.find_value(all, fn rows ->
+    Enum.find_value(all, fn build ->
+      rows = build.()
       footer = legend(ctx, rows) ++ footer_rows(ctx)
       if length(drawn(rows)) + length(footer) <= height, do: fill(rows, footer, height, ctx)
-    end) || cut(List.last(all), footer_rows(ctx), height, ctx)
+    end) || cut(List.last(all).(), footer_rows(ctx), height, ctx)
   end
 
   defp fill(rows, footer, height, ctx) do
@@ -164,10 +167,10 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
 
     cond do
       length(ctx.runs) > 1 ->
-        Enum.map(bodies(ctx, []), &(summary ++ band ++ &1))
+        Enum.map(bodies(ctx, []), fn build -> fn -> summary ++ band ++ build.() end end)
 
       ctx.mode == :compact and band != [] ->
-        Enum.map(bodies(ctx, []), &(band ++ [blank(ctx) | &1]))
+        Enum.map(bodies(ctx, []), fn build -> fn -> band ++ [blank(ctx) | build.()] end end)
 
       true ->
         bodies(ctx, band)
@@ -177,13 +180,17 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
   defp bodies(%{mode: :full} = ctx, band) do
     [chat | others] = ordered(ctx)
 
-    rich = unfold_full(ctx, chat, band, true) ++ Enum.flat_map(others, &orbit(ctx, &1, true))
-    lean = unfold_full(ctx, chat, band, false) ++ Enum.flat_map(others, &orbit(ctx, &1, true))
-
-    tight =
-      unfold_full_tight(ctx, chat, band) ++ Enum.flat_map(others, &orbit(ctx, &1, false))
-
-    [rich, lean, tight]
+    [
+      fn ->
+        unfold_full(ctx, chat, band, true) ++ Enum.flat_map(others, &orbit(ctx, &1, true))
+      end,
+      fn ->
+        unfold_full(ctx, chat, band, false) ++ Enum.flat_map(others, &orbit(ctx, &1, true))
+      end,
+      fn ->
+        unfold_full_tight(ctx, chat, band) ++ Enum.flat_map(others, &orbit(ctx, &1, false))
+      end
+    ]
   end
 
   defp bodies(%{mode: :compact} = ctx, _band) do
@@ -192,19 +199,26 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
 
     # Fold the other runs from the last one up (D5), then drop earlier runs,
     # then collapse done agents.
+    # The unfolded rows of each run are drawn once and shared by the folds.
+    chat_rows = unfold_compact(ctx, chat, false)
+    open_rows = Map.new(others, &{&1.id, unfold_compact(ctx, &1, false)})
+
     folds =
       for k <- 0..length(others) do
-        {open, folded} = Enum.split(others, length(others) - k)
+        fn ->
+          {open, folded} = Enum.split(others, length(others) - k)
 
-        unfold_compact(ctx, chat, false) ++
-          Enum.flat_map(open, &unfold_compact(ctx, &1, false)) ++
-          Enum.flat_map(folded, &orbit(ctx, &1, true))
+          chat_rows ++
+            Enum.flat_map(open, &Map.fetch!(open_rows, &1.id)) ++
+            Enum.flat_map(folded, &orbit(ctx, &1, true))
+        end
       end
 
-    with_earlier = Enum.map(folds, &(&1 ++ earlier))
+    with_earlier = Enum.map(folds, fn build -> fn -> build.() ++ earlier end end)
 
-    collapsed =
+    collapsed = fn ->
       unfold_compact(ctx, chat, true) ++ Enum.flat_map(others, &orbit(ctx, &1, false))
+    end
 
     with_earlier ++ folds ++ [collapsed]
   end
