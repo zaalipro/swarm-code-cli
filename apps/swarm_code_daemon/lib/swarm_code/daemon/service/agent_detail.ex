@@ -116,44 +116,64 @@ defmodule SwarmCode.Daemon.Service.AgentDetail do
   ## --------------------------------------------------------------- findings
 
   @doc """
-  The numbered (or bulleted) findings of a result, first 20: each item's
-  first sentence, its severity when the item names one, its first
-  `path:line`.
+  The numbered findings of a result, first 20: a numbered list item (`1.`,
+  `2)`) or a table row whose first cell is its number. Each keeps its first
+  sentence (a leading severity label moves to `severity`, which is set only
+  when the item leads with one or a table cell names one) and its first
+  `path:line`. Bullets are not findings (they are notes, open issues, …).
   """
   def findings(result, roots) when is_binary(result) do
     result
     |> String.split(~r/\r?\n/u)
-    |> Enum.flat_map(fn line ->
-      case Regex.run(~r/^\s{0,3}(?:\d{1,2}[.)]|[-*•])\s+(.+)$/u, line) do
-        [_, text] -> [text]
-        _ -> []
-      end
+    |> Enum.flat_map(&finding_line/1)
+    |> Enum.map(fn {severity, text, whole} ->
+      {severity, PanelFacts.first_sentence(text, roots, 400), whole}
     end)
-    |> Enum.map(fn text ->
-      sentence = PanelFacts.first_sentence(text, roots, 400)
-      {sentence, text}
-    end)
-    |> Enum.reject(fn {sentence, _} -> is_nil(sentence) end)
+    |> Enum.reject(fn {_, sentence, _} -> is_nil(sentence) end)
     |> Enum.take(@max_findings)
     |> Enum.with_index(1)
-    |> Enum.map(fn {{sentence, text}, n} ->
+    |> Enum.map(fn {{severity, sentence, whole}, n} ->
       %{
         "n" => n,
-        "severity" => severity(text),
+        "severity" => severity,
         "text" => sentence,
-        "ref" => List.first(PanelFacts.finding_refs(text, roots))
+        "ref" => List.first(PanelFacts.finding_refs(whole, roots))
       }
     end)
   end
 
   def findings(_, _), do: []
 
-  defp severity(text) do
+  @severity ~r/^\W*(?:severity\W*)?(critical|blocker|severe|high|major|medium|moderate|low|minor|nit|trivial)\b\W*/iu
+
+  defp finding_line(line) do
     cond do
-      Regex.match?(~r/\b(critical|high|major|severe|blocker)\b/iu, text) -> "high"
-      Regex.match?(~r/\b(medium|moderate)\b/iu, text) -> "medium"
-      Regex.match?(~r/\b(low|minor|nit|trivial)\b/iu, text) -> "low"
-      true -> nil
+      match = Regex.run(~r/^\s{0,3}\d{1,2}[.)]\s+(.+)$/u, line) ->
+        text = List.last(match)
+
+        case Regex.run(@severity, text) do
+          [label, word] -> [{severity(word), String.replace_prefix(text, label, ""), text}]
+          _ -> [{nil, text, text}]
+        end
+
+      match = Regex.run(~r/^\s*\|\s*\d{1,2}\s*\|(.+)\|\s*$/u, line) ->
+        cells = match |> List.last() |> String.split("|") |> Enum.map(&String.trim/1)
+        word = Enum.find(cells, &Regex.match?(~r/^\W*[a-z]+\W*$/iu, &1))
+        severity = if word, do: severity(String.replace(word, ~r/\W/u, ""))
+        text = cells |> Enum.reject(&(&1 == "")) |> List.last()
+        if text, do: [{severity, text, Enum.join(cells, " ")}], else: []
+
+      true ->
+        []
+    end
+  end
+
+  defp severity(word) do
+    case String.downcase(word) do
+      w when w in ~w(critical blocker severe high major) -> "high"
+      w when w in ~w(medium moderate) -> "medium"
+      w when w in ~w(low minor nit trivial) -> "low"
+      _ -> nil
     end
   end
 
@@ -214,7 +234,7 @@ defmodule SwarmCode.Daemon.Service.AgentDetail do
       case kind do
         :read -> {"read #{count(items, n, "file")}", nil}
         :search -> {"searched #{count(items, n, "pattern")}", nil}
-        :explore -> {"explored " <> Enum.join(Enum.take(items, 3), ", "), nil}
+        :explore -> {"explored " <> Enum.map_join(Enum.take(items, 3), ", ", &place/1), nil}
         :think -> {if(n == 1, do: "thought", else: "thought ×#{n}"), thought(ops, roots)}
         :command -> {"ran " <> (List.first(items) || "a command"), last_line(last.tail)}
         :edit -> {PanelFacts.doing(last, roots) |> past(), nil}
@@ -288,6 +308,10 @@ defmodule SwarmCode.Daemon.Service.AgentDetail do
       spawned -> "started #{length(spawned)} agent#{if length(spawned) == 1, do: "", else: "s"}"
     end
   end
+
+  defp place("."), do: "the project"
+  defp place("./"), do: "the project"
+  defp place(path), do: path
 
   # "editing lib/y.ex" → "edited lib/y.ex"
   defp past("editing " <> rest), do: "edited " <> rest

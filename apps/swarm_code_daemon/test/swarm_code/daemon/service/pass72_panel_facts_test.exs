@@ -92,10 +92,12 @@ defmodule SwarmCode.Daemon.Service.Pass72PanelFactsTest do
       assert f["now"] == "Now tracing how RunServer stops agents."
     end
 
-    test "a finished think gives its opening sentence; no reasoning says thinking" do
+    test "a finished think gives its opening sentence; no reasoning at all says thinking" do
       llm = op("llm", "thinking", 10, 20, %{detail: "Weighing flush safety first. Then more."})
       open = op("llm", "thinking", 21, nil, %{detail: ""})
-      assert facts(agent(), [open, llm])["now"] == "thinking"
+      # An open think with no sentence yet: the one before it.
+      assert facts(agent(), [open, llm])["now"] == "Weighing flush safety first."
+      assert facts(agent(), [open])["now"] == "thinking"
       # With only the finished one, the state is working between steps.
       assert facts(agent(), [llm])["now"] == "working"
     end
@@ -166,6 +168,16 @@ defmodule SwarmCode.Daemon.Service.Pass72PanelFactsTest do
         refute value =~ "worktrees"
         refute value =~ "isolated"
       end
+    end
+
+    test "a finding drops a leading severity label" do
+      done =
+        agent(%{
+          status: "done",
+          result_head: "1. medium lib/a.ex:51 — casts :role from attrs. Then."
+        })
+
+      assert facts(done, [])["finding"] == "lib/a.ex:51 — casts :role from attrs."
     end
 
     test "queued, paused and stopped say so; tokens add up" do
@@ -331,6 +343,53 @@ defmodule SwarmCode.Daemon.Service.Pass72PanelFactsTest do
 
       assert [_, _, %{"state" => "waiting"} | _] = Facts.phases(wf, agents, "waiting_user")
       assert Facts.phases(%{phases: [], phase: nil}, agents, "running") == []
+    end
+  end
+
+  describe "detail findings" do
+    alias SwarmCode.Daemon.Service.AgentDetail
+
+    test "numbered items with a leading severity label; bullets are not findings" do
+      result = """
+      ## Findings
+
+      1. medium lib/ailogic/accounts/user.ex:51 — registration_changeset casts :role. More text.
+      2. **High:** the vault falls back to a fixed salt (lib/ailogic/vault.ex:8).
+      3. The cache is never warmed on a high traffic path.
+
+      ## Open issues
+
+      - Finding 2 needs a second look.
+      """
+
+      assert [
+               %{"n" => 1, "severity" => "medium", "ref" => "lib/ailogic/accounts/user.ex:51"} =
+                 a,
+               %{"n" => 2, "severity" => "high", "ref" => "lib/ailogic/vault.ex:8"} = b,
+               %{"n" => 3, "severity" => nil, "ref" => nil}
+             ] = AgentDetail.findings(result, [])
+
+      assert a["text"] == "lib/ailogic/accounts/user.ex:51 — registration_changeset casts :role."
+      assert b["text"] == "the vault falls back to a fixed salt (lib/ailogic/vault.ex:8)."
+    end
+
+    test "a findings table: the number, the severity cell, the last cell and the ref" do
+      result = """
+      | # | Severity | Location | Finding |
+      |---|---|---|---|
+      | 1 | critical | lib/web/registration_controller.ex:39 | Public POST /register passes raw params. |
+      | 2 | medium | test/tickets_test.exs:352 | The empty-list test never runs empty. |
+      """
+
+      assert [
+               %{
+                 "n" => 1,
+                 "severity" => "high",
+                 "text" => "Public POST /register passes raw params.",
+                 "ref" => "lib/web/registration_controller.ex:39"
+               },
+               %{"n" => 2, "severity" => "medium", "ref" => "test/tickets_test.exs:352"}
+             ] = AgentDetail.findings(result, [])
     end
   end
 end

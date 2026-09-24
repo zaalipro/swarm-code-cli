@@ -193,7 +193,8 @@ defmodule SwarmCode.Daemon.Service.PanelFacts do
   end
 
   # The newest reasoning: an open think streams its tail (its last complete
-  # sentence is the freshest), a finished one keeps its opening.
+  # sentence is the freshest), a finished one keeps its opening. A think that
+  # has not said a sentence yet falls back to the one before it.
   defp thought(ops, roots) do
     ops
     |> newest_first()
@@ -384,7 +385,23 @@ defmodule SwarmCode.Daemon.Service.PanelFacts do
   ## ---------------------------------------------------------------- finding
 
   @doc "The first sentence of an agent's result (≤ 160 bytes), else nil."
-  def finding(result, roots \\ []), do: first_sentence(result, roots(roots), @finding_bytes)
+  def finding(result, roots \\ []) do
+    case first_sentence(result, roots(roots), @finding_bytes + 40) do
+      nil ->
+        nil
+
+      sentence ->
+        # A leading severity label ("medium", "**High:**") is the overlay's
+        # column, not the sentence.
+        sentence
+        |> String.replace(
+          ~r/^\W*(?:severity\W*)?(critical|blocker|severe|high|major|medium|moderate|low|minor|nit|trivial)\b[\s:*\-–—]*/iu,
+          ""
+        )
+        |> blank_nil()
+        |> then(&(&1 && clip(&1, @finding_bytes)))
+    end
+  end
 
   @doc "Up to five `path:line` references cited by a result, in order, unique."
   def finding_refs(result, roots \\ [])
@@ -601,15 +618,12 @@ defmodule SwarmCode.Daemon.Service.PanelFacts do
     |> Enum.filter(&(String.length(&1) >= 8 and String.match?(&1, ~r/[.!?]$/u)))
     |> List.last()
     |> case do
-      nil ->
-        "thinking"
-
-      line ->
-        line |> scrub(roots) |> blank_nil() |> then(&((&1 && clip(&1, @now_bytes)) || "thinking"))
+      nil -> nil
+      line -> line |> scrub(roots) |> blank_nil() |> then(&(&1 && clip(&1, @now_bytes)))
     end
   end
 
-  defp last_sentence(_, _), do: "thinking"
+  defp last_sentence(_, _), do: nil
 
   # A heading, a rule or a bold-only label names a section; it is no finding.
   defp heading?(line) do
