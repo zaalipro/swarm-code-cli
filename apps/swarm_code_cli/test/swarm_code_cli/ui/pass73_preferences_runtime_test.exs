@@ -1,11 +1,13 @@
-defmodule SwarmCodeCLI.UI.Pass72PreferencesRuntimeTest do
+defmodule SwarmCodeCLI.UI.Pass73PreferencesRuntimeTest do
   @moduledoc """
-  Pass 72 (P6): the session runtime reads the preferences file at start and
-  writes the panel's mode when it changes, in tasks it owns.
+  pass73 T2/T9 in the session runtime: `/mouse` and `/theme` tell the
+  terminal's owner at once, ask for the frame that shows the change and save
+  the choice, and the session keeps running (live check: `/mouse off` closed
+  the session, the runtime crashed committing the change).
   """
   use ExUnit.Case, async: false
 
-  alias SwarmCodeCLI.UI.{SessionRuntime, Init, Size, Capabilities}
+  alias SwarmCodeCLI.UI.{SessionRuntime, Init, Input, Size, Capabilities}
   alias SwarmCodeCLI.UI.Init.Preferences
   alias SwarmCodeCLI.UI.DataSource.Fake
   alias Fake.{Script, Source}
@@ -17,7 +19,7 @@ defmodule SwarmCodeCLI.UI.Pass72PreferencesRuntimeTest do
       Script.decode(File.read!(Path.expand("../../fixtures/fake/three_run_script.json", __DIR__)))
 
     source = start_supervised!({Source, script: script, source_epoch: "epoch"})
-    client = start_supervised!({Fake, source: source, source_epoch: "epoch", client_id: "prefs"})
+    client = start_supervised!({Fake, source: source, source_epoch: "epoch", client_id: "p73"})
     size = %Size{columns: 160, rows: 50}
     caps = %Capabilities{size: size}
 
@@ -38,8 +40,6 @@ defmodule SwarmCodeCLI.UI.Pass72PreferencesRuntimeTest do
     {runtime, caps}
   end
 
-  # Waits for the runtime's preferences task (if any) to finish and for the
-  # runtime to have handled its answer.
   defp settle(runtime) do
     case :sys.get_state(runtime).prefs.task do
       %Task{pid: pid} ->
@@ -60,30 +60,41 @@ defmodule SwarmCodeCLI.UI.Pass72PreferencesRuntimeTest do
     if SessionRuntime.status(runtime).phase == :running, do: :ok, else: running(runtime, n - 1)
   end
 
-  test "the mode is read at start and written, privately, when Ctrl-B changes it", %{
+  defp command(runtime, text) do
+    for letter <- String.graphemes(text),
+        do: :ok = SessionRuntime.input(runtime, Input.text_fragment(:press, letter, []))
+
+    :ok = SessionRuntime.input(runtime, Input.key(:enter))
+  end
+
+  test "/mouse off and /theme reach the terminal, and the session keeps running", %{
     tmp_dir: dir
   } do
     path = Path.join(dir, "cli.json")
-    :ok = Preferences.write(path, %{panel_mode: :compact})
     {runtime, caps} = start_runtime(path)
     settle(runtime)
-    assert SessionRuntime.snapshot(runtime).panel_mode == :compact
+    watch = Process.monitor(runtime)
 
     {:ok, _} = SessionRuntime.register_terminal(runtime, self(), 0, caps)
     running(runtime)
+    revision = SessionRuntime.snapshot(runtime).revision
 
-    :ok = SessionRuntime.input(runtime, {:text_fragment, :press, "b", [:control]})
-    assert SessionRuntime.snapshot(runtime).panel_mode == :hidden
+    command(runtime, "/mouse off")
+    assert_receive {:terminal_preferences, %{mouse?: false}}, 1_000
+    refute_received {:DOWN, ^watch, :process, _, _}
+    assert SessionRuntime.status(runtime).phase == :running
+
+    ui = SessionRuntime.snapshot(runtime)
+    refute ui.mouse?
+    assert ui.revision > revision
+
+    command(runtime, "/theme")
+    assert_receive {:terminal_preferences, %{theme: :light}}, 1_000
+    assert SessionRuntime.status(runtime).phase == :running
+    assert SessionRuntime.snapshot(runtime).theme_mode == :light
 
     settle(runtime)
-    assert Preferences.read(path) == %{Preferences.defaults() | panel_mode: :hidden}
-
-    assert File.stat!(path).mode |> Bitwise.band(0o777) == 0o600
-  end
-
-  test "without a path nothing is read or written", %{tmp_dir: dir} do
-    {runtime, _caps} = start_runtime(nil)
-    assert :sys.get_state(runtime).prefs == %{path: nil, task: nil, pending: nil, changed?: false}
-    assert File.ls!(dir) == []
+    assert %{mouse?: false, theme: :light} = Preferences.read(path)
+    refute_received {:DOWN, ^watch, :process, _, _}
   end
 end

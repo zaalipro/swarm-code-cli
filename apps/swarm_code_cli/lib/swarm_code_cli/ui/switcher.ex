@@ -59,6 +59,10 @@ defmodule SwarmCodeCLI.UI.Switcher do
       vim_mode_entry(state)
     ]
 
+    # pass73-K: the /approval picker's rows (T7) and the display toggles
+    # (T1, T2, T9), each naming the state it is in.
+    local = local ++ approval_entries(state) ++ display_entries(state)
+
     # Both pickers open on the same next layer id: only one of them ever does.
     models =
       for target <- ModelPicker.targets(),
@@ -391,6 +395,65 @@ defmodule SwarmCodeCLI.UI.Switcher do
   defp prefix("#" <> query), do: {[:conversation, :research], query}
   defp prefix(">" <> query), do: {[:action], query}
   defp prefix(query), do: {@kinds, query}
+
+  @approval_modes [
+    {:read_only, "read-only", "nothing is written or run without you"},
+    {:auto, "auto", "edits go ahead, commands ask"},
+    {:full_access, "full access", "nothing asks first"}
+  ]
+
+  @doc "The switcher query that shows only the /approval picker's rows (T7)."
+  def approval_query, do: ">approvals:"
+
+  # pass73 T7: `/approval` without an argument opens these three rows, the
+  # project's current mode checked.
+  defp approval_entries(state) do
+    current =
+      case Map.get(state.read_model.snapshots, :workspace) do
+        %{} = workspace -> Map.get(workspace, :approval_mode)
+        _ -> nil
+      end
+
+    # The label carries the query's word; the row draws the mode as its
+    # title (so the query's highlight does not dim it), least to most
+    # permissive.
+    for {{mode, words, detail}, order} <- Enum.with_index(@approval_modes, 1) do
+      %{
+        entry(
+          "Approvals: " <> words <> " · " <> detail,
+          :action,
+          {:local, {:approval_mode, mode}}
+        )
+        | title: words,
+          detail: detail,
+          current?: mode == current,
+          order: order
+      }
+    end
+  end
+
+  defp display_entries(state) do
+    [
+      entry(
+        if(Map.get(state, :show_diffs, true), do: "Diffs: shown", else: "Diffs: hidden"),
+        :action,
+        {:local, {:show_diffs, :toggle}}
+      ),
+      entry(
+        if(Map.get(state, :theme_mode, :dark) == :light,
+          do: "Theme: light",
+          else: "Theme: dark"
+        ),
+        :action,
+        {:local, {:theme_mode, :toggle}}
+      ),
+      entry(
+        if(Map.get(state, :mouse?, true), do: "Mouse wheel: on", else: "Mouse wheel: off"),
+        :action,
+        {:local, {:mouse, :toggle}}
+      )
+    ]
+  end
 
   # The one place the vim keymap is switched from inside the shell. The label
   # names the state it is in, the target the state it will be in.

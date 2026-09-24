@@ -33,6 +33,18 @@ defmodule SwarmCodeCLI.UI.Keymap.Docs do
     session: "Session"
   ]
 
+  @mouse_note "Mouse: the wheel scrolls the pane under the pointer (the transcript, the side " <>
+                "panel, the agent overlay, the pager), three lines a notch. While wheel reports " <>
+                "are on, Shift-drag (Option-drag in Terminal.app and iTerm2) selects text; " <>
+                "`/mouse off` gives the terminal its own selection back."
+
+  @doc """
+  pass73 T9: the sentence about the mouse, for this reference and the help
+  sheet (`?`) while wheel reports are on.
+  """
+  @spec mouse_note() :: binary()
+  def mouse_note, do: @mouse_note
+
   @doc "The reference as Markdown, ending in a newline."
   @spec render() :: binary()
   def render do
@@ -48,6 +60,8 @@ defmodule SwarmCodeCLI.UI.Keymap.Docs do
     same list for the current context on screen. Vim's NORMAL and VISUAL modes
     exist only with the vim keymap on (`SWARM_KEYMAP=vim`, or "Vim mode" in
     the command palette).
+
+    #{@mouse_note}
     """
 
     header <> Enum.map_join(Bindings.contexts(), "", &context/1)

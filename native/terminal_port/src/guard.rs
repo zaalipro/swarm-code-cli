@@ -167,6 +167,8 @@ pub fn run(beam_port: bool) -> i32 {
                 // init flags activates with them.
                 let result = match byte[0] {
                     8 => tty.restore(),
+                    crate::protocol::GUARD_MOUSE_ON => tty.mouse(true),
+                    crate::protocol::GUARD_MOUSE_OFF => tty.mouse(false),
                     flags if flags & !crate::protocol::FLAGS == 0 => tty.activate(flags),
                     _ => Err(io::ErrorKind::InvalidData.into()),
                 };
@@ -192,6 +194,18 @@ pub fn run(beam_port: bool) -> i32 {
     } else {
         1
     }
+}
+/// pass73 T9: asks the guard to turn wheel reports on or off.
+pub fn mouse(socket: &mut UnixStream, on: bool) -> Result<(), u8> {
+    let byte = if on {
+        crate::protocol::GUARD_MOUSE_ON
+    } else {
+        crate::protocol::GUARD_MOUSE_OFF
+    };
+    socket.write_all(&[byte]).map_err(|_| 6)?;
+    let mut ack = [0];
+    socket.read_exact(&mut ack).map_err(|_| 6)?;
+    if ack[0] == 1 { Ok(()) } else { Err(6) }
 }
 pub fn modes(socket: &mut UnixStream, flags: Option<u8>) -> Result<(), u8> {
     socket.write_all(&[flags.unwrap_or(8)]).map_err(|_| 6)?;

@@ -87,7 +87,20 @@ defmodule SwarmCodeCLI.UI.Action do
              | :queue
              | :approval
              | :trust
-             | :panel}
+             | :panel
+             | :diff
+             | :theme
+             | :mouse}
+          # pass73-K: Enter on the palette runs its command (T4); the opt-out
+          # key sends a "workflow" message as it is (T5); /diff, /theme and
+          # /mouse (T1, T2, T9) and the /approval picker's rows (T7).
+          | {:run_command, binary()}
+          | :send_plain
+          | {:show_diffs, boolean() | :toggle}
+          | {:theme_mode, :dark | :light | :toggle}
+          | {:mouse, boolean() | :toggle}
+          | {:approval_mode, :read_only | :auto | :full_access}
+          | {:preferences_loaded, map()}
           | {:open_conversation, binary()}
           | :new_conversation
           | {:complete_path, binary()}
@@ -106,6 +119,7 @@ defmodule SwarmCodeCLI.UI.Action do
              | {:step, :next | :previous}
              | {:focus, :next | :previous}
              | {:move, :up | :down | :page_up | :page_down | :first | :last}
+             | {:scroll, integer()}
              | {:answer, binary()}}
           | {:set_tab, :agents | :timeline | :changes}
           | {:select_agent, binary()}
@@ -219,8 +233,41 @@ defmodule SwarmCodeCLI.UI.Action do
           :queue,
           :approval,
           :trust,
-          :panel
+          :panel,
+          :diff,
+          :theme,
+          :mouse
         ]
+      )
+
+  def validate({:run_command, name} = action),
+    do: valid_action(action, SwarmCodeCLI.UI.SlashPalette.valid_name?(name))
+
+  def validate(:send_plain), do: {:ok, :send_plain}
+
+  def validate({:show_diffs, value} = action),
+    do: valid_action(action, is_boolean(value) or value == :toggle)
+
+  def validate({:theme_mode, value} = action),
+    do: valid_action(action, value in [:dark, :light, :toggle])
+
+  def validate({:mouse, value} = action),
+    do: valid_action(action, is_boolean(value) or value == :toggle)
+
+  def validate({:approval_mode, mode} = action),
+    do: valid_action(action, mode in [:read_only, :auto, :full_access])
+
+  # The runtime read cli.json: the keys it holds beside the panel's mode.
+  def validate({:preferences_loaded, loaded} = action) when is_map(loaded),
+    do:
+      valid_action(
+        action,
+        Enum.all?(loaded, fn
+          {:show_diffs, value} -> is_boolean(value)
+          {:theme, value} -> value in [nil, :dark, :light]
+          {:mouse?, value} -> is_boolean(value)
+          _ -> false
+        end)
       )
 
   def validate({:open_conversation, id} = action), do: valid_action(action, Intent.valid_id?(id))
@@ -290,6 +337,10 @@ defmodule SwarmCodeCLI.UI.Action do
 
   def validate({:overlay, {:focus, direction}} = action),
     do: valid_action(action, direction in [:next, :previous])
+
+  # pass73 T9: a wheel notch over the overlay moves its activity by lines.
+  def validate({:overlay, {:scroll, lines}} = action),
+    do: valid_action(action, is_integer(lines) and lines in -50..50 and lines != 0)
 
   def validate({:overlay, {:move, direction}} = action),
     do: valid_action(action, direction in [:up, :down, :page_up, :page_down, :first, :last])

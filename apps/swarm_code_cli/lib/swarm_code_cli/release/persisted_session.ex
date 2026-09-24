@@ -314,6 +314,13 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
       color_mode = color_mode()
       ascii? = ascii?(System.get_env())
 
+      # pass73 T1/T2/T9: cli.json (read here, before the session starts) and
+      # the environment decide the theme, the wheel and the diffs.
+      preferences =
+        SwarmCodeCLI.UI.Init.Preferences.read(SwarmCodeCLI.Release.preferences_path())
+
+      start = start_preferences(System.get_env(), preferences, settings_mode())
+
       caps = %Capabilities{
         size: %Size{columns: 80, rows: 24},
         stdin_tty?: true,
@@ -332,7 +339,12 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
         destination: {:conversation, conversation_id},
         banner: :persisted_banner,
         now: System.system_time(:millisecond),
-        keymap: Init.keymap_from_env()
+        keymap: Init.keymap_from_env(),
+        panel_mode: preferences.panel_mode,
+        show_diffs: preferences.show_diffs,
+        theme_mode: start.theme,
+        theme_env: start.theme_env,
+        mouse?: start.mouse?
       }
 
       runtime =
@@ -353,16 +365,17 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
         child!(supervisor, Owner,
           runtime: runtime,
           capabilities: caps,
-          # B10: SWARM_MOUSE=1 opts into wheel reports (they turn off the
-          # terminal's own click-and-drag selection, so never by default).
+          # pass73 T9: wheel reports are on unless `/mouse off` or
+          # SWARM_MOUSE=0 said otherwise; with them on, Shift-drag (Option-drag
+          # in Terminal.app and iTerm2) still selects text.
           flags: %{
             alternate?: true,
             focus?: true,
             paste?: true,
-            mouse?: System.get_env("SWARM_MOUSE") == "1"
+            mouse?: start.mouse?
           },
           executable: executable,
-          theme: SwarmCodeCLI.UI.Theme.mode(System.get_env("SWARM_THEME"), settings_mode())
+          theme: start.theme
         )
 
       owner_monitor = Process.monitor(owner)
@@ -1082,6 +1095,43 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
   """
   @spec ascii?(map()) :: boolean()
   def ascii?(env) when is_map(env), do: Map.get(env, "SWARM_ASCII") in ["1", "true", "yes"]
+
+  @doc """
+  pass73 T2/T9: the theme and the wheel a session starts with, from the
+  environment, `cli.json` (`Init.Preferences.read/1`) and the desktop's
+  settings mode. The theme is `SWARM_THEME` > cli.json (`/theme`) > the
+  desktop's mode > dark; `theme_env` names the theme `SWARM_THEME` set (so
+  `/theme` can say it wins at the next launch). Wheel reports are
+  `SWARM_MOUSE=0|1` > cli.json (`/mouse`) > on.
+  """
+  @spec start_preferences(map(), map(), term()) :: %{
+          theme: :dark | :light,
+          theme_env: :dark | :light | nil,
+          mouse?: boolean()
+        }
+  def start_preferences(env, preferences, settings_mode) when is_map(env) do
+    theme_env =
+      case env |> Map.get("SWARM_THEME", "") |> String.trim() |> String.downcase() do
+        "dark" -> :dark
+        "light" -> :light
+        _ -> nil
+      end
+
+    fallback = Map.get(preferences, :theme) || settings_mode
+
+    mouse? =
+      case env |> Map.get("SWARM_MOUSE", "") |> String.trim() |> String.downcase() do
+        value when value in ["1", "on", "true", "yes"] -> true
+        value when value in ["0", "off", "false", "no"] -> false
+        _ -> Map.get(preferences, :mouse?, true) != false
+      end
+
+    %{
+      theme: theme_env || SwarmCodeCLI.UI.Theme.mode(nil, fallback),
+      theme_env: theme_env,
+      mouse?: mouse?
+    }
+  end
 
   # pass71 F4: the desktop's light/dark choice (`settings.mode`), read
   # without `Settings.get/0`, which inserts the row when it is missing.

@@ -220,14 +220,35 @@ defmodule SwarmCodeCLI.UI.ConversationsTest do
     assert state.destination == {:conversation, @b}
   end
 
-  test "/approval sets the project's mode; bare, it says what the mode is" do
+  test "/approval sets the project's mode; bare, it opens a picker of the three" do
     {state, effects} = send_draft(ready(), "/approval full")
     assert [request] = for({:command, request} <- effects, do: request)
     assert request.kind == {:project_update, :full_access, nil}
     assert Editor.text(Drafts.fetch(state.drafts, @key).editor) == ""
 
-    {state, []} = send_draft(ready(approval_mode: :auto), "/approval")
-    assert {:command_feedback, "Approval: auto." <> _} = state.notice
+    # pass73 T7: the three modes, the current one checked; a pick sets it.
+    {state, _effects} = send_draft(ready(approval_mode: :auto), "/approval")
+    assert [{:switcher, _} | _] = state.layers
+    rows = Switcher.visible(state)
+
+    assert Enum.map(rows, &{&1.title, &1.current?}) == [
+             {"read-only", false},
+             {"auto", true},
+             {"full access", false}
+           ]
+
+    # The cursor starts on the current mode (live check: it started above
+    # the rows, so Down then Enter chose read-only): Enter keeps the mode,
+    # Down is the next one.
+    full = Enum.find(rows, &(&1.title == "full access"))
+    assert state.focus == Enum.find(rows, & &1.current?).id
+    table = Map.new(rows, &{&1.id, &1.target})
+    {:ok, down} = Keymap.resolve(Input.key(:down), state, table)
+    assert elem(Reducer.update(state, down), 0).focus == full.id
+
+    {state, effects} = Reducer.update(state, elem(full.target, 1))
+    assert [%{kind: {:project_update, :full_access, nil}}] = for({:command, r} <- effects, do: r)
+    assert state.layers == []
 
     {state, []} = send_draft(ready(), "/approval sometimes")
     assert {:command_feedback, "Approval is read-only, auto or full" <> _} = state.notice

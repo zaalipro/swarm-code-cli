@@ -859,6 +859,19 @@ defmodule SwarmCodeCLI.UI.Keymap.Bindings do
       help: "Queue the draft instead of sending it",
       hint: 0
     },
+    # pass73 T5: a message that names a workflow is sent as /create-workflow;
+    # this key sends that one message as it is. Ctrl-S is free everywhere
+    # (raw mode turns flow control off, so the terminal passes it through).
+    %Binding{
+      id: :send_plain,
+      keys: [{"s", [:control]}],
+      action: :send_plain,
+      contexts: [:composer, :composer_normal, :composer_visual],
+      group: :act,
+      label: "Plain",
+      help: "Send a message that names a workflow as a plain message, not as /create-workflow",
+      hint: 0
+    },
 
     # ------------------------------------------------------------------
     # Pickers

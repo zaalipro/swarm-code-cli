@@ -294,6 +294,33 @@ class TerminalPortPTY(unittest.TestCase):
         p.restored()
         self.assertIn(b'\x1b[?1006l', p.terminal)
 
+    def test_mouse_command_turns_wheel_reports_on_and_off_live(self):
+        # pass73 T9: `/mouse on|off` without a new init. Tag 8 writes only
+        # the SGR mouse modes, the wheel decodes while they are on, and the
+        # restoration still turns them off.
+        p = self.port(flags=7)
+        self.assertNotIn(b'\x1b[?1000h', p.terminal)
+        mark = len(p.terminal)
+        p.send(packet(struct.pack('>BBQQB', 1, 8, GEN, 1, 1)))
+        end = time.monotonic() + 3
+        while b'\x1b[?1000h\x1b[?1006h' not in p.terminal[mark:] and time.monotonic() < end:
+            p.pump()
+        self.assertIn(b'\x1b[?1000h\x1b[?1006h', p.terminal[mark:])
+        self.assertNotIn(b'\x1b[?1049h', p.terminal[mark:])
+        os.write(p.master, b'\x1b[<64;3;4M')
+        p.send(command(2, 2))
+        self.assertEqual(p.recv(), struct.pack('>BBQQBBBHH', 1, 17, GEN, 2, 6, 0, 0, 2, 3))
+        mark = len(p.terminal)
+        p.send(packet(struct.pack('>BBQQB', 1, 8, GEN, 3, 0)))
+        end = time.monotonic() + 3
+        while b'\x1b[?1006l' not in p.terminal[mark:] and time.monotonic() < end:
+            p.pump()
+        self.assertIn(b'\x1b[?1000l', p.terminal[mark:])
+        self.assertIn(b'\x1b[?1006l', p.terminal[mark:])
+        p.send(command(4, 4))
+        self.assertEqual(p.recv()[1], 19)
+        p.restored()
+
     def test_draw_credit_paste_escape_and_shutdown(self):
         p = self.port()
         p.send(draw(text=b'XYZ'))

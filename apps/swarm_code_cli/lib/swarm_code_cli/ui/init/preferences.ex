@@ -3,9 +3,13 @@ defmodule SwarmCodeCLI.UI.Init.Preferences do
   The CLI's preferences file (pass 72, P6): `cli.json` beside the database in
   the SwarmCode config directory, owner-only (0600).
 
-  It holds the side panel's mode today (`{"panel": "compact"}`); keys this
-  version does not know are kept when it writes. A missing, unreadable,
-  oversized or malformed file means the defaults, never a crash.
+  It holds the side panel's mode (`{"panel": "compact"}`) and, since pass 73,
+  whether tool rows show their diffs (`"show_diffs": false`, `/diff`), the
+  theme (`"theme": "light"`, `/theme`) and whether the terminal sends wheel
+  reports (`"mouse": false`, `/mouse`). Keys this version does not know are
+  kept when it writes, and a write changes only the keys it is given. A
+  missing, unreadable, oversized or malformed file (or value) means the
+  defaults, never a crash.
 
   `read/1` runs in the launcher before the session starts, `write/2` in work
   the session runtime owns; neither is ever called from a state owner's
@@ -16,32 +20,90 @@ defmodule SwarmCodeCLI.UI.Init.Preferences do
   @max_bytes 16_384
   @modes %{"full" => :full, "compact" => :compact, "hidden" => :hidden}
 
-  @type t :: %{panel_mode: :full | :compact | :hidden}
+  @themes %{"dark" => :dark, "light" => :light}
 
-  @doc "The defaults: the full panel."
+  # Each preference: its key in the file, its encoder and its validity.
+  @keys %{panel_mode: "panel", show_diffs: "show_diffs", theme: "theme", mouse?: "mouse"}
+
+  @typedoc """
+  `theme` is nil when the file names none: the launcher then falls back to
+  the desktop's settings (`SWARM_THEME` > cli.json > desktop > dark).
+  """
+  @type t :: %{
+          panel_mode: :full | :compact | :hidden,
+          show_diffs: boolean(),
+          theme: :dark | :light | nil,
+          mouse?: boolean()
+        }
+
+  @doc "The defaults: the full panel, diffs shown, no theme of its own, wheel reports on."
   @spec defaults() :: t()
-  def defaults, do: %{panel_mode: :full}
+  def defaults, do: %{panel_mode: :full, show_diffs: true, theme: nil, mouse?: true}
 
-  @doc "The preferences in `path`, or the defaults."
+  @doc "The preferences in `path`, or the defaults (per key)."
   @spec read(Path.t() | nil) :: t()
   def read(path) do
     case read_map(path) do
-      {:ok, map} -> %{panel_mode: Map.get(@modes, Map.get(map, "panel"), :full)}
-      :error -> defaults()
+      {:ok, map} ->
+        %{
+          panel_mode: Map.get(@modes, Map.get(map, "panel"), :full),
+          show_diffs: boolean(Map.get(map, "show_diffs"), true),
+          theme: Map.get(@themes, Map.get(map, "theme")),
+          mouse?: boolean(Map.get(map, "mouse"), true)
+        }
+
+      :error ->
+        defaults()
     end
   end
 
-  @doc "Writes `preferences` to `path` atomically, keeping keys it does not know."
-  @spec write(Path.t(), t()) :: :ok | {:error, term()}
-  def write(path, %{panel_mode: mode})
-      when is_binary(path) and mode in [:full, :compact, :hidden] do
+  @doc """
+  Whether `preferences` is a non-empty map of known keys with valid values:
+  what `write/2` accepts (any subset of `t()`, `theme` not nil).
+  """
+  @spec valid?(term()) :: boolean()
+  def valid?(preferences) when is_map(preferences) and map_size(preferences) > 0,
+    do: Enum.all?(preferences, fn {key, value} -> valid_value?(key, value) end)
+
+  def valid?(_preferences), do: false
+
+  defp valid_value?(:panel_mode, mode), do: mode in [:full, :compact, :hidden]
+  defp valid_value?(:show_diffs, value), do: is_boolean(value)
+  defp valid_value?(:theme, value), do: value in [:dark, :light]
+  defp valid_value?(:mouse?, value), do: is_boolean(value)
+  defp valid_value?(_key, _value), do: false
+
+  defp boolean(value, _default) when is_boolean(value), do: value
+  defp boolean(_value, default), do: default
+
+  defp encode(value) when is_boolean(value), do: value
+  defp encode(value) when is_atom(value), do: Atom.to_string(value)
+
+  @doc """
+  Writes the given preferences (any subset of `t()`) to `path` atomically,
+  keeping every other key, known or not.
+  """
+  @spec write(Path.t(), map()) :: :ok | {:error, term()}
+  def write(path, preferences) when is_binary(path) do
+    if valid?(preferences), do: write_valid(path, preferences), else: {:error, :invalid}
+  end
+
+  def write(_path, _preferences), do: {:error, :invalid}
+
+  defp write_valid(path, preferences) do
     existing =
       case read_map(path) do
         {:ok, map} -> map
         :error -> %{}
       end
 
-    body = JSON.encode!(Map.put(existing, "panel", Atom.to_string(mode)))
+    body =
+      preferences
+      |> Enum.reduce(existing, fn {key, value}, map ->
+        Map.put(map, Map.fetch!(@keys, key), encode(value))
+      end)
+      |> JSON.encode!()
+
     dir = Path.dirname(path)
     temporary = Path.join(dir, ".cli.json." <> random() <> ".tmp")
 
@@ -57,8 +119,6 @@ defmodule SwarmCodeCLI.UI.Init.Preferences do
       _ = File.rm(temporary)
     end
   end
-
-  def write(_path, _preferences), do: {:error, :invalid}
 
   defp read_map(path) when is_binary(path) do
     with {:ok, %File.Stat{type: :regular, size: size}} when size <= @max_bytes <- File.stat(path),

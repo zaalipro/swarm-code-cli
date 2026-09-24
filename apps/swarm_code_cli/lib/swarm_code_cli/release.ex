@@ -37,6 +37,9 @@ defmodule SwarmCodeCLI.Release do
   Exit codes: 0 done, 1 the run failed, 2 usage, 3 startup refused.
   Keys in the full-screen view: Ctrl-P palette, ? every key, Esc stops a turn,
   Ctrl-F opens an agent from the side panel, Ctrl-B its shape, Ctrl-C twice quits.
+  The mouse wheel scrolls the pane under the pointer; Shift-drag (Option-drag in
+  Terminal.app and iTerm2) still selects text, and /mouse off gives the
+  terminal its own selection back.
   """
 
   # The prompt's size is the composer's: one paste.

@@ -214,6 +214,22 @@ impl Session<'_> {
                 self.awaiting_resume = false;
                 self.activate()?;
             }
+            // pass73 T9: wheel reports on or off without leaving raw mode.
+            // The flags keep the choice, so a resume (after the editor or a
+            // shell suspend) activates with it and its ready reports it.
+            Command::Mouse { on, .. } => {
+                let flags = if on {
+                    self.flags | protocol::FLAG_MOUSE
+                } else {
+                    self.flags & !protocol::FLAG_MOUSE
+                };
+                if flags != self.flags {
+                    self.flags = flags;
+                    if self.active && !self.awaiting_resume {
+                        guard::mouse(self.guard, on)?;
+                    }
+                }
+            }
             // pass70 B10: OSC 52 between frames. A suspended terminal belongs
             // to the shell, so the text is dropped; a failed write only costs
             // the next frame a full repaint.

@@ -31,7 +31,8 @@ defmodule SwarmCodeCLI.UI.Keymap do
     ModelPicker,
     Question,
     State,
-    Switcher
+    Switcher,
+    WorkflowKeyword
   }
 
   alias SwarmCodeCLI.UI.Keymap.{Bindings, Context, Special}
@@ -119,12 +120,23 @@ defmodule SwarmCodeCLI.UI.Keymap do
        when is_binary(text) do
     case {local_command(text), ModelPicker.opener(text)} do
       {command, _} when not is_nil(command) -> result({:slash_local, command})
-      {nil, nil} -> invoke(target, state)
+      {nil, nil} -> invoke(workflow_route(target), state)
       {nil, picker} -> result({:open_layer, ModelPicker.open(state, picker)})
     end
   end
 
   defp send_target(target, state), do: invoke(target, state)
+
+  # pass73 T5: a message that names a workflow (`WorkflowKeyword`) goes as
+  # `/create-workflow <text>`; the opt-out key (`:send_plain`) skips this.
+  defp workflow_route({:intent, {:dispatch, :send, text, :main, []}} = target) do
+    routed = {:dispatch, :send, WorkflowKeyword.command(text), :main, []}
+
+    if WorkflowKeyword.routes?(text) and
+         match?({:ok, _}, SwarmCodeCLI.UI.Intent.validate(routed)),
+       do: {:intent, routed},
+       else: target
+  end
 
   @doc """
   Whether an Enter that found no Send target should wait for the workspace:
@@ -157,8 +169,8 @@ defmodule SwarmCodeCLI.UI.Keymap do
   @doc """
   The slash commands the client answers itself, from the draft's text: a bare
   `/help`, `/quit` (`/exit`), `/new` (`/clear`), `/resume`, `/conversations`,
-  `/trust`, and `/queue`, `/approval` and `/panel` with or without their
-  argument.
+  `/trust`, and `/queue`, `/approval`, `/panel`, `/diff`, `/theme` and
+  `/mouse` with or without their argument.
   """
   @spec local_command(binary()) :: atom() | nil
   def local_command(text) when is_binary(text) do
@@ -169,6 +181,9 @@ defmodule SwarmCodeCLI.UI.Keymap do
       command?(trimmed, "/queue") -> :queue
       command?(trimmed, "/approval") -> :approval
       command?(trimmed, "/panel") -> :panel
+      command?(trimmed, "/diff") -> :diff
+      command?(trimmed, "/theme") -> :theme
+      command?(trimmed, "/mouse") -> :mouse
       trimmed == "/trust" -> :trust
       true -> nil
     end
@@ -405,10 +420,13 @@ defmodule SwarmCodeCLI.UI.Keymap do
 
   # ------------------------------------------------------------ mouse wheel
 
-  # pass70 F (E6's second half, B10's opt-in `SWARM_MOUSE=1` reports): a wheel
-  # notch scrolls three lines of what is under the pointer and never moves
-  # focus. A paged layer (help, an approval card, a report) takes the wheel
-  # while it is open; any other layer (a picker, a form) ignores it.
+  # pass70 F (E6's second half): a wheel notch scrolls three lines of what is
+  # under the pointer and never moves focus. pass73 T9: wheel reports are on
+  # by default, and the pane under the pointer is the transcript, the side
+  # panel, the agent overlay or the pager. A modal layer (help, a report, the
+  # pager) takes the wheel while it is open; the approval card is not modal,
+  # so it takes the wheel only under the pointer; any other layer (a picker,
+  # a form) ignores it.
   @wheel_lines 3
 
   defp wheel(kind, column, row, state) do
@@ -418,27 +436,53 @@ defmodule SwarmCodeCLI.UI.Keymap do
       [:help | _] ->
         result({:scroll, "dialog", {:line, delta}})
 
-      [{layer, _} | _] when layer in [:approval, :command_report] ->
+      [{:command_report, _} | _] ->
         result({:scroll, "dialog", {:line, delta}})
+
+      [{:detail, _, _} | _] ->
+        result({:scroll, "detail", {:line, delta}})
+
+      [{:approval, _} | _] ->
+        if in_dialog?(column, row, state),
+          do: result({:scroll, "dialog", {:line, delta}}),
+          else: pane_wheel(column, row, delta, state)
 
       [_ | _] ->
         :ignore
 
       [] ->
-        result({:scroll, wheel_region(column, row, state), {:line, delta}})
+        pane_wheel(column, row, delta, state)
     end
   end
 
+  defp pane_wheel(_column, _row, delta, %{overlay: %{}}),
+    do: result({:overlay, {:scroll, delta}})
+
+  defp pane_wheel(column, row, delta, state),
+    do: result({:scroll, wheel_region(column, row, state), {:line, delta}})
+
+  # The side panel docks in the inspector's rectangle (pass 72).
   defp wheel_region(column, row, state) do
     case state.size && Layout.for_state(state).rects do
-      %{inspector: %{x: x, y: y, width: w, height: h}}
-      when column >= x and column < x + w and row >= y and row < y + h ->
-        "inspector"
+      %{inspector: rect} ->
+        if inside?(rect, column, row), do: "panel", else: "main"
 
       _ ->
         "main"
     end
   end
+
+  defp in_dialog?(column, row, state) do
+    case SwarmCodeCLI.UI.Projector.Dialog.project(state, Layout.classify(state.size)) do
+      %{rect: %{} = rect} -> inside?(rect, column, row)
+      _ -> false
+    end
+  rescue
+    _ -> false
+  end
+
+  defp inside?(%{x: x, y: y, width: w, height: h}, column, row),
+    do: column >= x and column < x + w and row >= y and row < y + h
 
   # ------------------------------------------------------- tiny exit escape
 
