@@ -319,6 +319,14 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
         said == "" ->
           {:cont, {shown, rest}}
 
+        # pass73 finisher (live check): a step whose words the daemon cut to
+        # its 2 KB preview (`detail_ref`) is the answer's own beginning, cut
+        # mid-word. Taking it off the answer split a compaction summary at
+        # byte 2048 ("5. `li", a blank row, then "b/ailogic…" with its code
+        # spans turned inside out); the answer keeps its words whole.
+        Map.get(step, :detail_ref) != nil and String.starts_with?(rest, said) ->
+          {:halt, {shown, rest}}
+
         String.starts_with?(rest, said) ->
           {:cont, {Map.put(shown, step.id, said), cut(rest, said)}}
 

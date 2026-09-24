@@ -600,6 +600,56 @@ defmodule SwarmCodeCLI.UI.Projector.WorkspaceTurnsTest do
     assert Enum.count(rows, &(&1 =~ "Now the sec")) == 1
   end
 
+  # pass73 finisher (live check): a compaction summary longer than 2 KB was
+  # drawn as its model step's 2 KB preview ("5. `li"), a blank row, then the
+  # rest of the answer ("b/ailogic_web/…"), its code spans inside out.
+  test "a step cut to its preview is the answer's beginning; the answer stays whole" do
+    state = fixture(:chat, {170, 40})
+    run = SwarmCodeCLI.UI.Projector.Support.run(state)
+    root = "root-" <> run.id
+
+    item = fn id, fields ->
+      struct(
+        %DTO.TranscriptItem{id: id, run_id: run.id, node_id: root, state: :done, text: "t"},
+        fields
+      )
+    end
+
+    filler = Enum.map_join(1..40, "\n", &"- point #{&1} of the summary")
+    line = "5. `lib/web/fallback_controller.ex` — optionally add `:bad_request` handling"
+    answer = "## Files\n\n" <> filler <> "\n\n" <> line <> "\n6. the tests"
+    cut_at = byte_size("## Files\n\n" <> filler <> "\n\n5. `li")
+    preview = binary_part(answer, 0, cut_at)
+
+    items = [
+      item.("m-user", role: :user, kind: :text, created_sequence: 1, text: "/compact"),
+      item.("m-answer", role: :assistant, kind: :text, created_sequence: 2, text: answer),
+      item.("op-think",
+        role: :tool,
+        kind: :thinking,
+        created_sequence: 3,
+        text: preview,
+        detail_ref: %DTO.DetailRef{id: "op-think:text", total_bytes: byte_size(answer)}
+      )
+    ]
+
+    state = put_in(state.read_model.transcript, Map.new(items, &{&1.id, &1}))
+    state = put_in(state.read_model.order[:workspace], Enum.map(items, & &1.id))
+    state = %{state | scrolls: Map.delete(state.scrolls, :main)}
+
+    {rows, _, _, _} = painted(state)
+    text = Enum.join(rows, "\n")
+
+    assert Enum.any?(
+             rows,
+             &(&1 =~ "5. lib/web/fallback_controller.ex — optionally add :bad_request handling")
+           ),
+           text
+
+    refute text =~ "`li"
+    assert Enum.count(rows, &(&1 =~ "point 40 of the summary")) == 1
+  end
+
   test "durations and byte counts read as people write them" do
     assert Turns.duration_text(400) == "0.4s"
     assert Turns.duration_text(1_200) == "1.2s"
