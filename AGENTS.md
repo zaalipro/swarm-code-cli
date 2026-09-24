@@ -196,6 +196,24 @@ by `scripts/dev/sync_unicode_width.exs --check`, `sync_unicode_variants.py --che
   `SWARM_USER_UMASK` for the commands and hooks the model runs in the project
   (`RunCommand.umask_prefix/0`); the locked-branch test pins that file's hash. In screen, `hardcopy` mangles non-ASCII; the `-L` logfile keeps the raw bytes (use it
   to measure output per keystroke or per reply).
+- The side panel (pass 72, direction D): `Projector.Panel` (full, compact), `Projector.Strip`
+  (under 120 columns) and `Projector.PanelOrder` (the entries hint mode and the overlay walk)
+  read S's wire facts (`AgentSummary.panel_state/now/lane/finding…`, `RunSummary.needs_you/
+  reported/phases…`, derived in `daemon/service/panel_facts.ex`). `State.panel_mode` cycles on
+  Ctrl-B and persists in `cli.json` beside the database (`Release.preferences_path/0`, 0600);
+  `State.hint` (Ctrl-F, labels from `UI.Hint.labels/1`, also over an approval card) and
+  `State.overlay` (`Projector.Overlay`, `Reducer.Overlay`, the `agent.detail` query, a steer
+  with the agent's `node_id`) are O's. The overlay's `x` stops its agent through the undrawn
+  `{:stop_agent, …}` keyboard action.
+- Watch flow control (pass 72 F): the persisted backend sends up to 8 deltas ahead of the
+  client's credit (the connection allows 16 frames, 512 KiB), a changed run re-sends only the
+  transcript items that changed, and a `watch_ready` names its own body's revision. Before,
+  a busy swarm overflowed the 128-delta queue every few seconds and a resync mid-run was
+  rejected ("watch_ready rejected: revision"), closing the session on "the daemon connection
+  closed". `cli.log` now carries the app's own `Logger` lines (the handler sets its filters; a
+  `:default` handler without them keeps only OTP reports): look for `watch queue overflow`,
+  `the daemon asked for a fresh … snapshot (reason)`, `watch_ready rejected: <check>`,
+  `event rejected: <check>`, `closing the daemon connection: <why>` and `data source lost`.
 - A transcript item carries at most 8 KB of a prompt or reply and 2 KB of a tool's output
   (`PersistedBackend` `@reply_bytes`, the projection's `substr`), with a `detail_ref` for the
   rest; the transcript says how much is left and Enter (or `o`) on the item opens it whole. A

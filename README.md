@@ -85,7 +85,7 @@ TUI):
 | Ctrl-T | select mode: `j`/`k` move, Enter opens, `y` copies, Esc or Ctrl-T back |
 | Ctrl-P | palette: conversations, runs, features, the model |
 | Ctrl-N | the next approval or question waiting |
-| Ctrl-F (or Ctrl-Space) | hint mode: a badge before every agent in the side panel; its letter opens that agent's overlay, a digit shows a run (`0` all runs), Ctrl-F again is Ctrl-N, Esc cancels. Hint keys never answer a request. Ctrl-F is not forward-char; Right moves the caret |
+| Ctrl-F (or Ctrl-Space) | hint mode: a badge before every agent in the side panel; its letter opens that agent's overlay, a digit shows a run (`0` all runs), Ctrl-F again is Ctrl-N, Esc cancels. Hint keys never answer a request; Ctrl-F also works over an approval card, and the letter opens the overlay whose band answers it. Ctrl-F is not forward-char; Right moves the caret |
 | Ctrl-B | the side panel: full, compact, hidden (under 120 columns: the strip or off); `/panel full\|compact\|hidden` sets it, and the choice is kept in `cli.json` beside the database |
 | `y` `Y` `A` `d` `D` `n` | on an approval: once, this run, always this command family, deny, deny and stop, next |
 | mouse wheel | scrolls what is under the pointer, only with `SWARM_MOUSE=1` (it turns off the terminal's own text selection) |
@@ -109,7 +109,7 @@ the status line: a new project is read-only until `/trust`; in `auto`, edits and
 safe commands (`ls`, `git status`) run by themselves and other commands ask.
 Quitting stops the session's runs and prints a short summary that lists the runs
 it stopped and a `swarmcode --resume <id>` hint for the conversation. Logs go to `~/Library/Logs/SwarmCode/cli.log`, never
-to the terminal. A second `swarmcode` on the same database exits with status 3
+to the terminal; a session that closes on "the daemon connection closed" says why there. A second `swarmcode` on the same database exits with status 3
 and one sentence naming the first one's process; a Ctrl-C outside the full-screen
 view (while it starts, during `-p`, after the summary) simply ends the program.
 The saved launcher performs guarded admission before accessing shared storage.
