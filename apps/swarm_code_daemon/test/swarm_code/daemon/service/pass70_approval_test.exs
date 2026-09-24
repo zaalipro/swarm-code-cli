@@ -261,6 +261,36 @@ defmodule SwarmCode.Daemon.Service.Pass70ApprovalTest do
     assert "touch" in Projects.get(c.project.id).auto_approve_prefixes
   end
 
+  # pass72 G15 (QA Q15): A on one "touch" also answers the other "touch"
+  # requests already waiting in the run (siblings in a swarm ask at once);
+  # another family, and a dangerous command (no family), still ask.
+  test "always allowing a family answers the same family already waiting" do
+    card = fn node, family ->
+      %{"kind" => "approval", "node_id" => node, "approval" => %{"command_family" => family}}
+    end
+
+    run = %{
+      id: "run-1",
+      interactions: [
+        card.("op-a", "touch"),
+        card.("op-b", "touch"),
+        card.("op-c", "mix test"),
+        card.("op-d", nil),
+        %{"kind" => "question", "node_id" => "op-e"}
+      ]
+    }
+
+    test = self()
+    resolve = fn run_id, node, decision -> send(test, {:resolved, run_id, node, decision}) end
+
+    Backend.settle_family(run, "op-a", "touch", resolve)
+    assert_received {:resolved, "run-1", "op-b", :approve}
+    refute_received {:resolved, _, _, _}
+
+    Backend.settle_family(run, "op-d", nil, resolve)
+    refute_received {:resolved, _, _, _}
+  end
+
   test "a dangerous command offers no family and refuses always_prefix", c do
     {run, approval} = start_turn(c, "rm -rf pass70-build")
     card = approval["approval"]

@@ -1455,8 +1455,28 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
       "always_prefix" ->
         family = get_in(run.approval, ["approval", "command_family"])
-        Engine.resolve_approval(run.id, node, :always_prefix, family)
+        result = Engine.resolve_approval(run.id, node, :always_prefix, family)
+        settle_family(run, node, family)
+        result
     end
+  end
+
+  # pass72 G15 (QA Q15): "always" for a command family also answers the
+  # requests of that family already waiting in the run; the user pressed A
+  # two or three times before. A dangerous command has no family, so it is
+  # never answered this way.
+  @doc false
+  def settle_family(run, node, family, resolve \\ &Engine.resolve_approval/3)
+
+  def settle_family(_run, _node, family, _resolve) when family in [nil, ""], do: :ok
+
+  def settle_family(run, node, family, resolve) do
+    run.interactions
+    |> Enum.filter(fn item ->
+      item["kind"] == "approval" and item["node_id"] != node and
+        get_in(item, ["approval", "command_family"]) == family
+    end)
+    |> Enum.each(&resolve.(run.id, &1["node_id"], :approve))
   end
 
   defp admitted_nodes(run), do: run.node_ids ++ Enum.map(run.interactions, & &1["node_id"])
