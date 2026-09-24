@@ -843,7 +843,7 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
   defp turn_agent_name(state, turn) do
     policy = state.capabilities.ambiguous_width
 
-    name =
+    root =
       state.read_model.agents
       |> Map.values()
       |> Enum.filter(&(Map.get(&1, :run_id) == turn.id))
@@ -854,13 +854,18 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
         _ -> nil
       end
 
+    # A chat turn is its agent ("Workflow author", "Planner"); a swarm or a
+    # workflow started from this conversation is the run, not its Lead.
     name =
-      name ||
-        case turn.kind do
-          :workflow -> "the workflow"
-          :swarm -> "the swarm"
-          _ -> "the turn"
-        end
+      case turn.kind do
+        :chat -> root || "the turn"
+        :swarm -> "the swarm"
+        :workflow -> "the workflow"
+        :research -> "the research"
+        :consensus -> "the consensus"
+        :goal -> "the goal run"
+        _ -> root || "the run"
+      end
 
     name = name |> String.split(["\r\n", "\n"], parts: 2) |> hd() |> String.trim()
 

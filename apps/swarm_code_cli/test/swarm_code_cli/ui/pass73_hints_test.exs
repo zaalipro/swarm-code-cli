@@ -72,6 +72,15 @@ defmodule SwarmCodeCLI.UI.Pass73HintsTest do
     assert row =~ ~r/Esc later   \? keys\s*$/
   end
 
+  test "a live swarm is named as the run, not by its Lead" do
+    state = %{
+      Fixtures.representative(:swarm, @size, %Capabilities{size: @size})
+      | focus: "composer"
+    }
+
+    assert status(state) =~ "Esc stop the swarm"
+  end
+
   test "a turn the daemon will not stop is not offered to Esc" do
     state = live()
     runs = Map.new(state.read_model.runs, fn {id, run} -> {id, %{run | allowed_actions: []}} end)
