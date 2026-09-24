@@ -176,7 +176,6 @@ defmodule SwarmCodeCLI.UI.Projector.PanelTest do
     }
 
     full = :panel_swarm_2 |> renamed(names, []) |> panel_text() |> Enum.join("\n")
-    IO.puts(full)
     assert full =~ "4 × reviewer-*"
     assert full =~ "├ ● controllers"
     assert full =~ ~r/╰ ! accounts +needs you/
@@ -201,7 +200,6 @@ defmodule SwarmCodeCLI.UI.Projector.PanelTest do
     compact = :panel_swarm_2 |> renamed(names, panel: :compact) |> panel_text()
     text = Enum.join(compact, "\n")
     refute text =~ "review:…"
-    IO.puts(text)
     assert text =~ ~r/! maintai… +\S/u
     assert text =~ ~r/correct… |correctness/u
 
