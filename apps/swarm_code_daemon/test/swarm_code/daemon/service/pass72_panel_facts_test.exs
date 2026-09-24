@@ -177,7 +177,59 @@ defmodule SwarmCode.Daemon.Service.Pass72PanelFactsTest do
           result_head: "1. medium lib/a.ex:51 — casts :role from attrs. Then."
         })
 
-      assert facts(done, [])["finding"] == "lib/a.ex:51 — casts :role from attrs."
+      # pass72 G4 (QA Q4): the leading path:line moves to the refs (D2's
+      # `» sentence · fake.ex:88`).
+      assert facts(done, [])["finding"] == "casts :role from attrs."
+      assert facts(done, [])["finding_refs"] == ["lib/a.ex:51"]
+    end
+
+    test "regression (QA Q4): a leading path with line ranges is not the sentence" do
+      done =
+        agent(%{
+          status: "done",
+          result_head:
+            "lib/ailogic_web/plugs/body_size_limit.ex :20-22 + :31,37: security plug is broken. More."
+        })
+
+      assert facts(done, [])["finding"] == "security plug is broken."
+      assert facts(done, [])["finding_refs"] == []
+    end
+
+    test "regression (QA Q4): a workflow step's structured findings read as a finding" do
+      json =
+        Jason.encode!(%{
+          "findings" => [
+            %{
+              "detail" =>
+                "The section asserts that a React SPA lives at web/. But every file is deleted.",
+              "file" => "docs/angular-migration-plan.md",
+              "line" => 7,
+              "severity" => "high",
+              "title" => "The plan describes a tree the change deletes"
+            },
+            %{"detail" => "Second thing is off. More.", "file" => "lib/b.ex", "line" => 3}
+          ]
+        })
+
+      done = agent(%{status: "done", result_head: json})
+      facts = facts(done, [])
+      assert facts["finding"] == "The plan describes a tree the change deletes"
+      assert facts["finding_refs"] == ["docs/angular-migration-plan.md:7", "lib/b.ex:3"]
+
+      empty = agent(%{status: "done", result_head: ~s({"findings":[]})})
+      assert facts(empty, [])["finding"] == "No findings."
+
+      # The 4 KB head cut inside the second item keeps the first.
+      cut = agent(%{status: "done", result_head: binary_part(json, 0, byte_size(json) - 30)})
+      assert facts(cut, [])["finding"] == "The plan describes a tree the change deletes"
+      refute facts(cut, [])["finding"] =~ "{"
+
+      alias SwarmCode.Daemon.Service.AgentDetail
+
+      assert [
+               %{"n" => 1, "severity" => "high", "ref" => "docs/angular-migration-plan.md:7"},
+               %{"n" => 2, "text" => "Second thing is off.", "ref" => "lib/b.ex:3"}
+             ] = AgentDetail.findings(json, [])
     end
 
     # pass72 F (P's request 2): the engine's notes on a worker's report are
@@ -216,8 +268,8 @@ defmodule SwarmCode.Daemon.Service.Pass72PanelFactsTest do
               "2. Low: a TODO in lib/ailogic/audit.ex:12.\n"
         })
 
-      assert facts(done, [])["finding"] ==
-               "the runner retries forever on a 500 (lib/ailogic/automations/runner.ex:127)."
+      assert facts(done, [])["finding"] == "the runner retries forever on a 500."
+      assert "lib/ailogic/automations/runner.ex:127" in facts(done, [])["finding_refs"]
 
       cited =
         agent(%{

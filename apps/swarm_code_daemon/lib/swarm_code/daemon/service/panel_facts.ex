@@ -389,7 +389,7 @@ defmodule SwarmCode.Daemon.Service.PanelFacts do
   lists them, else the result's first sentence, else nil.
   """
   def finding(result, roots \\ []) do
-    result = without_engine_notes(result)
+    result = result |> without_engine_notes() |> structured_text()
 
     # pass72 F (live): reports often open with narration ("I've reviewed the
     # web layer.") and list the findings below. An opening sentence that cites
@@ -417,6 +417,17 @@ defmodule SwarmCode.Daemon.Service.PanelFacts do
           ~r/^\W*(?:severity\W*)?(critical|blocker|severe|high|major|medium|moderate|low|minor|nit|trivial)\b[\s:*\-–—]*/iu,
           ""
         )
+        # pass72 G4 (QA Q4): a leading `path:line` is the evidence column
+        # (`finding_refs`), not the sentence.
+        |> String.replace(
+          ~r/^\(?[\w.\/\-]+\.[A-Za-z][A-Za-z0-9]{0,7}\)?[\s:+,\d\-]*?(?:[:—–]|\s-)\s+/u,
+          ""
+        )
+        # …and so is a trailing `(path:line)`.
+        |> String.replace(
+          ~r/\s*\([\w.\/\-]+\.[A-Za-z][A-Za-z0-9]{0,7}(?::[\d\-,]+)?\)(?=[.!?]?$)/u,
+          ""
+        )
         |> blank_nil()
         |> then(&(&1 && clip(&1, @finding_bytes)))
     end
@@ -439,10 +450,136 @@ defmodule SwarmCode.Daemon.Service.PanelFacts do
 
   defp without_engine_notes(result), do: result
 
+  @doc """
+  pass72 G4 (QA Q4): a structured result (a workflow step's
+  `{"findings":[…]}`) as the numbered list a written report would give:
+  `1. high <title or first sentence> (file:line)`, or "No findings." for an
+  empty list. A head cut mid-JSON (`result_head` is 4 KB) keeps the items it
+  holds whole strings for. Any other text is returned unchanged.
+  """
+  def structured_text(result, full? \\ false)
+
+  def structured_text(result, full?) when is_binary(result) do
+    trimmed = String.trim(result)
+
+    if String.starts_with?(trimmed, "{") do
+      case Jason.decode(trimmed) do
+        {:ok, %{"findings" => items}} when is_list(items) -> findings_text(items, full?)
+        {:ok, %{} = map} -> summary_text(map) || result
+        _ -> partial_findings(trimmed) || result
+      end
+    else
+      result
+    end
+  end
+
+  def structured_text(result, _full?), do: result
+
+  defp findings_text(items, full? \\ false) do
+    items
+    |> Enum.filter(&is_map/1)
+    |> Enum.map(&finding_item(&1, full?))
+    |> Enum.reject(&is_nil/1)
+    |> case do
+      [] ->
+        "No findings."
+
+      lines ->
+        lines |> Enum.with_index(1) |> Enum.map_join("\n", fn {line, n} -> "#{n}. " <> line end)
+    end
+  end
+
+  defp finding_item(item, full?) do
+    titled = Enum.find_value(~w(title summary), &string(item[&1]))
+
+    text =
+      titled ||
+        Enum.find_value(~w(detail description message text), fn key ->
+          case string(item[key]) do
+            nil -> nil
+            detail -> first_sentence(detail, [], @finding_bytes + 40)
+          end
+        end)
+
+    ref =
+      case {string(item["file"]) || string(item["path"]), item["line"] || item["start_line"]} do
+        {nil, _} -> nil
+        {file, line} when is_integer(line) -> " (#{file}:#{line})"
+        {file, _} -> " (#{file})"
+      end
+
+    severity = if s = string(item["severity"]), do: s <> " ", else: ""
+
+    detail =
+      with true <- full? and titled != nil,
+           detail when is_binary(detail) <- string(item["detail"]) do
+        "\n   " <> detail
+      else
+        _ -> ""
+      end
+
+    if text, do: severity <> text <> (ref || "") <> detail
+  end
+
+  defp summary_text(map),
+    do: Enum.find_value(~w(summary result answer text), &string(map[&1]))
+
+  defp string(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      text -> text
+    end
+  end
+
+  defp string(_), do: nil
+
+  # A head cut inside the JSON: each whole `{…}` item it still holds.
+  defp partial_findings(text) do
+    cond do
+      Regex.match?(~r/^\{\s*"findings"\s*:\s*\[\s*\]/u, text) ->
+        "No findings."
+
+      Regex.match?(~r/^\{\s*"findings"\s*:\s*\[/u, text) ->
+        text
+        |> String.replace(~r/^\{\s*"findings"\s*:\s*\[\s*/u, "")
+        |> String.split(~r/\}\s*,\s*\{/u)
+        |> Enum.map(&partial_item/1)
+        |> Enum.reject(&(&1 == %{}))
+        |> case do
+          [] -> nil
+          items -> findings_text(items)
+        end
+
+      true ->
+        nil
+    end
+  end
+
+  defp partial_item(chunk) do
+    strings =
+      ~r/"(\w+)"\s*:\s*"((?:[^"\\]|\\.)*)"/u
+      |> Regex.scan(chunk)
+      |> Enum.flat_map(fn [_, key, raw] ->
+        case Jason.decode(~s(") <> raw <> ~s(")) do
+          {:ok, value} -> [{key, value}]
+          _ -> []
+        end
+      end)
+
+    numbers =
+      ~r/"(\w+)"\s*:\s*(\d+)/u
+      |> Regex.scan(chunk)
+      |> Enum.map(fn [_, key, n] -> {key, String.to_integer(n)} end)
+
+    Map.new(strings ++ numbers)
+  end
+
   @doc "Up to five `path:line` references cited by a result, in order, unique."
   def finding_refs(result, roots \\ [])
 
   def finding_refs(result, roots) when is_binary(result) do
+    result = structured_text(result)
+
     ~r/(?<![\w\/.\-])((?:[\w.\-]+\/)*[\w\-][\w.\-]*\.[A-Za-z][A-Za-z0-9]{0,7}):(\d{1,6})/u
     |> Regex.scan(scrub(result, roots(roots)))
     |> Enum.map(fn [_, path, line] -> path <> ":" <> line end)

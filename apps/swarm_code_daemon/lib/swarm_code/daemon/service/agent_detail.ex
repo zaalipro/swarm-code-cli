@@ -74,7 +74,11 @@ defmodule SwarmCode.Daemon.Service.AgentDetail do
       "needs_you" =>
         PanelFacts.needs_you(interactions, %{n.id => %{"name" => n.name}}, parents(ops, n), roots),
       "findings" => findings(n.result_head, roots),
-      "result" => PanelFacts.clip(PanelFacts.scrub_lines(n.result, roots), 8192),
+      "result" =>
+        PanelFacts.clip(
+          PanelFacts.scrub_lines(PanelFacts.structured_text(n.result, true), roots),
+          8192
+        ),
       "result_bytes" => n.result_bytes || 0,
       "error" => nil,
       "agent_error" =>
@@ -124,6 +128,7 @@ defmodule SwarmCode.Daemon.Service.AgentDetail do
   """
   def findings(result, roots) when is_binary(result) do
     result
+    |> PanelFacts.structured_text()
     |> String.split(~r/\r?\n/u)
     |> Enum.flat_map(&finding_line/1)
     |> Enum.map(fn {severity, text, whole} ->

@@ -735,8 +735,11 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
   defp produced_words(_), do: nil
 
   # `fake.ex:88 +1`: the first reference and how many more.
-  defp evidence(%{refs: [first | rest]}),
-    do: if(rest == [], do: first, else: "#{first} +#{length(rest)}")
+  # pass72 G4 (QA Q4): D2's `fake.ex:88 +1`: the basename and its line.
+  defp evidence(%{refs: [first | rest]}) do
+    first = Path.basename(first)
+    if rest == [], do: first, else: "#{first} +#{length(rest)}"
+  end
 
   defp evidence(_), do: nil
 
