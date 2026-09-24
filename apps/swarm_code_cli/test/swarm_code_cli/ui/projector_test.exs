@@ -355,11 +355,15 @@ defmodule SwarmCodeCLI.UI.ProjectorTest do
     state =
       fixture() |> put_in([Access.key(:read_model), Access.key(:interactions), "approval"], item)
 
-    # The approval itself is drawn in the composer slot, not as a modal.
+    # The approval itself is drawn over the composer, not as a modal. pass73
+    # T7: the framed card with its keys sits at the bottom of main, one blank
+    # row above the composer; the edge row stays the composer's.
     {scene, _} = Projector.project(%{state | layers: [{:approval, "approval"}], focus: "cancel"})
     assert scene.overlay == nil
+    main = Enum.find(scene.regions, &(&1.role == :main))
+    assert Enum.join(texts(main.blocks), "") =~ "once"
     edge = Enum.find(scene.regions, &(&1.role == :activity))
-    assert Enum.join(texts(edge.blocks), "") =~ "once"
+    refute Enum.join(texts(edge.blocks), "") =~ "once"
 
     {scene, _} =
       Projector.project(%{state | layers: [{:unsent_changes, :detach}], focus: "confirm"})
