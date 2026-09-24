@@ -129,6 +129,17 @@ defmodule SwarmCodeCLI.UI.Projector.WorkspaceTurnsTest do
     assert Enum.all?(rows, &(String.length(&1) <= 100))
   end
 
+  # pass72 G5 (QA Q6): a lane line too long for the pane cuts its sentence
+  # with `…` and keeps the elapsed and tokens on the right.
+  test "regression: a long lane line ends in … and keeps its meta" do
+    state = fixture(:swarm, {80, 24})
+    {rows, _, _, _} = painted(state)
+    builder = Enum.find(rows, &(&1 =~ "builder-4"))
+
+    assert builder =~ ~r/run_command failed: mix test exited with sta… +7k$/u
+    assert Enum.all?(rows, &(String.length(&1) <= 80))
+  end
+
   # pass71 F2: an expanded row shows twenty lines; the count of the rest
   # names no key when the whole text is on the client (Enter folds it).
   test "an expanded lane shows its calls, the first twenty result lines and counts the rest" do

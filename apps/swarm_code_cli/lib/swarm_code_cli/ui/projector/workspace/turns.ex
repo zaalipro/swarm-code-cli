@@ -915,7 +915,7 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
       cond do
         p3 == :done and view != nil and view.finding != nil ->
           refs = List.first(view.refs)
-          finding = view.finding <> if(refs, do: " " <> refs, else: "")
+          finding = view.finding <> if(refs, do: " · " <> Path.basename(refs), else: "")
           {PanelGlyph.get(:finding, state) <> " " <> finding, sentence_role}
 
         failure != nil and p3 not in [:done, :needs_you] ->
@@ -949,6 +949,8 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
       ],
       nil
     )
+    # pass72 G5 (QA Q6): the sentence gives way to the meta, cut with `…`.
+    |> Map.put(:keep_right, true)
   end
 
   defp panel_view(%{run: run}, agent_id, state) when is_map(run) do
@@ -1509,7 +1511,7 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
   # margin when it fits (dropped when it does not), the row clipped to the
   # width, the fill painted from its column to the margin, the selection rail
   # in the first cell, and neighbouring spans of one style merged.
-  defp render(%{segs: segs, fill: fill}, width, state, selected?) do
+  defp render(%{segs: segs, fill: fill} = row, width, state, selected?) do
     policy = state.capabilities.ambiguous_width
     avail = max(1, width - 1)
 
@@ -1524,10 +1526,25 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
     left_cells = Markdown.segments_cells(left, policy)
     right_cells = Markdown.segments_cells(right, policy)
 
+    keep_right? = Map.get(row, :keep_right, false)
+    room = avail - 2 - right_cells
+
     segs =
-      if right != [] and left_cells + 2 + right_cells <= avail,
-        do: left ++ [{String.duplicate(" ", avail - left_cells - right_cells), :plain}] ++ right,
-        else: clip(left, avail, policy)
+      cond do
+        right != [] and left_cells + 2 + right_cells <= avail ->
+          left ++ [{String.duplicate(" ", avail - left_cells - right_cells), :plain}] ++ right
+
+        keep_right? and right != [] and room >= div(avail, 2) ->
+          left = ellipsis(left, room, policy)
+          used = Markdown.segments_cells(left, policy)
+          left ++ [{String.duplicate(" ", avail - used - right_cells), :plain}] ++ right
+
+        keep_right? ->
+          ellipsis(left, avail, policy)
+
+        true ->
+          clip(left, avail, policy)
+      end
 
     fill = fill || if(selected?, do: {@margin, :hover})
 
@@ -1551,6 +1568,33 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
     |> Enum.map(fn [{_, style} | _] = group ->
       %Span{text: safe(Enum.map_join(group, &elem(&1, 0)), state), style: style}
     end)
+  end
+
+  # `clip/3` with a `…` in the last cell when anything was cut.
+  defp ellipsis(segs, width, policy) do
+    if Markdown.segments_cells(segs, policy) <= width do
+      segs
+    else
+      kept = segs |> clip(max(width - 1, 0), policy) |> trim_trailing_space()
+
+      case List.last(kept) do
+        {_, key} -> kept ++ [{"…", key}]
+        nil -> [{"…", :plain}]
+      end
+    end
+  end
+
+  defp trim_trailing_space(segs) do
+    case List.last(segs) do
+      {text, key} ->
+        case String.trim_trailing(text) do
+          "" -> segs |> Enum.drop(-1) |> trim_trailing_space()
+          trimmed -> List.replace_at(segs, -1, {trimmed, key})
+        end
+
+      nil ->
+        segs
+    end
   end
 
   defp clip(segs, width, policy) do
