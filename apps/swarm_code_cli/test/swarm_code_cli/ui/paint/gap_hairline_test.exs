@@ -63,7 +63,7 @@ defmodule SwarmCodeCLI.UI.Paint.GapHairlineTest do
       # 96-cell reading measure in the middle of it. The columns the navigator
       # owned are main's own empty gutter, so nothing is painted there and no
       # region starts to the left of main.
-      assert main.rect == %Rect{x: 0, y: 1, width: 127, height: 28}
+      assert main.rect == %Rect{x: 0, y: 1, width: 123, height: 28}
 
       docked =
         for region <- scene.regions,
@@ -79,16 +79,21 @@ defmodule SwarmCodeCLI.UI.Paint.GapHairlineTest do
       end
     end
 
-    test "inspector gap column 127 contains hairline glyph" do
+    test "pass72 R13: the panel's gap column 123 is blank in colour, a hairline without it" do
       state = fixture(:chat, {170, 34})
       plan = paint(state)
 
-      # Inspector is at x=128, w=42, y=2, h=31 (row 1 is now the tab row)
-      # Gap column is at x=127
-      glyphs = column_glyphs(plan, 127, 2, 32)
+      # The panel is at x=124, w=46; in colour its surface is its edge and no
+      # full-height rule is drawn beside it.
+      glyphs = column_glyphs(plan, 123, 2, 32)
 
-      assert Enum.all?(glyphs, &(&1 == "╎")),
-             "Expected all cells in inspector gap column 127 to be hairline, got: #{inspect(glyphs)}"
+      assert Enum.all?(glyphs, &(&1 in [nil, " "])),
+             "Expected a blank gap column 123 in colour, got: #{inspect(glyphs)}"
+
+      mono = paint(fixture(:chat, {170, 34}, color: :monochrome))
+
+      assert Enum.all?(column_glyphs(mono, 123, 2, 32), &(&1 == "╎")),
+             "Expected the hairline in monochrome"
 
       # The hairline belongs to the inspector's dock, not to main's right edge,
       # so centring main's reading measure neither orphans it nor runs main into
@@ -96,8 +101,8 @@ defmodule SwarmCodeCLI.UI.Paint.GapHairlineTest do
       {scene, _} = Projector.project(state)
       main = Enum.find(scene.regions, &(&1.role == :main))
       inspector = Enum.find(scene.regions, &(&1.role == :inspector))
-      assert inspector.rect.x - 1 == 127
-      assert main.rect.x + main.rect.width <= 127
+      assert inspector.rect.x - 1 == 123
+      assert main.rect.x + main.rect.width <= 123
     end
 
     test "the title and tab row on row 0 is never split by a gap column" do
@@ -151,11 +156,11 @@ defmodule SwarmCodeCLI.UI.Paint.GapHairlineTest do
 
   describe "ASCII mode degrades hairline to pipe" do
     test "xl ASCII mode uses | instead of hairline glyph" do
-      state = fixture(:chat, {170, 34}, ascii: true)
+      state = fixture(:chat, {170, 34}, ascii: true, color: :monochrome)
       plan = paint(state)
 
-      # Inspector gap at x=127, rows 2..32 (row 1 is the tab row)
-      glyphs = column_glyphs(plan, 127, 2, 32)
+      # Panel gap at x=123, rows 2..32; the hairline is drawn only without colour.
+      glyphs = column_glyphs(plan, 123, 2, 32)
 
       assert Enum.all?(glyphs, &(&1 == "|")),
              "Expected pipe | in ASCII mode inspector gap, got: #{inspect(glyphs)}"
@@ -166,14 +171,14 @@ defmodule SwarmCodeCLI.UI.Paint.GapHairlineTest do
     end
 
     test "wide policy uses | fallback for hairline" do
-      state = fixture(:chat, {170, 34}, policy: :wide)
+      state = fixture(:chat, {170, 34}, policy: :wide, color: :monochrome)
       plan = paint(state)
 
       # Under :wide policy, chrome/3 checks Width.cells and falls back
       # to ASCII if the glyph is not 1 cell. Since hairline is SAFE (1 cell
       # under both policies), the hairline glyph should still be used. The only
-      # dock left is the inspector, whose gap column is 127.
-      glyphs = column_glyphs(plan, 127, 2, 32)
+      # dock left is the panel, whose gap column is 123 (drawn without colour).
+      glyphs = column_glyphs(plan, 123, 2, 32)
 
       assert Enum.all?(glyphs, &(&1 == "╎")),
              "Expected hairline glyph under :wide policy (SAFE glyph), got: #{inspect(glyphs)}"

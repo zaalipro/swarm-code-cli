@@ -150,10 +150,17 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
       text = RunRow.tinted(:text_muted, state)
       key = %{RunRow.tinted(:key, state) | modifiers: [:bold]}
 
+      # pass72: beside the docked panel main can be 73 columns; the short
+      # form keeps the command on the row.
+      words =
+        if width >= 80,
+          do: "This project is not trusted, so SwarmCode only reads it. ",
+          else: "This project is not trusted: read only. "
+
       spans =
         [
           {"  ! ", warn},
-          {"This project is not trusted, so SwarmCode only reads it. ", text},
+          {words, text},
           {"/trust", key},
           {" trusts it.", text}
         ]

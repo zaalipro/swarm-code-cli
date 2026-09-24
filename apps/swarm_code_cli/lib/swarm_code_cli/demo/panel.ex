@@ -247,7 +247,8 @@ defmodule SwarmCodeCLI.Demo.Panel do
     agents = [
       agent(run, 1, "Lead", :lead, :running, 168_000, 20_000,
         lane: "ttwwwtwwwwtw",
-        now: "writing § 3 of the report"
+        now: "writing section 3 of the report",
+        activity: :working
       ),
       agent(run, 2, "reader-docs", :worker, :done, 90_000, 12_000,
         finding: "NimblePool is gone from Req"
@@ -510,7 +511,7 @@ defmodule SwarmCodeCLI.Demo.Panel do
     }
   end
 
-  @wire [:now, :lane, :finding, :finding_refs, :files_changed, :activity]
+  @wire [:now, :lane, :finding, :finding_refs, :files_changed]
 
   defp agent(run, i, name, role, state, elapsed, tokens, opts) do
     started = elapsed && @clock - elapsed
@@ -535,14 +536,29 @@ defmodule SwarmCodeCLI.Demo.Panel do
       retry_at: Keyword.get(opts, :retry_at)
     }
 
-    Enum.reduce(@wire, base, fn key, acc ->
-      case Keyword.fetch(opts, key) do
-        {:ok, value} when key == :lane -> Map.put(acc, :lane, lane(value))
-        {:ok, value} -> Map.put(acc, key, value)
-        :error -> acc
-      end
-    end)
+    agent =
+      Enum.reduce(@wire, base, fn key, acc ->
+        case Keyword.fetch(opts, key) do
+          {:ok, value} when key == :lane -> Map.put(acc, :lane, lane(value))
+          {:ok, value} -> Map.put(acc, key, value)
+          :error -> acc
+        end
+      end)
+
+    # The daemon's P3 state (owner S's `panel_state`): the scene's own word
+    # where it gives one, else what the runtime state says.
+    Map.put(agent, :panel_state, Keyword.get(opts, :activity) || p3(role, state))
   end
+
+  defp p3(_role, :waiting_approval), do: :needs_you
+  defp p3(_role, :waiting_question), do: :needs_you
+  defp p3(:lead, :running), do: :waiting
+  defp p3(_role, :streaming), do: :thinking
+  defp p3(_role, :running), do: :working
+  defp p3(_role, :done), do: :done
+  defp p3(_role, :failed), do: :failed
+  defp p3(_role, :queued), do: :queued
+  defp p3(_role, _state), do: :working
 
   # `t` think, `o` tools, `w` write, `y` waiting on you, `.` idle, `x` failed.
   defp lane(cells) do

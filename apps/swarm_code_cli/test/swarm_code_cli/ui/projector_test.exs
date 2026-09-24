@@ -124,13 +124,14 @@ defmodule SwarmCodeCLI.UI.ProjectorTest do
     end
   end
 
+  # pass72: the side panel draws no controls (P1); stopping one agent is the
+  # agent overlay's (owner O). What stays pinned here: a run the daemon does
+  # not let you stop offers no run stop, whatever its agents allow.
   test "agent and run stop permissions are independent" do
     state = Fixtures.representative(:swarm, %Size{columns: 170, rows: 34}, struct(Capabilities))
     run = hd(Map.values(state.read_model.runs))
-    agent = hd(Map.values(state.read_model.agents))
     state = put_in(state.read_model.runs[run.id].allowed_actions, [])
     {_, actions} = Projector.project(state)
-    assert {:intent, {:stop_agent, run.id, agent.id, agent.revision}} in Map.values(actions)
     refute {:intent, {:run_control, :stop, run.id}} in Map.values(actions)
   end
 
@@ -740,7 +741,8 @@ defmodule SwarmCodeCLI.UI.ProjectorTest do
     main = Enum.find(scene.regions, &(&1.role == :main))
     assert main.rect.x == 0
     assert main.rect.width == 100
-    assert main.rect.y == 1
+    # pass72 R17: under 120 columns row 1 is the side panel's strip.
+    assert main.rect.y == 2
 
     # Every run is still accounted for on the one-line tab row: the ones that fit
     # are tabs, the rest are the +N remainder.

@@ -904,23 +904,34 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
     p3 = (view && view.state) || lane_state(agent, items)
     {sentence, sentence_role} = if view, do: Model.sentence(view, state), else: {"", :text_muted}
 
-    sentence =
-      if (p3 == :done and view) && view.finding do
-        refs = List.first(view.refs)
+    # A failed call the agent has not moved past stays on its line (R2).
+    failure =
+      items
+      |> Enum.filter(&(&1.kind == :error))
+      |> List.last()
+      |> then(&(&1 && first_line(admitted(&1.text, state))))
 
-        PanelGlyph.get(:finding, state) <>
-          " " <> view.finding <> if(refs, do: " " <> refs, else: "")
-      else
-        sentence
+    {sentence, sentence_role} =
+      cond do
+        p3 == :done and view != nil and view.finding != nil ->
+          refs = List.first(view.refs)
+          finding = view.finding <> if(refs, do: " " <> refs, else: "")
+          {PanelGlyph.get(:finding, state) <> " " <> finding, sentence_role}
+
+        failure != nil and p3 not in [:done, :needs_you] ->
+          {failure, :error}
+
+        true ->
+          {sentence, sentence_role}
       end
 
     order = worker_order(ctx) ++ Enum.map(queued_workers(ctx, state), & &1.id)
     last? = List.last(order) == agent_id
     connector = PanelGlyph.get(if(last?, do: :elbow, else: :tee), state)
     name_w = worker_name_width(ctx, state)
-    duration = view && Model.short_clock(view.elapsed)
+    duration = view && view.elapsed && view.elapsed >= 1_000 && Model.short_clock(view.elapsed)
     tokens = agent && Model.tokens(Model.token_count(agent))
-    meta = [duration, tokens] |> Enum.reject(&is_nil/1) |> Enum.join(" · ")
+    meta = [duration, tokens] |> Enum.reject(&(&1 in [nil, false])) |> Enum.join(" · ")
     glyph_mods = if p3 == :needs_you, do: [:bold], else: []
 
     spec(

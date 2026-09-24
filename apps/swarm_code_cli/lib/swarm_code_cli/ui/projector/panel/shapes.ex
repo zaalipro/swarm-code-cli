@@ -63,7 +63,7 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Shapes do
           ]
 
         :consensus_judge ->
-          models = Enum.count(views, &(&1.role != :judge))
+          models = Enum.count(views, &(&1.role not in [:judge, :assistant, :lead]))
 
           [
             "consensus",
@@ -76,7 +76,17 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Shapes do
           [mode_words(state), team(ctx, views), Model.tokens(tokens), Model.money(run.cost_usd)]
       end
 
-    parts |> Enum.reject(&(is_nil(&1) or &1 == "")) |> Enum.join(" · ")
+    parts = Enum.reject(parts, &(is_nil(&1) or &1 == ""))
+    room = ctx.width - 4
+    joined = Enum.join(parts, " · ")
+
+    # A long model name goes before the tokens and the cost do.
+    if Draw.cells(joined, state) > room and length(parts) > 2 do
+      model = Map.get(run, :model)
+      parts |> Enum.reject(&(&1 == model)) |> Enum.join(" · ")
+    else
+      joined
+    end
   end
 
   defp run_tokens(run, views) do
@@ -278,6 +288,24 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Shapes do
         ]
 
       _ ->
+        wire_iteration(ctx, run)
+    end
+  end
+
+  # Owner S's goal facts: this run's place among the goal's runs (the domain
+  # records no maximum, so there is no rail to draw).
+  defp wire_iteration(ctx, run) do
+    case {Map.get(run, :goal_iteration), Map.get(run, :goal_iterations)} do
+      {i, n} when is_integer(i) and is_integer(n) and n >= i ->
+        [
+          Panel.row(ctx, [{"iteration", :text_muted}], [{"#{i} of #{n} so far", :text_faint}]),
+          Panel.blank(ctx)
+        ]
+
+      {i, _} when is_integer(i) ->
+        [Panel.row(ctx, [{"iteration", :text_muted}], [{"#{i}", :text_faint}]), Panel.blank(ctx)]
+
+      _ ->
         []
     end
   end
@@ -353,13 +381,15 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Shapes do
         phases_foot(ctx, run) ++ if(extras?, do: produced(ctx, run, "produced so far"), else: [])
 
       :goal ->
-        criteria(ctx, run) ++ if(extras?, do: produced(ctx, run, "produced"), else: [])
+        criteria(ctx, run) ++
+          verdict(ctx, run, "last verdict") ++
+          if(extras?, do: produced(ctx, run, "produced"), else: [])
 
       :research ->
         sections(ctx, run)
 
       :consensus_judge ->
-        agreement(ctx, run)
+        agreement(ctx, run) ++ criteria(ctx, run) ++ verdict(ctx, run, "the judge said")
 
       _ ->
         []
@@ -418,7 +448,10 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Shapes do
   end
 
   defp chat_foot(ctx, run) do
-    said(ctx, run) ++ produced(ctx, run, "produced") ++ context(ctx)
+    # A finished turn's finding row already says it.
+    said = if run.state in [:done, :failed, :stopped], do: [], else: said(ctx, run)
+
+    said ++ produced(ctx, run, "produced") ++ context(ctx)
   end
 
   # `it said`: the newest words of the turn, quoted, and when (D4 chat).
@@ -429,14 +462,14 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Shapes do
       |> Enum.filter(&(&1.run_id == run.id and &1.kind == :text and &1.role == :assistant))
       |> Enum.max_by(&{&1.created_sequence, &1.id}, fn -> nil end)
 
-    case item && Model.present(item.text) do
+    case item && Model.sentences(item.text, 2) do
       nil ->
         []
 
       text ->
         when_said =
           case {item.at, run.started_at} do
-            {at, s} when is_integer(at) and is_integer(s) and at >= s ->
+            {at, s} when is_integer(at) and is_integer(s) and at >= s + 1_000 ->
               [
                 Panel.row(ctx, [
                   {"  said at " <> Model.short_clock(at - s) <> ", shown in the chat above",
@@ -449,7 +482,7 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Shapes do
           end
 
         [Panel.blank(ctx), Panel.row(ctx, [{"it said", :text_muted}])] ++
-          quoted(ctx, text |> String.replace(~r/\s+/, " ")) ++ when_said
+          quoted(ctx, text) ++ when_said
     end
   end
 
@@ -558,27 +591,50 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Shapes do
     end
   end
 
+  # The criteria (D4 goal): the goal facts when the wire has them, else the
+  # judge's newest verdict checks (✓ met, ✗ not met, ○ not scored yet).
   defp criteria(ctx, run) do
     goal = Map.get(run, :goal) || %{}
 
-    case Map.get(goal, :criteria) do
-      [_ | _] = criteria ->
-        met = Enum.count(criteria, &is_integer(Map.get(&1, :met_in)))
-        total = length(criteria)
-
-        rows =
+    items =
+      case Map.get(goal, :criteria) do
+        [_ | _] = criteria ->
           Enum.map(criteria, fn c ->
             met_in = Map.get(c, :met_in)
+            {if(met_in, do: true), Map.get(c, :text) || "", met_in && "met in it #{met_in}"}
+          end)
 
+        _ ->
+          case verdict_of(ctx, run) do
+            %{checks: [_ | _] = checks} ->
+              Enum.map(checks, &{&1.ok, &1.key, Model.present(&1.note)})
+
+            _ ->
+              []
+          end
+      end
+
+    case items do
+      [] ->
+        []
+
+      items ->
+        met = Enum.count(items, &(elem(&1, 0) == true))
+        total = length(items)
+
+        rows =
+          Enum.map(items, fn {ok, text, note} ->
             {glyph, role} =
-              if met_in,
-                do: {Panel.g(ctx, :done), :success},
-                else: {Panel.g(ctx, :queued), :text_faint}
+              case ok do
+                true -> {Panel.g(ctx, :done), :success}
+                false -> {Panel.g(ctx, :failed), :error}
+                nil -> {Panel.g(ctx, :queued), :text_faint}
+              end
 
             Panel.row(
               ctx,
-              [{"  " <> glyph, role}, {" " <> (Map.get(c, :text) || ""), :text_primary}],
-              if(met_in, do: [{"met in it #{met_in}", :text_faint}], else: [])
+              [{"  " <> glyph, role}, {" " <> text, :text_primary}],
+              if(note, do: [{note, :text_faint}], else: [])
             )
           end)
 
@@ -600,10 +656,14 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Shapes do
             {String.duplicate(Panel.g(ctx, :gauge_off), total - met), :text_ghost}
           ])
         ] ++ rows ++ verdict
-
-      _ ->
-        []
     end
+  end
+
+  defp verdict_of(ctx, run) do
+    ctx.state.read_model.verdicts
+    |> Map.values()
+    |> Enum.filter(&(&1.run_id == run.id))
+    |> Enum.max_by(&{&1.round, &1.revision, &1.id}, fn -> nil end)
   end
 
   defp sections(ctx, run) do
@@ -632,6 +692,19 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Shapes do
 
       _ ->
         []
+    end
+  end
+
+  # Owner S's `verdict`: the latest judge's own words, quoted (goal, consensus).
+  defp verdict(ctx, run, title) do
+    goal_quoted? = is_map(Map.get(run, :goal)) and Map.get(run.goal, :last_verdict)
+
+    summary = with %{summary: text} <- verdict_of(ctx, run), do: text
+
+    case Model.present(Map.get(run, :verdict)) || Model.present(summary) do
+      nil -> []
+      _text when goal_quoted? -> []
+      text -> [Panel.blank(ctx), Panel.row(ctx, [{title, :text_muted}])] ++ quoted(ctx, text)
     end
   end
 

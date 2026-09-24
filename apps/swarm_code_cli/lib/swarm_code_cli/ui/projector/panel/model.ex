@@ -9,6 +9,7 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Model do
   are read through `Map.get/3` with a default, so the panel works before and
   after they arrive; what is not known is left out, never invented (R5).
   """
+  alias SwarmCodeCLI.UI.DataSource.Lane
   alias SwarmCodeCLI.UI.Projector.Support
   alias SwarmCodeCLI.UI.Projector.Inspector.{Hive, Words}
 
@@ -125,6 +126,13 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Model do
 
   defp pad2(n), do: n |> Integer.to_string() |> String.pad_leading(2, "0")
 
+  defp tokens_of(agent) do
+    case Map.get(agent, :tokens) do
+      n when is_integer(n) and n > 0 -> n
+      _ -> token_count(agent)
+    end
+  end
+
   @doc "Tokens in and out of a run or agent."
   def token_count(item), do: (Map.get(item, :tokens_in) || 0) + (Map.get(item, :tokens_out) || 0)
 
@@ -136,7 +144,7 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Model do
   Each is a map of what R1 allows the panel to say.
   """
   def agents(state, run) do
-    lanes = Hive.lanes_for(state, run)
+    lanes = state |> Hive.lanes_for(run) |> Enum.map(&with_run_facts(&1, run))
     pending = pending(state, run)
     subs = Enum.reject(lanes, &lead?/1)
     affixes = affixes(Enum.map(subs, &Hive.name/1))
@@ -157,19 +165,16 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Model do
   # its sentence and lane.
   @run_facts [:lane, :now, :finding, :finding_refs, :files_changed, :activity]
 
-  defp view(
-         %{role: :assistant, id: id} = agent,
-         %{id: id} = run,
-         lanes,
-         pending,
-         affixes,
-         index,
-         state
-       )
-       when not is_map_key(agent, :lane) do
-    facts = run |> Map.take(@run_facts) |> Enum.reject(fn {_k, v} -> is_nil(v) end) |> Map.new()
-    view(Map.merge(agent, facts), run, lanes, pending, affixes, index, state)
+  defp with_run_facts(%{role: :assistant, id: id} = agent, %{id: id} = run) do
+    Enum.reduce(@run_facts, agent, fn key, acc ->
+      case {Map.get(acc, key), Map.get(run, key)} do
+        {nil, value} when not is_nil(value) -> Map.put(acc, key, value)
+        _ -> acc
+      end
+    end)
   end
+
+  defp with_run_facts(agent, _run), do: agent
 
   defp view(agent, run, lanes, pending, affixes, index, state) do
     asks = Enum.filter(pending, &asks_for?(&1, agent, lanes))
@@ -192,15 +197,15 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Model do
       raw_state: agent.state,
       needs_you?: p3 == :needs_you,
       asks: asks,
-      lane: lane(agent),
+      lane: lane(agent, state.now),
       now: now(agent),
       finding: finding(agent, state),
       refs: refs(agent, state),
       files_changed: Map.get(agent, :files_changed),
       error: present(agent.error),
       retry_at: Map.get(agent, :retry_at),
-      elapsed: elapsed(agent, state),
-      tokens: token_count(agent),
+      elapsed: Lane.elapsed_ms(agent, state.now) || elapsed(agent, state),
+      tokens: tokens_of(agent),
       cost: Map.get(agent, :cost_usd)
     }
   end
@@ -233,8 +238,14 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Model do
   def p3_state(agent, lanes, asks \\ []) do
     explicit = Map.get(agent, :activity) || Map.get(agent, :panel_state)
 
+    # The wire's own P3 state wins (owner S); `:working` is also its default,
+    # so it is trusted only while the agent really runs.
+    trusted? =
+      explicit in @p3 and
+        (explicit != :working or agent.state in [:running, :retrying])
+
     cond do
-      explicit in @p3 -> explicit
+      trusted? -> explicit
       asks != [] -> :needs_you
       Words.waiting?(agent.state) -> :needs_you
       agent.state == :failed -> :failed
@@ -305,14 +316,18 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Model do
     end
   end
 
-  defp ask_sentence(%{asks: [ask | _]}, true), do: answer_verb("approve: " <> request(ask), ask)
+  defp ask_sentence(%{asks: [ask | _]}, true), do: answer_verb("approve: " <> ask.text, ask)
   defp ask_sentence(%{asks: [ask | _]}, false), do: short_ask(ask)
   defp ask_sentence(_view, _compact?), do: "waiting for your answer"
 
-  defp answer_verb("approve: " <> text, %{kind: :question}), do: "answer: " <> text
+  defp answer_verb("approve: " <> text, %{verb: :question}), do: "answer: " <> text
   defp answer_verb(text, _ask), do: text
 
   @doc "What a pending interaction asks for, in five words (the full row)."
+  def short_ask(%{verb: :question}), do: "waiting for your answer"
+  def short_ask(%{verb: :command}), do: "wants to run a command"
+  def short_ask(%{verb: :edit}), do: "wants to edit a file"
+  def short_ask(%{verb: {:tool, tool}}), do: "wants to use " <> tool
   def short_ask(%{kind: :question}), do: "waiting for your answer"
   def short_ask(%{approval: %{tool: "run_command"}}), do: "wants to run a command"
 
@@ -374,30 +389,34 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Model do
     first_line(base) <> retry
   end
 
+  # With no words of its own the row says only what is not already the state
+  # word; `""` leaves the sentence out.
   defp now_sentence(view) do
     view.now ||
       case view.state do
         :waiting -> "waiting on the others"
         :queued -> "not started yet"
-        :paused -> "paused"
-        :thinking -> "thinking"
         :stopped -> "stopped before it finished"
         :done -> "finished"
-        _ -> "working"
+        _ -> ""
       end
   end
 
   # The server's own words, never an internal label: the isolation notice
   # ("isolated in swarm/…") and ids are not sentences (owner bug, P1).
   defp now(agent) do
-    [Map.get(agent, :now), agent.step]
+    superseded =
+      if Map.get(agent, :launched_by_superseded, false),
+        do: SwarmCodeCLI.UI.SafeText.value(SwarmCodeCLI.UI.SafeText.chrome(:superseded_child))
+
+    [superseded, Map.get(agent, :now), agent.step]
     |> Enum.map(&present/1)
     |> Enum.find(&sentence?/1)
     |> then(&(&1 && first_line(&1)))
   end
 
   # A step that only names a state is not a sentence ("queued queued").
-  @bare_words ~w(queued running done failed waiting thinking working streaming paused stopped planning)
+  @bare_words ~w(queued running done failed waiting thinking working streaming paused stopped)
 
   @doc "Whether `text` may be shown as an agent's sentence (no isolation or branch text)."
   def sentence?(nil), do: false
@@ -438,6 +457,18 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Model do
     |> Enum.take(5)
   end
 
+  # A chat turn's one assistant stands for the run: its report is the answer.
+  defp report(%{state: :done, id: id, role: :assistant}, state) do
+    state.read_model.transcript
+    |> Map.values()
+    |> Enum.filter(&(&1.run_id == id and &1.kind == :text and &1.role == :assistant))
+    |> Enum.max_by(&{&1.created_sequence, &1.id}, fn -> nil end)
+    |> case do
+      %{text: text} when is_binary(text) -> text
+      _ -> nil
+    end
+  end
+
   defp report(%{state: :done, id: id}, state) do
     state.read_model.transcript
     |> Map.values()
@@ -451,11 +482,18 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Model do
 
   defp report(_agent, _state), do: nil
 
-  defp first_sentence(nil), do: nil
+  defp first_sentence(text), do: sentences(text, 1)
 
-  defp first_sentence(text) do
+  @doc """
+  The first `n` sentences of `text` as plain words: markdown marks, headings
+  and list markers dropped, whitespace folded, at most 160 characters.
+  """
+  def sentences(nil, _n), do: nil
+
+  def sentences(text, n) do
     text
-    |> String.replace(~r/[#*`_>]+/, " ")
+    |> String.replace(~r/^\s*(#+|[-*+]|\d+\.)\s+/m, "")
+    |> String.replace(~r/[#*`>]+/, " ")
     |> String.split(["\n\n"], trim: true)
     |> Enum.map(&String.trim/1)
     |> Enum.find(&(&1 != "" and sentence?(&1)))
@@ -466,10 +504,12 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Model do
       para ->
         para
         |> String.replace(~r/\s+/, " ")
-        |> String.split(~r/(?<=[.!?])\s/, parts: 2)
-        |> hd()
-        |> String.trim_trailing(".")
-        |> binary_slice(0, 160)
+        |> String.split(~r/(?<=[.!?])\s/)
+        |> Enum.take(n)
+        |> Enum.join(" ")
+        |> String.trim()
+        |> then(&if(n == 1, do: String.trim_trailing(&1, "."), else: &1))
+        |> String.slice(0, 160)
     end
   end
 
@@ -480,13 +520,16 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Model do
   `:think | :tools | :write | :you | :idle | :fail`; `nil` when the wire sent
   none (the row then carries only the sentence: an unknown lane is not drawn).
   """
-  def lane(agent) do
-    case Map.get(agent, :lane) do
+  def lane(agent, now \\ nil) do
+    cells = if is_list(Map.get(agent, :lane)), do: Lane.window(agent, now, 12), else: []
+
+    case cells do
       cells when is_list(cells) and cells != [] -> Enum.map(cells, &lane_kind/1)
       _ -> nil
     end
   end
 
+  defp lane_kind(:wait_you), do: :you
   defp lane_kind(kind) when kind in @lane_kinds, do: kind
   defp lane_kind(kind) when is_binary(kind), do: kind |> known_kind()
   defp lane_kind(_), do: :idle
@@ -506,28 +549,79 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Model do
 
   # ------------------------------------------------------------ needs you
 
-  @doc "Pending interactions of `run`, oldest first."
+  @doc """
+  What waits on you in `run`, oldest first, as asks `%{id, kind, text, verb,
+  agent_id, node_id, at}`: the run summary's `needs_you` (owner S's band
+  entries) when it has any, else the run's pending interactions.
+  """
   def pending(state, run) do
-    state.read_model.interactions
-    |> Map.values()
-    |> Enum.filter(&(&1.state == :pending and &1.run_id == run.id))
-    |> Enum.sort_by(&{&1.created_at, &1.id})
+    case Map.get(run, :needs_you) do
+      [_ | _] = wire ->
+        wire |> Enum.map(&from_wire/1) |> Enum.sort_by(&{&1.at, &1.id})
+
+      _ ->
+        state.read_model.interactions
+        |> Map.values()
+        |> Enum.filter(&(&1.state == :pending and &1.run_id == run.id))
+        |> Enum.map(&from_interaction/1)
+        |> Enum.sort_by(&{&1.at, &1.id})
+    end
   end
 
-  defp asks_for?(interaction, agent, lanes) do
-    by_agent = interaction.approval && interaction.approval.agent_id
+  defp from_wire(entry) do
+    text = first_line(Map.get(entry, :text) || "")
+    kind = Map.get(entry, :kind, :approval)
 
+    %{
+      id: Map.get(entry, :node_id) || Map.get(entry, :agent_id) || text,
+      kind: kind,
+      text: text,
+      verb: wire_verb(kind, text),
+      agent_id: Map.get(entry, :agent_id),
+      node_id: Map.get(entry, :node_id),
+      at: Map.get(entry, :requested_at) || 0
+    }
+  end
+
+  defp wire_verb(:question, _text), do: :question
+  defp wire_verb(:gate, _text), do: :question
+  defp wire_verb(_kind, "edit " <> _), do: :edit
+  defp wire_verb(_kind, _text), do: :command
+
+  defp from_interaction(interaction) do
+    tool = interaction.approval && interaction.approval.tool
+
+    verb =
+      cond do
+        interaction.kind == :question -> :question
+        tool == "run_command" -> :command
+        tool in ["edit_file", "write_file", "edit_files"] -> :edit
+        is_binary(tool) and tool != "" -> {:tool, tool}
+        true -> :command
+      end
+
+    %{
+      id: interaction.id,
+      kind: interaction.kind,
+      text: request(interaction),
+      verb: verb,
+      agent_id: interaction.approval && interaction.approval.agent_id,
+      node_id: interaction.node_id,
+      at: interaction.created_at
+    }
+  end
+
+  defp asks_for?(ask, agent, lanes) do
     waiting = Enum.filter(lanes, &Words.waiting?(&1.state))
 
     cond do
-      is_binary(by_agent) -> by_agent == agent.id
-      interaction.node_id == agent.id -> true
-      Enum.any?(lanes, &(&1.id == interaction.node_id)) -> false
+      is_binary(ask.agent_id) -> ask.agent_id == agent.id
+      ask.node_id == agent.id -> true
+      Enum.any?(lanes, &(&1.id == ask.node_id)) -> false
       # The op node is not an agent: the one agent waiting on you asked.
       length(waiting) == 1 -> hd(waiting).id == agent.id
-      # A question or approval raised on a node the read model does not hold as
-      # an agent belongs to the lead (or the one assistant).
-      true -> lead?(agent) and not Enum.any?(lanes, &(&1.id == interaction.node_id))
+      # Otherwise the lead (or the one assistant) asked.
+      true -> lead?(agent)
     end
   end
 
@@ -546,7 +640,7 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Model do
         {ask, run, view}
       end)
     end)
-    |> Enum.sort_by(fn {ask, _run, _view} -> {ask.created_at, ask.id} end)
+    |> Enum.sort_by(fn {ask, _run, _view} -> {ask.at, ask.id} end)
   end
 
   # ---------------------------------------------------------------- names
@@ -556,11 +650,13 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Model do
   only a hyphenated affix of two or more siblings counts, and never one that
   would leave a name empty.
   """
-  def affixes(names) when length(names) < 2, do: {"", ""}
+  def affixes(names) when length(names) < 3, do: {"", ""}
 
+  # Only the shared suffix is dropped (`*-review`); a shared prefix names the
+  # kind of worker ("reader-docs", "reader-code") and stays.
   def affixes(names) do
     suffix = common(Enum.map(names, &(String.split(&1, "-") |> Enum.reverse())))
-    prefix = common(Enum.map(names, &String.split(&1, "-")))
+    prefix = []
     suffix = if suffix == [], do: "", else: "-" <> (suffix |> Enum.reverse() |> Enum.join("-"))
     prefix = if prefix == [], do: "", else: Enum.join(prefix, "-") <> "-"
 

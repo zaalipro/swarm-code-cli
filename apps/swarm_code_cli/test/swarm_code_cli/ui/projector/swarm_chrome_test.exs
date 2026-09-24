@@ -35,9 +35,13 @@ defmodule SwarmCodeCLI.UI.Projector.SwarmChromeTest do
 
   defp quiet(state), do: put_in(state.read_model.interactions, %{})
 
+  # pass72: under 120 columns the side panel's strip (R17) shows the swarm on
+  # row 1, so the hive edge is drawn only with the panel hidden.
+  defp hidden(state), do: Map.put(state, :panel_mode, :hidden)
+
   describe "the hive strip" do
-    test "a live swarm below the docking width draws every agent on the composer's edge" do
-      rows = scene(:swarm, {110, 34}) |> quiet() |> screen()
+    test "a live swarm with the panel hidden draws every agent on the composer's edge" do
+      rows = scene(:swarm, {110, 34}) |> quiet() |> hidden() |> screen()
       strip = Enum.find(rows, &(&1 =~ ~r/^── hive /))
       assert strip, Enum.join(rows, "\n")
 
@@ -50,15 +54,16 @@ defmodule SwarmCodeCLI.UI.Projector.SwarmChromeTest do
     end
 
     test "names are shortened only when the row is full" do
-      rows = scene(:swarm, {70, 30}) |> quiet() |> screen()
+      rows = scene(:swarm, {70, 30}) |> quiet() |> hidden() |> screen()
       strip = Enum.find(rows, &(&1 =~ ~r/^── hive /))
       assert strip
       assert String.length(strip) <= 70
       assert strip =~ "…" or strip =~ ~r/\+\d/
     end
 
-    test "with the inspector docked, an approval open, or the run finished there is no strip" do
+    test "with the panel docked or stripped, an approval open, or the run finished there is no strip" do
       refute scene(:swarm, {160, 45}) |> quiet() |> screen() |> Enum.any?(&(&1 =~ "── hive"))
+      refute scene(:swarm, {110, 34}) |> quiet() |> screen() |> Enum.any?(&(&1 =~ "── hive"))
       refute scene(:swarm, {110, 34}) |> screen() |> Enum.any?(&(&1 =~ "── hive"))
       refute scene(:first_reply, {110, 34}) |> screen() |> Enum.any?(&(&1 =~ "── hive"))
     end

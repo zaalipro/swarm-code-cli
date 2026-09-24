@@ -266,7 +266,7 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
     state = ctx.state
     name = (view && view.display) || "the Lead"
     name_role = (view && view.name_role) || :text_primary
-    question? = ask.kind == :question
+    question? = ask.verb == :question
     title_name = if question?, do: name <> " asks", else: name
 
     head =
@@ -279,7 +279,7 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
       )
 
     inner = ctx.width - 5
-    request = Draw.wrap(Model.request(ask), inner, 3, state)
+    request = Draw.wrap(ask.text, inner, 3, state)
 
     badge = badge_for(ctx, view)
 
@@ -327,7 +327,7 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
             [
               {Draw.pad_to(short, 6, ctx.state), role},
               {" ", :plain},
-              {Model.request(ask), :text_primary}
+              {ask.text, :text_primary}
             ],
           [],
           band: true,
@@ -353,14 +353,14 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
   defp again_key(_ctx), do: [{"^F", :text_primary, [:bold]}, {" again", :text_muted}]
 
   # Why it asks: what it wants to do and the project's approval mode.
-  defp reason(%{kind: :question}, _run, _ctx), do: "answer it in the chat"
+  defp reason(%{verb: :question}, _run, _ctx), do: "answer it in the chat"
 
   defp reason(ask, _run, ctx) do
     verb =
-      case ask.approval && ask.approval.tool do
-        "run_command" -> "run a command"
-        tool when tool in ["edit_file", "write_file", "edit_files"] -> "edit a file"
-        tool when is_binary(tool) and tool != "" -> "use " <> tool
+      case ask.verb do
+        :command -> "run a command"
+        :edit -> "edit a file"
+        {:tool, tool} -> "use " <> tool
         _ -> "go ahead"
       end
 
@@ -420,7 +420,8 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
           [
             {Draw.mark(Model.kind(run), state), Model.kind_role(run)},
             {" ", :plain},
-            {Model.first_line(run.title), title_role, title_mods},
+            {title(ctx, run, lead, in_chat?, clock && not ctx.hint? && clock), title_role,
+             title_mods},
             if(in_chat?, do: {" · in chat", if(ctx.hint?, do: :text_faint, else: :text_muted)})
           ],
         if(clock && not ctx.hint?, do: [{clock, :text_muted}], else: [])
@@ -456,13 +457,28 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
         [
           {Draw.mark(Model.kind(run), state), Model.kind_role(run)},
           {" ", :plain},
-          {Model.first_line(run.title), title_role, if(in_chat?, do: [:bold], else: [])},
+          {title(ctx, run, lead, in_chat?, right_text(right)), title_role,
+           if(in_chat?, do: [:bold], else: [])},
           if(in_chat?, do: {" · in chat", :text_muted})
         ],
       right
     )
     |> target({:run, run.id})
   end
+
+  # The title is what gives way: "in chat" (R4) and the right-hand facts keep
+  # their room.
+  defp title(ctx, run, lead, in_chat?, right) do
+    state = ctx.state
+    lead_cells = cells(lead, state)
+    in_chat = if in_chat?, do: Draw.cells(" · in chat", state), else: 0
+    right_cells = if is_binary(right) and right != "", do: Draw.cells(right, state) + 1, else: 0
+    room = ctx.width - 2 - lead_cells - 3 - in_chat - right_cells
+    Draw.elide(Model.first_line(run.title), max(4, room), state)
+  end
+
+  defp right_text([{text, _role}]), do: text
+  defp right_text(_), do: nil
 
   # -------------------------------------------------------- full blocks
 
@@ -670,6 +686,9 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
         else: []
 
     case lines do
+      [] when lane == [] ->
+        []
+
       [] ->
         [row(ctx, prefix ++ lane, [])]
 
