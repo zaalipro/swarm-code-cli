@@ -229,3 +229,31 @@ are the fallbacks for an outcome without those fields.
 - F4 (`scripts/dev/live_session.exs`, unowned): the dev launchers still start with `mouse?` unset (off)
   and `Theme.mode(SWARM_THEME, nil)`. `SwarmCodeCLI.Release.PersistedSession.start_preferences/3` gives
   the release's precedence; use it there if the dev sessions should match.
+
+## Live checks (sandbox release, K's branch at K7 + V2's owner request applied temporarily, then reverted)
+
+Found and fixed, each with a regression test that fails without the fix:
+
+- K8: from the bottom of the chat, the first wheel notches and PgUp did not move the view. A following
+  view whose last item is taller than the page moved from that item's last row, while the projector
+  draws such an anchor bottom-aligned. `Scroll` now starts the move from the view's top row
+  (`follow_top/3`). Tests: `Pass73MouseTest` "the first notch from the bottom of the chat".
+- K9: `/mouse off` (and `/theme`) closed the whole session. `SessionRuntime.local_effect/2`
+  committed `{:terminal_preferences, …}` against the runtime's state instead of the UI's, and the
+  KeyError stopped the runtime. Test: `Pass73PreferencesRuntimeTest`.
+- K10: the `/approval` picker opened with the cursor above the rows, so Down then Enter chose
+  read-only while auto was checked. It now opens on the current mode. Test: `ConversationsTest`.
+
+Seen working after the fixes (6 real prompts in total): wheel reports on at start (`?1000h ?1006h`);
+`/mouse off` says "Wheel scrolling off", the port sends `?1000l…?1006l`, and cli.json is
+`{"mouse":false}` (0600). `/theme` repaints at once and says "Dark theme · /theme switches back".
+After a restart, the mouse stays off and the theme stays dark. `/mouse on` turns reports back on. Two
+wheel notches move the transcript 6 rows and two more move it back. The wheel over the panel leaves the
+transcript alone (the panel drawing waits for F1). `/tru`+Enter runs `/trust` and `/app`+Enter opens
+the picker. "Approvals: full access → auto" is shown. Ctrl-S sent "also say which modules could be a
+workflow" plainly. Enter sent "a workflow that counts …" as `/create-workflow …`, and the daemon
+accepted it. Esc stopped the newest live chat turn, and a second Esc stopped the other one.
+
+Needs other owners: main's daemon (before S) started a second concurrent chat turn for a message sent
+during a turn, and S's rules make it a steer. Theme and mouse changing live need V2's owner change (the
+request above); without it the owner ignores the message, and the change applies at the next launch.
