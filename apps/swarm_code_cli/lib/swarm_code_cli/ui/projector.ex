@@ -17,7 +17,13 @@ defmodule SwarmCodeCLI.UI.Projector do
     if layout.class == :too_small do
       tiny(state, scene, layout)
     else
-      {regions, cursor} = Shell.project(state, layout)
+      # pass72 P8: the agent overlay covers the whole screen, so the shell
+      # under it is not projected at all.
+      {regions, cursor} =
+        case SwarmCodeCLI.UI.Projector.Overlay.project(state, layout) do
+          nil -> Shell.project(state, layout)
+          covered -> covered
+        end
 
       {scene, background} =
         Support.finalize(%{scene | regions: regions, cursor: cursor}, state.revision)

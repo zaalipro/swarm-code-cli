@@ -70,7 +70,7 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
 
   defp modal(state, class, background) do
     layer = hd(state.layers)
-    rect = rectangle(layer, state.size, class)
+    rect = layer |> rectangle(state.size, class) |> beside_panel(layer, state)
 
     # `decor` draws a picker row as more than text in colour: the title with
     # the query's letters picked out, the detail dimmed, the kind or shortcut
@@ -504,6 +504,7 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
   @entry_bindings %{
     {:local, {:open_layer, :help}} => :help,
     {:local, {:toggle_dock, :inspector}} => :toggle_inspector,
+    {:local, {:panel_mode, :cycle}} => :toggle_inspector,
     {:local, {:presenter_handoff_requested, :plain}} => :presenter_handoff
   }
 
@@ -1376,6 +1377,21 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
   # height, which is what keeps a context's whole grammar on one screen.
   defp rectangle(:help, size, _class), do: centred(size, 150, size.rows - 2)
   defp rectangle(_layer, size, _class), do: centred(size, 80, 24)
+
+  # pass72 F: with the side panel docked, a prompt is centred over the chat
+  # (main) rather than the whole screen, so it leaves the panel's needs-you
+  # band readable while it asks. Only the x moves, and only when main has room.
+  defp beside_panel(%Rect{} = rect, layer, state) when layer != :help do
+    case SwarmCodeCLI.UI.Layout.for_state(state).rects do
+      %{inspector: _, main: %Rect{x: mx, width: mw}} when mw >= rect.width + 2 ->
+        %{rect | x: mx + div(mw - rect.width, 2)}
+
+      _ ->
+        rect
+    end
+  end
+
+  defp beside_panel(rect, _layer, _state), do: rect
 
   defp centred(size, max_width, max_height) do
     width = max(1, min(max_width, size.columns - 4))
