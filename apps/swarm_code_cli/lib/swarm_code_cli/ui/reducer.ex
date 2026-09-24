@@ -1788,12 +1788,28 @@ defmodule SwarmCodeCLI.UI.Reducer do
   # says where it went (`Reducer.Deliveries`).
   defp invoke_intent(state, intent, id) do
     if Layout.for_state(state).mutations_visible? do
-      {state, effects} = Commands.invoke(state, intent, id)
-      {Deliveries.sent(state, effects), effects}
+      {next, effects} = Commands.invoke(state, intent, id)
+      {next |> Deliveries.sent(effects) |> still_sending(state, intent, effects), effects}
     else
       {state, []}
     end
   end
+
+  # pass73 T3/T8: Enter again while the last send has not been answered is
+  # never silent: the draft waits for that answer, and the status says so.
+  defp still_sending(next, state, {:dispatch, _, _, _, _}, []) do
+    case State.current_draft_key(state) do
+      nil ->
+        next
+
+      key ->
+        if sending?(state, key),
+          do: %{next | notice: {:command_feedback, "Still sending the last message; one moment."}},
+          else: next
+    end
+  end
+
+  defp still_sending(next, _state, _intent, _effects), do: next
 
   # The draft takes the picked command when it is empty or already holds it;
   # anything else is unsent work the pick must not replace.

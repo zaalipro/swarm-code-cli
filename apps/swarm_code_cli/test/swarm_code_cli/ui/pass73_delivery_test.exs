@@ -86,6 +86,13 @@ defmodule SwarmCodeCLI.UI.Pass73DeliveryTest do
     assert [%{status: :refused, reason: "the daemon did not answer in time"}] = state.deliveries
   end
 
+  test "Enter again before the daemon answers says it is still sending" do
+    {state, _request} = sent(ready([run("t", :running)]), "first")
+    {state, effects} = send(state)
+    assert requests(effects) == []
+    assert state.notice == {:command_feedback, "Still sending the last message; one moment."}
+  end
+
   test "a workflow message is recorded as the user typed it" do
     {state, request} = sent(ready(), "make a workflow for releases")
 
