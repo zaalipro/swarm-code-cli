@@ -51,6 +51,15 @@ defmodule SwarmCodeCLI.UI.State do
     # {conversation id, {:request, id} | {:run, id}}: a stop asked for before
     # the turn it stops was on screen; it is sent once that run appears.
     stop_on_arrival: nil,
+    # pass73 finisher (S's request K5): the runs this session asked to stop,
+    # newest first (at most 32). `Keymap.live_turn/2` passes over them, so a
+    # Ctrl-C after the stop reaches the next turn or arms the quit, even while
+    # the read model still draws the stopped run live.
+    stops_asked: [],
+    # pass73 (V2's request K-1): origin => why its settled mutation was not
+    # carried out (the daemon's sentence, or its admission code), for the
+    # status row's toast.
+    mutation_reasons: %{},
     # pass72-O fields: the side panel's mode, hint mode and the agent overlay.
     # The panel's shape: :full (2 rows per agent), :compact (1 row) or
     # :hidden; under 120 columns anything but :hidden is the one-row strip.

@@ -1986,7 +1986,12 @@ defmodule SwarmCodeCLI.UI.Reducer do
 
     if effects == [],
       do: {next, effects},
-      else: {%{next | notice: {:command_feedback, "Stopping the turn."}}, effects}
+      else:
+        {%{
+           next
+           | notice: {:command_feedback, "Stopping the turn."},
+             stops_asked: Enum.take([run_id | List.delete(next.stops_asked, run_id)], 32)
+         }, effects}
   end
 
   # The draft is on its way: its send is pending with the service.

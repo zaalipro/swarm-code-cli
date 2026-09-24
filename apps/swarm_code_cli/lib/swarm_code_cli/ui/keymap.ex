@@ -939,19 +939,26 @@ defmodule SwarmCodeCLI.UI.Keymap do
 
   A run launched by another run (a swarm the chat agent started) is not the
   turn; stopping it takes an explicit Stop.
+
+  pass73 finisher (S's request K5): a run this session already asked to stop
+  (`State.stops_asked`) is not the turn any more, even while the read model
+  still draws it live. Ctrl-C and Esc then reach the next live turn, and once
+  none is left Ctrl-C arms the quit instead of stopping the same run forever.
   """
   @spec live_turn(map(), [atom()]) :: map() | nil
   def live_turn(
         state,
         states \\ [:queued, :running, :streaming, :retrying]
       ) do
+    asked = Map.get(state, :stops_asked, [])
+
     case State.current_draft_key(state) do
       {conversation, _} ->
         state.read_model.runs
         |> Map.values()
         |> Enum.filter(
           &(&1.conversation_id == conversation and is_nil(&1.parent_run_id) and
-              &1.state in states)
+              &1.state in states and &1.id not in asked)
         )
         |> Enum.max_by(&{&1.started_at || 0, &1.created_sequence}, fn -> nil end)
 
