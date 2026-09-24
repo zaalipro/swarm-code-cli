@@ -353,14 +353,14 @@ defmodule SwarmCodeCLI.UI.ShellAwarenessTest do
       assert scene.overlay == nil
       pixels = screen(state)
 
-      # The card sits right above the composer: the title and the command at
-      # the bottom of main, the keys on the row above the draft.
+      # The card sits right above the composer (pass73 T7: a framed card at
+      # the bottom of main, a blank row and the composer's rule under it).
       assert pixels =~ "scout-1 wants to run a command"
       assert pixels =~ "$ mix test --failed"
       assert pixels =~ "runs on your machine, in the project"
-      assert pixels =~ "y once"
-      assert pixels =~ "A for this run"
-      assert pixels =~ "d deny"
+      assert pixels =~ ~r/y\]? +once/
+      assert pixels =~ ~r/A\]? +for this run/
+      assert pixels =~ ~r/d\]? +deny/
       assert pixels =~ "Type a message"
 
       assert Enum.any?(

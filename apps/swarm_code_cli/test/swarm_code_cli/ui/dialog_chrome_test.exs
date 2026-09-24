@@ -247,10 +247,11 @@ defmodule SwarmCodeCLI.UI.DialogChromeTest do
         assert full =~ "Review this synthetic project"
         assert full =~ "The assistant wants to change a file"
         assert full =~ "lib/auth/session.ex"
-        assert full =~ "y once"
+        # pass73 T7: each key on its keycap, its words beside it.
+        assert full =~ ~r/y\]? +once/
         # The legacy :always_allow is what the service reads as "for this run".
-        assert full =~ "A for this run"
-        assert full =~ "d deny"
+        assert full =~ ~r/A\]? +for this run/
+        assert full =~ ~r/d\]? +deny/
         assert focus_count(plan) == 0
         assert row(plan, plan.size.rows - 1) =~ "1 waiting"
 

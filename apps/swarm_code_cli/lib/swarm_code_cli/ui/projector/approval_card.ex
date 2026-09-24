@@ -189,20 +189,19 @@ defmodule SwarmCodeCLI.UI.Projector.ApprovalCard do
 
   # --- the body -----------------------------------------------------------------------
 
-  # The lines the card shows about the call, before wrapping: the command, or
-  # the file and the change as a small diff, or the arguments one per line.
+  # The source lines the card shows about the call, before wrapping, each with
+  # its kind: the command (shell-coloured on the code surface), the file and
+  # the change as a small diff, or the arguments one per line.
   defp body(facts) do
     cond do
       facts.command ->
         facts.command
+        |> String.trim_trailing()
         |> String.split(["\r\n", "\n"])
-        |> Enum.with_index()
-        |> Enum.map(fn {line, index} ->
-          {if(index == 0, do: "$ ", else: "  ") <> line, :command}
-        end)
+        |> Enum.map(&{&1, :command})
 
       facts.path ->
-        [{facts.path, :command}] ++ change_lines(facts.arguments)
+        [{facts.path, :path}] ++ change_lines(facts.arguments)
 
       facts.arguments != %{} ->
         facts.arguments
@@ -317,17 +316,139 @@ defmodule SwarmCodeCLI.UI.Projector.ApprovalCard do
   defp bytes(n) when n >= 1_024, do: "#{Float.round(n / 1_024, 1)} KB"
   defp bytes(n), do: "#{n} bytes"
 
-  # --- layout -------------------------------------------------------------------------
+  # --- wrapping ----------------------------------------------------------------------
+
+  # The body as display lines `{prefix, text, kind}` for `room` cells. A
+  # command is a shell prompt: `$ ` before its first line, its other lines
+  # under the command, and a line too long for the card breaks between shell
+  # words (a quoted string stays whole when it fits) and goes on four cells in.
+  defp display_lines(lines, room, policy) do
+    lines
+    |> Enum.with_index()
+    |> Enum.flat_map(fn
+      {{line, :command}, index} ->
+        prefix = if index == 0, do: "$ ", else: "  "
+
+        line
+        |> shell_wrap(max(1, room - 2), max(1, room - 4), policy)
+        |> Enum.with_index()
+        |> Enum.map(fn {piece, i} -> {if(i == 0, do: prefix, else: "    "), piece, :command} end)
+
+      {{"", kind}, _index} ->
+        [{"", "", kind}]
+
+      {{line, kind}, _index} ->
+        line |> Width.wrap(max(1, room), policy) |> Enum.map(&{"", &1, kind})
+    end)
+  end
 
   @doc """
-  The card for the approval in the slot at `width` cells, or nil when there
-  is none or no composer to draw it in:
+  `line` in rows of at most `first` cells, then `rest` cells, broken between
+  shell words: at blanks outside quotes, and a word longer than a row is cut
+  by cells. A quote left open at the end of the line (a `python3 -c "` that
+  continues on the next line) does not hold the rest of the line together.
+  """
+  def shell_wrap(line, first, rest, policy) do
+    words = shell_words(line)
+
+    {rows, current} =
+      Enum.reduce(words, {[], ""}, fn word, {rows, current} ->
+        room = if rows == [], do: first, else: rest
+        candidate = current <> word
+
+        cond do
+          Width.cells(candidate, policy) <= room ->
+            {rows, candidate}
+
+          String.trim(current) == "" ->
+            hard(rows, candidate, room, rest, policy)
+
+          true ->
+            rows = [String.trim_trailing(current) | rows]
+            word = String.trim_leading(word)
+
+            if Width.cells(word, policy) <= rest,
+              do: {rows, word},
+              else: hard(rows, word, rest, rest, policy)
+        end
+      end)
+
+    rows = if current == "" and rows != [], do: rows, else: [current | rows]
+    Enum.reverse(rows)
+  end
+
+  # A word wider than its row, cut by cells; the last piece stays open.
+  defp hard(rows, text, room, rest, policy) do
+    {head, tail, _} = Width.take_cells(text, max(1, room), policy)
+
+    if tail == "" do
+      {rows, head}
+    else
+      hard([head | rows], tail, rest, rest, policy)
+    end
+  end
+
+  # The line cut before each blank that is outside quotes; each word keeps
+  # its leading blanks, so the words join back to the line. A quote with no
+  # partner later on the line (a `python3 -c "` whose script follows on the
+  # next lines) is an ordinary character.
+  defp shell_words(line), do: split_words(String.graphemes(line), "", [])
+
+  defp split_words([], current, words),
+    do: Enum.reverse(if current == "", do: words, else: [current | words])
+
+  defp split_words([g | rest], current, words) when g in [" ", "\t"] do
+    if String.trim(current) == "",
+      do: split_words(rest, current <> g, words),
+      else: split_words(rest, g, [current | words])
+  end
+
+  defp split_words([g | rest], current, words) when g in ["\"", "'"] do
+    case Enum.find_index(rest, &(&1 == g)) do
+      nil ->
+        split_words(rest, current <> g, words)
+
+      i ->
+        {quoted, after_quote} = Enum.split(rest, i + 1)
+        split_words(after_quote, current <> g <> Enum.join(quoted), words)
+    end
+  end
+
+  defp split_words([g | rest], current, words), do: split_words(rest, current <> g, words)
+
+  # --- layout -------------------------------------------------------------------------
+
+  @command_rows 6
+
+  @doc """
+  The card for the approval waiting in the composer slot, at `width` cells
+  of main, or nil when there is none or no composer. pass73 T7 (the owner:
+  "super ugly"): a framed card in the D2 language,
+
+      ╭─ ! angular-plan wants to run a command ─────────────── dangerous ─╮
+      │  “check the plan payload's shape before the angular client changes” │
+      │                                                                      │
+      │   $ cd apps/ailogic_web && curl -s http://localhost:4000/api/plans…  │
+      │       | python3 -c "                                                 │
+      │     import json,sys                                                  │
+      │  … 5 more lines · Enter shows all                                    │
+      │                                                                      │
+      │   y  once    Y  this run    A  always “curl”    d  deny    D  deny …  │
+      ╰─ in the project · read-only asks ───────────────── 1 of 2 · n next ─╯
+
+  a header with the glyph, the agent, the verb and the risk word in its
+  colour; the reason on its own line; the command in a code block wrapped
+  between shell words, at most six lines until Enter shows all (K's
+  `selection["approval_all"]`, paged with PgUp/PgDn in either form); the
+  decisions as key chips with even spacing; and one blank row under it, so
+  the card never touches the composer. Every row of it is drawn in main:
 
     * `rows` — `{left, right}` segment lists, top to bottom; the first
-      `growth` rows are drawn by main at its bottom, the next one on the edge
-      row and the rest in the composer;
+      `growth` rows (the card and the blank row) are drawn at the bottom of
+      main, the last one is the composer's edge row (a hairline);
     * `growth` — rows the card takes from the bottom of main;
-    * `window` — `{first, shown, total}` body lines, for paging.
+    * `window` — `{first, shown, total}` command lines, for paging;
+    * `edge: :composer` — the edge row belongs to the composer.
   """
   def layout(state, width) do
     layout = Layout.for_state(state)
@@ -340,74 +461,103 @@ defmodule SwarmCodeCLI.UI.Projector.ApprovalCard do
     end
   end
 
+  @doc "Whether the card shows every line of `item` (Enter on the card, K's `approval_all`)."
+  def expanded?(state, item), do: Map.get(state.selection, "approval_all") == item.id
+
+  @doc """
+  How many command lines the open card leaves out (0 when it shows them
+  all), so a hint can say "Enter shows all" only when that is true.
+  """
+  def hidden_lines(state, width) do
+    case layout(state, width) do
+      %{window: {_first, shown, total}} -> max(0, total - shown)
+      nil -> 0
+    end
+  end
+
   defp waiting(state), do: SwarmCodeCLI.UI.Projector.Composer.waiting_approvals(state)
 
   defp build(item, rest, state, width, main_rows) do
     policy = state.capabilities.ambiguous_width
     facts = facts(item)
-    inner = max(1, width - 4)
+    frame = frame(state)
+
+    # Two cells of margin on the left, one on the right; inside the frame a
+    # blank each side, and the code block pads its text by one more.
+    card = max(12, width - 3)
+    inner = card - 4
+    room = max(1, inner - 2)
 
     limits = %{SafeText.Limits.content() | ambiguous_width: policy}
 
-    body =
+    lines =
       facts
       |> body()
       |> bounded()
-      |> Enum.flat_map(fn {line, kind} ->
-        line
-        |> SwarmCodeCLI.UI.Projector.Density.external(limits)
-        |> SafeText.value()
-        |> then(&if(&1 == "", do: [""], else: Width.wrap(&1, inner, policy)))
-        |> Enum.map(&{&1, kind})
+      |> Enum.map(fn {line, kind} ->
+        {line |> SwarmCodeCLI.UI.Projector.Density.external(limits) |> SafeText.value(), kind}
       end)
+      |> display_lines(room, policy)
 
-    where = where(facts, state)
-    total = length(body)
+    total = length(lines)
+    expanded? = expanded?(state, item)
+    keys = key_rows(keys(item, facts, state), inner - 1, state)
+    reason = reason_text(facts, state)
 
-    # The keys sit on the row above the composer, so the draft stays in view
-    # under the card; the title, the body and where it runs grow up into
-    # main, by at most half of it.
-    needed = 2 + total + if(where == [], do: 0, else: 1)
-    rows_total = min(needed, 1 + max(2, div(main_rows, 2)))
-    growth = rows_total - 1
+    # Rows the card may take from main: most of it, never all of it.
+    budget = max(6, div(main_rows * 2, 3))
+    fixed = 1 + length(keys) + 1 + 1
+    limit = if expanded?, do: total, else: min(total, @command_rows)
 
-    room = max(0, rows_total - 2)
-    where_rows = if where != [] and (room - min(total, room) >= 1 or room >= 3), do: 1, else: 0
-    shown = min(total, max(0, room - where_rows))
+    {spacer?, gaps?, reason?, shown} = fit(fixed, limit, total, budget)
     first = scroll(state, item, total, shown)
+    more = more_words(first, shown, total, expanded?, state)
+    visible = lines |> Enum.drop(first) |> Enum.take(shown)
 
-    visible = body |> Enum.drop(first) |> Enum.take(shown)
+    gap = if gaps?, do: [blank_row(frame, card, state)], else: []
 
-    title = title_row(item, rest, state)
-    body_rows = Enum.map(visible, &body_row(&1, state))
-
-    more =
-      if shown < total,
-        do: [
-          {"#{first + 1}#{if(state.capabilities.ascii?, do: "-", else: "–")}#{first + shown} of #{total} · PgDn",
-           tint(:text_faint, state)}
-        ],
-        else: []
-
-    where_row =
-      cond do
-        where_rows == 0 -> []
-        true -> [{[indent(state) | where], more}]
-      end
-
-    keys = [{[indent(state) | keys(item, rest, facts, state)], []}]
-    filler = List.duplicate({[{rail(state), tint(:warning, state)}], []}, rows_total)
-
+    # A blank row above the card, when there is room, keeps the transcript
+    # off its top border; the one under it is never given up.
     rows =
-      [title | body_rows] ++
-        where_row ++
-        Enum.take(filler, max(0, rows_total - 2 - length(body_rows) - length(where_row))) ++ keys
+      if(spacer?, do: [separator()], else: []) ++
+        [top_row(item, facts, frame, card, state)] ++
+        if(reason?, do: [text_row(reason, :text_muted, frame, card, state)], else: []) ++
+        gap ++
+        Enum.map(visible, &code_row(&1, frame, card, state)) ++
+        if(more, do: [text_row(more, :text_faint, frame, card, state)], else: []) ++
+        gap ++
+        Enum.map(keys, &keys_row(&1, frame, card, state)) ++
+        [bottom_row(item, rest, facts, frame, card, state), separator()]
 
-    %{item: item, rows: rows, growth: growth, window: {first, shown, total}}
+    growth = length(rows)
+
+    %{
+      item: item,
+      rows: rows ++ [edge_row(state, width)],
+      growth: growth,
+      window: {first, shown, total},
+      edge: :composer
+    }
   end
 
-  # The body's first visible line: the page the user scrolled to while the
-  # card is the open layer, else the top.
+  # What fits `budget` rows, as `{spacer?, gaps?, reason?, shown}`: the
+  # blank row above the card goes first, then the gaps inside it, then
+  # command lines down to one (with its "more" line), then the reason.
+  defp fit(fixed, limit, total, budget) do
+    more = fn shown -> if shown < total, do: 1, else: 0 end
+    need = fn spacer, gaps, shown -> fixed + spacer + gaps + 1 + shown + more.(shown) end
+
+    cond do
+      need.(1, 2, limit) <= budget -> {true, true, true, limit}
+      need.(0, 2, limit) <= budget -> {false, true, true, limit}
+      need.(0, 0, limit) <= budget -> {false, false, true, limit}
+      (shown = budget - fixed - 2) >= 1 -> {false, false, true, min(shown, limit)}
+      true -> {false, false, false, max(1, min(limit, budget - fixed - 1))}
+    end
+  end
+
+  # The command's first visible line: the page the user scrolled to while
+  # the card is the open layer, else the top.
   defp scroll(state, item, total, shown) do
     first =
       case state.layers do
@@ -424,54 +574,284 @@ defmodule SwarmCodeCLI.UI.Projector.ApprovalCard do
     first |> min(max(0, total - shown)) |> max(0)
   end
 
-  defp title_row(item, rest, state) do
-    mark = SafeText.value(Support.glyph(:waiting, state))
+  defp more_words(_first, shown, total, _expanded?, _state) when shown >= total, do: nil
 
-    count =
-      if rest == [], do: [], else: [{"1 of #{length(rest) + 1} waiting", tint(:warning, state)}]
-
-    {[
-       {rail(state), tint(:warning, state)},
-       {" " <> mark <> " ", tint(:warning, state, [:bold])},
-       {title(item, state), tint(:text_primary, state, [:bold])}
-     ], count}
+  defp more_words(0, shown, total, false, state) do
+    n = total - shown
+    "#{ellipsis(state)} #{n} more #{if n == 1, do: "line", else: "lines"} · Enter shows all"
   end
 
-  defp body_row({line, kind}, state) do
-    style =
+  defp more_words(first, shown, total, expanded?, state) do
+    dash = if state.capabilities.ascii?, do: "-", else: "–"
+    tail = if expanded?, do: "", else: " · Enter shows all"
+    "lines #{first + 1}#{dash}#{first + shown} of #{total} · PgUp PgDn" <> tail
+  end
+
+  # --- rows ---------------------------------------------------------------------------
+
+  defp frame(%{capabilities: %{ascii?: true}}),
+    do: %{tl: "+", tr: "+", bl: "+", br: "+", h: "-", v: "|"}
+
+  defp frame(state) do
+    if Width.cells("╭", state.capabilities.ambiguous_width) == 1,
+      do: %{tl: "╭", tr: "╮", bl: "╰", br: "╯", h: "─", v: "│"},
+      else: %{tl: "⎡", tr: "⎤", bl: "⎣", br: "⎦", h: "⎯", v: "⎜"}
+  end
+
+  # `╭─ ! angular-plan wants to run a command ───── dangerous ─╮`
+  defp top_row(item, facts, frame, card, state) do
+    policy = state.capabilities.ambiguous_width
+    border = tint(:warning, state)
+    mark = SafeText.value(Support.glyph(:waiting, state))
+    name = who(item, state)
+    risk = risk(facts, state)
+    risk_cells = segments_cells(risk, policy)
+
+    # `╭─ ` title ` ─…─` then ` risk ─╮` or `╮`; the title gives way (from
+    # its end) before the risk word does, and the rule keeps one cell.
+    tail = if risk == [], do: 1, else: risk_cells + 4
+    room = card - 3 - 1 - 1 - tail
+    verb = " wants to " <> verb(facts)
+
+    title =
+      [
+        {mark <> " ", tint(:warning, state, [:bold])},
+        {name, tint(name_role(item, state), state, [:bold])},
+        {verb, tint(:text_primary, state, [:bold])}
+      ]
+      |> clip(max(1, room), state)
+
+    fill = max(1, card - 3 - segments_cells(title, policy) - 1 - tail)
+
+    left =
+      [{margin(), plain(state)}, {frame.tl <> frame.h <> " ", border}] ++
+        title ++
+        [{" " <> String.duplicate(frame.h, fill), border}] ++
+        if(risk == [],
+          do: [{frame.tr, border}],
+          else: [{" ", border}] ++ risk ++ [{" " <> frame.h <> frame.tr, border}]
+        )
+
+    {pad(left, card + 2, state), []}
+  end
+
+  # The risk word in its colour, as a chip: "dangerous" in red, "read-only"
+  # in green; nothing for an ordinary call.
+  defp risk(%{classification: :dangerous}, state), do: [{" dangerous ", chip(:chip_err, state)}]
+  defp risk(%{classification: :safe}, state), do: [{" read-only ", chip(:chip_ok, state)}]
+  defp risk(_facts, _state), do: []
+
+  defp text_row(text, role, frame, card, state) do
+    policy = state.capabilities.ambiguous_width
+    border = tint(:warning, state)
+    inner = card - 4
+    text = if Width.cells(text, policy) > inner - 1, do: elide(text, inner - 1, state), else: text
+
+    left = [
+      {margin(), plain(state)},
+      {frame.v <> "  ", border},
+      {text, tint(role, state)}
+    ]
+
+    {close(left, frame, card, state), []}
+  end
+
+  defp blank_row(frame, card, state) do
+    border = tint(:warning, state)
+    {close([{margin(), plain(state)}, {frame.v, border}], frame, card, state), []}
+  end
+
+  # A command line on the code block's surface: the prompt faint, the shell
+  # coloured by `Syntax`, the command's first word bold.
+  defp code_row({prefix, text, kind}, frame, card, state) do
+    policy = state.capabilities.ambiguous_width
+    border = tint(:warning, state)
+    inner = card - 4
+    surface = surface(state)
+
+    body =
       case kind do
-        :command -> tint(:text_primary, state, [:bold])
-        :add -> tint(:success, state)
-        :del -> tint(:error, state)
-        :plain -> tint(:text_muted, state)
-        :omitted -> tint(:text_faint, state)
+        :command -> shell_segments(prefix, text, state)
+        :path -> [{text, tint(:text_primary, state, [:bold])}]
+        :add -> [{text, tint(:success, state)}]
+        :del -> [{text, tint(:error, state)}]
+        :omitted -> [{text, tint(:text_faint, state)}]
+        _ -> [{text, tint(:text_muted, state)}]
+      end
+      |> clip(inner - 2, state)
+      |> Enum.map(fn {t, style} -> {t, %{style | background: surface}} end)
+
+    used = segments_cells(body, policy)
+
+    left =
+      [
+        {margin(), plain(state)},
+        {frame.v <> " ", border},
+        {" ", %{plain(state) | background: surface}}
+      ] ++
+        body ++
+        [{String.duplicate(" ", max(0, inner - 1 - used)), %{plain(state) | background: surface}}]
+
+    {close(left, frame, card, state), []}
+  end
+
+  @syntax %{
+    keyword: :agent_lane_2,
+    string: :agent_lane_1,
+    number: :agent_lane_3,
+    atom: :agent_lane_3,
+    type: :agent_lane_5,
+    function: :text_primary,
+    variable: :agent_lane_4,
+    comment: :text_faint,
+    punct: :text_muted,
+    plain: :text_primary
+  }
+
+  defp shell_segments(prefix, text, state) do
+    prompt = if prefix == "", do: [], else: [{prefix, tint(:text_faint, state)}]
+
+    tokens =
+      case SwarmCodeCLI.UI.Projector.Syntax.line(text, :shell) do
+        [] -> if text == "", do: [], else: [{text, :plain}]
+        tokens -> tokens
       end
 
-    {[indent(state), {line, style}], []}
+    # The program the line runs reads first: its first word in bold.
+    {segments, _} =
+      Enum.map_reduce(tokens, prefix == "$ ", fn {piece, kind}, lead? ->
+        role = Map.get(@syntax, kind, :text_primary)
+        word? = lead? and String.trim(piece) != ""
+        mods = if word? and kind in [:plain, :keyword, :function], do: [:bold], else: []
+        {{piece, tint(role, state, mods)}, lead? and not word?}
+      end)
+
+    prompt ++ segments
   end
 
-  defp indent(state), do: {rail(state) <> "   ", tint(:warning, state)}
+  defp keys_row(chips, frame, card, state) do
+    border = tint(:warning, state)
+    left = [{margin(), plain(state)}, {frame.v <> "  ", border}] ++ chips
+    {close(left, frame, card, state), []}
+  end
 
-  # Where it runs, how the service classes it and why the model wants it.
-  defp where(facts, state) do
-    parts =
-      [
-        facts.cwd && {"in " <> cwd_words(facts.cwd), tint(:text_muted, state)},
-        case facts.classification do
-          :dangerous -> {"dangerous", tint(:error, state, [:bold])}
-          :safe -> {"read-only", tint(:success, state)}
-          _ -> nil
-        end,
-        facts.reason && {quoted(facts.reason, state), tint(:text_muted, state)}
-      ]
+  # `╰─ in the project · read-only asks ──────── 1 of 2 waiting · n next ─╯`
+  defp bottom_row(_item, rest, facts, frame, card, state) do
+    policy = state.capabilities.ambiguous_width
+    border = tint(:warning, state)
+    faint = tint(:text_faint, state)
+    dot = {" · ", tint(:text_ghost, state)}
+
+    info =
+      [where_words(facts), policy_words(facts, state)]
       |> Enum.reject(&is_nil/1)
+      |> Enum.map(&{&1, faint})
+      |> Enum.intersperse(dot)
 
-    parts =
-      if parts == [],
-        do: [{permission_words(facts.permission), tint(:text_muted, state)}],
-        else: parts
+    next =
+      if rest == [],
+        do: [],
+        else: [
+          {"1 of #{length(rest) + 1} waiting", tint(:warning, state)},
+          dot,
+          {"n", tint(:text_primary, state, [:bold])},
+          {" next", tint(:text_muted, state)}
+        ]
 
-    Enum.intersperse(parts, {" · ", tint(:text_ghost, state)})
+    # `╰─` then ` info ` then the rule, then ` next ─╯` or `╯`.
+    tail = if next == [], do: 1, else: segments_cells(next, policy) + 4
+    info = if info == [], do: [], else: clip(info, max(0, card - 5 - tail), state)
+
+    head =
+      if info == [],
+        do: [{margin(), plain(state)}, {frame.bl <> frame.h, border}],
+        else:
+          [{margin(), plain(state)}, {frame.bl <> frame.h <> " ", border}] ++
+            info ++ [{" ", border}]
+
+    fill = max(1, card - (segments_cells(head, policy) - 2) - tail)
+
+    left =
+      head ++
+        [{String.duplicate(frame.h, fill), border}] ++
+        if(next == [],
+          do: [{frame.br, border}],
+          else: [{" ", border}] ++ next ++ [{" " <> frame.h <> frame.br, border}]
+        )
+
+    {pad(left, card + 2, state), []}
+  end
+
+  defp separator, do: {[], []}
+
+  # The composer's own row under the card: its hairline, as when no card is
+  # up (drawn by `Composer.edge/2`, which owner V2 lets fall through to its
+  # hairline for `edge: :composer`).
+  defp edge_row(state, width) do
+    hairline =
+      SwarmCodeCLI.UI.Projector.Markdown.hairline(%{
+        ascii?: state.capabilities.ascii?,
+        policy: state.capabilities.ambiguous_width
+      })
+
+    {[{String.duplicate(hairline, max(1, width)), tint(:text_ghost, state)}], []}
+  end
+
+  # The frame's right side after `left`, padded to the card's width.
+  defp close(left, frame, card, state) do
+    policy = state.capabilities.ambiguous_width
+    border = tint(:warning, state)
+    used = segments_cells(left, policy) - 2
+    left ++ [{String.duplicate(" ", max(0, card - used - 1)), plain(state)}, {frame.v, border}]
+  end
+
+  defp pad(left, cells, state) do
+    used = segments_cells(left, state.capabilities.ambiguous_width)
+    if used < cells, do: left ++ [{String.duplicate(" ", cells - used), plain(state)}], else: left
+  end
+
+  defp margin, do: "  "
+
+  # Why it asks, on its own line: the model's own reason in quotes, else the
+  # rule that made it ask.
+  defp reason_text(facts, state) do
+    case facts.reason do
+      nil -> rule_words(facts, state)
+      reason -> quoted(compact(reason), state)
+    end
+  end
+
+  defp rule_words(facts, state) do
+    what = if facts.permission == :execute, do: "command", else: "change"
+
+    case approval_mode(state) do
+      :read_only -> "read-only run, so every #{what} asks first"
+      :auto when what == "command" -> "auto runs safe commands; this one asks first"
+      :auto -> "auto asks before this change"
+      _ -> permission_words(facts.permission)
+    end
+  end
+
+  # The bottom border's short form of the rule, when the reason line holds
+  # the model's own words.
+  defp policy_words(%{reason: nil}, _state), do: nil
+
+  defp policy_words(_facts, state) do
+    case approval_mode(state) do
+      :read_only -> "read-only asks"
+      :auto -> "auto asks"
+      _ -> nil
+    end
+  end
+
+  defp where_words(%{cwd: nil}), do: nil
+  defp where_words(%{cwd: cwd}), do: "in " <> cwd_words(cwd)
+
+  defp approval_mode(state) do
+    case Map.get(state.read_model.snapshots, :workspace) do
+      %{} = workspace -> Map.get(workspace, :approval_mode)
+      _ -> nil
+    end
   end
 
   defp cwd_words("."), do: "the project"
@@ -482,43 +862,181 @@ defmodule SwarmCodeCLI.UI.Projector.ApprovalCard do
   defp permission_words(:read), do: "reads the project"
   defp permission_words(_), do: "needs your permission"
 
-  defp keys(item, rest, facts, state) do
-    keys =
-      state
-      |> decisions(item)
-      |> Enum.map(fn {decision, key, words, _target} ->
-        words =
-          if decision == :always_prefix and facts.family,
-            do: words <> " " <> quoted(facts.family, state),
-            else: words
+  # The asking agent's lane colour, as its panel row draws the name (R11).
+  defp name_role(item, state) do
+    approval = item.approval || %{}
+    agent_id = Map.get(approval, :agent_id) || item.node_id
 
-        {key, words, focused?(state, decision)}
+    siblings =
+      state
+      |> SwarmCodeCLI.UI.Projector.Inspector.Hive.agents(item.run_id)
+      |> Enum.reject(&(&1.role in [:lead, :assistant]))
+
+    case Enum.find_index(siblings, &(&1.id == agent_id)) do
+      nil -> :text_primary
+      index -> :"agent_lane_#{rem(index, 5) + 1}"
+    end
+  end
+
+  # --- keys ---------------------------------------------------------------------------
+
+  # The decisions as `{key, words, focused?}`, in key order.
+  defp keys(item, facts, state) do
+    state
+    |> decisions(item)
+    |> Enum.map(fn {decision, key, words, _target} ->
+      words =
+        if decision == :always_prefix and facts.family,
+          do: words <> " " <> quoted(facts.family, state),
+          else: words
+
+      {key, words, focused?(state, decision)}
+    end)
+  end
+
+  # Key chips with even spacing: the letter on a warm keycap, its words
+  # beside it; the focused one lit whole. Keycaps with a blank each side of
+  # the letter when the row holds them all, else snug keycaps, else the
+  # chips wrap onto a second row.
+  defp key_rows(keys, room, state) do
+    policy = state.capabilities.ambiguous_width
+    roomy = keys |> Enum.map(&key_chip(&1, true, state)) |> joined("    ", state)
+    snug = Enum.map(keys, &key_chip(&1, false, state))
+
+    cond do
+      keys == [] -> [[]]
+      segments_cells(roomy, policy) <= room -> [roomy]
+      segments_cells(joined(snug, "   ", state), policy) <= room -> [joined(snug, "   ", state)]
+      true -> snug |> wrap_chips(room, state) |> Enum.map(&clip(&1, room, state))
+    end
+  end
+
+  defp joined(chips, gap, state),
+    do: chips |> Enum.intersperse([{gap, plain(state)}]) |> List.flatten()
+
+  defp wrap_chips(chips, room, state) do
+    policy = state.capabilities.ambiguous_width
+
+    {rows, current} =
+      Enum.reduce(chips, {[], []}, fn chip, {rows, current} ->
+        candidate = if current == [], do: chip, else: current ++ [{"   ", plain(state)}] ++ chip
+
+        if current != [] and segments_cells(candidate, policy) > room,
+          do: {[current | rows], chip},
+          else: {rows, candidate}
       end)
 
-    keys = if rest == [], do: keys, else: keys ++ [{"n", "next", false}]
+    Enum.reverse(if current == [], do: rows, else: [current | rows])
+  end
 
-    keys
-    |> Enum.map(fn
-      {key, words, true} ->
-        on = SwarmCodeCLI.UI.Theme.style(:on_warn, state.capabilities)
-        chip = %{tint(:text_primary, state, [:bold]) | foreground: on.foreground}
-        chip = %{chip | background: on.background}
+  defp key_chip({key, words, true}, _roomy?, state) do
+    on = SwarmCodeCLI.UI.Theme.style(:on_warn, state.capabilities)
 
-        # Monochrome has no chip colour, so the focus is spelled in brackets.
-        if state.capabilities.color_mode == :monochrome,
-          do: [{"[" <> key <> " " <> words <> "]", chip}],
-          else: [{" " <> key <> " " <> words <> " ", chip}]
+    chip = %{
+      tint(:text_primary, state, [:bold])
+      | foreground: on.foreground,
+        background: on.background
+    }
 
-      {key, words, false} ->
-        [{key, tint(:key, state, [:bold])}, {" " <> words, tint(:text_muted, state)}]
-    end)
-    |> Enum.intersperse([{"   ", tint(:text_muted, state)}])
-    |> List.flatten()
+    # Monochrome has no chip colour, so the focus is spelled in brackets.
+    if state.capabilities.color_mode == :monochrome,
+      do: [{"[" <> key <> " " <> words <> "]", chip}],
+      else: [{" " <> key <> " " <> words <> " ", chip}]
+  end
+
+  defp key_chip({key, words, false}, roomy?, state) do
+    cond do
+      state.capabilities.color_mode == :monochrome ->
+        [
+          {"[" <> key <> "]", tint(:text_primary, state, [:bold])},
+          {" " <> words, tint(:text_muted, state)}
+        ]
+
+      roomy? ->
+        [{" " <> key <> " ", chip(:chip_warn, state)}, {" " <> words, tint(:text_muted, state)}]
+
+      true ->
+        [{key, chip(:chip_warn, state)}, {" " <> words, tint(:text_muted, state)}]
+    end
   end
 
   # The focus ids E's keymap gives the card's decisions (`Keymap.approval_key/3`).
   defp focused?(state, decision),
     do: state.layers != [] and state.focus == Atom.to_string(decision)
+
+  # --- drawing the rows ----------------------------------------------------------------
+
+  @doc """
+  One row of the card as a block for main, on the canvas (the card is a
+  frame, not a filled surface; only its code block carries one).
+  """
+  def block({left, right}, state, width) do
+    policy = state.capabilities.ambiguous_width
+    used = segments_cells(left, policy) + segments_cells(right, policy)
+
+    segments =
+      left ++
+        if(right == [] or used + 1 > width,
+          do: [],
+          else: [{String.duplicate(" ", max(0, width - used - 1)), plain(state)}] ++ right
+        )
+
+    segments = clip(segments, width, state)
+
+    %SwarmCodeCLI.UI.Scene.Block.RichText{
+      spans:
+        case segments do
+          [] -> [span(" ", plain(state), state, width)]
+          segments -> Enum.map(segments, fn {text, style} -> span(text, style, state, width) end)
+        end
+    }
+  end
+
+  defp span(text, style, state, width),
+    do: %SwarmCodeCLI.UI.Scene.Span{
+      text: SwarmCodeCLI.UI.Projector.Density.safe(text, state, max(1, width)),
+      style: style
+    }
+
+  # --- helpers ------------------------------------------------------------------------
+
+  defp segments_cells(segments, policy),
+    do: Enum.reduce(segments, 0, fn {text, _}, sum -> sum + Width.cells(text, policy) end)
+
+  # The segments cut to `cells`, the last one ending in `…` when anything
+  # was cut.
+  defp clip(segments, cells, state) do
+    policy = state.capabilities.ambiguous_width
+
+    if segments_cells(segments, policy) <= cells do
+      segments
+    else
+      mark = ellipsis(state)
+      room = max(0, cells - Width.cells(mark, policy))
+
+      {kept, _} =
+        Enum.reduce_while(segments, {[], 0}, fn {text, style}, {acc, used} ->
+          c = Width.cells(text, policy)
+
+          cond do
+            used + c <= room ->
+              {:cont, {[{text, style} | acc], used + c}}
+
+            true ->
+              {taken, _, taken_cells} = Width.take_cells(text, max(0, room - used), policy)
+              {:halt, {[{taken, style} | acc], used + taken_cells}}
+          end
+        end)
+
+      case kept do
+        [{text, style} | rest] -> Enum.reverse([{text <> mark, style} | rest])
+        [] -> [{mark, plain(state)}]
+      end
+    end
+  end
+
+  defp elide(text, cells, state),
+    do: Width.elide(text, cells, :end, state.capabilities.ambiguous_width)
 
   defp home(path) do
     case System.user_home() do
@@ -535,7 +1053,17 @@ defmodule SwarmCodeCLI.UI.Projector.ApprovalCard do
   defp quoted(text, %{capabilities: %{ascii?: true}}), do: "\"" <> text <> "\""
   defp quoted(text, _state), do: "“" <> text <> "”"
 
-  defp rail(state), do: SafeText.value(Support.rail(state))
+  defp ellipsis(%{capabilities: %{ascii?: true}}), do: "..."
+  defp ellipsis(_state), do: "…"
+
+  defp plain(state), do: tint(:text_primary, state)
+
+  defp surface(state), do: SwarmCodeCLI.UI.Theme.style(:card, state.capabilities).background
+
+  defp chip(role, state) do
+    style = SwarmCodeCLI.UI.Theme.style(role, state.capabilities)
+    %{RunRow.tinted(role, state) | background: style.background, modifiers: [:bold]}
+  end
 
   defp tint(role, state, modifiers \\ []),
     do: %{RunRow.tinted(role, state) | background: nil, modifiers: modifiers}
