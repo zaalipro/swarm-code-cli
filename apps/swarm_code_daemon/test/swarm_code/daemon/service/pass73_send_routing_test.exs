@@ -264,6 +264,43 @@ defmodule SwarmCode.Daemon.Service.Pass73SendRoutingTest do
     assert Conversations.get_run(started).prompt == "Say hello"
   end
 
+  # Live: a second Ctrl-C reached the run the first had stopped, and the
+  # footer said "The daemon refused that request".
+  test "a stop that reaches a finished run is done; a steer to it says why", c do
+    {run, approval} = start_turn(c, "touch pass73-stop.txt")
+    assert {:ok, _} = resolve(c, run, approval, "deny_stop")
+    assert eventually(fn -> not Engine.chat_running?(c.conversation.id) end)
+    assert eventually(fn -> Conversations.get_run(run).status in ["stopped", "done"] end)
+
+    stop = %ServiceRequest{
+      operation: :run_control,
+      timeout_ms: 5000,
+      params: %{"run_id" => run, "action" => "stop"}
+    }
+
+    assert {:ok, %{"value" => %{"status" => "accepted", "feedback" => %{"text" => said}}}} =
+             request(c, "stop-again", stop)
+
+    assert said == "That run had already finished."
+
+    steer = %ServiceRequest{
+      operation: :run_steer,
+      timeout_ms: 5000,
+      params: %{
+        "run_id" => run,
+        "node_id" => nil,
+        "text" => "one more thing",
+        "attachment_refs" => []
+      }
+    }
+
+    assert {:ok, %{"value" => %{"status" => "rejected", "reason" => reason}}} =
+             request(c, "steer-late", steer)
+
+    assert reason["code"] == "steer_finished"
+    assert reason["text"] =~ "send the message in the chat"
+  end
+
   # The in-memory response cache refused every command past its 4,096th.
   test "the 4,097th command of a session is not refused", c do
     configure(c)

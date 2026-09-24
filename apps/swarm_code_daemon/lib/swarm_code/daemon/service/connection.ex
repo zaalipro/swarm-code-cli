@@ -15,6 +15,8 @@ defmodule SwarmCode.Daemon.Service.Connection do
   # the client consumes is acknowledged with a request of its own, so a fixed
   # budget of 4,096 ids per connection ran out in a busy session and closed it.
   @recent_ids 4_096
+  # Write errors that mean the client has gone (its close, not ours).
+  @peer_gone ~w(closed epipe enotconn econnreset)
   # A client that leaves a frame half written is given this long. Our client
   # writes each frame in one send, so only a broken peer trips it.
   @partial_ms 2_000
@@ -66,6 +68,10 @@ defmodule SwarmCode.Daemon.Service.Connection do
         closing(why)
         {:stop, :normal, state}
 
+      {:gone, why} ->
+        client_gone(why)
+        {:stop, :normal, state}
+
       {:arm, reason} ->
         closing("the socket could not be re-armed (#{describe_reason(reason)})")
         {:stop, :normal, state}
@@ -79,7 +85,10 @@ defmodule SwarmCode.Daemon.Service.Connection do
   # pass73 T11: a write that failed (the client stopped reading past the send
   # timeout, or went away) ends the connection once, with its reason.
   def handle_info({:write_failed, why}, state) do
-    closing("a frame could not be written (#{why})")
+    if why in @peer_gone,
+      do: client_gone("a write found the socket #{why}"),
+      else: closing("a frame could not be written (#{why})")
+
     {:stop, :normal, state}
   end
 
@@ -220,9 +229,8 @@ defmodule SwarmCode.Daemon.Service.Connection do
   # pass73 T11: the client's own close is noted too (info: a quit does it), so
   # a log that ends a session always says which side closed.
   def handle_info({:tcp_closed, _socket}, state) do
-    Logger.info(
-      "SwarmCode daemon: the client closed its connection (#{map_size(state.watches)} watches, " <>
-        "#{map_size(state.requests)} requests in flight)"
+    client_gone(
+      "#{map_size(state.watches)} watches, #{map_size(state.requests)} requests in flight"
     )
 
     {:stop, :normal, state}
@@ -241,6 +249,11 @@ defmodule SwarmCode.Daemon.Service.Connection do
   # operation, never a payload, nonce or text.
   defp closing(words),
     do: Logger.warning("SwarmCode daemon closed a client connection: " <> words)
+
+  # A write that finds the peer gone is the client's close (a quit closes the
+  # socket while its last unwatch is answered), not the daemon's decision.
+  defp client_gone(words),
+    do: Logger.info("SwarmCode daemon: the client closed its connection (" <> words <> ")")
 
   defp describe_reason(reason) when is_atom(reason), do: Atom.to_string(reason)
   defp describe_reason(%{__exception__: true} = error), do: inspect(error.__struct__)
@@ -537,7 +550,8 @@ defmodule SwarmCode.Daemon.Service.Connection do
   defp acknowledge(state, message) do
     case write(state, %{message | type: :response, body: acknowledged()}) do
       :ok -> {:ok, state}
-      {:error, reason} -> {:close, "an acknowledgement could not be written (#{reason})"}
+      {:error, reason} when reason in @peer_gone -> {:gone, "while an ack was answered"}
+      {:error, reason} -> {:close, "an acknowledgement could not be written (#{inspect(reason)})"}
     end
   end
 
@@ -708,6 +722,10 @@ defmodule SwarmCode.Daemon.Service.Connection do
         )
 
         fail_request(state, message, :untyped)
+
+      {:error, why} when why in @peer_gone ->
+        client_gone("while a reply was written")
+        {:stop, :normal, state}
 
       {:error, why} ->
         closing("a reply could not be written (#{describe(message)}: #{why})")

@@ -190,6 +190,27 @@ defmodule SwarmCode.Daemon.Service.Pass73ConnectionTest do
     assert log =~ "SwarmCode daemon: the client closed its connection"
   end
 
+  # Live: a quit closes the socket while its last unwatch is answered; that
+  # was logged as a close the daemon decided on.
+  test "a write that finds the client gone is the client's close", %{path: path} do
+    {socket, _backend} = connected_with_backend(path)
+    unwatch = %{request() | body: %{"op" => "unwatch", "watch_ref" => "x", "timeout_ms" => 1000}}
+
+    log =
+      capture_log([level: :info], fn ->
+        :ok = send_frame(socket, unwatch)
+        :gen_tcp.close(socket)
+
+        receive do
+        after
+          300 -> :ok
+        end
+      end)
+
+    assert log =~ "SwarmCode daemon: the client closed its connection"
+    refute log =~ "closed a client connection"
+  end
+
   defp assert_alive(socket) do
     request = %{request() | request_id: "99999999-9999-4999-8999-999999999999"}
     send_frame(socket, request)

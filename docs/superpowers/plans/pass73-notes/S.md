@@ -86,10 +86,18 @@ toast in words. A prompt is never dropped; its failures are retried.
   nothing_to_stop not_resumable not_running not_paused not_found conversation_not_found
   ambiguous_run ambiguous_conversation unknown_model invalid_effort invalid_budget
   budget_too_low input_too_large expansion_too_large not_attachable attachments_not_queued
-  too_many_attachments client_only operation_failed`. `text` is the sentence to show, for example
+  too_many_attachments client_only operation_failed run_not_found agent_not_found
+  decision_not_offered run_finished steer_finished`. `text` is the sentence to show, for example
   "/swarm needs <task>.", "Nothing to compact yet: this conversation has no history to
   summarise.", "The database was busy; send it again.". `error` still carries the closed
   `AdmissionError` code, as before.
+- Run control (pass73 S10). A stop that reaches a run already finished is now `accepted`, with
+  the notice "That run had already finished.". In the live check, a second Ctrl-C reached the
+  swarm the first had stopped, and the footer said "The daemon refused that request". Every other
+  run-control, steer or approval refusal carries a `reason`: `run_not_found`, `agent_not_found`,
+  `decision_not_offered`, `run_finished`, `steer_finished` ("That run has finished; send the
+  message in the chat to start a new turn."), `not_running`, `not_paused`. cli.log logs each one
+  as `SwarmCode daemon refused a command (<op>): <code>`.
 - `DTO.TranscriptItem.target_kind == :steer` with `target_id` set to the run: a user message
   the running turn took in, whether it came from the chat or from the overlay's steer.
 - `DTO.WorkspaceSnapshot.queued_texts` and `DTO.WorkspaceMetadata.queued_texts`: `[String.t()]`,

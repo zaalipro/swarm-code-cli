@@ -887,14 +887,16 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         },
         else: run
 
+    op = Atom.to_string(operation)
+
     cond do
       is_nil(run) or not run_member?(run, scope, state) ->
-        {reject(id, :not_allowed), state}
+        {refuse(id, :run_not_found, "", op), state}
 
       # pass70 C2 (rel F2): an approval waits on the **op** node, never on an
       # agent; the nodes a run is waiting on are admitted beside its agents.
       params["node_id"] != nil and params["node_id"] not in admitted_nodes(run) ->
-        {reject(id, :not_allowed), state}
+        {refuse(id, :agent_not_found, "", op), state}
 
       operation == :approval_resolve and
           (is_nil(run.approval) or run.approval["id"] != params["interaction_id"] or
@@ -904,10 +906,16 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
       operation == :approval_resolve and
           params["decision"] not in offered_decisions(run.approval) ->
-        {reject(id, :not_allowed), state}
+        {refuse(id, :decision_not_offered, "", op), state}
+
+      # pass73 T3/T8: a second Ctrl-C or Esc reaches a run the first already
+      # ended; what it asks for is done, so it is not refused.
+      run.status in @terminal and operation == :run_control and params["action"] == "stop" ->
+        {accepted(id, [run.id], notice("Stop", "That run had already finished.")), state}
 
       run.status in @terminal ->
-        {reject(id, :not_allowed), state}
+        reason = if operation == :run_steer, do: :steer_finished, else: :run_finished
+        {refuse(id, reason, "", op), state}
 
       true ->
         answer = control(operation, params, run, state)
@@ -915,7 +923,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         case answer do
           :ok -> {accepted(id, [run.id]), state}
           {:ok, _} -> {accepted(id, [run.id]), state}
-          _ -> {reject(id, :not_allowed), state}
+          {:error, reason} when is_atom(reason) -> {refuse(id, reason, "", op), state}
+          _ -> {refuse(id, :operation_failed, "", op), state}
         end
     end
   end
@@ -3754,9 +3763,9 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   # pass73 T3/T8: a refused command says why and what to do, in words. The
   # error keeps the closed wire code; `reason` carries the service's own
   # reason and the sentence the terminal shows. cli.log names the reason.
-  defp refuse(id, reason, text \\ "") do
+  defp refuse(id, reason, text \\ "", op \\ "dispatch") do
     {code, words} = refusal(reason, text)
-    Logger.info("SwarmCode daemon refused a command: #{code}")
+    Logger.info("SwarmCode daemon refused a command (#{op}): #{code}")
 
     outcome(id, "rejected", [], error(error_code(reason)), nil, nil, %{
       "code" => code,
@@ -3804,7 +3813,13 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       "An image cannot wait on the queue; send it without Tab and it goes to the running turn.",
     client_only: "That command works in the terminal itself; send it there.",
     too_many_attachments: "At most four images go with one message.",
-    operation_failed: "That did not work; cli.log has the details."
+    operation_failed: "That did not work; cli.log has the details.",
+    run_not_found: "That run is not in this conversation any more.",
+    agent_not_found: "That agent is not part of this run any more.",
+    decision_not_offered: "That answer is not offered for this request.",
+    run_finished: "That run has already finished.",
+    steer_finished: "That run has finished; send the message in the chat to start a new turn.",
+    finished: "That run has already finished."
   }
 
   defp refusal(reason, text) when is_atom(reason) do
