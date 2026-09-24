@@ -188,7 +188,20 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         monitor: Process.monitor(connection)
       }
 
-      {:reply, {:watch, 0, state.revision, kind, body}, put_in(state.watches[key], entry)}
+      # pass72 F: the snapshot's own revision is the one its `watch_ready`
+      # names. The body comes from a page projection whose revision can trail
+      # the live one (broadcasts bump it); the client rejects the pair when they
+      # differ, and a rewatch mid-run (a resync after overflow) closed the
+      # session on "the daemon connection closed". Later deltas never name a
+      # revision below the snapshot's.
+      revision =
+        case body do
+          %{"revision" => revision} when is_integer(revision) -> revision
+          _ -> state.revision
+        end
+
+      state = %{state | revision: max(state.revision, revision)}
+      {:reply, {:watch, 0, revision, kind, body}, put_in(state.watches[key], entry)}
     else
       _ -> {:reply, wire_error(:invalid_request), state}
     end

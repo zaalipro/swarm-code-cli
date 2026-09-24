@@ -522,6 +522,57 @@ defmodule SwarmCode.Daemon.Service.PersistedBackendTest do
     {:ok, %{"value" => %{"items" => []}}} = query(c.backend, c.scope, "pending")
   end
 
+  # pass72 F (live): a rewatch after live broadcasts (a resync after overflow)
+  # answered `watch_ready` with the live revision but a body projected with the
+  # page's own, which the client rejects ("watch_ready rejected: revision") and
+  # the session closed on "the daemon connection closed".
+  test "a watch_ready names the revision its snapshot carries", c do
+    require Ecto.Query
+
+    {:ok, run} =
+      Conversations.create_run(%{
+        conversation_id: c.conversation.id,
+        kind: "chat",
+        prompt: "Live writer",
+        status: "running",
+        started_at: DateTime.utc_now()
+      })
+
+    # A live run keeps writing while the watch is answered: the backend's
+    # refresh and the page it projects can see different rows.
+    writer =
+      Task.async(fn ->
+        Enum.each(1..400, fn i ->
+          stamp = DateTime.add(DateTime.utc_now(), i, :millisecond)
+
+          Repo.update_all(
+            Ecto.Query.from(r in SwarmCode.Domain.Conversations.Run, where: r.id == ^run.id),
+            set: [updated_at: stamp]
+          )
+        end)
+      end)
+
+    for i <- 1..40 do
+      watch = %ServiceRequest{
+        operation: :watch,
+        timeout_ms: 5000,
+        params: %{
+          "watch_ref" => "rewatch-#{i}",
+          "slot" => "workspace",
+          "page_size" => 50,
+          "byte_limit" => 262_144
+        }
+      }
+
+      assert {:watch, 0, revision, "workspace_snapshot", body} =
+               GenServer.call(c.backend, {:service_watch, self(), "watch-#{i}", c.scope, watch})
+
+      assert revision == body["revision"]
+    end
+
+    Task.await(writer, 60_000)
+  end
+
   test "watch receives typed deltas with credit and foreign controls are rejected", c do
     watch = %ServiceRequest{
       operation: :watch,
