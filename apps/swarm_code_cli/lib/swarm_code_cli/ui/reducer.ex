@@ -2494,6 +2494,14 @@ defmodule SwarmCodeCLI.UI.Reducer do
               )
           end
 
+        # The cursor starts on the current mode: Enter keeps it, Up and
+        # Down reach the other two.
+        state =
+          case Enum.find(SwarmCodeCLI.UI.Switcher.visible(state), &Map.get(&1, :current?)) do
+            %{id: id} -> %{state | focus: id}
+            nil -> state
+          end
+
         {state, cleared ++ opened ++ typed}
 
       nil ->

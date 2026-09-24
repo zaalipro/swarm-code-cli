@@ -237,7 +237,15 @@ defmodule SwarmCodeCLI.UI.ConversationsTest do
              {"full access", false}
            ]
 
+    # The cursor starts on the current mode (live check: it started above
+    # the rows, so Down then Enter chose read-only): Enter keeps the mode,
+    # Down is the next one.
     full = Enum.find(rows, &(&1.title == "full access"))
+    assert state.focus == Enum.find(rows, & &1.current?).id
+    table = Map.new(rows, &{&1.id, &1.target})
+    {:ok, down} = Keymap.resolve(Input.key(:down), state, table)
+    assert elem(Reducer.update(state, down), 0).focus == full.id
+
     {state, effects} = Reducer.update(state, elem(full.target, 1))
     assert [%{kind: {:project_update, :full_access, nil}}] = for({:command, r} <- effects, do: r)
     assert state.layers == []
