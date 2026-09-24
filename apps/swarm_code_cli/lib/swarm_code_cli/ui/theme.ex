@@ -393,10 +393,38 @@ defmodule SwarmCodeCLI.UI.Theme do
   caller reads the environment and the settings.
   """
   @spec mode(binary() | nil, term()) :: :dark | :light
-  def mode(env, settings_mode) do
+  def mode(env, settings_mode), do: mode(env, nil, settings_mode)
+
+  @doc """
+  pass73 T2: the start precedence with the `/theme` choice persisted in
+  cli.json: `SWARM_THEME` > cli.json `theme` > the desktop settings' `mode`
+  > dark. Pure; unknown values fall through to the next source.
+  """
+  @spec mode(binary() | nil, term(), term()) :: :dark | :light
+  def mode(env, preference, settings_mode) do
+    normalize_mode(env) || normalize_mode(preference) || normalize_mode(settings_mode) || :dark
+  end
+
+  @doc """
+  pass73 T2: the theme `SWARM_THEME` forces at every launch, or nil. A live
+  `/theme` switch still applies; its confirmation says this one wins at the
+  next launch (`switch_words/2`).
+  """
+  @spec env_mode(binary() | nil) :: :dark | :light | nil
+  def env_mode(env), do: normalize_mode(env)
+
+  @doc """
+  pass73 T2: the one-line confirmation of a `/theme` switch to `mode`, naming
+  the `SWARM_THEME` override when it will win at the next launch.
+  """
+  @spec switch_words(:dark | :light, binary() | nil) :: binary()
+  def switch_words(mode, env) when mode in [:dark, :light] do
+    base = "Theme: #{mode} · /theme switches back"
+
     case normalize_mode(env) do
-      nil -> normalize_mode(settings_mode) || :dark
-      mode -> mode
+      nil -> base
+      ^mode -> base
+      forced -> base <> " · SWARM_THEME=#{forced} still wins at the next launch"
     end
   end
 

@@ -247,6 +247,14 @@ defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.Owner do
     {:noreply, next}
   end
 
+  # pass73 T2 (K's `{:terminal_preferences, …}` effect, sent by the session
+  # runtime): the theme applies from the next frame. Wheel reports (`mouse?`,
+  # T9) change only through the port's own mode command, so this owner never
+  # flips its `flags` by itself: its ready check compares them with the port.
+  defp dispatch({:terminal_preferences, preferences}, state) when is_map(preferences) do
+    {:noreply, retheme(state, Map.get(preferences, :theme))}
+  end
+
   defp dispatch({:plain_instruction, "Rerun with --plain"}, %{phase: :restored} = state) do
     IO.puts(
       "Run (cd apps/swarm_code_cli && MIX_QUIET=1 mise exec -- mix swarm_code.demo.plain --script complete)"
@@ -502,6 +510,17 @@ defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.Owner do
         {error, state}
     end
   end
+
+  # pass73 T2: `/theme` switches the palette live. A change drops the kept
+  # frame, whose palette is the old theme's, so a degraded frame can never
+  # repaint old colours; the port diffs cells by colour, so the next frame
+  # (the runtime draws the state that changed) repaints every cell.
+  defp retheme(state, theme) when theme in [:dark, :light] and theme != state.theme do
+    Logger.info("terminal theme switched to #{theme}")
+    %{state | theme: theme, last_plan: nil}
+  end
+
+  defp retheme(state, _theme), do: state
 
   defp encode(build, sequence) do
     with {:ok, plan} <- build.(),
