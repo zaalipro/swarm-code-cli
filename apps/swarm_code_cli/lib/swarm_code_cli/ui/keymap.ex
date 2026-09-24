@@ -406,7 +406,7 @@ defmodule SwarmCodeCLI.UI.Keymap do
   # At :too_small there is no dialog to read and no focus ring to walk, so the
   # unsent-changes confirmation accepts exactly one key and nothing else.
   defp tiny_unsent?(%{layers: [{:unsent_changes, _} | _]} = state),
-    do: Layout.calculate(state.size, state.preferences).class == :too_small
+    do: Layout.for_state(state).class == :too_small
 
   defp tiny_unsent?(_state), do: false
 

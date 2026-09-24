@@ -1667,7 +1667,7 @@ defmodule SwarmCodeCLI.UI.Reducer do
   end
 
   defp invoke_intent(state, intent, id) do
-    if Layout.calculate(state.size, state.preferences).mutations_visible?,
+    if Layout.for_state(state).mutations_visible?,
       do: Commands.invoke(state, intent, id),
       else: {state, []}
   end
@@ -2061,7 +2061,7 @@ defmodule SwarmCodeCLI.UI.Reducer do
     (match?({:data, %{kind: kind}} when kind != :response, action) or
        action in [:close_top_layer, :boot] or match?({:navigate, _}, action)) and
       state.focus in ["composer", "main", "inspector"] and
-      Layout.calculate(state.size, state.preferences).mutations_visible?
+      Layout.for_state(state).mutations_visible?
   end
 
   defp auto_open?(_state, _action), do: false

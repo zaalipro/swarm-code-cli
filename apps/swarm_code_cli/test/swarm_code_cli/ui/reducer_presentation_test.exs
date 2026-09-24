@@ -76,7 +76,7 @@ defmodule SwarmCodeCLI.UI.ReducerPresentationTest do
     {restored, []} = Reducer.update(restored, {:layout_adjust, :navigator, :reset})
     {restored, []} = Reducer.update(restored, {:layout_adjust, :inspector, :reset})
     assert restored.preferences.navigator_width == 26
-    assert restored.preferences.inspector_width == 42
+    assert restored.preferences.inspector_width == 46
 
     grown =
       Enum.reduce(1..20, restored, fn _, acc ->

@@ -4,7 +4,7 @@ defmodule SwarmCodeCLI.UI.ScrollMetrics do
   alias SwarmCodeCLI.UI.Projector.Workspace.Turns
 
   def viewport(state, region) do
-    layout = Layout.calculate(state.size, state.preferences)
+    layout = Layout.for_state(state)
     Map.get(layout.rects, region, layout.rects.main)
   end
 

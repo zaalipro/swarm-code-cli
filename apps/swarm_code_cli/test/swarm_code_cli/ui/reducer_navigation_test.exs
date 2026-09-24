@@ -493,13 +493,13 @@ defmodule SwarmCodeCLI.UI.ReducerNavigationTest do
       refute Enum.any?(scene.regions, &(&1.role == :navigator))
 
       # Main's band still starts at column 0: the stale navigator reserves
-      # nothing. Main centres its 96-cell reading measure inside the 107 columns
-      # the 42-cell inspector and its gap leave, so nothing sits to its left.
+      # nothing. Main centres its 96-cell reading measure inside the 103 columns
+      # the 46-cell panel and its gap leave, so nothing sits to its left.
       main = Enum.find(scene.regions, &(&1.role == :main))
       inspector = Enum.find(scene.regions, &(&1.role == :inspector))
-      assert inspector.rect.x - 1 == 107
-      assert main.rect == %Rect{x: 0, y: 1, width: 107, height: 34}
-      assert main.rect.x == div(107 - main.rect.width, 2)
+      assert inspector.rect.x - 1 == 103
+      assert main.rect == %Rect{x: 0, y: 1, width: 103, height: 34}
+      assert main.rect.x == div(103 - main.rect.width, 2)
 
       docked =
         for region <- scene.regions,
