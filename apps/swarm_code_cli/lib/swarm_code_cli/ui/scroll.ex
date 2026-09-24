@@ -44,7 +44,7 @@ defmodule SwarmCodeCLI.UI.Scroll do
 
   def apply(scroll, {kind, delta}, ids, page_height, height_for)
       when kind in [:line, :half_page, :page] do
-    follow_anchor = {List.last(ids), max(0, item_height(height_for, List.last(ids)) - 1), :top}
+    follow_anchor = follow_top(ids, page_height, height_for)
     {id, line, bias} = if scroll.follow?, do: follow_anchor, else: scroll.anchor || follow_anchor
     index = Enum.find_index(ids, &(&1 == id)) || 0
     movement = delta * lines_per(kind, page_height)
@@ -54,6 +54,18 @@ defmodule SwarmCodeCLI.UI.Scroll do
 
   def apply(scroll, operation, ids, height, _),
     do: __MODULE__.apply(scroll, operation, ids, height)
+
+  # pass73 T9: following, the view is the last `page_height` rows, so a move
+  # starts from that view's top row. It started from the last row, and the
+  # projector draws an anchor whose rows do not fill the view from the end
+  # (pass70 Q1): the first wheel notches, and PgUp, moved almost nothing.
+  defp follow_top([], _page_height, _height_for), do: {nil, 0, :top}
+
+  defp follow_top(ids, page_height, height_for) do
+    last = length(ids) - 1
+    bottom = max(0, item_height(height_for, List.last(ids)) - 1)
+    locate(ids, last, bottom - max(0, page_height - 1), :top, height_for)
+  end
 
   # Ctrl-D and Ctrl-U move half a viewport, never less than a line, so the keys
   # still do something in a one-row pane.

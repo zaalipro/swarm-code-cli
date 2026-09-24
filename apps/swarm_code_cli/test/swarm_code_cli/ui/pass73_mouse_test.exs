@@ -150,6 +150,70 @@ defmodule SwarmCodeCLI.UI.Pass73MouseTest do
     assert first.(state) == bottom - 3
   end
 
+  describe "the first notch from the bottom of the chat (live check)" do
+    alias SwarmCodeCLI.UI.Projector.Workspace.Turns
+
+    defp chat do
+      items =
+        for n <- 1..30 do
+          %DTO.TranscriptItem{
+            id: "i#{n}",
+            node_id: "i#{n}",
+            run_id: "r1",
+            conversation_id: "c",
+            attempt_id: "attempt",
+            role: :user,
+            text: "prompt number #{n}\nsecond line of #{n}"
+          }
+        end
+
+      ready([run("r1", :done)],
+        columns: 100,
+        rows: 24,
+        snapshot: %{transcript: %DTO.TranscriptWindow{items: items}}
+      )
+    end
+
+    defp lines(state) do
+      # The height the reducer pages by is the one drawn.
+      height = SwarmCodeCLI.UI.ScrollMetrics.content_height(state, :main)
+      width = SwarmCodeCLI.UI.ScrollMetrics.viewport(state, :main).width
+      {blocks, _first, _total} = Turns.viewport(state, width, height)
+
+      blocks
+      |> Enum.map_join("\n", fn block ->
+        Enum.map_join(block.spans, &SwarmCodeCLI.UI.SafeText.value(&1.text))
+      end)
+      |> String.split("\n")
+    end
+
+    defp notch(state, kind) do
+      %{main: main} = Layout.for_state(state).rects
+      {:ok, action} = Keymap.resolve(wheel(kind, main.x + 2, main.y + 2), state, %{})
+      elem(Reducer.update(state, action), 0)
+    end
+
+    test "moves the view three rows, and back" do
+      state = chat()
+      following = lines(state)
+      up = notch(state, :wheel_up)
+
+      # Before, the move started from the last row and the view, drawn from
+      # the end while the anchor's rows do not fill it, did not move at all.
+      assert Enum.drop(lines(up), 3) == Enum.drop(following, -3)
+      assert lines(notch(up, :wheel_down)) == following
+      assert Enum.drop(lines(notch(up, :wheel_up)), 6) == Enum.drop(following, -6)
+    end
+
+    test "PgUp from the bottom shows the page above" do
+      state = chat()
+      following = lines(state)
+      {:ok, action} = Keymap.resolve(SwarmCodeCLI.UI.Input.key(:page_up), state, %{})
+      up = elem(Reducer.update(state, action), 0)
+      refute Enum.any?(lines(up), &(&1 in following and String.trim(&1) != ""))
+    end
+  end
+
   test "the launcher: SWARM_THEME > cli.json > desktop > dark; SWARM_MOUSE > cli.json > on" do
     defaults = SwarmCodeCLI.UI.Init.Preferences.defaults()
 

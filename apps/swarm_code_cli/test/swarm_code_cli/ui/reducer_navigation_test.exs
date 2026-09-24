@@ -70,7 +70,20 @@ defmodule SwarmCodeCLI.UI.ReducerNavigationTest do
     intent = {:dispatch, :send, "hello", :main, []}
     {pending, [{:command, request}]} = Reducer.update(state, {:invoke, intent, "command"})
     assert pending.mutations[{:draft, {"c", :main}}] == {:pending, "command", intent}
-    assert Reducer.update(pending, {:invoke, intent, "command-2"}) == {pending, []}
+    # The duplicate sends nothing and changes nothing but the status line,
+    # which says why (pass73 T3/T8: never silent).
+    {duplicate, []} = Reducer.update(pending, {:invoke, intent, "command-2"})
+    assert duplicate.requests == pending.requests and duplicate.mutations == pending.mutations
+    assert duplicate.drafts == pending.drafts and duplicate.deliveries == pending.deliveries
+    assert duplicate.notice == {:command_feedback, "Still sending the last message; one moment."}
+
+    assert %{
+             duplicate
+             | notice: pending.notice,
+               notice_at: pending.notice_at,
+               revision: pending.revision
+           } == pending
+
     {away, effects} = Reducer.update(pending, {:navigate, {:conversation, "other"}})
     refute {:cancel_request, "command"} in effects
 
