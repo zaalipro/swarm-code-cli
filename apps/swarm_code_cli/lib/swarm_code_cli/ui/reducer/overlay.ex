@@ -20,7 +20,8 @@ defmodule SwarmCodeCLI.UI.Reducer.Overlay do
   band, each page, then the composer.
   """
 
-  alias SwarmCodeCLI.UI.Keymap
+  alias SwarmCodeCLI.UI.{Keymap, State}
+  alias SwarmCodeCLI.UI.DataSource.Request
   alias SwarmCodeCLI.UI.Reducer.Hint
 
   @narrow_columns 120
@@ -63,7 +64,10 @@ defmodule SwarmCodeCLI.UI.Reducer.Overlay do
           page: 0,
           cursor: 0,
           expanded: MapSet.new(),
-          restore: restore
+          restore: restore,
+          detail: nil,
+          detail_request: nil,
+          detail_at: nil
         }
 
         state = %{state | overlay: overlay, hint: nil}
@@ -81,6 +85,70 @@ defmodule SwarmCodeCLI.UI.Reducer.Overlay do
       focus: state.focus,
       draft: Map.get(state.selection, "composer_draft", :none)
     }
+  end
+
+  # The detail is a snapshot of one moment: while the overlay is up it is
+  # asked for again as facts about the run arrive, at most this often and one
+  # request at a time.
+  @detail_every_ms 2_000
+
+  @doc """
+  Asks for owner S's agent detail (`{:agent_detail, run, node}`) unless one
+  is on its way or `force?` is false and the last one is recent. The request
+  rides the workspace watch's scope; a source that cannot answer it leaves the
+  overlay on what the read model has.
+  """
+  def request_detail(state, force? \\ true)
+
+  def request_detail(%{overlay: %{} = overlay} = state, force?) do
+    watch = Map.get(state.watches, :workspace)
+    in_flight = Map.get(overlay, :detail_request)
+    asked_at = Map.get(overlay, :detail_at)
+
+    recent? =
+      not force? and is_integer(asked_at) and state.now - asked_at < @detail_every_ms
+
+    with nil <- in_flight,
+         false <- recent?,
+         %{status: :ready, scope: scope, generation: generation} <- watch,
+         {id, next} = State.next_id(state, :request),
+         {:ok, request} <-
+           Request.validate(%Request{
+             request_id: id,
+             kind: {:agent_detail, overlay.run_id, overlay.node_id},
+             scope: scope,
+             generation: generation,
+             origin: {:query, :agent_detail},
+             deadline: state.now + state.deadline_ms,
+             expected_response: :agent_detail
+           }) do
+      overlay = Map.merge(overlay, %{detail_request: id, detail_at: state.now})
+
+      {%{next | overlay: overlay, requests: Map.put(next.requests, id, request)},
+       [{:query, request}]}
+    else
+      _ -> {state, []}
+    end
+  end
+
+  def request_detail(state, _force?), do: {state, []}
+
+  @doc "Keeps an agent detail that answers the overlay's own request; drops a stale one."
+  def detail_response(%{overlay: overlay} = state, request, body) do
+    state = %{state | requests: Map.delete(state.requests, request.request_id)}
+
+    case overlay do
+      %{detail_request: id, node_id: node} when id == request.request_id ->
+        detail =
+          if body.state == :idle and body.agent_id == node,
+            do: body,
+            else: Map.get(overlay, :detail)
+
+        {%{state | overlay: Map.merge(overlay, %{detail: detail, detail_request: nil})}, []}
+
+      _ ->
+        {state, []}
+    end
   end
 
   @doc "Closes the overlay, putting the chat's scroll, draft and focus back as they were."

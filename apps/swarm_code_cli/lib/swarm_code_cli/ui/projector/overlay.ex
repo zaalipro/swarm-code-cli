@@ -76,7 +76,7 @@ defmodule SwarmCodeCLI.UI.Projector.Overlay do
 
   @doc "How many rows the activity cursor moves over (groups, or raw operations)."
   def cursor_rows(%{overlay: %{}} = state) do
-    if state.overlay.raw_ops?, do: length(items(state)), else: length(groups(state))
+    if state.overlay.raw_ops?, do: length(raw_ops(state)), else: length(groups(state))
   end
 
   def cursor_rows(_state), do: 0
@@ -87,9 +87,8 @@ defmodule SwarmCodeCLI.UI.Projector.Overlay do
   diff on demand, nil for nothing.
   """
   def activate_target(%{overlay: %{raw_ops?: true, run_id: run}} = state, cursor) do
-    case Enum.at(items(state), cursor) do
-      %{tool: %{diff_ref: %{id: ref}}} when is_binary(ref) -> {:open_detail, run, ref}
-      %{detail_ref: %{id: ref}} when is_binary(ref) -> {:open_detail, run, ref}
+    case Enum.at(raw_ops(state), cursor) do
+      %{ref: ref} when is_binary(ref) -> {:open_detail, run, ref}
       _ -> nil
     end
   end
@@ -121,6 +120,91 @@ defmodule SwarmCodeCLI.UI.Projector.Overlay do
   and edits fold into one group each; what the agent said stands alone.
   """
   def groups(state) do
+    case Map.get(detail(state), :activity) do
+      [_ | _] = activity -> activity |> Enum.with_index() |> Enum.map(&detail_group/1)
+      _ -> derived_groups(state)
+    end
+  end
+
+  @detail_class %{
+    read: :read,
+    explore: :read,
+    search: :search,
+    think: :thought,
+    said: :said,
+    command: :command,
+    edit: :edit,
+    web: :web,
+    agents: :spawn,
+    ask: :ask,
+    other: :tool
+  }
+
+  defp detail_group({group, index}) do
+    class = Map.get(@detail_class, group.kind, :tool)
+
+    details =
+      cond do
+        is_binary(group.quote) and group.quote != "" and class in [:thought, :said] ->
+          [quoted(group.quote)]
+
+        is_binary(group.quote) and group.quote != "" ->
+          [group.quote]
+
+        true ->
+          [Enum.join(group.items, " · ")]
+      end
+
+    %{
+      key: "detail:#{index}:#{group.kind}:#{group.started_at}",
+      class: class,
+      items: Enum.map(group.items, &%{text: &1}),
+      title: group.title,
+      details: Enum.reject(details, &(&1 == "")),
+      duration_ms: group.duration_ms
+    }
+  end
+
+  @doc "The raw operations `o` lists, oldest first, as %{name, words, ms, ref}."
+  def raw_ops(state) do
+    case Map.get(detail(state), :operations) do
+      [_ | _] = ops ->
+        Enum.map(ops, &%{name: &1.op_type, words: &1.title, ms: &1.duration_ms, ref: nil})
+
+      _ ->
+        Enum.map(items(state), fn item ->
+          name =
+            case item do
+              %{kind: :tool, tool: %{name: name}} -> name
+              %{kind: kind} -> Atom.to_string(kind)
+            end
+
+          words =
+            case item do
+              %{kind: :tool} -> tool_words(item)
+              other -> thought(other) || ""
+            end
+
+          ref =
+            case item do
+              %{tool: %{diff_ref: %{id: ref}}} when is_binary(ref) -> ref
+              %{detail_ref: %{id: ref}} when is_binary(ref) -> ref
+              _ -> nil
+            end
+
+          %{name: name, words: words, ms: finish(item) - item.at, ref: ref}
+        end)
+    end
+  end
+
+  defp steps(state) do
+    case Map.get(detail(state), :activity) do
+      [_ | _] = activity -> activity |> Enum.map(&max(&1.count, 1)) |> Enum.sum()
+      _ -> length(items(state))
+    end
+  end
+
+  defp derived_groups(state) do
     state
     |> items()
     |> Enum.map(&{class(&1), &1})
@@ -546,8 +630,13 @@ defmodule SwarmCodeCLI.UI.Projector.Overlay do
 
     cells =
       case Map.get(detail(state), :life) do
-        [_ | _] = life -> Enum.take(life, lane_width)
-        _ -> derived_life(state, start, stop, lane_width)
+        [_ | _] = life ->
+          life
+          |> Enum.take(lane_width)
+          |> Enum.map(&if(&1 == :wait_you, do: :waiting, else: &1))
+
+        _ ->
+          derived_life(state, start, stop, lane_width)
       end
 
     if cells == [] do
@@ -639,6 +728,13 @@ defmodule SwarmCodeCLI.UI.Projector.Overlay do
   end
 
   defp thought_ms(state) do
+    case Map.get(detail(state), :think_ms) do
+      ms when is_integer(ms) and ms > 0 -> ms
+      _ -> derived_thought_ms(state)
+    end
+  end
+
+  defp derived_thought_ms(state) do
     state
     |> items()
     |> Enum.filter(&(class(&1) == :thought))
@@ -743,7 +839,7 @@ defmodule SwarmCodeCLI.UI.Projector.Overlay do
   # the numbered findings or the files it changed.
   defp brief(state, _run, agent, width) do
     detail = detail(state)
-    brief = Map.get(detail, :brief) || agent.title || ""
+    brief = first_text([Map.get(detail, :brief), agent.title])
 
     brief_rows =
       if brief == "",
@@ -787,6 +883,7 @@ defmodule SwarmCodeCLI.UI.Projector.Overlay do
   defp produced(state, agent, width) do
     findings = findings(state, agent)
     changed = changed_files(state)
+    result = Map.get(detail(state), :result) || ""
 
     cond do
       findings != [] ->
@@ -815,6 +912,13 @@ defmodule SwarmCodeCLI.UI.Projector.Overlay do
           end) ++
           [[{"o then Enter on an edit opens its diff", st(state, :text_faint)}]]
 
+      result != "" ->
+        [heading(state, "RESULT · what the lead gets", false)] ++
+          (result
+           |> wrap(state, width)
+           |> Enum.take(12)
+           |> Enum.map(&[{&1, st(state, :text_primary)}]))
+
       agent.state in [:done, :failed, :stopped, :interrupted] ->
         [heading(state, "FINDINGS", false), [{"none recorded", st(state, :text_faint)}]]
 
@@ -827,6 +931,8 @@ defmodule SwarmCodeCLI.UI.Projector.Overlay do
     |> Enum.take(20)
     |> then(fn rows -> Enum.map(rows, &clip_row(&1, state, width)) end)
   end
+
+  defp first_text(values), do: Enum.find(values, "", &(is_binary(&1) and String.trim(&1) != ""))
 
   defp findings(state, agent) do
     case Map.get(detail(state), :findings) do
@@ -856,6 +962,13 @@ defmodule SwarmCodeCLI.UI.Projector.Overlay do
   defp normalize_finding(_other), do: %{text: "", ref: nil, severity: nil}
 
   defp changed_files(state) do
+    case Map.get(detail(state), :files_changed) do
+      [_ | _] = files -> Enum.map(files, &{&1, 0, 0})
+      _ -> derived_changed_files(state)
+    end
+  end
+
+  defp derived_changed_files(state) do
     state
     |> items()
     |> Enum.filter(&(class(&1) == :edit))
@@ -886,8 +999,8 @@ defmodule SwarmCodeCLI.UI.Projector.Overlay do
 
     title =
       if raw?,
-        do: "ACTIVITY · every operation · #{length(items(state))}",
-        else: "ACTIVITY · said and did · " <> count(length(items(state)), "step") <> ", grouped"
+        do: "ACTIVITY · every operation · #{length(raw_ops(state))}",
+        else: "ACTIVITY · said and did · " <> count(steps(state), "step") <> ", grouped"
 
     head = [
       heading(state, title, focus?) ++
@@ -953,6 +1066,7 @@ defmodule SwarmCodeCLI.UI.Projector.Overlay do
         case group.class do
           :said -> {:text_primary, "›"}
           :error -> {:error, "✗"}
+          :ask -> {:warning, "!"}
           :edit -> {:success, arrow}
           _ -> {:text_primary, arrow}
         end
@@ -997,9 +1111,10 @@ defmodule SwarmCodeCLI.UI.Projector.Overlay do
     group.items
     |> Enum.map(fn item ->
       text =
-        case group.class do
-          :thought -> quoted(thought(item) || "")
-          _ -> tool_words(item)
+        case {group.class, item} do
+          {_, %{text: text} = item} when map_size(item) == 1 -> text
+          {:thought, item} -> quoted(thought(item) || "")
+          {_, item} -> tool_words(item)
         end
 
       [{"  " <> text, st(state, :text_muted)}]
@@ -1009,33 +1124,13 @@ defmodule SwarmCodeCLI.UI.Projector.Overlay do
   end
 
   defp raw_entries(state, width) do
-    Enum.map(items(state), fn item ->
-      name =
-        case item do
-          %{kind: :tool, tool: %{name: name}} -> name
-          %{kind: kind} -> Atom.to_string(kind)
-        end
-
-      words =
-        case item do
-          %{kind: :tool} ->
-            tool_words(item)
-
-          other ->
-            sentence(Map.get(other, :reasoning) || "")
-            |> then(&if(&1 == "", do: sentence(other.text), else: &1))
-        end
-
-      time =
-        case finish(item) - item.at do
-          ms when ms >= 1000 -> clock(ms)
-          _ -> ""
-        end
+    Enum.map(raw_ops(state), fn op ->
+      time = if is_integer(op.ms) and op.ms >= 1000, do: clock(op.ms), else: ""
 
       [
         right_align(
           state,
-          [{name <> "  ", st(state, :text_faint)}, {words, st(state, :text_primary)}],
+          [{op.name <> "  ", st(state, :text_faint)}, {op.words || "", st(state, :text_primary)}],
           [{time, st(state, :text_faint)}],
           width
         )
@@ -1085,11 +1180,20 @@ defmodule SwarmCodeCLI.UI.Projector.Overlay do
     agent = OverlayState.agent(state)
 
     cond do
-      agent == nil -> ""
-      agent.state not in [:running, :streaming, :retrying] -> ""
-      is_binary(Map.get(agent, :now)) and Map.get(agent, :now) != "" -> Map.get(agent, :now)
-      is_binary(agent.step) and agent.step != "" -> agent.step
-      true -> ""
+      agent == nil ->
+        ""
+
+      agent.state not in [:running, :streaming, :retrying] ->
+        ""
+
+      first_text([Map.get(detail(state), :now), Map.get(agent, :now)]) != "" ->
+        first_text([Map.get(detail(state), :now), Map.get(agent, :now)])
+
+      is_binary(agent.step) and agent.step != "" ->
+        agent.step
+
+      true ->
+        ""
     end
   end
 
@@ -1139,6 +1243,15 @@ defmodule SwarmCodeCLI.UI.Projector.Overlay do
     searched = Enum.count(items, &(class(&1) == :search))
     changed = length(changed_files(state))
 
+    {read, searched} =
+      case detail(state) do
+        %{files_read: files_read, files_searched: files_searched} ->
+          {length(files_read), length(files_searched)}
+
+        _ ->
+          {read, searched}
+      end
+
     detail = detail(state)
 
     context =
@@ -1160,20 +1273,35 @@ defmodule SwarmCodeCLI.UI.Projector.Overlay do
       end
 
     budget =
-      case Map.get(detail, :budget) do
-        %{used: used, limit: limit} when is_number(used) and is_number(limit) and limit > 0 ->
+      case {Map.get(detail, :turn), Map.get(detail, :max_turns)} do
+        {turn, max} when is_integer(turn) and is_integer(max) and max > 0 ->
           [
+            [],
             right_align(
               state,
-              [{"BUDGET", bold(state, :text_faint)}],
-              [{cost(used) <> " of " <> cost(limit), st(state, :text_primary)}],
+              [{"TURNS", bold(state, :text_faint)}],
+              [{"#{turn} of #{max}", st(state, :text_primary)}],
               width
             )
           ]
 
         _ ->
           []
-      end
+      end ++
+        case Map.get(detail, :budget) do
+          %{used: used, limit: limit} when is_number(used) and is_number(limit) and limit > 0 ->
+            [
+              right_align(
+                state,
+                [{"BUDGET", bold(state, :text_faint)}],
+                [{cost(used) <> " of " <> cost(limit), st(state, :text_primary)}],
+                width
+              )
+            ]
+
+          _ ->
+            []
+        end
 
     ([heading(state, "WHERE IT SITS", false)] ++
        tree ++
@@ -1299,18 +1427,12 @@ defmodule SwarmCodeCLI.UI.Projector.Overlay do
 
   # ------------------------------------------------------------- helpers
 
-  # owner S's on-demand agent detail, when it has arrived.
-  defp detail(%{overlay: %{node_id: node}} = state) do
-    case Map.get(state.read_model, :agent_details) do
-      %{} = details ->
-        case Map.get(details, node) do
-          %_{} = detail -> Map.from_struct(detail)
-          %{} = detail -> detail
-          _ -> %{}
-        end
-
-      _ ->
-        %{}
+  # Owner S's on-demand agent detail (`DTO.AgentDetail`), when it has arrived
+  # for this agent; the reducer keeps it on the overlay.
+  defp detail(%{overlay: %{node_id: node} = overlay}) do
+    case Map.get(overlay, :detail) do
+      %{agent_id: ^node, state: :idle} = detail -> Map.from_struct(detail)
+      _ -> %{}
     end
   end
 

@@ -103,7 +103,7 @@ defmodule SwarmCodeCLI.UI.Keymap.Special do
   end
 
   def run(:focus_next, _key, %{focus: "main", layers: []} = state, _table) do
-    layout = Layout.calculate(state.size, state.preferences)
+    layout = Layout.for_state(state)
 
     if Map.has_key?(layout.rects, :composer),
       do: ok({:focus_region, "composer"}),
@@ -480,8 +480,8 @@ defmodule SwarmCodeCLI.UI.Keymap.Special do
   # docked by the layout or opened as a run_inspector overlay.
   defp inspector_tab(state, direction) do
     docked? =
-      state.size
-      |> Layout.calculate(state.preferences)
+      state
+      |> Layout.for_state()
       |> Map.fetch!(:rects)
       |> Map.has_key?(:inspector)
 

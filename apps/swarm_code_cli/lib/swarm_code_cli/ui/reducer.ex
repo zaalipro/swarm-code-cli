@@ -173,7 +173,7 @@ defmodule SwarmCodeCLI.UI.Reducer do
 
   defp transition(state, {:overlay_open, run, node}) do
     case Overlay.open(state, run, node) do
-      {:ok, next} -> {next, []}
+      {:ok, next} -> Overlay.request_detail(next)
       {:error, text} -> feedback(state, text)
     end
   end
@@ -1266,6 +1266,9 @@ defmodule SwarmCodeCLI.UI.Reducer do
           {:detail_window, body} ->
             Details.response(state, request, body)
 
+          {:agent_detail, body} ->
+            Overlay.detail_response(state, request, body)
+
           {:conversation_list, %DTO.ConversationList{} = body} ->
             state = %{state | requests: Map.delete(state.requests, delivery.request_id)}
 
@@ -1282,6 +1285,20 @@ defmodule SwarmCodeCLI.UI.Reducer do
 
       _ ->
         {state, []}
+    end
+  end
+
+  # While the agent overlay is up, news about its run asks for a fresh detail.
+  defp transition(%{overlay: %{run_id: run}} = state, {:data, delivery}) do
+    {state, effects} = Watch.deliver(state, delivery)
+
+    case delivery do
+      %{kind: :delta, body: %{run_id: ^run}} when state.overlay != nil ->
+        {state, more} = Overlay.request_detail(state, false)
+        {state, effects ++ more}
+
+      _ ->
+        {state, effects}
     end
   end
 
@@ -1383,7 +1400,7 @@ defmodule SwarmCodeCLI.UI.Reducer do
     docked? =
       state.size &&
         Map.has_key?(
-          SwarmCodeCLI.UI.Layout.calculate(state.size, state.preferences).rects,
+          SwarmCodeCLI.UI.Layout.for_state(state).rects,
           :inspector
         )
 
@@ -1474,7 +1491,7 @@ defmodule SwarmCodeCLI.UI.Reducer do
   # outside the ring; `focus_cycle` puts it back on the first real region rather
   # than counting from a member that no longer exists.
   def focus_graph(state) do
-    rects = Layout.calculate(state.size, state.preferences).rects
+    rects = Layout.for_state(state).rects
 
     Enum.filter(["main", "inspector", "composer"], fn region ->
       Map.has_key?(rects, region_atom(region))

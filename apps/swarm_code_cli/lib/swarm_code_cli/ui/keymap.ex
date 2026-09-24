@@ -387,7 +387,7 @@ defmodule SwarmCodeCLI.UI.Keymap do
   end
 
   defp wheel_region(column, row, state) do
-    case state.size && Layout.calculate(state.size, state.preferences).rects do
+    case state.size && Layout.for_state(state).rects do
       %{inspector: %{x: x, y: y, width: w, height: h}}
       when column >= x and column < x + w and row >= y and row < y + h ->
         "inspector"

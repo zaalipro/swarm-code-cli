@@ -8,6 +8,7 @@ defmodule SwarmCodeCLI.UI.Pass72OverlayKeysTest do
 
   alias SwarmCodeCLI.UI.{Capabilities, Drafts, Editor, Init, Input, Keymap, Reducer, Size}
   alias SwarmCodeCLI.UI.{Projector, Scene}
+  alias SwarmCodeCLI.UI.Reducer.Overlay
   alias SwarmCodeCLI.UI.DataSource.{DTO, Delivery}
 
   @main {"c", :main}
@@ -33,6 +34,7 @@ defmodule SwarmCodeCLI.UI.Pass72OverlayKeysTest do
       run_id: run,
       revision: 1,
       state: Keyword.get(opts, :state, :running),
+      panel_state: Keyword.get(opts, :panel_state, :working),
       name: Keyword.get(opts, :name, id),
       role: Keyword.get(opts, :role, :worker),
       parent_id: Keyword.get(opts, :parent, "lead"),
@@ -160,8 +162,14 @@ defmodule SwarmCodeCLI.UI.Pass72OverlayKeysTest do
     end
 
     test "agents that need you get the first letters" do
+      agents =
+        Enum.map(swarm_agents(), fn
+          %{id: "web"} = web -> %{web | state: :waiting_approval, panel_state: :needs_you}
+          other -> other
+        end)
+
       state =
-        ready(interactions: [approval("a1", "r1", "web")])
+        ready(agents: agents, interactions: [approval("a1", "r1", "web")])
         |> Map.put(:layers, [])
         |> press!(ctrl("f"))
 
@@ -385,6 +393,58 @@ defmodule SwarmCodeCLI.UI.Pass72OverlayKeysTest do
       {state, effects} = Reducer.update(ready(), {:panel_preferences_loaded, :compact})
       assert state.panel_mode == :compact
       assert effects == []
+    end
+  end
+
+  # ------------------------------------------------------------- the detail
+
+  describe "the agent detail (owner S)" do
+    defp screen(state) do
+      layout = SwarmCodeCLI.UI.Layout.calculate(state.size, state.preferences)
+      {[region], _} = Projector.Overlay.project(state, layout)
+
+      region.blocks
+      |> Enum.map_join("\n", fn block ->
+        Enum.map_join(block.spans, &SwarmCodeCLI.UI.SafeText.value(&1.text))
+      end)
+    end
+
+    test "only the answer to the overlay's own request is kept, and it is what the overlay shows" do
+      state = ready() |> Reducer.update({:overlay_open, "r1", "web"}) |> elem(0)
+      overlay = %{state.overlay | detail_request: "req-1"}
+      state = %{state | overlay: overlay}
+
+      detail = %DTO.AgentDetail{
+        agent_id: "web",
+        run_id: "r1",
+        brief: "Review the web UI for focus problems.",
+        findings: [
+          %DTO.Finding{n: 1, severity: :high, text: "Esc fires twice", ref: "lib/frame.ex:88"}
+        ],
+        activity: [
+          %DTO.ActivityGroup{kind: :read, title: "read 14 files", items: ["chat.ex"], count: 14}
+        ],
+        life: [:think, :tools, :wait_you],
+        files_read: ["chat.ex"],
+        context_used: 12_000,
+        context_window: 128_000
+      }
+
+      stale = %{request_id: "req-0"}
+      {kept, []} = Overlay.detail_response(state, stale, detail)
+      assert kept.overlay.detail == nil
+
+      own = %{request_id: "req-1"}
+      {state, []} = Overlay.detail_response(state, own, detail)
+      assert state.overlay.detail == detail
+
+      text = screen(state)
+      assert text =~ "Review the web UI for focus problems."
+      assert text =~ "Esc fires twice"
+      assert text =~ "lib/frame.ex:88"
+      assert text =~ "read 14 files"
+      assert text =~ "12k of 128k"
+      assert text =~ "▂▅▒"
     end
   end
 end

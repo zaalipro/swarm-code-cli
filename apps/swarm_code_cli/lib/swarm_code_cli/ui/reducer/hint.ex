@@ -3,36 +3,40 @@ defmodule SwarmCodeCLI.UI.Reducer.Hint do
   Hint mode's state (pass 72, P7): entering it computes the badges from the
   side panel's visible entries, a typed key resolves against them.
 
-  The panel's order is owner P's `Projector.PanelOrder.entries/1`; until that
-  exists in this branch, `entries/1` derives the same shape from the read
-  model: the runs of the tab row, each followed by its agents, the lead first.
+  The panel's order is owner P's `Projector.PanelOrder.entries/1`: an entry
+  exists exactly when its row is on screen (the strip's, under 120 columns).
   """
 
   alias SwarmCodeCLI.UI.Hint
-  alias SwarmCodeCLI.UI.Projector.Shell
+  alias SwarmCodeCLI.UI.Projector.PanelOrder
 
   @waiting_states [:waiting_approval, :waiting_question]
 
-  @doc "The panel's visible entries in display order (`PanelOrder.entries/1`'s shape)."
+  @doc "The panel's visible entries in display order (owner P's `PanelOrder.entries/1`)."
   @spec entries(map()) :: [Hint.entry()]
-  def entries(state) do
-    runs = Shell.tabline_runs(state)
+  def entries(state), do: PanelOrder.entries(state)
 
-    Enum.flat_map(runs, fn run ->
-      [
-        {:run, run.id}
-        | Enum.map(agents(state, run.id), &{:agent, run.id, &1.id, needs_you?(state, &1)})
-      ]
-    end)
-  end
-
-  @doc "A run's agents in panel order: the lead first, then by start."
+  @doc """
+  A run's agents in panel order: the ones the panel draws in its order, then
+  the folded rest, the lead first and then by start.
+  """
   def agents(state, run_id) do
+    drawn =
+      state
+      |> entries()
+      |> Enum.flat_map(fn
+        {:agent, ^run_id, node, _} -> [node]
+        _ -> []
+      end)
+      |> Enum.with_index()
+      |> Map.new()
+
     state.read_model.agents
     |> Map.values()
     |> Enum.filter(&(&1.run_id == run_id and &1.state != :superseded))
     |> Enum.sort_by(
-      &{if(&1.role == :lead or &1.parent_id == nil, do: 0, else: 1), &1.depth, &1.started_at || 0,
+      &{Map.get(drawn, &1.id, map_size(drawn)),
+       if(&1.role == :lead or &1.parent_id == nil, do: 0, else: 1), &1.depth, &1.started_at || 0,
        &1.id}
     )
   end
