@@ -8,3 +8,6 @@ erl_crash.dump
 /swarm_code_cli-*.tar
 __pycache__/
 /apps/swarm_code_daemon/priv/native/
+
+# ExUnit @tag :tmp_dir output (pass72 F)
+/apps/*/tmp/
