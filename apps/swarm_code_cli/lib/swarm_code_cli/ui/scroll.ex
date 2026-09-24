@@ -61,10 +61,27 @@ defmodule SwarmCodeCLI.UI.Scroll do
   # (pass70 Q1): the first wheel notches, and PgUp, moved almost nothing.
   defp follow_top([], _page_height, _height_for), do: {nil, 0, :top}
 
+  #
+  # pass73 F9: the bottom row is the last row of the last item that draws one;
+  # an item that draws nothing (a silent thought, a worker's call under a
+  # folded lane) takes no row here either. Each counted as one row, so the
+  # first notch over a turn that ended in three of them moved nothing, and
+  # every later notch lost a row per such item it crossed.
   defp follow_top(ids, page_height, height_for) do
-    last = length(ids) - 1
-    bottom = max(0, item_height(height_for, List.last(ids)) - 1)
+    last = last_drawn(ids, height_for)
+    bottom = max(0, item_height(height_for, Enum.at(ids, last)) - 1)
     locate(ids, last, bottom - max(0, page_height - 1), :top, height_for)
+  end
+
+  defp last_drawn(ids, height_for) do
+    last = length(ids) - 1
+
+    ids
+    |> Enum.reverse()
+    |> Enum.with_index()
+    |> Enum.find_value(last, fn {id, back} ->
+      if item_height(height_for, id) > 0, do: last - back
+    end)
   end
 
   # Ctrl-D and Ctrl-U move half a viewport, never less than a line, so the keys
@@ -96,7 +113,7 @@ defmodule SwarmCodeCLI.UI.Scroll do
   end
 
   defp item_height(_, nil), do: 1
-  defp item_height(fun, id), do: max(1, fun.(id))
+  defp item_height(fun, id), do: max(0, fun.(id))
 
   def repair(scroll, id, old_ids, new_ids) do
     unseen = OrderedIdSet.delete(scroll.unseen, id)

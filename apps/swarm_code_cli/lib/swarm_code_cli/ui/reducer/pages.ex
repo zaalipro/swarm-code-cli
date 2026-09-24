@@ -115,7 +115,7 @@ defmodule SwarmCodeCLI.UI.Reducer.Pages do
     ids
     |> Enum.drop_while(&(&1 != id))
     |> Enum.reduce_while({0, true}, fn item, {sum, first?} ->
-      rows = max(1, height_for.(item)) - if(first?, do: line, else: 0)
+      rows = max(0, height_for.(item)) - if(first?, do: line, else: 0)
       sum = sum + max(rows, 0)
       if sum > limit, do: {:halt, {sum, false}}, else: {:cont, {sum, false}}
     end)

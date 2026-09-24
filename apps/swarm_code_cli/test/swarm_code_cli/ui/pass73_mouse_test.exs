@@ -205,6 +205,52 @@ defmodule SwarmCodeCLI.UI.Pass73MouseTest do
       assert Enum.drop(lines(notch(up, :wheel_up)), 6) == Enum.drop(following, -6)
     end
 
+    # pass73 F9 (finisher's live check): a tool-using turn leaves thinking
+    # items that draw nothing (text and reasoning empty, the live sandbox's
+    # shape). The scroll counted each as one row, so over a turn that ended in
+    # three of them the first notch from the bottom moved nothing.
+    test "the first notch moves three rows over a tail of items that draw nothing" do
+      state = chat()
+
+      thinking =
+        for n <- 1..3 do
+          %DTO.TranscriptItem{
+            id: "t#{n}",
+            node_id: "t#{n}",
+            run_id: "r1",
+            conversation_id: "c",
+            attempt_id: "attempt",
+            role: :tool,
+            kind: :thinking,
+            state: :done,
+            text: "",
+            reasoning: ""
+          }
+        end
+
+      items =
+        Enum.map(28..30, &state.read_model.transcript["i#{&1}"])
+        |> Enum.zip(thinking)
+        |> Enum.flat_map(fn {prompt, thought} -> [thought, prompt] end)
+
+      state =
+        Enum.reduce(items, state, fn item, acc ->
+          acc = put_in(acc.read_model.transcript[item.id], item)
+          order = Map.get(acc.read_model.order, :workspace, []) -- [item.id]
+          put_in(acc.read_model.order[:workspace], order ++ [item.id])
+        end)
+
+      assert Enum.take(SwarmCodeCLI.UI.ScrollMetrics.order(state, :main, :workspace), -6) ==
+               ~w(t1 i28 t2 i29 t3 i30)
+
+      assert SwarmCodeCLI.UI.ScrollMetrics.height(state, :main, "t3") == 0
+
+      following = lines(state)
+      up = notch(state, :wheel_up)
+      assert Enum.drop(lines(up), 3) == Enum.drop(following, -3)
+      assert lines(notch(up, :wheel_down)) == following
+    end
+
     test "PgUp from the bottom shows the page above" do
       state = chat()
       following = lines(state)
