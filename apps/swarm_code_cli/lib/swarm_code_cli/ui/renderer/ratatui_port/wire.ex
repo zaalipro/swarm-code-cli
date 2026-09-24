@@ -60,6 +60,18 @@ defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.Wire do
 
   def copy(_, _, _), do: invalid()
 
+  @doc """
+  pass73 T9: wheel reports on or off live: `1, 8, generation, token, on`.
+  The port answers nothing; it updates its flags, so the `ready` of a later
+  resume reports them.
+  """
+  def mouse(generation, token, on?)
+      when is_integer(generation) and generation >= 0 and generation <= @max_u64 and
+             is_integer(token) and token >= 0 and token <= @max_u64 and is_boolean(on?),
+      do: {:ok, <<19::32, 1, 8, generation::64, token::64, if(on?, do: 1, else: 0)>>}
+
+  def mouse(_, _, _), do: invalid()
+
   defp inert?(text) do
     not String.match?(
       text,

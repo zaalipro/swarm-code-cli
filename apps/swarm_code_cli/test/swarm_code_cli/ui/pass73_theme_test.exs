@@ -58,7 +58,36 @@ defmodule SwarmCodeCLI.UI.Pass73ThemeTest do
       refute light?(:sys.get_state(owner).last_plan)
     end
 
-    test "the same theme again keeps the kept frame; a mouse-only change leaves the theme and flags" do
+    test "wheel reports go on and off live; the flags follow so a later ready agrees" do
+      {owner, runtime} = owner(:dark)
+      ready(owner)
+      draw(owner, runtime, 1)
+      counter = :sys.get_state(owner).counter
+
+      send(owner, {:terminal_preferences, %{mouse?: true}})
+      state = :sys.get_state(owner)
+      assert state.flags.mouse? == true
+      assert state.caps.mouse == :best_effort
+      assert state.counter == counter + 1
+      assert state.theme == :dark
+
+      # Unchanged: no command, no token spent.
+      send(owner, {:terminal_preferences, %{mouse?: true}})
+      assert :sys.get_state(owner).counter == counter + 1
+
+      send(owner, {:terminal_preferences, %{mouse?: false, theme: :light}})
+      assert %{flags: %{mouse?: false}, theme: :light} = :sys.get_state(owner)
+    end
+
+    test "the mouse command is 19 bytes: tag 8, generation, token, on" do
+      alias SwarmCodeCLI.UI.Renderer.RatatuiPort.Wire
+      assert Wire.mouse(1, 7, true) == {:ok, <<19::32, 1, 8, 1::64, 7::64, 1>>}
+      assert Wire.mouse(1, 8, false) == {:ok, <<19::32, 1, 8, 1::64, 8::64, 0>>}
+      assert {:error, _} = Wire.mouse(1, -1, true)
+      assert {:error, _} = Wire.mouse(1, 1, :yes)
+    end
+
+    test "the same theme again keeps the kept frame" do
       {owner, runtime} = owner(:light)
       ready(owner)
       draw(owner, runtime, 1)
@@ -68,8 +97,7 @@ defmodule SwarmCodeCLI.UI.Pass73ThemeTest do
       send(owner, {:terminal_preferences, %{theme: :light}})
       assert :sys.get_state(owner).last_plan == kept
 
-      send(owner, {:terminal_preferences, %{mouse?: false}})
-      assert %{theme: :light, flags: ^flags} = :sys.get_state(owner)
+      assert :sys.get_state(owner).flags == flags
 
       # Nonsense is ignored: the owner answers and keeps its theme.
       send(owner, {:terminal_preferences, %{theme: :sepia}})
