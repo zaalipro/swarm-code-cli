@@ -31,7 +31,7 @@ Merge with `git merge --no-edit p73-K-keyword`. Until then read the fields with 
     (`/com` → runs `/compact`); a "workflow" message (goes as `/create-workflow`).
   - `:steer`: a plain message while this conversation's top-level `:chat` run is running/streaming/
     waiting/retrying; also any text in the agent overlay's composer.
-  - `:queue`: a plain message while the chat turn is `:queued`/`:paused`, or `/compact`/`/rewind`
+  - `:queue`: a plain message while the chat turn is `:queued`/`:paused`, or `/compact`
     while a chat turn is live.
   - `:send`: otherwise (a swarm or workflow running beside does not make it a steer).
   - T6 wording suggestion: send → "Enter send", steer → "Enter steer", queue → "Enter queue",
@@ -165,8 +165,14 @@ is already right.
 
 ### S (daemon, wire): T3/T8
 
+Done on K's side after reading S.md: `Reducer.Deliveries` reads `Map.get(outcome, :disposition)` first
+(`:steered | :queued | :started`) and `Map.get(outcome, :reason).text` for a refusal, which becomes the
+status notice alone (S's request K1; a refused overlay steer too). `Composer.enter_action/1` queues only
+`/compact` during a live chat turn (S's rule 1); every other command is `:run_command`. The notes below
+are the fallbacks for an outcome without those fields.
+
 - The client sends a plain message while the chat turn runs as `dispatch` `send` with the typed text,
-  and `/compact` (or `/rewind`) during a turn also as `send`, as typed. Please steer or queue server-side.
+  and `/compact` during a turn also as `send`, as typed (S: queued). Please steer or queue server-side.
 - `Reducer.Deliveries` reads the outcome like this: accepted with feedback title `"Queue"` (or text
   starting "Queued") → queued; title `"Steer"` (or text starting "Steered" / "Sent to the running") →
   steered; accepted with the live chat turn's run id in `identifiers` → steered even without feedback;

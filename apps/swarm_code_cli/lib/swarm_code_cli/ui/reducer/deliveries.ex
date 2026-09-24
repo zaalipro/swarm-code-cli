@@ -41,6 +41,7 @@ defmodule SwarmCodeCLI.UI.Reducer.Deliveries do
           status: :sending,
           at: state.now,
           reason: nil,
+          said?: false,
           turn_id: turn && turn.id,
           operation: operation
         }
@@ -77,9 +78,26 @@ defmodule SwarmCodeCLI.UI.Reducer.Deliveries do
 
   defp settle(delivery, %{status: :accepted} = outcome, state) do
     ids = outcome.identifiers || []
-    feedback = outcome.feedback
     runs = state.read_model.runs
 
+    # pass73 S: the daemon names the disposition (`Outcome.disposition`,
+    # read with `Map.get` until S is merged); its words are the fallback.
+    case Map.get(outcome, :disposition) do
+      :steered -> %{delivery | status: :steered, run_id: steered_run(delivery, ids, runs)}
+      :queued -> %{delivery | status: :queued}
+      :started -> %{delivery | status: :started, run_id: started_run(ids, runs)}
+      _ -> settle_by_words(delivery, ids, outcome.feedback, runs)
+    end
+  end
+
+  defp settle(delivery, outcome, _state) do
+    case refusal_text(Map.get(outcome, :reason)) do
+      nil -> %{delivery | status: :refused, reason: reason(outcome), said?: false}
+      text -> %{delivery | status: :refused, reason: text, said?: true}
+    end
+  end
+
+  defp settle_by_words(delivery, ids, feedback, runs) do
     cond do
       said?(feedback, ["queue"], ["queued"]) ->
         %{delivery | status: :queued}
@@ -91,16 +109,11 @@ defmodule SwarmCodeCLI.UI.Reducer.Deliveries do
         %{delivery | status: :steered, run_id: delivery.turn_id}
 
       true ->
-        %{
-          delivery
-          | status: :started,
-            run_id: Enum.find(ids, &Map.has_key?(runs, &1)) || List.first(ids)
-        }
+        %{delivery | status: :started, run_id: started_run(ids, runs)}
     end
   end
 
-  defp settle(delivery, outcome, _state),
-    do: %{delivery | status: :refused, reason: reason(outcome)}
+  defp started_run(ids, runs), do: Enum.find(ids, &Map.has_key?(runs, &1)) || List.first(ids)
 
   defp steered_run(delivery, ids, runs) do
     cond do
@@ -118,47 +131,42 @@ defmodule SwarmCodeCLI.UI.Reducer.Deliveries do
 
   defp said?(_feedback, _titles, _openings), do: false
 
-  # The words for the outcome's status or admission code.
+  # pass73 S: a refusal carries the service's own sentence
+  # (`Outcome.reason`, a `%Refusal{code, text}`), written for people.
+  defp refusal_text(%{text: text}) when is_binary(text) do
+    case String.trim(text) do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
+  defp refusal_text(_reason), do: nil
+
+  # Without one, the words for the outcome's status or admission code (its
+  # message is a fixed diagnostic, never shown).
   defp reason(%{status: status}) when status in [:deadline_exceeded, :outcome_unknown],
     do: "the daemon did not answer in time"
 
   defp reason(%{status: :revision_conflict}), do: "the conversation changed meanwhile"
   defp reason(%{status: :interrupted}), do: "the session was interrupted"
-  defp reason(%{error: %AdmissionError{} = error}), do: admission_words(error)
+  defp reason(%{error: %AdmissionError{code: code}}), do: admission_words(code)
   defp reason(_outcome), do: "the daemon did not take it"
 
-  defp admission_words(%AdmissionError{code: code, message: message}) do
-    case code do
-      :capacity_exceeded -> "the daemon is busy"
-      :deadline_expired -> "the daemon did not answer in time"
-      :source_unavailable -> "the daemon connection is down"
-      :closed -> "the daemon connection is closed"
-      :stale_revision -> "the conversation changed meanwhile"
-      :not_allowed -> sentence(code, message) || "it is not allowed right now"
-      _ -> sentence(code, message) || "the daemon did not take it"
-    end
-  end
+  defp admission_words(:capacity_exceeded), do: "the daemon is busy"
+  defp admission_words(:deadline_expired), do: "the daemon did not answer in time"
+  defp admission_words(:source_unavailable), do: "the daemon connection is down"
+  defp admission_words(:closed), do: "the daemon connection is closed"
+  defp admission_words(:stale_revision), do: "the conversation changed meanwhile"
+  defp admission_words(:not_allowed), do: "it is not allowed right now"
+  defp admission_words(_code), do: "the daemon did not take it"
 
-  # A reason the daemon wrote for people, not the code's fixed diagnostic.
-  defp sentence(code, message) when is_binary(message) do
-    fixed =
-      try do
-        AdmissionError.new(code).message
-      rescue
-        _ -> nil
-      end
+  # The service's sentence stands alone; the fallback words say what to do.
+  defp refusal_words(%{reason: reason, said?: true}), do: safe(reason)
 
-    case String.trim(message) do
-      "" -> nil
-      ^fixed -> nil
-      text -> String.trim_trailing(text, ".")
-    end
-  end
+  defp refusal_words(%{reason: reason}),
+    do: safe("Not sent: #{reason}. Your draft is kept; Enter tries again.")
 
-  defp sentence(_code, _message), do: nil
-
-  defp refusal_words(%{reason: reason}) do
-    text = "Not sent: #{reason}. Your draft is kept; Enter tries again."
+  defp safe(text) do
     {:ok, safe} = SafeText.external(text, SafeText.Limits.content())
     SafeText.value(safe)
   end

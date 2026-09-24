@@ -1453,6 +1453,7 @@ defmodule SwarmCodeCLI.UI.Reducer do
     settled = remember_prompt(settled, request, outcome)
     settled = note_sent_turn(settled, request, outcome)
     settled = Deliveries.settled(settled, request, outcome)
+    settled = steer_refusal(settled, request, outcome)
 
     case {outcome.status, outcome.feedback, request.origin, State.current_draft_key(state)} do
       {:accepted, %{kind: kind} = feedback, {:draft, {conversation, _}}, {conversation, _}}
@@ -1794,6 +1795,24 @@ defmodule SwarmCodeCLI.UI.Reducer do
       {state, []}
     end
   end
+
+  # pass73 S (request K1): a refused steer from the overlay says the
+  # service's words (`Outcome.reason`, read with `Map.get` until S is
+  # merged); a refused send says them through `Reducer.Deliveries`.
+  defp steer_refusal(state, %{kind: {:steer, _, _, _, _}}, %{status: status} = outcome)
+       when status != :accepted do
+    case Map.get(outcome, :reason) do
+      %{text: text} when is_binary(text) ->
+        if String.trim(text) == "",
+          do: state,
+          else: %{state | notice: {:command_feedback, String.trim(text)}}
+
+      _ ->
+        state
+    end
+  end
+
+  defp steer_refusal(state, _request, _outcome), do: state
 
   # pass73 T3/T8: Enter again while the last send has not been answered is
   # never silent: the draft waits for that answer, and the status says so.

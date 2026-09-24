@@ -93,6 +93,56 @@ defmodule SwarmCodeCLI.UI.Pass73DeliveryTest do
     assert state.notice == {:command_feedback, "Still sending the last message; one moment."}
   end
 
+  describe "with the daemon's disposition and reason (pass73 S)" do
+    alias SwarmCodeCLI.UI.Reducer.Deliveries
+
+    defp settle(state, request, fields) do
+      outcome = Map.merge(%DTO.Outcome{request_id: request.request_id}, Map.new(fields))
+      Deliveries.settled(state, request, outcome)
+    end
+
+    test "the disposition decides, whatever the words" do
+      {state, request} = sent(ready([run("t", :running)]), "look at the router")
+
+      assert [%{status: :steered, run_id: "t"}] =
+               settle(state, request,
+                 status: :accepted,
+                 identifiers: ["t"],
+                 disposition: :steered
+               ).deliveries
+
+      assert [%{status: :queued}] =
+               settle(state, request, status: :accepted, identifiers: [], disposition: :queued).deliveries
+
+      assert [%{status: :started, run_id: "s"}] =
+               settle(state, request,
+                 status: :accepted,
+                 identifiers: ["s"],
+                 disposition: :started
+               ).deliveries
+    end
+
+    test "a refusal's own sentence is the status line, alone" do
+      {state, request} = sent(ready(), "/compact")
+
+      state =
+        settle(state, request,
+          status: :rejected,
+          error: AdmissionError.new(:not_allowed),
+          reason: %{
+            code: "nothing_to_compact",
+            text: "Nothing to compact yet: this conversation has no history to summarise."
+          }
+        )
+
+      assert [%{status: :refused, reason: "Nothing to compact yet" <> _}] = state.deliveries
+
+      assert state.notice ==
+               {:command_feedback,
+                "Nothing to compact yet: this conversation has no history to summarise."}
+    end
+  end
+
   test "a workflow message is recorded as the user typed it" do
     {state, request} = sent(ready(), "make a workflow for releases")
 

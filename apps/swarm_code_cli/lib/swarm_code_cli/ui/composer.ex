@@ -14,8 +14,8 @@ defmodule SwarmCodeCLI.UI.Composer do
       message that names "workflow" and goes as `/create-workflow` (T5).
     * `:steer`: a plain message goes to this conversation's running chat turn
       (T3), or the agent overlay's composer steers its agent.
-    * `:queue`: the message (or a conversation-level command such as
-      `/compact`) waits for the running chat turn to end.
+    * `:queue`: the message (or `/compact`) waits for the running chat
+      turn to end.
     * `:send`: a plain message starts a turn.
 
   The daemon has the last word: it may still queue a message the client
@@ -33,9 +33,10 @@ defmodule SwarmCodeCLI.UI.Composer do
   @steerable [:running, :streaming, :waiting_question, :waiting_approval, :retrying]
   @waiting [:queued, :paused]
 
-  # Commands that change the conversation itself: while its chat turn runs
-  # they wait for it (T3), where a run-launching command starts at once.
-  @after_turn ~w(compact rewind)
+  # A command that changes the conversation itself waits for its chat turn
+  # (T3; pass73 S queues `/compact` then), where every other command,
+  # run-launching ones included, starts at once beside the live runs.
+  @after_turn ~w(compact)
 
   @doc "What Enter does with the composer now (see the moduledoc)."
   @spec enter_action(map()) :: enter_action()
