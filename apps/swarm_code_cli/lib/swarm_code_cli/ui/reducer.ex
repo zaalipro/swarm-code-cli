@@ -24,6 +24,8 @@ defmodule SwarmCodeCLI.UI.Reducer do
   alias SwarmCodeCLI.UI.Reducer.{Watch, Commands, Pages, Editing, Details, PathCompletion}
   alias SwarmCodeCLI.UI.Reducer.Hint, as: Hints
   alias SwarmCodeCLI.UI.Reducer.Overlay
+  alias SwarmCodeCLI.UI.Reducer.Display
+  alias SwarmCodeCLI.UI.WorkflowKeyword
   alias SwarmCodeCLI.UI.Hint
   alias SwarmCodeCLI.UI.DataSource.DTO.Outcome
   alias SwarmCodeCLI.UI.Projector.{RunPalette, RunsDashboard}
@@ -64,6 +66,8 @@ defmodule SwarmCodeCLI.UI.Reducer do
              init.banner in [nil, :live_banner, :persisted_banner] and
              init.focus in ["main", "composer"] and init.keymap in [:default, :vim] and
              init.panel_mode in [:full, :compact, :hidden] and
+             is_boolean(init.show_diffs) and init.theme_mode in [:dark, :light] and
+             init.theme_env in [nil, :dark, :light] and is_boolean(init.mouse?) and
              SwarmCodeCLI.UI.Intent.valid_id?(init.id_prefix) and is_integer(init.now) and
              init.now >= 0 and is_integer(init.deadline_ms) and init.deadline_ms >= 0 and
              is_integer(init.id_sequence) and init.id_sequence >= 0,
@@ -117,6 +121,54 @@ defmodule SwarmCodeCLI.UI.Reducer do
   # way the choice is written to the preferences file by the session.
   defp transition(state, {:panel_mode, :cycle}), do: set_panel(state, next_panel(state))
   defp transition(state, {:panel_mode, mode}), do: set_panel(state, mode)
+
+  # pass73-K: /diff, /theme, /mouse (T1, T2, T9), their palette rows, and
+  # the rest of cli.json once the session has read it.
+  defp transition(state, {:show_diffs, value}), do: Display.set(state, :show_diffs, value)
+  defp transition(state, {:theme_mode, value}), do: Display.set(state, :theme_mode, value)
+  defp transition(state, {:mouse, value}), do: Display.set(state, :mouse, value)
+  defp transition(state, {:preferences_loaded, loaded}), do: Display.loaded(state, loaded)
+
+  # pass73-K T7: a row of the /approval picker sets the project's mode.
+  defp transition(state, {:approval_mode, mode}),
+    do: service_request(state, {:project_update, mode, nil}, {:project, :update})
+
+  # pass73-K T4: Enter on the palette's highlighted command that takes no
+  # argument writes it and runs it, as if it had been typed whole.
+  defp transition(state, {:run_command, name}) do
+    case State.current_draft_key(state) do
+      nil ->
+        {state, []}
+
+      key ->
+        {state, replaced} = replace_draft(state, key, "/" <> name)
+
+        case Keymap.draft_send(state) do
+          {:ok, action} ->
+            {state, sent} = transition(state, action)
+            {state, replaced ++ sent}
+
+          :ignore ->
+            {state, replaced}
+        end
+    end
+  end
+
+  # pass73-K T5: the opt-out key sends a message that names a workflow as the
+  # plain message it is; anything else goes exactly as Enter sends it.
+  defp transition(state, :send_plain) do
+    text = Keymap.draft_text(state)
+
+    action =
+      if WorkflowKeyword.routes?(text),
+        do: Keymap.draft_dispatch(state, :send),
+        else: Keymap.draft_send(state)
+
+    case action do
+      {:ok, action} -> transition(state, action)
+      :ignore -> {state, []}
+    end
+  end
 
   defp transition(state, {:panel_preferences_loaded, mode}),
     do: {%{state | panel_mode: mode}, []}
@@ -2408,6 +2460,19 @@ defmodule SwarmCodeCLI.UI.Reducer do
     end
   end
 
+  # pass73-K: /diff, /theme and /mouse, with or without their argument.
+  defp slash_local(state, command) when command in [:diff, :theme, :mouse] do
+    case Display.parse(command, Keymap.draft_text(state)) do
+      {:ok, field, value} ->
+        {state, cleared} = clear_command_draft(state)
+        {state, set} = transition(state, {field, value})
+        {state, cleared ++ set}
+
+      {:error, words} ->
+        feedback(state, words)
+    end
+  end
+
   defp slash_local(state, :trust) do
     {state, cleared} = clear_command_draft(state)
     {state, sent} = service_request(state, {:project_update, nil, true}, {:project, :update})
@@ -2506,6 +2571,7 @@ defmodule SwarmCodeCLI.UI.Reducer do
     :resize,
     :hint,
     :panel_preferences_loaded,
+    :preferences_loaded,
     :external_edit_done
   ]
 

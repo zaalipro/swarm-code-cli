@@ -26,11 +26,32 @@ defmodule SwarmCodeCLI.UI.SlashPalette do
       args: "[full|compact|hidden]",
       desc: "The side agent panel's shape (Ctrl-B cycles it); remembered"
     },
+    # pass73 T1/T2/T9: display preferences, remembered in cli.json.
+    %{
+      name: "diff",
+      args: "[on|off]",
+      desc: "Show or hide diffs and file previews under tool rows; remembered"
+    },
+    %{name: "theme", args: "[dark|light]", desc: "Switch the dark or light theme; remembered"},
+    %{
+      name: "mouse",
+      args: "[on|off]",
+      desc: "Wheel scrolling on, or off for the terminal's own selection; remembered"
+    },
     %{name: "queue", args: "<text>", desc: "Send this after the running turn"},
     %{name: "help", args: "", desc: "List the commands and the keys"},
     %{name: "quit", args: "", desc: "Leave SwarmCode; running work of this session stops"}
   ]
   @local_names Enum.map(@local, & &1.name)
+
+  # pass73: commands whose meaning the client changed; their catalogue entry
+  # (`diff` was "the files this conversation changed") lends no words.
+  @own_words ~w(diff theme mouse approval)
+
+  # pass73 T4: commands with an optional argument that is their point; Enter
+  # on the palette writes `/<name> ` for them and waits, as for a required
+  # `<argument>`. Every other command without a required argument runs.
+  @wants_text ~w(consensus create-workflow goal plan swarm queue search attach workflow)
 
   @doc "Rows of the popup above the composer (pass 70 E5); `visible(state, rows())`."
   def rows, do: @rows
@@ -62,9 +83,8 @@ defmodule SwarmCodeCLI.UI.SlashPalette do
     # flags `client: true` (pass70 C7) lends its words but not its position.
     local =
       for item <- @local, score(item.name, needle) != nil do
-        Map.get_lazy(flagged, item.name, fn ->
-          Map.merge(item, %{scope: nil, kind: :builtin, client: true})
-        end)
+        own = Map.merge(item, %{scope: nil, kind: :builtin, client: true})
+        if item.name in @own_words, do: own, else: Map.get(flagged, item.name, own)
       end
 
     names = Enum.map(local, & &1.name)
@@ -124,6 +144,45 @@ defmodule SwarmCodeCLI.UI.SlashPalette do
       %{state | slash_palette: %{context: context(state), index: next}}
     end
   end
+
+  @doc """
+  pass73 T4: what Enter does while the palette is open. `{:complete, name}`
+  writes `/<name> ` and waits for the argument; `{:run, name}` runs the
+  highlighted command at once (it takes no argument); nil when the palette
+  is closed or the draft already names a command exactly (Enter sends it as
+  typed).
+  """
+  @spec enter_completion(map()) :: {:complete | :run, binary()} | nil
+  def enter_completion(state) do
+    with {_key, query} <- context(state),
+         items when items != [] <- catalogue(query),
+         name = query |> String.trim_leading("/") |> String.downcase(),
+         false <- name != "" and Enum.any?(items, &(&1.name == name)),
+         %{name: selected} = item <- selected(state) do
+      if runs_bare?(item), do: {:run, selected}, else: {:complete, selected}
+    else
+      _ -> nil
+    end
+  end
+
+  @doc """
+  Whether a palette entry runs without an argument: it takes none, or only
+  an optional one that is not its point. A required `<argument>` or one of
+  the text commands (`/consensus [task]`) waits for the argument.
+  """
+  @spec runs_bare?(map()) :: boolean()
+  def runs_bare?(%{name: name} = item) do
+    args = Map.get(item, :args) || ""
+
+    cond do
+      String.trim(args) == "" -> true
+      String.contains?(args, "<") -> false
+      name in @wants_text -> false
+      true -> true
+    end
+  end
+
+  def runs_bare?(_item), do: false
 
   @doc "Replace only the current matching draft, as one undoable editor replacement."
   def complete(state, name) do

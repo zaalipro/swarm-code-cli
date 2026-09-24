@@ -238,10 +238,25 @@ defmodule SwarmCodeCLI.UI.Keymap.Special do
 
   # Enter before the workspace has loaded has no Send target yet; it is kept
   # as one deferred send the reducer replays once the watch is ready (R2).
+  # pass73 T4: while the slash palette is open, Enter accepts its highlighted
+  # command like Tab; a command that takes no argument then runs at once.
   def run(:activate, _key, %{focus: "composer"} = state, table) do
-    case Keymap.find_target(state, table, &match?({:intent, {:dispatch, :send, _, _, _}}, &1)) do
-      :ignore -> unsent(state)
-      resolved -> resolved
+    case SlashPalette.enter_completion(state) do
+      {:complete, name} ->
+        ok({:complete_command, name})
+
+      {:run, name} ->
+        ok({:run_command, name})
+
+      nil ->
+        case Keymap.find_target(
+               state,
+               table,
+               &match?({:intent, {:dispatch, :send, _, _, _}}, &1)
+             ) do
+          :ignore -> unsent(state)
+          resolved -> resolved
+        end
     end
   end
 

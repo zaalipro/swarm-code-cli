@@ -8,8 +8,15 @@ defmodule SwarmCodeCLI.UI.Pass72PreferencesTest do
 
   test "a missing, malformed, oversized or foreign file means the full panel", %{tmp_dir: dir} do
     path = Path.join(dir, "cli.json")
-    assert Preferences.read(path) == %{panel_mode: :full}
-    assert Preferences.read(nil) == %{panel_mode: :full}
+    assert Preferences.read(path) == Preferences.defaults()
+    assert Preferences.read(nil) == Preferences.defaults()
+
+    assert Preferences.defaults() == %{
+             panel_mode: :full,
+             show_diffs: true,
+             theme: nil,
+             mouse?: true
+           }
 
     for body <- [
           "{",
@@ -19,12 +26,12 @@ defmodule SwarmCodeCLI.UI.Pass72PreferencesTest do
           String.duplicate(" ", 20_000)
         ] do
       File.write!(path, body)
-      assert Preferences.read(path) == %{panel_mode: :full}
+      assert Preferences.read(path) == Preferences.defaults()
     end
 
     File.rm!(path)
     File.mkdir!(path)
-    assert Preferences.read(path) == %{panel_mode: :full}
+    assert Preferences.read(path) == Preferences.defaults()
   end
 
   test "a write is 0600, atomic, keeps keys it does not know and leaves no temporary file",
@@ -33,7 +40,7 @@ defmodule SwarmCodeCLI.UI.Pass72PreferencesTest do
     File.write!(path, ~s({"theme": "dusk", "panel": "full"}))
 
     assert Preferences.write(path, %{panel_mode: :compact}) == :ok
-    assert Preferences.read(path) == %{panel_mode: :compact}
+    assert Preferences.read(path) == %{Preferences.defaults() | panel_mode: :compact}
     assert JSON.decode!(File.read!(path)) == %{"theme" => "dusk", "panel" => "compact"}
     assert File.stat!(path).mode |> Bitwise.band(0o777) == 0o600
     assert File.ls!(dir) == ["cli.json"]
@@ -42,7 +49,7 @@ defmodule SwarmCodeCLI.UI.Pass72PreferencesTest do
   test "a write creates a missing directory owner-only", %{tmp_dir: dir} do
     path = Path.join([dir, "SwarmCode", "cli.json"])
     assert Preferences.write(path, %{panel_mode: :hidden}) == :ok
-    assert Preferences.read(path) == %{panel_mode: :hidden}
+    assert Preferences.read(path) == %{Preferences.defaults() | panel_mode: :hidden}
     assert File.stat!(Path.dirname(path)).mode |> Bitwise.band(0o777) == 0o700
   end
 

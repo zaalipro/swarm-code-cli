@@ -116,10 +116,21 @@ defmodule SwarmCodeCLI.UI.SlashPaletteTest do
 
   test "Enter keeps literal slash command in authorized dispatch and release is inert" do
     original = state("/sw")
-    intent = {:dispatch, :send, "/sw", :main, []}
+
+    # pass73 T4: on the palette, Enter completes the highlighted command
+    # (/swarm needs its task, so the caret waits after `/swarm `).
+    assert {:ok, {:complete_command, "swarm"}} =
+             Keymap.resolve(Input.key(:enter), original, %{
+               "send" => {:intent, {:dispatch, :send, "/sw", :main, []}}
+             })
+
+    # A command typed whole, with its argument, goes as typed.
+    intent = {:dispatch, :send, "/swarm fix it", :main, []}
 
     assert {:ok, {:invoke, ^intent, _}} =
-             Keymap.resolve(Input.key(:enter), original, %{"send" => {:intent, intent}})
+             Keymap.resolve(Input.key(:enter), state("/swarm fix it"), %{
+               "send" => {:intent, intent}
+             })
 
     assert :ignore = Keymap.resolve(Input.key(:release, :tab, []), original, %{})
     modal = %{original | layers: [:help]}
