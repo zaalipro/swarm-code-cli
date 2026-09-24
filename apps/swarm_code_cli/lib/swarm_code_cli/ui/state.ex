@@ -77,6 +77,9 @@ defmodule SwarmCodeCLI.UI.State do
     # T9: the terminal sends wheel reports (`/mouse`); off restores the
     # terminal's own click-and-drag selection.
     mouse?: true,
+    # T9: rows the wheel pushed the side panel's view down (the panel clamps
+    # it to what is cut off when drawn; 0 shows the top).
+    panel_scroll: 0,
     # T3/T8: what became of the messages sent from the main composer, newest
     # first (at most 50): %{id, conversation_id, run_id, text, status, at}
     # with status :sending (not answered yet), :steered (went to the running

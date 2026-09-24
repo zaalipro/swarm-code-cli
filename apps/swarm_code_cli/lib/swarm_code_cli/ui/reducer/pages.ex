@@ -3,6 +3,9 @@ defmodule SwarmCodeCLI.UI.Reducer.Pages do
   alias SwarmCodeCLI.UI.{State, Scroll, ScrollMetrics, PageState}
   alias SwarmCodeCLI.UI.DataSource.Request
 
+  # pass73 T9: the most rows a wheel may push the side panel's view down.
+  @panel_scroll_max 500
+
   # The help sheet is the one bare-atom layer with a body longer than a screen.
   def scroll(%{layers: [:help | _]} = state, "dialog", operation),
     do: scroll_dialog(state, operation)
@@ -10,6 +13,50 @@ defmodule SwarmCodeCLI.UI.Reducer.Pages do
   def scroll(%{layers: [{kind, _} | _]} = state, "dialog", operation)
       when kind in [:approval, :command_report],
       do: scroll_dialog(state, operation)
+
+  # pass73 T9: the wheel over the pager moves its view by lines, clamped to
+  # its body (the pager keeps its line in the inspector scroll's anchor).
+  def scroll(%{layers: [{:detail, _, _} | _]} = state, "detail", operation) do
+    dialog =
+      SwarmCodeCLI.UI.Projector.Dialog.project(
+        state,
+        SwarmCodeCLI.UI.Layout.classify(state.size)
+      )
+
+    case dialog do
+      %{body_visible_range: {first, last}, body_total_count: total} ->
+        height = max(1, last - first)
+        maximum = max(0, total - height)
+
+        line =
+          case operation do
+            {:line, count} -> first + count
+            {:half_page, count} -> first + max(1, div(height, 2)) * count
+            {:page, count} -> first + height * count
+            :first -> 0
+            :last -> maximum
+            _ -> first
+          end
+
+        before = Map.get(state.scrolls, :inspector, %Scroll{})
+        scroll = %{before | anchor: {"detail", line |> min(maximum) |> max(0), :top}}
+        {%{state | scrolls: Map.put(state.scrolls, :inspector, scroll)}, []}
+
+      _ ->
+        {state, []}
+    end
+  end
+
+  # pass73 T9: the wheel over the side panel. The panel folds to fit its
+  # height; only when even its most folded shape is cut does an offset show
+  # more (`state.panel_scroll`, rows skipped, clamped by the panel when drawn).
+  def scroll(state, "panel", {:line, count}) do
+    offset = Map.get(state, :panel_scroll, 0) + count
+    {Map.put(state, :panel_scroll, offset |> min(@panel_scroll_max) |> max(0)), []}
+  end
+
+  def scroll(state, "panel", operation) when operation in [:first, :follow],
+    do: {Map.put(state, :panel_scroll, 0), []}
 
   # The navigator is not one of them. A session restored onto the deleted region
   # still carries `scrolls.navigator` and `selection["navigator"]`, and scrolling

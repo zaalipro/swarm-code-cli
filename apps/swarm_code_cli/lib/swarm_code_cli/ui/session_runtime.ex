@@ -721,10 +721,12 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
   # pass73-K (T2, T9): the terminal's owner repaints in the other theme or
   # turns wheel reports on or off; an owner that does not know the message
   # ignores it.
+  # The frame that shows the change is asked for after the message, so the
+  # owner paints it with the new theme (both go from this process, in order).
   defp local_effect(%{terminal: terminal} = state, {:terminal_preferences, preferences})
        when is_pid(terminal) do
     send(terminal, {:terminal_preferences, preferences})
-    state
+    commit(%{state | ui: %{state.ui | revision: state.ui.revision + 1}}, state)
   end
 
   # Announcements already live in the safe Scene; no text is sent to terminal state.

@@ -384,3 +384,47 @@ fn the_mouse_flag_is_an_init_flag_and_wheel_events_have_a_payload() {
     expected.extend_from_slice(&[6, 1, 2, 1, 44, 0, 2]);
     assert_eq!(packet, self::packet(&expected));
 }
+// pass73 T9: wheel reports turn on or off live, without a new init.
+fn mouse(on: u8) -> Vec<u8> {
+    let mut b = vec![1, 8];
+    b.extend_from_slice(&7u64.to_be_bytes());
+    b.extend_from_slice(&9u64.to_be_bytes());
+    b.push(on);
+    b
+}
+#[test]
+fn mouse_commands_turn_wheel_reports_on_or_off_live() {
+    for (byte, on) in [(1, true), (0, false)] {
+        let body = mouse(byte);
+        let command = decode_command(&body).unwrap();
+        assert_eq!(
+            command,
+            Command::Mouse {
+                generation: 7,
+                token: 9,
+                on
+            }
+        );
+        assert_eq!(command.operation(), "mouse");
+        assert_eq!(command.generation(), Some(7));
+        assert_eq!(command.token(), Some(9));
+    }
+    let body = mouse(1);
+    for end in 0..body.len() {
+        assert_eq!(decode_command(&body[..end]), Err(ProtocolError));
+    }
+    for bad in [mouse(2), mouse(255), {
+        let mut b = mouse(1);
+        b.push(0);
+        b
+    }] {
+        assert_eq!(decode_command(&bad), Err(ProtocolError));
+    }
+    use swarm_terminal_port::protocol::{FLAGS, GUARD_MOUSE_OFF, GUARD_MOUSE_ON};
+    // The guard tells them from init flags and from the restore byte.
+    for byte in [GUARD_MOUSE_ON, GUARD_MOUSE_OFF] {
+        assert_ne!(byte & !FLAGS, 0);
+        assert_ne!(byte, 8);
+    }
+    assert_ne!(GUARD_MOUSE_ON, GUARD_MOUSE_OFF);
+}

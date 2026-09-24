@@ -130,6 +130,22 @@ impl Tty {
         }
         out.flush()
     }
+    /// pass73 T9: turns SGR wheel reports on or off in the active terminal
+    /// and remembers it, so a later activation or restoration agrees.
+    pub fn mouse(&mut self, on: bool) -> io::Result<()> {
+        if !self.active {
+            return Err(io::ErrorKind::NotConnected.into());
+        }
+        let mut out = FdWriter::new(self.file.as_raw_fd(), false);
+        if on {
+            out.write_all(b"\x1b[?1000h\x1b[?1006h")?;
+            self.flags |= crate::protocol::FLAG_MOUSE;
+        } else {
+            out.write_all(b"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l")?;
+            self.flags &= !crate::protocol::FLAG_MOUSE;
+        }
+        out.flush()
+    }
     pub fn restore(&mut self) -> io::Result<()> {
         if !self.active {
             return Ok(());

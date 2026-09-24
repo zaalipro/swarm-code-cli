@@ -13,6 +13,11 @@ pub const MAX_COPY_BYTES: usize = 65_536;
 /// (pass70 B10, opt-in) SGR mouse reports for the wheel.
 pub const FLAG_MOUSE: u8 = 16;
 pub const FLAGS: u8 = 1 | 2 | 4 | FLAG_MOUSE;
+/// pass73 T9: the guard bytes that turn SGR wheel reports on or off while the
+/// terminal stays in raw mode. Neither is made only of init flags, and
+/// neither is the restore byte 8.
+pub const GUARD_MOUSE_ON: u8 = 32;
+pub const GUARD_MOUSE_OFF: u8 = 64;
 pub const MAX_RESPONSE_BYTES: usize = 262_167;
 
 /// A fixed diagnostic that cannot expose rejected input or OS details.
@@ -50,6 +55,12 @@ pub enum Command<'a> {
         token: u64,
         text: &'a str,
     },
+    /// pass73 T9: `/mouse on|off` turns wheel reports on or off live.
+    Mouse {
+        generation: u64,
+        token: u64,
+        on: bool,
+    },
 }
 impl Command<'_> {
     /// Draw inherits the already initialized connection's generation.
@@ -60,7 +71,8 @@ impl Command<'_> {
             | Self::Shutdown { generation, .. }
             | Self::Suspend { generation, .. }
             | Self::Resume { generation, .. }
-            | Self::Copy { generation, .. } => Some(*generation),
+            | Self::Copy { generation, .. }
+            | Self::Mouse { generation, .. } => Some(*generation),
             Self::Draw { .. } => None,
         }
     }
@@ -70,7 +82,8 @@ impl Command<'_> {
             | Self::Shutdown { token, .. }
             | Self::Suspend { token, .. }
             | Self::Resume { token, .. }
-            | Self::Copy { token, .. } => Some(*token),
+            | Self::Copy { token, .. }
+            | Self::Mouse { token, .. } => Some(*token),
             _ => None,
         }
     }
@@ -83,6 +96,7 @@ impl Command<'_> {
             Self::Suspend { .. } => "suspend",
             Self::Resume { .. } => "resume",
             Self::Copy { .. } => "copy",
+            Self::Mouse { .. } => "mouse",
         }
     }
 }
@@ -104,6 +118,9 @@ impl fmt::Debug for Command<'_> {
             }
             Self::Copy { text, .. } => {
                 debug.field("text_bytes", &text.len());
+            }
+            Self::Mouse { on, .. } => {
+                debug.field("on", on);
             }
             _ => {}
         }
@@ -128,6 +145,9 @@ pub fn decode_command(body: &[u8]) -> Result<Command<'_>, ProtocolError> {
     if body[1] == 7 {
         return decode_copy(body);
     }
+    if body[1] == 8 {
+        return decode_mouse(body);
+    }
     let expected = match body[1] {
         1 => 11,
         2 | 4 | 5 | 6 => 18,
@@ -151,6 +171,20 @@ pub fn decode_command(body: &[u8]) -> Result<Command<'_>, ProtocolError> {
         5 => Command::Suspend { generation, token },
         6 => Command::Resume { generation, token },
         _ => return Err(ProtocolError),
+    })
+}
+
+/// `1, 8, generation, token, on:u8` (0 off, 1 on): wheel reports live (pass73 T9).
+fn decode_mouse(body: &[u8]) -> Result<Command<'_>, ProtocolError> {
+    if body.len() != 19 || body[18] > 1 {
+        return Err(ProtocolError);
+    }
+    let generation = u64::from_be_bytes(body[2..10].try_into().map_err(|_| ProtocolError)?);
+    let token = u64::from_be_bytes(body[10..18].try_into().map_err(|_| ProtocolError)?);
+    Ok(Command::Mouse {
+        generation,
+        token,
+        on: body[18] == 1,
     })
 }
 

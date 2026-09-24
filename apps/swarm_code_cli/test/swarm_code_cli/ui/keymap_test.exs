@@ -512,7 +512,8 @@ defmodule SwarmCodeCLI.UI.KeymapTest do
       assert {:ok, {:scroll, "main", {:line, 3}}} =
                Keymap.resolve({:mouse, :wheel_down, nil, 10, 10, []}, state, %{})
 
-      assert {:ok, {:scroll, "inspector", {:line, 3}}} =
+      # pass73 T9: the docked inspector's place is the side panel's (pass 72).
+      assert {:ok, {:scroll, "panel", {:line, 3}}} =
                Keymap.resolve({:mouse, :wheel_down, nil, 150, 10, []}, state, %{})
 
       assert {:ok, {:scroll, "dialog", {:line, -3}}} =

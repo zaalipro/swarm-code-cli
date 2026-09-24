@@ -420,10 +420,13 @@ defmodule SwarmCodeCLI.UI.Keymap do
 
   # ------------------------------------------------------------ mouse wheel
 
-  # pass70 F (E6's second half, B10's opt-in `SWARM_MOUSE=1` reports): a wheel
-  # notch scrolls three lines of what is under the pointer and never moves
-  # focus. A paged layer (help, an approval card, a report) takes the wheel
-  # while it is open; any other layer (a picker, a form) ignores it.
+  # pass70 F (E6's second half): a wheel notch scrolls three lines of what is
+  # under the pointer and never moves focus. pass73 T9: wheel reports are on
+  # by default, and the pane under the pointer is the transcript, the side
+  # panel, the agent overlay or the pager. A modal layer (help, a report, the
+  # pager) takes the wheel while it is open; the approval card is not modal,
+  # so it takes the wheel only under the pointer; any other layer (a picker,
+  # a form) ignores it.
   @wheel_lines 3
 
   defp wheel(kind, column, row, state) do
@@ -433,27 +436,53 @@ defmodule SwarmCodeCLI.UI.Keymap do
       [:help | _] ->
         result({:scroll, "dialog", {:line, delta}})
 
-      [{layer, _} | _] when layer in [:approval, :command_report] ->
+      [{:command_report, _} | _] ->
         result({:scroll, "dialog", {:line, delta}})
+
+      [{:detail, _, _} | _] ->
+        result({:scroll, "detail", {:line, delta}})
+
+      [{:approval, _} | _] ->
+        if in_dialog?(column, row, state),
+          do: result({:scroll, "dialog", {:line, delta}}),
+          else: pane_wheel(column, row, delta, state)
 
       [_ | _] ->
         :ignore
 
       [] ->
-        result({:scroll, wheel_region(column, row, state), {:line, delta}})
+        pane_wheel(column, row, delta, state)
     end
   end
 
+  defp pane_wheel(_column, _row, delta, %{overlay: %{}}),
+    do: result({:overlay, {:scroll, delta}})
+
+  defp pane_wheel(column, row, delta, state),
+    do: result({:scroll, wheel_region(column, row, state), {:line, delta}})
+
+  # The side panel docks in the inspector's rectangle (pass 72).
   defp wheel_region(column, row, state) do
     case state.size && Layout.for_state(state).rects do
-      %{inspector: %{x: x, y: y, width: w, height: h}}
-      when column >= x and column < x + w and row >= y and row < y + h ->
-        "inspector"
+      %{inspector: rect} ->
+        if inside?(rect, column, row), do: "panel", else: "main"
 
       _ ->
         "main"
     end
   end
+
+  defp in_dialog?(column, row, state) do
+    case SwarmCodeCLI.UI.Projector.Dialog.project(state, Layout.classify(state.size)) do
+      %{rect: %{} = rect} -> inside?(rect, column, row)
+      _ -> false
+    end
+  rescue
+    _ -> false
+  end
+
+  defp inside?(%{x: x, y: y, width: w, height: h}, column, row),
+    do: column >= x and column < x + w and row >= y and row < y + h
 
   # ------------------------------------------------------- tiny exit escape
 

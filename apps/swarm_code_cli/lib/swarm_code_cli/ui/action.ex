@@ -119,6 +119,7 @@ defmodule SwarmCodeCLI.UI.Action do
              | {:step, :next | :previous}
              | {:focus, :next | :previous}
              | {:move, :up | :down | :page_up | :page_down | :first | :last}
+             | {:scroll, integer()}
              | {:answer, binary()}}
           | {:set_tab, :agents | :timeline | :changes}
           | {:select_agent, binary()}
@@ -336,6 +337,10 @@ defmodule SwarmCodeCLI.UI.Action do
 
   def validate({:overlay, {:focus, direction}} = action),
     do: valid_action(action, direction in [:next, :previous])
+
+  # pass73 T9: a wheel notch over the overlay moves its activity by lines.
+  def validate({:overlay, {:scroll, lines}} = action),
+    do: valid_action(action, is_integer(lines) and lines in -50..50 and lines != 0)
 
   def validate({:overlay, {:move, direction}} = action),
     do: valid_action(action, direction in [:up, :down, :page_up, :page_down, :first, :last])
