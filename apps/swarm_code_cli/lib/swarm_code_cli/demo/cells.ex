@@ -75,11 +75,22 @@ defmodule SwarmCodeCLI.Demo.Cells do
               do: {{:conversation, scene}, size, :truecolor, false, :rich}
   @light for scene <- [:first_reply, :trouble, :approval],
              do: {{:light, scene}, {160, 45}, :truecolor, false, :rich}
+  # pass72: the side panel's scenes (`Demo.Panel`, the D2 mockups) at the four
+  # golden sizes, rich and in monochrome ASCII; compact and hint mode for the
+  # swarm and the heavy load.
+  @panel for scene <- SwarmCodeCLI.Demo.Panel.scenes(),
+             size <- @golden_sizes,
+             {mode, ascii?, tier} <- [{:truecolor, false, :rich}, {:monochrome, true, :measured}],
+             do: {{:panel, scene, :full}, size, mode, ascii?, tier}
+  @panel_modes for scene <- [:panel_swarm_2, :panel_heavy],
+                   size <- [{160, 45}, {120, 36}],
+                   kind <- [{:panel, scene, :compact}, {:panel_hint, scene, :compact}],
+                   do: {kind, size, :truecolor, false, :rich}
   @examples @core ++
               @dialogs ++
               @pane ++
               [{:too_small, {49, 13}, :monochrome, true, :measured}] ++
-              @conversations ++ @pickers ++ @pass71 ++ @light
+              @conversations ++ @pickers ++ @pass71 ++ @light ++ @panel ++ @panel_modes
 
   @doc "How many files `run/0` writes, the index included."
   def file_count, do: length(@examples) + 1
@@ -232,6 +243,27 @@ defmodule SwarmCodeCLI.Demo.Cells do
   defp fixture({:conversation, scene}, size, capabilities),
     do: Conversation.state(scene, size, capabilities)
 
+  defp fixture({:panel, scene, mode}, size, capabilities),
+    do: scene |> SwarmCodeCLI.Demo.Panel.state(size, capabilities) |> Map.put(:panel_mode, mode)
+
+  # Hint mode as owner O's reducer sets it: a badge for every entry, needs-you
+  # agents first, then the home row; digits for the runs.
+  defp fixture({:panel_hint, scene, mode}, size, capabilities) do
+    state = fixture({:panel, scene, mode}, size, capabilities)
+    entries = SwarmCodeCLI.UI.Projector.PanelOrder.entries(state)
+    {runs, agents} = Enum.split_with(entries, &match?({:run, _}, &1))
+    {asks, rest} = Enum.split_with(agents, &match?({:agent, _, _, true}, &1))
+    letters = ~w(s d f g h j k l w e r t u i o p)
+
+    labels =
+      Map.new(Enum.zip(letters, Enum.uniq(asks ++ rest)))
+      |> Map.merge(
+        Map.new(Enum.with_index(runs, 1), fn {run, i} -> {Integer.to_string(i), run} end)
+      )
+
+    Map.put(state, :hint, %{labels: labels, typed: ""})
+  end
+
   defp fixture(kind, size, capabilities),
     do: Fixtures.representative(kind, size, capabilities) |> wide_dock()
 
@@ -252,6 +284,13 @@ defmodule SwarmCodeCLI.Demo.Cells do
 
         {:light, scene} ->
           "light-" <> String.replace(Atom.to_string(scene), "_", "-")
+
+        {:panel, scene, mode} ->
+          String.replace(Atom.to_string(scene), "_", "-") <> "-" <> Atom.to_string(mode)
+
+        {:panel_hint, scene, mode} ->
+          String.replace(Atom.to_string(scene), "_", "-") <>
+            "-" <> Atom.to_string(mode) <> "-hint"
 
         kind ->
           Atom.to_string(kind)
@@ -284,6 +323,8 @@ defmodule SwarmCodeCLI.Demo.Cells do
           case kind do
             {:conversation, scene} -> "conversation #{scene}"
             {:light, scene} -> "light #{scene}"
+            {:panel, scene, mode} -> "#{scene} #{mode}"
+            {:panel_hint, scene, mode} -> "#{scene} #{mode} hint"
             kind -> Atom.to_string(kind)
           end
 

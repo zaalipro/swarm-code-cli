@@ -18,7 +18,8 @@ defmodule SwarmCodeCLI.Demo.CellsTest do
     assert files == Enum.sort(files)
     assert length(files) == Cells.file_count()
     # pass71 V6: six rich conversation previews and three light ones.
-    assert length(files) == 23 + 8 * 4 + 2 + 6 + 3
+    # pass72: 10 panel scenes x 4 sizes x 2 tiers, and compact + hint for two.
+    assert length(files) == 23 + 8 * 4 + 2 + 6 + 3 + 10 * 4 * 2 + 8
     assert "index.html" in files
     assert Enum.sort(File.ls!(directory)) == files
 
@@ -39,13 +40,29 @@ defmodule SwarmCodeCLI.Demo.CellsTest do
     svg = assert_svg(Path.join(directory, "too-small-49x13-monochrome-ascii.svg"), 49, 13)
     refute svg =~ "data-action="
 
-    # The agents tab at both tiers: the rich one carries the eighth blocks and
-    # half-row edges, the measured one only the stripes and quadrants.
+    # pass72: the side panel at both tiers: the rich one draws the D2 tree and
+    # in-chat bar, the measured one their one-cell twins under both policies.
     rich = assert_svg(Path.join(directory, "swarm-170x42-truecolor-rich.svg"), 170, 42)
     measured = assert_svg(Path.join(directory, "swarm-170x42-truecolor.svg"), 170, 42)
-    assert rich =~ "█" and rich =~ "▄"
-    refute measured =~ "█" or measured =~ "▄"
-    assert measured =~ "▐" and measured =~ "▗"
+    assert rich =~ ">├<" and rich =~ ">▌<"
+    refute measured =~ ">├<" or measured =~ ">▌<"
+    assert measured =~ ">⊢<" and measured =~ ">▐<"
+
+    # pass72: every panel scene at the four golden sizes, and compact and hint.
+    for scene <- SwarmCodeCLI.Demo.Panel.scenes(),
+        {columns, rows} <- [{160, 45}, {120, 36}, {90, 30}, {80, 24}] do
+      name = String.replace(Atom.to_string(scene), "_", "-")
+
+      assert_svg(
+        Path.join(directory, "#{name}-full-#{columns}x#{rows}-truecolor-rich.svg"),
+        columns,
+        rows
+      )
+
+      assert "#{name}-full-#{columns}x#{rows}-monochrome-ascii.svg" in files
+    end
+
+    assert "panel-heavy-compact-hint-160x45-truecolor-rich.svg" in files
 
     for name <-
           ~w(consensus-170x42-truecolor-rich.svg approval-170x42-truecolor-rich.svg swarm-150x30-truecolor-rich.svg) do
