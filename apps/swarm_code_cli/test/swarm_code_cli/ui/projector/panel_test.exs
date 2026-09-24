@@ -260,6 +260,9 @@ defmodule SwarmCodeCLI.UI.Projector.PanelTest do
 
     refute text =~ "is merging"
     assert text =~ "stopped before the merge"
+    # pass72 G20 (QA Q23): the state word is not said twice.
+    assert text =~ "before it finished"
+    refute text =~ ~r/stopped\s+stopped/
     refute text =~ "weighing flush vs retry order"
     assert text =~ "3 of 4"
   end
