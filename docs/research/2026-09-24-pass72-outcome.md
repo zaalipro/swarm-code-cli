@@ -180,7 +180,7 @@ documentation and tests.
 
 ## Precommit
 
-I ran `mise exec -- mix precommit` twice on this branch, with `_build/prod` removed.
+I ran `mise exec -- mix precommit` three times on this branch, with `_build/prod` removed.
 
 - The format check, `compile --warnings-as-errors` and `deps.unlock --check-unused` passed.
 - Tests, second run (on F21):
@@ -197,4 +197,5 @@ passes alone three times out of three.
 The first run failed the same test plus `ThreeRunScenarioTest`, which asserts on a scroll snapshot
 under load. It also passes alone three times out of three.
 
-Because of the flaky test, the precommit gate did not pass cleanly in either run.
+A third run on F23 (3abcd0e) passed cleanly: core 147/0, daemon 982/0, cli 1630 + 7 properties/0,
+provenance and snapshot checks green, exit 0.
