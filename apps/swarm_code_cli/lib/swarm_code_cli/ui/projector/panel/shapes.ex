@@ -166,9 +166,9 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Shapes do
   # ------------------------------------------------------------ before
 
   @doc "Rows above the agents: a workflow's pipeline, a goal's iterations, research's funnel."
-  def before_agents(ctx, run, _views, _extras?) do
+  def before_agents(ctx, run, views, _extras?) do
     case Model.kind(run) do
-      :workflow -> pipeline(ctx, run)
+      :workflow -> pipeline(ctx, run) ++ live_phase(ctx, run, views)
       :goal -> iterations(ctx, run)
       :research -> funnel(ctx, run)
       :consensus_judge -> positions(ctx, run)
@@ -225,6 +225,19 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Shapes do
         Panel.row(ctx, [{"  ", :plain} | rail]),
         Panel.blank(ctx)
       ]
+    end
+  end
+
+  # `implement            3 steps in parallel` over the live phase's agents.
+  defp live_phase(ctx, run, views) do
+    case Enum.find(phases(run), &(phase_state(&1.state) in [:working, :needs_you])) do
+      nil ->
+        []
+
+      phase ->
+        n = length(views)
+        words = if n > 1, do: "#{n} steps in parallel", else: Panel.count(n, "step", "steps")
+        [Panel.row(ctx, [{phase.name, :text_muted}], [{words, :text_faint}])]
     end
   end
 
@@ -405,7 +418,39 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Shapes do
   end
 
   defp chat_foot(ctx, run) do
-    produced(ctx, run, "produced") ++ context(ctx)
+    said(ctx, run) ++ produced(ctx, run, "produced") ++ context(ctx)
+  end
+
+  # `it said`: the newest words of the turn, quoted, and when (D4 chat).
+  defp said(ctx, run) do
+    item =
+      ctx.state.read_model.transcript
+      |> Map.values()
+      |> Enum.filter(&(&1.run_id == run.id and &1.kind == :text and &1.role == :assistant))
+      |> Enum.max_by(&{&1.created_sequence, &1.id}, fn -> nil end)
+
+    case item && Model.present(item.text) do
+      nil ->
+        []
+
+      text ->
+        when_said =
+          case {item.at, run.started_at} do
+            {at, s} when is_integer(at) and is_integer(s) and at >= s ->
+              [
+                Panel.row(ctx, [
+                  {"  said at " <> Model.short_clock(at - s) <> ", shown in the chat above",
+                   :text_faint}
+                ])
+              ]
+
+            _ ->
+              []
+          end
+
+        [Panel.blank(ctx), Panel.row(ctx, [{"it said", :text_muted}])] ++
+          quoted(ctx, text |> String.replace(~r/\s+/, " ")) ++ when_said
+    end
   end
 
   @doc false
@@ -442,7 +487,7 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Shapes do
 
             Panel.row(
               ctx,
-              [{"  " <> Draw.elide(path, room, state, :middle), :text_primary}],
+              [{"  " <> tail_path(path, room, state), :text_primary}],
               right
             )
           end)
@@ -454,6 +499,17 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Shapes do
           ])
         ] ++ rows
     end
+  end
+
+  # The end of a path that fits: leading directories go first (`…/fake_clock.ex`).
+  defp tail_path(path, room, state) do
+    parts = Path.split(path)
+
+    Enum.find_value(0..(length(parts) - 1), fn drop ->
+      candidate = parts |> Enum.drop(drop) |> Path.join()
+      candidate = if drop > 0, do: "…/" <> candidate, else: candidate
+      if Draw.cells(candidate, state) <= room, do: candidate
+    end) || Draw.elide(path, room, state, :middle)
   end
 
   defp sum(changes, key), do: changes |> Enum.map(&(Map.get(&1, key) || 0)) |> Enum.sum()

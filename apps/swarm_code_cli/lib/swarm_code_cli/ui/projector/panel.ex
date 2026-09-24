@@ -33,13 +33,25 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
   @compact_lane 8
   @short_field 8
 
+  # The compact name column: the widest short name and one cell, 5..8 (P6).
+  defp short_field(ctx) do
+    widest =
+      ctx.views
+      |> Map.values()
+      |> List.flatten()
+      |> Enum.map(&Draw.cells(&1.short, ctx.state))
+      |> Enum.max(fn -> 4 end)
+
+    min(@short_field, max(5, widest + 1))
+  end
+
   @type target ::
           {:run, binary()} | {:agent, binary(), binary(), boolean()} | nil
   @type row :: {SwarmCodeCLI.UI.Scene.Block.RichText.t(), target(), keyword()}
 
   @doc "The panel's blocks for a `rect` (the inspector region)."
   def project(state, rect, _class) do
-    state |> plan(rect.width, rect.height) |> Enum.map(&elem(&1, 0))
+    state |> plan(rect.width, rect.height) |> Enum.map(&elem(&1, 0)) |> Enum.reject(&is_nil/1)
   end
 
   @doc "The panel mode the state asks for (owner O's `panel_mode`), `:full` by default."
@@ -100,12 +112,12 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
   # Candidates from the richest to the most folded; the first that fits wins,
   # and the last one is cut to the height with a count of what is left out.
   defp layout(ctx, height) do
-    footer = footer_rows(ctx)
-    all = candidates(ctx) |> Enum.map(fn body -> body ++ legend(ctx, body) end)
+    all = candidates(ctx)
 
     Enum.find_value(all, fn rows ->
+      footer = legend(ctx, rows) ++ footer_rows(ctx)
       if length(drawn(rows)) + length(footer) <= height, do: fill(rows, footer, height, ctx)
-    end) || cut(List.last(all), footer, height, ctx)
+    end) || cut(List.last(all), footer_rows(ctx), height, ctx)
   end
 
   defp fill(rows, footer, height, ctx) do
@@ -522,13 +534,18 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
 
   # The name column: the widest sibling, never cut while there is room (R14),
   # cut in the middle only past what the row can hold.
+  # The state words line up in one column (col 22 of a 46-cell pane, D3).
+  @word_column 21
+
   defp name_width(ctx, views, tree?) do
     state = ctx.state
-    widest = views |> Enum.map(&Draw.cells(&1.display, state)) |> Enum.max(fn -> 4 end)
+    subs = if tree?, do: Enum.reject(views, &(&1.role == :lead)), else: views
+    widest = subs |> Enum.map(&Draw.cells(&1.display, state)) |> Enum.max(fn -> 4 end)
     prefix = if tree?, do: 4, else: 2
     meta = views |> Enum.map(&Draw.cells(meta(&1) || "", state)) |> Enum.max(fn -> 0 end)
     cap = ctx.width - 2 - prefix - 1 - 9 - 1 - meta
-    widest |> max(4) |> min(max(4, cap))
+    column = @word_column - prefix - 1
+    widest |> max(column) |> min(max(4, cap))
   end
 
   defp meta(view) do
@@ -776,7 +793,7 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
         [
           {g(ctx, view.state), Model.glyph_role(view.state), glyph_mods},
           {" ", :plain},
-          {Draw.pad_to(view.short, @short_field, state), dim.(view.name_role)},
+          {Draw.pad_to(view.short, short_field(ctx), state), dim.(view.name_role)},
           {" ", :plain}
         ] ++ body,
       []
@@ -917,7 +934,6 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
 
     if drawn? and not ctx.hint? do
       [
-        blank(ctx),
         row(ctx, [
           {"last 60 s  ", :text_faint},
           {g(ctx, :lane_think), :text_muted},

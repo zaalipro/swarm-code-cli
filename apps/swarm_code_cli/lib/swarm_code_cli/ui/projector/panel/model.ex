@@ -153,6 +153,24 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Model do
 
   defp lead?(%{role: role}), do: role in [:lead, :assistant]
 
+  # A chat turn's one assistant stands for the run: the run summary carries
+  # its sentence and lane.
+  @run_facts [:lane, :now, :finding, :finding_refs, :files_changed, :activity]
+
+  defp view(
+         %{role: :assistant, id: id} = agent,
+         %{id: id} = run,
+         lanes,
+         pending,
+         affixes,
+         index,
+         state
+       )
+       when not is_map_key(agent, :lane) do
+    facts = run |> Map.take(@run_facts) |> Enum.reject(fn {_k, v} -> is_nil(v) end) |> Map.new()
+    view(Map.merge(agent, facts), run, lanes, pending, affixes, index, state)
+  end
+
   defp view(agent, run, lanes, pending, affixes, index, state) do
     asks = Enum.filter(pending, &asks_for?(&1, agent, lanes))
     p3 = p3_state(agent, lanes, asks)
@@ -378,11 +396,15 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Model do
     |> then(&(&1 && first_line(&1)))
   end
 
+  # A step that only names a state is not a sentence ("queued queued").
+  @bare_words ~w(queued running done failed waiting thinking working streaming paused stopped planning)
+
   @doc "Whether `text` may be shown as an agent's sentence (no isolation or branch text)."
   def sentence?(nil), do: false
 
   def sentence?(text) do
-    not String.starts_with?(text, "isolated in ") and
+    String.downcase(text) not in @bare_words and
+      not String.starts_with?(text, "isolated in ") and
       not Regex.match?(~r/\bswarm\/[0-9a-f]{6,}/, text)
   end
 
@@ -565,9 +587,11 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Model do
 
   @doc "A short name of at most 8 cells for the compact row (P6, R14)."
   def short(name) do
+    first = name |> String.split(["-", " ", "_"], trim: true) |> List.first() || name
+
     cond do
       String.length(name) <= 8 -> name
-      String.length(hd(String.split(name, "-"))) <= 8 -> hd(String.split(name, "-"))
+      String.length(first) <= 8 -> first
       true -> String.slice(name, 0, 7) <> "…"
     end
   end

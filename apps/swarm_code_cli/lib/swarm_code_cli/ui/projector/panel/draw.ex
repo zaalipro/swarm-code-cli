@@ -120,17 +120,36 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Draw do
 
   @doc "Word-wraps `text` to `n` cells, at most `rows` rows; the last row is elided."
   def wrap(text, n, rows, state) do
-    policy = state.capabilities.ambiguous_width
+    n = max(1, n)
     safe = text |> Density.safe(state, 10_000) |> SafeText.value()
-    lines = Width.wrap(safe, max(1, n), policy)
+    lines = words(safe, n, state)
 
     if length(lines) <= rows do
       lines
     else
       {kept, [last | rest]} = Enum.split(lines, rows - 1)
-      tail = Enum.join([last | rest], " ")
-      kept ++ [elide(tail, n, state)]
+      kept ++ [elide(Enum.join([last | rest], " "), n, state)]
     end
+  end
+
+  # Greedy word wrap by cells; a word wider than the row is cut by cells.
+  defp words(text, n, state) do
+    policy = state.capabilities.ambiguous_width
+
+    text
+    |> String.split(" ", trim: true)
+    |> Enum.flat_map(fn word ->
+      if cells(word, state) > n, do: Width.wrap(word, n, policy), else: [word]
+    end)
+    |> Enum.reduce([], fn
+      word, [] ->
+        [word]
+
+      word, [line | done] ->
+        joined = line <> " " <> word
+        if cells(joined, state) <= n, do: [joined | done], else: [word, line | done]
+    end)
+    |> Enum.reverse()
   end
 
   defp normalize(segments) do
