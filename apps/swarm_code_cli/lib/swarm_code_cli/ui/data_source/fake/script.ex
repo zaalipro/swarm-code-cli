@@ -647,7 +647,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
   end
 
   defp do_apply_deltas(script, deltas) do
-    deltas = creation_order(script, deltas)
+    deltas = script |> creation_order(deltas) |> with_needs_you(script)
     next = Enum.reduce(deltas, script, &apply_delta/2)
 
     activity_deltas =
@@ -670,6 +670,58 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
       end)
 
     {next, deltas ++ activity_deltas ++ [%Delta{kind: :counts_update, body: counts(next)}]}
+  end
+
+  # pass72 S (fake parity): a run summary carries what waits on the user,
+  # oldest first, as the daemon's does. A batch that changes a run's
+  # interactions without republishing the run gets that run appended.
+  defp with_needs_you(deltas, script) do
+    {deltas, pending} =
+      Enum.map_reduce(deltas, script.interactions, fn
+        %Delta{kind: :run_update, body: run} = delta, pending ->
+          {%{delta | body: %{run | needs_you: needs_you(run.id, pending, script.agents)}},
+           pending}
+
+        %Delta{kind: :interaction_upsert, body: interaction} = delta, pending ->
+          {delta, Map.put(pending, interaction.id, interaction)}
+
+        %Delta{kind: :interaction_remove, entity_id: id} = delta, pending ->
+          {delta, Map.delete(pending, id)}
+
+        delta, pending ->
+          {delta, pending}
+      end)
+
+    published = for %Delta{kind: :run_update, body: run} <- deltas, into: MapSet.new(), do: run.id
+
+    touched =
+      for %Delta{kind: kind, run_id: run_id} <- deltas,
+          kind in [:interaction_upsert, :interaction_remove],
+          not MapSet.member?(published, run_id),
+          uniq: true,
+          do: run_id
+
+    extra =
+      for run_id <- touched,
+          %DTO.RunSummary{} = run <- [Map.get(script.runs, run_id)],
+          fresh = needs_you(run_id, pending, script.agents),
+          fresh != run.needs_you,
+          do: fact(:run_update, %{run | needs_you: fresh})
+
+    deltas ++ extra
+  end
+
+  defp needs_you(run_id, pending, agents) do
+    pending
+    |> Map.values()
+    |> Enum.filter(&(&1.run_id == run_id and &1.state == :pending))
+    |> Enum.map(fn i ->
+      agent = Map.get(agents, i.node_id)
+      DTO.NeedsYou.from_interaction(i, agent && agent.id, (agent && agent.name) || "")
+    end)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.sort_by(&{&1.requested_at, &1.node_id})
+    |> Enum.take(20)
   end
 
   defp apply_delta(%Delta{kind: :node_upsert, body: item}, script),
@@ -1069,7 +1121,12 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
             agents_total: 5,
             agents_running: 3,
             changes: 3,
-            consensus: true
+            consensus: true,
+            reported: 0,
+            total: 4,
+            round: 1,
+            rounds: 2,
+            verdict: "Two of three proposals meet the bar; the docs change needs another pass."
           ]
 
         true ->
@@ -1099,7 +1156,13 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
         progress: 35,
         tokens_in: 6_120,
         tokens_out: 1_480,
-        cost_usd: 0.061
+        cost_usd: 0.061,
+        tokens: 7_600,
+        panel_state: :waiting,
+        now: "waiting on 3 agents",
+        lane: lane("▂··▂▅·······"),
+        lane_at: @clock_ms,
+        lane_now: :idle
       ),
       agent(:scout_1, base,
         name: "scout-1",
@@ -1111,7 +1174,13 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
         tokens_out: 640,
         cost_usd: 0.028,
         parent_id: id(:lead),
-        depth: 1
+        depth: 1,
+        tokens: 3_850,
+        panel_state: :working,
+        now: "searching \"Repo\\.\" in lib/",
+        lane: lane("▂▅▅▅▂▅▅▅▅▂▅▅"),
+        lane_at: @clock_ms,
+        lane_now: :tools
       ),
       agent(:scout_2, base,
         name: "scout-2",
@@ -1123,7 +1192,13 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
         tokens_out: 512,
         cost_usd: 0.024,
         parent_id: id(:lead),
-        depth: 1
+        depth: 1,
+        tokens: 3_492,
+        panel_state: :thinking,
+        now: "weighing whether the session tests cover a refresh",
+        lane: lane("▂▂▅▂▂▂▂▂▂▂▂▂"),
+        lane_at: @clock_ms,
+        lane_now: :think
       ),
       agent(:builder_4, base,
         name: "builder-4",
@@ -1138,7 +1213,14 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
         cost_usd: 0.058,
         parent_id: id(:lead),
         depth: 1,
-        changes_stat: "+42 −7"
+        changes_stat: "+42 −7",
+        tokens: 6_660,
+        panel_state: :working,
+        now: "editing lib/swarm_code/repo.ex",
+        lane: lane("▅▅▂███▅▂████"),
+        lane_at: @clock_ms,
+        lane_now: :write,
+        files_changed: 2
       ),
       agent(:judge, base,
         name: "judge",
@@ -1153,9 +1235,19 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
         cost_usd: 0.013,
         parent_id: id(:lead),
         depth: 1,
-        started_at: nil
+        started_at: nil,
+        tokens: 1_248,
+        panel_state: :queued,
+        now: "queued"
       )
     ]
+  end
+
+  # pass72 S: a lane written the way the panel draws it (▂ think, ▅ tools,
+  # █ write, ▒ waiting on you, · idle), oldest cell first.
+  defp lane(cells) do
+    kinds = %{"▂" => :think, "▅" => :tools, "█" => :write, "▒" => :wait_you, "·" => :idle}
+    cells |> String.graphemes() |> Enum.map(&Map.fetch!(kinds, &1))
   end
 
   defp agent(key, base, extra),
@@ -1317,7 +1409,16 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
         progress: 100,
         tokens_in: 3_640,
         tokens_out: 702,
-        finished_at: @clock_ms - 55_000
+        finished_at: @clock_ms - 55_000,
+        tokens: 4_342,
+        panel_state: :done,
+        now: "Refresh tokens are read in three places, all through Repo.",
+        finding: "Refresh tokens are read in three places, all through Repo.",
+        finding_refs: ["lib/swarm_code/repo.ex:41", "lib/swarm_code/session.ex:88"],
+        lane: [],
+        lane_at: nil,
+        lane_now: :idle,
+        elapsed_ms: 55_000
     }
 
     builder_4 = %{
@@ -1326,7 +1427,13 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
         step: "run mix test",
         progress: 65,
         tokens_in: 6_110,
-        tokens_out: 1_540
+        tokens_out: 1_540,
+        tokens: 7_650,
+        panel_state: :working,
+        now: "running mix test",
+        lane: lane("▂███▅▂████▅▅"),
+        lane_at: @clock_ms + 5_000,
+        lane_now: :tools
     }
 
     change_3 = %{script.changes[id(:change_3)] | revision: 2, restorable: true}

@@ -30,6 +30,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   # pass71 S2: slow reads run as jobs; this many at once, the rest are refused.
   @max_jobs 8
   @terminal [:completed, :failed, :cancelled, :interrupted]
+  alias SwarmCode.Daemon.Service.PanelFacts
+
   alias SwarmCode.Daemon.Service.{
     CommandDispatcher,
     CommandLedger,
@@ -2074,6 +2076,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         else: %{state | change_facts: facts}
 
     op_facts = op_diff_facts(checkpoints, facts)
+    panel = panel_inputs(state, rows)
 
     runs =
       Map.new(rows, fn row ->
@@ -2108,7 +2111,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
           finished_at: ms(row.finished_at),
           consensus: row.consensus == true,
           error: run_error(row, ns),
-          stop: stop_facts(row.status, Map.get(row, :error_kind))
+          stop: stop_facts(row.status, Map.get(row, :error_kind)),
+          panel: %{}
         }
 
         rs =
@@ -2160,6 +2164,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
             true -> run.status
           end
 
+        run = panel_run(run, row, ns, interactions, panel, state)
         {row.id, %{run | interactions: interactions, approval: approval, status: status}}
       end)
 
@@ -2649,6 +2654,83 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         )
       end)
 
+  # pass72 S: what the side panel reads beside the rows: the clock, the live
+  # runs' recent and open operations (lanes, sentences, whose op waits), the
+  # files each agent wrote, workflow phases and goal iterations.
+  defp panel_inputs(state, rows) do
+    conv = state.opts[:conversation_id]
+    ids = Enum.map(rows, & &1.id)
+
+    live =
+      for row <- rows, row.status not in ["done", "stopped", "failed", "interrupted"], do: row.id
+
+    ops = PersistedProjection.panel_ops(conv, live)
+    workflows = for row <- rows, row.kind == "workflow", do: row.id
+
+    %{
+      ops: Enum.group_by(ops, & &1.parent_id),
+      parents: Map.new(ops, &{&1.id, &1.parent_id}),
+      files: PersistedProjection.files_changed(conv, ids),
+      workflows: PersistedProjection.workflow_phases(workflows),
+      goals: PersistedProjection.goal_facts(rows)
+    }
+  end
+
+  # The agents' panel facts (merged into their wire bodies) and the run's.
+  defp panel_run(run, row, ns, interactions, panel, state) do
+    owner = fn i ->
+      get_in(i, ["approval", "agent_id"]) || panel.parents[i["node_id"]] || i["node_id"]
+    end
+
+    waiting = Enum.group_by(interactions, owner)
+    # Any agent's result may cite a sibling's worktree: strip them all.
+    roots = Enum.map(ns, & &1.workspace_path) ++ Map.get(state, :roots, [])
+
+    agents =
+      Enum.zip_with(ns, run.agents, fn n, body ->
+        Map.merge(
+          body,
+          PanelFacts.agent(n, Map.get(panel.ops, n.id, []),
+            interactions: Map.get(waiting, n.id, []),
+            files_changed: Map.get(panel.files, n.id, 0),
+            roots: roots
+          )
+        )
+      end)
+
+    subs = Enum.filter(ns, &(is_binary(&1.parent_id) and &1.id != row.root_node_id))
+    judges = Enum.filter(ns, &match?("Judge" <> _, &1.name || ""))
+    goal = panel.goals[row.id]
+
+    verdict =
+      judges
+      |> Enum.flat_map(&List.wrap(verdict_body(&1)))
+      |> Enum.max_by(& &1["round"], fn -> nil end)
+
+    facts = %{
+      "needs_you" =>
+        PanelFacts.needs_you(interactions, Map.new(agents, &{&1["id"], &1}), panel.parents, roots),
+      "reported" => Enum.count(subs, &(&1.status in ["done", "failed", "stopped"])),
+      "total" => length(subs),
+      "phases" => PanelFacts.phases(panel.workflows[row.id] || %{}, ns, row.status),
+      "phase" => panel.workflows[row.id] && clip(panel.workflows[row.id].phase, 120),
+      "goal_iteration" => goal && goal.iteration,
+      "goal_iterations" => goal && goal.iterations,
+      "goal_status" => goal && clip(goal.status, 32),
+      "round" => if(row.consensus == true, do: length(judges)),
+      "rounds" => if(row.consensus == true, do: positive(Map.get(row, :consensus_rounds))),
+      "verdict" => verdict && blank_nil(verdict["summary"])
+    }
+
+    %{run | agents: agents, panel: facts}
+  end
+
+  defp positive(n) when is_integer(n) and n > 0, do: n
+  defp positive(_), do: nil
+
+  defp blank_nil(""), do: nil
+  defp blank_nil(text), do: text
+
   defp summary(run, state),
     do:
       %{
@@ -2677,6 +2759,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         "error" => run.error
       }
       |> Map.merge(run.stop)
+      |> Map.merge(Map.get(run, :panel, %{}))
 
   defp member?(_, %{kind: :global, id: nil}), do: true
   defp member?(state, %{kind: :project, id: id}), do: id == state.opts[:project_id]

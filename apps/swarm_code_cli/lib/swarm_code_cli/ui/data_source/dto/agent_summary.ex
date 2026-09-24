@@ -21,7 +21,17 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.AgentSummary do
       stop_reason: nil,
       error_kind: nil,
       stop_label: nil,
-      retry_at: nil
+      retry_at: nil,
+      panel_state: "working",
+      now: "",
+      lane: [],
+      lane_at: nil,
+      lane_now: "idle",
+      finding: nil,
+      finding_refs: [],
+      files_changed: 0,
+      elapsed_ms: nil,
+      tokens: 0
     ],
     fields: [
       name: {:text, 200},
@@ -46,6 +56,29 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.AgentSummary do
       error_kind: {:optional, {:text, 64}},
       stop_label: {:optional, {:text, 64}},
       retry_at: {:optional, :count},
+      # pass72 S (plan P1-P4): the side panel's facts, derived by the daemon
+      # from what the domain records. `panel_state` is the one P3 state set
+      # (`state` keeps the runtime status); `now` one plain sentence with a
+      # verb (never an id, branch or worktree); `lane` the rolling 60-second
+      # activity window in 5-second cells, oldest first, ending at `lane_at`
+      # (unix ms, a cell boundary), with `lane_now` the kind still going on at
+      # `lane_at` (what a client rolls forward); `finding` the first sentence
+      # of the agent's result and `finding_refs` the `path:line` it cites;
+      # `files_changed` distinct files it wrote; `elapsed_ms` only once it
+      # finished (a live agent's is the client's clock minus `started_at`);
+      # `tokens` = in + out.
+      panel_state:
+        {:enum,
+         [:working, :thinking, :waiting, :needs_you, :done, :failed, :stopped, :queued, :paused]},
+      now: {:text, 80},
+      lane: {:list, {:enum, [:think, :tools, :write, :wait_you, :idle]}},
+      lane_at: {:optional, :count},
+      lane_now: {:enum, [:think, :tools, :write, :wait_you, :idle]},
+      finding: {:optional, {:text, 160}},
+      finding_refs: {:list, {:text, 200}},
+      files_changed: :count,
+      elapsed_ms: {:optional, :count},
+      tokens: :count,
       id: :id,
       run_id: :id,
       revision: :revision,
@@ -89,6 +122,16 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.AgentSummary do
       error_kind: nil,
       stop_label: nil,
       retry_at: nil,
+      panel_state: :working,
+      now: "",
+      lane: [],
+      lane_at: nil,
+      lane_now: :idle,
+      finding: nil,
+      finding_refs: [],
+      files_changed: 0,
+      elapsed_ms: nil,
+      tokens: 0,
       id: nil,
       run_id: nil,
       revision: 0,

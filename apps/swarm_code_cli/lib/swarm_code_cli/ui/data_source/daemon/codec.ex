@@ -94,7 +94,18 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
       :stop_reason,
       :error_kind,
       :stop_label,
-      :retry_at
+      :retry_at,
+      # pass72 S: the side panel's agent facts.
+      :panel_state,
+      :now,
+      :lane,
+      :lane_at,
+      :lane_now,
+      :finding,
+      :finding_refs,
+      :files_changed,
+      :elapsed_ms,
+      :tokens
     ],
     DTO.RunSummary => [
       :tokens_in,
@@ -113,7 +124,19 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
       :error_kind,
       :stop_label,
       :provider_name,
-      :retry_at
+      :retry_at,
+      # pass72 S: the side panel's run facts.
+      :needs_you,
+      :reported,
+      :total,
+      :phases,
+      :phase,
+      :goal_iteration,
+      :goal_iterations,
+      :goal_status,
+      :round,
+      :rounds,
+      :verdict
     ],
     DTO.ToolCall => [
       :title,
@@ -143,7 +166,9 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
       :diff_ref
     ],
     DTO.Verdict => [:round, :status, :checks, :summary],
-    DTO.VerdictCheck => [:ok, :note]
+    DTO.VerdictCheck => [:ok, :note],
+    DTO.NeedsYou => [:agent_id, :node_id, :agent_name, :reason, :requested_at],
+    DTO.Phase => [:agent_count, :live, :done]
   }
 
   def watch_request(watch, wire_id, nonce, timeout_ms) do
