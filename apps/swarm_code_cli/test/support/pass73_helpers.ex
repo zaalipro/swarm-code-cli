@@ -59,7 +59,7 @@ defmodule SwarmCodeCLI.UI.Pass73Helpers do
     )
   end
 
-  def watch_ready(state, runs \\ [], extra \\ %{}) do
+  def watch_ready(state, runs \\ [], extra \\ %{}, revision \\ 0) do
     watch = state.watches.workspace
 
     Reducer.update(
@@ -71,7 +71,7 @@ defmodule SwarmCodeCLI.UI.Pass73Helpers do
          request_id: nil,
          scope: watch.scope,
          generation: watch.generation,
-         revision: 0,
+         revision: revision,
          sequence: nil,
          body: snapshot(runs, extra)
        }}
@@ -79,7 +79,38 @@ defmodule SwarmCodeCLI.UI.Pass73Helpers do
   end
 
   def ready(runs \\ [], opts \\ []),
-    do: opts |> booting() |> watch_ready(runs, Keyword.get(opts, :snapshot, %{})) |> elem(0)
+    do:
+      opts
+      |> booting()
+      |> shell_ready()
+      |> watch_ready(runs, Keyword.get(opts, :snapshot, %{}))
+      |> elem(0)
+
+  # The shell watch carries the project and conversation requests.
+  def shell_ready(state) do
+    watch = state.watches.shell
+
+    {state, _} =
+      Reducer.update(
+        state,
+        {:data,
+         %Delivery{
+           kind: :watch_ready,
+           watch_ref: watch.watch_ref,
+           request_id: nil,
+           scope: watch.scope,
+           generation: watch.generation,
+           revision: 0,
+           sequence: nil,
+           body: %DTO.ShellSnapshot{
+             counts: %DTO.Counts{},
+             connection: %DTO.Connection{source_epoch: "e"}
+           }
+         }}
+      )
+
+    state
+  end
 
   def run_update(state, body) do
     watch = state.watches.workspace

@@ -1477,12 +1477,23 @@ defmodule SwarmCodeCLI.UI.Reducer do
        }),
        do: navigate_conversation(state, id)
 
-  defp settle_service(state, %{kind: {:project_update, _, _}}, %Outcome{
+  # pass73 T7: the policy change the workspace already showed keeps its words
+  # ("Approvals: auto → full access") when the service's own answer comes
+  # after it; a /trust says both.
+  defp settle_service(state, %{kind: {:project_update, _mode, trust}}, %Outcome{
          status: :accepted,
          feedback: %{text: text}
        })
-       when is_binary(text),
-       do: {%{state | notice: {:command_feedback, text}}, []}
+       when is_binary(text) do
+    words =
+      case {recent_policy_words(state), trust} do
+        {nil, _} -> text
+        {policy, true} -> "Project trusted · " <> policy
+        {policy, _} -> policy
+      end
+
+    {%{state | notice: {:command_feedback, words}}, []}
+  end
 
   defp settle_service(state, %{kind: kind}, %Outcome{status: status})
        when status != :accepted do
@@ -2559,26 +2570,45 @@ defmodule SwarmCodeCLI.UI.Reducer do
   defp approval_mode(_value), do: nil
 
   # pass73 T7: however the project's approval mode changes (this session's
-  # /approval or picker, the desktop, another client), the change is said in
-  # the transcript ("Approvals: auto → full access", `policy_notices`) and as
-  # a toast, once, when the workspace shows the new mode.
-  defp note_policy_change(before, next) do
-    with %{conversation_id: conversation, approval_mode: from} when not is_nil(from) <-
-           Map.get(before.read_model.snapshots, :workspace),
-         %{conversation_id: ^conversation, approval_mode: to} when not is_nil(to) and to != from <-
-           Map.get(next.read_model.snapshots, :workspace) do
-      notice = %{conversation_id: conversation, from: from, to: to, at: next.now}
-      words = "Approvals: " <> mode_words(from) <> " → " <> mode_words(to)
+  # /approval or picker, /trust, the desktop, another client), the change is
+  # said in the transcript ("Approvals: auto → full access", `policy_notices`)
+  # and as a toast, once. The mode last seen is kept apart from the snapshot,
+  # so a change that arrives with a resync (the snapshot replaced, not
+  # patched) is noticed too; the first mode a session sees is no change.
+  defp note_policy_change(_before, next) do
+    case Map.get(next.read_model.snapshots, :workspace) do
+      %{conversation_id: conversation, approval_mode: to} when not is_nil(to) ->
+        case next.approval_seen do
+          ^to ->
+            next
 
-      %{
+          nil ->
+            %{next | approval_seen: to}
+
+          from ->
+            notice = %{conversation_id: conversation, from: from, to: to, at: next.now}
+            words = "Approvals: " <> mode_words(from) <> " → " <> mode_words(to)
+
+            %{
+              next
+              | approval_seen: to,
+                policy_notices: Enum.take([notice | next.policy_notices], 20),
+                notice: {:command_feedback, words}
+            }
+        end
+
+      _ ->
         next
-        | policy_notices: Enum.take([notice | next.policy_notices], 20),
-          notice: {:command_feedback, words}
-      }
-    else
-      _ -> next
     end
   end
+
+  @policy_recent_ms 5_000
+
+  defp recent_policy_words(%{policy_notices: [%{at: at, from: from, to: to} | _], now: now})
+       when is_integer(at) and is_integer(now) and now - at <= @policy_recent_ms,
+       do: "Approvals: " <> mode_words(from) <> " → " <> mode_words(to)
+
+  defp recent_policy_words(_state), do: nil
 
   defp mode_words(:read_only), do: "read-only"
   defp mode_words(:auto), do: "auto"

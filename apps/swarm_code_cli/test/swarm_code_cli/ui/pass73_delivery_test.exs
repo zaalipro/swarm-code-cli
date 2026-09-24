@@ -207,6 +207,31 @@ defmodule SwarmCodeCLI.UI.Pass73DeliveryTest do
       assert state.notice == {:command_feedback, "Approvals: full access → read-only"}
     end
 
+    test "a change that arrives with a fresh snapshot is noticed too" do
+      state = ready([], snapshot: %{approval_mode: :read_only})
+      {state, _} = watch_ready(state, [], %{approval_mode: :auto}, 9)
+      assert [%{from: :read_only, to: :auto}] = state.policy_notices
+      assert state.notice == {:command_feedback, "Approvals: read-only → auto"}
+    end
+
+    test "the service's answer after the change keeps the change's words" do
+      state = ready([], snapshot: %{approval_mode: :auto})
+      {state, effects} = state |> paste("/approval full") |> send()
+      [request] = requests(effects)
+      {state, _} = metadata(state, :full_access, 5)
+
+      {state, _} =
+        outcome(state, request, :accepted, [],
+          feedback: %DTO.Feedback{
+            kind: :notice,
+            title: "Project",
+            text: "Approval mode: full access"
+          }
+        )
+
+      assert state.notice == {:command_feedback, "Approvals: auto → full access"}
+    end
+
     test "the first snapshot is not a change" do
       state = ready([], snapshot: %{approval_mode: :read_only})
       assert state.policy_notices == []

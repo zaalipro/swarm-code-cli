@@ -232,12 +232,12 @@ defmodule SwarmCodeCLI.UI.ConversationsTest do
     rows = Switcher.visible(state)
 
     assert Enum.map(rows, &{&1.title, &1.current?}) == [
-             {"Approvals: auto", true},
-             {"Approvals: full access", false},
-             {"Approvals: read-only", false}
+             {"read-only", false},
+             {"auto", true},
+             {"full access", false}
            ]
 
-    full = Enum.find(rows, &(&1.title == "Approvals: full access"))
+    full = Enum.find(rows, &(&1.title == "full access"))
     {state, effects} = Reducer.update(state, elem(full.target, 1))
     assert [%{kind: {:project_update, :full_access, nil}}] = for({:command, r} <- effects, do: r)
     assert state.layers == []

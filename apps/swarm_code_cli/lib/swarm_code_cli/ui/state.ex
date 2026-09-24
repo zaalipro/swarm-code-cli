@@ -91,6 +91,9 @@ defmodule SwarmCodeCLI.UI.State do
     # most 20): %{conversation_id, from, to, at}; the transcript prints
     # "Approvals: auto → full access" at `at`.
     policy_notices: [],
+    # The approval mode the workspace last showed (nil before the first), so
+    # a change is noticed across a resync that replaced the snapshot.
+    approval_seen: nil,
     library: nil,
     feature_form: nil,
     banner: nil,

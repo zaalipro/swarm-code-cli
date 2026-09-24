@@ -414,14 +414,20 @@ defmodule SwarmCodeCLI.UI.Switcher do
         _ -> nil
       end
 
-    for {mode, words, detail} <- @approval_modes do
-      title = "Approvals: " <> words
-
+    # The label carries the query's word; the row draws the mode as its
+    # title (so the query's highlight does not dim it), least to most
+    # permissive.
+    for {{mode, words, detail}, order} <- Enum.with_index(@approval_modes, 1) do
       %{
-        entry(title <> " · " <> detail, :action, {:local, {:approval_mode, mode}})
-        | title: title,
+        entry(
+          "Approvals: " <> words <> " · " <> detail,
+          :action,
+          {:local, {:approval_mode, mode}}
+        )
+        | title: words,
           detail: detail,
-          current?: mode == current
+          current?: mode == current,
+          order: order
       }
     end
   end
