@@ -20,7 +20,9 @@ defmodule SwarmCodeCLI.UI.Effect do
           | {:copy, binary()}
           | {:edit_externally, DraftKey.t(), binary()}
           | {:detach, non_neg_integer()}
-          | {:save_preferences, %{panel_mode: :full | :compact | :hidden}}
+          | {:save_preferences, map()}
+          | {:terminal_preferences,
+             %{optional(:theme) => :dark | :light, optional(:mouse?) => boolean()}}
 
   # What select mode's `y` may put on the clipboard in one OSC 52 write.
   @max_copy_bytes 262_144
@@ -92,9 +94,24 @@ defmodule SwarmCodeCLI.UI.Effect do
     do: valid_effect(effect, is_integer(exit_status) and exit_status >= 0)
 
   # pass72-O: the session writes the CLI preferences file (the side panel's
-  # mode) in work it owns; the reducer only says what changed.
-  def validate({:save_preferences, %{panel_mode: mode} = preferences} = effect),
-    do: valid_effect(effect, map_size(preferences) == 1 and mode in [:full, :compact, :hidden])
+  # mode) in work it owns; the reducer only says what changed. pass73-K: any
+  # subset of the file's preferences (`Init.Preferences.valid?/1`).
+  def validate({:save_preferences, preferences} = effect),
+    do: valid_effect(effect, SwarmCodeCLI.UI.Init.Preferences.valid?(preferences))
+
+  # pass73-K (T2, T9): the terminal's owner repaints in the other theme, or
+  # turns wheel reports on or off, without a restart.
+  def validate({:terminal_preferences, preferences} = effect) when is_map(preferences),
+    do:
+      valid_effect(
+        effect,
+        map_size(preferences) > 0 and
+          Enum.all?(preferences, fn
+            {:theme, mode} -> mode in [:dark, :light]
+            {:mouse?, on?} -> is_boolean(on?)
+            _ -> false
+          end)
+      )
 
   def validate(_effect), do: {:error, :invalid_effect}
 

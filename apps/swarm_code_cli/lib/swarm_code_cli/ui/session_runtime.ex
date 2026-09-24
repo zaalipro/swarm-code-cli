@@ -710,8 +710,22 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
   defp local_effect(%{prefs: %{task: nil} = prefs} = state, {:save_preferences, wanted}),
     do: %{state | prefs: %{prefs | task: write_task(prefs.path, wanted), changed?: true}}
 
+  # pass73-K: a change waiting behind the write in flight joins the others
+  # that wait (the panel, then the theme: both land).
   defp local_effect(%{prefs: prefs} = state, {:save_preferences, wanted}),
-    do: %{state | prefs: %{prefs | pending: wanted, changed?: true}}
+    do: %{
+      state
+      | prefs: %{prefs | pending: Map.merge(prefs.pending || %{}, wanted), changed?: true}
+    }
+
+  # pass73-K (T2, T9): the terminal's owner repaints in the other theme or
+  # turns wheel reports on or off; an owner that does not know the message
+  # ignores it.
+  defp local_effect(%{terminal: terminal} = state, {:terminal_preferences, preferences})
+       when is_pid(terminal) do
+    send(terminal, {:terminal_preferences, preferences})
+    state
+  end
 
   # Announcements already live in the safe Scene; no text is sent to terminal state.
   defp local_effect(state, _), do: state
@@ -743,8 +757,10 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
 
     state =
       case result do
-        {:read, %{panel_mode: mode}} when not prefs.changed? ->
-          update(state, {:panel_preferences_loaded, mode})
+        {:read, %{panel_mode: mode} = read} when not prefs.changed? ->
+          state = update(state, {:panel_preferences_loaded, mode})
+          loaded = Map.take(read, [:show_diffs, :theme, :mouse?])
+          if loaded == %{}, do: state, else: update(state, {:preferences_loaded, loaded})
 
         _ ->
           state

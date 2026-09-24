@@ -42,6 +42,7 @@ the command palette).
 |---|---|
 | `Enter` | Send the draft (in every vim mode); while loading, it sends once ready |
 | `Alt-Enter` | Queue the draft instead of sending it |
+| `Ctrl-S` | Send a message that names a workflow as a plain message, not as /create-workflow |
 | `Ctrl-N` | Open the next approval or question waiting on you |
 
 ### Layers
@@ -156,6 +157,7 @@ the command palette).
 |---|---|
 | `Enter` | Send the draft (in every vim mode); while loading, it sends once ready |
 | `Alt-Enter` | Queue the draft instead of sending it |
+| `Ctrl-S` | Send a message that names a workflow as a plain message, not as /create-workflow |
 | `Ctrl-N` | Open the next approval or question waiting on you |
 
 ### Layers
@@ -238,6 +240,7 @@ the command palette).
 |---|---|
 | `Enter` | Send the draft (in every vim mode); while loading, it sends once ready |
 | `Alt-Enter` | Queue the draft instead of sending it |
+| `Ctrl-S` | Send a message that names a workflow as a plain message, not as /create-workflow |
 | `Ctrl-N` | Open the next approval or question waiting on you |
 
 ### Layers
