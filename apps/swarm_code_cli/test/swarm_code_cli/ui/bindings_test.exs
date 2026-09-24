@@ -141,6 +141,7 @@ defmodule SwarmCodeCLI.UI.BindingsTest do
                    {:close_or_quit, :picker},
                    {:composer_newline, :composer},
                    {:composer_newline, :field},
+                   {:composer_newline, :overlay},
                    {:question_option, :dialog},
                    {:vim_delete_char, :composer_normal},
                    {:vim_delete_char_back, :composer_normal}
@@ -270,6 +271,8 @@ defmodule SwarmCodeCLI.UI.BindingsTest do
 
   # The resolver agrees with the table when it returns the declared action, or —
   # for a binding that declined — when it fell through to typing.
+  # pass72: hint mode takes every key; one no binding there uses ends it.
+  defp agrees?(:ignore, {:ok, {:hint, :cancel}}), do: true
   defp agrees?(:ignore, resolved), do: resolved == :ignore or typing?(resolved)
   defp agrees?(declared, resolved), do: declared == resolved
 
@@ -397,7 +400,29 @@ defmodule SwarmCodeCLI.UI.BindingsTest do
       :picker -> %{state | focus: "query"}
       :dialog -> %{state | focus: "dialog"}
       :field -> field(state)
+      :hint -> %{state | focus: "composer", hint: SwarmCodeCLI.UI.Reducer.Hint.open(state)}
+      :overlay -> overlay(state)
     end
+  end
+
+  # pass72: the agent overlay on the fixture swarm's lead, with the fixture's
+  # approval waiting on it, focused on its activity.
+  defp overlay(state) do
+    %{
+      state
+      | focus: "composer",
+        overlay: %{
+          run_id: "fixture-run",
+          node_id: "node-a",
+          draft_key: {"fixture-conversation", {:agent, "node-a"}},
+          focus: :activity,
+          raw_ops?: false,
+          page: 0,
+          cursor: 0,
+          expanded: MapSet.new(),
+          restore: %{scroll: nil, focus: "composer", draft: :none}
+        }
+    }
   end
 
   # The research form's question box is the simplest real field editor: one

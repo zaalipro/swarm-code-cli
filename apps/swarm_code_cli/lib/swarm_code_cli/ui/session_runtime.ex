@@ -35,6 +35,7 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
   }
 
   alias SwarmCodeCLI.Companion
+  alias SwarmCodeCLI.UI.Init.Preferences
   alias SwarmCodeCLI.UI.DataSource
   alias SwarmCodeCLI.UI.DataSource.DataBridge
 
@@ -146,7 +147,11 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
        copy: nil,
        # Ctrl-X: nil, or %{key, dir, file, task, timer} while the editor owns the terminal.
        edit: nil,
-       editor: Keyword.get(opts, :editor, &__MODULE__.run_editor/1)
+       editor: Keyword.get(opts, :editor, &__MODULE__.run_editor/1),
+       # pass72-O: the CLI preferences file (`:preferences_path`; nil keeps
+       # the panel's mode in memory only). It is read and written by tasks
+       # this process owns, one at a time, the newest change waiting its turn.
+       prefs: start_preferences(Keyword.get_lazy(opts, :preferences_path, &default_preferences/0))
      }}
   end
 
@@ -279,6 +284,14 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
 
   def handle_info({:copy_timeout, token}, %{copy: {token, _, _}} = state),
     do: {:noreply, copy_notice(state, :timeout)}
+
+  def handle_info({ref, result}, %{prefs: %{task: %Task{ref: ref}}} = state) do
+    Process.demonitor(ref, [:flush])
+    {:noreply, preferences_done(state, result)}
+  end
+
+  def handle_info({:DOWN, ref, :process, _, _}, %{prefs: %{task: %Task{ref: ref}}} = state),
+    do: {:noreply, preferences_done(state, {:error, :crashed})}
 
   def handle_info({ref, result}, %{edit: %{task: %Task{ref: ref}}} = state) do
     Process.demonitor(ref, [:flush])
@@ -678,8 +691,59 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
   defp local_effect(state, {:edit_externally, key, _text}),
     do: update(state, {:external_edit_done, key, {:error, :busy}})
 
+  defp local_effect(%{prefs: %{path: nil}} = state, {:save_preferences, _}), do: state
+
+  defp local_effect(%{prefs: %{task: nil} = prefs} = state, {:save_preferences, wanted}),
+    do: %{state | prefs: %{prefs | task: write_task(prefs.path, wanted), changed?: true}}
+
+  defp local_effect(%{prefs: prefs} = state, {:save_preferences, wanted}),
+    do: %{state | prefs: %{prefs | pending: wanted, changed?: true}}
+
   # Announcements already live in the safe Scene; no text is sent to terminal state.
   defp local_effect(state, _), do: state
+
+  # ------------------------------------------- pass72-O: the preferences file
+
+  # Only the packaged TUI keeps preferences unless the launcher names a
+  # path: tests and the fake demos never touch the user's config directory.
+  defp default_preferences do
+    if System.get_env("SWARM_RELEASE_TUI") == "1",
+      do: SwarmCodeCLI.Release.preferences_path(),
+      else: nil
+  end
+
+  defp start_preferences(path) when is_binary(path) do
+    task = Task.async(fn -> {:read, Preferences.read(path)} end)
+    %{path: path, task: task, pending: nil, changed?: false}
+  end
+
+  defp start_preferences(_path), do: %{path: nil, task: nil, pending: nil, changed?: false}
+
+  defp write_task(path, wanted),
+    do: Task.async(fn -> {:written, Preferences.write(path, wanted)} end)
+
+  # A read answers once, at start, and is ignored when the user has already
+  # chosen; a write makes room for the change that waited behind it.
+  defp preferences_done(%{prefs: prefs} = state, result) do
+    state = %{state | prefs: %{prefs | task: nil}}
+
+    state =
+      case result do
+        {:read, %{panel_mode: mode}} when not prefs.changed? ->
+          update(state, {:panel_preferences_loaded, mode})
+
+        _ ->
+          state
+      end
+
+    case state.prefs do
+      %{pending: nil} ->
+        state
+
+      %{pending: wanted} = current ->
+        %{state | prefs: %{current | pending: nil, task: write_task(current.path, wanted)}}
+    end
+  end
 
   defp copy_notice(state, result) do
     text =
@@ -986,6 +1050,7 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
   @impl true
   def terminate(_, state) do
     if state.edit && state.edit.task, do: Task.shutdown(state.edit.task, :brutal_kill)
+    if state.prefs.task, do: Task.shutdown(state.prefs.task, 1_000)
     remove_edit(state.edit)
     cancel(state.close_timer)
     cancel(state.binding_timer)

@@ -78,7 +78,15 @@ defmodule SwarmCodeCLI.UI.Action do
           | {:history, :previous | :next}
           | :copy_selection
           | {:slash_local,
-             :help | :quit | :new | :resume | :conversations | :queue | :approval | :trust}
+             :help
+             | :quit
+             | :new
+             | :resume
+             | :conversations
+             | :queue
+             | :approval
+             | :trust
+             | :panel}
           | {:open_conversation, binary()}
           | :new_conversation
           | {:complete_path, binary()}
@@ -86,6 +94,18 @@ defmodule SwarmCodeCLI.UI.Action do
           | {:external_editor, DraftKey.t()}
           | {:external_edit_done, DraftKey.t(), {:ok, binary()} | {:error, external_edit_error()}}
           | {:toggle_dock, :inspector}
+          | {:panel_mode, :full | :compact | :hidden | :cycle}
+          | {:panel_preferences_loaded, :full | :compact | :hidden}
+          | {:hint, :open | :again | :cancel | :backspace | {:key, binary()}}
+          | {:overlay_open, binary(), binary()}
+          | {:overlay,
+             :close
+             | :raw_ops
+             | :activate
+             | {:step, :next | :previous}
+             | {:focus, :next | :previous}
+             | {:move, :up | :down | :page_up | :page_down | :first | :last}
+             | {:answer, binary()}}
           | {:set_tab, :agents | :timeline | :changes}
           | {:select_agent, binary()}
           | {:set_keymap, :default | :vim}
@@ -188,7 +208,17 @@ defmodule SwarmCodeCLI.UI.Action do
     do:
       valid_action(
         action,
-        command in [:help, :quit, :new, :resume, :conversations, :queue, :approval, :trust]
+        command in [
+          :help,
+          :quit,
+          :new,
+          :resume,
+          :conversations,
+          :queue,
+          :approval,
+          :trust,
+          :panel
+        ]
       )
 
   def validate({:open_conversation, id} = action), do: valid_action(action, Intent.valid_id?(id))
@@ -222,6 +252,48 @@ defmodule SwarmCodeCLI.UI.Action do
 
   def validate({:toggle_dock, dock} = action),
     do: valid_action(action, dock == :inspector)
+
+  # pass72-O: the side panel's mode (Ctrl-B cycles it, /panel sets it) and
+  # the mode the preferences file held at start.
+  def validate({:panel_mode, mode} = action),
+    do: valid_action(action, mode in [:full, :compact, :hidden, :cycle])
+
+  def validate({:panel_preferences_loaded, mode} = action),
+    do: valid_action(action, mode in [:full, :compact, :hidden])
+
+  # Hint mode: a badge key is one printable grapheme (a label is typed one
+  # letter at a time); digits pick runs.
+  def validate({:hint, operation} = action)
+      when operation in [:open, :again, :cancel, :backspace],
+      do: {:ok, action}
+
+  def validate({:hint, {:key, text}} = action),
+    do:
+      valid_action(
+        action,
+        is_binary(text) and byte_size(text) in 1..4 and Intent.valid_id?(text) and
+          String.length(text) == 1
+      )
+
+  # The agent overlay (P8): opened on one agent of one run.
+  def validate({:overlay_open, run_id, node_id} = action),
+    do: valid_action(action, Intent.valid_id?(run_id) and Intent.valid_id?(node_id))
+
+  def validate({:overlay, operation} = action)
+      when operation in [:close, :raw_ops, :activate],
+      do: {:ok, action}
+
+  def validate({:overlay, {:step, direction}} = action),
+    do: valid_action(action, direction in [:next, :previous])
+
+  def validate({:overlay, {:focus, direction}} = action),
+    do: valid_action(action, direction in [:next, :previous])
+
+  def validate({:overlay, {:move, direction}} = action),
+    do: valid_action(action, direction in [:up, :down, :page_up, :page_down, :first, :last])
+
+  def validate({:overlay, {:answer, key}} = action),
+    do: valid_action(action, key in ["y", "a", "Y", "A", "d", "D", "n"])
 
   def validate({:library_page, direction} = action),
     do: valid_action(action, direction in [:next, :previous, :refresh])

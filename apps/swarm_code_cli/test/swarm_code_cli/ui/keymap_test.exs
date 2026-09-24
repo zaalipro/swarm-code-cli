@@ -189,9 +189,9 @@ defmodule SwarmCodeCLI.UI.KeymapTest do
     test "Ctrl chords reach through a modal's text field; bare letters do not" do
       modal = %{state() | layers: [{:switcher, "s"}], focus: "query"}
 
-      # Ctrl-B is a global chord: it toggles the dock from every context.
+      # Ctrl-B is a global chord: it cycles the side panel from every context.
       assert Keymap.resolve(letter("b", [:control]), modal, %{}) ==
-               {:ok, {:toggle_dock, :inspector}}
+               {:ok, {:panel_mode, :cycle}}
 
       # "?" is a printable key, so inside a field it is typing, not help.
       assert {:ok, {:field_editor, _, {:insert, "?"}}} = Keymap.resolve(letter("?"), modal, %{})
@@ -236,14 +236,11 @@ defmodule SwarmCodeCLI.UI.KeymapTest do
     end
 
     test "[ and ] move inspector tabs whenever the inspector is on screen" do
-      # 120x40 is :medium, which docks the inspector only when asked to.
-      undocked = main()
+      # pass72: from 120 columns the side panel is docked unless it is hidden.
+      undocked = %{main() | panel_mode: :hidden}
       assert Keymap.resolve(letter("]"), undocked, %{}) == :ignore
 
-      docked = %{
-        undocked
-        | preferences: %{undocked.preferences | medium_dock: :inspector}
-      }
+      docked = %{undocked | panel_mode: :full}
 
       assert Keymap.resolve(letter("]"), docked, %{}) == {:ok, {:inspector_tab, :next}}
       assert Keymap.resolve(letter("["), docked, %{}) == {:ok, {:inspector_tab, :previous}}

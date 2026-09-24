@@ -51,6 +51,17 @@ defmodule SwarmCodeCLI.UI.State do
     # {conversation id, {:request, id} | {:run, id}}: a stop asked for before
     # the turn it stops was on screen; it is sent once that run appears.
     stop_on_arrival: nil,
+    # pass72-O fields: the side panel's mode, hint mode and the agent overlay.
+    # The panel's shape: :full (2 rows per agent), :compact (1 row) or
+    # :hidden; under 120 columns anything but :hidden is the one-row strip.
+    panel_mode: :full,
+    # Hint mode (Ctrl-F): nil, or the badge labels (`UI.Hint.labels/1`) and
+    # what has been typed of a two-letter label so far.
+    hint: nil,
+    # The agent overlay: nil, or %{run_id, node_id, focus: :band | :activity
+    # | :composer, raw_ops?, page, restore: %{scroll, draft}} (see
+    # `UI.Reducer.Overlay`).
+    overlay: nil,
     library: nil,
     feature_form: nil,
     banner: nil,
@@ -143,6 +154,9 @@ defmodule SwarmCodeCLI.UI.State do
   end
 
   def dirty?(state), do: Drafts.dirty?(state.drafts) or FieldEditors.dirty?(state.field_editors)
+
+  # The agent overlay's composer is the one being typed into while it is open.
+  def current_draft_key(%{overlay: %{draft_key: key}}) when not is_nil(key), do: key
 
   def current_draft_key(%{
         destination: {:conversation, id},

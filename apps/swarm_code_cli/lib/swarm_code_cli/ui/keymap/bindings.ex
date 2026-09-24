@@ -62,11 +62,14 @@ defmodule SwarmCodeCLI.UI.Keymap.Bindings do
     :inspector,
     :picker,
     :field,
-    :dialog
+    :dialog,
+    :overlay,
+    :hint
   ]
 
   # The contexts where a bare printable key is the user typing, not a binding.
-  @typing_contexts [:composer, :field, :picker]
+  # The agent overlay has a composer of its own (pass 72).
+  @typing_contexts [:composer, :field, :picker, :overlay]
 
   # The groups the help sheet renders, in the order it renders them. Vim first:
   # it only appears in the NORMAL and VISUAL sheets, where it is the point.
@@ -132,15 +135,223 @@ defmodule SwarmCodeCLI.UI.Keymap.Bindings do
       help: "Run palette; the same chord closes it",
       hint: 3
     },
+    # pass72 (K6): the side panel cycles full -> compact -> hidden; under 120
+    # columns, where the panel is a one-row strip, strip -> off. The choice is
+    # remembered in the CLI preferences file.
     %Binding{
       id: :toggle_inspector,
       keys: [{"b", [:control]}, {"i", [:alt]}],
-      action: {:toggle_dock, :inspector},
+      action: {:panel_mode, :cycle},
       contexts: [:global],
       group: :layers,
-      label: "Inspector",
-      help: "Show or hide the inspector dock",
+      label: "Panel",
+      help: "Side panel: full, compact, hidden (strip or off under 120 columns)",
       hint: 2
+    },
+    # pass72 (P7, K1): hint mode badges every agent and run in the side panel.
+    # Ctrl-F is no longer the composer's Emacs forward-char (the Right arrow
+    # moves the caret); Ctrl-Space arrives as NUL where the terminal sends it.
+    %Binding{
+      id: :hint_mode,
+      keys: [{"f", [:control]}, {" ", [:control]}],
+      action: {:hint, :open},
+      contexts: [:composer, :composer_normal, :composer_visual, :main, :inspector, :overlay],
+      group: :runs,
+      label: "Hints",
+      help:
+        "Hint mode: a letter opens an agent, a digit a run (not forward-char: Right moves the caret)",
+      hint: [composer: 6, main: 5, inspector: 5, overlay: 3]
+    },
+    %Binding{
+      id: :hint_again,
+      keys: [{"f", [:control]}, {" ", [:control]}],
+      action: {:hint, :again},
+      contexts: [:hint],
+      group: :runs,
+      label: "Needs you",
+      help: "Pressed again: the next request waiting on you (as Ctrl-N)",
+      hint: [hint: 3]
+    },
+    %Binding{
+      id: :hint_pick,
+      keys: Enum.map(~w(s f g h j k l w e r t u i o p), &{&1, []}),
+      action: {:special, :hint_key},
+      contexts: [:hint],
+      group: :runs,
+      label: "Open",
+      help: "Open the agent with this badge in the overlay (two letters past 15 agents)",
+      hint: [hint: 5]
+    },
+    %Binding{
+      id: :hint_run,
+      keys: Enum.map(~w(1 2 3 4 5 6 7 8 9), &{&1, []}),
+      action: {:special, :hint_key},
+      contexts: [:hint],
+      group: :runs,
+      label: "Run",
+      help: "Show the run with this number in the chat",
+      hint: [hint: 4]
+    },
+    %Binding{
+      id: :hint_runs_dashboard,
+      keys: [{"0", []}],
+      action: {:special, :hint_key},
+      contexts: [:hint],
+      group: :runs,
+      label: "All runs",
+      help: "The runs dashboard (as Ctrl-G)",
+      hint: 0
+    },
+    %Binding{
+      id: :hint_cancel,
+      keys: [{:escape, []}],
+      action: {:hint, :cancel},
+      contexts: [:hint],
+      group: :session,
+      label: "Cancel",
+      help: "Leave hint mode; hint keys never answer a request",
+      hint: [hint: 2]
+    },
+    %Binding{
+      id: :hint_backspace,
+      keys: [{:backspace, []}],
+      action: {:hint, :backspace},
+      contexts: [:hint],
+      group: :session,
+      label: "Undo letter",
+      help: "Take back the first letter of a two-letter badge",
+      hint: 0
+    },
+    # pass72 (P8, K5): the agent overlay, a full-screen view of one agent.
+    %Binding{
+      id: :overlay_close,
+      keys: [{:escape, []}],
+      action: {:overlay, :close},
+      contexts: [:overlay],
+      group: :session,
+      label: "Back",
+      help: "Back to the chat, at the same scroll and with the same draft",
+      hint: [overlay: 9]
+    },
+    %Binding{
+      id: :overlay_focus_next,
+      keys: [{:tab, []}],
+      action: {:overlay, {:focus, :next}},
+      contexts: [:overlay],
+      group: :focus,
+      label: "Focus",
+      help: "Focus the band, the activity, the composer (and the pages under 120 columns)",
+      hint: [overlay: 6],
+      repeat: true
+    },
+    %Binding{
+      id: :overlay_focus_previous,
+      keys: [{:tab, [:shift]}, {:back_tab, []}],
+      action: {:overlay, {:focus, :previous}},
+      contexts: [:overlay],
+      group: :focus,
+      label: "Focus back",
+      help: "Move the overlay's focus back",
+      hint: 0,
+      repeat: true
+    },
+    %Binding{
+      id: :overlay_next_agent,
+      keys: [{"]", []}],
+      action: {:special, :overlay_letter},
+      contexts: [:overlay],
+      group: :navigate,
+      label: "Next agent",
+      help: "The next agent in panel order, wrapping (types while the composer has text)",
+      hint: [overlay: 8],
+      repeat: true
+    },
+    %Binding{
+      id: :overlay_previous_agent,
+      keys: [{"[", []}],
+      action: {:special, :overlay_letter},
+      contexts: [:overlay],
+      group: :navigate,
+      label: "Prev agent",
+      help: "The previous agent in panel order, wrapping",
+      hint: [overlay: 7],
+      repeat: true
+    },
+    %Binding{
+      id: :overlay_raw_ops,
+      keys: [{"o", []}],
+      action: {:special, :overlay_letter},
+      contexts: [:overlay],
+      group: :act,
+      label: "Operations",
+      help: "Show every raw operation instead of the grouped activity, and back",
+      hint: [overlay: 5]
+    },
+    %Binding{
+      id: :overlay_answer,
+      keys: Enum.map(~w(y a Y A d D n), &{&1, []}),
+      action: {:special, :overlay_letter},
+      contexts: [:overlay],
+      group: :act,
+      label: "Answer",
+      help:
+        "y/a once, Y this run, A always the family, d deny, D deny + stop, n next; only while the composer is empty",
+      hint: [overlay: 4]
+    },
+    %Binding{
+      id: :overlay_activate,
+      keys: [{:enter, []}],
+      action: {:overlay, :activate},
+      contexts: [:overlay],
+      group: :act,
+      label: "Steer",
+      help:
+        "In the composer, steer only this agent; on a group, expand it; on the band, the card",
+      hint: [overlay: 10]
+    },
+    %Binding{
+      id: :overlay_move_down,
+      keys: [{:down, []}],
+      action: {:overlay, {:move, :down}},
+      contexts: [:overlay],
+      group: :navigate,
+      label: "Down",
+      help: "Next group of the activity",
+      hint: 0,
+      repeat: true
+    },
+    %Binding{
+      id: :overlay_move_up,
+      keys: [{:up, []}],
+      action: {:overlay, {:move, :up}},
+      contexts: [:overlay],
+      group: :navigate,
+      label: "Up",
+      help: "Previous group of the activity",
+      hint: 0,
+      repeat: true
+    },
+    %Binding{
+      id: :overlay_page_down,
+      keys: [{:page_down, []}],
+      action: {:overlay, {:move, :page_down}},
+      contexts: [:overlay],
+      group: :navigate,
+      label: "Page down",
+      help: "Scroll the activity a page down",
+      hint: 0,
+      repeat: true
+    },
+    %Binding{
+      id: :overlay_page_up,
+      keys: [{:page_up, []}],
+      action: {:overlay, {:move, :page_up}},
+      contexts: [:overlay],
+      group: :navigate,
+      label: "Page up",
+      help: "Scroll the activity a page up",
+      hint: 0,
+      repeat: true
     },
     # Ctrl-C never ends the session by itself: it closes a layer, else clears
     # the draft, else stops the turn in view (or the one Enter just sent), and
@@ -807,7 +1018,7 @@ defmodule SwarmCodeCLI.UI.Keymap.Bindings do
       id: :next_need_chord,
       keys: [{"n", [:control]}],
       action: {:special, :next_need},
-      contexts: [:composer, :composer_normal, :composer_visual],
+      contexts: [:composer, :composer_normal, :composer_visual, :overlay],
       group: :act,
       label: "Waiting",
       help: "Open the next approval or question waiting on you",
@@ -962,7 +1173,7 @@ defmodule SwarmCodeCLI.UI.Keymap.Bindings do
       id: :composer_newline,
       keys: [{"o", [:control]}, {"j", [:control]}, {:enter, [:shift]}],
       action: {:special, :composer_newline},
-      contexts: [:composer, :field],
+      contexts: [:composer, :field, :overlay],
       group: :edit,
       label: "Newline",
       help: "Insert a line break without sending (Ctrl-O or Ctrl-J)",
@@ -972,7 +1183,7 @@ defmodule SwarmCodeCLI.UI.Keymap.Bindings do
       id: :external_editor,
       keys: [{"x", [:control]}],
       action: {:special, :external_editor},
-      contexts: [:composer, :composer_normal],
+      contexts: [:composer, :composer_normal, :overlay],
       group: :edit,
       label: "Editor",
       help: "Edit the draft in $VISUAL or $EDITOR; saving and quitting brings it back"
@@ -1003,7 +1214,7 @@ defmodule SwarmCodeCLI.UI.Keymap.Bindings do
       id: :composer_line_start,
       keys: [{"a", [:control]}],
       action: {:editor_op, {:move, :line_start}},
-      contexts: [:composer, :field],
+      contexts: [:composer, :field, :overlay],
       group: :edit,
       label: "Line start",
       help: "Move to the start of the line",
@@ -1014,7 +1225,7 @@ defmodule SwarmCodeCLI.UI.Keymap.Bindings do
       id: :composer_line_end,
       keys: [{"e", [:control]}],
       action: {:editor_op, {:move, :line_end}},
-      contexts: [:composer, :field],
+      contexts: [:composer, :field, :overlay],
       group: :edit,
       label: "Line end",
       help: "Move to the end of the line",
@@ -1025,7 +1236,7 @@ defmodule SwarmCodeCLI.UI.Keymap.Bindings do
       id: :composer_delete_word_backward,
       keys: [{"w", [:control]}],
       action: {:editor_op, :delete_word_backward},
-      contexts: [:composer, :field],
+      contexts: [:composer, :field, :overlay],
       group: :edit,
       label: "Del word",
       help: "Delete the word before the cursor",
@@ -1071,7 +1282,7 @@ defmodule SwarmCodeCLI.UI.Keymap.Bindings do
       id: :composer_undo,
       keys: [{"z", [:control]}],
       action: {:editor_op, :undo},
-      contexts: [:composer, :field],
+      contexts: [:composer, :field, :overlay],
       group: :edit,
       label: "Undo",
       help: "Undo the last edit",
@@ -1082,7 +1293,7 @@ defmodule SwarmCodeCLI.UI.Keymap.Bindings do
       id: :composer_redo,
       keys: [{"z", [:control, :shift]}],
       action: {:editor_op, :redo},
-      contexts: [:composer, :field],
+      contexts: [:composer, :field, :overlay],
       group: :edit,
       label: "Redo",
       help: "Redo (needs a terminal that reports Ctrl-Shift)",

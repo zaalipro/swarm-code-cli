@@ -184,6 +184,36 @@ defmodule SwarmCodeCLI.UI.Reducer.Commands do
     end
   end
 
+  # pass72: the agent overlay's composer steers the one agent it shows.
+  defp resolve_context(
+         %{overlay: %{run_id: run_id, node_id: node_id, draft_key: key}} = state,
+         {:steer, run_id, node_id, _, _},
+         base
+       ) do
+    with {:ok, run} <- Map.fetch(state.read_model.runs, run_id),
+         {:ok, agent} <- Map.fetch(state.read_model.agents, node_id),
+         true <- agent.run_id == run_id and scope_run?(base.scope, run),
+         true <-
+           run.state in [:running, :streaming, :retrying, :waiting_approval, :waiting_question],
+         true <- elem(key, 0) == run.conversation_id,
+         draft = Drafts.fetch(state.drafts, key),
+         true <-
+           Enum.all?(draft.attachments, &(&1.status == :ready)) and
+             not match?({:invalid, _}, draft.staged_validation) do
+      context = draft_context(base, draft, key, run.allowed_actions)
+
+      {:ok,
+       %{
+         context
+         | active_run_id: run.id,
+           active_run_state: run.state,
+           active_node_id: node_id
+       }}
+    else
+      _ -> {:error, :invalid_origin}
+    end
+  end
+
   defp resolve_context(state, {:steer, run_id, node_id, _, _}, base) do
     with {:ok, run} <- Map.fetch(state.read_model.runs, run_id),
          {:ok, node} <- find_node(state, run_id, node_id),

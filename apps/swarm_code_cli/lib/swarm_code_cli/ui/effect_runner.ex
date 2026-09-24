@@ -162,6 +162,10 @@ defmodule SwarmCodeCLI.UI.EffectRunner do
 
       :conversation_list ->
         struct!(DTO.ConversationList, attrs)
+
+      # pass72: the overlay's agent detail (owner S's request).
+      :agent_detail ->
+        struct!(DTO.AgentDetail, attrs)
     end
   end
 

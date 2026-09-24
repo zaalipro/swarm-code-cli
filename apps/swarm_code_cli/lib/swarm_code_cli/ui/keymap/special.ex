@@ -103,7 +103,7 @@ defmodule SwarmCodeCLI.UI.Keymap.Special do
   end
 
   def run(:focus_next, _key, %{focus: "main", layers: []} = state, _table) do
-    layout = Layout.calculate(state.size, state.preferences)
+    layout = Layout.for_state(state)
 
     if Map.has_key?(layout.rects, :composer),
       do: ok({:focus_region, "composer"}),
@@ -245,6 +245,15 @@ defmodule SwarmCodeCLI.UI.Keymap.Special do
     end
   end
 
+  # pass72 (P8): Enter on an agent selected in the side panel opens its
+  # overlay.
+  def run(:activate, _key, %{focus: "inspector"} = state, table) do
+    case Map.get(state.read_model.agents, Map.get(state.selection, "inspector")) do
+      %{id: id, run_id: run} -> ok({:overlay_open, run, id})
+      _ -> Keymap.content_activate(state, table)
+    end
+  end
+
   def run(:activate, _key, state, table), do: Keymap.content_activate(state, table)
 
   # Enter in the composer, under its own name so the surfaces can say "Send".
@@ -340,6 +349,35 @@ defmodule SwarmCodeCLI.UI.Keymap.Special do
       id -> ok({:open_interaction, id})
     end
   end
+
+  # ------------------------------------------------------- pass72: hints
+
+  # A badge letter, a run digit or `0` (the runs dashboard): the reducer holds
+  # the labels and decides.
+  def run(:hint_key, {code, _mods}, _state, _table), do: ok({:hint, {:key, code}})
+
+  # The overlay's letters act only while its composer is empty (K4, K5);
+  # with text in it they type. `y a Y A d D n` also need a request waiting on
+  # this agent, or they start a steer like any other letter; `o [ ]` act
+  # from the band and the activity, and type once Tab has put the focus in
+  # the composer.
+  def run(:overlay_letter, {code, []}, %{overlay: %{} = overlay} = state, _table) do
+    empty? = Keymap.draft_text(state) == ""
+    composer? = overlay.focus == :composer
+    waiting? = SwarmCodeCLI.UI.Reducer.Overlay.request(state) != nil
+
+    cond do
+      not empty? -> :ignore
+      code in ~w(y a Y A d D n) and waiting? -> ok({:overlay, {:answer, code}})
+      code in ~w(y a Y A d D n) or composer? -> :ignore
+      code == "]" -> ok({:overlay, {:step, :next}})
+      code == "[" -> ok({:overlay, {:step, :previous}})
+      code == "o" -> ok({:overlay, :raw_ops})
+      true -> :ignore
+    end
+  end
+
+  def run(:overlay_letter, _key, _state, _table), do: :ignore
 
   # ---------------------------------------------------------------- fields
 
@@ -451,8 +489,8 @@ defmodule SwarmCodeCLI.UI.Keymap.Special do
   # docked by the layout or opened as a run_inspector overlay.
   defp inspector_tab(state, direction) do
     docked? =
-      state.size
-      |> Layout.calculate(state.preferences)
+      state
+      |> Layout.for_state()
       |> Map.fetch!(:rects)
       |> Map.has_key?(:inspector)
 

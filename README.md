@@ -85,14 +85,25 @@ TUI):
 | Ctrl-T | select mode: `j`/`k` move, Enter opens, `y` copies, Esc or Ctrl-T back |
 | Ctrl-P | palette: conversations, runs, features, the model |
 | Ctrl-N | the next approval or question waiting |
+| Ctrl-F (or Ctrl-Space) | hint mode: a badge before every agent in the side panel; its letter opens that agent's overlay, a digit shows a run (`0` all runs), Ctrl-F again is Ctrl-N, Esc cancels. Hint keys never answer a request. Ctrl-F is not forward-char; Right moves the caret |
+| Ctrl-B | the side panel: full, compact, hidden (under 120 columns: the strip or off); `/panel full\|compact\|hidden` sets it, and the choice is kept in `cli.json` beside the database |
 | `y` `Y` `A` `d` `D` `n` | on an approval: once, this run, always this command family, deny, deny and stop, next |
 | mouse wheel | scrolls what is under the pointer, only with `SWARM_MOUSE=1` (it turns off the terminal's own text selection) |
+
+The agent overlay (a badge letter, or Enter on an agent in select mode) shows
+one agent full screen: its request with the approval keys, its life on a time
+axis, its brief and findings, what it did grouped (`o` every raw operation),
+where it sits in the run, and a composer that steers only that agent. `[` `]`
+step through the run's agents, Tab moves between the request, the activity and
+the composer (under 120 columns also through the pages), and Esc returns to the
+chat at the same scroll with the same draft. The approval letters and `o [ ]`
+act only while the overlay's composer is empty.
 
 An approval or a question opens over the conversation by itself; for a moment
 after it opens, keys keep typing into the draft, so a sentence is never
 answered by accident. The client answers some slash commands itself: `/new`
 (`/clear`), `/resume` (pick a conversation), `/approval read-only|auto|full`,
-`/trust`, `/queue <text>`, `/help` and `/quit`; typing `/` lists every command
+`/panel full|compact|hidden`, `/trust`, `/queue <text>`, `/help` and `/quit`; typing `/` lists every command
 above the composer. The project's approval mode is the desktop's and is always on
 the status line: a new project is read-only until `/trust`; in `auto`, edits and
 safe commands (`ls`, `git status`) run by themselves and other commands ask.

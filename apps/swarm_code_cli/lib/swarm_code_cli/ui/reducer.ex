@@ -22,6 +22,9 @@ defmodule SwarmCodeCLI.UI.Reducer do
   alias SwarmCodeCLI.UI.Vim
   alias SwarmCodeCLI.UI.SlashPalette
   alias SwarmCodeCLI.UI.Reducer.{Watch, Commands, Pages, Editing, Details, PathCompletion}
+  alias SwarmCodeCLI.UI.Reducer.Hint, as: Hints
+  alias SwarmCodeCLI.UI.Reducer.Overlay
+  alias SwarmCodeCLI.UI.Hint
   alias SwarmCodeCLI.UI.DataSource.DTO.Outcome
   alias SwarmCodeCLI.UI.Projector.{RunPalette, RunsDashboard}
   alias SwarmCodeCLI.UI.DataSource.{DTO, Request}
@@ -60,6 +63,7 @@ defmodule SwarmCodeCLI.UI.Reducer do
     unless SwarmCodeCLI.UI.Intent.valid_id?(init.source_epoch) and
              init.banner in [nil, :live_banner, :persisted_banner] and
              init.focus in ["main", "composer"] and init.keymap in [:default, :vim] and
+             init.panel_mode in [:full, :compact, :hidden] and
              SwarmCodeCLI.UI.Intent.valid_id?(init.id_prefix) and is_integer(init.now) and
              init.now >= 0 and is_integer(init.deadline_ms) and init.deadline_ms >= 0 and
              is_integer(init.id_sequence) and init.id_sequence >= 0,
@@ -86,7 +90,8 @@ defmodule SwarmCodeCLI.UI.Reducer do
   def update(%State{} = state, action) do
     case Action.validate(action) do
       {:ok, action} ->
-        {next, effects} = transition(state, action)
+        {next, effects} = transition(leave_modes(state, action), action)
+        next = drop_hint_under_layer(next)
         {next, effects} = replay_deferred(next, effects)
         {next, effects} = track_sent_turn(next, effects)
         {next, effects} = sync_interactions(next, effects, action)
@@ -104,6 +109,175 @@ defmodule SwarmCodeCLI.UI.Reducer do
   end
 
   defp transition(state, :boot), do: {state, []}
+
+  # ------------------------------------ pass72-O: the panel, hints, the overlay
+
+  # Ctrl-B (K6): full -> compact -> hidden; under 120 columns the panel is a
+  # strip, so the cycle is strip -> off. `/panel` sets it directly. Either
+  # way the choice is written to the preferences file by the session.
+  defp transition(state, {:panel_mode, :cycle}), do: set_panel(state, next_panel(state))
+  defp transition(state, {:panel_mode, mode}), do: set_panel(state, mode)
+
+  defp transition(state, {:panel_preferences_loaded, mode}),
+    do: {%{state | panel_mode: mode}, []}
+
+  defp transition(state, {:hint, :open}) do
+    case Hints.open(state) do
+      nil -> feedback(state, "Nothing in the panel to open.")
+      hint -> {%{state | hint: hint}, []}
+    end
+  end
+
+  defp transition(%{hint: nil} = state, {:hint, _}), do: {state, []}
+  defp transition(state, {:hint, :cancel}), do: {%{state | hint: nil}, []}
+
+  defp transition(%{hint: %{typed: ""}} = state, {:hint, :backspace}),
+    do: {%{state | hint: nil}, []}
+
+  defp transition(%{hint: hint} = state, {:hint, :backspace}),
+    do: {%{state | hint: %{hint | typed: ""}}, []}
+
+  # The leader pressed again is Ctrl-N: the next request waiting on you.
+  defp transition(state, {:hint, :again}) do
+    state = %{state | hint: nil}
+
+    case Keymap.Special.run(:next_need, {"n", [:control]}, state, %{}) do
+      {:ok, action} -> transition(state, action)
+      :ignore -> {state, []}
+    end
+  end
+
+  defp transition(%{hint: %{typed: ""}} = state, {:hint, {:key, "0"}}) do
+    {id, state} = State.next_id(%{state | hint: nil}, :layer)
+    transition(Overlay.close(state), {:open_layer, {:runs_dashboard, id}})
+  end
+
+  defp transition(%{hint: hint} = state, {:hint, {:key, key}}) do
+    typed = hint.typed <> key
+
+    case Hint.match(hint.labels, typed) do
+      {:target, {:agent, run, node}} ->
+        transition(%{state | hint: nil}, {:overlay_open, run, node})
+
+      {:target, {:run, run}} ->
+        # P10: a run picked in the panel is shown in the chat.
+        transition(Overlay.close(%{state | hint: nil}), {:navigate, {:run, run}})
+
+      :prefix ->
+        {%{state | hint: %{hint | typed: typed}}, []}
+
+      :none ->
+        {%{state | hint: nil}, []}
+    end
+  end
+
+  defp transition(state, {:overlay_open, run, node}) do
+    case Overlay.open(state, run, node) do
+      {:ok, next} -> Overlay.request_detail(next)
+      {:error, text} -> feedback(state, text)
+    end
+  end
+
+  defp transition(%{overlay: nil} = state, {:overlay, _}), do: {state, []}
+  defp transition(state, {:overlay, :close}), do: {Overlay.close(state), []}
+
+  defp transition(%{overlay: overlay} = state, {:overlay, :raw_ops}),
+    do:
+      {%{
+         state
+         | overlay: %{overlay | raw_ops?: not overlay.raw_ops?, cursor: 0, focus: :activity}
+       }, []}
+
+  defp transition(state, {:overlay, {:focus, direction}}),
+    do: {Overlay.cycle(state, direction), []}
+
+  defp transition(state, {:overlay, {:step, direction}}) do
+    case Overlay.step(state, direction) do
+      nil -> {state, []}
+      agent -> transition(state, {:overlay_open, agent.run_id, agent.id})
+    end
+  end
+
+  defp transition(%{overlay: overlay} = state, {:overlay, {:move, direction}}) do
+    rows = SwarmCodeCLI.UI.Projector.Overlay.cursor_rows(state)
+    page = max(1, div(state.size.rows, 2))
+
+    cursor =
+      case direction do
+        :down -> overlay.cursor + 1
+        :up -> overlay.cursor - 1
+        :page_down -> overlay.cursor + page
+        :page_up -> overlay.cursor - page
+        :first -> 0
+        :last -> rows - 1
+      end
+
+    cursor = cursor |> min(max(rows - 1, 0)) |> max(0)
+    focus = if overlay.focus == :band, do: :activity, else: overlay.focus
+    {%{state | overlay: %{overlay | cursor: cursor, focus: focus}}, []}
+  end
+
+  defp transition(%{overlay: overlay} = state, {:overlay, :activate}) do
+    case overlay.focus do
+      :composer ->
+        case Overlay.steer(state) do
+          nil -> {state, []}
+          intent -> transition(state, {:invoke, intent, elem(State.next_id(state, :request), 0)})
+        end
+
+      :band ->
+        case Overlay.request(state) do
+          nil -> {state, []}
+          item -> transition(state, {:open_interaction, item.id})
+        end
+
+      :activity ->
+        case SwarmCodeCLI.UI.Projector.Overlay.activate_target(state, overlay.cursor) do
+          nil ->
+            {state, []}
+
+          {:open_detail, run, ref} ->
+            transition(state, {:open_detail, run, ref})
+
+          {:expand, key} ->
+            expanded =
+              if MapSet.member?(overlay.expanded, key),
+                do: MapSet.delete(overlay.expanded, key),
+                else: MapSet.put(overlay.expanded, key)
+
+            {%{state | overlay: %{overlay | expanded: expanded}}, []}
+        end
+    end
+  end
+
+  defp transition(state, {:overlay, {:answer, "n"}}) do
+    case Overlay.next_needing(state) do
+      nil -> transition(state, :nothing_waiting)
+      {run, node} -> transition(state, {:overlay_open, run, node})
+    end
+  end
+
+  defp transition(state, {:overlay, {:answer, code}}) do
+    case {Overlay.decision(state, code), Overlay.request(state)} do
+      {nil, %{kind: :question, id: id}} ->
+        transition(state, {:open_interaction, id})
+
+      {nil, _} ->
+        {state, []}
+
+      {intent, _} ->
+        transition(state, {:invoke, intent, elem(State.next_id(state, :request), 0)})
+    end
+  end
+
+  # Typing anywhere in the overlay types into its composer and puts the focus
+  # there.
+  defp transition(
+         %{overlay: %{draft_key: key, focus: focus} = overlay} = state,
+         {:editor, key, _} = action
+       )
+       when focus != :composer,
+       do: transition(%{state | overlay: %{overlay | focus: :composer}}, action)
 
   # ------------------------------------------------ the composer-first keys
 
@@ -142,6 +316,9 @@ defmodule SwarmCodeCLI.UI.Reducer do
       cond do
         state.layers != [] ->
           transition(state, :close_top_layer)
+
+        state.overlay != nil ->
+          {Overlay.close(state), []}
 
         key != nil and Keymap.draft_text(state) != "" and not sending?(state, key) ->
           {state, a} = Editing.apply(state, :editor, key, :select_all)
@@ -1089,6 +1266,9 @@ defmodule SwarmCodeCLI.UI.Reducer do
           {:detail_window, body} ->
             Details.response(state, request, body)
 
+          {:agent_detail, body} ->
+            Overlay.detail_response(state, request, body)
+
           {:conversation_list, %DTO.ConversationList{} = body} ->
             state = %{state | requests: Map.delete(state.requests, delivery.request_id)}
 
@@ -1105,6 +1285,20 @@ defmodule SwarmCodeCLI.UI.Reducer do
 
       _ ->
         {state, []}
+    end
+  end
+
+  # While the agent overlay is up, news about its run asks for a fresh detail.
+  defp transition(%{overlay: %{run_id: run}} = state, {:data, delivery}) do
+    {state, effects} = Watch.deliver(state, delivery)
+
+    case delivery do
+      %{kind: :delta, body: %{run_id: ^run}} when state.overlay != nil ->
+        {state, more} = Overlay.request_detail(state, false)
+        {state, effects ++ more}
+
+      _ ->
+        {state, effects}
     end
   end
 
@@ -1206,7 +1400,7 @@ defmodule SwarmCodeCLI.UI.Reducer do
     docked? =
       state.size &&
         Map.has_key?(
-          SwarmCodeCLI.UI.Layout.calculate(state.size, state.preferences).rects,
+          SwarmCodeCLI.UI.Layout.for_state(state).rects,
           :inspector
         )
 
@@ -1297,7 +1491,7 @@ defmodule SwarmCodeCLI.UI.Reducer do
   # outside the ring; `focus_cycle` puts it back on the first real region rather
   # than counting from a member that no longer exists.
   def focus_graph(state) do
-    rects = Layout.calculate(state.size, state.preferences).rects
+    rects = Layout.for_state(state).rects
 
     Enum.filter(["main", "inspector", "composer"], fn region ->
       Map.has_key?(rects, region_atom(region))
@@ -1860,8 +2054,10 @@ defmodule SwarmCodeCLI.UI.Reducer do
   end
 
   # Only data, a closed layer or a navigation can make something newly
-  # waiting; a keystroke that opened nothing must not.
-  defp auto_open?(%{layers: [], lifecycle: :running} = state, action) do
+  # waiting; a keystroke that opened nothing must not. Hint mode and the
+  # agent overlay (pass 72) hold them back: the overlay's band shows its own
+  # agent's request, and Ctrl-N reaches the rest.
+  defp auto_open?(%{layers: [], lifecycle: :running, hint: nil, overlay: nil} = state, action) do
     (match?({:data, %{kind: kind}} when kind != :response, action) or
        action in [:close_top_layer, :boot] or match?({:navigate, _}, action)) and
       state.focus in ["composer", "main", "inspector"] and
@@ -2130,6 +2326,37 @@ defmodule SwarmCodeCLI.UI.Reducer do
     end
   end
 
+  defp slash_local(state, :panel) do
+    argument =
+      state
+      |> Keymap.draft_text()
+      |> String.trim()
+      |> String.replace_prefix("/panel", "")
+      |> String.trim()
+      |> String.downcase()
+
+    mode =
+      case argument do
+        "full" -> :full
+        "compact" -> :compact
+        value when value in ["hidden", "off", "hide", "none"] -> :hidden
+        _ -> nil
+      end
+
+    cond do
+      mode != nil ->
+        {state, cleared} = clear_command_draft(state)
+        {state, set} = set_panel(state, mode)
+        {state, cleared ++ set}
+
+      argument == "" ->
+        feedback(state, "Panel is #{state.panel_mode}: /panel full, compact or hidden.")
+
+      true ->
+        feedback(state, "Panel is full, compact or hidden: /panel compact.")
+    end
+  end
+
   defp slash_local(state, :trust) do
     {state, cleared} = clear_command_draft(state)
     {state, sent} = service_request(state, {:project_update, nil, true}, {:project, :update})
@@ -2213,4 +2440,84 @@ defmodule SwarmCodeCLI.UI.Reducer do
 
   defp finish_exit(state, :plain),
     do: {%{state | lifecycle: :closing, exit_pending: nil}, [{:presenter_handoff, :plain}]}
+
+  # Hint mode lasts one keystroke: whatever the user does next that is not a
+  # hint key ends it first. Facts arriving from the source, timers and the
+  # terminal's own reports do not.
+  @hint_neutral [
+    :data,
+    :timer_fired,
+    :draw_result,
+    :terminal_capabilities,
+    :terminal_lifecycle,
+    :terminal_failed,
+    :terminal_focus,
+    :resize,
+    :hint,
+    :panel_preferences_loaded,
+    :external_edit_done
+  ]
+
+  defp leave_modes(state, action) do
+    state =
+      if state.hint != nil and not hint_neutral?(action),
+        do: %{state | hint: nil},
+        else: state
+
+    # Going somewhere else leaves the agent overlay the way Esc does.
+    case action do
+      {kind, _} when kind in [:navigate, :open_conversation] and state.overlay != nil ->
+        Overlay.close(state)
+
+      :new_conversation when state.overlay != nil ->
+        Overlay.close(state)
+
+      _ ->
+        state
+    end
+  end
+
+  # An editor's undo boundary arrives from its timer a second after typing
+  # stopped; it is not the user doing something.
+  defp hint_neutral?({kind, _key, {:undo_boundary, _}}) when kind in [:editor, :field_editor],
+    do: true
+
+  defp hint_neutral?(action),
+    do: action == :boot or (is_tuple(action) and elem(action, 0) in @hint_neutral)
+
+  defp drop_hint_under_layer(%{hint: %{}, layers: [_ | _]} = state), do: %{state | hint: nil}
+  defp drop_hint_under_layer(state), do: state
+
+  # ------------------------------------------------ pass72-O helpers
+
+  defp next_panel(state) do
+    narrow? = state.size != nil and state.size.columns < 120
+
+    case {narrow?, state.panel_mode} do
+      {true, :hidden} -> :full
+      {true, _} -> :hidden
+      {false, :full} -> :compact
+      {false, :compact} -> :hidden
+      {false, :hidden} -> :full
+    end
+  end
+
+  defp set_panel(state, mode) do
+    narrow? = state.size != nil and state.size.columns < 120
+
+    words =
+      case {narrow?, mode} do
+        {true, :hidden} -> "Panel off."
+        {true, _} -> "Panel strip (#{mode} at 120 columns and wider)."
+        {false, mode} -> "Panel #{mode}."
+      end
+
+    {state, effects} = feedback(%{state | panel_mode: mode}, words)
+    {state, effects ++ [{:save_preferences, %{panel_mode: mode}}]}
+  end
+
+  defp feedback(state, text) do
+    {:ok, safe} = SafeText.external(text, SafeText.Limits.content())
+    {%{state | notice: {:command_feedback, SafeText.value(safe)}}, []}
+  end
 end

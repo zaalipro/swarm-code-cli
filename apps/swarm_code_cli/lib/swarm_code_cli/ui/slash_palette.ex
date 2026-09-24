@@ -21,6 +21,11 @@ defmodule SwarmCodeCLI.UI.SlashPalette do
       desc: "How much agents may do without asking"
     },
     %{name: "trust", args: "", desc: "Trust this project: read its AGENTS.md and allow edits"},
+    %{
+      name: "panel",
+      args: "[full|compact|hidden]",
+      desc: "The side agent panel's shape (Ctrl-B cycles it); remembered"
+    },
     %{name: "queue", args: "<text>", desc: "Send this after the running turn"},
     %{name: "help", args: "", desc: "List the commands and the keys"},
     %{name: "quit", args: "", desc: "Leave SwarmCode; running work of this session stops"}

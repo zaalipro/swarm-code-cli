@@ -51,7 +51,10 @@ defmodule SwarmCodeCLI.UI.Switcher do
       entry("Quit", :action, {:local, {:quit_requested, :detach}}),
       entry("New conversation", :conversation, {:local, :new_conversation}),
       entry("Plain presenter", :action, {:local, {:presenter_handoff_requested, :plain}}),
-      entry("Toggle Inspector", :action, {:local, {:toggle_dock, :inspector}}),
+      entry("Side panel: next shape", :action, {:local, {:panel_mode, :cycle}}),
+      entry("Side panel: full", :action, {:local, {:panel_mode, :full}}),
+      entry("Side panel: compact", :action, {:local, {:panel_mode, :compact}}),
+      entry("Side panel: hidden", :action, {:local, {:panel_mode, :hidden}}),
       entry("Open visual companion", :action, {:local, :open_companion}),
       vim_mode_entry(state)
     ]

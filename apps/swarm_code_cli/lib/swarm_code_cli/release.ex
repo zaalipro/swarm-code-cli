@@ -13,6 +13,8 @@ defmodule SwarmCodeCLI.Release do
 
   alias SwarmCodeCLI.Release.Headless
 
+  @compile {:no_warn_undefined, [SwarmCode.Domain.Paths]}
+
   @usage """
   Usage: swarmcode [DIR] [--new | --continue | --resume ID] [--model M]
                    [-p PROMPT [--json]] [--plain [--ndjson]] [--help] [--version]
@@ -34,7 +36,7 @@ defmodule SwarmCodeCLI.Release do
 
   Exit codes: 0 done, 1 the run failed, 2 usage, 3 startup refused.
   Keys in the full-screen view: Ctrl-P palette, ? every key, Esc stops a turn,
-  Ctrl-C twice quits.
+  Ctrl-F opens an agent from the side panel, Ctrl-B its shape, Ctrl-C twice quits.
   """
 
   # The prompt's size is the composer's: one paste.
@@ -48,6 +50,17 @@ defmodule SwarmCodeCLI.Release do
           prompt: binary() | nil,
           format: :text | :json | :ndjson
         }
+
+  @doc """
+  The CLI preferences file (pass 72, P6): `cli.json` in the SwarmCode config
+  directory, beside the database. nil when the domain is not loaded.
+  """
+  @spec preferences_path() :: Path.t() | nil
+  def preferences_path do
+    Path.join(SwarmCode.Domain.Paths.config_dir(), "cli.json")
+  rescue
+    _ -> nil
+  end
 
   @doc "Runs the command line and halts the VM with its exit code."
   def main(["tui"]), do: SwarmCodeCLI.Release.PersistedSession.run()
