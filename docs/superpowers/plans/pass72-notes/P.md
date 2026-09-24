@@ -113,4 +113,6 @@ owner's own screenshots (owner-notes.md).
   `reducer_navigation_test` 107→103); they pass once O applies those edits.
 - `panel_test.exs` 18/0 (goldens at 160x45, 120x36, 90x30, 80x24, NO_COLOR and ASCII; the owner's bugs and two
   real-run regressions), `golden_scenes_test`, `workspace_turns_test`, `inspector_cards_test`, `cells_test`.
-- `mix format --check-formatted` clean; no compiler warnings in the full run.
+- `mix format --check-formatted` clean. The full run showed three test-file warnings of mine (an unused alias,
+  an orphaned `dock?/1` in `inspector_cards_test`, an unused default in `panel_test`), fixed in P8 and rerun
+  (37/0); the remaining "redefining module …Migrations…" warnings come from the daemon tests and predate this pass.

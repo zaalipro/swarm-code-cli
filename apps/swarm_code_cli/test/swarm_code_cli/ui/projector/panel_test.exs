@@ -12,7 +12,7 @@ defmodule SwarmCodeCLI.UI.Projector.PanelTest do
   alias SwarmCodeCLI.UI.Projector.{Panel, PanelOrder}
   alias SwarmCodeCLI.UI.Projector.Panel.Glyph
 
-  defp caps(size, opts \\ []) do
+  defp caps(size, opts) do
     %Capabilities{
       size: size,
       color_mode: Keyword.get(opts, :mode, :truecolor),

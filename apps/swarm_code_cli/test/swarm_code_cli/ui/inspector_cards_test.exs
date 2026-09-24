@@ -5,7 +5,7 @@ defmodule SwarmCodeCLI.UI.InspectorCardsTest do
   170x34 (xl) and 150x30 (wide), in colour, monochrome and ASCII.
   """
   use ExUnit.Case, async: true
-  alias SwarmCodeCLI.UI.{Capabilities, Fixtures, Paint, Projector, Reducer, Scene, Size}
+  alias SwarmCodeCLI.UI.{Capabilities, Fixtures, Paint, Projector, Scene, Size}
   alias SwarmCodeCLI.UI.Paint.{Options, Plan}
   alias SwarmCodeCLI.UI.DataSource.DTO
   alias SwarmCodeCLI.UI.Projector.Inspector.Words
@@ -66,11 +66,6 @@ defmodule SwarmCodeCLI.UI.InspectorCardsTest do
     do: kind |> state(cols, rows, opts) |> painted() |> elem(0)
 
   defp targets(table, target), do: for({id, ^target} <- table, do: id)
-
-  defp dock?(state) do
-    {scene, _table} = Projector.project(state)
-    Enum.any?(scene.regions, &(&1.role == :inspector))
-  end
 
   # The background of the first cell of `text` on the row that contains it.
   defp background(plan, rect, rows, text) do
