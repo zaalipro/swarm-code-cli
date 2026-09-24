@@ -239,6 +239,9 @@ defmodule SwarmCodeCLI.UI.Keymap do
       grace?(state) ->
         grace(code, mods, state)
 
+      typing_over_card?(code, mods, state) ->
+        draft_edit(state, if(code == :backspace, do: :delete_backward, else: {:insert, code}))
+
       true ->
         context = Context.of(state)
 
@@ -368,6 +371,30 @@ defmodule SwarmCodeCLI.UI.Keymap do
   end
 
   defp grace(_code, _mods, _state), do: :ignore
+
+  # pass72 G10 (QA Q11): a card that opened by itself answers only to its
+  # own keys (y Y A d D n) while the draft is empty. Any other character, or
+  # any character once the draft has text, types into the composer under the
+  # card, where the user sees it; "abc" used to approve a command with its
+  # "a". A card the user focused (^N, a badge) keeps the whole grammar.
+  @card_answers ~w(y Y A d D n)
+
+  defp typing_over_card?(_code, _mods, %{hint: %{}}), do: false
+
+  defp typing_over_card?(code, mods, %{auto_opened: id, layers: [{:approval, id} | _]} = state)
+       when not is_nil(id) and (mods == [] or mods == [:shift]) do
+    typing? = String.trim(draft_text(state)) != ""
+
+    cond do
+      code == :backspace -> typing?
+      not is_binary(code) -> false
+      not String.printable?(code) or String.length(code) != 1 or code == " " -> typing?
+      typing? -> true
+      true -> code not in @card_answers
+    end
+  end
+
+  defp typing_over_card?(_code, _mods, _state), do: false
 
   defp draft_edit(state, operation) do
     case State.current_draft_key(state) do

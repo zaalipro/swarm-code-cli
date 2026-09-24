@@ -390,7 +390,20 @@ defmodule SwarmCodeCLI.UI.ComposerFirstTest do
       assert [{:approval, "a1"} | _] = state.layers
 
       {state, []} = Reducer.update(state, {:timer_fired, state.interaction_grace})
-      {_, effects} = press(state, letter("y"))
+
+      # pass72 G10 (K4, QA Q11): the card that opened by itself answers only
+      # while the draft is empty; with text in it, y keeps typing.
+      {typed, effects} = press(state, letter("y"))
+      assert commands(effects) == []
+      assert text(typed) == "yes do ity"
+
+      cleared =
+        Enum.reduce(1..String.length(text(state)), state, fn _, st ->
+          elem(press(st, Input.key(:backspace)), 0)
+        end)
+
+      assert text(cleared) == ""
+      {_, effects} = press(cleared, letter("y"))
       assert [{:resolve_approval, "r", "op-1", "a1", 5, :approve}] = commands(effects)
     end
 

@@ -1009,10 +1009,19 @@ defmodule SwarmCodeCLI.UI.Reducer do
               {state, []}
           end
 
+        # pass72 G10: a request in another conversation opens that
+        # conversation, not a run view (which has nothing to send, QA Q1).
         {state, moved} =
-          if in_view?(state, item),
-            do: {state, []},
-            else: transition(state, {:navigate, {:run, run_id}})
+          cond do
+            in_view?(state, item) ->
+              {state, []}
+
+            is_binary(item.conversation_id) ->
+              transition(state, {:navigate, {:conversation, item.conversation_id}})
+
+            true ->
+              transition(state, {:navigate, {:run, run_id}})
+          end
 
         {state, opened} = transition(state, {:open_layer, {kind, id}})
         state = %{state | auto_opened: nil, interaction_grace: nil}

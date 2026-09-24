@@ -261,6 +261,42 @@ defmodule SwarmCodeCLI.UI.Pass72FinisherTest do
              for({:command, request} <- effects, do: request.kind)
   end
 
+  # pass72 G10 (QA Q11): "abc" typed at a card that opened by itself
+  # approved the command with its "a".
+  test "regression: typing at a card that opened by itself types, and answers nothing" do
+    state = ready(interactions: [approval("web")], run_state: :waiting_approval)
+    assert [{:approval, "a1"} | _] = state.layers
+    state = %{state | interaction_grace: nil}
+
+    {_scene, table} = Projector.project(state)
+
+    typed =
+      Enum.reduce(~w(a b c), {state, []}, fn letter, {st, effects} ->
+        {_scene, table} = Projector.project(st)
+
+        case Keymap.resolve(Input.text_fragment(:press, letter, []), st, table) do
+          {:ok, action} ->
+            {next, more} = Reducer.update(st, action)
+            {next, effects ++ more}
+
+          :ignore ->
+            {st, effects}
+        end
+      end)
+
+    {state_after, effects} = typed
+    assert for({:command, request} <- effects, do: request.kind) == []
+    assert Keymap.draft_text(state_after) == "abc"
+    assert [{:approval, "a1"} | _] = state_after.layers
+
+    # With the draft empty, y still answers the card (K4).
+    {:ok, action} = Keymap.resolve(Input.text_fragment(:press, "y", []), state, table)
+    {_state, effects} = Reducer.update(state, action)
+
+    assert [{:resolve_approval, "r1", "op-a1", "a1", 5, :approve}] =
+             for({:command, request} <- effects, do: request.kind)
+  end
+
   test "Ctrl-F stays inert over a dialog that is not a request card" do
     {state, _} = Reducer.update(ready(), {:open_layer, :help})
     assert [layer | _] = state.layers
