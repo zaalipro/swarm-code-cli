@@ -134,10 +134,14 @@ defmodule SwarmCode.Daemon.Service.PersistedProjection do
           # What the node produced, never its name: the client draws the
           # speaker line from the agent the item belongs to, so a name in the
           # body was a lead called "Lead" over three blank rows.
+          # pass72 S: an agent's `detail` "isolated in <branch>" is the
+          # engine's bookkeeping, never what the agent produced (the owner saw
+          # the branch name as an agent's line): it is not the item's text.
           text:
             fragment(
-              "substr(trim(coalesce(?, ?, '') || char(10) || coalesce(?, ''), char(10)), 1, case when ? = 'agent' then 8192 else 2048 end)",
+              "substr(trim(coalesce(?, case when ? like 'isolated in %' then null else ? end, '') || char(10) || coalesce(?, ''), char(10)), 1, case when ? = 'agent' then 8192 else 2048 end)",
               n.result,
+              n.detail,
               n.detail,
               n.error,
               n.kind
@@ -149,8 +153,9 @@ defmodule SwarmCode.Daemon.Service.PersistedProjection do
           updated_at: n.updated_at,
           text_bytes:
             fragment(
-              "length(cast(trim(coalesce(?, ?, '') || char(10) || coalesce(?, ''), char(10)) as blob))",
+              "length(cast(trim(coalesce(?, case when ? like 'isolated in %' then null else ? end, '') || char(10) || coalesce(?, ''), char(10)) as blob))",
               n.result,
+              n.detail,
               n.detail,
               n.error
             ),
@@ -737,8 +742,9 @@ defmodule SwarmCode.Daemon.Service.PersistedProjection do
             # for a window of the size it was promised.
             text:
               fragment(
-                "substr(cast(trim(coalesce(?, ?, '') || char(10) || coalesce(?, ''), char(10)) as blob), ?, ?)",
+                "substr(cast(trim(coalesce(?, case when ? like 'isolated in %' then null else ? end, '') || char(10) || coalesce(?, ''), char(10)) as blob), ?, ?)",
                 n.result,
+                n.detail,
                 n.detail,
                 n.error,
                 ^(offset + 1),
@@ -746,8 +752,9 @@ defmodule SwarmCode.Daemon.Service.PersistedProjection do
               ),
             total:
               fragment(
-                "length(cast(trim(coalesce(?, ?, '') || char(10) || coalesce(?, ''), char(10)) as blob))",
+                "length(cast(trim(coalesce(?, case when ? like 'isolated in %' then null else ? end, '') || char(10) || coalesce(?, ''), char(10)) as blob))",
                 n.result,
+                n.detail,
                 n.detail,
                 n.error
               )

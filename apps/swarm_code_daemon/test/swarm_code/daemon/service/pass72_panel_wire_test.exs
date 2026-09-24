@@ -200,6 +200,15 @@ defmodule SwarmCode.Daemon.Service.Pass72PanelWireTest do
              agent_detail(c.backend, c.scope, c.run.id, Ecto.UUID.generate())
   end
 
+  test "an agent's transcript item never carries the engine's isolation line", c do
+    assert {:ok, %{"value" => workspace}} = query(c.backend, c.scope, "workspace")
+    item = Enum.find(workspace["transcript"]["items"], &(&1["id"] == c.web.id))
+    assert item
+    refute item["text"] =~ "isolated in"
+    refute item["text"] =~ "swarm/"
+    assert item["detail_ref"] == nil
+  end
+
   test "the facts are a function of the database: a second projection publishes the same bodies",
        c do
     assert {:ok, %{"value" => first}} = query(c.backend, c.scope, "workspace")
