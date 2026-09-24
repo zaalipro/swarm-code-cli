@@ -452,12 +452,13 @@ defmodule SwarmCode.Daemon.Service.PanelFacts do
   # The literal request: the command itself, else the tool and its path.
   defp approval_text(card, roots) do
     args = decode(card["arguments_preview"])
+    command = card["command"] || (card["tool"] == "run_command" && args["command"])
 
     cond do
       # The command is the literal request the user answers: kept whole,
       # only its control characters and runs of whitespace fold to spaces.
-      is_binary(card["command"]) and card["command"] != "" ->
-        literal(card["command"])
+      is_binary(command) and command != "" ->
+        literal(command)
 
       is_binary(args["path"]) ->
         (verb(card["tool"]) <> " " <> scrub(args["path"], roots)) |> String.trim()
@@ -518,7 +519,10 @@ defmodule SwarmCode.Daemon.Service.PanelFacts do
       end)
 
     text
-    |> String.replace(~r/[^\s"'(]*\/\.swarm_code\/worktrees\/(?:[0-9a-f]{8}\/)?[^\/\s]+\/?/u, "")
+    |> String.replace(
+      ~r/(?:[^\s"'(`]*\/)?\.swarm_code\/worktrees\/(?:[0-9a-f]{8}\/)?[^\/\s`]+\/?/u,
+      ""
+    )
     |> String.replace(~r/\bisolated in \S+/u, "")
     |> String.replace(~r/\bswarm\/[0-9a-f]{6,}\/[\w.\-]+/u, "")
     |> String.replace(
@@ -531,6 +535,34 @@ defmodule SwarmCode.Daemon.Service.PanelFacts do
   end
 
   def scrub(_, _), do: ""
+
+  @doc """
+  `scrub/2` for a multi-line text (a brief, a result): the same removals, but
+  newlines and indentation stay; other control characters go.
+  """
+  def scrub_lines(text, roots) when is_binary(text) do
+    text =
+      Enum.reduce(roots(roots), text, fn root, acc ->
+        String.replace(acc, root <> "/", "") |> String.replace(root, ".")
+      end)
+
+    text
+    |> String.replace(
+      ~r/(?:[^\s"'(`]*\/)?\.swarm_code\/worktrees\/(?:[0-9a-f]{8}\/)?[^\/\s`]+\/?/u,
+      ""
+    )
+    |> String.replace(~r/\bisolated in \S+/u, "")
+    |> String.replace(~r/\bswarm\/[0-9a-f]{6,}\/[\w.\-]+/u, "")
+    |> String.replace(
+      ~r/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/iu,
+      ""
+    )
+    |> String.replace(~r/\r\n?/u, "\n")
+    |> String.replace(~r/[\x00-\x08\x0B-\x1F\x7F]/u, "")
+    |> String.trim()
+  end
+
+  def scrub_lines(_, _), do: ""
 
   defp literal(text) when is_binary(text),
     do: text |> String.replace(~r/[\x00-\x1F\x7F\s]+/u, " ") |> String.trim()

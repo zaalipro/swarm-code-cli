@@ -7,13 +7,15 @@ defmodule SwarmCodeCLI.UI.DataSource.Pass72PanelWireTest do
   """
   use ExUnit.Case, async: true
   alias SwarmCode.Protocol.{Envelope, Message, Scope}
-  alias SwarmCodeCLI.UI.DataSource.{Delivery, Delta, DTO, Lane, Watch}
+  alias SwarmCodeCLI.UI.DataSource.{Delivery, Delta, DTO, Lane, Request, Watch}
   alias SwarmCodeCLI.UI.DataSource.Daemon.Codec
   alias SwarmCodeCLI.UI.DataSource.Fake.{Script, Source}
   alias SwarmCodeCLI.TestSupport.HiveWire, as: Wire
 
   @conversation "22222222-2222-4222-8222-222222222222"
   @node "44444444-4444-4444-8444-444444444444"
+  @wire "11111111-1111-4111-8111-111111111111"
+  @run "33333333-3333-4333-8333-333333333333"
   @nonce String.duplicate("A", 43)
   @scope %Scope{kind: :conversation, id: @conversation, generation: 2}
 
@@ -57,6 +59,9 @@ defmodule SwarmCodeCLI.UI.DataSource.Pass72PanelWireTest do
     "rounds" => 2,
     "verdict" => "Two of three proposals meet the bar."
   }
+
+  defp fixture,
+    do: File.read!(Path.expand("../../../fixtures/fake/three_run_script.json", __DIR__))
 
   defp through_json(message) do
     {:ok, bytes} = Envelope.encode(message)
@@ -241,10 +246,204 @@ defmodule SwarmCodeCLI.UI.DataSource.Pass72PanelWireTest do
     end
   end
 
-  describe "fake parity" do
-    defp fixture,
-      do: File.read!(Path.expand("../../../fixtures/fake/three_run_script.json", __DIR__))
+  describe "agent detail" do
+    defp detail_request(scope \\ @scope, run \\ @run, node \\ @node),
+      do: %Request{
+        request_id: "local-1",
+        kind: {:agent_detail, run, node},
+        scope: scope,
+        generation: scope.generation,
+        origin: {:query, :agent_detail},
+        deadline: 5_000,
+        expected_response: :agent_detail
+      }
 
+    defp detail_wire(extra \\ %{}),
+      do:
+        Map.merge(
+          %{
+            "state" => "idle",
+            "request_id" => @wire,
+            "error" => nil,
+            "run_id" => @run,
+            "agent_id" => @node,
+            "name" => "web-ui-desktop",
+            "role" => "sub",
+            "model" => "deepseek-v4-pro",
+            "panel_state" => "needs_you",
+            "now" => "wants to run a command",
+            "parent_name" => "Lead",
+            "brief" => "Review the web UI for desktop regressions.",
+            "brief_bytes" => 42,
+            "needs_you" => @panel_run["needs_you"],
+            "findings" => [
+              %{
+                "n" => 1,
+                "severity" => "high",
+                "text" => "Esc closes two layers.",
+                "ref" => "assets/js/hooks.js:88"
+              }
+            ],
+            "result" => "",
+            "result_bytes" => 0,
+            "agent_error" => nil,
+            "activity" => [
+              %{
+                "kind" => "read",
+                "title" => "read 3 files",
+                "items" => ["a.ex", "b.ex", "c.ex"],
+                "count" => 3,
+                "started_at" => 1_788_436_700_000,
+                "duration_ms" => 900,
+                "quote" => nil,
+                "state" => "done"
+              },
+              %{
+                "kind" => "think",
+                "title" => "thought ×2",
+                "items" => [],
+                "count" => 2,
+                "started_at" => 1_788_436_701_000,
+                "duration_ms" => 41_000,
+                "quote" => "Esc handling lives in two hooks.",
+                "state" => "done"
+              }
+            ],
+            "operations" => [
+              %{
+                "id" => @node,
+                "op_type" => "read_file",
+                "title" => "read a.ex",
+                "status" => "done",
+                "started_at" => 1_788_436_700_000,
+                "duration_ms" => 300
+              }
+            ],
+            "life" => ~w(think tools tools wait_you),
+            "life_started_at" => 1_788_436_700_000,
+            "life_bucket_ms" => 1_000,
+            "think_ms" => 41_000,
+            "files_read" => ["a.ex", "b.ex", "c.ex"],
+            "files_searched" => [~s("Escape")],
+            "files_changed" => [],
+            "changes_stat" => nil,
+            "tokens_in" => 18_000,
+            "tokens_out" => 3_000,
+            "cost_usd" => 0.05,
+            "context_used" => 18_000,
+            "context_window" => 98_304,
+            "turn" => nil,
+            "max_turns" => nil,
+            "started_at" => 1_788_436_700_000,
+            "finished_at" => nil
+          },
+          extra
+        )
+
+    defp detail_result(value),
+      do: %Message{
+        version: 1,
+        sequence: nil,
+        occurred_at: nil,
+        type: :response,
+        request_id: @wire,
+        nonce: @nonce,
+        scope: @scope,
+        body: %{"op" => "result", "response_kind" => "agent_detail", "value" => value}
+      }
+
+    test "the request is a closed agent.detail body" do
+      assert {:ok, message} = Codec.request(detail_request(), @wire, @nonce, 0)
+
+      assert Map.drop(message.body, ["timeout_ms"]) ==
+               %{"op" => "agent.detail", "run_id" => @run, "node_id" => @node}
+
+      assert {:error, :invalid_request} =
+               Request.validate(%{detail_request() | kind: {:agent_detail, "run", @node}})
+
+      assert {:error, :invalid_request} =
+               Request.validate(%{detail_request() | expected_response: :outcome})
+    end
+
+    test "the response crosses JSON and decodes with its groups, findings and band" do
+      assert {:ok, %Delivery{kind: :response, body: %DTO.AgentDetail{} = d}} =
+               Codec.response(
+                 through_json(detail_result(detail_wire())),
+                 detail_request(),
+                 @wire,
+                 @nonce
+               )
+
+      assert d.request_id == "local-1"
+      assert {d.name, d.panel_state, d.parent_name} == {"web-ui-desktop", :needs_you, "Lead"}
+      assert [%DTO.Finding{severity: :high, ref: "assets/js/hooks.js:88"}] = d.findings
+
+      assert [%DTO.ActivityGroup{kind: :read, count: 3}, %DTO.ActivityGroup{kind: :think} = t] =
+               d.activity
+
+      assert t.quote == "Esc handling lives in two hooks."
+      assert [%DTO.OpLine{op_type: "read_file"}] = d.operations
+      assert d.life == [:think, :tools, :tools, :wait_you]
+      assert [%DTO.NeedsYou{text: "mix test test/swarm_code_web --only ui"}] = d.needs_you
+    end
+
+    test "a detail for another agent than asked is refused" do
+      other = "55555555-5555-4555-8555-555555555555"
+
+      assert {:error, _} =
+               Codec.response(
+                 through_json(detail_result(detail_wire(%{"agent_id" => other}))),
+                 detail_request(),
+                 @wire,
+                 @nonce
+               )
+    end
+
+    test "the overlay composer steers only its agent: run.steer names the node" do
+      request = %Request{
+        request_id: "local-3",
+        kind: {:steer, @run, @node, "check the Esc path only", []},
+        scope: @scope,
+        generation: 2,
+        origin: {:draft, {@conversation, {:thread, @node}}},
+        deadline: 5_000,
+        expected_response: :outcome
+      }
+
+      assert {:ok, message} = Codec.request(request, @wire, @nonce, 0)
+
+      assert Map.drop(message.body, ["timeout_ms"]) == %{
+               "op" => "run.steer",
+               "run_id" => @run,
+               "node_id" => @node,
+               "text" => "check the Esc path only",
+               "attachment_refs" => []
+             }
+    end
+
+    test "the fake answers with the agent's synthetic detail, and refuses a stranger" do
+      {:ok, script} = Script.decode(fixture())
+      pid = start_supervised!({Source, script: script, source_epoch: "epoch-1"})
+      Source.attach(pid, "client", self())
+      scope = %Scope{kind: :conversation, id: Script.id(:a), generation: 0}
+
+      request = %{
+        detail_request(scope, Script.id(:a2), Script.id(:scout_1))
+        | deadline: Script.clock_ms() + 5_000
+      }
+
+      assert :ok = Source.request(pid, "client", request)
+      assert_receive {:fake_source, "client", %Delivery{body: %DTO.AgentDetail{} = d}}
+      assert {d.name, d.state, d.parent_name} == {"scout-1", :idle, "lead"}
+      assert [%DTO.Finding{n: 1, severity: :high} | _] = d.findings
+      assert {:ok, _} = DTO.AgentDetail.validate(d)
+
+      stranger = %{request | request_id: "local-2", kind: {:agent_detail, Script.id(:a2), @node}}
+      assert {:error, _} = Source.request(pid, "client", stranger)
+    end
+  end
+
+  describe "fake parity" do
     test "the fake's agents and consensus run carry the panel facts the daemon sends" do
       {:ok, script} = Script.decode(fixture())
       agents = Map.new(script.agents, fn {_, a} -> {a.name, a} end)

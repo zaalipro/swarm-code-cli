@@ -254,6 +254,11 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Source do
     with {:ok, body} <- result, do: {:ok, state.script, body, []}
   end
 
+  defp execute(state, %Request{kind: {:agent_detail, _, _}} = request) do
+    with {:ok, body} <- SwarmCodeCLI.UI.DataSource.Fake.AgentDetail.query(state.script, request),
+         do: {:ok, state.script, body, []}
+  end
+
   defp execute(state, %Request{kind: {:feature_query, :files, _, _, _, _}} = request) do
     with {:ok, body} <- Session.files(state.script, request), do: {:ok, state.script, body, []}
   end

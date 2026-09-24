@@ -33,6 +33,7 @@ defmodule SwarmCode.Protocol.ServiceRequest do
           | :feature_query
           | :feature_command
           | :question_answer
+          | :agent_detail
 
   @type t :: %__MODULE__{
           operation: operation(),
@@ -113,6 +114,7 @@ defmodule SwarmCode.Protocol.ServiceRequest do
   defp decode_operation("feature.query"), do: :feature_query
   defp decode_operation("feature.command"), do: :feature_command
   defp decode_operation("question.answer"), do: :question_answer
+  defp decode_operation("agent.detail"), do: :agent_detail
   defp decode_operation(_operation), do: nil
 
   defp encode_operation(:query), do: "query"
@@ -134,6 +136,7 @@ defmodule SwarmCode.Protocol.ServiceRequest do
   defp encode_operation(:feature_query), do: "feature.query"
   defp encode_operation(:feature_command), do: "feature.command"
   defp encode_operation(:question_answer), do: "question.answer"
+  defp encode_operation(:agent_detail), do: "agent.detail"
   defp encode_operation(_operation), do: nil
 
   defp param_keys(:query), do: ~w(slot cursor direction page_size byte_limit)
@@ -160,6 +163,9 @@ defmodule SwarmCode.Protocol.ServiceRequest do
 
   defp param_keys(:question_answer),
     do: ~w(run_id node_id interaction_id expected_revision answers custom_text)
+
+  # pass72 S: one agent's detail for the overlay (a read).
+  defp param_keys(:agent_detail), do: ~w(run_id node_id)
 
   defp param_keys(_operation), do: []
 
@@ -281,6 +287,9 @@ defmodule SwarmCode.Protocol.ServiceRequest do
       String.valid?(params["custom_text"]) and
       (params["answers"] != [] or String.trim(params["custom_text"]) != "")
   end
+
+  defp valid_params?(:agent_detail, params, scope),
+    do: run_scope?(params["run_id"], scope) and uuid?(params["node_id"])
 
   defp json_attributes?(_, depth) when depth > 6, do: false
 

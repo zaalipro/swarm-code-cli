@@ -830,6 +830,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
   defp admit_check(false, code), do: {:error, AdmissionError.new(code)}
   defp request_capability(%{"op" => "query"}), do: :query
   defp request_capability(%{"op" => "feature.query"}), do: :query
+  defp request_capability(%{"op" => "agent.detail"}), do: :query
   defp request_capability(%{"op" => "feature.command"}), do: :feature_command
   defp request_capability(%{"op" => "question.answer"}), do: :question_answer
   defp request_capability(%{"op" => "detail"}), do: :detail
@@ -943,6 +944,9 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
 
         :conversation_list ->
           struct!(DTO.ConversationList, attrs)
+
+        :agent_detail ->
+          struct!(DTO.AgentDetail, attrs)
       end
 
     %Delivery{

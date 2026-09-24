@@ -26,7 +26,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   # pass70 C8: finished-run checkpoints whose change facts a reload computes.
   @facts_per_reload 50
   # Operations that read: never ledgered, answered with a typed error.
-  @reads [:query, :detail, :feature_query, :conversation_list]
+  @reads [:query, :detail, :feature_query, :conversation_list, :agent_detail]
   # pass71 S2: slow reads run as jobs; this many at once, the rest are refused.
   @max_jobs 8
   @terminal [:completed, :failed, :cancelled, :interrupted]
@@ -695,6 +695,61 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   defp execute(%{operation: :feature_command} = request, scope, id, state) do
     scoped = feature_scope(scope, state)
     {SwarmCode.Daemon.Service.FeatureRequest.execute(request, scoped, id, state.revision), state}
+  end
+
+  # pass72 S: one agent's detail for the overlay. The rows are read by a job
+  # (never in this callback); the pending interactions are this projection's.
+  defp execute(%{operation: :agent_detail, params: params}, scope, id, state) do
+    # A run this service has not projected yet (no watch so far): project once.
+    state = if Map.has_key?(state.runs, params["run_id"]), do: state, else: refresh(state)
+    run = state.runs[params["run_id"]]
+
+    if run && run_member?(run, scope, state) do
+      conversation = state.opts[:conversation_id]
+      node_id = params["node_id"]
+      interactions = run.interactions
+      model = state.agent_models[node_id] || run.model
+      roots = Map.get(state, :roots, [])
+
+      work = fn ->
+        case PersistedProjection.agent_detail(conversation, run.id, node_id) do
+          {:ok, rows} ->
+            ops = MapSet.new(rows.ops, & &1.id)
+
+            mine =
+              Enum.filter(interactions, fn i ->
+                get_in(i, ["approval", "agent_id"]) == node_id or i["node_id"] == node_id or
+                  MapSet.member?(ops, i["node_id"])
+              end)
+
+            window =
+              if is_binary(model),
+                do:
+                  SwarmCode.Domain.Engine.Context.budget(
+                    model,
+                    SwarmCode.Domain.Settings.get_cached()
+                  )
+
+            body =
+              SwarmCode.Daemon.Service.AgentDetail.build(rows,
+                request_id: id,
+                roots: roots,
+                interactions: mine,
+                model: model,
+                context_window: if(is_integer(window) and window > 0, do: window)
+              )
+
+            result("agent_detail", body)
+
+          :error ->
+            wire_error(:not_allowed)
+        end
+      end
+
+      {{:job, %{key: nil, replace: false, work: work, finish: &{&1, &2}}}, state}
+    else
+      {wire_error(:not_allowed), state}
+    end
   end
 
   defp execute(%{operation: :detail, params: params}, scope, id, state) do
