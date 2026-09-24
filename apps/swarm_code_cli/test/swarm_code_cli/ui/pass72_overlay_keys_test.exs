@@ -138,6 +138,21 @@ defmodule SwarmCodeCLI.UI.Pass72OverlayKeysTest do
     Reducer.update(state, action)
   end
 
+  defp screen_rows(state) do
+    {scene, _} = Projector.project(state)
+    {:ok, plan} = SwarmCodeCLI.UI.Paint.build(scene)
+
+    for y <- 0..(state.size.rows - 1) do
+      for x <- 0..(state.size.columns - 1), reduce: "" do
+        acc ->
+          case SwarmCodeCLI.UI.Paint.Plan.cell(plan, x, y) do
+            {:glyph, glyph, _, _} -> acc <> glyph
+            _ -> acc
+          end
+      end
+    end
+  end
+
   defp commands(effects), do: for({:command, request} <- effects, do: request.kind)
 
   # ------------------------------------------------------------------ hints
@@ -320,6 +335,29 @@ defmodule SwarmCodeCLI.UI.Pass72OverlayKeysTest do
       state = state |> press!(letter("]")) |> press!(letter("]")) |> press!(letter("]"))
       assert state.overlay.node_id == "lead"
       assert press!(state, letter("[")).overlay.node_id == "web"
+    end
+
+    test "a request does not move the Lead: [ ] and the tree keep the Lead first" do
+      agents =
+        Enum.map(swarm_agents(), fn
+          %{id: "web"} = web -> %{web | state: :waiting_approval, panel_state: :needs_you}
+          other -> other
+        end)
+
+      state =
+        ready(agents: agents, interactions: [approval("a1", "r1", "web")])
+        |> Map.put(:layers, [])
+        |> Reducer.update({:overlay_open, "r1", "web"})
+        |> elem(0)
+
+      assert Enum.map(Overlay.neighbours(state), & &1.id) == ~w(lead engine data web)
+      assert press!(state, letter("]")).overlay.node_id == "lead"
+
+      rows = screen_rows(state)
+      lead = Enum.find_index(rows, &(&1 =~ ~r/[●◐◌] Lead/u))
+      assert lead, "the Lead is the tree's root:\n" <> Enum.join(rows, "\n")
+      assert Enum.at(rows, lead + 1) =~ ~r/├ . engine/u
+      assert Enum.at(rows, lead + 3) =~ ~r/╰ ! web.*you are here/u
     end
 
     test "the approval grammar answers only while the composer is empty" do

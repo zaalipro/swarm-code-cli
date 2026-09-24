@@ -17,28 +17,41 @@ defmodule SwarmCodeCLI.UI.Reducer.Hint do
   def entries(state), do: PanelOrder.entries(state)
 
   @doc """
-  A run's agents in panel order: the ones the panel draws in its order, then
-  the folded rest, the lead first and then by start.
+  A run's agents in the panel's run-block order (K5: "with the Lead first"):
+  the lead, then each agent followed by the agents it spawned, siblings by
+  start. pass72 G2 (QA Q2): the needs-you band's rows no longer lead the
+  order, so the Lead stays first and the order does not move as requests
+  come and go.
   """
   def agents(state, run_id) do
-    drawn =
-      state
-      |> entries()
-      |> Enum.flat_map(fn
-        {:agent, ^run_id, node, _} -> [node]
-        _ -> []
-      end)
-      |> Enum.with_index()
-      |> Map.new()
+    agents =
+      state.read_model.agents
+      |> Map.values()
+      |> Enum.filter(&(&1.run_id == run_id and &1.state != :superseded))
+      |> Enum.sort_by(&{root_rank(&1), &1.depth || 0, &1.started_at || 0, &1.id})
 
-    state.read_model.agents
-    |> Map.values()
-    |> Enum.filter(&(&1.run_id == run_id and &1.state != :superseded))
-    |> Enum.sort_by(
-      &{Map.get(drawn, &1.id, map_size(drawn)),
-       if(&1.role == :lead or &1.parent_id == nil, do: 0, else: 1), &1.depth, &1.started_at || 0,
-       &1.id}
-    )
+    ids = MapSet.new(agents, & &1.id)
+    children = Enum.group_by(agents, &parent_in(&1, ids))
+
+    children
+    |> Map.get(nil, [])
+    |> Enum.flat_map(&subtree(&1, children, MapSet.new()))
+  end
+
+  defp root_rank(agent), do: if(agent.role == :lead or agent.parent_id == nil, do: 0, else: 1)
+
+  # An agent whose parent is not in the run (or is itself) hangs from the root.
+  defp parent_in(%{parent_id: parent, id: id}, ids) do
+    if parent != id and MapSet.member?(ids, parent), do: parent, else: nil
+  end
+
+  defp subtree(agent, children, seen) do
+    if MapSet.member?(seen, agent.id) do
+      []
+    else
+      seen = MapSet.put(seen, agent.id)
+      [agent | Enum.flat_map(Map.get(children, agent.id, []), &subtree(&1, children, seen))]
+    end
   end
 
   @doc "Whether something of `agent`'s waits on the user."

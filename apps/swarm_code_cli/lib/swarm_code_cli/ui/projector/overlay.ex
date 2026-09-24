@@ -1207,22 +1207,33 @@ defmodule SwarmCodeCLI.UI.Projector.Overlay do
 
   defp now_glyph(state), do: one_cell(state, "●", "*")
 
+  defp level(nil, _levels), do: 0
+  defp level(parent, levels), do: Map.get(levels, parent, 0) + 1
+
   # WHERE IT SITS, FILES, TOKENS, CONTEXT, BUDGET (only when set).
   defp where(state, _run, agent, width) do
     agents = OverlayState.neighbours(state)
 
+    # pass72 G2 (QA Q2): the tree is drawn from parent_id; the neighbours
+    # come in pre-order, so a node's last sibling closes with ╰.
+    ids = MapSet.new(agents, & &1.id)
+    parent = &if(&1.parent_id in ids and &1.parent_id != &1.id, do: &1.parent_id)
+    last = agents |> Enum.group_by(parent) |> Map.new(fn {k, v} -> {k, List.last(v).id} end)
+    levels = Enum.reduce(agents, %{}, &Map.put(&2, &1.id, level(parent.(&1), &2)))
+
     tree =
       agents
       |> Enum.take(12)
-      |> Enum.with_index()
-      |> Enum.map(fn {current, index} ->
+      |> Enum.map(fn current ->
         {glyph, _word, role} = agent_state(state, current)
+        up = parent.(current)
+        indent = String.duplicate("  ", max(Map.fetch!(levels, current.id) - 1, 0))
 
         connector =
           cond do
-            current.parent_id == nil or current.role == :lead -> ""
-            index == length(agents) - 1 -> one_cell(state, "╰", "`") <> " "
-            true -> one_cell(state, "├", "|") <> " "
+            up == nil -> ""
+            Map.get(last, up) == current.id -> indent <> one_cell(state, "╰", "`") <> " "
+            true -> indent <> one_cell(state, "├", "|") <> " "
           end
 
         here = if current.id == agent.id, do: "  ‹ you are here", else: ""
