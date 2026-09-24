@@ -18,9 +18,16 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.Outcome do
       interaction: {:optional, {:dto, SwarmCodeCLI.UI.DataSource.DTO.PendingInteraction}},
       feedback: {:optional, {:dto, SwarmCodeCLI.UI.DataSource.DTO.Feedback}},
       error: {:optional, :error},
-      corrective_action: {:enum, [:none, :retry, :refresh, :answer]}
+      corrective_action: {:enum, [:none, :retry, :refresh, :answer]},
+      # pass73 T3/T8: where an accepted send went. `started`: a new run
+      # (identifiers: its id); `steered`: into the running chat turn
+      # (identifiers: that run's id); `queued`: on the conversation's queue,
+      # it starts when the running turn ends (identifiers: the conversation).
+      disposition: {:optional, {:enum, [:started, :steered, :queued]}},
+      # pass73 T3/T8: why a command was refused, in words (rejected only).
+      reason: {:optional, {:dto, SwarmCodeCLI.UI.DataSource.DTO.Refusal}}
     ],
-    wire_defaults: [feedback: nil],
+    wire_defaults: [feedback: nil, disposition: nil, reason: nil],
     defaults: [
       status: :rejected,
       request_id: nil,
@@ -28,7 +35,9 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.Outcome do
       interaction: nil,
       feedback: nil,
       error: nil,
-      corrective_action: :none
+      corrective_action: :none,
+      disposition: nil,
+      reason: nil
     ]
 
   def decode_status("accepted"), do: {:ok, :accepted}

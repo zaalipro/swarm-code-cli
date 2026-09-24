@@ -11,7 +11,8 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.WorkspaceMetadata do
       context_window: nil,
       cost_usd: nil,
       title: nil,
-      queued: 0
+      queued: 0,
+      queued_texts: []
     ],
     fields: [
       conversation_id: :id,
@@ -33,7 +34,9 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.WorkspaceMetadata do
       cost_usd: {:optional, :float},
       title: {:optional, {:text, 256}},
       # pass71 S5: prompts of this conversation queued behind its live turn.
-      queued: :count
+      queued: :count,
+      # pass73 T3/T8: what waits there, oldest first (at most 20, 2 KB each).
+      queued_texts: {:list, {:text, 2048}}
     ],
     defaults: [
       conversation_id: nil,
@@ -51,6 +54,7 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.WorkspaceMetadata do
       context_window: nil,
       cost_usd: nil,
       title: nil,
-      queued: 0
+      queued: 0,
+      queued_texts: []
     ]
 end

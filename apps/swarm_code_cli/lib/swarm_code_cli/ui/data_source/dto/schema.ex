@@ -197,8 +197,13 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.Schema do
 
   def relations?(%{__struct__: DTO.RateLimit} = limit), do: limit.used_percent <= 100
 
+  def relations?(%{__struct__: DTO.Refusal} = refusal),
+    do: String.trim(refusal.code) != "" and String.trim(refusal.text) != ""
+
   def relations?(%{__struct__: DTO.Outcome} = outcome) do
     (is_nil(outcome.feedback) or outcome.status == :accepted) and
+      (is_nil(outcome.disposition) or outcome.status == :accepted) and
+      (is_nil(outcome.reason) or outcome.status == :rejected) and
       case outcome.status do
         :needs_input -> not is_nil(outcome.interaction) and is_nil(outcome.error)
         :rejected -> not is_nil(outcome.error) and is_nil(outcome.interaction)

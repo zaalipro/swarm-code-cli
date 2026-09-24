@@ -23,7 +23,8 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.WorkspaceSnapshot do
       cost_usd: nil,
       title: nil,
       background: [],
-      queued: 0
+      queued: 0,
+      queued_texts: []
     ],
     fields: [
       project: {:optional, {:text, 200}},
@@ -46,6 +47,8 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.WorkspaceSnapshot do
       background: {:list, {:dto, SwarmCodeCLI.UI.DataSource.DTO.BackgroundCommand}},
       # pass71 S5: prompts of this conversation queued behind its live turn.
       queued: :count,
+      # pass73 T3/T8: what waits there, oldest first (at most 20, 2 KB each).
+      queued_texts: {:list, {:text, 2048}},
       allowed_actions: :actions,
       revision: :revision,
       seen_revision: :revision,
@@ -84,6 +87,7 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.WorkspaceSnapshot do
       title: nil,
       background: [],
       queued: 0,
+      queued_texts: [],
       allowed_actions: [],
       revision: 0,
       seen_revision: 0,
