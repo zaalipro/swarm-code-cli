@@ -31,6 +31,8 @@ defmodule SwarmCode.Daemon.Service.PersistedProjection do
           launched_by_run_id: r.launched_by_run_id,
           consensus: r.consensus,
           goal_id: r.goal_id,
+          # pass72 S: a consensus run's configured rounds (D4).
+          consensus_rounds: fragment("json_extract(?, '$.rounds')", r.consensus_config),
           tokens_in: r.tokens_in,
           tokens_out: r.tokens_out,
           cost_usd: r.cost_usd,
@@ -251,9 +253,151 @@ defmodule SwarmCode.Daemon.Service.PersistedProjection do
         error_kind: n.error_kind,
         # Only a judge's result is read (its verdict JSON); everyone else's
         # stays in the database.
-        result: fragment("case when ? like 'Judge%' then ? else null end", n.name, n.result)
+        result: fragment("case when ? like 'Judge%' then ? else null end", n.name, n.result),
+        # pass72 S: the head of a finished agent's result (its finding and
+        # the `path:line` it cites), its workflow phase, and its worktree (a
+        # prefix the panel's sentences strip).
+        result_head:
+          fragment(
+            "case when ? = 'done' then substr(?, 1, 4096) else null end",
+            n.status,
+            n.result
+          ),
+        phase: n.phase,
+        workspace_path: n.workspace_path
       }
     )
+  end
+
+  @doc """
+  pass72 S: the operations the side panel reads for the agents of the live runs
+  `ids`: each agent's newest 64 and every open one, newest first. The
+  detail (an llm op's reasoning) is cut to 1 280 bytes. Clock-free, so a
+  projection is a function of the database alone.
+  """
+  @panel_ops_per_agent 64
+
+  def panel_ops(_conversation, []), do: []
+
+  def panel_ops(conversation, ids) do
+    ranked =
+      from(n in Node,
+        join: r in Run,
+        on: r.id == n.run_id,
+        where: r.conversation_id == ^conversation and n.run_id in ^ids and n.kind == "op",
+        select: %{
+          id: n.id,
+          run_id: n.run_id,
+          parent_id: n.parent_id,
+          op_type: n.op_type,
+          status: n.status,
+          title: fragment("substr(coalesce(?, ''), 1, 200)", n.title),
+          detail: fragment("substr(coalesce(?, ''), 1, 1280)", n.detail),
+          started_at: n.started_at,
+          finished_at: n.finished_at,
+          inserted_at: n.inserted_at,
+          rank:
+            over(row_number(),
+              partition_by: n.parent_id,
+              order_by: [desc: n.started_at, desc: n.inserted_at, desc: n.id]
+            )
+        }
+      )
+
+    Repo.all(
+      from(o in subquery(ranked),
+        where: o.rank <= ^@panel_ops_per_agent or o.status in ^@open_ops,
+        order_by: [desc: o.started_at, desc: o.inserted_at, desc: o.id],
+        limit: 4000,
+        select: %{
+          id: o.id,
+          run_id: o.run_id,
+          parent_id: o.parent_id,
+          op_type: o.op_type,
+          status: o.status,
+          title: o.title,
+          detail: o.detail,
+          started_at: o.started_at,
+          finished_at: o.finished_at
+        }
+      )
+    )
+  end
+
+  @doc "pass72 S: how many distinct files each agent of the runs `ids` wrote: `%{agent_id => n}`."
+  def files_changed(_conversation, []), do: %{}
+
+  def files_changed(conversation, ids) do
+    Repo.all(
+      from(c in Checkpoint,
+        join: n in Node,
+        on: n.id == c.node_id,
+        where: c.conversation_id == ^conversation and c.run_id in ^ids,
+        group_by: fragment("case when ? = 'agent' then ? else ? end", n.kind, n.id, n.parent_id),
+        select:
+          {fragment("case when ? = 'agent' then ? else ? end", n.kind, n.id, n.parent_id),
+           count(c.path, :distinct)}
+      )
+    )
+    |> Enum.reject(fn {agent, _} -> is_nil(agent) end)
+    |> Map.new()
+  end
+
+  @doc "pass72 S: `%{run_id => %{phases, phase}}` for the workflow runs among `ids`."
+  def workflow_phases([]), do: %{}
+
+  def workflow_phases(ids) do
+    Repo.all(
+      from(w in SwarmCode.Domain.Workflows.Run,
+        where: w.run_id in ^ids,
+        select: {w.run_id, %{phases: w.phases, phase: w.phase}}
+      )
+    )
+    |> Map.new()
+  end
+
+  @doc """
+  pass72 S: for the goal runs among `rows`, `%{run_id => %{iteration,
+  iterations, status}}`: the run's place among its goal's runs (oldest first),
+  how many runs the goal has had, and the goal's status.
+  """
+  def goal_facts(rows) do
+    goal_ids = rows |> Enum.map(& &1.goal_id) |> Enum.filter(&is_binary/1) |> Enum.uniq()
+
+    if goal_ids == [] do
+      %{}
+    else
+      runs =
+        Repo.all(
+          from(r in Run,
+            where: r.goal_id in ^goal_ids,
+            order_by: [asc: r.inserted_at, asc: r.id],
+            select: {r.goal_id, r.id}
+          )
+        )
+        |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
+
+      status =
+        Repo.all(
+          from(g in SwarmCode.Domain.Conversations.Goal,
+            where: g.id in ^goal_ids,
+            select: {g.id, g.status}
+          )
+        )
+        |> Map.new()
+
+      for row <- rows, is_binary(row.goal_id), into: %{} do
+        ids = Map.get(runs, row.goal_id, [])
+        index = Enum.find_index(ids, &(&1 == row.id))
+
+        {row.id,
+         %{
+           iteration: index && index + 1,
+           iterations: length(ids),
+           status: status[row.goal_id]
+         }}
+      end
+    end
   end
 
   @doc "The newest still-open op per agent of `ids`: `%{agent_id => op}`."
