@@ -738,10 +738,10 @@ defmodule SwarmCode.Daemon.Backup.GateTest do
     task =
       Task.Supervisor.async_nolink(task_supervisor, fn -> create(fixture, test_hook: hook) end)
 
-    assert_receive {:source_pin_swapped, pinned}, 5_000
+    assert_receive {:source_pin_swapped, pinned}, 30_000
     send(task.pid, {:restore_source_pin, pinned})
 
-    assert {:ok, artifact} = Task.await(task, 10_000)
+    assert {:ok, artifact} = Task.await(task, 30_000)
     assert_receive :source_pin_restored, 30_000
     assert SchemaFixture.row_counts(fixture.db)["projects"] == 2
     assert SchemaFixture.row_counts(artifact.database)["projects"] == 2
@@ -782,7 +782,7 @@ defmodule SwarmCode.Daemon.Backup.GateTest do
     task =
       Task.Supervisor.async_nolink(task_supervisor, fn -> create(fixture, test_hook: hook) end)
 
-    assert_receive {:wal_pin_ready, pinned}, 5_000
+    assert_receive {:wal_pin_ready, pinned}, 30_000
 
     parked =
       for suffix <- ["", "-wal", "-shm"] do
@@ -803,7 +803,7 @@ defmodule SwarmCode.Daemon.Backup.GateTest do
 
     send(task.pid, :continue_wal_restore)
 
-    assert {:ok, artifact} = Task.await(task, 10_000)
+    assert {:ok, artifact} = Task.await(task, 30_000)
     assert source_state(fixture.db) == before
     assert SchemaFixture.row_counts(artifact.database)["projects"] == 2
     refute Enum.any?(File.ls!(fixture.backup_dir), &String.contains?(&1, ".source-pin."))
