@@ -173,19 +173,32 @@ by `scripts/dev/sync_unicode_width.exs --check`, `sync_unicode_variants.py --che
   has loaded is kept and sent once it has (R2); `q` closes or quits only in select
   mode (Ctrl-T), dialogs and pickers. Ctrl-J (the port decodes a bare LF as Ctrl-J) and Ctrl-O insert a
   newline; Ctrl-X edits the draft in `$VISUAL`/`$EDITOR`. An approval card opens over the
-  conversation by itself with `y Y A d D n`. `SWARM_MOUSE=1` opts into SGR wheel reports (off by
-  default: they disable the terminal's own selection).
+  conversation by itself with `y Y A d D n`; only the letters of the decisions it offers answer it,
+  and only while the draft is empty; Enter with a draft under it sends the draft, and with the
+  draft empty shows the whole command (`Keymap.show_all?/2`). A run this session already asked to
+  stop (`State.stops_asked`) is no longer "the turn", so the next Ctrl-C stops another or arms the
+  quit. Wheel reports are on by default (pass73 T9): the wheel scrolls the pane under the pointer;
+  Shift-drag (Option-drag in Terminal.app/iTerm2) selects text; `/mouse off` (kept in cli.json) or
+  `SWARM_MOUSE=0` turns them off. Enter on the `/` list takes the highlighted command (runs it when
+  it takes no argument); a message naming a workflow goes as `/create-workflow`, Ctrl-S sends it
+  plain. `SwarmCodeCLI.UI.Composer.enter_action/1` is the one answer to "what does Enter do now"
+  (send, steer, queue, run, complete, show all) for the keymap, the footer and the pending marks.
 - Measure glyphs with `SwarmCodeCLI.UI.Width.cells/2` under both ambiguous-width policies before
   drawing. Box drawing, half blocks and emoji are ambiguous or wide. Progress is the `▐` tick
   bar, not a solid fill. Colours come from `UI.Theme` (the web app's Carbon tokens); never invent
   a palette. The launchers build the capabilities by hand: the rich glyph tier (thin `▏` rails)
   needs truecolor and a `TERM` naming ghostty, kitty, wezterm or iTerm
-  (`Capabilities.glyph_tier/4`), and the light palette is chosen once by `Theme.mode/2`
-  (`SWARM_THEME`, else the desktop settings' `mode`) and passed to the port owner (pass 71).
+  (`Capabilities.glyph_tier/4`), and the palette starts as `Theme.mode/3` (`SWARM_THEME` >
+  cli.json `theme` > the desktop settings' `mode` > dark, through
+  `Release.PersistedSession.start_preferences/3`); `/theme` switches it live
+  (`{:terminal_preferences, …}` to the port owner, which also sends the port's tag-8 wheel
+  command for `/mouse`). `/diff off` draws every tool row on one line.
 - To drive the real TUI end to end, do not sleep inside the Python pty harness: it stops draining
   the pty and the port dies with fake `:draw`/`:restoration` errors. Use GNU screen
   (`screen -dmS name …`, then `screen -S name -p 0 -X width -w 170 45`, `-X stuff`,
-  `-X hardcopy`), and always quit the TUI with its own quit path (Ctrl-C twice, and a third time if
+  `-X hardcopy`; macOS's screen 4.00 does not pass `width -w` on to a detached window's app, so
+  start it as `stty cols 170 rows 45; <command>` in the window's shell, and set
+  `-X logfile flush 1` so a `-L` log holds the last frame), and always quit the TUI with its own quit path (Ctrl-C twice, and a third time if
   it asks "Stop N live runs and quit?") before closing the window. Screen sets `TERM=screen`
   inside its window, so pass `TERM=xterm-ghostty COLORTERM=truecolor` in the command to see the
   rich tier. The release prints a short exit summary to the main screen after it leaves the
@@ -214,6 +227,25 @@ by `scripts/dev/sync_unicode_width.exs --check`, `sync_unicode_variants.py --che
   `:default` handler without them keeps only OTP reports): look for `watch queue overflow`,
   `the daemon asked for a fresh … snapshot (reason)`, `watch_ready rejected: <check>`,
   `event rejected: <check>`, `closing the daemon connection: <why>` and `data source lost`.
+- Scrolling counts an item's rows with `ScrollMetrics.height/3`, which is `Turns.height/3`, the rows
+  the painter draws. An item that draws nothing (a thinking item with no text, a worker's call
+  under a folded lane) counts 0 rows in `Scroll` too (pass 73 F9): clamped to 1, the first wheel
+  notch from the bottom of a tool-using turn moved nothing.
+- Nothing is refused because work runs (pass 73 T3/T8, `PersistedBackend` `dispatch_send`):
+  run-launching commands (`/swarm`, `/plan <task>`, `/consensus`, `/create-workflow`, workflows,
+  goals) start beside the live runs; a plain message while this conversation's chat run is
+  registered steers the newest one (`Engine.steer/4`); `/compact` during a turn, and a message
+  during a compaction, wait on the conversation's queue and drain when it ends. The `Outcome`
+  says where a send went (`disposition` started | steered | queued) and a refusal why
+  (`reason: %Refusal{code, text}`; the text is shown as is); the transcript marks a steered
+  message (`target_kind: :steer`) and draws `queued_texts` after the live turn. User-facing
+  words never say "the daemon".
+- Busy sessions stay up (pass 73 T11): an ack for a dropped watch is answered, request ids are
+  recent windows (4,096 daemon, 256 client), watches have their own 16 slots and the 33rd request
+  gets `capacity_exceeded`, `send_timeout` is 45 s, the client's read backlog applies
+  backpressure. Every close is logged on both sides with a redacted reason
+  (`SwarmCode daemon closed a client connection: <why>`, `the client closed its connection`,
+  `SwarmCode daemon refused a command (<op>): <code>`).
 - A transcript item carries at most 8 KB of a prompt or reply and 2 KB of a tool's output
   (`PersistedBackend` `@reply_bytes`, the projection's `substr`), with a `detail_ref` for the
   rest; the transcript says how much is left and Enter (or `o`) on the item opens it whole. A

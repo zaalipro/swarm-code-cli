@@ -318,7 +318,7 @@ Mouse: the wheel scrolls the pane under the pointer (the transcript, the side pa
 | `a` | Open the action menu for what is selected |
 | `y` | Copy the selected item's text to the clipboard |
 | `o` | Open the full text of the selected item |
-| `Enter` | Activate what is focused |
+| `Enter` | Activate what is focused; on an approval card that cuts its command, show all of it |
 | `Alt-Enter` | Queue the draft instead of sending it |
 | `n` | Open the next approval or question waiting on you, across every run |
 | `N` | Open the previous approval or question waiting on you |
@@ -399,7 +399,7 @@ Mouse: the wheel scrolls the pane under the pointer (the transcript, the side pa
 | `a` | Open the action menu for what is selected |
 | `y` | Copy the selected item's text to the clipboard |
 | `o` | Open the full text of the selected item |
-| `Enter` | Activate what is focused |
+| `Enter` | Activate what is focused; on an approval card that cuts its command, show all of it |
 | `Alt-Enter` | Queue the draft instead of sending it |
 | `n` | Open the next approval or question waiting on you, across every run |
 | `N` | Open the previous approval or question waiting on you |
@@ -463,7 +463,7 @@ Mouse: the wheel scrolls the pane under the pointer (the transcript, the side pa
 
 | Keys | Does |
 |---|---|
-| `Enter` | Activate what is focused |
+| `Enter` | Activate what is focused; on an approval card that cuts its command, show all of it |
 | `Alt-Enter` | Queue the draft instead of sending it |
 
 ### Layers
@@ -509,7 +509,7 @@ Mouse: the wheel scrolls the pane under the pointer (the transcript, the side pa
 
 | Keys | Does |
 |---|---|
-| `Enter` | Activate what is focused |
+| `Enter` | Activate what is focused; on an approval card that cuts its command, show all of it |
 | `Alt-Enter` | Queue the draft instead of sending it |
 
 ### Layers
@@ -584,7 +584,7 @@ Mouse: the wheel scrolls the pane under the pointer (the transcript, the side pa
 
 | Keys | Does |
 |---|---|
-| `Enter` | Activate what is focused |
+| `Enter` | Activate what is focused; on an approval card that cuts its command, show all of it |
 | `Alt-Enter` | Queue the draft instead of sending it |
 | `y` | Confirm: yes; on an approval, allow it once |
 | `a` | Allow the pending request once (same as y) |

@@ -102,7 +102,12 @@ act only while the overlay's composer is empty.
 
 An approval or a question opens over the conversation by itself; for a moment
 after it opens, keys keep typing into the draft, so a sentence is never
-answered by accident. The client answers some slash commands itself: `/new`
+answered by accident. Only the letters of the decisions the card offers answer
+it, and only while the draft is empty; any other letter types, and Enter with a
+draft sends it (the card stays). The approval card is a framed card above the
+composer with the command in a code block of at most six lines; with the draft
+empty, Enter shows every line and Enter again folds them back. The client
+answers some slash commands itself: `/new`
 (`/clear`), `/resume` (pick a conversation), `/approval read-only|auto|full`
 (bare: a picker of the three, the current one checked; every change of the mode,
 from here or anywhere, is said in the chat as "Approvals: auto → full access"),
@@ -190,7 +195,8 @@ canonical database and survive reinstalls.
 | `SWARM_MODEL_OVERRIDE` | Set by `swarmcode --model` only: the session's model, never written |
 | `SWARM_KEYMAP` | `vim` for vim keys in the composer |
 | `SWARM_ASCII` | `1` draws plain ASCII glyphs, for a terminal or font without symbols |
-| `SWARM_MOUSE` | `1` for mouse-wheel scrolling |
+| `SWARM_MOUSE` | `0` turns mouse-wheel reports off, `1` on; wins over `/mouse` in `cli.json` (default on) |
+| `SWARM_THEME` | `dark` or `light`; wins over `/theme` in `cli.json` and the desktop's mode (default dark) |
 | `SWARM_COMPANION` | `0` turns the visual companion off |
 | `SWARM_APPROVAL` | Unsaved live launcher only: `ask` (default), `read-only` or `auto`; saved sessions use the project's approval mode |
 | `SWARM_ENV_FILE` | Optional shell environment file; defaults to `~/.secrets` |

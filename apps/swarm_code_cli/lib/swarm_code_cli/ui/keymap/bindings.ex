@@ -834,7 +834,7 @@ defmodule SwarmCodeCLI.UI.Keymap.Bindings do
       contexts: [:main, :inspector, :picker, :field, :dialog],
       group: :act,
       label: "Act",
-      help: "Activate what is focused",
+      help: "Activate what is focused; on an approval card that cuts its command, show all of it",
       hint: 8
     },
     # The same key and the same special as :activate, split out so the status
