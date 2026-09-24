@@ -119,9 +119,9 @@ sees the partial text before the run finishes.
 
 ## Acceptance
 
-The PNGs are under `/Users/zaali/.cache/p70cli/p72-F/`. The release for QA is at
-`/Users/zaali/.cache/p70cli/rel-p72/`, built from 28c1cb1 (F19). The later commits change only
-documentation and tests.
+The PNGs are under `/Users/zaali/.cache/p70cli/p72-F/`. The release at
+`/Users/zaali/.cache/p70cli/rel-p72/` was first built from 28c1cb1 (F19) for QA, then rebuilt from b8294d9 (G21) after
+the QA fixes. See "QA findings after the finisher" for the new PNGs.
 
 | # | Item | Result | Evidence |
 | --- | --- | --- | --- |
@@ -147,6 +147,73 @@ documentation and tests.
   - The projector takes 40–60 ms per frame on this branch (test env). On main it takes 61–78 ms,
     with the old inspector.
   - The panel's own plan takes 6–9 ms.
+
+## QA findings after the finisher (G1–G21)
+
+QA's report is `/Users/zaali/.cache/p70cli/p72-Q/qa.md`. Every P0 and P1 item and the cheap P2
+items were fixed, each with a regression test. Where QA and the plan disagree, I followed the plan
+and say so in the table.
+
+| QA | Priority | Outcome | Commit |
+| --- | --- | --- | --- |
+| Q1 `^F` + digit strands the user in a run view | P0 | Fixed. The digit keeps the chat and scrolls it to the run's first item. A run from another chat opens that chat. Enter with a draft in a run view now says why nothing was sent. | 97685a5 G1 |
+| Q2 the Lead sorts after the agents that need you | P1 | Fixed. `[`/`]`, "Nth of M" and the tree follow the run block: Lead first, then children, siblings by start. G21 fixes a gap found in the live check: persisted workers point at the Lead's spawn op, so they drew flat. They now nest by depth. | bf86113 G2, b8294d9 G21 |
+| Q3 the shared prefix is never trimmed | P1 | Fixed. The prefix and suffix are trimmed when 3+ siblings share them. The team header reads `4 × reviewer-*`. Short names stay distinct, and the band's name column fits them. I kept the 3-sibling threshold (plan over QA): D2's research frame keeps `reader-docs`/`reader-code` whole. | 7069673, de5d3cd G3 |
+| Q4 findings as raw JSON; the path repeated | P1 | Fixed. JSON findings, whole or cut by the 4 KB head, become a numbered list or "No findings." The path moves to the refs as a basename. | c4757bc G4 |
+| Q5 LIFE draws idle while thinking/waiting | P1 | Fixed, except one part. Open agents run to the clock, and an in-flight detail request goes stale after 10 s, another generation, or leaving, so it no longer blocks the next. This stale request caused the client fallback. Deferred: an approval wait that has been answered still draws as tools, because persisting the wait needs a domain change. | 324379e G6 |
+| Q6 transcript agent lines clipped without … | P1 | Fixed. The sentence is cut with … and the meta is kept. | bb6c637 G5 |
+| Q7 latency under 2–3 live runs | P1 | Fixed. The safe-text mark check has an ASCII fast path, and `Width.take_prefix` is linear. Appends to one stream are joined. On the 1500-item scene, chat went from 76–96 ms to 30–37 ms, and the overlay from 139–171 ms to 50–55 ms. | 31b6ee6 G14 |
+| Q8 "ran" for commands that did not run | P1 | Fixed. Commands read asked to run, running, blocked, you denied, stopped, failed or ran. Tool names are humanized, and find_files counts as a search. | eeca0c3 G7 |
+| Q9 hint letters on undrawn rows | P1 | Fixed. Letters follow the band's drawn rows, in order. | de60efe G8 |
+| Q10 transcript order regressions | P1 | Fixed. Late workers are drawn before the stop notice. Streamed steps keep their place. An ask says its question once. | 519be2e G9 |
+| Q11 typing at a card answers it | P1 | Fixed. At a card that opened by itself, only y Y A d D n answer, and only while the draft is empty. ^N to another chat opens that chat. | 44e5bc0, eef3579 G10 |
+| Q12 overlay steer invisible | P1 | Fixed. The steer is echoed in the overlay (`› you: “…”`), and the chat shows "steered to <name>". A daemon test checks that the steer reaches only its target. Deferred: persisting the target on the message is a domain change. | 9827a17 G11 |
+| Q13 "now" is the model's narration | P1 | Fixed. Narration openers become verb phrases, empty narration falls back to the recent tool, and ": 1." lists are handled. | 465444c G12 |
+| Q14 the header loses the agent on a long title | P1 | Fixed. The run title is trimmed first, and the run clock moves to the meta row. | a4429c9 G13 |
+| Q15 `A always` leaves identical pending requests | P2 | Fixed. The same family already waiting in the run is settled too. | 320617b G15 |
+| Q16 `⬢` in the tab strip | P2 | Deferred. 13 tests from earlier passes pin the logo and the tab counts as the shell's design (W5 Change 2). This is outside the panel's scope. | — |
+| Q17 the beam survives SIGHUP | P2 | Fixed. Output writes have a timeout, and `System.stop` has a 10 s `System.halt` fallback. Live: the beam exited 4 s after `screen -X quit`. | 92a528c G17 |
+| Q18 hint footer spacing | P2 | Fixed. The footer reads `s-l open  1-5 run  ^F again: needs you  Esc`. Deferred: the narrow D10 sheet. | de60efe G8 |
+| Q19 band reason cut; workflow_control called "a command" | P2 | Fixed. NeedsYou carries an optional `tool`, so the band reads "wants to use workflow control", and the reason is "· auto asks". The flaky steer test also got headroom. | e974b9f G18, a8010c7 G19 |
+| Q20 counts disagree | P2 | Deferred. The counts and token semantics need a shared count source. | — |
+| Q21 card docked, not inline | P2 | Deferred. The D9 inline card is a layout change. | — |
+| Q22 overlay details | P2 | Deferred. RESULT is still flattened markdown, and the finished agent's composer hint, the LIFE story brackets and Ctrl-U remain. | — |
+| Q23 "stopped stopped" | P2 | Fixed. The line reads "before it finished". | 961cd7a G20 |
+| Q24 palette overflow and duplicates | P2 | Deferred (palette, not the panel). | — |
+| Q25 empty workflow parameters in titles | P2 | Fixed. `Model.title/1` drops empty `key=` in the panel, strip, shapes, tabs and overlay. | a4429c9 G13 |
+| Q26 mono-tier glyphs | P2 | Deferred. The tier's glyph set is measured under Width.cells, and changing it needs the width work. | — |
+| Q27 the 60 s lane is always ▂ | P2 | Deferred. This is a design question for D2's rhythm. | — |
+
+### Live check after the fixes
+
+The check used the sandbox recipe on ailogic, with 6 real prompts and deepseek-v4-pro:
+
+- a 4-reviewer swarm
+- a steer
+- two command turns
+- a 2-worker approval swarm
+
+The release was rebuilt at b8294d9 and copied to `/Users/zaali/.cache/p70cli/rel-p72/`. Then
+`_build/prod` was removed. The PNGs:
+
+- `/Users/zaali/.cache/p70cli/p72-F/polish/final-panel-swarm.png`: D2 frame 1. The team header reads `4 × reviewer-*`, and the rows use the short names.
+- `/Users/zaali/.cache/p70cli/p72-F/polish/final-hint.png`: `^F` letters in band order, with the footer `s-j open  1 run  ^F again: needs you  Esc`.
+- `/Users/zaali/.cache/p70cli/p72-F/polish/final-overlay-steer.png`: the steer echoed in ACTIVITY.
+- `/Users/zaali/.cache/p70cli/p72-F/polish/final-chat-steered.png`: "steered to reviewer-controllers" under the user line.
+- `/Users/zaali/.cache/p70cli/p72-F/polish/final-overlay-done.png`: the overlay once the agent finished (RESULT, LIFE to the end).
+- `/Users/zaali/.cache/p70cli/p72-F/polish/final-chat-stopped.png`: "before it finished" after a stop.
+- `/Users/zaali/.cache/p70cli/p72-F/polish/final-card.png`: the approval card for `mix help compile`.
+- `/Users/zaali/.cache/p70cli/p72-F/polish/final-always-settled.png`: one `A` settled both workers' identical requests. Typing "hello day" first went to the draft; nothing was answered.
+- `/Users/zaali/.cache/p70cli/p72-F/polish/final-overlay-tree.png`: the rebuilt release; WHERE IT SITS nests `├ checker-a` / `╰ checker-b` under the Lead (G21).
+- `/Users/zaali/.cache/p70cli/p72-F/polish/final-chat-commands.png`: the command rows in the chat.
+
+Pressing `^F 1` in the live swarm kept the chat and scrolled it to the run (Q1). Closing the screen
+session ended the beam in about 4 s (Q17).
+
+The live check also showed two things that are not fixed:
+
+- An overlay RESULT that is markdown still reads flat (`## Findings ### 1.`), as recorded under Q22.
+- Worker results can carry an integration note about a delta patch ("65 files changed") even when the worker edited nothing. This comes from the domain's worktree isolation and is outside the panel's scope.
 
 ## Still open
 
@@ -199,3 +266,18 @@ under load. It also passes alone three times out of three.
 
 A third run on F23 (3abcd0e) passed cleanly: core 147/0, daemon 982/0, cli 1630 + 7 properties/0,
 provenance and snapshot checks green, exit 0.
+
+### Final precommit (after G21)
+
+A `mise exec -- mix precommit` run on b8294d9, with `_build/prod` removed, exited 0:
+
+- core: 147 tests, 0 failures
+- daemon: 993 tests, 0 failures
+- cli: 7 properties, 1649 tests, 0 failures
+- unicode-width attestation OK
+- 31730 attested pairs verified
+
+Two more checks passed:
+
+- `scripts/dev/check_terminal_port.sh` exited 0: 58 locked crates and 108 license texts.
+- `mix swarm_code.keymap --check` exited 0: `docs/keybindings.md` matches the binding table.
