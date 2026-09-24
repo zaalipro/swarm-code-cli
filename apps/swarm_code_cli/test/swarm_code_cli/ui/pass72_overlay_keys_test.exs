@@ -416,6 +416,28 @@ defmodule SwarmCodeCLI.UI.Pass72OverlayKeysTest do
       assert Enum.at(rows, lead + 3) =~ ~r/╰ ! web.*you are here/u
     end
 
+    test "workers whose parent_id names the Lead's spawn op still nest under the Lead" do
+      agents =
+        Enum.map(swarm_agents(), fn
+          %{role: :lead} = lead -> lead
+          worker -> %{worker | parent_id: "op-spawn"}
+        end)
+
+      state =
+        ready(agents: agents)
+        |> Map.put(:layers, [])
+        |> Reducer.update({:overlay_open, "r1", "data"})
+        |> elem(0)
+
+      assert Enum.map(Overlay.neighbours(state), & &1.id) == ~w(lead engine data web)
+
+      rows = screen_rows(state)
+      lead = Enum.find_index(rows, &(&1 =~ ~r/[●◐◌] Lead/u))
+      assert lead, Enum.join(rows, "\n")
+      assert Enum.at(rows, lead + 1) =~ ~r/├ . engine/u
+      assert Enum.at(rows, lead + 3) =~ ~r/╰ . web/u
+    end
+
     test "the approval grammar answers only while the composer is empty" do
       state =
         ready(runs: [run("r1", :waiting_approval)], interactions: [approval("a1", "r1", "web")])

@@ -31,7 +31,13 @@ defmodule SwarmCodeCLI.UI.Reducer.Hint do
       |> Enum.sort_by(&{root_rank(&1), &1.depth || 0, &1.started_at || 0, &1.id})
 
     ids = MapSet.new(agents, & &1.id)
-    children = Enum.group_by(agents, &parent_in(&1, ids))
+
+    # The returned agents carry the resolved parent, so the overlay's tree
+    # draws the same nesting this order follows.
+    children =
+      agents
+      |> Enum.map(&%{&1 | parent_id: parent_in(&1, ids, agents)})
+      |> Enum.group_by(& &1.parent_id)
 
     children
     |> Map.get(nil, [])
@@ -41,8 +47,25 @@ defmodule SwarmCodeCLI.UI.Reducer.Hint do
   defp root_rank(agent), do: if(agent.role == :lead or agent.parent_id == nil, do: 0, else: 1)
 
   # An agent whose parent is not in the run (or is itself) hangs from the root.
-  defp parent_in(%{parent_id: parent, id: id}, ids) do
-    if parent != id and MapSet.member?(ids, parent), do: parent, else: nil
+  # pass72 G21: a worker's persisted parent_id names the Lead's spawn_agent
+  # operation, not the Lead, so it falls back to depth: the latest agent one
+  # level up that started no later than it (the panel nests by depth too).
+  defp parent_in(%{parent_id: parent, id: id} = agent, ids, agents) do
+    cond do
+      parent != id and MapSet.member?(ids, parent) -> parent
+      (agent.depth || 0) > 0 -> by_depth(agent, agents)
+      true -> nil
+    end
+  end
+
+  defp by_depth(agent, agents) do
+    up = Enum.filter(agents, &((&1.depth || 0) == agent.depth - 1 and &1.id != agent.id))
+    started = agent.started_at || 0
+
+    case Enum.filter(up, &((&1.started_at || 0) <= started)) do
+      [] -> up |> List.first() |> then(&(&1 && &1.id))
+      before -> List.last(before).id
+    end
   end
 
   defp subtree(agent, children, seen) do
