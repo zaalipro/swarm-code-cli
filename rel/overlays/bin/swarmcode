@@ -50,7 +50,8 @@ Session:
   SWARM_COMPANION=0    do not serve the visual companion
 
 Keys: type to write; Enter sends, Esc stops a turn, Ctrl-C twice quits,
-Ctrl-P palette (also /resume, /new, /model, /approval), Ctrl-T select, ? every key.
+Ctrl-P palette (also /resume, /new, /model, /approval), Ctrl-T select, ? every key,
+Ctrl-F agents (side-panel hints), Ctrl-B panel (full, compact, hidden).
 SWARM_PROJECT_ROOT is ignored; name the directory instead.
 HELP
 }

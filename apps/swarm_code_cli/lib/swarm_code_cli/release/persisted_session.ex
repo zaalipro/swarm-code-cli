@@ -323,7 +323,9 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
           frame_ms: 33,
           close_ms: 3000,
           wall_clock: true,
-          instruction_sink: self()
+          instruction_sink: self(),
+          # pass72 P6: the panel's shape persists in cli.json beside the database.
+          preferences_path: SwarmCodeCLI.Release.preferences_path()
         )
 
       start_companion(supervisor, runtime, Path.basename(session.project.root_path))
