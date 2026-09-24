@@ -2085,15 +2085,19 @@ defmodule SwarmCodeCLI.UI.Reducer do
   end
 
   # An accepted send names the run it started: remember it while it is not on
-  # screen, and aim a stop that waited for this request at it.
+  # screen, and aim a stop that waited for this request at it. pass73 (S's
+  # request K4): only a send that started a run; a steered one names the
+  # running turn (already on screen), a queued one names none.
   defp note_sent_turn(
          state,
          %{kind: {:dispatch, :send, _, _, _}, origin: {:draft, {conv, _}}} = request,
          %Outcome{
            status: :accepted,
-           identifiers: [run_id | _]
+           identifiers: [run_id | _],
+           disposition: disposition
          }
-       ) do
+       )
+       when disposition in [nil, :started] do
     state =
       if Map.has_key?(state.read_model.runs, run_id),
         do: state,
