@@ -771,6 +771,20 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
         [heading | entries]
       end)
 
+    # pass73 finisher (K's request F2): while wheel reports are on, the sheet
+    # ends with how the mouse works and how to select text anyway.
+    lines =
+      if Map.get(state, :mouse?, true) do
+        note =
+          SwarmCodeCLI.UI.Keymap.Docs.mouse_note()
+          |> String.replace("`", "")
+          |> SwarmCodeCLI.UI.Prose.wrap(max(1, inner - 2), policy)
+
+        lines ++ [""] ++ note
+      else
+        lines
+      end
+
     options =
       lines
       |> Enum.with_index()

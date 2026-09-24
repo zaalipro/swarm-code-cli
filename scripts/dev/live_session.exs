@@ -109,6 +109,19 @@ defmodule SwarmCode.Development.LiveSession do
             Capabilities.glyph_tier(color_mode(), :narrow, false, System.get_env("TERM"))
         }
 
+        # pass73 finisher (K's request F4): the theme, the wheel and the diffs
+        # start as the release starts them (SWARM_THEME > cli.json > dark;
+        # SWARM_MOUSE > cli.json > on), so the state and the port agree.
+        preferences =
+          SwarmCodeCLI.UI.Init.Preferences.read(SwarmCodeCLI.Release.preferences_path())
+
+        start =
+          SwarmCodeCLI.Release.PersistedSession.start_preferences(
+            System.get_env(),
+            preferences,
+            nil
+          )
+
         init = %Init{
           focus: "composer",
           size: caps.size,
@@ -116,7 +129,12 @@ defmodule SwarmCode.Development.LiveSession do
           source_epoch: source_epoch,
           destination: {:conversation, conversation_id},
           banner: :live_banner,
-          now: System.system_time(:millisecond)
+          now: System.system_time(:millisecond),
+          panel_mode: preferences.panel_mode,
+          show_diffs: preferences.show_diffs,
+          theme_mode: start.theme,
+          theme_env: start.theme_env,
+          mouse?: start.mouse?
         }
 
         runtime =
@@ -142,9 +160,9 @@ defmodule SwarmCode.Development.LiveSession do
           child!(supervisor, Owner,
             runtime: runtime,
             capabilities: caps,
-            flags: %{alternate?: true, focus?: true, paste?: true},
+            flags: %{alternate?: true, focus?: true, paste?: true, mouse?: start.mouse?},
             executable: executable,
-            theme: SwarmCodeCLI.UI.Theme.mode(System.get_env("SWARM_THEME"), nil)
+            theme: start.theme
           )
 
         owner_monitor = Process.monitor(owner)
