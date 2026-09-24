@@ -26,23 +26,25 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
   `plan/3` returns the rows with the target each one stands for, which
   `PanelOrder.entries/1` reads, so the hint keys and the rows never disagree.
   """
-  alias SwarmCodeCLI.UI.Projector.Panel.{Draw, Model, Shapes}
+  alias SwarmCodeCLI.UI.Projector.Panel.{Draw, Model, Name, Shapes}
   alias SwarmCodeCLI.UI.Projector.Inspector.Changes
 
   @full_lane 12
   @compact_lane 8
-  @short_field 8
-
-  # The compact name column: the widest short name and one cell, 5..8 (P6).
+  # The compact name column: the widest name and one cell. pass73 T10: it is
+  # the agent's one name (`Panel.Name`), cut at its end with `…` only where
+  # the sentence would keep fewer than 14 cells (16 cells of name in a
+  # 46-cell pane), never a different, shorter word.
   defp short_field(ctx) do
     widest =
       ctx.views
       |> Map.values()
       |> List.flatten()
-      |> Enum.map(&Draw.cells(&1.short, ctx.state))
+      |> Enum.map(&Draw.cells(&1.display, ctx.state))
       |> Enum.max(fn -> 4 end)
 
-    min(@short_field, max(5, widest + 1))
+    badge = if ctx.hint?, do: 2, else: 0
+    min(max(5, widest + 1), max(5, ctx.width - 29 - badge))
   end
 
   @type target ::
@@ -137,6 +139,16 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
     footer = if height >= 8, do: footer, else: []
     room = max(0, height - length(footer))
 
+    # pass73 T9 (K's `panel_scroll`, the wheel over the panel): the drawn
+    # rows scroll by what the wheel asked, as far as the overflow goes; the
+    # needs-you band stays pinned (R3).
+    drawn = Enum.count(rows, &(elem(&1, 0) != nil))
+
+    skip =
+      min(max(0, Map.get(ctx.state, :panel_scroll, 0) || 0), max(0, drawn - max(room - 1, 0)))
+
+    rows = scrolled(rows, skip)
+
     {kept, _} =
       Enum.reduce_while(rows, {[], 0}, fn r, {acc, n} ->
         cond do
@@ -156,10 +168,28 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
       end)
 
     words =
-      if left > 0, do: "+#{left} more · Ctrl-G all runs", else: "more below · Ctrl-G all runs"
+      cond do
+        left > 0 and skip > 0 -> "+#{left} more · more above · Ctrl-G all runs"
+        left > 0 -> "+#{left} more · Ctrl-G all runs"
+        skip > 0 -> "more above · Ctrl-G all runs"
+        true -> "more below · Ctrl-G all runs"
+      end
 
     more = if room >= 1, do: [row(ctx, [{words, :text_faint}], [])], else: []
     kept ++ more ++ footer
+  end
+
+  defp scrolled(rows, 0), do: rows
+
+  defp scrolled(rows, skip) do
+    {kept, _} =
+      Enum.flat_map_reduce(rows, skip, fn {block, _target, opts} = row, left ->
+        if left == 0 or block == nil or Keyword.get(opts, :band, false),
+          do: {[row], left},
+          else: {[], left - 1}
+      end)
+
+    kept
   end
 
   # Where the band goes (R3, D2): under the run's header when one run is
@@ -296,7 +326,13 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
       )
 
     inner = ctx.width - 5
-    request = Draw.wrap(ask.text, inner, 3, state)
+
+    # pass73 T10: a command or a file is one row, cut with `…` (the card and
+    # the overlay show it whole); a question may take three.
+    request =
+      if question?,
+        do: Draw.wrap(ask.text, inner, 3, state),
+        else: [Draw.elide(Model.flat(ask.text), inner, state)]
 
     badge = badge_for(ctx, view)
 
@@ -332,16 +368,17 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
 
     head = row(ctx, [{title, :warning, [:bold]}], right, band: true, background: :card)
 
-    # pass72 G3 (QA Q3): the band's name column fits the short names (≤ 8).
+    # pass72 G3 (QA Q3): the band's name column fits the names; pass73 T10:
+    # the same name as the agent's row, cut with `…` only past 16 cells.
     name_w =
       shown
-      |> Enum.map(fn {_, _, view} -> Draw.cells((view && view.short) || "Lead", ctx.state) end)
+      |> Enum.map(fn {_, _, view} -> Draw.cells((view && view.display) || "Lead", ctx.state) end)
       |> Enum.max(fn -> 4 end)
-      |> min(8)
+      |> min(16)
 
     items =
       Enum.map(shown, fn {ask, _run, view} ->
-        short = (view && view.short) || "Lead"
+        short = Name.fit((view && view.display) || "Lead", name_w, ctx.state)
         role = (view && view.name_role) || :text_primary
         badge = badge_for(ctx, view)
         lead = if badge, do: badge_segments(ctx, badge), else: [{"  ", :plain}]
@@ -807,7 +844,7 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
           []
 
         done ->
-          names = Enum.map_join(done, ", ", & &1.short)
+          names = Enum.map_join(done, ", ", & &1.display)
 
           [
             row(ctx, [
@@ -854,7 +891,11 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
         [
           {g(ctx, view.state), Model.glyph_role(view.state), glyph_mods},
           {" ", :plain},
-          {Draw.pad_to(view.short, short_field(ctx), state), dim.(view.name_role)},
+          {Draw.pad_to(
+             Name.fit(view.display, short_field(ctx) - 1, state),
+             short_field(ctx),
+             state
+           ), dim.(view.name_role)},
           {" ", :plain}
         ] ++ body,
       []
@@ -918,8 +959,8 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
     state = ctx.state
 
     cond do
-      v = Enum.find(views, & &1.needs_you?) ->
-        [{"! " <> v.short, :warning}, {" " <> elem(Model.sentence(v, state), 0), :text_muted}]
+      v = Model.first_waiting(views) ->
+        [{"! " <> v.display, :warning}, {" " <> elem(Model.sentence(v, state), 0), :text_muted}]
 
       v = Enum.find(views, &(&1.state == :failed)) ->
         [
@@ -931,7 +972,7 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
         [{fact, :text_muted}]
 
       v = Enum.find(Enum.reverse(views), &(&1.state in [:working, :thinking])) ->
-        [{v.short <> " " <> elem(Model.sentence(v, state), 0), :text_muted}]
+        [{v.display <> " " <> elem(Model.sentence(v, state), 0), :text_muted}]
 
       true ->
         [{Model.word(hd(views ++ [%{state: :done}]).state), :text_muted}]

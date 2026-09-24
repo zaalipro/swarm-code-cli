@@ -47,8 +47,9 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
   # card grew into main, else the slash popup completing the draft.
   defp popup(state, rect) do
     case ApprovalCard.layout(state, rect.width) do
+      # pass73 T7: the framed card and the blank row under it, on the canvas.
       %{rows: rows, growth: growth} ->
-        rows |> Enum.take(growth) |> Composer.card_blocks(state, rect.width)
+        rows |> Enum.take(growth) |> Enum.map(&ApprovalCard.block(&1, state, rect.width))
 
       nil ->
         cond do

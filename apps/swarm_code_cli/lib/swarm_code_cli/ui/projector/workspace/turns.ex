@@ -40,7 +40,7 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
   alias SwarmCodeCLI.UI.DataSource.DTO
   alias SwarmCodeCLI.UI.Scene.{Block, Span}
   alias SwarmCodeCLI.UI.Projector.{Density, Markdown, RunRow, Support}
-  alias SwarmCodeCLI.UI.Projector.Panel.Model
+  alias SwarmCodeCLI.UI.Projector.Panel.{Model, Name}
   alias SwarmCodeCLI.UI.Projector.Panel.Glyph, as: PanelGlyph
 
   @margin 2
@@ -214,8 +214,64 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
       first_by_worker: first_by_worker,
       worker_ids: Map.new(first_by_worker, fn {agent, id} -> {id, agent} end),
       lead_tools: Enum.filter(lead_work, &(&1.kind == :tool)),
-      view_first?: false
+      notices: notices(state, run, items),
+      view_first?: false,
+      pending?: false
     }
+  end
+
+  # pass73 T7: every change of the approval policy prints a notice in the
+  # transcript ("Approvals: auto → full access", K's `policy_notices`), after
+  # the item that was the newest when it happened: in the run that had
+  # started last by then, its last item not newer than the change.
+  defp notices(state, run, items) do
+    case {Map.get(state, :policy_notices, []), run} do
+      {[_ | _] = all, %{conversation_id: conversation}} when items != [] ->
+        runs =
+          state.read_model.runs
+          |> Map.values()
+          |> Enum.filter(&(&1.conversation_id == conversation))
+
+        all
+        |> Enum.filter(&(Map.get(&1, :conversation_id) == conversation))
+        |> Enum.filter(fn notice -> current_run(runs, notice.at) == run.id end)
+        |> Enum.reduce(%{}, fn notice, acc ->
+          anchor =
+            items
+            |> Enum.filter(&(is_integer(&1.at) and &1.at <= notice.at))
+            |> List.last()
+            |> Kernel.||(List.last(items))
+
+          Map.update(acc, anchor.id, [notice], &(&1 ++ [notice]))
+        end)
+        |> Map.new(fn {id, list} -> {id, Enum.sort_by(list, & &1.at)} end)
+
+      _ ->
+        %{}
+    end
+  end
+
+  defp current_run(runs, at) when is_integer(at) do
+    runs
+    |> Enum.filter(&((Map.get(&1, :started_at) || 0) <= at))
+    |> Enum.max_by(&{Map.get(&1, :started_at) || 0, &1.created_sequence, &1.id}, fn -> nil end)
+    |> then(&(&1 && &1.id))
+  end
+
+  defp current_run(_runs, _at), do: nil
+
+  @doc """
+  The run whose block the pending sends close (pass73 T3/T8): the live chat
+  turn of the conversation in view, else the last run shown.
+  """
+  def pending_run(state, runs) do
+    live =
+      runs
+      |> Enum.map(&Map.get(state.read_model.runs, &1))
+      |> Enum.filter(&match?(%{kind: :chat, state: s} when s in @live, &1))
+      |> List.last()
+
+    (live && live.id) || List.last(runs)
   end
 
   defp late_workers(items, first_by_worker) do
@@ -309,7 +365,12 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
         # An item of a run the view does not show (a superseded turn) takes no
         # row, so scrolling over the daemon's order skips it as the paint does.
         if runs == [] or run_id in runs do
-          ctx = %{context(state, run_id) | view_first?: List.first(runs) == run_id}
+          ctx = %{
+            context(state, run_id)
+            | view_first?: List.first(runs) == run_id,
+              pending?: run_id == pending_run(state, runs)
+          }
+
           length(rows(state, ctx, id, width))
         else
           0
@@ -342,11 +403,21 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
       end
 
     header = if item.id == ctx.header_id, do: header_rows(ctx, state, width), else: []
-    tail = if item.id == ctx.last_id, do: tail_rows(ctx, state, width), else: []
+
+    tail =
+      if item.id == ctx.last_id,
+        do:
+          tail_rows(ctx, state, width) ++
+            if(Map.get(ctx, :pending?, false), do: pending_rows(ctx, state, width), else: []),
+        else: []
+
+    notices = notice_rows(Map.get(Map.get(ctx, :notices, %{}), item.id, []), state)
 
     # The header opens the lead's turn, so it comes before the item's own
     # rows; the answer and the footer close the run after the last item.
-    if item.role == :user, do: own ++ header ++ tail, else: header ++ own ++ tail
+    if item.role == :user,
+      do: own ++ header ++ tail ++ notices,
+      else: header ++ own ++ tail ++ notices
   end
 
   defp repeats?(summary, target) when is_binary(summary) and is_binary(target) do
@@ -378,11 +449,15 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
     time =
       if is_integer(item.at) and item.at > 0, do: clock(item.at), else: nil
 
+    # pass73 T5: "workflow" as the composer showed it, highlighted.
+    pieces = keyword_lines(text, lines, card)
+
     rows =
       lines
+      |> Enum.zip(pieces)
       |> Enum.with_index()
-      |> Enum.map(fn {line, index} ->
-        segs = [{"  ", :plain}, {rail, :user_rail}, {" ", :text}, {line, card}]
+      |> Enum.map(fn {{line, pieces}, index} ->
+        segs = [{"  ", :plain}, {rail, :user_rail}, {" ", :text} | pieces]
 
         segs =
           if (index == 0 and time) &&
@@ -393,10 +468,207 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
         spec(segs, {@margin, :user_card})
       end)
 
-    # One blank row before every run but the first one on screen.
-    lead = if item.id == ctx.first_id and not ctx.view_first?, do: [blank()], else: []
-    lead ++ rows ++ steer_rows(item, state)
+    # One blank row before every run but the first one on screen. pass73 T3:
+    # a message inside a run (a steer) stands apart from the work around it,
+    # a blank row above and one below unless it ends the run.
+    lead = if item.id == ctx.first_id and ctx.view_first?, do: [], else: [blank()]
+
+    trail = if item.id in [ctx.first_id, ctx.last_id], do: [], else: [blank()]
+    lead ++ rows ++ steer_rows(item, state) ++ steered_rows(item, state) ++ trail
   end
+
+  # pass73 T5: the keyword spans of the message (K's `WorkflowKeyword`),
+  # and for a message that went as `/create-workflow` the command itself,
+  # cut into each wrapped line: `[{piece, style}]` per line.
+  @create_workflow "/create-workflow"
+
+  defp keyword_lines(text, lines, card) do
+    spans = keyword_spans(text)
+
+    if spans == [] do
+      Enum.map(lines, &[{&1, card}])
+    else
+      {pieces, _} =
+        Enum.map_reduce(lines, 0, fn line, cursor ->
+          case line != "" && :binary.match(text, line, scope: {cursor, byte_size(text) - cursor}) do
+            {at, length} -> {cut_spans(line, at, spans, card), at + length}
+            _ -> {[{line, card}], cursor}
+          end
+        end)
+
+      pieces
+    end
+  end
+
+  defp keyword_spans(text) do
+    case text do
+      @create_workflow <> " " <> rest ->
+        offset = byte_size(@create_workflow) + 1
+
+        [{0, byte_size(@create_workflow)}] ++
+          Enum.map(SwarmCodeCLI.UI.WorkflowKeyword.spans(rest), fn {at, n} -> {at + offset, n} end)
+
+      _ ->
+        SwarmCodeCLI.UI.WorkflowKeyword.spans(text)
+    end
+  end
+
+  # `line` sits at byte `at` of the message; the spans that fall in it are
+  # the keyword's style, the rest the card's.
+  defp cut_spans(line, at, spans, card) do
+    stop = at + byte_size(line)
+
+    {pieces, cursor} =
+      spans
+      |> Enum.filter(fn {from, n} -> from < stop and from + n > at end)
+      |> Enum.reduce({[], at}, fn {from, n}, {acc, cursor} ->
+        from = max(from, cursor)
+        to = min(from + n, stop)
+        before = binary_part(line, cursor - at, from - cursor)
+        word = binary_part(line, from - at, to - from)
+        {[{word, {:role, :run_workflow, [:bold]}}, {before, card} | acc], to}
+      end)
+
+    rest = binary_part(line, cursor - at, stop - cursor)
+
+    [{rest, card} | pieces]
+    |> Enum.reverse()
+    |> Enum.reject(fn {piece, _} -> piece == "" end)
+  end
+
+  # pass73 T3/T8: a message the running turn took in (S's `target_kind:
+  # :steer`, or K's delivery marked `:steered` until that arrives) says so
+  # under itself.
+  defp steered_rows(%{run_id: run, text: text} = item, state) when is_binary(text) do
+    trimmed = String.trim(text)
+
+    steered? =
+      Map.get(item, :target_kind) == :steer or
+        Enum.any?(
+          Map.get(state, :deliveries, []),
+          &(Map.get(&1, :status) == :steered and Map.get(&1, :run_id) == run and
+              String.trim(Map.get(&1, :text) || "") == trimmed)
+        )
+
+    if steered?,
+      do: [
+        spec(
+          [
+            {String.duplicate(" ", @body + 2), :plain},
+            {arrow(state) <> " to the running turn", :faint}
+          ],
+          nil
+        )
+      ],
+      else: []
+  end
+
+  defp steered_rows(_item, _state), do: []
+
+  defp arrow(%{capabilities: %{ascii?: true}}), do: "->"
+
+  defp arrow(state) do
+    if Width.cells("→", state.capabilities.ambiguous_width) == 1, do: "→", else: "›"
+  end
+
+  # pass73 T3/T8: what was sent while the turn runs and has not started yet,
+  # after the live turn: S's `queued_texts` (the daemon's queue, oldest
+  # first), else K's deliveries still `:queued`; and a send still on its way.
+  defp pending_rows(ctx, state, width) do
+    queued = queued_texts(state)
+    deliveries = Map.get(state, :deliveries, []) |> Enum.reverse()
+    conversation = ctx.run && ctx.run.conversation_id
+    mine = Enum.filter(deliveries, &(Map.get(&1, :conversation_id) == conversation))
+
+    queued =
+      case queued do
+        nil -> for d <- mine, Map.get(d, :status) == :queued, do: Map.get(d, :text) || ""
+        texts -> texts
+      end
+
+    sending =
+      for d <- mine,
+          Map.get(d, :status) == :sending,
+          text = String.trim(Map.get(d, :text) || ""),
+          text != "",
+          not sent?(state, conversation, text, Map.get(d, :at)),
+          do: text
+
+    rows =
+      Enum.flat_map(
+        queued,
+        &pending_card(&1, "queued · sends after the running turn", state, width)
+      ) ++
+        Enum.flat_map(sending, &pending_card(&1, "sending…", state, width))
+
+    if rows == [], do: [], else: [blank() | rows]
+  end
+
+  defp queued_texts(state) do
+    snapshot = Map.get(state.read_model.snapshots, :workspace)
+
+    case snapshot && Map.get(snapshot, :queued_texts) do
+      texts when is_list(texts) -> Enum.filter(texts, &is_binary/1)
+      _ -> nil
+    end
+  end
+
+  # A send whose message is already in the transcript is no longer pending.
+  defp sent?(state, conversation, text, at) do
+    Enum.any?(state.read_model.transcript, fn {_, item} ->
+      item.role == :user and item.conversation_id == conversation and
+        String.trim(item.text || "") in [text, @create_workflow <> " " <> text] and
+        (not is_integer(at) or not is_integer(item.at) or item.at >= at - 60_000)
+    end)
+  end
+
+  defp pending_card(text, mark, state, width) do
+    policy = state.capabilities.ambiguous_width
+    inner = max(1, width - @body - 1)
+    line = text |> admitted(state) |> SwarmCodeCLI.UI.Projector.Panel.Model.flat()
+
+    line =
+      if Width.cells(line, policy) > inner, do: Width.elide(line, inner, :end, policy), else: line
+
+    [
+      spec(
+        [{"  ", :plain}, {rail_glyph(state), :faint}, {" ", :text}, {line, :muted}],
+        {@margin, :user_card}
+      ),
+      spec([{String.duplicate(" ", @body + 2), :plain}, {mark, :faint}], nil)
+    ]
+  end
+
+  # pass73 T7: "Approvals: auto → full access", one row each.
+  defp notice_rows([], _state), do: []
+
+  defp notice_rows(notices, state) do
+    for notice <- notices do
+      to = mode_words(Map.get(notice, :to))
+
+      words =
+        case Map.get(notice, :from) do
+          nil ->
+            [{"Approvals: ", :muted}, {to, :strong}]
+
+          from ->
+            [
+              {"Approvals: ", :muted},
+              {mode_words(from), :muted},
+              {" " <> arrow(state) <> " ", :faint},
+              {to, :strong}
+            ]
+        end
+
+      spec([{String.duplicate(" ", @body), :plain} | words], nil)
+    end
+  end
+
+  defp mode_words(:read_only), do: "read-only"
+  defp mode_words(:auto), do: "auto"
+  defp mode_words(:full_access), do: "full access"
+  defp mode_words(other) when is_binary(other), do: other
+  defp mode_words(_), do: "unknown"
 
   # pass72 G11 (QA Q12): a steer sent from the agent overlay says whom it
   # went to, under the message.
@@ -404,7 +676,9 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
     trimmed = String.trim(text)
 
     case Enum.find(Map.get(state, :steers, []), &match?({^run, ^trimmed, _, _}, &1)) do
-      {_, _, _, name} ->
+      {_, _, node, name} ->
+        # pass73 T10: by the agent's one name, as the panel says it.
+        name = Name.for_node(state, run, node, name) || name
         [spec([{String.duplicate(" ", @body + 2), :plain}, {"steered to " <> name, :faint}], nil)]
 
       nil ->
@@ -433,11 +707,7 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
     {_letter, kind_role} = Theme.run_kind(kind)
     mark = SafeText.value(Support.glyph(Theme.run_mark(kind), state))
 
-    name =
-      case ctx.answer && agent(ctx.answer, state) do
-        %{name: name} when is_binary(name) and name != "" -> name
-        _ -> lead_name(ctx, state)
-      end
+    name = speaker(ctx, state)
 
     model = run && present(run.model)
 
@@ -455,25 +725,32 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
     blank_before ++ [spec(left ++ [{:right, right}], nil)]
   end
 
-  defp lead_name(ctx, state) do
+  # pass73 T10: the turn is spoken by its agent under its one name
+  # (`Panel.Name`): "Lead", or a chat turn's role label ("Workflow author"
+  # for a `/create-workflow` turn, where it used to say "assistant").
+  defp speaker(ctx, state) do
+    answering =
+      case ctx.answer && agent(ctx.answer, state) do
+        %{role: role} = agent when role in [:lead, :assistant] -> agent
+        _ -> nil
+      end
+
     lead =
-      state.read_model.agents
-      |> Map.values()
-      |> Enum.find(&(&1.run_id == ctx.run_id and &1.role in [:lead, :assistant]))
+      answering ||
+        state.read_model.agents
+        |> Map.values()
+        |> Enum.find(&(&1.run_id == ctx.run_id and &1.role in [:lead, :assistant]))
 
-    case lead do
-      %{name: name} when is_binary(name) and name != "" ->
-        String.downcase(name)
+    cond do
+      lead ->
+        Name.of(state, lead)
 
-      _ ->
-        # With no named lead the turn is spoken by what it is.
-        case ctx.run && ctx.run.kind do
-          kind when kind in [:consensus, :research, :workflow, :goal, :ultra] ->
-            Atom.to_string(kind)
+      # With no agent the turn is spoken by what it is.
+      (kind = ctx.run && ctx.run.kind) in [:consensus, :research, :workflow, :goal, :ultra] ->
+        Atom.to_string(kind)
 
-          _ ->
-            "assistant"
-        end
+      true ->
+        Name.role_label(%{}, ctx.run)
     end
   end
 
@@ -678,16 +955,20 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
 
     expanded? = MapSet.member?(state.expansions, item.id)
 
-    # pass71 V3 (R5): an edit shows its first hunk in place, expanded or not.
+    # pass71 V3 (R5): an edit shows its first hunk in place, expanded or not;
+    # pass73 T1: unless `/diff off` (K's `show_diffs`), when every tool row
+    # is its one line and Enter opens the diff or the output.
     body =
       cond do
-        diff -> first_hunk(diff, tool, state, width, indent + 2)
+        diff && show_diffs?(state) -> first_hunk(diff, tool, state, width, indent + 2)
         not expanded? -> []
         true -> preview(item.text, :muted, state, width, indent + 2, item.detail_ref)
       end
 
     [spec(left ++ [{:right, right}], nil) | body]
   end
+
+  defp show_diffs?(state), do: Map.get(state, :show_diffs, true) != false
 
   defp background_pending?(item, tool),
     do:
@@ -1288,8 +1569,11 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
 
     name =
       case agent(item, state) do
-        %{name: name} when is_binary(name) and name != "" -> name <> " · "
-        _ -> ""
+        %{name: name} = agent when is_binary(name) and name != "" ->
+          Name.of(state, agent) <> " · "
+
+        _ ->
+          ""
       end
 
     (name <> (item.text || ""))
@@ -1507,7 +1791,9 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
   defp viewport(state, width, height, follow?) do
     ids = view_order(state)
     transcript = state.read_model.transcript
-    first_run = state |> view_runs() |> List.first()
+    runs = view_runs(state)
+    first_run = List.first(runs)
+    pending_run = pending_run(state, runs)
     scroll = Map.get(state.scrolls, :main)
     anchor = scroll && scroll.anchor
 
@@ -1534,7 +1820,12 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
                 {ctx, cache}
 
               :error ->
-                ctx = %{context(state, run_id) | view_first?: run_id == first_run}
+                ctx = %{
+                  context(state, run_id)
+                  | view_first?: run_id == first_run,
+                    pending?: run_id == pending_run
+                }
+
                 {ctx, Map.put(cache, run_id, ctx)}
             end
 

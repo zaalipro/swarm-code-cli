@@ -36,15 +36,15 @@ defmodule SwarmCodeCLI.UI.RepresentativeScenesTest do
       for text <- evidence, do: assert(pixels =~ text)
 
       # The prompt is a card and the turn has one header row (ux M3); the turn
-      # is spoken by the run's agent when the hive names one (the swarm lead),
-      # and by "assistant" otherwise.
+      # is spoken by the run's agent under its one name (pass73 T10: "Lead",
+      # a chat turn's role label), and by its kind otherwise.
       assert pixels =~ "Review this synthetic project"
       refute pixels =~ "you · "
 
       speaker =
         case kind do
-          :swarm -> "lead  "
-          :chat -> "assistant  "
+          :swarm -> "Lead  "
+          :chat -> "Assistant  "
           other -> Atom.to_string(other) <> "  "
         end
 

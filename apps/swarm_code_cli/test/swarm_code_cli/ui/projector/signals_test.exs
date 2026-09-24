@@ -156,7 +156,7 @@ defmodule SwarmCodeCLI.UI.Projector.SignalsTest do
     test "a rate-limited turn says why it stopped and when it retries" do
       {rows, _scene, _table, _plan} = scene(:trouble, {120, 60}) |> screen()
 
-      header = find(rows, ~r/assistant .* failed +rate limit +4\.0s/)
+      header = find(rows, ~r/Assistant .* failed +rate limit +4\.0s/)
       assert header
 
       assert find(rows, ~r/Failed · 429 Too Many Requests/)
