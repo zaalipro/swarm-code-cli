@@ -259,6 +259,13 @@ defmodule SwarmCodeCLI.UI.Pass72OverlayKeysTest do
       assert [{:runs_dashboard, _} | _] = state |> press!(letter("0")) |> Map.get(:layers)
     end
 
+    test "^N for a request in another conversation opens that conversation, not a run view" do
+      other = %{approval("a9", "r1", "web") | conversation_id: "c2"}
+      state = ready(interactions: [other]) |> Map.put(:layers, [])
+      {state, _} = Reducer.update(state, {:open_interaction, "a9"})
+      assert state.destination == {:conversation, "c2"}
+    end
+
     test "Enter in a run view says why nothing was sent" do
       # A run view watches the run, not the conversation: no Send target.
       state = %{ready() | destination: {:run, "r1"}}
