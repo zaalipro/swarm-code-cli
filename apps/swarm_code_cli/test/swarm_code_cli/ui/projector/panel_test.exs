@@ -383,10 +383,60 @@ defmodule SwarmCodeCLI.UI.Projector.PanelTest do
     assert strip =~ nweb <> "  web"
   end
 
+  test "regression (QA Q9): letters go to the band's rows in its order, none to hidden ones" do
+    # Full keeps three band rows and folds the runs not in chat; the fourth
+    # request (plug, in a folded run) is only in "+1 more".
+    st = state(:panel_heavy, 160, 45)
+    model = st.read_model
+    base = model.interactions["demo-approval-70"]
+    chat = %{model.interactions["demo-approval-80"] | created_at: 1_788_436_600_000}
+    model = %{model | interactions: Map.put(model.interactions, "demo-approval-80", chat)}
+
+    more =
+      for {id, run, agent, at} <- [
+            {"demo-approval-60", "demo-panel-run-60", "agent-60-1", 1_788_436_700_000},
+            {"demo-approval-20", "demo-panel-run-20", "agent-20-3", 1_788_436_760_000}
+          ],
+          into: %{} do
+        {id,
+         %{
+           base
+           | id: id,
+             run_id: run,
+             node_id: "op-" <> id,
+             created_at: at,
+             approval: %{base.approval | agent_id: agent}
+         }}
+      end
+
+    st = %{st | read_model: %{model | interactions: Map.merge(model.interactions, more)}}
+    labels = st |> PanelOrder.entries() |> SwarmCodeCLI.UI.Hint.labels()
+
+    assert labels["s"] == {:agent, "demo-panel-run-80", "agent-80-5"}
+    assert labels["f"] == {:agent, "demo-panel-run-60", "agent-60-1"}
+    assert labels["g"] == {:agent, "demo-panel-run-20", "agent-20-3"}
+    refute SwarmCodeCLI.UI.Hint.label_for(labels, {:agent, "demo-panel-run-70", "agent-70-4"})
+
+    text = st |> Map.put(:hint, %{labels: labels, typed: ""}) |> panel_text() |> Enum.join("\n")
+    assert text =~ "+1 more"
+
+    assert text =~ ~r/\^F again: needs you  Esc/
+
+    for {label, {:agent, _, _}} <- labels do
+      assert text =~ " #{label} ", "badge #{label} is not drawn:\n" <> text
+    end
+  end
+
   test "PanelOrder: runs and agents in display order; a folded run keeps its needs-you agent" do
     entries = PanelOrder.entries(state(:panel_swarm_2, 160, 45))
 
-    assert [{:run, "demo-panel-run-80"}, {:agent, _, "agent-80-1", false} | _] = entries
+    # The band's row is drawn under the run's header, before the tree (G8).
+    assert [
+             {:run, "demo-panel-run-80"},
+             {:agent, _, "agent-80-5", true},
+             {:agent, _, "agent-80-1", false} | _
+           ] = entries
+
     assert {:agent, "demo-panel-run-80", "agent-80-5", true} in entries
 
     heavy = PanelOrder.entries(state(:panel_heavy, 160, 45))

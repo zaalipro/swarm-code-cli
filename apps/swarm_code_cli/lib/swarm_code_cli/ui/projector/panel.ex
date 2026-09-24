@@ -307,6 +307,7 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
         lead = if i == 0 and badge, do: badge_segments(ctx, badge), else: [{"  ", :plain}]
         row(ctx, lead ++ [{line, :text_primary, [:bold]}], [], band: true, background: :card)
       end)
+      |> band_target(view)
 
     tail =
       row(ctx, [{"  " <> reason(ask, run, ctx), :text_muted}], answer_key(ctx),
@@ -357,6 +358,9 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
           band: true,
           background: :card
         )
+        |> List.wrap()
+        |> band_target(view)
+        |> hd()
       end)
 
     more =
@@ -371,6 +375,14 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
 
     [head | items] ++ more
   end
+
+  # pass72 G8 (QA Q9): a band row is the drawn entry of its agent, so the
+  # hint letters follow what the band shows, oldest first; a request past the
+  # band's cap ("+2 more") gets no letter and is reached with ^N.
+  defp band_target([first | rest], %{run_id: run, id: id}),
+    do: [target(first, {:agent, run, id, true}) | rest]
+
+  defp band_target(rows, _view), do: rows
 
   defp answer_key(%{hint?: true} = ctx), do: again_key(ctx)
   defp answer_key(_ctx), do: [{"^N", :text_primary, [:bold]}, {" answer", :text_muted}]
@@ -886,18 +898,14 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
       )
       |> target({:run, run.id})
 
-    # Needs-you agents of a folded run stay reachable from the hint keys.
-    hidden =
-      views
-      |> Enum.filter(& &1.needs_you?)
-      |> Enum.map(fn v -> {nil, {:agent, v.run_id, v.id, true}, [hidden: true]} end)
-
+    # A folded run's needs-you agents are reached through the band's rows
+    # (pass72 G8), never through an entry nothing on screen shows.
     second =
       if sentence?,
         do: [row(ctx, [{"   ", :plain} | priority(ctx, run, views)], [])],
         else: []
 
-    [first | second] ++ hidden
+    [first | second]
   end
 
   defp glyph_mods(%{state: :needs_you}), do: [:bold]
@@ -1036,16 +1044,20 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
               [
                 span && {span, :text_primary},
                 span && {" open", :text_faint},
-                run_span && {" · ", :text_ghost},
+                run_span && {"  ", :plain},
                 run_span && {run_span, :text_primary},
                 run_span && {" run", :text_faint},
-                {" · ", :text_ghost},
+                {"  ", :plain},
                 {"^F", :text_primary},
-                {" again: needs you", :text_faint}
+                {" again: needs you", :text_faint},
+                # pass72 G8 (QA Q18): D7's Esc, never run into the words;
+                # two-space gaps so the row fits 44 cells.
+                {"  ", :plain},
+                {"Esc", :text_primary}
               ],
               &is_nil/1
             ),
-            [{"Esc", :text_primary}]
+            []
           )
 
         length(ctx.runs) > 1 and ctx.mode == :full ->
