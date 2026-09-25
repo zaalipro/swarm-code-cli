@@ -18,7 +18,6 @@ defmodule SwarmCodeCLI.UI.Keymap.C74OverridesTest do
           {"pgup", [{:page_up, []}]},
           {"x", [{"x", []}]},
           {"X", [{"X", []}]},
-          {"Shift-x", [{"X", []}]},
           {"?", [{"?", []}]},
           {"Space", [{" ", []}]},
           {"Ctrl-Space", [{" ", [:control]}]},
@@ -30,18 +29,20 @@ defmodule SwarmCodeCLI.UI.Keymap.C74OverridesTest do
           {"Delete", [{:delete, []}]}
         ] do
       test "#{name}" do
-        assert KeyName.parse(unquote(name)) == {:ok, unquote(Macro.escape(keys))}
+        assert KeyName.keys(unquote(name)) == {:ok, unquote(Macro.escape(keys))}
+        assert {:ok, key} = KeyName.parse(unquote(name))
+        assert key == hd(unquote(Macro.escape(keys)))
       end
     end
 
     for name <- ["Ctrl-Shift-A", "Ctrl-Enter", "Ctrl-Tab", "Shift-Enter", "Ctrl-I", "Ctrl-M"] do
-      test "#{name} cannot be reported" do
-        assert KeyName.parse(unquote(name)) ==
-                 {:error, "this terminal cannot report #{unquote(name)}"}
+      test "#{name} parses but cannot be reported" do
+        assert {:ok, _key} = KeyName.parse(unquote(name))
+        assert {:error, "this terminal cannot report " <> _} = KeyName.keys(unquote(name))
       end
     end
 
-    for name <- ["", "Ctrl-", "Hyper-X", "Ctrl-Ctrl-L", "ab", "F13", "Ctrl-Shift"] do
+    for name <- ["", "Ctrl-", "Hyper-X", "Ctrl-Ctrl-L", "ab", "F13", "Ctrl-Shift", "Shift-x"] do
       test "#{inspect(name)} is not a key name" do
         assert KeyName.parse(unquote(name)) == {:error, "not a key name"}
       end
@@ -59,7 +60,7 @@ defmodule SwarmCodeCLI.UI.Keymap.C74OverridesTest do
       assert KeyName.format("Ctrl-L", :rich) == "Ctrl-L"
 
       assert KeyName.canonical("ctrl-shift-tab") ==
-               {:error, "this terminal cannot report ctrl-shift-tab"}
+               {:error, "this terminal cannot report Ctrl-Shift-Tab"}
 
       assert KeyName.canonical("pgdn") == {:ok, "PageDown"}
     end
@@ -77,10 +78,8 @@ defmodule SwarmCodeCLI.UI.Keymap.C74OverridesTest do
         end)
 
       check all(key <- member_of(keys)) do
-        case KeyName.parse(KeyName.name(key)) do
-          {:ok, parsed} -> assert key in parsed
-          {:error, "this terminal cannot report " <> _} -> :ok
-        end
+        assert {:ok, parsed} = KeyName.parse(KeyName.name(key))
+        assert key in KeyName.expand(parsed)
       end
     end
   end

@@ -146,7 +146,8 @@ defmodule SwarmCodeCLI.UI.Keymap.Overrides do
   @spec bindings_for_key(t() | nil, String.t()) :: [{Binding.t(), [atom()]}]
   def bindings_for_key(overrides, name) do
     case KeyName.parse(name) do
-      {:ok, keys} ->
+      {:ok, key} ->
+        keys = KeyName.expand(key)
         overrides = overrides || %__MODULE__{}
         occupancy = occupancy(overrides.by_id)
 
@@ -224,7 +225,7 @@ defmodule SwarmCodeCLI.UI.Keymap.Overrides do
 
     with id when not is_nil(id) <- id(sid),
          [name | _] <- names,
-         {:ok, keys} <- KeyName.parse(name),
+         {:ok, keys} <- KeyName.keys(name),
          [{other, _contexts} | _] <-
            overrides |> bindings_for_key(name) |> Enum.reject(fn {b, _} -> b.id == id end) do
       other_sid = Atom.to_string(other.id)
@@ -288,7 +289,7 @@ defmodule SwarmCodeCLI.UI.Keymap.Overrides do
 
   defp parse_names(names) do
     Enum.reduce_while(names, {:ok, []}, fn name, {:ok, acc} ->
-      case KeyName.parse(name) do
+      case KeyName.keys(name) do
         {:ok, keys} ->
           case Enum.find(keys, &(&1 in @fixed_keys)) do
             nil -> {:cont, {:ok, acc ++ (keys -- acc)}}

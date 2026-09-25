@@ -70,10 +70,20 @@ defmodule SwarmCodeCLI.UI.Reducer do
              init.theme_env in [nil, :dark, :light] and is_boolean(init.mouse?) and
              SwarmCodeCLI.UI.Intent.valid_id?(init.id_prefix) and is_integer(init.now) and
              init.now >= 0 and is_integer(init.deadline_ms) and init.deadline_ms >= 0 and
-             is_integer(init.id_sequence) and init.id_sequence >= 0,
+             is_integer(init.id_sequence) and init.id_sequence >= 0 and is_map(init.prefs) and
+             is_map(init.launch_facts) and
+             SwarmCodeCLI.UI.Settings.Event.open_arg?(init.settings_open),
            do: raise(ArgumentError, "invalid reducer init")
 
-    state = struct!(State, Map.from_struct(init))
+    # cli74: the boot query waits for the shell (`pending_open_settings`), and
+    # the key overrides are compiled once from cli.json's `keys`.
+    state =
+      State
+      |> struct!(init |> Map.from_struct() |> Map.delete(:settings_open))
+      |> Map.merge(%{
+        pending_open_settings: init.settings_open,
+        key_overrides: SwarmCodeCLI.UI.Keymap.Overrides.compile(Map.get(init.prefs, "keys"))
+      })
 
     state = %{
       state
@@ -104,6 +114,8 @@ defmodule SwarmCodeCLI.UI.Reducer do
         next = hush_refusals(state, next)
         next = stamp_notice(state, next)
         next = repair_switcher(state, next)
+        next = SwarmCodeCLI.UI.Reducer.Settings.track_legacy(next, effects)
+        {next, effects} = boot_settings(next, effects)
         Enum.each(effects, &SwarmCodeCLI.UI.Effect.validate!/1)
 
         if next == state,
@@ -131,6 +143,32 @@ defmodule SwarmCodeCLI.UI.Reducer do
   defp transition(state, {:theme_mode, value}), do: Display.set(state, :theme_mode, value)
   defp transition(state, {:mouse, value}), do: Display.set(state, :mouse, value)
   defp transition(state, {:preferences_loaded, loaded}), do: Display.loaded(state, loaded)
+
+  # cli74: Ctrl-N over the settings layer closes it (the resume point is
+  # kept) and opens what waits for you, as it does in the shell.
+  defp transition(%{settings: %{}} = state, {:settings, {:verb, :needs_you}}) do
+    {state, closed} = SwarmCodeCLI.UI.Reducer.Settings.close(state)
+
+    case Keymap.Special.run(:next_need, {"n", [:control]}, state, %{}) do
+      {:ok, action} ->
+        {state, opened} = transition(state, action)
+        {state, closed ++ opened}
+
+      :ignore ->
+        {state, closed}
+    end
+  end
+
+  # cli74: the settings layer's keys, its data and the runtime's answers.
+  defp transition(state, {:settings, event}),
+    do: SwarmCodeCLI.UI.Reducer.Settings.event(state, event)
+
+  # F2, `/settings [ARG]`, a palette row (the palette closes first).
+  defp transition(state, {:settings_open, arg}) do
+    {state, closed} = close_switcher(state)
+    {state, opened} = SwarmCodeCLI.UI.Reducer.Settings.open(state, arg)
+    {state, closed ++ opened}
+  end
 
   # pass73-K T7: a row of the /approval picker sets the project's mode; the
   # picker closes, and the change is announced once the project says so
@@ -1186,7 +1224,7 @@ defmodule SwarmCodeCLI.UI.Reducer do
          } = state,
          {:open_layer, {:feature_form, feature, id}}
        )
-       when feature in [:workflows, :schedules, :settings, :mcp, :memory] and is_binary(id) do
+       when feature in [:workflows, :schedules, :mcp, :memory] and is_binary(id) do
     item = Enum.find(body.items, &(&1.id == id && not is_nil(&1.form)))
 
     form =
@@ -1415,6 +1453,9 @@ defmodule SwarmCodeCLI.UI.Reducer do
           {:watch_snapshot, _} ->
             {state, []}
 
+          {expected, body} when expected in [:settings_snapshot, :settings_result] ->
+            SwarmCodeCLI.UI.Reducer.Settings.Responses.response(state, request, body)
+
           _ ->
             Pages.response(state, request, delivery.body)
         end
@@ -1422,6 +1463,13 @@ defmodule SwarmCodeCLI.UI.Reducer do
       _ ->
         {state, []}
     end
+  end
+
+  # cli74: the settings layer follows its deltas and a resynced shell watch.
+  defp transition(%{settings: %SwarmCodeCLI.UI.Settings.Layer{}} = state, {:data, delivery}) do
+    {state, effects} = Watch.deliver(state, delivery)
+    {state, more} = SwarmCodeCLI.UI.Reducer.Settings.Responses.data(state, delivery)
+    {state, effects ++ more}
   end
 
   # While the agent overlay is up, news about its run asks for a fresh detail.
@@ -2299,7 +2347,12 @@ defmodule SwarmCodeCLI.UI.Reducer do
   # waiting; a keystroke that opened nothing must not. Hint mode and the
   # agent overlay (pass 72) hold them back: the overlay's band shows its own
   # agent's request, and Ctrl-N reaches the rest.
-  defp auto_open?(%{layers: [], lifecycle: :running, hint: nil, overlay: nil} = state, action) do
+  # cli74: approvals and questions wait while the settings layer is open; its
+  # header shows them and Ctrl-N reaches them.
+  defp auto_open?(
+         %{layers: [], lifecycle: :running, hint: nil, overlay: nil, settings: nil} = state,
+         action
+       ) do
     (match?({:data, %{kind: kind}} when kind != :response, action) or
        action in [:close_top_layer, :boot] or match?({:navigate, _}, action)) and
       state.focus in ["composer", "main", "inspector"] and
@@ -2634,6 +2687,22 @@ defmodule SwarmCodeCLI.UI.Reducer do
     end
   end
 
+  # cli74: `/settings [ARG]` (and `/config`, `/prefs`) opens the settings
+  # layer at ARG; the command's text leaves the draft first.
+  defp slash_local(state, :settings) do
+    argument =
+      state
+      |> Keymap.draft_text()
+      |> String.trim()
+      |> String.replace(~r{\A/(settings|config|prefs)\b}, "")
+      |> String.trim()
+      |> SwarmCodeCLI.UI.Settings.DeepLink.clip()
+
+    {state, cleared} = clear_command_draft(state)
+    {state, opened} = transition(state, {:settings_open, argument})
+    {state, cleared ++ opened}
+  end
+
   defp slash_local(state, :trust) do
     {state, cleared} = clear_command_draft(state)
     {state, sent} = service_request(state, {:project_update, nil, true}, {:project, :update})
@@ -2764,8 +2833,25 @@ defmodule SwarmCodeCLI.UI.Reducer do
     :hint,
     :panel_preferences_loaded,
     :preferences_loaded,
-    :external_edit_done
+    :external_edit_done,
+    :settings
   ]
+
+  # cli74: `swarmcode settings [QUERY]` opens the layer once the shell is
+  # ready, over nothing else.
+  defp boot_settings(%{pending_open_settings: arg, settings: nil, layers: []} = state, effects)
+       when not is_nil(arg) do
+    if match?(%{status: :ready}, state.watches.shell) do
+      {state, opened} =
+        SwarmCodeCLI.UI.Reducer.Settings.open(%{state | pending_open_settings: nil}, arg)
+
+      {state, effects ++ opened}
+    else
+      {state, effects}
+    end
+  end
+
+  defp boot_settings(state, effects), do: {state, effects}
 
   defp leave_modes(state, action) do
     state =

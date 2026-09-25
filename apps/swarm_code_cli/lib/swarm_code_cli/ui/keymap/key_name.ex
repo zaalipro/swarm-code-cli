@@ -76,20 +76,73 @@ defmodule SwarmCodeCLI.UI.Keymap.KeyName do
   @max_bytes 32
 
   @doc """
-  The keys a name stands for (usually one; `Shift-Tab` is both the back-tab
-  code and Tab with Shift, as the binding table spells it).
+  The key a name spells (`{code, mods}`), syntactically: `Ctrl-Shift-Z`
+  parses, although a terminal cannot report it (`keys/1` says so); `Shift-x`
+  does not (a shifted letter is written as the capital, `X`).
   """
-  @spec parse(term()) :: {:ok, [key()]} | {:error, String.t()}
+  @spec parse(term()) :: {:ok, key()} | {:error, String.t()}
   def parse(name) when is_binary(name) and byte_size(name) in 1..@max_bytes do
-    trimmed = String.trim(name)
-
-    with {:ok, mods, rest} <- prefixes(trimmed, []),
+    with {:ok, mods, rest} <- prefixes(String.trim(name), []),
          {:ok, code} <- code(rest) do
-      build(code, mods, trimmed)
+      build(code, mods)
     end
   end
 
   def parse(_), do: {:error, "not a key name"}
+
+  @doc """
+  The keys an override of `name` binds: the parsed key when the terminal can
+  report it, plus the second code a terminal sends for the same chord
+  (`Shift-Tab` is both the back-tab code and Tab with Shift).
+  """
+  @spec keys(term()) :: {:ok, [key()]} | {:error, String.t()}
+  def keys(name) do
+    with {:ok, key} <- parse(name),
+         :ok <- reportable(key),
+         do: {:ok, expand(key)}
+  end
+
+  @doc "Every code a terminal may send for `key` (`Shift-Tab`: two)."
+  @spec expand(key()) :: [key()]
+  def expand({:back_tab, []}), do: [{:back_tab, []}, {:tab, [:shift]}]
+  def expand({:tab, [:shift]}), do: [{:back_tab, []}, {:tab, [:shift]}]
+  def expand(key), do: [key]
+
+  @doc """
+  Whether a terminal without the enhanced keyboard protocol can report `key`
+  as itself: not `Ctrl-Shift-<letter>`, `Ctrl-Enter`, `Shift-Enter`,
+  `Ctrl-Tab`, `Shift-Space`, nor the Ctrl letters that arrive as another key
+  (`Ctrl-I` is Tab, `Ctrl-M` Enter, `Ctrl-[` Esc) or Ctrl with a symbol.
+  """
+  @spec reportable(key()) :: :ok | {:error, String.t()}
+  def reportable({code, mods} = key) do
+    control? = :control in mods
+    shift? = :shift in mods
+    letter? = is_binary(code) and String.match?(code, ~r/\A[A-Za-z]\z/)
+
+    unreportable? =
+      cond do
+        code == :enter ->
+          control? or shift?
+
+        code == :tab ->
+          control?
+
+        code == " " ->
+          shift?
+
+        is_binary(code) and control? and letter? ->
+          shift? or Map.has_key?(@ctrl_aliases, String.downcase(code))
+
+        is_binary(code) and control? ->
+          true
+
+        true ->
+          false
+      end
+
+    if unreportable?, do: {:error, "this terminal cannot report #{name(key)}"}, else: :ok
+  end
 
   @doc "Whether `name` parses."
   @spec valid?(term()) :: boolean()
@@ -101,6 +154,7 @@ defmodule SwarmCodeCLI.UI.Keymap.KeyName do
   """
   @spec name(key()) :: String.t()
   def name({:back_tab, _mods}), do: "Shift-Tab"
+  def name({:tab, mods}) when mods == [:shift], do: "Shift-Tab"
 
   def name({code, mods}) when is_list(mods) do
     {code, mods} = normalize(code, mods)
@@ -109,14 +163,14 @@ defmodule SwarmCodeCLI.UI.Keymap.KeyName do
 
   @doc """
   A key as the screen prints it: arrows as `↑ ↓ ← →` in the rich and measured
-  glyph tiers, words in ascii; everything else as `Projector.KeyLabel` spells
-  it for the rest of the interface.
+  glyph tiers, words in ascii; `:stored` is `name/1`; everything else as
+  `Projector.KeyLabel` spells it for the rest of the interface.
   """
   @spec format(key() | String.t(), :stored | :rich | :measured | :ascii | boolean()) ::
           String.t()
   def format(name, tier) when is_binary(name) do
     case parse(name) do
-      {:ok, [key | _]} -> format(key, tier)
+      {:ok, key} -> format(key, tier)
       {:error, _} -> name
     end
   end
@@ -124,10 +178,10 @@ defmodule SwarmCodeCLI.UI.Keymap.KeyName do
   def format(key, :stored), do: name(key)
   def format(key, tier), do: KeyLabel.label(key, tier in [:ascii, true])
 
-  @doc "The canonical stored spelling of a typed name, or the parse error."
+  @doc "The canonical stored spelling of a typed name, or why it is not one."
   @spec canonical(term()) :: {:ok, String.t()} | {:error, String.t()}
   def canonical(name) do
-    with {:ok, [key | _]} <- parse(name), do: {:ok, name(key)}
+    with {:ok, key} <- parse(name), :ok <- reportable(key), do: {:ok, name(key)}
   end
 
   # ---------------------------------------------------------------- parsing
@@ -165,63 +219,34 @@ defmodule SwarmCodeCLI.UI.Keymap.KeyName do
       not String.match?(text, ~r/\A[\x00-\x1f\x7f]\z/)
   end
 
-  defp build(:tab, [:shift], _name), do: {:ok, [{:back_tab, []}, {:tab, [:shift]}]}
+  defp build(:tab, [:shift]), do: {:ok, {:back_tab, []}}
 
-  defp build(code, mods, name) when code in [:enter, :tab] do
-    if :control in mods or (:shift in mods and code == :enter),
-      do: unreportable(name),
-      else: {:ok, [{code, mods}]}
-  end
-
-  defp build(" ", mods, name) do
-    if :shift in mods, do: unreportable(name), else: {:ok, [{" ", mods}]}
-  end
-
-  defp build(code, mods, name) when is_binary(code) do
+  defp build(code, mods) when is_binary(code) do
     letter? = String.match?(code, ~r/\A[A-Za-z]\z/)
+    command? = :control in mods or :alt in mods
 
     cond do
-      :control in mods and letter? and :shift in mods ->
-        unreportable(name)
+      :control in mods and letter? ->
+        {:ok, {String.downcase(code), mods}}
 
-      :control in mods and Map.has_key?(@ctrl_aliases, String.downcase(code)) ->
-        unreportable(name)
-
-      :control in mods and not letter? ->
-        unreportable(name)
-
-      :control in mods ->
-        {:ok, [{String.downcase(code), mods}]}
-
-      letter? and :shift in mods ->
-        {:ok, [{String.upcase(code), mods -- [:shift]}]}
-
-      :shift in mods ->
-        # a shifted symbol arrives as the symbol itself (`?`, not Shift-/)
-        {:ok, [{code, mods -- [:shift]}]}
+      # A shifted letter or symbol is the character itself (`X`, `?`).
+      :shift in mods and not command? ->
+        {:error, "not a key name"}
 
       true ->
-        {:ok, [{code, mods}]}
+        {:ok, {code, mods}}
     end
   end
 
-  defp build(code, mods, _name), do: {:ok, [{code, mods}]}
-
-  defp unreportable(name), do: {:error, "this terminal cannot report #{name}"}
+  defp build(code, mods), do: {:ok, {code, mods}}
 
   # --------------------------------------------------------------- printing
 
   defp normalize(code, mods) when is_binary(code) do
     cond do
-      (:control in mods or :alt in mods) and String.length(code) == 1 and :shift in mods and
-          code == String.upcase(code) ->
-        {code, mods -- [:shift]}
-
-      :control in mods and String.length(code) == 1 ->
-        {String.upcase(code), mods}
-
-      true ->
-        {code, mods -- [:shift]}
+      :control in mods and String.length(code) == 1 -> {String.upcase(code), mods}
+      :alt in mods and String.length(code) == 1 -> {code, mods}
+      true -> {code, mods -- [:shift]}
     end
   end
 

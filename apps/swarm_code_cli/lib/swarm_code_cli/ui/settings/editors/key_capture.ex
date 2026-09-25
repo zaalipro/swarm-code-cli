@@ -218,7 +218,7 @@ defmodule SwarmCodeCLI.UI.Settings.Editors.KeyCapture do
   end
 
   defp first_key(name) do
-    case KeyName.parse(name) do
+    case KeyName.keys(name) do
       {:ok, [key | _]} -> {:ok, [key]}
       error -> error
     end

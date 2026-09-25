@@ -80,7 +80,6 @@ defmodule SwarmCodeCLI.UI.LayerSpec do
              :workflows,
              :research,
              :schedules,
-             :settings,
              :usage,
              :changes,
              :checkpoints,
@@ -93,7 +92,7 @@ defmodule SwarmCodeCLI.UI.LayerSpec do
     do: if(Intent.valid_id?(owner), do: {:ok, layer}, else: {:error, :invalid_layer_spec})
 
   def validate({:feature_form, feature, id} = layer)
-      when feature in [:workflows, :schedules, :settings, :mcp, :memory] do
+      when feature in [:workflows, :schedules, :mcp, :memory] do
     if Intent.valid_id?(id), do: {:ok, layer}, else: {:error, :invalid_layer_spec}
   end
 

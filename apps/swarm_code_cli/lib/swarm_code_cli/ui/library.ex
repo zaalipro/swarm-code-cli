@@ -3,11 +3,12 @@ defmodule SwarmCodeCLI.UI.Library do
   alias SwarmCodeCLI.UI.{State, FieldEditors, Editor, FeatureForm}
   alias SwarmCodeCLI.UI.DataSource.{Request, DTO}
 
+  # cli74 (D22): the settings form is gone; the settings layer (F2,
+  # `/settings`) edits every setting.
   @features [
     :workflows,
     :research,
     :schedules,
-    :settings,
     :usage,
     :changes,
     :checkpoints,
@@ -475,8 +476,6 @@ defmodule SwarmCodeCLI.UI.Library do
       end
     end
   end
-
-  defp scope_for(state, :settings), do: state.watches.shell.scope
 
   defp scope_for(state, _feature),
     do:

@@ -762,7 +762,13 @@ defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.Owner do
     |> Map.put(:message, :redacted)
     |> Map.put(:reason, safe_reason(Map.get(status, :reason)))
     |> Map.put(:log, [])
+    |> redact_queue()
   end
+
+  # cli74 (§3.11): messages still in the mailbox (a copy's text) stay out of
+  # a crash report too.
+  defp redact_queue(%{queue: _} = status), do: Map.put(status, :queue, [])
+  defp redact_queue(status), do: status
 
   defp safe_reason(reason)
        when reason in [

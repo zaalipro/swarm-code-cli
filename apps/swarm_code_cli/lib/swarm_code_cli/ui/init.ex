@@ -20,7 +20,13 @@ defmodule SwarmCodeCLI.UI.Init do
     show_diffs: true,
     theme_mode: :dark,
     theme_env: nil,
-    mouse?: true
+    mouse?: true,
+    # cli74 (§3.8.4): every cli.json value by json name, the launch's env and
+    # flag overrides, and `swarmcode settings [QUERY]`'s query (nil = none;
+    # "" opens the Overview).
+    prefs: %{},
+    launch_facts: %{},
+    settings_open: nil
   ]
 
   @type t :: %__MODULE__{}

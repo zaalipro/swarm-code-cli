@@ -278,7 +278,15 @@ defmodule SwarmCodeCLI.Plain.OneShot do
 
   # -- sending ----------------------------------------------------------------
 
-  defp send_prompt(state) do
+  # cli74: the settings layer needs the full-screen terminal; a one-shot
+  # says so and sends nothing.
+  defp send_prompt(%{prompt: prompt} = state) when is_binary(prompt) do
+    if SwarmCodeCLI.UI.Keymap.settings_command?(prompt),
+      do: finish(state, 1, SwarmCodeCLI.Plain.Command.settings_words()),
+      else: send_line(state)
+  end
+
+  defp send_line(state) do
     key = {state.conversation, :main}
     {state, _} = update(state, {:editor, key, {:paste, state.prompt}})
     text = Editor.text(Drafts.fetch(state.ui.drafts, key).editor)
