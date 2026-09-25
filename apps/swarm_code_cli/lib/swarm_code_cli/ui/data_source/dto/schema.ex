@@ -53,6 +53,8 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.Schema do
 
   defp type_ast({:optional, type}), do: {:|, [], [type_ast(type), nil]}
   defp type_ast({:list, type}), do: [type_ast(type)]
+  # A three-element tuple arrives quoted (`{:{}, meta, [...]}`).
+  defp type_ast({:{}, _meta, [:list, type, _max]}), do: [type_ast(type)]
   defp type_ast({:dto, module}), do: {{:., [], [module, :t]}, [], []}
 
   def valid?(:id, value), do: Intent.valid_id?(value)
@@ -79,6 +81,9 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.Schema do
   def valid?({:optional, _}, nil), do: true
   def valid?({:optional, type}, value), do: valid?(type, value)
   def valid?({:list, type}, values), do: bounded_list?(values, 200, &valid?(type, &1))
+
+  # pass74 S1-11 (R5): a list with its own bound (the workspace's 400 models).
+  def valid?({:list, type, max}, values), do: bounded_list?(values, max, &valid?(type, &1))
 
   def valid?(:actions, values),
     do:
@@ -304,6 +309,7 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.Schema do
   defp decode_value({:optional, _}, nil), do: {:ok, nil}
   defp decode_value({:optional, type}, value), do: decode_value(type, value)
   defp decode_value({:list, type}, values), do: decode_list(type, values, 200)
+  defp decode_value({:list, type, max}, values), do: decode_list(type, values, max)
   defp decode_value({:dto, module}, value), do: module.decode(value)
   defp decode_value(:error, value), do: AdmissionError.decode(value)
 

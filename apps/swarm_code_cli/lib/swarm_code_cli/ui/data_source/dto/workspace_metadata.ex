@@ -7,6 +7,7 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.WorkspaceMetadata do
       approval_mode: nil,
       trusted: nil,
       chat_provider: nil,
+      chat_provider_usable: nil,
       context_used: nil,
       context_window: nil,
       cost_usd: nil,
@@ -22,13 +23,17 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.WorkspaceMetadata do
       swarm_model: {:optional, :text},
       effort: {:optional, :text},
       swarm_effort: {:optional, :text},
-      models: {:list, {:dto, SwarmCodeCLI.UI.DataSource.DTO.ModelOption}},
+      # pass74 S1-11 (R5): the service sends up to 400 models.
+      models: {:list, {:dto, SwarmCodeCLI.UI.DataSource.DTO.ModelOption}, 400},
       # pass70 C1 (see WorkspaceSnapshot): project approval mode and trust,
       # the chat model's provider, the context gauge, the conversation's
       # spend and title.
       approval_mode: {:optional, {:enum, [:read_only, :auto, :full_access]}},
       trusted: {:optional, :boolean},
       chat_provider: {:optional, {:text, 200}},
+      # pass74 S1-11 (D11): whether that provider can answer (a key, or a
+      # private-host base URL); false with no provider; nil when not known.
+      chat_provider_usable: {:optional, :boolean},
       context_used: {:optional, :count},
       context_window: {:optional, :count},
       cost_usd: {:optional, :float},
@@ -50,6 +55,7 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.WorkspaceMetadata do
       approval_mode: nil,
       trusted: nil,
       chat_provider: nil,
+      chat_provider_usable: nil,
       context_used: nil,
       context_window: nil,
       cost_usd: nil,

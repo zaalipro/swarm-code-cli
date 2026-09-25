@@ -3558,6 +3558,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       "approval_mode" => approval_mode(conversation),
       "trusted" => trusted(conversation),
       "chat_provider" => provider_name(chat),
+      # pass74 S1-11 (D11): whether that provider can answer.
+      "chat_provider_usable" => provider_usable?(chat),
       "context_used" => totals.context_used,
       "context_window" => context_window(chat),
       "cost_usd" => totals.cost_usd,
@@ -3584,6 +3586,9 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     do: preview(name, 200)
 
   defp provider_name(_), do: nil
+
+  defp provider_usable?({:ok, %{provider: provider}}), do: SessionConfiguration.usable?(provider)
+  defp provider_usable?(_), do: false
 
   # The window the harness works in: the point where `Context.trim/2` starts
   # dropping history (75 % of the model's configured window, or the default
