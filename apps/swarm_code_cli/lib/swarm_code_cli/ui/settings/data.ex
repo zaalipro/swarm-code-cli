@@ -29,7 +29,9 @@ defmodule SwarmCodeCLI.UI.Settings.Data do
             usage: nil,
             projects: nil,
             cli: nil,
-            loaded_at: nil
+            loaded_at: nil,
+            project_id: nil,
+            conversation_id: nil
 
   @type t :: %__MODULE__{}
 

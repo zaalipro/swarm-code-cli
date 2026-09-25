@@ -1453,6 +1453,9 @@ defmodule SwarmCodeCLI.UI.Reducer do
           {:watch_snapshot, _} ->
             {state, []}
 
+          {expected, body} when expected in [:settings_snapshot, :settings_result] ->
+            SwarmCodeCLI.UI.Reducer.Settings.Responses.response(state, request, body)
+
           _ ->
             Pages.response(state, request, delivery.body)
         end
@@ -1460,6 +1463,13 @@ defmodule SwarmCodeCLI.UI.Reducer do
       _ ->
         {state, []}
     end
+  end
+
+  # cli74: the settings layer follows its deltas and a resynced shell watch.
+  defp transition(%{settings: %SwarmCodeCLI.UI.Settings.Layer{}} = state, {:data, delivery}) do
+    {state, effects} = Watch.deliver(state, delivery)
+    {state, more} = SwarmCodeCLI.UI.Reducer.Settings.Responses.data(state, delivery)
+    {state, effects ++ more}
   end
 
   # While the agent overlay is up, news about its run asks for a fresh detail.

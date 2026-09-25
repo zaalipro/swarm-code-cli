@@ -8,8 +8,9 @@ defmodule SwarmCodeCLI.UI.Settings.Ctx do
       the needs-you count, the keymap, the live terminal preferences).
     * `data` — `Settings.Data`: what the service answered.
     * `caps`, `size`, `now` — the terminal and the owner's clock.
-    * `project`, `conversation` — the page's project (the picker's choice, or
-      the session's) and the session conversation id.
+    * `project`, `conversation` — the page's project as `%{"id", "name"}`
+      (the service's context project; the name from the workspace) and the
+      session conversation as `%{"id"}`.
     * `prefs` — every cli.json value by json name (`state.prefs`).
     * `launch_facts` — env and flag overrides and the launch flags.
     * `overrides` — the compiled key overrides (`Keymap.Overrides`).

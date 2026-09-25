@@ -25,7 +25,7 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Commit do
   alias SwarmCodeCLI.UI.Keymap.Overrides
   alias SwarmCodeCLI.UI.Layout.Preferences, as: LayoutPreferences
   alias SwarmCodeCLI.UI.Init.Preferences
-  alias SwarmCodeCLI.UI.Settings.{Display, Layer, Nav, Provenance, Rows, Undo}
+  alias SwarmCodeCLI.UI.Settings.{Display, Layer, Nav, Provenance, Rows, Undo, Wire}
   alias SwarmCodeCLI.UI.Vim
   alias SwarmCodeCLI.UI.State
 
@@ -144,17 +144,23 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Commit do
     {ref, layer} = next_ref(layer)
     setting = Map.get(layer.data.values, entry.key)
     expected = Keyword.get(opts, :expected, setting && Map.get(setting, :base))
+    expected = if expected == :absent, do: nil, else: expected
     old = current(state, entry)
+
+    change = %{"key" => entry.key, "value" => value, "target" => change_target(state, entry)}
 
     params = %{
       "action" => "values.patch",
       "target" => nil,
-      "attributes" => %{"changes" => [%{"key" => entry.key, "value" => value}]},
-      "expected" => %{entry.key => expected}
+      "attributes" => %{"changes" => [change]},
+      "expected" => %{entry.key => wire_expected(expected)}
     }
 
-    case SwarmCodeCLI.UI.Settings.Wire.command(put_layer(state, layer), ref, params) do
-      {:ok, state, effects} ->
+    case Wire.command(put_layer(state, layer), params, %{kind: :write, write_ref: ref}) do
+      {:error, words, state} ->
+        {status(state, "Couldn't save: " <> words, :error), []}
+
+      {state, effects} ->
         write = %{
           ref: ref,
           kind: :daemon,
@@ -180,9 +186,77 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Commit do
 
         {timer, state} = saving_timer(put_layer(state, layer), ref)
         {state, effects ++ [timer]}
+    end
+  end
 
-      {:error, words} ->
-        {status(state, "Couldn't save: " <> words, :error), []}
+  # Session keys name the session's conversation; project keys the page's project.
+  defp change_target(state, %Entry{scope: :session}),
+    do: %{"conversation_id" => state.settings.data.conversation_id}
+
+  defp change_target(state, %Entry{scope: :project}),
+    do: %{"project_id" => Wire.project_id(state)}
+
+  defp change_target(_state, _entry), do: %{}
+
+  # A value never read (nil base) is written unconditionally.
+  defp wire_expected(nil), do: %{"$any" => true}
+  defp wire_expected(expected), do: expected
+
+  @doc """
+  A daemon value write answered (`DTO.SettingsResult`, or the words of a
+  failed request): the write `write_ref` takes its outcome.
+  """
+  @spec daemon_result(State.t(), pos_integer(), term()) :: {State.t(), list()}
+  def daemon_result(%{settings: %Layer{} = layer} = state, write_ref, result) do
+    case find(layer, write_ref) do
+      {key, write} ->
+        layer = %{layer | writes: Map.delete(layer.writes, key)}
+        outcome(put_layer(state, layer), key, write, daemon_outcome(result, write))
+
+      nil ->
+        {state, []}
+    end
+  end
+
+  def daemon_result(state, _write_ref, _result), do: {state, []}
+
+  defp daemon_outcome({:failed, words}, _write), do: {:failed, words}
+
+  defp daemon_outcome(%{status: :accepted} = result, write),
+    do: if(row(result, write) == :unchanged, do: :unchanged, else: :accepted)
+
+  defp daemon_outcome(%{status: :unchanged}, _write), do: :unchanged
+
+  defp daemon_outcome(%{status: :conflict} = result, write) do
+    current =
+      case Enum.find(result.results || [], &(Map.get(&1, :target) == write.key)) do
+        %{current: current} -> current
+        _ -> nil
+      end
+
+    {:conflict, current}
+  end
+
+  defp daemon_outcome(%{status: :rejected} = result, write) do
+    message =
+      case Enum.find(result.results || [], &(Map.get(&1, :target) == write.key)) do
+        %{message: message} when is_binary(message) -> message
+        _ -> result.message || "is invalid"
+      end
+
+    {:rejected, message}
+  end
+
+  defp daemon_outcome(%{corrective_action: :refresh}, _write),
+    do: {:failed, "Couldn't tell whether that was saved; reloading."}
+
+  defp daemon_outcome(result, _write),
+    do: {:failed, Map.get(result, :message) || "the service could not save it"}
+
+  defp row(result, write) do
+    case Enum.find(result.results || [], &(Map.get(&1, :target) == write.key)) do
+      %{status: :unchanged} -> :unchanged
+      _ -> :accepted
     end
   end
 

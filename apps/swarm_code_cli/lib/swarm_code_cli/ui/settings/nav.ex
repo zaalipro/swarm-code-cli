@@ -48,14 +48,23 @@ defmodule SwarmCodeCLI.UI.Settings.Nav do
     }
   end
 
-  defp project(state) do
-    case Map.get(state.read_model.snapshots, :workspace) do
-      %{project: project} when is_binary(project) -> project
-      _ -> nil
-    end
+  # The page's project as the sections read it: `%{"id", "name"}` (the id
+  # from the service's values, the name from the workspace), nil when neither.
+  defp project(%{settings: %Layer{data: data}} = state) do
+    name =
+      case Map.get(state.read_model.snapshots, :workspace) do
+        %{project: project} when is_binary(project) -> project
+        _ -> nil
+      end
+
+    id = data && data.project_id
+    if is_nil(id) and is_nil(name), do: nil, else: %{"id" => id, "name" => name}
   end
 
-  defp conversation(%{destination: {:conversation, id}}), do: id
+  defp conversation(%{settings: %Layer{data: %{conversation_id: id}}}) when is_binary(id),
+    do: %{"id" => id}
+
+  defp conversation(%{destination: {:conversation, id}}), do: %{"id" => id}
   defp conversation(_state), do: nil
 
   @doc "The rows of the page on screen."

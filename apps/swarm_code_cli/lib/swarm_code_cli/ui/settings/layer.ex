@@ -45,7 +45,8 @@ defmodule SwarmCodeCLI.UI.Settings.Layer do
             available: true,
             message: nil,
             next_ref: 1,
-            file_conflicts: %{}
+            file_conflicts: %{},
+            watch_generation: nil
 
   @type region :: :search | :rail | :page | :detail
   @type mode :: :browse | :search | :command_line | :editing | :paste | :capture
@@ -82,7 +83,8 @@ defmodule SwarmCodeCLI.UI.Settings.Layer do
           available: boolean(),
           message: nil | String.t(),
           next_ref: pos_integer(),
-          file_conflicts: map()
+          file_conflicts: map(),
+          watch_generation: nil | non_neg_integer()
         }
 
   @regions [:search, :rail, :page, :detail]

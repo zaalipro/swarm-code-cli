@@ -23,8 +23,8 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings do
   alias SwarmCodeCLI.UI.{Hint, SafeText, State}
   alias SwarmCode.Settings.CliFile
   alias SwarmCodeCLI.UI.Init.Preferences
-  alias SwarmCodeCLI.UI.Reducer.Settings.{Commit, Edit, Ops}
-  alias SwarmCodeCLI.UI.Settings.{DeepLink, Layer, Nav, Page, Sections}
+  alias SwarmCodeCLI.UI.Reducer.Settings.{Commit, Edit, Ops, Responses}
+  alias SwarmCodeCLI.UI.Settings.{DeepLink, Layer, Nav, Page, Sections, Wire}
 
   @conflict_words "cli.json changed elsewhere; /settings shows it"
 
@@ -42,15 +42,21 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings do
   moves it there.
   """
   @spec open(State.t(), term()) :: {State.t(), list()}
-  def open(%{settings: %Layer{}} = state, nil), do: close(state)
+  def open(state, arg) do
+    {state, effects} = open_layer(state, arg)
+    {state, more} = Wire.sync(state)
+    {state, effects ++ more}
+  end
 
-  def open(%{settings: %Layer{} = layer} = state, arg) do
+  defp open_layer(%{settings: %Layer{}} = state, nil), do: close(state)
+
+  defp open_layer(%{settings: %Layer{} = layer} = state, arg) do
     link = DeepLink.resolve(arg, nil)
     layer = arrive(%{layer | stack: link.stack, deep_link: link.deep_link, popover: nil}, link)
     {state |> put_layer(layer) |> Nav.settle(), []}
   end
 
-  def open(state, arg) do
+  defp open_layer(state, arg) do
     generation = state.settings_generation + 1
     resume = state.settings_resume
     link = DeepLink.resolve(arg, resume)
@@ -66,7 +72,8 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings do
         },
         deep_link: link.deep_link,
         tasks: resume_tasks(resume),
-        region: resume_region(resume, arg)
+        region: resume_region(resume, arg),
+        watch_generation: shell_generation(state)
       })
       |> arrive(link)
 
@@ -75,6 +82,13 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings do
       |> Nav.settle()
 
     {state, [{:settings_cli_read, generation}]}
+  end
+
+  defp shell_generation(state) do
+    case Map.get(state.watches, :shell) do
+      %{generation: generation} -> generation
+      _ -> nil
+    end
   end
 
   defp resume_tasks(%{tasks: tasks}) when is_map(tasks), do: tasks
@@ -125,10 +139,19 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings do
 
   # ------------------------------------------------------------------ keys
 
-  @doc "Applies one `{:settings, event}` action."
+  @doc """
+  Applies one `{:settings, event}` action, then asks for what the page on
+  screen needs and does not have yet.
+  """
   @spec event(State.t(), term()) :: {State.t(), list()}
+  def event(state, event) do
+    {state, effects} = handle_event(state, event)
+    {state, more} = Wire.sync(state)
+    {state, effects ++ more}
+  end
+
   # An open editor takes the keys, the text and the pastes first.
-  def event(%{settings: %Layer{mode: :editing, popover: nil}} = state, {:verb, verb}) do
+  defp handle_event(%{settings: %Layer{mode: :editing, popover: nil}} = state, {:verb, verb}) do
     case Edit.verb_event(verb) do
       nil when verb == :interrupt -> Edit.event(state, :interrupt)
       nil -> verb(state, verb)
@@ -136,18 +159,23 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings do
     end
   end
 
-  def event(%{settings: %Layer{mode: :editing, popover: nil}} = state, {kind, _} = event)
-      when kind in [:text, :paste, :key, :raw],
-      do: Edit.event(state, event)
+  defp handle_event(%{settings: %Layer{mode: :editing, popover: nil}} = state, {kind, _} = event)
+       when kind in [:text, :paste, :key, :raw],
+       do: Edit.event(state, event)
 
-  def event(%{settings: %Layer{}} = state, {:verb, verb}), do: verb(state, verb)
+  defp handle_event(%{settings: %Layer{}} = state, {:verb, verb}), do: verb(state, verb)
 
-  def event(state, {:saving, generation, ref}), do: {Commit.saving(state, generation, ref), []}
-  def event(state, {:settle, generation, timer}), do: Ops.settle(state, generation, timer)
+  defp handle_event(state, {:saving, generation, ref}),
+    do: {Commit.saving(state, generation, ref), []}
+
+  defp handle_event(state, {:settle, generation, timer}), do: Ops.settle(state, generation, timer)
 
   # Ctrl-F's badges: the letter opens its section; any other key ends them.
-  def event(%{settings: %Layer{jump: %{labels: labels}} = layer} = state, {:raw, {code, []}})
-      when is_binary(code) do
+  defp handle_event(
+         %{settings: %Layer{jump: %{labels: labels}} = layer} = state,
+         {:raw, {code, []}}
+       )
+       when is_binary(code) do
     layer = %{layer | jump: nil}
 
     case Map.get(labels, code) do
@@ -156,27 +184,27 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings do
     end
   end
 
-  def event(%{settings: %Layer{jump: %{}} = layer} = state, {:raw, _key}),
+  defp handle_event(%{settings: %Layer{jump: %{}} = layer} = state, {:raw, _key}),
     do: {put_layer(state, %{layer | jump: nil}), []}
 
-  def event(%{settings: %Layer{} = layer} = state, {:wheel, delta, _column, _row}) do
+  defp handle_event(%{settings: %Layer{} = layer} = state, {:wheel, delta, _column, _row}) do
     case layer.region do
       :rail -> {rail_to(state, Nav.rail_move(state, sign(delta))), []}
       _ -> {Nav.move(state, delta), []}
     end
   end
 
-  def event(state, {:cli_snapshot, generation, %{values: values} = snapshot}) do
+  defp handle_event(state, {:cli_snapshot, generation, %{values: values} = snapshot}) do
     state = %{state | prefs: values}
     {put_cli(state, generation, snapshot), []}
   end
 
-  def event(state, {:cli_snapshot, generation, {:error, reason}}),
+  defp handle_event(state, {:cli_snapshot, generation, {:error, reason}}),
     do: {put_cli(state, generation, {:error, reason}), []}
 
   # A legacy save found the key changed in the file since the session read
   # it: the file's value stays, the shell shows it, and the user is told.
-  def event(state, {:prefs_conflict, current}) when is_map(current) do
+  defp handle_event(state, {:prefs_conflict, current}) when is_map(current) do
     prefs =
       Enum.reduce(current, state.prefs, fn
         {name, :absent}, acc -> Map.delete(acc, name)
@@ -189,7 +217,7 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings do
 
   # A cli.json write answered: `state.prefs` follows the file it left; the
   # layer that asked (same generation) takes the outcome.
-  def event(state, {:cli_result, generation, ref, result}) do
+  defp handle_event(state, {:cli_result, generation, ref, result}) do
     state =
       case result do
         {:ok, %{values: values}} -> %{state | prefs: values}
@@ -211,10 +239,10 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings do
     end
   end
 
-  def event(state, {:folder_result, _generation, result}),
+  defp handle_event(state, {:folder_result, _generation, result}),
     do: {notice(state, folder_words(result)), []}
 
-  def event(state, _event), do: {state, []}
+  defp handle_event(state, _event), do: {state, []}
 
   # ------------------------------------------------------------------ verbs
 
@@ -304,6 +332,8 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings do
            region: :search,
            search: %{query: "", cursor: nil, entered_from: layer.region}
        }), []}
+
+  defp verb(state, :refresh), do: Responses.reload(state)
 
   defp verb(state, _verb), do: {state, []}
 
