@@ -115,9 +115,17 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Providers do
 
   def title(ctx) do
     case R.page_record(ctx) do
-      {@kind, @draft} -> "New provider · unsaved · Ctrl-S creates it · Esc discards"
-      {@kind, id} -> provider_name(ctx, id) || "Providers"
-      _ -> "Providers"
+      {@kind, @draft} ->
+        "New provider · unsaved · Ctrl-S creates it · Esc discards"
+
+      {@kind, id} ->
+        if(R.page_sub(ctx) == :effort_levels,
+          do: EffortLevels.title(ctx, id),
+          else: provider_name(ctx, id) || "Providers"
+        )
+
+      _ ->
+        "Providers"
     end
   end
 
@@ -1221,7 +1229,9 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Providers do
   anyway, `Ctrl-S` create the draft, Enter on action rows.
   """
   def act(ctx, row, verb) do
-    do_act(ctx, R.field(row, "target") || Map.get(row, :target), verb, row)
+    if R.page_sub(ctx) == :effort_levels,
+      do: EffortLevels.act(ctx, row, verb),
+      else: do_act(ctx, Map.get(row, :target), verb, row)
   end
 
   # the list page
@@ -1605,6 +1615,12 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Providers do
   replacement is staged; a kind change asks first (§4.8).
   """
   def commit(ctx, row, value) do
+    if R.page_sub(ctx) == :effort_levels,
+      do: EffortLevels.commit(ctx, row, value),
+      else: commit_page(ctx, row, value)
+  end
+
+  defp commit_page(ctx, row, value) do
     case Map.get(row, :target) do
       {:field, id, "kind", old} when value != old ->
         kind_change_ops(ctx, id, old, value)
