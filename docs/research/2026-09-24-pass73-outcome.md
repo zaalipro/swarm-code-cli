@@ -20,7 +20,8 @@ The sandbox setup:
 - `deepseek-v4-pro`, `/trust` on the scratch copy (read-only → auto).
 - The release built from this branch, copied to `/Users/zaali/.cache/p70cli/rel-p73/`. The final
   copy includes F9. F10 changes only one help sentence, so it is not in that copy. After QA #1 the
-  polisher rebuilt it at G14 (b109fc4); see "QA #1 and the polish".
+  polisher rebuilt it at G14 (b109fc4); see "QA #1 and the polish". After QA #2 the second
+  polisher rebuilt it at G28 (aac8306); see "QA #2 and the second polish".
 - GNU screen with `-L` raw logs, rendered to PNG by the spec's `tools/vt.py` and `svg2png.py`. The
   finisher's scratch copy of `vt.py` (`/Users/zaali/.cache/p70cli/p73-F/tools/vt.py`) adds ECH
   (`CSI n X`), which the port uses to blank cells. Without ECH the replay leaves stale text that the
@@ -291,10 +292,10 @@ The sandbox setup:
 
 | # | Item | Result | Evidence |
 | --- | --- | --- | --- |
-| 1 | precommit, port check, keymap check, PTY suites | pass | After QA #1: `mix precommit` exit 0 at 9c29311 without `_build/prod`: core 148/0, daemon 1011/0, CLI 1801/0 (7 properties); port check and keymap check pass (see "QA #1 and the polish"). Before: `mix precommit` exit 0 at 7309405 without `_build/prod`: core 148/0, daemon 1011/0, CLI 1783/0 (7 properties). `check_terminal_port.sh` exit 0 (cargo fmt, 45 Rust tests, 58 crates / 108 licence texts). `mix swarm_code.keymap --check` matches. PTY suites: port 16, demo 8, live 1, saved 1, all OK after F9 |
+| 1 | precommit, port check, keymap check, PTY suites | pass | After QA #2: `mix precommit` exit 0 at aac8306 without `_build/prod`: core 148/0, daemon 1013/0, CLI 1815/0 (7 properties); port check and keymap check pass (see "QA #2 and the second polish"). After QA #1: `mix precommit` exit 0 at 9c29311 without `_build/prod`: core 148/0, daemon 1011/0, CLI 1801/0 (7 properties); port check and keymap check pass (see "QA #1 and the polish"). Before: `mix precommit` exit 0 at 7309405 without `_build/prod`: core 148/0, daemon 1011/0, CLI 1783/0 (7 properties). `check_terminal_port.sh` exit 0 (cargo fmt, 45 Rust tests, 58 crates / 108 licence texts). `mix swarm_code.keymap --check` matches. PTY suites: port 16, demo 8, live 1, saved 1, all OK after F9 |
 | 2 | `/swarm` + `/create-workflow` + an approval, then `/plan`, `/compact`, a plain message; 10 minutes with 3 live runs; close reasons in cli.log | pass (the forced close could not be caused) | `b1`, `c1`, `d1`, `f1`, `g0`, `g1`; 37 minutes with three live runs; quit-time lines in cli.log; S's close-reason tests |
 | 3 | `/diff` off/on, kept across a restart; `/theme` live and kept; `SWARM_THEME` precedence | pass | `u3`, `y0`, `da`, `db`; `u0`, `lc`, `le`, `wl`; cli.json 0600 |
-| 4 | `/com` + Enter runs `/compact`; `/consens` + Enter leaves `/consensus ` | pass (under an auto-opened approval card only since G11, QA Q1-01) | `f0`, `f1` (queued behind the turn, hinted "queue" since F7), `z0`, `z1`; `a1` (`/tru`); polish shots `a1`, `f1`, `f2` |
+| 4 | `/com` + Enter runs `/compact`; `/consens` + Enter leaves `/consensus ` | pass (under an auto-opened approval card only since G11, QA Q1-01; under a card focused with Ctrl-N or `n` since G21, QA Q2-01, polish shot `e6`) | `f0`, `f1` (queued behind the turn, hinted "queue" since F7), `z0`, `z1`; `a1` (`/tru`); polish shots `a1`, `f1`, `f2` |
 | 5 | "workflow" highlighted, sent as `/create-workflow`, opt-out key | pass (Ctrl-S under an approval card and its hint row only since G11, QA Q1-02) | `c0`, `c1`; K's live check; polish shots `k1`, `k3` |
 | 6 | Footer hints in the six states | pass | `a0`, `b0`, `w0`, `g0`, `f0`, `j0`, `h1`, `m1` |
 | 7 | Card at 160x45 and 120x36, ≤ 6 lines, chips, blank row, `/approval` picker, policy notice | pass ("Enter shows all" seen live by QA #1 and the polisher, "Enter fold" since G13) | `j0`, `m0`, `m1`, `m2`, `r0`–`r3`, `a2` |
@@ -399,6 +400,78 @@ What each shot shows:
 - Quit through "Stop 2 live runs and quit?" and X. `cli.log` has only the deliberate `/nosuch`
   refusal and the usual quit lines.
 
+## QA #2 and the second polish (G21 to G29)
+
+QA #2 (`/Users/zaali/.cache/p70cli/p73-Q2/qa.md`) ran the G14 release for 28 minutes with two to
+four live runs and up to five approvals waiting. It found no P0, two P1s and nine P2s, and
+confirmed QA #1's P0/P1 fixes live. The second polisher fixed both P1s and seven P2s, each with a
+regression test: `pass73_qa2_test.exs` (keys through `Keymap.resolve/3` and `Reducer.update/2`,
+drawn rows painted like the golden scenes), `pass73_qa2_runtime_test.exs` (the session's cli.log
+line), and in the daemon `pass73_send_routing_test.exs` (a real backend and a loopback provider)
+and `pass73_qa2_panel_facts_test.exs`. Each finding's test fails without its fix; the follow half
+of Q2-05 pins behaviour that already held. Two P2s are deferred.
+
+| ID | Sev | Finding | Result |
+| --- | --- | --- | --- |
+| Q2-01 | P1 | on a card focused with Ctrl-N or `n`, typed letters were decisions: "hey" approved a command, `/consens` walked the cards | fixed in ce16f42 (G21): `Keymap.typing_over_card?/3` and `typing_under_card?/1` apply to every approval card on top, whether it opened by itself or the user focused it. Its own keys (the decisions it offers, `n`, `?`) act only on an empty draft; every other key, and every key once the draft has text, is the composer's, and Enter sends that draft. The old `a` (allow once) is removed from the binding table, because it could only type now; `docs/keybindings.md` is regenerated. `?` is one of the card's keys, because the status row says "? keys" and `?` used to type instead, on both cards. QA's other idea (carry `auto_opened` along `n`) is not needed once the rule covers every card. QA #1's Q1-09 test now answers the card with the action its `y` gives on an empty draft (`y` types over a draft now). AGENTS.md and README say it |
+| Q2-02 | P1 | a `/plan` started beside a `/swarm` and a `/create-workflow` planned "all three asks" | fixed in ade7f9d (G22), in the daemon's domain (`Engine.do_start_chat_turn/4`, recorded as the `engine.ex` provenance patch). In the model's history of a new turn, a user message whose run is still registered beside it (the message launched or steered that run) is read as a note: `[An earlier message, handled by a separate swarm run that is still running on its own. It is not part of the current request; do not plan, answer or act on it here: "…"]`. The stored message is unchanged. The desktop has the same behaviour and is not changed (read-only) |
+| Q2-03 | P2 | the question dialog cut the question to its title line, broke options inside words and left about ten empty rows | fixed in 60ee09c (G26) and 6f09ed2 (G27): a question that does not fit the title leads the body, wrapped at words, and the title names who asks (`ApprovalCard.who/2`); options wrap at words (`Prose.wrap/3`); the dialog is as tall as its rows. A short question stays the title (`DialogChromeTest`). QA also asked to mark the first option on open; that is not done, because a question opens on Cancel on purpose (Enter must not answer by accident), so the footer says "5 choices · Down picks one · Esc closes" instead of "1 of 5" |
+| Q2-04 | P2 | the workflow-run card showed "args: {}" and "auto runs safe commands" | fixed in de3de00 (G23): empty args are left out, and the rule reads "auto asks before a workflow runs" |
+| Q2-05 | P2 | a resync the client started ("reconnecting") was not logged, and the chat stopped following after it | fixed in 43a9894 (G24): `Watch.resync/3` keeps its reason on the watch (`:gap`, `:snapshot_required`, `:overflow`, `:unbounded`, `:retry`), and the session logs `SwarmCode: asked the daemon for a fresh workspace snapshot (a delta arrived out of order)`. The lost follow did not reproduce: the snapshot keeps `Scroll.follow?`, and a test pins it. QA could not tell whether the resync or Ctrl-N caused it |
+| Q2-06 | P2 | the card always said "1 of N waiting" | fixed in de3de00 (G23): the card counts its place in the walk `n` takes (`Keymap.Special.waiting_ids/1`: tab order, then by id). QA #1's Q1-04 test now expects "2 of 2" on the second card. The card that opens by itself is the oldest request, which is not always first in tab order, so it can read "2 of 2"; `n` then wraps to "1 of 2" |
+| Q2-07 | P2 | raw workflow tool names in the band, the run row and the transcript rows | fixed in de3de00 (G23): the band's request reads "/quick-check" (the daemon's `PanelFacts`) with "run a workflow · auto asks", the run row "wants to run a workflow", and the overlay and the older dialog title use the card's words. The tool rows read "list workflows", "check workflow", "save workflow quick-check" and "run workflow quick-check" |
+| Q2-08 | P2 | the `/approval` picker filtered on typed text but showed nothing of it ("NO RESULTS") | fixed in 2e1213e (G25): typed text filters the three modes by name ("au" is Auto), and the title shows it ("Approvals: au") |
+| Q2-09 | P2 | the panel's cost and the status row's cost differ, with no label | deferred. The two numbers have different scopes: the panel's row 0 (the D1 frame) sums the run in chat and every live run, of any conversation; the status row is this conversation's total, finished runs included. Either label would be wrong in one direction, so this is the owner's call on the D1 row |
+| Q2-10 | P2 | rows the running turn added after a steer had no agent header | fixed in 60ee09c (G26) and aac8306 (G28): after a steer that the run's own rows follow, one line "✳ Planner continued" says whose they are. G28 (found by the precommit) keeps it off a message followed by another message. V1's steer-spacing test in `pass73_transcript_test.exs` now expects the line between the mark's blank row and the work |
+| Q2-11 | P2 | typing showed slowly under load | deferred. It was not measured, and part of the load came from another workflow on the machine. AGENTS.md asks for a locked before/after fixture, memory and query counts for performance work; this needs its own measured pass |
+
+### The live check after the second polish
+
+- The release was built at 60ee09c (G26) for the live check. It was then rebuilt at aac8306 (G27
+  names who asks in a question's title; G28 keeps "continued" to a steer) and copied to
+  `/Users/zaali/.cache/p70cli/rel-p73/`. The final copy booted, continued the conversation and
+  quit cleanly. `_build/prod` is removed.
+- Sandbox: `HOME=/Users/zaali/.cache/p70cli/p73-F/polish2/home` (a fresh copy of `sandbox-home`,
+  desktop mode light), a scratch `ailogic` copy, `deepseek-v4-pro`, `/trust`, GNU screen `g2` at
+  160x45. Shots are in `/Users/zaali/.cache/p70cli/p73-F/polish2/shots/`, rendered with QA's
+  `vt.py` and `svg2png_bg.py`.
+- Real prompts, 5 in total: a `/swarm` of two agents whose commands ask; a `/plan` beside it; a
+  steer to the Planner under a card; "make a tiny project workflow named quick-check … then run
+  it once" (routed to `/create-workflow`); and an `ask_user` question.
+
+What each shot shows:
+
+- `e3.png` (Q2-01): Esc twice, then Ctrl-N focused the deps-agent card ("1 of 2 waiting"). "hey"
+  is the draft, 2 are still waiting, and the status row says "Enter steer · Esc later".
+- `e6` (Q2-01, Q2-06): `n` walked to the tests-agent card ("2 of 2 waiting"). `/consens` is the
+  draft, the `/` list is open under the card, and the row says "Enter complete".
+- `w5` / `w6` (Q2-02): the Planner read only the ticket controllers, and its plan is "--verbose
+  (query param) request timings for the ticket API", with no part for the swarm's two agents.
+- `a2` (Q2-10): under the steer "Also keep the plan under six steps …" with "→ to the running
+  turn", the line "✳ Planner continued" heads the Planner's next rows.
+- `w1` / `w2.png` (Q2-04, Q2-06, Q2-07): the rows "list workflows", "check workflow", "save workflow
+  quick-check" and "run workflow quick-check"; the card "Workflow author wants to run the workflow
+  /quick-check" with "auto asks before a workflow runs", no args line and "1 of 2 waiting"; the
+  band row "Workflow author /quick-check" and the run row "wants to run a workflow".
+- `k2.png` (Q2-08): the picker titled "Approvals: au" with only "✓ Auto".
+- `q1.png` / `q2` (Q2-03): the Assistant's 50-word question wrapped whole in the body, four
+  options wrapped at words, "Your answer:", then "5 choices · Down picks one · Esc closes". The
+  box ends at its rows. Down gives "1 of 5 · Enter chooses".
+- cli.log stayed empty for the whole session (no resync, no refusal) until the quit lines.
+- Every screen session started for the check is closed, and no release process is left.
+
+Final checks at aac8306 (G28), without `_build/prod`:
+
+- `mise exec -- mix precommit` exit 0: core 148 tests, 0 failures; daemon 1013 tests, 0
+  failures; CLI 7 properties, 1815 tests, 0 failures. The only warnings are the daemon tests'
+  known migration-module redefinitions. (The first run, at 6f09ed2, failed two CLI tests on G26's
+  "continued" line; G28 fixed them.)
+- `scripts/dev/check_terminal_port.sh` exit 0: cargo fmt, 58 Rust tests, 58 crates and 108
+  licence texts.
+- `mix swarm_code.keymap --check`: `docs/keybindings.md` matches the binding table (regenerated in
+  G21 without the `a` row).
+- G29 changes only this file.
+
 ## Requests between owners
 
 | From → to | Request | What happened |
@@ -434,13 +507,21 @@ What each shot shows:
 - The stale live run behind S's K5 report was not found. F4 makes Ctrl-C independent of it.
 - A normal quit logs `data source lost: the data source announced it closed` as a warning. It is
   noise, not an error.
-- The release copy at `/Users/zaali/.cache/p70cli/rel-p73/` is built at G14 (b109fc4). G15 changes
-  only AGENTS.md.
+- The release copy at `/Users/zaali/.cache/p70cli/rel-p73/` is built at G28 (aac8306). G29 changes
+  only this file.
 - From QA #1:
   - Q1-06: a Ctrl-S message keeps the highlight, as the plan's T5 says.
   - Q1-10: a resumed transcript cannot page in older items (daemon paging, pre-existing).
   - Q1-11: the composer wraps inside words; hint digits skip folded runs; the panel's in-chat mark
     does not follow a digit jump; the `/plan` echo and the mode label come from the daemon.
-- Seen in the polish live check (`c2.png`): the panel's NEEDS YOU band still names a workflow-run
-  approval "workflow run" / "approve: work…". These are the band's own words; only the card was
-  reworded in G13.
+- Seen in the polish live check (`c2.png`): the panel's NEEDS YOU band still named a workflow-run
+  approval "workflow run" / "approve: work…". Fixed in G23 (QA Q2-07).
+- From QA #2:
+  - Q2-09: the panel's cost (the runs it shows) and the status row's cost (this conversation) have
+    different scopes and no label; the D1 row is the owner's call.
+  - Q2-11: typing under load is not measured; it needs a measured pass with a locked fixture.
+  - Q2-02 changed the daemon's copy of the desktop engine (a provenance patch); the desktop itself
+    still gives a new turn the launch messages of runs in flight as asks.
+  - The card that opens by itself is the oldest request, and its place in `n`'s walk (tab order)
+    can be "2 of 2".
+  - A question opens on Cancel, not on its first option (kept on purpose, see Q2-03).
