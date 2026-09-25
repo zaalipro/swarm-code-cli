@@ -182,10 +182,18 @@ defmodule SwarmCode.Daemon.Service.Settings.Secrets do
 
   def redaction_list(_other), do: []
 
+  # A scheme-prefixed credential (`Bearer <token>`) is also redacted when a
+  # message quotes the token alone.
   defp present(values) do
     values
     |> Enum.filter(&is_binary/1)
     |> Enum.reject(&(String.trim(&1) == ""))
+    |> Enum.flat_map(fn value ->
+      case Regex.run(~r/^\s*(?:bearer|basic|token)\s+(\S+)\s*$/i, value) do
+        [_, token] -> [value, token]
+        nil -> [value]
+      end
+    end)
     |> Enum.uniq()
   end
 end
