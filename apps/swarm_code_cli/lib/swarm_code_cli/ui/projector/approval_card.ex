@@ -181,6 +181,16 @@ defmodule SwarmCodeCLI.UI.Projector.ApprovalCard do
     do: "change a file"
 
   def verb(%{tool: "delete_file"}), do: "delete a file"
+
+  # pass73 G1 (QA Q1-07): "run the workflow /format-check", not "run
+  # workflow run".
+  def verb(%{tool: "workflow_run", arguments: arguments}) do
+    case string(arguments["name"]) do
+      name when is_binary(name) and name != "" -> "run the workflow /" <> String.trim(name)
+      _ -> "run a one-off workflow"
+    end
+  end
+
   def verb(%{tool: tool, permission: :execute}) when tool != "", do: "run " <> words(tool)
   def verb(%{tool: tool}) when tool != "", do: "use " <> words(tool)
   def verb(_), do: "do something that needs your permission"
@@ -194,6 +204,15 @@ defmodule SwarmCodeCLI.UI.Projector.ApprovalCard do
   # the change as a small diff, or the arguments one per line.
   defp body(facts) do
     cond do
+      # The workflow's name is in the title and `continue` is how the agent
+      # hears back: neither is the user's decision. What is left (its args,
+      # a one-off's source and budget) is.
+      facts.tool == "workflow_run" ->
+        facts.arguments
+        |> Map.drop(["name", "continue"])
+        |> Enum.sort_by(&elem(&1, 0))
+        |> Enum.flat_map(fn {key, value} -> argument_lines(key, value) end)
+
       facts.command ->
         facts.command
         |> String.trim_trailing()
@@ -516,6 +535,15 @@ defmodule SwarmCodeCLI.UI.Projector.ApprovalCard do
 
     gap = if gaps?, do: [blank_row(frame, card, state)], else: []
 
+    # A call with nothing to show (a saved workflow without args) keeps one
+    # gap between the header and the keys, not two.
+    code =
+      case Enum.map(visible, &code_row(&1, frame, card, state)) ++
+             if(more, do: [text_row(more, :text_faint, frame, card, state)], else: []) do
+        [] -> []
+        code -> code ++ gap
+      end
+
     # A blank row above the card, when there is room, keeps the transcript
     # off its top border; the one under it is never given up.
     rows =
@@ -523,9 +551,7 @@ defmodule SwarmCodeCLI.UI.Projector.ApprovalCard do
         [top_row(item, facts, frame, card, state)] ++
         if(reason?, do: [text_row(reason, :text_muted, frame, card, state)], else: []) ++
         gap ++
-        Enum.map(visible, &code_row(&1, frame, card, state)) ++
-        if(more, do: [text_row(more, :text_faint, frame, card, state)], else: []) ++
-        gap ++
+        code ++
         Enum.map(keys, &keys_row(&1, frame, card, state)) ++
         [bottom_row(item, rest, facts, frame, card, state), separator()]
 
@@ -748,11 +774,16 @@ defmodule SwarmCodeCLI.UI.Projector.ApprovalCard do
       |> Enum.map(&{&1, faint})
       |> Enum.intersperse(dot)
 
+    # pass73 G1 (QA Q1-04): one count everywhere: every request waiting on
+    # the user, as the status row and the band count them and as `n` walks
+    # them, the ones set aside with Esc included.
+    total = max(length(rest) + 1, SwarmCodeCLI.UI.Projector.Status.waiting_count(state))
+
     next =
-      if rest == [],
+      if total <= 1,
         do: [],
         else: [
-          {"1 of #{length(rest) + 1} waiting", tint(:warning, state)},
+          {"1 of #{total} waiting", tint(:warning, state)},
           dot,
           {"n", tint(:text_primary, state, [:bold])},
           {" next", tint(:text_muted, state)}

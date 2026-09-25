@@ -58,8 +58,10 @@ defmodule SwarmCodeCLI.UI.Pass73FinisherTest do
       assert ApprovalCard.expanded?(shown, shown.read_model.interactions[id])
       assert [{:approval, ^id} | _] = shown.layers
 
-      # Expanded, Enter folds it back rather than closing the card.
-      assert Composer.enter_action(shown) == :show_all
+      # Expanded, Enter folds it back rather than closing the card, and the
+      # status row says so (pass73 G1, QA Q1-05).
+      assert Composer.enter_action(shown) == :fold
+      assert Status.enter_words(Composer.enter_action(shown)) == "fold"
       {:ok, again} = Keymap.resolve(Input.key(:enter), shown, %{})
       {folded, []} = Reducer.update(shown, again)
       refute ApprovalCard.expanded?(folded, folded.read_model.interactions[id])

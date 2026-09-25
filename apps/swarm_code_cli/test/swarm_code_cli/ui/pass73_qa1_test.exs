@@ -28,7 +28,7 @@ defmodule SwarmCodeCLI.UI.Pass73Qa1Test do
   alias SwarmCodeCLI.UI.{SafeText, SlashPalette, Width}
   alias SwarmCodeCLI.UI.DataSource.DTO
   alias SwarmCodeCLI.UI.Paint.{Options, Plan}
-  alias SwarmCodeCLI.UI.Projector.Status
+  alias SwarmCodeCLI.UI.Projector.{ApprovalCard, Status}
 
   # ---------------------------------------------------------------- fixtures
 
@@ -325,5 +325,65 @@ defmodule SwarmCodeCLI.UI.Pass73Qa1Test do
       back = notch(up, :wheel_down, 2)
       assert back.scrolls.main.follow?
     end
+  end
+
+  # ------------------------------------------------------------------ Q1-04
+
+  defp card_text(state) do
+    width = Layout.for_state(state).rects.main.width
+
+    case ApprovalCard.layout(state, width) do
+      %{rows: rows} ->
+        Enum.map(rows, fn {left, right} ->
+          Enum.map_join(left ++ right, fn {text, _style} -> text end)
+        end)
+
+      nil ->
+        []
+    end
+  end
+
+  test "Q1-04 a card counts the one set aside, as the status row does" do
+    state = under_card([approval("a1"), approval("a2", created_at: 2)])
+    assert Enum.any?(card_text(state), &(&1 =~ "1 of 2 waiting"))
+
+    # Esc sets a1 aside; a2 opens by itself and still says 1 of 2.
+    state = press!(state, key(:escape))
+    assert [{:approval, "a2"} | _] = state.layers
+    assert Status.waiting_count(state) == 2
+
+    assert Enum.any?(card_text(state), &(&1 =~ "1 of 2 waiting · n next")),
+           inspect(card_text(state))
+  end
+
+  # ------------------------------------------------------------------ Q1-07
+
+  test "Q1-07 the workflow-run card names the workflow and leaves continue out" do
+    item =
+      approval("a1",
+        tool: "workflow_run",
+        preview: ~s({"name":"format-compile-check","continue":true})
+      )
+
+    state = under_card([item])
+
+    assert ApprovalCard.title(item, state) =~
+             ~r/wants to run the workflow \/format-compile-check$/
+
+    rows = card_text(state)
+    refute Enum.any?(rows, &(&1 =~ "continue"))
+    refute Enum.any?(rows, &(&1 =~ "workflow run"))
+
+    with_args =
+      approval("a1",
+        tool: "workflow_run",
+        preview: ~s({"name":"nightly","args":{"path":"lib"},"continue":false})
+      )
+
+    state = under_card([with_args])
+    assert Enum.any?(card_text(state), &(&1 =~ ~s(args: {"path":"lib"})))
+
+    one_off = approval("a1", tool: "workflow_run", preview: ~s({"source":"phase :a","budget":2}))
+    assert ApprovalCard.title(one_off, state) =~ "wants to run a one-off workflow"
   end
 end

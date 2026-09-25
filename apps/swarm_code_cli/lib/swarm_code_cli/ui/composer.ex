@@ -19,8 +19,10 @@ defmodule SwarmCodeCLI.UI.Composer do
     * `:queue`: `/compact` waits for the running chat turn to end.
     * `:send`: a plain message starts a turn.
     * `:show_all`: the approval card is on top and the draft is blank: Enter
-      shows every line of the command the card cut, or folds it back
-      (pass73 finisher, V1's request K1).
+      shows every line of the command the card cut (pass73 finisher, V1's
+      request K1).
+    * `:fold`: the same, once the card shows them all: Enter folds it back
+      (pass73 G1, QA Q1-05).
 
   pass73 finisher: under an approval card that opened by itself, a draft
   with text is still the composer's (`Keymap.typing_under_card?/1`), so
@@ -33,7 +35,7 @@ defmodule SwarmCodeCLI.UI.Composer do
   alias SwarmCodeCLI.UI.{Drafts, Editor, Keymap, SlashPalette, State, WorkflowKeyword}
 
   @type enter_action ::
-          :send | :steer | :queue | :run_command | :complete | :show_all | :none
+          :send | :steer | :queue | :run_command | :complete | :show_all | :fold | :none
   @type esc_action ::
           {:stop, map()} | :close_layer | :close_overlay | :dismiss_completion | :none
 
@@ -64,8 +66,14 @@ defmodule SwarmCodeCLI.UI.Composer do
     end
   end
 
-  defp blank_action(%{layers: [{:approval, id} | _]} = state) when is_binary(id),
-    do: if(Keymap.show_all?(state, id), do: :show_all, else: :none)
+  # pass73 G1 (QA Q1-05): once the card shows every line, Enter folds it.
+  defp blank_action(%{layers: [{:approval, id} | _]} = state) when is_binary(id) do
+    cond do
+      not Keymap.show_all?(state, id) -> :none
+      Map.get(state.selection, "approval_all") == id -> :fold
+      true -> :show_all
+    end
+  end
 
   defp blank_action(_state), do: :none
 

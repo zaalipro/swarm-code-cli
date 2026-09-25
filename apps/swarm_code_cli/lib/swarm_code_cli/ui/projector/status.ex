@@ -838,6 +838,7 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
   def enter_words(:run_command), do: "run"
   def enter_words(:complete), do: "complete"
   def enter_words(:show_all), do: "show all"
+  def enter_words(:fold), do: "fold"
   def enter_words(_), do: nil
 
   @doc """
