@@ -679,8 +679,13 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.SettingsIntegrations do
   end
 
   defp run("provider.fetch_models", c, state) do
+    # `attributes.listed` is a test hook: the list the simulated server answers
+    listed = get(c.attributes, "listed")
+    attrs = if is_list(listed), do: %{"listed" => listed}, else: %{}
+
     with_provider(state, c, fn p ->
-      {{:task, task("provider.fetch_models", %{"id" => p["id"]}), result("accepted")}, state}
+      {{:task, task("provider.fetch_models", %{"id" => p["id"]}, attrs), result("accepted")},
+       state}
     end)
   end
 

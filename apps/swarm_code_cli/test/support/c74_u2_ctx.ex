@@ -7,8 +7,8 @@ defmodule SwarmCodeCLI.Test.C74U2Ctx do
 
   alias SwarmCodeCLI.UI.DataSource.Fake.SettingsIntegrations, as: I
 
-  @kinds ~w(providers model_options pricing_rows unpriced_models search_providers mcp_servers
-            memory_files commands agent_defs skills workflows)
+  @kinds ~w(providers model_options effort_presets pricing_rows unpriced_models search_providers
+            mcp_servers memory_files commands agent_defs skills workflows)
 
   def ctx(state \\ I.seed(), opts \\ []) do
     records =
@@ -27,7 +27,7 @@ defmodule SwarmCodeCLI.Test.C74U2Ctx do
     singles =
       for {kind, id} <- Keyword.get(opts, :records, []), into: %{} do
         {:ok, rec} = I.query(state, %{"view" => "record", "kind" => kind, "id" => id})
-        {{kind, id}, rec}
+        {{kind, id}, %{fields: rec["fields"], loaded_at: 0}}
       end
 
     layer =
@@ -48,7 +48,7 @@ defmodule SwarmCodeCLI.Test.C74U2Ctx do
         records: records,
         record: singles,
         files: Keyword.get(opts, :files, %{}),
-        values: Keyword.get(opts, :values, %{}),
+        values: Keyword.get(opts, :values, default_values()),
         task_views: Keyword.get(opts, :task_views, %{})
       },
       layer: layer,
@@ -59,7 +59,30 @@ defmodule SwarmCodeCLI.Test.C74U2Ctx do
       conversation: %{"id" => I.ids().conversation},
       prefs: %{},
       launch_facts: %{env: %{"VISUAL" => "hx"}},
-      overrides: nil
+      overrides: nil,
+      page:
+        Keyword.get(opts, :page, %{section: nil, record: nil, sub: nil, cursor: nil, scroll: 0})
+    }
+  end
+
+  @doc "Appendix A values the integration pages read."
+  def default_values do
+    ids = I.ids()
+
+    %{
+      "models.chat" => %{
+        key: "models.chat",
+        value: %{"provider_id" => ids.deepseek, "model" => "deepseek-v4-pro"},
+        state: "ok"
+      },
+      "models.sub_agent" => %{
+        key: "models.sub_agent",
+        value: %{"provider_id" => ids.deepseek, "model" => "deepseek-v4-flash"},
+        state: "ok"
+      },
+      "web.reader" => %{key: "web.reader", value: "web_fetch", state: "ok"},
+      "storage.retention_days" => %{key: "storage.retention_days", value: nil, state: "ok"},
+      "storage.prune_days" => %{key: "storage.prune_days", value: nil, state: "ok"}
     }
   end
 
@@ -69,4 +92,68 @@ defmodule SwarmCodeCLI.Test.C74U2Ctx do
   def put_layer(ctx, key, value), do: put_in(ctx, [:layer, key], value)
 
   def text(segments), do: Enum.map_join(segments, "", fn {t, _} -> t end)
+end
+
+defmodule SwarmCodeCLI.Test.C74U2Ctx.Page do
+  @moduledoc false
+  def at(section, record \\ nil, sub \\ nil),
+    do: %{section: section, record: record, sub: sub, cursor: nil, scroll: 0}
+end
+
+defmodule SwarmCodeCLI.Test.C74U2Tasks do
+  @moduledoc false
+  alias SwarmCodeCLI.UI.DataSource.Fake.SettingsIntegrations, as: I
+
+  @doc "Runs `action` through the fake: `{state, task_map_for_the_layer, rows}`."
+  def run(
+        state,
+        action,
+        target,
+        attributes \\ %{},
+        outcome \\ :run,
+        task_id \\ nil,
+        secrets \\ []
+      ) do
+    {{:task, task, _}, state} =
+      I.command(state, %{
+        "action" => action,
+        "target" => target,
+        "attributes" => attributes,
+        "secrets" => secrets
+      })
+
+    id = task_id || "task-" <> action
+    task = Map.put(task, "task_id", id)
+
+    case I.run_task(state, task, outcome) do
+      {{:done, summary, rows}, state} ->
+        {state, id,
+         %{
+           action: action,
+           target: target,
+           state: "done",
+           summary: summary,
+           at: "2026-09-25T18:42:00Z",
+           cancellable: task["cancellable"]
+         }, rows}
+
+      {{:failed, message}, state} ->
+        {state, id,
+         %{
+           action: action,
+           target: target,
+           state: "failed",
+           message: message,
+           at: "2026-09-25T18:42:00Z",
+           cancellable: task["cancellable"]
+         }, []}
+    end
+  end
+
+  @doc "Puts a finished task and its rows into a section context."
+  def put(ctx, id, task, rows) do
+    ctx
+    |> put_in([:layer, :tasks, id], Map.merge(%{received_at_ms: ctx.now, elapsed_ms: 400}, task))
+    |> put_in([:data, :task_views, id], %{summary: task[:summary], pages: %{nil => rows}})
+  end
 end

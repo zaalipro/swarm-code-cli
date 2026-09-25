@@ -18,6 +18,83 @@ defmodule SwarmCodeCLI.UI.Settings.IntegrationRows do
     Map.get(ctx, :layer) || get_in_map(ctx, [:state_view, :settings]) || %{}
   end
 
+  @doc "The page on screen (`%Page{}`: `section`, `record`, `sub`), or a section page map."
+  def current_page(ctx) do
+    Map.get(ctx, :page) ||
+      case Map.get(layer(ctx), :stack) do
+        [page | _] -> page
+        _ -> %{section: nil, record: nil, sub: nil, cursor: nil, scroll: 0}
+      end
+  end
+
+  @doc "The record the page shows, `{kind, id}`, or nil."
+  def page_record(ctx), do: Map.get(current_page(ctx), :record)
+
+  @doc "The sub-page the page shows, or nil."
+  def page_sub(ctx), do: Map.get(current_page(ctx), :sub)
+
+  @doc "A page (§3.7.1 `%Page{}` fields) for an `{:open, page}` op."
+  def new_page(section, record \\ nil, sub \\ nil),
+    do: %{section: section, record: record, sub: sub, cursor: nil, scroll: 0}
+
+  @doc "A detail (§3.7.2 `%Detail{}` fields)."
+  def detail(attrs) do
+    Map.merge(
+      %{
+        title: "",
+        scope: nil,
+        key_line: nil,
+        description: "",
+        facts: [],
+        layers: [],
+        checks: [],
+        results: [],
+        actions: [],
+        notes: []
+      },
+      Map.new(attrs)
+    )
+  end
+
+  @doc "A confirmation (§3.7.2 `%Confirm{}` fields)."
+  def confirm(attrs) do
+    Map.merge(
+      %{
+        id: nil,
+        title: "",
+        lines: [],
+        safe: "Cancel",
+        danger: "",
+        letter: nil,
+        undoable?: true,
+        typed: nil,
+        counting?: false,
+        focus: :safe,
+        input: "",
+        opener: nil
+      },
+      Map.new(attrs)
+    )
+  end
+
+  @doc "A picker (§3.7.8 `%Picker{}` fields)."
+  def picker(attrs) do
+    Map.merge(
+      %{
+        id: nil,
+        title: "",
+        options: [],
+        cursor: 0,
+        query: "",
+        current: nil,
+        on_pick: nil,
+        opener: nil,
+        filter?: true
+      },
+      Map.new(attrs)
+    )
+  end
+
   @doc "The layer's data (`%Data{}`), or `%{}`."
   def data(ctx), do: Map.get(ctx, :data) || Map.get(layer(ctx), :data) || %{}
 
@@ -55,7 +132,7 @@ defmodule SwarmCodeCLI.UI.Settings.IntegrationRows do
   defp project_field(p, key), do: field(p, key)
 
   @doc "The loaded page of `kind` (any options when `options` is nil), or nil."
-  def page(ctx, kind, options \\ nil) do
+  def records_page(ctx, kind, options \\ nil) do
     records = Map.get(data(ctx), :records) || %{}
 
     exact = if options, do: Map.get(records, {kind, options}) || Map.get(records, kind)
@@ -70,18 +147,18 @@ defmodule SwarmCodeCLI.UI.Settings.IntegrationRows do
 
   @doc "The loaded items of `kind` (records), `[]` before they arrive."
   def items(ctx, kind, options \\ nil) do
-    case page(ctx, kind, options) do
+    case records_page(ctx, kind, options) do
       nil -> []
       page -> Map.get(page, :items) || Map.get(page, "items") || []
     end
   end
 
   @doc "Whether a page of `kind` has arrived."
-  def loaded?(ctx, kind, options \\ nil), do: page(ctx, kind, options) != nil
+  def loaded?(ctx, kind, options \\ nil), do: records_page(ctx, kind, options) != nil
 
   @doc "The total of a record page (its own count when the page has none)."
   def total(ctx, kind, options \\ nil) do
-    case page(ctx, kind, options) do
+    case records_page(ctx, kind, options) do
       nil -> nil
       page -> Map.get(page, :total) || Map.get(page, "total") || length(items(ctx, kind, options))
     end
@@ -185,6 +262,22 @@ defmodule SwarmCodeCLI.UI.Settings.IntegrationRows do
     end
   end
 
+  @doc "A draft's fields (`%{field => value}`)."
+  def draft_fields(nil), do: %{}
+  def draft_fields(draft), do: Map.get(draft, :fields) || Map.get(draft, "fields") || %{}
+
+  @doc "A draft's field errors (`%{field => message}`)."
+  def draft_errors(nil), do: %{}
+  def draft_errors(draft), do: Map.get(draft, :errors) || Map.get(draft, "errors") || %{}
+
+  @doc "Whether a draft holds a pasted secret for `slot`."
+  def draft_secret?(nil, _slot), do: false
+
+  def draft_secret?(draft, slot) do
+    secrets = Map.get(draft, :secrets) || Map.get(draft, "secrets") || %{}
+    Map.has_key?(secrets, slot)
+  end
+
   @doc "The draft of `kind` (§3.7.10) or nil."
   def draft(ctx, kind), do: layer(ctx) |> Map.get(:drafts, %{}) |> Map.get(kind)
 
@@ -256,7 +349,8 @@ defmodule SwarmCodeCLI.UI.Settings.IntegrationRows do
   @atoms Map.new(
            ~w(id name kind value state action target result summary rows received_at_ms elapsed_ms
               message progress done total step bytes items fields set hint at count ms status
-              provider_id model options project_id title root),
+              provider_id model options project_id title root errors secrets env
+              cancellable),
            &{&1, String.to_atom(&1)}
          )
   defp atom(key) when is_binary(key), do: Map.get(@atoms, key, key)
@@ -289,7 +383,8 @@ defmodule SwarmCodeCLI.UI.Settings.IntegrationRows do
     :detail,
     :state,
     :columns,
-    :target
+    :target,
+    :indent
   ]
 
   @doc """
@@ -313,7 +408,8 @@ defmodule SwarmCodeCLI.UI.Settings.IntegrationRows do
       detail: nil,
       state: :normal,
       columns: nil,
-      target: nil
+      target: nil,
+      indent: 0
     }
 
     Map.merge(base, Map.take(attrs, @row_keys))
