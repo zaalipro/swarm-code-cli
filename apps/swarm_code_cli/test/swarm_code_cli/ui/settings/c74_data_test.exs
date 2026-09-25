@@ -126,6 +126,35 @@ defmodule SwarmCodeCLI.UI.Settings.C74DataTest do
     _ = fake
   end
 
+  test "a second change of a daemon key, made after the first was saved, carries the saved value as its CAS (cli74 F: the sandbox showed a conflict)" do
+    {state, fake} = opened()
+    state = Nav.put_cursor(state, "key:limits.max_concurrent_agents")
+
+    step = fn state, fake ->
+      {state, effects} = act(state, {:settings, {:verb, :right}})
+      [{:start_timer, timer, 600, _}] = effects
+      {state, effects} = act(state, {:settings, {:settle, state.settings.generation, timer}})
+      [request] = sent(effects)
+      {fake, body, _facts} = FakeSettings.command(fake, request)
+      {state, _} = deliver(state, request, body)
+      {state, fake, params(request)}
+    end
+
+    {state, fake, first} = step.(state, fake)
+    assert first["expected"] == %{"limits.max_concurrent_agents" => 6}
+    assert row(state, "limits.max_concurrent_agents").value |> words() =~ "7"
+
+    # no re-read has arrived yet: the base is the value the service accepted
+    {state, _fake, second} = step.(state, fake)
+
+    assert [%{"key" => "limits.max_concurrent_agents", "value" => 8}] =
+             second["attributes"]["changes"]
+
+    assert second["expected"] == %{"limits.max_concurrent_agents" => 7}
+    assert state.settings.conflicts == %{}
+    assert state.settings.status.text == "Max concurrent agents → 8 · next spawn"
+  end
+
   test "a rejected daemon value shows its message under the row" do
     {state, fake} = opened()
     reply = %{status: :rejected, message: "must be between 1 and 16"}

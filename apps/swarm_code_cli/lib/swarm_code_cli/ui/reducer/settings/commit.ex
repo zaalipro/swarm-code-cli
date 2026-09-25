@@ -339,10 +339,14 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Commit do
   message} | {:failed, words}`.
   """
   @spec outcome(State.t(), term(), map(), term()) :: {State.t(), list()}
-  def outcome(state, key, write, :unchanged), do: send_queued(state, key, write, write.sent)
+  def outcome(state, key, write, :unchanged) do
+    state = settled(state, Registry.fetch!(write.key), write.sent)
+    send_queued(state, key, write, write.sent)
+  end
 
   def outcome(state, key, write, :accepted) do
     entry = Registry.fetch!(write.key)
+    state = settled(state, entry, write.sent)
     {state, live} = live(state, entry)
     state = state |> history(entry, write) |> next_launch(entry) |> toast(entry, write)
     {state, queued} = send_queued(state, key, write, write.sent)
@@ -383,6 +387,42 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Commit do
     state = restore_step(state, write)
     {status(state, "Couldn't save: " <> words <> dropped(entry, write), :error), []}
   end
+
+  # A daemon write the service accepted is what its home layer now holds:
+  # the row's base (the next write's `expected`) and, unless a stronger layer
+  # wins, its value — at once, not when the re-read arrives (a second change
+  # of the same key made meanwhile must not conflict with the first).
+  defp settled(%{settings: %Layer{data: data} = layer} = state, %Entry{} = entry, sent) do
+    case Map.get(data.values, entry.key) do
+      %{} = setting when entry.home not in [:cli, nil] and sent != :remove ->
+        home = entry.home
+
+        layers =
+          Enum.map(Map.get(setting, :layers) || [], fn
+            %{layer: ^home} = l -> %{l | value: sent, set: true}
+            l -> l
+          end)
+
+        wins? = Map.get(setting, :winner) in [home, :default, nil]
+
+        setting = %{
+          setting
+          | base: sent,
+            layers: layers,
+            value: if(wins?, do: sent, else: setting.value),
+            winner: if(wins?, do: home, else: setting.winner),
+            state: if(wins?, do: :ok, else: setting.state)
+        }
+
+        values = Map.put(data.values, entry.key, setting)
+        put_layer(state, %{layer | data: %{data | values: values}})
+
+      _ ->
+        state
+    end
+  end
+
+  defp settled(state, _entry, _sent), do: state
 
   defp dropped(_entry, %{queued: nil}), do: ""
   defp dropped(entry, _write), do: "; your later change to #{entry.label} was not sent"

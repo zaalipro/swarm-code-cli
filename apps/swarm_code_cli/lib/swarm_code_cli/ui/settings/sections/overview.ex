@@ -393,10 +393,11 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Overview do
   defp glance_words("approvals", g, ctx) do
     project = g["project"] || (ctx.project && ctx.project["name"])
 
+    # The mode in words (`read-only`, `auto`, `full access`), never the column value.
     mode =
       cond do
-        is_binary(g["mode"]) and is_binary(project) -> "#{project}: #{g["mode"]}"
-        is_binary(g["mode"]) -> g["mode"]
+        is_binary(g["mode"]) and is_binary(project) -> "#{project}: #{mode_words(g["mode"])}"
+        is_binary(g["mode"]) -> mode_words(g["mode"])
         true -> nil
       end
 
@@ -745,4 +746,9 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Overview do
   defp count(n, _one, many), do: "#{n} #{many}"
 
   defp blank?(text), do: text in [nil, ""]
+
+  defp mode_words(mode) when mode in ["read_only", "auto", "full_access"],
+    do: SwarmCodeCLI.UI.Settings.Sections.Approvals.mode_words(mode)
+
+  defp mode_words(mode), do: mode
 end
