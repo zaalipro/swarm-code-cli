@@ -24,7 +24,13 @@ defmodule SwarmCodeCLI.UI.C74U3Helpers do
   @doc "Answers every settings request in `effects` from the fake store, until none is left."
   def serve({state, effects}, fake), do: serve(state, effects, fake)
 
-  def serve(state, effects, fake) do
+  # Bounded: a load the fake cannot answer (a record kind U2's fake
+  # simulates) is asked again after every answer; five rounds settle a page.
+  def serve(state, effects, fake, rounds \\ 5)
+
+  def serve(state, _effects, fake, 0), do: {state, fake}
+
+  def serve(state, effects, fake, rounds) do
     case sent(effects) do
       [] ->
         {state, fake}
@@ -42,7 +48,7 @@ defmodule SwarmCodeCLI.UI.C74U3Helpers do
             {acc, fake, more ++ next}
           end)
 
-        serve(state, more, fake)
+        serve(state, more, fake, rounds - 1)
     end
   end
 
