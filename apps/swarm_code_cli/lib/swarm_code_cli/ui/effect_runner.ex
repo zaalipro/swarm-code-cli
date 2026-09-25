@@ -119,6 +119,11 @@ defmodule SwarmCodeCLI.UI.EffectRunner do
       error: error
     }
 
+  # pass74 §3.6: a settings request the data source refused.
+  defp error_body(%{expected_response: expected} = request, error, _)
+       when expected in [:settings_snapshot, :settings_result],
+       do: {:settings_failed, request.request_id, DTO.SettingsResult.failure_words(error)}
+
   defp error_body(request, error, epoch) do
     attrs = [request_id: request.request_id, state: :error, error: error]
 

@@ -18,7 +18,10 @@ defmodule SwarmCodeCLI.UI.DataSource.Delta do
     # `background_upsert`/`background_remove` travel with the run.
     toast: DTO.Toast,
     rate_limit: DTO.RateLimit,
-    background_upsert: DTO.BackgroundCommand
+    background_upsert: DTO.BackgroundCommand,
+    # pass74 §3.4.4: global-scope settings facts on the shell watch.
+    settings_update: DTO.SettingsUpdate,
+    settings_task: DTO.SettingsTask
   }
   @kinds Map.keys(@bodies) ++
            [
@@ -67,6 +70,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Delta do
           | :background_upsert
           | :background_remove
           | :snapshot_required
+          | :settings_update
+          | :settings_task
   @type t :: %__MODULE__{
           kind: kind(),
           entity_id: binary() | nil,
@@ -89,6 +94,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Delta do
             | DTO.Toast.t()
             | DTO.RateLimit.t()
             | DTO.BackgroundCommand.t()
+            | DTO.SettingsUpdate.t()
+            | DTO.SettingsTask.t()
             | nil,
           sequence: non_neg_integer(),
           revision: non_neg_integer()
@@ -159,6 +166,17 @@ defmodule SwarmCodeCLI.UI.DataSource.Delta do
   # elsewhere); the envelope routes, the body says what it is about.
   defp correlated_body?(%{body: %DTO.Toast{} = body} = delta),
     do: delta.entity_id == body.id and is_nil(delta.attempt_id)
+
+  # pass74 §3.4.4: a settings task is named by its task id; an update by nothing.
+  defp correlated_body?(%{kind: :settings_task, body: %DTO.SettingsTask{} = body} = delta),
+    do:
+      delta.entity_id == body.task_id and is_nil(delta.run_id) and
+        is_nil(delta.conversation_id) and is_nil(delta.attempt_id)
+
+  defp correlated_body?(%{kind: :settings_update, body: %DTO.SettingsUpdate{}} = delta),
+    do:
+      is_nil(delta.entity_id) and is_nil(delta.run_id) and is_nil(delta.conversation_id) and
+        is_nil(delta.attempt_id)
 
   defp correlated_body?(%{body: %DTO.RateLimit{} = body} = delta),
     do: delta.entity_id == body.provider_id and is_nil(delta.run_id) and is_nil(delta.attempt_id)
@@ -236,6 +254,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Delta do
         :toast -> DTO.Toast
         :rate_limit -> DTO.RateLimit
         :background_upsert -> DTO.BackgroundCommand
+        :settings_update -> DTO.SettingsUpdate
+        :settings_task -> DTO.SettingsTask
         _ -> nil
       end
 
