@@ -193,10 +193,13 @@ defmodule SwarmCodeCLI.UI.Settings.Nav do
     cursor = Layer.page(layer).cursor
 
     case layer.deep_link do
+      # A key's row, or the action row a section draws for that key under an
+      # id of its own (`act:…` rows that carry the registry key).
       {:row, row_id} ->
-        if Enum.any?(focusable, &(&1.id == row_id)),
-          do: %{put_cursor(state, row_id) | settings: %{state.settings | deep_link: nil}},
-          else: state
+        case Enum.find(focusable, &linked?(&1, row_id)) do
+          nil -> state
+          row -> %{put_cursor(state, row.id) | settings: %{state.settings | deep_link: nil}}
+        end
 
       # A blank open lands on the Overview's first attention item; the link
       # is spent once the service's overview is in (an item it lists first
@@ -222,6 +225,11 @@ defmodule SwarmCodeCLI.UI.Settings.Nav do
   end
 
   def settle(state), do: state
+
+  defp linked?(%Row{id: id}, id), do: true
+  defp linked?(%Row{key: key}, "key:" <> key) when is_binary(key), do: true
+  defp linked?(%Row{id: "act:" <> key}, "key:" <> key), do: true
+  defp linked?(_row, _row_id), do: false
 
   defp settle_cursor(state, focusable, cursor) do
     cond do

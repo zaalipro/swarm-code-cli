@@ -117,14 +117,26 @@ defmodule SwarmCodeCLI.UI.Settings.DeepLink do
 
   defp section(id), do: %{stack: [Page.section(id)], search: nil, deep_link: nil}
 
+  # Registry groups a section draws on a sub-page of its own: the consensus
+  # rows of Models & effort (§2.2) and the desktop's window state (§2.20).
+  @sub_groups %{
+    {:models_effort, "consensus · this conversation"} => :consensus,
+    {:desktop, "window state"} => :window_state
+  }
+
   defp key_page(entry) do
     row = "key:" <> entry.key
 
-    %{
-      stack: [%Page{section: entry.section, cursor: row}],
-      search: nil,
-      deep_link: {:row, row}
-    }
+    stack =
+      case Map.get(@sub_groups, {entry.section, entry.group}) do
+        nil ->
+          [%Page{section: entry.section, cursor: row}]
+
+        sub ->
+          [%Page{section: entry.section, sub: sub, cursor: row}, Page.section(entry.section)]
+      end
+
+    %{stack: stack, search: nil, deep_link: {:row, row}}
   end
 
   defp record(kind, id) do

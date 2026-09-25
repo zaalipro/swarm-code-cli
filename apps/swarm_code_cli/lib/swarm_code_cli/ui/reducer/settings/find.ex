@@ -206,12 +206,10 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Find do
 
   def go(state, {:key, key}) do
     case Registry.fetch(key) do
-      {:ok, entry} ->
-        leave_to(
-          state,
-          [%Page{section: entry.section, cursor: "key:" <> key}],
-          {:row, "key:" <> key}
-        )
+      {:ok, _entry} ->
+        # The key's page (a sub-page for the consensus and window-state rows).
+        %{stack: stack, deep_link: link} = DeepLink.resolve({:key, key}, nil)
+        leave_to(state, stack, link)
 
       :error ->
         {state, []}

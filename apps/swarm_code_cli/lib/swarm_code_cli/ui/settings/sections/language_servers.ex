@@ -119,8 +119,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.LanguageServers do
       columns: [
         {name, :text_primary, 1},
         {exts, :text_faint, 4},
-        {command, command_role, 2},
-        {Enum.map_join(state, "", &elem(&1, 0)), :text_muted, 3}
+        {command, command_role, 2}
       ],
       editor:
         {SwarmCodeCLI.UI.Settings.Editors.LspCommand,

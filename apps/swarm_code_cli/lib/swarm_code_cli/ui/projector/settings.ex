@@ -12,7 +12,7 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
       footer   the focused row's keys, then the layer's
 
   Under 120 columns the rail gives way to the page (the header crumb says
-  where you are); under 80 × 16 one sentence says the terminal is too small.
+  where you are); under 80 × 20 one sentence says the terminal is too small.
   Only the page rows around the cursor are built into lines.
   """
 
@@ -27,7 +27,7 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
   @rail 26
   @detail 48
   @min_columns 80
-  @min_rows 16
+  @min_rows 20
   @label 29
 
   @doc "The layer's regions and cursor, or nil when it is closed."
@@ -56,14 +56,24 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
 
   def project(_state, _layout), do: nil
 
+  # A5 / F§too small: the one sentence, centred on two lines (it is wider
+  # than the terminal that needs it); Esc still closes the layer.
   defp too_small(state, width, height) do
-    words = "Settings needs at least #{@min_columns} × #{@min_rows} · Esc closes"
-    top = div(max(height - 1, 0), 2)
-    pad = max(div(width - Text.text_cells(state, words), 2), 0)
+    lines = [
+      "Settings needs #{@min_columns} × #{@min_rows}; this terminal is #{width} × #{height}.",
+      "Make it larger, or use swarmcode config in a shell."
+    ]
+
+    top = div(max(height - length(lines), 0), 2)
+
+    centred =
+      for words <- lines do
+        pad = max(div(width - Text.text_cells(state, words), 2), 0)
+        [{String.duplicate(" ", pad), :text_primary}, {words, :text_primary}]
+      end
 
     List.duplicate([], top) ++
-      [[{String.duplicate(" ", pad), :text_primary}, {words, :text_muted}]] ++
-      List.duplicate([], max(height - top - 1, 0))
+      centred ++ List.duplicate([], max(height - top - length(lines), 0))
   end
 
   defp screen(state, width, height) do
@@ -385,11 +395,14 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
         end)
 
       skip = window_skip(rows, heights, start)
+      tables = tables(state, rows, width - 3)
 
       lines =
         window
         |> Enum.reverse()
-        |> Enum.flat_map(&row_lines(state, &1, &1 == current and layer.region == :page, width))
+        |> Enum.flat_map(
+          &row_lines(state, &1, &1 == current and layer.region == :page, width, tables)
+        )
         |> Enum.drop(skip)
 
       if start == 0, do: Enum.take(head ++ lines, height), else: Enum.take(lines, height)
@@ -430,7 +443,21 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
 
   defp page_status(_layer), do: nil
 
-  defp row_lines(state, %Row{kind: :heading} = row, _focused?, width) do
+  # A table's heading row (a label-less heading with columns) draws the
+  # column names in the table's layout.
+  defp row_lines(state, %Row{kind: :heading, columns: [_ | _]} = row, _focused?, width, tables)
+       when is_map_key(tables, row.id) do
+    [
+      Text.spread(
+        state,
+        [{"   ", :text_primary} | Map.fetch!(tables, row.id)],
+        row.tag ++ [{" ", :text_primary}],
+        width
+      )
+    ]
+  end
+
+  defp row_lines(state, %Row{kind: :heading} = row, _focused?, width, _tables) do
     [
       Text.spread(
         state,
@@ -441,7 +468,7 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
     ]
   end
 
-  defp row_lines(state, %Row{} = row, focused?, width) do
+  defp row_lines(state, %Row{} = row, focused?, width, tables) do
     layer = state.settings
     editing = editing(layer, row)
     display = editing && editing.module.display(editing.state, Nav.ctx(state))
@@ -478,7 +505,8 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
     main =
       cond do
         is_list(row.columns) ->
-          [lead, mark, {" ", :text_primary}] ++ columns(state, row, width - 3)
+          [lead, mark, {" ", :text_primary}] ++
+            Map.get_lazy(tables, row.id, fn -> columns(state, row, width - 3) end)
 
         row.label == "" ->
           [lead, mark, {" ", :text_primary}] ++ Text.clip(state, value, width - 4)
@@ -503,17 +531,103 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
   # that fit, dropping the least important (highest priority number, the
   # rightmost among equals) until the rest fit (§4.11).
   defp columns(state, %Row{} = row, width) do
-    name = if row.label == "", do: [], else: [{row.label, :text_primary, 0}]
-
-    cells =
-      name ++
-        Enum.map(row.columns, fn {text, role, priority} -> {to_string(text), role, priority} end)
-
-    kept = fit_columns(state, cells, width)
+    kept = fit_columns(state, cells(row), width)
 
     kept
     |> Enum.map(fn {text, role, _} -> [{text, role}, {"  ", :text_primary}] end)
     |> Enum.concat()
+  end
+
+  # The cells of a table row: the name (the label, unless the section drew
+  # it as the first column itself), then the columns. The name is never
+  # dropped.
+  defp cells(%Row{label: label, columns: columns}) do
+    columns =
+      Enum.map(columns, fn {text, role, priority} -> {to_string(text), role, priority} end)
+
+    cond do
+      label == "" or Enum.any?(columns, &match?({^label, _, _}, &1)) ->
+        columns
+        |> Enum.with_index()
+        |> Enum.map(fn
+          {{text, role, _}, 0} -> {text, role, 0}
+          {{^label, role, _}, _} when label != "" -> {label, role, 0}
+          {cell, _} -> cell
+        end)
+
+      true ->
+        [{label, :text_primary, 0} | columns]
+    end
+  end
+
+  # §4.15: the rows of one record table (a run of consecutive rows with
+  # columns) share their columns — each padded to the table's widest cell —
+  # and a table too wide for the page drops its least important column in
+  # every row alike. Answers the drawn segments of each table row by row id.
+  defp tables(state, rows, width) do
+    rows
+    |> Enum.chunk_by(&(is_list(&1.columns) and &1.columns != []))
+    |> Enum.filter(fn [first | _] -> is_list(first.columns) and first.columns != [] end)
+    |> Enum.reduce(%{}, fn table, acc -> Map.merge(acc, table_layout(state, table, width)) end)
+  end
+
+  defp table_layout(state, table, width) do
+    rows = for row <- table, do: {row.id, cells(row)}
+    count = rows |> Enum.map(fn {_, cells} -> length(cells) end) |> Enum.max()
+
+    widths =
+      for i <- 0..(count - 1) do
+        rows
+        |> Enum.map(fn {_, cells} ->
+          case Enum.at(cells, i) do
+            {text, _, _} -> Text.text_cells(state, text)
+            nil -> 0
+          end
+        end)
+        |> Enum.max()
+      end
+
+    priorities =
+      for i <- 0..(count - 1) do
+        if i == 0,
+          do: 0,
+          else:
+            Enum.find_value(rows, 1, fn {_, cells} ->
+              case Enum.at(cells, i) do
+                {_, _, priority} -> priority
+                nil -> nil
+              end
+            end)
+      end
+
+    kept = keep_columns(Enum.to_list(0..(count - 1)), widths, priorities, width)
+    last = List.last(kept)
+
+    Map.new(rows, fn {id, cells} ->
+      segments =
+        Enum.flat_map(kept, fn i ->
+          {text, role, _} = Enum.at(cells, i) || {"", :text_primary, 1}
+          pad = Enum.at(widths, i) - Text.text_cells(state, text)
+
+          if i == last,
+            do: [{text, role}],
+            else: [{text, role}, {String.duplicate(" ", max(pad, 0) + 2), :text_primary}]
+        end)
+
+      {id, segments}
+    end)
+  end
+
+  defp keep_columns(kept, widths, priorities, width) do
+    total = kept |> Enum.map(&(Enum.at(widths, &1) + 2)) |> Enum.sum()
+    droppable = Enum.filter(kept, &(Enum.at(priorities, &1) > 0))
+
+    if total <= width or droppable == [] do
+      kept
+    else
+      drop = Enum.max_by(droppable, &{Enum.at(priorities, &1), &1})
+      keep_columns(List.delete(kept, drop), widths, priorities, width)
+    end
   end
 
   defp fit_columns(state, cells, width) do

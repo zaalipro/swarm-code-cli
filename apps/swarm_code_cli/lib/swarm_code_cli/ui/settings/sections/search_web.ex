@@ -143,8 +143,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.SearchWeb do
         {"#{n}", :text_faint, 3},
         {tick, :text_primary, 1},
         {label(kind), :text_primary, 1},
-        {text(key_segments(ctx, f)), :text_muted, 2},
-        {text(last_test_segments(ctx, f)), :text_faint, 4}
+        {text(key_segments(ctx, f)), :text_muted, 2}
       ],
       keys: [
         {"Space", :toggle, if(on, do: "turn off", else: "turn on")},

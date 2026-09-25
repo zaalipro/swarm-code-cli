@@ -55,7 +55,8 @@ defmodule SwarmCodeCLI.UI.Settings.C74ProjectorTest do
   test "too small says so in one sentence and Esc closes" do
     state = sized(72, 18) |> act!({:settings_open, nil})
     text = Enum.join(lines(state), "\n")
-    assert text =~ "Settings needs at least 80 × 16 · Esc closes"
+    assert text =~ "Settings needs 80 × 20; this terminal is 72 × 18."
+    assert text =~ "Make it larger, or use swarmcode config in a shell."
   end
 
   test "the ASCII twin has no non-ASCII byte" do
