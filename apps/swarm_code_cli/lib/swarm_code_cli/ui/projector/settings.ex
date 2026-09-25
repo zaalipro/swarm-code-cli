@@ -133,11 +133,13 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
       [{" Settings", {:text_primary, [:bold]}}] ++
         Enum.flat_map(trail, &[{" #{crumb} ", :text_faint}, {&1, {:text_primary, [:bold]}}])
 
-    right =
+    esc =
       cond do
         Layer.depth(layer) > 1 -> [{"Esc", {:info, [:bold]}}, {" back ", :text_faint}]
         true -> [{"Esc", {:info, [:bold]}}, {" back to chat ", :text_faint}]
       end
+
+    right = needs_you(state) ++ esc
 
     Text.spread(state, left, right, width)
   end
@@ -157,6 +159,21 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
   defp sub_name(%Page{sub: {_, name}}) when is_binary(name), do: name
   defp sub_name(%Page{sub: {_, _, name}}) when is_binary(name), do: name
   defp sub_name(_page), do: "…"
+
+  # The chip of what waits on you in the chat (Ctrl-N goes there).
+  defp needs_you(state) do
+    count =
+      state.read_model.interactions
+      |> Map.values()
+      |> Enum.count(&(Map.get(&1, :state) == :pending))
+
+    if count > 0,
+      do: [
+        {"! #{count} need#{if count == 1, do: "s", else: ""} you", :warning},
+        {" Ctrl-N   ", :text_faint}
+      ],
+      else: []
+  end
 
   # ----------------------------------------------------------- search
 

@@ -123,7 +123,10 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings do
   come back as they were.
   """
   @spec close(State.t()) :: {State.t(), list()}
-  def close(%{settings: %Layer{} = layer} = state) do
+  def close(%{settings: %Layer{}} = state) do
+    {state, cancels} = cancel_mine(state)
+    layer = state.settings
+
     resume = %{
       stack: Enum.map(layer.stack, &%{&1 | scroll: &1.scroll}),
       region: if(layer.region == :search, do: :page, else: layer.region),
@@ -140,10 +143,19 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings do
           state
       end
 
-    {%{state | settings: nil, settings_resume: resume}, []}
+    {%{state | settings: nil, settings_resume: resume}, cancels}
   end
 
   def close(state), do: {state, []}
+
+  # Closing stops the cancellable tasks this layer started; the others run on.
+  defp cancel_mine(%{settings: %Layer{tasks: tasks}} = state) do
+    Enum.reduce(SwarmCodeCLI.UI.Settings.Tasks.to_cancel(tasks), {state, []}, fn id,
+                                                                                 {acc, effects} ->
+      {acc, more} = Wire.op(acc, {:cancel_task, id})
+      {acc, effects ++ more}
+    end)
+  end
 
   # ------------------------------------------------------------------ keys
 

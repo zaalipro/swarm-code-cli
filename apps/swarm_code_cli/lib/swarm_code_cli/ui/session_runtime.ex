@@ -617,7 +617,7 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
   @doc false
   def time_dependent?(%{lifecycle: :running, read_model: model, now: now} = ui) do
     Enum.any?(model.runs, fn {_, run} -> run.state in @live_run_states end) or
-      SwarmCodeCLI.UI.State.fading_notice?(ui) or
+      SwarmCodeCLI.UI.State.fading_notice?(ui) or settings_ticking?(ui) or
       case Map.get(model, :toasts, []) do
         [%{at: at} | _] when is_integer(at) and is_integer(now) -> now - at < @toast_window_ms
         _ -> false
@@ -625,6 +625,19 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
   end
 
   def time_dependent?(_ui), do: false
+
+  # cli74 §4.9: an open settings layer repaints each second only while a
+  # task it shows is running, a write is saving or a toast is fading.
+  defp settings_ticking?(%{settings: %SwarmCodeCLI.UI.Settings.Layer{} = layer, now: now}) do
+    Enum.any?(layer.tasks, fn {_id, task} -> SwarmCodeCLI.UI.Settings.Tasks.running?(task) end) or
+      Enum.any?(layer.writes, fn {_key, write} -> Map.get(write, :saving?) == true end) or
+      case layer.status do
+        %{at: at, ms: ms} when is_integer(at) and is_integer(now) -> now - at < ms
+        _ -> false
+      end
+  end
+
+  defp settings_ticking?(_ui), do: false
 
   # A live session reads the wall clock at every commit, so the tabs' elapsed
   # times move. A scripted session (a demo, a test) was given a fixed clock at

@@ -333,6 +333,21 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Ops do
   defp generic(state, %Row{key: key}, :copy) when is_binary(key),
     do: {Commit.status(state, "Copied #{key}", :text_muted), [{:copy, key}]}
 
+  # -- c stops the running task of the page (the only one, or the row's).
+  defp generic(%{settings: layer} = state, row, :cancel_task) do
+    running =
+      for {id, task} <- layer.tasks,
+          SwarmCodeCLI.UI.Settings.Tasks.running?(task),
+          SwarmCodeCLI.UI.Settings.Tasks.cancellable?(Map.get(task, "action")),
+          do: id
+
+    case {row && row.target, running} do
+      {{:task, id}, _} when is_binary(id) -> run(state, [{:cancel_task, id}])
+      {_, [id]} -> run(state, [{:cancel_task, id}])
+      _ -> nothing(state, :cancel_task)
+    end
+  end
+
   # -- Esc on a conflict takes theirs.
   defp generic(state, _row, :right), do: {state, []}
   defp generic(state, _row, :open_row), do: {state, []}

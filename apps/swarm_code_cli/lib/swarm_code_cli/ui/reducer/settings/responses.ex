@@ -333,7 +333,8 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Responses do
       "target" => Map.get(meta, :target),
       "attributes" => Map.get(meta, :attributes) || %{},
       "state" => :running,
-      "received_at_ms" => state.now
+      "received_at_ms" => state.now,
+      "mine" => true
     }
 
     %{state | settings: %{layer | tasks: Map.put(layer.tasks, task_id, entry)}}
