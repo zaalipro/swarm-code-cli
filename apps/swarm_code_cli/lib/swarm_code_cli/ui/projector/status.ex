@@ -198,6 +198,11 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
     limit = rate_limit(state)
     background = background(state)
 
+    # cli74 (§3.10.1): the chip while the chat provider cannot answer.
+    provider =
+      if SwarmCodeCLI.UI.Settings.ChatProvider.missing(state),
+        do: {SwarmCodeCLI.UI.Settings.ChatProvider.chip(), tint(:plain, state, :warning, [:bold])}
+
     # {rank, fact}: the higher the rank, the longer a fact holds its place
     # when the row is short.
     parts =
@@ -207,6 +212,7 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
           {70, approval},
           {60, model},
           {90, waiting},
+          {88, provider},
           {85, limit},
           {95, connection}
         ],
@@ -220,6 +226,7 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
           {40, cost},
           {45, background},
           {90, waiting},
+          {88, provider},
           {85, limit},
           {95, connection}
         ]

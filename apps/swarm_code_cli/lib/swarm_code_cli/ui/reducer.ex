@@ -163,8 +163,16 @@ defmodule SwarmCodeCLI.UI.Reducer do
   defp transition(state, {:settings, event}),
     do: SwarmCodeCLI.UI.Reducer.Settings.event(state, event)
 
-  # F2, `/settings [ARG]`, a palette row (the palette closes first).
+  # F2, `/settings [ARG]`, a palette row (the palette closes first). While
+  # the conversation's chat provider cannot answer, a blank open lands on
+  # Providers (the words Enter showed say so, §3.10.1).
   defp transition(state, {:settings_open, arg}) do
+    arg =
+      if is_nil(arg) and is_nil(state.settings) and
+           SwarmCodeCLI.UI.Settings.ChatProvider.missing(state) != nil,
+         do: {:section, :providers},
+         else: arg
+
     {state, closed} = close_switcher(state)
     {state, opened} = SwarmCodeCLI.UI.Reducer.Settings.open(state, arg)
     {state, closed ++ opened}
@@ -979,13 +987,19 @@ defmodule SwarmCodeCLI.UI.Reducer do
   end
 
   defp transition(state, {:invoke, intent, id}) do
-    {next, effects} = invoke_intent(state, intent, id)
+    case provider_refusal(state, intent) do
+      nil ->
+        {next, effects} = invoke_intent(state, intent, id)
 
-    if effects != [] do
-      {next, closed} = close_switcher(next)
-      {next, closed ++ effects}
-    else
-      {next, effects}
+        if effects != [] do
+          {next, closed} = close_switcher(next)
+          {next, closed ++ effects}
+        else
+          {next, effects}
+        end
+
+      words ->
+        {%{state | notice: {:command_feedback, words}}, []}
     end
   end
 
@@ -2836,6 +2850,22 @@ defmodule SwarmCodeCLI.UI.Reducer do
     :external_edit_done,
     :settings
   ]
+
+  # cli74 (D11, §3.10.1): a message sent while the conversation's chat
+  # provider cannot answer is not dispatched; the draft stays and the status
+  # says why and where to fix it. Commands (`/model …`) still go.
+  defp provider_refusal(state, {:dispatch, :send, text, _target, _args}) do
+    alias SwarmCodeCLI.UI.Settings.ChatProvider
+
+    with true <- ChatProvider.message?(text),
+         {:missing, _} = missing <- ChatProvider.missing(state) do
+      ChatProvider.words(missing)
+    else
+      _ -> nil
+    end
+  end
+
+  defp provider_refusal(_state, _intent), do: nil
 
   # cli74: `swarmcode settings [QUERY]` opens the layer once the shell is
   # ready, over nothing else.
