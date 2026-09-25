@@ -606,6 +606,8 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
   end
 
   defp effects(state, emitted) do
+    note_resyncs(state.ui, emitted)
+
     Enum.each(emitted, fn effect ->
       EffectRunner.run(effect, %{
         data_source: state.data_source,
@@ -614,6 +616,27 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
         local: fn value -> send(self(), {:owned_effect, state.secret, value}) end
       })
     end)
+  end
+
+  # pass73 G2 (QA Q2-05): a resync the client asks for (a sequence gap, a
+  # delta the read model cannot apply, a window past its bound) says so in
+  # cli.log, as the daemon's own requests for one already do.
+  @resync_words %{
+    gap: "a delta arrived out of order",
+    snapshot_required: "a delta needed the whole snapshot",
+    overflow: "the window outgrew its bound",
+    unbounded: "the snapshot outgrew its bound",
+    retry: "a retry"
+  }
+
+  defp note_resyncs(ui, emitted) do
+    for {:query, %{kind: {:resync_watch, ref}}} <- emitted,
+        {slot, %{watch_ref: ^ref} = watch} <- ui.watches do
+      why = Map.get(@resync_words, Map.get(watch, :resync_reason), "a retry")
+      Logger.info("SwarmCode: asked the daemon for a fresh #{slot} snapshot (#{why})")
+    end
+
+    :ok
   end
 
   defp local_effect(%{phase: :running} = state, {:start_timer, id, ms, action}),

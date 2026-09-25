@@ -10,6 +10,9 @@ defmodule SwarmCodeCLI.UI.Pass73Qa2Test do
     * Q2-04 the workflow-run card leaves empty args out and gives its own
       rule, not "auto runs safe commands".
     * Q2-06 the card's footer counts its place in the walk `n` takes.
+    * Q2-05 a resync the client asks for carries its reason (logged by the
+      session, `Pass73Qa2RuntimeTest`), and a chat that followed its bottom
+      still follows once the fresh snapshot lands.
     * Q2-07 a workflow run is named in words in the band, the run row, the
       overlay and the transcript's tool rows, never `workflow_run`.
   """
@@ -18,9 +21,9 @@ defmodule SwarmCodeCLI.UI.Pass73Qa2Test do
   import SwarmCodeCLI.UI.Pass73Helpers
 
   alias SwarmCodeCLI.Test.Pass73Scenes
-  alias SwarmCodeCLI.UI.{Composer, Input, Keymap, Layout, Paint, Projector, SafeText}
+  alias SwarmCodeCLI.UI.{Composer, Input, Keymap, Layout, Paint, Projector, Reducer, SafeText}
   alias SwarmCodeCLI.UI.Paint.{Options, Plan}
-  alias SwarmCodeCLI.UI.DataSource.DTO
+  alias SwarmCodeCLI.UI.DataSource.{DTO, Delivery, Delta}
   alias SwarmCodeCLI.UI.Projector.{ApprovalCard, Panel, Status}
 
   # ---------------------------------------------------------------- fixtures
@@ -335,5 +338,74 @@ defmodule SwarmCodeCLI.UI.Pass73Qa2Test do
     text = state |> screen() |> Enum.join("\n")
     assert text =~ "Workflow author wants to run the workflow /format-and-test", text
     refute text =~ "wants to run a command"
+  end
+
+  # ------------------------------------------------------------------ Q2-05
+
+  defp said(id, seq, text) do
+    %DTO.TranscriptItem{
+      id: id,
+      node_id: id,
+      run_id: "r",
+      conversation_id: "c",
+      attempt_id: "attempt",
+      revision: 1,
+      role: :assistant,
+      kind: :text,
+      state: :done,
+      text: text,
+      reasoning: "",
+      created_sequence: seq,
+      at: seq
+    }
+  end
+
+  test "Q2-05 a gap resyncs with its reason, and the chat still follows after the snapshot" do
+    items = for n <- 1..40, do: said("i#{n}", n, "line #{n}\nsecond line of #{n}")
+
+    state =
+      ready([run("r", :running)],
+        snapshot: %{transcript: %DTO.TranscriptWindow{items: items}}
+      )
+
+    assert state.scrolls.main.follow?
+    watch = state.watches.workspace
+
+    gap = %Delivery{
+      kind: :delta,
+      watch_ref: watch.watch_ref,
+      request_id: nil,
+      scope: watch.scope,
+      generation: watch.generation,
+      revision: 3,
+      sequence: watch.sequence + 2,
+      body: %Delta{
+        kind: :run_update,
+        entity_id: "r",
+        run_id: "r",
+        conversation_id: "c",
+        body: run("r", :running),
+        revision: 3,
+        sequence: watch.sequence + 2
+      }
+    }
+
+    {resyncing, [{:query, request}]} = Reducer.update(state, {:data, gap})
+    assert request.kind == {:resync_watch, watch.watch_ref}
+    assert resyncing.watches.workspace.resync_reason == :gap
+
+    more = items ++ for n <- 41..60, do: said("i#{n}", n, "line #{n}")
+
+    {fresh, _} =
+      watch_ready(
+        resyncing,
+        [run("r", :running)],
+        %{transcript: %DTO.TranscriptWindow{items: more}},
+        4
+      )
+
+    assert fresh.watches.workspace.status == :ready
+    assert fresh.watches.workspace.resync_reason == nil
+    assert fresh.scrolls.main.follow?
   end
 end

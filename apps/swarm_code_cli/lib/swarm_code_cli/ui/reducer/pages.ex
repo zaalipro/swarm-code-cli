@@ -290,7 +290,8 @@ defmodule SwarmCodeCLI.UI.Reducer.Pages do
       else
         SwarmCodeCLI.UI.Reducer.Watch.resync(
           %{state | requests: Map.delete(state.requests, request.request_id)},
-          slot
+          slot,
+          :unbounded
         )
       end
     else

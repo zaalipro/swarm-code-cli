@@ -80,7 +80,12 @@ defmodule SwarmCodeCLI.UI.Reducer.Watch do
     if slot, do: matching(state, slot, delivery), else: {state, []}
   end
 
-  def resync(state, slot) do
+  @doc """
+  Asks for a fresh snapshot of `slot`'s watch, unless one is on its way.
+  pass73 G2 (QA Q2-05): `reason` rides on the watch until the snapshot
+  lands, so the session's cli.log says why (`SessionRuntime`).
+  """
+  def resync(state, slot, reason \\ :retry) do
     watch = state.watches[slot]
 
     if watch.resync_request_id || watch.status == :closed do
@@ -98,7 +103,7 @@ defmodule SwarmCodeCLI.UI.Reducer.Watch do
         expected_response: :watch_snapshot
       }
 
-      watch = %{watch | status: :resyncing, resync_request_id: id}
+      watch = %{watch | status: :resyncing, resync_request_id: id, resync_reason: reason}
 
       state = %{
         state
@@ -140,6 +145,7 @@ defmodule SwarmCodeCLI.UI.Reducer.Watch do
           revision: delivery.revision,
           sequence: delivery.body.through_sequence,
           resync_request_id: nil,
+          resync_reason: nil,
           retry: nil
       }
 
@@ -164,7 +170,7 @@ defmodule SwarmCodeCLI.UI.Reducer.Watch do
              requests: Map.drop(candidate.requests, [old.resync_request_id, superseded_page])
          }, effects}
       else
-        resync(state, slot)
+        resync(state, slot, :unbounded)
       end
     end
   end
@@ -183,12 +189,12 @@ defmodule SwarmCodeCLI.UI.Reducer.Watch do
         {state, []}
 
       delivery.sequence != watch.sequence + 1 ->
-        resync(state, slot)
+        resync(state, slot, :gap)
 
       true ->
         case ReadModel.delta(state.read_model, slot, delivery.body) do
           {:error, :snapshot_required} ->
-            resync(state, slot)
+            resync(state, slot, :snapshot_required)
 
           {:ok, model, changed, removed} ->
             old_ids = Map.get(state.read_model.order, slot, [])
@@ -201,7 +207,7 @@ defmodule SwarmCodeCLI.UI.Reducer.Watch do
 
             state = %{state | read_model: model, watches: Map.put(state.watches, slot, watch)}
             {state, overflow} = update_scrolls(state, slot, changed, removed, old_ids)
-            if overflow, do: resync(state, slot), else: {state, []}
+            if overflow, do: resync(state, slot, :overflow), else: {state, []}
         end
     end
   end
