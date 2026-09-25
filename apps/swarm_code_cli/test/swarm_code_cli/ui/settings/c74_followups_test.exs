@@ -119,4 +119,37 @@ defmodule SwarmCodeCLI.UI.Settings.C74FollowupsTest do
       assert Registry.fetch!("terminal.panel").section == :layout
     end
   end
+
+  describe "cli.json that could not be read" do
+    test "every page still draws (found on a real screen: the demo has no cli.json)" do
+      {state, _} = act(ready(), {:resize, %SwarmCodeCLI.UI.Size{columns: 160, rows: 45}})
+      {state, _} = act(state, {:settings_open, nil})
+      gen = state.settings.generation
+      {state, _} = act(state, {:settings, {:cli_snapshot, gen, {:error, :unavailable}}})
+      assert state.settings.data.cli == {:error, :unavailable}
+
+      for id <- Sections.ids() do
+        {state, _} = act(state, {:settings_open, {:section, id}})
+
+        state =
+          if state.settings,
+            do: state,
+            else: elem(act(state, {:settings_open, {:section, id}}), 0)
+
+        {scene, _} = SwarmCodeCLI.UI.Projector.project(state)
+        assert scene.regions != []
+      end
+
+      {state, _} = act(state, {:settings_open, {:section, :overview}})
+      state = if state.settings, do: state, else: elem(act(state, {:settings_open, nil}), 0)
+
+      titles =
+        state
+        |> Nav.ctx()
+        |> SwarmCodeCLI.UI.Settings.Sections.Overview.items()
+        |> Enum.map(& &1.title)
+
+      assert "cli.json could not be read" in titles
+    end
+  end
 end

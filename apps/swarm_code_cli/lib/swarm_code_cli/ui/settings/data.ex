@@ -51,6 +51,15 @@ defmodule SwarmCodeCLI.UI.Settings.Data do
       task_pages: @max_task_pages
     }
 
+  @doc """
+  The cli.json names the runtime's read found with a value it could not use
+  (none when cli.json could not be read at all: `cli` is then
+  `{:error, reason}`, or nil before the read answers).
+  """
+  @spec cli_invalid(t() | nil) :: [String.t()]
+  def cli_invalid(%__MODULE__{cli: %{invalid: invalid}}) when is_list(invalid), do: invalid
+  def cli_invalid(_data), do: []
+
   @doc "The SettingValue of `key`, or nil."
   @spec value(t(), String.t()) :: map() | nil
   def value(%__MODULE__{values: values}, key), do: Map.get(values, key)

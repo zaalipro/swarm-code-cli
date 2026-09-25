@@ -25,7 +25,7 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Commit do
   alias SwarmCodeCLI.UI.Keymap.Overrides
   alias SwarmCodeCLI.UI.Layout.Preferences, as: LayoutPreferences
   alias SwarmCodeCLI.UI.Init.Preferences
-  alias SwarmCodeCLI.UI.Settings.{Display, Layer, Nav, Provenance, Rows, Undo, Wire}
+  alias SwarmCodeCLI.UI.Settings.{Data, Display, Layer, Nav, Provenance, Rows, Undo, Wire}
   alias SwarmCodeCLI.UI.Vim
   alias SwarmCodeCLI.UI.State
 
@@ -583,12 +583,11 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Commit do
   # shows what wins without it).
   defp shown(state, %Entry{storage: {:cli, name}} = entry, :remove) do
     layer = state.settings
-    cli = layer.data.cli || %{}
 
     Provenance.cli_value(
       entry,
       Map.delete(state.prefs, name),
-      Map.get(cli, :invalid, []) -- [name],
+      Data.cli_invalid(layer.data) -- [name],
       state.launch_facts,
       layer.data.values
     ).value

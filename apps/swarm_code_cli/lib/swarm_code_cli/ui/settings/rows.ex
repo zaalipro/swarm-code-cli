@@ -13,7 +13,7 @@ defmodule SwarmCodeCLI.UI.Settings.Rows do
   """
 
   alias SwarmCode.Settings.{Entry, Registry}
-  alias SwarmCodeCLI.UI.Settings.{Ctx, Detail, Display, Editors, Provenance, Row}
+  alias SwarmCodeCLI.UI.Settings.{Ctx, Data, Detail, Display, Editors, Provenance, Row}
 
   @applies %{
     at_once: "at once",
@@ -81,8 +81,7 @@ defmodule SwarmCodeCLI.UI.Settings.Rows do
   """
   @spec setting(Ctx.t(), Entry.t()) :: map() | nil
   def setting(%Ctx{} = ctx, %Entry{storage: {:cli, _}} = entry) do
-    cli = (ctx.data && ctx.data.cli) || %{}
-    invalid = Map.get(cli, :invalid, [])
+    invalid = Data.cli_invalid(ctx.data)
     values = (ctx.data && ctx.data.values) || %{}
     Provenance.cli_value(entry, ctx.prefs || %{}, invalid, ctx.launch_facts || %{}, values)
   end
