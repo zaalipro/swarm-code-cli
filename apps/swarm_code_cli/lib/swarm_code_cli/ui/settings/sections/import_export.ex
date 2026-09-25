@@ -276,7 +276,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.ImportExport do
 
         body = Enum.map(rows, &preview_row(&1, ticks))
 
-        apply = %Row{
+        apply_row = %Row{
           id: "imp:apply",
           kind: :action,
           label: "Apply #{count} #{if count == 1, do: "change", else: "changes"}",
@@ -286,7 +286,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.ImportExport do
         }
 
         [Row.info("imp-summary", summary_words(summary, state.path)), path_row, head] ++
-          body ++ [apply]
+          body ++ [apply_row]
     end
   end
 

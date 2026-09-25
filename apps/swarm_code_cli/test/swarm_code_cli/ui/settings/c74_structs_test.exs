@@ -162,11 +162,13 @@ defmodule SwarmCodeCLI.UI.Settings.C74StructsTest do
 
     test "a section that is not in this build falls back to the defaults" do
       ctx = %Ctx{}
-      assert Sections.loads(:agents_limits, ctx) == [{:values, [:agents_limits]}]
-      assert Sections.act(:agents_limits, ctx, %Row{id: "x"}, :enter) == :default
-      assert Sections.commit(:agents_limits, ctx, %Row{id: "x"}, 3) == :default
-      assert Sections.page_title(:agents_limits, ctx) == "Agents & limits"
-      assert is_list(Sections.rows(:agents_limits, ctx))
+      # U2's Library is not in U3's branch (U3 builds Agents & limits)
+      refute Code.ensure_loaded?(SwarmCodeCLI.UI.Settings.Sections.Library)
+      assert Sections.loads(:library, ctx) == [{:values, [:library]}]
+      assert Sections.act(:library, ctx, %Row{id: "x"}, :enter) == :default
+      assert Sections.commit(:library, ctx, %Row{id: "x"}, 3) == :default
+      assert Sections.page_title(:library, ctx) == "Library"
+      assert is_list(Sections.rows(:library, ctx))
     end
   end
 

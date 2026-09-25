@@ -15,8 +15,6 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.FilesEnv do
 
   alias SwarmCodeCLI.UI.Settings.{Row, Rows}
 
-  @compile {:no_warn_undefined, [SwarmCode.Settings.Registry, SwarmCode.Settings.SecretPattern]}
-
   @max_bytes 65_536
   @secret ~r/(API_?KEY|_KEY$|SECRET|TOKEN|PASSWORD|PASSWD|CREDENTIAL|_PAT$)/i
   @developer ~w[SWARM_TEST_EXPECTED SWARM_SCENE_DUMP SWARM_CODE_DIRECTORY_BROKER_TEST_FAULT
@@ -476,11 +474,9 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.FilesEnv do
   def bytes(_), do: ""
 
   defp section_of(key) do
-    if Code.ensure_loaded?(SwarmCode.Settings.Registry) do
-      case SwarmCode.Settings.Registry.fetch(key) do
-        {:ok, entry} -> entry.section
-        :error -> nil
-      end
+    case SwarmCode.Settings.Registry.fetch(key) do
+      {:ok, entry} -> entry.section
+      _ -> nil
     end
   end
 
