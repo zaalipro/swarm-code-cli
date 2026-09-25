@@ -753,9 +753,10 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
       lead ->
         Name.of(state, lead)
 
-      # With no agent the turn is spoken by what it is.
+      # With no agent the turn is spoken by what it is, capitalised like
+      # every other role label ("Workflow", as "Planner"; QA Q1-11).
       (kind = ctx.run && ctx.run.kind) in [:consensus, :research, :workflow, :goal, :ultra] ->
-        Atom.to_string(kind)
+        kind |> Atom.to_string() |> String.capitalize()
 
       true ->
         Name.role_label(%{}, ctx.run)

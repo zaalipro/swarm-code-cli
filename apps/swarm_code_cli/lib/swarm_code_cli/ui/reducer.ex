@@ -79,7 +79,8 @@ defmodule SwarmCodeCLI.UI.Reducer do
       state
       | watches: Map.new([:shell, :workspace, :activity, :inspector], &{&1, %WatchState{}}),
         drafts: Drafts.new(ambiguous_width: init.capabilities.ambiguous_width),
-        field_editors: FieldEditors.new(ambiguous_width: init.capabilities.ambiguous_width)
+        field_editors: FieldEditors.new(ambiguous_width: init.capabilities.ambiguous_width),
+        panel_shown: shown_panel(init.panel_mode, :full)
     }
 
     {state, shell} = Watch.open(state, :shell, :global, nil)
@@ -100,6 +101,7 @@ defmodule SwarmCodeCLI.UI.Reducer do
         {next, effects} = track_sent_turn(next, effects)
         {next, effects} = sync_interactions(next, effects, action)
         next = note_policy_change(state, next)
+        next = hush_refusals(state, next)
         next = stamp_notice(state, next)
         next = repair_switcher(state, next)
         Enum.each(effects, &SwarmCodeCLI.UI.Effect.validate!/1)
@@ -177,7 +179,7 @@ defmodule SwarmCodeCLI.UI.Reducer do
   end
 
   defp transition(state, {:panel_preferences_loaded, mode}),
-    do: {%{state | panel_mode: mode}, []}
+    do: {%{state | panel_mode: mode, panel_shown: shown_panel(mode, state.panel_shown)}, []}
 
   # pass72 F: over a dialog, hint mode opens only from a request card (D9:
   # "^F <letter> opens the agent"); the other dialogs keep Ctrl-F inert.
@@ -2190,6 +2192,43 @@ defmodule SwarmCodeCLI.UI.Reducer do
 
   defp quit_hint, do: "Press Ctrl-C again to quit."
 
+  # pass73 G1 (QA Q1-09): "Not sent: …" stays on the status row only until
+  # the user moves on: an edit of that draft, or any new request (a card
+  # answered, another send), puts the stale refusal away, so the row shows
+  # the hints that are true now. The pending and accepted ones are kept.
+  defp hush_refusals(before, next) do
+    stale =
+      for {{:draft, key} = origin, {:settled, _id, status}} <- next.mutations,
+          status != :accepted,
+          new_mutation?(before, next) or draft_edited?(before, next, key),
+          do: origin
+
+    if stale == [],
+      do: next,
+      else: %{
+        next
+        | mutations: Map.drop(next.mutations, stale),
+          mutation_reasons: Map.drop(next.mutation_reasons, stale)
+      }
+  end
+
+  # A request the user started: a send, an answer, a stop (not a background
+  # query such as the conversation list).
+  defp new_mutation?(%{mutations: mutations}, %{mutations: mutations}), do: false
+
+  defp new_mutation?(before, next) do
+    Enum.any?(next.mutations, fn {origin, mutation} ->
+      match?({:pending, _, _}, mutation) and Map.get(before.mutations, origin) != mutation
+    end)
+  end
+
+  defp draft_edited?(%{drafts: drafts}, %{drafts: drafts}, _key), do: false
+
+  defp draft_edited?(before, next, key),
+    do:
+      Editor.text(Drafts.fetch(before.drafts, key).editor) !=
+        Editor.text(Drafts.fetch(next.drafts, key).editor)
+
   # --------------------------------------- approvals and questions in view
 
   # Whether an interaction belongs to what is on screen: its conversation, or
@@ -2769,7 +2808,7 @@ defmodule SwarmCodeCLI.UI.Reducer do
     narrow? = state.size != nil and state.size.columns < 120
 
     case {narrow?, state.panel_mode} do
-      {true, :hidden} -> :full
+      {true, :hidden} -> state.panel_shown
       {true, _} -> :hidden
       {false, :full} -> :compact
       {false, :compact} -> :hidden
@@ -2787,9 +2826,13 @@ defmodule SwarmCodeCLI.UI.Reducer do
         {false, mode} -> "Panel #{mode}."
       end
 
-    {state, effects} = feedback(%{state | panel_mode: mode}, words)
+    state = %{state | panel_mode: mode, panel_shown: shown_panel(mode, state.panel_shown)}
+    {state, effects} = feedback(state, words)
     {state, effects ++ [{:save_preferences, %{panel_mode: mode}}]}
   end
+
+  defp shown_panel(:hidden, shown), do: shown
+  defp shown_panel(mode, _shown), do: mode
 
   defp feedback(state, text) do
     {:ok, safe} = SafeText.external(text, SafeText.Limits.content())

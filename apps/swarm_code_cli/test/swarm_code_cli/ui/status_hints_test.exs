@@ -19,7 +19,7 @@ defmodule SwarmCodeCLI.UI.StatusHintsTest do
     Width
   }
 
-  alias SwarmCodeCLI.UI.Keymap.{Bindings, Context}
+  alias SwarmCodeCLI.UI.Keymap.Bindings
   alias SwarmCodeCLI.UI.Paint.{Options, Plan}
   alias SwarmCodeCLI.UI.Projector.{KeyLabel, Shell, Status}
 

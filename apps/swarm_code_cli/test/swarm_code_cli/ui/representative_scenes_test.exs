@@ -37,7 +37,8 @@ defmodule SwarmCodeCLI.UI.RepresentativeScenesTest do
 
       # The prompt is a card and the turn has one header row (ux M3); the turn
       # is spoken by the run's agent under its one name (pass73 T10: "Lead",
-      # a chat turn's role label), and by its kind otherwise.
+      # a chat turn's role label), and by its kind otherwise, capitalised like
+      # the role labels (pass73 G1, QA Q1-11: "Consensus", not "consensus").
       assert pixels =~ "Review this synthetic project"
       refute pixels =~ "you · "
 
@@ -45,7 +46,7 @@ defmodule SwarmCodeCLI.UI.RepresentativeScenesTest do
         case kind do
           :swarm -> "Lead  "
           :chat -> "Assistant  "
-          other -> Atom.to_string(other) <> "  "
+          other -> String.capitalize(Atom.to_string(other)) <> "  "
         end
 
       assert pixels =~ speaker
@@ -54,7 +55,7 @@ defmodule SwarmCodeCLI.UI.RepresentativeScenesTest do
       assert Enum.count(main.blocks, &is_struct(&1, Block.RunCard)) == 0
 
       if kind in [:consensus, :research] do
-        heading = Atom.to_string(kind)
+        heading = String.capitalize(Atom.to_string(kind))
 
         assert Enum.any?(blocks(main), fn
                  %Scene.Span{text: text, style: style} ->

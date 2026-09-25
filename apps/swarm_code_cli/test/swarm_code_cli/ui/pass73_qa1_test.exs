@@ -386,4 +386,90 @@ defmodule SwarmCodeCLI.UI.Pass73Qa1Test do
     one_off = approval("a1", tool: "workflow_run", preview: ~s({"source":"phase :a","budget":2}))
     assert ApprovalCard.title(one_off, state) =~ "wants to run a one-off workflow"
   end
+
+  # ------------------------------------------------------------------ Q1-08
+
+  test "Q1-08 Ctrl-B on a narrow terminal brings back compact, not full" do
+    state = ready([], columns: 90, rows: 30, init: [panel_mode: :compact])
+
+    {off, effects} = press(state, ctrl("b"))
+    assert off.panel_mode == :hidden
+    assert {:save_preferences, %{panel_mode: :hidden}} in effects
+
+    {back, effects} = press(off, ctrl("b"))
+    assert back.panel_mode == :compact
+    assert {:save_preferences, %{panel_mode: :compact}} in effects
+
+    # Loaded from cli.json after start, the same.
+    {loaded, _} =
+      Reducer.update(ready([], columns: 90, rows: 30), {:panel_preferences_loaded, :compact})
+
+    loaded = loaded |> press!(ctrl("b")) |> press!(ctrl("b"))
+    assert loaded.panel_mode == :compact
+  end
+
+  # ------------------------------------------------------------------ Q1-09
+
+  describe "Q1-09 a refused send" do
+    defp refused do
+      state = ready([]) |> type("/com")
+      {state, effects} = press(state, key(:enter))
+      [request] = requests(effects)
+      {state, _} = outcome(state, request, :rejected, [])
+      assert {:settled, _, :rejected} = state.mutations[{:draft, key()}]
+      state
+    end
+
+    test "goes once the draft is edited" do
+      edited = press!(refused(), key(:backspace))
+      refute Map.has_key?(edited.mutations, {:draft, key()})
+    end
+
+    test "goes once another request starts (a card answered), and stays until then" do
+      state = type(under_card(), "hello")
+      {state, effects} = press(state, key(:enter))
+      [request] = requests(effects)
+      {state, _} = outcome(state, request, :rejected, [])
+      assert {:settled, _, :rejected} = state.mutations[{:draft, key()}]
+
+      # A key that changes nothing about the draft keeps it.
+      kept = press!(state, key(:page_down))
+      assert {:settled, _, :rejected} = kept.mutations[{:draft, key()}]
+
+      # The card put aside and brought back on purpose answers to y.
+      focused = state |> press!(key(:escape)) |> press!(ctrl("n"))
+      assert [{:approval, "a1"} | _] = focused.layers
+      {answered, effects} = press(focused, letter("y"))
+      assert [{:resolve_approval, "r", _, "a1", 5, :approve}] = commands(effects)
+      assert text(answered) == "hello"
+      refute Map.has_key?(answered.mutations, {:draft, key()})
+    end
+  end
+
+  # ------------------------------------------------------------------ Q1-11
+
+  test "Q1-11 a workflow run without an agent is spoken as Workflow" do
+    item = %DTO.TranscriptItem{
+      id: "w-1",
+      node_id: "w-1",
+      run_id: "w",
+      conversation_id: "c",
+      attempt_id: "attempt",
+      role: :assistant,
+      kind: :text,
+      state: :done,
+      text: "The checks passed."
+    }
+
+    state =
+      ready([run("w", :done, kind: :workflow, title: "/format-check")],
+        columns: 120,
+        rows: 30,
+        snapshot: %{transcript: %DTO.TranscriptWindow{items: [item]}}
+      )
+
+    rows = main_rows(state, paint(state))
+    assert Enum.any?(rows, &(&1 =~ ~r/\bWorkflow\b/)), Enum.join(rows, "\n")
+    refute Enum.any?(rows, &(&1 =~ ~r/^\s*\S+\s+workflow\b/))
+  end
 end

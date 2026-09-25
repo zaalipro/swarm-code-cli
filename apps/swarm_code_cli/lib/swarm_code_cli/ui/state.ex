@@ -64,6 +64,10 @@ defmodule SwarmCodeCLI.UI.State do
     # The panel's shape: :full (2 rows per agent), :compact (1 row) or
     # :hidden; under 120 columns anything but :hidden is the one-row strip.
     panel_mode: :full,
+    # pass73 G1 (QA Q1-08): the last shape the panel had when it was not
+    # :hidden, so Ctrl-B on a narrow terminal (strip -> off -> strip) brings
+    # back :compact rather than writing :full over it.
+    panel_shown: :full,
     # Hint mode (Ctrl-F): nil, or the badge labels (`UI.Hint.labels/1`) and
     # what has been typed of a two-letter label so far.
     hint: nil,
