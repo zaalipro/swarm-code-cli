@@ -87,7 +87,13 @@ defmodule SwarmCodeCLI.UI.Settings.C74SearchTest do
     test "search over the whole index stays fast" do
       index = Search.index(ctx())
       big = Enum.take(Stream.cycle(index), Search.max_entries())
-      {micros, _} = :timer.tc(fn -> Search.run(big, "limit command") end)
+      # The best of five runs: the bound is the search's cost, not the
+      # scheduler's while other tests run.
+      micros =
+        1..5
+        |> Enum.map(fn _ -> elem(:timer.tc(fn -> Search.run(big, "limit command") end), 0) end)
+        |> Enum.min()
+
       assert micros < 20_000, "#{micros} µs"
     end
   end

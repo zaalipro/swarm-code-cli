@@ -93,7 +93,10 @@ defmodule SwarmCodeCLI.UI.Settings.Search do
 
     entry
     |> Map.put(:tokens, tokens)
-    |> Map.put(:all, tokens |> Map.values() |> List.flatten() |> Enum.uniq())
+    |> Map.put(
+      :all,
+      " " <> (tokens |> Map.values() |> List.flatten() |> Enum.uniq() |> Enum.join(" "))
+    )
     |> Map.put(:lower_label, String.downcase(entry.label))
   end
 
@@ -302,7 +305,9 @@ defmodule SwarmCodeCLI.UI.Settings.Search do
   defp rank(entry, words) do
     all = entry.all
 
-    if Enum.all?(words, fn word -> Enum.any?(all, &String.starts_with?(&1, word)) end) do
+    # A word is a prefix of some token when " word" occurs in the joined
+    # tokens (a C-level binary search, no list walk per keystroke).
+    if Enum.all?(words, &(:binary.match(all, " " <> &1) != :nomatch)) do
       best(entry, words)
     end
   end
