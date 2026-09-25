@@ -21,6 +21,9 @@ defmodule SwarmCodeCLI.UI.Settings.Op do
     * `{:cli_write, %{json_name => value | :remove}}` — a cli.json change set.
     * `{:open_folder, path}` / `{:copy, text}` — OS-facing work the runtime owns.
     * `{:toast, text, role}` / `{:leave, then}`.
+    * `{:goto, target}` — leave for `{:section, id}`, `{:key, key}` or
+      `{:record, kind, id}` as the search's `g` does; `{:search, words}` —
+      the search row with `words` in it (Overview's `… N more`).
   """
 
   alias SwarmCodeCLI.UI.Settings.{Confirm, Page, Picker}
@@ -65,6 +68,8 @@ defmodule SwarmCodeCLI.UI.Settings.Op do
           | {:row_error, String.t(), String.t()}
           | {:treat_secret, term()}
           | {:conflict_discard, {:file, String.t()}}
+          | {:goto, {:section, atom()} | {:key, String.t()} | {:record, String.t(), String.t()}}
+          | {:search, String.t()}
 
   @doc "A `settings.command` op with its options."
   @spec command(String.t(), map() | nil, map(), map()) :: t()
@@ -111,5 +116,9 @@ defmodule SwarmCodeCLI.UI.Settings.Op do
   def valid?({:row_error, row_id, message}), do: is_binary(row_id) and is_binary(message)
   def valid?({:treat_secret, _mark}), do: true
   def valid?({:conflict_discard, {:file, ref}}), do: is_binary(ref)
+  def valid?({:goto, {:section, id}}), do: is_atom(id)
+  def valid?({:goto, {:key, key}}), do: is_binary(key)
+  def valid?({:goto, {:record, kind, id}}), do: is_binary(kind) and is_binary(id)
+  def valid?({:search, words}), do: is_binary(words)
   def valid?(_op), do: false
 end

@@ -22,6 +22,7 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
   alias SwarmCodeCLI.UI.Scene.{Rect, Region}
   alias SwarmCodeCLI.UI.SafeText
   alias SwarmCodeCLI.UI.Settings.{Detail, Glyphs, Layer, Nav, Page, Row, Sections}
+  alias SwarmCodeCLI.UI.Settings.Sections.Overview
 
   @rail 26
   @detail 48
@@ -228,11 +229,33 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
 
   defp search(state, _layer, width),
     do:
-      Text.fit(
+      Text.spread(
         state,
         [{" / ", :text_muted}, {"search every setting, provider, server and key", :text_ghost}],
+        strip(state),
         width
       )
+
+  # What the Overview counts, on every page: changed values, attention
+  # items, values the environment sets (F1's search row).
+  defp strip(state) do
+    summary = Overview.summary(Nav.ctx(state))
+
+    [
+      if(summary.changed > 0,
+        do: [
+          {glyph(state, :changed) <> " ", :text_muted},
+          {"#{summary.changed} changed from default  ", :text_faint}
+        ]
+      ),
+      if(summary.attention > 0,
+        do: [{"! ", :warning}, {"#{summary.attention} need attention  ", :text_faint}]
+      ),
+      if(summary.env > 0, do: [{"#{summary.env} from env ", :text_faint}])
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.concat()
+  end
 
   # ------------------------------------------------------------- rail
 
@@ -627,11 +650,27 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
             width
           )
         else
-          []
+          tip(state, layer, width)
         end
 
       _ ->
-        []
+        tip(state, layer, width)
+    end
+  end
+
+  # The Overview's quiet line when nothing was said.
+  defp tip(state, layer, width) do
+    if Layer.section(layer) == :overview and Layer.depth(layer) == 1 do
+      Text.fit(
+        state,
+        [
+          {" /settings <words> opens straight at a setting · : runs a settings command such as :set theme light",
+           :text_faint}
+        ],
+        width
+      )
+    else
+      []
     end
   end
 

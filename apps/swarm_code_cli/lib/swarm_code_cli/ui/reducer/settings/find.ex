@@ -53,6 +53,14 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Find do
     end
   end
 
+  @doc "Opens the search row with `words` in it, the results found."
+  @spec query(map(), String.t()) :: map()
+  def query(%{settings: %Layer{}} = state, words) when is_binary(words) do
+    {state, _} = open(%{state | settings: %{state.settings | filter: nil}})
+    state = put_in(state.settings.search.query, words)
+    refresh(state)
+  end
+
   @doc "One key or text while the search row, the filter or the command line has focus."
   @spec event(map(), term()) :: {map(), list()}
   def event(%{settings: %Layer{mode: :command_line}} = state, event),
@@ -189,9 +197,14 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Find do
     end
   end
 
-  defp go(state, {:section, id}), do: leave_to(state, [Page.section(id)], nil)
+  @doc """
+  Leaves the search (when open) for a target: a section, a key's row (the
+  cursor on it) or a record page above its section.
+  """
+  @spec go(map(), term()) :: {map(), list()}
+  def go(state, {:section, id}), do: leave_to(state, [Page.section(id)], nil)
 
-  defp go(state, {:key, key}) do
+  def go(state, {:key, key}) do
     case Registry.fetch(key) do
       {:ok, entry} ->
         leave_to(
@@ -205,13 +218,13 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Find do
     end
   end
 
-  defp go(state, {:record, kind, id}) do
+  def go(state, {:record, kind, id}) do
     section = DeepLink.record_section(to_string(kind)) || Layer.section(state.settings)
     leave_to(state, [%Page{section: section, record: {kind, id}}, Page.section(section)], nil)
   end
 
-  defp go(state, {:record, kind, id, _item}), do: go(state, {:record, kind, id})
-  defp go(state, _target), do: {state, []}
+  def go(state, {:record, kind, id, _item}), do: go(state, {:record, kind, id})
+  def go(state, _target), do: {state, []}
 
   defp leave_to(%{settings: layer} = state, stack, deep_link) do
     layer = %{

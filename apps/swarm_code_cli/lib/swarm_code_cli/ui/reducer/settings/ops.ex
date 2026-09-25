@@ -12,7 +12,7 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Ops do
 
   alias SwarmCode.Settings.{Entry, Registry}
   alias SwarmCodeCLI.UI.Keymap.{KeyName, SettingsBindings}
-  alias SwarmCodeCLI.UI.Reducer.Settings.{Commit, Edit}
+  alias SwarmCodeCLI.UI.Reducer.Settings.{Commit, Edit, Find}
 
   alias SwarmCodeCLI.UI.Settings.{
     Editors,
@@ -206,6 +206,8 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Ops do
     do: {state |> put_layer(%{layer | page_project_id: project_id}) |> Nav.settle(), []}
 
   # Service requests (commands, tasks, loads): `Settings.Wire`.
+  defp one(state, {:goto, target}), do: Find.go(state, target)
+  defp one(state, {:search, words}), do: {Find.query(state, words), []}
   defp one(state, op), do: SwarmCodeCLI.UI.Settings.Wire.op(state, op)
 
   # A section's reset: its writable keys whose value is not the default.

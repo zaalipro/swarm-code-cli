@@ -191,16 +191,38 @@ defmodule SwarmCodeCLI.UI.Settings.Nav do
           do: %{put_cursor(state, row_id) | settings: %{state.settings | deep_link: nil}},
           else: state
 
-      _ ->
+      # A blank open lands on the Overview's first attention item; the link
+      # is spent once the service's overview is in (an item it lists first
+      # may arrive after the client's own).
+      :first_attention ->
+        first = Enum.find(focusable, &String.starts_with?(&1.id, "att:"))
+        state = if first, do: put_cursor(state, first.id), else: state
+
         cond do
-          focusable == [] -> state
-          Enum.any?(focusable, &(&1.id == cursor)) -> state
-          true -> put_cursor(state, hd(focusable).id)
+          Layer.section(layer) != :overview or layer.data.overview != nil ->
+            %{state | settings: %{state.settings | deep_link: nil}} |> settle()
+
+          first == nil ->
+            settle_cursor(state, focusable, cursor)
+
+          true ->
+            state
         end
+
+      _ ->
+        settle_cursor(state, focusable, cursor)
     end
   end
 
   def settle(state), do: state
+
+  defp settle_cursor(state, focusable, cursor) do
+    cond do
+      focusable == [] -> state
+      Enum.any?(focusable, &(&1.id == cursor)) -> state
+      true -> put_cursor(state, hd(focusable).id)
+    end
+  end
 
   @doc "The rail's section ids in order."
   @spec rail() :: [atom()]

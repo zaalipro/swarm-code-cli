@@ -272,6 +272,12 @@ defmodule SwarmCodeCLI.UI.Settings.Search do
   defp filter?(%{key: key}, {:key, prefix}, _ctx) when is_binary(key),
     do: String.starts_with?(key, prefix)
 
+  # A value changed from its default (a read-only fact is not a value one
+  # changes; the Overview counts the same set).
+  defp filter?(%{kind: :key, entry: %{type: type}}, :modified, _ctx)
+       when type in [:fact, :action, :link],
+       do: false
+
   defp filter?(%{kind: :key, setting: setting}, :modified, _ctx),
     do: winner(setting) not in [nil, :default]
 
