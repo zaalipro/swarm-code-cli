@@ -51,6 +51,7 @@ defmodule SwarmCodeCLI.Release.C74SettingsEntryTest do
     test "a folder named settings or config opens with ./ or --" do
       assert {:ok, %{mode: :tui, project: "./settings"}} = Release.parse(["./settings"])
       assert {:ok, %{mode: :tui, project: "config"}} = Release.parse(["--", "config"])
+      assert {:config, ["list", "--json"]} = Release.parse(["config", "list", "--json"])
     end
 
     test "the usage text names both subcommands" do
@@ -133,6 +134,17 @@ defmodule SwarmCodeCLI.Release.C74SettingsEntryTest do
       assert resolve(log["ROOT"]) == Path.join(c.project, "settings") |> resolve()
       assert log["OPEN"] == "<unset>"
       assert log["ONLY"] == "<unset>"
+    end
+
+    test "config evaluates the release with the config words, from this folder", c do
+      {_output, 0} = launch(c, ["config", "list", "--json"])
+      log = stub(c)
+      assert log["ARGS"] =~ "[eval]"
+      assert log["ARGS"] =~ "[config] [list] [--json]"
+      assert resolve(log["ROOT"]) == resolve(c.project)
+      assert log["ONLY"] == "<unset>"
+
+      {_output, 3} = launch(c, ["config", "get", "x"], [{"STUB_EXIT", "3"}])
     end
 
     test "--help names the subcommands", c do

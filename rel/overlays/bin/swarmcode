@@ -121,6 +121,28 @@ needs_value() {
 # subcommands; a folder of that name opens with ./settings or -- settings.
 settings_mode=0
 settings_query=""
+if [[ $# -gt 0 && "$1" == "config" ]]; then
+  shift
+  export SWARM_PROJECT_ROOT="$PWD"
+  unset SWARM_RELEASE_TUI SWARM_SETTINGS_OPEN SWARM_SETTINGS_ONLY
+  stdin_secret=0
+  if [[ "${1:-}" == "secret" && -t 0 ]]; then
+    for arg in "$@"; do [[ "$arg" == "--stdin" ]] && stdin_secret=1; done
+  fi
+  if [[ $stdin_secret -eq 1 ]]; then
+    # Secrets never come from argv; typed ones are not echoed.
+    printf 'Paste the key, then Enter (not shown): ' >&2
+    stty -echo
+    trap 'stty echo' EXIT INT TERM
+    set +e
+    "$root/bin/swarm_code_cli" eval 'SwarmCodeCLI.Release.main(System.argv())' config "$@"
+    code=$?
+    stty echo
+    printf '\n' >&2
+    exit $code
+  fi
+  exec "$root/bin/swarm_code_cli" eval 'SwarmCodeCLI.Release.main(System.argv())' config "$@"
+fi
 if [[ $# -gt 0 && "$1" == "settings" ]]; then
   shift
   settings_mode=1

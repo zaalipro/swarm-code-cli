@@ -84,6 +84,8 @@ defmodule SwarmCodeCLI.Release do
   @spec run([binary()]) :: 0 | 1 | 2 | 3 | 4
   def run(args) do
     case parse(args) do
+      {:config, rest} ->
+        SwarmCodeCLI.Release.ConfigCommand.run(rest)
 
       :help ->
         IO.write(@usage)
@@ -132,6 +134,7 @@ defmodule SwarmCodeCLI.Release do
           :help | :version | {:error, binary()} | {:ok, options()} | {:config, [binary()]}
   # pass74 S1-13/S1-14: the first word `settings` or `config` is the
   # subcommand (a folder of that name opens with ./settings or -- settings).
+  def parse(["config" | rest]), do: {:config, rest}
   def parse(["settings" | rest]), do: settings(rest, [], nil)
 
   def parse(args) when is_list(args) do

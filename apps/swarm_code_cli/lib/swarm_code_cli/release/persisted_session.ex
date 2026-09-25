@@ -126,6 +126,44 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
     end
   end
 
+  @doc """
+  pass74 S1-14: the foundation-only boot of `swarmcode config` — the log file,
+  the lease and the verified migrations (guarded storage); no session
+  selection, no provider resolution, no boot recovery, no daemon socket.
+  Returns `{:ok, fun.()}` or `{:error, failure}` (a startup refusal carries
+  its `:code`). Never raises.
+  """
+  @spec with_foundation(keyword(), (-> term())) :: {:ok, term()} | {:error, failure()}
+  def with_foundation(options \\ [], fun) when is_list(options) and is_function(fun, 0) do
+    guarded(fn ->
+      route_logger!(log_path(nil))
+      start_applications!()
+      version = Application.spec(:swarm_code_daemon, :vsn) |> to_string()
+
+      boot =
+        Keyword.get_lazy(options, :boot_config, fn ->
+          BootConfig.canonical(platform(), System.user_home!(), version)
+        end)
+
+      {:ok, launcher} = RepoLauncher.start_link(boot_config: boot, pool_size: 4)
+      Process.unlink(launcher)
+
+      try do
+        case await_storage(launcher, boot) do
+          :ok -> {:ok, fun.()}
+          {:error, failure} -> {:error, failure}
+        end
+      after
+        close_owned_runtime(launcher)
+      end
+    end)
+    |> case do
+      {:ok, {:ok, result}} -> {:ok, result}
+      {:ok, {:error, failure}} -> {:error, failure}
+      {:error, failure} -> {:error, failure}
+    end
+  end
+
   @doc "Prints a failure (two lines and the log path) on stderr and returns its exit status."
   @spec report(failure()) :: non_neg_integer()
   def report(%{status: status, message: message, action: action}) do
