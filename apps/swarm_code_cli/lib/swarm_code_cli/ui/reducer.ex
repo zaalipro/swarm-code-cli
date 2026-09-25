@@ -411,6 +411,11 @@ defmodule SwarmCodeCLI.UI.Reducer do
 
     acted =
       cond do
+        # pass73 G1 (QA Q1-02): a draft typed under a card that opened by
+        # itself is cleared first; the next press puts the card aside.
+        Keymap.typing_under_card?(state) and not sending?(state, key) ->
+          clear_draft(state, key)
+
         state.layers != [] ->
           transition(state, :close_top_layer)
 
@@ -418,9 +423,7 @@ defmodule SwarmCodeCLI.UI.Reducer do
           {Overlay.close(state), []}
 
         key != nil and Keymap.draft_text(state) != "" and not sending?(state, key) ->
-          {state, a} = Editing.apply(state, :editor, key, :select_all)
-          {state, b} = Editing.apply(state, :editor, key, :delete_backward)
-          {%{state | history_cursor: nil}, a ++ b}
+          clear_draft(state, key)
 
         turn != nil and :stop in turn.allowed_actions ->
           case stop_turn(state, turn.id) do
@@ -2170,6 +2173,12 @@ defmodule SwarmCodeCLI.UI.Reducer do
   end
 
   defp disarm_quit(state), do: %{state | quit_armed: nil}
+
+  defp clear_draft(state, key) do
+    {state, a} = Editing.apply(state, :editor, key, :select_all)
+    {state, b} = Editing.apply(state, :editor, key, :delete_backward)
+    {%{state | history_cursor: nil, slash_palette: nil}, a ++ b}
+  end
 
   # pass70 Q2: feedback on the status line ("Project trusted", "Command
   # rejected", "Stopping the turn.") is a toast, not a banner. The moment it

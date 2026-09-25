@@ -49,7 +49,16 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
     case ApprovalCard.layout(state, rect.width) do
       # pass73 T7: the framed card and the blank row under it, on the canvas.
       %{rows: rows, growth: growth} ->
-        rows |> Enum.take(growth) |> Enum.map(&ApprovalCard.block(&1, state, rect.width))
+        card = rows |> Enum.take(growth) |> Enum.map(&ApprovalCard.block(&1, state, rect.width))
+
+        # pass73 G1 (QA Q1-01): a `/` draft typed under a card that opened
+        # by itself lists its commands on the composer, under the card's
+        # blank row, in the rows the card leaves.
+        room = min(SlashPalette.rows(), rect.height - growth - 1)
+
+        if room > 0 and SlashPalette.open?(state),
+          do: card ++ Composer.slash_popup(state, rect.width, room),
+          else: card
 
       nil ->
         cond do

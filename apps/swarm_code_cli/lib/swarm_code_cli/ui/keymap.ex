@@ -259,8 +259,16 @@ defmodule SwarmCodeCLI.UI.Keymap do
 
       # pass73 finisher: Enter under a card that opened by itself sends the
       # draft typed there (steers the turn, starts a run…); the card stays.
+      # pass73 G1 (QA Q1-01): the `/` list is open there too, so Enter first
+      # completes or runs its highlighted command, as it does without a card.
       sending_under_card?(code, mods, state) ->
-        draft_send(state)
+        send_under_card(state)
+
+      # pass73 G1 (QA Q1-02): the rest of the composer's editing and sending
+      # keys reach that draft as well; Esc, PgUp/PgDn and the rest stay the
+      # card's.
+      composing_under_card?(code, mods, state) ->
+        dispatch(code, mods, phase, composer_view(state), table)
 
       true ->
         context = Context.of(state)
@@ -454,6 +462,54 @@ defmodule SwarmCodeCLI.UI.Keymap do
 
   defp sending_under_card?(:enter, [], state), do: typing_under_card?(state)
   defp sending_under_card?(_code, _mods, _state), do: false
+
+  defp send_under_card(state) do
+    case SwarmCodeCLI.UI.SlashPalette.enter_completion(state) do
+      {:complete, name} -> result({:complete_command, name})
+      {:run, name} -> result({:run_command, name})
+      nil -> draft_send(state)
+    end
+  end
+
+  # pass73 G1 (QA Q1-02): the composer keys that act on a draft typed under
+  # a card that opened by itself: the caret and selection moves, the line
+  # and word deletions, undo, a new line, Tab's completion, and the two
+  # other ways to send (Ctrl-S plain, Alt-Enter queue). Ctrl-C clears that
+  # draft first in the reducer. Esc ("later"), PgUp/PgDn (the card's
+  # command) and the global chords keep their meaning on the card.
+  @composer_under_card [
+    :complete,
+    :composer_up,
+    :composer_down,
+    :composer_line_start,
+    :composer_line_end,
+    :composer_half_up,
+    :composer_delete_word_backward,
+    :composer_newline,
+    :composer_undo,
+    :composer_redo,
+    :send_plain,
+    :queue
+  ]
+
+  defp composing_under_card?(code, mods, state) do
+    if typing_under_card?(state) do
+      view = composer_view(state)
+      context = Context.of(view)
+
+      case Bindings.lookup(context, code, mods) do
+        %{id: id} -> id in @composer_under_card
+        nil -> context == :composer and editor_fallthrough(code, mods, view) != :ignore
+      end
+    else
+      false
+    end
+  end
+
+  # The state as the composer sees it with the card set aside: no layer, the
+  # caret in the draft. Only key resolution reads it; the reducer applies
+  # the result to the real state, card and all.
+  defp composer_view(state), do: %{state | layers: [], focus: "composer"}
 
   defp draft_edit(state, operation) do
     case State.current_draft_key(state) do

@@ -702,21 +702,30 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
        when kind in [:approval, :question] do
     ascii? = state.capabilities.ascii?
 
+    action = enter_action(state)
+
     enter =
-      case enter_words(enter_action(state)) do
+      case enter_words(action) do
         nil -> []
-        words -> [{:activate, words}]
+        words -> [{:activate, words, :dialog}]
       end
 
-    (enter ++
-       [
-         {:escape, "later"},
-         {:next_need, "next"},
-         {:help, "keys"}
-       ])
-    |> Enum.flat_map(fn {id, words} ->
+    # pass73 G1 (QA Q1-02): over a draft typed under the card, `n` and `?`
+    # type; Ctrl-C clears the draft and Tab completes its `/` command.
+    rest =
+      if SwarmCodeCLI.UI.Keymap.typing_under_card?(state) do
+        complete? = SlashPalette.open?(state) and action != :complete
+
+        [{:escape, "later", :dialog}, {:interrupt, "clear", :dialog}] ++
+          if(complete?, do: [{:complete, "complete", :composer}], else: [])
+      else
+        [{:escape, "later", :dialog}, {:next_need, "next", :dialog}, {:help, "keys", :dialog}]
+      end
+
+    (enter ++ rest)
+    |> Enum.flat_map(fn {id, words, context} ->
       with %{} = binding <- Bindings.fetch(id),
-           key when key != nil <- Bindings.key_in_context(binding, :dialog) do
+           key when key != nil <- Bindings.key_in_context(binding, context) do
         [{KeyLabel.label(key, ascii?), words}]
       else
         _ -> []

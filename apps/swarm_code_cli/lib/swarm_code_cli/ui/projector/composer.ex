@@ -229,16 +229,17 @@ defmodule SwarmCodeCLI.UI.Projector.Composer do
   @doc """
   The row above the composer. pass73 T7 (V1): the approval card is drawn
   whole at the bottom of main with a blank row under it, so the edge row
-  stays the composer's own (the hive strip or the hairline); the "workflow"
-  hint never takes it from a card. Without a card: the workflow hint, else
-  the hive strip, else a quiet hairline.
+  stays the composer's own: the workflow hint, else the hive strip, else a
+  quiet hairline. pass73 G1 (QA Q1-02): a draft typed under the card that
+  names "workflow" gets its hint there too, with the key that sends it
+  plainly.
   """
   def edge(state, rect) do
     width = rect.width
 
     case ApprovalCard.layout(state, width) do
       %{edge: :composer} ->
-        HiveStrip.block(state, width) || hairline(state, width)
+        workflow_hint(state, width) || HiveStrip.block(state, width) || hairline(state, width)
 
       %{rows: rows, growth: growth} ->
         {left, right} = Enum.at(rows, growth)
@@ -509,19 +510,21 @@ defmodule SwarmCodeCLI.UI.Projector.Composer do
   end
 
   @doc """
-  The slash popup: up to eight commands matching the draft, drawn by main
-  just above the composer, the selected one on the hover surface with the
-  accent rail.
+  The slash popup: up to eight commands matching the draft (`rows`, fewer
+  under an approval card), drawn by main just above the composer, the
+  selected one on the hover surface with the accent rail.
   """
-  def slash_popup(state, width) do
-    suggestions = SlashPalette.visible(state, 8)
+  def slash_popup(state, width, rows \\ SlashPalette.rows()) do
+    suggestions = SlashPalette.visible(state, rows)
 
     # pass73 T4/T6: the selected row says what Enter does with it now (runs a
-    # bare command, completes one that waits for its argument).
+    # bare command, completes one that waits for its argument, or queues
+    # `/compact` behind the running turn, as the status row says since F7).
     enter =
       case SwarmCodeCLI.UI.Projector.Status.enter_action(state) do
         :run_command -> " run"
         :complete -> " complete"
+        :queue -> " queue"
         _ -> nil
       end
 

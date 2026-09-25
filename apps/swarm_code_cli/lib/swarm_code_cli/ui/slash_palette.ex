@@ -209,7 +209,18 @@ defmodule SwarmCodeCLI.UI.SlashPalette do
     end
   end
 
-  defp context(%{focus: "composer", layers: []} = state) do
+  defp context(%{focus: "composer", layers: []} = state), do: draft_context(state)
+
+  # pass73 G1 (QA Q1-01): a draft typed under an approval card that opened by
+  # itself is still the composer's (`Keymap.typing_under_card?/1`), so its
+  # `/com` lists, completes and runs `/compact` as it does without the card.
+  defp context(%{layers: [{:approval, _} | _]} = state) do
+    if SwarmCodeCLI.UI.Keymap.typing_under_card?(state), do: draft_context(state), else: nil
+  end
+
+  defp context(_), do: nil
+
+  defp draft_context(state) do
     with key when not is_nil(key) <- State.current_draft_key(state),
          draft <- Drafts.fetch(state.drafts, key),
          text <- Editor.text(draft.editor),
@@ -221,6 +232,4 @@ defmodule SwarmCodeCLI.UI.SlashPalette do
       _ -> nil
     end
   end
-
-  defp context(_), do: nil
 end
