@@ -489,7 +489,9 @@ defmodule SwarmCodeCLI.UI.Pass73Qa2Test do
       screen = screen(state)
       text = Enum.join(screen, "\n")
 
-      # The whole question, in the body (the title says who asks).
+      # The whole question, in the body; the title says who asks.
+      assert text =~ "The assistant asks"
+
       words = fn line -> line |> String.split(~r/[^\w'.?]+/u, trim: true) end
       body = screen |> Enum.flat_map(words) |> Enum.join(" ")
       assert body =~ "side conversation instead?", text

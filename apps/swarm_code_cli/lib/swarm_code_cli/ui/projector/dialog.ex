@@ -1360,12 +1360,8 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
   defp tool_words(tool) when is_binary(tool), do: String.replace(tool, "_", " ")
   defp tool_words(_tool), do: "a tool"
 
-  defp question_title(item, state) do
-    case Map.get(state.read_model.agents, item.node_id) do
-      %{name: name} when is_binary(name) and name != "" -> name <> " asks"
-      _ -> "A question for you"
-    end
-  end
+  # Who asks, by the one name the card, the band and the overlay use.
+  defp question_title(item, state), do: ApprovalCard.who(item, state) <> " asks"
 
   defp approval_tool_line(%{tool: tool, permission: permission}),
     do: "Tool: " <> tool_words(tool) <> " · needs permission to " <> permission_word(permission)
