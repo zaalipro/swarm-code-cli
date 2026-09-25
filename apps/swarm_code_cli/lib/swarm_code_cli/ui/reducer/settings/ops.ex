@@ -13,7 +13,21 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Ops do
   alias SwarmCode.Settings.{Entry, Registry}
   alias SwarmCodeCLI.UI.Keymap.{KeyName, SettingsBindings}
   alias SwarmCodeCLI.UI.Reducer.Settings.{Commit, Edit}
-  alias SwarmCodeCLI.UI.Settings.{Editors, Layer, Nav, Op, Page, Paste, Row, Rows, Sections, Undo}
+
+  alias SwarmCodeCLI.UI.Settings.{
+    Editors,
+    Layer,
+    Nav,
+    Normalize,
+    Op,
+    Page,
+    Paste,
+    Row,
+    Rows,
+    Sections,
+    Undo
+  }
+
   alias SwarmCodeCLI.UI.State
 
   @number_settle_ms 600
@@ -24,7 +38,9 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Ops do
   @doc "Runs `ops` in order."
   @spec run(map(), [term()]) :: {map(), list()}
   def run(state, ops) when is_list(ops) do
-    Enum.reduce(ops, {state, []}, fn op, {acc, effects} ->
+    ops
+    |> Enum.map(&Normalize.op/1)
+    |> Enum.reduce({state, []}, fn op, {acc, effects} ->
       if Op.valid?(op) do
         {acc, more} = one(acc, op)
         {acc, effects ++ more}

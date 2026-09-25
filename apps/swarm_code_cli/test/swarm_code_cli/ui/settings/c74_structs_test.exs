@@ -217,7 +217,9 @@ defmodule SwarmCodeCLI.UI.Settings.C74StructsTest do
       ]
 
       for op <- ops, do: assert(Op.valid?(op), inspect(op))
-      refute Op.valid?({:cli_write, %{}})
+      # An empty change set is the "Make it private" rewrite (U3's request).
+    assert Op.valid?({:cli_write, %{}})
+    refute Op.valid?({:cli_write, [:panel]})
       refute Op.valid?({:patch, :atom, 1})
       refute Op.valid?(:nonsense)
     end

@@ -16,10 +16,10 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
   Only the page rows around the cursor are built into lines.
   """
 
+  alias SwarmCodeCLI.UI.Projector.Settings.Popover, as: SettingsPopover
   alias SwarmCodeCLI.UI.Projector.Settings.Text
   alias SwarmCodeCLI.UI.Scene.{Rect, Region}
   alias SwarmCodeCLI.UI.SafeText
-  alias SwarmCodeCLI.UI.Settings, as: SettingsContext
   alias SwarmCodeCLI.UI.Settings.{Detail, Glyphs, Layer, Nav, Page, Row, Sections}
 
   @rail 26
@@ -461,10 +461,9 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
   defp popover(lines, %{settings: %Layer{popover: nil}}, _width, _height), do: lines
 
   defp popover(lines, state, width, height) do
-    box = popover_lines(state, state.settings.popover)
-
-    box_width =
-      min(max(Enum.max(Enum.map(box, &Text.cells(state, &1)), fn -> 20 end) + 4, 30), width - 4)
+    box = SettingsPopover.lines(state, state.settings.popover)
+    widest = box |> Enum.map(&Text.cells(state, &1)) |> Enum.max(fn -> 20 end)
+    box_width = min(max(widest + 4, 40), width - 4)
 
     box_height = min(length(box) + 2, height - 4)
     top = max(div(height - box_height, 2), 1)
@@ -499,66 +498,6 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
       end
     end)
   end
-
-  defp popover_lines(state, {:help, _}) do
-    context = SettingsContext.context(state.settings)
-    overrides = SwarmCodeCLI.UI.Keymap.overrides(state)
-
-    SwarmCodeCLI.UI.Keymap.Bindings.all()
-    |> Enum.filter(&(context in &1.contexts))
-    |> Enum.map(fn binding ->
-      key =
-        case SwarmCodeCLI.UI.Keymap.Bindings.keys_for(binding.id, overrides) do
-          [first | _] -> SwarmCodeCLI.UI.Keymap.KeyName.format(first, :rich)
-          [] -> "unbound"
-        end
-
-      [{pad(key, 10), {:info, [:bold]}}, {binding.label, :text_primary}]
-    end)
-    |> then(
-      &([[{"Keys here", {:text_primary, [:bold]}}], []] ++
-          &1 ++ [[], [{"Esc closes", :text_faint}]])
-    )
-  end
-
-  defp popover_lines(_state, {:confirm, %{confirm: confirm}}) do
-    title = Map.get(confirm, :title) || "Are you sure?"
-
-    body =
-      Enum.map(Map.get(confirm, :lines) || [], fn line ->
-        if is_binary(line), do: [{line, :text_primary}], else: line
-      end)
-
-    danger = Map.get(confirm, :danger) || ""
-    letter = Map.get(confirm, :letter)
-
-    buttons =
-      [{"[ #{Map.get(confirm, :safe) || "Cancel"} ]  ", :text_primary}] ++
-        if(danger != "",
-          do: [{"[ #{if letter, do: letter <> "  ", else: ""}#{danger} ]", :error}],
-          else: []
-        )
-
-    [[{title, {:text_primary, [:bold]}}], []] ++ body ++ [[], buttons]
-  end
-
-  defp popover_lines(_state, {:picker, picker}) do
-    title = Map.get(picker, :title) || "Choose"
-    options = Map.get(picker, :options) || []
-    cursor = Map.get(picker, :cursor) || 0
-
-    [[{title, {:text_primary, [:bold]}}], []] ++
-      (options
-       |> Enum.with_index()
-       |> Enum.take(20)
-       |> Enum.map(fn {option, index} ->
-         label = Map.get(option, :label) || to_string(Map.get(option, :value))
-         line = [{label, :text_primary}]
-         if index == cursor, do: Text.select(line), else: line
-       end))
-  end
-
-  defp popover_lines(_state, {kind, _}), do: [[{to_string(kind), :text_primary}]]
 
   # ---------------------------------------------------------- helpers
 

@@ -23,7 +23,7 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings do
   alias SwarmCodeCLI.UI.{Hint, SafeText, State}
   alias SwarmCode.Settings.CliFile
   alias SwarmCodeCLI.UI.Init.Preferences
-  alias SwarmCodeCLI.UI.Reducer.Settings.{Commit, Edit, Ops, Responses}
+  alias SwarmCodeCLI.UI.Reducer.Settings.{Commit, Edit, Ops, Popover, Responses}
   alias SwarmCodeCLI.UI.Settings.{DeepLink, Layer, Nav, Page, Sections, Wire}
 
   @conflict_words "cli.json changed elsewhere; /settings shows it"
@@ -149,6 +149,11 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings do
     {state, more} = Wire.sync(state)
     {state, effects ++ more}
   end
+
+  # A popover owns every key while it is open (Tab stays inside it).
+  defp handle_event(%{settings: %Layer{popover: {_, _}}} = state, {kind, _} = event)
+       when kind in [:verb, :text, :key, :raw, :paste],
+       do: Popover.event(state, event)
 
   # An open editor takes the keys, the text and the pastes first.
   defp handle_event(%{settings: %Layer{mode: :editing, popover: nil}} = state, {:verb, verb}) do

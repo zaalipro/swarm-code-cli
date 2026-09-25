@@ -56,6 +56,15 @@ defmodule SwarmCodeCLI.UI.Settings.Op do
           | {:copy, String.t()}
           | {:toast, String.t(), atom()}
           | {:leave, term()}
+          | {:edit, String.t(), map()}
+          | {:project, String.t() | nil}
+          | {:draft_put, String.t(), map()}
+          | {:draft_discard, String.t()}
+          | {:stage, {String.t(), String.t()}, map()}
+          | {:unstage, {String.t(), String.t()}, [String.t()] | :all}
+          | {:row_error, String.t(), String.t()}
+          | {:treat_secret, term()}
+          | {:conflict_discard, {:file, String.t()}}
 
   @doc "A `settings.command` op with its options."
   @spec command(String.t(), map() | nil, map(), map()) :: t()
@@ -86,10 +95,21 @@ defmodule SwarmCodeCLI.UI.Settings.Op do
   def valid?({:paste, target}), do: is_map(target)
   def valid?({:edit, row_id}), do: is_binary(row_id)
   def valid?({:external_edit, spec}), do: is_map(spec)
-  def valid?({:cli_write, changes}), do: is_map(changes) and map_size(changes) > 0
+  # An empty change set rewrites the file as it is (Files & environment's
+  # "Make it private").
+  def valid?({:cli_write, changes}), do: is_map(changes)
   def valid?({:open_folder, path}), do: is_binary(path)
   def valid?({:copy, text}), do: is_binary(text)
   def valid?({:toast, text, role}), do: is_binary(text) and is_atom(role)
   def valid?({:leave, _then}), do: true
+  def valid?({:edit, row_id, opts}), do: is_binary(row_id) and is_map(opts)
+  def valid?({:project, id}), do: is_nil(id) or is_binary(id)
+  def valid?({:draft_put, _kind, fields}), do: is_map(fields)
+  def valid?({:draft_discard, _kind}), do: true
+  def valid?({:stage, {_kind, _id}, fields}), do: is_map(fields)
+  def valid?({:unstage, {_kind, _id}, fields}), do: fields == :all or is_list(fields)
+  def valid?({:row_error, row_id, message}), do: is_binary(row_id) and is_binary(message)
+  def valid?({:treat_secret, _mark}), do: true
+  def valid?({:conflict_discard, {:file, ref}}), do: is_binary(ref)
   def valid?(_op), do: false
 end

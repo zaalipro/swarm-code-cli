@@ -49,6 +49,19 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Edit do
   @spec open(map(), Row.t(), map()) :: {map(), list()}
   def open(state, row, extra \\ %{})
 
+  # An enum with more choices than fit the value column is a picker popover.
+  def open(%{settings: %Layer{} = layer} = state, %Row{editor: {Editors.Enum, opts}} = row, extra)
+      when not is_map_key(extra, :segmented) do
+    opts = Map.merge(opts, extra)
+
+    if Editors.Enum.segmented?(opts) do
+      open(state, %{row | editor: {Editors.Enum, opts}}, %{segmented: true})
+    else
+      picker = %{Editors.Enum.picker(row.label, opts) | on_pick: {:commit, row}, opener: row.id}
+      {%{state | settings: %{layer | popover: {:picker, picker}}}, []}
+    end
+  end
+
   def open(%{settings: %Layer{}} = state, %Row{editor: {module, opts}} = row, extra) do
     ctx = Nav.ctx(state)
     opts = Map.merge(opts, extra)

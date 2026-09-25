@@ -6,7 +6,7 @@ defmodule SwarmCodeCLI.UI.Settings.Nav do
   what the cursor rests on is always what is drawn.
   """
 
-  alias SwarmCodeCLI.UI.Settings.{Ctx, Layer, Page, Row, Sections}
+  alias SwarmCodeCLI.UI.Settings.{Ctx, Layer, Normalize, Page, Row, Sections}
 
   # Rows of chrome around the page column (header, search, rules, status,
   # footer): what is left is the page's height, which PgUp/PgDn move by.
@@ -73,16 +73,19 @@ defmodule SwarmCodeCLI.UI.Settings.Nav do
     ctx = ctx(state)
     page = Layer.page(layer)
 
-    case Page.level(page) do
-      :section ->
-        Sections.rows(page.section, ctx)
+    rows =
+      case Page.level(page) do
+        :section ->
+          Sections.rows(page.section, ctx)
 
-      :record ->
-        Sections.record_rows(page.section, ctx, elem(page.record, 0), elem(page.record, 1))
+        :record ->
+          Sections.record_rows(page.section, ctx, elem(page.record, 0), elem(page.record, 1))
 
-      :sub ->
-        Sections.sub_rows(page.section, ctx, page.sub)
-    end
+        :sub ->
+          Sections.sub_rows(page.section, ctx, page.sub)
+      end
+
+    Normalize.rows(rows)
   end
 
   @doc "The row the page cursor is on (nil on an empty page)."
