@@ -195,10 +195,12 @@ defmodule SwarmCodeCLI.UI.Settings.Nav do
     case layer.deep_link do
       # A key's row, or the action row a section draws for that key under an
       # id of its own (`act:…` rows that carry the registry key).
+      # A key drawn as a heading (a group of rows: the environment) lands on
+      # the first row under it.
       {:row, row_id} ->
-        case Enum.find(focusable, &linked?(&1, row_id)) do
+        case Enum.drop_while(rows, &(not linked?(&1, row_id))) |> Enum.find(&Row.focusable?/1) do
           nil -> state
-          row -> %{put_cursor(state, row.id) | settings: %{state.settings | deep_link: nil}}
+          row -> state |> put_cursor(row.id) |> spend_link()
         end
 
       # A blank open lands on the Overview's first attention item; the link
@@ -225,6 +227,8 @@ defmodule SwarmCodeCLI.UI.Settings.Nav do
   end
 
   def settle(state), do: state
+
+  defp spend_link(%{settings: layer} = state), do: %{state | settings: %{layer | deep_link: nil}}
 
   defp linked?(%Row{id: id}, id), do: true
   defp linked?(%Row{key: key}, "key:" <> key) when is_binary(key), do: true
