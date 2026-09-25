@@ -1145,7 +1145,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.MCP do
             write_key: {:record, @kind, id, :delete},
             undo: false,
             toast: "Deleted #{name}",
-            after: :back
+            after: [{:unstage, {@kind, id}, :all}, :back]
           }}
        ]}
     ]

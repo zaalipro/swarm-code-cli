@@ -116,8 +116,16 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Responses do
   defp load_failed(%{settings: layer} = state, {:values, _}, words),
     do: %{state | settings: %{layer | available: false, message: words}}
 
-  defp load_failed(%{settings: layer} = state, load, words),
-    do: Commit.status(%{state | settings: Wire.failed(layer, load)}, words, :error)
+  # cli74 F21: a load the page on screen no longer needs (the record a
+  # delete just removed, answered after the delete took the page back) fails
+  # quietly; it said "that provider no longer exists" over "Deleted DeepSeek".
+  defp load_failed(%{settings: layer} = state, load, words) do
+    state = %{state | settings: Wire.failed(layer, load)}
+
+    if load in Sections.loads(Layer.section(state.settings), Nav.ctx(state)),
+      do: Commit.status(state, words, :error),
+      else: state
+  end
 
   # What a snapshot's body puts into the layer's data.
   defp put(data, :open, :open, %SettingsOpen{} = open, now) do

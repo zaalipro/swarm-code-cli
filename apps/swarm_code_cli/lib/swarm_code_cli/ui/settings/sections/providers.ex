@@ -1506,7 +1506,9 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Providers do
          write_key: {:record, @kind, id, :delete},
          undo: false,
          toast: "Deleted #{R.field(f, "name")}",
-         after: :back
+         # cli74 F21: what was staged for it (the replacement picks) goes
+         # with it, or leaving asked about "changes to provider <id>".
+         after: [{:unstage, {@kind, id}, :all}, :back]
        }}
     ]
   end

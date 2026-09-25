@@ -206,4 +206,31 @@ defmodule SwarmCodeCLI.UI.Settings.C74FTableRowsTest do
     assert text =~ "[ T  Trust ]"
     refute text =~ "T  T  Trust"
   end
+
+  # cli74 F21 (found in the sandbox): after a provider was deleted its staged
+  # replacement picks stayed, and leaving asked about "changes to provider <id>".
+  test "deleting a provider drops what was staged for it" do
+    fake = FakeSettings.seed()
+
+    {state, fake} =
+      ready() |> Reducer.update({:settings_open, {:section, :providers}}) |> serve(fake)
+
+    "rec:provider:" <> id =
+      Enum.find(Nav.rows(state), &(&1.label =~ "OpenRouter" and &1.id =~ "rec:provider:")).id
+
+    {state, fake} =
+      state
+      |> Ops.run([{:open, %Page{section: :providers, record: {"provider", id}}}])
+      |> serve(fake)
+
+    staged = Map.put(state.settings.staged, {"provider", id}, %{"replacements" => %{}})
+    state = %{state | settings: %{state.settings | staged: staged}}
+    delete = Enum.find(Nav.rows(state), &(&1.label =~ "Delete this provider"))
+    {state, _} = Ops.run(state, Providers.act(Nav.ctx(state), delete, :open_row))
+    assert {:confirm, _} = state.settings.popover
+
+    {deleted, _fake} = state |> Reducer.update({:settings, {:text, "D"}}) |> serve(fake)
+    assert deleted.settings.status.text =~ "Deleted"
+    refute Map.has_key?(deleted.settings.staged, {"provider", id})
+  end
 end
