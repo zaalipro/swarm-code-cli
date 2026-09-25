@@ -112,4 +112,35 @@ defmodule SwarmCodeCLI.UI.Settings.C74FTableRowsTest do
     assert state.settings.paste == nil
     refute Enum.any?(lines(state), &(&1 =~ "save it anyway"))
   end
+
+  # cli74 F17 (A22, found in the sandbox): the service's task deltas carry no
+  # `at`, so an ended test said no time.
+  test "an ended task from the service says the local time it ended" do
+    fake = FakeSettings.seed()
+    state = %{ready() | now: 1_790_000_000_000}
+
+    {state, fake} =
+      state |> Reducer.update({:settings_open, {:section, :providers}}) |> serve(fake)
+
+    "rec:provider:" <> id =
+      Enum.find(Nav.rows(state), &(&1.label =~ "DeepSeek" and &1.id =~ "rec:provider:")).id
+
+    {state, _fake} =
+      state
+      |> Ops.run([{:open, %Page{section: :providers, record: {"provider", id}}}])
+      |> serve(fake)
+
+    done = %DTO.SettingsTask{
+      task_id: "t-f17",
+      action: "provider.test",
+      target: %{"id" => id},
+      state: :done,
+      summary: %{"count" => 2, "ms" => 5}
+    }
+
+    {state, _} = Responses.delta(state, done)
+    {_, {hour, minute, _}} = :calendar.system_time_to_local_time(state.now, :millisecond)
+    clock = :io_lib.format("~2..0B:~2..0B", [hour, minute]) |> to_string()
+    assert Enum.any?(lines(state), &(&1 =~ "✓ listed 2 models in 5 ms · #{clock}"))
+  end
 end

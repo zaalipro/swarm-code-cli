@@ -523,7 +523,7 @@ defmodule SwarmCodeCLI.UI.Settings.IntegrationRows do
   def task_words(ctx, {_id, task}, start, success) do
     state = to_string(field(task, "state"))
     elapsed = elapsed_s(ctx, task)
-    at = hhmm(field(task, "at")) || clock(ctx)
+    at = hhmm(field(task, "at")) || clock(ctx) || arrived(state, field(task, "received_at_ms"))
 
     case state do
       "running" ->
@@ -567,6 +567,17 @@ defmodule SwarmCodeCLI.UI.Settings.IntegrationRows do
 
   defp suffix(nil), do: ""
   defp suffix(at), do: " · #{at}"
+
+  # cli74 F17: the service's task deltas carry no `at`; an ended task says
+  # the local time its end arrived (A22's `· HH:MM`).
+  defp arrived(state, ms) when state != "running" and is_integer(ms) and ms > 0 do
+    {_date, {hour, minute, _}} = :calendar.system_time_to_local_time(ms, :millisecond)
+    two(hour) <> ":" <> two(minute)
+  end
+
+  defp arrived(_state, _ms), do: nil
+
+  defp two(n), do: n |> Integer.to_string() |> String.pad_leading(2, "0")
 
   defp clock(ctx) do
     case Map.get(ctx, :clock) do
