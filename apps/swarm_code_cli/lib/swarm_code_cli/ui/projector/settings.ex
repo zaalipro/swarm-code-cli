@@ -504,9 +504,10 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
 
     main =
       cond do
-        # A table row being pasted into (Space on an engine with no key)
-        # shows the paste's words instead of its columns.
-        is_list(row.columns) and pasting?(layer, row) ->
+        # A table row being edited (Enter on a language) or pasted into
+        # (Space on an engine with no key) shows the editor's or the paste's
+        # words instead of its columns.
+        is_list(row.columns) and (display != nil or pasting?(layer, row)) ->
           [lead, mark, {" ", :text_primary}] ++
             label ++ [{" ", :text_primary}] ++ value_segments
 

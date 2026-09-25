@@ -133,13 +133,15 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.LanguageServers do
     )
   end
 
+  # `off` and `no default` are the row's tag already (cli74 F15: the row
+  # read "off off off" and "no default … no default  no default").
   defp state_segments(ctx, override, default, result) do
     cond do
       override == "off" ->
-        [{"off", :text_faint}]
+        []
 
       override == nil and default == nil ->
-        [{"no default", :text_faint}]
+        []
 
       result == nil ->
         []
@@ -218,8 +220,11 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.LanguageServers do
           R.row(
             id: "act:lsp.stop",
             kind: :action,
-            label: "▸ Stop running language servers of #{R.project_name(ctx)}",
-            value: [{"they restart with the saved commands on the next call", :text_faint}],
+            label: "▸ Stop servers here",
+            value: [
+              {"#{R.project_name(ctx)}'s servers restart with the saved commands on the next call",
+               :text_faint}
+            ],
             keys: [{"Enter", :open_row, "stop"}],
             target: {:stop, %{"project_id" => project}}
           )
@@ -231,8 +236,8 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.LanguageServers do
         R.row(
           id: "act:lsp.stop_all",
           kind: :action,
-          label: "▸ Stop running language servers of every project",
-          value: [{"applies the commands now", :text_faint}],
+          label: "▸ Stop servers everywhere",
+          value: [{"every project's servers · applies the commands now", :text_faint}],
           keys: [{"Enter", :open_row, "stop"}],
           target: {:stop, %{"all" => true}}
         )

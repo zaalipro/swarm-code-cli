@@ -41,7 +41,11 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.C74LanguageServersTest do
     assert text(erlang.tag) =~ "custom"
     assert Enum.any?(erlang.lines, &(text(&1) =~ "a path with spaces cannot be written"))
 
-    assert text(row(LS.rows(lsp_ctx()), "key:lsp.erlang").value) =~ "no default: set a command"
+    fresh = row(LS.rows(lsp_ctx()), "key:lsp.erlang")
+    assert text(fresh.value) =~ "no default: set a command"
+    # cli74 F15: each word once — the tag says it, the state does not repeat it.
+    assert text(fresh.tag) == "  no default"
+    assert text(row(rows, "key:lsp.zig").tag) == "  off"
   end
 
   test "off, a custom command and back to default write lsp.<language>" do
