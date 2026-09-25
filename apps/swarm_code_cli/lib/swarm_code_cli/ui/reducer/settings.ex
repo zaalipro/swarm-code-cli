@@ -21,10 +21,18 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings do
   """
 
   alias SwarmCodeCLI.UI.{Hint, SafeText, State}
+  alias SwarmCode.Settings.CliFile
   alias SwarmCodeCLI.UI.Init.Preferences
+  alias SwarmCodeCLI.UI.Reducer.Settings.{Commit, Edit, Ops}
   alias SwarmCodeCLI.UI.Settings.{DeepLink, Layer, Nav, Page, Sections}
 
   @conflict_words "cli.json changed elsewhere; /settings shows it"
+
+  # The keys a page row answers (the section's `act/3` first, §4.3).
+  @row_verbs [:enter, :toggle, :left, :right, :big_left, :big_right, :reset, :undo, :redo] ++
+               [:copy, :add, :add_key, :delete, :delete_record, :remove_all, :move_up] ++
+               [:move_down, :test, :fetch, :open_related, :cancel_task, :new, :clear] ++
+               [:edit_external, :all_on, :all_off, :alt, :restart, :save, :external]
 
   # ------------------------------------------------------------ open, close
 
@@ -119,7 +127,23 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings do
 
   @doc "Applies one `{:settings, event}` action."
   @spec event(State.t(), term()) :: {State.t(), list()}
+  # An open editor takes the keys, the text and the pastes first.
+  def event(%{settings: %Layer{mode: :editing, popover: nil}} = state, {:verb, verb}) do
+    case Edit.verb_event(verb) do
+      nil when verb == :interrupt -> Edit.event(state, :interrupt)
+      nil -> verb(state, verb)
+      event -> Edit.event(state, event)
+    end
+  end
+
+  def event(%{settings: %Layer{mode: :editing, popover: nil}} = state, {kind, _} = event)
+      when kind in [:text, :paste, :key, :raw],
+      do: Edit.event(state, event)
+
   def event(%{settings: %Layer{}} = state, {:verb, verb}), do: verb(state, verb)
+
+  def event(state, {:saving, generation, ref}), do: {Commit.saving(state, generation, ref), []}
+  def event(state, {:settle, generation, timer}), do: Ops.settle(state, generation, timer)
 
   # Ctrl-F's badges: the letter opens its section; any other key ends them.
   def event(%{settings: %Layer{jump: %{labels: labels}} = layer} = state, {:raw, {code, []}})
@@ -159,7 +183,7 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings do
         {name, value}, acc -> Map.put(acc, name, value)
       end)
 
-    {state, effects} = apply_legacy(%{state | prefs: prefs}, Map.keys(current))
+    {state, effects} = Commit.apply_names(%{state | prefs: prefs}, Map.keys(current))
     {notice(state, @conflict_words), effects}
   end
 
@@ -173,7 +197,18 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings do
         _ -> state
       end
 
-    {cli_outcome(state, generation, ref, result), []}
+    state = put_cli_result(state, generation, result)
+
+    case state.settings do
+      %Layer{writes: writes} ->
+        case Enum.find(writes, fn {_key, write} -> write.ref == ref end) do
+          {{:cli_batch, _} = key, write} -> batch_outcome(state, key, write, result)
+          _ -> Commit.cli_result(state, generation, ref, result)
+        end
+
+      _ ->
+        {state, []}
+    end
   end
 
   def event(state, {:folder_result, _generation, result}),
@@ -203,12 +238,19 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings do
   defp verb(%{settings: %Layer{region: :detail} = layer} = state, :back),
     do: {put_layer(state, %{layer | region: :page}), []}
 
-  defp verb(%{settings: %Layer{} = layer} = state, :back) do
-    case Layer.pop(layer) do
-      {:ok, layer} -> {state |> put_layer(layer) |> Nav.settle(), []}
-      :top -> close(state)
+  # Esc on a conflict row takes theirs.
+  defp verb(%{settings: %Layer{region: :page, mode: :browse} = layer} = state, :back)
+       when map_size(layer.conflicts) > 0 do
+    case Nav.current(state) do
+      %{key: key} when is_map_key(layer.conflicts, {:value, key}) ->
+        {put_layer(state, %{layer | conflicts: Map.delete(layer.conflicts, {:value, key})}), []}
+
+      _ ->
+        back(state)
     end
   end
+
+  defp verb(state, :back), do: back(state)
 
   defp verb(state, :close), do: close(state)
 
@@ -223,15 +265,18 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings do
        do: {rail_to(state, Nav.rail_move(state, step(verb))), []}
 
   defp verb(%{settings: %Layer{mode: :browse}} = state, verb)
-       when verb in [:up, :down, :page_up, :page_down, :first, :last],
-       do: {Nav.move(state, step(verb)), []}
+       when verb in [:up, :down, :page_up, :page_down, :first, :last] do
+    {state, settled} = Ops.flush_step(state)
+    {Nav.move(state, step(verb)), settled}
+  end
 
   defp verb(%{settings: %Layer{region: :rail} = layer} = state, verb)
        when verb in [:right, :enter],
        do: {put_layer(state, %{layer | region: :page}) |> Nav.settle(), []}
 
-  defp verb(%{settings: %Layer{region: :page, mode: :browse} = layer} = state, :left),
-    do: {put_layer(state, %{layer | region: :rail}), []}
+  defp verb(%{settings: %Layer{region: :page, mode: :browse, popover: nil}} = state, verb)
+       when verb in @row_verbs,
+       do: Ops.row_verb(state, verb)
 
   defp verb(state, :next_region), do: {cycle_region(state, 1), []}
   defp verb(state, :previous_region), do: {cycle_region(state, -1), []}
@@ -261,6 +306,32 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings do
        }), []}
 
   defp verb(state, _verb), do: {state, []}
+
+  defp back_pop(%{settings: %Layer{} = layer} = state) do
+    case Layer.pop(layer) do
+      {:ok, layer} -> {state |> put_layer(layer) |> Nav.settle(), []}
+      :top -> close(state)
+    end
+  end
+
+  # Below a section page the section answers Esc first (`[]` ignores it).
+  defp back(%{settings: %Layer{} = layer} = state) do
+    {state, settled} = Ops.flush_step(state)
+
+    answer =
+      if Layer.depth(layer) > 1,
+        do: Sections.act(Layer.section(layer), Nav.ctx(state), Nav.current(state), :escape),
+        else: :default
+
+    {state, effects} =
+      case answer do
+        [] -> {state, []}
+        [_ | _] = ops -> Ops.run(state, ops)
+        _default -> back_pop(state)
+      end
+
+    {state, settled ++ effects}
+  end
 
   defp step(:up), do: -1
   defp step(:down), do: 1
@@ -331,50 +402,49 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings do
   def folder_words({:error, :busy}), do: "Still opening the last folder"
   def folder_words(_result), do: "Couldn't open the folder · y copies the path"
 
-  defp cli_outcome(
-         %{settings: %Layer{generation: generation} = layer} = state,
-         generation,
-         ref,
-         result
-       ),
-       do: %{
-         state
-         | settings: %{layer | requests: Map.put(layer.requests, {:cli, ref}, {:done, result})}
-       }
+  # The layer's copy of the file follows a write's snapshot.
+  defp put_cli_result(state, generation, {:ok, snapshot}),
+    do: put_cli(state, generation, snapshot)
 
-  defp cli_outcome(state, _generation, _ref, _result), do: state
+  defp put_cli_result(state, generation, {:ok, snapshot, _}),
+    do: put_cli(state, generation, snapshot)
+
+  defp put_cli_result(state, _generation, _result), do: state
+
+  # A section's own cli.json change set (`{:cli_write, changes}`).
+  defp batch_outcome(%{settings: layer} = state, key, write, result) do
+    state = put_layer(state, %{layer | writes: Map.delete(layer.writes, key)})
+
+    case result do
+      {:ok, _} ->
+        batch_done(state, write)
+
+      {:ok, _, _} ->
+        batch_done(state, write)
+
+      {:conflict, _} ->
+        {Commit.status(state, @conflict_words, :warning), []}
+
+      {:error, :invalid, messages} ->
+        {Commit.status(state, "Couldn't save: " <> first(messages), :error), []}
+
+      {:error, reason} ->
+        {Commit.status(state, "Couldn't save: " <> CliFile.words(reason), :error), []}
+    end
+  end
+
+  defp batch_done(state, write) do
+    {state, effects} = Commit.apply_names(state, write.names)
+    {Commit.status(state, "Saved cli.json", :success), effects}
+  end
+
+  defp first(messages), do: messages |> Map.values() |> List.first() || "is invalid"
 
   defp put_cli(%{settings: %Layer{generation: layer_generation} = layer} = state, generation, cli)
        when generation in [nil, layer_generation],
        do: %{state | settings: %{layer | data: %{layer.data | cli: cli}}}
 
   defp put_cli(state, _generation, _cli), do: state
-
-  # The shell's live copies of the four legacy preferences follow the file;
-  # the terminal repaints or turns wheel reports over when those moved.
-  defp apply_legacy(state, names) do
-    legacy = Preferences.legacy(state.prefs)
-
-    Enum.reduce(names, {state, []}, fn
-      "panel", {acc, effects} ->
-        {%{acc | panel_mode: legacy.panel_mode}, effects}
-
-      "show_diffs", {acc, effects} ->
-        {%{acc | show_diffs: legacy.show_diffs}, effects}
-
-      "mouse", {acc, effects} when acc.mouse? != legacy.mouse? ->
-        {%{acc | mouse?: legacy.mouse?},
-         effects ++ [{:terminal_preferences, %{mouse?: legacy.mouse?}}]}
-
-      "theme", {%{theme_env: nil} = acc, effects}
-      when legacy.theme != nil and legacy.theme != acc.theme_mode ->
-        {%{acc | theme_mode: legacy.theme},
-         effects ++ [{:terminal_preferences, %{theme: legacy.theme}}]}
-
-      _name, acc ->
-        acc
-    end)
-  end
 
   defp notice(%{settings: %Layer{} = layer} = state, words),
     do: %{state | settings: %{layer | status: %{text: words, role: :text_muted, at: state.now}}}

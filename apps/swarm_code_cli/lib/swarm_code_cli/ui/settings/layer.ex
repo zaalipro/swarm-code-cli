@@ -43,7 +43,9 @@ defmodule SwarmCodeCLI.UI.Settings.Layer do
             detail_open: false,
             next_launch: MapSet.new(),
             available: true,
-            message: nil
+            message: nil,
+            next_ref: 1,
+            file_conflicts: %{}
 
   @type region :: :search | :rail | :page | :detail
   @type mode :: :browse | :search | :command_line | :editing | :paste | :capture
@@ -78,7 +80,9 @@ defmodule SwarmCodeCLI.UI.Settings.Layer do
           detail_open: boolean(),
           next_launch: MapSet.t(),
           available: boolean(),
-          message: nil | String.t()
+          message: nil | String.t(),
+          next_ref: pos_integer(),
+          file_conflicts: map()
         }
 
   @regions [:search, :rail, :page, :detail]

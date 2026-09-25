@@ -20,9 +20,15 @@ defmodule SwarmCodeCLI.UI.Projector do
       # pass72 P8: the agent overlay covers the whole screen, so the shell
       # under it is not projected at all.
       {regions, cursor} =
-        case SwarmCodeCLI.UI.Projector.Overlay.project(state, layout) do
-          nil -> Shell.project(state, layout)
-          covered -> covered
+        case SwarmCodeCLI.UI.Projector.Settings.project(state, layout) do
+          nil ->
+            case SwarmCodeCLI.UI.Projector.Overlay.project(state, layout) do
+              nil -> Shell.project(state, layout)
+              covered -> covered
+            end
+
+          settings ->
+            settings
         end
 
       {scene, background} =

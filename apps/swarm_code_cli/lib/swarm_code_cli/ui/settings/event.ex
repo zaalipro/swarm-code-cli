@@ -58,6 +58,11 @@ defmodule SwarmCodeCLI.UI.Settings.Event do
   def valid?({:folder_result, generation, result}),
     do: generation?(generation, false) and (result == :ok or match?({:error, _}, result))
 
+  def valid?({:saving, generation, ref}), do: generation?(generation, false) and ref?(ref)
+
+  def valid?({:settle, generation, timer}),
+    do: generation?(generation, false) and is_binary(timer) and byte_size(timer) <= 128
+
   def valid?(_event), do: false
 
   @doc "Whether `ref` names a request of the layer (a positive integer)."

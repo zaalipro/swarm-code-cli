@@ -117,6 +117,9 @@ defmodule SwarmCodeCLI.UI.Settings.Sections do
   @doc "An editor's committed value: the section's ops, or `:default`."
   def commit(id, ctx, row, value), do: call(id, :commit, [ctx, row, value], fn -> :default end)
 
+  @doc "A picker's choice for the section (`on_pick: {:section, id, tag}`): its ops."
+  def picked(id, ctx, tag, value), do: call(id, :picked, [ctx, tag, value], fn -> [] end)
+
   @doc "The page title (`unsaved · Ctrl-S creates it · Esc discards` on a draft)."
   def page_title(id, ctx), do: call(id, :title, [ctx], fn -> title(id) end)
 
@@ -141,6 +144,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections do
   defp invoke(module, :sub_rows, [ctx, sub]), do: module.sub_rows(ctx, sub)
   defp invoke(module, :act, [ctx, row, action]), do: module.act(ctx, row, action)
   defp invoke(module, :commit, [ctx, row, value]), do: module.commit(ctx, row, value)
+  defp invoke(module, :picked, [ctx, tag, value]), do: module.picked(ctx, tag, value)
   defp invoke(module, :title, [ctx]), do: module.title(ctx)
   defp invoke(module, :attention, [ctx]), do: module.attention(ctx)
   defp invoke(module, :counts, [ctx]), do: module.counts(ctx)
