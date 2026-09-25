@@ -34,6 +34,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   @max_jobs 8
   @terminal [:completed, :failed, :cancelled, :interrupted]
   alias SwarmCode.Daemon.Service.PanelFacts
+  alias SwarmCode.Daemon.Service.Settings.Jobs, as: SettingsJobs
+  alias SwarmCode.Daemon.Service.Settings.Tasks, as: SettingsTasks
 
   alias SwarmCode.Daemon.Service.{
     CommandDispatcher,
@@ -146,7 +148,17 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         # the functions that do the slow work (tests inject blocking fakes).
         jobs: %{},
         task_supervisor: Keyword.get(opts, :task_supervisor, SwarmCode.Domain.TaskSupervisor),
-        work: work(opts[:work])
+        work: work(opts[:work]),
+        # pass74 S1-9/S1-10 (§3.3.8, §3.3.10): settings jobs (their own pool
+        # of 4), the tasks this session started with their result cache, the
+        # settings revision and the cache-hygiene marks the last values read.
+        settings_jobs: %{},
+        settings_tasks:
+          SettingsTasks.new(self(),
+            supervisor: Keyword.get(opts, :task_supervisor, SwarmCode.Domain.TaskSupervisor)
+          ),
+        settings_revision: 0,
+        settings_seen: nil
       }
 
       {:ok, reload(state)}
@@ -240,6 +252,46 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
   def handle_info({:service_unwatch, connection, ref}, state),
     do: {:noreply, unwatch(state, {connection, ref})}
+
+  # pass74 S1-10 (§3.3.10): a settings job's answer, crash and timer.
+  def handle_info({ref, answer}, %{settings_jobs: jobs} = state)
+      when is_reference(ref) and is_map_key(jobs, ref) do
+    Process.demonitor(ref, [:flush])
+    job = jobs[ref]
+    Process.cancel_timer(job.timer)
+    {response, next} = job.finish.(answer, %{state | settings_jobs: Map.delete(jobs, ref)})
+    GenServer.reply(job.from, response)
+    {:noreply, next}
+  end
+
+  def handle_info({:DOWN, ref, :process, _, _}, %{settings_jobs: jobs} = state)
+      when is_map_key(jobs, ref),
+      do: {:noreply, settle_settings_job(state, ref, false)}
+
+  def handle_info({:settings_job_timeout, ref}, %{settings_jobs: jobs} = state)
+      when is_map_key(jobs, ref),
+      do: {:noreply, settle_settings_job(state, ref, true)}
+
+  # pass74 S1-9 (§3.3.8): the settings tasks' own messages.
+  def handle_info({ref, _} = message, %{settings_tasks: %{refs: refs}} = state)
+      when is_reference(ref) and is_map_key(refs, ref),
+      do: {:noreply, settings_task_message(state, message)}
+
+  def handle_info(
+        {:DOWN, ref, :process, _, _} = message,
+        %{settings_tasks: %{refs: refs}} = state
+      )
+      when is_map_key(refs, ref),
+      do: {:noreply, settings_task_message(state, message)}
+
+  def handle_info(message, state)
+      when elem(message, 0) in [
+             :settings_task_progress,
+             :settings_task_emit,
+             :settings_task_timeout,
+             :settings_task_purge
+           ],
+      do: {:noreply, settings_task_message(state, message)}
 
   def handle_info({:DOWN, monitor, :process, _, _}, %{repo_monitor: monitor} = state),
     do: {:stop, :admitted_repo_lost, state}
@@ -445,6 +497,10 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   @impl true
   def terminate(_, state) do
     cancel_jobs(state, wire_error(:source_unavailable))
+    # pass74 S1-9/S1-10: every settings job settles (a command's ledger row
+    # completes), every task stops by its kind, every purge timer ends.
+    Enum.reduce(Map.keys(state.settings_jobs), state, &settle_settings_job(&2, &1, true))
+    SettingsTasks.terminate(state.settings_tasks)
     cancel_facts_job(state.facts_job, state.task_supervisor)
     Events.unsubscribe(state.opts[:conversation_id])
   end
@@ -452,6 +508,12 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   @impl true
   def format_status(status),
     do: %{status | state: %{mode: :persisted, runs: map_size(status.state.runs)}}
+
+  defp admit_request(id, _scope, %{operation: :settings_query} = request, from, state),
+    do: settings_query(id, request, from, state)
+
+  defp admit_request(id, scope, %{operation: :settings_command} = request, from, state),
+    do: settings_command(id, scope, request, from, state)
 
   defp admit_request(id, scope, request, from, state) do
     command? = Map.get(request, :operation) not in @reads
@@ -3087,7 +3149,13 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   defp attachment_ids(_), do: []
 
   defp broadcast(state, delta) do
-    delta = Map.put(delta, "conversation_id", state.opts[:conversation_id])
+    # pass74 S1-10: settings deltas belong to no conversation (§3.4.4).
+    delta =
+      if delta["kind"] in ["settings_update", "settings_task"],
+        do: delta,
+        else: Map.put(delta, "conversation_id", state.opts[:conversation_id])
+
+    settings_delta? = delta["kind"] in ["settings_update", "settings_task"]
 
     Enum.reduce(state.watches, state, fn {key, entry}, acc ->
       relevant =
@@ -3095,8 +3163,18 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
           (entry.scope.kind != :run or entry.scope.id == delta["run_id"]) and
           case entry.slot do
             # pass70 C1: toasts and rate limits reach the shell watch alone.
+            # pass74 S1-10: settings deltas are global and ride the shell.
             "shell" ->
-              delta["kind"] in ["run_update", "toast", "rate_limit"]
+              delta["kind"] in [
+                "run_update",
+                "toast",
+                "rate_limit",
+                "settings_update",
+                "settings_task"
+              ]
+
+            _other when settings_delta? ->
+              false
 
             "activity" ->
               delta["kind"] == "activity_upsert"
@@ -3134,7 +3212,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
         pending =
           Enum.reject(pending, fn {old, _} ->
-            delta["kind"] not in ["stream_append", "stream_reset"] and
+            delta["kind"] not in ["stream_append", "stream_reset", "settings_update"] and
               old["kind"] == delta["kind"] and old["entity_id"] == delta["entity_id"] and
               not (delta["kind"] == "node_upsert" and
                      Enum.any?(pending, fn {queued, _} ->
@@ -3996,4 +4074,287 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   end
 
   defp cancel_job_timer(%{timer: timer}), do: Process.cancel_timer(timer)
+
+  ## pass74 S1-9/S1-10: settings (spec §3.3.8, §3.3.10)
+
+  # A read runs as a settings job; the `task` view reads this session's own
+  # task cache here (no job, no Repo). A newer read with the same key (view,
+  # kind, id, project, `options.slot`) replaces an older one.
+  defp settings_query(id, %{params: %{"view" => "task"} = params}, _from, state) do
+    reply =
+      case SettingsTasks.view(state.settings_tasks, params) do
+        {:ok, body, tasks} ->
+          {SettingsJobs.snapshot_reply("task", {:ok, body}, state.settings_revision, id),
+           %{state | settings_tasks: tasks}}
+
+        {:error, error} ->
+          {SettingsJobs.snapshot_reply("task", {:error, error}, state.settings_revision, id),
+           state}
+      end
+
+    {response, next} = reply
+    {:reply, response, next}
+  end
+
+  defp settings_query(id, %{params: params} = request, from, state) do
+    key = SettingsJobs.query_key(params)
+    state = replace_settings_jobs(state, key)
+
+    if map_size(state.settings_jobs) >= SettingsJobs.pool() do
+      {:reply, wire_error(:capacity_exceeded), state}
+    else
+      inputs = settings_inputs(state, :query, params, id)
+      view = params["view"]
+
+      work = fn -> SettingsJobs.query(params, inputs) end
+
+      finish = fn {answer, marks}, state ->
+        state = if marks, do: %{state | settings_seen: marks}, else: state
+        {SettingsJobs.snapshot_reply(view, answer, state.settings_revision, id), state}
+      end
+
+      start_settings_job(state, from, %{
+        key: key,
+        command: nil,
+        work: work,
+        finish: finish,
+        timeout: request.timeout_ms
+      })
+    end
+  end
+
+  # A command runs as a settings job, never replaceable (M1). The pool is
+  # checked before the ledger admits it; a command with pasted secrets is not
+  # durable and not remembered, and its fingerprint masks them (§3.3.10).
+  defp settings_command(id, _scope, %{params: %{"action" => "task.cancel"} = params}, _, state) do
+    task_id = get_in(params, ["target", "task_id"])
+
+    {value, state} =
+      case SettingsTasks.cancel(state.settings_tasks, task_id) do
+        {:ok, tasks, bodies} ->
+          {settings_value(:accepted, nil, id, state),
+           emit_settings_tasks(%{state | settings_tasks: tasks}, bodies)}
+
+        :finished ->
+          {settings_value(:unchanged, "That already finished.", id, state), state}
+
+        {:error, error} ->
+          {SwarmCode.Daemon.Service.Settings.Wire.result(error, id, state.settings_revision),
+           state}
+      end
+
+    {:reply, SettingsJobs.result_reply(value), state}
+  end
+
+  defp settings_command(id, scope, %{params: params} = request, from, state) do
+    fingerprint = SettingsJobs.fingerprint(scope, params)
+    durable = not SettingsJobs.secrets?(params)
+
+    cond do
+      match?({^fingerprint, _}, state.requests[id]) ->
+        {:reply, elem(state.requests[id], 1), state}
+
+      is_tuple(state.requests[id]) ->
+        {:reply, reject(id, :request_conflict), state}
+
+      map_size(state.settings_jobs) >= SettingsJobs.pool() ->
+        {:reply, SettingsJobs.busy_reply(id, state.settings_revision), state}
+
+      true ->
+        admission =
+          if durable,
+            do: CommandLedger.admit(state.opts[:project_id], id, scope, fingerprint),
+            else: :new
+
+        case admission do
+          {:replay, saved} ->
+            {:reply, saved, state}
+
+          {:unresolved, _} ->
+            {:reply, unknown_outcome(id), state}
+
+          {:conflict, reason} ->
+            {:reply, reject(id, reason), state}
+
+          :new ->
+            inputs = settings_inputs(state, :command, params, id)
+            work = fn -> SettingsJobs.command(params, id, inputs) end
+
+            finish = fn answer, state ->
+              {value, state} = settings_answer(answer, id, state)
+              settle_settings_command(state, id, fingerprint, durable, value)
+            end
+
+            start_settings_job(state, from, %{
+              key: nil,
+              command: %{id: id, fingerprint: fingerprint, durable: durable},
+              work: work,
+              finish: finish,
+              timeout: max(request.timeout_ms - 1_000, 1_000)
+            })
+        end
+    end
+  end
+
+  defp settings_answer({:ok, result}, id, state),
+    do:
+      {SwarmCode.Daemon.Service.Settings.Wire.result(result, id, state.settings_revision), state}
+
+  defp settings_answer({:task, spec, result}, id, state) do
+    case SettingsTasks.start(state.settings_tasks, spec) do
+      {:ok, tasks, task_id, bodies} ->
+        result = %{result | task: %{task_id: task_id, action: spec.action}}
+        state = emit_settings_tasks(%{state | settings_tasks: tasks}, bodies)
+
+        {SwarmCode.Daemon.Service.Settings.Wire.result(result, id, state.settings_revision),
+         state}
+
+      {:error, error} ->
+        {SwarmCode.Daemon.Service.Settings.Wire.result(error, id, state.settings_revision), state}
+    end
+  end
+
+  defp settings_answer({:error, error}, id, state),
+    do: {SwarmCode.Daemon.Service.Settings.Wire.result(error, id, state.settings_revision), state}
+
+  defp settings_value(status, message, id, state) do
+    SwarmCode.Daemon.Service.Settings.Wire.result(
+      %SwarmCode.Daemon.Service.Settings.Result{status: status, message: message},
+      id,
+      state.settings_revision
+    )
+  end
+
+  # Every settle path of a command job ends here: the ledger row completes
+  # (under the 120 KiB guard) and the answer is remembered, unless the command
+  # carried secrets.
+  defp settle_settings_command(state, id, fingerprint, durable, value) do
+    {:ok, _} = response = SettingsJobs.result_reply(value)
+
+    if durable do
+      CommandLedger.complete(state.opts[:project_id], id, response)
+      {response, remember_response(state, id, fingerprint, response)}
+    else
+      {response, state}
+    end
+  end
+
+  defp settings_inputs(state, kind, params, id) do
+    {results, store} =
+      SettingsTasks.task_results(
+        state.settings_tasks,
+        SettingsJobs.declarations(kind, params),
+        params,
+        params["target"]
+      )
+
+    %{
+      project_id: state.opts[:project_id],
+      conversation_id: state.opts[:conversation_id],
+      task_results: results,
+      sessions_store: store,
+      seen: state.settings_seen,
+      revision: state.settings_revision,
+      request_id: id
+    }
+  end
+
+  defp start_settings_job(state, from, job) do
+    task = Task.Supervisor.async_nolink(state.task_supervisor, job.work)
+    timer = Process.send_after(self(), {:settings_job_timeout, task.ref}, job.timeout)
+
+    entry = %{
+      pid: task.pid,
+      from: from,
+      key: job.key,
+      command: job.command,
+      finish: job.finish,
+      timer: timer
+    }
+
+    {:noreply, %{state | settings_jobs: Map.put(state.settings_jobs, task.ref, entry)}}
+  end
+
+  defp replace_settings_jobs(state, key) do
+    state.settings_jobs
+    |> Enum.filter(fn {_, job} -> job.command == nil and job.key == key end)
+    |> Enum.reduce(state, fn {ref, job}, acc ->
+      acc = kill_settings_job(acc, ref, job)
+      GenServer.reply(job.from, wire_error(:stale_revision))
+      acc
+    end)
+  end
+
+  # A job that crashed (`kill?` false), timed out or is stopped with the
+  # service (`kill?` true): a read answers `source_unavailable`, a command the
+  # `unavailable` settings_result its ledger row completes with (M1).
+  defp settle_settings_job(state, ref, kill?) do
+    case state.settings_jobs[ref] do
+      nil ->
+        state
+
+      job ->
+        state =
+          if kill?,
+            do: kill_settings_job(state, ref, job),
+            else: forget_settings_job(state, ref, job)
+
+        case job.command do
+          nil ->
+            GenServer.reply(job.from, wire_error(:source_unavailable))
+            state
+
+          %{id: id, fingerprint: fingerprint, durable: durable} ->
+            value =
+              SwarmCode.Daemon.Service.Settings.Wire.status(
+                "unavailable",
+                SettingsJobs.unknown_words(),
+                id,
+                state.settings_revision
+              )
+
+            {response, state} = settle_settings_command(state, id, fingerprint, durable, value)
+            GenServer.reply(job.from, response)
+            state
+        end
+    end
+  end
+
+  defp kill_settings_job(state, ref, job) do
+    Process.demonitor(ref, [:flush])
+    Task.Supervisor.terminate_child(state.task_supervisor, job.pid)
+    Process.exit(job.pid, :kill)
+    forget_settings_job(state, ref, job)
+  end
+
+  defp forget_settings_job(state, ref, job) do
+    Process.cancel_timer(job.timer)
+    %{state | settings_jobs: Map.delete(state.settings_jobs, ref)}
+  end
+
+  defp settings_task_message(state, message) do
+    case SettingsTasks.handle(state.settings_tasks, message) do
+      {:ok, tasks, bodies} -> emit_settings_tasks(%{state | settings_tasks: tasks}, bodies)
+      :unknown -> state
+    end
+  end
+
+  defp emit_settings_tasks(state, bodies) do
+    Enum.reduce(bodies, state, fn body, acc ->
+      revision = acc.revision + 1
+
+      broadcast(%{acc | revision: revision}, %{
+        "kind" => "settings_task",
+        "entity_id" => body["task_id"],
+        "run_id" => nil,
+        "conversation_id" => nil,
+        "channel" => nil,
+        "attempt_id" => nil,
+        "text" => nil,
+        "body" => body,
+        "sequence" => 0,
+        "revision" => revision
+      })
+    end)
+  end
 end

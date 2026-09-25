@@ -116,6 +116,30 @@ defmodule SwarmCode.Daemon.Service.Settings.TaskCache do
   def purge_refs(%__MODULE__{entries: entries}),
     do: for({_key, %{purge_ref: ref}} <- entries, is_reference(ref), do: ref)
 
+  @doc "Record the purge reference and timer of a secrets-bearing entry."
+  @spec mark_purge(t(), key(), reference(), reference()) :: t()
+  def mark_purge(%__MODULE__{entries: entries} = cache, key, ref, timer) do
+    case Map.fetch(entries, key) do
+      {:ok, entry} ->
+        entry = entry |> Map.put(:purge_ref, ref) |> Map.put(:purge_timer, timer)
+        %{cache | entries: Map.put(entries, key, entry)}
+
+      :error ->
+        cache
+    end
+  end
+
+  @doc "The purge timers of the entries held, by key (cancelled on terminate and eviction)."
+  @spec purge_timers(t()) :: %{key() => reference()}
+  def purge_timers(%__MODULE__{entries: entries}),
+    do:
+      for(
+        {key, %{purge_timer: timer}} <- entries,
+        is_reference(timer),
+        into: %{},
+        do: {key, timer}
+      )
+
   @doc "The number of entries and their bytes."
   @spec size(t()) :: {non_neg_integer(), non_neg_integer()}
   def size(%__MODULE__{entries: entries, bytes: bytes}), do: {map_size(entries), bytes}
@@ -165,7 +189,7 @@ defmodule SwarmCode.Daemon.Service.Settings.TaskCache do
   end
 
   defp strip(%{} = entry) when not is_struct(entry),
-    do: Map.drop(entry, [:purge_ref, :used, :bytes])
+    do: Map.drop(entry, [:purge_ref, :purge_timer, :used, :bytes])
 
   defp strip(value), do: value
 
