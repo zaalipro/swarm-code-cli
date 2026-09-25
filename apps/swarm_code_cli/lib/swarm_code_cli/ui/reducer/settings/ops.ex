@@ -135,8 +135,12 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Ops do
     end
   end
 
+  # The layer remembers what the edit was of (never its content) to route
+  # the text that comes back.
   defp one(%{settings: layer} = state, {:external_edit, spec}) do
     {ref, layer} = next_ref(layer)
+    kept = Map.take(spec, [:ref, :fingerprint, :suffix, :name, :save])
+    layer = %{layer | requests: Map.put(layer.requests, {:external, ref}, kept)}
     {put_layer(state, layer), [{:settings_external_edit, layer.generation, ref, spec}]}
   end
 

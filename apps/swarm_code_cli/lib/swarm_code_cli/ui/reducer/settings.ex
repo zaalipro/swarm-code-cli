@@ -284,6 +284,18 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings do
     end
   end
 
+  # The text an external editor returned: cli.json goes back through its
+  # fingerprint CAS; an open multi-line editor takes it; a file is saved
+  # with the fingerprint it was read with.
+  defp handle_event(
+         %{settings: %Layer{generation: generation} = layer} = state,
+         {:external_result, generation, ref, result}
+       ) do
+    {spec, requests} = Map.pop(layer.requests, {:external, ref})
+    state = put_layer(state, %{layer | requests: requests})
+    external(state, spec, result)
+  end
+
   defp handle_event(state, {:folder_result, _generation, result}),
     do: {notice(state, folder_words(result)), []}
 
@@ -540,6 +552,45 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings do
   defp detail_column?(_state), do: false
 
   defp put_layer(state, layer), do: %{state | settings: layer}
+
+  defp external(state, nil, _result), do: {state, []}
+
+  defp external(state, _spec, {:error, reason}),
+    do: {Commit.status(state, "Couldn't open the editor (#{external_words(reason)})", :error), []}
+
+  defp external(%{settings: layer} = state, %{ref: "cli.json"} = spec, {:ok, text}) do
+    ref = layer.next_ref
+    layer = %{layer | next_ref: ref + 1}
+
+    {put_layer(state, layer),
+     [{:settings_cli_write_text, layer.generation, ref, text, Map.get(spec, :fingerprint)}]}
+  end
+
+  defp external(%{settings: %Layer{editing: %{module: module}}} = state, _spec, {:ok, text})
+       when module == SwarmCodeCLI.UI.Settings.Editors.Multiline,
+       do: Edit.event(state, {:replace, text})
+
+  defp external(state, %{ref: ref} = spec, {:ok, text}) when is_binary(ref) do
+    name = Map.get(spec, :name) || ref
+
+    op =
+      {:command, "file.save", %{"ref" => ref}, %{"content" => text},
+       %{
+         expected: %{"fingerprint" => Map.get(spec, :fingerprint)},
+         write_key: {:file, ref},
+         undo: false,
+         toast: "Saved #{name}"
+       }}
+
+    Ops.run(state, [op])
+  end
+
+  defp external(state, _spec, _result), do: {state, []}
+
+  defp external_words(:unavailable), do: "no editor is set; terminal.editor, VISUAL or EDITOR"
+  defp external_words(:terminal), do: "the terminal could not hand over"
+  defp external_words(reason) when is_atom(reason), do: Atom.to_string(reason)
+  defp external_words(_reason), do: "it did not start"
 
   @doc """
   Keeps `state.prefs` in step with the legacy saves the reducer emits (the

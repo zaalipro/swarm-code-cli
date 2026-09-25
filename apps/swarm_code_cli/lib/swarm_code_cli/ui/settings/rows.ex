@@ -352,8 +352,17 @@ defmodule SwarmCodeCLI.UI.Settings.Rows do
      }}
   end
 
+  defp by_type(%Entry{type: :checklist} = entry, value, setting),
+    do: {Editors.Checklist, %{choices: Display.choices(entry, setting), value: value || []}}
+
+  defp by_type(%Entry{type: :list} = entry, value, _setting),
+    do: {Editors.List, %{value: value || [], entry: entry, ordered: true}}
+
+  defp by_type(%Entry{type: :lsp_command} = entry, value, _setting),
+    do: {Editors.LspCommand, %{value: value, default: entry.example, max: 1_024}}
+
   defp by_type(%Entry{type: type} = entry, value, _setting)
-       when type in [:text, :path, :combo, :lsp_command] do
+       when type in [:text, :path, :combo] do
     text = if is_binary(value), do: value, else: ""
     {Editors.Text, %{entry: entry, value: text, max: @text_max, nullable: entry.nullable}}
   end
