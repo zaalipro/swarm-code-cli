@@ -19,7 +19,8 @@ The sandbox setup:
 - A scratch copy of `ailogic` at `/Users/zaali/.cache/p70cli/p73-F/ailogic`.
 - `deepseek-v4-pro`, `/trust` on the scratch copy (read-only → auto).
 - The release built from this branch, copied to `/Users/zaali/.cache/p70cli/rel-p73/`. The final
-  copy includes F9. F10 changes only one help sentence, so it is not in that copy.
+  copy includes F9. F10 changes only one help sentence, so it is not in that copy. After QA #1 the
+  polisher rebuilt it at G14 (b109fc4); see "QA #1 and the polish".
 - GNU screen with `-L` raw logs, rendered to PNG by the spec's `tools/vt.py` and `svg2png.py`. The
   finisher's scratch copy of `vt.py` (`/Users/zaali/.cache/p70cli/p73-F/tools/vt.py`) adds ECH
   (`CSI n X`), which the port uses to blank cells. Without ECH the replay leaves stale text that the
@@ -290,14 +291,14 @@ The sandbox setup:
 
 | # | Item | Result | Evidence |
 | --- | --- | --- | --- |
-| 1 | precommit, port check, keymap check, PTY suites | pass | `mix precommit` exit 0 at 7309405 without `_build/prod`: core 148/0, daemon 1011/0, CLI 1783/0 (7 properties). `check_terminal_port.sh` exit 0 (cargo fmt, 45 Rust tests, 58 crates / 108 licence texts). `mix swarm_code.keymap --check` matches. PTY suites: port 16, demo 8, live 1, saved 1, all OK after F9 |
+| 1 | precommit, port check, keymap check, PTY suites | pass | After QA #1: `mix precommit` exit 0 at 9c29311 without `_build/prod`: core 148/0, daemon 1011/0, CLI 1801/0 (7 properties); port check and keymap check pass (see "QA #1 and the polish"). Before: `mix precommit` exit 0 at 7309405 without `_build/prod`: core 148/0, daemon 1011/0, CLI 1783/0 (7 properties). `check_terminal_port.sh` exit 0 (cargo fmt, 45 Rust tests, 58 crates / 108 licence texts). `mix swarm_code.keymap --check` matches. PTY suites: port 16, demo 8, live 1, saved 1, all OK after F9 |
 | 2 | `/swarm` + `/create-workflow` + an approval, then `/plan`, `/compact`, a plain message; 10 minutes with 3 live runs; close reasons in cli.log | pass (the forced close could not be caused) | `b1`, `c1`, `d1`, `f1`, `g0`, `g1`; 37 minutes with three live runs; quit-time lines in cli.log; S's close-reason tests |
 | 3 | `/diff` off/on, kept across a restart; `/theme` live and kept; `SWARM_THEME` precedence | pass | `u3`, `y0`, `da`, `db`; `u0`, `lc`, `le`, `wl`; cli.json 0600 |
-| 4 | `/com` + Enter runs `/compact`; `/consens` + Enter leaves `/consensus ` | pass | `f0`, `f1` (queued behind the turn, hinted "queue" since F7), `z0`, `z1`; `a1` (`/tru`) |
-| 5 | "workflow" highlighted, sent as `/create-workflow`, opt-out key | pass (the Ctrl-S opt-out was checked live by K, not by the finisher) | `c0`, `c1`; K's live check |
+| 4 | `/com` + Enter runs `/compact`; `/consens` + Enter leaves `/consensus ` | pass (under an auto-opened approval card only since G11, QA Q1-01) | `f0`, `f1` (queued behind the turn, hinted "queue" since F7), `z0`, `z1`; `a1` (`/tru`); polish shots `a1`, `f1`, `f2` |
+| 5 | "workflow" highlighted, sent as `/create-workflow`, opt-out key | pass (Ctrl-S under an approval card and its hint row only since G11, QA Q1-02) | `c0`, `c1`; K's live check; polish shots `k1`, `k3` |
 | 6 | Footer hints in the six states | pass | `a0`, `b0`, `w0`, `g0`, `f0`, `j0`, `h1`, `m1` |
-| 7 | Card at 160x45 and 120x36, ≤ 6 lines, chips, blank row, `/approval` picker, policy notice | pass ("Enter shows all" is covered by tests only) | `j0`, `m0`, `m1`, `m2`, `r0`–`r3`, `a2` |
-| 8 | Wheel in the transcript, the panel and the overlay; `/mouse off` | partial before F9, pass after it for the transcript and overlay; the panel wheel was not seen live | `wg`/`wh` → F9 → `lm`, `wl`, `wm`; `hc`; `dc`/`dd` with the port's `?1000l…`/`?1000h` |
+| 7 | Card at 160x45 and 120x36, ≤ 6 lines, chips, blank row, `/approval` picker, policy notice | pass ("Enter shows all" seen live by QA #1 and the polisher, "Enter fold" since G13) | `j0`, `m0`, `m1`, `m2`, `r0`–`r3`, `a2` |
+| 8 | Wheel in the transcript, the panel and the overlay; `/mouse off` | partial before F9, pass after it for the transcript and overlay; notches past the bottom are not stored since G12 (QA Q1-03); the panel wheel was not seen live | `wg`/`wh` → F9 → `lm`, `wl`, `wm`; `hc`; `dc`/`dd` with the port's `?1000l…`/`?1000h` |
 | 9 | Screenshot-11 scenario renders cleanly | pass | `m0`–`m2` (card, band, names), `i2` (Workflow author); `pass73_finisher_test.exs` on `Pass73Scenes.screenshot_11/2` |
 
 ## Finisher commits
@@ -314,6 +315,89 @@ The sandbox setup:
 | 503f1a9 | F8: an answer longer than 2 KB is drawn whole, not split at its step's preview (live check) |
 | 7db0c80 | F9: an item that draws nothing takes no row in the scroll, so the first wheel notch from the bottom moves three rows (live check) |
 | 7309405 | F10: AGENTS.md, README and the key reference say what pass 73 changed |
+
+## QA #1 and the polish (G11 to G15)
+
+QA #1 (`/Users/zaali/.cache/p70cli/p73-Q1/qa.md`) ran the F9 release for 28.5 minutes with three
+live runs and found one P0, two P1s and nine P2s. The polisher fixed all three P0/P1 findings and
+the cheap P2s, each with a regression test in `pass73_qa1_test.exs` (keys through `Keymap.resolve/3`
+and `Reducer.update/2`, drawn rows painted like the golden scenes). Without the fixes, 17 of its 18
+tests fail. One P2 contradicts the plan and was left as the plan says.
+
+| ID | Sev | Finding | Result |
+| --- | --- | --- | --- |
+| Q1-01 | P0 | `/com` + Enter under an auto-opened approval card was refused ("There is no /com") while the hint said "Enter run" | fixed in 7881b05 (G11): `SlashPalette.context/1` accepts the draft under that card, so the list is drawn under the card's blank row, and Enter completes, runs or queues. The list row says "Enter queue" as the status row does (it said "Tab complete" behind a live turn, even without a card) |
+| Q1-02 | P1 | under that card only printable keys, Backspace and Enter reached the draft; Ctrl-S did nothing; Ctrl-C closed the card; no workflow hint row | fixed in 7881b05 (G11): with a draft under the card, the composer's editing and sending keys resolve against the composer (arrows, Home/End, Ctrl-A/E/U/W, undo, new line, Tab, Ctrl-S, Alt-Enter). Esc, PgUp/PgDn and the global chords stay the card's. Ctrl-C clears the draft before it puts the card aside. The workflow hint takes the edge row, and the status row drops "n next" and "? keys" while those letters type |
+| Q1-03 | P1 | wheel-down past the bottom was stored, so the next wheel-ups did nothing, and wheeling back never followed again | fixed in 105b782 (G12): `Pages.refollow/7` follows again after a line move down that ends on the last screen, once the chat is longer than a page or the view was following. A chat that fits one page keeps the exact anchor of a detached line move (`ThreeRunScenarioTest`) |
+| Q1-04 | P2 | the card's "1 of N waiting" left out the ones set aside, unlike the band and the status row | fixed in 5ca7518 (G13): the footer counts `Status.waiting_count/1`, which is what `n` walks |
+| Q1-05 | P2 | "Enter show all" stayed on the status row once the card showed all | fixed in 5ca7518 (G13): `enter_action/1` answers `:fold`, worded "Enter fold". `pass73_finisher_test.exs` now expects `:fold` on the expanded card |
+| Q1-06 | P2 | a message sent plainly with Ctrl-S still shows "workflow" highlighted | not changed, following the plan. T5 says the word is highlighted "in the sent user message", and V1's `pass73_transcript_test.exs` asserts it for a plain message. A routed message is already told apart by its `/create-workflow` prefix, which is highlighted too |
+| Q1-07 | P2 | the workflow-run card read "wants to run workflow run" with raw `name:`/`continue:` lines | fixed in 5ca7518 (G13): "wants to run the workflow /format-check" (or "a one-off workflow"). The body shows only the args, source and budget, and a call with nothing to show keeps one gap |
+| Q1-08 | P2 | Ctrl-B at a narrow width (strip → off → strip) wrote `"panel":"full"` over `/panel compact` | fixed in b109fc4 (G14): `State.panel_shown` remembers the last shape that was not hidden |
+| Q1-09 | P2 | a stale "Not sent: …" hid the true hints for minutes | fixed in b109fc4 (G14): a settled draft refusal leaves the status row once that draft is edited, or once another request the user started is on its way (an answer, a send, a stop). Background queries do not count |
+| Q1-10 | P2 | a resumed transcript starts mid-conversation, and a run's late stop note lands inside a later block (pre-existing) | deferred. `PersistedBackend.snapshot` sends the last `limit` items with no `before_cursor`. The fix needs a transcript cursor on the wire and daemon paging. This is not a pass 73 note |
+| Q1-11 | P2 | small visual issues | partly. The lower-case "workflow" (and "consensus", "research") speaker is capitalised in b109fc4 (G14), and `RepresentativeScenesTest` follows. Deferred: mid-word soft wrap in the composer (the editor's grapheme wrap drives the caret's visual lines); hint digits skipping folded runs, and the panel's in-chat mark after a digit jump (the pass 72 hint and panel models); the `/plan` echo and the mode label, which come from the daemon's stored text and workspace mode |
+| Q1-12 | P2 | unused `Context` alias in `status_hints_test.exs` | fixed in b109fc4 (G14) |
+
+G15 (9c29311) updates AGENTS.md: the keys a draft under the card takes, and Enter folds.
+
+Final checks at 9c29311, without `_build/prod`:
+
+- `mise exec -- mix precommit` exit 0: core 148/0, daemon 1011/0, CLI 1801/0 (7 properties).
+  The only warnings are the daemon tests' known migration-module redefinitions; the unused
+  alias is gone.
+- `scripts/dev/check_terminal_port.sh` exit 0: cargo fmt, 58 Rust tests, 58 crates and 108
+  licence texts.
+- `mix swarm_code.keymap --check`: `docs/keybindings.md` matches the binding table.
+- Running `mix test` inside `apps/swarm_code_cli` alone fails the Companion and data-source
+  files (`:public_key` and the daemon's test support are not loaded). From the umbrella root
+  they pass (32/0).
+
+### The live check after the polish
+
+- Release rebuilt at b109fc4 and copied to `/Users/zaali/.cache/p70cli/rel-p73/` (the only
+  change after it is AGENTS.md). `_build/prod` removed.
+- Sandbox: `HOME=/Users/zaali/.cache/p70cli/p73-F/polish1/home` (a fresh copy of `sandbox-home`,
+  desktop mode light), a scratch `ailogic` copy, `deepseek-v4-pro`, `/trust`, GNU screen `g1` at
+  160x45 (90x30 through `stty -f /dev/ttys001`).
+- Shots: `/Users/zaali/.cache/p70cli/p73-F/polish1/shots/`, rendered with QA's `vt.py` and
+  `svg2png_bg.py`.
+- Real prompts, 4 in total:
+  1. a `/swarm` of three reviewers, each running a python3 script of 16 or more lines;
+  2. a question naming "workflow", sent with Ctrl-S under the card;
+  3. `/compact`, reached as `/com` + Enter under the card;
+  4. "make a tiny workflow named format-check … then run it once".
+
+What each shot shows:
+
+- `a1.png`: `/com` under the controller card. The list is drawn under the card's blank row, and
+  the list row and the status row say "Enter run".
+- `f2.png`: behind the Compactor turn, the same draft says "Enter queue" on the list row and the
+  status row.
+- `f1`: `/com` + Enter ran `/compact` (Compactor thinking) with the card still open. `cli.log`
+  has no `unknown_command` for it.
+- `b1`: ←← X, then Ctrl-A Y, gave `Y/cXom`. `b2`: Ctrl-E Ctrl-U emptied the draft, and the card
+  stayed. `f3`: Ctrl-C cleared `/com`, and the card stayed.
+- `k1.png`: "workflow · sends as /create-workflow · Ctrl-S plain message" above the composer,
+  under the card. `k3`: Ctrl-S sent the message plainly, the Assistant answered, and the card
+  stayed.
+- `c1`: Enter on the blank draft showed all 18 lines, and the status row said "Enter fold · Esc
+  later". The next Enter folded the card and the row said "Enter show all" again (read from the
+  row; that shot was overwritten).
+- `n1`–`n3`: `/nosuch` was refused. "Not sent: There is no /nosuch…" was still there after 8 s
+  (`n2`). Typing `x` brought back "Enter run · Esc later" (`n3`).
+- `e1`: Esc set the controller card aside. The test card opened with "1 of 3 waiting · n next",
+  and the status row said "3 waiting".
+- `w1` / `w2` at 90x30: Ctrl-B gave "Panel off.", then "Panel strip (compact at 120 columns and
+  wider)."; cli.json went `{"panel":"hidden"}` → `{"panel":"compact"}`.
+- Wheel: six wheel-downs at the bottom left the view unchanged (`wb_before`/`wb_after`). The
+  first wheel-up after them moved three rows (`wt_base` → `wt_1`, via `wheeltest.sh`). Wheeling
+  back reached the bottom (`wd2`). After an up and a down notch, the growing workflow block was
+  drawn at the bottom (`fy`).
+- `c2.png`: "! Workflow author wants to run the workflow /format-check", with no `continue` line.
+  `j2`: the run's block is headed "⧉ Workflow".
+- Quit through "Stop 2 live runs and quit?" and X. `cli.log` has only the deliberate `/nosuch`
+  refusal and the usual quit lines.
 
 ## Requests between owners
 
@@ -344,10 +428,19 @@ The sandbox setup:
 - `-p`/`--plain` does not route the word "workflow" (T5).
 - The panel wheel was not seen live, because nothing overflowed. A forced daemon-side close could
   not be caused from outside (T9, T11). Tests cover both.
-- "Enter shows all" on a card was not seen live (T7). The test drives the screenshot-11 scene.
+- "Enter shows all" on a card was not seen live by the finisher (T7). QA #1 and the polisher saw
+  it live, and it says "Enter fold" since G13.
 - The GFM table extra-cell leftover in `projector/markdown.ex` (V1).
 - The stale live run behind S's K5 report was not found. F4 makes Ctrl-C independent of it.
 - A normal quit logs `data source lost: the data source announced it closed` as a warning. It is
   noise, not an error.
-- The release copy at `/Users/zaali/.cache/p70cli/rel-p73/` is built at F9. F10 changes one help
-  sentence and is not in it.
+- The release copy at `/Users/zaali/.cache/p70cli/rel-p73/` is built at G14 (b109fc4). G15 changes
+  only AGENTS.md.
+- From QA #1:
+  - Q1-06: a Ctrl-S message keeps the highlight, as the plan's T5 says.
+  - Q1-10: a resumed transcript cannot page in older items (daemon paging, pre-existing).
+  - Q1-11: the composer wraps inside words; hint digits skip folded runs; the panel's in-chat mark
+    does not follow a digit jump; the `/plan` echo and the mode label come from the daemon.
+- Seen in the polish live check (`c2.png`): the panel's NEEDS YOU band still names a workflow-run
+  approval "workflow run" / "approve: work…". These are the band's own words; only the card was
+  reworded in G13.
