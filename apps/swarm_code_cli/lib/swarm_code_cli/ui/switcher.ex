@@ -393,6 +393,10 @@ defmodule SwarmCodeCLI.UI.Switcher do
   # `#` is the resume list: conversations and researches. Runs have their own
   # switcher (Ctrl-R) and only buried the conversations (pass70 Q10).
   defp prefix("#" <> query), do: {[:conversation, :research], query}
+  # pass73 G2 (QA Q2-08): typing in the /approval picker filters its three
+  # rows by their mode ("au" is Auto); the query had no space where the
+  # labels do, so any typed text left "NO RESULTS".
+  defp prefix(">approvals:" <> typed), do: {[:action], "approvals: " <> String.trim(typed)}
   defp prefix(">" <> query), do: {[:action], query}
   defp prefix(query), do: {@kinds, query}
 

@@ -1084,7 +1084,11 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
   defp switcher_title("/" <> query), do: "Commands: " <> query
   # pass73 finisher: the /approval picker's rows are a query of their own
   # (`Switcher.approval_query/0`); its title is what it chooses.
-  defp switcher_title(">approvals:" <> _), do: "Approvals · who asks before what runs"
+  defp switcher_title(">approvals:"), do: "Approvals · who asks before what runs"
+
+  # pass73 G2 (QA Q2-08): what is typed after it filters the three modes;
+  # the title shows it, where "NO RESULTS" alone never said why.
+  defp switcher_title(">approvals:" <> typed), do: "Approvals: " <> typed
   defp switcher_title(">" <> query), do: "Actions: " <> query
   defp switcher_title("@" <> query), do: "Projects: " <> query
   defp switcher_title(query), do: "Search: " <> query

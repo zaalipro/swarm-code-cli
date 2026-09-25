@@ -13,6 +13,7 @@ defmodule SwarmCodeCLI.UI.Pass73Qa2Test do
     * Q2-05 a resync the client asks for carries its reason (logged by the
       session, `Pass73Qa2RuntimeTest`), and a chat that followed its bottom
       still follows once the fresh snapshot lands.
+    * Q2-08 the `/approval` picker shows what typing filters it by.
     * Q2-07 a workflow run is named in words in the band, the run row, the
       overlay and the transcript's tool rows, never `workflow_run`.
   """
@@ -407,5 +408,33 @@ defmodule SwarmCodeCLI.UI.Pass73Qa2Test do
     assert fresh.watches.workspace.status == :ready
     assert fresh.watches.workspace.resync_reason == nil
     assert fresh.scrolls.main.follow?
+  end
+
+  # ------------------------------------------------------------------ Q2-08
+
+  defp dialog(state) do
+    {scene, _} = Projector.project(state)
+    %SwarmCodeCLI.UI.Scene.Dialog{} = scene.overlay
+  end
+
+  test "Q2-08 the /approval picker shows what typing filters it by" do
+    {state, _} = ready([]) |> paste("/approval") |> send()
+    assert [{:switcher, _} | _] = state.layers
+
+    assert String.trim(SafeText.value(dialog(state).title)) ==
+             "Approvals · who asks before what runs"
+
+    filtered = type(state, "au")
+    assert String.trim(SafeText.value(dialog(filtered).title)) == "Approvals: au"
+    text = filtered |> screen() |> Enum.join("\n")
+    assert text =~ "Approvals: au"
+    assert text =~ ~r/auto · edits go ahead/i
+    refute text =~ ~r/full access · nothing asks first/i
+    refute text =~ "NO RESULTS"
+
+    # A filter that matches nothing says which filter it was.
+    none = type(state, "/nosu")
+    text = none |> screen() |> Enum.join("\n")
+    assert text =~ "Approvals: /nosu", text
   end
 end
