@@ -148,6 +148,66 @@ defmodule SwarmCodeCLI.TestSupport.ContractFixtures do
     |> Jason.encode!()
   end
 
+  # pass74 §3.4: the two settings ops, their exact parameter sets and the two
+  # response kinds, for the conformance and codec tests.
+  @settings_scope %Scope{kind: :global, id: nil, generation: 3}
+
+  def settings_scope, do: @settings_scope
+
+  def settings_param_keys(:query), do: SwarmCode.Settings.WireBounds.param_keys(:settings_query)
+
+  def settings_param_keys(:command),
+    do: SwarmCode.Settings.WireBounds.param_keys(:settings_command)
+
+  def settings_query_request(params \\ %{"view" => "values"}, options \\ []) do
+    {:ok, request} =
+      Request.settings_query(
+        params,
+        Keyword.get(options, :origin, {:settings, 1, :open}),
+        Keyword.get(options, :deadline, 1_788_438_400_000),
+        request_id: Keyword.get(options, :request_id, "request-s1"),
+        generation: 3
+      )
+
+    request
+  end
+
+  def settings_command_request(command, options \\ []) do
+    {:ok, request} =
+      Request.settings_command(
+        command,
+        Keyword.get(options, :origin, {:settings, 1, {:commit, 1}}),
+        Keyword.get(options, :deadline, 1_788_438_400_000),
+        request_id: Keyword.get(options, :request_id, "request-c1"),
+        generation: 3
+      )
+
+    request
+  end
+
+  def settings_snapshot_value(view, body, options \\ []),
+    do: %{
+      "request_id" => Keyword.get(options, :request_id),
+      "view" => view,
+      "revision" => Keyword.get(options, :revision, 7),
+      "available" => Keyword.get(options, :available, true),
+      "message" => Keyword.get(options, :message),
+      "body" => body
+    }
+
+  def settings_result_value(status, options \\ []),
+    do: %{
+      "request_id" => Keyword.get(options, :request_id),
+      "status" => status,
+      "results" => Keyword.get(options, :results, []),
+      "record" => Keyword.get(options, :record),
+      "task" => Keyword.get(options, :task),
+      "message" => Keyword.get(options, :message),
+      "confirm" => Keyword.get(options, :confirm),
+      "field_errors" => Keyword.get(options, :field_errors, []),
+      "revision" => Keyword.get(options, :revision, 8)
+    }
+
   def expected_q1_request_bytes do
     ~s({"deadline":1788438400000,"expected_response":"outcome","generation":3,"kind":["answer_question","run-a2","node-a2","q1",7,["option-2"]],"origin":["interaction","q1",7],"request_id":"request-42","scope":{"generation":3,"id":"conversation-a","kind":"conversation"}})
   end

@@ -56,6 +56,10 @@ defmodule SwarmCodeCLI.UI.Effect do
   def validate({:command, %Request{expected_response: :outcome} = request} = effect),
     do: valid_effect(effect, match?({:ok, _request}, Request.validate(request)))
 
+  # pass74 S1-6 (§3.6): a settings command answers a settings_result.
+  def validate({:command, %Request{expected_response: :settings_result} = request} = effect),
+    do: valid_effect(effect, match?({:ok, _request}, Request.validate(request)))
+
   def validate({:cancel_request, request_id} = effect),
     do: valid_effect(effect, Intent.valid_id?(request_id))
 

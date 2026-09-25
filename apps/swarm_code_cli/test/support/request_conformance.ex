@@ -267,6 +267,29 @@ defmodule SwarmCodeCLI.TestSupport.RequestConformance do
   end
 
   def encode(request), do: ContractFixtures.canonical_request_bytes(request)
+
+  @doc "pass74 §3.4: one conformant request of each settings op, by wire op name."
+  def settings_rows do
+    [
+      {"settings.query",
+       ContractFixtures.settings_query_request(%{"view" => "open", "project_id" => nil})},
+      {"settings.command",
+       ContractFixtures.settings_command_request(%{
+         "action" => "values.patch",
+         "attributes" => %{
+           "changes" => [
+             %{"key" => "limits.max_concurrent_agents", "value" => 6, "target" => nil}
+           ]
+         },
+         "expected" => %{"limits.max_concurrent_agents" => 4}
+       })}
+    ]
+  end
+
+  @doc "pass74 §3.4.2: the settings response kinds and the expected response each answers."
+  def settings_response_kinds,
+    do: [{"settings_snapshot", :settings_snapshot}, {"settings_result", :settings_result}]
+
   # Only fixed test-table vocabulary is decoded. Production command parsing never atomizes input.
   defp atom(value) do
     atoms = [

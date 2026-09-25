@@ -317,6 +317,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
     end
   end
 
+  # pass74 §3.4.4: a settings update carries the settings revision, not the watch's.
+  defp body_revision?(%DTO.SettingsUpdate{}, _expected), do: true
   defp body_revision?(%{revision: revision}, expected), do: revision == expected
   defp body_revision?(_, _), do: true
 
@@ -343,7 +345,14 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
   defp page_sizes?(_, _), do: true
 
   defp scoped_delta?(_, %Delta{kind: kind})
-       when kind in [:counts_update, :connection, :toast, :rate_limit],
+       when kind in [
+              :counts_update,
+              :connection,
+              :toast,
+              :rate_limit,
+              :settings_update,
+              :settings_task
+            ],
        do: true
 
   defp scoped_delta?(%{kind: :global}, %Delta{kind: :workspace_metadata}), do: false
@@ -427,6 +436,13 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
        }}
 
   defp request_body({:resync_watch, ref}), do: {:ok, %{"op" => "resync", "watch_ref" => ref}}
+
+  # pass74 §3.4.1: the exact parameter sets (`Request.validate/1` checked them).
+  defp request_body({:settings_query, params}),
+    do: {:ok, Map.put(params, "op", "settings.query")}
+
+  defp request_body({:settings_command, params}),
+    do: {:ok, Map.put(params, "op", "settings.command")}
 
   defp request_body({:agent_detail, run_id, node_id}),
     do: {:ok, %{"op" => "agent.detail", "run_id" => run_id, "node_id" => node_id}}
@@ -553,6 +569,26 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
     end
   end
 
+  # pass74 §3.4.2 (B3b): a settings answer never closes the connection for its
+  # content. A snapshot or result the §3.4.6 rules refuse becomes
+  # `{:settings_failed, request_id, words}`; an `outcome` reply to a command is a
+  # `SettingsResult` whose outcome is unknown. Only a reply of another kind (a
+  # daemon bug) closes it, as for every request.
+  defp response_body(
+         %Message{
+           type: :response,
+           body: %{"op" => "result", "response_kind" => kind, "value" => value} = body
+         } = message,
+         %Request{expected_response: expected} = request
+       )
+       when map_size(body) == 3 and expected in [:settings_snapshot, :settings_result] do
+    case settings_body(kind, expected, value, message.request_id, request.request_id) do
+      {:ok, dto} -> settings_delivery(request, dto)
+      {:error, :kind} -> invalid()
+      {:error, _reason} -> settings_delivery(request, settings_failed(request))
+    end
+  end
+
   defp response_body(
          %Message{
            type: :response,
@@ -588,6 +624,48 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
   end
 
   defp response_body(_, _), do: invalid()
+
+  defp settings_body("settings_snapshot", :settings_snapshot, value, wire_id, local_id),
+    do: settings_identity(DTO.SettingsSnapshot.decode(value), wire_id, local_id)
+
+  defp settings_body("settings_result", :settings_result, value, wire_id, local_id),
+    do: settings_identity(DTO.SettingsResult.decode(value), wire_id, local_id)
+
+  defp settings_body("outcome", :settings_result, value, _wire_id, local_id),
+    do: {:ok, DTO.SettingsResult.from_outcome(value, local_id)}
+
+  defp settings_body(_kind, _expected, _value, _wire_id, _local_id), do: {:error, :kind}
+
+  defp settings_identity({:ok, %{request_id: id} = dto}, wire_id, local_id)
+       when id in [nil, wire_id],
+       do: {:ok, %{dto | request_id: local_id}}
+
+  defp settings_identity({:ok, _dto}, _wire_id, _local_id), do: {:error, :request_id}
+  defp settings_identity({:error, reason}, _wire_id, _local_id), do: {:error, reason}
+
+  @doc """
+  pass74 §3.4.6 rule 5: the typed body of a settings request the client refused
+  or could not complete: `{:settings_failed, request_id, words}`.
+  """
+  def settings_failed(%Request{request_id: id}, words \\ "Couldn't read settings right now."),
+    do: {:settings_failed, id, words}
+
+  defp settings_delivery(request, body) do
+    case Delivery.validate(%Delivery{
+           kind: :response,
+           request_id: request.request_id,
+           watch_ref: nil,
+           scope: request.scope,
+           generation: request.generation,
+           revision: nil,
+           sequence: nil,
+           body: body
+         }) do
+      {:ok, delivery} -> {:ok, delivery}
+      _ -> invalid()
+    end
+  end
+
   defp body_identity(%{request_id: id}, id), do: :ok
   defp body_identity(%{request_id: _}, _), do: :error
   defp body_identity(_, _), do: :ok
@@ -600,6 +678,14 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
   defp exact_wire_shape?(%DTO.LibraryItem{form: nil} = dto, wire)
        when is_map(wire) and not is_map_key(wire, "form"),
        do: exact_wire_shape?(dto, Map.put(wire, "form", nil))
+
+  # pass74 §3.4.6: the settings DTOs check their own shape while decoding (they
+  # drop what this client does not know); here only their key sets must match.
+  defp exact_wire_shape?(%module{} = dto, wire)
+       when module in [DTO.SettingsUpdate, DTO.SettingsTask] and is_map(wire),
+       do:
+         Enum.sort(Map.keys(wire)) ==
+           dto |> Map.from_struct() |> Map.keys() |> Enum.map(&Atom.to_string/1) |> Enum.sort()
 
   defp exact_wire_shape?(%{__struct__: module} = dto, wire) when is_map(wire) do
     fields = Map.from_struct(dto)
