@@ -36,6 +36,12 @@ defmodule SwarmCodeCLI.UI.Keymap do
   }
 
   alias SwarmCodeCLI.UI.Keymap.{Bindings, Context, Special}
+  alias SwarmCodeCLI.UI.Settings
+
+  # cli74 U1-2: the settings layer's contexts (spec §3.9.1).
+  @settings_contexts Settings.contexts()
+  # Vim's j, k and G in the settings pages (never in a typing context).
+  @settings_vim %{"j" => :down, "k" => :up, "G" => :last}
 
   @spec resolve(term(), map(), map()) :: {:ok, Action.t()} | :ignore
   def resolve(input, state, table) when is_map(table) do
@@ -71,7 +77,7 @@ defmodule SwarmCodeCLI.UI.Keymap do
 
     mods == [] and context in [:composer, :overlay] and not tiny_unsent?(state) and
       not confirm_exit?(code, mods, phase, state) and not grace?(state) and
-      Bindings.lookup(context, code, mods) == nil and
+      Bindings.lookup(context, code, mods, overrides(state)) == nil and
       match?({:ok, _}, Input.validate(input_of(code, phase)))
   end
 
@@ -219,7 +225,13 @@ defmodule SwarmCodeCLI.UI.Keymap do
   defp route({:rejected, reason}, _, _), do: result({:input_rejected, reason})
 
   defp route({:paste, text}, state, _) do
-    if grace?(state), do: draft_edit(state, {:paste, text}), else: edit(state, {:paste, text})
+    cond do
+      # cli74 U1-2: a paste over the settings layer is the layer's (a secret's
+      # paste target, a text editor, the search); never the draft beneath.
+      settings_input?(state) -> result({:settings, {:paste, text}})
+      grace?(state) -> draft_edit(state, {:paste, text})
+      true -> edit(state, {:paste, text})
+    end
   end
 
   # Ctrl-Space reaches the port as NUL (pass72, K1): it is the chord the
@@ -271,10 +283,18 @@ defmodule SwarmCodeCLI.UI.Keymap do
       composing_under_card?(code, mods, state) ->
         dispatch(code, mods, phase, composer_view(state), table)
 
+      # cli74 U1-2: Ctrl-F's badges on the settings rail take the next key,
+      # whatever it is (Ctrl-C still interrupts).
+      settings_jump?(code, mods, state) ->
+        result({:settings, {:raw, {code, mods}}})
+
+      settings_vim?(code, mods, state) ->
+        result({:settings, {:verb, Map.fetch!(@settings_vim, code)}})
+
       true ->
         context = Context.of(state)
 
-        case Bindings.lookup(context, code, mods) do
+        case Bindings.lookup(context, code, mods, overrides(state)) do
           nil ->
             fallthrough(context, code, mods, state)
 
@@ -305,6 +325,9 @@ defmodule SwarmCodeCLI.UI.Keymap do
   defp fallthrough(context, code, mods, state) when context in [:composer, :field, :overlay],
     do: editor_fallthrough(code, mods, state)
 
+  defp fallthrough(context, code, mods, _state) when context in @settings_contexts,
+    do: settings_fallthrough(context, code, mods)
+
   # Hint mode takes every key: a printable one that is no badge ends it (the
   # reducer says nothing matched), anything else simply ends it. A hint key
   # never reaches the composer or an approval.
@@ -322,6 +345,55 @@ defmodule SwarmCodeCLI.UI.Keymap do
        do: result({:compose, code})
 
   defp fallthrough(_context, _code, _mods, _state), do: :ignore
+
+  # ------------------------------------------------------------ settings
+
+  # cli74 U1-2: the key-capture editor takes every key as data; the typing
+  # contexts (search, editors, the paste target, pickers, popovers) get text
+  # and the editor keys; browsing ignores what it does not bind.
+  defp settings_fallthrough(:settings_capture, code, mods),
+    do: result({:settings, {:raw, {code, mods}}})
+
+  defp settings_fallthrough(:settings, _code, _mods), do: :ignore
+
+  defp settings_fallthrough(_context, code, []) when is_binary(code),
+    do: result({:settings, {:text, code}})
+
+  defp settings_fallthrough(_context, code, mods) do
+    case settings_key(code, mods) do
+      nil -> :ignore
+      key -> result({:settings, {:key, key}})
+    end
+  end
+
+  defp settings_key(:back_tab, []), do: :backtab
+  defp settings_key(code, []) when is_atom(code), do: code
+  defp settings_key(code, [:shift]) when is_atom(code), do: {:shift, code}
+
+  defp settings_key(code, [:control]) when is_binary(code) and byte_size(code) == 1,
+    do: {:ctrl, String.downcase(code)}
+
+  defp settings_key(_code, _mods), do: nil
+
+  # The layer owns keys and pastes while it is open and no shell layer (the
+  # quit confirmation, say) sits over it.
+  defp settings_input?(state), do: Context.of(state) in @settings_contexts
+
+  defp settings_jump?(code, mods, %{settings: %Settings.Layer{jump: %{}}} = state),
+    do: {code, mods} != {"c", [:control]} and Context.of(state) == :settings
+
+  defp settings_jump?(_code, _mods, _state), do: false
+
+  # Vim's j, k and G move in the settings pages too (never in a typing
+  # context); `g g` is `settings_goto`'s, which the layer reads twice.
+  defp settings_vim?(code, [], %{keymap: :vim} = state) when is_map_key(@settings_vim, code),
+    do: Context.of(state) == :settings
+
+  defp settings_vim?(_code, _mods, _state), do: false
+
+  @doc false
+  # The user's key overrides (cli74 §3.9.3); `nil` until the state has them.
+  def overrides(state), do: Map.get(state, :key_overrides)
 
   defp editor_fallthrough(code, mods, state) do
     operation =
@@ -503,7 +575,7 @@ defmodule SwarmCodeCLI.UI.Keymap do
       view = composer_view(state)
       context = Context.of(view)
 
-      case Bindings.lookup(context, code, mods) do
+      case Bindings.lookup(context, code, mods, overrides(state)) do
         %{id: id} -> id in @composer_under_card
         nil -> context == :composer and editor_fallthrough(code, mods, view) != :ignore
       end
@@ -539,6 +611,10 @@ defmodule SwarmCodeCLI.UI.Keymap do
     delta = if kind == :wheel_up, do: -@wheel_lines, else: @wheel_lines
 
     case state.layers do
+      # cli74 U1-2: the settings layer scrolls the region under the pointer.
+      [] when is_map_key(state, :settings) and is_struct(state.settings, Settings.Layer) ->
+        result({:settings, {:wheel, delta, column, row}})
+
       [:help | _] ->
         result({:scroll, "dialog", {:line, delta}})
 
@@ -949,6 +1025,10 @@ defmodule SwarmCodeCLI.UI.Keymap do
         nil
     end
   end
+
+  # cli74 U1-2: the settings layer's editors keep their own text; nothing
+  # typed there reaches the draft or the overlay beneath it.
+  def editor_context(%{settings: %Settings.Layer{}}), do: nil
 
   # The agent overlay's composer takes the typing wherever its focus ring is.
   def editor_context(%{overlay: %{draft_key: key}}) when not is_nil(key), do: {:editor, key}

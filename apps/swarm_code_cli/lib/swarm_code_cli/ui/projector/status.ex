@@ -117,7 +117,8 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
 
   defp select_hints(state) do
     ascii? = state.capabilities.ascii?
-    first = fn id -> id |> Bindings.keys_for() |> List.first() end
+    overrides = SwarmCodeCLI.UI.Keymap.overrides(state)
+    first = fn id -> id |> Bindings.keys_for(overrides) |> List.first() end
 
     move =
       case {first.(:move_next), first.(:move_previous)} do
@@ -725,7 +726,8 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
     (enter ++ rest)
     |> Enum.flat_map(fn {id, words, context} ->
       with %{} = binding <- Bindings.fetch(id),
-           key when key != nil <- Bindings.key_in_context(binding, context) do
+           key when key != nil <-
+             Bindings.key_in_context(binding, context, SwarmCodeCLI.UI.Keymap.overrides(state)) do
         [{KeyLabel.label(key, ascii?), words}]
       else
         _ -> []
@@ -746,7 +748,7 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
     # how to stop the turn rather than "Enter send".
     |> Enum.sort_by(&if(&1.id == :interrupt_turn, do: 0, else: 1))
     |> Enum.flat_map(fn binding ->
-      case Bindings.key_in_context(binding, context) do
+      case Bindings.key_in_context(binding, context, SwarmCodeCLI.UI.Keymap.overrides(state)) do
         nil -> []
         key -> [{KeyLabel.label(key, state.capabilities.ascii?), String.downcase(binding.label)}]
       end
@@ -775,7 +777,7 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
   def composer_hints(state) do
     ascii? = state.capabilities.ascii?
     text = SwarmCodeCLI.UI.Keymap.draft_text(state)
-    key = fn id -> composer_key(id, ascii?) end
+    key = fn id -> composer_key(id, ascii?, SwarmCodeCLI.UI.Keymap.overrides(state)) end
 
     esc =
       case esc_words(state) do
@@ -815,9 +817,9 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
     esc ++ enter ++ rest
   end
 
-  defp composer_key(id, ascii?) do
+  defp composer_key(id, ascii?, overrides) do
     with %{} = binding <- Bindings.fetch(id),
-         key when key != nil <- Bindings.key_in_context(binding, :composer) do
+         key when key != nil <- Bindings.key_in_context(binding, :composer, overrides) do
       KeyLabel.label(key, ascii?)
     else
       _ -> nil

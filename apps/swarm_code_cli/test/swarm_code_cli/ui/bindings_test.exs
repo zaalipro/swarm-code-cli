@@ -150,7 +150,9 @@ defmodule SwarmCodeCLI.UI.BindingsTest do
                  ] ++
                    for(
                      id <- [:layout_narrower, :layout_wider, :layout_reset],
-                     context <- Bindings.contexts() -- [:inspector],
+                     # cli74: global chords never reach the settings layer.
+                     context <-
+                       Bindings.contexts() -- [:inspector | Bindings.settings_contexts()],
                      do: {id, context}
                    )
                )
@@ -253,11 +255,15 @@ defmodule SwarmCodeCLI.UI.BindingsTest do
   defp contexts_of(binding, {code, mods}) do
     typing? = is_binary(code) and mods == []
 
+    # cli74: `:global` never reaches the settings layer's contexts, and a bare
+    # printable key is only bound in `:settings` (browsing) there.
+    settings = Bindings.settings_contexts()
+
     binding.contexts
     |> Enum.flat_map(fn
-      :global when typing? -> Bindings.contexts() -- Bindings.typing_contexts()
-      :global -> Bindings.contexts()
-      context -> [context]
+      :global when typing? -> Bindings.contexts() -- (Bindings.typing_contexts() ++ settings)
+      :global -> Bindings.contexts() -- settings
+      context -> if typing? and context in (settings -- [:settings]), do: [], else: [context]
     end)
     |> Enum.uniq()
   end
@@ -404,7 +410,29 @@ defmodule SwarmCodeCLI.UI.BindingsTest do
       :field -> field(state)
       :hint -> %{state | focus: "composer", hint: SwarmCodeCLI.UI.Reducer.Hint.open(state)}
       :overlay -> overlay(state)
+      settings -> settings(state, settings)
     end
+  end
+
+  # cli74: the settings layer open over the shell, in the mode or with the
+  # popover that makes each of its seven contexts.
+  defp settings(state, context) do
+    alias SwarmCodeCLI.UI.Settings.{Confirm, Layer, Paste, Picker}
+
+    layer = Layer.new(1)
+
+    layer =
+      case context do
+        :settings -> layer
+        :settings_search -> %{layer | mode: :search, search: %{query: ""}}
+        :settings_edit -> %{layer | mode: :editing, editing: %{}}
+        :settings_paste -> %{layer | mode: :paste, paste: Paste.new(%{})}
+        :settings_capture -> %{layer | mode: :capture}
+        :settings_picker -> %{layer | popover: {:picker, %Picker{id: "p"}}}
+        :settings_popover -> %{layer | popover: {:confirm, %Confirm{id: "c"}}}
+      end
+
+    %{state | focus: "composer", settings: layer}
   end
 
   # pass72: the agent overlay on the fixture swarm's lead, with the fixture's

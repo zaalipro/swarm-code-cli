@@ -2,9 +2,11 @@ defmodule SwarmCodeCLI.UI.Settings.Sections do
   @moduledoc """
   The 22 sections of the settings layer (spec §1.3 D4) and the module that
   builds each page (§3.1). `module_for/1` is a compile-time map; a module that
-  is not loaded in this build falls back to the default implementation
+  is not part of this build falls back to the default implementation
   (`Settings.Section`'s defaults: every registry row of the section), so every
-  branch runs end to end.
+  branch runs end to end. The UI never loads code by name (the architecture
+  test forbids it), so a missing module is recognised by the
+  `UndefinedFunctionError` that names exactly that module and callback.
 
   Titles, groups and synonyms come from the core registry
   (`SwarmCode.Settings.Sections`) when it is loaded, else from the copy here.
@@ -75,21 +77,11 @@ defmodule SwarmCodeCLI.UI.Settings.Sections do
   @spec module_for(atom()) :: module()
   def module_for(id) when is_map_key(@modules, id), do: Map.fetch!(@modules, id)
 
-  @doc "The module that answers for `id`: its own when loaded, else `nil` (the defaults)."
-  @spec impl(atom()) :: module() | nil
-  def impl(id) do
-    module = module_for(id)
-    if Code.ensure_loaded?(module) and function_exported?(module, :rows, 1), do: module, else: nil
-  end
-
   @doc "Every section as `%{id, title, group, synonyms}` in rail order."
   @spec all() :: [map()]
   def all do
     core =
-      if Code.ensure_loaded?(SwarmCode.Settings.Sections) and
-           function_exported?(SwarmCode.Settings.Sections, :all, 0),
-         do: SwarmCode.Settings.Sections.all(),
-         else: nil
+      optional(SwarmCode.Settings.Sections, :all, fn -> SwarmCode.Settings.Sections.all() end)
 
     case core do
       [_ | _] = sections ->
@@ -205,14 +197,33 @@ defmodule SwarmCodeCLI.UI.Settings.Sections do
   def counts(id, ctx), do: call(id, :counts, [ctx], fn -> %{records: nil} end)
 
   defp call(id, name, args, default) do
-    case impl(id) do
-      nil ->
-        default.()
+    module = module_for(id)
 
-      module ->
-        if function_exported?(module, name, length(args)),
-          do: apply(module, name, args),
-          else: default.()
+    case optional(module, name, fn -> invoke(module, name, args) end) do
+      nil -> default.()
+      result -> result
     end
+  end
+
+  defp invoke(module, :loads, [ctx]), do: module.loads(ctx)
+  defp invoke(module, :rows, [ctx]), do: module.rows(ctx)
+  defp invoke(module, :record_rows, [ctx, kind, id]), do: module.record_rows(ctx, kind, id)
+  defp invoke(module, :sub_rows, [ctx, sub]), do: module.sub_rows(ctx, sub)
+  defp invoke(module, :act, [ctx, row, action]), do: module.act(ctx, row, action)
+  defp invoke(module, :commit, [ctx, row, value]), do: module.commit(ctx, row, value)
+  defp invoke(module, :title, [ctx]), do: module.title(ctx)
+  defp invoke(module, :attention, [ctx]), do: module.attention(ctx)
+  defp invoke(module, :counts, [ctx]), do: module.counts(ctx)
+
+  @doc false
+  # `fun`'s result, or nil when `module` (or its `name` callback) is not part
+  # of this build. Any other error is the section's own and is raised.
+  def optional(module, name, fun) do
+    fun.()
+  rescue
+    error in UndefinedFunctionError ->
+      if error.module == module and error.function == name,
+        do: nil,
+        else: reraise(error, __STACKTRACE__)
   end
 end

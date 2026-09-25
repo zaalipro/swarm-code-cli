@@ -50,30 +50,51 @@ defmodule SwarmCodeCLI.UI.Keymap.Bindings do
   modifier) is dropped from the contexts where it would be typing — the
   composer, a field editor and a picker's filter. That is why `?` opens help
   everywhere but inside a text field, while `F1` opens it everywhere.
+
+  cli74: the settings layer's seven contexts are never reached by `:global`
+  (the layer has its own grammar, `UI.Keymap.SettingsBindings`), and a bare
+  printable key is bound there only while browsing (`:settings`). The user's
+  key overrides answer first through `lookup/4`, `key_in_context/3`,
+  `keys_in_context/3` and `keys_for/2`.
   """
 
-  alias SwarmCodeCLI.UI.Keymap.Binding
+  alias SwarmCodeCLI.UI.Keymap.{Binding, Overrides, SettingsBindings}
+
+  # cli74 U1-2: the settings layer's seven contexts (spec §3.9.1). `:global`
+  # never expands into them, and a bare printable key is only ever bound in
+  # `:settings` (browsing).
+  @settings_contexts SettingsBindings.contexts()
+  @settings_letterless SettingsBindings.letterless_contexts()
 
   @contexts [
-    :composer,
-    :composer_normal,
-    :composer_visual,
-    :main,
-    :inspector,
-    :picker,
-    :field,
-    :dialog,
-    :overlay,
-    :hint
-  ]
+              :composer,
+              :composer_normal,
+              :composer_visual,
+              :main,
+              :inspector,
+              :picker,
+              :field,
+              :dialog,
+              :overlay,
+              :hint
+            ] ++ @settings_contexts
 
   # The contexts where a bare printable key is the user typing, not a binding.
-  # The agent overlay has a composer of its own (pass 72).
-  @typing_contexts [:composer, :field, :picker, :overlay]
+  # The agent overlay has a composer of its own (pass 72); the settings
+  # search, its text editors and its pickers' filters type too (cli74).
+  @typing_contexts [
+    :composer,
+    :field,
+    :picker,
+    :overlay,
+    :settings_search,
+    :settings_edit,
+    :settings_picker
+  ]
 
   # The groups the help sheet renders, in the order it renders them. Vim first:
   # it only appears in the NORMAL and VISUAL sheets, where it is the point.
-  @groups [:vim, :navigate, :focus, :runs, :act, :layers, :edit, :session]
+  @groups [:vim, :navigate, :focus, :runs, :act, :layers, :edit, :session, :settings]
 
   @inspector_tabs [:agents, :timeline, :changes]
 
@@ -1826,15 +1847,23 @@ defmodule SwarmCodeCLI.UI.Keymap.Bindings do
     {"jump_previous_run", :jump_previous_run, {:run_tab, :previous}}
   ]
 
+  # cli74 U1-2: F2 opens Settings from the shell; the layer's own rows follow.
+  @bindings @bindings ++ [SettingsBindings.open_binding() | SettingsBindings.all()]
+
   @table Enum.reduce(@bindings, %{}, fn binding, table ->
            Enum.reduce(binding.keys, table, fn {code, mods} = key, table ->
              typing? = is_binary(code) and mods == []
 
              contexts =
                Enum.flat_map(binding.contexts, fn
-                 :global when typing? -> @contexts -- @typing_contexts
-                 :global -> @contexts
-                 context -> [context]
+                 :global when typing? ->
+                   @contexts -- (@typing_contexts ++ @settings_contexts)
+
+                 :global ->
+                   @contexts -- @settings_contexts
+
+                 context ->
+                   if typing? and context in @settings_letterless, do: [], else: [context]
                end)
 
              Enum.reduce(contexts, table, &Map.put(&2, {&1, key}, binding))
@@ -1868,6 +1897,26 @@ defmodule SwarmCodeCLI.UI.Keymap.Bindings do
   @doc "The binding bound to `code`/`mods` in `context`, or `nil`."
   @spec lookup(atom(), term(), [atom()]) :: Binding.t() | nil
   def lookup(context, code, mods), do: Map.get(@table, {context, {code, mods}})
+
+  @doc """
+  The binding `code`/`mods` reaches in `context` under the user's key
+  overrides (cli74 §3.9.3): an override's binding, `nil` where the user
+  unbound the key, else the table's.
+  """
+  @spec lookup(atom(), term(), [atom()], Overrides.t() | nil) :: Binding.t() | nil
+  def lookup(context, code, mods, nil), do: lookup(context, code, mods)
+
+  def lookup(context, code, mods, overrides) do
+    case Overrides.lookup(overrides, context, code, mods) do
+      :default -> lookup(context, code, mods)
+      :unbound -> nil
+      %Binding{} = binding -> binding
+    end
+  end
+
+  @doc "The settings contexts (cli74), in the order the docs list them."
+  @spec settings_contexts() :: [atom()]
+  def settings_contexts, do: @settings_contexts
 
   @doc "Every binding reachable in `context`, in table order."
   @spec for_context(atom()) :: [Binding.t()]
@@ -1910,13 +1959,32 @@ defmodule SwarmCodeCLI.UI.Keymap.Bindings do
   context has to be one the resolver would actually route there.
   """
   @spec key_in_context(Binding.t(), atom()) :: Binding.key() | nil
-  def key_in_context(%Binding{} = binding, context),
-    do: Enum.find(binding.keys, fn {code, mods} -> lookup(context, code, mods) == binding end)
+  def key_in_context(%Binding{} = binding, context), do: key_in_context(binding, context, nil)
+
+  @doc "`key_in_context/2` under the user's key overrides (cli74)."
+  @spec key_in_context(Binding.t(), atom(), Overrides.t() | nil) :: Binding.key() | nil
+  def key_in_context(%Binding{} = binding, context, overrides),
+    do:
+      binding.id
+      |> keys_for(overrides)
+      |> Enum.find(fn {code, mods} -> same?(lookup(context, code, mods, overrides), binding) end)
 
   @doc "Every one of `binding`'s keys that reaches it in `context`, in table order."
   @spec keys_in_context(Binding.t(), atom()) :: [Binding.key()]
-  def keys_in_context(%Binding{} = binding, context),
-    do: Enum.filter(binding.keys, fn {code, mods} -> lookup(context, code, mods) == binding end)
+  def keys_in_context(%Binding{} = binding, context), do: keys_in_context(binding, context, nil)
+
+  @doc "`keys_in_context/2` under the user's key overrides (cli74)."
+  @spec keys_in_context(Binding.t(), atom(), Overrides.t() | nil) :: [Binding.key()]
+  def keys_in_context(%Binding{} = binding, context, overrides),
+    do:
+      binding.id
+      |> keys_for(overrides)
+      |> Enum.filter(fn {code, mods} ->
+        same?(lookup(context, code, mods, overrides), binding)
+      end)
+
+  defp same?(%Binding{id: id}, %Binding{id: id}), do: true
+  defp same?(_found, _binding), do: false
 
   @doc "The keys `id` is bound to, or `[]` when there is no such binding."
   @spec keys_for(atom()) :: [Binding.key()]
@@ -1924,6 +1992,15 @@ defmodule SwarmCodeCLI.UI.Keymap.Bindings do
     case Enum.find(@bindings, &(&1.id == id)) do
       nil -> []
       binding -> binding.keys
+    end
+  end
+
+  @doc "The keys `id` is bound to under the user's overrides (`[]` when unbound)."
+  @spec keys_for(atom(), Overrides.t() | nil) :: [Binding.key()]
+  def keys_for(id, overrides) do
+    case Overrides.keys_for(overrides, id) do
+      :default -> keys_for(id)
+      keys -> keys
     end
   end
 

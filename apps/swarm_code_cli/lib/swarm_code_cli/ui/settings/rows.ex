@@ -25,10 +25,9 @@ defmodule SwarmCodeCLI.UI.Settings.Rows do
   @doc "The registry entries of `section` (empty when the registry is not in the build)."
   @spec entries(Ctx.t(), atom()) :: [struct()]
   def entries(_ctx, section) do
-    if Code.ensure_loaded?(SwarmCode.Settings.Registry) and
-         function_exported?(SwarmCode.Settings.Registry, :for_section, 1),
-       do: SwarmCode.Settings.Registry.for_section(section),
-       else: []
+    SwarmCodeCLI.UI.Settings.Sections.optional(SwarmCode.Settings.Registry, :for_section, fn ->
+      SwarmCode.Settings.Registry.for_section(section)
+    end) || []
   end
 
   @doc "One registry entry as a row (label and key; the value comes with the data)."

@@ -248,6 +248,14 @@ defmodule SwarmCodeCLI.UI.Action do
 
   def validate(:send_plain), do: {:ok, :send_plain}
 
+  # cli74 U1-2: the settings layer's keys and results, and the ways to open it
+  # (F2, `/settings [ARG]`, a palette row).
+  def validate({:settings, event} = action),
+    do: valid_action(action, SwarmCodeCLI.UI.Settings.Event.valid?(event))
+
+  def validate({:settings_open, arg} = action),
+    do: valid_action(action, SwarmCodeCLI.UI.Settings.Event.open_arg?(arg))
+
   def validate({:show_diffs, value} = action),
     do: valid_action(action, is_boolean(value) or value == :toggle)
 

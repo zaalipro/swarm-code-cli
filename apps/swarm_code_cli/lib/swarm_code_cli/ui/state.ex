@@ -75,6 +75,11 @@ defmodule SwarmCodeCLI.UI.State do
     # | :composer, raw_ops?, page, restore: %{scroll, draft}} (see
     # `UI.Reducer.Overlay`).
     overlay: nil,
+    # cli74 (spec §3.7.1): the settings layer while it is open (a
+    # `UI.Settings.Layer`), and the user's key overrides from cli.json's
+    # `keys` (`UI.Keymap.Overrides`; nil = the defaults everywhere).
+    settings: nil,
+    key_overrides: nil,
     # pass72 G11 (QA Q12): steers sent from the overlay, newest first, as
     # {run_id, text, node_id, agent name} (at most 50), so the transcript can
     # mark a steer "→ agent" and the overlay can echo it. The daemon records
