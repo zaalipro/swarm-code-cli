@@ -290,6 +290,37 @@ defmodule SwarmCode.Daemon.Service.Settings.C74TasksTest do
     end
   end
 
+  test "the task view of a secrets-bearing result shows its rows and its summary only",
+       %{sup: sup} do
+    tasks = new(sup)
+    drafts = Base.encode64(~s({"GITHUB_TOKEN":"ghp_secretvalue123"}))
+
+    result = %{
+      "rows" => [%{"name" => "github", "env" => [%{"name" => "GITHUB_TOKEN", "secret" => true}]}],
+      "drafts" => drafts,
+      "count" => 1
+    }
+
+    secret =
+      spec("mcp.import.read", "import", fn _ -> {:ok, result} end,
+        holds_secrets?: true,
+        summary: &Map.drop(&1, ["rows", "drafts"])
+      )
+
+    {:ok, tasks, id, _} = Tasks.start(tasks, secret)
+    {tasks, _} = until_state(tasks, "done")
+    {:ok, body, tasks} = Tasks.view(tasks, %{"id" => id})
+    assert %{"summary" => %{"count" => 1}, "rows" => [_], "total" => 1} = body["result"]
+    refute Jason.encode!(body) =~ drafts
+
+    # Any other result: the rest is the summary (§3.3.6).
+    plain = spec("lsp.check", "check", fn _ -> {:ok, Map.delete(result, "drafts")} end)
+    {:ok, tasks, id, _} = Tasks.start(tasks, plain)
+    {tasks, _} = until_state(tasks, "done")
+    {:ok, body, _tasks} = Tasks.view(tasks, %{"id" => id})
+    assert body["result"]["summary"] == %{"count" => 1}
+  end
+
   test "terminate stops every task, the non-cancellable ones too, and every purge timer",
        %{sup: sup} do
     tasks = new(sup, purge_ms: 60_000)

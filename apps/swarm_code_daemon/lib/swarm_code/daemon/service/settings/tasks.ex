@@ -530,7 +530,12 @@ defmodule SwarmCode.Daemon.Service.Settings.Tasks do
   end
 
   defp view_body(entry, params) do
-    {rows, summary} = rows_of(entry.result, entry.summary)
+    {rows, rest} = rows_of(entry.result)
+
+    # The rest of a result is its summary, except for a result that holds
+    # secrets (an MCP import's drafts): it shows only its rows and the
+    # handler's own summary, which the delta carried already.
+    summary = if Map.get(entry, :secret?) == true, do: entry.summary, else: rest || entry.summary
     size = min(positive(params["page_size"]) || @page, @page)
     start = cursor(params["cursor"])
     total = length(rows)
@@ -558,15 +563,15 @@ defmodule SwarmCode.Daemon.Service.Settings.Tasks do
     }
   end
 
-  defp rows_of(%{"rows" => rows} = result, _summary) when is_list(rows),
+  defp rows_of(%{"rows" => rows} = result) when is_list(rows),
     do: {rows, result |> Map.delete("rows") |> public_keys()}
 
-  defp rows_of(%{rows: rows} = result, _summary) when is_list(rows),
+  defp rows_of(%{rows: rows} = result) when is_list(rows),
     do: {rows, result |> Map.delete(:rows) |> public_keys()}
 
-  defp rows_of(rows, summary) when is_list(rows), do: {rows, summary}
-  defp rows_of(%{} = result, _summary), do: {[], public_keys(result)}
-  defp rows_of(_result, summary), do: {[], summary}
+  defp rows_of(rows) when is_list(rows), do: {rows, nil}
+  defp rows_of(%{} = result), do: {[], public_keys(result)}
+  defp rows_of(_result), do: {[], nil}
 
   # A result key starting with "_" is the task's own (an import preview's
   # parsed file): kept for a later command, never shown.
