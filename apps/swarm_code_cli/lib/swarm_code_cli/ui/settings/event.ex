@@ -38,7 +38,47 @@ defmodule SwarmCodeCLI.UI.Settings.Event do
   def valid?({:wheel, delta, column, row}),
     do: is_integer(delta) and abs(delta) <= 10 and non_neg?(column) and non_neg?(row)
 
+  # The session runtime's answers (§3.8.2): cli.json reads and writes, the
+  # external editor, the open-folder task.
+  def valid?({:cli_snapshot, generation, snapshot}),
+    do: generation?(generation, true) and snapshot?(snapshot)
+
+  def valid?({:cli_result, generation, ref, result}),
+    do: generation?(generation, false) and ref?(ref) and cli_result?(result)
+
+  def valid?({:prefs_conflict, current}) when is_map(current),
+    do: map_size(current) <= 64 and Enum.all?(Map.keys(current), &is_binary/1)
+
+  def valid?({:external_result, generation, ref, {:ok, text}}) when is_binary(text),
+    do: generation?(generation, false) and ref?(ref) and byte_size(text) <= @max_paste_bytes
+
+  def valid?({:external_result, generation, ref, {:error, _reason}}),
+    do: generation?(generation, false) and ref?(ref)
+
+  def valid?({:folder_result, generation, result}),
+    do: generation?(generation, false) and (result == :ok or match?({:error, _}, result))
+
   def valid?(_event), do: false
+
+  @doc "Whether `ref` names a request of the layer (a positive integer)."
+  def ref?(ref), do: is_integer(ref) and ref > 0
+
+  defp generation?(nil, nil_ok?), do: nil_ok?
+  defp generation?(generation, _nil_ok?), do: is_integer(generation) and generation >= 0
+
+  defp snapshot?(%{values: values, status: status}) when is_map(values), do: is_atom(status)
+  defp snapshot?({:error, reason}), do: is_atom(reason)
+  defp snapshot?(_snapshot), do: false
+
+  defp cli_result?({:ok, snapshot}), do: snapshot?(snapshot)
+  defp cli_result?({:ok, snapshot, warnings}), do: snapshot?(snapshot) and is_map(warnings)
+
+  defp cli_result?({:conflict, current}),
+    do: is_map(current) or is_binary(current) or is_nil(current)
+
+  defp cli_result?({:error, :invalid, messages}), do: is_map(messages)
+  defp cli_result?({:error, _reason}), do: true
+  defp cli_result?(_result), do: false
 
   @doc """
   Whether `arg` may open the layer: `nil` (the resume point), the rest of a

@@ -83,7 +83,11 @@ defmodule SwarmCodeCLI.UI.Pass72PreferencesRuntimeTest do
 
   test "without a path nothing is read or written", %{tmp_dir: dir} do
     {runtime, _caps} = start_runtime(nil)
-    assert :sys.get_state(runtime).prefs == %{path: nil, task: nil, pending: nil, changed?: false}
+    # cli74: the preference queue (`Init.PrefsQueue`) is empty and idle.
+    assert %{path: nil, task: nil, job: nil, known: known, queue: queue} =
+             :sys.get_state(runtime).prefs
+
+    assert known == %{} and SwarmCodeCLI.UI.Init.PrefsQueue.size(queue) == 0
     assert File.ls!(dir) == []
   end
 end

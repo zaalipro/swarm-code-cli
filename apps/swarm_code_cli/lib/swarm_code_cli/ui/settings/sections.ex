@@ -9,12 +9,10 @@ defmodule SwarmCodeCLI.UI.Settings.Sections do
   `UndefinedFunctionError` that names exactly that module and callback.
 
   Titles, groups and synonyms come from the core registry
-  (`SwarmCode.Settings.Sections`) when it is loaded, else from the copy here.
+  (`SwarmCode.Settings.Sections`).
   """
 
   alias SwarmCodeCLI.UI.Settings.Section
-
-  @compile {:no_warn_undefined, [SwarmCode.Settings.Sections]}
 
   @modules %{
     overview: SwarmCodeCLI.UI.Settings.Sections.Overview,
@@ -41,79 +39,28 @@ defmodule SwarmCodeCLI.UI.Settings.Sections do
     import_export: SwarmCodeCLI.UI.Settings.Sections.ImportExport
   }
 
-  # The rail (D4): Overview, then 21 sections in six groups.
-  @fallback [
-    {:overview, "Overview", nil, []},
-    {:models_effort, "Models & effort", "models", ["model", "models", "effort"]},
-    {:providers, "Providers", "models", ["provider", "api key", "keys api"]},
-    {:pricing, "Pricing", "models", ["price", "prices", "cost"]},
-    {:search_web, "Search & web", "tools", ["search", "web", "reader"]},
-    {:deep_research, "Deep research", "tools", ["research"]},
-    {:mcp, "MCP servers", "tools", ["mcp", "servers", "tools"]},
-    {:language_servers, "Language servers", "tools", ["lsp", "language server"]},
-    {:agents_limits, "Agents & limits", "agents", ["agents", "limits", "timeouts"]},
-    {:approvals, "Approvals & trust", "agents", ["approval", "approvals", "trust"]},
-    {:project_file, "Project file", "agents", ["config.json", "hooks", "profiles"]},
-    {:memory, "Memory & instructions", "agents", ["memory", "instructions"]},
-    {:library, "Library", "agents", ["commands", "skills", "workflows", "agent definitions"]},
-    {:appearance, "Appearance", "this terminal", ["colours", "colors", "glyphs"]},
-    {:layout, "Layout & transcript", "this terminal", ["layout", "panel", "transcript"]},
-    {:keys, "Keys & input", "this terminal", ["keys", "keybindings", "key bindings", "mouse"]},
-    {:startup, "Session & startup", "this terminal", ["startup", "launch"]},
-    {:storage, "Storage", "data", ["cleanup", "disk"]},
-    {:budget, "Budget & usage", "data", ["usage", "spend"]},
-    {:desktop, "Desktop app", "more", ["desktop"]},
-    {:files_env, "Files & environment", "more", ["files", "environment", "env", "paths"]},
-    {:import_export, "Import & export", "more", ["import", "export", "backup"]}
-  ]
+  alias SwarmCode.Settings.Sections, as: Core
 
-  @ids Enum.map(@fallback, &elem(&1, 0))
+  @ids Core.ids()
+  @order @ids |> Enum.with_index() |> Map.new()
 
   @doc "The 22 section ids in rail order."
   @spec ids() :: [atom()]
   def ids, do: @ids
 
-  @doc "The module that builds `id`'s page (it may not be loaded in this build)."
+  @doc "The module that builds `id`'s page (it may not be part of this build yet)."
   @spec module_for(atom()) :: module()
   def module_for(id) when is_map_key(@modules, id), do: Map.fetch!(@modules, id)
 
-  @doc "Every section as `%{id, title, group, synonyms}` in rail order."
+  @doc "Every section as `%{id, title, group, synonyms}` in rail order (the core registry's)."
   @spec all() :: [map()]
-  def all do
-    core =
-      optional(SwarmCode.Settings.Sections, :all, fn -> SwarmCode.Settings.Sections.all() end)
-
-    case core do
-      [_ | _] = sections ->
-        by_id = Map.new(sections, &{Map.get(&1, :id), &1})
-
-        Enum.map(@fallback, fn {id, title, group, synonyms} ->
-          case Map.get(by_id, id) do
-            nil ->
-              %{id: id, title: title, group: group, synonyms: synonyms}
-
-            section ->
-              %{
-                id: id,
-                title: Map.get(section, :title, title),
-                group: group,
-                synonyms: Map.get(section, :synonyms, synonyms)
-              }
-          end
-        end)
-
-      _ ->
-        Enum.map(@fallback, fn {id, title, group, synonyms} ->
-          %{id: id, title: title, group: group, synonyms: synonyms}
-        end)
-    end
-  end
+  def all, do: Core.all()
 
   @doc "The title of `id`."
   @spec title(atom()) :: String.t()
   def title(id) do
-    case List.keyfind(@fallback, id, 0) do
-      {_, title, _, _} -> title
+    case Core.get(id) do
+      %{title: title} -> title
       nil -> to_string(id)
     end
   end
@@ -121,28 +68,24 @@ defmodule SwarmCodeCLI.UI.Settings.Sections do
   @doc "The rail group of `id` (nil for Overview)."
   @spec group(atom()) :: String.t() | nil
   def group(id) do
-    case List.keyfind(@fallback, id, 0) do
-      {_, _, group, _} -> group
+    case Core.get(id) do
+      %{group: group} -> group
       nil -> nil
     end
   end
 
   @doc "`{group, [ids]}` in rail order."
   @spec groups() :: [{String.t() | nil, [atom()]}]
-  def groups do
-    @fallback
-    |> Enum.chunk_by(&elem(&1, 2))
-    |> Enum.map(fn [{_, _, group, _} | _] = chunk -> {group, Enum.map(chunk, &elem(&1, 0))} end)
-  end
+  def groups, do: Core.groups()
 
   @doc "Section id => its index in rail order."
   @spec order() :: %{atom() => non_neg_integer()}
-  def order, do: @ids |> Enum.with_index() |> Map.new()
+  def order, do: @order
 
   @doc "The section after (`1`) or before (`-1`) `id`, wrapping."
   @spec step(atom(), 1 | -1) :: atom()
   def step(id, delta) do
-    index = Enum.find_index(@ids, &(&1 == id)) || 0
+    index = Map.get(@order, id, 0)
     Enum.at(@ids, Integer.mod(index + delta, length(@ids)))
   end
 
@@ -151,20 +94,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections do
   with spaces, `-` and `_` folded. `:error` otherwise.
   """
   @spec fetch(String.t()) :: {:ok, atom()} | :error
-  def fetch(text) when is_binary(text) do
-    wanted = fold(text)
-
-    found =
-      Enum.find(all(), fn section ->
-        fold(Atom.to_string(section.id)) == wanted or fold(section.title) == wanted or
-          Enum.any?(section.synonyms || [], &(fold(&1) == wanted))
-      end)
-
-    if found, do: {:ok, found.id}, else: :error
-  end
-
-  defp fold(text),
-    do: text |> String.downcase() |> String.replace(~r/[\s_\-&]+/u, "") |> String.trim()
+  def fetch(text), do: Core.fetch(text)
 
   # ------------------------------------------------------------ dispatch
 

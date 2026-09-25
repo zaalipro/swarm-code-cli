@@ -70,10 +70,20 @@ defmodule SwarmCodeCLI.UI.Reducer do
              init.theme_env in [nil, :dark, :light] and is_boolean(init.mouse?) and
              SwarmCodeCLI.UI.Intent.valid_id?(init.id_prefix) and is_integer(init.now) and
              init.now >= 0 and is_integer(init.deadline_ms) and init.deadline_ms >= 0 and
-             is_integer(init.id_sequence) and init.id_sequence >= 0,
+             is_integer(init.id_sequence) and init.id_sequence >= 0 and is_map(init.prefs) and
+             is_map(init.launch_facts) and
+             SwarmCodeCLI.UI.Settings.Event.open_arg?(init.settings_open),
            do: raise(ArgumentError, "invalid reducer init")
 
-    state = struct!(State, Map.from_struct(init))
+    # cli74: the boot query waits for the shell (`pending_open_settings`), and
+    # the key overrides are compiled once from cli.json's `keys`.
+    state =
+      State
+      |> struct!(init |> Map.from_struct() |> Map.delete(:settings_open))
+      |> Map.merge(%{
+        pending_open_settings: init.settings_open,
+        key_overrides: SwarmCodeCLI.UI.Keymap.Overrides.compile(Map.get(init.prefs, "keys"))
+      })
 
     state = %{
       state
@@ -104,6 +114,7 @@ defmodule SwarmCodeCLI.UI.Reducer do
         next = hush_refusals(state, next)
         next = stamp_notice(state, next)
         next = repair_switcher(state, next)
+        next = SwarmCodeCLI.UI.Reducer.Settings.track_legacy(next, effects)
         Enum.each(effects, &SwarmCodeCLI.UI.Effect.validate!/1)
 
         if next == state,
@@ -131,6 +142,10 @@ defmodule SwarmCodeCLI.UI.Reducer do
   defp transition(state, {:theme_mode, value}), do: Display.set(state, :theme_mode, value)
   defp transition(state, {:mouse, value}), do: Display.set(state, :mouse, value)
   defp transition(state, {:preferences_loaded, loaded}), do: Display.loaded(state, loaded)
+
+  # cli74: the settings layer's keys, its data and the runtime's answers.
+  defp transition(state, {:settings, event}),
+    do: SwarmCodeCLI.UI.Reducer.Settings.event(state, event)
 
   # pass73-K T7: a row of the /approval picker sets the project's mode; the
   # picker closes, and the change is announced once the project says so
@@ -2764,7 +2779,8 @@ defmodule SwarmCodeCLI.UI.Reducer do
     :hint,
     :panel_preferences_loaded,
     :preferences_loaded,
-    :external_edit_done
+    :external_edit_done,
+    :settings
   ]
 
   defp leave_modes(state, action) do

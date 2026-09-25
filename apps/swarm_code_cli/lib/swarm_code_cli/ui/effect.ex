@@ -23,9 +23,17 @@ defmodule SwarmCodeCLI.UI.Effect do
           | {:save_preferences, map()}
           | {:terminal_preferences,
              %{optional(:theme) => :dark | :light, optional(:mouse?) => boolean()}}
+          | {:settings_cli_read, non_neg_integer()}
+          | {:settings_cli_write, non_neg_integer(), pos_integer(), map(), map()}
+          | {:settings_cli_write_text, non_neg_integer(), pos_integer(), binary(), binary() | nil}
+          | {:settings_external_edit, non_neg_integer(), pos_integer(), map()}
+          | {:settings_open_folder, non_neg_integer(), binary()}
 
   # What select mode's `y` may put on the clipboard in one OSC 52 write.
   @max_copy_bytes 262_144
+
+  # cli.json's own bound (`SwarmCode.Settings.CliFile.max_bytes/0`).
+  @max_cli_bytes 65_536
 
   @doc "The largest text a copy effect carries."
   @spec max_copy_bytes() :: pos_integer()
@@ -113,7 +121,56 @@ defmodule SwarmCodeCLI.UI.Effect do
           end)
       )
 
+  # cli74 (§3.8.2): cli.json reads and writes run in the session runtime's
+  # preference queue, one at a time; answered as `{:settings, …}` actions.
+  def validate({:settings_cli_read, generation} = effect),
+    do: valid_effect(effect, generation?(generation))
+
+  def validate({:settings_cli_write, generation, ref, changes, expected} = effect),
+    do:
+      valid_effect(
+        effect,
+        generation?(generation) and ref?(ref) and cli_map?(changes) and cli_map?(expected)
+      )
+
+  def validate({:settings_cli_write_text, generation, ref, text, fingerprint} = effect),
+    do:
+      valid_effect(
+        effect,
+        generation?(generation) and ref?(ref) and is_binary(text) and
+          byte_size(text) <= @max_cli_bytes and String.valid?(text) and
+          (is_nil(fingerprint) or (is_binary(fingerprint) and byte_size(fingerprint) <= 128))
+      )
+
+  # The external editor on a settings text or file (a private copy, 0600).
+  def validate(
+        {:settings_external_edit, generation, ref, %{content: content, suffix: suffix}} = effect
+      ),
+      do:
+        valid_effect(
+          effect,
+          generation?(generation) and ref?(ref) and is_binary(content) and
+            byte_size(content) <= @max_copy_bytes and String.valid?(content) and is_binary(suffix) and
+            suffix =~ ~r/\A\.[a-z0-9]{1,8}\z/
+        )
+
+  # `o` on a file or path row: the desktop opens the folder.
+  def validate({:settings_open_folder, generation, path} = effect),
+    do:
+      valid_effect(
+        effect,
+        generation?(generation) and is_binary(path) and byte_size(path) <= 4_096 and
+          String.valid?(path) and String.starts_with?(path, "/") and
+          not String.contains?(path, <<0>>)
+      )
+
   def validate(_effect), do: {:error, :invalid_effect}
+
+  defp generation?(generation), do: is_integer(generation) and generation >= 0
+  defp ref?(ref), do: is_integer(ref) and ref > 0
+
+  defp cli_map?(map),
+    do: is_map(map) and map_size(map) <= 64 and Enum.all?(Map.keys(map), &is_binary/1)
 
   @spec validate!(term()) :: t()
   def validate!(effect) do
