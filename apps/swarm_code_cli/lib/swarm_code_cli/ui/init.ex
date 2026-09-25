@@ -20,7 +20,16 @@ defmodule SwarmCodeCLI.UI.Init do
     show_diffs: true,
     theme_mode: :dark,
     theme_env: nil,
-    mouse?: true
+    mouse?: true,
+    # cli74 (§3.8.4): every cli.json value by json name, the launch's env and
+    # flag overrides, and `swarmcode settings [QUERY]`'s query (nil = none;
+    # "" opens the Overview).
+    prefs: %{},
+    launch_facts: %{},
+    settings_open: nil,
+    # cli74 (§2.17, A10): cli.json's `startup_conversation: ask` — the resume
+    # picker opens once the shell is ready, as /resume opens it.
+    resume_picker?: false
   ]
 
   @type t :: %__MODULE__{}

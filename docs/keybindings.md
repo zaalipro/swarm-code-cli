@@ -58,6 +58,7 @@ Mouse: the wheel scrolls the pane under the pointer (the transcript, the side pa
 | `Alt-H` / `Alt-Shift-H` / `Ctrl-Alt-H` / `Ctrl-Alt-Shift-H` | Narrow the inspector dock (add Ctrl for a bigger step) |
 | `Alt-L` / `Alt-Shift-L` / `Ctrl-Alt-L` / `Ctrl-Alt-Shift-L` | Widen the inspector dock (add Ctrl for a bigger step) |
 | `Alt-0` / `Alt-Shift-0` / `Ctrl-Alt-0` / `Ctrl-Alt-Shift-0` | Reset the inspector dock to its default width |
+| `F2` | Settings: every setting, provider, search engine, MCP server and key (also /settings) |
 
 ### Edit
 
@@ -172,6 +173,7 @@ Mouse: the wheel scrolls the pane under the pointer (the transcript, the side pa
 | `Alt-H` / `Alt-Shift-H` / `Ctrl-Alt-H` / `Ctrl-Alt-Shift-H` | Narrow the inspector dock (add Ctrl for a bigger step) |
 | `Alt-L` / `Alt-Shift-L` / `Ctrl-Alt-L` / `Ctrl-Alt-Shift-L` | Widen the inspector dock (add Ctrl for a bigger step) |
 | `Alt-0` / `Alt-Shift-0` / `Ctrl-Alt-0` / `Ctrl-Alt-Shift-0` | Reset the inspector dock to its default width |
+| `F2` | Settings: every setting, provider, search engine, MCP server and key (also /settings) |
 
 ### Edit
 
@@ -334,6 +336,7 @@ Mouse: the wheel scrolls the pane under the pointer (the transcript, the side pa
 | `Alt-H` / `Alt-Shift-H` / `Ctrl-Alt-H` / `Ctrl-Alt-Shift-H` | Narrow the inspector dock (add Ctrl for a bigger step) |
 | `Alt-L` / `Alt-Shift-L` / `Ctrl-Alt-L` / `Ctrl-Alt-Shift-L` | Widen the inspector dock (add Ctrl for a bigger step) |
 | `Alt-0` / `Alt-Shift-0` / `Ctrl-Alt-0` / `Ctrl-Alt-Shift-0` | Reset the inspector dock to its default width |
+| `F2` | Settings: every setting, provider, search engine, MCP server and key (also /settings) |
 
 ### Session
 
@@ -415,6 +418,7 @@ Mouse: the wheel scrolls the pane under the pointer (the transcript, the side pa
 | `Alt-H` / `Alt-Shift-H` / `Ctrl-Alt-H` / `Ctrl-Alt-Shift-H` | Narrow the inspector dock (add Ctrl for a bigger step) |
 | `Alt-L` / `Alt-Shift-L` / `Ctrl-Alt-L` / `Ctrl-Alt-Shift-L` | Widen the inspector dock (add Ctrl for a bigger step) |
 | `Alt-0` / `Alt-Shift-0` / `Ctrl-Alt-0` / `Ctrl-Alt-Shift-0` | Reset the inspector dock to its default width |
+| `F2` | Settings: every setting, provider, search engine, MCP server and key (also /settings) |
 
 ### Session
 
@@ -730,3 +734,189 @@ Mouse: the wheel scrolls the pane under the pointer (the transcript, the side pa
 | `Esc` | Leave hint mode; hint keys never answer a request |
 | `Backspace` | Take back the first letter of a two-letter badge |
 | `Ctrl-C` | Clear the draft, else stop the turn; twice with nothing to stop quits |
+
+# Settings
+
+`F2` or `/settings` (also `/config`, `/prefs`) opens Settings over the
+shell; `/settings <words>` opens it at the matching section or setting.
+Esc goes back one level and closes Settings at a section page; `q` closes
+it from anywhere. The letters below act on the focused row, and the footer
+lists only the letters that row answers to, in its own words (`t test the
+connection`, `R restart now`). With the vim keymap `j`, `k`, `g g` and `G`
+also move. Ctrl-C clears a text, then cancels; on a page it closes
+Settings, and a second Ctrl-C quits as in the shell.
+
+Every key except Esc, Enter, the arrows, Ctrl-C, `?`/`F1` and Ctrl-S can be
+changed on Settings › Keys & input (stored in cli.json's `keys`). If a
+change leaves you without a way back, run `swarmcode config reset
+terminal.keys` in a shell.
+
+## Settings: browsing the rail and the pages
+
+### Settings
+
+| Keys | Does |
+|---|---|
+| `↑` | The row above (the result above, the option above) |
+| `↓` | The row below (the result below, the option below) |
+| `PgUp` | One page up; in a number editor one big step up |
+| `PgDn` | One page down; in a number editor one big step down |
+| `Home` | The first row; in a text editor the start of the line |
+| `End` | The last row; in a text editor the end of the line |
+| `←` | Back to the rail; on an enum or number one step down; in text the caret left |
+| `→` | Open the section from the rail; on an enum or number one step up; in text the caret right |
+| `Shift-←` | A number one big step down (Shift-Left) |
+| `Shift-→` | A number one big step up (Shift-Right) |
+| `[` | The section above on the rail |
+| `]` | The section below on the rail |
+| `Tab` / `Shift-Tab` | Tab and Shift-Tab walk the rail, the page and the detail (the tabs of the cleanup wizard) |
+| `Ctrl-F` | Letter badges on the rail; the badge's letter opens that section |
+| `Esc` / `q` / `F2` | Esc goes back one level and closes Settings at a section page; q and F2 close Settings |
+| `Enter` | Open, edit or run the focused row (choose the option, press the focused button) |
+| `Space` | Flip a toggle, a switch or a checklist item |
+| `/` | Search every setting; in a list of more than 20 rows, filter the list |
+| `:` | The command line: `:set key value`, `:reset key`, `:go section` |
+| `?` / `F1` | Every key of this page; the same key closes it |
+| `i` | The detail of the focused row (a page of its own on a small terminal) |
+| `Ctrl-R` | Read this page again from the daemon and cli.json |
+| `Ctrl-N` | Close Settings and go to the run that waits for you |
+| `Ctrl-C` | Clear the text, then cancel; on a page close Settings (twice quits, as in the shell) |
+| `Ctrl-S` | Create the record being drafted; commit a multi-line text |
+| `Ctrl-X` | Edit the text or the file in your editor (terminal.editor, VISUAL, EDITOR) |
+| `u` / `Ctrl-Z` | Undo the last change made here (not a key: those are never kept) |
+| `U` / `Ctrl-Y` | Redo what undo took back |
+| `r` | Reset to the default (revert a staged field) |
+| `R` | Restart an MCP server now; reload the project file |
+| `a` | Add a record or a list item |
+| `+` | Key bindings: capture an additional key (4 at most) |
+| `x` / `Del` | Delete the focused item (asks when it cannot be undone) |
+| `D` | Delete the record this page shows (asks) |
+| `X` | Remove every item of a list; unbind every key of a binding (asks) |
+| `K` / `Shift-↑` | Move the focused item up an ordered list |
+| `J` / `Shift-↓` | Move the focused item down an ordered list |
+| `t` | Test the connection, the key or the command |
+| `f` | Fetch the provider's models |
+| `o` | An MCP server's output; a file's or a path's folder |
+| `c` | Cancel the task running on the focused row |
+| `y` | Copy the setting's key or the path (never a secret) |
+| `n` | Library: a new command, skill, agent definition or workflow file |
+| `C` | Memory: clear the file (asks) |
+| `e` | Edit the file in your editor (as Ctrl-X) |
+| `A` | MCP tools: every tool on; storage sessions: pick every one shown |
+| `N` | MCP tools: every tool off |
+| `s` | The row's second action: treat as secret, sort, save it anyway |
+| `g` | A search result's section (vim: g g is the first row) |
+
+## Settings: the search row and the `:` command line
+
+### Settings
+
+| Keys | Does |
+|---|---|
+| `↑` | The row above (the result above, the option above) |
+| `↓` | The row below (the result below, the option below) |
+| `PgUp` | One page up; in a number editor one big step up |
+| `PgDn` | One page down; in a number editor one big step down |
+| `Home` | The first row; in a text editor the start of the line |
+| `End` | The last row; in a text editor the end of the line |
+| `←` | Back to the rail; on an enum or number one step down; in text the caret left |
+| `→` | Open the section from the rail; on an enum or number one step up; in text the caret right |
+| `Enter` | Open, edit or run the focused row (choose the option, press the focused button) |
+| `F1` | Every key of this page; the same key closes it |
+| `Ctrl-N` | Close Settings and go to the run that waits for you |
+| `Ctrl-C` | Clear the text, then cancel; on a page close Settings (twice quits, as in the shell) |
+| `Esc` | Cancel the editor (the old value stays); clear the search, then leave; close once |
+| `Tab` | Complete a key, a path, a model, an env name or an @filter |
+| `Ctrl-A` | The caret to the start of the line |
+| `Ctrl-E` | The caret to the end of the line |
+| `Ctrl-W` | Delete the word before the caret |
+| `Ctrl-U` | Delete everything before the caret |
+| `Backspace` | Delete the character before the caret |
+| `Del` | Delete the character after the caret |
+
+## Settings: a value being edited
+
+### Settings
+
+| Keys | Does |
+|---|---|
+| `PgUp` | One page up; in a number editor one big step up |
+| `PgDn` | One page down; in a number editor one big step down |
+| `Home` | The first row; in a text editor the start of the line |
+| `End` | The last row; in a text editor the end of the line |
+| `←` | Back to the rail; on an enum or number one step down; in text the caret left |
+| `→` | Open the section from the rail; on an enum or number one step up; in text the caret right |
+| `Shift-←` | A number one big step down (Shift-Left) |
+| `Shift-→` | A number one big step up (Shift-Right) |
+| `F1` | Every key of this page; the same key closes it |
+| `Ctrl-C` | Clear the text, then cancel; on a page close Settings (twice quits, as in the shell) |
+| `Ctrl-S` | Create the record being drafted; commit a multi-line text |
+| `Ctrl-X` | Edit the text or the file in your editor (terminal.editor, VISUAL, EDITOR) |
+| `Esc` | Cancel the editor (the old value stays); clear the search, then leave; close once |
+| `Enter` | Save the value (a new line in a multi-line text: Ctrl-S saves) |
+| `Tab` | Complete a key, a path, a model, an env name or an @filter |
+| `Ctrl-A` | The caret to the start of the line |
+| `Ctrl-E` | The caret to the end of the line |
+| `Ctrl-W` | Delete the word before the caret |
+| `Ctrl-U` | Delete everything before the caret |
+| `Backspace` | Delete the character before the caret |
+| `Del` | Delete the character after the caret |
+
+## Settings: pasting a key
+
+### Settings
+
+| Keys | Does |
+|---|---|
+| `F1` | Every key of this page; the same key closes it |
+| `Ctrl-C` | Clear the text, then cancel; on a page close Settings (twice quits, as in the shell) |
+| `Esc` | Cancel the editor (the old value stays); clear the search, then leave; close once |
+| `Enter` | Check the pasted key and save it |
+| `Ctrl-U` | Drop what was pasted |
+| `Ctrl-T` | Type the key instead of pasting it (never shown) |
+
+## Settings: capturing a key (Key bindings)
+
+### Settings
+
+| Keys | Does |
+|---|---|
+| `Ctrl-C` | Clear the text, then cancel; on a page close Settings (twice quits, as in the shell) |
+
+## Settings: a picker
+
+### Settings
+
+| Keys | Does |
+|---|---|
+| `↑` | The row above (the result above, the option above) |
+| `↓` | The row below (the result below, the option below) |
+| `PgUp` | One page up; in a number editor one big step up |
+| `PgDn` | One page down; in a number editor one big step down |
+| `Home` | The first row; in a text editor the start of the line |
+| `End` | The last row; in a text editor the end of the line |
+| `Enter` | Open, edit or run the focused row (choose the option, press the focused button) |
+| `F1` | Every key of this page; the same key closes it |
+| `Ctrl-C` | Clear the text, then cancel; on a page close Settings (twice quits, as in the shell) |
+| `Esc` | Cancel the editor (the old value stays); clear the search, then leave; close once |
+| `Ctrl-W` | Delete the word before the caret |
+| `Ctrl-U` | Delete everything before the caret |
+| `Backspace` | Delete the character before the caret |
+| `Del` | Delete the character after the caret |
+
+## Settings: a confirmation, the key help or the leave question
+
+### Settings
+
+| Keys | Does |
+|---|---|
+| `↑` | The row above (the result above, the option above) |
+| `↓` | The row below (the result below, the option below) |
+| `←` | Back to the rail; on an enum or number one step down; in text the caret left |
+| `→` | Open the section from the rail; on an enum or number one step up; in text the caret right |
+| `Enter` | Open, edit or run the focused row (choose the option, press the focused button) |
+| `Ctrl-C` | Clear the text, then cancel; on a page close Settings (twice quits, as in the shell) |
+| `Esc` | Cancel the editor (the old value stays); clear the search, then leave; close once |
+| `Backspace` | Delete the character before the caret |
+| `Tab` | The next button (focus stays inside the popover) |
+| `Shift-Tab` | The previous button |

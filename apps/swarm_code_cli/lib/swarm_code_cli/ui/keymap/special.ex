@@ -23,6 +23,17 @@ defmodule SwarmCodeCLI.UI.Keymap.Special do
   @spec run(atom(), key(), map(), map()) :: {:ok, term()} | :ignore
   def run(name, key, state, table)
 
+  # ------------------------------------------------------------- settings
+
+  # cli74 U1-2: Esc goes back one level (and closes at a section page); `q`
+  # and F2 close the layer from any level.
+  def run(:settings_close, {:escape, []}, _state, _table), do: ok({:settings, {:verb, :back}})
+  def run(:settings_close, _key, _state, _table), do: ok({:settings, {:verb, :close}})
+
+  # Tab walks rail -> page -> detail; Shift-Tab the other way.
+  def run(:settings_rail, {:tab, []}, _state, _table), do: ok({:settings, {:verb, :next_region}})
+  def run(:settings_rail, _key, _state, _table), do: ok({:settings, {:verb, :previous_region}})
+
   # ---------------------------------------------------------------- layers
 
   # Ctrl-P opens the palette and never toggles it shut: a second press while it

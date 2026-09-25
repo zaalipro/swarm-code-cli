@@ -17,12 +17,13 @@ defmodule SwarmCodeCLI.UI.Keymap.Context do
   | `:dialog` | any other layer |
   | `:hint` | hint mode (Ctrl-F), no layer |
   | `:overlay` | the agent overlay is open, no layer |
+  | `:settings…` | the settings layer is open, no shell layer over it: one of seven by its mode and popover (`UI.Settings.context/1`, cli74) |
 
   A picker is a picker before it is a field: its query *is* the layer, and its
   keys (Ctrl-N, Home, the opening chord) have to beat the field editor's.
   """
 
-  alias SwarmCodeCLI.UI.Keymap
+  alias SwarmCodeCLI.UI.{Keymap, Settings}
 
   @picker_layers [
     :switcher,
@@ -57,6 +58,10 @@ defmodule SwarmCodeCLI.UI.Keymap.Context do
       true -> :dialog
     end
   end
+
+  # cli74 U1-2: the settings layer covers the shell (and the agent overlay)
+  # until it closes; its mode and popover pick one of its seven contexts.
+  def of(%{settings: %Settings.Layer{} = layer}), do: Settings.context(layer)
 
   # pass72: hint mode reads its badge keys before anything under it, and the
   # agent overlay covers the chat until Esc.

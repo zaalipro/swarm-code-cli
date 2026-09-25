@@ -75,6 +75,28 @@ defmodule SwarmCodeCLI.UI.State do
     # | :composer, raw_ops?, page, restore: %{scroll, draft}} (see
     # `UI.Reducer.Overlay`).
     overlay: nil,
+    # cli74 (spec §3.7.1): the settings layer while it is open (a
+    # `UI.Settings.Layer`), and the user's key overrides from cli.json's
+    # `keys` (`UI.Keymap.Overrides`; nil = the defaults everywhere).
+    settings: nil,
+    key_overrides: nil,
+    # The page stack, focus and tasks kept after the layer closes, for the
+    # next `/settings` (nil before the first close).
+    settings_resume: nil,
+    # Undo, redo and "changed in this session" (`Settings.Undo`): kept for
+    # the whole session, so they survive closing the layer (D38).
+    settings_history: %SwarmCodeCLI.UI.Settings.Undo{},
+    # Bumped at every open; responses of an older generation are dropped.
+    settings_generation: 0,
+    # Every cli.json value by json name, as the session last read it (the
+    # launcher's, then every read and write of the preferences queue).
+    prefs: %{},
+    # The environment variables and flags that override cli.json at this
+    # launch (§3.8.4): `env_overrides`, `flag_overrides`, the project root.
+    launch_facts: %{},
+    # `swarmcode settings [QUERY]` at boot: opened once the shell is ready.
+    pending_open_settings: nil,
+    pending_resume_picker: false,
     # pass72 G11 (QA Q12): steers sent from the overlay, newest first, as
     # {run_id, text, node_id, agent name} (at most 50), so the transcript can
     # mark a steer "→ agent" and the overlay can echo it. The daemon records

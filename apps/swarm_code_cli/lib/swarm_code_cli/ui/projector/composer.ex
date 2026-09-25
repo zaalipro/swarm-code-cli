@@ -263,7 +263,8 @@ defmodule SwarmCodeCLI.UI.Projector.Composer do
          :run_command <- SwarmCodeCLI.UI.Composer.enter_action(state),
          true <- WorkflowKeyword.routes?(text),
          %{} = binding <- Bindings.fetch(:send_plain),
-         key when key != nil <- Bindings.key_in_context(binding, :composer) do
+         key when key != nil <-
+           Bindings.key_in_context(binding, :composer, SwarmCodeCLI.UI.Keymap.overrides(state)) do
       label = KeyLabel.label(key, state.capabilities.ascii?)
       dot = if state.capabilities.ascii?, do: "-", else: "·"
       faint = tint(:text_faint, state)

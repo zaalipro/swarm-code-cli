@@ -542,7 +542,7 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
         {Map.get(@entry_kinds, entry.kind, ""), :text_faint}
 
       id ->
-        case Bindings.keys_for(id) do
+        case Bindings.keys_for(id, SwarmCodeCLI.UI.Keymap.overrides(state)) do
           [key | _] -> {KeyLabel.label(key, state.capabilities.ascii?), :key}
           [] -> {"", :text_faint}
         end
@@ -766,7 +766,11 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
             |> Bindings.for_context()
             |> Enum.filter(&(&1.group == group))
             |> Enum.map(fn binding ->
-              keys = binding |> Bindings.keys_in_context(context) |> KeyLabel.joined(ascii?)
+              keys =
+                binding
+                |> Bindings.keys_in_context(context, SwarmCodeCLI.UI.Keymap.overrides(state))
+                |> KeyLabel.joined(ascii?)
+
               {keys, binding.help}
             end),
           rows != [],

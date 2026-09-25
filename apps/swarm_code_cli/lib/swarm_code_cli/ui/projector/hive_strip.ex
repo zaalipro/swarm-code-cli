@@ -49,7 +49,7 @@ defmodule SwarmCodeCLI.UI.Projector.HiveStrip do
     head = [{rule <> rule <> " ", ghost}, {"hive", faint}, {" ", ghost}]
 
     tail =
-      case Bindings.keys_for(:toggle_inspector) do
+      case Bindings.keys_for(:toggle_inspector, SwarmCodeCLI.UI.Keymap.overrides(state)) do
         [key | _] ->
           [
             {" ", ghost},

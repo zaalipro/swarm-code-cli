@@ -139,6 +139,14 @@ defmodule SwarmCodeCLI.UI.Reducer.Commands do
   defp mutation_reasons(state, origin, _outcome),
     do: Map.delete(Map.get(state, :mutation_reasons, %{}), origin)
 
+  # cli74 (D11): a send refused for want of a usable provider says where to
+  # fix it (§3.10.1).
+  defp refusal(%Outcome{reason: %{code: "provider_required", text: text}}),
+    do: SwarmCodeCLI.UI.Settings.ChatProvider.refusal_words(text)
+
+  defp refusal(%Outcome{reason: %{text: "No model provider can answer" <> _ = text}}),
+    do: SwarmCodeCLI.UI.Settings.ChatProvider.refusal_words(text)
+
   defp refusal(%Outcome{reason: %{text: text}} = outcome) when is_binary(text) do
     case String.trim(text) do
       "" -> refusal(%{outcome | reason: nil})

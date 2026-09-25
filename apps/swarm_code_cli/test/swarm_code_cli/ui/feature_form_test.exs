@@ -78,7 +78,7 @@ defmodule SwarmCodeCLI.UI.FeatureFormTest do
 
   test "required, malformed numbers and JSON errors remain editable with field-specific feedback" do
     state =
-      ready(:settings, "limits", :update, [
+      ready(:memory, "limits", :update, [
         field("max_agent_turns", "Agent turns", kind: :integer, value: "2x", required: true),
         field("monthly_budget_usd", "Monthly budget", kind: :number, value: "12.5"),
         field("pricing", "Pricing", kind: :json, value: "{")
@@ -100,7 +100,7 @@ defmodule SwarmCodeCLI.UI.FeatureFormTest do
     assert FeatureForm.value(rejected, "max_agent_turns") == "30"
     {pending, [{:command, request}]} = Reducer.update(rejected, :feature_submit)
     {accepted, effects} = response(pending, request, :accepted)
-    assert accepted.layers == [{:library, :settings}]
+    assert accepted.layers == [{:library, :memory}]
     assert accepted.feature_form == nil
     assert Enum.any?(effects, &match?({:query, _}, &1))
   end
@@ -120,7 +120,7 @@ defmodule SwarmCodeCLI.UI.FeatureFormTest do
 
   test "long forms scroll focused fields into view at terminal widths and keep submit controls" do
     fields = for n <- 1..25, do: field("field#{n}", "Field #{n}", value: "value #{n}")
-    state = ready(:settings, "defaults", :update, fields)
+    state = ready(:memory, "defaults", :update, fields)
     {state, []} = Reducer.update(state, Library.activation(state, "form"))
 
     for width <- [80, 120] do
@@ -142,7 +142,7 @@ defmodule SwarmCodeCLI.UI.FeatureFormTest do
 
   test "form fields and actions are inert outside their owner and read-only controls cannot mutate" do
     state =
-      ready(:settings, "limits", :update, [field("max_agent_turns", "Turns", kind: :integer)])
+      ready(:memory, "limits", :update, [field("max_agent_turns", "Turns", kind: :integer)])
 
     assert {^state, []} = Reducer.update(state, :feature_submit)
     assert {^state, []} = Reducer.update(state, {:feature_cycle, "max_agent_turns", 1})
@@ -167,6 +167,9 @@ defmodule SwarmCodeCLI.UI.FeatureFormTest do
   defp field(key, label, opts),
     do: struct!(DTO.FormField, Keyword.merge([key: key, label: label], opts))
 
+  # cli74 (D22): the library's settings form is gone (the settings layer
+  # replaced it); these form mechanics are the same on any feature form, so
+  # they run on Memory's.
   defp ready(feature, id, action, fields) do
     size = %Size{columns: 120, rows: 40}
 

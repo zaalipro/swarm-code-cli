@@ -35,7 +35,7 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
   }
 
   alias SwarmCodeCLI.Companion
-  alias SwarmCodeCLI.UI.Init.Preferences
+  alias SwarmCodeCLI.UI.Init.{Preferences, PrefsQueue}
   alias SwarmCodeCLI.UI.DataSource
   alias SwarmCodeCLI.UI.DataSource.DataBridge
 
@@ -45,6 +45,8 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
   @suspend_ms 5_000
   # The edited draft is read back bounded like a paste (plus a final newline).
   @max_edit_bytes 262_144
+  # cli74: how long the desktop has to open a folder (`o` in Settings).
+  @folder_ms 5_000
 
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
 
@@ -148,9 +150,13 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
        # Ctrl-X: nil, or %{key, dir, file, task, timer} while the editor owns the terminal.
        edit: nil,
        editor: Keyword.get(opts, :editor, &__MODULE__.run_editor/1),
+       # cli74: nil, or %{task, timer, generation} while the desktop opens a
+       # folder for the settings layer.
+       folder: nil,
        # pass72-O: the CLI preferences file (`:preferences_path`; nil keeps
-       # the panel's mode in memory only). It is read and written by tasks
-       # this process owns, one at a time, the newest change waiting its turn.
+       # the panel's mode in memory only). cli74: every read and write of it
+       # is a job of one FIFO (`Init.PrefsQueue`, at most 32) run one at a
+       # time in a task this process owns.
        prefs: start_preferences(Keyword.get_lazy(opts, :preferences_path, &default_preferences/0))
      }}
   end
@@ -290,6 +296,19 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
     {:noreply, preferences_done(state, result)}
   end
 
+  def handle_info({ref, result}, %{folder: %{task: %Task{ref: ref}}} = state) do
+    Process.demonitor(ref, [:flush])
+    {:noreply, folder_done(state, result)}
+  end
+
+  def handle_info({:DOWN, ref, :process, _, _}, %{folder: %{task: %Task{ref: ref}}} = state),
+    do: {:noreply, folder_done(state, {:error, :failed})}
+
+  def handle_info({:folder_timeout, ref}, %{folder: %{task: %Task{ref: ref} = task}} = state) do
+    Task.shutdown(task, :brutal_kill)
+    {:noreply, folder_done(state, {:error, :timeout})}
+  end
+
   def handle_info({:DOWN, ref, :process, _, _}, %{prefs: %{task: %Task{ref: ref}}} = state),
     do: {:noreply, preferences_done(state, {:error, :crashed})}
 
@@ -424,18 +443,29 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
   # (owned by this process, linked and monitored) on the private copy.
   defp start_editor(%{edit: %{task: nil} = edit, ui: %{lifecycle: :suspended}} = state) do
     cancel(edit.timer)
-    runner = state.editor
+    runner = editor_runner(state)
     file = edit.file
+    # A draft never ends in the newline editors add; a settings file keeps
+    # its bytes exactly.
+    strip? = not match?({:settings, _, _}, edit.key)
 
     task =
       Task.async(fn ->
-        with :ok <- runner.(file), do: read_back(file)
+        with :ok <- runner.(file), do: read_back(file, strip?)
       end)
 
     %{state | edit: %{edit | task: task, timer: nil}}
   end
 
   defp start_editor(state), do: state
+
+  # cli74: `terminal.editor` (cli.json's "editor") comes before VISUAL and
+  # EDITOR; a runner injected by a test is used as it is.
+  defp editor_runner(%{editor: editor, ui: ui}) do
+    if editor == (&__MODULE__.run_editor/1),
+      do: &run_editor(&1, Map.get(ui.prefs, "editor")),
+      else: editor
+  end
 
   # The terminal comes back, the copy is removed, and the reducer gets the
   # text or the reason; whatever happened, the edit is over.
@@ -452,7 +482,13 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
         do: result,
         else: {:error, :unavailable}
 
-    update(%{state | edit: nil}, {:external_edit_done, edit.key, result})
+    case edit.key do
+      {:settings, generation, ref} ->
+        update(%{state | edit: nil}, {:settings, {:external_result, generation, ref, result}})
+
+      key ->
+        update(%{state | edit: nil}, {:external_edit_done, key, result})
+    end
   end
 
   @doc false
@@ -460,9 +496,9 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
   # arguments (`code -w`). A port child runs in a session of its own, so
   # `/dev/tty` is not there: with `:nouse_stdio` it inherits this VM's stdin
   # and stdout, the terminal itself (the native port reopens it the same way).
-  def run_editor(file) do
+  def run_editor(file, preferred \\ nil) do
     command =
-      [System.get_env("VISUAL"), System.get_env("EDITOR")]
+      [preferred, System.get_env("VISUAL"), System.get_env("EDITOR")]
       |> Enum.map(&String.trim(&1 || ""))
       |> Enum.find("vi", &(&1 != ""))
 
@@ -487,11 +523,11 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
     _ -> {:error, :unavailable}
   end
 
-  defp read_back(file) do
+  defp read_back(file, strip?) do
     with {:ok, %{size: size}} when size <= @max_edit_bytes + 1 <- File.stat(file),
          {:ok, text} <- File.read(file) do
       # Editors end a file with a newline the draft never had.
-      text = String.replace_suffix(text, "\n", "")
+      text = if strip?, do: String.replace_suffix(text, "\n", ""), else: text
 
       cond do
         byte_size(text) > @max_edit_bytes -> {:error, :too_large}
@@ -505,14 +541,14 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
   end
 
   # A private directory (0700) holding one file (0600) with the draft.
-  defp edit_copy(text) do
+  defp edit_copy(text, name \\ "draft.md") do
     dir =
       Path.join(
         System.tmp_dir!(),
         "swarmcode-edit-" <> Base.url_encode64(:crypto.strong_rand_bytes(12), padding: false)
       )
 
-    file = Path.join(dir, "draft.md")
+    file = Path.join(dir, name)
 
     with :ok <- File.mkdir(dir),
          :ok <- File.chmod(dir, 0o700),
@@ -581,7 +617,7 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
   @doc false
   def time_dependent?(%{lifecycle: :running, read_model: model, now: now} = ui) do
     Enum.any?(model.runs, fn {_, run} -> run.state in @live_run_states end) or
-      SwarmCodeCLI.UI.State.fading_notice?(ui) or
+      SwarmCodeCLI.UI.State.fading_notice?(ui) or settings_ticking?(ui) or
       case Map.get(model, :toasts, []) do
         [%{at: at} | _] when is_integer(at) and is_integer(now) -> now - at < @toast_window_ms
         _ -> false
@@ -589,6 +625,19 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
   end
 
   def time_dependent?(_ui), do: false
+
+  # cli74 §4.9: an open settings layer repaints each second only while a
+  # task it shows is running, a write is saving or a toast is fading.
+  defp settings_ticking?(%{settings: %SwarmCodeCLI.UI.Settings.Layer{} = layer, now: now}) do
+    Enum.any?(layer.tasks, fn {_id, task} -> SwarmCodeCLI.UI.Settings.Tasks.running?(task) end) or
+      Enum.any?(layer.writes, fn {_key, write} -> Map.get(write, :saving?) == true end) or
+      case layer.status do
+        %{at: at, ms: ms} when is_integer(at) and is_integer(now) -> now - at < ms
+        _ -> false
+      end
+  end
+
+  defp settings_ticking?(_ui), do: false
 
   # A live session reads the wall clock at every commit, so the tabs' elapsed
   # times move. A scripted session (a demo, a test) was given a fixed clock at
@@ -728,18 +777,57 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
   defp local_effect(state, {:edit_externally, key, _text}),
     do: update(state, {:external_edit_done, key, {:error, :busy}})
 
-  defp local_effect(%{prefs: %{path: nil}} = state, {:save_preferences, _}), do: state
+  # cli74: the external editor on a settings text or file. The same private
+  # copy and the same terminal hand-over as Ctrl-X in the composer; the
+  # answer goes to the settings layer that asked, by generation and ref.
+  defp local_effect(
+         %{phase: :running, terminal: terminal, edit: nil} = state,
+         {:settings_external_edit, generation, ref, %{content: content, suffix: suffix}}
+       )
+       when is_pid(terminal) do
+    key = {:settings, generation, ref}
 
-  defp local_effect(%{prefs: %{task: nil} = prefs} = state, {:save_preferences, wanted}),
-    do: %{state | prefs: %{prefs | task: write_task(prefs.path, wanted), changed?: true}}
+    case edit_copy(content, "edit" <> suffix) do
+      {:ok, dir, file} ->
+        send(terminal, {:terminal_control, :suspend, state.ui.terminal_generation})
+        timer = Process.send_after(self(), {:edit_timeout, key}, @suspend_ms)
+        %{state | edit: %{key: key, dir: dir, file: file, task: nil, timer: timer}}
 
-  # pass73-K: a change waiting behind the write in flight joins the others
-  # that wait (the panel, then the theme: both land).
-  defp local_effect(%{prefs: prefs} = state, {:save_preferences, wanted}),
-    do: %{
-      state
-      | prefs: %{prefs | pending: Map.merge(prefs.pending || %{}, wanted), changed?: true}
-    }
+      :error ->
+        update(state, {:settings, {:external_result, generation, ref, {:error, :unavailable}}})
+    end
+  end
+
+  defp local_effect(%{edit: nil} = state, {:settings_external_edit, generation, ref, _spec}),
+    do: update(state, {:settings, {:external_result, generation, ref, {:error, :terminal}}})
+
+  defp local_effect(state, {:settings_external_edit, generation, ref, _spec}),
+    do: update(state, {:settings, {:external_result, generation, ref, {:error, :busy}}})
+
+  # cli74: `o` on a folder or path row. The desktop opens it in a task this
+  # process owns, bounded by a timer; one at a time.
+  defp local_effect(%{folder: nil} = state, {:settings_open_folder, generation, path}) do
+    task = Task.async(fn -> open_folder(path) end)
+    timer = Process.send_after(self(), {:folder_timeout, task.ref}, @folder_ms)
+    %{state | folder: %{task: task, timer: timer, generation: generation}}
+  end
+
+  defp local_effect(state, {:settings_open_folder, generation, _path}),
+    do: update(state, {:settings, {:folder_result, generation, {:error, :busy}}})
+
+  # pass73-K, cli74: every cli.json read and write is one job of the
+  # preference queue; the legacy saves write only the keys they change.
+  defp local_effect(state, {:save_preferences, wanted}),
+    do: enqueue(%{state | prefs: %{state.prefs | changed?: true}}, {:legacy, wanted})
+
+  defp local_effect(state, {:settings_cli_read, generation}),
+    do: enqueue(state, {:read, generation})
+
+  defp local_effect(state, {:settings_cli_write, generation, ref, changes, expected}),
+    do: enqueue(state, {:write, generation, ref, changes, expected})
+
+  defp local_effect(state, {:settings_cli_write_text, generation, ref, text, fingerprint}),
+    do: enqueue(state, {:write_text, generation, ref, text, fingerprint})
 
   # pass73-K (T2, T9): the terminal's owner repaints in the other theme or
   # turns wheel reports on or off; an owner that does not know the message
@@ -765,40 +853,127 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
       else: nil
   end
 
-  defp start_preferences(path) when is_binary(path) do
-    task = Task.async(fn -> {:read, Preferences.read(path)} end)
-    %{path: path, task: task, pending: nil, changed?: false}
-  end
+  defp start_preferences(path) when is_binary(path),
+    do: start_job(empty_preferences(path), :boot)
 
-  defp start_preferences(_path), do: %{path: nil, task: nil, pending: nil, changed?: false}
+  defp start_preferences(_path), do: empty_preferences(nil)
 
-  defp write_task(path, wanted),
-    do: Task.async(fn -> {:written, Preferences.write(path, wanted)} end)
+  defp empty_preferences(path),
+    do: %{path: path, task: nil, job: nil, queue: PrefsQueue.new(), known: %{}, changed?: false}
 
-  # A read answers once, at start, and is ignored when the user has already
-  # chosen; a write makes room for the change that waited behind it.
-  defp preferences_done(%{prefs: prefs} = state, result) do
-    state = %{state | prefs: %{prefs | task: nil}}
+  # The values the session last read travel with the job: a legacy save
+  # expects each key it writes to still hold them.
+  defp start_job(%{path: path, known: known} = prefs, job),
+    do: %{prefs | task: Task.async(fn -> Preferences.run(path, job, known) end), job: job}
 
-    state =
-      case result do
-        {:read, %{panel_mode: mode} = read} when not prefs.changed? ->
-          state = update(state, {:panel_preferences_loaded, mode})
-          loaded = Map.take(read, [:show_diffs, :theme, :mouse?])
-          if loaded == %{}, do: state, else: update(state, {:preferences_loaded, loaded})
+  defp enqueue(%{prefs: %{path: nil}} = state, job),
+    do: preferences_answer(state, Preferences.unavailable(job))
 
-        _ ->
-          state
-      end
+  defp enqueue(%{prefs: %{task: nil} = prefs} = state, job),
+    do: %{state | prefs: start_job(prefs, job)}
 
-    case state.prefs do
-      %{pending: nil} ->
-        state
-
-      %{pending: wanted} = current ->
-        %{state | prefs: %{current | pending: nil, task: write_task(current.path, wanted)}}
+  defp enqueue(%{prefs: prefs} = state, job) do
+    case PrefsQueue.push(prefs.queue, job) do
+      {:ok, queue} -> %{state | prefs: %{prefs | queue: queue}}
+      {:error, :busy} -> preferences_answer(state, Preferences.unavailable(job, :busy))
     end
   end
+
+  defp preferences_done(%{prefs: prefs} = state, {answer, known}) when is_map(known) do
+    state = %{state | prefs: %{prefs | task: nil, job: nil, known: known}}
+    state |> preferences_answer(answer) |> next_job()
+  end
+
+  defp preferences_done(%{prefs: prefs} = state, _crashed) do
+    state = %{state | prefs: %{prefs | task: nil, job: nil}}
+    state |> preferences_answer(Preferences.unavailable(prefs.job, :crashed)) |> next_job()
+  end
+
+  defp next_job(%{prefs: %{task: nil} = prefs} = state) do
+    case PrefsQueue.pop(prefs.queue) do
+      {:ok, job, queue} -> %{state | prefs: start_job(%{prefs | queue: queue}, job)}
+      :empty -> state
+    end
+  end
+
+  defp next_job(state), do: state
+
+  # The boot read answers once and is ignored for the legacy four when the
+  # user has already chosen; every snapshot refreshes `state.prefs`.
+  defp preferences_answer(state, {:boot, snapshot}) do
+    state =
+      if state.prefs.changed? do
+        state
+      else
+        read = Preferences.legacy(snapshot.values)
+        state = update(state, {:panel_preferences_loaded, read.panel_mode})
+        update(state, {:preferences_loaded, Map.take(read, [:show_diffs, :theme, :mouse?])})
+      end
+
+    update(state, {:settings, {:cli_snapshot, nil, snapshot}})
+  end
+
+  defp preferences_answer(state, {:legacy, _wanted, {:ok, snapshot}}),
+    do: update(state, {:settings, {:cli_snapshot, nil, snapshot}})
+
+  defp preferences_answer(state, {:legacy, _wanted, {:conflict, current}}),
+    do: update(state, {:settings, {:prefs_conflict, current}})
+
+  defp preferences_answer(state, {:legacy, _wanted, {:error, reason}}) do
+    if reason != :unavailable,
+      do: Logger.info("SwarmCode: cli.json was not written (#{inspect(reason)})")
+
+    state
+  end
+
+  defp preferences_answer(state, {:legacy, _wanted, {:error, :invalid, _messages}}), do: state
+
+  defp preferences_answer(state, {:cli_snapshot, generation, snapshot}),
+    do: update(state, {:settings, {:cli_snapshot, generation, snapshot}})
+
+  defp preferences_answer(state, {:cli_result, generation, ref, result}),
+    do: update(state, {:settings, {:cli_result, generation, ref, result}})
+
+  defp preferences_answer(state, _answer), do: state
+
+  defp folder_done(%{folder: folder} = state, result) do
+    cancel(folder.timer)
+    update(%{state | folder: nil}, {:settings, {:folder_result, folder.generation, result}})
+  end
+
+  @doc false
+  # cli74: `o` in Settings. macOS opens the folder with `open`; Linux with
+  # `xdg-open` when a display is there; never over SSH. A folder that does
+  # not exist is not created by a read.
+  def open_folder(path, env \\ System.get_env(), os \\ :os.type()) do
+    with {:ok, command} <- folder_opener(os, env),
+         {:dir, true} <- {:dir, File.dir?(path)},
+         executable when is_binary(executable) <- System.find_executable(command) do
+      case System.cmd(executable, [path], stderr_to_stdout: true) do
+        {_output, 0} -> :ok
+        _ -> {:error, :failed}
+      end
+    else
+      {:dir, false} -> {:error, :missing}
+      nil -> {:error, :no_desktop}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc false
+  def folder_opener(os, env) do
+    ssh? = present?(Map.get(env, "SSH_CONNECTION"))
+    display? = present?(Map.get(env, "DISPLAY")) or present?(Map.get(env, "WAYLAND_DISPLAY"))
+
+    case os do
+      _ when ssh? -> {:error, :no_desktop}
+      {:unix, :darwin} -> {:ok, "open"}
+      {:unix, _} when display? -> {:ok, "xdg-open"}
+      _ -> {:error, :no_desktop}
+    end
+  end
+
+  defp present?(value), do: is_binary(value) and String.trim(value) != ""
 
   defp copy_notice(state, result) do
     text =
@@ -811,6 +986,11 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
 
         {:error, :invalid_text} ->
           "Not copied: the text is over 64 KiB or has control characters."
+
+        # cli74 (§3.7.2): `y` in Settings copies a key or a path, which the
+        # detail pane always shows.
+        _ when is_struct(state.ui.settings) ->
+          "Couldn't copy · the path is shown in the detail"
 
         _ ->
           "This terminal cannot take a copy from SwarmCode."
@@ -1106,6 +1286,7 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
   def terminate(_, state) do
     if state.edit && state.edit.task, do: Task.shutdown(state.edit.task, :brutal_kill)
     if state.prefs.task, do: Task.shutdown(state.prefs.task, 1_000)
+    if state.folder, do: Task.shutdown(state.folder.task, :brutal_kill)
     remove_edit(state.edit)
     cancel(state.close_timer)
     cancel(state.binding_timer)
@@ -1129,7 +1310,12 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
     |> Map.put(:message, :redacted)
     |> Map.put(:reason, :redacted)
     |> Map.put(:log, [])
+    |> redact_queue()
   end
+
+  # cli74 (§3.11): a paste waiting in the mailbox is a secret too.
+  defp redact_queue(%{queue: _} = status), do: Map.put(status, :queue, [])
+  defp redact_queue(status), do: status
 
   defp summary(state),
     do: %{

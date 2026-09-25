@@ -19,7 +19,14 @@ defmodule SwarmCodeCLI.UI.Keymap.Docs do
     dialog: "Dialogs",
     field: "Text fields inside dialogs",
     overlay: "Agent overlay",
-    hint: "Hint mode (Ctrl-F)"
+    hint: "Hint mode (Ctrl-F)",
+    settings: "Settings: browsing the rail and the pages",
+    settings_search: "Settings: the search row and the `:` command line",
+    settings_edit: "Settings: a value being edited",
+    settings_paste: "Settings: pasting a key",
+    settings_capture: "Settings: capturing a key (Key bindings)",
+    settings_picker: "Settings: a picker",
+    settings_popover: "Settings: a confirmation, the key help or the leave question"
   ]
 
   @groups [
@@ -30,13 +37,34 @@ defmodule SwarmCodeCLI.UI.Keymap.Docs do
     layers: "Layers",
     edit: "Edit",
     vim: "Vim",
-    session: "Session"
+    session: "Session",
+    settings: "Settings"
   ]
 
   @mouse_note "Mouse: the wheel scrolls the pane under the pointer (the transcript, the side " <>
                 "panel, the agent overlay, the pager), three lines a notch. While wheel reports " <>
                 "are on, Shift-drag (Option-drag in Terminal.app and iTerm2) selects text; " <>
                 "`/mouse off` gives the terminal its own selection back."
+
+  # cli74 U1-2: the settings layer's chapter (spec §3.9, §4.3).
+  @settings_intro """
+
+  # Settings
+
+  `F2` or `/settings` (also `/config`, `/prefs`) opens Settings over the
+  shell; `/settings <words>` opens it at the matching section or setting.
+  Esc goes back one level and closes Settings at a section page; `q` closes
+  it from anywhere. The letters below act on the focused row, and the footer
+  lists only the letters that row answers to, in its own words (`t test the
+  connection`, `R restart now`). With the vim keymap `j`, `k`, `g g` and `G`
+  also move. Ctrl-C clears a text, then cancels; on a page it closes
+  Settings, and a second Ctrl-C quits as in the shell.
+
+  Every key except Esc, Enter, the arrows, Ctrl-C, `?`/`F1` and Ctrl-S can be
+  changed on Settings › Keys & input (stored in cli.json's `keys`). If a
+  change leaves you without a way back, run `swarmcode config reset
+  terminal.keys` in a shell.
+  """
 
   @doc """
   pass73 T9: the sentence about the mouse, for this reference and the help
@@ -64,7 +92,11 @@ defmodule SwarmCodeCLI.UI.Keymap.Docs do
     #{@mouse_note}
     """
 
-    header <> Enum.map_join(Bindings.contexts(), "", &context/1)
+    shell = Bindings.contexts() -- Bindings.settings_contexts()
+
+    header <>
+      Enum.map_join(shell, "", &context/1) <>
+      @settings_intro <> Enum.map_join(Bindings.settings_contexts(), "", &context/1)
   end
 
   @doc "The human title of `context`."

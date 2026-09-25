@@ -38,6 +38,12 @@ defmodule SwarmCodeCLI.UI.SlashPalette do
       args: "[on|off]",
       desc: "Wheel scrolling on, or off for the terminal's own selection; remembered"
     },
+    # cli74: the settings layer (F2); `/config` and `/prefs` open it too.
+    %{
+      name: "settings",
+      args: "[section or setting]",
+      desc: "Every setting: models, providers, search, MCP, keys, this terminal"
+    },
     %{name: "queue", args: "<text>", desc: "Send this after the running turn"},
     %{name: "help", args: "", desc: "List the commands and the keys"},
     %{name: "quit", args: "", desc: "Leave SwarmCode; running work of this session stops"}
@@ -46,7 +52,11 @@ defmodule SwarmCodeCLI.UI.SlashPalette do
 
   # pass73: commands whose meaning the client changed; their catalogue entry
   # (`diff` was "the files this conversation changed") lends no words.
-  @own_words ~w(diff theme mouse approval)
+  @own_words ~w(diff theme mouse approval settings)
+
+  # cli74: the client's `/settings` answers these names too, so a custom
+  # command of the same name is shadowed (Settings › Library says so).
+  @shadowed ~w(config prefs)
 
   # pass73 T4: commands with an optional argument that is their point; Enter
   # on the palette writes `/<name> ` for them and waits, as for a required
@@ -89,7 +99,7 @@ defmodule SwarmCodeCLI.UI.SlashPalette do
 
     names = Enum.map(local, & &1.name)
 
-    (local ++ Enum.reject(remote, &(&1.name in names)))
+    (local ++ Enum.reject(remote, &(&1.name in names or &1.name in @shadowed)))
     |> Enum.with_index()
     |> Enum.sort_by(fn {item, index} -> {score(item.name, needle), index} end)
     |> Enum.map(&elem(&1, 0))
