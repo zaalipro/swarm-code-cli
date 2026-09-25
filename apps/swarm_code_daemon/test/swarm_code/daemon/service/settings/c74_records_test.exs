@@ -81,6 +81,12 @@ defmodule SwarmCode.Daemon.Service.Settings.C74RecordsTest do
           assert {:ok, ^module} = Router.view(view, kind)
         end
       end
+
+      # every wire action the Router sends to an S2 handler is one it declares, and back
+      declared = Enum.flat_map(@s2_handlers, & &1.actions())
+      wire = SwarmCode.Settings.WireBounds.actions()
+      assert declared -- wire == []
+      assert Enum.filter(wire, &(Router.action_module(&1) in @s2_handlers)) -- declared == []
     end
   end
 

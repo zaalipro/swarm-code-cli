@@ -523,13 +523,14 @@ defmodule SwarmCode.Daemon.Service.Settings.Storage do
     settings = ProviderSettings.settings_row()
 
     %{
-      "storage" => %{
-        "retention_days" => settings.storage_retention_days,
-        "prune_days" => settings.storage_prune_days,
-        "last_sweep" => Kit.iso(settings.storage_last_cleanup_at),
-        "sessions_measured" => ctx |> store() |> then(&(&1 && length(&1))),
-        "cleanup_running" => Store.running?()
-      }
+      "storage" =>
+        Kit.glance(%{
+          "retention_days" => settings.storage_retention_days,
+          "prune_days" => settings.storage_prune_days,
+          "last_sweep" => Kit.iso(settings.storage_last_cleanup_at),
+          "sessions_measured" => ctx |> store() |> then(&(&1 && length(&1))),
+          "cleanup" => if(Store.running?(), do: "running", else: "idle")
+        })
     }
   end
 end

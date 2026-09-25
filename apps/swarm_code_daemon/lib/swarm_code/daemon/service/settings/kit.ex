@@ -409,6 +409,19 @@ defmodule SwarmCode.Daemon.Service.Settings.Kit do
     end
   end
 
+  @doc """
+  An Overview glance fragment (§3.4.2: numbers and strings, ≤ 16 entries):
+  nil entries dropped, at most 16 kept.
+  """
+  @spec glance(map()) :: map()
+  def glance(map) when is_map(map) do
+    map
+    |> Enum.filter(fn {_k, v} -> is_number(v) or is_binary(v) end)
+    |> Enum.sort()
+    |> Enum.take(16)
+    |> Map.new()
+  end
+
   @doc "Bytes in words: `512 B`, `12 KB`, `1.8 GB`."
   @spec bytes(integer() | nil) :: String.t()
   def bytes(nil), do: "0 B"

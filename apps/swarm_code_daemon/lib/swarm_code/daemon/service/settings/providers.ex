@@ -852,28 +852,15 @@ defmodule SwarmCode.Daemon.Service.Settings.Providers do
 
   defp applied_message(provider, _mode, _fetched), do: "#{provider.name}: models updated"
 
-  # The fetched list of a `provider.fetch_models` (or one provider of a
-  # `provider.fetch_all`) task, from the declared cache entry (§3.3.2).
+  # The fetched list of a `provider.fetch_models` task, from the declared
+  # cache entry (§3.3.2).
   defp fetched(ctx, task_id, id) when is_binary(task_id) do
-    entry =
-      Kit.task_entry(ctx, "provider.fetch_models", task_id) ||
-        Kit.task_entry(ctx, "provider.fetch_all", task_id)
-
+    entry = Kit.task_entry(ctx, "provider.fetch_models", task_id)
     result = entry && entry.result
 
-    cond do
-      is_map(result) and Kit.get(result, "provider_id") == id ->
-        {:ok, stringify(result)}
-
-      is_map(result) and is_list(Kit.get(result, "providers")) ->
-        case Enum.find(Kit.get(result, "providers"), &(Kit.get(&1, "id") == id)) do
-          %{} = row -> {:ok, stringify(row)}
-          nil -> fetch_again()
-        end
-
-      true ->
-        fetch_again()
-    end
+    if is_map(result) and Kit.get(result, "provider_id") == id,
+      do: {:ok, stringify(result)},
+      else: fetch_again()
   end
 
   defp fetched(_ctx, _task_id, _id), do: fetch_again()
@@ -937,8 +924,7 @@ defmodule SwarmCode.Daemon.Service.Settings.Providers do
       "added" => diff["added"],
       "removed" => diff["removed"],
       "truncated" => diff["truncated"],
-      "message" => nil,
-      "models" => diff["models"]
+      "message" => nil
     }
   end
 
@@ -990,7 +976,7 @@ defmodule SwarmCode.Daemon.Service.Settings.Providers do
     failed =
       for p <- providers, entry = last_check(ctx, p.id), entry.state in ["failed", "timeout"] do
         %{
-          id: "AT2:" <> p.id,
+          id: "AT2",
           severity: "error",
           section: "providers",
           target: %{"kind" => "provider", "id" => p.id},
@@ -1009,7 +995,7 @@ defmodule SwarmCode.Daemon.Service.Settings.Providers do
     keyless =
       for p <- providers, MapSet.member?(default_ids, p.id), not usable?(p) do
         %{
-          id: "AT3:" <> p.id,
+          id: "AT3",
           severity: "warning",
           section: "providers",
           target: %{"kind" => "provider", "id" => p.id},

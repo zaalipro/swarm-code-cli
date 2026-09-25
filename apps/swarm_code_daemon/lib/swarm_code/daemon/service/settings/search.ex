@@ -620,13 +620,14 @@ defmodule SwarmCode.Daemon.Service.Settings.Search do
       end)
 
     %{
-      "search" => %{
-        "engines" => length(engines),
-        "on" => length(on),
-        "first" => on |> List.first() |> then(&(&1 && Engines.label(&1.kind))),
-        "reader" => ProviderSettings.settings_row().research_reader || "web_fetch",
-        "failed" => failed
-      }
+      "search" =>
+        Kit.glance(%{
+          "engines" => length(engines),
+          "on" => length(on),
+          "first" => on |> List.first() |> then(&(&1 && Engines.label(&1.kind))),
+          "reader" => ProviderSettings.settings_row().research_reader || "web_fetch",
+          "failed" => failed
+        })
     }
   end
 

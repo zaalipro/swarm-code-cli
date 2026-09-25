@@ -233,7 +233,7 @@ defmodule SwarmCode.Daemon.Service.Settings.C74StorageTest do
   end
 
   test "glance", c do
-    assert %{"storage" => %{"retention_days" => nil, "cleanup_running" => false}} =
-             Storage.glance(c.ctx)
+    assert %{"storage" => %{"cleanup" => "idle"} = glance} = Storage.glance(c.ctx)
+    refute Map.has_key?(glance, "retention_days")
   end
 end
