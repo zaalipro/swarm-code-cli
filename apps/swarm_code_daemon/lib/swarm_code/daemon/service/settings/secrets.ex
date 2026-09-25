@@ -13,6 +13,7 @@ defmodule SwarmCode.Daemon.Service.Settings.Secrets do
   formats a secret itself.
   """
 
+  alias SwarmCode.Daemon.Service.Settings.Kit
   alias SwarmCode.Domain.MCP.Server
   alias SwarmCode.Domain.Providers.Provider
   alias SwarmCode.Domain.Search.SearchProvider
@@ -89,6 +90,33 @@ defmodule SwarmCode.Daemon.Service.Settings.Secrets do
       if is_map(entry) and slot_of(entry) == slot and is_binary(value_of(entry)),
         do: {:ok, value_of(entry)}
     end)
+  end
+
+  @doc """
+  The pasted value of `slot`, checked (§3.5.9): `{:ok, value}` or an
+  `invalid` error on the `field` row. The value is never in the error.
+  """
+  @spec required(map(), String.t(), String.t()) :: {:ok, String.t()} | {:error, struct()}
+  def required(command, slot, field \\ "api_key") do
+    case take(command, slot) do
+      :error ->
+        Kit.error(:invalid, "paste the key", [Kit.field_error(field, "paste the key")])
+
+      {:ok, value} ->
+        case check_paste(value) do
+          :ok -> {:ok, value}
+          {:error, message} -> Kit.error(:invalid, message, [Kit.field_error(field, message)])
+        end
+    end
+  end
+
+  @doc "The pasted value of an optional `slot`: `{:ok, nil}` when absent, else as `required/3`."
+  @spec optional(map(), String.t(), String.t()) :: {:ok, String.t() | nil} | {:error, struct()}
+  def optional(command, slot, field \\ "api_key") do
+    case take(command, slot) do
+      :error -> {:ok, nil}
+      {:ok, _} -> with {:ok, value} <- required(command, slot, field), do: {:ok, normalise(value)}
+    end
   end
 
   @doc "Every slot the command carries (never the values)."

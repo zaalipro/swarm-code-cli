@@ -41,6 +41,25 @@ defmodule SwarmCode.Daemon.Service.Settings.Kit do
      )}
   end
 
+  @doc "The `expected[key]` of a command (present, possibly null), or an `invalid` error."
+  @spec expected(map(), String.t()) :: {:ok, term()} | {:error, struct()}
+  def expected(command, key) do
+    expected = cmd(command, :expected)
+
+    if has?(expected, key),
+      do: {:ok, get(expected, key)},
+      else: error(:invalid, "expected is missing for #{key}")
+  end
+
+  @doc "The busy answer of a write that could not get the database."
+  @spec busy() :: {:error, struct()}
+  def busy, do: error(:busy, "Settings is busy; try again in a moment.")
+
+  @doc "The answer of a part of settings this build does not have."
+  @spec unsupported() :: {:error, struct()}
+  def unsupported,
+    do: error(:unsupported, "This part of settings is not available in this build.")
+
   @doc "A field error row."
   @spec field_error(String.t(), String.t()) :: map()
   def field_error(target, message), do: %{target: to_string(target), message: message}
