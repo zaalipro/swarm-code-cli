@@ -104,21 +104,23 @@ defmodule SwarmCode.Daemon.Service.SessionConfiguration do
     end
   end
 
-  # A provider can serve a turn when it has a key, or when it is a local
-  # server (a loopback URL) that needs none.
-  defp usable?(provider) do
-    (is_binary(provider.api_key) and String.trim(provider.api_key) != "") or
-      loopback?(provider.base_url)
+  @doc """
+  pass74 D11: the one "usable" predicate of launch, dispatch and the settings
+  attention: a provider can serve a turn when it has a non-blank key, or when its
+  base URL is a private host (loopback, RFC 1918, link-local, `.local`,
+  `.internal`, `.home.arpa` — `WebFetch.private_host?/1`) that needs none.
+  """
+  @spec usable?(map() | nil) :: boolean()
+  def usable?(%{} = provider) do
+    key = Map.get(provider, :api_key)
+    url = Map.get(provider, :base_url)
+
+    (is_binary(key) and String.trim(key) != "") or
+      (is_binary(url) and String.trim(url) != "" and
+         SwarmCode.Domain.Tools.WebFetch.private_host?(url))
   end
 
-  defp loopback?(url) when is_binary(url) do
-    case URI.parse(url) do
-      %URI{host: host} when host in ["localhost", "127.0.0.1", "::1", "[::1]"] -> true
-      _ -> false
-    end
-  end
-
-  defp loopback?(_), do: false
+  def usable?(_provider), do: false
 
   ## Session override
 

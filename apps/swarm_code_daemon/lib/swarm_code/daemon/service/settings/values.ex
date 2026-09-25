@@ -467,7 +467,6 @@ defmodule SwarmCode.Daemon.Service.Settings.Values do
   defp effective(conversation, kind) do
     case safe(fn -> Providers.effective_model(conversation, kind) end, nil) do
       {:ok, %{provider: provider, model: model}} -> {provider, model}
-      %{provider: provider, model: model} -> {provider, model}
       _ -> nil
     end
   end
