@@ -587,7 +587,6 @@ Mouse: the wheel scrolls the pane under the pointer (the transcript, the side pa
 | `Enter` | Activate what is focused; on an approval card that cuts its command, show all of it |
 | `Alt-Enter` | Queue the draft instead of sending it |
 | `y` | Confirm: yes; on an approval, allow it once |
-| `a` | Allow the pending request once (same as y) |
 | `Y` | Allow it for the rest of this run |
 | `A` | Always allow commands of this family in the project |
 | `d` | Deny the pending request; the run goes on without it |

@@ -103,8 +103,9 @@ act only while the overlay's composer is empty.
 An approval or a question opens over the conversation by itself; for a moment
 after it opens, keys keep typing into the draft, so a sentence is never
 answered by accident. Only the letters of the decisions the card offers answer
-it, and only while the draft is empty; any other letter types, and Enter with a
-draft sends it (the card stays). The approval card is a framed card above the
+it, and only while the draft is empty, also on a card you brought up with
+Ctrl-N or `n`; any other letter types, and Enter with a draft sends it (the
+card stays). The approval card is a framed card above the
 composer with the command in a code block of at most six lines; with the draft
 empty, Enter shows every line and Enter again folds them back. The client
 answers some slash commands itself: `/new`

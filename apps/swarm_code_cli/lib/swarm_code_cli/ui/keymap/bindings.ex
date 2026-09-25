@@ -1080,18 +1080,9 @@ defmodule SwarmCodeCLI.UI.Keymap.Bindings do
       help: "Confirm: yes; on an approval, allow it once",
       hint: 3
     },
-    # The older spelling of "allow once", kept so a card that still names
-    # :approve keeps its key.
-    %Binding{
-      id: :approve,
-      keys: [{"a", []}],
-      action: {:special, :approve},
-      contexts: [:dialog],
-      group: :act,
-      label: "Approve",
-      help: "Allow the pending request once (same as y)",
-      hint: 0
-    },
+    # pass73 G2 (QA Q2-01): the older "a" for "allow once" is gone. A card
+    # answers only to the decisions it offers, so "a" types into the draft
+    # under every approval card, focused or not; y allows once.
     %Binding{
       id: :approve_run,
       keys: [{"Y", []}],

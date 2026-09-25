@@ -436,10 +436,16 @@ defmodule SwarmCodeCLI.UI.Pass73Qa1Test do
       kept = press!(state, key(:page_down))
       assert {:settled, _, :rejected} = kept.mutations[{:draft, key()}]
 
-      # The card put aside and brought back on purpose answers to y.
+      # The card put aside and brought back on purpose. pass73 G2 (QA
+      # Q2-01): a draft under a focused card is the composer's too, so its y
+      # types ("hello" is edited, which also ends the refusal); the card is
+      # answered here with the action its y resolves to on an empty draft
+      # (a chip), which leaves the draft as it is.
       focused = state |> press!(key(:escape)) |> press!(ctrl("n"))
       assert [{:approval, "a1"} | _] = focused.layers
-      {answered, effects} = press(focused, letter("y"))
+      assert text(press!(focused, letter("y"))) == "helloy"
+      {:ok, answer} = Keymap.approval_key("y", focused, %{})
+      {answered, effects} = Reducer.update(focused, answer)
       assert [{:resolve_approval, "r", _, "a1", 5, :approve}] = commands(effects)
       assert text(answered) == "hello"
       refute Map.has_key?(answered.mutations, {:draft, key()})

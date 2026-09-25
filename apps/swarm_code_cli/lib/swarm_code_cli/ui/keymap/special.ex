@@ -299,7 +299,6 @@ defmodule SwarmCodeCLI.UI.Keymap.Special do
   def run(:dialog_page_down, _key, state, _table), do: dialog_page(state, :next, {:page, 1})
   def run(:dialog_page_up, _key, state, _table), do: dialog_page(state, :previous, {:page, -1})
 
-  def run(:approve, _key, state, table), do: Keymap.approval_key("a", state, table)
   def run(:deny, _key, state, table), do: Keymap.approval_key("d", state, table)
   def run(:deny_stop, _key, state, table), do: Keymap.approval_key("D", state, table)
   def run(:approve_run, _key, state, table), do: Keymap.approval_key("Y", state, table)

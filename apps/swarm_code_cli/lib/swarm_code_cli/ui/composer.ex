@@ -24,8 +24,8 @@ defmodule SwarmCodeCLI.UI.Composer do
     * `:fold`: the same, once the card shows them all: Enter folds it back
       (pass73 G1, QA Q1-05).
 
-  pass73 finisher: under an approval card that opened by itself, a draft
-  with text is still the composer's (`Keymap.typing_under_card?/1`), so
+  pass73 finisher: under an approval card (G2: opened by itself or
+  focused), a draft with text is still the composer's (`Keymap.typing_under_card?/1`), so
   Enter does with it what it does without the card.
 
   The daemon has the last word: it may still queue a message the client

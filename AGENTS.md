@@ -174,7 +174,8 @@ by `scripts/dev/sync_unicode_width.exs --check`, `sync_unicode_variants.py --che
   mode (Ctrl-T), dialogs and pickers. Ctrl-J (the port decodes a bare LF as Ctrl-J) and Ctrl-O insert a
   newline; Ctrl-X edits the draft in `$VISUAL`/`$EDITOR`. An approval card opens over the
   conversation by itself with `y Y A d D n`; only the letters of the decisions it offers answer it,
-  and only while the draft is empty; a draft typed under it is the composer's (pass73 G1: its
+  and only while the draft is empty, whether it opened by itself or was focused with Ctrl-N, `n` or
+  a badge (pass73 G2; there is no `a`); a draft typed under it is the composer's (pass73 G1: its
   `/` list, Enter, Tab, arrows, Ctrl-A/E/U/W, Ctrl-S, Alt-Enter; Ctrl-C clears it before it puts
   the card aside; Esc and PgUp/PgDn stay the card's), and with the draft empty Enter shows the
   whole command, then folds it (`Keymap.show_all?/2`). A run this session already asked to

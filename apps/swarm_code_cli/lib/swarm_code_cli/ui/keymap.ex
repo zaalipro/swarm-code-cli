@@ -257,8 +257,9 @@ defmodule SwarmCodeCLI.UI.Keymap do
       typing_over_card?(code, mods, state) ->
         draft_edit(state, if(code == :backspace, do: :delete_backward, else: {:insert, code}))
 
-      # pass73 finisher: Enter under a card that opened by itself sends the
-      # draft typed there (steers the turn, starts a run…); the card stays.
+      # pass73 finisher: Enter under an approval card sends the draft typed
+      # there (steers the turn, starts a run…); the card stays (G2: whether
+      # it opened by itself or the user focused it).
       # pass73 G1 (QA Q1-01): the `/` list is open there too, so Enter first
       # completes or runs its highlighted command, as it does without a card.
       sending_under_card?(code, mods, state) ->
@@ -403,15 +404,17 @@ defmodule SwarmCodeCLI.UI.Keymap do
   # pass72 G10 (QA Q11): a card that opened by itself answers only to its
   # own keys while the draft is empty. Any other character, or any character
   # once the draft has text, types into the composer under the card, where
-  # the user sees it; "abc" used to approve a command with its "a". A card
-  # the user focused (^N, a badge) keeps the whole grammar. pass73 finisher
-  # (V1's request K3): its own keys are the decisions it offers (`n` walks to
-  # the next one), so the "A" of "Also add …" types when the card offers no
-  # "always".
+  # the user sees it; "abc" used to approve a command with its "a". pass73
+  # finisher (V1's request K3): its own keys are the decisions it offers (`n`
+  # walks to the next one), so the "A" of "Also add …" types when the card
+  # offers no "always". pass73 G2 (QA Q2-01): a card the user focused (^N,
+  # `n`, a badge) is the same card over the same composer, so it follows the
+  # same rule; it used to keep the whole dialog grammar, and "hey" typed at
+  # it swallowed "h" and "e" and approved a command with its "y".
   defp typing_over_card?(_code, _mods, %{hint: %{}}), do: false
 
-  defp typing_over_card?(code, mods, %{auto_opened: id, layers: [{:approval, id} | _]} = state)
-       when not is_nil(id) and (mods == [] or mods == [:shift]) do
+  defp typing_over_card?(code, mods, %{layers: [{:approval, id} | _]} = state)
+       when is_binary(id) and (mods == [] or mods == [:shift]) do
     typing? = String.trim(draft_text(state)) != ""
 
     cond do
@@ -425,7 +428,9 @@ defmodule SwarmCodeCLI.UI.Keymap do
 
   defp typing_over_card?(_code, _mods, _state), do: false
 
-  # The letters a pending approval answers to: one per decision it offers.
+  # The letters a pending approval answers to: one per decision it offers,
+  # `n` (the next one) and `?` (the keys, pass73 G2: the status row offers
+  # "? keys" on an empty draft, and `?` used to type there instead).
   defp card_answers(state, id) do
     case Map.get(state.read_model.interactions, id) do
       %{kind: :approval} = item ->
@@ -437,26 +442,27 @@ defmodule SwarmCodeCLI.UI.Keymap do
           {"A", :always_prefix in offered or :always_allow in offered},
           {"d", :deny in offered},
           {"D", :deny_stop in offered},
-          {"n", true}
+          {"n", true},
+          {"?", true}
         ]
         |> Enum.flat_map(fn {key, offered?} -> if offered?, do: [key], else: [] end)
 
       _ ->
-        ["n"]
+        ["n", "?"]
     end
   end
 
   @doc """
   pass73 finisher: whether Enter sends the composer's draft although an
-  approval card is open: the card opened by itself (the user did not focus
-  it) and the draft under it holds text. The card stays open.
+  approval card is open: the draft under the card holds text. The card stays
+  open. pass73 G2 (QA Q2-01): whether the card opened by itself or the user
+  focused it (^N, `n`, a badge).
   """
   @spec typing_under_card?(map()) :: boolean()
   def typing_under_card?(%{hint: %{}}), do: false
 
-  def typing_under_card?(%{auto_opened: id, layers: [{:approval, id} | _]} = state)
-      when not is_nil(id),
-      do: String.trim(draft_text(state)) != ""
+  def typing_under_card?(%{layers: [{:approval, id} | _]} = state) when is_binary(id),
+    do: String.trim(draft_text(state)) != ""
 
   def typing_under_card?(_state), do: false
 
@@ -472,7 +478,7 @@ defmodule SwarmCodeCLI.UI.Keymap do
   end
 
   # pass73 G1 (QA Q1-02): the composer keys that act on a draft typed under
-  # a card that opened by itself: the caret and selection moves, the line
+  # an approval card (G2: opened by itself or focused): the caret and selection moves, the line
   # and word deletions, undo, a new line, Tab's completion, and the two
   # other ways to send (Ctrl-S plain, Alt-Enter queue). Ctrl-C clears that
   # draft first in the reducer. Esc ("later"), PgUp/PgDn (the card's

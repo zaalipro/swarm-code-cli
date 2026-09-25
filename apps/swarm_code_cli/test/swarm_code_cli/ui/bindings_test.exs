@@ -27,7 +27,6 @@ defmodule SwarmCodeCLI.UI.BindingsTest do
   }
 
   @dialog_layers %{
-    approve: {:approval, "approval-1"},
     approve_run: {:approval, "approval-1"},
     deny: {:approval, "approval-1"},
     deny_stop: {:approval, "approval-1"},
