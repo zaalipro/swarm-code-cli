@@ -1052,6 +1052,17 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
 
   @diff_preview 12
 
+  # pass74 (§2.15 `terminal.diff_lines`): the lines of a hunk drawn before
+  # "… N more lines", from cli.json through `state.prefs` (4–200), else 12.
+  defp diff_preview(state) do
+    prefs = Map.get(state, :prefs) || %{}
+
+    case Map.get(prefs, "diff_lines") do
+      n when is_integer(n) and n >= 4 and n <= 200 -> n
+      _ -> @diff_preview
+    end
+  end
+
   # The diff an edit row shows: the daemon's first hunk (`ToolCall.hunk`,
   # pass71 S contract, read with `Map.get` until it is on the wire), else the
   # item's own text when that is a unified diff.
@@ -1078,7 +1089,7 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
     |> Enum.drop_while(&(not String.starts_with?(&1, "@@")))
   end
 
-  # An edit's first hunk, in place: its `@@` line and at most a dozen lines in
+  # An edit's first hunk, in place: its `@@` line and at most `diff_preview/1` lines in
   # the diff colours, then how many lines the whole diff has beyond them.
   defp first_hunk(text, tool, state, width, indent) do
     policy = state.capabilities.ambiguous_width
@@ -1095,7 +1106,7 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
           {[], []}
       end
 
-    shown = Enum.take(hunk, @diff_preview)
+    shown = Enum.take(hunk, diff_preview(state))
 
     # The daemon may send only the first hunk and count the rest.
     total =

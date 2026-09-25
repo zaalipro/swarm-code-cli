@@ -262,22 +262,23 @@ defmodule SwarmCodeCLI.UI.Settings.C74KeymapTest do
   end
 
   describe "overrides and key names (the seam U3 fills)" do
-    test "the pass-through overrides answer with the defaults" do
+    # pass74 U3-2: the overrides are real now (U3 owns overrides.ex after
+    # c74-U1-api): an override moves the binding, its default key is unbound.
+    test "an override moves a binding and unbinds its default key" do
       overrides = Overrides.compile(%{"settings_add" => ["b"]})
-      assert Overrides.lookup(overrides, :settings, "a", []) == :default
-      assert Overrides.keys_for(overrides, :settings_add) == :default
+      assert overrides.errors == []
+      assert Overrides.lookup(overrides, :settings, "a", []) == :unbound
+      assert Overrides.keys_for(overrides, :settings_add) == [{"b", []}]
       assert Overrides.check(overrides, "settings_add", ["b"]) == :ok
-      assert Bindings.lookup(:settings, "a", [], overrides).id == :settings_add
-      assert Bindings.keys_for(:settings_add, overrides) == [{"a", []}]
+      assert Bindings.lookup(:settings, "b", [], overrides).id == :settings_add
+      assert Bindings.lookup(:settings, "a", [], overrides) == nil
+      assert Bindings.keys_for(:settings_add, overrides) == [{"b", []}]
       binding = Bindings.fetch(:settings_add)
-      assert Bindings.key_in_context(binding, :settings, overrides) == {"a", []}
+      assert Bindings.key_in_context(binding, :settings, overrides) == {"b", []}
 
-      reached = Overrides.bindings_for_key(overrides, "a")
+      reached = Overrides.bindings_for_key(overrides, "b")
       assert Enum.any?(reached, &match?({%Binding{id: :settings_add}, [:settings]}, &1))
-
-      assert Enum.all?(reached, fn {binding, contexts} ->
-               contexts != [] and binding.id != :help
-             end)
+      assert Enum.all?(reached, fn {_binding, contexts} -> contexts != [] end)
 
       ids = overrides |> Overrides.bindings_for_key("Ctrl-C") |> Enum.map(&elem(&1, 0).id)
       assert :interrupt in ids and :settings_interrupt in ids
