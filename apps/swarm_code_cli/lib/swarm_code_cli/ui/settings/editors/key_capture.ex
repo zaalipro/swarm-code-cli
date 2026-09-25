@@ -23,6 +23,8 @@ defmodule SwarmCodeCLI.UI.Settings.Editors.KeyCapture do
   1.5 s cancels. Pure: time is `ctx.now`.
   """
 
+  @behaviour SwarmCodeCLI.UI.Settings.Editor
+
   alias SwarmCodeCLI.UI.Keymap.{KeyName, Overrides}
 
   @double_esc_ms 1_500
@@ -42,7 +44,7 @@ defmodule SwarmCodeCLI.UI.Settings.Editors.KeyCapture do
           last_esc: nil | integer()
         }
 
-  @doc false
+  @impl true
   def init(row, opts, ctx) do
     opts = opts || %{}
     mode = Map.get(opts, :mode, :binding)
@@ -78,7 +80,7 @@ defmodule SwarmCodeCLI.UI.Settings.Editors.KeyCapture do
 
   # ------------------------------------------------------------------ keys
 
-  @doc false
+  @impl true
   def handle(%{phase: :capture} = state, {:raw, {:escape, []}}, ctx), do: escape(state, ctx)
   def handle(%{phase: :capture} = state, {:key, :escape}, ctx), do: escape(state, ctx)
 
@@ -296,7 +298,7 @@ defmodule SwarmCodeCLI.UI.Settings.Editors.KeyCapture do
 
   # --------------------------------------------------------------- display
 
-  @doc false
+  @impl true
   def display(state, ctx) do
     tier = tier(ctx)
 

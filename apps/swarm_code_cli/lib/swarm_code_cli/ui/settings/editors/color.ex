@@ -13,16 +13,18 @@ defmodule SwarmCodeCLI.UI.Settings.Editors.Color do
   palette of the running session).
   """
 
+  @behaviour SwarmCodeCLI.UI.Settings.Editor
+
   alias SwarmCodeCLI.Release.TerminalPreferences
   alias SwarmCodeCLI.UI.Theme
 
   @max_bytes 16
   @carbon 0xFF6A1A
 
-  @doc false
-  def init(row, _opts, ctx) do
+  @impl true
+  def init(row, opts, ctx) do
     text =
-      case current(row, ctx) do
+      case Map.get(opts || %{}, :value) || current(row, ctx) do
         value when is_binary(value) -> value
         _ -> ""
       end
@@ -30,7 +32,7 @@ defmodule SwarmCodeCLI.UI.Settings.Editors.Color do
     {:ok, %{text: text, original: text, message: nil}}
   end
 
-  @doc false
+  @impl true
   def handle(state, {:text, text}, _ctx) do
     text = state.text <> String.replace(text, ~r/[\r\n\s]/u, "")
     {:cont, %{state | text: binary_part(text, 0, min(byte_size(text), @max_bytes)), message: nil}}
@@ -59,7 +61,7 @@ defmodule SwarmCodeCLI.UI.Settings.Editors.Color do
 
   def handle(state, _event, _ctx), do: {:cont, state}
 
-  @doc false
+  @impl true
   def display(state, ctx) do
     value = [{state.text, :code}]
 
