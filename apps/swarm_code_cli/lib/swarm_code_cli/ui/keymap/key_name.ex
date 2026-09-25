@@ -112,7 +112,8 @@ defmodule SwarmCodeCLI.UI.Keymap.KeyName do
   glyph tiers, words in ascii; everything else as `Projector.KeyLabel` spells
   it for the rest of the interface.
   """
-  @spec format(key() | String.t(), :rich | :measured | :ascii | boolean()) :: String.t()
+  @spec format(key() | String.t(), :stored | :rich | :measured | :ascii | boolean()) ::
+          String.t()
   def format(name, tier) when is_binary(name) do
     case parse(name) do
       {:ok, [key | _]} -> format(key, tier)
@@ -120,6 +121,7 @@ defmodule SwarmCodeCLI.UI.Keymap.KeyName do
     end
   end
 
+  def format(key, :stored), do: name(key)
   def format(key, tier), do: KeyLabel.label(key, tier in [:ascii, true])
 
   @doc "The canonical stored spelling of a typed name, or the parse error."
