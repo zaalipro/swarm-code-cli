@@ -120,6 +120,22 @@ defmodule SwarmCodeCLI.UI.Settings.C74FollowupsTest do
     end
   end
 
+  test "a cli.json write that could not happen says why once (a demo session keeps none)" do
+    {state, _} = act(ready(), {:settings_open, {:key, "terminal.panel"}})
+    {state, effects} = act(state, {:settings, {:verb, :right}})
+
+    [{:settings_cli_write, gen, ref, _changes, _expected}] =
+      for({:settings_cli_write, _, _, _, _} = write <- effects, do: write)
+
+    {state, _} = act(state, {:settings, {:cli_result, gen, ref, {:error, :unavailable}}})
+
+    assert state.settings.status.text ==
+             "Couldn't save: this session keeps no cli.json (a demo or a test session)"
+
+    assert SwarmCodeCLI.UI.Reducer.Settings.Commit.cli_words(:eacces) ==
+             "cli.json could not be written (eacces)"
+  end
+
   describe "cli.json that could not be read" do
     test "every page still draws (found on a real screen: the demo has no cli.json)" do
       {state, _} = act(ready(), {:resize, %SwarmCodeCLI.UI.Size{columns: 160, rows: 45}})
@@ -140,16 +156,19 @@ defmodule SwarmCodeCLI.UI.Settings.C74FollowupsTest do
         assert scene.regions != []
       end
 
-      {state, _} = act(state, {:settings_open, {:section, :overview}})
-      state = if state.settings, do: state, else: elem(act(state, {:settings_open, nil}), 0)
-
-      titles =
+      titles = fn state ->
         state
         |> Nav.ctx()
         |> SwarmCodeCLI.UI.Settings.Sections.Overview.items()
         |> Enum.map(& &1.title)
+      end
 
-      assert "cli.json could not be read" in titles
+      # No cli.json in this session (the demo): nothing to fix.
+      refute "cli.json could not be read" in titles.(state)
+
+      layer = state.settings
+      failed = %{state | settings: %{layer | data: %{layer.data | cli: {:error, :eacces}}}}
+      assert "cli.json could not be read" in titles.(failed)
     end
   end
 end

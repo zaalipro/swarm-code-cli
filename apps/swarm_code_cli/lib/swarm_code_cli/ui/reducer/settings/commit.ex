@@ -312,7 +312,20 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Commit do
       {:rejected,
        Map.get(messages, write.name) || messages |> Map.values() |> List.first() || "is invalid"}
 
-  defp cli_outcome({:error, reason}, _write), do: {:failed, CliFile.words(reason)}
+  defp cli_outcome({:error, reason}, _write), do: {:failed, cli_words(reason)}
+
+  @doc """
+  Why a cli.json write did not happen, in words that follow "Couldn't save: "
+  (a session without a cli.json — the demo, a test — says so).
+  """
+  @spec cli_words(term()) :: String.t()
+  def cli_words(:unavailable), do: "this session keeps no cli.json (a demo or a test session)"
+
+  def cli_words(reason) when reason in [:symlink, :busy, :too_large, :not_json, :unreadable],
+    do: CliFile.words(reason)
+
+  def cli_words(reason) when is_atom(reason), do: "cli.json could not be written (#{reason})"
+  def cli_words(_reason), do: "cli.json could not be written"
 
   defp accepted(%{sent: sent, expected: expected}) do
     if sent == expected or (sent == :remove and expected == :absent),

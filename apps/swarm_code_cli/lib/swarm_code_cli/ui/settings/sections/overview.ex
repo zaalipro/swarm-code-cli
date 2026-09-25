@@ -218,6 +218,9 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Overview do
   defp cli_attention(%Ctx{data: %{cli: cli}}), do: cli_items(cli)
   defp cli_attention(_ctx), do: []
 
+  # A session that keeps no cli.json (the demo, a test) has nothing to fix.
+  defp cli_items({:error, :unavailable}), do: []
+
   defp cli_items({:error, _reason}),
     do: [cli_item("cli:unreadable", :error, CliFile.words(:unreadable), reset_words())]
 

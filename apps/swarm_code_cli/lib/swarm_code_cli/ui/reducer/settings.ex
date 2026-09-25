@@ -21,7 +21,6 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings do
   """
 
   alias SwarmCodeCLI.UI.{Hint, SafeText, State}
-  alias SwarmCode.Settings.CliFile
   alias SwarmCodeCLI.UI.Init.Preferences
   alias SwarmCodeCLI.UI.Reducer.Settings.{Commit, Edit, Find, Ops, Popover, Responses}
   alias SwarmCodeCLI.UI.Settings.{DeepLink, Layer, Nav, Page, Sections, Wire}
@@ -652,7 +651,7 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings do
         {Commit.status(state, "Couldn't save: " <> first(messages), :error), []}
 
       {:error, reason} ->
-        {Commit.status(state, "Couldn't save: " <> CliFile.words(reason), :error), []}
+        {Commit.status(state, "Couldn't save: " <> Commit.cli_words(reason), :error), []}
     end
   end
 
