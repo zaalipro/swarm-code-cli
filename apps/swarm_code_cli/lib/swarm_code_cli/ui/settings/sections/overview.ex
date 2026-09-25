@@ -3,10 +3,11 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Overview do
   The Overview page (spec §2.1, §4.14, frame F1): where `/settings` lands.
   Pure: every row is built from the `Settings.Ctx`.
 
-    * *needs attention* — the service's items (`overview.attention`), the
-      client's (AT13 cli.json, AT14 key overrides) and any section's own,
-      errors first then rail order, at most 8; Enter goes where the item
-      points (a row, a record, a section).
+    * *needs attention* — the service's items (`overview.attention`) and
+      the client's (AT13 cli.json, AT14 key overrides), errors first then
+      rail order, at most 8; Enter goes where the item points (a row, a
+      record, a section). The strip on every page counts the same list, so
+      it is built from data alone (no section module is asked).
     * *at a glance* — one line per `overview.glance` fragment; Enter opens
       its section.
     * *changed from default* — the first 9 values whose winning layer is not
@@ -114,12 +115,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Overview do
   def items(%Ctx{} = ctx) do
     service = ctx |> overview() |> Map.get(:attention, []) |> Enum.map(&from_service/1)
 
-    sections =
-      Sections.ids()
-      |> Enum.reject(&(&1 == :overview))
-      |> Enum.flat_map(&Sections.attention(&1, ctx))
-
-    (service ++ attention(ctx) ++ sections)
+    (service ++ attention(ctx))
     |> Enum.filter(&match?(%Attention{}, &1))
     |> Enum.uniq_by(& &1.id)
     |> Attention.sort(Sections.order())
