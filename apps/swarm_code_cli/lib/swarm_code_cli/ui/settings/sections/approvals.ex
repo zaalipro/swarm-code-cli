@@ -104,6 +104,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Approvals do
   def act(_ctx, _row, _verb), do: :default
 
   @doc false
+  @impl true
   def picked(_ctx, :project, id) when is_binary(id), do: [{:project, id}]
   def picked(_ctx, _tag, _value), do: []
 

@@ -168,6 +168,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.ProjectFile do
   end
 
   @doc false
+  @impl true
   def picked(_ctx, :new_hook, event) when event in @events,
     do: [{:open, %Page{section: :project_file, record: {"hook", "new:" <> event}}}]
 
@@ -327,6 +328,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.ProjectFile do
   re-sends the same content and `expected` with `confirmed_hooks: true`.
   """
   @spec confirm_external(map(), map(), [String.t()]) :: term()
+  @impl true
   def confirm_external(ctx, %{content: content, fingerprint: fingerprint}, items) do
     id = project_id(ctx)
 

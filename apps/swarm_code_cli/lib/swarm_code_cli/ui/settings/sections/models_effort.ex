@@ -121,6 +121,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.ModelsEffort do
   def act(_ctx, _row, _verb), do: :default
 
   @doc false
+  @impl true
   def picked(ctx, :profile, name) when is_binary(name) do
     [
       {:command, "profile.apply", %{"conversation_id" => conversation_id(ctx)}, %{"name" => name},

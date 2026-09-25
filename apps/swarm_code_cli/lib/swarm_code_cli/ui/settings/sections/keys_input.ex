@@ -143,6 +143,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.KeysInput do
   def act(_ctx, _row, _verb), do: :default
 
   @doc false
+  @impl true
   def picked(_ctx, :context, context) when is_atom(context),
     do: [:back, {:open, %Page{section: :keys, sub: {@sub, context}}}]
 
@@ -269,6 +270,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.KeysInput do
   (`Overrides.bindings_for_key/2`); other words match the labels.
   """
   @spec filter(map(), [Row.t()], String.t()) :: [Row.t()]
+  @impl true
   def filter(ctx, rows, query) do
     query = query |> String.trim() |> String.trim_leading("/")
     bindings = rows |> Enum.filter(&match?(%Row{target: {:binding, _, _}}, &1))
