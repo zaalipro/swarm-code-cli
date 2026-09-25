@@ -297,4 +297,30 @@ defmodule SwarmCodeCLI.UI.Settings.C74SecretCanaryTest do
     assert done.settings.paste == nil
     assert done.settings.status.text == "DeepSeek API key replaced · the new key listed 2 models"
   end
+
+  # cli74 F14 (A45, found in the sandbox): Space on an engine with no key
+  # opened a paste the table never showed.
+  test "Space on an engine with no key shows the paste on the engine's row" do
+    fake = FakeSettings.seed()
+    state = ready()
+    state = %{state | capabilities: %{state.capabilities | paste: :supported}}
+    {state, _fake} = state |> act({:settings_open, {:section, :search_web}}) |> serve(fake)
+
+    brave =
+      Enum.find(SwarmCodeCLI.UI.Settings.Nav.rows(state), &(&1.id == "rec:search_provider:brave"))
+
+    ops =
+      SwarmCodeCLI.UI.Settings.Sections.SearchWeb.act(
+        SwarmCodeCLI.UI.Settings.Nav.ctx(state),
+        brave,
+        :toggle
+      )
+
+    {state, _} = Ops.run(state, ops)
+
+    assert state.settings.mode == :paste
+    line = screen(state) |> String.split("\n") |> Enum.find(&(&1 =~ "paste the key"))
+    assert line =~ "Brave"
+    assert screen(state) =~ "Enter save"
+  end
 end

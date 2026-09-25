@@ -504,6 +504,12 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
 
     main =
       cond do
+        # A table row being pasted into (Space on an engine with no key)
+        # shows the paste's words instead of its columns.
+        is_list(row.columns) and pasting?(layer, row) ->
+          [lead, mark, {" ", :text_primary}] ++
+            label ++ [{" ", :text_primary}] ++ value_segments
+
         is_list(row.columns) ->
           [lead, mark, {" ", :text_primary}] ++
             Map.get_lazy(tables, row.id, fn -> columns(state, row, width - 3) end)

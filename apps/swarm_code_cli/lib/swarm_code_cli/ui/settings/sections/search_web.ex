@@ -523,14 +523,17 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.SearchWeb do
       [
         {:toast, "#{label(kind)} needs a key first · paste it and it turns on", :info},
         {:paste,
-         key_target(ctx, kind, false, [
+         ctx
+         |> key_target(kind, false, [
            {:command, "search.update", %{"kind" => kind}, %{"enabled" => true},
             %{
               expected: %{"fields" => %{"enabled" => false}},
               write_key: {:record, @kind, kind, "enabled"},
               toast: "#{label(kind)} on"
             }}
-         ])}
+         ])
+         # cli74 F14: the paste shows on the engine's own table row.
+         |> Map.put(:row_id, "rec:#{@kind}:#{kind}")}
       ]
     else
       update_ops(ctx, kind, "enabled", not on, on)

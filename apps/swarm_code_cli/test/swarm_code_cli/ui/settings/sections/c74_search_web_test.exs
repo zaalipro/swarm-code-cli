@@ -77,6 +77,8 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.C74SearchWebTest do
 
     assert words == "Brave needs a key first · paste it and it turns on"
     assert target.action == "search.set_key" and target.attributes == %{"test_first" => false}
+    # cli74 F14: the paste shows on the row Space was pressed on.
+    assert target.row_id == "rec:search_provider:brave"
 
     assert [{:command, "search.update", %{"kind" => "brave"}, %{"enabled" => true}, _}] =
              target.then
