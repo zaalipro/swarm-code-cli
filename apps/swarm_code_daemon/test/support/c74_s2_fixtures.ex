@@ -169,6 +169,22 @@ defmodule SwarmCode.Test.C74S2 do
         chat_model: "deepseek-v4-pro"
       })
 
+    # Appendix A's "unpriced in use" (AT5): two recent conversations on models
+    # without a pricing row.
+    for {project, provider, model, title} <- [
+          {notes, anthropic, "claude-sonnet-5", "Sketch the release notes"},
+          {ailogic, ollama, "qwen3-coder", "Try the local model"}
+        ] do
+      {:ok, other} = Conversations.create(project.id)
+
+      {:ok, _} =
+        Conversations.update(other, %{
+          title: title,
+          chat_provider_id: provider.id,
+          chat_model: model
+        })
+    end
+
     {:ok, _} =
       Settings.update(%{
         default_chat_provider_id: deepseek.id,
