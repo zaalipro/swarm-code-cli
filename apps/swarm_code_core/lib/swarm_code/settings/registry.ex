@@ -19,10 +19,18 @@ defmodule SwarmCode.Settings.Registry do
   @modules [
     Registry.Models,
     Registry.Session,
+    Registry.Actions,
     Registry.Web,
     Registry.Research,
+    Registry.Lsp,
     Registry.Limits,
-    Registry.Project
+    Registry.Project,
+    Registry.ProjectFile,
+    Registry.Terminal,
+    Registry.Storage,
+    Registry.Budget,
+    Registry.Desktop,
+    Registry.Facts
   ]
 
   @section_order Sections.ids() |> Enum.with_index() |> Map.new()
