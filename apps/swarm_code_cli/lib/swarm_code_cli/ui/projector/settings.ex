@@ -156,6 +156,7 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
   end
 
   defp sub_name(%Page{sub: sub}) when is_binary(sub), do: sub
+  defp sub_name(%Page{sub: {:rows, title, _rows}}) when is_binary(title), do: title
   defp sub_name(%Page{sub: {_, name}}) when is_binary(name), do: name
   defp sub_name(%Page{sub: {_, _, name}}) when is_binary(name), do: name
   defp sub_name(_page), do: "…"
@@ -239,6 +240,7 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
     layer = state.settings
     section = Layer.section(layer)
     bar = glyph(state, :focus_bar)
+    marks = rail_marks(state)
 
     lines =
       Enum.flat_map(Sections.groups(), fn {group, ids} ->
@@ -251,7 +253,16 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
             title = Sections.title(id)
             role = if here?, do: {:text_primary, [:bold]}, else: :text_muted
             lead = if cursor?, do: {bar, :focus}, else: {" ", :text_primary}
-            line = Text.fit(state, [lead, {"  " <> title, role}], @rail)
+            mark = Map.get(marks, id, [])
+
+            line =
+              Text.spread(
+                state,
+                [lead, {"  " <> title, role}],
+                mark ++ [{" ", :text_primary}],
+                @rail
+              )
+
             if cursor?, do: Text.select(line), else: line
           end)
 
@@ -261,47 +272,134 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
     Enum.take(lines, rows)
   end
 
+  # Per section: `!N` attention items (the overview's), else `•N` values
+  # changed from their default (terminal keys and the loaded daemon ones).
+  defp rail_marks(state) do
+    layer = state.settings
+    changed = glyph(state, :changed)
+
+    attention =
+      case layer.data.overview do
+        %{attention: items} when is_list(items) ->
+          items
+          |> Enum.map(&Map.get(&1, :section))
+          |> Enum.reject(&is_nil/1)
+          |> Enum.frequencies()
+
+        _ ->
+          %{}
+      end
+
+    daemon =
+      for {key, setting} <- layer.data.values,
+          Map.get(setting, :winner) not in [nil, :default],
+          {:ok, entry} <- [SwarmCode.Settings.Registry.fetch(key)],
+          do: entry.section
+
+    cli =
+      for {name, _value} <- state.prefs,
+          {:key, key} <- [SwarmCode.Settings.Registry.resolve(name)],
+          {:ok, entry} <- [SwarmCode.Settings.Registry.fetch(key)],
+          match?({:cli, ^name}, entry.storage),
+          do: entry.section
+
+    changed_counts = Enum.frequencies(daemon ++ cli)
+
+    Sections.ids()
+    |> Enum.flat_map(fn id ->
+      cond do
+        Map.get(attention, id, 0) > 0 ->
+          [{id, [{"!#{attention[id]}", :warning}]}]
+
+        Map.get(changed_counts, id, 0) > 0 ->
+          [{id, [{changed <> "#{changed_counts[id]}", :text_muted}]}]
+
+        true ->
+          []
+      end
+    end)
+    |> Map.new()
+  end
+
   # ------------------------------------------------------------- page
 
+  # Only the rows in the window are laid out: heights come from the rows'
+  # own continuation lines (and the open editor's), so a 400-row page costs
+  # the same to draw as a 20-row one.
   defp page_lines(state, rows, current, width, height) do
     layer = state.settings
-    title = Sections.page_title(Layer.section(layer), Nav.ctx(state))
-    status = page_status(layer)
 
     head =
-      case status do
+      case page_status(layer) do
         nil -> []
         words -> [[{"  " <> words, :text_muted}], []]
       end
 
-    _ = title
+    if rows == [] do
+      head ++ [[{"  Nothing here yet.", :text_muted}]]
+    else
+      heights = Enum.map(rows, &row_height(state, &1))
+      index = Enum.find_index(rows, &(&1 == current)) || 0
+      before = heights |> Enum.take(index) |> Enum.sum()
+      cursor_start = length(head) + before
+      cursor_height = Enum.at(heights, index, 1)
+      room = max(height - length(head), 1)
 
-    blocks =
+      start =
+        if cursor_start + cursor_height <= height,
+          do: 0,
+          else: max(min(before, before + cursor_height - room), 0)
+
+      {window, _} =
+        rows
+        |> Enum.zip(heights)
+        |> Enum.reduce_while({[], 0}, fn {row, row_height}, {acc, at} ->
+          cond do
+            at >= start + room -> {:halt, {acc, at}}
+            at + row_height <= start -> {:cont, {acc, at + row_height}}
+            true -> {:cont, {[row | acc], at + row_height}}
+          end
+        end)
+
+      skip = window_skip(rows, heights, start)
+
+      lines =
+        window
+        |> Enum.reverse()
+        |> Enum.flat_map(&row_lines(state, &1, &1 == current and layer.region == :page, width))
+        |> Enum.drop(skip)
+
+      if start == 0, do: Enum.take(head ++ lines, height), else: Enum.take(lines, height)
+    end
+  end
+
+  # The lines of the first window row that sit above the window's top.
+  defp window_skip(rows, heights, start) do
+    {_, skip} =
       rows
-      |> Enum.map(fn row ->
-        {row, row_lines(state, row, row == current and layer.region == :page, width)}
+      |> Enum.zip(heights)
+      |> Enum.reduce_while({0, 0}, fn {_row, row_height}, {at, _} ->
+        if at + row_height > start,
+          do: {:halt, {at, start - at}},
+          else: {:cont, {at + row_height, 0}}
       end)
 
-    lines = head ++ Enum.flat_map(blocks, &elem(&1, 1))
-    lines = if rows == [], do: head ++ [[{"  Nothing here yet.", :text_muted}]], else: lines
+    max(skip, 0)
+  end
 
-    cursor_start =
-      Enum.reduce_while(blocks, length(head), fn {row, row_lines}, at ->
-        if row == current, do: {:halt, at}, else: {:cont, at + length(row_lines)}
-      end)
+  defp row_height(state, %Row{} = row) do
+    extra =
+      case editing(state.settings, row) do
+        nil ->
+          if pasting?(state.settings, row),
+            do: length(PasteTarget.lines(state.settings.paste)),
+            else: 0
 
-    cursor_height =
-      case Enum.find(blocks, fn {row, _} -> row == current end) do
-        {_, lines} -> length(lines)
-        nil -> 1
+        editing ->
+          length(Map.get(editing.module.display(editing.state, Nav.ctx(state)), :lines, []))
       end
 
-    start =
-      if cursor_start + cursor_height <= height,
-        do: 0,
-        else: min(cursor_start, cursor_start + cursor_height - height)
-
-    Enum.slice(lines, max(start, 0), height)
+    1 + length(row.lines) + extra
   end
 
   defp page_status(%Layer{available: false, message: message}) when is_binary(message),
@@ -355,10 +453,16 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
     value_segments = Text.clip(state, value, value_room)
 
     main =
-      if row.label == "" do
-        [lead, mark, {" ", :text_primary}] ++ Text.clip(state, value, width - 4)
-      else
-        [lead, mark, {" ", :text_primary}] ++ label ++ [{" ", :text_primary}] ++ value_segments
+      cond do
+        is_list(row.columns) ->
+          [lead, mark, {" ", :text_primary}] ++ columns(state, row, width - 3)
+
+        row.label == "" ->
+          [lead, mark, {" ", :text_primary}] ++ Text.clip(state, value, width - 4)
+
+        true ->
+          [lead, mark, {" ", :text_primary}] ++
+            label ++ [{" ", :text_primary}] ++ value_segments
       end
 
     main = Text.spread(state, main, tag ++ [{" ", :text_primary}], width)
@@ -370,6 +474,42 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
       Enum.map(row.lines ++ extra, fn line -> [{indent, :text_primary} | line] end)
 
     [main | continuation]
+  end
+
+  # A record table's row: the name first (never dropped), then the columns
+  # that fit, dropping the least important (highest priority number, the
+  # rightmost among equals) until the rest fit (§4.11).
+  defp columns(state, %Row{} = row, width) do
+    name = if row.label == "", do: [], else: [{row.label, :text_primary, 0}]
+
+    cells =
+      name ++
+        Enum.map(row.columns, fn {text, role, priority} -> {to_string(text), role, priority} end)
+
+    kept = fit_columns(state, cells, width)
+
+    kept
+    |> Enum.map(fn {text, role, _} -> [{text, role}, {"  ", :text_primary}] end)
+    |> Enum.concat()
+  end
+
+  defp fit_columns(state, cells, width) do
+    total =
+      cells |> Enum.map(fn {text, _, _} -> Text.text_cells(state, text) + 2 end) |> Enum.sum()
+
+    droppable =
+      cells
+      |> Enum.with_index()
+      |> Enum.filter(fn {{_, _, priority}, _} -> priority > 0 end)
+
+    cond do
+      total <= width or droppable == [] ->
+        cells
+
+      true ->
+        {_, drop} = Enum.max_by(droppable, fn {{_, _, priority}, index} -> {priority, index} end)
+        fit_columns(state, List.delete_at(cells, drop), width)
+    end
   end
 
   defp pasting?(%Layer{paste: %{target: target}}, %Row{id: id}) when is_map(target),

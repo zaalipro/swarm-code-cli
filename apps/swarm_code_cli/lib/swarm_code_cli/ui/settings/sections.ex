@@ -108,7 +108,11 @@ defmodule SwarmCodeCLI.UI.Settings.Sections do
   def record_rows(id, ctx, kind, record_id),
     do: call(id, :record_rows, [ctx, kind, record_id], fn -> [] end)
 
-  @doc "The rows of a sub-page."
+  @doc """
+  The rows of a sub-page. A sub-page opened with its rows
+  (`{:rows, title, rows}`: a task's result, a preview) shows them as given.
+  """
+  def sub_rows(_id, _ctx, {:rows, _title, rows}) when is_list(rows), do: rows
   def sub_rows(id, ctx, sub), do: call(id, :sub_rows, [ctx, sub], fn -> [] end)
 
   @doc "A row letter or Enter on a row: the section's ops, or `:default`."
