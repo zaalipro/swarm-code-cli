@@ -122,12 +122,8 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Storage do
 
   defp sweep_words(nil), do: "never"
 
-  defp sweep_words(iso) when is_binary(iso) do
-    case DateTime.from_iso8601(iso) do
-      {:ok, dt, _} -> Calendar.strftime(dt, "%d %b %Y %H:%M")
-      _ -> iso
-    end
-  end
+  defp sweep_words(iso) when is_binary(iso),
+    do: R.local_stamp(iso, "%d %b %Y %H:%M") || iso
 
   defp sweep_words(other), do: to_string(other)
 

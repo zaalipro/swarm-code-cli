@@ -170,4 +170,19 @@ defmodule SwarmCodeCLI.UI.Settings.C74FTableRowsTest do
 
     assert hd(lines(state)) =~ "Settings › Providers › DeepSeek"
   end
+
+  # cli74 F19 (found in the sandbox): "Last opened" said the stored UTC time.
+  test "stored UTC stamps read as the local wall clock" do
+    local =
+      {{2026, 9, 25}, {18, 44, 0}}
+      |> :calendar.universal_time_to_local_time()
+      |> NaiveDateTime.from_erl!()
+      |> Calendar.strftime("%Y-%m-%d %H:%M")
+
+    alias SwarmCodeCLI.UI.Settings.IntegrationRows, as: R
+    assert R.local_stamp("2026-09-25T18:44:12", "%Y-%m-%d %H:%M") == local
+    assert R.local_stamp("2026-09-25T18:44:12Z", "%Y-%m-%d %H:%M") == local
+    assert R.local_stamp("2026-09-25T18:44:12.123456Z", "%Y-%m-%d %H:%M") == local
+    assert R.local_stamp("yesterday", "%H:%M") == nil
+  end
 end

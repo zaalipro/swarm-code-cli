@@ -230,7 +230,9 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Approvals do
   defp decorate(%Row{key: "project.last_opened"} = row, _ctx, project) do
     words =
       case get(project, :last_opened_at) do
-        at when is_binary(at) -> String.slice(at, 0, 16) |> String.replace("T", " ")
+        at when is_binary(at) ->
+          SwarmCodeCLI.UI.Settings.IntegrationRows.local_stamp(at, "%Y-%m-%d %H:%M") ||
+            at |> String.slice(0, 16) |> String.replace("T", " ")
         _ -> "never"
       end
 

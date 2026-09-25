@@ -74,7 +74,14 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.C74StorageTest do
              "1.8 GB on disk · 4 MB write-ahead log · at least 100 MB reclaimable · 2 isolation directories (30 MB) · 214 sessions"
 
     assert text(row(rows, "info:storage:kind:agent_details").value) == "4120 · 910 MB"
-    assert text(row(rows, "fact:storage.last_sweep").value) == "13 Sep 2026 09:00"
+    # cli74 F19: the stored UTC stamp in this machine's local time.
+    local =
+      {{2026, 9, 13}, {9, 0, 0}}
+      |> :calendar.universal_time_to_local_time()
+      |> NaiveDateTime.from_erl!()
+      |> Calendar.strftime("%d %b %Y %H:%M")
+
+    assert text(row(rows, "fact:storage.last_sweep").value) == local
     assert row(rows, "act:storage.apply_retention").state == :disabled
     assert text(row(rows, "act:storage.apply_retention").value) == "set a retention first"
     assert row(rows, "act:storage.measure").label == "▸ Re-measure"

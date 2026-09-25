@@ -483,6 +483,34 @@ defmodule SwarmCodeCLI.UI.Settings.IntegrationRows do
 
   def hhmm(_), do: nil
 
+  @doc """
+  cli74 F19: a stored UTC stamp (ISO-8601, with or without `Z`) as the local
+  wall clock in `format` (`Calendar.strftime/2`); nil when it does not parse.
+  The database keeps UTC, the rows said it as if it were local.
+  """
+  @spec local_stamp(term(), String.t()) :: String.t() | nil
+  def local_stamp(iso, format) when is_binary(iso) do
+    naive =
+      case DateTime.from_iso8601(iso) do
+        {:ok, dt, _} -> DateTime.to_naive(dt)
+        _ -> with({:ok, n} <- NaiveDateTime.from_iso8601(iso), do: n, else: (_ -> nil))
+      end
+
+    case naive do
+      %NaiveDateTime{} = n ->
+        n
+        |> NaiveDateTime.to_erl()
+        |> :calendar.universal_time_to_local_time()
+        |> NaiveDateTime.from_erl!()
+        |> Calendar.strftime(format)
+
+      nil ->
+        nil
+    end
+  end
+
+  def local_stamp(_iso, _format), do: nil
+
   @doc "A count with a noun: `1 model`, `3 models`."
   def count(1, noun), do: "1 #{noun}"
   def count(n, noun), do: "#{n} #{noun}s"
