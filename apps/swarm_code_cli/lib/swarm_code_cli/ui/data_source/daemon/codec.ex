@@ -585,11 +585,30 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
        )
        when map_size(body) == 3 and expected in [:settings_snapshot, :settings_result] do
     case settings_body(kind, expected, value, message.request_id, request.request_id) do
-      {:ok, dto} -> settings_delivery(request, dto)
-      {:error, :kind} -> invalid()
-      {:error, _reason} -> settings_delivery(request, settings_failed(request))
+      {:ok, dto} ->
+        settings_delivery(request, dto)
+
+      {:error, :kind} ->
+        invalid()
+
+      {:error, reason} ->
+        Logger.warning("a settings answer was refused: #{refusal(reason)}")
+        settings_delivery(request, settings_failed(request))
     end
   end
+
+  # The shape of a refusal for the log: atoms and field names only, never a
+  # value from the answer (it may hold a secret the rules refused).
+  defp refusal(reason) when is_tuple(reason),
+    do: reason |> Tuple.to_list() |> Enum.map_join(" ", &refusal/1)
+
+  defp refusal(reason) when is_atom(reason), do: Atom.to_string(reason)
+
+  defp refusal(reason) when is_binary(reason) do
+    if reason =~ ~r/\A[a-z_.]{1,40}\z/, do: reason, else: "_"
+  end
+
+  defp refusal(_reason), do: "_"
 
   defp response_body(
          %Message{

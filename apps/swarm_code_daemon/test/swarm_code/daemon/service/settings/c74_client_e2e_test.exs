@@ -75,6 +75,8 @@ defmodule SwarmCode.Daemon.Service.Settings.C74ClientE2ETest do
         screen = screen(opened)
 
         assert rows != [], "#{id}: no rows"
+        status = opened.settings.status && opened.settings.status.text
+        refute status in ["Couldn't read settings right now."], "#{id}: #{status}"
         refute text =~ "not available in this build", "#{id}:\n#{text}"
         refute text =~ "Couldn't read settings", "#{id}:\n#{text}"
         refute screen =~ ~r/\bnil\b/, "#{id}:\n#{screen}"

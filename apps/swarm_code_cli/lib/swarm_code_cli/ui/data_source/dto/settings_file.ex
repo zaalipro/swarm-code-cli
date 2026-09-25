@@ -18,7 +18,7 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.SettingsFile do
 
   @doc false
   def decode!(wire) do
-    file = SettingsDecode.map!(SettingsDecode.fetch!(wire, "file"), 256, :file)
+    file = wire |> SettingsDecode.fetch!("file") |> SettingsDecode.map!(256, :file) |> flat()
     {:ok, kind} = RecordKind.fetch("file")
 
     %__MODULE__{
@@ -26,6 +26,17 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.SettingsFile do
       content: SettingsDecode.opt_text!(SettingsDecode.fetch!(file, "content"), @content_max)
     }
   end
+
+  # The service answers the file as a record (`{"kind": "file", "id",
+  # "fields": {…, "content"}}`, §3.4.2's "file record + content"); the fake
+  # answers its fields flat. Both read as the fields with `content` beside them.
+  defp flat(%{"kind" => "file", "fields" => fields} = record) when is_map(fields) do
+    fields = SettingsDecode.map!(fields, 256, :file)
+    content = Map.get(record, "content", Map.get(fields, "content"))
+    Map.put(fields, "content", content)
+  end
+
+  defp flat(file), do: file
 
   @spec validate(term()) :: {:ok, t()} | {:error, :invalid_dto}
   def validate(%__MODULE__{fields: fields, content: content} = file)
