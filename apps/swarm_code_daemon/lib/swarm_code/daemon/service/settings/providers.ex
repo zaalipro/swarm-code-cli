@@ -57,10 +57,7 @@ defmodule SwarmCode.Daemon.Service.Settings.Providers do
     do: [{"provider.test", :all}, {"provider.fetch_models", :all}]
 
   def cache_reads("provider.apply_models"),
-    do: [
-      {"provider.fetch_models", {:param, "fetch_task_id"}},
-      {"provider.fetch_all", {:param, "fetch_task_id"}}
-    ]
+    do: [{"provider.fetch_models", {:param, "fetch_task_id"}}]
 
   def cache_reads(_other), do: []
 

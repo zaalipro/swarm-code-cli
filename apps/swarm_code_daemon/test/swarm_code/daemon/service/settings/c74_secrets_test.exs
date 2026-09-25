@@ -1,7 +1,6 @@
 defmodule SwarmCode.Daemon.Service.Settings.C74SecretsTest do
   @moduledoc "pass 74 S2-1: the secrets helper (§3.5.9, D6)."
   use ExUnit.Case, async: true
-  use ExUnitProperties
 
   alias SwarmCode.Daemon.Service.Settings.{Kit, Secrets}
   alias SwarmCode.Domain.MCP.Server
@@ -28,8 +27,8 @@ defmodule SwarmCode.Daemon.Service.Settings.C74SecretsTest do
       assert Secrets.hint("abcdefghij\u0001k") == nil
     end
 
-    property "a hint is nil or exactly the last 4 printable characters" do
-      check all(secret <- string(:printable, min_length: 0, max_length: 40)) do
+    test "a hint is nil or exactly the last 4 printable characters" do
+      for secret <- samples(400, 0..40, [?\s, ?\t, ?\n, 0x1, ?é, ?- | Enum.to_list(?!..?~)]) do
         case Secrets.hint(secret) do
           nil ->
             assert String.length(secret) < 12 or String.slice(secret, -4, 4) =~ ~r/\s/u or
@@ -67,8 +66,8 @@ defmodule SwarmCode.Daemon.Service.Settings.C74SecretsTest do
       assert Secrets.check_paste(String.duplicate("a", 8_192)) == :ok
     end
 
-    property "a single printable word of 8..8192 bytes is accepted" do
-      check all(key <- string(?!..?~, min_length: 8, max_length: 200)) do
+    test "a single printable word of 8..8192 bytes is accepted" do
+      for key <- samples(400, 8..200, Enum.to_list(?!..?~)) do
         assert Secrets.check_paste(key) == :ok
       end
     end
@@ -173,6 +172,17 @@ defmodule SwarmCode.Daemon.Service.Settings.C74SecretsTest do
       refute out =~ "pw1"
       assert byte_size(out) <= 2_048
       assert String.valid?(out)
+    end
+  end
+
+  # Seeded random strings (the daemon app has no StreamData): `n` strings of a
+  # length in `lengths` drawn from `alphabet`.
+  defp samples(n, lengths, alphabet) do
+    :rand.seed(:exsss, {74, 2, 1})
+
+    for _ <- 1..n do
+      len = Enum.random(lengths)
+      for _ <- 1..len//1, into: "", do: <<Enum.random(alphabet)::utf8>>
     end
   end
 end
