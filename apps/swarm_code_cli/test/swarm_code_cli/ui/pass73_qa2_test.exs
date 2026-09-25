@@ -7,14 +7,21 @@ defmodule SwarmCodeCLI.UI.Pass73Qa2Test do
     * Q2-01 a card the user focused (Ctrl-N, `n`) takes typed text the way a
       card that opened by itself does: "hey" types, it approves nothing. `?`
       opens the keys on an empty draft, as the status row says.
+    * Q2-04 the workflow-run card leaves empty args out and gives its own
+      rule, not "auto runs safe commands".
+    * Q2-06 the card's footer counts its place in the walk `n` takes.
+    * Q2-07 a workflow run is named in words in the band, the run row, the
+      overlay and the transcript's tool rows, never `workflow_run`.
   """
   use ExUnit.Case, async: true
 
   import SwarmCodeCLI.UI.Pass73Helpers
 
-  alias SwarmCodeCLI.UI.{Composer, Input, Keymap, Layout, SafeText}
+  alias SwarmCodeCLI.Test.Pass73Scenes
+  alias SwarmCodeCLI.UI.{Composer, Input, Keymap, Layout, Paint, Projector, SafeText}
+  alias SwarmCodeCLI.UI.Paint.{Options, Plan}
   alias SwarmCodeCLI.UI.DataSource.DTO
-  alias SwarmCodeCLI.UI.Projector.Status
+  alias SwarmCodeCLI.UI.Projector.{ApprovalCard, Panel, Status}
 
   # ---------------------------------------------------------------- fixtures
 
@@ -61,6 +68,40 @@ defmodule SwarmCodeCLI.UI.Pass73Qa2Test do
   defp commands(effects), do: for({:command, request} <- effects, do: request.kind)
 
   defp key(code, mods \\ []), do: Input.key(code, mods)
+
+  defp card_text(state) do
+    width = Layout.for_state(state).rects.main.width
+
+    case ApprovalCard.layout(state, width) do
+      %{rows: rows} ->
+        Enum.map(rows, fn {left, right} ->
+          Enum.map_join(left ++ right, fn {text, _style} -> text end)
+        end)
+
+      nil ->
+        []
+    end
+  end
+
+  defp screen(state) do
+    {scene, _} = Projector.project(state)
+
+    {:ok, plan} =
+      Paint.build(scene, %Options{
+        color_mode: state.capabilities.color_mode,
+        ascii?: state.capabilities.ascii?
+      })
+
+    for y <- 0..(state.size.rows - 1) do
+      for x <- 0..(state.size.columns - 1), reduce: "" do
+        acc ->
+          case Plan.cell(plan, x, y) do
+            {:glyph, glyph, _, _} -> acc <> glyph
+            _ -> acc
+          end
+      end
+    end
+  end
 
   defp status_words(state) do
     state
@@ -151,5 +192,148 @@ defmodule SwarmCodeCLI.UI.Pass73Qa2Test do
       assert [{:dispatch, :send, "use the staging db", :main, []}] = commands(effects)
       assert [{:approval, ^id} | _] = sent.layers
     end
+  end
+
+  # ------------------------------------------------------------------ Q2-04
+
+  test "Q2-04 the workflow-run card shows no empty args and says what auto does" do
+    item =
+      approval("a1",
+        tool: "workflow_run",
+        preview: ~s({"name":"format-and-test","args":{},"continue":true})
+      )
+
+    state =
+      ready([run("r", :waiting_approval)],
+        snapshot: %{interactions: [item], approval_mode: :auto}
+      )
+
+    rows = card_text(%{state | interaction_grace: nil})
+    assert Enum.any?(rows, &(&1 =~ "wants to run the workflow /format-and-test"))
+    refute Enum.any?(rows, &(&1 =~ "args"))
+    refute Enum.any?(rows, &(&1 =~ "safe commands"))
+    assert Enum.any?(rows, &(&1 =~ "auto asks before a workflow runs"))
+
+    # Args that say something are still shown.
+    with_args = %{
+      item
+      | approval: %{item.approval | arguments_preview: ~s({"name":"n","args":{"path":"lib"}})}
+    }
+
+    state =
+      ready([run("r", :waiting_approval)],
+        snapshot: %{interactions: [with_args], approval_mode: :auto}
+      )
+
+    assert Enum.any?(card_text(state), &(&1 =~ ~s(args: {"path":"lib"})))
+  end
+
+  # ------------------------------------------------------------------ Q2-06
+
+  test "Q2-06 the footer counts the card's place in the walk n takes" do
+    state = under_card([approval("a1"), approval("a2", created_at: 2), approval("a3")])
+    assert Enum.any?(card_text(state), &(&1 =~ "1 of 3 waiting"))
+
+    state = press!(state, letter("n"))
+    assert [{:approval, "a2"} | _] = state.layers
+    assert Enum.any?(card_text(state), &(&1 =~ "2 of 3 waiting"))
+
+    state = press!(state, letter("n"))
+    assert [{:approval, "a3"} | _] = state.layers
+    assert Enum.any?(card_text(state), &(&1 =~ "3 of 3 waiting"))
+  end
+
+  # ------------------------------------------------------------------ Q2-07
+
+  # Screenshot 11 with the Workflow author asking to run /format-and-test
+  # (auto mode), after its workflow tool calls.
+  defp workflow_scene(columns, rows) do
+    state = Pass73Scenes.screenshot_11(columns, rows)
+    chat = Pass73Scenes.chat_id()
+    model = state.read_model
+    old = model.interactions["demo-approval-80"]
+
+    approval = %{
+      old
+      | run_id: chat,
+        node_id: "wf-op",
+        approval: %DTO.Approval{
+          tool: "workflow_run",
+          permission: :execute,
+          arguments_preview: ~s({"name":"format-and-test","args":{},"continue":true}),
+          agent_id: "agent-81-1",
+          agent_name: "Workflow author",
+          allowed_decisions: [:approve, :approve_run, :deny, :deny_stop]
+        }
+    }
+
+    tools =
+      for {{name, title}, n} <-
+            Enum.with_index([
+              {"workflow_list", "workflow_list"},
+              {"workflow_smoke_check", "workflow_smoke_check"},
+              {"workflow_save", "workflow_save format-and-test"},
+              {"workflow_run", "workflow_run format-and-test"}
+            ]) do
+        %DTO.TranscriptItem{
+          id: "wf-tool-#{n}",
+          run_id: chat,
+          conversation_id: "demo-panel",
+          node_id: "wf-tool-node-#{n}",
+          agent_id: "agent-81-1",
+          revision: 1,
+          role: :assistant,
+          kind: :tool,
+          state: :done,
+          text: "",
+          reasoning: "",
+          attempt_id: "demo-attempt",
+          created_sequence: 81_010 + n,
+          at: state.now - 20_000 + n,
+          tool: %DTO.ToolCall{name: name, title: title, status: :done, detail: "ok"}
+        }
+      end
+
+    workspace = Map.get(model.snapshots, :workspace) || %DTO.WorkspaceSnapshot{}
+
+    model = %{
+      model
+      | interactions: %{approval.id => approval},
+        transcript: Map.merge(model.transcript, Map.new(tools, &{&1.id, &1})),
+        order: %{model.order | workspace: model.order.workspace ++ Enum.map(tools, & &1.id)},
+        snapshots: Map.put(model.snapshots, :workspace, %{workspace | approval_mode: :auto})
+    }
+
+    {%{state | read_model: model}, approval}
+  end
+
+  test "Q2-07 a workflow run is named in words in the band, the run row and the tool rows" do
+    for {columns, rows} <- [{160, 45}, {120, 36}] do
+      {state, approval} = workflow_scene(columns, rows)
+      text = state |> screen() |> Enum.join("\n")
+
+      assert text =~ "/format-and-test", text
+      assert text =~ "run a workflow · auto asks", text
+      refute text =~ "use workflow run", text
+      refute text =~ "wants to use workflow", text
+      refute text =~ "workflow_", text
+      assert text =~ "list workflows"
+      assert text =~ ~r/save workflow\s+format-and-test/
+      assert text =~ ~r/run workflow\s+format-and-test/
+
+      assert Panel.Model.short_ask(%{verb: :workflow}) == "wants to run a workflow"
+      assert Panel.Model.request(approval) == "/format-and-test"
+    end
+  end
+
+  test "Q2-07 the overlay's band names the workflow like the card" do
+    {state, _approval} = workflow_scene(160, 45)
+
+    {:ok, state} =
+      SwarmCodeCLI.UI.Reducer.Overlay.open(state, Pass73Scenes.chat_id(), "agent-81-1")
+
+    text = state |> screen() |> Enum.join("\n")
+    assert text =~ "Workflow author wants to run the workflow /format-and-test", text
+    refute text =~ "wants to run a command"
   end
 end

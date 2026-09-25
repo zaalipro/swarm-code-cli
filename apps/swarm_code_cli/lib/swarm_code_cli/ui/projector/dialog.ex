@@ -1286,8 +1286,18 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
         _ -> "The agent"
       end
 
-    agent <> " wants to " <> approval_verb(item.approval)
+    agent <> " wants to " <> approval_verb(item.approval, item)
   end
+
+  # pass73 G2 (QA Q2-07): a workflow run in the card's words ("run the
+  # workflow /format-and-test"), not "run workflow run".
+  defp approval_verb(%{tool: "workflow_run"}, item),
+    do:
+      SwarmCodeCLI.UI.Projector.ApprovalCard.verb(
+        SwarmCodeCLI.UI.Projector.ApprovalCard.facts(item)
+      )
+
+  defp approval_verb(approval, _item), do: approval_verb(approval)
 
   defp approval_verb(nil), do: "do something that needs your permission"
   defp approval_verb(%{tool: "run_command"}), do: "run a command"

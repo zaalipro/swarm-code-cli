@@ -1083,13 +1083,36 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
       else: String.pad_trailing(verb, @verb_cells)
   end
 
+  # pass73 G2 (QA Q2-07): the workflow tools title themselves by their raw
+  # names ("workflow_save format-and-test", "workflow_list"); their rows say
+  # them in words, with what follows the name as the target.
+  @tool_verbs %{
+    "workflow_list" => "list workflows",
+    "workflow_smoke_check" => "check workflow",
+    "workflow_save" => "save workflow",
+    "workflow_run" => "run workflow",
+    "workflow_control" => "workflow"
+  }
+
   # The tool's verb: the first word of its title ("read mix.exs" → "read",
   # "run: ls" → "run"), else its name in words.
+  defp verb(%DTO.ToolCall{name: name}) when is_map_key(@tool_verbs, name),
+    do: Map.fetch!(@tool_verbs, name)
+
   defp verb(%DTO.ToolCall{title: title, name: name}) do
     case Regex.run(~r/^([a-z][a-z_]*):?\s/u, title || "") do
       [_, word] -> word
       nil -> String.replace(name || "tool", "_", " ")
     end
+  end
+
+  defp target(%DTO.ToolCall{title: title, name: name}, _verb)
+       when is_map_key(@tool_verbs, name) do
+    title = first_line(title) || ""
+
+    if String.starts_with?(title, name),
+      do: title |> String.replace_prefix(name, "") |> String.trim(),
+      else: title
   end
 
   defp target(%DTO.ToolCall{title: title} = tool, verb) do

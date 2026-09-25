@@ -747,6 +747,15 @@ defmodule SwarmCode.Daemon.Service.PanelFacts do
       is_binary(args["path"]) ->
         (verb(card["tool"]) <> " " <> scrub(args["path"], roots)) |> String.trim()
 
+      # pass73 G2 (QA Q2-07): the workflow by its command, as the card names
+      # it, not "workflow run".
+      card["tool"] == "workflow_run" and is_binary(args["name"]) and
+          String.trim(args["name"]) != "" ->
+        "/" <> (args["name"] |> String.trim() |> String.trim_leading("/") |> literal())
+
+      card["tool"] == "workflow_run" ->
+        "a one-off workflow"
+
       true ->
         humanize(card["tool"] || "agent operation")
     end

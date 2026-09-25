@@ -467,9 +467,14 @@ defmodule SwarmCodeCLI.UI.Keymap.Special do
     end
   end
 
-  # Pending interactions in tab order, then by id inside a run, so the walk is
-  # the one the user can predict from the row above the transcript.
-  defp waiting_ids(state) do
+  @doc """
+  The ids of the pending interactions in the order `n` walks them: tab
+  order, then by id inside a run, so the walk is the one the user can
+  predict from the row above the transcript. The approval card counts its
+  place in it (pass73 G2).
+  """
+  @spec waiting_ids(map()) :: [String.t()]
+  def waiting_ids(state) do
     by_run =
       state.read_model.interactions
       |> Map.values()

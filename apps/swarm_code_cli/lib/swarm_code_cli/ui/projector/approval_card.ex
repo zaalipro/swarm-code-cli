@@ -207,9 +207,11 @@ defmodule SwarmCodeCLI.UI.Projector.ApprovalCard do
       # The workflow's name is in the title and `continue` is how the agent
       # hears back: neither is the user's decision. What is left (its args,
       # a one-off's source and budget) is.
+      # pass73 G2 (QA Q2-04): nor are empty args, which read "args: {}".
       facts.tool == "workflow_run" ->
         facts.arguments
         |> Map.drop(["name", "continue"])
+        |> Enum.reject(fn {_key, value} -> value in [%{}, [], nil, ""] end)
         |> Enum.sort_by(&elem(&1, 0))
         |> Enum.flat_map(fn {key, value} -> argument_lines(key, value) end)
 
@@ -762,7 +764,7 @@ defmodule SwarmCodeCLI.UI.Projector.ApprovalCard do
   end
 
   # `╰─ in the project · read-only asks ──────── 1 of 2 waiting · n next ─╯`
-  defp bottom_row(_item, rest, facts, frame, card, state) do
+  defp bottom_row(item, rest, facts, frame, card, state) do
     policy = state.capabilities.ambiguous_width
     border = tint(:warning, state)
     faint = tint(:text_faint, state)
@@ -779,11 +781,23 @@ defmodule SwarmCodeCLI.UI.Projector.ApprovalCard do
     # them, the ones set aside with Esc included.
     total = max(length(rest) + 1, SwarmCodeCLI.UI.Projector.Status.waiting_count(state))
 
+    # pass73 G2 (QA Q2-06): this card's place in the walk `n` takes (the
+    # tab row's order), not always "1 of N".
+    place =
+      state
+      |> SwarmCodeCLI.UI.Keymap.Special.waiting_ids()
+      |> Enum.find_index(&(&1 == item.id))
+
+    counted =
+      if place,
+        do: "#{min(place + 1, total)} of #{total} waiting",
+        else: "#{total} waiting"
+
     next =
       if total <= 1,
         do: [],
         else: [
-          {"1 of #{total} waiting", tint(:warning, state)},
+          {counted, tint(:warning, state)},
           dot,
           {"n", tint(:text_primary, state, [:bold])},
           {" next", tint(:text_muted, state)}
@@ -849,6 +863,15 @@ defmodule SwarmCodeCLI.UI.Projector.ApprovalCard do
     case facts.reason do
       nil -> rule_words(facts, state)
       reason -> quoted(compact(reason), state)
+    end
+  end
+
+  # pass73 G2 (QA Q2-04): a workflow run is not a command, "safe" or not.
+  defp rule_words(%{tool: "workflow_run"} = facts, state) do
+    case approval_mode(state) do
+      :read_only -> "read-only run, so every workflow run asks first"
+      :auto -> "auto asks before a workflow runs"
+      _ -> permission_words(facts.permission)
     end
   end
 

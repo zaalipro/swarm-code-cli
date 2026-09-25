@@ -326,9 +326,11 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Model do
   def short_ask(%{verb: :question}), do: "waiting for your answer"
   def short_ask(%{verb: :command}), do: "wants to run a command"
   def short_ask(%{verb: :edit}), do: "wants to edit a file"
+  def short_ask(%{verb: :workflow}), do: "wants to run a workflow"
   def short_ask(%{verb: {:tool, tool}}), do: "wants to use " <> tool
   def short_ask(%{kind: :question}), do: "waiting for your answer"
   def short_ask(%{approval: %{tool: "run_command"}}), do: "wants to run a command"
+  def short_ask(%{approval: %{tool: "workflow_run"}}), do: "wants to run a workflow"
 
   def short_ask(%{approval: %{tool: tool}})
       when tool in ["edit_file", "write_file", "edit_files"],
@@ -368,11 +370,20 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Model do
     end
   end
 
+  # pass73 G2 (QA Q2-07): the workflow by its command, not "workflow_run {…}".
+  def request(%{approval: %{tool: "workflow_run"}} = item),
+    do: workflow_request(SwarmCodeCLI.UI.Projector.ApprovalCard.facts(item).arguments["name"])
+
   def request(%{approval: %{arguments_preview: preview, tool: tool}}) when is_binary(preview),
     do: String.trim(tool <> " " <> first_line(preview))
 
   def request(%{text: text}) when is_binary(text), do: first_line(text)
   def request(_), do: ""
+
+  defp workflow_request(name) when is_binary(name) and name != "",
+    do: "/" <> (name |> String.trim() |> String.trim_leading("/"))
+
+  defp workflow_request(_name), do: "a one-off workflow"
 
   @doc "`text` on one line: its lines joined by a space, runs of blanks as one."
   def flat(text) when is_binary(text),
@@ -623,6 +634,7 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Model do
   defp wire_verb(:question, _text, _tool), do: :question
   defp wire_verb(:gate, _text, _tool), do: :question
   defp wire_verb(_kind, _text, "run_command"), do: :command
+  defp wire_verb(_kind, _text, "workflow_run"), do: :workflow
 
   defp wire_verb(_kind, _text, tool) when tool in ["edit_file", "write_file", "edit_files"],
     do: :edit
@@ -642,6 +654,7 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Model do
       cond do
         interaction.kind == :question -> :question
         tool == "run_command" -> :command
+        tool == "workflow_run" -> :workflow
         tool in ["edit_file", "write_file", "edit_files"] -> :edit
         is_binary(tool) and tool != "" -> {:tool, humanize(tool)}
         true -> :command

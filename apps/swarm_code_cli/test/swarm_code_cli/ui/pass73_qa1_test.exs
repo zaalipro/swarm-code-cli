@@ -347,12 +347,13 @@ defmodule SwarmCodeCLI.UI.Pass73Qa1Test do
     state = under_card([approval("a1"), approval("a2", created_at: 2)])
     assert Enum.any?(card_text(state), &(&1 =~ "1 of 2 waiting"))
 
-    # Esc sets a1 aside; a2 opens by itself and still says 1 of 2.
+    # Esc sets a1 aside; a2 opens by itself and still counts 2. pass73 G2
+    # (QA Q2-06): it is the second in the walk `n` takes, so "2 of 2".
     state = press!(state, key(:escape))
     assert [{:approval, "a2"} | _] = state.layers
     assert Status.waiting_count(state) == 2
 
-    assert Enum.any?(card_text(state), &(&1 =~ "1 of 2 waiting · n next")),
+    assert Enum.any?(card_text(state), &(&1 =~ "2 of 2 waiting · n next")),
            inspect(card_text(state))
   end
 

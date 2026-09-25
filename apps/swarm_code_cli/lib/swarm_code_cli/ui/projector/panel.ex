@@ -433,6 +433,8 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
       case ask.verb do
         :command -> "run a command"
         :edit -> "edit a file"
+        # pass73 G2 (QA Q2-07): not "use workflow run".
+        :workflow -> "run a workflow"
         {:tool, tool} -> "use " <> tool
         _ -> "go ahead"
       end

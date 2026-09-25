@@ -26,7 +26,7 @@ defmodule SwarmCodeCLI.UI.Projector.Overlay do
   """
 
   alias SwarmCodeCLI.UI.{Drafts, Keymap, SafeText, Theme, Width}
-  alias SwarmCodeCLI.UI.Projector.{Density, Support}
+  alias SwarmCodeCLI.UI.Projector.{ApprovalCard, Density, Support}
   alias SwarmCodeCLI.UI.Projector.Panel.Name
   alias SwarmCodeCLI.UI.Reducer.Hint
   alias SwarmCodeCLI.UI.Reducer.Overlay, as: OverlayState
@@ -629,9 +629,11 @@ defmodule SwarmCodeCLI.UI.Projector.Overlay do
     reason = (approval && approval.reason) || ""
 
     verb =
-      case approval && approval.permission do
-        :execute -> " wants to run a command"
-        :read -> " wants to read"
+      case approval && {approval.tool, approval.permission} do
+        # pass73 G2 (QA Q2-07): a workflow run is named, not "a command".
+        {"workflow_run", _} -> " wants to " <> ApprovalCard.verb(ApprovalCard.facts(item))
+        {_, :execute} -> " wants to run a command"
+        {_, :read} -> " wants to read"
         _ -> " wants to change a file"
       end
 
