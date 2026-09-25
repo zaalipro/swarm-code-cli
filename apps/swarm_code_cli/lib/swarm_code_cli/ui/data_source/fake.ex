@@ -36,6 +36,12 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake do
   @impl true
   def close(server), do: GenServer.call(server, :close)
 
+  @doc """
+  pass74 §3.6: finish every running settings task that is not held
+  (`Fake.Settings.step/1`); `server` is this adapter or its source.
+  """
+  def step(server), do: SwarmCodeCLI.UI.DataSource.Fake.Settings.step(server)
+
   @impl true
   def init(opts) do
     source = Keyword.get(opts, :source)
@@ -71,6 +77,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake do
 
   @impl true
   def handle_call(:close, _, state), do: {:reply, :ok, shutdown(state)}
+  # pass74 §3.6: the settings controls address the canonical source.
+  def handle_call(:settings_source, _, state), do: {:reply, state.source, state}
   def handle_call({:bind, _, _}, _, %{phase: :closed} = s), do: {:reply, {:error, :closed}, s}
 
   def handle_call({:bind, _, _}, _, %{phase: phase} = s) when phase != :unbound,
@@ -161,7 +169,11 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake do
 
   def handle_call({:request, mode, value}, _from, s) do
     with {:ok, req} <- Request.validate(value),
-         :ok <- check(mode == :command == (req.expected_response == :outcome), :invalid_request),
+         :ok <-
+           check(
+             mode == :command == req.expected_response in [:outcome, :settings_result],
+             :invalid_request
+           ),
          :ok <- check(req.deadline > Script.clock_ms(), :deadline_expired),
          :ok <- check(not MapSet.member?(s.used_requests, req.request_id), :request_conflict),
          :ok <-
@@ -406,6 +418,9 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake do
     attrs = [state: :error, request_id: req.request_id, error: error]
 
     case req.expected_response do
+      expected when expected in [:settings_snapshot, :settings_result] ->
+        {:settings_failed, req.request_id, DTO.SettingsResult.failure_words(error)}
+
       :outcome ->
         %DTO.Outcome{
           request_id: req.request_id,
@@ -540,7 +555,10 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake do
 
   defp relevant?(_, %{kind: k}) when k in [:counts_update, :connection], do: true
   # pass70 C1: toasts and rate limits belong to the shell watch alone.
-  defp relevant?(%{slot: slot}, %{kind: k}) when k in [:toast, :rate_limit], do: slot == :shell
+  defp relevant?(%{slot: slot}, %{kind: k})
+       when k in [:toast, :rate_limit, :settings_update, :settings_task],
+       do: slot == :shell
+
   defp relevant?(%{scope: %{kind: :global}}, _), do: true
   defp relevant?(%{scope: %{kind: :run, id: id}}, d), do: d.run_id == id
   defp relevant?(%{scope: %{kind: :conversation, id: id}}, d), do: d.conversation_id == id
@@ -586,7 +604,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake do
       %Request{} = req ->
         if correlated?(req, d) and response?(req.expected_response, d.body) and
              scoped_body?(req.scope, d.body) and
-             valid_epoch?(s, d.body) and d.body.request_id == req.request_id and
+             valid_epoch?(s, d.body) and body_request_id(d.body) == req.request_id and
              response_matches?(req, d.body) do
           emit(s, d)
           %{s | requests: Map.delete(s.requests, id)}
@@ -665,7 +683,16 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake do
   defp response?(:conversation_list, body), do: match?(%DTO.ConversationList{}, body)
   defp response?(:library_snapshot, body), do: match?(%DTO.LibrarySnapshot{}, body)
   defp response?(:agent_detail, body), do: match?(%DTO.AgentDetail{}, body)
+
+  defp response?(:settings_snapshot, body),
+    do: match?(%DTO.SettingsSnapshot{}, body) or match?({:settings_failed, _, _}, body)
+
+  defp response?(:settings_result, body),
+    do: match?(%DTO.SettingsResult{}, body) or match?({:settings_failed, _, _}, body)
+
   defp response?(_, _), do: false
+  defp body_request_id({:settings_failed, id, _words}), do: id
+  defp body_request_id(%{request_id: id}), do: id
 
   defp valid_resync(s, %Request{kind: {:resync_watch, ref}} = req) do
     case s.watches[ref] do

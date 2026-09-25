@@ -9,8 +9,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Source do
   Byte limits use the uncompressed external-term size of the typed DTO body.
   """
   use GenServer
-  alias SwarmCodeCLI.UI.DataSource.{AdmissionError, Delivery, DTO, Request, Watch}
-  alias SwarmCodeCLI.UI.DataSource.Fake.{Script, Session}
+  alias SwarmCodeCLI.UI.DataSource.{AdmissionError, Delivery, Delta, DTO, Request, Watch}
+  alias SwarmCodeCLI.UI.DataSource.Fake.{Script, Session, Settings}
   alias SwarmCodeCLI.UI.Intent
   @max_clients 32
   @max_watches 16
@@ -33,11 +33,20 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Source do
   @impl true
   def init(opts) do
     with true <- is_list(opts) and Keyword.keyword?(opts),
-         true <- Enum.all?(Keyword.keys(opts), &(&1 in [:script, :source_epoch])),
+         true <- Enum.all?(Keyword.keys(opts), &(&1 in [:script, :source_epoch, :settings])),
          {:ok, script} <- Script.validate(Keyword.get(opts, :script)),
          epoch <- Keyword.get(opts, :source_epoch),
-         true <- Intent.valid_id?(epoch) do
-      {:ok, %{script: script, epoch: epoch, clients: %{}}}
+         true <- Intent.valid_id?(epoch),
+         true <- Keyword.keyword?(Keyword.get(opts, :settings, [])) do
+      # pass74 §3.6: the settings store is seeded on first use (Appendix A).
+      {:ok,
+       %{
+         script: script,
+         epoch: epoch,
+         clients: %{},
+         settings: nil,
+         settings_opts: Keyword.get(opts, :settings, [])
+       }}
     else
       _ -> {:stop, AdmissionError.new(:invalid_fixture)}
     end
@@ -51,6 +60,16 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Source do
     do: {:reply, :ok, unwatch_client(state, id, ref)}
 
   def handle_call(:snapshot, _, state), do: {:reply, state.script, state}
+
+  # pass74 §3.6: `Fake.Settings` controls reach the store through its source.
+  def handle_call(:settings_source, _, state), do: {:reply, self(), state}
+
+  def handle_call({:settings_control, op, args}, _, state) when is_atom(op) and is_list(args) do
+    state = with_settings(state)
+    {reply, settings, facts} = Settings.control(state.settings, op, args)
+    next = settings_facts(%{state | settings: settings}, facts)
+    {:reply, reply, next}
+  end
 
   def handle_call({:attach, id, pid}, _, state) do
     cond do
@@ -111,7 +130,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Source do
          :ok <- check(request.deadline > Script.clock_ms(), :deadline_expired),
          :ok <- check(not Map.has_key?(client.requests, request.request_id), :request_conflict),
          :ok <- check(map_size(client.requests) < @max_requests, :capacity_exceeded),
-         {:ok, script, body, deltas} <- execute(state, request) do
+         {:ok, state, body, deltas} <- execute_request(state, request) do
       delivery = %Delivery{
         kind: :response,
         watch_ref: nil,
@@ -125,8 +144,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Source do
 
       send(client.pid, {:fake_source, id, delivery})
 
-      next =
-        %{state | script: script} |> put_in([:clients, id, :requests, request.request_id], true)
+      next = put_in(state, [:clients, id, :requests, request.request_id], true)
 
       broadcast(next, deltas)
       {:reply, :ok, next}
@@ -238,6 +256,82 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Source do
 
   defp broadcast(state, deltas) do
     Enum.each(state.clients, fn {id, client} -> send(client.pid, {:fake_source, id, deltas}) end)
+  end
+
+  defp execute_request(state, %Request{kind: {op, _}} = request)
+       when op in [:settings_query, :settings_command] do
+    state = with_settings(state)
+
+    {settings, body, facts} =
+      if op == :settings_query,
+        do: Settings.query(state.settings, request),
+        else: Settings.command(state.settings, request)
+
+    {state, deltas} = settings_deltas(%{state | settings: settings}, facts)
+    {:ok, state, body, deltas}
+  end
+
+  defp execute_request(state, request) do
+    with {:ok, script, body, deltas} <- execute(state, request),
+         do: {:ok, %{state | script: script}, body, deltas}
+  end
+
+  defp with_settings(%{settings: nil} = state),
+    do: %{state | settings: Settings.seed(state.settings_opts)}
+
+  defp with_settings(state), do: state
+
+  # Settings facts become canonical deltas on the global sequence.
+  defp settings_deltas(state, []), do: {state, []}
+
+  defp settings_deltas(state, facts) do
+    bodies = for fact <- facts, {:ok, body} <- [settings_body(fact)], do: body
+    settings_sequence(state, bodies)
+  end
+
+  defp settings_sequence(state, []), do: {state, []}
+
+  defp settings_sequence(state, bodies) do
+    revision = state.script.revision + 1
+
+    {deltas, sequence} =
+      Enum.map_reduce(bodies, state.script.sequence, fn {kind, body}, sequence ->
+        delta = %Delta{
+          kind: kind,
+          entity_id: if(kind == :settings_task, do: body.task_id),
+          body: body,
+          sequence: sequence + 1,
+          revision: revision
+        }
+
+        {delta, sequence + 1}
+      end)
+
+    {%{state | script: %{state.script | sequence: sequence, revision: revision}}, deltas}
+  end
+
+  defp settings_body({kind, wire}) do
+    decoded =
+      case kind do
+        :settings_update -> DTO.SettingsUpdate.decode(wire)
+        :settings_task -> DTO.SettingsTask.decode(wire)
+      end
+
+    with {:ok, body} <- decoded,
+         {:ok, _} <-
+           Delta.validate(%Delta{
+             kind: kind,
+             entity_id: if(kind == :settings_task, do: body.task_id),
+             body: body
+           }) do
+      {:ok, {kind, body}}
+    end
+  end
+
+  defp settings_facts(state, facts) do
+    {state, deltas} = settings_deltas(state, facts)
+    broadcast(state, deltas)
+    state
   end
 
   defp execute(state, %Request{kind: {:query, slot, cursor, direction, size, bytes}} = request) do
