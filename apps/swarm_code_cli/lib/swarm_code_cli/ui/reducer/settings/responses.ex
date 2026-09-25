@@ -31,6 +31,7 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Responses do
   }
 
   alias SwarmCodeCLI.UI.Reducer.Settings.{Commit, Ops}
+  alias SwarmCodeCLI.UI.Reducer.Settings.Paste, as: PasteTarget
   alias SwarmCodeCLI.UI.Settings.{Data, DeepLink, Layer, Nav, Page, Sections, Wire}
 
   @refresh_words "Couldn't tell whether that was saved; reloading."
@@ -192,6 +193,11 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Responses do
 
         state =
           if result.task, do: track(state, result.task.task_id, meta, result.task), else: state
+
+        state =
+          if Map.get(opts, :paste) == :keep,
+            do: PasteTarget.replacement_started(state, result.task && result.task.task_id),
+            else: state
 
         text = Map.get(opts, :toast) || result.message
 
@@ -381,8 +387,14 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Responses do
       })
 
     state = %{state | settings: %{layer | tasks: Map.put(layer.tasks, id, entry)}}
+    ended? = task.state in [:done, :failed, :timeout, :cancelled]
 
-    if task.state in [:done, :failed, :timeout, :cancelled],
+    state =
+      if ended?,
+        do: PasteTarget.task_ended(state, id, task.state, task.summary || task.message),
+        else: state
+
+    if ended?,
       do: Wire.load(state, {:task, id}),
       else: {state, []}
   end

@@ -155,6 +155,11 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings do
        when kind in [:verb, :text, :key, :raw, :paste],
        do: Popover.event(state, event)
 
+  # The paste target of a secret takes its keys, text and pastes.
+  defp handle_event(%{settings: %Layer{mode: :paste, paste: %{}}} = state, {kind, _} = event)
+       when kind in [:verb, :text, :paste],
+       do: SwarmCodeCLI.UI.Reducer.Settings.Paste.event(state, event)
+
   # An open editor takes the keys, the text and the pastes first.
   defp handle_event(%{settings: %Layer{mode: :editing, popover: nil}} = state, {:verb, verb}) do
     case Edit.verb_event(verb) do

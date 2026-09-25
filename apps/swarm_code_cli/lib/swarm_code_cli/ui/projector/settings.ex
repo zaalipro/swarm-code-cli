@@ -18,6 +18,7 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
 
   alias SwarmCodeCLI.UI.Projector.Settings.Popover, as: SettingsPopover
   alias SwarmCodeCLI.UI.Projector.Settings.Text
+  alias SwarmCodeCLI.UI.Reducer.Settings.Paste, as: PasteTarget
   alias SwarmCodeCLI.UI.Scene.{Rect, Region}
   alias SwarmCodeCLI.UI.SafeText
   alias SwarmCodeCLI.UI.Settings.{Detail, Glyphs, Layer, Nav, Page, Row, Sections}
@@ -269,8 +270,20 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
     layer = state.settings
     editing = editing(layer, row)
     display = editing && editing.module.display(editing.state, Nav.ctx(state))
-    value = if display, do: display.value, else: row.value
-    extra = if display, do: Map.get(display, :lines, []), else: []
+
+    value =
+      cond do
+        display -> display.value
+        pasting?(layer, row) -> PasteTarget.words(layer.paste, Glyphs.tier(state.capabilities))
+        true -> row.value
+      end
+
+    extra =
+      cond do
+        display -> Map.get(display, :lines, [])
+        pasting?(layer, row) -> PasteTarget.lines(layer.paste)
+        true -> []
+      end
 
     value_column = if width >= 84, do: 32, else: max(22, div(width * 2, 5))
     label_width = min(@label, max(value_column - 3, 8))
@@ -304,6 +317,11 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
 
     [main | continuation]
   end
+
+  defp pasting?(%Layer{paste: %{target: target}}, %Row{id: id}) when is_map(target),
+    do: (Map.get(target, :row_id) || Map.get(target, "row_id")) == id
+
+  defp pasting?(_layer, _row), do: false
 
   defp editing(%Layer{editing: %{row_id: id} = editing}, %Row{id: id}), do: editing
   defp editing(_layer, _row), do: nil

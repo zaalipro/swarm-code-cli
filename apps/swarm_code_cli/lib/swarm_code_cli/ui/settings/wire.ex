@@ -159,7 +159,8 @@ defmodule SwarmCodeCLI.UI.Settings.Wire do
 
         case built do
           {:ok, request} ->
-            {:ok, request, %{state | requests: Map.put(state.requests, id, request)}}
+            {:ok, request,
+             %{state | requests: Map.put(state.requests, id, without_secrets(request))}}
 
           {:error, {:too_long, param}} ->
             {:error, Request.too_long_words(param)}
@@ -172,6 +173,12 @@ defmodule SwarmCodeCLI.UI.Settings.Wire do
         {:error, "the service is not connected"}
     end
   end
+
+  # The copy the reducer keeps to match the answer never holds a secret.
+  defp without_secrets(%Request{kind: {:settings_command, params}} = request),
+    do: %{request | kind: {:settings_command, Map.put(params, "secrets", [])}}
+
+  defp without_secrets(request), do: request
 
   # ------------------------------------------------------- section ops
 
