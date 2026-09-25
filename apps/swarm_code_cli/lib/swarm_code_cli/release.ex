@@ -18,8 +18,15 @@ defmodule SwarmCodeCLI.Release do
   @usage """
   Usage: swarmcode [DIR] [--new | --continue | --resume ID] [--model M]
                    [-p PROMPT [--json]] [--plain [--ndjson]] [--help] [--version]
+         swarmcode settings [QUERY] [--dir DIR]
+         swarmcode config COMMAND [ARGS]     (swarmcode config help lists them)
 
   Opens the saved session for DIR (default: the current directory).
+
+    settings [QUERY]  open Settings, at QUERY when given ('swarmcode settings providers');
+                      it opens even when no model provider is set up yet
+    config COMMAND    read and change settings from scripts, dotfiles and SSH
+                      (a folder named settings or config: swarmcode ./settings, ./config)
 
     --new           start a new conversation
     --continue, -c  continue the latest conversation (the default)
@@ -46,7 +53,7 @@ defmodule SwarmCodeCLI.Release do
   @max_prompt_bytes 262_144
 
   @type options :: %{
-          mode: :tui | :plain | :prompt,
+          mode: :tui | :plain | :prompt | :settings,
           project: binary() | nil,
           conversation: binary() | nil,
           model: binary() | nil,
@@ -74,9 +81,10 @@ defmodule SwarmCodeCLI.Release do
   end
 
   @doc "Runs the command line and returns the exit code (the VM keeps running)."
-  @spec run([binary()]) :: 0 | 1 | 2 | 3
+  @spec run([binary()]) :: 0 | 1 | 2 | 3 | 4
   def run(args) do
     case parse(args) do
+
       :help ->
         IO.write(@usage)
         0
@@ -89,7 +97,7 @@ defmodule SwarmCodeCLI.Release do
         IO.puts(:stderr, "swarmcode: " <> message <> " Run 'swarmcode --help'.")
         2
 
-      {:ok, %{mode: :tui}} ->
+      {:ok, %{mode: mode}} when mode in [:tui, :settings] ->
         IO.puts(
           :stderr,
           "swarmcode: the full-screen view starts from the swarmcode command, not from eval. " <>
@@ -120,7 +128,12 @@ defmodule SwarmCodeCLI.Release do
   `-p`, `--ndjson` without `--plain`, `-p` with `--plain`, two conversation
   choices or two directories are usage errors.
   """
-  @spec parse([binary()]) :: :help | :version | {:error, binary()} | {:ok, options()}
+  @spec parse([binary()]) ::
+          :help | :version | {:error, binary()} | {:ok, options()} | {:config, [binary()]}
+  # pass74 S1-13/S1-14: the first word `settings` or `config` is the
+  # subcommand (a folder of that name opens with ./settings or -- settings).
+  def parse(["settings" | rest]), do: settings(rest, [], nil)
+
   def parse(args) when is_list(args) do
     initial = %{
       mode: :tui,
@@ -142,6 +155,35 @@ defmodule SwarmCodeCLI.Release do
       end
     end
   end
+
+  defp settings([], words, dir),
+    do:
+      {:ok,
+       %{
+         mode: :settings,
+         project: dir,
+         conversation: nil,
+         model: nil,
+         prompt: nil,
+         format: :text,
+         query: words |> Enum.reverse() |> Enum.join(" ")
+       }}
+
+  defp settings([flag | _], _words, _dir) when flag in ["--help", "-h"], do: :help
+
+  defp settings(["--dir" <> _ | _], _words, dir) when dir != nil,
+    do: {:error, "name one directory at most."}
+
+  defp settings(["--dir", dir | rest], words, nil) when dir != "--",
+    do: settings(rest, words, dir)
+
+  defp settings(["--dir=" <> dir | rest], words, nil), do: settings(rest, words, dir)
+  defp settings(["--dir" | _], _words, _dir), do: {:error, "--dir needs a value."}
+
+  defp settings(["-" <> _ = flag | _], _words, _dir) when flag != "-",
+    do: {:error, "settings takes a query and --dir only."}
+
+  defp settings([word | rest], words, dir), do: settings(rest, [word | words], dir)
 
   defp flags([], parsed), do: {:ok, parsed}
 

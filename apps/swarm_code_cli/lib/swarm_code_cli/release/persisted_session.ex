@@ -253,12 +253,35 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
     # retain native statement resources in the launcher while the TUI runs.
     query_worker(fn ->
       with {:ok, session} <- SessionSelection.open(root, selection),
-           {:ok, session} <- SessionConfiguration.prepare(session, System.get_env()) do
+           {:ok, session} <- prepare(session) do
         {:ok, session}
       else
         {:error, reason} -> {:error, session_failure(reason, selection)}
       end
     end)
+  end
+
+  # pass74 S1-13 (D11): `swarmcode settings` opens without a usable provider —
+  # that is how one is added; the dispatch refuses a send until then.
+  defp prepare(session) do
+    case SessionConfiguration.prepare(session, System.get_env()) do
+      {:error, :provider_required} ->
+        if settings_only?(), do: {:ok, session}, else: {:error, :provider_required}
+
+      other ->
+        other
+    end
+  end
+
+  @doc false
+  # pass74 S1-13: the launcher's `swarmcode settings [QUERY]`.
+  @spec settings_only?() :: boolean()
+  def settings_only?, do: System.get_env("SWARM_SETTINGS_ONLY") == "1"
+
+  @doc false
+  @spec settings_open() :: String.t() | nil
+  def settings_open do
+    if settings_only?(), do: System.get_env("SWARM_SETTINGS_OPEN") || "", else: nil
   end
 
   # B6: the desktop's boot recovery (interrupted runs, seeded providers, MCP
@@ -346,6 +369,10 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
         theme_env: start.theme_env,
         mouse?: start.mouse?
       }
+
+      # pass74 S1-13: open the settings layer at boot (U1's `Init` field; a
+      # build without it ignores the key).
+      init = struct(init, settings_open: settings_open())
 
       runtime =
         child!(supervisor, SessionRuntime,
@@ -773,7 +800,8 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
   defp startup_failure(%{__struct__: SwarmCode.Daemon.StartupError} = error, boot) do
     Logger.error("startup refused: #{error.code}: #{error.message} #{error.action}")
     {message, action} = startup_words(error.code, error, boot)
-    failure(@exit_refused, message, action)
+    # pass74 S1-14: `swarmcode config` answers a held lease with its own words.
+    @exit_refused |> failure(message, action) |> Map.put(:code, error.code)
   end
 
   defp startup_failure(reason, _boot) do
@@ -792,10 +820,13 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
       {"The SwarmCode app is open, and only one of them can use your conversations at a time.",
        "Quit the SwarmCode app, then run swarmcode again."}
 
-  defp startup_words(:data_lease_held, _error, boot),
-    do:
-      {lease_holder(boot),
-       "Close it first (Ctrl-C twice, and once more if it asks), then run swarmcode again."}
+  defp startup_words(:data_lease_held, _error, boot) do
+    if settings_only?(),
+      do: {lease_words(boot, :settings), ""},
+      else:
+        {lease_holder(boot),
+         "Close it first (Ctrl-C twice, and once more if it asks), then run swarmcode again."}
+  end
 
   # The allowlist's two refusals (pass70 D2: an upgrade only the app makes, a
   # database from a newer app) and the gate's stray-file and damaged-file ones
@@ -844,12 +875,13 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
       {"swarmcode could not open your conversations database.",
        "Close other SwarmCode windows and run swarmcode again."}
 
+  # pass74 S1-13 (D11): the exit-3 words name the settings command.
   defp session_failure(:provider_required, _),
     do:
       failure(
         @exit_refused,
         "No model provider is set up yet.",
-        "Add one in SwarmCode Settings, or set SWARM_MODEL, SWARM_BASE_URL and SWARM_API_KEY in ~/.secrets."
+        "Run 'swarmcode settings providers' to add one, or set SWARM_MODEL, SWARM_BASE_URL and SWARM_API_KEY in ~/.secrets."
       )
 
   # pass71 F19 (review R17): the sentence names the model that was given.
@@ -885,6 +917,32 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
       "swarmcode could not open the conversation.",
       "Run swarmcode again; nothing was changed."
     )
+  end
+
+  @doc false
+  # pass74 S1-13/S1-14: a settings change while another session holds the
+  # data. The owner record names its process, not its folder.
+  @spec lease_words(term(), :settings | :config) :: String.t()
+  def lease_words(boot, :settings),
+    do:
+      "A swarmcode session is open (#{lease_process(boot)}); change settings there with /settings, or close it first."
+
+  def lease_words(boot, :config),
+    do:
+      "A swarmcode session is open (#{lease_process(boot)}); change it there with /settings, or close it first."
+
+  defp lease_process(boot) do
+    with {:ok, paths} <- paths_for(boot),
+         {:ok, %File.Stat{type: :regular, size: size}} when size <= 32_768 <-
+           File.lstat(paths.owner_record),
+         {:ok, body} <- File.read(paths.owner_record),
+         {:ok, %{"pid" => pid}} when is_integer(pid) <- Jason.decode(body) do
+      "process #{pid}"
+    else
+      _ -> "another process"
+    end
+  rescue
+    _ -> "another process"
   end
 
   # B7: the lease owner record names the process that holds the data lease.
