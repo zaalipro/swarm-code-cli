@@ -185,4 +185,25 @@ defmodule SwarmCodeCLI.UI.Settings.C74FTableRowsTest do
     assert R.local_stamp("2026-09-25T18:44:12.123456Z", "%Y-%m-%d %H:%M") == local
     assert R.local_stamp("yesterday", "%H:%M") == nil
   end
+
+  # cli74 F20 (found in the sandbox): "[ T  T  Trust ]".
+  test "a confirmation draws its letter once" do
+    fake = FakeSettings.seed()
+
+    {state, _fake} =
+      ready() |> Reducer.update({:settings_open, {:section, :approvals}}) |> serve(fake)
+
+    confirm = %SwarmCodeCLI.UI.Settings.Confirm{
+      id: "t",
+      title: "Trust ailogic?",
+      safe: "Not now",
+      danger: "T  Trust",
+      letter: "T"
+    }
+
+    {state, _} = Ops.run(state, [{:confirm, confirm, then: []}])
+    text = Enum.join(lines(state), "\n")
+    assert text =~ "[ T  Trust ]"
+    refute text =~ "T  T  Trust"
+  end
 end

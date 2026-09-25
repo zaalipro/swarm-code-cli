@@ -143,7 +143,13 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Popover do
           []
 
         words ->
-          label = if confirm.letter, do: "[ #{confirm.letter}  #{words} ]", else: "[ #{words} ]"
+          # cli74 F20: eleven confirmations name the letter in their words
+          # already ("T  Trust"); it was drawn twice ("[ T  T  Trust ]").
+          label =
+            if confirm.letter && not String.starts_with?(words, confirm.letter <> "  "),
+              do: "[ #{confirm.letter}  #{words} ]",
+              else: "[ #{words} ]"
+
           role = if Popover.enabled?(confirm), do: :error, else: :text_ghost
           line = [{label, role}]
 
