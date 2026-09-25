@@ -829,12 +829,14 @@ defmodule SwarmCode.Daemon.Service.Settings.Values do
         current = current_value(change, reads)
         want = Map.get(expected, change.key)
 
+        # §3.3.4: `unchanged` when the value already is the current one (a
+        # retry of an applied write), before the compare-and-set.
         cond do
-          not any?(want) and not WireValue.equal?(current, want) ->
-            {:conflict, change, current}
-
           WireValue.equal?(current, change.value) ->
             {:unchanged, change, current}
+
+          not any?(want) and not WireValue.equal?(current, want) ->
+            {:conflict, change, current}
 
           true ->
             {:write, change, current}
@@ -1034,6 +1036,15 @@ defmodule SwarmCode.Daemon.Service.Settings.Values do
 
   defp first([message | _]), do: message
   defp first(_), do: nil
+
+  @doc "The conversation columns the session entries are stored in (§3.3.9)."
+  @spec conversation_columns() :: [atom()]
+  def conversation_columns do
+    for %Entry{home: :session} = entry <- Registry.all(),
+        column <- columns(entry),
+        uniq: true,
+        do: column
+  end
 
   defp columns(%Entry{storage: {:setting, f}}), do: [f]
   defp columns(%Entry{storage: {:setting_pair, pf, mf}}), do: [pf, mf]

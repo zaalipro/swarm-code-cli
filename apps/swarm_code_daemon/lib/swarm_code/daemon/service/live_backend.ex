@@ -61,7 +61,24 @@ defmodule SwarmCode.Daemon.Service.LiveBackend do
     end
   end
 
+  # pass74 S1-10 (D28): an unsaved session has no saved settings. Settings
+  # requests are answered with the words, never remembered (a command's pasted
+  # secrets must not stay in the request cache).
   @impl true
+  def handle_call({:service_request, id, scope, %{operation: op} = request}, _, state)
+      when op in [:settings_query, :settings_command] do
+    response =
+      with {:ok, _} <- ServiceRequest.encode(request, scope),
+           true <- member?(state, scope) do
+        live_settings(op, request.params, id)
+      else
+        _ ->
+          if op == :settings_query, do: wire_error(:not_allowed), else: reject(id, :not_allowed)
+      end
+
+    {:reply, response, state}
+  end
+
   def handle_call({:service_request, id, scope, request}, _, state) do
     # pass70 F: `conversation_list` is a read (the palette sends it on open);
     # answering it as a command made the client drop the connection. The
@@ -230,9 +247,34 @@ defmodule SwarmCode.Daemon.Service.LiveBackend do
     if Process.alive?(state.supervisor), do: Supervisor.stop(state.supervisor, :shutdown, 10_000)
   end
 
+  # pass74 S1-10 (M15): never a message or a log entry in a crash report.
   @impl true
-  def format_status(status),
-    do: %{status | state: %{mode: status.state.opts[:mode], runs: map_size(status.state.runs)}}
+  def format_status(status) do
+    status
+    |> Map.put(:state, %{mode: status.state.opts[:mode], runs: map_size(status.state.runs)})
+    |> Map.replace(:message, :redacted)
+    |> Map.replace(:log, :redacted)
+  end
+
+  @settings_words "Saved settings are available in a saved session (swarmcode). " <>
+                    "This session runs from SWARM_* variables."
+
+  defp live_settings(:settings_query, params, id) do
+    value =
+      SwarmCode.Daemon.Service.Settings.Wire.unavailable_snapshot(
+        params["view"],
+        @settings_words,
+        0,
+        id
+      )
+
+    {:ok, %{"op" => "result", "response_kind" => "settings_snapshot", "value" => value}}
+  end
+
+  defp live_settings(:settings_command, _params, id) do
+    value = SwarmCode.Daemon.Service.Settings.Wire.status("unavailable", @settings_words, id, 0)
+    {:ok, %{"op" => "result", "response_kind" => "settings_result", "value" => value}}
+  end
 
   defp execute(%{operation: :dispatch_send, params: params}, _scope, id, state) do
     if map_size(state.runs) >= 200 or map_size(state.requests) >= 4096 do

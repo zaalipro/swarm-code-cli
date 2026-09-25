@@ -34,6 +34,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   @max_jobs 8
   @terminal [:completed, :failed, :cancelled, :interrupted]
   alias SwarmCode.Daemon.Service.PanelFacts
+  alias SwarmCode.Daemon.Service.Settings.Deltas, as: SettingsDeltas
   alias SwarmCode.Daemon.Service.Settings.Jobs, as: SettingsJobs
   alias SwarmCode.Daemon.Service.Settings.Tasks, as: SettingsTasks
 
@@ -67,7 +68,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   @impl true
   def init(opts) do
     with true <- Enum.all?([:project_id, :conversation_id, :source_epoch], &uuid?(opts[&1])),
-         %{project_id: project_id} <- Conversations.get(opts[:conversation_id]),
+         %{project_id: project_id} = conversation <- Conversations.get(opts[:conversation_id]),
          true <- project_id == opts[:project_id],
          %{root_path: project_root} <- Projects.get!(project_id),
          {:ok, root} <- SwarmCode.Domain.Tools.Path.real_path(opts[:project_root]),
@@ -86,6 +87,14 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       # pass70 C5 (arch F10): what happens outside this conversation.
       SwarmCode.Domain.PubSub.subscribe(SwarmCode.Domain.PubSub, "notifications")
       SwarmCode.Domain.MCP.subscribe()
+      # pass74 S1-10 (§3.3.9): what the settings layer shows changes here.
+      SwarmCode.Domain.Settings.subscribe()
+      SwarmCode.Domain.Providers.subscribe()
+      SwarmCode.Domain.Search.subscribe()
+      Projects.subscribe()
+      SwarmCode.Domain.Storage.subscribe()
+      # pass74 S1-10 (M3): cleanups keep back the conversation shown here.
+      SwarmCode.Domain.UIState.opened(opts[:conversation_id])
 
       state = %{
         opts: Keyword.put(opts, :project_root, root),
@@ -158,7 +167,14 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
             supervisor: Keyword.get(opts, :task_supervisor, SwarmCode.Domain.TaskSupervisor)
           ),
         settings_revision: 0,
-        settings_seen: nil
+        settings_seen: nil,
+        # pass74 S1-10 (§3.3.9): the sections touched since the last
+        # `settings_update`, its 100 ms timer, when a settings command of this
+        # session last completed, and the session values last projected.
+        settings_pending: [],
+        settings_timer: nil,
+        settings_own_at: nil,
+        settings_session: SettingsDeltas.session_values(conversation)
       }
 
       {:ok, reload(state)}
@@ -426,8 +442,59 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       when is_binary(provider_id) and is_map(snapshot),
       do: {:noreply, rate_limit(state, provider_id, snapshot)}
 
-  def handle_info({:mcp_status, server_id, status}, state),
-    do: {:noreply, mcp_status(state, server_id, status)}
+  def handle_info({:mcp_status, server_id, status} = message, state),
+    do: {:noreply, state |> mcp_status(server_id, status) |> mark_settings(message)}
+
+  # pass74 S1-10 (§3.3.9): a settings, provider, search, project or storage
+  # change marks sections for one coalesced `settings_update`. The settings
+  # row in `{:settings_updated, _}` is never bound (R19).
+  def handle_info({:settings_updated, _}, state),
+    do: {:noreply, mark_settings(state, {:settings_updated, nil})}
+
+  def handle_info({event} = message, state)
+      when event in [:providers_changed, :search_providers_updated, :projects_changed],
+      do: {:noreply, mark_settings(state, message)}
+
+  def handle_info({event, _} = message, state) when event in [:storage_done, :storage_failed],
+    do: {:noreply, mark_settings(state, message)}
+
+  def handle_info({:storage_progress, _}, state), do: {:noreply, state}
+
+  def handle_info({:conversation_updated, %{id: id} = conversation}, state)
+      when is_binary(id) do
+    state =
+      if id == state.opts[:conversation_id] do
+        {changed?, values} =
+          SettingsDeltas.conversation_changed(state.settings_session, conversation)
+
+        state = %{state | settings_session: values}
+        if changed?, do: add_settings_sections(state, ["models_effort"]), else: state
+      else
+        state
+      end
+
+    {:noreply, schedule_refresh(state)}
+  end
+
+  def handle_info(:settings_update_flush, state) do
+    now = System.monotonic_time(:millisecond)
+    origin = if SettingsDeltas.own?(state.settings_own_at, now), do: "settings", else: "elsewhere"
+    settings_revision = state.settings_revision + 1
+    revision = state.revision + 1
+
+    delta =
+      SettingsDeltas.update_delta(revision, settings_revision, state.settings_pending, origin)
+
+    state = %{
+      state
+      | settings_timer: nil,
+        settings_pending: [],
+        settings_revision: settings_revision,
+        revision: revision
+    }
+
+    {:noreply, broadcast(state, delta)}
+  end
 
   # pass71 S6 (C9): a streaming tick (`Node.patch_cols/0`: status while
   # running, progress, detail, tokens, cost, turn) and the run totals written
@@ -505,9 +572,15 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     Events.unsubscribe(state.opts[:conversation_id])
   end
 
+  # pass74 S1-10 (M15): a crash report never holds a message or a log entry
+  # (a settings command's secrets travel in the message).
   @impl true
-  def format_status(status),
-    do: %{status | state: %{mode: :persisted, runs: map_size(status.state.runs)}}
+  def format_status(status) do
+    status
+    |> Map.put(:state, %{mode: :persisted, runs: map_size(status.state.runs)})
+    |> Map.replace(:message, :redacted)
+    |> Map.replace(:log, :redacted)
+  end
 
   defp admit_request(id, _scope, %{operation: :settings_query} = request, from, state),
     do: settings_query(id, request, from, state)
@@ -1068,7 +1141,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     text = params["text"]
 
     answer =
-      with {:ok, attachments} <-
+      with :ok <- usable_chat_provider(state),
+           {:ok, attachments} <-
              attachment_payloads(Enum.uniq(state.attachment_ids ++ params["attachment_refs"])) do
         Engine.start_chat_turn(
           SessionConfiguration.overlay(Conversations.get!(state.opts[:conversation_id])),
@@ -1302,6 +1376,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       state = %{cancel_jobs(state, wire_error(:not_allowed)) | queue_monitors: %{}}
       Events.unsubscribe(state.opts[:conversation_id])
       Events.subscribe(id)
+      # pass74 S1-10 (M3): the conversation shown now is the one kept back.
+      SwarmCode.Domain.UIState.opened(id)
 
       # Watches of the whole project (the shell, the activity list) now show
       # another conversation: they re-snapshot. Watches of the old
@@ -1338,7 +1414,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
           change_facts: %{},
           facts_missing: [],
           facts_job: cancel_facts_job(state.facts_job, state.task_supervisor),
-          facts_failed: MapSet.new()
+          facts_failed: MapSet.new(),
+          settings_session: SettingsDeltas.session_values(Conversations.get(id))
       })
     end
   end
@@ -1741,6 +1818,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
        do: reason
 
   defp error_code(:unknown_outcome), do: :unknown_outcome
+  defp error_code({:provider_required, _words}), do: :not_allowed
   defp error_code(:not_configured), do: :source_unavailable
   # The client's closed error enum has no "not found": a model no provider
   # lists is an argument the request cannot carry, which is what it says.
@@ -3909,6 +3987,9 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     {Atom.to_string(reason), words}
   end
 
+  defp refusal({:provider_required, words}, _text) when is_binary(words),
+    do: {"provider_required", words}
+
   defp refusal(_reason, text), do: refusal(:operation_failed, text)
 
   defp command_words(:missing_argument, name) when is_binary(name),
@@ -4230,6 +4311,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   # carried secrets.
   defp settle_settings_command(state, id, fingerprint, durable, value) do
     {:ok, _} = response = SettingsJobs.result_reply(value)
+    state = %{state | settings_own_at: System.monotonic_time(:millisecond)}
 
     if durable do
       CommandLedger.complete(state.opts[:project_id], id, response)
@@ -4342,19 +4424,53 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   defp emit_settings_tasks(state, bodies) do
     Enum.reduce(bodies, state, fn body, acc ->
       revision = acc.revision + 1
-
-      broadcast(%{acc | revision: revision}, %{
-        "kind" => "settings_task",
-        "entity_id" => body["task_id"],
-        "run_id" => nil,
-        "conversation_id" => nil,
-        "channel" => nil,
-        "attempt_id" => nil,
-        "text" => nil,
-        "body" => body,
-        "sequence" => 0,
-        "revision" => revision
-      })
+      broadcast(%{acc | revision: revision}, SettingsDeltas.task_delta(revision, body))
     end)
   end
+
+  defp mark_settings(state, message) do
+    case SettingsDeltas.sections(message) do
+      {sections, refresh?} ->
+        state = add_settings_sections(state, sections)
+        if refresh?, do: schedule_refresh(state), else: state
+
+      :ignore ->
+        state
+    end
+  end
+
+  defp add_settings_sections(state, sections) do
+    state = %{state | settings_pending: Enum.uniq(state.settings_pending ++ sections)}
+
+    if state.settings_timer,
+      do: state,
+      else: %{
+        state
+        | settings_timer:
+            Process.send_after(self(), :settings_update_flush, SettingsDeltas.coalesce_ms())
+      }
+  end
+
+  # pass74 S1-10 (D11, M9): a prompt starts a turn only when the effective chat
+  # provider (after the `--model` overlay) can answer.
+  defp usable_chat_provider(state) do
+    conversation = SessionConfiguration.overlay(Conversations.get!(state.opts[:conversation_id]))
+
+    case SwarmCode.Domain.Providers.effective_model(conversation, :chat) do
+      {:ok, %{provider: provider}} ->
+        if SessionConfiguration.usable?(provider),
+          do: :ok,
+          else: {:error, {:provider_required, provider_required_words(provider)}}
+
+      _ ->
+        {:error, {:provider_required, provider_required_words(nil)}}
+    end
+  end
+
+  defp provider_required_words(%{name: name}) when is_binary(name) and name != "",
+    do:
+      "No model provider can answer: #{preview(name, 120)} has no key. Add one in /settings providers."
+
+  defp provider_required_words(_provider),
+    do: "No model provider can answer. Add one in /settings providers."
 end

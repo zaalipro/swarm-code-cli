@@ -110,6 +110,12 @@ defmodule SwarmCode.Daemon.Service.Settings.C74ValuesTest do
                "limits.max_concurrent_agents" => 8
              })
 
+    # A retry of an applied write: its expected value is stale, the value is current.
+    assert {:ok, %Result{status: :unchanged}} =
+             patch(ctx, [{"limits.max_concurrent_agents", 8}], %{
+               "limits.max_concurrent_agents" => 6
+             })
+
     assert {:ok, %Result{status: :rejected, results: [%{message: message}]}} =
              patch(ctx, [{"limits.max_concurrent_agents", 0}], %{
                "limits.max_concurrent_agents" => 8

@@ -84,6 +84,13 @@ defmodule SwarmCode.Daemon.Service.Settings.Jobs do
   """
   @spec query(map(), map()) :: {{:ok, map()} | {:error, Error.t()}, map() | nil}
   def query(params, inputs) do
+    case seam(:query, params) do
+      {:answer, answer} -> {answer, nil}
+      :continue -> run_query(params, inputs)
+    end
+  end
+
+  defp run_query(params, inputs) do
     ctx = context(inputs)
     view = params["view"]
 
@@ -105,10 +112,24 @@ defmodule SwarmCode.Daemon.Service.Settings.Jobs do
   @spec command(map(), String.t(), map()) ::
           {:ok, Result.t()} | {:task, struct(), Result.t()} | {:error, Error.t()}
   def command(params, request_id, inputs) do
-    Settings.command(
-      Command.from_params(params, request_id),
-      context(Map.put(inputs, :request_id, request_id))
-    )
+    case seam(:command, params) do
+      {:answer, answer} ->
+        answer
+
+      :continue ->
+        Settings.command(
+          Command.from_params(params, request_id),
+          context(Map.put(inputs, :request_id, request_id))
+        )
+    end
+  end
+
+  # Tests hold a job here (a blocking function) or answer for the handler.
+  defp seam(kind, params) do
+    case Application.get_env(:swarm_code_daemon, :settings_job_seam) do
+      fun when is_function(fun, 2) -> fun.(kind, params)
+      _ -> :continue
+    end
   end
 
   @doc "The context of a job from the backend's inputs."

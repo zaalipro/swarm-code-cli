@@ -372,8 +372,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
       |> redact_message()
 
   # pass74 §3.3.10: the last message may be a settings command with its secrets.
-  defp redact_message(%{message: _} = status), do: %{status | message: :redacted}
-  defp redact_message(status), do: status
+  defp redact_message(status),
+    do: status |> Map.replace(:message, :redacted) |> Map.replace(:log, :redacted)
 
   defp receive_message(message, %{phase: :binding} = state) do
     with %Message{type: :hello_ok, sequence: nil, occurred_at: nil, scope: nil} <- message,
