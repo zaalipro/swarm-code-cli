@@ -234,6 +234,36 @@ defmodule SwarmCode.Daemon.Service.Pass73SendRoutingTest do
     assert Engine.chat_running?(c.conversation.id)
   end
 
+  # pass73 G2 (QA #2 Q2-02, seen live): a `/plan` started seconds after a
+  # `/swarm` and a `/create-workflow` planned "all three asks". The message
+  # that launched a run still in flight is a note in the new turn's history,
+  # not a bare ask; the stored message is untouched.
+  test "/plan beside a live turn does not read that turn's message as its ask", c do
+    {run, _approval} = start_turn(c, "touch pass73-plan-history.txt")
+    assert_receive {:http_request, 1, _}, 5_000
+
+    assert {:ok, %{"value" => %{"disposition" => "started", "identifiers" => [planner]}}} =
+             request(c, "plan-history", send_request("/plan audit the retry path"))
+
+    refute planner == run
+    assert_receive {:http_request, 2, planner_call}, 10_000
+
+    users =
+      for %{"role" => "user", "content" => content} <-
+            Jason.decode!(planner_call.body)["messages"],
+          do: if(is_binary(content), do: content, else: Jason.encode!(content))
+
+    refute "Run the marker command" in users
+    assert [note] = Enum.filter(users, &(&1 =~ "Run the marker command"))
+    assert note =~ "handled by a separate turn that is still running"
+    assert note =~ "not part of the current request"
+    assert List.last(users) =~ "audit the retry path"
+
+    assert Enum.any?(Conversations.list_messages(c.conversation.id), fn m ->
+             m.role == "user" and m.content == "Run the marker command" and m.run_id == run
+           end)
+  end
+
   test "a refusal that remains says why and what to do", c do
     assert {:ok, %{"value" => %{"reason" => %{"code" => "not_configured", "text" => said}}}} =
              request(c, "unconfigured", send_request("/compact"))

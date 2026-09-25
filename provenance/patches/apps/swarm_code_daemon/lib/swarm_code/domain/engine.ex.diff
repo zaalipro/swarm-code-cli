@@ -1,0 +1,69 @@
+# CLI-local change to lib/swarm_code/engine.ex at 6dd8d82, after the rewrite
+# rules of provenance/sync-rules.json. Recorded by mix swarm_code.provenance.sync.
+--- a/apps/swarm_code_daemon/lib/swarm_code/domain/engine.ex
++++ b/apps/swarm_code_daemon/lib/swarm_code/domain/engine.ex
+@@ -158,6 +158,7 @@
+           conversation.id,
+           4 * SwarmCode.Domain.Engine.Context.budget(chat.model, settings)
+         )
++        |> note_in_flight(in_flight_beside(conversation.id, run.id))
+         |> Prompts.history_to_messages()
+         |> replace_last_user(prompt)
+ 
+@@ -516,6 +517,56 @@
+ 
+   defp with_context(_context, prompt), do: prompt
+ 
++  # pass73 G2 (CLI QA Q2-02): the runs of this conversation still in flight
++  # beside the turn starting now, by id, with their kind. A `/plan` started
++  # seconds after a `/swarm` and a `/create-workflow` used to read their two
++  # launch messages as unanswered asks and planned "all three asks".
++  defp in_flight_beside(conversation_id, run_id) do
++    SwarmCode.Domain.Registry
++    |> Registry.select([
++      {{{:run, :"$1"}, :_, {:"$2", :"$3"}}, [{:==, :"$2", conversation_id}], [{{:"$1", :"$3"}}]}
++    ])
++    |> Map.new()
++    |> Map.delete(run_id)
++  end
++
++  # A user message that launched (or steered) one of those runs is read as a
++  # note that the run is handling it, not as an ask of this turn. Its text
++  # stays in the note, on one line and cut to 160 characters, so the model
++  # knows what runs beside it. The stored message is untouched.
++  defp note_in_flight(messages, in_flight) when map_size(in_flight) == 0, do: messages
++
++  defp note_in_flight(messages, in_flight) do
++    Enum.map(messages, fn
++      %{role: "user", run_id: run_id} = message when is_map_key(in_flight, run_id) ->
++        %{message | content: in_flight_note(message.content, in_flight[run_id]), attachments: []}
++
++      message ->
++        message
++    end)
++  end
++
++  @in_flight_words %{
++    "chat" => "turn",
++    "swarm" => "swarm run",
++    "workflow" => "workflow run",
++    "compact" => "compaction"
++  }
++
++  defp in_flight_note(content, kind) do
++    words = Map.get(@in_flight_words, kind, "run")
++
++    quoted =
++      content
++      |> String.replace(~r/\s+/u, " ")
++      |> String.trim()
++      |> then(&if(String.length(&1) > 160, do: String.slice(&1, 0, 159) <> "…", else: &1))
++
++    "[An earlier message, handled by a separate #{words} that is still running on its " <>
++      "own. It is not part of the current request; do not plan, answer or act on it here: \"" <>
++      quoted <> "\"]"
++  end
++
+   defp replace_last_user(history, prompt) do
+     case Enum.reverse(history) do
+       [%{role: "user"} = last | rest] ->
