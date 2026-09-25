@@ -206,6 +206,7 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
       before_notice: before_notice,
       first_id: items |> List.first() |> then(&(&1 && &1.id)),
       last_id: items |> List.last() |> then(&(&1 && &1.id)),
+      continues: continues(items),
       answer: answer,
       header_id: header && header.id,
       step_texts: step_texts,
@@ -489,11 +490,13 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
       steered_rows(item, state) ++ trail ++ continued_rows(item, ctx, state)
   end
 
-  # pass73 G2 (QA Q2-10): the rows a run adds after a message inside it (a
+  # pass73 G2 (QA Q2-10): the rows a run adds after a message it took in (a
   # steer) sat under that message with no name while other turns ran; one
-  # line says whose they are.
+  # line says whose they are. Only where the run's own work follows.
   defp continued_rows(item, ctx, state) do
-    if item.id in [ctx.first_id, ctx.last_id] do
+    if item.id in [ctx.first_id, ctx.last_id] or
+         not MapSet.member?(Map.get(ctx, :continues, MapSet.new()), item.id) or
+         not steered?(item, state) do
       []
     else
       kind = RunRow.theme_kind((ctx.run && ctx.run.kind) || :chat)
@@ -577,18 +580,8 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
   # pass73 T3/T8: a message the running turn took in (S's `target_kind:
   # :steer`, or K's delivery marked `:steered` until that arrives) says so
   # under itself.
-  defp steered_rows(%{run_id: run, text: text} = item, state) when is_binary(text) do
-    trimmed = String.trim(text)
-
-    steered? =
-      Map.get(item, :target_kind) == :steer or
-        Enum.any?(
-          Map.get(state, :deliveries, []),
-          &(Map.get(&1, :status) == :steered and Map.get(&1, :run_id) == run and
-              String.trim(Map.get(&1, :text) || "") == trimmed)
-        )
-
-    if steered?,
+  defp steered_rows(%{text: text} = item, state) when is_binary(text) do
+    if steered?(item, state),
       do: [
         spec(
           [
@@ -602,6 +595,30 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
   end
 
   defp steered_rows(_item, _state), do: []
+
+  defp steered?(%{run_id: run, text: text} = item, state) when is_binary(text) do
+    trimmed = String.trim(text)
+
+    Map.get(item, :target_kind) == :steer or
+      Enum.any?(
+        Map.get(state, :deliveries, []),
+        &(Map.get(&1, :status) == :steered and Map.get(&1, :run_id) == run and
+            String.trim(Map.get(&1, :text) || "") == trimmed)
+      )
+  end
+
+  defp steered?(_item, _state), do: false
+
+  # The user messages of a run that the run's own items follow (pass73 G2).
+  defp continues(items) do
+    items
+    |> Enum.chunk_every(2, 1, :discard)
+    |> Enum.flat_map(fn
+      [%{role: :user, id: id}, %{role: role}] when role != :user -> [id]
+      _ -> []
+    end)
+    |> MapSet.new()
+  end
 
   defp arrow(%{capabilities: %{ascii?: true}}), do: "->"
 

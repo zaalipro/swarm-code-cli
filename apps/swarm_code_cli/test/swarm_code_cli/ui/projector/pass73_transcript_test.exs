@@ -290,7 +290,10 @@ defmodule SwarmCodeCLI.UI.Projector.Pass73TranscriptTest do
       refute Enum.at(rows, at - 2) == "", Enum.join(rows, "\n")
       assert Enum.at(rows, at + 1) =~ ~r/^ +→ to the running turn/
       assert Enum.at(rows, at + 2) == "", Enum.join(rows, "\n")
-      assert Enum.at(rows, at + 3) =~ "Adding the admin plans to the scan."
+      # pass73 G2 (QA Q2-10): the run's rows after it are headed by whose
+      # they are, then its work goes on.
+      assert Enum.at(rows, at + 3) =~ ~r/^  \S Workflow author continued$/u
+      assert Enum.at(rows, at + 4) =~ "Adding the admin plans to the scan."
       assert_heights(state)
     end
 
