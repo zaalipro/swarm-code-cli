@@ -23,7 +23,9 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
               SwarmCode.Daemon.Shutdown,
               SwarmCode.Domain.Engine,
               SwarmCode.Domain.Repo,
-              Ecto.UUID
+              Ecto.UUID,
+              SwarmCodeCLI.Release.TerminalPreferences,
+              {SwarmCodeCLI.UI.Theme, :put_accent, 1}
             ]}
   require Logger
   alias SwarmCode.Daemon.RepoLauncher
@@ -33,6 +35,11 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
   alias SwarmCodeCLI.UI.{Capabilities, Init, SessionRuntime, Size}
   alias SwarmCodeCLI.UI.DataSource.Daemon
   alias SwarmCodeCLI.UI.Renderer.RatatuiPort.Owner
+
+  # pass74 S1-13 (§3.8.4): U3's launch rules and accent, used when this build
+  # has them.
+  @terminal_preferences SwarmCodeCLI.Release.TerminalPreferences
+  @theme SwarmCodeCLI.UI.Theme
 
   @exit_failure 1
   @exit_usage 2
@@ -126,6 +133,44 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
     end
   end
 
+  @doc """
+  pass74 S1-14: the foundation-only boot of `swarmcode config` — the log file,
+  the lease and the verified migrations (guarded storage); no session
+  selection, no provider resolution, no boot recovery, no daemon socket.
+  Returns `{:ok, fun.()}` or `{:error, failure}` (a startup refusal carries
+  its `:code`). Never raises.
+  """
+  @spec with_foundation(keyword(), (-> term())) :: {:ok, term()} | {:error, failure()}
+  def with_foundation(options \\ [], fun) when is_list(options) and is_function(fun, 0) do
+    guarded(fn ->
+      route_logger!(log_path(nil))
+      start_applications!()
+      version = Application.spec(:swarm_code_daemon, :vsn) |> to_string()
+
+      boot =
+        Keyword.get_lazy(options, :boot_config, fn ->
+          BootConfig.canonical(platform(), System.user_home!(), version)
+        end)
+
+      {:ok, launcher} = RepoLauncher.start_link(boot_config: boot, pool_size: 4)
+      Process.unlink(launcher)
+
+      try do
+        case await_storage(launcher, boot) do
+          :ok -> {:ok, fun.()}
+          {:error, failure} -> {:error, failure}
+        end
+      after
+        close_owned_runtime(launcher)
+      end
+    end)
+    |> case do
+      {:ok, {:ok, result}} -> {:ok, result}
+      {:ok, {:error, failure}} -> {:error, failure}
+      {:error, failure} -> {:error, failure}
+    end
+  end
+
   @doc "Prints a failure (two lines and the log path) on stderr and returns its exit status."
   @spec report(failure()) :: non_neg_integer()
   def report(%{status: status, message: message, action: action}) do
@@ -184,12 +229,15 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
         preflight!()
         root = project_root()
         check_root!(root)
-        selection = selection_from_env()
+        {selection, ask?} = tui_selection()
         executable = terminal_port!()
         route_logger!(log_path(test_boot))
         start_applications!()
 
-        with_storage(test_boot, fn session -> tui(session, executable, opts) end, root,
+        with_storage(
+          test_boot,
+          fn session -> tui(session, executable, Keyword.put(opts, :resume_picker?, ask?)) end,
+          root,
           conversation: selection
         )
       end)
@@ -213,7 +261,7 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
     if opts[:label] == :dev,
       do: IO.puts(:stderr, "swarmcode (dev) — conversation #{session.conversation.id}")
 
-    {outcome, current} = run_ui(session, executable)
+    {outcome, current} = run_ui(session, executable, opts[:resume_picker?] == true)
     shown = %{session | conversation: %{session.conversation | id: current}}
     # Read the summary while storage and the runs are still up, then stop them.
     summary = query_worker(fn -> summary(shown, started_at) end)
@@ -253,12 +301,49 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
     # retain native statement resources in the launcher while the TUI runs.
     query_worker(fn ->
       with {:ok, session} <- SessionSelection.open(root, selection),
-           {:ok, session} <- SessionConfiguration.prepare(session, System.get_env()) do
+           {:ok, session} <- prepare(session) do
         {:ok, session}
       else
         {:error, reason} -> {:error, session_failure(reason, selection)}
       end
     end)
+  end
+
+  # pass74 S1-13 (D11): `swarmcode settings` opens without a usable provider —
+  # that is how one is added; the dispatch refuses a send until then.
+  defp prepare(session) do
+    case SessionConfiguration.prepare(session, System.get_env()) do
+      {:error, :provider_required} ->
+        if settings_only?(), do: {:ok, session}, else: {:error, :provider_required}
+
+      other ->
+        other
+    end
+  end
+
+  @doc false
+  # pass74 S1-13: the launcher's `swarmcode settings [QUERY]`.
+  @spec settings_only?() :: boolean()
+  def settings_only?, do: System.get_env("SWARM_SETTINGS_ONLY") == "1"
+
+  @doc false
+  @spec settings_open() :: String.t() | nil
+  def settings_open do
+    if settings_only?(), do: open_query(System.get_env("SWARM_SETTINGS_OPEN") || ""), else: nil
+  end
+
+  # The reducer refuses an Init whose query is over 200 bytes or holds a
+  # control character; such a query (the launcher refuses it first) opens
+  # the Overview instead.
+  defp open_query(query) do
+    query = String.trim(query)
+
+    if byte_size(query) <= 200 and String.valid?(query) and
+         query
+         |> String.to_charlist()
+         |> Enum.all?(&(&1 >= 0x20 and &1 != 0x7F and not (&1 >= 0x80 and &1 <= 0x9F))),
+       do: query,
+       else: ""
   end
 
   # B6: the desktop's boot recovery (interrupted runs, seeded providers, MCP
@@ -273,7 +358,7 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
       :ok
   end
 
-  defp run_ui(session, executable) do
+  defp run_ui(session, executable, resume_picker?) do
     {dir, stat} = private_directory!()
     {:ok, supervisor} = Supervisor.start_link([], strategy: :one_for_all, max_restarts: 0)
     Process.unlink(supervisor)
@@ -311,24 +396,24 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
           timeout: 30_000
         )
 
-      color_mode = color_mode()
-      ascii? = ascii?(System.get_env())
-
       # pass73 T1/T2/T9: cli.json (read here, before the session starts) and
-      # the environment decide the theme, the wheel and the diffs.
-      preferences =
-        SwarmCodeCLI.UI.Init.Preferences.read(SwarmCodeCLI.Release.preferences_path())
-
-      start = start_preferences(System.get_env(), preferences, settings_mode())
+      # the environment decide the theme, the wheel and the diffs; pass74
+      # S1-13: the launch's terminal comes from one `launch/4` (§3.8.4).
+      cli_path = SwarmCodeCLI.Release.preferences_path()
+      preferences = SwarmCodeCLI.UI.Init.Preferences.read(cli_path)
+      launch = launch(System.get_env(), cli_path, preferences, settings_mode())
+      put_accent(launch.accent)
 
       caps = %Capabilities{
         size: %Size{columns: 80, rows: 24},
         stdin_tty?: true,
         stdout_tty?: true,
-        color_mode: color_mode,
-        ascii?: ascii?,
+        color_mode: launch.color_mode,
+        ascii?: launch.ascii?,
         # pass71 F4: the rich tier (thin rails, V1) where the terminal has it.
-        glyph_tier: Capabilities.glyph_tier(color_mode, :narrow, ascii?, System.get_env("TERM"))
+        glyph_tier: launch.glyph_tier,
+        ambiguous_width: launch.ambiguous_width,
+        reduced_motion?: launch.reduced_motion?
       }
 
       init = %Init{
@@ -339,13 +424,24 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
         destination: {:conversation, conversation_id},
         banner: :persisted_banner,
         now: System.system_time(:millisecond),
-        keymap: Init.keymap_from_env(),
+        keymap: launch.keymap,
         panel_mode: preferences.panel_mode,
         show_diffs: preferences.show_diffs,
-        theme_mode: start.theme,
-        theme_env: start.theme_env,
-        mouse?: start.mouse?
+        theme_mode: launch.theme,
+        theme_env: launch.theme_env,
+        mouse?: launch.mouse?
       }
+
+      # pass74 S1-13: the settings layer's boot query, the cli values, the
+      # launch facts and cli.json's `ask` (U1's `Init` fields; a build without
+      # them ignores the keys).
+      init =
+        struct(init,
+          settings_open: settings_open(),
+          prefs: launch.prefs,
+          launch_facts: launch_facts(launch, session.project.root_path, cli_path),
+          resume_picker?: resume_picker?
+        )
 
       runtime =
         child!(supervisor, SessionRuntime,
@@ -359,7 +455,8 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
           preferences_path: SwarmCodeCLI.Release.preferences_path()
         )
 
-      start_companion(supervisor, runtime, Path.basename(session.project.root_path))
+      if launch.companion?,
+        do: start_companion(supervisor, runtime, Path.basename(session.project.root_path))
 
       owner =
         child!(supervisor, Owner,
@@ -372,10 +469,10 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
             alternate?: true,
             focus?: true,
             paste?: true,
-            mouse?: start.mouse?
+            mouse?: launch.mouse?
           },
           executable: executable,
-          theme: start.theme
+          theme: launch.theme
         )
 
       owner_monitor = Process.monitor(owner)
@@ -448,12 +545,107 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
   end
 
   # The visual companion mirrors this session on a loopback port; the palette's
-  # "Open visual companion" shows the URL. SWARM_COMPANION=0 leaves it out, and
-  # the URL is never printed here because it carries the session token.
+  # "Open visual companion" shows the URL. SWARM_COMPANION=0 (or cli.json's
+  # `companion`, §3.8.4) leaves it out, and the URL is never printed here
+  # because it carries the session token.
   defp start_companion(supervisor, runtime, project) do
-    if System.get_env("SWARM_COMPANION") != "0" do
-      companion = child!(supervisor, Companion, runtime: runtime, project: project)
-      SessionRuntime.attach_companion(runtime, Companion.sink(companion))
+    companion = child!(supervisor, Companion, runtime: runtime, project: project)
+    SessionRuntime.attach_companion(runtime, Companion.sink(companion))
+  end
+
+  @doc """
+  pass74 S1-13 (§3.8.4): the launch's terminal. U3's
+  `TerminalPreferences.launch/4` when this build has it (the environment,
+  `CliFile.read_all/1`'s snapshot, the desktop's mode, no flags: the launcher
+  turns them into `SWARM_CONVERSATION`); else today's rules in the same shape.
+  A failure of the rules falls back to today's rules too.
+  """
+  @spec launch(map(), Path.t() | nil, map(), term()) :: map()
+  def launch(env, cli_path, preferences, desktop_mode) when is_map(env) do
+    snapshot = SwarmCode.Settings.CliFile.read_all(cli_path)
+
+    if Code.ensure_loaded?(@terminal_preferences) do
+      try do
+        @terminal_preferences.launch(env, snapshot, desktop_mode, %{})
+      rescue
+        error ->
+          Logger.error("terminal preferences failed: #{Exception.format(:error, error)}")
+          today(env, snapshot, preferences, desktop_mode)
+      end
+    else
+      today(env, snapshot, preferences, desktop_mode)
+    end
+  end
+
+  defp today(env, snapshot, preferences, desktop_mode) do
+    color_mode = color_mode(env)
+    ascii? = ascii?(env)
+    start = start_preferences(env, preferences, desktop_mode)
+
+    %{
+      theme: start.theme,
+      theme_env: start.theme_env,
+      mouse?: start.mouse?,
+      keymap: Init.keymap_from_env(Map.get(env, "SWARM_KEYMAP")),
+      color_mode: color_mode,
+      ascii?: ascii?,
+      glyph_tier: Capabilities.glyph_tier(color_mode, :narrow, ascii?, Map.get(env, "TERM")),
+      ambiguous_width: :narrow,
+      reduced_motion?: false,
+      accent: nil,
+      companion?: Map.get(env, "SWARM_COMPANION") != "0",
+      startup_conversation: :latest,
+      prefs: snapshot.values,
+      env_overrides: %{},
+      flag_overrides: %{},
+      warnings: []
+    }
+  end
+
+  @doc "pass74 S1-13: what the settings layer shows about this launch (§3.8.3)."
+  @spec launch_facts(map(), Path.t(), Path.t() | nil) :: map()
+  def launch_facts(launch, root, cli_path) do
+    %{
+      env_overrides: launch.env_overrides,
+      flag_overrides: launch.flag_overrides,
+      flags: %{},
+      project_root: root,
+      log_path: log_path(nil),
+      cli_path: cli_path,
+      cli_version: Application.spec(:swarm_code_cli, :vsn) |> to_string(),
+      home: System.user_home()
+    }
+  end
+
+  # The accent is process-wide for the launch: written once, before the port
+  # owner starts (U3's `Theme.put_accent/1`, when this build has it).
+  defp put_accent(accent) do
+    if Code.ensure_loaded?(@theme) and function_exported?(@theme, :put_accent, 1),
+      do: @theme.put_accent(accent)
+
+    :ok
+  end
+
+  @doc """
+  pass74 S1-13 (§3.8.4): the conversation a TUI session opens and whether it
+  asks first. A flag or `SWARM_CONVERSATION` chooses; else cli.json's
+  `startup_conversation` (`ask` opens the latest with the resume picker over
+  it). A settings-only session opens the latest (it never starts a new one).
+  """
+  @spec tui_selection() :: {:latest | :new | String.t(), boolean()}
+  def tui_selection do
+    if System.get_env("SWARM_CONVERSATION") in [nil, ""] and not settings_only?(),
+      do: startup_selection(SwarmCodeCLI.Release.preferences_path()),
+      else: {selection_from_env(), false}
+  end
+
+  @doc false
+  @spec startup_selection(Path.t() | nil) :: {:latest | :new, boolean()}
+  def startup_selection(cli_path) do
+    case SwarmCode.Settings.CliFile.read_all(cli_path).values["startup_conversation"] do
+      "new" -> {:new, false}
+      "ask" -> {:latest, true}
+      _ -> {:latest, false}
     end
   end
 
@@ -773,7 +965,8 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
   defp startup_failure(%{__struct__: SwarmCode.Daemon.StartupError} = error, boot) do
     Logger.error("startup refused: #{error.code}: #{error.message} #{error.action}")
     {message, action} = startup_words(error.code, error, boot)
-    failure(@exit_refused, message, action)
+    # pass74 S1-14: `swarmcode config` answers a held lease with its own words.
+    @exit_refused |> failure(message, action) |> Map.put(:code, error.code)
   end
 
   defp startup_failure(reason, _boot) do
@@ -792,10 +985,13 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
       {"The SwarmCode app is open, and only one of them can use your conversations at a time.",
        "Quit the SwarmCode app, then run swarmcode again."}
 
-  defp startup_words(:data_lease_held, _error, boot),
-    do:
-      {lease_holder(boot),
-       "Close it first (Ctrl-C twice, and once more if it asks), then run swarmcode again."}
+  defp startup_words(:data_lease_held, _error, boot) do
+    if settings_only?(),
+      do: {lease_words(boot, :settings), ""},
+      else:
+        {lease_holder(boot),
+         "Close it first (Ctrl-C twice, and once more if it asks), then run swarmcode again."}
+  end
 
   # The allowlist's two refusals (pass70 D2: an upgrade only the app makes, a
   # database from a newer app) and the gate's stray-file and damaged-file ones
@@ -844,12 +1040,13 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
       {"swarmcode could not open your conversations database.",
        "Close other SwarmCode windows and run swarmcode again."}
 
+  # pass74 S1-13 (D11): the exit-3 words name the settings command.
   defp session_failure(:provider_required, _),
     do:
       failure(
         @exit_refused,
         "No model provider is set up yet.",
-        "Add one in SwarmCode Settings, or set SWARM_MODEL, SWARM_BASE_URL and SWARM_API_KEY in ~/.secrets."
+        "Run 'swarmcode settings providers' to add one, or set SWARM_MODEL, SWARM_BASE_URL and SWARM_API_KEY in ~/.secrets."
       )
 
   # pass71 F19 (review R17): the sentence names the model that was given.
@@ -885,6 +1082,32 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
       "swarmcode could not open the conversation.",
       "Run swarmcode again; nothing was changed."
     )
+  end
+
+  @doc false
+  # pass74 S1-13/S1-14: a settings change while another session holds the
+  # data. The owner record names its process, not its folder.
+  @spec lease_words(term(), :settings | :config) :: String.t()
+  def lease_words(boot, :settings),
+    do:
+      "A swarmcode session is open (#{lease_process(boot)}); change settings there with /settings, or close it first."
+
+  def lease_words(boot, :config),
+    do:
+      "A swarmcode session is open (#{lease_process(boot)}); change it there with /settings, or close it first."
+
+  defp lease_process(boot) do
+    with {:ok, paths} <- paths_for(boot),
+         {:ok, %File.Stat{type: :regular, size: size}} when size <= 32_768 <-
+           File.lstat(paths.owner_record),
+         {:ok, body} <- File.read(paths.owner_record),
+         {:ok, %{"pid" => pid}} when is_integer(pid) <- Jason.decode(body) do
+      "process #{pid}"
+    else
+      _ -> "another process"
+    end
+  rescue
+    _ -> "another process"
   end
 
   # B7: the lease owner record names the process that holds the data lease.
@@ -1149,11 +1372,12 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
     :exit, _ -> nil
   end
 
-  defp color_mode do
+  # D21: NO_COLOR counts when it is present and not empty (no-color.org).
+  defp color_mode(env) do
     cond do
-      System.get_env("NO_COLOR") != nil -> :monochrome
-      System.get_env("COLORTERM") in ["truecolor", "24bit"] -> :truecolor
-      String.contains?(System.get_env("TERM") || "", "256color") -> :ansi256
+      Map.get(env, "NO_COLOR") not in [nil, ""] -> :monochrome
+      Map.get(env, "COLORTERM") in ["truecolor", "24bit"] -> :truecolor
+      String.contains?(Map.get(env, "TERM") || "", "256color") -> :ansi256
       true -> :ansi16
     end
   end

@@ -255,10 +255,21 @@ defmodule SwarmCode.Daemon.Service.FeatureRequest do
 
   defp failure(_, _, code), do: wire_error(code)
   defp error(code), do: %{"code" => Atom.to_string(code), "message" => message(code)}
-  defp message(:not_allowed), do: "This action is not available in the selected project."
-  defp message(:invalid_request), do: "The feature action or its values are invalid."
-  defp message(:capacity_exceeded), do: "The feature page exceeds its size limit."
-  defp message(:source_unavailable), do: "The feature service is unavailable."
+
+  # pass74 S1-11 (R1): the client decodes an error only with the canonical
+  # message of its code (`AdmissionError.new/1`); a test keeps both tables equal.
+  @canonical_messages %{
+    not_allowed: "request is not allowed",
+    invalid_request: "invalid data source request",
+    capacity_exceeded: "data source admission capacity exceeded",
+    source_unavailable: "data source is unavailable"
+  }
+
+  @doc "The canonical error message of each code this module answers (R1)."
+  @spec canonical_messages() :: %{atom() => String.t()}
+  def canonical_messages, do: @canonical_messages
+
+  defp message(code), do: Map.fetch!(@canonical_messages, code)
   defp wire_error(code), do: {:error, Map.put(error(code), "op", "error")}
 
   defp result(kind, body),

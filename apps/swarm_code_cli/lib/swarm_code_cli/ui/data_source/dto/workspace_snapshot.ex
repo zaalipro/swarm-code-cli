@@ -18,6 +18,7 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.WorkspaceSnapshot do
       approval_mode: nil,
       trusted: nil,
       chat_provider: nil,
+      chat_provider_usable: nil,
       context_used: nil,
       context_window: nil,
       cost_usd: nil,
@@ -28,7 +29,8 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.WorkspaceSnapshot do
     ],
     fields: [
       project: {:optional, {:text, 200}},
-      models: {:list, {:dto, SwarmCodeCLI.UI.DataSource.DTO.ModelOption}},
+      # pass74 S1-11 (R5): the service sends up to 400 models.
+      models: {:list, {:dto, SwarmCodeCLI.UI.DataSource.DTO.ModelOption}, 400},
       agents: {:list, {:dto, SwarmCodeCLI.UI.DataSource.DTO.AgentSummary}},
       changes: {:list, {:dto, SwarmCodeCLI.UI.DataSource.DTO.Change}},
       verdicts: {:list, {:dto, SwarmCodeCLI.UI.DataSource.DTO.Verdict}},
@@ -40,6 +42,9 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.WorkspaceSnapshot do
       approval_mode: {:optional, {:enum, [:read_only, :auto, :full_access]}},
       trusted: {:optional, :boolean},
       chat_provider: {:optional, {:text, 200}},
+      # pass74 S1-11 (D11): whether that provider can answer (a key, or a
+      # private-host base URL); false with no provider; nil when not known.
+      chat_provider_usable: {:optional, :boolean},
       context_used: {:optional, :count},
       context_window: {:optional, :count},
       cost_usd: {:optional, :float},
@@ -81,6 +86,7 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.WorkspaceSnapshot do
       approval_mode: nil,
       trusted: nil,
       chat_provider: nil,
+      chat_provider_usable: nil,
       context_used: nil,
       context_window: nil,
       cost_usd: nil,

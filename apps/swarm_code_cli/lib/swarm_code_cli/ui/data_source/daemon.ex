@@ -250,7 +250,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
 
   def handle_call({:request, kind, value}, _from, state) when kind in [:query, :command] do
     with {:ok, request} <- Request.validate(value),
-         true <- kind == :command == (request.expected_response == :outcome),
+         true <- kind == :command == command_response?(request.expected_response),
          :ok <-
            admit_check(
              not recent?(state.used_requests, request.request_id) and
@@ -261,7 +261,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
          wall = state.clock.(:system),
          {:ok, message} <-
            Codec.request(request, wire_id(state.epoch, request.request_id), state.nonce, wall),
-         true <- request_capability(message.body) in state.capabilities do
+         :ok <- capability_check(request_capability(message.body), state.capabilities) do
       # pass71 S1: the wall-clock deadline becomes a monotonic one here, with
       # the same budget the wire request carries (`timeout_ms`).
       entry = %{
@@ -365,7 +365,15 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
   end
 
   @impl true
-  def format_status(status), do: %{status | state: %{phase: status.state.phase}}
+  def format_status(status),
+    do:
+      status
+      |> Map.put(:state, %{phase: status.state.phase})
+      |> redact_message()
+
+  # pass74 §3.3.10: the last message may be a settings command with its secrets.
+  defp redact_message(status),
+    do: status |> Map.replace(:message, :redacted) |> Map.replace(:log, :redacted)
 
   defp receive_message(message, %{phase: :binding} = state) do
     with %Message{type: :hello_ok, sequence: nil, occurred_at: nil, scope: nil} <- message,
@@ -922,6 +930,20 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
   defp cancel_timer(nil), do: :ok
   defp cancel_timer({timer, _}), do: Process.cancel_timer(timer)
   defp failure(code, state), do: {:reply, {:error, AdmissionError.new(code)}, state}
+
+  # pass74 S1-6: a settings command answers a `settings_result`, not an outcome.
+  defp command_response?(expected), do: expected in [:outcome, :settings_result]
+
+  # A daemon without the grant never sees a settings request: the layer reads
+  # `not_allowed` instead of the old invalid-request refusal.
+  defp capability_check(capability, capabilities) do
+    cond do
+      capability in capabilities -> :ok
+      capability == :settings -> {:error, AdmissionError.new(:not_allowed)}
+      true -> false
+    end
+  end
+
   defp now(state), do: state.clock.(:monotonic)
   defp default_clock(:system), do: System.system_time(:millisecond)
   defp default_clock(:monotonic), do: System.monotonic_time(:millisecond)
@@ -964,6 +986,9 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
   defp request_capability(%{"op" => "conversation.new"}), do: :conversation_new
   defp request_capability(%{"op" => "mark_seen"}), do: :mark_seen
   defp request_capability(%{"op" => "project.update"}), do: :project_update
+  # pass74 §3.4.1: both settings ops need the `settings` grant.
+  defp request_capability(%{"op" => "settings.query"}), do: :settings
+  defp request_capability(%{"op" => "settings.command"}), do: :settings
   defp request_capability(_), do: nil
 
   defp expire_requests(state) do
@@ -1016,6 +1041,16 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
 
     body =
       case request.expected_response do
+        # pass74 §3.4.2: `{:settings_failed, request_id, words}`; a command whose
+        # fate is unknown says so (the layer re-queries what it shows).
+        expected when expected in [:settings_snapshot, :settings_result] ->
+          words =
+            if status == :outcome_unknown,
+              do: DTO.SettingsResult.unknown_words(),
+              else: DTO.SettingsResult.failure_words(error)
+
+          Codec.settings_failed(request, words)
+
         :outcome ->
           %DTO.Outcome{
             request_id: request.request_id,

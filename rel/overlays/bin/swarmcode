@@ -16,8 +16,15 @@ usage() {
   cat <<'HELP'
 Usage: swarmcode [DIR] [--new | --continue | --resume ID] [--model M]
                  [-p PROMPT [--json]] [--plain [--ndjson]] [--help] [--version]
+       swarmcode settings [QUERY] [--dir DIR]
+       swarmcode config COMMAND [ARGS]     (swarmcode config help lists them)
 
 Opens the saved session for DIR (default: the current directory).
+
+  settings [QUERY]  open Settings, at QUERY when given ('swarmcode settings providers');
+                    it opens even when no model provider is set up yet
+  config COMMAND    read and change settings from scripts, dotfiles and SSH
+                    (a folder named settings or config: swarmcode ./settings, ./config)
 
   --new           start a new conversation
   --continue, -c  continue the latest conversation (the default)
@@ -110,6 +117,51 @@ needs_value() {
   [[ $2 -ge 2 && "$3" != "--" ]] || die_usage "$1 needs a value."
 }
 
+# pass74 S1-13/S1-14: `settings` and `config` as the first word are the
+# subcommands; a folder of that name opens with ./settings or -- settings.
+settings_mode=0
+settings_query=""
+if [[ $# -gt 0 && "$1" == "config" ]]; then
+  shift
+  export SWARM_PROJECT_ROOT="$PWD"
+  unset SWARM_RELEASE_TUI SWARM_SETTINGS_OPEN SWARM_SETTINGS_ONLY
+  stdin_secret=0
+  if [[ "${1:-}" == "secret" && -t 0 ]]; then
+    for arg in "$@"; do [[ "$arg" == "--stdin" ]] && stdin_secret=1; done
+  fi
+  if [[ $stdin_secret -eq 1 ]]; then
+    # Secrets never come from argv; typed ones are not echoed.
+    printf 'Paste the key, then Enter (not shown): ' >&2
+    stty -echo
+    trap 'stty echo' EXIT INT TERM
+    set +e
+    "$root/bin/swarm_code_cli" eval 'SwarmCodeCLI.Release.main(System.argv())' config "$@"
+    code=$?
+    stty echo
+    printf '\n' >&2
+    exit $code
+  fi
+  exec "$root/bin/swarm_code_cli" eval 'SwarmCodeCLI.Release.main(System.argv())' config "$@"
+fi
+if [[ $# -gt 0 && "$1" == "settings" ]]; then
+  shift
+  settings_mode=1
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --help | -h) usage; exit 0 ;;
+      --dir) needs_value "$1" $# "${2:-}"; set_project "$2"; shift ;;
+      --dir=*) set_project "${1#--dir=}" ;;
+      -?*) die_usage "settings takes a query and --dir only." ;;
+      *) settings_query="${settings_query:+$settings_query }$1" ;;
+    esac
+    shift
+  done
+  # The TUI opens at a query of 200 bytes at most (§3.10.1).
+  if (($(printf '%s' "$settings_query" | LC_ALL=C wc -c) > 200)); then
+    die_usage "the settings query is too long (200 bytes at most)."
+  fi
+fi
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --help | -h) usage; exit 0 ;;
@@ -183,7 +235,7 @@ if [[ $model_set -eq 1 ]]; then
 else
   unset SWARM_MODEL_OVERRIDE
 fi
-unset SWARM_RELEASE_TUI
+unset SWARM_RELEASE_TUI SWARM_SETTINGS_OPEN SWARM_SETTINGS_ONLY
 
 headless() {
   exec "$root/bin/swarm_code_cli" eval 'SwarmCodeCLI.Release.main(System.argv())' "$@"
@@ -191,6 +243,17 @@ headless() {
 
 if [[ $prompt_set -eq 1 ]]; then
   if [[ $json -eq 1 ]]; then headless -p "$prompt" --json; else headless -p "$prompt"; fi
+fi
+
+if [[ $settings_mode -eq 1 ]]; then
+  if ! [[ -t 0 && -t 1 && "${TERM:-dumb}" != "dumb" ]]; then
+    echo "swarmcode: settings needs a terminal; 'swarmcode config' changes settings from scripts." >&2
+    exit 2
+  fi
+  export SWARM_SETTINGS_OPEN="$settings_query"
+  export SWARM_SETTINGS_ONLY=1
+  export SWARM_RELEASE_TUI=1
+  exec "$root/bin/swarm_code_cli" start
 fi
 
 if [[ $plain -eq 0 ]] && ! [[ -t 0 && -t 1 && "${TERM:-dumb}" != "dumb" ]]; then

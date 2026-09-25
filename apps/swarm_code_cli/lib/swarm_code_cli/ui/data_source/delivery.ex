@@ -89,6 +89,9 @@ defmodule SwarmCodeCLI.UI.DataSource.Delivery do
   defp correlated_body?(%{kind: :response, request_id: id, body: %{request_id: body_id}}),
     do: id == body_id
 
+  defp correlated_body?(%{kind: :response, request_id: id, body: {:settings_failed, body_id, _}}),
+    do: id == body_id
+
   defp correlated_body?(%{
          kind: :delta,
          revision: revision,
@@ -115,9 +118,21 @@ defmodule SwarmCodeCLI.UI.DataSource.Delivery do
         match?({:ok, _}, DTO.ConversationList.validate(body)) or
         match?({:ok, _}, DTO.AgentDetail.validate(body)) or
         match?({:ok, _}, DTO.Outcome.validate(body)) or
-        match?({:ok, _}, DTO.PendingInteraction.validate(body))
+        match?({:ok, _}, DTO.PendingInteraction.validate(body)) or settings_body?(body)
 
   defp valid_body?(_, _), do: false
+
+  # pass74 §3.4.6: a settings answer, or the typed failure of a settings request.
+  defp settings_body?(%DTO.SettingsSnapshot{} = body),
+    do: match?({:ok, _}, DTO.SettingsSnapshot.validate(body))
+
+  defp settings_body?(%DTO.SettingsResult{} = body),
+    do: match?({:ok, _}, DTO.SettingsResult.validate(body))
+
+  defp settings_body?({:settings_failed, id, words}),
+    do: Intent.valid_id?(id) and is_binary(words) and byte_size(words) <= 2_048
+
+  defp settings_body?(_body), do: false
 
   defp page_body?(%module{} = body)
        when module in [
