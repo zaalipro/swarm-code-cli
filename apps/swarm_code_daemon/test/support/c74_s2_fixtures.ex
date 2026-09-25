@@ -41,22 +41,33 @@ defmodule SwarmCode.Test.C74S2 do
       File.rm_rf(dir)
     end)
 
+    # WAL first, with one connection: three connections switching a new file
+    # to WAL at once lock each other out at connect.
+    db = Path.join(dir, "fixture.db")
+    SwarmCode.Domain.Repo.ensure_database_permissions!(db)
+    {:ok, conn} = Exqlite.Sqlite3.open(db)
+    :ok = Exqlite.Sqlite3.execute(conn, "PRAGMA journal_mode=WAL")
+    :ok = Exqlite.Sqlite3.close(conn)
+
     start_supervised!(
-      {Repo,
-       database: Path.join(dir, "fixture.db"),
-       domain_fixture: true,
-       pool_size: 3,
-       journal_mode: :wal,
-       log: false}
+      {Repo, database: db, domain_fixture: true, pool_size: 3, journal_mode: :wal, log: false}
     )
 
-    Ecto.Migrator.run(
-      Repo,
-      Application.app_dir(:swarm_code_daemon, "priv/domain_repo/migrations"),
-      :up,
-      all: true,
-      log: false
-    )
+    # The migrations are loaded once per test; the second load is not news.
+    ignore = Code.get_compiler_option(:ignore_module_conflict)
+    Code.put_compiler_option(:ignore_module_conflict, true)
+
+    try do
+      Ecto.Migrator.run(
+        Repo,
+        Application.app_dir(:swarm_code_daemon, "priv/domain_repo/migrations"),
+        :up,
+        all: true,
+        log: false
+      )
+    after
+      Code.put_compiler_option(:ignore_module_conflict, ignore)
+    end
 
     Cache.clear()
     %{dir: dir, config_dir: config_dir, user_agents_dir: user_agents}
@@ -235,9 +246,9 @@ defmodule SwarmCode.Test.C74S2 do
   @doc "A search provider row written directly."
   def search_row!(kind, attrs) do
     {:ok, row} =
-      %SearchProvider{}
+      (Repo.get_by(SearchProvider, kind: kind) || %SearchProvider{})
       |> SearchProvider.changeset(Map.put(attrs, :kind, kind))
-      |> Repo.insert()
+      |> Repo.insert_or_update()
 
     row
   end
