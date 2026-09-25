@@ -559,14 +559,19 @@ defmodule SwarmCode.Daemon.Service.Settings.Tasks do
   end
 
   defp rows_of(%{"rows" => rows} = result, _summary) when is_list(rows),
-    do: {rows, Map.delete(result, "rows")}
+    do: {rows, result |> Map.delete("rows") |> public_keys()}
 
   defp rows_of(%{rows: rows} = result, _summary) when is_list(rows),
-    do: {rows, Map.delete(result, :rows)}
+    do: {rows, result |> Map.delete(:rows) |> public_keys()}
 
   defp rows_of(rows, summary) when is_list(rows), do: {rows, summary}
-  defp rows_of(%{} = result, _summary), do: {[], result}
+  defp rows_of(%{} = result, _summary), do: {[], public_keys(result)}
   defp rows_of(_result, summary), do: {[], summary}
+
+  # A result key starting with "_" is the task's own (an import preview's
+  # parsed file): kept for a later command, never shown.
+  defp public_keys(result),
+    do: Map.reject(result, fn {key, _} -> is_binary(key) and String.starts_with?(key, "_") end)
 
   defp positive(n) when is_integer(n) and n > 0, do: n
   defp positive(_), do: nil
