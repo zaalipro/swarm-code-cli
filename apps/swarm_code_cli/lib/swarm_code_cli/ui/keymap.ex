@@ -190,6 +190,7 @@ defmodule SwarmCodeCLI.UI.Keymap do
       command?(trimmed, "/diff") -> :diff
       command?(trimmed, "/theme") -> :theme
       command?(trimmed, "/mouse") -> :mouse
+      settings_command?(trimmed) -> :settings
       trimmed == "/trust" -> :trust
       true -> nil
     end
@@ -198,6 +199,20 @@ defmodule SwarmCodeCLI.UI.Keymap do
   def local_command(_text), do: nil
 
   defp command?(text, name), do: text == name or String.starts_with?(text, name <> " ")
+
+  @doc """
+  cli74: whether `text` is `/settings`, `/config` or `/prefs`, with or
+  without an argument.
+  """
+  @spec settings_command?(term()) :: boolean()
+  def settings_command?(text) when is_binary(text) do
+    trimmed = String.trim(text)
+
+    command?(trimmed, "/settings") or command?(trimmed, "/config") or
+      command?(trimmed, "/prefs")
+  end
+
+  def settings_command?(_text), do: false
 
   defp invoke({:intent, intent}, state) do
     if destructive?(intent) and not match?([{:confirm_intent, ^intent} | _], state.layers),

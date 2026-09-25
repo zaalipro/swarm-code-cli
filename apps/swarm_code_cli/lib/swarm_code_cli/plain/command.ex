@@ -4,7 +4,25 @@ defmodule SwarmCodeCLI.Plain.Command do
   alias SwarmCodeCLI.UI.{Destination, LayerSpec, Intent, RequestResolver, SafeText}
   alias SafeText.Limits
 
+  @settings_words "/settings needs the full-screen terminal; use swarmcode config here."
+
+  @doc "cli74: what the plain presenter and a one-shot answer to `/settings` (`/config`, `/prefs`)."
+  def settings_words, do: @settings_words
+
   def parse(line, %Presenter{} = presenter, scope) do
+    if SwarmCodeCLI.UI.Keymap.settings_command?(line),
+      do: settings_refusal(),
+      else: parse_line(line, presenter, scope)
+  end
+
+  def parse(_, _, _), do: diagnostic()
+
+  defp settings_refusal do
+    {:ok, text} = SafeText.external(@settings_words, Limits.content())
+    {:error, text}
+  end
+
+  defp parse_line(line, presenter, scope) do
     with {:ok, words} <- Lexer.words(line),
          {:ok, result} <- decode(words, presenter),
          :ok <- authorize(result, presenter, scope) do
@@ -14,7 +32,6 @@ defmodule SwarmCodeCLI.Plain.Command do
     end
   end
 
-  def parse(_, _, _), do: diagnostic()
   defp authorize({:local, _}, _, _), do: :ok
 
   defp authorize({:intent, intent}, p, scope) do

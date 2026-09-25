@@ -5,6 +5,8 @@ defmodule SwarmCodeCLI.UI.Switcher.Entry do
   # conversation or model in use.
   # `order` keeps a source's own order among equally good matches (the
   # service lists conversations newest first); 0 for everything else.
+  # `search` holds extra words a query may match (cli74: a setting's key
+  # and synonyms), never drawn.
   defstruct [
     :id,
     :label,
@@ -14,7 +16,8 @@ defmodule SwarmCodeCLI.UI.Switcher.Entry do
     :detail,
     recent?: false,
     current?: false,
-    order: 0
+    order: 0,
+    search: nil
   ]
 
   @type t :: %__MODULE__{}
@@ -34,7 +37,22 @@ defmodule SwarmCodeCLI.UI.Switcher do
 
   alias SwarmCodeCLI.UI.Reducer.Commands
   alias SwarmCodeCLI.UI.Switcher.Entry
-  @kinds [:command, :workflow, :project, :repository, :conversation, :research, :run, :action]
+
+  @kinds [
+    :command,
+    :workflow,
+    :project,
+    :repository,
+    :conversation,
+    :research,
+    :run,
+    :action,
+    :settings
+  ]
+
+  # cli74: one row per setting, listed only once two characters are typed or
+  # under `>settings:`, and always below every other row.
+  @setting_min_query 2
   def open(state, _opener), do: {:switcher, elem(State.next_id(state, :layer), 0)}
 
   def field_key({kind, id}) when kind in [:switcher, :jump, :action_menu],
@@ -91,6 +109,7 @@ defmodule SwarmCodeCLI.UI.Switcher do
     local ++
       models ++
       libraries ++
+      settings_entries(state) ++
       local_entries(state) ++
       domain_entries(state) ++
       conversation_entries(state) ++
@@ -210,10 +229,18 @@ defmodule SwarmCodeCLI.UI.Switcher do
     {kinds, query} = prefix(Editor.text(editor))
     query = String.downcase(String.trim(query))
 
+    # cli74: a setting's own row waits for two typed characters (or the
+    # `>settings:` prefix) and then ranks below every other kind.
+    kinds =
+      if :setting in kinds or String.length(query) >= @setting_min_query,
+        do: kinds ++ [:setting],
+        else: kinds
+
     entries
     |> Enum.filter(&(&1.kind in kinds))
     |> Enum.flat_map(fn entry ->
       label = String.downcase(entry.label)
+      search = String.downcase(entry.search || "")
 
       score =
         cond do
@@ -229,6 +256,11 @@ defmodule SwarmCodeCLI.UI.Switcher do
           String.contains?(label, query) or String.contains?(String.downcase(entry.id), query) ->
             2
 
+          search != "" and
+              (String.contains?(search, query) or
+                 Enum.any?(String.split(search), &String.starts_with?(&1, query))) ->
+            2
+
           true ->
             nil
         end
@@ -236,8 +268,9 @@ defmodule SwarmCodeCLI.UI.Switcher do
       if is_nil(score),
         do: [],
         else: [
-          {{score, Enum.find_index(@kinds, &(&1 == entry.kind)) || 99, entry.order, label,
-            entry.id}, entry}
+          {{if(entry.kind == :setting, do: 1, else: 0), score,
+            Enum.find_index(@kinds, &(&1 == entry.kind)) || 99, entry.order, label, entry.id},
+           entry}
         ]
     end)
     |> Enum.sort_by(&elem(&1, 0))
@@ -397,8 +430,61 @@ defmodule SwarmCodeCLI.UI.Switcher do
   # rows by their mode ("au" is Auto); the query had no space where the
   # labels do, so any typed text left "NO RESULTS".
   defp prefix(">approvals:" <> typed), do: {[:action], "approvals: " <> String.trim(typed)}
+  # cli74: every setting, section and the Settings row itself.
+  defp prefix(">settings:" <> typed), do: {[:settings, :setting], typed}
   defp prefix(">" <> query), do: {[:action], query}
   defp prefix(query), do: {@kinds, query}
+
+  @doc "The switcher query that lists only settings rows (cli74)."
+  def settings_query, do: ">settings:"
+
+  # cli74: "Settings" (the Overview), one row per section and one per scalar
+  # setting ("Settings › Theme  light"), each opening the layer there.
+  defp settings_entries(state) do
+    sections =
+      for %{id: id, title: title} <- SwarmCodeCLI.UI.Settings.Sections.all(), id != :overview do
+        %{
+          entry("Settings › " <> title, :settings, {:local, {:settings_open, {:section, id}}})
+          | title: "Settings › " <> title
+        }
+      end
+
+    settings =
+      for entry <- SwarmCode.Settings.Registry.all(),
+          SwarmCode.Settings.Entry.scalar?(entry) do
+        value = setting_value(state, entry)
+        label = "Settings › " <> entry.label
+
+        %{
+          entry(
+            if(value, do: label <> "  " <> value, else: label),
+            :setting,
+            {:local, {:settings_open, {:key, entry.key}}}
+          )
+          | title: label,
+            detail: value,
+            search: Enum.join([entry.key | entry.synonyms], " ")
+        }
+      end
+
+    [
+      %{
+        entry("Settings", :settings, {:local, {:settings_open, {:section, :overview}}})
+        | search: "preferences config configure options"
+      }
+      | sections
+    ] ++ settings
+  end
+
+  # The value a row can name without asking the daemon: this terminal's.
+  defp setting_value(state, %{storage: {:cli, name}} = entry) do
+    case Map.fetch(state.prefs, name) do
+      {:ok, value} -> SwarmCode.Settings.TextValue.format(entry, value)
+      :error -> nil
+    end
+  end
+
+  defp setting_value(_state, _entry), do: nil
 
   @approval_modes [
     {:read_only, "read-only", "nothing is written or run without you"},

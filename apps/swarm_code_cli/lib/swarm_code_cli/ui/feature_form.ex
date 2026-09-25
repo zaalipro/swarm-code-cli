@@ -90,13 +90,9 @@ defmodule SwarmCodeCLI.UI.FeatureForm do
         {request_id, state} = State.next_id(state, :feature_command)
 
         scope =
-          if feature == :settings,
-            do: state.watches.shell.scope,
-            else:
-              if(state.destination != :activity and state.watches.workspace.scope,
-                do: state.watches.workspace.scope,
-                else: state.watches.shell.scope
-              )
+          if state.destination != :activity and state.watches.workspace.scope,
+            do: state.watches.workspace.scope,
+            else: state.watches.shell.scope
 
         request = %Request{
           request_id: request_id,

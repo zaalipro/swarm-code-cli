@@ -239,7 +239,8 @@ defmodule SwarmCodeCLI.UI.Action do
           :panel,
           :diff,
           :theme,
-          :mouse
+          :mouse,
+          :settings
         ]
       )
 

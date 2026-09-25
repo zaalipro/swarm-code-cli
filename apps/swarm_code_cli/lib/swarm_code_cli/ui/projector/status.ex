@@ -662,8 +662,9 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
   defp refusal_reason(code) when code in [:read_only, "read_only"],
     do: {"approvals are read-only", "/approval auto lets edits go ahead"}
 
+  # cli74: the hint names the settings page that fixes it.
   defp refusal_reason(code) when code in [:no_provider, "no_provider"],
-    do: {"no model provider is set up", "add one in the desktop app's settings"}
+    do: {"no model provider is set up", "/settings providers adds one"}
 
   defp refusal_reason(code) when code in [:not_found, "not_found", :gone, "gone"],
     do: {"it no longer exists", "Ctrl-G shows the runs that do"}
