@@ -160,16 +160,53 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
 
   # ----------------------------------------------------------- search
 
-  defp search(state, %Layer{mode: :search, search: %{query: query}}, width) do
+  defp search(state, %Layer{mode: :command_line, command_line: %{text: text} = line}, width) do
     caret = glyph(state, :caret)
+
+    error =
+      if line.error,
+        do: [{glyph(state, :fail) <> " " <> line.error <> " ", :error}],
+        else: [{"Enter runs · Esc leaves ", :text_faint}]
+
+    Text.spread(
+      state,
+      [{" : ", {:info, [:bold]}}, {text, :text_primary}, {caret, :focus}],
+      error,
+      width
+    )
+  end
+
+  defp search(state, %Layer{mode: :search, search: nil, filter: %{} = filter}, width) do
+    caret = glyph(state, :caret)
+    shown = state |> Nav.rows() |> Enum.count(&Row.focusable?/1)
+
+    Text.spread(
+      state,
+      [{" / ", {:info, [:bold]}}, {filter.query, :text_primary}, {caret, :focus}],
+      [{"filter #{filter.total} rows · #{shown} match ", :text_faint}],
+      width
+    )
+  end
+
+  defp search(state, %Layer{mode: :search, search: %{query: query} = search}, width) do
+    caret = glyph(state, :caret)
+
+    count =
+      case Map.get(search, :found) do
+        %{results: results} -> [{"#{length(results)} results · Esc clears ", :text_faint}]
+        _ -> [{"Esc leaves ", :text_faint}]
+      end
 
     Text.spread(
       state,
       [{" / ", {:info, [:bold]}}, {query, :text_primary}, {caret, :focus}],
-      [{"Esc clears ", :text_faint}],
+      count,
       width
     )
   end
+
+  defp search(state, %Layer{search: %{query: query}}, width) when query != "",
+    do: Text.fit(state, [{" / ", :text_muted}, {query, :text_primary}], width)
 
   defp search(state, _layer, width),
     do:

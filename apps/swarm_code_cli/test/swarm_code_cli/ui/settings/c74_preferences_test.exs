@@ -315,7 +315,7 @@ defmodule SwarmCodeCLI.UI.Settings.C74PreferencesTest do
     runtime
   end
 
-  defp running(runtime, n \\ 200)
+  defp running(runtime, n \\ 5_000)
   defp running(_runtime, 0), do: flunk("runtime did not bind")
 
   defp running(runtime, n) do

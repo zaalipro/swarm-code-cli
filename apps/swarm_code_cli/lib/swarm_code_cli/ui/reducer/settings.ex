@@ -23,7 +23,7 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings do
   alias SwarmCodeCLI.UI.{Hint, SafeText, State}
   alias SwarmCode.Settings.CliFile
   alias SwarmCodeCLI.UI.Init.Preferences
-  alias SwarmCodeCLI.UI.Reducer.Settings.{Commit, Edit, Ops, Popover, Responses}
+  alias SwarmCodeCLI.UI.Reducer.Settings.{Commit, Edit, Find, Ops, Popover, Responses}
   alias SwarmCodeCLI.UI.Settings.{DeepLink, Layer, Nav, Page, Sections, Wire}
 
   @conflict_words "cli.json changed elsewhere; /settings shows it"
@@ -44,6 +44,7 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings do
   @spec open(State.t(), term()) :: {State.t(), list()}
   def open(state, arg) do
     {state, effects} = open_layer(state, arg)
+    state = Find.refresh(state)
     {state, more} = Wire.sync(state)
     {state, effects ++ more}
   end
@@ -103,7 +104,14 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings do
       layer
       | mode: :search,
         region: :search,
-        search: %{query: query, cursor: nil, entered_from: :open},
+        search: %{
+          query: query,
+          cursor: nil,
+          entered_from: :open,
+          index: nil,
+          index_key: nil,
+          found: nil
+        },
         rail_cursor: Layer.section(layer)
     }
 
@@ -159,6 +167,21 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings do
   defp handle_event(%{settings: %Layer{mode: :paste, paste: %{}}} = state, {kind, _} = event)
        when kind in [:verb, :text, :paste],
        do: SwarmCodeCLI.UI.Reducer.Settings.Paste.event(state, event)
+
+  # The search row, the in-page filter and the command line take typing and
+  # their keys; Esc, Ctrl-C and ? keep their layer meaning.
+  defp handle_event(%{settings: %Layer{mode: mode, popover: nil}} = state, {kind, value} = event)
+       when mode in [:search, :command_line] and kind in [:text, :paste, :verb] and
+              value not in [
+                :escape,
+                :back,
+                :interrupt,
+                :help,
+                :close,
+                :next_region,
+                :previous_region
+              ],
+       do: Find.event(state, event)
 
   # An open editor takes the keys, the text and the pastes first.
   defp handle_event(%{settings: %Layer{mode: :editing, popover: nil}} = state, {:verb, verb}) do
@@ -262,6 +285,20 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings do
        when verb in [:back, :escape],
        do: {put_layer(state, %{layer | popover: nil}), []}
 
+  defp verb(
+         %{settings: %Layer{mode: :search, search: nil, filter: %{} = filter} = layer} = state,
+         verb
+       )
+       when verb in [:back, :escape, :interrupt] do
+    if filter.query != "",
+      do: {Nav.settle(put_layer(state, %{layer | filter: %{filter | query: ""}})), []},
+      else: {put_layer(state, %{layer | mode: :browse, filter: nil, region: :page}), []}
+  end
+
+  defp verb(%{settings: %Layer{mode: :command_line} = layer} = state, verb)
+       when verb in [:back, :escape, :interrupt],
+       do: {put_layer(state, %{layer | mode: :browse, command_line: nil, region: :page}), []}
+
   defp verb(%{settings: %Layer{mode: :search} = layer} = state, verb)
        when verb in [:back, :escape] do
     case layer.search do
@@ -334,14 +371,8 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings do
   defp verb(%{settings: %Layer{} = layer} = state, :info),
     do: {put_layer(state, %{layer | detail_open: not layer.detail_open}), []}
 
-  defp verb(%{settings: %Layer{} = layer} = state, :search),
-    do:
-      {put_layer(state, %{
-         layer
-         | mode: :search,
-           region: :search,
-           search: %{query: "", cursor: nil, entered_from: layer.region}
-       }), []}
+  defp verb(state, :search), do: Find.open(state)
+  defp verb(state, :command), do: Find.command_line(state)
 
   defp verb(state, :refresh), do: Responses.reload(state)
 

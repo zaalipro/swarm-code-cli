@@ -6,7 +6,7 @@ defmodule SwarmCodeCLI.UI.Settings.Nav do
   what the cursor rests on is always what is drawn.
   """
 
-  alias SwarmCodeCLI.UI.Settings.{Ctx, Layer, Normalize, Page, Row, Sections}
+  alias SwarmCodeCLI.UI.Settings.{Ctx, Layer, Normalize, Page, Row, Search, Sections}
 
   # Rows of chrome around the page column (header, search, rules, status,
   # footer): what is left is the page's height, which PgUp/PgDn move by.
@@ -69,6 +69,10 @@ defmodule SwarmCodeCLI.UI.Settings.Nav do
 
   @doc "The rows of the page on screen."
   @spec rows(map()) :: [Row.t()]
+  def rows(%{settings: %Layer{search: %{query: query, found: %{} = found}}} = state)
+      when query != "",
+      do: Search.rows(ctx(state), found, query)
+
   def rows(%{settings: %Layer{} = layer} = state) do
     ctx = ctx(state)
     page = Layer.page(layer)
@@ -85,7 +89,37 @@ defmodule SwarmCodeCLI.UI.Settings.Nav do
           Sections.sub_rows(page.section, ctx, page.sub)
       end
 
-    Normalize.rows(rows)
+    rows |> Normalize.rows() |> filtered(layer)
+  end
+
+  # D37: a long list narrowed in place by its filter.
+  defp filtered(rows, %Layer{filter: %{query: query, page: key}} = layer) when query != "" do
+    page = Layer.page(layer)
+
+    if key == {page.section, page.record, page.sub} do
+      words = query |> String.downcase() |> String.split(~r/\s+/u, trim: true)
+      Enum.filter(rows, &(Row.focusable?(&1) and matches?(&1, words)))
+    else
+      rows
+    end
+  end
+
+  defp filtered(rows, _layer), do: rows
+
+  defp matches?(%Row{} = row, words) do
+    haystack =
+      [
+        row.label
+        | Enum.map(
+            row.value ++ Enum.flat_map(row.columns || [], &[{elem(&1, 0), nil}]),
+            &elem(&1, 0)
+          )
+      ]
+      |> Enum.join(" ")
+      |> String.downcase()
+      |> String.split(~r/[^\p{L}\p{N}._\/-]+/u, trim: true)
+
+    Enum.all?(words, fn word -> Enum.any?(haystack, &String.starts_with?(&1, word)) end)
   end
 
   @doc "The row the page cursor is on (nil on an empty page)."
