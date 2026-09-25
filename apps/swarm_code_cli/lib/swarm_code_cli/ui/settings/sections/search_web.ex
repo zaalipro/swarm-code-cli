@@ -267,13 +267,17 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.SearchWeb do
     set = R.field(key, "set") == true
     task = R.task(ctx, "search.set_key", %{"kind" => kind})
     order = if engine, do: position_words(ctx, kind), else: "a reader: no order"
+    key_row_id = "fld:search_provider:#{kind}:api_key"
 
     key_lines =
       cond do
-        R.running?(task) ->
+        # The paste's own value says "checking" while it is open; the
+        # refusal and its keys show while the refused paste waits (cli74 F16).
+        R.running?(task) and R.paste_state(ctx, key_row_id) == :none ->
           [[{R.glyph(ctx, :running) <> " checking the new key…", :info}]]
 
-        task && R.field(elem(task, 1), "state") in ["failed", "timeout"] ->
+        task != nil and R.field(elem(task, 1), "state") in ["failed", "timeout"] and
+            R.paste_state(ctx, key_row_id) == :refused ->
           [
             [{to_string(R.field(elem(task, 1), "message")), :error}],
             [
@@ -596,6 +600,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.SearchWeb do
       label: "#{label(kind)} API key",
       set?: set?,
       kind: @kind,
+      own_lines: true,
       expected: %{"key" => R.field(f, "api_key")},
       then: then
     }

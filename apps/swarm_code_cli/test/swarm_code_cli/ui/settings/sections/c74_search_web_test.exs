@@ -147,6 +147,14 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.C74SearchWebTest do
       )
 
     c = record_ctx("tavily") |> T.put(id, task, [])
+    # cli74 F16: the refusal and its keys show while the refused paste
+    # waits (after Esc nothing is left to save).
+    assert row(
+             SearchWeb.record_rows(c, "search_provider", "tavily"),
+             "fld:search_provider:tavily:api_key"
+           ).lines == []
+
+    c = with_refused_paste(c, "fld:search_provider:tavily:api_key")
 
     key =
       row(
@@ -230,5 +238,15 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.C74SearchWebTest do
 
     assert text(row(SearchWeb.rows(ctx(state)), "info:search:none").value) ==
              "Agents cannot search the web: no search engine is on"
+  end
+
+  defp with_refused_paste(ctx, row_id) do
+    paste = %SwarmCodeCLI.UI.Settings.Paste{
+      target: %{row_id: row_id},
+      bytes: "sk-new-0000000000000000",
+      refused: {:replacement, "The new key was refused (401)."}
+    }
+
+    %{ctx | layer: Map.put(ctx.layer || %{}, :paste, paste)}
   end
 end

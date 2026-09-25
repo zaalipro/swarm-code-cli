@@ -261,6 +261,12 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.C74ProvidersTest do
         )
 
       c = record_ctx(@ids.deepseek) |> T.put(id, task, [])
+      # cli74 F16: the refusal and its keys show while the refused paste
+      # waits (after Esc nothing is left to save).
+      assert row(record_rows(c, @ids.deepseek), "fld:provider:#{@ids.deepseek}:api_key").lines ==
+               []
+
+      c = with_refused_paste(c, "fld:provider:#{@ids.deepseek}:api_key")
       key = row(record_rows(c, @ids.deepseek), "fld:provider:#{@ids.deepseek}:api_key")
 
       assert Enum.map(key.lines, &text/1) == [
@@ -460,5 +466,15 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.C74ProvidersTest do
       c = put_in(c.data.records[{"providers", %{}}].items, [])
       assert [%{id: "info:gone"}] = record_rows(c, @ids.deepseek)
     end
+  end
+
+  defp with_refused_paste(ctx, row_id) do
+    paste = %SwarmCodeCLI.UI.Settings.Paste{
+      target: %{row_id: row_id},
+      bytes: "sk-new-0000000000000000",
+      refused: {:replacement, "The new key was refused (401)."}
+    }
+
+    %{ctx | layer: Map.put(ctx.layer || %{}, :paste, paste)}
   end
 end

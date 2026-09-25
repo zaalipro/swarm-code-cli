@@ -530,10 +530,13 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Providers do
 
     lines =
       cond do
-        R.running?(task) ->
+        # The paste's own value says "checking" while it is open; the
+        # refusal and its keys show while the refused paste waits (cli74 F16).
+        R.running?(task) and R.paste_state(ctx, row_id) == :none ->
           [[{R.glyph(ctx, :running) <> " checking the new key…", :info}]]
 
-        task && R.field(elem(task, 1), "state") in ["failed", "timeout"] ->
+        task != nil and R.field(elem(task, 1), "state") in ["failed", "timeout"] and
+            R.paste_state(ctx, row_id) == :refused ->
           [
             [{to_string(R.field(elem(task, 1), "message")), :error}],
             [
@@ -1371,6 +1374,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Providers do
       label: "#{name} API key",
       set?: set?,
       kind: @kind,
+      own_lines: true,
       expected: %{"key" => R.field(provider(ctx, id) || %{}, "api_key")},
       then: if(set?, do: [], else: [{:task, "provider.test", %{"id" => id}, %{}}])
     }

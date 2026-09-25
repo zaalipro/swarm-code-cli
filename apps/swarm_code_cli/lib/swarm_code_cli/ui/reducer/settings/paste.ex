@@ -250,9 +250,16 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Paste do
     end
   end
 
-  @doc "The continuation lines under the pasting row (a refused replacement's choice)."
+  @doc """
+  The continuation lines under the pasting row (a refused replacement's
+  choice), unless the target's section draws them itself (`own_lines: true`,
+  a provider's or search engine's key: cli74 F16, it was said three times).
+  """
   @spec lines(Target.t()) :: [[{String.t(), atom()}]]
-  def lines(%Target{refused: {:replacement, words}}), do: [[{words, :warning}]]
+  def lines(%Target{refused: {:replacement, words}, target: target}) do
+    if field(target, :own_lines) == true, do: [], else: [[{words, :warning}]]
+  end
+
   def lines(%Target{}), do: []
 
   defp drop(%{settings: %Layer{} = layer} = state),

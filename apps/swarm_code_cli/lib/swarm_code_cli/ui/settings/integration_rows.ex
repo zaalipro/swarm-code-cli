@@ -601,6 +601,21 @@ defmodule SwarmCodeCLI.UI.Settings.IntegrationRows do
   def running?(nil), do: false
   def running?({_id, task}), do: to_string(field(task, "state")) == "running"
 
+  @doc """
+  cli74 F16: the paste open on `row_id`: `:none`, `:open` or `:refused` (a
+  replaced key the endpoint refused, waiting for `s` or Esc).
+  """
+  @spec paste_state(map(), String.t()) :: :none | :open | :refused
+  def paste_state(%{layer: %{paste: %{target: target} = paste}}, row_id) when is_map(target) do
+    cond do
+      (Map.get(target, :row_id) || Map.get(target, "row_id")) != row_id -> :none
+      match?({:replacement, _}, Map.get(paste, :refused)) -> :refused
+      true -> :open
+    end
+  end
+
+  def paste_state(_ctx, _row_id), do: :none
+
   @glyphs %{
     running: {"◷", "~"},
     ok: {"✓", "v"},

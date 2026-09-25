@@ -11,7 +11,10 @@ defmodule SwarmCodeCLI.UI.Settings.C74FTableRowsTest do
   alias SwarmCodeCLI.UI.{Projector, Reducer, SafeText}
   alias SwarmCodeCLI.UI.DataSource.{Delivery, Request}
   alias SwarmCodeCLI.UI.DataSource.Fake.Settings, as: FakeSettings
-  alias SwarmCodeCLI.UI.Reducer.Settings.Ops
+  alias SwarmCodeCLI.UI.DataSource.DTO
+  alias SwarmCodeCLI.UI.Reducer.Settings.{Ops, Responses}
+  alias SwarmCodeCLI.UI.Settings.{Nav, Page}
+  alias SwarmCodeCLI.UI.Settings.Sections.Providers
 
   defp serve({state, effects}, fake) do
     for({kind, %Request{} = r} <- effects, kind in [:query, :command], do: r)
@@ -61,5 +64,52 @@ defmodule SwarmCodeCLI.UI.Settings.C74FTableRowsTest do
     line = Enum.find(lines(state), &(&1 =~ "Elixir"))
     refute line =~ ".ex .exs"
     assert line != before
+  end
+
+  # cli74 F16 (A43, found in the sandbox): a refused replacement said so
+  # three times (the section's two lines and the paste's own line).
+  test "a refused key replacement says so once, and not after Esc" do
+    fake = FakeSettings.seed()
+    {:ok, fake, []} = FakeSettings.control(fake, :stub_reply, ["provider.set_key", {:task, %{}}])
+    state = ready()
+    state = %{state | capabilities: %{state.capabilities | paste: :supported}}
+
+    {state, fake} =
+      state |> Reducer.update({:settings_open, {:section, :providers}}) |> serve(fake)
+
+    "rec:provider:" <> id =
+      Enum.find(Nav.rows(state), &(&1.label =~ "DeepSeek" and &1.id =~ "rec:provider:")).id
+
+    {state, fake} =
+      state
+      |> Ops.run([{:open, %Page{section: :providers, record: {"provider", id}}}])
+      |> serve(fake)
+
+    key = Enum.find(Nav.rows(state), &(&1.id == "fld:provider:#{id}:api_key"))
+    [{:paste, target}] = Providers.act(Nav.ctx(state), key, :open_row)
+    {state, _} = Ops.run(state, [{:paste, target}])
+    {state, _} = Reducer.update(state, {:settings, {:paste, "sk-refused-0000000000000"}})
+    {state, _fake} = state |> Reducer.update({:settings, {:verb, :paste_commit}}) |> serve(fake)
+    task_id = state.settings.paste.pending_task
+    assert is_binary(task_id)
+    assert state |> lines() |> Enum.count(&(&1 =~ "checking the new key")) == 1
+
+    failed = %DTO.SettingsTask{
+      task_id: task_id,
+      action: "provider.set_key",
+      target: %{"id" => id},
+      state: :failed,
+      message: "The new key was refused (401)."
+    }
+
+    {state, _} = Responses.delta(state, failed)
+    text = lines(state)
+    assert Enum.count(text, &(&1 =~ "The new key was refused (401).")) == 1
+    # Once on the page (the footer names the same keys without the dot).
+    assert Enum.count(text, &(&1 =~ "save it anyway · Esc")) == 1
+
+    {state, _} = Reducer.update(state, {:settings, {:verb, :escape}})
+    assert state.settings.paste == nil
+    refute Enum.any?(lines(state), &(&1 =~ "save it anyway"))
   end
 end
