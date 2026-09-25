@@ -916,13 +916,22 @@ defmodule SwarmCodeCLI.Release.ConfigCommand do
 
   defp mcp(name, action, env) do
     run_record(env, %{}, "mcp_servers", "name", name, fn item, ctx ->
-      attributes =
+      enabled = get_in(item, ["fields", "enabled"]) == true
+
+      # mcp.toggle compares what this command read (§3.3.5): `expected` is
+      # the enabled flag the record showed.
+      {attributes, expected} =
         if action == "mcp.toggle",
-          do: %{"enabled" => get_in(item, ["fields", "enabled"]) != true},
-          else: %{}
+          do: {%{"enabled" => not enabled}, %{"fields" => %{"enabled" => enabled}}},
+          else: {%{}, nil}
 
       Headless.command(
-        struct(@command, %{action: action, target: %{"id" => item["id"]}, attributes: attributes}),
+        struct(@command, %{
+          action: action,
+          target: %{"id" => item["id"]},
+          attributes: attributes,
+          expected: expected
+        }),
         ctx
       )
     end)

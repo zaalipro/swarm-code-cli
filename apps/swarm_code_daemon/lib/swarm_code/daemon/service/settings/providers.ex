@@ -230,7 +230,8 @@ defmodule SwarmCode.Daemon.Service.Settings.Providers do
   # -- create ---------------------------------------------------------------
 
   defp create(cmd, ctx) do
-    with {:ok, attrs} <- attributes(Kit.cmd(cmd, :attributes), @creatable),
+    with {:ok, given} <- preset_attributes(Kit.cmd(cmd, :attributes)),
+         {:ok, attrs} <- attributes(given, @creatable),
          {:ok, key} <- optional_key(cmd) do
       attrs = Map.put(attrs, "api_key", key || "")
 
@@ -1051,6 +1052,46 @@ defmodule SwarmCode.Daemon.Service.Settings.Providers do
   end
 
   defp attributes(_attrs, _allowed), do: Kit.error(:invalid, "attributes must be a map")
+
+  # `swarmcode config record add provider --preset NAME` (A61) sends the
+  # preset's id: its name, kind, base URL, the Anthropic fallbacks and the
+  # preset's effort levels fill whatever the command did not give.
+  defp preset_attributes(attrs) when is_map(attrs) do
+    attrs = Map.new(attrs, fn {k, v} -> {to_string(k), v} end)
+
+    case Map.pop(attrs, "preset") do
+      {nil, attrs} ->
+        {:ok, attrs}
+
+      {id, attrs} ->
+        case Enum.find(SwarmCode.Settings.Registry.Actions.provider_presets(), &(&1.id == id)) do
+          nil ->
+            Kit.error(:invalid, "no preset named #{id}", [
+              Kit.field_error("preset", "no preset named #{id}")
+            ])
+
+          preset ->
+            levels =
+              Enum.find_value(presets(preset.kind), fn p ->
+                if p["id"] == preset.effort_preset, do: p["levels"]
+              end)
+
+            defaults =
+              %{
+                "name" => preset.name,
+                "kind" => preset.kind,
+                "base_url" => preset.base_url,
+                "models" => [],
+                "fallbacks" => preset.kind == "anthropic"
+              }
+              |> then(&if levels, do: Map.put(&1, "effort_levels", levels), else: &1)
+
+            {:ok, Map.merge(defaults, Map.reject(attrs, fn {_k, v} -> v in [nil, ""] end))}
+        end
+    end
+  end
+
+  defp preset_attributes(attrs), do: {:ok, attrs}
 
   @doc false
   def normalise_models(models) when is_list(models) do

@@ -212,6 +212,43 @@ defmodule SwarmCodeCLI.Release.C74ConfigCommandTest do
     assert code in [0, 1]
   end
 
+  test "headless provisioning (A61): a provider from a preset, its key, the chat model, an MCP toggle",
+       c do
+    assert {0, _, _} = config(c, ["record", "add", "provider", "--preset", "openrouter"])
+    openrouter = Enum.find(Providers.list(), &(&1.name == "OpenRouter"))
+    assert openrouter.base_url == "https://openrouter.ai/api/v1"
+    assert openrouter.kind == "openai_compatible"
+    assert [_ | _] = openrouter.effort_levels
+
+    assert {2, _, err} = config(c, ["record", "add", "provider", "--preset", "nope"])
+    assert err =~ "no preset named nope"
+
+    assert {0, _, _} =
+             config(c, ["record", "set", "provider:OpenRouter.base_url", "http://127.0.0.1:9/v1"])
+
+    {:ok, stdin} = StringIO.open("sk-or-test-000000000000beef\n")
+
+    assert {0, _, _} =
+             config(c, ["secret", "provider:OpenRouter", "--stdin", "--no-test"], stdin: stdin)
+
+    openrouter = Enum.find(Providers.list(), &(&1.name == "OpenRouter"))
+    assert openrouter.api_key == "sk-or-test-000000000000beef"
+    assert openrouter.base_url == "http://127.0.0.1:9/v1"
+
+    {:ok, _server} =
+      SwarmCode.Domain.MCP.create(%{
+        name: "github",
+        transport: "stdio",
+        command: "github-mcp-server",
+        enabled: false
+      })
+
+    assert {0, _, _} = config(c, ["mcp", "toggle", "github"])
+    assert SwarmCode.Domain.MCP.list() |> Enum.find(&(&1.name == "github")) |> Map.get(:enabled)
+    assert {0, _, _} = config(c, ["mcp", "toggle", "github"])
+    refute SwarmCode.Domain.MCP.list() |> Enum.find(&(&1.name == "github")) |> Map.get(:enabled)
+  end
+
   test "export, import and doctor run as headless tasks", c do
     file = Path.join(c.base, "settings.json")
     assert {0, out, _} = config(c, ["set", "limits.max_concurrent_agents", "6"])
