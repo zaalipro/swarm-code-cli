@@ -190,7 +190,7 @@ defmodule SwarmCodeCLI.UI.Settings.C74DataTest do
 
     task = %DTO.SettingsTask{task_id: "t1", action: "provider.test", state: :done, elapsed_ms: 10}
     {state, effects} = SwarmCodeCLI.UI.Reducer.Settings.Responses.delta(state, task)
-    assert %{"state" => :done} = state.settings.tasks["t1"]
+    assert %{"state" => "done"} = state.settings.tasks["t1"]
     assert [%{"view" => "task", "id" => "t1"}] = Enum.map(sent(effects), &params/1)
   end
 

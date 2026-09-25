@@ -131,7 +131,7 @@ defmodule SwarmCode.Daemon.Service.Settings.Storage do
       cancellable?: true,
       kind: :plain,
       run: fn _report -> {:ok, measure()} end,
-      summary: &Map.delete(&1, "sessions"),
+      summary: &measure_summary/1,
       redact: []
     )
   end
@@ -234,6 +234,38 @@ defmodule SwarmCode.Daemon.Service.Settings.Storage do
       "sessions" => Enum.map(sessions, &session_fields/1),
       "measured_at" => Kit.iso(DateTime.utc_now())
     }
+  end
+
+  @doc false
+  # The measure's delta summary, as the Storage page and the cleanup wizard
+  # read it: the overview's numbers at the top, each preset with its plan's
+  # totals (`id`, `label`, `count`, `bytes`, `vacuum`), never the sessions
+  # (the backend keeps those as the sessions store).
+  def measure_summary(result) do
+    overview = Map.get(result, "overview") || %{}
+
+    kinds =
+      for k <- Map.get(overview, "kinds") || [], do: Map.put_new(k, "kind", Map.get(k, "key"))
+
+    overview = Map.put(overview, "kinds", kinds)
+
+    presets =
+      for p <- Map.get(result, "presets") || [] do
+        preview = Map.get(p, "preview") || %{}
+
+        Map.merge(p, %{
+          "id" => p["key"],
+          "label" => p["title"],
+          "count" => Map.get(preview, "total_count", 0),
+          "bytes" => Map.get(preview, "total_bytes", 0),
+          "vacuum" => Map.get(preview, "vacuum") == true
+        })
+      end
+
+    overview
+    |> Map.put("overview", overview)
+    |> Map.put("presets", presets)
+    |> Map.put("measured_at", Map.get(result, "measured_at"))
   end
 
   defp overview(o) do

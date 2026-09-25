@@ -348,7 +348,7 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Responses do
       "action" => Map.get(meta, :action) || Map.get(task, :action),
       "target" => Map.get(meta, :target),
       "attributes" => Map.get(meta, :attributes) || %{},
-      "state" => :running,
+      "state" => "running",
       "received_at_ms" => state.now,
       "mine" => true
     }
@@ -396,7 +396,7 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Responses do
 
     entry =
       Map.merge(current, %{
-        "state" => task.state,
+        "state" => wire_state(task.state),
         "elapsed_ms" => task.elapsed_ms,
         "progress" => task.progress,
         "summary" => task.summary,
@@ -544,4 +544,9 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Responses do
   end
 
   defp follow_desktop(state), do: {state, []}
+
+  # A task entry is wire-shaped like the rest of its fields: the state is the
+  # wire's word (`"running"`, `"done"`, …), which the sections compare against.
+  defp wire_state(state) when is_atom(state) and not is_nil(state), do: Atom.to_string(state)
+  defp wire_state(state), do: state
 end

@@ -91,7 +91,16 @@ defmodule SwarmCode.Daemon.Service.Settings.C74StorageTest do
       assert open["open"] and open["reason"] == "open" and not open["deletable"]
 
       {:task, spec, _} = task("storage.measure", c)
-      refute Map.has_key?(spec.summary.(result), "sessions")
+      summary = spec.summary.(result)
+      # the sessions stay in the backend's store; the page reads the numbers
+      # at the top and each preset's totals (cli74 F)
+      refute is_list(summary["sessions"])
+      assert summary["db_bytes"] == result["overview"]["db_bytes"]
+      assert length(summary["kinds"]) == length(result["overview"]["kinds"])
+      assert Enum.all?(summary["kinds"], &(&1["kind"] == &1["key"]))
+
+      assert %{"id" => "older_30", "label" => _, "count" => 2, "vacuum" => false} =
+               hd(summary["presets"])
     end
 
     test "records page the store: no store → measure first; sort, filter, pages", c do
