@@ -375,12 +375,14 @@ defmodule SwarmCode.Daemon.Service.Settings.Search do
         Repo.retry(:settings_search, fn ->
           Repo.transaction(fn ->
             order = Enum.map(rows(), fn {row, _} -> row.kind end)
-            index = Enum.find_index(order, &(&1 == kind))
-            target = index + dir
+            # cli74 F13: engines move among engines; the last one never
+            # trades places with a reader.
+            engines = Enum.filter(order, &(role(&1) == "engine"))
+            target = Enum.find_index(engines, &(&1 == kind)) + dir
 
             cond do
               not Kit.same?(expected_order, order) -> Repo.rollback({:conflict_order, order})
-              target < 0 or target >= length(order) -> :unchanged
+              target < 0 or target >= length(engines) -> :unchanged
               Map.get(cmd, :dry_run) -> :dry_run
               true -> Engines.move(kind, dir)
             end

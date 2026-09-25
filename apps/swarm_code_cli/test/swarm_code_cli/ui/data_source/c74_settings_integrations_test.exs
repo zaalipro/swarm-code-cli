@@ -480,7 +480,7 @@ defmodule SwarmCodeCLI.UI.DataSource.C74SettingsIntegrationsTest do
       ok(
         state,
         cmd("search.move", %{"kind" => "exa"}, %{"dir" => -1},
-          expected: %{"order" => ~w(tavily exa brave serper)}
+          expected: %{"order" => ~w(tavily exa brave serper jina firecrawl)}
         )
       )
 

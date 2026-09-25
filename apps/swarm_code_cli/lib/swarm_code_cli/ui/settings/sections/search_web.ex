@@ -560,12 +560,14 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.SearchWeb do
   end
 
   defp move_ops(ctx, kind, dir) do
-    order =
-      for rec <- R.items(ctx, "search_providers"),
-          R.field(R.fields(rec), "role") == "engine",
-          do: R.record_id(rec)
+    records = R.items(ctx, "search_providers")
+    # cli74 F13: the service compares the whole order it reads (readers too).
+    order = Enum.map(records, &R.record_id/1)
 
-    if kind in order do
+    engines =
+      for rec <- records, R.field(R.fields(rec), "role") == "engine", do: R.record_id(rec)
+
+    if kind in engines do
       [
         {:command, "search.move", %{"kind" => kind}, %{"dir" => dir},
          %{

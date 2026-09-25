@@ -1011,6 +1011,9 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.SettingsIntegrations do
   defp run("search.move", c, state) do
     with_search(state, c, fn row ->
       order = engine_order(state)
+      # cli74 F13: like the service, the compare-and-set is on the whole
+      # order (readers too); engines move among engines.
+      whole = for r <- search_list(state), do: r["kind"]
       dir = get(c.attributes, "dir")
       index = Enum.find_index(order, &(&1 == row["kind"]))
       expected = get(c.expected || %{}, "order")
@@ -1019,10 +1022,10 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.SettingsIntegrations do
         row["role"] != "engine" ->
           {{:ok, result("rejected", message: "readers have no order")}, state}
 
-        expected != nil and expected != order ->
+        expected != nil and expected != whole ->
           {{:ok,
             result("conflict",
-              results: [%{"target" => "order", "status" => "conflict", "current" => order}],
+              results: [%{"target" => "order", "status" => "conflict", "current" => whole}],
               message: "changed while you edited"
             )}, state}
 

@@ -265,6 +265,19 @@ defmodule SwarmCode.Daemon.Service.Settings.C74SearchTest do
                  expected: %{"order" => order}
                )
     end
+
+    test "the last engine never trades places with a reader (cli74 F13)", c do
+      {:ok, page} = Handler.query("records", "search_providers", %{}, c.ctx)
+      order = kinds(page)
+      last = order |> Enum.filter(&(&1 in ~w(tavily exa brave serper))) |> List.last()
+
+      {:ok, edge} =
+        run(c, "search.move", last, attributes: %{"dir" => 1}, expected: %{"order" => order})
+
+      assert edge.status == :unchanged
+      {:ok, again} = Handler.query("records", "search_providers", %{}, c.ctx)
+      assert kinds(again) == order
+    end
   end
 
   describe "search.test" do

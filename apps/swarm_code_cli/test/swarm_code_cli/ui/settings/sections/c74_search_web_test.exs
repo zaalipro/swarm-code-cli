@@ -55,7 +55,9 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.C74SearchWebTest do
     [{:command, "search.move", %{"kind" => "exa"}, %{"dir" => 1}, opts}] =
       SearchWeb.act(c, exa, :move_down)
 
-    assert opts.expected == %{"order" => ~w(tavily exa brave serper)}
+    # cli74 F13: the whole order the service reads, readers too (the
+    # engines alone were a conflict every time, found in the sandbox).
+    assert opts.expected == %{"order" => ~w(tavily exa brave serper jina firecrawl)}
     [{:command, "search.move", _, %{"dir" => -1}, _}] = SearchWeb.act(c, exa, :move_up)
 
     assert [{:toast, "readers have no order", :info}] =
