@@ -107,7 +107,7 @@ defmodule SwarmCodeCLI.UI.Settings.IntegrationRows do
   @doc "A project record's fields by id, from `records:projects`."
   def project(ctx, id) do
     ctx
-    |> items("projects")
+    |> projects()
     |> Enum.find(&(field(&1, "id") == id or record_id(&1) == id))
     |> case do
       nil ->
@@ -117,6 +117,22 @@ defmodule SwarmCodeCLI.UI.Settings.IntegrationRows do
 
       rec ->
         rec
+    end
+  end
+
+  @doc "Every project the layer knows (`records:projects`, or the `open` view's projects page)."
+  def projects(ctx) do
+    case items(ctx, "projects") do
+      [] ->
+        case Map.get(data(ctx), :projects) do
+          %{items: items} -> items
+          %{"items" => items} -> items
+          list when is_list(list) -> list
+          _ -> []
+        end
+
+      items ->
+        items
     end
   end
 
