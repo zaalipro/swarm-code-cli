@@ -319,7 +319,21 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
   @doc false
   @spec settings_open() :: String.t() | nil
   def settings_open do
-    if settings_only?(), do: System.get_env("SWARM_SETTINGS_OPEN") || "", else: nil
+    if settings_only?(), do: open_query(System.get_env("SWARM_SETTINGS_OPEN") || ""), else: nil
+  end
+
+  # The reducer refuses an Init whose query is over 200 bytes or holds a
+  # control character; such a query (the launcher refuses it first) opens
+  # the Overview instead.
+  defp open_query(query) do
+    query = String.trim(query)
+
+    if byte_size(query) <= 200 and String.valid?(query) and
+         query
+         |> String.to_charlist()
+         |> Enum.all?(&(&1 >= 0x20 and &1 != 0x7F and not (&1 >= 0x80 and &1 <= 0x9F))),
+       do: query,
+       else: ""
   end
 
   # B6: the desktop's boot recovery (interrupted runs, seeded providers, MCP

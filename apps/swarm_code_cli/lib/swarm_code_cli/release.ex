@@ -159,18 +159,23 @@ defmodule SwarmCodeCLI.Release do
     end
   end
 
-  defp settings([], words, dir),
-    do:
-      {:ok,
-       %{
-         mode: :settings,
-         project: dir,
-         conversation: nil,
-         model: nil,
-         prompt: nil,
-         format: :text,
-         query: words |> Enum.reverse() |> Enum.join(" ")
-       }}
+  defp settings([], words, dir) do
+    query = words |> Enum.reverse() |> Enum.join(" ")
+
+    if byte_size(query) > 200,
+      do: {:error, "the settings query is too long (200 bytes at most)."},
+      else:
+        {:ok,
+         %{
+           mode: :settings,
+           project: dir,
+           conversation: nil,
+           model: nil,
+           prompt: nil,
+           format: :text,
+           query: query
+         }}
+  end
 
   defp settings([flag | _], _words, _dir) when flag in ["--help", "-h"], do: :help
 

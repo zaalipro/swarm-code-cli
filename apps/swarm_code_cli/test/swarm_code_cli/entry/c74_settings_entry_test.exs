@@ -48,6 +48,14 @@ defmodule SwarmCodeCLI.Release.C74SettingsEntryTest do
                Release.parse(["settings", "--dir", "a", "--dir", "b"])
     end
 
+    test "a settings query is 200 bytes at most" do
+      at_most = String.duplicate("é", 100)
+      assert {:ok, %{query: ^at_most}} = Release.parse(["settings", at_most])
+
+      assert {:error, "the settings query is too long (200 bytes at most)."} =
+               Release.parse(["settings", at_most, "x"])
+    end
+
     test "a folder named settings or config opens with ./ or --" do
       assert {:ok, %{mode: :tui, project: "./settings"}} = Release.parse(["./settings"])
       assert {:ok, %{mode: :tui, project: "config"}} = Release.parse(["--", "config"])
@@ -120,6 +128,12 @@ defmodule SwarmCodeCLI.Release.C74SettingsEntryTest do
 
       {output, 2} = launch(c, ["settings", "--plain"])
       assert output =~ "settings takes a query and --dir only."
+    end
+
+    test "a settings query over 200 bytes is a usage error", c do
+      {output, 2} = launch(c, ["settings", String.duplicate("é", 100), "x"])
+      assert output =~ "the settings query is too long (200 bytes at most)."
+      refute File.exists?(c.log)
     end
 
     test "settings without a terminal says to use config", c do

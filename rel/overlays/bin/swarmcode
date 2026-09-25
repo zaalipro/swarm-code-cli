@@ -156,6 +156,10 @@ if [[ $# -gt 0 && "$1" == "settings" ]]; then
     esac
     shift
   done
+  # The TUI opens at a query of 200 bytes at most (§3.10.1).
+  if (($(printf '%s' "$settings_query" | LC_ALL=C wc -c) > 200)); then
+    die_usage "the settings query is too long (200 bytes at most)."
+  fi
 fi
 
 while [[ $# -gt 0 ]]; do
