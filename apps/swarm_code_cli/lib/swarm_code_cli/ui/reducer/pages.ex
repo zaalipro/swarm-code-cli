@@ -73,7 +73,7 @@ defmodule SwarmCodeCLI.UI.Reducer.Pages do
     scroll =
       before
       |> Scroll.apply(operation, ids, page_height, height_for)
-      |> refollow(operation, ids, page_height, height_for, Map.get(state.pages, slot))
+      |> refollow(operation, ids, page_height, height_for, Map.get(state.pages, slot), before)
 
     state = %{state | scrolls: Map.put(state.scrolls, key, scroll)}
 
@@ -87,27 +87,40 @@ defmodule SwarmCodeCLI.UI.Reducer.Pages do
   def scroll(state, _, _), do: {state, []}
 
   # pass70 Q1: paging down (PgDn, Ctrl-D) onto the last screen of the
-  # conversation follows the stream again; a line scroll stays exact. Before, PgDn kept the anchor at the top of the view, so
+  # conversation follows the stream again. Before, PgDn kept the anchor at the top of the view, so
   # a third press left one line on screen above a blank page, and a prompt
   # sent from there was drawn below the bottom edge. Only when the loaded
   # window is the newest one (no page after it) is its end the real end.
+  #
+  # pass73 G1 (QA Q1-03): a line move down does the same once the
+  # conversation is longer than a page (or it was following already). The
+  # wheel's notches past the bottom moved the anchor below the last screen,
+  # where the view cannot follow, and the next notches up only paid that
+  # back; wheeling to the bottom also left new output unfollowed. Over a
+  # conversation that fits one page a line move from a detached view keeps
+  # its exact anchor, as before.
   defp refollow(
          %Scroll{follow?: false, anchor: {id, line, _}} = scroll,
          {kind, delta},
          ids,
          height,
          height_for,
-         page
+         page,
+         before
        )
-       when kind in [:page, :half_page] and delta > 0 do
+       when kind in [:page, :half_page, :line] and delta > 0 do
     newest? = page == nil or Map.get(page, :after_cursor) == nil
 
-    if newest? and lines_below(ids, id, line, height_for, height) <= height,
+    moves? =
+      kind != :line or before.follow? or
+        lines_below(ids, List.first(ids), 0, height_for, height) > height
+
+    if newest? and moves? and lines_below(ids, id, line, height_for, height) <= height,
       do: Scroll.apply(scroll, :follow, ids),
       else: scroll
   end
 
-  defp refollow(scroll, _operation, _ids, _height, _height_for, _page), do: scroll
+  defp refollow(scroll, _operation, _ids, _height, _height_for, _page, _before), do: scroll
 
   # The rows from the anchor's row to the end, counted only until they pass
   # `limit`, so a long conversation is never measured in full.

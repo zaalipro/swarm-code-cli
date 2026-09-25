@@ -24,7 +24,7 @@ defmodule SwarmCodeCLI.UI.Pass73Qa1Test do
   import SwarmCodeCLI.UI.Pass73Helpers
 
   alias SwarmCodeCLI.Test.Pass73Scenes
-  alias SwarmCodeCLI.UI.{Composer, Input, Keymap, Layout, Paint, Projector}
+  alias SwarmCodeCLI.UI.{Composer, Input, Keymap, Layout, Paint, Projector, Reducer}
   alias SwarmCodeCLI.UI.{SafeText, SlashPalette, Width}
   alias SwarmCodeCLI.UI.DataSource.DTO
   alias SwarmCodeCLI.UI.Paint.{Options, Plan}
@@ -257,5 +257,73 @@ defmodule SwarmCodeCLI.UI.Pass73Qa1Test do
       _ -> []
     end)
     |> Enum.map_join(&SafeText.value(&1.text))
+  end
+
+  # ------------------------------------------------------------------ Q1-03
+
+  describe "Q1-03 the wheel at the bottom of the chat" do
+    alias SwarmCodeCLI.UI.Projector.Workspace.Turns
+
+    defp chat do
+      items =
+        for n <- 1..30 do
+          %DTO.TranscriptItem{
+            id: "i#{n}",
+            node_id: "i#{n}",
+            run_id: "r1",
+            conversation_id: "c",
+            attempt_id: "attempt",
+            role: :user,
+            text: "prompt number #{n}\nsecond line of #{n}"
+          }
+        end
+
+      ready([run("r1", :done)],
+        columns: 100,
+        rows: 24,
+        snapshot: %{transcript: %DTO.TranscriptWindow{items: items}}
+      )
+    end
+
+    defp lines(state) do
+      height = SwarmCodeCLI.UI.ScrollMetrics.content_height(state, :main)
+      width = SwarmCodeCLI.UI.ScrollMetrics.viewport(state, :main).width
+      {blocks, _first, _total} = Turns.viewport(state, width, height)
+
+      blocks
+      |> Enum.map_join("\n", fn block -> Enum.map_join(block.spans, &SafeText.value(&1.text)) end)
+      |> String.split("\n")
+    end
+
+    defp notch(state, kind, times \\ 1) do
+      %{main: main} = Layout.for_state(state).rects
+
+      Enum.reduce(1..times, state, fn _, acc ->
+        {:ok, action} =
+          Keymap.resolve({:mouse, kind, nil, main.x + 2, main.y + 2, []}, acc, %{})
+
+        elem(Reducer.update(acc, action), 0)
+      end)
+    end
+
+    test "notches past the bottom are not stored: the next notch up moves three rows" do
+      state = chat()
+      following = lines(state)
+
+      over = notch(state, :wheel_down, 5)
+      assert over.scrolls.main.follow?
+      assert lines(over) == following
+
+      up = notch(over, :wheel_up)
+      assert Enum.drop(lines(up), 3) == Enum.drop(following, -3)
+    end
+
+    test "wheeling back to the bottom follows the stream again" do
+      up = notch(chat(), :wheel_up, 2)
+      refute up.scrolls.main.follow?
+
+      back = notch(up, :wheel_down, 2)
+      assert back.scrolls.main.follow?
+    end
   end
 end
