@@ -480,16 +480,24 @@ defmodule SwarmCodeCLI.UI.Settings.IntegrationRows do
   def context(n) when is_integer(n) and n >= 1_000, do: "#{div(n, 1_000)}k"
   def context(n), do: to_string(n)
 
-  @doc "A money amount per million tokens: `0.27`, `15.00`; four decimals when needed."
+  @doc "A money amount per million tokens: `0.27`, `15.00`; below 0.10 up to three decimals (`0.007`)."
   def money(nil), do: "—"
 
+  def money(n) when is_number(n) and n >= 0.1, do: :erlang.float_to_binary(n * 1.0, decimals: 2)
+
   def money(n) when is_number(n) do
-    two = :erlang.float_to_binary(n * 1.0, decimals: 2)
-    four = :erlang.float_to_binary(n * 1.0, decimals: 4)
-    if String.to_float(two) == n * 1.0, do: two, else: String.trim_trailing(four, "0")
+    three = :erlang.float_to_binary(n * 1.0, decimals: 3) |> String.trim_trailing("0")
+    if String.ends_with?(three, "."), do: three <> "00", else: pad_two(three)
   end
 
   def money(_), do: "—"
+
+  defp pad_two(text) do
+    case String.split(text, ".") do
+      [int, dec] when byte_size(dec) < 2 -> int <> "." <> String.pad_trailing(dec, 2, "0")
+      _ -> text
+    end
+  end
 
   @doc """
   The words of a task row (§4.9): `{segments, tag_segments}` for a running, done, failed,
