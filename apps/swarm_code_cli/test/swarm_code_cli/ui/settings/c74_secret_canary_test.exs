@@ -224,4 +224,77 @@ defmodule SwarmCodeCLI.UI.Settings.C74SecretCanaryTest do
     assert state.settings.paste == nil
     assert clean?(state)
   end
+
+  # cli74 F12 (A43, found in the sandbox): a decoded secret field has atom
+  # keys; sent back as the key's expected value it failed the wire bounds.
+  test "a replacement sends the decoded secret field as JSON and waits for its check" do
+    {state, _fake} = opened()
+    expected = %{"key" => %{set: true, hint: "cdef"}}
+    {state, _} = Ops.run(state, [{:paste, target(%{set?: true, expected: expected})}])
+    state = act!(state, {:settings, {:paste, @canary}})
+
+    assert screen(state) =~ "Enter save"
+    assert screen(state) =~ "Ctrl-T type instead"
+
+    {state, effects} = act(state, {:settings, {:verb, :paste_commit}})
+    [request] = sent(effects)
+    {:settings_command, params} = request.kind
+    assert params["expected"] == %{"key" => %{"set" => true, "hint" => "cdef"}}
+    assert state.settings.paste.pending_task == :sent
+    assert screen(state) =~ "Esc keep the old key"
+  end
+
+  test "a replacement the service rejects stops waiting and keeps the paste" do
+    {state, fake} = opened()
+
+    {:ok, fake, []} =
+      FakeSettings.control(fake, :stub_reply, [
+        "search.set_key",
+        %{status: :rejected, message: "no"}
+      ])
+
+    {state, _} = Ops.run(state, [{:paste, target(%{set?: true})}])
+    state = act!(state, {:settings, {:paste, @canary}})
+
+    {state, _fake} = state |> act({:settings, {:verb, :paste_commit}}) |> serve(fake)
+    assert state.settings.paste.pending_task == nil
+    assert state.settings.paste.bytes == @canary
+    refute screen(state) =~ "checking the new key"
+    assert state.settings.status.text =~ "Couldn't save"
+  end
+
+  test "the service's own refusal sentence is not wrapped twice; its count names the models" do
+    {state, fake} = opened()
+    {:ok, fake, []} = FakeSettings.control(fake, :stub_reply, ["provider.set_key", {:task, %{}}])
+    provider = target(%{set?: true, action: "provider.set_key", label: "DeepSeek API key"})
+
+    pending = fn ->
+      {state, _} = Ops.run(state, [{:paste, provider}])
+      state = act!(state, {:settings, {:paste, @canary}})
+      {state, _fake} = state |> act({:settings, {:verb, :paste_commit}}) |> serve(fake)
+      assert is_binary(state.settings.paste.pending_task)
+      state
+    end
+
+    state1 = pending.()
+
+    task = %DTO.SettingsTask{
+      task_id: state1.settings.paste.pending_task,
+      action: "provider.set_key"
+    }
+
+    {refused, _} =
+      Responses.delta(state1, %{task | state: :failed, message: "The new key was refused (401)."})
+
+    assert screen(refused) =~
+             "The new key was refused (401). s save it anyway · Esc keep the old key"
+
+    refute screen(refused) =~ "refused (The new key"
+
+    {done, _} =
+      Responses.delta(state1, %{task | state: :done, summary: %{"saved" => true, "count" => 2}})
+
+    assert done.settings.paste == nil
+    assert done.settings.status.text == "DeepSeek API key replaced · the new key listed 2 models"
+  end
 end

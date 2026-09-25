@@ -189,9 +189,9 @@ defmodule SwarmCodeCLI.UI.Settings.Wire do
 
     params = %{
       "action" => action,
-      "target" => target,
-      "attributes" => attributes || %{},
-      "expected" => Map.get(opts, :expected),
+      "target" => json(target),
+      "attributes" => json(attributes || %{}),
+      "expected" => json(Map.get(opts, :expected)),
       "secrets" => secrets(state, Map.get(opts, :secrets_from)),
       "dry_run" => Map.get(opts, :dry_run, false)
     }
@@ -232,6 +232,19 @@ defmodule SwarmCodeCLI.UI.Settings.Wire do
 
   def op(state, {:load, load}), do: load(state, load)
   def op(state, _op), do: {state, []}
+
+  # cli74 F12: a section's target, attributes and expected as the wire's JSON.
+  # A decoded secret field is `%{set: …, hint: …}`; sent back as a key's
+  # expected value it failed the bounds check ("That is too long to save
+  # here (expected)") and every key replacement stopped there.
+  defp json(map) when is_map(map) and not is_struct(map),
+    do: Map.new(map, fn {key, value} -> {json_key(key), json(value)} end)
+
+  defp json(list) when is_list(list), do: Enum.map(list, &json/1)
+  defp json(value), do: value
+
+  defp json_key(key) when is_atom(key), do: Atom.to_string(key)
+  defp json_key(key), do: key
 
   # A command's secrets come from the paste target or a draft, never from
   # its attributes (§3.7.7).

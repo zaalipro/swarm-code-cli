@@ -800,6 +800,9 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
         layer.mode == :search ->
           [{"Enter", "open"}, {"Esc", "clear"}]
 
+        layer.mode == :paste and layer.paste != nil ->
+          paste_keys(layer.paste)
+
         layer.region == :rail ->
           [{"Enter", "open"}, {"/", "search"}, {"Tab", "page"}]
 
@@ -820,6 +823,22 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
 
     Text.spread(state, left, [{"settings ", :text_ghost}], width)
   end
+
+  # cli74 F12: while a key is pasted the footer names the paste's own keys,
+  # not the row's (it said "Enter paste a new key" over a pasted key).
+  defp paste_keys(%{refused: {:replacement, _}}),
+    do: [{"s", "save it anyway"}, {"Esc", "keep the old key"}]
+
+  defp paste_keys(%{pending_task: task}) when task != nil, do: [{"Esc", "keep the old key"}]
+
+  defp paste_keys(_paste),
+    do: [
+      {"Cmd-V", "paste"},
+      {"Enter", "save"},
+      {"Ctrl-U", "clear"},
+      {"Ctrl-T", "type instead"},
+      {"Esc", "cancel"}
+    ]
 
   # ---------------------------------------------------------- popover
 

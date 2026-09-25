@@ -17,7 +17,12 @@ defmodule SwarmCode.Daemon.Service.Settings.C74ClientE2ETest do
   alias SwarmCodeCLI.UI.{Projector, Reducer, SafeText, Size}
   alias SwarmCodeCLI.UI.DataSource
   alias SwarmCodeCLI.UI.DataSource.{Delivery, Request}
-  alias SwarmCodeCLI.UI.Settings.{Nav, Row, Sections}
+  alias SwarmCode.Domain.Providers
+  alias SwarmCode.Protocol.{Scope, ServiceRequest}
+  alias SwarmCode.Test.LoopbackHTTP, as: HTTP
+  alias SwarmCodeCLI.UI.Reducer.Settings.{Ops, Responses}
+  alias SwarmCodeCLI.UI.Settings.{Nav, Page, Row, Sections}
+  alias SwarmCodeCLI.UI.Settings.Sections.Providers, as: ProvidersPage
 
   @moduletag timeout: 180_000
   @out System.get_env("C74_E2E_OUT")
@@ -56,7 +61,7 @@ defmodule SwarmCode.Daemon.Service.Settings.C74ClientE2ETest do
       DataSource.Daemon.start_link(socket_path: path, nonce: nonce, source_epoch: epoch)
 
     assert {:ok, "e2e"} = DataSource.bind_owner(client, self(), "e2e")
-    Map.merge(data, %{client: client, fx: fx})
+    Map.merge(data, %{client: client, fx: fx, backend: backend})
   end
 
   test "every section opens on the daemon's data and draws its page", c do
@@ -93,7 +98,101 @@ defmodule SwarmCode.Daemon.Service.Settings.C74ClientE2ETest do
     end
   end
 
+  # cli74 F12 (A43, found in the sandbox): replacing a stored key sends the
+  # command with the pasted bytes and `test_first`; the daemon tests the new
+  # key against the endpoint and writes it only when it answers.
+  test "a replaced provider key is tested first, then saved", c do
+    server =
+      HTTP.start(fn socket, _request, _n ->
+        body = Jason.encode!(%{"data" => [%{"id" => "stub-a"}, %{"id" => "stub-b"}]})
+        HTTP.respond(socket, 200, body, [{"content-type", "application/json"}])
+      end)
+
+    prior = Application.get_env(:swarm_code_daemon, :llm_providers)
+
+    Application.put_env(:swarm_code_daemon, :llm_providers, %{
+      "openai_compatible" => SwarmCode.Domain.LLM.OpenAI
+    })
+
+    on_exit(fn ->
+      if prior,
+        do: Application.put_env(:swarm_code_daemon, :llm_providers, prior),
+        else: Application.delete_env(:swarm_code_daemon, :llm_providers)
+    end)
+
+    {:ok, _} = Providers.update(c.deepseek, %{base_url: server.url <> "/v1"})
+    key = "sk-e2e-replacement-0000000wxyz"
+    id = c.deepseek.id
+    watch = shell_watch(c.backend)
+
+    state =
+      %{sized(ready(), 160, 45) | now: System.system_time(:millisecond)}
+      |> Reducer.update({:settings_open, {:section, :providers}})
+      |> serve(c.client)
+
+    state =
+      state
+      |> Ops.run([{:open, %Page{section: :providers, record: {"provider", id}}}])
+      |> serve(c.client)
+
+    state = %{state | capabilities: %{state.capabilities | paste: :supported}}
+    row = Enum.find(Nav.rows(state), &(&1.id == "fld:provider:#{id}:api_key"))
+    assert %Row{} = row, inspect(Enum.map(Nav.rows(state), & &1.id))
+    [{:paste, target}] = ProvidersPage.act(Nav.ctx(state), row, :open_row)
+    assert target.set? == true
+    {state, _} = Ops.run(state, [{:paste, target}])
+    {state, _} = Reducer.update(state, {:settings, {:paste, key}})
+
+    state =
+      state
+      |> Reducer.update({:settings, {:verb, :paste_commit}})
+      |> serve(c.client)
+
+    assert is_binary(state.settings.paste.pending_task), inspect(state.settings.status)
+    state = settle_task(state, watch)
+
+    assert state.settings.paste == nil, inspect(state.settings.tasks)
+    assert state.settings.status.text == "DeepSeek API key replaced · the new key listed 2 models"
+    assert Providers.get(id).api_key == key
+    HTTP.stop(server)
+  end
+
   # ---------------------------------------------------------------- driving
+
+  # The session's shell watch, where the service reports its settings tasks.
+  defp shell_watch(backend) do
+    watch = %ServiceRequest{
+      operation: :watch,
+      timeout_ms: 1_000,
+      params: %{"watch_ref" => "sh", "slot" => "shell", "page_size" => 20, "byte_limit" => 65_536}
+    }
+
+    scope = %Scope{kind: :global, id: nil, generation: 1}
+
+    assert {:watch, 0, _, _kind, _body} =
+             GenServer.call(backend, {:service_watch, self(), "w-sh", scope, watch})
+
+    send(backend, {:service_ready, self(), "sh"})
+    "sh"
+  end
+
+  # Feeds the watch's settings deltas to the reducer until the paste's check
+  # settles.
+  defp settle_task(state, ref) do
+    receive do
+      {:service_delta, backend, ^ref, delta} ->
+        send(backend, {:service_credit, self(), ref, delta["sequence"]})
+        {:ok, decoded} = SwarmCodeCLI.UI.DataSource.Delta.decode(delta)
+        {state, _effects} = Responses.delta(state, decoded.body)
+
+        case state.settings.paste do
+          %{pending_task: task} when is_binary(task) -> settle_task(state, ref)
+          _ -> state
+        end
+    after
+      15_000 -> flunk("the key check never ended")
+    end
+  end
 
   defp sized(state, columns, rows),
     do: elem(Reducer.update(state, {:resize, %Size{columns: columns, rows: rows}}), 0)

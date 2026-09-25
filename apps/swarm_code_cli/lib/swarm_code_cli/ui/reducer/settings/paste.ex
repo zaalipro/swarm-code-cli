@@ -127,10 +127,14 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Paste do
     state = put(state, %{paste | refused: nil})
     {state, effects} = Ops.run(state, [op])
 
+    # A command refused before it left (its status line says why) keeps the
+    # paste, so Enter can try again and Esc keeps the stored key.
     state =
-      if test_first?,
-        do: put(state, %{state.settings.paste | pending_task: :sent}),
-        else: drop(state)
+      cond do
+        not Enum.any?(effects, &match?({:command, _}, &1)) -> state
+        test_first? -> put(state, %{state.settings.paste | pending_task: :sent})
+        true -> drop(state)
+      end
 
     {state, effects}
   end
@@ -150,7 +154,21 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Paste do
       when is_binary(task_id),
       do: put(state, %{paste | pending_task: task_id})
 
+  # No check started (the service already had that key): nothing waits.
+  def replacement_started(%{settings: %Layer{paste: %Target{pending_task: :sent}}} = state, nil),
+    do: drop(state)
+
   def replacement_started(state, _task_id), do: state
+
+  @doc """
+  A replacement's command was refused, conflicted or failed (the status
+  line says why): the paste is kept and no longer waits for a check.
+  """
+  @spec replacement_failed(map()) :: map()
+  def replacement_failed(%{settings: %Layer{paste: %Target{pending_task: :sent} = paste}} = state),
+    do: put(state, %{paste | pending_task: nil})
+
+  def replacement_failed(state), do: state
 
   @doc "A settings task ended: a replacement check it was waiting for settles here."
   @spec task_ended(map(), String.t(), atom(), term()) :: map()
@@ -161,10 +179,10 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Paste do
         summary
       ) do
     label = field(paste.target, :label) || "The key"
-    count = models(summary)
+    count = if field(paste.target, :action) == "provider.set_key", do: models(summary)
 
     words =
-      if count,
+      if is_integer(count),
         do: "#{label} replaced · the new key listed #{count} models",
         else: "#{label} replaced"
 
@@ -177,15 +195,24 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Paste do
         _failed,
         summary
       ) do
+    # The service's own sentence already says it (`The new key was refused (401).`).
+    reason = refusal(summary)
+
     words =
-      "The new key was refused (#{refusal(summary)}). s save it anyway · Esc keep the old key"
+      if String.starts_with?(reason, "The new key was refused"),
+        do: reason <> " s save it anyway · Esc keep the old key",
+        else: "The new key was refused (#{reason}). s save it anyway · Esc keep the old key"
 
     put(state, %{paste | pending_task: nil, refused: {:replacement, words}})
   end
 
   def task_ended(state, _task_id, _state, _summary), do: state
 
-  defp models(%{} = summary), do: Map.get(summary, "models") || Map.get(summary, :models)
+  # The service's summary names it `count`; the fake's `models`.
+  defp models(%{} = summary),
+    do:
+      Map.get(summary, "models") || Map.get(summary, :models) || Map.get(summary, "count") ||
+        Map.get(summary, :count)
   defp models(_summary), do: nil
 
   defp refusal(%{} = summary),

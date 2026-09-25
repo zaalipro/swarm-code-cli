@@ -251,7 +251,7 @@ defmodule SwarmCodeCLI.Release.C74ConfigCommandTest do
 
   test "export, import and doctor run as headless tasks", c do
     file = Path.join(c.base, "settings.json")
-    assert {0, out, _} = config(c, ["set", "limits.max_concurrent_agents", "6"])
+    assert {0, _out, _} = config(c, ["set", "limits.max_concurrent_agents", "6"])
     assert {0, out, _} = config(c, ["export", file])
     assert out =~ "Exported to"
     assert %{"format" => "swarmcode-settings"} = Jason.decode!(File.read!(file))

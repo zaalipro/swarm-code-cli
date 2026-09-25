@@ -203,6 +203,12 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Responses do
   defp command_result(state, meta, %SettingsResult{} = result) do
     opts = Map.get(meta, :opts, %{})
 
+    # A key replacement that did not start its check stops waiting for it.
+    state =
+      if Map.get(opts, :paste) == :keep and result.status not in [:accepted, :unchanged],
+        do: PasteTarget.replacement_failed(state),
+        else: state
+
     case result.status do
       status when status in [:accepted, :unchanged] ->
         state = put_record(state, result.record)
@@ -211,9 +217,18 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Responses do
           if result.task, do: track(state, result.task.task_id, meta, result.task), else: state
 
         state =
-          if Map.get(opts, :paste) == :keep,
-            do: PasteTarget.replacement_started(state, result.task && result.task.task_id),
-            else: state
+          cond do
+            Map.get(opts, :paste) != :keep ->
+              state
+
+            status == :unchanged and is_binary(result.message) ->
+              state
+              |> PasteTarget.replacement_started(result.task && result.task.task_id)
+              |> Commit.status(result.message, :text_muted)
+
+            true ->
+              PasteTarget.replacement_started(state, result.task && result.task.task_id)
+          end
 
         text = Map.get(opts, :toast) || result.message
 
