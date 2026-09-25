@@ -8,6 +8,8 @@ defmodule SwarmCode.Daemon.Service.Settings.Efforts do
   the desktop's exact text, keyed `rows[i]`.
   """
 
+  @behaviour SwarmCode.Daemon.Service.Settings.Handler
+
   alias SwarmCode.Daemon.Service.Settings.Kit
   alias SwarmCode.Daemon.Service.Settings.Providers, as: ProviderSettings
   alias SwarmCode.Domain.{Providers, Repo}

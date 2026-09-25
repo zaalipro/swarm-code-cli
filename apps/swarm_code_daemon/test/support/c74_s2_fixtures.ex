@@ -373,4 +373,63 @@ defmodule SwarmCode.Test.C74S2 do
     me = self()
     spec.run.(fn progress -> send(me, {:progress, progress}) end)
   end
+
+  @doc """
+  Asserts that a record (or every item of a record page) decodes against its
+  `RecordKind` as the client would (§3.4.6 rules 2–4): only declared fields,
+  secret fields exactly `{set, hint}`, masked env/header entries hold no
+  value and a shown entry is not a secret. Returns its argument.
+  """
+  def declared!(%{"items" => items} = page) when is_list(items) do
+    Enum.each(items, &declared!/1)
+    page
+  end
+
+  def declared!(%{"kind" => kind, "fields" => fields} = record) do
+    {:ok, rk} = SwarmCode.Settings.RecordKind.fetch(kind)
+    names = SwarmCode.Settings.RecordKind.field_names(rk)
+    extra = Map.keys(fields) -- names
+    ExUnit.Assertions.assert(extra == [], "#{kind} has undeclared fields #{inspect(extra)}")
+
+    for field <- rk.fields, Map.has_key?(fields, field.name) do
+      value = Map.fetch!(fields, field.name)
+
+      cond do
+        field.secret ->
+          ExUnit.Assertions.assert(
+            match?(
+              %{"set" => set, "hint" => hint}
+              when is_boolean(set) and map_size(value) == 2 and
+                     (is_nil(hint) or byte_size(hint) <= 16),
+              value
+            ),
+            "#{kind}.#{field.name} is not {set, hint}"
+          )
+
+        field.type == :kv_secrets and is_list(value) ->
+          for entry <- value do
+            if entry["secret"] do
+              ExUnit.Assertions.assert(
+                is_nil(entry["value"]),
+                "#{kind}.#{field.name} shows a secret"
+              )
+            else
+              ExUnit.Assertions.refute(
+                SwarmCode.Settings.SecretPattern.secret_kv?(entry["name"], entry["value"]),
+                "#{kind}.#{field.name} shows #{entry["name"]} unmasked"
+              )
+            end
+          end
+
+        is_list(value) ->
+          max = SwarmCode.Settings.RecordKind.list_max(field)
+          ExUnit.Assertions.assert(length(value) <= max, "#{kind}.#{field.name} > #{max}")
+
+        true ->
+          :ok
+      end
+    end
+
+    record
+  end
 end

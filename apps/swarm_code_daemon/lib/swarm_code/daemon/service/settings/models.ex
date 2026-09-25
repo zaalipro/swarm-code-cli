@@ -6,6 +6,8 @@ defmodule SwarmCode.Daemon.Service.Settings.Models do
   fetch of this session still listed it.
   """
 
+  @behaviour SwarmCode.Daemon.Service.Settings.Handler
+
   alias SwarmCode.Daemon.Service.Settings.Kit
   alias SwarmCode.Daemon.Service.Settings.Providers, as: ProviderSettings
   alias SwarmCode.Domain.Providers

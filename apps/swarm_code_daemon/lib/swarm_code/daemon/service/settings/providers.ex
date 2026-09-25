@@ -9,6 +9,8 @@ defmodule SwarmCode.Daemon.Service.Settings.Providers do
   task message is redacted with the provider's keys.
   """
 
+  @behaviour SwarmCode.Daemon.Service.Settings.Handler
+
   import Ecto.Query, warn: false, except: [update: 2]
 
   alias SwarmCode.Daemon.Service.Settings.{Kit, Secrets}
