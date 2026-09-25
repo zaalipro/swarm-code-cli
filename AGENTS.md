@@ -174,15 +174,18 @@ by `scripts/dev/sync_unicode_width.exs --check`, `sync_unicode_variants.py --che
   mode (Ctrl-T), dialogs and pickers. Ctrl-J (the port decodes a bare LF as Ctrl-J) and Ctrl-O insert a
   newline; Ctrl-X edits the draft in `$VISUAL`/`$EDITOR`. An approval card opens over the
   conversation by itself with `y Y A d D n`; only the letters of the decisions it offers answer it,
-  and only while the draft is empty; Enter with a draft under it sends the draft, and with the
-  draft empty shows the whole command (`Keymap.show_all?/2`). A run this session already asked to
+  and only while the draft is empty; a draft typed under it is the composer's (pass73 G1: its
+  `/` list, Enter, Tab, arrows, Ctrl-A/E/U/W, Ctrl-S, Alt-Enter; Ctrl-C clears it before it puts
+  the card aside; Esc and PgUp/PgDn stay the card's), and with the draft empty Enter shows the
+  whole command, then folds it (`Keymap.show_all?/2`). A run this session already asked to
   stop (`State.stops_asked`) is no longer "the turn", so the next Ctrl-C stops another or arms the
   quit. Wheel reports are on by default (pass73 T9): the wheel scrolls the pane under the pointer;
   Shift-drag (Option-drag in Terminal.app/iTerm2) selects text; `/mouse off` (kept in cli.json) or
   `SWARM_MOUSE=0` turns them off. Enter on the `/` list takes the highlighted command (runs it when
   it takes no argument); a message naming a workflow goes as `/create-workflow`, Ctrl-S sends it
   plain. `SwarmCodeCLI.UI.Composer.enter_action/1` is the one answer to "what does Enter do now"
-  (send, steer, queue, run, complete, show all) for the keymap, the footer and the pending marks.
+  (send, steer, queue, run, complete, show all, fold) for the keymap, the footer and the pending
+  marks.
 - Measure glyphs with `SwarmCodeCLI.UI.Width.cells/2` under both ambiguous-width policies before
   drawing. Box drawing, half blocks and emoji are ambiguous or wide. Progress is the `▐` tick
   bar, not a solid fill. Colours come from `UI.Theme` (the web app's Carbon tokens); never invent
