@@ -235,7 +235,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.SettingsIntegrations do
       |> provider_list()
       |> Enum.filter(&(only in [nil, &1["id"]]))
       |> Enum.flat_map(fn p ->
-        models = Enum.uniq(p["models"] ++ List.wrap(p["default_model"]))
+        models = Enum.sort(Enum.uniq(p["models"] ++ List.wrap(p["default_model"])))
         fetched = fetched_models(state, p["id"])
 
         for m <- models do
