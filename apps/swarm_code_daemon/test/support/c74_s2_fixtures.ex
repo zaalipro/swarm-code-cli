@@ -29,14 +29,20 @@ defmodule SwarmCode.Test.C74S2 do
     File.mkdir_p!(config_dir)
     File.chmod!(dir, 0o700)
 
+    home = Path.join(dir, "home")
+    File.mkdir_p!(home)
+
     prior = Application.fetch_env(:swarm_code_daemon, :domain_config_dir)
     prior_agents = Application.fetch_env(:swarm_code_daemon, :settings_user_agents_dir)
+    prior_home = Application.fetch_env(:swarm_code_daemon, :settings_home_dir)
     Application.put_env(:swarm_code_daemon, :domain_config_dir, config_dir)
     Application.put_env(:swarm_code_daemon, :settings_user_agents_dir, user_agents)
+    Application.put_env(:swarm_code_daemon, :settings_home_dir, home)
 
     on_exit(fn ->
       restore(:domain_config_dir, prior)
       restore(:settings_user_agents_dir, prior_agents)
+      restore(:settings_home_dir, prior_home)
       Cache.clear()
       File.rm_rf(dir)
     end)
@@ -70,7 +76,7 @@ defmodule SwarmCode.Test.C74S2 do
     end
 
     Cache.clear()
-    %{dir: dir, config_dir: config_dir, user_agents_dir: user_agents}
+    %{dir: dir, config_dir: config_dir, user_agents_dir: user_agents, home: home}
   end
 
   defp restore(key, {:ok, value}), do: Application.put_env(:swarm_code_daemon, key, value)

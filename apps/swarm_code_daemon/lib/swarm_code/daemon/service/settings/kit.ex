@@ -387,13 +387,25 @@ defmodule SwarmCode.Daemon.Service.Settings.Kit do
   def tilde(nil), do: nil
 
   def tilde(path) do
-    home = System.user_home() || ""
+    home = home() || ""
 
     cond do
       home == "" -> path
       path == home -> "~"
       String.starts_with?(path, home <> "/") -> "~" <> String.replace_prefix(path, home, "")
       true -> path
+    end
+  end
+
+  @doc """
+  The user's home directory as settings sees it: the application's
+  `:settings_home_dir` (a test seam) or `System.user_home/0`.
+  """
+  @spec home() :: String.t() | nil
+  def home do
+    case Application.get_env(:swarm_code_daemon, :settings_home_dir) do
+      dir when is_binary(dir) -> dir
+      _ -> System.user_home()
     end
   end
 
