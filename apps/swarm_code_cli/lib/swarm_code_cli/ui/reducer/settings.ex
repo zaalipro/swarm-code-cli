@@ -327,10 +327,10 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings do
 
   defp verb(state, :back), do: back(state)
 
-  defp verb(state, :close), do: close(state)
+  defp verb(state, :close), do: leave(state, :close)
 
   # Ctrl-C on a page closes the layer; in a text it clears first (editors).
-  defp verb(%{settings: %Layer{mode: :browse}} = state, :interrupt), do: close(state)
+  defp verb(%{settings: %Layer{mode: :browse}} = state, :interrupt), do: leave(state, :close)
 
   defp verb(%{settings: %Layer{mode: :search} = layer} = state, :interrupt),
     do: verb(%{state | settings: layer}, :escape)
@@ -357,10 +357,10 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings do
   defp verb(state, :previous_region), do: {cycle_region(state, -1), []}
 
   defp verb(%{settings: %Layer{} = layer} = state, :prev_section),
-    do: go_section(state, Sections.step(Layer.section(layer), -1), layer.region)
+    do: leave(state, {:section, Sections.step(Layer.section(layer), -1), layer.region})
 
   defp verb(%{settings: %Layer{} = layer} = state, :next_section),
-    do: go_section(state, Sections.step(Layer.section(layer), 1), layer.region)
+    do: leave(state, {:section, Sections.step(Layer.section(layer), 1), layer.region})
 
   defp verb(%{settings: %Layer{} = layer} = state, :jump),
     do: {put_layer(state, %{layer | jump: %{labels: Nav.jump_labels(Hint.letters())}}), []}
@@ -398,10 +398,94 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings do
       case answer do
         [] -> {state, []}
         [_ | _] = ops -> Ops.run(state, ops)
-        _default -> back_pop(state)
+        _default -> leave(state, :pop)
       end
 
     {state, settled ++ effects}
+  end
+
+  # ------------------------------------------------------ leaving a page
+
+  @doc """
+  Leaves the page (`:pop`, `:close`, `{:section, id, region}`) unless
+  something on it is not saved (a paste, a draft being filled, staged
+  fields): then the pending question asks first (§3.7.10). A record page's
+  section answers `:leave` first (the MCP page applies its valid staged
+  fields in one `mcp.update`).
+  """
+  @spec leave(State.t(), term()) :: {State.t(), list()}
+  def leave(%{settings: %Layer{} = layer} = state, how) do
+    case pending(layer) do
+      [] ->
+        leave_now(state, how)
+
+      items ->
+        body = %{items: items, then: [], continue: how, save: [], discard: discard_ops(layer)}
+        {put_layer(state, %{layer | popover: {:pending, body}}), []}
+    end
+  end
+
+  def leave(state, _how), do: {state, []}
+
+  @doc "Leaves without asking (the pending question was answered)."
+  @spec leave_now(State.t(), term()) :: {State.t(), list()}
+  def leave_now(%{settings: %Layer{} = layer} = state, how) do
+    {state, left} =
+      if Layer.depth(layer) > 1 do
+        case Sections.act(Layer.section(layer), Nav.ctx(state), Nav.current(state), :leave) do
+          [_ | _] = ops -> Ops.run(state, ops)
+          _ -> {state, []}
+        end
+      else
+        {state, []}
+      end
+
+    {state, effects} =
+      case how do
+        :pop -> back_pop(state)
+        :close -> close(state)
+        {:section, id, region} -> go_section(state, id, region)
+      end
+
+    {state, left ++ effects}
+  end
+
+  def leave_now(state, _how), do: {state, []}
+
+  defp pending(%Layer{} = layer) do
+    paste =
+      case layer.paste do
+        %{bytes: bytes, target: target} when bytes != "" ->
+          ["the pasted #{Map.get(target, :label) || "key"}"]
+
+        _ ->
+          []
+      end
+
+    drafts =
+      for {kind, draft} <- layer.drafts,
+          dirty_draft?(draft),
+          do: "the new #{kind} (not created yet)"
+
+    staged =
+      for {{kind, id}, fields} <- layer.staged,
+          map_size(fields) > 0,
+          do: "changes to #{kind} #{id}"
+
+    paste ++ drafts ++ staged
+  end
+
+  defp dirty_draft?(draft) when is_map(draft),
+    do:
+      Enum.any?(draft, fn {key, value} ->
+        key not in [:errors, "errors"] and value not in [nil, "", %{}, []]
+      end)
+
+  defp dirty_draft?(_draft), do: false
+
+  defp discard_ops(%Layer{} = layer) do
+    Enum.map(Map.keys(layer.drafts), &{:draft_discard, &1}) ++
+      Enum.map(Map.keys(layer.staged), &{:unstage, &1, :all})
   end
 
   defp step(:up), do: -1

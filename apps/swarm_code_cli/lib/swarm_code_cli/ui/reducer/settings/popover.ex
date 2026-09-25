@@ -150,10 +150,10 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Popover do
   defp handle(state, :pending, body, event) do
     cond do
       letter?(event, "s") ->
-        state |> close() |> elem(0) |> Ops.run(Map.get(body, :save, []) ++ body.then)
+        answer_pending(state, body, Map.get(body, :save, []))
 
       letter?(event, "d") ->
-        state |> close() |> elem(0) |> Ops.run(Map.get(body, :discard, []) ++ body.then)
+        answer_pending(state, body, Map.get(body, :discard, []))
 
       event in [{:verb, :escape}, {:verb, :back}, {:verb, :close}] ->
         close(state)
@@ -167,6 +167,23 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Popover do
     do: close(state)
 
   defp handle(state, _kind, _body, _event), do: {state, []}
+
+  # `s` saves what can be saved (a paste or a draft needs its own Enter or
+  # Ctrl-S, so it is dropped), `d` discards; then the leave goes on.
+  defp answer_pending(state, body, ops) do
+    {state, _} = close(state)
+    {state, effects} = Ops.run(state, ops ++ Map.get(body, :then, []))
+    state = %{state | settings: %{state.settings | paste: nil, mode: :browse}}
+
+    case Map.get(body, :continue) do
+      nil ->
+        {state, effects}
+
+      how ->
+        {state, more} = SwarmCodeCLI.UI.Reducer.Settings.leave_now(state, how)
+        {state, effects ++ more}
+    end
+  end
 
   # ------------------------------------------------------------ helpers
 

@@ -34,13 +34,36 @@ defmodule SwarmCodeCLI.UI.Settings.Rows do
   @doc "Every registry entry of `section` as rows, with a heading per group."
   @spec registry(Ctx.t(), atom()) :: [Row.t()]
   def registry(%Ctx{} = ctx, section) do
-    ctx
-    |> entries(section)
-    |> Enum.chunk_by(&Map.get(&1, :group))
-    |> Enum.flat_map(fn [first | _] = group ->
-      heading = if is_binary(Map.get(first, :group)), do: [Row.heading(first.group)], else: []
-      heading ++ Enum.map(group, &scalar(ctx, &1))
-    end)
+    entries = entries(ctx, section)
+
+    rows =
+      entries
+      |> Enum.chunk_by(&Map.get(&1, :group))
+      |> Enum.flat_map(fn [first | _] = group ->
+        heading = if is_binary(Map.get(first, :group)), do: [Row.heading(first.group)], else: []
+        heading ++ Enum.map(group, &scalar(ctx, &1))
+      end)
+
+    rows ++ danger(entries, section)
+  end
+
+  # The danger group: the section's reset, when it has values to reset.
+  defp danger(entries, section) do
+    if Enum.any?(entries, &(Entry.writable?(&1) and &1.resettable and not &1.desktop_only)) do
+      [
+        Row.heading("danger"),
+        %Row{
+          id: "act:reset_section",
+          kind: :action,
+          label: "",
+          value: [{"▸ Reset this section…", :text_primary}],
+          keys: [{"Enter", :enter, "review what changes"}],
+          target: {:reset_section, section}
+        }
+      ]
+    else
+      []
+    end
   end
 
   @doc "The registry entries of `section`, in page order."

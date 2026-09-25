@@ -54,7 +54,49 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Ops do
 
   defp one(state, {:patch, key, value}), do: Commit.patch(state, key, value, reason: :edit)
   defp one(state, {:reset, keys}), do: Commit.reset(state, keys)
-  defp one(state, {:reset_section, id}), do: Commit.reset(state, changed_keys(state, id))
+  # A section's reset asks first, listing every value that changes.
+  defp one(state, {:reset_section, id}) do
+    ctx = Nav.ctx(state)
+    title = SwarmCodeCLI.UI.Settings.Sections.title(id)
+
+    case changed_keys(state, id) do
+      [] ->
+        {Commit.status(state, "Nothing to reset in #{title}", :text_muted), []}
+
+      keys ->
+        lines =
+          Enum.map(keys, fn key ->
+            entry = Registry.fetch!(key)
+
+            now =
+              SwarmCodeCLI.UI.Settings.Display.toast_words(
+                entry,
+                Rows.shown(ctx, entry, Rows.setting(ctx, entry))
+              )
+
+            back = SwarmCodeCLI.UI.Settings.Display.toast_words(entry, entry.default)
+            "#{entry.label}  #{now} → #{back}"
+          end)
+
+        count = length(keys)
+        noun = if count == 1, do: "value", else: "values"
+
+        confirm = %SwarmCodeCLI.UI.Settings.Confirm{
+          id: "reset_section",
+          title: "Reset #{title}?",
+          lines: lines,
+          safe: "Keep them",
+          danger: "Reset #{count} #{noun}",
+          letter: "R"
+        }
+
+        one(
+          state,
+          {:confirm, confirm,
+           then: [{:reset, keys}, {:toast, "Reset #{count} #{noun} in #{title}", :success}]}
+        )
+    end
+  end
 
   defp one(state, {:toast, text, role}), do: {Commit.status(state, text, role), []}
 
@@ -224,6 +266,9 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Ops do
           reason: :edit,
           expected: conflict.theirs_wire
         )
+
+      match?({:reset_section, _}, row.target) ->
+        run(state, [row.target])
 
       match?({Editors.Toggle, _}, row.editor) ->
         {_, opts} = row.editor
