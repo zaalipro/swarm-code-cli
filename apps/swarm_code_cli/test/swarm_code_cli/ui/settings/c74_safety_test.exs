@@ -97,7 +97,10 @@ defmodule SwarmCodeCLI.UI.Settings.C74SafetyTest do
           text(":") ++
           text("get terminal.panel") ++
           [key(:enter)] ++
-          [{:settings, {:verb, :previous_section}}, {:settings_open, {:section, :storage}}]
+          [{:settings, {:verb, :previous_section}}, {:settings_open, {:section, :budget}}]
+
+      # Storage is not in this walk: its page measures on open (A27), a task
+      # that legitimately ticks while it runs (§4.9).
 
       {state, effects, _fake} = drive(sized(), actions)
       assert state.settings.search == nil and state.settings.mode == :browse

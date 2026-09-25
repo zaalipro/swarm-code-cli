@@ -366,8 +366,8 @@ defmodule SwarmCodeCLI.UI.Settings.IntegrationRows do
            ~w(id name kind value state action target result summary rows received_at_ms elapsed_ms
               message progress done total step bytes items fields set hint at count ms status
               provider_id model options project_id title root errors secrets env
-              cancellable attributes),
-           &{&1, String.to_atom(&1)}
+              cancellable attributes)a,
+           &{Atom.to_string(&1), &1}
          )
   defp atom(key) when is_binary(key), do: Map.get(@atoms, key, key)
   defp atom(key), do: key

@@ -12,7 +12,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections do
   (`SwarmCode.Settings.Sections`).
   """
 
-  alias SwarmCodeCLI.UI.Settings.Section
+  alias SwarmCodeCLI.UI.Settings.{Row, Section}
 
   @modules %{
     overview: SwarmCodeCLI.UI.Settings.Sections.Overview,
@@ -115,7 +115,12 @@ defmodule SwarmCodeCLI.UI.Settings.Sections do
   def sub_rows(_id, _ctx, {:rows, _title, rows}) when is_list(rows), do: rows
   def sub_rows(id, ctx, sub), do: call(id, :sub_rows, [ctx, sub], fn -> [] end)
 
-  @doc "A row letter or Enter on a row: the section's ops, or `:default`."
+  @doc """
+  A row letter or Enter on a row: the section's ops, or `:default`. Page verbs
+  (`:leave`, `:escape`) may arrive with no focused row; the section then sees an
+  empty `%Row{}`.
+  """
+  def act(id, ctx, nil, action), do: act(id, ctx, %Row{}, action)
   def act(id, ctx, row, action), do: call(id, :act, [ctx, row, action], fn -> :default end)
 
   @doc "An editor's committed value: the section's ops, or `:default`."

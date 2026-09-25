@@ -1,4 +1,7 @@
 defmodule SwarmCodeCLI.UI.Settings.C74StructsTest do
+  @missing SwarmCodeCLI.UI.Settings.Sections.NotInThisBuild
+  @compile {:no_warn_undefined, @missing}
+
   use ExUnit.Case, async: true
 
   alias SwarmCodeCLI.UI.Settings
@@ -161,14 +164,18 @@ defmodule SwarmCodeCLI.UI.Settings.C74StructsTest do
     end
 
     test "a section that is not in this build falls back to the defaults" do
-      ctx = %Ctx{}
-      # U2's Library is not in U3's branch (U3 builds Agents & limits)
-      refute Code.ensure_loaded?(SwarmCodeCLI.UI.Settings.Sections.Library)
-      assert Sections.loads(:library, ctx) == [{:values, [:library]}]
-      assert Sections.act(:library, ctx, %Row{id: "x"}, :enter) == :default
-      assert Sections.commit(:library, ctx, %Row{id: "x"}, 3) == :default
-      assert Sections.page_title(:library, ctx) == "Library"
-      assert is_list(Sections.rows(:library, ctx))
+      # Every section is built on the merged tree; the fallback itself is
+      # `Sections.optional/3`, which answers nil only for the missing module
+      # and callback it names and re-raises anything else.
+      for %{id: id} <- Sections.all(),
+          do: assert(Code.ensure_loaded?(Sections.module_for(id)), "#{id}")
+
+      assert Sections.optional(@missing, :act, fn -> @missing.act(%Ctx{}, %Row{}, :enter) end) ==
+               nil
+
+      assert_raise UndefinedFunctionError, fn ->
+        Sections.optional(Sections.Library, :act, fn -> @missing.act(%Ctx{}, %Row{}, :enter) end)
+      end
     end
   end
 

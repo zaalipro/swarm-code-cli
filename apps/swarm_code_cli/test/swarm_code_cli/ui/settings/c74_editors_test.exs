@@ -168,7 +168,7 @@ defmodule SwarmCodeCLI.UI.Settings.C74EditorsTest do
              run(Editors.LspCommand, %{value: nil}, text("elixir-ls --stdio") ++ [{:key, :enter}])
   end
 
-  test "a model row edits as text when the model picker is not in this build" do
+  test "a model row opens the model picker (U2) with the current model" do
     state = Reducer.update(ready(), {:settings_open, {:section, :models_effort}}) |> elem(0)
     value = %{"provider_id" => "p1", "model" => "deepseek-v4-pro"}
 
@@ -192,7 +192,7 @@ defmodule SwarmCodeCLI.UI.Settings.C74EditorsTest do
     assert {SwarmCodeCLI.UI.Settings.ModelPicker, %{current: ^value}} = row.editor
 
     {state, _} = SwarmCodeCLI.UI.Reducer.Settings.Edit.open(state, row)
-    assert state.settings.editing.module == Editors.Text
-    assert state.settings.editing.state.buffer.text == "p1|deepseek-v4-pro"
+    assert state.settings.editing.module == SwarmCodeCLI.UI.Settings.ModelPicker
+    assert %{key: "models.chat", current: ^value} = state.settings.editing.state
   end
 end
