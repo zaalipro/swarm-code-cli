@@ -48,6 +48,16 @@ defmodule SwarmCodeCLI.UI.Width do
 
   @spec cells(binary(), :narrow | :wide) :: non_neg_integer()
   def cells(binary, ambiguous) when is_binary(binary) and ambiguous in [:narrow, :wide] do
+    if printable_ascii?(binary), do: byte_size(binary), else: unicode_cells(binary, ambiguous)
+  end
+
+  @doc "True when every byte is printable ASCII (0x20–0x7E): one cell each."
+  @spec printable_ascii?(binary()) :: boolean()
+  def printable_ascii?(<<c, rest::binary>>) when c in 0x20..0x7E, do: printable_ascii?(rest)
+  def printable_ascii?(<<>>), do: true
+  def printable_ascii?(_binary), do: false
+
+  defp unicode_cells(binary, ambiguous) do
     binary
     |> String.to_charlist()
     |> Enum.reverse()

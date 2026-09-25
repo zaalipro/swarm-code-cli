@@ -1590,16 +1590,48 @@ defmodule SwarmCodeCLI.UI.SafeText do
   defp sanitized_identity?(binary, limit),
     do: sanitize(binary, limit, 8, :narrow) == {:ok, binary}
 
+  # Printable ASCII (0x20–0x7E) is its own sanitized form: one cell per
+  # byte, no control, mark, join or invisible character. The fast path keeps
+  # a full-screen repaint from walking every cell through the grapheme scan.
   defp sanitize(binary, limit, tabs, width) do
-    binary
-    |> repair_invalid_utf8()
-    |> scan(limit, tabs, width, 0, [])
+    if byte_size(binary) <= limit and Width.printable_ascii?(binary) do
+      {:ok, binary}
+    else
+      binary
+      |> repair_invalid_utf8()
+      |> scan(limit, tabs, width, 0, [])
+    end
   end
 
   defp scan(<<>>, _remaining, _tabs, _width, _column, acc),
     do: {:ok, acc |> Enum.reverse() |> IO.iodata_to_binary()}
 
-  defp scan(binary, remaining, tabs, width, column, acc) do
+  # A run of printable ASCII is copied as it is (one cell per byte). The last
+  # byte before a non-ASCII byte stays in the grapheme scan: a combining mark
+  # or a variation selector after it belongs to its grapheme.
+  defp scan(<<c, _::binary>> = binary, remaining, tabs, width, column, acc)
+       when c in 0x20..0x7E do
+    case ascii_run(binary, 0) do
+      0 ->
+        scan_grapheme(binary, remaining, tabs, width, column, acc)
+
+      n when n > remaining ->
+        {:error, :escaped_output_too_large}
+
+      n ->
+        <<run::binary-size(n), rest::binary>> = binary
+        scan(rest, remaining - n, tabs, width, column + n, [run | acc])
+    end
+  end
+
+  defp scan(binary, remaining, tabs, width, column, acc),
+    do: scan_grapheme(binary, remaining, tabs, width, column, acc)
+
+  defp ascii_run(<<c, rest::binary>>, n) when c in 0x20..0x7E, do: ascii_run(rest, n + 1)
+  defp ascii_run(<<c, _::binary>>, n) when c >= 0x80, do: max(n - 1, 0)
+  defp ascii_run(_rest, n), do: n
+
+  defp scan_grapheme(binary, remaining, tabs, width, column, acc) do
     {grapheme, rest} = String.next_grapheme(binary)
 
     case sanitize_grapheme(grapheme, remaining, tabs, width, column) do
