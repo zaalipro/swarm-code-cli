@@ -17,6 +17,27 @@ defmodule SwarmCodeCLI.UI.Theme do
   alias SwarmCodeCLI.UI.{Capabilities, SafeText, Scene}
   alias SwarmCodeCLI.UI.Scene.{Color, Style}
   @modes [:truecolor, :ansi256, :ansi16, :monochrome]
+  @carbon_accent 0xFF6A1A
+  @carbon_accent_tint 0x3E291D
+  # xterm's default 16 colours, for the accent's 16-colour twin.
+  @ansi16 [
+    black: {0, 0, 0},
+    red: {205, 0, 0},
+    green: {0, 205, 0},
+    yellow: {205, 205, 0},
+    blue: {0, 0, 238},
+    magenta: {205, 0, 205},
+    cyan: {0, 205, 205},
+    white: {229, 229, 229},
+    bright_black: {127, 127, 127},
+    bright_red: {255, 0, 0},
+    bright_green: {0, 255, 0},
+    bright_yellow: {255, 255, 0},
+    bright_blue: {92, 92, 255},
+    bright_magenta: {255, 0, 255},
+    bright_cyan: {0, 255, 255},
+    bright_white: {255, 255, 255}
+  ]
 
   @type run_kind ::
           :assistant | :goal | :swarm | :workflow | :research | :consensus_judge | :ultra
@@ -370,9 +391,11 @@ defmodule SwarmCodeCLI.UI.Theme do
   def light(nil, :text, :ansi256), do: {:indexed, @light_index_text}
 
   def light({:rgb, r, g, b} = value, _slot, _mode) do
-    case Map.fetch(@light_rgb, r * 65_536 + g * 256 + b) do
+    hex = r * 65_536 + g * 256 + b
+
+    case Map.fetch(@light_rgb, hex) do
       {:ok, twin} -> rgb(twin)
-      :error -> value
+      :error -> light_accent_tint(hex, value)
     end
   end
 
@@ -384,6 +407,18 @@ defmodule SwarmCodeCLI.UI.Theme do
   end
 
   def light(value, _slot, _mode), do: value
+
+  # pass74: the chip tint of a custom accent reads on a white card as the
+  # Carbon tint does.
+  defp light_accent_tint(hex, value) do
+    case accent() do
+      nil ->
+        value
+
+      accent ->
+        if hex == tint(accent, 0x111111, 0.2), do: rgb(tint(accent, 0xFFFFFF, 0.15)), else: value
+    end
+  end
 
   defp rgb(hex), do: {:rgb, div(hex, 65_536), rem(div(hex, 256), 256), rem(hex, 256)}
 
@@ -439,15 +474,139 @@ defmodule SwarmCodeCLI.UI.Theme do
   defp normalize_mode(value) when value in [:light, :dark], do: value
   defp normalize_mode(_), do: nil
 
-  defp color(:truecolor, rgb, _index, _ansi),
+  # pass74 (§3.8.4, `terminal.accent`): the accent roles — every colour that
+  # is Carbon's #FF6A1A, and the chip tint made from it — follow the accent the
+  # launch chose. Nil keeps Carbon exactly.
+  defp color(mode, @carbon_accent, index, ansi) do
+    case accent() do
+      nil -> plain_color(mode, @carbon_accent, index, ansi)
+      rgb -> accent_color(mode, rgb)
+    end
+  end
+
+  defp color(mode, @carbon_accent_tint, index, ansi) do
+    case accent() do
+      nil -> plain_color(mode, @carbon_accent_tint, index, ansi)
+      rgb -> plain_color(mode, tint(rgb, 0x111111, 0.2), index, ansi)
+    end
+  end
+
+  defp color(mode, rgb, index, ansi), do: plain_color(mode, rgb, index, ansi)
+
+  defp accent_color(mode, rgb) do
+    twins = accent_twins(rgb)
+    plain_color(mode, rgb, twins.ansi256, twins.ansi16)
+  end
+
+  defp plain_color(:truecolor, rgb, _index, _ansi),
     do: %Color{
       role: :default,
       value: {:rgb, div(rgb, 65_536), rem(div(rgb, 256), 256), rem(rgb, 256)}
     }
 
-  defp color(:ansi256, _rgb, index, _ansi), do: %Color{role: :default, value: {:indexed, index}}
-  defp color(:ansi16, _rgb, _index, ansi), do: %Color{role: :default, value: {:ansi, ansi}}
-  defp color(:monochrome, _rgb, _index, _ansi), do: nil
+  defp plain_color(:ansi256, _rgb, index, _ansi),
+    do: %Color{role: :default, value: {:indexed, index}}
+
+  defp plain_color(:ansi16, _rgb, _index, ansi), do: %Color{role: :default, value: {:ansi, ansi}}
+  defp plain_color(:monochrome, _rgb, _index, _ansi), do: nil
+
+  # ---------------------------------------------------------------- accent
+
+  @accent_key {__MODULE__, :accent}
+
+  @doc """
+  pass74 (§3.8.4): the launch's accent colour, `{r, g, b}` or nil for
+  Carbon's own. Written once by the launcher before the port owner starts
+  (a `:persistent_term`, process-wide for the launch).
+  """
+  @spec put_accent({0..255, 0..255, 0..255} | nil) :: :ok
+  def put_accent(nil) do
+    _ = :persistent_term.erase(@accent_key)
+    :ok
+  end
+
+  def put_accent({r, g, b})
+      when r in 0..255 and g in 0..255 and b in 0..255 do
+    :persistent_term.put(@accent_key, r * 65_536 + g * 256 + b)
+  end
+
+  @doc "The accent in use as a 24-bit integer, or nil for Carbon's #FF6A1A."
+  @spec accent() :: non_neg_integer() | nil
+  def accent, do: :persistent_term.get(@accent_key, nil)
+
+  @doc """
+  The 256- and 16-colour twins of an accent colour (nearest by distance in
+  RGB; the 256 twin is chosen from the colour cube and the grey ramp, whose
+  values do not depend on the terminal's own palette).
+  """
+  @spec accent_twins(non_neg_integer() | {0..255, 0..255, 0..255}) :: %{
+          rgb: non_neg_integer(),
+          ansi256: 16..255,
+          ansi16: atom()
+        }
+  def accent_twins({r, g, b}), do: accent_twins(r * 65_536 + g * 256 + b)
+
+  def accent_twins(rgb) when is_integer(rgb) do
+    triple = split(rgb)
+
+    %{
+      rgb: rgb,
+      ansi256: Enum.min_by(16..255, &distance(triple, xterm256(&1))),
+      ansi16: @ansi16 |> Enum.min_by(fn {_name, value} -> distance(triple, value) end) |> elem(0)
+    }
+  end
+
+  @doc """
+  The WCAG 2 contrast ratio of two 24-bit colours (1.0–21.0). The settings
+  page shows it for an accent on the page colour of the current mode.
+  """
+  @spec contrast(non_neg_integer(), non_neg_integer()) :: float()
+  def contrast(a, b) do
+    {hi, lo} =
+      Enum.min_max_by([luminance(a), luminance(b)], & &1) |> then(fn {l, h} -> {h, l} end)
+
+    Float.round((hi + 0.05) / (lo + 0.05), 2)
+  end
+
+  @doc "The page colour contrast is measured against, per mode."
+  @spec page_color(:dark | :light) :: non_neg_integer()
+  def page_color(:light), do: @light_page
+  def page_color(_dark), do: 0x111111
+
+  defp luminance(rgb) do
+    {r, g, b} = split(rgb)
+
+    [r, g, b]
+    |> Enum.map(fn channel ->
+      c = channel / 255
+      if c <= 0.03928, do: c / 12.92, else: :math.pow((c + 0.055) / 1.055, 2.4)
+    end)
+    |> then(fn [r, g, b] -> 0.2126 * r + 0.7152 * g + 0.0722 * b end)
+  end
+
+  defp tint(rgb, base, amount) do
+    {r1, g1, b1} = split(rgb)
+    {r2, g2, b2} = split(base)
+    mix = fn a, b -> round(b + (a - b) * amount) end
+    mix.(r1, r2) * 65_536 + mix.(g1, g2) * 256 + mix.(b1, b2)
+  end
+
+  defp split(rgb), do: {div(rgb, 65_536), rem(div(rgb, 256), 256), rem(rgb, 256)}
+
+  defp distance({r1, g1, b1}, {r2, g2, b2}),
+    do: (r1 - r2) * (r1 - r2) + (g1 - g2) * (g1 - g2) + (b1 - b2) * (b1 - b2)
+
+  @cube [0, 95, 135, 175, 215, 255]
+
+  defp xterm256(index) when index in 16..231 do
+    n = index - 16
+    {Enum.at(@cube, div(n, 36)), Enum.at(@cube, rem(div(n, 6), 6)), Enum.at(@cube, rem(n, 6))}
+  end
+
+  defp xterm256(index) when index in 232..255 do
+    level = 8 + (index - 232) * 10
+    {level, level, level}
+  end
 
   defp cue(style, :focus, mode),
     do: %{

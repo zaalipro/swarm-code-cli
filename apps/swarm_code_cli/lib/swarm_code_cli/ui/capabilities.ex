@@ -202,6 +202,21 @@ defmodule SwarmCodeCLI.UI.Capabilities do
       else: :measured
   end
 
+  @doc """
+  pass74 (§2.14 `terminal.glyphs`): the glyph tier with the user's cli.json
+  choice. `"rich"` and `"measured"` force that tier (ascii still wins: the
+  caller sets `ascii?`), anything else is `glyph_tier/4`'s probe. Forcing rich
+  under wide ambiguous width is honoured; the settings page warns about it.
+  """
+  @spec glyph_tier(color_mode(), ambiguous_width(), boolean(), String.t() | nil, term()) ::
+          glyph_tier()
+  def glyph_tier(_mode, _width, true, _term, _preference), do: :measured
+  def glyph_tier(_mode, _width, false, _term, "rich"), do: :rich
+  def glyph_tier(_mode, _width, false, _term, "measured"), do: :measured
+
+  def glyph_tier(mode, width, ascii?, term, _preference),
+    do: glyph_tier(mode, width, ascii?, term)
+
   defp rich_terminal?(term) when is_binary(term) do
     components = String.split(term, "-")
     Enum.any?(components, &(&1 in ~w[ghostty kitty wezterm iterm iterm2]))
