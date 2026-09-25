@@ -65,24 +65,7 @@ defmodule SwarmCode.Daemon.Service do
          {:ok, clients} <- DynamicSupervisor.start_link(strategy: :one_for_one, max_children: 32) do
       config =
         Map.new(opts)
-        |> Map.put_new(:capabilities, [
-          :query,
-          :detail,
-          :watch,
-          :conversation_open,
-          :conversation_list,
-          :conversation_new,
-          :mark_seen,
-          :project_update,
-          :dispatch_send,
-          :run_pause,
-          :run_continue,
-          :run_stop,
-          :run_steer,
-          :approval_resolve,
-          :feature_command,
-          :question_answer
-        ])
+        |> Map.put_new(:capabilities, default_capabilities())
 
       owner = self()
       acceptor = spawn_link(fn -> accept(socket, clients, config) end)
@@ -122,6 +105,32 @@ defmodule SwarmCode.Daemon.Service do
     if Process.alive?(state.clients), do: Supervisor.stop(state.clients, :normal, 5000)
     cleanup(state.path, state.stat)
   end
+
+  @doc """
+  The capabilities a connection is granted unless the launcher names others:
+  every capability of the handshake's closed set (pass74 S1-5 adds `settings`).
+  """
+  @spec default_capabilities() :: [atom()]
+  def default_capabilities,
+    do: [
+      :query,
+      :detail,
+      :watch,
+      :conversation_open,
+      :conversation_list,
+      :conversation_new,
+      :mark_seen,
+      :project_update,
+      :dispatch_send,
+      :run_pause,
+      :run_continue,
+      :run_stop,
+      :run_steer,
+      :approval_resolve,
+      :feature_command,
+      :question_answer,
+      :settings
+    ]
 
   @impl true
   def format_status(status), do: %{status | state: %{status: :listening}}

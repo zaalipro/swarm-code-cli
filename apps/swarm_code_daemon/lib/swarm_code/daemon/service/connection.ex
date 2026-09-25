@@ -97,7 +97,7 @@ defmodule SwarmCode.Daemon.Service.Connection do
       {nil, _} ->
         {:noreply, state}
 
-      {%{message: message, timer: timer, deadline: deadline}, requests} ->
+      {%{message: message, operation: operation, timer: timer, deadline: deadline}, requests} ->
         Process.demonitor(ref, [:flush])
         Process.cancel_timer(timer)
         state = %{state | requests: requests}
@@ -107,20 +107,20 @@ defmodule SwarmCode.Daemon.Service.Connection do
             finish_watch(state, message, sequence, revision, kind, body)
 
           {:ok, body} when is_map(body) ->
-            reply(state, message, :response, body)
+            reply(state, message, operation, :response, body)
 
           {:error, %{"op" => "error"} = body} ->
-            reply(state, message, :error, body)
+            reply(state, message, operation, :error, body)
 
           {:indeterminate, reason} ->
             # pass70 C4: the backend call may have reached a mutation before
             # its caller failed. The request settles as unknown (a command) or
             # failed (a read); the connection and its watches stay.
-            fail_request(state, message, reason)
+            fail_request(state, message, operation, reason)
 
           _ ->
             # An untyped backend failure proves no particular mutation outcome.
-            fail_request(state, message, :untyped)
+            fail_request(state, message, operation, :untyped)
         end
     end
   end
@@ -188,13 +188,13 @@ defmodule SwarmCode.Daemon.Service.Connection do
       {nil, _} ->
         {:noreply, state}
 
-      {%{task: task, message: message}, requests} ->
+      {%{task: task, message: message, operation: operation}, requests} ->
         # pass70 C4 (rel F4): one slow request fails alone; the connection
         # and every other request and watch carry on.
         Task.Supervisor.terminate_child(state.workers, task.pid)
         Process.demonitor(ref, [:flush])
         Logger.warning("SwarmCode daemon: a request timed out (#{describe(message)})")
-        fail_request(%{state | requests: requests}, message, :deadline)
+        fail_request(%{state | requests: requests}, message, operation, :deadline)
     end
   end
 
@@ -215,7 +215,9 @@ defmodule SwarmCode.Daemon.Service.Connection do
 
   def handle_info({:DOWN, ref, :process, _, reason}, state)
       when is_map_key(state.requests, ref) do
-    {%{message: message, timer: timer}, requests} = Map.pop(state.requests, ref)
+    {%{message: message, operation: operation, timer: timer}, requests} =
+      Map.pop(state.requests, ref)
+
     Process.cancel_timer(timer)
 
     Logger.warning(
@@ -223,7 +225,7 @@ defmodule SwarmCode.Daemon.Service.Connection do
         inspect(reason, limit: 40, printable_limit: 300)
     )
 
-    fail_request(%{state | requests: requests}, message, :worker_down)
+    fail_request(%{state | requests: requests}, message, operation, :worker_down)
   end
 
   # pass73 T11: the client's own close is noted too (info: a quit does it), so
@@ -282,7 +284,19 @@ defmodule SwarmCode.Daemon.Service.Connection do
   end
 
   @impl true
-  def format_status(status), do: %{status | state: %{phase: status.state.phase}}
+  def format_status(status) do
+    status
+    |> Map.put(:state, %{phase: status.state.phase})
+    |> redact_status()
+  end
+
+  # pass74 S1-5 (M15): a crash report never holds the message in flight (a
+  # settings command carries pasted secrets) or the process's log.
+  defp redact_status(status) do
+    Enum.reduce([:message, :log], status, fn key, acc ->
+      if Map.has_key?(acc, key), do: Map.put(acc, key, :redacted), else: acc
+    end)
+  end
 
   defp consume([], state), do: {:ok, state}
 
@@ -409,7 +423,7 @@ defmodule SwarmCode.Daemon.Service.Connection do
       state
       | requests:
           Map.put(state.requests, task.ref, %{
-            message: message,
+            message: without_secrets(message),
             operation: request.operation,
             task: task,
             timer: timer,
@@ -434,6 +448,13 @@ defmodule SwarmCode.Daemon.Service.Connection do
     end
   end
 
+  # pass74 S1-5 (M15): a settings command's pasted secrets live only in its
+  # request task; the connection keeps the message without them.
+  defp without_secrets(%Message{body: body} = message) when is_map(body),
+    do: %{message | body: Map.delete(body, "secrets")}
+
+  defp without_secrets(message), do: message
+
   defp watch_capacity(%ServiceRequest{operation: :watch, params: params}, state) do
     cond do
       map_size(state.watches) >= @watches -> "a watch past the limit of #{@watches}"
@@ -452,6 +473,10 @@ defmodule SwarmCode.Daemon.Service.Connection do
 
         :feature_command ->
           :feature_command
+
+        # pass74 S1-5: both settings operations ride the `settings` capability.
+        op when op in [:settings_query, :settings_command] ->
+          :settings
 
         :question_answer ->
           :question_answer
@@ -617,13 +642,10 @@ defmodule SwarmCode.Daemon.Service.Connection do
   # may have reached its mutation, so it reads `outcome_unknown` (the client
   # refreshes); a read fails with a typed error. A watch that never became
   # ready is dropped and its client is told to re-snapshot.
-  defp fail_request(state, %Message{body: body} = message, reason) do
-    operation =
-      case ServiceRequest.decode(body, message.scope) do
-        {:ok, request} -> request.operation
-        _ -> nil
-      end
-
+  # pass74 S1-5: the operation is the one stored when the request started;
+  # the stored body no longer holds a settings command's secrets, so it is
+  # never decoded again here.
+  defp fail_request(state, %Message{body: body} = message, operation, reason) do
     code = if reason == :deadline, do: "deadline_expired", else: "source_unavailable"
 
     cond do
@@ -631,7 +653,15 @@ defmodule SwarmCode.Daemon.Service.Connection do
       operation == :watch ->
         {:noreply, require_snapshot(state, body["watch_ref"], "overflow")}
 
-      operation in [:query, :detail, :feature_query, :conversation_list, :agent_detail, nil] ->
+      operation in [
+        :query,
+        :detail,
+        :feature_query,
+        :conversation_list,
+        :agent_detail,
+        :settings_query,
+        nil
+      ] ->
         {:noreply, error_reply(state, message, code)}
 
       true ->
@@ -710,7 +740,7 @@ defmodule SwarmCode.Daemon.Service.Connection do
   # pass73 T11: a reply that cannot be encoded (a body past the frame limit)
   # fails its own request; only a socket that cannot be written ends the
   # connection, and it says so.
-  defp reply(state, message, type, body) do
+  defp reply(state, message, operation, type, body) do
     case write(state, %{message | type: type, body: body}) do
       :ok ->
         {:noreply, state}
@@ -721,7 +751,7 @@ defmodule SwarmCode.Daemon.Service.Connection do
             "the request fails alone"
         )
 
-        fail_request(state, message, :untyped)
+        fail_request(state, message, operation, :untyped)
 
       {:error, why} when why in @peer_gone ->
         client_gone("while a reply was written")

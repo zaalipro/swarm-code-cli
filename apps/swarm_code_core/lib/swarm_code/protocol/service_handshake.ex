@@ -28,7 +28,9 @@ defmodule SwarmCode.Protocol.ServiceHandshake do
     "run.steer" => :run_steer,
     "approval.resolve" => :approval_resolve,
     "feature.command" => :feature_command,
-    "question.answer" => :question_answer
+    "question.answer" => :question_answer,
+    # pass74 S1-5: settings.query and settings.command (§3.4.1).
+    "settings" => :settings
   }
   @max_frame_bytes 1_048_576
 
@@ -53,6 +55,7 @@ defmodule SwarmCode.Protocol.ServiceHandshake do
             | :approval_resolve
             | :feature_command
             | :question_answer
+            | :settings
 
     @type t :: %__MODULE__{
             source_epoch: binary(),

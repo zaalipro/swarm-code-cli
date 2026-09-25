@@ -9,6 +9,7 @@ defmodule SwarmCode.Protocol.ServiceRequest do
   """
 
   alias SwarmCode.Protocol.{Error, Scope}
+  alias SwarmCode.Settings.WireBounds
 
   @enforce_keys [:operation, :params, :timeout_ms]
   defstruct @enforce_keys
@@ -34,6 +35,8 @@ defmodule SwarmCode.Protocol.ServiceRequest do
           | :feature_command
           | :question_answer
           | :agent_detail
+          | :settings_query
+          | :settings_command
 
   @type t :: %__MODULE__{
           operation: operation(),
@@ -115,6 +118,8 @@ defmodule SwarmCode.Protocol.ServiceRequest do
   defp decode_operation("feature.command"), do: :feature_command
   defp decode_operation("question.answer"), do: :question_answer
   defp decode_operation("agent.detail"), do: :agent_detail
+  defp decode_operation("settings.query"), do: :settings_query
+  defp decode_operation("settings.command"), do: :settings_command
   defp decode_operation(_operation), do: nil
 
   defp encode_operation(:query), do: "query"
@@ -137,6 +142,8 @@ defmodule SwarmCode.Protocol.ServiceRequest do
   defp encode_operation(:feature_command), do: "feature.command"
   defp encode_operation(:question_answer), do: "question.answer"
   defp encode_operation(:agent_detail), do: "agent.detail"
+  defp encode_operation(:settings_query), do: "settings.query"
+  defp encode_operation(:settings_command), do: "settings.command"
   defp encode_operation(_operation), do: nil
 
   defp param_keys(:query), do: ~w(slot cursor direction page_size byte_limit)
@@ -166,6 +173,11 @@ defmodule SwarmCode.Protocol.ServiceRequest do
 
   # pass72 S: one agent's detail for the overlay (a read).
   defp param_keys(:agent_detail), do: ~w(run_id node_id)
+
+  # pass74 S1-5: the settings wire (§3.4.1); the key sets and bounds are
+  # `SwarmCode.Settings.WireBounds`, shared with the client.
+  defp param_keys(op) when op in [:settings_query, :settings_command],
+    do: WireBounds.param_keys(op)
 
   defp param_keys(_operation), do: []
 
@@ -291,6 +303,11 @@ defmodule SwarmCode.Protocol.ServiceRequest do
   defp valid_params?(:agent_detail, params, scope),
     do: run_scope?(params["run_id"], scope) and uuid?(params["node_id"])
 
+  # pass74 S1-5: settings requests are global-scope only; every bound is the
+  # one `WireBounds.valid?/2` the client checks before sending.
+  defp valid_params?(op, params, scope) when op in [:settings_query, :settings_command],
+    do: scope.kind == :global and scope.id == nil and WireBounds.valid?(op, params) == :ok
+
   defp json_attributes?(_, depth) when depth > 6, do: false
 
   defp json_attributes?(value, _) when is_binary(value),
@@ -385,4 +402,24 @@ defmodule SwarmCode.Protocol.ServiceRequest do
   defp control_free?(<<_point::utf8, rest::binary>>), do: control_free?(rest)
 
   defp invalid, do: {:error, Error.new(:invalid_envelope)}
+
+  defimpl Inspect do
+    import Inspect.Algebra
+
+    # pass74 S1-5 (§3.11): a settings command's pasted secrets never reach a
+    # crash report or a log line: only their count is shown.
+    def inspect(%{params: %{"secrets" => secrets} = params} = request, opts)
+        when is_list(secrets) do
+      shown = %{request | params: Map.put(params, "secrets", "[#{length(secrets)} redacted]")}
+      concat(["#SwarmCode.Protocol.ServiceRequest<", to_doc(Map.from_struct(shown), opts), ">"])
+    end
+
+    def inspect(request, opts),
+      do:
+        concat([
+          "#SwarmCode.Protocol.ServiceRequest<",
+          to_doc(Map.from_struct(request), opts),
+          ">"
+        ])
+  end
 end
