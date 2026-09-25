@@ -482,7 +482,37 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
     lead = if item.id == ctx.first_id and ctx.view_first?, do: [], else: [blank()]
 
     trail = if item.id in [ctx.first_id, ctx.last_id], do: [], else: [blank()]
-    lead ++ rows ++ steer_rows(item, state) ++ steered_rows(item, state) ++ trail
+
+    lead ++
+      rows ++
+      steer_rows(item, state) ++
+      steered_rows(item, state) ++ trail ++ continued_rows(item, ctx, state)
+  end
+
+  # pass73 G2 (QA Q2-10): the rows a run adds after a message inside it (a
+  # steer) sat under that message with no name while other turns ran; one
+  # line says whose they are.
+  defp continued_rows(item, ctx, state) do
+    if item.id in [ctx.first_id, ctx.last_id] do
+      []
+    else
+      kind = RunRow.theme_kind((ctx.run && ctx.run.kind) || :chat)
+      {_letter, kind_role} = Theme.run_kind(kind)
+      mark = SafeText.value(Support.glyph(Theme.run_mark(kind), state))
+
+      [
+        spec(
+          [
+            {"  ", :plain},
+            {mark, {:role, kind_role, [:bold]}},
+            {" ", :text},
+            {speaker(ctx, state), {:role, kind_role, [:bold]}},
+            {" continued", :faint}
+          ],
+          nil
+        )
+      ]
+    end
   end
 
   # pass73 T5: the keyword spans of the message (K's `WorkflowKeyword`),

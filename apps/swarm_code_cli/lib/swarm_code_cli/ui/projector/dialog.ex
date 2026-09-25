@@ -4,6 +4,7 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
     Editor,
     FieldEditors,
     ModelPicker,
+    Prose,
     SafeText,
     State,
     Switcher,
@@ -27,6 +28,10 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
     Support,
     Syntax
   }
+
+  # pass73 G2 (QA Q2-03): the rows of a question's own text above its
+  # options; they are neither choices nor counted as ones.
+  @body_rows ["prompt", "prompt-gap"]
 
   def project(state, class, background \\ %{})
   def project(%{layers: []}, _class, _background), do: nil
@@ -122,9 +127,14 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
           block
       end)
 
-    # Headings are not items.
-    items = Enum.reject(options, fn {id, _, _} -> match?(%{heading: _}, Map.get(decor, id)) end)
-    ordinal = Enum.find_index(items, fn {id, _, _} -> id == focus end) || 0
+    # Headings are not items, nor is a question's own text (pass73 G2).
+    items =
+      Enum.reject(options, fn {id, _, _} ->
+        match?(%{heading: _}, Map.get(decor, id)) or id in @body_rows
+      end)
+
+    found = Enum.find_index(items, fn {id, _, _} -> id == focus end)
+    ordinal = found || 0
 
     overflow =
       Support.text(
@@ -134,6 +144,11 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
 
           :help ->
             "PgUp/PgDn, Ctrl-D/U scroll · #{length(options)} lines"
+
+          # pass73 G2 (QA Q2-03): a question opens on Cancel, so no option
+          # is "1 of 4" yet.
+          {:question, _} when is_nil(found) ->
+            "#{length(items)} choices · Down picks one · Esc closes"
 
           # pass70 Q10: where the choice is and how to make it, not "item 1 of 8".
           _ ->
@@ -170,11 +185,22 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
         width =
           max(1, rect.width - 2 - if(focused? or not mono?, do: prefix_width, else: 0))
 
-        # A decorated row is one line; its spans clip it.
+        # A decorated row is one line; its spans clip it. pass73 G2 (QA
+        # Q2-03): a question's text and options wrap at words ("immedi|ately").
         lines =
-          if Map.has_key?(decor, id) and not mono?,
-            do: [text],
-            else: Width.wrap(text, width, state.capabilities.ambiguous_width)
+          cond do
+            Map.has_key?(decor, id) and not mono? ->
+              [text]
+
+            match?({:question, _}, layer) ->
+              text
+              |> Prose.wrap(width, state.capabilities.ambiguous_width)
+              |> Enum.with_index()
+              |> Enum.map(fn {line, n} -> if n > 0, do: String.trim_leading(line), else: line end)
+
+            true ->
+              Width.wrap(text, width, state.capabilities.ambiguous_width)
+          end
 
         Enum.map(lines, fn line ->
           {id, Density.safe(line, state, rect.width - 2), action}
@@ -183,10 +209,12 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
 
     # A picker is as tall as its rows (top edge where the centred box would
     # start, so filtering shortens it from below), never a tall empty box.
+    # pass73 G2 (QA Q2-03): a question too, not ten empty rows under it.
     rect =
-      if picker_layer?(layer) and class not in [:narrow, :small, :compressed_small],
-        do: %{rect | height: min(rect.height, max(8, length(rows) + 2 + footer_height))},
-        else: rect
+      if (picker_layer?(layer) or match?({:question, _}, layer)) and
+           class not in [:narrow, :small, :compressed_small],
+         do: %{rect | height: min(rect.height, max(8, length(rows) + 2 + footer_height))},
+         else: rect
 
     height = max(0, rect.height - 2 - footer_height)
 
@@ -1219,8 +1247,27 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
 
     footer = submit ++ [control("cancel", SafeText.chrome(:cancel), {:local, :close_top_layer})]
 
-    {Density.safe(item.question.prompt, state, rect.width * 4), options, footer,
-     focus(state, options)}
+    # pass73 G2 (QA Q2-03): the title cut a long question to one line, and
+    # it was not shown anywhere else. A question that fits the title stays
+    # there; a longer one leads the body, wrapped at words, above the
+    # options, and the title says who asks.
+    question = item.question.prompt || ""
+
+    fits? =
+      not String.contains?(question, ["\n", "\r"]) and
+        Width.cells(question, state.capabilities.ambiguous_width) <= rect.width - 6
+
+    {title, prompt} =
+      if fits?,
+        do: {question, []},
+        else:
+          {question_title(item, state),
+           [
+             {"prompt", Density.safe(question, state, rect.width * 32), nil},
+             {"prompt-gap", Density.safe(" ", state, 1), nil}
+           ]}
+
+    {Density.safe(title, state, rect.width - 2), prompt ++ options, footer, focus(state, options)}
   end
 
   # The approval card answers the three questions the user has before they
@@ -1312,6 +1359,13 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
 
   defp tool_words(tool) when is_binary(tool), do: String.replace(tool, "_", " ")
   defp tool_words(_tool), do: "a tool"
+
+  defp question_title(item, state) do
+    case Map.get(state.read_model.agents, item.node_id) do
+      %{name: name} when is_binary(name) and name != "" -> name <> " asks"
+      _ -> "A question for you"
+    end
+  end
 
   defp approval_tool_line(%{tool: tool, permission: permission}),
     do: "Tool: " <> tool_words(tool) <> " · needs permission to " <> permission_word(permission)

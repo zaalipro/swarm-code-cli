@@ -7,12 +7,16 @@ defmodule SwarmCodeCLI.UI.Pass73Qa2Test do
     * Q2-01 a card the user focused (Ctrl-N, `n`) takes typed text the way a
       card that opened by itself does: "hey" types, it approves nothing. `?`
       opens the keys on an empty draft, as the status row says.
+    * Q2-03 the question dialog shows the whole question, wraps its options
+      at words, is as tall as its rows and does not call Cancel "1 of 5".
     * Q2-04 the workflow-run card leaves empty args out and gives its own
       rule, not "auto runs safe commands".
     * Q2-06 the card's footer counts its place in the walk `n` takes.
     * Q2-05 a resync the client asks for carries its reason (logged by the
       session, `Pass73Qa2RuntimeTest`), and a chat that followed its bottom
       still follows once the fresh snapshot lands.
+    * Q2-10 the rows a run adds after a message inside it (a steer) are
+      headed by the run's speaker, "continued".
     * Q2-08 the `/approval` picker shows what typing filters it by.
     * Q2-07 a workflow run is named in words in the band, the run row, the
       overlay and the transcript's tool rows, never `workflow_run`.
@@ -436,5 +440,150 @@ defmodule SwarmCodeCLI.UI.Pass73Qa2Test do
     none = type(state, "/nosu")
     text = none |> screen() |> Enum.join("\n")
     assert text =~ "Approvals: /nosu", text
+  end
+
+  # ------------------------------------------------------------------ Q2-03
+
+  @question "The earlier format-and-test workflow run is still occupying the conversation's " <>
+              "chat slot, so a new turn would queue behind it. Should I wait for it, stop it, " <>
+              "or start the plan in a side conversation instead?"
+
+  test "Q2-03 the question dialog shows the question whole and wraps its options at words" do
+    labels = [
+      "Wait until the workflow finishes on its own, then continue with the plan immediately",
+      "Stop the workflow now and start the plan (its partial results are lost)",
+      "Start the plan in a side conversation and leave the workflow running",
+      "Cancel the plan"
+    ]
+
+    item = %DTO.PendingInteraction{
+      id: "q1",
+      kind: :question,
+      run_id: "r",
+      node_id: "op-q1",
+      conversation_id: "c",
+      expected_revision: 2,
+      created_at: 1,
+      allowed_actions: [:answer_question],
+      question: %DTO.Question{
+        prompt: @question,
+        multiple: false,
+        options:
+          for(
+            {label, n} <- Enum.with_index(labels, 1),
+            do: %DTO.QuestionOption{id: "o#{n}", label: label}
+          )
+      }
+    }
+
+    for {columns, rows} <- [{160, 45}, {120, 36}] do
+      state =
+        ready([run("r", :waiting_question)],
+          columns: columns,
+          rows: rows,
+          snapshot: %{interactions: [item]}
+        )
+
+      assert [{:question, "q1"} | _] = state.layers
+      state = %{state | interaction_grace: nil}
+      screen = screen(state)
+      text = Enum.join(screen, "\n")
+
+      # The whole question, in the body (the title says who asks).
+      words = fn line -> line |> String.split(~r/[^\w'.?]+/u, trim: true) end
+      body = screen |> Enum.flat_map(words) |> Enum.join(" ")
+      assert body =~ "side conversation instead?", text
+
+      # Every word of every option is whole on some row: none is split.
+      for label <- labels, word <- String.split(label, ~r/[^\w]+/u, trim: true) do
+        assert Enum.any?(screen, &(&1 =~ ~r/(^|[^\w])#{word}([^\w]|$)/u)),
+               "#{word} is split at #{columns}x#{rows}:\n" <> text
+      end
+
+      # Cancel is focused on open: the footer does not say "1 of 4".
+      # (Four options and "Your answer".)
+      assert text =~ "5 choices · Down picks one · Esc closes"
+      refute text =~ "1 of 5"
+
+      # As tall as its rows: no run of empty rows inside the box.
+      inside =
+        screen
+        |> Enum.map(&Regex.run(~r/│(.*)│/u, &1, capture: :all_but_first))
+        |> Enum.reject(&is_nil/1)
+        |> Enum.map(fn [row] -> String.trim(row) end)
+
+      refute Enum.any?(Enum.chunk_every(inside, 3, 1, :discard), &(&1 == ["", "", ""])),
+             text
+
+      # Down marks Option 1, and the footer counts it.
+      down = press!(state, key(:down))
+      assert down |> screen() |> Enum.join("\n") =~ "1 of 5 · Enter chooses"
+    end
+  end
+
+  # ------------------------------------------------------------------ Q2-10
+
+  defp turn_item(id, seq, fields) do
+    struct!(
+      %DTO.TranscriptItem{
+        id: id,
+        node_id: id,
+        run_id: "r",
+        conversation_id: "c",
+        attempt_id: "attempt",
+        revision: 1,
+        role: :assistant,
+        kind: :text,
+        state: :done,
+        text: "",
+        reasoning: "",
+        created_sequence: seq,
+        at: seq * 1000
+      },
+      fields
+    )
+  end
+
+  defp tool_item(id, seq, title),
+    do:
+      turn_item(id, seq,
+        kind: :tool,
+        tool: %DTO.ToolCall{name: "read_file", title: title, status: :done, detail: "3 lines"}
+      )
+
+  test "Q2-10 the rows after a steer are headed by the run's speaker, continued" do
+    items = [
+      turn_item("u1", 1, role: :user, text: "plan the --verbose flag"),
+      tool_item("t1", 2, "read mix.exs"),
+      turn_item("u2", 3,
+        role: :user,
+        text: "Also mention which Elixir version",
+        target_kind: :steer,
+        target_id: "r"
+      ),
+      tool_item("t2", 4, "read .formatter.exs"),
+      tool_item("t3", 5, "read lib/cli.ex")
+    ]
+
+    state =
+      ready([run("r", :running, title: "/plan the --verbose flag")],
+        columns: 160,
+        rows: 45,
+        snapshot: %{transcript: %DTO.TranscriptWindow{items: items}}
+      )
+
+    rows = screen(state)
+    text = Enum.join(rows, "\n")
+    steer = Enum.find_index(rows, &(&1 =~ "Also mention which Elixir version"))
+    formatter = Enum.find_index(rows, &(&1 =~ ".formatter.exs"))
+    assert steer && formatter, text
+
+    between = Enum.slice(rows, (steer + 1)..(formatter - 1))
+    assert Enum.any?(between, &(&1 =~ ~r/^\s+\S \S+ continued\s/u)), text
+
+    # The run's own first message opens it with the full header; it is not
+    # "continued".
+    first = Enum.find_index(rows, &(&1 =~ "plan the --verbose flag"))
+    refute rows |> Enum.slice(first..steer) |> Enum.any?(&(&1 =~ "continued"))
   end
 end
