@@ -19,8 +19,6 @@ defmodule SwarmCode.Daemon.Service.Settings.Secrets do
   alias SwarmCode.Domain.Search.SearchProvider
   alias SwarmCode.Settings.SecretPattern
 
-  @compile {:no_warn_undefined, [SecretPattern]}
-
   # `LLM.HTTP.redact/2` skips shorter values, so a shorter key could not be
   # redacted from an error message.
   @min_bytes 8

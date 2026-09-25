@@ -21,8 +21,6 @@ defmodule SwarmCode.Daemon.Service.Settings.Providers do
   alias SwarmCode.Domain.Scheduled.Task, as: ScheduledTask
   alias SwarmCode.Domain.Settings.Setting
 
-  @compile {:no_warn_undefined, [SwarmCode.Settings.Registry]}
-
   @actions ~w(provider.create provider.update provider.set_key provider.clear_key
               provider.delete provider.test provider.fetch_models provider.apply_models
               provider.fetch_all provider.forget_caps)
@@ -75,11 +73,7 @@ defmodule SwarmCode.Daemon.Service.Settings.Providers do
   end
 
   defp pair_columns(key) do
-    registry = SwarmCode.Settings.Registry
-
-    with true <- Code.ensure_loaded?(registry),
-         true <- function_exported?(registry, :fetch, 1),
-         {:ok, entry} <- registry.fetch(key),
+    with {:ok, entry} <- SwarmCode.Settings.Registry.fetch(key),
          {:setting_pair, pf, mf} <- Map.get(entry, :storage) do
       {pf, mf}
     else
@@ -206,17 +200,7 @@ defmodule SwarmCode.Daemon.Service.Settings.Providers do
   otherwise).
   """
   @spec usable?(Provider.t()) :: boolean()
-  def usable?(provider) do
-    config = SwarmCode.Daemon.Service.SessionConfiguration
-
-    if Code.ensure_loaded?(config) and function_exported?(config, :usable?, 1) do
-      apply(config, :usable?, [provider])
-    else
-      (is_binary(provider.api_key) and String.trim(provider.api_key) != "") or
-        (is_binary(provider.base_url) and
-           SwarmCode.Domain.Tools.WebFetch.private_host?(provider.base_url))
-    end
-  end
+  def usable?(provider), do: SwarmCode.Daemon.Service.SessionConfiguration.usable?(provider)
 
   @doc "The settings row, read fresh; never inserts (D24)."
   @spec settings_row() :: Setting.t()

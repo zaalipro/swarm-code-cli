@@ -26,7 +26,6 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Settings do
   alias SwarmCodeCLI.UI.DataSource.{DTO, Request}
 
   @integrations SwarmCodeCLI.UI.DataSource.Fake.SettingsIntegrations
-  @compile {:no_warn_undefined, [@integrations]}
 
   @ailogic "11111111-1111-4111-8111-111111111111"
   @notes "22222222-2222-4222-8222-222222222222"
@@ -155,16 +154,9 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Settings do
     }
   end
 
-  # U2's simulation, when this build has it: a plain call (the module loads on
-  # first use); a build without it answers every S2 action `unsupported`.
-  defp integrations_seed(now) do
-    @integrations.seed(now: now)
-  rescue
-    error in UndefinedFunctionError ->
-      if error.module == @integrations and error.function == :seed,
-        do: nil,
-        else: reraise(error, __STACKTRACE__)
-  end
+  # U2's simulation of the integration handlers (`integrations: false` leaves
+  # it out: every S2 action then answers `unsupported`).
+  defp integrations_seed(now), do: @integrations.seed(now: now)
 
   defp seed_global do
     base =

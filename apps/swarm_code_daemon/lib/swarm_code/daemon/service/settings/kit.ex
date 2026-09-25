@@ -11,8 +11,6 @@ defmodule SwarmCode.Daemon.Service.Settings.Kit do
   alias SwarmCode.Daemon.Service.Settings.{Error, Result, TaskSpec}
   alias SwarmCode.Domain.LLM.HTTP
 
-  @compile {:no_warn_undefined, [Error, Result, TaskSpec]}
-
   @page_size 200
   @message_bytes 2_048
 

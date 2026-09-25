@@ -23,9 +23,7 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
               SwarmCode.Daemon.Shutdown,
               SwarmCode.Domain.Engine,
               SwarmCode.Domain.Repo,
-              Ecto.UUID,
-              SwarmCodeCLI.Release.TerminalPreferences,
-              {SwarmCodeCLI.UI.Theme, :put_accent, 1}
+              Ecto.UUID
             ]}
   require Logger
   alias SwarmCode.Daemon.RepoLauncher
@@ -36,10 +34,7 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
   alias SwarmCodeCLI.UI.DataSource.Daemon
   alias SwarmCodeCLI.UI.Renderer.RatatuiPort.Owner
 
-  # pass74 S1-13 (§3.8.4): U3's launch rules and accent, used when this build
-  # has them.
-  @terminal_preferences SwarmCodeCLI.Release.TerminalPreferences
-  @theme SwarmCodeCLI.UI.Theme
+  alias SwarmCodeCLI.Release.TerminalPreferences
 
   @exit_failure 1
   @exit_usage 2
@@ -554,26 +549,22 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
   end
 
   @doc """
-  pass74 S1-13 (§3.8.4): the launch's terminal. U3's
-  `TerminalPreferences.launch/4` when this build has it (the environment,
-  `CliFile.read_all/1`'s snapshot, the desktop's mode, no flags: the launcher
-  turns them into `SWARM_CONVERSATION`); else today's rules in the same shape.
-  A failure of the rules falls back to today's rules too.
+  pass74 S1-13 (§3.8.4): the launch's terminal: U3's
+  `TerminalPreferences.launch/4` (the environment, `CliFile.read_all/1`'s
+  snapshot, the desktop's mode, no flags: the launcher turns them into
+  `SWARM_CONVERSATION`). A failure of those rules falls back to today's rules
+  in the same shape, with one logged error.
   """
   @spec launch(map(), Path.t() | nil, map(), term()) :: map()
   def launch(env, cli_path, preferences, desktop_mode) when is_map(env) do
     snapshot = SwarmCode.Settings.CliFile.read_all(cli_path)
 
-    if Code.ensure_loaded?(@terminal_preferences) do
-      try do
-        @terminal_preferences.launch(env, snapshot, desktop_mode, %{})
-      rescue
-        error ->
-          Logger.error("terminal preferences failed: #{Exception.format(:error, error)}")
-          today(env, snapshot, preferences, desktop_mode)
-      end
-    else
-      today(env, snapshot, preferences, desktop_mode)
+    try do
+      TerminalPreferences.launch(env, snapshot, desktop_mode, %{})
+    rescue
+      error ->
+        Logger.error("terminal preferences failed: #{Exception.format(:error, error)}")
+        today(env, snapshot, preferences, desktop_mode)
     end
   end
 
@@ -618,11 +609,9 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
   end
 
   # The accent is process-wide for the launch: written once, before the port
-  # owner starts (U3's `Theme.put_accent/1`, when this build has it).
+  # owner starts (U3's `Theme.put_accent/1`).
   defp put_accent(accent) do
-    if Code.ensure_loaded?(@theme) and function_exported?(@theme, :put_accent, 1),
-      do: @theme.put_accent(accent)
-
+    SwarmCodeCLI.UI.Theme.put_accent(accent)
     :ok
   end
 

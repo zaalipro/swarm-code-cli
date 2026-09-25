@@ -16,9 +16,7 @@ defmodule SwarmCode.Daemon.Service.Settings.Files do
   alias SwarmCode.Domain.Engine.ProjectContext
   alias SwarmCode.Domain.Projects.Workspace
 
-  @compile {:no_warn_undefined, [SwarmCode.Daemon.Service.Settings.Library]}
-
-  @library SwarmCode.Daemon.Service.Settings.Library
+  alias SwarmCode.Daemon.Service.Settings.Library
   @max_content 262_144
   @in_place 16_384
   @max_ref 512
@@ -280,8 +278,8 @@ defmodule SwarmCode.Daemon.Service.Settings.Files do
   end
 
   def query(view, kind, params, ctx) do
-    if library?() and {view, kind} in @library.views(),
-      do: @library.query(view, kind, params, ctx),
+    if {view, kind} in Library.views(),
+      do: Library.query(view, kind, params, ctx),
       else: Kit.unsupported()
   end
 
@@ -296,8 +294,6 @@ defmodule SwarmCode.Daemon.Service.Settings.Files do
     end
   end
 
-  defp library?, do: Code.ensure_loaded?(@library)
-
   ## ------------------------------------------------------------ commands
 
   @doc false
@@ -306,7 +302,7 @@ defmodule SwarmCode.Daemon.Service.Settings.Files do
   def command(%{action: "file.clear"} = cmd, _ctx), do: clear(cmd)
 
   def command(%{action: "file.create"} = cmd, ctx) do
-    if library?(), do: @library.create(cmd, ctx), else: Kit.unsupported()
+    Library.create(cmd, ctx)
   end
 
   def command(_cmd, _ctx), do: Kit.unsupported()

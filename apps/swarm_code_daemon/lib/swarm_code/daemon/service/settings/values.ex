@@ -33,13 +33,11 @@ defmodule SwarmCode.Daemon.Service.Settings.Values do
   alias SwarmCode.Settings.{Entry, Registry, Sections, SecretPattern, TextValue, Validate}
   alias SwarmCode.Settings.WireValue
 
-  @project_config SwarmCode.Daemon.Service.Settings.ProjectConfig
-  @compile {:no_warn_undefined, [@project_config]}
+  alias SwarmCode.Daemon.Service.Settings.ProjectConfig
 
   @config_file ".swarm_code/config.json"
   @file_limit 1_048_576
   @max_changes 256
-  @unavailable "This part of settings is not available in this build."
   @session_only "only this session's conversation can be changed here"
   @project_gone "That project no longer exists"
 
@@ -1097,11 +1095,8 @@ defmodule SwarmCode.Daemon.Service.Settings.Values do
       dry_run? ->
         Enum.map(changes, &Result.row(&1.key, :accepted))
 
-      not Code.ensure_loaded?(@project_config) ->
-        Enum.map(changes, &Result.row(&1.key, :rejected, message: @unavailable))
-
       true ->
-        case @project_config.remove_top_level(project, keys, Map.get(expected, "$file")) do
+        case ProjectConfig.remove_top_level(project, keys, Map.get(expected, "$file")) do
           {:ok, _} ->
             Enum.map(changes, &Result.row(&1.key, :accepted))
 
@@ -1126,8 +1121,7 @@ defmodule SwarmCode.Daemon.Service.Settings.Values do
   # name => %{"effort" => …} from S2's ProjectConfig when present, else the file.
   defp profiles(project) do
     listed =
-      if project && Code.ensure_loaded?(@project_config),
-        do: safe(fn -> @project_config.profiles(project) end, nil)
+      if project, do: safe(fn -> ProjectConfig.profiles(project) end, nil)
 
     case listed do
       list when is_list(list) ->
