@@ -52,6 +52,45 @@ defmodule SwarmCodeCLI.UI.Settings.C74ProviderTest do
     assert status_text(state) =~ "No model provider can answer: llmotions has no key"
   end
 
+  test "S1's shape: chat_provider_usable false beside the provider's name" do
+    workspace = Map.fetch!(ready().read_model.snapshots, :workspace)
+
+    workspace =
+      workspace |> Map.put(:chat_provider, "DeepSeek") |> Map.put(:chat_provider_usable, false)
+
+    state = ready()
+
+    state = %{
+      state
+      | read_model: %{
+          state.read_model
+          | snapshots: %{state.read_model.snapshots | workspace: workspace}
+        }
+    }
+
+    assert ChatProvider.missing(state) == {:missing, "DeepSeek"}
+
+    {state, effects} = state |> type("hi") |> enter()
+    assert requests(effects) == []
+
+    assert state.notice ==
+             {:command_feedback,
+              "No model provider can answer: DeepSeek has no key · F2 opens Settings › Providers"}
+
+    usable = %{
+      state
+      | read_model: %{
+          state.read_model
+          | snapshots: %{
+              state.read_model.snapshots
+              | workspace: %{workspace | chat_provider_usable: nil}
+            }
+        }
+    }
+
+    assert ChatProvider.missing(usable) == nil
+  end
+
   test "with no provider at all the words say none is set up" do
     state = ready() |> with_provider(%{name: nil, usable: false}) |> type("hi")
     {state, _effects} = enter(state)
@@ -94,13 +133,13 @@ defmodule SwarmCodeCLI.UI.Settings.C74ProviderTest do
     assert Layer.section(opened.settings) == :overview
   end
 
-  test "the service's own refusal reads the same words" do
+  test "the service's own refusal (by its words, whatever its code) reads the same words" do
     state = ready() |> type("hello")
     {state, effects} = enter(state)
     [request] = requests(effects)
 
     refusal = %DTO.Refusal{
-      code: "provider_required",
+      code: "not_allowed",
       text: "No model provider can answer: DeepSeek has no key. Add one in /settings providers."
     }
 
@@ -130,5 +169,22 @@ defmodule SwarmCodeCLI.UI.Settings.C74ProviderTest do
              "No model provider can answer: DeepSeek has no key · F2 opens Settings › Providers"
 
     assert text(state) == "hello"
+  end
+
+  describe "startup_conversation: ask" do
+    test "the resume picker opens once the shell is ready, as /resume opens it" do
+      state = booting(init: [resume_picker?: true])
+      assert state.pending_resume_picker and state.layers == []
+      state = shell_ready(state)
+      assert [{:switcher, _} | _] = state.layers
+      refute state.pending_resume_picker
+    end
+
+    test "swarmcode settings wins over the picker" do
+      state = booting(init: [resume_picker?: true, settings_open: ""]) |> shell_ready()
+      assert state.settings != nil
+      refute state.pending_resume_picker
+      refute Enum.any?(state.layers, &match?({:switcher, _}, &1))
+    end
   end
 end

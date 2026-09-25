@@ -72,16 +72,18 @@ defmodule SwarmCodeCLI.UI.Reducer do
              init.now >= 0 and is_integer(init.deadline_ms) and init.deadline_ms >= 0 and
              is_integer(init.id_sequence) and init.id_sequence >= 0 and is_map(init.prefs) and
              is_map(init.launch_facts) and
-             SwarmCodeCLI.UI.Settings.Event.open_arg?(init.settings_open),
+             SwarmCodeCLI.UI.Settings.Event.open_arg?(init.settings_open) and
+             is_boolean(init.resume_picker?),
            do: raise(ArgumentError, "invalid reducer init")
 
     # cli74: the boot query waits for the shell (`pending_open_settings`), and
     # the key overrides are compiled once from cli.json's `keys`.
     state =
       State
-      |> struct!(init |> Map.from_struct() |> Map.delete(:settings_open))
+      |> struct!(init |> Map.from_struct() |> Map.drop([:settings_open, :resume_picker?]))
       |> Map.merge(%{
         pending_open_settings: init.settings_open,
+        pending_resume_picker: init.resume_picker? and is_nil(init.settings_open),
         key_overrides: SwarmCodeCLI.UI.Keymap.Overrides.compile(Map.get(init.prefs, "keys"))
       })
 
@@ -116,6 +118,7 @@ defmodule SwarmCodeCLI.UI.Reducer do
         next = repair_switcher(state, next)
         next = SwarmCodeCLI.UI.Reducer.Settings.track_legacy(next, effects)
         {next, effects} = boot_settings(next, effects)
+        {next, effects} = boot_resume_picker(next, effects)
         Enum.each(effects, &SwarmCodeCLI.UI.Effect.validate!/1)
 
         if next == state,
@@ -2882,6 +2885,32 @@ defmodule SwarmCodeCLI.UI.Reducer do
   end
 
   defp boot_settings(state, effects), do: {state, effects}
+
+  # cli74 (§2.17, A10): `startup_conversation: ask` opens the resume picker
+  # once the shell is ready, over nothing else, as /resume does (a draft the
+  # session restored stays).
+  defp boot_resume_picker(
+         %{pending_resume_picker: true, layers: [], settings: nil} = state,
+         effects
+       ) do
+    if match?(%{status: :ready}, state.watches.shell) do
+      state = %{state | pending_resume_picker: false}
+      layer = SwarmCodeCLI.UI.Switcher.open(state, state.focus)
+      {state, opened} = transition(state, {:open_layer, layer})
+
+      {state, typed} =
+        case SwarmCodeCLI.UI.Switcher.field_key(layer) do
+          nil -> {state, []}
+          key -> Editing.apply(state, :field_editor, key, {:insert, "#"})
+        end
+
+      {state, effects ++ opened ++ typed}
+    else
+      {state, effects}
+    end
+  end
+
+  defp boot_resume_picker(state, effects), do: {state, effects}
 
   defp leave_modes(state, action) do
     state =

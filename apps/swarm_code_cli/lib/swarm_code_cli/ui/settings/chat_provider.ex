@@ -1,11 +1,13 @@
 defmodule SwarmCodeCLI.UI.Settings.ChatProvider do
   @moduledoc """
   Whether the conversation's chat provider can answer (spec §3.10.1, D11),
-  from the workspace metadata's `chat_provider: %{name, usable}` (the
-  service projects it after the `--model` overlay). Pure.
+  from the workspace metadata the service projects after the `--model`
+  overlay: `chat_provider_usable` (true, false, or nil when unknown) beside
+  `chat_provider` (the name) — S1's shape — or `chat_provider: %{name,
+  usable}` (the spec's). Pure.
 
-  An older service sends the provider's name alone (a string): the client
-  cannot tell, so it never refuses on its own and the service decides.
+  An older service sends the provider's name alone: the client cannot tell,
+  so it never refuses on its own and the service decides.
   """
 
   @providers "F2 opens Settings › Providers"
@@ -17,23 +19,29 @@ defmodule SwarmCodeCLI.UI.Settings.ChatProvider do
   @spec missing(map()) :: nil | {:missing, String.t() | nil}
   def missing(%{read_model: %{snapshots: snapshots}}) do
     case Map.get(snapshots, :workspace) do
-      %{chat_provider: provider} -> from(provider)
-      _ -> nil
+      %{chat_provider_usable: false} = workspace ->
+        {:missing, name(Map.get(workspace, :chat_provider))}
+
+      %{chat_provider: provider} ->
+        from(provider)
+
+      _ ->
+        nil
     end
   end
 
   def missing(_state), do: nil
 
   defp from(%{} = provider) do
-    usable = field(provider, :usable)
-    name = field(provider, :name)
-
-    if usable == false,
-      do: {:missing, if(is_binary(name) and String.trim(name) != "", do: name, else: nil)},
+    if field(provider, :usable) == false,
+      do: {:missing, name(field(provider, :name))},
       else: nil
   end
 
   defp from(_provider), do: nil
+
+  defp name(name) when is_binary(name), do: if(String.trim(name) == "", do: nil, else: name)
+  defp name(_name), do: nil
 
   defp field(map, key), do: Map.get(map, key, Map.get(map, Atom.to_string(key)))
 

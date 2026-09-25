@@ -26,7 +26,10 @@ defmodule SwarmCodeCLI.UI.Init do
     # "" opens the Overview).
     prefs: %{},
     launch_facts: %{},
-    settings_open: nil
+    settings_open: nil,
+    # cli74 (§2.17, A10): cli.json's `startup_conversation: ask` — the resume
+    # picker opens once the shell is ready, as /resume opens it.
+    resume_picker?: false
   ]
 
   @type t :: %__MODULE__{}
