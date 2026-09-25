@@ -308,6 +308,13 @@ defmodule SwarmCode.Settings.C74TypesTest do
       end
     end
 
+    test "an empty URL user and a Slack app token are secrets too (S2's samples)" do
+      assert SecretPattern.secret_kv?("REDIS_URL", "redis://:hunter2@cache:6379")
+      assert SecretPattern.secret_kv?("SLACK_APP", "xapp-1-A0B1-000-abcdef")
+      refute SecretPattern.secret_kv?("URL", "https://example.com:8443/path")
+      refute SecretPattern.secret_kv?("URL", "https://example.com/a:b@c")
+    end
+
     test "hints are the last four characters of a long secret only" do
       assert SecretPattern.hint("sk-test-deepseek-00000000a1b2") == "a1b2"
       assert SecretPattern.hint("short-key") == nil

@@ -13,10 +13,11 @@ defmodule SwarmCode.Settings.SecretPattern do
   @kv_key_source "(authorization|cookie|api[-_ ]?key|apikey|token|secret|password|credential)"
   @kv_value_source "^(sk-[A-Za-z0-9_\\-]{4,}|Bearer\\s+\\S{4,})$"
   @env_name_source "(API_?KEY|_KEY$|SECRET|TOKEN|PASSWORD|PASSWD|CREDENTIAL|_PAT$)"
-  @userinfo_source "://[^/@\\s:]+:[^/@\\s]+@"
+  # The user may be empty (`redis://:password@host`).
+  @userinfo_source "://[^/@\\s:]*:[^/@\\s]+@"
 
   @token_prefixes ~w(sk_live_ sk_test_ rk_live_ sk-ant- sk-proj- ghp_ gho_ ghu_ ghs_ github_pat_
-                     glpat- xoxa- xoxb- xoxp- xoxr- AKIA ASIA AIza hf_ tvly-)
+                     glpat- xoxa- xoxb- xoxp- xoxr- xapp- AKIA ASIA AIza hf_ tvly-)
 
   @doc "The desktop's name rule (caseless)."
   @spec kv_key_regex() :: Regex.t()
