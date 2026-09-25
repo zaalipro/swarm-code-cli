@@ -14,7 +14,7 @@ defmodule SwarmCodeCLI.UI.Settings.Wire do
 
   alias SwarmCodeCLI.UI.DataSource.Request
   alias SwarmCodeCLI.UI.Reducer.Settings.Commit
-  alias SwarmCodeCLI.UI.Settings.{Data, Layer, Nav, Sections}
+  alias SwarmCodeCLI.UI.Settings.{Data, Layer, Nav, Page, Sections}
   alias SwarmCodeCLI.UI.State
 
   @deadline_ms 15_000
@@ -259,11 +259,32 @@ defmodule SwarmCodeCLI.UI.Settings.Wire do
 
   # The open view carries every section's values: while it is on its way no
   # values load goes out.
-  defp needed?(%Layer{} = layer, {:values, _} = load),
-    do: not in_flight?(layer, :open) and not in_flight?(layer, load) and not loaded?(layer, load)
+  # What the open view brings is not asked for beside it.
+  defp needed?(%Layer{} = layer, load)
+       when load in [:overview, :facts] or
+              (is_tuple(load) and elem(load, 0) == :values) or
+              load == {:records, "projects", %{}},
+       do:
+         not in_flight?(layer, :open) and not in_flight?(layer, load) and
+           not loaded?(layer, load) and not failed_here?(layer, load)
 
   defp needed?(%Layer{} = layer, load),
-    do: not in_flight?(layer, load) and not loaded?(layer, load)
+    do: not in_flight?(layer, load) and not loaded?(layer, load) and not failed_here?(layer, load)
+
+  # A load the service could not answer is asked once per arrival on a page,
+  # not again after every other answer (Ctrl-R and a delta still ask).
+  defp failed_here?(%Layer{requests: requests} = layer, load),
+    do: Map.get(requests, {:failed, load}) == Page.ref(Layer.page(layer))
+
+  @doc "Forgets the failed loads (Ctrl-R and a `settings_update` ask everything again)."
+  @spec forget_failures(Layer.t()) :: Layer.t()
+  def forget_failures(%Layer{requests: requests} = layer),
+    do: %{layer | requests: Map.reject(requests, fn {key, _} -> match?({:failed, _}, key) end)}
+
+  @doc "Remembers that `load` failed on the page on screen (see `sync/1`)."
+  @spec failed(Layer.t(), term()) :: Layer.t()
+  def failed(%Layer{} = layer, load),
+    do: %{layer | requests: Map.put(layer.requests, {:failed, load}, Page.ref(Layer.page(layer)))}
 
   defp in_flight?(%Layer{requests: requests}, load),
     do: Enum.any?(requests, fn {_ref, meta} -> is_map(meta) and Map.get(meta, :load) == load end)

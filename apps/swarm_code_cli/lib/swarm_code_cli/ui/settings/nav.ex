@@ -89,22 +89,29 @@ defmodule SwarmCodeCLI.UI.Settings.Nav do
           Sections.sub_rows(page.section, ctx, page.sub)
       end
 
-    rows |> Normalize.rows() |> filtered(layer)
+    rows |> Normalize.rows() |> filtered(layer, ctx)
   end
 
-  # D37: a long list narrowed in place by its filter.
-  defp filtered(rows, %Layer{filter: %{query: query, page: key}} = layer) when query != "" do
+  # D37: a long list narrowed in place by its filter; a section that knows
+  # better (Key bindings matches key names) answers through `filter/3`.
+  defp filtered(rows, %Layer{filter: %{query: query, page: key}} = layer, ctx) when query != "" do
     page = Layer.page(layer)
 
     if key == {page.section, page.record, page.sub} do
-      words = query |> String.downcase() |> String.split(~r/\s+/u, trim: true)
-      Enum.filter(rows, &(Row.focusable?(&1) and matches?(&1, words)))
+      case Sections.filter(page.section, ctx, rows, query) do
+        kept when is_list(kept) ->
+          Normalize.rows(kept)
+
+        nil ->
+          words = query |> String.downcase() |> String.split(~r/\s+/u, trim: true)
+          Enum.filter(rows, &(Row.focusable?(&1) and matches?(&1, words)))
+      end
     else
       rows
     end
   end
 
-  defp filtered(rows, _layer), do: rows
+  defp filtered(rows, _layer, _ctx), do: rows
 
   defp matches?(%Row{} = row, words) do
     haystack =

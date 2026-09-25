@@ -127,6 +127,21 @@ defmodule SwarmCodeCLI.UI.Settings.Sections do
   @doc "The page title (`unsaved · Ctrl-S creates it · Esc discards` on a draft)."
   def page_title(id, ctx), do: call(id, :title, [ctx], fn -> title(id) end)
 
+  @doc """
+  A `needs_confirmation` answer to a file the section handed to the user's
+  editor (`spec` is `%{content, fingerprint}`, `items` what the service
+  asks about): the section's op or ops that ask and save again, else nil.
+  """
+  def confirm_external(id, ctx, spec, items),
+    do: call(id, :confirm_external, [ctx, spec, items], fn -> nil end)
+
+  @doc """
+  The rows of a long page the in-page `/` filter keeps: the section's
+  `filter/3` (Key bindings matches key names), else nil (the layer matches
+  the row text).
+  """
+  def filter(id, ctx, rows, query), do: call(id, :filter, [ctx, rows, query], fn -> nil end)
+
   @doc "The client-side attention items of section `id`."
   def attention(id, ctx), do: call(id, :attention, [ctx], fn -> [] end)
 
@@ -151,6 +166,11 @@ defmodule SwarmCodeCLI.UI.Settings.Sections do
   defp invoke(module, :picked, [ctx, tag, value]), do: module.picked(ctx, tag, value)
   defp invoke(module, :title, [ctx]), do: module.title(ctx)
   defp invoke(module, :attention, [ctx]), do: module.attention(ctx)
+
+  defp invoke(module, :confirm_external, [ctx, spec, items]),
+    do: module.confirm_external(ctx, spec, items)
+
+  defp invoke(module, :filter, [ctx, rows, query]), do: module.filter(ctx, rows, query)
   defp invoke(module, :counts, [ctx]), do: module.counts(ctx)
 
   @doc false

@@ -579,7 +579,12 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings do
          expected: %{"fingerprint" => Map.get(spec, :fingerprint)},
          write_key: {:file, ref},
          undo: false,
-         toast: "Saved #{name}"
+         toast: "Saved #{name}",
+         # A save the service wants confirmed (a project file's new hooks,
+         # D14) is asked by the page that handed the file out.
+         confirm_with:
+           {Layer.section(state.settings),
+            %{content: text, fingerprint: Map.get(spec, :fingerprint)}}
        }}
 
     Ops.run(state, [op])

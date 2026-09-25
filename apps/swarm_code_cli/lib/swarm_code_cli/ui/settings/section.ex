@@ -22,13 +22,26 @@ defmodule SwarmCodeCLI.UI.Settings.Section do
   @callback title(Ctx.t()) :: String.t()
   @callback attention(Ctx.t()) :: [Attention.t()]
   @callback counts(Ctx.t()) :: %{records: non_neg_integer() | nil}
+  @doc "A picker's choice (`on_pick: {:section, id, tag}`): the ops it means."
+  @callback picked(Ctx.t(), tag :: term(), value :: term()) :: [Op.t()]
+  @doc """
+  The service wants a file this section handed to the user's editor
+  confirmed (`spec` = `%{content, fingerprint}`): the op(s) that ask and save
+  again with the confirmation.
+  """
+  @callback confirm_external(Ctx.t(), spec :: map(), items :: list()) :: Op.t() | [Op.t()]
+  @doc "The rows a long page's `/` filter keeps (else the layer matches the row text)."
+  @callback filter(Ctx.t(), [Row.t()], query :: String.t()) :: [Row.t()]
   @optional_callbacks record_rows: 3,
                       sub_rows: 2,
                       act: 3,
                       commit: 3,
                       title: 1,
                       attention: 1,
-                      counts: 1
+                      counts: 1,
+                      picked: 3,
+                      confirm_external: 3,
+                      filter: 3
 
   defmacro __using__(opts) do
     id = Keyword.fetch!(opts, :id)

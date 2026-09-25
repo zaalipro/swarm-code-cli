@@ -201,6 +201,9 @@ defmodule SwarmCodeCLI.UI.Settings.Display do
   def words(value) when is_binary(value), do: String.replace(value, ["\r\n", "\n", "\r"], " ")
   def words(value) when is_atom(value) or is_number(value), do: to_string(value)
   def words(value) when is_list(value), do: Enum.map_join(value, ", ", &words/1)
+  # A model value (`%{"provider_id", "model"}`) reads as its model id.
+  def words(%{"model" => model}) when is_binary(model) and model != "", do: model
+  def words(%{model: model}) when is_binary(model) and model != "", do: model
   def words(value) when is_map(value), do: entries(map_size(value))
   def words(_value), do: "?"
 

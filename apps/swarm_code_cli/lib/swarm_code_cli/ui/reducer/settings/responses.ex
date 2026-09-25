@@ -116,7 +116,8 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Responses do
   defp load_failed(%{settings: layer} = state, {:values, _}, words),
     do: %{state | settings: %{layer | available: false, message: words}}
 
-  defp load_failed(state, _load, words), do: Commit.status(state, words, :error)
+  defp load_failed(%{settings: layer} = state, load, words),
+    do: Commit.status(%{state | settings: Wire.failed(layer, load)}, words, :error)
 
   # What a snapshot's body puts into the layer's data.
   defp put(data, :open, :open, %SettingsOpen{} = open, now) do
@@ -184,6 +185,21 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Responses do
 
   # ---------------------------------------------------------- commands
 
+  # The page that handed the file out asks (its `confirm_external/3`), else
+  # the status line says what the service wants.
+  defp needs_confirmation(state, %{confirm_with: {section, spec}}, %SettingsResult{} = result)
+       when is_atom(section) do
+    items = (result.confirm && Map.get(result.confirm, :items)) || []
+
+    case Sections.confirm_external(section, Nav.ctx(state), spec, items) do
+      nil -> needs_confirmation(state, %{}, result)
+      ops -> Ops.run(state, List.wrap(ops))
+    end
+  end
+
+  defp needs_confirmation(state, _opts, result),
+    do: {Commit.status(state, result.message || "That needs a confirmation", :warning), []}
+
   defp command_result(state, meta, %SettingsResult{} = result) do
     opts = Map.get(meta, :opts, %{})
 
@@ -216,7 +232,7 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Responses do
          ), []}
 
       :needs_confirmation ->
-        {Commit.status(state, result.message || "That needs a confirmation", :warning), []}
+        needs_confirmation(state, opts, result)
 
       :conflict ->
         {state, effects} = reload(state)
@@ -362,6 +378,7 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Responses do
           do: Enum.reduce(update.sections, layer.changed_elsewhere, &Map.put(&2, &1, state.now)),
           else: layer.changed_elsewhere
 
+      layer = Wire.forget_failures(layer)
       state = %{state | settings: %{layer | data: data, changed_elsewhere: elsewhere}}
       Wire.sync(state)
     else
@@ -449,7 +466,7 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Responses do
         overview: nil
     }
 
-    Wire.sync(%{state | settings: %{layer | data: data}})
+    Wire.sync(%{state | settings: %{Wire.forget_failures(layer) | data: data}})
   end
 
   def reload(state), do: {state, []}
