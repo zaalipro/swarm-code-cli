@@ -106,6 +106,8 @@ defmodule SwarmCodeCLI.Release.C74ConfigCommandTest do
     assert err =~ "unknown config command"
     assert {2, _, err} = config(c, ["get", "--bogus"])
     assert err =~ "unknown option"
+    assert {0, out, _} = config(c, ["--help"])
+    assert out =~ "swarmcode config COMMAND"
   end
 
   test "a cli.json key is written without the database, even while a session is open", c do
@@ -197,6 +199,13 @@ defmodule SwarmCodeCLI.Release.C74ConfigCommandTest do
   test "secrets never come from argv; a piped one is read from stdin", c do
     assert {2, _, err} = config(c, ["record", "set", "provider:DeepSeek.api_key", @canary])
     assert err =~ "Secrets are read from stdin so they never reach your shell history"
+
+    # a record's secret named as a setting gets the same sentence, not "not a setting" (A13)
+    for key <- ["provider.DeepSeek.api_key", "search.tavily.api_key", "mcp:github.env.GH_PAT"] do
+      assert {2, _, err} = config(c, ["set", key, @canary])
+      assert err =~ "Secrets are read from stdin", key
+      refute err =~ "not a setting"
+    end
 
     {:ok, stdin} = StringIO.open(@canary <> "\n")
     {code, _out, _err} = config(c, ["secret", "provider:DeepSeek", "--stdin"], stdin: stdin)

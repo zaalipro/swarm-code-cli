@@ -137,6 +137,9 @@ defmodule SwarmCodeCLI.Release.ConfigCommand do
   defp parse_flags([flag | rest], words, flags) when flag in @bool_flags,
     do: parse_flags(rest, words, Map.put(flags, flag, true))
 
+  defp parse_flags([flag | rest], words, flags) when flag in ["--help", "-h"],
+    do: parse_flags(rest, ["help" | words], flags)
+
   defp parse_flags(["--" <> _ = flag | _], _words, _flags) when flag != "--",
     do: {:error, "unknown option '#{flag}'."}
 
@@ -283,7 +286,8 @@ defmodule SwarmCodeCLI.Release.ConfigCommand do
   end
 
   defp set(text, value, flags, env) do
-    with {:ok, entry} <- resolve(text),
+    with :ok <- not_secret_ref(text),
+         {:ok, entry} <- resolve(text),
          :ok <- not_secret(entry) do
       if entry.scope == :cli,
         do: set_cli(entry, value, flags, env),
@@ -293,6 +297,24 @@ defmodule SwarmCodeCLI.Release.ConfigCommand do
 
   defp not_secret(%Entry{secret: true}), do: secret_in_argv()
   defp not_secret(_entry), do: :ok
+
+  # A13: a record's secret named as a setting (`provider.DeepSeek.api_key`,
+  # `search.tavily.api_key`, `mcp:github.env.GITHUB_TOKEN`) gets the stdin
+  # sentence, before the unknown-key message.
+  @secret_kinds ~w(provider providers search search_provider mcp mcp_server)
+  @secret_fields ~w(api_key key token secret)
+
+  defp not_secret_ref(text) do
+    parts = text |> String.replace(":", ".") |> String.split(".")
+
+    cond do
+      length(parts) < 3 -> :ok
+      hd(parts) not in @secret_kinds -> :ok
+      List.last(parts) in @secret_fields -> secret_in_argv()
+      Enum.at(parts, 2) in ["env", "headers"] -> secret_in_argv()
+      true -> :ok
+    end
+  end
 
   defp secret_in_argv do
     IO.puts(:stderr, @stdin_words)
