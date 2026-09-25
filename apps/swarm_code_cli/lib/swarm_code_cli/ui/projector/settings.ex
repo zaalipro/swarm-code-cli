@@ -137,7 +137,7 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
       case Page.level(page) do
         :section -> [Sections.title(page.section)]
         :record -> [Sections.title(page.section), record_name(state, page)]
-        :sub -> [Sections.title(page.section), sub_name(page)]
+        :sub -> [Sections.title(page.section), sub_title(state, page)]
       end
 
     left =
@@ -163,6 +163,31 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
 
       _ ->
         to_string(id)
+    end
+  end
+
+  # cli74 F18: a sub-page without a name of its own (a provider's delete
+  # page) is named by its section's title (the provider), not "…".
+  defp sub_title(state, page) do
+    section = Sections.title(page.section)
+
+    case sub_name(page) do
+      "…" ->
+        title = Sections.page_title(page.section, Nav.ctx(state))
+
+        cond do
+          not is_binary(title) or title in ["", section] ->
+            "…"
+
+          String.starts_with?(title, section <> " › ") ->
+            String.replace_prefix(title, section <> " › ", "")
+
+          true ->
+            title
+        end
+
+      name ->
+        name
     end
   end
 

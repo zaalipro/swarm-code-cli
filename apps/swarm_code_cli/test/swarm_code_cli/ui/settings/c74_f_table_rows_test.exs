@@ -143,4 +143,31 @@ defmodule SwarmCodeCLI.UI.Settings.C74FTableRowsTest do
     clock = :io_lib.format("~2..0B:~2..0B", [hour, minute]) |> to_string()
     assert Enum.any?(lines(state), &(&1 =~ "✓ listed 2 models in 5 ms · #{clock}"))
   end
+
+  # cli74 F18 (found in the sandbox): the provider's delete page was
+  # "Settings › Providers › …" at 160 columns.
+  test "a provider's delete page names the provider in the header" do
+    fake = FakeSettings.seed()
+
+    {state, fake} =
+      ready() |> Reducer.update({:settings_open, {:section, :providers}}) |> serve(fake)
+
+    "rec:provider:" <> id =
+      Enum.find(Nav.rows(state), &(&1.label =~ "DeepSeek" and &1.id =~ "rec:provider:")).id
+
+    {state, _fake} =
+      state
+      |> Ops.run([{:open, %Page{section: :providers, record: {"provider", id}}}])
+      |> serve(fake)
+
+    # The page a provider that serves a default opens before it is deleted.
+    {state, _} =
+      Ops.run(state, [{:open, %Page{section: :providers, record: {"provider", id}, sub: :delete}}])
+
+    assert SwarmCodeCLI.UI.Settings.Page.level(
+             SwarmCodeCLI.UI.Settings.Layer.page(state.settings)
+           ) == :sub
+
+    assert hd(lines(state)) =~ "Settings › Providers › DeepSeek"
+  end
 end
