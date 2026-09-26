@@ -22,8 +22,15 @@ defmodule SwarmCodeCLI.UI.Settings.Display do
 
   def value(%Entry{type: :fact}, value, _setting, _lookups), do: [{words(value), :text_muted}]
 
-  def value(%Entry{type: type} = entry, _value, _setting, _lookups) when type in [:action, :link],
-    do: [{"▸ " <> entry.label, :text_primary}]
+  # The label names the action; the value says what it does (its description's
+  # first sentence), so the row does not read its name twice.
+  def value(%Entry{type: type} = entry, _value, _setting, _lookups)
+      when type in [:action, :link] do
+    case first_sentence(entry.description) do
+      "" -> [{"▸", :text_primary}]
+      words -> [{"▸ ", :text_primary}, {words, :text_muted}]
+    end
+  end
 
   def value(%Entry{secret: true}, value, _setting, _lookups) do
     if value in [nil, "", false],
@@ -239,4 +246,24 @@ defmodule SwarmCodeCLI.UI.Settings.Display do
     |> value(value, setting && Map.delete(setting, :state), %{})
     |> Enum.map_join("", &elem(&1, 0))
   end
+
+  defp first_sentence(text) when is_binary(text) do
+    sentence =
+      text
+      |> String.split(~r/\.(\s|$)/, parts: 2)
+      |> List.first()
+      |> String.trim()
+
+    case String.graphemes(sentence) do
+      [first, second | rest] ->
+        if String.upcase(second) == second and String.downcase(second) != second,
+          do: sentence,
+          else: String.downcase(first) <> second <> Enum.join(rest)
+
+      _ ->
+        sentence
+    end
+  end
+
+  defp first_sentence(_text), do: ""
 end

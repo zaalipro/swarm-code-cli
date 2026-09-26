@@ -264,4 +264,20 @@ defmodule SwarmCodeCLI.UI.Settings.C74FTableRowsTest do
     assert Enum.any?(lines(pasted), &(&1 =~ "pasted · not shown"))
     refute Enum.any?(lines(pasted), &(&1 =~ "sk-pasted"))
   end
+
+  # cli74 F30 (found in the sandbox at 160 x 45): a registry action row drew its
+  # label twice ("Export settings…  ▸ Export settings…"); the value says what it does.
+  test "a registry action row says what it does beside its label, not the label again" do
+    {state, _fake} =
+      ready()
+      |> Reducer.update({:settings_open, {:section, :import_export}})
+      |> serve(FakeSettings.seed())
+
+    export = Enum.find(Nav.rows(state), &(&1.id == "key:transfer.export"))
+    value = Enum.map_join(export.value, "", &elem(&1, 0))
+
+    assert export.label == "Export settings…"
+    refute value =~ "Export settings"
+    assert value == "▸ writes the chosen scopes to a JSON file (0600)"
+  end
 end
