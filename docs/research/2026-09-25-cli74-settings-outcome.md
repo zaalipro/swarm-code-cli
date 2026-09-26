@@ -280,11 +280,122 @@ Final checks at G25 (442b78e), with `_build/prod` removed first:
   environment. `:public_key`, `SwarmCode.Domain.Repo` and the daemon's test support are not on a
   single app's code path. The same tests pass in the umbrella run above.
 
+## QA #2 and the polish (G27–G40)
+
+QA #2 (`/Users/zaali/.cache/c74/Q2/qa.md`) reported two P0s (P0-1, P0-2), seven P1s (P1-1 to
+P1-7) and twelve P2s (P2-1 to P2-12). Each fix has a regression test in `c74_qa2_test.exs`, which
+drives the reducer against `Fake.Settings`. The undo and conflict fixes are also tested in the
+daemon's `c74_qa2_e2e_test.exs`. That test drives the terminal's reducer and sections against the
+real service, over its socket, on the Appendix A database. It found the price CAS and the three
+undos listed after the table, which the fake had let through. Each new test failed without its
+fix. `Fake.Settings` now takes a `strict_expected` seed option: with it, the fake refuses a
+command without `expected`, as the service does.
+
+The subjects of G28, G33 and G35 number some P2s one off from the report. G28's "P2-7" is P2-8.
+G33's "P2-4, P2-5, P2-9, P2-11" are P2-5, P2-6, P2-10, P2-2. G35's "P2-2" is P2-4. The table,
+the tests and the code comments use the report's numbers; G37 renumbered the tests and comments.
+
+| Finding | Result | Commit |
+| --- | --- | --- |
+| P0-1 the model picker was never drawn | fixed: the picker draws as F4's box under its row. The border holds the title and the provider and model counts. Inside are the filter, the column names, the provider groups, a window around the focused row (`… N more, type to filter`), the keys and `N of M`. The box moves up when it does not fit below the row. Tested at 160 and 80 columns | G27 ae6add0 |
+| P0-2 a fresh session offered only the null choice, so Enter erased the model | fixed: the picker asks for its options each time it opens, and Enter waits while they load. The sandbox then found a second cause: the options came in one page of 100, and llmotions alone has 142 models, so a later provider (stubprov) was never offered. The picker now reads page after page to the end, up to 50 pages, and a page read again drops the older chain's next page | G27 ae6add0, G36 aa4fab7 |
+| P1-1 a model value showed its provider's UUID | fixed: a value names its provider by name, or `unnamed provider` | G27 ae6add0 |
+| P1-2 undo of a search-engine move: `expected is missing for order` | fixed: the undo expects the order the move left (the neighbour swap of `Search.move/2`) | G29 dda44df, G29b eaabf81 |
+| P1-3 a record field changed elsewhere dropped the user's value | fixed: the row keeps yours as §3.7.9 draws it: `! changed while you edited (…): now <theirs>` and `Enter keep yours (<yours>) · Esc take theirs (<theirs>)`. Enter writes yours again, expecting theirs; Esc takes theirs | G32 4f4aa90 |
+| P1-4 an MCP tool switch threw the focus to the top | fixed: the cursor keeps its row while a load is in flight, or while the page's loads have not all been answered | G30 a1c170b |
+| P1-5 undo of `N`/`A` on MCP tools: `expected is missing for disabled_tools` | fixed: the undo expects the disabled list the switch left | G29 dda44df |
+| P1-6 `▸ Test it first` on a new server showed nothing | fixed: the row shows the draft's `mcp.test` task as it runs, then `✓ connected · N tools: a, b, c` or the failure. Enter and `t` both start it | G31 b24c37a |
+| P1-7 after a secret variable, no other variable could be saved | fixed. The root cause: the service's env entries decode with an atom `secret` key, but `IntegrationRows.field/2` reads string keys, and `secret` was missing from its atom map. So the stored secret read as plain, and the staged list sent its masked value. The secret is now staged as `keep` | G28 31b55d5 |
+| P2-1 the enum editor cut its choices (Firecrawl hidden) | fixed: when the choices do not fit, the editor draws a `‹ … Jina Reader … ›` window around the focused choice | G34 57d084e |
+| P2-2 a new provider's Default model stayed `none` | fixed with P0-2: the picker offers the provider's models. The row reads `none · Enter picks one of its N models` | G27, G33 75fe1a8, G36 |
+| P2-3 row tags run into long values | deferred with F-15. It needs the row layout that wraps a value under itself (§4.2) | — |
+| P2-4 the search did not find records | fixed: opening the search loads the providers, the search engines and the MCP servers, and the query runs again as they arrive. A search engine's result is named by its label | G35 74ed02b |
+| P2-5 ids in words (`Search & web › exa`, `pages through firecrawl`) | fixed: `Search & web › Exa`, and the Overview's `Exa first` and `pages through Firecrawl` | G33 75fe1a8 (test in G37) |
+| P2-6 Key bindings: `2 match`, fixed bindings without keys, vim first | fixed. The filter says `1 match` / `2 matches` (G33). The binding labelled `Ctrl-C` was taken for its own name column, which shifted the table and dropped the keys column; the name is now the first column (G37). A table's name is the first cell that reads as the label, so `Up` (key name `Up`) keeps its key-name column last in importance (G38). Under the standard keymap the vim group is listed last (G37) | G33, G37 22bf770, G38 19a9030 |
+| P2-7 the keys sheet lacked §4.3's `←→ step` and split the change group | partly fixed: the first clause of ← and → now reads `Back to the rail or step down` and `Open the section or step up`, and `docs/keybindings.md` was regenerated. Deferred: the change group has 29 entries, more than a 45-row column holds; keeping it together needs a different sheet layout | G39 17fb1e3 |
+| P2-8 the env paste did not name the variable; a saved secret drew as pending | fixed: `FAKE_TOKEN · paste the value · Cmd-V`. The saved secret keeps `secret · set · ends …` | G28 31b55d5 |
+| P2-9 ASCII `>  > Add…`, `✓` as `v` | no change. The spec's ASCII twins are ▌→`>`, ▸→`>`, ✓→`v` (§4.11, T§15.2) | — |
+| P2-10 after `Fetch every provider's models` the row said `not fetched this session` | fixed: after a finished `provider.fetch_all` the row says `fetched this session HH:MM` | G33 75fe1a8 |
+| P2-11 the rail counted records only after a visit; no storage glance | fixed: the rail falls back to the Overview's glance counts. The storage glance reads the service's keys: `214 sessions · never cleaned up · deletes sessions after 90 days` | G33 75fe1a8 |
+| P2-12 `:goto` Providers focused `▸ Add a provider…` | fixed: the cursor waits for the page's records, then lands on the first record | G33 75fe1a8 |
+
+The daemon e2e test found four defects QA did not report. All four are fixed in G29 dda44df:
+
+- The price CAS compared rows that still carried nil keys, while the service stores a row
+  without them. Every edit of a row without cache rates was a conflict.
+- A rename sent `row` and `rename_row` the wrong way round.
+- Three undos were refused: an applied MCP connection change, saved effort levels, and applied
+  models. Each now reads its `expected` from the record in the answer.
+
+G38 was found in the sandbox after G37. G40 was found by the first final precommit: A31's
+rail check now drops the record count (`Providers 4`) that the rail shows since G33.
+
+The live check used the sandbox home `/Users/zaali/.cache/c74/F/polish2/sb` and a loopback
+models stub (127.0.0.1:18743, three `GET /v1/models`). The release was built at G27, G36, G37,
+G38 and G39. Sessions g2a–g2f (160×45) were rendered with `vt.py`/`svg2png.py` into
+`sb/shots/`, and the PNGs were read. The shots show:
+
+- P0-1: `a02`/`a03` (the Chat model box). Those shots also found the 100-option page behind
+  G36: the box counted `1 provider · 100 models`.
+- P0-2/P2-2: `b14`, before G36: stubprov's picker read `0 providers · 0 models`. At G36, `c01`
+  reads `2 providers · 144 models` and `c05` reads `1 provider · 2 models` with stub-a and
+  stub-b. Enter on stub-a gave `✓ Default model → stub-a` (`c06`), and the sandbox DB changed.
+  Enter on the null choice before the options loaded left the DB unchanged.
+- P1-1: `c02`: `deepseek-v4-pro · llmotions`, with no UUID on the page.
+- P2-11: `b01`: `Providers 1` and `MCP servers 1` on the rail before either section was opened.
+- P1-2: Exa `J` gave the order tavily, brave, exa; `u` gave tavily, exa, brave with `✓ Undid:
+  Moved Exa below Brave`; `U` redid it (`c11`–`c13`, DB checked each time).
+- P2-5: `c14`: `Search & web › Exa`. P2-1: `c19`/`c20`: `‹ Plain fetch (strip HTML) … ›`, then
+  `‹ … Jina Reader … ›`.
+- P1-3: while the Base URL was being edited, `https://theirs.example` was written straight into
+  the DB. Enter on `https://mine.example` drew the conflict row (`c16`), and a second Enter wrote
+  mine (`c17`, DB `https://mine.example`).
+- P1-4 and P1-5: Space on `beta` kept the cursor on `beta` (`c25`). `N` turned all three tools
+  off, and `u` restored `["beta"]` with the cursor still on `beta` (`c26`, `c27`).
+- P1-7 and P2-8: `FAKE_TOKEN=` showed `FAKE_TOKEN · paste the value · Cmd-V` (`c29`). After the
+  paste, `MODE=fast` was staged, then Esc and `s`. The DB then held both variables, and the
+  server output read `token len 23` (`c38`, `c39`).
+- P1-6: `c46`: `✓ connected · 3 tools: alpha, beta, gamma`. The draft was then discarded with
+  `d`, and no server was created.
+- P2-6 at G38: `e03` (the settings group, no key-name column) and `e04` (`/ctrl-c`: `Interrupt
+  Ctrl-C` and `Ctrl-C  Ctrl-C`). The vim group is last (`e02`).
+- P2-7 at G39: `f01`, the keys sheet.
+
+Budget: no real prompts and no real provider or network calls. The only network traffic was the
+three loopback stub requests. Screen sessions g2a–g2f were closed. The stub (its own pid) was
+killed, and no `mcpfake.py` or sandbox process is left. The release copy in
+`/Users/zaali/.cache/p70cli/rel-c74/` is now the G39 build that was checked live (`f01`),
+replacing the G25 copy. `_build/prod` was removed before the final precommit.
+
+Final checks at G40 (f574b59), with `_build/prod` removed first. G40 changes only a test, so the
+G39 release copy matches it:
+
+- `mise exec -- mix precommit` (the third run): core 194 tests, daemon 1 247 tests, and CLI 10
+  properties and 2 452 tests, all with 0 failures. Provenance verify, `provenance.sync --check`,
+  the schema snapshot (12 Python tests) and the unicode-width attestation (31 730 pairs) all
+  pass. The run exited 0.
+- The first run failed A31, which G40 fixed. The second run failed one timing assertion:
+  `daemon_test.exs:368` ("closed within 100 ms"). That test passed alone three times in a row,
+  and nothing in G27–G40 touches the data source. The third run was clean.
+- `scripts/dev/check_terminal_port.sh`: 58 Rust tests pass, and it verified 58 locked crate
+  records and 108 license texts.
+- `mix swarm_code.keymap --check`: `docs/keybindings.md matches the binding table`. G39 had
+  regenerated the file with `--write`.
+
 ## What is open
 
-- QA #1 ran, and the polish above answers it. The later QA passes have not run yet.
-- Deferred from QA #1: F-13's Overview header context and `‹ … ›` segmented editor, F-15's
-  wrapping of values under themselves, and F-21's lease directory (see the table).
+- QA #1 and QA #2 ran, and the two polishes above answer them.
+- Deferred from QA #2: P2-3 (with F-15) and the column split of P2-7's change group (see the
+  table). The model picker reads at most 50 pages (5 000 options).
+- A record conflict's origin reads `elsewhere in this session` even for a change another process
+  made. This is the same `Commit.outcome/4` origin noted below for value conflicts. Its two lines
+  are cut at the page column's width. The status row repeats `Enter keeps yours · Esc takes
+  theirs` in full.
+- An empty Key bindings filter says `Nothing here yet.`, not `nothing matches`. QA did not report
+  it.
+- Deferred from QA #1: F-13's Overview header context, F-15's wrapping of values under
+  themselves, and F-21's lease directory (see the table). F-13's `‹ … ›` segmented editor came
+  with G34 (QA #2 P2-1).
 - A value conflict row keeps the row's old value (`7` in `u09`) until Ctrl-R. Its origin always
   reads `elsewhere in this session`, even for a change from another process. This existed before
   the pass (`Commit.outcome/4`), and QA #1 did not report it.
