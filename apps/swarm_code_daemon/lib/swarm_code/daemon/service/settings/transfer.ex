@@ -372,7 +372,8 @@ defmodule SwarmCode.Daemon.Service.Settings.Transfer do
   defp preview_rows(document, ctx) do
     names = provider_names()
     file_providers = for %{"name" => name} <- List.wrap(document["providers"]), do: name
-    known = MapSet.new(Map.keys(names) ++ file_providers)
+    # `names` is id → name; a model value names its provider.
+    known = MapSet.new(Map.values(names) ++ file_providers)
     values = Map.new(layered(ctx, scalar_entries()), &{&1["key"], &1})
 
     scalar_rows =

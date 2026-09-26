@@ -208,6 +208,26 @@ defmodule SwarmCode.Daemon.Service.Settings.C74TransferTest do
     assert {:error, %{code: :not_found}} = Settings.command(apply, fresh_ctx)
   end
 
+  test "a model value naming a provider of this database imports without the records", fixture do
+    # Found in the sandbox (cli74 F28): `swarmcode config export` leaves the records out
+    # by default, and every model row of its import preview read "invalid" (the known
+    # providers were their ids, not their names).
+    path = Path.join(fixture.dir, "no-records.json")
+    assert {:ok, _} = export!(fixture, path, %{"scopes" => ~w(global terminal project)})
+    refute File.read!(path) |> Jason.decode!() |> Map.has_key?("providers")
+
+    preview = C74S1.command("import.preview", target: %{"path" => path})
+    assert {:task, spec, _} = Settings.command(preview, ctx(fixture))
+    assert {:ok, %{"rows" => rows}} = run(spec)
+
+    models = Enum.filter(rows, &String.starts_with?(&1["key_or_record"] || "", "models."))
+    assert models != []
+
+    for row <- models, row["after"] != nil do
+      assert row["status"] == "same", inspect(row)
+    end
+  end
+
   test "a file carrying a secret is refused with the words", fixture do
     path = Path.join(fixture.dir, "secret.json")
 
