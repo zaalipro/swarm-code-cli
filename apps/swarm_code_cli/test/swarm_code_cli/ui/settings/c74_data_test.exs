@@ -274,6 +274,33 @@ defmodule SwarmCodeCLI.UI.Settings.C74DataTest do
   defp task_id_of({_tag, %DTO.SettingsResult{} = result}), do: task_id_of(result)
   defp task_id_of(other), do: flunk("no task in #{inspect(other, limit: 6)}")
 
+  # cli74 F41 (found in the sandbox): the view held a wrapper around the summary,
+  # so Storage said "— on disk" and a fetch "0 → 0 after this fetch".
+  test "a task's result keeps its own summary where the pages read it" do
+    {state, _fake} = opened()
+
+    task = %DTO.SettingsTask{task_id: "t9", action: "storage.measure", state: :done}
+    {state, effects} = SwarmCodeCLI.UI.Reducer.Settings.Responses.delta(state, task)
+    [request] = sent(effects)
+
+    view = %DTO.SettingsTaskView{
+      task_id: "t9",
+      action: "storage.measure",
+      state: :done,
+      summary: %{"db_bytes" => 52_428_800, "added" => 2},
+      rows: [%{"id" => "db"}],
+      total: 1
+    }
+
+    snapshot = %DTO.SettingsSnapshot{request_id: request.request_id, view: :task, body: view}
+    {state, _} = deliver(state, request, snapshot)
+
+    ctx = Nav.ctx(state)
+    alias SwarmCodeCLI.UI.Settings.IntegrationRows, as: R
+    assert R.task_summary(ctx, "t9") == %{"db_bytes" => 52_428_800, "added" => 2}
+    assert R.task_rows(ctx, "t9") == [%{"id" => "db"}]
+  end
+
   test "an answer for a closed or reopened layer is dropped" do
     {state, effects} = act(ready(), {:settings_open, {:section, :agents_limits}})
     [request] = sent(effects)

@@ -160,17 +160,13 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Responses do
   defp put(data, :facts, :facts, facts, _now), do: %{data | facts: facts}
   defp put(data, :usage, :usage, usage, _now), do: %{data | usage: usage}
 
-  defp put(data, {:task, task_id}, :task, %SettingsTaskView{} = view, now) do
-    summary = %{
-      state: view.state,
-      message: view.message,
-      summary: view.summary,
-      total: view.total,
-      next_cursor: view.next_cursor
-    }
-
-    Data.put_task_page(data, task_id, summary, nil, view.rows, now)
-  end
+  # cli74 F41: the view keeps the task's own summary, as every page reads it
+  # (`%{summary, pages}`, Data's moduledoc). It kept a wrapper around it, so
+  # against the service Storage said `— on disk`, a fetch `0 → 0 after this
+  # fetch`, and the wizard, the imports and the LSP check read nothing (the
+  # fake-built contexts held the summary itself; found in the sandbox).
+  defp put(data, {:task, task_id}, :task, %SettingsTaskView{} = view, now),
+    do: Data.put_task_page(data, task_id, view.summary, nil, view.rows, now)
 
   defp put(data, _load, _view, _body, _now), do: data
 
