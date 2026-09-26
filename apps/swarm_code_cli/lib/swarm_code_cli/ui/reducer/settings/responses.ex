@@ -82,7 +82,9 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Responses do
     data = %{layer.data | revision: max(layer.data.revision, snapshot.revision)}
     data = put(data, load, snapshot.view, snapshot.body, state.now)
     state = %{state | settings: %{layer | data: data, available: true, message: nil}}
-    follow_desktop(state)
+    {state, effects} = follow_desktop(state)
+    {state, more} = more_pages(state, load, snapshot.body)
+    {state, effects ++ more}
   end
 
   # -- value writes
@@ -161,6 +163,15 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Responses do
 
   defp put(data, {:records, kind, options}, :records, %SettingsRecordPage{} = page, now),
     do: Data.put_records(data, {kind, options}, page_map(page), now)
+
+  defp put(
+         data,
+         {:records_more, kind, options, cursor},
+         :records,
+         %SettingsRecordPage{} = page,
+         _now
+       ),
+       do: Data.append_records(data, {kind, options}, cursor, page_map(page))
 
   defp put(data, {:record, kind, id}, :record, %SettingsRecord{} = record, now),
     do: Data.put_record(data, {kind, id}, record.fields, now)
@@ -727,6 +738,36 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Responses do
   end
 
   defp deep_record(state), do: state
+
+  # QA #2 P0-2: the model picker's options are read whole, page after page (a
+  # provider's 142 models filled the first page of 100, and a provider named
+  # after it was never offered), up to @option_pages pages.
+  @option_pages 50
+
+  defp more_pages(state, load, %SettingsRecordPage{next_cursor: cursor})
+       when is_binary(cursor) do
+    case load do
+      {:records, "model_options", options} ->
+        Wire.load(state, {:records_more, "model_options", options, cursor})
+
+      {:records_more, "model_options", options, _} ->
+        if length(page_items(state, options)) < @option_pages * 100,
+          do: Wire.load(state, {:records_more, "model_options", options, cursor}),
+          else: {state, []}
+
+      _ ->
+        {state, []}
+    end
+  end
+
+  defp more_pages(state, _load, _body), do: {state, []}
+
+  defp page_items(%{settings: %Layer{data: data}}, options) do
+    case Map.get(data.records, {"model_options", options}) do
+      %{items: items} -> items
+      _ -> []
+    end
+  end
 
   # D18: the terminal follows the desktop's mode when cli.json names none.
   defp follow_desktop(%{settings: %Layer{data: data}, theme_env: nil} = state) do

@@ -575,4 +575,41 @@ defmodule SwarmCodeCLI.UI.Settings.C74Qa2Test do
       assert label in labels, inspect({query, labels})
     end
   end
+
+  describe "P0-2: the picker reads every page of the options" do
+    test "a provider after one with 150 models is offered, and the counts are whole" do
+      id = I.ids().anthropic
+      many = for n <- 1..150, do: "claude-extra-#{String.pad_leading("#{n}", 3, "0")}"
+      fake = FakeSettings.seed()
+      fake = update_in(fake.integrations.providers[id]["models"], &(&1 ++ many))
+
+      {state, fake} = opened(:models_effort, fake: fake)
+      state = Nav.put_cursor(state, "key:models.chat")
+      {state, effects} = verb(state, :enter)
+      {state, _fake} = serve(state, effects, fake, 8)
+
+      display = ModelPicker.display(state.settings.editing.state, Nav.ctx(state))
+      assert display.popover.meta =~ ~r/^3 providers · 15\d models$/, display.popover.meta
+
+      names =
+        for {_pid, name, _kind, _options} <-
+              ModelPicker.groups(state.settings.editing.state, Nav.ctx(state)),
+            do: name
+
+      assert "DeepSeek" in names and "Ollama" in names
+      # the cursor waited for the last page and sits on the current value
+      assert [{"deepseek-v4-pro", _} | _] = display.value
+    end
+
+    test "a page read again meanwhile drops the older chain's next page" do
+      alias SwarmCodeCLI.UI.Settings.Data
+      key = {"model_options", %{}}
+      data = Data.put_records(%Data{}, key, %{items: [1, 2], next_cursor: "2", total: 4}, 0)
+
+      assert Data.append_records(data, key, "2", %{items: [3, 4], next_cursor: nil}).records[key].items ==
+               [1, 2, 3, 4]
+
+      assert Data.append_records(data, key, "5", %{items: [9], next_cursor: nil}) == data
+    end
+  end
 end

@@ -128,6 +128,10 @@ defmodule SwarmCodeCLI.UI.Settings.Wire do
       "page_size" => @page_size
     }
 
+  # The next page of a list that is read whole (the model picker's options).
+  defp params(state, {:records_more, kind, options, cursor}),
+    do: Map.put(params(state, {:records, kind, options}), "cursor", cursor)
+
   defp params(state, {:record, kind, id}),
     do: %{"view" => "record", "kind" => kind, "id" => id, "project_id" => project_id(state)}
 

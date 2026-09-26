@@ -184,6 +184,14 @@ defmodule SwarmCodeCLI.UI.Settings.ModelPicker do
       cursor
   end
 
+  # Every page of the options is in (QA #2 P0-2: they arrive page by page).
+  defp complete?(ctx) do
+    case R.records_page(ctx, "model_options") do
+      nil -> false
+      page -> (Map.get(page, :next_cursor) || Map.get(page, "next_cursor")) == nil
+    end
+  end
+
   @doc """
   What the picker reads from the service (QA #2 P0-2): the options, asked
   again each time the picker opens so a provider created or fetched in this
@@ -199,7 +207,7 @@ defmodule SwarmCodeCLI.UI.Settings.ModelPicker do
   defp place(s, ctx) do
     choices = choices(s, ctx)
 
-    if choices == [] or not R.loaded?(ctx, "model_options") do
+    if choices == [] or not complete?(ctx) do
       s
     else
       index =

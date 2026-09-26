@@ -82,6 +82,28 @@ defmodule SwarmCodeCLI.UI.Settings.Data do
     %{data | records: Map.drop(records, drop)}
   end
 
+  @doc """
+  Adds the page at `cursor` of a list read whole (the model picker's options)
+  to the page it follows; a page the list no longer ends at (it was read
+  again meanwhile) is dropped.
+  """
+  @spec append_records(t(), {String.t(), map()}, String.t(), map()) :: t()
+  def append_records(%__MODULE__{} = data, key, cursor, page) do
+    case Map.get(data.records, key) do
+      %{items: items, next_cursor: ^cursor} = current ->
+        merged = %{
+          current
+          | items: items ++ (Map.get(page, :items) || []),
+            next_cursor: Map.get(page, :next_cursor)
+        }
+
+        %{data | records: Map.put(data.records, key, merged)}
+
+      _ ->
+        data
+    end
+  end
+
   @doc "Stores one record, keeping at most 16 (the oldest dropped)."
   @spec put_record(t(), {String.t(), String.t()}, map(), integer()) :: t()
   def put_record(%__MODULE__{} = data, key, fields, now) do
