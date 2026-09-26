@@ -325,8 +325,9 @@ defmodule SwarmCodeCLI.UI.Settings.KeyValueSecrets do
       name in names ->
         [{:row_error, row_id, "already in the list"}]
 
+      # The paste is drawn on the add row: the entry has no row of its own yet.
       secret?(name, value) ->
-        [{:paste, secret_target(record_fields, id, map, name)}]
+        [{:paste, %{secret_target(record_fields, id, map, name) | row_id: row_id}}]
 
       true ->
         stage(ctx, id, map, record_fields, &(&1 ++ [%{"name" => name, "value" => value}]))

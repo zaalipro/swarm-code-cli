@@ -376,6 +376,10 @@ defmodule SwarmCodeCLI.UI.Settings.C74Qa1Test do
 
       assert state.settings.mode == :paste
       assert state.settings.paste.target.slot == "env:SLACK_TOKEN"
+      # The paste is drawn where the name was typed.
+      assert state.settings.paste.target.row_id == "act:kv.add"
+      line = state |> screen() |> String.split("\n") |> Enum.find(&(&1 =~ "Add a variable"))
+      assert line =~ "paste the key · Cmd-V", line
 
       # What is typed now is refused by the paste target, never drawn.
       state = typed(state, "sk-canary2-9Z8Y")
