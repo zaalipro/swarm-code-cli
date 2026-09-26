@@ -328,6 +328,9 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Responses do
   defp replace_record_id(term, id) when is_list(term),
     do: Enum.map(term, &replace_record_id(&1, id))
 
+  defp replace_record_id(term, id) when is_map(term) and not is_struct(term),
+    do: Map.new(term, fn {key, value} -> {key, replace_record_id(value, id)} end)
+
   defp replace_record_id(term, _id), do: term
 
   defp field_errors(%{settings: layer} = state, opts, %SettingsResult{

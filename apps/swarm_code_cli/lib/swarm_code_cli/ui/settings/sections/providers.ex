@@ -1586,7 +1586,8 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Providers do
          undo: false,
          toast: "Added #{attrs["name"]}",
          after:
-           {:open_record, :providers, @kind, then: [{:task, "provider.test", :record_id, %{}}]}
+           {:open_record, :providers, @kind,
+            then: [{:task, "provider.test", %{"id" => :record_id}, %{}}]}
        }}
     ]
   end

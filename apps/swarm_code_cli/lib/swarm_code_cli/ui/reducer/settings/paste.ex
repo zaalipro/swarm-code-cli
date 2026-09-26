@@ -97,7 +97,7 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Paste do
         state = %{state | settings: %{layer | drafts: drafts, paste: nil, mode: :browse}}
         label = field(target, :label) || "The value"
         {state, effects} = Ops.run(state, List.wrap(field(target, :then)))
-        {Commit.status(state, "#{label} kept for the import · not shown", :success), effects}
+        {Commit.status(state, "#{label} kept #{kept_for(draft)} · not shown", :success), effects}
 
       nil ->
         send(state, paste, field(target, :set?) == true)
@@ -273,4 +273,8 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Paste do
 
   defp field(map, key) when is_map(map), do: Map.get(map, key, Map.get(map, Atom.to_string(key)))
   defp field(_map, _key), do: nil
+
+  # cli74 F36: a provider draft's key waits for Ctrl-S, not for an import.
+  defp kept_for("mcp_import"), do: "for the import"
+  defp kept_for(_draft), do: "until Ctrl-S creates it"
 end

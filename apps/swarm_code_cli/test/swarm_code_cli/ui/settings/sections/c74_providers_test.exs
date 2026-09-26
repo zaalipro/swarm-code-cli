@@ -128,7 +128,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.C74ProvidersTest do
       assert opts.secrets_from == {:draft, "provider"}
 
       assert {:open_record, :providers, "provider",
-              then: [{:task, "provider.test", :record_id, %{}}]} = opts.after
+              then: [{:task, "provider.test", %{"id" => :record_id}, %{}}]} = opts.after
     end
 
     test "a built-in preset sends no levels; a field error lands under its row" do

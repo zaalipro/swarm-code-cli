@@ -349,4 +349,39 @@ defmodule SwarmCodeCLI.UI.Settings.C74FTableRowsTest do
       assert function_exported?(module, :picked, 3), inspect({section, tag})
     end
   end
+
+  # cli74 F36 (found in the sandbox): "Create it" says it saves and tests the new
+  # provider, but the test after the create carried the new id as a bare string
+  # target, which no op accepts, so no test ran.
+  test "Ctrl-S on a new provider creates it, opens it and tests it" do
+    fake = FakeSettings.seed()
+
+    {state, fake} =
+      ready() |> Reducer.update({:settings_open, {:section, :providers}}) |> serve(fake)
+
+    {state, fake} = state |> Ops.run(Providers.start_draft("lmstudio")) |> serve(fake)
+
+    assert hd(lines(state)) =~ "Settings › Providers › new "
+
+    # A key pasted into the draft waits for Ctrl-S (the words said "for the import").
+    state = Nav.put_cursor(state, "fld:provider:draft:api_key")
+    {state, _} = Reducer.update(state, {:settings, {:paste, "sk-lm-local-000000000001"}})
+    {state, _} = Reducer.update(state, {:settings, {:verb, :paste_commit}})
+    assert state.settings.status.text =~ "kept until Ctrl-S creates it"
+    # The helpers' serve answers what the answers ask for too (the test after the create).
+    {state, fake} =
+      state
+      |> Reducer.update({:settings, {:verb, :save}})
+      |> SwarmCodeCLI.UI.C74U3Helpers.serve(fake)
+
+    assert {"provider", id} = SwarmCodeCLI.UI.Settings.Layer.page(state.settings).record
+    assert is_binary(id) and id != "draft"
+
+    {requests, _, _} = FakeSettings.control(fake, :requests, [])
+
+    assert Enum.any?(requests, fn r ->
+             r["action"] == "provider.test" and r["target"] == %{"id" => id}
+           end),
+           inspect(Enum.map(requests, & &1["action"]))
+  end
 end

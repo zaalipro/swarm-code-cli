@@ -180,6 +180,9 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
     Text.spread(state, left, right, width)
   end
 
+  # A draft is not a record yet: the crumb says `new`, not the draft's id.
+  defp record_name(_state, %Page{record: {_kind, "draft"}}), do: "new"
+
   defp record_name(state, %Page{record: {kind, id}}) do
     case Map.get(state.settings.data.record, {kind, id}) do
       %{fields: fields} when is_map(fields) ->
