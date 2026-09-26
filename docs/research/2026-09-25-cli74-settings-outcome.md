@@ -208,9 +208,86 @@ The sandbox found almost all of these. Each commit has a test that fails without
   now records the file while its pool runs.
 - F45 records F42/F43's edit of the synced `domain/storage.ex` as its provenance patch.
 
+## QA #1 and the polish (G11–G25)
+
+QA #1 (`/Users/zaali/.cache/c74/Q1/qa.md`) reported F-1 to F-10 as P1 and F-11 to F-23 as P2. Its
+report had no P0. Each fix has a regression test in `c74_qa1_test.exs` or in the section's own
+test. The daemon fixes are tested in `c74_attention`, `c74_backend_settings`, `c74_search` and
+`c74_transfer`. Each new test was run against the code without its fix and failed.
+
+| Finding | Result | Commit |
+| --- | --- | --- |
+| F-1 a created provider or MCP server kept its draft and pasted key | fixed: the create drops the draft, and the new record's page replaces the draft's | G11 2c89b5b |
+| F-2 undo overwrote a change made elsewhere | fixed: undo and redo are CAS writes. Section commands with an inverse (toggles, moves, prices) are now undo steps | G12 45730a2 |
+| F-3 Esc after a search result's editor closed the layer | fixed: the editor ends back on the results. Esc clears the query, then leaves the search | G12 45730a2 |
+| F-4 a result below an info row could not be reached | fixed: ↓ reaches every result. Enter picks the best-ranked result. Enter on an action result runs it in its own section | G12 45730a2, G24 838f450 |
+| F-5 the keys sheet listed 7 keys | fixed: the sheet lists the bindings of the page under it, in groups, plus the marks and the value layers. The marks line up with the keys' help column | G13 7e6629b, G23 0bf1be8 |
+| F-6 a typed MCP secret value was drawn | fixed: `NAME=` after a secret-looking name, or a token prefix after `=`, opens the paste on the add row | G16 a232775, G21 6348dc6 |
+| F-7 `D` never deleted on a record page | fixed: `D` works from any row of a provider's or an MCP server's page | G14 869a054 |
+| F-8 a deleted MCP server stayed listed until Ctrl-R | fixed: `mcp_changed` now produces a `settings_update` for `mcp` and `overview` | G15 c423b2a |
+| F-9 a failed MCP server was not counted | fixed: the daemon's overview kept only one item because it read atom-keyed items with string keys. Items are now unique per id and target on both sides | G14 869a054, G15 c423b2a |
+| F-10 `a apply all` did nothing | fixed: `a` and `+` work from any row of the page. The Models row lists the difference | G14 869a054 |
+| F-11 `Couldn't save` printed twice; field error not under its row | fixed | G11 2c89b5b, G12 45730a2 |
+| F-12 number messages | fixed: `is invalid`, `can't be blank` (core `TextValue` and the editor) | G17 97bcd01 |
+| F-13 frame amendments | fixed: the search count (`search 130 settings, …`, `7 of 130 · 3 sections`), `writes to <layer> · <meaning>` on the status row, and the rail record counts. Deferred: the Overview header context (§4.1.11) and the `‹ … ›` segmented editor (§4.5). Both are new drawing work | G18 f2f501c, G19 22aac5c, G20 c402637 |
+| F-14 Appearance preview cut at 160 columns | fixed: each box is 37 cells | G17 97bcd01 |
+| F-15 truncations that hide the value | deferred. Wrapping a value under itself (§4.2) changes the row layout of the whole projector, which is too large for a polish pass | — |
+| F-16 key binding rows repeated their tag | fixed | G17 97bcd01 |
+| F-17 Desktop app rows carry a second line | no change. The spec asks for it: §3.7.5 and U3-11 require the `no effect in the terminal` line on every desktop row | — |
+| F-18 NO_COLOR: no focus mark on a search result | fixed: the focused result carries `▌`/`>`. Under NO_COLOR and 16 colours, the focused row, picker option and confirmation button are reverse video (§4.11). Before, a picker's focused option looked like the others | G12 45730a2, G25 442b78e |
+| F-19 `config export --help` wrote a file named `help` | fixed: `--help`/`-h` after a subcommand prints the usage | G17 97bcd01 |
+| F-20 import preview listed unchanged terminal keys as changes | fixed: the preview compares against the client's `cli.json` and marks each key `same` or `change` | G19 22aac5c |
+| F-21 words | fixed: `Moved Exa above Tavily`; the pending question names records (`the new MCP server`, `changes to github`); Storage counts in thin groups; the welcome card names the rebound palette key. Kept as the spec says: `medium (not set)` (`null_label` of `efforts.implementer`) and `at least 0 B reclaimable` (§2.20). Deferred: the lease refusal's `(<dir>)`, because the lease owner record holds no directory, and adding one changes the lease format the desktop shares | G16 a232775, G18 f2f501c |
+| F-22 a renamed price did not open its row | fixed: `after_ops` accepts `{:open_record, section, kind, id}` | G12 45730a2 |
+| F-23 Esc after a paste on Environment | not reproduced. A test keeps it working | G16 a232775 |
+
+The polish sandbox found three more problems:
+
+- G22 d31ee59: after a refused Ctrl-S, the `✗ can't be blank` line stayed under a field the user
+  had filled in since.
+- G24 838f450: Enter on an action search result did nothing, although its detail said `Enter
+  run`.
+- G25 442b78e: the NO_COLOR picker selection described under F-18.
+
+The live check used a sandbox home (`/Users/zaali/.cache/c74/F/polish1/sb`), a loopback models
+stub on 127.0.0.1:18743, and the release built from G20, then from G23, then from G25. It was
+rendered with `vt.py`/`svg2png.py` into `sb/shots/`. The shots show:
+
+- F-1: `p05`, `p06`. F-3: `f3a`–`f3e`; the sandbox DB `storage_retention_days` is 90. F-5:
+  `f5`, `s18`. F-7: `p09`, `m10`. F-10: `p07`, `p08`. F-11: `p03`, `s14`.
+- F-6: `m06`–`m08`, `s06`; the pasted value reads `●●●●●●●● secret · set · ends ECHO`.
+- F-8 and F-9: `m02` shows `! 3 need attention` and `MCP servers !1`. After `D D`, `m11`
+  shows the list without `fakesrv`, the toast `Deleted fakesrv`, `! 2`, and a DB count of 0,
+  with no Ctrl-R.
+- F-2: `u09`. `Max concurrent agents` went 6 → 7, then 9 was written straight into the sandbox
+  DB. `u` showed `! changed while you edited … Enter keep yours (6) · Esc take theirs (9)`, and
+  the DB kept 9.
+- G22: `s15`. G24: `a01` → `a02` (80×24, NO_COLOR, ASCII). G25: `a04`, `a05`.
+
+The only real network call was the first session's tavily MCP connect. Tavily was disabled in
+the sandbox DB for the later sessions. The release copy in `/Users/zaali/.cache/p70cli/rel-c74/`
+is the G25 build that was checked live, and `_build/prod` was removed before the final precommit.
+
+Final checks at G25 (442b78e), with `_build/prod` removed first:
+
+- `mise exec -- mix precommit`: core 194 tests, daemon 1 240 tests, and CLI 10 properties and
+  2 418 tests, all with 0 failures. Provenance verify, `provenance.sync --check`, the schema
+  snapshot (12 Python tests) and the unicode-width attestation all pass. The run exited 0.
+- `scripts/dev/check_terminal_port.sh`: 58 Rust tests pass, and it verified 58 locked crate
+  records and 108 license texts.
+- `mix swarm_code.keymap --check`: `docs/keybindings.md matches the binding table`.
+- Running `mix test` inside `apps/swarm_code_cli` alone gives 26 failures, all from the
+  environment. `:public_key`, `SwarmCode.Domain.Repo` and the daemon's test support are not on a
+  single app's code path. The same tests pass in the umbrella run above.
+
 ## What is open
 
-- The QA passes that follow in the workflow have not run yet.
+- QA #1 ran, and the polish above answers it. The later QA passes have not run yet.
+- Deferred from QA #1: F-13's Overview header context and `‹ … ›` segmented editor, F-15's
+  wrapping of values under themselves, and F-21's lease directory (see the table).
+- A value conflict row keeps the row's old value (`7` in `u09`) until Ctrl-R. Its origin always
+  reads `elsewhere in this session`, even for a change from another process. This existed before
+  the pass (`Commit.outcome/4`), and QA #1 did not report it.
 - The CLI repo has no `CHANGELOG.md` for F-7's pass-74 entry. As in passes 70–73, this document
   is the record of the pass.
 - U2's note: `x` on an unknown `lsp_servers` key sends `lsp.remove_key` with `undo: false`, so it
