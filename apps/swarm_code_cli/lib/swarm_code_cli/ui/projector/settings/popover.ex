@@ -181,6 +181,80 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Popover do
 
   def lines(_state, {kind, _body}), do: [[{to_string(kind), :text_primary}]]
 
+  @doc """
+  The inside of an editor's popover (the model picker, F4) at `inner` cells
+  and at most `room` lines: the filter, the column names, the window of rows
+  around the focused one, then the keys with `N of M` on the right.
+  """
+  @spec editor_lines(map(), map(), pos_integer(), pos_integer()) :: [[Text.segment()]]
+  def editor_lines(state, popover, inner, room) do
+    rows = Map.get(popover, :rows) || []
+    models? = Enum.any?(rows, &(&1.kind in [:model, :null, :typed]))
+    heading = if models?, do: [picker_heading()], else: []
+    list_room = max(room - 5 - length(heading), 3)
+    {window, hidden} = picker_window(rows, list_room)
+    bar = Glyphs.get(:focus_bar, Glyphs.tier(state.capabilities))
+
+    list =
+      Enum.map(window, fn row ->
+        line =
+          case row.kind do
+            :group -> [{" ", :text_primary} | row.segments]
+            :info -> [{"  ", :text_primary} | row.segments]
+            _ -> [lead(row.focused?, bar), {" ", :text_primary} | row.segments]
+          end
+
+        if row.focused?, do: Text.select(line), else: line
+      end)
+
+    more =
+      if hidden > 0,
+        do: [[{"    … #{hidden} more, type to filter", :text_faint}]],
+        else: []
+
+    keys =
+      (Map.get(popover, :footer) || [])
+      |> Enum.flat_map(fn {key, words} ->
+        [{key, {:info, [:bold]}}, {" " <> words <> "   ", :text_faint}]
+      end)
+
+    footer =
+      Text.spread(
+        state,
+        keys,
+        [{to_string(Map.get(popover, :position) || ""), :text_faint}],
+        inner
+      )
+
+    rule = Glyphs.get(:rule_h, Glyphs.tier(state.capabilities))
+
+    [Map.get(popover, :query) || [], []] ++
+      heading ++ list ++ more ++ [[], [{String.duplicate(rule, inner), :border}], footer]
+  end
+
+  defp lead(true, bar), do: {bar, :focus}
+  defp lead(false, _bar), do: {" ", :text_primary}
+
+  defp picker_heading do
+    [
+      {"    " <>
+         String.pad_trailing("model", 34) <>
+         String.pad_trailing("context", 16) <>
+         "$ per M tokens · in · out", :text_faint}
+    ]
+  end
+
+  # The rows around the focused one that fit, and how many are left below.
+  defp picker_window(rows, room) when length(rows) <= room, do: {rows, 0}
+
+  defp picker_window(rows, room) do
+    room = room - 1
+    focused = Enum.find_index(rows, & &1.focused?) || 0
+    start = focused |> Kernel.-(div(room, 2)) |> max(0) |> min(length(rows) - room)
+    window = Enum.slice(rows, start, room)
+    {window, length(rows) - start - length(window)}
+  end
+
   defp buttons(%Confirm{} = confirm) do
     safe = [{"[ #{confirm.safe} ]", :text_primary}]
     safe = if confirm.focus == :safe, do: Text.select(safe), else: safe

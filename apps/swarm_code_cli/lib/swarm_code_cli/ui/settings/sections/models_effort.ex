@@ -29,7 +29,8 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.ModelsEffort do
 
   @impl true
   def loads(ctx) do
-    base = [{:values, [:models_effort]}]
+    # QA #2 P0-2, P1-1: the model rows name their provider and open the picker.
+    base = [{:values, [:models_effort]} | SwarmCodeCLI.UI.Settings.ModelPicker.loads()]
     if project_id(ctx), do: base ++ [{:record, "project_config", project_id(ctx)}], else: base
   end
 

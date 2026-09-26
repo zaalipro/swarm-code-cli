@@ -28,7 +28,9 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.DeepResearch do
   ]
 
   @impl true
-  def loads(_ctx), do: [{:values, [:deep_research]}, :facts]
+  # QA #2 P0-2: the research tiers are model rows (the picker's options, the names).
+  def loads(_ctx),
+    do: [{:values, [:deep_research]}, :facts] ++ SwarmCodeCLI.UI.Settings.ModelPicker.loads()
 
   @impl true
   def rows(ctx) do

@@ -12,7 +12,7 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Edit do
 
   alias SwarmCode.Settings.Registry
   alias SwarmCodeCLI.UI.Reducer.Settings.{Commit, Ops}
-  alias SwarmCodeCLI.UI.Settings.{Editors, Layer, Nav, Row, Sections}
+  alias SwarmCodeCLI.UI.Settings.{Editors, Layer, ModelPicker, Nav, Row, Sections, Wire}
 
   @verb_events %{
     commit: {:key, :enter},
@@ -77,8 +77,8 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Edit do
           context: :settings_edit
         }
 
-        state = put_editing(state, editing)
-        {state |> refresh_context() |> clear_error(row.id), []}
+        state = state |> put_editing(editing) |> refresh_context() |> clear_error(row.id)
+        loads(state, module)
 
       {:error, words} ->
         {Commit.status(state, words, :error), []}
@@ -86,6 +86,17 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Edit do
   end
 
   def open(state, _row, _extra), do: {state, []}
+
+  # QA #2 P0-2: the model picker reads the options as they are now; a page
+  # that loaded them earlier (or never) offered only the null choice, and a
+  # provider created in this session was never offered.
+  defp loads(state, ModelPicker) do
+    {state, fresh} = Wire.refresh(state, {:records, "model_options", %{}})
+    {state, more} = Wire.sync(state)
+    {state, fresh ++ more}
+  end
+
+  defp loads(state, _module), do: {state, []}
 
   defp init(module, row, opts, ctx) do
     case module.init(row, opts, ctx) do

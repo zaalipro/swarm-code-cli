@@ -43,7 +43,7 @@ defmodule SwarmCodeCLI.UI.Settings.Wire do
         do: [:open | Sections.loads(Layer.section(layer), Nav.ctx(state))],
         else: Sections.loads(Layer.section(layer), Nav.ctx(state)) ++ [:overview]
 
-    loads = Enum.uniq(loads)
+    loads = Enum.uniq(loads ++ editor_loads(layer))
 
     Enum.reduce(loads, {state, []}, fn load, {acc, effects} ->
       if needed?(acc.settings, load) do
@@ -56,6 +56,25 @@ defmodule SwarmCodeCLI.UI.Settings.Wire do
   end
 
   def sync(state), do: {state, []}
+
+  # QA #2 P0-2: an open model picker needs the options on any page (a search
+  # result opens it from the Overview), and again after a delta dropped them.
+  defp editor_loads(%Layer{
+         mode: :editing,
+         editing: %{module: SwarmCodeCLI.UI.Settings.ModelPicker}
+       }),
+       do: SwarmCodeCLI.UI.Settings.ModelPicker.loads()
+
+  defp editor_loads(_layer), do: []
+
+  @doc """
+  Asks for `load` again unless it is on its way: what the page holds may be
+  older than a write made since (the model picker's options, QA #2 P0-2).
+  """
+  @spec refresh(map(), term()) :: {map(), list()}
+  def refresh(%{settings: %Layer{} = layer} = state, load) do
+    if in_flight?(layer, load), do: {state, []}, else: load(state, load)
+  end
 
   @doc "Asks for one load (again, even when it is loaded: a delta, Ctrl-R)."
   @spec load(map(), term()) :: {map(), list()}

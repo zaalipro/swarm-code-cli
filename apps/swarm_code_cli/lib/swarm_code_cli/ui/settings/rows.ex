@@ -161,11 +161,16 @@ defmodule SwarmCodeCLI.UI.Settings.Rows do
       case ctx.data && provider_pages(ctx.data.records) do
         [] -> nil
         nil -> nil
-        items -> Map.new(items, &{get(&1, :id), get(&1, :name) || get(&1, :id)})
+        # QA #2 P1-1: a record keeps its name under `fields` (the service's
+        # records); the id was drawn where the name belongs.
+        items -> Map.new(items, &{get(&1, :id), provider_name(&1)})
       end
 
     %{providers: providers, home: get(ctx.launch_facts || %{}, :home)}
   end
+
+  defp provider_name(item),
+    do: SwarmCodeCLI.UI.Settings.IntegrationRows.field(item, "name") || "unnamed provider"
 
   defp provider_pages(records) when is_map(records) do
     pages = for {{kind, _}, page} <- records, kind in ["provider", "providers"], do: page

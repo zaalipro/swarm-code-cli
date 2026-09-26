@@ -86,7 +86,7 @@ defmodule SwarmCodeCLI.UI.Settings.ModelPicker do
         {:cont, %{s | cursor: next_group(choices, s.cursor, -1)}}
 
       {:key, :enter} ->
-        choose(s, choices)
+        choose(s, choices, ctx)
 
       {:key, :escape} when s.query != "" or s.filtering ->
         {:cont, %{s | query: "", filtering: false, cursor: 0}}
@@ -117,13 +117,18 @@ defmodule SwarmCodeCLI.UI.Settings.ModelPicker do
     end
   end
 
-  defp choose(s, choices) do
+  # QA #2 P0-2: while the options are on their way (or no provider lists a
+  # model) the list holds only the null choice, which the popover does not
+  # draw; Enter there erased the model. It waits for the options instead.
+  defp choose(s, choices, ctx) do
     case Enum.at(choices, s.cursor) do
       nil ->
         {:cont, s}
 
       {:null, _} ->
-        {:commit, nil, s}
+        if R.loaded?(ctx, "model_options") and groups(s, ctx) != [],
+          do: {:commit, nil, s},
+          else: {:cont, s}
 
       {:model, pid, _name, model, _fields} ->
         {:commit, %{"provider_id" => pid, "model" => model}, s}
@@ -179,13 +184,22 @@ defmodule SwarmCodeCLI.UI.Settings.ModelPicker do
       cursor
   end
 
+  @doc """
+  What the picker reads from the service (QA #2 P0-2): the options, asked
+  again each time the picker opens so a provider created or fetched in this
+  session is offered, and the providers for the fetch state and the names.
+  """
+  @spec loads() :: [{:records, String.t(), map()}]
+  def loads, do: [{:records, "model_options", %{}}, {:records, "providers", %{}}]
+
   # the cursor starts on the current value once the options have arrived
+  # (QA #2 P0-2: not before; the null choice alone placed it for good)
   defp place(%__MODULE__{placed: true} = s, _ctx), do: s
 
   defp place(s, ctx) do
     choices = choices(s, ctx)
 
-    if choices == [] do
+    if choices == [] or not R.loaded?(ctx, "model_options") do
       s
     else
       index =

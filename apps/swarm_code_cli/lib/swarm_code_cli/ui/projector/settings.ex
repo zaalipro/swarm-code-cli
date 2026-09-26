@@ -143,7 +143,17 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
         drawer_lines ++
         [rule(state, width), status(state, layer, current, width), footer(state, current, width)]
 
-    lines |> popover(state, width, height) |> Enum.take(height)
+    # The screen line of the focused page row (an editor's popover opens under it).
+    anchor =
+      case Enum.find_index(page, &cursor_line?/1) do
+        nil -> nil
+        index -> index + 3 + if(strip?, do: 1, else: 0)
+      end
+
+    lines
+    |> editor_popover(state, anchor, if(rail?, do: @rail + 1, else: 0), width, height)
+    |> popover(state, width, height)
+    |> Enum.take(height)
   end
 
   # ----------------------------------------------------------- header
@@ -1082,6 +1092,94 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
         over -> Text.splice(state, line, left, over, width)
       end
     end)
+  end
+
+  # ------------------------------------------------- editor popover (F4)
+
+  # QA #2 P0-1: an open editor whose display carries a popover (the model
+  # picker) floats it under its row, as F4 draws it: the title and the counts
+  # in the top border, the filter, the list, the keys and `N of M` inside.
+  # Nothing drew it: the footer changed and the list was never seen.
+  defp editor_popover(
+         lines,
+         %{settings: %Layer{mode: :editing, editing: %{module: module} = editing}} = state,
+         anchor,
+         page_left,
+         width,
+         height
+       ) do
+    case module.display(editing.state, Nav.ctx(state)) do
+      %{popover: %{kind: :picker} = popover} ->
+        float(lines, state, popover, anchor, page_left, width, height)
+
+      _ ->
+        lines
+    end
+  end
+
+  defp editor_popover(lines, _state, _anchor, _page_left, _width, _height), do: lines
+
+  defp float(lines, state, popover, anchor, page_left, width, height) do
+    left = min(page_left + 2, max(width - 44, 0))
+    box_width = max(min(width - left - 2, 121), min(40, width - left))
+    inner = box_width - 2
+    # the header's three lines above, the status and the footer below
+    room = max(height - 5, 6)
+    body = SettingsPopover.editor_lines(state, popover, inner - 1, room - 2)
+    box_height = length(body) + 2
+
+    top =
+      cond do
+        is_integer(anchor) and anchor + 1 + box_height <= height - 2 -> anchor + 1
+        true -> max(height - 2 - box_height, 1)
+      end
+
+    h = glyph(state, :rule_h)
+    v = glyph(state, :rule_v)
+
+    framed =
+      [top_border(state, popover, box_width)] ++
+        Enum.map(body, fn line ->
+          [{v, :border}, {" ", :popover}] ++ Text.fit(state, line, inner - 1) ++ [{v, :border}]
+        end) ++
+        [
+          [
+            {glyph(state, :corner_bl) <> String.duplicate(h, inner) <> glyph(state, :corner_br),
+             :border}
+          ]
+        ]
+
+    Enum.with_index(lines)
+    |> Enum.map(fn {line, index} ->
+      case Enum.at(framed, index - top) do
+        nil -> line
+        _ when index < top -> line
+        over -> Text.splice(state, line, left, over, width)
+      end
+    end)
+  end
+
+  # `┌─ Chat model · new conversations ───── 4 providers · 23 models ─┐`
+  defp top_border(state, popover, box_width) do
+    h = glyph(state, :rule_h)
+
+    right = [
+      {" " <> to_string(Map.get(popover, :meta) || "") <> " ", :text_faint},
+      {h <> glyph(state, :corner_tr), :border}
+    ]
+
+    title =
+      [{to_string(Map.get(popover, :title) || ""), {:text_primary, [:bold]}}] ++
+        case Map.get(popover, :subtitle) do
+          nil -> []
+          sub -> [{" · " <> to_string(sub), :text_faint}]
+        end
+
+    lead = [{glyph(state, :corner_tl) <> h <> " ", :border}]
+    title = Text.clip(state, title, max(box_width - Text.cells(state, right) - 5, 1))
+    used = Text.cells(state, lead) + Text.cells(state, title) + Text.cells(state, right)
+    fill = [{" " <> String.duplicate(h, max(box_width - used - 1, 0)), :border}]
+    lead ++ title ++ fill ++ right
   end
 
   # ---------------------------------------------------------- helpers
