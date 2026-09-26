@@ -401,4 +401,34 @@ defmodule SwarmCodeCLI.UI.Settings.C74FTableRowsTest do
            end),
            inspect(Enum.map(requests, & &1["action"]))
   end
+
+  # cli74 F39 (found in the sandbox): `t` and `f` on the Providers list ran their task
+  # and showed nothing (the last-test column is the first the table drops).
+  for {verb, action} <- [test: "provider.test", fetch: "provider.fetch_models"] do
+    test "#{verb} on a provider row opens the provider and runs #{action} there" do
+      fake = FakeSettings.seed()
+
+      {state, fake} =
+        ready() |> Reducer.update({:settings_open, {:section, :providers}}) |> serve(fake)
+
+      "rec:provider:" <> id =
+        Enum.find_value(Nav.rows(state), fn row ->
+          if String.starts_with?(row.id, "rec:provider:"), do: row.id
+        end)
+
+      state = Nav.put_cursor(state, "rec:provider:" <> id)
+
+      {state, fake} =
+        state
+        |> Reducer.update({:settings, {:verb, unquote(verb)}})
+        |> SwarmCodeCLI.UI.C74U3Helpers.serve(fake)
+
+      assert SwarmCodeCLI.UI.Settings.Layer.page(state.settings).record == {"provider", id}
+      {requests, _, _} = FakeSettings.control(fake, :requests, [])
+
+      assert Enum.any?(requests, fn r ->
+               r["action"] == unquote(action) and r["target"] == %{"id" => id}
+             end)
+    end
+  end
 end

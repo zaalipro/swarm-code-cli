@@ -1250,11 +1250,20 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Providers do
   defp do_act(_ctx, {:provider, id}, :open_row, _row),
     do: [{:open, R.new_page(:providers, {@kind, id})}]
 
+  # cli74 F39: `t` and `f` on a list row open the provider and run there, where
+  # the task row says it and a fetch shows its difference (the list's last-test
+  # column is the first a narrow table drops: both said nothing, found in the sandbox).
   defp do_act(_ctx, {:provider, id}, :test, _row),
-    do: [{:task, "provider.test", %{"id" => id}, %{}}]
+    do: [
+      {:open, R.new_page(:providers, {@kind, id})},
+      {:task, "provider.test", %{"id" => id}, %{}}
+    ]
 
   defp do_act(_ctx, {:provider, id}, :fetch, _row),
-    do: [{:task, "provider.fetch_models", %{"id" => id}, %{}}]
+    do: [
+      {:open, R.new_page(:providers, {@kind, id})},
+      {:task, "provider.fetch_models", %{"id" => id}, %{}}
+    ]
 
   defp do_act(ctx, {:provider, id}, :delete, _row), do: delete_ops(ctx, id)
 
