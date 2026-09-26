@@ -193,6 +193,11 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
   # A draft is not a record yet: the crumb says `new`, not the draft's id.
   defp record_name(_state, %Page{record: {_kind, "draft"}}), do: "new"
 
+  # QA #2 P2-4: a search engine's record has no name field; its label names it
+  # (`Search & web › Exa`, not `› exa`).
+  defp record_name(_state, %Page{record: {"search_provider", id}}),
+    do: SwarmCodeCLI.UI.Settings.Sections.SearchWeb.label(id)
+
   defp record_name(state, %Page{record: {kind, id}}) do
     case Map.get(state.settings.data.record, {kind, id}) do
       %{fields: fields} when is_map(fields) ->
@@ -275,7 +280,10 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
     Text.spread(
       state,
       [{" / ", {:info, [:bold]}}, {filter.query, :text_primary}, {caret, :focus}],
-      [{"filter #{filter.total} rows · #{shown} match ", :text_faint}],
+      [
+        {"filter #{filter.total} rows · #{shown} #{if shown == 1, do: "match", else: "matches"} ",
+         :text_faint}
+      ],
       width
     )
   end

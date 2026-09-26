@@ -440,4 +440,72 @@ defmodule SwarmCodeCLI.UI.Settings.C74Qa2Test do
       assert Layer.page(state.settings).record == {"search_provider", "exa"}
     end
   end
+
+  # ------------------------------------------------------------------ P2
+
+  test "P2-12: Providers opened while its list loads focuses the first provider" do
+    {state, _fake} = opened(:providers)
+    assert "rec:provider:" <> _ = Layer.page(state.settings).cursor
+    assert "rec:provider:" <> _ = Nav.current(state).id
+  end
+
+  test "P2-4: a search engine's page is named by its label in the crumb" do
+    {state, fake} = opened(:search_web, state: sized(160, 45))
+
+    {state, _} =
+      Ops.run(state, [{:open, %Page{section: :search_web, record: {"search_provider", "exa"}}}])
+
+    {state, _fake} = state |> Wire.sync() |> serve(fake)
+    assert hd(lines(state)) =~ "Search & web › Exa"
+  end
+
+  defp provider_page(fake, id) do
+    {state, fake} = opened(:providers, fake: fake)
+    {state, _} = Ops.run(state, [{:open, %Page{section: :providers, record: {"provider", id}}}])
+    state |> Wire.sync() |> serve(fake)
+  end
+
+  test "P2-9: after Fetch every provider's models a provider's page says it was fetched" do
+    id = I.ids().deepseek
+    {state, _fake} = provider_page(FakeSettings.seed(), id)
+    assert words(row(state, "fld:provider:#{id}:models")) =~ "not fetched this session"
+
+    task = %{
+      "task_id" => "t-all",
+      "action" => "provider.fetch_all",
+      "target" => nil,
+      "state" => "done",
+      "summary" => %{"providers" => [%{"id" => id, "state" => "done", "count" => 3}]},
+      "received_at_ms" => System.system_time(:millisecond)
+    }
+
+    layer = state.settings
+    state = %{state | settings: %{layer | tasks: Map.put(layer.tasks, "t-all", task)}}
+    text = words(row(state, "fld:provider:#{id}:models"))
+    assert text =~ ~r/fetched this session \d\d:\d\d/
+    refute text =~ "not fetched"
+  end
+
+  test "P2-11: a provider with models and no default model says how to pick one" do
+    id = I.ids().deepseek
+    fake = FakeSettings.seed()
+    fake = put_in(fake.integrations.providers[id]["default_model"], nil)
+    {state, _fake} = provider_page(fake, id)
+
+    assert words(row(state, "fld:provider:#{id}:default_model")) =~
+             ~r/none · Enter picks one of its \d+ models/
+  end
+
+  test "P2-5: the page filter counts its rows in agreement (1 match, 2 matches)" do
+    {state, _fake} = opened(:keys, state: sized(160, 45))
+    {state, _} = Ops.run(state, [{:open, %Page{section: :keys, sub: {:key_bindings, nil}}}])
+    state = press!(state, letter("/"))
+
+    for {query, noun} <- [{"palette", "match"}, {"scroll", "matches"}] do
+      [_header, search | _] = state |> typed(query) |> lines()
+      [_, count, said] = Regex.run(~r/· (\d+) (match(?:es)?) /, search)
+      assert said == noun, search
+      assert if(count == "1", do: noun == "match", else: noun == "matches"), search
+    end
+  end
 end

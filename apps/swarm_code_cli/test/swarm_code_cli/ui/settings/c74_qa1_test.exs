@@ -259,6 +259,9 @@ defmodule SwarmCodeCLI.UI.Settings.C74Qa1Test do
   # focused option had no mark; §4.11 draws the selection as reverse video.
   test "F-18: under NO_COLOR the picker's focused option is reverse video, the others are not" do
     {state, _fake} = opened(:providers)
+    # The picker opens from the Add row (the page now opens on the first
+    # provider, QA #2 P2-12, whose row would be reversed as the focus).
+    state = Nav.put_cursor(state, "act:providers.add")
     state = %{state | capabilities: %{state.capabilities | color_mode: :monochrome}}
     {state, _} = Ops.run(state, Providers.act(Nav.ctx(state), %{target: {:add}}, :add))
     state = key(state, :down)

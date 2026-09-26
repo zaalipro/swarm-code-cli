@@ -355,8 +355,12 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Overview do
 
     parts([
       on,
-      text(g["first"], &"#{&1} first"),
-      text(g["reader"], &"pages through #{&1}"),
+      # QA #2 P2-4: the engines by their labels, not their ids
+      text(g["first"], &"#{SwarmCodeCLI.UI.Settings.Sections.SearchWeb.label(&1)} first"),
+      text(
+        g["reader"],
+        &"pages through #{SwarmCodeCLI.UI.Settings.Sections.SearchWeb.label(&1)}"
+      ),
       counted(g["off"], "off")
     ])
   end

@@ -273,13 +273,24 @@ defmodule SwarmCodeCLI.UI.Settings.Nav do
     cond do
       focusable == [] -> state
       Enum.any?(focusable, &(&1.id == cursor)) -> state
-      is_binary(cursor) and loading?(state.settings) -> state
+      # QA #2 P2-12: a page that opens while its records load places the
+      # cursor once they are in (it stayed on `▸ Add a provider…`).
+      (is_nil(cursor) or is_binary(cursor)) and loading?(state) -> state
       true -> put_cursor(state, hd(focusable).id)
     end
   end
 
-  defp loading?(%Layer{requests: requests}),
-    do: Enum.any?(requests, fn {_ref, meta} -> is_map(meta) and Map.get(meta, :kind) == :load end)
+  # A load on its way, or one the page needs and does not hold yet (the
+  # layer settles before it sends them).
+  defp loading?(%{settings: %Layer{requests: requests} = layer} = state) do
+    Enum.any?(requests, fn {_ref, meta} -> is_map(meta) and Map.get(meta, :kind) == :load end) or
+      not Enum.all?(
+        Sections.loads(Layer.section(layer), ctx(state)),
+        &(SwarmCodeCLI.UI.Settings.Wire.loaded?(layer, &1) or failed?(layer, &1))
+      )
+  end
+
+  defp failed?(%Layer{requests: requests}, load), do: Map.has_key?(requests, {:failed, load})
 
   @doc "The rail's section ids in order."
   @spec rail() :: [atom()]

@@ -630,7 +630,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Providers do
       kind: :field,
       key: "provider.default_model",
       label: "Default model",
-      value: if(model, do: [{model, :text_primary}], else: [{"none", :text_ghost}]),
+      value: default_model_value(model, R.field(f, "models") || []),
       tag: [{"global", :text_muted}],
       lines: error_lines(ctx, row_id),
       editor:
@@ -647,14 +647,47 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Providers do
     )
   end
 
+  # QA #2 P2-9: `Fetch every provider's models` fetched this one too; its row
+  # said `not fetched this session`. The time the bulk fetch ended, or "".
+  defp bulk_fetch(ctx, id) do
+    with {_task_id, task} <- R.task(ctx, "provider.fetch_all"),
+         "done" <- to_string(R.field(task, "state")),
+         rows when is_list(rows) <- R.field(R.field(task, "summary") || %{}, "providers"),
+         true <- Enum.any?(rows, &(R.field(&1, "id") == id and R.field(&1, "state") == "done")) do
+      case R.field(task, "received_at_ms") do
+        ms when is_integer(ms) and ms > 0 ->
+          {_date, {hour, minute, _}} = :calendar.system_time_to_local_time(ms, :millisecond)
+          :io_lib.format("~2..0B:~2..0B", [hour, minute]) |> to_string()
+
+        _ ->
+          ""
+      end
+    else
+      _ -> nil
+    end
+  end
+
+  # QA #2 P2-11: a provider whose list arrived but has no default says how to pick one.
+  defp default_model_value(model, _models) when is_binary(model) and model != "",
+    do: [{model, :text_primary}]
+
+  defp default_model_value(_model, []), do: [{"none", :text_ghost}]
+
+  defp default_model_value(_model, models),
+    do: [
+      {"none", :text_ghost},
+      {" · Enter picks one of its #{R.count(length(models), "model")}", :warning}
+    ]
+
   defp models_summary_row(ctx, id, f) do
     models = R.field(f, "models") || []
     fetched = R.field(f, "last_fetch")
     diff = pending_fetch(ctx, id, f)
 
     when_words =
-      case fetched && R.field(fetched, "state") do
-        "done" -> "fetched this session #{R.hhmm(R.field(fetched, "at"))}"
+      case {fetched && R.field(fetched, "state"), bulk_fetch(ctx, id)} do
+        {"done", _} -> "fetched this session #{R.hhmm(R.field(fetched, "at"))}"
+        {_, at} when is_binary(at) -> String.trim("fetched this session #{at}")
         _ -> "not fetched this session"
       end
 
