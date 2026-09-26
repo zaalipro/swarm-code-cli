@@ -763,8 +763,8 @@ terminal.keys` in a shell.
 | `PgDn` | One page down; in a number editor one big step down |
 | `Home` | The first row; in a text editor the start of the line |
 | `End` | The last row; in a text editor the end of the line |
-| `←` | Back to the rail; on an enum or number one step down; in text the caret left |
-| `→` | Open the section from the rail; on an enum or number one step up; in text the caret right |
+| `←` | Back to the rail or step down (an enum or a number on its row; in text the caret left) |
+| `→` | Open the section or step up (an enum or a number on its row; in text the caret right) |
 | `Shift-←` | A number one big step down (Shift-Left) |
 | `Shift-→` | A number one big step up (Shift-Right) |
 | `[` | The section above on the rail |
@@ -819,8 +819,8 @@ terminal.keys` in a shell.
 | `PgDn` | One page down; in a number editor one big step down |
 | `Home` | The first row; in a text editor the start of the line |
 | `End` | The last row; in a text editor the end of the line |
-| `←` | Back to the rail; on an enum or number one step down; in text the caret left |
-| `→` | Open the section from the rail; on an enum or number one step up; in text the caret right |
+| `←` | Back to the rail or step down (an enum or a number on its row; in text the caret left) |
+| `→` | Open the section or step up (an enum or a number on its row; in text the caret right) |
 | `Enter` | Open, edit or run the focused row (choose the option, press the focused button) |
 | `F1` | Every key of this page; the same key closes it |
 | `Ctrl-N` | Close Settings and go to the run that waits for you |
@@ -844,8 +844,8 @@ terminal.keys` in a shell.
 | `PgDn` | One page down; in a number editor one big step down |
 | `Home` | The first row; in a text editor the start of the line |
 | `End` | The last row; in a text editor the end of the line |
-| `←` | Back to the rail; on an enum or number one step down; in text the caret left |
-| `→` | Open the section from the rail; on an enum or number one step up; in text the caret right |
+| `←` | Back to the rail or step down (an enum or a number on its row; in text the caret left) |
+| `→` | Open the section or step up (an enum or a number on its row; in text the caret right) |
 | `Shift-←` | A number one big step down (Shift-Left) |
 | `Shift-→` | A number one big step up (Shift-Right) |
 | `F1` | Every key of this page; the same key closes it |
@@ -912,8 +912,8 @@ terminal.keys` in a shell.
 |---|---|
 | `↑` | The row above (the result above, the option above) |
 | `↓` | The row below (the result below, the option below) |
-| `←` | Back to the rail; on an enum or number one step down; in text the caret left |
-| `→` | Open the section from the rail; on an enum or number one step up; in text the caret right |
+| `←` | Back to the rail or step down (an enum or a number on its row; in text the caret left) |
+| `→` | Open the section or step up (an enum or a number on its row; in text the caret right) |
 | `Enter` | Open, edit or run the focused row (choose the option, press the focused button) |
 | `Ctrl-C` | Clear the text, then cancel; on a page close Settings (twice quits, as in the shell) |
 | `Esc` | Cancel the editor (the old value stays); clear the search, then leave; close once |

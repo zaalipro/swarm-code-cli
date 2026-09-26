@@ -571,6 +571,15 @@ defmodule SwarmCodeCLI.UI.Settings.C74Qa2Test do
     end
   end
 
+  test "P2-7: the keys sheet says ← and → also step an enum or a number (§4.3)" do
+    state = sized(160, 45) |> act!({:settings_open, {:section, :appearance}})
+    text = state |> press!(letter("?")) |> lines() |> Enum.join("\n")
+
+    assert text =~ ~r/←\s+Back to the rail or step down/, text
+    assert text =~ ~r/→\s+Open the section or step up/, text
+    assert text =~ "Remapped yourself out of a key?"
+  end
+
   test "P2-1: the enum editor keeps the focused choice in view (‹ … Firecrawl ›)" do
     alias SwarmCodeCLI.UI.Settings.Editors.Enum, as: EnumEditor
 
