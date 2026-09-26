@@ -596,9 +596,10 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.SearchWeb do
   # `Search.move/2`).
   defp moved(order, kind, dir) do
     index = Enum.find_index(order, &(&1 == kind))
-    target = index && index + dir
 
-    if index && target >= 0 and target < length(order) do
+    if is_integer(index) and index + dir >= 0 and index + dir < length(order) do
+      target = index + dir
+
       order
       |> List.replace_at(index, Enum.at(order, target))
       |> List.replace_at(target, kind)

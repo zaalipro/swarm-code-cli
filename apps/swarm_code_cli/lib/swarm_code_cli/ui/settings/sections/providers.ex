@@ -1567,8 +1567,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Providers do
            # QA #2: the undo expects the list this apply leaves (the answer's record).
            undo:
              {:command, "provider.update", %{"id" => id},
-              %{"models" => R.field(f, "models") || []},
-              %{expected_from: {:fields, ["models"]}}},
+              %{"models" => R.field(f, "models") || []}, %{expected_from: {:fields, ["models"]}}},
            toast: if(mode == "add", do: "Added the new models", else: "Applied the fetched list")
          }}
       ]

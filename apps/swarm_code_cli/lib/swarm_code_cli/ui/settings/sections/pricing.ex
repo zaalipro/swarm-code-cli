@@ -552,20 +552,24 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Pricing do
 
   defp rename_ops(model, name, old) do
     [
-      {:command, "pricing.put_row", nil,
-       old |> Map.put("model", name) |> Map.put("rename_from", model),
-       # QA #2: `row` is the row at the new name (none yet), `rename_row` the
-       # renamed one; they were swapped, and the undo had neither.
-       %{
-         expected: %{"row" => nil, "rename_row" => stored_row(old)},
-         write_key: {:record, @kind, model, "model"},
-         undo:
-           {:command, "pricing.put_row", nil,
-            old |> Map.put("model", model) |> Map.put("rename_from", name),
-            %{expected: %{"row" => nil, "rename_row" => stored_row(old)}}},
-         toast: "#{model} renamed to #{name}",
-         after: {:open_record, :pricing, @kind, name}
-       }}
+      {
+        :command,
+        "pricing.put_row",
+        nil,
+        old |> Map.put("model", name) |> Map.put("rename_from", model),
+        # QA #2: `row` is the row at the new name (none yet), `rename_row` the
+        # renamed one; they were swapped, and the undo had neither.
+        %{
+          expected: %{"row" => nil, "rename_row" => stored_row(old)},
+          write_key: {:record, @kind, model, "model"},
+          undo:
+            {:command, "pricing.put_row", nil,
+             old |> Map.put("model", model) |> Map.put("rename_from", name),
+             %{expected: %{"row" => nil, "rename_row" => stored_row(old)}}},
+          toast: "#{model} renamed to #{name}",
+          after: {:open_record, :pricing, @kind, name}
+        }
+      }
     ]
   end
 

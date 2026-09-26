@@ -32,7 +32,17 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Responses do
 
   alias SwarmCodeCLI.UI.Reducer.Settings.{Commit, Ops}
   alias SwarmCodeCLI.UI.Reducer.Settings.Paste, as: PasteTarget
-  alias SwarmCodeCLI.UI.Settings.{Data, DeepLink, IntegrationRows, Layer, Nav, Page, Sections, Wire}
+
+  alias SwarmCodeCLI.UI.Settings.{
+    Data,
+    DeepLink,
+    IntegrationRows,
+    Layer,
+    Nav,
+    Page,
+    Sections,
+    Wire
+  }
 
   @refresh_words "Couldn't tell whether that was saved; reloading."
 
