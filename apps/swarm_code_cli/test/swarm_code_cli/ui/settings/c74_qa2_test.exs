@@ -538,6 +538,20 @@ defmodule SwarmCodeCLI.UI.Settings.C74Qa2Test do
       assert text =~ ~r/Ctrl-C\s+Ctrl-C\s+\S/, text
     end
 
+    test "a key name that reads like the label (Up's key name is Up) stays the least important column" do
+      {state, _fake} = opened(:keys, state: sized(160, 45))
+      page = %Page{section: :keys, sub: {:key_bindings, :settings}}
+      {state, _} = Ops.run(state, [{:open, page}])
+      text = state |> lines() |> Enum.join("\n")
+
+      # the settings table drops its key names (priority 9) before its
+      # contexts (priority 3): no row reads `Up  ↑  Up` or `PgUp  PageUp`
+      assert text =~ ~r/Up\s+↑/, text
+      refute text =~ ~r/↑\s+Up\s/, text
+      refute text =~ ~r/PgUp\s+PageUp/, text
+      assert text =~ ~r/Page up\s+PgUp\s+· default/, text
+    end
+
     test "the vim group comes last under the standard keymap and first under vim" do
       {state, _fake} = opened(:keys, state: sized(160, 45))
       {state, _} = Ops.run(state, [{:open, %Page{section: :keys, sub: {:key_bindings, nil}}}])

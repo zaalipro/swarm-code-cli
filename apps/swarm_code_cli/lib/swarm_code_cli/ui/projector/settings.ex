@@ -749,13 +749,18 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
     columns =
       Enum.map(columns, fn {text, role, priority} -> {to_string(text), role, priority} end)
 
+    # Only the first cell that reads as the label is the name: a later one
+    # that happens to read the same (a key binding `Up` whose key name is
+    # `Up`) keeps its own priority (QA #2 P2-6).
+    name_at = if label == "", do: nil, else: Enum.find_index(columns, &match?({^label, _, _}, &1))
+
     cond do
-      label == "" or Enum.any?(columns, &match?({^label, _, _}, &1)) ->
+      label == "" or name_at != nil ->
         columns
         |> Enum.with_index()
         |> Enum.map(fn
           {{text, role, _}, 0} -> {text, role, 0}
-          {{^label, role, _}, _} when label != "" -> {label, role, 0}
+          {{text, role, _}, ^name_at} -> {text, role, 0}
           {cell, _} -> cell
         end)
 
