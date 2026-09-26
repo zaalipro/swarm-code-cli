@@ -165,8 +165,10 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Paste do
   line says why): the paste is kept and no longer waits for a check.
   """
   @spec replacement_failed(map()) :: map()
-  def replacement_failed(%{settings: %Layer{paste: %Target{pending_task: :sent} = paste}} = state),
-    do: put(state, %{paste | pending_task: nil})
+  def replacement_failed(
+        %{settings: %Layer{paste: %Target{pending_task: :sent} = paste}} = state
+      ),
+      do: put(state, %{paste | pending_task: nil})
 
   def replacement_failed(state), do: state
 
@@ -213,6 +215,7 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Paste do
     do:
       Map.get(summary, "models") || Map.get(summary, :models) || Map.get(summary, "count") ||
         Map.get(summary, :count)
+
   defp models(_summary), do: nil
 
   defp refusal(%{} = summary),

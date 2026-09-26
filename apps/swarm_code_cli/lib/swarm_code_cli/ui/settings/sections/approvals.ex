@@ -233,7 +233,9 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Approvals do
         at when is_binary(at) ->
           SwarmCodeCLI.UI.Settings.IntegrationRows.local_stamp(at, "%Y-%m-%d %H:%M") ||
             at |> String.slice(0, 16) |> String.replace("T", " ")
-        _ -> "never"
+
+        _ ->
+          "never"
       end
 
     %Row{row | value: [{words, :text_muted}], state: :readonly}
