@@ -149,6 +149,10 @@ defmodule SwarmCodeCLI.UI.Settings.C74EffortLevelsTest do
 
     assert Enum.map(rows, & &1["key"]) == ["off", "high", "max"]
 
+    # cli74 F35: the picker's own on_pick reaches the same ops through the section.
+    assert [{:draft_put, _, %{"rows" => ^rows}}] =
+             Providers.picked(c, picker.on_pick |> elem(2), "deepseek")
+
     [{:draft_put, _, %{"rows" => added}}, {:edit, "item:levels:3"}] =
       Providers.act(c, row(rows(c, @ids.ollama), "act:levels.add"), :open_row)
 

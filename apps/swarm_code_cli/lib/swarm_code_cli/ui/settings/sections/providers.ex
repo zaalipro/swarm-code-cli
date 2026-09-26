@@ -1667,6 +1667,14 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Providers do
     end
   end
 
+  @doc """
+  A picker's choice: `:preset` (Add a provider…) opens a draft from that preset;
+  `:effort_preset` (the effort levels sub-page) puts the preset's levels in its draft.
+  """
+  def picked(_ctx, :preset, value), do: start_draft(value)
+  def picked(ctx, :effort_preset, value), do: EffortLevels.picked(ctx, value)
+  def picked(_ctx, _tag, _value), do: []
+
   @doc "Ops that open a draft from a preset id (the preset picker's `on_pick`)."
   def start_draft(preset_id) do
     case Enum.find(@presets, &(&1.id == preset_id)) do

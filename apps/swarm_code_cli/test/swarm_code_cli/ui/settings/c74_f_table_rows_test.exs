@@ -305,4 +305,48 @@ defmodule SwarmCodeCLI.UI.Settings.C74FTableRowsTest do
     draft = state.settings.drafts["pricing_row"]
     assert draft.fields["model"] == model and draft.fields["input"] == 0.5
   end
+
+  # cli74 F35 (found in the sandbox): choosing a preset in "Add a provider…" closed
+  # the picker and did nothing: nothing answered `on_pick: {:section, :providers,
+  # :preset}` (nor the effort levels' preset picker). Every section picker answers.
+  test "the provider preset picker opens a draft from the chosen preset" do
+    fake = FakeSettings.seed()
+
+    {state, fake} =
+      ready() |> Reducer.update({:settings_open, {:section, :providers}}) |> serve(fake)
+
+    {state, _} =
+      state |> Nav.put_cursor("act:providers.add") |> Reducer.update({:settings, {:verb, :enter}})
+
+    assert {:picker, picker} = state.settings.popover
+    assert Enum.any?(picker.options, &(&1.value == "openrouter"))
+
+    state =
+      Enum.reduce(String.graphemes("openrouter"), state, fn ch, acc ->
+        elem(Reducer.update(acc, {:settings, {:text, ch}}), 0)
+      end)
+
+    {state, _fake} = state |> Reducer.update({:settings, {:verb, :enter}}) |> serve(fake)
+    assert state.settings.popover == nil
+    assert Page.level(SwarmCodeCLI.UI.Settings.Layer.page(state.settings)) == :record
+    assert state.settings.drafts["provider"].fields["base_url"] == "https://openrouter.ai/api/v1"
+    assert Enum.any?(lines(state), &(&1 =~ "openrouter.ai"))
+  end
+
+  test "every section picker names a section that answers it" do
+    for {section, tag} <- [
+          {:providers, :preset},
+          {:providers, :effort_preset},
+          {:mcp, :import_scope},
+          {:library, {:new, "commands"}},
+          {:models_effort, :profile},
+          {:keys, :context},
+          {:approvals, :project},
+          {:project_file, :new_hook}
+        ] do
+      module = SwarmCodeCLI.UI.Settings.Sections.module_for(section)
+      Code.ensure_loaded!(module)
+      assert function_exported?(module, :picked, 3), inspect({section, tag})
+    end
+  end
 end

@@ -525,6 +525,12 @@ defmodule SwarmCodeCLI.UI.Settings.EffortLevels do
     end
   end
 
+  @doc "The preset picker's choice on the page's provider (`on_pick: {:section, :providers, :effort_preset}`)."
+  def picked(ctx, preset_id) do
+    id = page_provider(ctx)
+    preset_ops(ctx, id, provider_fields(ctx, id), preset_id)
+  end
+
   @doc "Ops that put a preset's levels into the draft (the preset picker's `on_pick`)."
   def preset_ops(ctx, id, f, preset_id) do
     case Enum.find(R.field(f, "presets") || [], &(R.field(&1, "id") == preset_id)) do
