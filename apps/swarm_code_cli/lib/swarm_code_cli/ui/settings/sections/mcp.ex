@@ -1171,7 +1171,8 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.MCP do
          undo: false,
          toast: "Added #{attrs["name"]}",
          errors_to: {:draft, @kind},
-         after: {:open_record, :mcp, @kind, then: []}
+         # QA F-1: the created server's page replaces the draft's, and the draft goes.
+         after: {:discard_draft, @kind, then: [:back, {:open_record, :mcp, @kind, then: []}]}
        }}
     ]
   end

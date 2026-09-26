@@ -1594,9 +1594,17 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Providers do
          write_key: {:record, @kind, @draft, :create},
          undo: false,
          toast: "Added #{attrs["name"]}",
+         errors_to: {:draft, @kind},
+         # QA F-1: the created provider's page replaces the draft's, and the
+         # draft (with its pasted key) goes; leaving later said "the new
+         # provider (not created yet)" and `s` brought the draft back.
          after:
-           {:open_record, :providers, @kind,
-            then: [{:task, "provider.test", %{"id" => :record_id}, %{}}]}
+           {:discard_draft, @kind,
+            then: [
+              :back,
+              {:open_record, :providers, @kind,
+               then: [{:task, "provider.test", %{"id" => :record_id}, %{}}]}
+            ]}
        }}
     ]
   end

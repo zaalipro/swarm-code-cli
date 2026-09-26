@@ -127,8 +127,15 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.C74ProvidersTest do
       assert attrs["effort_levels"] == Enum.find(I.presets(), &(&1["id"] == "deepseek"))["levels"]
       assert opts.secrets_from == {:draft, "provider"}
 
-      assert {:open_record, :providers, "provider",
-              then: [{:task, "provider.test", %{"id" => :record_id}, %{}}]} = opts.after
+      # cli74 G1 (QA F-1): the created provider's page replaces the draft's and the draft goes.
+      assert {:discard_draft, "provider",
+              then: [
+                :back,
+                {:open_record, :providers, "provider",
+                 then: [{:task, "provider.test", %{"id" => :record_id}, %{}}]}
+              ]} = opts.after
+
+      assert opts.errors_to == {:draft, "provider"}
     end
 
     test "a built-in preset sends no levels; a field error lands under its row" do
