@@ -194,7 +194,17 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Text do
   @spec style(map(), term()) :: map()
   def style(state, {role, :on, background}) do
     base = style(state, role)
-    %{base | background: Theme.style(background, state.capabilities).background}
+
+    case Theme.style(background, state.capabilities) do
+      # NO_COLOR and 16 colours draw the selection as reverse video (§4.11),
+      # not as a background colour; a picker's or a confirmation's focused
+      # line lost it and read like the others.
+      %{background: nil, modifiers: modifiers} ->
+        %{base | modifiers: Enum.uniq(base.modifiers ++ (modifiers -- [:dim]))}
+
+      %{background: color} ->
+        %{base | background: color}
+    end
   end
 
   def style(state, {role, modifiers}) when is_list(modifiers) do

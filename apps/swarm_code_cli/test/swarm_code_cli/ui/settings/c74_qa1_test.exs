@@ -255,6 +255,30 @@ defmodule SwarmCodeCLI.UI.Settings.C74Qa1Test do
     refute marked.(state, "Keys a project file")
   end
 
+  # Found in the polish sandbox (80 x 24, NO_COLOR): the preset picker's
+  # focused option had no mark; §4.11 draws the selection as reverse video.
+  test "F-18: under NO_COLOR the picker's focused option is reverse video, the others are not" do
+    {state, _fake} = opened(:providers)
+    state = %{state | capabilities: %{state.capabilities | color_mode: :monochrome}}
+    {state, _} = Ops.run(state, Providers.act(Nav.ctx(state), %{target: {:add}}, :add))
+    state = key(state, :down)
+    assert {:picker, %{cursor: 1}} = state.settings.popover
+
+    reversed? = fn words ->
+      {scene, _} = SwarmCodeCLI.UI.Projector.project(state)
+
+      scene.regions
+      |> Enum.flat_map(& &1.blocks)
+      |> Enum.flat_map(&Map.get(&1, :spans, []))
+      |> Enum.filter(&(SwarmCodeCLI.UI.SafeText.value(&1.text) == words))
+      |> Enum.map(&(:reversed in &1.style.modifiers))
+    end
+
+    assert reversed?.("OpenAI") == [true]
+    assert [false | _] = anthropic = reversed?.("Anthropic")
+    refute true in anthropic
+  end
+
   # ------------------------------------------------------------------ F-5
 
   describe "F-5: the keys sheet lists the page's keys, the marks and the layers" do
