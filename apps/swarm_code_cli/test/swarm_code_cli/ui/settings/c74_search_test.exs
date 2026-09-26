@@ -109,7 +109,9 @@ defmodule SwarmCodeCLI.UI.Settings.C74SearchTest do
 
       text = screen(state)
       assert text =~ "Side panel"
-      assert text =~ "results · Esc clears"
+      # cli74 G1 (QA F-13, §4.1.7): `N of <scalar settings> · S sections`.
+      assert text =~
+               ~r/\d+ of #{length(SwarmCode.Settings.Registry.scalar_keys())} · \d+ sections?/
 
       state = press!(state, Input.key(:down))
       assert Nav.current(state).id == "key:terminal.panel"

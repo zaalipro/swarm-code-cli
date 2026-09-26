@@ -188,7 +188,11 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Storage do
               id: "info:storage:kind:#{R.field(k, "kind")}",
               kind: :info,
               label: R.field(k, "label"),
-              value: [{"#{R.field(k, "count")} · #{R.bytes(R.field(k, "bytes"))}", :text_muted}],
+              # QA F-21: counts in thin groups, as Pricing prints them (`12 496`).
+              value: [
+                {"#{SwarmCodeCLI.UI.Settings.Sections.Pricing.group_digits(R.field(k, "count"))} · #{R.bytes(R.field(k, "bytes"))}",
+                 :text_muted}
+              ],
               state: :readonly
             )
           end

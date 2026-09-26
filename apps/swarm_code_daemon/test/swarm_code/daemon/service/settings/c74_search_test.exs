@@ -242,7 +242,7 @@ defmodule SwarmCode.Daemon.Service.Settings.C74SearchTest do
       {:ok, moved} =
         run(c, "search.move", "exa", attributes: %{"dir" => -1}, expected: %{"order" => order})
 
-      assert moved.status == :accepted and moved.message == "Exa moved up"
+      assert moved.status == :accepted and moved.message == "Moved Exa above Tavily"
       assert [%{target: "order", value: ["exa", "tavily" | _]}] = moved.results
 
       {:ok, stale} =

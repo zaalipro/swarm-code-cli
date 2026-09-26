@@ -273,10 +273,19 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
   defp search(state, %Layer{mode: :search, search: %{query: query} = search}, width) do
     caret = glyph(state, :caret)
 
+    # §4.1.7 (QA F-13): `7 of 212 · 3 sections`.
     count =
       case Map.get(search, :found) do
-        %{results: results} -> [{"#{length(results)} results · Esc clears ", :text_faint}]
-        _ -> [{"Esc leaves ", :text_faint}]
+        %{results: results} ->
+          sections = results |> Enum.map(&elem(&1, 1).section) |> Enum.uniq() |> length()
+
+          [
+            {"#{length(results)} of #{scalar_count()} · #{sections} section#{if sections == 1, do: "", else: "s"} ",
+             :text_faint}
+          ]
+
+        _ ->
+          [{"Esc leaves ", :text_faint}]
       end
 
     Text.spread(
@@ -294,7 +303,10 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
     do:
       Text.spread(
         state,
-        [{" / ", :text_muted}, {"search every setting, provider, server and key", :text_ghost}],
+        [
+          {" / ", :text_muted},
+          {"search #{scalar_count()} settings, providers, servers and keys", :text_ghost}
+        ],
         strip(state, width),
         width
       )
@@ -1030,6 +1042,9 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
   end
 
   # ---------------------------------------------------------- helpers
+
+  # §4.1.2: the placeholder and the result count name the scalar settings.
+  defp scalar_count, do: length(SwarmCode.Settings.Registry.scalar_keys())
 
   defp glyph(state, id), do: Glyphs.get(id, Glyphs.tier(state.capabilities))
   defp rule(state, width), do: [{String.duplicate(glyph(state, :rule_h), width), :border}]

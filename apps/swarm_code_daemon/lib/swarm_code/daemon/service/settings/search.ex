@@ -111,6 +111,19 @@ defmodule SwarmCode.Daemon.Service.Settings.Search do
     end
   end
 
+  # §4.7: `Moved Exa above Brave` (QA F-21 said `Exa moved down`).
+  defp moved_words(order, kind, dir) do
+    engines = Enum.filter(order, &(role(&1) == "engine"))
+    index = Enum.find_index(engines, &(&1 == kind))
+    other = Enum.at(engines, index - dir)
+
+    cond do
+      other == nil -> "Moved #{Engines.label(kind)}"
+      dir < 0 -> "Moved #{Engines.label(kind)} above #{Engines.label(other)}"
+      true -> "Moved #{Engines.label(kind)} below #{Engines.label(other)}"
+    end
+  end
+
   defp role(kind), do: if(kind in Engines.engine_kinds(), do: "engine", else: "reader")
 
   defp default_base_url(kind) do
@@ -397,7 +410,7 @@ defmodule SwarmCode.Daemon.Service.Settings.Search do
           Kit.ok(
             results: [Kit.row("order", :accepted, value: order)],
             record: fresh_record(kind, ctx),
-            message: "#{Engines.label(kind)} moved #{if dir < 0, do: "up", else: "down"}"
+            message: moved_words(order, kind, dir)
           )
 
         {:ok, :dry_run} ->

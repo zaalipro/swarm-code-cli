@@ -468,6 +468,32 @@ defmodule SwarmCodeCLI.UI.Settings.C74Qa1Test do
     assert length(String.split(line, "default")) - 1 == 1, line
   end
 
+  # Every span of the scene, virtual lists too.
+  defp all_text(state) do
+    {scene, _} = SwarmCodeCLI.UI.Projector.project(state)
+    scene.regions |> Enum.flat_map(& &1.blocks) |> Enum.map_join("\n", &block_text/1)
+  end
+
+  defp block_text(%{items: items}), do: Enum.map_join(items, "\n", &block_text/1)
+
+  defp block_text(%{spans: spans}),
+    do: Enum.map_join(spans, "", &SwarmCodeCLI.UI.SafeText.value(&1.text))
+
+  defp block_text(_block), do: ""
+
+  test "F-21: the welcome card names the palette key the user bound" do
+    alias SwarmCodeCLI.UI.Keymap.Overrides
+    before = ready() |> all_text()
+    assert before =~ "Ctrl-P"
+    assert before =~ "workflows, research, memory, settings"
+
+    state = %{ready() | key_overrides: Overrides.compile(%{"command_palette" => ["F5"]})}
+    text = all_text(state)
+    assert text =~ "F5"
+    assert text =~ "workflows, research, memory, settings"
+    refute text =~ "Ctrl-P"
+  end
+
   # ------------------------------------------------------------------ F-22
 
   test "F-22: a renamed price opens the renamed row's page in place of the old one" do

@@ -73,7 +73,8 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.C74StorageTest do
     assert text(row(rows, "info:storage:line").value) ==
              "1.8 GB on disk · 4 MB write-ahead log · at least 100 MB reclaimable · 2 isolation directories (30 MB) · 214 sessions"
 
-    assert text(row(rows, "info:storage:kind:agent_details").value) == "4120 · 910 MB"
+    # cli74 G1 (QA F-21): counts in thin groups.
+    assert text(row(rows, "info:storage:kind:agent_details").value) == "4 120 · 910 MB"
     # cli74 F19: the stored UTC stamp in this machine's local time.
     local =
       {{2026, 9, 13}, {9, 0, 0}}

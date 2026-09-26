@@ -285,7 +285,7 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
     keys = [
       {@enter_key, "send"},
       {"/", "commands"},
-      {@palette_key, "workflows, research, memory, settings"}
+      {palette_key(state), "workflows, research, memory, settings"}
     ]
 
     blocks =
@@ -328,6 +328,18 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
   end
 
   defp welcome_content(_state, _width, _height), do: []
+
+  # The palette key after the user's overrides (QA F-21: the card still said
+  # Ctrl-P after Palette was rebound to F5, while the footer said F5).
+  defp palette_key(state) do
+    case SwarmCodeCLI.UI.Keymap.Bindings.keys_for(
+           :command_palette,
+           SwarmCodeCLI.UI.Keymap.overrides(state)
+         ) do
+      [key | _] -> SwarmCodeCLI.UI.Projector.KeyLabel.label(key)
+      [] -> @palette_key
+    end
+  end
 
   defp mode_panel(state, run, width, class) do
     plan? = match?(%{mode: :plan}, Map.get(state.read_model.snapshots, :workspace))
