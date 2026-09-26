@@ -172,11 +172,14 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Ops do
   defp one(state, {:leave, _then}), do: {state, []}
 
   # A draft is `%{fields, errors, secrets}`: the pages read `draft.fields`, a
-  # rejected create puts `errors` and a paste puts `secrets` beside them.
+  # rejected create puts `errors` and a paste puts `secrets` beside them. A
+  # field put again drops its error: the ✗ line answered the old value.
   defp one(%{settings: layer} = state, {:draft_put, kind, fields}) when is_map(fields) do
     drafts =
       Map.update(layer.drafts, kind, %{fields: fields}, fn draft ->
-        Map.update(draft, :fields, fields, &Map.merge(&1, fields))
+        draft
+        |> Map.update(:fields, fields, &Map.merge(&1, fields))
+        |> drop_draft_errors(Map.keys(fields))
       end)
 
     {put_layer(state, %{layer | drafts: drafts}), []}
@@ -535,4 +538,9 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Ops do
 
   defp next_ref(%Layer{next_ref: ref} = layer), do: {ref, %{layer | next_ref: ref + 1}}
   defp put_layer(state, layer), do: %{state | settings: layer}
+
+  defp drop_draft_errors(%{errors: errors} = draft, keys) when is_map(errors),
+    do: %{draft | errors: Map.drop(errors, keys)}
+
+  defp drop_draft_errors(draft, _keys), do: draft
 end

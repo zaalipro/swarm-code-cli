@@ -74,6 +74,25 @@ defmodule SwarmCodeCLI.UI.Settings.C74Qa1Test do
       {state, _} = verb(state, :back)
       assert state.settings.popover == nil
     end
+
+    # Found in the polish sandbox: a refused Ctrl-S left "✗ can't be blank" under
+    # a field the user had filled in since.
+    test "a field filled in after a refused Ctrl-S loses its error line; the others keep theirs" do
+      {state, fake} = opened(:providers)
+      {state, fake} = state |> Ops.run(Providers.start_draft("lmstudio")) |> serve(fake)
+      {state, _} = Ops.run(state, [{:draft_put, "provider", %{"name" => "", "kind" => "?"}}])
+
+      {state, _fake} = state |> verb(:save) |> serve(fake)
+
+      name_row = fn state -> Enum.find(Nav.rows(state), &(&1.id == "fld:provider:draft:name")) end
+      assert %{marks: [:invalid], lines: [[{"✗ can't be blank", :error}]]} = name_row.(state)
+      assert %{"kind" => "is invalid"} = state.settings.drafts["provider"].errors
+
+      {state, _} = Ops.run(state, [{:draft_put, "provider", %{"name" => "Mine"}}])
+
+      assert %{marks: [], lines: []} = name_row.(state)
+      assert state.settings.drafts["provider"].errors == %{"kind" => "is invalid"}
+    end
   end
 
   # ------------------------------------------------------------------ F-2
