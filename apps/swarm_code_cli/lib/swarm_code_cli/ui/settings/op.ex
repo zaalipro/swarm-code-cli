@@ -18,7 +18,9 @@ defmodule SwarmCodeCLI.UI.Settings.Op do
       the row's editor.
     * `{:external_edit, %{ref, content, fingerprint, suffix}}` — a private
       copy edited in the user's editor (owned by the session runtime).
-    * `{:cli_write, %{json_name => value | :remove}}` — a cli.json change set.
+    * `{:cli_write, %{json_name => value | :remove}}` — a cli.json change set;
+      `{:cli_write, changes, %{toast: words | nil}}` says `words` (or nothing)
+      when it is saved instead of `Saved cli.json`.
     * `{:open_folder, path}` / `{:copy, text}` — OS-facing work the runtime owns.
     * `{:toast, text, role}` / `{:leave, then}`.
     * `{:goto, target}` — leave for `{:section, id}`, `{:key, key}` or
@@ -55,6 +57,7 @@ defmodule SwarmCodeCLI.UI.Settings.Op do
           | {:edit, String.t()}
           | {:external_edit, map()}
           | {:cli_write, %{String.t() => term()}}
+          | {:cli_write, %{String.t() => term()}, map()}
           | {:open_folder, String.t()}
           | {:copy, String.t()}
           | {:toast, String.t(), atom()}
@@ -103,6 +106,8 @@ defmodule SwarmCodeCLI.UI.Settings.Op do
   # An empty change set rewrites the file as it is (Files & environment's
   # "Make it private").
   def valid?({:cli_write, changes}), do: is_map(changes)
+  # `%{toast: words | nil}`: the words when it is saved (nil says nothing).
+  def valid?({:cli_write, changes, opts}), do: is_map(changes) and is_map(opts)
   def valid?({:open_folder, path}), do: is_binary(path)
   def valid?({:copy, text}), do: is_binary(text)
   def valid?({:toast, text, role}), do: is_binary(text) and is_atom(role)

@@ -168,12 +168,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.ImportExport do
          undoable?: false,
          typed: "reset",
          opener: "key:transfer.reset_everything"
-       },
-       then:
-         [
-           {:command, "values.reset", nil, %{"scope" => "all"},
-            %{toast: "Every value is back to its default · no undo", undo: false}}
-         ] ++ reset_cli(ctx)}
+       }, then: reset_everything_ops(ctx)}
     ]
   end
 
@@ -493,6 +488,56 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.ImportExport do
   defp words(value), do: value |> inspect() |> String.slice(0, 60)
 
   # ---------------------------------------------------------------- helpers
+
+  @reset_words "Every value is back to its default · no undo"
+
+  # §3.3.4: the reset names every changed global value with its snapshot base
+  # (a value changed since conflicts and nothing is written); the cli.json half
+  # says nothing when the database half speaks, so the last word is the reset's.
+  defp reset_everything_ops(ctx) do
+    keys = changed_global_keys(ctx)
+    cli = reset_cli(ctx)
+
+    values =
+      if keys == [],
+        do: [],
+        else: [
+          {:command, "values.reset", nil, %{"keys" => keys},
+           %{expected: Map.new(keys, &{&1, base(ctx, &1)}), toast: @reset_words, undo: false}}
+        ]
+
+    cli =
+      case cli do
+        [] ->
+          []
+
+        [{:cli_write, changes}] ->
+          [{:cli_write, changes, %{toast: if(values == [], do: @reset_words)}}]
+      end
+
+    case values ++ cli do
+      [] -> [{:toast, "Nothing to reset: every value is its default", :text_muted}]
+      ops -> ops
+    end
+  end
+
+  defp changed_global_keys(ctx) do
+    values = (ctx.data && ctx.data.values) || %{}
+
+    for entry <- SwarmCode.Settings.Registry.all(),
+        entry.home == :global and entry.resettable and
+          SwarmCode.Settings.Entry.writable?(entry) and not match?({:cli, _}, entry.storage),
+        %{winner: winner} <- [Map.get(values, entry.key)],
+        winner not in [:default, nil],
+        do: entry.key
+  end
+
+  defp base(ctx, key) do
+    case Map.get(ctx.data.values, key) do
+      %{base: base} when base not in [nil, :absent] -> base
+      _ -> %{"$any" => true}
+    end
+  end
 
   defp reset_cli(ctx) do
     known = known_cli_names()

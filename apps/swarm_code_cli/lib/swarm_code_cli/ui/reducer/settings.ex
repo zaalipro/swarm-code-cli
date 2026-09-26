@@ -665,7 +665,11 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings do
 
   defp batch_done(state, write) do
     {state, effects} = Commit.apply_names(state, write.names)
-    {Commit.status(state, "Saved cli.json", :success), effects}
+
+    case Map.get(write, :toast, "Saved cli.json") do
+      nil -> {state, effects}
+      words -> {Commit.status(state, words, :success), effects}
+    end
   end
 
   defp first(messages), do: messages |> Map.values() |> List.first() || "is invalid"

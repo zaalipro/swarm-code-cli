@@ -4,6 +4,7 @@ defmodule SwarmCodeCLI.UI.Settings.C74ImportExportTest do
 
   import SwarmCodeCLI.UI.C74U3Helpers
 
+  alias SwarmCodeCLI.UI.DataSource.Fake.Settings, as: FakeSettings
   alias SwarmCodeCLI.UI.Settings.{Confirm, Nav, Page, Sections}
   alias SwarmCodeCLI.UI.Settings.Sections.ImportExport
 
@@ -187,9 +188,55 @@ defmodule SwarmCodeCLI.UI.Settings.C74ImportExportTest do
     assert [{:confirm, %Confirm{typed: "reset", undoable?: false}, then: then}] =
              Sections.act(:import_export, ctx, row, :open_row)
 
-    assert [{:command, "values.reset", nil, %{"scope" => "all"}, _}, {:cli_write, changes}] = then
+    # cli74 F32 (found in the sandbox): `scope: "all"` went without `expected`, the
+    # service refused it (every reset key needs its base) and only cli.json was
+    # reset. The reset names the changed global keys with their snapshot bases, and
+    # the cli.json half is quiet so the last word is the reset's.
+    assert [
+             {:command, "values.reset", nil, %{"keys" => keys}, %{expected: expected} = opts},
+             {:cli_write, changes, %{toast: nil}}
+           ] = then
+
     assert changes == %{"panel" => :remove}
+    assert keys != [] and Enum.sort(Map.keys(expected)) == Enum.sort(keys)
+    assert opts.toast =~ "back to its default"
+
+    for key <- keys do
+      entry = SwarmCode.Settings.Registry.fetch!(key)
+      assert entry.home == :global and entry.resettable, key
+      setting = ctx.data.values[key]
+      assert setting.winner not in [:default, nil], key
+      assert expected[key] == (setting.base || %{"$any" => true}), key
+    end
   end
+
+  test "Reset everything through the layer puts every global value back (Fake)" do
+    {state, fake} = opened(:import_export)
+    assert Enum.count(state.settings.data.values, &global_changed?/1) > 0
+
+    {state, _} = state |> Nav.put_cursor("key:transfer.reset_everything") |> verb(:enter)
+    state = Enum.reduce(String.graphemes("reset"), state, &act!(&2, {:settings, {:text, &1}}))
+    before = for {key, _} = pair <- state.settings.data.values, global_changed?(pair), do: key
+    {state, fake} = state |> verb(:enter) |> serve(fake)
+
+    assert state.settings.popover == nil
+    assert state.settings.status.text =~ "back to its default"
+
+    # What the service now answers for each value that had changed.
+    for key <- before do
+      entry = SwarmCode.Settings.Registry.fetch!(key)
+      assert %{"winner" => "default"} = FakeSettings.setting_value(fake, entry, nil), key
+    end
+  end
+
+  defp global_changed?({key, %{winner: winner}}) do
+    case SwarmCode.Settings.Registry.fetch(key) do
+      {:ok, entry} -> entry.home == :global and entry.resettable and winner not in [:default, nil]
+      :error -> false
+    end
+  end
+
+  defp global_changed?(_), do: false
 
   test "summary words" do
     assert ImportExport.summary_words(nil, "a.json") == "Import · a.json"

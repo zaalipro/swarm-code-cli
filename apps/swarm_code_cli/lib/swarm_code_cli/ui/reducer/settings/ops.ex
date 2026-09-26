@@ -144,10 +144,21 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Ops do
     {put_layer(state, layer), [{:settings_external_edit, layer.generation, ref, spec}]}
   end
 
-  defp one(%{settings: layer} = state, {:cli_write, changes}) do
+  defp one(state, {:cli_write, changes}),
+    do: one(state, {:cli_write, changes, %{toast: "Saved cli.json"}})
+
+  defp one(%{settings: layer} = state, {:cli_write, changes, opts}) do
     {ref, layer} = next_ref(layer)
     expected = Map.new(changes, fn {name, _} -> {name, Map.get(state.prefs, name, :absent)} end)
-    write = %{ref: ref, kind: :cli_batch, names: Map.keys(changes), changes: changes}
+
+    write = %{
+      ref: ref,
+      kind: :cli_batch,
+      names: Map.keys(changes),
+      changes: changes,
+      toast: Map.get(opts, :toast, "Saved cli.json")
+    }
+
     layer = %{layer | writes: Map.put(layer.writes, {:cli_batch, ref}, write)}
     {put_layer(state, layer), [{:settings_cli_write, layer.generation, ref, changes, expected}]}
   end
