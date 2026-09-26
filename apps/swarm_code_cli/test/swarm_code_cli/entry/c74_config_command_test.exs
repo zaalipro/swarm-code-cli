@@ -110,6 +110,23 @@ defmodule SwarmCodeCLI.Release.C74ConfigCommandTest do
     assert out =~ "swarmcode config COMMAND"
   end
 
+  # cli74 G1 (QA F-19): `export --help` wrote a file named `help` into the
+  # working directory and `import --help` previewed one.
+  test "--help and -h after a subcommand print the usage and touch nothing", c do
+    for args <- [
+          ["export", "--help"],
+          ["import", "-h"],
+          ["set", "limits.max_concurrent_agents", "--help"]
+        ] do
+      assert {0, out, _} = config(c, args)
+      assert out =~ "swarmcode config COMMAND"
+    end
+
+    refute File.exists?(Path.join(c.root, "help"))
+    assert {0, out, _} = config(c, ["get", "limits.max_concurrent_agents"])
+    assert out =~ "limits.max_concurrent_agents  4"
+  end
+
   test "a cli.json key is written without the database, even while a session is open", c do
     assert {0, out, _} = config(c, ["set", "terminal.panel", "hidden"], foundation: c.held)
     assert out =~ "terminal.panel = hidden"

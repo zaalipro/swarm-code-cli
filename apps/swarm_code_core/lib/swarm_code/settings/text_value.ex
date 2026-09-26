@@ -207,6 +207,10 @@ defmodule SwarmCode.Settings.TextValue do
     end
   end
 
+  # A8: Ecto's words, as the desktop shows them (QA F-12 said "must be a
+  # whole number" for both).
+  defp integer(""), do: {:error, "can't be blank"}
+
   defp integer(text) do
     case Integer.parse(String.replace(text, "_", "")) do
       {value, ""} ->
@@ -215,7 +219,7 @@ defmodule SwarmCode.Settings.TextValue do
       _ ->
         case Float.parse(text) do
           {value, ""} -> {:ok, value}
-          _ -> {:error, "must be a whole number"}
+          _ -> {:error, "is invalid"}
         end
     end
   end

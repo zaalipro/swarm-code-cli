@@ -327,11 +327,12 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.KeysInput do
       tag: [from],
       marks: marks,
       state: if(fixed?, do: :readonly, else: :normal),
+      # The tag says default/changed/fixed at the row's end (QA F-16: a
+      # column said it too, `· default … · default`).
       columns: [
         {key_text, if(keys == [], do: :text_ghost, else: :text_primary), 1},
         {contexts, :text_muted, 3},
-        {names, :text_ghost, 9},
-        {elem(from, 0), elem(from, 1), 2}
+        {names, :text_ghost, 9}
       ],
       editor:
         if(fixed?,

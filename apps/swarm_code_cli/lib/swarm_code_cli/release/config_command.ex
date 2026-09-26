@@ -137,8 +137,10 @@ defmodule SwarmCodeCLI.Release.ConfigCommand do
   defp parse_flags([flag | rest], words, flags) when flag in @bool_flags,
     do: parse_flags(rest, words, Map.put(flags, flag, true))
 
+  # QA F-19: `--help` anywhere asks for the usage; as a word it was the
+  # subcommand's argument (`export --help` wrote a file named help).
   defp parse_flags([flag | rest], words, flags) when flag in ["--help", "-h"],
-    do: parse_flags(rest, ["help" | words], flags)
+    do: parse_flags(rest, words, Map.put(flags, "--help", true))
 
   defp parse_flags(["--" <> _ = flag | _], _words, _flags) when flag != "--",
     do: {:error, "unknown option '#{flag}'."}
@@ -146,6 +148,11 @@ defmodule SwarmCodeCLI.Release.ConfigCommand do
   defp parse_flags([word | rest], words, flags), do: parse_flags(rest, [word | words], flags)
 
   ## --------------------------------------------------------------- dispatch
+
+  defp dispatch(_words, %{"--help" => true}, _env) do
+    IO.write(@usage)
+    @ok
+  end
 
   defp dispatch([], _flags, _env), do: usage_error("name a command.")
 

@@ -123,7 +123,9 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Appearance do
 
   # --------------------------------------------------------------- preview
 
-  @box 38
+  # Two boxes and their gap fit the 80 cells a 160-column page gives a row
+  # (QA F-14: at 38 the light box lost its right edge there).
+  @box 37
 
   @doc """
   The preview block (F10): the same transcript rows in a dark and a light

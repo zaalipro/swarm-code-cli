@@ -433,6 +433,41 @@ defmodule SwarmCodeCLI.UI.Settings.C74Qa1Test do
     refute Enum.any?(items, &(&1 =~ "mcp_server" or &1 =~ id))
   end
 
+  # ------------------------------------------------------------------ P2
+
+  test "F-12: a number says Ecto's words: is invalid, can't be blank" do
+    {:ok, entry} = SwarmCode.Settings.Registry.fetch("limits.max_concurrent_agents")
+    assert SwarmCode.Settings.TextValue.parse(entry, "abc") == {:error, "is invalid"}
+    assert SwarmCode.Settings.TextValue.parse(entry, "") == {:error, "can't be blank"}
+    assert SwarmCode.Settings.TextValue.parse(entry, "99") == {:ok, 99}
+
+    alias SwarmCodeCLI.UI.Settings.Editors.Number
+    assert Number.parse(%{entry: entry}, "abc") == {:error, "is invalid"}
+    assert Number.parse(%{entry: entry}, "99") == {:error, "must be between 1 and 16"}
+    assert Number.parse(%{min: 1, max: 9}, "x") == {:error, "is invalid"}
+  end
+
+  test "F-14: at 160 x 45 both preview boxes are whole" do
+    state =
+      ready()
+      |> act!({:resize, %SwarmCodeCLI.UI.Size{columns: 160, rows: 45}})
+      |> act!({:settings_open, {:section, :appearance}})
+
+    lines = state |> screen() |> String.split("\n")
+    top = Enum.find(lines, &(&1 =~ "┌─ dark"))
+    assert top =~ ~r/┌─ dark ─+┐ ┌─ light ─+┐/u, top
+    assert Enum.any?(lines, &(&1 =~ ~r/└─+┘ └─+┘/u))
+  end
+
+  test "F-16: a key binding row says default or changed once" do
+    {state, _fake} = opened(:keys)
+    {state, _} = Ops.run(state, [{:open, %Page{section: :keys, sub: {:key_bindings, nil}}}])
+    text = screen(state)
+    line = text |> String.split("\n") |> Enum.find(&(&1 =~ "Next word"))
+    assert line, text
+    assert length(String.split(line, "default")) - 1 == 1, line
+  end
+
   # ------------------------------------------------------------------ F-22
 
   test "F-22: a renamed price opens the renamed row's page in place of the old one" do

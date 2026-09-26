@@ -168,14 +168,14 @@ defmodule SwarmCodeCLI.UI.Settings.Editors.Number do
   defp number(text, 0) do
     case Integer.parse(String.replace(text, "_", "")) do
       {value, ""} -> {:ok, value}
-      _ -> {:error, "must be a whole number"}
+      _ -> {:error, "is invalid"}
     end
   end
 
   defp number(text, decimals) do
     case Float.parse(String.replace(text, "_", "")) do
       {value, ""} -> {:ok, Float.round(value, decimals)}
-      _ -> {:error, "must be a number"}
+      _ -> {:error, "is invalid"}
     end
   end
 
