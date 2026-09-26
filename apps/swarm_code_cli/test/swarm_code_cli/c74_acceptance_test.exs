@@ -159,7 +159,8 @@ defmodule SwarmCodeCLI.C74AcceptanceTest do
         |> Enum.drop(3)
         |> Enum.map(&(&1 |> String.split("│") |> hd() |> String.trim()))
         |> Enum.reject(&(&1 == ""))
-        |> Enum.map(&String.replace(&1, ~r/\s+[•!]\d+$/u, ""))
+        # a mark (•N, !N) or a record count (Providers 4, QA #2 P2-11)
+        |> Enum.map(&String.replace(&1, ~r/\s+[•!]?\d+$/u, ""))
 
       expected =
         ["Overview"] ++
