@@ -15,7 +15,7 @@ defmodule SwarmCodeCLI.C74AcceptanceTest do
   | A5 too small | here |
   | A6 writes per layer, `session.mode` four columns | `ui/settings/c74_commit_test.exs`, `ui/settings/c74_data_test.exs`, daemon `settings/c74_values_test.exs` |
   | A8 desktop messages | `ui/settings/c74_commit_test.exs` ("a rejected value…"), core `settings/c74_types_test.exs`, daemon `c74_registry_parity_test.exs` |
-  | A9 provenance, env, flag, ignored layers | `ui/settings/c74_commit_test.exs` ("an env override wins…"), `release/c74_terminal_preferences_test.exs`, `ui/settings/c74_models_effort_test.exs` |
+  | A9 provenance, env, flag, ignored layers | `ui/settings/c74_commit_test.exs` ("an env override wins…"), `entry/c74_terminal_preferences_test.exs`, `ui/settings/c74_models_effort_test.exs` |
   | A10 live terminal preferences | `ui/settings/c74_preferences_test.exs`, `ui/settings/c74_keys_layout_startup_test.exs`, `entry/c74_launch_test.exs` |
   | A11 cli.json | core `settings/c74_cli_file_test.exs`, `ui/pass72_preferences_runtime_test.exs` |
   | A12 undo/redo | `ui/settings/c74_undo_test.exs` |
