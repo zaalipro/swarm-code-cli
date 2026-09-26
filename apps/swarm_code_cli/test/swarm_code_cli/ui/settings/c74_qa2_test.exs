@@ -559,4 +559,20 @@ defmodule SwarmCodeCLI.UI.Settings.C74Qa2Test do
       assert text == "214 sessions · never cleaned up · deletes sessions after 90 days"
     end
   end
+
+  test "P2-2: the search finds a provider, a search engine and an MCP server before their pages are visited" do
+    {state, fake} = opened(:overview)
+    refute Map.has_key?(state.settings.data.records, {"search_providers", %{}})
+
+    {state, effects} = act(state, {:settings, {:verb, :search}})
+    assert [_] = queries(effects, "search_providers")
+    {state, _fake} = serve(state, effects, fake)
+
+    for {query, label} <- [{"tavily", "Tavily"}, {"deepseek", "DeepSeek"}, {"github", "github"}] do
+      state = typed(state, query)
+      %{found: found} = state.settings.search
+      labels = found |> Map.get(:results, []) |> Enum.map(fn {_rank, entry} -> entry.label end)
+      assert label in labels, inspect({query, labels})
+    end
+  end
 end

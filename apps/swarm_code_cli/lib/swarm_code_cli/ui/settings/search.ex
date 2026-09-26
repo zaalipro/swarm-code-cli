@@ -153,7 +153,16 @@ defmodule SwarmCodeCLI.UI.Settings.Search do
     kind = Map.get(record, :kind)
     id = Map.get(record, :id)
     fields = Map.get(record, :fields) || %{}
-    name = text(Map.get(fields, "name") || id)
+    # a search engine has no name field: its label names it (`Tavily`)
+    name =
+      text(
+        Map.get(fields, "name") ||
+          if(kind == "search_provider",
+            do: SwarmCodeCLI.UI.Settings.Sections.SearchWeb.label(id),
+            else: id
+          )
+      )
+
     section = DeepLink.record_section(to_string(kind)) || :overview
     rail = Map.get(order, section, 99)
 

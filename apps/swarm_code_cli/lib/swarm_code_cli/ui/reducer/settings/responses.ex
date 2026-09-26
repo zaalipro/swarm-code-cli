@@ -671,11 +671,17 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Responses do
   # once its list has arrived; a name the search could not place opens the
   # provider or server of exactly that name.
   defp settle(%{settings: %Layer{}} = state) do
-    state = state |> deep_record() |> Nav.settle()
+    state = state |> deep_record() |> search_again() |> Nav.settle()
     Wire.sync(state)
   end
 
   defp settle(state), do: {state, []}
+
+  # QA #2 P2-2: records that arrive while a query is typed join its results.
+  defp search_again(%{settings: %Layer{search: %{query: query}}} = state) when query != "",
+    do: SwarmCodeCLI.UI.Reducer.Settings.Find.refresh(state)
+
+  defp search_again(state), do: state
 
   defp deep_record(%{settings: %Layer{deep_link: {:record, kind, id}} = layer} = state) do
     if Enum.any?(layer.data.records, fn {{_kind, _}, page} ->

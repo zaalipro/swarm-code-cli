@@ -43,7 +43,7 @@ defmodule SwarmCodeCLI.UI.Settings.Wire do
         do: [:open | Sections.loads(Layer.section(layer), Nav.ctx(state))],
         else: Sections.loads(Layer.section(layer), Nav.ctx(state)) ++ [:overview]
 
-    loads = Enum.uniq(loads ++ editor_loads(layer))
+    loads = Enum.uniq(loads ++ editor_loads(layer) ++ search_loads(state))
 
     Enum.reduce(loads, {state, []}, fn load, {acc, effects} ->
       if needed?(acc.settings, load) do
@@ -66,6 +66,19 @@ defmodule SwarmCodeCLI.UI.Settings.Wire do
        do: SwarmCodeCLI.UI.Settings.ModelPicker.loads()
 
   defp editor_loads(_layer), do: []
+
+  # QA #2 P2-2 (§3.7.11): the search finds providers, search engines and MCP
+  # servers by name; their light lists load when the search opens (they were
+  # found only after their section had been visited).
+  defp search_loads(%{settings: %Layer{search: %{}}} = state) do
+    [
+      {:records, "providers", %{}},
+      {:records, "search_providers", %{}},
+      {:records, "mcp_servers", %{"project_id" => project_id(state)}}
+    ]
+  end
+
+  defp search_loads(_state), do: []
 
   @doc """
   Asks for `load` again unless it is on its way: what the page holds may be
