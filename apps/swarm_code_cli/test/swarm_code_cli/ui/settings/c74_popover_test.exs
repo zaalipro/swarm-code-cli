@@ -95,6 +95,34 @@ defmodule SwarmCodeCLI.UI.Settings.C74PopoverTest do
       assert state.settings.status.text == "Deleted DeepSeek"
     end
 
+    # cli74 F31 (found in the sandbox): typing `reset` then Enter pressed the focused
+    # Cancel, so Reset everything closed without doing anything and said nothing.
+    test "Enter after the typed word presses the button; a half-typed word keeps the dialog" do
+      {state, _} = run(opened(), [delete_confirm(%{typed: "reset", letter: "R"})])
+
+      half = Enum.reduce(String.graphemes("res"), state, &press!(&2, letter(&1)))
+      half = press!(half, Input.key(:enter))
+      assert {:confirm, %{confirm: %Confirm{input: "res"}}} = half.settings.popover
+
+      typed = Enum.reduce(String.graphemes("et"), half, &press!(&2, letter(&1)))
+
+      # Tab to the button and back to Cancel: Enter cancels even with the word typed.
+      kept =
+        typed |> press!(Input.key(:tab)) |> press!(Input.key(:tab)) |> press!(Input.key(:enter))
+
+      assert kept.settings.popover == nil
+      assert kept.settings.status == nil
+
+      done = press!(typed, Input.key(:enter))
+      assert done.settings.popover == nil
+      assert done.settings.status.text == "Deleted DeepSeek"
+
+      # Nothing typed: Enter is the focused Cancel.
+      cancelled = press!(state, Input.key(:enter))
+      assert cancelled.settings.popover == nil
+      assert cancelled.settings.status == nil
+    end
+
     test "the button stays disabled while the counts load" do
       {state, _} = run(opened(), [delete_confirm(%{counting?: true})])
       state = press!(state, letter("D"))

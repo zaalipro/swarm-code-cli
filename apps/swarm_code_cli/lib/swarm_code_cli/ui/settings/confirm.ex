@@ -19,6 +19,7 @@ defmodule SwarmCodeCLI.UI.Settings.Confirm do
             counting?: false,
             focus: :safe,
             input: "",
+            tabbed?: false,
             opener: nil
 
   @type t :: %__MODULE__{
@@ -33,6 +34,7 @@ defmodule SwarmCodeCLI.UI.Settings.Confirm do
           counting?: boolean(),
           focus: :safe | :danger,
           input: String.t(),
+          tabbed?: boolean(),
           opener: String.t() | nil
         }
 end

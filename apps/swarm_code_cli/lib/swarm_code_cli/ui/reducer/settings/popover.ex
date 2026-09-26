@@ -48,7 +48,29 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Popover do
        when verb in [:next_button, :previous_button, :left, :right] do
     confirm = body.confirm
     focus = if confirm.focus == :safe and enabled?(confirm), do: :danger, else: :safe
-    {put(state, {:confirm, %{body | confirm: %{confirm | focus: focus}}}), []}
+    {put(state, {:confirm, %{body | confirm: %{confirm | focus: focus, tabbed?: true}}}), []}
+  end
+
+  # A typed confirmation: the word is the answer, so Enter right after typing it
+  # presses the button (as the cleanup's `delete 14` then Enter); after Tab, Enter
+  # is the focused button; a half-typed word keeps the dialog open.
+  defp handle(
+         state,
+         :confirm,
+         %{confirm: %Confirm{typed: typed} = confirm} = body,
+         {:verb, verb}
+       )
+       when is_binary(typed) and verb in [:enter, :commit] do
+    cond do
+      enabled?(confirm) and (confirm.focus == :danger or not confirm.tabbed?) ->
+        press(state, body)
+
+      enabled?(confirm) or String.trim(confirm.input) == "" ->
+        close(state)
+
+      true ->
+        {state, []}
+    end
   end
 
   defp handle(state, :confirm, body, {:verb, verb}) when verb in [:enter, :commit] do
@@ -69,13 +91,13 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Popover do
        )
        when is_binary(typed) do
     input = String.slice(confirm.input, 0, max(String.length(confirm.input) - 1, 0))
-    {put(state, {:confirm, %{body | confirm: %{confirm | input: input}}}), []}
+    {put(state, {:confirm, %{body | confirm: %{confirm | input: input, tabbed?: false}}}), []}
   end
 
   defp handle(state, :confirm, %{confirm: %Confirm{typed: typed} = confirm} = body, {:text, text})
        when is_binary(typed) do
     input = String.slice(confirm.input <> text, 0, 64)
-    {put(state, {:confirm, %{body | confirm: %{confirm | input: input}}}), []}
+    {put(state, {:confirm, %{body | confirm: %{confirm | input: input, tabbed?: false}}}), []}
   end
 
   # The destructive letter presses its button (a verb binding or a typed letter).
