@@ -235,13 +235,21 @@ defmodule SwarmCodeCLI.UI.Settings.Nav do
   defp linked?(%Row{id: "act:" <> key}, "key:" <> key), do: true
   defp linked?(_row, _row_id), do: false
 
+  # QA #2 P1-4: a write's delta drops the page's records and asks for them
+  # again; while they are on their way the row under the cursor is missing,
+  # and the cursor fell to the page's first row (every MCP tool switch threw
+  # the focus to the server's header). It keeps its row until the loads end.
   defp settle_cursor(state, focusable, cursor) do
     cond do
       focusable == [] -> state
       Enum.any?(focusable, &(&1.id == cursor)) -> state
+      is_binary(cursor) and loading?(state.settings) -> state
       true -> put_cursor(state, hd(focusable).id)
     end
   end
+
+  defp loading?(%Layer{requests: requests}),
+    do: Enum.any?(requests, fn {_ref, meta} -> is_map(meta) and Map.get(meta, :kind) == :load end)
 
   @doc "The rail's section ids in order."
   @spec rail() :: [atom()]

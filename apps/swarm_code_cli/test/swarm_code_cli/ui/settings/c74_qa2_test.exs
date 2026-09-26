@@ -313,4 +313,42 @@ defmodule SwarmCodeCLI.UI.Settings.C74Qa2Test do
       assert fake.integrations.mcp[id]["url"] == "https://mine.example/mcp"
     end
   end
+
+  # ------------------------------------------------------------------ P1-4
+
+  test "P1-4: a tool switched with Space keeps the focus through the delta's reload" do
+    {state, fake} = opened(:mcp, fake: strict())
+    id = I.ids().docs
+    {state, _} = Ops.run(state, [{:open, %Page{section: :mcp, record: {"mcp_server", id}}}])
+    {state, fake} = state |> Wire.sync() |> serve(fake)
+    tools = for %{id: "item:tools:" <> _} = row <- rows(state), do: row.id
+    third = Enum.at(tools, 2)
+
+    {state, fake} = state |> Nav.put_cursor(third) |> verb(:toggle) |> serve(fake)
+    assert Nav.current(state).id == third
+
+    # the write's delta: the page's records go and are asked for again
+    update = %SwarmCodeCLI.UI.DataSource.DTO.SettingsUpdate{
+      revision: state.settings.data.revision + 10,
+      sections: [:mcp, :overview],
+      origin: :settings
+    }
+
+    {state, effects} = SwarmCodeCLI.UI.Reducer.Settings.Responses.delta(state, update)
+    assert [_ | _] = sent(effects)
+
+    # answered one at a time, the server's own record last: the cursor never
+    # leaves the tool
+    {state, _fake} =
+      effects
+      |> sent()
+      |> Enum.sort_by(&(params(&1)["view"] == "record"))
+      |> Enum.reduce({state, fake}, fn request, {acc, fake} ->
+        {acc, fake} = serve(acc, [{:query, request}], fake)
+        assert Layer.page(acc.settings).cursor == third
+        {acc, fake}
+      end)
+
+    assert Nav.current(state).id == third
+  end
 end
