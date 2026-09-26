@@ -180,12 +180,29 @@ defmodule SwarmCodeCLI.UI.Settings.C74DataTest do
     refute MapSet.member?(state.settings.data.values_loaded, :agents_limits)
     assert Map.has_key?(state.settings.changed_elsewhere, :agents_limits)
 
-    assert [%{"view" => "values", "sections" => ["agents_limits"]}] =
+    # cli74 F38: and the overview the header and the rail count on every page.
+    assert [%{"view" => "values", "sections" => ["agents_limits"]}, %{"view" => "overview"}] =
              Enum.map(sent(effects), &params/1)
 
     # An older revision is ignored.
     stale = %DTO.SettingsUpdate{revision: 3, sections: [:agents_limits], origin: :settings}
     assert {_, []} = SwarmCodeCLI.UI.Reducer.Settings.Responses.delta(state, stale)
+  end
+
+  # cli74 F38 (found in the sandbox): after a delta the header's "! 1 need attention"
+  # and the rail's "!1" went away on every page but the Overview.
+  test "the attention counts come back after a delta on any page" do
+    {state, fake} = opened()
+    assert state.settings.data.overview != nil
+
+    update = %DTO.SettingsUpdate{revision: 99, sections: [:agents_limits], origin: :elsewhere}
+    {state, _fake} = serve(SwarmCodeCLI.UI.Reducer.Settings.Responses.delta(state, update), fake)
+
+    assert state.settings.data.overview != nil
+    assert :agents_limits in state.settings.data.values_loaded
+
+    # Nothing is asked twice once the page holds it.
+    assert {_, []} = SwarmCodeCLI.UI.Settings.Wire.sync(state)
   end
 
   test "a settings_update delivered on the shell watch reaches the layer" do

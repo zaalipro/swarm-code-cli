@@ -29,12 +29,21 @@ defmodule SwarmCodeCLI.UI.Settings.Wire do
 
   @doc """
   Sends what the page on screen needs and does not have (and is not already
-  asking for): the open view on a fresh layer, then the section's `loads/1`.
+  asking for): the open view on a fresh layer, then the section's `loads/1`,
+  then the overview, which the header and the rail count on every page.
+
+  cli74 F38: a delta drops the overview and only the Overview page asked for
+  it again, so the header's `! 1 need attention` and the rail's `!1` went away
+  on every other page (found in the sandbox, `swarmcode settings providers`).
   """
   @spec sync(map()) :: {map(), list()}
   def sync(%{settings: %Layer{available: true} = layer} = state) do
-    loads = if layer.data.loaded_at == nil, do: [:open], else: []
-    loads = loads ++ Sections.loads(Layer.section(layer), Nav.ctx(state))
+    loads =
+      if layer.data.loaded_at == nil,
+        do: [:open | Sections.loads(Layer.section(layer), Nav.ctx(state))],
+        else: Sections.loads(Layer.section(layer), Nav.ctx(state)) ++ [:overview]
+
+    loads = Enum.uniq(loads)
 
     Enum.reduce(loads, {state, []}, fn load, {acc, effects} ->
       if needed?(acc.settings, load) do
