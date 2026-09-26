@@ -186,6 +186,36 @@ defmodule SwarmCode.Daemon.Service.Settings.C74Qa2E2ETest do
     assert SwarmCode.Domain.Providers.get(id).effort_levels == saved
   end
 
+  # ------------------------------------------------------------ conflicts
+
+  test "a record field changed elsewhere keeps yours: Enter writes it expecting theirs (QA #2 P1-3)",
+       c do
+    page = %Page{section: :search_web, record: {"search_provider", "exa"}}
+    state = open(c, :search_web) |> open_page(c, page)
+    row = Enum.find(Nav.rows(state), &(&1.id == "fld:search_provider:exa:base_url"))
+
+    C74S2.search_row!("exa", %{base_url: "https://theirs.example"})
+
+    state =
+      state
+      |> Nav.put_cursor(row.id)
+      |> Edit.commit(row, "https://mine.example")
+      |> serve(c.client)
+
+    assert base_url("exa") == "https://theirs.example"
+    conflicted = Enum.find(Nav.rows(state), &(&1.id == row.id))
+    assert :conflict in conflicted.marks, inspect(state.settings.status)
+    assert Enum.any?(conflicted.lines, &(words(&1) =~ "Enter keep yours (https://mine.example)"))
+
+    state = state |> verb(:enter) |> serve(c.client)
+    assert base_url("exa") == "https://mine.example", inspect(state.settings.status)
+    assert state.settings.conflicts == %{}
+  end
+
+  defp base_url(kind), do: Enum.find(Engines.all(), &(&1.kind == kind)).base_url
+
+  defp words(segments), do: Enum.map_join(segments, "", &elem(&1, 0))
+
   defp record(ctx, id), do: SwarmCodeCLI.UI.Settings.IntegrationRows.record(ctx, "provider", id)
 
   defp stringify(map), do: Map.new(map, fn {k, v} -> {to_string(k), v} end)

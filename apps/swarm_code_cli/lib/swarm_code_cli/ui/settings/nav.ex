@@ -89,7 +89,37 @@ defmodule SwarmCodeCLI.UI.Settings.Nav do
           Sections.sub_rows(page.section, ctx, page.sub)
       end
 
-    rows |> Normalize.rows() |> filtered(layer, ctx)
+    rows |> Normalize.rows() |> filtered(layer, ctx) |> conflicted(layer)
+  end
+
+  # QA #2 P1-3 (§3.7.9): a record field that changed elsewhere while it was
+  # written shows both values on its row.
+  defp conflicted(rows, %Layer{conflicts: conflicts}) when map_size(conflicts) > 0 do
+    Enum.map(rows, fn row ->
+      case Map.get(conflicts, {:row, row.id}) do
+        %{mine: mine, theirs: theirs} = conflict ->
+          theirs = words(theirs)
+          mine = words(mine)
+
+          lines = [
+            [{"! changed while you edited (#{conflict.origin}): now #{theirs}", :warning}],
+            [{"Enter keep yours (#{mine}) · Esc take theirs (#{theirs})", :text_muted}]
+          ]
+
+          %{row | marks: Enum.uniq(row.marks ++ [:conflict]), lines: row.lines ++ lines}
+
+        _ ->
+          row
+      end
+    end)
+  end
+
+  defp conflicted(rows, _layer), do: rows
+
+  defp words(values) when is_map(values) do
+    values
+    |> Enum.sort()
+    |> Enum.map_join(", ", fn {_field, value} -> SwarmCodeCLI.UI.Settings.Display.words(value) end)
   end
 
   # D37: a long list narrowed in place by its filter; a section that knows

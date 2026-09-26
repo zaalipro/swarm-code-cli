@@ -352,6 +352,10 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings do
       %{key: key} when is_map_key(layer.conflicts, {:value, key}) ->
         {put_layer(state, %{layer | conflicts: Map.delete(layer.conflicts, {:value, key})}), []}
 
+      # QA #2 P1-3: a record field's conflict takes theirs (the page shows it).
+      %{id: id} when is_map_key(layer.conflicts, {:row, id}) ->
+        {put_layer(state, %{layer | conflicts: Map.delete(layer.conflicts, {:row, id})}), []}
+
       _ ->
         back(state)
     end

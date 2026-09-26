@@ -263,6 +263,10 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Ops do
         nil ->
           generic(state, nil, verb)
 
+        # QA #2 P1-3: Enter on a record field's conflict keeps *mine*.
+        %Row{id: id} when verb in [:enter, :commit] and is_map_key(layer.conflicts, {:row, id}) ->
+          SwarmCodeCLI.UI.Reducer.Settings.Responses.keep_mine(state, id)
+
         %Row{} = row ->
           case Sections.act(Layer.section(layer), Nav.ctx(state), row, section_verb(row, verb)) do
             ops when is_list(ops) -> run(state, ops)

@@ -269,10 +269,22 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Responses do
         needs_confirmation(restore_command_step(state, opts), opts, result)
 
       :conflict ->
-        {state, effects} = state |> restore_command_step(opts) |> reload()
+        state = restore_command_step(state, opts)
 
-        {Commit.status(state, "That changed elsewhere; showing the new version", :warning),
-         effects}
+        case record_conflict(state, meta, opts, result) do
+          nil ->
+            {state, effects} = reload(state)
+
+            {Commit.status(state, "That changed elsewhere; showing the new version", :warning),
+             effects}
+
+          {row_id, conflict} ->
+            layer = state.settings
+            conflicts = Map.put(layer.conflicts, {:row, row_id}, conflict)
+            {state, effects} = reload(%{state | settings: %{layer | conflicts: conflicts}})
+            words = "That changed elsewhere · Enter keeps yours · Esc takes theirs"
+            {Commit.status(state, words, :warning), effects}
+        end
 
       _other ->
         {state, effects} = state |> restore_command_step(opts) |> refresh_on_unknown(result)
@@ -283,6 +295,75 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Responses do
             else: result.message || "Couldn't save that"
 
         {Commit.status(state, words, :error), effects}
+    end
+  end
+
+  # QA #2 P1-3 (§3.7.9): a record field written with `expected.fields` that
+  # changed elsewhere keeps *mine* (the command's value) and *theirs* (the
+  # result's current) on its row: Enter re-sends mine expecting theirs, Esc
+  # takes theirs. It dropped mine and only reloaded.
+  defp record_conflict(state, meta, opts, %SettingsResult{results: results}) do
+    fields = opts |> Map.get(:expected) |> expected_fields()
+    attributes = Map.get(meta, :attributes) || %{}
+
+    moved =
+      for row <- results || [],
+          Map.get(row, :status) == :conflict,
+          target = to_string(Map.get(row, :target)),
+          Map.has_key?(fields, target) and Map.has_key?(attributes, target),
+          do: {target, Map.get(row, :current)}
+
+    if moved == [] do
+      nil
+    else
+      keys = Enum.map(moved, &elem(&1, 0))
+
+      conflict = %{
+        command: {meta.action, meta.target, attributes, Map.drop(opts, [:undo_step])},
+        mine: Map.take(attributes, keys),
+        theirs: Map.new(moved),
+        origin: "elsewhere in this session"
+      }
+
+      {conflict_row(state, Map.get(opts, :write_key), keys), conflict}
+    end
+  end
+
+  defp expected_fields(%{"fields" => fields}) when is_map(fields), do: fields
+  defp expected_fields(%{fields: fields}) when is_map(fields), do: fields
+  defp expected_fields(_expected), do: %{}
+
+  # The field's row (`fld:<kind>:<id>:<field>`), else the row the cursor is on.
+  defp conflict_row(state, {:record, kind, id, field}, _keys) when is_binary(field) do
+    row_id = "fld:#{kind}:#{id}:#{field}"
+
+    if Enum.any?(Nav.rows(state), &(&1.id == row_id)),
+      do: row_id,
+      else: cursor_row(state)
+  end
+
+  defp conflict_row(state, _write_key, _keys), do: cursor_row(state)
+
+  defp cursor_row(state) do
+    case Nav.current(state) do
+      %{id: id} -> id
+      _ -> "none"
+    end
+  end
+
+  @doc "Enter on a row with a record conflict: *mine* again, expecting *theirs* (§3.7.9)."
+  @spec keep_mine(map(), String.t()) :: {map(), list()}
+  def keep_mine(%{settings: %Layer{} = layer} = state, row_id) do
+    case Map.pop(layer.conflicts, {:row, row_id}) do
+      {nil, _} ->
+        {state, []}
+
+      {%{command: {action, target, attributes, opts}, theirs: theirs}, conflicts} ->
+        state = %{state | settings: %{layer | conflicts: conflicts}}
+        expected = Map.get(opts, :expected) || %{}
+        fields = Map.merge(expected_fields(expected), theirs)
+        opts = Map.put(opts, :expected, %{"fields" => fields})
+        Ops.run(state, [{:command, action, target, attributes, opts}])
     end
   end
 

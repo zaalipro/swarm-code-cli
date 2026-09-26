@@ -386,4 +386,58 @@ defmodule SwarmCodeCLI.UI.Settings.C74Qa2Test do
     {state, _} = SwarmCodeCLI.UI.Reducer.Settings.Responses.delta(state, done)
     assert words(row(state, "act:mcp.test_draft")) =~ "connected · 3 tools: alpha, beta, gamma"
   end
+
+  # ------------------------------------------------------------------ P1-3
+
+  defp exa_base_url_conflict do
+    {state, fake} = opened(:search_web, fake: strict())
+    page = %Page{section: :search_web, record: {"search_provider", "exa"}}
+    {state, _} = Ops.run(state, [{:open, page}])
+    {state, fake} = state |> Wire.sync() |> serve(fake)
+    row = row(state, "fld:search_provider:exa:base_url")
+    assert row, inspect(Enum.map(rows(state), & &1.id))
+
+    # someone else writes the field while it is being edited
+    fake = put_in(fake.integrations.search["exa"]["base_url"], "https://theirs.example")
+
+    {state, fake} =
+      state |> Nav.put_cursor(row.id) |> Edit.commit(row, "https://mine.example") |> serve(fake)
+
+    assert fake.integrations.search["exa"]["base_url"] == "https://theirs.example"
+    {state, fake}
+  end
+
+  describe "P1-3: a record field changed elsewhere keeps yours on its row" do
+    test "the row shows both values; Enter writes yours expecting theirs" do
+      {state, fake} = exa_base_url_conflict()
+      conflicted = row(state, "fld:search_provider:exa:base_url")
+      assert :conflict in conflicted.marks
+      text = all_words(conflicted)
+
+      assert text =~
+               "! changed while you edited (elsewhere in this session): now https://theirs.example"
+
+      assert text =~
+               "Enter keep yours (https://mine.example) · Esc take theirs (https://theirs.example)"
+
+      assert state.settings.status.text =~ "Enter keeps yours"
+
+      {state, effects} = verb(state, :enter)
+      assert [update] = commands(effects, "search.update")
+      assert update["expected"] == %{"fields" => %{"base_url" => "https://theirs.example"}}
+
+      {state, fake} = serve(state, effects, fake)
+      assert fake.integrations.search["exa"]["base_url"] == "https://mine.example"
+      refute :conflict in row(state, "fld:search_provider:exa:base_url").marks
+    end
+
+    test "Esc takes theirs and writes nothing" do
+      {state, _fake} = exa_base_url_conflict()
+      {state, effects} = verb(state, :back)
+      assert sent(effects) == []
+      assert state.settings.conflicts == %{}
+      refute all_words(row(state, "fld:search_provider:exa:base_url")) =~ "mine.example"
+      assert Layer.page(state.settings).record == {"search_provider", "exa"}
+    end
+  end
 end
