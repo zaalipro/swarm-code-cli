@@ -120,9 +120,26 @@ defmodule SwarmCode.Domain.Storage do
 
   # ------------------------------------------------------------ sizes on disk
 
-  @doc "The SQLite file this repo is pointed at."
+  @doc """
+  The SQLite file this repo has open (`PRAGMA database_list`'s `main`).
+
+  cli74 F42: it read `Repo.config()[:database]`, which the guarded repo never
+  carries (the lease admits the path), so Storage said `0 B on disk` and `df`
+  measured the working directory (found in the sandbox).
+  """
   @spec db_path() :: String.t()
-  def db_path, do: Repo.config()[:database] |> to_string()
+  def db_path do
+    case Repo.query("PRAGMA database_list", [], log: false) do
+      {:ok, %{rows: rows}} ->
+        Enum.find_value(rows, "", fn
+          [_seq, "main", file | _] when is_binary(file) -> file
+          _ -> nil
+        end)
+
+      _ ->
+        Repo.config()[:database] |> to_string()
+    end
+  end
 
   @doc "The bytes the database occupies: the file, its write-ahead log and its shared index."
   @spec file_bytes() :: %{db: non_neg_integer(), wal: non_neg_integer(), shm: non_neg_integer()}

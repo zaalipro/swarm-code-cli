@@ -57,6 +57,16 @@ defmodule SwarmCode.Domain.StorageTest do
     %{path: path}
   end
 
+  # cli74 F42 (found in the sandbox): the path came from Repo.config()[:database],
+  # which a repo started without it (the guarded one) never has: `0 B on disk`.
+  test "the sizes on disk are the file the repo has open", %{path: path} do
+    assert Path.basename(Storage.db_path()) == "storage.db"
+    assert File.exists?(Storage.db_path())
+    assert Storage.db_path() |> Path.dirname() |> File.stat!() == File.stat!(path)
+    assert Storage.file_bytes().db > 0
+    assert Storage.overview().db_bytes == File.stat!(Storage.db_path()).size
+  end
+
   test "a clean sweep emits the plain storage_done event with no errors" do
     {:ok, project} = Projects.create(%{name: "Fixture", root_path: fixture_root()})
     {:ok, conversation} = Conversations.create(project.id)
