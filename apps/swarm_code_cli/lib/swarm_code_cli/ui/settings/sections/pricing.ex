@@ -395,6 +395,12 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Pricing do
     )
   end
 
+  # QA #2: a row as the service stores it, for a CAS `expected`: its set
+  # fields only (the stored map never holds a blank one). With the blanks
+  # every price edit of a row without cache rates read as a conflict.
+  defp stored_row(nil), do: nil
+  defp stored_row(row), do: for({k, v} <- row, v != nil, into: %{}, do: {k, v})
+
   defp row_wire(f) do
     %{
       "input" => R.field(f, "input"),
@@ -463,7 +469,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Pricing do
         [
           {:command, "pricing.delete_row", %{"model" => model}, %{},
            %{
-             expected: %{"row" => old},
+             expected: %{"row" => stored_row(old)},
              write_key: {:record, @kind, model, :delete},
              undo:
                {:command, "pricing.put_row", nil, Map.put(old, "model", model),
@@ -483,11 +489,11 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Pricing do
       [
         {:command, "pricing.put_row", nil, Map.put(new, "model", model),
          %{
-           expected: %{"row" => old},
+           expected: %{"row" => stored_row(old)},
            write_key: {:record, @kind, model, changes |> Map.keys() |> hd()},
            undo:
              {:command, "pricing.put_row", nil, Map.put(old, "model", model),
-              %{expected: %{"row" => new}}},
+              %{expected: %{"row" => stored_row(new)}}},
            toast: "#{model} · #{describe(changes)}"
          }}
       ]
@@ -548,12 +554,15 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Pricing do
     [
       {:command, "pricing.put_row", nil,
        old |> Map.put("model", name) |> Map.put("rename_from", model),
+       # QA #2: `row` is the row at the new name (none yet), `rename_row` the
+       # renamed one; they were swapped, and the undo had neither.
        %{
-         expected: %{"row" => old, "rename_row" => nil},
+         expected: %{"row" => nil, "rename_row" => stored_row(old)},
          write_key: {:record, @kind, model, "model"},
          undo:
            {:command, "pricing.put_row", nil,
-            old |> Map.put("model", model) |> Map.put("rename_from", name), %{}},
+            old |> Map.put("model", model) |> Map.put("rename_from", name),
+            %{expected: %{"row" => nil, "rename_row" => stored_row(old)}}},
          toast: "#{model} renamed to #{name}",
          after: {:open_record, :pricing, @kind, name}
        }}
@@ -573,16 +582,20 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Pricing do
         if complete?(fields) do
           model = R.field(fields, "model")
 
+          row =
+            Map.merge(
+              %{"cache_read" => nil, "cache_write" => nil, "context_window" => nil},
+              Map.take(fields, ~w(model input output cache_read cache_write context_window))
+            )
+
           [
-            {:command, "pricing.put_row", nil,
-             Map.merge(
-               %{"cache_read" => nil, "cache_write" => nil, "context_window" => nil},
-               Map.take(fields, ~w(model input output cache_read cache_write context_window))
-             ),
+            {:command, "pricing.put_row", nil, row,
              %{
                expected: %{"row" => nil},
                write_key: {:record, @kind, model, :create},
-               undo: {:command, "pricing.delete_row", %{"model" => model}, %{}, %{}},
+               undo:
+                 {:command, "pricing.delete_row", %{"model" => model}, %{},
+                  %{expected: %{"row" => stored_row(Map.delete(row, "model"))}}},
                toast: "Priced #{model}",
                errors_to: {:draft, @kind},
                after: {:discard_draft, @kind, then: :back}

@@ -150,6 +150,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.SettingsIntegrations do
     %{
       now: now,
       revision: 1,
+      strict_expected: Keyword.get(opts, :strict_expected, false),
       env: Keyword.get(opts, :env, %{"GITHUB_TOKEN" => "set"}),
       defaults:
         Keyword.get(opts, :defaults, %{
@@ -420,13 +421,47 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.SettingsIntegrations do
   """
   @spec command(state(), map()) ::
           {{:ok, result()} | {:task, task(), result()}, state()} | :unsupported
+  # QA #2: the service refuses a compare-and-set command without its
+  # `expected` (`Kit.expected/2`); the fake took one without, so undo steps
+  # built with none passed every fake test and failed against the service.
+  # A store seeded `strict_expected: true` refuses them too.
+  @expected_key %{
+    "provider.update" => "fields",
+    "provider.set_key" => "key",
+    "provider.clear_key" => "key",
+    "provider.delete" => "updated_at",
+    "provider.apply_models" => "fields",
+    "efforts.save" => "levels",
+    "efforts.remove_override" => "levels",
+    "pricing.put_row" => "row",
+    "pricing.delete_row" => "row",
+    "search.update" => "fields",
+    "search.set_key" => "key",
+    "search.clear_key" => "key",
+    "search.move" => "order",
+    "mcp.update" => "fields",
+    "mcp.set_secret" => "key",
+    "mcp.toggle" => "fields",
+    "mcp.set_tools" => "disabled_tools",
+    "mcp.delete" => "updated_at",
+    "lsp.remove_key" => "value"
+  }
+
   def command(state, cmd) do
     action = get(cmd, "action")
+    wanted = Map.get(@expected_key, action)
+    expected = get(cmd, "expected")
 
-    if action in @actions do
-      run(action, normalize(cmd), state)
-    else
-      :unsupported
+    cond do
+      action not in @actions ->
+        :unsupported
+
+      Map.get(state, :strict_expected) == true and wanted != nil and
+          not (is_map(expected) and Map.has_key?(expected, wanted)) ->
+        {{:ok, result("rejected", message: "expected is missing for #{wanted}")}, state}
+
+      true ->
+        run(action, normalize(cmd), state)
     end
   end
 
@@ -821,10 +856,14 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.SettingsIntegrations do
     attrs = c.attributes
     model = trim(get(attrs, "model"))
     rename_from = get(attrs, "rename_from")
-    old = Map.get(state.pricing, rename_from || model)
     expected = c.expected || %{}
+    rename? = is_binary(rename_from) and rename_from != model
+    # QA #2: as the service compares: `row` is the stored row at the model's
+    # name, `rename_row` the stored row being renamed (neither holds a blank).
+    at_name = Map.get(state.pricing, model)
+    renamed = if rename?, do: Map.get(state.pricing, rename_from)
 
-    errors = pricing_errors(state, model, rename_from, attrs)
+    errors = pricing_errors(state, model, rename_from, attrs, get(expected, "row"))
 
     cond do
       model == "" ->
@@ -834,21 +873,25 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.SettingsIntegrations do
             message: "can't be blank"
           )}, state}
 
-      Map.has_key?(expected, "row") and not same?(pricing_wire(old), get(expected, "row")) ->
+      errors != [] ->
+        {{:ok, result("rejected", field_errors: errors, message: first_message(errors))}, state}
+
+      rename? and not Map.has_key?(expected, "rename_row") ->
+        {{:ok, result("rejected", message: "expected is missing for rename_row")}, state}
+
+      not same?(at_name, get(expected, "row")) ->
         {{:ok,
           result("conflict",
-            results: [
-              %{
-                "target" => rename_from || model,
-                "status" => "conflict",
-                "current" => pricing_wire(old)
-              }
-            ],
+            results: [%{"target" => model, "status" => "conflict", "current" => at_name}],
             message: "changed while you edited"
           )}, state}
 
-      errors != [] ->
-        {{:ok, result("rejected", field_errors: errors, message: first_message(errors))}, state}
+      rename? and not same?(renamed, get(expected, "rename_row")) ->
+        {{:ok,
+          result("conflict",
+            results: [%{"target" => rename_from, "status" => "conflict", "current" => renamed}],
+            message: "changed while you edited"
+          )}, state}
 
       true ->
         row =
@@ -881,13 +924,10 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.SettingsIntegrations do
         {{:ok, result("not_found", message: "#{model} has no price")}, state}
 
       {:ok, row} ->
-        if Map.has_key?(c.expected || %{}, "row") and
-             not same?(pricing_wire(row), get(c.expected, "row")) do
+        if not same?(row, get(c.expected, "row")) do
           {{:ok,
             result("conflict",
-              results: [
-                %{"target" => model, "status" => "conflict", "current" => pricing_wire(row)}
-              ],
+              results: [%{"target" => model, "status" => "conflict", "current" => row}],
               message: "changed while you edited"
             )}, state}
         else
@@ -2633,7 +2673,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.SettingsIntegrations do
 
   defp round4(n), do: Float.round(n * 1.0, 4)
 
-  defp pricing_errors(state, model, rename_from, attrs) do
+  defp pricing_errors(state, model, rename_from, attrs, expected_row) do
     num = fn k ->
       v = get(attrs, k)
       is_number(v) and v >= 0
@@ -2647,7 +2687,10 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.SettingsIntegrations do
     cw = get(attrs, "context_window")
 
     [
-      (model != rename_from and Map.has_key?(state.pricing, model)) &&
+      # the service: a taken name is a duplicate for a rename or a create
+      # (an edit of the row itself expects it)
+      (Map.has_key?(state.pricing, model) and
+         ((is_binary(rename_from) and rename_from != model) or is_nil(expected_row))) &&
         %{"target" => "model", "message" => "duplicate model"},
       String.length(model) > 256 &&
         %{"target" => "model", "message" => "should be at most 256 character(s)"},

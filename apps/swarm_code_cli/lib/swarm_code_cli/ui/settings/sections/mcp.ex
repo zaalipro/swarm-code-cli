@@ -1057,7 +1057,11 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.MCP do
          %{
            expected: %{"fields" => expected},
            write_key: {:record, @kind, id, :connection},
-           undo: {:command, "mcp.update", %{"id" => id}, old, %{}},
+           # QA #2: the undo expects the fields this update leaves, read from
+           # the answer's record (the env is masked there).
+           undo:
+             {:command, "mcp.update", %{"id" => id}, old,
+              %{expected_from: {:fields, Map.keys(staged)}}},
            toast:
              "Applied #{R.count(map_size(staged), "change")} · restarts #{R.field(f, "name")}",
            after: {:unstage, {@kind, id}, :all}
@@ -1108,17 +1112,28 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.MCP do
       disabled = R.field(f, "disabled_tools") || for({n, false} <- current, do: n)
       inverse = Map.new(changes, fn {n, on} -> {n, not on} end)
       on_after = Enum.count(Map.merge(current, changes), &elem(&1, 1))
+      # QA #2 P1-5: the undo expects the list this write leaves (the service
+      # compares it as a set and refused an undo without it).
+      after_ = disabled_after(disabled, changes)
 
       [
         {:command, "mcp.set_tools", %{"id" => id}, %{"tools" => changes},
          %{
            expected: %{"disabled_tools" => disabled},
            write_key: {:record, @kind, id, "disabled_tools"},
-           undo: {:command, "mcp.set_tools", %{"id" => id}, %{"tools" => inverse}, %{}},
+           undo:
+             {:command, "mcp.set_tools", %{"id" => id}, %{"tools" => inverse},
+              %{expected: %{"disabled_tools" => after_}}},
            toast: "#{R.field(f, "name")}: #{on_after} of #{length(tools)} tools on"
          }}
       ]
     end
+  end
+
+  defp disabled_after(disabled, changes) do
+    off = for {name, false} <- changes, do: name
+    on = for {name, true} <- changes, do: name
+    Enum.uniq((disabled -- on) ++ off)
   end
 
   defp delete_ops(_ctx, id, f) do

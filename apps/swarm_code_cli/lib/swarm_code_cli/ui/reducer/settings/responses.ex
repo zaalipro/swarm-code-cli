@@ -32,7 +32,7 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Responses do
 
   alias SwarmCodeCLI.UI.Reducer.Settings.{Commit, Ops}
   alias SwarmCodeCLI.UI.Reducer.Settings.Paste, as: PasteTarget
-  alias SwarmCodeCLI.UI.Settings.{Data, DeepLink, Layer, Nav, Page, Sections, Wire}
+  alias SwarmCodeCLI.UI.Settings.{Data, DeepLink, IntegrationRows, Layer, Nav, Page, Sections, Wire}
 
   @refresh_words "Couldn't tell whether that was saved; reloading."
 
@@ -241,7 +241,8 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Responses do
         state =
           if is_binary(text) and status == :accepted, do: toast(state, text, opts), else: state
 
-        state = if status == :accepted, do: command_step(state, meta, opts, text), else: state
+        state =
+          if status == :accepted, do: command_step(state, meta, opts, text, result), else: state
 
         Ops.run(state, after_ops(Map.get(opts, :after), result))
 
@@ -278,20 +279,21 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Responses do
   # QA F-2 (§3.7.10): a section command with an inverse op (a toggle, a move,
   # a price) is one undo step; the redo re-sends the command as it was sent.
   # An undo or redo of a step moves the step and pushes none.
-  defp command_step(state, _meta, %{undo_step: _}, _text), do: state
+  defp command_step(state, _meta, %{undo_step: _}, _text, _result), do: state
 
   defp command_step(
          %{settings_history: history} = state,
          meta,
          %{undo: {:command, _, _, _, _} = inverse} = opts,
-         text
+         text,
+         result
        ) do
     step = %{
       write_key: Map.get(opts, :write_key),
       label: if(is_binary(text), do: text, else: meta.action),
       old: nil,
       new: nil,
-      inverse: inverse,
+      inverse: fill_expected(inverse, result),
       redo:
         {:command, meta.action, meta.target, meta.attributes,
          Map.take(opts, [:expected, :write_key])}
@@ -300,7 +302,29 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Responses do
     %{state | settings_history: SwarmCodeCLI.UI.Settings.Undo.push(history, step)}
   end
 
-  defp command_step(state, _meta, _opts, _text), do: state
+  defp command_step(state, _meta, _opts, _text, _result), do: state
+
+  # QA #2: an inverse is a CAS write expecting what the step wrote. Where the
+  # page cannot know it before the answer (an MCP server's masked env, the
+  # saved effort levels, a provider's applied models), the inverse names the
+  # record fields to read (`expected_from`) and the answer's record fills
+  # them in; an undo without them was refused (expected is missing).
+  defp fill_expected(
+         {:command, action, target, attributes, %{expected_from: spec} = opts},
+         %SettingsResult{record: %SettingsRecord{fields: fields}}
+       )
+       when is_map(fields) do
+    opts = opts |> Map.delete(:expected_from) |> Map.put(:expected, from_record(spec, fields))
+    {:command, action, target, attributes, opts}
+  end
+
+  defp fill_expected(inverse, _result), do: inverse
+
+  defp from_record({:fields, keys}, fields),
+    do: %{"fields" => Map.new(keys, &{&1, IntegrationRows.field(fields, &1)})}
+
+  defp from_record({:path, path, as}, fields),
+    do: %{as => Enum.reduce(path, fields, &IntegrationRows.field(&2, &1))}
 
   # A failed undo or redo of a command puts its step back where it was.
   defp restore_command_step(%{settings_history: history} = state, %{undo_step: {how, step}}),

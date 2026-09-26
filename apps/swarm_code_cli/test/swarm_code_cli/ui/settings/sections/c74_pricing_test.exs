@@ -140,26 +140,34 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.C74PricingTest do
 
     assert attrs["output"] == 70 and attrs["input"] == 15 and attrs["model"] == "claude-opus-5"
 
+    # QA #2: the row as the service stores it (no blank fields), which its
+    # compare-and-set reads; with the blanks every edit was a conflict.
     assert opts.expected == %{
-             "row" => %{
-               "input" => 15,
-               "output" => 75,
-               "cache_read" => nil,
-               "cache_write" => nil,
-               "context_window" => 200_000
-             }
+             "row" => %{"input" => 15, "output" => 75, "context_window" => 200_000}
            }
 
-    assert {:command, "pricing.put_row", nil, %{"output" => 75}, _} = opts.undo
+    assert {:command, "pricing.put_row", nil, %{"output" => 75}, undo_opts} = opts.undo
+
+    assert undo_opts.expected == %{
+             "row" => %{"input" => 15, "output" => 70, "context_window" => 200_000}
+           }
 
     assert [{:row_error, _, "context window: a whole number of tokens between 8000 and 2000000"}] =
              Pricing.commit(c, row(rows, "fld:pricing_row:claude-opus-5:context_window"), 100)
 
     [
       {:command, "pricing.put_row", nil,
-       %{"model" => "claude-opus-5.1", "rename_from" => "claude-opus-5"}, _}
+       %{"model" => "claude-opus-5.1", "rename_from" => "claude-opus-5"}, rename}
     ] =
       Pricing.commit(c, row(rows, "fld:pricing_row:claude-opus-5:model"), "claude-opus-5.1")
+
+    # `row` is the new name's row (none), `rename_row` the renamed one.
+    stored = %{"input" => 15, "output" => 75, "context_window" => 200_000}
+    assert rename.expected == %{"row" => nil, "rename_row" => stored}
+
+    assert {:command, "pricing.put_row", nil,
+            %{"model" => "claude-opus-5", "rename_from" => "claude-opus-5.1"},
+            %{expected: %{"row" => nil, "rename_row" => ^stored}}} = rename.undo
   end
 
   test "x removes a row, undoable" do

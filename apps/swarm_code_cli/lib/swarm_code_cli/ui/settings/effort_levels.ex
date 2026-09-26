@@ -480,9 +480,15 @@ defmodule SwarmCodeCLI.UI.Settings.EffortLevels do
        expected: %{"levels" => stored(f, model)},
        write_key:
          {:record, "provider", id, if(model, do: "model_effort_levels", else: "effort_levels")},
+       # QA #2: the undo expects the levels this save leaves (the answer's record).
        undo:
          {:command, "efforts.save", %{"id" => id, "model" => model},
-          %{"rows" => stored(f, model) || []}, %{}},
+          %{"rows" => stored(f, model) || []},
+          %{
+            expected_from:
+              {:path, if(model, do: ["model_effort_levels", model], else: ["effort_levels"]),
+               "levels"}
+          }},
        toast: "Saved #{R.count(length(rows), "effort level")}",
        after: {:discard_draft, @draft},
        errors_to: {:draft, @draft}

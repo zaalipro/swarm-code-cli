@@ -119,13 +119,16 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Settings do
   The Appendix A store. Options: `:now` (ISO-8601), `:auto_tasks` (default false),
   `:integrations` (default true: seed `Fake.SettingsIntegrations` when loaded),
   `:env` (the environment the service sees), `:flag_model` (the `--model` overlay,
-  nil for none).
+  nil for none), `:strict_expected` (default false: refuse a compare-and-set
+  command without its `expected`, as the service does).
   """
   @spec seed(keyword()) :: state()
   def seed(opts \\ []) do
     now = Keyword.get(opts, :now, "2026-09-25T18:40:00Z")
 
-    integrations = if Keyword.get(opts, :integrations, true), do: integrations_seed(now)
+    integrations =
+      if Keyword.get(opts, :integrations, true),
+        do: integrations_seed(now, Keyword.get(opts, :strict_expected, false))
 
     %{
       now: now,
@@ -156,7 +159,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Settings do
 
   # U2's simulation of the integration handlers (`integrations: false` leaves
   # it out: every S2 action then answers `unsupported`).
-  defp integrations_seed(now), do: @integrations.seed(now: now)
+  defp integrations_seed(now, strict?),
+    do: @integrations.seed(now: now, strict_expected: strict?)
 
   defp seed_global do
     base =

@@ -580,11 +580,30 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.SearchWeb do
          %{
            expected: %{"order" => order},
            write_key: {:record, @kind, :order, :order},
-           undo: {:command, "search.move", %{"kind" => kind}, %{"dir" => -dir}, %{}}
+           # QA #2 P1-2: the undo is a CAS move too; it expects the order this
+           # move leaves (the service refused it: expected is missing for order).
+           undo:
+             {:command, "search.move", %{"kind" => kind}, %{"dir" => -dir},
+              %{expected: %{"order" => moved(order, kind, dir)}}}
          }}
       ]
     else
       [{:toast, "readers have no order", :info}]
+    end
+  end
+
+  # The order after `kind` trades places with its neighbour (the service's
+  # `Search.move/2`).
+  defp moved(order, kind, dir) do
+    index = Enum.find_index(order, &(&1 == kind))
+    target = index && index + dir
+
+    if index && target >= 0 and target < length(order) do
+      order
+      |> List.replace_at(index, Enum.at(order, target))
+      |> List.replace_at(target, kind)
+    else
+      order
     end
   end
 

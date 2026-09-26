@@ -14,7 +14,8 @@ defmodule SwarmCodeCLI.UI.Settings.C74Qa2Test do
   alias SwarmCodeCLI.UI.{Input, Projector, SafeText, Size}
   alias SwarmCodeCLI.UI.DataSource.DTO.SettingsRecord
   alias SwarmCodeCLI.UI.DataSource.Fake.SettingsIntegrations, as: I
-  alias SwarmCodeCLI.UI.Reducer.Settings.Ops
+  alias SwarmCodeCLI.UI.DataSource.Fake.Settings, as: FakeSettings
+  alias SwarmCodeCLI.UI.Reducer.Settings.{Edit, Ops}
   alias SwarmCodeCLI.UI.Settings.{KeyValueSecrets, Layer, ModelPicker, Nav, Page, Wire}
 
   defp sized(columns, rows),
@@ -195,5 +196,121 @@ defmodule SwarmCodeCLI.UI.Settings.C74Qa2Test do
     assert state.settings.mode == :paste
     line = state |> lines() |> Enum.find(&(&1 =~ "Add a variable"))
     assert line =~ "SLACK_TOKEN · paste the value · Cmd-V", line
+  end
+
+  # ------------------------------------------------------------------ P1-2, P1-5
+
+  # A store that refuses a compare-and-set command without `expected`, as the
+  # service does (the fake took them, so every undo passed its tests).
+  defp strict, do: FakeSettings.seed(strict_expected: true)
+
+  defp undo_redo(state, fake) do
+    {state, fake} = state |> verb(:undo) |> serve(fake)
+    undone = state.settings.status.text
+    {state, fake} = state |> verb(:redo) |> serve(fake)
+    {state, fake, undone, state.settings.status.text}
+  end
+
+  defp engines(fake) do
+    fake.integrations.search
+    |> Map.values()
+    |> Enum.filter(&(&1["role"] == "engine"))
+    |> Enum.sort_by(& &1["position"])
+    |> Enum.map(& &1["kind"])
+  end
+
+  describe "P1-2, P1-5: every section command with an inverse undoes and redoes as a CAS write" do
+    test "a search engine move (K, then u, then U)" do
+      {state, fake} = opened(:search_web, fake: strict())
+      before = engines(fake)
+      state = Nav.put_cursor(state, "rec:search_provider:exa")
+      {state, fake} = state |> verb(:move_up) |> serve(fake)
+      moved = engines(fake)
+      assert moved != before
+
+      {state, fake} = state |> verb(:undo) |> serve(fake)
+      assert state.settings.status.text =~ "Undid: ", state.settings.status.text
+      assert engines(fake) == before
+
+      {state, fake} = state |> verb(:redo) |> serve(fake)
+      assert state.settings.status.text =~ "Redid: ", state.settings.status.text
+      assert engines(fake) == moved
+    end
+
+    test "all of an MCP server's tools off (N), then u, then U" do
+      {state, fake} = opened(:mcp, fake: strict())
+      id = I.ids().docs
+      {state, _} = Ops.run(state, [{:open, %Page{section: :mcp, record: {"mcp_server", id}}}])
+      {state, fake} = state |> Wire.sync() |> serve(fake)
+      before = fake.integrations.mcp[id]["disabled_tools"]
+      [first | _] = for %{id: "item:tools:" <> _} = row <- rows(state), do: row.id
+
+      {state, fake} = state |> Nav.put_cursor(first) |> verb(:all_off) |> serve(fake)
+      all_off = fake.integrations.mcp[id]["disabled_tools"]
+      assert length(all_off) > length(before)
+
+      {_state, fake, undone, redone} = undo_redo(state, fake)
+      assert undone =~ "Undid: ", undone
+      assert redone =~ "Redid: ", redone
+      assert Enum.sort(fake.integrations.mcp[id]["disabled_tools"]) == Enum.sort(all_off)
+    end
+
+    test "a price edit, then u, then U" do
+      model = "claude-opus-5"
+      {state, fake} = opened(:pricing, fake: strict())
+
+      {state, _} =
+        Ops.run(state, [{:open, %Page{section: :pricing, record: {"pricing_row", model}}}])
+
+      {state, fake} = state |> Wire.sync() |> serve(fake)
+      row = row(state, "fld:pricing_row:#{model}:output")
+      {state, fake} = state |> Nav.put_cursor(row.id) |> Edit.commit(row, 70) |> serve(fake)
+      assert fake.integrations.pricing[model]["output"] == 70
+
+      {state, fake} = state |> verb(:undo) |> serve(fake)
+      assert state.settings.status.text =~ "Undid: ", state.settings.status.text
+      assert fake.integrations.pricing[model]["output"] == 75
+
+      {state, fake} = state |> verb(:redo) |> serve(fake)
+      assert state.settings.status.text =~ "Redid: ", state.settings.status.text
+      assert fake.integrations.pricing[model]["output"] == 70
+    end
+
+    test "a price renamed, then u" do
+      {state, fake} = opened(:pricing, fake: strict())
+      page = %Page{section: :pricing, record: {"pricing_row", "claude-opus-5"}}
+      {state, _} = Ops.run(state, [{:open, page}])
+      {state, fake} = state |> Wire.sync() |> serve(fake)
+      row = row(state, "fld:pricing_row:claude-opus-5:model")
+      {state, fake} = state |> Edit.commit(row, "claude-opus-5.1") |> serve(fake)
+      assert Map.has_key?(fake.integrations.pricing, "claude-opus-5.1")
+      refute Map.has_key?(fake.integrations.pricing, "claude-opus-5")
+
+      {state, fake} = state |> verb(:undo) |> serve(fake)
+      assert state.settings.status.text =~ "Undid: ", state.settings.status.text
+      assert Map.has_key?(fake.integrations.pricing, "claude-opus-5")
+      refute Map.has_key?(fake.integrations.pricing, "claude-opus-5.1")
+    end
+
+    test "a staged MCP connection change applied, then u, then U" do
+      {state, fake} = opened(:mcp, fake: strict())
+      id = I.ids().docs
+      {state, _} = Ops.run(state, [{:open, %Page{section: :mcp, record: {"mcp_server", id}}}])
+      {state, fake} = state |> Wire.sync() |> serve(fake)
+      url = fake.integrations.mcp[id]["url"]
+
+      {state, _} =
+        Ops.run(state, [{:stage, {"mcp_server", id}, %{"url" => "https://mine.example/mcp"}}])
+
+      {state, fake} = state |> verb(:restart) |> serve(fake)
+      assert fake.integrations.mcp[id]["url"] == "https://mine.example/mcp"
+
+      {state, fake} = state |> verb(:undo) |> serve(fake)
+      assert state.settings.status.text =~ "Undid: ", state.settings.status.text
+      assert fake.integrations.mcp[id]["url"] == url
+
+      {_state, fake} = state |> verb(:redo) |> serve(fake)
+      assert fake.integrations.mcp[id]["url"] == "https://mine.example/mcp"
+    end
   end
 end
