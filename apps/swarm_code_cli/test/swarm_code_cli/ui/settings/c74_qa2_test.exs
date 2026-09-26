@@ -351,4 +351,39 @@ defmodule SwarmCodeCLI.UI.Settings.C74Qa2Test do
 
     assert Nav.current(state).id == third
   end
+
+  # ------------------------------------------------------------------ P1-6
+
+  test "P1-6: Test it first on a new MCP server shows the test and the tools it listed" do
+    {state, fake} = opened(:mcp)
+
+    [_ | _] =
+      ops = SwarmCodeCLI.UI.Settings.Sections.MCP.act(Nav.ctx(state), %{target: {:add}}, :add)
+
+    {state, fake} = state |> Ops.run(ops) |> serve(fake)
+
+    {state, _} =
+      Ops.run(state, [{:draft_put, "mcp_server", %{"name" => "fakeq2", "command" => "fake-mcp"}}])
+
+    state = Nav.put_cursor(state, "act:mcp.test_draft")
+    assert {"Enter", :open_row, "test"} in row(state, "act:mcp.test_draft").keys
+
+    {state, effects} = verb(state, :enter)
+    assert [%{"target" => %{"draft" => true}}] = commands(effects, "mcp.test")
+    {state, _fake} = serve(state, effects, fake)
+    assert words(row(state, "act:mcp.test_draft")) =~ "starting it to list its tools"
+
+    [{task_id, _}] = Enum.filter(state.settings.tasks, fn {_, t} -> t["action"] == "mcp.test" end)
+
+    done = %SwarmCodeCLI.UI.DataSource.DTO.SettingsTask{
+      task_id: task_id,
+      action: "mcp.test",
+      target: %{"draft" => true},
+      state: :done,
+      summary: %{"tools" => ["alpha", "beta", "gamma"], "count" => 3}
+    }
+
+    {state, _} = SwarmCodeCLI.UI.Reducer.Settings.Responses.delta(state, done)
+    assert words(row(state, "act:mcp.test_draft")) =~ "connected · 3 tools: alpha, beta, gamma"
+  end
 end

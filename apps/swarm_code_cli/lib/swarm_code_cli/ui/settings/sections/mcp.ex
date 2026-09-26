@@ -767,15 +767,44 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.MCP do
           keys: [{"Enter", :open_row, "create"}, {"Ctrl-S", :save, "create"}],
           target: {:create}
         ),
-        R.row(
-          id: "act:mcp.test_draft",
-          kind: :action,
-          label: "▸ Test it first",
-          value: [{"starts it once, lists its tools, saves nothing", :text_faint}],
-          keys: [{"t", :test, "test"}],
-          target: {:test_draft}
-        )
+        draft_test_row(ctx)
       ]
+  end
+
+  # QA #2 P1-6: the row shows its test as the saved server's Test row does
+  # (it kept its static words, so `t` and Enter looked like nothing), with the
+  # tools it listed, and Enter tests too.
+  defp draft_test_row(ctx) do
+    task = R.task(ctx, "mcp.test", %{"draft" => true})
+
+    {value, tag} =
+      if task do
+        R.task_words(ctx, task, "starting it to list its tools", &draft_tools_words/1)
+      else
+        {[{"starts it once, lists its tools, saves nothing", :text_faint}], [{"t", :key}]}
+      end
+
+    R.row(
+      id: "act:mcp.test_draft",
+      kind: :action,
+      label: "▸ Test it first",
+      value: value,
+      tag: tag,
+      state: if(R.running?(task), do: :running, else: :normal),
+      keys:
+        [{"Enter", :open_row, "test"}, {"t", :test, "test"}] ++
+          if(R.running?(task), do: [{"c", :cancel_task, "stop"}], else: []),
+      target: {:test_draft}
+    )
+  end
+
+  defp draft_tools_words(summary) do
+    count = R.field(summary, "count") || 0
+    names = R.field(summary, "tools") || []
+    shown = names |> Enum.take(5) |> Enum.join(", ")
+    more = if count > 5, do: " +#{count - 5}", else: ""
+
+    "connected · #{R.count(count, "tool")}" <> if(names == [], do: "", else: ": #{shown}#{more}")
   end
 
   defp draft_attrs(ctx) do
