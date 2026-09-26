@@ -641,7 +641,14 @@ defmodule SwarmCodeCLI.Release.ConfigCommand do
         _ -> Headless.context(nil, nil)
       end
 
-    case Settings.query("records", %{"kind" => kind, "page_size" => 200}, ctx) do
+    # `records provider` reads like `record get provider:NAME`: a record kind names its list.
+    view =
+      case Map.fetch(@kinds, kind) do
+        {:ok, {list, _name_field, _section}} -> list
+        :error -> kind
+      end
+
+    case Settings.query("records", %{"kind" => view, "page_size" => 200}, ctx) do
       {:ok, %{"items" => items}} ->
         {:ok, items}
 

@@ -249,6 +249,17 @@ defmodule SwarmCodeCLI.Release.C74ConfigCommandTest do
     refute SwarmCode.Domain.MCP.list() |> Enum.find(&(&1.name == "github")) |> Map.get(:enabled)
   end
 
+  test "records takes the kind a record is named by as well as its list (records provider)", c do
+    # Found in the sandbox (cli74 F26): `records provider` said "not a settings view"
+    # while `record get provider:DeepSeek` and the usage line both name the kind.
+    assert {0, plural, _} = config(c, ["records", "providers"])
+    assert plural =~ "name=DeepSeek"
+    assert {0, ^plural, _} = config(c, ["records", "provider"])
+    assert {0, _, _} = config(c, ["records", "search_provider"])
+    assert {2, _, err} = config(c, ["records", "nope"])
+    assert err =~ "not a settings view"
+  end
+
   test "export, import and doctor run as headless tasks", c do
     file = Path.join(c.base, "settings.json")
     assert {0, _out, _} = config(c, ["set", "limits.max_concurrent_agents", "6"])
