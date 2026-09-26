@@ -344,6 +344,17 @@ defmodule SwarmCode.Daemon.Service.Settings.C74BackendSettingsTest do
     assert %{"origin" => "settings", "revision" => 2} = own["body"]
   end
 
+  # cli74 G1 (QA F-8): a server created or deleted (`MCP.broadcast/0`) made no
+  # settings_update, so a deleted server stayed on an open MCP page until Ctrl-R.
+  test "an MCP server added, changed or deleted makes a settings_update for mcp", c do
+    ref = shell_watch(c.backend, "shell")
+    SwarmCode.Domain.MCP.broadcast()
+
+    assert [delta] = settings_deltas(ref, "settings_update", 400)
+    assert "mcp" in delta["body"]["sections"]
+    assert "overview" in delta["body"]["sections"]
+  end
+
   test "the workspace metadata re-projects a new default chat model", c do
     {:ok, _} =
       Conversations.update(c.conversation, %{chat_provider_id: nil, chat_model: nil})

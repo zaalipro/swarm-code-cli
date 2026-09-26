@@ -55,15 +55,24 @@ defmodule SwarmCode.Daemon.Service.Settings.Overview do
     finish(own ++ List.flatten(handlers))
   end
 
-  @doc "One item per id, sorted, at most 64."
+  @doc """
+  One item per id and target, with string keys, sorted, at most 64. The
+  handlers' items have atom keys and share their source's id (`AT1` for every
+  failed server): read as `item["id"]` they were all `nil`, so every handler
+  item after the first was dropped (QA F-9: a failed MCP server behind a
+  pricing item was never counted).
+  """
   @spec finish([map()]) :: [map()]
   def finish(items) do
     items
     |> Enum.filter(&is_map/1)
-    |> Enum.uniq_by(& &1["id"])
+    |> Enum.map(&stringify/1)
+    |> Enum.uniq_by(&{&1["id"], &1["target"]})
     |> sort()
     |> Enum.take(@max)
   end
+
+  defp stringify(item), do: Map.new(item, fn {key, value} -> {to_string(key), value} end)
 
   @doc "Errors first, then warnings, then the rail order of their sections (stable)."
   @spec sort([map()]) :: [map()]

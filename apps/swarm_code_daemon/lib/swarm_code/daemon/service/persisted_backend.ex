@@ -452,7 +452,12 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     do: {:noreply, mark_settings(state, {:settings_updated, nil})}
 
   def handle_info({event} = message, state)
-      when event in [:providers_changed, :search_providers_updated, :projects_changed],
+      when event in [
+             :providers_changed,
+             :search_providers_updated,
+             :projects_changed,
+             :mcp_changed
+           ],
       do: {:noreply, mark_settings(state, message)}
 
   def handle_info({event, _} = message, state) when event in [:storage_done, :storage_failed],

@@ -36,6 +36,9 @@ defmodule SwarmCode.Daemon.Service.Settings.Deltas do
   def sections({:storage_done, _result}), do: {["storage"], false}
   def sections({:storage_failed, _reason}), do: {["storage"], false}
   def sections({:mcp_status, _id, _status}), do: {["mcp", "overview"], false}
+  # QA F-8: a server created, changed or deleted (`MCP.broadcast/0`); a
+  # deleted server stayed on an open MCP page until Ctrl-R.
+  def sections({:mcp_changed}), do: {["mcp", "overview"], false}
   def sections(_message), do: :ignore
 
   @doc "The registry-backed conversation columns (a change of one marks models_effort)."

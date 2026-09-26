@@ -78,6 +78,27 @@ defmodule SwarmCode.Daemon.Service.Settings.C74AttentionTest do
     assert by_id["AT8"].reason == "effort, hooks.post_edit, profiles.fast.mode"
   end
 
+  # cli74 G1 (QA F-9): the overview kept only the first handler item (every
+  # atom-keyed item read as id nil), so the failed server behind the pricing
+  # item was never counted.
+  test "the overview counts every handler's items, one per source and target", c do
+    items = S.Overview.attention_items(c.ctx)
+    ids = Enum.map(items, & &1["id"])
+
+    for id <- ~w(AT1 AT5 AT8), do: assert(id in ids, inspect(ids))
+    assert Enum.all?(items, &is_binary(&1["id"]))
+
+    at1 = Enum.find(items, &(&1["id"] == "AT1"))
+    assert at1["title"] == "github MCP server failed to start"
+    assert at1["severity"] == "error"
+    # Errors first.
+    assert hd(items)["severity"] == "error"
+
+    two = S.Overview.finish([at1, %{at1 | "target" => %{"kind" => "mcp_server", "id" => "x"}}])
+    assert length(two) == 2
+    assert length(S.Overview.finish([at1, at1])) == 1
+  end
+
   test "every item has the overview's wire shape and no secret", c do
     items = attention(c.ctx)
     json = items |> Wire.json() |> Jason.encode!()
