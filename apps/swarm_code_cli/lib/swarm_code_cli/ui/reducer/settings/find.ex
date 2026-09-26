@@ -204,10 +204,26 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Find do
   defp open_result(state) do
     case Nav.current(state) do
       %Row{target: {:search_result, target}} -> go(state, target)
+      %Row{kind: :action, key: key} when is_binary(key) -> run_action(state, key)
       %Row{kind: kind} when kind in [:setting, :action] -> Ops.row_verb(state, :enter)
       # A fact has nothing to edit: Enter shows it in its section (as `g`).
       %Row{kind: :info, key: key} when is_binary(key) -> go(state, {:key, key})
       _ -> {state, []}
+    end
+  end
+
+  # An action result ("Enter run") runs where its section draws it: the
+  # section acts on its own row (`act:<key>`), not on the search's copy, so
+  # Enter goes there (as `g`) and presses Enter on that row once it is shown.
+  defp run_action(state, key) do
+    {state, effects} = go(state, {:key, key})
+
+    with %Row{id: id, key: row_key} <- Nav.current(state),
+         true <- id == "act:" <> key or row_key == key do
+      {state, more} = Ops.row_verb(state, :enter)
+      {state, effects ++ more}
+    else
+      _ -> {state, effects}
     end
   end
 

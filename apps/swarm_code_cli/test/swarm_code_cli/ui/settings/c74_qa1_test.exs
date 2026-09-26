@@ -6,7 +6,7 @@ defmodule SwarmCodeCLI.UI.Settings.C74Qa1Test do
   """
   use ExUnit.Case, async: true
 
-  import SwarmCodeCLI.UI.Pass73Helpers, only: [ready: 0, press!: 2, letter: 1]
+  import SwarmCodeCLI.UI.Pass73Helpers, only: [ready: 0, press: 2, press!: 2, letter: 1]
   import SwarmCodeCLI.UI.C74U3Helpers
   import SwarmCodeCLI.Test.C74U2Ctx, only: [ctx: 2]
 
@@ -211,6 +211,21 @@ defmodule SwarmCodeCLI.UI.Settings.C74Qa1Test do
       entered = key(state, :enter)
       assert entered.settings.mode == :editing
       assert entered.settings.editing.row.key == "budget.monthly_usd"
+    end
+
+    # Found in the polish sandbox: the detail said `Enter run` and Enter did
+    # nothing, since the section under the search cannot run another's action.
+    test "Enter on an action result runs it in its own section" do
+      {state, fake} = opened(:mcp)
+      state = state |> press!(letter("/")) |> typed("add a provider")
+      assert Enum.any?(Nav.rows(state), &(&1.id == "key:providers.add"))
+
+      {state, _fake} = state |> press(Input.key(:enter)) |> serve(fake)
+
+      assert state.settings.search == nil
+      assert Layer.section(state.settings) == :providers
+      assert Nav.current(state).id == "act:providers.add"
+      assert {:picker, %{id: "provider.preset"}} = state.settings.popover
     end
 
     test "Enter on a fact result shows it in its section" do
