@@ -118,8 +118,11 @@ defmodule SwarmCodeCLI.UI.Settings.C74ImportExportTest do
     path_row =
       ctx |> then(&Sections.sub_rows(:import_export, &1, {:import, state})) |> find("imp:path")
 
-    assert [{:task, "import.preview", %{"path" => @path}, %{}} | _] =
+    # cli74 G1 (QA F-20): the preview compares terminal keys with this cli.json.
+    assert [{:task, "import.preview", %{"path" => @path}, %{"terminal" => terminal}} | _] =
              Sections.commit(:import_export, ctx, path_row, "  " <> @path <> " ")
+
+    assert terminal == ctx.prefs
 
     assert [{:toast, _, :warning}] = Sections.commit(:import_export, ctx, path_row, " ")
   end

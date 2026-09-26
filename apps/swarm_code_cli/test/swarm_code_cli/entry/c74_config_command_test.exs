@@ -280,12 +280,16 @@ defmodule SwarmCodeCLI.Release.C74ConfigCommandTest do
   test "export, import and doctor run as headless tasks", c do
     file = Path.join(c.base, "settings.json")
     assert {0, _out, _} = config(c, ["set", "limits.max_concurrent_agents", "6"])
+    assert {0, _out, _} = config(c, ["set", "terminal.theme", "dark"])
     assert {0, out, _} = config(c, ["export", file])
     assert out =~ "Exported to"
     assert %{"format" => "swarmcode-settings"} = Jason.decode!(File.read!(file))
 
     assert {0, out, _} = config(c, ["import", file])
     assert out =~ "Nothing was changed; add --apply to import."
+    # cli74 G1 (QA F-20): the same machine's cli.json value is `same`, not `- -> dark`.
+    assert out =~ ~r/same\s+terminal\s+theme\s+dark -> dark/
+    refute out =~ ~r/change\s+terminal\s+theme/
 
     assert {code, out, _} = config(c, ["doctor"])
     assert code in [0, 1]

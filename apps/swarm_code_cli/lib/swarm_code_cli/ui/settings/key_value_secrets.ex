@@ -193,7 +193,7 @@ defmodule SwarmCodeCLI.UI.Settings.KeyValueSecrets do
         # the value is never drawn; the paste target takes it instead.
         editor:
           {SwarmCodeCLI.UI.Settings.Editors.Text,
-           %{value: "", max: 4_096, commit_when: {__MODULE__, :secret_entry?}}},
+           %{value: "", max: 4_096, commit_when: &__MODULE__.secret_entry?/1}},
         keys: [{"Enter", :open_row, "add"}, {"a", :add, "add"}],
         target: {:kv_add, id, map}
       )
@@ -326,10 +326,7 @@ defmodule SwarmCodeCLI.UI.Settings.KeyValueSecrets do
         [{:row_error, row_id, "already in the list"}]
 
       secret?(name, value) ->
-        [
-          {:paste, secret_target(record_fields, id, map, name)},
-          {:toast, "#{name} looks like a secret · paste its value (it is never shown)", :info}
-        ]
+        [{:paste, secret_target(record_fields, id, map, name)}]
 
       true ->
         stage(ctx, id, map, record_fields, &(&1 ++ [%{"name" => name, "value" => value}]))

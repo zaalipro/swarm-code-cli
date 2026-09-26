@@ -1144,8 +1144,15 @@ defmodule SwarmCodeCLI.Release.ConfigCommand do
           _ -> Headless.context(nil, nil)
         end
 
+      # The terminal rows compare with this machine's cli.json (QA F-20).
+      terminal = CliFile.read_all(env.cli_path).values
+
       case Headless.command(
-             struct(@command, %{action: "import.preview", target: %{"path" => path}}),
+             struct(@command, %{
+               action: "import.preview",
+               target: %{"path" => path},
+               attributes: %{"terminal" => terminal}
+             }),
              ctx
            ) do
         {:task, _, {:ok, %{"rows" => rows} = preview}} ->

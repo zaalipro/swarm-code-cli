@@ -149,6 +149,29 @@ defmodule SwarmCode.Daemon.Service.Settings.C74TransferTest do
     assert %{"format" => "swarmcode-settings"} = Jason.decode!(File.read!(path))
   end
 
+  # cli74 G1 (QA F-20): the preview read every terminal key as a change from
+  # nothing; with the client's cli.json values a matching key is `same`.
+  test "the import preview compares terminal keys with the client's cli.json", fixture do
+    path = Path.join(fixture.dir, "terminal.json")
+    assert {:ok, _} = export!(fixture, path)
+
+    terminal_row = fn current ->
+      preview =
+        C74S1.command("import.preview",
+          target: %{"path" => path},
+          attributes: %{"terminal" => current}
+        )
+
+      assert {:task, spec, _} = Settings.command(preview, ctx(fixture))
+      assert {:ok, %{"rows" => rows}} = run(spec)
+      Enum.find(rows, &(&1["scope"] == "terminal" and &1["key_or_record"] == "panel"))
+    end
+
+    assert %{"status" => "same", "now" => "compact"} = terminal_row.(%{"panel" => "compact"})
+    assert %{"status" => "change", "now" => "full"} = terminal_row.(%{"panel" => "full"})
+    assert %{"status" => "change", "now" => nil} = terminal_row.(%{})
+  end
+
   test "export then import on a fresh database gives the same values", fixture do
     path = Path.join(fixture.dir, "roundtrip.json")
     assert {:ok, _} = export!(fixture, path)

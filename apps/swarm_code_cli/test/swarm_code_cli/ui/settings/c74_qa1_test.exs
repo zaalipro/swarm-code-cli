@@ -494,6 +494,21 @@ defmodule SwarmCodeCLI.UI.Settings.C74Qa1Test do
     refute text =~ "Ctrl-P"
   end
 
+  test "F-13: the status row says where the focused row writes" do
+    at = fn key ->
+      state =
+        ready()
+        |> act!({:resize, %SwarmCodeCLI.UI.Size{columns: 160, rows: 45}})
+        |> act!({:settings_open, {:key, key}})
+
+      state |> screen() |> String.split("\n") |> Enum.find(&(&1 =~ "writes to"))
+    end
+
+    assert at.("limits.max_concurrent_agents") =~ "writes to global · shared with the desktop app"
+    assert at.("terminal.panel") =~ "writes to cli.json · this machine's terminal"
+    assert at.("session.effort") =~ "writes to this conversation"
+  end
+
   # ------------------------------------------------------------------ F-22
 
   test "F-22: a renamed price opens the renamed row's page in place of the old one" do

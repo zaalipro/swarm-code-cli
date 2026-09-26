@@ -226,7 +226,8 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.ImportExport do
     else
       state = sub_state(ctx, :import)
 
-      [{:task, "import.preview", %{"path" => path}, %{}}] ++
+      # The terminal rows compare with this terminal's cli.json (QA F-20).
+      [{:task, "import.preview", %{"path" => path}, %{"terminal" => ctx.prefs || %{}}}] ++
         reopen(:import, %{state | path: path}, "imp:path")
     end
   end

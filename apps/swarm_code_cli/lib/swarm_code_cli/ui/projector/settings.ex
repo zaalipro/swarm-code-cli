@@ -904,7 +904,39 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
 
   # ----------------------------------------------------- status, footer
 
-  defp status(state, layer, _current, width) do
+  # §4.1.5 (QA F-13): the right side says where a change of the focused row
+  # is written, beside the toast or the tip.
+  defp status(state, layer, current, width) do
+    right = writes_to(state, current)
+    room = if right == [], do: width, else: max(width - Text.cells(state, right) - 2, 0)
+    left = status_left(state, layer, room)
+
+    if right == [],
+      do: left,
+      else: Text.spread(state, left, right ++ [{" ", :text_primary}], width)
+  end
+
+  defp writes_to(state, %{key: key}) when is_binary(key) do
+    with {:ok, entry} <- SwarmCode.Settings.Registry.fetch(key),
+         true <- SwarmCode.Settings.Entry.writable?(entry) do
+      words =
+        case entry.home do
+          :cli ->
+            "cli.json · this machine's terminal"
+
+          home ->
+            SwarmCodeCLI.UI.Settings.Rows.scope_words(Nav.ctx(state), %{entry | scope: home})
+        end
+
+      if is_binary(words), do: [{"writes to " <> words, :text_faint}], else: []
+    else
+      _ -> []
+    end
+  end
+
+  defp writes_to(_state, _current), do: []
+
+  defp status_left(state, layer, width) do
     case layer.status do
       %{text: text, role: role, at: at} = status ->
         if state.now - at < Map.get(status, :ms, 4_000) do

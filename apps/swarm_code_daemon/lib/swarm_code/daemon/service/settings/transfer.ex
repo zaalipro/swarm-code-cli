@@ -73,7 +73,10 @@ defmodule SwarmCode.Daemon.Service.Settings.Transfer do
 
   def command(%Command{action: "import.preview"} = command, %Context{} = ctx) do
     with {:ok, path} <- import_path(command.target) do
-      run = fn _report -> preview_run(path, ctx) end
+      # The client's cli.json values, so a terminal row that matches reads
+      # `same` (QA F-20: every terminal key read as a change from `-`).
+      terminal = terminal_values((command.attributes || %{})["terminal"])
+      run = fn _report -> preview_run(path, ctx, terminal) end
 
       spec =
         TaskSpec.new("import.preview", {"import.preview", path}, run,
@@ -297,12 +300,12 @@ defmodule SwarmCode.Daemon.Service.Settings.Transfer do
 
   defp import_path(_target), do: {:error, Error.new(:invalid, "name a file")}
 
-  defp preview_run(path, ctx) do
+  defp preview_run(path, ctx, terminal) do
     Process.flag(:trap_exit, true)
 
     with {:ok, document} <- read_document(path),
          :ok <- no_secrets(document) do
-      rows = preview_rows(document, ctx)
+      rows = preview_rows(document, ctx, terminal)
       {:ok, %{"rows" => rows, "counts" => counts(rows), "_document" => document}}
     end
   end
@@ -369,7 +372,7 @@ defmodule SwarmCode.Daemon.Service.Settings.Transfer do
 
   defp secret_field(_record, _key, _label), do: []
 
-  defp preview_rows(document, ctx) do
+  defp preview_rows(document, ctx, terminal) do
     names = provider_names()
     file_providers = for %{"name" => name} <- List.wrap(document["providers"]), do: name
     # `names` is id → name; a model value names its provider.
@@ -383,7 +386,7 @@ defmodule SwarmCode.Daemon.Service.Settings.Transfer do
 
     rows =
       scalar_rows ++
-        terminal_rows(document["terminal"]) ++
+        terminal_rows(document["terminal"], terminal) ++
         provider_rows(document["providers"]) ++
         search_rows(document["search_providers"]) ++
         mcp_rows(document["mcp_servers"]) ++ pricing_rows(document["pricing"])
@@ -463,17 +466,26 @@ defmodule SwarmCode.Daemon.Service.Settings.Transfer do
   defp check_value(%Entry{type: :model}, _value, _known), do: {:error, "not a model"}
   defp check_value(entry, value, _known), do: Validate.check(entry, value)
 
-  defp terminal_rows(%{} = terminal) do
+  defp terminal_rows(%{} = terminal, current) do
     names = cli_names()
 
     for {key, value} <- terminal do
-      if MapSet.member?(names, key),
-        do: row("terminal", key, nil, value, "change"),
-        else: row("terminal", key, nil, value, "invalid", "not a terminal setting")
+      now = Map.get(current, key)
+
+      cond do
+        not MapSet.member?(names, key) ->
+          row("terminal", key, nil, value, "invalid", "not a terminal setting")
+
+        Map.has_key?(current, key) and WireValue.equal?(now, value) ->
+          row("terminal", key, now, value, "same")
+
+        true ->
+          row("terminal", key, now, value, "change")
+      end
     end
   end
 
-  defp terminal_rows(_), do: []
+  defp terminal_rows(_, _current), do: []
 
   defp provider_rows(providers) do
     existing = Map.new(Providers.list(), &{&1.name, provider_out(&1)})
