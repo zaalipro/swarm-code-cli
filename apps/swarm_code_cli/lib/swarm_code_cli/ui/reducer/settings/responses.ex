@@ -368,6 +368,12 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Responses do
 
   # --------------------------------------------------------------- tasks
 
+  # cli74 F40: a fast task's deltas can arrive before the command's answer (a
+  # loopback test ends in milliseconds); what they said is kept, not reset to
+  # `running` (the Test connection row said `testing · 46 s` for good, found in
+  # the sandbox).
+  @delta_fields ~w(state elapsed_ms progress summary message received_at_ms)
+
   defp track(%{settings: layer} = state, task_id, meta, task) do
     entry = %{
       "task_id" => task_id,
@@ -378,6 +384,9 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Responses do
       "received_at_ms" => state.now,
       "mine" => true
     }
+
+    early = layer.tasks |> Map.get(task_id, %{}) |> Map.take(@delta_fields)
+    entry = Map.merge(entry, early)
 
     %{state | settings: %{layer | tasks: Map.put(layer.tasks, task_id, entry)}}
   end

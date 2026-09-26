@@ -240,6 +240,40 @@ defmodule SwarmCodeCLI.UI.Settings.C74DataTest do
     assert [%{"view" => "task", "id" => "t1"}] = Enum.map(sent(effects), &params/1)
   end
 
+  # cli74 F40 (found in the sandbox): a loopback test ended before the command's
+  # answer arrived, and the answer reset its row to "testing the connection" for good.
+  test "a task that ends before its command is answered stays ended" do
+    {state, fake} = opened()
+    pid = SwarmCodeCLI.UI.DataSource.Fake.SettingsIntegrations.ids().deepseek
+
+    {state, effects} =
+      SwarmCodeCLI.UI.Reducer.Settings.Ops.run(state, [
+        {:task, "provider.test", %{"id" => pid}, %{}}
+      ])
+
+    [request] = sent(effects)
+    {_fake, body, _} = FakeSettings.command(fake, request)
+    task_id = task_id_of(body)
+    assert is_binary(task_id)
+
+    done = %DTO.SettingsTask{
+      task_id: task_id,
+      action: "provider.test",
+      state: :done,
+      elapsed_ms: 4
+    }
+
+    {state, _} = SwarmCodeCLI.UI.Reducer.Settings.Responses.delta(state, done)
+    {state, _} = deliver(state, request, body)
+
+    assert %{"state" => "done", "mine" => true, "target" => %{"id" => ^pid}} =
+             state.settings.tasks[task_id]
+  end
+
+  defp task_id_of(%DTO.SettingsResult{task: %{task_id: id}}), do: id
+  defp task_id_of({_tag, %DTO.SettingsResult{} = result}), do: task_id_of(result)
+  defp task_id_of(other), do: flunk("no task in #{inspect(other, limit: 6)}")
+
   test "an answer for a closed or reopened layer is dropped" do
     {state, effects} = act(ready(), {:settings_open, {:section, :agents_limits}})
     [request] = sent(effects)
