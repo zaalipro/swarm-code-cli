@@ -209,8 +209,56 @@ defmodule SwarmCodeCLI.C74AcceptanceTest do
       state = esc.(state)
       assert Page.level(Layer.page(state.settings)) == :section
       assert Layer.section(state.settings) == :mcp
+      # F16 (cli74 F33): the section's header says where Esc goes: the sections page.
+      assert hd(lines(state)) =~ "Esc sections"
+
       state = esc.(state)
-      assert state.settings == nil or Layer.section(state.settings) == :overview
+      assert state.settings.region == :rail
+      text = Enum.join(lines(state), "\n")
+      assert hd(lines(state)) =~ "Esc back to chat"
+
+      # The sections page scrolls with its cursor (MCP servers) in view.
+      for title <- ["Providers", "MCP servers", "Language servers", "Agents & limits"],
+          do: assert(text =~ title, title)
+
+      assert Enum.any?(lines(state), &(&1 =~ "▌" and &1 =~ "MCP servers"))
+
+      # ↓ moves to the next section and Enter opens it as a page.
+      state = state |> key(:down) |> elem(0) |> key(:enter) |> elem(0)
+      assert state.settings.region == :page
+      assert Layer.section(state.settings) == :language_servers
+
+      state = esc.(state)
+      assert state.settings.region == :rail
+      state = esc.(state)
+      assert state.settings == nil
+    end
+  end
+
+  describe "F14: under 120 columns a one-row section strip" do
+    test "the strip names the section and its neighbours, the count, and [ ] step it" do
+      {state, _fake} = opened(:approvals)
+      state = sized(state, 90, 30)
+      [_header, strip | _] = lines(state)
+
+      assert strip =~ "[ "
+      assert strip =~ "Approvals & trust"
+      assert strip =~ "Agents & limits"
+      assert strip =~ "10 of 22"
+      assert SwarmCodeCLI.UI.Width.cells(strip, :narrow) <= 90
+      # The search row's counts shorten (F14: `• 14  ! 3  2 env`).
+      refute Enum.at(lines(state), 2) =~ "changed from default"
+
+      state =
+        SwarmCodeCLI.UI.Pass73Helpers.press!(state, SwarmCodeCLI.UI.Pass73Helpers.letter("]"))
+
+      [_header, strip | _] = lines(state)
+      assert strip =~ "11 of 22"
+
+      wide = sized(state, 120, 30)
+      refute Enum.at(lines(wide), 1) =~ " of 22"
+      small = sized(state, 80, 24)
+      refute Enum.at(lines(small), 1) =~ " of 22"
     end
   end
 

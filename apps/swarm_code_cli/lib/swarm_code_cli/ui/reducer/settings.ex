@@ -429,11 +429,24 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings do
       case answer do
         [] -> {state, []}
         [_ | _] = ops -> Ops.run(state, ops)
-        _default -> leave(state, :pop)
+        _default -> pop_or_sections(state)
       end
 
     {state, settled ++ effects}
   end
+
+  # F16: at 80–89 columns a section's page goes back to the sections page
+  # (the rail region, drawn as a page); from there Esc goes back to the chat.
+  defp pop_or_sections(
+         %{settings: %Layer{region: :page} = layer, size: %{columns: c, rows: r}} = state
+       )
+       when c in 80..89 and r >= 20 do
+    if Layer.depth(layer) == 1,
+      do: {put_layer(state, %{layer | region: :rail, rail_cursor: Layer.section(layer)}), []},
+      else: leave(state, :pop)
+  end
+
+  defp pop_or_sections(state), do: leave(state, :pop)
 
   # ------------------------------------------------------ leaving a page
 

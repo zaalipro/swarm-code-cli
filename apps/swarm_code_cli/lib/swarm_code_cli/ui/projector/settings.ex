@@ -28,6 +28,7 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
   @detail 48
   @min_columns 80
   @min_rows 20
+  @narrow 90
   @label 29
 
   @doc "The layer's regions and cursor, or nil when it is closed."
@@ -82,11 +83,22 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
     current = Nav.current(state, rows)
     rail? = width >= 120
     detail? = width >= 160
+    # T§6.1: narrow (90–119) puts a one-row section strip under the header;
+    # small (80–89) drills down, the sections being a page of their own (F16).
+    strip? = not rail? and width >= @narrow
+    sections_page? = sections_page?(state)
     drawer = if detail?, do: 0, else: if(width < 120 or height < 30, do: 3, else: 4)
-    body_rows = max(height - 6 - if(drawer > 0, do: drawer + 1, else: 0), 1)
+
+    body_rows =
+      max(height - 6 - if(drawer > 0, do: drawer + 1, else: 0) - if(strip?, do: 1, else: 0), 1)
+
     page_width = width - if(rail?, do: @rail + 1, else: 0) - if(detail?, do: @detail + 1, else: 0)
 
-    page = page_lines(state, rows, current, page_width, body_rows)
+    page =
+      if sections_page?,
+        do: sections_page_lines(state, page_width, body_rows),
+        else: page_lines(state, rows, current, page_width, body_rows)
+
     rail = if rail?, do: rail_lines(state, body_rows), else: nil
     detail = if detail?, do: detail_lines(state, current, @detail, body_rows), else: nil
 
@@ -108,7 +120,12 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
 
     drawer_lines =
       if drawer > 0 do
-        lines = detail_lines(state, current, width - 2, drawer)
+        lines =
+          if sections_page?,
+            do: [
+              [{"Enter opens ", :text_faint}, {Sections.title(layer.rail_cursor), :text_primary}]
+            ],
+            else: detail_lines(state, current, width - 2, drawer)
 
         [
           rule(state, width)
@@ -119,7 +136,9 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
       end
 
     lines =
-      [header(state, layer, width), search(state, layer, width), rule(state, width)] ++
+      [header(state, layer, width)] ++
+        if(strip?, do: [section_strip(state, layer, width)], else: []) ++
+        [search(state, layer, width), rule(state, width)] ++
         body ++
         drawer_lines ++
         [rule(state, width), status(state, layer, current, width), footer(state, current, width)]
@@ -146,8 +165,14 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
 
     esc =
       cond do
-        Layer.depth(layer) > 1 -> [{"Esc", {:info, [:bold]}}, {" back ", :text_faint}]
-        true -> [{"Esc", {:info, [:bold]}}, {" back to chat ", :text_faint}]
+        Layer.depth(layer) > 1 ->
+          [{"Esc", {:info, [:bold]}}, {" back ", :text_faint}]
+
+        small?(state) and layer.region != :rail ->
+          [{"Esc", {:info, [:bold]}}, {" sections ", :text_faint}]
+
+        true ->
+          [{"Esc", {:info, [:bold]}}, {" back to chat ", :text_faint}]
       end
 
     right = needs_you(state) ++ esc
@@ -267,34 +292,117 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
       Text.spread(
         state,
         [{" / ", :text_muted}, {"search every setting, provider, server and key", :text_ghost}],
-        strip(state),
+        strip(state, width),
         width
       )
 
   # What the Overview counts, on every page: changed values, attention
   # items, values the environment sets (F1's search row).
-  defp strip(state) do
+  # Under 120 columns the words shorten (F14: `• 14  ! 3  2 env`).
+  defp strip(state, width) do
     summary = Overview.summary(Nav.ctx(state))
+    short? = width < 120
 
     [
       if(summary.changed > 0,
         do: [
           {glyph(state, :changed) <> " ", :text_muted},
-          {"#{summary.changed} changed from default  ", :text_faint}
+          {if(short?,
+             do: "#{summary.changed}  ",
+             else: "#{summary.changed} changed from default  "
+           ), :text_faint}
         ]
       ),
       if(summary.attention > 0,
-        do: [{"! ", :warning}, {"#{summary.attention} need attention  ", :text_faint}]
+        do: [
+          {"! ", :warning},
+          {if(short?, do: "#{summary.attention}  ", else: "#{summary.attention} need attention  "),
+           :text_faint}
+        ]
       ),
-      if(summary.env > 0, do: [{"#{summary.env} from env ", :text_faint}])
+      if(summary.env > 0,
+        do: [
+          {if(short?, do: "#{summary.env} env ", else: "#{summary.env} from env "), :text_faint}
+        ]
+      )
     ]
     |> Enum.reject(&is_nil/1)
     |> Enum.concat()
   end
 
+  # ------------------------------------------------------ small, narrow
+
+  defp small?(%{size: %{columns: columns}}), do: columns >= @min_columns and columns < @narrow
+  defp small?(_state), do: false
+
+  # F16: at 80–89 columns the rail region is the sections page.
+  defp sections_page?(%{settings: %Layer{region: :rail}} = state), do: small?(state)
+  defp sections_page?(_state), do: false
+
+  # The rail's lines at the page's width, scrolled so the cursor stays in view.
+  defp sections_page_lines(state, width, rows) do
+    lines = rail_lines(state, 1_000, width)
+    cursor = Enum.find_index(lines, &cursor_line?/1) || 0
+    top = cursor |> Kernel.-(div(rows, 2)) |> max(0) |> min(max(length(lines) - rows, 0))
+    Enum.slice(lines, top, rows)
+  end
+
+  defp cursor_line?(line),
+    do: Enum.any?(line, fn {_text, role} -> role == :focus or match?({:focus, _, _}, role) end)
+
+  # F14: `[ Agents & limits  Approvals & trust  Project file ]      10 of 22`,
+  # the current section and as many neighbours as fit.
+  defp section_strip(state, layer, width) do
+    ids = Sections.ids()
+    current = Layer.section(layer)
+    index = Enum.find_index(ids, &(&1 == current)) || 0
+    count = "#{index + 1} of #{length(ids)} "
+    room = width - String.length(count) - 6
+    window = strip_window(ids, index, room)
+
+    names =
+      window
+      |> Enum.map(fn id ->
+        role = if id == current, do: {:text_primary, [:bold]}, else: :text_muted
+        [{Sections.title(id), role}]
+      end)
+      |> Enum.intersperse([{"  ", :text_faint}])
+      |> Enum.concat()
+
+    Text.spread(
+      state,
+      [{" [ ", :text_faint}] ++ names ++ [{" ]", :text_faint}],
+      [{count, :text_faint}],
+      width
+    )
+  end
+
+  defp strip_window(ids, index, room) do
+    cost = fn id -> String.length(Sections.title(id)) + 2 end
+    grow(ids, index, index, cost.(Enum.at(ids, index)), room, cost)
+  end
+
+  # Widens [lo, hi] a section at a time (right, then left) while it fits.
+  defp grow(ids, lo, hi, used, room, cost) do
+    {lo2, hi2, used2} =
+      Enum.reduce([hi + 1, lo - 1], {lo, hi, used}, fn at, {l, h, u} = acc ->
+        id = if at >= 0, do: Enum.at(ids, at)
+
+        cond do
+          id == nil or u + cost.(id) > room -> acc
+          at > h -> {l, at, u + cost.(id)}
+          true -> {at, h, u + cost.(id)}
+        end
+      end)
+
+    if {lo2, hi2} == {lo, hi},
+      do: Enum.slice(ids, lo..hi//1),
+      else: grow(ids, lo2, hi2, used2, room, cost)
+  end
+
   # ------------------------------------------------------------- rail
 
-  defp rail_lines(state, rows) do
+  defp rail_lines(state, rows, width \\ @rail) do
     layer = state.settings
     section = Layer.section(layer)
     bar = glyph(state, :focus_bar)
@@ -318,7 +426,7 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
                 state,
                 [lead, {"  " <> title, role}],
                 mark ++ [{" ", :text_primary}],
-                @rail
+                width
               )
 
             if cursor?, do: Text.select(line), else: line
