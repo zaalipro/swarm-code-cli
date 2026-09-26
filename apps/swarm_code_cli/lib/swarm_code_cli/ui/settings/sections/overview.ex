@@ -422,11 +422,21 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Overview do
     ])
   end
 
-  defp glance_words("storage", g, _ctx) do
+  # QA #2 P2-10: the service's fragment is `retention_days`, `last_sweep`,
+  # `sessions_measured`, `cleanup` (running | idle); none of it was read, so
+  # the storage line was missing from *at a glance*.
+  defp glance_words("storage", g, ctx) do
     parts([
       if(is_integer(g["database_bytes"]), do: bytes(g["database_bytes"])),
       if(is_integer(g["sessions"]), do: count(g["sessions"], "session", "sessions")),
-      cleanup(g)
+      if(is_integer(g["sessions_measured"]),
+        do: count(g["sessions_measured"], "session", "sessions")
+      ),
+      cleanup(g, ctx),
+      if(g["cleanup"] == "running", do: "cleaning up now"),
+      if(is_integer(g["retention_days"]) and g["retention_days"] > 0,
+        do: "deletes sessions after #{g["retention_days"]} days"
+      )
     ])
   end
 
@@ -468,6 +478,23 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Overview do
   defp cleanup(%{"last_sweep" => sweep}) when is_binary(sweep), do: "last sweep #{sweep}"
   defp cleanup(%{"cleanup_days" => nil}), do: "never cleaned up"
   defp cleanup(_g), do: nil
+
+  defp cleanup(%{"cleanup_days" => _} = g, _ctx), do: cleanup(g)
+
+  defp cleanup(%{"last_sweep" => sweep} = g, %Ctx{now: now}) when is_binary(sweep) do
+    case DateTime.from_iso8601(sweep) do
+      {:ok, at, _} when is_integer(now) ->
+        days = div(max(now - DateTime.to_unix(at, :millisecond), 0), 86_400_000)
+        cleanup(%{"cleanup_days" => days})
+
+      _ ->
+        cleanup(g)
+    end
+  end
+
+  # the service's fragment without a sweep: none has run
+  defp cleanup(%{"retention_days" => _}, _ctx), do: "never cleaned up"
+  defp cleanup(g, _ctx), do: cleanup(g)
 
   defp parts(list) do
     case Enum.reject(list, &(&1 in [nil, ""])) do

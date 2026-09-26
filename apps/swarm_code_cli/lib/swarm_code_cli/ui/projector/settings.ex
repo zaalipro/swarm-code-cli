@@ -510,7 +510,9 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
 
     Sections.ids()
     |> Enum.flat_map(fn id ->
-      records = if id in @counted, do: Map.get(Sections.counts(id, ctx), :records)
+      records =
+        if id in @counted,
+          do: Map.get(Sections.counts(id, ctx), :records) || glance_count(layer.data.overview, id)
 
       cond do
         Map.get(attention, id, 0) > 0 ->
@@ -529,6 +531,21 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
       end
     end)
     |> Map.new()
+  end
+
+  # QA #2 P2-10: before a section's records are loaded its count comes from
+  # the Overview's glance (`providers 4`), so the rail shows it from the start.
+  defp glance_count(%{glance: %{} = glance}, :providers),
+    do: glance_int(glance, "providers", "count")
+
+  defp glance_count(%{glance: %{} = glance}, :mcp), do: glance_int(glance, "mcp", "servers")
+  defp glance_count(_overview, _id), do: nil
+
+  defp glance_int(glance, name, key) do
+    case Map.get(glance, name) do
+      %{} = fragment -> if is_integer(fragment[key]), do: fragment[key]
+      _ -> nil
+    end
   end
 
   # ------------------------------------------------------------- page

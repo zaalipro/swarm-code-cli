@@ -508,4 +508,55 @@ defmodule SwarmCodeCLI.UI.Settings.C74Qa2Test do
       assert if(count == "1", do: noun == "match", else: noun == "matches"), search
     end
   end
+
+  test "P2-1: the enum editor keeps the focused choice in view (‹ … Firecrawl ›)" do
+    alias SwarmCodeCLI.UI.Settings.Editors.Enum, as: EnumEditor
+
+    choices = [
+      %{value: "web_fetch", label: "Plain fetch (strip HTML)", hint: nil},
+      %{value: "jina", label: "Jina Reader", hint: nil},
+      %{value: "firecrawl", label: "Firecrawl", hint: nil}
+    ]
+
+    ctx = %{size: %{columns: 160, rows: 45}}
+    {:ok, editor} = EnumEditor.init(%{}, %{choices: choices, value: "firecrawl"}, ctx)
+    shown = EnumEditor.display(editor, ctx).value
+    text = words(shown)
+    assert text =~ ~r/^‹ … .*Firecrawl ›$/, text
+    assert {"Firecrawl", :selection} in shown
+    assert String.length(text) <= 40
+
+    # at 200 columns they all fit, as §4.5 draws them
+    wide = %{size: %{columns: 200, rows: 45}}
+
+    assert words(EnumEditor.display(editor, wide).value) ==
+             "‹ Plain fetch (strip HTML)  Jina Reader  Firecrawl ›"
+  end
+
+  describe "P2-10: the Overview's counts and storage line" do
+    test "the rail counts providers and MCP servers before their sections are opened" do
+      {state, _fake} = opened(:overview, state: sized(160, 45))
+      refute Map.has_key?(state.settings.data.records, {"providers", %{}})
+      text = state |> lines() |> Enum.join("\n")
+      assert text =~ ~r/Providers\s+4 │/
+    end
+
+    test "at a glance has a storage line from the service's fragment" do
+      {state, _fake} = opened(:overview)
+      layer = state.settings
+      overview = layer.data.overview
+
+      glance =
+        Map.put(overview.glance, "storage", %{
+          "retention_days" => 90,
+          "cleanup" => "idle",
+          "sessions_measured" => 214
+        })
+
+      data = %{layer.data | overview: %{overview | glance: glance}}
+      state = %{state | settings: %{layer | data: data}}
+      text = words(row(state, "info:glance:storage"))
+      assert text == "214 sessions · never cleaned up · deletes sessions after 90 days"
+    end
+  end
 end
