@@ -372,8 +372,8 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Popover do
           marks
           |> Enum.map(fn {mark, role, words} ->
             [
-              {String.pad_trailing(mark, 16), role},
-              {String.pad_trailing(words, column - 16), :text_primary}
+              {String.pad_trailing(mark, 15), role},
+              {String.pad_trailing(words, column - 15), :text_primary}
             ]
           end)
           |> Enum.chunk_every(3)

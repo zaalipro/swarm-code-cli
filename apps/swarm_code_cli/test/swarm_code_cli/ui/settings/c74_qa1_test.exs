@@ -262,6 +262,12 @@ defmodule SwarmCodeCLI.UI.Settings.C74Qa1Test do
       assert text =~ "Delete the record this page shows"
       assert text =~ "marks"
       assert text =~ "needs your attention"
+
+      # A mark's words start where a key's help does: 15 cells after it.
+      line = text |> String.split("\n") |> Enum.find(&(&1 =~ "changed from its default"))
+      [before_words, _] = String.split(line, "changed from its default", parts: 2)
+      [before_mark, _] = String.split(before_words, "•", parts: 2)
+      assert String.length(before_words) - String.length(before_mark) == 15
       assert text =~ "where a value comes from, strongest first"
       assert text =~ "shared with the desktop app"
       assert text =~ "Remapped yourself out of a key? swarmcode config reset terminal.keys"
