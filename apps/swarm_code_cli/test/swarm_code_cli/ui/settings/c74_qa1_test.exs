@@ -509,6 +509,22 @@ defmodule SwarmCodeCLI.UI.Settings.C74Qa1Test do
     assert at.("session.effort") =~ "writes to this conversation"
   end
 
+  test "F-13: the rail counts the providers once they are loaded" do
+    {state, _fake} = opened(:providers)
+
+    state =
+      SwarmCodeCLI.UI.Reducer.update(
+        state,
+        {:resize, %SwarmCodeCLI.UI.Size{columns: 160, rows: 45}}
+      )
+      |> elem(0)
+
+    n = length(for row <- Nav.rows(state), String.starts_with?(row.id, "rec:provider:"), do: row)
+    assert n > 0
+    line = state |> screen() |> String.split("\n") |> Enum.find(&(&1 =~ ~r/^\s+Providers\s/u))
+    assert line =~ ~r/Providers\s+#{n}\s+│/u, line
+  end
+
   # ------------------------------------------------------------------ F-22
 
   test "F-22: a renamed price opens the renamed row's page in place of the old one" do

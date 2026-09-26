@@ -453,8 +453,11 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
     Enum.take(lines, rows)
   end
 
+  @counted [:providers, :mcp, :library]
+
   # Per section: `!N` attention items (the overview's), else `•N` values
-  # changed from their default (terminal keys and the loaded daemon ones).
+  # changed from their default (terminal keys and the loaded daemon ones),
+  # else the record count of Providers, MCP servers and Library.
   defp rail_marks(state) do
     layer = state.settings
     changed = glyph(state, :changed)
@@ -485,15 +488,23 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
           do: entry.section
 
     changed_counts = Enum.frequencies(daemon ++ cli)
+    ctx = Nav.ctx(state)
 
     Sections.ids()
     |> Enum.flat_map(fn id ->
+      records = if id in @counted, do: Map.get(Sections.counts(id, ctx), :records)
+
       cond do
         Map.get(attention, id, 0) > 0 ->
           [{id, [{"!#{attention[id]}", :warning}]}]
 
         Map.get(changed_counts, id, 0) > 0 ->
           [{id, [{changed <> "#{changed_counts[id]}", :text_muted}]}]
+
+        # §4.1.1 (QA F-13): a plain number is the section's record count,
+        # once its records are loaded.
+        is_integer(records) ->
+          [{id, [{"#{records}", :text_faint}]}]
 
         true ->
           []
