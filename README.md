@@ -228,6 +228,58 @@ actions, and correlated responses. `/goal` presents the conversation goal;
 Use PgUp/PgDn or Home/End to read long goal reports. The unsaved launcher reports
 persisted features unavailable because it has no Domain Repo.
 
+## Settings
+
+Every setting the desktop app has, and this terminal's own, in one full-screen layer:
+`/settings [what]` (also `/config`, `/prefs`), F2, a Settings row in Ctrl-P
+(`>settings:theme` lists single settings), or `swarmcode settings [what]` from a shell
+(`swarmcode settings providers` opens at Providers; it opens even when no model provider
+can answer yet). `what` is a section, a key (`limits.max_agent_depth`), a label or a
+synonym, and the cursor lands on that row.
+
+- **22 sections, 170 settings**: Overview; Models & effort, Providers (presets, pasted
+  keys, fetch models with the difference shown first, effort levels), Pricing; Search &
+  web (engines in fallback order, readers), Deep research, MCP servers (stdio and HTTP,
+  env and headers masked, `.mcp.json` import, reconnect), Language servers; Agents &
+  limits, Approvals & trust, the project file (`.swarm_code/config.json`: hooks,
+  profiles), Memory & instructions, Library (commands, agents, skills, workflows);
+  Appearance, Layout & transcript, Keys & input (rebind any action, `swarmcode config
+  keys`), Session & startup; Storage (measure, cleanup, vacuum, retention), Budget &
+  usage; Desktop app, Files & environment (doctor), Import & export.
+- **Where a value comes from** is on every row: `default`, `global` (the database the
+  desktop app shares), `project`, `this conversation`, `cli` (`cli.json` beside the
+  database, 0600, 64 KB at most), `flag` or `env` (`SWARM_THEME=light wins while set`).
+- **Writes are compare-and-set.** A value changed elsewhere (the desktop app, another
+  command) shows `changed elsewhere` instead of being overwritten; `u` undoes the last
+  change of this session, also after closing and reopening the layer.
+- **Keys are pasted, never typed or shown**: the row reads `●●●●●●●● set · ends 4f2a`;
+  a replaced key is tested against the endpoint before it is saved (`s` saves a refused
+  one anyway). Keys never reach the screen, logs, undo, search or exports.
+- **Slow work runs as a task with its seconds shown** (tests, fetch models, MCP probes,
+  storage) and `c` cancels it; leaving the page cancels what it started.
+- `/` searches every setting, provider, server and key; `[` `]` change section; `?`
+  lists the keys; below 120 columns the rail becomes a section strip, at 80 × 24 the
+  pages drill down (Esc goes back one level).
+
+`swarmcode config` does the same from scripts, dotfiles and SSH, through the same
+service and checks (`swarmcode config help` lists every command):
+
+```sh
+swarmcode config list --modified
+swarmcode config set limits.max_agent_depth 3
+swarmcode config record add provider --preset deepseek
+printf '%s' "$DEEPSEEK_KEY" | swarmcode config secret provider:DeepSeek --stdin
+swarmcode config set models.chat DeepSeek/deepseek-v4-pro
+swarmcode config search order tavily,exa
+swarmcode config export settings.json && swarmcode config import settings.json --apply
+```
+
+Secrets are read from stdin only (an argument is refused with the sentence that says
+so). While a `swarmcode` session is open, settings stored in the database are changed
+in that session (`config set` exits 3 and says which process holds it); terminal
+settings (`cli.json`) can always be set. Exit codes: 0 done, 1 failed, 2 usage or an
+invalid value, 3 startup refused, 4 changed elsewhere (`--expect`).
+
 ## Visual companion
 
 A saved or live session can serve a local web page that mirrors the same
@@ -245,9 +297,10 @@ Set `SWARM_COMPANION=0` before launching to turn the companion off entirely.
 The page can be developed without a session: `apps/swarm_code_cli/priv/companion/index.html?fixture=1`
 renders the bundled fixture, and `scripts/dev/companion_screenshot.sh <url> <out.png>` captures it headlessly.
 
-Feature-library rows can open typed forms for workflow starts, schedule creation or
-editing, and settings updates. Arrow keys cycle choices and booleans; Enter submits;
-Escape cancels. Rejected values stay in the form with an error message.
+Feature-library rows can open typed forms for workflow starts and schedule creation or
+editing. Arrow keys cycle choices and booleans; Enter submits; Escape cancels. Rejected
+values stay in the form with an error message. Settings have their own layer (see
+Settings above).
 
 The persisted service uses the guarded Foundation-to-Repo handoff, durable command
 ledger, bounded projections, streamed deltas, and reconnect-safe request identity.
