@@ -217,6 +217,53 @@ defmodule SwarmCodeCLI.UI.Settings.C74Qa1Test do
     refute marked.(state, "Keys a project file")
   end
 
+  # ------------------------------------------------------------------ F-5
+
+  describe "F-5: the keys sheet lists the page's keys, the marks and the layers" do
+    test "at 160 x 45 every settings binding shows at once, with the legend and the last line" do
+      state =
+        ready()
+        |> act!({:resize, %SwarmCodeCLI.UI.Size{columns: 160, rows: 45}})
+        |> act!({:settings_open, {:section, :appearance}})
+        |> press!(letter("?"))
+
+      assert {:help, _} = state.settings.popover
+      text = screen(state)
+
+      for binding <- SwarmCodeCLI.UI.Keymap.SettingsBindings.all(),
+          :settings in binding.contexts do
+        clause = binding.help |> String.split([" (", "; "], parts: 2) |> hd()
+        assert text =~ binding.label or text =~ clause, binding.label
+      end
+
+      assert text =~ "Delete the record this page shows"
+      assert text =~ "marks"
+      assert text =~ "needs your attention"
+      assert text =~ "where a value comes from, strongest first"
+      assert text =~ "shared with the desktop app"
+      assert text =~ "Remapped yourself out of a key? swarmcode config reset terminal.keys"
+    end
+
+    test "at 90 columns the sheet is one scrolling column with each key's help" do
+      state =
+        ready()
+        |> act!({:resize, %SwarmCodeCLI.UI.Size{columns: 90, rows: 30}})
+        |> act!({:settings_open, {:section, :appearance}})
+        |> press!(letter("?"))
+
+      text =
+        state
+        |> SwarmCodeCLI.UI.Projector.Settings.Popover.lines({:help, %{scroll: 0}})
+        |> Enum.map_join("\n", fn line -> Enum.map_join(line, "", &elem(&1, 0)) end)
+
+      for binding <- SwarmCodeCLI.UI.Keymap.SettingsBindings.all(),
+          :settings in binding.contexts,
+          do: assert(text =~ binding.label <> " — " <> binding.help, binding.label)
+
+      assert text =~ "where a value comes from"
+    end
+  end
+
   # ------------------------------------------------------------------ F-22
 
   test "F-22: a renamed price opens the renamed row's page in place of the old one" do
