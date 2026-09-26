@@ -2106,10 +2106,16 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.SettingsIntegrations do
   defp stringify(map) when is_map(map), do: Map.new(map, fn {k, v} -> {to_string(k), v} end)
   defp stringify(_), do: %{}
 
+  # cli74 G1: a result row carries every field the wire requires (the
+  # service's `Kit.row/3` does); a row without `current` failed to decode, so
+  # a search engine move answered "Couldn't read settings right now." here.
   defp result(status, opts \\ []) do
     %{
       "status" => status,
-      "results" => Keyword.get(opts, :results, []),
+      "results" =>
+        opts
+        |> Keyword.get(:results, [])
+        |> Enum.map(&Map.merge(%{"value" => nil, "current" => nil, "message" => nil}, &1)),
       "record" => Keyword.get(opts, :record),
       "task" => nil,
       "message" => Keyword.get(opts, :message),

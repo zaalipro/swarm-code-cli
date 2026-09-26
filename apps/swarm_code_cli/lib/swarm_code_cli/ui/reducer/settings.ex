@@ -334,7 +334,8 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings do
        when verb in [:back, :escape] do
     case layer.search do
       %{query: query} = search when query != "" ->
-        {put_layer(state, %{layer | search: %{search | query: ""}}), []}
+        search = %{search | query: "", cursor: nil, found: nil}
+        {state |> put_layer(%{layer | search: search, region: :search}) |> Nav.settle(), []}
 
       _ ->
         {put_layer(state, %{layer | mode: :browse, search: nil, region: :page}), []}

@@ -533,12 +533,15 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
       skip = window_skip(rows, heights, start)
       tables = tables(state, rows, width - 3)
 
+      # QA F-18: a search result the cursor is on is marked as a page row is.
+      on_page? =
+        layer.region == :page or
+          (layer.region == :search and match?(%{cursor: id} when id != nil, layer.search))
+
       lines =
         window
         |> Enum.reverse()
-        |> Enum.flat_map(
-          &row_lines(state, &1, &1 == current and layer.region == :page, width, tables)
-        )
+        |> Enum.flat_map(&row_lines(state, &1, &1 == current and on_page?, width, tables))
         |> Enum.drop(skip)
 
       if start == 0, do: Enum.take(head ++ lines, height), else: Enum.take(lines, height)

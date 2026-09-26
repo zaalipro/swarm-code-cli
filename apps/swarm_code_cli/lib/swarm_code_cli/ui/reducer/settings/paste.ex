@@ -94,7 +94,11 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Paste do
             Map.update(current, :secrets, %{slot => value}, &Map.put(&1, slot, value))
           end)
 
-        state = %{state | settings: %{layer | drafts: drafts, paste: nil, mode: :browse}}
+        state = %{
+          state
+          | settings: %{layer | drafts: drafts, paste: nil, mode: Layer.resume_mode(layer)}
+        }
+
         label = field(target, :label) || "The value"
         {state, effects} = Ops.run(state, List.wrap(field(target, :then)))
         {Commit.status(state, "#{label} kept #{kept_for(draft)} · not shown", :success), effects}
@@ -266,7 +270,7 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Paste do
   def lines(%Target{}), do: []
 
   defp drop(%{settings: %Layer{} = layer} = state),
-    do: %{state | settings: %{layer | paste: nil, mode: :browse}}
+    do: %{state | settings: %{layer | paste: nil, mode: Layer.resume_mode(layer)}}
 
   defp put(%{settings: %Layer{} = layer} = state, paste),
     do: %{state | settings: %{layer | paste: paste}}

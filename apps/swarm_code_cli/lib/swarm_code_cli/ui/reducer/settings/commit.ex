@@ -62,6 +62,14 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Commit do
   defp cli_value(%Entry{storage: {:cli, _}}, :absent), do: :remove
   defp cli_value(_entry, value), do: value
 
+  @doc """
+  `Couldn't save: <words>`, once: the service's messages may already say it
+  (QA F-11: `Couldn't save: Couldn't save: name can't be blank`).
+  """
+  @spec couldnt_save(String.t()) :: String.t()
+  def couldnt_save("Couldn't save" <> _ = words), do: words
+  def couldnt_save(words), do: "Couldn't save: " <> words
+
   @doc "Resets registry keys to their defaults (terminal keys are removed from cli.json)."
   @spec reset(State.t(), [String.t()]) :: {State.t(), list()}
   def reset(state, keys) do
@@ -158,7 +166,7 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Commit do
 
     case Wire.command(put_layer(state, layer), params, %{kind: :write, write_ref: ref}) do
       {:error, words, state} ->
-        {status(state, "Couldn't save: " <> words, :error), []}
+        {status(state, couldnt_save(words), :error), []}
 
       {state, effects} ->
         write = %{
@@ -379,13 +387,13 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Commit do
     row = "key:" <> write.key
     layer = %{layer | row_errors: Map.put(layer.row_errors, row, message)}
     state = state |> put_layer(layer) |> restore_step(write)
-    {status(state, "Couldn't save: " <> message <> dropped(entry, write), :error), []}
+    {status(state, couldnt_save(message) <> dropped(entry, write), :error), []}
   end
 
   def outcome(state, _key, write, {:failed, words}) do
     entry = Registry.fetch!(write.key)
     state = restore_step(state, write)
-    {status(state, "Couldn't save: " <> words <> dropped(entry, write), :error), []}
+    {status(state, couldnt_save(words) <> dropped(entry, write), :error), []}
   end
 
   # A daemon write the service accepted is what its home layer now holds:

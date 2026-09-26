@@ -449,11 +449,39 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Ops do
         state = %{state | settings_history: history}
 
         case if(how == :undo, do: step.inverse, else: step.redo) do
-          {:patch, key, value} -> Commit.patch(state, key, value, reason: how, step: step)
-          op -> run(state, [op])
+          # QA F-2 (§3.7.10): the inverse is a CAS write expecting what the
+          # step wrote (a redo, what the undo wrote back), so a change made
+          # elsewhere since shows the conflict row instead of being overwritten.
+          {:patch, key, value} ->
+            Commit.patch(state, key, value,
+              reason: how,
+              step: step,
+              expected: step_expected(step, how)
+            )
+
+          {:command, action, target, attributes, opts} ->
+            word = if how == :undo, do: "Undid: ", else: "Redid: "
+
+            opts =
+              opts
+              |> Map.new()
+              |> Map.put(:undo_step, {how, step})
+              |> Map.put_new(:toast, word <> step.label)
+
+            run(state, [{:command, action, target, attributes, opts}])
+
+          op ->
+            run(state, [op])
         end
     end
   end
+
+  # A removed terminal key is expected absent.
+  defp step_expected(%{redo: {:patch, _key, written}}, :undo), do: stored(written)
+  defp step_expected(%{inverse: {:patch, _key, written}}, :redo), do: stored(written)
+
+  defp stored(:remove), do: :absent
+  defp stored(value), do: value
 
   # ------------------------------------------------- number stepping
 

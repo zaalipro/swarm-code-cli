@@ -121,8 +121,8 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Find do
     state =
       case state.settings.search do
         %{cursor: nil} ->
-          with id when is_binary(id) <- first_result(state),
-               do: Nav.put_cursor(state, id),
+          with id when is_binary(id) <- best_result(state),
+               do: state |> Nav.put_cursor(id) |> put_search(&%{&1 | cursor: id}),
                else: (_ -> state)
 
         _ ->
@@ -162,13 +162,33 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Find do
 
   def refresh(state), do: state
 
+  # QA F-4: ↓ from the typing row lands on the first result on screen, a
+  # fact (an info row) too: it can be read and passed; it returned nil for a
+  # fact, so `/monthly budget` could not reach "Monthly budget" below one.
   defp first_result(state) do
     case Enum.find(Nav.rows(state), &Row.focusable?/1) do
-      %Row{kind: :info} -> nil
       %Row{id: id} -> id
       nil -> nil
     end
   end
+
+  # Enter from the typing row: the best-ranked result Enter can act on (the
+  # page groups results by section in rail order, §3.7.11, so the best match
+  # is not always the first on screen), else the first on screen.
+  defp best_result(%{settings: %Layer{search: %{found: %{results: [_ | _] = results}}}} = state) do
+    actionable =
+      for %Row{kind: kind, id: id} = row <- Nav.rows(state),
+          kind != :info and Row.focusable?(row),
+          into: MapSet.new(),
+          do: id
+
+    Enum.find_value(results, fn {_rank, entry} ->
+      id = if entry.kind == :key, do: "key:" <> entry.key, else: entry.id
+      if MapSet.member?(actionable, id), do: id
+    end) || first_result(state)
+  end
+
+  defp best_result(state), do: first_result(state)
 
   defp sync_cursor(state) do
     case Nav.current(state) do
@@ -184,7 +204,9 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Find do
   defp open_result(state) do
     case Nav.current(state) do
       %Row{target: {:search_result, target}} -> go(state, target)
-      %Row{kind: :setting} -> Ops.row_verb(state, :enter)
+      %Row{kind: kind} when kind in [:setting, :action] -> Ops.row_verb(state, :enter)
+      # A fact has nothing to edit: Enter shows it in its section (as `g`).
+      %Row{kind: :info, key: key} when is_binary(key) -> go(state, {:key, key})
       _ -> {state, []}
     end
   end

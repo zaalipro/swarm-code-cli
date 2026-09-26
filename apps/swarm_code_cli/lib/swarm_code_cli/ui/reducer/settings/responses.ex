@@ -86,9 +86,11 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Responses do
   end
 
   # -- section commands and tasks
-  defp handle(state, %{kind: kind}, {:settings_failed, _id, words})
-       when kind in [:command, :task],
-       do: {Commit.status(state, "Couldn't save: " <> words, :error), []}
+  defp handle(state, %{kind: kind} = meta, {:settings_failed, _id, words})
+       when kind in [:command, :task] do
+    state = restore_command_step(state, Map.get(meta, :opts, %{}))
+    {Commit.status(state, Commit.couldnt_save(words), :error), []}
+  end
 
   defp handle(state, %{kind: :command} = meta, %SettingsResult{} = result),
     do: command_result(state, meta, result)
@@ -239,28 +241,30 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Responses do
         state =
           if is_binary(text) and status == :accepted, do: toast(state, text, opts), else: state
 
+        state = if status == :accepted, do: command_step(state, meta, opts, text), else: state
+
         Ops.run(state, after_ops(Map.get(opts, :after), result))
 
       :rejected ->
-        state = field_errors(state, opts, result)
+        state = state |> field_errors(opts, result) |> restore_command_step(opts)
 
         {Commit.status(
            state,
-           "Couldn't save: " <> (result.message || first_error(result)),
+           Commit.couldnt_save(result.message || first_error(result)),
            :error
          ), []}
 
       :needs_confirmation ->
-        needs_confirmation(state, opts, result)
+        needs_confirmation(restore_command_step(state, opts), opts, result)
 
       :conflict ->
-        {state, effects} = reload(state)
+        {state, effects} = state |> restore_command_step(opts) |> reload()
 
         {Commit.status(state, "That changed elsewhere; showing the new version", :warning),
          effects}
 
       _other ->
-        {state, effects} = refresh_on_unknown(state, result)
+        {state, effects} = state |> restore_command_step(opts) |> refresh_on_unknown(result)
 
         words =
           if result.corrective_action == :refresh,
@@ -270,6 +274,39 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Responses do
         {Commit.status(state, words, :error), effects}
     end
   end
+
+  # QA F-2 (§3.7.10): a section command with an inverse op (a toggle, a move,
+  # a price) is one undo step; the redo re-sends the command as it was sent.
+  # An undo or redo of a step moves the step and pushes none.
+  defp command_step(state, _meta, %{undo_step: _}, _text), do: state
+
+  defp command_step(
+         %{settings_history: history} = state,
+         meta,
+         %{undo: {:command, _, _, _, _} = inverse} = opts,
+         text
+       ) do
+    step = %{
+      write_key: Map.get(opts, :write_key),
+      label: if(is_binary(text), do: text, else: meta.action),
+      old: nil,
+      new: nil,
+      inverse: inverse,
+      redo:
+        {:command, meta.action, meta.target, meta.attributes,
+         Map.take(opts, [:expected, :write_key])}
+    }
+
+    %{state | settings_history: SwarmCodeCLI.UI.Settings.Undo.push(history, step)}
+  end
+
+  defp command_step(state, _meta, _opts, _text), do: state
+
+  # A failed undo or redo of a command puts its step back where it was.
+  defp restore_command_step(%{settings_history: history} = state, %{undo_step: {how, step}}),
+    do: %{state | settings_history: SwarmCodeCLI.UI.Settings.Undo.restore(history, step, how)}
+
+  defp restore_command_step(state, _opts), do: state
 
   defp toast(state, text, opts) do
     undo? = Map.get(opts, :undo, true) != false
@@ -313,7 +350,18 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Responses do
     if is_binary(id), do: [{:open, page} | ops], else: ops
   end
 
-  defp after_ops(ops, _result) when is_list(ops), do: ops
+  # QA F-22: a renamed record's page (a pricing row) replaces the old name's.
+  defp after_ops({:open_record, section, kind, id}, _result) when is_binary(id),
+    do: [:back, {:open, %Page{section: section, record: {kind, id}}}]
+
+  # A list of ops runs as it is; an `open_record` in it opens the created record.
+  defp after_ops(ops, result) when is_list(ops) do
+    Enum.flat_map(ops, fn
+      {:open_record, _section, _kind, _then} = op -> after_ops(op, result)
+      op -> [op]
+    end)
+  end
+
   defp after_ops(_other, _result), do: []
 
   defp replace_record_id(:record_id, id), do: id

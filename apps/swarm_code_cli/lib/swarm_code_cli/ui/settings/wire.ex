@@ -208,7 +208,7 @@ defmodule SwarmCodeCLI.UI.Settings.Wire do
     meta = %{kind: :command, action: action, target: target, attributes: attributes, opts: opts}
 
     case command(state, params, meta) do
-      {:error, words, state} -> {Commit.status(state, "Couldn't save: " <> words, :error), []}
+      {:error, words, state} -> {Commit.status(state, Commit.couldnt_save(words), :error), []}
       {state, effects} -> {state, effects}
     end
   end

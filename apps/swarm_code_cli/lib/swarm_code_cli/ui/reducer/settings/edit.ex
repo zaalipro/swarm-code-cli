@@ -161,7 +161,7 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Edit do
   @doc "Closes the editor (the layer browses again)."
   @spec close(map()) :: map()
   def close(%{settings: %Layer{} = layer} = state),
-    do: %{state | settings: %{layer | editing: nil, mode: :browse}}
+    do: %{state | settings: %{layer | editing: nil, mode: Layer.resume_mode(layer)}}
 
   @doc """
   Writes `value` for `row`: the section's `commit/3` first, else the

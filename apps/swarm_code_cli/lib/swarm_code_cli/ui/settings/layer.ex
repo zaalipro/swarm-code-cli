@@ -112,6 +112,16 @@ defmodule SwarmCodeCLI.UI.Settings.Layer do
   @spec section(t()) :: atom()
   def section(%__MODULE__{} = layer), do: page(layer).section
 
+  @doc """
+  The mode an editor, a paste or a picker gives back when it ends: the
+  search when it was opened on a search result (the results are still on
+  screen, and Esc clears them, then leaves), else browsing (QA F-3: Esc
+  after a result's editor closed the layer).
+  """
+  @spec resume_mode(t()) :: :search | :browse
+  def resume_mode(%__MODULE__{search: %{query: query}}) when query != "", do: :search
+  def resume_mode(%__MODULE__{}), do: :browse
+
   @doc "Replace the page on screen."
   @spec put_page(t(), Page.t()) :: t()
   def put_page(%__MODULE__{stack: [_ | rest]} = layer, %Page{} = page),
