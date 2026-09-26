@@ -354,7 +354,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.C74ProvidersTest do
       c = record_ctx(@ids.deepseek) |> T.put(id, task, [])
 
       assert text(row(record_rows(c, @ids.deepseek), "act:provider.test").value) ==
-               "✓ listed 2 models in 412 ms · 18:42"
+               "✓ listed 2 models in 412 ms · #{local_hhmm(18, 42)}"
 
       running =
         record_ctx(@ids.deepseek)

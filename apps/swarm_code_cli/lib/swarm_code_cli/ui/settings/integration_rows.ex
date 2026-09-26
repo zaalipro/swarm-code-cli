@@ -471,16 +471,13 @@ defmodule SwarmCodeCLI.UI.Settings.IntegrationRows do
   def bytes(n) when is_float(n), do: bytes(round(n))
   def bytes(_), do: "—"
 
-  @doc "`HH:MM` of an ISO-8601 stamp (the time part as written), or nil."
-  def hhmm(nil), do: nil
+  @doc """
+  `HH:MM` of a stored UTC stamp on the local wall clock, or nil.
 
-  def hhmm(iso) when is_binary(iso) do
-    case Regex.run(~r/T(\d{2}):(\d{2})/, iso) do
-      [_, h, m] -> "#{h}:#{m}"
-      _ -> nil
-    end
-  end
-
+  cli74 F37: it printed the time part as written, so a provider's header said
+  `answered 05:36` beside its own test row's `· 09:36` (found in the sandbox).
+  """
+  def hhmm(iso) when is_binary(iso), do: local_stamp(iso, "%H:%M")
   def hhmm(_), do: nil
 
   @doc """

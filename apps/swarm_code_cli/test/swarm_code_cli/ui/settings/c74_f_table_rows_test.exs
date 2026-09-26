@@ -186,6 +186,23 @@ defmodule SwarmCodeCLI.UI.Settings.C74FTableRowsTest do
     assert R.local_stamp("yesterday", "%H:%M") == nil
   end
 
+  # cli74 F37 (found in the sandbox): a new provider's header said "answered 05:36"
+  # beside its test row's "· 09:36"; every HH:MM of a stored stamp is local time.
+  test "a stored stamp's HH:MM is the local wall clock" do
+    alias SwarmCodeCLI.UI.Settings.IntegrationRows, as: R
+
+    local =
+      {{2026, 9, 25}, {18, 40, 0}}
+      |> :calendar.universal_time_to_local_time()
+      |> NaiveDateTime.from_erl!()
+      |> Calendar.strftime("%H:%M")
+
+    assert R.hhmm("2026-09-25T18:40:00Z") == local
+    assert R.hhmm("2026-09-25T18:40:00.5+00:00") == local
+    assert R.hhmm("soon") == nil
+    assert R.hhmm(nil) == nil
+  end
+
   # cli74 F20 (found in the sandbox): "[ T  T  Trust ]".
   test "a confirmation draws its letter once" do
     fake = FakeSettings.seed()

@@ -123,7 +123,12 @@ defmodule SwarmCodeCLI.UI.Settings.C74ModelPickerTest do
     c = ctx(state)
     {s, c} = open(%{}, c)
     lines = rows_text(s, c)
-    assert Enum.any?(lines, &(&1 =~ "DeepSeek  OpenAI-compatible · fetched this session 18:40"))
+
+    assert Enum.any?(
+             lines,
+             &(&1 =~ "DeepSeek  OpenAI-compatible · fetched this session #{local_hhmm(18, 40)}")
+           )
+
     assert Enum.any?(lines, &(&1 =~ ~r/deepseek-v4-flash.*not in the last fetch/))
 
     c =

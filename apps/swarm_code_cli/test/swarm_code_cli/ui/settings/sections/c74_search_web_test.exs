@@ -38,7 +38,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.C74SearchWebTest do
     assert text(row(rows, "rec:search_provider:tavily").value) ==
              "1 [✓] key ●●●●●●●● set · ends e5f6"
 
-    assert text(row(rows, "rec:search_provider:tavily").tag) == "✓ searched 18:40"
+    assert text(row(rows, "rec:search_provider:tavily").tag) == "✓ searched #{local_hhmm(18, 40)}"
     assert text(row(rows, "rec:search_provider:exa").tag) == "never tested"
     assert text(row(rows, "rec:search_provider:brave").value) == "3 [ ] no key"
 
@@ -117,7 +117,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.C74SearchWebTest do
 
     assert text(
              row(SearchWeb.record_rows(done, "search_provider", "tavily"), "act:search.test").value
-           ) == "✓ 3 results · 612 ms · 18:42"
+           ) == "✓ 3 results · 612 ms · #{local_hhmm(18, 42)}"
 
     failed =
       record_ctx("tavily")
@@ -131,7 +131,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.C74SearchWebTest do
 
     assert text(
              row(SearchWeb.record_rows(failed, "search_provider", "tavily"), "act:search.test").value
-           ) == "✗ rate or plan limit (432) · 18:43"
+           ) == "✗ rate or plan limit (432) · #{local_hhmm(18, 43)}"
   end
 
   test "a refused replacement keeps the old key; s saves it anyway" do

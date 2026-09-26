@@ -10,6 +10,14 @@ defmodule SwarmCodeCLI.Test.C74U2Ctx do
   @kinds ~w(providers model_options effort_presets pricing_rows unpriced_models search_providers
             mcp_servers memory_files commands agent_defs skills workflows)
 
+  @doc "HH:MM on the local wall clock of 2026-09-25 `h`:`m` UTC (the fake's day; rows say local time)."
+  def local_hhmm(h, m) do
+    {{2026, 9, 25}, {h, m, 0}}
+    |> :calendar.universal_time_to_local_time()
+    |> NaiveDateTime.from_erl!()
+    |> Calendar.strftime("%H:%M")
+  end
+
   def ctx(state \\ I.seed(), opts \\ []) do
     records =
       for kind <- Keyword.get(opts, :kinds, @kinds), into: %{} do
