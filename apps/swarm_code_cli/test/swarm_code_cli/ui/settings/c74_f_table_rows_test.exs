@@ -233,4 +233,35 @@ defmodule SwarmCodeCLI.UI.Settings.C74FTableRowsTest do
     assert deleted.settings.status.text =~ "Deleted"
     refute Map.has_key?(deleted.settings.staged, {"provider", id})
   end
+
+  # cli74 F29 (A17, found in the sandbox): a paste on a focused key row was dropped
+  # silently; the row says "paste the key · Cmd-V", so the paste opens it.
+  test "a paste on a focused key row opens the paste with that key; elsewhere it does nothing" do
+    fake = FakeSettings.seed()
+    state = ready()
+    state = %{state | capabilities: %{state.capabilities | paste: :supported}}
+
+    {state, fake} =
+      state |> Reducer.update({:settings_open, {:section, :providers}}) |> serve(fake)
+
+    "rec:provider:" <> id =
+      Enum.find(Nav.rows(state), &(&1.label =~ "DeepSeek" and &1.id =~ "rec:provider:")).id
+
+    {state, _fake} =
+      state
+      |> Ops.run([{:open, %Page{section: :providers, record: {"provider", id}}}])
+      |> serve(fake)
+
+    on_name = Nav.put_cursor(state, "fld:provider:#{id}:name")
+    {ignored, _} = Reducer.update(on_name, {:settings, {:paste, "sk-pasted-0000000000001"}})
+    assert ignored.settings.mode == :browse
+    assert ignored.settings.paste == nil
+
+    on_key = Nav.put_cursor(state, "fld:provider:#{id}:api_key")
+    {pasted, _} = Reducer.update(on_key, {:settings, {:paste, "sk-pasted-0000000000001"}})
+    assert pasted.settings.mode == :paste
+    assert pasted.settings.paste.bytes == "sk-pasted-0000000000001"
+    assert Enum.any?(lines(pasted), &(&1 =~ "pasted · not shown"))
+    refute Enum.any?(lines(pasted), &(&1 =~ "sk-pasted"))
+  end
 end

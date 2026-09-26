@@ -209,6 +209,14 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings do
 
   defp handle_event(%{settings: %Layer{}} = state, {:verb, verb}), do: verb(state, verb)
 
+  # A paste on a focused key row opens its paste target with the key.
+  defp handle_event(
+         %{settings: %Layer{mode: :browse, region: :page, popover: nil}} = state,
+         {:paste, bytes}
+       )
+       when is_binary(bytes),
+       do: Ops.paste_on_row(state, bytes)
+
   defp handle_event(state, {:saving, generation, ref}),
     do: {Commit.saving(state, generation, ref), []}
 

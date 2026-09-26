@@ -253,6 +253,31 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Ops do
     {state, settled ++ effects}
   end
 
+  @doc """
+  A paste while browsing: when Enter on the focused row would open a paste
+  target (a key row says `paste the key · Cmd-V`), the target opens holding
+  the pasted bytes; on any other row the paste does nothing.
+  """
+  @spec paste_on_row(State.t(), binary()) :: {State.t(), list()}
+  def paste_on_row(%{settings: %Layer{} = layer} = state, bytes) when is_binary(bytes) do
+    with %Row{} = row <- Nav.current(state),
+         [{:paste, _target}] = ops <-
+           Sections.act(Layer.section(layer), Nav.ctx(state), row, :open_row) do
+      {state, effects} = run(state, ops)
+
+      case state.settings do
+        %Layer{mode: :paste, paste: %{}} ->
+          {state, more} = SwarmCodeCLI.UI.Reducer.Settings.Paste.event(state, {:paste, bytes})
+          {state, effects ++ more}
+
+        _ ->
+          {state, effects}
+      end
+    else
+      _ -> {state, []}
+    end
+  end
+
   # Enter is `:open_row` for the sections; ←/→ are `:step` on rows that list it.
   defp section_verb(_row, :enter), do: :open_row
 
