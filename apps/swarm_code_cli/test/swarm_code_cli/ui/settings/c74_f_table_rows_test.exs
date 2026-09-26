@@ -431,4 +431,26 @@ defmodule SwarmCodeCLI.UI.Settings.C74FTableRowsTest do
              end)
     end
   end
+
+  # cli74 F44 (found in the sandbox): the task view's summary is the rest of the raw
+  # result (storage.measure's numbers sit under "overview"); the delta's is shaped for
+  # the pages, so Storage said "— on disk" while the service had measured.
+  test "a task's summary is the delta's, shaped for the pages, before the view's" do
+    alias SwarmCodeCLI.UI.Settings.IntegrationRows, as: R
+
+    delta = %{"db_bytes" => 52_428_800, "overview" => %{"db_bytes" => 52_428_800}}
+    raw = %{"overview" => %{"db_bytes" => 52_428_800}, "presets" => []}
+
+    ctx = %{
+      tasks: %{"t1" => %{"state" => "done", "summary" => delta}, "t2" => %{"state" => "done"}},
+      data: %{
+        task_views: %{"t1" => %{summary: raw, pages: %{}}, "t2" => %{summary: raw, pages: %{}}}
+      }
+    }
+
+    assert R.task_summary(ctx, "t1") == delta
+    # A delta whose summary was over its bound: the view's is all there is.
+    assert R.task_summary(ctx, "t2") == raw
+    assert R.task_summary(ctx, "t3") == nil
+  end
 end

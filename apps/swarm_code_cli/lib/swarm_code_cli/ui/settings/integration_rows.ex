@@ -264,17 +264,21 @@ defmodule SwarmCodeCLI.UI.Settings.IntegrationRows do
 
   defp cursor_order(_), do: 0
 
-  @doc "A finished task's summary (from the delta or the task view), or nil."
+  @doc """
+  A finished task's summary, or nil: the delta's, which the service shapes for
+  the pages (`spec.summary`), else the task view's (the rest of the result, when
+  the delta's was over its 16 KiB bound).
+
+  cli74 F44: the view's came first; for `storage.measure` it is the raw result
+  (the numbers under `overview`), so Storage said `— on disk` (found in the sandbox).
+  """
   def task_summary(ctx, task_id) do
-    views = Map.get(data(ctx), :task_views) || %{}
+    from_delta = tasks(ctx) |> Map.get(task_id) |> then(&(&1 && field(&1, "summary")))
 
-    case Map.get(views, task_id) do
-      nil ->
-        tasks(ctx) |> Map.get(task_id) |> then(&(&1 && field(&1, "summary")))
-
-      view ->
-        field(view, "summary") ||
-          tasks(ctx) |> Map.get(task_id) |> then(&(&1 && field(&1, "summary")))
+    case {from_delta, Map.get(Map.get(data(ctx), :task_views) || %{}, task_id)} do
+      {%{} = summary, _view} -> summary
+      {_, nil} -> nil
+      {_, view} -> field(view, "summary")
     end
   end
 
