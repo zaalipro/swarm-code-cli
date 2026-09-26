@@ -171,8 +171,14 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Ops do
   defp one(state, {:leave, then}) when is_list(then), do: run(state, then)
   defp one(state, {:leave, _then}), do: {state, []}
 
+  # A draft is `%{fields, errors, secrets}`: the pages read `draft.fields`, a
+  # rejected create puts `errors` and a paste puts `secrets` beside them.
   defp one(%{settings: layer} = state, {:draft_put, kind, fields}) when is_map(fields) do
-    drafts = Map.update(layer.drafts, kind, fields, &Map.merge(&1, fields))
+    drafts =
+      Map.update(layer.drafts, kind, %{fields: fields}, fn draft ->
+        Map.update(draft, :fields, fields, &Map.merge(&1, fields))
+      end)
+
     {put_layer(state, %{layer | drafts: drafts}), []}
   end
 

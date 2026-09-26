@@ -280,4 +280,29 @@ defmodule SwarmCodeCLI.UI.Settings.C74FTableRowsTest do
     refute value =~ "Export settings"
     assert value == "▸ writes the chosen scopes to a JSON file (0600)"
   end
+
+  # cli74 F34 (A44, found in the sandbox): Enter on an unpriced model opened a new
+  # price with Model "—": `{:draft_put, kind, fields}` merged the fields into the
+  # draft itself while every page reads `draft.fields` (errors and pasted secrets
+  # sit beside them).
+  test "a draft keeps its fields where the pages read them (Enter on an unpriced model)" do
+    {state, _fake} =
+      ready()
+      |> Reducer.update({:settings_open, {:section, :pricing}})
+      |> serve(FakeSettings.seed())
+
+    unpriced = Enum.find(Nav.rows(state), &String.starts_with?(&1.id, "rec:unpriced_model:"))
+    assert unpriced, Enum.map_join(Nav.rows(state), "\n", & &1.id)
+    "rec:unpriced_model:" <> model = unpriced.id
+
+    {state, _} =
+      state |> Nav.put_cursor(unpriced.id) |> Reducer.update({:settings, {:verb, :enter}})
+
+    model_row = Enum.find(Nav.rows(state), &(&1.id == "fld:pricing_row:draft:model"))
+    assert Enum.map_join(model_row.value, "", &elem(&1, 0)) =~ model
+
+    {state, _} = Ops.run(state, [{:draft_put, "pricing_row", %{"input" => 0.5}}])
+    draft = state.settings.drafts["pricing_row"]
+    assert draft.fields["model"] == model and draft.fields["input"] == 0.5
+  end
 end
