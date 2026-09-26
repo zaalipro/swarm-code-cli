@@ -8,7 +8,7 @@ defmodule SwarmCode.Daemon.Service.Settings.Facts do
   @behaviour SwarmCode.Daemon.Service.Settings.Handler
 
   alias SwarmCode.Daemon.Service.Settings.{Context, Error}
-  alias SwarmCode.Domain.{Paths, Repo, Research}
+  alias SwarmCode.Domain.{Paths, Research}
   alias SwarmCode.Domain.Research.Levels
   alias SwarmCode.Settings.{Registry, SecretPattern}
 
@@ -74,11 +74,14 @@ defmodule SwarmCode.Daemon.Service.Settings.Facts do
     end
   end
 
-  @doc "The database file the service has open."
+  @doc """
+  The database file the service has open (cli74 F42: `Repo.config()` names no
+  file for the guarded repo, so Files & environment said `Database …`).
+  """
   @spec database_path() :: String.t() | nil
   def database_path do
-    case safe(fn -> Repo.config() end, []) do
-      config when is_list(config) -> Keyword.get(config, :database)
+    case safe(fn -> SwarmCode.Domain.Storage.db_path() end, "") do
+      path when is_binary(path) and path != "" -> path
       _ -> nil
     end
   end

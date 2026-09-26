@@ -120,25 +120,53 @@ defmodule SwarmCode.Domain.Storage do
 
   # ------------------------------------------------------------ sizes on disk
 
+  @db_key {__MODULE__, :database}
+
   @doc """
-  The SQLite file this repo has open (`PRAGMA database_list`'s `main`).
+  The SQLite file this repo has open: `PRAGMA database_list`'s `main` when it
+  is a file (a repo started on a path), else the file the guarded repo's
+  launcher recorded (its connections open a VFS name, `/swarm-binding`), else
+  the configured path.
 
   cli74 F42: it read `Repo.config()[:database]`, which the guarded repo never
-  carries (the lease admits the path), so Storage said `0 B on disk` and `df`
-  measured the working directory (found in the sandbox).
+  carries, so Storage said `0 B on disk` and `df` measured the working
+  directory (found in the sandbox).
   """
   @spec db_path() :: String.t()
   def db_path do
+    main = main_file()
+
+    cond do
+      is_binary(main) and File.regular?(main) -> main
+      is_binary(path = :persistent_term.get(@db_key, nil)) -> path
+      true -> Repo.config()[:database] |> to_string()
+    end
+  end
+
+  defp main_file do
     case Repo.query("PRAGMA database_list", [], log: false) do
       {:ok, %{rows: rows}} ->
-        Enum.find_value(rows, "", fn
+        Enum.find_value(rows, fn
           [_seq, "main", file | _] when is_binary(file) -> file
           _ -> nil
         end)
 
       _ ->
-        Repo.config()[:database] |> to_string()
+        nil
     end
+  rescue
+    # No repo is running (a launcher that stopped): nothing is open.
+    _ -> nil
+  end
+
+  @doc false
+  # The guarded repo's launcher: the file its pool opens (nil when it stops).
+  @spec put_db_path(String.t() | nil) :: :ok
+  def put_db_path(path) when is_binary(path), do: :persistent_term.put(@db_key, path)
+
+  def put_db_path(nil) do
+    _ = :persistent_term.erase(@db_key)
+    :ok
   end
 
   @doc "The bytes the database occupies: the file, its write-ahead log and its shared index."

@@ -69,6 +69,8 @@ defmodule SwarmCode.Daemon.RepoLauncher do
                CrossAppLease.consume(ready.lease, capability, state.options[:pool_size]) do
           case start_repo(ready.lease, generation) do
             {:ok, repo} ->
+              # cli74 F42: Storage's sizes on disk (the pool opens a VFS name).
+              :ok = SwarmCode.Domain.Storage.put_db_path(ready.paths.database)
               timer = Process.send_after(self(), :pool_timeout, 15_000)
 
               {:noreply,
@@ -340,6 +342,7 @@ defmodule SwarmCode.Daemon.RepoLauncher do
   defp stop_repo(%{repo: nil} = state), do: state
 
   defp stop_repo(state) do
+    :ok = SwarmCode.Domain.Storage.put_db_path(nil)
     if Process.whereis(Repo) == state.repo, do: Process.unregister(Repo)
     monitor = Process.monitor(state.repo)
 

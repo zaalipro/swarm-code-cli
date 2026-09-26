@@ -103,6 +103,9 @@ defmodule SwarmCode.Daemon.Service.Settings.C74OverviewTest do
     key = Enum.find(facts["env"], &(&1["name"] == "OPENAI_API_KEY"))
     assert %{"set" => true, "value" => nil, "secret" => true} = key
     assert facts["scheduler"] == "desktop_only"
+    # cli74 F42: the database the service has open, and its bytes (it read a config key).
+    assert File.regular?(facts["paths"]["database"])
+    assert facts["database_bytes"] > 0
     assert facts["paths"]["project_dir"] =~ ".swarm_code"
     assert length(facts["research_levels"]) == 4
   end

@@ -145,6 +145,23 @@ defmodule SwarmCode.Daemon.GuardedRepoTest do
     assert :ok = RepoLauncher.close(next)
   end
 
+  # cli74 F42 (found in the sandbox): Storage said "0 B on disk" on the guarded repo,
+  # whose config never names the file.
+  test "Storage measures the file the guarded repo has open", %{boot: boot, database: database} do
+    {:ok, launcher} = RepoLauncher.start_link(boot_config: boot, pool_size: 1)
+    assert {:ok, repo} = RepoLauncher.await_ready(launcher, 60_000)
+
+    Task.async(fn ->
+      Repo.put_dynamic_repo(repo)
+      assert SwarmCode.Domain.Storage.file_bytes().db == File.stat!(database).size
+      assert SwarmCode.Domain.Storage.file_bytes().db > 0
+    end)
+    |> Task.await(15_000)
+
+    assert :ok = RepoLauncher.close(launcher)
+    refute SwarmCode.Domain.Storage.db_path() == database
+  end
+
   test "capability is creator-bound, opaque and consumed once", %{boot: boot} do
     {:ok, ready} = FoundationGate.prepare(boot)
     {:ok, capability} = FoundationGate.seal_ready(ready)
