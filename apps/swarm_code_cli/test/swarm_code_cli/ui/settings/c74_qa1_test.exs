@@ -534,7 +534,8 @@ defmodule SwarmCodeCLI.UI.Settings.C74Qa1Test do
   test "F-16: a key binding row says default or changed once" do
     {state, _fake} = opened(:keys)
     {state, _} = Ops.run(state, [{:open, %Page{section: :keys, sub: {:key_bindings, nil}}}])
-    text = screen(state)
+    # the vim group leads the list under the vim keymap (QA #2 P2-6)
+    text = screen(%{state | keymap: :vim})
     line = text |> String.split("\n") |> Enum.find(&(&1 =~ "Next word"))
     assert line, text
     assert length(String.split(line, "default")) - 1 == 1, line

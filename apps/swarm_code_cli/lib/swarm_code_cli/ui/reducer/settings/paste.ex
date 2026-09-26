@@ -257,7 +257,7 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Paste do
     end
   end
 
-  # QA #2 P2-7: a secret typed on an Add row waits for its value there; the
+  # QA #2 P2-8: a secret typed on an Add row waits for its value there; the
   # row names the variable (the typed `NAME=` is gone from it).
   defp prompt(target) do
     slot = to_string(field(target, :slot) || "")

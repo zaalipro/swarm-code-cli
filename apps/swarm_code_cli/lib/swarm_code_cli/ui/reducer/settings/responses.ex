@@ -688,7 +688,7 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Responses do
 
   defp settle(state), do: {state, []}
 
-  # QA #2 P2-2: records that arrive while a query is typed join its results.
+  # QA #2 P2-4: records that arrive while a query is typed join its results.
   defp search_again(%{settings: %Layer{search: %{query: query}}} = state) when query != "",
     do: SwarmCodeCLI.UI.Reducer.Settings.Find.refresh(state)
 

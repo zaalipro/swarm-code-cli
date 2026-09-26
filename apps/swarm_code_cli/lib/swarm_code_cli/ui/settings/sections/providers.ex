@@ -647,7 +647,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Providers do
     )
   end
 
-  # QA #2 P2-9: `Fetch every provider's models` fetched this one too; its row
+  # QA #2 P2-10: `Fetch every provider's models` fetched this one too; its row
   # said `not fetched this session`. The time the bulk fetch ended, or "".
   defp bulk_fetch(ctx, id) do
     with {_task_id, task} <- R.task(ctx, "provider.fetch_all"),
@@ -667,7 +667,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Providers do
     end
   end
 
-  # QA #2 P2-11: a provider whose list arrived but has no default says how to pick one.
+  # QA #2 P2-2: a provider whose list arrived but has no default says how to pick one.
   defp default_model_value(model, _models) when is_binary(model) and model != "",
     do: [{model, :text_primary}]
 

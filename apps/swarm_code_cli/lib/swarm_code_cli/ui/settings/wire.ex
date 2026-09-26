@@ -67,7 +67,7 @@ defmodule SwarmCodeCLI.UI.Settings.Wire do
 
   defp editor_loads(_layer), do: []
 
-  # QA #2 P2-2 (§3.7.11): the search finds providers, search engines and MCP
+  # QA #2 P2-4 (§3.7.11): the search finds providers, search engines and MCP
   # servers by name; their light lists load when the search opens (they were
   # found only after their section had been visited).
   defp search_loads(%{settings: %Layer{search: %{}}} = state) do

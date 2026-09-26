@@ -250,7 +250,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.KeysInput do
       |> Enum.group_by(& &1.group)
 
     body =
-      Enum.flat_map(Bindings.groups() ++ (Map.keys(groups) -- Bindings.groups()), fn group ->
+      Enum.flat_map(group_order(ctx) ++ (Map.keys(groups) -- Bindings.groups()), fn group ->
         case Map.get(groups, group, []) do
           [] ->
             []
@@ -262,6 +262,15 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.KeysInput do
       end)
 
     [picker] ++ body ++ [Row.heading("danger"), reset] ++ facts_rows()
+  end
+
+  # QA #2 P2-6: the vim group leads only under the vim keymap; with the
+  # standard keymap its bindings do nothing, so they come last (the sketch
+  # of §4.15 starts with the palette).
+  defp group_order(ctx) do
+    if Map.get(ctx.state_view || %{}, :keymap) == :vim,
+      do: Bindings.groups(),
+      else: (Bindings.groups() -- [:vim]) ++ [:vim]
   end
 
   @doc """
@@ -328,8 +337,11 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.KeysInput do
       marks: marks,
       state: if(fixed?, do: :readonly, else: :normal),
       # The tag says default/changed/fixed at the row's end (QA F-16: a
-      # column said it too, `· default … · default`).
+      # column said it too, `· default … · default`). The name is the first
+      # column (QA #2 P2-6): a label that reads like its key (`Ctrl-C`) was
+      # taken for the name column and shifted the row's keys out of the table.
       columns: [
+        {binding.label, if(fixed?, do: :text_muted, else: :text_primary), 0},
         {key_text, if(keys == [], do: :text_ghost, else: :text_primary), 1},
         {contexts, :text_muted, 3},
         {names, :text_ghost, 9}

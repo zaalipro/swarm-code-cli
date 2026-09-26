@@ -193,7 +193,7 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
   # A draft is not a record yet: the crumb says `new`, not the draft's id.
   defp record_name(_state, %Page{record: {_kind, "draft"}}), do: "new"
 
-  # QA #2 P2-4: a search engine's record has no name field; its label names it
+  # QA #2 P2-5: a search engine's record has no name field; its label names it
   # (`Search & web › Exa`, not `› exa`).
   defp record_name(_state, %Page{record: {"search_provider", id}}),
     do: SwarmCodeCLI.UI.Settings.Sections.SearchWeb.label(id)
@@ -533,7 +533,7 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
     |> Map.new()
   end
 
-  # QA #2 P2-10: before a section's records are loaded its count comes from
+  # QA #2 P2-11: before a section's records are loaded its count comes from
   # the Overview's glance (`providers 4`), so the rail shows it from the start.
   defp glance_count(%{glance: %{} = glance}, :providers),
     do: glance_int(glance, "providers", "count")

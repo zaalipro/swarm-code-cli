@@ -138,7 +138,7 @@ defmodule SwarmCodeCLI.UI.Settings.C74Qa2Test do
     end
   end
 
-  # ------------------------------------------------------------------ P1-7, P2-7
+  # ------------------------------------------------------------------ P1-7, P2-8
 
   defp env_page do
     state = %{ready() | capabilities: %{ready().capabilities | paste: :supported}}
@@ -165,7 +165,7 @@ defmodule SwarmCodeCLI.UI.Settings.C74Qa2Test do
       assert %{"name" => "GITHUB_PERSONAL_ACCESS_TOKEN", "keep" => true} in env
       assert %{"name" => "MODE", "value" => "fast"} in env
 
-      # P2-7: only the staged row is pending; the saved secret keeps its hint
+      # P2-8: only the staged row is pending; the saved secret keeps its hint
       assert row(state, "kv:env:0").marks == []
       assert words(row(state, "kv:env:0")) =~ "secret · set · ends i9j0"
       assert Enum.find(rows(state), &(&1.label == "MODE")).marks == [:pending]
@@ -190,7 +190,7 @@ defmodule SwarmCodeCLI.UI.Settings.C74Qa2Test do
     end
   end
 
-  test "P2-7: a secret typed on the add row names its variable while it waits for the paste" do
+  test "P2-8: a secret typed on the add row names its variable while it waits for the paste" do
     {state, _fake, _id} = env_page()
     state = state |> Nav.put_cursor("act:kv.add") |> key(:enter) |> typed("SLACK_TOKEN=")
     assert state.settings.mode == :paste
@@ -449,7 +449,7 @@ defmodule SwarmCodeCLI.UI.Settings.C74Qa2Test do
     assert "rec:provider:" <> _ = Nav.current(state).id
   end
 
-  test "P2-4: a search engine's page is named by its label in the crumb" do
+  test "P2-5: a search engine's page is named by its label in the crumb" do
     {state, fake} = opened(:search_web, state: sized(160, 45))
 
     {state, _} =
@@ -459,13 +459,32 @@ defmodule SwarmCodeCLI.UI.Settings.C74Qa2Test do
     assert hd(lines(state)) =~ "Search & web › Exa"
   end
 
+  test "P2-5: the Overview names the search engines and the reader by their labels" do
+    {state, _fake} = opened(:overview)
+    layer = state.settings
+    overview = layer.data.overview
+
+    glance =
+      Map.put(overview.glance, "search", %{
+        "enabled" => 1,
+        "total" => 4,
+        "first" => "exa",
+        "reader" => "firecrawl"
+      })
+
+    data = %{layer.data | overview: %{overview | glance: glance}}
+    text = words(row(%{state | settings: %{layer | data: data}}, "info:glance:search"))
+    assert text =~ "Exa first", text
+    assert text =~ "pages through Firecrawl", text
+  end
+
   defp provider_page(fake, id) do
     {state, fake} = opened(:providers, fake: fake)
     {state, _} = Ops.run(state, [{:open, %Page{section: :providers, record: {"provider", id}}}])
     state |> Wire.sync() |> serve(fake)
   end
 
-  test "P2-9: after Fetch every provider's models a provider's page says it was fetched" do
+  test "P2-10: after Fetch every provider's models a provider's page says it was fetched" do
     id = I.ids().deepseek
     {state, _fake} = provider_page(FakeSettings.seed(), id)
     assert words(row(state, "fld:provider:#{id}:models")) =~ "not fetched this session"
@@ -486,7 +505,7 @@ defmodule SwarmCodeCLI.UI.Settings.C74Qa2Test do
     refute text =~ "not fetched"
   end
 
-  test "P2-11: a provider with models and no default model says how to pick one" do
+  test "P2-2: a provider with models and no default model says how to pick one" do
     id = I.ids().deepseek
     fake = FakeSettings.seed()
     fake = put_in(fake.integrations.providers[id]["default_model"], nil)
@@ -496,7 +515,7 @@ defmodule SwarmCodeCLI.UI.Settings.C74Qa2Test do
              ~r/none · Enter picks one of its \d+ models/
   end
 
-  test "P2-5: the page filter counts its rows in agreement (1 match, 2 matches)" do
+  test "P2-6: the page filter counts its rows in agreement (1 match, 2 matches)" do
     {state, _fake} = opened(:keys, state: sized(160, 45))
     {state, _} = Ops.run(state, [{:open, %Page{section: :keys, sub: {:key_bindings, nil}}}])
     state = press!(state, letter("/"))
@@ -506,6 +525,35 @@ defmodule SwarmCodeCLI.UI.Settings.C74Qa2Test do
       [_, count, said] = Regex.run(~r/· (\d+) (match(?:es)?) /, search)
       assert said == noun, search
       assert if(count == "1", do: noun == "match", else: noun == "matches"), search
+    end
+  end
+
+  describe "P2-6: the Key bindings list" do
+    test "a key query keeps each binding's keys in the table (/ctrl-c: Interrupt and a binding named Ctrl-C)" do
+      {state, _fake} = opened(:keys, state: sized(160, 45))
+      {state, _} = Ops.run(state, [{:open, %Page{section: :keys, sub: {:key_bindings, nil}}}])
+      text = state |> press!(letter("/")) |> typed("ctrl-c") |> lines() |> Enum.join("\n")
+
+      assert text =~ ~r/Interrupt\s+Ctrl-C\s+\S/, text
+      assert text =~ ~r/Ctrl-C\s+Ctrl-C\s+\S/, text
+    end
+
+    test "the vim group comes last under the standard keymap and first under vim" do
+      {state, _fake} = opened(:keys, state: sized(160, 45))
+      {state, _} = Ops.run(state, [{:open, %Page{section: :keys, sub: {:key_bindings, nil}}}])
+
+      headings = fn state ->
+        for %{kind: :heading, label: label} <- Nav.rows(state), do: label
+      end
+
+      standard = headings.(state)
+      assert hd(standard) != "vim (NORMAL and VISUAL)", inspect(standard)
+      assert "vim (NORMAL and VISUAL)" in standard
+
+      assert List.last(standard -- ["danger", "this terminal"]) == "vim (NORMAL and VISUAL)",
+             inspect(standard)
+
+      assert hd(headings.(%{state | keymap: :vim})) == "vim (NORMAL and VISUAL)"
     end
   end
 
@@ -533,7 +581,7 @@ defmodule SwarmCodeCLI.UI.Settings.C74Qa2Test do
              "‹ Plain fetch (strip HTML)  Jina Reader  Firecrawl ›"
   end
 
-  describe "P2-10: the Overview's counts and storage line" do
+  describe "P2-11: the Overview's counts and storage line" do
     test "the rail counts providers and MCP servers before their sections are opened" do
       {state, _fake} = opened(:overview, state: sized(160, 45))
       refute Map.has_key?(state.settings.data.records, {"providers", %{}})
@@ -560,7 +608,7 @@ defmodule SwarmCodeCLI.UI.Settings.C74Qa2Test do
     end
   end
 
-  test "P2-2: the search finds a provider, a search engine and an MCP server before their pages are visited" do
+  test "P2-4: the search finds a provider, a search engine and an MCP server before their pages are visited" do
     {state, fake} = opened(:overview)
     refute Map.has_key?(state.settings.data.records, {"search_providers", %{}})
 

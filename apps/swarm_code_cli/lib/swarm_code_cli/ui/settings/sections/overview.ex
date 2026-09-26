@@ -355,7 +355,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Overview do
 
     parts([
       on,
-      # QA #2 P2-4: the engines by their labels, not their ids
+      # QA #2 P2-5: the engines by their labels, not their ids
       text(g["first"], &"#{SwarmCodeCLI.UI.Settings.Sections.SearchWeb.label(&1)} first"),
       text(
         g["reader"],
@@ -422,7 +422,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Overview do
     ])
   end
 
-  # QA #2 P2-10: the service's fragment is `retention_days`, `last_sweep`,
+  # QA #2 P2-11: the service's fragment is `retention_days`, `last_sweep`,
   # `sessions_measured`, `cleanup` (running | idle); none of it was read, so
   # the storage line was missing from *at a glance*.
   defp glance_words("storage", g, ctx) do
