@@ -90,6 +90,20 @@ defmodule SwarmCodeCLI.UI.Settings.KeyValueSecrets do
     end
   end
 
+  @doc """
+  Whether typed `NAME=value` text holds a secret already: a `=` after a
+  secret-looking name, or a value that starts like a token.
+  """
+  @spec secret_entry?(String.t()) :: boolean()
+  def secret_entry?(text) when is_binary(text) do
+    case String.split(text, "=", parts: 2) do
+      [name, value] -> String.trim(name) != "" and secret?(String.trim(name), value)
+      _ -> false
+    end
+  end
+
+  def secret_entry?(_text), do: false
+
   @doc "Whether a name/value pair is a secret (`SecretPattern.secret_kv?/2`)."
   def secret?(name, value),
     do: SecretPattern.secret_kv?(to_string(name), if(is_binary(value), do: value, else: ""))
@@ -172,9 +186,14 @@ defmodule SwarmCodeCLI.UI.Settings.KeyValueSecrets do
         kind: :action,
         label: "▸ Add #{if map == :env, do: "a variable", else: "a header"}",
         value: [
-          {"NAME=value · a secret-looking name or value becomes a paste target", :text_faint}
+          {"NAME=value · a secret's value is pasted: = opens the paste", :text_faint}
         ],
-        editor: {SwarmCodeCLI.UI.Settings.Editors.Text, %{value: "", max: 4_096}},
+        # QA F-6: the typed text is committed the moment it reads as a secret
+        # (`NAME=` for a secret-looking name, or a token prefix after `=`), so
+        # the value is never drawn; the paste target takes it instead.
+        editor:
+          {SwarmCodeCLI.UI.Settings.Editors.Text,
+           %{value: "", max: 4_096, commit_when: {__MODULE__, :secret_entry?}}},
         keys: [{"Enter", :open_row, "add"}, {"a", :add, "add"}],
         target: {:kv_add, id, map}
       )
@@ -307,7 +326,10 @@ defmodule SwarmCodeCLI.UI.Settings.KeyValueSecrets do
         [{:row_error, row_id, "already in the list"}]
 
       secret?(name, value) ->
-        [{:paste, secret_target(record_fields, id, map, name)}]
+        [
+          {:paste, secret_target(record_fields, id, map, name)},
+          {:toast, "#{name} looks like a secret · paste its value (it is never shown)", :info}
+        ]
 
       true ->
         stage(ctx, id, map, record_fields, &(&1 ++ [%{"name" => name, "value" => value}]))

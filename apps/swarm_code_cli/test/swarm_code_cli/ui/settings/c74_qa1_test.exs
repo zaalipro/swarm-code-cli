@@ -351,6 +351,88 @@ defmodule SwarmCodeCLI.UI.Settings.C74Qa1Test do
            ]
   end
 
+  # ------------------------------------------------------------------ F-6, F-23
+
+  defp env_page do
+    state = %{ready() | capabilities: %{ready().capabilities | paste: :supported}}
+    {state, fake} = opened(:mcp, state: state)
+    id = I.ids().github
+    record = %Page{section: :mcp, record: {"mcp_server", id}}
+    page = %Page{record | sub: :env}
+    {state, fake} = state |> Ops.run([{:open, record}]) |> serve(fake)
+    {state, fake} = state |> Ops.run([{:open, page}]) |> serve(fake)
+    {state, fake, id}
+  end
+
+  describe "F-6: a secret typed on the Add a variable row is never drawn" do
+    test "= after a secret-looking name opens the paste before any value is typed" do
+      {state, _fake, _id} = env_page()
+      state = state |> Nav.put_cursor("act:kv.add") |> key(:enter)
+      assert state.settings.mode == :editing
+
+      state = typed(state, "SLACK_TOKEN")
+      assert screen(state) =~ "SLACK_TOKEN"
+      state = typed(state, "=")
+
+      assert state.settings.mode == :paste
+      assert state.settings.paste.target.slot == "env:SLACK_TOKEN"
+
+      # What is typed now is refused by the paste target, never drawn.
+      state = typed(state, "sk-canary2-9Z8Y")
+      refute screen(state) =~ "sk-can"
+      refute screen(state) =~ "9Z8Y"
+    end
+
+    test "a token prefix after = under a plain name commits before the rest is drawn" do
+      {state, _fake, _id} = env_page()
+      state = state |> Nav.put_cursor("act:kv.add") |> key(:enter) |> typed("NOTES=ghp_")
+      assert state.settings.mode == :paste
+      assert state.settings.paste.target.slot == "env:NOTES"
+      refute screen(state) =~ "ghp_"
+    end
+
+    test "a plain value is typed and staged as before" do
+      {state, _fake, _id} = env_page()
+
+      state =
+        state |> Nav.put_cursor("act:kv.add") |> key(:enter) |> typed("GITHUB_HOST=example.org")
+
+      assert state.settings.mode == :editing
+      state = key(state, :enter)
+      assert screen(state) =~ "example.org"
+    end
+  end
+
+  test "F-23: Esc leaves the Environment sub-page right after a pasted secret" do
+    {state, fake, id} = env_page()
+    state = state |> Nav.put_cursor("act:kv.add") |> key(:enter) |> typed("SLACK_TOKEN=")
+    assert state.settings.mode == :paste
+    {state, _} = act(state, {:settings, {:paste, "xoxb-0000-canary-0000"}})
+    {state, fake} = state |> verb(:paste_commit) |> serve(fake)
+    assert state.settings.mode == :browse
+    assert Layer.page(state.settings).sub == :env
+
+    {state, _fake} = state |> key(:escape) |> then(&{&1, fake})
+    assert Layer.page(state.settings).record == {"mcp_server", id}
+    assert Layer.page(state.settings).sub == nil
+  end
+
+  test "F-21: the pending question names a draft and a staged record as the pages do" do
+    {state, _fake, id} = env_page()
+
+    {state, _} =
+      Ops.run(state, [
+        {:stage, {"mcp_server", id}, %{"command" => "npx"}},
+        {:draft_put, "mcp_server", %{"name" => "fakesrv"}}
+      ])
+
+    asked = act!(state, {:settings, {:verb, :next_section}})
+    assert {:pending, %{items: items}} = asked.settings.popover
+    assert "changes to github" in items
+    assert "the new MCP server (not created yet)" in items
+    refute Enum.any?(items, &(&1 =~ "mcp_server" or &1 =~ id))
+  end
+
   # ------------------------------------------------------------------ F-22
 
   test "F-22: a renamed price opens the renamed row's page in place of the old one" do

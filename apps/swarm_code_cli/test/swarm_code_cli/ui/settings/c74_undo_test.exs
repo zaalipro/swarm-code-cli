@@ -117,7 +117,8 @@ defmodule SwarmCodeCLI.UI.Settings.C74UndoTest do
 
       asked = act!(state, {:settings, {:verb, :next_section}})
       assert {:pending, %{items: items}} = asked.settings.popover
-      assert "changes to mcp_server github" in items
+      # cli74 G1 (QA F-21): no internal kind or id; a record not loaded is "this MCP server".
+      assert "changes to this MCP server" in items
       assert "the new provider (not created yet)" in items
 
       left = press!(asked, letter("d"))

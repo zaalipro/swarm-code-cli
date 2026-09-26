@@ -8,7 +8,9 @@ defmodule SwarmCodeCLI.UI.Settings.Editors.Text do
   Opts: `value`, `max` (bytes, 4 096), `entry` (a registry entry: its
   normalisation and validators), `parse` (an entry whose text form is
   parsed: a model's `provider/model`), `placeholder`, `nullable` (blank =
-  null).
+  null), `commit_when` (`{module, function}`: after a key or a paste, when
+  `module.function(text)` is true the text is committed at once, before it
+  is drawn — an MCP variable whose value turns out to be a secret).
   """
 
   @behaviour SwarmCodeCLI.UI.Settings.Editor
@@ -45,7 +47,8 @@ defmodule SwarmCodeCLI.UI.Settings.Editors.Text do
 
     case Buffer.insert(state.buffer, text) do
       {:ok, buffer} ->
-        {:cont, %{state | buffer: buffer, error: nil}}
+        state = %{state | buffer: buffer, error: nil}
+        if commit_now?(state), do: {:commit, buffer.text, state}, else: {:cont, state}
 
       {:error, :multiline} ->
         {:cont, %{state | error: "one line only"}}
@@ -56,6 +59,11 @@ defmodule SwarmCodeCLI.UI.Settings.Editors.Text do
   end
 
   def handle(state, _event, _ctx), do: {:cont, state}
+
+  defp commit_now?(%{opts: %{commit_when: {module, function}}, buffer: buffer}),
+    do: apply(module, function, [buffer.text]) == true
+
+  defp commit_now?(_state), do: false
 
   @doc "The value Enter writes: `{:ok, value}` or `{:error, message}`."
   @spec check(map(), String.t()) :: {:ok, term()} | {:error, String.t()}

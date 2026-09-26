@@ -460,7 +460,7 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings do
   """
   @spec leave(State.t(), term()) :: {State.t(), list()}
   def leave(%{settings: %Layer{} = layer} = state, how) do
-    case pending(layer) do
+    case pending(state, layer) do
       [] ->
         leave_now(state, how)
 
@@ -497,7 +497,7 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings do
 
   def leave_now(state, _how), do: {state, []}
 
-  defp pending(%Layer{} = layer) do
+  defp pending(state, %Layer{} = layer) do
     paste =
       case layer.paste do
         %{bytes: bytes, target: target} when bytes != "" ->
@@ -510,14 +510,37 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings do
     drafts =
       for {kind, draft} <- layer.drafts,
           dirty_draft?(draft),
-          do: "the new #{kind} (not created yet)"
+          do: "the new #{kind_words(kind)} (not created yet)"
 
     staged =
       for {{kind, id}, fields} <- layer.staged,
           map_size(fields) > 0,
-          do: "changes to #{kind} #{id}"
+          do: "changes to #{record_name(state, kind, id)}"
 
     paste ++ drafts ++ staged
+  end
+
+  # QA F-21: the question names things as the pages do, never an internal
+  # kind or an id (§4.13).
+  @kind_words %{
+    "mcp_server" => "MCP server",
+    "pricing_row" => "price",
+    "effort_levels" => "effort levels",
+    "search_provider" => "search engine",
+    "mcp_import" => "import"
+  }
+  defp kind_words(kind), do: Map.get(@kind_words, kind, String.replace(to_string(kind), "_", " "))
+
+  defp record_name(state, kind, id) do
+    alias SwarmCodeCLI.UI.Settings.IntegrationRows, as: R
+
+    name =
+      case R.record(Nav.ctx(state), kind, id) do
+        nil -> nil
+        record -> record |> R.fields() |> R.field("name")
+      end
+
+    if is_binary(name) and name != "", do: name, else: "this #{kind_words(kind)}"
   end
 
   defp dirty_draft?(draft) when is_map(draft),
