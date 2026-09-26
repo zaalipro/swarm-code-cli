@@ -253,7 +253,18 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Paste do
         [{marks <> " pasted · not shown", :text_primary}, {"  not saved", :warning}]
 
       true ->
-        [{"paste the key · Cmd-V", :text_ghost}]
+        [{prompt(paste.target), :text_ghost}]
+    end
+  end
+
+  # QA #2 P2-7: a secret typed on an Add row waits for its value there; the
+  # row names the variable (the typed `NAME=` is gone from it).
+  defp prompt(target) do
+    slot = to_string(field(target, :slot) || "")
+
+    case {field(target, :row_id), String.split(slot, ":", parts: 2)} do
+      {"act:kv.add", [_, name]} when name != "" -> "#{name} · paste the value · Cmd-V"
+      _ -> "paste the key · Cmd-V"
     end
   end
 

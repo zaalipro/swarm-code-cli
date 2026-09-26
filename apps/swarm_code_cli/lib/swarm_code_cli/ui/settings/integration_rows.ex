@@ -366,10 +366,13 @@ defmodule SwarmCodeCLI.UI.Settings.IntegrationRows do
 
   def field(_, _), do: nil
 
+  # QA #2 P1-7: `secret` too: the service's MCP env/header entries decode to
+  # `%{name, secret, value, hint}`; read by string, a stored secret looked
+  # plain, was staged without `keep`, and the save said "paste its value".
   @atoms Map.new(
            ~w(id name kind value state action target result summary rows received_at_ms elapsed_ms
               message progress done total step bytes items fields set hint at count ms status
-              provider_id model options project_id title root errors secrets env
+              provider_id model options project_id title root errors secrets secret env
               cancellable attributes)a,
            &{Atom.to_string(&1), &1}
          )

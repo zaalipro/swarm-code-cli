@@ -11,9 +11,11 @@ defmodule SwarmCodeCLI.UI.Settings.C74Qa2Test do
   import SwarmCodeCLI.UI.Pass73Helpers, only: [ready: 0, press!: 2, letter: 1]
   import SwarmCodeCLI.UI.C74U3Helpers
 
-  alias SwarmCodeCLI.UI.{Projector, SafeText, Size}
+  alias SwarmCodeCLI.UI.{Input, Projector, SafeText, Size}
+  alias SwarmCodeCLI.UI.DataSource.DTO.SettingsRecord
   alias SwarmCodeCLI.UI.DataSource.Fake.SettingsIntegrations, as: I
-  alias SwarmCodeCLI.UI.Settings.{ModelPicker, Nav}
+  alias SwarmCodeCLI.UI.Reducer.Settings.Ops
+  alias SwarmCodeCLI.UI.Settings.{KeyValueSecrets, Layer, ModelPicker, Nav, Page, Wire}
 
   defp sized(columns, rows),
     do: act!(ready(), {:resize, %Size{columns: columns, rows: rows}})
@@ -28,6 +30,7 @@ defmodule SwarmCodeCLI.UI.Settings.C74Qa2Test do
 
   defp cells(line), do: SwarmCodeCLI.UI.Width.cells(line, :narrow)
   defp typed(state, text), do: Enum.reduce(String.graphemes(text), state, &press!(&2, letter(&1)))
+  defp key(state, name), do: press!(state, Input.key(name))
 
   defp queries(effects, kind) do
     for request <- sent(effects),
@@ -132,5 +135,65 @@ defmodule SwarmCodeCLI.UI.Settings.C74Qa2Test do
       refute words(row) =~ I.ids().deepseek
       assert words(row) =~ "· DeepSeek"
     end
+  end
+
+  # ------------------------------------------------------------------ P1-7, P2-7
+
+  defp env_page do
+    state = %{ready() | capabilities: %{ready().capabilities | paste: :supported}}
+    {state, fake} = opened(:mcp, state: state)
+    id = I.ids().github
+    record = %Page{section: :mcp, record: {"mcp_server", id}}
+    {state, _} = Ops.run(state, [{:open, record}])
+    {state, _} = Ops.run(state, [{:open, %Page{record | sub: :env}}])
+    {state, fake} = state |> Wire.sync() |> serve(fake)
+    {state, fake, id}
+  end
+
+  describe "P1-7: a stored secret stays stored when another variable is added" do
+    test "the service's entries (atom keys) read as secrets: the staged list keeps them" do
+      {state, _fake, id} = env_page()
+      token = row(state, "kv:env:0")
+      assert token.label == "GITHUB_PERSONAL_ACCESS_TOKEN"
+      assert token.marks == []
+
+      state = state |> Nav.put_cursor("act:kv.add") |> key(:enter) |> typed("MODE=fast")
+      state = key(state, :enter)
+
+      assert %{"env" => env} = state.settings.staged[{"mcp_server", id}]
+      assert %{"name" => "GITHUB_PERSONAL_ACCESS_TOKEN", "keep" => true} in env
+      assert %{"name" => "MODE", "value" => "fast"} in env
+
+      # P2-7: only the staged row is pending; the saved secret keeps its hint
+      assert row(state, "kv:env:0").marks == []
+      assert words(row(state, "kv:env:0")) =~ "secret · set · ends i9j0"
+      assert Enum.find(rows(state), &(&1.label == "MODE")).marks == [:pending]
+    end
+
+    test "a decoded env entry is secret by its field, not only by its name" do
+      {:ok, record} =
+        SettingsRecord.decode(%{
+          "kind" => "mcp_server",
+          "id" => "s1",
+          "fields" => %{
+            "name" => "fakeq2",
+            "env" => [%{"name" => "OPAQUE", "secret" => true, "value" => nil, "hint" => "9911"}]
+          }
+        })
+
+      ctx = %SwarmCodeCLI.UI.Settings.Ctx{layer: %Layer{}, data: %SwarmCodeCLI.UI.Settings.Data{}}
+
+      assert KeyValueSecrets.desired(ctx, "s1", :env, record.fields) == [
+               %{"name" => "OPAQUE", "keep" => true}
+             ]
+    end
+  end
+
+  test "P2-7: a secret typed on the add row names its variable while it waits for the paste" do
+    {state, _fake, _id} = env_page()
+    state = state |> Nav.put_cursor("act:kv.add") |> key(:enter) |> typed("SLACK_TOKEN=")
+    assert state.settings.mode == :paste
+    line = state |> lines() |> Enum.find(&(&1 =~ "Add a variable"))
+    assert line =~ "SLACK_TOKEN · paste the value · Cmd-V", line
   end
 end
