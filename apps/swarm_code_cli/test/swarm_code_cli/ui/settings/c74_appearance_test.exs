@@ -30,6 +30,19 @@ defmodule SwarmCodeCLI.UI.Settings.C74AppearanceTest do
     refute line_words(theme) =~ "wins while set"
   end
 
+  test "the theme row says SWARM_THEME wins once when the launch itself carries the override" do
+    # Found in the sandbox (cli74 F24): the generic provenance line and this page's own
+    # line were both drawn under the Theme row.
+    facts = %{env_overrides: %{"terminal.theme" => %{var: "SWARM_THEME", value: "light"}}}
+    {state, _fake} = opened(:appearance, put: [launch_facts: facts, prefs: %{"theme" => "dark"}])
+    theme = key_row(state, "terminal.theme")
+
+    assert words(theme.tag) == "env SWARM_THEME"
+    wins = Enum.filter(theme.lines, &(words(&1) =~ "wins while set"))
+    assert [line] = wins
+    assert words(line) == "SWARM_THEME=light wins while set · cli.json: dark"
+  end
+
   test "the F10 rows: colour and glyph tiers this launch, the accent with its contrast" do
     {state, _fake} = opened(:appearance)
     ids = Enum.map(rows(state), & &1.id)

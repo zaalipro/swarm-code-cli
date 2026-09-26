@@ -43,12 +43,15 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Appearance do
       %{var: var, value: value} = override when not is_map_key(override, :ignored) ->
         stored = pref(ctx, "theme") || theme_value(ctx) || "follow"
 
-        %Row{
-          row
-          | lines:
-              row.lines ++
-                [[{"#{var}=#{value} wins while set · cli.json: #{stored}", :text_muted}]]
-        }
+        # The layer draws the same words from the launch's provenance; say it once.
+        if Enum.any?(row.lines, &wins_line?/1),
+          do: row,
+          else: %Row{
+            row
+            | lines:
+                row.lines ++
+                  [[{"#{var}=#{value} wins while set · cli.json: #{stored}", :text_muted}]]
+          }
 
       _ ->
         case {theme_value(ctx), desktop_mode(ctx)} do
@@ -60,6 +63,14 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Appearance do
         end
     end
   end
+
+  defp wins_line?(segments) when is_list(segments),
+    do: Enum.any?(segments, &(is_tuple(&1) and wins_text?(elem(&1, 0))))
+
+  defp wins_line?(_line), do: false
+
+  defp wins_text?(text) when is_binary(text), do: String.contains?(text, "wins while set")
+  defp wins_text?(_text), do: false
 
   defp decorate(%Row{key: "terminal.accent"} = row, ctx) do
     value = pref(ctx, "accent")
