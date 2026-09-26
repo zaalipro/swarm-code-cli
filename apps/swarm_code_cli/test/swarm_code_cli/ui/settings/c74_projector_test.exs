@@ -11,6 +11,7 @@ defmodule SwarmCodeCLI.UI.Settings.C74ProjectorTest do
   import SwarmCodeCLI.UI.Pass73Helpers, only: [ready: 0]
 
   alias SwarmCodeCLI.UI.{Projector, Reducer, SafeText, Size}
+  alias SwarmCodeCLI.UI.Paint.{Blocks, Options}
   alias SwarmCodeCLI.UI.Projector.Settings, as: SettingsProjector
   alias SwarmCodeCLI.UI.Settings.{Layer, Page, Row}
 
@@ -77,6 +78,33 @@ defmodule SwarmCodeCLI.UI.Settings.C74ProjectorTest do
       |> act!({:settings_open, {:key, "terminal.panel"}})
 
     assert Enum.any?(lines(state), &(&1 =~ "•"))
+  end
+
+  test "NO_COLOR paints no role words: every settings row stays one row of the page" do
+    # Found in the sandbox (cli74 F25): with NO_COLOR=1 the painter put `FOCUS >`,
+    # `[INFO]` and `! WAITING` before spans of those roles, the rows overflowed and
+    # the header wrapped. The settings rows carry their own marks.
+    base = %{foreground: nil, background: nil, modifiers: []}
+    mono = sized(160, 45)
+    mono = %{mono | capabilities: %{mono.capabilities | color_mode: :monochrome}}
+
+    for section <- [:overview, :providers, :mcp, :appearance, :approvals, :storage] do
+      state = act!(mono, {:settings_open, {:section, section}})
+      {[region], nil} = SettingsProjector.project(state, nil)
+
+      {:ok, painted} =
+        Blocks.lines(region.blocks, 160, %Options{color_mode: :monochrome}, base, 45)
+
+      texts = Enum.map(painted, &Enum.map_join(&1.units, fn unit -> unit.text end))
+      assert length(texts) == length(region.blocks), "#{section}: a row wrapped"
+
+      for text <- texts,
+          words <- ["FOCUS >", "[INFO]", "! WAITING", "RUNNING ", "SELECTED >", "[DISABLED]"] do
+        refute text =~ words, "#{section}: #{inspect(words)} in #{inspect(text)}"
+      end
+
+      for text <- texts, do: assert(cells(text) <= 160, "#{section}: #{inspect(text)}")
+    end
   end
 
   test "record-table columns drop the least important first as the page narrows" do

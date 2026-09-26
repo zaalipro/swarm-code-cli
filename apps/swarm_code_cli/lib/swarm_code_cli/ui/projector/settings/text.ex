@@ -203,17 +203,23 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Text do
   end
 
   def style(%{capabilities: %{color_mode: :monochrome} = caps}, role) do
-    base = %{Theme.style(role, caps) | prefix: nil}
+    themed = Theme.style(role, caps)
 
     modifiers =
       cond do
         role in [:text_muted, :text_faint, :text_ghost, :border] -> [:dim]
         role in [:warning, :error, :accent, :focus] -> [:bold]
-        role in [:selection] -> [:reverse]
+        role in [:selection] -> [:reversed]
         true -> []
       end
 
-    %{base | modifiers: Enum.uniq(modifiers ++ base.modifiers)}
+    base = %{themed | prefix: nil, modifiers: Enum.uniq(modifiers ++ themed.modifiers)}
+
+    # The painter puts a role's words (`FOCUS >`, `! WAITING`, `[INFO]`) before every
+    # span of that role in monochrome. Settings rows carry their own marks and are
+    # measured without those words, so such a role paints as primary text with the
+    # same modifiers (NO_COLOR has no colour to lose).
+    if themed.prefix, do: %{base | role: :text_primary}, else: base
   end
 
   def style(state, role), do: %{Theme.style(role, state.capabilities) | prefix: nil}
