@@ -409,7 +409,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Providers do
           label: "▸ Delete this provider…",
           value: [{"asks first and shows what uses it", :text_faint}],
           tag: [{"D", :key}],
-          keys: [{"D", :delete, "delete #{name}"}, {"Enter", :open_row, "delete…"}],
+          keys: [{"D", :delete_record, "delete #{name}"}, {"Enter", :open_row, "delete…"}],
           target: {:delete, id}
         )
       ]
@@ -685,7 +685,8 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Providers do
         ),
       marks: if(diff, do: [:pending], else: []),
       lines: [[{Enum.join(Enum.take(models, 4), "  ") <> more(models, 4), :text_muted}]],
-      keys: [{"Enter", :open_row, "edit the list"}, {"f", :fetch, "fetch models"}],
+      keys:
+        [{"Enter", :open_row, "edit the list"}, {"f", :fetch, "fetch models"}] ++ diff_keys(diff),
       target: {:open_sub, id, :models}
     )
   end
@@ -1106,7 +1107,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Providers do
           label: "D  Delete #{name}",
           value: if(ready, do: [], else: [{"pick every replacement first", :text_faint}]),
           state: if(ready, do: :normal, else: :disabled),
-          keys: [{"D", :delete, "delete #{name}"}],
+          keys: [{"D", :delete_record, "delete #{name}"}],
           target: {:delete_now, id}
         )
       ]
@@ -1293,14 +1294,25 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Providers do
        %{toast: "Forgot what this session learned"}}
     ]
 
-  defp do_act(ctx, {:delete, id}, verb, _row) when verb in [:open_row, :delete],
+  defp do_act(ctx, {:delete, id}, verb, _row) when verb in [:open_row, :delete, :delete_record],
     do: delete_ops(ctx, id)
 
   defp do_act(ctx, _target, :delete, %{id: "act:provider.delete"}),
     do: page_id_ops(ctx, &delete_ops(ctx, &1))
 
-  defp do_act(ctx, {:delete_now, id}, verb, _row) when verb in [:open_row, :delete],
-    do: delete_now_ops(ctx, id)
+  defp do_act(ctx, {:delete_now, id}, verb, _row)
+       when verb in [:open_row, :delete, :delete_record],
+       do: delete_now_ops(ctx, id)
+
+  # QA F-7: `D` deletes the provider this page shows from any of its rows (it
+  # sends :delete_record; the rows answered only :delete, so D did nothing).
+  defp do_act(ctx, _target, :delete_record, _row) do
+    case {R.page_record(ctx), R.page_sub(ctx)} do
+      {{@kind, id}, nil} when id != @draft -> delete_ops(ctx, id)
+      {{@kind, id}, :delete} -> delete_now_ops(ctx, id)
+      _ -> :default
+    end
+  end
 
   defp do_act(_ctx, {:back}, :open_row, _row), do: [:back]
   defp do_act(ctx, {:diff, id, task_id}, :add, _row), do: apply_ops(ctx, id, task_id, "replace")
@@ -1332,8 +1344,15 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Providers do
 
   defp do_act(ctx, {:create}, :open_row, _row), do: create_ops(ctx)
 
-  defp do_act(ctx, _target, :add, _row) do
-    if R.page_record(ctx) == nil, do: [preset_picker()], else: :default
+  # QA F-10: a fetch difference waiting on the provider's page is applied by
+  # `a` (all) or `+` (the new ones) from any of its rows, as the difference
+  # says; only the Fetch models row took them.
+  defp do_act(ctx, _target, verb, _row) when verb in [:add, :add_key] do
+    case {R.page_record(ctx), R.page_sub(ctx)} do
+      {nil, _} when verb == :add -> [preset_picker()]
+      {{@kind, id}, nil} when id != @draft -> apply_pending(ctx, id, verb)
+      _ -> :default
+    end
   end
 
   defp do_act(_ctx, _target, _verb, _row), do: :default

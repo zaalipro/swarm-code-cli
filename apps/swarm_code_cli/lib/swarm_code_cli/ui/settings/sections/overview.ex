@@ -115,9 +115,10 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Overview do
   def items(%Ctx{} = ctx) do
     service = ctx |> overview() |> Map.get(:attention, []) |> Enum.map(&from_service/1)
 
+    # One per source and target: two failed servers are two AT1 items (QA F-9).
     (service ++ attention(ctx))
     |> Enum.filter(&match?(%Attention{}, &1))
-    |> Enum.uniq_by(& &1.id)
+    |> Enum.uniq_by(&{&1.id, &1.target})
     |> Attention.sort(Sections.order())
   end
 

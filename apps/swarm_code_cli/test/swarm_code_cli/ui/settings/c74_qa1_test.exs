@@ -8,9 +8,13 @@ defmodule SwarmCodeCLI.UI.Settings.C74Qa1Test do
 
   import SwarmCodeCLI.UI.Pass73Helpers, only: [ready: 0, press!: 2, letter: 1]
   import SwarmCodeCLI.UI.C74U3Helpers
+  import SwarmCodeCLI.Test.C74U2Ctx, only: [ctx: 2]
 
   alias SwarmCodeCLI.UI.Input
   alias SwarmCodeCLI.UI.DataSource.Fake.Settings, as: FakeSettings
+  alias SwarmCodeCLI.UI.DataSource.Fake.SettingsIntegrations, as: I
+  alias SwarmCodeCLI.Test.C74U2Tasks, as: T
+  alias SwarmCodeCLI.Test.C74U2Ctx.Page, as: U2Page
   alias SwarmCodeCLI.UI.Reducer.Settings.Ops
   alias SwarmCodeCLI.UI.Settings.{Layer, Nav, Page}
   alias SwarmCodeCLI.UI.Settings.Sections.{MCP, Providers}
@@ -262,6 +266,89 @@ defmodule SwarmCodeCLI.UI.Settings.C74Qa1Test do
 
       assert text =~ "where a value comes from"
     end
+  end
+
+  # ------------------------------------------------------------------ F-7, F-10
+
+  defp record_ctx(section, kind, id),
+    do: ctx(I.seed(), records: [{kind, id}], page: U2Page.at(section, {kind, id}, nil))
+
+  defp find_row(rows, id), do: Enum.find(rows, &(&1.id == id)) || flunk("no row #{id}")
+
+  describe "F-7: D deletes the record a page shows" do
+    test "on a provider's page D from any row does what Enter on its delete row does" do
+      id = I.ids().openrouter
+      c = record_ctx(:providers, "provider", id)
+      rows = Providers.record_rows(c, "provider", id)
+      delete = find_row(rows, "act:provider.delete")
+
+      assert {"D", :delete_record, "delete OpenRouter"} in delete.keys
+      [_ | _] = ops = Providers.act(c, delete, :delete_record)
+      assert ops == Providers.act(c, delete, :open_row)
+      assert Providers.act(c, find_row(rows, "fld:provider:#{id}:name"), :delete_record) == ops
+    end
+
+    test "on an MCP server's page D asks first, from any row" do
+      id = I.ids().fs
+      c = record_ctx(:mcp, "mcp_server", id)
+      rows = MCP.record_rows(c, "mcp_server", id)
+      delete = find_row(rows, "act:mcp.delete")
+
+      assert {"D", :delete_record, "delete"} in delete.keys
+      assert [{:confirm, %{id: "mcp.delete"}, then: _}] = MCP.act(c, delete, :delete_record)
+      # The head row (the first a page focuses).
+      head = find_row(rows, "info:mcp:head:#{id}")
+      assert [{:confirm, %{id: "mcp.delete"}, then: _}] = MCP.act(c, head, :delete_record)
+    end
+  end
+
+  test "F-10: a and + apply a waiting fetch difference from any row of the provider's page" do
+    id = I.ids().deepseek
+    {_s, tid, task, trows} = T.run(I.seed(), "provider.fetch_models", %{"id" => id})
+    c = record_ctx(:providers, "provider", id) |> T.put(tid, task, trows)
+    rows = Providers.record_rows(c, "provider", id)
+
+    models = find_row(rows, "fld:provider:#{id}:models")
+    assert {"a", :add, "apply all"} in models.keys
+
+    for row <- [find_row(rows, "fld:provider:#{id}:name"), models] do
+      assert [{:command, "provider.apply_models", _, %{"mode" => "replace"}, _}] =
+               Providers.act(c, row, :add)
+
+      assert [{:command, "provider.apply_models", _, %{"mode" => "add"}, _}] =
+               Providers.act(c, row, :add_key)
+    end
+
+    # Without a difference `a` on the page is not an apply.
+    plain = record_ctx(:providers, "provider", id)
+    name = find_row(Providers.record_rows(plain, "provider", id), "fld:provider:#{id}:name")
+    assert Providers.act(plain, name, :add) == :default
+  end
+
+  test "F-9: two failed servers are two attention items on the client too" do
+    item = fn id ->
+      %{
+        id: "AT1",
+        severity: :error,
+        section: :mcp,
+        target: %{kind: "mcp_server", id: id},
+        title: "#{id} MCP server failed to start",
+        reason: "command not found"
+      }
+    end
+
+    ctx = %SwarmCodeCLI.UI.Settings.Ctx{
+      data: %SwarmCodeCLI.UI.Settings.Data{overview: %{attention: [item.("a"), item.("b")]}},
+      prefs: %{},
+      launch_facts: %{}
+    }
+
+    items = SwarmCodeCLI.UI.Settings.Sections.Overview.items(ctx)
+
+    assert Enum.map(items, & &1.target) == [
+             {:record, "mcp_server", "a"},
+             {:record, "mcp_server", "b"}
+           ]
   end
 
   # ------------------------------------------------------------------ F-22

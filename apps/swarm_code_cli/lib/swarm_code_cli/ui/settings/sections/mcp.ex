@@ -393,7 +393,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.MCP do
           label: "▸ Delete this server…",
           value: [{"asks first", :text_faint}],
           tag: [{"D", :key}],
-          keys: [{"D", :delete, "delete"}, {"Enter", :open_row, "delete…"}],
+          keys: [{"D", :delete_record, "delete"}, {"Enter", :open_row, "delete…"}],
           target: {:delete, id}
         )
       ]
@@ -945,10 +945,11 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.MCP do
       {{:output}, :open_row} ->
         [{:open, R.new_page(:mcp, {@kind, id}, :output)}]
 
-      {{:delete, _}, v} when v in [:delete, :open_row] ->
+      {{:delete, _}, v} when v in [:delete, :delete_record, :open_row] ->
         delete_ops(ctx, id, f)
 
-      {_, :delete} ->
+      # QA F-7: `D` (delete the record this page shows) sends :delete_record.
+      {_, v} when v in [:delete, :delete_record] ->
         if(R.page_sub(ctx) == nil, do: delete_ops(ctx, id, f), else: :default)
 
       _ ->
