@@ -1,15 +1,136 @@
 defmodule SwarmCodeCLI.UI.Projector.Interview do
   @moduledoc "pass75 interview: the ask_user note (frames QA1-QA3)."
 
-  alias SwarmCodeCLI.UI.{Editor, FieldEditors, Question, SafeText, Size, Theme, Width}
+  alias SwarmCodeCLI.UI.{Editor, FieldEditors, Layout, Question, SafeText, Size, Theme, Width}
   alias SwarmCodeCLI.UI.Keymap.Bindings
-  alias SwarmCodeCLI.UI.Projector.{Density, KeyLabel, RunRow, Support}
-  alias SwarmCodeCLI.UI.Projector.Panel.Glyph
-  alias SwarmCodeCLI.UI.Scene.{Block, Rect, Span}
+  alias SwarmCodeCLI.UI.Projector.{ApprovalCard, Density, KeyLabel, RunRow, Support}
+  alias SwarmCodeCLI.UI.Projector.Panel.{Glyph, Model}
+  alias SwarmCodeCLI.UI.Scene.{Block, Dialog, Rect, Span}
 
   @narrow_classes [:narrow, :small, :compressed_small]
   @joiner "   "
   @placeholder "Something else, in your own words…"
+
+  @doc """
+  The note for the ask of `node_id` as a `Scene.Dialog` (style `:note`), or
+  nil when nothing of that ask is pending.
+  """
+  @spec dialog(map(), atom(), binary()) :: Dialog.t() | nil
+  def dialog(state, class, node_id) do
+    case Question.ask(state, node_id) do
+      nil ->
+        nil
+
+      ask ->
+        interview = Question.interview(state, node_id)
+        first = hd(ask.rows)
+        name = ApprovalCard.who(first, state)
+        size = state.size
+        main = Map.get(Layout.for_state(state).rects, :main) || full(size)
+        text_width = max(rect(size, main, class, 1).width - 8, 1)
+        all = rows(state, class, ask, interview, text_width)
+        rect = rect(size, main, class, length(all))
+        {visible, scroll} = fit(all, max(rect.height - 2, 0), focus_tag(state))
+        total = length(all)
+        narrow? = class in @narrow_classes
+        {:ok, title} = SafeText.external(name <> " asks you", SafeText.Limits.content())
+
+        %Dialog{
+          id: "interview-" <> node_id,
+          rect: rect,
+          title: title,
+          blocks: Enum.map(visible, &elem(&1, 1)),
+          focused_control_id: focus_control(state, ask, interview),
+          footer: [],
+          body_scroll: min(scroll, total),
+          body_visible_range: {min(scroll, total), min(scroll + length(visible), total)},
+          body_total_count: total,
+          style: :note,
+          edges: edges(state, ask, name, name_role(first, state), state.now),
+          air: not narrow?,
+          backdrop: if(narrow?, do: :plain, else: :ghost)
+        }
+    end
+  end
+
+  defp full(size), do: %Rect{x: 0, y: 0, width: size.columns, height: size.rows}
+
+  defp focus_tag(%{focus: "other"}), do: :other
+  defp focus_tag(%{focus: focus}) when is_binary(focus), do: {:option, focus}
+  defp focus_tag(_state), do: nil
+
+  # The focused option of the current question or "other"; nil otherwise.
+  defp focus_control(state, ask, interview) do
+    if state.focus in Question.focus_ids(Question.current(ask, interview)),
+      do: state.focus
+  end
+
+  # The Lead (or the assistant) speaks in its run's hue, a worker in its lane.
+  defp name_role(row, state) do
+    case ApprovalCard.name_role(row, state) do
+      :text_primary -> state |> run_kind(row.run_id) |> Theme.run_kind() |> elem(1)
+      lane -> lane
+    end
+  end
+
+  defp run_kind(state, run_id) do
+    case Map.get(state.read_model.runs, run_id) do
+      nil -> :assistant
+      run -> Model.kind(run)
+    end
+  end
+
+  @doc """
+  The four edge texts: `<mark> <Name> asks you [m questions]`, `<kind> · <run
+  title> · asked m:ss ago`, `Esc later: …` and `^N reopens`.
+  """
+  @spec edges(map(), Question.ask(), binary(), atom(), integer()) :: map()
+  def edges(state, ask, name, role, now_ms) do
+    ctx = %{state: state}
+    run = Map.get(state.read_model.runs, ask.run_id)
+    mark = state |> run_kind(ask.run_id) |> Theme.run_mark() |> Support.glyph(state)
+    count = if ask.total >= 2, do: [{" #{ask.total} questions", :text_primary}], else: []
+
+    asked =
+      case ask.requested_at do
+        nil ->
+          nil
+
+        at ->
+          seconds = max(div(now_ms - at, 1000), 0)
+          ss = seconds |> rem(60) |> Integer.to_string() |> String.pad_leading(2, "0")
+          "asked #{div(seconds, 60)}:#{ss} ago"
+      end
+
+    about =
+      [run && Atom.to_string(run.kind), run && clean(run.title, ctx), asked]
+      |> Enum.reject(&(&1 in [nil, ""]))
+      |> Enum.join(" · ")
+
+    {words, words_role} = Question.deadline_words(ask, now_ms, name)
+    "Esc" <> later = words
+
+    reopen =
+      case key(state, :next_need_chord) do
+        nil -> []
+        label -> [{chord(label), {:text_primary, [:bold]}}, {" reopens", :text_faint}]
+      end
+
+    %{
+      top_left:
+        spans(ctx, [
+          {SafeText.value(mark) <> " " <> name, {role, [:bold]}},
+          {" asks you", :text_primary} | count
+        ]),
+      top_right: spans(ctx, [{about, :text_faint}]),
+      bottom_left: spans(ctx, [{"Esc", {:text_primary, [:bold]}}, {later, words_role}]),
+      bottom_right: spans(ctx, reopen)
+    }
+  end
+
+  # `Ctrl-N` reads `^N` on the note's edge, as the panel writes it.
+  defp chord("Ctrl-" <> <<letter::binary-size(1)>>), do: "^" <> letter
+  defp chord(label), do: label
 
   @doc "The label of the first key bound to `id` under the user's overrides; nil when unbound."
   @spec key(map(), atom()) :: String.t() | nil
@@ -516,7 +637,7 @@ defmodule SwarmCodeCLI.UI.Projector.Interview do
       |> Enum.reject(&(elem(&1, 0) == nil))
       |> Enum.map(fn {k, words} -> [{k, {:text_primary, [:bold]}}, {words, :text_faint}] end)
 
-    name = SwarmCodeCLI.UI.Projector.ApprovalCard.who(hd(ask.rows), state)
+    name = ApprovalCard.who(hd(ask.rows), state)
     enter_words = Question.enter_words(ask, interview, name)
 
     enter =
