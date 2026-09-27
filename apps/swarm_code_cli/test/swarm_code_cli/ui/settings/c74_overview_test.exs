@@ -16,7 +16,7 @@ defmodule SwarmCodeCLI.UI.Settings.C74OverviewTest do
   alias SwarmCodeCLI.UI.DataSource.Fake.Settings, as: FakeSettings
   alias SwarmCodeCLI.UI.Keymap.Overrides
   alias SwarmCodeCLI.UI.Projector.Settings, as: SettingsProjector
-  alias SwarmCodeCLI.UI.Settings.{Layer, Nav, Rows, Sections, Undo}
+  alias SwarmCodeCLI.UI.Settings.{Grid, Layer, Nav, Rows, Sections, Undo}
   alias SwarmCodeCLI.UI.Settings.Sections.Overview
 
   defp act(state, action), do: Reducer.update(state, action)
@@ -89,14 +89,46 @@ defmodule SwarmCodeCLI.UI.Settings.C74OverviewTest do
   end
 
   # The page column of the body, one string per line, runs of spaces
-  # folded to two and the ends trimmed.
-  defp page_column(state) do
+  # folded to two and the ends trimmed. Pass 75 (E): the page is the grid's
+  # page span of each body line (no `│` rules any more); the group spine
+  # (`╭─ `, `│`, `╰`) is dropped, the focus `▌` kept, and the blank lines
+  # between groups are left out.
+  defp page_column(state), do: state |> page_rows() |> Enum.map(&elem(&1, 1))
+
+  # The page column with each line's spine cell (NO_COLOR draws the twin:
+  # `*` a set value, `|` a default, `!` attention, `>` the focus, a space on
+  # a continuation line or a title).
+  defp page_rows(state) do
+    grid = Grid.for(state.size.columns, state.size.rows)
+
     state
     |> lines()
-    |> Enum.filter(&(length(String.split(&1, "│")) == 3))
+    |> Enum.slice(grid.body_top, grid.body_rows)
     |> Enum.map(fn line ->
-      line |> String.split("│") |> Enum.at(1) |> String.replace(~r/ {2,}/, "  ") |> String.trim()
+      page = String.slice(line, grid.page.left, grid.page.width)
+
+      text =
+        page
+        |> unspine()
+        |> String.replace(~r/ {2,}/, "  ")
+        |> String.trim()
+
+      {String.first(page) || " ", text}
     end)
+    |> Enum.reject(&(elem(&1, 1) == ""))
+  end
+
+  # The spine cell (`╭─ ` of a title, `│ ╰ ╭`; the twin's `* | !`) is dropped,
+  # and so is the twin's `----` run of a title.
+  defp unspine("╭─ " <> rest), do: rest
+
+  defp unspine(line) do
+    line = String.replace(line, ~r/ -{3,}/, "")
+
+    case String.next_grapheme(line) do
+      {spine, rest} when spine in ["│", "╰", "╭", "*", "|", "!"] -> " " <> rest
+      _ -> line
+    end
   end
 
   # Every scalar with its value, as the registry's rules resolve it.
@@ -116,9 +148,11 @@ defmodule SwarmCodeCLI.UI.Settings.C74OverviewTest do
       state = appendix_a()
       column = page_column(state)
 
-      assert Enum.take(column, 16) == [
+      # pass 75 (E): the focus is the twin's `>` in the spine column (R28.2),
+      # and a value wider than its column wraps rather than being cut (R22.4).
+      assert Enum.take(column, 17) == [
                "needs attention  3",
-               "▌! github MCP server failed to start  Enter open",
+               ">! github MCP server failed to start  Enter open",
                "command not found: github-mcp-server",
                "! 2 models in use have no price  Enter open",
                "claude-sonnet-5, qwen3-coder",
@@ -130,27 +164,43 @@ defmodule SwarmCodeCLI.UI.Settings.C74OverviewTest do
                "MCP  3 servers · 1 failed · 41 tools",
                "agents  6 at once · depth 2 · 60 turns",
                "approvals  auto · trusted · 5 always-allowed commands",
-               "storage  1.8 GB · 214 sessions · last cleanup 12 days ago",
+               "storage  1.8 GB · 214 sessions · last cleanup 12 days",
+               "ago",
                "budget  $38.20 of $50.00 this month  ▰▰▰▰▰▰▰▰▰▰▰▰▱▱▱▱",
                "changed from default  #{changed_count(state)} · @modified lists every one"
              ]
 
       # The first 9 changed values, the strongest layers first, then the rest.
-      changed = column |> Enum.drop(16) |> Enum.take(10)
-      assert Enum.all?(Enum.take(changed, 9), &String.starts_with?(&1, "• "))
-      assert List.last(changed) == "… #{changed_count(state) - 9} more"
+      # Pass 75: a changed value carries no `•`; its spine names the layer
+      # that set it (the twin's `*`, R21.7), and its wrapped lines have none.
+      changed = state |> page_rows() |> Enum.drop(17)
 
-      assert Enum.at(changed, 2) ==
-               "• Theme  Light · cli.json says Dark  env SWARM_THEME"
+      {shown, [{_, more} | _]} =
+        Enum.split_while(changed, &(not (elem(&1, 1) =~ ~r/^\+\d+ more$/)))
 
-      assert Enum.at(changed, 3) == "• Editor for Ctrl-X  hx  env VISUAL"
+      values = for {"*", text} <- shown, do: text
+      assert length(values) == 9
+      assert Enum.all?(shown, fn {spine, _} -> spine in ["*", " "] end)
+      assert more == "+#{changed_count(state) - 9} more"
+
+      assert Enum.at(values, 2) ==
+               "Theme  Light · cli.json says Dark  env SWARM_THEME"
+
+      assert Enum.at(values, 3) == "Editor for Ctrl-X  hx  env VISUAL"
     end
 
     test "where values come from: the fixed points, and every value counted once" do
-      state = appendix_a()
-      column = page_column(state)
-      start = Enum.find_index(column, &String.starts_with?(&1, "where values come from"))
-      rows = column |> Enum.drop(start + 1) |> Enum.take(8)
+      # pass 75 (E): the blank line between groups and the wrapped values put
+      # this group below a 38-row body; a taller terminal shows it whole. Its
+      # rows are the lines with a spine (a wrapped line has none).
+      state = appendix_a({160, 70})
+      column = page_rows(state)
+      start = Enum.find_index(column, &String.starts_with?(elem(&1, 1), "where values come from"))
+
+      rows =
+        for {spine, text} <- Enum.drop(column, start + 1), spine != " ", do: text
+
+      rows = Enum.take(rows, 8)
 
       counts =
         Map.new(rows, fn row ->
@@ -170,7 +220,9 @@ defmodule SwarmCodeCLI.UI.Settings.C74OverviewTest do
     test "the search row counts what changed, what needs attention and what env sets" do
       [_header, search | _] = lines(appendix_a())
       n = changed_count(appendix_a())
-      assert search =~ "• #{n} changed from default  ! 3 need attention  2 from env"
+      # pass 75 (R25.2): three spaces apart, the attention chip padded
+      assert String.replace(search, ~r/ {2,}/, "  ") =~
+               "• #{n} changed from default  ! 3 need attention  2 from env"
     end
   end
 

@@ -12,7 +12,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Overview do
       its section.
     * *changed from default* — the first 9 values whose winning layer is not
       the default (the strongest layers first), as ordinary setting rows
-      (Enter edits, `r` resets), then `… N more`, which opens the search on
+      (Enter edits, `r` resets), then `+N more`, which opens the search on
       `@modified`.
     * *where values come from* — how many values each layer supplies now,
       with the names or the words that say what the layer is.
@@ -132,7 +132,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Overview do
     items = items(ctx)
     count = length(items)
     shown = Enum.take(items, @attention_shown)
-    tag = if count > 0, do: [{Integer.to_string(count), :warning}], else: []
+    tag = if count > 0, do: [{Integer.to_string(count), :text_faint}], else: []
 
     body =
       cond do
@@ -189,7 +189,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Overview do
     do: "it in " <> Sections.title(DeepLink.record_section(kind) || :overview)
 
   defp more_attention(count) when count > @attention_shown,
-    do: [Row.info("attention_more", [{"… #{count - @attention_shown} more", :text_faint}])]
+    do: [Row.info("attention_more", [{"+#{count - @attention_shown} more", :text_faint}])]
 
   defp more_attention(_count), do: []
 
@@ -453,9 +453,9 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Overview do
         filled = min(@gauge_cells, round(@gauge_cells * spent / budget))
 
         [
-          {"#{money(spent)} of #{money(budget)} this month    ", :text_primary},
+          {"#{money(spent)} of #{money(budget)} this month  ", :text_primary},
           {String.duplicate("▰", filled), if(spent > budget, do: :warning, else: :text_muted)},
-          {String.duplicate("▱", @gauge_cells - filled), :text_ghost}
+          {String.duplicate("▱", @gauge_cells - filled), :text_faint}
         ]
 
       is_number(spent) ->
@@ -560,7 +560,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Overview do
     more =
       if total > @changed_shown,
         do: [
-          Row.info("changed_more", [{"… #{total - @changed_shown} more", :text_faint}],
+          Row.info("changed_more", [{"+#{total - @changed_shown} more", :text_faint}],
             target: {:overview_search, "@modified"},
             keys: [{"Enter", :enter, "list every one"}]
           )
