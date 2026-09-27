@@ -125,8 +125,20 @@ defmodule SwarmCodeCLI.UI.Settings.C75NoteTest do
     test "the ladder's env line takes the env hue on the note's spine" do
       note = note(open(:appearance, {160, 45}, "key:terminal.theme"))
       {_, text, spans} = find_note(note, ~r/^› env/)
-      assert text =~ "light"
+      # the choice's label, as the page draws it (407)
+      assert text =~ "Light"
       assert role_at(spans, 116) == :agent_lane_4
+    end
+
+    test "an enum's ladder and facts name the choice's label, never the stored word (407)" do
+      state = open(:approvals, {160, 45})
+      row = Enum.find(Nav.rows(state), &match?({Editors.Enum, _}, &1.editor))
+      note = note(Nav.put_cursor(state, row.id))
+      texts = for {_, text, _} <- note, do: text
+
+      assert Enum.any?(texts, &(&1 =~ ~r/^(› |  )project   Auto /))
+      assert Enum.any?(texts, &(&1 =~ ~r/^value    Auto/))
+      refute Enum.any?(texts, &(&1 =~ ~r/read_only|full_access|(project|default) +auto/))
     end
 
     test "an open enum editor's note lists every choice, marks and hints (R24.4)" do

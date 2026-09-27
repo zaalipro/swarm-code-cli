@@ -415,8 +415,8 @@ defmodule SwarmCodeCLI.UI.Settings.Rows do
       scope: scope_words(ctx, entry),
       key_line: key_line(entry),
       description: entry.description || "",
-      facts: facts(ctx, entry, value),
-      layers: detail_layers(setting),
+      facts: facts(ctx, entry, value, setting),
+      layers: detail_layers(entry, setting),
       notes:
         [
           if(entry.desktop_only, do: {"no effect in the terminal", :text_faint}),
@@ -456,15 +456,16 @@ defmodule SwarmCodeCLI.UI.Settings.Rows do
   defp project_name(name) when is_binary(name), do: name
   defp project_name(_project), do: nil
 
-  defp facts(ctx, %Entry{} = entry, value) do
+  defp facts(ctx, %Entry{} = entry, value, setting) do
     lookups = lookups(ctx)
+    choices = choices_only(entry, setting)
 
     [
       if(Entry.scalar?(entry),
-        do: {"value", segments_words(Display.value(entry, value, nil, lookups))}
+        do: {"value", segments_words(Display.value(entry, value, choices, lookups))}
       ),
       if(Entry.scalar?(entry) and not is_nil(entry.default),
-        do: {"default", segments_words(Display.value(entry, entry.default, nil, lookups))}
+        do: {"default", segments_words(Display.value(entry, entry.default, choices, lookups))}
       ),
       if(is_number(entry.min) and is_number(entry.max),
         do: {"range", "#{Display.number(entry, entry.min)}–#{Display.number(entry, entry.max)}"}
@@ -486,9 +487,9 @@ defmodule SwarmCodeCLI.UI.Settings.Rows do
 
   defp segments_words(segments), do: Enum.map_join(segments, "", &elem(&1, 0))
 
-  defp detail_layers(nil), do: []
+  defp detail_layers(_entry, nil), do: []
 
-  defp detail_layers(setting) do
+  defp detail_layers(entry, setting) do
     winner = Map.get(setting, :winner)
 
     setting
@@ -500,7 +501,7 @@ defmodule SwarmCodeCLI.UI.Settings.Rows do
         value:
           cond do
             Map.get(layer, :ignored, false) -> "#{Map.get(layer, :raw)} (ignored)"
-            Map.get(layer, :set, false) -> Display.words(Map.get(layer, :value))
+            Map.get(layer, :set, false) -> label_words(entry, Map.get(layer, :value), setting)
             true -> "not set"
           end,
         note: Map.get(layer, :note) || Map.get(layer, :source),
@@ -510,6 +511,17 @@ defmodule SwarmCodeCLI.UI.Settings.Rows do
       }
     end)
   end
+
+  # An enum's or an effort's value by its label (`Read-only`, `High`), as the
+  # page row draws it, never the stored word (`read_only`); others in words (407).
+  defp label_words(%Entry{type: type} = entry, value, setting) when type in [:enum, :effort],
+    do: segments_words(Display.value(entry, value, choices_only(entry, setting)))
+
+  defp label_words(_entry, value, _setting), do: Display.words(value)
+
+  # The setting's choices without its state: an invalid stored value must
+  # not turn every layer and fact into the "not understood" sentence.
+  defp choices_only(entry, setting), do: %{choices: Display.choices(entry, setting)}
 
   # ----------------------------------------------------------- helpers
 
