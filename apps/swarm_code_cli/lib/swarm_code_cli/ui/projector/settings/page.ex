@@ -535,6 +535,338 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Page do
   defp editing(%Layer{editing: %{row_id: id} = editing}, %Row{id: id}), do: editing
   defp editing(_layer, _row), do: nil
 
+  # ---------------------------------------------------- build, window
+
+  @type item :: %{
+          index: non_neg_integer() | nil,
+          kind: :title | :row | :blank | :info,
+          focus?: boolean(),
+          current?: boolean(),
+          height: pos_integer(),
+          group: non_neg_integer(),
+          focusable?: boolean(),
+          build: (-> [segments()])
+        }
+
+  @type meta :: %{
+          lines: [segments()],
+          focus_first: non_neg_integer() | nil,
+          focus_last: non_neg_integer() | nil,
+          group_top: non_neg_integer() | nil,
+          above: non_neg_integer(),
+          below: non_neg_integer()
+        }
+
+  @doc """
+  The page's body: its groups as items (titles, rows, the blank lines
+  between groups), windowed to `grid.body_rows` lines around the cursor, with
+  where the focus and its group sit. Only the items in the window are built
+  into segments; the others are measured.
+  """
+  @spec build(map(), Grid.t(), map()) :: meta()
+  def build(state, %Grid{} = grid, _caps) do
+    layer = state.settings
+    rows = Nav.rows(state)
+    current = Nav.current(state, rows)
+
+    on_page? =
+      layer.region == :page or
+        (layer.region == :search and match?(%{cursor: id} when id != nil, layer.search))
+
+    items =
+      head_items(state, layer, grid) ++
+        if rows == [],
+          do: [info_item(state, grid, "Nothing here yet.")],
+          else: row_items(state, rows, current, on_page?, grid)
+
+    cursor = Enum.find(items, &(&1.kind in [:row, :info] and &1.index != nil and &1.current?))
+    window(items, cursor, nil, grid, state)
+  end
+
+  defp head_items(state, %Layer{available: false, message: message}, grid)
+       when is_binary(message),
+       do: [info_item(state, grid, message), blank_item(-1)]
+
+  defp head_items(_state, _layer, _grid), do: []
+
+  defp info_item(state, grid, words) do
+    %{
+      index: nil,
+      kind: :info,
+      focus?: false,
+      current?: false,
+      focusable?: false,
+      height: 1,
+      group: -1,
+      build: fn -> [Text.fit(state, [{"   " <> words, :text_muted}], grid.page.width)] end
+    }
+  end
+
+  defp blank_item(group),
+    do: %{
+      index: nil,
+      kind: :blank,
+      focus?: false,
+      current?: false,
+      focusable?: false,
+      height: 1,
+      group: group,
+      build: fn -> [[]] end
+    }
+
+  defp row_items(state, rows, current, on_page?, grid) do
+    tables = tables(state, rows, grid.page.width - 3)
+    band? = state.settings.popover == nil
+    index_of = rows |> Enum.with_index() |> Map.new(fn {row, i} -> {row.id, i} end)
+
+    rows
+    |> groups()
+    |> Enum.with_index()
+    |> Enum.flat_map(fn {group, g} ->
+      separator = if g > 0, do: [blank_item(g)], else: []
+
+      title =
+        if group.title,
+          do: [
+            %{
+              index: group.first_index,
+              kind: :title,
+              focus?: false,
+              current?: false,
+              focusable?: false,
+              height: 1,
+              group: g,
+              build: fn -> [title_line(state, group, grid)] end
+            }
+          ],
+          else: []
+
+      last = length(group.rows) - 1
+
+      members =
+        group.rows
+        |> Enum.with_index()
+        |> Enum.map(fn {row, at} ->
+          current? = current != nil and row.id == current.id
+          focus? = current? and on_page?
+
+          opts = [
+            focus?: focus?,
+            band?: band?,
+            first?: at == 0 and group.title == nil,
+            last?: at == last,
+            tables: tables
+          ]
+
+          %{
+            index: Map.get(index_of, row.id),
+            kind: if(row.kind == :info, do: :info, else: :row),
+            focus?: focus?,
+            current?: current?,
+            focusable?: Row.focusable?(row),
+            height: height(state, row, group, grid, tables),
+            group: g,
+            build: fn -> row_lines(state, row, group, grid, opts) end
+          }
+        end)
+
+      separator ++ title ++ members
+    end)
+  end
+
+  defp height(state, row, group, grid, tables),
+    do: length(content(state, hoist(row, state.capabilities), group, grid, false, tables))
+
+  @doc """
+  The window over `items`: when the cursor's group fits the body its title
+  is the first line (D18), else the cursor sits at the bottom; under 120
+  columns the lines naming what is hidden above and below take their rows
+  (`arrows/3`). Answers the body's lines (exactly `grid.body_rows`) and the
+  body-relative lines of the focus and its group.
+  """
+  @spec window([item()], item() | nil, non_neg_integer() | nil, Grid.t(), map()) :: meta()
+  def window(items, cursor, _group_top, %Grid{} = grid, state) do
+    placed = place_items(items)
+    total = Enum.reduce(items, 0, &(&1.height + &2))
+    arrows? = grid.class in [:strip, :small]
+
+    {first, room, top_lines, bottom_lines} =
+      Enum.reduce_while(1..3, {nil, grid.body_rows, 0, 0}, fn _, {_first, _room, top, bottom} ->
+        room = max(grid.body_rows - top - bottom, 1)
+        first = first_line(placed, cursor, total, room)
+
+        top2 =
+          if arrows? and hidden(placed, first, room, :above) > 0, do: arrow_rows(grid), else: 0
+
+        bottom2 =
+          if arrows? and hidden(placed, first, room, :below) > 0, do: arrow_rows(grid), else: 0
+
+        if {top2, bottom2} == {top, bottom},
+          do: {:halt, {first, room, top, bottom}},
+          else: {:cont, {first, max(grid.body_rows - top2 - bottom2, 1), top2, bottom2}}
+      end)
+
+    first = first || first_line(placed, cursor, total, room)
+    visible = window_lines(placed, first, room)
+
+    {focus_first, focus_last, group_top} =
+      case cursor && Enum.find(placed, fn {item, _} -> item == cursor end) do
+        {item, start} ->
+          group_start = group_start(placed, item.group)
+          shift = top_lines - first
+
+          {if(item.focus?, do: start + shift),
+           if(item.focus?, do: start + item.height - 1 + shift),
+           max(group_start + shift, top_lines)}
+
+        nil ->
+          {nil, nil, nil}
+      end
+
+    meta = %{
+      lines: visible,
+      focus_first: focus_first,
+      focus_last: focus_last,
+      group_top: group_top,
+      above: hidden(placed, first, room, :above),
+      below: hidden(placed, first, room, :below),
+      above_names: hidden_titles(placed, first, room, :above),
+      below_names: hidden_titles(placed, first, room, :below),
+      top_lines: top_lines,
+      bottom_lines: bottom_lines
+    }
+
+    meta = arrows(meta, state, grid)
+    %{meta | lines: pad_lines(state, meta.lines, grid)}
+  end
+
+  defp place_items(items) do
+    {placed, _} = Enum.map_reduce(items, 0, fn item, at -> {{item, at}, at + item.height} end)
+    placed
+  end
+
+  defp group_start(placed, group) do
+    Enum.find_value(placed, 0, fn {item, at} ->
+      if item.group == group and item.kind != :blank, do: at
+    end)
+  end
+
+  # The first body line: the cursor's group title when the group fits, else
+  # as little scrolling as keeps the cursor's item in view, cursor at the bottom.
+  defp first_line(_placed, nil, _total, _room), do: 0
+
+  defp first_line(placed, cursor, total, room) do
+    {_, start} = Enum.find(placed, fn {item, _} -> item == cursor end)
+    group = group_start(placed, cursor.group)
+
+    group_end =
+      placed
+      |> Enum.filter(fn {item, _} -> item.group == cursor.group end)
+      |> Enum.map(fn {item, at} -> at + item.height end)
+      |> Enum.max(fn -> start + cursor.height end)
+
+    first =
+      if group_end - group <= room,
+        do: group,
+        else: min(max(group, start + cursor.height - room), start)
+
+    first |> min(max(total - room, 0)) |> max(0)
+  end
+
+  defp window_lines(placed, first, room) do
+    last = first + room
+
+    placed
+    |> Enum.filter(fn {item, at} -> at + item.height > first and at < last end)
+    |> Enum.flat_map(fn {item, at} ->
+      lines = item.build.()
+      skip = max(first - at, 0)
+      lines |> Enum.drop(skip) |> Enum.take(last - max(at, first))
+    end)
+  end
+
+  defp hidden(placed, first, room, side) do
+    Enum.count(placed, fn {item, at} ->
+      item.focusable? and
+        case side do
+          :above -> at + item.height <= first
+          :below -> at >= first + room
+        end
+    end)
+  end
+
+  defp hidden_titles(placed, first, room, side) do
+    for {%{kind: :title, build: build}, at} <- placed,
+        (side == :above and at < first) or (side == :below and at >= first + room) do
+      build.() |> hd() |> title_words()
+    end
+  end
+
+  # A title line's words (the title itself, without the spine and the tag).
+  defp title_words(line) do
+    Enum.find_value(line, "", fn
+      {text, :text_muted} -> text
+      _ -> nil
+    end)
+  end
+
+  defp arrow_rows(%Grid{class: :strip}), do: 2
+  defp arrow_rows(%Grid{}), do: 1
+
+  @doc """
+  Under 120 columns, the lines that name what the window hides: `↑ title ·
+  title · N rows above` first and `↓ … · N rows below` last (a blank line
+  beside each under the strip layout); nothing at 120 columns and more.
+  """
+  @spec arrows(map(), map(), Grid.t()) :: map()
+  def arrows(%{top_lines: top, bottom_lines: bottom} = meta, state, %Grid{} = grid)
+      when grid.class in [:strip, :small] do
+    up = if top > 0, do: [arrow_line(state, meta, :above, grid)], else: []
+    down = if bottom > 0, do: [arrow_line(state, meta, :below, grid)], else: []
+
+    {up, down} =
+      if grid.class == :strip,
+        do: {if(up == [], do: [], else: up ++ [[]]), if(down == [], do: [], else: [[] | down])},
+        else: {up, down}
+
+    body = Enum.take(meta.lines, grid.body_rows - length(up) - length(down))
+    filler = List.duplicate([], max(grid.body_rows - length(up) - length(down) - length(body), 0))
+    %{meta | lines: up ++ body ++ filler ++ down}
+  end
+
+  def arrows(meta, _state, _grid), do: meta
+
+  defp arrow_line(state, meta, side, grid) do
+    {glyph, count, names, words} =
+      case side do
+        :above -> {:up, meta.above, meta.above_names, "above"}
+        :below -> {:down, meta.below, meta.below_names, "below"}
+      end
+
+    arrow = [
+      {"   ", :text_primary},
+      {Glyphs.for_caps(glyph, state.capabilities) <> " ", :text_faint}
+    ]
+
+    tail = [{" · #{count} #{if count == 1, do: "row", else: "rows"} #{words}", :text_faint}]
+
+    names =
+      names
+      |> Enum.map(&[{&1, :text_muted}])
+      |> Enum.intersperse([{" · ", :text_faint}])
+      |> Enum.concat()
+
+    room = grid.page.width - Text.cells(state, arrow) - Text.cells(state, tail) - 1
+    Text.fit(state, arrow ++ Text.clip(state, names, max(room, 0)) ++ tail, grid.page.width)
+  end
+
+  defp pad_lines(state, lines, %Grid{} = grid) do
+    lines = Enum.take(lines, grid.body_rows)
+
+    (lines ++ List.duplicate([], grid.body_rows - length(lines)))
+    |> Enum.map(&Text.fit(state, &1, grid.page.width))
+  end
+
   # ------------------------------------------------------------ tables
 
   # A record table's row: the name first (never dropped), then the columns
