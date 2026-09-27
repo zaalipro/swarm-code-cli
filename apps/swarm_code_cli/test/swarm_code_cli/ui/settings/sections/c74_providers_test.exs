@@ -188,8 +188,11 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.C74ProvidersTest do
 
       rows = record_rows(c, @ids.deepseek)
 
-      assert text(row(rows, "fld:provider:#{@ids.deepseek}:api_key").value) ==
-               "●●●●●●●● set · ends a1b2 · stored in SwarmCode's database"
+      # pass 75 (R27.3): `stored in SwarmCode's database` is the key row's
+      # continuation line, not its value's tail
+      key_row = row(rows, "fld:provider:#{@ids.deepseek}:api_key")
+      assert text(key_row.value) == "●●●●●●●● set · ends a1b2"
+      assert [{"stored in SwarmCode's database", :text_faint}] in key_row.lines
 
       assert text(row(rows, "fld:provider:#{@ids.deepseek}:effort_levels").value) ==
                "DeepSeek V4 · 3 levels"
@@ -197,8 +200,11 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.C74ProvidersTest do
       assert text(row(rows, "info:used_by").value) ==
                "the chat default · the sub-agent default · 12 conversations · 2 scheduled tasks"
 
-      assert text(row(rows, "info:head:#{@ids.deepseek}").value) ==
-               "OpenAI-compatible · global · 12 conversations use it"
+      # pass 75 (R27.3): the hero line reads the kind and the scope; who uses
+      # the provider is its continuation line
+      head = row(rows, "info:head:#{@ids.deepseek}")
+      assert text(head.value) == "OpenAI-compatible · global"
+      assert Enum.map(head.lines, &text/1) == ["12 conversations use it"]
     end
 
     test "fallbacks only for Anthropic; forget caps only after a refusal" do
@@ -269,9 +275,10 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.C74ProvidersTest do
 
       c = record_ctx(@ids.deepseek) |> T.put(id, task, [])
       # cli74 F16: the refusal and its keys show while the refused paste
-      # waits (after Esc nothing is left to save).
+      # waits (after Esc nothing is left to save). Pass 75 (R27.3): the key
+      # row's own continuation line says where the key is kept.
       assert row(record_rows(c, @ids.deepseek), "fld:provider:#{@ids.deepseek}:api_key").lines ==
-               []
+               [[{"stored in SwarmCode's database", :text_faint}]]
 
       c = with_refused_paste(c, "fld:provider:#{@ids.deepseek}:api_key")
       key = row(record_rows(c, @ids.deepseek), "fld:provider:#{@ids.deepseek}:api_key")

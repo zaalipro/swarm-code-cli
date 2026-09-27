@@ -435,14 +435,25 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Providers do
           []
       end
 
+    # Pass 75 (R27.3, F3): the kind and the scope on the hero line, who uses
+    # it on the line under it.
+    uses =
+      case convs do
+        0 -> "no conversation uses it"
+        1 -> "1 conversation uses it"
+        n -> "#{n} conversations use it"
+      end
+
     R.row(
       id: "info:head:#{id}",
       kind: :info,
       label: R.field(f, "name"),
       value: [
-        {"#{ModelPicker.kind_label(R.field(f, "kind"))} · global · #{R.count(convs, "conversation")} use it",
-         :text_faint}
+        {ModelPicker.kind_label(R.field(f, "kind")), :text_primary},
+        {" · ", :text_faint},
+        {"global", :text_muted}
       ],
+      lines: [[{uses, :text_muted}]],
       tag: tag,
       state: :readonly
     )
@@ -553,10 +564,16 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Providers do
           error_lines(ctx, row_id)
       end
 
+    # Pass 75 (R27.3): where the key is kept is a continuation line of its
+    # own; a refusal or an error takes its place while it waits.
+    lines =
+      if set and lines == [],
+        do: [[{"stored in SwarmCode's database", :text_faint}]],
+        else: lines
+
     value =
       if set,
-        do:
-          R.secret_words(key, R.tier(ctx)) ++ [{" · stored in SwarmCode's database", :text_faint}],
+        do: R.secret_words(key, R.tier(ctx)),
         else:
           [{"not set", :text_ghost}] ++
             if(R.field(f, "usable") == true,
