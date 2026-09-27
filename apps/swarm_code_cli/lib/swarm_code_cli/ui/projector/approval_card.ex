@@ -132,6 +132,12 @@ defmodule SwarmCodeCLI.UI.Projector.ApprovalCard do
 
   defp first_present(values), do: Enum.find(values, &(is_binary(&1) and String.trim(&1) != ""))
 
+  # pass75 interview: a question names its asking agent on `question.agent_id`
+  # (an approval on `approval.agent_id`).
+  defp asker(%{kind: :question, question: %{agent_id: id}}) when is_binary(id), do: id
+  defp asker(%{approval: %{} = approval}), do: Map.get(approval, :agent_id)
+  defp asker(_item), do: nil
+
   @doc "\"scout-1 wants to run a command\": the asking agent by name, else the plainest true thing."
   def title(item, state), do: who(item, state) <> " wants to " <> verb(facts(item))
 
@@ -142,7 +148,7 @@ defmodule SwarmCodeCLI.UI.Projector.ApprovalCard do
   """
   def who(item, state) do
     approval = item.approval || %{}
-    agent_id = Map.get(approval, :agent_id)
+    agent_id = asker(item)
     fallback = first_present([Map.get(approval, :agent_name)])
 
     Name.for_node(state, item.run_id, agent_id, fallback) ||
@@ -617,10 +623,11 @@ defmodule SwarmCodeCLI.UI.Projector.ApprovalCard do
 
   # --- rows ---------------------------------------------------------------------------
 
-  defp frame(%{capabilities: %{ascii?: true}}),
+  @doc "The dialog frame glyphs for the terminal's capabilities (pass75: shared with the interview note)."
+  def frame(%{capabilities: %{ascii?: true}}),
     do: %{tl: "+", tr: "+", bl: "+", br: "+", h: "-", v: "|"}
 
-  defp frame(state) do
+  def frame(state) do
     if Width.cells("╭", state.capabilities.ambiguous_width) == 1,
       do: %{tl: "╭", tr: "╮", bl: "╰", br: "╯", h: "─", v: "│"},
       else: %{tl: "⎡", tr: "⎤", bl: "⎣", br: "⎦", h: "⎯", v: "⎜"}
@@ -917,9 +924,9 @@ defmodule SwarmCodeCLI.UI.Projector.ApprovalCard do
   defp permission_words(_), do: "needs your permission"
 
   # The asking agent's lane colour, as its panel row draws the name (R11).
-  defp name_role(item, state) do
-    approval = item.approval || %{}
-    agent_id = Map.get(approval, :agent_id) || item.node_id
+  @doc "The role the asking agent's name is drawn in: its lane hue, else `:text_primary`."
+  def name_role(item, state) do
+    agent_id = asker(item) || item.node_id
 
     siblings =
       state
