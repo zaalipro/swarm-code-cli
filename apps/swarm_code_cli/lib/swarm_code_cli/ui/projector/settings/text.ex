@@ -184,6 +184,7 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Text do
         |> String.split(~r/( )/, include_captures: true, trim: true)
         |> Enum.map(&{&1, role})
       end)
+      |> words()
       |> Enum.reduce({[], [], 0}, &place(state, &1, width, &2))
 
     [current | done]
@@ -191,9 +192,28 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Text do
     |> Enum.map(&finish_line/1)
   end
 
-  defp place(_state, {" ", _}, _width, {done, [], 0}), do: {done, [], 0}
+  # The tokens as words: a space alone, or the pieces of one word, which may
+  # span segments (`▰▰▰` then `▱` is one word in two roles).
+  defp words(tokens) do
+    tokens
+    |> Enum.chunk_while(
+      [],
+      fn
+        {" ", _} = space, [] -> {:cont, [space], []}
+        {" ", _} = space, word -> {:cont, Enum.reverse(word), [space]}
+        piece, [{" ", _}] = space -> {:cont, space, [piece]}
+        piece, word -> {:cont, [piece | word]}
+      end,
+      fn
+        [] -> {:cont, []}
+        word -> {:cont, Enum.reverse(word), []}
+      end
+    )
+  end
 
-  defp place(state, {" ", _} = token, width, {done, current, used}) do
+  defp place(_state, [{" ", _}], _width, {done, [], 0}), do: {done, [], 0}
+
+  defp place(state, [{" ", _} = token], width, {done, current, used}) do
     size = text_cells(state, " ")
 
     if used + size <= width,
@@ -201,38 +221,39 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Text do
       else: {[current | done], [], 0}
   end
 
-  defp place(state, {word, role} = token, width, {done, current, used}) do
-    size = text_cells(state, word)
+  defp place(state, pieces, width, {done, current, used}) do
+    size = Enum.reduce(pieces, 0, fn {text, _}, sum -> sum + text_cells(state, text) end)
 
     cond do
       used + size <= width ->
-        {done, [token | current], used + size}
+        {done, Enum.reverse(pieces) ++ current, used + size}
 
       size <= width ->
-        {[current | done], [token], size}
+        {[current | done], Enum.reverse(pieces), size}
 
       true ->
         done = if current == [], do: done, else: [current | done]
-        [{last, last_size} | full] = state |> split_cells(word, width) |> Enum.reverse()
-        full_lines = Enum.map(full, fn {chunk, _} -> [{chunk, role}] end)
-        {full_lines ++ done, [{last, role}], last_size}
+        [last | full] = state |> split_cells(pieces, width) |> Enum.reverse()
+        {Enum.map(full, &elem(&1, 0)) ++ done, elem(last, 0), elem(last, 1)}
     end
   end
 
-  # A word split into chunks of at most `width` cells (at least one grapheme each).
-  defp split_cells(state, word, width) do
-    {chunks, chunk, used} =
-      word
-      |> String.graphemes()
-      |> Enum.reduce({[], "", 0}, fn grapheme, {chunks, chunk, used} ->
+  # A word too wide for a line, split into lines of at most `width` cells
+  # (at least one grapheme each), every grapheme keeping its role. Each
+  # line comes back as `{reversed segments, cells}`.
+  defp split_cells(state, pieces, width) do
+    {lines, line, used} =
+      pieces
+      |> Enum.flat_map(fn {text, role} -> Enum.map(String.graphemes(text), &{&1, role}) end)
+      |> Enum.reduce({[], [], 0}, fn {grapheme, _role} = token, {lines, line, used} ->
         size = text_cells(state, grapheme)
 
-        if used + size > width and chunk != "",
-          do: {[{chunk, used} | chunks], grapheme, size},
-          else: {chunks, chunk <> grapheme, used + size}
+        if used + size > width and line != [],
+          do: {[{line, used} | lines], [token], size},
+          else: {lines, [token | line], used + size}
       end)
 
-    Enum.reverse([{chunk, used} | chunks])
+    Enum.reverse([{line, used} | lines])
   end
 
   defp finish_line(reversed) do
