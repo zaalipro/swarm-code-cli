@@ -71,6 +71,10 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Overview do
 
   @cli_errors [:unreadable, :not_json, :symlink]
 
+  @doc "The word of a settings layer (`project file`, `cli.json`, …); `default` for an unknown one."
+  @spec layer_word(atom()) :: String.t()
+  def layer_word(layer), do: Map.get(@layer_words, layer, "default")
+
   @impl true
   def loads(_ctx), do: [:overview]
 
@@ -626,7 +630,9 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Overview do
             {String.pad_leading(Integer.to_string(length(won)), 3), :text_primary},
             {"  " <> source_words(ctx, layer, won, values), :text_faint}
           ],
-          state: :readonly
+          # a layer that supplies nothing draws faint (pass 75, R21.10)
+          state: if(won == [], do: :disabled, else: :readonly),
+          layer: layer
         }
       end)
 
