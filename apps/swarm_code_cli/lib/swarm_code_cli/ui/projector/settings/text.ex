@@ -170,9 +170,10 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Text do
 
   @doc """
   `segments` word-wrapped to `width` cells with their roles kept across the
-  breaks. Words split on single spaces; a space never starts a line and
-  trailing spaces are dropped; a word wider than a line starts its own line
-  and is split at `width` cells, never cut with `…`.
+  breaks. Words split on single spaces; a space never starts a wrapped
+  line (the first line keeps its leading pad: a right-aligned count, a
+  chip's cell) and trailing spaces are dropped; a word wider than a line
+  starts its own line and is split at `width` cells, never cut with `…`.
   """
   @spec wrap_segments(map(), [segment()], pos_integer()) :: [[segment()]]
   def wrap_segments(state, segments, width) do
@@ -211,7 +212,7 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Text do
     )
   end
 
-  defp place(_state, [{" ", _}], _width, {done, [], 0}), do: {done, [], 0}
+  defp place(_state, [{" ", _}], _width, {[_ | _] = done, [], 0}), do: {done, [], 0}
 
   defp place(state, [{" ", _} = token], width, {done, current, used}) do
     size = text_cells(state, " ")
