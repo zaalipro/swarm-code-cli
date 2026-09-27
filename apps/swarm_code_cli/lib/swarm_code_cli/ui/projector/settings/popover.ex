@@ -89,6 +89,72 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Popover do
 
   @picker_rows 12
 
+  @doc """
+  A popover's rounded frame (pass 75, E) `width` cells wide around `lines`:
+  `╭─ title ───… right ─╮`, `│ line │`, `╰─ bottom ───…─╯`; the frame is
+  `text_faint`, and every cell sits on the `popover` fill. An empty title,
+  right or bottom leaves the rule unbroken there.
+  """
+  @spec frame(
+          map(),
+          [[Text.segment()]],
+          [Text.segment()],
+          [Text.segment()],
+          [Text.segment()],
+          pos_integer()
+        ) ::
+          [[Text.segment()]]
+  def frame(state, lines, title, right, bottom, width) do
+    g = &Glyphs.for_caps(&1, state.capabilities)
+    h = g.(:rule_h)
+    v = g.(:rule_v)
+
+    top = border(state, g.(:corner_tl), title, right, g.(:corner_tr), h, width)
+    foot = border(state, g.(:corner_bl), bottom, [], g.(:corner_br), h, width)
+
+    sides =
+      Enum.map(lines, fn line ->
+        [{v, :text_faint}, {" ", :text_primary}] ++
+          Text.fit(state, line, max(width - 4, 0)) ++ [{" ", :text_primary}, {v, :text_faint}]
+      end)
+
+    Enum.map([top | sides] ++ [foot], &on_popover/1)
+  end
+
+  # `╭─ title ───… right ─╮` (or `╰─ bottom ───…─╯`), the words kept whole
+  # when they fit, the title clipped first when they do not.
+  defp border(state, left_corner, words, right, right_corner, h, width) do
+    lead =
+      if words == [],
+        do: [{left_corner <> h, :text_faint}],
+        else: [{left_corner <> h <> " ", :text_faint}]
+
+    tail =
+      if right == [],
+        do: [{h <> right_corner, :text_faint}],
+        else: [{" ", :text_faint}] ++ right ++ [{" " <> h <> right_corner, :text_faint}]
+
+    room = width - Text.cells(state, lead) - Text.cells(state, tail) - 1
+
+    words =
+      if words == [], do: [], else: Text.clip(state, words, max(room, 0)) ++ [{" ", :text_faint}]
+
+    used = Text.cells(state, lead) + Text.cells(state, words) + Text.cells(state, tail)
+    lead ++ words ++ [{String.duplicate(h, max(width - used, 0)), :text_faint}] ++ tail
+  end
+
+  defp on_popover(line) do
+    Enum.map(line, fn
+      {text, {_role, :on, _background}} = segment when is_binary(text) -> segment
+      {text, {_role, modifiers} = spec} when is_list(modifiers) -> {text, {spec, :on, :popover}}
+      {text, role} -> {text, {role, :on, :popover}}
+    end)
+  end
+
+  @doc "The page and rail behind a popover, every foreground faint (the scrim)."
+  @spec scrim([[Text.segment()]]) :: [[Text.segment()]]
+  def scrim(lines), do: Enum.map(lines, &Text.scrim/1)
+
   @doc "The popover's lines (segments), without its frame."
   @spec lines(map(), term()) :: [[Text.segment()]]
   def lines(state, {:help, %{scroll: scroll}}) do
@@ -204,12 +270,12 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Popover do
             _ -> [lead(row.focused?, bar), {" ", :text_primary} | row.segments]
           end
 
-        if row.focused?, do: Text.select(line), else: line
+        if row.focused?, do: Text.band(line), else: line
       end)
 
     more =
       if hidden > 0,
-        do: [[{"    … #{hidden} more, type to filter", :text_faint}]],
+        do: [[{"    +#{hidden} more · type to filter", :text_faint}]],
         else: []
 
     keys =
@@ -226,10 +292,9 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Popover do
         inner
       )
 
-    rule = Glyphs.get(:rule_h, Glyphs.tier(state.capabilities))
+    tail = if Map.get(popover, :kind) == :picker, do: [], else: [[], footer]
 
-    [Map.get(popover, :query) || [], []] ++
-      heading ++ list ++ more ++ [[], [{String.duplicate(rule, inner), :border}], footer]
+    [Map.get(popover, :query) || [], []] ++ heading ++ list ++ more ++ tail
   end
 
   defp lead(true, bar), do: {bar, :focus}
@@ -272,7 +337,7 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Popover do
               do: "[ #{confirm.letter}  #{words} ]",
               else: "[ #{words} ]"
 
-          role = if Popover.enabled?(confirm), do: :error, else: :text_ghost
+          role = if Popover.enabled?(confirm), do: :error, else: :text_faint
           line = [{label, role}]
 
           [

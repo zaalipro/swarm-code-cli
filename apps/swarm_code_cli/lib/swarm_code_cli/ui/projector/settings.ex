@@ -84,7 +84,7 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
         if(grid.strip_row, do: [Chrome.strip(state, grid, glyphs)], else: [])
 
     head = head ++ List.duplicate([], max(grid.body_top - length(head), 0))
-    {body, anchor} = body(state, grid, caps, current)
+    {body, span} = body(state, grid, caps, current)
 
     lines =
       head ++
@@ -98,9 +98,7 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
 
     lines = Enum.take(lines ++ List.duplicate([], max(grid.rows - length(lines), 0)), grid.rows)
 
-    lines
-    |> editor_popover(state, anchor, grid)
-    |> popover(state, grid)
+    overlay(lines, state, span, grid)
   end
 
   # The body lines (rail ‖ page ‖ note, `grid.body_rows` of them) and the
@@ -145,9 +143,13 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
         Text.fit(state, rail_part ++ page_part ++ note_part, grid.columns)
       end
 
-    anchor = if is_integer(meta.focus_first), do: grid.body_top + meta.focus_first
+    span =
+      if is_integer(meta.focus_first),
+        do:
+          {grid.body_top + meta.focus_first,
+           grid.body_top + (meta[:focus_last] || meta.focus_first)}
 
-    {lines, anchor}
+    {lines, span}
   end
 
   defp spaces(count), do: {String.duplicate(" ", max(count, 0)), :text_primary}
@@ -274,136 +276,112 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
 
   # ---------------------------------------------------------- popover
 
-  defp popover(lines, %{settings: %Layer{popover: nil}}, _grid), do: lines
-
-  defp popover(lines, state, %Grid{columns: width, rows: height}) do
-    box = SettingsPopover.lines(state, state.settings.popover)
-    widest = box |> Enum.map(&Text.cells(state, &1)) |> Enum.max(fn -> 20 end)
-    box_width = min(max(widest + 4, 40), width - 4)
-
-    box_height = min(length(box) + 2, height - 4)
-    top = max(div(height - box_height, 2), 1)
-    left = max(div(width - box_width, 2), 0)
-    h = glyph(state, :rule_h)
-    v = glyph(state, :rule_v)
-    inner = box_width - 2
-
-    framed =
-      [
-        [
-          {glyph(state, :corner_tl) <> String.duplicate(h, inner) <> glyph(state, :corner_tr),
-           :border}
-        ]
-      ] ++
-        Enum.map(Enum.take(box, box_height - 2), fn line ->
-          [{v, :border}, {" ", :popover}] ++ Text.fit(state, line, inner - 1) ++ [{v, :border}]
-        end) ++
-        [
-          [
-            {glyph(state, :corner_bl) <> String.duplicate(h, inner) <> glyph(state, :corner_br),
-             :border}
-          ]
-        ]
-
-    Enum.with_index(lines)
-    |> Enum.map(fn {line, index} ->
-      case Enum.at(framed, index - top) do
-        nil -> line
-        _ when index < top -> line
-        over -> Text.splice(state, line, left, over, width)
-      end
-    end)
-  end
-
-  # ------------------------------------------------- editor popover (F4)
-
-  # QA #2 P0-1: an open editor whose display carries a popover (the model
-  # picker) floats it under its row, as F4 draws it: the title and the counts
-  # in the top border, the filter, the list, the keys and `N of M` inside.
-  # Nothing drew it: the footer changed and the list was never seen.
-  defp editor_popover(
-         lines,
-         %{settings: %Layer{mode: :editing, editing: %{module: module} = editing}} = state,
-         anchor,
-         %Grid{columns: width, rows: height} = grid
-       ) do
-    page_left = grid.page.left - 2
-
-    case module.display(editing.state, Nav.ctx(state)) do
-      %{popover: %{kind: :picker} = popover} ->
-        float(lines, state, popover, anchor, page_left, width, height)
-
-      _ ->
+  # Pass 75 (E, R26.3): a popover is a rounded `text_faint` box on the
+  # `popover` fill over the scrimmed body; the anchor row (the focused item)
+  # keeps its colours. The keys sheet, a confirmation and the pending
+  # question are centred; a picker (an enum's, or the model picker an
+  # editor floats) hangs under its row from the page's spine column.
+  defp overlay(lines, state, span, %Grid{} = grid) do
+    case box(state, span, grid) do
+      nil ->
         lines
+
+      {framed, top, left} ->
+        {first, last} = span || {nil, nil}
+        body = grid.body_top..(grid.body_top + grid.body_rows - 1)//1
+
+        lines
+        |> Enum.with_index()
+        |> Enum.map(fn {line, index} ->
+          anchor? = is_integer(first) and index >= first and index <= last
+          line = if index in body and not anchor?, do: Text.scrim(line), else: line
+
+          case index >= top and Enum.at(framed, index - top) do
+            over when is_list(over) -> Text.splice(state, line, left, over, grid.columns)
+            _ -> line
+          end
+        end)
     end
   end
 
-  defp editor_popover(lines, _state, _anchor, _grid), do: lines
-
-  defp float(lines, state, popover, anchor, page_left, width, height) do
-    left = min(page_left + 2, max(width - 44, 0))
-    box_width = max(min(width - left - 2, 121), min(40, width - left))
-    inner = box_width - 2
-    # the header's three lines above, the status and the footer below
-    room = max(height - 5, 6)
-    body = SettingsPopover.editor_lines(state, popover, inner - 1, room - 2)
-    box_height = length(body) + 2
-
-    top =
-      cond do
-        is_integer(anchor) and anchor + 1 + box_height <= height - 2 -> anchor + 1
-        true -> max(height - 2 - box_height, 1)
-      end
-
-    h = glyph(state, :rule_h)
-    v = glyph(state, :rule_v)
-
-    framed =
-      [top_border(state, popover, box_width)] ++
-        Enum.map(body, fn line ->
-          [{v, :border}, {" ", :popover}] ++ Text.fit(state, line, inner - 1) ++ [{v, :border}]
-        end) ++
-        [
-          [
-            {glyph(state, :corner_bl) <> String.duplicate(h, inner) <> glyph(state, :corner_br),
-             :border}
-          ]
-        ]
-
-    Enum.with_index(lines)
-    |> Enum.map(fn {line, index} ->
-      case Enum.at(framed, index - top) do
-        nil -> line
-        _ when index < top -> line
-        over -> Text.splice(state, line, left, over, width)
-      end
-    end)
+  # The framed box and where it goes, or nil when no popover is open.
+  defp box(%{settings: %Layer{popover: {kind, _} = popover}} = state, span, %Grid{} = grid)
+       when kind in [:picker, :project_picker] do
+    content = SettingsPopover.lines(state, popover)
+    width = min(max(widest(state, content) + 4, 40), grid.page.width)
+    height = min(length(content) + 2, grid.body_rows)
+    framed = SettingsPopover.frame(state, Enum.take(content, height - 2), [], [], [], width)
+    {framed, under(span, height, grid), grid.page.left}
   end
 
-  # `┌─ Chat model · new conversations ───── 4 providers · 23 models ─┐`
-  defp top_border(state, popover, box_width) do
-    h = glyph(state, :rule_h)
-
-    right = [
-      {" " <> to_string(Map.get(popover, :meta) || "") <> " ", :text_faint},
-      {h <> glyph(state, :corner_tr), :border}
-    ]
-
-    title =
-      [{to_string(Map.get(popover, :title) || ""), {:text_primary, [:bold]}}] ++
-        case Map.get(popover, :subtitle) do
-          nil -> []
-          sub -> [{" · " <> to_string(sub), :text_faint}]
-        end
-
-    lead = [{glyph(state, :corner_tl) <> h <> " ", :border}]
-    title = Text.clip(state, title, max(box_width - Text.cells(state, right) - 5, 1))
-    used = Text.cells(state, lead) + Text.cells(state, title) + Text.cells(state, right)
-    fill = [{" " <> String.duplicate(h, max(box_width - used - 1, 0)), :border}]
-    lead ++ title ++ fill ++ right
+  defp box(%{settings: %Layer{popover: {_, _} = popover}} = state, _span, %Grid{} = grid) do
+    content = SettingsPopover.lines(state, popover)
+    width = min(max(widest(state, content) + 4, 40), grid.columns - 4)
+    height = min(length(content) + 2, grid.rows - 4)
+    framed = SettingsPopover.frame(state, Enum.take(content, height - 2), [], [], [], width)
+    {framed, max(div(grid.rows - height, 2), 1), max(div(grid.columns - width, 2), 0)}
   end
 
-  # ---------------------------------------------------------- helpers
+  # QA #2 P0-1: an open editor whose display carries a popover (the model
+  # picker, F4) floats it under its row: the title and the counts in the top
+  # border, the filter, the column names and the window of models inside.
+  defp box(
+         %{settings: %Layer{mode: :editing, editing: %{module: module} = editing}} = state,
+         span,
+         %Grid{} = grid
+       ) do
+    case module.display(editing.state, Nav.ctx(state)) do
+      %{popover: %{kind: :picker} = popover} ->
+        left = min(grid.page.left, max(grid.columns - 44, 0))
+        width = max(min(grid.columns - left - 2, 121), min(40, grid.columns - left))
+        # the header's lines above, the status and the message below
+        room = max(grid.rows - 5, 6)
+        content = SettingsPopover.editor_lines(state, popover, width - 4, room - 2)
+        height = length(content) + 2
 
-  defp glyph(state, id), do: Glyphs.for_caps(id, state.capabilities)
+        framed =
+          SettingsPopover.frame(
+            state,
+            content,
+            picker_title(popover),
+            picker_meta(popover),
+            [],
+            width
+          )
+
+        {framed, under(span, height, grid), left}
+
+      _ ->
+        nil
+    end
+  end
+
+  defp box(_state, _span, _grid), do: nil
+
+  # The first screen row of a box `height` lines tall under the anchor row,
+  # or as low as it fits above the message row.
+  defp under({_first, last}, height, %Grid{} = grid) when last + 1 + height <= grid.rows - 2,
+    do: last + 1
+
+  defp under(_span, height, %Grid{} = grid), do: max(grid.rows - 2 - height, 1)
+
+  defp widest(state, lines),
+    do: lines |> Enum.map(&Text.cells(state, &1)) |> Enum.max(fn -> 20 end)
+
+  # `Chat model · new conversations` (the subtitle faint) and the counts.
+  defp picker_title(popover) do
+    [{to_string(Map.get(popover, :title) || ""), {:text_primary, [:bold]}}] ++
+      case Map.get(popover, :subtitle) do
+        nil -> []
+        sub -> [{" · " <> to_string(sub), :text_faint}]
+      end
+  end
+
+  defp picker_meta(popover) do
+    case Map.get(popover, :meta) do
+      nil -> []
+      "" -> []
+      meta -> [{to_string(meta), :text_faint}]
+    end
+  end
 end

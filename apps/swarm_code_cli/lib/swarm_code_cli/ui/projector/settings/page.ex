@@ -272,10 +272,15 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Page do
   with the focus on the page and no popover open.
   """
   @spec drawer?(map(), Grid.t()) :: boolean()
-  def drawer?(%{settings: %Layer{region: :page, popover: nil}}, %Grid{drawer_lines: lines}),
-    do: lines > 0
+  def drawer?(%{settings: %Layer{region: :page} = layer}, %Grid{drawer_lines: lines}),
+    do: lines > 0 and not popover?(layer)
 
   def drawer?(_state, _grid), do: false
+
+  # A popover is open: the layer's own, or the model picker an editor floats.
+  defp popover?(%Layer{popover: {_, _}}), do: true
+  defp popover?(%Layer{mode: :editing, editing: %{module: ModelPicker}}), do: true
+  defp popover?(_layer), do: false
 
   # The spine cell of one line of a row.
   defp spine(state, row, group, at, count, focus?, opts) do
@@ -726,7 +731,7 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Page do
 
   defp row_items(state, rows, current, on_page?, grid) do
     tables = tables(state, rows, grid.page.width - 3)
-    band? = state.settings.popover == nil
+    band? = not popover?(state.settings)
     index_of = rows |> Enum.with_index() |> Map.new(fn {row, i} -> {row.id, i} end)
 
     rows
