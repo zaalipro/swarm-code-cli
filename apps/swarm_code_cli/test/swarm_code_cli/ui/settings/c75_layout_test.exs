@@ -175,6 +175,29 @@ defmodule SwarmCodeCLI.UI.Settings.C75LayoutTest do
     refute first =~ "writes t"
   end
 
+  test "a focused row whose tag names its Enter key draws no second hint (R22.8, 407)" do
+    state = open(:models_effort, {160, 45})
+    grid = Grid.for(160, 45)
+
+    row = %Row{
+      id: "fld:mcp:m1:env",
+      kind: :field,
+      label: "Environment",
+      value: [{"none", :text_faint}],
+      tag: [{"Enter", :key}, {" edit", :text_faint}],
+      keys: [{"Enter", :open_row, "edit"}]
+    }
+
+    [group] = Page.groups([row])
+
+    [first | _] =
+      for line <- Page.row_lines(state, row, group, grid, focus?: true),
+          do: Enum.map_join(line, &elem(&1, 0))
+
+    assert first =~ "Enter edit"
+    refute first =~ ~r/Enter edit\s+Enter edit/
+  end
+
   test "with the focus on the rail the band and `▌` move there (D9)" do
     state = open(:models_effort, {160, 45})
     {state, _} = verb(state, :previous_region)

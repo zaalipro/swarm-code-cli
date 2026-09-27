@@ -771,8 +771,15 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Page do
   defp hint_room(state, row, true, value, tag, grid) do
     hint = if editing(state.settings, row), do: [], else: hint(row)
 
+    # a tag that already names the key (`Enter edit`) is the hint (407)
+    said? =
+      case hint do
+        [{key, _} | _] -> Enum.any?(tag, fn {text, _} -> text == key end)
+        [] -> false
+      end
+
     fits? =
-      hint != [] and
+      hint != [] and not said? and
         Text.cells(state, value) + 3 + Text.cells(state, hint) + 3 + Text.cells(state, tag) <=
           grid.page.width - grid.value_offset
 
