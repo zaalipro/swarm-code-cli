@@ -108,16 +108,25 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
   defp body(state, %Grid{} = grid, caps, current) do
     glyphs = &Glyphs.for_caps(&1, caps)
 
+    detail? = state.settings.detail_open and current != nil
+
     meta =
-      if sections_page?(state, grid),
-        do: %{
-          lines: sections_page_lines(state, grid.page.width, grid.body_rows, glyphs),
-          focus_first: nil
-        },
-        else: SettingsPage.build(state, grid, caps)
+      cond do
+        sections_page?(state, grid) ->
+          %{
+            lines: sections_page_lines(state, grid.page.width, grid.body_rows, glyphs),
+            focus_first: nil
+          }
+
+        detail? ->
+          Note.detail_page(state, current, grid)
+
+        true ->
+          SettingsPage.build(state, grid, caps)
+      end
 
     rail = if grid.rail, do: rail_lines(state, grid.rail.width, glyphs), else: nil
-    note = if grid.note, do: Note.column(state, current, meta, grid), else: nil
+    note = if grid.note && not detail?, do: Note.column(state, current, meta, grid), else: nil
 
     lines =
       for index <- 0..(grid.body_rows - 1) do

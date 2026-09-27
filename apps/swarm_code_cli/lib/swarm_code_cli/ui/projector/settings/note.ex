@@ -129,6 +129,7 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Note do
   defp plain(lines), do: Enum.map(lines, &{&1, nil})
 
   defp title(state, title, scope, width) do
+    title = SwarmCodeCLI.UI.Projector.Settings.Page.strip_suffix(title, scope)
     scope = if scope in [nil, ""], do: [], else: [{" · " <> scope, :text_muted}]
     wrap(state, [{title, {:text_primary, [:bold]}} | scope], width)
   end
@@ -167,7 +168,18 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Note do
   def ladder(state, %Row{detail: %Detail{layers: layers}}, :column),
     do: state |> ladder_spined(layers, 40) |> Enum.map(&elem(&1, 0))
 
-  def ladder(state, %Row{detail: %Detail{layers: layers}}, :inline) do
+  def ladder(state, %Row{} = row, :inline) do
+    state
+    |> ladder_cells(row)
+    |> Enum.intersperse([{"   ", :text_primary}])
+    |> Enum.concat()
+  end
+
+  def ladder(_state, _row, :column), do: []
+
+  # The inline ladder's cells, strongest first: `▎word value` in the layer's
+  # hue, ` ✓` after the winner (the twin: the winner's word bold, ` v`).
+  defp ladder_cells(state, %Row{detail: %Detail{layers: layers}}) do
     caps = state.capabilities
     twin? = Glyphs.twin?(caps)
 
@@ -185,12 +197,9 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Note do
         do: cell ++ [{" " <> ok(caps), :success}],
         else: cell
     end)
-    |> Enum.intersperse([{"   ", :text_primary}])
-    |> Enum.concat()
   end
 
-  def ladder(_state, _row, :column), do: []
-  def ladder(_state, _row, :inline), do: []
+  defp ladder_cells(_state, _row), do: []
 
   defp ladder_spined(_state, [], _width), do: []
 
@@ -289,6 +298,146 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Note do
     |> Enum.reject(&(&1 == []))
     |> Enum.intersperse([{[], nil}])
     |> Enum.concat()
+  end
+
+  # ----------------------------------------------------------- drawer
+
+  @doc """
+  The drawer under 160 columns (R24.5, R24.6): the note in 3 lines at
+  120-159 and 90-119 columns (`╰─ ` + the description; the ladder inline with
+  the key line right; the keys with `i the whole detail` right), in 2 at
+  80-89 (`╰─ ` + the key line + the ladder; the keys). Lines are the page's
+  width less the spine cell, which the page draws; nothing is cut with `…`:
+  what does not fit is left out whole.
+  """
+  @spec drawer(map(), Row.t(), Grid.t()) :: [segments()]
+  def drawer(state, %Row{} = row, %Grid{drawer_lines: lines} = grid) when lines in [2, 3] do
+    caps = state.capabilities
+    detail = row.detail || %Detail{title: row.label}
+    width = grid.page.width - 1
+    hook = {hook(caps) <> " ", :text_faint}
+    key_line = if detail.key_line, do: [{detail.key_line, :text_faint}], else: []
+    cells = ladder_cells(state, row)
+    indent = {"  ", :text_primary}
+
+    keys =
+      keys_line(
+        state,
+        indent,
+        Enum.reject(keys_of(row, detail), &(elem(&1, 0) == "i")),
+        width
+      )
+
+    case lines do
+      3 ->
+        description =
+          case wrap(state, [{detail.description || "", :text_muted}], max(width - 4, 1)) do
+            [first | _] -> first
+            [] -> []
+          end
+
+        [
+          Text.fit(state, [hook | description], width),
+          fill_right(state, [indent], cells, key_line, width),
+          keys
+        ]
+
+      2 ->
+        lead = [hook | key_line] ++ if(key_line == [], do: [], else: [{" ", :text_primary}])
+
+        [
+          fill_right(state, lead, cells, [], width),
+          keys
+        ]
+    end
+  end
+
+  def drawer(_state, _row, _grid), do: []
+
+  # `lead`, then as many whole `cells` (three apart) as fit before `right`
+  # (right-aligned one cell inside the edge); `right` gives way when not even
+  # the first cell fits beside it.
+  defp fill_right(state, lead, cells, right, width) do
+    right_part = if right == [], do: [], else: right ++ [{" ", :text_primary}]
+    room = width - Text.cells(state, lead) - Text.cells(state, right_part) - 1
+
+    case take_cells(state, cells, room) do
+      [] when right != [] and cells != [] ->
+        fill_right(state, lead, cells, [], width)
+
+      kept ->
+        Text.spread(state, lead ++ kept, right_part, width)
+    end
+  end
+
+  defp take_cells(state, cells, room) do
+    cells
+    |> Enum.reduce_while({[], 0}, fn cell, {acc, used} ->
+      gap = if acc == [], do: 0, else: 3
+      size = Text.cells(state, cell)
+
+      if used + gap + size <= room,
+        do: {:cont, {[cell | acc], used + gap + size}},
+        else: {:halt, {acc, used}}
+    end)
+    |> elem(0)
+    |> Enum.reverse()
+    |> Enum.intersperse([{"   ", :text_primary}])
+    |> Enum.concat()
+  end
+
+  # The drawer's last line: the keys that fit, `i the whole detail` right.
+  defp keys_line(state, indent, keys, width) do
+    more = [{"i", :key}, {" the whole detail", :text_faint}, {" ", :text_primary}]
+    chunks = Enum.map(keys, fn {key, words} -> [{key, :key}, {" " <> words, :text_faint}] end)
+    room = width - Text.cells(state, [indent]) - Text.cells(state, more) - 3
+    Text.spread(state, [indent | take_cells(state, chunks, room)], more, width)
+  end
+
+  defp hook(caps), do: if(Glyphs.twin?(caps), do: "+-", else: Glyphs.for_caps(:hook, caps))
+
+  # ------------------------------------------------------ detail page
+
+  @doc """
+  The whole note as the page (R24.7), while `layer.detail_open`: one group
+  titled with the row's label whose lines are the note's body at the page's
+  width less four, on a spine `╭ │ ╰`, never banded. Answers the page's
+  metadata with no focus line.
+  """
+  @spec detail_page(map(), Row.t(), Grid.t()) :: map()
+  def detail_page(state, %Row{} = row, %Grid{} = grid) do
+    caps = state.capabilities
+    twin? = Glyphs.twin?(caps)
+    title = %{title: [{row.label, :text_muted}], tag: []}
+    title_line = SwarmCodeCLI.UI.Projector.Settings.Page.title_line(state, title, grid)
+    body = body(state, row, max(grid.page.width - 4, 1))
+    last = length(body) - 1
+
+    lines =
+      body
+      |> Enum.with_index()
+      |> Enum.map(fn {line, at} ->
+        spine =
+          cond do
+            twin? -> {" ", :text_primary}
+            at == last -> {Glyphs.for_caps(:spine_end, caps), :text_faint}
+            true -> {Glyphs.for_caps(:spine, caps), :text_faint}
+          end
+
+        Text.fit(state, [spine, {"  ", :text_primary} | line], grid.page.width)
+      end)
+
+    shown = Enum.take([title_line | lines], grid.body_rows)
+    blank = List.duplicate([], grid.body_rows - length(shown))
+
+    %{
+      lines: Enum.map(shown ++ blank, &Text.fit(state, &1, grid.page.width)),
+      focus_first: nil,
+      focus_last: nil,
+      group_top: nil,
+      above: 0,
+      below: max(length(lines) + 1 - grid.body_rows, 0)
+    }
   end
 
   defp enum_editor(%Layer{mode: :editing, editing: %{module: Editors.Enum, row_id: id} = e}, %Row{

@@ -50,7 +50,7 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Chrome do
 
     words =
       cond do
-        Layer.depth(layer) > 1 -> " back"
+        Layer.depth(layer) > 1 or layer.detail_open -> " back"
         grid.class == :small and layer.region != :rail -> " sections"
         true -> " back to chat"
       end

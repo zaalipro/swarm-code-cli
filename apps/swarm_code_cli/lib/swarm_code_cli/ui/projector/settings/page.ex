@@ -9,7 +9,7 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Page do
   cells wide.
   """
 
-  alias SwarmCodeCLI.UI.Projector.Settings.Text
+  alias SwarmCodeCLI.UI.Projector.Settings.{Note, Text}
   alias SwarmCodeCLI.UI.Reducer.Settings.Paste, as: PasteTarget
   alias SwarmCodeCLI.UI.Settings.{Editors, Glyphs, Grid, Layer, ModelPicker, Nav, Row, Strata}
 
@@ -244,16 +244,38 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Page do
     focus? = Keyword.get(opts, :focus?, false)
     row = hoist(row, state.capabilities)
     content = content(state, row, group, grid, focus?, Keyword.get(opts, :tables, %{}))
-    count = length(content)
+    drawer = if focus? and drawer?(state, grid), do: Note.drawer(state, row, grid), else: []
+    count = length(content) + length(drawer)
 
-    content
-    |> Enum.with_index()
-    |> Enum.map(fn {line, at} ->
-      spine = spine(state, row, group, at, count, focus?, opts)
-      line = Text.fit(state, [spine | line], grid.page.width)
-      if focus? and Keyword.get(opts, :band?, true), do: Text.band(line), else: line
-    end)
+    main =
+      content
+      |> Enum.with_index()
+      |> Enum.map(fn {line, at} ->
+        spine = spine(state, row, group, at, count, focus?, opts)
+        line = Text.fit(state, [spine | line], grid.page.width)
+        if focus? and Keyword.get(opts, :band?, true), do: Text.band(line), else: line
+      end)
+
+    drawn =
+      drawer
+      |> Enum.with_index(length(content))
+      |> Enum.map(fn {line, at} ->
+        spine = spine(state, row, group, at, count, false, opts)
+        Text.fit(state, [spine | line], grid.page.width)
+      end)
+
+    main ++ drawn
   end
+
+  @doc """
+  Whether the focused row carries the drawer (R24.5): under 160 columns,
+  with the focus on the page and no popover open.
+  """
+  @spec drawer?(map(), Grid.t()) :: boolean()
+  def drawer?(%{settings: %Layer{region: :page, popover: nil}}, %Grid{drawer_lines: lines}),
+    do: lines > 0
+
+  def drawer?(_state, _grid), do: false
 
   # The spine cell of one line of a row.
   defp spine(state, row, group, at, count, focus?, opts) do
@@ -664,7 +686,9 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Page do
             focus?: focus?,
             current?: current?,
             focusable?: Row.focusable?(row),
-            height: height(state, row, group, grid, tables),
+            height:
+              height(state, row, group, grid, tables) +
+                if(focus? and drawer?(state, grid), do: grid.drawer_lines, else: 0),
             group: g,
             build: fn -> row_lines(state, row, group, grid, opts) end
           }
