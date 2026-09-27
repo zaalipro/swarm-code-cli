@@ -205,7 +205,7 @@ defmodule SwarmCodeCLI.UI.Question do
     step = min(interview.step, last)
 
     cond do
-      ask.total == 1 -> "send to the " <> name
+      ask.total == 1 -> "send to " <> the(name)
       step < last -> "next: " <> header(Enum.at(ask.rows, step + 1))
       last == 0 -> "send 1 answer"
       true -> "send " <> Integer.to_string(last + 1) <> " answers"
@@ -215,16 +215,17 @@ defmodule SwarmCodeCLI.UI.Question do
   @doc "The note's bottom-left words and their role."
   @spec deadline_words(ask(), integer(), binary()) :: {binary(), :text_faint | :warning}
   def deadline_words(%{deadline: 0, legacy?: true}, _now_ms, name),
-    do: {"Esc later: the " <> name <> " keeps waiting", :text_faint}
+    do: {"Esc later: " <> the(name) <> " keeps waiting", :text_faint}
 
   def deadline_words(%{deadline: 0}, _now_ms, name),
-    do: {"Esc later: the " <> name <> " waits until you answer or stop", :text_faint}
+    do: {"Esc later: " <> the(name) <> " waits until you answer or stop", :text_faint}
 
   def deadline_words(%{deadline: deadline}, now_ms, name) do
     left = deadline - now_ms
     minutes = max(div(left, 60_000), 0)
 
-    {"Esc later: the " <> name <> " keeps waiting, " <> Integer.to_string(minutes) <> " min left",
+    {"Esc later: " <>
+       the(name) <> " keeps waiting, " <> Integer.to_string(minutes) <> " min left",
      if(left < 300_000, do: :warning, else: :text_faint)}
   end
 
@@ -233,13 +234,22 @@ defmodule SwarmCodeCLI.UI.Question do
   def vanish_notice(%{deadline: deadline}, now_ms, name)
       when deadline > 0 and now_ms >= deadline,
       do:
-        "The " <>
-          name <>
+        capital(the(name)) <>
           " stopped waiting: no answer after " <>
           Integer.to_string(div(@timeout_ms, 60_000)) <> " min"
 
   def vanish_notice(_ask, _now_ms, name),
-    do: "The " <> name <> " is no longer waiting for your answers"
+    do: capital(the(name)) <> " is no longer waiting for your answers"
+
+  # "the Lead"; the default speakers already carry their article ("The
+  # assistant", "An agent", `ApprovalCard.who/2`), so they read "the
+  # assistant" and "an agent", never "the The assistant".
+  defp the("The " <> rest), do: "the " <> rest
+  defp the("An " <> rest), do: "an " <> rest
+  defp the("A " <> rest), do: "a " <> rest
+  defp the(name), do: "the " <> name
+
+  defp capital(<<first::utf8, rest::binary>>), do: String.upcase(<<first::utf8>>) <> rest
 
   def other_text(state, item),
     do:

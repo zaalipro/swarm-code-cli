@@ -218,7 +218,9 @@ defmodule SwarmCodeCLI.UI.DialogChromeTest do
         refute full =~ "Cancel"
         refute "cancel" in SwarmCodeCLI.UI.Reducer.focus_graph(state)
         assert full =~ "1-3 pick"
-        assert full =~ "Enter send to "
+        # The default speaker keeps one article: "the assistant".
+        assert full =~ "Enter send to the assistant"
+        refute full =~ "the The"
 
         assert_status_bar_when_visible(plan, scene)
       end
@@ -251,7 +253,7 @@ defmodule SwarmCodeCLI.UI.DialogChromeTest do
         bottom_row = row(plan, bottom, rect.x, rect.width)
         assert top_row =~ "The assistant asks you"
         assert top_row =~ "chat · Streaming conversation"
-        assert bottom_row =~ "Esc later: the "
+        assert bottom_row =~ "Esc later: the assistant keeps waiting"
         assert bottom_row =~ "^N reopens"
       end
     end
