@@ -660,12 +660,12 @@ defmodule SwarmCodeCLI.UI.Settings.IntegrationRows do
   def paste_state(_ctx, _row_id), do: :none
 
   @glyphs %{
-    running: {"◷", "~"},
+    running: {"◐", "~"},
     ok: {"✓", "v"},
     error: {"✗", "x"},
     attention: {"!", "!"},
     changed: {"•", "*"},
-    action: {"▸", ">"},
+    action: {"▸", "+"},
     dot: {"·", "-"},
     new: {"+", "+"},
     gone: {"−", "-"},
