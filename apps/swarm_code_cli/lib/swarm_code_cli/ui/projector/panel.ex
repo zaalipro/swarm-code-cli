@@ -197,21 +197,18 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
     pairs = Enum.map(runs, &{&1, Map.get(ctx.views, &1.id, [])})
     headers = run_header_full(ctx, chat) ++ Enum.map(others, &launched_row(ctx, &1))
 
-    band =
-      case band_rows(ctx) do
-        [] -> []
-        band -> band ++ [blank(ctx)]
-      end
-
+    band = band_rows(ctx)
     agents = agent_rows(ctx, pairs)
     tail = tail_rows(ctx, true)
 
+    # One blank row between the blocks that are drawn (air, not rules).
     for level <- [:full, :summary, :bare] do
       fn ->
-        headers ++
-          [blank(ctx)] ++
-          band ++
-          Enum.flat_map(runs, &found_rows(ctx, &1, level)) ++ [blank(ctx)] ++ agents ++ tail
+        [headers, band, Enum.flat_map(runs, &found_rows(ctx, &1, level)), agents]
+        |> Enum.reject(&(&1 == []))
+        |> Enum.intersperse([blank(ctx)])
+        |> Enum.concat()
+        |> Kernel.++(tail)
       end
     end
   end
@@ -914,37 +911,7 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
 
   # --------------------------------------------------- earlier and legend
 
-  defp earlier_rows(ctx) do
-    state = ctx.state
-
-    state
-    |> Model.earlier(2)
-    |> Enum.map(fn run ->
-      clock = run |> Model.elapsed(state) |> Model.clock()
-      {mark, role} = done_mark(ctx, run)
-
-      row(
-        ctx,
-        [
-          {" ", :plain},
-          {Draw.mark(Model.kind(run), state), :text_muted},
-          {" ", :plain},
-          {Model.title(run), :text_primary}
-        ],
-        [{mark, role}, {" " <> (clock || ""), :text_muted}]
-      )
-      |> target({:run, run.id})
-    end)
-    |> case do
-      [] -> []
-      rows -> [blank(ctx) | rows]
-    end
-  end
-
-  @doc false
-  def done_mark(ctx, %{state: :done}), do: {g(ctx, :done), :success}
-  def done_mark(ctx, %{state: :failed}), do: {g(ctx, :failed), :error}
-  def done_mark(ctx, _run), do: {g(ctx, :stopped), :text_muted}
+  defp earlier_rows(ctx), do: Shapes.earlier(ctx)
 
   # pass 75 V2 (7.6): the keys row, no rule above it.
   defp footer_rows(ctx) do

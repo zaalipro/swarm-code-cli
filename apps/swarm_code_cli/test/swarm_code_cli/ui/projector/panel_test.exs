@@ -367,6 +367,38 @@ defmodule SwarmCodeCLI.UI.Projector.PanelTest do
     assert text =~ ~r/^ ⧉ ship retry +04:12 *$/m
   end
 
+  # pass 75 (7.5): the chat's earlier runs are one worded row, no `×` rows.
+  test "earlier runs are one worded row: finished, stopped or runs, one run singular" do
+    st = state(:panel_chat, 160, 45)
+    rows = st |> panel_text() |> Enum.map(&String.trim_trailing/1)
+    assert " earlier  2 finished runs in this chat Ctrl-R" in rows
+    refute Enum.any?(rows, &(&1 =~ "×"))
+    refute Enum.any?(rows, &(&1 =~ "architecture review"))
+
+    runs = st.read_model.runs
+    [first, second] = runs |> Map.values() |> Enum.filter(&(&1.state == :done))
+
+    with_states = fn states ->
+      model = st.read_model
+
+      runs =
+        Enum.zip([first, second], states)
+        |> Enum.reduce(runs, fn {run, s}, acc -> Map.put(acc, run.id, %{run | state: s}) end)
+
+      %{st | read_model: %{model | runs: runs}} |> panel_text() |> Enum.join("\n")
+    end
+
+    assert with_states.([:stopped, :failed]) =~ " earlier  2 stopped runs in this chat"
+    assert with_states.([:done, :failed]) =~ " earlier  2 runs in this chat"
+
+    one = %{st | read_model: %{st.read_model | runs: Map.delete(runs, first.id)}}
+    assert one |> panel_text() |> Enum.join("\n") =~ " earlier  1 finished run in this chat"
+
+    # With no earlier run there is no row.
+    none = %{st | read_model: %{st.read_model | runs: Map.drop(runs, [first.id, second.id])}}
+    refute none |> panel_text() |> Enum.join("\n") =~ "earlier"
+  end
+
   test "heavy compact fits 160x45 and 120x36 and keeps every run" do
     for {c, r} <- [{160, 45}, {120, 36}] do
       text = :panel_heavy |> state(c, r, panel: :compact) |> panel_text() |> Enum.join("\n")

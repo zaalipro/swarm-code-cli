@@ -751,34 +751,31 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Shapes do
 
   # ------------------------------------------------------------ earlier
 
-  @doc "`earlier in this chat` (the chat frame): finished runs, newest first."
+  @doc """
+  pass 75 (7.5): the chat's earlier runs on one worded row, `earlier  3
+  stopped runs in this chat  Ctrl-R`; none when every run is shown. Not a
+  target: `Ctrl-R` opens them.
+  """
   def earlier(ctx) do
-    state = ctx.state
-
-    case Model.earlier(state, 3) do
-      [] ->
+    case Model.earlier(ctx.state, :counts) do
+      %{count: 0} ->
         []
 
-      runs ->
-        rows =
-          Enum.map(runs, fn run ->
-            {mark, role} = Panel.done_mark(ctx, run)
-            clock = run |> Model.elapsed(state) |> Model.clock()
+      %{count: n, stopped: stopped, finished: finished} ->
+        word =
+          cond do
+            finished == n -> Panel.count(n, "finished run", "finished runs")
+            stopped == n -> Panel.count(n, "stopped run", "stopped runs")
+            true -> Panel.count(n, "run", "runs")
+          end
 
-            Panel.row(
-              ctx,
-              [
-                {"  " <> mark, role},
-                {" ", :plain},
-                {Draw.mark(Model.kind(run), state), Model.kind_role(run)},
-                {" " <> Model.title(run), :text_muted}
-              ],
-              [{clock || "", :text_faint}]
-            )
-            |> then(fn {b, _t, o} -> {b, {:run, run.id}, o} end)
-          end)
-
-        [Panel.blank(ctx), Panel.row(ctx, [{"earlier in this chat", :text_muted}]) | rows]
+        [
+          Panel.row(
+            ctx,
+            [{"earlier", :text_muted}, {"  #{word} in this chat", :text_faint}],
+            [{"Ctrl-R", :text_muted, [:bold]}]
+          )
+        ]
     end
   end
 
