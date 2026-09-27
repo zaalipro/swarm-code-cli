@@ -3,6 +3,7 @@ defmodule SwarmCode.Domain.Tools.SpawnAgent do
   @behaviour SwarmCode.Domain.Tools.Tool
 
   alias SwarmCode.Domain.{Agents, Engine.RunServer}
+  alias SwarmCode.Domain.Tools.AgentTitle
 
   @impl true
   def name, do: "spawn_agent"
@@ -43,6 +44,12 @@ defmodule SwarmCode.Domain.Tools.SpawnAgent do
       "type" => "object",
       "properties" => %{
         "name" => %{"type" => "string", "description" => "short agent name, max 24 chars"},
+        # pass75 (CLI): the display name the side panel shows instead of name.
+        "title" => %{
+          "type" => "string",
+          "description" =>
+            "a display name in sentence case, 1-3 words, e.g. \"Build check\"; the panel shows it instead of name"
+        },
         "task" => %{
           "type" => "string",
           "description" => "precise task, files it owns, expected output"
@@ -116,7 +123,9 @@ defmodule SwarmCode.Domain.Tools.SpawnAgent do
         model_override: args["model"],
         effort_override: args["effort"],
         # spec 72 C5: structured output schema for sub-agents.
-        output_schema: args["output_schema"]
+        output_schema: args["output_schema"],
+        # pass75 (CLI): the Lead's display name for the agent.
+        title: AgentTitle.clean(args["title"], name)
       }
 
       case RunServer.start_agent(ctx.run_id, attrs) do
