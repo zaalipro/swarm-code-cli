@@ -116,7 +116,11 @@ defmodule SwarmCodeCLI.Plain.Presenter do
           ])
         ] ++
           Enum.map(Enum.with_index(options, 1), fn {option, index} ->
-            record([Integer.to_string(index), ". ", option.id, " ", option.label])
+            # pass75: the description is its own field; appended when set.
+            record(
+              [Integer.to_string(index), ". ", option.id, " ", option.label] ++
+                if(option.description != "", do: [" — ", option.description], else: [])
+            )
           end) ++
           [
             record([

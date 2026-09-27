@@ -13,7 +13,14 @@ defmodule SwarmCode.Daemon.Service.QuestionProjection do
 
   def index(node, revision, id), do: Enum.find(0..3, &(id(node, revision, &1) == id))
 
-  def rows(base, questions) do
+  @doc """
+  One wire row per unanswered question of an ask. pass75: each question map
+  carries its index, header and the asked total, and `meta` names the asker
+  and when it asked (unix ms); an option's description is its own field.
+  """
+  def rows(base, questions), do: rows(base, questions, %{agent_id: nil, requested_at: nil})
+
+  def rows(base, questions, meta) do
     questions
     |> Enum.take(4)
     |> Enum.with_index()
@@ -26,12 +33,11 @@ defmodule SwarmCode.Daemon.Service.QuestionProjection do
         |> Enum.take(12)
         |> Enum.with_index()
         |> Enum.map(fn {o, i} ->
-          label = o[:label] || ""
-
-          label =
-            if o[:description] in [nil, ""], do: label, else: label <> " — " <> o.description
-
-          %{"id" => question_id <> ":" <> Integer.to_string(i), "label" => label}
+          %{
+            "id" => question_id <> ":" <> Integer.to_string(i),
+            "label" => o[:label] || "",
+            "description" => o[:description] || ""
+          }
         end)
 
       Map.merge(base, %{
@@ -41,7 +47,12 @@ defmodule SwarmCode.Daemon.Service.QuestionProjection do
         "question" => %{
           "prompt" => q[:question] || "",
           "options" => options,
-          "multiple" => q[:multiple] == true
+          "multiple" => q[:multiple] == true,
+          "index" => index,
+          "header" => q[:header],
+          "total" => q[:total] || length(questions),
+          "agent_id" => meta.agent_id,
+          "requested_at" => meta.requested_at
         },
         "allowed_actions" => ["answer_question"]
       })

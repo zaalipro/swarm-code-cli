@@ -492,7 +492,8 @@ defmodule SwarmCodeCLI.Companion.View do
       title: blank_to_nil(question.prompt) || "question",
       command: nil,
       risk: nil,
-      options: Enum.map(question.options, &%{id: &1.id, label: &1.label})
+      options:
+        Enum.map(question.options, &%{id: &1.id, label: &1.label, description: &1.description})
     })
   end
 
