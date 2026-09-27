@@ -11,10 +11,23 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Model do
   """
   alias SwarmCodeCLI.UI.DataSource.Lane
   alias SwarmCodeCLI.UI.Projector.Support
-  alias SwarmCodeCLI.UI.Projector.Panel.Name
+  alias SwarmCodeCLI.UI.Projector.Panel.{Glyph, Name}
   alias SwarmCodeCLI.UI.Projector.Inspector.{Hive, Words}
 
-  @p3 [:working, :thinking, :waiting, :needs_you, :done, :failed, :queued, :paused, :stopped]
+  # `:turn_limit` is the client's own (pass 75): the wire says `done` with
+  # `stop_reason: "turn_budget"`, never a new state.
+  @p3 [
+    :working,
+    :thinking,
+    :waiting,
+    :needs_you,
+    :done,
+    :failed,
+    :queued,
+    :paused,
+    :stopped,
+    :turn_limit
+  ]
   @lane_kinds [:think, :tools, :write, :you, :idle, :fail]
   @live [:queued, :running, :streaming, :waiting_question, :waiting_approval, :paused, :retrying]
 
@@ -40,7 +53,11 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Model do
     if chat, do: [chat | others], else: others
   end
 
-  @doc "Finished runs of the chat on screen, newest first, not counting the one in chat."
+  @doc """
+  Finished runs of the chat on screen, newest first, not counting the one in
+  chat: the first `limit` of them, or with `:counts` (pass 75)
+  `%{count: n, stopped: s, finished: f}` over all of them.
+  """
   def earlier(state, limit \\ 3) do
     chat = in_chat(state)
     conversation = chat && chat.conversation_id
@@ -50,7 +67,18 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Model do
     |> Enum.filter(&(&1.conversation_id == conversation and &1.state not in @live))
     |> Enum.reject(&(&1.state == :superseded or (chat && &1.id == chat.id)))
     |> Enum.sort_by(&{-&1.created_sequence, &1.id})
-    |> Enum.take(limit)
+    |> then(&if(limit == :counts, do: counts(&1), else: Enum.take(&1, limit)))
+  end
+
+  # pass 75 (7.5): the panel draws no earlier run of its own, only one worded
+  # row, so every earlier run is beyond its window: how many, how many
+  # failed or were stopped, how many finished.
+  defp counts(runs) do
+    %{
+      count: length(runs),
+      stopped: Enum.count(runs, &(&1.state in [:failed, :stopped])),
+      finished: Enum.count(runs, &(&1.state == :done))
+    }
   end
 
   @doc "The run kind the theme knows (`:chat` is the assistant, `:consensus` the judge)."
@@ -116,14 +144,12 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Model do
   def tokens(n) when n < 1_000_000, do: "#{div(n + 500, 1000)}k"
   def tokens(n), do: :erlang.float_to_binary(n / 1_000_000, decimals: 1) <> "M"
 
-  @doc "`$0.14` (R6); nil when unknown or zero."
-  def money(cost) when is_number(cost) and cost > 0 and cost < 0.01,
-    do: "$" <> :erlang.float_to_binary(cost / 1, decimals: 3)
-
-  def money(cost) when is_number(cost) and cost > 0,
-    do: "$" <> :erlang.float_to_binary(cost / 1, decimals: 2)
-
-  def money(_), do: nil
+  @doc """
+  `$0.14` (pass 75, R9): a price is two decimals whatever it is, `$0.00`
+  included; nil when unpriced, so the caller draws tokens instead.
+  """
+  def money(nil), do: nil
+  def money(x) when is_number(x), do: "$" <> :erlang.float_to_binary(x / 1, decimals: 2)
 
   defp pad2(n), do: n |> Integer.to_string() |> String.pad_leading(2, "0")
 
@@ -157,7 +183,7 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Model do
         {view, if(lead?, do: index, else: index + 1)}
       end)
 
-    views
+    Enum.map(views, &Map.put(&1, :status_text, status_text(&1, views, state)))
   end
 
   defp lead?(%{role: role}), do: role in [:lead, :assistant]
@@ -206,8 +232,114 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Model do
       retry_at: Map.get(agent, :retry_at),
       elapsed: Lane.elapsed_ms(agent, state.now) || elapsed(agent, state),
       tokens: tokens_of(agent),
-      cost: Map.get(agent, :cost_usd)
+      cost: Map.get(agent, :cost_usd),
+      # pass 75: turns, the Summarizer's line, the turn-limit agent's last
+      # words, and what the V2 row draws from them.
+      turn: Map.get(agent, :turn),
+      max_turns: Map.get(agent, :max_turns),
+      last_words: Map.get(agent, :last_words),
+      summary: Map.get(agent, :summary),
+      summary_rev: Map.get(agent, :summary_rev),
+      revision: Map.get(agent, :revision),
+      lane_at: Map.get(agent, :lane_at),
+      title?: Name.ai_title?(agent),
+      figure: figure(agent, p3, state.now, state),
+      attention: attention(p3, p3 in [:working, :thinking] and quiet?(agent, state.now))
     }
+  end
+
+  @doc """
+  The figure at the end of a V2 agent row (6.4), in this precedence: a
+  turn-limit stop's `✗ 30/30`, a working agent's `quiet 1m` after 60 s
+  without an event, its `turn/max_turns` (warning from 80 %), else nil.
+  """
+  @spec figure(map(), atom(), non_neg_integer(), map()) :: {String.t(), atom()} | nil
+  def figure(agent, p3, now_ms, state) do
+    max_turns = Map.get(agent, :max_turns)
+    turn = Map.get(agent, :turn) || 0
+
+    cond do
+      p3 == :turn_limit and is_integer(max_turns) ->
+        {Glyph.get(:turn_limit, state) <> " #{max_turns}/#{max_turns}", :error}
+
+      p3 in [:working, :thinking] and quiet?(agent, now_ms) ->
+        {"quiet #{div(now_ms - agent.lane_at, 60_000)}m", :warning}
+
+      is_integer(max_turns) and max_turns > 0 ->
+        {"#{turn}/#{max_turns}", if(turn / max_turns >= 0.8, do: :warning, else: :text_muted)}
+
+      true ->
+        nil
+    end
+  end
+
+  defp quiet?(agent, now_ms),
+    do:
+      is_integer(Map.get(agent, :lane_at)) and is_integer(now_ms) and
+        now_ms - agent.lane_at >= 60_000
+
+  @doc """
+  How much a row needs the eye (6.2), lowest first: needs you, stopped
+  (failed, turn limit, stopped), quiet, working, waiting, the rest.
+  """
+  @spec attention(atom(), boolean()) :: 0..5
+  def attention(:needs_you, _quiet?), do: 0
+  def attention(p3, _quiet?) when p3 in [:failed, :turn_limit, :stopped], do: 1
+  def attention(p3, true) when p3 in [:working, :thinking], do: 2
+  def attention(p3, _quiet?) when p3 in [:working, :thinking], do: 3
+  def attention(:waiting, _quiet?), do: 4
+  def attention(_p3, _quiet?), do: 5
+
+  @doc """
+  The words after the name on a V2 agent row (5.8) and their role: a request
+  says `asks you` or `wants to run`; else the Summarizer's line while AI
+  status lines are on; else the Lead's waiting words (a harness fact); else
+  the rule sentence, faint. The held summary is drawn whatever its
+  `summary_rev` (the daemon sends only one it still holds, D-S5).
+  """
+  @spec status_text(map(), [map()], map()) :: {String.t(), atom()}
+  def status_text(view, views, state) do
+    cond do
+      view.state == :needs_you ->
+        {if(asks_question?(view), do: "asks you", else: "wants to run"), :text_muted}
+
+      Map.get(state, :agent_summaries?, true) and is_binary(view.summary) and
+          String.trim(view.summary) != "" ->
+        {view.summary, :text_muted}
+
+      view.role == :lead and view.state == :waiting ->
+        {lead_words(view, views), :text_muted}
+
+      true ->
+        {elem(sentence(view, state, true), 0), :text_faint}
+    end
+  end
+
+  defp asks_question?(%{asks: [%{verb: :question} | _]}), do: true
+  defp asks_question?(%{asks: [], raw_state: :waiting_question}), do: true
+  defp asks_question?(_view), do: false
+
+  # The daemon's `now` for a waiting Lead, in the panel's words: a count reads
+  # `waiting for 2`, one agent's slug its name (`waiting on Docs accuracy`).
+  defp lead_words(view, views) do
+    now = view.now || now_sentence(view)
+
+    case Regex.run(~r/^waiting on (\d+) agents$/, now) do
+      [_, n] ->
+        "waiting for " <> n
+
+      nil ->
+        case now do
+          "waiting on " <> slug ->
+            case Enum.find(views, &(&1.name == slug and &1.id != view.id)) do
+              %{display: display} -> "waiting on " <> display
+              nil -> now
+            end
+
+          _ ->
+            now
+        end
+    end
   end
 
   # Name colours (R11): lane colours for agents only; the lead and the one
@@ -241,6 +373,8 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Model do
         (explicit != :working or agent.state in [:running, :retrying])
 
     cond do
+      # pass 75: a turn-limit stop is a stop (the wire's `done` + reason).
+      Map.get(agent, :stop_reason) == "turn_budget" -> :turn_limit
       # A request that waits on the user wins over a live wire state (the
       # wire's default `:working` can lag the pending interaction).
       asks != [] and explicit not in [:done, :failed, :stopped] -> :needs_you
@@ -276,11 +410,13 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Model do
   def word(:stopped), do: "stopped"
   def word(:queued), do: "queued"
   def word(:paused), do: "paused"
+  def word(:turn_limit), do: "turn limit"
 
   @doc "The role of a state's glyph (R11)."
   def glyph_role(:needs_you), do: :warning
   def glyph_role(:failed), do: :error
   def glyph_role(:done), do: :success
+  def glyph_role(:turn_limit), do: :error
   def glyph_role(state) when state in [:working, :thinking], do: :text_primary
   def glyph_role(:queued), do: :text_faint
   def glyph_role(_), do: :text_muted
@@ -289,6 +425,7 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Model do
   def word_role(:needs_you), do: :warning
   def word_role(:failed), do: :error
   def word_role(:done), do: :success
+  def word_role(:turn_limit), do: :error
   def word_role(_), do: :text_muted
 
   # --------------------------------------------------------- the sentence
@@ -431,6 +568,7 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Model do
   # A stopped agent's last `now` is no longer true, so it is not shown; the
   # state word already says "stopped" (pass72 G20, QA Q23: "stopped stopped").
   defp now_sentence(%{state: :stopped}), do: "before it finished"
+  defp now_sentence(%{state: :turn_limit} = view), do: view.now || "no answer: turn limit"
 
   defp now_sentence(view) do
     view.now ||
@@ -471,6 +609,9 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Model do
   # ------------------------------------------------------------- findings
 
   @doc "The agent's finding: the wire's, else the first sentence of its last report."
+  # pass 75: a turn-limit stop has no finding (its last words are not one).
+  def finding(%{stop_reason: "turn_budget"}, _state), do: nil
+
   def finding(agent, state) do
     case present(agent.finding) do
       nil -> agent |> reports(state) |> Enum.find_value(&first_sentence/1)
