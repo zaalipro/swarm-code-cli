@@ -419,17 +419,43 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Page do
     continuation_at = if row.label == "", do: 4, else: grid.value_offset + 1
     more_room = max(width - continuation_at - 1, 1)
 
+    indent = {String.duplicate(" ", continuation_at), :text_primary}
+
     continuations =
-      for line <- row.lines ++ extra,
+      for line <- row.lines,
           wrapped <- Text.wrap_segments(state, line, more_room) do
-        Text.fit(
-          state,
-          [{String.duplicate(" ", continuation_at), :text_primary} | wrapped],
-          width
-        )
+        Text.fit(state, [indent | wrapped], width)
       end
 
-    main ++ continuations
+    main ++ continuations ++ editor_lines(state, extra, indent, more_room, width)
+  end
+
+  # The open editor's (or the paste target's) lines under the row: a
+  # trailing `warning` segment (`not saved`) is right-aligned one cell inside
+  # the page, on the line's last wrapped line.
+  defp editor_lines(state, lines, indent, room, width) do
+    Enum.flat_map(lines, fn line ->
+      {left, right} =
+        case List.last(line) do
+          {_text, :warning} = marker -> {Enum.drop(line, -1), [marker, {" ", :text_primary}]}
+          _ -> {line, []}
+        end
+
+      wrapped =
+        if left == [],
+          do: [[]],
+          else: Text.wrap_segments(state, left, max(room - Text.cells(state, right), 1))
+
+      last = length(wrapped) - 1
+
+      wrapped
+      |> Enum.with_index()
+      |> Enum.map(fn {part, at} ->
+        if at == last,
+          do: Text.spread(state, [indent | part], right, width),
+          else: Text.fit(state, [indent | part], width)
+      end)
+    end)
   end
 
   # The value (or the open editor's, or the paste target's) and the extra

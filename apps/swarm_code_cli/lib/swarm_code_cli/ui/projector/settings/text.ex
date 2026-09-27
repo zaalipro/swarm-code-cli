@@ -269,12 +269,15 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Text do
   @spec style(map(), term()) :: map()
   # The focus band: a pseudo-background drawn as the accent chip's background,
   # or as reverse video where there is no background colour to spend.
+  # A segment that brings its own fill (a chip, the enum's candidate) keeps it.
   def style(%{capabilities: caps} = state, {inner, :on, :band}) do
     base = style(state, inner)
 
-    if caps.color_mode in [:truecolor, :ansi256],
-      do: %{base | background: Theme.style(:chip_accent, caps).background},
-      else: %{base | modifiers: Enum.uniq(base.modifiers ++ [:reversed])}
+    cond do
+      base.background != nil -> base
+      caps.color_mode in [:truecolor, :ansi256] -> %{base | background: band_background(caps)}
+      true -> %{base | modifiers: Enum.uniq(base.modifiers ++ [:reversed])}
+    end
   end
 
   # 16 colours and NO_COLOR drop the hover, surface and popover fills.
@@ -327,6 +330,8 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Text do
   end
 
   def style(state, role), do: %{Theme.style(role, state.capabilities) | prefix: nil}
+
+  defp band_background(caps), do: Theme.style(:chip_accent, caps).background
 
   @doc "Puts every segment of a row on the selection background."
   @spec select([segment()]) :: [segment()]

@@ -7,6 +7,8 @@ defmodule SwarmCodeCLI.UI.Settings.Editors.Toggle do
 
   @behaviour SwarmCodeCLI.UI.Settings.Editor
 
+  alias SwarmCodeCLI.UI.Settings.{Display, Glyphs}
+
   @impl true
   def init(_row, opts, _ctx) do
     {:ok,
@@ -26,9 +28,9 @@ defmodule SwarmCodeCLI.UI.Settings.Editors.Toggle do
   def handle(state, _event, _ctx), do: {:cont, state}
 
   @impl true
-  def display(state, _ctx) do
+  def display(state, ctx) do
     %{
-      value: [{if(state.value, do: state.on, else: state.off), :text_primary}],
+      value: Display.switch(state.value, Glyphs.tier(Map.get(ctx || %{}, :caps))),
       lines: [],
       popover: nil,
       context: :settings,

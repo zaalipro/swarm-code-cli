@@ -154,38 +154,46 @@ defmodule SwarmCodeCLI.UI.Settings.Editors.Enum do
 
   @impl true
   def display(state, ctx) do
-    # §4.5 `‹ auto  read-only  full ›`; QA #2 P2-1: when the choices do not
-    # fit the value column the ones around the focused choice are drawn (the
-    # line was cut at its end, so a later choice, even the current, was never
-    # seen while choosing).
+    # Pass 75 (E): a segmented control on the row: the candidate is the one
+    # accent-backed word, the saved value is underlined, the others muted,
+    # three cells apart; `…` at a windowed end (QA #2 P2-1: the choices
+    # around the candidate stay in view when they do not all fit).
     {first, last} = window(state, budget(ctx) - 4)
 
     shown =
       state.choices
       |> Enum.with_index()
       |> Enum.slice(first..last//1)
-      |> Enum.flat_map(fn {choice, index} ->
-        role = if index == state.index, do: :selection, else: :text_muted
-        [{choice.label, role}, {"  ", :text_faint}]
+      |> Enum.map(fn {choice, index} ->
+        cond do
+          index == state.index -> {" " <> choice.label <> " ", {:on_accent, [:bold]}}
+          choice.value == state.original -> {choice.label, {:text_primary, [:underline]}}
+          true -> {choice.label, :text_muted}
+        end
       end)
-      |> Enum.drop(-1)
 
     value =
-      [{"‹ ", :text_faint}] ++
-        if(first > 0, do: [{"… ", :text_faint}], else: []) ++
-        shown ++
-        if(last < length(state.choices) - 1, do: [{" …", :text_faint}], else: []) ++
-        [{" ›", :text_faint}]
+      if(first > 0, do: [{"…", :text_faint}], else: [])
+      |> Kernel.++(shown)
+      |> Kernel.++(if(last < length(state.choices) - 1, do: [{"…", :text_faint}], else: []))
+      |> Enum.intersperse({"   ", :text_primary})
 
-    hint =
-      case Enum.at(state.choices, state.index) do
-        %{hint: hint} when is_binary(hint) and hint != "" -> [[{hint, :text_faint}]]
+    candidate = Enum.at(state.choices, state.index)
+
+    words =
+      case candidate do
+        %{hint: hint} when is_binary(hint) and hint != "" -> [{hint, :text_muted}]
         _ -> []
       end
 
+    unsaved =
+      if candidate && candidate.value != state.original,
+        do: [{"not saved", :warning}],
+        else: []
+
     %{
       value: value,
-      lines: hint,
+      lines: if(words ++ unsaved == [], do: [], else: [words ++ unsaved]),
       popover: nil,
       context: :settings_edit,
       footer: [{"←→", "choose"}, {"Enter", "save"}, {"Esc", "cancel"}]

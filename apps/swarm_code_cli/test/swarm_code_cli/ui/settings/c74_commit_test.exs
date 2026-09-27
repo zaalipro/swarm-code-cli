@@ -60,7 +60,7 @@ defmodule SwarmCodeCLI.UI.Settings.C74CommitTest do
       row = row(state, "terminal.show_diffs")
 
       assert %Row{kind: :setting, label: "Show diffs"} = row
-      assert words(row.value) == "on"
+      assert words(row.value) =~ "on"
       assert words(row.tag) == "default"
       assert row.marks == []
       assert {Editors.Toggle, %{value: true}} = row.editor
@@ -132,7 +132,7 @@ defmodule SwarmCodeCLI.UI.Settings.C74CommitTest do
       assert {:settings_cli_write, ^generation, ref, %{"show_diffs" => false},
               %{"show_diffs" => :absent}} = write = cli_write(effects)
 
-      assert words(row(state, "terminal.show_diffs").value) == "off"
+      assert words(row(state, "terminal.show_diffs").value) =~ "off"
 
       assert Enum.any?(
                effects,
