@@ -638,13 +638,19 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
       []
     else
       {r, t} = Shapes.reported(run, views)
-      pad = String.duplicate(" ", max(1, 16 - Draw.cells("found", state)))
+      ratio = "#{r} of #{t} in"
+      files = " · " <> files_words(Map.get(run, :files_changed))
+
+      # `R of T in` at column 17; the gap gives way first where a wide `·`
+      # would push the files words past the row.
+      slack = ctx.width - 2 - Draw.cells("found" <> ratio <> files, state)
+      pad = String.duplicate(" ", max(1, min(16 - Draw.cells("found", state), slack)))
 
       count =
         row(ctx, [
           {"found" <> pad, :text_muted},
-          {"#{r} of #{t} in", :text_muted},
-          {" · " <> files_words(Map.get(run, :files_changed)), :text_faint}
+          {ratio, :text_muted},
+          {files, :text_faint}
         ])
 
       gauge =
