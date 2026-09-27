@@ -166,6 +166,25 @@ defmodule SwarmCodeCLI.UI.Paint.Budget do
          do: walk(blocks, depth + 1, display_depth, count)
   end
 
+  # pass75 interview: a note dialog's four edge span lists.
+  defp walk(
+         %{top_left: _, top_right: _, bottom_left: _, bottom_right: _} = edges,
+         depth,
+         display_depth,
+         count
+       )
+       when map_size(edges) == 4 do
+    with {:ok, count} <- count_node(count) do
+      [edges.top_left, edges.top_right, edges.bottom_left, edges.bottom_right]
+      |> Enum.reduce_while({:ok, count}, fn value, {:ok, current} ->
+        case walk(value, depth + 1, display_depth, current) do
+          {:ok, current} -> {:cont, {:ok, current}}
+          error -> {:halt, error}
+        end
+      end)
+    end
+  end
+
   defp walk(tuple, depth, display_depth, count) when is_tuple(tuple) and tuple_size(tuple) <= 4 do
     with {:ok, count} <- count_node(count) do
       Enum.reduce_while(Tuple.to_list(tuple), {:ok, count}, fn value, {:ok, current} ->
