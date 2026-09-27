@@ -165,6 +165,17 @@ defmodule SwarmCode.Settings.Registry.Terminal do
       synonyms: ["diffs", "diff"],
       parity: "CLI /diff"
     ),
+    cli("terminal.agent_summaries", :layout, "AI status lines",
+      group: "transcript",
+      description:
+        "One short AI-written line beside each live agent in the panel; off draws the plain rule sentence.",
+      storage: {:cli, "agent_summaries"},
+      type: :toggle,
+      default: true,
+      applies: :at_once,
+      synonyms: ["summaries", "status lines", "ai status", "agent status"],
+      parity: "CLI /panel summaries"
+    ),
     cli("terminal.notice_seconds", :layout, "Notices stay for",
       group: "transcript",
       storage: {:cli, "notice_seconds"},

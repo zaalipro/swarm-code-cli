@@ -139,6 +139,7 @@ Scopes: `global` (the database, shared with the desktop app), `project` (the pro
 | `terminal.composer_rows` | Composer height | cli | integer | 3 | at once | — |
 | `terminal.inspector_width` | Inspector width | cli | enum | default | at once | — |
 | `terminal.show_diffs` | Show diffs | cli | toggle | on | at once | — |
+| `terminal.agent_summaries` | AI status lines | cli | toggle | on | at once | — |
 | `terminal.notice_seconds` | Notices stay for | cli | duration | 6s | at once | — |
 | `terminal.diff_lines` | Diff lines shown | cli | integer | 12 | at once | — |
 
