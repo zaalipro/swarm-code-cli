@@ -616,21 +616,63 @@ defmodule SwarmCodeCLI.UI.Projector.PanelTest do
     assert Enum.count(heavy, &match?({:run, _}, &1)) == 5
   end
 
-  test "under 120 columns the panel is one strip ending in ! N needs you ^N (R17)" do
+  test "under 120 columns the panel is one strip: needs you, R of T in, the turn limit, $ (S5)" do
     st = state(:panel_swarm_2, 100, 28)
     rects = Layout.for_state(st).rects
     refute Map.has_key?(rects, :inspector)
     assert rects.tabline.y == 1 and rects.tabline.height == 1
 
     strip = st |> screen() |> Enum.at(1) |> String.trim_trailing()
-    # pass73 T10: the one names, cut at their ends to share the row.
-    assert strip =~
-             "▌⋔ architecture review 1/4 · Lead◌ Engine li…● Data pers…◐ Llm tools✓ Web ui d…!"
-
-    assert strip =~ ~r/! 1 needs you \^N$/
+    # pass 75 (8.2, S5): the chat, what waits on you, the swarm's count, the
+    # price on the right; no per-agent list, no fill.
+    assert strip =~ ~r/^ ▌⋔ architecture review  ! 1 needs you \^N   ⋔ 1 of 4 in +\$0\.15$/
 
     assert [{:run, _} | agents] = PanelOrder.entries(st)
     assert length(agents) == 5
+
+    # The most recent turn-limit stop, by its one name, whole while it fits.
+    st = turn_limited(st)
+    strip = st |> screen() |> Enum.at(1) |> String.trim_trailing()
+    assert strip =~ "   ⋔ 1 of 4 in · ✗ Engine lifecycle turn limit"
+
+    [{row, _, _} | _] = SwarmCodeCLI.UI.Projector.Strip.plan(st, 100)
+    roles = Map.new(row.spans, &{SafeText.value(&1.text), &1.style})
+    error = SwarmCodeCLI.UI.Theme.style(:error, st.capabilities).foreground
+    assert roles["✗"].foreground == error
+    assert roles[" turn limit"].foreground == error
+    refute Enum.any?(row.spans, &(&1.style.background not in [nil, :reset]))
+  end
+
+  test "at 80 columns the strip drops the name, then shortens the title" do
+    at = fn columns ->
+      state(:panel_swarm_2, columns, 28)
+      |> turn_limited()
+      |> screen()
+      |> Enum.at(1)
+      |> String.trim_trailing()
+    end
+
+    # The name goes first; the title and the price stay whole.
+    strip = at.(80)
+    assert strip =~ "▌⋔ architecture review  ! 1 needs you ^N   ⋔ 1 of 4 in · ✗ turn limit"
+    refute strip =~ "Engine"
+    assert strip =~ ~r/\$0\.15$/
+
+    # Then the title is cut to 12 cells.
+    strip = at.(70)
+    assert strip =~ "▌⋔ architectur…  ! 1 needs you ^N   ⋔ 1 of 4 in · ✗ turn limit"
+    assert strip =~ ~r/\$0\.15$/
+  end
+
+  # Engine lifecycle ran out of turns.
+  defp turn_limited(st) do
+    agent = st.read_model.agents["agent-80-2"]
+
+    agent =
+      %{agent | state: :done, finished_at: st.now - 1_000}
+      |> Map.merge(%{panel_state: :done, stop_reason: "turn_budget", turn: 30, max_turns: 30})
+
+    put_in(st.read_model.agents["agent-80-2"], agent)
   end
 
   test "hidden: no dock, no strip, main takes the width" do
