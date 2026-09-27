@@ -22,8 +22,14 @@ defmodule SwarmCodeCLI.UI.Init.Preferences do
   @modes %{"full" => :full, "compact" => :compact, "hidden" => :hidden}
   @themes %{"dark" => :dark, "light" => :light}
 
-  # The four legacy preferences and their json names.
-  @keys %{panel_mode: "panel", show_diffs: "show_diffs", theme: "theme", mouse?: "mouse"}
+  # The five legacy preferences and their json names.
+  @keys %{
+    panel_mode: "panel",
+    show_diffs: "show_diffs",
+    theme: "theme",
+    mouse?: "mouse",
+    agent_summaries?: "agent_summaries"
+  }
 
   @typedoc """
   `theme` is nil when the file names none: the launcher then falls back to
@@ -33,7 +39,8 @@ defmodule SwarmCodeCLI.UI.Init.Preferences do
           panel_mode: :full | :compact | :hidden,
           show_diffs: boolean(),
           theme: :dark | :light | nil,
-          mouse?: boolean()
+          mouse?: boolean(),
+          agent_summaries?: boolean()
         }
 
   @typedoc "One job of the session runtime's preference queue (§3.8.2)."
@@ -46,9 +53,10 @@ defmodule SwarmCodeCLI.UI.Init.Preferences do
 
   @doc "The defaults: the full panel, diffs shown, no theme of its own, wheel reports on."
   @spec defaults() :: t()
-  def defaults, do: %{panel_mode: :full, show_diffs: true, theme: nil, mouse?: true}
+  def defaults,
+    do: %{panel_mode: :full, show_diffs: true, theme: nil, mouse?: true, agent_summaries?: true}
 
-  @doc "The json names of the four legacy preferences."
+  @doc "The json names of the five legacy preferences."
   @spec legacy_names() :: %{atom() => String.t()}
   def legacy_names, do: @keys
 
@@ -63,7 +71,8 @@ defmodule SwarmCodeCLI.UI.Init.Preferences do
       panel_mode: Map.get(@modes, Map.get(values, "panel"), :full),
       show_diffs: boolean(Map.get(values, "show_diffs"), true),
       theme: Map.get(@themes, Map.get(values, "theme")),
-      mouse?: boolean(Map.get(values, "mouse"), true)
+      mouse?: boolean(Map.get(values, "mouse"), true),
+      agent_summaries?: boolean(Map.get(values, "agent_summaries"), true)
     }
   end
 
@@ -81,6 +90,7 @@ defmodule SwarmCodeCLI.UI.Init.Preferences do
   defp valid_value?(:show_diffs, value), do: is_boolean(value)
   defp valid_value?(:theme, value), do: value in [:dark, :light]
   defp valid_value?(:mouse?, value), do: is_boolean(value)
+  defp valid_value?(:agent_summaries?, v), do: is_boolean(v)
   defp valid_value?(_key, _value), do: false
 
   @doc "The cli.json changes (json name => wire value) of legacy preferences."

@@ -18,7 +18,8 @@ defmodule SwarmCodeCLI.UI.Pass73PreferencesTest do
              panel_mode: :compact,
              show_diffs: false,
              theme: :light,
-             mouse?: false
+             mouse?: false,
+             agent_summaries?: true
            }
 
     File.write!(path, ~s({"panel": "compact", "show_diffs": "no", "theme": "dusk", "mouse": 0}))
@@ -27,7 +28,8 @@ defmodule SwarmCodeCLI.UI.Pass73PreferencesTest do
              panel_mode: :compact,
              show_diffs: true,
              theme: nil,
-             mouse?: true
+             mouse?: true,
+             agent_summaries?: true
            }
   end
 

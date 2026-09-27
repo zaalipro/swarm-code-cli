@@ -15,7 +15,8 @@ defmodule SwarmCodeCLI.UI.Pass72PreferencesTest do
              panel_mode: :full,
              show_diffs: true,
              theme: nil,
-             mouse?: true
+             mouse?: true,
+             agent_summaries?: true
            }
 
     for body <- [
@@ -59,5 +60,12 @@ defmodule SwarmCodeCLI.UI.Pass72PreferencesTest do
     File.write!(Path.join(path, "keep"), "x")
     assert {:error, _} = Preferences.write(path, %{panel_mode: :compact})
     assert Enum.sort(File.ls!(dir)) == ["cli.json"]
+  end
+
+  test "agent_summaries reads false and writes back", %{tmp_dir: dir} do
+    path = Path.join(dir, "cli.json")
+    assert Preferences.write(path, %{agent_summaries?: false}) == :ok
+    assert Preferences.read(path).agent_summaries? == false
+    assert JSON.decode!(File.read!(path))["agent_summaries"] == false
   end
 end
