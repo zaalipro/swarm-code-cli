@@ -338,6 +338,19 @@ defmodule SwarmCodeCLI.UI.Projector.C75PanelTest do
     assert Enum.count(rows, &(&1 =~ "earlier")) == 1
   end
 
+  # 410 (sandbox): one AI-named swarm in compact mode drew `names drop
+  # *-review`, a suffix none of the drawn names carries (7.9).
+  test "compact: AI-titled agents draw no `names drop` note" do
+    views =
+      for slug <-
+            ~w(build-verify-review strategy-fit-review docs-accuracy-review ts-removal-review),
+          do: %{role: :worker, name: slug, title?: true}
+
+    run = %{id: "r1"}
+    lead = %{role: :lead, name: "lead", title?: false}
+    assert Panel.Shapes.compact_note(%{runs: [run]}, run, [lead | views]) == []
+  end
+
   test "summaries off draws the rule sentence in text_faint" do
     st = state(:panel_owner19, 176, 45)
     st = put_in(st.read_model.agents["agent-91-3"].now, "running a command")

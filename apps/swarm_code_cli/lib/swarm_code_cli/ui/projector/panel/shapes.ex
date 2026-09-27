@@ -781,9 +781,13 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Shapes do
 
   # ------------------------------------------------------------ compact
 
-  @doc "A compact run's note: the suffix its names drop (R14), when one run is shown."
+  @doc """
+  A compact run's note: the suffix its names drop (R14), when one run is
+  shown. An AI-titled agent shows its title, not its slug, so only the
+  slug-named agents count (410: `names drop *-review` under AI names).
+  """
   def compact_note(%{runs: [_]} = ctx, _run, views) do
-    subs = Enum.reject(views, &(&1.role in [:lead, :assistant]))
+    subs = Enum.reject(views, &(&1.role in [:lead, :assistant] or Map.get(&1, :title?, false)))
 
     case Model.affixes(Enum.map(subs, & &1.name)) do
       {"", ""} ->
