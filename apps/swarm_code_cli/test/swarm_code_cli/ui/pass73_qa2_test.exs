@@ -242,12 +242,14 @@ defmodule SwarmCodeCLI.UI.Pass73Qa2Test do
     state = under_card([approval("a1"), approval("a2", created_at: 2), approval("a3")])
     assert Enum.any?(card_text(state), &(&1 =~ "1 of 3 waiting"))
 
+    # pass 75: the walk follows `Question.order_key/1`, creation first, so
+    # a3 (created at 1) comes before a2 (created at 2).
     state = press!(state, letter("n"))
-    assert [{:approval, "a2"} | _] = state.layers
+    assert [{:approval, "a3"} | _] = state.layers
     assert Enum.any?(card_text(state), &(&1 =~ "2 of 3 waiting"))
 
     state = press!(state, letter("n"))
-    assert [{:approval, "a3"} | _] = state.layers
+    assert [{:approval, "a2"} | _] = state.layers
     assert Enum.any?(card_text(state), &(&1 =~ "3 of 3 waiting"))
   end
 
@@ -484,16 +486,27 @@ defmodule SwarmCodeCLI.UI.Pass73Qa2Test do
           snapshot: %{interactions: [item]}
         )
 
-      assert [{:question, "q1"} | _] = state.layers
+      assert [{:question, "op-q1"} | _] = state.layers
       state = %{state | interaction_grace: nil}
       screen = screen(state)
       text = Enum.join(screen, "\n")
 
-      # The whole question, in the body; the title says who asks.
-      assert text =~ "The assistant asks"
+      # The whole question, in the body; the note's top-left edge says who
+      # asks (pass 75).
+      assert text =~ "The assistant asks you"
+
+      # pass 75: the note is 86 wide, so at 120 columns the panel shows beside
+      # it; the body is read inside the note's own columns.
+      {scene, _} = Projector.project(state)
+      rect = scene.overlay.rect
+
+      note =
+        screen
+        |> Enum.slice(rect.y, rect.height)
+        |> Enum.map(&String.slice(&1, rect.x, rect.width))
 
       words = fn line -> line |> String.split(~r/[^\w'.?]+/u, trim: true) end
-      body = screen |> Enum.flat_map(words) |> Enum.join(" ")
+      body = note |> Enum.flat_map(words) |> Enum.join(" ")
       assert body =~ "side conversation instead?", text
 
       # Every word of every option is whole on some row: none is split.
@@ -502,10 +515,12 @@ defmodule SwarmCodeCLI.UI.Pass73Qa2Test do
                "#{word} is split at #{columns}x#{rows}:\n" <> text
       end
 
-      # Cancel is focused on open: the footer does not say "1 of 4".
-      # (Four options and "Your answer".)
-      assert text =~ "5 choices · Down picks one · Esc closes"
-      refute text =~ "1 of 5"
+      # pass 75: the note opens with nothing focused and nothing picked, and
+      # has no Cancel control; its keys row names the picks.
+      refute "cancel" in SwarmCodeCLI.UI.Reducer.focus_graph(state)
+      refute text =~ "FOCUS >"
+      assert text =~ "You will send  not answered yet"
+      assert text =~ "1-4 pick"
 
       # As tall as its rows: no run of empty rows inside the box.
       inside =
@@ -517,9 +532,10 @@ defmodule SwarmCodeCLI.UI.Pass73Qa2Test do
       refute Enum.any?(Enum.chunk_every(inside, 3, 1, :discard), &(&1 == ["", "", ""])),
              text
 
-      # Down marks Option 1, and the footer counts it.
-      down = press!(state, key(:down))
-      assert down |> screen() |> Enum.join("\n") =~ "1 of 5 · Enter chooses"
+      # Down marks Option 1, and the ledger says what Enter would send.
+      down = press!(state, key(:down)) |> screen() |> Enum.join("\n")
+      assert down =~ "FOCUS > Wait until the workflow"
+      assert down =~ "You will send  Wait until the workflow"
     end
   end
 
