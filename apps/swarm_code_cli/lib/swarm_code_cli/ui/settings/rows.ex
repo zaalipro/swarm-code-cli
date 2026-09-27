@@ -13,7 +13,7 @@ defmodule SwarmCodeCLI.UI.Settings.Rows do
   """
 
   alias SwarmCode.Settings.{Entry, Registry}
-  alias SwarmCodeCLI.UI.Settings.{Ctx, Data, Detail, Display, Editors, Provenance, Row}
+  alias SwarmCodeCLI.UI.Settings.{Ctx, Data, Detail, Display, Editors, Glyphs, Provenance, Row}
 
   @applies %{
     at_once: "at once",
@@ -128,8 +128,19 @@ defmodule SwarmCodeCLI.UI.Settings.Rows do
       keys: keys(entry),
       detail: detail(ctx, entry, setting, value),
       state: state(entry, loaded?),
-      target: {:entry, entry.key}
+      target: {:entry, entry.key},
+      layer: layer_of(setting)
     }
+  end
+
+  # The layer that set the value (the tag's word), nil before the value loads.
+  defp layer_of(nil), do: nil
+
+  defp layer_of(setting) do
+    case Provenance.winner(setting) do
+      %{layer: layer} -> layer
+      _ -> nil
+    end
   end
 
   defp row_kind(%Entry{type: :action}), do: :action
@@ -166,7 +177,11 @@ defmodule SwarmCodeCLI.UI.Settings.Rows do
         items -> Map.new(items, &{get(&1, :id), provider_name(&1)})
       end
 
-    %{providers: providers, home: get(ctx.launch_facts || %{}, :home)}
+    %{
+      providers: providers,
+      home: get(ctx.launch_facts || %{}, :home),
+      tier: Glyphs.tier(ctx.caps)
+    }
   end
 
   defp provider_name(item),
@@ -480,6 +495,7 @@ defmodule SwarmCodeCLI.UI.Settings.Rows do
     |> Map.get(:layers, [])
     |> Enum.map(fn layer ->
       %{
+        id: layer.layer,
         layer: Provenance.word(layer.layer),
         value:
           cond do

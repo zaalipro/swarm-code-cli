@@ -407,7 +407,8 @@ defmodule SwarmCodeCLI.UI.Settings.IntegrationRows do
     :state,
     :columns,
     :target,
-    :indent
+    :indent,
+    :layer
   ]
 
   @doc """
@@ -432,7 +433,8 @@ defmodule SwarmCodeCLI.UI.Settings.IntegrationRows do
       state: :normal,
       columns: nil,
       target: nil,
-      indent: 0
+      indent: 0,
+      layer: nil
     }
 
     Map.merge(base, Map.take(attrs, @row_keys))
