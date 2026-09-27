@@ -1593,8 +1593,132 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     })
   end
 
-  # pass75: a status timer fired (task 112c gives it the decision).
-  defp summarize_due(state, _agent_id), do: state
+  # pass75: a status timer fired: the decision runs again for its agent when
+  # the last projection still holds it and its run.
+  defp summarize_due(%{inputs: nil} = state, _agent_id), do: state
+
+  defp summarize_due(state, agent_id) do
+    node = Enum.find(state.inputs.agents, &(&1.id == agent_id))
+    row = node && Enum.find(state.inputs.rows, &(&1.id == node.run_id))
+
+    if node && row,
+      do: summarize_one(state, node, row, System.system_time(:millisecond)),
+      else: state
+  end
+
+  # pass75 (the Summarizer): after every reload, each projected agent of a
+  # live run may get one AI status line (AgentStatus decides); the agents of
+  # a run that ended lose their call in flight and timer. Never on a page.
+  defp summarize_agents(%{inputs: nil} = state), do: state
+
+  defp summarize_agents(state) do
+    if Application.get_env(:swarm_code_daemon, :summarize_agents, true) do
+      now = System.system_time(:millisecond)
+      rows = Map.new(state.inputs.rows, &{&1.id, &1})
+
+      ended =
+        for node <- state.inputs.agents,
+            row = rows[node.run_id],
+            row == nil or row.status not in ["running", "waiting_user"],
+            do: node.id
+
+      state = %{
+        state
+        | agent_status: AgentStatus.cancel(state.agent_status, ended, state.task_supervisor)
+      }
+
+      Enum.reduce(state.inputs.agents, state, fn node, acc ->
+        case rows[node.run_id] do
+          nil -> acc
+          row -> summarize_one(acc, node, row, now)
+        end
+      end)
+    else
+      state
+    end
+  end
+
+  defp summarize_one(state, node, row, now) do
+    ops = Map.get(Map.get(state.inputs, :panel_ops) || %{}, node.id, [])
+
+    agent = %{
+      id: node.id,
+      role: node.role,
+      key: AgentStatus.fact_key(node, ops, now),
+      stopped?: PanelFacts.turn_limit?(node) or node.status == "failed"
+    }
+
+    run = %{id: row.id, status: row.status, kind: presentation_kind(row)}
+
+    state =
+      case AgentStatus.decide(state.agent_status, agent, run, now) do
+        {:call, status, seq} ->
+          Logger.info("agent status: run #{row.id} call #{Map.get(status.calls, row.id)}/120")
+          start_summary(%{state | agent_status: status}, node, AgentStatus.notes(node, ops), seq)
+
+        {:wait, status, ms} ->
+          arm_status_timer(%{state | agent_status: status}, node.id, ms)
+
+        {:skip, status} ->
+          %{state | agent_status: status}
+      end
+
+    # Crossing into quiet changes the facts: a timer re-runs the decision then.
+    anchor = PanelFacts.anchor(ops)
+
+    if node.status in ["running", "retrying"] and is_integer(anchor) and
+         now - anchor < 60_000 and not Map.has_key?(state.agent_status.timers, node.id),
+       do: arm_status_timer(state, node.id, 60_000 - (now - anchor)),
+       else: state
+  end
+
+  # One owned, correlated task per call; the model, cli.json and the
+  # conversation are read inside it, never in this process.
+  defp start_summary(state, node, notes, seq) do
+    work = state.work
+    conversation_id = state.opts[:conversation_id]
+    agent_id = node.id
+
+    task =
+      Task.Supervisor.async_nolink(state.task_supervisor, fn ->
+        {:agent_summary, agent_id, seq, run_summarize(work, notes, conversation_id)}
+      end)
+
+    %{
+      state
+      | agent_status: AgentStatus.started(state.agent_status, agent_id, seq, task.ref, task.pid)
+    }
+  end
+
+  defp run_summarize(work, notes, conversation_id) do
+    with true <- cli_summaries_on?(),
+         %SwarmCode.Domain.Conversations.Conversation{} = conversation <-
+           Conversations.get(conversation_id),
+         {:ok, model} <- SwarmCode.Domain.Providers.effective_model(conversation, :chat),
+         {:ok, text} <- work.summarize.(notes, model) do
+      AgentStatus.accept(text, notes)
+    else
+      false -> {:error, :off}
+      nil -> {:error, :no_conversation}
+      {:error, reason} -> {:error, reason}
+      other -> {:error, {:unexpected, other}}
+    end
+  end
+
+  # The user's switch (cli.json `agent_summaries`, `/panel summaries`).
+  defp cli_summaries_on? do
+    path = Path.join(SwarmCode.Domain.Paths.config_dir(), "cli.json")
+    SwarmCode.Settings.CliFile.read_all(path).values |> Map.get("agent_summaries", true) != false
+  rescue
+    _ -> true
+  end
+
+  defp arm_status_timer(state, agent_id, ms) do
+    ref = Process.send_after(self(), {:agent_status_due, agent_id}, max(ms, 0))
+    {old, status} = AgentStatus.put_timer(state.agent_status, agent_id, ref)
+    if old, do: Process.cancel_timer(old)
+    %{state | agent_status: status}
+  end
 
   defp arm_refresh(%{refresh_pending: true} = state), do: state
 
@@ -2422,6 +2546,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     |> build_projection(rows, records, agents, :reload)
     |> count_projection(:full)
     |> start_facts_job()
+    |> summarize_agents()
   end
 
   # pass71 S6 (C9): the runs and nodes a streaming tick named are refetched
@@ -2464,6 +2589,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       |> build_projection(rows, records, agents, {:partial, inputs})
       |> count_projection(:partial)
       |> start_facts_job()
+      |> summarize_agents()
     else
       _ -> reload(state)
     end
