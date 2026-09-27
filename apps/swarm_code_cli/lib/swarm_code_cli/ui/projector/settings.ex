@@ -144,7 +144,11 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
         [rule(state, width)] ++
         body ++
         drawer_lines ++
-        [rule(state, width), status(state, layer, current, width), footer(state, current, width)]
+        [
+          rule(state, width),
+          Chrome.message(state, grid, glyphs, current),
+          Chrome.status(state, grid, glyphs, current)
+        ]
 
     # The screen line of the focused page row (an editor's popover opens under it).
     anchor =
@@ -621,134 +625,6 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
   end
 
   defp pad(text, width), do: String.pad_trailing(to_string(text), width)
-
-  # ----------------------------------------------------- status, footer
-
-  # §4.1.5 (QA F-13): the right side says where a change of the focused row
-  # is written, beside the toast or the tip.
-  defp status(state, layer, current, width) do
-    right = writes_to(state, current)
-    room = if right == [], do: width, else: max(width - Text.cells(state, right) - 2, 0)
-    left = status_left(state, layer, room)
-
-    if right == [],
-      do: left,
-      else: Text.spread(state, left, right ++ [{" ", :text_primary}], width)
-  end
-
-  defp writes_to(state, %{key: key}) when is_binary(key) do
-    with {:ok, entry} <- SwarmCode.Settings.Registry.fetch(key),
-         true <- SwarmCode.Settings.Entry.writable?(entry) do
-      words =
-        case entry.home do
-          :cli ->
-            "cli.json · this machine's terminal"
-
-          home ->
-            SwarmCodeCLI.UI.Settings.Rows.scope_words(Nav.ctx(state), %{entry | scope: home})
-        end
-
-      if is_binary(words), do: [{"writes to " <> words, :text_faint}], else: []
-    else
-      _ -> []
-    end
-  end
-
-  defp writes_to(_state, _current), do: []
-
-  defp status_left(state, layer, width) do
-    case layer.status do
-      %{text: text, role: role, at: at} = status ->
-        if state.now - at < Map.get(status, :ms, 4_000) do
-          glyph =
-            case role do
-              :success -> [{" " <> glyph(state, :ok) <> " ", :success}]
-              :error -> [{" " <> glyph(state, :fail) <> " ", :error}]
-              :warning -> [{" ! ", :warning}]
-              _ -> [{" ", :text_primary}]
-            end
-
-          Text.fit(
-            state,
-            glyph ++ [{text, if(role in [:success, :text_muted], do: :text_primary, else: role)}],
-            width
-          )
-        else
-          tip(state, layer, width)
-        end
-
-      _ ->
-        tip(state, layer, width)
-    end
-  end
-
-  # The Overview's quiet line when nothing was said.
-  defp tip(state, layer, width) do
-    if Layer.section(layer) == :overview and Layer.depth(layer) == 1 do
-      Text.fit(
-        state,
-        [
-          {" /settings <words> opens straight at a setting · : runs a settings command such as :set theme light",
-           :text_faint}
-        ],
-        width
-      )
-    else
-      []
-    end
-  end
-
-  defp footer(state, current, width) do
-    layer = state.settings
-
-    keys =
-      cond do
-        layer.mode == :editing and layer.editing != nil ->
-          display = layer.editing.module.display(layer.editing.state, Nav.ctx(state))
-          Map.get(display, :footer, [])
-
-        layer.mode == :search ->
-          [{"Enter", "open"}, {"Esc", "clear"}]
-
-        layer.mode == :paste and layer.paste != nil ->
-          paste_keys(layer.paste)
-
-        layer.region == :rail ->
-          [{"Enter", "open"}, {"/", "search"}, {"Tab", "page"}]
-
-        current != nil ->
-          Enum.map(current.keys, fn {key, _verb, words} -> {key, words} end) ++
-            [{"/", "search"}, {"[ ]", "section"}]
-
-        true ->
-          [{"/", "search"}, {"[ ]", "section"}]
-      end
-
-    keys = keys ++ [{"?", "keys"}]
-
-    left =
-      Enum.flat_map(keys, fn {key, words} ->
-        [{" " <> key, {:info, [:bold]}}, {" " <> words <> "  ", :text_faint}]
-      end)
-
-    Text.spread(state, left, [{"settings ", :text_ghost}], width)
-  end
-
-  # cli74 F12: while a key is pasted the footer names the paste's own keys,
-  # not the row's (it said "Enter paste a new key" over a pasted key).
-  defp paste_keys(%{refused: {:replacement, _}}),
-    do: [{"s", "save it anyway"}, {"Esc", "keep the old key"}]
-
-  defp paste_keys(%{pending_task: task}) when task != nil, do: [{"Esc", "keep the old key"}]
-
-  defp paste_keys(_paste),
-    do: [
-      {"Cmd-V", "paste"},
-      {"Enter", "save"},
-      {"Ctrl-U", "clear"},
-      {"Ctrl-T", "type instead"},
-      {"Esc", "cancel"}
-    ]
 
   # ---------------------------------------------------------- popover
 

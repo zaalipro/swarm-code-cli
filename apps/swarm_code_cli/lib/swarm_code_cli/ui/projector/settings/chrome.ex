@@ -9,7 +9,20 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Chrome do
   """
 
   alias SwarmCodeCLI.UI.Projector.Settings.Text
-  alias SwarmCodeCLI.UI.Settings.{Glyphs, Grid, Layer, Nav, Page, Row, Sections}
+
+  alias SwarmCodeCLI.UI.Settings.{
+    Editors,
+    Glyphs,
+    Grid,
+    Layer,
+    ModelPicker,
+    Nav,
+    Page,
+    Row,
+    Rows,
+    Sections
+  }
+
   alias SwarmCodeCLI.UI.Settings.Sections.Overview
 
   @type segments :: [Text.segment()]
@@ -299,6 +312,254 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Chrome do
       do: Enum.slice(ids, lo..hi//1),
       else: grow(ids, lo2, hi2, used2, room, cost)
   end
+
+  # ---------------------------------------------------- message row
+
+  @doc """
+  The message row: the toast for its 4 s, else the consequence of the open
+  enum editor's candidate, else the Overview's tip; on the right, where a
+  change of the focused row is written.
+  """
+  @spec message(map(), Grid.t(), glyphs(), Row.t() | nil | :auto) :: segments()
+  def message(state, %Grid{} = grid, glyphs, current \\ :auto) do
+    layer = state.settings
+    current = current(state, current)
+
+    left =
+      toast(state, layer, glyphs) || consequence(state, layer, current, glyphs) ||
+        tip(layer)
+
+    right =
+      case writes_to(state, current) do
+        nil -> []
+        words -> [{"writes to ", :text_faint}, {words, :text_muted}]
+      end
+
+    Text.spread(state, [margin(grid) | left], right ++ [margin(grid)], grid.columns)
+  end
+
+  defp toast(state, layer, glyphs) do
+    case layer.status do
+      %{text: text, role: role, at: at} = status ->
+        if state.now - at < Map.get(status, :ms, 4_000) do
+          glyph =
+            case role do
+              :success -> [{glyphs.(:ok) <> " ", :success}]
+              :error -> [{glyphs.(:fail) <> " ", :error}]
+              :warning -> [{"! ", :warning}]
+              _ -> []
+            end
+
+          glyph ++ [{text, :text_primary}]
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  # `Approvals Read-only → Auto for swarm-code once you press Enter`.
+  defp consequence(
+         state,
+         %Layer{mode: :editing, editing: %{module: Editors.Enum, state: editor}},
+         %Row{key: key} = row,
+         glyphs
+       )
+       when is_binary(key) do
+    with %{choices: choices, index: index, original: original} <- editor,
+         %{value: value, label: label} <- Enum.at(choices, index),
+         true <- value != original,
+         words when is_binary(words) <- writes_to(state, row) do
+      saved = Enum.find_value(choices, to_string(original), &(&1.value == original && &1.label))
+
+      [
+        {row.label, :text_primary},
+        {" ", :text_primary},
+        {to_string(saved), :text_primary},
+        {" " <> glyphs.(:link) <> " ", :text_faint},
+        {to_string(label), :text_primary},
+        {" for " <> words <> " once you press Enter", :text_muted}
+      ]
+    else
+      _ -> nil
+    end
+  end
+
+  defp consequence(_state, _layer, _current, _glyphs), do: nil
+
+  # The Overview's quiet line when nothing was said.
+  defp tip(layer) do
+    if Layer.section(layer) == :overview and Layer.depth(layer) == 1,
+      do: [
+        {"/settings <words> opens straight at a setting · : runs a settings command such as :set theme light",
+         :text_muted}
+      ],
+      else: []
+  end
+
+  # §4.1.5 (QA F-13): where a change of the focused row is written.
+  defp writes_to(state, %{key: key}) when is_binary(key) do
+    with {:ok, entry} <- SwarmCode.Settings.Registry.fetch(key),
+         true <- SwarmCode.Settings.Entry.writable?(entry) do
+      words =
+        case entry.home do
+          :cli -> "cli.json · this machine's terminal"
+          home -> Rows.scope_words(Nav.ctx(state), %{entry | scope: home})
+        end
+
+      if is_binary(words), do: words
+    else
+      _ -> nil
+    end
+  end
+
+  defp writes_to(_state, _current), do: nil
+
+  # ---------------------------------------------------- status line
+
+  @doc """
+  The status line on a `surface` fill: the mode word, the keys of the focused
+  row or the open editor, and the legend (project and conversation) right.
+  """
+  @spec status(map(), Grid.t(), glyphs(), Row.t() | nil | :auto) :: segments()
+  def status(state, %Grid{} = grid, _glyphs, current \\ :auto) do
+    layer = state.settings
+    current = current(state, current)
+
+    keys =
+      (keys(state, layer, current) ++ [{"?", "keys"}])
+      |> Enum.map(fn {key, words} -> [{key, :key}, {" " <> words, :text_faint}] end)
+      |> Enum.intersperse([{"   ", :text_primary}])
+      |> Enum.concat()
+
+    left = [margin(grid), mode_word(layer), {"   ", :text_primary}] ++ keys
+    legend = legend(state, grid)
+    right = legend ++ [margin(grid)]
+
+    line =
+      if legend != [] and
+           Text.cells(state, left) + 3 + Text.cells(state, right) <= grid.columns,
+         do: Text.spread(state, left, right, grid.columns),
+         else: Text.fit(state, left, grid.columns)
+
+    on(line, :surface)
+  end
+
+  @doc "The mode word the status line opens with (decision D11)."
+  @spec mode_word(Layer.t()) :: {String.t(), Text.segment() | term()}
+  def mode_word(%Layer{mode: :capture}), do: {"KEY", {:accent, [:bold]}}
+  def mode_word(%Layer{mode: :command_line}), do: {"COMMAND", {:info, [:bold]}}
+  def mode_word(%Layer{mode: :search}), do: {"SEARCH", {:info, [:bold]}}
+  def mode_word(%Layer{mode: :paste}), do: {"SECRET", {:warning, [:bold]}}
+
+  def mode_word(%Layer{mode: :editing} = layer) do
+    cond do
+      secret?(layer.editing) -> {"SECRET", {:warning, [:bold]}}
+      picker?(layer) -> {"PICK", {:accent, [:bold]}}
+      true -> {"EDIT", {:accent, [:bold]}}
+    end
+  end
+
+  def mode_word(%Layer{}), do: {"BROWSE", {:text_primary, [:bold]}}
+
+  defp picker?(%Layer{popover: {:picker, _}}), do: true
+  defp picker?(%Layer{editing: %{module: ModelPicker}}), do: true
+  defp picker?(_layer), do: false
+
+  defp secret?(%{state: %{opts: %{secret: true}}}), do: true
+  defp secret?(_editing), do: false
+
+  # The keys per mode, as the pass-74 footer listed them.
+  defp keys(state, layer, current) do
+    cond do
+      layer.mode == :editing and layer.editing != nil ->
+        display = layer.editing.module.display(layer.editing.state, Nav.ctx(state))
+        Map.get(display, :footer, [])
+
+      layer.mode == :search ->
+        [{"Enter", "open"}, {"Esc", "clear"}]
+
+      layer.mode == :paste and layer.paste != nil ->
+        paste_keys(layer.paste)
+
+      layer.region == :rail ->
+        [{"Enter", "open"}, {"/", "search"}, {"Tab", "page"}]
+
+      current != nil ->
+        Enum.map(current.keys, fn {key, _verb, words} -> {key, words} end) ++
+          [{"/", "search"}, {"[ ]", "section"}]
+
+      true ->
+        [{"/", "search"}, {"[ ]", "section"}]
+    end
+  end
+
+  # cli74 F12: while a key is pasted the footer names the paste's own keys,
+  # not the row's (it said "Enter paste a new key" over a pasted key).
+  defp paste_keys(%{refused: {:replacement, _}}),
+    do: [{"s", "save it anyway"}, {"Esc", "keep the old key"}]
+
+  defp paste_keys(%{pending_task: task}) when task != nil, do: [{"Esc", "keep the old key"}]
+
+  defp paste_keys(_paste),
+    do: [
+      {"Cmd-V", "paste"},
+      {"Enter", "save"},
+      {"Ctrl-U", "clear"},
+      {"Ctrl-T", "type instead"},
+      {"Esc", "cancel"}
+    ]
+
+  @doc """
+  The status line's legend: the project (`agent_lane_2`) and the
+  conversation's title (`agent_lane_1`), the two hues the page's spines use
+  most; shorter under 120 columns, the title alone under 90.
+  """
+  @spec legend(map(), Grid.t()) :: segments()
+  def legend(state, %Grid{} = grid) do
+    ctx = Nav.ctx(state)
+
+    name =
+      case ctx.project do
+        %{"name" => name} when is_binary(name) and name != "" -> name
+        _ -> nil
+      end
+
+    title = session_title(ctx)
+
+    parts =
+      case grid.class do
+        class when class in [:wide, :rail] ->
+          [
+            name && [{"project ", :text_faint}, {name, :agent_lane_2}],
+            title && [{"conversation ", :text_faint}, {title, :agent_lane_1}]
+          ]
+
+        :strip ->
+          [name && [{name, :agent_lane_2}], title && [{title, :agent_lane_1}]]
+
+        _small ->
+          [title && [{title, :agent_lane_1}]]
+      end
+
+    parts
+    |> Enum.reject(&is_nil/1)
+    |> Enum.intersperse([{" · ", :text_faint}])
+    |> Enum.concat()
+  end
+
+  defp session_title(ctx) do
+    with {:ok, entry} <- SwarmCode.Settings.Registry.fetch("session.title"),
+         title when is_binary(title) and title != "" <-
+           Rows.shown(ctx, entry, Rows.setting(ctx, entry)) do
+      title
+    else
+      _ -> nil
+    end
+  end
+
+  defp current(state, :auto), do: Nav.current(state, Nav.rows(state))
+  defp current(_state, current), do: current
 
   # ------------------------------------------------------- rail marks
 
