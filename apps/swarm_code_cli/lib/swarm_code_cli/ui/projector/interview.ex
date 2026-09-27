@@ -282,7 +282,10 @@ defmodule SwarmCodeCLI.UI.Projector.Interview do
         ]
   def rows(state, _class, ask, interview, text_width) do
     current = Question.current(ask, interview)
-    ctx = %{state: state, tw: text_width, node: ask.node_id, current: current}
+    # A row this client may not answer (no `:answer_question`, or its answer
+    # already on its way) is drawn without the targets that would answer it.
+    answer? = Support.allowed?(state, current, :answer_question)
+    ctx = %{state: state, tw: text_width, node: ask.node_id, current: current, answer?: answer?}
 
     why =
       case why(state, ask, text_width) do
@@ -473,18 +476,21 @@ defmodule SwarmCodeCLI.UI.Projector.Interview do
       action = if multiple, do: :toggle, else: :pick
       target = {:local, {:interview, {action, ctx.node, option.id}}}
 
+      # The first row is the option's one target; the rows a long label
+      # wraps onto read, they are not a second control.
       option_rows =
-        [rail(ctx, focused?) ++ lead ++ [label]] ++
+        [
+          {{:option, option.id},
+           answer_spans(ctx, rail(ctx, focused?) ++ lead ++ [label], target)}
+        ] ++
           Enum.map(more, fn line ->
-            rail(ctx, focused?) ++
-              [{String.duplicate(" ", indent), :text_faint}, {line, label_role}]
+            {{:option, option.id},
+             rich(
+               ctx,
+               rail(ctx, focused?) ++
+                 [{String.duplicate(" ", indent), :text_faint}, {line, label_role}]
+             )}
           end)
-
-      option_rows =
-        Enum.map(
-          option_rows,
-          &{{:option, option.id}, Support.action_spans(spans(ctx, &1), target)}
-        )
 
       description = clean(Map.get(option, :description) || "", ctx)
 
@@ -563,8 +569,9 @@ defmodule SwarmCodeCLI.UI.Projector.Interview do
           [{next, :text_faint}, {"  ", :text_faint}, {cut(text, room, ctx), :text_primary}]
       end
 
-    Support.action_spans(
-      spans(ctx, rail(ctx, focused?) ++ line(left, right, ctx)),
+    answer_spans(
+      ctx,
+      rail(ctx, focused?) ++ line(left, right, ctx),
       {:local, {:interview, {:toggle_other, ctx.node}}}
     )
   end
@@ -700,12 +707,7 @@ defmodule SwarmCodeCLI.UI.Projector.Interview do
           %{width: left_width, blocks: [rich(ctx, left_spans)]},
           %{
             width: enter_width,
-            blocks: [
-              Support.action_spans(
-                spans(ctx, enter),
-                {:local, {:interview, {:confirm, ctx.node}}}
-              )
-            ]
+            blocks: [answer_spans(ctx, enter, {:local, {:interview, {:confirm, ctx.node}}})]
           }
         ],
         gap: 0
@@ -781,6 +783,12 @@ defmodule SwarmCodeCLI.UI.Projector.Interview do
   end
 
   defp rich(ctx, parts), do: %Block.RichText{spans: spans(ctx, parts)}
+
+  # A row that answers: a target while this client may answer, else text.
+  defp answer_spans(%{answer?: true} = ctx, parts, target),
+    do: Support.action_spans(spans(ctx, parts), target)
+
+  defp answer_spans(ctx, parts, _target), do: rich(ctx, parts)
 
   defp spans(ctx, parts) do
     for part <- parts, elem(part, 0) != "" do
