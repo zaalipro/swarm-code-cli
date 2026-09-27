@@ -1,8 +1,9 @@
 defmodule SwarmCodeCLI.UI.C75InterviewModelTest do
   use ExUnit.Case, async: true
 
-  alias SwarmCodeCLI.UI.{Editor, FieldEditors, Pass73Helpers, Question}
+  alias SwarmCodeCLI.UI.{Editor, FieldEditors, Input, Pass73Helpers, Projector, Question, Scene}
   alias SwarmCodeCLI.UI.DataSource.DTO
+  alias SwarmCodeCLI.UI.Projector.ApprovalCard
 
   @run "11111111-1111-4111-8111-111111111111"
   @node "22222222-2222-4222-8222-222222222222"
@@ -221,5 +222,54 @@ defmodule SwarmCodeCLI.UI.C75InterviewModelTest do
 
     assert Question.vanish_notice(none, @deadline, "Lead") ==
              "The Lead is no longer waiting for your answers"
+  end
+
+  test "the default speakers keep one article: the assistant, an agent (231, review Q-3)" do
+    state = state([row("q", 0, "Format", false, [{"csv", "CSV"}], total: 1)])
+    ask = Question.ask(state, @node)
+    first = hd(ask.rows)
+    step = interview(0)[@node]
+
+    assert ApprovalCard.who(first, state) == "An agent"
+    assert Question.enter_words(ask, step, "An agent") == "send to an agent"
+
+    chat = put_in(state.read_model.runs[@run], Pass73Helpers.run(@run, :waiting_question))
+    name = ApprovalCard.who(first, chat)
+    assert name == "The assistant"
+    assert Question.enter_words(ask, step, name) == "send to the assistant"
+
+    assert Question.deadline_words(ask, @deadline - 29 * 60_000 - 1, name) ==
+             {"Esc later: the assistant keeps waiting, 29 min left", :text_faint}
+
+    assert Question.vanish_notice(ask, @deadline - 1, name) ==
+             "The assistant is no longer waiting for your answers"
+  end
+
+  test "a question row without its body is one ask, answered in your own words (review Q-4)" do
+    bare = %{hd(rows()) | id: "bare", question: nil}
+    state = state([bare])
+
+    assert [ask] = Question.asks(state)
+    assert ask.total == 1 and ask.legacy?
+    assert [%{id: "bare"}] = Question.needs(state)
+    assert Question.header(hd(ask.rows)) == "Question 1"
+    assert Question.focus_ids(hd(ask.rows)) == ["other"]
+    assert Question.ledger(state, ask) == [{:current, "Question 1", "not answered yet"}]
+
+    # The wire never carries such a row (`Schema.relations?/1` wants a body),
+    # but a hand-built one must not crash the note: it draws, the words typed
+    # into "other" are its answer, and Enter confirms it.
+    note = %{state | layers: [{:question, @node}], focus: "other", interaction_grace: nil}
+    {scene, _} = Projector.project(note)
+    assert Scene.validate(scene) == :ok
+    assert scene.overlay.focused_control_id == "other"
+
+    typed = Pass73Helpers.type(note, "fine")
+
+    assert Question.intents(typed, Question.ask(typed, @node)) == [
+             {:answer_question, @run, @node, "bare", 4, %{option_ids: [], custom_text: "fine"}}
+           ]
+
+    assert {%{}, _effects} = Pass73Helpers.press(typed, Input.key(:enter))
   end
 end

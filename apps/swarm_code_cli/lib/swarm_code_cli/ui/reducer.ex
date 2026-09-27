@@ -118,6 +118,7 @@ defmodule SwarmCodeCLI.UI.Reducer do
         next = hush_refusals(state, next)
         next = stamp_notice(state, next)
         next = repair_switcher(state, next)
+        next = follow_note_focus(state, next)
         next = SwarmCodeCLI.UI.Reducer.Settings.track_legacy(next, effects)
         {next, effects} = boot_settings(next, effects)
         {next, effects} = boot_resume_picker(next, effects)
@@ -2074,6 +2075,19 @@ defmodule SwarmCodeCLI.UI.Reducer do
 
   # ------------------------------------------------ pass75 interview
 
+  # PgUp/PgDn move the note's view and keep its focus (14.9); a focus that
+  # moves, or a note that opens, brings the view back to the focused row.
+  defp follow_note_focus(
+         %{layers: [top | _], focus: focus},
+         %{layers: [top | _], focus: focus} = next
+       ),
+       do: next
+
+  defp follow_note_focus(_state, %{layers: [{:question, _} | _]} = next),
+    do: %{next | selection: Map.delete(next.selection, "dialog_scroll")}
+
+  defp follow_note_focus(_state, next), do: next
+
   # The note's events change only held state: picks, ticks, focus and the
   # step. Nothing leaves the CLI before the final Enter.
   defp interview(state, {:pick, node, option}) do
@@ -2095,9 +2109,9 @@ defmodule SwarmCodeCLI.UI.Reducer do
   defp interview(state, {:toggle, node, option}) do
     with_question(state, node, fn _ask, interview, current ->
       if option in option_ids(current) do
-        {toggled, []} = transition(state, {:select_option, current.id, option})
+        {toggled, effects} = transition(state, {:select_option, current.id, option})
         interview = %{interview | last_focus: Map.put(interview.last_focus, current.id, option)}
-        {%{put_interview(toggled, node, interview) | focus: option}, []}
+        {%{put_interview(toggled, node, interview) | focus: option}, effects}
       else
         {state, []}
       end

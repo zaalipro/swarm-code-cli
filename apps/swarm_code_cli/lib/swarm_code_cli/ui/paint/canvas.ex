@@ -99,7 +99,9 @@ defmodule SwarmCodeCLI.UI.Paint.Canvas do
   @doc """
   pass75 interview: maps the style index of every cell inside `rect` (clipped
   to the canvas) through `fun`, keeping glyphs, widths and owners. `fun` is
-  pure: it never registers a style.
+  pure: it never registers a style. A blank cell is a `" "` glyph in
+  `blank_style` (`new/2`), so it is mapped too; a wide glyph's continuation
+  cell carries no style and is left as it is.
   """
   @spec restyle(t(), Rect.t(), (non_neg_integer() -> non_neg_integer())) :: t()
   def restyle(

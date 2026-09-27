@@ -4,7 +4,7 @@ defmodule SwarmCodeCLI.UI.C75InterviewKeysTest do
 
   import SwarmCodeCLI.UI.Pass73Helpers
 
-  alias SwarmCodeCLI.UI.{Editor, FieldEditors, Input, Paint, Projector, Question}
+  alias SwarmCodeCLI.UI.{Editor, FieldEditors, Input, Keymap, Paint, Projector, Question}
   alias SwarmCodeCLI.UI.DataSource.DTO
   alias SwarmCodeCLI.UI.Keymap.Bindings
   alias SwarmCodeCLI.UI.Paint.{Options, Plan}
@@ -196,6 +196,72 @@ defmodule SwarmCodeCLI.UI.C75InterviewKeysTest do
     dismissed = press!(typed, key(:escape))
     assert dismissed.layers == []
     assert {@node, 4} in dismissed.dismissed_interactions
+  end
+
+  # One question with sixteen options (the wire's most): at 120x20 the note
+  # scrolls its body.
+  defp long_opened do
+    base = row("b-q0", 0, total: 1)
+
+    options =
+      for n <- 1..16, do: %DTO.QuestionOption{id: "o#{n}", label: "Choice #{n}"}
+
+    state = opened([%{base | question: %{base.question | options: options}}])
+    assert [{:question, @node}] = state.layers
+    %{state | size: %SwarmCodeCLI.UI.Size{columns: 120, rows: 20}}
+  end
+
+  defp body_scroll(state), do: elem(Projector.project(state), 0).overlay.body_scroll
+
+  # The number of the first option row the note draws.
+  defp first_choice(state) do
+    Enum.find_value(screen(state), fn line ->
+      case Regex.run(~r/Choice (\d+)\b/, line) do
+        [_, n] -> String.to_integer(n)
+        nil -> nil
+      end
+    end)
+  end
+
+  test "PgDn and PgUp page a long note; the focus stays, and moving it brings the view back" do
+    state = long_opened() |> press!(key(:down))
+    focus = state.focus
+    assert focus == "o1"
+    assert body_scroll(state) == 0
+    assert first_choice(state) == 1
+
+    paged = press!(state, key(:page_down))
+    assert paged.focus == focus
+    assert body_scroll(paged) > 0
+    assert first_choice(paged) > 1
+
+    back = press!(paged, key(:page_up))
+    assert back.focus == focus
+    assert body_scroll(back) == 0
+    assert first_choice(back) == 1
+
+    # ↓ moves the focus: the paged offset goes and the focused row is in view.
+    moved = press!(paged, key(:down))
+    assert moved.focus == "o2"
+    refute Map.has_key?(moved.selection, "dialog_scroll")
+    assert first_choice(moved) == 1
+  end
+
+  test "Enter in the other field sends the words; it does not insert a newline" do
+    state = opened([row("b-q0", 0, total: 1)]) |> press!(key(:tab))
+    assert state.focus == "other"
+    state = type(state, "hi")
+
+    assert {:ok, {:interview, {:confirm, @node}}} = Keymap.resolve(key(:enter), state, %{})
+    {sent, effects} = press(state, key(:enter))
+
+    assert Enum.map(requests(effects), & &1.kind) == [
+             {:answer_question, "r", @node, "b-q0", 4, %{option_ids: [], custom_text: "hi"}}
+           ]
+
+    assert sent.field_editors
+           |> FieldEditors.fetch({:question_other, "b-q0", 4})
+           |> Editor.text() == "hi"
   end
 
   test "the keymap table: → is :dialog_right in the dialog, and no key means two things" do

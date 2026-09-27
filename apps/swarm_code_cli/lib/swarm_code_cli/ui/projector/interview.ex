@@ -30,7 +30,13 @@ defmodule SwarmCodeCLI.UI.Projector.Interview do
         text_width = max(rect(size, main, class, 1).width - 8, 1)
         all = rows(state, class, ask, interview, text_width)
         rect = rect(size, main, class, length(all))
-        {visible, scroll} = fit(all, max(rect.height - 2, 0), focus_tag(state))
+        # PgUp/PgDn page the note through `selection["dialog_scroll"]`
+        # (14.9); the reducer drops it when the focus moves.
+        requested = Map.get(state.selection, "dialog_scroll")
+
+        {visible, scroll, shown} =
+          view(all, max(rect.height - 2, 0), focus_tag(state), requested)
+
         total = length(all)
         narrow? = class in @narrow_classes
         {:ok, title} = SafeText.external(name <> " asks you", SafeText.Limits.content())
@@ -45,7 +51,7 @@ defmodule SwarmCodeCLI.UI.Projector.Interview do
           focused_control_id: focus_control(state, ask, interview),
           footer: [],
           body_scroll: min(scroll, total),
-          body_visible_range: {min(scroll, total), min(scroll + length(visible), total)},
+          body_visible_range: {min(scroll, total), min(scroll + shown, total)},
           body_total_count: total,
           style: :note,
           edges: edges(state, ask, name, name_role(first, state), state.now),
@@ -170,13 +176,22 @@ defmodule SwarmCodeCLI.UI.Projector.Interview do
   The rows that fit `max_rows`, and the scroll of the body. Nothing is dropped
   when the rows fit. Else the blank rows go first (bottom-most first), then the
   why row; a body still too tall scrolls the slice between the stepper and the
-  keys row so the focused row stays in view.
+  keys row so the focused row stays in view. A `requested` offset (the note
+  paged with PgUp/PgDn, clamped to the slice) places the window instead, and
+  the focus stays where it is, in view or not.
   """
-  @spec fit([{term(), term()}], non_neg_integer(), term()) ::
+  @spec fit([{term(), term()}], non_neg_integer(), term(), integer() | nil) ::
           {[{term(), term()}], non_neg_integer()}
-  def fit(tagged_rows, max_rows, focused_tag) do
+  def fit(tagged_rows, max_rows, focused_tag, requested \\ nil) do
+    {rows, scroll, _shown} = view(tagged_rows, max_rows, focused_tag, requested)
+    {rows, scroll}
+  end
+
+  # `fit/4` plus how many rows of the scrolled slice are in view (every row
+  # when nothing scrolls): the page PgUp/PgDn move by.
+  defp view(tagged_rows, max_rows, focused_tag, requested) do
     if length(tagged_rows) <= max_rows do
-      {tagged_rows, 0}
+      {tagged_rows, 0, length(tagged_rows)}
     else
       rows = drop_blanks(tagged_rows, length(tagged_rows) - max_rows)
 
@@ -185,7 +200,9 @@ defmodule SwarmCodeCLI.UI.Projector.Interview do
           do: Enum.reject(rows, &(elem(&1, 0) == :why)),
           else: rows
 
-      if length(rows) <= max_rows, do: {rows, 0}, else: scroll(rows, max_rows, focused_tag)
+      if length(rows) <= max_rows,
+        do: {rows, 0, length(rows)},
+        else: scroll(rows, max_rows, focused_tag, requested)
     end
   end
 
@@ -203,8 +220,9 @@ defmodule SwarmCodeCLI.UI.Projector.Interview do
   end
 
   # The stepper (and what stands above it) and the keys row stay; the rows in
-  # between scroll so the focused one is inside the window.
-  defp scroll(rows, max_rows, focused_tag) do
+  # between scroll so the focused one is inside the window, or to the paged
+  # offset when there is one.
+  defp scroll(rows, max_rows, focused_tag, requested) do
     head_count =
       case Enum.find_index(rows, &(elem(&1, 0) == :stepper)) do
         nil -> 0
@@ -226,9 +244,14 @@ defmodule SwarmCodeCLI.UI.Projector.Interview do
       end
 
     last = max(length(slice) - window, 0)
-    offset = (final - window + 1) |> max(0) |> min(first) |> min(last)
+
+    offset =
+      if is_integer(requested),
+        do: requested |> max(0) |> min(last),
+        else: (final - window + 1) |> max(0) |> min(first) |> min(last)
+
     visible = slice |> Enum.drop(offset) |> Enum.take(window)
-    {Enum.take(head ++ visible ++ tail, max_rows), offset}
+    {Enum.take(head ++ visible ++ tail, max_rows), offset, length(visible)}
   end
 
   @doc """

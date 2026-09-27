@@ -47,14 +47,17 @@ defmodule SwarmCodeCLI.UI.Question do
     |> Enum.map(fn {node_id, group} ->
       revision = group |> Enum.map(& &1.expected_revision) |> Enum.max()
 
+      # A hand-built row without its question body (the wire never carries
+      # one: `Schema.relations?/1`) still counts as waiting; it reads as an
+      # empty `Question N`, so every accessor below may read `row.question`.
       rows =
         group
         |> Enum.filter(&(&1.expected_revision == revision))
         |> Enum.sort_by(&order_key/1)
+        |> Enum.map(&with_body/1)
 
       first = hd(rows)
-      # A row without its question body still counts as waiting.
-      question = first.question || %SwarmCodeCLI.UI.DataSource.DTO.Question{}
+      question = first.question
 
       %{
         node_id: node_id,
@@ -70,6 +73,11 @@ defmodule SwarmCodeCLI.UI.Question do
     end)
     |> Enum.sort_by(&order_key(hd(&1.rows)))
   end
+
+  defp with_body(%{question: nil} = row),
+    do: %{row | question: %SwarmCodeCLI.UI.DataSource.DTO.Question{}}
+
+  defp with_body(row), do: row
 
   @doc "The pending ask of `node_id`, or nil."
   @spec ask(map(), binary()) :: ask() | nil
