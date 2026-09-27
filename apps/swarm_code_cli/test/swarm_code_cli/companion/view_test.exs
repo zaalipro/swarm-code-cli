@@ -497,7 +497,12 @@ defmodule SwarmCodeCLI.Companion.ViewTest do
 
     assert [first, second] = view.needs
     assert first.id == "need-a" and first.kind == "question" and first.title == "Which?"
-    assert first.options == [%{id: "x", label: "X"}, %{id: "y", label: "Y"}]
+    # pass75 interview: an option's description travels as its own field.
+    assert first.options == [
+             %{id: "x", label: "X", description: ""},
+             %{id: "y", label: "Y", description: ""}
+           ]
+
     assert first.command == nil and first.risk == nil and first.agent_id == nil
     assert first.revision == 3 and first.run_id == "fixture-run"
     assert second.id == "need-b" and second.kind == "approval" and second.title == "shell"
