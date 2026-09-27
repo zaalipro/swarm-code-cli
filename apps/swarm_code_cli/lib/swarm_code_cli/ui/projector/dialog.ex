@@ -4,7 +4,6 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
     Editor,
     FieldEditors,
     ModelPicker,
-    Prose,
     SafeText,
     State,
     Switcher,
@@ -21,6 +20,7 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
     ApprovalCard,
     Composer,
     Density,
+    Interview,
     KeyLabel,
     RunPalette,
     RunRow,
@@ -28,10 +28,6 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
     Support,
     Syntax
   }
-
-  # pass73 G2 (QA Q2-03): the rows of a question's own text above its
-  # options; they are neither choices nor counted as ones.
-  @body_rows ["prompt", "prompt-gap"]
 
   def project(state, class, background \\ %{})
   def project(%{layers: []}, _class, _background), do: nil
@@ -45,6 +41,11 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
   # of body: striped surface rows carrying a gauge, not single-line options.
   def project(%{layers: [{:run_palette, _} | _]} = state, class, _background),
     do: RunPalette.dialog(state, class)
+
+  # pass75 interview: an `ask_user` call is one note, built by its own
+  # projector (frames QA1-QA3).
+  def project(%{layers: [{:question, node_id} | _]} = state, class, _background),
+    do: Interview.dialog(state, class, node_id)
 
   # An approval drawn in the composer slot is not a modal (the projector draws
   # no overlay for it), but the reducer still pages its body through this
@@ -127,11 +128,8 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
           block
       end)
 
-    # Headings are not items, nor is a question's own text (pass73 G2).
-    items =
-      Enum.reject(options, fn {id, _, _} ->
-        match?(%{heading: _}, Map.get(decor, id)) or id in @body_rows
-      end)
+    # Headings are not items.
+    items = Enum.reject(options, fn {id, _, _} -> match?(%{heading: _}, Map.get(decor, id)) end)
 
     found = Enum.find_index(items, fn {id, _, _} -> id == focus end)
     ordinal = found || 0
@@ -144,11 +142,6 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
 
           :help ->
             "PgUp/PgDn, Ctrl-D/U scroll · #{length(options)} lines"
-
-          # pass73 G2 (QA Q2-03): a question opens on Cancel, so no option
-          # is "1 of 4" yet.
-          {:question, _} when is_nil(found) ->
-            "#{length(items)} choices · Down picks one · Esc closes"
 
           # pass70 Q10: where the choice is and how to make it, not "item 1 of 8".
           _ ->
@@ -185,22 +178,11 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
         width =
           max(1, rect.width - 2 - if(focused? or not mono?, do: prefix_width, else: 0))
 
-        # A decorated row is one line; its spans clip it. pass73 G2 (QA
-        # Q2-03): a question's text and options wrap at words ("immedi|ately").
+        # A decorated row is one line; its spans clip it.
         lines =
-          cond do
-            Map.has_key?(decor, id) and not mono? ->
-              [text]
-
-            match?({:question, _}, layer) ->
-              text
-              |> Prose.wrap(width, state.capabilities.ambiguous_width)
-              |> Enum.with_index()
-              |> Enum.map(fn {line, n} -> if n > 0, do: String.trim_leading(line), else: line end)
-
-            true ->
-              Width.wrap(text, width, state.capabilities.ambiguous_width)
-          end
+          if Map.has_key?(decor, id) and not mono?,
+            do: [text],
+            else: Width.wrap(text, width, state.capabilities.ambiguous_width)
 
         Enum.map(lines, fn line ->
           {id, Density.safe(line, state, rect.width - 2), action}
@@ -209,12 +191,10 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
 
     # A picker is as tall as its rows (top edge where the centred box would
     # start, so filtering shortens it from below), never a tall empty box.
-    # pass73 G2 (QA Q2-03): a question too, not ten empty rows under it.
     rect =
-      if (picker_layer?(layer) or match?({:question, _}, layer)) and
-           class not in [:narrow, :small, :compressed_small],
-         do: %{rect | height: min(rect.height, max(8, length(rows) + 2 + footer_height))},
-         else: rect
+      if picker_layer?(layer) and class not in [:narrow, :small, :compressed_small],
+        do: %{rect | height: min(rect.height, max(8, length(rows) + 2 + footer_height))},
+        else: rect
 
     height = max(0, rect.height - 2 - footer_height)
 
@@ -1042,7 +1022,7 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
      focus(state, options)}
   end
 
-  defp contents({kind, id}, state, rect, class) when kind in [:question, :approval] do
+  defp contents({:approval, id}, state, rect, class) do
     item = Map.get(state.read_model.interactions, id)
 
     if item && item.state == :pending && class != :compressed_small do
@@ -1197,83 +1177,6 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
   defp no_models(state, rect),
     do: Density.safe("No provider lists any model.", state, rect.width - 2)
 
-  defp interaction(%{kind: :question} = item, state, rect) do
-    permitted = Support.allowed?(state, item, :answer_question)
-    selected = Map.get(state.selection, {:question, item.id}, [])
-
-    selected =
-      Enum.filter(selected, fn id -> Enum.any?(item.question.options, &(&1.id == id)) end)
-
-    options =
-      item.question.options
-      |> Enum.with_index(1)
-      |> Enum.map(fn {option, ordinal} ->
-        target =
-          cond do
-            not permitted ->
-              nil
-
-            item.question.multiple ->
-              {:local, {:select_option, item.id, option.id}}
-
-            true ->
-              case SwarmCodeCLI.UI.Question.answer_intent(state, item, option.id) do
-                :ignore -> nil
-                intent -> {:intent, intent}
-              end
-          end
-
-        marker =
-          if item.question.multiple,
-            do: if(option.id in selected, do: "[x] ", else: "[ ] "),
-            else: ""
-
-        {option.id,
-         Density.safe("Option #{ordinal} · " <> marker <> option.label, state, rect.width * 32),
-         target}
-      end)
-
-    custom = SwarmCodeCLI.UI.Question.other_text(state, item)
-
-    options =
-      options ++
-        [
-          {"other", Density.safe("Your answer: " <> custom, state, rect.width * 8),
-           if(permitted, do: {:local, {:focus_region, "other"}})}
-        ]
-
-    submit_intent = SwarmCodeCLI.UI.Question.answer_intent(state, item, "submit")
-
-    submit =
-      if permitted and submit_intent != :ignore,
-        do: [control("submit", SafeText.chrome(:submit), {:intent, submit_intent})],
-        else: []
-
-    footer = submit ++ [control("cancel", SafeText.chrome(:cancel), {:local, :close_top_layer})]
-
-    # pass73 G2 (QA Q2-03): the title cut a long question to one line, and
-    # it was not shown anywhere else. A question that fits the title stays
-    # there; a longer one leads the body, wrapped at words, above the
-    # options, and the title says who asks.
-    question = item.question.prompt || ""
-
-    fits? =
-      not String.contains?(question, ["\n", "\r"]) and
-        Width.cells(question, state.capabilities.ambiguous_width) <= rect.width - 6
-
-    {title, prompt} =
-      if fits?,
-        do: {question, []},
-        else:
-          {question_title(item, state),
-           [
-             {"prompt", Density.safe(question, state, rect.width * 32), nil},
-             {"prompt-gap", Density.safe(" ", state, 1), nil}
-           ]}
-
-    {Density.safe(title, state, rect.width - 2), prompt ++ options, footer, focus(state, options)}
-  end
-
   # The approval card answers the three questions the user has before they
   # press a key: who is asking, what exactly would run, and what it could
   # touch. The command comes first because it is what the user will read; the
@@ -1365,7 +1268,6 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
   defp tool_words(_tool), do: "a tool"
 
   # Who asks, by the one name the card, the band and the overlay use.
-  defp question_title(item, state), do: ApprovalCard.who(item, state) <> " asks"
 
   defp approval_tool_line(%{tool: tool, permission: permission}),
     do: "Tool: " <> tool_words(tool) <> " · needs permission to " <> permission_word(permission)
