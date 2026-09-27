@@ -174,9 +174,9 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Appearance do
     ]
 
     boxes =
-      [pair([border("┌─ dark ", "┐"), border("┌─ light ", "┐")])] ++
+      [pair([top(tier, "dark"), top(tier, "light")])] ++
         Enum.map(lines, &pair([boxed(&1), boxed(&1)])) ++
-        [pair([border("└", "┘"), border("└", "┘")])]
+        [pair([bottom(tier), bottom(tier)])]
 
     [
       Row.heading("preview · the same rows in both themes", [
@@ -198,18 +198,28 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Appearance do
   defp glyph_line(:ascii), do: "* S C * # /  * ~ . ! v x o #-"
   defp glyph_line(_tier), do: "✳ ⋔ ⚖ ◉ ⧉ ⌕  ● ◐ ◌ ! ✓ ✗ ○ ▰▱"
 
+  # The cards' rounded frame (pass 75, E): `╭─ dark ───╮` … `╰───╯`, faint.
+  defp top(tier, name),
+    do:
+      border(
+        Glyphs.get(:corner_tl, tier) <> "─ " <> name <> " ",
+        Glyphs.get(:corner_tr, tier)
+      )
+
+  defp bottom(tier), do: border(Glyphs.get(:corner_bl, tier), Glyphs.get(:corner_br, tier))
+
   defp border(left, right) do
     fill = @box + 2 - String.length(left) - String.length(right)
-    [{left <> String.duplicate("─", max(fill, 0)) <> right, :text_ghost}]
+    [{left <> String.duplicate("─", max(fill, 0)) <> right, :text_faint}]
   end
 
   defp boxed(segments) do
     width = segments |> Enum.map(&String.length(elem(&1, 0))) |> Enum.sum()
     pad = max(@box - 2 - width, 0)
-    [{"│ ", :text_ghost}] ++ segments ++ [{String.duplicate(" ", pad) <> " │", :text_ghost}]
+    [{"│ ", :text_faint}] ++ segments ++ [{String.duplicate(" ", pad) <> " │", :text_faint}]
   end
 
-  defp pair([left, right]), do: left ++ [{" ", :text_ghost}] ++ right
+  defp pair([left, right]), do: left ++ [{" ", :text_faint}] ++ right
 
   defp desktop_link(rest, ctx) do
     theme = desktop_value(ctx, "desktop.theme") || "carbon"

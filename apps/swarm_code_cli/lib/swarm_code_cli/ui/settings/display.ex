@@ -35,7 +35,7 @@ defmodule SwarmCodeCLI.UI.Settings.Display do
 
   def value(%Entry{secret: true}, value, _setting, _lookups) do
     if value in [nil, "", false],
-      do: [{"not set", :text_ghost}],
+      do: [{"not set", :text_faint}],
       else: [{"●●●●●●●●", :text_primary}]
   end
 
@@ -72,7 +72,11 @@ defmodule SwarmCodeCLI.UI.Settings.Display do
 
     cond do
       is_map(providers) and Map.has_key?(providers, provider_id) ->
-        [{model, :text_primary}, {" · " <> Map.fetch!(providers, provider_id), :text_faint}]
+        [
+          {model, :text_primary},
+          {" · ", :text_faint},
+          {Map.fetch!(providers, provider_id), :text_muted}
+        ]
 
       is_map(providers) ->
         [{"! the provider was deleted; pick another", :warning}]
@@ -122,7 +126,7 @@ defmodule SwarmCodeCLI.UI.Settings.Display do
     end
   end
 
-  def value(%Entry{}, nil, _setting, _lookups), do: [{"not set", :text_ghost}]
+  def value(%Entry{}, nil, _setting, _lookups), do: [{"not set", :text_faint}]
   def value(%Entry{}, value, _setting, _lookups), do: [{words(value), :text_primary}]
 
   @doc "The choices of an enum or effort entry: the SettingValue's dynamic ones, else the entry's."

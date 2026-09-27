@@ -60,12 +60,15 @@ defmodule SwarmCodeCLI.UI.Settings.C74AppearanceTest do
   end
 
   test "the preview: the same rows in a dark and a light box, and the ASCII twins" do
-    {state, _fake} = opened(:appearance)
+    # pass 75 (E): the cards' rounded frame is drawn where the tier has it.
+    rich = SwarmCodeCLI.UI.Pass73Helpers.ready()
+    rich = %{rich | capabilities: %{rich.capabilities | glyph_tier: :rich}}
+    {state, _fake} = opened(:appearance, state: rich)
     text = page_text(state)
 
     assert text =~ "preview · the same rows in both themes"
-    assert text =~ "┌─ dark ───"
-    assert text =~ "┌─ light ───"
+    assert text =~ "╭─ dark ───"
+    assert text =~ "╭─ light ───"
     # cli74 G1 (QA F-14): boxes of 37 so the pair fits a 160-column page's 80 cells.
     assert text =~ "│ ✳ Assistant  deepseek-v4-pro        │ │ ✳ Assistant  deepseek-v4-pro"
     assert text =~ "│ ! deps-agent wants to run           │"

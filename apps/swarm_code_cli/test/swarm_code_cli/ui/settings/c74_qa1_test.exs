@@ -520,15 +520,17 @@ defmodule SwarmCodeCLI.UI.Settings.C74Qa1Test do
   end
 
   test "F-14: at 160 x 45 both preview boxes are whole" do
+    rich = ready()
+
     state =
-      ready()
+      %{rich | capabilities: %{rich.capabilities | glyph_tier: :rich}}
       |> act!({:resize, %SwarmCodeCLI.UI.Size{columns: 160, rows: 45}})
       |> act!({:settings_open, {:section, :appearance}})
 
     lines = state |> screen() |> String.split("\n")
-    top = Enum.find(lines, &(&1 =~ "┌─ dark"))
-    assert top =~ ~r/┌─ dark ─+┐ ┌─ light ─+┐/u, top
-    assert Enum.any?(lines, &(&1 =~ ~r/└─+┘ └─+┘/u))
+    top = Enum.find(lines, &(&1 =~ "╭─ dark"))
+    assert top =~ ~r/╭─ dark ─+╮ ╭─ light ─+╮/u, top
+    assert Enum.any?(lines, &(&1 =~ ~r/╰─+╯ ╰─+╯/u))
   end
 
   test "F-16: a key binding row says default or changed once" do
