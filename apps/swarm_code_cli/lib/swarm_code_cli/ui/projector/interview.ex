@@ -214,9 +214,19 @@ defmodule SwarmCodeCLI.UI.Projector.Interview do
     {head, rest} = Enum.split(rows, head_count)
     {slice, tail} = Enum.split_with(rest, &(elem(&1, 0) != :keys))
     window = max(max_rows - length(head) - length(tail), 0)
-    focused = Enum.find_index(slice, &(elem(&1, 0) == focused_tag)) || 0
+    # A wrapped label is whole in view when it fits the window, and its
+    # first row (the number and the focus words) always is.
+    focused =
+      for {{tag, _}, i} <- Enum.with_index(slice), tag == focused_tag, do: i
+
+    {first, final} =
+      case focused do
+        [] -> {0, 0}
+        indexes -> {hd(indexes), List.last(indexes)}
+      end
+
     last = max(length(slice) - window, 0)
-    offset = (focused - window + 1) |> max(0) |> min(last)
+    offset = (final - window + 1) |> max(0) |> min(first) |> min(last)
     visible = slice |> Enum.drop(offset) |> Enum.take(window)
     {Enum.take(head ++ visible ++ tail, max_rows), offset}
   end
@@ -408,9 +418,17 @@ defmodule SwarmCodeCLI.UI.Projector.Interview do
   defp wrap_prose(text, width, ctx),
     do: SwarmCodeCLI.UI.Prose.wrap(text, width, ctx.state.capabilities.ambiguous_width)
 
+  # Word-wrapped lines without the space a wrap carries over; at least one.
+  defp wrap_lines(text, width, ctx) do
+    case wrap_prose(text, width, ctx) do
+      [] -> [""]
+      [first | rest] -> [first | Enum.map(rest, &String.trim_leading/1)]
+    end
+  end
+
   # Two rows per option: `<N>  <label>` (a multi-select `[✓]` before the
-  # label) and its description under the label. The focused option carries
-  # the accent rail on both rows.
+  # label, a long one wrapping under itself) and its description under the
+  # label. The focused option carries the accent rail on all its rows.
   defp options(ctx, row) do
     state = ctx.state
     multiple = row.question.multiple
@@ -443,39 +461,46 @@ defmodule SwarmCodeCLI.UI.Projector.Interview do
 
       lead = [{number, number_role}, {"  ", :text_faint}] ++ box
       label_role = if focused? or tick?, do: {:text_primary, [:bold]}, else: :text_primary
-      label_room = max(ctx.tw - width(lead, ctx), 1)
-      label = {cut(clean(option.label, ctx), label_room, ctx), label_role}
+      # The monochrome `FOCUS > ` words take their cells from the label, so
+      # the focused row keeps its width.
+      cue = if focused?, do: focus_prefix_cells(ctx), else: 0
+      indent = width(lead, ctx)
+      # A long label wraps at words under itself (pass73 Q2-03): the whole
+      # option is read, never cut.
+      [first | more] = wrap_lines(clean(option.label, ctx), max(ctx.tw - indent - cue, 1), ctx)
+      label = {first, label_role}
       label = if focused?, do: focus_prefix(label, state), else: label
-      option_spans = rail(ctx, focused?) ++ lead ++ [label]
       action = if multiple, do: :toggle, else: :pick
+      target = {:local, {:interview, {action, ctx.node, option.id}}}
 
-      option_row =
-        {{:option, option.id},
-         Support.action_spans(
-           spans(ctx, option_spans),
-           {:local, {:interview, {action, ctx.node, option.id}}}
-         )}
+      option_rows =
+        [rail(ctx, focused?) ++ lead ++ [label]] ++
+          Enum.map(more, fn line ->
+            rail(ctx, focused?) ++
+              [{String.duplicate(" ", indent), :text_faint}, {line, label_role}]
+          end)
+
+      option_rows =
+        Enum.map(
+          option_rows,
+          &{{:option, option.id}, Support.action_spans(spans(ctx, &1), target)}
+        )
 
       description = clean(Map.get(option, :description) || "", ctx)
 
       if description == "" do
-        [option_row]
+        option_rows
       else
-        indent = width([{number, :text_faint}, {"  ", :text_faint}] ++ box, ctx)
         role = if focused?, do: :text_primary, else: :text_muted
 
-        [
-          option_row,
-          {{:desc, option.id},
-           rich(
-             ctx,
-             rail(ctx, focused?) ++
-               [
-                 {String.duplicate(" ", indent), :text_faint},
-                 {cut(description, max(ctx.tw - indent, 1), ctx), role}
-               ]
-           )}
-        ]
+        option_rows ++
+          for line <- wrap_lines(description, max(ctx.tw - indent, 1), ctx) do
+            {{:desc, option.id},
+             rich(
+               ctx,
+               rail(ctx, focused?) ++ [{String.duplicate(" ", indent), :text_faint}, {line, role}]
+             )}
+          end
       end
     end)
   end
@@ -485,6 +510,16 @@ defmodule SwarmCodeCLI.UI.Projector.Interview do
     do: {text, role, Theme.style(:focus, caps).prefix}
 
   defp focus_prefix(label, _state), do: label
+
+  # The cells the painter adds before a focused label: the prefix and a space.
+  defp focus_prefix_cells(%{state: %{capabilities: %{color_mode: :monochrome} = caps}} = ctx) do
+    case Theme.style(:focus, caps).prefix do
+      nil -> 0
+      prefix -> cells(SafeText.value(prefix), ctx) + 1
+    end
+  end
+
+  defp focus_prefix_cells(_ctx), do: 0
 
   # `›  Something else, in your own words…   Tab to type`, or, focused, the
   # text with the caret and `Tab back to the list`.
@@ -617,7 +652,8 @@ defmodule SwarmCodeCLI.UI.Projector.Interview do
   defp keys(ctx, ask, interview) do
     state = ctx.state
     row = ctx.current
-    n = length(row.question.options)
+    # The digit keys reach options 1-9 only.
+    n = min(length(row.question.options), 9)
     multiple = row.question.multiple
 
     digits =
