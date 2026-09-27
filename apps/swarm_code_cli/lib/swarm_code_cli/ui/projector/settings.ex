@@ -16,13 +16,13 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
   Only the page rows around the cursor are built into lines.
   """
 
+  alias SwarmCodeCLI.UI.Projector.Settings.Chrome
   alias SwarmCodeCLI.UI.Projector.Settings.Popover, as: SettingsPopover
   alias SwarmCodeCLI.UI.Projector.Settings.Text
   alias SwarmCodeCLI.UI.Reducer.Settings.Paste, as: PasteTarget
   alias SwarmCodeCLI.UI.Scene.{Rect, Region}
   alias SwarmCodeCLI.UI.SafeText
-  alias SwarmCodeCLI.UI.Settings.{Detail, Glyphs, Layer, Nav, Page, Row, Sections}
-  alias SwarmCodeCLI.UI.Settings.Sections.Overview
+  alias SwarmCodeCLI.UI.Settings.{Detail, Glyphs, Grid, Layer, Nav, Row, Sections}
 
   @rail 26
   @detail 48
@@ -135,10 +135,13 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
         []
       end
 
+    grid = Grid.for(width, height)
+    glyphs = &Glyphs.for_caps(&1, state.capabilities)
+
     lines =
-      [header(state, layer, width)] ++
-        if(strip?, do: [section_strip(state, layer, width)], else: []) ++
-        [search(state, layer, width), rule(state, width)] ++
+      [Chrome.crumb(state, grid, glyphs), Chrome.well(state, grid, glyphs)] ++
+        if(strip?, do: [Chrome.strip(state, grid, glyphs)], else: []) ++
+        [rule(state, width)] ++
         body ++
         drawer_lines ++
         [rule(state, width), status(state, layer, current, width), footer(state, current, width)]
@@ -154,213 +157,6 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
     |> editor_popover(state, anchor, if(rail?, do: @rail + 1, else: 0), width, height)
     |> popover(state, width, height)
     |> Enum.take(height)
-  end
-
-  # ----------------------------------------------------------- header
-
-  defp header(state, layer, width) do
-    crumb = glyph(state, :crumb)
-    page = Layer.page(layer)
-
-    trail =
-      case Page.level(page) do
-        :section -> [Sections.title(page.section)]
-        :record -> [Sections.title(page.section), record_name(state, page)]
-        :sub -> [Sections.title(page.section), sub_title(state, page)]
-      end
-
-    left =
-      [{" Settings", {:text_primary, [:bold]}}] ++
-        Enum.flat_map(trail, &[{" #{crumb} ", :text_faint}, {&1, {:text_primary, [:bold]}}])
-
-    esc =
-      cond do
-        Layer.depth(layer) > 1 ->
-          [{"Esc", {:info, [:bold]}}, {" back ", :text_faint}]
-
-        small?(state) and layer.region != :rail ->
-          [{"Esc", {:info, [:bold]}}, {" sections ", :text_faint}]
-
-        true ->
-          [{"Esc", {:info, [:bold]}}, {" back to chat ", :text_faint}]
-      end
-
-    right = needs_you(state) ++ esc
-
-    Text.spread(state, left, right, width)
-  end
-
-  # A draft is not a record yet: the crumb says `new`, not the draft's id.
-  defp record_name(_state, %Page{record: {_kind, "draft"}}), do: "new"
-
-  # QA #2 P2-5: a search engine's record has no name field; its label names it
-  # (`Search & web › Exa`, not `› exa`).
-  defp record_name(_state, %Page{record: {"search_provider", id}}),
-    do: SwarmCodeCLI.UI.Settings.Sections.SearchWeb.label(id)
-
-  defp record_name(state, %Page{record: {kind, id}}) do
-    case Map.get(state.settings.data.record, {kind, id}) do
-      %{fields: fields} when is_map(fields) ->
-        name = Map.get(fields, "name") || Map.get(fields, :name)
-        if is_binary(name) and name != "", do: name, else: to_string(id)
-
-      _ ->
-        to_string(id)
-    end
-  end
-
-  # cli74 F18: a sub-page without a name of its own (a provider's delete
-  # page) is named by its section's title (the provider), not "…".
-  defp sub_title(state, page) do
-    section = Sections.title(page.section)
-
-    case sub_name(page) do
-      "…" ->
-        title = Sections.page_title(page.section, Nav.ctx(state))
-
-        cond do
-          not is_binary(title) or title in ["", section] ->
-            "…"
-
-          String.starts_with?(title, section <> " › ") ->
-            String.replace_prefix(title, section <> " › ", "")
-
-          true ->
-            title
-        end
-
-      name ->
-        name
-    end
-  end
-
-  defp sub_name(%Page{sub: sub}) when is_binary(sub), do: sub
-  defp sub_name(%Page{sub: {:rows, title, _rows}}) when is_binary(title), do: title
-  defp sub_name(%Page{sub: {_, name}}) when is_binary(name), do: name
-  defp sub_name(%Page{sub: {_, _, name}}) when is_binary(name), do: name
-  defp sub_name(_page), do: "…"
-
-  # The chip of what waits on you in the chat (Ctrl-N goes there).
-  defp needs_you(state) do
-    count =
-      state.read_model.interactions
-      |> Map.values()
-      |> Enum.count(&(Map.get(&1, :state) == :pending))
-
-    if count > 0,
-      do: [
-        {"! #{count} need#{if count == 1, do: "s", else: ""} you", :warning},
-        {" Ctrl-N   ", :text_faint}
-      ],
-      else: []
-  end
-
-  # ----------------------------------------------------------- search
-
-  defp search(state, %Layer{mode: :command_line, command_line: %{text: text} = line}, width) do
-    caret = glyph(state, :caret)
-
-    error =
-      if line.error,
-        do: [{glyph(state, :fail) <> " " <> line.error <> " ", :error}],
-        else: [{"Enter runs · Esc leaves ", :text_faint}]
-
-    Text.spread(
-      state,
-      [{" : ", {:info, [:bold]}}, {text, :text_primary}, {caret, :focus}],
-      error,
-      width
-    )
-  end
-
-  defp search(state, %Layer{mode: :search, search: nil, filter: %{} = filter}, width) do
-    caret = glyph(state, :caret)
-    shown = state |> Nav.rows() |> Enum.count(&Row.focusable?/1)
-
-    Text.spread(
-      state,
-      [{" / ", {:info, [:bold]}}, {filter.query, :text_primary}, {caret, :focus}],
-      [
-        {"filter #{filter.total} rows · #{shown} #{if shown == 1, do: "match", else: "matches"} ",
-         :text_faint}
-      ],
-      width
-    )
-  end
-
-  defp search(state, %Layer{mode: :search, search: %{query: query} = search}, width) do
-    caret = glyph(state, :caret)
-
-    # §4.1.7 (QA F-13): `7 of 212 · 3 sections`.
-    count =
-      case Map.get(search, :found) do
-        %{results: results} ->
-          sections = results |> Enum.map(&elem(&1, 1).section) |> Enum.uniq() |> length()
-
-          [
-            {"#{length(results)} of #{scalar_count()} · #{sections} section#{if sections == 1, do: "", else: "s"} ",
-             :text_faint}
-          ]
-
-        _ ->
-          [{"Esc leaves ", :text_faint}]
-      end
-
-    Text.spread(
-      state,
-      [{" / ", {:info, [:bold]}}, {query, :text_primary}, {caret, :focus}],
-      count,
-      width
-    )
-  end
-
-  defp search(state, %Layer{search: %{query: query}}, width) when query != "",
-    do: Text.fit(state, [{" / ", :text_muted}, {query, :text_primary}], width)
-
-  defp search(state, _layer, width),
-    do:
-      Text.spread(
-        state,
-        [
-          {" / ", :text_muted},
-          {"search #{scalar_count()} settings, providers, servers and keys", :text_ghost}
-        ],
-        strip(state, width),
-        width
-      )
-
-  # What the Overview counts, on every page: changed values, attention
-  # items, values the environment sets (F1's search row).
-  # Under 120 columns the words shorten (F14: `• 14  ! 3  2 env`).
-  defp strip(state, width) do
-    summary = Overview.summary(Nav.ctx(state))
-    short? = width < 120
-
-    [
-      if(summary.changed > 0,
-        do: [
-          {glyph(state, :changed) <> " ", :text_muted},
-          {if(short?,
-             do: "#{summary.changed}  ",
-             else: "#{summary.changed} changed from default  "
-           ), :text_faint}
-        ]
-      ),
-      if(summary.attention > 0,
-        do: [
-          {"! ", :warning},
-          {if(short?, do: "#{summary.attention}  ", else: "#{summary.attention} need attention  "),
-           :text_faint}
-        ]
-      ),
-      if(summary.env > 0,
-        do: [
-          {if(short?, do: "#{summary.env} env ", else: "#{summary.env} from env "), :text_faint}
-        ]
-      )
-    ]
-    |> Enum.reject(&is_nil/1)
-    |> Enum.concat()
   end
 
   # ------------------------------------------------------ small, narrow
@@ -383,63 +179,13 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
   defp cursor_line?(line),
     do: Enum.any?(line, fn {_text, role} -> role == :focus or match?({:focus, _, _}, role) end)
 
-  # F14: `[ Agents & limits  Approvals & trust  Project file ]      10 of 22`,
-  # the current section and as many neighbours as fit.
-  defp section_strip(state, layer, width) do
-    ids = Sections.ids()
-    current = Layer.section(layer)
-    index = Enum.find_index(ids, &(&1 == current)) || 0
-    count = "#{index + 1} of #{length(ids)} "
-    room = width - String.length(count) - 6
-    window = strip_window(ids, index, room)
-
-    names =
-      window
-      |> Enum.map(fn id ->
-        role = if id == current, do: {:text_primary, [:bold]}, else: :text_muted
-        [{Sections.title(id), role}]
-      end)
-      |> Enum.intersperse([{"  ", :text_faint}])
-      |> Enum.concat()
-
-    Text.spread(
-      state,
-      [{" [ ", :text_faint}] ++ names ++ [{" ]", :text_faint}],
-      [{count, :text_faint}],
-      width
-    )
-  end
-
-  defp strip_window(ids, index, room) do
-    cost = fn id -> String.length(Sections.title(id)) + 2 end
-    grow(ids, index, index, cost.(Enum.at(ids, index)), room, cost)
-  end
-
-  # Widens [lo, hi] a section at a time (right, then left) while it fits.
-  defp grow(ids, lo, hi, used, room, cost) do
-    {lo2, hi2, used2} =
-      Enum.reduce([hi + 1, lo - 1], {lo, hi, used}, fn at, {l, h, u} = acc ->
-        id = if at >= 0, do: Enum.at(ids, at)
-
-        cond do
-          id == nil or u + cost.(id) > room -> acc
-          at > h -> {l, at, u + cost.(id)}
-          true -> {at, h, u + cost.(id)}
-        end
-      end)
-
-    if {lo2, hi2} == {lo, hi},
-      do: Enum.slice(ids, lo..hi//1),
-      else: grow(ids, lo2, hi2, used2, room, cost)
-  end
-
   # ------------------------------------------------------------- rail
 
   defp rail_lines(state, rows, width \\ @rail) do
     layer = state.settings
     section = Layer.section(layer)
     bar = glyph(state, :focus_bar)
-    marks = rail_marks(state)
+    marks = Chrome.rail_marks(state, &Glyphs.for_caps(&1, state.capabilities))
 
     lines =
       Enum.flat_map(Sections.groups(), fn {group, ids} ->
@@ -469,83 +215,6 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
       end)
 
     Enum.take(lines, rows)
-  end
-
-  @counted [:providers, :mcp, :library]
-
-  # Per section: `!N` attention items (the overview's), else `•N` values
-  # changed from their default (terminal keys and the loaded daemon ones),
-  # else the record count of Providers, MCP servers and Library.
-  defp rail_marks(state) do
-    layer = state.settings
-    changed = glyph(state, :changed)
-
-    attention =
-      case layer.data.overview do
-        %{attention: items} when is_list(items) ->
-          items
-          |> Enum.map(&Map.get(&1, :section))
-          |> Enum.reject(&is_nil/1)
-          |> Enum.frequencies()
-
-        _ ->
-          %{}
-      end
-
-    daemon =
-      for {key, setting} <- layer.data.values,
-          Map.get(setting, :winner) not in [nil, :default],
-          {:ok, entry} <- [SwarmCode.Settings.Registry.fetch(key)],
-          do: entry.section
-
-    cli =
-      for {name, _value} <- state.prefs,
-          {:key, key} <- [SwarmCode.Settings.Registry.resolve(name)],
-          {:ok, entry} <- [SwarmCode.Settings.Registry.fetch(key)],
-          match?({:cli, ^name}, entry.storage),
-          do: entry.section
-
-    changed_counts = Enum.frequencies(daemon ++ cli)
-    ctx = Nav.ctx(state)
-
-    Sections.ids()
-    |> Enum.flat_map(fn id ->
-      records =
-        if id in @counted,
-          do: Map.get(Sections.counts(id, ctx), :records) || glance_count(layer.data.overview, id)
-
-      cond do
-        Map.get(attention, id, 0) > 0 ->
-          [{id, [{"!#{attention[id]}", :warning}]}]
-
-        Map.get(changed_counts, id, 0) > 0 ->
-          [{id, [{changed <> "#{changed_counts[id]}", :text_muted}]}]
-
-        # §4.1.1 (QA F-13): a plain number is the section's record count,
-        # once its records are loaded.
-        is_integer(records) ->
-          [{id, [{"#{records}", :text_faint}]}]
-
-        true ->
-          []
-      end
-    end)
-    |> Map.new()
-  end
-
-  # QA #2 P2-11: before a section's records are loaded its count comes from
-  # the Overview's glance (`providers 4`), so the rail shows it from the start.
-  defp glance_count(%{glance: %{} = glance}, :providers),
-    do: glance_int(glance, "providers", "count")
-
-  defp glance_count(%{glance: %{} = glance}, :mcp), do: glance_int(glance, "mcp", "servers")
-  defp glance_count(_overview, _id), do: nil
-
-  defp glance_int(glance, name, key) do
-    case Map.get(glance, name) do
-      %{} = fragment -> if is_integer(fragment[key]), do: fragment[key]
-      _ -> nil
-    end
   end
 
   # ------------------------------------------------------------- page
@@ -1213,9 +882,6 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
   end
 
   # ---------------------------------------------------------- helpers
-
-  # §4.1.2: the placeholder and the result count name the scalar settings.
-  defp scalar_count, do: length(SwarmCode.Settings.Registry.scalar_keys())
 
   defp glyph(state, id), do: Glyphs.get(id, Glyphs.tier(state.capabilities))
   defp rule(state, width), do: [{String.duplicate(glyph(state, :rule_h), width), :border}]
