@@ -74,7 +74,21 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.C74StorageTest do
              "1.8 GB on disk · 4 MB write-ahead log · at least 100 MB reclaimable · 2 isolation directories (30 MB) · 214 sessions"
 
     # cli74 G1 (QA F-21): counts in thin groups.
-    assert text(row(rows, "info:storage:kind:agent_details").value) == "4 120 · 910 MB"
+    # pass 75 (R27.1): the count and the size right-aligned in 6 and 8 cells
+    assert text(row(rows, "info:storage:kind:agent_details").value) == " 4 120 ·   910 MB"
+
+    assert [{:swatch, texture, role}] = row(rows, "info:storage:kind:agent_details").marks
+    assert texture in [:tex_1, :tex_2, :tex_3, :tex_4, :tex_5]
+    assert role in [:text_muted, :text_faint]
+
+    # the bar: textures in quiet roles, never text_primary; `measured` is the
+    # overview heading's tag, not a row of its own
+    bar = row(rows, "info:storage:bar").value
+    assert String.starts_with?(text(bar), "█")
+    refute Enum.any?(bar, &(elem(&1, 1) == :text_primary))
+    assert Enum.all?(bar, &(elem(&1, 1) in [:text_muted, :text_faint]))
+    assert text(row(rows, "head:overview").tag) =~ "measured"
+    refute Enum.any?(rows, &(&1.id == "info:storage:measured"))
     # cli74 F19: the stored UTC stamp in this machine's local time.
     local =
       {{2026, 9, 13}, {9, 0, 0}}
@@ -240,7 +254,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.C74StorageTest do
       })
 
     [r] = W.rows(running)
-    assert text(r.value) == "◷ deleting 2 of 5 · 402 MB freed · deleting sessions"
+    assert text(r.value) == "◐ deleting 2 of 5 · 402 MB freed · deleting sessions"
     assert text(r.tag) == "can't be stopped"
     assert [] = W.act(running, r, :escape)
 

@@ -19,6 +19,10 @@ defmodule SwarmCodeCLI.UI.Settings.Row do
     * `columns` is `nil` or `[{text, role, priority}]` for record tables:
       columns drop right to left by priority as the page narrows.
     * `target` is opaque to U1 and handed back to the section's `act/3`.
+    * `layer` is the layer that set the value (`:session | :project |
+      :project_file | :env | :flag | :cli | :global | :default`), or `nil`
+      when no layer is known; the projector colours the row's spine by it
+      (`Settings.Strata`, pass 75).
   """
 
   alias SwarmCodeCLI.UI.Settings.Detail
@@ -37,7 +41,8 @@ defmodule SwarmCodeCLI.UI.Settings.Row do
             state: :normal,
             columns: nil,
             target: nil,
-            indent: 0
+            indent: 0,
+            layer: nil
 
   @type segment :: {String.t(), atom()}
   @type t :: %__MODULE__{
@@ -64,7 +69,17 @@ defmodule SwarmCodeCLI.UI.Settings.Row do
           state: :normal | :readonly | :disabled | :loading | :running,
           columns: nil | [{String.t(), atom(), pos_integer()}],
           target: term(),
-          indent: non_neg_integer()
+          indent: non_neg_integer(),
+          layer:
+            :session
+            | :project
+            | :project_file
+            | :env
+            | :flag
+            | :cli
+            | :global
+            | :default
+            | nil
         }
 
   @kinds [:setting, :record, :field, :action, :heading, :info, :link, :list_item, :kv_item]

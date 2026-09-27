@@ -5,6 +5,7 @@ defmodule SwarmCodeCLI.UI.Settings.Display do
   """
 
   alias SwarmCode.Settings.Entry
+  alias SwarmCodeCLI.UI.Settings.Glyphs
 
   @list_items 3
   @invalid_raw 40
@@ -34,15 +35,15 @@ defmodule SwarmCodeCLI.UI.Settings.Display do
 
   def value(%Entry{secret: true}, value, _setting, _lookups) do
     if value in [nil, "", false],
-      do: [{"not set", :text_ghost}],
+      do: [{"not set", :text_faint}],
       else: [{"●●●●●●●●", :text_primary}]
   end
 
   def value(%Entry{nullable: true} = entry, nil, _setting, _lookups),
     do: [{entry.null_label || "not set", :text_muted}]
 
-  def value(%Entry{type: :toggle}, value, _setting, _lookups),
-    do: [{if(value == true, do: "on", else: "off"), :text_primary}]
+  def value(%Entry{type: :toggle}, value, _setting, lookups),
+    do: switch(value == true, Map.get(lookups || %{}, :tier, :measured))
 
   def value(%Entry{type: type} = entry, value, setting, _lookups) when type in [:enum, :effort] do
     choices = choices(entry, setting)
@@ -71,7 +72,11 @@ defmodule SwarmCodeCLI.UI.Settings.Display do
 
     cond do
       is_map(providers) and Map.has_key?(providers, provider_id) ->
-        [{model, :text_primary}, {" · " <> Map.fetch!(providers, provider_id), :text_faint}]
+        [
+          {model, :text_primary},
+          {" · ", :text_faint},
+          {Map.fetch!(providers, provider_id), :text_muted}
+        ]
 
       is_map(providers) ->
         [{"! the provider was deleted; pick another", :warning}]
@@ -121,7 +126,7 @@ defmodule SwarmCodeCLI.UI.Settings.Display do
     end
   end
 
-  def value(%Entry{}, nil, _setting, _lookups), do: [{"not set", :text_ghost}]
+  def value(%Entry{}, nil, _setting, _lookups), do: [{"not set", :text_faint}]
   def value(%Entry{}, value, _setting, _lookups), do: [{words(value), :text_primary}]
 
   @doc "The choices of an enum or effort entry: the SettingValue's dynamic ones, else the entry's."
@@ -200,6 +205,29 @@ defmodule SwarmCodeCLI.UI.Settings.Display do
     if String.length(text) <= max, do: text, else: String.slice(text, 0, max - 1) <> "…"
   end
 
+  @doc """
+  A toggle's value as a switch (R22.7): `○── off` / `──● on` (the knob in
+  `success`) where the tier draws them, `[ ] off` / `[x] on` in ASCII and
+  where the switch glyphs are not one cell each.
+  """
+  @spec switch(boolean(), :rich | :measured | :ascii) :: [{String.t(), atom()}]
+  def switch(on?, tier) do
+    glyph = Glyphs.get(if(on?, do: :switch_on, else: :switch_off), tier)
+    words = if on?, do: " on", else: " off"
+
+    cond do
+      tier == :ascii or String.starts_with?(glyph, "[") ->
+        [{glyph <> words, :text_primary}]
+
+      on? ->
+        {track, knob} = String.split_at(glyph, -1)
+        [{track, :text_muted}, {knob, :success}, {words, :text_primary}]
+
+      true ->
+        [{glyph, :text_muted}, {words, :text_primary}]
+    end
+  end
+
   @doc "A value in words, one line (never inspect output)."
   @spec words(term()) :: String.t()
   def words(nil), do: "not set"
@@ -241,7 +269,12 @@ defmodule SwarmCodeCLI.UI.Settings.Display do
 
   @doc "The words of a value for a toast (`Side panel → compact`)."
   @spec toast_words(Entry.t(), term(), map() | nil) :: String.t()
-  def toast_words(entry, value, setting \\ nil) do
+  def toast_words(entry, value, setting \\ nil)
+
+  def toast_words(%Entry{type: :toggle, secret: false}, value, _setting) when is_boolean(value),
+    do: words(value)
+
+  def toast_words(entry, value, setting) do
     entry
     |> value(value, setting && Map.delete(setting, :state), %{})
     |> Enum.map_join("", &elem(&1, 0))

@@ -382,6 +382,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Pricing do
       label: label,
       value: shown,
       tag: [{"global", :text_muted}],
+      layer: :global,
       lines: if(error, do: [[{R.glyph(ctx, :error) <> " " <> error, :error}]], else: []),
       marks: if(error, do: [:invalid], else: []),
       editor: editor,

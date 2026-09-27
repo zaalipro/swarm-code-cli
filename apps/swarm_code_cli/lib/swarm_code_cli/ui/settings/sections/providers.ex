@@ -435,14 +435,25 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Providers do
           []
       end
 
+    # Pass 75 (R27.3, F3): the kind and the scope on the hero line, who uses
+    # it on the line under it.
+    uses =
+      case convs do
+        0 -> "no conversation uses it"
+        1 -> "1 conversation uses it"
+        n -> "#{n} conversations use it"
+      end
+
     R.row(
       id: "info:head:#{id}",
       kind: :info,
       label: R.field(f, "name"),
       value: [
-        {"#{ModelPicker.kind_label(R.field(f, "kind"))} · global · #{R.count(convs, "conversation")} use it",
-         :text_faint}
+        {ModelPicker.kind_label(R.field(f, "kind")), :text_primary},
+        {" · ", :text_faint},
+        {"global", :text_muted}
       ],
+      lines: [[{uses, :text_muted}]],
       tag: tag,
       state: :readonly
     )
@@ -458,6 +469,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Providers do
       label: label,
       value: [{to_string(value || ""), :text_primary}],
       tag: [{"global", :text_muted}],
+      layer: :global,
       lines: error_lines(ctx, row_id),
       marks: if(R.row_error(ctx, row_id), do: [:invalid], else: []),
       editor:
@@ -507,6 +519,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Providers do
       label: "Kind",
       value: [{ModelPicker.kind_label(kind), :text_primary}],
       tag: [{"global", :text_muted}],
+      layer: :global,
       lines: error_lines(ctx, row_id),
       editor:
         {SwarmCodeCLI.UI.Settings.Editors.Enum,
@@ -551,10 +564,16 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Providers do
           error_lines(ctx, row_id)
       end
 
+    # Pass 75 (R27.3): where the key is kept is a continuation line of its
+    # own; a refusal or an error takes its place while it waits.
+    lines =
+      if set and lines == [],
+        do: [[{"stored in SwarmCode's database", :text_faint}]],
+        else: lines
+
     value =
       if set,
-        do:
-          R.secret_words(key, R.tier(ctx)) ++ [{" · stored in SwarmCode's database", :text_faint}],
+        do: R.secret_words(key, R.tier(ctx)),
         else:
           [{"not set", :text_ghost}] ++
             if(R.field(f, "usable") == true,
@@ -569,6 +588,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Providers do
       label: "API key",
       value: value,
       tag: [{"global", :text_muted}],
+      layer: :global,
       lines: lines,
       state: if(R.running?(task), do: :running, else: :normal),
       keys:
@@ -632,6 +652,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Providers do
       label: "Default model",
       value: default_model_value(model, R.field(f, "models") || []),
       tag: [{"global", :text_muted}],
+      layer: :global,
       lines: error_lines(ctx, row_id),
       editor:
         {ModelPicker,
@@ -897,6 +918,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Providers do
       label: "Fallback on a refusal",
       value: [{if(on, do: "on", else: "off"), :text_primary}],
       tag: [{"global", :text_muted}],
+      layer: :global,
       lines: error_lines(ctx, row_id),
       editor: {SwarmCodeCLI.UI.Settings.Editors.Toggle, %{value: on}},
       keys: [{"Space", :toggle, "switch"}],

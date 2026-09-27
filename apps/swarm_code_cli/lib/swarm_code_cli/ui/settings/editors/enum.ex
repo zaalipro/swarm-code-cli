@@ -11,7 +11,7 @@ defmodule SwarmCodeCLI.UI.Settings.Editors.Enum do
 
   @behaviour SwarmCodeCLI.UI.Settings.Editor
 
-  alias SwarmCodeCLI.UI.Settings.Picker
+  alias SwarmCodeCLI.UI.Settings.{Grid, Picker}
 
   @segmented_max 5
 
@@ -116,17 +116,14 @@ defmodule SwarmCodeCLI.UI.Settings.Editors.Enum do
 
   defp current(state), do: Enum.at(state.choices, state.index).value
 
-  # The value column's room at this terminal size (the projector's layout:
-  # the rail from 120 columns, the detail from 160, the value at 32, a tag).
-  defp budget(%{size: %{columns: columns}}) when is_integer(columns) do
-    page =
-      cond do
-        columns >= 160 -> columns - 27 - 49
-        columns >= 120 -> columns - 27
-        true -> columns
-      end
-
-    max(page - 32 - 12, 16)
+  # The value column's room at this terminal size: the grid's page from the
+  # value column, less a gap and the tag's room (pass 75), at least 12.
+  defp budget(%{size: %{columns: columns, rows: rows}})
+       when is_integer(columns) and is_integer(rows) do
+    case Grid.for(columns, rows) do
+      %Grid{page: %{width: width}, value_offset: offset} -> max(width - offset - 4, 12)
+      %Grid{} -> 12
+    end
   end
 
   defp budget(_ctx), do: 60
@@ -157,38 +154,46 @@ defmodule SwarmCodeCLI.UI.Settings.Editors.Enum do
 
   @impl true
   def display(state, ctx) do
-    # §4.5 `‹ auto  read-only  full ›`; QA #2 P2-1: when the choices do not
-    # fit the value column the ones around the focused choice are drawn (the
-    # line was cut at its end, so a later choice, even the current, was never
-    # seen while choosing).
+    # Pass 75 (E): a segmented control on the row: the candidate is the one
+    # accent-backed word, the saved value is underlined, the others muted,
+    # three cells apart; `…` at a windowed end (QA #2 P2-1: the choices
+    # around the candidate stay in view when they do not all fit).
     {first, last} = window(state, budget(ctx) - 4)
 
     shown =
       state.choices
       |> Enum.with_index()
       |> Enum.slice(first..last//1)
-      |> Enum.flat_map(fn {choice, index} ->
-        role = if index == state.index, do: :selection, else: :text_muted
-        [{choice.label, role}, {"  ", :text_faint}]
+      |> Enum.map(fn {choice, index} ->
+        cond do
+          index == state.index -> {" " <> choice.label <> " ", {:on_accent, [:bold]}}
+          choice.value == state.original -> {choice.label, {:text_primary, [:underline]}}
+          true -> {choice.label, :text_muted}
+        end
       end)
-      |> Enum.drop(-1)
 
     value =
-      [{"‹ ", :text_faint}] ++
-        if(first > 0, do: [{"… ", :text_faint}], else: []) ++
-        shown ++
-        if(last < length(state.choices) - 1, do: [{" …", :text_faint}], else: []) ++
-        [{" ›", :text_faint}]
+      if(first > 0, do: [{"…", :text_faint}], else: [])
+      |> Kernel.++(shown)
+      |> Kernel.++(if(last < length(state.choices) - 1, do: [{"…", :text_faint}], else: []))
+      |> Enum.intersperse({"   ", :text_primary})
 
-    hint =
-      case Enum.at(state.choices, state.index) do
-        %{hint: hint} when is_binary(hint) and hint != "" -> [[{hint, :text_faint}]]
+    candidate = Enum.at(state.choices, state.index)
+
+    words =
+      case candidate do
+        %{hint: hint} when is_binary(hint) and hint != "" -> [{hint, :text_muted}]
         _ -> []
       end
 
+    unsaved =
+      if candidate && candidate.value != state.original,
+        do: [{"not saved", :warning}],
+        else: []
+
     %{
       value: value,
-      lines: hint,
+      lines: if(words ++ unsaved == [], do: [], else: [words ++ unsaved]),
       popover: nil,
       context: :settings_edit,
       footer: [{"←→", "choose"}, {"Enter", "save"}, {"Esc", "cancel"}]

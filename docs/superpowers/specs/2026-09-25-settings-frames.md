@@ -1,3 +1,5 @@
+> Superseded visually by pass 75 (E, Strata): see `.specs/01_cli75_panel_interview_settings_spec.md` (Design › Frames › Settings area); behaviour below still holds.
+
 # Settings TUI — frames
 
 Companion to `inv-tui-design.md` (rationale, information architecture, interaction rules). These

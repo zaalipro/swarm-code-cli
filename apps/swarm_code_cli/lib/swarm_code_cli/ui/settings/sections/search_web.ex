@@ -234,6 +234,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.SearchWeb do
          :text_primary}
       ],
       tag: [{if(value == "web_fetch", do: "default", else: "global"), :text_muted}],
+      layer: if(value == "web_fetch", do: :default, else: :global),
       lines: note,
       marks: if(note != [], do: [:attention], else: []),
       editor: {SwarmCodeCLI.UI.Settings.Editors.Enum, %{choices: choices, value: value}},
@@ -320,6 +321,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.SearchWeb do
             ]
           ),
         tag: [{"global", :text_muted}],
+        layer: :global,
         keys: [{"Space", :toggle, "switch"}],
         target: {:enabled, kind, on}
       ),
@@ -339,6 +341,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.SearchWeb do
             ]
           ),
         tag: [{"global", :text_muted}],
+        layer: :global,
         lines: key_lines,
         state: if(R.running?(task), do: :running, else: :normal),
         keys:
@@ -376,6 +379,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.SearchWeb do
               [{url, :text_primary}]
           end,
         tag: [{"global", :text_muted}],
+        layer: :global,
         lines: error_lines(ctx, "fld:search_provider:#{kind}:base_url"),
         editor:
           {SwarmCodeCLI.UI.Settings.Editors.Text,

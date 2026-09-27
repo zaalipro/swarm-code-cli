@@ -123,9 +123,10 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Appearance do
 
   # --------------------------------------------------------------- preview
 
-  # Two boxes and their gap fit the 80 cells a 160-column page gives a row
-  # (QA F-14: at 38 the light box lost its right edge there).
-  @box 37
+  # Two boxes and their gap fit the 78 cells a 160-column page gives a row
+  # without a label (pass 75, E: the page is 82 cells from its spine; QA F-14:
+  # a box too wide lost the light box's right edge there).
+  @box 36
 
   @doc """
   The preview block (F10): the same transcript rows in a dark and a light
@@ -138,7 +139,11 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Appearance do
     bar = Glyphs.get(:focus_bar, tier)
 
     lines = [
-      [{"✳ ", :run_assistant}, {"Assistant  ", :title}, {"deepseek-v4-pro", :text_muted}],
+      [
+        {if(tier == :ascii, do: "* ", else: "✳ "), :run_assistant},
+        {"Assistant  ", :title},
+        {"deepseek-v4-pro", :text_muted}
+      ],
       [
         {"  #{ok} ", :success},
         {"read  ", :text_muted},
@@ -174,9 +179,9 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Appearance do
     ]
 
     boxes =
-      [pair([border("┌─ dark ", "┐"), border("┌─ light ", "┐")])] ++
+      [pair([top(tier, "dark"), top(tier, "light")])] ++
         Enum.map(lines, &pair([boxed(&1), boxed(&1)])) ++
-        [pair([border("└", "┘"), border("└", "┘")])]
+        [pair([bottom(tier), bottom(tier)])]
 
     [
       Row.heading("preview · the same rows in both themes", [
@@ -198,18 +203,28 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Appearance do
   defp glyph_line(:ascii), do: "* S C * # /  * ~ . ! v x o #-"
   defp glyph_line(_tier), do: "✳ ⋔ ⚖ ◉ ⧉ ⌕  ● ◐ ◌ ! ✓ ✗ ○ ▰▱"
 
+  # The cards' rounded frame (pass 75, E): `╭─ dark ───╮` … `╰───╯`, faint.
+  defp top(tier, name),
+    do:
+      border(
+        Glyphs.get(:corner_tl, tier) <> "─ " <> name <> " ",
+        Glyphs.get(:corner_tr, tier)
+      )
+
+  defp bottom(tier), do: border(Glyphs.get(:corner_bl, tier), Glyphs.get(:corner_br, tier))
+
   defp border(left, right) do
     fill = @box + 2 - String.length(left) - String.length(right)
-    [{left <> String.duplicate("─", max(fill, 0)) <> right, :text_ghost}]
+    [{left <> String.duplicate("─", max(fill, 0)) <> right, :text_faint}]
   end
 
   defp boxed(segments) do
     width = segments |> Enum.map(&String.length(elem(&1, 0))) |> Enum.sum()
     pad = max(@box - 2 - width, 0)
-    [{"│ ", :text_ghost}] ++ segments ++ [{String.duplicate(" ", pad) <> " │", :text_ghost}]
+    [{"│ ", :text_faint}] ++ segments ++ [{String.duplicate(" ", pad) <> " │", :text_faint}]
   end
 
-  defp pair([left, right]), do: left ++ [{" ", :text_ghost}] ++ right
+  defp pair([left, right]), do: left ++ [{" ", :text_faint}] ++ right
 
   defp desktop_link(rest, ctx) do
     theme = desktop_value(ctx, "desktop.theme") || "carbon"

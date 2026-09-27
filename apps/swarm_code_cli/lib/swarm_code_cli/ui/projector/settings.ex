@@ -1,45 +1,41 @@
 defmodule SwarmCodeCLI.UI.Projector.Settings do
   @moduledoc """
-  The settings layer on screen (spec §3.7.13, §4.2): it covers the shell the
-  way the agent overlay does.
+  The settings layer on screen (spec §3.7.13, §4.2; pass 75, E): it covers
+  the shell the way the agent overlay does. Every number comes from
+  `Settings.Grid`; the lines come from four helpers on that grid.
 
-      header   Settings › Section › record                     Esc back to chat
-      search   / search … (or the query being typed)
-      rule
-      body     rail │ page │ detail (≥ 160 columns; else a drawer above the status)
-      rule
-      status   the last toast, or what the focused row's layer is
-      footer   the focused row's keys, then the layer's
+      row 0     the crumb                          (`Chrome.crumb/3`)
+      row 1     the search well and the counts     (`Chrome.well/3`)
+      row 2     the section strip under 120 columns (`Chrome.strip/3`)
+      body      rail ‖ page ‖ note, separated by gutters, never by rules
+                (`rail_lines/3`, `Page.build/3`, the note column)
+      rows - 3  the message row                    (`Chrome.message/4`)
+      rows - 1  the status line                    (`Chrome.status/4`)
 
-  Under 120 columns the rail gives way to the page (the header crumb says
-  where you are); under 80 × 20 one sentence says the terminal is too small.
+  Under 120 columns the rail gives way to the strip, under 90 to the crumb's
+  `Esc sections`; under 80 × 20 two sentences say the terminal is too small.
   Only the page rows around the cursor are built into lines.
   """
 
+  alias SwarmCodeCLI.UI.Projector.Settings.Chrome
+  alias SwarmCodeCLI.UI.Projector.Settings.Note
+  alias SwarmCodeCLI.UI.Projector.Settings.Page, as: SettingsPage
   alias SwarmCodeCLI.UI.Projector.Settings.Popover, as: SettingsPopover
   alias SwarmCodeCLI.UI.Projector.Settings.Text
-  alias SwarmCodeCLI.UI.Reducer.Settings.Paste, as: PasteTarget
   alias SwarmCodeCLI.UI.Scene.{Rect, Region}
   alias SwarmCodeCLI.UI.SafeText
-  alias SwarmCodeCLI.UI.Settings.{Detail, Glyphs, Layer, Nav, Page, Row, Sections}
-  alias SwarmCodeCLI.UI.Settings.Sections.Overview
-
-  @rail 26
-  @detail 48
-  @min_columns 80
-  @min_rows 20
-  @narrow 90
-  @label 29
+  alias SwarmCodeCLI.UI.Settings.{Glyphs, Grid, Layer, Nav, Sections}
 
   @doc "The layer's regions and cursor, or nil when it is closed."
   @spec project(map(), term()) :: nil | {[Region.t()], nil}
   def project(%{settings: %Layer{}} = state, _layout) do
     %{columns: width, rows: height} = state.size
+    grid = Grid.for(width, height)
 
     lines =
-      if width < @min_columns or height < @min_rows,
+      if grid.class == :too_small,
         do: too_small(state, width, height),
-        else: screen(state, width, height)
+        else: screen(state, grid, state.capabilities)
 
     blocks = Enum.map(lines, &Text.row(state, &1, width))
 
@@ -61,7 +57,7 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
   # than the terminal that needs it); Esc still closes the layer.
   defp too_small(state, width, height) do
     lines = [
-      "Settings needs #{@min_columns} × #{@min_rows}; this terminal is #{width} × #{height}.",
+      "Settings needs 80 × 20; this terminal is #{width} × #{height}.",
       "Make it larger, or use swarmcode config in a shell."
     ]
 
@@ -77,1147 +73,294 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
       centred ++ List.duplicate([], max(height - top - length(lines), 0))
   end
 
-  defp screen(state, width, height) do
-    layer = state.settings
-    rows = Nav.rows(state)
-    current = Nav.current(state, rows)
-    rail? = width >= 120
-    detail? = width >= 160
-    # T§6.1: narrow (90–119) puts a one-row section strip under the header;
-    # small (80–89) drills down, the sections being a page of their own (F16).
-    strip? = not rail? and width >= @narrow
-    sections_page? = sections_page?(state)
-    drawer = if detail?, do: 0, else: if(width < 120 or height < 30, do: 3, else: 4)
+  # crumb, well, [strip], blank, body, blank, message, blank, status: exactly
+  # `grid.rows` lines (D1: no top-margin row, the crumb is the first line).
+  defp screen(state, %Grid{} = grid, caps) do
+    glyphs = &Glyphs.for_caps(&1, caps)
+    current = Nav.current(state, Nav.rows(state))
 
-    body_rows =
-      max(height - 6 - if(drawer > 0, do: drawer + 1, else: 0) - if(strip?, do: 1, else: 0), 1)
+    head =
+      [Chrome.crumb(state, grid, glyphs), Chrome.well(state, grid, glyphs)] ++
+        if(grid.strip_row, do: [Chrome.strip(state, grid, glyphs)], else: [])
 
-    page_width = width - if(rail?, do: @rail + 1, else: 0) - if(detail?, do: @detail + 1, else: 0)
-
-    page =
-      if sections_page?,
-        do: sections_page_lines(state, page_width, body_rows),
-        else: page_lines(state, rows, current, page_width, body_rows)
-
-    rail = if rail?, do: rail_lines(state, body_rows), else: nil
-    detail = if detail?, do: detail_lines(state, current, @detail, body_rows), else: nil
-
-    body =
-      for index <- 0..(body_rows - 1) do
-        [
-          if(rail,
-            do: Text.fit(state, Enum.at(rail, index, []), @rail) ++ [rule_v(state)],
-            else: []
-          ),
-          Text.fit(state, Enum.at(page, index, []), page_width),
-          if(detail,
-            do: [rule_v(state) | Text.fit(state, Enum.at(detail, index, []), @detail)],
-            else: []
-          )
-        ]
-        |> Enum.concat()
-      end
-
-    drawer_lines =
-      if drawer > 0 do
-        lines =
-          if sections_page?,
-            do: [
-              [{"Enter opens ", :text_faint}, {Sections.title(layer.rail_cursor), :text_primary}]
-            ],
-            else: detail_lines(state, current, width - 2, drawer)
-
-        [
-          rule(state, width)
-          | Enum.map(0..(drawer - 1), &[{" ", :text_primary} | Enum.at(lines, &1, [])])
-        ]
-      else
-        []
-      end
+    head = head ++ List.duplicate([], max(grid.body_top - length(head), 0))
+    {body, span} = body(state, grid, caps, current)
 
     lines =
-      [header(state, layer, width)] ++
-        if(strip?, do: [section_strip(state, layer, width)], else: []) ++
-        [search(state, layer, width), rule(state, width)] ++
+      head ++
         body ++
-        drawer_lines ++
-        [rule(state, width), status(state, layer, current, width), footer(state, current, width)]
+        [
+          [],
+          Chrome.message(state, grid, glyphs, current),
+          [],
+          Chrome.status(state, grid, glyphs, current)
+        ]
 
-    # The screen line of the focused page row (an editor's popover opens under it).
-    anchor =
-      case Enum.find_index(page, &cursor_line?/1) do
-        nil -> nil
-        index -> index + 3 + if(strip?, do: 1, else: 0)
-      end
+    lines = Enum.take(lines ++ List.duplicate([], max(grid.rows - length(lines), 0)), grid.rows)
 
-    lines
-    |> editor_popover(state, anchor, if(rail?, do: @rail + 1, else: 0), width, height)
-    |> popover(state, width, height)
-    |> Enum.take(height)
+    overlay(lines, state, span, grid)
   end
 
-  # ----------------------------------------------------------- header
+  # The body lines (rail ‖ page ‖ note, `grid.body_rows` of them) and the
+  # screen line of the focused page row (an editor's popover opens under it).
+  defp body(state, %Grid{} = grid, caps, current) do
+    glyphs = &Glyphs.for_caps(&1, caps)
 
-  defp header(state, layer, width) do
-    crumb = glyph(state, :crumb)
-    page = Layer.page(layer)
+    detail? = state.settings.detail_open and current != nil
 
-    trail =
-      case Page.level(page) do
-        :section -> [Sections.title(page.section)]
-        :record -> [Sections.title(page.section), record_name(state, page)]
-        :sub -> [Sections.title(page.section), sub_title(state, page)]
-      end
-
-    left =
-      [{" Settings", {:text_primary, [:bold]}}] ++
-        Enum.flat_map(trail, &[{" #{crumb} ", :text_faint}, {&1, {:text_primary, [:bold]}}])
-
-    esc =
+    meta =
       cond do
-        Layer.depth(layer) > 1 ->
-          [{"Esc", {:info, [:bold]}}, {" back ", :text_faint}]
+        sections_page?(state, grid) ->
+          %{
+            lines: sections_page_lines(state, grid.page.width, grid.body_rows, glyphs),
+            focus_first: nil
+          }
 
-        small?(state) and layer.region != :rail ->
-          [{"Esc", {:info, [:bold]}}, {" sections ", :text_faint}]
+        detail? ->
+          Note.detail_page(state, current, grid)
 
         true ->
-          [{"Esc", {:info, [:bold]}}, {" back to chat ", :text_faint}]
+          SettingsPage.build(state, grid, caps)
       end
 
-    right = needs_you(state) ++ esc
+    rail = if grid.rail, do: rail_lines(state, grid.rail.width, glyphs), else: nil
+    note = if grid.note && not detail?, do: Note.column(state, current, meta, grid), else: nil
 
-    Text.spread(state, left, right, width)
+    lines =
+      for index <- 0..(grid.body_rows - 1) do
+        rail_part =
+          if rail,
+            do:
+              [spaces(grid.rail.left)] ++
+                Text.fit(state, Enum.at(rail, index, []), grid.rail.width) ++
+                [spaces(grid.page.left - grid.rail.left - grid.rail.width)],
+            else: [spaces(grid.page.left)]
+
+        page_part = Text.fit(state, Enum.at(meta.lines, index, []), grid.page.width)
+
+        note_part = if note, do: note_part(state, note, index, grid), else: []
+
+        Text.fit(state, rail_part ++ page_part ++ note_part, grid.columns)
+      end
+
+    span =
+      if is_integer(meta.focus_first),
+        do:
+          {grid.body_top + meta.focus_first,
+           grid.body_top + (meta[:focus_last] || meta.focus_first)}
+
+    {lines, span}
   end
 
-  # A draft is not a record yet: the crumb says `new`, not the draft's id.
-  defp record_name(_state, %Page{record: {_kind, "draft"}}), do: "new"
+  defp spaces(count), do: {String.duplicate(" ", max(count, 0)), :text_primary}
 
-  # QA #2 P2-5: a search engine's record has no name field; its label names it
-  # (`Search & web › Exa`, not `› exa`).
-  defp record_name(_state, %Page{record: {"search_provider", id}}),
-    do: SwarmCodeCLI.UI.Settings.Sections.SearchWeb.label(id)
+  # The gutter and the note on body line `index`: the connector `───┤` (or
+  # `───╮` on the note's first line) on the focus row's line.
+  defp note_part(state, note, index, %Grid{} = grid) do
+    caps = state.capabilities
+    gutter = grid.note.spine - grid.page.left - grid.page.width
+    line = if index >= note.top, do: Enum.at(note.lines, index - note.top, []), else: []
 
-  defp record_name(state, %Page{record: {kind, id}}) do
-    case Map.get(state.settings.data.record, {kind, id}) do
-      %{fields: fields} when is_map(fields) ->
-        name = Map.get(fields, "name") || Map.get(fields, :name)
-        if is_binary(name) and name != "", do: name, else: to_string(id)
+    if note.join == index and line != [] do
+      twin? = Glyphs.twin?(caps)
+      dash = if twin?, do: "-", else: Glyphs.for_caps(:connector, caps)
+      join = if note.top == index, do: :join_top, else: :join_mid
+      join = if twin?, do: "+", else: Glyphs.for_caps(join, caps)
+      [_spine | rest] = line
 
-      _ ->
-        to_string(id)
-    end
-  end
-
-  # cli74 F18: a sub-page without a name of its own (a provider's delete
-  # page) is named by its section's title (the provider), not "…".
-  defp sub_title(state, page) do
-    section = Sections.title(page.section)
-
-    case sub_name(page) do
-      "…" ->
-        title = Sections.page_title(page.section, Nav.ctx(state))
-
-        cond do
-          not is_binary(title) or title in ["", section] ->
-            "…"
-
-          String.starts_with?(title, section <> " › ") ->
-            String.replace_prefix(title, section <> " › ", "")
-
-          true ->
-            title
-        end
-
-      name ->
-        name
-    end
-  end
-
-  defp sub_name(%Page{sub: sub}) when is_binary(sub), do: sub
-  defp sub_name(%Page{sub: {:rows, title, _rows}}) when is_binary(title), do: title
-  defp sub_name(%Page{sub: {_, name}}) when is_binary(name), do: name
-  defp sub_name(%Page{sub: {_, _, name}}) when is_binary(name), do: name
-  defp sub_name(_page), do: "…"
-
-  # The chip of what waits on you in the chat (Ctrl-N goes there).
-  defp needs_you(state) do
-    count =
-      state.read_model.interactions
-      |> Map.values()
-      |> Enum.count(&(Map.get(&1, :state) == :pending))
-
-    if count > 0,
-      do: [
-        {"! #{count} need#{if count == 1, do: "s", else: ""} you", :warning},
-        {" Ctrl-N   ", :text_faint}
-      ],
-      else: []
-  end
-
-  # ----------------------------------------------------------- search
-
-  defp search(state, %Layer{mode: :command_line, command_line: %{text: text} = line}, width) do
-    caret = glyph(state, :caret)
-
-    error =
-      if line.error,
-        do: [{glyph(state, :fail) <> " " <> line.error <> " ", :error}],
-        else: [{"Enter runs · Esc leaves ", :text_faint}]
-
-    Text.spread(
-      state,
-      [{" : ", {:info, [:bold]}}, {text, :text_primary}, {caret, :focus}],
-      error,
-      width
-    )
-  end
-
-  defp search(state, %Layer{mode: :search, search: nil, filter: %{} = filter}, width) do
-    caret = glyph(state, :caret)
-    shown = state |> Nav.rows() |> Enum.count(&Row.focusable?/1)
-
-    Text.spread(
-      state,
-      [{" / ", {:info, [:bold]}}, {filter.query, :text_primary}, {caret, :focus}],
       [
-        {"filter #{filter.total} rows · #{shown} #{if shown == 1, do: "match", else: "matches"} ",
-         :text_faint}
-      ],
-      width
-    )
-  end
-
-  defp search(state, %Layer{mode: :search, search: %{query: query} = search}, width) do
-    caret = glyph(state, :caret)
-
-    # §4.1.7 (QA F-13): `7 of 212 · 3 sections`.
-    count =
-      case Map.get(search, :found) do
-        %{results: results} ->
-          sections = results |> Enum.map(&elem(&1, 1).section) |> Enum.uniq() |> length()
-
-          [
-            {"#{length(results)} of #{scalar_count()} · #{sections} section#{if sections == 1, do: "", else: "s"} ",
-             :text_faint}
-          ]
-
-        _ ->
-          [{"Esc leaves ", :text_faint}]
-      end
-
-    Text.spread(
-      state,
-      [{" / ", {:info, [:bold]}}, {query, :text_primary}, {caret, :focus}],
-      count,
-      width
-    )
-  end
-
-  defp search(state, %Layer{search: %{query: query}}, width) when query != "",
-    do: Text.fit(state, [{" / ", :text_muted}, {query, :text_primary}], width)
-
-  defp search(state, _layer, width),
-    do:
-      Text.spread(
-        state,
-        [
-          {" / ", :text_muted},
-          {"search #{scalar_count()} settings, providers, servers and keys", :text_ghost}
-        ],
-        strip(state, width),
-        width
-      )
-
-  # What the Overview counts, on every page: changed values, attention
-  # items, values the environment sets (F1's search row).
-  # Under 120 columns the words shorten (F14: `• 14  ! 3  2 env`).
-  defp strip(state, width) do
-    summary = Overview.summary(Nav.ctx(state))
-    short? = width < 120
-
-    [
-      if(summary.changed > 0,
-        do: [
-          {glyph(state, :changed) <> " ", :text_muted},
-          {if(short?,
-             do: "#{summary.changed}  ",
-             else: "#{summary.changed} changed from default  "
-           ), :text_faint}
-        ]
-      ),
-      if(summary.attention > 0,
-        do: [
-          {"! ", :warning},
-          {if(short?, do: "#{summary.attention}  ", else: "#{summary.attention} need attention  "),
-           :text_faint}
-        ]
-      ),
-      if(summary.env > 0,
-        do: [
-          {if(short?, do: "#{summary.env} env ", else: "#{summary.env} from env "), :text_faint}
-        ]
-      )
-    ]
-    |> Enum.reject(&is_nil/1)
-    |> Enum.concat()
+        spaces(gutter - 3),
+        {String.duplicate(dash, 3), :text_faint},
+        {join, :text_faint}
+        | Text.fit(state, rest, grid.note.width + 1)
+      ]
+    else
+      [spaces(gutter) | Text.fit(state, line, grid.note.width + 2)]
+    end
   end
 
   # ------------------------------------------------------ small, narrow
 
-  defp small?(%{size: %{columns: columns}}), do: columns >= @min_columns and columns < @narrow
-  defp small?(_state), do: false
-
   # F16: at 80–89 columns the rail region is the sections page.
-  defp sections_page?(%{settings: %Layer{region: :rail}} = state), do: small?(state)
-  defp sections_page?(_state), do: false
+  defp sections_page?(%{settings: %Layer{region: :rail}}, %Grid{class: :small}), do: true
+  defp sections_page?(_state, _grid), do: false
 
   # The rail's lines at the page's width, scrolled so the cursor stays in view.
-  defp sections_page_lines(state, width, rows) do
-    lines = rail_lines(state, 1_000, width)
-    cursor = Enum.find_index(lines, &cursor_line?/1) || 0
+  defp sections_page_lines(state, width, rows, glyphs) do
+    {lines, cursor} = rail(state, width, glyphs)
+    cursor = cursor || 0
     top = cursor |> Kernel.-(div(rows, 2)) |> max(0) |> min(max(length(lines) - rows, 0))
     Enum.slice(lines, top, rows)
   end
 
-  defp cursor_line?(line),
-    do: Enum.any?(line, fn {_text, role} -> role == :focus or match?({:focus, _, _}, role) end)
-
-  # F14: `[ Agents & limits  Approvals & trust  Project file ]      10 of 22`,
-  # the current section and as many neighbours as fit.
-  defp section_strip(state, layer, width) do
-    ids = Sections.ids()
-    current = Layer.section(layer)
-    index = Enum.find_index(ids, &(&1 == current)) || 0
-    count = "#{index + 1} of #{length(ids)} "
-    room = width - String.length(count) - 6
-    window = strip_window(ids, index, room)
-
-    names =
-      window
-      |> Enum.map(fn id ->
-        role = if id == current, do: {:text_primary, [:bold]}, else: :text_muted
-        [{Sections.title(id), role}]
-      end)
-      |> Enum.intersperse([{"  ", :text_faint}])
-      |> Enum.concat()
-
-    Text.spread(
-      state,
-      [{" [ ", :text_faint}] ++ names ++ [{" ]", :text_faint}],
-      [{count, :text_faint}],
-      width
-    )
-  end
-
-  defp strip_window(ids, index, room) do
-    cost = fn id -> String.length(Sections.title(id)) + 2 end
-    grow(ids, index, index, cost.(Enum.at(ids, index)), room, cost)
-  end
-
-  # Widens [lo, hi] a section at a time (right, then left) while it fits.
-  defp grow(ids, lo, hi, used, room, cost) do
-    {lo2, hi2, used2} =
-      Enum.reduce([hi + 1, lo - 1], {lo, hi, used}, fn at, {l, h, u} = acc ->
-        id = if at >= 0, do: Enum.at(ids, at)
-
-        cond do
-          id == nil or u + cost.(id) > room -> acc
-          at > h -> {l, at, u + cost.(id)}
-          true -> {at, h, u + cost.(id)}
-        end
-      end)
-
-    if {lo2, hi2} == {lo, hi},
-      do: Enum.slice(ids, lo..hi//1),
-      else: grow(ids, lo2, hi2, used2, room, cost)
-  end
-
   # ------------------------------------------------------------- rail
 
-  defp rail_lines(state, rows, width \\ @rail) do
+  # The rail (pass 75, E): group words at rail column 1, the sections at
+  # column 2 with their marks right, the current section on a `hover` pill.
+  # When the rail has the focus the band and `▌` sit on the rail cursor (D9);
+  # during a search the sections draw their match counts and no pill.
+  defp rail_lines(state, width, glyphs) do
+    {lines, _cursor} = rail(state, width, glyphs)
+    lines
+  end
+
+  # The rail's lines and the index of the rail cursor's line (nil without focus).
+  defp rail(state, width, glyphs) do
     layer = state.settings
     section = Layer.section(layer)
-    bar = glyph(state, :focus_bar)
-    marks = rail_marks(state)
+    focus? = layer.region == :rail
+    matches = search_matches(layer)
+    marks = if matches, do: %{}, else: Chrome.rail_marks(state, glyphs)
 
-    lines =
+    tagged =
       Enum.flat_map(Sections.groups(), fn {group, ids} ->
-        heading = if group, do: [[{"  " <> group, :text_faint}]], else: []
+        heading = if group, do: [{[{" " <> group, :text_faint}], false}], else: []
 
         items =
           Enum.map(ids, fn id ->
-            cursor? = layer.region == :rail and layer.rail_cursor == id
-            here? = id == section
-            title = Sections.title(id)
-            role = if here?, do: {:text_primary, [:bold]}, else: :text_muted
-            lead = if cursor?, do: {bar, :focus}, else: {" ", :text_primary}
-            mark = Map.get(marks, id, [])
+            cursor? = focus? and layer.rail_cursor == id
+            pill? = id == section and matches == nil and not cursor?
+            count = matches && Map.get(matches, id, 0)
+
+            {role, mark} =
+              cond do
+                count == 0 -> {:text_faint, []}
+                is_integer(count) -> {:text_muted, [{"#{count}", :text_muted}]}
+                pill? or cursor? -> {{:text_primary, [:bold]}, Map.get(marks, id, [])}
+                true -> {:text_muted, Map.get(marks, id, [])}
+              end
+
+            # the twin marks the rail cursor as it marks the page focus
+            bar =
+              if Glyphs.twin?(state.capabilities),
+                do: {">", {:text_primary, [:bold, :reversed]}},
+                else: {glyphs.(:focus_bar), :accent}
+
+            lead =
+              if cursor?,
+                do: [bar, {" ", :text_primary}],
+                else: [{"  ", :text_primary}]
 
             line =
               Text.spread(
                 state,
-                [lead, {"  " <> title, role}],
-                mark ++ [{" ", :text_primary}],
+                lead ++ [{Sections.title(id), role}],
+                if(mark == [], do: [], else: mark ++ [{" ", :text_primary}]),
                 width
               )
 
-            if cursor?, do: Text.select(line), else: line
-          end)
-
-        heading ++ items ++ [[]]
-      end)
-
-    Enum.take(lines, rows)
-  end
-
-  @counted [:providers, :mcp, :library]
-
-  # Per section: `!N` attention items (the overview's), else `•N` values
-  # changed from their default (terminal keys and the loaded daemon ones),
-  # else the record count of Providers, MCP servers and Library.
-  defp rail_marks(state) do
-    layer = state.settings
-    changed = glyph(state, :changed)
-
-    attention =
-      case layer.data.overview do
-        %{attention: items} when is_list(items) ->
-          items
-          |> Enum.map(&Map.get(&1, :section))
-          |> Enum.reject(&is_nil/1)
-          |> Enum.frequencies()
-
-        _ ->
-          %{}
-      end
-
-    daemon =
-      for {key, setting} <- layer.data.values,
-          Map.get(setting, :winner) not in [nil, :default],
-          {:ok, entry} <- [SwarmCode.Settings.Registry.fetch(key)],
-          do: entry.section
-
-    cli =
-      for {name, _value} <- state.prefs,
-          {:key, key} <- [SwarmCode.Settings.Registry.resolve(name)],
-          {:ok, entry} <- [SwarmCode.Settings.Registry.fetch(key)],
-          match?({:cli, ^name}, entry.storage),
-          do: entry.section
-
-    changed_counts = Enum.frequencies(daemon ++ cli)
-    ctx = Nav.ctx(state)
-
-    Sections.ids()
-    |> Enum.flat_map(fn id ->
-      records =
-        if id in @counted,
-          do: Map.get(Sections.counts(id, ctx), :records) || glance_count(layer.data.overview, id)
-
-      cond do
-        Map.get(attention, id, 0) > 0 ->
-          [{id, [{"!#{attention[id]}", :warning}]}]
-
-        Map.get(changed_counts, id, 0) > 0 ->
-          [{id, [{changed <> "#{changed_counts[id]}", :text_muted}]}]
-
-        # §4.1.1 (QA F-13): a plain number is the section's record count,
-        # once its records are loaded.
-        is_integer(records) ->
-          [{id, [{"#{records}", :text_faint}]}]
-
-        true ->
-          []
-      end
-    end)
-    |> Map.new()
-  end
-
-  # QA #2 P2-11: before a section's records are loaded its count comes from
-  # the Overview's glance (`providers 4`), so the rail shows it from the start.
-  defp glance_count(%{glance: %{} = glance}, :providers),
-    do: glance_int(glance, "providers", "count")
-
-  defp glance_count(%{glance: %{} = glance}, :mcp), do: glance_int(glance, "mcp", "servers")
-  defp glance_count(_overview, _id), do: nil
-
-  defp glance_int(glance, name, key) do
-    case Map.get(glance, name) do
-      %{} = fragment -> if is_integer(fragment[key]), do: fragment[key]
-      _ -> nil
-    end
-  end
-
-  # ------------------------------------------------------------- page
-
-  # Only the rows in the window are laid out: heights come from the rows'
-  # own continuation lines (and the open editor's), so a 400-row page costs
-  # the same to draw as a 20-row one.
-  defp page_lines(state, rows, current, width, height) do
-    layer = state.settings
-
-    head =
-      case page_status(layer) do
-        nil -> []
-        words -> [[{"  " <> words, :text_muted}], []]
-      end
-
-    if rows == [] do
-      head ++ [[{"  Nothing here yet.", :text_muted}]]
-    else
-      heights = Enum.map(rows, &row_height(state, &1))
-      index = Enum.find_index(rows, &(&1 == current)) || 0
-      before = heights |> Enum.take(index) |> Enum.sum()
-      cursor_start = length(head) + before
-      cursor_height = Enum.at(heights, index, 1)
-      room = max(height - length(head), 1)
-
-      start =
-        if cursor_start + cursor_height <= height,
-          do: 0,
-          else: max(min(before, before + cursor_height - room), 0)
-
-      {window, _} =
-        rows
-        |> Enum.zip(heights)
-        |> Enum.reduce_while({[], 0}, fn {row, row_height}, {acc, at} ->
-          cond do
-            at >= start + room -> {:halt, {acc, at}}
-            at + row_height <= start -> {:cont, {acc, at + row_height}}
-            true -> {:cont, {[row | acc], at + row_height}}
-          end
-        end)
-
-      skip = window_skip(rows, heights, start)
-      tables = tables(state, rows, width - 3)
-
-      # QA F-18: a search result the cursor is on is marked as a page row is.
-      on_page? =
-        layer.region == :page or
-          (layer.region == :search and match?(%{cursor: id} when id != nil, layer.search))
-
-      lines =
-        window
-        |> Enum.reverse()
-        |> Enum.flat_map(&row_lines(state, &1, &1 == current and on_page?, width, tables))
-        |> Enum.drop(skip)
-
-      if start == 0, do: Enum.take(head ++ lines, height), else: Enum.take(lines, height)
-    end
-  end
-
-  # The lines of the first window row that sit above the window's top.
-  defp window_skip(rows, heights, start) do
-    {_, skip} =
-      rows
-      |> Enum.zip(heights)
-      |> Enum.reduce_while({0, 0}, fn {_row, row_height}, {at, _} ->
-        if at + row_height > start,
-          do: {:halt, {at, start - at}},
-          else: {:cont, {at + row_height, 0}}
-      end)
-
-    max(skip, 0)
-  end
-
-  defp row_height(state, %Row{} = row) do
-    extra =
-      case editing(state.settings, row) do
-        nil ->
-          if pasting?(state.settings, row),
-            do: length(PasteTarget.lines(state.settings.paste)),
-            else: 0
-
-        editing ->
-          length(Map.get(editing.module.display(editing.state, Nav.ctx(state)), :lines, []))
-      end
-
-    1 + length(row.lines) + extra
-  end
-
-  defp page_status(%Layer{available: false, message: message}) when is_binary(message),
-    do: message
-
-  defp page_status(_layer), do: nil
-
-  # A table's heading row (a label-less heading with columns) draws the
-  # column names in the table's layout.
-  defp row_lines(state, %Row{kind: :heading, columns: [_ | _]} = row, _focused?, width, tables)
-       when is_map_key(tables, row.id) do
-    [
-      Text.spread(
-        state,
-        [{"   ", :text_primary} | Map.fetch!(tables, row.id)],
-        row.tag ++ [{" ", :text_primary}],
-        width
-      )
-    ]
-  end
-
-  defp row_lines(state, %Row{kind: :heading} = row, _focused?, width, _tables) do
-    [
-      Text.spread(
-        state,
-        [{"  " <> row.label, :text_muted}],
-        row.tag ++ [{" ", :text_primary}],
-        width
-      )
-    ]
-  end
-
-  defp row_lines(state, %Row{} = row, focused?, width, tables) do
-    layer = state.settings
-    editing = editing(layer, row)
-    display = editing && editing.module.display(editing.state, Nav.ctx(state))
-
-    value =
-      cond do
-        display -> display.value
-        pasting?(layer, row) -> PasteTarget.words(layer.paste, Glyphs.tier(state.capabilities))
-        true -> row.value
-      end
-
-    extra =
-      cond do
-        display -> Map.get(display, :lines, [])
-        pasting?(layer, row) -> PasteTarget.lines(layer.paste)
-        true -> []
-      end
-
-    value_column = if width >= 84, do: 32, else: max(22, div(width * 2, 5))
-    label_width = min(@label, max(value_column - 3, 8))
-
-    lead = if focused?, do: {glyph(state, :focus_bar), :focus}, else: {" ", :text_primary}
-    mark = mark(state, row.marks)
-    label_role = if row.state == :readonly, do: :text_muted, else: :text_primary
-
-    label =
-      Text.fit(state, [{String.duplicate(" ", row.indent) <> row.label, label_role}], label_width)
-
-    tag = row.tag
-    tag_cells = Text.cells(state, tag)
-    value_room = max(width - value_column - tag_cells - 2, 8)
-    value_segments = Text.clip(state, value, value_room)
-
-    main =
-      cond do
-        # A table row being edited (Enter on a language) or pasted into
-        # (Space on an engine with no key) shows the editor's or the paste's
-        # words instead of its columns.
-        is_list(row.columns) and (display != nil or pasting?(layer, row)) ->
-          [lead, mark, {" ", :text_primary}] ++
-            label ++ [{" ", :text_primary}] ++ value_segments
-
-        is_list(row.columns) ->
-          [lead, mark, {" ", :text_primary}] ++
-            Map.get_lazy(tables, row.id, fn -> columns(state, row, width - 3) end)
-
-        row.label == "" ->
-          [lead, mark, {" ", :text_primary}] ++ Text.clip(state, value, width - 4)
-
-        true ->
-          [lead, mark, {" ", :text_primary}] ++
-            label ++ [{" ", :text_primary}] ++ value_segments
-      end
-
-    main = Text.spread(state, main, tag ++ [{" ", :text_primary}], width)
-    main = if focused?, do: Text.select(main), else: main
-
-    indent = String.duplicate(" ", if(row.label == "", do: 4, else: value_column))
-
-    continuation =
-      Enum.map(row.lines ++ extra, fn line -> [{indent, :text_primary} | line] end)
-
-    [main | continuation]
-  end
-
-  # A record table's row: the name first (never dropped), then the columns
-  # that fit, dropping the least important (highest priority number, the
-  # rightmost among equals) until the rest fit (§4.11).
-  defp columns(state, %Row{} = row, width) do
-    kept = fit_columns(state, cells(row), width)
-
-    kept
-    |> Enum.map(fn {text, role, _} -> [{text, role}, {"  ", :text_primary}] end)
-    |> Enum.concat()
-  end
-
-  # The cells of a table row: the name (the label, unless the section drew
-  # it as the first column itself), then the columns. The name is never
-  # dropped.
-  defp cells(%Row{label: label, columns: columns}) do
-    columns =
-      Enum.map(columns, fn {text, role, priority} -> {to_string(text), role, priority} end)
-
-    # Only the first cell that reads as the label is the name: a later one
-    # that happens to read the same (a key binding `Up` whose key name is
-    # `Up`) keeps its own priority (QA #2 P2-6).
-    name_at = if label == "", do: nil, else: Enum.find_index(columns, &match?({^label, _, _}, &1))
-
-    cond do
-      label == "" or name_at != nil ->
-        columns
-        |> Enum.with_index()
-        |> Enum.map(fn
-          {{text, role, _}, 0} -> {text, role, 0}
-          {{text, role, _}, ^name_at} -> {text, role, 0}
-          {cell, _} -> cell
-        end)
-
-      true ->
-        [{label, :text_primary, 0} | columns]
-    end
-  end
-
-  # §4.15: the rows of one record table (a run of consecutive rows with
-  # columns) share their columns — each padded to the table's widest cell —
-  # and a table too wide for the page drops its least important column in
-  # every row alike. Answers the drawn segments of each table row by row id.
-  defp tables(state, rows, width) do
-    rows
-    |> Enum.chunk_by(&(is_list(&1.columns) and &1.columns != []))
-    |> Enum.filter(fn [first | _] -> is_list(first.columns) and first.columns != [] end)
-    |> Enum.reduce(%{}, fn table, acc -> Map.merge(acc, table_layout(state, table, width)) end)
-  end
-
-  defp table_layout(state, table, width) do
-    rows = for row <- table, do: {row.id, cells(row)}
-    count = rows |> Enum.map(fn {_, cells} -> length(cells) end) |> Enum.max()
-
-    widths =
-      for i <- 0..(count - 1) do
-        rows
-        |> Enum.map(fn {_, cells} ->
-          case Enum.at(cells, i) do
-            {text, _, _} -> Text.text_cells(state, text)
-            nil -> 0
-          end
-        end)
-        |> Enum.max()
-      end
-
-    priorities =
-      for i <- 0..(count - 1) do
-        if i == 0,
-          do: 0,
-          else:
-            Enum.find_value(rows, 1, fn {_, cells} ->
-              case Enum.at(cells, i) do
-                {_, _, priority} -> priority
-                nil -> nil
-              end
-            end)
-      end
-
-    kept = keep_columns(Enum.to_list(0..(count - 1)), widths, priorities, width)
-    last = List.last(kept)
-
-    Map.new(rows, fn {id, cells} ->
-      segments =
-        Enum.flat_map(kept, fn i ->
-          {text, role, _} = Enum.at(cells, i) || {"", :text_primary, 1}
-          pad = Enum.at(widths, i) - Text.text_cells(state, text)
-
-          if i == last,
-            do: [{text, role}],
-            else: [{text, role}, {String.duplicate(" ", max(pad, 0) + 2), :text_primary}]
-        end)
-
-      {id, segments}
-    end)
-  end
-
-  defp keep_columns(kept, widths, priorities, width) do
-    total = kept |> Enum.map(&(Enum.at(widths, &1) + 2)) |> Enum.sum()
-    droppable = Enum.filter(kept, &(Enum.at(priorities, &1) > 0))
-
-    if total <= width or droppable == [] do
-      kept
-    else
-      drop = Enum.max_by(droppable, &{Enum.at(priorities, &1), &1})
-      keep_columns(List.delete(kept, drop), widths, priorities, width)
-    end
-  end
-
-  defp fit_columns(state, cells, width) do
-    total =
-      cells |> Enum.map(fn {text, _, _} -> Text.text_cells(state, text) + 2 end) |> Enum.sum()
-
-    droppable =
-      cells
-      |> Enum.with_index()
-      |> Enum.filter(fn {{_, _, priority}, _} -> priority > 0 end)
-
-    cond do
-      total <= width or droppable == [] ->
-        cells
-
-      true ->
-        {_, drop} = Enum.max_by(droppable, fn {{_, _, priority}, index} -> {priority, index} end)
-        fit_columns(state, List.delete_at(cells, drop), width)
-    end
-  end
-
-  defp pasting?(%Layer{paste: %{target: target}}, %Row{id: id}) when is_map(target),
-    do: (Map.get(target, :row_id) || Map.get(target, "row_id")) == id
-
-  defp pasting?(_layer, _row), do: false
-
-  defp editing(%Layer{editing: %{row_id: id} = editing}, %Row{id: id}), do: editing
-  defp editing(_layer, _row), do: nil
-
-  @mark_order [:invalid, :conflict, :attention, :pending, :running, :changed]
-
-  defp mark(state, marks) do
-    case Enum.find(@mark_order, &(&1 in marks)) do
-      :invalid -> {glyph(state, :fail), :error}
-      :conflict -> {"!", :warning}
-      :attention -> {"!", :warning}
-      :pending -> {glyph(state, :running), :text_faint}
-      :running -> {glyph(state, :running), :info}
-      :changed -> {glyph(state, :changed), :text_muted}
-      nil -> {" ", :text_primary}
-    end
-  end
-
-  # ----------------------------------------------------------- detail
-
-  defp detail_lines(_state, nil, _width, _rows), do: []
-
-  defp detail_lines(state, %Row{detail: nil} = row, width, rows),
-    do: detail_lines(state, %{row | detail: %Detail{title: row.label}}, width, rows)
-
-  defp detail_lines(state, %Row{detail: %Detail{} = detail} = row, width, rows) do
-    inner = max(width - 2, 10)
-    scope = if detail.scope, do: [{" · " <> detail.scope, :text_faint}], else: []
-
-    title = [[{" ", :text_primary}, {detail.title, {:text_primary, [:bold]}} | scope]]
-    key_line = if detail.key_line, do: [[{" " <> detail.key_line, :text_faint}]], else: []
-
-    description =
-      if detail.description in [nil, ""],
-        do: [],
-        else: [
-          []
-          | Enum.map(Text.wrap(state, detail.description, inner), &[{" " <> &1, :text_primary}])
-        ]
-
-    facts =
-      if detail.facts == [],
-        do: [],
-        else: [
-          []
-          | Enum.map(detail.facts, fn {name, value} ->
-              [{" " <> pad(name, 10), :text_muted}, {value, :text_primary}]
-            end)
-        ]
-
-    layers =
-      if detail.layers == [] do
-        []
-      else
-        crumb = glyph(state, :crumb)
-        ok = glyph(state, :ok)
-
-        [[], [{" where it comes from", :text_muted}, {"   strongest first", :text_faint}]] ++
-          Enum.map(detail.layers, fn layer ->
-            lead = if layer.winner?, do: " #{crumb} ", else: "   "
-            role = if layer.winner?, do: :text_primary, else: :text_muted
-            win = if layer.winner?, do: [{"  " <> ok, :success}], else: []
-            note = if layer.note, do: [{"  " <> to_string(layer.note), :text_faint}], else: []
-            [{lead <> pad(layer.layer, 18), role}, {layer.value, role}] ++ note ++ win
-          end)
-      end
-
-    notes = Enum.map(detail.notes, fn {words, role} -> [{" " <> words, role}] end)
-    notes = if notes == [], do: [], else: [[] | notes]
-
-    keys =
-      case row.keys do
-        [] ->
-          []
-
-        keys ->
-          [
-            []
-            | Enum.map(keys, fn {key, _verb, words} ->
-                [{" " <> key, {:info, [:bold]}}, {" " <> words, :text_faint}]
-              end)
-          ]
-      end
-
-    (title ++ key_line ++ description ++ facts ++ layers ++ notes ++ keys)
-    |> Enum.map(&Text.clip(state, &1, width))
-    |> Enum.take(rows)
-  end
-
-  defp pad(text, width), do: String.pad_trailing(to_string(text), width)
-
-  # ----------------------------------------------------- status, footer
-
-  # §4.1.5 (QA F-13): the right side says where a change of the focused row
-  # is written, beside the toast or the tip.
-  defp status(state, layer, current, width) do
-    right = writes_to(state, current)
-    room = if right == [], do: width, else: max(width - Text.cells(state, right) - 2, 0)
-    left = status_left(state, layer, room)
-
-    if right == [],
-      do: left,
-      else: Text.spread(state, left, right ++ [{" ", :text_primary}], width)
-  end
-
-  defp writes_to(state, %{key: key}) when is_binary(key) do
-    with {:ok, entry} <- SwarmCode.Settings.Registry.fetch(key),
-         true <- SwarmCode.Settings.Entry.writable?(entry) do
-      words =
-        case entry.home do
-          :cli ->
-            "cli.json · this machine's terminal"
-
-          home ->
-            SwarmCodeCLI.UI.Settings.Rows.scope_words(Nav.ctx(state), %{entry | scope: home})
-        end
-
-      if is_binary(words), do: [{"writes to " <> words, :text_faint}], else: []
-    else
-      _ -> []
-    end
-  end
-
-  defp writes_to(_state, _current), do: []
-
-  defp status_left(state, layer, width) do
-    case layer.status do
-      %{text: text, role: role, at: at} = status ->
-        if state.now - at < Map.get(status, :ms, 4_000) do
-          glyph =
-            case role do
-              :success -> [{" " <> glyph(state, :ok) <> " ", :success}]
-              :error -> [{" " <> glyph(state, :fail) <> " ", :error}]
-              :warning -> [{" ! ", :warning}]
-              _ -> [{" ", :text_primary}]
+            cond do
+              cursor? -> {Text.band(line), true}
+              pill? -> {on_fill(line, :hover), false}
+              true -> {line, false}
             end
+          end)
 
-          Text.fit(
-            state,
-            glyph ++ [{text, if(role in [:success, :text_muted], do: :text_primary, else: role)}],
-            width
-          )
-        else
-          tip(state, layer, width)
-        end
-
-      _ ->
-        tip(state, layer, width)
-    end
-  end
-
-  # The Overview's quiet line when nothing was said.
-  defp tip(state, layer, width) do
-    if Layer.section(layer) == :overview and Layer.depth(layer) == 1 do
-      Text.fit(
-        state,
-        [
-          {" /settings <words> opens straight at a setting · : runs a settings command such as :set theme light",
-           :text_faint}
-        ],
-        width
-      )
-    else
-      []
-    end
-  end
-
-  defp footer(state, current, width) do
-    layer = state.settings
-
-    keys =
-      cond do
-        layer.mode == :editing and layer.editing != nil ->
-          display = layer.editing.module.display(layer.editing.state, Nav.ctx(state))
-          Map.get(display, :footer, [])
-
-        layer.mode == :search ->
-          [{"Enter", "open"}, {"Esc", "clear"}]
-
-        layer.mode == :paste and layer.paste != nil ->
-          paste_keys(layer.paste)
-
-        layer.region == :rail ->
-          [{"Enter", "open"}, {"/", "search"}, {"Tab", "page"}]
-
-        current != nil ->
-          Enum.map(current.keys, fn {key, _verb, words} -> {key, words} end) ++
-            [{"/", "search"}, {"[ ]", "section"}]
-
-        true ->
-          [{"/", "search"}, {"[ ]", "section"}]
-      end
-
-    keys = keys ++ [{"?", "keys"}]
-
-    left =
-      Enum.flat_map(keys, fn {key, words} ->
-        [{" " <> key, {:info, [:bold]}}, {" " <> words <> "  ", :text_faint}]
+        heading ++ items ++ [{[], false}]
       end)
 
-    Text.spread(state, left, [{"settings ", :text_ghost}], width)
+    {Enum.map(tagged, &elem(&1, 0)), Enum.find_index(tagged, &elem(&1, 1))}
   end
 
-  # cli74 F12: while a key is pasted the footer names the paste's own keys,
-  # not the row's (it said "Enter paste a new key" over a pasted key).
-  defp paste_keys(%{refused: {:replacement, _}}),
-    do: [{"s", "save it anyway"}, {"Esc", "keep the old key"}]
+  # Per section, the results of the query being searched (nil when no query).
+  defp search_matches(%Layer{mode: :search, search: %{query: query} = search})
+       when is_binary(query) and query != "" do
+    case Map.get(search, :found) do
+      %{results: results} -> Enum.frequencies_by(results, &elem(&1, 1).section)
+      _ -> %{}
+    end
+  end
 
-  defp paste_keys(%{pending_task: task}) when task != nil, do: [{"Esc", "keep the old key"}]
+  defp search_matches(_layer), do: nil
 
-  defp paste_keys(_paste),
-    do: [
-      {"Cmd-V", "paste"},
-      {"Enter", "save"},
-      {"Ctrl-U", "clear"},
-      {"Ctrl-T", "type instead"},
-      {"Esc", "cancel"}
-    ]
+  defp on_fill(segments, background) do
+    Enum.map(segments, fn
+      {text, {_, :on, _}} = segment when is_binary(text) -> segment
+      {text, role} -> {text, {role, :on, background}}
+    end)
+  end
 
   # ---------------------------------------------------------- popover
 
-  defp popover(lines, %{settings: %Layer{popover: nil}}, _width, _height), do: lines
-
-  defp popover(lines, state, width, height) do
-    box = SettingsPopover.lines(state, state.settings.popover)
-    widest = box |> Enum.map(&Text.cells(state, &1)) |> Enum.max(fn -> 20 end)
-    box_width = min(max(widest + 4, 40), width - 4)
-
-    box_height = min(length(box) + 2, height - 4)
-    top = max(div(height - box_height, 2), 1)
-    left = max(div(width - box_width, 2), 0)
-    h = glyph(state, :rule_h)
-    v = glyph(state, :rule_v)
-    inner = box_width - 2
-
-    framed =
-      [
-        [
-          {glyph(state, :corner_tl) <> String.duplicate(h, inner) <> glyph(state, :corner_tr),
-           :border}
-        ]
-      ] ++
-        Enum.map(Enum.take(box, box_height - 2), fn line ->
-          [{v, :border}, {" ", :popover}] ++ Text.fit(state, line, inner - 1) ++ [{v, :border}]
-        end) ++
-        [
-          [
-            {glyph(state, :corner_bl) <> String.duplicate(h, inner) <> glyph(state, :corner_br),
-             :border}
-          ]
-        ]
-
-    Enum.with_index(lines)
-    |> Enum.map(fn {line, index} ->
-      case Enum.at(framed, index - top) do
-        nil -> line
-        _ when index < top -> line
-        over -> Text.splice(state, line, left, over, width)
-      end
-    end)
-  end
-
-  # ------------------------------------------------- editor popover (F4)
-
-  # QA #2 P0-1: an open editor whose display carries a popover (the model
-  # picker) floats it under its row, as F4 draws it: the title and the counts
-  # in the top border, the filter, the list, the keys and `N of M` inside.
-  # Nothing drew it: the footer changed and the list was never seen.
-  defp editor_popover(
-         lines,
-         %{settings: %Layer{mode: :editing, editing: %{module: module} = editing}} = state,
-         anchor,
-         page_left,
-         width,
-         height
-       ) do
-    case module.display(editing.state, Nav.ctx(state)) do
-      %{popover: %{kind: :picker} = popover} ->
-        float(lines, state, popover, anchor, page_left, width, height)
-
-      _ ->
+  # Pass 75 (E, R26.3): a popover is a rounded `text_faint` box on the
+  # `popover` fill over the scrimmed body; the anchor row (the focused item)
+  # keeps its colours. The keys sheet, a confirmation and the pending
+  # question are centred; a picker (an enum's, or the model picker an
+  # editor floats) hangs under its row from the page's spine column.
+  defp overlay(lines, state, span, %Grid{} = grid) do
+    case box(state, span, grid) do
+      nil ->
         lines
+
+      {framed, top, left} ->
+        {first, last} = span || {nil, nil}
+        body = grid.body_top..(grid.body_top + grid.body_rows - 1)//1
+
+        lines
+        |> Enum.with_index()
+        |> Enum.map(fn {line, index} ->
+          anchor? = is_integer(first) and index >= first and index <= last
+          line = if index in body and not anchor?, do: Text.scrim(line), else: line
+
+          case index >= top and Enum.at(framed, index - top) do
+            over when is_list(over) -> Text.splice(state, line, left, over, grid.columns)
+            _ -> line
+          end
+        end)
     end
   end
 
-  defp editor_popover(lines, _state, _anchor, _page_left, _width, _height), do: lines
-
-  defp float(lines, state, popover, anchor, page_left, width, height) do
-    left = min(page_left + 2, max(width - 44, 0))
-    box_width = max(min(width - left - 2, 121), min(40, width - left))
-    inner = box_width - 2
-    # the header's three lines above, the status and the footer below
-    room = max(height - 5, 6)
-    body = SettingsPopover.editor_lines(state, popover, inner - 1, room - 2)
-    box_height = length(body) + 2
-
-    top =
-      cond do
-        is_integer(anchor) and anchor + 1 + box_height <= height - 2 -> anchor + 1
-        true -> max(height - 2 - box_height, 1)
-      end
-
-    h = glyph(state, :rule_h)
-    v = glyph(state, :rule_v)
-
-    framed =
-      [top_border(state, popover, box_width)] ++
-        Enum.map(body, fn line ->
-          [{v, :border}, {" ", :popover}] ++ Text.fit(state, line, inner - 1) ++ [{v, :border}]
-        end) ++
-        [
-          [
-            {glyph(state, :corner_bl) <> String.duplicate(h, inner) <> glyph(state, :corner_br),
-             :border}
-          ]
-        ]
-
-    Enum.with_index(lines)
-    |> Enum.map(fn {line, index} ->
-      case Enum.at(framed, index - top) do
-        nil -> line
-        _ when index < top -> line
-        over -> Text.splice(state, line, left, over, width)
-      end
-    end)
+  # The framed box and where it goes, or nil when no popover is open.
+  defp box(%{settings: %Layer{popover: {kind, _} = popover}} = state, span, %Grid{} = grid)
+       when kind in [:picker, :project_picker] do
+    content = SettingsPopover.lines(state, popover)
+    width = min(max(widest(state, content) + 4, 40), grid.page.width)
+    height = min(length(content) + 2, grid.body_rows)
+    framed = SettingsPopover.frame(state, Enum.take(content, height - 2), [], [], [], width)
+    {framed, under(span, height, grid), grid.page.left}
   end
 
-  # `┌─ Chat model · new conversations ───── 4 providers · 23 models ─┐`
-  defp top_border(state, popover, box_width) do
-    h = glyph(state, :rule_h)
-
-    right = [
-      {" " <> to_string(Map.get(popover, :meta) || "") <> " ", :text_faint},
-      {h <> glyph(state, :corner_tr), :border}
-    ]
-
-    title =
-      [{to_string(Map.get(popover, :title) || ""), {:text_primary, [:bold]}}] ++
-        case Map.get(popover, :subtitle) do
-          nil -> []
-          sub -> [{" · " <> to_string(sub), :text_faint}]
-        end
-
-    lead = [{glyph(state, :corner_tl) <> h <> " ", :border}]
-    title = Text.clip(state, title, max(box_width - Text.cells(state, right) - 5, 1))
-    used = Text.cells(state, lead) + Text.cells(state, title) + Text.cells(state, right)
-    fill = [{" " <> String.duplicate(h, max(box_width - used - 1, 0)), :border}]
-    lead ++ title ++ fill ++ right
+  defp box(%{settings: %Layer{popover: {_, _} = popover}} = state, _span, %Grid{} = grid) do
+    content = SettingsPopover.lines(state, popover)
+    width = min(max(widest(state, content) + 4, 40), grid.columns - 4)
+    # a sheet may cover the well and the message row; the crumb and the
+    # status line stay
+    height = min(length(content) + 2, grid.rows - 2)
+    framed = SettingsPopover.frame(state, Enum.take(content, height - 2), [], [], [], width)
+    {framed, max(div(grid.rows - height, 2), 1), max(div(grid.columns - width, 2), 0)}
   end
 
-  # ---------------------------------------------------------- helpers
+  # QA #2 P0-1: an open editor whose display carries a popover (the model
+  # picker, F4) floats it under its row: the title and the counts in the top
+  # border, the filter, the column names and the window of models inside.
+  defp box(
+         %{settings: %Layer{mode: :editing, editing: %{module: module} = editing}} = state,
+         span,
+         %Grid{} = grid
+       ) do
+    case module.display(editing.state, Nav.ctx(state)) do
+      %{popover: %{kind: :picker} = popover} ->
+        left = min(grid.page.left, max(grid.columns - 44, 0))
+        width = max(min(grid.columns - left - 2, 121), min(40, grid.columns - left))
+        # the header's lines above, the status and the message below
+        room = max(grid.rows - 5, 6)
+        framed = SettingsPopover.picker_frame(state, popover, width, room)
+        {framed, under(span, length(framed), grid), left}
 
-  # §4.1.2: the placeholder and the result count name the scalar settings.
-  defp scalar_count, do: length(SwarmCode.Settings.Registry.scalar_keys())
+      _ ->
+        nil
+    end
+  end
 
-  defp glyph(state, id), do: Glyphs.get(id, Glyphs.tier(state.capabilities))
-  defp rule(state, width), do: [{String.duplicate(glyph(state, :rule_h), width), :border}]
-  defp rule_v(state), do: {glyph(state, :rule_v), :border}
+  defp box(_state, _span, _grid), do: nil
+
+  # The first screen row of a box `height` lines tall under the anchor row,
+  # or as low as it fits above the message row.
+  defp under({_first, last}, height, %Grid{} = grid) when last + 1 + height <= grid.rows - 2,
+    do: last + 1
+
+  defp under(_span, height, %Grid{} = grid), do: max(grid.rows - 2 - height, 1)
+
+  defp widest(state, lines),
+    do: lines |> Enum.map(&Text.cells(state, &1)) |> Enum.max(fn -> 20 end)
 end

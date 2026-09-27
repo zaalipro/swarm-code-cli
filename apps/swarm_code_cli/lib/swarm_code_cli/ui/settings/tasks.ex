@@ -12,6 +12,8 @@ defmodule SwarmCodeCLI.UI.Settings.Tasks do
   the next open.
   """
 
+  alias SwarmCodeCLI.UI.Settings.Glyphs
+
   @not_cancellable ~w(storage.run storage.vacuum storage.apply_retention import.apply
                       mcp.import.apply provider.apply_models file.save values.reset)
 
@@ -49,7 +51,8 @@ defmodule SwarmCodeCLI.UI.Settings.Tasks do
           end
 
         still = if elapsed >= 30_000, do: " · still running", else: ""
-        [{"◷ running · #{seconds(elapsed)}#{progress}#{still}", :info}]
+        running = Glyphs.get(:running, :rich)
+        [{"#{running} running · #{seconds(elapsed)}#{progress}#{still}", :info}]
 
       state when state in [:done, "done"] ->
         [{"✓ done", :success} | message(task)]

@@ -24,15 +24,23 @@ defmodule SwarmCodeCLI.UI.Settings.C74ModelPickerTest do
     end)
   end
 
-  defp rows_text(s, c), do: ModelPicker.display(s, c).popover.rows |> Enum.map(&text(&1.segments))
+  # pass 75: a provider's heading is `{left, right}` (`N models` right)
+  defp rows_text(s, c),
+    do: ModelPicker.display(s, c).popover.rows |> Enum.map(&row_text(&1.segments))
+
+  defp row_text({left, right}), do: text(left) <> "   " <> text(right)
+  defp row_text(segments), do: text(segments)
 
   test "groups by provider with prices, contexts and the current mark" do
     {s, c} = open()
     view = ModelPicker.display(s, c)
-    assert view.popover.meta == "3 providers · 5 models"
+    assert view.popover.meta == {"3 providers", "5 models"}
+    # pass 75: the keys are drawn in the status line under PICK, not in the box
+    assert {"↑↓", "move"} in view.footer
+    assert {"Esc", "close"} in view.footer
     assert view.context == :settings_picker
     lines = rows_text(s, c)
-    assert Enum.at(lines, 0) =~ "Anthropic  Anthropic · not fetched this session"
+    assert Enum.at(lines, 0) =~ "Anthropic Anthropic · not fetched this session"
 
     assert Enum.any?(
              lines,
@@ -41,6 +49,22 @@ defmodule SwarmCodeCLI.UI.Settings.C74ModelPickerTest do
 
     assert Enum.any?(lines, &(&1 =~ ~r/claude-opus-5\s+200k\s+15.00 · 75.00/))
     assert Enum.any?(lines, &(&1 =~ ~r/claude-sonnet-5\s+family default\s+no price/))
+
+    # pass 75 (R26.4): `no price` is amber only for a model in `unpriced_models`
+    # with conversations in the last 30 days (the fake: claude-sonnet-5, qwen3-coder)
+    no_price =
+      for row <- ModelPicker.display(s, c).popover.rows,
+          row.kind == :model,
+          {"no price" <> _, role} <- row.segments,
+          do: {row.id |> String.split(":") |> List.last(), role}
+
+    assert {"claude-sonnet-5", :warning} in no_price
+    assert {"qwen3-coder", :warning} in no_price
+
+    for {model, role} <- no_price,
+        model not in ["claude-sonnet-5", "qwen3-coder"],
+        do: assert(role == :text_muted, model)
+
     # the cursor starts on the current value
     assert view.value == [{"deepseek-v4-pro", :text_primary}, {" · DeepSeek", :text_faint}]
     assert view.popover.position == "4 of 5"
@@ -126,7 +150,7 @@ defmodule SwarmCodeCLI.UI.Settings.C74ModelPickerTest do
 
     assert Enum.any?(
              lines,
-             &(&1 =~ "DeepSeek  OpenAI-compatible · fetched this session #{local_hhmm(18, 40)}")
+             &(&1 =~ "DeepSeek OpenAI-compatible · fetched this session #{local_hhmm(18, 40)}")
            )
 
     assert Enum.any?(lines, &(&1 =~ ~r/deepseek-v4-flash.*not in the last fetch/))
@@ -139,7 +163,10 @@ defmodule SwarmCodeCLI.UI.Settings.C74ModelPickerTest do
         elapsed_ms: 1_000
       })
 
-    assert Enum.any?(rows_text(s, c), &(&1 =~ "Anthropic  ◷ fetching the model list · 1 s"))
+    assert Enum.any?(
+             rows_text(s, c),
+             &(&1 =~ "Anthropic Anthropic ◐ fetching the model list · 1 s")
+           )
   end
 
   test "before the options arrive the picker says so" do

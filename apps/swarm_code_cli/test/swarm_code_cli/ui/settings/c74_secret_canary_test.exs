@@ -105,6 +105,7 @@ defmodule SwarmCodeCLI.UI.Settings.C74SecretCanaryTest do
         state = act!(state, {:settings, {:paste, @canary}})
         text = screen(state)
         refute text =~ @canary
+        refute text =~ String.slice(@canary, -4, 4)
         assert text =~ "●●●●●●●● pasted · not shown"
         refute inspect(state) =~ @canary
         refute inspect(state.settings) =~ @canary

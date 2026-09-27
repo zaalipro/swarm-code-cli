@@ -168,6 +168,122 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Text do
     end
   end
 
+  @pad_roles [:text_primary, :text_muted, :text_faint]
+
+  @doc """
+  `segments` word-wrapped to `width` cells with their roles kept across the
+  breaks. Words split on single spaces; a space never starts a wrapped
+  line (the first line keeps a plain leading pad, such as a right-aligned
+  count) and trailing spaces are dropped; a word wider than a line starts
+  its own line and is split at the line's width, never cut with `…`.
+
+  `first: cells` gives the first line its own width (a label or a value
+  whose first line is wider than its wrapped lines); the text is wrapped
+  once, so a word split at a line's end is never re-joined with a space.
+  """
+  @spec wrap_segments(map(), [segment()], pos_integer(), keyword()) :: [[segment()]]
+  def wrap_segments(state, segments, width, opts \\ []) do
+    widths = {Keyword.get(opts, :first, width), width}
+
+    {done, current, _used} =
+      segments
+      |> Enum.flat_map(fn {text, role} ->
+        text
+        |> to_string()
+        |> String.split(~r/( )/, include_captures: true, trim: true)
+        |> Enum.map(&{&1, role})
+      end)
+      |> words()
+      |> Enum.reduce({[], [], 0}, &place(state, &1, widths, &2))
+
+    [current | done]
+    |> Enum.reverse()
+    |> Enum.map(&finish_line/1)
+  end
+
+  # The tokens as words: a space alone, or the pieces of one word, which may
+  # span segments (`▰▰▰` then `▱` is one word in two roles).
+  defp words(tokens) do
+    tokens
+    |> Enum.chunk_while(
+      [],
+      fn
+        {" ", _} = space, [] -> {:cont, [space], []}
+        {" ", _} = space, word -> {:cont, Enum.reverse(word), [space]}
+        piece, [{" ", _}] = space -> {:cont, space, [piece]}
+        piece, word -> {:cont, [piece | word]}
+      end,
+      fn
+        [] -> {:cont, []}
+        word -> {:cont, Enum.reverse(word), []}
+      end
+    )
+  end
+
+  # A space never starts a wrapped line; the first line keeps a plain pad
+  # (a right-aligned count) but not a chip's pad cell, so a chip's word stays
+  # on its column.
+  defp place(_state, [{" ", role}], _widths, {done, [], 0})
+       when done != [] or role not in @pad_roles,
+       do: {done, [], 0}
+
+  defp place(state, [{" ", _} = token], widths, {done, current, used}) do
+    size = text_cells(state, " ")
+
+    if used + size <= line_width(widths, done),
+      do: {done, [token | current], used + size},
+      else: {[current | done], [], 0}
+  end
+
+  defp place(state, pieces, {_first, rest} = widths, {done, current, used}) do
+    size = Enum.reduce(pieces, 0, fn {text, _}, sum -> sum + text_cells(state, text) end)
+
+    cond do
+      used + size <= line_width(widths, done) ->
+        {done, Enum.reverse(pieces) ++ current, used + size}
+
+      current != [] and size <= rest ->
+        {[current | done], Enum.reverse(pieces), size}
+
+      true ->
+        done = if current == [], do: done, else: [current | done]
+        lines = split_cells(state, pieces, line_width(widths, done), rest)
+        [last | full] = Enum.reverse(lines)
+        {Enum.map(full, &elem(&1, 0)) ++ done, elem(last, 0), elem(last, 1)}
+    end
+  end
+
+  # The width of the line being filled: `first` until a line is done.
+  defp line_width({first, _rest}, []), do: first
+  defp line_width({_first, rest}, _done), do: rest
+
+  # A word too wide for a line, split into lines of at most `first` cells,
+  # then `rest` (at least one grapheme each), every grapheme keeping its
+  # role. Each line comes back as `{reversed segments, cells}`.
+  defp split_cells(state, pieces, first, rest) do
+    {lines, line, used} =
+      pieces
+      |> Enum.flat_map(fn {text, role} -> Enum.map(String.graphemes(text), &{&1, role}) end)
+      |> Enum.reduce({[], [], 0}, fn {grapheme, _role} = token, {lines, line, used} ->
+        size = text_cells(state, grapheme)
+        width = if lines == [], do: first, else: rest
+
+        if used + size > width and line != [],
+          do: {[{line, used} | lines], [token], size},
+          else: {lines, [token | line], used + size}
+      end)
+
+    Enum.reverse([{line, used} | lines])
+  end
+
+  defp finish_line(reversed) do
+    reversed
+    |> Enum.drop_while(fn {text, _} -> text == " " end)
+    |> Enum.reverse()
+    |> Enum.chunk_by(fn {_, role} -> role end)
+    |> Enum.map(fn [{_, role} | _] = run -> {Enum.map_join(run, &elem(&1, 0)), role} end)
+  end
+
   @doc "One screen row of `segments`, exactly `width` cells."
   @spec row(map(), [segment()], non_neg_integer()) :: Block.RichText.t()
   def row(state, segments, width) do
@@ -192,6 +308,24 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Text do
 
   @doc "The style of a role; `{role, modifiers}` adds modifiers, `{role, :on, background}` a background."
   @spec style(map(), term()) :: map()
+  # The focus band: a pseudo-background drawn as the accent chip's background,
+  # or as reverse video where there is no background colour to spend.
+  # A segment that brings its own fill (a chip, the enum's candidate) keeps it.
+  def style(%{capabilities: caps} = state, {inner, :on, :band}) do
+    base = style(state, inner)
+
+    cond do
+      base.background != nil -> base
+      caps.color_mode in [:truecolor, :ansi256] -> %{base | background: band_background(caps)}
+      true -> %{base | modifiers: Enum.uniq(base.modifiers ++ [:reversed])}
+    end
+  end
+
+  # 16 colours and NO_COLOR drop the hover, surface and popover fills.
+  def style(%{capabilities: %{color_mode: mode}} = state, {inner, :on, bg})
+      when bg in [:hover, :surface, :popover] and mode in [:ansi16, :monochrome],
+      do: style(state, inner)
+
   def style(state, {role, :on, background}) do
     base = style(state, role)
 
@@ -211,6 +345,10 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Text do
     base = style(state, role)
     %{base | modifiers: Enum.uniq(modifiers ++ (base.modifiers -- [:dim]))}
   end
+
+  # Roles that vanish on a slate desk draw as the faintest readable text.
+  def style(state, role) when role in [:text_ghost, :border, :border_soft, :ticks_track],
+    do: style(state, :text_faint)
 
   def style(%{capabilities: %{color_mode: :monochrome} = caps}, role) do
     themed = Theme.style(role, caps)
@@ -234,13 +372,31 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Text do
 
   def style(state, role), do: %{Theme.style(role, state.capabilities) | prefix: nil}
 
+  defp band_background(caps), do: Theme.style(:chip_accent, caps).background
+
   @doc "Puts every segment of a row on the selection background."
   @spec select([segment()]) :: [segment()]
   def select(segments),
     do: Enum.map(segments, fn {text, role} -> {text, on(role, :selection)} end)
 
+  @doc "Puts every segment of a row on the focus band (`style/2` resolves `:band`)."
+  @spec band([segment()]) :: [segment()]
+  def band(segments), do: Enum.map(segments, fn {text, role} -> {text, on(role, :band)} end)
+
+  @doc "Every segment drawn faint (a popover's scrim); a background wrapper is kept."
+  @spec scrim([segment()]) :: [segment()]
+  def scrim(segments) do
+    Enum.map(segments, fn
+      {text, {_, :on, background}} -> {text, {:text_faint, :on, background}}
+      {text, _} -> {text, :text_faint}
+    end)
+  end
+
   defp on({role, :on, _}, background), do: {role, :on, background}
-  defp on({role, modifiers}, background) when is_list(modifiers), do: {role, :on, background}
+
+  defp on({_role, modifiers} = spec, background) when is_list(modifiers),
+    do: {spec, :on, background}
+
   defp on(role, background), do: {role, :on, background}
 
   @doc false

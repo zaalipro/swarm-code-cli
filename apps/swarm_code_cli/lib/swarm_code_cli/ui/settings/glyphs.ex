@@ -23,20 +23,20 @@ defmodule SwarmCodeCLI.UI.Settings.Glyphs do
     check_on: {"[✓]", "[✓]", "[v]"},
     check_off: {"[ ]", "[ ]", "[ ]"},
     secret: {"●●●●●●●●", "●●●●●●●●", "********"},
-    running: {"◷", "◷", "~"},
+    running: {"◐", "◐", "~"},
     left_right: {"←→", "←→", "Left/Right"},
     up_down: {"↑↓", "↑↓", "Up/Down"},
     left: {"←", "←", "Left"},
     right: {"→", "→", "Right"},
     up: {"↑", "↑", "Up"},
     down: {"↓", "↓", "Down"},
-    action: {"▸", "▸", ">"},
+    action: {"▸", "▸", "+"},
     rule_h: {"─", "─", "-"},
     rule_v: {"│", "│", "|"},
-    corner_tl: {"┌", "┌", "+"},
-    corner_tr: {"┐", "┐", "+"},
-    corner_bl: {"└", "└", "+"},
-    corner_br: {"┘", "┘", "+"},
+    corner_tl: {"╭", "+", "+"},
+    corner_tr: {"╮", "+", "+"},
+    corner_bl: {"╰", "+", "+"},
+    corner_br: {"╯", "+", "+"},
     tee_l: {"│", "│", "|"},
     tee_r: {"│", "│", "|"},
     gauge_on: {"▰", "▰", "#"},
@@ -50,7 +50,25 @@ defmodule SwarmCodeCLI.UI.Settings.Glyphs do
     minus: {"−", "−", "-"},
     times: {"×", "×", "x"},
     quote_open: {"“", "“", "\""},
-    quote_close: {"”", "”", "\""}
+    quote_close: {"”", "”", "\""},
+    # pass 75 (E): group spines, the note's connector, switches and textures
+    spine_top: {"╭", "+", "+"},
+    spine: {"│", "|", "|"},
+    spine_end: {"╰", "+", "+"},
+    title_lead: {"─", "-", "-"},
+    join_mid: {"┤", "+", "+"},
+    join_top: {"╮", "+", "+"},
+    connector: {"─", "-", "-"},
+    hook: {"╰─", "+-", "+-"},
+    ladder: {"▎", "", ""},
+    note_end: {"╰", "+", "+"},
+    switch_off: {"○──", "[ ]", "[ ]"},
+    switch_on: {"──●", "[x]", "[x]"},
+    tex_1: {"█", "#", "#"},
+    tex_2: {"▓", "=", "="},
+    tex_3: {"▒", "-", "-"},
+    tex_4: {"░", ".", "."},
+    tex_5: {"▄", ":", ":"}
   }
 
   @doc "Every glyph id."
@@ -74,6 +92,10 @@ defmodule SwarmCodeCLI.UI.Settings.Glyphs do
   def tier(%{ascii?: true}), do: :ascii
   def tier(%{glyph_tier: :rich}), do: :rich
   def tier(_caps), do: :measured
+
+  @doc "Whether the settings layer draws its twin: the ASCII tier or NO_COLOR."
+  @spec twin?(map()) :: boolean()
+  def twin?(caps), do: tier(caps) == :ascii or Map.get(caps, :color_mode) == :monochrome
 
   @doc """
   The glyph `id` the terminal can draw: its tier's twin, or the ASCII one
@@ -107,11 +129,13 @@ defmodule SwarmCodeCLI.UI.Settings.Glyphs do
     {"—", "-"},
     {"–", "-"},
     {"×", "x"},
+    {"←→", "Left/Right"},
+    {"↑↓", "Up/Down"},
     {"→", "->"},
     {"←", "<-"},
     {"↑", "Up"},
     {"↓", "Down"},
-    {"▸", ">"},
+    {"▸", "+"},
     {"•", "*"},
     {"✓", "v"},
     {"✗", "x"},
@@ -125,7 +149,20 @@ defmodule SwarmCodeCLI.UI.Settings.Glyphs do
     {"▰", "#"},
     {"▱", "."},
     {"’", "'"},
-    {"‘", "'"}
+    {"‘", "'"},
+    {"╭", "+"},
+    {"╮", "+"},
+    {"╰", "+"},
+    {"╯", "+"},
+    {"┤", "+"},
+    {"◐", "~"},
+    {"○", "o"},
+    {"▎", ""},
+    {"█", "#"},
+    {"▓", "="},
+    {"▒", "-"},
+    {"░", "."},
+    {"▄", ":"}
   ]
 
   @doc """

@@ -407,7 +407,8 @@ defmodule SwarmCodeCLI.UI.Settings.IntegrationRows do
     :state,
     :columns,
     :target,
-    :indent
+    :indent,
+    :layer
   ]
 
   @doc """
@@ -432,7 +433,8 @@ defmodule SwarmCodeCLI.UI.Settings.IntegrationRows do
       state: :normal,
       columns: nil,
       target: nil,
-      indent: 0
+      indent: 0,
+      layer: nil
     }
 
     Map.merge(base, Map.take(attrs, @row_keys))
@@ -571,11 +573,12 @@ defmodule SwarmCodeCLI.UI.Settings.IntegrationRows do
         {[{glyph(ctx, :running) <> " ", :info}, {"#{words} · #{elapsed} s#{still}", :text_muted}],
          cancel}
 
+      # pass 75: the summary is its own segment, so the page can draw it as a chip
       "done" ->
         {[
            {glyph(ctx, :ok) <> " ", :success},
-           {success.(field(task, "summary") || %{}) <> suffix(at), :text_muted}
-         ], []}
+           {success.(field(task, "summary") || %{}), :text_muted}
+         ] ++ if(at, do: [{" · " <> at, :text_muted}], else: []), []}
 
       "failed" ->
         {[
@@ -660,12 +663,12 @@ defmodule SwarmCodeCLI.UI.Settings.IntegrationRows do
   def paste_state(_ctx, _row_id), do: :none
 
   @glyphs %{
-    running: {"◷", "~"},
+    running: {"◐", "~"},
     ok: {"✓", "v"},
     error: {"✗", "x"},
     attention: {"!", "!"},
     changed: {"•", "*"},
-    action: {"▸", ">"},
+    action: {"▸", "+"},
     dot: {"·", "-"},
     new: {"+", "+"},
     gone: {"−", "-"},

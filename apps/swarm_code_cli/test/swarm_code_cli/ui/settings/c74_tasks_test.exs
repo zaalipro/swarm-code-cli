@@ -33,9 +33,9 @@ defmodule SwarmCodeCLI.UI.Settings.C74TasksTest do
       "progress" => %{"done" => 3, "total" => 10}
     }
 
-    assert [{"◷ running · 5 s · 3/10", :info}] = Tasks.words(running, 4_000)
+    assert [{"◐ running · 5 s · 3/10", :info}] = Tasks.words(running, 4_000)
 
-    assert [{"◷ running · 1 min 2 s · still running", :info}] =
+    assert [{"◐ running · 1 min 2 s · still running", :info}] =
              Tasks.words(%{"state" => :running, "elapsed_ms" => 62_000}, 0)
 
     assert [{"✓ done", :success}, {" · 12 models", :text_muted}] =
