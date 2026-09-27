@@ -29,24 +29,6 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
   alias SwarmCodeCLI.UI.Projector.Panel.{Draw, Model, Name, Shapes}
   alias SwarmCodeCLI.UI.Projector.Inspector.Changes
 
-  @full_lane 12
-  @compact_lane 8
-  # The compact name column: the widest name and one cell. pass73 T10: it is
-  # the agent's one name (`Panel.Name`), cut at its end with `…` only where
-  # the sentence would keep fewer than 14 cells (16 cells of name in a
-  # 46-cell pane), never a different, shorter word.
-  defp short_field(ctx) do
-    widest =
-      ctx.views
-      |> Map.values()
-      |> List.flatten()
-      |> Enum.map(&Draw.cells(&1.display, ctx.state))
-      |> Enum.max(fn -> 4 end)
-
-    badge = if ctx.hint?, do: 2, else: 0
-    min(max(5, widest + 1), max(5, ctx.width - 29 - badge))
-  end
-
   @type target ::
           {:run, binary()} | {:agent, binary(), binary(), boolean()} | nil
   @type row :: {SwarmCodeCLI.UI.Scene.Block.RichText.t(), target(), keyword()}
@@ -123,7 +105,7 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
 
     Enum.find_value(all, fn build ->
       rows = build.()
-      footer = legend(ctx, rows) ++ footer_rows(ctx)
+      footer = footer_rows(ctx)
       if length(drawn(rows)) + length(footer) <= height, do: fill(rows, footer, height, ctx)
     end) || cut(List.last(all).(), footer_rows(ctx), height, ctx)
   end
@@ -213,16 +195,12 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
   defp bodies(%{mode: :full} = ctx, band) do
     [chat | others] = ordered(ctx)
 
+    launched = Enum.map(others, &launched_row(ctx, &1))
+
     [
-      fn ->
-        unfold_full(ctx, chat, band, true) ++ Enum.flat_map(others, &orbit(ctx, &1, true))
-      end,
-      fn ->
-        unfold_full(ctx, chat, band, false) ++ Enum.flat_map(others, &orbit(ctx, &1, true))
-      end,
-      fn ->
-        unfold_full_tight(ctx, chat, band) ++ Enum.flat_map(others, &orbit(ctx, &1, false))
-      end
+      fn -> unfold_full(ctx, chat, band, true) ++ launched end,
+      fn -> unfold_full(ctx, chat, band, false) ++ launched end,
+      fn -> unfold_full_tight(ctx, chat, band) ++ launched end
     ]
   end
 
@@ -233,8 +211,8 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
     # Fold the other runs from the last one up (D5), then drop earlier runs,
     # then collapse done agents.
     # The unfolded rows of each run are drawn once and shared by the folds.
-    chat_rows = unfold_compact(ctx, chat, false)
-    open_rows = Map.new(others, &{&1.id, unfold_compact(ctx, &1, false)})
+    chat_rows = unfold_compact(ctx, chat)
+    open_rows = Map.new(others, &{&1.id, unfold_compact(ctx, &1)})
 
     folds =
       for k <- 0..length(others) do
@@ -243,17 +221,12 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
 
           chat_rows ++
             Enum.flat_map(open, &Map.fetch!(open_rows, &1.id)) ++
-            Enum.flat_map(folded, &orbit(ctx, &1, true))
+            Enum.map(folded, &run_header_compact(ctx, &1))
         end
       end
 
     with_earlier = Enum.map(folds, fn build -> fn -> build.() ++ earlier end end)
-
-    collapsed = fn ->
-      unfold_compact(ctx, chat, true) ++ Enum.flat_map(others, &orbit(ctx, &1, false))
-    end
-
-    with_earlier ++ folds ++ [collapsed]
+    with_earlier ++ folds
   end
 
   # The run in chat first; when no run is in chat, the newest live run leads.
@@ -530,15 +503,14 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
 
   defp run_header_compact(ctx, run), do: header_row(ctx, run)
 
-  @doc false
   # pass 75 V2 (7.1): a shown run that is not the in-chat run, on one row:
   # its mark at 1, its title muted at 3, a swarm's `R of T in`, the clock.
-  def launched_row(ctx, run) do
+  defp launched_row(ctx, run) do
     state = ctx.state
     views = Map.get(ctx.views, run.id, [])
     clock = run |> Model.elapsed(state) |> Model.clock()
     badge = run_badge(ctx, run)
-    lead = if badge, do: badge_segments(ctx, badge), else: [{" ", :plain}]
+    lead = if badge, do: badge_segments(ctx, badge), else: []
 
     count =
       case Model.kind(run) do
@@ -766,90 +738,131 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
 
   # -------------------------------------------------------- full blocks
 
-  defp unfold_full(ctx, run, band, extras?) do
+  defp unfold_full(ctx, run, band, _extras?) do
     views = Map.get(ctx.views, run.id, [])
-
     header = run_header_full(ctx, run)
     band = if band == [], do: [], else: band ++ [blank(ctx)]
-    pre = Shapes.before_agents(ctx, run, views, extras?)
-    blocks = agent_blocks(ctx, run, views)
-    post = found_rows(ctx, run) ++ Shapes.after_agents(ctx, run, views, extras?)
-    earlier = if extras? and run.id == ctx.chat_id, do: Shapes.earlier(ctx), else: []
     gap = if length(ctx.runs) > 1, do: [], else: [blank(ctx)]
 
-    header ++ gap ++ band ++ pre ++ blocks ++ post ++ earlier
+    header ++
+      gap ++ band ++ found_rows(ctx, run) ++ [blank(ctx)] ++ agent_rows(ctx, [{run, views}])
   end
 
   # Full mode with too little height: the header, the band and one row per agent.
   defp unfold_full_tight(ctx, run, band) do
     views = Map.get(ctx.views, run.id, [])
-    header = run_header_full(ctx, run)
-    header ++ band ++ Enum.map(views, &compact_row(ctx, &1))
+    run_header_full(ctx, run) ++ band ++ agent_rows(ctx, [{run, views}], false)
   end
 
-  @doc false
-  def agent_blocks(ctx, _run, views) do
-    tree? = Enum.any?(views, &(&1.role == :lead)) and length(views) > 1
-    {visible, deeper} = Enum.split_with(views, &(&1.depth <= 1 or &1.role == :lead))
-    name_w = name_width(ctx, visible, tree?)
-    last = length(visible) - 1
+  # ------------------------------------------------------------ agents
 
-    visible
-    |> Enum.with_index()
-    |> Enum.flat_map(fn {view, i} ->
-      {first, cont} = connectors(ctx, tree?, view, i, last)
-      w = if tree? and view.role == :lead, do: name_w + 2, else: name_w
-      agent_block(ctx, view, first, cont, w)
-    end)
-    |> Kernel.++(deeper_row(ctx, deeper))
+  # pass 75 V2 (6.1-6.6): one block for the shown runs, `runs_in_order` the
+  # in-chat run first. A title row `agents   N live · M stopped`, then one
+  # row per agent that is not done (a done agent is in `found`), each run's
+  # rows sorted by attention, ties in wire order. `status?` false drops the
+  # status text (compact, 7.9).
+  defp agent_rows(ctx, runs_in_order, status? \\ true) do
+    rows_by_run =
+      Enum.map(runs_in_order, fn {run, views} ->
+        shown =
+          views
+          |> Enum.with_index()
+          |> Enum.reject(fn {view, _} -> view.state == :done end)
+          |> Enum.sort_by(fn {view, i} -> {view.attention, i} end)
+          |> Enum.map(&elem(&1, 0))
+
+        {run, shown}
+      end)
+
+    all = Enum.flat_map(rows_by_run, &elem(&1, 1))
+
+    if all == [] do
+      []
+    else
+      live = Enum.count(all, &(&1.state in [:working, :thinking, :needs_you]))
+      stopped = Enum.count(all, &(&1.state in [:failed, :turn_limit, :stopped]))
+
+      words =
+        [if(live > 0, do: "#{live} live"), if(stopped > 0, do: "#{stopped} stopped")]
+        |> Enum.reject(&is_nil/1)
+        |> Enum.join(" · ")
+
+      col = name_column(all, ctx.state)
+      title = row(ctx, [{"agents", :text_muted}], [{words, :text_faint}])
+
+      rows =
+        Enum.flat_map(rows_by_run, fn {run, shown} ->
+          shown
+          |> Enum.with_index()
+          |> Enum.map(fn {view, i} -> agent_row(ctx, view, run, col, i == 0, status?) end)
+        end)
+
+      [title | rows]
+    end
   end
 
-  # R16: agents deeper than the lead's workers collapse to one row.
-  defp deeper_row(_ctx, []), do: []
-
-  defp deeper_row(ctx, deeper) do
-    [
-      row(ctx, [
-        {"  " <> g(ctx, :deeper) <> " ", :text_faint},
-        {"#{length(deeper)} more agents under them · open in the overlay", :text_faint}
-      ])
-    ]
+  # The name column: the widest name shown and two cells, at most 24 (6.5).
+  defp name_column(views, state) do
+    widest = views |> Enum.map(&Draw.cells(&1.display, state)) |> Enum.max(fn -> 0 end)
+    min(24, widest + 2)
   end
 
-  # The tree connector before an agent's first row and before its other rows.
-  defp connectors(ctx, true = _tree?, %{role: :lead}, _i, last) do
-    cont = if last > 0, do: g(ctx, :pipe), else: " "
-    {"", cont}
-  end
-
-  defp connectors(ctx, true, _view, i, last) do
-    if i == last,
-      do: {g(ctx, :elbow), " "},
-      else: {g(ctx, :tee), g(ctx, :pipe)}
-  end
-
-  defp connectors(ctx, false, _view, i, last) do
-    {"", if(i == last, do: " ", else: g(ctx, :pipe))}
-  end
-
-  # The name column: the widest sibling, never cut while there is room (R14),
-  # cut in the middle only past what the row can hold.
-  # The state words line up in one column (col 22 of a 46-cell pane, D3).
-  @word_column 21
-
-  defp name_width(ctx, views, tree?) do
+  # `<mark> <glyph> <name> <status>   <figure>`: the mark on the run's first
+  # row only, the name in its hue, the status cut at its end, the figure
+  # ending at the row's last cell (6.3-6.6).
+  defp agent_row(ctx, view, run, col, first?, status?) do
     state = ctx.state
-    subs = if tree?, do: Enum.reject(views, &(&1.role == :lead)), else: views
-    widest = subs |> Enum.map(&Draw.cells(&1.display, state)) |> Enum.max(fn -> 4 end)
-    prefix = if tree?, do: 4, else: 2
-    meta = views |> Enum.map(&Draw.cells(meta(&1) || "", state)) |> Enum.max(fn -> 0 end)
-    # pass72 G3 (QA Q3): the widest state word shown, not "needs you" always.
-    word = views |> Enum.map(&Draw.cells(Model.word(&1.state), state)) |> Enum.max(fn -> 4 end)
-    cap = ctx.width - 2 - prefix - 1 - word - 1 - meta
-    column = @word_column - prefix - 1
-    widest |> max(column) |> min(max(4, cap))
+    {token, glyph_role} = agent_glyph(view.state)
+    figure = Map.get(view, :figure)
+    figure_cells = if figure, do: Draw.cells(elem(figure, 0), state), else: 0
+    gap = if figure, do: 1, else: 0
+    dim = fn role -> if ctx.hint?, do: :text_faint, else: role end
+
+    mark =
+      case badge_for(ctx, view) do
+        nil when ctx.hint? ->
+          [{"    ", :plain}]
+
+        nil ->
+          [
+            {if(first?, do: Draw.mark(Model.kind(run), state), else: " "), Model.kind_role(run)},
+            {" ", :plain}
+          ]
+
+        badge ->
+          badge_segments(ctx, badge)
+      end
+
+    glyph_mods = if view.state == :needs_you, do: [:bold], else: []
+    name = Draw.pad_to(Draw.elide(view.display, 24, state), col, state)
+
+    status =
+      if status? do
+        {text, role} = view.status_text
+        room = max(0, ctx.width - 2 - 4 - col - figure_cells - gap)
+        text = if room == 0, do: "", else: Draw.elide(text, room, state)
+        [{text, dim.(role)}]
+      else
+        []
+      end
+
+    row(
+      ctx,
+      mark ++
+        [{g(ctx, token), glyph_role, glyph_mods}, {" ", :plain}, {name, dim.(view.name_role)}] ++
+        status,
+      if(figure, do: [figure], else: [])
+    )
+    |> target({:agent, run.id, view.id, view.state == :needs_you})
   end
 
+  defp agent_glyph(state) when state in [:working, :thinking], do: {:agent_live, :text_primary}
+  defp agent_glyph(:needs_you), do: {:bang, :warning}
+  defp agent_glyph(:turn_limit), do: {:turn_limit, :error}
+  defp agent_glyph(state) when state in [:failed, :stopped], do: {:failed, :error}
+  defp agent_glyph(_waiting_queued_or_paused), do: {:waiting, :text_primary}
+
+  # The run's clock and tokens (a found row's right side).
   defp meta(view) do
     [Model.short_clock(view.elapsed), Model.tokens(view.tokens)]
     |> Enum.reject(&is_nil/1)
@@ -859,341 +872,28 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
     end
   end
 
-  defp agent_block(ctx, view, first, cont, name_w) do
-    state = ctx.state
-    hint? = ctx.hint?
-    badge = badge_for(ctx, view)
-
-    glyph_mods = if view.state == :needs_you, do: [:bold], else: []
-
-    prefix =
-      cond do
-        hint? and badge -> badge_segments(ctx, badge)
-        hint? -> [{"    ", :plain}]
-        first == "" -> []
-        true -> [{first, :text_ghost}, {" ", :plain}]
-      end
-
-    dim = fn role -> if hint?, do: :text_faint, else: role end
-    word_role = if view.state == :needs_you, do: :warning, else: dim.(Model.word_role(view.state))
-    word_mods = if view.state == :needs_you, do: [:bold], else: []
-
-    name_row =
-      row(
-        ctx,
-        prefix ++
-          [
-            {g(ctx, view.state), Model.glyph_role(view.state), glyph_mods},
-            {" ", :plain},
-            {name(view.display, name_w, state), dim.(view.name_role)},
-            {" ", :plain},
-            {Model.word(view.state), word_role, word_mods}
-          ],
-        if(hint?, do: [], else: [{meta(view) || "", :text_faint}])
-      )
-      |> target({:agent, view.run_id, view.id, view.needs_you?})
-
-    cont_prefix =
-      cond do
-        hint? -> [{"     ", :plain}]
-        true -> [{cont, :text_ghost}, {" ", :plain}]
-      end
-
-    [name_row | detail_rows(ctx, view, cont_prefix)]
-  end
-
-  defp name(text, w, state) do
-    if Draw.cells(text, state) > w,
-      do: Draw.pad_to(Draw.elide(text, w, state, :middle), w, state),
-      else: Draw.pad_to(text, w, state)
-  end
-
-  # The second row: the lane and the sentence; a done agent's finding and its
-  # evidence; a failure with its retry.
-  defp detail_rows(ctx, %{state: :done} = view, prefix) do
-    state = ctx.state
-
-    lead =
-      prefix ++
-        [{g(ctx, :finding), if(ctx.hint?, do: :text_faint, else: :success)}, {" ", :plain}]
-
-    room = ctx.width - 2 - cells(prefix, state) - 2
-    text = view.finding || produced_words(view) || "finished"
-    evidence = evidence(view)
-    lines = Draw.wrap(text, room, if(ctx.hint?, do: 1, else: 2), state)
-    last_line = List.last(lines)
-
-    {lines, tail} =
-      cond do
-        evidence == nil or ctx.hint? ->
-          {lines, []}
-
-        Draw.cells(last_line <> " · " <> evidence, state) <= room ->
-          {List.replace_at(lines, -1, {last_line, evidence}), []}
-
-        true ->
-          {lines, [evidence]}
-      end
-
-    role = if ctx.hint?, do: :text_faint, else: :text_primary
-
-    first_rows =
-      lines
-      |> Enum.with_index()
-      |> Enum.map(fn
-        {{line, ev}, 0} ->
-          row(ctx, lead ++ [{line, role}, {" · " <> ev, :text_faint}], [])
-
-        {line, 0} ->
-          row(ctx, lead ++ [{line, role}], [])
-
-        {{line, ev}, _} ->
-          row(ctx, prefix ++ [{"  " <> line, role}, {" · " <> ev, :text_faint}], [])
-
-        {line, _} ->
-          row(ctx, prefix ++ [{"  " <> line, role}], [])
-      end)
-
-    first_rows ++ Enum.map(tail, &row(ctx, prefix ++ [{"  " <> &1, :text_faint}], []))
-  end
-
-  defp detail_rows(ctx, view, prefix) do
-    state = ctx.state
-    {sentence, role} = Model.sentence(view, state)
-    role = if ctx.hint? and role != :warning, do: :text_faint, else: role
-    lane = lane_segments(ctx, view, @full_lane)
-    lane_cells = if lane == [], do: 0, else: @full_lane + 1
-    room = ctx.width - 2 - cells(prefix, state) - lane_cells
-    lines = Draw.wrap(sentence, room, if(ctx.hint?, do: 1, else: 2), state)
-
-    retry =
-      if view.state == :failed and view.retry_at,
-        do: [],
-        else: []
-
-    case lines do
-      [] when lane == [] ->
-        []
-
-      [] ->
-        [row(ctx, prefix ++ lane, [])]
-
-      [one | more] ->
-        pad = String.duplicate(" ", lane_cells)
-
-        [row(ctx, prefix ++ lane ++ spacer(lane) ++ [{one, role}], [])] ++
-          Enum.map(more, &row(ctx, prefix ++ [{pad <> &1, role}], [])) ++ retry
-    end
-  end
-
-  defp spacer([]), do: []
-  defp spacer(_lane), do: [{" ", :plain}]
-
-  defp produced_words(%{files_changed: n}) when is_integer(n) and n > 0,
-    do: count(n, "file changed", "files changed")
-
-  defp produced_words(_), do: nil
-
-  # `fake.ex:88 +1`: the first reference and how many more.
-  # pass72 G4 (QA Q4): D2's `fake.ex:88 +1`: the basename and its line.
-  defp evidence(%{refs: [first | rest]}) do
-    first = Path.basename(first)
-    if rest == [], do: first, else: "#{first} +#{length(rest)}"
-  end
-
-  defp evidence(_), do: nil
-
-  # ------------------------------------------------------------- lanes
-
-  @doc false
-  def lane_segments(ctx, view, n) do
-    case Model.window(view.lane, n) do
-      nil ->
-        []
-
-      cells ->
-        cells
-        |> Enum.chunk_by(& &1)
-        |> Enum.map(fn [kind | _] = run ->
-          {String.duplicate(g(ctx, lane_token(kind)), length(run)), lane_role(ctx, view, kind)}
-        end)
-    end
-  end
-
-  defp lane_token(:think), do: :lane_think
-  defp lane_token(:tools), do: :lane_tools
-  defp lane_token(:write), do: :lane_write
-  defp lane_token(:you), do: :lane_you
-  defp lane_token(:fail), do: :lane_fail
-  defp lane_token(_), do: :lane_idle
-
-  defp lane_role(%{hint?: true}, _view, :you), do: :warning
-  defp lane_role(%{hint?: true}, _view, _kind), do: :text_faint
-  defp lane_role(_ctx, _view, :think), do: :text_muted
-  defp lane_role(_ctx, _view, :you), do: :warning
-  defp lane_role(_ctx, _view, :fail), do: :error
-  defp lane_role(_ctx, _view, :idle), do: :text_ghost
-  defp lane_role(_ctx, view, _kind), do: view.lane_role
-
   # ------------------------------------------------------ compact rows
 
-  defp unfold_compact(ctx, run, collapse_done?) do
+  # 7.9: the header's row 1, the found row, one row per agent that is not
+  # done with its figure only.
+  defp unfold_compact(ctx, run) do
     views = Map.get(ctx.views, run.id, [])
 
-    {done, rest} =
-      if collapse_done? and length(views) > 6,
-        do: Enum.split_with(views, &(&1.state == :done)),
-        else: {[], views}
+    found =
+      case found_rows(ctx, run, false) do
+        [count | _] -> [count]
+        [] -> []
+      end
 
-    header = run_header_compact(ctx, run)
-    rows = Enum.map(rest, &compact_row(ctx, &1))
-
-    collapsed =
-      case done do
-        [] ->
-          []
-
-        done ->
-          names = Enum.map_join(done, ", ", & &1.display)
-
-          [
-            row(ctx, [
-              {"  " <> g(ctx, :done), :success},
-              {" #{length(done)} done: " <> names, :text_muted}
-            ])
-          ]
+    rows =
+      case agent_rows(ctx, [{run, views}], false) do
+        [_title | rows] -> rows
+        [] -> []
       end
 
     note = Shapes.compact_note(ctx, run, views)
-    [header | rows] ++ collapsed ++ note
+    [run_header_compact(ctx, run)] ++ found ++ rows ++ note
   end
-
-  defp compact_row(ctx, view) do
-    state = ctx.state
-    badge = badge_for(ctx, view)
-
-    prefix =
-      cond do
-        badge -> badge_segments(ctx, badge)
-        ctx.hint? -> [{"    ", :plain}]
-        true -> [{"  ", :plain}]
-      end
-
-    dim = fn role -> if ctx.hint?, do: :text_faint, else: role end
-    glyph_mods = if view.state == :needs_you, do: [:bold], else: []
-
-    {body, _} =
-      case view.state do
-        :done ->
-          text = view.finding || produced_words(view) || "finished"
-          {[{g(ctx, :finding) <> " " <> text, dim.(:text_primary)}], nil}
-
-        _ ->
-          {sentence, role} = Model.sentence(view, state, true)
-          role = if ctx.hint? and role != :warning, do: :text_faint, else: role
-          lane = lane_segments(ctx, view, @compact_lane)
-          {lane ++ spacer(lane) ++ [{sentence, role}], nil}
-      end
-
-    row(
-      ctx,
-      prefix ++
-        [
-          {g(ctx, view.state), Model.glyph_role(view.state), glyph_mods},
-          {" ", :plain},
-          {Draw.pad_to(
-             Name.fit(view.display, short_field(ctx) - 1, state),
-             short_field(ctx),
-             state
-           ), dim.(view.name_role)},
-          {" ", :plain}
-        ] ++ body,
-      []
-    )
-    |> target({:agent, view.run_id, view.id, view.needs_you?})
-  end
-
-  # -------------------------------------------------------- orbit lines
-
-  # D6: a folded run on two rows, `⋔ api hardening  ●●◐!   0/3 · 05:02` and
-  # its most important sentence (R2); one row when `sentence?` is false.
-  defp orbit(ctx, run, sentence?) do
-    state = ctx.state
-    views = Map.get(ctx.views, run.id, [])
-    badge = run_badge(ctx, run)
-    clock = run |> Model.elapsed(state) |> Model.clock()
-    ratio = Shapes.ratio(ctx, run)
-
-    glyphs =
-      views
-      |> Enum.take(12)
-      |> Enum.map(&{g(ctx, &1.state), Model.glyph_role(&1.state), glyph_mods(&1)})
-
-    lead = if badge, do: badge_segments(ctx, badge), else: [{" ", :plain}]
-
-    right =
-      if ctx.hint?,
-        do: [],
-        else: [{[ratio, clock] |> Enum.reject(&is_nil/1) |> Enum.join(" · "), :text_muted}]
-
-    first =
-      row(
-        ctx,
-        lead ++
-          [
-            {Draw.mark(Model.kind(run), state), Model.kind_role(run)},
-            {" ", :plain},
-            {Model.title(run), if(ctx.hint?, do: :text_faint, else: :text_primary)},
-            {"  ", :plain}
-          ] ++ glyphs,
-        right
-      )
-      |> target({:run, run.id})
-
-    # A folded run's needs-you agents are reached through the band's rows
-    # (pass72 G8), never through an entry nothing on screen shows.
-    second =
-      if sentence?,
-        do: [row(ctx, [{"   ", :plain} | priority(ctx, run, views)], [])],
-        else: []
-
-    [first | second]
-  end
-
-  defp glyph_mods(%{state: :needs_you}), do: [:bold]
-  defp glyph_mods(_), do: []
-
-  # R2 over a whole run: who needs you, else who failed, else the kind's own
-  # fact, else what the newest working agent does.
-  defp priority(ctx, run, views) do
-    state = ctx.state
-
-    cond do
-      v = Model.first_waiting(views) ->
-        [{"! " <> v.display, :warning}, {" " <> elem(Model.sentence(v, state), 0), :text_muted}]
-
-      v = Enum.find(views, &(&1.state == :failed)) ->
-        [
-          {g(ctx, :failed) <> " " <> v.display <> " failed", :error},
-          {retry_words(v, state), :text_muted}
-        ]
-
-      fact = Shapes.orbit_fact(ctx, run, views) ->
-        [{fact, :text_muted}]
-
-      v = Enum.find(Enum.reverse(views), &(&1.state in [:working, :thinking])) ->
-        [{v.display <> " " <> elem(Model.sentence(v, state), 0), :text_muted}]
-
-      true ->
-        [{Model.word(hd(views ++ [%{state: :done}]).state), :text_muted}]
-    end
-  end
-
-  defp retry_words(%{retry_at: at}, %{now: now})
-       when is_integer(at) and is_integer(now) and at > now,
-       do: " · retry in #{div(at - now + 999, 1000)} s"
-
-  defp retry_words(_v, _state), do: ""
 
   # --------------------------------------------------- earlier and legend
 
@@ -1228,36 +928,6 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
   def done_mark(ctx, %{state: :done}), do: {g(ctx, :done), :success}
   def done_mark(ctx, %{state: :failed}), do: {g(ctx, :failed), :error}
   def done_mark(ctx, _run), do: {g(ctx, :stopped), :text_muted}
-
-  # The lane legend, only when a lane is drawn.
-  defp legend(ctx, body) do
-    drawn? =
-      Enum.any?(body, fn
-        {_b, {:agent, run_id, id, _}, _} ->
-          ctx.views |> Map.get(run_id, []) |> Enum.any?(&(&1.id == id and &1.lane != nil))
-
-        _ ->
-          false
-      end)
-
-    if drawn? and not ctx.hint? do
-      [
-        row(ctx, [
-          {"last 60 s  ", :text_faint},
-          {g(ctx, :lane_think), :text_muted},
-          {" think ", :text_faint},
-          {g(ctx, :lane_tools), :text_primary},
-          {" tools ", :text_faint},
-          {g(ctx, :lane_write), :text_primary},
-          {" write ", :text_faint},
-          {g(ctx, :lane_you), :warning},
-          {" you", :text_faint}
-        ])
-      ]
-    else
-      []
-    end
-  end
 
   defp footer_rows(ctx) do
     inner = max(0, ctx.width - 2)
