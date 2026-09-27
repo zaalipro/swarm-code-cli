@@ -597,6 +597,173 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
     if unpriced?, do: "+", else: ""
   end
 
+  # --------------------------------------------------------- found
+
+  # pass 75 V2 (7.3): what the run has produced so far. `found  R of T in`,
+  # the gauge, why the report is not in yet; then, with `detail?`, each
+  # finished agent's `✓` row, its conclusion and its refs, and the Lead's
+  # report once it is done. Nothing when the run has no sub agents.
+  defp found_rows(ctx, run, detail? \\ true) do
+    state = ctx.state
+    views = Map.get(ctx.views, run.id, [])
+    subs = Enum.reject(views, &(&1.role in [:lead, :assistant]))
+
+    if subs == [] do
+      []
+    else
+      {r, t} = Shapes.reported(run, views)
+      pad = String.duplicate(" ", max(1, 16 - Draw.cells("found", state)))
+
+      count =
+        row(ctx, [
+          {"found" <> pad, :text_muted},
+          {"#{r} of #{t} in", :text_muted},
+          {" · " <> files_words(Map.get(run, :files_changed)), :text_faint}
+        ])
+
+      gauge =
+        row(
+          ctx,
+          [{Draw.mark(Model.kind(run), state), Model.kind_role(run)}, {" ", :plain}] ++
+            Shapes.report_gauge(subs, ctx.width, state)
+        )
+
+      why =
+        case Shapes.why_line(run, subs, state) do
+          nil -> []
+          words -> [row(ctx, [{"  " <> words, :text_faint}])]
+        end
+
+      details = if detail?, do: found_details(ctx, run, views, subs), else: []
+      details = if details == [], do: [], else: [blank(ctx) | details]
+
+      Enum.map([count, gauge | why], &target(&1, {:run, run.id})) ++ details
+    end
+  end
+
+  defp files_words(n) when is_integer(n) and n > 0, do: count(n, "file changed", "files changed")
+  defp files_words(_), do: "no files changed"
+
+  # Each finished sub agent in the order it finished, one blank row between,
+  # then the Lead's report.
+  defp found_details(ctx, run, views, subs) do
+    done =
+      subs
+      |> Enum.filter(&(&1.state == :done))
+      |> Enum.sort_by(&finished_key/1)
+      |> Enum.map(&found_agent(ctx, run, &1))
+
+    lead =
+      case Enum.find(views, &(&1.role == :lead and &1.state == :done)) do
+        nil -> []
+        view -> [found_lead(ctx, run, view)]
+      end
+
+    (done ++ lead) |> Enum.intersperse([blank(ctx)]) |> List.flatten()
+  end
+
+  defp finished_key(view) do
+    case Map.get(view, :finished_at) do
+      at when is_integer(at) -> {0, at}
+      _ -> {1, 0}
+    end
+  end
+
+  defp found_agent(ctx, run, view) do
+    state = ctx.state
+    target = {:agent, run.id, view.id, false}
+
+    head =
+      row(
+        ctx,
+        found_lead_in(ctx, view) ++ [{view.display, view.name_role}],
+        found_meta(view)
+      )
+
+    headline =
+      case view.finding do
+        nil ->
+          []
+
+        finding ->
+          Enum.map(
+            Draw.wrap(finding, ctx.width - 6, 2, state),
+            &row(ctx, [{"    " <> &1, :text_primary}])
+          )
+      end
+
+    refs =
+      case {view.finding, view.refs} do
+        {finding, [_ | _] = refs} when is_binary(finding) ->
+          [row(ctx, [{"    " <> Enum.join(refs, " · "), :text_faint}])]
+
+        _ ->
+          []
+      end
+
+    Enum.map([head | headline], &target(&1, target)) ++ refs
+  end
+
+  # The Lead's report (S4): `✓ Lead · the report`, its headline, where to read it.
+  defp found_lead(ctx, run, view) do
+    state = ctx.state
+
+    head =
+      row(
+        ctx,
+        found_lead_in(ctx, view) ++
+          [{"Lead", :text_primary, [:bold]}, {" · the report", :text_muted}],
+        found_meta(view)
+      )
+      |> target({:agent, run.id, view.id, false})
+
+    headline =
+      case view.finding do
+        nil ->
+          []
+
+        finding ->
+          Enum.map(
+            Draw.wrap(finding, ctx.width - 6, 2, state),
+            &row(ctx, [{"    " <> &1, :text_primary}])
+          )
+      end
+
+    reported =
+      row(ctx, [
+        {"    reported · ", :text_faint},
+        {"^F", :text_muted, [:bold]},
+        {" reads it", :text_faint}
+      ])
+
+    not_covered =
+      case Map.get(run, :not_covered) do
+        n when is_integer(n) and n > 0 and run.state == :done ->
+          [row(ctx, [{"    not covered", :text_muted}], [{Integer.to_string(n), :text_muted}])]
+
+        _ ->
+          []
+      end
+
+    [head | headline] ++ [reported | not_covered]
+  end
+
+  # `  ✓ ` before a finished agent's name, or its hint badge.
+  defp found_lead_in(ctx, view) do
+    case badge_for(ctx, view) do
+      nil -> [{"  " <> g(ctx, :done), :success}, {" ", :plain}]
+      badge -> badge_segments(ctx, badge) ++ [{g(ctx, :done), :success}, {" ", :plain}]
+    end
+  end
+
+  # A found row's right side: the clock and the tokens, never money (R9.1).
+  defp found_meta(view) do
+    case meta(view) do
+      nil -> []
+      words -> [{words, :text_faint}]
+    end
+  end
+
   # -------------------------------------------------------- full blocks
 
   defp unfold_full(ctx, run, band, extras?) do
@@ -606,7 +773,7 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
     band = if band == [], do: [], else: band ++ [blank(ctx)]
     pre = Shapes.before_agents(ctx, run, views, extras?)
     blocks = agent_blocks(ctx, run, views)
-    post = Shapes.after_agents(ctx, run, views, extras?)
+    post = found_rows(ctx, run) ++ Shapes.after_agents(ctx, run, views, extras?)
     earlier = if extras? and run.id == ctx.chat_id, do: Shapes.earlier(ctx), else: []
     gap = if length(ctx.runs) > 1, do: [], else: [blank(ctx)]
 

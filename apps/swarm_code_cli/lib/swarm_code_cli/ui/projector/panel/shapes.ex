@@ -440,11 +440,9 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Shapes do
   # ------------------------------------------------------------- after
 
   @doc "Rows under the agents: the kind's facts; `extras?` adds the optional ones."
-  def after_agents(ctx, run, views, extras?) do
+  def after_agents(ctx, run, _views, extras?) do
     case Model.kind(run) do
-      :swarm ->
-        swarm_foot(ctx, run, views)
-
+      # pass 75 V2: a swarm's foot is the panel's `found` block (7.3).
       :assistant ->
         if(extras?, do: chat_foot(ctx, run), else: [])
 
@@ -464,63 +462,6 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Shapes do
 
       _ ->
         []
-    end
-  end
-
-  # `reported  ▰▱▱▱  1 of 4        1 needs you` and what the lead waits for.
-  defp swarm_foot(ctx, run, views) do
-    # Reported = came back with a result (`:done`), on the wire and here.
-    {reported, total} = reported(run, views)
-    ended = if run.state in [:stopped, :failed], do: run.state
-
-    if total == 0 do
-      []
-    else
-      waiting = Enum.filter(views, & &1.needs_you?)
-      working = Enum.count(views, &(&1.state in [:working, :thinking]))
-
-      left =
-        Enum.filter(
-          views,
-          &(&1.role not in [:lead, :assistant] and &1.state not in [:done, :failed, :stopped])
-        )
-
-      shown = min(total, 12)
-      lit = if total > 12, do: div(reported * 12, total), else: reported
-
-      right =
-        cond do
-          ended -> []
-          waiting != [] -> [{"#{length(waiting)} needs you", :warning}]
-          working > 0 -> [{"#{working} working", :text_faint}]
-          true -> []
-        end
-
-      why =
-        cond do
-          ended == :stopped -> "stopped before the merge"
-          ended == :failed -> "failed before the merge"
-          run.state == :done -> "the Lead merged the findings"
-          waiting != [] -> Model.first_waiting(views).display <> " is paused on you"
-          reported == total -> "the Lead is merging the findings"
-          length(left) == 1 -> "the Lead reports once #{hd(left).display} is in"
-          true -> "the Lead reports when all #{total} are in"
-        end
-
-      [
-        Panel.blank(ctx),
-        Panel.row(
-          ctx,
-          [
-            {"reported  ", :text_muted},
-            {String.duplicate(Panel.g(ctx, :gauge_on), lit), :success},
-            {String.duplicate(Panel.g(ctx, :gauge_off), shown - lit), :text_ghost},
-            {"  #{reported} of #{total}", :text_primary}
-          ],
-          right
-        ),
-        Panel.row(ctx, [{"          " <> why, :text_faint}])
-      ]
     end
   end
 

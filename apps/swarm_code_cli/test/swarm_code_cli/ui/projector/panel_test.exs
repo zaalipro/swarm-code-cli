@@ -236,7 +236,11 @@ defmodule SwarmCodeCLI.UI.Projector.PanelTest do
     assert text =~ "▅▅▂▅▅▅▅▅▒▒▒▒ wants to run a command"
     assert text =~ "» Fake provider never reaches the refusal"
     assert text =~ "fake.ex:88 +1"
-    assert text =~ ~r/reported  ▰▱▱▱  1 of 4 +1 needs you/
+    # pass 75 V2 (7.3): the found block: count, gauge, why, the finished agent.
+    assert text =~ " found           1 of 4 in · no files changed"
+    assert text =~ " ⋔ ▄▄▄▄▄▄▄▄▄ ▁▁▁▁▁▁▁▁▁ ▁▁▁▁▁▁▁▁▁ ▁▁▁▁▁▁▁▁▁"
+    assert text =~ "   the Lead reports once all 4 are in"
+    assert text =~ ~r/   ✓ Llm tools +1:22 · 9k/
     assert text =~ "last 60 s  ▂ think ▅ tools █ write ▒ you"
     assert List.last(rows) =~ ~r/\^F agents  \^N needs you  \^B panel +full$/
   end
@@ -245,9 +249,11 @@ defmodule SwarmCodeCLI.UI.Projector.PanelTest do
     text = :panel_swarm_3 |> state(160, 45) |> panel_text() |> Enum.join("\n")
 
     refute text =~ "NEEDS YOU"
-    assert text =~ "» stop reason read before the flush"
-    assert text =~ "run_server.ex:214 +1"
-    assert text =~ "3 of 4"
+    # pass 75 V2 (7.3): a finished agent's conclusion and its refs in `found`.
+    assert text =~ ~r/   ✓ Engine lifecycle +1:28 · 19k/
+    assert text =~ "\n     stop reason read before the flush"
+    assert text =~ "\n     run_server.ex:214 · agent_server.ex:88"
+    assert text =~ "found           3 of 4 in"
   end
 
   test "regression: a stopped swarm counts only done agents and never says the Lead is merging" do
@@ -269,12 +275,13 @@ defmodule SwarmCodeCLI.UI.Projector.PanelTest do
     text = %{state | read_model: model} |> panel_text() |> Enum.join("\n")
 
     refute text =~ "is merging"
-    assert text =~ "stopped before the merge"
+    # pass 75 V2: a run that no longer runs says no why-line at all.
+    refute text =~ ~r/the Lead (reports|waits|is writing)/
     # pass72 G20 (QA Q23): the state word is not said twice.
     assert text =~ "before it finished"
     refute text =~ ~r/stopped\s+stopped/
     refute text =~ "weighing flush vs retry order"
-    assert text =~ "3 of 4"
+    assert text =~ "found           3 of 4 in"
   end
 
   test "regression: a worker's finding skips the engine's branch notice (real run, pass72)" do
@@ -312,7 +319,7 @@ defmodule SwarmCodeCLI.UI.Projector.PanelTest do
     text = %{state | read_model: model} |> panel_text() |> Enum.join("\n")
 
     refute text =~ "Changes on branch"
-    assert text =~ "» The first line of mix help compile"
+    assert text =~ "\n     The first line of mix help compile"
     assert text =~ "Compiles source files"
   end
 
