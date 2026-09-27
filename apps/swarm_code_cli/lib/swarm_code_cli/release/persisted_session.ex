@@ -422,6 +422,7 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
         keymap: launch.keymap,
         panel_mode: preferences.panel_mode,
         show_diffs: preferences.show_diffs,
+        agent_summaries?: preferences.agent_summaries?,
         theme_mode: launch.theme,
         theme_env: launch.theme_env,
         mouse?: launch.mouse?
