@@ -48,7 +48,9 @@ defmodule SwarmCodeCLI.C74AcceptanceTest do
 
   alias SwarmCode.Settings.Registry
   alias SwarmCodeCLI.UI.{Input, Keymap, Projector, SafeText, Size}
-  alias SwarmCodeCLI.UI.Settings.{Layer, Nav, Page, Search, Sections}
+  alias SwarmCodeCLI.UI.Projector.Settings.Page, as: Drawn
+  alias SwarmCodeCLI.UI.Projector.Settings.Text
+  alias SwarmCodeCLI.UI.Settings.{Grid, Layer, Nav, Page, Search, Sections}
 
   @sizes [{160, 45}, {120, 30}, {90, 30}, {80, 24}]
 
@@ -198,14 +200,34 @@ defmodule SwarmCodeCLI.C74AcceptanceTest do
       {state, _fake} = state |> Nav.put_cursor(env.id) |> key(:enter) |> serve(fake)
       assert Page.level(Layer.page(state.settings)) == :sub
 
-      # pass 75 (R22.4): a label wider than the 19-cell label column wraps
-      # with a 2-cell hanging indent instead of being cut (a longer word is
-      # split at the column), so each word's first 17 characters are asserted
-      for row <- Nav.rows(state),
-          row.label != "",
-          word <- String.split(String.slice(row.label, 0, 20)) do
-        assert Enum.join(lines(state), "\n") =~ String.slice(word, 0, 17)
-      end
+      # pass 75 (R22.4): a label wider than the label column wraps with a
+      # 2-cell hanging indent instead of being cut (a longer word is split at
+      # the column), so each of its wrapped lines is asserted on one screen
+      # line, as E draws it (hoisted mark, group-title suffix, row indent)
+      grid = Grid.for(80, 24)
+      screen = lines(state)
+
+      checked =
+        for group <- Drawn.groups(Nav.rows(state)), row <- group.rows, row.label != "" do
+          title = group.title && Enum.map_join(group.title, "", &elem(&1, 0))
+          label = Drawn.strip_suffix(Drawn.hoist(row, state.capabilities).label, title)
+          width = grid.label_width - min(row.indent || 0, max(grid.label_width - 4, 0))
+
+          wrapped =
+            state
+            |> Text.wrap_segments([{label, :text_primary}], max(width - 2, 1), first: width)
+            |> Enum.map(fn line -> line |> Enum.map_join("", &elem(&1, 0)) |> String.trim() end)
+
+          assert String.replace(Enum.join(wrapped), " ", "") == String.replace(label, " ", ""),
+                 label
+
+          for text <- wrapped,
+              do: assert(Enum.any?(screen, &String.contains?(&1, text)), "#{label}: #{text}")
+
+          label
+        end
+
+      assert checked != []
 
       esc = fn state ->
         {:ok, action} = Keymap.resolve(Input.key(:escape), state, %{})

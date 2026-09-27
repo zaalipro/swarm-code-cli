@@ -36,9 +36,12 @@ defmodule SwarmCodeCLI.UI.Settings.Tasks do
         do: id
   end
 
-  @doc "A task's state as a row shows it, with the time it has run (1 s steps)."
-  @spec words(map(), integer()) :: [{String.t(), atom()}]
-  def words(task, now) do
+  @doc """
+  A task's state as a row shows it, with the time it has run (1 s steps);
+  `tier` (`Glyphs.tier/1` of the caps) picks the running glyph's twin.
+  """
+  @spec words(map(), integer(), :rich | :measured | :ascii) :: [{String.t(), atom()}]
+  def words(task, now, tier \\ :rich) do
     elapsed = elapsed(task, now)
 
     case field(task, "state") do
@@ -51,7 +54,7 @@ defmodule SwarmCodeCLI.UI.Settings.Tasks do
           end
 
         still = if elapsed >= 30_000, do: " · still running", else: ""
-        running = Glyphs.get(:running, :rich)
+        running = Glyphs.get(:running, tier)
         [{"#{running} running · #{seconds(elapsed)}#{progress}#{still}", :info}]
 
       state when state in [:done, "done"] ->
