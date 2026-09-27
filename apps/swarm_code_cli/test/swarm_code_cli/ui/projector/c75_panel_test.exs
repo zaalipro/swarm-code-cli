@@ -16,7 +16,7 @@ defmodule SwarmCodeCLI.UI.Projector.C75PanelTest do
   alias SwarmCodeCLI.Demo.Panel, as: Scenes
   alias SwarmCodeCLI.UI.{Capabilities, Layout, Paint, Projector, SafeText, Size, Theme, Width}
   alias SwarmCodeCLI.UI.Paint.{Options, Plan}
-  alias SwarmCodeCLI.UI.Projector.Panel
+  alias SwarmCodeCLI.UI.Projector.{Panel, PanelOrder}
   alias SwarmCodeCLI.UI.Projector.Panel.Draw
 
   defp caps(size, opts) do
@@ -375,6 +375,50 @@ defmodule SwarmCodeCLI.UI.Projector.C75PanelTest do
 
     assert Enum.find(rows(st), &(&1 =~ "Docs accuracy")) =~ "checking app data"
     assert_role(st, "checking app data", :text_muted)
+  end
+
+  # Review P-11: in hint mode the badge (or its blank) takes 4 cells before
+  # the glyph where the mark takes 2, so the status is cut to the room the row
+  # really has; the row's own fit never cuts it a second time.
+  test "hint mode: a badge row's status gets the room after the badge" do
+    st = state(:panel_owner19, 176, 45)
+    entries = PanelOrder.entries(st)
+    docs = Enum.find(entries, &match?({:agent, _, "agent-91-3", _}, &1))
+    fit = Enum.find(entries, &match?({:agent, _, "agent-91-5", _}, &1))
+    assert docs && fit
+
+    st = Map.put(st, :hint, %{labels: %{"s" => docs, "d" => fit}, typed: ""})
+    rows = rows(st)
+
+    assert "  s  ◒ Docs accuracy  checking app data 21/30" in rows, inspect(rows)
+    assert "  d  ◒ Strategy fit   weighing 2 pl… quiet 1m" in rows, inspect(rows)
+    # Hint mode dims every word but the badges.
+    assert_role(st, "weighing 2 pl…", :text_faint)
+    assert Enum.all?(panel_text(st), &(Width.cells(&1, :narrow) == 46))
+  end
+
+  # Review P-12: in the full candidate a blank row ends a run's found block
+  # (task 145), so with several shown runs one run's refs or why-line never
+  # runs into the next run's `found` row. The tighter candidates are the
+  # found, gauge and why rows only (task 147a), so they stay packed.
+  test "found blocks of several runs: a blank row between them in the full candidate" do
+    for {r, level} <- [{45, :bare}, {60, :summary}, {70, :full}] do
+      rows = rows(state(:panel_heavy, 176, r))
+      at = for {row, i} <- Enum.with_index(rows), String.starts_with?(row, " found "), do: i
+      before = Enum.map(at, &Enum.at(rows, &1 - 1))
+
+      assert length(at) == 5, "176x#{r}: #{inspect(rows)}"
+      assert Enum.any?(rows, &(&1 =~ "the Lead reports once")) == (level != :bare)
+      assert Enum.any?(rows, &(&1 =~ ~r/^   ✓ /)) == (level == :full)
+
+      if level == :full do
+        assert Enum.all?(before, &(&1 == "")), "176x#{r}: #{inspect(rows)}"
+        assert Enum.at(rows, Enum.at(at, 1) - 2) == "     fake.ex:88 · anthropic.ex:301"
+      else
+        assert [""] == Enum.uniq(Enum.take(before, 1))
+        refute Enum.any?(tl(before), &(&1 == "")), "176x#{r}: #{inspect(rows)}"
+      end
+    end
   end
 
   # The rules behind the rows, value by value (tasks 141, 142, 147b): the
