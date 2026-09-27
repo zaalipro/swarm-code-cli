@@ -272,6 +272,35 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   def handle_info({:service_unwatch, connection, ref}, state),
     do: {:noreply, unwatch(state, {connection, ref})}
 
+  # pass75: a status line's outcome re-projects only its agent; a crashed
+  # call frees the agent; a timer (debounce or quiet) re-runs the decision.
+  def handle_info(
+        {ref, {:agent_summary, agent_id, seq, outcome}},
+        %{agent_status: %{refs: refs}} = state
+      )
+      when is_reference(ref) and is_map_key(refs, ref) do
+    Process.demonitor(ref, [:flush])
+
+    case AgentStatus.settle(state.agent_status, ref, agent_id, seq, outcome) do
+      {:changed, status} ->
+        {:noreply, schedule_partial(%{state | agent_status: status}, [], [agent_id])}
+
+      {:unchanged, status} ->
+        {:noreply, %{state | agent_status: status}}
+    end
+  end
+
+  def handle_info({:DOWN, ref, :process, _, _}, %{agent_status: %{refs: refs}} = state)
+      when is_map_key(refs, ref) do
+    {_agent_id, status} = AgentStatus.down(state.agent_status, ref)
+    {:noreply, %{state | agent_status: status}}
+  end
+
+  def handle_info({:agent_status_due, agent_id}, state) do
+    state = %{state | agent_status: AgentStatus.clear_timer(state.agent_status, agent_id)}
+    {:noreply, summarize_due(state, agent_id)}
+  end
+
   # pass74 S1-10 (§3.3.10): a settings job's answer, crash and timer.
   def handle_info({ref, answer}, %{settings_jobs: jobs} = state)
       when is_reference(ref) and is_map_key(jobs, ref) do
@@ -577,6 +606,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     Enum.reduce(Map.keys(state.settings_jobs), state, &settle_settings_job(&2, &1, true))
     SettingsTasks.terminate(state.settings_tasks)
     cancel_facts_job(state.facts_job, state.task_supervisor)
+    AgentStatus.cancel_all(state.agent_status, state.task_supervisor)
     Events.unsubscribe(state.opts[:conversation_id])
   end
 
@@ -1562,6 +1592,9 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         }
     })
   end
+
+  # pass75: a status timer fired (task 112c gives it the decision).
+  defp summarize_due(state, _agent_id), do: state
 
   defp arm_refresh(%{refresh_pending: true} = state), do: state
 
