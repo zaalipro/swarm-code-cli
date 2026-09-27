@@ -1965,10 +1965,22 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       "depth" => n.depth || 0,
       "changes_stat" => clip(n.changes_stat, 200),
       "error" => if(present?(n.error), do: clip(n.error, 200)),
-      "model" => clip(models[n.id], 200)
+      "model" => clip(models[n.id], 200),
+      "turn" => turn_of(n),
+      "max_turns" => max_turns_of(n),
+      "summary" => nil,
+      "summary_rev" => nil,
+      "last_words" => nil
     }
     |> Map.merge(stop)
   end
+
+  # pass75: an agent with a turn budget sends its turn (0 before the first)
+  # and the budget; without one (nil or 0) both are nil, as AgentDetail does.
+  defp max_turns_of(%{max_turns: m}) when is_integer(m) and m > 0, do: m
+  defp max_turns_of(_), do: nil
+
+  defp turn_of(n), do: if(max_turns_of(n), do: n.turn || 0)
 
   # pass70 C6 (arch F16): why a run or an agent stopped, as the synced domain
   # records it (`error_kind` holds a provider error kind or an orchestration
@@ -2382,7 +2394,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   # projection, or changed anything a tick cannot carry: then the change was
   # structural and its own event is on its way. Golden-tested against a reload.
   @run_tick_keys [:tokens_in, :tokens_out, :cost_usd, :model, :updated_at]
-  @agent_tick_keys [:status, :progress, :tokens_in, :tokens_out, :cost_usd, :updated_at]
+  @agent_tick_keys [:status, :progress, :tokens_in, :tokens_out, :cost_usd, :updated_at, :turn]
   @record_tick_keys [:status, :text, :text_bytes, :detail, :tokens_in, :tokens_out, :updated_at]
 
   defp partial_reload(%{inputs: nil} = state, _partial), do: reload(state)

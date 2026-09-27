@@ -844,7 +844,13 @@ defmodule SwarmCode.Daemon.Service.LiveBackend do
         if(is_integer(run.finished_at) and is_integer(run.at),
           do: max(run.finished_at - run.at, 0)
         ),
-      "tokens" => 0
+      "tokens" => 0,
+      # pass75: the unsaved runtime keeps no turns and runs no Summarizer.
+      "turn" => nil,
+      "max_turns" => nil,
+      "summary" => nil,
+      "summary_rev" => nil,
+      "last_words" => nil
     }
   end
 

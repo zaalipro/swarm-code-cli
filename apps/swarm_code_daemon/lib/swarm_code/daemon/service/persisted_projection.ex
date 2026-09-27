@@ -280,7 +280,19 @@ defmodule SwarmCode.Daemon.Service.PersistedProjection do
             n.result
           ),
         phase: n.phase,
-        workspace_path: n.workspace_path
+        workspace_path: n.workspace_path,
+        # pass75: the agent's turns, its task's head and its report's tail
+        # (the conclusion the headline falls back to, and the Summarizer's
+        # notes).
+        turn: n.turn,
+        max_turns: n.max_turns,
+        prompt_head: fragment("substr(coalesce(?, ''), 1, 300)", n.prompt),
+        result_tail:
+          fragment(
+            "case when ? = 'done' then substr(?, -2048) else null end",
+            n.status,
+            n.result
+          )
       }
     )
   end
