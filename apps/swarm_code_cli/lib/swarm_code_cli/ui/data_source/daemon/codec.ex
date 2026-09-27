@@ -113,7 +113,12 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
       :finding_refs,
       :files_changed,
       :elapsed_ms,
-      :tokens
+      :tokens,
+      :turn,
+      :max_turns,
+      :summary,
+      :summary_rev,
+      :last_words
     ],
     DTO.RunSummary => [
       :tokens_in,
