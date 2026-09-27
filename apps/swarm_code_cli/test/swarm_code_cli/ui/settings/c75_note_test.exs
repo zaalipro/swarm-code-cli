@@ -51,6 +51,19 @@ defmodule SwarmCodeCLI.UI.Settings.C75NoteTest do
 
   defp find_note(note, pattern), do: Enum.find(note, fn {_at, text, _} -> text =~ pattern end)
 
+  test "a detail-less action row's note is titled without its `▸ ` (F6b, 407)" do
+    state = open(:models_effort, {160, 45})
+
+    row = %SwarmCodeCLI.UI.Settings.Row{
+      id: "act:env:add",
+      kind: :action,
+      label: "▸ Add a variable"
+    }
+
+    [title | _] = Note.body(state, row, 40)
+    assert Enum.map_join(title, &elem(&1, 0)) =~ ~r/^Add a variable/
+  end
+
   test "Note.placement/4: the group's top, slid up for the body, never past the focus" do
     assert Note.placement(4, 7, 20, 38) == 4
     assert Note.placement(30, 33, 20, 38) == 18

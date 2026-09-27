@@ -96,7 +96,7 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Note do
   # The body with the role of the note's spine cell on each line (the
   # ladder's lines take their layer's hue; nil = faint).
   defp body_spined(state, %Row{} = row, width) do
-    detail = row.detail || %Detail{title: row.label}
+    detail = row.detail || untitled(state, row)
     title = title(state, detail.title, detail.scope, width)
 
     key_line =
@@ -250,7 +250,7 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Note do
 
   defp editor_body_spined(state, %Row{} = row, %{state: editor} = editing, width) do
     caps = state.capabilities
-    detail = row.detail || %Detail{title: row.label}
+    detail = row.detail || untitled(state, row)
 
     title =
       wrap(state, [{row.label, {:text_primary, [:bold]}}, {" · editing", :text_muted}], width)
@@ -314,7 +314,7 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Note do
   @spec drawer(map(), Row.t(), Grid.t()) :: [segments()]
   def drawer(state, %Row{} = row, %Grid{drawer_lines: lines} = grid) when lines in [2, 3] do
     caps = state.capabilities
-    detail = row.detail || %Detail{title: row.label}
+    detail = row.detail || untitled(state, row)
     width = grid.page.width - 1
     hook = {hook(caps) <> " ", :text_faint}
     key_line = if detail.key_line, do: [{detail.key_line, :text_faint}], else: []
@@ -471,6 +471,13 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Note do
   defp picker_open?(%Layer{popover: {:picker, _}}), do: true
   defp picker_open?(%Layer{mode: :editing, editing: %{module: ModelPicker}}), do: true
   defp picker_open?(_layer), do: false
+
+  # A detail-less row is titled by its label as the page draws it: no
+  # `▸ `/`→ `/`◐ ` prefix, which went to the mark slot (F6b, 407).
+  defp untitled(state, row),
+    do: %Detail{
+      title: SwarmCodeCLI.UI.Projector.Settings.Page.hoist(row, state.capabilities).label
+    }
 
   defp wrap(state, segments, width), do: Text.wrap_segments(state, segments, width)
 
