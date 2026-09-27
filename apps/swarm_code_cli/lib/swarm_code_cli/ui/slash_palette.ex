@@ -23,8 +23,8 @@ defmodule SwarmCodeCLI.UI.SlashPalette do
     %{name: "trust", args: "", desc: "Trust this project: read its AGENTS.md and allow edits"},
     %{
       name: "panel",
-      args: "[full|compact|hidden]",
-      desc: "The side agent panel's shape (Ctrl-B cycles it); remembered"
+      args: "[full|compact|hidden|summaries on|off]",
+      desc: "The side agent panel's shape (Ctrl-B cycles it) and its AI status lines; remembered"
     },
     # pass73 T1/T2/T9: display preferences, remembered in cli.json.
     %{

@@ -2679,6 +2679,21 @@ defmodule SwarmCodeCLI.UI.Reducer do
       end
 
     cond do
+      # pass75: the panel's AI status lines (cli.json `agent_summaries`).
+      argument == "summaries" ->
+        feedback(
+          state,
+          if(state.agent_summaries?,
+            do: "AI status lines are on: /panel summaries off",
+            else: "AI status lines are off: /panel summaries on"
+          )
+        )
+
+      argument in ["summaries on", "summaries off"] ->
+        {state, cleared} = clear_command_draft(state)
+        {state, set} = Display.set(state, :agent_summaries?, argument == "summaries on")
+        {state, cleared ++ set}
+
       mode != nil ->
         {state, cleared} = clear_command_draft(state)
         {state, set} = set_panel(state, mode)
