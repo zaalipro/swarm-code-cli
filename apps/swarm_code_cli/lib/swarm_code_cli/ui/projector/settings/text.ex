@@ -192,6 +192,21 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Text do
 
   @doc "The style of a role; `{role, modifiers}` adds modifiers, `{role, :on, background}` a background."
   @spec style(map(), term()) :: map()
+  # The focus band: a pseudo-background drawn as the accent chip's background,
+  # or as reverse video where there is no background colour to spend.
+  def style(%{capabilities: caps} = state, {inner, :on, :band}) do
+    base = style(state, inner)
+
+    if caps.color_mode in [:truecolor, :ansi256],
+      do: %{base | background: Theme.style(:chip_accent, caps).background},
+      else: %{base | modifiers: Enum.uniq(base.modifiers ++ [:reversed])}
+  end
+
+  # 16 colours and NO_COLOR drop the hover, surface and popover fills.
+  def style(%{capabilities: %{color_mode: mode}} = state, {inner, :on, bg})
+      when bg in [:hover, :surface, :popover] and mode in [:ansi16, :monochrome],
+      do: style(state, inner)
+
   def style(state, {role, :on, background}) do
     base = style(state, role)
 
@@ -211,6 +226,10 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Text do
     base = style(state, role)
     %{base | modifiers: Enum.uniq(modifiers ++ (base.modifiers -- [:dim]))}
   end
+
+  # Roles that vanish on a slate desk draw as the faintest readable text.
+  def style(state, role) when role in [:text_ghost, :border, :border_soft, :ticks_track],
+    do: style(state, :text_faint)
 
   def style(%{capabilities: %{color_mode: :monochrome} = caps}, role) do
     themed = Theme.style(role, caps)
@@ -239,8 +258,24 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Text do
   def select(segments),
     do: Enum.map(segments, fn {text, role} -> {text, on(role, :selection)} end)
 
+  @doc "Puts every segment of a row on the focus band (`style/2` resolves `:band`)."
+  @spec band([segment()]) :: [segment()]
+  def band(segments), do: Enum.map(segments, fn {text, role} -> {text, on(role, :band)} end)
+
+  @doc "Every segment drawn faint (a popover's scrim); a background wrapper is kept."
+  @spec scrim([segment()]) :: [segment()]
+  def scrim(segments) do
+    Enum.map(segments, fn
+      {text, {_, :on, background}} -> {text, {:text_faint, :on, background}}
+      {text, _} -> {text, :text_faint}
+    end)
+  end
+
   defp on({role, :on, _}, background), do: {role, :on, background}
-  defp on({role, modifiers}, background) when is_list(modifiers), do: {role, :on, background}
+
+  defp on({_role, modifiers} = spec, background) when is_list(modifiers),
+    do: {spec, :on, background}
+
   defp on(role, background), do: {role, :on, background}
 
   @doc false
