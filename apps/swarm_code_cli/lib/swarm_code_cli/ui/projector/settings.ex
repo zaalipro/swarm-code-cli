@@ -17,6 +17,7 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
   """
 
   alias SwarmCodeCLI.UI.Projector.Settings.Chrome
+  alias SwarmCodeCLI.UI.Projector.Settings.Page, as: SettingsPage
   alias SwarmCodeCLI.UI.Projector.Settings.Popover, as: SettingsPopover
   alias SwarmCodeCLI.UI.Projector.Settings.Text
   alias SwarmCodeCLI.UI.Reducer.Settings.Paste, as: PasteTarget
@@ -304,7 +305,7 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
         end)
 
       skip = window_skip(rows, heights, start)
-      tables = tables(state, rows, width - 3)
+      tables = SettingsPage.tables(state, rows, width - 3)
 
       # QA F-18: a search result the cursor is on is marked as a page row is.
       on_page? =
@@ -425,7 +426,7 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
 
         is_list(row.columns) ->
           [lead, mark, {" ", :text_primary}] ++
-            Map.get_lazy(tables, row.id, fn -> columns(state, row, width - 3) end)
+            Map.get_lazy(tables, row.id, fn -> SettingsPage.columns(state, row, width - 3) end)
 
         row.label == "" ->
           [lead, mark, {" ", :text_primary}] ++ Text.clip(state, value, width - 4)
@@ -444,133 +445,6 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
       Enum.map(row.lines ++ extra, fn line -> [{indent, :text_primary} | line] end)
 
     [main | continuation]
-  end
-
-  # A record table's row: the name first (never dropped), then the columns
-  # that fit, dropping the least important (highest priority number, the
-  # rightmost among equals) until the rest fit (§4.11).
-  defp columns(state, %Row{} = row, width) do
-    kept = fit_columns(state, cells(row), width)
-
-    kept
-    |> Enum.map(fn {text, role, _} -> [{text, role}, {"  ", :text_primary}] end)
-    |> Enum.concat()
-  end
-
-  # The cells of a table row: the name (the label, unless the section drew
-  # it as the first column itself), then the columns. The name is never
-  # dropped.
-  defp cells(%Row{label: label, columns: columns}) do
-    columns =
-      Enum.map(columns, fn {text, role, priority} -> {to_string(text), role, priority} end)
-
-    # Only the first cell that reads as the label is the name: a later one
-    # that happens to read the same (a key binding `Up` whose key name is
-    # `Up`) keeps its own priority (QA #2 P2-6).
-    name_at = if label == "", do: nil, else: Enum.find_index(columns, &match?({^label, _, _}, &1))
-
-    cond do
-      label == "" or name_at != nil ->
-        columns
-        |> Enum.with_index()
-        |> Enum.map(fn
-          {{text, role, _}, 0} -> {text, role, 0}
-          {{text, role, _}, ^name_at} -> {text, role, 0}
-          {cell, _} -> cell
-        end)
-
-      true ->
-        [{label, :text_primary, 0} | columns]
-    end
-  end
-
-  # §4.15: the rows of one record table (a run of consecutive rows with
-  # columns) share their columns — each padded to the table's widest cell —
-  # and a table too wide for the page drops its least important column in
-  # every row alike. Answers the drawn segments of each table row by row id.
-  defp tables(state, rows, width) do
-    rows
-    |> Enum.chunk_by(&(is_list(&1.columns) and &1.columns != []))
-    |> Enum.filter(fn [first | _] -> is_list(first.columns) and first.columns != [] end)
-    |> Enum.reduce(%{}, fn table, acc -> Map.merge(acc, table_layout(state, table, width)) end)
-  end
-
-  defp table_layout(state, table, width) do
-    rows = for row <- table, do: {row.id, cells(row)}
-    count = rows |> Enum.map(fn {_, cells} -> length(cells) end) |> Enum.max()
-
-    widths =
-      for i <- 0..(count - 1) do
-        rows
-        |> Enum.map(fn {_, cells} ->
-          case Enum.at(cells, i) do
-            {text, _, _} -> Text.text_cells(state, text)
-            nil -> 0
-          end
-        end)
-        |> Enum.max()
-      end
-
-    priorities =
-      for i <- 0..(count - 1) do
-        if i == 0,
-          do: 0,
-          else:
-            Enum.find_value(rows, 1, fn {_, cells} ->
-              case Enum.at(cells, i) do
-                {_, _, priority} -> priority
-                nil -> nil
-              end
-            end)
-      end
-
-    kept = keep_columns(Enum.to_list(0..(count - 1)), widths, priorities, width)
-    last = List.last(kept)
-
-    Map.new(rows, fn {id, cells} ->
-      segments =
-        Enum.flat_map(kept, fn i ->
-          {text, role, _} = Enum.at(cells, i) || {"", :text_primary, 1}
-          pad = Enum.at(widths, i) - Text.text_cells(state, text)
-
-          if i == last,
-            do: [{text, role}],
-            else: [{text, role}, {String.duplicate(" ", max(pad, 0) + 2), :text_primary}]
-        end)
-
-      {id, segments}
-    end)
-  end
-
-  defp keep_columns(kept, widths, priorities, width) do
-    total = kept |> Enum.map(&(Enum.at(widths, &1) + 2)) |> Enum.sum()
-    droppable = Enum.filter(kept, &(Enum.at(priorities, &1) > 0))
-
-    if total <= width or droppable == [] do
-      kept
-    else
-      drop = Enum.max_by(droppable, &{Enum.at(priorities, &1), &1})
-      keep_columns(List.delete(kept, drop), widths, priorities, width)
-    end
-  end
-
-  defp fit_columns(state, cells, width) do
-    total =
-      cells |> Enum.map(fn {text, _, _} -> Text.text_cells(state, text) + 2 end) |> Enum.sum()
-
-    droppable =
-      cells
-      |> Enum.with_index()
-      |> Enum.filter(fn {{_, _, priority}, _} -> priority > 0 end)
-
-    cond do
-      total <= width or droppable == [] ->
-        cells
-
-      true ->
-        {_, drop} = Enum.max_by(droppable, fn {{_, _, priority}, index} -> {priority, index} end)
-        fit_columns(state, List.delete_at(cells, drop), width)
-    end
   end
 
   defp pasting?(%Layer{paste: %{target: target}}, %Row{id: id}) when is_map(target),

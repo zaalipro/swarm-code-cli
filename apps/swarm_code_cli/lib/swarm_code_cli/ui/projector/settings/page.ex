@@ -10,7 +10,8 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Page do
   """
 
   alias SwarmCodeCLI.UI.Projector.Settings.Text
-  alias SwarmCodeCLI.UI.Settings.{Glyphs, Grid, Row}
+  alias SwarmCodeCLI.UI.Reducer.Settings.Paste, as: PasteTarget
+  alias SwarmCodeCLI.UI.Settings.{Editors, Glyphs, Grid, Layer, ModelPicker, Nav, Row, Strata}
 
   @type segments :: [Text.segment()]
   @type group :: %{
@@ -223,6 +224,448 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Page do
 
   defp swatch?({:swatch, _texture, _role}), do: true
   defp swatch?(_mark), do: false
+
+  # -------------------------------------------------------- row lines
+
+  @doc """
+  One row's lines, each exactly `grid.page.width` cells: the spine cell, the
+  mark slot, the label wrapped in its column (2-cell hanging indent), the
+  value wrapped from the value column (continuations 2 cells further in),
+  the tag right-aligned one cell inside the page, the hint on the focused
+  row, then the row's own continuation lines and the open editor's lines.
+
+  Opts: `focus?` (the page cursor is on it), `band?` (draw the band; false
+  while a popover is open), `first?` (the first line of a title-less group
+  opens it with `╭`), `last?` (the group's last row: its last line closes
+  the group with `╰`), `tables` (the page's table layouts by row id).
+  """
+  @spec row_lines(map(), Row.t(), group(), Grid.t(), keyword()) :: [segments()]
+  def row_lines(state, %Row{} = row, group, %Grid{} = grid, opts \\ []) do
+    focus? = Keyword.get(opts, :focus?, false)
+    row = hoist(row, state.capabilities)
+    content = content(state, row, group, grid, focus?, Keyword.get(opts, :tables, %{}))
+    count = length(content)
+
+    content
+    |> Enum.with_index()
+    |> Enum.map(fn {line, at} ->
+      spine = spine(state, row, group, at, count, focus?, opts)
+      line = Text.fit(state, [spine | line], grid.page.width)
+      if focus? and Keyword.get(opts, :band?, true), do: Text.band(line), else: line
+    end)
+  end
+
+  # The spine cell of one line of a row.
+  defp spine(state, row, group, at, count, focus?, opts) do
+    caps = state.capabilities
+    glyph = &Glyphs.for_caps(&1, caps)
+
+    cond do
+      not group.spined? ->
+        {" ", :text_primary}
+
+      Glyphs.twin?(caps) ->
+        cond do
+          at > 0 -> {" ", :text_primary}
+          focus? -> {glyph.(:focus_bar), {:text_primary, [:bold, :reversed]}}
+          :attention in row.marks -> {"!", :warning}
+          Strata.set?(row.layer) -> {"*", :text_primary}
+          true -> {"|", :text_faint}
+        end
+
+      focus? ->
+        {glyph.(:focus_bar), :accent}
+
+      at == 0 and Keyword.get(opts, :first?, false) ->
+        {glyph.(:spine_top), :text_faint}
+
+      at == count - 1 and Keyword.get(opts, :last?, false) ->
+        {glyph.(:spine_end), :text_faint}
+
+      true ->
+        {glyph.(:spine), Strata.spine_role(row)}
+    end
+  end
+
+  # The lines after the spine cell (page width - 1 cells each).
+  defp content(state, %Row{kind: :heading} = row, _group, grid, _focus?, tables) do
+    heads =
+      Map.get(tables, row.id) ||
+        Enum.map(row.columns, fn {t, _r, _p} -> {"#{t}  ", :text_faint} end)
+
+    [
+      Text.spread(
+        state,
+        [{"  ", :text_primary} | heads],
+        row.tag ++ [{" ", :text_primary}],
+        grid.page.width - 1
+      )
+    ]
+  end
+
+  defp content(state, %Row{columns: [_ | _]} = row, group, grid, focus?, tables) do
+    if editing(state.settings, row) != nil or pasting?(state.settings, row) do
+      setting_content(state, row, group, grid, focus?)
+    else
+      width = grid.page.width - 1
+      cells = Map.get_lazy(tables, row.id, fn -> columns(state, row, grid.page.width - 3) end)
+      mark = mark(row, state.capabilities, group.danger?)
+
+      [
+        Text.spread(
+          state,
+          [mark, {" ", :text_primary} | cells],
+          tag(row, focus?) ++ [{" ", :text_primary}],
+          width
+        )
+      ]
+    end
+  end
+
+  defp content(state, row, group, grid, focus?, _tables),
+    do: setting_content(state, row, group, grid, focus?)
+
+  defp setting_content(state, %Row{} = row, group, %Grid{} = grid, focus?) do
+    width = grid.page.width - 1
+    {value, extra} = shown(state, row)
+    tag = tag(row, focus?)
+    mark = mark(row, state.capabilities, group.danger?)
+
+    {head, room} =
+      if row.label == "" do
+        {[mark, {" ", :text_primary}], width - 2}
+      else
+        {[mark, {" ", :text_primary}], grid.value_offset - 1}
+      end
+
+    label =
+      label_lines(state, row, group, focus?, if(row.label == "", do: 0, else: grid.label_width))
+
+    value = value(row, value)
+    tag_cells = Text.cells(state, tag)
+
+    value_room =
+      if row.label == "",
+        do: room - tag_cells - 2,
+        else: grid.page.width - grid.value_offset - tag_cells - 2
+
+    {value_room, tag_on_first?} =
+      if value_room >= 8, do: {value_room, true}, else: {value_room + tag_cells, false}
+
+    value_room =
+      min(
+        value_room,
+        if(row.label == "", do: width - 5, else: grid.page.width - grid.value_offset - 3)
+      )
+
+    values = Text.wrap_segments(state, value, max(value_room, 1))
+    chip? = match?([{_, :chip_ok} | _], value)
+
+    rows = max(length(label), length(values))
+
+    main =
+      for k <- 0..(rows - 1) do
+        label_k = Enum.at(label, k, [])
+        value_k = Enum.at(values, k, [])
+
+        left =
+          cond do
+            row.label == "" and k == 0 ->
+              head ++ value_k
+
+            row.label == "" ->
+              [{"  ", :text_primary}, {"  ", :text_primary} | value_k]
+
+            true ->
+              lead = if k == 0, do: head, else: [{"  ", :text_primary}]
+              gap = if k == 0 and chip?, do: [], else: [{" ", :text_primary}]
+              indent = if k == 0, do: [], else: [{"  ", :text_primary}]
+
+              lead ++ Text.fit(state, label_k, grid.label_width) ++ gap ++ indent ++ value_k
+          end
+
+        right =
+          cond do
+            k == 0 and tag_on_first? -> hint_room(state, row, focus?, value_k, tag, grid) ++ tag
+            k == rows - 1 and not tag_on_first? -> tag
+            true -> []
+          end
+
+        Text.spread(state, left, right ++ [{" ", :text_primary}], width)
+      end
+
+    continuation_at = if row.label == "", do: 4, else: grid.value_offset + 1
+    more_room = max(width - continuation_at - 1, 1)
+
+    continuations =
+      for line <- row.lines ++ extra,
+          wrapped <- Text.wrap_segments(state, line, more_room) do
+        Text.fit(
+          state,
+          [{String.duplicate(" ", continuation_at), :text_primary} | wrapped],
+          width
+        )
+      end
+
+    main ++ continuations
+  end
+
+  # The value (or the open editor's, or the paste target's) and the extra
+  # lines the editor or the paste draws under it.
+  defp shown(state, row) do
+    layer = state.settings
+
+    case editing(layer, row) do
+      %{module: module, state: editor} ->
+        display = module.display(editor, Nav.ctx(state))
+        {display.value, Map.get(display, :lines, [])}
+
+      nil ->
+        if pasting?(layer, row),
+          do:
+            {PasteTarget.words(layer.paste, Glyphs.tier(state.capabilities)),
+             PasteTarget.lines(layer.paste)},
+          else: {row.value, []}
+    end
+  end
+
+  defp label_lines(_state, _row, _group, _focus?, 0), do: []
+
+  defp label_lines(state, row, group, focus?, width) do
+    role =
+      cond do
+        row.state == :disabled -> :text_faint
+        row.layer == :default or row.state == :readonly -> :text_muted
+        true -> :text_primary
+      end
+
+    role = if focus?, do: {role, [:bold]}, else: role
+    title = group.title && Enum.map_join(group.title, "", &elem(&1, 0))
+    text = strip_suffix(row.label, title)
+    indent = min(row.indent || 0, max(width - 4, 0))
+    pad = String.duplicate(" ", indent)
+
+    lines =
+      case Text.wrap_segments(state, [{text, role}], width - indent) do
+        [first | [_ | _] = rest] ->
+          rest_text = rest |> Enum.flat_map(& &1) |> Enum.map_join(" ", &elem(&1, 0))
+
+          [
+            first
+            | Enum.map(
+                Text.wrap_segments(state, [{rest_text, role}], max(width - indent - 2, 1)),
+                &[{"  ", :text_primary} | &1]
+              )
+          ]
+
+        lines ->
+          lines
+      end
+
+    if indent == 0, do: lines, else: Enum.map(lines, &[{pad, :text_primary} | &1])
+  end
+
+  defp value(%Row{state: :disabled}, value),
+    do: value |> split_dots() |> Enum.map(fn {text, _} -> {text, :text_faint} end)
+
+  defp value(%Row{layer: :default}, value) do
+    value
+    |> split_dots()
+    |> Enum.map(fn
+      {text, :text_primary} -> {text, :text_muted}
+      segment -> segment
+    end)
+  end
+
+  defp value(_row, value), do: split_dots(value)
+
+  # The whole tag in the hue of the layer that set the value; muted on focus.
+  defp tag(%Row{tag: tag}, true), do: Enum.map(tag || [], fn {text, _} -> {text, :text_muted} end)
+  defp tag(%Row{tag: tag, layer: nil}, false), do: tag || []
+
+  defp tag(%Row{tag: tag, layer: layer}, false) do
+    role = Strata.role(layer)
+
+    Enum.map(tag || [], fn
+      {text, r} when r in [:text_primary, :text_muted, :text_faint] -> {text, role}
+      segment -> segment
+    end)
+  end
+
+  # The hint and three cells, when the focused row has room for them.
+  defp hint_room(_state, _row, false, _value, _tag, _grid), do: []
+
+  defp hint_room(state, row, true, value, tag, grid) do
+    hint = if editing(state.settings, row), do: [], else: hint(row)
+
+    fits? =
+      hint != [] and
+        Text.cells(state, value) + 3 + Text.cells(state, hint) + 3 + Text.cells(state, tag) <=
+          grid.page.width - grid.value_offset
+
+    if fits?, do: hint ++ [{"   ", :text_primary}], else: []
+  end
+
+  @doc """
+  The focused row's hint (D8): its first `Enter` key, else its editor's verb
+  (`Space switch` for a toggle, `Enter pick` for the model picker, `Enter
+  edit`), else nothing.
+  """
+  @spec hint(Row.t()) :: segments()
+  def hint(%Row{keys: keys, editor: editor}) do
+    case Enum.find(keys || [], fn {key, _verb, _words} -> key == "Enter" end) do
+      {key, _verb, words} ->
+        [{key, :key}, {" " <> words, :text_faint}]
+
+      nil ->
+        case editor do
+          {Editors.Toggle, _} -> [{"Space", :key}, {" switch", :text_faint}]
+          {ModelPicker, _} -> [{"Enter", :key}, {" pick", :text_faint}]
+          {_module, _opts} -> [{"Enter", :key}, {" edit", :text_faint}]
+          nil -> []
+        end
+    end
+  end
+
+  defp pasting?(%Layer{paste: %{target: target}}, %Row{id: id}) when is_map(target),
+    do: (Map.get(target, :row_id) || Map.get(target, "row_id")) == id
+
+  defp pasting?(_layer, _row), do: false
+
+  defp editing(%Layer{editing: %{row_id: id} = editing}, %Row{id: id}), do: editing
+  defp editing(_layer, _row), do: nil
+
+  # ------------------------------------------------------------ tables
+
+  # A record table's row: the name first (never dropped), then the columns
+  # that fit, dropping the least important (highest priority number, the
+  # rightmost among equals) until the rest fit (§4.11).
+  @doc "A record table's row cut to `width`: the name first, then the columns that fit."
+  @spec columns(map(), Row.t(), non_neg_integer()) :: segments()
+  def columns(state, %Row{} = row, width) do
+    kept = fit_columns(state, cells(row), width)
+
+    kept
+    |> Enum.map(fn {text, role, _} -> [{text, role}, {"  ", :text_primary}] end)
+    |> Enum.concat()
+  end
+
+  # The cells of a table row: the name (the label, unless the section drew
+  # it as the first column itself), then the columns. The name is never
+  # dropped.
+  defp cells(%Row{label: label, columns: columns}) do
+    columns =
+      Enum.map(columns, fn {text, role, priority} -> {to_string(text), role, priority} end)
+
+    # Only the first cell that reads as the label is the name: a later one
+    # that happens to read the same (a key binding `Up` whose key name is
+    # `Up`) keeps its own priority (QA #2 P2-6).
+    name_at = if label == "", do: nil, else: Enum.find_index(columns, &match?({^label, _, _}, &1))
+
+    cond do
+      label == "" or name_at != nil ->
+        columns
+        |> Enum.with_index()
+        |> Enum.map(fn
+          {{text, role, _}, 0} -> {text, role, 0}
+          {{text, role, _}, ^name_at} -> {text, role, 0}
+          {cell, _} -> cell
+        end)
+
+      true ->
+        [{label, :text_primary, 0} | columns]
+    end
+  end
+
+  # §4.15: the rows of one record table (a run of consecutive rows with
+  # columns) share their columns — each padded to the table's widest cell —
+  # and a table too wide for the page drops its least important column in
+  # every row alike. Answers the drawn segments of each table row by row id.
+  @spec tables(map(), [Row.t()], non_neg_integer()) :: %{String.t() => segments()}
+  def tables(state, rows, width) do
+    rows
+    |> Enum.chunk_by(&(is_list(&1.columns) and &1.columns != []))
+    |> Enum.filter(fn [first | _] -> is_list(first.columns) and first.columns != [] end)
+    |> Enum.reduce(%{}, fn table, acc -> Map.merge(acc, table_layout(state, table, width)) end)
+  end
+
+  defp table_layout(state, table, width) do
+    rows = for row <- table, do: {row.id, cells(row)}
+    count = rows |> Enum.map(fn {_, cells} -> length(cells) end) |> Enum.max()
+
+    widths =
+      for i <- 0..(count - 1) do
+        rows
+        |> Enum.map(fn {_, cells} ->
+          case Enum.at(cells, i) do
+            {text, _, _} -> Text.text_cells(state, text)
+            nil -> 0
+          end
+        end)
+        |> Enum.max()
+      end
+
+    priorities =
+      for i <- 0..(count - 1) do
+        if i == 0,
+          do: 0,
+          else:
+            Enum.find_value(rows, 1, fn {_, cells} ->
+              case Enum.at(cells, i) do
+                {_, _, priority} -> priority
+                nil -> nil
+              end
+            end)
+      end
+
+    kept = keep_columns(Enum.to_list(0..(count - 1)), widths, priorities, width)
+    last = List.last(kept)
+
+    Map.new(rows, fn {id, cells} ->
+      segments =
+        Enum.flat_map(kept, fn i ->
+          {text, role, _} = Enum.at(cells, i) || {"", :text_primary, 1}
+          pad = Enum.at(widths, i) - Text.text_cells(state, text)
+
+          if i == last,
+            do: [{text, role}],
+            else: [{text, role}, {String.duplicate(" ", max(pad, 0) + 2), :text_primary}]
+        end)
+
+      {id, segments}
+    end)
+  end
+
+  defp keep_columns(kept, widths, priorities, width) do
+    total = kept |> Enum.map(&(Enum.at(widths, &1) + 2)) |> Enum.sum()
+    droppable = Enum.filter(kept, &(Enum.at(priorities, &1) > 0))
+
+    if total <= width or droppable == [] do
+      kept
+    else
+      drop = Enum.max_by(droppable, &{Enum.at(priorities, &1), &1})
+      keep_columns(List.delete(kept, drop), widths, priorities, width)
+    end
+  end
+
+  defp fit_columns(state, cells, width) do
+    total =
+      cells |> Enum.map(fn {text, _, _} -> Text.text_cells(state, text) + 2 end) |> Enum.sum()
+
+    droppable =
+      cells
+      |> Enum.with_index()
+      |> Enum.filter(fn {{_, _, priority}, _} -> priority > 0 end)
+
+    cond do
+      total <= width or droppable == [] ->
+        cells
+
+      true ->
+        {_, drop} = Enum.max_by(droppable, fn {{_, _, priority}, index} -> {priority, index} end)
+        fit_columns(state, List.delete_at(cells, drop), width)
+    end
+  end
 
   @doc """
   A label without the ` · <group title>` it ends with (`Model · this
