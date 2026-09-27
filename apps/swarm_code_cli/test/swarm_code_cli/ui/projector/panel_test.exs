@@ -151,10 +151,10 @@ defmodule SwarmCodeCLI.UI.Projector.PanelTest do
   test "regression: names are whole while the row has room (R14), the shared suffix shown once" do
     text = :panel_swarm_2 |> state(160, 45) |> panel_text() |> Enum.join("\n")
 
-    assert text =~ "engine-lifecycle working"
-    assert text =~ "data-persistence thinking"
+    assert text =~ "Engine lifecycle working"
+    assert text =~ "Data persistence thinking"
     assert text =~ "4 × *-review"
-    refute text =~ "engine-lifec…"
+    refute text =~ "Engine lifec…"
   end
 
   defp renamed(scene, names, opts) do
@@ -162,7 +162,11 @@ defmodule SwarmCodeCLI.UI.Projector.PanelTest do
     model = state.read_model
 
     agents =
-      Map.new(model.agents, fn {id, a} -> {id, %{a | name: Map.get(names, a.name, a.name)}} end)
+      Map.new(model.agents, fn {id, a} ->
+        # pass 75: a node without an AI title has its slug as its title.
+        name = Map.get(names, a.name, a.name)
+        {id, %{a | name: name, title: name}}
+      end)
 
     %{state | read_model: %{model | agents: agents}}
   end
@@ -177,8 +181,8 @@ defmodule SwarmCodeCLI.UI.Projector.PanelTest do
 
     full = :panel_swarm_2 |> renamed(names, []) |> panel_text() |> Enum.join("\n")
     assert full =~ "4 × reviewer-*"
-    assert full =~ "├ ● controllers"
-    assert full =~ ~r/╰ ! accounts +needs you/
+    assert full =~ "├ ● Controllers"
+    assert full =~ ~r/╰ ! Accounts +needs you/
     refute full =~ "reviewer…"
 
     compact = :panel_swarm_2 |> renamed(names, panel: :compact) |> panel_text()
@@ -201,12 +205,12 @@ defmodule SwarmCodeCLI.UI.Projector.PanelTest do
     text = Enum.join(compact, "\n")
     refute text =~ "review:…"
     # pass73 T10: the band and the row say the same whole name.
-    assert text =~ ~r/! maintainability +\S/u
-    assert text =~ ~r/^ +maintainability +\S/mu
-    assert text =~ ~r/correctness /u
+    assert text =~ ~r/! Maintainability +\S/u
+    assert text =~ ~r/^ +Maintainability +\S/mu
+    assert text =~ ~r/Correctness /u
 
     full = :panel_swarm_2 |> renamed(names, []) |> panel_text() |> Enum.join("\n")
-    assert full =~ "maintainability"
+    assert full =~ "Maintainability"
     refute full =~ "review:ma…"
   end
 
@@ -218,13 +222,13 @@ defmodule SwarmCodeCLI.UI.Projector.PanelTest do
 
     assert Enum.at(rows, 0) =~ ~r/^ ▌⋔ architecture review · in chat +02:14$/
     assert Enum.at(rows, 1) =~ "read-only · 4 × *-review · 65k · $0.15"
-    assert text =~ "! NEEDS YOU · web-ui-desktop       1 waiting"
+    assert text =~ "! NEEDS YOU · Web ui desktop       1 waiting"
     assert text =~ "   mix test test/swarm_code_web/live"
     assert text =~ ~r/run a command · read-only asks +\^N answer/
     assert text =~ ~r/◌ Lead +waiting +2:14 · 9k/
-    assert text =~ "├ ● engine-lifecycle working"
+    assert text =~ "├ ● Engine lifecycle working"
     assert text =~ "▅▅▅▅▂▅▅▅▅▅▂▂ tracing where stop is saved"
-    assert text =~ ~r/╰ ! web-ui-desktop +needs you/
+    assert text =~ ~r/╰ ! Web ui desktop +needs you/
     assert text =~ "▅▅▂▅▅▅▅▅▒▒▒▒ wants to run a command"
     assert text =~ "» Fake provider never reaches the refusal"
     assert text =~ "fake.ex:88 +1"
@@ -315,10 +319,10 @@ defmodule SwarmCodeCLI.UI.Projector.PanelTest do
     assert text =~ "! 1 NEEDS YOU"
     assert text =~ ~r/▌⋔ architecture review · in chat 1\/4 · 02:14/
     # pass73 T10: the full panel's name, never a shorter word for the agent.
-    assert text =~ ~r/● engine-lifecycle +▂▅▅▅▅▅▂▂ tracing/
-    assert text =~ ~r/! web-ui-desktop +▅▅▅▅▒▒▒▒ approve: mix/
-    assert text =~ ~r/✓ llm-tools +» Fake provider/
-    assert text =~ ~r/^ +web-ui-desktop mix test/m
+    assert text =~ ~r/● Engine lifecycle +▂▅▅▅▅▅▂▂ tracing/
+    assert text =~ ~r/! Web ui desktop +▅▅▅▅▒▒▒▒ approve: mix/
+    assert text =~ ~r/✓ Llm tools +» Fake provider/
+    assert text =~ ~r/^ +Web ui desktop mix test/m
     assert List.last(rows) =~ "compact"
   end
 
@@ -327,10 +331,10 @@ defmodule SwarmCodeCLI.UI.Projector.PanelTest do
 
     assert text =~ "5 runs · 17 agents"
     assert text =~ "! 2 NEED YOU · oldest first"
-    assert text =~ ~r/plug +edit lib\/api\/plug.ex/
+    assert text =~ ~r/Plug +edit lib\/api\/plug.ex/
     assert text =~ ~r/⋔ api hardening  .*0\/3 · 05:02/
-    assert text =~ "! plug wants to edit a file"
-    assert text =~ "✗ retry-tests failed · retry in 8 s"
+    assert text =~ "! Plug wants to edit a file"
+    assert text =~ "✗ Retry tests failed · retry in 8 s"
   end
 
   test "heavy compact fits 160x45 and 120x36 and keeps every run" do
@@ -361,7 +365,7 @@ defmodule SwarmCodeCLI.UI.Projector.PanelTest do
 
     assert text =~ " 1  ▌⋔ architecture review · in chat"
     assert text =~ " d  ◌ Lead"
-    assert text =~ " s  ! web-ui-desktop"
+    assert text =~ " s  ! Web ui desktop"
     assert text =~ " s  mix test test/swarm_code_web/live"
     assert text =~ "^F again"
     assert text =~ "Esc"
@@ -380,14 +384,14 @@ defmodule SwarmCodeCLI.UI.Projector.PanelTest do
     text = st |> Map.put(:hint, %{labels: labels, typed: ""}) |> panel_text() |> Enum.join("\n")
 
     assert text =~ " #{lead}  ◌ Lead"
-    assert text =~ " #{web}  ! web-ui-desktop"
+    assert text =~ " #{web}  ! Web ui desktop"
     assert text =~ " 1  ▌⋔ architecture review"
 
     narrow = state(:panel_swarm_2, 100, 28)
     nlabels = narrow |> PanelOrder.entries() |> SwarmCodeCLI.UI.Hint.labels()
     strip = narrow |> Map.put(:hint, %{labels: nlabels, typed: ""}) |> screen() |> Enum.at(1)
     nweb = SwarmCodeCLI.UI.Hint.label_for(nlabels, {:agent, "demo-panel-run-80", "agent-80-5"})
-    assert strip =~ nweb <> "  web"
+    assert strip =~ nweb <> "  Web"
   end
 
   test "regression (QA Q9): letters go to the band's rows in its order, none to hidden ones" do
@@ -489,7 +493,7 @@ defmodule SwarmCodeCLI.UI.Projector.PanelTest do
     strip = st |> screen() |> Enum.at(1) |> String.trim_trailing()
     # pass73 T10: the one names, cut at their ends to share the row.
     assert strip =~
-             "▌⋔ architecture review 1/4 · Lead◌ engine-li…● data-pers…◐ llm-tools✓ web-ui-d…!"
+             "▌⋔ architecture review 1/4 · Lead◌ Engine li…● Data pers…◐ Llm tools✓ Web ui d…!"
 
     assert strip =~ ~r/! 1 needs you \^N$/
 
@@ -518,9 +522,9 @@ defmodule SwarmCodeCLI.UI.Projector.PanelTest do
 
     compact = state(:panel_heavy, 160, 45, mode: :monochrome, ascii?: true, panel: :compact)
     ctext = compact |> panel_text() |> Enum.join("\n")
-    assert ctext =~ "! web"
-    assert ctext =~ "x retry"
-    assert ctext =~ "v llm"
+    assert ctext =~ "! Web"
+    assert ctext =~ "x Retry"
+    assert ctext =~ "v Llm"
 
     for row <- panel_text(st) do
       assert String.replace(row, ["·", "…"], "") =~ ~r/^[\x20-\x7e]*$/, inspect(row)
