@@ -769,7 +769,12 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Model do
       verb: wire_verb(kind, text, Map.get(entry, :tool)),
       agent_id: Map.get(entry, :agent_id),
       node_id: Map.get(entry, :node_id),
-      at: Map.get(entry, :requested_at) || 0
+      at: Map.get(entry, :requested_at) || 0,
+      # pass 75 (M3): an ask's question headers and its first question's
+      # option count, for the band's words; `source` gates its age (M10).
+      questions: Map.get(entry, :questions) || [],
+      options: Map.get(entry, :options) || 0,
+      source: :wire
     }
   end
 
@@ -809,7 +814,10 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Model do
       verb: verb,
       agent_id: interaction.approval && interaction.approval.agent_id,
       node_id: interaction.node_id,
-      at: interaction.created_at
+      at: interaction.created_at,
+      questions: [],
+      options: 0,
+      source: :interaction
     }
   end
 

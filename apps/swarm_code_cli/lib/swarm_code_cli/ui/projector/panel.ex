@@ -26,7 +26,7 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
   `plan/3` returns the rows with the target each one stands for, which
   `PanelOrder.entries/1` reads, so the hint keys and the rows never disagree.
   """
-  alias SwarmCodeCLI.UI.Projector.Panel.{Draw, Model, Name, Shapes}
+  alias SwarmCodeCLI.UI.Projector.Panel.{Draw, Model, Shapes}
   alias SwarmCodeCLI.UI.Projector.Inspector.Changes
 
   @type target ::
@@ -312,109 +312,130 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
 
   defp band_rows(%{needs: []}), do: []
 
-  defp band_rows(%{needs: [{ask, run, view}]} = ctx) when ctx.mode == :full do
-    state = ctx.state
-    name = (view && view.display) || "the Lead"
-    name_role = (view && view.name_role) || :text_primary
-    question? = ask.verb == :question
-    title_name = if question?, do: name <> " asks", else: name
-
-    head =
-      row(
-        ctx,
-        [{"! NEEDS YOU", :warning, [:bold]}, {" · ", :text_muted}, {title_name, name_role}],
-        [{"1 waiting", :text_muted}],
-        band: true,
-        background: :card
-      )
-
-    inner = ctx.width - 5
-
-    # pass73 T10: a command or a file is one row, cut with `…` (the card and
-    # the overlay show it whole); a question may take three.
-    request =
-      if question?,
-        do: Draw.wrap(ask.text, inner, 3, state),
-        else: [Draw.elide(Model.flat(ask.text), inner, state)]
-
-    badge = badge_for(ctx, view)
-
-    body =
-      request
-      |> Enum.with_index()
-      |> Enum.map(fn {line, i} ->
-        lead = if i == 0 and badge, do: badge_segments(ctx, badge), else: [{"  ", :plain}]
-        row(ctx, lead ++ [{line, :text_primary, [:bold]}], [], band: true, background: :card)
-      end)
-      |> band_target(view)
-
-    tail =
-      row(ctx, [{"  " <> reason(ask, run, ctx), :text_muted}], answer_key(ctx),
-        band: true,
-        background: :card
-      )
-
-    [head | body] ++ [tail]
-  end
-
+  # pass 75 V2 (7.2, SA S3): one band for every shown run, oldest first:
+  # `! 2 need you · oldest first   ^N answer`, then per request its agent
+  # (` │ ⋔ Docs accuracy wants to run   0:41`), up to two rows of what it
+  # asks and one row of why. No fill.
   defp band_rows(ctx) do
     n = length(ctx.needs)
     cap = if ctx.mode == :compact, do: 2, else: 3
     shown = Enum.take(ctx.needs, cap)
-
-    title =
-      if n == 1,
-        do: "! 1 NEEDS YOU",
-        else: "! #{n} NEED YOU · oldest first"
-
     right = if ctx.hint?, do: again_key(ctx), else: answer_key(ctx)
+    words = if n == 1, do: " 1 needs you", else: " #{n} need you"
 
-    head = row(ctx, [{title, :warning, [:bold]}], right, band: true, background: :card)
+    head =
+      row(
+        ctx,
+        [
+          {"!", :warning, [:bold]},
+          {words, :warning, [:bold]},
+          {" · oldest first", :text_muted}
+        ],
+        right,
+        band: true
+      )
 
-    # pass72 G3 (QA Q3): the band's name column fits the names; pass73 T10:
-    # the same name as the agent's row, cut with `…` only past 16 cells.
-    name_w =
-      shown
-      |> Enum.map(fn {_, _, view} -> Draw.cells((view && view.display) || "Lead", ctx.state) end)
-      |> Enum.max(fn -> 4 end)
-      |> min(16)
-
-    items =
-      Enum.map(shown, fn {ask, _run, view} ->
-        short = Name.fit((view && view.display) || "Lead", name_w, ctx.state)
-        role = (view && view.name_role) || :text_primary
-        badge = badge_for(ctx, view)
-        lead = if badge, do: badge_segments(ctx, badge), else: [{"  ", :plain}]
-
-        row(
-          ctx,
-          lead ++
-            [
-              {Draw.pad_to(short, name_w, ctx.state), role},
-              {" ", :plain},
-              {ask.text, :text_primary}
-            ],
-          [],
-          band: true,
-          background: :card
-        )
-        |> List.wrap()
-        |> band_target(view)
-        |> hd()
-      end)
+    items = Enum.flat_map(shown, fn {ask, run, view} -> band_request(ctx, ask, run, view) end)
 
     more =
       if n > cap,
         do: [
-          row(ctx, [{"  +#{n - cap} more · ^N goes through them", :text_faint}], [],
-            band: true,
-            background: :card
-          )
+          row(ctx, [{"  +#{n - cap} more · ^N goes through them", :text_faint}], [], band: true)
         ],
         else: []
 
     [head | items] ++ more
   end
+
+  defp band_request(ctx, ask, run, view) do
+    state = ctx.state
+    bar = {g(ctx, :pipe), :warning}
+    name = (view && view.display) || "Lead"
+    role = (view && view.name_role) || :text_primary
+    verb = if ask.verb == :question, do: " asks", else: " wants to run"
+    age = band_age(ask, state)
+    age_cells = if age, do: Draw.cells(age, state) + 1, else: 0
+
+    lead =
+      case badge_for(ctx, view) do
+        nil -> [bar, {" ", :plain}]
+        badge -> [bar, {" ", :plain}] ++ badge_segments(ctx, badge)
+      end
+
+    room = ctx.width - 2 - cells(lead, state) - 2 - Draw.cells(verb, state) - age_cells
+
+    first =
+      row(
+        ctx,
+        lead ++
+          [
+            {Draw.mark(Model.kind(run), state), Model.kind_role(run)},
+            {" ", :plain},
+            {Draw.elide(name, max(4, room), state), role},
+            {verb, :text_muted}
+          ],
+        if(age, do: [{age, :text_faint}], else: []),
+        band: true
+      )
+
+    inner = ctx.width - 2 - 4
+    {text, reason} = band_words(ask, run, ctx)
+
+    body =
+      text
+      |> Draw.wrap(inner, 2, state)
+      |> Enum.map(&row(ctx, [bar, {"   " <> &1, :text_primary}], [], band: true))
+
+    why =
+      if reason, do: [row(ctx, [bar, {"   " <> reason, :text_faint}], [], band: true)], else: []
+
+    band_target([first | body] ++ why, view)
+  end
+
+  # What a request asks and why (7.2, 18.3): a command flattened, a
+  # question by its headers and how it may be answered.
+  defp band_words(%{verb: :question} = ask, _run, _ctx) do
+    k = Map.get(ask, :options, 0)
+
+    reason =
+      cond do
+        k >= 2 -> "#{k} options, or your own words"
+        k == 1 -> "1 option, or your own words"
+        true -> "your own words"
+      end
+
+    case Map.get(ask, :questions, []) do
+      [] -> {ask.text, reason}
+      [header] -> {"1 question: " <> header, reason}
+      headers -> {"#{length(headers)} questions: " <> Enum.join(headers, ", "), nil}
+    end
+  end
+
+  defp band_words(ask, run, ctx) do
+    reason =
+      if dangerous?(ask, ctx.state),
+        do: "dangerous: asks even in full access",
+        else: reason(ask, run, ctx)
+
+    {Model.flat(ask.text), reason}
+  end
+
+  defp dangerous?(ask, state) do
+    Enum.any?(Map.values(state.read_model.interactions), fn interaction ->
+      interaction.state == :pending and
+        (interaction.id == ask.id or
+           (is_binary(ask.node_id) and interaction.node_id == ask.node_id)) and
+        match?(%{classification: c} when c in [:dangerous, "dangerous"], interaction.approval)
+    end)
+  end
+
+  # M10: how long ago a request came, `0:41`, only for a wire entry whose
+  # unix-ms time is at or before now and under a day old.
+  defp band_age(%{source: :wire, at: at}, %{now: now})
+       when is_integer(at) and is_integer(now) and at <= now and now - at < 86_400_000,
+       do: Model.short_clock(now - at)
+
+  defp band_age(_ask, _state), do: nil
 
   # pass72 G8 (QA Q9): a band row is the drawn entry of its agent, so the
   # hint letters follow what the band shows, oldest first; a request past the
