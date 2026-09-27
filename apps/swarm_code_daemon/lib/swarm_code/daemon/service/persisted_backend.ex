@@ -33,6 +33,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   # pass71 S2: slow reads run as jobs; this many at once, the rest are refused.
   @max_jobs 8
   @terminal [:completed, :failed, :cancelled, :interrupted]
+  alias SwarmCode.Daemon.Service.AgentStatus
   alias SwarmCode.Daemon.Service.PanelFacts
   alias SwarmCode.Daemon.Service.Settings.Deltas, as: SettingsDeltas
   alias SwarmCode.Daemon.Service.Settings.Jobs, as: SettingsJobs
@@ -136,6 +137,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         # broadcasts and never stores; kept for the agents projected. And what
         # the projected runs left running in the background.
         agent_models: %{},
+        # pass75: the Summarizer's per-agent status lines (AgentStatus).
+        agent_status: %AgentStatus{},
         background: %{},
         background_tick: nil,
         # pass70 C8: unified diffs being paged, and what each finished run
@@ -1933,9 +1936,10 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   # `ops` is `%{agent_id => newest open op}`; an agent's step is that op's
   # title (a tool call reads "grep Bootstrap|…", a think reads "thinking"),
   # else its status word.
-  defp agent_summary(n, ops, models) do
+  defp agent_summary(n, ops, models, agent_status) do
     status = normalize_node_status(n.status)
     stop = stop_facts(n.status, Map.get(n, :error_kind))
+    {summary, summary_rev} = AgentStatus.summary(agent_status, n.id)
 
     step =
       case ops[n.id] do
@@ -1968,8 +1972,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       "model" => clip(models[n.id], 200),
       "turn" => turn_of(n),
       "max_turns" => max_turns_of(n),
-      "summary" => nil,
-      "summary_rev" => nil,
+      "summary" => summary,
+      "summary_rev" => summary_rev,
       "last_words" => if(PanelFacts.turn_limit?(n), do: PanelFacts.last_words(n))
     }
     |> Map.merge(stop)
@@ -2523,7 +2527,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
           created: stamp(row.inserted_at),
           revision: revision,
           records: [],
-          agents: Enum.map(ns, &agent_summary(&1, ops, state.agent_models)),
+          agents: Enum.map(ns, &agent_summary(&1, ops, state.agent_models, state.agent_status)),
           node_ids: Enum.map(ns, & &1.id),
           approval: nil,
           interactions: [],
@@ -2625,6 +2629,12 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         changes: Map.new(checkpoints, &{&1.id, change_body(&1, state)}),
         verdicts: Map.new(verdicts),
         agent_models: Map.take(state.agent_models, Enum.map(agents, & &1.id)),
+        agent_status:
+          AgentStatus.retain(
+            state.agent_status,
+            Enum.map(agents, & &1.id),
+            state.task_supervisor
+          ),
         background: background,
         inputs:
           if(reload?,
@@ -2634,7 +2644,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
               agents: agents,
               ops: ops,
               checkpoints: checkpoints,
-              checkpoint_counts: checkpoint_counts
+              checkpoint_counts: checkpoint_counts,
+              panel_ops: panel.ops
             },
             else: state.inputs
           )
@@ -4109,7 +4120,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       file_index: fn root -> elem(SwarmCode.Domain.FeatureCatalog.file_index(root), 0) end,
       diff: &change_or_op_diff/2,
       change_diff: &SwarmCode.Domain.FeatureCatalog.change_diff/2,
-      feature_query: &SwarmCode.Daemon.Service.FeatureRequest.execute/4
+      feature_query: &SwarmCode.Daemon.Service.FeatureRequest.execute/4,
+      summarize: &AgentStatus.summarize/2
     }
 
     if is_map(overrides),

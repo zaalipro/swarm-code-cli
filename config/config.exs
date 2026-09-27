@@ -10,4 +10,7 @@ if config_env() == :test do
   config :swarm_code_daemon,
          :domain_config_dir,
          Path.join(System.tmp_dir!(), "swarm-code-test-config-#{System.get_env("USER", "user")}")
+
+  # pass75: no AI status lines in tests unless a test turns them on.
+  config :swarm_code_daemon, :summarize_agents, false
 end
