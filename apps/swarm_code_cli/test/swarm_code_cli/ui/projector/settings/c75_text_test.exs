@@ -60,6 +60,53 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.C75TextTest do
              Theme.style(:hover, state.capabilities).background
   end
 
+  describe "wrap_segments/3" do
+    test "wraps across segment boundaries and keeps each word's role" do
+      state = st(:truecolor)
+
+      # Greedy: "alpha beta" is exactly 10 cells, so it fits on the first line.
+      assert Text.wrap_segments(
+               state,
+               [{"alpha ", :text_primary}, {"beta gamma", :text_muted}],
+               10
+             ) ==
+               [[{"alpha ", :text_primary}, {"beta", :text_muted}], [{"gamma", :text_muted}]]
+
+      assert Text.wrap_segments(
+               state,
+               [{"alphabet ", :text_primary}, {"beta gamma", :text_muted}],
+               10
+             ) == [[{"alphabet", :text_primary}], [{"beta gamma", :text_muted}]]
+    end
+
+    test "a word wider than the line is split at the width, never cut with an ellipsis" do
+      state = st(:truecolor)
+      word = String.duplicate("x", 25)
+      lines = Text.wrap_segments(state, [{"a " <> word, :text_primary}], 10)
+
+      assert [[{"a", :text_primary}] | split] = lines
+      assert Enum.map(split, fn [{text, _}] -> String.length(text) end) == [10, 10, 5]
+      refute Enum.any?(lines, fn line -> Enum.any?(line, fn {t, _} -> t =~ "…" end) end)
+    end
+
+    test "wide graphemes wrap by cells" do
+      state = st(:truecolor)
+
+      assert Text.wrap_segments(state, [{"日本 語語 本日", :text_primary}], 5) ==
+               [[{"日本", :text_primary}], [{"語語", :text_primary}], [{"本日", :text_primary}]]
+
+      assert Text.wrap_segments(state, [{"日本語", :text_primary}], 5) ==
+               [[{"日本", :text_primary}], [{"語", :text_primary}]]
+    end
+
+    test "no text is one empty line; wrap/3 keeps its string contract" do
+      state = st(:truecolor)
+      assert Text.wrap_segments(state, [], 10) == [[]]
+      assert Text.wrap_segments(state, [{"", :text_primary}, {"", :text_muted}], 10) == [[]]
+      assert Text.wrap(state, "", 10) == [""]
+    end
+  end
+
   test "scrim draws every segment faint and keeps a background wrapper" do
     assert Text.scrim([{"a", :accent}, {"b", {:text_primary, :on, :popover}}]) ==
              [{"a", :text_faint}, {"b", {:text_faint, :on, :popover}}]

@@ -168,6 +168,81 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Text do
     end
   end
 
+  @doc """
+  `segments` word-wrapped to `width` cells with their roles kept across the
+  breaks. Words split on single spaces; a space never starts a line and
+  trailing spaces are dropped; a word wider than a line starts its own line
+  and is split at `width` cells, never cut with `…`.
+  """
+  @spec wrap_segments(map(), [segment()], pos_integer()) :: [[segment()]]
+  def wrap_segments(state, segments, width) do
+    {done, current, _used} =
+      segments
+      |> Enum.flat_map(fn {text, role} ->
+        text
+        |> to_string()
+        |> String.split(~r/( )/, include_captures: true, trim: true)
+        |> Enum.map(&{&1, role})
+      end)
+      |> Enum.reduce({[], [], 0}, &place(state, &1, width, &2))
+
+    [current | done]
+    |> Enum.reverse()
+    |> Enum.map(&finish_line/1)
+  end
+
+  defp place(_state, {" ", _}, _width, {done, [], 0}), do: {done, [], 0}
+
+  defp place(state, {" ", _} = token, width, {done, current, used}) do
+    size = text_cells(state, " ")
+
+    if used + size <= width,
+      do: {done, [token | current], used + size},
+      else: {[current | done], [], 0}
+  end
+
+  defp place(state, {word, role} = token, width, {done, current, used}) do
+    size = text_cells(state, word)
+
+    cond do
+      used + size <= width ->
+        {done, [token | current], used + size}
+
+      size <= width ->
+        {[current | done], [token], size}
+
+      true ->
+        done = if current == [], do: done, else: [current | done]
+        [{last, last_size} | full] = state |> split_cells(word, width) |> Enum.reverse()
+        full_lines = Enum.map(full, fn {chunk, _} -> [{chunk, role}] end)
+        {full_lines ++ done, [{last, role}], last_size}
+    end
+  end
+
+  # A word split into chunks of at most `width` cells (at least one grapheme each).
+  defp split_cells(state, word, width) do
+    {chunks, chunk, used} =
+      word
+      |> String.graphemes()
+      |> Enum.reduce({[], "", 0}, fn grapheme, {chunks, chunk, used} ->
+        size = text_cells(state, grapheme)
+
+        if used + size > width and chunk != "",
+          do: {[{chunk, used} | chunks], grapheme, size},
+          else: {chunks, chunk <> grapheme, used + size}
+      end)
+
+    Enum.reverse([{chunk, used} | chunks])
+  end
+
+  defp finish_line(reversed) do
+    reversed
+    |> Enum.drop_while(fn {text, _} -> text == " " end)
+    |> Enum.reverse()
+    |> Enum.chunk_by(fn {_, role} -> role end)
+    |> Enum.map(fn [{_, role} | _] = run -> {Enum.map_join(run, &elem(&1, 0)), role} end)
+  end
+
   @doc "One screen row of `segments`, exactly `width` cells."
   @spec row(map(), [segment()], non_neg_integer()) :: Block.RichText.t()
   def row(state, segments, width) do
