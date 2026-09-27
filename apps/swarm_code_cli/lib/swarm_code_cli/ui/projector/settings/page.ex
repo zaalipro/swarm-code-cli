@@ -11,7 +11,18 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Page do
 
   alias SwarmCodeCLI.UI.Projector.Settings.{Note, Text}
   alias SwarmCodeCLI.UI.Reducer.Settings.Paste, as: PasteTarget
-  alias SwarmCodeCLI.UI.Settings.{Editors, Glyphs, Grid, Layer, ModelPicker, Nav, Row, Strata}
+
+  alias SwarmCodeCLI.UI.Settings.{
+    Editors,
+    Glyphs,
+    Grid,
+    Layer,
+    ModelPicker,
+    Nav,
+    Row,
+    Search,
+    Strata
+  }
 
   @type segments :: [Text.segment()]
   @type group :: %{
@@ -724,6 +735,35 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Page do
   defp head_items(state, %Layer{available: false, message: message}, grid)
        when is_binary(message),
        do: [info_item(state, grid, message), blank_item(-1)]
+
+  # Pass 75 (R27.4): while a query is searched the page opens with the
+  # filter vocabulary on one quiet line (wrapped, never cut), then a blank.
+  defp head_items(state, %Layer{mode: :search, search: %{query: query}}, grid)
+       when is_binary(query) and query != "" do
+    words =
+      (Search.filters() -- ["@section:", "@key:"])
+      |> Enum.map(&{&1, :text_muted})
+      |> Enum.intersperse({"  ", :text_muted})
+
+    lines =
+      state
+      |> Text.wrap_segments([{"filters ", :text_faint} | words], max(grid.page.width - 4, 1))
+      |> Enum.map(&Text.fit(state, [{"   ", :text_primary} | &1], grid.page.width))
+
+    [
+      %{
+        index: nil,
+        kind: :info,
+        focus?: false,
+        current?: false,
+        focusable?: false,
+        height: length(lines),
+        group: -1,
+        build: fn -> lines end
+      },
+      blank_item(-1)
+    ]
+  end
 
   defp head_items(_state, _layer, _grid), do: []
 

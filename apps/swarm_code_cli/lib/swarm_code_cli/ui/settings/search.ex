@@ -422,21 +422,35 @@ defmodule SwarmCodeCLI.UI.Settings.Search do
       end)
   end
 
-  defp result_row(ctx, %{kind: :key, entry: entry}),
-    do: %{Rows.scalar(ctx, entry) | indent: 0}
+  # Pass 75 (R27.4): a key result carries its key on the line under it.
+  defp result_row(ctx, %{kind: :key, entry: entry}) do
+    row = Rows.scalar(ctx, entry)
+    %{row | indent: 0, lines: [[{entry.key, :text_faint}] | row.lines || []]}
+  end
 
+  # A record, item or section result: the link mark, no value, and where it
+  # leads as its tag.
   defp result_row(_ctx, entry) do
     alias SwarmCodeCLI.UI.Settings.Row
+
+    section = Map.get(entry, :section) || target_section(entry.target)
 
     %Row{
       id: entry.id,
       kind: :link,
       label: entry.label,
-      value: [{"▸ open", :text_muted}],
+      value: [],
+      marks: [:link],
+      tag: if(section, do: [{Sections.title(section), :text_muted}], else: []),
       keys: [{"Enter", :enter, "open"}, {"g", :goto, "go to its section"}],
       target: {:search_result, entry.target}
     }
   end
+
+  defp target_section({:record, kind, _id}), do: DeepLink.record_section(kind)
+  defp target_section({:record, kind, _id, _item}), do: DeepLink.record_section(kind)
+  defp target_section({:section, id}), do: id
+  defp target_section(_target), do: nil
 
   @doc "What the index was built from: rebuilt only when this changes."
   @spec index_key(Ctx.t()) :: term()

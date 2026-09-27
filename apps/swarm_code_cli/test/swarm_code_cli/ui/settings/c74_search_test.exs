@@ -113,6 +113,12 @@ defmodule SwarmCodeCLI.UI.Settings.C74SearchTest do
       assert text =~
                ~r/\d+ of #{length(SwarmCode.Settings.Registry.scalar_keys())} · \d+ sections?/
 
+      # pass 75 (R27.4): a key result carries its key on the line under it,
+      # and the page opens with the filter words
+      panel = Enum.find(Nav.rows(state), &(&1.id == "key:terminal.panel"))
+      assert hd(panel.lines) == [{"terminal.panel", :text_faint}]
+      assert text =~ "filters @modified  @env"
+
       state = press!(state, Input.key(:down))
       assert Nav.current(state).id == "key:terminal.panel"
       {state, effects} = act(state, {:settings, {:verb, :right}})
@@ -123,6 +129,23 @@ defmodule SwarmCodeCLI.UI.Settings.C74SearchTest do
              )
 
       assert state.settings.search.query == "side panel"
+    end
+
+    test "a section result is a link: its mark, no value, its section as the tag" do
+      state =
+        ready() |> act!({:settings_open, nil}) |> press!(letter("/")) |> typed("storage")
+
+      link = Enum.find(Nav.rows(state), &(&1.id == "section:storage"))
+      assert link, inspect(Enum.map(Nav.rows(state), & &1.id))
+      assert link.kind == :link
+      assert link.marks == [:link]
+      assert link.value == []
+      assert link.tag == [{"Storage", :text_muted}]
+
+      refute Enum.any?(
+               Nav.rows(state),
+               &(Enum.map_join(&1.value, "", fn {t, _} -> t end) == "▸ open")
+             )
     end
 
     test "g on a result goes to it in its section; Esc clears then leaves" do
