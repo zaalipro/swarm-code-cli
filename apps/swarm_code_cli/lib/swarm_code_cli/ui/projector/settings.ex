@@ -18,12 +18,13 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
   """
 
   alias SwarmCodeCLI.UI.Projector.Settings.Chrome
+  alias SwarmCodeCLI.UI.Projector.Settings.Note
   alias SwarmCodeCLI.UI.Projector.Settings.Page, as: SettingsPage
   alias SwarmCodeCLI.UI.Projector.Settings.Popover, as: SettingsPopover
   alias SwarmCodeCLI.UI.Projector.Settings.Text
   alias SwarmCodeCLI.UI.Scene.{Rect, Region}
   alias SwarmCodeCLI.UI.SafeText
-  alias SwarmCodeCLI.UI.Settings.{Detail, Glyphs, Grid, Layer, Nav, Row, Sections}
+  alias SwarmCodeCLI.UI.Settings.{Glyphs, Grid, Layer, Nav, Sections}
 
   @doc "The layer's regions and cursor, or nil when it is closed."
   @spec project(map(), term()) :: nil | {[Region.t()], nil}
@@ -116,7 +117,7 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
         else: SettingsPage.build(state, grid, caps)
 
     rail = if grid.rail, do: rail_lines(state, grid.rail.width, glyphs), else: nil
-    note = if grid.note, do: note_lines(state, current, grid), else: nil
+    note = if grid.note, do: Note.column(state, current, meta, grid), else: nil
 
     lines =
       for index <- 0..(grid.body_rows - 1) do
@@ -130,12 +131,7 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
 
         page_part = Text.fit(state, Enum.at(meta.lines, index, []), grid.page.width)
 
-        note_part =
-          if note,
-            do:
-              [spaces(grid.note.spine - grid.page.left - grid.page.width)] ++
-                Text.fit(state, Enum.at(note, index, []), grid.note.width + 2),
-            else: []
+        note_part = if note, do: note_part(state, note, index, grid), else: []
 
         Text.fit(state, rail_part ++ page_part ++ note_part, grid.columns)
       end
@@ -147,11 +143,29 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
 
   defp spaces(count), do: {String.duplicate(" ", max(count, 0)), :text_primary}
 
-  # The note column's lines at 160 columns and more (task 319 hangs it from
-  # the focused group; until then the detail of the focused row from the top).
-  defp note_lines(state, current, %Grid{note: note, body_rows: rows}) do
-    state
-    |> detail_lines(current, note.width + 2, rows)
+  # The gutter and the note on body line `index`: the connector `───┤` (or
+  # `───╮` on the note's first line) on the focus row's line.
+  defp note_part(state, note, index, %Grid{} = grid) do
+    caps = state.capabilities
+    gutter = grid.note.spine - grid.page.left - grid.page.width
+    line = if index >= note.top, do: Enum.at(note.lines, index - note.top, []), else: []
+
+    if note.join == index and line != [] do
+      twin? = Glyphs.twin?(caps)
+      dash = if twin?, do: "-", else: Glyphs.for_caps(:connector, caps)
+      join = if note.top == index, do: :join_top, else: :join_mid
+      join = if twin?, do: "+", else: Glyphs.for_caps(join, caps)
+      [_spine | rest] = line
+
+      [
+        spaces(gutter - 3),
+        {String.duplicate(dash, 3), :text_faint},
+        {join, :text_faint}
+        | Text.fit(state, rest, grid.note.width + 1)
+      ]
+    else
+      [spaces(gutter) | Text.fit(state, line, grid.note.width + 2)]
+    end
   end
 
   # ------------------------------------------------------ small, narrow
@@ -248,79 +262,6 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
       {text, role} -> {text, {role, :on, background}}
     end)
   end
-
-  # ----------------------------------------------------------- detail
-
-  defp detail_lines(_state, nil, _width, _rows), do: []
-
-  defp detail_lines(state, %Row{detail: nil} = row, width, rows),
-    do: detail_lines(state, %{row | detail: %Detail{title: row.label}}, width, rows)
-
-  defp detail_lines(state, %Row{detail: %Detail{} = detail} = row, width, rows) do
-    inner = max(width - 2, 10)
-    scope = if detail.scope, do: [{" · " <> detail.scope, :text_faint}], else: []
-
-    title = [[{" ", :text_primary}, {detail.title, {:text_primary, [:bold]}} | scope]]
-    key_line = if detail.key_line, do: [[{" " <> detail.key_line, :text_faint}]], else: []
-
-    description =
-      if detail.description in [nil, ""],
-        do: [],
-        else: [
-          []
-          | Enum.map(Text.wrap(state, detail.description, inner), &[{" " <> &1, :text_primary}])
-        ]
-
-    facts =
-      if detail.facts == [],
-        do: [],
-        else: [
-          []
-          | Enum.map(detail.facts, fn {name, value} ->
-              [{" " <> pad(name, 10), :text_muted}, {value, :text_primary}]
-            end)
-        ]
-
-    layers =
-      if detail.layers == [] do
-        []
-      else
-        crumb = glyph(state, :crumb)
-        ok = glyph(state, :ok)
-
-        [[], [{" where it comes from", :text_muted}, {"   strongest first", :text_faint}]] ++
-          Enum.map(detail.layers, fn layer ->
-            lead = if layer.winner?, do: " #{crumb} ", else: "   "
-            role = if layer.winner?, do: :text_primary, else: :text_muted
-            win = if layer.winner?, do: [{"  " <> ok, :success}], else: []
-            note = if layer.note, do: [{"  " <> to_string(layer.note), :text_faint}], else: []
-            [{lead <> pad(layer.layer, 18), role}, {layer.value, role}] ++ note ++ win
-          end)
-      end
-
-    notes = Enum.map(detail.notes, fn {words, role} -> [{" " <> words, role}] end)
-    notes = if notes == [], do: [], else: [[] | notes]
-
-    keys =
-      case row.keys do
-        [] ->
-          []
-
-        keys ->
-          [
-            []
-            | Enum.map(keys, fn {key, _verb, words} ->
-                [{" " <> key, {:info, [:bold]}}, {" " <> words, :text_faint}]
-              end)
-          ]
-      end
-
-    (title ++ key_line ++ description ++ facts ++ layers ++ notes ++ keys)
-    |> Enum.map(&Text.clip(state, &1, width))
-    |> Enum.take(rows)
-  end
-
-  defp pad(text, width), do: String.pad_trailing(to_string(text), width)
 
   # ---------------------------------------------------------- popover
 
