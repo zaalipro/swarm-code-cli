@@ -86,7 +86,7 @@ Three umbrella apps with deliberate ownership boundaries (`apps/*/mix.exs`):
   `SwarmCode.Domain.*` is the desktop lineage, re-derived from desktop `6dd8d82` (pass 69) by
   `mix swarm_code.provenance.sync`; CLI-local files (`domain/runtime.ex`, `paths.ex`,
   `notifications.ex`, `pub_sub.ex`, `feature_catalog.ex`, `html.ex`,
-  `engine/pending_interactions.ex`) are never synced (Ecto SQLite Repo via vendored `exqlite`,
+  `engine/pending_interactions.ex`, `tools/agent_title.ex`) are never synced (Ecto SQLite Repo via vendored `exqlite`,
   conversations, `Engine` with run/agent supervisors, LLM adapters, tools, workflows, research,
   scheduler, MCP, settings). `SwarmCode.Daemon.*` wraps it: `FoundationGate` (canonical paths,
   process identity, private directories, signed macOS desktop detector, `CrossAppLease`, audited
@@ -189,7 +189,7 @@ by `scripts/dev/sync_unicode_width.exs --check`, `sync_unicode_variants.py --che
   it takes no argument); a message naming a workflow goes as `/create-workflow`, Ctrl-S sends it
   plain. `SwarmCodeCLI.UI.Composer.enter_action/1` is the one answer to "what does Enter do now"
   (send, steer, queue, run, complete, show all, fold) for the keymap, the footer and the pending
-  marks.
+  marks. Pass 75: an `ask_user` call is one note, layer `{:question, node_id}` (`UI.Question`, `Projector.Interview`): digits pick or tick, Space ticks (multi-select only), Tab moves list↔other, ←/→ step questions (`:dialog_right`/`:dialog_left`, else the focus cycle), Enter confirms, steps or sends (N `question.answer` requests at the final Enter), and Esc keeps the held answers (^N reopens).
 - Measure glyphs with `SwarmCodeCLI.UI.Width.cells/2` under both ambiguous-width policies before
   drawing. Box drawing, half blocks and emoji are ambiguous or wide. Progress is the `▐` tick
   bar, not a solid fill. Colours come from `UI.Theme` (the web app's Carbon tokens); never invent
@@ -224,7 +224,7 @@ by `scripts/dev/sync_unicode_width.exs --check`, `sync_unicode_variants.py --che
   `State.hint` (Ctrl-F, labels from `UI.Hint.labels/1`, also over an approval card) and
   `State.overlay` (`Projector.Overlay`, `Reducer.Overlay`, the `agent.detail` query, a steer
   with the agent's `node_id`) are O's. The overlay's `x` stops its agent through the undrawn
-  `{:stop_agent, …}` keyboard action.
+  `{:stop_agent, …}` keyboard action. Pass 75 (V2): one row per agent sorted by attention (`Panel.Model.attention/2`) with an AI name (`spawn_agent`'s optional `title`, cleaned by `Domain.Tools.AgentTitle.clean/2`, stored in `nodes.title`; the slug shows only dim in the ^F overlay), a status line (`summary` from the `Daemon.Service.AgentStatus` Summarizer that `PersistedBackend` drives, off in test config `:summarize_agents`, cli.json `agent_summaries`, `/panel summaries on|off`) and one figure; a turn-limit stop (`stop_reason "turn_budget"`) is the client state `:turn_limit` and never a report; `$` only when `cost_usd` is a number; no lanes, legend, fills or ghost text in the panel. Workflow and consensus runs also draw their kind sections (`Shapes.before_agents/4`, `after_agents/4`) between the band and the found blocks (owner decision P-1).
 - Watch flow control (pass 72 F): the persisted backend sends up to 8 deltas ahead of the
   client's credit (the connection allows 16 frames, 512 KiB), a changed run re-sends only the
   transcript items that changed, and a `watch_ready` names its own body's revision. Before,
