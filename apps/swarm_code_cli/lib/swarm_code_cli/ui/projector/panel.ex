@@ -192,15 +192,17 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
   end
 
   # pass 75 V2 (D2): one body for every shown run: the in-chat run's header,
-  # one row per other run, the band, the found blocks, one agents block,
-  # then the spent, earlier and keys rows. Tighter candidates drop the
-  # finished agents' conclusions, then the why-lines.
+  # one row per other run, the band, the kind sections, the found blocks,
+  # one agents block, then the spent, earlier and keys rows. Tighter
+  # candidates drop the finished agents' conclusions, then the why-lines and
+  # the kind sections.
   defp bodies(%{mode: :full} = ctx, _band) do
     [chat | others] = runs = ordered(ctx)
     pairs = Enum.map(runs, &{&1, Map.get(ctx.views, &1.id, [])})
     headers = run_header_full(ctx, chat) ++ Enum.map(others, &launched_row(ctx, &1))
 
     band = band_rows(ctx)
+    kinds = kind_rows(ctx, pairs)
     agents = agent_rows(ctx, pairs)
     tail = tail_rows(ctx, true)
 
@@ -217,7 +219,9 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
           |> Enum.intersperse(if level == :full, do: [blank(ctx)], else: [])
           |> Enum.concat()
 
-        [headers, band, found, agents]
+        kinds = if level == :bare, do: [], else: kinds
+
+        [headers, band, kinds, found, agents]
         |> Enum.reject(&(&1 == []))
         |> Enum.intersperse([blank(ctx)])
         |> Enum.concat()
@@ -248,6 +252,33 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
     with_earlier = Enum.map(folds, fn build -> fn -> build.() ++ tail_rows(ctx, true) end end)
     without = Enum.map(folds, fn build -> fn -> build.() ++ tail_rows(ctx, false) end end)
     with_earlier ++ without
+  end
+
+  # Review P-1 (spec Blockers, 153b, the owner's decision): the kind sections
+  # stay for workflow and consensus runs only: a workflow's phases (the
+  # pipeline, the live phase, `phases N of M done`) and a consensus run's
+  # positions, agreement, criteria and the judge's words. Goal and research
+  # runs draw none. One blank row parts the parts of a section (never two)
+  # and one run's section from the next.
+  defp kind_rows(ctx, pairs) do
+    b = blank(ctx)
+
+    pairs
+    |> Enum.filter(fn {run, _views} -> Model.kind(run) in [:workflow, :consensus_judge] end)
+    |> Enum.map(fn {run, views} ->
+      (Shapes.before_agents(ctx, run, views, false) ++
+         Shapes.after_agents(ctx, run, views, false))
+      |> Enum.reduce([], fn
+        ^b, [] -> []
+        ^b, [^b | _] = acc -> acc
+        row, acc -> [row | acc]
+      end)
+      |> Enum.drop_while(&(&1 == b))
+      |> Enum.reverse()
+    end)
+    |> Enum.reject(&(&1 == []))
+    |> Enum.intersperse([b])
+    |> Enum.concat()
   end
 
   # The panel's tail (7.4-7.6): a blank row, what the shown runs spent, the

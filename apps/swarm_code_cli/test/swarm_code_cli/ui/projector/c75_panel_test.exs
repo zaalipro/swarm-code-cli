@@ -402,7 +402,9 @@ defmodule SwarmCodeCLI.UI.Projector.C75PanelTest do
   # runs into the next run's `found` row. The tighter candidates are the
   # found, gauge and why rows only (task 147a), so they stay packed.
   test "found blocks of several runs: a blank row between them in the full candidate" do
-    for {r, level} <- [{45, :bare}, {60, :summary}, {70, :full}] do
+    # Review P-1: the heavy scene's workflow and consensus sections (15 rows)
+    # come with the summary and full candidates, so those need more height.
+    for {r, level} <- [{45, :bare}, {70, :summary}, {80, :full}] do
       rows = rows(state(:panel_heavy, 176, r))
       at = for {row, i} <- Enum.with_index(rows), String.starts_with?(row, " found "), do: i
       before = Enum.map(at, &Enum.at(rows, &1 - 1))
@@ -419,6 +421,52 @@ defmodule SwarmCodeCLI.UI.Projector.C75PanelTest do
         refute Enum.any?(tl(before), &(&1 == "")), "176x#{r}: #{inspect(rows)}"
       end
     end
+  end
+
+  # Review P-1 (spec Blockers, 153b, the owner's decision): the kind sections
+  # stay for workflow and consensus runs only, drawn between the band and the
+  # agents block (above the found blocks), with one blank row between their
+  # parts; goal and research runs draw none, and the tightest candidate
+  # drops them.
+  test "kind sections: a workflow's phases and a consensus run's positions, never a goal's or research's" do
+    at = fn rows, re ->
+      Enum.find_index(rows, &(&1 =~ re)) || flunk("no #{inspect(re)}: #{inspect(rows)}")
+    end
+
+    wf = rows(state(:panel_workflow, 176, 45))
+    scan = at.(wf, ~r/^   scan   plan   implement   verify   report$/)
+    assert Enum.at(wf, scan + 1) == "   ✓──────✓──────●───────────○────────○"
+    live = at.(wf, ~r/^ implement +3 steps in parallel$/)
+    phases = at.(wf, ~r/^ phases +2 of 5 done$/)
+    assert Enum.at(wf, phases + 1) == "   ▰▰▱▱▱"
+    assert Enum.at(wf, scan - 1) == ""
+    assert Enum.at(wf, phases + 2) == ""
+    assert scan < live and live < phases
+    assert phases < at.(wf, ~r/^ found /) and phases < at.(wf, ~r/^ agents /)
+
+    cs = rows(state(:panel_consensus, 176, 45))
+    positions = at.(cs, ~r/^ positions$/)
+
+    assert Enum.slice(cs, (positions + 1)..(positions + 4)) == [
+             "   A  yes, one worktree per writer run",
+             "   B  only when 2+ agents write",
+             "   C  no, checkpoints are enough",
+             ""
+           ]
+
+    assert Enum.at(cs, positions + 5) =~ ~r/^ agreement +2 of 3 on A$/
+    assert positions + 5 < at.(cs, ~r/^ found /)
+
+    for {scene, words} <- [
+          panel_goal: ~r/^ (criteria|iterations?|last verdict|produced)( |$)/,
+          panel_research: ~r/^ (sources|report)( |$)/
+        ] do
+      rows = rows(state(scene, 176, 45))
+      refute Enum.any?(rows, &(&1 =~ words)), "#{scene}: #{inspect(rows)}"
+    end
+
+    heavy = rows(state(:panel_heavy, 176, 45))
+    refute Enum.any?(heavy, &(&1 =~ ~r/scan   plan|^ positions$|^ phases /))
   end
 
   # The rules behind the rows, value by value (tasks 141, 142, 147b): the

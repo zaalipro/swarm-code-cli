@@ -138,22 +138,22 @@ defmodule SwarmCodeCLI.UI.Projector.GoldenScenesTest do
   alias SwarmCodeCLI.Demo.Panel, as: PanelScenes
 
   # pass 75: re-derived from the V2 panel (humanised names, `found`, the
-  # band's words, the spent and earlier rows; no kind sections). Open owner
-  # decision (spec Blockers, 153b): the V2 body draws no workflow phases,
-  # goal criteria, research funnel or consensus positions, so this evidence
-  # does not prove them; restore `implement`/`criteria`/`sources`/`positions`
-  # here if the owner keeps the kind sections.
+  # band's words, the spent and earlier rows). Review P-1 (spec Blockers,
+  # 153b, the owner's decision): the kind sections stay for workflow and
+  # consensus runs only, so `implement` and `positions` are evidence again;
+  # goal criteria and the research funnel (`criteria`, `sources`) are not
+  # drawn.
   @panel_evidence %{
     panel_chat: {"fix the flaky retry test", ["Assistant", "2 finished runs in this chat"]},
     panel_swarm_1: {"architecture review", ["Engine lifecycle", "found"]},
     panel_swarm_2:
       {"architecture review", ["1 needs you · oldest first", "mix test test/swarm_code_web/live"]},
     panel_swarm_3: {"architecture review", ["stop reason read before the flush"]},
-    panel_workflow: {"ship retry", ["found", "Retry tests"]},
+    panel_workflow: {"ship retry", ["implement", "found", "Retry tests"]},
     panel_goal: {"suite green", ["found", "Goal agent"]},
     panel_plan: {"rate limits for the API", ["1 needs you · oldest first", "limit per API key"]},
     panel_research: {"Req vs Finch pooling", ["found", "Reader code"]},
-    panel_consensus: {"should runs own worktrees?", ["found", "Gemini"]},
+    panel_consensus: {"should runs own worktrees?", ["positions", "found", "Gemini"]},
     panel_heavy: {"architecture review", ["spent", "2 need you"]},
     panel_owner19:
       {"lets plan how to make this app better", ["Build check", "quiet 1m", "no files changed"]},

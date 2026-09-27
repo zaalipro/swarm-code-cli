@@ -5,10 +5,10 @@ defmodule SwarmCodeCLI.UI.InspectorCardsTest do
   170x34 (xl) and 150x30 (wide), in colour, monochrome and ASCII.
   """
   use ExUnit.Case, async: true
-  alias SwarmCodeCLI.UI.{Capabilities, Fixtures, Paint, Projector, SafeText, Scene, Size}
+  alias SwarmCodeCLI.UI.{Capabilities, Fixtures, Paint, Projector, Scene, Size}
   alias SwarmCodeCLI.UI.Paint.{Options, Plan}
   alias SwarmCodeCLI.UI.DataSource.DTO
-  alias SwarmCodeCLI.UI.Projector.Inspector.{Verdict, Words}
+  alias SwarmCodeCLI.UI.Projector.Inspector.Words
 
   # The fixture clock: the run started five minutes before it.
   @now 1_788_436_800_000
@@ -66,23 +66,6 @@ defmodule SwarmCodeCLI.UI.InspectorCardsTest do
     do: kind |> state(cols, rows, opts) |> painted() |> elem(0)
 
   defp targets(table, target), do: for({id, ^target} <- table, do: id)
-
-  # The verdict card's rows as text (pass 75: the V2 panel body, D2, no longer
-  # draws the verdict; `Inspector.Verdict` still builds it). Open owner
-  # decision (spec Blockers, 153b): `Verdict.card/3` has no lib caller at
-  # c75-P, so the two tests that read it prove the card, not the panel. If the
-  # owner keeps the kind sections in V2, they read the painted panel again; if
-  # not, they go with `Shapes.before_agents/4` and `after_agents/4`.
-  defp verdict_rows(state) do
-    run = state.read_model.runs |> Map.values() |> Enum.find(&Verdict.judged?/1)
-
-    state
-    |> Verdict.card(run, 120)
-    |> Enum.map(fn
-      %{spans: spans} -> Enum.map_join(spans, "", &SafeText.value(&1.text))
-      %{text: text} -> SafeText.value(text)
-    end)
-  end
 
   # The background of the first cell of `text` on the row that contains it.
   defp background(plan, rect, rows, text) do
@@ -235,21 +218,22 @@ defmodule SwarmCodeCLI.UI.InspectorCardsTest do
 
   describe "the verdict of a judged run" do
     test "a consensus run shows the newest verdict's checks as criteria and the judge's words" do
-      # pass 75 V2 (D2): the agents tab draws the run's header, its agent row,
-      # the spent row and the keys; no criteria. The checks and the judge's
-      # words are the verdict card's (`Inspector.Verdict.card/3`).
-      state = state(:consensus, 170, 34)
-      rows = state |> painted() |> elem(0)
+      # Review P-1 (spec Blockers, 153b, the owner's decision): the V2 body
+      # keeps a consensus run's kind section between the band and the agents
+      # block: the criteria, then the judge's words.
+      rows = rows(:consensus, 170, 34)
       assert Enum.any?(rows, &(&1 =~ ~r/^ agents +1 live$/))
-      refute Enum.any?(rows, &(&1 =~ ~r/^ criteria /))
 
-      v = verdict_rows(state)
-      assert hd(v) == "Verdict · round 1 · done"
-      assert Enum.at(v, 1) =~ ~r/^✓ tests_pass +142 tests, 0 failures$/
-      assert Enum.at(v, 2) =~ ~r/^✓ no_regressions +auth paths unchanged$/
-      assert Enum.at(v, 3) =~ ~r/^✕ docs_updated +architecture.md still draft$/
-      assert Enum.at(v, 4) =~ ~r/^— style +not evaluated$/
-      assert Enum.any?(v, &(&1 =~ "Two of three proposals meet the bar"))
+      v = Enum.find_index(rows, &(&1 =~ ~r/^ criteria +2 of 4 met$/))
+      assert v, "no criteria row"
+      assert Enum.at(rows, v + 2) =~ ~r/^   ✓ tests_pass +142 tests, 0 failures$/
+      assert Enum.at(rows, v + 3) =~ ~r/^   ✓ no_regressions +auth paths unchanged$/
+      assert Enum.at(rows, v + 4) =~ ~r/^   ✗ docs_updated +architecture.md still draft$/
+      assert Enum.at(rows, v + 5) =~ ~r/^   ⚬ style +not evaluated$/
+      assert Enum.any?(rows, &(&1 =~ "Two of three proposals meet the bar"))
+
+      # The section sits above the agents block.
+      assert v < Enum.find_index(rows, &(&1 =~ ~r/^ agents /))
     end
 
     test "the newest round wins" do
@@ -265,10 +249,9 @@ defmodule SwarmCodeCLI.UI.InspectorCardsTest do
       }
 
       state = put_in(state.read_model.verdicts, %{"judge-1" => older, "judge-2" => newer})
-      # pass 75 V2 (D2): on the verdict card, not the panel.
-      rows = verdict_rows(state)
+      {rows, _, _, _} = painted(state)
 
-      assert Enum.any?(rows, &(&1 =~ ~r/^✓ docs_updated +docs landed$/))
+      assert Enum.any?(rows, &(&1 =~ ~r/^   ✓ docs_updated +docs landed$/))
       assert Enum.any?(rows, &(&1 =~ "All three proposals meet the bar."))
       refute Enum.any?(rows, &String.contains?(&1, "142 tests"))
     end
