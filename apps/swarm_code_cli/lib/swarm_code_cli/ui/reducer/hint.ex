@@ -83,14 +83,14 @@ defmodule SwarmCodeCLI.UI.Reducer.Hint do
   end
 
   @doc "The pending requests of one agent, oldest first."
+  # pass75 interview: one need per ask (its lowest-index row, which opens the
+  # ask's note, `UI.Question.ask_id/1`), in `UI.Question.order_key/1` order.
   def pending(state, run_id, node_id) do
-    state.read_model.interactions
-    |> Map.values()
+    state
+    |> SwarmCodeCLI.UI.Question.needs()
     |> Enum.filter(fn item ->
-      item.state == :pending and item.run_id == run_id and
-        (item.node_id == node_id or agent_of(item) == node_id)
+      item.run_id == run_id and (item.node_id == node_id or agent_of(item) == node_id)
     end)
-    |> Enum.sort_by(&{&1.created_at || 0, &1.id})
   end
 
   defp agent_of(%{approval: %{} = approval}), do: Map.get(approval, :agent_id)
