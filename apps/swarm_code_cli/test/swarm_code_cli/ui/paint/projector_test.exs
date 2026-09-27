@@ -237,24 +237,35 @@ defmodule SwarmCodeCLI.UI.Paint.ProjectorTest do
       allowed_actions: [:answer_question]
     }
 
-    target = {:intent, {:answer_question, item.run_id, item.node_id, item.id, 3, ["option-20"]}}
+    # pass 75: the note's option row picks; the note's Enter sends the answer.
+    target = {:local, {:interview, {:pick, item.node_id, "option-20"}}}
 
     for size <- [{50, 16}, {72, 20}, {120, 40}],
         policy <- [:narrow, :wide],
         ascii <- [false, true] do
       state = fixture(:chat, size, policy, :monochrome, ascii)
       state = put_in(state.read_model.interactions[item.id], item)
-      {scene, table, plan} = paint(%{state | layers: [{:question, item.id}], focus: "option-20"})
-      assert scene.overlay.body_scroll > 0
+      state = %{state | layers: [{:question, item.node_id}], focus: "option-20"}
+      {scene, table, plan} = paint(state)
+
+      # pass 75: the note cuts labels to one row, so it scrolls exactly when
+      # its body is taller than the note (120x40 shows all 20 options).
+      overlay = scene.overlay
+      assert overlay.body_scroll > 0 == overlay.body_total_count > overlay.rect.height - 2
       assert plan.cursor == nil
       assert plan.focus.control_id == "option-20"
       assert target in Map.values(table)
       refute {:intent, {:run_control, :stop, item.run_id}} in Map.values(table)
       assert screen(plan) =~ "wrapped choice"
-      assert screen(plan) =~ "Cancel"
+      refute screen(plan) =~ "Cancel"
+      refute "cancel" in SwarmCodeCLI.UI.Reducer.focus_graph(state)
       assert length(String.split(screen(plan), "FOCUS >")) - 1 == 1
-      {id, _} = Enum.find(table, fn {_, value} -> value == target end)
-      [focused | _] = plan.actions[id]
+      # pass 75: a wrapped label is one target on each of its rows; the
+      # focus words lead its first row.
+      rects =
+        for {id, value} <- table, value == target, rect <- Map.get(plan.actions, id, []), do: rect
+
+      [focused | _] = Enum.sort_by(rects, & &1.y)
       assert row(plan, focused.y, focused.x, focused.width) =~ "FOCUS >"
     end
   end
@@ -551,10 +562,12 @@ defmodule SwarmCodeCLI.UI.Paint.ProjectorTest do
     end
   end
 
-  # pass72: the side panel names every agent once, the lead first at the top
-  # of its tree; its rows are a picture, not controls (P1), so the hint keys
-  # and the agent overlay (owner O) reach an agent, not a click on its row.
-  test "the side panel names every sub-agent once and the lead heads the tree" do
+  # pass72: the side panel names every agent once; its rows are a picture,
+  # not controls (P1), so the hint keys and the agent overlay (owner O) reach
+  # an agent, not a click on its row. pass 75: the V2 rows carry the agent's
+  # human name and a status text, and the block is sorted by attention, so
+  # the Lead no longer heads it.
+  test "the side panel names every sub-agent once and the Lead once" do
     for color <- [:truecolor, :monochrome], policy <- [:narrow, :wide] do
       state = fixture(:swarm, {160, 50}, policy, color)
       {scene, _table, plan} = paint(state)
@@ -565,16 +578,15 @@ defmodule SwarmCodeCLI.UI.Paint.ProjectorTest do
         for y <- inspector.rect.y..(inspector.rect.y + inspector.rect.height - 1),
             do: row(plan, y, inspector.rect.x, inspector.rect.width)
 
-      words = "(working|thinking|waiting|needs you|done|failed|stopped|queued|paused)"
-
       for agent <- agents, agent.role != :lead do
-        name_row = Regex.compile!(" " <> Regex.escape(agent.name) <> " +" <> words)
-        assert Enum.count(rows, &(&1 =~ name_row)) == 1, agent.name
+        name = SwarmCodeCLI.UI.Projector.Panel.Name.of(state, agent)
+        name_row = Regex.compile!(" " <> Regex.escape(name) <> " {2,}\\S")
+        assert Enum.count(rows, &(&1 =~ name_row)) == 1, name
       end
 
-      lead_row = Enum.find_index(rows, &(&1 =~ ~r/ Lead +/))
-      first_sub = Enum.find_index(rows, &(&1 =~ "scout-1"))
-      assert lead_row && first_sub && lead_row < first_sub
+      # The Lead's own row (` Lead ` then the status column), not the why
+      # line's "the Lead reports once all 4 are in".
+      assert Enum.count(rows, &(&1 =~ ~r/ Lead {2,}\S/)) == 1
     end
   end
 

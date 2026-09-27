@@ -239,7 +239,7 @@ defmodule SwarmCodeCLI.TestSupport.RequestConformance do
 
     layers =
       case c.interaction do
-        {kind, _, _, id, _} -> [{kind, id}]
+        {kind, _, node, id, _} -> [if(kind == :question, do: {kind, node}, else: {kind, id})]
         nil -> []
       end
 
@@ -263,8 +263,29 @@ defmodule SwarmCodeCLI.TestSupport.RequestConformance do
     }
 
     {_scene, actions} = Projector.project(state)
-    Enum.find(Map.values(actions), &(&1 == {:intent, intent(row)}))
+    values = Map.values(actions)
+    Enum.find(values, &(&1 == {:intent, intent(row)})) || note_target(state, values)
   end
+
+  # pass 75: the question note draws no per-option intent. Its Enter (the
+  # projected confirm target) sends `Question.intents/2` for the focused
+  # option, whose `%{option_ids, custom_text: ""}` payload is the plain
+  # command's option list.
+  defp note_target(%{layers: [{:question, node} | _]} = state, values) do
+    alias SwarmCodeCLI.UI.Question
+
+    with true <- {:local, {:interview, {:confirm, node}}} in values,
+         %{rows: [row | _]} = ask <- Question.ask(state, node),
+         [option | _] <- Map.get(state.selection, {:question, row.id}, []),
+         [{:answer_question, run, ^node, id, rev, %{option_ids: ids, custom_text: ""}}] <-
+           Question.intents(%{state | focus: option}, ask) do
+      {:intent, {:answer_question, run, node, id, rev, ids}}
+    else
+      _ -> nil
+    end
+  end
+
+  defp note_target(_state, _values), do: nil
 
   def encode(request), do: ContractFixtures.canonical_request_bytes(request)
 

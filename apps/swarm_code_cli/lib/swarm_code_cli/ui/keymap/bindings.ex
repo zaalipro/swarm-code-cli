@@ -490,7 +490,7 @@ defmodule SwarmCodeCLI.UI.Keymap.Bindings do
     %Binding{
       id: :focus_previous,
       keys: [{:tab, [:shift]}, {:back_tab, []}],
-      action: {:focus_cycle, :previous},
+      action: {:special, :focus_previous},
       contexts: [:main, :inspector, :picker, :field, :dialog],
       group: :focus,
       label: "Previous",
@@ -970,7 +970,7 @@ defmodule SwarmCodeCLI.UI.Keymap.Bindings do
     # ------------------------------------------------------------------
     %Binding{
       id: :dialog_next,
-      keys: [{"j", []}, {:down, []}, {:right, []}],
+      keys: [{"j", []}, {:down, []}],
       action: {:focus_cycle, :next},
       contexts: [:dialog],
       group: :navigate,
@@ -981,12 +981,36 @@ defmodule SwarmCodeCLI.UI.Keymap.Bindings do
     },
     %Binding{
       id: :dialog_previous,
-      keys: [{"k", []}, {:up, []}, {:left, []}],
+      keys: [{"k", []}, {:up, []}],
       action: {:focus_cycle, :previous},
       contexts: [:dialog],
       group: :navigate,
       label: "Up",
       help: "Focus the previous control",
+      hint: 4,
+      repeat: true
+    },
+    # pass75 interview: ←/→ step between the questions of an ask, and cycle
+    # the controls of every other dialog as before.
+    %Binding{
+      id: :dialog_right,
+      keys: [{:right, []}],
+      action: {:special, :dialog_right},
+      contexts: [:dialog],
+      group: :navigate,
+      label: "Right",
+      help: "Next question, or the next control",
+      hint: 5,
+      repeat: true
+    },
+    %Binding{
+      id: :dialog_left,
+      keys: [{:left, []}],
+      action: {:special, :dialog_left},
+      contexts: [:dialog],
+      group: :navigate,
+      label: "Left",
+      help: "Previous question, or the previous control",
       hint: 4,
       repeat: true
     },

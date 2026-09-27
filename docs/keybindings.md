@@ -556,8 +556,10 @@ Mouse: the wheel scrolls the pane under the pointer (the transcript, the side pa
 
 | Keys | Does |
 |---|---|
-| `j` / `↓` / `→` | Focus the next control |
-| `k` / `↑` / `←` | Focus the previous control |
+| `j` / `↓` | Focus the next control |
+| `k` / `↑` | Focus the previous control |
+| `→` | Next question, or the next control |
+| `←` | Previous question, or the previous control |
 | `PgDn` | Scroll the dialog down a page |
 | `PgUp` | Scroll the dialog up a page |
 | `Ctrl-D` | Scroll the dialog down half a page |

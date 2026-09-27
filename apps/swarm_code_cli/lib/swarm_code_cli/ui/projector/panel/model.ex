@@ -743,7 +743,8 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Model do
   @doc """
   What waits on you in `run`, oldest first, as asks `%{id, kind, text, verb,
   agent_id, node_id, at}`: the run summary's `needs_you` (owner S's band
-  entries) when it has any, else the run's pending interactions.
+  entries) when it has any, else the run's pending interactions, one per ask
+  (pass 75: `UI.Question.needs/1`, every approval plus each ask's first row).
   """
   def pending(state, run) do
     case run.needs_you do
@@ -751,9 +752,9 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Model do
         wire |> Enum.map(&from_wire/1) |> Enum.sort_by(&{&1.at, &1.id})
 
       _ ->
-        state.read_model.interactions
-        |> Map.values()
-        |> Enum.filter(&(&1.state == :pending and &1.run_id == run.id))
+        state
+        |> SwarmCodeCLI.UI.Question.needs()
+        |> Enum.filter(&(&1.run_id == run.id))
         |> Enum.map(&from_interaction/1)
         |> Enum.sort_by(&{&1.at, &1.id})
     end

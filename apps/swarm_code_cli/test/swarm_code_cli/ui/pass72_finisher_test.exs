@@ -147,7 +147,8 @@ defmodule SwarmCodeCLI.UI.Pass72FinisherTest do
 
     assert Enum.any?(scene.regions, &(&1.id == "agent-overlay"))
     refute Enum.any?(scene.regions, &(&1.role == :inspector))
-    assert Enum.join(texts(scene.regions), "\n") =~ "engine-lifecycle"
+    # pass 75: the overlay names the agent by its human name (task 140).
+    assert Enum.join(texts(scene.regions), "\n") =~ "Engine lifecycle"
   end
 
   test "x in the overlay stops the agent it shows, and asks first" do
@@ -194,8 +195,11 @@ defmodule SwarmCodeCLI.UI.Pass72FinisherTest do
           block <- region.blocks,
           do: Enum.map_join(block.spans, &SafeText.value(&1.text))
 
-    assert Enum.any?(rows, &(&1 =~ "! web-ui-desktop"))
-    refute Enum.any?(rows, &(&1 =~ "● web-ui-desktop"))
+    # pass 75: the panel names an agent by its human name (task 140), and a
+    # live agent's glyph in the agents block is `◒` (D-L14).
+    assert Enum.any?(rows, &(&1 =~ "! Web ui desktop"))
+    refute Enum.any?(rows, &(&1 =~ "● Web ui desktop"))
+    refute Enum.any?(rows, &(&1 =~ "◒ Web ui desktop"))
   end
 
   test "a question dialog is centred over the chat, clear of the docked panel" do
@@ -205,7 +209,7 @@ defmodule SwarmCodeCLI.UI.Pass72FinisherTest do
     panel = layout.rects.inspector
     assert panel.x >= main.x + main.width
 
-    state = %{state | layers: [{:question, "q1"}]}
+    state = %{state | layers: [{:question, "op-q1"}]}
     {scene, _} = Projector.project(state)
     dialog = scene.overlay
     assert dialog

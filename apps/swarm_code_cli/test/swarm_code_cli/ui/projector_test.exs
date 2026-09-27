@@ -12,6 +12,19 @@ defmodule SwarmCodeCLI.UI.ProjectorTest do
   defp texts(t) when is_tuple(t), do: t |> Tuple.to_list() |> texts()
   defp texts(_), do: []
 
+  # Every action id a block carries, on itself or on its spans.
+  defp action_ids(%{__struct__: _} = t), do: t |> Map.from_struct() |> action_ids()
+
+  defp action_ids(m) when is_map(m) do
+    Enum.flat_map(m, fn
+      {:action_id, id} when is_binary(id) -> [id]
+      {_key, value} -> action_ids(value)
+    end)
+  end
+
+  defp action_ids(l) when is_list(l), do: Enum.flat_map(l, &action_ids/1)
+  defp action_ids(_), do: []
+
   test "every boundary projects valid scenes with opaque valid actions" do
     for {c, r} <- [
           {170, 34},
@@ -217,14 +230,21 @@ defmodule SwarmCodeCLI.UI.ProjectorTest do
 
     state = fixture(72, 20)
     state = put_in(state.read_model.interactions["question"], interaction)
-    state = %{state | layers: [{:question, "question"}], focus: "option-20"}
+    state = %{state | layers: [{:question, "node"}], focus: "option-20"}
     {scene, actions} = Projector.project(state)
     assert scene.overlay.body_scroll > 0
     assert scene.overlay.focused_control_id == "option-20"
 
-    assert {:intent, {:answer_question, "fixture-run", "node", "question", 3, ["option-20"]}} in Map.values(
-             actions
-           )
+    # pass 75: the option row picks and the note's Enter label confirms; the
+    # confirm sends the focused option as the map payload.
+    assert {:local, {:interview, {:pick, "node", "option-20"}}} in Map.values(actions)
+    assert {:local, {:interview, {:confirm, "node"}}} in Map.values(actions)
+
+    assert SwarmCodeCLI.UI.Question.intents(state, SwarmCodeCLI.UI.Question.ask(state, "node")) ==
+             [
+               {:answer_question, "fixture-run", "node", "question", 3,
+                %{option_ids: ["option-20"], custom_text: ""}}
+             ]
 
     refute {:intent, {:run_control, :stop, "fixture-run"}} in Map.values(actions)
     assert Scene.validate(scene) == :ok
@@ -320,24 +340,29 @@ defmodule SwarmCodeCLI.UI.ProjectorTest do
     state = fixture()
     state = put_in(state.read_model.interactions[item.id], item)
 
+    # pass 75: the note has no Submit control; its Enter label confirms, and
+    # the focused option is not ticked by being focused.
     state = %{
       state
-      | layers: [{:question, item.id}],
-        focus: "submit",
+      | layers: [{:question, item.node_id}],
+        focus: "one",
         selection: %{{:question, item.id} => ["two"]}
     }
 
     {scene, actions} = Projector.project(state)
-    assert scene.overlay.focused_control_id == "submit"
-    assert {:local, {:select_option, "multi", "one"}} in Map.values(actions)
+    assert scene.overlay.focused_control_id == "one"
+    assert {:local, {:interview, {:toggle, "node", "one"}}} in Map.values(actions)
+    assert {:local, {:interview, {:confirm, "node"}}} in Map.values(actions)
 
-    assert {:intent, {:answer_question, "fixture-run", "node", "multi", 8, ["two"]}} in Map.values(
-             actions
-           )
+    intents =
+      SwarmCodeCLI.UI.Question.intents(state, SwarmCodeCLI.UI.Question.ask(state, "node"))
 
-    refute {:intent, {:answer_question, "fixture-run", "node", "multi", 8, ["one"]}} in Map.values(
-             actions
-           )
+    assert intents == [
+             {:answer_question, "fixture-run", "node", "multi", 8,
+              %{option_ids: ["two"], custom_text: ""}}
+           ]
+
+    refute Enum.any?(intents, &match?({_, _, _, _, _, %{option_ids: ["one" | _]}}, &1))
   end
 
   test "approval cancel focus and confirmation focus survive projection" do
@@ -678,32 +703,42 @@ defmodule SwarmCodeCLI.UI.ProjectorTest do
 
     state = fixture(50, 16)
     state = put_in(state.read_model.interactions[item.id], item)
-    state = %{state | layers: [{:question, item.id}], focus: "o"}
-    target = {:intent, {:answer_question, item.run_id, item.node_id, item.id, 3, ["o"]}}
+    # pass 75: the note (a border, no footer rows) picks with the option's
+    # first row, which stays in view however far the label wraps.
+    state = %{state | layers: [{:question, item.node_id}], focus: "o"}
+    target = {:local, {:interview, {:pick, item.node_id, "o"}}}
 
     for {columns, rows} <- [{50, 16}, {72, 20}, {150, 30}] do
       {scene, actions} = Projector.project(%{state | size: %Size{columns: columns, rows: rows}})
       assert Scene.validate(scene) == :ok
       assert scene.overlay.focused_control_id == "o"
 
-      if scene.overlay.body_total_count > scene.overlay.rect.height - 4,
-        do: assert(scene.overlay.body_scroll > 0)
+      # A label longer than the note: the note fills its height, and the
+      # option's first row (its one target) stays in view rather than
+      # scrolling past it.
+      if scene.overlay.body_total_count > scene.overlay.rect.height - 2,
+        do: assert(length(scene.overlay.blocks) == scene.overlay.rect.height - 2)
 
       assert Enum.count(actions, fn {_, value} -> value == target end) == 1
 
       assert Enum.any?(scene.overlay.blocks, fn block ->
-               Map.get(actions, Map.get(block, :action_id)) == target
+               block |> action_ids() |> Enum.any?(&(Map.get(actions, &1) == target))
              end)
 
-      assert length(scene.overlay.blocks) <= scene.overlay.rect.height - 4
+      assert length(scene.overlay.blocks) <= scene.overlay.rect.height - 2
     end
 
     {_, actions} =
       Projector.project(put_in(state.read_model.interactions[item.id].allowed_actions, []))
 
     refute target in Map.values(actions)
-    {_, actions} = Projector.project(%{state | size: %Size{columns: 50, rows: 14}})
-    refute target in Map.values(actions)
+    refute {:local, {:interview, {:confirm, item.node_id}}} in Map.values(actions)
+
+    # pass 75 (16.4): below 100 columns, down to the smallest class, the note
+    # fills the screen with the same rows, and it still answers.
+    {scene, actions} = Projector.project(%{state | size: %Size{columns: 50, rows: 14}})
+    assert scene.layout_class == :compressed_small
+    assert target in Map.values(actions)
   end
 
   # The navigator used to own the shell run list: a VirtualList of every run in

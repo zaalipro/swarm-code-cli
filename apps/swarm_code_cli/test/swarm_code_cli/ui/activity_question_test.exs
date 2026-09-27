@@ -71,6 +71,29 @@ defmodule SwarmCodeCLI.UI.ActivityQuestionTest do
            ]
   end
 
+  test "a deadline of 0 sorts after every timed item" do
+    items = [
+      %DTO.ActivityItem{id: "forever", kind: :question, deadline: 0, created_at: 1},
+      %DTO.ActivityItem{id: "timed", kind: :question, deadline: 20, created_at: 2}
+    ]
+
+    assert Enum.map(Activity.sort(items), & &1.id) == ["timed", "forever"]
+
+    fallback = %DTO.ActivityItem{
+      id: "fallback",
+      kind: :approval,
+      deadline: nil,
+      created_at: 3,
+      interaction: %DTO.PendingInteraction{id: "i", state: :pending, deadline: 20}
+    }
+
+    early = %DTO.ActivityItem{id: "early", kind: :question, deadline: 10, created_at: 4}
+    late = %DTO.ActivityItem{id: "late", kind: :question, deadline: 30, created_at: 0}
+
+    assert Enum.map(Activity.sort([late, fallback | items] ++ [early]), & &1.id) ==
+             ["early", "timed", "fallback", "late", "forever"]
+  end
+
   test "question preserves exact identity and rejects stale, pending, resolved or unauthorized submission" do
     item = %DTO.PendingInteraction{
       id: "q1",
@@ -162,21 +185,34 @@ defmodule SwarmCodeCLI.UI.ActivityQuestionTest do
         }
     }
 
+    # pass 75: the activity row opens its ask's note (keyed by the asking
+    # node); Enter on the note confirms the ask, and a one-question ask sends
+    # the focused option at once, as the map payload.
     {state, _} = Reducer.update(state, {:open_layer, {:question, "q1"}})
+    assert [{:question, "node-a2"} | _] = state.layers
     {state, []} = Reducer.update(state, {:focus_region, "option-2"})
     {_, table} = Projector.project(state)
-    assert {:ok, {:invoke, intent, id} = action} = Keymap.resolve(Input.key(:enter), state, table)
-    assert intent == {:answer_question, "run-a2", "node-a2", "q1", 7, ["option-2"]}
+
+    assert {:ok, {:interview, {:confirm, "node-a2"}} = action} =
+             Keymap.resolve(Input.key(:enter), state, table)
+
+    intent =
+      {:answer_question, "run-a2", "node-a2", "q1", 7,
+       %{option_ids: ["option-2"], custom_text: ""}}
+
     {pending, [{:command, request}]} = Reducer.update(state, action)
-    assert request.request_id == id
+    assert Question.interview(pending, "node-a2").sending == [request.request_id]
     assert request.origin == {:interaction, "q1", 7}
     assert request.kind == intent
+
+    # While it is on its way a second Enter sends nothing.
     {_, table} = Projector.project(pending)
-    assert :ignore = Keymap.resolve(Input.key(:enter), pending, table)
+    assert {:ok, again} = Keymap.resolve(Input.key(:enter), pending, table)
+    assert {_, []} = Reducer.update(pending, again)
     assert Reducer.update(pending, action) == {pending, []}
   end
 
-  test "multiple question Enter toggles an option and submits only from Submit" do
+  test "multiple question Space toggles an option and Enter submits only the ticks" do
     alias SwarmCodeCLI.UI.{Capabilities, Input, Keymap, Size}
 
     item = %DTO.PendingInteraction{
@@ -193,21 +229,27 @@ defmodule SwarmCodeCLI.UI.ActivityQuestionTest do
 
     size = %Size{columns: 120, rows: 40}
 
+    # pass 75: the note of node "n"; there is no Submit control. Space ticks
+    # the focused option, Enter confirms, and the answer is the ticks alone,
+    # not the focused option.
     state = %State{
       size: size,
       capabilities: %Capabilities{size: size},
-      layers: [{:question, "q"}],
+      layers: [{:question, "n"}],
       focus: "two",
       selection: %{{:question, "q"} => ["one"]}
     }
 
     state = %{state | read_model: %{state.read_model | interactions: %{"q" => item}}}
-    intent = {:answer_question, "r", "n", "q", 7, ["one"]}
-    table = %{"option" => {:local, {:select_option, "q", "two"}}, "submit" => {:intent, intent}}
-    assert {:ok, {:select_option, "q", "two"}} = Keymap.resolve(Input.key(:enter), state, table)
 
-    assert {:ok, {:invoke, ^intent, _}} =
-             Keymap.resolve(Input.key(:enter), %{state | focus: "submit"}, table)
+    assert {:ok, {:interview, {:toggle, "n", "two"}}} =
+             Keymap.resolve(Input.text_fragment(:press, " ", []), state, %{})
+
+    assert {:ok, {:interview, {:confirm, "n"}}} = Keymap.resolve(Input.key(:enter), state, %{})
+
+    assert Question.intents(state, Question.ask(state, "n")) == [
+             {:answer_question, "r", "n", "q", 7, %{option_ids: ["one"], custom_text: ""}}
+           ]
   end
 
   test "accepted interaction cannot resubmit before its canonical resolution; other settlements preserve retry" do

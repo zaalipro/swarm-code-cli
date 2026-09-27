@@ -33,8 +33,9 @@ defmodule SwarmCodeCLI.UI.BindingsTest do
     always_allow: {:approval, "approval-1"},
     confirm_yes: {:confirm_intent, {:run_control, :stop, "run-1"}},
     confirm_no: {:confirm_intent, {:run_control, :stop, "run-1"}},
-    question_option: {:question, "question-1"},
-    select_option: {:question, "question-1"},
+    # pass75 interview: the note's layer is the asking op's node id.
+    question_option: {:question, "node-b"},
+    select_option: {:question, "node-b"},
     dialog_page_down: {:approval, "approval-1"},
     dialog_page_up: {:approval, "approval-1"}
   }
@@ -58,6 +59,25 @@ defmodule SwarmCodeCLI.UI.BindingsTest do
       # The flattened table keeps exactly one entry per pair, so its size is the
       # count of distinct pairs: a silent overwrite would shrink it.
       assert map_size(Bindings.table()) == length(Enum.uniq_by(pairs, &elem(&1, 0)))
+    end
+
+    # pass75 interview: ←/→ left :dialog_next/:dialog_previous for their own
+    # :dialog bindings, so no {context, key} pair is bound twice.
+    test "dialog_right and dialog_left exist with → and ←" do
+      by_id = Map.new(Bindings.all(), &{&1.id, &1})
+
+      assert %{keys: [{:right, []}], action: {:special, :dialog_right}, contexts: [:dialog]} =
+               by_id.dialog_right
+
+      assert %{keys: [{:left, []}], action: {:special, :dialog_left}, contexts: [:dialog]} =
+               by_id.dialog_left
+
+      assert by_id.dialog_next.keys == [{"j", []}, {:down, []}]
+      assert by_id.dialog_previous.keys == [{"k", []}, {:up, []}]
+      assert by_id.focus_previous.action == {:special, :focus_previous}
+
+      assert Bindings.table()[{:dialog, {:right, []}}] != nil
+      assert Bindings.table()[{:dialog, {:left, []}}] != nil
     end
 
     test "every binding id is unique and every context it names is real" do

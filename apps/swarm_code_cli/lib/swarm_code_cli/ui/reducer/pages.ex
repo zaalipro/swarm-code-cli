@@ -10,8 +10,9 @@ defmodule SwarmCodeCLI.UI.Reducer.Pages do
   def scroll(%{layers: [:help | _]} = state, "dialog", operation),
     do: scroll_dialog(state, operation)
 
+  # pass75 interview: the question note pages the same way (14.9).
   def scroll(%{layers: [{kind, _} | _]} = state, "dialog", operation)
-      when kind in [:approval, :command_report],
+      when kind in [:approval, :command_report, :question],
       do: scroll_dialog(state, operation)
 
   # pass73 T9: the wheel over the pager moves its view by lines, clamped to
@@ -138,8 +139,12 @@ defmodule SwarmCodeCLI.UI.Reducer.Pages do
   defp scroll_dialog(state, operation) do
     # The dialog already measures its wrapped body and sticky footer. Use that
     # same viewport so paging can reach every argument without changing focus
-    # to an approving action.
-    state = %{state | focus: "cancel"}
+    # to an approving action. pass75 interview: paging the note keeps its
+    # focus, which answers nothing by itself.
+    state =
+      if match?([{:question, _} | _], state.layers),
+        do: state,
+        else: %{state | focus: "cancel"}
 
     dialog =
       SwarmCodeCLI.UI.Projector.Dialog.project(state, SwarmCodeCLI.UI.Layout.classify(state.size))

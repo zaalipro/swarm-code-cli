@@ -130,7 +130,11 @@ defmodule SwarmCodeCLI.UI.Scene do
            focused_control_id: focused,
            body_scroll: scroll,
            body_visible_range: range,
-           body_total_count: total
+           body_total_count: total,
+           style: style,
+           edges: edges,
+           air: air,
+           backdrop: backdrop
          },
          size
        ) do
@@ -138,10 +142,19 @@ defmodule SwarmCodeCLI.UI.Scene do
       is_list(blocks) and Enum.all?(blocks, &valid_block?/1) and is_list(footer) and
       Enum.all?(footer, &valid_block?/1) and (is_nil(focused) or nonempty_binary?(focused)) and
       is_integer(scroll) and scroll >= 0 and is_integer(total) and total >= 0 and scroll <= total and
-      bounded_range?(range, total)
+      bounded_range?(range, total) and style in [:card, :note] and
+      backdrop in [:plain, :ghost] and is_boolean(air) and valid_edges?(edges)
   end
 
   defp valid_dialog?(_, _), do: false
+
+  # pass75 interview: the note's four edge texts.
+  defp valid_edges?(%{top_left: tl, top_right: tr, bottom_left: bl, bottom_right: br} = edges)
+       when map_size(edges) == 4,
+       do:
+         Enum.all?([tl, tr, bl, br], &(is_list(&1) and Enum.all?(&1, fn s -> valid_span?(s) end)))
+
+  defp valid_edges?(_), do: false
 
   defp valid_cursor?(nil, _), do: true
 

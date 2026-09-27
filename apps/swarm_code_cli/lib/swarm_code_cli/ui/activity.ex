@@ -3,10 +3,13 @@ defmodule SwarmCodeCLI.UI.Activity do
   def sort(items), do: Enum.sort_by(items, &sort_key/1)
 
   defp sort_key(%{kind: kind} = item) when kind in [:question, :approval] do
+    # pass75: neither 0 nor nil is a clock; the atom sorts after every integer.
+    deadline =
+      [item.deadline, item.interaction && item.interaction.deadline]
+      |> Enum.find(&(is_integer(&1) and &1 > 0)) || :infinity
+
     if is_nil(item.interaction) or item.interaction.state == :pending,
-      do:
-        {0, item.deadline || (item.interaction && item.interaction.deadline) || :infinity,
-         item.created_at, item.id},
+      do: {0, deadline, item.created_at, item.id},
       else: {3, -item.created_at, 0, item.id}
   end
 

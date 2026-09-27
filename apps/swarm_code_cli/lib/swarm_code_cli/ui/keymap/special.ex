@@ -13,7 +13,7 @@ defmodule SwarmCodeCLI.UI.Keymap.Special do
   still type into a switcher's query.
   """
 
-  alias SwarmCodeCLI.UI.{Keymap, Layout, SlashPalette, State, Switcher}
+  alias SwarmCodeCLI.UI.{Keymap, Layout, Question, SlashPalette, State, Switcher}
   alias SwarmCodeCLI.UI.Keymap.Bindings
   alias SwarmCodeCLI.UI.Reducer.PathCompletion
   alias SwarmCodeCLI.UI.Projector.RunsDashboard
@@ -131,6 +131,14 @@ defmodule SwarmCodeCLI.UI.Keymap.Special do
       _ -> if Keymap.live_turn(state), do: run(:queue, nil, state, table), else: :ignore
     end
   end
+
+  # pass75 interview: Tab and Shift-Tab jump between the note's list and its
+  # "other" field.
+  def run(name, _key, %{layers: [{:question, node} | _]}, _table)
+      when name in [:focus_next, :focus_previous],
+      do: ok({:interview, {:toggle_other, node}})
+
+  def run(:focus_previous, _key, _state, _table), do: ok({:focus_cycle, :previous})
 
   def run(:focus_next, _key, state, _table) do
     case SlashPalette.selected(state) do
@@ -333,25 +341,32 @@ defmodule SwarmCodeCLI.UI.Keymap.Special do
   def run(:confirm_no, _key, %{layers: [layer | _]}, _table),
     do: if(confirmable?(layer), do: ok(:close_top_layer), else: :ignore)
 
-  def run(:question_option, {code, _mods}, %{layers: [{:question, id} | _]} = state, _table) do
-    case state.read_model.interactions[id] do
-      %{state: :pending, question: %{options: options}} ->
-        case Enum.at(options, String.to_integer(code) - 1) do
-          %{id: option} -> ok({:focus_region, option})
-          _ -> :ignore
-        end
+  # pass75 interview: a digit picks (single-select) or ticks (multi-select)
+  # option N of the current question; in "other" digits type.
+  def run(:question_option, _key, %{layers: [{:question, _} | _], focus: "other"}, _table),
+    do: :ignore
 
-      _ ->
-        :ignore
+  def run(:question_option, {code, _mods}, %{layers: [{:question, node} | _]} = state, _table) do
+    with %{} = row <- current_question(state, node),
+         %{id: option} <- Enum.at(row.question.options, String.to_integer(code) - 1) do
+      if row.question.multiple,
+        do: ok({:interview, {:toggle, node, option}}),
+        else: ok({:interview, {:pick, node, option}})
+    else
+      _ -> :ignore
     end
   end
 
   def run(:question_option, _key, _state, _table), do: :ignore
 
-  def run(:select_option, _key, %{layers: [{:question, id} | _]} = state, table) do
-    case state.read_model.interactions[id] do
-      %{state: :pending, question: %{multiple: true}} ->
-        Keymap.activate({:local, {:select_option, id, state.focus}}, state, table)
+  # pass75 interview: Space ticks the focused option of a multi-select
+  # question; on a single-select one it would be a hidden second Enter.
+  def run(:select_option, _key, %{layers: [{:question, node} | _]} = state, _table) do
+    case current_question(state, node) do
+      %{question: %{multiple: true, options: options}} ->
+        if Enum.any?(options, &(&1.id == state.focus)),
+          do: ok({:interview, {:toggle, node, state.focus}}),
+          else: :ignore
 
       _ ->
         :ignore
@@ -359,6 +374,23 @@ defmodule SwarmCodeCLI.UI.Keymap.Special do
   end
 
   def run(:select_option, _key, _state, _table), do: :ignore
+
+  # pass75 interview: ←/→ step between the questions of an ask (from the list;
+  # in "other" they move the caret through the field context); anywhere else
+  # they cycle the dialog's controls as before.
+  def run(name, _key, %{layers: [{:question, node} | _]} = state, _table)
+      when name in [:dialog_right, :dialog_left] do
+    case Question.ask(state, node) do
+      %{rows: [_, _ | _]} when state.focus != "other" ->
+        ok({:interview, {:step, node, if(name == :dialog_right, do: 1, else: -1)}})
+
+      _ ->
+        ok({:focus_cycle, if(name == :dialog_right, do: :next, else: :previous)})
+    end
+  end
+
+  def run(name, _key, _state, _table) when name in [:dialog_right, :dialog_left],
+    do: ok({:focus_cycle, if(name == :dialog_right, do: :next, else: :previous)})
 
   # ------------------------------------------------------- waiting on you
 
@@ -484,20 +516,25 @@ defmodule SwarmCodeCLI.UI.Keymap.Special do
   predict from the row above the transcript. The approval card counts its
   place in it (pass73 G2).
   """
+  # pass75 interview: one id per ask (its node id, the note's layer id) and
+  # one per approval, in `Question.order_key/1` order inside a run.
   @spec waiting_ids(map()) :: [String.t()]
   def waiting_ids(state) do
-    by_run =
-      state.read_model.interactions
-      |> Map.values()
-      |> Enum.filter(&(&1.state == :pending))
-      |> Enum.group_by(& &1.run_id)
+    by_run = state |> Question.needs() |> Enum.group_by(& &1.run_id)
 
     run_order = SwarmCodeCLI.UI.Projector.Shell.tabline_runs(state) |> Enum.map(& &1.id)
     stray = Map.keys(by_run) -- run_order
 
     Enum.flat_map(run_order ++ Enum.sort(stray), fn run_id ->
-      by_run |> Map.get(run_id, []) |> Enum.map(& &1.id) |> Enum.sort()
+      by_run |> Map.get(run_id, []) |> Enum.map(&Question.ask_id/1)
     end)
+  end
+
+  defp current_question(state, node) do
+    case Question.ask(state, node) do
+      nil -> nil
+      ask -> Question.current(ask, Question.interview(state, node))
+    end
   end
 
   defp toggle_layer(state, kind) do

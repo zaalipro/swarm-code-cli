@@ -81,6 +81,26 @@ defmodule SwarmCodeCLI.UI.DialogChromeTest do
     end)
   end
 
+  # pass 75: rows of the question note whose rail slot (border, two cells of
+  # padding) holds the accent in-chat rail.
+  defp note_rail_rows(plan, scene, state) do
+    rail = SwarmCodeCLI.UI.Projector.Panel.Glyph.get(:in_chat, state)
+    rect = scene.overlay.rect
+
+    Enum.count((rect.y + 1)..(rect.y + rect.height - 2), fn y ->
+      row(plan, y, rect.x + 3, 1) == rail and
+        foreground(plan, rect.x + 3, y) ==
+          Theme.style(:accent, state.capabilities).foreground.value
+    end)
+  end
+
+  defp foreground(plan, x, y) do
+    case Plan.cell(plan, x, y) do
+      {:glyph, _, _, index} -> elem(plan.palette, index).foreground
+      _ -> nil
+    end
+  end
+
   defp background(plan, x, y) do
     case Plan.cell(plan, x, y) do
       {:glyph, _, _, index} -> elem(plan.palette, index).background
@@ -182,29 +202,66 @@ defmodule SwarmCodeCLI.UI.DialogChromeTest do
       } do
         state = fixture({unquote(cols), unquote(rows)}, :truecolor, unquote(ascii))
         state = put_in(state.read_model.interactions[interaction.id], interaction)
-        state = %{state | layers: [{:question, interaction.id}], focus: "opt-1"}
+        state = %{state | layers: [{:question, interaction.node_id}], focus: "opt-1"}
         {scene, _table, plan} = paint(state)
 
         assert scene.overlay != nil
         full = screen(plan)
 
-        assert row(plan, scene.overlay.rect.y) =~ " Question "
+        # pass 75: the note's top-left edge names who asks, padded by a space.
+        assert row(plan, scene.overlay.rect.y) =~ " The assistant asks you "
         assert focus_count(plan) == 0
-        assert rail_rows(plan, scene, state) == 1
+        assert note_rail_rows(plan, scene, state) == 1
 
-        assert full =~ "Option 1"
-        assert full =~ "Option 2"
-        assert full =~ "Cancel"
-        assert full =~ ~r"1 of \d · Enter chooses"
+        assert full =~ "1  First choice"
+        assert full =~ "2  Second choice"
+        refute full =~ "Cancel"
+        refute "cancel" in SwarmCodeCLI.UI.Reducer.focus_graph(state)
+        assert full =~ "1-3 pick"
+        # The default speaker keeps one article: "the assistant".
+        assert full =~ "Enter send to the assistant"
+        refute full =~ "the The"
 
         assert_status_bar_when_visible(plan, scene)
+      end
+
+      test "the note's rounded text_faint frame and edge texts at #{cols}x#{rows} ascii=#{ascii}",
+           %{interaction: interaction} do
+        state = fixture({unquote(cols), unquote(rows)}, :truecolor, unquote(ascii))
+        state = put_in(state.read_model.interactions[interaction.id], interaction)
+        state = %{state | layers: [{:question, interaction.node_id}], focus: "opt-1"}
+        {scene, _table, plan} = paint(state)
+
+        rect = scene.overlay.rect
+
+        {left, right, top, bottom} =
+          {rect.x, rect.x + rect.width - 1, rect.y, rect.y + rect.height - 1}
+
+        faint = Theme.style(:text_faint, state.capabilities).foreground.value
+
+        corners =
+          if unquote(ascii), do: ["+", "+", "+", "+"], else: ["╭", "╮", "╰", "╯"]
+
+        points = [{left, top}, {right, top}, {left, bottom}, {right, bottom}]
+
+        for {corner, {x, y}} <- Enum.zip(corners, points) do
+          assert row(plan, y, x, 1) == corner
+          assert foreground(plan, x, y) == faint
+        end
+
+        top_row = row(plan, top, rect.x, rect.width)
+        bottom_row = row(plan, bottom, rect.x, rect.width)
+        assert top_row =~ "The assistant asks you"
+        assert top_row =~ "chat · Streaming conversation"
+        assert bottom_row =~ "Esc later: the assistant keeps waiting"
+        assert bottom_row =~ "^N reopens"
       end
     end
 
     test "monochrome marks the focused option with FOCUS > once", %{interaction: interaction} do
       state = fixture({120, 40}, :monochrome, true)
       state = put_in(state.read_model.interactions[interaction.id], interaction)
-      state = %{state | layers: [{:question, interaction.id}], focus: "opt-1"}
+      state = %{state | layers: [{:question, interaction.node_id}], focus: "opt-1"}
       {_scene, _table, plan} = paint(state)
       assert focus_count(plan) == 1
     end

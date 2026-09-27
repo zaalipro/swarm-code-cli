@@ -119,8 +119,39 @@ defmodule SwarmCodeCLI.UI.Reducer.Commands do
         },
         else: state
 
-    {state, []}
+    {settle_interview(state, request), []}
   end
+
+  # pass75 interview: an answer the note sent has settled; a refused one
+  # keeps its row on the note with the reason under the ledger.
+  defp settle_interview(%{interviews: interviews} = state, request)
+       when map_size(interviews) > 0 do
+    case Enum.find(interviews, fn {_, interview} -> request.request_id in interview.sending end) do
+      nil ->
+        state
+
+      {node, interview} ->
+        interview = %{interview | sending: List.delete(interview.sending, request.request_id)}
+
+        interview =
+          case {request.origin, Map.get(Map.get(state, :mutation_reasons, %{}), request.origin)} do
+            {{:interaction, row_id, _}, reason} when reason != nil ->
+              words =
+                request.origin
+                |> SwarmCodeCLI.UI.Projector.Status.refusal_words(reason)
+                |> String.replace_prefix("Not answered: ", "")
+
+              %{interview | refused: Map.put(interview.refused, row_id, words)}
+
+            _ ->
+              interview
+          end
+
+        %{state | interviews: Map.put(interviews, node, interview)}
+    end
+  end
+
+  defp settle_interview(state, _request), do: state
 
   # pass73 (V2's request K-1): why a settled mutation was not carried out,
   # for the status row's toast (`Status.refusal_words/2`): the daemon's own

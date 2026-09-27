@@ -7,6 +7,7 @@ defmodule SwarmCodeCLI.UI.LayerSpec do
   @type t ::
           :help
           | {:run_inspector, binary(), inspector_tab()}
+          # {:question, id}: id is the asking op's node_id (one layer per ask, pass 75)
           | {:question | :approval, binary()}
           | {:unsent_changes, :detach | :plain}
           | {:confirm_intent, Intent.t()}

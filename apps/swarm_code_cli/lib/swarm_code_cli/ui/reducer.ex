@@ -12,7 +12,8 @@ defmodule SwarmCodeCLI.UI.Reducer do
     Layout,
     ModelPicker,
     SafeText,
-    FeatureForm
+    FeatureForm,
+    Question
   }
 
   alias SwarmCodeCLI.UI.Layout.Preferences
@@ -28,7 +29,7 @@ defmodule SwarmCodeCLI.UI.Reducer do
   alias SwarmCodeCLI.UI.WorkflowKeyword
   alias SwarmCodeCLI.UI.Hint
   alias SwarmCodeCLI.UI.DataSource.DTO.Outcome
-  alias SwarmCodeCLI.UI.Projector.{RunPalette, RunsDashboard}
+  alias SwarmCodeCLI.UI.Projector.{ApprovalCard, RunPalette, RunsDashboard}
   alias SwarmCodeCLI.UI.DataSource.{DTO, Request}
 
   # The query is drawn on the dashboard header line beside the counts, so it is
@@ -112,11 +113,12 @@ defmodule SwarmCodeCLI.UI.Reducer do
         next = drop_hint_under_layer(next)
         {next, effects} = replay_deferred(next, effects)
         {next, effects} = track_sent_turn(next, effects)
-        {next, effects} = sync_interactions(next, effects, action)
+        {next, effects} = sync_interactions(next, effects, action, state)
         next = note_policy_change(state, next)
         next = hush_refusals(state, next)
         next = stamp_notice(state, next)
         next = repair_switcher(state, next)
+        next = follow_note_focus(state, next)
         next = SwarmCodeCLI.UI.Reducer.Settings.track_legacy(next, effects)
         {next, effects} = boot_settings(next, effects)
         {next, effects} = boot_resume_picker(next, effects)
@@ -1115,6 +1117,8 @@ defmodule SwarmCodeCLI.UI.Reducer do
     end
   end
 
+  defp transition(state, {:interview, event}), do: interview(state, event)
+
   defp transition(state, {:draft_target, key, target}), do: Editing.target(state, key, target)
   defp transition(state, {:timer_fired, id}), do: Editing.timer(state, id)
 
@@ -1152,9 +1156,12 @@ defmodule SwarmCodeCLI.UI.Reducer do
   # already open for another interaction is closed first, or the walk would
   # stack cards the user then has to unwind.
   defp transition(state, {:open_interaction, id}) do
-    case Map.get(state.read_model.interactions, id) do
-      %{state: :pending, kind: kind, run_id: run_id} = item
-      when kind in [:question, :approval] ->
+    case interaction_target(state, id) do
+      # pass75 interview: the ask's note is already the top layer.
+      {node, %{kind: :question}} when hd(state.layers) == {:question, node} ->
+        {%{state | auto_opened: nil, interaction_grace: nil}, []}
+
+      {layer_id, %{kind: kind, run_id: run_id} = item} ->
         {state, closed} =
           case state.layers do
             [{top, _} | _] when top in [:question, :approval] ->
@@ -1179,11 +1186,11 @@ defmodule SwarmCodeCLI.UI.Reducer do
               transition(state, {:navigate, {:run, run_id}})
           end
 
-        {state, opened} = transition(state, {:open_layer, {kind, id}})
+        {state, opened} = transition(state, {:open_layer, {kind, layer_id}})
         state = %{state | auto_opened: nil, interaction_grace: nil}
         {state, closed ++ moved ++ opened}
 
-      _ ->
+      nil ->
         transition(state, :nothing_waiting)
     end
   end
@@ -1640,13 +1647,11 @@ defmodule SwarmCodeCLI.UI.Reducer do
   def focus_graph(%{layers: [{kind, _} | _]}) when kind in [:unsent_changes, :confirm_intent],
     do: ["cancel", "confirm"]
 
-  def focus_graph(%{layers: [{:question, id} | _]} = state) do
-    case Map.get(state.read_model.interactions, id) do
-      %{question: %{options: options}} ->
-        Enum.map(options, & &1.id) ++ ["other", "submit", "cancel"]
-
-      _ ->
-        ["cancel"]
+  # pass75 interview: the current question's options, then "other".
+  def focus_graph(%{layers: [{:question, node} | _]} = state) do
+    case Question.ask(state, node) do
+      nil -> ["cancel"]
+      ask -> Question.focus_ids(Question.current(ask, Question.interview(state, node)))
     end
   end
 
@@ -2010,6 +2015,20 @@ defmodule SwarmCodeCLI.UI.Reducer do
     }
 
   defp open_plain_layer(state, layer) do
+    # pass75 interview: a question row (the activity pane opens rows) opens
+    # its ask's note.
+    layer =
+      case layer do
+        {:question, id} ->
+          case Map.get(state.read_model.interactions, id) do
+            %{kind: :question, node_id: node} when is_binary(node) -> {:question, node}
+            _ -> layer
+          end
+
+        _ ->
+          layer
+      end
+
     {preview, advanced} = State.next_id(state, :layer)
 
     state =
@@ -2035,8 +2054,11 @@ defmodule SwarmCodeCLI.UI.Reducer do
 
     focus =
       cond do
+        match?({:question, _}, layer) ->
+          question_focus(next, elem(layer, 1))
+
         match?({:unsent_changes, _}, layer) or match?({:approval, _}, layer) or
-          match?({:question, _}, layer) or match?({:confirm_intent, _}, layer) ->
+            match?({:confirm_intent, _}, layer) ->
           "cancel"
 
         # The palette is a switcher: it opens on the run you are looking at, not
@@ -2049,6 +2071,200 @@ defmodule SwarmCodeCLI.UI.Reducer do
       end
 
     {%{next | focus: focus}, []}
+  end
+
+  # ------------------------------------------------ pass75 interview
+
+  # PgUp/PgDn move the note's view and keep its focus (14.9); a focus that
+  # moves, or a note that opens, brings the view back to the focused row.
+  defp follow_note_focus(
+         %{layers: [top | _], focus: focus},
+         %{layers: [top | _], focus: focus} = next
+       ),
+       do: next
+
+  defp follow_note_focus(_state, %{layers: [{:question, _} | _]} = next),
+    do: %{next | selection: Map.delete(next.selection, "dialog_scroll")}
+
+  defp follow_note_focus(_state, next), do: next
+
+  # The note's events change only held state: picks, ticks, focus and the
+  # step. Nothing leaves the CLI before the final Enter.
+  defp interview(state, {:pick, node, option}) do
+    with_question(state, node, fn _ask, interview, current ->
+      if option in option_ids(current) do
+        interview = %{
+          interview
+          | picks: Map.put(interview.picks, current.id, option),
+            last_focus: Map.put(interview.last_focus, current.id, option)
+        }
+
+        {%{put_interview(state, node, interview) | focus: option}, []}
+      else
+        {state, []}
+      end
+    end)
+  end
+
+  defp interview(state, {:toggle, node, option}) do
+    with_question(state, node, fn _ask, interview, current ->
+      if option in option_ids(current) do
+        {toggled, effects} = transition(state, {:select_option, current.id, option})
+        interview = %{interview | last_focus: Map.put(interview.last_focus, current.id, option)}
+        {%{put_interview(toggled, node, interview) | focus: option}, effects}
+      else
+        {state, []}
+      end
+    end)
+  end
+
+  defp interview(state, {:toggle_other, node}) do
+    with_question(state, node, fn _ask, interview, current ->
+      options = option_ids(current)
+
+      if state.focus == "other" do
+        back =
+          case Map.get(interview.last_focus, current.id) do
+            focus when is_binary(focus) and focus != "other" -> focus
+            _ -> List.first(options) || "other"
+          end
+
+        {%{state | focus: back}, []}
+      else
+        interview =
+          if state.focus in options,
+            do: %{
+              interview
+              | last_focus: Map.put(interview.last_focus, current.id, state.focus)
+            },
+            else: interview
+
+        {%{put_interview(state, node, interview) | focus: "other"}, []}
+      end
+    end)
+  end
+
+  defp interview(state, {:step, node, delta}),
+    do: step_to(state, node, fn interview, _count -> interview.step + delta end)
+
+  defp interview(state, {:goto, node, index}),
+    do: step_to(state, node, fn _interview, _count -> index end)
+
+  # Enter: the next question once this one has an answer; on the last one,
+  # every answer at once (one `question.answer` per row, in index order) when
+  # all are answered, else back to the first open question.
+  defp interview(state, {:confirm, node}) do
+    with_question(state, node, fn ask, interview, current ->
+      last? = current == List.last(ask.rows)
+      answer = Question.answer(state, ask, current)
+
+      cond do
+        interview.sending != [] ->
+          {state, []}
+
+        answer == nil and not last? ->
+          {state, []}
+
+        not last? ->
+          state |> hold_pick(ask, current, answer) |> interview({:step, node, 1})
+
+        Question.complete?(state, ask) ->
+          send_answers(state, ask)
+
+        true ->
+          state = hold_pick(state, ask, current, answer)
+          index = Question.first_unanswered(state, ask)
+          step_to(state, node, fn _interview, _count -> index end)
+      end
+    end)
+  end
+
+  defp interview(state, _event), do: {state, []}
+
+  # Enter on a single-select question whose answer is its focused option
+  # makes that option the explicit pick, so it outlives the focus.
+  defp hold_pick(state, ask, current, %{option_ids: [option], custom_text: ""}) do
+    interview = Question.interview(state, ask.node_id)
+
+    if current.question.multiple or Map.has_key?(interview.picks, current.id),
+      do: state,
+      else:
+        put_interview(state, ask.node_id, %{
+          interview
+          | picks: Map.put(interview.picks, current.id, option)
+        })
+  end
+
+  defp hold_pick(state, _ask, _current, _answer), do: state
+
+  # Each intent previews its request id on the state the previous one
+  # returned, exactly as `stop_turn/2` does.
+  defp send_answers(state, ask) do
+    {state, effects, ids} =
+      Enum.reduce(Question.intents(state, ask), {state, [], []}, fn intent, {acc, effects, ids} ->
+        {id, _} = State.next_id(acc, :request)
+        {acc, more} = invoke_intent(acc, intent, id)
+        {acc, effects ++ more, if(more == [], do: ids, else: ids ++ [id])}
+      end)
+
+    interview = Question.interview(state, ask.node_id)
+
+    {put_interview(state, ask.node_id, %{
+       interview
+       | sending: ids,
+         refused: Map.drop(interview.refused, Enum.map(ask.rows, & &1.id))
+     }), effects}
+  end
+
+  # The focus of the question being left is kept, so coming back finds it.
+  defp step_to(state, node, target) do
+    with_question(state, node, fn ask, interview, current ->
+      count = length(ask.rows)
+      step = target.(interview, count) |> max(0) |> min(count - 1)
+
+      last_focus =
+        if state.focus in Question.focus_ids(current),
+          do: Map.put(interview.last_focus, current.id, state.focus),
+          else: interview.last_focus
+
+      interview = %{interview | step: step, last_focus: last_focus}
+      next = Question.current(ask, interview)
+
+      {%{
+         put_interview(state, node, interview)
+         | focus: Map.get(last_focus, next.id, "dialog"),
+           selection: Map.delete(state.selection, "dialog_scroll")
+       }, []}
+    end)
+  end
+
+  defp with_question(state, node, fun) do
+    case Question.ask(state, node) do
+      nil ->
+        {state, []}
+
+      ask ->
+        interview = Question.interview(state, node)
+        fun.(ask, interview, Question.current(ask, interview))
+    end
+  end
+
+  defp put_interview(state, node, interview),
+    do: %{state | interviews: Map.put(state.interviews, node, interview)}
+
+  defp option_ids(row), do: Enum.map(row.question.options, & &1.id)
+
+  # pass75 interview: a fresh note opens with nothing focused ("dialog"); a
+  # held one where its current question's focus was left.
+  defp question_focus(state, node) do
+    case Question.ask(state, node) do
+      nil ->
+        "dialog"
+
+      ask ->
+        interview = Question.interview(state, node)
+        Map.get(interview.last_focus, Question.current(ask, interview).id, "dialog")
+    end
   end
 
   # ------------------------------------------------- interrupt and quit
@@ -2311,28 +2527,112 @@ defmodule SwarmCodeCLI.UI.Reducer do
   # closes by itself, and when nothing is open the first pending approval or
   # question of the conversation in view opens by itself, over the composer's
   # draft, which it leaves exactly as it was.
-  defp sync_interactions(state, effects, action) do
-    {state, effects} = close_settled(state, effects)
+  defp sync_interactions(state, effects, action, previous) do
+    {state, effects} = close_settled(state, effects, previous)
 
-    if auto_open?(state, action) do
-      case next_in_view(state) do
-        nil ->
-          {state, effects}
+    {state, effects} =
+      if auto_open?(state, action) do
+        case next_in_view(state) do
+          nil ->
+            {state, effects}
 
-        item ->
-          {opened, more} = transition(state, {:open_layer, {item.kind, item.id}})
-          {opened, grace} = start_grace(%{opened | auto_opened: item.id})
-          {opened, effects ++ more ++ grace}
+          {id, item} ->
+            {opened, more} = transition(state, {:open_layer, {item.kind, id}})
+            {opened, grace} = start_grace(%{opened | auto_opened: id})
+            {opened, effects ++ more ++ grace}
+        end
+      else
+        {state, effects}
       end
+
+    {prune_interviews(state, previous), effects}
+  end
+
+  # pass75 interview: held answers are bounded state. An ask that left (and
+  # has no answer still on its way) drops its interview; a question row that
+  # left drops its ticks and its "other" editor; at most 8 asks are held, the
+  # oldest (and those whose rows are all gone) dropped first.
+  @interviews_limit 8
+
+  defp prune_interviews(state, previous) do
+    before = previous.read_model.interactions
+    now = state.read_model.interactions
+
+    vanished =
+      if before == now,
+        do: [],
+        else:
+          for(
+            {id, %{kind: :question}} <- Map.drop(before, Map.keys(now)),
+            do: id
+          )
+
+    state =
+      if vanished == [],
+        do: state,
+        else: %{
+          state
+          | selection: Map.drop(state.selection, Enum.map(vanished, &{:question, &1})),
+            field_editors: Enum.reduce(vanished, state.field_editors, &close_row_editors/2)
+        }
+
+    if state.interviews == %{} do
+      state
     else
-      {state, effects}
+      asks = Map.new(Question.asks(state), &{&1.node_id, &1})
+
+      kept =
+        state.interviews
+        |> Enum.reject(fn {node, interview} ->
+          not Map.has_key?(asks, node) and interview.sending == []
+        end)
+        |> Enum.sort_by(fn {node, _} ->
+          case Map.get(asks, node) do
+            nil -> {0, 0}
+            %{rows: [first | _]} -> {1, first.created_at}
+          end
+        end)
+        |> Enum.take(-@interviews_limit)
+        |> Map.new()
+
+      %{state | interviews: kept}
     end
+  end
+
+  defp close_row_editors(row_id, fields) do
+    if SwarmCodeCLI.UI.Intent.valid_id?(row_id),
+      do: FieldEditors.close_owner(fields, row_id),
+      else: fields
   end
 
   # A card closes by itself when its interaction stopped waiting, and a card
   # that opened by itself also closes when the view moved away from it.
-  defp close_settled(%{layers: [{kind, id} | _]} = state, effects)
-       when kind in [:approval, :question] do
+  # pass75 interview: a note stays while any row of its ask is pending; when
+  # the last one leaves before the CLI sent anything, the status line says why.
+  defp close_settled(%{layers: [{:question, node} | _]} = state, effects, previous) do
+    case Question.ask(state, node) do
+      nil ->
+        {closed, effects} = close_card(state, effects, node)
+
+        with [] <- Question.interview(state, node).sending,
+             %{rows: [first | _]} = last <- Question.ask(previous, node) do
+          words = Question.vanish_notice(last, state.now, ApprovalCard.who(first, previous))
+          {:ok, text} = SafeText.external(words, SafeText.Limits.content())
+
+          {%{closed | notice: {:command_feedback, SafeText.value(text)}},
+           effects ++ [{:announce, text}]}
+        else
+          _ -> {closed, effects}
+        end
+
+      %{rows: [first | _]} ->
+        if state.auto_opened != node or in_view?(state, first),
+          do: {state, effects},
+          else: close_card(state, effects, node)
+    end
+  end
+
+  defp close_settled(%{layers: [{:approval, id} | _]} = state, effects, _previous) do
     case Map.get(state.read_model.interactions, id) do
       %{state: :pending} = item ->
         if state.auto_opened != id or in_view?(state, item),
@@ -2344,7 +2644,7 @@ defmodule SwarmCodeCLI.UI.Reducer do
     end
   end
 
-  defp close_settled(state, effects), do: {state, effects}
+  defp close_settled(state, effects, _previous), do: {state, effects}
 
   # Closing a card for the user is not the user putting it aside: it is not
   # dismissed, and comes back when its conversation is in view again.
@@ -2379,19 +2679,76 @@ defmodule SwarmCodeCLI.UI.Reducer do
 
   defp auto_open?(_state, _action), do: false
 
+  # pass75 interview: `id` names an ask (its node id), one of its rows, or an
+  # approval; a question opens the ask's one note, `{:question, node_id}`,
+  # carried by its lowest-index row.
+  defp interaction_target(state, id) do
+    ask =
+      Question.ask(state, id) ||
+        case Map.get(state.read_model.interactions, id) do
+          %{kind: :question, node_id: node} when is_binary(node) -> Question.ask(state, node)
+          _ -> nil
+        end
+
+    case {ask, Map.get(state.read_model.interactions, id)} do
+      {%{node_id: node, rows: [first | _]}, _} -> {node, first}
+      {nil, %{state: :pending, kind: :approval} = item} -> {id, item}
+      _ -> nil
+    end
+  end
+
+  # pass75 interview: one need per ask, in `Question.order_key/1` order; the
+  # layer id of a question is its ask's node id.
   defp next_in_view(state) do
-    state.read_model.interactions
-    |> Map.values()
-    |> Enum.filter(
-      &(&1.state == :pending and &1.kind in [:approval, :question] and in_view?(state, &1) and
-          {&1.id, &1.expected_revision} not in state.dismissed_interactions)
+    state
+    |> Question.needs()
+    |> Enum.find(
+      &(in_view?(state, &1) and
+          {Question.ask_id(&1), &1.expected_revision} not in state.dismissed_interactions)
     )
-    |> Enum.min_by(&{&1.created_at, &1.id}, fn -> nil end)
+    |> case do
+      nil -> nil
+      row -> {Question.ask_id(row), row}
+    end
   end
 
   # Esc on a card that is still pending puts it aside: it does not reopen by
   # itself until its revision moves. Ctrl-N brings it back on purpose.
-  defp dismiss(state, {kind, id}) when kind in [:approval, :question] do
+  # pass75 interview: a note is put aside as `{node_id, ask revision}`, and
+  # keeps the focus it had so ^N reopens it there.
+  defp dismiss(state, {:question, node}) do
+    case Question.ask(state, node) do
+      %{revision: revision} = ask ->
+        dismissed =
+          [{node, revision} | List.delete(state.dismissed_interactions, {node, revision})]
+          |> Enum.take(@dismissed_limit)
+
+        interview = Question.interview(state, node)
+        current = Question.current(ask, interview)
+
+        interviews =
+          if state.focus in Question.focus_ids(current),
+            do:
+              Map.put(state.interviews, node, %{
+                interview
+                | last_focus: Map.put(interview.last_focus, current.id, state.focus)
+              }),
+            else: state.interviews
+
+        %{
+          state
+          | dismissed_interactions: dismissed,
+            interviews: interviews,
+            auto_opened: nil,
+            interaction_grace: nil
+        }
+
+      nil ->
+        %{state | auto_opened: nil, interaction_grace: nil}
+    end
+  end
+
+  defp dismiss(state, {:approval, id}) do
     case Map.get(state.read_model.interactions, id) do
       %{state: :pending, expected_revision: revision} ->
         dismissed =
