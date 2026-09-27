@@ -153,11 +153,13 @@ defmodule SwarmCodeCLI.C74AcceptanceTest do
       {state, _fake} = opened(:overview)
       state = sized(state, 160, 45)
 
+      # pass 75 (E, R20.1, R25.5): no `│` rule; the rail is the 24 cells from
+      # column 2 of each body line (rows 3-40)
       rail =
         state
         |> lines()
-        |> Enum.drop(3)
-        |> Enum.map(&(&1 |> String.split("│") |> hd() |> String.trim()))
+        |> Enum.slice(3, 38)
+        |> Enum.map(&(&1 |> String.slice(2, 24) |> String.trim()))
         |> Enum.reject(&(&1 == ""))
         # a mark (•N, !N) or a record count (Providers 4, QA #2 P2-11)
         |> Enum.map(&String.replace(&1, ~r/\s+[•!]?\d+$/u, ""))
@@ -196,8 +198,13 @@ defmodule SwarmCodeCLI.C74AcceptanceTest do
       {state, _fake} = state |> Nav.put_cursor(env.id) |> key(:enter) |> serve(fake)
       assert Page.level(Layer.page(state.settings)) == :sub
 
-      for row <- Nav.rows(state), row.label != "" do
-        assert Enum.join(lines(state), "\n") =~ String.slice(row.label, 0, 20)
+      # pass 75 (R22.4): a label wider than the 19-cell label column wraps
+      # with a 2-cell hanging indent instead of being cut (a longer word is
+      # split at the column), so each word's first 17 characters are asserted
+      for row <- Nav.rows(state),
+          row.label != "",
+          word <- String.split(String.slice(row.label, 0, 20)) do
+        assert Enum.join(lines(state), "\n") =~ String.slice(word, 0, 17)
       end
 
       esc = fn state ->
@@ -222,7 +229,9 @@ defmodule SwarmCodeCLI.C74AcceptanceTest do
       for title <- ["Providers", "MCP servers", "Language servers", "Agents & limits"],
           do: assert(text =~ title, title)
 
-      assert Enum.any?(lines(state), &(&1 =~ "▌" and &1 =~ "MCP servers"))
+      # pass 75 (R28.2): this terminal is NO_COLOR, whose twin marks the rail
+      # cursor as it marks the page focus, `>`
+      assert Enum.any?(lines(state), &(&1 =~ ~r/>\s+MCP servers/u))
 
       # ↓ moves to the next section and Enter opens it as a page.
       state = state |> key(:down) |> elem(0) |> key(:enter) |> elem(0)
@@ -240,26 +249,29 @@ defmodule SwarmCodeCLI.C74AcceptanceTest do
     test "the strip names the section and its neighbours, the count, and [ ] step it" do
       {state, _fake} = opened(:approvals)
       state = sized(state, 90, 30)
-      [_header, strip | _] = lines(state)
+      # pass 75 (E, R25.4): the strip is row 2, under the crumb and the well,
+      # opened by `‹` after the margin and closed by `›` before `N of 22`
+      strip = Enum.at(lines(state), 2)
 
-      assert strip =~ "[ "
+      assert strip |> String.trim_leading() |> String.starts_with?("‹"), strip
+      assert strip =~ ~r/›\s+10 of 22\s*$/u, strip
       assert strip =~ "Approvals & trust"
       assert strip =~ "Agents & limits"
       assert strip =~ "10 of 22"
       assert SwarmCodeCLI.UI.Width.cells(strip, :narrow) <= 90
-      # The search row's counts shorten (F14: `• 14  ! 3  2 env`).
-      refute Enum.at(lines(state), 2) =~ "changed from default"
+      # The search row's counts shorten (F14: `• 14  ! 3  2 env`); the well is row 1.
+      refute Enum.at(lines(state), 1) =~ "changed from default"
 
       state =
         SwarmCodeCLI.UI.Pass73Helpers.press!(state, SwarmCodeCLI.UI.Pass73Helpers.letter("]"))
 
-      [_header, strip | _] = lines(state)
+      strip = Enum.at(lines(state), 2)
       assert strip =~ "11 of 22"
 
       wide = sized(state, 120, 30)
-      refute Enum.at(lines(wide), 1) =~ " of 22"
+      refute Enum.at(lines(wide), 2) =~ " of 22"
       small = sized(state, 80, 24)
-      refute Enum.at(lines(small), 1) =~ " of 22"
+      refute Enum.at(lines(small), 2) =~ " of 22"
     end
   end
 
