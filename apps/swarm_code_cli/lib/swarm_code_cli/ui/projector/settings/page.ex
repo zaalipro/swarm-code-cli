@@ -458,6 +458,7 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Page do
 
     continuations =
       for line <- row.lines,
+          line = if(line == [{row.key, :text_faint}], do: chips(state, line), else: line),
           wrapped <- Text.wrap_segments(state, line, more_room) do
         Text.fit(state, [indent | wrapped], width)
       end
@@ -594,15 +595,17 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Page do
     indent = min(row.indent || 0, max(width - 4, 0))
     pad = String.duplicate(" ", indent)
 
+    segments = chips(state, [{text, role}])
+
     lines =
-      case Text.wrap_segments(state, [{text, role}], width - indent) do
+      case Text.wrap_segments(state, segments, width - indent) do
         [first | [_ | _] = rest] ->
-          rest_text = rest |> Enum.flat_map(& &1) |> Enum.map_join(" ", &elem(&1, 0))
+          rest = rest |> Enum.intersperse([{" ", role}]) |> Enum.concat()
 
           [
             first
             | Enum.map(
-                Text.wrap_segments(state, [{rest_text, role}], max(width - indent - 2, 1)),
+                Text.wrap_segments(state, rest, max(width - indent - 2, 1)),
                 &[{"  ", :text_primary} | &1]
               )
           ]
@@ -613,6 +616,62 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Page do
 
     if indent == 0, do: lines, else: Enum.map(lines, &[{pad, :text_primary} | &1])
   end
+
+  @doc """
+  While a query is searched, each of its words (two characters or more, not
+  an `@` filter) lights up where it matched in `segments`, case-insensitively:
+  a `chip_info` chip ` word ` (the twin: `[word]`); the other runs keep their
+  role. Outside a search the segments come back unchanged.
+  """
+  @spec chips(map(), segments()) :: segments()
+  def chips(%{settings: %Layer{mode: :search, search: %{query: query}}} = state, segments)
+      when is_binary(query) and query != "" do
+    words =
+      query
+      |> String.downcase()
+      |> String.split()
+      |> Enum.reject(&String.starts_with?(&1, "@"))
+      |> Enum.filter(&(String.length(&1) >= 2))
+
+    twin? = Glyphs.twin?(state.capabilities)
+
+    if words == [],
+      do: segments,
+      else: Enum.flat_map(segments, fn {text, role} -> chip_text(text, role, words, twin?) end)
+  end
+
+  def chips(_state, segments), do: segments
+
+  defp chip_text("", _role, _words, _twin?), do: []
+
+  defp chip_text(text, role, words, twin?) when is_binary(text) do
+    down = String.downcase(text)
+
+    hits =
+      for word <- words, [before, _] <- [String.split(down, word, parts: 2)] do
+        {String.length(before), String.length(word)}
+      end
+
+    case Enum.min_by(hits, &elem(&1, 0), fn -> nil end) do
+      nil ->
+        [{text, role}]
+
+      {at, length} ->
+        before = String.slice(text, 0, at)
+        matched = String.slice(text, at, length)
+        rest = String.slice(text, (at + length)..-1//1)
+
+        chip =
+          if twin?,
+            do: {"[" <> matched <> "]", :text_primary},
+            else: {" " <> matched <> " ", :chip_info}
+
+        if(before == "", do: [], else: [{before, role}]) ++
+          [chip | chip_text(rest, role, words, twin?)]
+    end
+  end
+
+  defp chip_text(text, role, _words, _twin?), do: [{text, role}]
 
   defp value(%Row{state: :disabled}, value),
     do: value |> split_dots() |> Enum.map(fn {text, _} -> {text, :text_faint} end)
