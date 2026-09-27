@@ -146,10 +146,12 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Model do
 
   @doc """
   `$0.14` (pass 75, R9): a price is two decimals whatever it is, `$0.00`
-  included; nil when unpriced, so the caller draws tokens instead.
+  included; nil when unpriced (nil, or anything that is not a number), so
+  the caller draws tokens instead.
   """
   def money(nil), do: nil
   def money(x) when is_number(x), do: "$" <> :erlang.float_to_binary(x / 1, decimals: 2)
+  def money(_), do: nil
 
   defp pad2(n), do: n |> Integer.to_string() |> String.pad_leading(2, "0")
 

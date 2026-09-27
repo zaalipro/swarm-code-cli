@@ -452,9 +452,8 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
   defp answer_key(_ctx), do: [{"^N", :text_primary, [:bold]}, {" answer", :text_muted}]
   defp again_key(_ctx), do: [{"^F", :text_primary, [:bold]}, {" again", :text_muted}]
 
-  # Why it asks: what it wants to do and the project's approval mode.
-  defp reason(%{verb: :question}, _run, _ctx), do: "answer it in the chat"
-
+  # Why it asks: what it wants to do and the project's approval mode. A
+  # question never reaches here: `band_words/3` answers it first (18.3).
   defp reason(ask, _run, ctx) do
     verb =
       case ask.verb do

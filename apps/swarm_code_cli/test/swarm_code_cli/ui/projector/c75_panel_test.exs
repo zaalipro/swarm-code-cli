@@ -332,4 +332,119 @@ defmodule SwarmCodeCLI.UI.Projector.C75PanelTest do
     assert Enum.find(rows(st), &(&1 =~ "Docs accuracy")) =~ "checking app data"
     assert_role(st, "checking app data", :text_muted)
   end
+
+  # The rules behind the rows, value by value (tasks 141, 142, 147b): the
+  # demo scene exercises only its own values.
+  describe "Model and Shapes rules" do
+    alias SwarmCodeCLI.UI.Projector.Panel.{Model, Shapes}
+
+    test "figures: a turn count warns from 80 %, a working agent is quiet after a minute" do
+      st = state(:panel_owner19, 176, 45)
+      now = st.now
+
+      assert Model.figure(%{max_turns: 30, turn: 24}, :working, now, st) == {"24/30", :warning}
+      assert Model.figure(%{max_turns: 30, turn: 23}, :working, now, st) == {"23/30", :text_muted}
+      assert Model.figure(%{lane_at: now - 120_000}, :working, now, st) == {"quiet 2m", :warning}
+      assert Model.figure(%{lane_at: now - 59_000}, :working, now, st) == nil
+    end
+
+    test "money is two decimals whatever it is, and nil when unpriced" do
+      assert Model.money(0.005) == "$0.01"
+      assert Model.money(0.0) == "$0.00"
+      assert Model.money(0.816) == "$0.82"
+      assert Model.money(nil) == nil
+      assert Model.money("0.12") == nil
+    end
+
+    test "a waiting Lead names the agent it waits on by its AI name" do
+      sub = %{id: "s", name: "docs-accuracy-review", display: "Docs accuracy"}
+
+      lead = %{
+        id: "l",
+        name: "lead",
+        role: :lead,
+        state: :waiting,
+        asks: [],
+        summary: nil,
+        now: "waiting on docs-accuracy-review"
+      }
+
+      st = %{agent_summaries?: true}
+      views = [lead, sub]
+
+      assert Model.status_text(lead, views, st) == {"waiting on Docs accuracy", :text_muted}
+
+      assert Model.status_text(%{lead | now: "waiting on 2 agents"}, views, st) ==
+               {"waiting for 2", :text_muted}
+
+      assert Model.status_text(%{lead | now: "waiting on other-review"}, views, st) ==
+               {"waiting on other-review", :text_muted}
+    end
+
+    test "the why-line: who came back empty and what the Lead waits for" do
+      st = state(:panel_owner19, 176, 45)
+      run = %{state: :running}
+
+      assert Shapes.why_line(run, [%{state: :turn_limit}, %{state: :done}], st) ==
+               "1 came back empty · the Lead is writing the report"
+
+      assert Shapes.why_line(
+               run,
+               [%{state: :failed}, %{state: :working, display: "Strategy fit"}],
+               st
+             ) == "1 came back empty · the Lead waits for Strategy fit"
+
+      assert Shapes.why_line(
+               run,
+               [%{state: :turn_limit}, %{state: :working}, %{state: :waiting}],
+               st
+             ) ==
+               "1 came back empty · the Lead waits for 2"
+
+      assert Shapes.why_line(run, [%{state: :done}, %{state: :working}], st) ==
+               "the Lead reports once all 2 are in"
+
+      assert Shapes.why_line(%{state: :done}, [%{state: :turn_limit}], st) == nil
+    end
+
+    test "the gauge: one cell per agent and no spaces when cells run short" do
+      st = state(:panel_owner19, 176, 45)
+      on = Draw.g(:report_on, st)
+
+      six =
+        Enum.map([:l1, :l2, :l3, :l4, :l5, :l1], &%{state: :done, name_role: &1, finished_at: 1})
+
+      segments = Shapes.report_gauge(six, 12, st)
+      assert length(segments) == 6
+      assert Enum.all?(segments, fn {text, _role} -> text == on end)
+      assert Draw.cells(on, st) == 1
+      refute {" ", :text_faint} in segments
+    end
+
+    test "the gauge: ended agents by finished_at, a tie keeps the wire order, the rest after" do
+      st = state(:panel_owner19, 176, 45)
+
+      views = [
+        %{state: :done, name_role: :l1, finished_at: 500},
+        %{state: :working, name_role: :l2},
+        %{state: :turn_limit, name_role: :l3, finished_at: 500},
+        %{state: :done, name_role: :l4, finished_at: 100}
+      ]
+
+      segments = Shapes.report_gauge(views, 46, st)
+      drawn = Enum.reject(segments, &(&1 == {" ", :text_faint}))
+
+      assert Enum.map(drawn, &elem(&1, 1)) == [:l4, :l1, :error, :text_faint]
+      assert Enum.all?(drawn, fn {text, _role} -> Draw.cells(text, st) == 9 end)
+      assert length(segments) == 7
+    end
+
+    test "one earlier run reads in the singular" do
+      st = state(:panel_owner19, 176, 45)
+      gone = ["demo-panel-run-88", "demo-panel-run-89"]
+      st = put_in(st.read_model.runs, Map.drop(st.read_model.runs, gone))
+
+      assert Enum.any?(rows(st), &(&1 =~ ~r/^ earlier  1 stopped run in this chat +Ctrl-R$/))
+    end
+  end
 end

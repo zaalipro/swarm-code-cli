@@ -10,7 +10,7 @@ defmodule SwarmCodeCLI.UI.Projector.GoldenScenesTest do
   use ExUnit.Case, async: true
 
   alias SwarmCodeCLI.Demo.Conversation
-  alias SwarmCodeCLI.UI.{Capabilities, Paint, Projector, Scene, Size}
+  alias SwarmCodeCLI.UI.{Capabilities, Paint, Projector, Scene, Size, Width}
   alias SwarmCodeCLI.UI.Paint.{Options, Plan}
 
   @sizes [{160, 45}, {120, 36}, {90, 30}, {80, 24}]
@@ -138,7 +138,11 @@ defmodule SwarmCodeCLI.UI.Projector.GoldenScenesTest do
   alias SwarmCodeCLI.Demo.Panel, as: PanelScenes
 
   # pass 75: re-derived from the V2 panel (humanised names, `found`, the
-  # band's words, the spent and earlier rows; no kind sections).
+  # band's words, the spent and earlier rows; no kind sections). Open owner
+  # decision (spec Blockers, 153b): the V2 body draws no workflow phases,
+  # goal criteria, research funnel or consensus positions, so this evidence
+  # does not prove them; restore `implement`/`criteria`/`sources`/`positions`
+  # here if the owner keeps the kind sections.
   @panel_evidence %{
     panel_chat: {"fix the flaky retry test", ["Assistant", "2 finished runs in this chat"]},
     panel_swarm_1: {"architecture review", ["Engine lifecycle", "found"]},
@@ -199,9 +203,17 @@ defmodule SwarmCodeCLI.UI.Projector.GoldenScenesTest do
         if elem(size, 0) >= 120 and panel == :full do
           for text <- docked, do: assert(screen =~ text, "#{label}: no #{inspect(text)}")
         else
-          # The strip (R17) sits on row 1; pass 75 (8.2): it may cut the
-          # title at its end, to 12 cells when the row is short.
-          if elem(size, 0) < 120, do: assert(Enum.at(rows, 1) =~ String.slice(title, 0, 11))
+          # The strip (R17) sits on row 1; pass 75 (8.2): it draws the title
+          # whole or cut at its end with `…`, to 22 cells, or to 12 cells
+          # when the row is short.
+          if elem(size, 0) < 120 do
+            policy = unquote(policy)
+            forms = [title | Enum.map([22, 12], &Width.elide(title, &1, :end, policy))]
+            strip = Enum.at(rows, 1)
+
+            assert Enum.any?(forms, &String.contains?(strip, &1)),
+                   "#{label}: the strip draws no form of #{inspect(title)}: #{strip}"
+          end
         end
 
         if ascii? do

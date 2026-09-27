@@ -68,7 +68,11 @@ defmodule SwarmCodeCLI.UI.InspectorCardsTest do
   defp targets(table, target), do: for({id, ^target} <- table, do: id)
 
   # The verdict card's rows as text (pass 75: the V2 panel body, D2, no longer
-  # draws the verdict; `Inspector.Verdict` still builds it).
+  # draws the verdict; `Inspector.Verdict` still builds it). Open owner
+  # decision (spec Blockers, 153b): `Verdict.card/3` has no lib caller at
+  # c75-P, so the two tests that read it prove the card, not the panel. If the
+  # owner keeps the kind sections in V2, they read the painted panel again; if
+  # not, they go with `Shapes.before_agents/4` and `after_agents/4`.
   defp verdict_rows(state) do
     run = state.read_model.runs |> Map.values() |> Enum.find(&Verdict.judged?/1)
 
