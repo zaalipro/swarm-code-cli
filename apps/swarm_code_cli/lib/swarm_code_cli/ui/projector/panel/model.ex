@@ -231,6 +231,7 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Model do
       error: present(agent.error),
       retry_at: Map.get(agent, :retry_at),
       elapsed: Lane.elapsed_ms(agent, state.now) || elapsed(agent, state),
+      finished_at: Map.get(agent, :finished_at),
       tokens: tokens_of(agent),
       cost: Map.get(agent, :cost_usd),
       # pass 75: turns, the Summarizer's line, the turn-limit agent's last

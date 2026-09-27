@@ -1363,10 +1363,15 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
 
     {sentence, sentence_role} =
       cond do
+        # pass 75: a turn-limit stop says the daemon's rule sentence.
+        p3 == :turn_limit and view != nil ->
+          {view.now || "no answer: turn limit", :error}
+
+        # pass 75: the finding without `»` (S2).
         p3 == :done and view != nil and view.finding != nil ->
           refs = List.first(view.refs)
           finding = view.finding <> if(refs, do: " · " <> Path.basename(refs), else: "")
-          {PanelGlyph.get(:finding, state) <> " " <> finding, sentence_role}
+          {finding, sentence_role}
 
         failure != nil and p3 not in [:done, :needs_you] ->
           {failure, :error}
@@ -1384,6 +1389,13 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
     meta = [duration, tokens] |> Enum.reject(&(&1 in [nil, false])) |> Enum.join(" · ")
     glyph_mods = if p3 == :needs_you, do: [:bold], else: []
 
+    # pass 75 (R2.5): a turn-limit agent's own last words, muted, after its
+    # rule sentence.
+    last =
+      if (p3 == :turn_limit and view) && view.last_words,
+        do: [{" · last: " <> view.last_words, :muted}],
+        else: []
+
     spec(
       [
         {String.duplicate(" ", @body), :plain},
@@ -1393,10 +1405,12 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
         {" ", :text},
         {pad_cells(name, name_w, state), {:role, lane, []}},
         {" ", :text},
-        {pad_cells(Model.word(p3), 11, state), {:role, word_role(p3), glyph_mods}},
-        {sentence, sentence_style(sentence_role, p3)},
-        {:right, if(meta != "", do: [{meta, :faint}], else: [])}
-      ],
+        # pass 75 (D-L13): the word column is 13 cells, S2's spacing.
+        {pad_cells(Model.word(p3), 13, state), {:role, word_role(p3), glyph_mods}},
+        {sentence, sentence_style(sentence_role, p3)}
+      ] ++
+        last ++
+        [{:right, if(meta != "", do: [{meta, :faint}], else: [])}],
       nil
     )
     # pass72 G5 (QA Q6): the sentence gives way to the meta, cut with `…`.

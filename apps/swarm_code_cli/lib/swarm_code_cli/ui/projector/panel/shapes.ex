@@ -16,6 +16,9 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Shapes do
   alias SwarmCodeCLI.UI.Projector.Panel
   alias SwarmCodeCLI.UI.Projector.Panel.{Draw, Model}
 
+  # A run that still runs (its why-line is drawn).
+  @running [:running, :streaming, :waiting_question, :waiting_approval, :paused, :retrying]
+
   # ------------------------------------------------------------ headers
 
   @doc "The dim second header row (D1): mode, team, tokens, cost."
@@ -160,7 +163,11 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Shapes do
     end
   end
 
-  @doc "Reviewers reported of spawned (R5: a known ratio): the wire's, else counted."
+  @doc """
+  Reviewers reported of spawned (R5: a known ratio): the wire's, else counted.
+  Only a `:done` agent counts; a turn-limit stop (pass 75, `:turn_limit`)
+  came back empty and does not, as the daemon's `reported` does not.
+  """
   def reported(run, views) do
     subs = Enum.reject(views, &(&1.role in [:lead, :assistant]))
 
@@ -170,6 +177,70 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Shapes do
 
       _ ->
         {Enum.count(subs, &(&1.state == :done)), length(subs)}
+    end
+  end
+
+  @doc """
+  The found block's gauge (pass 75, 7.3): one segment of `cell` cells per sub
+  agent, `cell = min(10, div(width - 4 - (t - 1), t))`, one space between
+  segments (one cell each and no spaces when `cell < 3`). The agents that
+  ended come first by `finished_at`, the rest in wire order: a done agent's
+  segment in its name's hue, a turn-limit or failed one empty in `:error`,
+  one not yet in `:text_faint`.
+  """
+  @spec report_gauge([map()], pos_integer(), map()) :: [{String.t(), atom()}]
+  def report_gauge([], _width, _state), do: []
+
+  def report_gauge(subs, width, state) do
+    t = length(subs)
+    cell = min(10, div(width - 4 - (t - 1), t))
+    {cell, gap} = if cell < 3, do: {1, []}, else: {cell, [{" ", :text_faint}]}
+    {ended, rest} = Enum.split_with(subs, &(&1.state in [:done, :turn_limit, :failed]))
+
+    ended
+    |> Enum.sort_by(&finished_key/1)
+    |> Kernel.++(rest)
+    |> Enum.map(fn view ->
+      case view.state do
+        :done ->
+          {String.duplicate(Draw.g(:report_on, state), cell), view.name_role}
+
+        s when s in [:turn_limit, :failed] ->
+          {String.duplicate(Draw.g(:report_empty, state), cell), :error}
+
+        _ ->
+          {String.duplicate(Draw.g(:report_off, state), cell), :text_faint}
+      end
+    end)
+    |> Enum.intersperse(gap)
+    |> List.flatten()
+  end
+
+  defp finished_key(view) do
+    case Map.get(view, :finished_at) do
+      at when is_integer(at) -> {0, at}
+      _ -> {1, 0}
+    end
+  end
+
+  @doc """
+  Why the run's report is not in yet (pass 75, 7.3), or nil once the run no
+  longer runs: `e` agents came back empty (turn limit or failed), `p` are
+  neither done nor stopped.
+  """
+  @spec why_line(map(), [map()], map()) :: String.t() | nil
+  def why_line(run, subs, _state) do
+    t = length(subs)
+    e = Enum.count(subs, &(&1.state in [:turn_limit, :failed]))
+    pending = Enum.reject(subs, &(&1.state in [:done, :failed, :turn_limit, :stopped]))
+    p = length(pending)
+
+    cond do
+      run.state not in @running -> nil
+      e == 0 -> "the Lead reports once all #{t} are in"
+      p >= 2 -> "#{e} came back empty · the Lead waits for #{p}"
+      p == 1 -> "#{e} came back empty · the Lead waits for " <> hd(pending).display
+      true -> "#{e} came back empty · the Lead is writing the report"
     end
   end
 

@@ -102,19 +102,19 @@ defmodule SwarmCodeCLI.UI.Projector.WorkspaceTurnsTest do
   # sentence, a tree connector, and its elapsed and tokens on the right.
   test "workers collapse to one lane line each, and a failure shows on its lane" do
     {rows, _, _, _} = fixture(:swarm, {100, 30}) |> painted()
-    at = index_of(rows, "    ⊢ ⦁ scout-1")
+    at = index_of(rows, "    ⊢ ⦁ Scout 1")
     [scout1, scout2, builder, judge] = Enum.slice(rows, at, 4)
 
-    assert scout1 =~ ~r/^    ⊢ ⦁ scout-1 +working +grep "Repo\\."/
-    assert scout2 =~ ~r/^    ⊢ ⦁ scout-2 +working +read test\/session_test.exs/
+    assert scout1 =~ ~r/^    ⊢ ⦁ Scout 1 +working +grep "Repo\\."/
+    assert scout2 =~ ~r/^    ⊢ ⦁ Scout 2 +working +read test\/session_test.exs/
 
     assert builder =~
-             ~r/^    ⊢ ⦁ builder-4 +working +run_command failed: mix test exited with status 1/
+             ~r/^    ⊢ ⦁ Builder 4 +working +run_command failed: mix test exited with status 1/
 
-    assert judge =~ ~r/^    ⎣ ! judge +needs you /
+    assert judge =~ ~r/^    ⎣ ! Judge +needs you /
 
     # One line per agent (the owner's duplicate spawn/lane rows).
-    for name <- ["scout-1", "scout-2", "builder-4", "judge"] do
+    for name <- ["Scout 1", "Scout 2", "Builder 4", "Judge"] do
       assert Enum.count(rows, &(&1 =~ name)) == 1, name
     end
 
@@ -134,10 +134,50 @@ defmodule SwarmCodeCLI.UI.Projector.WorkspaceTurnsTest do
   test "regression: a long lane line ends in … and keeps its meta" do
     state = fixture(:swarm, {80, 24})
     {rows, _, _, _} = painted(state)
-    builder = Enum.find(rows, &(&1 =~ "builder-4"))
+    builder = Enum.find(rows, &(&1 =~ "Builder 4"))
 
-    assert builder =~ ~r/run_command failed: mix test exited with sta… +7k$/u
+    # pass 75: the word column is 13 cells (S2), two more than before.
+    assert builder =~ ~r/run_command failed: mix test exited with s… +7k$/u
     assert Enum.all?(rows, &(String.length(&1) <= 80))
+  end
+
+  # pass 75 (R2.5, S2 line 106): a worker that ran out of turns says so in
+  # the error colour, then its own last words, muted.
+  test "a turn-limit worker's lane line" do
+    state = fixture(:swarm, {220, 30})
+    builder = state.read_model.agents["agent-4"]
+
+    builder =
+      %{builder | state: :done, finished_at: builder.started_at + 814_000}
+      |> Map.merge(%{
+        panel_state: :done,
+        stop_reason: "turn_budget",
+        stop_label: "turn limit",
+        now: "no answer after 30 turns",
+        turn: 30,
+        max_turns: 30,
+        last_words: "Deps are all ok; two \"build is outdated\" findings remain."
+      })
+
+    state = put_in(state.read_model.agents["agent-4"], builder)
+    {rows, scene, _, _} = painted(state)
+    row = Enum.find(rows, &(&1 =~ "Builder 4"))
+
+    assert row =~
+             ~r/^    ⊢ ✗ Builder 4 +turn limit   no answer after 30 turns · last: Deps are all ok; two "build is outdated" findings remain\. +\S/u
+
+    red = Theme.style(:error, state.capabilities).foreground
+    muted = Theme.style(:text_muted, state.capabilities).foreground
+    assert find_span(scene, "turn limit").style.foreground == red
+    assert find_span(scene, "no answer after 30 turns").style.foreground == red
+    assert find_span(scene, " · last: Deps").style.foreground == muted
+
+    # Without last words the `· last:` part is absent.
+    state = put_in(state.read_model.agents["agent-4"].last_words, nil)
+    {rows, _, _, _} = painted(state)
+    row = Enum.find(rows, &(&1 =~ "Builder 4"))
+    assert row =~ "turn limit   no answer after 30 turns"
+    refute row =~ "last:"
   end
 
   # pass71 F2: an expanded row shows twenty lines; the count of the rest
@@ -149,7 +189,7 @@ defmodule SwarmCodeCLI.UI.Projector.WorkspaceTurnsTest do
       |> Map.put(:expansions, MapSet.new(["005"]))
 
     {rows, _, _, _} = painted(state)
-    at = index_of(rows, "    ⊢ ⦁ scout-1")
+    at = index_of(rows, "    ⊢ ⦁ Scout 1")
 
     assert Enum.at(rows, at + 1) =~ ~r/^      ✓ grep  "Repo\\\."\s+lib\/ test\/ · 41 hits  0\.4s$/
 
@@ -158,7 +198,7 @@ defmodule SwarmCodeCLI.UI.Projector.WorkspaceTurnsTest do
 
     # Collapsing again through the same expansion set restores the lane line.
     {collapsed, _, _, _} = painted(%{state | expansions: MapSet.new()})
-    assert index_of(collapsed, "    ⊢ ⦁ scout-1")
+    assert index_of(collapsed, "    ⊢ ⦁ Scout 1")
     refute Enum.any?(collapsed, &(&1 =~ "result line"))
   end
 
@@ -329,10 +369,10 @@ defmodule SwarmCodeCLI.UI.Projector.WorkspaceTurnsTest do
       )
 
     {rows, _, _, _} = painted(state)
-    builder = Enum.find_index(rows, &(&1 =~ "builder-4"))
+    builder = Enum.find_index(rows, &(&1 =~ "Builder 4"))
     stop = Enum.find_index(rows, &(&1 =~ "Swarm stopped by user."))
     assert builder && stop && builder < stop, Enum.join(rows, "\n")
-    assert Enum.count(rows, &(&1 =~ "builder-4")) == 1
+    assert Enum.count(rows, &(&1 =~ "Builder 4")) == 1
   end
 
   test "regression (QA Q10): an ask's row says its question once" do
@@ -469,7 +509,7 @@ defmodule SwarmCodeCLI.UI.Projector.WorkspaceTurnsTest do
       assert main.rect.width == 100
       assert Enum.all?(rows, &(SwarmCodeCLI.UI.Width.cells(&1, policy) <= 100))
       assert Enum.any?(rows, &(&1 =~ "Review this synthetic project"))
-      assert index_of(rows, "    ⊢ ⦁ scout-1")
+      assert index_of(rows, "    ⊢ ⦁ Scout 1")
       assert index_of(rows, "  ⋔ Lead")
     end
   end
@@ -514,8 +554,8 @@ defmodule SwarmCodeCLI.UI.Projector.WorkspaceTurnsTest do
     assert String.starts_with?(Enum.at(rows, 0), "  | Review this synthetic project")
     header = Enum.find(rows, &String.starts_with?(&1, "  S Lead"))
     assert String.ends_with?(header, "writing |  23k tok")
-    assert index_of(rows, "    | * scout-1    working")
-    assert index_of(rows, "    ` ! judge      needs you")
+    assert index_of(rows, "    | * Scout 1    working")
+    assert index_of(rows, "    ` ! Judge      needs you")
 
     expanded =
       fixture(:swarm, {100, 30}, ascii: true)
