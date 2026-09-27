@@ -53,8 +53,11 @@ defmodule SwarmCodeCLI.UI.KeymapTest do
       assert Context.of(%{main() | layers: [{:runs_dashboard, "d"}]}) == :picker
 
       # A question's "other" box is a field even though the layer is a dialog.
+      # pass 75: the note has no Cancel control; it opens with nothing focused.
       question = question_state()
-      assert Context.of(%{question | focus: "cancel"}) == :dialog
+      refute "cancel" in Reducer.focus_graph(question)
+      assert Context.of(question) == :dialog
+      assert Context.of(%{question | focus: "opt-a"}) == :dialog
       assert Context.of(%{question | focus: "other"}) == :field
     end
 
@@ -388,16 +391,22 @@ defmodule SwarmCodeCLI.UI.KeymapTest do
     end
 
     test "1-9 pick a question option and Space ticks a multiple choice" do
+      # pass 75: on the note a digit ticks option N of a multi-select question
+      # (it picks on a single-select one) and Space ticks the focused option.
       state = question_state()
-      assert Keymap.resolve(letter("1"), state, %{}) == {:ok, {:focus_region, "opt-a"}}
-      assert Keymap.resolve(letter("2"), state, %{}) == {:ok, {:focus_region, "opt-b"}}
+
+      assert Keymap.resolve(letter("1"), state, %{}) ==
+               {:ok, {:interview, {:toggle, "n", "opt-a"}}}
+
+      assert Keymap.resolve(letter("2"), state, %{}) ==
+               {:ok, {:interview, {:toggle, "n", "opt-b"}}}
+
       assert Keymap.resolve(letter("3"), state, %{}) == :ignore
 
       focused = %{state | focus: "opt-a"}
-      table = %{"opt-a" => {:local, {:select_option, "q", "opt-a"}}}
 
-      assert Keymap.resolve(letter(" "), focused, table) ==
-               {:ok, {:select_option, "q", "opt-a"}}
+      assert Keymap.resolve(letter(" "), focused, %{}) ==
+               {:ok, {:interview, {:toggle, "n", "opt-a"}}}
     end
 
     test "modal Cancel wins over the composer and bare Enter never confirms a stop" do
@@ -801,8 +810,8 @@ defmodule SwarmCodeCLI.UI.KeymapTest do
 
     %{
       state
-      | layers: [{:question, "q"}],
-        focus: "cancel",
+      | layers: [{:question, "n"}],
+        focus: nil,
         read_model: %{state.read_model | interactions: %{"q" => interaction}}
     }
   end
