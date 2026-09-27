@@ -107,6 +107,8 @@ defmodule SwarmCodeCLI.UI.State do
     show_diffs: true,
     # pass75: AI status lines in the panel (cli.json agent_summaries).
     agent_summaries?: true,
+    # pass75 interview: held answers per ask, node_id => UI.Question.interview()
+    interviews: %{},
     # T2: the painted theme (`/theme`); the port owner repaints on a change.
     theme_mode: :dark,
     # T2: `SWARM_THEME` named a theme at launch, so it wins at the next one.

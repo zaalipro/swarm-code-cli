@@ -65,6 +65,14 @@ defmodule SwarmCodeCLI.UI.Action do
           | :unsupported_public_no_alt
           | :session_failed
 
+  @type interview_event ::
+          {:pick, binary(), binary()}
+          | {:toggle, binary(), binary()}
+          | {:toggle_other, binary()}
+          | {:step, binary(), -1 | 1}
+          | {:goto, binary(), 0..3}
+          | {:confirm, binary()}
+
   @type t ::
           :boot
           | :editor_detach_notice
@@ -149,6 +157,7 @@ defmodule SwarmCodeCLI.UI.Action do
           | {:editor, DraftKey.t(), Operation.t()}
           | {:draft_target, DraftKey.t(), :none | Intent.dispatch_target()}
           | {:select_option, binary(), binary()}
+          | {:interview, interview_event()}
           | {:open_detail, binary(), binary()}
           | {:detail_page, :next | :previous}
           | {:retry_page, :shell | :workspace | :activity | :inspector, :before | :after}
@@ -513,6 +522,19 @@ defmodule SwarmCodeCLI.UI.Action do
 
   def validate({:select_option, interaction_id, option_id} = action),
     do: valid_action(action, Intent.valid_id?(interaction_id) and Intent.valid_id?(option_id))
+
+  # pass75 interview: the note's events, keyed by the asking op's node id.
+  def validate({:interview, {kind, node, option}} = action) when kind in [:pick, :toggle],
+    do: valid_action(action, Intent.valid_id?(node) and Intent.valid_id?(option))
+
+  def validate({:interview, {kind, node}} = action) when kind in [:toggle_other, :confirm],
+    do: valid_action(action, Intent.valid_id?(node))
+
+  def validate({:interview, {:step, node, delta}} = action),
+    do: valid_action(action, Intent.valid_id?(node) and delta in [-1, 1])
+
+  def validate({:interview, {:goto, node, index}} = action),
+    do: valid_action(action, Intent.valid_id?(node) and index in 0..3)
 
   def validate({:draft_target, key, target} = action),
     do:
