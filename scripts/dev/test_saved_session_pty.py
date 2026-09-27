@@ -128,12 +128,13 @@ SwarmCode.Development.PersistedSession.run_for_test(boot)
                         terminal.wait_for(b'Remember saved terminal')
                     terminal.wait_for(b'Saved terminal verified.', timeout=30)
                     terminal.capture(f'saved-session-{phase}')
-                    # pass72: the side panel repeats what the assistant said
-                    # (D2 chat frame, `» …`); the transcript holds the reply once.
+                    # pass75 V2 (R7.1, R7.3): the side panel draws the chat run's
+                    # header (`chat · in chat`) and no found block for a run
+                    # without sub agents; the transcript holds the reply once.
                     said = [line for line in terminal.screen().split(b'\n')
                             if line.strip().startswith(b'Saved terminal verified.')]
                     self.assertEqual(len(said), 1)
-                    self.assertIn(b'\xc2\xbb Saved terminal verified.', terminal.screen())
+                    self.assertIn(b'chat \xc2\xb7 in chat', terminal.screen())
                     if phase == 0:
                         terminal.send(b'\x1b[200~/goal\x1b[201~\r')
                         terminal.wait_for(b'Conversation goal')
