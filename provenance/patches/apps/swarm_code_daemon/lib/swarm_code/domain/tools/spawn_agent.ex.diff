@@ -1,0 +1,36 @@
+# CLI-local change to lib/swarm_code/tools/spawn_agent.ex at 6dd8d82, after the rewrite
+# rules of provenance/sync-rules.json. Recorded by mix swarm_code.provenance.sync.
+--- a/apps/swarm_code_daemon/lib/swarm_code/domain/tools/spawn_agent.ex
++++ b/apps/swarm_code_daemon/lib/swarm_code/domain/tools/spawn_agent.ex
+@@ -3,6 +3,7 @@
+   @behaviour SwarmCode.Domain.Tools.Tool
+ 
+   alias SwarmCode.Domain.{Agents, Engine.RunServer}
++  alias SwarmCode.Domain.Tools.AgentTitle
+ 
+   @impl true
+   def name, do: "spawn_agent"
+@@ -43,6 +44,12 @@
+       "type" => "object",
+       "properties" => %{
+         "name" => %{"type" => "string", "description" => "short agent name, max 24 chars"},
++        # pass75 (CLI): the display name the side panel shows instead of name.
++        "title" => %{
++          "type" => "string",
++          "description" =>
++            "a display name in sentence case, 1-3 words, e.g. \"Build check\"; the panel shows it instead of name"
++        },
+         "task" => %{
+           "type" => "string",
+           "description" => "precise task, files it owns, expected output"
+@@ -116,7 +123,9 @@
+         model_override: args["model"],
+         effort_override: args["effort"],
+         # spec 72 C5: structured output schema for sub-agents.
+-        output_schema: args["output_schema"]
++        output_schema: args["output_schema"],
++        # pass75 (CLI): the Lead's display name for the agent.
++        title: AgentTitle.clean(args["title"], name)
+       }
+ 
+       case RunServer.start_agent(ctx.run_id, attrs) do

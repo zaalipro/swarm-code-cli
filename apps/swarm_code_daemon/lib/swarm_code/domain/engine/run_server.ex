@@ -231,6 +231,7 @@ defmodule SwarmCode.Domain.Engine.RunServer do
   end
 
   @spec start_agent(String.t(), %{
+          optional(:title) => String.t(),
           parent_id: String.t(),
           name: String.t(),
           task: String.t(),
@@ -1191,7 +1192,7 @@ defmodule SwarmCode.Domain.Engine.RunServer do
           parent_id: attrs.parent_id,
           name: name,
           role: "sub",
-          title: name,
+          title: Map.get(attrs, :title) || name,
           depth: attrs.depth,
           prompt: attrs.task,
           status: if(queued?, do: "queued", else: "running")

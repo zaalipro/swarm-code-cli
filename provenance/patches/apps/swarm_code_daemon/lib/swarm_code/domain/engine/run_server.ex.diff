@@ -51,7 +51,15 @@
    @doc "The questions waiting for an answer in this run, or `[]`."
    @spec pending_questions(String.t()) :: [{String.t(), [map()]}]
    # Spec 43 §1.4: its own call — `get_state/1` copied the whole run (nodes,
-@@ -863,7 +900,8 @@
+@@ -194,6 +231,7 @@
+   end
+ 
+   @spec start_agent(String.t(), %{
++          optional(:title) => String.t(),
+           parent_id: String.t(),
+           name: String.t(),
+           task: String.t(),
+@@ -863,7 +901,8 @@
            from: from,
            timer: timer,
            permission: permission,
@@ -61,7 +69,7 @@
          })
          # spec 66 T3: the card used to render the node title alone — "run: " and
          # 60 characters of the command — and `detail` said "awaiting approval".
-@@ -899,7 +937,13 @@
+@@ -899,7 +938,13 @@
  
      state =
        state
@@ -76,7 +84,16 @@
        |> put_node(node_id, %{status: "awaiting_answer", detail: first})
  
      SwarmCode.Domain.Engine.Questions.put(state.conversation.id, state.run.id, node_id)
-@@ -1425,6 +1469,52 @@
+@@ -1147,7 +1192,7 @@
+           parent_id: attrs.parent_id,
+           name: name,
+           role: "sub",
+-          title: name,
++          title: Map.get(attrs, :title) || name,
+           depth: attrs.depth,
+           prompt: attrs.task,
+           status: if(queued?, do: "queued", else: "running")
+@@ -1425,6 +1470,52 @@
  
    def handle_call(:get_state, _from, state), do: {:reply, state, state}
  
