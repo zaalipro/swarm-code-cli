@@ -326,7 +326,7 @@ defmodule SwarmCodeCLI.UI.Projector.Interview do
 
         header_role =
           case mark do
-            :current -> {:text_primary, [:bold, :underline]}
+            :current -> {:text_primary, [:bold, :underlined]}
             :open -> :text_faint
             _ -> :text_muted
           end
