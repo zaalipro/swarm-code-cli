@@ -458,6 +458,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Providers do
       label: label,
       value: [{to_string(value || ""), :text_primary}],
       tag: [{"global", :text_muted}],
+      layer: :global,
       lines: error_lines(ctx, row_id),
       marks: if(R.row_error(ctx, row_id), do: [:invalid], else: []),
       editor:
@@ -507,6 +508,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Providers do
       label: "Kind",
       value: [{ModelPicker.kind_label(kind), :text_primary}],
       tag: [{"global", :text_muted}],
+      layer: :global,
       lines: error_lines(ctx, row_id),
       editor:
         {SwarmCodeCLI.UI.Settings.Editors.Enum,
@@ -569,6 +571,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Providers do
       label: "API key",
       value: value,
       tag: [{"global", :text_muted}],
+      layer: :global,
       lines: lines,
       state: if(R.running?(task), do: :running, else: :normal),
       keys:
@@ -632,6 +635,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Providers do
       label: "Default model",
       value: default_model_value(model, R.field(f, "models") || []),
       tag: [{"global", :text_muted}],
+      layer: :global,
       lines: error_lines(ctx, row_id),
       editor:
         {ModelPicker,
@@ -897,6 +901,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Providers do
       label: "Fallback on a refusal",
       value: [{if(on, do: "on", else: "off"), :text_primary}],
       tag: [{"global", :text_muted}],
+      layer: :global,
       lines: error_lines(ctx, row_id),
       editor: {SwarmCodeCLI.UI.Settings.Editors.Toggle, %{value: on}},
       keys: [{"Space", :toggle, "switch"}],

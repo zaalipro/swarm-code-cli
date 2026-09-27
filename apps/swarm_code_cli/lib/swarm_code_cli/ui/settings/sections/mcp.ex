@@ -346,6 +346,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.MCP do
           value: [{if(R.field(f, "enabled") == true, do: "on", else: "off"), :text_primary}],
           lines: [[{"off stops it at once", :text_faint}]],
           tag: [{"global", :text_muted}],
+          layer: :global,
           keys: [{"Space", :toggle, "switch"}],
           target: {:enabled, id}
         ),
@@ -449,6 +450,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.MCP do
         {if(changed, do: "not applied", else: "global"),
          if(changed, do: :warning, else: :text_muted)}
       ],
+      layer: if(changed, do: nil, else: :global),
       marks: if(changed, do: [:pending], else: []),
       lines:
         error_lines(ctx, row_id) ++
