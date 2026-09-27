@@ -741,6 +741,11 @@ defmodule SwarmCodeCLI.UI.Keymap do
     end
   end
 
+  # pass75 interview: Enter on the note moves to the next question or sends
+  # every answer, whatever is focused (an option, "other" or nothing).
+  defp modal_focus_activate({:question, node}, _state, _table),
+    do: result({:interview, {:confirm, node}})
+
   defp modal_focus_activate(_, %{focus: focus}, _) when focus in ["cancel", "close"],
     do: result(:close_top_layer)
 
@@ -755,22 +760,6 @@ defmodule SwarmCodeCLI.UI.Keymap do
 
   defp modal_focus_activate({:confirm_intent, intent}, %{focus: "confirm"} = state, table),
     do: activate({:intent, intent}, state, table)
-
-  defp modal_focus_activate({:question, id}, state, table) do
-    case Map.get(state.read_model.interactions, id) do
-      nil ->
-        :ignore
-
-      %{question: %{multiple: true}} when state.focus not in ["submit", "other"] ->
-        activate({:local, {:select_option, id, state.focus}}, state, table)
-
-      item ->
-        case Question.answer_intent(state, item, state.focus) do
-          :ignore -> :ignore
-          intent -> activate({:intent, intent}, state, table)
-        end
-    end
-  end
 
   defp modal_focus_activate({:approval, _}, state, table),
     do: approval_key(state.focus, state, table)
@@ -1008,15 +997,17 @@ defmodule SwarmCodeCLI.UI.Keymap do
       Switcher.field_key(layer) ->
         {:field_editor, Switcher.field_key(layer)}
 
+      # pass75 interview: the "other" editor of the note's current question.
       match?({:question, _}, layer) and state.focus == "other" ->
-        {:question, id} = layer
+        {:question, node} = layer
 
-        case state.read_model.interactions[id] do
-          %{state: :pending, expected_revision: revision} ->
-            {:field_editor, {:question_other, id, revision}}
-
-          _ ->
+        case Question.ask(state, node) do
+          nil ->
             nil
+
+          ask ->
+            row = Question.current(ask, Question.interview(state, node))
+            {:field_editor, {:question_other, row.id, row.expected_revision}}
         end
 
       match?({:research_form, _}, layer) and state.focus == "question" ->
