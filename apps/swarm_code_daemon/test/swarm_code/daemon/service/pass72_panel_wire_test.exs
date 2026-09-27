@@ -129,11 +129,76 @@ defmodule SwarmCode.Daemon.Service.Pass72PanelWireTest do
       finished_at: DateTime.add(c.t0, 9, :second)
     })
 
+    # pass75: a turn-limit stop is persisted as done; it is no report.
+    limited =
+      node!(%{
+        run_id: c.run.id,
+        parent_id: c.lead.id,
+        kind: "agent",
+        role: "sub",
+        name: "deps-review",
+        status: "done",
+        error_kind: "turn_budget",
+        max_turns: 30,
+        turn: 30,
+        depth: 1,
+        result:
+          "Deps are all ok; two findings remain.\n\n_(Stopped after 30 turns; partial result above.)_",
+        started_at: c.t0,
+        finished_at: DateTime.add(c.t0, 60, :second)
+      })
+
     Cache.clear()
     assert {:ok, %{"value" => workspace}} = query(c.backend, c.scope, "workspace")
     assert {:ok, snapshot} = DTO.WorkspaceSnapshot.decode(workspace)
     swarm = Enum.find(snapshot.runs, &(&1.id == c.run.id))
-    assert {swarm.reported, swarm.total} == {1, 3}
+    assert {swarm.reported, swarm.total} == {1, 4}
+
+    body = Enum.find(workspace["agents"], &(&1["id"] == limited.id))
+
+    assert %{"stop_reason" => "turn_budget", "turn" => 30, "max_turns" => 30} = body
+    assert body["last_words"] == "Deps are all ok; two findings remain."
+    assert body["now"] == "no answer after 30 turns"
+    assert body["finding"] == nil
+  end
+
+  test "turn and max_turns ride the wire and a turn tick re-sends", c do
+    node = turn_node!(c)
+    Cache.clear()
+    full = full!(c.backend)
+    assert %{"turn" => 3, "max_turns" => 30} = agent_body(full, c.run.id, node.id)
+
+    assert {:ok, %{"value" => workspace}} = query(c.backend, c.scope, "workspace")
+    assert {:ok, snapshot} = DTO.WorkspaceSnapshot.decode(workspace)
+    agent = Enum.find(snapshot.agents, &(&1.id == node.id))
+    assert {agent.turn, agent.max_turns} == {3, 30}
+
+    # An agent without a budget sends neither.
+    assert %{"turn" => nil, "max_turns" => nil} = agent_body(full, c.run.id, c.web.id)
+
+    {:ok, _} = Conversations.update_node(node, %{turn: 4})
+    before = :sys.get_state(c.backend)
+    send(c.backend, {:nodes_patch, c.run.id, [{node.id, %{turn: 4}}]})
+    ticked = settled!(c.backend)
+
+    assert ticked.projections.partial == before.projections.partial + 1
+    assert ticked.projections.full == before.projections.full
+    assert agent_body(ticked, c.run.id, node.id)["turn"] == 4
+  end
+
+  test "partial and full reloads agree on turns", c do
+    node = turn_node!(c)
+    Cache.clear()
+    full!(c.backend)
+
+    {:ok, _} = Conversations.update_node(node, %{turn: 7})
+    send(c.backend, {:nodes_patch, c.run.id, [{node.id, %{turn: 7}}]})
+    partial = agent_body(settled!(c.backend), c.run.id, node.id)
+    assert partial["turn"] == 7
+
+    assert {:ok, %{"value" => workspace}} = query(c.backend, c.scope, "workspace")
+    assert Enum.find(workspace["agents"], &(&1["id"] == node.id)) == partial
+    assert agent_body(full!(c.backend), c.run.id, node.id) == partial
   end
 
   test "runs carry reported of total, consensus rounds, goal iterations and phases", c do
@@ -239,6 +304,50 @@ defmodule SwarmCode.Daemon.Service.Pass72PanelWireTest do
     assert {:ok, %{"value" => second}} = query(c.backend, c.scope, "workspace")
     assert first["agents"] == second["agents"]
     assert first["runs"] == second["runs"]
+  end
+
+  defp turn_node!(c),
+    do:
+      node!(%{
+        run_id: c.run.id,
+        parent_id: c.lead.id,
+        kind: "agent",
+        role: "sub",
+        name: "turn-review",
+        status: "running",
+        depth: 1,
+        max_turns: 30,
+        turn: 3,
+        started_at: c.t0
+      })
+
+  defp agent_body(state, run_id, node_id),
+    do: Enum.find(state.runs[run_id].agents, &(&1["id"] == node_id))
+
+  # The armed refresh ran (it fires 20 ms after the first event).
+  defp settled!(backend, tries \\ 200) do
+    state = :sys.get_state(backend)
+
+    cond do
+      not state.refresh_pending ->
+        state
+
+      tries > 0 ->
+        receive do
+        after
+          5 -> settled!(backend, tries - 1)
+        end
+
+      true ->
+        flunk("the refresh never ran")
+    end
+  end
+
+  # A refresh nobody armed is a full reload.
+  defp full!(backend) do
+    settled!(backend)
+    send(backend, :refresh_projection)
+    :sys.get_state(backend)
   end
 
   # ---------------------------------------------------------------- fixture
