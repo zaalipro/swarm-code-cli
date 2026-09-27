@@ -69,9 +69,10 @@ defmodule SwarmCodeCLI.UI.Settings.C74AppearanceTest do
     assert text =~ "preview · the same rows in both themes"
     assert text =~ "╭─ dark ───"
     assert text =~ "╭─ light ───"
-    # cli74 G1 (QA F-14): boxes of 37 so the pair fits a 160-column page's 80 cells.
-    assert text =~ "│ ✳ Assistant  deepseek-v4-pro        │ │ ✳ Assistant  deepseek-v4-pro"
-    assert text =~ "│ ! deps-agent wants to run           │"
+    # cli74 G1 (QA F-14): boxes of 36 so the pair fits the 78 cells an E page
+    # (pass 75, 82 cells from its spine) gives a row without a label.
+    assert text =~ "│ ✳ Assistant  deepseek-v4-pro       │ │ ✳ Assistant  deepseek-v4-pro"
+    assert text =~ "│ ! deps-agent wants to run          │"
 
     assert text =~
              "ASCII twins  * S C * # /   * ~ . ! v x o   #-   (Glyphs: ASCII, or SWARM_ASCII=1)"

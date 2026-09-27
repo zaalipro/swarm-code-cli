@@ -21,6 +21,13 @@ defmodule SwarmCodeCLI.UI.Settings.C74Qa2Test do
   defp sized(columns, rows),
     do: act!(ready(), {:resize, %Size{columns: columns, rows: rows}})
 
+  # a truecolor terminal with the rich glyphs (pass 75: the rounded frame)
+  defp rich(state),
+    do: %{
+      state
+      | capabilities: %{state.capabilities | color_mode: :truecolor, glyph_tier: :rich}
+    }
+
   defp lines(state) do
     {scene, _actions} = Projector.project(state)
 
@@ -46,7 +53,9 @@ defmodule SwarmCodeCLI.UI.Settings.C74Qa2Test do
   describe "P0-1: the model picker is drawn" do
     for {columns, rows} <- [{160, 45}, {80, 24}] do
       test "Enter on Chat model floats the F4 box at #{columns}×#{rows}" do
-        {state, fake} = opened(:models_effort, state: sized(unquote(columns), unquote(rows)))
+        {state, fake} =
+          opened(:models_effort, state: rich(sized(unquote(columns), unquote(rows))))
+
         state = Nav.put_cursor(state, "key:models.chat")
         {state, _fake} = state |> verb(:enter) |> serve(fake)
         assert state.settings.mode == :editing
@@ -62,15 +71,18 @@ defmodule SwarmCodeCLI.UI.Settings.C74Qa2Test do
         assert Enum.all?(lines, &(cells(&1) == unquote(columns))),
                inspect(Enum.map(lines, &cells/1))
 
-        top = Enum.find_index(lines, &(&1 =~ "┌─ Chat model"))
+        # pass 75 (R26.3-26.4): the rounded frame; `N of M` on the filter's
+        # line; the keys in the status line under PICK
+        top = Enum.find_index(lines, &(&1 =~ "╭─ Chat model"))
         assert top, Enum.join(lines, "\n")
-        assert Enum.at(lines, top) =~ ~r/providers · \d+ models ─┐/
-        assert Enum.at(lines, top + 1) =~ "/ type to filter · provider/model works too"
+        assert Enum.at(lines, top) =~ ~r/providers · \d+ models ─╮/
+        assert Enum.at(lines, top + 1) =~ "/ ▏type to filter · provider/model works too"
         text = Enum.join(lines, "\n")
         assert text =~ "DeepSeek"
         assert text =~ ~r/✓ deepseek-v4-pro/
-        assert text =~ ~r/Enter choose .* \d+ of \d+/
-        assert Enum.any?(lines, &(&1 =~ "└"))
+        assert List.last(lines) =~ ~r/PICK .*Enter choose/
+        assert Enum.at(lines, top + 1) =~ ~r/\d+ of \d+/
+        assert Enum.any?(lines, &(&1 =~ "╰"))
       end
     end
 
@@ -110,7 +122,7 @@ defmodule SwarmCodeCLI.UI.Settings.C74Qa2Test do
     end
 
     test "Enter while the options are on their way writes nothing (it erased the model)" do
-      {state, fake} = opened(:models_effort)
+      {state, fake} = opened(:models_effort, state: rich(ready()))
       layer = state.settings
       state = %{state | settings: %{layer | data: %{layer.data | records: %{}}}}
       state = Nav.put_cursor(state, "key:models.sub_agent")
@@ -122,7 +134,7 @@ defmodule SwarmCodeCLI.UI.Settings.C74Qa2Test do
       assert sent(effects) == []
       assert state.settings.mode == :editing
       text = state |> lines() |> Enum.join("\n")
-      assert text =~ "┌─ Sub-agent model"
+      assert text =~ "╭─ Sub-agent model"
 
       # the options arrive: the cursor is on the current value, not the null choice
       {state, _fake} = serve(state, loads, fake)
@@ -593,23 +605,29 @@ defmodule SwarmCodeCLI.UI.Settings.C74Qa2Test do
     {:ok, editor} = EnumEditor.init(%{}, %{choices: choices, value: "firecrawl"}, ctx)
     shown = EnumEditor.display(editor, ctx).value
     text = words(shown)
-    assert text =~ ~r/^‹ … .*Firecrawl ›$/, text
-    assert {"Firecrawl", :selection} in shown
+    # pass 75 (R26.1): a segmented control, no `‹ ›`: `…` at the cut end, the
+    # candidate the one accent-backed word
+    assert text =~ ~r/^…   .*Firecrawl $/, text
+    refute text =~ "‹"
+    assert {" Firecrawl ", {:on_accent, [:bold]}} in shown
     assert String.length(text) <= 40
 
-    # at 200 columns they all fit, as §4.5 draws them
+    # at 200 columns E's page is still 82 cells (R20.1): the same window
     wide = %{size: %{columns: 200, rows: 45}}
+    assert words(EnumEditor.display(editor, wide).value) == text
 
-    assert words(EnumEditor.display(editor, wide).value) ==
-             "‹ Plain fetch (strip HTML)  Jina Reader  Firecrawl ›"
+    # where the value column has room for them all they are drawn, as §4.5 does
+    roomy = [%{value: "a", label: "Auto", hint: nil}, %{value: "b", label: "Build", hint: nil}]
+    {:ok, small} = EnumEditor.init(%{}, %{choices: roomy, value: "a"}, wide)
+    assert words(EnumEditor.display(small, wide).value) == " Auto    Build"
   end
 
   describe "P2-11: the Overview's counts and storage line" do
     test "the rail counts providers and MCP servers before their sections are opened" do
       {state, _fake} = opened(:overview, state: sized(160, 45))
       refute Map.has_key?(state.settings.data.records, {"providers", %{}})
-      text = state |> lines() |> Enum.join("\n")
-      assert text =~ ~r/Providers\s+4 │/
+      # pass 75 (R20.1): the rail's 24 cells from column 2, no rule after them
+      assert Enum.any?(lines(state), &(String.slice(&1, 2, 24) =~ ~r/Providers\s+4\s*$/))
     end
 
     test "at a glance has a storage line from the service's fragment" do
@@ -660,7 +678,9 @@ defmodule SwarmCodeCLI.UI.Settings.C74Qa2Test do
       {state, _fake} = serve(state, effects, fake, 8)
 
       display = ModelPicker.display(state.settings.editing.state, Nav.ctx(state))
-      assert display.popover.meta =~ ~r/^3 providers · 15\d models$/, display.popover.meta
+      # pass 75 (R26.4): the counts are two figures for the top border
+      assert {"3 providers", models} = display.popover.meta
+      assert models =~ ~r/^15\d models$/, models
 
       names =
         for {_pid, name, _kind, _options} <-

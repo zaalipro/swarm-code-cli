@@ -243,8 +243,15 @@ defmodule SwarmCodeCLI.UI.Settings.C74Qa1Test do
     state = %{state | capabilities: caps}
     state = state |> press!(letter("/")) |> typed("monthly budget") |> key(:down)
 
+    # pass 75 (R27.4): the query's words are `[word]` chips in the twin
     marked = fn state, label ->
-      line = state |> screen() |> String.split("\n") |> Enum.find(&(&1 =~ label))
+      line =
+        state
+        |> screen()
+        |> String.split("\n")
+        |> Enum.map(&String.replace(&1, ~r/\[([^\]]*)\]/u, "\\1"))
+        |> Enum.find(&(&1 =~ label))
+
       line =~ ~r/>\s*\S?\s*#{label}/u
     end
 
@@ -596,8 +603,10 @@ defmodule SwarmCodeCLI.UI.Settings.C74Qa1Test do
 
     n = length(for row <- Nav.rows(state), String.starts_with?(row.id, "rec:provider:"), do: row)
     assert n > 0
+    # pass 75 (R20.1, R25.5): no rule after the rail; its 24 cells from column 2
     line = state |> screen() |> String.split("\n") |> Enum.find(&(&1 =~ ~r/^\s+Providers\s/u))
-    assert line =~ ~r/Providers\s+#{n}\s+│/u, line
+    assert String.slice(line, 2, 24) =~ ~r/Providers\s+#{n}\s*$/u, line
+    assert String.slice(line, 26, 4) == "    ", line
   end
 
   # ------------------------------------------------------------------ F-22
