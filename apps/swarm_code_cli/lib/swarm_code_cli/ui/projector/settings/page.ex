@@ -101,7 +101,7 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Page do
       left = [{"   ", :text_primary}] ++ title ++ [{" ", :text_primary}]
       stop = if tag == [], do: 4, else: Text.cells(state, right) + 3
       run = max(page.width - Text.cells(state, left) - stop, 0)
-      line = left ++ [{String.duplicate(Glyphs.for_caps(:title_lead, caps), run), :text_faint}]
+      line = left ++ [{String.duplicate("-", run), :text_faint}]
       Text.spread(state, line, right, page.width)
     else
       lead =
@@ -267,7 +267,7 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Page do
       Glyphs.twin?(caps) ->
         cond do
           at > 0 -> {" ", :text_primary}
-          focus? -> {glyph.(:focus_bar), {:text_primary, [:bold, :reversed]}}
+          focus? -> {">", {:text_primary, [:bold, :reversed]}}
           :attention in row.marks -> {"!", :warning}
           Strata.set?(row.layer) -> {"*", :text_primary}
           true -> {"|", :text_faint}
