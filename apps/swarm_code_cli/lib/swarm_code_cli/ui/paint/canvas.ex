@@ -96,6 +96,44 @@ defmodule SwarmCodeCLI.UI.Paint.Canvas do
 
   def fill(_, _, _), do: {:error, :invalid_cell}
 
+  @doc """
+  pass75 interview: maps the style index of every cell inside `rect` (clipped
+  to the canvas) through `fun`, keeping glyphs, widths and owners. `fun` is
+  pure: it never registers a style.
+  """
+  @spec restyle(t(), Rect.t(), (non_neg_integer() -> non_neg_integer())) :: t()
+  def restyle(
+        %__MODULE__{size: %Size{columns: columns, rows: rows}} = canvas,
+        %Rect{} = rect,
+        fun
+      )
+      when is_function(fun, 1) do
+    x0 = max(rect.x, 0)
+    y0 = max(rect.y, 0)
+    x1 = min(rect.x + rect.width, columns) - 1
+    y1 = min(rect.y + rect.height, rows) - 1
+
+    if x0 > x1 or y0 > y1 do
+      canvas
+    else
+      cells =
+        for y <- y0..y1, x <- x0..x1, reduce: canvas.cells do
+          cells ->
+            index = y * columns + x
+
+            case :array.get(index, cells) do
+              {:glyph, glyph, width, style} ->
+                :array.set(index, {:glyph, glyph, width, fun.(style)}, cells)
+
+              _continuation ->
+                cells
+            end
+        end
+
+      %{canvas | cells: cells}
+    end
+  end
+
   @spec finish(t()) :: tuple()
   def finish(%__MODULE__{cells: cells}), do: cells |> :array.to_list() |> List.to_tuple()
 
