@@ -1819,15 +1819,16 @@ defmodule SwarmCodeCLI.UI.Projector.Overlay do
 
   defp short(state, agent), do: Name.fit(agent_name(state, agent), 16, state)
 
+  # The hue the panel and the run card give the agent (`Panel.Model`): the
+  # overlay counted the Lead as a lane, so a worker took its neighbour's
+  # colour (frame SA2 O: `Build check` in the V2 row's lane; 410).
   defp lane_role(state, agent) do
-    index =
-      state
-      |> OverlayState.neighbours()
-      |> Enum.find_index(&(&1.id == agent.id))
-
-    case index do
-      nil -> :text_primary
-      index -> elem(Theme.agent_lane(Integer.mod(index, 5) + 1), 1)
+    with %{} = run <- Map.get(state.read_model.runs, agent.run_id),
+         %{name_role: role} <-
+           state |> PanelModel.agents(run) |> Enum.find(&(&1.id == agent.id)) do
+      role
+    else
+      _ -> :text_primary
     end
   end
 

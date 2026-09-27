@@ -169,6 +169,37 @@ defmodule SwarmCodeCLI.UI.Projector.C75PanelTest do
     assert_role(st, "✓", :success)
   end
 
+  # 410 (sandbox, frame SA2 O): the overlay counted the Lead as a lane, so
+  # its header drew a worker in its neighbour's hue.
+  test "the ^F overlay names an agent in the hue the panel gives it" do
+    st = state(:panel_owner19, 176, 45)
+
+    build =
+      st.read_model.agents
+      |> Map.values()
+      |> Enum.find(&(Panel.Name.of(st, &1) == "Build check"))
+
+    {st, _} = SwarmCodeCLI.UI.Reducer.update(st, {:overlay_open, build.run_id, build.id})
+    {scene, _} = Projector.project(st)
+    {:ok, plan} = Paint.build(scene, %Options{color_mode: :truecolor, ascii?: false})
+
+    cells =
+      for x <- 0..(st.size.columns - 1) do
+        case Plan.cell(plan, x, 0) do
+          {:glyph, glyph, _, index} -> {x, glyph, index}
+          _ -> {x, "", nil}
+        end
+      end
+
+    text = Enum.map_join(cells, &elem(&1, 1))
+    assert text =~ "Build check"
+    [before | _] = String.split(text, "Build check", parts: 2)
+    {_, "B", index} = Enum.at(Enum.reject(cells, &(elem(&1, 1) == "")), String.length(before))
+
+    assert elem(plan.palette, index).foreground ==
+             Theme.style(:agent_lane_3, st.capabilities).foreground.value
+  end
+
   # ------------------------------------------------------------ the band
 
   test "SA S3's band: two requests oldest first, AI names, the ask's words" do
