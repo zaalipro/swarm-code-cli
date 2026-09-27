@@ -100,20 +100,23 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
   # and the last one is cut to the height with a count of what is left out.
   # Each candidate is a function, built only when the richer ones did not
   # fit: most frames stop at the first.
+  # pass 75 V2 (7.6): every candidate ends with the keys row and the rows
+  # are top-anchored; blank rows fill the pane below them.
   defp layout(ctx, height) do
     all = candidates(ctx)
 
     Enum.find_value(all, fn build ->
       rows = build.()
-      footer = footer_rows(ctx)
-      if length(drawn(rows)) + length(footer) <= height, do: fill(rows, footer, height, ctx)
-    end) || cut(List.last(all).(), footer_rows(ctx), height, ctx)
+      if length(drawn(rows)) <= height, do: fill(rows, height, ctx)
+    end) ||
+      (
+        {body, keys} = Enum.split(List.last(all).(), -1)
+        cut(body, keys, height, ctx)
+      )
   end
 
-  defp fill(rows, footer, height, ctx) do
-    blank = List.duplicate(blank(ctx), max(0, height - length(drawn(rows)) - length(footer)))
-    rows ++ blank ++ footer
-  end
+  defp fill(rows, height, ctx),
+    do: rows ++ List.duplicate(blank(ctx), max(0, height - length(drawn(rows))))
 
   # The last candidate still does not fit: keep what fits and say how many
   # agents are left out; the footer goes first when even that is too tall.
@@ -174,42 +177,49 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
     kept
   end
 
-  # Where the band goes (R3, D2): under the run's header when one run is
-  # live, under the load row when there are more (D6), and first in compact.
+  # Where the band goes: inside the full body, after the headers (V2, S3);
+  # first in compact.
+  defp candidates(%{mode: :full} = ctx), do: bodies(ctx, [])
+
   defp candidates(ctx) do
-    band = band_rows(ctx)
-    summary = summary_rows(ctx)
-
-    cond do
-      length(ctx.runs) > 1 ->
-        Enum.map(bodies(ctx, []), fn build -> fn -> summary ++ band ++ build.() end end)
-
-      ctx.mode == :compact and band != [] ->
-        Enum.map(bodies(ctx, []), fn build -> fn -> band ++ [blank(ctx) | build.()] end end)
-
-      true ->
-        bodies(ctx, band)
+    case band_rows(ctx) do
+      [] -> bodies(ctx, [])
+      band -> Enum.map(bodies(ctx, []), fn build -> fn -> band ++ [blank(ctx) | build.()] end end)
     end
   end
 
-  defp bodies(%{mode: :full} = ctx, band) do
-    [chat | others] = ordered(ctx)
+  # pass 75 V2 (D2): one body for every shown run: the in-chat run's header,
+  # one row per other run, the band, the found blocks, one agents block,
+  # then the spent, earlier and keys rows. Tighter candidates drop the
+  # finished agents' conclusions, then the why-lines.
+  defp bodies(%{mode: :full} = ctx, _band) do
+    [chat | others] = runs = ordered(ctx)
+    pairs = Enum.map(runs, &{&1, Map.get(ctx.views, &1.id, [])})
+    headers = run_header_full(ctx, chat) ++ Enum.map(others, &launched_row(ctx, &1))
 
-    launched = Enum.map(others, &launched_row(ctx, &1))
+    band =
+      case band_rows(ctx) do
+        [] -> []
+        band -> band ++ [blank(ctx)]
+      end
 
-    [
-      fn -> unfold_full(ctx, chat, band, true) ++ launched end,
-      fn -> unfold_full(ctx, chat, band, false) ++ launched end,
-      fn -> unfold_full_tight(ctx, chat, band) ++ launched end
-    ]
+    agents = agent_rows(ctx, pairs)
+    tail = tail_rows(ctx, true)
+
+    for level <- [:full, :summary, :bare] do
+      fn ->
+        headers ++
+          [blank(ctx)] ++
+          band ++
+          Enum.flat_map(runs, &found_rows(ctx, &1, level)) ++ [blank(ctx)] ++ agents ++ tail
+      end
+    end
   end
 
   defp bodies(%{mode: :compact} = ctx, _band) do
     [chat | others] = ordered(ctx)
-    earlier = earlier_rows(ctx)
 
-    # Fold the other runs from the last one up (D5), then drop earlier runs,
-    # then collapse done agents.
+    # Fold the other runs from the last one up (D5), then drop earlier runs.
     # The unfolded rows of each run are drawn once and shared by the folds.
     chat_rows = unfold_compact(ctx, chat)
     open_rows = Map.new(others, &{&1.id, unfold_compact(ctx, &1)})
@@ -225,12 +235,52 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
         end
       end
 
-    with_earlier = Enum.map(folds, fn build -> fn -> build.() ++ earlier end end)
-    with_earlier ++ folds
+    with_earlier = Enum.map(folds, fn build -> fn -> build.() ++ tail_rows(ctx, true) end end)
+    without = Enum.map(folds, fn build -> fn -> build.() ++ tail_rows(ctx, false) end end)
+    with_earlier ++ without
   end
 
-  # The run in chat first; when no run is in chat, the newest live run leads.
-  defp ordered(ctx), do: ctx.runs
+  # The panel's tail (7.4-7.6): a blank row, what the shown runs spent, the
+  # earlier row, the keys.
+  defp tail_rows(ctx, earlier?) do
+    [blank(ctx), spent_row(ctx)] ++
+      if(earlier?, do: earlier_rows(ctx), else: []) ++ footer_rows(ctx)
+  end
+
+  # pass 75 (7.4, 9.3): `spent $0.82 · 4.1M tokens · 2 runs`, the priced
+  # runs' sum and every run's tokens; tokens only when no run is priced.
+  defp spent_row(ctx) do
+    pairs = Enum.map(ctx.runs, &{&1, Map.get(ctx.views, &1.id, [])})
+    priced = Enum.filter(ctx.runs, &is_number(&1.cost_usd))
+    tokens = pairs |> Enum.map(fn {run, views} -> tokens(run, views) end) |> Enum.sum()
+    tokens = Model.tokens(tokens) || "0"
+    words = count(length(ctx.runs), "run", "runs")
+
+    left =
+      case priced do
+        [] ->
+          [{"spent ", :text_faint}, {"#{tokens} tokens · " <> words, :text_muted}]
+
+        _ ->
+          money = priced |> Enum.map(& &1.cost_usd) |> Enum.sum() |> Model.money()
+
+          plus =
+            case plus(pairs) do
+              "" -> []
+              mark -> [{mark, :text_faint}]
+            end
+
+          [{"spent ", :text_faint}, {money, :text_primary}] ++
+            plus ++ [{" · #{tokens} tokens · " <> words, :text_muted}]
+      end
+
+    row(ctx, left, [])
+  end
+
+  # The run in chat first (when no run is in chat, the newest live run
+  # leads), then the other shown runs in the order they started (V2, 6.1).
+  defp ordered(%{runs: [first | others]}),
+    do: [first | Enum.sort_by(others, &{&1.started_at || 0, &1.created_sequence, &1.id})]
 
   # --------------------------------------------------------------- rows
 
@@ -258,24 +308,7 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
       row(ctx, [{"Ctrl-G", :text_muted}, {"  all runs", :text_faint}], [])
     ]
 
-    fill(Enum.take(rows, height), Enum.take(footer_rows(ctx), max(0, height - 3)), height, ctx)
-  end
-
-  # Row 0 (D1): the whole load, when more than one run is live.
-  defp summary_rows(%{runs: runs}) when length(runs) < 2, do: []
-
-  defp summary_rows(ctx) do
-    agents = ctx.views |> Map.values() |> List.flatten()
-    live = Enum.count(agents, &(&1.state not in [:done, :failed, :stopped]))
-    cost = ctx.runs |> Enum.map(&(Map.get(&1, :cost_usd) || 0)) |> Enum.sum()
-
-    rest =
-      [count(length(agents), "agent", "agents"), "#{live} live", Model.money(cost)]
-      |> Enum.reject(&is_nil/1)
-      |> Enum.map_join("", &(" · " <> &1))
-
-    [row(ctx, [{count(length(ctx.runs), "run", "runs"), :text_primary}, {rest, :text_faint}], [])] ++
-      if(ctx.mode == :compact and ctx.needs == [], do: [blank(ctx)], else: [])
+    fill(Enum.take(rows ++ footer_rows(ctx), height), height, ctx)
   end
 
   # ------------------------------------------------------------ the band
@@ -572,10 +605,10 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
   # --------------------------------------------------------- found
 
   # pass 75 V2 (7.3): what the run has produced so far. `found  R of T in`,
-  # the gauge, why the report is not in yet; then, with `detail?`, each
-  # finished agent's `✓` row, its conclusion and its refs, and the Lead's
-  # report once it is done. Nothing when the run has no sub agents.
-  defp found_rows(ctx, run, detail? \\ true) do
+  # the gauge, why the report is not in yet (not at `level` `:bare`); then,
+  # at `:full`, each finished agent's `✓` row, its conclusion and its refs,
+  # and the Lead's report once it is done. Nothing without sub agents.
+  defp found_rows(ctx, run, level) do
     state = ctx.state
     views = Map.get(ctx.views, run.id, [])
     subs = Enum.reject(views, &(&1.role in [:lead, :assistant]))
@@ -601,12 +634,12 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
         )
 
       why =
-        case Shapes.why_line(run, subs, state) do
-          nil -> []
-          words -> [row(ctx, [{"  " <> words, :text_faint}])]
+        case level != :bare && Shapes.why_line(run, subs, state) do
+          words when is_binary(words) -> [row(ctx, [{"  " <> words, :text_faint}])]
+          _ -> []
         end
 
-      details = if detail?, do: found_details(ctx, run, views, subs), else: []
+      details = if level == :full, do: found_details(ctx, run, views, subs), else: []
       details = if details == [], do: [], else: [blank(ctx) | details]
 
       Enum.map([count, gauge | why], &target(&1, {:run, run.id})) ++ details
@@ -738,22 +771,6 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
 
   # -------------------------------------------------------- full blocks
 
-  defp unfold_full(ctx, run, band, _extras?) do
-    views = Map.get(ctx.views, run.id, [])
-    header = run_header_full(ctx, run)
-    band = if band == [], do: [], else: band ++ [blank(ctx)]
-    gap = if length(ctx.runs) > 1, do: [], else: [blank(ctx)]
-
-    header ++
-      gap ++ band ++ found_rows(ctx, run) ++ [blank(ctx)] ++ agent_rows(ctx, [{run, views}])
-  end
-
-  # Full mode with too little height: the header, the band and one row per agent.
-  defp unfold_full_tight(ctx, run, band) do
-    views = Map.get(ctx.views, run.id, [])
-    run_header_full(ctx, run) ++ band ++ agent_rows(ctx, [{run, views}], false)
-  end
-
   # ------------------------------------------------------------ agents
 
   # pass 75 V2 (6.1-6.6): one block for the shown runs, `runs_in_order` the
@@ -880,7 +897,7 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
     views = Map.get(ctx.views, run.id, [])
 
     found =
-      case found_rows(ctx, run, false) do
+      case found_rows(ctx, run, :bare) do
         [count | _] -> [count]
         [] -> []
       end
@@ -929,10 +946,8 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
   def done_mark(ctx, %{state: :failed}), do: {g(ctx, :failed), :error}
   def done_mark(ctx, _run), do: {g(ctx, :stopped), :text_muted}
 
+  # pass 75 V2 (7.6): the keys row, no rule above it.
   defp footer_rows(ctx) do
-    inner = max(0, ctx.width - 2)
-    rule = row(ctx, [{String.duplicate(g(ctx, :rule), inner), :text_ghost}], [])
-
     keys =
       cond do
         ctx.hint? ->
@@ -982,41 +997,22 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
             []
           )
 
-        length(ctx.runs) > 1 and ctx.mode == :full ->
-          row(
-            ctx,
-            [
-              {"^F", :text_muted},
-              {" + 1-#{min(9, length(ctx.runs))} opens a run  ", :text_faint},
-              {"^N", :text_muted},
-              {" next", :text_faint}
-            ],
-            [{mode_word(ctx), :text_faint}]
-          )
-
         true ->
-          row(
-            ctx,
-            [
-              {"^F", :text_muted},
-              {" agents  ", :text_faint},
-              {"^N", :text_muted},
-              {" needs you  ", :text_faint},
-              {"^B", :text_muted},
-              {" panel", :text_faint}
-            ],
-            [{mode_word(ctx), :text_faint}]
-          )
+          row(ctx, [
+            {"^F", :text_muted, [:bold]},
+            {" agents  ", :text_faint},
+            {"^N", :text_muted, [:bold]},
+            {" needs you  ", :text_faint},
+            {"^B", :text_muted, [:bold]},
+            {" panel", :text_faint}
+          ])
       end
 
-    [rule, keys]
+    [keys]
   end
 
   @hint_order ~w(s d f g h j k l w e r t u i o p)
   defp order(label), do: Enum.find_index(@hint_order, &(&1 == label)) || 99
-
-  defp mode_word(%{mode: :compact}), do: "compact"
-  defp mode_word(_), do: "full"
 
   # ------------------------------------------------------------ helpers
 

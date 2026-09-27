@@ -247,7 +247,9 @@ defmodule SwarmCodeCLI.UI.Projector.PanelTest do
     assert text =~ "   the Lead reports once all 4 are in"
     assert text =~ ~r/   ✓ Llm tools +1:22 · 9k/
     refute text =~ "last 60 s"
-    assert List.last(rows) =~ ~r/\^F agents  \^N needs you  \^B panel +full$/
+    # pass 75 V2 (7.6): the keys row is the last content row, top-anchored.
+    assert rows |> Enum.reject(&(&1 == "")) |> List.last() == " ^F agents  ^N needs you  ^B panel"
+    assert List.last(rows) == ""
   end
 
   test "the band is absent when nothing waits (frame 3), and findings take the done rows" do
@@ -342,13 +344,22 @@ defmodule SwarmCodeCLI.UI.Projector.PanelTest do
     refute text =~ "Llm tools"
     assert text =~ " found           1 of 4 in"
     assert text =~ ~r/^ +Web ui desktop mix test/m
-    assert List.last(rows) =~ "compact"
+    # pass 75 (7.9): the spent and keys rows end the content.
+    content = rows |> Enum.map(&String.trim_trailing/1) |> Enum.reject(&(&1 == ""))
+    assert List.last(content) == " ^F agents  ^N needs you  ^B panel"
+    assert Enum.at(content, -2) =~ ~r/^ spent \$0\.15\+ · 65k tokens · 1 run$/
   end
 
-  test "heavy full: the load row, two requests oldest first, the others on one row each" do
+  test "heavy full: the spent row, two requests oldest first, every run's header row" do
     text = :panel_heavy |> state(160, 45) |> panel_text() |> Enum.join("\n")
 
-    assert text =~ "5 runs · 17 agents"
+    # pass 75 V2: no load row; the spent row sums the five runs.
+    assert text =~ ~r/^ spent \$1\.71\+ · 223k tokens · 5 runs *$/m
+    assert text =~ ~r/^▌⋔ architecture review *$/m
+    assert text =~ ~r/^ ⚖ should runs own worktrees\? +03:10 *$/m
+    # Every shown run's agents are in the one agents block.
+    assert text =~ ~r/^ ⋔ ! Plug +wants to run *$/m
+    assert text =~ ~r/^ ⧉ ✗ Retry tests +tests failed/m
     assert text =~ "! 2 NEED YOU · oldest first"
     assert text =~ ~r/Plug +edit lib\/api\/plug.ex/
     assert text =~ ~r/^ ⋔ api hardening  0 of 3 in +05:02 *$/m
@@ -445,7 +456,8 @@ defmodule SwarmCodeCLI.UI.Projector.PanelTest do
     assert labels["s"] == {:agent, "demo-panel-run-80", "agent-80-5"}
     assert labels["f"] == {:agent, "demo-panel-run-60", "agent-60-1"}
     assert labels["g"] == {:agent, "demo-panel-run-20", "agent-20-3"}
-    refute SwarmCodeCLI.UI.Hint.label_for(labels, {:agent, "demo-panel-run-70", "agent-70-4"})
+    # pass 75 V2: plug's run is no longer folded, so its agents row takes a letter.
+    assert SwarmCodeCLI.UI.Hint.label_for(labels, {:agent, "demo-panel-run-70", "agent-70-4"})
 
     text = st |> Map.put(:hint, %{labels: labels, typed: ""}) |> panel_text() |> Enum.join("\n")
     assert text =~ "+1 more"
@@ -537,7 +549,9 @@ defmodule SwarmCodeCLI.UI.Projector.PanelTest do
     assert text =~ ~r/S ! Web ui desktop +wants to run/
     assert text =~ ~r/o Engine lifecycle +tracing where/
     assert text =~ ~r/\. Lead +waiting on 3 reviewers/
-    assert text =~ ~r/v Llm tools +1:22/
+    # The heavy frame keeps no found details; frame 2's does, in ASCII too.
+    two = state(:panel_swarm_2, 160, 45, mode: :monochrome, ascii?: true, tier: :measured)
+    assert two |> panel_text() |> Enum.join("\n") =~ ~r/   v Llm tools +1:22 · 9k/
     assert text =~ "S ######### --------- --------- ---------"
 
     compact = state(:panel_heavy, 160, 45, mode: :monochrome, ascii?: true, panel: :compact)

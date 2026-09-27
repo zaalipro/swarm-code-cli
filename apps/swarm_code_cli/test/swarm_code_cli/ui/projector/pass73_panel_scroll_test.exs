@@ -20,7 +20,15 @@ defmodule SwarmCodeCLI.UI.Projector.Pass73PanelScrollTest do
     extra =
       for i <- 6..29, into: %{} do
         id = "agent-80-#{i}"
-        {id, %{template | id: id, name: "worker-#{i}", started_at: template.started_at + i}}
+        # pass 75: a node's title is its slug unless the Lead named it.
+        {id,
+         %{
+           template
+           | id: id,
+             name: "worker-#{i}",
+             title: "worker-#{i}",
+             started_at: template.started_at + i
+         }}
       end
 
     put_in(state.read_model.agents, Map.merge(state.read_model.agents, extra))
@@ -52,6 +60,9 @@ defmodule SwarmCodeCLI.UI.Projector.Pass73PanelScrollTest do
     # Past the end it stops at the last row.
     far = state |> Map.put(:panel_scroll, 10_000) |> texts()
     assert length(far) == length(top)
-    assert Enum.any?(far, &(&1 =~ "worker-29"))
+    # pass 75: the slug reads humanised.
+    assert Enum.any?(far, &(&1 =~ "Worker 29"))
+    # The keys row stays the last content row.
+    assert List.last(far) =~ "^F agents  ^N needs you  ^B panel"
   end
 end
