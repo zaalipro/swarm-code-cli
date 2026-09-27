@@ -120,6 +120,15 @@ defmodule SwarmCodeCLI.UI.Settings.C75ChromeSearchTest do
       assert Enum.any?(key, fn {text, style} -> text =~ "theme" and style.role == :chip_info end)
     end
 
+    test "the chip lights the word in place: a key and a label read whole (407)",
+         %{state: state} do
+      [{row, text, _} | _] = page_rows(state, ~r/^.  Theme\s+Follow the desktop app/u)
+      key = state |> lines() |> Enum.at(row + 1)
+      assert key =~ "terminal.theme"
+      refute key =~ "terminal. theme"
+      assert text =~ ~r/  Theme {2,}Follow/u
+    end
+
     test "the query's word is a `chip_info` chip on the label", %{state: state} do
       [{_, _, spans} | _] = page_rows(state, ~r/^.  Theme\s+Follow the desktop app/u)
 

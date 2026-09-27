@@ -681,8 +681,10 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Page do
   @doc """
   While a query is searched, each of its words (two characters or more, not
   an `@` filter) lights up where it matched in `segments`, case-insensitively:
-  a `chip_info` chip ` word ` (the twin: `[word]`); the other runs keep their
-  role. Outside a search the segments come back unchanged.
+  a `chip_info` chip on the word itself, with no padding, so a key still
+  reads whole (`terminal.theme`, E's F5; 407) (the twin: `[word]`); the
+  other runs keep their role. Outside a search the segments come back
+  unchanged.
   """
   @spec chips(map(), segments()) :: segments()
   def chips(%{settings: %Layer{mode: :search, search: %{query: query}}} = state, segments)
@@ -725,7 +727,7 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Page do
         chip =
           if twin?,
             do: {"[" <> matched <> "]", :text_primary},
-            else: {" " <> matched <> " ", :chip_info}
+            else: {matched, :chip_info}
 
         if(before == "", do: [], else: [{before, role}]) ++
           [chip | chip_text(rest, role, words, twin?)]
