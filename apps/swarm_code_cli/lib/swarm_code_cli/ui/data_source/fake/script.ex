@@ -17,8 +17,13 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
     "catalogue-retry",
     "catalogue-agent-stop",
     "catalogue-activity",
-    "catalogue-statuses"
+    "catalogue-statuses",
+    # pass75 interview: one ask of three questions.
+    "interview-3"
   ]
+  # The committed fixtures list the barriers before pass 75; the pass-75
+  # barrier exists only in the script, so a fixture may name either list.
+  @fixture_barriers @barriers -- ["interview-3"]
   @ids %{
     a: "00000000-0000-4000-8000-00000000000a",
     b: "00000000-0000-4000-8000-00000000000b",
@@ -27,6 +32,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
     b1: "00000000-0000-4000-8000-0000000000b1",
     q1: "00000000-0000-4000-8000-0000000000c1",
     q2: "00000000-0000-4000-8000-0000000000c2",
+    q3: "00000000-0000-4000-8000-0000000000c4",
     approval: "00000000-0000-4000-8000-0000000000c3",
     node_a1: "00000000-0000-4000-8000-0000000000d1",
     node_a2: "00000000-0000-4000-8000-0000000000d2",
@@ -96,9 +102,9 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
 
   @spec decode(term()) :: {:ok, t()} | {:error, AdmissionError.t()}
   def decode(input) do
-    with {:ok,
-          %{"version" => 1, "clock" => @clock, "runs" => runs, "barriers" => @barriers} = raw} <-
+    with {:ok, %{"version" => 1, "clock" => @clock, "runs" => runs, "barriers" => barriers} = raw} <-
            JsonLimits.decode(input, max_bytes: 1_048_576, max_depth: 12, max_entries: 4096),
+         true <- barriers in [@barriers, @fixture_barriers],
          true <- map_size(raw) == 4,
          true <- Schema.bounded_list?(runs, 3, fn _ -> true end) and length(runs) == 3,
          {:ok, decoded} <- decode_runs(runs),
@@ -519,6 +525,107 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
     apply_deltas(script, deltas)
   end
 
+  # pass75 interview: A2's agent asks three questions at once (one node, one
+  # revision, indexes 0-2), as the daemon sends an ask_user call's rows.
+  defp step(script, "interview-3") do
+    a2 = %{
+      script.runs[id(:a2)]
+      | revision: script.runs[id(:a2)].revision + 1,
+        state: :waiting_question,
+        allowed_actions: [:stop],
+        needs: 3
+    }
+
+    common = [total: 3, requested_at: @clock_ms - 70_000]
+    deadline = @clock_ms + 1_730_000
+
+    q1 =
+      question(
+        :q1,
+        :a2,
+        :node_a2,
+        7,
+        :high,
+        deadline,
+        common ++
+          [
+            index: 0,
+            header: "Format",
+            prompt: "Which format should the ticket export produce?",
+            options: [
+              {"csv", "CSV"},
+              {"json", "JSON"},
+              {"both", "CSV and JSON"},
+              {"xlsx", "XLSX"}
+            ],
+            descriptions: [
+              "One row per ticket; opens in Excel and Sheets.",
+              "Nested comments and tags; the shape a re-import reads.",
+              "Two buttons in the toolbar; doubles the export tests.",
+              "A native spreadsheet; adds the elixlsx dependency."
+            ]
+          ]
+      )
+
+    q2 =
+      question(
+        :q2,
+        :a2,
+        :node_a2,
+        7,
+        :high,
+        deadline,
+        common ++
+          [
+            index: 1,
+            header: "Fields",
+            multiple: true,
+            prompt: "Which fields should each exported row carry?",
+            options: [
+              {"status", "Status and priority"},
+              {"assignee", "Assignee"},
+              {"email", "Customer email"},
+              {"comments", "Comments"}
+            ],
+            descriptions: [
+              "Always there and cheap, straight from tickets.",
+              "Joins users; empty for 6% of tickets.",
+              "Personal data: the export then needs the admin role.",
+              "From ticket_comments; adds ~30 MB to a full export."
+            ]
+          ]
+      )
+
+    q3 =
+      question(
+        :q3,
+        :a2,
+        :node_a2,
+        7,
+        :high,
+        deadline,
+        common ++
+          [
+            index: 2,
+            header: "Delivery",
+            prompt: "How should people get the export?",
+            options: [
+              {"download", "Download in the browser"},
+              {"email_link", "Email a link"},
+              {"s3", "Upload to S3"},
+              {"api", "API endpoint"}
+            ]
+          ]
+      )
+
+    deltas =
+      if script.runs[id(:a2)].state in [:running, :streaming, :retrying, :waiting_question],
+        do: Enum.map([q1, q2, q3], &fact(:interaction_upsert, &1)) ++ [fact(:run_update, a2)],
+        else: []
+
+    apply_deltas(script, deltas)
+  end
+
   defp step(script, "catalogue-statuses") do
     superseded = %{
       item(:a1, :node_a1, "message-A-superseded", "Original superseded authentication proposal.")
@@ -711,18 +818,41 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
     deltas ++ extra
   end
 
+  # pass75 interview: one entry per ask, as the daemon's PanelFacts builds
+  # it: an ask's question rows (one node) name every header in index order,
+  # the first one's option count and the ask's time in ms.
   defp needs_you(run_id, pending, agents) do
-    pending
-    |> Map.values()
-    |> Enum.filter(&(&1.run_id == run_id and &1.state == :pending))
-    |> Enum.map(fn i ->
-      agent = Map.get(agents, i.node_id)
-      DTO.NeedsYou.from_interaction(i, agent && agent.id, (agent && agent.name) || "")
+    {questions, others} =
+      pending
+      |> Map.values()
+      |> Enum.filter(&(&1.run_id == run_id and &1.state == :pending))
+      |> Enum.split_with(&(&1.kind == :question and match?(%DTO.Question{}, &1.question)))
+
+    asks =
+      questions
+      |> Enum.group_by(& &1.node_id)
+      |> Enum.map(fn {_node, group} -> Enum.sort_by(group, & &1.question.index) end)
+
+    (Enum.map(others, &[&1]) ++ asks)
+    |> Enum.map(fn [first | _] = group ->
+      agent = Map.get(agents, first.node_id)
+      entry = DTO.NeedsYou.from_interaction(first, agent && agent.id, (agent && agent.name) || "")
+
+      if entry && first.kind == :question,
+        do: %{
+          entry
+          | questions: group |> Enum.take(4) |> Enum.map(&question_header/1),
+            requested_at: first.question.requested_at || entry.requested_at
+        },
+        else: entry
     end)
     |> Enum.reject(&is_nil/1)
     |> Enum.sort_by(&{&1.requested_at, &1.node_id})
     |> Enum.take(20)
   end
+
+  defp question_header(%DTO.PendingInteraction{question: q}),
+    do: q.header || "Question " <> Integer.to_string(q.index + 1)
 
   defp apply_delta(%Delta{kind: :node_upsert, body: item}, script),
     do: %{script | transcript: Map.put(script.transcript, item.id, item)}
@@ -988,12 +1118,21 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
     end
   end
 
-  defp command_deltas(script, {:answer_question, run_id, node_id, id, revision, options}) do
+  defp command_deltas(script, {:answer_question, run_id, node_id, id, revision, answer}) do
+    # pass75 interview: the note sends `%{option_ids:, custom_text:}`.
+    {options, custom} =
+      case answer do
+        %{option_ids: ids, custom_text: text} when is_list(ids) and is_binary(text) -> {ids, text}
+        ids when is_list(ids) -> {ids, ""}
+        _ -> {[], ""}
+      end
+
     with {:ok, q} <-
            interaction(script, :question, run_id, node_id, id, revision, :answer_question),
          :ok <-
            condition(
-             options != [] and (q.question.multiple or length(options) == 1) and
+             (options != [] or String.trim(custom) != "") and
+               (q.question.multiple or length(options) <= 1) and
                Enum.all?(options, fn option ->
                  Enum.any?(q.question.options, &(&1.id == option))
                end),
@@ -1472,24 +1611,50 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
     }
 
   defp question(key, run, node, revision, urgency, deadline),
-    do: %DTO.PendingInteraction{
+    do: question(key, run, node, revision, urgency, deadline, [])
+
+  # pass75 interview: the daemon's question shape (index, header, total, the
+  # asker, the ask's time in ms, each option's own description).
+  defp question(key, run, node, revision, urgency, deadline, opts) do
+    options =
+      Keyword.get(opts, :options, [
+        {"option-1", "Authentication"},
+        {"option-2", "Authentication and tests"}
+      ])
+
+    descriptions = Keyword.get(opts, :descriptions, [])
+
+    %DTO.PendingInteraction{
       id: id(key),
       run_id: id(run),
       node_id: id(node),
       conversation_id: id(if(run == :b1, do: :b, else: :a)),
       expected_revision: revision,
       question: %DTO.Question{
-        prompt: "Which review should proceed?",
-        options: [
-          %DTO.QuestionOption{id: "option-1", label: "Authentication"},
-          %DTO.QuestionOption{id: "option-2", label: "Authentication and tests"}
-        ]
+        prompt: Keyword.get(opts, :prompt, "Which review should proceed?"),
+        options:
+          options
+          |> Enum.with_index()
+          |> Enum.map(fn {{option_id, label}, i} ->
+            %DTO.QuestionOption{
+              id: option_id,
+              label: label,
+              description: Enum.at(descriptions, i, "")
+            }
+          end),
+        multiple: Keyword.get(opts, :multiple, false),
+        index: Keyword.get(opts, :index, 0),
+        header: Keyword.get(opts, :header),
+        total: Keyword.get(opts, :total, 1),
+        agent_id: Keyword.get(opts, :agent_id),
+        requested_at: Keyword.get(opts, :requested_at)
       },
       allowed_actions: [:answer_question],
       urgency: urgency,
       deadline: deadline,
       created_at: @clock_ms
     }
+  end
 
   defp catalogue_run(key, state, actions, revision),
     do: %DTO.RunSummary{
