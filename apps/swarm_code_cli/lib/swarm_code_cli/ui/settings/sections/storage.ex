@@ -8,7 +8,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Storage do
   `▸ Reclaim disk space (VACUUM)` and `▸ Apply retention now`. Pure.
   """
 
-  alias SwarmCodeCLI.UI.Settings.CleanupWizard
+  alias SwarmCodeCLI.UI.Settings.{CleanupWizard, Glyphs, Grid}
   alias SwarmCodeCLI.UI.Settings.IntegrationRows, as: R
 
   @retention [
@@ -63,7 +63,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Storage do
           :text_faint
         ),
         last_sweep_row(ctx),
-        R.heading("overview", "overview")
+        overview_heading(ctx)
       ] ++
       overview_rows(ctx) ++
       [R.heading("actions", "actions")] ++ action_rows(ctx)
@@ -169,7 +169,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Storage do
             )
           ]
 
-      {{_id, t}, m} ->
+      {{_id, _t}, m} ->
         kinds = R.field(m, "kinds") || []
         total = kinds |> Enum.map(&(R.field(&1, "bytes") || 0)) |> Enum.sum()
 
@@ -182,50 +182,122 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Storage do
             state: :readonly
           )
 
+        # Pass 75 (R27.1): each kind wears its bar texture in the mark slot;
+        # the count and the size line up right.
         legend =
-          for k <- kinds do
+          for {k, i} <- Enum.with_index(kinds) do
+            {texture, role} = texture(i, R.field(k, "kind"), nil)
+
             R.row(
               id: "info:storage:kind:#{R.field(k, "kind")}",
               kind: :info,
               label: R.field(k, "label"),
+              marks: [{:swatch, texture, role}],
               # QA F-21: counts in thin groups, as Pricing prints them (`12 496`).
               value: [
-                {"#{SwarmCodeCLI.UI.Settings.Sections.Pricing.group_digits(R.field(k, "count"))} · #{R.bytes(R.field(k, "bytes"))}",
-                 :text_muted}
-              ],
-              state: :readonly
+                {String.pad_leading(
+                   SwarmCodeCLI.UI.Settings.Sections.Pricing.group_digits(R.field(k, "count")),
+                   6
+                 ), :text_primary},
+                {" · ", :text_faint},
+                {String.pad_leading(R.bytes(R.field(k, "bytes")), 8), :text_primary}
+              ]
             )
           end
 
         line =
           "#{R.bytes(R.field(m, "db_bytes"))} on disk · #{R.bytes(R.field(m, "wal_bytes"))} write-ahead log · at least #{R.bytes(R.field(m, "reclaimable_bytes"))} reclaimable · #{R.field(m, "isolation_dirs") || 0} isolation directories (#{R.bytes(R.field(m, "isolation_bytes"))}) · #{R.count(R.field(m, "sessions") || 0, "session")}"
 
-        [bar] ++
-          legend ++
-          [
-            R.info("storage:line", line),
-            R.info(
-              "storage:measured",
-              "measured #{R.hhmm(R.field(t, "at")) || "just now"}",
-              :text_faint
-            )
-          ]
+        [bar] ++ legend ++ [R.info("storage:line", line)]
     end
   end
 
-  @roles [:accent, :info, :success, :warning, :text_muted, :text_faint]
+  # `overview`, with when it was measured as its tag (pass 75, R27.1).
+  defp overview_heading(ctx) do
+    tag =
+      case {measure_task(ctx), measure(ctx)} do
+        {{_id, t}, m} when not is_nil(m) ->
+          [{"measured #{R.hhmm(R.field(t, "at")) || "just now"}", :text_faint}]
 
-  defp bar_segments(ctx, kinds, total) do
-    block = if R.tier(ctx) == :ascii, do: "#", else: "▰"
+        _ ->
+          []
+      end
+
+    R.heading("overview", "overview", tag)
+  end
+
+  @textures [:tex_1, :tex_2, :tex_3, :tex_4, :tex_5]
+  @roles [:text_muted, :text_faint]
+
+  # Pass 75 (R27.1): a texture strip the width of the page less four, one
+  # texture per kind (`█ ▓ ▒ ░ ▄`, ASCII `# = - . :`) in quiet roles that
+  # alternate; `warning` only for the bar's subject, never `text_primary`.
+  defp bar_segments(ctx, kinds, total, subject_kind \\ nil) do
+    bytes = Enum.map(kinds, &(R.field(&1, "bytes") || 0))
+    cells = shares(bytes, total, bar_width(ctx))
 
     kinds
+    |> Enum.zip(cells)
     |> Enum.with_index()
-    |> Enum.map(fn {k, i} ->
-      width =
-        if total > 0, do: max(1, round((R.field(k, "bytes") || 0) * @bar_width / total)), else: 0
-
-      {String.duplicate(block, width), Enum.at(@roles, rem(i, length(@roles)))}
+    |> Enum.map(fn {{k, cells}, i} ->
+      {texture, role} = texture(i, R.field(k, "kind"), subject_kind)
+      {String.duplicate(Glyphs.get(texture, R.tier(ctx)), cells), role}
     end)
+  end
+
+  # Each kind's cells of a `width`-cell bar: its share, at least one for a
+  # kind that holds bytes, the largest remainders first so the bar is whole.
+  defp shares(bytes, total, _width) when total <= 0, do: Enum.map(bytes, fn _ -> 0 end)
+
+  defp shares(bytes, total, width) do
+    raw = Enum.map(bytes, &(&1 * width / total))
+    floor = Enum.zip_with(raw, bytes, fn r, b -> if b > 0, do: max(1, trunc(r)), else: 0 end)
+    diff = width - Enum.sum(floor)
+
+    order =
+      raw
+      |> Enum.zip(floor)
+      |> Enum.with_index()
+      |> Enum.sort_by(fn {{r, f}, _i} -> f - r end)
+      |> Enum.map(&elem(&1, 1))
+
+    cond do
+      diff > 0 ->
+        extra = order |> Stream.cycle() |> Enum.take(diff) |> Enum.frequencies()
+        floor |> Enum.with_index() |> Enum.map(fn {f, i} -> f + Map.get(extra, i, 0) end)
+
+      diff < 0 ->
+        trim(floor, -diff)
+
+      true ->
+        floor
+    end
+  end
+
+  # Takes `n` cells from the widest kinds (never below one cell).
+  defp trim(cells, 0), do: cells
+
+  defp trim(cells, n) do
+    {widest, at} = cells |> Enum.with_index() |> Enum.max_by(&elem(&1, 0))
+    if widest <= 1, do: cells, else: trim(List.replace_at(cells, at, widest - 1), n - 1)
+  end
+
+  defp texture(i, kind, subject_kind) do
+    role = if kind != nil and kind == subject_kind, do: :warning, else: Enum.at(@roles, rem(i, 2))
+    {Enum.at(@textures, rem(i, 5)), role}
+  end
+
+  defp bar_width(ctx) do
+    case Map.get(ctx, :size) do
+      %{columns: columns, rows: rows} when is_integer(columns) and is_integer(rows) ->
+        case Grid.for(columns, rows) do
+          %Grid{page: %{width: page}} -> page - 4
+          %Grid{} -> @bar_width
+        end
+
+      _ ->
+        @bar_width
+    end
   end
 
   defp action_rows(ctx) do

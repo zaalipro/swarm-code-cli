@@ -385,9 +385,15 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Page do
         if(row.label == "", do: width - 5, else: grid.page.width - grid.value_offset - 3)
       )
 
+    # A row without a label draws its value from the label column: its first
+    # line has the room to the page's edge (the storage bar is the page less
+    # four), its wrapped lines two cells less.
+    first_room =
+      if row.label == "" and tag_cells == 0, do: max(room - 1, value_room), else: value_room
+
     well? = focus? and well?(state.settings, row)
     value = if well?, do: caret(state, row, value), else: value
-    values = Text.wrap_segments(state, value, max(value_room, 1))
+    values = wrap_value(state, value, max(first_room, 1), max(value_room, 1))
     values = if well?, do: well(state, values, value_room), else: values
     chip? = match?([{_, :chip_ok} | _], value)
 
@@ -428,7 +434,10 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Page do
             true -> []
           end
 
-        Text.spread(state, left, right ++ [{" ", :text_primary}], width)
+        # the margin cell ends every line; only a tag or a hint needs a gap
+        if right == [],
+          do: Text.fit(state, left, width - 1) ++ [{" ", :text_primary}],
+          else: Text.spread(state, left, right ++ [{" ", :text_primary}], width)
       end
 
     continuation_at = if row.label == "", do: 4, else: grid.value_offset + 1
@@ -471,6 +480,20 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Page do
           else: Text.fit(state, [indent | part], width)
       end)
     end)
+  end
+
+  # The value wrapped at `first` cells on its first line and `rest` after.
+  defp wrap_value(state, value, room, room), do: Text.wrap_segments(state, value, room)
+
+  defp wrap_value(state, value, first, rest) do
+    case Text.wrap_segments(state, value, first) do
+      [head | [_ | _] = tail] ->
+        more = tail |> Enum.intersperse([{" ", :text_primary}]) |> Enum.concat()
+        [head | Text.wrap_segments(state, more, rest)]
+
+      lines ->
+        lines
+    end
   end
 
   # The band over a focused item's line; a well (an open text field) keeps
