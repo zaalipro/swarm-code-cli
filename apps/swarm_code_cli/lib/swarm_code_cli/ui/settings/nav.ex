@@ -6,11 +6,10 @@ defmodule SwarmCodeCLI.UI.Settings.Nav do
   what the cursor rests on is always what is drawn.
   """
 
-  alias SwarmCodeCLI.UI.Settings.{Ctx, Layer, Normalize, Page, Row, Search, Sections}
+  alias SwarmCodeCLI.UI.Settings.{Ctx, Grid, Layer, Normalize, Page, Row, Search, Sections}
 
   # Rows of chrome around the page column (header, search, rules, status,
   # footer): what is left is the page's height, which PgUp/PgDn move by.
-  @chrome_rows 8
 
   @doc "The context sections build their rows from."
   @spec ctx(map()) :: Ctx.t()
@@ -171,9 +170,12 @@ defmodule SwarmCodeCLI.UI.Settings.Nav do
     Enum.find(focusable, &(&1.id == cursor)) || List.first(focusable)
   end
 
-  @doc "The page's height in rows (what PgUp and PgDn move by)."
+  @doc "The page's height in rows (what PgUp and PgDn move by): the grid's body rows."
   @spec page_height(map()) :: pos_integer()
-  def page_height(%{size: %{rows: rows}}), do: max(rows - @chrome_rows, 3)
+  def page_height(%{size: %{columns: columns, rows: rows}})
+      when is_integer(columns) and is_integer(rows),
+      do: columns |> Grid.for(rows) |> Grid.page_height()
+
   def page_height(_state), do: 10
 
   @doc """

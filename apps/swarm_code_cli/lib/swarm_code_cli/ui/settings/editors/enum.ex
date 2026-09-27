@@ -11,7 +11,7 @@ defmodule SwarmCodeCLI.UI.Settings.Editors.Enum do
 
   @behaviour SwarmCodeCLI.UI.Settings.Editor
 
-  alias SwarmCodeCLI.UI.Settings.Picker
+  alias SwarmCodeCLI.UI.Settings.{Grid, Picker}
 
   @segmented_max 5
 
@@ -116,17 +116,14 @@ defmodule SwarmCodeCLI.UI.Settings.Editors.Enum do
 
   defp current(state), do: Enum.at(state.choices, state.index).value
 
-  # The value column's room at this terminal size (the projector's layout:
-  # the rail from 120 columns, the detail from 160, the value at 32, a tag).
-  defp budget(%{size: %{columns: columns}}) when is_integer(columns) do
-    page =
-      cond do
-        columns >= 160 -> columns - 27 - 49
-        columns >= 120 -> columns - 27
-        true -> columns
-      end
-
-    max(page - 32 - 12, 16)
+  # The value column's room at this terminal size: the grid's page from the
+  # value column, less a gap and the tag's room (pass 75), at least 12.
+  defp budget(%{size: %{columns: columns, rows: rows}})
+       when is_integer(columns) and is_integer(rows) do
+    case Grid.for(columns, rows) do
+      %Grid{page: %{width: width}, value_offset: offset} -> max(width - offset - 4, 12)
+      %Grid{} -> 12
+    end
   end
 
   defp budget(_ctx), do: 60
