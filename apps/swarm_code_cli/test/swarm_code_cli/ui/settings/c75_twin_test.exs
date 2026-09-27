@@ -13,8 +13,8 @@ defmodule SwarmCodeCLI.UI.Settings.C75TwinTest do
   import SwarmCodeCLI.UI.C74U3Helpers, except: [screen: 1]
 
   alias SwarmCodeCLI.UI.{Pass73Helpers, Width}
-  alias SwarmCodeCLI.UI.Projector.Settings.Text
-  alias SwarmCodeCLI.UI.Settings.{Editors, Grid, Nav, Sections}
+  alias SwarmCodeCLI.UI.Projector.Settings.{Page, Text}
+  alias SwarmCodeCLI.UI.Settings.{Editors, Grid, Nav, Row, Sections}
 
   @sizes [{160, 45}, {90, 30}, {80, 24}]
   @tiers [:rich, :ascii, :monochrome]
@@ -122,6 +122,31 @@ defmodule SwarmCodeCLI.UI.Settings.C75TwinTest do
         else: []
       )
     ]
+  end
+
+  test "a token wider than its column wraps whole: no space is written into it (R22.4)" do
+    for {columns, rows} = size <- [{160, 45}, {90, 30}] do
+      state = open(:overview, size, :rich)
+      grid = Grid.for(columns, rows)
+      token = String.duplicate("x", 200)
+      name = String.duplicate("A", 60)
+
+      for {row, letter, count} <- [
+            {%Row{id: "c75-info", kind: :info, value: [{token, :text_primary}]}, "x", 200},
+            {%Row{id: "c75-env", label: name, value: [{"1", :text_primary}]}, "A", 60}
+          ] do
+        [group] = Page.groups([row])
+
+        texts =
+          state
+          |> Page.row_lines(row, group, grid)
+          |> Enum.map(fn line -> Enum.map_join(line, &elem(&1, 0)) end)
+
+        assert Enum.all?(texts, &(Width.cells(&1, :narrow) == grid.page.width)), inspect(size)
+        refute Enum.any?(texts, &(&1 =~ "#{letter} #{letter}")), inspect({size, texts})
+        assert texts |> Enum.join() |> String.graphemes() |> Enum.count(&(&1 == letter)) == count
+      end
+    end
   end
 
   test "ambiguous-width terminals: every line fits, the label column is 33 (R28.4)" do

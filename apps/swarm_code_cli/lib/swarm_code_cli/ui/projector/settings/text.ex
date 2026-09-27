@@ -175,10 +175,16 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Text do
   breaks. Words split on single spaces; a space never starts a wrapped
   line (the first line keeps a plain leading pad, such as a right-aligned
   count) and trailing spaces are dropped; a word wider than a line starts
-  its own line and is split at `width` cells, never cut with `…`.
+  its own line and is split at the line's width, never cut with `…`.
+
+  `first: cells` gives the first line its own width (a label or a value
+  whose first line is wider than its wrapped lines); the text is wrapped
+  once, so a word split at a line's end is never re-joined with a space.
   """
-  @spec wrap_segments(map(), [segment()], pos_integer()) :: [[segment()]]
-  def wrap_segments(state, segments, width) do
+  @spec wrap_segments(map(), [segment()], pos_integer(), keyword()) :: [[segment()]]
+  def wrap_segments(state, segments, width, opts \\ []) do
+    widths = {Keyword.get(opts, :first, width), width}
+
     {done, current, _used} =
       segments
       |> Enum.flat_map(fn {text, role} ->
@@ -188,7 +194,7 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Text do
         |> Enum.map(&{&1, role})
       end)
       |> words()
-      |> Enum.reduce({[], [], 0}, &place(state, &1, width, &2))
+      |> Enum.reduce({[], [], 0}, &place(state, &1, widths, &2))
 
     [current | done]
     |> Enum.reverse()
@@ -217,44 +223,50 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Text do
   # A space never starts a wrapped line; the first line keeps a plain pad
   # (a right-aligned count) but not a chip's pad cell, so a chip's word stays
   # on its column.
-  defp place(_state, [{" ", role}], _width, {done, [], 0})
+  defp place(_state, [{" ", role}], _widths, {done, [], 0})
        when done != [] or role not in @pad_roles,
        do: {done, [], 0}
 
-  defp place(state, [{" ", _} = token], width, {done, current, used}) do
+  defp place(state, [{" ", _} = token], widths, {done, current, used}) do
     size = text_cells(state, " ")
 
-    if used + size <= width,
+    if used + size <= line_width(widths, done),
       do: {done, [token | current], used + size},
       else: {[current | done], [], 0}
   end
 
-  defp place(state, pieces, width, {done, current, used}) do
+  defp place(state, pieces, {_first, rest} = widths, {done, current, used}) do
     size = Enum.reduce(pieces, 0, fn {text, _}, sum -> sum + text_cells(state, text) end)
 
     cond do
-      used + size <= width ->
+      used + size <= line_width(widths, done) ->
         {done, Enum.reverse(pieces) ++ current, used + size}
 
-      size <= width ->
+      current != [] and size <= rest ->
         {[current | done], Enum.reverse(pieces), size}
 
       true ->
         done = if current == [], do: done, else: [current | done]
-        [last | full] = state |> split_cells(pieces, width) |> Enum.reverse()
+        lines = split_cells(state, pieces, line_width(widths, done), rest)
+        [last | full] = Enum.reverse(lines)
         {Enum.map(full, &elem(&1, 0)) ++ done, elem(last, 0), elem(last, 1)}
     end
   end
 
-  # A word too wide for a line, split into lines of at most `width` cells
-  # (at least one grapheme each), every grapheme keeping its role. Each
-  # line comes back as `{reversed segments, cells}`.
-  defp split_cells(state, pieces, width) do
+  # The width of the line being filled: `first` until a line is done.
+  defp line_width({first, _rest}, []), do: first
+  defp line_width({_first, rest}, _done), do: rest
+
+  # A word too wide for a line, split into lines of at most `first` cells,
+  # then `rest` (at least one grapheme each), every grapheme keeping its
+  # role. Each line comes back as `{reversed segments, cells}`.
+  defp split_cells(state, pieces, first, rest) do
     {lines, line, used} =
       pieces
       |> Enum.flat_map(fn {text, role} -> Enum.map(String.graphemes(text), &{&1, role}) end)
       |> Enum.reduce({[], [], 0}, fn {grapheme, _role} = token, {lines, line, used} ->
         size = text_cells(state, grapheme)
+        width = if lines == [], do: first, else: rest
 
         if used + size > width and line != [],
           do: {[{line, used} | lines], [token], size},

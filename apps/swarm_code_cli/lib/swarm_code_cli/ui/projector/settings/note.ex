@@ -427,7 +427,19 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Note do
         Text.fit(state, [spine, {"  ", :text_primary} | line], grid.page.width)
       end)
 
-    shown = Enum.take([title_line | lines], grid.body_rows)
+    all = [title_line | lines]
+
+    # A detail longer than the body names what it hides on its last line,
+    # at every width (R22.4: never cut silently).
+    {shown, below} =
+      if length(all) > grid.body_rows do
+        kept = Enum.take(all, max(grid.body_rows - 1, 0))
+        below = length(all) - length(kept)
+        {kept ++ [below_line(caps, below)], below}
+      else
+        {all, 0}
+      end
+
     blank = List.duplicate([], grid.body_rows - length(shown))
 
     %{
@@ -436,8 +448,16 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Note do
       focus_last: nil,
       group_top: nil,
       above: 0,
-      below: max(length(lines) + 1 - grid.body_rows, 0)
+      below: below
     }
+  end
+
+  defp below_line(caps, count) do
+    [
+      {"   ", :text_primary},
+      {Glyphs.for_caps(:down, caps) <> " ", :text_faint},
+      {"#{count} #{if count == 1, do: "line", else: "lines"} below", :text_faint}
+    ]
   end
 
   defp enum_editor(%Layer{mode: :editing, editing: %{module: Editors.Enum, row_id: id} = e}, %Row{

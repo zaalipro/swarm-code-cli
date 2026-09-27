@@ -211,6 +211,28 @@ defmodule SwarmCodeCLI.UI.Settings.C75NoteTest do
     end
   end
 
+  test "140 columns: a detail longer than the body says how many lines are below (R22.4)" do
+    detail = fn rows ->
+      state = open(:models_effort, {140, rows})
+      effort = Enum.find(Nav.rows(state), &(&1.label =~ "Effort"))
+      {detail, _} = state |> Nav.put_cursor(effort.id) |> verb(:info)
+      page_lines(detail, {140, rows})
+    end
+
+    whole = detail.(45) |> Enum.reject(&(String.trim(&1) == ""))
+    refute Enum.any?(whole, &(&1 =~ "below"))
+
+    grid = Grid.for(140, 20)
+    assert grid.class == :rail
+    assert length(whole) > grid.body_rows
+
+    page = detail.(20)
+    assert length(page) == grid.body_rows
+    assert Enum.take(page, grid.body_rows - 1) == Enum.take(whole, grid.body_rows - 1)
+    hidden = length(whole) - (grid.body_rows - 1)
+    assert page |> List.last() |> String.trim() == "↓ #{hidden} lines below"
+  end
+
   test "80 × 24: a 2-line drawer and a 19-cell label column (R24.6, R20.5)" do
     state = open(:models_effort, {80, 24})
     effort = Enum.find(Nav.rows(state), &(&1.label =~ "Effort"))

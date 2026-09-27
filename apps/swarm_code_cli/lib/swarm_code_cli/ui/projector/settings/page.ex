@@ -565,19 +565,10 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Page do
     end)
   end
 
-  # The value wrapped at `first` cells on its first line and `rest` after.
-  defp wrap_value(state, value, room, room), do: Text.wrap_segments(state, value, room)
-
-  defp wrap_value(state, value, first, rest) do
-    case Text.wrap_segments(state, value, first) do
-      [head | [_ | _] = tail] ->
-        more = tail |> Enum.intersperse([{" ", :text_primary}]) |> Enum.concat()
-        [head | Text.wrap_segments(state, more, rest)]
-
-      lines ->
-        lines
-    end
-  end
+  # The value wrapped at `first` cells on its first line and `rest` after,
+  # in one pass: a word split at a line's end is never re-joined with a space.
+  defp wrap_value(state, value, first, rest),
+    do: Text.wrap_segments(state, value, rest, first: first)
 
   # The band over a focused item's line; a well (an open text field) keeps
   # its own fill on its cells.
@@ -668,22 +659,11 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Page do
 
     segments = chips(state, [{text, role}])
 
-    lines =
-      case Text.wrap_segments(state, segments, width - indent) do
-        [first | [_ | _] = rest] ->
-          rest = rest |> Enum.intersperse([{" ", role}]) |> Enum.concat()
+    # the wrapped lines hang two cells in, wrapped in one pass with the first
+    [first | rest] =
+      Text.wrap_segments(state, segments, max(width - indent - 2, 1), first: width - indent)
 
-          [
-            first
-            | Enum.map(
-                Text.wrap_segments(state, rest, max(width - indent - 2, 1)),
-                &[{"  ", :text_primary} | &1]
-              )
-          ]
-
-        lines ->
-          lines
-      end
+    lines = [first | Enum.map(rest, &[{"  ", :text_primary} | &1])]
 
     if indent == 0, do: lines, else: Enum.map(lines, &[{pad, :text_primary} | &1])
   end
@@ -973,7 +953,7 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Page do
             current?: current?,
             focusable?: Row.focusable?(row),
             height:
-              height(state, row, group, grid, tables) +
+              height(state, row, group, grid, focus?, tables) +
                 if(focus? and drawer?(state, grid), do: grid.drawer_lines, else: 0),
             group: g,
             build: fn -> row_lines(state, row, group, grid, opts) end
@@ -984,8 +964,9 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Page do
     end)
   end
 
-  defp height(state, row, group, grid, tables),
-    do: length(content(state, hoist(row, state.capabilities), group, grid, false, tables))
+  # Measured as drawn: the focused row's well and caret can add a line.
+  defp height(state, row, group, grid, focus?, tables),
+    do: length(content(state, hoist(row, state.capabilities), group, grid, focus?, tables))
 
   @doc """
   The window over `items`: when the cursor's group fits the body its title

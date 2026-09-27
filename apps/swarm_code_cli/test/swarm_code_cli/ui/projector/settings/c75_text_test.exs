@@ -32,6 +32,16 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.C75TextTest do
     end
   end
 
+  test "a chip keeps its own fill on the band" do
+    for mode <- [:truecolor, :ansi256], role <- [:chip_ok, :chip_info] do
+      state = st(mode)
+      fill = Theme.style(role, state.capabilities).background
+
+      assert fill != nil
+      assert Text.style(state, {role, :on, :band}).background == fill, "#{mode} #{role}"
+    end
+  end
+
   test "the band is reverse video in 16 colours and NO_COLOR" do
     for mode <- [:ansi16, :monochrome] do
       style = Text.style(st(mode), {:text_primary, :on, :band})
@@ -97,6 +107,40 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.C75TextTest do
 
       assert Text.wrap_segments(state, [{"日本語", :text_primary}], 5) ==
                [[{"日本", :text_primary}], [{"語", :text_primary}]]
+    end
+
+    test "the first line keeps a plain leading pad; a chip's pad and a wrapped line's space are dropped" do
+      state = st(:truecolor)
+
+      # a right-aligned count (the storage legend) keeps its pad
+      assert Text.wrap_segments(state, [{"   12", :text_primary}], 10) ==
+               [[{"   12", :text_primary}]]
+
+      # a chip's pad cell is not a plain pad: the chip's word stays on its column
+      assert Text.wrap_segments(state, [{" ", :chip_info}, {"x", :text_primary}], 10) ==
+               [[{"x", :text_primary}]]
+
+      # the wrapped line starts at its word, not at the space before it
+      assert Text.wrap_segments(state, [{"  aaaa bbbb", :text_primary}], 6) ==
+               [[{"  aaaa", :text_primary}], [{"bbbb", :text_primary}]]
+    end
+
+    test "first: gives the first line its own width; a split word is never re-joined with a space" do
+      state = st(:truecolor)
+      token = String.duplicate("x", 200)
+      lines = Text.wrap_segments(state, [{token, :text_primary}], 77, first: 78)
+      texts = Enum.map(lines, fn line -> Enum.map_join(line, &elem(&1, 0)) end)
+
+      assert Enum.map(texts, &String.length/1) == [78, 77, 45]
+      refute Enum.any?(texts, &String.contains?(&1, " "))
+      assert Enum.join(texts) == token
+
+      assert Text.wrap_segments(state, [{"aaaa bbbb cccc", :text_primary}], 4, first: 9) ==
+               [[{"aaaa bbbb", :text_primary}], [{"cccc", :text_primary}]]
+
+      # a first line narrower than the rest never leaves an empty first line
+      assert Text.wrap_segments(state, [{"abcdef", :text_primary}], 8, first: 4) ==
+               [[{"abcd", :text_primary}], [{"ef", :text_primary}]]
     end
 
     test "no text is one empty line; wrap/3 keeps its string contract" do
