@@ -83,7 +83,7 @@ defmodule SwarmCodeCLI.UI.Projector.Pass73CardTest do
       plan = paint(state)
       all = rows(plan)
       main = main_rows(state, all)
-      {first, last, card} = card(main, "╭─ ! angular-plan wants to run a command", "╰─")
+      {first, last, card} = card(main, "╭─ ! Angular plan wants to run a command", "╰─")
 
       # Every row of the frame closes at the same column.
       widths = Enum.map(card, &Width.cells(&1, :narrow))
@@ -137,7 +137,9 @@ defmodule SwarmCodeCLI.UI.Projector.Pass73CardTest do
     x = Width.cells(hd(String.split(row, "this run", parts: 2)), :narrow)
     assert style(plan, x, y).background == nil
 
-    y = Enum.find_index(all, &(&1 =~ "dangerous"))
+    # pass 75: the side panel's band may say `dangerous` too (S3); the card's
+    # header is the row that closes its frame.
+    y = Enum.find_index(all, &(&1 =~ ~r/dangerous +─╮/u))
     row = Enum.at(all, y)
     x = Width.cells(hd(String.split(row, "dangerous", parts: 2)), :narrow)
     assert style(plan, x, y).background == Theme.style(:chip_err, caps).background.value
@@ -158,7 +160,7 @@ defmodule SwarmCodeCLI.UI.Projector.Pass73CardTest do
 
     assert ApprovalCard.expanded?(state, item)
     main = main_rows(state, rows(paint(state)))
-    {_first, last, card} = card(main, "╭─ ! angular-plan", "╰─")
+    {_first, last, card} = card(main, "╭─ ! Angular plan", "╰─")
     body = Enum.join(card, "\n")
 
     for line <- ["import json,sys", "print(len(d['steps']), 'steps')", "print(d['owner'])"] do
@@ -191,7 +193,7 @@ defmodule SwarmCodeCLI.UI.Projector.Pass73CardTest do
   test "NO_COLOR and ASCII: an ASCII frame, bracketed keys, the words kept" do
     state = Pass73Scenes.screenshot_11(120, 36, draft: @draft, ascii?: true, mode: :monochrome)
     main = main_rows(state, rows(paint(state)))
-    {_first, _last, card} = card(main, "+- ! angular-plan wants to run a command", "+-")
+    {_first, _last, card} = card(main, "+- ! Angular plan wants to run a command", "+-")
     body = Enum.join(card, "\n")
 
     assert body =~ "dangerous"
@@ -204,7 +206,7 @@ defmodule SwarmCodeCLI.UI.Projector.Pass73CardTest do
   test "under the wide ambiguous-width policy the frame is one cell a glyph" do
     state = Pass73Scenes.screenshot_11(160, 45, draft: @draft, policy: :wide, tier: :measured)
     main = main_rows(state, rows(paint(state)))
-    {_first, _last, card} = card(main, "⎡⎯ ! angular-plan", "⎣⎯")
+    {_first, _last, card} = card(main, "⎡⎯ ! Angular plan", "⎣⎯")
     widths = Enum.map(card, &Width.cells(&1, :wide))
     assert length(Enum.uniq(widths)) == 1, Enum.join(card, "\n")
   end
