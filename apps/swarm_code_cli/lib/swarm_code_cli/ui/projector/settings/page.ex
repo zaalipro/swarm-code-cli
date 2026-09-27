@@ -228,10 +228,42 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Page do
       :running -> {glyph.(:running), :info}
       :action -> {glyph.(:action), if(danger?, do: :error, else: :text_muted)}
       :link -> {glyph.(:link), :text_muted}
-      {:swatch, texture, role} -> {glyph.(texture), role}
+      {:swatch, texture, role} -> {swatch(texture, caps), role}
       nil -> {" ", :text_primary}
     end
   end
+
+  # A texture in the mark slot; the twin draws its ASCII shape (R28.2).
+  defp swatch(texture, caps) do
+    if Glyphs.twin?(caps),
+      do: Glyphs.get(texture, :ascii),
+      else: Glyphs.for_caps(texture, caps)
+  end
+
+  @textures %{"█" => "#", "▓" => "=", "▒" => "-", "░" => ".", "▄" => ":"}
+
+  # The twin (NO_COLOR or ASCII, D15): structure must not depend on hue, so
+  # a switch reads `[ ] off` / `[x] on` and a texture strip `# = - . :`.
+  defp twin(segments, caps) do
+    if Glyphs.twin?(caps) do
+      segments
+      |> twin_switch()
+      |> Enum.map(fn
+        {text, role} when is_binary(text) ->
+          {String.replace(text, Map.keys(@textures), &Map.fetch!(@textures, &1)), role}
+
+        segment ->
+          segment
+      end)
+    else
+      segments
+    end
+  end
+
+  defp twin_switch([{"──", _}, {"●", _} | rest]), do: [{"[x]", :text_primary} | twin_switch(rest)]
+  defp twin_switch([{"○──", _} | rest]), do: [{"[ ]", :text_primary} | twin_switch(rest)]
+  defp twin_switch([segment | rest]), do: [segment | twin_switch(rest)]
+  defp twin_switch([]), do: []
 
   defp swatch?({:swatch, _texture, _role}), do: true
   defp swatch?(_mark), do: false
@@ -379,7 +411,7 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Page do
     label =
       label_lines(state, row, group, focus?, if(row.label == "", do: 0, else: grid.label_width))
 
-    value = value(row, value)
+    value = row |> value(value) |> twin(state.capabilities)
     tag_cells = Text.cells(state, tag)
 
     value_room =
