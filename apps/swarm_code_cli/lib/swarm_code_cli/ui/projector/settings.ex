@@ -79,6 +79,8 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
 
   defp screen(state, width, height) do
     layer = state.settings
+    grid = Grid.for(width, height)
+    glyphs = &Glyphs.for_caps(&1, state.capabilities)
     rows = Nav.rows(state)
     current = Nav.current(state, rows)
     rail? = width >= 120
@@ -96,10 +98,10 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
 
     page =
       if sections_page?,
-        do: sections_page_lines(state, page_width, body_rows),
+        do: sections_page_lines(state, page_width, body_rows, glyphs),
         else: page_lines(state, rows, current, page_width, body_rows)
 
-    rail = if rail?, do: rail_lines(state, body_rows), else: nil
+    rail = if rail?, do: state |> rail_lines(@rail, glyphs) |> Enum.take(body_rows), else: nil
     detail = if detail?, do: detail_lines(state, current, @detail, body_rows), else: nil
 
     body =
@@ -134,9 +136,6 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
       else
         []
       end
-
-    grid = Grid.for(width, height)
-    glyphs = &Glyphs.for_caps(&1, state.capabilities)
 
     lines =
       [Chrome.crumb(state, grid, glyphs), Chrome.well(state, grid, glyphs)] ++
@@ -173,9 +172,9 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
   defp sections_page?(_state), do: false
 
   # The rail's lines at the page's width, scrolled so the cursor stays in view.
-  defp sections_page_lines(state, width, rows) do
-    lines = rail_lines(state, 1_000, width)
-    cursor = Enum.find_index(lines, &cursor_line?/1) || 0
+  defp sections_page_lines(state, width, rows, glyphs) do
+    {lines, cursor} = rail(state, width, glyphs)
+    cursor = cursor || 0
     top = cursor |> Kernel.-(div(rows, 2)) |> max(0) |> min(max(length(lines) - rows, 0))
     Enum.slice(lines, top, rows)
   end
@@ -185,40 +184,83 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
 
   # ------------------------------------------------------------- rail
 
-  defp rail_lines(state, rows, width \\ @rail) do
+  # The rail (pass 75, E): group words at rail column 1, the sections at
+  # column 2 with their marks right, the current section on a `hover` pill.
+  # When the rail has the focus the band and `▌` sit on the rail cursor (D9);
+  # during a search the sections draw their match counts and no pill.
+  defp rail_lines(state, width, glyphs) do
+    {lines, _cursor} = rail(state, width, glyphs)
+    lines
+  end
+
+  # The rail's lines and the index of the rail cursor's line (nil without focus).
+  defp rail(state, width, glyphs) do
     layer = state.settings
     section = Layer.section(layer)
-    bar = glyph(state, :focus_bar)
-    marks = Chrome.rail_marks(state, &Glyphs.for_caps(&1, state.capabilities))
+    focus? = layer.region == :rail
+    matches = search_matches(layer)
+    marks = if matches, do: %{}, else: Chrome.rail_marks(state, glyphs)
 
-    lines =
+    tagged =
       Enum.flat_map(Sections.groups(), fn {group, ids} ->
-        heading = if group, do: [[{"  " <> group, :text_faint}]], else: []
+        heading = if group, do: [{[{" " <> group, :text_faint}], false}], else: []
 
         items =
           Enum.map(ids, fn id ->
-            cursor? = layer.region == :rail and layer.rail_cursor == id
-            here? = id == section
-            title = Sections.title(id)
-            role = if here?, do: {:text_primary, [:bold]}, else: :text_muted
-            lead = if cursor?, do: {bar, :focus}, else: {" ", :text_primary}
-            mark = Map.get(marks, id, [])
+            cursor? = focus? and layer.rail_cursor == id
+            pill? = id == section and matches == nil and not cursor?
+            count = matches && Map.get(matches, id, 0)
+
+            {role, mark} =
+              cond do
+                count == 0 -> {:text_faint, []}
+                is_integer(count) -> {:text_muted, [{"#{count}", :text_muted}]}
+                pill? or cursor? -> {{:text_primary, [:bold]}, Map.get(marks, id, [])}
+                true -> {:text_muted, Map.get(marks, id, [])}
+              end
+
+            lead =
+              if cursor?,
+                do: [{glyphs.(:focus_bar), :accent}, {" ", :text_primary}],
+                else: [{"  ", :text_primary}]
 
             line =
               Text.spread(
                 state,
-                [lead, {"  " <> title, role}],
+                lead ++ [{Sections.title(id), role}],
                 mark ++ [{" ", :text_primary}],
                 width
               )
 
-            if cursor?, do: Text.select(line), else: line
+            cond do
+              cursor? -> {Text.band(line), true}
+              pill? -> {on_fill(line, :hover), false}
+              true -> {line, false}
+            end
           end)
 
-        heading ++ items ++ [[]]
+        heading ++ items ++ [{[], false}]
       end)
 
-    Enum.take(lines, rows)
+    {Enum.map(tagged, &elem(&1, 0)), Enum.find_index(tagged, &elem(&1, 1))}
+  end
+
+  # Per section, the results of the query being searched (nil when no query).
+  defp search_matches(%Layer{mode: :search, search: %{query: query} = search})
+       when is_binary(query) and query != "" do
+    case Map.get(search, :found) do
+      %{results: results} -> Enum.frequencies_by(results, &elem(&1, 1).section)
+      _ -> %{}
+    end
+  end
+
+  defp search_matches(_layer), do: nil
+
+  defp on_fill(segments, background) do
+    Enum.map(segments, fn
+      {text, {_, :on, _}} = segment when is_binary(text) -> segment
+      {text, role} -> {text, {role, :on, background}}
+    end)
   end
 
   # ------------------------------------------------------------- page
