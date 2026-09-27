@@ -141,6 +141,34 @@ defmodule SwarmCodeCLI.UI.Projector.WorkspaceTurnsTest do
     assert Enum.all?(rows, &(String.length(&1) <= 80))
   end
 
+  # pass 75 (8.1, 4.4, S2): a finished worker's finding has no `»`, and an
+  # AI name longer than the card's name column ends in `…`, never cut in the
+  # middle.
+  test "a done worker's finding has no » and a long AI name ends in …" do
+    state = fixture(:swarm, {160, 30})
+    scout = state.read_model.agents["agent-2"]
+    long = "Map every auth call site now"
+    assert String.length(long) == 28
+
+    scout =
+      %{scout | state: :done, title: long, finished_at: scout.started_at + 60_000}
+      |> Map.merge(%{
+        panel_state: :done,
+        finding: "Nine call sites; two skip the guard.",
+        finding_refs: ["lib/auth.ex:12"]
+      })
+
+    state = put_in(state.read_model.agents["agent-2"], scout)
+    {rows, _, _, _} = painted(state)
+    row = Enum.find(rows, &(&1 =~ "Map every auth"))
+
+    assert row =~
+             ~r/^    ⊢ ✓ Map every auth call site… done         Nine call sites; two skip the guard\. · auth\.ex:12/u
+
+    refute Enum.any?(rows, &(&1 =~ "»"))
+    refute row =~ "Map every auth call site now"
+  end
+
   # pass 75 (R2.5, S2 line 106): a worker that ran out of turns says so in
   # the error colour, then its own last words, muted.
   test "a turn-limit worker's lane line" do
