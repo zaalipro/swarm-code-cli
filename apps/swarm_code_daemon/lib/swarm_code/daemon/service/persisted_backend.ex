@@ -1970,7 +1970,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       "max_turns" => max_turns_of(n),
       "summary" => nil,
       "summary_rev" => nil,
-      "last_words" => nil
+      "last_words" => if(PanelFacts.turn_limit?(n), do: PanelFacts.last_words(n))
     }
     |> Map.merge(stop)
   end
@@ -3153,7 +3153,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       "needs_you" =>
         PanelFacts.needs_you(interactions, Map.new(agents, &{&1["id"], &1}), panel.parents, roots),
       # Reported = came back with a result; a stopped or failed agent did not.
-      "reported" => Enum.count(subs, &(&1.status == "done")),
+      "reported" => Enum.count(subs, &PanelFacts.reported?/1),
       "total" => length(subs),
       "phases" => PanelFacts.phases(panel.workflows[row.id] || %{}, ns, row.status),
       "phase" => panel.workflows[row.id] && clip(panel.workflows[row.id].phase, 120),

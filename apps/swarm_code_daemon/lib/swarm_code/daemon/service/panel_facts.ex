@@ -49,24 +49,71 @@ defmodule SwarmCode.Daemon.Service.PanelFacts do
     roots = roots(opts[:roots])
     interactions = opts[:interactions] || []
     state = state(n, ops, interactions)
-    finding = if n.status == "done", do: finding(Map.get(n, :result_head), roots)
+    turn_limit? = turn_limit?(n)
+
+    finding =
+      if n.status == "done" and not turn_limit?, do: finding(Map.get(n, :result_head), roots)
+
     lane_at = anchor(ops)
     live? = state not in [:done, :failed, :stopped, :queued] and is_integer(lane_at)
 
     %{
       "panel_state" => Atom.to_string(state),
-      "now" => now(state, n, ops, interactions, finding, roots),
+      "now" =>
+        if(turn_limit?,
+          do: turn_limit_now(n),
+          else: now(state, n, ops, interactions, finding, roots)
+        ),
       "lane" =>
         if(live?, do: Enum.map(lane(ops, lane_at, @cells, @cell_ms), &Atom.to_string/1), else: []),
       "lane_at" => if(live?, do: lane_at),
       "lane_now" => Atom.to_string(if(live?, do: lane_now(ops), else: :idle)),
       "finding" => finding,
       "finding_refs" =>
-        if(n.status == "done", do: finding_refs(Map.get(n, :result_head), roots), else: []),
+        if(n.status == "done" and not turn_limit?,
+          do: finding_refs(Map.get(n, :result_head), roots),
+          else: []
+        ),
       "files_changed" => opts[:files_changed] || 0,
       "elapsed_ms" => elapsed_ms(n),
       "tokens" => (n.tokens_in || 0) + (n.tokens_out || 0)
     }
+  end
+
+  @doc """
+  pass75: an agent the engine stopped at its turn budget. The domain persists
+  it as `done` with `error_kind "turn_budget"` (and whatever it had written so
+  far as its result); it is a stop, not a report.
+  """
+  @spec turn_limit?(map()) :: boolean()
+  def turn_limit?(n), do: n.status == "done" and Map.get(n, :error_kind) == "turn_budget"
+
+  @doc "pass75: an agent that came back with a report (a turn-limit stop did not)."
+  @spec reported?(map()) :: boolean()
+  def reported?(n), do: n.status == "done" and not turn_limit?(n)
+
+  @doc "pass75: the rule sentence of a turn-limit stop (≤ 80 bytes)."
+  @spec turn_limit_now(map()) :: String.t()
+  def turn_limit_now(n) do
+    if is_integer(m = Map.get(n, :max_turns)) and m > 0,
+      do: "no answer after #{m} turns",
+      else: "no answer: turn limit"
+  end
+
+  @doc """
+  pass75: the first sentence a turn-limit agent had written (≤ 160 bytes), nil
+  when it wrote nothing but the engine's own "Stopped after" notice.
+  """
+  @spec last_words(map()) :: String.t() | nil
+  def last_words(n) do
+    head = Map.get(n, :result_head)
+    sentence = first_sentence(head, [], 200)
+
+    cond do
+      is_nil(sentence) -> nil
+      String.starts_with?(sentence, ["Stopped after", "_(Stopped after"]) -> nil
+      true -> clip(sentence, 160)
+    end
   end
 
   ## ------------------------------------------------------------------ state
