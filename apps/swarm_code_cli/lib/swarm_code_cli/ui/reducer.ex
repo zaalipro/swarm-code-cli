@@ -1116,6 +1116,8 @@ defmodule SwarmCodeCLI.UI.Reducer do
     end
   end
 
+  defp transition(state, {:interview, event}), do: interview(state, event)
+
   defp transition(state, {:draft_target, key, target}), do: Editing.target(state, key, target)
   defp transition(state, {:timer_fired, id}), do: Editing.timer(state, id)
 
@@ -2069,6 +2071,110 @@ defmodule SwarmCodeCLI.UI.Reducer do
 
     {%{next | focus: focus}, []}
   end
+
+  # ------------------------------------------------ pass75 interview
+
+  # The note's events change only held state: picks, ticks, focus and the
+  # step. Nothing leaves the CLI before the final Enter.
+  defp interview(state, {:pick, node, option}) do
+    with_question(state, node, fn _ask, interview, current ->
+      if option in option_ids(current) do
+        interview = %{
+          interview
+          | picks: Map.put(interview.picks, current.id, option),
+            last_focus: Map.put(interview.last_focus, current.id, option)
+        }
+
+        {%{put_interview(state, node, interview) | focus: option}, []}
+      else
+        {state, []}
+      end
+    end)
+  end
+
+  defp interview(state, {:toggle, node, option}) do
+    with_question(state, node, fn _ask, interview, current ->
+      if option in option_ids(current) do
+        {toggled, []} = transition(state, {:select_option, current.id, option})
+        interview = %{interview | last_focus: Map.put(interview.last_focus, current.id, option)}
+        {%{put_interview(toggled, node, interview) | focus: option}, []}
+      else
+        {state, []}
+      end
+    end)
+  end
+
+  defp interview(state, {:toggle_other, node}) do
+    with_question(state, node, fn _ask, interview, current ->
+      options = option_ids(current)
+
+      if state.focus == "other" do
+        back =
+          case Map.get(interview.last_focus, current.id) do
+            focus when is_binary(focus) and focus != "other" -> focus
+            _ -> List.first(options) || "other"
+          end
+
+        {%{state | focus: back}, []}
+      else
+        interview =
+          if state.focus in options,
+            do: %{
+              interview
+              | last_focus: Map.put(interview.last_focus, current.id, state.focus)
+            },
+            else: interview
+
+        {%{put_interview(state, node, interview) | focus: "other"}, []}
+      end
+    end)
+  end
+
+  defp interview(state, {:step, node, delta}),
+    do: step_to(state, node, fn interview, _count -> interview.step + delta end)
+
+  defp interview(state, {:goto, node, index}),
+    do: step_to(state, node, fn _interview, _count -> index end)
+
+  defp interview(state, _event), do: {state, []}
+
+  # The focus of the question being left is kept, so coming back finds it.
+  defp step_to(state, node, target) do
+    with_question(state, node, fn ask, interview, current ->
+      count = length(ask.rows)
+      step = target.(interview, count) |> max(0) |> min(count - 1)
+
+      last_focus =
+        if state.focus in Question.focus_ids(current),
+          do: Map.put(interview.last_focus, current.id, state.focus),
+          else: interview.last_focus
+
+      interview = %{interview | step: step, last_focus: last_focus}
+      next = Question.current(ask, interview)
+
+      {%{
+         put_interview(state, node, interview)
+         | focus: Map.get(last_focus, next.id, "dialog"),
+           selection: Map.delete(state.selection, "dialog_scroll")
+       }, []}
+    end)
+  end
+
+  defp with_question(state, node, fun) do
+    case Question.ask(state, node) do
+      nil ->
+        {state, []}
+
+      ask ->
+        interview = Question.interview(state, node)
+        fun.(ask, interview, Question.current(ask, interview))
+    end
+  end
+
+  defp put_interview(state, node, interview),
+    do: %{state | interviews: Map.put(state.interviews, node, interview)}
+
+  defp option_ids(row), do: Enum.map(row.question.options, & &1.id)
 
   # pass75 interview: a fresh note opens with nothing focused ("dialog"); a
   # held one where its current question's focus was left.
