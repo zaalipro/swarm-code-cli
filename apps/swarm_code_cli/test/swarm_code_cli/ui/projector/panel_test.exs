@@ -357,10 +357,13 @@ defmodule SwarmCodeCLI.UI.Projector.PanelTest do
   test "heavy full: no load row, two requests oldest first, every run's header row" do
     text = :panel_heavy |> state(160, 45) |> panel_text() |> Enum.join("\n")
 
-    # pass 75 V2: no load row; the rows past the pane are counted and the
-    # keys row stays the last content row.
+    # pass 75 V2: no load row; the rows past the pane are counted, and the
+    # spent and keys rows stay whole under them.
     refute text =~ "5 runs · 17 agents"
-    assert text =~ ~r/^ \+\d+ more · Ctrl-G all runs *\n \^F agents  \^N needs you  \^B panel/m
+
+    assert text =~
+             ~r/^ \+\d+ more · Ctrl-G all runs *\n spent \$1\.71\+ · 223k tokens · 5 runs *\n \^F agents  \^N needs you  \^B panel/m
+
     assert text =~ ~r/^▌⋔ architecture review *$/m
     assert text =~ ~r/^ ⚖ should runs own worktrees\? +03:10 *$/m
     # Every shown run's agents are in the one agents block.

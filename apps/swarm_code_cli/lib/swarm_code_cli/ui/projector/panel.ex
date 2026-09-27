@@ -110,8 +110,11 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
       if length(drawn(rows)) <= height, do: fill(rows, height, ctx)
     end) ||
       (
-        {body, keys} = Enum.split(List.last(all).(), -1)
-        cut(body, keys, height, ctx)
+        # The spent, earlier and keys rows stay whole under the cut rows.
+        {body, [_blank | tail]} =
+          Enum.split(List.last(all).(), -length(tail_rows(ctx, ctx.mode == :full)))
+
+        cut(body, tail, height, ctx)
       )
   end
 

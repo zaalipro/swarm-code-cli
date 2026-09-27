@@ -52,7 +52,7 @@ defmodule SwarmCodeCLI.UI.Projector.Pass73PanelScrollTest do
 
     scrolled = state |> Map.put(:panel_scroll, 6) |> texts()
     assert Enum.any?(scrolled, &(&1 =~ "more above")), Enum.join(scrolled, "\n")
-    assert Enum.any?(scrolled, &(&1 =~ "NEEDS YOU"))
+    assert Enum.any?(scrolled, &(&1 =~ "needs you · oldest first"))
     assert Enum.any?(scrolled, &(&1 =~ "mix test test/swarm_code_web/live"))
     assert scrolled != top
     assert length(scrolled) == length(top)
