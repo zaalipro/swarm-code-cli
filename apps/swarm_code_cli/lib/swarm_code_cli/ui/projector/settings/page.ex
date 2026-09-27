@@ -120,6 +120,110 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Page do
   @spec separators([group()]) :: [boolean()]
   def separators(groups), do: groups |> Enum.with_index() |> Enum.map(fn {_, i} -> i > 0 end)
 
+  # ----------------------------------------------- hoist and marks
+
+  @prefixes [action: "▸ ", link: "→ ", running: "◐ "]
+
+  @doc """
+  A row as the page draws it: a leading `▸ `, `→ ` or `◐ ` (or the tier's
+  twin) of its label, else of its first value segment, becomes the `:action`,
+  `:link` or `:running` mark in the mark slot; a finished task's `✓ ` plus its
+  muted summary becomes one `chip_ok` chip. The section's row data is not
+  changed (D4).
+  """
+  @spec hoist(Row.t(), map()) :: Row.t()
+  def hoist(%Row{} = row, caps) do
+    prefixes = prefixes(caps)
+    row |> hoist_prefix(prefixes) |> chip(caps)
+  end
+
+  defp prefixes(caps) do
+    Enum.flat_map(@prefixes, fn {mark, prefix} ->
+      twin = Glyphs.get(mark, :ascii) <> " "
+      if Glyphs.tier(caps) == :ascii, do: [{mark, prefix}, {mark, twin}], else: [{mark, prefix}]
+    end)
+  end
+
+  defp hoist_prefix(%Row{label: label, value: value} = row, prefixes) do
+    case Enum.find(prefixes, fn {_, prefix} -> String.starts_with?(label, prefix) end) do
+      {mark, prefix} ->
+        %{row | label: String.replace_prefix(label, prefix, ""), marks: add_mark(row.marks, mark)}
+
+      nil ->
+        with [{text, role} | rest] <- value,
+             true <- is_binary(text),
+             {mark, prefix} <-
+               Enum.find(prefixes, fn {_, prefix} -> String.starts_with?(text, prefix) end) do
+          %{
+            row
+            | value: [{String.replace_prefix(text, prefix, ""), role} | rest],
+              marks: add_mark(row.marks, mark)
+          }
+        else
+          _ -> row
+        end
+    end
+  end
+
+  defp add_mark(marks, mark), do: if(mark in marks, do: marks, else: marks ++ [mark])
+
+  defp chip(%Row{value: [{ok, :success}, {summary, :text_muted} | rest]} = row, caps)
+       when ok in ["✓ ", "v "] do
+    chip =
+      if Glyphs.twin?(caps),
+        do: {"[" <> ok <> summary <> "]", :success},
+        else: {" " <> ok <> summary <> " ", :chip_ok}
+
+    %{row | value: [chip | rest]}
+  end
+
+  defp chip(row, _caps), do: row
+
+  @doc "Every ` · ` in a primary or muted segment drawn faint; the pieces keep their role."
+  @spec split_dots(segments()) :: segments()
+  def split_dots(segments) do
+    Enum.flat_map(segments, fn
+      {text, role} when role in [:text_primary, :text_muted] and is_binary(text) ->
+        text
+        |> String.split(" · ")
+        |> Enum.intersperse(:dot)
+        |> Enum.flat_map(fn
+          :dot -> [{" · ", :text_faint}]
+          "" -> []
+          piece -> [{piece, role}]
+        end)
+
+      segment ->
+        [segment]
+    end)
+  end
+
+  @mark_order [:invalid, :conflict, :attention, :pending, :running, :action, :link]
+
+  @doc """
+  The one glyph of a row's mark slot, by priority; `:changed` draws nothing
+  (the spine's hue says it). `danger?` draws the action mark as an error.
+  """
+  @spec mark(Row.t(), map(), boolean()) :: Text.segment()
+  def mark(%Row{marks: marks}, caps, danger?) do
+    glyph = &Glyphs.for_caps(&1, caps)
+
+    case Enum.find(@mark_order, &(&1 in marks)) || Enum.find(marks, &swatch?/1) do
+      :invalid -> {glyph.(:fail), :error}
+      :conflict -> {"!", :warning}
+      :attention -> {"!", {:warning, [:bold]}}
+      :pending -> {glyph.(:running), :text_faint}
+      :running -> {glyph.(:running), :info}
+      :action -> {glyph.(:action), if(danger?, do: :error, else: :text_muted)}
+      :link -> {glyph.(:link), :text_muted}
+      {:swatch, texture, role} -> {glyph.(texture), role}
+      nil -> {" ", :text_primary}
+    end
+  end
+
+  defp swatch?({:swatch, _texture, _role}), do: true
+  defp swatch?(_mark), do: false
+
   @doc """
   A label without the ` · <group title>` it ends with (`Model · this
   conversation` under `this conversation` draws `Model`); the registry label
