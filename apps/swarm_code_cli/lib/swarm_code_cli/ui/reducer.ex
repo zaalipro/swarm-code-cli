@@ -2136,7 +2136,71 @@ defmodule SwarmCodeCLI.UI.Reducer do
   defp interview(state, {:goto, node, index}),
     do: step_to(state, node, fn _interview, _count -> index end)
 
+  # Enter: the next question once this one has an answer; on the last one,
+  # every answer at once (one `question.answer` per row, in index order) when
+  # all are answered, else back to the first open question.
+  defp interview(state, {:confirm, node}) do
+    with_question(state, node, fn ask, interview, current ->
+      last? = current == List.last(ask.rows)
+      answer = Question.answer(state, ask, current)
+
+      cond do
+        interview.sending != [] ->
+          {state, []}
+
+        answer == nil and not last? ->
+          {state, []}
+
+        not last? ->
+          state |> hold_pick(ask, current, answer) |> interview({:step, node, 1})
+
+        Question.complete?(state, ask) ->
+          send_answers(state, ask)
+
+        true ->
+          state = hold_pick(state, ask, current, answer)
+          index = Question.first_unanswered(state, ask)
+          step_to(state, node, fn _interview, _count -> index end)
+      end
+    end)
+  end
+
   defp interview(state, _event), do: {state, []}
+
+  # Enter on a single-select question whose answer is its focused option
+  # makes that option the explicit pick, so it outlives the focus.
+  defp hold_pick(state, ask, current, %{option_ids: [option], custom_text: ""}) do
+    interview = Question.interview(state, ask.node_id)
+
+    if current.question.multiple or Map.has_key?(interview.picks, current.id),
+      do: state,
+      else:
+        put_interview(state, ask.node_id, %{
+          interview
+          | picks: Map.put(interview.picks, current.id, option)
+        })
+  end
+
+  defp hold_pick(state, _ask, _current, _answer), do: state
+
+  # Each intent previews its request id on the state the previous one
+  # returned, exactly as `stop_turn/2` does.
+  defp send_answers(state, ask) do
+    {state, effects, ids} =
+      Enum.reduce(Question.intents(state, ask), {state, [], []}, fn intent, {acc, effects, ids} ->
+        {id, _} = State.next_id(acc, :request)
+        {acc, more} = invoke_intent(acc, intent, id)
+        {acc, effects ++ more, if(more == [], do: ids, else: ids ++ [id])}
+      end)
+
+    interview = Question.interview(state, ask.node_id)
+
+    {put_interview(state, ask.node_id, %{
+       interview
+       | sending: ids,
+         refused: Map.drop(interview.refused, Enum.map(ask.rows, & &1.id))
+     }), effects}
+  end
 
   # The focus of the question being left is kept, so coming back finds it.
   defp step_to(state, node, target) do
@@ -2452,19 +2516,79 @@ defmodule SwarmCodeCLI.UI.Reducer do
   defp sync_interactions(state, effects, action, previous) do
     {state, effects} = close_settled(state, effects, previous)
 
-    if auto_open?(state, action) do
-      case next_in_view(state) do
-        nil ->
-          {state, effects}
+    {state, effects} =
+      if auto_open?(state, action) do
+        case next_in_view(state) do
+          nil ->
+            {state, effects}
 
-        {id, item} ->
-          {opened, more} = transition(state, {:open_layer, {item.kind, id}})
-          {opened, grace} = start_grace(%{opened | auto_opened: id})
-          {opened, effects ++ more ++ grace}
+          {id, item} ->
+            {opened, more} = transition(state, {:open_layer, {item.kind, id}})
+            {opened, grace} = start_grace(%{opened | auto_opened: id})
+            {opened, effects ++ more ++ grace}
+        end
+      else
+        {state, effects}
       end
+
+    {prune_interviews(state, previous), effects}
+  end
+
+  # pass75 interview: held answers are bounded state. An ask that left (and
+  # has no answer still on its way) drops its interview; a question row that
+  # left drops its ticks and its "other" editor; at most 8 asks are held, the
+  # oldest (and those whose rows are all gone) dropped first.
+  @interviews_limit 8
+
+  defp prune_interviews(state, previous) do
+    before = previous.read_model.interactions
+    now = state.read_model.interactions
+
+    vanished =
+      if before == now,
+        do: [],
+        else:
+          for(
+            {id, %{kind: :question}} <- Map.drop(before, Map.keys(now)),
+            do: id
+          )
+
+    state =
+      if vanished == [],
+        do: state,
+        else: %{
+          state
+          | selection: Map.drop(state.selection, Enum.map(vanished, &{:question, &1})),
+            field_editors: Enum.reduce(vanished, state.field_editors, &close_row_editors/2)
+        }
+
+    if state.interviews == %{} do
+      state
     else
-      {state, effects}
+      asks = Map.new(Question.asks(state), &{&1.node_id, &1})
+
+      kept =
+        state.interviews
+        |> Enum.reject(fn {node, interview} ->
+          not Map.has_key?(asks, node) and interview.sending == []
+        end)
+        |> Enum.sort_by(fn {node, _} ->
+          case Map.get(asks, node) do
+            nil -> {0, 0}
+            %{rows: [first | _]} -> {1, first.created_at}
+          end
+        end)
+        |> Enum.take(-@interviews_limit)
+        |> Map.new()
+
+      %{state | interviews: kept}
     end
+  end
+
+  defp close_row_editors(row_id, fields) do
+    if SwarmCodeCLI.UI.Intent.valid_id?(row_id),
+      do: FieldEditors.close_owner(fields, row_id),
+      else: fields
   end
 
   # A card closes by itself when its interaction stopped waiting, and a card
