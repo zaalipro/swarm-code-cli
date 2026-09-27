@@ -31,7 +31,8 @@ defmodule SwarmCodeCLI.UI.Settings.C74PreferencesTest do
                panel_mode: :compact,
                show_diffs: false,
                theme: :light,
-               mouse?: true
+               mouse?: true,
+               agent_summaries?: true
              }
 
       # Unknown keys survive, the file is private.

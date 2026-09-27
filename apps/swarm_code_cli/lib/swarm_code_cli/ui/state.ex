@@ -105,6 +105,8 @@ defmodule SwarmCodeCLI.UI.State do
     # pass73-K fields (published with the tag `p73-K-keyword`).
     # T1: tool rows show their diffs, previews and output tails (`/diff`).
     show_diffs: true,
+    # pass75: AI status lines in the panel (cli.json agent_summaries).
+    agent_summaries?: true,
     # T2: the painted theme (`/theme`); the port owner repaints on a change.
     theme_mode: :dark,
     # T2: `SWARM_THEME` named a theme at launch, so it wins at the next one.
