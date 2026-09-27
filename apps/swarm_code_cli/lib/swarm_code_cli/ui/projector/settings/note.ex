@@ -225,7 +225,8 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Note do
 
         left = [
           {lead, :accent},
-          {pad(Overview.layer_word(id), 10), word},
+          # 10 cells, and one space at least: `project file` is 12 (407)
+          {pad(Overview.layer_word(id), 9) <> " ", word},
           {pad(to_string(layer.value), 8) <> " ", value_role}
           | if(note, do: [{to_string(note), :text_faint}], else: [])
         ]

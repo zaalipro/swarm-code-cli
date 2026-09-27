@@ -114,6 +114,14 @@ defmodule SwarmCodeCLI.UI.Settings.C75NoteTest do
       assert last > where
     end
 
+    test "a layer word wider than its 10 cells keeps one space before the value (407)" do
+      note = note(open(:models_effort, {160, 45}, "key:efforts.default"))
+      {_, text, _} = find_note(note, ~r/^  project file/)
+      assert text =~ ~r/^  project file \S/
+      {_, text, _} = find_note(note, ~r/^(› |  )default/)
+      assert text =~ ~r/^(› |  )default   \S/
+    end
+
     test "the ladder's env line takes the env hue on the note's spine" do
       note = note(open(:appearance, {160, 45}, "key:terminal.theme"))
       {_, text, spans} = find_note(note, ~r/^› env/)
