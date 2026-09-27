@@ -52,7 +52,8 @@ defmodule SwarmCode.Daemon.Service.PanelFacts do
     turn_limit? = turn_limit?(n)
 
     finding =
-      if n.status == "done" and not turn_limit?, do: finding(Map.get(n, :result_head), roots)
+      if n.status == "done" and not turn_limit?,
+        do: finding(Map.get(n, :result_head), Map.get(n, :result_tail), roots)
 
     lane_at = anchor(ops)
     live? = state not in [:done, :failed, :stopped, :queued] and is_integer(lane_at)
@@ -107,7 +108,7 @@ defmodule SwarmCode.Daemon.Service.PanelFacts do
   @spec last_words(map()) :: String.t() | nil
   def last_words(n) do
     head = Map.get(n, :result_head)
-    sentence = first_sentence(head, [], 200)
+    sentence = first_sentence(head, [], 200, skip: &narration?/1)
 
     cond do
       is_nil(sentence) -> nil
@@ -528,13 +529,38 @@ defmodule SwarmCode.Daemon.Service.PanelFacts do
   What an agent found (≤ 160 bytes): its first numbered finding when the result
   lists them, else the result's first sentence, else nil.
   """
-  def finding(result, roots \\ []) do
+  def finding(result, roots \\ []), do: finding(result, nil, roots)
+
+  @doc """
+  pass75: the finding of a report's `head`, skipping sentences that narrate
+  ("I'll start by…"); when the head holds only narration, the last real
+  sentence of the report's `tail` (its conclusion), else nil.
+  """
+  def finding(head, tail, roots) do
+    case head_finding(head, roots) do
+      nil -> tail_finding(tail, roots)
+      finding -> finding
+    end
+  end
+
+  defp tail_finding(tail, roots) when is_binary(tail) do
+    # The engine's notes close a worker's report; they are no conclusion.
+    tail
+    |> without_engine_notes()
+    |> last_sentence()
+    |> then(&(&1 && &1 |> scrub(roots(roots)) |> blank_nil()))
+    |> then(&(&1 && clip(&1, @finding_bytes)))
+  end
+
+  defp tail_finding(_, _), do: nil
+
+  defp head_finding(result, roots) do
     result = result |> without_engine_notes() |> structured_text()
 
     # pass72 F (live): reports often open with narration ("I've reviewed the
     # web layer.") and list the findings below. An opening sentence that cites
     # no `path:line` gives way to the first numbered finding.
-    opening = first_sentence(result, roots(roots), @finding_bytes + 40)
+    opening = first_sentence(result, roots(roots), @finding_bytes + 40, skip: &narration?/1)
 
     first =
       with true <- is_binary(opening) and finding_refs(opening, roots) == [],
@@ -545,7 +571,7 @@ defmodule SwarmCode.Daemon.Service.PanelFacts do
         _ -> result
       end
 
-    case first_sentence(first, roots(roots), @finding_bytes + 40) do
+    case first_sentence(first, roots(roots), @finding_bytes + 40, skip: &narration?/1) do
       nil ->
         nil
 
@@ -910,15 +936,22 @@ defmodule SwarmCode.Daemon.Service.PanelFacts do
   defp literal(_), do: ""
 
   @doc "The first real sentence of a text (headings, rules and bullets skipped)."
-  def first_sentence(text, roots, max \\ @now_bytes)
+  def first_sentence(text, roots, max \\ @now_bytes),
+    do: first_sentence(text, roots, max, [])
 
-  def first_sentence(text, roots, max) when is_binary(text) do
+  @doc """
+  pass75: `first_sentence/3` with `opts`: `:skip`, a predicate on a line that
+  passes over it (`&narration?/1`).
+  """
+  def first_sentence(text, roots, max, opts) when is_binary(text) do
+    skip = Keyword.get(opts, :skip, fn _ -> false end)
+
     text
     |> String.slice(0, 4_000)
     |> String.split(~r/\r?\n/u)
     |> Enum.reject(&heading?/1)
     |> Enum.map(&plain_line/1)
-    |> Enum.find(&(String.length(&1) >= 8 and not String.ends_with?(&1, ":")))
+    |> Enum.find(&(String.length(&1) >= 8 and not String.ends_with?(&1, ":") and not skip.(&1)))
     |> case do
       nil ->
         nil
@@ -932,7 +965,66 @@ defmodule SwarmCode.Daemon.Service.PanelFacts do
     end
   end
 
-  def first_sentence(_, _, _), do: nil
+  def first_sentence(_, _, _, _), do: nil
+
+  @openers [
+    "i'll",
+    "i will",
+    "let me",
+    "i'm going to",
+    "i am going to",
+    "first,",
+    "first i",
+    "starting",
+    "i need to",
+    "i should",
+    "looking at",
+    "let's",
+    "now i",
+    "next,",
+    "i can see"
+  ]
+
+  @doc """
+  pass75: a sentence that narrates what the agent is about to do ("I'll start
+  by…", "Let me check…"), after any leading markdown marks.
+  """
+  @spec narration?(String.t()) :: boolean()
+  def narration?(s) do
+    s =
+      s
+      |> String.replace(~r/\A[*#>\-\s]+/u, "")
+      |> String.replace("’", "'")
+      |> String.downcase()
+
+    Enum.any?(@openers, &String.starts_with?(s, &1))
+  end
+
+  @doc """
+  pass75: the last real sentence of a report's tail (its conclusion): the
+  first fragment is dropped (the tail starts mid-sentence), narration and the
+  engine's "Stopped after" notice are skipped. ≤ 160 bytes, or nil.
+  """
+  @spec last_sentence(String.t() | nil) :: String.t() | nil
+  def last_sentence(tail) when is_binary(tail) do
+    if String.trim(tail) == "" do
+      nil
+    else
+      tail
+      |> String.split(~r/(?<=[.!?])\s+|\n+/u)
+      |> Enum.drop(1)
+      |> Enum.map(&String.trim/1)
+      |> Enum.reverse()
+      |> Enum.find(fn sentence ->
+        String.length(sentence) >= 8 and not String.ends_with?(sentence, ":") and
+          not narration?(sentence) and
+          not String.starts_with?(sentence, ["_(Stopped after", "Stopped after"])
+      end)
+      |> then(&(&1 && clip(&1, @finding_bytes)))
+    end
+  end
+
+  def last_sentence(_), do: nil
 
   # A heading, a rule or a bold-only label names a section; it is no finding.
   defp heading?(line) do
