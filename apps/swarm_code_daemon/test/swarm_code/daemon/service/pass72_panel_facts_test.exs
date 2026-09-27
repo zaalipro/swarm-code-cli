@@ -418,7 +418,9 @@ defmodule SwarmCode.Daemon.Service.Pass72PanelFactsTest do
         %{
           "kind" => "question",
           "node_id" => "op3",
-          "created_at" => 300,
+          # pass75: a row's created_at is a microsecond stamp; the band's
+          # requested_at is unix ms (300 here), so the order is unchanged.
+          "created_at" => 300_000,
           "question" => %{"prompt" => "Which branch?"}
         }
       ]
@@ -448,6 +450,61 @@ defmodule SwarmCode.Daemon.Service.Pass72PanelFactsTest do
                  "reason" => ""
                }
              ] = band
+    end
+
+    # pass75 interview (task 205): one item per ask, its headers in index order.
+    test "an ask's question rows are one item with its headers, options and ms" do
+      question = fn index, header, extra ->
+        %{
+          "kind" => "question",
+          "node_id" => "op9",
+          "created_at" => 5_000_000,
+          "question" =>
+            Map.merge(
+              %{
+                "prompt" => "Question #{index}?",
+                "index" => index,
+                "header" => header,
+                "options" => [%{"id" => "x#{index}", "label" => "X"}],
+                "requested_at" => 4_000
+              },
+              extra
+            )
+        }
+      end
+
+      rows = [
+        question.(2, "Delivery", %{}),
+        question.(0, "Format", %{"options" => Enum.map(1..4, &%{"id" => "o#{&1}"})}),
+        question.(1, "Fields", %{})
+      ]
+
+      assert [item] = Facts.needs_you(rows, %{}, %{})
+      assert item["questions"] == ["Format", "Fields", "Delivery"]
+      assert item["options"] == 4
+      assert item["requested_at"] == 4_000
+      assert item["text"] == "Question 0?"
+      assert item["node_id"] == "op9"
+
+      unnamed = [
+        question.(0, "Format", %{"requested_at" => nil}),
+        question.(1, nil, %{"requested_at" => nil})
+      ]
+
+      assert [item] = Facts.needs_you(unnamed, %{}, %{})
+      assert item["questions"] == ["Format", "Question 2"]
+      assert item["requested_at"] == div(5_000_000, 1000)
+    end
+
+    test "an approval item names no questions and no options" do
+      approval = %{
+        "kind" => "approval",
+        "node_id" => "op1",
+        "created_at" => 9,
+        "approval" => %{"tool" => "run_command", "command" => "ls", "requested_at" => 1}
+      }
+
+      assert [%{"questions" => [], "options" => 0}] = Facts.needs_you([approval], %{}, %{})
     end
 
     test "workflow phases come from the declared list and the current phase" do

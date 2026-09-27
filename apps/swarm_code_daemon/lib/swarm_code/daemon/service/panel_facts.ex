@@ -767,8 +767,20 @@ defmodule SwarmCode.Daemon.Service.PanelFacts do
   def needs_you(interactions, agents_by_id, op_parent, roots \\ []) do
     roots = roots(roots)
 
-    interactions
+    # pass75 interview: one item per ask. An ask's question rows share their
+    # node and are read in index order; approvals stay one per node.
+    {questions, others} = Enum.split_with(interactions, &(&1["kind"] == "question"))
+
+    asks =
+      questions
+      |> Enum.group_by(& &1["node_id"])
+      |> Enum.map(fn {_node, group} ->
+        Enum.sort_by(group, &(get_in(&1, ["question", "index"]) || 0))
+      end)
+
+    others
     |> Enum.uniq_by(&{&1["node_id"], &1["kind"]})
+    |> Enum.concat(asks)
     |> Enum.map(fn i -> needs_you_item(i, agents_by_id, op_parent, roots) end)
     |> Enum.sort_by(& &1["requested_at"])
     |> Enum.take(20)
@@ -786,25 +798,42 @@ defmodule SwarmCode.Daemon.Service.PanelFacts do
       "text" => clip(approval_text(card, roots), 1024),
       "reason" => clip(scrub(card["reason"] || "", roots), 512),
       "requested_at" => card["requested_at"] || i["created_at"] || 0,
-      "tool" => (is_binary(card["tool"]) && clip(card["tool"], 64)) || nil
+      "tool" => (is_binary(card["tool"]) && clip(card["tool"], 64)) || nil,
+      "questions" => [],
+      "options" => 0
     }
   end
 
-  defp needs_you_item(%{"kind" => "question"} = i, agents, parents, _roots) do
-    agent_id = parents[i["node_id"]] || i["node_id"]
+  # pass75 interview: one ask, its question rows in index order; the band
+  # names every header and the first question's option count. `requested_at`
+  # is unix ms (the row's `created_at` is a microsecond revision stamp).
+  defp needs_you_item([%{"kind" => "question"} = first | _] = group, agents, parents, _roots) do
+    agent_id = parents[first["node_id"]] || first["node_id"]
     agent = agents[agent_id]
-    prompt = get_in(i, ["question", "prompt"]) || ""
+    question = first["question"] || %{}
+    prompt = question["prompt"] || ""
 
     %{
       "agent_id" => agent && agent_id,
-      "node_id" => i["node_id"],
+      "node_id" => first["node_id"],
       "agent_name" => clip((agent && agent["name"]) || "", 200),
       "kind" => "question",
       "text" => clip(literal(prompt), 1024),
       "reason" => "",
-      "requested_at" => i["created_at"] || 0
+      "requested_at" => question["requested_at"] || div(first["created_at"] || 0, 1000),
+      "questions" => group |> Enum.take(4) |> Enum.map(&header_or_fallback/1),
+      "options" => length(question["options"] || [])
     }
   end
+
+  defp header_or_fallback(%{"question" => %{} = q}) do
+    case q["header"] do
+      header when is_binary(header) and header != "" -> clip(header, 64)
+      _ -> "Question " <> Integer.to_string((q["index"] || 0) + 1)
+    end
+  end
+
+  defp header_or_fallback(_), do: "Question 1"
 
   # The literal request: the command itself, else the tool and its path.
   defp approval_text(card, roots) do
