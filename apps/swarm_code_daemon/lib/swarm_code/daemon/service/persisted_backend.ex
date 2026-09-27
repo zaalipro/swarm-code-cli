@@ -296,9 +296,17 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     {:noreply, %{state | agent_status: status}}
   end
 
-  def handle_info({:agent_status_due, agent_id}, state) do
-    state = %{state | agent_status: AgentStatus.clear_timer(state.agent_status, agent_id)}
-    {:noreply, summarize_due(state, agent_id)}
+  # The timer message names its own ref: a replaced or cancelled timer that
+  # still delivers is not the agent's timer and is ignored.
+  def handle_info({:timeout, ref, {:agent_status_due, agent_id}}, state) do
+    case state.agent_status.timers do
+      %{^agent_id => ^ref} ->
+        state = %{state | agent_status: AgentStatus.clear_timer(state.agent_status, agent_id)}
+        {:noreply, summarize_due(state, agent_id)}
+
+      _stale ->
+        {:noreply, state}
+    end
   end
 
   # pass74 S1-10 (§3.3.10): a settings job's answer, crash and timer.
@@ -1616,10 +1624,10 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       now = System.system_time(:millisecond)
       rows = Map.new(state.inputs.rows, &{&1.id, &1})
 
+      # An agent without its run row counts as ended too.
       ended =
         for node <- state.inputs.agents,
-            row = rows[node.run_id],
-            row == nil or row.status not in ["running", "waiting_user"],
+            Map.get(rows[node.run_id] || %{}, :status) not in ["running", "waiting_user"],
             do: node.id
 
       state = %{
@@ -1663,11 +1671,13 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
           %{state | agent_status: status}
       end
 
-    # Crossing into quiet changes the facts: a timer re-runs the decision then.
+    # Crossing into quiet changes the facts: a timer re-runs the decision then,
+    # for an agent that can get a line at all (never a lead or an ended run's).
     anchor = PanelFacts.anchor(ops)
 
     if node.status in ["running", "retrying"] and is_integer(anchor) and
-         now - anchor < 60_000 and not Map.has_key?(state.agent_status.timers, node.id),
+         now - anchor < 60_000 and not Map.has_key?(state.agent_status.timers, node.id) and
+         AgentStatus.eligible?(state.agent_status, agent, run),
        do: arm_status_timer(state, node.id, 60_000 - (now - anchor)),
        else: state
   end
@@ -1714,7 +1724,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   end
 
   defp arm_status_timer(state, agent_id, ms) do
-    ref = Process.send_after(self(), {:agent_status_due, agent_id}, max(ms, 0))
+    ref = :erlang.start_timer(max(ms, 0), self(), {:agent_status_due, agent_id})
     {old, status} = AgentStatus.put_timer(state.agent_status, agent_id, ref)
     if old, do: Process.cancel_timer(old)
     %{state | agent_status: status}
@@ -2788,11 +2798,17 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         changes: Map.new(checkpoints, &{&1.id, change_body(&1, state)}),
         verdicts: Map.new(verdicts),
         agent_models: Map.take(state.agent_models, Enum.map(agents, & &1.id)),
+        # A query's page holds a subset of the agents and is thrown away:
+        # only the service's own projection ends calls and timers.
         agent_status:
-          AgentStatus.retain(
-            state.agent_status,
-            Enum.map(agents, & &1.id),
-            state.task_supervisor
+          if(reload?,
+            do:
+              AgentStatus.retain(
+                state.agent_status,
+                Enum.map(agents, & &1.id),
+                state.task_supervisor
+              ),
+            else: state.agent_status
           ),
         background: background,
         inputs:

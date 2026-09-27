@@ -151,12 +151,20 @@ defmodule SwarmCode.Daemon.Service.AgentStatus do
     end
   end
 
-  defp skip?(status, agent, run) do
-    agent.role == "lead" or (agent.role == "assistant" and run.kind == "chat") or
-      run.status not in @live_runs or MapSet.member?(status.frozen, agent.id) or
-      Map.has_key?(status.pending, agent.id) or
-      Map.get(status.calls, run.id, 0) >= @max_calls_per_run
+  @doc """
+  Whether `agent` of `run` can get a line at all: not a lead or a plain
+  chat's assistant, a live run, not frozen, the run's calls not spent. A call
+  in flight or unchanged facts do not make it ineligible.
+  """
+  @spec eligible?(t(), map(), map()) :: boolean()
+  def eligible?(%__MODULE__{} = status, agent, run) do
+    not (agent.role == "lead" or (agent.role == "assistant" and run.kind == "chat") or
+           run.status not in @live_runs or MapSet.member?(status.frozen, agent.id) or
+           Map.get(status.calls, run.id, 0) >= @max_calls_per_run)
   end
+
+  defp skip?(status, agent, run),
+    do: not eligible?(status, agent, run) or Map.has_key?(status.pending, agent.id)
 
   defp bump_run(status, run_id) do
     calls = Map.update(status.calls, run_id, 1, &(&1 + 1))
@@ -278,7 +286,8 @@ defmodule SwarmCode.Daemon.Service.AgentStatus do
 
   @doc """
   A call's outcome arrived: the call is no longer pending; a new text is kept
-  unless a newer call's text is already held.
+  unless a newer call's text is already held. The outcome of a call that was
+  ended (its ref is no longer held) changes nothing.
   """
   @spec settle(
           t(),
@@ -287,6 +296,10 @@ defmodule SwarmCode.Daemon.Service.AgentStatus do
           pos_integer(),
           {:ok, String.t()} | :reject | {:error, term()}
         ) :: {:changed | :unchanged, t()}
+  def settle(%__MODULE__{refs: refs} = status, ref, _agent_id, _seq, _outcome)
+      when not is_map_key(refs, ref),
+      do: {:unchanged, status}
+
   def settle(%__MODULE__{} = status, ref, agent_id, seq, outcome) do
     status = %{
       status

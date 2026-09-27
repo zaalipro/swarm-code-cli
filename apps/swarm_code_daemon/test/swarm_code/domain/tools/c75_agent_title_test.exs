@@ -29,7 +29,9 @@ defmodule SwarmCode.Domain.Tools.C75AgentTitleTest do
     {"verify the whole build pipeline end to end", "verify the whole"},
     {nil, @slug},
     {"   ", @slug},
-    {String.duplicate("é", 30), String.duplicate("é", 16)}
+    {String.duplicate("é", 30), String.duplicate("é", 16)},
+    # cli75 W review (W-5): a cut on the word gap leaves no trailing space.
+    {"aaaaaaaaaaaaaaaaaaaaaaa bb cc", "aaaaaaaaaaaaaaaaaaaaaaa"}
   ]
 
   # The guarded launch (verified backup, then the 53 -> 57 migration) costs

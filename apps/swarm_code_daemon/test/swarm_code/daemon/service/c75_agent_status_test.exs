@@ -245,6 +245,38 @@ defmodule SwarmCode.Daemon.Service.C75AgentStatusTest do
       assert s.calls == %{"r" => 1}
       assert Map.keys(s.keys) == ["b"]
     end
+
+    # cli75 W review (W-6): retain/3 ends the unlisted agent's call only, and a
+    # cancelled call's late answer is not a line.
+    test "retain/3 ends only an unlisted agent's call in flight" do
+      sup = start_supervised!(Task.Supervisor)
+      [a, b] = for _ <- 1..2, do: Task.Supervisor.async_nolink(sup, &hold/0)
+      ma = Process.monitor(a.pid)
+      mb = Process.monitor(b.pid)
+
+      s =
+        %AgentStatus{}
+        |> AgentStatus.started("a", 1, a.ref, a.pid)
+        |> AgentStatus.started("b", 1, b.ref, b.pid)
+        |> AgentStatus.retain(["a"], sup)
+
+      assert_receive {:DOWN, ^mb, :process, _, _}
+      refute_receive {:DOWN, ^ma, :process, _, _}, 100
+      assert s.pending == %{"a" => {1, a.ref, a.pid}}
+      assert s.refs == %{a.ref => "a"}
+    end
+
+    test "a cancelled call's late answer changes nothing" do
+      sup = start_supervised!(Task.Supervisor)
+      task = Task.Supervisor.async_nolink(sup, &hold/0)
+      s = AgentStatus.started(%AgentStatus{}, "a", 1, task.ref, task.pid)
+      s = AgentStatus.cancel(s, ["a"], sup)
+      assert s.pending == %{} and s.refs == %{}
+
+      assert {:unchanged, s} = AgentStatus.settle(s, task.ref, "a", 1, {:ok, "late line"})
+      assert AgentStatus.summary(s, "a") == {nil, nil}
+      assert s.refs == %{}
+    end
   end
 
   # ------------------------------------------------------ notes / request
@@ -406,9 +438,94 @@ defmodule SwarmCode.Daemon.Service.C75AgentStatusTest do
       full!(backend)
       assert agents(backend, c.scope)[c.sub.id]["summary"] == nil
     end
+
+    # cli75 W review (W-1, W-6): a query's page is not the service's
+    # projection, so it ends no call of an agent outside the page.
+    test "a page query keeps the call in flight of an agent outside the page", c do
+      backend =
+        backend_with!(c, fn _notes, _model ->
+          receive do
+            :go -> {:ok, "reading the repo"}
+          end
+        end)
+
+      full!(backend)
+      state = until!(backend, &Map.has_key?(&1.agent_status.pending, c.sub.id))
+      {1, _ref, pid} = state.agent_status.pending[c.sub.id]
+      monitor = Process.monitor(pid)
+
+      {:ok, _later} =
+        Conversations.create_run(%{
+          conversation_id: c.conv.id,
+          kind: "chat",
+          prompt: "A later turn",
+          status: "done",
+          started_at: DateTime.utc_now()
+        })
+
+      assert {:ok, %{"value" => page}} = query(backend, c.scope, "workspace", 1)
+      refute Enum.any?(page["agents"], &(&1["id"] == c.sub.id))
+
+      refute_receive {:DOWN, ^monitor, :process, _, _}, 200
+      assert {1, _ref, ^pid} = :sys.get_state(backend).agent_status.pending[c.sub.id]
+
+      send(pid, :go)
+
+      until!(
+        backend,
+        &(AgentStatus.summary(&1.agent_status, c.sub.id) == {"reading the repo", 1})
+      )
+    end
+
+    # cli75 W review (W-2): only the agent's current timer runs the decision;
+    # a replaced or cancelled one that still delivers is ignored.
+    test "a stale status timer leaves the armed one in place", c do
+      backend = backend!(c, {:ok, "reading the repo"})
+      full!(backend)
+      assert_receive {:notes, _}, 5_000
+
+      state =
+        until!(backend, fn s ->
+          s.agent_status.pending == %{} and Map.has_key?(s.agent_status.timers, c.sub.id)
+        end)
+
+      armed = state.agent_status.timers[c.sub.id]
+      send(backend, {:timeout, make_ref(), {:agent_status_due, c.sub.id}})
+      assert :sys.get_state(backend).agent_status.timers[c.sub.id] == armed
+    end
+
+    # cli75 W review (W-3): a lead is never summarised, so it gets no quiet
+    # timer however fresh its last operation is.
+    test "a lead with a fresh operation gets no quiet timer", c do
+      node!(%{
+        run_id: c.run.id,
+        parent_id: c.lead.id,
+        kind: "op",
+        op_type: "read_file",
+        title: "plan the review",
+        status: "done",
+        started_at: DateTime.add(DateTime.utc_now(), -6, :second),
+        finished_at: DateTime.add(DateTime.utc_now(), -5, :second)
+      })
+
+      backend = backend!(c, {:ok, "reading the repo"})
+      full!(backend)
+      assert_receive {:notes, _}, 5_000
+      state = until!(backend, &(&1.agent_status.pending == %{}))
+      state = if state.refresh_pending, do: full!(backend), else: state
+
+      assert Map.has_key?(state.agent_status.timers, c.sub.id)
+      refute Map.has_key?(state.agent_status.timers, c.lead.id)
+    end
   end
 
   # ---------------------------------------------------------------- helpers
+
+  defp hold do
+    receive do
+      :never -> :ok
+    end
+  end
 
   defp op(id, type, status, started, finished),
     do: %{
@@ -430,6 +547,13 @@ defmodule SwarmCode.Daemon.Service.C75AgentStatusTest do
   defp backend!(c, answer) do
     test_pid = self()
 
+    backend_with!(c, fn notes, _model ->
+      send(test_pid, {:notes, notes})
+      answer
+    end)
+  end
+
+  defp backend_with!(c, summarize) do
     start_supervised!(
       {Backend,
        [
@@ -439,12 +563,7 @@ defmodule SwarmCode.Daemon.Service.C75AgentStatusTest do
          project_id: c.project.id,
          conversation_id: c.conv.id,
          source_epoch: Ecto.UUID.generate(),
-         work: %{
-           summarize: fn notes, _model ->
-             send(test_pid, {:notes, notes})
-             answer
-           end
-         }
+         work: %{summarize: summarize}
        ]}
     )
   end
@@ -479,7 +598,7 @@ defmodule SwarmCode.Daemon.Service.C75AgentStatusTest do
     Map.new(workspace["agents"], &{&1["id"], &1})
   end
 
-  defp query(backend, scope, slot),
+  defp query(backend, scope, slot, page_size \\ 200),
     do:
       GenServer.call(
         backend,
@@ -491,7 +610,7 @@ defmodule SwarmCode.Daemon.Service.C75AgentStatusTest do
              "slot" => slot,
              "cursor" => nil,
              "direction" => "after",
-             "page_size" => 200,
+             "page_size" => page_size,
              "byte_limit" => 1_048_576
            }
          }},

@@ -29,6 +29,7 @@ defmodule SwarmCode.Domain.Tools.AgentTitle do
       |> Enum.join(" ")
       |> String.slice(0, @max_chars)
       |> within_bytes()
+      |> String.trim_trailing()
       |> case do
         "" -> slug
         clean -> clean
