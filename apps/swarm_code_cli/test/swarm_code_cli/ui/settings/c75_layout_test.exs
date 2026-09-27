@@ -154,6 +154,27 @@ defmodule SwarmCodeCLI.UI.Settings.C75LayoutTest do
     assert Page.mark(hoisted, caps, false) == {"◐", :info}
   end
 
+  test "a value that wraps before a tag leaves two cells before it (R22.4, 407)" do
+    state = open(:models_effort, {160, 45})
+    grid = Grid.for(160, 45)
+
+    row = %Row{
+      id: "act:provider.test",
+      kind: :action,
+      label: "▸ Test connection",
+      value: [{"lists the models with the saved values; writes nothing", :text_faint}],
+      tag: [{"t", :key}]
+    }
+
+    [group] = Page.groups([row])
+
+    [first | _] =
+      for line <- Page.row_lines(state, row, group, grid), do: Enum.map_join(line, &elem(&1, 0))
+
+    assert String.ends_with?(first, "  t ")
+    refute first =~ "writes t"
+  end
+
   test "with the focus on the rail the band and `▌` move there (D9)" do
     state = open(:models_effort, {160, 45})
     {state, _} = verb(state, :previous_region)

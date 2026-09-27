@@ -451,10 +451,12 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Page do
     value = row |> value(value) |> twin(state.capabilities)
     tag_cells = Text.cells(state, tag)
 
+    # two cells before the tag on both kinds of row (Assumptions › Settings:
+    # "leave 2 cells before the tag"; `writes t` read as one word, 407)
     value_room =
       if row.label == "",
         do: room - tag_cells - 2,
-        else: grid.page.width - grid.value_offset - tag_cells - 2
+        else: grid.page.width - grid.value_offset - tag_cells - 3
 
     {value_room, tag_on_first?} =
       if value_room >= 8, do: {value_room, true}, else: {value_room + tag_cells, false}
