@@ -186,18 +186,43 @@ defmodule SwarmCodeCLI.Demo.Cells do
       node_id: "preview-node",
       conversation_id: "fixture-conversation",
       expected_revision: 3,
+      # pass 75: QA1's first question (task 208's strings); the layer is the
+      # asking op's node, one note per ask.
       question: %Question{
-        prompt: "Which synthetic change should be reviewed first?",
+        prompt: "Which format should the ticket export produce?",
+        index: 0,
+        header: "Format",
+        total: 1,
+        agent_id: nil,
+        requested_at: nil,
         options: [
-          %QuestionOption{id: "layout", label: "Review the workspace layout"},
-          %QuestionOption{id: "actions", label: "Check the visible action controls"}
+          %QuestionOption{
+            id: "csv",
+            label: "CSV",
+            description: "One row per ticket; opens in Excel and Sheets."
+          },
+          %QuestionOption{
+            id: "json",
+            label: "JSON",
+            description: "Nested comments and tags; the shape a re-import reads."
+          },
+          %QuestionOption{
+            id: "both",
+            label: "CSV and JSON",
+            description: "Two buttons in the toolbar; doubles the export tests."
+          },
+          %QuestionOption{
+            id: "xlsx",
+            label: "XLSX",
+            description: "A native spreadsheet; adds the elixlsx dependency."
+          }
         ]
       },
       allowed_actions: [:answer_question]
     }
 
     state = put_in(state.read_model.interactions[interaction.id], interaction)
-    %{state | layers: [{:question, interaction.id}], focus: "layout"}
+    %{state | layers: [{:question, interaction.node_id}], focus: "json"}
   end
 
   defp fixture(:confirmation, size, capabilities) do
