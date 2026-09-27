@@ -136,10 +136,7 @@ defmodule SwarmCodeCLI.UI.Reducer.Commands do
         interview =
           case {request.origin, Map.get(Map.get(state, :mutation_reasons, %{}), request.origin)} do
             {{:interaction, row_id, _}, reason} when reason != nil ->
-              words =
-                request.origin
-                |> SwarmCodeCLI.UI.Projector.Status.refusal_words(reason)
-                |> String.replace_prefix("Not answered: ", "")
+              words = SwarmCodeCLI.UI.Projector.Status.refusal_reason_words(reason)
 
               %{interview | refused: Map.put(interview.refused, row_id, words)}
 

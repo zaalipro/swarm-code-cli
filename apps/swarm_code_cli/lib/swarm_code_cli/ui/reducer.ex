@@ -2169,7 +2169,7 @@ defmodule SwarmCodeCLI.UI.Reducer do
           state |> hold_pick(ask, current, answer) |> interview({:step, node, 1})
 
         Question.complete?(state, ask) ->
-          send_answers(state, ask)
+          state |> hold_pick(ask, current, answer) |> send_answers(ask)
 
         true ->
           state = hold_pick(state, ask, current, answer)

@@ -5,9 +5,19 @@ defmodule SwarmCodeCLI.UI.C75InterviewSettleTest do
 
   import SwarmCodeCLI.UI.Pass73Helpers
 
-  alias SwarmCodeCLI.UI.{Editor, FieldEditors, Projector, Question, Reducer, SafeText, State}
+  alias SwarmCodeCLI.UI.{
+    Editor,
+    FieldEditors,
+    Input,
+    Projector,
+    Question,
+    Reducer,
+    SafeText,
+    State
+  }
+
   alias SwarmCodeCLI.UI.DataSource.{AdmissionError, DTO, Delivery, Delta}
-  alias SwarmCodeCLI.UI.Projector.RunRow
+  alias SwarmCodeCLI.UI.Projector.{RunRow, Status}
   alias SwarmCodeCLI.UI.Scene.Block
 
   @node "n9"
@@ -173,11 +183,54 @@ defmodule SwarmCodeCLI.UI.C75InterviewSettleTest do
              String.starts_with?(text, "Fields: ") and style.foreground == warning
            end)
 
+    # Review Q-12: the row is the header and the reason's own words, whole.
+    why = Status.refusal_reason_words(AdmissionError.new(:stale_revision))
+    assert why == "it changed meanwhile · look at it again and retry"
+
+    assert Enum.any?(note_spans(state), fn {text, _} -> String.trim(text) == "Fields: " <> why end)
+
     # The removed rows took their headers with them: indexes 0 and 2.
     ledger = Question.ledger(state, Question.ask(state, @node))
     assert {:earlier, _, "answered earlier"} = Enum.at(ledger, 0)
     assert {_, "Fields", _} = Enum.at(ledger, 1)
     assert {:earlier, _, "answered earlier"} = Enum.at(ledger, 2)
+  end
+
+  # Review Q-11: the last question's answer that came from the focus alone
+  # is held when it is sent, so a refused send keeps it after the focus moves.
+  test "the last Enter holds a focus-only answer, so a refusal keeps it for the resend" do
+    state =
+      opened(rows())
+      |> update!({:interview, {:pick, @node, "o1-0"}})
+      |> update!({:interview, {:confirm, @node}})
+      |> update!({:interview, {:toggle, @node, "o2-1"}})
+      |> update!({:interview, {:confirm, @node}})
+      |> press!(Input.key(:down))
+
+    assert Question.interview(state, @node).step == 2
+    assert state.focus == "o1-2"
+    refute Map.has_key?(Question.interview(state, @node).picks, "a-q2")
+
+    {state, effects} = Reducer.update(state, {:interview, {:confirm, @node}})
+    [q0, q1, q2] = requests(effects)
+    assert elem(q2.kind, 5) == %{option_ids: ["o1-2"], custom_text: ""}
+
+    {state, _} = outcome(state, q0, :accepted, ["b-q0", "r"])
+    state = remove(state, "b-q0")
+    {state, _} = outcome(state, q1, :accepted, ["c-q1", "r"])
+    state = remove(state, "c-q1")
+
+    {state, _} =
+      outcome(state, q2, :rejected, [], error: AdmissionError.new(:stale_revision))
+
+    assert [{:question, @node} | _] = state.layers
+    moved = press!(state, Input.key(:down))
+    assert moved.focus == "o2-2"
+
+    [row] = Question.ask(moved, @node).rows
+
+    assert Question.answer(moved, Question.ask(moved, @node), row) ==
+             %{option_ids: ["o1-2"], custom_text: ""}
   end
 
   test "an ask that leaves unanswered says why; one answered says nothing" do

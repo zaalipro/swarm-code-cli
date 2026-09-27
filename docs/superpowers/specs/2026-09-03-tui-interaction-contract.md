@@ -675,7 +675,6 @@ Every shortcut has a switcher, action-menu, or command route. macOS Command keys
 - Escape closes/leaves the current layer without answering, skipping, approving, or denying.
 - Pass 75 deviation (the question note): ← (not `b`) goes back to the previous question.
 - Pass 75 deviation: there is no skip key: every question is answered before the ask is sent.
-- Pass 75 deviation: a resolved question closes the note rather than becoming read-only.
 
 ### 12.6 Focus and modal behavior
 
@@ -689,7 +688,7 @@ Every shortcut has a switcher, action-menu, or command route. macOS Command keys
 - Destructive confirmation defaults to Cancel. Bare Enter cannot become destructive until the user explicitly focuses the destructive action.
 - Escape closes exactly one logical layer and restores opener region, item, scroll, and selection.
 - If another client resolves a visible interaction, the current dialog becomes a settled/read-only state instead of disappearing and stealing focus.
-  Pass 75 deviation: a resolved question closes the note rather than becoming read-only; ← (not `b`) goes back to the previous question, and there is no skip key: every question is answered before the ask is sent.
+- Pass 75 deviation: a resolved question closes the note rather than becoming read-only.
 - Every operational breakpoint has an explicit focus graph. Traversal visits every enabled region/action-menu control exactly once, never reaches hidden or disabled actions, exposes a focused disabled reason in the action menu, and restores the prior legal focus after resize or layer close.
 - Terminal input `focus_lost`/`focus_gained` resolves to generation-correlated `{:terminal_focus, :lost | :gained, current_generation}`. It pauses/resumes visible-only animation and cursor emphasis without changing logical region/item focus. Stale generations are inert; neither event activates, navigates, or resets selection.
 

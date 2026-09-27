@@ -624,9 +624,18 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
         _ -> "Not done"
       end
 
+    lead <> ": " <> refusal_reason_words(reason)
+  end
+
+  @doc """
+  Why a mutation was refused and what to do, without the lead word: the
+  question note's refusal row (`<header>: <words>`).
+  """
+  @spec refusal_reason_words(term()) :: binary()
+  def refusal_reason_words(reason) do
     case refusal_reason(reason) do
-      {why, todo} -> lead <> ": " <> why <> " · " <> todo
-      words when is_binary(words) -> lead <> ": " <> words
+      {why, todo} -> why <> " · " <> todo
+      words when is_binary(words) -> words
     end
   end
 
