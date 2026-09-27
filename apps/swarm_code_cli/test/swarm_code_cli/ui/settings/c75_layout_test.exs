@@ -11,6 +11,7 @@ defmodule SwarmCodeCLI.UI.Settings.C75LayoutTest do
   import SwarmCodeCLI.UI.C74U3Helpers, except: [screen: 1]
 
   alias SwarmCodeCLI.UI.Pass73Helpers
+  alias SwarmCodeCLI.UI.Projector.Settings.Page
   alias SwarmCodeCLI.UI.Settings.{Grid, Nav, Row}
   alias SwarmCodeCLI.UI.Width
 
@@ -186,5 +187,39 @@ defmodule SwarmCodeCLI.UI.Settings.C75LayoutTest do
     {state, _} = verb(state, :page_down)
     index = Enum.find_index(focusable, &(&1.id == Nav.current(state).id))
     assert index == min(38, length(focusable) - 1)
+  end
+
+  # S review 2 (S-5): `build/3` wraps each row once and the window draws
+  # those lines; the focused item spans exactly the lines `row_lines/5`
+  # draws for it on its own (well, caret and drawer included).
+  test "the window's focused item is the row as row_lines/5 draws it (160 × 45, 90 × 30)" do
+    for size <- [{160, 45}, {90, 30}], section <- [:models_effort, :providers, :approvals] do
+      state = open(section, size)
+      grid = Grid.for(state.size.columns, state.size.rows)
+      rows = Nav.rows(state)
+
+      for row <- rows |> Enum.filter(&Row.focusable?/1) |> Enum.take(12) do
+        state = Nav.put_cursor(state, row.id)
+        meta = Page.build(state, grid, state.capabilities)
+        group = Enum.find(Page.groups(rows), fn group -> row in group.rows end)
+        at = Enum.find_index(group.rows, &(&1 == row))
+
+        drawn =
+          Page.row_lines(state, row, group, grid,
+            focus?: true,
+            first?: at == 0 and group.title == nil,
+            last?: at == length(group.rows) - 1,
+            tables: Page.tables(state, rows, grid.page.width - 3)
+          )
+
+        text = fn lines -> Enum.map(lines, &Enum.map_join(&1, "", fn {t, _} -> t end)) end
+        where = "#{section} #{inspect(size)} #{row.id}"
+
+        assert meta.focus_last - meta.focus_first + 1 == length(drawn), where
+
+        assert text.(Enum.slice(meta.lines, meta.focus_first..meta.focus_last)) == text.(drawn),
+               where
+      end
+    end
   end
 end

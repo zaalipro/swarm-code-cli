@@ -94,8 +94,9 @@ defmodule SwarmCodeCLI.UI.Settings.Glyphs do
   def tier(_caps), do: :measured
 
   @doc "Whether the settings layer draws its twin: the ASCII tier or NO_COLOR."
-  @spec twin?(map()) :: boolean()
-  def twin?(caps), do: tier(caps) == :ascii or Map.get(caps, :color_mode) == :monochrome
+  @spec twin?(map() | nil) :: boolean()
+  def twin?(%{} = caps), do: tier(caps) == :ascii or Map.get(caps, :color_mode) == :monochrome
+  def twin?(_caps), do: false
 
   @doc """
   The glyph `id` the terminal can draw: its tier's twin, or the ASCII one

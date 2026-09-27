@@ -48,5 +48,17 @@ defmodule SwarmCodeCLI.UI.Settings.C75GlyphsTest do
              color_mode: :truecolor,
              ambiguous_width: :wide
            })
+
+    # a ctx without caps draws the rich layer, it does not raise
+    refute Glyphs.twin?(nil)
+  end
+
+  test "a running task's words draw the tier's running glyph" do
+    running = %{"state" => "running", "elapsed_ms" => 5_000}
+
+    assert [{"◐ running · 5 s", :info}] = SwarmCodeCLI.UI.Settings.Tasks.words(running, 4_000)
+
+    assert [{"~ running · 5 s", :info}] =
+             SwarmCodeCLI.UI.Settings.Tasks.words(running, 4_000, :ascii)
   end
 end

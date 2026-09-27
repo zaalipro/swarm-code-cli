@@ -307,13 +307,20 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Page do
   Opts: `focus?` (the page cursor is on it), `band?` (draw the band; false
   while a popover is open), `first?` (the first line of a title-less group
   opens it with `╭`), `last?` (the group's last row: its last line closes
-  the group with `╰`), `tables` (the page's table layouts by row id).
+  the group with `╰`), `tables` (the page's table layouts by row id),
+  `content` (the row's lines after the spine cell, already measured by
+  `build/3`, so they are not wrapped a second time).
   """
   @spec row_lines(map(), Row.t(), group(), Grid.t(), keyword()) :: [segments()]
   def row_lines(state, %Row{} = row, group, %Grid{} = grid, opts \\ []) do
     focus? = Keyword.get(opts, :focus?, false)
     row = hoist(row, state.capabilities)
-    content = content(state, row, group, grid, focus?, Keyword.get(opts, :tables, %{}))
+
+    content =
+      Keyword.get_lazy(opts, :content, fn ->
+        content(state, row, group, grid, focus?, Keyword.get(opts, :tables, %{}))
+      end)
+
     drawer = if focus? and drawer?(state, grid), do: Note.drawer(state, row, grid), else: []
     count = length(content) + length(drawer)
 
@@ -937,13 +944,17 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Page do
         |> Enum.map(fn {row, at} ->
           current? = current != nil and row.id == current.id
           focus? = current? and on_page?
+          # measured as drawn (the focused row's well and caret can add a
+          # line), wrapped once: the drawn window reuses these lines
+          content = content(state, hoist(row, state.capabilities), group, grid, focus?, tables)
 
           opts = [
             focus?: focus?,
             band?: band?,
             first?: at == 0 and group.title == nil,
             last?: at == last,
-            tables: tables
+            tables: tables,
+            content: content
           ]
 
           %{
@@ -953,7 +964,7 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Page do
             current?: current?,
             focusable?: Row.focusable?(row),
             height:
-              height(state, row, group, grid, focus?, tables) +
+              length(content) +
                 if(focus? and drawer?(state, grid), do: grid.drawer_lines, else: 0),
             group: g,
             build: fn -> row_lines(state, row, group, grid, opts) end
@@ -963,10 +974,6 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Page do
       separator ++ title ++ members
     end)
   end
-
-  # Measured as drawn: the focused row's well and caret can add a line.
-  defp height(state, row, group, grid, focus?, tables),
-    do: length(content(state, hoist(row, state.capabilities), group, grid, focus?, tables))
 
   @doc """
   The window over `items`: when the cursor's group fits the body its title
