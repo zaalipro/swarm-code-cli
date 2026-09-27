@@ -139,7 +139,7 @@ defmodule SwarmCodeCLI.UI.Settings.C74ModelPickerTest do
         elapsed_ms: 1_000
       })
 
-    assert Enum.any?(rows_text(s, c), &(&1 =~ "Anthropic  ◷ fetching the model list · 1 s"))
+    assert Enum.any?(rows_text(s, c), &(&1 =~ "Anthropic  ◐ fetching the model list · 1 s"))
   end
 
   test "before the options arrive the picker says so" do
