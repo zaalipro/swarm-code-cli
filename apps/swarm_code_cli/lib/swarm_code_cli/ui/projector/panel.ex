@@ -204,10 +204,20 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
     agents = agent_rows(ctx, pairs)
     tail = tail_rows(ctx, true)
 
-    # One blank row between the blocks that are drawn (air, not rules).
+    # One blank row between the blocks that are drawn (air, not rules). In the
+    # full candidate one also parts a run's found block from the next (task
+    # 145: "then a blank row"), so a run's refs never run into the next
+    # `found`; the tighter ones are the found, gauge and why rows only (147a).
     for level <- [:full, :summary, :bare] do
       fn ->
-        [headers, band, Enum.flat_map(runs, &found_rows(ctx, &1, level)), agents]
+        found =
+          runs
+          |> Enum.map(&found_rows(ctx, &1, level))
+          |> Enum.reject(&(&1 == []))
+          |> Enum.intersperse(if level == :full, do: [blank(ctx)], else: [])
+          |> Enum.concat()
+
+        [headers, band, found, agents]
         |> Enum.reject(&(&1 == []))
         |> Enum.intersperse([blank(ctx)])
         |> Enum.concat()
@@ -884,7 +894,10 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
     status =
       if status? do
         {text, role} = view.status_text
-        room = max(0, ctx.width - 2 - 4 - col - figure_cells - gap)
+        # The prefix before the name: mark, space, glyph, space (4 cells);
+        # in hint mode the badge or its blank takes 4 cells, not 2.
+        prefix = if ctx.hint?, do: 6, else: 4
+        room = max(0, ctx.width - 2 - prefix - col - figure_cells - gap)
         text = if room == 0, do: "", else: Draw.elide(text, room, state)
         [{text, dim.(role)}]
       else
