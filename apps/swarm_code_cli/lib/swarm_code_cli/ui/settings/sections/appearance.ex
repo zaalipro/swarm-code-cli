@@ -138,7 +138,11 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Appearance do
     bar = Glyphs.get(:focus_bar, tier)
 
     lines = [
-      [{"✳ ", :run_assistant}, {"Assistant  ", :title}, {"deepseek-v4-pro", :text_muted}],
+      [
+        {if(tier == :ascii, do: "* ", else: "✳ "), :run_assistant},
+        {"Assistant  ", :title},
+        {"deepseek-v4-pro", :text_muted}
+      ],
       [
         {"  #{ok} ", :success},
         {"read  ", :text_muted},

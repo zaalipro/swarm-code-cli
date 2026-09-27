@@ -212,6 +212,11 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Chrome do
     summary = Overview.summary(Nav.ctx(state))
     short? = grid.class in [:strip, :small]
     changed = Glyphs.for_caps(:changed, state.capabilities)
+    twin? = Glyphs.twin?(state.capabilities)
+
+    chip = fn words ->
+      if twin?, do: {"[" <> words <> "]", :text_primary}, else: {" " <> words <> " ", :chip_warn}
+    end
 
     [
       if(summary.changed > 0,
@@ -223,10 +228,12 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Chrome do
       ),
       if(summary.attention > 0,
         do: [
-          {if(short?,
-             do: " ! #{summary.attention} ",
-             else: " ! #{summary.attention} need attention "
-           ), :chip_warn}
+          chip.(
+            if(short?,
+              do: "! #{summary.attention}",
+              else: "! #{summary.attention} need attention"
+            )
+          )
         ]
       ),
       if(summary.env > 0,
@@ -426,24 +433,41 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Chrome do
     layer = state.settings
     current = current(state, current)
 
-    keys =
+    chunks =
       (keys(state, layer, current) ++ [{"?", "keys"}])
       |> Enum.map(fn {key, words} -> [{key, :key}, {" " <> words, :text_faint}] end)
-      |> Enum.intersperse([{"   ", :text_primary}])
-      |> Enum.concat()
 
-    left = [margin(grid), mode_word(layer), {"   ", :text_primary}] ++ keys
+    base = [margin(grid), mode_word(layer), {"   ", :text_primary}]
     legend = legend(state, grid)
     right = legend ++ [margin(grid)]
+    all = base ++ join_keys(chunks)
 
+    # the keys that fit are drawn whole, never cut; the legend only beside all of them
     line =
-      if legend != [] and
-           Text.cells(state, left) + 3 + Text.cells(state, right) <= grid.columns,
-         do: Text.spread(state, left, right, grid.columns),
-         else: Text.fit(state, left, grid.columns)
+      if legend != [] and Text.cells(state, all) + 3 + Text.cells(state, right) <= grid.columns do
+        Text.spread(state, all, right, grid.columns)
+      else
+        room = grid.columns - Text.cells(state, base) - grid.margin
+
+        kept =
+          chunks
+          |> Enum.reduce_while({[], 0}, fn chunk, {acc, used} ->
+            size = Text.cells(state, chunk) + if(acc == [], do: 0, else: 3)
+
+            if used + size <= room,
+              do: {:cont, {acc ++ [chunk], used + size}},
+              else: {:halt, {acc, used}}
+          end)
+          |> elem(0)
+
+        Text.fit(state, base ++ join_keys(kept), grid.columns)
+      end
 
     on(line, :surface)
   end
+
+  defp join_keys(chunks),
+    do: chunks |> Enum.intersperse([{"   ", :text_primary}]) |> Enum.concat()
 
   @doc "The mode word the status line opens with (decision D11)."
   @spec mode_word(Layer.t()) :: {String.t(), Text.segment() | term()}

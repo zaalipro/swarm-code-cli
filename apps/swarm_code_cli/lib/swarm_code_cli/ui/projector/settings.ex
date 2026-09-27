@@ -230,9 +230,15 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
                 true -> {:text_muted, Map.get(marks, id, [])}
               end
 
+            # the twin marks the rail cursor as it marks the page focus
+            bar =
+              if Glyphs.twin?(state.capabilities),
+                do: {">", {:text_primary, [:bold, :reversed]}},
+                else: {glyphs.(:focus_bar), :accent}
+
             lead =
               if cursor?,
-                do: [{glyphs.(:focus_bar), :accent}, {" ", :text_primary}],
+                do: [bar, {" ", :text_primary}],
                 else: [{"  ", :text_primary}]
 
             line =

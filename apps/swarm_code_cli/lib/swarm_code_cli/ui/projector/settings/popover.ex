@@ -105,7 +105,12 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Popover do
         ) ::
           [[Text.segment()]]
   def frame(state, lines, title, right, bottom, width) do
-    g = &Glyphs.for_caps(&1, state.capabilities)
+    # the twin (NO_COLOR or ASCII) draws the box from `+ - |`
+    g =
+      if Glyphs.twin?(state.capabilities),
+        do: &Glyphs.get(&1, :ascii),
+        else: &Glyphs.for_caps(&1, state.capabilities)
+
     h = g.(:rule_h)
     v = g.(:rule_v)
 
