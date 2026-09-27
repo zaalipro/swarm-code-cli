@@ -285,7 +285,10 @@ defmodule SwarmCodeCLI.UI.Fixtures do
       {"judge", :judge, "Judge · round 1", "waiting for you", 0, 990, 258, nil}
     ]
 
-    for {{name, role, title, step, progress, tokens_in, tokens_out, stat}, i} <-
+    # The third field is the agent's task. Its node title is its slug, the
+    # daemon's default when the Lead gives no AI title (pass 75: a title
+    # that differs from the slug is drawn as the agent's name).
+    for {{name, role, _task, step, progress, tokens_in, tokens_out, stat}, i} <-
           Enum.with_index(lanes, 1) do
       %DTO.AgentSummary{
         id: "agent-#{i}",
@@ -295,7 +298,7 @@ defmodule SwarmCodeCLI.UI.Fixtures do
         allowed_actions: [:stop_agent],
         name: name,
         role: role,
-        title: title,
+        title: name,
         step: step,
         progress: progress,
         tokens_in: tokens_in,

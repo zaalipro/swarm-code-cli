@@ -151,10 +151,12 @@ defmodule SwarmCodeCLI.UI.Projector.PanelTest do
   test "regression: names are whole while the row has room (R14), the shared suffix shown once" do
     text = :panel_swarm_2 |> state(160, 45) |> panel_text() |> Enum.join("\n")
 
-    assert text =~ "engine-lifecycle working"
-    assert text =~ "data-persistence thinking"
-    assert text =~ "4 × *-review"
-    refute text =~ "engine-lifec…"
+    # pass 75 V2: an agents row is glyph, the whole name, then its status.
+    assert text =~ ~r/◒ Engine lifecycle  tracing/u
+    assert text =~ ~r/◒ Data persistence  weighing/u
+    # pass 75 V2: the header no longer says the shared suffix; no name repeats it.
+    refute text =~ ~r/(lifecycle|persistence|tools|desktop)-review/
+    refute text =~ "Engine lifec…"
   end
 
   defp renamed(scene, names, opts) do
@@ -162,7 +164,11 @@ defmodule SwarmCodeCLI.UI.Projector.PanelTest do
     model = state.read_model
 
     agents =
-      Map.new(model.agents, fn {id, a} -> {id, %{a | name: Map.get(names, a.name, a.name)}} end)
+      Map.new(model.agents, fn {id, a} ->
+        # pass 75: a node without an AI title has its slug as its title.
+        name = Map.get(names, a.name, a.name)
+        {id, %{a | name: name, title: name}}
+      end)
 
     %{state | read_model: %{model | agents: agents}}
   end
@@ -176,14 +182,15 @@ defmodule SwarmCodeCLI.UI.Projector.PanelTest do
     }
 
     full = :panel_swarm_2 |> renamed(names, []) |> panel_text() |> Enum.join("\n")
-    assert full =~ "4 × reviewer-*"
-    assert full =~ "├ ● controllers"
-    assert full =~ ~r/╰ ! accounts +needs you/
+    # pass 75 V2: the header no longer says the shared part; no name repeats it.
+    refute full =~ ~r/reviewer-(controllers|plugs|liveviews|accounts)/i
+    assert full =~ ~r/◒ Controllers +\S/u
+    assert full =~ ~r/! Accounts +wants to run/
     refute full =~ "reviewer…"
 
     compact = :panel_swarm_2 |> renamed(names, panel: :compact) |> panel_text()
-    rows = Enum.filter(compact, &(&1 =~ ~r/^\s+[●◐◌!✓✗] \S/u))
-    shorts = Enum.map(rows, &(Regex.run(~r/^\s+\S (\S+)/u, &1) |> List.last()))
+    rows = Enum.filter(compact, &(&1 =~ ~r/^\s+(?:\S )?[◒◌!✗] \S/u))
+    shorts = Enum.map(rows, &(Regex.run(~r/[◒◌!✗] (\S+)/u, &1) |> List.last()))
     assert length(shorts) >= 4
     assert shorts == Enum.uniq(shorts), Enum.join(compact, "\n")
     assert Enum.join(compact, "\n") =~ "names drop reviewer-*"
@@ -201,45 +208,62 @@ defmodule SwarmCodeCLI.UI.Projector.PanelTest do
     text = Enum.join(compact, "\n")
     refute text =~ "review:…"
     # pass73 T10: the band and the row say the same whole name.
-    assert text =~ ~r/! maintainability +\S/u
-    assert text =~ ~r/^ +maintainability +\S/mu
-    assert text =~ ~r/correctness /u
+    assert text =~ ~r/! Maintainability\b/u
+    assert text =~ ~r/^ │ \S Maintainability wants to run/mu
+    assert text =~ ~r/Correctness /u
 
     full = :panel_swarm_2 |> renamed(names, []) |> panel_text() |> Enum.join("\n")
-    assert full =~ "maintainability"
+    assert full =~ "Maintainability"
     refute full =~ "review:ma…"
   end
 
   # --------------------------------------------------------- the frames
 
-  test "swarm frame 2: header, the band with the literal command and ^N, the tree, the gauge" do
+  test "swarm frame 2: header, the band with the literal command and ^N, found, the agents" do
     rows = :panel_swarm_2 |> state(160, 45) |> panel_text() |> Enum.map(&String.trim_trailing/1)
     text = Enum.join(rows, "\n")
 
-    assert Enum.at(rows, 0) =~ ~r/^ ▌⋔ architecture review · in chat +02:14$/
-    assert Enum.at(rows, 1) =~ "read-only · 4 × *-review · 65k · $0.15"
-    assert text =~ "! NEEDS YOU · web-ui-desktop       1 waiting"
-    assert text =~ "   mix test test/swarm_code_web/live"
-    assert text =~ ~r/run a command · read-only asks +\^N answer/
-    assert text =~ ~r/◌ Lead +waiting +2:14 · 9k/
-    assert text =~ "├ ● engine-lifecycle working"
-    assert text =~ "▅▅▅▅▂▅▅▅▅▅▂▂ tracing where stop is saved"
-    assert text =~ ~r/╰ ! web-ui-desktop +needs you/
-    assert text =~ "▅▅▂▅▅▅▅▅▒▒▒▒ wants to run a command"
-    assert text =~ "» Fake provider never reaches the refusal"
-    assert text =~ "fake.ex:88 +1"
-    assert text =~ ~r/reported  ▰▱▱▱  1 of 4 +1 needs you/
-    assert text =~ "last 60 s  ▂ think ▅ tools █ write ▒ you"
-    assert List.last(rows) =~ ~r/\^F agents  \^N needs you  \^B panel +full$/
+    # pass 75 V2 (7.1): the in-chat run's title row from column 0, then its
+    # kind, place, tokens and price (`+`: its agents carry no price), clock.
+    assert Enum.at(rows, 0) == "▌⋔ architecture review"
+    assert Enum.at(rows, 1) =~ ~r/^   swarm · in chat · 65k · \$0\.15\+ +02:14$/
+    # pass 75 V2 (7.2, S3): the band's title, then per request its agent,
+    # the literal command and why it asks, with the warning bar.
+    assert text =~ ~r/^ ! 1 needs you · oldest first +\^N answer$/m
+    assert text =~ ~r/^ │ ⋔ Web ui desktop wants to run$/m
+    assert text =~ ~r/^ │   mix test test\/swarm_code_web\/live$/m
+    assert text =~ ~r/^ │   run a command · read-only asks$/m
+    # pass 75 V2 (6.1-6.6): one row per agent that is not done, by attention;
+    # no tree, no lanes, no legend.
+    assert text =~ ~r/^ agents +3 live$/m
+    assert text =~ ~r/^ ⋔ ! Web ui desktop +wants to run$/m
+    assert text =~ ~r/^   ◒ Engine lifecycle  tracing where stop is…$/m
+    assert text =~ ~r/^   ◌ Lead +waiting on 3 reviewers$/m
+    refute text =~ "▅▅▅▅▂"
+    refute text =~ "├"
+    assert text =~ "\n     Fake provider never reaches the refusal"
+    refute text =~ "»"
+    assert text =~ "fake.ex:88 · anthropic.ex:301"
+    # pass 75 V2 (7.3): the found block: count, gauge, why, the finished agent.
+    assert text =~ " found           1 of 4 in · no files changed"
+    assert text =~ " ⋔ ▄▄▄▄▄▄▄▄▄ ▁▁▁▁▁▁▁▁▁ ▁▁▁▁▁▁▁▁▁ ▁▁▁▁▁▁▁▁▁"
+    assert text =~ "   the Lead reports once all 4 are in"
+    assert text =~ ~r/   ✓ Llm tools +1:22 · 9k/
+    refute text =~ "last 60 s"
+    # pass 75 V2 (7.6): the keys row is the last content row, top-anchored.
+    assert rows |> Enum.reject(&(&1 == "")) |> List.last() == " ^F agents  ^N needs you  ^B panel"
+    assert List.last(rows) == ""
   end
 
   test "the band is absent when nothing waits (frame 3), and findings take the done rows" do
     text = :panel_swarm_3 |> state(160, 45) |> panel_text() |> Enum.join("\n")
 
     refute text =~ "NEEDS YOU"
-    assert text =~ "» stop reason read before the flush"
-    assert text =~ "run_server.ex:214 +1"
-    assert text =~ "3 of 4"
+    # pass 75 V2 (7.3): a finished agent's conclusion and its refs in `found`.
+    assert text =~ ~r/   ✓ Engine lifecycle +1:28 · 19k/
+    assert text =~ "\n     stop reason read before the flush"
+    assert text =~ "\n     run_server.ex:214 · agent_server.ex:88"
+    assert text =~ "found           3 of 4 in"
   end
 
   test "regression: a stopped swarm counts only done agents and never says the Lead is merging" do
@@ -261,12 +285,13 @@ defmodule SwarmCodeCLI.UI.Projector.PanelTest do
     text = %{state | read_model: model} |> panel_text() |> Enum.join("\n")
 
     refute text =~ "is merging"
-    assert text =~ "stopped before the merge"
+    # pass 75 V2: a run that no longer runs says no why-line at all.
+    refute text =~ ~r/the Lead (reports|waits|is writing)/
     # pass72 G20 (QA Q23): the state word is not said twice.
     assert text =~ "before it finished"
     refute text =~ ~r/stopped\s+stopped/
     refute text =~ "weighing flush vs retry order"
-    assert text =~ "3 of 4"
+    assert text =~ "found           3 of 4 in"
   end
 
   test "regression: a worker's finding skips the engine's branch notice (real run, pass72)" do
@@ -304,33 +329,84 @@ defmodule SwarmCodeCLI.UI.Projector.PanelTest do
     text = %{state | read_model: model} |> panel_text() |> Enum.join("\n")
 
     refute text =~ "Changes on branch"
-    assert text =~ "» The first line of mix help compile"
+    assert text =~ "\n     The first line of mix help compile"
     assert text =~ "Compiles source files"
   end
 
-  test "compact: one row per agent with its one name, an 8-cell lane and the action" do
+  test "compact: one row per agent that is not done: mark, glyph, its one name, its figure" do
     rows = :panel_swarm_2 |> state(160, 45, panel: :compact) |> panel_text()
     text = Enum.join(rows, "\n")
 
-    assert text =~ "! 1 NEEDS YOU"
-    assert text =~ ~r/▌⋔ architecture review · in chat 1\/4 · 02:14/
+    assert text =~ "! 1 needs you · oldest first"
+    # pass 75 (7.9): a compact run is its header's row 1.
+    assert text =~ ~r/^▌⋔ architecture review +$/m
     # pass73 T10: the full panel's name, never a shorter word for the agent.
-    assert text =~ ~r/● engine-lifecycle +▂▅▅▅▅▅▂▂ tracing/
-    assert text =~ ~r/! web-ui-desktop +▅▅▅▅▒▒▒▒ approve: mix/
-    assert text =~ ~r/✓ llm-tools +» Fake provider/
-    assert text =~ ~r/^ +web-ui-desktop mix test/m
-    assert List.last(rows) =~ "compact"
+    # pass 75 (7.9): no lane, no status text; a done agent has no row.
+    assert text =~ ~r/^   ◒ Engine lifecycle +$/m
+    assert text =~ ~r/^ ⋔ ! Web ui desktop +$/m
+    refute text =~ "Llm tools"
+    assert text =~ " found           1 of 4 in"
+    assert text =~ ~r/^ │ ⋔ Web ui desktop wants to run *$/m
+    assert text =~ ~r/^ │   mix test/m
+    # pass 75 (7.9): the spent and keys rows end the content.
+    content = rows |> Enum.map(&String.trim_trailing/1) |> Enum.reject(&(&1 == ""))
+    assert List.last(content) == " ^F agents  ^N needs you  ^B panel"
+    assert Enum.at(content, -2) =~ ~r/^ spent \$0\.15\+ · 65k tokens · 1 run$/
   end
 
-  test "heavy full: the load row, two requests oldest first, the others folded to orbit lines" do
+  test "heavy full: no load row, two requests oldest first, every run's header row" do
     text = :panel_heavy |> state(160, 45) |> panel_text() |> Enum.join("\n")
 
-    assert text =~ "5 runs · 17 agents"
-    assert text =~ "! 2 NEED YOU · oldest first"
-    assert text =~ ~r/plug +edit lib\/api\/plug.ex/
-    assert text =~ ~r/⋔ api hardening  .*0\/3 · 05:02/
-    assert text =~ "! plug wants to edit a file"
-    assert text =~ "✗ retry-tests failed · retry in 8 s"
+    # pass 75 V2: no load row; the rows past the pane are counted, and the
+    # spent and keys rows stay whole under them.
+    refute text =~ "5 runs · 17 agents"
+
+    assert text =~
+             ~r/^ \+\d+ more · Ctrl-G all runs *\n spent \$1\.71\+ · 223k tokens · 5 runs *\n \^F agents  \^N needs you  \^B panel/m
+
+    assert text =~ ~r/^▌⋔ architecture review *$/m
+    assert text =~ ~r/^ ⚖ should runs own worktrees\? +03:10 *$/m
+    # Every shown run's agents are in the one agents block.
+    assert text =~ ~r/^ ⋔ ! Plug +wants to run *$/m
+    assert text =~ ~r/^ ⧉ ✗ Retry tests +tests failed/m
+    assert text =~ "! 2 need you · oldest first"
+    assert text =~ ~r/│ ⋔ Plug wants to run *\n │   edit lib\/api\/plug.ex/
+    assert text =~ ~r/│ ⋔ Plug wants to run(.|\n)*│ ⋔ Web ui desktop wants to run/
+    assert text =~ ~r/^ ⋔ api hardening  0 of 3 in +05:02 *$/m
+    assert text =~ ~r/^ ◉ suite green +11:40 *$/m
+    assert text =~ ~r/^ ⧉ ship retry +04:12 *$/m
+  end
+
+  # pass 75 (7.5): the chat's earlier runs are one worded row, no `×` rows.
+  test "earlier runs are one worded row: finished, stopped or runs, one run singular" do
+    st = state(:panel_chat, 160, 45)
+    rows = st |> panel_text() |> Enum.map(&String.trim_trailing/1)
+    assert " earlier  2 finished runs in this chat Ctrl-R" in rows
+    refute Enum.any?(rows, &(&1 =~ "×"))
+    refute Enum.any?(rows, &(&1 =~ "architecture review"))
+
+    runs = st.read_model.runs
+    [first, second] = runs |> Map.values() |> Enum.filter(&(&1.state == :done))
+
+    with_states = fn states ->
+      model = st.read_model
+
+      runs =
+        Enum.zip([first, second], states)
+        |> Enum.reduce(runs, fn {run, s}, acc -> Map.put(acc, run.id, %{run | state: s}) end)
+
+      %{st | read_model: %{model | runs: runs}} |> panel_text() |> Enum.join("\n")
+    end
+
+    assert with_states.([:stopped, :failed]) =~ " earlier  2 stopped runs in this chat"
+    assert with_states.([:done, :failed]) =~ " earlier  2 runs in this chat"
+
+    one = %{st | read_model: %{st.read_model | runs: Map.delete(runs, first.id)}}
+    assert one |> panel_text() |> Enum.join("\n") =~ " earlier  1 finished run in this chat"
+
+    # With no earlier run there is no row.
+    none = %{st | read_model: %{st.read_model | runs: Map.drop(runs, [first.id, second.id])}}
+    refute none |> panel_text() |> Enum.join("\n") =~ "earlier"
   end
 
   test "heavy compact fits 160x45 and 120x36 and keeps every run" do
@@ -341,7 +417,7 @@ defmodule SwarmCodeCLI.UI.Projector.PanelTest do
         assert text =~ title, "#{c}x#{r}: #{title}"
       end
 
-      assert text =~ "NEED YOU"
+      assert text =~ "need you"
     end
   end
 
@@ -359,10 +435,11 @@ defmodule SwarmCodeCLI.UI.Projector.PanelTest do
       |> panel_text()
       |> Enum.join("\n")
 
-    assert text =~ " 1  ▌⋔ architecture review · in chat"
+    assert text =~ " 1  ▌⋔ architecture review"
     assert text =~ " d  ◌ Lead"
-    assert text =~ " s  ! web-ui-desktop"
-    assert text =~ " s  mix test test/swarm_code_web/live"
+    assert text =~ " s  ! Web ui desktop"
+    # pass 75: the band's letter follows its warning bar, before the mark.
+    assert text =~ " │  s  ⋔ Web ui desktop wants to run"
     assert text =~ "^F again"
     assert text =~ "Esc"
   end
@@ -380,14 +457,14 @@ defmodule SwarmCodeCLI.UI.Projector.PanelTest do
     text = st |> Map.put(:hint, %{labels: labels, typed: ""}) |> panel_text() |> Enum.join("\n")
 
     assert text =~ " #{lead}  ◌ Lead"
-    assert text =~ " #{web}  ! web-ui-desktop"
+    assert text =~ " #{web}  ! Web ui desktop"
     assert text =~ " 1  ▌⋔ architecture review"
 
     narrow = state(:panel_swarm_2, 100, 28)
     nlabels = narrow |> PanelOrder.entries() |> SwarmCodeCLI.UI.Hint.labels()
     strip = narrow |> Map.put(:hint, %{labels: nlabels, typed: ""}) |> screen() |> Enum.at(1)
     nweb = SwarmCodeCLI.UI.Hint.label_for(nlabels, {:agent, "demo-panel-run-80", "agent-80-5"})
-    assert strip =~ nweb <> "  web"
+    assert strip =~ nweb <> "  Web"
   end
 
   test "regression (QA Q9): letters go to the band's rows in its order, none to hidden ones" do
@@ -422,7 +499,8 @@ defmodule SwarmCodeCLI.UI.Projector.PanelTest do
     assert labels["s"] == {:agent, "demo-panel-run-80", "agent-80-5"}
     assert labels["f"] == {:agent, "demo-panel-run-60", "agent-60-1"}
     assert labels["g"] == {:agent, "demo-panel-run-20", "agent-20-3"}
-    refute SwarmCodeCLI.UI.Hint.label_for(labels, {:agent, "demo-panel-run-70", "agent-70-4"})
+    # pass 75 V2: plug's run is no longer folded, so its agents row takes a letter.
+    assert SwarmCodeCLI.UI.Hint.label_for(labels, {:agent, "demo-panel-run-70", "agent-70-4"})
 
     text = st |> Map.put(:hint, %{labels: labels, typed: ""}) |> panel_text() |> Enum.join("\n")
     assert text =~ "+1 more"
@@ -458,20 +536,81 @@ defmodule SwarmCodeCLI.UI.Projector.PanelTest do
     model = %{model | snapshots: Map.put(model.snapshots, :workspace, workspace)}
     text = %{st | read_model: model} |> panel_text() |> Enum.join("\n")
 
-    assert text =~ "wants to use workflow control"
+    # pass 75 V2: the agents row says `wants to run`; the band says the tool.
+    assert text =~ ~r/! Web ui desktop +wants to run *$/m
     refute text =~ "wants to run a command"
-    assert text =~ ~r/use workflow control · auto asks +\^N answer/
+    assert text =~ ~r/^ │   use workflow control · auto asks *$/m
+    assert text =~ ~r/^ ! 1 needs you · oldest first +\^N answer *$/m
+  end
+
+  # pass 75 (M3, 18.3, M10): an ask's band words come from its headers and
+  # option count; its age only from a wire time at or before now.
+  test "the band's words for an ask: headers, options, your own words, the age" do
+    st = state(:panel_swarm_2, 160, 45)
+    run = st.read_model.runs["demo-panel-run-80"]
+
+    band = fn fields ->
+      entry =
+        struct!(
+          %SwarmCodeCLI.UI.DataSource.DTO.NeedsYou{
+            agent_id: "agent-80-5",
+            node_id: "demo-op-81",
+            agent_name: "web-ui-desktop-review",
+            kind: :question,
+            text: "Which should the plan make better first?\nMore context",
+            requested_at: st.now - 12_000
+          },
+          fields
+        )
+
+      model = %{
+        st.read_model
+        | runs: Map.put(st.read_model.runs, run.id, %{run | needs_you: [entry]})
+      }
+
+      %{st | read_model: model} |> panel_text() |> Enum.map(&String.trim_trailing/1)
+    end
+
+    rows = band.(questions: ["Focus"], options: 4)
+    assert " │ ⋔ Web ui desktop asks                 0:12" in rows
+    assert " │   1 question: Focus" in rows
+    assert " │   4 options, or your own words" in rows
+    refute Enum.any?(rows, &(&1 =~ "answer it in the chat"))
+
+    rows = band.(questions: ["Focus", "Scope", "Risk"], options: 2)
+    assert " │   3 questions: Focus, Scope, Risk" in rows
+    refute Enum.any?(rows, &(&1 =~ "options, or your own words"))
+
+    rows = band.(questions: [], options: 1)
+    assert " │   Which should the plan make better first?" in rows
+    assert " │   1 option, or your own words" in rows
+
+    rows = band.(questions: [], options: 0)
+    assert " │   your own words" in rows
+
+    # An older daemon's microsecond stamp is far past now: no age.
+    rows = band.(questions: ["Focus"], options: 4, requested_at: st.now * 1000)
+    assert " │ ⋔ Web ui desktop asks" in rows
+  end
+
+  test "a dangerous command's band row says it asks even in full access" do
+    st = state(:panel_swarm_2, 160, 45)
+    [id] = Map.keys(st.read_model.interactions)
+    item = st.read_model.interactions[id]
+    item = %{item | approval: %{item.approval | classification: :dangerous}}
+    st = put_in(st.read_model.interactions[id], item)
+    rows = st |> panel_text() |> Enum.map(&String.trim_trailing/1)
+
+    assert " │   dangerous: asks even in full access" in rows
+    refute " │   run a command · read-only asks" in rows
   end
 
   test "PanelOrder: runs and agents in display order; a folded run keeps its needs-you agent" do
     entries = PanelOrder.entries(state(:panel_swarm_2, 160, 45))
 
     # The band's row is drawn under the run's header, before the tree (G8).
-    assert [
-             {:run, "demo-panel-run-80"},
-             {:agent, _, "agent-80-5", true},
-             {:agent, _, "agent-80-1", false} | _
-           ] = entries
+    assert [{:run, "demo-panel-run-80"}, {:agent, _, "agent-80-5", true} | rest] = entries
+    assert {:agent, "demo-panel-run-80", "agent-80-1", false} in rest
 
     assert {:agent, "demo-panel-run-80", "agent-80-5", true} in entries
 
@@ -480,21 +619,63 @@ defmodule SwarmCodeCLI.UI.Projector.PanelTest do
     assert Enum.count(heavy, &match?({:run, _}, &1)) == 5
   end
 
-  test "under 120 columns the panel is one strip ending in ! N needs you ^N (R17)" do
+  test "under 120 columns the panel is one strip: needs you, R of T in, the turn limit, $ (S5)" do
     st = state(:panel_swarm_2, 100, 28)
     rects = Layout.for_state(st).rects
     refute Map.has_key?(rects, :inspector)
     assert rects.tabline.y == 1 and rects.tabline.height == 1
 
     strip = st |> screen() |> Enum.at(1) |> String.trim_trailing()
-    # pass73 T10: the one names, cut at their ends to share the row.
-    assert strip =~
-             "▌⋔ architecture review 1/4 · Lead◌ engine-li…● data-pers…◐ llm-tools✓ web-ui-d…!"
-
-    assert strip =~ ~r/! 1 needs you \^N$/
+    # pass 75 (8.2, S5): the chat, what waits on you, the swarm's count, the
+    # price on the right; no per-agent list, no fill.
+    assert strip =~ ~r/^ ▌⋔ architecture review  ! 1 needs you \^N   ⋔ 1 of 4 in +\$0\.15$/
 
     assert [{:run, _} | agents] = PanelOrder.entries(st)
     assert length(agents) == 5
+
+    # The most recent turn-limit stop, by its one name, whole while it fits.
+    st = turn_limited(st)
+    strip = st |> screen() |> Enum.at(1) |> String.trim_trailing()
+    assert strip =~ "   ⋔ 1 of 4 in · ✗ Engine lifecycle turn limit"
+
+    [{row, _, _} | _] = SwarmCodeCLI.UI.Projector.Strip.plan(st, 100)
+    roles = Map.new(row.spans, &{SafeText.value(&1.text), &1.style})
+    error = SwarmCodeCLI.UI.Theme.style(:error, st.capabilities).foreground
+    assert roles["✗"].foreground == error
+    assert roles[" turn limit"].foreground == error
+    refute Enum.any?(row.spans, &(&1.style.background not in [nil, :reset]))
+  end
+
+  test "at 80 columns the strip drops the name, then shortens the title" do
+    at = fn columns ->
+      state(:panel_swarm_2, columns, 28)
+      |> turn_limited()
+      |> screen()
+      |> Enum.at(1)
+      |> String.trim_trailing()
+    end
+
+    # The name goes first; the title and the price stay whole.
+    strip = at.(80)
+    assert strip =~ "▌⋔ architecture review  ! 1 needs you ^N   ⋔ 1 of 4 in · ✗ turn limit"
+    refute strip =~ "Engine"
+    assert strip =~ ~r/\$0\.15$/
+
+    # Then the title is cut to 12 cells.
+    strip = at.(70)
+    assert strip =~ "▌⋔ architectur…  ! 1 needs you ^N   ⋔ 1 of 4 in · ✗ turn limit"
+    assert strip =~ ~r/\$0\.15$/
+  end
+
+  # Engine lifecycle ran out of turns.
+  defp turn_limited(st) do
+    agent = st.read_model.agents["agent-80-2"]
+
+    agent =
+      %{agent | state: :done, finished_at: st.now - 1_000}
+      |> Map.merge(%{panel_state: :done, stop_reason: "turn_budget", turn: 30, max_turns: 30})
+
+    put_in(st.read_model.agents["agent-80-2"], agent)
   end
 
   test "hidden: no dock, no strip, main takes the width" do
@@ -508,19 +689,25 @@ defmodule SwarmCodeCLI.UI.Projector.PanelTest do
     end
   end
 
-  test "NO_COLOR and ASCII: every state keeps its word and its ASCII glyph" do
+  test "NO_COLOR and ASCII: every state keeps its ASCII glyph and its words" do
     st = state(:panel_heavy, 160, 45, mode: :monochrome, ascii?: true, tier: :measured)
     text = st |> panel_text() |> Enum.join("\n")
 
-    for word <- ["working", "thinking", "waiting", "needs you", "done"] do
-      assert text =~ word
-    end
+    # pass 75 V2: a row has no state word; its ASCII glyph and status say it.
+    assert text =~ ~r/S ! Web ui desktop +wants to run/
+    assert text =~ ~r/o Engine lifecycle +tracing where/
+    assert text =~ ~r/\. Lead +waiting on 3 reviewers/
+    # The heavy frame keeps no found details; frame 2's does, in ASCII too.
+    two = state(:panel_swarm_2, 160, 45, mode: :monochrome, ascii?: true, tier: :measured)
+    assert two |> panel_text() |> Enum.join("\n") =~ ~r/   v Llm tools +1:22 · 9k/
+    assert text =~ "S ######### --------- --------- ---------"
 
     compact = state(:panel_heavy, 160, 45, mode: :monochrome, ascii?: true, panel: :compact)
     ctext = compact |> panel_text() |> Enum.join("\n")
-    assert ctext =~ "! web"
-    assert ctext =~ "x retry"
-    assert ctext =~ "v llm"
+    assert ctext =~ "! Web"
+    assert ctext =~ "x Retry"
+    # A done agent is in the full panel's found block, not a compact row.
+    refute ctext =~ "v Llm"
 
     for row <- panel_text(st) do
       assert String.replace(row, ["·", "…"], "") =~ ~r/^[\x20-\x7e]*$/, inspect(row)

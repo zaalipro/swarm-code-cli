@@ -16,6 +16,9 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Shapes do
   alias SwarmCodeCLI.UI.Projector.Panel
   alias SwarmCodeCLI.UI.Projector.Panel.{Draw, Model}
 
+  # A run that still runs (its why-line is drawn).
+  @running [:running, :streaming, :waiting_question, :waiting_approval, :paused, :retrying]
+
   # ------------------------------------------------------------ headers
 
   @doc "The dim second header row (D1): mode, team, tokens, cost."
@@ -160,7 +163,11 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Shapes do
     end
   end
 
-  @doc "Reviewers reported of spawned (R5: a known ratio): the wire's, else counted."
+  @doc """
+  Reviewers reported of spawned (R5: a known ratio): the wire's, else counted.
+  Only a `:done` agent counts; a turn-limit stop (pass 75, `:turn_limit`)
+  came back empty and does not, as the daemon's `reported` does not.
+  """
   def reported(run, views) do
     subs = Enum.reject(views, &(&1.role in [:lead, :assistant]))
 
@@ -170,6 +177,70 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Shapes do
 
       _ ->
         {Enum.count(subs, &(&1.state == :done)), length(subs)}
+    end
+  end
+
+  @doc """
+  The found block's gauge (pass 75, 7.3): one segment of `cell` cells per sub
+  agent, `cell = min(10, div(width - 4 - (t - 1), t))`, one space between
+  segments (one cell each and no spaces when `cell < 3`). The agents that
+  ended come first by `finished_at`, the rest in wire order: a done agent's
+  segment in its name's hue, a turn-limit or failed one empty in `:error`,
+  one not yet in `:text_faint`.
+  """
+  @spec report_gauge([map()], pos_integer(), map()) :: [{String.t(), atom()}]
+  def report_gauge([], _width, _state), do: []
+
+  def report_gauge(subs, width, state) do
+    t = length(subs)
+    cell = min(10, div(width - 4 - (t - 1), t))
+    {cell, gap} = if cell < 3, do: {1, []}, else: {cell, [{" ", :text_faint}]}
+    {ended, rest} = Enum.split_with(subs, &(&1.state in [:done, :turn_limit, :failed]))
+
+    ended
+    |> Enum.sort_by(&finished_key/1)
+    |> Kernel.++(rest)
+    |> Enum.map(fn view ->
+      case view.state do
+        :done ->
+          {String.duplicate(Draw.g(:report_on, state), cell), view.name_role}
+
+        s when s in [:turn_limit, :failed] ->
+          {String.duplicate(Draw.g(:report_empty, state), cell), :error}
+
+        _ ->
+          {String.duplicate(Draw.g(:report_off, state), cell), :text_faint}
+      end
+    end)
+    |> Enum.intersperse(gap)
+    |> List.flatten()
+  end
+
+  defp finished_key(view) do
+    case Map.get(view, :finished_at) do
+      at when is_integer(at) -> {0, at}
+      _ -> {1, 0}
+    end
+  end
+
+  @doc """
+  Why the run's report is not in yet (pass 75, 7.3), or nil once the run no
+  longer runs: `e` agents came back empty (turn limit or failed), `p` are
+  neither done nor stopped.
+  """
+  @spec why_line(map(), [map()], map()) :: String.t() | nil
+  def why_line(run, subs, _state) do
+    t = length(subs)
+    e = Enum.count(subs, &(&1.state in [:turn_limit, :failed]))
+    pending = Enum.reject(subs, &(&1.state in [:done, :failed, :turn_limit, :stopped]))
+    p = length(pending)
+
+    cond do
+      run.state not in @running -> nil
+      e == 0 -> "the Lead reports once all #{t} are in"
+      p >= 2 -> "#{e} came back empty · the Lead waits for #{p}"
+      p == 1 -> "#{e} came back empty · the Lead waits for " <> hd(pending).display
+      true -> "#{e} came back empty · the Lead is writing the report"
     end
   end
 
@@ -369,11 +440,9 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Shapes do
   # ------------------------------------------------------------- after
 
   @doc "Rows under the agents: the kind's facts; `extras?` adds the optional ones."
-  def after_agents(ctx, run, views, extras?) do
+  def after_agents(ctx, run, _views, extras?) do
     case Model.kind(run) do
-      :swarm ->
-        swarm_foot(ctx, run, views)
-
+      # pass 75 V2: a swarm's foot is the panel's `found` block (7.3).
       :assistant ->
         if(extras?, do: chat_foot(ctx, run), else: [])
 
@@ -393,63 +462,6 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Shapes do
 
       _ ->
         []
-    end
-  end
-
-  # `reported  ▰▱▱▱  1 of 4        1 needs you` and what the lead waits for.
-  defp swarm_foot(ctx, run, views) do
-    # Reported = came back with a result (`:done`), on the wire and here.
-    {reported, total} = reported(run, views)
-    ended = if run.state in [:stopped, :failed], do: run.state
-
-    if total == 0 do
-      []
-    else
-      waiting = Enum.filter(views, & &1.needs_you?)
-      working = Enum.count(views, &(&1.state in [:working, :thinking]))
-
-      left =
-        Enum.filter(
-          views,
-          &(&1.role not in [:lead, :assistant] and &1.state not in [:done, :failed, :stopped])
-        )
-
-      shown = min(total, 12)
-      lit = if total > 12, do: div(reported * 12, total), else: reported
-
-      right =
-        cond do
-          ended -> []
-          waiting != [] -> [{"#{length(waiting)} needs you", :warning}]
-          working > 0 -> [{"#{working} working", :text_faint}]
-          true -> []
-        end
-
-      why =
-        cond do
-          ended == :stopped -> "stopped before the merge"
-          ended == :failed -> "failed before the merge"
-          run.state == :done -> "the Lead merged the findings"
-          waiting != [] -> Model.first_waiting(views).display <> " is paused on you"
-          reported == total -> "the Lead is merging the findings"
-          length(left) == 1 -> "the Lead reports once #{hd(left).display} is in"
-          true -> "the Lead reports when all #{total} are in"
-        end
-
-      [
-        Panel.blank(ctx),
-        Panel.row(
-          ctx,
-          [
-            {"reported  ", :text_muted},
-            {String.duplicate(Panel.g(ctx, :gauge_on), lit), :success},
-            {String.duplicate(Panel.g(ctx, :gauge_off), shown - lit), :text_ghost},
-            {"  #{reported} of #{total}", :text_primary}
-          ],
-          right
-        ),
-        Panel.row(ctx, [{"          " <> why, :text_faint}])
-      ]
     end
   end
 
@@ -739,34 +751,31 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Shapes do
 
   # ------------------------------------------------------------ earlier
 
-  @doc "`earlier in this chat` (the chat frame): finished runs, newest first."
+  @doc """
+  pass 75 (7.5): the chat's earlier runs on one worded row, `earlier  3
+  stopped runs in this chat  Ctrl-R`; none when every run is shown. Not a
+  target: `Ctrl-R` opens them.
+  """
   def earlier(ctx) do
-    state = ctx.state
-
-    case Model.earlier(state, 3) do
-      [] ->
+    case Model.earlier(ctx.state, :counts) do
+      %{count: 0} ->
         []
 
-      runs ->
-        rows =
-          Enum.map(runs, fn run ->
-            {mark, role} = Panel.done_mark(ctx, run)
-            clock = run |> Model.elapsed(state) |> Model.clock()
+      %{count: n, stopped: stopped, finished: finished} ->
+        word =
+          cond do
+            finished == n -> Panel.count(n, "finished run", "finished runs")
+            stopped == n -> Panel.count(n, "stopped run", "stopped runs")
+            true -> Panel.count(n, "run", "runs")
+          end
 
-            Panel.row(
-              ctx,
-              [
-                {"  " <> mark, role},
-                {" ", :plain},
-                {Draw.mark(Model.kind(run), state), Model.kind_role(run)},
-                {" " <> Model.title(run), :text_muted}
-              ],
-              [{clock || "", :text_faint}]
-            )
-            |> then(fn {b, _t, o} -> {b, {:run, run.id}, o} end)
-          end)
-
-        [Panel.blank(ctx), Panel.row(ctx, [{"earlier in this chat", :text_muted}]) | rows]
+        [
+          Panel.row(
+            ctx,
+            [{"earlier", :text_muted}, {"  #{word} in this chat", :text_faint}],
+            [{"Ctrl-R", :text_muted, [:bold]}]
+          )
+        ]
     end
   end
 

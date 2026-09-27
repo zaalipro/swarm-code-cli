@@ -13,8 +13,11 @@ defmodule SwarmCodeCLI.Demo.Panel do
   Scenes: `:panel_chat`, `:panel_swarm_1` (02:10), `:panel_swarm_2` (02:14,
   web waits on a command), `:panel_swarm_3` (02:31, three findings),
   `:panel_workflow`, `:panel_goal`, `:panel_plan`, `:panel_research`,
-  `:panel_consensus` and `:panel_heavy` (five runs, seventeen agents, two
-  waiting on you).
+  `:panel_consensus`, `:panel_heavy` (five runs, seventeen agents, two
+  waiting on you), and pass 75's `:panel_owner19` (SA2 V2: a consensus in
+  chat and the swarm it launched, one agent out of turns, AI names and
+  status lines) with `:panel_owner19_band` (the same, plus SA S3's two
+  requests).
   """
   alias SwarmCodeCLI.UI.{Capabilities, Draft, Drafts, Editor, ReadModel, Size, State}
   alias SwarmCodeCLI.UI.DataSource.DTO
@@ -33,7 +36,9 @@ defmodule SwarmCodeCLI.Demo.Panel do
     :panel_plan,
     :panel_research,
     :panel_consensus,
-    :panel_heavy
+    :panel_heavy,
+    :panel_owner19,
+    :panel_owner19_band
   ]
 
   @doc "Every scene, in the order the gallery shows them."
@@ -361,6 +366,170 @@ defmodule SwarmCodeCLI.Demo.Panel do
     {runs, agents, [edit | review_asks], review_items, approval_mode: :read_only}
   end
 
+  # pass 75 (Data Models › Demo scenes): SA2's V2. The consensus in chat
+  # launched a swarm review; one reviewer ran out of turns, one is quiet.
+  defp build(:panel_owner19) do
+    {runs, agents, _asks, items, extra} = owner19()
+    {runs, agents, [], items, extra}
+  end
+
+  # The same, plus SA S3's two requests: a dangerous command of Docs
+  # accuracy and the consensus agent's ask (one question, four options).
+  defp build(:panel_owner19_band) do
+    {[consensus, swarm | earlier], agents, asks, items, extra} = owner19()
+
+    approval = %DTO.NeedsYou{
+      agent_id: "agent-91-3",
+      node_id: "demo-op-91",
+      agent_name: "docs-accuracy-review",
+      kind: :approval,
+      text: "rm -rf /tmp/appexchange && curl -sL https://appexchange.salesforce.com/…",
+      reason: "clear the cached listing before fetching it again",
+      requested_at: @clock - 41_000,
+      tool: "run_command"
+    }
+
+    ask = %DTO.NeedsYou{
+      agent_id: "agent-90-1",
+      node_id: "demo-op-90",
+      agent_name: "Consensus",
+      kind: :question,
+      text: "Which should the plan make better first?",
+      requested_at: @clock - 12_000,
+      questions: ["Focus"],
+      options: 4
+    }
+
+    # The approval itself: the service classed the command dangerous.
+    command = %DTO.PendingInteraction{
+      id: "demo-approval-91",
+      run_id: swarm.id,
+      node_id: "demo-op-91",
+      conversation_id: @conversation,
+      kind: :approval,
+      expected_revision: 1,
+      approval: %DTO.Approval{
+        tool: "run_command",
+        permission: :execute,
+        command: "rm -rf /tmp/appexchange && curl -sL https://appexchange.salesforce.com/",
+        command_family: "rm",
+        classification: :dangerous,
+        arguments_preview:
+          ~s({"command":"rm -rf /tmp/appexchange && curl -sL https://appexchange.salesforce.com/"}),
+        agent_id: "agent-91-3",
+        agent_name: "docs-accuracy-review"
+      },
+      allowed_actions: [:approve, :deny],
+      created_at: @clock - 41_000
+    }
+
+    runs = [%{consensus | needs_you: [ask]}, %{swarm | needs_you: [approval]} | earlier]
+    {runs, agents, [command | asks], items, extra}
+  end
+
+  defp owner19 do
+    consensus =
+      run(90, :consensus, "lets plan how to make this app better", :running, 49_000,
+        tokens: 65_000,
+        cost: 0.01
+      )
+
+    swarm =
+      run(91, :swarm, "swarm review changes", :running, 975_000,
+        tokens: 4_035_000,
+        cost: 0.81
+      )
+      |> Map.put(:files_changed, 0)
+
+    earlier = [
+      run(87, :swarm, "swarm review the sidebar", :stopped, 3_600_000, duration: 505_000),
+      run(88, :swarm, "swarm review…", :stopped, 2_400_000, duration: 505_000),
+      run(89, :workflow, "/review-changes", :failed, 1_800_000, duration: 120_000)
+    ]
+
+    assistant =
+      agent(consensus, 1, "Consensus", :assistant, :running, 49_000, 65_000,
+        activity: :working,
+        turn: 3,
+        max_turns: 30,
+        summary: "reading the repo",
+        summary_rev: 1,
+        cost_usd: 0.01
+      )
+
+    lead =
+      agent(swarm, 1, "Lead", :lead, :running, 975_000, 83_000,
+        activity: :waiting,
+        now: "waiting on 2 agents",
+        turn: 4,
+        max_turns: 30,
+        cost_usd: 0.06
+      )
+
+    # Started in this order, so the lanes (and their hues) read TS removal,
+    # Docs accuracy, Build check, Strategy fit; TS removal finished first.
+    ts =
+      agent(swarm, 2, "ts-removal-review", :worker, :done, 900_000, 840_000,
+        title: "TS removal",
+        finding: "Deleting ailogic_typescript/ is safe: nothing in lib/ or assets/ imports it.",
+        finding_refs: ["mix.exs:12", "README.md:21"],
+        cost_usd: 0.20
+      )
+      |> Map.put(:finished_at, @clock - 900_000 + 514_000)
+
+    docs =
+      agent(swarm, 3, "docs-accuracy-review", :worker, :running, 880_000, 1_000_000,
+        title: "Docs accuracy",
+        activity: :working,
+        turn: 21,
+        max_turns: 30,
+        summary: "checking app data",
+        summary_rev: 4,
+        lane_at: @clock - 5_000,
+        cost_usd: 0.22
+      )
+
+    build =
+      agent(swarm, 4, "build-verify-review", :worker, :done, 850_000, 612_000,
+        title: "Build check",
+        stop_reason: "turn_budget",
+        stop_label: "turn limit",
+        now: "no answer after 30 turns",
+        turn: 30,
+        max_turns: 30,
+        summary: "build never ran",
+        summary_rev: 3,
+        last_words: "Deps are all ok; two \"build is outdated\" findings remain.",
+        finding: nil,
+        cost_usd: 0.12
+      )
+      |> Map.put(:finished_at, @clock - 850_000 + 814_000)
+
+    strategy =
+      agent(swarm, 5, "strategy-fit-review", :worker, :running, 840_000, 1_500_000,
+        title: "Strategy fit",
+        activity: :working,
+        summary: "weighing 2 plans",
+        summary_rev: 2,
+        lane_at: @clock - 61_000,
+        cost_usd: 0.21
+      )
+
+    items = [
+      user(consensus, 0, 49_000, "lets plan how to make this app better"),
+      text(
+        consensus,
+        1,
+        40_000,
+        "I'll do a quick reconnaissance of the repo state before proposing anything.",
+        agent_id: assistant.id
+      )
+    ]
+
+    {[consensus, swarm | earlier], [assistant, lead, ts, docs, build, strategy], [], items,
+     approval_mode: :full_access}
+  end
+
   # The four read-only reviewers of the owner's own swarm, at three moments.
   defp review(elapsed, moment) do
     run =
@@ -511,7 +680,24 @@ defmodule SwarmCodeCLI.Demo.Panel do
     }
   end
 
-  @wire [:now, :lane, :finding, :finding_refs, :files_changed]
+  @wire [
+    :now,
+    :lane,
+    :finding,
+    :finding_refs,
+    :files_changed,
+    # pass 75
+    :title,
+    :turn,
+    :max_turns,
+    :summary,
+    :summary_rev,
+    :last_words,
+    :stop_reason,
+    :stop_label,
+    :lane_at,
+    :cost_usd
+  ]
 
   defp agent(run, i, name, role, state, elapsed, tokens, opts) do
     started = elapsed && @clock - elapsed
