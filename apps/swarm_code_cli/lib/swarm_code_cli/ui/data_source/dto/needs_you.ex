@@ -7,6 +7,8 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.NeedsYou do
   justification or the read-only/auto explanation), `node_id` the node that
   waits (an approval's op node, a question's node) and `agent_id` the agent it
   belongs to. Oldest first on the run summary.
+
+  pass75 interview: questions (headers, ≤ 4) and options (count)
   """
   use SwarmCodeCLI.UI.DataSource.DTO.Schema,
     wire_defaults: [
@@ -15,7 +17,9 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.NeedsYou do
       agent_name: "",
       reason: "",
       requested_at: 0,
-      tool: nil
+      tool: nil,
+      questions: [],
+      options: 0
     ],
     fields: [
       agent_id: {:optional, :id},
@@ -27,7 +31,11 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.NeedsYou do
       requested_at: :count,
       # pass72 G19 (QA Q19): the approval's tool, so the panel says "wants to
       # use workflow control" rather than "wants to run a command".
-      tool: {:optional, {:text, 64}}
+      tool: {:optional, {:text, 64}},
+      # pass75 interview: the ask's question headers and the first one's
+      # option count, so the band words come from facts.
+      questions: {:list, {:text, 64}, 4},
+      options: :count
     ],
     defaults: [
       agent_id: nil,
@@ -37,7 +45,9 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.NeedsYou do
       text: "",
       reason: "",
       requested_at: 0,
-      tool: nil
+      tool: nil,
+      questions: [],
+      options: 0
     ]
 
   alias SwarmCodeCLI.UI.DataSource.DTO
@@ -59,7 +69,9 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.NeedsYou do
           text: clip(a.command || a.tool, 1024),
           reason: clip(a.reason || "", 512),
           requested_at: a.requested_at || i.created_at,
-          tool: a.tool && clip(a.tool, 64)
+          tool: a.tool && clip(a.tool, 64),
+          questions: [],
+          options: 0
         }
 
       %{kind: :question, question: %DTO.Question{} = q} ->
@@ -69,7 +81,9 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.NeedsYou do
           agent_name: clip(agent_name || "", 200),
           kind: :question,
           text: clip(q.prompt, 1024),
-          requested_at: i.created_at
+          requested_at: i.created_at,
+          questions: [q.header || "Question " <> Integer.to_string(q.index + 1)],
+          options: length(q.options)
         }
 
       _ ->
