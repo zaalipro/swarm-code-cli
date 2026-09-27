@@ -620,6 +620,39 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Popover do
           end)
       end
 
+    # Pass 75 (R25.8, D19): after the `•` line, what a coloured spine says.
+    spine =
+      if Glyphs.twin?(state.capabilities),
+        do: [
+          {"* ", :text_primary},
+          {"set  ", :text_muted},
+          {"| ", :text_faint},
+          {"default  ", :text_muted},
+          {"! ", :warning},
+          {"attention", :text_muted}
+        ],
+        else: [
+          {"│  ", :text_faint},
+          {"a coloured spine: the layer that set the value  ", :text_muted},
+          {"session", :agent_lane_1},
+          {"  ", :text_muted},
+          {"project", :agent_lane_2},
+          {"  ", :text_muted},
+          {"env", :agent_lane_4},
+          {"  ", :text_muted},
+          {"flag", :agent_lane_5},
+          {"  ", :text_muted},
+          {"cli.json", :run_consensus_judge}
+        ]
+
+    spine_lines = Text.wrap_segments(state, spine, inner || help_width(state))
+
+    mark_lines =
+      case mark_lines do
+        [first | rest] -> [first | spine_lines] ++ rest
+        [] -> spine_lines
+      end
+
     [[{"marks", :text_muted}]] ++
       mark_lines ++
       [

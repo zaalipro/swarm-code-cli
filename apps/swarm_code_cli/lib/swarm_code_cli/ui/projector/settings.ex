@@ -317,7 +317,9 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
   defp box(%{settings: %Layer{popover: {_, _} = popover}} = state, _span, %Grid{} = grid) do
     content = SettingsPopover.lines(state, popover)
     width = min(max(widest(state, content) + 4, 40), grid.columns - 4)
-    height = min(length(content) + 2, grid.rows - 4)
+    # a sheet may cover the well and the message row; the crumb and the
+    # status line stay
+    height = min(length(content) + 2, grid.rows - 2)
     framed = SettingsPopover.frame(state, Enum.take(content, height - 2), [], [], [], width)
     {framed, max(div(grid.rows - height, 2), 1), max(div(grid.columns - width, 2), 0)}
   end
