@@ -48,8 +48,10 @@ defmodule SwarmCodeCLI.UI.Paint.Scene do
     do: ctx
 
   defp region(region, ctx) do
+    # pass 75 R7.7 (QA-1): the docked side panel has no fill; the blank gap
+    # column is its edge (the hairline stays in monochrome).
     style =
-      if region.role in [:navigator, :inspector],
+      if region.role == :navigator,
         do: resolve(:surface, ctx.base, ctx.options),
         else: ctx.base
 
@@ -333,8 +335,9 @@ defmodule SwarmCodeCLI.UI.Paint.Scene do
   defp hairline(region, ctx, surface) do
     rect = region.rect
 
-    # pass72 R13: no full-height rule beside the side panel; its surface is
-    # the edge. Without colour (no surface shows) the hairline stays.
+    # pass72 R13: no full-height rule beside the side panel in colour; the
+    # blank gap column is the edge (pass 75: no fill either). Without colour
+    # the hairline stays.
     gap_col =
       case region.role do
         :navigator -> rect.x + rect.width

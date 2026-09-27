@@ -249,6 +249,19 @@ defmodule SwarmCodeCLI.UI.Projector.C75PanelTest do
     assert Enum.at(rows, at + 2) =~ ~r/^ ⋔ ! Docs accuracy +wants to run +21\/30$/
   end
 
+  # Final QA-3 (6.3, SA S3 row 144): an agent row's `!` is plain `:warning`;
+  # only the band's `!` and count are bold.
+  test "the agents block's needs-you glyph is plain warning, the band's is bold" do
+    st = state(:panel_owner19_band, 176, 45)
+    bangs = Enum.filter(spans(st), &(SafeText.value(&1.text) == "!"))
+    assert length(bangs) >= 3
+    assert Enum.all?(bangs, &(&1.style.foreground == fg(st, :warning)))
+    assert [band] = Enum.filter(bangs, &(:bold in &1.style.modifiers))
+
+    # the band's `!` is the first one drawn
+    assert band == hd(bangs)
+  end
+
   # ------------------------------------------------------------- the rules
 
   test "a name wider than the column ends in …" do
@@ -293,6 +306,29 @@ defmodule SwarmCodeCLI.UI.Projector.C75PanelTest do
 
         refute s.style.background in fills, "#{scene} #{panel}: #{inspect(text)} is filled"
         assert s.style.background == plain, "#{scene} #{panel}: #{inspect(text)} is filled"
+      end
+    end
+  end
+
+  # Final QA-1: the paint filled the whole docked region with `:surface`, so
+  # every panel cell, blank rows included, sat on a dark slab (R7.7).
+  test "no painted cell of the docked panel region has a background of its own" do
+    for scene <- [:panel_owner19, :panel_owner19_band], panel <- [:full, :compact] do
+      st = state(scene, 176, 45, panel: panel)
+      rect = Layout.for_state(st).rects.inspector
+      {projected, _} = Projector.project(st)
+      {:ok, plan} = Paint.build(projected, %Options{color_mode: :truecolor, ascii?: false})
+      canvas = elem(plan.palette, 0).background
+
+      for y <- rect.y..(rect.y + rect.height - 1), x <- rect.x..(rect.x + rect.width - 1) do
+        case Plan.cell(plan, x, y) do
+          {:glyph, glyph, _, index} ->
+            assert elem(plan.palette, index).background == canvas,
+                   "#{scene} #{panel}: #{inspect(glyph)} at (#{x}, #{y}) is filled"
+
+          _ ->
+            :ok
+        end
       end
     end
   end

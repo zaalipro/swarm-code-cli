@@ -171,6 +171,7 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Note do
   def ladder(state, %Row{} = row, :inline) do
     state
     |> ladder_cells(row)
+    |> Enum.map(&elem(&1, 0))
     |> Enum.intersperse([{"   ", :text_primary}])
     |> Enum.concat()
   end
@@ -178,7 +179,8 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Note do
   def ladder(_state, _row, :column), do: []
 
   # The inline ladder's cells, strongest first: `▎word value` in the layer's
-  # hue, ` ✓` after the winner (the twin: the winner's word bold, ` v`).
+  # hue, ` ✓` after the winner (the twin: the winner's word bold, ` v`); each
+  # with whether its layer is set, for `take_rungs/3`.
   defp ladder_cells(state, %Row{detail: %Detail{layers: layers}}) do
     caps = state.capabilities
     twin? = Glyphs.twin?(caps)
@@ -193,9 +195,12 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Note do
           do: [{word, if(layer.winner?, do: {:text_primary, [:bold]}, else: :text_muted)}],
           else: [{Glyphs.for_caps(:ladder, caps), Strata.role(id)}, {word, :text_muted}]
 
-      if layer.winner?,
-        do: cell ++ [{" " <> ok(caps), :success}],
-        else: cell
+      cell =
+        if layer.winner?,
+          do: cell ++ [{" " <> ok(caps), :success}],
+          else: cell
+
+      {cell, Map.get(layer, :set?, false) or layer.winner?}
     end)
   end
 
@@ -362,13 +367,38 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Note do
     right_part = if right == [], do: [], else: right ++ [{" ", :text_primary}]
     room = width - Text.cells(state, lead) - Text.cells(state, right_part) - 1
 
-    case take_cells(state, cells, room) do
+    case take_rungs(state, cells, room) do
       [] when right != [] and cells != [] ->
         fill_right(state, lead, cells, [], width)
 
       kept ->
         Text.spread(state, lead ++ kept, right_part, width)
     end
+  end
+
+  # The ladder's rungs that fit `room`, three apart, in ladder order: an
+  # unset rung goes first (the weakest first), then the weakest set one, so
+  # the layer that supplies the value is the last to go (final QA-12).
+  defp take_rungs(state, rungs, room) do
+    width = fn kept ->
+      cells = Enum.map(kept, fn {{cell, _set?}, _at} -> Text.cells(state, cell) end)
+      Enum.sum(cells) + 3 * max(length(cells) - 1, 0)
+    end
+
+    indexed = Enum.with_index(rungs)
+
+    order =
+      Enum.reverse(Enum.reject(indexed, fn {{_, set?}, _} -> set? end)) ++
+        Enum.reverse(Enum.filter(indexed, fn {{_, set?}, _} -> set? end))
+
+    order
+    |> Enum.reduce_while(indexed, fn drop, kept ->
+      if width.(kept) <= room, do: {:halt, kept}, else: {:cont, List.delete(kept, drop)}
+    end)
+    |> then(&if(width.(&1) <= room, do: &1, else: []))
+    |> Enum.map(fn {{cell, _}, _} -> cell end)
+    |> Enum.intersperse([{"   ", :text_primary}])
+    |> Enum.concat()
   end
 
   defp take_cells(state, cells, room) do

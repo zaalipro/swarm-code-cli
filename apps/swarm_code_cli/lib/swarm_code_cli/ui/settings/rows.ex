@@ -401,7 +401,7 @@ defmodule SwarmCodeCLI.UI.Settings.Rows do
 
   defp keys(%Entry{} = entry) do
     if Entry.writable?(entry) and entry.resettable,
-      do: [{"r", :reset, "reset to the default"}],
+      do: [{"r", :reset, "reset"}],
       else: []
   end
 

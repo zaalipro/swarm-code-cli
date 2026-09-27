@@ -55,7 +55,8 @@ defmodule SwarmCodeCLI.UI.Projector.Strip do
     head = fn cells ->
       [
         if(in_chat?, do: {Panel.g(ctx, :in_chat), :accent}, else: {" ", :plain}),
-        {Draw.mark(Model.kind(run), state), Model.kind_role(run)},
+        # S5 draws the chat run's mark bold, like its title (final QA-5).
+        {Draw.mark(Model.kind(run), state), Model.kind_role(run), [:bold]},
         {" " <> Draw.elide(Model.title(run), cells, state), :text_primary, [:bold]}
       ]
     end

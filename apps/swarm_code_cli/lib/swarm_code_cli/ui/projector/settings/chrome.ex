@@ -263,61 +263,75 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Chrome do
     index = Enum.find_index(ids, &(&1 == current)) || 0
     marks = rail_marks(state, glyphs)
     right = [{"#{index + 1}", :text_primary}, {" of #{length(ids)}", :text_faint}]
-    room = grid.columns - 2 * grid.margin - Text.cells(state, right) - 8
 
-    names =
-      ids
-      |> strip_window(index, room, &strip_cost(state, &1, marks))
-      |> Enum.map(fn id ->
-        mark = Map.get(marks, id, [])
-        title = Sections.title(id)
-
-        if id == current do
-          mark = if mark == [], do: [], else: [{" ", :text_primary} | mark]
-
-          on_hover(
-            [{" ", :text_primary}, {title, {:text_primary, [:bold]}}] ++
-              mark ++ [{" ", :text_primary}]
-          )
-        else
-          mark = if mark == [], do: [], else: [{" ", :text_primary} | mark]
-          [{title, :text_muted} | mark]
-        end
-      end)
-      |> Enum.intersperse([{"   ", :text_primary}])
-      |> Enum.concat()
-
-    left =
+    left_of = fn names ->
       [margin(grid), {glyphs.(:step_left), :text_faint}, {"  ", :text_primary}] ++
         names ++ [{"  ", :text_primary}, {glyphs.(:step_right), :text_faint}]
+    end
 
-    Text.spread(state, left, right ++ [margin(grid)], grid.columns)
+    # The row as drawn, measured whole: the window keeps a section only when
+    # the row still leaves one cell before `N of 22` (final QA-7: the old
+    # per-item estimate dropped `Search & web` at 90 columns).
+    room = grid.columns - Text.cells(state, right ++ [margin(grid)]) - 1
+
+    fits? = fn window ->
+      Text.cells(state, left_of.(strip_names(window, current, marks))) <= room
+    end
+
+    names = ids |> strip_window(index, fits?) |> strip_names(current, marks)
+
+    Text.spread(state, left_of.(names), right ++ [margin(grid)], grid.columns)
   end
 
-  defp strip_cost(state, id, marks) do
-    Text.text_cells(state, Sections.title(id)) + Text.cells(state, Map.get(marks, id, [])) + 5
+  # The sections' names three cells apart (tm, a mark after a space); the
+  # current one is a `hover` pill whose one-cell pad counts in those three.
+  defp strip_names(window, current, marks) do
+    window
+    |> Enum.map(fn id ->
+      mark = Map.get(marks, id, [])
+      mark = if mark == [], do: [], else: [{" ", :text_primary} | mark]
+      title = Sections.title(id)
+
+      if id == current do
+        {:pill,
+         on_hover(
+           [{" ", :text_primary}, {title, {:text_primary, [:bold]}}] ++
+             mark ++ [{" ", :text_primary}]
+         )}
+      else
+        {:name, [{title, :text_muted} | mark]}
+      end
+    end)
+    |> Enum.chunk_every(2, 1)
+    |> Enum.flat_map(fn
+      [{kind_a, a}, {kind_b, _}] ->
+        gap = if :pill in [kind_a, kind_b], do: "  ", else: "   "
+        a ++ [{gap, :text_primary}]
+
+      [{_, a}] ->
+        a
+    end)
   end
 
-  # The window of sections that fits `room`, around the current one.
-  defp strip_window(ids, index, room, cost),
-    do: grow(ids, index, index, cost.(Enum.at(ids, index)), room, cost)
+  # The window of sections that fits, around the current one.
+  defp strip_window(ids, index, fits?), do: grow(ids, index, index, fits?)
 
   # Widens [lo, hi] a section at a time (right, then left) while it fits.
-  defp grow(ids, lo, hi, used, room, cost) do
-    {lo2, hi2, used2} =
-      Enum.reduce([hi + 1, lo - 1], {lo, hi, used}, fn at, {l, h, u} = acc ->
-        id = if at >= 0, do: Enum.at(ids, at)
+  defp grow(ids, lo, hi, fits?) do
+    {lo2, hi2} =
+      Enum.reduce([hi + 1, lo - 1], {lo, hi}, fn at, {l, h} = acc ->
+        {l2, h2} = if at > h, do: {l, at}, else: {at, h}
 
         cond do
-          id == nil or u + cost.(id) > room -> acc
-          at > h -> {l, at, u + cost.(id)}
-          true -> {at, h, u + cost.(id)}
+          at < 0 or at >= length(ids) -> acc
+          fits?.(Enum.slice(ids, l2..h2//1)) -> {l2, h2}
+          true -> acc
         end
       end)
 
     if {lo2, hi2} == {lo, hi},
       do: Enum.slice(ids, lo..hi//1),
-      else: grow(ids, lo2, hi2, used2, room, cost)
+      else: grow(ids, lo2, hi2, fits?)
   end
 
   # ---------------------------------------------------- message row

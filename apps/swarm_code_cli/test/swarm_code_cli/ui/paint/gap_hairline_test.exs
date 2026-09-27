@@ -83,8 +83,8 @@ defmodule SwarmCodeCLI.UI.Paint.GapHairlineTest do
       state = fixture(:chat, {170, 34})
       plan = paint(state)
 
-      # The panel is at x=124, w=46; in colour its surface is its edge and no
-      # full-height rule is drawn beside it.
+      # The panel is at x=124, w=46; in colour the blank gap column is its
+      # edge (no fill, pass 75 R7.7) and no full-height rule is drawn beside it.
       glyphs = column_glyphs(plan, 123, 2, 32)
 
       assert Enum.all?(glyphs, &(&1 in [nil, " "])),

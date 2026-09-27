@@ -1393,8 +1393,6 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
     duration = view && view.elapsed && view.elapsed >= 1_000 && Model.short_clock(view.elapsed)
     tokens = agent && Model.tokens(Model.token_count(agent))
     meta = [duration, tokens] |> Enum.reject(&(&1 in [nil, false])) |> Enum.join(" · ")
-    glyph_mods = if p3 == :needs_you, do: [:bold], else: []
-
     # pass 75 (R2.5): a turn-limit agent's own last words, muted, after its
     # rule sentence.
     last =
@@ -1405,14 +1403,16 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
     spec(
       [
         {String.duplicate(" ", @body), :plain},
-        {connector, {:role, :text_ghost, []}},
+        # final QA-4: S2/S3 draw the connectors `:text_faint`, and the
+        # needs-you `!` and word plain `:warning` with the sentence `tp`.
+        {connector, {:role, :text_faint, []}},
         {" ", :text},
-        {PanelGlyph.get(p3, state), {:role, Model.glyph_role(p3), glyph_mods}},
+        {PanelGlyph.get(p3, state), {:role, Model.glyph_role(p3), []}},
         {" ", :text},
         {pad_cells(name, name_w, state), {:role, lane, []}},
         {" ", :text},
         # pass 75 (D-L13): the word column is 13 cells, S2's spacing.
-        {pad_cells(Model.word(p3), 13, state), {:role, word_role(p3), glyph_mods}},
+        {pad_cells(Model.word(p3), 13, state), {:role, word_role(p3), []}},
         {sentence, sentence_style(sentence_role, p3)}
       ] ++
         last ++
@@ -1444,6 +1444,7 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
   defp word_role(:needs_you), do: :warning
   defp word_role(p3), do: Model.word_role(p3)
 
+  defp sentence_style(_role, :needs_you), do: :text
   defp sentence_style(:warning, _p3), do: {:role, :warning, []}
   defp sentence_style(:error, _p3), do: {:role, :error, []}
   defp sentence_style(_role, :done), do: :muted

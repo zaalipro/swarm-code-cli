@@ -121,7 +121,7 @@ defmodule SwarmCodeCLI.UI.Settings.C75NoteTest do
       assert {"✓", %{role: :success}} = span_at(spans, check)
 
       {last, text, spans} = List.last(note)
-      assert text =~ "r reset to the default"
+      assert text =~ ~r/\br reset\b(?! to)/
       assert role_at(spans, 118) == :key
       assert cell(lines_row(spans), 116) == "╰"
       assert last > where
@@ -208,7 +208,7 @@ defmodule SwarmCodeCLI.UI.Settings.C75NoteTest do
       assert String.trim_trailing(two)
              |> String.ends_with?("session.effort · conversations.effort")
 
-      assert three =~ "r reset to the default"
+      assert three =~ ~r/\br reset\b(?! to)/
       assert String.trim_trailing(three) |> String.ends_with?("i the whole detail")
 
       spans = Enum.at(line_spans(state), Grid.for(90, 30).body_top + focus + 1)
@@ -230,7 +230,7 @@ defmodule SwarmCodeCLI.UI.Settings.C75NoteTest do
       assert hd(page) =~ ~r/^╭─ Effort/
       assert Enum.any?(page, &(&1 =~ "where it comes from · strongest first"))
       last = page |> Enum.reject(&(String.trim(&1) == "")) |> List.last()
-      assert last =~ ~r/^╰\s+r reset to the default/
+      assert last =~ ~r/^╰\s+r reset\b(?! to)/
       refute Enum.any?(page, &String.starts_with?(&1, "▌"))
 
       {back, _} = verb(detail, :info)
@@ -282,9 +282,54 @@ defmodule SwarmCodeCLI.UI.Settings.C75NoteTest do
 
     [one, two, three] = Enum.slice(page, focus + 1, 3)
     assert one =~ ~r/^.╰─ session\.effort · conversations\.effort ▎session high ✓/u
-    assert two =~ "r reset to the default"
+    assert two =~ ~r/\br reset\b(?! to)/
     assert String.trim_trailing(two) |> String.ends_with?("i the whole detail")
     refute three =~ "i the whole detail"
+  end
+
+  # Final QA-12: at 90 columns the drawer kept `▎project file not set` and
+  # dropped `▎default Medium`, the layer that supplied the value.
+  test "the drawer's inline ladder drops an unset rung before a set one" do
+    state = open(:models_effort, {90, 30})
+    grid = Grid.for(90, 30)
+
+    layers = [
+      %{id: :global, value: "High", winner?: true, set?: true},
+      %{id: :project_file, value: "not set", winner?: false, set?: false},
+      %{id: :default, value: "Medium", winner?: false, set?: true}
+    ]
+
+    row = fn key_line ->
+      %SwarmCodeCLI.UI.Settings.Row{
+        id: "k",
+        label: "Default effort",
+        keys: [{"r", :reset, "reset"}],
+        detail: %SwarmCodeCLI.UI.Settings.Detail{
+          title: "Default effort",
+          key_line: key_line,
+          description: "Reasoning effort.",
+          layers: layers
+        }
+      }
+    end
+
+    ladder = fn key_line ->
+      [_, two, _] = Note.drawer(state, row.(key_line), grid)
+      lines_row(two)
+    end
+
+    # room for all three: every rung, strongest first
+    assert ladder.("k") =~ ~r/▎global High ✓   ▎project file not set   ▎default Medium/u
+
+    # room for two: the unset rung goes, the set `default` stays
+    two = ladder.(String.duplicate("x", 40))
+    assert two =~ ~r/▎global High ✓   ▎default Medium/u
+    refute two =~ "project file"
+
+    # room for one: the winner stays
+    one = ladder.(String.duplicate("x", 58))
+    assert one =~ "▎global High ✓"
+    refute one =~ "default Medium"
   end
 
   defp blank?(note, at) do

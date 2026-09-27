@@ -917,7 +917,6 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
           badge_segments(ctx, badge)
       end
 
-    glyph_mods = if view.state == :needs_you, do: [:bold], else: []
     # A name wider than the column ends in `…` one cell short of it, so a
     # space always parts it from the status (6.5).
     name = Draw.pad_to(Draw.elide(view.display, min(24, col - 1), state), col, state)
@@ -937,8 +936,10 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
 
     row(
       ctx,
+      # 6.3 (final QA-3): the needs-you `!` is plain `:warning`; bold is
+      # the band's title only.
       mark ++
-        [{g(ctx, token), glyph_role, glyph_mods}, {" ", :plain}, {name, dim.(view.name_role)}] ++
+        [{g(ctx, token), glyph_role}, {" ", :plain}, {name, dim.(view.name_role)}] ++
         status,
       if(figure, do: [figure], else: [])
     )

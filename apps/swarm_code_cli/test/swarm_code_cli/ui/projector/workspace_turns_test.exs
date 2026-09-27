@@ -200,6 +200,10 @@ defmodule SwarmCodeCLI.UI.Projector.WorkspaceTurnsTest do
     assert find_span(scene, "no answer after 30 turns").style.foreground == red
     assert find_span(scene, " · last: Deps").style.foreground == muted
 
+    # Final QA-4: the connectors are `:text_faint` (S2), never ghost text.
+    faint = Theme.style(:text_faint, state.capabilities).foreground
+    assert find_span(scene, "⊢").style.foreground == faint
+
     # Without last words the `· last:` part is absent.
     state = put_in(state.read_model.agents["agent-4"].last_words, nil)
     {rows, _, _, _} = painted(state)

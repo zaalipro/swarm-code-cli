@@ -187,13 +187,16 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Approvals do
         p -> get(p, :name) || "?"
       end
 
-    here = if current_project?(ctx), do: " · this session's project", else: ""
+    # final QA-9: the hint is its own line under the value (F6 rows 269-270),
+    # never joined to the value and wrapped with it.
+    here = if current_project?(ctx), do: [[{"this session's project", :text_faint}]], else: []
 
     %Row{
       id: "act:project_picker",
       kind: :action,
       label: "Project",
-      value: [{name <> " ▾", :title}, {here, :text_faint}],
+      value: [{name <> " ▾", :title}],
+      lines: here,
       tag: [{"writes to #{name} (project)", :text_faint}],
       keys: [{"Enter", :enter, "pick a project"}]
     }
@@ -294,6 +297,8 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Approvals do
         %Row{
           id: "other:" <> to_string(get(p, :id)),
           kind: :link,
+          # final QA-10: `→` in the mark slot (22.1), as F6 rows 284-286 draw.
+          marks: [:link],
           label: get(p, :name) || "?",
           value: [
             {if(prefixes == [], do: "none yet", else: Enum.join(prefixes, ", ")),
@@ -305,7 +310,9 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Approvals do
         }
       end
 
-    if others == [], do: [], else: [Row.heading("other projects") | others]
+    if others == [],
+      do: [],
+      else: [Row.heading("other projects", [{"#{length(others)}", :text_faint}]) | others]
   end
 
   defp hook_lines(ctx) do

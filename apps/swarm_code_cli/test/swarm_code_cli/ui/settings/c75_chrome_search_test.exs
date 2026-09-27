@@ -199,6 +199,17 @@ defmodule SwarmCodeCLI.UI.Settings.C75ChromeSearchTest do
     end
   end
 
+  # Final QA-7: the pill's pad counts in the three cells between names, and
+  # the window is measured as drawn, so at 90 columns `Search & web` fits
+  # after `Pricing` as frame 414 draws it.
+  test "the section strip at 90: names three apart, the pill set off by two" do
+    {state, _fake} = opened(:models_effort, state: with_env(ready({90, 30})))
+    strip = state |> lines() |> Enum.at(2)
+    assert strip =~ ~r/‹  Overview  \s?Models & effort[^›]*Search & web  ›/u
+    assert strip =~ ~r/Overview   Models & effort /u
+    assert strip =~ ~r/ Providers( \S+)?   Pricing/u
+  end
+
   describe "the status line's legend (R25.6)" do
     test "names the project when the workspace does, then the conversation" do
       state = ready({160, 45})
@@ -211,6 +222,19 @@ defmodule SwarmCodeCLI.UI.Settings.C75ChromeSearchTest do
              |> List.last()
              |> String.trim_trailing()
              |> String.ends_with?("project ailogic · conversation Refactor the parser")
+    end
+
+    # Final QA-6: `r reset to the default` left no room for the legend at 90.
+    test "at 90 a resettable row's status line keeps `name · title`" do
+      state = ready({90, 30})
+      snapshots = Map.put(state.read_model.snapshots, :workspace, %{project: "ailogic"})
+      state = put_in(state.read_model.snapshots, snapshots)
+      {state, _fake} = opened(:models_effort, state: state)
+      state = SwarmCodeCLI.UI.Settings.Nav.put_cursor(state, "key:efforts.default")
+      last = state |> lines() |> List.last() |> String.trim_trailing()
+
+      assert last =~ ~r/\br reset   /
+      assert String.ends_with?(last, "ailogic · Refactor the parser")
     end
 
     test "the conversation alone without a project name" do
