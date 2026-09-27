@@ -71,6 +71,29 @@ defmodule SwarmCodeCLI.UI.ActivityQuestionTest do
            ]
   end
 
+  test "a deadline of 0 sorts after every timed item" do
+    items = [
+      %DTO.ActivityItem{id: "forever", kind: :question, deadline: 0, created_at: 1},
+      %DTO.ActivityItem{id: "timed", kind: :question, deadline: 20, created_at: 2}
+    ]
+
+    assert Enum.map(Activity.sort(items), & &1.id) == ["timed", "forever"]
+
+    fallback = %DTO.ActivityItem{
+      id: "fallback",
+      kind: :approval,
+      deadline: nil,
+      created_at: 3,
+      interaction: %DTO.PendingInteraction{id: "i", state: :pending, deadline: 20}
+    }
+
+    early = %DTO.ActivityItem{id: "early", kind: :question, deadline: 10, created_at: 4}
+    late = %DTO.ActivityItem{id: "late", kind: :question, deadline: 30, created_at: 0}
+
+    assert Enum.map(Activity.sort([late, fallback | items] ++ [early]), & &1.id) ==
+             ["early", "timed", "fallback", "late", "forever"]
+  end
+
   test "question preserves exact identity and rejects stale, pending, resolved or unauthorized submission" do
     item = %DTO.PendingInteraction{
       id: "q1",
