@@ -56,18 +56,19 @@ defmodule SwarmCodeCLI.UI.Projector.Pass73NamesTest do
       text = Enum.join(rows, "\n")
       angular = Map.fetch!(state.read_model.agents, Pass73Scenes.angular_id())
 
-      assert Name.of(state, angular) == "angular-plan"
-      assert text =~ "angular-plan wants to run a command", "#{panel} #{c}x#{r}"
-      assert text =~ ~r/NEEDS YOU · angular-plan|! 1 NEEDS YOU/
+      # pass 75: the trimmed slug is humanised (`angular-plan` → `Angular plan`).
+      assert Name.of(state, angular) == "Angular plan"
+      assert text =~ "Angular plan wants to run a command", "#{panel} #{c}x#{r}"
+      assert text =~ ~r/NEEDS YOU · Angular plan|! 1 NEEDS YOU/
       refute text =~ "review-angular-plan", "#{panel} #{c}x#{r}:\n" <> text
+      refute text =~ "angular-plan", "#{panel} #{c}x#{r}:\n" <> text
       # Beside a state glyph (panel rows, the strip, the chat's agent
       # lines), the agent is never a shorter word.
-      named = Regex.scan(~r/[●◐◌!✓✗○⏸] ([\w-]+)/u, text, capture: :all_but_first)
-      assert ["angular-plan"] in named
-      refute ["angular"] in named, "#{panel} #{c}x#{r}:\n" <> text
+      assert text =~ ~r/[●◐◒◌!✓✗○⏸] Angular plan/u
+      refute text =~ ~r/[●◐◒◌!✓✗○⏸] Angular(?! plan)/u, "#{panel} #{c}x#{r}:\n" <> text
 
       views = Model.agents(state, Map.fetch!(state.read_model.runs, Pass73Scenes.swarm_id()))
-      assert Enum.find(views, &(&1.id == angular.id)).display == "angular-plan"
+      assert Enum.find(views, &(&1.id == angular.id)).display == "Angular plan"
     end
 
     # The overlay on the agent names it the same way in its header and band.
@@ -81,19 +82,21 @@ defmodule SwarmCodeCLI.UI.Projector.Pass73NamesTest do
       )
 
     assert Overlay.project(state, Layout.for_state(state))
-    text = state |> screen() |> Enum.join("\n")
-    assert text =~ "angular-plan wants to run a command"
-    refute text =~ "review-angular-plan"
-    named = Regex.scan(~r/[●◐◌!✓✗○⏸] ([\w-]+)/u, text, capture: :all_but_first)
-    refute ["angular"] in named
+    rows = screen(state)
+    text = Enum.join(rows, "\n")
+    assert text =~ "Angular plan wants to run a command"
+    # The header and the band: never the slug (pass 75: the agent's title is
+    # its slug here, so the BRIEF's fallback, the node's title, may show it).
+    refute rows |> Enum.take(4) |> Enum.join("\n") =~ "review-angular-plan"
+    refute text =~ ~r/[●◐◒◌!✓✗○⏸] Angular(?! plan)/u
   end
 
   test "the card and the overlay name the agent by Panel.Name, the approval's raw name aside" do
     state = Pass73Scenes.screenshot_11(160, 45)
     item = state.read_model.interactions["demo-approval-80"]
     assert item.approval.agent_name == "review-angular-plan"
-    assert ApprovalCard.who(item, state) == "angular-plan"
-    assert ApprovalCard.title(item, state) == "angular-plan wants to run a command"
+    assert ApprovalCard.who(item, state) == "Angular plan"
+    assert ApprovalCard.title(item, state) == "Angular plan wants to run a command"
   end
 
   test "the band flattens a multi-line command to one row with …; the card keeps it whole" do
@@ -179,17 +182,17 @@ defmodule SwarmCodeCLI.UI.Projector.Pass73NamesTest do
     panel = Enum.join(panel_rows, "\n")
 
     assert [first, _] = Enum.filter(panel_rows, &(&1 =~ ~r/ls lib|curl/)), panel
-    assert first =~ "security-plan"
-    assert Enum.join(rows, "\n") =~ "security-plan wants to run a command"
+    assert first =~ "Security plan"
+    assert Enum.join(rows, "\n") =~ "Security plan wants to run a command"
     # The swarm's row under the run in chat names the same agent.
-    assert panel =~ "! security-plan wants to run a command", panel
-    refute panel =~ "angular-plan wants to"
+    assert panel =~ "! Security plan wants to run a command", panel
+    refute panel =~ "Angular plan wants to"
 
     # With the swarm in view, its footer does too.
     state = %{state | destination: {:run, Pass73Scenes.swarm_id()}}
     panel = state |> screen() |> region(state, :inspector) |> Enum.join("\n")
-    assert panel =~ "security-plan is paused on", panel
-    refute panel =~ "angular-plan is paused on"
+    assert panel =~ "Security plan is paused on", panel
+    refute panel =~ "Angular plan is paused on"
   end
 
   test "a chat turn's role label: the node's own name, the run's title, else Assistant" do
@@ -200,6 +203,50 @@ defmodule SwarmCodeCLI.UI.Projector.Pass73NamesTest do
 
     assert Name.role_label(%{name: nil}, %{title: "hello"}) == "Assistant"
     assert Name.display(%{role: :lead, name: "lead"}, {"", ""}, nil) == "Lead"
-    assert Name.display(%{role: :worker, name: "review-x-plan"}, {"review-", ""}, nil) == "x-plan"
+    assert Name.display(%{role: :worker, name: "review-x-plan"}, {"review-", ""}, nil) == "X plan"
+  end
+
+  test "pass 75: the trimmed slug is humanised" do
+    # The shared `review-` prefix goes, dashes and underscores read as
+    # spaces, the first letter is upper case.
+    names =
+      for slug <- ~w(review-angular-plan review-elixir-plan review-security-plan review-deploy),
+          do: Name.display(%{role: :worker, name: slug}, {"review-", ""}, nil)
+
+    assert names == ["Angular plan", "Elixir plan", "Security plan", "Deploy"]
+    assert Name.humanise("") == ""
+    assert Name.humanise("build__verify-review") == "Build verify review"
+    assert Name.humanise("-x-") == "X"
+  end
+
+  test "pass 75: an AI title wins over the slug" do
+    # The Lead named the deploy reviewer "Build check" (spawn_agent's title).
+    state = Pass73Scenes.screenshot_11(160, 45, titles: %{"agent-80-5" => "Build check"})
+    deploy = Map.fetch!(state.read_model.agents, "agent-80-5")
+
+    assert Name.ai_title?(deploy)
+    assert Name.slug(deploy) == "review-deploy"
+    # The title as is: no affix trim, no humanising.
+    assert Name.of(state, deploy) == "Build check"
+
+    rows = screen(state)
+    main = state |> then(&region(rows, &1, :main)) |> Enum.join("\n")
+    assert main =~ "Build check", main
+    refute Enum.join(rows, "\n") =~ ~r/\bDeploy\b|review-deploy/
+
+    # With the swarm in view its panel row reads the title too.
+    state = %{state | destination: {:run, Pass73Scenes.swarm_id()}}
+    rows = screen(state)
+    panel = state |> then(&region(rows, &1, :inspector)) |> Enum.join("\n")
+    assert panel =~ "Build check", panel
+    refute Enum.join(rows, "\n") =~ ~r/\bDeploy\b|review-deploy/
+
+    # An agent whose title is its own name reads its humanised slug.
+    elixir = Map.fetch!(state.read_model.agents, "agent-80-3")
+    assert elixir.title == elixir.name
+    refute Name.ai_title?(elixir)
+    assert Name.of(state, elixir) == "Elixir plan"
+    assert Name.ai_title?(%{name: "x", title: "  "}) == false
+    assert Name.ai_title?(%{name: "x"}) == false
   end
 end
