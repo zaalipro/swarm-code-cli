@@ -23,6 +23,7 @@ defmodule SwarmCodeCLI.UI.Question do
         }
 
   @new_interview %{step: 0, picks: %{}, last_focus: %{}, sending: [], refused: %{}}
+  @timeout_ms 1_800_000
 
   @doc "The one ordering key of pending interactions: creation, asker, question index, id."
   @spec order_key(row()) :: {integer(), binary(), integer(), binary()}
@@ -101,6 +102,142 @@ defmodule SwarmCodeCLI.UI.Question do
   @doc "The focus ids of a question: its option ids, then `\"other\"`."
   @spec focus_ids(row()) :: [binary()]
   def focus_ids(row), do: Enum.map(row.question.options, & &1.id) ++ ["other"]
+
+  @doc """
+  What the final Enter would send for `row`, or nil.
+
+  Single-select: non-blank "other" text replaces the pick; else the explicit pick, else the
+  focused option of the current step. Multi-select: the ticks (in option order) plus the
+  "other" text.
+  """
+  @spec answer(map(), ask(), row()) :: %{option_ids: [binary()], custom_text: binary()} | nil
+  def answer(state, ask, row) do
+    text = other_text(state, row)
+    blank? = String.trim(text) == ""
+
+    if row.question.multiple do
+      ticked = Map.get(state.selection, {:question, row.id}, [])
+      ticks = for option <- row.question.options, option.id in ticked, do: option.id
+
+      if ticks == [] and blank?, do: nil, else: %{option_ids: ticks, custom_text: text}
+    else
+      pick =
+        Map.get(interview(state, ask.node_id).picks, row.id) || focused_option(state, ask, row)
+
+      cond do
+        not blank? -> %{option_ids: [], custom_text: text}
+        pick != nil -> %{option_ids: [pick], custom_text: ""}
+        true -> nil
+      end
+    end
+  end
+
+  defp focused_option(state, ask, row) do
+    if current(ask, interview(state, ask.node_id)) == row and
+         Enum.any?(row.question.options, &(&1.id == state.focus)),
+       do: state.focus
+  end
+
+  @doc "Every row of the ask with its answer (or nil), in index order."
+  @spec answers(map(), ask()) :: [{row(), map() | nil}]
+  def answers(state, ask), do: Enum.map(ask.rows, &{&1, answer(state, ask, &1)})
+
+  @spec complete?(map(), ask()) :: boolean()
+  def complete?(state, ask), do: Enum.all?(answers(state, ask), fn {_, a} -> a != nil end)
+
+  @doc "The position in `ask.rows` of the first unanswered row, else 0."
+  @spec first_unanswered(map(), ask()) :: non_neg_integer()
+  def first_unanswered(state, ask),
+    do: Enum.find_index(answers(state, ask), fn {_, a} -> a == nil end) || 0
+
+  @doc "One `:answer_question` intent per answered row, in index order."
+  @spec intents(map(), ask()) :: [tuple()]
+  def intents(state, ask) do
+    for {row, answer} <- answers(state, ask), answer != nil do
+      {:answer_question, row.run_id, row.node_id, row.id, row.expected_revision, answer}
+    end
+  end
+
+  @doc "The `You will send` ledger: one `{glyph_state, header, words}` per asked index."
+  @spec ledger(map(), ask()) :: [{:done | :current | :open | :earlier, binary(), binary()}]
+  def ledger(state, ask) do
+    current = current(ask, interview(state, ask.node_id))
+
+    for i <- 0..(ask.total - 1)//1 do
+      case Enum.find(ask.rows, &(&1.question.index == i)) do
+        nil ->
+          {:earlier, "Question " <> Integer.to_string(i + 1), "answered earlier"}
+
+        row ->
+          answer = answer(state, ask, row)
+
+          glyph =
+            cond do
+              row == current -> :current
+              answer != nil -> :done
+              true -> :open
+            end
+
+          {glyph, header(row), answer_words(row, answer)}
+      end
+    end
+  end
+
+  defp answer_words(_row, nil), do: "not answered yet"
+
+  defp answer_words(row, %{option_ids: ids, custom_text: text}) do
+    labels =
+      for option <- row.question.options, option.id in ids, do: option.label
+
+    parts =
+      [Enum.join(labels, ", "), if(String.trim(text) != "", do: ~s("#{text}"), else: "")]
+      |> Enum.reject(&(&1 == ""))
+
+    Enum.join(parts, " + ")
+  end
+
+  @doc "The words after `Enter` on the note's keys row."
+  @spec enter_words(ask(), interview(), binary()) :: binary()
+  def enter_words(ask, interview, name) do
+    last = length(ask.rows) - 1
+    step = min(interview.step, last)
+
+    cond do
+      ask.total == 1 -> "send to the " <> name
+      step < last -> "next: " <> header(Enum.at(ask.rows, step + 1))
+      last == 0 -> "send 1 answer"
+      true -> "send " <> Integer.to_string(last + 1) <> " answers"
+    end
+  end
+
+  @doc "The note's bottom-left words and their role."
+  @spec deadline_words(ask(), integer(), binary()) :: {binary(), :text_faint | :warning}
+  def deadline_words(%{deadline: 0, legacy?: true}, _now_ms, name),
+    do: {"Esc later: the " <> name <> " keeps waiting", :text_faint}
+
+  def deadline_words(%{deadline: 0}, _now_ms, name),
+    do: {"Esc later: the " <> name <> " waits until you answer or stop", :text_faint}
+
+  def deadline_words(%{deadline: deadline}, now_ms, name) do
+    left = deadline - now_ms
+    minutes = max(div(left, 60_000), 0)
+
+    {"Esc later: the " <> name <> " keeps waiting, " <> Integer.to_string(minutes) <> " min left",
+     if(left < 300_000, do: :warning, else: :text_faint)}
+  end
+
+  @doc "The notice when every row of an ask left before the CLI sent anything."
+  @spec vanish_notice(ask(), integer(), binary()) :: binary()
+  def vanish_notice(%{deadline: deadline}, now_ms, name)
+      when deadline > 0 and now_ms >= deadline,
+      do:
+        "The " <>
+          name <>
+          " stopped waiting: no answer after " <>
+          Integer.to_string(div(@timeout_ms, 60_000)) <> " min"
+
+  def vanish_notice(_ask, _now_ms, name),
+    do: "The " <> name <> " is no longer waiting for your answers"
 
   def other_text(state, item),
     do:
