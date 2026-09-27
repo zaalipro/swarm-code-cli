@@ -240,7 +240,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.C74StorageTest do
       })
 
     [r] = W.rows(running)
-    assert text(r.value) == "◷ deleting 2 of 5 · 402 MB freed · deleting sessions"
+    assert text(r.value) == "◐ deleting 2 of 5 · 402 MB freed · deleting sessions"
     assert text(r.tag) == "can't be stopped"
     assert [] = W.act(running, r, :escape)
 

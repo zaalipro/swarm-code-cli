@@ -110,7 +110,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.C74SearchWebTest do
 
     assert text(
              row(SearchWeb.record_rows(running, "search_provider", "tavily"), "act:search.test").value
-           ) == "◷ searching · uses 1 search from your Tavily plan · 1 s"
+           ) == "◐ searching · uses 1 search from your Tavily plan · 1 s"
 
     {state, id, task, _} = T.run(I.seed(), "search.test", %{"kind" => "tavily"})
     done = record_ctx("tavily", state) |> T.put(id, task, [])

@@ -373,7 +373,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.C74ProvidersTest do
         })
 
       test_row = row(record_rows(running, @ids.deepseek), "act:provider.test")
-      assert text(test_row.value) == "◷ testing the connection · 2 s"
+      assert text(test_row.value) == "◐ testing the connection · 2 s"
       assert text(test_row.tag) == "c stop"
     end
 
