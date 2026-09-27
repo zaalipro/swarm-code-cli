@@ -522,6 +522,173 @@ defmodule SwarmCode.Daemon.Service.PersistedBackendTest do
     {:ok, %{"value" => %{"items" => []}}} = query(c.backend, c.scope, "pending")
   end
 
+  # pass75 interview (task 207): one ask of three questions is three wire rows
+  # of one node and revision, with the ask's clock; three indexed answers
+  # complete it in any order.
+  test "a three-question ask is one ask on the wire and completes after three answers", c do
+    three_question_ask(c, [0, 1, 2])
+  end
+
+  test "a three-question ask completes when its answers arrive in the order 2, 0, 1", c do
+    three_question_ask(c, [2, 0, 1])
+  end
+
+  defp three_question_ask(c, order) do
+    # Request ids are durable in the ledger the tests share: one set per test.
+    unique = System.unique_integer([:positive])
+
+    qs = [
+      %{
+        "question" => "Which format should the export produce?",
+        "header" => "Format",
+        "options" => [%{"label" => "CSV"}, %{"label" => "JSON"}]
+      },
+      %{
+        "question" => "Which fields should each row carry?",
+        "header" => "Fields",
+        "multi_select" => true,
+        "options" => [%{"label" => "Status"}, %{"label" => "Assignee"}]
+      },
+      %{
+        "question" => "How should people get the export?",
+        "header" => "Delivery",
+        "options" => [%{"label" => "Download"}, %{"label" => "Email"}]
+      }
+    ]
+
+    server =
+      HTTP.start(fn socket, _request, turn ->
+        delta =
+          if turn == 1 do
+            %{
+              "tool_calls" => [
+                %{
+                  "index" => 0,
+                  "id" => "interview-3",
+                  "type" => "function",
+                  "function" => %{
+                    "name" => "ask_user",
+                    "arguments" => Jason.encode!(%{"questions" => qs})
+                  }
+                }
+              ]
+            }
+          else
+            %{"content" => "Export planned."}
+          end
+
+        HTTP.stream(socket, [
+          HTTP.sse(%{
+            "choices" => [
+              %{
+                "index" => 0,
+                "delta" => delta,
+                "finish_reason" => if(turn == 1, do: "tool_calls", else: "stop")
+              }
+            ]
+          })
+        ])
+      end)
+
+    on_exit(fn -> HTTP.stop(server) end)
+
+    {:ok, provider} =
+      Providers.create(%{
+        name: "interview-3-#{c.conversation.id}",
+        kind: "openai_compatible",
+        base_url: server.url <> "/v1",
+        models: ["fixture"],
+        default_model: "fixture"
+      })
+
+    {:ok, _} =
+      Conversations.update(c.conversation, %{chat_provider_id: provider.id, chat_model: "fixture"})
+
+    watch = %ServiceRequest{
+      operation: :watch,
+      timeout_ms: 5000,
+      params: %{
+        "watch_ref" => "interview",
+        "slot" => "workspace",
+        "page_size" => 50,
+        "byte_limit" => 262_144
+      }
+    }
+
+    assert {:watch, 0, _, "workspace_snapshot", _} =
+             GenServer.call(c.backend, {:service_watch, self(), "watch", c.scope, watch})
+
+    send(c.backend, {:service_ready, self(), "interview"})
+
+    assert {:ok, %{"value" => %{"status" => "accepted", "identifiers" => [run]}}} =
+             request(c.backend, "interview-3-#{unique}", c.scope, send_request("Plan the export"))
+
+    assert eventually(fn ->
+             length(SwarmCode.Domain.Engine.Questions.list(c.conversation.id)) == 1
+           end)
+
+    upserts =
+      c.backend
+      |> drain("interview")
+      |> Enum.filter(&(&1["kind"] == "interaction_upsert"))
+      |> Enum.map(& &1["body"])
+      |> Enum.reverse()
+      |> Enum.uniq_by(& &1["id"])
+      |> Enum.sort_by(& &1["question"]["index"])
+
+    assert [_, _, _] = upserts
+    assert upserts |> Enum.map(& &1["node_id"]) |> Enum.uniq() |> length() == 1
+    assert upserts |> Enum.map(& &1["expected_revision"]) |> Enum.uniq() |> length() == 1
+    assert Enum.map(upserts, & &1["question"]["index"]) == [0, 1, 2]
+    assert Enum.map(upserts, & &1["question"]["header"]) == ["Format", "Fields", "Delivery"]
+
+    for row <- upserts do
+      assert row["question"]["total"] == 3
+      assert abs(row["deadline"] - (row["question"]["requested_at"] + 1_800_000)) <= 1_000
+      assert {:ok, _} = SwarmCodeCLI.UI.DataSource.DTO.PendingInteraction.decode(row)
+    end
+
+    for index <- order do
+      row = Enum.at(upserts, index)
+
+      assert {:ok, %{"value" => %{"status" => "accepted"}}} =
+               request(
+                 c.backend,
+                 "interview-3-answer-#{index}-#{unique}",
+                 c.scope,
+                 %ServiceRequest{
+                   operation: :question_answer,
+                   timeout_ms: 5000,
+                   params: %{
+                     "run_id" => run,
+                     "node_id" => row["node_id"],
+                     "interaction_id" => row["id"],
+                     "expected_revision" => row["expected_revision"],
+                     "answers" => [hd(row["question"]["options"])["id"]],
+                     "custom_text" => ""
+                   }
+                 }
+               )
+    end
+
+    assert eventually(fn -> Conversations.get_run(run).status == "done" end)
+    assert_receive {:http_request, 2, followup}, 5000
+    assert followup.body =~ "CSV"
+    assert followup.body =~ "Status"
+    assert followup.body =~ "Download"
+
+    removed =
+      c.backend
+      |> drain("interview")
+      |> Enum.filter(&(&1["kind"] == "interaction_remove"))
+      |> Enum.map(& &1["entity_id"])
+      |> Enum.uniq()
+      |> Enum.sort()
+
+    assert removed == upserts |> Enum.map(& &1["id"]) |> Enum.sort()
+    {:ok, %{"value" => %{"items" => []}}} = query(c.backend, c.scope, "pending")
+  end
+
   # pass72 F (live): a rewatch after live broadcasts (a resync after overflow)
   # answered `watch_ready` with the live revision but a body projected with the
   # page's own, which the client rejects ("watch_ready rejected: revision") and
