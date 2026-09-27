@@ -18,6 +18,7 @@ defmodule SwarmCode.Domain.Engine.RunServerPendingInteractionsTest do
     :command_family,
     :classification,
     :allowed_decisions,
+    :deadline_at,
     :requested_at,
     :questions
   ]
@@ -229,6 +230,62 @@ defmodule SwarmCode.Domain.Engine.RunServerPendingInteractionsTest do
       assert {:reply, [row], ^state} = RunServer.handle_call(:pending_interactions, nil, state)
       assert byte_size(row.args) <= 8192
       refute row.args =~ "SECRET"
+    end
+  end
+
+  # pass75: the ask's clock and its questions' headers reach the row.
+  test "question rows carry deadline_at 30 minutes after requested_at" do
+    id = Ecto.UUID.generate()
+
+    entry = %{
+      questions: [%{"question" => "Which?"}],
+      timer: make_ref(),
+      requested_at: DateTime.utc_now()
+    }
+
+    state = state(%{}, %{id => entry}, %{})
+
+    assert {:reply, [row], ^state} = RunServer.handle_call(:pending_interactions, nil, state)
+    assert DateTime.diff(row.deadline_at, entry.requested_at, :millisecond) == 1_800_000
+    assert Map.keys(row) |> Enum.sort() == Enum.sort(@row_keys)
+  end
+
+  test "an ask without a timer has no deadline" do
+    id = Ecto.UUID.generate()
+
+    entry = %{
+      questions: [%{"question" => "Which?"}],
+      timer: nil,
+      requested_at: DateTime.utc_now()
+    }
+
+    state = state(%{}, %{id => entry}, %{})
+
+    assert {:reply, [row], ^state} = RunServer.handle_call(:pending_interactions, nil, state)
+    assert row.deadline_at == nil
+  end
+
+  test "each question carries its header and the asked total" do
+    id = Ecto.UUID.generate()
+
+    entry = %{
+      questions: [
+        %{"question" => "Which format?", "header" => "Format"},
+        %{"question" => "Which fields?", "header" => "Fields"},
+        %{"question" => "How delivered?"}
+      ],
+      answers: %{1 => ["x"]},
+      timer: make_ref(),
+      requested_at: DateTime.utc_now()
+    }
+
+    state = state(%{}, %{id => entry}, %{})
+    assert {:reply, [row], ^state} = RunServer.handle_call(:pending_interactions, nil, state)
+    assert [%{index: 0, header: "Format"}, %{index: 2, header: nil}] = row.questions
+
+    for q <- row.questions do
+      assert Map.has_key?(q, :header)
+      assert q.total == length(entry.questions)
     end
   end
 

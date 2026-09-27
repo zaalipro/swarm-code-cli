@@ -77,7 +77,10 @@ has exactly these keys:
 | `classification` | `:safe \| :normal \| :dangerous` (`CommandSafety`) | nil |
 | `allowed_decisions` | `[:approve, :approve_run, (:always_prefix if family), :deny, :deny_stop]` | `[]` |
 | `requested_at` | `DateTime` UTC when the run started waiting | same |
-| `questions` | `[]` | unanswered `%{index, question, options: [%{label, description}], multiple}` |
+| `deadline_at` | `nil` | `DateTime` 30 min after `requested_at` when the ask has a timer, else `nil` |
+| `questions` | `[]` | unanswered `%{index, question, options: [%{label, description}], multiple, header, total}` |
+
+`deadline_at` — `DateTime` when the ask has a timer (30 min after `requested_at`), `nil` for approvals and infinite asks (pass 75).
 
 Decision mapping to `RunServer.resolve_approval(run_id, node_id, decision)`:
 `approve` → `:approve`; `approve_run` → `:always` (every call of this tool for the rest of the

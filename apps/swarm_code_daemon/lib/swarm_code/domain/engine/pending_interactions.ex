@@ -35,11 +35,14 @@ defmodule SwarmCode.Domain.Engine.PendingInteractions do
       family; → `{:always_prefix, family}`), `:deny`, `:deny_stop`. `[]` for a
       question.
     * `requested_at` — `DateTime` (UTC) when the run started waiting.
+    * `deadline_at` — `DateTime` when the ask has a timer (30 min after
+      `requested_at`), nil for approvals and infinite asks (pass 75).
     * `questions` — for a question row, the unanswered questions
-      (`%{index, question, options: [%{label, description}], multiple}`),
-      `[]` for an approval.
+      (`%{index, question, options: [%{label, description}], multiple,
+      header, total}`), `[]` for an approval.
   """
 
+  alias SwarmCode.Domain.Engine.Questions
   alias SwarmCode.Domain.Tools.CommandSafety
 
   @max_rows 64
@@ -91,6 +94,7 @@ defmodule SwarmCode.Domain.Engine.PendingInteractions do
           if(family && classification != :dangerous, do: [:always_prefix], else: []) ++
           [:deny, :deny_stop],
       requested_at: Map.get(approval, :requested_at),
+      deadline_at: nil,
       questions: []
     }
   end
@@ -113,9 +117,17 @@ defmodule SwarmCode.Domain.Engine.PendingInteractions do
       classification: nil,
       allowed_decisions: [],
       requested_at: Map.get(entry, :requested_at),
+      deadline_at: deadline_at(entry),
       questions: unanswered_question_data(entry)
     }
   end
+
+  # pass75: when the ask's 30-minute timer fires; nil for an ask without one
+  # (the consensus gate waits for ever).
+  defp deadline_at(%{timer: timer, requested_at: %DateTime{} = at}) when is_reference(timer),
+    do: DateTime.add(at, Questions.deadline_ms(:question), :millisecond)
+
+  defp deadline_at(_), do: nil
 
   @doc "The question entry of `node_id` when question `index` is still unanswered."
   @spec pending_question_entry(map(), String.t(), non_neg_integer()) ::
@@ -221,28 +233,42 @@ defmodule SwarmCode.Domain.Engine.PendingInteractions do
   defp original_option_label(_), do: nil
 
   defp unanswered_question_data(entry) do
+    # pass75: the asked count, which stays the same as answers arrive.
+    total =
+      case Map.get(entry, :questions) do
+        questions when is_list(questions) -> length(questions)
+        _ -> 0
+      end
+
     entry
     |> Map.get(:questions)
     |> bound_list(4)
     |> Enum.with_index()
     |> Enum.reject(fn {_q, index} -> Map.has_key?(Map.get(entry, :answers, %{}), index) end)
-    |> Enum.map(fn {q, index} -> bound_question_data(q, index) end)
+    |> Enum.map(fn {q, index} -> bound_question_data(q, index, total) end)
   end
 
   # This projection crosses a process boundary. Keep it independent of the
   # runtime maps and reject malformed input instead of reflecting it verbatim.
-  defp bound_question_data(question, index) when is_map(question) do
+  defp bound_question_data(question, index, total) when is_map(question) do
     %{
       index: index,
       question: bound_text(question["question"] || question[:question], 4_000),
       options:
         bound_list(question["options"] || question[:options], 12) |> Enum.map(&bound_option/1),
-      multiple: question["multi_select"] == true or question[:multi_select] == true
+      multiple: question["multi_select"] == true or question[:multi_select] == true,
+      header: bound_header(question),
+      total: total
     }
   end
 
-  defp bound_question_data(_, index),
-    do: %{index: index, question: "", options: [], multiple: false}
+  defp bound_question_data(_, index, total),
+    do: %{index: index, question: "", options: [], multiple: false, header: nil, total: total}
+
+  # pass75: the question's short chip (`ask_user` stores string keys).
+  defp bound_header(%{"header" => h}) when is_binary(h) and h != "", do: bound_text(h, 64)
+  defp bound_header(%{header: h}) when is_binary(h) and h != "", do: bound_text(h, 64)
+  defp bound_header(_), do: nil
 
   defp bound_option(option) when is_map(option) do
     %{
