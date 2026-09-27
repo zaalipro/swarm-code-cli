@@ -141,7 +141,7 @@ defmodule SwarmCodeCLI.UI.Settings.C74FTableRowsTest do
     {state, _} = Responses.delta(state, done)
     {_, {hour, minute, _}} = :calendar.system_time_to_local_time(state.now, :millisecond)
     clock = :io_lib.format("~2..0B:~2..0B", [hour, minute]) |> to_string()
-    assert Enum.any?(lines(state), &(&1 =~ "✓ listed 2 models in 5 ms · #{clock}"))
+    assert Enum.any?(lines(state), &(&1 =~ "[✓ listed 2 models in 5 ms] · #{clock}"))
   end
 
   # cli74 F18 (found in the sandbox): the provider's delete page was
