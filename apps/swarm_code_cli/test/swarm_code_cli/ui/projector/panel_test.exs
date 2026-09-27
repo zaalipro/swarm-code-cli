@@ -153,7 +153,8 @@ defmodule SwarmCodeCLI.UI.Projector.PanelTest do
 
     assert text =~ "Engine lifecycle working"
     assert text =~ "Data persistence thinking"
-    assert text =~ "4 × *-review"
+    # pass 75 V2: the header no longer says the shared suffix; no name repeats it.
+    refute text =~ ~r/(lifecycle|persistence|tools|desktop)-review/
     refute text =~ "Engine lifec…"
   end
 
@@ -180,7 +181,8 @@ defmodule SwarmCodeCLI.UI.Projector.PanelTest do
     }
 
     full = :panel_swarm_2 |> renamed(names, []) |> panel_text() |> Enum.join("\n")
-    assert full =~ "4 × reviewer-*"
+    # pass 75 V2: the header no longer says the shared part; no name repeats it.
+    refute full =~ ~r/reviewer-(controllers|plugs|liveviews|accounts)/i
     assert full =~ "├ ● Controllers"
     assert full =~ ~r/╰ ! Accounts +needs you/
     refute full =~ "reviewer…"
@@ -220,8 +222,10 @@ defmodule SwarmCodeCLI.UI.Projector.PanelTest do
     rows = :panel_swarm_2 |> state(160, 45) |> panel_text() |> Enum.map(&String.trim_trailing/1)
     text = Enum.join(rows, "\n")
 
-    assert Enum.at(rows, 0) =~ ~r/^ ▌⋔ architecture review · in chat +02:14$/
-    assert Enum.at(rows, 1) =~ "read-only · 4 × *-review · 65k · $0.15"
+    # pass 75 V2 (7.1): the in-chat run's title row from column 0, then its
+    # kind, place, tokens and price (`+`: its agents carry no price), clock.
+    assert Enum.at(rows, 0) == "▌⋔ architecture review"
+    assert Enum.at(rows, 1) =~ ~r/^   swarm · in chat · 65k · \$0\.15\+ +02:14$/
     assert text =~ "! NEEDS YOU · Web ui desktop       1 waiting"
     assert text =~ "   mix test test/swarm_code_web/live"
     assert text =~ ~r/run a command · read-only asks +\^N answer/
@@ -317,7 +321,8 @@ defmodule SwarmCodeCLI.UI.Projector.PanelTest do
     text = Enum.join(rows, "\n")
 
     assert text =~ "! 1 NEEDS YOU"
-    assert text =~ ~r/▌⋔ architecture review · in chat 1\/4 · 02:14/
+    # pass 75 (7.9): a compact run is its header's row 1.
+    assert text =~ ~r/^▌⋔ architecture review +$/m
     # pass73 T10: the full panel's name, never a shorter word for the agent.
     assert text =~ ~r/● Engine lifecycle +▂▅▅▅▅▅▂▂ tracing/
     assert text =~ ~r/! Web ui desktop +▅▅▅▅▒▒▒▒ approve: mix/
@@ -363,7 +368,7 @@ defmodule SwarmCodeCLI.UI.Projector.PanelTest do
       |> panel_text()
       |> Enum.join("\n")
 
-    assert text =~ " 1  ▌⋔ architecture review · in chat"
+    assert text =~ " 1  ▌⋔ architecture review"
     assert text =~ " d  ◌ Lead"
     assert text =~ " s  ! Web ui desktop"
     assert text =~ " s  mix test test/swarm_code_web/live"

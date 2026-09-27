@@ -263,8 +263,8 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
 
   @doc false
   def row(ctx, left, right \\ [], opts \\ []) do
-    {Draw.row(left, right, ctx.width, ctx.state, Keyword.take(opts, [:background])), nil,
-     Keyword.drop(opts, [:background])}
+    {Draw.row(left, right, ctx.width, ctx.state, Keyword.take(opts, [:background, :margin])), nil,
+     Keyword.drop(opts, [:background, :margin])}
   end
 
   @doc false
@@ -472,89 +472,130 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
 
   # -------------------------------------------------------- run headers
 
+  # pass 75 V2 (7.1): the in-chat run's two rows. Row 1 has no margin: the
+  # accent `▌` at column 0, the mark at 1, the bold title at 3 (end-cut, so
+  # the pane's last cell stays its margin). Row 2 from column 3: kind, place,
+  # tokens and the price when there is one, the clock on the right.
   defp run_header_full(ctx, run) do
     state = ctx.state
-    in_chat? = run.id == ctx.chat_id
-    badge = run_badge(ctx, run)
     clock = run |> Model.elapsed(state) |> Model.clock()
+    views = Map.get(ctx.views, run.id, [])
 
-    bar =
-      cond do
-        in_chat? -> [{g(ctx, :in_chat), :accent}]
-        true -> [{" ", :plain}]
+    words =
+      [
+        "#{kind_word(run)}",
+        if(run.id == ctx.chat_id, do: "in chat"),
+        Model.tokens(tokens(run, views))
+      ]
+      |> Enum.reject(&is_nil/1)
+      |> Enum.join(" · ")
+
+    words =
+      case Model.money(run.cost_usd) do
+        nil -> words
+        money -> words <> " · " <> money <> plus([{run, views}])
       end
 
-    lead = if badge, do: badge_segments(ctx, badge), else: []
-    title_role = if ctx.hint?, do: :text_faint, else: :text_primary
-    title_mods = if ctx.hint?, do: [], else: [:bold]
-
-    first =
-      row(
-        ctx,
-        lead ++
-          bar ++
-          [
-            {Draw.mark(Model.kind(run), state), Model.kind_role(run)},
-            {" ", :plain},
-            {title(ctx, run, lead, in_chat?, clock && not ctx.hint? && clock), title_role,
-             title_mods},
-            if(in_chat?, do: {" · in chat", if(ctx.hint?, do: :text_faint, else: :text_muted)})
-          ],
-        if(clock && not ctx.hint?, do: [{clock, :text_muted}], else: [])
-      )
-      |> target({:run, run.id})
-
-    meta = Shapes.meta(ctx, run)
-    indent = if badge, do: "      ", else: "  "
-    second = if meta != "", do: [row(ctx, [{indent <> meta, :text_faint}], [])], else: []
-    [first | second]
+    indent = if run_badge(ctx, run), do: "      ", else: "  "
+    right = if clock && not ctx.hint?, do: [{clock, :text_muted}], else: []
+    [header_row(ctx, run), row(ctx, [{indent <> words, :text_faint}], right)]
   end
 
-  defp run_header_compact(ctx, run) do
+  # Row 1 of a header (full and compact): `▌` (the in-chat run) or a blank,
+  # the mark and the bold title, target the run; the hint badge first.
+  defp header_row(ctx, run) do
     state = ctx.state
     in_chat? = run.id == ctx.chat_id
     badge = run_badge(ctx, run)
-    clock = run |> Model.elapsed(state) |> Model.clock()
-    ratio = Shapes.ratio(ctx, run)
-
-    bar = if in_chat?, do: [{g(ctx, :in_chat), :accent}], else: [{" ", :plain}]
     lead = if badge, do: badge_segments(ctx, badge), else: []
+    bar = if in_chat?, do: [{g(ctx, :in_chat), :accent}], else: [{" ", :plain}]
     title_role = if ctx.hint?, do: :text_faint, else: :text_primary
-
-    right =
-      if ctx.hint?,
-        do: [],
-        else: [{[ratio, clock] |> Enum.reject(&is_nil/1) |> Enum.join(" · "), :text_muted}]
+    title_mods = if ctx.hint?, do: [], else: [:bold]
+    room = ctx.width - cells(lead, state) - 3 - 1
 
     row(
       ctx,
       lead ++
         bar ++
         [
+          {Draw.mark(Model.kind(run), state), Model.kind_role(run), [:bold]},
+          {" ", :plain},
+          {Draw.elide(Model.title(run), max(4, room), state), title_role, title_mods}
+        ],
+      [],
+      margin: 0
+    )
+    |> target({:run, run.id})
+  end
+
+  defp run_header_compact(ctx, run), do: header_row(ctx, run)
+
+  @doc false
+  # pass 75 V2 (7.1): a shown run that is not the in-chat run, on one row:
+  # its mark at 1, its title muted at 3, a swarm's `R of T in`, the clock.
+  def launched_row(ctx, run) do
+    state = ctx.state
+    views = Map.get(ctx.views, run.id, [])
+    clock = run |> Model.elapsed(state) |> Model.clock()
+    badge = run_badge(ctx, run)
+    lead = if badge, do: badge_segments(ctx, badge), else: [{" ", :plain}]
+
+    count =
+      case Model.kind(run) do
+        :swarm ->
+          {reported, total} = Shapes.reported(run, views)
+          [{"  ", :plain}, {"#{reported} of #{total} in", :text_faint}]
+
+        _ ->
+          []
+      end
+
+    right = if clock && not ctx.hint?, do: [{clock, :text_muted}], else: []
+    right_cells = if right == [], do: 0, else: Draw.cells(clock, state) + 1
+    room = ctx.width - 2 - cells(lead, state) - 2 - cells(count, state) - right_cells
+
+    row(
+      ctx,
+      lead ++
+        [
           {Draw.mark(Model.kind(run), state), Model.kind_role(run)},
           {" ", :plain},
-          {title(ctx, run, lead, in_chat?, right_text(right)), title_role,
-           if(in_chat?, do: [:bold], else: [])},
-          if(in_chat?, do: {" · in chat", :text_muted})
-        ],
+          {Draw.elide(Model.title(run), max(4, room), state),
+           if(ctx.hint?, do: :text_faint, else: :text_muted)}
+        ] ++ count,
       right
     )
     |> target({:run, run.id})
   end
 
-  # The title is what gives way: "in chat" (R4) and the right-hand facts keep
-  # their room.
-  defp title(ctx, run, lead, in_chat?, right) do
-    state = ctx.state
-    lead_cells = cells(lead, state)
-    in_chat = if in_chat?, do: Draw.cells(" · in chat", state), else: 0
-    right_cells = if is_binary(right) and right != "", do: Draw.cells(right, state) + 1, else: 0
-    room = ctx.width - 2 - lead_cells - 3 - in_chat - right_cells
-    Draw.elide(Model.title(run), max(4, room), state)
+  # The run kind as a word: `consensus`, `chat`, `swarm`, `workflow`, …
+  defp kind_word(run) do
+    case Model.kind(run) do
+      :consensus_judge -> "consensus"
+      :assistant -> "chat"
+      kind -> Atom.to_string(kind)
+    end
   end
 
-  defp right_text([{text, _role}]), do: text
-  defp right_text(_), do: nil
+  # A run's tokens: its own count, else its agents'.
+  defp tokens(run, views) do
+    case Model.token_count(run) do
+      0 -> views |> Enum.map(&(&1.tokens || 0)) |> Enum.sum()
+      n -> n
+    end
+  end
+
+  # 9.3: a price that leaves out an agent with tokens but no price of its
+  # own reads `$0.01+`.
+  defp plus(pairs) do
+    unpriced? =
+      Enum.any?(pairs, fn {run, views} ->
+        is_number(run.cost_usd) and
+          Enum.any?(views, &(is_integer(&1.tokens) and &1.tokens > 0 and is_nil(&1.cost)))
+      end)
+
+    if unpriced?, do: "+", else: ""
+  end
 
   # -------------------------------------------------------- full blocks
 
