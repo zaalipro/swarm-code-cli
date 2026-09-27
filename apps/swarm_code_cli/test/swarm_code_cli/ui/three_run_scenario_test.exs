@@ -154,8 +154,12 @@ defmodule SwarmCodeCLI.UI.ThreeRunScenarioTest do
     a2 = Script.id(:a2)
     node_a2 = Script.id(:node_a2)
 
+    # pass 75: the question note (one layer per ask, keyed by the asking op's
+    # node) answers through its Enter label, which confirms the ask.
+    assert [{:question, ^node_a2} | _] = state.layers
+
     assert Enum.any?(actions, fn {_, target} ->
-             match?({:intent, {:answer_question, ^a2, ^node_a2, ^q1, 7, _}}, target)
+             match?({:local, {:interview, {:confirm, ^node_a2}}}, target)
            end)
 
     key(runtime, :enter)
@@ -168,7 +172,9 @@ defmodule SwarmCodeCLI.UI.ThreeRunScenarioTest do
     canonical = Source.snapshot(source)
     assert map_size(canonical.commands) == 1
     [{_, command}] = Map.to_list(canonical.commands)
-    expected_kind = {:answer_question, a2, node_a2, q1, 7, [option2]}
+
+    expected_kind =
+      {:answer_question, a2, node_a2, q1, 7, %{option_ids: [option2], custom_text: ""}}
 
     expected_fingerprint =
       :crypto.hash(
