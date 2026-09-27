@@ -1,18 +1,19 @@
 defmodule SwarmCodeCLI.UI.Projector.Settings do
   @moduledoc """
-  The settings layer on screen (spec §3.7.13, §4.2): it covers the shell the
-  way the agent overlay does.
+  The settings layer on screen (spec §3.7.13, §4.2; pass 75, E): it covers
+  the shell the way the agent overlay does. Every number comes from
+  `Settings.Grid`; the lines come from four helpers on that grid.
 
-      header   Settings › Section › record                     Esc back to chat
-      search   / search … (or the query being typed)
-      rule
-      body     rail │ page │ detail (≥ 160 columns; else a drawer above the status)
-      rule
-      status   the last toast, or what the focused row's layer is
-      footer   the focused row's keys, then the layer's
+      row 0     the crumb                          (`Chrome.crumb/3`)
+      row 1     the search well and the counts     (`Chrome.well/3`)
+      row 2     the section strip under 120 columns (`Chrome.strip/3`)
+      body      rail ‖ page ‖ note, separated by gutters, never by rules
+                (`rail_lines/3`, `Page.build/3`, the note column)
+      rows - 3  the message row                    (`Chrome.message/4`)
+      rows - 1  the status line                    (`Chrome.status/4`)
 
-  Under 120 columns the rail gives way to the page (the header crumb says
-  where you are); under 80 × 20 one sentence says the terminal is too small.
+  Under 120 columns the rail gives way to the strip, under 90 to the crumb's
+  `Esc sections`; under 80 × 20 two sentences say the terminal is too small.
   Only the page rows around the cursor are built into lines.
   """
 
@@ -20,27 +21,20 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
   alias SwarmCodeCLI.UI.Projector.Settings.Page, as: SettingsPage
   alias SwarmCodeCLI.UI.Projector.Settings.Popover, as: SettingsPopover
   alias SwarmCodeCLI.UI.Projector.Settings.Text
-  alias SwarmCodeCLI.UI.Reducer.Settings.Paste, as: PasteTarget
   alias SwarmCodeCLI.UI.Scene.{Rect, Region}
   alias SwarmCodeCLI.UI.SafeText
   alias SwarmCodeCLI.UI.Settings.{Detail, Glyphs, Grid, Layer, Nav, Row, Sections}
-
-  @rail 26
-  @detail 48
-  @min_columns 80
-  @min_rows 20
-  @narrow 90
-  @label 29
 
   @doc "The layer's regions and cursor, or nil when it is closed."
   @spec project(map(), term()) :: nil | {[Region.t()], nil}
   def project(%{settings: %Layer{}} = state, _layout) do
     %{columns: width, rows: height} = state.size
+    grid = Grid.for(width, height)
 
     lines =
-      if width < @min_columns or height < @min_rows,
+      if grid.class == :too_small,
         do: too_small(state, width, height),
-        else: screen(state, width, height)
+        else: screen(state, grid, state.capabilities)
 
     blocks = Enum.map(lines, &Text.row(state, &1, width))
 
@@ -62,7 +56,7 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
   # than the terminal that needs it); Esc still closes the layer.
   defp too_small(state, width, height) do
     lines = [
-      "Settings needs #{@min_columns} × #{@min_rows}; this terminal is #{width} × #{height}.",
+      "Settings needs 80 × 20; this terminal is #{width} × #{height}.",
       "Make it larger, or use swarmcode config in a shell."
     ]
 
@@ -78,99 +72,93 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
       centred ++ List.duplicate([], max(height - top - length(lines), 0))
   end
 
-  defp screen(state, width, height) do
-    layer = state.settings
-    grid = Grid.for(width, height)
-    glyphs = &Glyphs.for_caps(&1, state.capabilities)
-    rows = Nav.rows(state)
-    current = Nav.current(state, rows)
-    rail? = width >= 120
-    detail? = width >= 160
-    # T§6.1: narrow (90–119) puts a one-row section strip under the header;
-    # small (80–89) drills down, the sections being a page of their own (F16).
-    strip? = not rail? and width >= @narrow
-    sections_page? = sections_page?(state)
-    drawer = if detail?, do: 0, else: if(width < 120 or height < 30, do: 3, else: 4)
+  # crumb, well, [strip], blank, body, blank, message, blank, status: exactly
+  # `grid.rows` lines (D1: no top-margin row, the crumb is the first line).
+  defp screen(state, %Grid{} = grid, caps) do
+    glyphs = &Glyphs.for_caps(&1, caps)
+    current = Nav.current(state, Nav.rows(state))
 
-    body_rows =
-      max(height - 6 - if(drawer > 0, do: drawer + 1, else: 0) - if(strip?, do: 1, else: 0), 1)
+    head =
+      [Chrome.crumb(state, grid, glyphs), Chrome.well(state, grid, glyphs)] ++
+        if(grid.strip_row, do: [Chrome.strip(state, grid, glyphs)], else: [])
 
-    page_width = width - if(rail?, do: @rail + 1, else: 0) - if(detail?, do: @detail + 1, else: 0)
-
-    page =
-      if sections_page?,
-        do: sections_page_lines(state, page_width, body_rows, glyphs),
-        else: page_lines(state, rows, current, page_width, body_rows)
-
-    rail = if rail?, do: state |> rail_lines(@rail, glyphs) |> Enum.take(body_rows), else: nil
-    detail = if detail?, do: detail_lines(state, current, @detail, body_rows), else: nil
-
-    body =
-      for index <- 0..(body_rows - 1) do
-        [
-          if(rail,
-            do: Text.fit(state, Enum.at(rail, index, []), @rail) ++ [rule_v(state)],
-            else: []
-          ),
-          Text.fit(state, Enum.at(page, index, []), page_width),
-          if(detail,
-            do: [rule_v(state) | Text.fit(state, Enum.at(detail, index, []), @detail)],
-            else: []
-          )
-        ]
-        |> Enum.concat()
-      end
-
-    drawer_lines =
-      if drawer > 0 do
-        lines =
-          if sections_page?,
-            do: [
-              [{"Enter opens ", :text_faint}, {Sections.title(layer.rail_cursor), :text_primary}]
-            ],
-            else: detail_lines(state, current, width - 2, drawer)
-
-        [
-          rule(state, width)
-          | Enum.map(0..(drawer - 1), &[{" ", :text_primary} | Enum.at(lines, &1, [])])
-        ]
-      else
-        []
-      end
+    head = head ++ List.duplicate([], max(grid.body_top - length(head), 0))
+    {body, anchor} = body(state, grid, caps, current)
 
     lines =
-      [Chrome.crumb(state, grid, glyphs), Chrome.well(state, grid, glyphs)] ++
-        if(strip?, do: [Chrome.strip(state, grid, glyphs)], else: []) ++
-        [rule(state, width)] ++
+      head ++
         body ++
-        drawer_lines ++
         [
-          rule(state, width),
+          [],
           Chrome.message(state, grid, glyphs, current),
+          [],
           Chrome.status(state, grid, glyphs, current)
         ]
 
-    # The screen line of the focused page row (an editor's popover opens under it).
-    anchor =
-      case Enum.find_index(page, &cursor_line?/1) do
-        nil -> nil
-        index -> index + 3 + if(strip?, do: 1, else: 0)
-      end
+    lines = Enum.take(lines ++ List.duplicate([], max(grid.rows - length(lines), 0)), grid.rows)
 
     lines
-    |> editor_popover(state, anchor, if(rail?, do: @rail + 1, else: 0), width, height)
-    |> popover(state, width, height)
-    |> Enum.take(height)
+    |> editor_popover(state, anchor, grid)
+    |> popover(state, grid)
+  end
+
+  # The body lines (rail ‖ page ‖ note, `grid.body_rows` of them) and the
+  # screen line of the focused page row (an editor's popover opens under it).
+  defp body(state, %Grid{} = grid, caps, current) do
+    glyphs = &Glyphs.for_caps(&1, caps)
+
+    meta =
+      if sections_page?(state, grid),
+        do: %{
+          lines: sections_page_lines(state, grid.page.width, grid.body_rows, glyphs),
+          focus_first: nil
+        },
+        else: SettingsPage.build(state, grid, caps)
+
+    rail = if grid.rail, do: rail_lines(state, grid.rail.width, glyphs), else: nil
+    note = if grid.note, do: note_lines(state, current, grid), else: nil
+
+    lines =
+      for index <- 0..(grid.body_rows - 1) do
+        rail_part =
+          if rail,
+            do:
+              [spaces(grid.rail.left)] ++
+                Text.fit(state, Enum.at(rail, index, []), grid.rail.width) ++
+                [spaces(grid.page.left - grid.rail.left - grid.rail.width)],
+            else: [spaces(grid.page.left)]
+
+        page_part = Text.fit(state, Enum.at(meta.lines, index, []), grid.page.width)
+
+        note_part =
+          if note,
+            do:
+              [spaces(grid.note.spine - grid.page.left - grid.page.width)] ++
+                Text.fit(state, Enum.at(note, index, []), grid.note.width + 2),
+            else: []
+
+        Text.fit(state, rail_part ++ page_part ++ note_part, grid.columns)
+      end
+
+    anchor = if is_integer(meta.focus_first), do: grid.body_top + meta.focus_first
+
+    {lines, anchor}
+  end
+
+  defp spaces(count), do: {String.duplicate(" ", max(count, 0)), :text_primary}
+
+  # The note column's lines at 160 columns and more (task 319 hangs it from
+  # the focused group; until then the detail of the focused row from the top).
+  defp note_lines(state, current, %Grid{note: note, body_rows: rows}) do
+    state
+    |> detail_lines(current, note.width + 2, rows)
   end
 
   # ------------------------------------------------------ small, narrow
 
-  defp small?(%{size: %{columns: columns}}), do: columns >= @min_columns and columns < @narrow
-  defp small?(_state), do: false
-
   # F16: at 80–89 columns the rail region is the sections page.
-  defp sections_page?(%{settings: %Layer{region: :rail}} = state), do: small?(state)
-  defp sections_page?(_state), do: false
+  defp sections_page?(%{settings: %Layer{region: :rail}}, %Grid{class: :small}), do: true
+  defp sections_page?(_state, _grid), do: false
 
   # The rail's lines at the page's width, scrolled so the cursor stays in view.
   defp sections_page_lines(state, width, rows, glyphs) do
@@ -179,9 +167,6 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
     top = cursor |> Kernel.-(div(rows, 2)) |> max(0) |> min(max(length(lines) - rows, 0))
     Enum.slice(lines, top, rows)
   end
-
-  defp cursor_line?(line),
-    do: Enum.any?(line, fn {_text, role} -> role == :focus or match?({:focus, _, _}, role) end)
 
   # ------------------------------------------------------------- rail
 
@@ -229,7 +214,7 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
               Text.spread(
                 state,
                 lead ++ [{Sections.title(id), role}],
-                mark ++ [{" ", :text_primary}],
+                if(mark == [], do: [], else: mark ++ [{" ", :text_primary}]),
                 width
               )
 
@@ -262,211 +247,6 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
       {text, {_, :on, _}} = segment when is_binary(text) -> segment
       {text, role} -> {text, {role, :on, background}}
     end)
-  end
-
-  # ------------------------------------------------------------- page
-
-  # Only the rows in the window are laid out: heights come from the rows'
-  # own continuation lines (and the open editor's), so a 400-row page costs
-  # the same to draw as a 20-row one.
-  defp page_lines(state, rows, current, width, height) do
-    layer = state.settings
-
-    head =
-      case page_status(layer) do
-        nil -> []
-        words -> [[{"  " <> words, :text_muted}], []]
-      end
-
-    if rows == [] do
-      head ++ [[{"  Nothing here yet.", :text_muted}]]
-    else
-      heights = Enum.map(rows, &row_height(state, &1))
-      index = Enum.find_index(rows, &(&1 == current)) || 0
-      before = heights |> Enum.take(index) |> Enum.sum()
-      cursor_start = length(head) + before
-      cursor_height = Enum.at(heights, index, 1)
-      room = max(height - length(head), 1)
-
-      start =
-        if cursor_start + cursor_height <= height,
-          do: 0,
-          else: max(min(before, before + cursor_height - room), 0)
-
-      {window, _} =
-        rows
-        |> Enum.zip(heights)
-        |> Enum.reduce_while({[], 0}, fn {row, row_height}, {acc, at} ->
-          cond do
-            at >= start + room -> {:halt, {acc, at}}
-            at + row_height <= start -> {:cont, {acc, at + row_height}}
-            true -> {:cont, {[row | acc], at + row_height}}
-          end
-        end)
-
-      skip = window_skip(rows, heights, start)
-      tables = SettingsPage.tables(state, rows, width - 3)
-
-      # QA F-18: a search result the cursor is on is marked as a page row is.
-      on_page? =
-        layer.region == :page or
-          (layer.region == :search and match?(%{cursor: id} when id != nil, layer.search))
-
-      lines =
-        window
-        |> Enum.reverse()
-        |> Enum.flat_map(&row_lines(state, &1, &1 == current and on_page?, width, tables))
-        |> Enum.drop(skip)
-
-      if start == 0, do: Enum.take(head ++ lines, height), else: Enum.take(lines, height)
-    end
-  end
-
-  # The lines of the first window row that sit above the window's top.
-  defp window_skip(rows, heights, start) do
-    {_, skip} =
-      rows
-      |> Enum.zip(heights)
-      |> Enum.reduce_while({0, 0}, fn {_row, row_height}, {at, _} ->
-        if at + row_height > start,
-          do: {:halt, {at, start - at}},
-          else: {:cont, {at + row_height, 0}}
-      end)
-
-    max(skip, 0)
-  end
-
-  defp row_height(state, %Row{} = row) do
-    extra =
-      case editing(state.settings, row) do
-        nil ->
-          if pasting?(state.settings, row),
-            do: length(PasteTarget.lines(state.settings.paste)),
-            else: 0
-
-        editing ->
-          length(Map.get(editing.module.display(editing.state, Nav.ctx(state)), :lines, []))
-      end
-
-    1 + length(row.lines) + extra
-  end
-
-  defp page_status(%Layer{available: false, message: message}) when is_binary(message),
-    do: message
-
-  defp page_status(_layer), do: nil
-
-  # A table's heading row (a label-less heading with columns) draws the
-  # column names in the table's layout.
-  defp row_lines(state, %Row{kind: :heading, columns: [_ | _]} = row, _focused?, width, tables)
-       when is_map_key(tables, row.id) do
-    [
-      Text.spread(
-        state,
-        [{"   ", :text_primary} | Map.fetch!(tables, row.id)],
-        row.tag ++ [{" ", :text_primary}],
-        width
-      )
-    ]
-  end
-
-  defp row_lines(state, %Row{kind: :heading} = row, _focused?, width, _tables) do
-    [
-      Text.spread(
-        state,
-        [{"  " <> row.label, :text_muted}],
-        row.tag ++ [{" ", :text_primary}],
-        width
-      )
-    ]
-  end
-
-  defp row_lines(state, %Row{} = row, focused?, width, tables) do
-    layer = state.settings
-    editing = editing(layer, row)
-    display = editing && editing.module.display(editing.state, Nav.ctx(state))
-
-    value =
-      cond do
-        display -> display.value
-        pasting?(layer, row) -> PasteTarget.words(layer.paste, Glyphs.tier(state.capabilities))
-        true -> row.value
-      end
-
-    extra =
-      cond do
-        display -> Map.get(display, :lines, [])
-        pasting?(layer, row) -> PasteTarget.lines(layer.paste)
-        true -> []
-      end
-
-    value_column = if width >= 84, do: 32, else: max(22, div(width * 2, 5))
-    label_width = min(@label, max(value_column - 3, 8))
-
-    lead = if focused?, do: {glyph(state, :focus_bar), :focus}, else: {" ", :text_primary}
-    mark = mark(state, row.marks)
-    label_role = if row.state == :readonly, do: :text_muted, else: :text_primary
-
-    label =
-      Text.fit(state, [{String.duplicate(" ", row.indent) <> row.label, label_role}], label_width)
-
-    tag = row.tag
-    tag_cells = Text.cells(state, tag)
-    value_room = max(width - value_column - tag_cells - 2, 8)
-    value_segments = Text.clip(state, value, value_room)
-
-    main =
-      cond do
-        # A table row being edited (Enter on a language) or pasted into
-        # (Space on an engine with no key) shows the editor's or the paste's
-        # words instead of its columns.
-        is_list(row.columns) and (display != nil or pasting?(layer, row)) ->
-          [lead, mark, {" ", :text_primary}] ++
-            label ++ [{" ", :text_primary}] ++ value_segments
-
-        is_list(row.columns) ->
-          [lead, mark, {" ", :text_primary}] ++
-            Map.get_lazy(tables, row.id, fn -> SettingsPage.columns(state, row, width - 3) end)
-
-        row.label == "" ->
-          [lead, mark, {" ", :text_primary}] ++ Text.clip(state, value, width - 4)
-
-        true ->
-          [lead, mark, {" ", :text_primary}] ++
-            label ++ [{" ", :text_primary}] ++ value_segments
-      end
-
-    main = Text.spread(state, main, tag ++ [{" ", :text_primary}], width)
-    main = if focused?, do: Text.select(main), else: main
-
-    indent = String.duplicate(" ", if(row.label == "", do: 4, else: value_column))
-
-    continuation =
-      Enum.map(row.lines ++ extra, fn line -> [{indent, :text_primary} | line] end)
-
-    [main | continuation]
-  end
-
-  defp pasting?(%Layer{paste: %{target: target}}, %Row{id: id}) when is_map(target),
-    do: (Map.get(target, :row_id) || Map.get(target, "row_id")) == id
-
-  defp pasting?(_layer, _row), do: false
-
-  defp editing(%Layer{editing: %{row_id: id} = editing}, %Row{id: id}), do: editing
-  defp editing(_layer, _row), do: nil
-
-  @mark_order [:invalid, :conflict, :attention, :pending, :running, :changed]
-
-  defp mark(state, marks) do
-    case Enum.find(@mark_order, &(&1 in marks)) do
-      :invalid -> {glyph(state, :fail), :error}
-      :conflict -> {"!", :warning}
-      :attention -> {"!", :warning}
-      :pending -> {glyph(state, :running), :text_faint}
-      :running -> {glyph(state, :running), :info}
-      :changed -> {glyph(state, :changed), :text_muted}
-      nil -> {" ", :text_primary}
-    end
   end
 
   # ----------------------------------------------------------- detail
@@ -544,9 +324,9 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
 
   # ---------------------------------------------------------- popover
 
-  defp popover(lines, %{settings: %Layer{popover: nil}}, _width, _height), do: lines
+  defp popover(lines, %{settings: %Layer{popover: nil}}, _grid), do: lines
 
-  defp popover(lines, state, width, height) do
+  defp popover(lines, state, %Grid{columns: width, rows: height}) do
     box = SettingsPopover.lines(state, state.settings.popover)
     widest = box |> Enum.map(&Text.cells(state, &1)) |> Enum.max(fn -> 20 end)
     box_width = min(max(widest + 4, 40), width - 4)
@@ -595,10 +375,10 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
          lines,
          %{settings: %Layer{mode: :editing, editing: %{module: module} = editing}} = state,
          anchor,
-         page_left,
-         width,
-         height
+         %Grid{columns: width, rows: height} = grid
        ) do
+    page_left = grid.page.left - 2
+
     case module.display(editing.state, Nav.ctx(state)) do
       %{popover: %{kind: :picker} = popover} ->
         float(lines, state, popover, anchor, page_left, width, height)
@@ -608,7 +388,7 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
     end
   end
 
-  defp editor_popover(lines, _state, _anchor, _page_left, _width, _height), do: lines
+  defp editor_popover(lines, _state, _anchor, _grid), do: lines
 
   defp float(lines, state, popover, anchor, page_left, width, height) do
     left = min(page_left + 2, max(width - 44, 0))
@@ -675,7 +455,5 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
 
   # ---------------------------------------------------------- helpers
 
-  defp glyph(state, id), do: Glyphs.get(id, Glyphs.tier(state.capabilities))
-  defp rule(state, width), do: [{String.duplicate(glyph(state, :rule_h), width), :border}]
-  defp rule_v(state), do: {glyph(state, :rule_v), :border}
+  defp glyph(state, id), do: Glyphs.for_caps(id, state.capabilities)
 end
