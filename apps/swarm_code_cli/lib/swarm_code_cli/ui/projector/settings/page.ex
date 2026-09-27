@@ -122,6 +122,32 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Page do
     end
   end
 
+  @doc """
+  A group's title lines: `title_line/3`, or, when the title and its tag do
+  not fit one line, the title alone and the tag right-aligned on the line
+  under it (on the group's spine), so neither is cut (R22.4).
+  """
+  @spec title_lines(map(), group(), Grid.t()) :: [segments()]
+  def title_lines(state, %{title: title} = group, %Grid{page: page} = grid) do
+    tag = Enum.map(group.tag, &faint_tag/1)
+    lead = 3
+
+    if tag == [] or
+         lead + Text.cells(state, title) + 2 + Text.cells(state, tag) + 1 <= page.width do
+      [title_line(state, group, grid)]
+    else
+      spine =
+        if Glyphs.twin?(state.capabilities),
+          do: {" ", :text_primary},
+          else: {Glyphs.for_caps(:spine, state.capabilities), :text_faint}
+
+      [
+        title_line(state, %{group | tag: []}, grid),
+        Text.spread(state, [spine], tag ++ [{" ", :text_primary}], page.width)
+      ]
+    end
+  end
+
   defp faint_tag({text, role}) when role in [:warning, :error], do: {text, role}
   defp faint_tag({text, _role}), do: {text, :text_faint}
 
@@ -164,6 +190,7 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Page do
       nil ->
         with [{text, role} | rest] <- value,
              true <- is_binary(text),
+             text = if(text in ["▸", "+"] and rest == [], do: text <> " ", else: text),
              {mark, prefix} <-
                Enum.find(prefixes, fn {_, prefix} -> String.starts_with?(text, prefix) end) do
           %{
@@ -442,33 +469,45 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Page do
 
     rows = max(length(label), length(values))
 
+    left_of = fn k ->
+      label_k = Enum.at(label, k, [])
+      value_k = Enum.at(values, k, [])
+
+      cond do
+        row.label == "" and k == 0 ->
+          head ++ value_k
+
+        row.label == "" ->
+          [{"  ", :text_primary}, {"  ", :text_primary} | value_k]
+
+        true ->
+          lead = if k == 0, do: head, else: [{"  ", :text_primary}]
+
+          gap =
+            cond do
+              k == 0 and chip? -> []
+              k == 0 and well? -> [{" ", {:text_primary, :on, :hover}}]
+              true -> [{" ", :text_primary}]
+            end
+
+          indent = if k == 0, do: [], else: [{"  ", :text_primary}]
+
+          lead ++ Text.fit(state, label_k, grid.label_width) ++ gap ++ indent ++ value_k
+      end
+    end
+
+    # R22.4: a tag that moved off the first line goes to the last line, or
+    # to a line of its own when the last line has no room for it.
+    rows =
+      if not tag_on_first? and tag != [] and
+           Text.cells(state, left_of.(rows - 1)) + 2 + tag_cells + 1 > width,
+         do: rows + 1,
+         else: rows
+
     main =
       for k <- 0..(rows - 1) do
-        label_k = Enum.at(label, k, [])
+        left = left_of.(k)
         value_k = Enum.at(values, k, [])
-
-        left =
-          cond do
-            row.label == "" and k == 0 ->
-              head ++ value_k
-
-            row.label == "" ->
-              [{"  ", :text_primary}, {"  ", :text_primary} | value_k]
-
-            true ->
-              lead = if k == 0, do: head, else: [{"  ", :text_primary}]
-
-              gap =
-                cond do
-                  k == 0 and chip? -> []
-                  k == 0 and well? -> [{" ", {:text_primary, :on, :hover}}]
-                  true -> [{" ", :text_primary}]
-                end
-
-              indent = if k == 0, do: [], else: [{"  ", :text_primary}]
-
-              lead ++ Text.fit(state, label_k, grid.label_width) ++ gap ++ indent ++ value_k
-          end
 
         right =
           cond do
@@ -903,9 +942,9 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Page do
               focus?: false,
               current?: false,
               focusable?: false,
-              height: 1,
+              height: length(title_lines(state, group, grid)),
               group: g,
-              build: fn -> [title_line(state, group, grid)] end
+              build: fn -> title_lines(state, group, grid) end
             }
           ],
           else: []
