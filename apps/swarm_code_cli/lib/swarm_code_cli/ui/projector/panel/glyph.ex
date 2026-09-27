@@ -48,7 +48,15 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Glyph do
     times: {"×", "x", "x"},
     dot_on: {"●", "⦁", "*"},
     dot_off: {"○", "⚬", "o"},
-    deeper: {"↳", "↳", ">"}
+    deeper: {"↳", "↳", ">"},
+    # pass 75 V2: the turn-limit stop, the found gauge, the needs-you row's
+    # glyph and the agents block's live agent (the card keeps working/thinking)
+    turn_limit: {"✗", "✗", "x"},
+    report_on: {"▄", "▰", "#"},
+    report_off: {"▁", "▱", "-"},
+    report_empty: {"▁", "▱", "x"},
+    bang: {"!", "!", "!"},
+    agent_live: {"◒", "◒", "o"}
   }
 
   @doc "Every token with its three forms, for the width tests and the gallery."

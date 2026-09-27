@@ -5,10 +5,10 @@ defmodule SwarmCodeCLI.UI.InspectorCardsTest do
   170x34 (xl) and 150x30 (wide), in colour, monochrome and ASCII.
   """
   use ExUnit.Case, async: true
-  alias SwarmCodeCLI.UI.{Capabilities, Fixtures, Paint, Projector, Scene, Size}
+  alias SwarmCodeCLI.UI.{Capabilities, Fixtures, Paint, Projector, SafeText, Scene, Size}
   alias SwarmCodeCLI.UI.Paint.{Options, Plan}
   alias SwarmCodeCLI.UI.DataSource.DTO
-  alias SwarmCodeCLI.UI.Projector.Inspector.Words
+  alias SwarmCodeCLI.UI.Projector.Inspector.{Verdict, Words}
 
   # The fixture clock: the run started five minutes before it.
   @now 1_788_436_800_000
@@ -67,6 +67,19 @@ defmodule SwarmCodeCLI.UI.InspectorCardsTest do
 
   defp targets(table, target), do: for({id, ^target} <- table, do: id)
 
+  # The verdict card's rows as text (pass 75: the V2 panel body, D2, no longer
+  # draws the verdict; `Inspector.Verdict` still builds it).
+  defp verdict_rows(state) do
+    run = state.read_model.runs |> Map.values() |> Enum.find(&Verdict.judged?/1)
+
+    state
+    |> Verdict.card(run, 120)
+    |> Enum.map(fn
+      %{spans: spans} -> Enum.map_join(spans, "", &SafeText.value(&1.text))
+      %{text: text} -> SafeText.value(text)
+    end)
+  end
+
   # The background of the first cell of `text` on the row that contains it.
   defp background(plan, rect, rows, text) do
     y = Enum.find_index(rows, &String.contains?(&1, text))
@@ -108,7 +121,9 @@ defmodule SwarmCodeCLI.UI.InspectorCardsTest do
     test "pass72: the agents tab is the side panel, with no strip; older spellings land on it" do
       for tab <- [nil, :agents, :thread, :overview, :nonsense] do
         rows = rows(:swarm, 170, 34, tab: tab)
-        assert hd(rows) =~ ~r/^ .⋔ Swarm · independent agen… · in chat 05:00$/u
+        # pass 75 V2 (7.1): the in-chat bar at column 0, then kind, place, clock.
+        assert hd(rows) =~ ~r/^.⋔ Swarm · independent agent lanes$/u
+        assert Enum.at(rows, 1) =~ ~r/^   swarm · in chat · 23k · \$0\.18 +05:00$/
         refute Enum.any?(rows, &(&1 =~ "timeline  changes"))
       end
     end
@@ -116,15 +131,24 @@ defmodule SwarmCodeCLI.UI.InspectorCardsTest do
 
   # pass72: the agents tab is the D side panel (`Projector.Panel`; its frames
   # are pinned in `projector/panel_test.exs`). These keep the pass-70 card
-  # behaviours that still apply, on the representative fixtures.
+  # behaviours that still apply, on the representative fixtures; pass 75
+  # draws them in the V2 form (one row per agent, humanised names).
   describe "the side panel on the representative fixtures" do
-    test "the lead first, then its agents as a two-level tree, and no operations" do
+    test "one row per agent, the one that needs you first, no tree and no operations" do
       rows = rows(:swarm, 170, 34)
+      at = Enum.find_index(rows, &(&1 =~ ~r/^ agents +5 live$/))
+      assert at, Enum.join(rows, "\n")
 
-      assert Enum.any?(rows, &(&1 =~ ~r/^ ⦁ Lead +working +4:45 · 8k$/))
-      assert Enum.any?(rows, &(&1 =~ ~r/^ ⊢ ⦁ scout-1 +working +4:40 · 4k$/))
-      assert Enum.any?(rows, &(&1 =~ ~r/^ ⎣ ! judge +needs you +4:25 · 1k$/))
-      assert Enum.any?(rows, &(&1 =~ ~r/^ reported  ▱▱▱▱  0 of 4 +1 needs you$/))
+      assert Enum.slice(rows, (at + 1)..(at + 5)) == [
+               " ⋔ ! Judge      asks you",
+               "   ◒ Lead       planning",
+               ~S(   ◒ Scout 1    grep "Repo\."),
+               "   ◒ Scout 2    read test/session_test.exs",
+               "   ◒ Builder 4  edit lib/swarm_code/repo.ex"
+             ]
+
+      assert " found           0 of 4 in · no files changed" in rows
+      refute Enum.any?(rows, &(&1 =~ ~r/[⊢⎣├╰]/u))
       refute Enum.any?(rows, &(&1 =~ ~r/Operations|Current task|active/))
     end
 
@@ -132,8 +156,10 @@ defmodule SwarmCodeCLI.UI.InspectorCardsTest do
       state = state(:swarm, 170, 34, caps: [color_mode: :truecolor])
       {rows, _table, plan, rect} = painted(state, :truecolor)
 
-      assert foreground(plan, rect, rows, "needs you") == @warning
-      assert foreground(plan, rect, rows, "waiting for your answer") == @warning
+      # pass 75 V2 (6.3, 5.8): its `!` in the warning colour; its row says
+      # `asks you`.
+      assert foreground(plan, rect, rows, "! Judge") == @warning
+      assert Enum.any?(rows, &(&1 =~ ~r/! Judge +asks you$/))
       refute Enum.any?(rows, &String.contains?(&1, "NEEDS ANSWER"))
     end
 
@@ -148,8 +174,10 @@ defmodule SwarmCodeCLI.UI.InspectorCardsTest do
         })
 
       {rows, _table, plan, rect} = painted(state, :truecolor)
-      assert Enum.any?(rows, &(&1 =~ ~r/^ ⊢ ✗ builder-4 +failed/))
-      assert foreground(plan, rect, rows, "mix test exited") == {:rgb, 255, 77, 79}
+      # pass 75 V2: the cross in the error colour, then its error, faint.
+      assert Enum.any?(rows, &(&1 =~ ~r/^   ✗ Builder 4 +mix test exited with status 1$/))
+      assert foreground(plan, rect, rows, "✗ Builder 4") == {:rgb, 255, 77, 79}
+      assert Enum.any?(rows, &(&1 =~ ~r/^ agents +4 live · 1 stopped$/))
     end
 
     test "a child of a superseded turn keeps the catalogue's exact words" do
@@ -157,8 +185,9 @@ defmodule SwarmCodeCLI.UI.InspectorCardsTest do
       state = put_in(state.read_model.agents["agent-3"].launched_by_superseded, true)
       rows = painted(state) |> elem(0)
 
-      lane = Enum.find_index(rows, &(&1 =~ "scout-2"))
-      assert Enum.at(rows, lane + 1) =~ "Launched by a superseded turn"
+      # pass 75 V2: on the agent's own row.
+      lane = Enum.find_index(rows, &(&1 =~ "Scout 2"))
+      assert Enum.at(rows, lane) =~ "Launched by a superseded turn"
     end
 
     test "a stopped agent says so in words, never STOPPED alone" do
@@ -167,7 +196,9 @@ defmodule SwarmCodeCLI.UI.InspectorCardsTest do
       state = put_in(state.read_model.agents["agent-2"].step, "")
       rows = painted(state) |> elem(0)
 
-      assert Enum.any?(rows, &(&1 =~ ~r/^ ⊢ ✗ scout-1 +stopped/))
+      # pass 75 V2: the cross, and words that are not the state word again.
+      assert Enum.any?(rows, &(&1 =~ ~r/^   ✗ Scout 1 +before it finished$/))
+      assert Enum.any?(rows, &(&1 =~ ~r/^ agents +4 live · 1 stopped$/))
       refute Enum.any?(rows, &String.contains?(&1, "STOPPED"))
       assert Words.state(:stopped) == "stopped by you"
     end
@@ -175,9 +206,12 @@ defmodule SwarmCodeCLI.UI.InspectorCardsTest do
     test "the cards degrade to their ASCII twins" do
       rows = rows(:swarm, 170, 34, caps: [ascii?: true])
 
-      assert Enum.any?(rows, &(&1 =~ ~r/^ \* Lead +working/))
-      assert Enum.any?(rows, &(&1 =~ ~r/^ \| \* scout-1 +working/))
-      assert Enum.any?(rows, &(&1 =~ ~r/^ ` ! judge +needs you/))
+      # pass 75 V2 (7.8): `o` live, `!` needs you, `S` the swarm, `|` in chat.
+      assert Enum.any?(rows, &(&1 =~ ~r/^   o Lead +planning$/))
+      assert Enum.any?(rows, &(&1 =~ ~r/^   o Scout 1 +grep/))
+      assert Enum.any?(rows, &(&1 =~ ~r/^ S ! Judge +asks you$/))
+      assert hd(rows) =~ ~r/^\|S Swarm/
+      assert " S --------- --------- --------- ---------" in rows
 
       for row <- rows do
         assert String.replace(row, ["·", "…"], "") =~ ~r/^[\x20-\x7e]*$/, inspect(row)
@@ -197,15 +231,21 @@ defmodule SwarmCodeCLI.UI.InspectorCardsTest do
 
   describe "the verdict of a judged run" do
     test "a consensus run shows the newest verdict's checks as criteria and the judge's words" do
-      rows = rows(:consensus, 170, 34)
+      # pass 75 V2 (D2): the agents tab draws the run's header, its agent row,
+      # the spent row and the keys; no criteria. The checks and the judge's
+      # words are the verdict card's (`Inspector.Verdict.card/3`).
+      state = state(:consensus, 170, 34)
+      rows = state |> painted() |> elem(0)
+      assert Enum.any?(rows, &(&1 =~ ~r/^ agents +1 live$/))
+      refute Enum.any?(rows, &(&1 =~ ~r/^ criteria /))
 
-      v = Enum.find_index(rows, &(&1 =~ ~r/^ criteria +2 of 4 met$/))
-      assert v, "no criteria row"
-      assert Enum.at(rows, v + 2) =~ ~r/^   ✓ tests_pass +142 tests, 0 failures$/
-      assert Enum.at(rows, v + 3) =~ ~r/^   ✓ no_regressions +auth paths unchanged$/
-      assert Enum.at(rows, v + 4) =~ ~r/^   ✗ docs_updated +architecture.md still draft$/
-      assert Enum.at(rows, v + 5) =~ ~r/^   ⚬ style +not evaluated$/
-      assert Enum.any?(rows, &(&1 =~ "Two of three proposals meet the bar"))
+      v = verdict_rows(state)
+      assert hd(v) == "Verdict · round 1 · done"
+      assert Enum.at(v, 1) =~ ~r/^✓ tests_pass +142 tests, 0 failures$/
+      assert Enum.at(v, 2) =~ ~r/^✓ no_regressions +auth paths unchanged$/
+      assert Enum.at(v, 3) =~ ~r/^✕ docs_updated +architecture.md still draft$/
+      assert Enum.at(v, 4) =~ ~r/^— style +not evaluated$/
+      assert Enum.any?(v, &(&1 =~ "Two of three proposals meet the bar"))
     end
 
     test "the newest round wins" do
@@ -221,9 +261,10 @@ defmodule SwarmCodeCLI.UI.InspectorCardsTest do
       }
 
       state = put_in(state.read_model.verdicts, %{"judge-1" => older, "judge-2" => newer})
-      {rows, _, _, _} = painted(state)
+      # pass 75 V2 (D2): on the verdict card, not the panel.
+      rows = verdict_rows(state)
 
-      assert Enum.any?(rows, &(&1 =~ ~r/^   ✓ docs_updated +docs landed$/))
+      assert Enum.any?(rows, &(&1 =~ ~r/^✓ docs_updated +docs landed$/))
       assert Enum.any?(rows, &(&1 =~ "All three proposals meet the bar."))
       refute Enum.any?(rows, &String.contains?(&1, "142 tests"))
     end

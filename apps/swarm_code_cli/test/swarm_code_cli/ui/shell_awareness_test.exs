@@ -227,7 +227,10 @@ defmodule SwarmCodeCLI.UI.ShellAwarenessTest do
         end)
 
       pixels = screen(put_in(state.read_model.runs, runs))
-      refute pixels =~ " tok"
+      # pass 75 (7.4, 9.3): the panel's spent row always counts tokens, so
+      # the one ` tok` is its zero; no `$` anywhere.
+      toks = pixels |> String.split("\n") |> Enum.filter(&(&1 =~ " tok"))
+      assert Enum.map(toks, &String.trim/1) == ["spent 0 tokens · 1 run"]
       refute pixels =~ "$"
     end
   end
@@ -355,7 +358,7 @@ defmodule SwarmCodeCLI.UI.ShellAwarenessTest do
 
       # The card sits right above the composer (pass73 T7: a framed card at
       # the bottom of main, a blank row and the composer's rule under it).
-      assert pixels =~ "scout-1 wants to run a command"
+      assert pixels =~ "Scout 1 wants to run a command"
       assert pixels =~ "$ mix test --failed"
       assert pixels =~ "runs on your machine, in the project"
       assert pixels =~ ~r/y\]? +once/

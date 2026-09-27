@@ -9,9 +9,10 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Name do
     * the Lead is "Lead";
     * a chat turn's one agent is its role label, the name the engine gave its
       node ("Workflow author", "Planner", "Consensus"), else "Assistant";
-    * any other agent is its own name without the prefix and suffix that
-      three or more of its siblings share (R14); the run header says the
-      shared part once (`4 × review-*`).
+    * any other agent is its AI title when the Lead gave it one (pass 75),
+      else its own name without the prefix and suffix that three or more of
+      its siblings share (R14), humanised (`angular-plan` → `Angular plan`);
+      the run header says the shared part once (`4 × review-*`).
 
   Where a row has no room for it, `fit/3` cuts that same name at its end
   with `…`: never another word for the agent.
@@ -76,7 +77,38 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Name do
   @spec display(map(), affixes(), map() | nil) :: binary()
   def display(%{role: :lead}, _affixes, _run), do: "Lead"
   def display(%{role: :assistant} = agent, _affixes, run), do: role_label(agent, run)
-  def display(agent, affixes, _run), do: trim(Hive.name(agent), affixes)
+
+  def display(agent, affixes, _run) do
+    if ai_title?(agent),
+      do: String.trim(agent.title),
+      else: humanise(trim(Hive.name(agent), affixes))
+  end
+
+  @doc """
+  Whether `agent` carries an AI title (pass 75): a `title` that is present
+  and differs from its slug. The Lead's `spawn_agent` call may name a worker
+  in plain words ("Build check"); without one the node's title is its slug.
+  """
+  @spec ai_title?(map()) :: boolean()
+  def ai_title?(agent),
+    do: present(Map.get(agent, :title)) != nil and String.trim(agent.title) != Hive.name(agent)
+
+  @doc "The agent's slug, its identifier (the ^F overlay shows it after an AI title)."
+  @spec slug(map()) :: String.t()
+  def slug(agent), do: Hive.name(agent)
+
+  @doc "`review-angular-plan` → `Review angular plan`: dashes and underscores become spaces, the first letter upper case."
+  @spec humanise(String.t()) :: String.t()
+  def humanise(s) do
+    case s |> String.replace(~r/[-_]+/, " ") |> String.trim() do
+      "" ->
+        ""
+
+      text ->
+        {first, rest} = String.split_at(text, 1)
+        String.upcase(first) <> rest
+    end
+  end
 
   @doc """
   A chat turn's agent by its role (spec 50 §4, the desktop's `Run.agent_name/1`):

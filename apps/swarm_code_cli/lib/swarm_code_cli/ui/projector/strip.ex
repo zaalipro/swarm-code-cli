@@ -1,20 +1,22 @@
 defmodule SwarmCodeCLI.UI.Projector.Strip do
   @moduledoc """
-  The side panel under 120 columns (pass72 P6, R17, D10): one row under the
-  title,
+  The side panel under 120 columns (pass72 P6, R17, D10; pass 75 SA S5):
+  one row under the title, no fill,
 
-      ▌⋔ architecture review 1/4 · Lead◌ engine● data◐ llm✓ web!  +1 run   ! 1 needs you ^N
+      ▌C lets plan how to make…  ! 2 need you ^N   ⋔ 3 of 4 in · ✗ Build check turn limit   $0.87
 
-  the run in chat with its known ratio, each agent as its short name and
-  state glyph, the other live runs as a count and their marks, and what waits
-  on you on the right. In hint mode each agent carries its badge before its
-  name. Every cell is measured, so the row never wraps.
+  the run in chat, what waits on you, the newest swarm's `R of T in`, the
+  most recent agent that ran out of turns, and the price (else tokens) on
+  the right. A row too narrow drops the stopped agent's name, then cuts the
+  title to 12 cells, then drops the price. In hint mode each agent of the
+  run in chat carries its badge before its name. Every cell is measured, so
+  the row never wraps.
   """
   alias SwarmCodeCLI.UI.Projector.Panel
   alias SwarmCodeCLI.UI.Projector.Panel.{Draw, Model, Name, Shapes}
 
-  # pass73 T10: the strip names each agent by its one name, cut at its end.
-  @strip_name 12
+  # pass 75 (S5): the chat title's cells before the row runs short.
+  @title_cells 22
 
   @doc "The strip's one block for a `width`-cell row."
   def project(state, width) do
@@ -27,11 +29,11 @@ defmodule SwarmCodeCLI.UI.Projector.Strip do
 
     case runs do
       [] -> []
-      [run | others] -> draw(state, width, run, others, runs)
+      [run | _others] -> draw(state, width, run, runs)
     end
   end
 
-  defp draw(state, width, run, others, runs) do
+  defp draw(state, width, run, runs) do
     views = Map.new(runs, &{&1.id, Model.agents(state, &1)})
     agents = Map.get(views, run.id, [])
     needs = Model.needs(state, runs, views)
@@ -50,54 +52,152 @@ defmodule SwarmCodeCLI.UI.Projector.Strip do
       labels: labels(state)
     }
 
-    ratio = Shapes.ratio(ctx, run)
-
-    head =
+    head = fn cells ->
       [
         if(in_chat?, do: {Panel.g(ctx, :in_chat), :accent}, else: {" ", :plain}),
         {Draw.mark(Model.kind(run), state), Model.kind_role(run)},
-        {" " <> Draw.elide(Model.title(run), 28, state), :text_primary, [:bold]},
-        ratio && {" " <> ratio, :text_muted},
-        agents != [] && {" · ", :text_ghost}
+        {" " <> Draw.elide(Model.title(run), cells, state), :text_primary, [:bold]}
       ]
-      |> Enum.reject(&(&1 in [nil, false]))
+    end
 
-    more =
-      case others do
-        [] ->
-          []
-
-        others ->
-          marks = Enum.map(others, &{Draw.mark(Model.kind(&1), state), Model.kind_role(&1)})
-
-          [
-            {" +#{length(others)} " <> if(length(others) == 1, do: "run ", else: "runs "),
-             :text_faint}
-          ] ++
-            marks
-      end
-
-    right =
+    need =
       case length(needs) do
         0 ->
           []
 
         n ->
           [
+            {"  ", :plain},
             {"! #{n} " <> if(n == 1, do: "needs you", else: "need you"), :warning, [:bold]},
-            {" ^N", :text_primary}
+            {" ^N", :text_primary, [:bold]}
           ]
       end
 
-    # pass73 T10: each agent by its one name; the names share what the row
-    # has left after the run, the other runs and what waits on you, so a
-    # long name is cut at its end with `…`, never swapped for a shorter word.
-    fixed = Draw.cells(Enum.map_join(head ++ more ++ right, &elem(&1, 0)), state) + 3
-    name_cells = name_cells(agents, ctx, width - fixed, state)
+    rows =
+      if ctx.hint? do
+        hinted(ctx, head.(@title_cells), agents, need)
+      else
+        fitted(ctx, head, need, swarm(ctx, runs), turn_limit(runs, views), money(ctx, runs))
+      end
+
+    targets =
+      Enum.map(agents, fn v -> {nil, {:agent, v.run_id, v.id, v.needs_you?}, [hidden: true]} end)
+
+    [{rows, {:run, run.id}, []} | targets]
+  end
+
+  # The row at its richest that fits (8.2): the stopped agent's name whole,
+  # else cut to the cells left (at most 24), else left out; then the title
+  # cut to 12 cells; then no price.
+  defp fitted(ctx, head, need, swarm, stopped, money) do
+    state = ctx.state
+    inner = ctx.width - 2
+
+    attempt = fn title_cells, name?, money? ->
+      right = if money?, do: money, else: []
+      right_cells = if right == [], do: 0, else: cells(right, state) + 1
+      left = head.(title_cells) ++ need ++ swarm
+      room = inner - cells(left, state) - right_cells
+      part = stopped_part(stopped, name?, room, state)
+      left = left ++ part
+      if cells(left, state) <= inner - right_cells, do: Draw.row(left, right, ctx.width, state)
+    end
+
+    Enum.find_value(
+      [
+        {@title_cells, true, true},
+        {@title_cells, false, true},
+        {12, false, true},
+        {12, false, false}
+      ],
+      fn {title, name?, money?} -> attempt.(title, name?, money?) end
+    ) ||
+      Draw.row(
+        head.(12) ++ need ++ swarm ++ stopped_part(stopped, false, 0, state),
+        [],
+        ctx.width,
+        state
+      )
+  end
+
+  # ` · ✗ Build check turn limit`: the name gets the cells left, at most 24,
+  # cut at its end only when they are fewer than it needs.
+  defp stopped_part(nil, _name?, _room, _state), do: []
+
+  defp stopped_part(view, name?, room, state) do
+    x = [{" · ", :text_faint}, {Draw.g(:turn_limit, state), :error}]
+    words = [{" turn limit", :error}]
+    fixed = cells(x ++ words, state) + 1
+    cells = min(24, room - fixed)
+
+    if name? and cells >= min(4, Draw.cells(view.display, state)),
+      do: x ++ [{" ", :plain}, {Name.fit(view.display, cells, state), view.name_role}] ++ words,
+      else: x ++ words
+  end
+
+  # `   ⋔ 3 of 4 in`: the newest swarm among the shown runs.
+  defp swarm(ctx, runs) do
+    case runs
+         |> Enum.filter(&(Model.kind(&1) == :swarm))
+         |> Enum.max_by(&{&1.created_sequence, &1.started_at || 0}, fn -> nil end) do
+      nil ->
+        []
+
+      run ->
+        {r, t} = Shapes.reported(run, Map.get(ctx.views, run.id, []))
+
+        [
+          {"   ", :plain},
+          {Draw.mark(Model.kind(run), ctx.state), Model.kind_role(run)},
+          {" #{r} of #{t} in", :text_muted}
+        ]
+    end
+  end
+
+  # The agent that ran out of turns most recently across the shown runs.
+  defp turn_limit(runs, views) do
+    runs
+    |> Enum.flat_map(&Map.get(views, &1.id, []))
+    |> Enum.filter(&(&1.state == :turn_limit))
+    |> Enum.max_by(&(Map.get(&1, :finished_at) || 0), fn -> nil end)
+  end
+
+  # The priced runs' sum (9.1), else every run's tokens.
+  defp money(ctx, runs) do
+    priced = Enum.filter(runs, &is_number(&1.cost_usd))
+
+    text =
+      case priced do
+        [] ->
+          runs
+          |> Enum.map(fn run -> tokens(run, Map.get(ctx.views, run.id, [])) end)
+          |> Enum.sum()
+          |> Model.tokens()
+          |> then(&(&1 && &1 <> " tokens"))
+
+        _ ->
+          priced |> Enum.map(& &1.cost_usd) |> Enum.sum() |> Model.money()
+      end
+
+    if text, do: [{text, :text_muted}], else: []
+  end
+
+  defp tokens(run, views) do
+    case Model.token_count(run) do
+      0 -> views |> Enum.map(&(&1.tokens || 0)) |> Enum.sum()
+      n -> n
+    end
+  end
+
+  # Hint mode: each agent of the run in chat by its one name and badge, so
+  # every letter the hint keys offer is on screen.
+  defp hinted(ctx, head, agents, need) do
+    state = ctx.state
+    fixed = cells(head ++ need, state) + 3
+    name_cells = name_cells(agents, ctx, ctx.width - fixed, state)
 
     agent_segments =
-      agents
-      |> Enum.flat_map(fn view ->
+      Enum.flat_map(agents, fn view ->
         badge = Map.get(ctx.labels, {:agent, view.run_id, view.id})
 
         badge_seg =
@@ -114,17 +214,13 @@ defmodule SwarmCodeCLI.UI.Projector.Strip do
           ]
       end)
 
-    row = Draw.row(head ++ agent_segments ++ more, right, width, state, background: :surface)
-
-    targets =
-      Enum.map(agents, fn v -> {nil, {:agent, v.run_id, v.id, v.needs_you?}, [hidden: true]} end)
-
-    [{row, {:run, run.id}, []} | targets]
+    sep = if agents == [], do: [], else: [{" · ", :text_faint}]
+    Draw.row(head ++ sep ++ agent_segments, need, ctx.width, state)
   end
 
   # Cells per agent name, shortest first: a name shorter than its fair share
   # of `room` keeps its length and leaves the rest to the longer ones (a
-  # badge, the glyph and a space are each agent's other cells); 3..12.
+  # badge, the glyph and a space are each agent's other cells); 3..24.
   defp name_cells(agents, ctx, room, state) do
     overhead = if ctx.hint?, do: 6, else: 2
 
@@ -134,11 +230,18 @@ defmodule SwarmCodeCLI.UI.Projector.Strip do
       |> Enum.sort_by(&elem(&1, 1))
       |> Enum.reduce({%{}, max(0, room), length(agents)}, fn {id, wanted}, {acc, left, n} ->
         share = div(left, max(n, 1)) - overhead
-        take = wanted |> min(share) |> min(@strip_name) |> max(3)
+        take = wanted |> min(share) |> min(24) |> max(3)
         {Map.put(acc, id, take), left - take - overhead, n - 1}
       end)
 
     cells
+  end
+
+  defp cells(segments, state) do
+    Enum.reduce(segments, 0, fn
+      {text, _role}, acc -> acc + Draw.cells(text, state)
+      {text, _role, _mods}, acc -> acc + Draw.cells(text, state)
+    end)
   end
 
   defp labels(state) do

@@ -27,6 +27,7 @@ defmodule SwarmCodeCLI.UI.Projector.Overlay do
 
   alias SwarmCodeCLI.UI.{Drafts, Keymap, SafeText, Theme, Width}
   alias SwarmCodeCLI.UI.Projector.{ApprovalCard, Density, Support}
+  alias SwarmCodeCLI.UI.Projector.Panel.Model, as: PanelModel
   alias SwarmCodeCLI.UI.Projector.Panel.Name
   alias SwarmCodeCLI.UI.Reducer.Hint
   alias SwarmCodeCLI.UI.Reducer.Overlay, as: OverlayState
@@ -508,12 +509,20 @@ defmodule SwarmCodeCLI.UI.Projector.Overlay do
 
     # pass72 G13 (QA Q14): the run title gives way first; the agent's name
     # and state word stay whole, and the rail gives way before them.
-    who = [
-      {name, bold(state, lane_role(state, agent))},
-      {"  ", st(state, :text_primary)},
-      {glyph, st(state, role)},
-      {" " <> word, st(state, role)}
-    ]
+    # pass 75 (4.5, SA2 O): after an AI title, the slug it stands for.
+    slug =
+      if Name.ai_title?(agent),
+        do: [{"  " <> Name.slug(agent), st(state, :text_faint)}],
+        else: []
+
+    who =
+      [{name, bold(state, lane_role(state, agent))}] ++
+        slug ++
+        [
+          {"  ", st(state, :text_primary)},
+          {glyph, st(state, role)},
+          {" " <> word, st(state, role)}
+        ]
 
     mark = [
       {" ", st(state, :text_primary)},
@@ -1766,26 +1775,30 @@ defmodule SwarmCodeCLI.UI.Projector.Overlay do
   def agent_state(state, agent) do
     p3 = if Hint.pending(state, agent.run_id, agent.id) != [], do: :needs_you, else: p3(agent)
 
-    {unicode, ascii, word, role} =
+    {unicode, ascii, role} =
       case p3 do
-        :working -> {"●", "*", "working", :text_primary}
-        :thinking -> {"◐", "~", "thinking", :text_primary}
-        :waiting -> {"◌", ".", "waiting", :text_muted}
-        :needs_you -> {"!", "!", "needs you", :warning}
-        :done -> {"✓", "v", "done", :success}
-        :failed -> {"✗", "x", "failed", :error}
-        :stopped -> {"✗", "x", "stopped", :text_muted}
-        :queued -> {"○", "o", "queued", :text_faint}
-        :paused -> {"⏸", "=", "paused", :text_muted}
+        :working -> {"●", "*", :text_primary}
+        :thinking -> {"◐", "~", :text_primary}
+        :waiting -> {"◌", ".", :text_muted}
+        :needs_you -> {"!", "!", :warning}
+        :done -> {"✓", "v", :success}
+        :failed -> {"✗", "x", :error}
+        # pass 75: a turn-limit stop reads `✗ turn limit` in the error colour.
+        :turn_limit -> {"✗", "x", :error}
+        :stopped -> {"✗", "x", :text_muted}
+        :queued -> {"○", "o", :text_faint}
+        :paused -> {"⏸", "=", :text_muted}
       end
 
-    {one_cell(state, unicode, ascii), word, role}
+    {one_cell(state, unicode, ascii), PanelModel.word(p3), role}
   end
 
   @p3 [:working, :thinking, :waiting, :needs_you, :done, :failed, :queued, :paused]
 
   # Owner S's summary names the P3 state (`panel_state`, or `state` once it is
   # one of them); otherwise it follows from the run-state enum.
+  defp p3(%{stop_reason: "turn_budget"}), do: :turn_limit
+
   defp p3(agent) do
     case {agent.panel_state, agent.state} do
       {state, _} when state in @p3 -> state

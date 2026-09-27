@@ -19,7 +19,8 @@ defmodule SwarmCodeCLI.UI.Projector.GoldenScenesTest do
     first_reply: ["Read mix.exs", "The app boots the repo"],
     approval: ["ls -la notes", "Type a message"],
     approval_edit: ["guard.ex", "Type a message"],
-    swarm: ["worker-a-accounts", "worker-b-live"],
+    # pass 75: the slugs read humanised.
+    swarm: ["Worker a accounts", "Worker b live"],
     long: ["The app boots the repo"],
     failed_workflow: ["/design-coloring", "Failed"],
     trouble: ["not trusted", "retrying in 42s", "exit 2"],
@@ -92,10 +93,27 @@ defmodule SwarmCodeCLI.UI.Projector.GoldenScenesTest do
 
   # pass71 V6, redrawn by pass72: what the docked side panel says about the
   # conversation scenes (the panel is direction D, not the pass-71 cards).
+  # pass 75: the V2 panel (a done chat turn has no agents row; the spent,
+  # earlier, found and band rows; humanised names).
   @pass71 %{
-    first_reply: ["✳ Read mix.exs", "· in chat", "✓ Assistant", "context", " elixir "],
-    trouble: ["@@ -12,9 +12,13 @@", "429 Too Many Requests", "earlier in this chat"],
-    swarm: ["worker-a-accounts", "reported", "! NEEDS YOU · worker-b-live"]
+    first_reply: [
+      "✳ Read mix.exs",
+      "· in chat",
+      "spent $0.01 · 19k tokens · 1 run",
+      "context",
+      " elixir "
+    ],
+    trouble: [
+      "@@ -12,9 +12,13 @@",
+      "429 Too Many Requests",
+      "earlier  2 finished runs in this chat"
+    ],
+    swarm: [
+      "Worker a accounts",
+      "1 of 3 in · no files changed",
+      "1 needs you · oldest first",
+      "Worker b live wants to run"
+    ]
   }
 
   for {scene, texts} <- @pass71, policy <- [:narrow, :wide] do
@@ -119,17 +137,25 @@ defmodule SwarmCodeCLI.UI.Projector.GoldenScenesTest do
   # transcript rows at 80x24.
   alias SwarmCodeCLI.Demo.Panel, as: PanelScenes
 
+  # pass 75: re-derived from the V2 panel (humanised names, `found`, the
+  # band's words, the spent and earlier rows; no kind sections).
   @panel_evidence %{
-    panel_chat: {"fix the flaky retry test", ["Assistant", "context"]},
-    panel_swarm_1: {"architecture review", ["engine-lifecycle", "reported"]},
-    panel_swarm_2: {"architecture review", ["NEEDS YOU", "mix test test/swarm_code_web/live"]},
+    panel_chat: {"fix the flaky retry test", ["Assistant", "2 finished runs in this chat"]},
+    panel_swarm_1: {"architecture review", ["Engine lifecycle", "found"]},
+    panel_swarm_2:
+      {"architecture review", ["1 needs you · oldest first", "mix test test/swarm_code_web/live"]},
     panel_swarm_3: {"architecture review", ["stop reason read before the flush"]},
-    panel_workflow: {"ship retry", ["implement", "retry-tests"]},
-    panel_goal: {"suite green", ["criteria", "goal agent"]},
-    panel_plan: {"rate limits for the API", ["NEEDS YOU", "limit per API key"]},
-    panel_research: {"Req vs Finch pooling", ["sources", "reader-code"]},
-    panel_consensus: {"should runs own worktrees?", ["positions", "gemini"]},
-    panel_heavy: {"architecture review", ["5 runs", "NEED YOU"]}
+    panel_workflow: {"ship retry", ["found", "Retry tests"]},
+    panel_goal: {"suite green", ["found", "Goal agent"]},
+    panel_plan: {"rate limits for the API", ["1 needs you · oldest first", "limit per API key"]},
+    panel_research: {"Req vs Finch pooling", ["found", "Reader code"]},
+    panel_consensus: {"should runs own worktrees?", ["found", "Gemini"]},
+    panel_heavy: {"architecture review", ["spent", "2 need you"]},
+    panel_owner19:
+      {"lets plan how to make this app better", ["Build check", "quiet 1m", "no files changed"]},
+    panel_owner19_band:
+      {"lets plan how to make this app better",
+       ["2 need you", "1 question: Focus", "dangerous: asks even in full access"]}
   }
 
   defp paint_panel(scene, {columns, rows}, policy, mode, ascii?, panel) do
@@ -173,8 +199,9 @@ defmodule SwarmCodeCLI.UI.Projector.GoldenScenesTest do
         if elem(size, 0) >= 120 and panel == :full do
           for text <- docked, do: assert(screen =~ text, "#{label}: no #{inspect(text)}")
         else
-          # The strip (R17) sits on row 1.
-          if elem(size, 0) < 120, do: assert(Enum.at(rows, 1) =~ title)
+          # The strip (R17) sits on row 1; pass 75 (8.2): it may cut the
+          # title at its end, to 12 cells when the row is short.
+          if elem(size, 0) < 120, do: assert(Enum.at(rows, 1) =~ String.slice(title, 0, 11))
         end
 
         if ascii? do

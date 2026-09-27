@@ -43,7 +43,11 @@ defmodule SwarmCodeCLI.Test.Pass73Scenes do
   def chat_id, do: @chat
   def angular_id, do: "agent-80-2"
 
-  @doc "The scene at `columns` x `rows`; `opts`: `:panel` mode, `:draft`, `:mode`, `:ascii?`, `:policy`."
+  @doc """
+  The scene at `columns` x `rows`; `opts`: `:panel` mode, `:draft`, `:mode`,
+  `:ascii?`, `:policy`, and `:titles`, a map of agent id to the AI title the
+  Lead gave it (pass 75; without one an agent's title is its slug).
+  """
   def screenshot_11(columns, rows, opts \\ []) do
     size = %Size{columns: columns, rows: rows}
 
@@ -61,7 +65,9 @@ defmodule SwarmCodeCLI.Test.Pass73Scenes do
 
     agents =
       Map.new(model.agents, fn {id, agent} ->
-        agent = %{agent | name: Map.get(@names, agent.name, agent.name)}
+        name = Map.get(@names, agent.name, agent.name)
+        title = Map.get(Keyword.get(opts, :titles, %{}), id, name)
+        agent = %{agent | name: name, title: title}
 
         agent =
           cond do

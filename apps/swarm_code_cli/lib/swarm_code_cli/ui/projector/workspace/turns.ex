@@ -214,6 +214,8 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
       workers: workers,
       first_by_worker: first_by_worker,
       worker_ids: Map.new(first_by_worker, fn {agent, id} -> {id, agent} end),
+      # pass 75 (8.1): the panel's views of the run's agents, once per card.
+      views: views_for_run(state, run),
       lead_tools: Enum.filter(lead_work, &(&1.kind == :tool)),
       notices: notices(state, run, items),
       view_first?: false,
@@ -1349,8 +1351,12 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
   #   ├ ● engine-lifecycle  working    tracing where stop is saved   1:44 · 16k
   defp lane_line(agent, agent_id, items, ctx, state) do
     lane = lane(agent, ctx, state)
-    view = panel_view(ctx, agent_id, state)
-    name = (view && view.display) || (agent && present(agent.name)) || "worker"
+    view = Map.get(ctx.views, agent_id)
+
+    name =
+      (view && view.display) ||
+        (agent && Name.display(agent, Name.affixes(state, ctx.run_id), ctx.run)) || "worker"
+
     p3 = (view && view.state) || lane_state(agent, items)
     {sentence, sentence_role} = if view, do: Model.sentence(view, state), else: {"", :text_muted}
 
@@ -1363,10 +1369,15 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
 
     {sentence, sentence_role} =
       cond do
+        # pass 75: a turn-limit stop says the daemon's rule sentence.
+        p3 == :turn_limit and view != nil ->
+          {view.now || "no answer: turn limit", :error}
+
+        # pass 75: the finding without `»` (S2).
         p3 == :done and view != nil and view.finding != nil ->
           refs = List.first(view.refs)
           finding = view.finding <> if(refs, do: " · " <> Path.basename(refs), else: "")
-          {PanelGlyph.get(:finding, state) <> " " <> finding, sentence_role}
+          {finding, sentence_role}
 
         failure != nil and p3 not in [:done, :needs_you] ->
           {failure, :error}
@@ -1384,6 +1395,13 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
     meta = [duration, tokens] |> Enum.reject(&(&1 in [nil, false])) |> Enum.join(" · ")
     glyph_mods = if p3 == :needs_you, do: [:bold], else: []
 
+    # pass 75 (R2.5): a turn-limit agent's own last words, muted, after its
+    # rule sentence.
+    last =
+      if (p3 == :turn_limit and view) && view.last_words,
+        do: [{" · last: " <> view.last_words, :muted}],
+        else: []
+
     spec(
       [
         {String.duplicate(" ", @body), :plain},
@@ -1393,21 +1411,24 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
         {" ", :text},
         {pad_cells(name, name_w, state), {:role, lane, []}},
         {" ", :text},
-        {pad_cells(Model.word(p3), 11, state), {:role, word_role(p3), glyph_mods}},
-        {sentence, sentence_style(sentence_role, p3)},
-        {:right, if(meta != "", do: [{meta, :faint}], else: [])}
-      ],
+        # pass 75 (D-L13): the word column is 13 cells, S2's spacing.
+        {pad_cells(Model.word(p3), 13, state), {:role, word_role(p3), glyph_mods}},
+        {sentence, sentence_style(sentence_role, p3)}
+      ] ++
+        last ++
+        [{:right, if(meta != "", do: [{meta, :faint}], else: [])}],
       nil
     )
     # pass72 G5 (QA Q6): the sentence gives way to the meta, cut with `…`.
     |> Map.put(:keep_right, true)
   end
 
-  defp panel_view(%{run: run}, agent_id, state) when is_map(run) do
-    state |> Model.agents(run) |> Enum.find(&(&1.id == agent_id))
-  end
+  # The run's agents as the panel sees them, by id: one `Model.agents/2`
+  # call per run card, not one per line (pass 75, 8.1).
+  defp views_for_run(state, run) when is_map(run),
+    do: state |> Model.agents(run) |> Map.new(&{&1.id, &1})
 
-  defp panel_view(_ctx, _agent_id, _state), do: nil
+  defp views_for_run(_state, _run), do: %{}
 
   defp lane_state(nil, items) do
     case items |> List.last() |> then(&(&1 && &1.state)) do
@@ -1436,16 +1457,11 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
   end
 
   defp worker_name_width(ctx, state) do
-    views =
-      case ctx.run do
-        run when is_map(run) -> Model.agents(state, run)
-        _ -> []
-      end
+    shown = worker_order(ctx) ++ Enum.map(queued_workers(ctx, state), & &1.id)
 
-    shown = MapSet.new(worker_order(ctx) ++ Enum.map(queued_workers(ctx, state), & &1.id))
-
-    views
-    |> Enum.filter(&MapSet.member?(shown, &1.id))
+    shown
+    |> Enum.map(&Map.get(ctx.views, &1))
+    |> Enum.reject(&is_nil/1)
     |> Enum.map(&Width.cells(&1.display, state.capabilities.ambiguous_width))
     |> Enum.max(fn -> 8 end)
     |> min(24)
@@ -1454,7 +1470,9 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
 
   defp pad_cells(text, n, state) do
     policy = state.capabilities.ambiguous_width
-    text = if Width.cells(text, policy) > n, do: Width.elide(text, n, :middle, policy), else: text
+    # pass 75 (4.4): a name too long for its column ends in `…`, never cut
+    # in the middle.
+    text = if Width.cells(text, policy) > n, do: Width.elide(text, n, :end, policy), else: text
     text <> String.duplicate(" ", max(0, n - Width.cells(text, policy)))
   end
 

@@ -349,7 +349,7 @@ defmodule SwarmCodeCLI.UI.Pass72OverlayKeysTest do
       state = press!(state, key(:escape))
       state = put_in(state.read_model.transcript["steer-1"], message)
       state = update_in(state.read_model.order[:workspace], &((&1 || []) ++ ["steer-1"]))
-      assert screen_rows(state) |> Enum.join("\n") =~ "steered to engine-lifecycle"
+      assert screen_rows(state) |> Enum.join("\n") =~ "steered to Engine lifecycle"
     end
 
     test "regression (QA Q14, Q25): a long run title gives way; the name, state and run clock stay" do
@@ -367,7 +367,7 @@ defmodule SwarmCodeCLI.UI.Pass72OverlayKeysTest do
           |> elem(0)
 
         [header, meta | _] = screen_rows(state)
-        assert header =~ "data-persistence  ● working", "#{columns}: " <> header
+        assert header =~ "Data persistence  ● working", "#{columns}: " <> header
         assert header =~ "…"
         refute header =~ "base="
         assert meta =~ ~r/run \d+:\d\d/, meta
@@ -412,8 +412,8 @@ defmodule SwarmCodeCLI.UI.Pass72OverlayKeysTest do
       rows = screen_rows(state)
       lead = Enum.find_index(rows, &(&1 =~ ~r/[●◐◌] Lead/u))
       assert lead, "the Lead is the tree's root:\n" <> Enum.join(rows, "\n")
-      assert Enum.at(rows, lead + 1) =~ ~r/├ . engine/u
-      assert Enum.at(rows, lead + 3) =~ ~r/╰ ! web.*you are here/u
+      assert Enum.at(rows, lead + 1) =~ ~r/├ . Engine/u
+      assert Enum.at(rows, lead + 3) =~ ~r/╰ ! Web.*you are here/u
     end
 
     test "workers whose parent_id names the Lead's spawn op still nest under the Lead" do
@@ -434,8 +434,8 @@ defmodule SwarmCodeCLI.UI.Pass72OverlayKeysTest do
       rows = screen_rows(state)
       lead = Enum.find_index(rows, &(&1 =~ ~r/[●◐◌] Lead/u))
       assert lead, Enum.join(rows, "\n")
-      assert Enum.at(rows, lead + 1) =~ ~r/├ . engine/u
-      assert Enum.at(rows, lead + 3) =~ ~r/╰ . web/u
+      assert Enum.at(rows, lead + 1) =~ ~r/├ . Engine/u
+      assert Enum.at(rows, lead + 3) =~ ~r/╰ . Web/u
     end
 
     test "the approval grammar answers only while the composer is empty" do
