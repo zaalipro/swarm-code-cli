@@ -405,22 +405,30 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Chrome do
   end
 
   # §4.1.5 (QA F-13): where a change of the focused row is written.
-  defp writes_to(state, %{key: key}) when is_binary(key) do
-    with {:ok, entry} <- SwarmCode.Settings.Registry.fetch(key),
-         true <- SwarmCode.Settings.Entry.writable?(entry) do
-      words =
-        case entry.home do
-          :cli -> "cli.json · this machine's terminal"
-          home -> Rows.scope_words(Nav.ctx(state), %{entry | scope: home})
-        end
+  defp writes_to(state, %{key: key} = current) when is_binary(key) do
+    case SwarmCode.Settings.Registry.fetch(key) do
+      {:ok, entry} ->
+        words =
+          case entry.home do
+            :cli -> "cli.json · this machine's terminal"
+            home -> Rows.scope_words(Nav.ctx(state), %{entry | scope: home})
+          end
 
-      if is_binary(words), do: words
-    else
-      _ -> nil
+        if SwarmCode.Settings.Entry.writable?(entry) and is_binary(words), do: words
+
+      :error ->
+        record_writes_to(current)
     end
   end
 
   defp writes_to(_state, _current), do: nil
+
+  # A record's field (a provider's API key) has no registry entry; the
+  # record lives in the shared database (F3, 407).
+  defp record_writes_to(%{kind: :field, layer: :global}),
+    do: "global · shared with the desktop app"
+
+  defp record_writes_to(_current), do: nil
 
   # ---------------------------------------------------- status line
 

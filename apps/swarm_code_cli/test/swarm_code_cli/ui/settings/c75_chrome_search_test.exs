@@ -13,7 +13,8 @@ defmodule SwarmCodeCLI.UI.Settings.C75ChromeSearchTest do
   alias SwarmCodeCLI.Test.C74U2Tasks
   alias SwarmCodeCLI.UI.Pass73Helpers
   alias SwarmCodeCLI.UI.DataSource.Fake.SettingsIntegrations
-  alias SwarmCodeCLI.UI.Settings.Grid
+  alias SwarmCodeCLI.UI.Projector.Settings.Chrome
+  alias SwarmCodeCLI.UI.Settings.{Glyphs, Grid, Row}
 
   @textures ["█", "▓", "▒", "░", "▄"]
 
@@ -143,6 +144,20 @@ defmodule SwarmCodeCLI.UI.Settings.C75ChromeSearchTest do
     test "the well reads `N of M · K sections`", %{state: state} do
       assert state |> lines() |> Enum.at(1) =~ ~r/\d+ of \d+ · \d+ sections\s*$/
     end
+  end
+
+  test "a record's global field says where it writes, like a setting (R25.6, 407)" do
+    {state, _fake} = opened(:providers, state: ready({160, 45}))
+    grid = Grid.for(160, 45)
+    glyphs = &Glyphs.for_caps(&1, state.capabilities)
+    api_key = %Row{id: "fld:provider:p1:api_key", kind: :field, key: "provider.api_key"}
+
+    text = fn row -> state |> Chrome.message(grid, glyphs, row) |> Enum.map_join(&elem(&1, 0)) end
+
+    assert String.trim(text.(%{api_key | layer: :global})) =~
+             ~r/writes to global · shared with the desktop app$/
+
+    refute text.(api_key) =~ "writes to"
   end
 
   test "a section result is a link: `→` in the mark slot, its section title as the tag" do
