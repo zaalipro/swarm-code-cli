@@ -109,8 +109,14 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Popover do
     h = g.(:rule_h)
     v = g.(:rule_v)
 
+    {bottom, bottom_right} =
+      case bottom do
+        {left, right} -> {left, right}
+        left -> {left, []}
+      end
+
     top = border(state, g.(:corner_tl), title, right, g.(:corner_tr), h, width)
-    foot = border(state, g.(:corner_bl), bottom, [], g.(:corner_br), h, width)
+    foot = border(state, g.(:corner_bl), bottom, bottom_right, g.(:corner_br), h, width)
 
     sides =
       Enum.map(lines, fn line ->
@@ -248,57 +254,150 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Popover do
   def lines(_state, {kind, _body}), do: [[{to_string(kind), :text_primary}]]
 
   @doc """
+  The model picker as F4 draws it (pass 75, R26.4), framed and `width` cells
+  wide in at most `room` lines: the title and the counts on the top border,
+  the legend and `Esc close` on the bottom one, the lines of
+  `editor_lines/4` inside.
+  """
+  @spec picker_frame(map(), map(), pos_integer(), pos_integer()) :: [[Text.segment()]]
+  def picker_frame(state, popover, width, room) do
+    content = editor_lines(state, popover, max(width - 4, 1), max(room - 2, 3))
+
+    title =
+      [{to_string(Map.get(popover, :title) || ""), {:text_primary, [:bold]}}] ++
+        case Map.get(popover, :subtitle) do
+          nil -> []
+          sub -> [{" · " <> to_string(sub), :text_faint}]
+        end
+
+    right =
+      case Map.get(popover, :meta) do
+        {providers, models} ->
+          [{providers, :text_muted}, {" · ", :text_faint}, {models, :text_muted}]
+
+        meta when is_binary(meta) and meta != "" ->
+          [{meta, :text_faint}]
+
+        _ ->
+          []
+      end
+
+    bottom = {Map.get(popover, :legend) || [], [{"Esc close", :text_faint}]}
+    frame(state, content, title, right, bottom, width)
+  end
+
+  @doc "The model picker's legend on its bottom border: `✓ current   ! used but unpriced`."
+  @spec picker_legend((atom() -> String.t())) :: [Text.segment()]
+  def picker_legend(glyphs) do
+    [
+      {glyphs.(:ok), :success},
+      {" current   ", :text_faint},
+      {"!", :warning},
+      {" used but unpriced", :text_faint}
+    ]
+  end
+
+  @doc """
   The inside of an editor's popover (the model picker, F4) at `inner` cells
-  and at most `room` lines: the filter, the column names, the window of rows
-  around the focused one, then the keys with `N of M` on the right.
+  and at most `room` lines: the filter with `i of n` right, the column names,
+  the `none` row, each provider's models on a spine under its heading, and
+  `+N more · type to filter` when the list is windowed. The keys are the
+  status line's (`PICK`); another editor's popover keeps its keys line.
   """
   @spec editor_lines(map(), map(), pos_integer(), pos_integer()) :: [[Text.segment()]]
   def editor_lines(state, popover, inner, room) do
     rows = Map.get(popover, :rows) || []
+    picker? = Map.get(popover, :kind) == :picker
     models? = Enum.any?(rows, &(&1.kind in [:model, :null, :typed]))
     heading = if models?, do: [picker_heading()], else: []
-    list_room = max(room - 5 - length(heading), 3)
+    list_room = max(room - if(picker?, do: 2, else: 4) - length(heading), 3)
     {window, hidden} = picker_window(rows, list_room)
-    bar = Glyphs.get(:focus_bar, Glyphs.tier(state.capabilities))
+    caps = state.capabilities
+    g = &Glyphs.for_caps(&1, caps)
+    pad = {" ", :text_primary}
 
     list =
-      Enum.map(window, fn row ->
+      window
+      |> Enum.with_index()
+      |> Enum.map(fn {row, at} ->
+        next = Enum.at(window, at + 1)
+        closes? = if next, do: next.kind != :model, else: hidden == 0
+
         line =
           case row.kind do
-            :group -> [{" ", :text_primary} | row.segments]
-            :info -> [{"  ", :text_primary} | row.segments]
-            _ -> [lead(row.focused?, bar), {" ", :text_primary} | row.segments]
+            :group ->
+              {left, right} = split_heading(row.segments)
+              Text.spread(state, [pad | left], right ++ [pad], inner)
+
+            :info ->
+              [{"  ", :text_primary} | row.segments]
+
+            :model ->
+              spine =
+                cond do
+                  row.focused? -> {g.(:focus_bar), :accent}
+                  closes? -> {g.(:spine_end), :text_faint}
+                  true -> {g.(:spine), :text_faint}
+                end
+
+              [pad, spine | row.segments]
+
+            _ ->
+              [pad, if(row.focused?, do: {g.(:focus_bar), :accent}, else: pad) | row.segments]
           end
 
-        if row.focused?, do: Text.band(line), else: line
+        if row.focused?,
+          do: [pad | Text.band(Text.fit(state, tl(line), max(inner - 1, 0)))],
+          else: line
       end)
 
     more =
       if hidden > 0,
-        do: [[{"    +#{hidden} more · type to filter", :text_faint}]],
+        do: [
+          [
+            pad,
+            {g.(:spine_end), :text_faint},
+            {"  ", :text_primary},
+            {"+#{hidden} more · type to filter", :text_faint}
+          ]
+        ],
         else: []
 
+    query =
+      Text.spread(
+        state,
+        [pad | Map.get(popover, :query) || []],
+        position(Map.get(popover, :position)) ++ [pad],
+        inner
+      )
+
+    tail = if picker?, do: [], else: [[], footer(state, popover, inner)]
+
+    [query, []] ++ heading ++ list ++ more ++ tail
+  end
+
+  defp split_heading({left, right}), do: {left, right}
+  defp split_heading(segments) when is_list(segments), do: {segments, []}
+
+  # `3 of 145`: the figure muted, the rest faint.
+  defp position(nil), do: []
+
+  defp position(words) do
+    case String.split(to_string(words), " of ", parts: 2) do
+      [i, n] -> [{i, :text_muted}, {" of " <> n, :text_faint}]
+      [words] -> [{words, :text_faint}]
+    end
+  end
+
+  defp footer(state, popover, inner) do
     keys =
       (Map.get(popover, :footer) || [])
       |> Enum.flat_map(fn {key, words} ->
         [{key, {:info, [:bold]}}, {" " <> words <> "   ", :text_faint}]
       end)
 
-    footer =
-      Text.spread(
-        state,
-        keys,
-        [{to_string(Map.get(popover, :position) || ""), :text_faint}],
-        inner
-      )
-
-    tail = if Map.get(popover, :kind) == :picker, do: [], else: [[], footer]
-
-    [Map.get(popover, :query) || [], []] ++ heading ++ list ++ more ++ tail
+    Text.spread(state, keys, [], inner)
   end
-
-  defp lead(true, bar), do: {bar, :focus}
-  defp lead(false, _bar), do: {" ", :text_primary}
 
   defp picker_heading do
     [

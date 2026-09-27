@@ -10,6 +10,8 @@ defmodule SwarmCodeCLI.UI.Settings.ModelPicker do
   from the context on every call so data that arrives while the picker is open shows up.
   """
 
+  alias SwarmCodeCLI.UI.Projector.Settings.Popover
+  alias SwarmCodeCLI.UI.Settings.Glyphs
   alias SwarmCodeCLI.UI.Settings.IntegrationRows, as: R
 
   defstruct key: nil,
@@ -352,18 +354,26 @@ defmodule SwarmCodeCLI.UI.Settings.ModelPicker do
       {"Esc", "close"}
     ]
 
+    caret = {Glyphs.for_caps(:caret, Map.get(ctx, :caps) || %{}), :accent}
+
     popover = %{
       kind: :picker,
       title: s.title,
       subtitle: s.subtitle,
-      meta: "#{R.count(length(groups), "provider")} · #{R.count(models, "model")}",
+      meta: {R.count(length(groups), "provider"), R.count(models, "model")},
       query:
         if(s.query == "" and not s.filtering,
-          do: [{"/ ", :text_muted}, {"type to filter · provider/model works too", :text_ghost}],
-          else: [{"/ ", :text_muted}, {s.query, :text_primary}]
+          do: [
+            {"/", :key},
+            {" ", :text_primary},
+            caret,
+            {"type to filter · provider/model works too", :text_faint}
+          ],
+          else: [{"/", :key}, {" ", :text_primary}, {s.query, :text_primary}, caret]
         ),
       rows: rows,
       position: if(choices == [], do: "0 of 0", else: "#{s.cursor + 1} of #{length(choices)}"),
+      legend: Popover.picker_legend(&Glyphs.for_caps(&1, Map.get(ctx, :caps) || %{})),
       footer: footer
     }
 
@@ -404,11 +414,11 @@ defmodule SwarmCodeCLI.UI.Settings.ModelPicker do
     used_by = used_by(ctx)
 
     group_rows =
-      for {pid, name, kind, _options} <- groups(s, ctx), Map.has_key?(by_provider, pid) do
+      for {pid, name, kind, options} <- groups(s, ctx), Map.has_key?(by_provider, pid) do
         header = %{
           id: "group:#{pid}",
           kind: :group,
-          segments: group_header(ctx, pid, name, kind, providers),
+          segments: group_header(ctx, pid, name, kind, providers, options),
           focused?: false
         }
 
@@ -442,10 +452,13 @@ defmodule SwarmCodeCLI.UI.Settings.ModelPicker do
     null_rows ++ group_rows ++ typed_rows
   end
 
-  defp group_header(ctx, pid, name, kind, providers) do
+  # A provider's group heading (pass 75, F4): `╭─ name Kind` and its fetch
+  # state on the left, `N models` on the right.
+  defp group_header(ctx, pid, name, kind, providers, options) do
     provider = Enum.find(providers, &(R.record_id(&1) == pid))
     last = provider && R.field(provider, "last_fetch")
     task = R.task(ctx, "provider.fetch_models", %{"id" => pid})
+    g = &Glyphs.for_caps(&1, Map.get(ctx, :caps) || %{})
 
     state =
       cond do
@@ -453,30 +466,46 @@ defmodule SwarmCodeCLI.UI.Settings.ModelPicker do
           {_id, t} = task
 
           [
-            {"  " <> R.glyph(ctx, :running) <> " ", :info},
+            {" " <> R.glyph(ctx, :running) <> " ", :info},
             {"fetching the model list · #{R.elapsed_s(ctx, t)} s", :text_muted}
           ]
 
         match?({_, _}, task) and R.field(elem(task, 1), "state") in ["failed", "timeout"] ->
           {_id, t} = task
+          message = to_string(R.field(t, "message"))
+
+          message =
+            case R.field(t, "base_url") do
+              url when is_binary(url) and url != "" ->
+                "not reachable: " <> message <> R.dot(ctx) <> url
+
+              _ ->
+                message
+            end
 
           [
-            {"  " <> R.glyph(ctx, :error) <> " ", :error},
-            {to_string(R.field(t, "message")), :text_muted},
-            {"   f fetch again", :text_faint}
+            {" " <> R.glyph(ctx, :error) <> " ", :error},
+            {message, :error},
+            {"   ", :text_primary},
+            {"f", :key},
+            {" fetch again", :text_faint}
           ]
 
         is_map(last) and R.field(last, "state") == "done" ->
-          [
-            {"  #{kind_label(kind)} · fetched this session #{R.hhmm(R.field(last, "at"))}",
-             :text_faint}
-          ]
+          [{" · fetched this session #{R.hhmm(R.field(last, "at"))}", :text_muted}]
 
         true ->
-          [{"  #{kind_label(kind)} · not fetched this session", :text_faint}]
+          [{" · not fetched this session", :text_muted}]
       end
 
-    [{name, :text_muted} | state]
+    left =
+      [
+        {g.(:spine_top) <> g.(:title_lead) <> " ", :text_faint},
+        {name, {:text_primary, [:bold]}},
+        {" " <> kind_label(kind), :text_muted}
+      ] ++ state
+
+    {left, [{R.count(length(options || []), "model"), :text_faint}]}
   end
 
   # Pass 75 (R26.4): the conversations of the last 30 days per model the

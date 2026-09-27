@@ -336,20 +336,8 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
         width = max(min(grid.columns - left - 2, 121), min(40, grid.columns - left))
         # the header's lines above, the status and the message below
         room = max(grid.rows - 5, 6)
-        content = SettingsPopover.editor_lines(state, popover, width - 4, room - 2)
-        height = length(content) + 2
-
-        framed =
-          SettingsPopover.frame(
-            state,
-            content,
-            picker_title(popover),
-            picker_meta(popover),
-            [],
-            width
-          )
-
-        {framed, under(span, height, grid), left}
+        framed = SettingsPopover.picker_frame(state, popover, width, room)
+        {framed, under(span, length(framed), grid), left}
 
       _ ->
         nil
@@ -367,21 +355,4 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
 
   defp widest(state, lines),
     do: lines |> Enum.map(&Text.cells(state, &1)) |> Enum.max(fn -> 20 end)
-
-  # `Chat model · new conversations` (the subtitle faint) and the counts.
-  defp picker_title(popover) do
-    [{to_string(Map.get(popover, :title) || ""), {:text_primary, [:bold]}}] ++
-      case Map.get(popover, :subtitle) do
-        nil -> []
-        sub -> [{" · " <> to_string(sub), :text_faint}]
-      end
-  end
-
-  defp picker_meta(popover) do
-    case Map.get(popover, :meta) do
-      nil -> []
-      "" -> []
-      meta -> [{to_string(meta), :text_faint}]
-    end
-  end
 end
