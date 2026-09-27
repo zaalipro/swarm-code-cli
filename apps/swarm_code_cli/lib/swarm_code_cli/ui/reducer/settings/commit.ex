@@ -553,6 +553,9 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Commit do
   defp consume("show_diffs", {state, effects}, legacy),
     do: {%{state | show_diffs: legacy.show_diffs}, effects}
 
+  defp consume("agent_summaries", {state, effects}, legacy),
+    do: {%{state | agent_summaries?: legacy.agent_summaries?}, effects}
+
   defp consume("mouse", {state, effects}, legacy) do
     if env?(state, "terminal.mouse") or state.mouse? == legacy.mouse?,
       do: {state, effects},

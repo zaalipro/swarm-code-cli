@@ -32,6 +32,20 @@ defmodule SwarmCodeCLI.UI.Reducer.Display do
     changed(%{state | show_diffs: on?}, words, [{:save_preferences, %{show_diffs: on?}}])
   end
 
+  def set(state, :agent_summaries?, :toggle),
+    do: set(state, :agent_summaries?, not state.agent_summaries?)
+
+  def set(state, :agent_summaries?, on?) when is_boolean(on?) do
+    words =
+      if on?,
+        do: "AI status lines on · /panel summaries off hides them",
+        else: "AI status lines off · /panel summaries on brings them back"
+
+    changed(%{state | agent_summaries?: on?}, words, [
+      {:save_preferences, %{agent_summaries?: on?}}
+    ])
+  end
+
   def set(state, :theme_mode, :toggle),
     do: set(state, :theme_mode, if(state.theme_mode == :light, do: :dark, else: :light))
 

@@ -66,7 +66,8 @@ defmodule SwarmCodeCLI.UI.Reducer do
              init.banner in [nil, :live_banner, :persisted_banner] and
              init.focus in ["main", "composer"] and init.keymap in [:default, :vim] and
              init.panel_mode in [:full, :compact, :hidden] and
-             is_boolean(init.show_diffs) and init.theme_mode in [:dark, :light] and
+             is_boolean(init.show_diffs) and is_boolean(init.agent_summaries?) and
+             init.theme_mode in [:dark, :light] and
              init.theme_env in [nil, :dark, :light] and is_boolean(init.mouse?) and
              SwarmCodeCLI.UI.Intent.valid_id?(init.id_prefix) and is_integer(init.now) and
              init.now >= 0 and is_integer(init.deadline_ms) and init.deadline_ms >= 0 and
