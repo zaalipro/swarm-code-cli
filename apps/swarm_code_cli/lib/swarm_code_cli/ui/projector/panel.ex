@@ -878,7 +878,9 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
       end
 
     glyph_mods = if view.state == :needs_you, do: [:bold], else: []
-    name = Draw.pad_to(Draw.elide(view.display, 24, state), col, state)
+    # A name wider than the column ends in `…` one cell short of it, so a
+    # space always parts it from the status (6.5).
+    name = Draw.pad_to(Draw.elide(view.display, min(24, col - 1), state), col, state)
 
     status =
       if status? do
