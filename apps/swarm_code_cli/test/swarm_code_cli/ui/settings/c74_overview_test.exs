@@ -220,9 +220,10 @@ defmodule SwarmCodeCLI.UI.Settings.C74OverviewTest do
     test "the search row counts what changed, what needs attention and what env sets" do
       [_header, search | _] = lines(appendix_a())
       n = changed_count(appendix_a())
-      # pass 75 (R25.2): three spaces apart, the attention chip padded
+      # pass 75 (R25.2): three spaces apart, the attention chip padded; this
+      # terminal is NO_COLOR, whose twin draws the chip as `[! N …]` (R28.2)
       assert String.replace(search, ~r/ {2,}/, "  ") =~
-               "• #{n} changed from default  ! 3 need attention  2 from env"
+               "• #{n} changed from default  [! 3 need attention]  2 from env"
     end
   end
 
