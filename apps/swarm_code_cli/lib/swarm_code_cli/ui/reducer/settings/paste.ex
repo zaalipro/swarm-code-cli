@@ -250,7 +250,7 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Paste do
         [{"typing · not shown", :text_muted}]
 
       Target.filled?(paste) ->
-        [{marks <> " pasted · not shown", :text_primary}, {"  not saved", :warning}]
+        [{marks <> " pasted", :text_primary}, {" · ", :text_faint}, {"not shown", :text_muted}]
 
       true ->
         [{prompt(paste.target), :text_ghost}]
@@ -276,6 +276,18 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Paste do
   @spec lines(Target.t()) :: [[{String.t(), atom()}]]
   def lines(%Target{refused: {:replacement, words}, target: target}) do
     if field(target, :own_lines) == true, do: [], else: [[{words, :warning}]]
+  end
+
+  # Pass 75 (E): a pasted value says how much was pasted, never what, on
+  # the row's second line, with `not saved` right (D13).
+  def lines(%Target{typing?: false, pending_task: nil, refused: nil, lines: count} = paste) do
+    if Target.filled?(paste) do
+      count = max(count, 1)
+      noun = if count == 1, do: "line", else: "lines"
+      [[{"pasted · not shown · #{count} #{noun}", :text_muted}, {"not saved", :warning}]]
+    else
+      []
+    end
   end
 
   def lines(%Target{}), do: []

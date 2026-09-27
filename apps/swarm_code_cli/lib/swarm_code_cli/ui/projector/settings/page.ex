@@ -253,7 +253,7 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Page do
       |> Enum.map(fn {line, at} ->
         spine = spine(state, row, group, at, count, focus?, opts)
         line = Text.fit(state, [spine | line], grid.page.width)
-        if focus? and Keyword.get(opts, :band?, true), do: Text.band(line), else: line
+        if focus? and Keyword.get(opts, :band?, true), do: band(line), else: line
       end)
 
     drawn =
@@ -380,7 +380,10 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Page do
         if(row.label == "", do: width - 5, else: grid.page.width - grid.value_offset - 3)
       )
 
+    well? = focus? and well?(state.settings, row)
+    value = if well?, do: caret(state, row, value), else: value
     values = Text.wrap_segments(state, value, max(value_room, 1))
+    values = if well?, do: well(state, values, value_room), else: values
     chip? = match?([{_, :chip_ok} | _], value)
 
     rows = max(length(label), length(values))
@@ -400,7 +403,14 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Page do
 
             true ->
               lead = if k == 0, do: head, else: [{"  ", :text_primary}]
-              gap = if k == 0 and chip?, do: [], else: [{" ", :text_primary}]
+
+              gap =
+                cond do
+                  k == 0 and chip? -> []
+                  k == 0 and well? -> [{" ", {:text_primary, :on, :hover}}]
+                  true -> [{" ", :text_primary}]
+                end
+
               indent = if k == 0, do: [], else: [{"  ", :text_primary}]
 
               lead ++ Text.fit(state, label_k, grid.label_width) ++ gap ++ indent ++ value_k
@@ -454,6 +464,58 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Page do
         if at == last,
           do: Text.spread(state, [indent | part], right, width),
           else: Text.fit(state, [indent | part], width)
+      end)
+    end)
+  end
+
+  # The band over a focused item's line; a well (an open text field) keeps
+  # its own fill on its cells.
+  defp band(line) do
+    Enum.map(line, fn
+      {_text, {_role, :on, _background}} = segment -> segment
+      segment -> Text.band([segment]) |> hd()
+    end)
+  end
+
+  @well_editors [
+    Editors.Text,
+    Editors.Number,
+    Editors.Multiline,
+    Editors.Color,
+    Editors.LspCommand
+  ]
+
+  # A text field is open on the row: a text, number, multi-line, colour or
+  # command editor, or the paste target of a secret (R26.2).
+  defp well?(layer, row) do
+    case editing(layer, row) do
+      %{module: module} -> module in @well_editors
+      nil -> pasting?(layer, row)
+    end
+  end
+
+  # The editor's caret as the accent caret; the paste target's after its words.
+  defp caret(state, row, value) do
+    caret = {Glyphs.for_caps(:caret, state.capabilities), :accent}
+
+    if pasting?(state.settings, row) and editing(state.settings, row) == nil do
+      value ++ [caret]
+    else
+      Enum.map(value, fn
+        {"▏", :focus} -> caret
+        segment -> segment
+      end)
+    end
+  end
+
+  # Each value line on the `hover` well, padded to the room before the tag.
+  defp well(state, lines, room) do
+    Enum.map(lines, fn line ->
+      line
+      |> then(&Text.fit(state, &1, max(room, Text.cells(state, &1))))
+      |> Enum.map(fn
+        {text, {_role, :on, _background}} = segment when is_binary(text) -> segment
+        {text, role} -> {text, {role, :on, :hover}}
       end)
     end)
   end
