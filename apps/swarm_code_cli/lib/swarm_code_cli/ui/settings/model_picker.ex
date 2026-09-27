@@ -198,7 +198,12 @@ defmodule SwarmCodeCLI.UI.Settings.ModelPicker do
   session is offered, and the providers for the fetch state and the names.
   """
   @spec loads() :: [{:records, String.t(), map()}]
-  def loads, do: [{:records, "model_options", %{}}, {:records, "providers", %{}}]
+  def loads,
+    do: [
+      {:records, "model_options", %{}},
+      {:records, "providers", %{}},
+      {:records, "unpriced_models", %{}}
+    ]
 
   # the cursor starts on the current value once the options have arrived
   # (QA #2 P0-2: not before; the null choice alone placed it for good)
@@ -396,6 +401,8 @@ defmodule SwarmCodeCLI.UI.Settings.ModelPicker do
 
     typed = Enum.filter(choices, &match?({:typed, _, _, _}, &1))
 
+    used_by = used_by(ctx)
+
     group_rows =
       for {pid, name, kind, _options} <- groups(s, ctx), Map.has_key?(by_provider, pid) do
         header = %{
@@ -410,7 +417,7 @@ defmodule SwarmCodeCLI.UI.Settings.ModelPicker do
             %{
               id: "model:#{pid}:#{model}",
               kind: :model,
-              segments: model_segments(ctx, s, pid, model, opt),
+              segments: model_segments(ctx, s, pid, model, opt, used_by),
               focused?: c == focused
             }
           end
@@ -472,24 +479,57 @@ defmodule SwarmCodeCLI.UI.Settings.ModelPicker do
     [{name, :text_muted} | state]
   end
 
-  defp model_segments(ctx, s, pid, model, opt) do
+  # Pass 75 (R26.4): the conversations of the last 30 days per model the
+  # pricing page lists as used but unpriced (an older daemon: none).
+  defp used_by(ctx) do
+    for rec <- R.items(ctx, "unpriced_models") || [],
+        f = R.fields(rec),
+        model = R.field(f, "model"),
+        is_binary(model),
+        into: %{},
+        do: {model, R.field(f, "conversations_30d") || 0}
+  end
+
+  # A model's line: the mark slot (`✓` the current, `!` used but unpriced),
+  # the model, its context and its price; `no price` is amber only when the
+  # model has conversations (it is spend without a price), then `used by N
+  # conversations` and the words of today.
+  defp model_segments(ctx, s, pid, model, opt, used_by) do
     current = current?(s, pid, model)
     price = R.field(opt, "price")
     fetched = R.field(opt, "in_last_fetch")
+    used = Map.get(used_by, model, 0)
+    priced? = is_map(price) and R.field(price, "input") != nil
+    alarm? = not priced? and used > 0
 
     price_seg =
-      if is_map(price) and R.field(price, "input") != nil,
-        do:
+      cond do
+        priced? ->
           {pad("#{R.money(R.field(price, "input"))} · #{R.money(R.field(price, "output"))}", 16),
-           :text_muted},
-        else: {pad("no price", 16), :warning}
+           :text_muted}
+
+        alarm? ->
+          {pad("no price", 16), :warning}
+
+        true ->
+          {pad("no price", 16), :text_muted}
+      end
+
+    mark =
+      cond do
+        current -> {R.glyph(ctx, :ok), :success}
+        alarm? -> {"!", {:warning, [:bold]}}
+        true -> {" ", :text_primary}
+      end
 
     [
-      {if(current, do: R.glyph(ctx, :ok) <> " ", else: "  "), :success},
+      mark,
+      {" ", :text_primary},
       {pad(model, 34), :text_primary},
       {pad(R.context(R.field(opt, "context_window")), 16), :text_muted},
       price_seg
     ] ++
+      if(used > 0, do: [{"used by #{R.count(used, "conversation")}", :text_faint}], else: []) ++
       if(fetched == false, do: [{"not in the last fetch", :text_faint}], else: []) ++
       if(current, do: [{"  current", :text_faint}], else: []) ++
       if(R.field(opt, "provider_default") == true and not current,

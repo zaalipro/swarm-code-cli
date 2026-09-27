@@ -41,6 +41,22 @@ defmodule SwarmCodeCLI.UI.Settings.C74ModelPickerTest do
 
     assert Enum.any?(lines, &(&1 =~ ~r/claude-opus-5\s+200k\s+15.00 · 75.00/))
     assert Enum.any?(lines, &(&1 =~ ~r/claude-sonnet-5\s+family default\s+no price/))
+
+    # pass 75 (R26.4): `no price` is amber only for a model in `unpriced_models`
+    # with conversations in the last 30 days (the fake: claude-sonnet-5, qwen3-coder)
+    no_price =
+      for row <- ModelPicker.display(s, c).popover.rows,
+          row.kind == :model,
+          {"no price" <> _, role} <- row.segments,
+          do: {row.id |> String.split(":") |> List.last(), role}
+
+    assert {"claude-sonnet-5", :warning} in no_price
+    assert {"qwen3-coder", :warning} in no_price
+
+    for {model, role} <- no_price,
+        model not in ["claude-sonnet-5", "qwen3-coder"],
+        do: assert(role == :text_muted, model)
+
     # the cursor starts on the current value
     assert view.value == [{"deepseek-v4-pro", :text_primary}, {" · DeepSeek", :text_faint}]
     assert view.popover.position == "4 of 5"
