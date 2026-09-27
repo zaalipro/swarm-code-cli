@@ -59,7 +59,9 @@ defmodule SwarmCodeCLI.UI.Projector.Pass73NamesTest do
       # pass 75: the trimmed slug is humanised (`angular-plan` → `Angular plan`).
       assert Name.of(state, angular) == "Angular plan"
       assert text =~ "Angular plan wants to run a command", "#{panel} #{c}x#{r}"
-      assert text =~ ~r/NEEDS YOU · Angular plan|! 1 NEEDS YOU/
+      # pass 75 (7.2): the band names the agent on its request row.
+      assert text =~ "! 1 needs you · oldest first"
+      assert text =~ ~r/│ ⋔ Angular plan wants to run/u
       refute text =~ "review-angular-plan", "#{panel} #{c}x#{r}:\n" <> text
       refute text =~ "angular-plan", "#{panel} #{c}x#{r}:\n" <> text
       # Beside a state glyph (panel rows, the strip, the chat's agent
@@ -91,6 +93,60 @@ defmodule SwarmCodeCLI.UI.Projector.Pass73NamesTest do
     refute text =~ ~r/[●◐◒◌!✓✗○⏸] Angular(?! plan)/u
   end
 
+  # pass 75 (4.5, 8.3, SA2 O): the slug stays the identifier; the ^F
+  # overlay shows it, faint, after an AI title.
+  test "the overlay header shows the slug after an AI title" do
+    state = Pass73Scenes.screenshot_11(160, 45)
+    agent = state.read_model.agents["agent-80-5"]
+
+    titled =
+      put_in(state.read_model.agents["agent-80-5"], %{
+        agent
+        | name: "build-verify-review",
+          title: "Build check"
+      })
+
+    {:ok, open} =
+      SwarmCodeCLI.UI.Reducer.Overlay.open(titled, Pass73Scenes.swarm_id(), "agent-80-5")
+
+    header = open |> screen() |> hd()
+    assert header =~ "Build check  build-verify-review", header
+
+    faint = SwarmCodeCLI.UI.Theme.style(:text_faint, open.capabilities).foreground
+    assert %{style: %{foreground: ^faint}} = find_span(open, "  build-verify-review")
+
+    # A turn-limit stop reads `✗ turn limit` in the error colour.
+    stopped =
+      update_in(titled.read_model.agents["agent-80-5"], fn a ->
+        %{a | state: :done} |> Map.merge(%{panel_state: :done, stop_reason: "turn_budget"})
+      end)
+
+    {:ok, open} =
+      SwarmCodeCLI.UI.Reducer.Overlay.open(stopped, Pass73Scenes.swarm_id(), "agent-80-5")
+
+    header = open |> screen() |> hd()
+    assert header =~ "Build check  build-verify-review  ✗ turn limit", header
+    red = SwarmCodeCLI.UI.Theme.style(:error, open.capabilities).foreground
+    assert %{style: %{foreground: ^red}} = find_span(open, " turn limit")
+
+    # Without an AI title the header is unchanged: the name, then the state.
+    {:ok, open} =
+      SwarmCodeCLI.UI.Reducer.Overlay.open(state, Pass73Scenes.swarm_id(), "agent-80-3")
+
+    header = open |> screen() |> hd()
+    assert header =~ ~r/› Elixir plan  \S \w/u, header
+    refute header =~ "review-elixir-plan"
+  end
+
+  defp find_span(state, text) do
+    {scene, _} = Projector.project(state)
+
+    scene.regions
+    |> Enum.flat_map(&Map.get(&1, :blocks, []))
+    |> Enum.flat_map(&Map.get(&1, :spans, []))
+    |> Enum.find(&(SwarmCodeCLI.UI.SafeText.value(&1.text) == text))
+  end
+
   test "the card and the overlay name the agent by Panel.Name, the approval's raw name aside" do
     state = Pass73Scenes.screenshot_11(160, 45)
     item = state.read_model.interactions["demo-approval-80"]
@@ -105,13 +161,16 @@ defmodule SwarmCodeCLI.UI.Projector.Pass73NamesTest do
       rows = screen(state)
       panel_rows = region(rows, state, :inspector)
 
-      band = Enum.find_index(panel_rows, &(&1 =~ "NEED"))
+      band = Enum.find_index(panel_rows, &(&1 =~ ~r/needs? you · oldest first/))
       assert band, Enum.join(panel_rows, "\n")
 
+      # pass 75 (7.2): the flat command on at most two rows, the second cut.
       command_rows = Enum.filter(panel_rows, &(&1 =~ "curl"))
       assert [one] = command_rows, Enum.join(panel_rows, "\n")
       assert one =~ "cd apps/ailogic_web && curl"
-      assert one =~ "…"
+      assert [^one, two, why] = Enum.slice(panel_rows, band + 2, 3)
+      assert two =~ "…"
+      refute why =~ ~r/json|python/
       refute Enum.any?(panel_rows, &(&1 =~ "import json"))
 
       # The card still shows the command's own lines.
@@ -181,18 +240,24 @@ defmodule SwarmCodeCLI.UI.Projector.Pass73NamesTest do
     panel_rows = region(rows, state, :inspector)
     panel = Enum.join(panel_rows, "\n")
 
-    assert [first, _] = Enum.filter(panel_rows, &(&1 =~ ~r/ls lib|curl/)), panel
-    assert first =~ "Security plan"
-    assert Enum.join(rows, "\n") =~ "Security plan wants to run a command"
-    # The swarm's row under the run in chat names the same agent.
-    assert panel =~ "! Security plan wants to run a command", panel
-    refute panel =~ "Angular plan wants to"
+    # pass 75 (7.2): the band's request rows, oldest first.
+    asking = fn rows ->
+      rows |> Enum.map(&Regex.run(~r/│ \S (.+?) wants to run/u, &1)) |> Enum.reject(&is_nil/1)
+    end
 
-    # With the swarm in view, its footer does too.
+    assert [[_, first], [_, second]] = asking.(panel_rows), panel
+    assert first == "Security plan"
+    assert second == "Angular plan"
+    assert Enum.join(rows, "\n") =~ "Security plan wants to run a command"
+    # The swarm's rows name the same agents.
+    assert panel =~ ~r/! Security plan +wants to run/, panel
+
+    # With the swarm in view, the band still leads with it; V2 has no footer.
     state = %{state | destination: {:run, Pass73Scenes.swarm_id()}}
-    panel = state |> screen() |> region(state, :inspector) |> Enum.join("\n")
-    assert panel =~ "Security plan is paused on", panel
-    refute panel =~ "Angular plan is paused on"
+    panel_rows = state |> screen() |> region(state, :inspector)
+    panel = Enum.join(panel_rows, "\n")
+    assert [[_, "Security plan"] | _] = asking.(panel_rows), panel
+    refute panel =~ "is paused on"
   end
 
   test "a chat turn's role label: the node's own name, the run's title, else Assistant" do
