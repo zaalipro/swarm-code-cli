@@ -11,6 +11,7 @@ defmodule SwarmCodeCLI.UI.Settings.C75LayoutTest do
   import SwarmCodeCLI.UI.C74U3Helpers, except: [screen: 1]
 
   alias SwarmCodeCLI.UI.Pass73Helpers
+  alias SwarmCodeCLI.UI.Projector.Settings.Page
   alias SwarmCodeCLI.UI.Settings.{Grid, Nav, Row}
   alias SwarmCodeCLI.UI.Width
 
@@ -135,6 +136,22 @@ defmodule SwarmCodeCLI.UI.Settings.C75LayoutTest do
 
       assert MapSet.disjoint?(roles(state), MapSet.new(@forbidden))
     end
+  end
+
+  test "a `▸ ` label and a `◐ ` value both leave their text; the slot draws `◐` (R22.1-22.2, 407)" do
+    caps = rich(Pass73Helpers.ready([], columns: 160, rows: 45)).capabilities
+
+    row = %Row{
+      id: "act:fetch",
+      label: "▸ Fetch models",
+      value: [{"◐ fetching the model list", :text_primary}, {" · 6 s", :text_faint}]
+    }
+
+    hoisted = Page.hoist(row, caps)
+    assert hoisted.label == "Fetch models"
+    assert [{"fetching the model list", :text_primary}, {" · 6 s", :text_faint}] = hoisted.value
+    assert :action in hoisted.marks and :running in hoisted.marks
+    assert Page.mark(hoisted, caps, false) == {"◐", :info}
   end
 
   test "with the focus on the rail the band and `▌` move there (D9)" do

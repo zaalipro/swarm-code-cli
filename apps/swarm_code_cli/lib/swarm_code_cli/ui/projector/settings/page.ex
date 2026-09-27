@@ -164,8 +164,9 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Page do
 
   @doc """
   A row as the page draws it: a leading `▸ `, `→ ` or `◐ ` (or the tier's
-  twin) of its label, else of its first value segment, becomes the `:action`,
-  `:link` or `:running` mark in the mark slot; a finished task's `✓ ` plus its
+  twin) of its label and of its first value segment becomes the `:action`,
+  `:link` or `:running` mark in the mark slot (the slot draws the first by
+  priority); a finished task's `✓ ` plus its
   muted summary becomes one `chip_ok` chip. The section's row data is not
   changed (D4).
   """
@@ -182,25 +183,34 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Page do
     end)
   end
 
-  defp hoist_prefix(%Row{label: label, value: value} = row, prefixes) do
+  # The label's prefix, then the first value segment's: `▸ Fetch models` with
+  # `◐ fetching …` loses both and the slot draws `◐` by priority (R22.1, 407).
+  defp hoist_prefix(%Row{} = row, prefixes),
+    do: row |> hoist_label(prefixes) |> hoist_value(prefixes)
+
+  defp hoist_label(%Row{label: label} = row, prefixes) do
     case Enum.find(prefixes, fn {_, prefix} -> String.starts_with?(label, prefix) end) do
       {mark, prefix} ->
         %{row | label: String.replace_prefix(label, prefix, ""), marks: add_mark(row.marks, mark)}
 
       nil ->
-        with [{text, role} | rest] <- value,
-             true <- is_binary(text),
-             text = if(text in ["▸", "+"] and rest == [], do: text <> " ", else: text),
-             {mark, prefix} <-
-               Enum.find(prefixes, fn {_, prefix} -> String.starts_with?(text, prefix) end) do
-          %{
-            row
-            | value: [{String.replace_prefix(text, prefix, ""), role} | rest],
-              marks: add_mark(row.marks, mark)
-          }
-        else
-          _ -> row
-        end
+        row
+    end
+  end
+
+  defp hoist_value(%Row{value: value} = row, prefixes) do
+    with [{text, role} | rest] <- value,
+         true <- is_binary(text),
+         text = if(text in ["▸", "+"] and rest == [], do: text <> " ", else: text),
+         {mark, prefix} <-
+           Enum.find(prefixes, fn {_, prefix} -> String.starts_with?(text, prefix) end) do
+      %{
+        row
+        | value: [{String.replace_prefix(text, prefix, ""), role} | rest],
+          marks: add_mark(row.marks, mark)
+      }
+    else
+      _ -> row
     end
   end
 
