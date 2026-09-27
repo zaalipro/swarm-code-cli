@@ -62,8 +62,11 @@ class LiveSession(unittest.TestCase):
                 terminal.send(b'Settings')
                 terminal.wait_for(b'Settings')
                 terminal.send(b'\r')
-                terminal.wait_for(b'Unavailable')
-                terminal.capture('live-library-unavailable')
+                # Since pass 74 (D22) the Settings row opens the settings layer,
+                # not the library's form; an unsaved session says why it holds
+                # no saved settings (LiveBackend's words).
+                terminal.wait_for(b'Saved settings are available in a saved session')
+                terminal.capture('live-settings-unavailable')
                 # Ctrl-C closes the layers (a press that closes, clears or stops
                 # never arms the quit), then two idle presses quit (pass71 R1).
                 for _ in range(8):
