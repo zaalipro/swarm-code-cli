@@ -256,7 +256,8 @@ defmodule SwarmCodeCLI.UI.Projector.Interview do
 
   @doc """
   Why the agent asks: the last sentence of the asker's newest assistant text
-  of the same run written before the ask's own op item, quoted by the caller,
+  (a message, or its own model turn) of the same run written before the
+  ask's own op item, quoted by the caller,
   cut to `width - 2` cells; nil when the op item is not loaded or nothing
   precedes it.
   """
@@ -268,8 +269,7 @@ defmodule SwarmCodeCLI.UI.Projector.Interview do
          %{} = said <-
            items
            |> Enum.filter(
-             &(&1.run_id == ask.run_id and &1.role == :assistant and &1.kind == :text and
-                 &1.created_sequence < bound)
+             &(&1.run_id == ask.run_id and said?(&1, ask) and &1.created_sequence < bound)
            )
            |> Enum.max_by(& &1.created_sequence, fn -> nil end),
          sentence when sentence != "" <- last_sentence(plain(said.text)) do
@@ -278,6 +278,17 @@ defmodule SwarmCodeCLI.UI.Projector.Interview do
       _ -> nil
     end
   end
+
+  # An assistant message, or the asker's own model turn: a swarm agent's
+  # words live in its `llm` op (kind `:thinking`, role `:tool`, `agent_id` =
+  # the agent), never in a message (the sandbox's Lead, 409).
+  defp said?(%{role: :assistant, kind: :text}, _ask), do: true
+
+  defp said?(%{kind: :thinking, agent_id: agent_id} = item, %{agent_id: agent_id})
+       when is_binary(agent_id),
+       do: plain(item.text) != ""
+
+  defp said?(_item, _ask), do: false
 
   defp plain(%SafeText{} = text), do: SafeText.value(text)
   defp plain(text) when is_binary(text), do: text

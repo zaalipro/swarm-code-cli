@@ -331,6 +331,36 @@ defmodule SwarmCodeCLI.UI.C75InterviewRenderTest do
     assert note_rows(scene, plan) == @qa1
   end
 
+  # 409 (sandbox): a swarm Lead's words before its ask are its own `llm` op
+  # (kind `:thinking`, role `:tool`, `agent_id` = the Lead), not a message.
+  test "QA1: the why row reads the asker's own model turn before the ask (409)" do
+    state = qa1(176, 45)
+
+    turn = %DTO.TranscriptItem{
+      id: "t10",
+      run_id: @run,
+      conversation_id: "c",
+      node_id: "llm-op",
+      agent_id: @lead,
+      role: :tool,
+      kind: :thinking,
+      created_sequence: 10,
+      text: "One decision before I split the work: the rest follows from the scouts."
+    }
+
+    other = %{turn | id: "t9", agent_id: "someone-else", created_sequence: 9, text: "Not me."}
+    model = state.read_model
+    transcript = model.transcript |> Map.put("t10", turn) |> Map.put("t9", other)
+    state = %{state | read_model: %{model | transcript: transcript}}
+
+    {scene, plan} = paint(state)
+    assert note_rows(scene, plan) == @qa1
+
+    alone = %{state | read_model: %{model | transcript: Map.delete(transcript, "t10")}}
+    {scene, plan} = paint(alone)
+    refute Enum.any?(note_rows(scene, plan), &(&1 =~ "Not me."))
+  end
+
   test "QA1 roles: the name, the rail, the descriptions, the frame and the ghosted chat" do
     state = qa1(176, 45)
     {scene, plan} = paint(state)
