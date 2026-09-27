@@ -53,17 +53,19 @@ defmodule SwarmCodeCLI.UI.Question do
         |> Enum.sort_by(&order_key/1)
 
       first = hd(rows)
+      # A row without its question body still counts as waiting.
+      question = first.question || %SwarmCodeCLI.UI.DataSource.DTO.Question{}
 
       %{
         node_id: node_id,
         run_id: first.run_id,
         revision: revision,
         rows: rows,
-        total: max(first.question.total, length(rows)),
+        total: max(question.total, length(rows)),
         deadline: first.deadline,
-        requested_at: first.question.requested_at,
-        agent_id: first.question.agent_id,
-        legacy?: first.question.total == 0
+        requested_at: question.requested_at,
+        agent_id: question.agent_id,
+        legacy?: question.total == 0
       }
     end)
     |> Enum.sort_by(&order_key(hd(&1.rows)))
