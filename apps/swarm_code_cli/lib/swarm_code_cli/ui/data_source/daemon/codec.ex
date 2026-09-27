@@ -182,6 +182,9 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
     DTO.VerdictCheck => [:ok, :note],
     # pass72 G19: `tool`, the approval's tool (absent from older bodies).
     DTO.NeedsYou => [:agent_id, :node_id, :agent_name, :reason, :requested_at, :tool],
+    # pass75 interview: the ask's facts and the option's own description.
+    DTO.Question => [:index, :header, :total, :agent_id, :requested_at],
+    DTO.QuestionOption => [:description],
     DTO.Phase => [:agent_count, :live, :done]
   }
 
