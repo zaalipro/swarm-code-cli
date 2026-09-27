@@ -35,8 +35,10 @@ defmodule SwarmCodeCLI.UI.Projector.Interview do
         narrow? = class in @narrow_classes
         {:ok, title} = SafeText.external(name <> " asks you", SafeText.Limits.content())
 
+        # The focus region is "dialog", as every dialog's is (19.3: the
+        # gallery's question cells carry `data-focus="dialog"`).
         %Dialog{
-          id: "interview-" <> node_id,
+          id: "dialog",
           rect: rect,
           title: title,
           blocks: Enum.map(visible, &elem(&1, 1)),
