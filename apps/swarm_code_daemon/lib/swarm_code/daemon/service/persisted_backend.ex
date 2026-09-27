@@ -2957,8 +2957,13 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
           }
         ]
 
+      # pass75 interview: the ask's clock and who asked when reach the note.
       p.kind == :question ->
-        SwarmCode.Daemon.Service.QuestionProjection.rows(base, detail[:questions] || [])
+        SwarmCode.Daemon.Service.QuestionProjection.rows(
+          %{base | "deadline" => unix_ms(detail[:deadline_at]) || 0},
+          detail[:questions] || [],
+          %{agent_id: detail[:agent_id], requested_at: unix_ms(detail[:requested_at])}
+        )
 
       true ->
         []
