@@ -71,15 +71,13 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
     [%Block.RichText{spans: spans}]
   end
 
-  @doc "How many approvals and questions are waiting on the user, across every run."
+  @doc "How many approvals and asks are waiting on the user, across every run (one per ask)."
   def waiting_count(state) do
     runs = state.read_model.runs
 
-    state.read_model.interactions
-    |> Map.values()
-    |> Enum.count(
-      &(&1.state == :pending and not match?(%{state: :superseded}, Map.get(runs, &1.run_id)))
-    )
+    state
+    |> SwarmCodeCLI.UI.Question.needs()
+    |> Enum.count(&(not match?(%{state: :superseded}, Map.get(runs, &1.run_id))))
   end
 
   # With vim on and the composer focused the row leads with the mode.
@@ -712,6 +710,7 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
     ascii? = state.capabilities.ascii?
 
     action = enter_action(state)
+    typing? = SwarmCodeCLI.UI.Keymap.typing_under_card?(state)
 
     enter =
       case enter_words(action) do
@@ -721,17 +720,26 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
 
     # pass73 G1 (QA Q1-02): over a draft typed under the card, `n` and `?`
     # type; Ctrl-C clears the draft and Tab completes its `/` command.
-    rest =
-      if SwarmCodeCLI.UI.Keymap.typing_under_card?(state) do
-        complete? = SlashPalette.open?(state) and action != :complete
+    # pass 75: the question note draws its own Enter words, so the row
+    # names only Esc and the keys sheet.
+    entries =
+      cond do
+        typing? ->
+          complete? = SlashPalette.open?(state) and action != :complete
 
-        [{:escape, "later", :dialog}, {:interrupt, "clear", :dialog}] ++
-          if(complete?, do: [{:complete, "complete", :composer}], else: [])
-      else
-        [{:escape, "later", :dialog}, {:next_need, "next", :dialog}, {:help, "keys", :dialog}]
+          enter ++
+            [{:escape, "later", :dialog}, {:interrupt, "clear", :dialog}] ++
+            if(complete?, do: [{:complete, "complete", :composer}], else: [])
+
+        kind == :question ->
+          [{:escape, "later", :dialog}, {:help, "keys", :dialog}]
+
+        true ->
+          enter ++
+            [{:escape, "later", :dialog}, {:next_need, "next", :dialog}, {:help, "keys", :dialog}]
       end
 
-    (enter ++ rest)
+    entries
     |> Enum.flat_map(fn {id, words, context} ->
       with %{} = binding <- Bindings.fetch(id),
            key when key != nil <-
