@@ -368,6 +368,14 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Page do
     glyph = &Glyphs.for_caps(&1, caps)
 
     cond do
+      # a focused hero (a leading info row with keys) draws `▌` like any
+      # focused item, though its group has no spine (R23.1, 407)
+      focus? and not group.spined? and not Glyphs.twin?(caps) ->
+        {glyph.(:focus_bar), :accent}
+
+      focus? and not group.spined? and at == 0 ->
+        {">", {:text_primary, [:bold, :reversed]}}
+
       not group.spined? ->
         {" ", :text_primary}
 

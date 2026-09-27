@@ -198,6 +198,29 @@ defmodule SwarmCodeCLI.UI.Settings.C75LayoutTest do
     refute first =~ ~r/Enter edit\s+Enter edit/
   end
 
+  test "a focused hero (a leading info row with keys) draws `▌` on its lines (R23.1, 407)" do
+    state = open(:models_effort, {160, 45})
+    grid = Grid.for(160, 45)
+
+    row = %Row{
+      id: "info:head:m1",
+      kind: :info,
+      label: "fakeq2",
+      value: [{"MCP server · stdio · every project", :text_muted}],
+      keys: [{"R", :restart, "restart now"}]
+    }
+
+    [group] = Page.groups([row])
+    refute group.spined?
+
+    for line <- Page.row_lines(state, row, group, grid, focus?: true) do
+      assert Enum.map_join(line, &elem(&1, 0)) =~ ~r/^▌/
+    end
+
+    [plain | _] = Page.row_lines(state, row, group, grid)
+    assert Enum.map_join(plain, &elem(&1, 0)) =~ ~r/^ /
+  end
+
   test "with the focus on the rail the band and `▌` move there (D9)" do
     state = open(:models_effort, {160, 45})
     {state, _} = verb(state, :previous_region)
