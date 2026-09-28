@@ -1,6 +1,6 @@
 defmodule SwarmCodeCLI.Release.LauncherTest do
   @moduledoc """
-  Pass 70 E4: `rel/overlays/bin/swarmcode` run as a subprocess against a stub
+  Pass 70 E4: `rel/overlays/bin/ncode` run as a subprocess against a stub
   release. The launcher owns usage (exit 2, before any VM starts), maps the
   session flags to the environment the release reads, and picks the full
   screen, `-p` or the plain presenter. The stub records what it was asked and
@@ -8,7 +8,7 @@ defmodule SwarmCodeCLI.Release.LauncherTest do
   """
   use ExUnit.Case, async: true
 
-  @launcher Path.expand("../../../../../rel/overlays/bin/swarmcode", __DIR__)
+  @launcher Path.expand("../../../../../rel/overlays/bin/ncode", __DIR__)
   @conversation "7d01acff-1111-4111-8111-111111111111"
 
   @stub """
@@ -27,23 +27,23 @@ defmodule SwarmCodeCLI.Release.LauncherTest do
 
   setup do
     base =
-      Path.join(System.tmp_dir!(), "swarmcode-launcher-#{System.unique_integer([:positive])}")
+      Path.join(System.tmp_dir!(), "ncode-launcher-#{System.unique_integer([:positive])}")
 
     bin = Path.join(base, "release/bin")
     project = Path.join(base, "project")
     File.mkdir_p!(bin)
     File.mkdir_p!(project)
     File.mkdir_p!(Path.join(base, "release/releases"))
-    File.cp!(@launcher, Path.join(bin, "swarmcode"))
+    File.cp!(@launcher, Path.join(bin, "ncode"))
     File.write!(Path.join(bin, "swarm_code_cli"), @stub)
     File.write!(Path.join(bin, "load_provider_env.sh"), ":\n")
     File.write!(Path.join(base, "release/releases/start_erl.data"), "16.0 0.1.0-dev\n")
-    File.chmod!(Path.join(bin, "swarmcode"), 0o755)
+    File.chmod!(Path.join(bin, "ncode"), 0o755)
     File.chmod!(Path.join(bin, "swarm_code_cli"), 0o755)
     on_exit(fn -> File.rm_rf!(base) end)
 
     %{
-      launcher: Path.join(bin, "swarmcode"),
+      launcher: Path.join(bin, "ncode"),
       project: project,
       log: Path.join(base, "stub.log")
     }
@@ -84,9 +84,9 @@ defmodule SwarmCodeCLI.Release.LauncherTest do
   describe "usage" do
     test "--help and --version answer without starting the release", context do
       assert {0, help} = launch(context, ["--help"])
-      assert help =~ "Usage: swarmcode [DIR] [--new | --continue | --resume ID] [--model M]"
+      assert help =~ "Usage: ncode [DIR] [--new | --continue | --resume ID] [--model M]"
       assert help =~ "Exit codes: 0 done, 1 the run failed, 2 usage, 3 startup refused."
-      assert {0, "swarmcode 0.1.0-dev\n"} = launch(context, ["--version"])
+      assert {0, "ncode 0.1.0-dev\n"} = launch(context, ["--version"])
       refute File.exists?(context.log)
     end
 
@@ -108,14 +108,14 @@ defmodule SwarmCodeCLI.Release.LauncherTest do
           ] do
         assert {2, output} = launch(context, args), inspect(args)
         assert [line] = String.split(output, "\n", trim: true), inspect(args)
-        assert line =~ ~r/^swarmcode: .+ Run 'swarmcode --help'\.$/
+        assert line =~ ~r/^ncode: .+ Run 'ncode --help'\.$/
       end
 
       refute File.exists?(context.log)
     end
 
     test "a directory that does not exist is a usage error", context do
-      assert {2, "swarmcode: 'nowhere' is not a directory.\n"} = launch(context, ["nowhere"])
+      assert {2, "ncode: 'nowhere' is not a directory.\n"} = launch(context, ["nowhere"])
     end
   end
 

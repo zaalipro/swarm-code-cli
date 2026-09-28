@@ -1,0 +1,286 @@
+#!/usr/bin/env bash
+# ncode — the installed ncode terminal client.
+#
+# Opens the saved session for a project directory (the current directory by
+# default) with the same environment rules as the development launchers:
+# provider settings come from the shell, or from ~/.secrets (NCODE_ENV_FILE)
+# when no provider key is exported.
+#
+# The full-screen view starts the release; `-p` and `--plain` evaluate
+# SwarmCodeCLI.Release.main/1 with only their own flags, after the choices
+# below have been exported. Exit codes: 0 done, 1 the run failed, 2 usage,
+# 3 startup refused.
+set -euo pipefail
+
+usage() {
+  cat <<'HELP'
+Usage: ncode [DIR] [--new | --continue | --resume ID] [--model M]
+             [-p PROMPT [--json]] [--plain [--ndjson]] [--help] [--version]
+       ncode settings [QUERY] [--dir DIR]
+       ncode config COMMAND [ARGS]     (ncode config help lists them)
+
+Opens the saved session for DIR (default: the current directory).
+
+  settings [QUERY]  open Settings, at QUERY when given ('ncode settings providers');
+                    it opens even when no model provider is set up yet
+  config COMMAND    read and change settings from scripts, dotfiles and SSH
+                    (a folder named settings or config: ncode ./settings, ./config)
+
+  --new           start a new conversation
+  --continue, -c  continue the latest conversation (the default)
+  --resume ID     open the conversation with this id
+  --model M       use model M (or provider/model) for this session only
+  -p PROMPT       run one turn in a new conversation (-c or --resume to continue
+                  one) without the full-screen view, print the answer and exit;
+                  approvals nobody can give are denied and said on stderr.
+                  PROMPT - reads the prompt from stdin
+  --json          with -p: print one JSON object instead of the streamed answer
+  --plain         line-by-line presenter for pipes, CI and SSH (type `help`);
+                  chosen by itself when stdin or stdout is not a terminal
+  --ndjson        with --plain: one JSON record per line
+  --help, -h      this text
+  --version, -V   the version
+
+Exit codes: 0 done, 1 the run failed, 2 usage, 3 startup refused.
+
+Provider settings (shell exports win; otherwise loaded from ~/.secrets or NCODE_ENV_FILE):
+  NCODE_MODEL          model id (first run, when the app has no provider yet)
+  NCODE_BASE_URL       endpoint; OpenAI-compatible URLs include /v1
+  NCODE_API_KEY        or OPENAI_API_KEY / ANTHROPIC_API_KEY
+  NCODE_PROVIDER       openai (default) or anthropic
+  NCODE_EFFORT         reasoning effort key
+
+Session:
+  NCODE_CONVERSATION   latest (default), new, or a conversation id (the flags win)
+  NCODE_KEYMAP=vim     vim keys in the composer
+  NCODE_ASCII=1        plain ASCII glyphs, for a terminal or font without symbols
+  NCODE_COMPANION=0    do not serve the visual companion
+
+The older SWARM_* names (SWARM_MODEL, SWARM_API_KEY, ...) still work; when both
+are set, the NCODE_* one wins.
+
+Keys: type to write; Enter sends, Esc stops a turn, Ctrl-C twice quits,
+Ctrl-P palette (also /resume, /new, /model, /approval), Ctrl-T select, ? every key,
+Ctrl-F agents (side-panel hints), Ctrl-B panel (full, compact, hidden).
+SWARM_PROJECT_ROOT is ignored; name the directory instead.
+HELP
+}
+
+self="$0"
+if command -v readlink >/dev/null 2>&1; then
+  resolved=$(readlink -f -- "$self" 2>/dev/null || true)
+  [[ -n "$resolved" ]] && self="$resolved"
+fi
+root=$(CDPATH= cd -- "$(dirname -- "$self")/.." && pwd)
+
+version() {
+  local data="$root/releases/start_erl.data" erts="" vsn=""
+  if [[ -r "$data" ]]; then
+    read -r erts vsn <"$data" || true
+  fi
+  echo "ncode ${vsn:-unknown}"
+}
+
+die_usage() {
+  echo "ncode: $1 Run 'ncode --help'." >&2
+  exit 2
+}
+
+# NCODE_* first, SWARM_* as the fallback: the release reads only the SWARM_*
+# names, so an exported NCODE_X is copied over SWARM_X here, before anything
+# below reads it. SWARM_PROJECT_ROOT has no NCODE_ twin (it is ignored).
+# Keep this list in step with the one in bin/load_provider_env.sh.
+for ncode_pair in MODEL:MODEL BASE_URL:BASE_URL API_KEY:API_KEY PROVIDER:PROVIDER \
+  EFFORT:EFFORT CONVERSATION:CONVERSATION KEYMAP:KEYMAP ASCII:ASCII COMPANION:COMPANION \
+  THEME:THEME MOUSE:MOUSE APPROVAL:APPROVAL ENV_FILE:ENV_FILE \
+  CONFIG_DIR:CODE_CONFIG_DIR SHELL:CODE_SHELL; do
+  ncode_name="NCODE_${ncode_pair%%:*}"
+  if [[ -n ${!ncode_name+x} ]]; then
+    export "SWARM_${ncode_pair#*:}=${!ncode_name}"
+  fi
+done
+unset ncode_pair ncode_name
+
+project=""
+project_set=0
+conversation=""
+model=""
+model_set=0
+prompt=""
+prompt_set=0
+json=0
+plain=0
+ndjson=0
+seen=" "
+
+once() {
+  case "$seen" in
+    *" $1 "*) die_usage "$1 is given twice." ;;
+  esac
+  seen="$seen$1 "
+}
+
+set_conversation() {
+  [[ -z "$conversation" ]] || die_usage "choose one of --new, --continue and --resume."
+  conversation="$1"
+}
+
+set_project() {
+  [[ $project_set -eq 0 ]] || die_usage "name one directory at most."
+  project="$1"
+  project_set=1
+}
+
+needs_value() {
+  [[ $2 -ge 2 && "$3" != "--" ]] || die_usage "$1 needs a value."
+}
+
+# pass74 S1-13/S1-14: `settings` and `config` as the first word are the
+# subcommands; a folder of that name opens with ./settings or -- settings.
+settings_mode=0
+settings_query=""
+if [[ $# -gt 0 && "$1" == "config" ]]; then
+  shift
+  export SWARM_PROJECT_ROOT="$PWD"
+  unset SWARM_RELEASE_TUI SWARM_SETTINGS_OPEN SWARM_SETTINGS_ONLY
+  stdin_secret=0
+  if [[ "${1:-}" == "secret" && -t 0 ]]; then
+    for arg in "$@"; do [[ "$arg" == "--stdin" ]] && stdin_secret=1; done
+  fi
+  if [[ $stdin_secret -eq 1 ]]; then
+    # Secrets never come from argv; typed ones are not echoed.
+    printf 'Paste the key, then Enter (not shown): ' >&2
+    stty -echo
+    trap 'stty echo' EXIT INT TERM
+    set +e
+    "$root/bin/swarm_code_cli" eval 'SwarmCodeCLI.Release.main(System.argv())' config "$@"
+    code=$?
+    stty echo
+    printf '\n' >&2
+    exit $code
+  fi
+  exec "$root/bin/swarm_code_cli" eval 'SwarmCodeCLI.Release.main(System.argv())' config "$@"
+fi
+if [[ $# -gt 0 && "$1" == "settings" ]]; then
+  shift
+  settings_mode=1
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --help | -h) usage; exit 0 ;;
+      --dir) needs_value "$1" $# "${2:-}"; set_project "$2"; shift ;;
+      --dir=*) set_project "${1#--dir=}" ;;
+      -?*) die_usage "settings takes a query and --dir only." ;;
+      *) settings_query="${settings_query:+$settings_query }$1" ;;
+    esac
+    shift
+  done
+  # The TUI opens at a query of 200 bytes at most (§3.10.1).
+  if (($(printf '%s' "$settings_query" | LC_ALL=C wc -c) > 200)); then
+    die_usage "the settings query is too long (200 bytes at most)."
+  fi
+fi
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --help | -h) usage; exit 0 ;;
+    --version | -V) version; exit 0 ;;
+    --new) set_conversation new ;;
+    --continue | -c) set_conversation latest ;;
+    --resume | -r) needs_value "$1" $# "${2:-}"; set_conversation "$2"; shift ;;
+    --resume=*) set_conversation "${1#--resume=}" ;;
+    --model | -m) needs_value "$1" $# "${2:-}"; once --model; model="$2"; model_set=1; shift ;;
+    --model=*) once --model; model="${1#--model=}"; model_set=1 ;;
+    -p | --prompt | --print) needs_value "$1" $# "${2:-}"; once -p; prompt="$2"; prompt_set=1; shift ;;
+    --prompt=*) once -p; prompt="${1#--prompt=}"; prompt_set=1 ;;
+    --json) once --json; json=1 ;;
+    --plain) once --plain; plain=1 ;;
+    --ndjson) once --ndjson; ndjson=1 ;;
+    --)
+      shift
+      while [[ $# -gt 0 ]]; do set_project "$1"; shift; done
+      break
+      ;;
+    -?*) die_usage "unknown option '$1'." ;;
+    *) set_project "$1" ;;
+  esac
+  shift
+done
+
+[[ $json -eq 0 || $prompt_set -eq 1 ]] || die_usage "--json goes with -p."
+[[ $ndjson -eq 0 || $plain -eq 1 ]] || die_usage "--ndjson goes with --plain."
+[[ $plain -eq 0 || $prompt_set -eq 0 ]] || die_usage "-p and --plain do not go together."
+if [[ $model_set -eq 1 && -z "${model//[[:space:]]/}" ]]; then
+  die_usage "--model needs a model name."
+fi
+if [[ $prompt_set -eq 1 && -z "${prompt//[[:space:]]/}" ]]; then
+  die_usage "-p needs a prompt."
+fi
+uuid='^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+case "$conversation" in
+  "" | new | latest) ;;
+  *) [[ "$conversation" =~ $uuid ]] || die_usage "--resume needs a conversation id." ;;
+esac
+
+# The project is the directory named on the command line, else where the
+# command was run. SWARM_PROJECT_ROOT is deliberately ignored: shells that
+# source the environment file export it everywhere, and a command that opened
+# the same project from every directory would be useless. Name the directory.
+# shellcheck source=/dev/null
+. "$root/bin/load_provider_env.sh"
+if [[ $project_set -eq 1 ]]; then
+  root_dir="$project"
+else
+  root_dir="$PWD"
+fi
+if [[ ! -d "$root_dir" ]]; then
+  echo "ncode: '$root_dir' is not a directory." >&2
+  exit 2
+fi
+SWARM_PROJECT_ROOT=$(cd -- "$root_dir" && pwd)
+export SWARM_PROJECT_ROOT
+export SWARM_TERMINAL_PORT="${SWARM_TERMINAL_PORT:-$root/bin/swarm-terminal-port}"
+if [[ -n "$conversation" ]]; then
+  export SWARM_CONVERSATION="$conversation"
+elif [[ $prompt_set -eq 1 && -z "${SWARM_CONVERSATION:-}" ]]; then
+  # pass71 F9 (review R6): a one-shot starts its own conversation; it used to
+  # land in the conversation you were working in and carry all its context.
+  export SWARM_CONVERSATION=new
+fi
+# A session's model override comes from --model alone: an export left in a
+# shell or an environment file never changes which model answers.
+if [[ $model_set -eq 1 ]]; then
+  export SWARM_MODEL_OVERRIDE="$model"
+else
+  unset SWARM_MODEL_OVERRIDE
+fi
+unset SWARM_RELEASE_TUI SWARM_SETTINGS_OPEN SWARM_SETTINGS_ONLY
+
+headless() {
+  exec "$root/bin/swarm_code_cli" eval 'SwarmCodeCLI.Release.main(System.argv())' "$@"
+}
+
+if [[ $prompt_set -eq 1 ]]; then
+  if [[ $json -eq 1 ]]; then headless -p "$prompt" --json; else headless -p "$prompt"; fi
+fi
+
+if [[ $settings_mode -eq 1 ]]; then
+  if ! [[ -t 0 && -t 1 && "${TERM:-dumb}" != "dumb" ]]; then
+    echo "ncode: settings needs a terminal; 'ncode config' changes settings from scripts." >&2
+    exit 2
+  fi
+  export SWARM_SETTINGS_OPEN="$settings_query"
+  export SWARM_SETTINGS_ONLY=1
+  export SWARM_RELEASE_TUI=1
+  exec "$root/bin/swarm_code_cli" start
+fi
+
+if [[ $plain -eq 0 ]] && ! [[ -t 0 && -t 1 && "${TERM:-dumb}" != "dumb" ]]; then
+  echo "ncode: not a terminal, so the plain presenter answers (--plain)." >&2
+  plain=1
+fi
+if [[ $plain -eq 1 ]]; then
+  if [[ $ndjson -eq 1 ]]; then headless --plain --ndjson; else headless --plain; fi
+fi
+
+export SWARM_RELEASE_TUI=1
+exec "$root/bin/swarm_code_cli" start
