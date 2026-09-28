@@ -730,7 +730,7 @@ defmodule SwarmCode.Daemon.Test.OSProcess do
 
   defp encode_opts!(dir, test_opts) do
     %{
-      "app_version" => "0.1.0-dev",
+      "app_version" => "0.1.0",
       "database_fingerprint" => "sha256:os-process-test",
       "data" => dir,
       "manifest_sha256" => "408afb8e6eb422c8df50fe65536a08f853475c162d584db45b4af708274fd1d0",

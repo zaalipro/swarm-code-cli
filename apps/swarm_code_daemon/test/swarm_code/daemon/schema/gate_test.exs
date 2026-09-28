@@ -34,7 +34,7 @@ defmodule SwarmCode.Daemon.Schema.GateTest do
   } do
     before = sha256_file(database)
 
-    assert {:ok, decision} = Gate.check(database, manifest, "0.1.0-dev")
+    assert {:ok, decision} = Gate.check(database, manifest, "0.1.0")
     assert decision.status == :ready
     assert List.last(decision.applied) == 20_261_017_000_004
     assert decision.pending == []
@@ -46,7 +46,7 @@ defmodule SwarmCode.Daemon.Schema.GateTest do
     before = sha256_file(database)
 
     assert {:ok, %{status: :migration_required, pending: pending}} =
-             Gate.check(database, manifest, "0.1.0-dev")
+             Gate.check(database, manifest, "0.1.0")
 
     assert Enum.map(pending, & &1.version) == [
              20_260_924_000_000,
@@ -72,7 +72,7 @@ defmodule SwarmCode.Daemon.Schema.GateTest do
       before = source_bytes(database)
 
       assert {:ok, %{status: :migration_required, pending: pending}} =
-               Gate.check(database, manifest, "0.1.0-dev")
+               Gate.check(database, manifest, "0.1.0")
 
       assert Enum.map(pending, & &1.version) == unquote(pending_versions)
       assert source_bytes(database) == before
@@ -83,7 +83,7 @@ defmodule SwarmCode.Daemon.Schema.GateTest do
     database = SchemaFixture.database!({:prefix, 20_261_017_000_004})
 
     assert {:ok, %{status: :ready, applied: applied} = decision} =
-             Gate.check(database, manifest, "0.1.0-dev")
+             Gate.check(database, manifest, "0.1.0")
 
     assert length(applied) == 57
     assert Gate.admit_migration(decision, manifest) == :ok
@@ -101,7 +101,7 @@ defmodule SwarmCode.Daemon.Schema.GateTest do
       before = source_bytes(database)
 
       assert {:ok, %{status: :migration_required, pending: pending} = decision} =
-               Gate.check(database, manifest, "0.1.0-dev")
+               Gate.check(database, manifest, "0.1.0")
 
       assert Enum.map(pending, & &1.version) == unquote(pending)
       assert Gate.admit_migration(decision, manifest) == :ok
@@ -115,7 +115,7 @@ defmodule SwarmCode.Daemon.Schema.GateTest do
       before = source_bytes(database)
 
       assert {:ok, %{status: :migration_required} = decision} =
-               Gate.check(database, manifest, "0.1.0-dev")
+               Gate.check(database, manifest, "0.1.0")
 
       assert {:error, error} = Gate.admit_migration(decision, manifest)
       assert error.code == :schema_incompatible
@@ -129,7 +129,7 @@ defmodule SwarmCode.Daemon.Schema.GateTest do
     directory = temporary_directory!()
 
     assert {:ok, %{status: :new_database} = decision} =
-             Gate.check(Path.join(directory, "absent.db"), manifest, "0.1.0-dev")
+             Gate.check(Path.join(directory, "absent.db"), manifest, "0.1.0")
 
     assert Gate.admit_migration(decision, manifest) == :ok
   end
@@ -147,14 +147,14 @@ defmodule SwarmCode.Daemon.Schema.GateTest do
     database = SchemaFixture.database!({:prefix, 20_260_929_000_000})
 
     assert {:ok, %{status: :migration_required} = decision} =
-             Gate.check(database, previous, "0.1.0-dev")
+             Gate.check(database, previous, "0.1.0")
 
     assert {:error, %{code: :schema_incompatible}} = Gate.admit_migration(decision, previous)
 
     ready = SchemaFixture.database!({:prefix, 20_261_015_000_003})
 
     assert {:ok, %{status: :migration_required} = decision} =
-             Gate.check(ready, manifest, "0.1.0-dev")
+             Gate.check(ready, manifest, "0.1.0")
 
     assert :ok = Gate.admit_migration(decision, manifest)
   end
@@ -166,7 +166,7 @@ defmodule SwarmCode.Daemon.Schema.GateTest do
     SchemaFixture.insert_migration!(database, 20_261_101_000_000)
     before = source_bytes(database)
 
-    assert {:error, error} = Gate.check(database, manifest, "0.1.0-dev")
+    assert {:error, error} = Gate.check(database, manifest, "0.1.0")
     assert error.code == :schema_incompatible
     assert error.message =~ "newer ncode app"
     assert error.action =~ "Update ncode"
@@ -186,7 +186,7 @@ defmodule SwarmCode.Daemon.Schema.GateTest do
     _writer = SchemaFixture.open_uncheckpointed_wal!(database)
     before = source_bytes(database)
     assert {:ok, _} = File.stat(database <> "-wal")
-    assert {:error, %{code: :schema_incompatible}} = Gate.check(database, manifest, "0.1.0-dev")
+    assert {:error, %{code: :schema_incompatible}} = Gate.check(database, manifest, "0.1.0")
     assert source_bytes(database) == before
   end
 
@@ -199,7 +199,7 @@ defmodule SwarmCode.Daemon.Schema.GateTest do
     before = source_bytes(database)
 
     assert {:error, %{code: :schema_incompatible} = error} =
-             Gate.check(database, manifest, "0.1.0-dev")
+             Gate.check(database, manifest, "0.1.0")
 
     # 58 rows: the probe's ceiling says so before any prefix comparison.
     assert error.message =~ "newer ncode app"
@@ -214,7 +214,7 @@ defmodule SwarmCode.Daemon.Schema.GateTest do
     gap_before = sha256_file(gap)
 
     assert {:error, %{code: :schema_incompatible}} =
-             Gate.check(gap, manifest, "0.1.0-dev")
+             Gate.check(gap, manifest, "0.1.0")
 
     assert sha256_file(gap) == gap_before
 
@@ -223,7 +223,7 @@ defmodule SwarmCode.Daemon.Schema.GateTest do
     drift_before = sha256_file(drift)
 
     assert {:error, %{code: :schema_incompatible}} =
-             Gate.check(drift, manifest, "0.1.0-dev")
+             Gate.check(drift, manifest, "0.1.0")
 
     assert sha256_file(drift) == drift_before
   end
@@ -233,7 +233,7 @@ defmodule SwarmCode.Daemon.Schema.GateTest do
     database = Path.join(directory, "absent.db")
 
     assert {:ok, %{status: :new_database, applied: [], pending: pending}} =
-             Gate.check(database, manifest, "0.1.0-dev")
+             Gate.check(database, manifest, "0.1.0")
 
     assert length(pending) == 57
     refute File.exists?(database)
@@ -249,7 +249,7 @@ defmodule SwarmCode.Daemon.Schema.GateTest do
 
       # pass70 Q13: said as what it is, not as an unknown SwarmCode version.
       assert {:error, %{code: :schema_incompatible} = error} =
-               Gate.check(database, manifest, "0.1.0-dev")
+               Gate.check(database, manifest, "0.1.0")
 
       assert error.message =~ "is not an ncode database"
       assert sha256_file(database) == before
@@ -263,7 +263,7 @@ defmodule SwarmCode.Daemon.Schema.GateTest do
     File.chmod!(database, 0o000)
     on_exit(fn -> File.chmod(database, 0o600) end)
 
-    assert {:error, error} = Gate.check(database, manifest, "0.1.0-dev")
+    assert {:error, error} = Gate.check(database, manifest, "0.1.0")
     refute error.message =~ "is not an ncode database"
   end
 
@@ -280,7 +280,7 @@ defmodule SwarmCode.Daemon.Schema.GateTest do
     before = sha256_file(database)
 
     assert {:error, %{code: :schema_incompatible} = error} =
-             Gate.check(database, manifest, "0.1.0-dev")
+             Gate.check(database, manifest, "0.1.0")
 
     assert error.message =~ "failed SQLite's integrity check"
     assert sha256_file(database) == before
@@ -294,7 +294,7 @@ defmodule SwarmCode.Daemon.Schema.GateTest do
     before = sha256_file(database)
 
     assert {:error, %{code: :schema_incompatible}} =
-             Gate.check(database, manifest, "0.1.0-dev")
+             Gate.check(database, manifest, "0.1.0")
 
     assert sha256_file(database) == before
   end
@@ -341,7 +341,7 @@ defmodule SwarmCode.Daemon.Schema.GateTest do
     assert binding.path == database
     assert elem(binding.identity, 3) == main.inode
     assert elem(binding.sidecars["-wal"], 3) == wal.inode
-    assert {:ok, %{status: :ready}} = Gate.check(database, manifest, "0.1.0-dev")
+    assert {:ok, %{status: :ready}} = Gate.check(database, manifest, "0.1.0")
     assert source_bytes(database) == before
 
     assert Enum.sort(File.ls!(Path.dirname(database))) ==
@@ -364,7 +364,7 @@ defmodule SwarmCode.Daemon.Schema.GateTest do
     end
 
     before = source_bytes(copied)
-    assert {:ok, %{status: :ready}} = Gate.check(copied, manifest, "0.1.0-dev")
+    assert {:ok, %{status: :ready}} = Gate.check(copied, manifest, "0.1.0")
     assert source_bytes(copied) == before
     assert Enum.sort(File.ls!(directory)) == ["copied.db", "copied.db-wal"]
   end
@@ -460,7 +460,7 @@ defmodule SwarmCode.Daemon.Schema.GateTest do
     database = SchemaFixture.database!(:current)
     File.chmod!(database, 0o644)
 
-    assert {:error, %{code: :schema_incompatible}} = Gate.check(database, manifest, "0.1.0-dev")
+    assert {:error, %{code: :schema_incompatible}} = Gate.check(database, manifest, "0.1.0")
     assert Bitwise.band(File.lstat!(database).mode, 0o7777) == 0o644
   end
 
@@ -476,7 +476,7 @@ defmodule SwarmCode.Daemon.Schema.GateTest do
     end
 
     assert {:error, %{code: :schema_incompatible}} =
-             Gate.check_bound(database, manifest, "0.1.0-dev", probe_hook: hook)
+             Gate.check_bound(database, manifest, "0.1.0", probe_hook: hook)
 
     assert File.exists?(parked)
     assert File.exists?(database)
@@ -492,7 +492,7 @@ defmodule SwarmCode.Daemon.Schema.GateTest do
     end
 
     assert {:error, %{code: :schema_incompatible}} =
-             Gate.check_bound(database, manifest, "0.1.0-dev", probe_hook: hook)
+             Gate.check_bound(database, manifest, "0.1.0", probe_hook: hook)
   end
 
   defp temporary_directory! do

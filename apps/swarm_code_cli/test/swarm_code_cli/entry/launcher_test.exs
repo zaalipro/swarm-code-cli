@@ -37,7 +37,7 @@ defmodule SwarmCodeCLI.Release.LauncherTest do
     File.cp!(@launcher, Path.join(bin, "ncode"))
     File.write!(Path.join(bin, "swarm_code_cli"), @stub)
     File.write!(Path.join(bin, "load_provider_env.sh"), ":\n")
-    File.write!(Path.join(base, "release/releases/start_erl.data"), "16.0 0.1.0-dev\n")
+    File.write!(Path.join(base, "release/releases/start_erl.data"), "16.0 0.1.0\n")
     File.chmod!(Path.join(bin, "ncode"), 0o755)
     File.chmod!(Path.join(bin, "swarm_code_cli"), 0o755)
     on_exit(fn -> File.rm_rf!(base) end)
@@ -86,7 +86,7 @@ defmodule SwarmCodeCLI.Release.LauncherTest do
       assert {0, help} = launch(context, ["--help"])
       assert help =~ "Usage: ncode [DIR] [--new | --continue | --resume ID] [--model M]"
       assert help =~ "Exit codes: 0 done, 1 the run failed, 2 usage, 3 startup refused."
-      assert {0, "ncode 0.1.0-dev\n"} = launch(context, ["--version"])
+      assert {0, "ncode 0.1.0\n"} = launch(context, ["--version"])
       refute File.exists?(context.log)
     end
 

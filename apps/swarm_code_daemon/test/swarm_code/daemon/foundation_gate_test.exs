@@ -8,7 +8,7 @@ defmodule SwarmCode.Daemon.FoundationGateTest do
   alias SwarmCode.Daemon.Platform.{DatabaseFingerprint, PrivateDirectory, ProcessIdentity}
   alias SwarmCode.Daemon.StartupError
 
-  @app_version "0.1.0-dev"
+  @app_version "0.1.0"
   @backup_operation_id "5cebddf0-68ee-4f79-9129-b17f1ca2d6de"
   @manifest_sha256 "4c0a8ec7fa4ca33aba4ca17ee300b98e1be008e165e7ff18f69d05943137e23f"
   @newest_migration 20_261_017_000_004

@@ -17,16 +17,16 @@ defmodule SwarmCode.Daemon.Service.CommandLedgerTest do
 
   test "exact CLI extension preserves audited Gate admission across reconnect", c do
     :ok = CommandLedger.ensure!()
-    assert {:ok, %{status: :ready}} = Gate.check_bound(c.path, c.manifest, "0.1.0-dev", [])
+    assert {:ok, %{status: :ready}} = Gate.check_bound(c.path, c.manifest, "0.1.0", [])
     :ok = CommandLedger.ensure!()
-    assert {:ok, %{status: :ready}} = Gate.check_bound(c.path, c.manifest, "0.1.0-dev", [])
+    assert {:ok, %{status: :ready}} = Gate.check_bound(c.path, c.manifest, "0.1.0", [])
   end
 
   test "malformed same-name metadata refuses without treating it as a CLI extension", c do
     Ecto.Adapters.SQL.query!(Repo, "CREATE TABLE cli_command_ledger(unexpected TEXT)", [])
 
     assert {:error, %{code: :schema_incompatible}} =
-             Gate.check_bound(c.path, c.manifest, "0.1.0-dev", [])
+             Gate.check_bound(c.path, c.manifest, "0.1.0", [])
 
     assert_raise RuntimeError, "CLI metadata schema mismatch", fn -> CommandLedger.ensure!() end
   end
@@ -41,7 +41,7 @@ defmodule SwarmCode.Daemon.Service.CommandLedgerTest do
     )
 
     assert {:error, %{code: :schema_incompatible}} =
-             Gate.check_bound(c.path, c.manifest, "0.1.0-dev", [])
+             Gate.check_bound(c.path, c.manifest, "0.1.0", [])
   end
 
   test "atomic durable reservation admits only one concurrent caller and preserves unknown outcomes" do

@@ -27,7 +27,7 @@ defmodule SwarmCode.Daemon.Service.SavedServiceTest do
           &{&1, root}
         ),
       database_path: database,
-      app_version: "0.1.0-dev",
+      app_version: "0.1.0",
       desktop_detector: fn -> :none end,
       directory_ensure: fn path, uid ->
         case File.mkdir(path) do

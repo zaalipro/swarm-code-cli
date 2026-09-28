@@ -62,7 +62,7 @@ defmodule SwarmCode.Daemon.Backup.GateTest do
     assert manifest["manifest_version"] == 1
     assert manifest["operation_id"] == @operation_id
     assert manifest["verified_at"] == "2026-09-01T12:00:00Z"
-    assert manifest["application"] == %{"name" => "swarm_code_daemon", "version" => "0.1.0-dev"}
+    assert manifest["application"] == %{"name" => "swarm_code_daemon", "version" => "0.1.0"}
     assert manifest["quick_check"] == "ok"
     assert manifest["foreign_key_violations"] == []
     assert manifest["row_counts"] == SchemaFixture.row_counts(fixture.db)
@@ -1425,7 +1425,7 @@ defmodule SwarmCode.Daemon.Backup.GateTest do
       SchemaFixture.insert_project!(database, "project-2", "Second project", "/private/project-2")
     end
 
-    assert {:ok, decision} = SchemaGate.check(database, MigrationManifest.load!(), "0.1.0-dev")
+    assert {:ok, decision} = SchemaGate.check(database, MigrationManifest.load!(), "0.1.0")
 
     assert decision.status ==
              if(Keyword.get(opts, :lineage) == :current, do: :ready, else: :migration_required)
@@ -1468,7 +1468,7 @@ defmodule SwarmCode.Daemon.Backup.GateTest do
 
   defp schema_decision!(database) do
     assert {:ok, %{status: :migration_required} = decision} =
-             SchemaGate.check(database, MigrationManifest.load!(), "0.1.0-dev")
+             SchemaGate.check(database, MigrationManifest.load!(), "0.1.0")
 
     decision
   end
@@ -1502,7 +1502,7 @@ defmodule SwarmCode.Daemon.Backup.GateTest do
         newest_migration: 20_260_929_000_000,
         manifest_sha256: "f04a55a27d1fee6a3192c6ff277993d4ab5a8f6414896e2be87dc3a41f48b75f"
       },
-      app_version: "0.1.0-dev"
+      app_version: "0.1.0"
     ]
 
     child =

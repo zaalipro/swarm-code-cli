@@ -4,7 +4,7 @@ defmodule SwarmCodeCLI.MixProject do
   def project do
     [
       apps_path: "apps",
-      version: "0.1.0-dev",
+      version: "0.1.0",
       elixir: "~> 1.18.4",
       start_permanent: Mix.env() == :prod,
       deps: [],
