@@ -86,8 +86,8 @@ defmodule SwarmCodeCLI.UI.Keymap.Docs do
     Keys are read against one *context* at a time, chosen from where the focus
     is and which layer is on top. `?` (or `F1` inside a text field) shows the
     same list for the current context on screen. Vim's NORMAL and VISUAL modes
-    exist only with the vim keymap on (`SWARM_KEYMAP=vim`, or "Vim mode" in
-    the command palette).
+    exist only with the vim keymap on (`NCODE_KEYMAP=vim`, or "Vim mode" in
+    the command palette; the older `SWARM_KEYMAP=vim` still works).
 
     #{@mouse_note}
     """

@@ -63,7 +63,9 @@ defmodule Mix.Tasks.SwarmCode.Settings do
       "from scripts with `ncode config set KEY VALUE` (`ncode config help`).\n\n",
       "Scopes: `global` (the database, shared with the desktop app), `project` (the project row),\n",
       "`session` (this conversation), `cli` (`cli.json`, this terminal only), `project_file`\n",
-      "(`.swarm_code/config.json`, read-only here).\n",
+      "(`.swarm_code/config.json`, read-only here).\n\n",
+      "Override: the environment variable or flag that wins over the stored value. The older\n",
+      "`SWARM_*` name of each `NCODE_*` variable still works; when both are set, `NCODE_*` wins.\n",
       Enum.map(sections, &["\n", &1])
     ])
   end
@@ -112,8 +114,30 @@ defmodule Mix.Tasks.SwarmCode.Settings do
 
   defp applies(value), do: to_string(value)
 
+  # The ncode launcher copies an exported NCODE_X over the SWARM_* name the release reads, so
+  # the reference names NCODE_X first. Keep in step with the list in rel/overlays/bin/ncode.
+  @ncode_names %{
+    "SWARM_APPROVAL" => "NCODE_APPROVAL",
+    "SWARM_ASCII" => "NCODE_ASCII",
+    "SWARM_CODE_SHELL" => "NCODE_SHELL",
+    "SWARM_COMPANION" => "NCODE_COMPANION",
+    "SWARM_CONVERSATION" => "NCODE_CONVERSATION",
+    "SWARM_KEYMAP" => "NCODE_KEYMAP",
+    "SWARM_MOUSE" => "NCODE_MOUSE",
+    "SWARM_THEME" => "NCODE_THEME"
+  }
+  # Set by `ncode --model` alone (the launcher unsets an exported one): the flag is the override.
+  @flag_carriers ["SWARM_MODEL_OVERRIDE"]
+
   defp override(entry) do
-    env = for name <- List.wrap(entry.env), is_binary(name), do: "`#{name}`"
+    env =
+      for name <- List.wrap(entry.env), is_binary(name), name not in @flag_carriers do
+        case @ncode_names do
+          %{^name => ncode} -> "`#{ncode}` or `#{name}`"
+          _ -> "`#{name}`"
+        end
+      end
+
     flag = if is_binary(entry.flag), do: ["`#{entry.flag}`"], else: []
 
     case env ++ flag do

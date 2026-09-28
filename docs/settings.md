@@ -8,6 +8,9 @@ Scopes: `global` (the database, shared with the desktop app), `project` (the pro
 `session` (this conversation), `cli` (`cli.json`, this terminal only), `project_file`
 (`.swarm_code/config.json`, read-only here).
 
+Override: the environment variable or flag that wins over the stored value. The older
+`SWARM_*` name of each `NCODE_*` variable still works; when both are set, `NCODE_*` wins.
+
 ## Models & effort
 
 | Key | Label | Scope | Type | Default | Applies | Override |
@@ -22,9 +25,9 @@ Scopes: `global` (the database, shared with the desktop app), `project` (the pro
 | `efforts.scheduled` | Scheduled effort | global | effort | same as the default effort | desktop | — |
 | `efforts.workflow` | Workflow effort | global | effort | same as the default effort | next turn | — |
 | `efforts.implementer` | Implementer effort | global | effort | medium (not set) | next turn | — |
-| `session.model` | Model · this conversation | session | model | the chat model | next turn | `SWARM_MODEL_OVERRIDE`, `--model` |
+| `session.model` | Model · this conversation | session | model | the chat model | next turn | `--model` |
 | `session.effort` | Effort · this conversation | session | effort | the default effort | next turn | — |
-| `session.sub_agent_model` | Sub-agent model · this conversation | session | model | the sub-agent model | next spawn | `SWARM_MODEL_OVERRIDE`, `--model` |
+| `session.sub_agent_model` | Sub-agent model · this conversation | session | model | the sub-agent model | next spawn | `--model` |
 | `session.sub_agent_effort` | Sub-agent effort · this conversation | session | effort | the sub-agent effort | next spawn | — |
 | `session.mode` | Mode | session | enum | build | next turn | — |
 | `session.title` | Title | session | text | New conversation | at once | — |
@@ -98,7 +101,7 @@ Scopes: `global` (the database, shared with the desktop app), `project` (the pro
 | `isolation.backend` | How to isolate | global | enum | auto | next spawn | — |
 | `shell.env_scrub` | Hide secrets from commands | global | toggle | on | next turn | — |
 | `shell.env_keep` | Keep these variables | global | list | GITHUB_TOKEN, GH_TOKEN | next turn | — |
-| `shell.path` | Shell | global | path | detect ($SHELL) | next turn | `SWARM_CODE_SHELL` |
+| `shell.path` | Shell | global | path | detect ($SHELL) | next turn | `NCODE_SHELL` or `SWARM_CODE_SHELL` |
 | `shell.login` | Login shell | global | toggle | on | next turn | — |
 
 ## Approvals & trust
@@ -124,9 +127,9 @@ Scopes: `global` (the database, shared with the desktop app), `project` (the pro
 
 | Key | Label | Scope | Type | Default | Applies | Override |
 |---|---|---|---|---|---|---|
-| `terminal.theme` | Theme | cli | enum | follow | at once | `SWARM_THEME` |
+| `terminal.theme` | Theme | cli | enum | follow | at once | `NCODE_THEME` or `SWARM_THEME` |
 | `terminal.colors` | Colours | cli | enum | auto | next launch | `NO_COLOR` |
-| `terminal.glyphs` | Glyphs | cli | enum | auto | next launch | `SWARM_ASCII` |
+| `terminal.glyphs` | Glyphs | cli | enum | auto | next launch | `NCODE_ASCII` or `SWARM_ASCII` |
 | `terminal.ambiguous_width` | Ambiguous-width characters | cli | enum | narrow | next launch | — |
 | `terminal.reduced_motion` | Reduced motion | cli | toggle | off | next launch | — |
 | `terminal.accent` | Accent colour | cli | color | Carbon (#FF6A1A) | next launch | — |
@@ -147,8 +150,8 @@ Scopes: `global` (the database, shared with the desktop app), `project` (the pro
 
 | Key | Label | Scope | Type | Default | Applies | Override |
 |---|---|---|---|---|---|---|
-| `terminal.keymap` | Keymap | cli | enum | standard | at once | `SWARM_KEYMAP` |
-| `terminal.mouse` | Wheel scrolling | cli | toggle | on | at once | `SWARM_MOUSE` |
+| `terminal.keymap` | Keymap | cli | enum | standard | at once | `NCODE_KEYMAP` or `SWARM_KEYMAP` |
+| `terminal.mouse` | Wheel scrolling | cli | toggle | on | at once | `NCODE_MOUSE` or `SWARM_MOUSE` |
 | `terminal.wheel_lines` | Lines per notch | cli | integer | 3 | at once | — |
 | `terminal.editor` | Editor for Ctrl-X | cli | text | $VISUAL, then $EDITOR, then vi | at once | `VISUAL`, `EDITOR` |
 | `terminal.hint_letters` | Hint letters | cli | text | sfghjklwertuiop | at once | — |
@@ -158,8 +161,8 @@ Scopes: `global` (the database, shared with the desktop app), `project` (the pro
 
 | Key | Label | Scope | Type | Default | Applies | Override |
 |---|---|---|---|---|---|---|
-| `terminal.startup_conversation` | On launch | cli | enum | latest | next launch | `SWARM_CONVERSATION`, `--new/--continue/--resume` |
-| `terminal.companion` | Visual companion | cli | toggle | on | next launch | `SWARM_COMPANION` |
+| `terminal.startup_conversation` | On launch | cli | enum | latest | next launch | `NCODE_CONVERSATION` or `SWARM_CONVERSATION`, `--new/--continue/--resume` |
+| `terminal.companion` | Visual companion | cli | toggle | on | next launch | `NCODE_COMPANION` or `SWARM_COMPANION` |
 
 ## Storage
 

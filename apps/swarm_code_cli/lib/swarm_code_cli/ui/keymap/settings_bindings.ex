@@ -96,7 +96,7 @@ defmodule SwarmCodeCLI.UI.Keymap.SettingsBindings do
     {:settings_info, [{"i", []}], :info, [:settings], "Detail",
      "The detail of the focused row (a page of its own on a small terminal)", 1, false},
     {:settings_refresh, [{"r", [:control]}], :refresh, [:settings], "Refresh",
-     "Read this page again from the daemon and cli.json", 0, false},
+     "Reload this page from the saved settings and cli.json", 0, false},
     {:settings_needs_you, [{"n", [:control]}], :needs_you, [:settings, :settings_search],
      "Needs you", "Close Settings and go to the run that waits for you", 3, false},
     {:settings_interrupt, [{"c", [:control]}], :interrupt, @contexts, "Ctrl-C",

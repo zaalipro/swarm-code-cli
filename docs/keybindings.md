@@ -7,8 +7,8 @@ and the table disagree.
 Keys are read against one *context* at a time, chosen from where the focus
 is and which layer is on top. `?` (or `F1` inside a text field) shows the
 same list for the current context on screen. Vim's NORMAL and VISUAL modes
-exist only with the vim keymap on (`SWARM_KEYMAP=vim`, or "Vim mode" in
-the command palette).
+exist only with the vim keymap on (`NCODE_KEYMAP=vim`, or "Vim mode" in
+the command palette; the older `SWARM_KEYMAP=vim` still works).
 
 Mouse: the wheel scrolls the pane under the pointer (the transcript, the side panel, the agent overlay, the pager), three lines a notch. While wheel reports are on, Shift-drag (Option-drag in Terminal.app and iTerm2) selects text; `/mouse off` gives the terminal its own selection back.
 
@@ -780,7 +780,7 @@ terminal.keys` in a shell.
 | `:` | The command line: `:set key value`, `:reset key`, `:go section` |
 | `?` / `F1` | Every key of this page; the same key closes it |
 | `i` | The detail of the focused row (a page of its own on a small terminal) |
-| `Ctrl-R` | Read this page again from the daemon and cli.json |
+| `Ctrl-R` | Reload this page from the saved settings and cli.json |
 | `Ctrl-N` | Close Settings and go to the run that waits for you |
 | `Ctrl-C` | Clear the text, then cancel; on a page close Settings (twice quits, as in the shell) |
 | `Ctrl-S` | Create the record being drafted; commit a multi-line text |
