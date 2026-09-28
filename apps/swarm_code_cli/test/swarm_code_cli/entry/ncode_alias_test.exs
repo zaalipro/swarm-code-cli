@@ -232,6 +232,49 @@ defmodule SwarmCodeCLI.Release.NcodeAliasTest do
       assert stub(context)["SWARM_MODEL"] == "shell-model"
     end
 
+    # Review A5: the dev launchers (scripts/dev/run_*.sh) source the loader
+    # directly, without bin/ncode's copy, so the loader maps exported names too.
+    test "sourced on its own, the loader copies exported NCODE_ names over SWARM_ names",
+         context do
+      File.write!(context.env_file, """
+      export SWARM_API_KEY=file-key
+      export SWARM_MODEL=file-model
+      """)
+
+      print =
+        ~s(for name in #{Enum.join(@printed, " ")}; do ) <>
+          ~s(if [[ -n ${!name+x} ]]; then printf '%s=%s\\n' "$name" "${!name}"; fi; done)
+
+      source = fn env ->
+        {output, 0} =
+          System.cmd("bash", ["--noprofile", "--norc", "-c", ~s(. "$1"; ) <> print, "t", @loader],
+            env: clean_env(context, [{"SWARM_ENV_FILE", context.env_file} | env]),
+            stderr_to_stdout: true
+          )
+
+        output
+        |> String.split("\n", trim: true)
+        |> Map.new(&List.to_tuple(String.split(&1, "=", parts: 2)))
+      end
+
+      exported = Enum.map(@aliases, fn {ncode, _} -> {ncode, "shell-" <> ncode} end)
+
+      exported =
+        List.keystore(exported, "NCODE_ENV_FILE", 0, {"NCODE_ENV_FILE", context.env_file})
+
+      vars = source.(exported)
+
+      for {ncode, swarm} <- @aliases, do: assert(vars[swarm] == vars[ncode], swarm)
+      # The exported NCODE_API_KEY counts as a key, so the file is not read.
+      assert vars["SWARM_API_KEY"] == "shell-NCODE_API_KEY"
+      assert vars["SWARM_MODEL"] == "shell-NCODE_MODEL"
+
+      # Without an exported key the file is read, and the exported name still wins.
+      vars = source.([{"NCODE_MODEL", "shell-model"}])
+      assert vars["SWARM_MODEL"] == "shell-model"
+      assert vars["SWARM_API_KEY"] == "file-key"
+    end
+
     test "a missing NCODE_ENV_FILE is refused by name", context do
       missing = Path.join(context.base, "missing.env")
       assert {code, output} = run(context, "ncode", ["-p", "hi"], [{"NCODE_ENV_FILE", missing}])

@@ -10,11 +10,24 @@
 # loaded (nor is NCODE_MODEL_OVERRIDE).
 #
 # ncode: NCODE_* first, SWARM_* as the fallback. The release reads only the
-# SWARM_* names, so inside the child shell a file's NCODE_X is copied over its
-# SWARM_X (the list is the launcher's, bin/ncode; keep them in step). Shell
-# exports still win over the file: bin/ncode has already copied an exported
-# NCODE_X over SWARM_X before this runs.
+# SWARM_* names, so an exported NCODE_X is copied over SWARM_X first (bin/ncode
+# has already done this for the release; the dev launchers source this file
+# directly), and inside the child shell a file's NCODE_X is copied over its
+# SWARM_X. Shell exports still win over the file. The list is the launcher's
+# (rel/overlays/bin/ncode); keep them in step.
 swarm_load_provider_env() {
+  local swarm_ncode_pairs="MODEL:MODEL BASE_URL:BASE_URL API_KEY:API_KEY PROVIDER:PROVIDER
+    EFFORT:EFFORT CONVERSATION:CONVERSATION KEYMAP:KEYMAP ASCII:ASCII COMPANION:COMPANION
+    THEME:THEME MOUSE:MOUSE APPROVAL:APPROVAL ENV_FILE:ENV_FILE
+    CONFIG_DIR:CODE_CONFIG_DIR SHELL:CODE_SHELL"
+  local swarm_ncode_pair swarm_ncode_name
+  for swarm_ncode_pair in $swarm_ncode_pairs; do
+    swarm_ncode_name="NCODE_${swarm_ncode_pair%%:*}"
+    if [[ -n ${!swarm_ncode_name+x} ]]; then
+      export "SWARM_${swarm_ncode_pair#*:}=${!swarm_ncode_name}"
+    fi
+  done
+
   # Presence matters: an explicitly empty key selects unauthenticated local APIs.
   if [[ ${SWARM_API_KEY+x} || ${OPENAI_API_KEY+x} || ${ANTHROPIC_API_KEY+x} ]]; then
     return 0
@@ -44,13 +57,11 @@ swarm_load_provider_env() {
     fi
   done < <(
     env -i HOME="$HOME" PATH="$PATH" bash --noprofile --norc -c '
+      pairs=$2
       set -a
       # shellcheck disable=SC1090
       source "$1" >/dev/null 2>&1 </dev/null
-      for pair in MODEL:MODEL BASE_URL:BASE_URL API_KEY:API_KEY PROVIDER:PROVIDER \
-        EFFORT:EFFORT CONVERSATION:CONVERSATION KEYMAP:KEYMAP ASCII:ASCII COMPANION:COMPANION \
-        THEME:THEME MOUSE:MOUSE APPROVAL:APPROVAL ENV_FILE:ENV_FILE \
-        CONFIG_DIR:CODE_CONFIG_DIR SHELL:CODE_SHELL; do
+      for pair in $pairs; do
         ncode="NCODE_${pair%%:*}"
         if [[ -n ${!ncode+x} ]]; then export "SWARM_${pair#*:}=${!ncode}"; fi
       done
@@ -59,7 +70,7 @@ swarm_load_provider_env() {
           SWARM_*|NCODE_*|OPENAI_*|ANTHROPIC_*|LLMOTIONS_*) printf "%s\0%s\0" "$name" "${!name}" ;;
         esac
       done
-    ' swarm-env "$swarm_env_path"
+    ' swarm-env "$swarm_env_path" "$swarm_ncode_pairs"
   )
 }
 

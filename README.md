@@ -226,8 +226,8 @@ canonical database and survive reinstalls.
 `ncode` reads the `NCODE_*` names first and the older `SWARM_*` names as the
 fallback; when both are set, the `NCODE_*` one wins. `NCODE_CONFIG_DIR` and
 `NCODE_SHELL` stand for `SWARM_CODE_CONFIG_DIR` and `SWARM_CODE_SHELL`. The
-development launchers in `scripts/dev` read only the `SWARM_*` names from the
-shell.
+development launchers in `scripts/dev` follow the same order through the
+shared provider-file loader.
 
 | Variable | Meaning |
 | --- | --- |

@@ -89,7 +89,8 @@ die_usage() {
 # NCODE_* first, SWARM_* as the fallback: the release reads only the SWARM_*
 # names, so an exported NCODE_X is copied over SWARM_X here, before anything
 # below reads it. SWARM_PROJECT_ROOT has no NCODE_ twin (it is ignored).
-# Keep this list in step with the one in bin/load_provider_env.sh.
+# Keep this list in step with the one in scripts/dev/load_provider_env.sh
+# (bin/load_provider_env.sh in the release).
 for ncode_pair in MODEL:MODEL BASE_URL:BASE_URL API_KEY:API_KEY PROVIDER:PROVIDER \
   EFFORT:EFFORT CONVERSATION:CONVERSATION KEYMAP:KEYMAP ASCII:ASCII COMPANION:COMPANION \
   THEME:THEME MOUSE:MOUSE APPROVAL:APPROVAL ENV_FILE:ENV_FILE \
