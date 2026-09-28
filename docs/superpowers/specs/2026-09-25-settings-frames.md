@@ -1,4 +1,4 @@
-> Superseded visually by pass 75 (E, Strata): see `.specs/01_cli75_panel_interview_settings_spec.md` (Design › Frames › Settings area); behaviour below still holds.
+> Superseded visually by pass 75 (E, Strata): see `docs/superpowers/specs/2026-09-27-cli75-panel-interview-settings-spec.md` (Design › Frames › Settings area); behaviour below still holds.
 
 # Settings TUI — frames
 
