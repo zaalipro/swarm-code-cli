@@ -283,7 +283,7 @@ defmodule SwarmCode.Daemon.Service.Settings.C74TransferTest do
   end
 
   # ncode rename (lane A): export keeps writing "swarmcode-settings" so an older
-  # ncode can import the file; import takes both names, and a newer version
+  # swarmcode can import the file; import takes both names, and a newer version
   # of either is refused the same way.
   test "import accepts both format names", fixture do
     for format <- ["swarmcode-settings", "ncode-settings"] do

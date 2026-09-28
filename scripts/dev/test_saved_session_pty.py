@@ -71,7 +71,7 @@ root = %s
 Application.put_env(:swarm_code_daemon, :domain_config_dir, Path.join(root, "config"))
 boot = [platform: :linux, mode: :test, home: root,
   env: Map.new(~w(XDG_DATA_HOME XDG_CONFIG_HOME XDG_STATE_HOME XDG_CACHE_HOME XDG_RUNTIME_DIR), &{&1, root}),
-  database_path: Path.join(root, "swarm_code.db"), app_version: "0.1.0-dev",
+  database_path: Path.join(root, "swarm_code.db"), app_version: "0.1.0",
   desktop_detector: fn -> :none end,
   directory_ensure: fn path, owner ->
     case File.mkdir(path) do

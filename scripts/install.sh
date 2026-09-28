@@ -8,7 +8,7 @@
 #
 # Re-running replaces the previous install. Nothing outside the prefix is
 # touched, and the user's conversations live in the canonical database, not
-# under the prefix, so a reinstall never loses them. `ncode`, the old
+# under the prefix, so a reinstall never loses them. `swarmcode`, the old
 # name, stays as a command that runs ncode.
 set -euo pipefail
 

@@ -925,7 +925,7 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
         fail!(
           @exit_failure,
           "The ncode terminal helper is missing.",
-          "Reinstall ncode (scripts/install.sh), or build it with scripts/dev/check_terminal_port.sh."
+          "Reinstall ncode (curl -fsSL https://code.llmotions.com/install.sh | sh), or build it in a checkout with scripts/dev/check_terminal_port.sh."
         )
   end
 
@@ -1011,7 +1011,7 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
   defp startup_words(:macos_platform_helper_unavailable, _error, _boot),
     do:
       {"ncode could not check whether the ncode app is running.",
-       "Reinstall ncode (scripts/install.sh)."}
+       "Reinstall ncode: curl -fsSL https://code.llmotions.com/install.sh | sh"}
 
   defp startup_words(code, _error, _boot) when code in [:backup_failed, :backup_unverified],
     do:
@@ -1036,7 +1036,7 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
       failure(
         @exit_refused,
         "No model provider is set up yet.",
-        "Run 'ncode settings providers' to add one, or set SWARM_MODEL, SWARM_BASE_URL and SWARM_API_KEY in ~/.secrets."
+        "Run 'ncode settings providers' to add one, or set NCODE_MODEL, NCODE_BASE_URL and NCODE_API_KEY in ~/.secrets (the older SWARM_* names still work)."
       )
 
   # pass71 F19 (review R17): the sentence names the model that was given.

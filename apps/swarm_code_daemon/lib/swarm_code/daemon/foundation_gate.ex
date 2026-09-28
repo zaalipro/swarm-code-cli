@@ -1457,7 +1457,7 @@ defmodule SwarmCode.Daemon.FoundationGate do
       :migration_manifest_invalid,
       false,
       "The bundled desktop migration manifest is unavailable or invalid.",
-      "Reinstall the exact signed ncode CLI build before accessing the canonical database."
+      "Reinstall the ncode CLI before accessing the canonical database."
     )
   end
 
