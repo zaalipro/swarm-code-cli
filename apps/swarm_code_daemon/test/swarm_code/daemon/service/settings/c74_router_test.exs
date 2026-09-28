@@ -163,7 +163,7 @@ defmodule SwarmCode.Daemon.Service.Settings.C74RouterTest do
 
     layers = [
       Layers.layer(:global, "high"),
-      Layers.ignored(:project_file, "high", "SwarmCode ignores this key"),
+      Layers.ignored(:project_file, "high", "ncode ignores this key"),
       Layers.layer(:default, "medium")
     ]
 

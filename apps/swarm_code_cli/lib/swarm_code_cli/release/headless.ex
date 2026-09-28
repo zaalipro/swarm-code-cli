@@ -1,7 +1,7 @@
 defmodule SwarmCodeCLI.Release.Headless do
   @moduledoc """
-  The saved session without the full-screen view: `swarmcode -p PROMPT` (one
-  turn, then exit) and `swarmcode --plain` (the line presenter, for pipes, CI
+  The saved session without the full-screen view: `ncode -p PROMPT` (one
+  turn, then exit) and `ncode --plain` (the line presenter, for pipes, CI
   and SSH).
 
   Startup and close are the saved session's own
@@ -55,9 +55,9 @@ defmodule SwarmCodeCLI.Release.Headless do
       {:error, failure} -> PersistedSession.report(failure)
     end
   rescue
-    error -> fail("SwarmCode stopped unexpectedly (#{inspect(error.__struct__)}).")
+    error -> fail("ncode stopped unexpectedly (#{inspect(error.__struct__)}).")
   catch
-    kind, _ -> fail("SwarmCode stopped unexpectedly (#{kind}).")
+    kind, _ -> fail("ncode stopped unexpectedly (#{kind}).")
   end
 
   # -- startup ----------------------------------------------------------------
@@ -75,14 +75,14 @@ defmodule SwarmCodeCLI.Release.Headless do
          %{
            status: 2,
            message: "A conversation is latest, new, or a conversation id; #{id} is none.",
-           action: "Run swarmcode --help."
+           action: "Run ncode --help."
          }}
     end
   end
 
   defp run_session(session, mode) do
     # First-run onboarding (D3) says on stderr that it wrote the provider row.
-    if notice = session[:notice], do: IO.puts(:stderr, "swarmcode: " <> notice)
+    if notice = session[:notice], do: IO.puts(:stderr, "ncode: " <> notice)
     warn_full_access(session, mode)
     {dir, stat} = private_directory()
     {:ok, supervisor} = Supervisor.start_link([], strategy: :one_for_all, max_restarts: 0)
@@ -131,8 +131,8 @@ defmodule SwarmCodeCLI.Release.Headless do
   def warn_full_access(%{project: %{approval_mode: "full_access"}}, {:prompt, _, _}) do
     IO.puts(
       :stderr,
-      "swarmcode: this project is in full access: commands and edits run without asking " <>
-        "(/approval auto in swarmcode to change it)."
+      "ncode: this project is in full access: commands and edits run without asking " <>
+        "(/approval auto in ncode to change it)."
     )
   end
 
@@ -182,7 +182,7 @@ defmodule SwarmCodeCLI.Release.Headless do
   defp plain_code(:run_failed), do: 1
 
   defp plain_code(:needs_input) do
-    IO.puts(:stderr, "swarmcode: a run is waiting for an answer; open swarmcode to give it.")
+    IO.puts(:stderr, "ncode: a run is waiting for an answer; open ncode to give it.")
     1
   end
 
@@ -236,7 +236,7 @@ defmodule SwarmCodeCLI.Release.Headless do
   end
 
   defp fail(text) do
-    IO.puts(:stderr, "swarmcode: " <> text)
+    IO.puts(:stderr, "ncode: " <> text)
     1
   end
 end

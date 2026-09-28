@@ -1,6 +1,6 @@
 defmodule SwarmCodeCLI.Release.C74SettingsEntryTest do
   @moduledoc """
-  pass74 S1-13: `swarmcode settings [QUERY] [--dir DIR]` and `swarmcode config`
+  pass74 S1-13: `ncode settings [QUERY] [--dir DIR]` and `ncode config`
   in the release grammar and in the launcher script (run as a subprocess
   against a stub release, as `launcher_test.exs` does).
   """
@@ -8,7 +8,7 @@ defmodule SwarmCodeCLI.Release.C74SettingsEntryTest do
 
   alias SwarmCodeCLI.Release
 
-  @launcher Path.expand("../../../../../rel/overlays/bin/swarmcode", __DIR__)
+  @launcher Path.expand("../../../../../rel/overlays/bin/ncode", __DIR__)
 
   @stub """
   #!/usr/bin/env bash
@@ -63,8 +63,8 @@ defmodule SwarmCodeCLI.Release.C74SettingsEntryTest do
     end
 
     test "the usage text names both subcommands" do
-      assert Release.usage() =~ "swarmcode settings [QUERY] [--dir DIR]"
-      assert Release.usage() =~ "swarmcode config COMMAND"
+      assert Release.usage() =~ "ncode settings [QUERY] [--dir DIR]"
+      assert Release.usage() =~ "ncode config COMMAND"
     end
   end
 
@@ -76,14 +76,14 @@ defmodule SwarmCodeCLI.Release.C74SettingsEntryTest do
       File.mkdir_p!(bin)
       File.mkdir_p!(Path.join(project, "settings"))
       File.mkdir_p!(Path.join(base, "release/releases"))
-      File.cp!(@launcher, Path.join(bin, "swarmcode"))
+      File.cp!(@launcher, Path.join(bin, "ncode"))
       File.write!(Path.join(bin, "swarm_code_cli"), @stub)
       File.write!(Path.join(bin, "load_provider_env.sh"), ":\n")
       File.write!(Path.join(base, "release/releases/start_erl.data"), "16.0 0.1.0-dev\n")
-      File.chmod!(Path.join(bin, "swarmcode"), 0o755)
+      File.chmod!(Path.join(bin, "ncode"), 0o755)
       File.chmod!(Path.join(bin, "swarm_code_cli"), 0o755)
       on_exit(fn -> File.rm_rf!(base) end)
-      %{launcher: Path.join(bin, "swarmcode"), project: project, log: Path.join(base, "stub.log")}
+      %{launcher: Path.join(bin, "ncode"), project: project, log: Path.join(base, "stub.log")}
     end
 
     defp launch(c, args, env \\ []) do
@@ -122,7 +122,7 @@ defmodule SwarmCodeCLI.Release.C74SettingsEntryTest do
           ] do
         {output, code} = launch(c, args)
         assert code == 2, inspect({args, output})
-        assert output =~ "swarmcode: "
+        assert output =~ "ncode: "
         refute File.exists?(c.log)
       end
 
@@ -163,8 +163,8 @@ defmodule SwarmCodeCLI.Release.C74SettingsEntryTest do
 
     test "--help names the subcommands", c do
       {output, 0} = launch(c, ["--help"])
-      assert output =~ "swarmcode settings [QUERY] [--dir DIR]"
-      assert output =~ "swarmcode ./settings"
+      assert output =~ "ncode settings [QUERY] [--dir DIR]"
+      assert output =~ "ncode ./settings"
     end
   end
 

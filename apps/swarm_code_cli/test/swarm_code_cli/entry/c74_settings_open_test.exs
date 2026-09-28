@@ -1,6 +1,6 @@
 defmodule SwarmCodeCLI.Release.C74SettingsOpenTest do
   @moduledoc """
-  pass74 S1-13: the query `swarmcode settings` hands the reducer. Outside
+  pass74 S1-13: the query `ncode settings` hands the reducer. Outside
   settings mode there is none; inside it is trimmed, and a query the reducer
   would refuse (over 200 bytes, a control character) opens the Overview.
   """

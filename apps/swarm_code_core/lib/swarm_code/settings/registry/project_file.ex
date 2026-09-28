@@ -5,7 +5,7 @@ defmodule SwarmCode.Settings.Registry.ProjectFile do
   # profiles are records (§2.23).
   import SwarmCode.Settings.Registry.Build
 
-  @ignored "SwarmCode ignores this key · x removes it"
+  @ignored "ncode ignores this key · x removes it"
 
   @denied ~w(tavily_api_key default_chat_provider_id default_swarm_provider_id
              default_scheduled_provider_id default_workflow_provider_id monthly_budget_usd

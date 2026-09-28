@@ -174,7 +174,7 @@ defmodule SwarmCode.Development.LiveSession do
             # terminal is restored.
             receive do
               {:session_closed, words} when is_binary(words) ->
-                IO.puts(:stderr, "swarmcode: the session closed because " <> words <> ".")
+                IO.puts(:stderr, "ncode: the session closed because " <> words <> ".")
             after
               0 -> :ok
             end

@@ -2,7 +2,7 @@ defmodule SwarmCodeCLI.Release do
   @moduledoc """
   Entry point for the packaged SwarmCode terminal client.
 
-  `rel/overlays/bin/swarmcode` parses the command line itself: the
+  `rel/overlays/bin/ncode` parses the command line itself: the
   full-screen view starts the release (`bin/swarm_code_cli start`) and the
   headless modes evaluate `SwarmCodeCLI.Release.main(System.argv())` with
   `-p PROMPT [--json]` or `--plain [--ndjson]`. The same grammar is accepted
@@ -16,17 +16,17 @@ defmodule SwarmCodeCLI.Release do
   @compile {:no_warn_undefined, [SwarmCode.Domain.Paths]}
 
   @usage """
-  Usage: swarmcode [DIR] [--new | --continue | --resume ID] [--model M]
-                   [-p PROMPT [--json]] [--plain [--ndjson]] [--help] [--version]
-         swarmcode settings [QUERY] [--dir DIR]
-         swarmcode config COMMAND [ARGS]     (swarmcode config help lists them)
+  Usage: ncode [DIR] [--new | --continue | --resume ID] [--model M]
+               [-p PROMPT [--json]] [--plain [--ndjson]] [--help] [--version]
+         ncode settings [QUERY] [--dir DIR]
+         ncode config COMMAND [ARGS]     (ncode config help lists them)
 
   Opens the saved session for DIR (default: the current directory).
 
-    settings [QUERY]  open Settings, at QUERY when given ('swarmcode settings providers');
+    settings [QUERY]  open Settings, at QUERY when given ('ncode settings providers');
                       it opens even when no model provider is set up yet
     config COMMAND    read and change settings from scripts, dotfiles and SSH
-                      (a folder named settings or config: swarmcode ./settings, ./config)
+                      (a folder named settings or config: ncode ./settings, ./config)
 
     --new           start a new conversation
     --continue, -c  continue the latest conversation (the default)
@@ -92,17 +92,17 @@ defmodule SwarmCodeCLI.Release do
         0
 
       :version ->
-        IO.puts("swarmcode " <> version())
+        IO.puts("ncode " <> version())
         0
 
       {:error, message} ->
-        IO.puts(:stderr, "swarmcode: " <> message <> " Run 'swarmcode --help'.")
+        IO.puts(:stderr, "ncode: " <> message <> " Run 'ncode --help'.")
         2
 
       {:ok, %{mode: mode}} when mode in [:tui, :settings] ->
         IO.puts(
           :stderr,
-          "swarmcode: the full-screen view starts from the swarmcode command, not from eval. " <>
+          "ncode: the full-screen view starts from the ncode command, not from eval. " <>
             "Use -p or --plain here."
         )
 
@@ -113,7 +113,7 @@ defmodule SwarmCodeCLI.Release do
           Headless.run(mode(options), headless_options(options))
         else
           {:error, message} ->
-            IO.puts(:stderr, "swarmcode: " <> message)
+            IO.puts(:stderr, "ncode: " <> message)
             2
         end
     end
@@ -300,7 +300,7 @@ defmodule SwarmCodeCLI.Release do
       parsed.conversation not in [nil, "new", "latest"] and not uuid?(parsed.conversation) ->
         # pass70 Q19: an eight-digit prefix is an id to a person; say what
         # is missing and where the ids are.
-        {:error, "--resume needs a whole conversation id; /resume inside swarmcode picks one."}
+        {:error, "--resume needs a whole conversation id; /resume inside ncode picks one."}
 
       parsed.prompt != nil and parsed.prompt != "-" and not prompt?(parsed.prompt) ->
         {:error, "-p needs a prompt of at most 256 KiB."}

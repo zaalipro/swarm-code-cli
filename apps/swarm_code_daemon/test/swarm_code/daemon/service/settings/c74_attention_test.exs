@@ -69,7 +69,7 @@ defmodule SwarmCode.Daemon.Service.Settings.C74AttentionTest do
     assert Enum.map(items, &{&1.id, &1.severity, &1.title}) |> Enum.sort() == [
              {"AT1", "error", "github MCP server failed to start"},
              {"AT5", "warning", "2 models in use have no price"},
-             {"AT8", "warning", "ailogic's project file has entries SwarmCode ignores"}
+             {"AT8", "warning", "ailogic's project file has entries ncode ignores"}
            ]
 
     by_id = Map.new(items, &{&1.id, &1})

@@ -119,7 +119,7 @@ defmodule SwarmCodeCLI.UI.Settings.C74ModelsEffortTest do
 
     rows = Sections.rows(:models_effort, ctx)
     file = Enum.find(rows, &(&1.id == "link:project_file"))
-    assert words(file.value) =~ "1 key SwarmCode ignores: effort"
+    assert words(file.value) =~ "1 key ncode ignores: effort"
     env = Enum.find(rows, &(&1.id == "link:files_env"))
     assert words(env.value) =~ "--model"
 

@@ -17,7 +17,7 @@ defmodule SwarmCodeCLI.UI.Pass73RefusalWordsTest do
     row = status(state)
     refute row =~ "daemon"
     refute row =~ "refused that request"
-    assert row =~ "Not sent: SwarmCode turned it down · try again, or see cli.log for why"
+    assert row =~ "Not sent: ncode turned it down · try again, or see cli.log for why"
   end
 
   test "the typed reason the daemon gave picks the words" do

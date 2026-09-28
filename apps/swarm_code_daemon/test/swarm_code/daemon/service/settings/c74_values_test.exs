@@ -330,7 +330,7 @@ defmodule SwarmCode.Daemon.Service.Settings.C74ValuesTest do
 
     default_effort = by_key["efforts.default"]
     ignored = Enum.find(default_effort["layers"], &(&1["layer"] == "project_file"))
-    assert %{"set" => true, "ignored" => true, "note" => "SwarmCode ignores this key"} = ignored
+    assert %{"set" => true, "ignored" => true, "note" => "ncode ignores this key"} = ignored
     assert default_effort["winner"] in ["global", "default"]
     assert by_key["project_file.effort"]["value"] == "high"
 

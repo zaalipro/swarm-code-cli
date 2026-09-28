@@ -3243,7 +3243,7 @@ defmodule SwarmCodeCLI.UI.Reducer do
 
   defp provider_refusal(_state, _intent), do: nil
 
-  # cli74: `swarmcode settings [QUERY]` opens the layer once the shell is
+  # cli74: `ncode settings [QUERY]` opens the layer once the shell is
   # ready, over nothing else.
   defp boot_settings(%{pending_open_settings: arg, settings: nil, layers: []} = state, effects)
        when not is_nil(arg) do

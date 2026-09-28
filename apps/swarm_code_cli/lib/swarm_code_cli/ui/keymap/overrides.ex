@@ -15,7 +15,7 @@ defmodule SwarmCodeCLI.UI.Keymap.Overrides do
   two bindings trade keys. `compile/1` never raises: an entry it cannot honour
   goes to `errors` (attention AT14) and the binding keeps its default keys.
 
-  Pure; the recovery path is `swarmcode config reset terminal.keys`.
+  Pure; the recovery path is `ncode config reset terminal.keys`.
   """
 
   alias SwarmCodeCLI.UI.Keymap.{Binding, Bindings, KeyName}

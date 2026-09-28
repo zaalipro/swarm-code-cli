@@ -115,7 +115,7 @@ defmodule SwarmCode.Settings.C74CliFileTest do
     assert %{status: :symlink, values: %{}} = CliFile.read_all(path(dir))
     assert {:error, :symlink} = CliFile.write_changes(path(dir), %{"panel" => "full"}, %{})
     assert File.read!(target) == ~s({"panel": "compact"})
-    assert CliFile.words(:symlink) == "cli.json is a symbolic link; SwarmCode will not replace it"
+    assert CliFile.words(:symlink) == "cli.json is a symbolic link; ncode will not replace it"
   end
 
   test "a file that is not JSON is never replaced", %{tmp_dir: dir} do

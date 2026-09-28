@@ -188,11 +188,11 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.C74ProvidersTest do
 
       rows = record_rows(c, @ids.deepseek)
 
-      # pass 75 (R27.3): `stored in SwarmCode's database` is the key row's
+      # pass 75 (R27.3): `stored in ncode's database` is the key row's
       # continuation line, not its value's tail
       key_row = row(rows, "fld:provider:#{@ids.deepseek}:api_key")
       assert text(key_row.value) == "●●●●●●●● set · ends a1b2"
-      assert [{"stored in SwarmCode's database", :text_faint}] in key_row.lines
+      assert [{"stored in ncode's database", :text_faint}] in key_row.lines
 
       assert text(row(rows, "fld:provider:#{@ids.deepseek}:effort_levels").value) ==
                "DeepSeek V4 · 3 levels"
@@ -278,7 +278,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.C74ProvidersTest do
       # waits (after Esc nothing is left to save). Pass 75 (R27.3): the key
       # row's own continuation line says where the key is kept.
       assert row(record_rows(c, @ids.deepseek), "fld:provider:#{@ids.deepseek}:api_key").lines ==
-               [[{"stored in SwarmCode's database", :text_faint}]]
+               [[{"stored in ncode's database", :text_faint}]]
 
       c = with_refused_paste(c, "fld:provider:#{@ids.deepseek}:api_key")
       key = row(record_rows(c, @ids.deepseek), "fld:provider:#{@ids.deepseek}:api_key")

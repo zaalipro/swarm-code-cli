@@ -2,7 +2,7 @@ defmodule SwarmCode.Daemon.Service.SessionConfigurationTest do
   # pass70 B4 (decision D3, arch F4, rel F5): the database decides the model;
   # environment variables never create provider rows or rewrite a
   # conversation, except the first-run fallback and the in-memory
-  # `swarmcode --model` session override.
+  # `ncode --model` session override.
   use ExUnit.Case, async: false
 
   alias SwarmCode.Daemon.Service.{SessionConfiguration, SessionSelection}

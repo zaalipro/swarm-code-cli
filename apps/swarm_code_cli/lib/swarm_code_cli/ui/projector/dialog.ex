@@ -609,8 +609,8 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
 
         {Density.safe("Stop " <> runs <> " and quit?", state, 60),
          [
-           {"quit_live_runs",
-            Density.safe("They stop when SwarmCode quits." <> draft, state, 200), nil}
+           {"quit_live_runs", Density.safe("They stop when ncode quits." <> draft, state, 200),
+            nil}
          ], [cancel] ++ confirm, focused}
 
       _ ->

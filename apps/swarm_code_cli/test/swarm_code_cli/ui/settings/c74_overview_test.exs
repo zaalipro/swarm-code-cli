@@ -156,7 +156,7 @@ defmodule SwarmCodeCLI.UI.Settings.C74OverviewTest do
                "command not found: github-mcp-server",
                "! 2 models in use have no price  Enter open",
                "claude-sonnet-5, qwen3-coder",
-               "! ailogic's project file has entries SwarmCode ignores  Enter open",
+               "! ailogic's project file has entries ncode ignores  Enter open",
                "effort, hooks.post_edit, profiles.fast.mode",
                "at a glance",
                "providers  4 · 3 usable · chat DeepSeek · deepseek-v4-pro",

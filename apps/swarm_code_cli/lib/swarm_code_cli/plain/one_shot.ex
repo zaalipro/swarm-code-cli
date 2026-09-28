@@ -1,6 +1,6 @@
 defmodule SwarmCodeCLI.Plain.OneShot do
   @moduledoc """
-  `swarmcode -p PROMPT`: one turn in the saved conversation with nobody at the
+  `ncode -p PROMPT`: one turn in the saved conversation with nobody at the
   keyboard.
 
   The prompt is sent the way the composer sends it, through the same pure
@@ -523,7 +523,7 @@ defmodule SwarmCodeCLI.Plain.OneShot do
 
     if Enum.any?(effects, &match?({:command, %Request{request_id: ^id}}, &1)),
       do: say(%{state | stopped?: true}, why <> " was stopped."),
-      else: finish(state, 1, why <> " cannot continue; open swarmcode to answer it.")
+      else: finish(state, 1, why <> " cannot continue; open ncode to answer it.")
   end
 
   # -- the end ----------------------------------------------------------------
@@ -736,7 +736,7 @@ defmodule SwarmCodeCLI.Plain.OneShot do
   # when the answer stopped mid-line (the answer itself is not changed).
   defp say(state, text, prefix? \\ true) do
     lead = if state.fresh_line?, do: "", else: "\n"
-    write(state.error, [lead, if(prefix?, do: "swarmcode: ", else: ""), clean(text), "\n"])
+    write(state.error, [lead, if(prefix?, do: "ncode: ", else: ""), clean(text), "\n"])
     %{state | fresh_line?: true}
   end
 

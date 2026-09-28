@@ -198,7 +198,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Pricing do
           scope: "global · shared with the desktop app",
           key_line: "pricing · settings.pricing[\"#{model}\"]",
           description:
-            "What a million tokens of #{model} cost, in dollars. Every cost SwarmCode shows (runs, the budget, usage) multiplies tokens by these prices; a cache read or write without its own price is derived from the input price.",
+            "What a million tokens of #{model} cost, in dollars. Every cost ncode shows (runs, the budget, usage) multiplies tokens by these prices; a cache read or write without its own price is derived from the input price.",
           facts: [{"applies", "the next cost computed"}]
         )
     )

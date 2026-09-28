@@ -256,7 +256,7 @@ defmodule SwarmCode.Daemon.Service.LiveBackend do
     |> Map.replace(:log, :redacted)
   end
 
-  @settings_words "Saved settings are available in a saved session (swarmcode). " <>
+  @settings_words "Saved settings are available in a saved session (ncode). " <>
                     "This session runs from SWARM_* variables."
 
   defp live_settings(:settings_query, params, id) do

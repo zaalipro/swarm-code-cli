@@ -421,7 +421,7 @@ defmodule SwarmCode.Daemon.Schema.Probe do
       :schema_incompatible,
       false,
       "The canonical database could not pass the read-only schema probe.",
-      "Use a supported SwarmCode version and restore only from a verified backup."
+      "Use a supported ncode version and restore only from a verified backup."
     )
   end
 end

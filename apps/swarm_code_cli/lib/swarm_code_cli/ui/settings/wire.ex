@@ -20,7 +20,7 @@ defmodule SwarmCodeCLI.UI.Settings.Wire do
   @deadline_ms 15_000
   @page_size 100
 
-  @unavailable "This SwarmCode service does not offer settings. Update the CLI and the daemon together."
+  @unavailable "This ncode service does not offer settings. Update the CLI and the daemon together."
 
   @doc "The words when the service cannot answer settings requests at all."
   def unavailable_words, do: @unavailable
@@ -34,7 +34,7 @@ defmodule SwarmCodeCLI.UI.Settings.Wire do
 
   cli74 F38: a delta drops the overview and only the Overview page asked for
   it again, so the header's `! 1 need attention` and the rail's `!1` went away
-  on every other page (found in the sandbox, `swarmcode settings providers`).
+  on every other page (found in the sandbox, `ncode settings providers`).
   """
   @spec sync(map()) :: {map(), list()}
   def sync(%{settings: %Layer{available: true} = layer} = state) do

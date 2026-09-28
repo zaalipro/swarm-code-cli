@@ -1,6 +1,6 @@
 defmodule SwarmCode.Settings.TextValue do
   @moduledoc """
-  The typed-text grammar of `swarmcode config set` and the settings command
+  The typed-text grammar of `ncode config set` and the settings command
   line (pass 74, spec §3.10.3): `on/off/true/false`, numbers with units
   (`30m`, `90s`, `2h`), `default`/`null`, comma-separated lists, models as
   `provider/model`, colours as `#RRGGBB`. Record fields parse by the same rules

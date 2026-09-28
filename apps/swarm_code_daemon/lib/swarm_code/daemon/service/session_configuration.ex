@@ -8,7 +8,7 @@ defmodule SwarmCode.Daemon.Service.SessionConfiguration do
   rows and never rewrite a conversation. Two exceptions, both in memory only:
 
   - `SWARM_MODEL_OVERRIDE` (`model` or `provider/model`, set only by
-    `swarmcode --model`) is a session override resolved against the providers
+    `ncode --model`) is a session override resolved against the providers
     in the database. It is never persisted; `overlay/1` applies it to a
     conversation struct right before a turn starts.
   - First run: when the database has no usable provider at all and `SWARM_*`
@@ -238,7 +238,7 @@ defmodule SwarmCode.Daemon.Service.SessionConfiguration do
                  default_model: config[:model]
                }) do
           {:ok, provider,
-           "First run: added the provider #{name} from your SWARM_* settings; change it in SwarmCode Settings."}
+           "First run: added the provider #{name} from your NCODE_*/SWARM_* settings; change it in ncode Settings."}
         end
 
       provider ->

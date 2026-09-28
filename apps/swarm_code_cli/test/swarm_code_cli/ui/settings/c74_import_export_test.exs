@@ -8,7 +8,7 @@ defmodule SwarmCodeCLI.UI.Settings.C74ImportExportTest do
   alias SwarmCodeCLI.UI.Settings.{Confirm, Nav, Page, Sections}
   alias SwarmCodeCLI.UI.Settings.Sections.ImportExport
 
-  @path "~/swarmcode-settings-2026-09-20.json"
+  @path "~/ncode-settings-2026-09-20.json"
 
   defp base do
     {state, _fake} = opened(:import_export)
@@ -76,7 +76,7 @@ defmodule SwarmCodeCLI.UI.Settings.C74ImportExportTest do
     assert [{:open, %Page{sub: {:export, state}}}] =
              Sections.act(:import_export, ctx, export, :open_row)
 
-    assert state.path =~ ~r/\A~\/swarmcode-settings-\d{4}-\d{2}-\d{2}\.json\z/
+    assert state.path =~ ~r/\A~\/ncode-settings-\d{4}-\d{2}-\d{2}\.json\z/
     assert "terminal" in state.scopes
     refute state.plain
 

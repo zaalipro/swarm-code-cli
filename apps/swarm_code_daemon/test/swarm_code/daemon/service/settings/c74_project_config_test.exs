@@ -64,7 +64,7 @@ defmodule SwarmCode.Daemon.Service.Settings.C74ProjectConfigTest do
       assert [%{id: "AT8", reason: "effort, hooks.post_edit, profiles.fast.mode"} = at8] =
                ProjectConfig.attention(c.ctx)
 
-      assert at8.title == "ailogic's project file has entries SwarmCode ignores"
+      assert at8.title == "ailogic's project file has entries ncode ignores"
     end
 
     test "every ignored-entry reason of §3.5.8", c do

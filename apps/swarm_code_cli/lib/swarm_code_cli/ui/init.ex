@@ -24,7 +24,7 @@ defmodule SwarmCodeCLI.UI.Init do
     theme_env: nil,
     mouse?: true,
     # cli74 (§3.8.4): every cli.json value by json name, the launch's env and
-    # flag overrides, and `swarmcode settings [QUERY]`'s query (nil = none;
+    # flag overrides, and `ncode settings [QUERY]`'s query (nil = none;
     # "" opens the Overview).
     prefs: %{},
     launch_facts: %{},

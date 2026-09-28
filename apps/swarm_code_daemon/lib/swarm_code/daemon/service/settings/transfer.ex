@@ -25,7 +25,10 @@ defmodule SwarmCode.Daemon.Service.Settings.Transfer do
   alias SwarmCode.Domain.{MCP, Providers, Search}
   alias SwarmCode.Settings.{Entry, Registry, SecretPattern, Validate, WireValue}
 
+  # Export keeps writing the pre-rename name so an older swarmcode can still
+  # import the file; import also accepts the ncode name (lane A, v0.1.0).
   @format "swarmcode-settings"
+  @formats [@format, "ncode-settings"]
   @version 1
   @secret "<secret: set>"
   @scopes ~w(global terminal project providers search mcp pricing lsp desktop_keys)
@@ -318,20 +321,21 @@ defmodule SwarmCode.Daemon.Service.Settings.Transfer do
          {:ok, text} <- File.read(path),
          {:ok, %{} = document} <- Jason.decode(text) do
       case document do
-        %{"format" => @format, "version" => @version} ->
+        %{"format" => format, "version" => @version} when format in @formats ->
           {:ok, document}
 
-        %{"format" => @format, "version" => version} when is_integer(version) and version > 1 ->
-          {:error, "made by a newer SwarmCode (version #{version})"}
+        %{"format" => format, "version" => version}
+        when format in @formats and is_integer(version) and version > 1 ->
+          {:error, "made by a newer ncode (version #{version})"}
 
         _ ->
-          {:error, "not a SwarmCode settings file"}
+          {:error, "not an ncode settings file"}
       end
     else
       {:error, words} when is_binary(words) -> {:error, words}
       {:ok, %File.Stat{}} -> {:error, "not a file"}
       {:error, :enoent} -> {:error, "no such file: #{home_relative(path)}"}
-      _ -> {:error, "not a SwarmCode settings file"}
+      _ -> {:error, "not an ncode settings file"}
     end
   end
 

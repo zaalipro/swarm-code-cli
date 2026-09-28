@@ -7,7 +7,7 @@ defmodule SwarmCodeCLI.Release.PersistedSessionTest do
 
   test "without a terminal the session refuses with a usage status and one sentence" do
     output = capture_io(:stderr, fn -> assert PersistedSession.run() == 2 end)
-    assert output =~ ~r/^swarmcode: /
+    assert output =~ ~r/^ncode: /
     refute output =~ "**"
     refute output =~ "SAVED DEV SESSION"
     refute output =~ "RuntimeError"
@@ -15,17 +15,17 @@ defmodule SwarmCodeCLI.Release.PersistedSessionTest do
   end
 
   test "a failure prints the sentence and the action and returns its status" do
-    failure = %{status: 3, message: "The SwarmCode app is open.", action: "Quit it."}
+    failure = %{status: 3, message: "The ncode app is open.", action: "Quit it."}
     output = capture_io(:stderr, fn -> assert PersistedSession.report(failure) == 3 end)
     [first, second | _] = String.split(output, "\n")
-    assert first == "swarmcode: The SwarmCode app is open."
+    assert first == "ncode: The ncode app is open."
     assert second == "  Quit it."
   end
 
-  test "a sentence that names swarmcode is not prefixed twice" do
-    failure = %{status: 3, message: "swarmcode could not start.", action: "Reinstall swarmcode."}
+  test "a sentence that names ncode is not prefixed twice" do
+    failure = %{status: 3, message: "ncode could not start.", action: "Reinstall ncode."}
     output = capture_io(:stderr, fn -> assert PersistedSession.report(failure) == 3 end)
-    assert hd(String.split(output, "\n")) == "swarmcode: could not start."
+    assert hd(String.split(output, "\n")) == "ncode: could not start."
   end
 
   test "SWARM_ASCII=1 selects the ASCII glyph tier (pass70 Q12)" do
@@ -105,12 +105,12 @@ defmodule SwarmCodeCLI.Release.PersistedSessionTest do
   test "the test runner entry refuses outside MIX_ENV=test only" do
     # In the test build the guard passes and the terminal check answers.
     output = capture_io(:stderr, fn -> assert PersistedSession.run_for_test([]) == 2 end)
-    assert output =~ "swarmcode: "
+    assert output =~ "ncode: "
   end
 
   test "an unknown release mode is a usage error, never a module lookup" do
     output = capture_io(:stderr, fn -> assert PersistedSession.run_entry("Elixir.File") == 2 end)
-    assert output =~ ~s(swarmcode: this build has no "Elixir.File" mode.)
+    assert output =~ ~s(ncode: this build has no "Elixir.File" mode.)
   end
 
   # pass71 F18 (review R20): the exit summary's resume hint names the
@@ -118,10 +118,10 @@ defmodule SwarmCodeCLI.Release.PersistedSessionTest do
   test "the resume hint names the conversation" do
     id = "3e4a58b5-0000-4000-8000-000000000001"
     here = System.get_env("PWD")
-    assert PersistedSession.resume_command(here, id) == "swarmcode --resume " <> id
-    assert PersistedSession.resume_command("/p/x y", id) == "swarmcode '/p/x y' --resume " <> id
-    assert PersistedSession.resume_command("/p/x", nil) == "swarmcode /p/x --continue"
-    assert PersistedSession.resume_command(here, "not-an-id") == "swarmcode --continue"
+    assert PersistedSession.resume_command(here, id) == "ncode --resume " <> id
+    assert PersistedSession.resume_command("/p/x y", id) == "ncode '/p/x y' --resume " <> id
+    assert PersistedSession.resume_command("/p/x", nil) == "ncode /p/x --continue"
+    assert PersistedSession.resume_command(here, "not-an-id") == "ncode --continue"
   end
 
   # pass71 F19 (review R17): an unknown --model says which model it was.

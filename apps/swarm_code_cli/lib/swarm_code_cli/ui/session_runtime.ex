@@ -509,7 +509,7 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
         args: [
           "-c",
           ~s(exec $SWARM_EDIT_COMMAND "$1" 2>&1),
-          "swarmcode-editor",
+          "ncode-editor",
           file
         ],
         env: [{~c"SWARM_EDIT_COMMAND", String.to_charlist(command)}]
@@ -545,7 +545,7 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
     dir =
       Path.join(
         System.tmp_dir!(),
-        "swarmcode-edit-" <> Base.url_encode64(:crypto.strong_rand_bytes(12), padding: false)
+        "ncode-edit-" <> Base.url_encode64(:crypto.strong_rand_bytes(12), padding: false)
       )
 
     file = Path.join(dir, name)
@@ -1024,7 +1024,7 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
 
   # A close the user did not ask for is said in plain words; a session that
   # vanishes with exit 0 cannot be reported, let alone fixed. A launcher with
-  # an instruction sink (the packaged `swarmcode`) gets the words and prints
+  # an instruction sink (the packaged `ncode`) gets the words and prints
   # them after the terminal is restored, with a failure exit status (pass70
   # B3); the details go to the log. Without a sink they go to stderr.
   defp report_shutdown(kind, sink) do
@@ -1045,7 +1045,7 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
 
         IO.puts(
           :stderr,
-          "swarmcode: the session closed: " <> shutdown_words(base) <> detail <> "."
+          "ncode: the session closed: " <> shutdown_words(base) <> detail <> "."
         )
     end
   end
@@ -1083,7 +1083,7 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
 
     if is_pid(sink),
       do: Logger.error("session closed: " <> text),
-      else: IO.puts(:stderr, "swarmcode: the session closed: " <> text <> ".")
+      else: IO.puts(:stderr, "ncode: the session closed: " <> text <> ".")
 
     case System.get_env("SWARM_SCENE_DUMP") do
       path when is_binary(path) and path != "" ->

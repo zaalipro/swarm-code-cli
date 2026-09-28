@@ -909,7 +909,7 @@ defmodule SwarmCodeCLI.UI.SafeText do
 
   def value(%{__struct__: __MODULE__, token: :swarmcode_wordmark} = text)
       when map_size(text) == 2,
-      do: "SwarmCode"
+      do: "ncode"
 
   def value(%{__struct__: __MODULE__, token: :workspace_label} = text) when map_size(text) == 2,
     do: "WORKSPACE"

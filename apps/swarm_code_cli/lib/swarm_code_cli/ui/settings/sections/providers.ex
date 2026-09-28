@@ -487,7 +487,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Providers do
       scope: "global · shared with the desktop app",
       key_line: "provider.base_url · providers.base_url",
       description:
-        "Where SwarmCode sends this provider's requests. Local and private addresses are allowed. A change clears the last test result: it tested another URL.",
+        "Where ncode sends this provider's requests. Local and private addresses are allowed. A change clears the last test result: it tested another URL.",
       facts: [{"applies", "next request"}]
     )
   end
@@ -568,7 +568,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Providers do
     # own; a refusal or an error takes its place while it waits.
     lines =
       if set and lines == [],
-        do: [[{"stored in SwarmCode's database", :text_faint}]],
+        do: [[{"stored in ncode's database", :text_faint}]],
         else: lines
 
     value =
@@ -602,10 +602,10 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Providers do
           scope: "global · shared with the desktop app",
           key_line: "provider.api_key · secret",
           description:
-            "The key SwarmCode sends to #{host(R.field(f, "base_url"))} with each request of this provider. It is never shown again, never written to a log, never in search results and never kept for undo.",
+            "The key ncode sends to #{host(R.field(f, "base_url"))} with each request of this provider. It is never shown again, never written to a log, never in search results and never kept for undo.",
           facts: [
             {"state", if(set, do: "set", else: "not set")},
-            {"stored", "stored in SwarmCode's database"},
+            {"stored", "stored in ncode's database"},
             {"sent to", "#{host(R.field(f, "base_url"))} only"},
             {"shared", "with the desktop app"}
           ]
@@ -1118,7 +1118,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Providers do
         do: [
           R.info(
             "delete:only",
-            "SwarmCode will have no model to talk to until you add one",
+            "ncode will have no model to talk to until you add one",
             :warning
           )
         ],
@@ -1553,7 +1553,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Providers do
                "its API key is deleted with it"
              ] ++
                if(length(R.items(ctx, "providers")) <= 1,
-                 do: ["SwarmCode will have no model to talk to until you add one"],
+                 do: ["ncode will have no model to talk to until you add one"],
                  else: []
                ),
            safe: "Keep #{name}",

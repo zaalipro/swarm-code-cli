@@ -3,7 +3,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.ImportExport do
   pass74 U3-13 (spec §2.22, sketch §4.15): Import & export.
 
     * `▸ Export settings…` opens the export page: the file (default
-      `~/swarmcode-settings-YYYY-MM-DD.json`), one toggle per scope (global
+      `~/ncode-settings-YYYY-MM-DD.json`), one toggle per scope (global
       values, terminal, this project, providers and search providers without
       keys, MCP servers, pricing, language servers, desktop keys), *include
       plain MCP values* (off: every MCP env/header value is written as
@@ -63,7 +63,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.ImportExport do
     date = now_ms |> DateTime.from_unix!(:millisecond) |> DateTime.to_date() |> Date.to_iso8601()
 
     %{
-      path: "~/swarmcode-settings-#{date}.json",
+      path: "~/ncode-settings-#{date}.json",
       scopes: for({id, _label, on?} <- @scopes, on?, do: id),
       plain: false,
       overwrite: false

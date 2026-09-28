@@ -6,14 +6,14 @@ export SWARM_USER_UMASK="${SWARM_USER_UMASK:-$(umask)}"
 umask 077
 if [[ $# -eq 1 && "$1" == "--help" ]]; then
   cat <<'HELP'
-SwarmCode development TUI — SAVED · DEV
+ncode development TUI — SAVED · DEV
 
 Usage: scripts/dev/run_saved_session.sh
 
-Runs the same session as the installed swarmcode on the canonical database.
+Runs the same session as the installed ncode on the canonical database.
 Resumes the latest saved conversation for SWARM_PROJECT_ROOT by default.
 Set SWARM_CONVERSATION to latest, new, or an existing conversation UUID.
-The conversation's own provider and model (or the SwarmCode default) are used;
+The conversation's own provider and model (or the ncode default) are used;
 SWARM_MODEL_OVERRIDE=<model|provider/model> overrides them for this session
 only. SWARM_* settings create a provider only when none exists yet.
 Logs: ~/Library/Logs/SwarmCode/cli.log (XDG state dir on Linux).

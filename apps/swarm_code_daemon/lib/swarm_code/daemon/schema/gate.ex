@@ -105,7 +105,7 @@ defmodule SwarmCode.Daemon.Schema.Gate do
 
   defp check_existing(path, manifest, app_version, opts) do
     # pass70 Q13: a file that is not SQLite at all gets its own sentence; the
-    # general one ("comes from a SwarmCode version this swarmcode does not
+    # general one ("comes from an ncode version this ncode does not
     # know") sent the person to upgrade something for a stray file.
     if sqlite_header?(path),
       do: check_sqlite(path, manifest, app_version, opts),
@@ -213,7 +213,7 @@ defmodule SwarmCode.Daemon.Schema.Gate do
       :schema_incompatible,
       false,
       "The canonical database is incompatible with this migration manifest.",
-      "Use a supported SwarmCode version and restore only from a verified backup."
+      "Use a supported ncode version and restore only from a verified backup."
     )
   end
 end

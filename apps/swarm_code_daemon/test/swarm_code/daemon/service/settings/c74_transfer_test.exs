@@ -232,7 +232,7 @@ defmodule SwarmCode.Daemon.Service.Settings.C74TransferTest do
   end
 
   test "a model value naming a provider of this database imports without the records", fixture do
-    # Found in the sandbox (cli74 F28): `swarmcode config export` leaves the records out
+    # Found in the sandbox (cli74 F28): `ncode config export` leaves the records out
     # by default, and every model row of its import preview read "invalid" (the known
     # providers were their ids, not their names).
     path = Path.join(fixture.dir, "no-records.json")
@@ -275,11 +275,31 @@ defmodule SwarmCode.Daemon.Service.Settings.C74TransferTest do
 
     newer = Path.join(fixture.dir, "newer.json")
     File.write!(newer, Jason.encode!(%{"format" => "swarmcode-settings", "version" => 2}))
-    assert {:error, "made by a newer SwarmCode (version 2)"} = Transfer.read_document(newer)
+    assert {:error, "made by a newer ncode (version 2)"} = Transfer.read_document(newer)
 
     other = Path.join(fixture.dir, "other.json")
     File.write!(other, ~s({"hello": 1}))
-    assert {:error, "not a SwarmCode settings file"} = Transfer.read_document(other)
+    assert {:error, "not an ncode settings file"} = Transfer.read_document(other)
+  end
+
+  # ncode rename (lane A): export keeps writing "swarmcode-settings" so an older
+  # ncode can import the file; import takes both names, and a newer version
+  # of either is refused the same way.
+  test "import accepts both format names", fixture do
+    for format <- ["swarmcode-settings", "ncode-settings"] do
+      path = Path.join(fixture.dir, "#{format}.json")
+      File.write!(path, Jason.encode!(%{"format" => format, "version" => 1, "scopes" => []}))
+      assert {:ok, %{"format" => ^format}} = Transfer.read_document(path)
+
+      newer = Path.join(fixture.dir, "#{format}-v2.json")
+      File.write!(newer, Jason.encode!(%{"format" => format, "version" => 2}))
+      assert {:error, "made by a newer ncode (version 2)"} = Transfer.read_document(newer)
+    end
+
+    other = Path.join(fixture.dir, "other-format.json")
+    File.write!(other, Jason.encode!(%{"format" => "ncode", "version" => 1}))
+    assert {:error, "not an ncode settings file"} = Transfer.read_document(other)
+    # Export still writes the old name: "exports with mode 0600…" pins it above.
   end
 
   test "doctor lists its checks and reports a research root that cannot be made", fixture do

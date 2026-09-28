@@ -180,7 +180,7 @@ defmodule SwarmCodeCLI.UI.Settings.C74ProviderTest do
       refute state.pending_resume_picker
     end
 
-    test "swarmcode settings wins over the picker" do
+    test "ncode settings wins over the picker" do
       state = booting(init: [resume_picker?: true, settings_open: ""]) |> shell_ready()
       assert state.settings != nil
       refute state.pending_resume_picker

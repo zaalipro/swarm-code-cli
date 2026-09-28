@@ -1,6 +1,6 @@
 defmodule SwarmCodeCLI.Release.PersistedSession do
   @moduledoc """
-  The saved `swarmcode` session: guarded storage, session selection, provider
+  The saved `ncode` session: guarded storage, session selection, provider
   resolution, the terminal UI, and an orderly close.
 
   Nothing here raises to the terminal (pass70 B3). Every failure becomes one
@@ -69,7 +69,7 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
       _ ->
         IO.puts(
           :stderr,
-          "swarmcode: this build has no #{inspect(mode)} mode. Run swarmcode --help."
+          "ncode: this build has no #{inspect(mode)} mode. Run ncode --help."
         )
 
         @exit_usage
@@ -93,7 +93,7 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
   end
 
   @doc """
-  Contract for headless entry points (owner E, `swarmcode -p` / `--plain`):
+  Contract for headless entry points (owner E, `ncode -p` / `--plain`):
   boots guarded storage and the saved runtime exactly like the TUI (log file,
   lease, migrations, session selection, provider resolution, boot recovery),
   calls `fun.(session)` with `%{project: _, conversation: _, notice: _}`, then
@@ -129,7 +129,7 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
   end
 
   @doc """
-  pass74 S1-14: the foundation-only boot of `swarmcode config` — the log file,
+  pass74 S1-14: the foundation-only boot of `ncode config` — the log file,
   the lease and the verified migrations (guarded storage); no session
   selection, no provider resolution, no boot recovery, no daemon socket.
   Returns `{:ok, fun.()}` or `{:error, failure}` (a startup refusal carries
@@ -169,15 +169,15 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
   @doc "Prints a failure (two lines and the log path) on stderr and returns its exit status."
   @spec report(failure()) :: non_neg_integer()
   def report(%{status: status, message: message, action: action}) do
-    # A sentence that names swarmcode itself is not prefixed twice (pass70 F14).
+    # A sentence that names ncode itself is not prefixed twice (pass70 F14).
     message =
       case message do
-        "swarmcode " <> rest -> rest
+        "ncode " <> rest -> rest
         message -> message
       end
 
     lines =
-      ["swarmcode: " <> message] ++
+      ["ncode: " <> message] ++
         if(action != "", do: ["  " <> action], else: []) ++
         if(status != @exit_usage and File.exists?(log_path(nil)),
           do: ["  Details: " <> log_path(nil)],
@@ -254,7 +254,7 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
     started_at = DateTime.utc_now()
 
     if opts[:label] == :dev,
-      do: IO.puts(:stderr, "swarmcode (dev) — conversation #{session.conversation.id}")
+      do: IO.puts(:stderr, "ncode (dev) — conversation #{session.conversation.id}")
 
     {outcome, current} = run_ui(session, executable, opts[:resume_picker?] == true)
     shown = %{session | conversation: %{session.conversation | id: current}}
@@ -304,7 +304,7 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
     end)
   end
 
-  # pass74 S1-13 (D11): `swarmcode settings` opens without a usable provider —
+  # pass74 S1-13 (D11): `ncode settings` opens without a usable provider —
   # that is how one is added; the dispatch refuses a send until then.
   defp prepare(session) do
     case SessionConfiguration.prepare(session, System.get_env()) do
@@ -317,7 +317,7 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
   end
 
   @doc false
-  # pass74 S1-13: the launcher's `swarmcode settings [QUERY]`.
+  # pass74 S1-13: the launcher's `ncode settings [QUERY]`.
   @spec settings_only?() :: boolean()
   def settings_only?, do: System.get_env("SWARM_SETTINGS_ONLY") == "1"
 
@@ -486,7 +486,7 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
                  failure(
                    @exit_failure,
                    "The session closed because " <> words <> ".",
-                   "Run swarmcode again; your conversation is saved."
+                   "Run ncode again; your conversation is saved."
                  )}
             after
               0 -> :ok
@@ -498,8 +498,8 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
             {:failed,
              failure(
                @exit_failure,
-               "The terminal stopped responding, so swarmcode closed.",
-               "Run swarmcode again; your conversation is saved."
+               "The terminal stopped responding, so ncode closed.",
+               "Run ncode again; your conversation is saved."
              )}
 
           {:DOWN, ^supervisor_monitor, :process, ^supervisor, reason} ->
@@ -508,8 +508,8 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
             {:failed,
              failure(
                @exit_failure,
-               "The session stopped unexpectedly, so swarmcode closed.",
-               "Run swarmcode again; your conversation is saved."
+               "The session stopped unexpectedly, so ncode closed.",
+               "Run ncode again; your conversation is saved."
              )}
         end
 
@@ -677,7 +677,7 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
         {:error, :cleanup_unconfirmed} ->
           say(
             :stderr,
-            "SwarmCode closed its database with one native handle still pending; saved data is safe."
+            "ncode closed its database with one native handle still pending; saved data is safe."
           )
 
         other ->
@@ -829,8 +829,8 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
         else: "--continue"
 
     if root == nil or root == here,
-      do: "swarmcode " <> flag,
-      else: "swarmcode " <> shell_quote(root) <> " " <> flag
+      do: "ncode " <> flag,
+      else: "ncode " <> shell_quote(root) <> " " <> flag
   end
 
   defp shell_quote(path) do
@@ -878,13 +878,13 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
 
     kind, reason ->
       Logger.error(
-        "swarmcode stopped unexpectedly: " <> Exception.format(kind, reason, __STACKTRACE__)
+        "ncode stopped unexpectedly: " <> Exception.format(kind, reason, __STACKTRACE__)
       )
 
       {:error,
        failure(
          @exit_failure,
-         "swarmcode stopped unexpectedly.",
+         "ncode stopped unexpectedly.",
          "Run it again; your conversation is saved."
        )}
   end
@@ -895,7 +895,7 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
 
   defp preflight! do
     unless System.argv() == [],
-      do: fail!(@exit_usage, "unexpected arguments.", "Run swarmcode --help.")
+      do: fail!(@exit_usage, "unexpected arguments.", "Run ncode --help.")
 
     unless (release_tui?() or :init.get_argument(:noinput) != :error) and
              :prim_tty.isatty(:stdin) == true and
@@ -904,8 +904,8 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
            do:
              fail!(
                @exit_usage,
-               "swarmcode needs an interactive terminal.",
-               ~s(In pipes and scripts use swarmcode -p "prompt" or swarmcode --plain.)
+               "ncode needs an interactive terminal.",
+               ~s(In pipes and scripts use ncode -p "prompt" or ncode --plain.)
              )
   end
 
@@ -924,8 +924,8 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
       else:
         fail!(
           @exit_failure,
-          "The swarmcode terminal helper is missing.",
-          "Reinstall swarmcode (scripts/install.sh), or build it with scripts/dev/check_terminal_port.sh."
+          "The ncode terminal helper is missing.",
+          "Reinstall ncode (scripts/install.sh), or build it with scripts/dev/check_terminal_port.sh."
         )
   end
 
@@ -937,7 +937,7 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
 
         {:error, reason} ->
           Logger.error("application #{app} did not start: #{inspect(reason)}")
-          fail!(@exit_failure, "swarmcode could not start.", "Reinstall swarmcode.")
+          fail!(@exit_failure, "ncode could not start.", "Reinstall ncode.")
       end
     end
 
@@ -955,7 +955,7 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
   defp startup_failure(%{__struct__: SwarmCode.Daemon.StartupError} = error, boot) do
     Logger.error("startup refused: #{error.code}: #{error.message} #{error.action}")
     {message, action} = startup_words(error.code, error, boot)
-    # pass74 S1-14: `swarmcode config` answers a held lease with its own words.
+    # pass74 S1-14: `ncode config` answers a held lease with its own words.
     @exit_refused |> failure(message, action) |> Map.put(:code, error.code)
   end
 
@@ -972,15 +972,15 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
 
   defp startup_words(:desktop_active, _error, _boot),
     do:
-      {"The SwarmCode app is open, and only one of them can use your conversations at a time.",
-       "Quit the SwarmCode app, then run swarmcode again."}
+      {"The ncode app is open, and only one of them can use your conversations at a time.",
+       "Quit the ncode app, then run ncode again."}
 
   defp startup_words(:data_lease_held, _error, boot) do
     if settings_only?(),
       do: {lease_words(boot, :settings), ""},
       else:
         {lease_holder(boot),
-         "Close it first (Ctrl-C twice, and once more if it asks), then run swarmcode again."}
+         "Close it first (Ctrl-C twice, and once more if it asks), then run ncode again."}
   end
 
   # The allowlist's two refusals (pass70 D2: an upgrade only the app makes, a
@@ -998,37 +998,37 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
     if Enum.any?(refusals, &(&1.message == error.message)),
       do: {error.message, error.action},
       else:
-        {"Your conversations database comes from a SwarmCode version this swarmcode does not know.",
-         "Update swarmcode, or open the SwarmCode app once to upgrade the database. Nothing was changed."}
+        {"Your conversations database comes from an ncode version this ncode does not know.",
+         "Update ncode, or open the ncode app once to upgrade the database. Nothing was changed."}
   end
 
   defp startup_words(code, _error, _boot)
        when code in [:private_directory_failed, :path_resolution_failed, :lease_failed],
        do:
-         {"swarmcode could not safely open its private data folder.",
+         {"ncode could not safely open its private data folder.",
           "Check that ~/Library/Application Support/SwarmCode belongs to you and has mode 0700."}
 
   defp startup_words(:macos_platform_helper_unavailable, _error, _boot),
     do:
-      {"swarmcode could not check whether the SwarmCode app is running.",
-       "Reinstall swarmcode (scripts/install.sh)."}
+      {"ncode could not check whether the ncode app is running.",
+       "Reinstall ncode (scripts/install.sh)."}
 
   defp startup_words(code, _error, _boot) when code in [:backup_failed, :backup_unverified],
     do:
-      {"swarmcode could not make a verified backup before upgrading the database, so it changed nothing.",
-       "Free some disk space and run swarmcode again."}
+      {"ncode could not make a verified backup before upgrading the database, so it changed nothing.",
+       "Free some disk space and run ncode again."}
 
   defp startup_words(_code, error, _boot), do: {error.message, error.action}
 
   defp storage_words(reason) when reason in [:migration_failed, :migration_timeout],
     do:
-      {"swarmcode could not upgrade the database; it was left as it was.",
-       "Your verified backup is in the SwarmCode backups folder. Open the SwarmCode app, or report this."}
+      {"ncode could not upgrade the database; it was left as it was.",
+       "Your verified backup is in the backups folder beside your conversations database. Open the ncode app, or report this."}
 
   defp storage_words(_reason),
     do:
-      {"swarmcode could not open your conversations database.",
-       "Close other SwarmCode windows and run swarmcode again."}
+      {"ncode could not open your conversations database.",
+       "Close other ncode windows and run ncode again."}
 
   # pass74 S1-13 (D11): the exit-3 words name the settings command.
   defp session_failure(:provider_required, _),
@@ -1036,7 +1036,7 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
       failure(
         @exit_refused,
         "No model provider is set up yet.",
-        "Run 'swarmcode settings providers' to add one, or set SWARM_MODEL, SWARM_BASE_URL and SWARM_API_KEY in ~/.secrets."
+        "Run 'ncode settings providers' to add one, or set SWARM_MODEL, SWARM_BASE_URL and SWARM_API_KEY in ~/.secrets."
       )
 
   # pass71 F19 (review R17): the sentence names the model that was given.
@@ -1053,7 +1053,7 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
       failure(
         @exit_usage,
         "That conversation is not part of this project.",
-        "Use swarmcode --continue, or --resume with an id from this project."
+        "Use ncode --continue, or --resume with an id from this project."
       )
 
   defp session_failure(:invalid_project, _),
@@ -1069,8 +1069,8 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
 
     failure(
       @exit_failure,
-      "swarmcode could not open the conversation.",
-      "Run swarmcode again; nothing was changed."
+      "ncode could not open the conversation.",
+      "Run ncode again; nothing was changed."
     )
   end
 
@@ -1080,11 +1080,11 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
   @spec lease_words(term(), :settings | :config) :: String.t()
   def lease_words(boot, :settings),
     do:
-      "A swarmcode session is open (#{lease_process(boot)}); change settings there with /settings, or close it first."
+      "A ncode session is open (#{lease_process(boot)}); change settings there with /settings, or close it first."
 
   def lease_words(boot, :config),
     do:
-      "A swarmcode session is open (#{lease_process(boot)}); change it there with /settings, or close it first."
+      "A ncode session is open (#{lease_process(boot)}); change it there with /settings, or close it first."
 
   defp lease_process(boot) do
     with {:ok, paths} <- paths_for(boot),
@@ -1113,12 +1113,12 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
           _ -> ""
         end
 
-      "Another swarmcode (process #{pid}#{since}) is already using your conversations."
+      "Another ncode (process #{pid}#{since}) is already using your conversations."
     else
-      _ -> "Another swarmcode is already using your conversations."
+      _ -> "Another ncode is already using your conversations."
     end
   rescue
-    _ -> "Another swarmcode is already using your conversations."
+    _ -> "Another ncode is already using your conversations."
   end
 
   defp local_clock(%DateTime{} = at) do
@@ -1250,7 +1250,7 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
             fail!(
               @exit_usage,
               "SWARM_CONVERSATION must be latest, new, or a conversation id.",
-              "Run swarmcode --help."
+              "Run ncode --help."
             )
         end
     end
@@ -1266,7 +1266,7 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
 
       {:error, reason} ->
         Logger.error("#{inspect(module)} did not start: #{inspect(reason)}")
-        fail!(@exit_failure, "swarmcode could not start its session.", "Run it again.")
+        fail!(@exit_failure, "ncode could not start its session.", "Run it again.")
     end
   end
 
@@ -1288,7 +1288,7 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
       _ ->
         fail!(
           @exit_failure,
-          "swarmcode could not create its private socket folder.",
+          "ncode could not create its private socket folder.",
           "Check /tmp."
         )
     end

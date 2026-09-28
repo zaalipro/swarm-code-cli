@@ -94,7 +94,7 @@ defmodule SwarmCodeCLI.UI.State do
     # The environment variables and flags that override cli.json at this
     # launch (§3.8.4): `env_overrides`, `flag_overrides`, the project root.
     launch_facts: %{},
-    # `swarmcode settings [QUERY]` at boot: opened once the shell is ready.
+    # `ncode settings [QUERY]` at boot: opened once the shell is ready.
     pending_open_settings: nil,
     pending_resume_picker: false,
     # pass72 G11 (QA Q12): steers sent from the overlay, newest first, as

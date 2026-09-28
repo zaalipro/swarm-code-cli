@@ -1374,7 +1374,7 @@ defmodule SwarmCode.Daemon.FoundationGate do
     StartupError.new(
       :path_resolution_failed,
       false,
-      "Canonical SwarmCode paths could not be resolved safely.",
+      "Canonical ncode paths could not be resolved safely.",
       "Use an absolute supported home/XDG path and an allowed startup mode."
     )
   end
@@ -1412,7 +1412,7 @@ defmodule SwarmCode.Daemon.FoundationGate do
     StartupError.new(
       :desktop_active,
       true,
-      "The SwarmCode macOS desktop is already running for this user.",
+      "The ncode macOS desktop is already running for this user.",
       "Quit the detected #{application} desktop (PID #{pid}) before starting the CLI daemon; there is no force-unlock option."
     )
   end
@@ -1423,7 +1423,7 @@ defmodule SwarmCode.Daemon.FoundationGate do
     |> String.slice(0, 128)
   end
 
-  defp safe_action_text(_value), do: "SwarmCode"
+  defp safe_action_text(_value), do: "ncode"
 
   defp database_fingerprint_failed do
     StartupError.new(
@@ -1457,7 +1457,7 @@ defmodule SwarmCode.Daemon.FoundationGate do
       :migration_manifest_invalid,
       false,
       "The bundled desktop migration manifest is unavailable or invalid.",
-      "Reinstall the exact signed SwarmCode CLI build before accessing the canonical database."
+      "Reinstall the exact signed ncode CLI build before accessing the canonical database."
     )
   end
 
@@ -1466,7 +1466,7 @@ defmodule SwarmCode.Daemon.FoundationGate do
       :schema_incompatible,
       false,
       "The canonical database is incompatible with the audited read-only schema contract.",
-      "Use a supported SwarmCode version or restore only from a verified backup; no migration was run."
+      "Use a supported ncode version or restore only from a verified backup; no migration was run."
     )
   end
 

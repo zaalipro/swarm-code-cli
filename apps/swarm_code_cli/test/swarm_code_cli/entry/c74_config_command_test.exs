@@ -1,6 +1,6 @@
 defmodule SwarmCodeCLI.Release.C74ConfigCommandTest do
   @moduledoc """
-  pass74 S1-14: `swarmcode config` against a fixture database and a temporary
+  pass74 S1-14: `ncode config` against a fixture database and a temporary
   cli.json. The foundation boot is replaced by a function that runs the work
   on the fixture Repo (or refuses as a held lease would).
   """
@@ -66,7 +66,7 @@ defmodule SwarmCodeCLI.Release.C74ConfigCommandTest do
       cli: Path.join(config, "cli.json"),
       foundation: fn fun -> {:ok, fun.()} end,
       held: fn _fun ->
-        {:error, %{code: :data_lease_held, status: 3, message: "Another swarmcode", action: ""}}
+        {:error, %{code: :data_lease_held, status: 3, message: "Another ncode", action: ""}}
       end
     }
   end
@@ -96,7 +96,7 @@ defmodule SwarmCodeCLI.Release.C74ConfigCommandTest do
   test "help, keys and usage errors" do
     c = %{foundation: nil, cli: nil, root: "/"}
     assert {0, out, _} = config(c, ["help"])
-    assert out =~ "swarmcode config COMMAND"
+    assert out =~ "ncode config COMMAND"
     assert {0, json, _} = config(c, ["keys", "--json"])
     keys = Jason.decode!(json)
     assert Enum.find(keys, &(&1["key"] == "limits.max_concurrent_agents"))["default"] == 4
@@ -107,7 +107,7 @@ defmodule SwarmCodeCLI.Release.C74ConfigCommandTest do
     assert {2, _, err} = config(c, ["get", "--bogus"])
     assert err =~ "unknown option"
     assert {0, out, _} = config(c, ["--help"])
-    assert out =~ "swarmcode config COMMAND"
+    assert out =~ "ncode config COMMAND"
   end
 
   # cli74 G1 (QA F-19): `export --help` wrote a file named `help` into the
@@ -119,7 +119,7 @@ defmodule SwarmCodeCLI.Release.C74ConfigCommandTest do
           ["set", "limits.max_concurrent_agents", "--help"]
         ] do
       assert {0, out, _} = config(c, args)
-      assert out =~ "swarmcode config COMMAND"
+      assert out =~ "ncode config COMMAND"
     end
 
     refute File.exists?(Path.join(c.root, "help"))
@@ -168,7 +168,7 @@ defmodule SwarmCodeCLI.Release.C74ConfigCommandTest do
     assert err =~ "limits.max_concurrent_agents changed: now 7."
 
     assert {2, _, err} = config(c, ["set", "limits.max_concurrent_agents", "lots"])
-    assert err =~ "swarmcode: limits.max_concurrent_agents:"
+    assert err =~ "ncode: limits.max_concurrent_agents:"
 
     assert {0, out, _} = config(c, ["set", "models.chat", "DeepSeek/deepseek-v4-pro"])
     assert out =~ "models.chat = DeepSeek/deepseek-v4-pro"
@@ -196,7 +196,7 @@ defmodule SwarmCodeCLI.Release.C74ConfigCommandTest do
     assert {2, _, err} =
              config(c, ["set", "project.approval_mode", "auto", "--project", elsewhere])
 
-    assert err =~ "This folder is not a SwarmCode project yet."
+    assert err =~ "This folder is not an ncode project yet."
     assert {0, _, _} = config(c, ["set", "project.approval_mode", "auto"])
     assert Projects.get(c.project.id).approval_mode == "auto"
   end
@@ -209,7 +209,7 @@ defmodule SwarmCodeCLI.Release.C74ConfigCommandTest do
     assert {3, _, err} =
              config(c, ["set", "limits.max_concurrent_agents", "7"], foundation: c.held)
 
-    assert err =~ "A swarmcode session is open ("
+    assert err =~ "A ncode session is open ("
     assert err =~ "change it there with /settings, or close it first."
   end
 

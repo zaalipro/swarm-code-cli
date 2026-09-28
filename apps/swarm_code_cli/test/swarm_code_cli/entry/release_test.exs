@@ -35,9 +35,9 @@ defmodule SwarmCodeCLI.ReleaseTest do
             {["--bogus"], "unknown option '--bogus'."},
             {["--resume"], "--resume needs a value."},
             {["--resume", "x"],
-             "--resume needs a whole conversation id; /resume inside swarmcode picks one."},
+             "--resume needs a whole conversation id; /resume inside ncode picks one."},
             {["--resume", "7d01acff"],
-             "--resume needs a whole conversation id; /resume inside swarmcode picks one."},
+             "--resume needs a whole conversation id; /resume inside ncode picks one."},
             {["--new", "--resume", @conversation],
              "choose one of --new, --continue and --resume."},
             {["--json"], "--json goes with -p."},
@@ -56,16 +56,16 @@ defmodule SwarmCodeCLI.ReleaseTest do
 
   describe "run/1" do
     test "help, version and usage errors" do
-      assert capture_io(fn -> assert Release.run(["--help"]) == 0 end) =~ "Usage: swarmcode"
-      assert capture_io(fn -> assert Release.run(["--version"]) == 0 end) =~ ~r/^swarmcode \S+/
+      assert capture_io(fn -> assert Release.run(["--help"]) == 0 end) =~ "Usage: ncode"
+      assert capture_io(fn -> assert Release.run(["--version"]) == 0 end) =~ ~r/^ncode \S+/
 
       assert capture_io(:stderr, fn -> assert Release.run(["--bogus"]) == 2 end) ==
-               "swarmcode: unknown option '--bogus'. Run 'swarmcode --help'.\n"
+               "ncode: unknown option '--bogus'. Run 'ncode --help'.\n"
     end
 
     test "the full screen is not started from eval" do
       assert capture_io(:stderr, fn -> assert Release.run([]) == 2 end) =~
-               "starts from the swarmcode command"
+               "starts from the ncode command"
     end
   end
 
@@ -89,9 +89,9 @@ defmodule SwarmCodeCLI.ReleaseTest do
     end
 
     test "exits 0 for --version and 2 for a usage error" do
-      assert {0, "swarmcode " <> _} = halt_code(["--version"])
-      assert {2, "swarmcode: unknown option '--nope'." <> _} = halt_code(["--nope"])
-      assert {2, "swarmcode: --json goes with -p." <> _} = halt_code(["--json"])
+      assert {0, "ncode " <> _} = halt_code(["--version"])
+      assert {2, "ncode: unknown option '--nope'." <> _} = halt_code(["--nope"])
+      assert {2, "ncode: --json goes with -p." <> _} = halt_code(["--json"])
     end
   end
 end

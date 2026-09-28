@@ -303,7 +303,7 @@ defmodule SwarmCode.Daemon.Service.Settings.Values do
            layer == :project_file and Map.has_key?(file, key)
          end) do
       {_, key} ->
-        Layers.ignored(:project_file, Map.get(file, key), "SwarmCode ignores this key",
+        Layers.ignored(:project_file, Map.get(file, key), "ncode ignores this key",
           source: @config_file
         )
 

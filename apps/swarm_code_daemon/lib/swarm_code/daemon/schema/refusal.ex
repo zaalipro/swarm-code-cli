@@ -15,8 +15,8 @@ defmodule SwarmCode.Daemon.Schema.Refusal do
     StartupError.new(
       :schema_incompatible,
       false,
-      "This SwarmCode database was upgraded by a newer SwarmCode app than this swarmcode supports.",
-      "Update swarmcode to a build made for your SwarmCode app; the database was not changed."
+      "This ncode database was upgraded by a newer ncode app than this ncode supports.",
+      "Update ncode to a build made for your ncode app; the database was not changed."
     )
   end
 
@@ -26,8 +26,8 @@ defmodule SwarmCode.Daemon.Schema.Refusal do
     StartupError.new(
       :schema_incompatible,
       false,
-      "The file where your conversations database belongs is not a SwarmCode database.",
-      "Move swarm_code.db aside or restore it from a verified backup, then run swarmcode again; nothing was changed."
+      "The file where your conversations database belongs is not an ncode database.",
+      "Move swarm_code.db aside or restore it from a verified backup, then run ncode again; nothing was changed."
     )
   end
 
@@ -38,7 +38,7 @@ defmodule SwarmCode.Daemon.Schema.Refusal do
       :schema_incompatible,
       false,
       "Your conversations database failed SQLite's integrity check.",
-      "Restore swarm_code.db from a verified backup, then run swarmcode again; nothing was changed."
+      "Restore swarm_code.db from a verified backup, then run ncode again; nothing was changed."
     )
   end
 
@@ -48,8 +48,8 @@ defmodule SwarmCode.Daemon.Schema.Refusal do
     StartupError.new(
       :schema_incompatible,
       false,
-      "This SwarmCode database needs an upgrade that only the SwarmCode app makes.",
-      "Open the SwarmCode app once to upgrade the database, quit it, then run swarmcode again."
+      "This ncode database needs an upgrade that only the ncode app makes.",
+      "Open the ncode app once to upgrade the database, quit it, then run ncode again."
     )
   end
 end

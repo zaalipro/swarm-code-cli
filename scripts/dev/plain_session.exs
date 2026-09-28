@@ -186,7 +186,7 @@ defmodule SwarmCode.Development.PlainSession do
         {:error, :cleanup_unconfirmed} ->
           IO.puts(
             :stderr,
-            "SwarmCode closed its database with one native handle still pending; saved data is safe."
+            "ncode closed its database with one native handle still pending; saved data is safe."
           )
 
         other ->

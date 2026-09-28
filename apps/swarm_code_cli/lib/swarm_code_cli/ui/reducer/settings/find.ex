@@ -12,7 +12,7 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Find do
       narrows that list in place; `/` on an empty filter opens the search.
     * **Command line** (`:`): `set <key> <value>`, `get <key>`, `reset
       <key>`, `goto <section | key | words>`, `undo`, `redo`, `help`.
-      Values are parsed as `swarmcode config set` parses them; a result is
+      Values are parsed as `ncode config set` parses them; a result is
       a toast, an error stays on the line.
   """
 

@@ -1,6 +1,6 @@
 defmodule SwarmCode.Daemon.Service.Settings.Headless do
   @moduledoc """
-  What `swarmcode config` (pass 74, spec §3.10.3) needs from the service
+  What `ncode config` (pass 74, spec §3.10.3) needs from the service
   beside the facade: the project of a folder, a conversation of it, a
   context, and tasks run in the calling process's own supervised child with
   the spec's timeout and stop rules (§3.3.8 rule 10). Nothing here is kept

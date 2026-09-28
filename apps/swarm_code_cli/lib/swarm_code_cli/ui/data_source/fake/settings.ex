@@ -453,7 +453,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Settings do
               :project_file,
               Jason.encode!(file[key]),
               nil,
-              "SwarmCode ignores this key"
+              "ncode ignores this key"
             )
 
           nil ->
@@ -593,7 +593,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Settings do
           "severity" => "warning",
           "section" => "project_file",
           "target" => %{"kind" => "project_config", "id" => @ailogic},
-          "title" => "ailogic's project file has entries SwarmCode ignores",
+          "title" => "ailogic's project file has entries ncode ignores",
           "reason" => "effort, hooks.post_edit, profiles.fast.mode"
         }
       ],
@@ -621,7 +621,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Settings do
     %{
       "paths" => %{
         "database" => "~/Library/Application Support/SwarmCode/swarm_code.db",
-        "config_dir" => "~/.config/swarmcode",
+        "config_dir" => "~/.config/swarm-code",
         "research_root" => "~/SwarmCode/research",
         "project_dir" => "/Users/dev/ailogic/.swarm_code",
         "user_agents" => "~/.swarm_code/agents",

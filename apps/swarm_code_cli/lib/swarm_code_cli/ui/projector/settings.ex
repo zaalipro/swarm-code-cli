@@ -58,7 +58,7 @@ defmodule SwarmCodeCLI.UI.Projector.Settings do
   defp too_small(state, width, height) do
     lines = [
       "Settings needs 80 × 20; this terminal is #{width} × #{height}.",
-      "Make it larger, or use swarmcode config in a shell."
+      "Make it larger, or use ncode config in a shell."
     ]
 
     top = div(max(height - length(lines), 0), 2)

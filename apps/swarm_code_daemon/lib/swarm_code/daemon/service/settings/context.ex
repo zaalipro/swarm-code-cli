@@ -63,7 +63,7 @@ defmodule SwarmCode.Daemon.Service.Settings.Context do
   def env_from(environment) when is_map(environment),
     do: Map.take(environment, @list_b ++ @developer)
 
-  @doc "A context for `swarmcode config` and tests."
+  @doc "A context for `ncode config` and tests."
   @spec new(keyword()) :: t()
   def new(fields \\ []) do
     struct(

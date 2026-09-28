@@ -11,7 +11,7 @@ defmodule SwarmCode.Settings.CliFile do
   (another writer in between restarts the write once, a second one answers
   `:busy`) and removes the temporary file on every path.
 
-  `swarmcode config` calls it directly; the TUI through
+  `ncode config` calls it directly; the TUI through
   `SwarmCodeCLI.UI.Init.Preferences` in work its session runtime owns. It is
   never called from a state owner's callback.
   """
@@ -121,7 +121,7 @@ defmodule SwarmCode.Settings.CliFile do
 
   @doc "The words for a status or an error atom, for rows and toasts."
   @spec words(atom()) :: String.t()
-  def words(:symlink), do: "cli.json is a symbolic link; SwarmCode will not replace it"
+  def words(:symlink), do: "cli.json is a symbolic link; ncode will not replace it"
   def words(:busy), do: "cli.json keeps changing; try again"
   def words(:too_large), do: "cli.json is larger than 64 KB"
   def words(:not_json), do: "cli.json is not valid JSON"

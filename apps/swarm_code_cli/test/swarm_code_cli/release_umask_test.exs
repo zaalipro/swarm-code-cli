@@ -2,7 +2,7 @@ defmodule SwarmCodeCLI.ReleaseUmaskTest do
   @moduledoc """
   pass71 S3: everything the release writes (logs, sockets, temp files,
   backups) is owner-only. The release's `env.sh` (sourced by every `bin/`
-  command, so `swarmcode`, `-p` and `--plain` alike) sets `umask 077`, and the
+  command, so `ncode`, `-p` and `--plain` alike) sets `umask 077`, and the
   VM it starts inherits it; so do the development session launchers.
   """
   use ExUnit.Case, async: true

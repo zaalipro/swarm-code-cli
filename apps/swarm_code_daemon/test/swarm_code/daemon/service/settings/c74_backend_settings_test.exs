@@ -512,7 +512,7 @@ defmodule SwarmCode.Daemon.Service.Settings.C74BackendSettingsTest do
 
   test "the LiveBackend answers that saved settings live in a saved session" do
     words =
-      "Saved settings are available in a saved session (swarmcode). This session runs from SWARM_* variables."
+      "Saved settings are available in a saved session (ncode). This session runs from SWARM_* variables."
 
     query = %ServiceRequest{
       operation: :settings_query,

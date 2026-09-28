@@ -119,7 +119,7 @@ defmodule SwarmCode.Daemon.Schema.GateTest do
 
       assert {:error, error} = Gate.admit_migration(decision, manifest)
       assert error.code == :schema_incompatible
-      assert error.action =~ "Open the SwarmCode app once to upgrade the database"
+      assert error.action =~ "Open the ncode app once to upgrade the database"
       refute error.message =~ "backup"
       assert source_bytes(database) == before
     end
@@ -168,8 +168,8 @@ defmodule SwarmCode.Daemon.Schema.GateTest do
 
     assert {:error, error} = Gate.check(database, manifest, "0.1.0-dev")
     assert error.code == :schema_incompatible
-    assert error.message =~ "newer SwarmCode app"
-    assert error.action =~ "Update swarmcode"
+    assert error.message =~ "newer ncode app"
+    assert error.action =~ "Update ncode"
     assert source_bytes(database) == before
   end
 
@@ -202,7 +202,7 @@ defmodule SwarmCode.Daemon.Schema.GateTest do
              Gate.check(database, manifest, "0.1.0-dev")
 
     # 58 rows: the probe's ceiling says so before any prefix comparison.
-    assert error.message =~ "newer SwarmCode app"
+    assert error.message =~ "newer ncode app"
     assert source_bytes(database) == before
   end
 
@@ -251,7 +251,7 @@ defmodule SwarmCode.Daemon.Schema.GateTest do
       assert {:error, %{code: :schema_incompatible} = error} =
                Gate.check(database, manifest, "0.1.0-dev")
 
-      assert error.message =~ "is not a SwarmCode database"
+      assert error.message =~ "is not an ncode database"
       assert sha256_file(database) == before
     end
   end
@@ -264,7 +264,7 @@ defmodule SwarmCode.Daemon.Schema.GateTest do
     on_exit(fn -> File.chmod(database, 0o600) end)
 
     assert {:error, error} = Gate.check(database, manifest, "0.1.0-dev")
-    refute error.message =~ "is not a SwarmCode database"
+    refute error.message =~ "is not an ncode database"
   end
 
   test "a database that fails its integrity check says so (pass70 Q13)", %{
@@ -323,7 +323,7 @@ defmodule SwarmCode.Daemon.Schema.GateTest do
     before = source_bytes(database)
 
     assert {:error, %{code: :schema_incompatible, message: message}} = Probe.inspect(database)
-    assert message =~ "newer SwarmCode app"
+    assert message =~ "newer ncode app"
     assert source_bytes(database) == before
   end
 

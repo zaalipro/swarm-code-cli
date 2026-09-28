@@ -334,7 +334,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.SearchWeb do
           if(set,
             do:
               R.secret_words(key, R.tier(ctx)) ++
-                [{" · stored in SwarmCode's database", :text_faint}],
+                [{" · stored in ncode's database", :text_faint}],
             else: [
               {if(R.field(f, "needs_key") == false, do: "not set · optional", else: "not set"),
                :text_ghost}
@@ -354,9 +354,9 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.SearchWeb do
             scope: "global · shared with the desktop app",
             key_line: "search_provider.api_key · secret",
             description:
-              "The key SwarmCode sends to #{label(kind)} with each search. It is never shown again, never written to a log, never in search results and never kept for undo.",
+              "The key ncode sends to #{label(kind)} with each search. It is never shown again, never written to a log, never in search results and never kept for undo.",
             facts: [
-              {"stored", "stored in SwarmCode's database"},
+              {"stored", "stored in ncode's database"},
               {"sent to", sent_to(kind)},
               {"shared", "with the desktop app"}
             ]

@@ -257,7 +257,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.FilesEnv do
     do: [[{"✗ cli.json is larger than 64 KB · the defaults are used", :error}]]
 
   defp status_lines(status) when status in [:symlink, "symlink"],
-    do: [[{"✗ cli.json is a symbolic link; SwarmCode will not replace it", :error}]]
+    do: [[{"✗ cli.json is a symbolic link; ncode will not replace it", :error}]]
 
   defp status_lines(status) when status in [:unreadable, "unreadable"],
     do: [[{"✗ cli.json could not be read", :error}]]
@@ -285,9 +285,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.FilesEnv do
       case normal do
         [] ->
           [
-            Row.info("env-none", "none of the variables SwarmCode reads is set",
-              role: :text_ghost
-            )
+            Row.info("env-none", "none of the variables ncode reads is set", role: :text_ghost)
           ]
 
         list ->

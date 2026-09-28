@@ -375,7 +375,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.KeysInput do
       ),
       Row.info(
         "bind-recover",
-        "Remapped yourself out of a key? swarmcode config reset terminal.keys",
+        "Remapped yourself out of a key? ncode config reset terminal.keys",
         role: :text_faint
       )
     ]

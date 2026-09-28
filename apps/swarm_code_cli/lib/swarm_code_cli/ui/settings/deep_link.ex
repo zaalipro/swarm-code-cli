@@ -1,6 +1,6 @@
 defmodule SwarmCodeCLI.UI.Settings.DeepLink do
   @moduledoc """
-  Where `/settings [ARG]`, F2, a palette row or `swarmcode settings [QUERY]`
+  Where `/settings [ARG]`, F2, a palette row or `ncode settings [QUERY]`
   opens the layer (spec §3.7.12). Pure.
 
   `resolve(arg, resume)` answers `%{stack, search, deep_link}`:

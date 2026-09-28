@@ -568,7 +568,7 @@ defmodule SwarmCode.Daemon.Service.Settings.Providers do
           message:
             "#{deleted.name} deleted" <>
               if(last?,
-                do: " · SwarmCode will have no model to talk to until you add one",
+                do: " · ncode will have no model to talk to until you add one",
                 else: ""
               ),
           results:
@@ -1053,7 +1053,7 @@ defmodule SwarmCode.Daemon.Service.Settings.Providers do
 
   defp attributes(_attrs, _allowed), do: Kit.error(:invalid, "attributes must be a map")
 
-  # `swarmcode config record add provider --preset NAME` (A61) sends the
+  # `ncode config record add provider --preset NAME` (A61) sends the
   # preset's id: its name, kind, base URL, the Anthropic fallbacks and the
   # preset's effort levels fill whatever the command did not give.
   defp preset_attributes(attrs) when is_map(attrs) do

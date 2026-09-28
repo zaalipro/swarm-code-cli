@@ -453,7 +453,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.ProjectFile do
           kind: :setting,
           key: "project_file." <> key,
           label: key,
-          value: [{short(value), :text_primary}, {" · SwarmCode ignores this key", :text_faint}],
+          value: [{short(value), :text_primary}, {" · ncode ignores this key", :text_faint}],
           tag: [{"x remove", :text_faint}],
           state: :readonly,
           target: {:remove_key, key},
@@ -478,7 +478,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.ProjectFile do
 
     case top_rows ++ denied_rows do
       [] -> []
-      rows -> [Row.heading("keys SwarmCode ignores") | rows]
+      rows -> [Row.heading("keys ncode ignores") | rows]
     end
   end
 

@@ -253,7 +253,7 @@ defmodule SwarmCodeCLI.UI.Settings.McpImport do
           indent: 4,
           value: [
             {"#{R.field(var, "name")} = ${#{ref}}", :text_primary},
-            {" · SwarmCode does not expand variables", :text_faint}
+            {" · ncode does not expand variables", :text_faint}
           ],
           lines: [choice_line(choice, in_shell, pasted)],
           keys: [{"Enter", :open_row, "choose"}],

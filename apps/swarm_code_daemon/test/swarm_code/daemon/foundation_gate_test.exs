@@ -717,8 +717,8 @@ defmodule SwarmCode.Daemon.FoundationGateTest do
 
       assert {:error, error} = FoundationGate.prepare(opts)
       assert error.code == :schema_incompatible
-      assert error.message =~ "only the SwarmCode app"
-      assert error.action =~ "Open the SwarmCode app once to upgrade the database"
+      assert error.message =~ "only the ncode app"
+      assert error.action =~ "Open the ncode app once to upgrade the database"
       assert File.ls!(Path.join(Path.dirname(fixture), "backups")) == []
       assert database_state(fixture) == before
       assert_reacquirable!(opts)
@@ -733,8 +733,8 @@ defmodule SwarmCode.Daemon.FoundationGateTest do
 
     assert {:error, error} = FoundationGate.prepare(opts)
     assert error.code == :schema_incompatible
-    assert error.message =~ "newer SwarmCode app"
-    assert error.action =~ "Update swarmcode"
+    assert error.message =~ "newer ncode app"
+    assert error.action =~ "Update ncode"
     assert File.ls!(Path.join(Path.dirname(fixture), "backups")) == []
     assert database_state(fixture) == before
     assert_reacquirable!(opts)

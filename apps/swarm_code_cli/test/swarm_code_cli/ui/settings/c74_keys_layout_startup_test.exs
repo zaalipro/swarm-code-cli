@@ -93,7 +93,7 @@ defmodule SwarmCodeCLI.UI.Settings.C74KeysLayoutStartupTest do
       assert fixed.state == :readonly
       assert fixed.keys == []
       assert find(rows, "act:reset_bindings")
-      assert Enum.any?(rows, &(all_words(&1) =~ "swarmcode config reset terminal.keys"))
+      assert Enum.any?(rows, &(all_words(&1) =~ "ncode config reset terminal.keys"))
     end
 
     test "/ctrl-j lists what Ctrl-J does; words match labels" do

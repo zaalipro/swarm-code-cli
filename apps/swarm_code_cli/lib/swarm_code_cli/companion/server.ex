@@ -123,7 +123,7 @@ defmodule SwarmCodeCLI.Companion.Server do
     @max_body 65_536
     @routes ["/", "/view", "/events", "/focus", "/act"]
     @source_index Path.expand("../../../priv/companion/index.html", __DIR__)
-    @placeholder "<!doctype html><meta charset=\"utf-8\"><title>SwarmCode companion</title>" <>
+    @placeholder "<!doctype html><meta charset=\"utf-8\"><title>ncode companion</title>" <>
                    "<p>Companion page not installed yet.</p>\n"
 
     # `do` is a keyword in Elixir, hence the unquote; httpd calls `Module:do/1`.

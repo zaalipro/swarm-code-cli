@@ -19,7 +19,7 @@ defmodule SwarmCodeCLI.C74AcceptanceTest do
   | A10 live terminal preferences | `ui/settings/c74_preferences_test.exs`, `ui/settings/c74_keys_layout_startup_test.exs`, `entry/c74_launch_test.exs` |
   | A11 cli.json | core `settings/c74_cli_file_test.exs`, `ui/pass72_preferences_runtime_test.exs` |
   | A12 undo/redo | `ui/settings/c74_undo_test.exs` |
-  | A13 `swarmcode config` | `entry/c74_config_command_test.exs` |
+  | A13 `ncode config` | `entry/c74_config_command_test.exs` |
   | A14 conflicts | `ui/settings/c74_commit_test.exs` ("a conflict keeps mine and theirs…"), `ui/settings/c74_data_test.exs` (a second change carries the saved CAS), daemon `c74_values_test.exs`, `c74_socket_test.exs` |
   | A15 record and file CAS | daemon `c74_providers_test.exs`, `c74_mcp_test.exs`, `c74_files_test.exs`; `ui/settings/sections/c74_memory_test.exs` |
   | A16 deltas re-query | `ui/settings/c74_data_test.exs` ("settings_update re-reads…", "…delivered on the shell watch…"), daemon `c74_backend_settings_test.exs` |
@@ -143,7 +143,7 @@ defmodule SwarmCodeCLI.C74AcceptanceTest do
       text = state |> lines() |> Enum.map_join(" ", &String.trim/1) |> String.trim()
 
       assert text =~
-               "Settings needs 80 × 20; this terminal is 72 × 18. Make it larger, or use swarmcode config in a shell."
+               "Settings needs 80 × 20; this terminal is 72 × 18. Make it larger, or use ncode config in a shell."
 
       {:ok, action} = Keymap.resolve(Input.key(:escape), state, %{})
       assert act!(state, action).settings == nil

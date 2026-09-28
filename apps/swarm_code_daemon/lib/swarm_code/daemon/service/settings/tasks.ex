@@ -149,7 +149,7 @@ defmodule SwarmCode.Daemon.Service.Settings.Tasks do
 
   @doc """
   Run `spec` under `supervisor` (rule 3), progress sent to `owner` as
-  `{:settings_task_progress, id, progress}`. `swarmcode config` uses it too
+  `{:settings_task_progress, id, progress}`. `ncode config` uses it too
   (rule 10).
   """
   @spec run(TaskSpec.t(), String.t(), pid(), GenServer.server()) :: Task.t()

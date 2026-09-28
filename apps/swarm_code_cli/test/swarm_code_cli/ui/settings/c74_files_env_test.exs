@@ -7,7 +7,7 @@ defmodule SwarmCodeCLI.UI.Settings.C74FilesEnvTest do
   alias SwarmCodeCLI.UI.Settings.{Attention, Nav, Sections}
   alias SwarmCodeCLI.UI.Settings.Sections.FilesEnv
 
-  @cli_path "~/.config/swarmcode/cli.json"
+  @cli_path "~/.config/swarm-code/cli.json"
 
   defp ctx_with(cli, launch \\ %{}) do
     {state, _fake} = opened(:files_env)
@@ -93,10 +93,10 @@ defmodule SwarmCodeCLI.UI.Settings.C74FilesEnvTest do
     ctx = Nav.ctx(state)
     config = key_row(state, "files.config_dir")
 
-    assert [{:open_folder, "~/.config/swarmcode"}] =
+    assert [{:open_folder, "~/.config/swarm-code"}] =
              Sections.act(:files_env, ctx, config, :open_related)
 
-    assert [{:copy, "~/.config/swarmcode"}, _] = Sections.act(:files_env, ctx, config, :copy)
+    assert [{:copy, "~/.config/swarm-code"}, _] = Sections.act(:files_env, ctx, config, :copy)
     assert words(key_row(state, "files.database")) =~ "1.7 GB"
 
     versions = key_row(state, "files.versions")

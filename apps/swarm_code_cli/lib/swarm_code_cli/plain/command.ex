@@ -4,7 +4,7 @@ defmodule SwarmCodeCLI.Plain.Command do
   alias SwarmCodeCLI.UI.{Destination, LayerSpec, Intent, RequestResolver, SafeText}
   alias SafeText.Limits
 
-  @settings_words "/settings needs the full-screen terminal; use swarmcode config here."
+  @settings_words "/settings needs the full-screen terminal; use ncode config here."
 
   @doc "cli74: what the plain presenter and a one-shot answer to `/settings` (`/config`, `/prefs`)."
   def settings_words, do: @settings_words

@@ -78,7 +78,7 @@ defmodule SwarmCodeCLI.UI.Settings.C74PreferencesTest do
       {{:boot, snapshot}, known} = Preferences.run(path, :boot, %{})
       assert snapshot.status == :absent and known == %{}
 
-      # Another process (`swarmcode config set terminal.theme light`).
+      # Another process (`ncode config set terminal.theme light`).
       {:ok, _} = CliFile.write_changes(path, %{"theme" => "light"}, %{"theme" => :any})
 
       {{:legacy, _, {:ok, after_diff}}, known} =

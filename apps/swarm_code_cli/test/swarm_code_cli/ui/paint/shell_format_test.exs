@@ -80,11 +80,11 @@ defmodule SwarmCodeCLI.UI.Paint.ShellFormatTest do
       assert String.starts_with?(title, " ⬢ FAKE DEMO — NO USER DATA   ")
     end
 
-    test "a saved session reads as SwarmCode until the daemon names the project" do
+    test "a saved session reads as ncode until the daemon names the project" do
       state = fixture(:chat, {170, 34}, banner: :persisted_banner)
       title = row(paint(state), 0)
-      assert String.starts_with?(title, " ⬢ SwarmCode   ")
-      refute title =~ "SWARMCODE"
+      assert String.starts_with?(title, " ⬢ ncode   ")
+      refute title =~ "NCODE"
     end
 
     test "medium uses the compact banner and still carries the run tab" do

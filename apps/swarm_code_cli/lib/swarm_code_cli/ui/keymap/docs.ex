@@ -62,7 +62,7 @@ defmodule SwarmCodeCLI.UI.Keymap.Docs do
 
   Every key except Esc, Enter, the arrows, Ctrl-C, `?`/`F1` and Ctrl-S can be
   changed on Settings › Keys & input (stored in cli.json's `keys`). If a
-  change leaves you without a way back, run `swarmcode config reset
+  change leaves you without a way back, run `ncode config reset
   terminal.keys` in a shell.
   """
 

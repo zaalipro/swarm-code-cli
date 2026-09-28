@@ -372,7 +372,7 @@ defmodule SwarmCodeCLI.UI.DialogChromeTest do
 
       {scene, _table, plan} = paint(state)
       assert row(plan, scene.overlay.rect.y) =~ " Stop 2 live runs and quit? "
-      assert screen(plan) =~ "They stop when SwarmCode quits."
+      assert screen(plan) =~ "They stop when ncode quits."
     end
   end
 

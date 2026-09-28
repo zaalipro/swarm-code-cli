@@ -515,10 +515,10 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Popover do
       legend(state, if(wide?, do: inner, else: nil)) ++
       [
         [
-          {"/settings <words> opens straight at a setting · :set <key> <value> · swarmcode config in a shell",
+          {"/settings <words> opens straight at a setting · :set <key> <value> · ncode config in a shell",
            :text_faint}
         ],
-        [{"Remapped yourself out of a key? swarmcode config reset terminal.keys", :text_faint}]
+        [{"Remapped yourself out of a key? ncode config reset terminal.keys", :text_faint}]
       ]
   end
 

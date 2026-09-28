@@ -7,7 +7,7 @@ umask 077
 
 if [[ $# -eq 1 && "$1" == "--help" ]]; then
   cat <<'HELP'
-SwarmCode plain CLI — persisted, headless session
+ncode plain CLI — persisted, headless session
 
 Usage: scripts/dev/run_plain_session.sh [--ndjson]
 

@@ -79,11 +79,11 @@ defmodule SwarmCodeCLI.UI.Pass73DeliveryTest do
     {state, _} =
       outcome(state, request, :rejected, [], error: AdmissionError.new(:capacity_exceeded))
 
-    assert [%{status: :refused, reason: "SwarmCode is busy"}] = state.deliveries
+    assert [%{status: :refused, reason: "ncode is busy"}] = state.deliveries
 
     {state, request} = sent(ready(), "hello")
     {state, _} = outcome(state, request, :deadline_exceeded, [])
-    assert [%{status: :refused, reason: "SwarmCode did not answer in time"}] = state.deliveries
+    assert [%{status: :refused, reason: "ncode did not answer in time"}] = state.deliveries
   end
 
   test "Enter again before the daemon answers says it is still sending" do

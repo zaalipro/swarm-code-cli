@@ -319,7 +319,7 @@ defmodule SwarmCodeCLI.UI.Settings.C74Qa1Test do
       assert String.length(before_words) - String.length(before_mark) == 15
       assert text =~ "where a value comes from, strongest first"
       assert text =~ "shared with the desktop app"
-      assert text =~ "Remapped yourself out of a key? swarmcode config reset terminal.keys"
+      assert text =~ "Remapped yourself out of a key? ncode config reset terminal.keys"
     end
 
     test "at 90 columns the sheet is one scrolling column with each key's help" do

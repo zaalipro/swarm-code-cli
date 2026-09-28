@@ -1,7 +1,7 @@
 defmodule SwarmCode.Settings.Registry do
   @moduledoc """
   The one settings registry (pass 74, spec §3.2.6, D3): every value the
-  settings layer, the service, `swarmcode config` and `docs/settings.md` know.
+  settings layer, the service, `ncode config` and `docs/settings.md` know.
   A value that is not here does not exist. Pure compiled data; lookups are maps
   built at compile time; runtime input is looked up in string tables and never
   becomes an atom (D32).
@@ -124,7 +124,7 @@ defmodule SwarmCode.Settings.Registry do
                   |> Enum.filter(&is_binary(&1.stored_name))
                   |> Enum.group_by(& &1.stored_name)
 
-  # Words the deep links, search and `swarmcode config` resolve (§3.7.12).
+  # Words the deep links, search and `ncode config` resolve (§3.7.12).
   @synonyms (for entry <- @all, word <- entry.synonyms, reduce: %{} do
                acc -> Map.put_new(acc, String.downcase(word), {:key, entry.key})
              end)

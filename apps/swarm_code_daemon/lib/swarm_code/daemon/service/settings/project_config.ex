@@ -883,7 +883,7 @@ defmodule SwarmCode.Daemon.Service.Settings.ProjectConfig do
                 severity: "warning",
                 section: "project_file",
                 target: target,
-                title: "#{project.name}'s project file has entries SwarmCode ignores",
+                title: "#{project.name}'s project file has entries ncode ignores",
                 reason: listed(items)
               }
             ]

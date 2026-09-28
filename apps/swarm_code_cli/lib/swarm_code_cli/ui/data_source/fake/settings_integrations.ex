@@ -3645,7 +3645,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.SettingsIntegrations do
 
     if key in @ignored_top or key in @denied,
       do: {:ok, Map.delete(config, key), "Removed #{key}"},
-      else: {:error, "only a key SwarmCode ignores can be removed here"}
+      else: {:error, "only a key ncode ignores can be removed here"}
   end
 
   defp project_config_op("remove_entry", c, config, _trusted) do

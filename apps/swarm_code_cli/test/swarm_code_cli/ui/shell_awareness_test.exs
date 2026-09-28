@@ -264,7 +264,7 @@ defmodule SwarmCodeCLI.UI.ShellAwarenessTest do
     test "falls back to the product's name for a saved session without a project" do
       state = with_workspace(%{fixture() | banner: :persisted_banner}, project: nil)
       [title | _] = String.split(screen(state), "\n")
-      assert String.starts_with?(title, " ⬢ SwarmCode   ")
+      assert String.starts_with?(title, " ⬢ ncode   ")
       refute title =~ "SAVED"
     end
   end

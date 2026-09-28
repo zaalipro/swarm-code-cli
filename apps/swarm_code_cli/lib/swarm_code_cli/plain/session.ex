@@ -702,8 +702,8 @@ defmodule SwarmCodeCLI.Plain.Session do
   end
 
   defp banner(:fake), do: SafeText.value(SafeText.chrome(:fake_banner))
-  defp banner(:plain), do: "SWARMCODE CLI — PLAIN"
-  defp banner(:saved), do: "SWARMCODE CLI — SAVED"
+  defp banner(:plain), do: "NCODE CLI — PLAIN"
+  defp banner(:saved), do: "NCODE CLI — SAVED"
   defp detach_message(true), do: "DETACHED — RUNS CONTINUE"
   defp detach_message(false), do: "DETACHED — SESSION CLOSED"
 

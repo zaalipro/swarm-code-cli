@@ -33,7 +33,7 @@ defmodule SwarmCode.Settings.Registry.Facts do
     ),
     fact("env.variables", :files_env, "Environment", :env,
       description:
-        "Every variable SwarmCode reads that is set, its value (secrets say set) and the setting it overrides.",
+        "Every variable ncode reads that is set, its value (secrets say set) and the setting it overrides.",
       synonyms: ["environment variables", "env vars"],
       since: :c74,
       parity: "NEW"

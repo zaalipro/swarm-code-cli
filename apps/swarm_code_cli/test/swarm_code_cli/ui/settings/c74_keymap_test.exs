@@ -136,7 +136,7 @@ defmodule SwarmCodeCLI.UI.Settings.C74KeymapTest do
 
       docs = SwarmCodeCLI.UI.Keymap.Docs.render()
       assert docs =~ "# Settings"
-      assert docs =~ "swarmcode config reset"
+      assert docs =~ "ncode config reset"
       assert docs =~ "`F2`"
     end
   end

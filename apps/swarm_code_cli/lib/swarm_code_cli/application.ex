@@ -31,7 +31,7 @@ defmodule SwarmCodeCLI.Application do
         )
       catch
         _kind, _reason ->
-          IO.puts(:stderr, "swarmcode: stopped unexpectedly. Run it again; your work is saved.")
+          IO.puts(:stderr, "ncode: stopped unexpectedly. Run it again; your work is saved.")
           1
       end
 

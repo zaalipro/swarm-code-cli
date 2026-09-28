@@ -230,7 +230,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.ModelsEffort do
               kind: :link,
               label: "This project's file",
               value: [
-                {"#{n} #{if n == 1, do: "key", else: "keys"} SwarmCode ignores: #{Enum.join(keys, ", ")}",
+                {"#{n} #{if n == 1, do: "key", else: "keys"} ncode ignores: #{Enum.join(keys, ", ")}",
                  :text_muted}
               ],
               tag: [{"→ Project file", :text_faint}],

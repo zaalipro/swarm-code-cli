@@ -204,7 +204,7 @@ defmodule SwarmCodeCLI.UI.Settings.C74OpenTest do
       presenter = %SwarmCodeCLI.Plain.Presenter{}
       assert {:error, text} = SwarmCodeCLI.Plain.Command.parse("/settings mcp", presenter, nil)
       assert SwarmCodeCLI.UI.SafeText.value(text) =~ "/settings needs the full-screen terminal"
-      assert SwarmCodeCLI.Plain.Command.settings_words() =~ "swarmcode config"
+      assert SwarmCodeCLI.Plain.Command.settings_words() =~ "ncode config"
     end
   end
 

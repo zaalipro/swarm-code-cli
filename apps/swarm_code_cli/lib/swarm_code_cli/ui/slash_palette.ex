@@ -46,7 +46,7 @@ defmodule SwarmCodeCLI.UI.SlashPalette do
     },
     %{name: "queue", args: "<text>", desc: "Send this after the running turn"},
     %{name: "help", args: "", desc: "List the commands and the keys"},
-    %{name: "quit", args: "", desc: "Leave SwarmCode; running work of this session stops"}
+    %{name: "quit", args: "", desc: "Leave ncode; running work of this session stops"}
   ]
   @local_names Enum.map(@local, & &1.name)
 

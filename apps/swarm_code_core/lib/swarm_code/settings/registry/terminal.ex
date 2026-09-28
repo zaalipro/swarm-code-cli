@@ -277,7 +277,7 @@ defmodule SwarmCode.Settings.Registry.Terminal do
     cli("terminal.keys", :keys, "Key bindings",
       group: "key bindings",
       description:
-        "Overrides only; an empty list unbinds. Every printed hint follows. swarmcode config reset terminal.keys recovers the defaults.",
+        "Overrides only; an empty list unbinds. Every printed hint follows. ncode config reset terminal.keys recovers the defaults.",
       storage: {:cli, "keys"},
       type: :keys,
       default: %{},

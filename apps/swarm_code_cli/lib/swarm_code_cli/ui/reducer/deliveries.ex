@@ -146,20 +146,20 @@ defmodule SwarmCodeCLI.UI.Reducer.Deliveries do
   # message is a fixed diagnostic, never shown). pass73 finisher (S's request
   # to V2): the words never name "the daemon".
   defp reason(%{status: status}) when status in [:deadline_exceeded, :outcome_unknown],
-    do: "SwarmCode did not answer in time"
+    do: "ncode did not answer in time"
 
   defp reason(%{status: :revision_conflict}), do: "the conversation changed meanwhile"
   defp reason(%{status: :interrupted}), do: "the session was interrupted"
   defp reason(%{error: %AdmissionError{code: code}}), do: admission_words(code)
-  defp reason(_outcome), do: "SwarmCode did not take it"
+  defp reason(_outcome), do: "ncode did not take it"
 
-  defp admission_words(:capacity_exceeded), do: "SwarmCode is busy"
-  defp admission_words(:deadline_expired), do: "SwarmCode did not answer in time"
-  defp admission_words(:source_unavailable), do: "the connection to SwarmCode is down"
-  defp admission_words(:closed), do: "the connection to SwarmCode is closed"
+  defp admission_words(:capacity_exceeded), do: "ncode is busy"
+  defp admission_words(:deadline_expired), do: "ncode did not answer in time"
+  defp admission_words(:source_unavailable), do: "the connection to ncode is down"
+  defp admission_words(:closed), do: "the connection to ncode is closed"
   defp admission_words(:stale_revision), do: "the conversation changed meanwhile"
   defp admission_words(:not_allowed), do: "it is not allowed right now"
-  defp admission_words(_code), do: "SwarmCode did not take it"
+  defp admission_words(_code), do: "ncode did not take it"
 
   # The service's sentence stands alone; the fallback words say what to do.
   defp refusal_words(%{reason: reason, said?: true}), do: safe(reason)

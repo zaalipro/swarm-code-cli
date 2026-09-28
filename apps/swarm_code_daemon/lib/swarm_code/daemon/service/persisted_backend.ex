@@ -461,13 +461,13 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   def handle_info({:notification, kind, message}, state) when is_binary(message) do
     case kind do
       :finished -> {:noreply, toast(state, "success", "Finished", message, nil)}
-      :info -> {:noreply, toast(state, "info", "SwarmCode", message, nil)}
+      :info -> {:noreply, toast(state, "info", "ncode", message, nil)}
       _waiting -> {:noreply, state}
     end
   end
 
   def handle_info({:toast, text}, state) when is_binary(text),
-    do: {:noreply, toast(state, "info", "SwarmCode", text, nil)}
+    do: {:noreply, toast(state, "info", "ncode", text, nil)}
 
   def handle_info({:waiting_changed}, state),
     do: {:noreply, schedule_refresh(waiting_elsewhere(state))}

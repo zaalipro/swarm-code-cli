@@ -50,7 +50,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Storage do
     [
       R.info(
         "storage:intro",
-        "What SwarmCode's own database and research folders hold. Nothing here touches your projects.",
+        "What ncode's own database and research folders hold. Nothing here touches your projects.",
         :text_faint
       ),
       R.heading("retention", "retention")

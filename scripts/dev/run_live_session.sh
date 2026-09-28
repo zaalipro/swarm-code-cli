@@ -6,7 +6,7 @@ export SWARM_USER_UMASK="${SWARM_USER_UMASK:-$(umask)}"
 umask 077
 if [[ $# -eq 1 && "$1" == "--help" ]]; then
   cat <<'HELP'
-SwarmCode development TUI — LIVE · UNSAVED
+ncode development TUI — LIVE · UNSAVED
 
 Usage: scripts/dev/run_live_session.sh
 

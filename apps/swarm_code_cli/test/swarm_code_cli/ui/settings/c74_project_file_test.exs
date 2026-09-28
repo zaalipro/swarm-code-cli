@@ -75,8 +75,8 @@ defmodule SwarmCodeCLI.UI.Settings.C74ProjectFileTest do
     assert words(header) == "✓ read"
     assert words(header.tag) == "e edit the whole file"
 
-    assert text =~ "keys SwarmCode ignores"
-    assert text =~ "effort high · SwarmCode ignores this key x remove"
+    assert text =~ "keys ncode ignores"
+    assert text =~ "effort high · ncode ignores this key x remove"
     assert text =~ "run only in trusted projects · ailogic is trusted"
     assert text =~ "event matcher command timeout"
     assert text =~ "post_tool_use ^edit_file$ mix format 10 s"

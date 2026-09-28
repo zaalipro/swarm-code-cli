@@ -655,11 +655,11 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
     do: {"too much is in flight at once", "wait a moment and send it again"}
 
   defp refusal_reason(code) when code in [:deadline_expired, "deadline_expired"],
-    do: {"SwarmCode took too long to answer", "send it again"}
+    do: {"ncode took too long to answer", "send it again"}
 
   defp refusal_reason(code)
        when code in [:source_unavailable, :closed, :not_bound, "source_unavailable", "closed"],
-       do: {"the connection to SwarmCode is down", "it reconnects by itself; send it again then"}
+       do: {"the connection to ncode is down", "it reconnects by itself; send it again then"}
 
   defp refusal_reason(code)
        when code in [:request_conflict, :duplicate_watch, "request_conflict", "duplicate_watch"],
@@ -667,7 +667,7 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
 
   defp refusal_reason(code)
        when code in [:invalid_request, :invalid_intent, :invalid_origin, "invalid_request"],
-       do: {"SwarmCode could not read the request", "nothing changed; edit it and try again"}
+       do: {"ncode could not read the request", "nothing changed; edit it and try again"}
 
   # pass73 S (typed refusal reasons on the wire), as far as the words go.
   defp refusal_reason(code) when code in [:untrusted, "untrusted", :project_untrusted],
@@ -692,7 +692,7 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
   end
 
   defp refusal_reason(_unknown),
-    do: {"SwarmCode turned it down", "try again, or see cli.log for why"}
+    do: {"ncode turned it down", "try again, or see cli.log for why"}
 
   # The strongest `budget` hints for the context, key then word.
   #

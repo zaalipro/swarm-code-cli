@@ -1,6 +1,6 @@
 defmodule SwarmCodeCLI.Release.ConfigCommand do
   @moduledoc """
-  `swarmcode config` (pass 74, spec §3.10.3): settings from scripts, dotfiles,
+  `ncode config` (pass 74, spec §3.10.3): settings from scripts, dotfiles,
   SSH and CI with the TUI's registry, validators, text parser, service and
   compare-and-set.
 
@@ -41,7 +41,7 @@ defmodule SwarmCodeCLI.Release.ConfigCommand do
   @conflict 4
 
   @usage """
-  Usage: swarmcode config COMMAND [ARGS]
+  Usage: ncode config COMMAND [ARGS]
 
     list [SECTION] [--modified] [--json]
     get KEY [--json]
@@ -70,7 +70,7 @@ defmodule SwarmCodeCLI.Release.ConfigCommand do
   """
 
   @stdin_words "Secrets are read from stdin so they never reach your shell history: " <>
-                 "swarmcode config secret <KIND:NAME[.SLOT]> --stdin"
+                 "ncode config secret <KIND:NAME[.SLOT]> --stdin"
 
   @value_flags ~w(--project --conversation --expect --name --preset --http)
   @bool_flags ~w(--json --modified --stdin --no-test --yes --apply --no-terminal --no-project
@@ -88,7 +88,7 @@ defmodule SwarmCodeCLI.Release.ConfigCommand do
   def usage, do: @usage
 
   @doc """
-  Run `swarmcode config ARGS`; returns the exit code. Options (tests):
+  Run `ncode config ARGS`; returns the exit code. Options (tests):
   `:foundation` (`fun -> {:ok, value} | {:error, failure}`), `:cli_path`,
   `:stdin` (an IO device), `:cwd`.
   """
@@ -490,7 +490,7 @@ defmodule SwarmCodeCLI.Release.ConfigCommand do
         {:ok, project}
 
       {:error, _} ->
-        unless opts[:quiet], do: err("This folder is not a SwarmCode project yet.")
+        unless opts[:quiet], do: err("This folder is not an ncode project yet.")
         @usage_code
     end
   end
@@ -618,7 +618,7 @@ defmodule SwarmCodeCLI.Release.ConfigCommand do
         if Entry.scalar?(entry), do: {:ok, entry}, else: usage_error("#{text}: not a setting.")
 
       _ ->
-        usage_error("#{text}: not a setting; 'swarmcode config keys' lists them.")
+        usage_error("#{text}: not a setting; 'ncode config keys' lists them.")
     end
   end
 
@@ -1315,11 +1315,11 @@ defmodule SwarmCodeCLI.Release.ConfigCommand do
   end
 
   defp usage_error(words) do
-    IO.puts(:stderr, "swarmcode: #{words} Run 'swarmcode config help'.")
+    IO.puts(:stderr, "ncode: #{words} Run 'ncode config help'.")
     @usage_code
   end
 
-  defp err(words), do: IO.puts(:stderr, "swarmcode: " <> words)
+  defp err(words), do: IO.puts(:stderr, "ncode: " <> words)
 
   defp format_current(_entry, :absent), do: "not set"
   defp format_current(entry, value), do: TextValue.format(entry, value)

@@ -191,7 +191,7 @@ defmodule SwarmCodeCLI.UI.Settings.C74PopoverTest do
       text = screen(state)
       assert text =~ "Keys in settings"
       assert text =~ "move"
-      assert text =~ "Remapped yourself out of a key? swarmcode config reset terminal.keys"
+      assert text =~ "Remapped yourself out of a key? ncode config reset terminal.keys"
       assert press!(state, Input.key(:escape)).settings.popover == nil
     end
   end

@@ -1,6 +1,6 @@
 defmodule SwarmCodeCLI.Plain.OneShotTest do
   @moduledoc """
-  Pass 70 E4: `swarmcode -p`. One prompt goes out the way the composer sends
+  Pass 70 E4: `ncode -p`. One prompt goes out the way the composer sends
   it, the answer streams to stdout, what needs a person is denied or stopped
   and said on stderr, and the exit code says how the run ended.
   """
@@ -280,7 +280,7 @@ defmodule SwarmCodeCLI.Plain.OneShotTest do
 
     assert code(session) == 0
     assert text(context.output) == "First try that\nSecond try.\n"
-    assert text(context.error) =~ "swarmcode: the answer restarted."
+    assert text(context.error) =~ "ncode: the answer restarted."
   end
 
   test "an answer longer than its preview is finished from its detail", context do
@@ -346,7 +346,7 @@ defmodule SwarmCodeCLI.Plain.OneShotTest do
     complete(session, [run(:done)], [])
 
     assert code(session) == 0
-    assert text(context.error) =~ "swarmcode: denied run_command rm -rf build"
+    assert text(context.error) =~ "ncode: denied run_command rm -rf build"
   end
 
   test "an approval the service will not deny stops the run, said once", context do
@@ -399,7 +399,7 @@ defmodule SwarmCodeCLI.Plain.OneShotTest do
     assert code(session) == 1
     assert text(context.output) == "_(stopped)_\n"
     error = text(context.error)
-    assert error =~ "swarmcode: denied run_command ls -la notes: nobody is here to approve it."
+    assert error =~ "ncode: denied run_command ls -la notes: nobody is here to approve it."
     assert error =~ "the approval could not be denied, so the run was stopped."
     assert length(String.split(error, "stopped")) == 2
   end
@@ -447,7 +447,7 @@ defmodule SwarmCodeCLI.Plain.OneShotTest do
     complete(session, [run(:failed, error: "provider said no")], [])
 
     assert code(session) == 1
-    assert text(context.error) =~ "swarmcode: the run failed: provider said no"
+    assert text(context.error) =~ "ncode: the run failed: provider said no"
   end
 
   test "a refused prompt exits 1 and says why", context do

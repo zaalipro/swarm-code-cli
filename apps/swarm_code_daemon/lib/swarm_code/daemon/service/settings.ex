@@ -2,7 +2,7 @@ defmodule SwarmCode.Daemon.Service.Settings do
   @moduledoc """
   The settings service (pass 74, spec §3.3): plain functions over the domain,
   called from PersistedBackend jobs (never inside the backend's callbacks) and
-  directly by `swarmcode config`. The Router picks the handler from a static
+  directly by `ncode config`. The Router picks the handler from a static
   table. Neither function raises to its caller: an exception becomes
   `unavailable` with "Couldn't read settings right now." and a log line that
   names the action or view only — never an attribute, a value or a secret.

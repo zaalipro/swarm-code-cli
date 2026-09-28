@@ -164,7 +164,7 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
       # form keeps the command on the row.
       words =
         if width >= 80,
-          do: "This project is not trusted, so SwarmCode only reads it. ",
+          do: "This project is not trusted, so ncode only reads it. ",
           else: "This project is not trusted: read only. "
 
       spans =
