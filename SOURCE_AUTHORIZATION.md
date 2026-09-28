@@ -60,3 +60,16 @@ Three other 40-character hexadecimal strings that a scan of `provenance/` finds,
 `chunks.ex`, `sse.ex` or `result.ex`, which the ledger records three times: as
 the `upstream_sha256` of the file's two copies and as the `sha256` of the copy
 that is unchanged.
+
+The verifier (`apps/swarm_code_core/lib/swarm_code/governance/provenance.ex`)
+admits version 1 records only at `dbb8804b3d7293178e571fa7afdf6bd47d06a51c` and
+version 2 records at four adaptation pins: the three commits named above and
+`ccb19732c7225a6bc88556f8f743bab7bda41a5b`. That list supersedes the sentence
+above that the verifier admits "only the two explicitly pinned commits".
+`ccb19732c7225a6bc88556f8f743bab7bda41a5b` is a desktop commit dated 2026-09-13
+and an ancestor of `6dd8d82ef29f9a6608b942259e1801846bb87ed9`; no entry in
+`provenance/extracted-files.json` cites it. It is used only for the schema
+manifest `apps/swarm_code_daemon/priv/schema/desktop-ccb1973.json` and its
+contract entry, and the 53 migration files that manifest records are
+byte-identical at `6dd8d82ef29f9a6608b942259e1801846bb87ed9`, so the manifest
+describes code this addendum covers.
