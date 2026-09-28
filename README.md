@@ -1,4 +1,30 @@
-# SwarmCode CLI
+# ncode CLI
+
+ncode (formerly SwarmCode) is a local-first coding harness for the terminal: a
+full-screen TUI, a line presenter for pipes and CI, and one-shot `-p` runs, over
+the same conversations database as the ncode desktop app. The command is `ncode`;
+`swarmcode` still works as a deprecated alias. Internal names are unchanged: the
+Elixir modules (`SwarmCode.*`, `SwarmCodeCLI.*`), the OTP apps and the release
+(`swarm_code_*`), the data folder `~/Library/Application Support/SwarmCode` with
+`swarm_code.db`, the logs in `~/Library/Logs/SwarmCode`, and `.swarm_code/` in
+your projects.
+
+## Install
+
+```sh
+curl -fsSL https://code.llmotions.com/install.sh | sh
+```
+
+ncode 0.1.0 is an unsigned developer preview for macOS 15 or later on Apple
+silicon. The installer downloads the release from GitHub Releases, checks its
+SHA-256 and installs the `ncode` command. Bring your own model provider: an
+Anthropic key or any OpenAI-compatible endpoint, added with
+`ncode settings providers` or exported as `NCODE_MODEL`, `NCODE_BASE_URL` and
+`NCODE_API_KEY` for the first run (the older `SWARM_*` names still work). Then run
+`ncode` in a project directory. To build from this checkout instead, see
+[Build from source](#build-from-source-contributors).
+
+## Development
 
 This repository contains a runnable terminal client connected to real
 OpenAI-compatible/Anthropic providers, six coding tools, approvals, run controls,
@@ -10,7 +36,7 @@ available for the verified TUI path.
 The live launcher uses in-memory history. Deterministic demos and a passive
 preview gallery are also available.
 
-The saved session uses the providers and models of the SwarmCode database, exactly
+The saved session uses the providers and models of the shared ncode database, exactly
 like the desktop app: the conversation's own choice, then the default in Settings.
 Environment variables never add provider rows or change a conversation's model.
 Only when the database has no usable provider at all does the first launch create
@@ -28,8 +54,9 @@ scripts/dev/run_saved_session.sh
 ```
 
 You may keep the same exports in `~/.secrets`; the launcher preserves values
-already exported for `SWARM_*`, `OPENAI_*`, and `ANTHROPIC_*` in the calling shell,
-and loads only those three families from the file (never its other secrets).
+already exported in the calling shell, and loads only the `SWARM_*`, `NCODE_*`,
+`OPENAI_*`, `ANTHROPIC_*` and `LLMOTIONS_*` families from the file (never its
+other secrets); inside the file an `NCODE_*` name wins over its `SWARM_*` twin.
 The saved, live, and plain development launchers share this behavior. Set
 `SWARM_ENV_FILE=/path/to/provider.env` to use another shell environment file.
 An exported provider key, including an explicitly empty key for local servers,
@@ -89,7 +116,7 @@ TUI):
 | Ctrl-F (or Ctrl-Space) | hint mode: a badge before every agent in the side panel; its letter opens that agent's overlay, a digit shows a run (`0` all runs), Ctrl-F again is Ctrl-N, Esc cancels. Hint keys never answer a request; Ctrl-F also works over an approval card, and the letter opens the overlay whose band answers it. Ctrl-F is not forward-char; Right moves the caret |
 | Ctrl-B | the side panel: full, compact, hidden (under 120 columns: the strip or off); `/panel full\|compact\|hidden` sets it, and the choice is kept in `cli.json` beside the database |
 | `y` `Y` `A` `d` `D` `n` | on an approval: once, this run, always this command family, deny, deny and stop, next |
-| mouse wheel | scrolls the pane under the pointer: the transcript, the side panel, the agent overlay, the pager (three lines a notch). On by default; Shift-drag (Option-drag in Terminal.app and iTerm2) still selects text, and `/mouse off` (kept in `cli.json`; `SWARM_MOUSE=0\|1` overrides it) gives the terminal its own selection back |
+| mouse wheel | scrolls the pane under the pointer: the transcript, the side panel, the agent overlay, the pager (three lines a notch). On by default; Shift-drag (Option-drag in Terminal.app and iTerm2) still selects text, and `/mouse off` (kept in `cli.json`; `NCODE_MOUSE=0\|1` or `SWARM_MOUSE=0\|1` overrides it) gives the terminal its own selection back |
 
 The agent overlay (a badge letter, or Enter on an agent in select mode) shows
 one agent full screen: its request with the approval keys, its life on a time
@@ -113,15 +140,15 @@ answers some slash commands itself: `/new`
 (bare: a picker of the three, the current one checked; every change of the mode,
 from here or anywhere, is said in the chat as "Approvals: auto → full access"),
 `/panel full|compact|hidden`, `/diff [on|off]` (tool rows with or without their
-diffs and previews), `/theme [dark|light]` (switches at once; `SWARM_THEME` still
-wins at the next launch), `/mouse [on|off]`, `/trust`, `/queue <text>`, `/help`
+diffs and previews), `/theme [dark|light]` (switches at once; `NCODE_THEME` or `SWARM_THEME`
+still wins at the next launch), `/mouse [on|off]`, `/trust`, `/queue <text>`, `/help`
 and `/quit`; `/panel`, `/diff`, `/theme` and `/mouse` are kept in `cli.json`.
 Typing `/` lists every command above the composer. The project's approval mode is the desktop's and is always on
 the status line: a new project is read-only until `/trust`; in `auto`, edits and
 safe commands (`ls`, `git status`) run by themselves and other commands ask.
 Quitting stops the session's runs and prints a short summary that lists the runs
-it stopped and a `swarmcode --resume <id>` hint for the conversation. Logs go to `~/Library/Logs/SwarmCode/cli.log`, never
-to the terminal; a session that closes on "the daemon connection closed" says why there. A second `swarmcode` on the same database exits with status 3
+it stopped and a `ncode --resume <id>` hint for the conversation. Logs go to `~/Library/Logs/SwarmCode/cli.log`, never
+to the terminal; a session that closes on "the daemon connection closed" says why there. A second `ncode` on the same database exits with status 3
 and one sentence naming the first one's process; a Ctrl-C outside the full-screen
 view (while it starts, during `-p`, after the summary) simply ends the program.
 The saved launcher performs guarded admission before accessing shared storage.
@@ -133,23 +160,36 @@ scripts/dev/build_release.sh
 ```
 
 The release is written to `_build/prod/rel/swarm_code_cli` and includes the
-native terminal helper plus the `swarmcode` launcher described below:
+native terminal helper plus the `ncode` launcher described below:
 
 ```sh
-_build/prod/rel/swarm_code_cli/bin/swarmcode --help
+_build/prod/rel/swarm_code_cli/bin/ncode --help
 ```
 
-### Install as `swarmcode`
+### Build from source (contributors)
 
 ```sh
 scripts/install.sh
-swarmcode            # the saved session for the current directory
-swarmcode ~/dev/app  # or for a named project
+ncode            # the saved session for the current directory
+ncode ~/dev/app  # or for a named project
 ```
 
+The installer builds the release from this checkout, copies it to
+`~/.local/share/ncode`, and writes `~/.local/bin/ncode` plus the deprecated
+`swarmcode` alias beside it (set `NCODE_PREFIX`, or the older `SWARMCODE_PREFIX`,
+for another prefix). An earlier install in `~/.local/share/swarmcode` is left in
+place, and the installer says that it can be removed. Building needs the pinned
+toolchain (`mise`, see `.tool-versions`) and Rust for the terminal port. The
+contributor gate `mix precommit` also needs the maintainer's desktop checkout
+(`~/dev/swarm-code`, or `SWARM_CODE_UPSTREAM`) at the pinned commit:
+`provenance.verify` and `provenance.sync --check` re-derive the extracted domain
+from it, so the gate cannot pass from this repository alone.
+
+### Using `ncode`
+
 ```text
-swarmcode [DIR] [--new | --continue | --resume ID] [--model M]
-          [-p PROMPT [--json]] [--plain [--ndjson]] [--help] [--version]
+ncode [DIR] [--new | --continue | --resume ID] [--model M]
+      [-p PROMPT [--json]] [--plain [--ndjson]] [--help] [--version]
 ```
 
 - `--new` starts a conversation, `--continue` (`-c`, the default) opens the
@@ -171,41 +211,46 @@ swarmcode [DIR] [--new | --continue | --resume ID] [--model M]
   incompatible schema: one line says which).
 
 ```sh
-swarmcode -p "summarise the open TODOs in lib/" > todos.md
-swarmcode -p "run the tests and fix what fails" --json | jq .state
-swarmcode -p - --model anthropic/claude-sonnet < review-request.md
+ncode -p "summarise the open TODOs in lib/" > todos.md
+ncode -p "run the tests and fix what fails" --json | jq .state
+ncode -p - --model anthropic/claude-sonnet < review-request.md
 ```
 
-The installer builds the release, copies it to `~/.local/share/swarmcode`, and
-writes `~/.local/bin/swarmcode` (set `SWARMCODE_PREFIX` for another prefix).
-`swarmcode` loads provider settings from `~/.secrets` (or `SWARM_ENV_FILE`) when
+`ncode` loads provider settings from `~/.secrets` (or `NCODE_ENV_FILE`) when
 no key is exported, exactly like the development launchers, but always opens
 the directory it was given or run from: a `SWARM_PROJECT_ROOT` inside the
 environment file is ignored so that one project is not opened from everywhere.
 Re-run the installer after pulling changes; conversations live in the
 canonical database and survive reinstalls.
 
+`ncode` reads the `NCODE_*` names first and the older `SWARM_*` names as the
+fallback; when both are set, the `NCODE_*` one wins. `NCODE_CONFIG_DIR` and
+`NCODE_SHELL` stand for `SWARM_CODE_CONFIG_DIR` and `SWARM_CODE_SHELL`. The
+development launchers in `scripts/dev` read only the `SWARM_*` names from the
+shell.
+
 | Variable | Meaning |
 | --- | --- |
-| `SWARM_PROVIDER` | First run only: `openai` (default) or `anthropic` |
-| `SWARM_MODEL` | First run only (no usable provider in the database): the model ID; `OPENAI_MODEL` / `ANTHROPIC_MODEL` also work |
-| `SWARM_BASE_URL` | First run only: the endpoint; OpenAI-compatible URLs include `/v1`, Anthropic URLs omit it. `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL` also work. |
-| `SWARM_API_KEY` | First run only: overrides `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`; may be empty for local servers |
-| `SWARM_PROJECT_ROOT` | Development launchers: project directory (default: the current directory); `swarmcode` ignores it, name the directory instead |
-| `SWARM_CONVERSATION` | `latest` (default), `new`, or a conversation id; the `swarmcode` flags win |
-| `SWARM_MODEL_OVERRIDE` | Set by `swarmcode --model` only: the session's model, never written |
-| `SWARM_KEYMAP` | `vim` for vim keys in the composer |
-| `SWARM_ASCII` | `1` draws plain ASCII glyphs, for a terminal or font without symbols |
-| `SWARM_MOUSE` | `0` turns mouse-wheel reports off, `1` on; wins over `/mouse` in `cli.json` (default on) |
-| `SWARM_THEME` | `dark` or `light`; wins over `/theme` in `cli.json` and the desktop's mode (default dark) |
-| `SWARM_COMPANION` | `0` turns the visual companion off |
+| `NCODE_PROVIDER` (`SWARM_PROVIDER`) | First run only: `openai` (default) or `anthropic` |
+| `NCODE_MODEL` (`SWARM_MODEL`) | First run only (no usable provider in the database): the model ID; `OPENAI_MODEL` / `ANTHROPIC_MODEL` also work |
+| `NCODE_BASE_URL` (`SWARM_BASE_URL`) | First run only: the endpoint; OpenAI-compatible URLs include `/v1`, Anthropic URLs omit it. `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL` also work. |
+| `NCODE_API_KEY` (`SWARM_API_KEY`) | First run only: overrides `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`; may be empty for local servers |
+| `SWARM_PROJECT_ROOT` | Development launchers: project directory (default: the current directory); `ncode` ignores it, name the directory instead |
+| `NCODE_CONVERSATION` (`SWARM_CONVERSATION`) | `latest` (default), `new`, or a conversation id; the `ncode` flags win |
+| `SWARM_MODEL_OVERRIDE` | Set by `ncode --model` only: the session's model, never written |
+| `NCODE_KEYMAP` (`SWARM_KEYMAP`) | `vim` for vim keys in the composer |
+| `NCODE_ASCII` (`SWARM_ASCII`) | `1` draws plain ASCII glyphs, for a terminal or font without symbols |
+| `NCODE_MOUSE` (`SWARM_MOUSE`) | `0` turns mouse-wheel reports off, `1` on; wins over `/mouse` in `cli.json` (default on) |
+| `NCODE_THEME` (`SWARM_THEME`) | `dark` or `light`; wins over `/theme` in `cli.json` and the desktop's mode (default dark) |
+| `NCODE_COMPANION` (`SWARM_COMPANION`) | `0` turns the visual companion off |
 | `SWARM_APPROVAL` | Unsaved live launcher only: `ask` (default), `read-only` or `auto`; saved sessions use the project's approval mode |
-| `SWARM_ENV_FILE` | Optional shell environment file; defaults to `~/.secrets` |
+| `NCODE_ENV_FILE` (`SWARM_ENV_FILE`) | Optional shell environment file; defaults to `~/.secrets` |
 
 Use `scripts/dev/run_live_session.sh --help` for startup help without building or
-opening the TUI. For Anthropic set `SWARM_PROVIDER=anthropic`,
-`SWARM_BASE_URL=https://api.anthropic.com`, `ANTHROPIC_API_KEY`, and a supported
-model ID. Local OpenAI-compatible servers can use an empty `SWARM_API_KEY`.
+opening the TUI. For Anthropic set `NCODE_PROVIDER=anthropic`,
+`NCODE_BASE_URL=https://api.anthropic.com`, `ANTHROPIC_API_KEY`, and a supported
+model ID (the development launchers take the `SWARM_*` names). Local
+OpenAI-compatible servers can use an empty `NCODE_API_KEY`.
 
 Saved slash commands are parsed and dispatched through the typed service boundary.
 `/swarm`, `/goal`, `/plan`, `/review`, `/effort`, `/swarm_effort`, `/rewind`,
@@ -232,8 +277,8 @@ persisted features unavailable because it has no Domain Repo.
 
 Every setting the desktop app has, and this terminal's own, in one full-screen layer:
 `/settings [what]` (also `/config`, `/prefs`), F2, a Settings row in Ctrl-P
-(`>settings:theme` lists single settings), or `swarmcode settings [what]` from a shell
-(`swarmcode settings providers` opens at Providers; it opens even when no model provider
+(`>settings:theme` lists single settings), or `ncode settings [what]` from a shell
+(`ncode settings providers` opens at Providers; it opens even when no model provider
 can answer yet). `what` is a section, a key (`limits.max_agent_depth`), a label or a
 synonym, and the cursor lands on that row.
 
@@ -243,7 +288,7 @@ synonym, and the cursor lands on that row.
   env and headers masked, `.mcp.json` import, reconnect), Language servers; Agents &
   limits, Approvals & trust, the project file (`.swarm_code/config.json`: hooks,
   profiles), Memory & instructions, Library (commands, agents, skills, workflows);
-  Appearance, Layout & transcript, Keys & input (rebind any action, `swarmcode config
+  Appearance, Layout & transcript, Keys & input (rebind any action, `ncode config
   keys`), Session & startup; Storage (measure, cleanup, vacuum, retention), Budget &
   usage; Desktop app, Files & environment (doctor), Import & export.
 - **Where a value comes from** is on every row: `default`, `global` (the database the
@@ -261,21 +306,21 @@ synonym, and the cursor lands on that row.
   lists the keys; below 120 columns the rail becomes a section strip, at 80 × 24 the
   pages drill down (Esc goes back one level).
 
-`swarmcode config` does the same from scripts, dotfiles and SSH, through the same
-service and checks (`swarmcode config help` lists every command):
+`ncode config` does the same from scripts, dotfiles and SSH, through the same
+service and checks (`ncode config help` lists every command):
 
 ```sh
-swarmcode config list --modified
-swarmcode config set limits.max_agent_depth 3
-swarmcode config record add provider --preset deepseek
-printf '%s' "$DEEPSEEK_KEY" | swarmcode config secret provider:DeepSeek --stdin
-swarmcode config set models.chat DeepSeek/deepseek-v4-pro
-swarmcode config search order tavily,exa
-swarmcode config export settings.json && swarmcode config import settings.json --apply
+ncode config list --modified
+ncode config set limits.max_agent_depth 3
+ncode config record add provider --preset deepseek
+printf '%s' "$DEEPSEEK_KEY" | ncode config secret provider:DeepSeek --stdin
+ncode config set models.chat DeepSeek/deepseek-v4-pro
+ncode config search order tavily,exa
+ncode config export settings.json && ncode config import settings.json --apply
 ```
 
 Secrets are read from stdin only (an argument is refused with the sentence that says
-so). While a `swarmcode` session is open, settings stored in the database are changed
+so). While a `ncode` session is open, settings stored in the database are changed
 in that session (`config set` exits 3 and says which process holds it); terminal
 settings (`cli.json`) can always be set. Exit codes: 0 done, 1 failed, 2 usage or an
 invalid value, 3 startup refused, 4 changed elsewhere (`--expect`).
@@ -429,8 +474,8 @@ for exact verification and remaining scope.
 The subsequent [directory and codec checkpoint](docs/research/2026-09-07-directories-codec-checkpoint.md)
 adds production directory ownership/locks and a strict pure client wire codec.
 The saved launcher now provides guarded database startup, command persistence,
-and history across restart. Release packaging and clean-host installation remain
-separate work.
+and history across restart. The packaged release is installed with the one-line
+installer (see [Install](#install)).
 
 The CLI now also includes a bounded local Unix-socket service listener, strict
 capability and nonce admission, reconnect-safe request identities, watch

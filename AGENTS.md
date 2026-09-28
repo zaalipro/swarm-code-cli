@@ -6,6 +6,18 @@ Claude Code reads this file directly when the project has no `CLAUDE.md`; do not
 
 ## What this is
 
+Product name (v0.1.0): **ncode**, lowercase; the installed command is `ncode`
+(`rel/overlays/bin/ncode`), with `swarmcode` and `swarm-code` kept as deprecated aliases that
+exec it. Internal names are unchanged on purpose: modules (`SwarmCode.*`, `SwarmCodeCLI.*`), OTP
+apps and the release (`swarm_code_*`), Mix tasks, the data folder
+`~/Library/Application Support/SwarmCode`, `swarm_code.db`, the logs, `.swarm_code/`, the desktop
+bundle id `com.zaali.swarmcode`, the `SWARM_*` names the release reads, the cli.log `SwarmCode:`
+prefixes and the export format `swarmcode-settings` (import also takes `ncode-settings`). The
+launcher and the provider-file loader copy `NCODE_X` over `SWARM_X` (NCODE first, SWARM the
+fallback; the list is in both files, pinned by `entry/ncode_alias_test.exs`). Model-facing and
+other strings inside provenance-ledger files still say SwarmCode until they are recorded as
+provenance patches.
+
 SwarmCode CLI: a standalone, local-first Elixir/OTP umbrella that gives the SwarmCode domain a
 full-screen terminal UI, an append-only plain presenter and headless commands. It shares the
 canonical SQLite database with the macOS desktop app (`~/dev/swarm-code`, a read-only reference;
@@ -36,9 +48,9 @@ command below says otherwise. Native builds also need `cc` (C11), `python3`, and
 | Real saved session (canonical DB, resumes latest conversation of `SWARM_PROJECT_ROOT`) | `scripts/dev/run_saved_session.sh` |
 | Real unsaved session | `scripts/dev/run_live_session.sh` |
 | Headless session, one command per line on stdin | `scripts/dev/run_plain_session.sh [--ndjson]` |
-| Release / install | `scripts/dev/build_release.sh` → `_build/prod/rel/swarm_code_cli`; `scripts/install.sh` installs `swarmcode` |
-| Packaged entry points | `bin/swarmcode [DIR] [--new\|--continue\|--resume ID] [--model M] [-p PROMPT [--json]] [--plain [--ndjson]]`; the launcher validates flags in bash (usage exits 2 before any VM), the TUI is `bin/swarm_code_cli start` with `SWARM_RELEASE_TUI=1`, `-p`/`--plain` are `bin/swarm_code_cli eval 'SwarmCodeCLI.Release.main(System.argv())' …`; `-p` starts a new conversation unless `-c`/`--resume`/`SWARM_CONVERSATION` names one (pass 71). Exit codes 0 done, 1 failed, 2 usage, 3 startup refused |
-| Settings (pass 74) | `swarmcode settings [QUERY]` opens the layer (`/settings`, F2); `swarmcode config help` lists the headless commands (`list/get/set/reset/keys/path/records/record/secret --stdin/search/mcp/export/import/doctor`) |
+| Release / install | `scripts/dev/build_release.sh` → `_build/prod/rel/swarm_code_cli`; `scripts/install.sh` installs `ncode` |
+| Packaged entry points | `bin/ncode [DIR] [--new\|--continue\|--resume ID] [--model M] [-p PROMPT [--json]] [--plain [--ndjson]]`; the launcher validates flags in bash (usage exits 2 before any VM), the TUI is `bin/swarm_code_cli start` with `SWARM_RELEASE_TUI=1`, `-p`/`--plain` are `bin/swarm_code_cli eval 'SwarmCodeCLI.Release.main(System.argv())' …`; `-p` starts a new conversation unless `-c`/`--resume`/`SWARM_CONVERSATION` names one (pass 71). Exit codes 0 done, 1 failed, 2 usage, 3 startup refused |
+| Settings (pass 74) | `ncode settings [QUERY]` opens the layer (`/settings`, F2); `ncode config help` lists the headless commands (`list/get/set/reset/keys/path/records/record/secret --stdin/search/mcp/export/import/doctor`) |
 | Re-derive the desktop domain | `mise exec -- mix swarm_code.provenance.sync --ref <desktop sha>` (read-only `git` on `~/dev/swarm-code` or `$SWARM_CODE_UPSTREAM`); `--check` verifies (in precommit) |
 | Re-pin a hand-edited ledger file outside the sync mappings | `mise exec -- mix swarm_code.provenance.repin <path> …` |
 
@@ -46,10 +58,11 @@ Providers (pass 70, decision D3): the database's providers and the conversation'
 decide the model, exactly like the desktop (`Providers.effective_model/2`). `SWARM_*` never
 create provider rows or rewrite a conversation; only when the database has no usable provider at
 all does the first run create one row from `SWARM_MODEL`/`SWARM_BASE_URL`/`SWARM_API_KEY` and say
-so (a toast in the TUI, a stderr line headless). `swarmcode --model M` (env
+so (a toast in the TUI, a stderr line headless). `ncode --model M` (env
 `SWARM_MODEL_OVERRIDE`, set only by the launcher) is an in-memory session override applied at
 each `Engine.start_*`; an explicit `/model` ends it. The launchers load only `SWARM_*`,
-`OPENAI_*` and `ANTHROPIC_*` from `~/.secrets` (or `SWARM_ENV_FILE`), never the whole file, and
+`NCODE_*`, `OPENAI_*`, `ANTHROPIC_*` and `LLMOTIONS_*` from `~/.secrets` (or `NCODE_ENV_FILE` /
+`SWARM_ENV_FILE`), never the whole file, and
 the synced engine scrubs secrets from model-run shells. Logger output goes to
 `~/Library/Logs/SwarmCode/cli.log` (0600, rotated; XDG state on Linux), never to the tty. On
 macOS quit the desktop app before a saved session; they cannot share the database.
@@ -195,8 +208,8 @@ by `scripts/dev/sync_unicode_width.exs --check`, `sync_unicode_variants.py --che
   bar, not a solid fill. Colours come from `UI.Theme` (the web app's Carbon tokens); never invent
   a palette. The launchers build the capabilities by hand: the rich glyph tier (thin `▏` rails)
   needs truecolor and a `TERM` naming ghostty, kitty, wezterm or iTerm
-  (`Capabilities.glyph_tier/4`), and the palette starts as `Theme.mode/3` (`SWARM_THEME` >
-  cli.json `theme` > the desktop settings' `mode` > dark, through
+  (`Capabilities.glyph_tier/4`), and the palette starts as `Theme.mode/3` (`SWARM_THEME`, which
+  `bin/ncode` sets from `NCODE_THEME`, > cli.json `theme` > the desktop settings' `mode` > dark, through
   `Release.PersistedSession.start_preferences/3`); `/theme` switches it live
   (`{:terminal_preferences, …}` to the port owner, which also sends the port's tag-8 wheel
   command for `/mouse`). `/diff off` draws every tool row on one line.
@@ -209,7 +222,7 @@ by `scripts/dev/sync_unicode_width.exs --check`, `sync_unicode_variants.py --che
   it asks "Stop N live runs and quit?") before closing the window. Screen sets `TERM=screen`
   inside its window, so pass `TERM=xterm-ghostty COLORTERM=truecolor` in the command to see the
   rich tier. The release prints a short exit summary to the main screen after it leaves the
-  alternate screen (the runs the quit stopped, and `swarmcode --resume <id>` for the
+  alternate screen (the runs the quit stopped, and `ncode --resume <id>` for the
   conversation on screen). `rel/env.sh.eex` starts the VM with `+Bd`, so a Ctrl-C in a cooked
   terminal (boot, `-p`, the moment after the summary) ends the process instead of opening the
   Erlang BREAK menu, and runs it under `umask 077` while keeping the user's umask in
@@ -272,7 +285,7 @@ by `scripts/dev/sync_unicode_width.exs --check`, `sync_unicode_variants.py --che
   `Fake.SettingsIntegrations` serve the demos and most tests and must agree with the service
   (the search order compare-and-set is the whole list, readers too). Pasted keys travel once in
   the command's `secrets`, never in attributes, rows, undo, logs or exports (`c74_secret_canary_test`).
-  `swarmcode config` (`Release.ConfigCommand`) uses the same service headless; while a session
+  `ncode config` (`Release.ConfigCommand`) uses the same service headless; while a session
   holds the data lease, database settings exit 3 and `cli.json` settings still work.
   `c74_client_e2e_test.exs` opens every section through the real socket, backend and handlers
   (`C74_E2E_OUT=<dir>` writes each page's rows and screen text).
