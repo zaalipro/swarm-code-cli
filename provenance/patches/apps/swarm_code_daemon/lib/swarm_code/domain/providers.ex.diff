@@ -12,7 +12,7 @@
 -        create(%{
 -          name: "llmotions",
 -          kind: "openai_compatible",
--          base_url: "https://cli.llmotions.com/v1",
+-          base_url: "https://api.example.com/v1",
 -          # Spec 13 §11 A-13: no key in the source tree — the environment is the
 -          # only place one comes from, and Settings → Providers is where the
 -          # user puts it otherwise.

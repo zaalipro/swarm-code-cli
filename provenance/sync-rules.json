@@ -41,6 +41,11 @@
       "id": "phoenix-html-shim",
       "pattern": "\\bPhoenix\\.HTML\\.",
       "replacement": "SwarmCode.Domain.HTML."
+    },
+    {
+      "id": "gateway-host",
+      "pattern": "https://[a-z0-9-]+\\.llmotions\\.com/v1",
+      "replacement": "https://api.example.com/v1"
     }
   ],
   "mappings": [
@@ -50,7 +55,9 @@
       "classification": "source",
       "rewrite": true,
       "format": true,
-      "include": ["**/*.ex"]
+      "include": [
+        "**/*.ex"
+      ]
     },
     {
       "upstream": "priv/repo/migrations/",
@@ -58,7 +65,9 @@
       "classification": "source",
       "rewrite": true,
       "format": false,
-      "include": ["*.exs"]
+      "include": [
+        "*.exs"
+      ]
     },
     {
       "upstream": "priv/agents/",
@@ -66,7 +75,9 @@
       "classification": "source",
       "rewrite": false,
       "format": false,
-      "include": ["*.md"]
+      "include": [
+        "*.md"
+      ]
     },
     {
       "upstream": "priv/workflows/",
@@ -74,7 +85,9 @@
       "classification": "source",
       "rewrite": false,
       "format": false,
-      "include": ["*.exs"]
+      "include": [
+        "*.exs"
+      ]
     },
     {
       "upstream": "priv/skills/",
@@ -82,7 +95,9 @@
       "classification": "spec",
       "rewrite": false,
       "format": false,
-      "include": ["**/*"]
+      "include": [
+        "**/*"
+      ]
     },
     {
       "upstream": "priv/",
@@ -90,7 +105,9 @@
       "classification": "spec",
       "rewrite": false,
       "format": false,
-      "files": ["spec_master.md"]
+      "files": [
+        "spec_master.md"
+      ]
     },
     {
       "upstream": "test/swarm_code/",

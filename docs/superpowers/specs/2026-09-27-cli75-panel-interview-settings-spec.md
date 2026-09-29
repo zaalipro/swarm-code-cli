@@ -2828,15 +2828,15 @@ The thirteen frames of `/Users/zaali/.cache/c74/design/E.html` follow, one `«cl
 125:     «tm:Models & effort»   «tf:•»«tm:14»     «tf:╭─» «tm:connection»                                                                         «tf:╭» «tp b:API key · llmotions» «tm:· global»
 126:   «hov:  »«tp b hov:Providers»«hov:           »«tf hov:2»«hov: »    «tm:│»  «tp:Name                          llmotions»                                 «tm:global»     «tf:│ provider.api_key · secret»
 127:     «tm:Pricing»            «wa:!1»     «tm:│»  «tp:Kind                          OpenAI-compatible»                         «tm:global»     «tf:│»
-128:                               «tm:│»  «tp:Base URL                      https://cli.llmotions.com/v1»              «tm:global»     «tf:│» «tm:The key SwarmCode sends to»
-129:    «tf:tools»                      «ac sel:▌»«sel:  »«tp b sel:API key»«sel:                       »«tm sel:●●●●●●●●»«tp sel: set»«tf sel: · »«tm sel:ends »«tp sel:9f3a»«sel:                  »«tm sel:global»«sel: » «tf:───┤» «tm:cli.llmotions.com with each request of»
+128:                               «tm:│»  «tp:Base URL                      https://api.example.com/v1»              «tm:global»     «tf:│» «tm:The key SwarmCode sends to»
+129:    «tf:tools»                      «ac sel:▌»«sel:  »«tp b sel:API key»«sel:                       »«tm sel:●●●●●●●●»«tp sel: set»«tf sel: · »«tm sel:ends »«tp sel:9f3a»«sel:                  »«tm sel:global»«sel: » «tf:───┤» «tm:api.example.com with each request of»
 130:     «tm:Search & web»              «ac sel:▌»«sel:                                  »«tm sel:stored in SwarmCode's database»«sel:                 »    «tf:│» «tm:this provider. It is never shown again,»
 131:     «tm:Deep research»      «tf:•»«tm:1»     «tf:╰»«tm:▸» «tp:Test connection»              «c-ok: ✓ listed 142 models in 412 ms » «tf:· 18:42               │» «tm:never written to a log, never in search»
 132:     «tm:MCP servers»         «tf:1                                                                                           │» «tm:results and never kept for undo.»
 133:     «tm:Language servers»          «tf:╭─» «tm:models»                                                                             «tf:│»
 134:                               «tm:│»  «tp:Default model                 deepseek-v4-pro»                           «tm:global»     «tf:│ state»    «tp:set» «tf:·» «tm:ends» «tp:9f3a»
 135:    «tf:agents»                     «tm:│»  «tp:Models                        142» «tf:·» «tm:fetched this session 18:40»                     «tf:│ stored»   «tm:in SwarmCode's database»
-136:     «tm:Agents & limits»    «tf:•»«tm:3     │                                  deepseek-v4-pro  deepseek-v4.1-flash  kimi-k3»      «tf:│ sent to»  «tp:cli.llmotions.com» «tm:only»
+136:     «tm:Agents & limits»    «tf:•»«tm:3     │                                  deepseek-v4-pro  deepseek-v4.1-flash  kimi-k3»      «tf:│ sent to»  «tp:api.example.com» «tm:only»
 137:     «tm:Approvals & trust»  «tf:•»«tm:4     │                                  gpt-5.5»  «tf:+138 more                                 │ shared»   «tm:with the desktop app»
 138:     «tm:Project file»              «tf:│»«tp:◐ Fetch models»                  «tm:fetching the model list» «tf:·» «tp:3 s»             «in b:c» «tf:stop     │»
 139:     «tm:Memory & instructions»     «tf:╰»«tm:→ Effort levels                 built-in levels»                                      «tf:│» «tm:where it comes from» «tf:· strongest first»
@@ -2877,7 +2877,7 @@ The thirteen frames of `/Users/zaali/.cache/c74/design/E.html` follow, one `«cl
 174:     «tf:Models & effort   •14     ╭─ connection»
 175:   «hov:  »«tf b hov:Providers»«hov:           »«tf hov:2»«hov: »    «tf:│  Name                          llmotions                                 global»
 176:     «tf:Pricing            !1     │  Kind                          OpenAI-compatible                         global»
-177:                               «tf:│  Base URL                      https://cli.llmotions.com/v1              global»
+177:                               «tf:│  Base URL                      https://api.example.com/v1              global»
 178:    «tf:tools                      │  API key                       ●●●●●●●● set · ends 9f3a                  global»
 179:     «tf:Search & web              │                                  stored in SwarmCode's database»
 180:     «tf:Deep research      •1     ╰▸ Test connection               ✓ listed 142 models in 412 ms  · 18:42»
