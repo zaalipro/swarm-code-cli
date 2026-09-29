@@ -73,3 +73,17 @@ manifest `apps/swarm_code_daemon/priv/schema/desktop-ccb1973.json` and its
 contract entry, and the 53 migration files that manifest records are
 byte-identical at `6dd8d82ef29f9a6608b942259e1801846bb87ed9`, so the manifest
 describes code this addendum covers.
+
+## Addendum: desktop commit ccb19732 (owner authorization, 2026-09-29)
+
+**Authorization date:** 2026-09-29
+
+The owner authorized the use, as part of this open-source project, of desktop
+commit `ccb19732c7225a6bc88556f8f743bab7bda41a5b` exactly as the addendum above
+describes it: as the source of the schema manifest
+`apps/swarm_code_daemon/priv/schema/desktop-ccb1973.json` and its contract
+entry, and as one of the four adaptation pins the verifier admits for version 2
+records. No entry in `provenance/extracted-files.json` cites it, and the sync
+pin stays `6dd8d82ef29f9a6608b942259e1801846bb87ed9`. The recorded copyright,
+MIT license and NOTICE terms remain in place. This addendum does not publish or
+modify the desktop repository.
