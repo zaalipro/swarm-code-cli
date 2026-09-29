@@ -52,7 +52,7 @@
     {
       "classification": "source",
       "destination": "apps/swarm_code_daemon/lib/swarm_code/llm/openai.ex",
-      "sha256": "ed17e16c9ccbc7654b90874bfb045680b671395cbcb0983f780b7ec89b952549",
+      "sha256": "d276b85583a9de7d8df0c615cff3004da13bfa73ff56cbfc3c989dc09f37efa5",
       "upstream_commit": "fb1b4ff82354ac8ff2e82d4f6516121fd55ff212",
       "upstream_path": "lib/swarm_code/llm/openai.ex",
       "upstream_sha256": "89166d5f0e44395faeeeda58d2975bd6cfc075e1682401970785415ea5ab771a"
@@ -564,7 +564,7 @@
     {
       "classification": "source",
       "destination": "apps/swarm_code_daemon/lib/swarm_code/domain/llm/openai.ex",
-      "sha256": "3a8f7fd9603f9af616df786c2fb2490cf3abae141b14bbc890aac706feaf990c",
+      "sha256": "f961c4146a00cd32a57c71950d4d993b894011f0e927ffc54fc9302512d3048c",
       "upstream_commit": "6dd8d82ef29f9a6608b942259e1801846bb87ed9",
       "upstream_path": "lib/swarm_code/llm/openai.ex",
       "upstream_sha256": "318d46040f9d77386ea0b4e073f56f77c1a751a83b68bc131511fc8100b5e982"
@@ -700,7 +700,7 @@
     {
       "classification": "source",
       "destination": "apps/swarm_code_daemon/lib/swarm_code/domain/providers.ex",
-      "sha256": "747964260b1a98bd66d21225e9ace6c754659ef697c4ce19a0af5f31d16764f8",
+      "sha256": "1cd339eb27cf5cb41d32a91a367c9fb2751937a7c809c110544a2313886824c1",
       "upstream_commit": "6dd8d82ef29f9a6608b942259e1801846bb87ed9",
       "upstream_path": "lib/swarm_code/providers.ex",
       "upstream_sha256": "a89d907f976063d52ea75367d0c370c0b34d518f454c5043dae8d59357154ba6"
@@ -1068,7 +1068,7 @@
     {
       "classification": "source",
       "destination": "apps/swarm_code_daemon/lib/swarm_code/domain/tools/run_command.ex",
-      "sha256": "4630261412724ea7af46e03c5cb8f0ac43f6fa5d77dd7cf2857612edb6035c0d",
+      "sha256": "8dce14c427ff984f8cc8e17e0f50e58c30c4839db1149dde26af6f57a2770d86",
       "upstream_commit": "6dd8d82ef29f9a6608b942259e1801846bb87ed9",
       "upstream_path": "lib/swarm_code/tools/run_command.ex",
       "upstream_sha256": "ea6d417838742d55bee632755afb0ad5554823e9f18b101a016383a9261841d9"

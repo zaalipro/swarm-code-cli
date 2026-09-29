@@ -121,31 +121,9 @@ defmodule SwarmCode.Domain.Providers do
 
   def subscribe, do: SwarmCode.Domain.PubSub.subscribe(SwarmCode.Domain.PubSub, "providers")
 
-  def seed_defaults do
-    if list() == [] do
-      {:ok, p} =
-        create(%{
-          name: "llmotions",
-          kind: "openai_compatible",
-          base_url: "https://cli.llmotions.com/v1",
-          # Spec 13 §11 A-13: no key in the source tree — the environment is the
-          # only place one comes from, and Settings → Providers is where the
-          # user puts it otherwise.
-          api_key: System.get_env("LLMOTIONS_API_KEY") || "",
-          models: ["gemini-3.7-flash-high"],
-          default_model: "gemini-3.7-flash-high"
-        })
-
-      Settings.update(%{
-        default_chat_provider_id: p.id,
-        default_chat_model: "gemini-3.7-flash-high",
-        default_swarm_provider_id: p.id,
-        default_swarm_model: "gemini-3.7-flash-high"
-      })
-    end
-
-    :ok
-  end
+  # ncode ships with no provider; the first-run flow asks the user to add one
+  # (BYOK). Existing rows are never touched.
+  def seed_defaults, do: :ok
 
   def fetch_models(%Provider{} = provider) do
     case LLM.list_models(provider) do

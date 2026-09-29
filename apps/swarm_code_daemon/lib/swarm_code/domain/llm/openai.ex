@@ -1,6 +1,6 @@
 defmodule SwarmCode.Domain.LLM.OpenAI do
   @moduledoc """
-  Client for every OpenAI-compatible `/chat/completions` server (llmotions included):
+  Client for every OpenAI-compatible `/chat/completions` server (OpenRouter, DeepSeek, vLLM, LM Studio …):
   streaming text deltas, tool calls assembled by `index`, usage capture, model listing.
   """
   @behaviour SwarmCode.Domain.LLM.Provider
@@ -408,7 +408,7 @@ defmodule SwarmCode.Domain.LLM.OpenAI do
   defp apply_content(acc, _content, _on_event), do: acc
 
   # Reasoning/thinking text. OpenAI-compatible servers use `delta.reasoning_content`
-  # (DeepSeek, vLLM, llmotions); some use plain `delta.reasoning`.
+  # (DeepSeek, vLLM); some use plain `delta.reasoning`.
   defp apply_reasoning(acc, text, on_event) when is_binary(text) and text != "" do
     on_event.({:reasoning_delta, text})
     %{acc | reasoning: Chunks.append(acc.reasoning, text)}

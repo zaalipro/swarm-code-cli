@@ -49,3 +49,12 @@
        command <>
        "\n" <>
        ~s(__sc_rc=$?; jobs -p > ") <>
+@@ -535,7 +557,7 @@
+                   RELEASE_VM_ARGS RELEASE_REMOTE_VM_ARGS)
+ 
+   # spec 66 T6: Erlang's `{env, …}` *extends* the BEAM's environment, so every
+-  # key the app was launched with — `ANTHROPIC_API_KEY`, `LLMOTIONS_API_KEY` —
++  # key the app was launched with — `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` —
+   # was visible to `env` in every command the model ran. `{name, false}` removes
+   # one. `GITHUB_TOKEN`/`GH_TOKEN` are kept by default so `gh` keeps working.
+   @secret_name ~r/(API_?KEY|_KEY$|SECRET|TOKEN|PASSWORD|PASSWD|CREDENTIAL|_PAT$)/i
