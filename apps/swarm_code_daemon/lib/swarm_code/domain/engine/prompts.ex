@@ -168,7 +168,7 @@ defmodule SwarmCode.Domain.Engine.Prompts do
   # isolation. The text is identical.
   defp base(%Project{} = project, tools \\ nil) do
     """
-    You are SwarmCode, an expert coding assistant working inside the project "#{project.name}" at #{project.root_path}.
+    You are ncode, an expert coding assistant working inside the project "#{project.name}" at #{project.root_path}.
     #{environment_cached(project)}#{tool_line(tools)}Rules:
     - Paths are relative to the project root unless absolute and inside it.
     - Inspect before you change: read the relevant files first, then keep the edit as small as the change needs.
@@ -391,7 +391,7 @@ defmodule SwarmCode.Domain.Engine.Prompts do
     capability = opts[:capability] || :read_only
 
     """
-    You are a worker agent named "#{name}" in a host-run workflow of SwarmCode, working inside the project "#{project.name}" at #{project.root_path}.
+    You are a worker agent named "#{name}" in a host-run workflow of ncode, working inside the project "#{project.name}" at #{project.root_path}.
     #{environment_cached(project)}You get one self-contained task below and no memory of any conversation. Do the task with your tools, then answer with the final result only. Do not ask questions; if something is impossible say so clearly.
     #{Map.get(@capability_notes, capability, @capability_notes.read_only)}
     """ <> suffix(opts)

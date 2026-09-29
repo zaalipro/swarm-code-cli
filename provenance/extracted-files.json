@@ -444,7 +444,7 @@
     {
       "classification": "source",
       "destination": "apps/swarm_code_daemon/lib/swarm_code/domain/engine/project_context.ex",
-      "sha256": "f49577c19514e3ad0e5e99628fe73466466faf6a4beab9c4d6750fdcf1cc11a5",
+      "sha256": "dba4ec86f057a42af34f8a72450b0ebb9601f4d208a31fe9420b80899bc27bb4",
       "upstream_commit": "6dd8d82ef29f9a6608b942259e1801846bb87ed9",
       "upstream_path": "lib/swarm_code/engine/project_context.ex",
       "upstream_sha256": "150d7987f1bd18f86a37e2c8249957465d9c01c2ef44c0732e42b24adeda84d0"
@@ -452,7 +452,7 @@
     {
       "classification": "source",
       "destination": "apps/swarm_code_daemon/lib/swarm_code/domain/engine/prompts.ex",
-      "sha256": "90b9d6eac75f30aef6f02592852073eafb9f6283fb0a565a1b00c0b1785b6c05",
+      "sha256": "20d58d5cbbc1f3d92357569f6821d6911a59f42a82731650ee3c2ccd128578ec",
       "upstream_commit": "6dd8d82ef29f9a6608b942259e1801846bb87ed9",
       "upstream_path": "lib/swarm_code/engine/prompts.ex",
       "upstream_sha256": "ef4dcd4e6b15c0653f87b2e6411bad6b54b87ef6c9fb67494a3f13961fa100b1"
@@ -1668,7 +1668,7 @@
     {
       "classification": "test",
       "destination": "apps/swarm_code_daemon/test/swarm_code/domain/engine/prompts_test.exs",
-      "sha256": "b5cf5418392edd95c37bcd40f29dbb5988fbbc9f3687e53604072fede61dc8d4",
+      "sha256": "04916ce714fbf4c3980dc5707717d56ee53c2dd3395552619b5d010a7cf87736",
       "upstream_commit": "6dd8d82ef29f9a6608b942259e1801846bb87ed9",
       "upstream_path": "test/swarm_code/engine/prompts_test.exs",
       "upstream_sha256": "fc418beda000cc7dfd54929315e3d7578031c47f029c61848dcaebd8598394d6"
@@ -1892,7 +1892,7 @@
     {
       "classification": "source",
       "destination": "apps/swarm_code_daemon/lib/swarm_code/domain/hooks.ex",
-      "sha256": "211e12a59e2d315e49bbb6df3bd133c4ceed21b5684121f80947aadee44fb963",
+      "sha256": "fecf1f539375717a892cdf3e04a927e179c897aabad95a55c85410bf657e9ddf",
       "upstream_commit": "6dd8d82ef29f9a6608b942259e1801846bb87ed9",
       "upstream_path": "lib/swarm_code/hooks.ex",
       "upstream_sha256": "c0f5033f4b5424f011a43ba016588f236d143282cc7be11940460081ca7e13dc"
@@ -2156,7 +2156,7 @@
     {
       "classification": "test",
       "destination": "apps/swarm_code_daemon/test/swarm_code/domain/engine/project_context_test.exs",
-      "sha256": "020c7012a11edf731c1ad971f4e8dbdb0912973528035e2cd4d4a2bddbf1ce31",
+      "sha256": "e1d023b030aa4385d958ff68b4c1eed58497cbe90fc5ce7c23bbe28da27184ae",
       "upstream_commit": "6dd8d82ef29f9a6608b942259e1801846bb87ed9",
       "upstream_path": "test/swarm_code/engine/project_context_test.exs",
       "upstream_sha256": "58e5e4f85ab5d2c7f72bad7681adf342b0463345e18f90a98f0d444e21c56af2"

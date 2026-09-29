@@ -2,7 +2,18 @@
 # rules of provenance/sync-rules.json. Recorded by mix swarm_code.provenance.sync.
 --- a/apps/swarm_code_daemon/lib/swarm_code/domain/hooks.ex
 +++ b/apps/swarm_code_daemon/lib/swarm_code/domain/hooks.ex
-@@ -238,7 +238,7 @@
+@@ -152,6 +152,10 @@
+           _none -> []
+         end
+ 
++    # ncode: every SWARMCODE_* name also goes out as its NCODE_* twin with the
++    # same value; the SWARMCODE_* names stay for existing hooks.
++    env = env ++ Enum.map(env, fn {"SWARMCODE_" <> rest, v} -> {"NCODE_" <> rest, v} end)
++
+     results =
+       Enum.reduce_while(hooks, [], fn hook, acc ->
+         case run_one(hook, root, env) do
+@@ -238,7 +242,7 @@
              :binary,
              :exit_status,
              :stderr_to_stdout,

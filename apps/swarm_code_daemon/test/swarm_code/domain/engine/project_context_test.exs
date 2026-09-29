@@ -36,6 +36,18 @@ defmodule SwarmCode.Domain.Engine.ProjectContextTest do
     assert ProjectContext.instructions(project) == "agents text"
   end
 
+  test "reads NCODE.md when AGENTS.md is absent", %{project: project, dir: dir} do
+    File.write!(Path.join(dir, "CLAUDE.md"), "claude text")
+    File.write!(Path.join(dir, "NCODE.md"), "ncode text")
+    assert ProjectContext.instructions(project) == "ncode text"
+  end
+
+  test "AGENTS.md wins over NCODE.md", %{project: project, dir: dir} do
+    File.write!(Path.join(dir, "NCODE.md"), "ncode text")
+    File.write!(Path.join(dir, "AGENTS.md"), "agents text")
+    assert ProjectContext.instructions(project) == "agents text"
+  end
+
   test "instructions are head-capped", %{project: project, dir: dir} do
     File.write!(Path.join(dir, "AGENTS.md"), String.duplicate("a", 40_000) <> "TAIL")
     text = ProjectContext.instructions(project)

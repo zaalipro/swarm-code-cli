@@ -152,6 +152,10 @@ defmodule SwarmCode.Domain.Hooks do
           _none -> []
         end
 
+    # ncode: every SWARMCODE_* name also goes out as its NCODE_* twin with the
+    # same value; the SWARMCODE_* names stay for existing hooks.
+    env = env ++ Enum.map(env, fn {"SWARMCODE_" <> rest, v} -> {"NCODE_" <> rest, v} end)
+
     results =
       Enum.reduce_while(hooks, [], fn hook, acc ->
         case run_one(hook, root, env) do

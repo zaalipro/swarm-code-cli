@@ -308,6 +308,18 @@ defmodule SwarmCode.Daemon.Service.Settings.C74ProjectConfigTest do
       assert [%{"name" => "fast"}] = ProjectConfig.profiles(c.ailogic)
     end
 
+    test "ncode: a hook sees the NCODE_* twins of the SWARMCODE_* names", c do
+      File.write!(
+        config_path(c.ailogic),
+        ~s({"hooks": {"session_start": [{"command": "echo \\"$NCODE_EVENT|$SWARMCODE_EVENT|$NCODE_PROJECT\\""}]}})
+      )
+
+      assert {:inject, text} =
+               Hooks.run(:session_start, %{project: c.ailogic}, c.ailogic.root_path)
+
+      assert text =~ "session_start|session_start|#{c.ailogic.root_path}"
+    end
+
     test "move_hook twice within one second: the engine reads the new order", c do
       File.write!(
         config_path(c.ailogic),

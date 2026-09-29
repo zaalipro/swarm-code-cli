@@ -9,7 +9,7 @@ defmodule SwarmCode.Domain.Engine.PromptsTest do
 
   test "assistant/1" do
     text = Prompts.assistant(@project)
-    assert String.starts_with?(text, "You are SwarmCode")
+    assert String.starts_with?(text, "You are ncode")
     assert text =~ "swarm-code"
     assert text =~ "/tmp/swarm-code"
   end

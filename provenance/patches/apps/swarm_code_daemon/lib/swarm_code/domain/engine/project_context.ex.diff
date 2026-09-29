@@ -1,0 +1,26 @@
+# CLI-local change to lib/swarm_code/engine/project_context.ex at 6dd8d82, after the rewrite
+# rules of provenance/sync-rules.json. Recorded by mix swarm_code.provenance.sync.
+--- a/apps/swarm_code_daemon/lib/swarm_code/domain/engine/project_context.ex
++++ b/apps/swarm_code_daemon/lib/swarm_code/domain/engine/project_context.ex
+@@ -14,10 +14,10 @@
+   # of a project are now every directory's first hit, root first, not the root's
+   # alone — in a monorepo the package conventions the agent is about to violate
+   # used to be invisible.
+-  @instruction_files ~w(AGENTS.override.md AGENTS.md SWARMCODE.md CLAUDE.md)
++  @instruction_files ~w(AGENTS.override.md AGENTS.md NCODE.md SWARMCODE.md CLAUDE.md)
+   # The file the editor writes. `AGENTS.override.md` is deliberately not here:
+   # an override is written by hand, and the editor still edits the normal file.
+-  @editable_files ~w(AGENTS.md SWARMCODE.md CLAUDE.md)
++  @editable_files ~w(AGENTS.md NCODE.md SWARMCODE.md CLAUDE.md)
+   @instructions_cap 32_000
+   # How far below the root a package's own file is still loaded, and how many
+   # files in total (Codex: root→cwd; SwarmCode has no cwd, so it is a depth).
+@@ -65,7 +65,7 @@
+   end
+ 
+   @doc """
+-  The instructions file to edit: the first of AGENTS.md / SWARMCODE.md / CLAUDE.md
++  The instructions file to edit: the first of AGENTS.md / NCODE.md / SWARMCODE.md / CLAUDE.md
+   that exists, else `<root>/AGENTS.md` (created on save).
+   """
+   @spec instructions_path(map()) :: String.t()
