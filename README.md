@@ -55,7 +55,7 @@ scripts/dev/run_saved_session.sh
 
 You may keep the same exports in `~/.secrets`; the launcher preserves values
 already exported in the calling shell, and loads only the `SWARM_*`, `NCODE_*`,
-`OPENAI_*`, `ANTHROPIC_*` and `LLMOTIONS_*` families from the file (never its
+`OPENAI_*` and `ANTHROPIC_*` families from the file (never its
 other secrets); inside the file an `NCODE_*` name wins over its `SWARM_*` twin.
 The saved, live, and plain development launchers share this behavior. Set
 `SWARM_ENV_FILE=/path/to/provider.env` to use another shell environment file.

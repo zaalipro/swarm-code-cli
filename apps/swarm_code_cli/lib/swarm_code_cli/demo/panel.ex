@@ -90,7 +90,7 @@ defmodule SwarmCodeCLI.Demo.Panel do
       mode: :build,
       chat_model: @model,
       swarm_model: @model,
-      chat_provider: "llmotions",
+      chat_provider: "openrouter",
       approval_mode: mode,
       trusted: mode != :read_only,
       context_used: Keyword.get(extra, :context_used, 26_000),
@@ -98,7 +98,7 @@ defmodule SwarmCodeCLI.Demo.Panel do
       cost_usd: runs |> Enum.map(&(&1.cost_usd || 0)) |> Enum.sum(),
       allowed_actions: [:send, :queue, :mark_seen],
       runs: runs,
-      models: [%DTO.ModelOption{provider_id: "p1", provider: "llmotions", model: @model}]
+      models: [%DTO.ModelOption{provider_id: "p1", provider: "openrouter", model: @model}]
     }
   end
 

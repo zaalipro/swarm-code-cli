@@ -3,8 +3,8 @@
 # Never print or persist private settings.
 #
 # pass70 B4 (rel F5): only provider variables leave the environment file. The
-# file is evaluated in a clean child shell and just SWARM_*, NCODE_*, OPENAI_*,
-# ANTHROPIC_* and LLMOTIONS_* come back, so a GitHub, npm or Linear token in
+# file is evaluated in a clean child shell and just SWARM_*, NCODE_*, OPENAI_*
+# and ANTHROPIC_* come back, so a GitHub, npm or Linear token in
 # ~/.secrets never reaches the BEAM, and therefore never a model-run shell
 # command. SWARM_MODEL_OVERRIDE is set only by `ncode --model` and is never
 # loaded (nor is NCODE_MODEL_OVERRIDE).
@@ -47,7 +47,7 @@ swarm_load_provider_env() {
   while IFS= read -r -d '' swarm_env_name && IFS= read -r -d '' swarm_env_value; do
     case "$swarm_env_name" in
       SWARM_MODEL_OVERRIDE | NCODE_MODEL_OVERRIDE) continue ;;
-      SWARM_* | NCODE_* | OPENAI_* | ANTHROPIC_* | LLMOTIONS_*) ;;
+      SWARM_* | NCODE_* | OPENAI_* | ANTHROPIC_*) ;;
       *) continue ;;
     esac
     [[ $swarm_env_name =~ ^[A-Z_][A-Z0-9_]*$ ]] || continue
@@ -67,7 +67,7 @@ swarm_load_provider_env() {
       done
       for name in $(compgen -e); do
         case "$name" in
-          SWARM_*|NCODE_*|OPENAI_*|ANTHROPIC_*|LLMOTIONS_*) printf "%s\0%s\0" "$name" "${!name}" ;;
+          SWARM_*|NCODE_*|OPENAI_*|ANTHROPIC_*) printf "%s\0%s\0" "$name" "${!name}" ;;
         esac
       done
     ' swarm-env "$swarm_env_path" "$swarm_ncode_pairs"

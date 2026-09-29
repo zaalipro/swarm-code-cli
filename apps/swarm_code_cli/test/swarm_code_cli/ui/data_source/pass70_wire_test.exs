@@ -270,7 +270,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Pass70WireTest do
             "stop_reason" => "turn_budget",
             "error_kind" => nil,
             "stop_label" => "turn limit",
-            "provider_name" => "llmotions",
+            "provider_name" => "openrouter",
             "retry_at" => nil
           })
         ])
@@ -286,7 +286,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Pass70WireTest do
         |> Map.merge(%{
           "approval_mode" => "auto",
           "trusted" => false,
-          "chat_provider" => "llmotions",
+          "chat_provider" => "openrouter",
           "context_used" => 18_000,
           "context_window" => 131_072,
           "cost_usd" => 0.21,
@@ -310,7 +310,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Pass70WireTest do
                {:auto, false, "Fix the login flow"}
 
       assert {page.context_used, page.context_window, page.chat_provider} ==
-               {18_000, 131_072, "llmotions"}
+               {18_000, 131_072, "openrouter"}
 
       assert [%DTO.BackgroundCommand{state: :running, pid: 4242}] = page.background
 
@@ -366,7 +366,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Pass70WireTest do
     test "a shell snapshot carries rate limits and the shell watch takes toast and rate deltas" do
       limit = %{
         "provider_id" => @provider,
-        "provider" => "llmotions",
+        "provider" => "openrouter",
         "scope" => "requests",
         "used_percent" => 62,
         "resets_at" => 1_788_436_842_000,

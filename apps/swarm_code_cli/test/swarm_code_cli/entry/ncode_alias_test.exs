@@ -34,7 +34,7 @@ defmodule SwarmCodeCLI.Release.NcodeAliasTest do
     {"NCODE_SHELL", "SWARM_CODE_SHELL"}
   ]
 
-  @extra ~w(LLMOTIONS_API_KEY GITHUB_TOKEN SWARM_MODEL_OVERRIDE NCODE_MODEL_OVERRIDE
+  @extra ~w(GITHUB_TOKEN SWARM_MODEL_OVERRIDE NCODE_MODEL_OVERRIDE
             OPENAI_API_KEY ANTHROPIC_API_KEY SWARM_RELEASE_TUI)
 
   @printed Enum.flat_map(@aliases, fn {ncode, swarm} -> [ncode, swarm] end) ++ @extra
@@ -181,12 +181,12 @@ defmodule SwarmCodeCLI.Release.NcodeAliasTest do
       %{env_file: Path.join(context.base, "secrets.env")}
     end
 
-    test "passes LLMOTIONS_API_KEY and NCODE_MODEL; never other tokens or a model override",
+    test "passes ANTHROPIC_API_KEY and NCODE_MODEL; never other tokens or a model override",
          context do
       File.write!(context.env_file, """
       export NCODE_MODEL=file-ncode-model
       export SWARM_MODEL=file-swarm-model
-      export LLMOTIONS_API_KEY=llm-test-key
+      export ANTHROPIC_API_KEY=anthropic-test-key
       export GITHUB_TOKEN=gh-test-token
       export NCODE_MODEL_OVERRIDE=never
       export SWARM_MODEL_OVERRIDE=never
@@ -196,7 +196,7 @@ defmodule SwarmCodeCLI.Release.NcodeAliasTest do
                run(context, "ncode", ["-p", "hi"], [{"NCODE_ENV_FILE", context.env_file}])
 
       log = stub(context)
-      assert log["LLMOTIONS_API_KEY"] == "llm-test-key"
+      assert log["ANTHROPIC_API_KEY"] == "anthropic-test-key"
       assert log["NCODE_MODEL"] == "file-ncode-model"
       # Inside the file the NCODE_ name wins too.
       assert log["SWARM_MODEL"] == "file-ncode-model"

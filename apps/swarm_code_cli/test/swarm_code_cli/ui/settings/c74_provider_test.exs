@@ -14,7 +14,7 @@ defmodule SwarmCodeCLI.UI.Settings.C74ProviderTest do
   alias SwarmCodeCLI.UI.DataSource.{Delivery, DTO}
   alias SwarmCodeCLI.UI.Settings.{ChatProvider, Layer}
 
-  @words "No model provider can answer: llmotions has no key · F2 opens Settings › Providers"
+  @words "No model provider can answer: openrouter has no key · F2 opens Settings › Providers"
 
   defp with_provider(state, provider) do
     workspace = Map.fetch!(state.read_model.snapshots, :workspace)
@@ -25,7 +25,7 @@ defmodule SwarmCodeCLI.UI.Settings.C74ProviderTest do
     %{state | read_model: %{state.read_model | snapshots: snapshots}}
   end
 
-  defp keyless, do: with_provider(ready(), %{name: "llmotions", usable: false})
+  defp keyless, do: with_provider(ready(), %{name: "openrouter", usable: false})
 
   defp enter(state) do
     {:ok, action} = Keymap.draft_send(state)
@@ -49,7 +49,7 @@ defmodule SwarmCodeCLI.UI.Settings.C74ProviderTest do
     assert requests(effects) == []
     assert text(state) == "hello there"
     assert state.notice == {:command_feedback, @words}
-    assert status_text(state) =~ "No model provider can answer: llmotions has no key"
+    assert status_text(state) =~ "No model provider can answer: openrouter has no key"
   end
 
   test "S1's shape: chat_provider_usable false beside the provider's name" do
@@ -119,12 +119,12 @@ defmodule SwarmCodeCLI.UI.Settings.C74ProviderTest do
   test "the header chip shows while the provider cannot answer, and goes when it can" do
     assert status_text(keyless()) =~ "no model provider · Providers"
 
-    usable = with_provider(ready(), %{name: "llmotions", usable: true})
+    usable = with_provider(ready(), %{name: "openrouter", usable: true})
     refute status_text(usable) =~ "no model provider"
   end
 
   test "an older service that names the provider alone is never refused by the client" do
-    state = ready() |> with_provider("llmotions") |> type("hello")
+    state = ready() |> with_provider("openrouter") |> type("hello")
     assert ChatProvider.missing(state) == nil
     {_state, effects} = enter(state)
     assert [%{kind: {:dispatch, :send, "hello", _, _}}] = requests(effects)

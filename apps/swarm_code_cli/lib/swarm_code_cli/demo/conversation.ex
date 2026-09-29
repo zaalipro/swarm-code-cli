@@ -102,7 +102,7 @@ defmodule SwarmCodeCLI.Demo.Conversation do
       mode: :build,
       chat_model: @model,
       swarm_model: @model,
-      chat_provider: "llmotions",
+      chat_provider: "openrouter",
       approval_mode: :auto,
       trusted: true,
       context_used: 19_400,
@@ -111,8 +111,8 @@ defmodule SwarmCodeCLI.Demo.Conversation do
       allowed_actions: [:send, :queue, :mark_seen],
       runs: runs,
       models: [
-        %DTO.ModelOption{provider_id: "p1", provider: "llmotions", model: @model},
-        %DTO.ModelOption{provider_id: "p1", provider: "llmotions", model: "deepseek-v4-pro"},
+        %DTO.ModelOption{provider_id: "p1", provider: "openrouter", model: @model},
+        %DTO.ModelOption{provider_id: "p1", provider: "openrouter", model: "deepseek-v4-pro"},
         %DTO.ModelOption{provider_id: "p2", provider: "anthropic", model: "claude-opus-5"}
       ]
     }
@@ -143,7 +143,7 @@ defmodule SwarmCodeCLI.Demo.Conversation do
       rate_limits: [
         %DTO.RateLimit{
           provider_id: "p1",
-          provider: "llmotions",
+          provider: "openrouter",
           scope: "requests",
           used_percent: 100.0,
           retry_at: @clock + 42_000
@@ -524,7 +524,7 @@ defmodule SwarmCodeCLI.Demo.Conversation do
         error: "429 Too Many Requests",
         error_kind: "rate_limit",
         stop_label: "rate limit",
-        provider_name: "llmotions",
+        provider_name: "openrouter",
         retry_at: @clock + 42_000,
         tokens_in: 900,
         tokens_out: 0

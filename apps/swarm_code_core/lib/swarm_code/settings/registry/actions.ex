@@ -40,14 +40,6 @@ defmodule SwarmCode.Settings.Registry.Actions do
         key: true
       },
       %{
-        id: "llmotions",
-        name: "llmotions",
-        kind: "openai_compatible",
-        base_url: "https://cli.llmotions.com/v1",
-        effort_preset: nil,
-        key: true
-      },
-      %{
         id: "ollama",
         name: "Ollama",
         kind: "openai_compatible",
@@ -77,7 +69,7 @@ defmodule SwarmCode.Settings.Registry.Actions do
   @entries [
     action("providers.add", :providers, "Add a provider", "provider.create",
       description:
-        "A draft from a preset: Anthropic, OpenAI, OpenRouter, DeepSeek, llmotions, Ollama, LM Studio or Other. Ctrl-S creates it and runs the test.",
+        "A draft from a preset: Anthropic, OpenAI, OpenRouter, DeepSeek, Ollama, LM Studio or Other. Ctrl-S creates it and runs the test.",
       synonyms: ["add provider", "new provider"],
       parity: "D§4c, D§4d"
     ),

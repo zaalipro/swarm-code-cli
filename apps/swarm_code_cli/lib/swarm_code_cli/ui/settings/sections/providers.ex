@@ -57,14 +57,6 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Providers do
       key?: true
     },
     %{
-      id: "llmotions",
-      name: "llmotions",
-      kind: "openai_compatible",
-      base_url: "https://cli.llmotions.com/v1",
-      effort_preset: nil,
-      key?: true
-    },
-    %{
       id: "ollama",
       name: "Ollama",
       kind: "openai_compatible",
@@ -149,7 +141,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Providers do
           [
             R.info(
               "empty",
-              "No provider yet. a adds one from a preset: Anthropic, OpenAI, OpenRouter, DeepSeek, llmotions, Ollama, LM Studio."
+              "No provider yet. a adds one from a preset: Anthropic, OpenAI, OpenRouter, DeepSeek, Ollama, LM Studio."
             )
           ]
 

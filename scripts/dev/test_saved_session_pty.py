@@ -17,11 +17,7 @@ from test_terminal_demo_pty import Demo, ROOT
 
 OVERRIDES = ('SWARM_PROVIDER SWARM_MODEL SWARM_BASE_URL OPENAI_MODEL ANTHROPIC_MODEL '
              'OPENAI_BASE_URL ANTHROPIC_BASE_URL OPENAI_API_KEY ANTHROPIC_API_KEY SWARM_API_KEY '
-             'SWARM_CONVERSATION SWARM_PERSISTED SWARM_MODEL_OVERRIDE SWARM_ENV_FILE '
-             # The desktop's seeded provider reads its key from the
-             # environment; a real key would make it usable and send the
-             # fixture prompt to a real model instead of this test's server.
-             'LLMOTIONS_API_KEY')
+             'SWARM_CONVERSATION SWARM_PERSISTED SWARM_MODEL_OVERRIDE SWARM_ENV_FILE')
 
 
 class SavedSession(unittest.TestCase):

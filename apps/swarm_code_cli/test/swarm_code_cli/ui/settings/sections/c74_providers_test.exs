@@ -73,7 +73,6 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.C74ProvidersTest do
                "OpenAI",
                "OpenRouter",
                "DeepSeek",
-               "llmotions",
                "Ollama",
                "LM Studio",
                "Other"

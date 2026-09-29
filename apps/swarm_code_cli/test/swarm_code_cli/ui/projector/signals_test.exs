@@ -160,7 +160,7 @@ defmodule SwarmCodeCLI.UI.Projector.SignalsTest do
       assert header
 
       assert find(rows, ~r/Failed · 429 Too Many Requests/)
-      assert find(rows, ~r/retrying in 42s · llmotions/)
+      assert find(rows, ~r/retrying in 42s · openrouter/)
     end
 
     test "once the retry time has passed the card says what to do instead" do
@@ -168,7 +168,7 @@ defmodule SwarmCodeCLI.UI.Projector.SignalsTest do
       state = %{state | now: state.now + 60_000}
       {rows, _scene, _table, _plan} = screen(state)
 
-      assert find(rows, ~r/rate limited by llmotions · retry in a moment · \/model to switch/)
+      assert find(rows, ~r/rate limited by openrouter · retry in a moment · \/model to switch/)
     end
 
     test "ASCII terminals get a hyphen, not a minus sign" do
@@ -195,7 +195,7 @@ defmodule SwarmCodeCLI.UI.Projector.SignalsTest do
       status = List.last(rows)
 
       assert status =~ "Build · read-only · untrusted"
-      assert status =~ "llmotions limited · 42s"
+      assert status =~ "openrouter limited · 42s"
       # pass73 T6: no turn streams and the composer is empty, so neither
       # Esc nor Enter is hinted; the keys that work now are.
       assert status =~ ~r/Ctrl-P palette +Ctrl-F hints$/
@@ -217,7 +217,7 @@ defmodule SwarmCodeCLI.UI.Projector.SignalsTest do
       status = List.last(rows)
 
       assert status =~ "Build"
-      assert status =~ "llmotions limited · 42s"
+      assert status =~ "openrouter limited · 42s"
       refute status =~ "bg mix"
       refute status =~ "…"
     end
@@ -225,11 +225,11 @@ defmodule SwarmCodeCLI.UI.Projector.SignalsTest do
     test "a window that is nearly spent is a warning, without a countdown" do
       state = scene(:trouble, {120, 40})
 
-      limit = %DTO.RateLimit{provider_id: "p1", provider: "llmotions", used_percent: 86.4}
+      limit = %DTO.RateLimit{provider_id: "p1", provider: "openrouter", used_percent: 86.4}
       state = put_in(state.read_model.snapshots.shell.rate_limits, [limit])
       {rows, _scene, _table, _plan} = screen(state)
 
-      assert List.last(rows) =~ "llmotions 86%"
+      assert List.last(rows) =~ "openrouter 86%"
     end
 
     test "the daemon's newest toast shows for a few seconds, in words" do

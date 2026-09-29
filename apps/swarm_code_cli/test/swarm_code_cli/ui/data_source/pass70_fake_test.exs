@@ -150,7 +150,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Pass70FakeTest do
 
     assert :ok = Source.watch(pid, "client", watch(:shell, global(), "watch-2"))
     assert_receive {:fake_source, "client", %Delivery{kind: :watch_ready, body: shell}}
-    assert [%DTO.RateLimit{provider: "llmotions", used_percent: 62.0}] = shell.rate_limits
+    assert [%DTO.RateLimit{provider: "openrouter", used_percent: 62.0}] = shell.rate_limits
   end
 
   test "an edit's and a change's diff load through detail" do

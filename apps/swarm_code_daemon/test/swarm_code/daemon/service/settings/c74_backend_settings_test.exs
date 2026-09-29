@@ -34,10 +34,25 @@ defmodule SwarmCode.Daemon.Service.Settings.C74BackendSettingsTest do
 
     fixture =
       if context[:fresh] do
-        prior = System.get_env("LLMOTIONS_API_KEY")
-        System.delete_env("LLMOTIONS_API_KEY")
-        on_exit(fn -> if prior, do: System.put_env("LLMOTIONS_API_KEY", prior) end)
         :ok = Providers.seed_defaults()
+
+        keyless =
+          C74S1.provider!(%{
+            name: "anthropic",
+            kind: "anthropic",
+            base_url: "https://api.anthropic.com",
+            api_key: "",
+            models: ["claude-sonnet-5-5"],
+            default_model: "claude-sonnet-5-5"
+          })
+
+        SwarmCode.Domain.Settings.update(%{
+          default_chat_provider_id: keyless.id,
+          default_chat_model: "claude-sonnet-5-5",
+          default_swarm_provider_id: keyless.id,
+          default_swarm_model: "claude-sonnet-5-5"
+        })
+
         project = C74S1.project!(dir, "fresh")
         %{ailogic: project, conversation: C74S1.conversation!(project)}
       else
@@ -403,7 +418,7 @@ defmodule SwarmCode.Daemon.Service.Settings.C74BackendSettingsTest do
   end
 
   @tag :fresh
-  test "a send on a fresh database whose seeded provider has no key is refused (D11)", c do
+  test "a send on a fresh database whose only provider has no key is refused (D11)", c do
     request = %ServiceRequest{
       operation: :dispatch_send,
       timeout_ms: 30_000,
@@ -423,7 +438,7 @@ defmodule SwarmCode.Daemon.Service.Settings.C74BackendSettingsTest do
     assert reason == %{
              "code" => "provider_required",
              "text" =>
-               "No model provider can answer: llmotions has no key. Add one in /settings providers."
+               "No model provider can answer: anthropic has no key. Add one in /settings providers."
            }
 
     assert Conversations.list_runs(c.conversation.id) == []

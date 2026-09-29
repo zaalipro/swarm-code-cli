@@ -62,7 +62,7 @@ defmodule SwarmCodeCLI.UI.Settings.C74FilesEnvTest do
       ctx_with(nil, %{
         env_overrides: %{
           "terminal.theme" => %{var: "SWARM_THEME", value: "light"},
-          "providers.key" => %{var: "LLMOTIONS_API_KEY", value: "sk-secret"}
+          "providers.key" => %{var: "OPENROUTER_API_KEY", value: "sk-secret"}
         }
       })
 
@@ -78,7 +78,7 @@ defmodule SwarmCodeCLI.UI.Settings.C74FilesEnvTest do
     assert words(theme) == "light"
     assert [{:section, :appearance}] = Sections.act(:files_env, ctx, theme, :open_row)
 
-    secret = find(rows, "env:LLMOTIONS_API_KEY")
+    secret = find(rows, "env:OPENROUTER_API_KEY")
     assert words(secret) == "set"
     refute Enum.any?(rows, &(all_words(&1) =~ "sk-secret"))
 

@@ -78,7 +78,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Session do
 
     limit = %DTO.RateLimit{
       provider_id: @provider,
-      provider: "llmotions",
+      provider: "openrouter",
       scope: "requests",
       used_percent: 62.0,
       resets_at: clock_ms + 42_000,
@@ -578,7 +578,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Session do
         mode: :build,
         approval_mode: session.approval_mode,
         trusted: session.trusted,
-        chat_provider: "llmotions",
+        chat_provider: "openrouter",
         title: session.conversations[conversation_id].title,
         cost_usd: cost(script, conversation_id),
         queued: queued(script, conversation_id)
@@ -702,7 +702,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Session do
     [
       approval_mode: s.approval_mode,
       trusted: s.trusted,
-      chat_provider: "llmotions",
+      chat_provider: "openrouter",
       context_used: 18_640,
       context_window: 131_072,
       cost_usd: if(conversation_id, do: cost(script, conversation_id)),

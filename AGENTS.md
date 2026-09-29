@@ -61,7 +61,7 @@ all does the first run create one row from `SWARM_MODEL`/`SWARM_BASE_URL`/`SWARM
 so (a toast in the TUI, a stderr line headless). `ncode --model M` (env
 `SWARM_MODEL_OVERRIDE`, set only by the launcher) is an in-memory session override applied at
 each `Engine.start_*`; an explicit `/model` ends it. The launchers load only `SWARM_*`,
-`NCODE_*`, `OPENAI_*`, `ANTHROPIC_*` and `LLMOTIONS_*` from `~/.secrets` (or `NCODE_ENV_FILE` /
+`NCODE_*`, `OPENAI_*` and `ANTHROPIC_*` from `~/.secrets` (or `NCODE_ENV_FILE` /
 `SWARM_ENV_FILE`), never the whole file, and
 the synced engine scrubs secrets from model-run shells. Logger output goes to
 `~/Library/Logs/SwarmCode/cli.log` (0600, rotated; XDG state on Linux), never to the tty. On

@@ -646,7 +646,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Settings do
           "feeds" => "terminal.editor"
         },
         %{
-          "name" => "LLMOTIONS_API_KEY",
+          "name" => "ANTHROPIC_API_KEY",
           "set" => false,
           "value" => nil,
           "secret" => true,

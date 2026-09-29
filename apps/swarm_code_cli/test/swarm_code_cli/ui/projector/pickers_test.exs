@@ -109,11 +109,11 @@ defmodule SwarmCodeCLI.UI.Projector.PickersTest do
       state = %{state | layers: [{:model_picker, :chat, "m1"}], focus: "dialog"}
       {rows, scene, _table, _plan} = screen(state)
 
-      llmotions = Enum.find_index(rows, &(&1 =~ ~r/│  llmotions +│/))
+      openrouter = Enum.find_index(rows, &(&1 =~ ~r/│  openrouter +│/))
       anthropic = Enum.find_index(rows, &(&1 =~ ~r/│  anthropic +│/))
-      assert llmotions && anthropic && llmotions < anthropic
+      assert openrouter && anthropic && openrouter < anthropic
 
-      assert Enum.at(rows, llmotions + 1) =~ ~r/✓ deepseek-v4\.1-flash +in use │/
+      assert Enum.at(rows, openrouter + 1) =~ ~r/✓ deepseek-v4\.1-flash +in use │/
       assert Enum.at(rows, anthropic + 1) =~ "claude-opus-5"
       assert Enum.any?(rows, &(&1 =~ "1 of 3 · Enter chooses · Esc closes"))
       assert scene.overlay.rect.height <= 10

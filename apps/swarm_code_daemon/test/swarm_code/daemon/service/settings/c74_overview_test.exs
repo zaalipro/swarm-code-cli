@@ -43,17 +43,29 @@ defmodule SwarmCode.Daemon.Service.Settings.C74OverviewTest do
 
   test "AT10 on a fresh database seeded without a key; a keyless private-host provider is usable",
        %{dir: dir} do
-    prior = System.get_env("LLMOTIONS_API_KEY")
-    System.delete_env("LLMOTIONS_API_KEY")
-    on_exit(fn -> if prior, do: System.put_env("LLMOTIONS_API_KEY", prior) end)
-
     :ok = Providers.seed_defaults()
+    assert Providers.list() == []
     project = C74S1.project!(dir, "fresh")
     ctx = C74S1.context(%{ailogic: project, conversation: nil})
 
     assert {:ok, %{"attention" => attention}} = Settings.query("overview", %{}, ctx)
     assert [%{"id" => "no_provider", "severity" => "error"} | _] = attention
     assert hd(attention)["title"] == "No provider can answer"
+
+    keyless =
+      C74S1.provider!(%{
+        name: "anthropic",
+        kind: "anthropic",
+        base_url: "https://api.anthropic.com",
+        api_key: "",
+        models: ["claude-sonnet-5-5"],
+        default_model: "claude-sonnet-5-5"
+      })
+
+    SwarmCode.Domain.Settings.update(%{
+      default_chat_provider_id: keyless.id,
+      default_chat_model: "claude-sonnet-5-5"
+    })
 
     C74S1.provider!(%{
       name: "LAN",
@@ -66,7 +78,7 @@ defmodule SwarmCode.Daemon.Service.Settings.C74OverviewTest do
     assert {:ok, %{"attention" => attention}} = Settings.query("overview", %{}, ctx)
     refute Enum.any?(attention, &(&1["id"] == "no_provider"))
 
-    assert %{"title" => "The chat model's provider llmotions has no key"} =
+    assert %{"title" => "The chat model's provider anthropic has no key"} =
              Enum.find(attention, &(&1["id"] == "chat_provider_keyless"))
   end
 

@@ -51,7 +51,7 @@ defmodule SwarmCodeCLI.UI.DataSource.ReadModelPass70Test do
   end
 
   test "rate limits come from the shell snapshot and are replaced per provider" do
-    limit = %DTO.RateLimit{provider_id: "p1", provider: "llmotions", used_percent: 62.0}
+    limit = %DTO.RateLimit{provider_id: "p1", provider: "openrouter", used_percent: 62.0}
 
     shell = %DTO.ShellSnapshot{
       counts: %DTO.Counts{},
