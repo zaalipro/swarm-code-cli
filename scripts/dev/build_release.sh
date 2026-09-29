@@ -6,6 +6,9 @@ cd "$root"
 
 # The release owns the BEAM/daemon. The native terminal port remains an explicit
 # checked artifact so a release can never silently fall back to a fake renderer.
+# Released binaries must run on macOS 15; without this the toolchain targets the
+# host SDK (macOS 26). Override with MACOSX_DEPLOYMENT_TARGET when needed.
+export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-15.0}"
 scripts/dev/check_terminal_port.sh
 export MIX_ENV="${MIX_ENV:-prod}"
 overlay_root="$root/rel/overlays"
