@@ -47,7 +47,7 @@ defmodule SwarmCodeCLI.Release.ConfigCommand do
     get KEY [--json]
     set KEY VALUE [--project DIR] [--conversation ID|latest] [--expect VALUE]
     reset KEY [--project DIR] [--conversation ID|latest]
-    keys [--json]
+    keys [--json]                every setting key
     path
     records KIND [--project DIR] [--json]
     record get KIND:NAME[.FIELD] [--json]
@@ -255,11 +255,16 @@ defmodule SwarmCodeCLI.Release.ConfigCommand do
           code
 
         {:error, %{code: :data_lease_held}} ->
-          unavailable =
-            for e <- Registry.all(), Entry.scalar?(e), e.scope != :cli, do: unavailable_row(e)
+          # cli020 B17 (onboarding-13): the cli keys still print; the
+          # database ones cannot be read, and the exit code says so.
+          print_rows(filter(cli, section, flags), flags)
 
-          print_rows(filter(cli ++ unavailable, section, flags), flags)
-          @ok
+          db? =
+            Enum.any?(Registry.all(), fn e ->
+              Entry.scalar?(e) and e.scope != :cli and (section == nil or e.section == section)
+            end)
+
+          if db?, do: session_open(), else: @ok
 
         {:error, failure} ->
           PersistedSession.report(failure)
@@ -282,8 +287,7 @@ defmodule SwarmCodeCLI.Release.ConfigCommand do
             code
 
           {:error, %{code: :data_lease_held}} ->
-            print_rows([unavailable_row(entry)], flags)
-            @ok
+            session_open()
 
           {:error, failure} ->
             PersistedSession.report(failure)
@@ -490,7 +494,13 @@ defmodule SwarmCodeCLI.Release.ConfigCommand do
         {:ok, project}
 
       {:error, _} ->
-        unless opts[:quiet], do: err("This folder is not an ncode project yet.")
+        # cli020 B17 (onboarding-20): the next step, not a dead end.
+        unless opts[:quiet],
+          do:
+            err(
+              "ncode has not opened #{dir} yet. Open it once (ncode #{dir}), then run this again."
+            )
+
         @usage_code
     end
   end
@@ -570,8 +580,13 @@ defmodule SwarmCodeCLI.Release.ConfigCommand do
     end
   end
 
-  defp unavailable_row(entry),
-    do: %{entry: entry, value: nil, layer: nil, text: "(unavailable while a session is open)"}
+  defp session_open do
+    err(
+      "A session is using the database; this value cannot be read now. Close it and run this again."
+    )
+
+    @refused
+  end
 
   defp filter(rows, section, flags) do
     rows
@@ -1263,24 +1278,114 @@ defmodule SwarmCodeCLI.Release.ConfigCommand do
       Headless.command(struct(@command, %{action: "doctor"}), ctx)
     end
 
+    # cli020 B17 (onboarding-12, -13): the client's checks always run; the
+    # database's run when the foundation opens, and a refusal is a row of its
+    # own (a session open skips them, a newer database or an open app block).
     case with_db(env, work) do
       {:ok, {:task, _, {:ok, %{"rows" => rows}}}} ->
-        rows = rows ++ client_checks(env)
-
-        if flags["--json"],
-          do: print_json(rows),
-          else:
-            table(Enum.map(rows, &[if(&1["ok"], do: "ok", else: "!!"), &1["id"], &1["message"]]))
-
-        if Enum.all?(rows, & &1["ok"]), do: @ok, else: @failed
+        print_doctor(rows ++ [database_version_ok(), app_ok()] ++ client_checks(env), flags)
 
       {:ok, answer} ->
         answer_code(answer, "doctor")
 
+      {:error, %{code: :data_lease_held}} ->
+        print_doctor(
+          [check("database", :note, "database checks skipped: a session is open", "")] ++
+            client_checks(env),
+          flags
+        )
+
+      {:error, %{code: :desktop_active}} ->
+        print_doctor(
+          [check("app", :problem, "the ncode app is open", "quit the ncode app")] ++
+            client_checks(env),
+          flags
+        )
+
+      {:error, %{code: :schema_incompatible} = failure} ->
+        print_doctor(
+          [check("database_version", :problem, failure.message, failure.action)] ++
+            client_checks(env),
+          flags
+        )
+
       {:error, failure} ->
-        refused(failure)
+        print_doctor(
+          [check("database", :problem, failure.message, failure.action)] ++ client_checks(env),
+          flags
+        )
     end
   end
+
+  defp database_version_ok,
+    do: check("database_version", :ok, "this ncode knows the database's version", "")
+
+  defp app_ok, do: check("app", :ok, "the ncode app is not open", "")
+
+  defp print_doctor(rows, flags) do
+    rows = Enum.map(rows, &doctor_level/1)
+    provider? = &String.starts_with?(&1["id"] || "", "provider:")
+    usable? = Enum.any?(rows, &(provider?.(&1) and &1["level"] == "ok"))
+
+    # A provider without a key is a note beside a usable one, a problem alone.
+    rows =
+      if usable?,
+        do: rows,
+        else:
+          Enum.map(rows, fn row ->
+            if provider?.(row) and row["level"] == "note",
+              do: %{row | "level" => "problem"},
+              else: row
+          end)
+
+    if flags["--json"],
+      do: print_json(rows),
+      else:
+        table(
+          Enum.map(rows, fn row ->
+            [doctor_mark(row["level"]), row["id"], row["message"], row["hint"] || ""]
+          end)
+        )
+
+    if Enum.any?(rows, &(&1["level"] == "problem")), do: @failed, else: @ok
+  end
+
+  defp doctor_mark("ok"), do: "ok"
+  defp doctor_mark("note"), do: "--"
+  defp doctor_mark(_), do: "!!"
+
+  # The daemon's rows say ok or not; what blocks a session and what to run
+  # about it is the client's word. Optional things (search, an MCP server, the
+  # research folder, a provider without a key beside a usable one) are notes.
+  defp doctor_level(%{"level" => _} = row), do: row
+
+  defp doctor_level(%{"ok" => true} = row), do: Map.merge(row, %{"level" => "ok", "hint" => ""})
+
+  defp doctor_level(%{"id" => id} = row) do
+    {level, hint} =
+      cond do
+        id == "search" -> {"note", "run: ncode settings search"}
+        String.starts_with?(id, "mcp:") -> {"note", "run: ncode settings mcp"}
+        id == "research_root" -> {"note", "check the folder's owner and mode"}
+        String.starts_with?(id, "provider:") -> {"note", "run: ncode settings providers"}
+        id == "providers" -> {"problem", "run: ncode settings providers"}
+        id == "project_file" -> {"problem", "fix .swarm_code/config.json in the project"}
+        id == "cli.json" -> {"problem", "fix or remove " <> to_string(row["message"])}
+        id == "config_dir" -> {"problem", "check the folder's owner and mode"}
+        true -> {"problem", ""}
+      end
+
+    Map.merge(row, %{"level" => level, "hint" => hint})
+  end
+
+  defp check(id, level, message, hint),
+    do: %{
+      "id" => id,
+      "ok" => level != :problem,
+      "level" => Atom.to_string(level),
+      "message" => message,
+      "hint" => hint
+    }
 
   defp client_checks(env) do
     cli =
