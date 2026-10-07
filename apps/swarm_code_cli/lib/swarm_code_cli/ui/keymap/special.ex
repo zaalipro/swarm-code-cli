@@ -315,6 +315,15 @@ defmodule SwarmCodeCLI.UI.Keymap.Special do
 
   # --------------------------------------------------------------- pickers
 
+  # cli020 D15: Up on a picker's first row (or its query) stays there; it
+  # never wraps round to Cancel.
+  def run(:picker_previous, _key, state, _table) do
+    case SwarmCodeCLI.UI.Reducer.focus_graph(state) do
+      ["query", first | _] when state.focus in ["query", first] -> :ignore
+      _ -> ok({:focus_cycle, :previous})
+    end
+  end
+
   def run(:picker_page_down, _key, state, _table), do: page_focus(state, :page_down)
   def run(:picker_page_up, _key, state, _table), do: page_focus(state, :page_up)
   def run(:picker_first, _key, state, _table), do: page_focus(state, :home)

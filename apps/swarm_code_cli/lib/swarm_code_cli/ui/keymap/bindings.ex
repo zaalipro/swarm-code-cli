@@ -925,7 +925,7 @@ defmodule SwarmCodeCLI.UI.Keymap.Bindings do
       id: :picker_previous,
       # No Ctrl-P alias: that chord is the palette everywhere, pickers included.
       keys: [{:up, []}],
-      action: {:focus_cycle, :previous},
+      action: {:special, :picker_previous},
       contexts: [:picker],
       group: :navigate,
       label: "Up",

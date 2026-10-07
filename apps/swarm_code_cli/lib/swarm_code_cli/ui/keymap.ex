@@ -1032,11 +1032,13 @@ defmodule SwarmCodeCLI.UI.Keymap do
   @spec editor_context(map()) :: {:field_editor, term()} | {:editor, term()} | nil
   def editor_context(%{layers: [layer | _]} = state) do
     cond do
-      state.focus in ["cancel", "confirm"] ->
-        nil
-
+      # cli020 D15: a picker with a query takes text and Backspace into its
+      # query whatever row has focus, Cancel and Confirm included.
       Switcher.field_key(layer) ->
         {:field_editor, Switcher.field_key(layer)}
+
+      state.focus in ["cancel", "confirm"] ->
+        nil
 
       # pass75 interview: the "other" editor of the note's current question.
       match?({:question, _}, layer) and state.focus == "other" ->
