@@ -12,6 +12,8 @@ defmodule SwarmCode.Daemon.Backup.GateTest do
   alias SwarmCode.Daemon.Schema.Gate, as: SchemaGate
 
   @operation_id "c608e2b2-441d-45fc-ae80-42199f63ddff"
+  # cli020 A8: the version this build writes into a backup manifest.
+  @app_version Application.spec(:swarm_code_daemon, :vsn) |> to_string()
   @verified_at ~U[2026-09-01 12:00:00Z]
   @manifest_keys ~w(
     application
@@ -1430,7 +1432,7 @@ defmodule SwarmCode.Daemon.Backup.GateTest do
       SchemaFixture.insert_project!(database, "project-2", "Second project", "/private/project-2")
     end
 
-    assert {:ok, decision} = SchemaGate.check(database, MigrationManifest.load!(), "0.1.0")
+    assert {:ok, decision} = SchemaGate.check(database, MigrationManifest.load!(), @app_version)
 
     assert decision.status ==
              if(Keyword.get(opts, :lineage) == :current, do: :ready, else: :migration_required)
@@ -1473,7 +1475,7 @@ defmodule SwarmCode.Daemon.Backup.GateTest do
 
   defp schema_decision!(database) do
     assert {:ok, %{status: :migration_required} = decision} =
-             SchemaGate.check(database, MigrationManifest.load!(), "0.1.0")
+             SchemaGate.check(database, MigrationManifest.load!(), @app_version)
 
     decision
   end
