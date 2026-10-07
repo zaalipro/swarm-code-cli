@@ -191,7 +191,7 @@ defmodule SwarmCodeCLI.Release.Headless do
     )
   end
 
-  defp present({:plain, format}, source, epoch, conversation, _extra) do
+  defp present({:plain, format}, source, epoch, conversation, extra) do
     {:ok, plain} =
       SwarmCodeCLI.Plain.Session.start_link(
         data_source: source,
@@ -213,10 +213,35 @@ defmodule SwarmCodeCLI.Release.Headless do
     receive do
       {:plain_session, ^plain, {:closed, reason}} ->
         Process.demonitor(monitor, [:flush])
-        plain_code(reason)
+
+        summary =
+          receive do
+            {:plain_session, ^plain, {:summary, summary}} -> summary
+          after
+            0 -> %{refused: 0, denied: 0}
+          end
+
+        plain_exit(reason, summary, Keyword.get(extra, :fail_on_denied, false))
 
       {:DOWN, ^monitor, :process, ^plain, _} ->
         fail("The plain session stopped unexpectedly.")
+    end
+  end
+
+  @doc """
+  cli020 B6/B3: the exit code of a `--plain` session from how it closed and
+  its summary: a refused send fails a clean close, and so does a denied
+  approval with `--fail-on-denied`.
+  """
+  @spec plain_exit(atom(), map(), boolean()) :: 0 | 1
+  def plain_exit(reason, summary, fail_on_denied?) do
+    code = plain_code(reason)
+
+    cond do
+      code != 0 -> code
+      Map.get(summary, :refused, 0) > 0 -> 1
+      fail_on_denied? and Map.get(summary, :denied, 0) > 0 -> 1
+      true -> 0
     end
   end
 
@@ -224,7 +249,21 @@ defmodule SwarmCodeCLI.Release.Headless do
   defp plain_code(:run_failed), do: 1
 
   defp plain_code(:needs_input) do
-    IO.puts(:stderr, "ncode: a run is waiting for an answer; open ncode to give it.")
+    IO.puts(
+      :stderr,
+      "ncode: the run was waiting for an approval and was stopped when input ended. " <>
+        "Answer it before closing stdin (approve or deny), or allow it with /approval auto, then rerun."
+    )
+
+    1
+  end
+
+  defp plain_code(:eof_timeout) do
+    IO.puts(
+      :stderr,
+      "ncode: input ended and the runs were still going after 10 minutes, so they were stopped."
+    )
+
     1
   end
 
