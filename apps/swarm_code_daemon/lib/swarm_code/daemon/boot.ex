@@ -59,7 +59,7 @@ defmodule SwarmCode.Daemon.Boot do
       start_mcp: &MCP.start_all/0,
       sweep_researches: &sweep_researches/0,
       repair_unfinished_nodes: &Conversations.repair_unfinished_nodes/0,
-      prune_attachments: &Attachments.prune_abandoned/0
+      prune_attachments: &prune_attachments/0
     ]
 
     results =
@@ -175,4 +175,12 @@ defmodule SwarmCode.Daemon.Boot do
   end
 
   defp redact(value), do: SwarmCode.Domain.LLM.HTTP.redact(inspect(value, limit: 20))
+
+  # cli020 A'3 (bugs-4): an image staged for the next message is in no
+  # message yet; the staging ledger (C2) names the ones to keep.
+  defp prune_attachments do
+    Attachments.prune_abandoned(DateTime.utc_now(), 24,
+      keep: SwarmCode.Daemon.Service.CommandLedger.staged_attachment_ids()
+    )
+  end
 end
