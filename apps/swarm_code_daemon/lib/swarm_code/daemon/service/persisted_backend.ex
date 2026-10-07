@@ -1110,6 +1110,30 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     end
   end
 
+  # cli020 C6 (ux-live-4): ↻ Retry, as the desktop does it
+  # (`workspace_live.ex` `retry_run/2`): a failed or stopped run of this
+  # conversation whose revision matches goes out again — the user message that
+  # launched it through dispatch (so `/swarm …` stays a swarm), else a swarm
+  # restarts on its prompt, else its prompt starts a chat turn.
+  defp execute(%{operation: :run_retry, params: params}, scope, id, state) do
+    state = refresh(state)
+    run = state.runs[params["run_id"]]
+
+    cond do
+      is_nil(run) or not run_member?(run, scope, state) ->
+        {refuse(id, :run_not_found, "", "run.retry"), state}
+
+      run.status not in [:failed, :cancelled] ->
+        {refuse(id, :not_retryable, "", "run.retry"), state}
+
+      run.revision != params["revision"] ->
+        {refuse(id, {:stale, "That run changed · look again."}, "", "run.retry"), state}
+
+      true ->
+        retry_run(state, scope, id, run)
+    end
+  end
+
   # cli020 C1: `queue.resume` lifts the pause a stop set and drains now.
   defp execute(%{operation: :queue_resume}, _scope, id, state) do
     state = state |> resume_pause() |> drain_queue() |> refresh()
@@ -1497,6 +1521,55 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     end
   end
 
+  defp retry_run(state, scope, id, run) do
+    row = Conversations.get_run(run.id)
+
+    case launch_text(state.opts[:conversation_id], run.id) do
+      text when is_binary(text) ->
+        send_params = %{
+          "action" => "send",
+          "text" => text,
+          "target" => %{"kind" => "main", "id" => nil},
+          "attachment_refs" => []
+        }
+
+        execute(%{operation: :dispatch_send, params: send_params}, scope, id, state)
+
+      nil when row.kind == "swarm" ->
+        conversation = Conversations.get!(state.opts[:conversation_id])
+
+        settle_send(
+          Engine.start_swarm(SessionConfiguration.overlay(conversation), row.prompt || ""),
+          id,
+          row.prompt || "",
+          state
+        )
+
+      nil ->
+        start_turn(state, id, %{"text" => row.prompt || "", "attachment_refs" => []})
+    end
+  end
+
+  # The user message that launched `run_id` (not a steer, not a side reply).
+  defp launch_text(conversation_id, run_id) do
+    alias SwarmCode.Domain.Conversations.Message
+
+    Repo.one(
+      from(m in Message,
+        where:
+          m.conversation_id == ^conversation_id and m.run_id == ^run_id and m.role == "user" and
+            is_nil(m.reply_to_run_id),
+        order_by: [asc: m.position],
+        limit: 1,
+        select: m.content
+      )
+    )
+    |> case do
+      text when is_binary(text) -> if String.trim(text) == "", do: nil, else: text
+      _ -> nil
+    end
+  end
+
   @doc false
   # cli020 C1: the queue's revision, the first 16 hex of sha256 over its full
   # texts joined by the unit separator.
@@ -1520,7 +1593,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
               conversation |> Conversation.changeset(%{queued: rest}) |> Repo.update!()
             else
               nil -> Repo.rollback(:not_found)
-              :stale -> Repo.rollback(:stale)
+              :stale -> Repo.rollback({:stale, "The queue changed · look again."})
               {:error, reason} -> Repo.rollback(reason)
             end
           end,
@@ -1530,7 +1603,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
     case outcome do
       {:ok, conversation} -> {:ok, conversation}
-      {:error, reason} when reason in [:stale, :not_found, :invalid_argument] -> {:error, reason}
+      {:error, {:stale, _} = reason} -> {:error, reason}
+      {:error, reason} when reason in [:not_found, :invalid_argument] -> {:error, reason}
       _ -> {:error, :database_busy}
     end
   end
@@ -2198,6 +2272,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
   defp error_code(:unknown_outcome), do: :unknown_outcome
   defp error_code({:provider_required, _words}), do: :not_allowed
+  defp error_code({:stale, _words}), do: :stale_revision
   defp error_code(:not_configured), do: :source_unavailable
   # The client's closed error enum has no "not found": a model no provider
   # lists is an argument the request cannot carry, which is what it says.
@@ -4422,8 +4497,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     run_finished: "That run has already finished.",
     steer_finished: "That run has finished; send the message in the chat to start a new turn.",
     finished: "That run has already finished.",
-    # cli020 C1.
-    stale: "The queue changed · look again."
+    # cli020 C6.
+    not_retryable: "Only a failed or stopped run can be retried."
   }
 
   defp refusal(reason, text) when is_atom(reason) do
@@ -4434,6 +4509,9 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
   defp refusal({:provider_required, words}, _text) when is_binary(words),
     do: {"provider_required", words}
+
+  # cli020: a compare-and-set lost (the queue, a run's revision), in words.
+  defp refusal({:stale, words}, _text) when is_binary(words), do: {"stale", words}
 
   defp refusal(_reason, text), do: refusal(:operation_failed, text)
 

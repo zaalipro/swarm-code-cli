@@ -39,6 +39,7 @@ defmodule SwarmCode.Protocol.ServiceRequest do
           | :settings_command
           | :queue_resume
           | :queue_edit
+          | :run_retry
 
   @type t :: %__MODULE__{
           operation: operation(),
@@ -125,6 +126,8 @@ defmodule SwarmCode.Protocol.ServiceRequest do
   # cli020 C1: the conversation's queue (resume after a stop, clear, drop one).
   defp decode_operation("queue.resume"), do: :queue_resume
   defp decode_operation("queue.edit"), do: :queue_edit
+  # cli020 C6: retry a failed or stopped run (the desktop's ↻ Retry).
+  defp decode_operation("run.retry"), do: :run_retry
   defp decode_operation(_operation), do: nil
 
   defp encode_operation(:query), do: "query"
@@ -151,6 +154,7 @@ defmodule SwarmCode.Protocol.ServiceRequest do
   defp encode_operation(:settings_command), do: "settings.command"
   defp encode_operation(:queue_resume), do: "queue.resume"
   defp encode_operation(:queue_edit), do: "queue.edit"
+  defp encode_operation(:run_retry), do: "run.retry"
   defp encode_operation(_operation), do: nil
 
   defp param_keys(:query), do: ~w(slot cursor direction page_size byte_limit)
@@ -190,6 +194,7 @@ defmodule SwarmCode.Protocol.ServiceRequest do
   defp param_keys(:queue_resume), do: []
   defp param_keys(:queue_edit), do: ~w(revision action position)
 
+  defp param_keys(:run_retry), do: ~w(run_id revision)
   defp param_keys(_operation), do: []
 
   defp valid_params?(:query, params, scope) do
@@ -318,6 +323,9 @@ defmodule SwarmCode.Protocol.ServiceRequest do
   # one `WireBounds.valid?/2` the client checks before sending.
   defp valid_params?(op, params, scope) when op in [:settings_query, :settings_command],
     do: scope.kind == :global and scope.id == nil and WireBounds.valid?(op, params) == :ok
+
+  defp valid_params?(:run_retry, params, scope),
+    do: run_scope?(params["run_id"], scope) and counter?(params["revision"])
 
   defp valid_params?(:queue_resume, _params, scope), do: scope.kind == :conversation
 

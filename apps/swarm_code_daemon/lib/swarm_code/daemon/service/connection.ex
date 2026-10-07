@@ -485,6 +485,9 @@ defmodule SwarmCode.Daemon.Service.Connection do
         op when op in [:queue_resume, :queue_edit] ->
           :queue
 
+        :run_retry ->
+          :run_retry
+
         op
         when op in [
                :query,

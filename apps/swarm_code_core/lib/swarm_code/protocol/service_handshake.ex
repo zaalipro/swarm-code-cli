@@ -32,7 +32,9 @@ defmodule SwarmCode.Protocol.ServiceHandshake do
     # pass74 S1-5: settings.query and settings.command (§3.4.1).
     "settings" => :settings,
     # cli020 C1: queue.resume and queue.edit.
-    "queue" => :queue
+    "queue" => :queue,
+    # cli020 C6.
+    "run.retry" => :run_retry
   }
   @max_frame_bytes 1_048_576
 
@@ -59,6 +61,7 @@ defmodule SwarmCode.Protocol.ServiceHandshake do
             | :question_answer
             | :settings
             | :queue
+            | :run_retry
 
     @type t :: %__MODULE__{
             source_epoch: binary(),

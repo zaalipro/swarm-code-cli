@@ -588,6 +588,10 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
             "decision" => Atom.to_string(decision)
           }}
 
+  # cli020 C6: the desktop's ↻ Retry; the service re-sends the run's message.
+  defp request_body({:retry_run, run, revision}),
+    do: {:ok, %{"op" => "run.retry", "run_id" => run, "revision" => revision}}
+
   # cli020 C1: the queue (the conversation is the request's scope).
   defp request_body({:queue_resume, _conversation}), do: {:ok, %{"op" => "queue.resume"}}
 

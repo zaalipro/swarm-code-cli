@@ -109,4 +109,31 @@ defmodule SwarmCodeCLI.UI.DataSource.C020WireTest do
       assert {old.queued_count, old.queue_paused, old.queue_revision} == {0, false, nil}
     end
   end
+
+  describe "C6 run.retry" do
+    test "{:retry_run, run, revision} encodes to run.retry" do
+      run = "33333333-3333-4333-8333-333333333333"
+
+      request = %Request{
+        request_id: "local-2",
+        kind: {:retry_run, run, 7},
+        scope: @scope,
+        generation: 2,
+        origin: {:run_revision, run, 7},
+        deadline: 5_000,
+        expected_response: :outcome
+      }
+
+      {:ok, message} = Codec.request(request, @wire, @nonce, 0)
+
+      assert {:ok, %ServiceRequest{operation: :run_retry}} =
+               ServiceRequest.decode(message.body, @scope)
+
+      assert Map.drop(message.body, ["timeout_ms"]) == %{
+               "op" => "run.retry",
+               "run_id" => run,
+               "revision" => 7
+             }
+    end
+  end
 end
