@@ -27,12 +27,16 @@ defmodule SwarmCodeCLI.Plain.Session do
     now = Keyword.fetch!(options, :now)
     presenter_options = Keyword.fetch!(options, :options)
     output_timeout = Keyword.get(options, :output_timeout, 1000)
+    # cli020 B7: a consumer slower than `output_timeout` is backpressure; a
+    # batch fails only after this deadline (or at once on a closed device).
+    output_deadline = Keyword.get(options, :output_deadline, 30_000)
     eof_mode = Keyword.get(options, :eof, :close)
 
     if Intent.valid_id?(epoch) and Intent.valid_id?(conversation) and is_integer(now) and now >= 0 and
          match?(%Options{}, presenter_options) and eof_mode in [:close, :wait] and
          is_integer(output_timeout) and
-         output_timeout in 1..5000 do
+         output_timeout in 1..5000 and is_integer(output_deadline) and
+         output_deadline in 1..60_000 do
       client = Keyword.fetch!(options, :data_source)
 
       state = %{
@@ -43,6 +47,7 @@ defmodule SwarmCodeCLI.Plain.Session do
         input: Keyword.fetch!(options, :input),
         output: Keyword.fetch!(options, :output),
         output_timeout: output_timeout,
+        output_deadline: max(output_deadline, output_timeout),
         eof_mode: eof_mode,
         eof_pending?: false,
         eof_token: nil,
@@ -708,7 +713,9 @@ defmodule SwarmCodeCLI.Plain.Session do
         {:plain_output, ^token, result} -> result
         {:DOWN, ^monitor, :process, ^worker, _} -> :error
       after
-        state.output_timeout -> :error
+        # cli020 B7: the writer is no longer killed at `output_timeout`; a
+        # paused pipe gets the whole deadline, a failed write ends sooner.
+        state.output_deadline -> :error
       end
 
     Process.unlink(worker)

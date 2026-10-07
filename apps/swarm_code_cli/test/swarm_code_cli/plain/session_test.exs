@@ -222,12 +222,63 @@ defmodule SwarmCodeCLI.Plain.SessionTest do
     on_exit(fn -> Process.exit(device, :kill) end)
 
     {_source, client, _input, session, _output} =
-      start_session(nil, output: device, error: device, output_timeout: 20)
+      start_session(nil, output: device, error: device, output_timeout: 20, output_deadline: 60)
 
     assert_receive :output_started
     assert_receive {:plain_session, ^session, {:closed, :output_failed}}, 2000
     assert Session.snapshot(session).phase == :closed
     assert :sys.get_state(client).phase == :closed
+  end
+
+  # cli020 B7 (bugs-20): a consumer that pauses longer than `output_timeout`
+  # is backpressure, not a failure; the batch waits (30 s at most).
+  test "a slow output device does not close the session" do
+    test = self()
+
+    device =
+      spawn(fn ->
+        receive do
+          {:io_request, from, reply_as, _request} ->
+            send(test, :output_started)
+
+            receive do
+              :release -> send(from, {:io_reply, reply_as, :ok})
+            end
+        end
+
+        accept = fn accept ->
+          receive do
+            {:io_request, from, reply_as, _} ->
+              send(from, {:io_reply, reply_as, :ok})
+              accept.(accept)
+          end
+        end
+
+        accept.(accept)
+      end)
+
+    on_exit(fn -> Process.exit(device, :kill) end)
+
+    {_source, _client, input, session, _output} =
+      start_session(nil, output: device, error: device, output_timeout: 20)
+
+    assert_receive :output_started, 2000
+    # Longer than output_timeout: the old writer was killed at 20 ms.
+    refute_receive {:plain_session, ^session, {:closed, _}}, 150
+    send(device, :release)
+    assert_receive {:plain_session, ^session, :ready}, 2000
+    :ok = FiniteInput.eof(input)
+    assert_receive {:plain_session, ^session, {:closed, :eof}}, 2000
+  end
+
+  test "an output device that fails closes at once" do
+    {:ok, closed} = StringIO.open("")
+    StringIO.close(closed)
+
+    {_source, _client, _input, session, _output} =
+      start_session(nil, output: closed, error: closed)
+
+    assert_receive {:plain_session, ^session, {:closed, :output_failed}}, 2000
   end
 
   test "reader handles charlist devices, drains oversized physical lines and dies with its owner" do
