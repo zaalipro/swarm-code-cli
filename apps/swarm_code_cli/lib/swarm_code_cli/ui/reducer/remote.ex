@@ -81,6 +81,12 @@ defmodule SwarmCodeCLI.UI.Reducer.Remote do
       {:attachment_slot, {:ok, payload}} ->
         SwarmCodeCLI.UI.Reducer.ImagePaste.slot_answer(state, request, payload)
 
+      {:rewind_turns, {:ok, payload}} ->
+        SwarmCodeCLI.UI.Reducer.Rewind.turns_answer(state, request, payload)
+
+      {:rewind_apply, {:ok, payload}} ->
+        SwarmCodeCLI.UI.Reducer.Rewind.apply_answer(state, request, payload)
+
       _ ->
         {state, []}
     end

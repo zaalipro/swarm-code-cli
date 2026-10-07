@@ -184,6 +184,9 @@ defmodule SwarmCodeCLI.UI.Keymap do
 
     cond do
       Map.has_key?(@local_commands, trimmed) -> Map.fetch!(@local_commands, trimmed)
+      # cli020 D10/D20: bare /rewind and /undo are the client's.
+      trimmed == "/rewind" -> :rewind
+      trimmed == "/undo" -> :undo
       command?(trimmed, "/queue") -> :queue
       command?(trimmed, "/approval") -> :approval
       command?(trimmed, "/panel") -> :panel
@@ -272,7 +275,15 @@ defmodule SwarmCodeCLI.UI.Keymap do
   defp fragment_mods([:shift]), do: []
   defp fragment_mods(mods), do: Enum.sort(mods)
 
+  # cli020 lane D: the layers D opens take their own keys first.
   defp dispatch(code, mods, phase, state, table) do
+    case phase in [:press, :repeat] and __MODULE__.Layers.key(code, mods, state) do
+      result when result in [false, :pass] -> dispatch_table(code, mods, phase, state, table)
+      result -> result
+    end
+  end
+
+  defp dispatch_table(code, mods, phase, state, table) do
     cond do
       phase not in [:press, :repeat] ->
         :ignore
@@ -303,7 +314,7 @@ defmodule SwarmCodeCLI.UI.Keymap do
       # keys reach that draft as well; Esc, PgUp/PgDn and the rest stay the
       # card's.
       composing_under_card?(code, mods, state) ->
-        dispatch(code, mods, phase, composer_view(state), table)
+        dispatch_table(code, mods, phase, composer_view(state), table)
 
       # cli74 U1-2: Ctrl-F's badges on the settings rail take the next key,
       # whatever it is (Ctrl-C still interrupts).

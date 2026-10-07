@@ -141,6 +141,10 @@ defmodule SwarmCodeCLI.UI.State do
     # cli020 D6: the request ids of the last Shift-Tab step while one is
     # still unanswered (a second Shift-Tab waits for them).
     mode_cycle: [],
+    # cli020 D10: the rewind in flight (`%{mode}` while the turns load,
+    # `%{mode: :apply, turn, scope}` while it applies) and the last bare Esc.
+    rewind: nil,
+    last_escape_at: nil,
     notify: :auto,
     title?: true,
     # cli020 D8, D13: cli.json's paste collapse threshold (0 = never), lines

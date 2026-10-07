@@ -108,6 +108,9 @@ defmodule SwarmCodeCLI.UI.Action do
           | {:cycle_permission_mode}
           | :shell_send
           | {:paste_image}
+          | {:rewind_open}
+          | {:rewind_move, -1 | 1}
+          | {:rewind_choose, :both | :conversation | :files}
           | {:paste_image_slot, binary()}
           | {:paste_image_done, binary(), binary(), :ok | {:error, :no_image | :failed}}
           | {:show_diffs, boolean() | :toggle}
@@ -255,7 +258,10 @@ defmodule SwarmCodeCLI.UI.Action do
           :diff,
           :theme,
           :mouse,
-          :settings
+          :settings,
+          # cli020 D10/D20.
+          :rewind,
+          :undo
         ]
       )
 
@@ -263,6 +269,13 @@ defmodule SwarmCodeCLI.UI.Action do
     do: valid_action(action, SwarmCodeCLI.UI.SlashPalette.valid_name?(name))
 
   def validate(:send_plain), do: {:ok, :send_plain}
+
+  # cli020 D10: the rewind list and its confirm.
+  def validate({:rewind_open} = action), do: {:ok, action}
+  def validate({:rewind_move, delta} = action), do: valid_action(action, delta in [-1, 1])
+
+  def validate({:rewind_choose, scope} = action),
+    do: valid_action(action, scope in [:both, :conversation, :files])
 
   # cli020 D9: Ctrl-V attaches the clipboard's image; the runtime's steps.
   def validate({:paste_image} = action), do: {:ok, action}

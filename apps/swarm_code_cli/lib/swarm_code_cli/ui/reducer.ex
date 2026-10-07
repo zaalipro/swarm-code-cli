@@ -25,7 +25,7 @@ defmodule SwarmCodeCLI.UI.Reducer do
   alias SwarmCodeCLI.UI.Reducer.{Watch, Commands, Pages, Editing, Details, PathCompletion}
   alias SwarmCodeCLI.UI.Reducer.Hint, as: Hints
   alias SwarmCodeCLI.UI.Reducer.Overlay
-  alias SwarmCodeCLI.UI.Reducer.{Deliveries, Display, ImagePaste, Remote}
+  alias SwarmCodeCLI.UI.Reducer.{Deliveries, Display, ImagePaste, Remote, Rewind}
   alias SwarmCodeCLI.UI.Draft.Pastes
   alias SwarmCodeCLI.UI.WorkflowKeyword
   alias SwarmCodeCLI.UI.Hint
@@ -476,6 +476,11 @@ defmodule SwarmCodeCLI.UI.Reducer do
 
   # Esc in the composer stops the turn that is generating, and nothing else.
   # A turn that was sent but is not on screen yet is that turn (I3).
+  # cli020 D10: the rewind list and its confirm (`Reducer.Rewind`).
+  defp transition(state, {:rewind_move, delta}), do: Rewind.move(state, delta)
+  defp transition(state, {:rewind_open}), do: Rewind.choose_turn(state)
+  defp transition(state, {:rewind_choose, scope}), do: Rewind.apply(state, scope)
+
   # cli020 D9: Ctrl-V and the runtime's steps (`Reducer.ImagePaste`).
   defp transition(state, {:paste_image}), do: ImagePaste.open(state)
 
@@ -519,9 +524,23 @@ defmodule SwarmCodeCLI.UI.Reducer do
 
   # cli020 D7: Esc while a `!` command runs stops it before any turn.
   defp transition(state, {:interrupt, :escape}) do
-    if shell_running?(state),
-      do: Remote.send(state, {:shell_stop, Remote.conversation(state)}, :shell),
-      else: stop_on_escape(state)
+    cond do
+      shell_running?(state) ->
+        Remote.send(state, {:shell_stop, Remote.conversation(state)}, :shell)
+
+      true ->
+        case stop_on_escape(state) do
+          # cli020 D10: a bare Esc that stopped nothing arms Esc Esc.
+          {^state, []} ->
+            case Rewind.escape(state) do
+              {:open, next} -> Rewind.request(next, :pick)
+              {:armed, next} -> {next, []}
+            end
+
+          stopped ->
+            {%{elem(stopped, 0) | last_escape_at: nil}, elem(stopped, 1)}
+        end
+    end
   end
 
   # Ctrl-C (pass71 R1): a press closes the top layer, else clears the draft,
@@ -3056,6 +3075,10 @@ defmodule SwarmCodeCLI.UI.Reducer do
     end
   end
 
+  @doc false
+  # cli020 D10: the rewound prompt goes into the draft as one undoable edit.
+  def replace_text(state, key, text), do: replace_draft(state, key, text)
+
   # One undoable replacement of the draft's text, like a slash completion.
   defp replace_draft(state, key, text) do
     {state, a} = Editing.apply(state, :editor, key, :select_all)
@@ -3086,6 +3109,13 @@ defmodule SwarmCodeCLI.UI.Reducer do
     do: "No editor could be started; set $VISUAL or $EDITOR."
 
   # ------------------------------------------------- client slash commands
+
+  # cli020 D10/D20: bare /rewind lists the turns; /undo confirms the newest.
+  defp slash_local(state, command) when command in [:rewind, :undo] do
+    {state, cleared} = clear_command_draft(state)
+    {state, sent} = Rewind.request(state, if(command == :rewind, do: :pick, else: :undo))
+    {state, cleared ++ sent}
+  end
 
   defp slash_local(state, :help) do
     {state, cleared} = clear_command_draft(state)

@@ -91,6 +91,15 @@ defmodule SwarmCodeCLI.Test.Cli020State do
 
   def enter(state), do: press(state, Input.key(:enter))
 
+  # Enter with the drawn Send target, as the session resolves it once the
+  # projector has drawn the composer (the tests draw nothing).
+  def send_draft(state) do
+    case Keymap.draft_send(state) do
+      {:ok, action} -> Reducer.update(state, action)
+      :ignore -> {state, []}
+    end
+  end
+
   def commands(effects), do: for({:command, request} <- effects, do: request.kind)
 
   @doc "Whether lane C's op `kind` is in this build (the seam sends it)."
