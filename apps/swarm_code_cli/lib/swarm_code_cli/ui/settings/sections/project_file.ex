@@ -18,7 +18,12 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.ProjectFile do
   alias SwarmCodeCLI.UI.Settings.{Confirm, Page, Picker, Row}
   alias SwarmCodeCLI.UI.Settings.Editors
 
-  @events ~w[session_start pre_tool_use post_tool_use]
+  # cli020 E30: F9's five events beside the three of pass74 (C23 adds them to
+  # the service's `@events`).
+  @events ~w[session_start pre_tool_use post_tool_use stop notification user_prompt_submit
+             pre_compact session_end]
+
+  @rules_hint "Edit .swarm_code/config.json; ncode reads it for trusted projects only."
 
   @impl true
   def loads(ctx) do
@@ -46,6 +51,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.ProjectFile do
         [header(config, ctx)] ++
           ignored_keys(config, id) ++
           hooks(config, ctx, id) ++
+          rules(config) ++
           ignored_entries(config, id) ++ profiles(config, id)
     end
   end
@@ -177,6 +183,11 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.ProjectFile do
   defp event_hint("session_start"), do: "once, when a session starts"
   defp event_hint("pre_tool_use"), do: "before each tool call"
   defp event_hint("post_tool_use"), do: "after each tool call"
+  defp event_hint("stop"), do: "when a turn ends"
+  defp event_hint("notification"), do: "when ncode asks for attention"
+  defp event_hint("user_prompt_submit"), do: "before a message is sent"
+  defp event_hint("pre_compact"), do: "before the history is compacted"
+  defp event_hint("session_end"), do: "once, when a session ends"
 
   # ------------------------------------------------------ the hook's page
 
@@ -561,6 +572,32 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.ProjectFile do
         ]
       }
     end
+  end
+
+  # cli020 E30 (competitors-11): the permission rules (F10's `permissions`:
+  # `allow`, `ask`, `deny`, C23), read-only; edited in the file itself. STUB:
+  # read from the `project_config` record's `permissions` field until C23's
+  # `project_config.summary` is wired.
+  defp rules(config) do
+    perms = get(config, :permissions)
+
+    rows =
+      for {kind, key} <- [{"allow", :allow}, {"ask", :ask}, {"deny", :deny}] do
+        items =
+          case get(perms, key) do
+            list when is_list(list) -> Enum.filter(list, &is_binary/1)
+            _ -> []
+          end
+
+        value =
+          if items == [],
+            do: [{"none", :text_ghost}],
+            else: [{Enum.join(items, " · "), :text_primary}]
+
+        %Row{id: "rule:" <> kind, kind: :info, label: kind, value: value}
+      end
+
+    [Row.heading("permission rules", [{@rules_hint, :text_faint}]) | rows]
   end
 
   defp event_hooks(hooks, event) when is_map(hooks) do

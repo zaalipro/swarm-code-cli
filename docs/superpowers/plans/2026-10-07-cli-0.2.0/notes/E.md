@@ -379,3 +379,18 @@ Branch `cli020/E` from M1 `3008f352`, worktree `~/dev/swarm-code-cli-wt/cli020-E
   compact: the counter row under the run in chat. `strip.ex`: `Plan 3/7` after the needs-you part.
   `:auto` already counts a plan (E5's `auto_shown?/1`).
 - Tests: `cli020/e29_plan_section_test.exs` (6). Run: CLI ui + cli020 + demo 2599/0.
+
+### E30 Hooks and rules in Settings
+- `ui/settings/sections/project_file.ex`: `@events` gains F9's `stop`, `notification`,
+  `user_prompt_submit`, `pre_compact`, `session_end` (with picker hints), so their hooks are rows of
+  the existing hooks table (`event · matcher · command · timeout`, still editable as pass74 made it,
+  and `a` can add them once C23 widens the service's `@events`). New read-only block
+  `permission rules` (hint `Edit .swarm_code/config.json; ncode reads it for trusted projects
+  only.`) with `rule:allow`, `rule:ask`, `rule:deny` info rows (`a · b` or `none`).
+- STUB: the rules are read from the `project_config` record's `permissions` field (`%{allow, ask,
+  deny}`); **handoff C**: add `"permissions"` to the record fields in
+  `service/settings/project_config.ex` `record/1` (or the finisher points `rules/1` at C23's
+  `project_config.summary`).
+- Deviation: hooks stay the pass74 editable table rather than a new read-only `event · command`
+  list (it already shows both; a read-only copy would duplicate it).
+- Tests: `cli020/e30_hooks_rules_test.exs` (3). Run: CLI settings + E30 527/0.
