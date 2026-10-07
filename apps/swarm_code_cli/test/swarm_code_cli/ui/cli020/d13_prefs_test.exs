@@ -14,7 +14,9 @@ defmodule SwarmCodeCLI.UI.Cli020.D13PrefsTest do
 
   # Settings wrote cli.json: the layer's snapshot carries every value.
   defp written(state, prefs) do
-    {state, _} = Reducer.update(state, {:settings, {:cli_snapshot, 0, %{values: prefs, status: :ok}}})
+    {state, _} =
+      Reducer.update(state, {:settings, {:cli_snapshot, 0, %{values: prefs, status: :ok}}})
+
     state
   end
 

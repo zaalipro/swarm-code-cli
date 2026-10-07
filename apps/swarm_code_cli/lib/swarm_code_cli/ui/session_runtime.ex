@@ -569,7 +569,10 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
         :nouse_stdio,
         args: [
           "-c",
-          ~s(exec $SWARM_EDIT_COMMAND "$1" 2>&1),
+          # cli020 D14: the command is evaluated by the shell, as git's
+          # core.editor is, so a quoted path with spaces and its arguments
+          # (`"/Applications/My Editor/e" --wait`) work.
+          ~s(eval "exec $SWARM_EDIT_COMMAND \\"\\$1\\"" 2>&1),
           "ncode-editor",
           file
         ],
