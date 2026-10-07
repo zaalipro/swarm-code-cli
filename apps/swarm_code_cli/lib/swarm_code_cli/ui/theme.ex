@@ -59,13 +59,24 @@ defmodule SwarmCodeCLI.UI.Theme do
   defp base_style(:text_muted, mode),
     do: %Style{foreground: color(mode, 0x8C8B88, 245, :white)} |> cue(:text_muted, mode)
 
-  defp base_style(:text_faint, mode),
-    do: %Style{foreground: color(mode, 0x5E5D5A, 240, :bright_black)} |> cue(:text_faint, mode)
+  # cli020 E23 (tui-code-13): faint reads at 4.77:1 on the surface and
+  # 4.52:1 on the card (WCAG, sRGB), ghost at 3.21:1 and 3.04:1; in 16
+  # colours faint is the terminal's white, never its bright black (the page
+  # colour of Solarized-style palettes). High contrast makes both muted, bold.
+  defp base_style(:text_faint, mode) do
+    if high_contrast?(),
+      do: %{base_style(:text_muted, mode) | modifiers: [:bold]} |> cue(:text_faint, mode),
+      else: %Style{foreground: color(mode, 0x868583, 245, :white)} |> cue(:text_faint, mode)
+  end
 
   # One step below faint: placeholders such as "no tools yet" that must read as
   # absence rather than as content.
-  defp base_style(:text_ghost, mode),
-    do: %Style{foreground: color(mode, 0x4B4A48, 239, :bright_black)} |> cue(:text_ghost, mode)
+  defp base_style(:text_ghost, mode) do
+    if high_contrast?(),
+      do: %{base_style(:text_muted, mode) | modifiers: [:bold]} |> cue(:text_ghost, mode),
+      else:
+        %Style{foreground: color(mode, 0x6A6967, 242, :bright_black)} |> cue(:text_ghost, mode)
+  end
 
   defp base_style(:focus, mode),
     do: %Style{foreground: color(mode, 0xFF6A1A, 208, :bright_yellow)} |> cue(:focus, mode)
@@ -297,11 +308,13 @@ defmodule SwarmCodeCLI.UI.Theme do
   # value each one replaces. A colour with no entry (the accent) is the same
   # in both modes.
   @light_rgb %{
-    # text, muted, faint, ghost
+    # text, muted, faint, ghost (cli020 E23: faint 4.70/4.94:1 and ghost
+    # 3.37/3.54:1 on the light surface and card), disabled
     0xF3F2F0 => 0x1A1A1A,
     0x8C8B88 => 0x6B6A67,
+    0x868583 => 0x72706C,
+    0x6A6967 => 0x8A8883,
     0x5E5D5A => 0x96948F,
-    0x4B4A48 => 0xB5B3AE,
     # border, bar track, elevated, card, popover, hover
     0x2A2A2A => 0xE2E0DC,
     0x3C3C3B => 0xE2E0DC,
@@ -347,7 +360,7 @@ defmodule SwarmCodeCLI.UI.Theme do
     255 => 234,
     245 => 242,
     240 => 246,
-    239 => 249,
+    242 => 244,
     236 => 254,
     238 => 253,
     234 => 255,
@@ -509,6 +522,25 @@ defmodule SwarmCodeCLI.UI.Theme do
 
   defp plain_color(:ansi16, _rgb, _index, ansi), do: %Color{role: :default, value: {:ansi, ansi}}
   defp plain_color(:monochrome, _rgb, _index, _ansi), do: nil
+
+  # ---------------------------------------------------------------- contrast
+
+  @contrast_key {__MODULE__, :high_contrast}
+
+  @doc """
+  cli020 E23: `terminal.colors` `high_contrast` for the launch (faint and
+  ghost drawn as muted, bold). Written by the launcher like the accent.
+  """
+  @spec put_high_contrast(boolean()) :: :ok
+  def put_high_contrast(true), do: :persistent_term.put(@contrast_key, true)
+
+  def put_high_contrast(false) do
+    _ = :persistent_term.erase(@contrast_key)
+    :ok
+  end
+
+  @spec high_contrast?() :: boolean()
+  def high_contrast?, do: :persistent_term.get(@contrast_key, false)
 
   # ---------------------------------------------------------------- accent
 

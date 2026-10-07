@@ -31,7 +31,7 @@ defmodule SwarmCode.Settings.Registry.Terminal do
     cli("terminal.colors", :appearance, "Colours",
       group: "colour and glyphs",
       description:
-        "#{@next_launch} NO_COLOR (set and not empty) wins; auto probes COLORTERM and TERM.",
+        "#{@next_launch} NO_COLOR (set and not empty) wins; auto probes COLORTERM and TERM; high contrast probes too and draws faint text as muted.",
       storage: {:cli, "colors"},
       type: :enum,
       choices:
@@ -40,7 +40,9 @@ defmodule SwarmCode.Settings.Registry.Terminal do
           {"truecolor", "truecolor"},
           {"256", "256"},
           {"16", "16"},
-          {"none", "none"}
+          {"none", "none"},
+          # cli020 E23: the probed colours with faint and ghost text as muted, bold.
+          {"high_contrast", "high contrast"}
         ]),
       default: "auto",
       layers: [:env, :cli, :default],

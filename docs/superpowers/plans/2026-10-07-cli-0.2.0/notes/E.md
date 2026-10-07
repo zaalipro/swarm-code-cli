@@ -260,3 +260,19 @@ Branch `cli020/E` from M1 `3008f352`, worktree `~/dev/swarm-code-cli-wt/cli020-E
 - `Dialog` library contents: for `:schedules` the first row is `Scheduled tasks fire only while the
   ncode app is running. Run now works here.` (not focusable), with the list, the detail and a save's
   message after it, so it shows again after Save. Test `cli020/e22_schedules_note_test.exs`.
+
+### E23 Contrast
+- `Theme`: dark `text_faint` `0x868583` (4.77:1 surface, 4.52:1 card), `text_ghost` `0x6A6967`
+  (3.21/3.04). 256 colours: faint `245` (4.94:1 on 234; deviation: the same index as muted, the
+  grey ramp has no step between `244` = 4.32:1 and `245`), ghost `242` (3.25:1). ANSI-16 faint
+  `:white`. Carbon light twins: faint `0x72706C` (4.70/4.94 on `0xFAF9F7`/`0xFFFFFF`), ghost
+  `0x8A8883` (3.37/3.54); index twins `245→242`, `242→244`. `disabled` keeps `0x5E5D5A` (not in
+  the contract).
+- High contrast: `Theme.put_high_contrast/1` + `high_contrast?/0` (`:persistent_term`, like the
+  accent): faint and ghost draw as muted, bold. `terminal.colors` gains `high_contrast` ("high
+  contrast"). **Handoff B** (`release/terminal_preferences.ex:166`): map `"high_contrast"` to the
+  probed colour mode (today it falls to the `_ ->` probe already) and call
+  `Theme.put_high_contrast(true)` at launch (beside `put_accent`).
+- Tests: `cli020/e23_contrast_test.exs` (computes WCAG for dark and light); `theme_test` row values
+  updated. `docs/settings.md` regenerated: unchanged (the table lists no choices). ui + cli020 +
+  demo 2557/0; core settings 40/0.
