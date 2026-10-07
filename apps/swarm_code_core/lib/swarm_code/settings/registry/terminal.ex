@@ -283,6 +283,29 @@ defmodule SwarmCode.Settings.Registry.Terminal do
       since: :c74,
       parity: "NEW"
     ),
+    # cli020 E28 (competitors-20): the status line's items and their order.
+    cli("terminal.status_items", :layout, "Status line",
+      group: "status line",
+      description: "The facts the bottom line shows, in this order. Branch needs a Git project.",
+      storage: {:cli, "status_items"},
+      type: :checklist,
+      choices:
+        choices([
+          {"mode", "mode"},
+          {"approval", "approval"},
+          {"model", "model"},
+          {"effort", "effort"},
+          {"branch", "branch"},
+          {"ctx", "context"},
+          {"cost", "cost"},
+          {"waiting", "waiting"}
+        ]),
+      default: ~w(mode approval model effort ctx cost waiting),
+      applies: :at_once,
+      synonyms: ["status bar", "status line", "branch", "git branch"],
+      since: :c74,
+      parity: "NEW"
+    ),
     cli("terminal.diff_lines", :layout, "Diff lines shown",
       group: "transcript",
       description: "Lines of each diff hunk drawn before … N more lines · Enter opens.",

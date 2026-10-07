@@ -176,16 +176,14 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
     effort = workspace && Map.get(workspace, :effort)
 
     model =
-      case chat_model do
-        model when is_binary(model) and model != "" and is_binary(effort) and effort != "" ->
-          {model <> " · " <> effort, tint(:plain, state, :text_muted, [])}
+      if is_binary(chat_model) and chat_model != "",
+        do: {chat_model, tint(:plain, state, :text_muted, [])}
 
-        model when is_binary(model) and model != "" ->
-          {model, tint(:plain, state, :text_muted, [])}
+    # cli020 E28: the effort is its own item (`model · effort` as before).
+    effort =
+      if is_binary(effort) and effort != "", do: {effort, tint(:plain, state, :text_muted, [])}
 
-        _ ->
-          nil
-      end
+    branch = branch_words(state, workspace)
 
     # The workers' model, only when it is not the chat model.
     agents =
@@ -210,38 +208,79 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
       if SwarmCodeCLI.UI.Settings.ChatProvider.missing(state),
         do: {SwarmCodeCLI.UI.Settings.ChatProvider.chip(), tint(:plain, state, :warning, [:bold])}
 
+    narrow? = class in [:narrow, :small, :compressed_small]
+
     # {rank, fact}: the higher the rank, the longer a fact holds its place
-    # when the row is short.
-    parts =
-      if class in [:narrow, :small, :compressed_small],
-        do: [
-          {100, mode},
-          {70, approval},
-          {60, model},
-          {90, waiting},
-          {88, provider},
-          {85, limit},
-          {95, connection}
-        ],
-        else: [
-          {100, mode},
-          {70, approval},
-          {65, trust},
-          {60, model},
-          {20, agents},
-          {50, context},
-          {40, cost},
-          {45, background},
-          {90, waiting},
-          {88, provider},
-          {85, limit},
-          {95, connection}
-        ]
+    # when the row is short. cli020 E28: `terminal.status_items` names the
+    # eight items drawn and their order; trust follows the approval, the
+    # agents' model the model and background work the cost (each drawn
+    # without its item too); provider, rate limit and connection always.
+    items = %{
+      "mode" => [{100, mode}],
+      "approval" => [{70, approval}],
+      "model" => [{60, model}],
+      "effort" => [{58, effort}],
+      "branch" => [{30, branch}],
+      "ctx" => [{50, context}],
+      "cost" => [{40, cost}],
+      "waiting" => [{90, waiting}]
+    }
+
+    items =
+      if narrow?,
+        do: Map.drop(items, ["branch", "ctx", "cost"]),
+        else: %{
+          items
+          | "approval" => [{70, approval}, {65, trust}],
+            "model" => [{60, model}, {20, agents}],
+            "cost" => [{40, cost}, {45, background}]
+        }
+
+    listed = state |> status_items() |> Enum.flat_map(&Map.get(items, &1, []))
+
+    always =
+      if narrow?,
+        do: [{88, provider}, {85, limit}, {95, connection}],
+        else: [{65, trust}, {45, background}, {88, provider}, {85, limit}, {95, connection}]
+
+    parts = Enum.uniq_by(listed ++ always, fn {_rank, fact} -> fact || make_ref() end)
 
     Enum.reject(parts, &is_nil(elem(&1, 1)))
   end
 
   defp essential(parts), do: Enum.filter(parts, &(elem(&1, 0) >= 85))
+
+  @status_items ~w(mode approval model effort branch ctx cost waiting)
+  @default_items ~w(mode approval model effort ctx cost waiting)
+
+  # cli020 E28: cli.json `status_items` (through `state.prefs`, the json
+  # names), a list of distinct known items; anything else is the default.
+  defp status_items(state) do
+    prefs = Map.get(state, :prefs) || %{}
+
+    case Map.get(prefs, "status_items") do
+      items when is_list(items) ->
+        if Enum.all?(items, &(&1 in @status_items)) and Enum.uniq(items) == items,
+          do: items,
+          else: @default_items
+
+      _ ->
+        @default_items
+    end
+  end
+
+  # `⎇ <branch> +<dirty>` (ASCII `br:`), from the workspace's git facts (C22,
+  # read with `Map.get` until they are on the wire).
+  defp branch_words(state, workspace) do
+    branch = workspace && Map.get(workspace, :git_branch)
+    dirty = workspace && Map.get(workspace, :git_dirty)
+
+    if is_binary(branch) and branch != "" do
+      mark = if state.capabilities.ascii?, do: "br: ", else: "⎇ "
+      dirty = if is_integer(dirty) and dirty > 0, do: " +#{dirty}", else: ""
+      {mark <> branch <> dirty, tint(:plain, state, :text_muted, [])}
+    end
+  end
 
   # Drop the lowest-ranked fact (the rightmost of equals) until the row fits.
   defp fit(parts, room, policy, state) do

@@ -353,3 +353,18 @@ Branch `cli020/E` from M1 `3008f352`, worktree `~/dev/swarm-code-cli-wt/cli020-E
 - Tests: `cli020/e27_palettes_test.exs` (21: a contrast test per palette and mode, values, paint
   substitution, options, preference + registry). Runs: core settings + commands 76/0; CLI ui +
   cli020 + demo + c74 2 failures (above, fixed), settings re-run 524/0.
+
+### E28 Status line items
+- Registry `terminal.status_items` (Layout page, group "status line", `:checklist` of mode approval
+  model effort branch ctx cost waiting, default all but branch, `{:cli, "status_items"}`, at once).
+  Counts 179 → 180, scalar 139 → 140, cli entries 26 → 27; `docs/settings.md` +1 row.
+- `projector/status.ex` `facts/2`: the listed items in the listed order, read from
+  `state.prefs["status_items"]` (json names, as `diff_lines` is); an unknown or repeated name means
+  the default. The effort is its own item now (the default still reads `model · effort`). Companions
+  keep today's places: trust after approval, the agents' model after the model, background work
+  after the cost (each still drawn when its item is not listed); provider, rate limit and connection
+  are always drawn. Narrow classes leave out branch, ctx and cost, as before for ctx/cost.
+- `branch`: `⎇ <git_branch> +<git_dirty>` (no `+` at 0; ASCII `br:`), STUB read with `Map.get` from
+  the workspace snapshot until C22 lands `git_branch`/`git_dirty`.
+- Tests: `cli020/e28_status_items_test.exs` (6). Runs: core settings 40/0; CLI ui + cli020 + demo +
+  c74 2606/0.

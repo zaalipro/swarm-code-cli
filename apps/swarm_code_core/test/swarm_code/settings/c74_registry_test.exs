@@ -25,7 +25,7 @@ defmodule SwarmCode.Settings.C74RegistryTest do
     appearance:
       ~w(terminal.theme terminal.palette terminal.colors terminal.glyphs terminal.ambiguous_width terminal.reduced_motion terminal.accent terminal.desktop_theme_link),
     layout:
-      ~w(terminal.panel terminal.composer_rows terminal.inspector_width terminal.show_diffs terminal.agent_summaries terminal.notice_seconds terminal.notify terminal.title terminal.paste_collapse_lines terminal.exit_transcript terminal.diff_lines),
+      ~w(terminal.panel terminal.composer_rows terminal.inspector_width terminal.show_diffs terminal.agent_summaries terminal.notice_seconds terminal.notify terminal.title terminal.paste_collapse_lines terminal.exit_transcript terminal.status_items terminal.diff_lines),
     keys:
       ~w(terminal.keymap terminal.mouse terminal.wheel_lines terminal.editor terminal.hint_letters terminal.keys terminal.terminal_facts),
     startup:
@@ -52,8 +52,8 @@ defmodule SwarmCode.Settings.C74RegistryTest do
     end
   end
 
-  test "the registry holds #{length(Registry.all())} entries (179: 169 table rows + lsp.check, lsp.stop + cli020 E1's three validator rows + E26's four terminal rows + E27's palette)" do
-    assert length(Registry.all()) == 179
+  test "the registry holds #{length(Registry.all())} entries (180: 169 table rows + lsp.check, lsp.stop + cli020 E1's three validator rows + E26's four terminal rows + E27's palette + E28's status items)" do
+    assert length(Registry.all()) == 180
     all = Map.merge(@part1, @part2) |> Map.values() |> List.flatten()
     assert Enum.sort(all) == Enum.sort(Enum.map(Registry.all(), & &1.key))
   end
@@ -64,11 +64,12 @@ defmodule SwarmCode.Settings.C74RegistryTest do
     assert indexes == Enum.sort(indexes)
   end
 
-  test "scalar keys fit in one values.patch; cli entries are the 26 terminal keys" do
+  test "scalar keys fit in one values.patch; cli entries are the 27 terminal keys" do
     assert length(Registry.scalar_keys()) <= Registry.max_patch()
-    # cli020 E26: notify, title, paste_collapse_lines, exit_transcript; E27: palette.
-    assert length(Registry.scalar_keys()) == 139
-    assert length(Registry.cli_entries()) == 26
+    # cli020 E26: notify, title, paste_collapse_lines, exit_transcript; E27: palette;
+    # E28: status_items.
+    assert length(Registry.scalar_keys()) == 140
+    assert length(Registry.cli_entries()) == 27
 
     for entry <- Registry.cli_entries() do
       assert {:cli, name} = entry.storage
