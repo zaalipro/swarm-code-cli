@@ -1815,6 +1815,28 @@ defmodule SwarmCodeCLI.UI.Reducer do
     end
   end
 
+  # cli020 C8/E9 (tui-code-11): `/search` hits are palette rows ("?"),
+  # Enter opens the hit's conversation; no hits stays the report.
+  defp show_feedback(state, :report, %{subject: :search, rows: [_ | _] = rows} = feedback, _id) do
+    query =
+      case feedback.title do
+        "Search: " <> words -> words
+        _ -> ""
+      end
+
+    state = %{state | search_results: %{query: query, options: Enum.take(rows, 50)}}
+    layer = SwarmCodeCLI.UI.Switcher.open(state, state.focus)
+    {state, opened} = transition(state, {:open_layer, layer})
+
+    {state, typed} =
+      case SwarmCodeCLI.UI.Switcher.field_key(layer) do
+        nil -> {state, []}
+        key -> Editing.apply(state, :field_editor, key, {:insert, "?"})
+      end
+
+    {state, opened ++ typed}
+  end
+
   defp show_feedback(state, :report, feedback, id) do
     transition(%{state | command_report: feedback}, {:open_layer, {:command_report, id}})
   end

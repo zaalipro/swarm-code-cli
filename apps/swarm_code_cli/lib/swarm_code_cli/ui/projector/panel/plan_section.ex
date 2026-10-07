@@ -11,8 +11,8 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.PlanSection do
         … 2 more
 
   `✓` done, `▸` in progress, `·` pending (ASCII `+ > .`); at most 7 steps,
-  then `… N more`. The strip shows the counter alone. The plan is read with
-  `Map.get` until C23 puts it on the wire.
+  then `… N more`. The strip shows the counter alone. The plan is C23's
+  `RunSummary.plan` (`Map.get`, so fixtures without the field draw none).
   """
   alias SwarmCodeCLI.UI.Projector.Panel
   alias SwarmCodeCLI.UI.Projector.Panel.Draw

@@ -1398,8 +1398,6 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
      Map.new(decor)}
   end
 
-  # STUB (cli020 §8.3): `{:effort_pick, level}` is D18's action; until it is
-  # in `Action`, a row has no target rather than an invalid one.
   # cli020 E25 (tui-code-21): the levels in words; the atom is what is stored.
   defp research_level(:low), do: "Fastest · about a minute"
   defp research_level(:medium), do: "Standard"
@@ -1432,16 +1430,10 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
     |> Enum.join(" · ")
   end
 
-  # STUB (cli020 §8.3): `{:rewind_choose, scope}` is D10's action.
-  defp rewind_target(scope) do
-    target = {:local, {:rewind_choose, scope}}
-    if match?({:ok, _}, SwarmCodeCLI.UI.ActionTarget.validate(target)), do: target
-  end
+  # cli020 §8.3: D10's `{:rewind_choose, scope}` and D18's `{:effort_pick, level}`.
+  defp rewind_target(scope), do: {:local, {:rewind_choose, scope}}
 
-  defp effort_target(level) do
-    target = {:local, {:effort_pick, level}}
-    if match?({:ok, _}, SwarmCodeCLI.UI.ActionTarget.validate(target)), do: target
-  end
+  defp effort_target(level), do: {:local, {:effort_pick, level}}
 
   # One row per model the daemon lists, the one in use marked, the provider
   # after the model so a filter on either reads the same. A snapshot with no

@@ -575,9 +575,8 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.ProjectFile do
   end
 
   # cli020 E30 (competitors-11): the permission rules (F10's `permissions`:
-  # `allow`, `ask`, `deny`, C23), read-only; edited in the file itself. STUB:
-  # read from the `project_config` record's `permissions` field until C23's
-  # `project_config.summary` is wired.
+  # `allow`, `ask`, `deny`, C23), read-only; edited in the file itself. Read
+  # from the `project_config` record's `permissions` field (cli020 M2).
   defp rules(config) do
     perms = get(config, :permissions)
 

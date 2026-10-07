@@ -14,6 +14,9 @@ defmodule SwarmCodeCLI.UI.State do
     :detail,
     :slash_palette,
     command_report: nil,
+    # cli020 C8/E9: the hits of the last `/search` with hits
+    # (`%{query, options: [DTO.FeedbackRow]}`), the palette's "?" rows.
+    search_results: nil,
     # pass70-E fields: the composer-first keyboard, approvals and history.
     # The id of the running "press Ctrl-C again to quit" timer, nil when unarmed.
     quit_armed: nil,

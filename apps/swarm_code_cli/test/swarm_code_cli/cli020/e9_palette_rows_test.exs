@@ -7,7 +7,7 @@ defmodule SwarmCodeCLI.Cli020.E9PaletteRowsTest do
 
   import SwarmCodeCLI.Cli020EHelpers
 
-  alias SwarmCodeCLI.UI.{Action, Editor, FieldEditors, Switcher}
+  alias SwarmCodeCLI.UI.{Editor, FieldEditors, Switcher}
 
   defp palette(state, query) do
     layer = {:switcher, "palette"}
@@ -56,13 +56,8 @@ defmodule SwarmCodeCLI.Cli020.E9PaletteRowsTest do
     state = fixture(:chat, {120, 30}) |> palette("stash")
     labels = state |> Switcher.visible() |> Enum.map(& &1.label)
 
-    # STUB until D19: the rows appear only when `Action` accepts them.
-    if match?({:ok, _}, Action.validate({:stash_draft})) do
-      assert "Stash draft" in labels
-      assert "Restore stash" in labels
-    else
-      refute "Stash draft" in labels
-    end
+    assert "Stash draft" in labels
+    assert "Restore stash" in labels
   end
 
   test "search hits are rows under ? whose Enter opens the hit's conversation" do

@@ -634,11 +634,9 @@ defmodule SwarmCodeCLI.UI.Switcher do
     ]
   end
 
-  # cli020 E9 (competitors-19): D19's stash actions. STUB: listed only once
-  # `Action` accepts them (D19), so the palette never carries an invalid target.
+  # cli020 E9 (competitors-19): D19's stash actions.
   defp stash_entries do
     for {label, action} <- [{"Stash draft", {:stash_draft}}, {"Restore stash", {:restore_stash}}],
-        match?({:ok, _}, SwarmCodeCLI.UI.Action.validate(action)),
         do: entry(label, :action, {:local, action})
   end
 
