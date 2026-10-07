@@ -94,6 +94,19 @@ defmodule SwarmCodeCLI.UI.Keymap.Special do
 
   def run(:copy_selected, _key, _state, _table), do: ok(:copy_selection)
 
+  # cli020 D16: `r` on a failed or stopped run's item retries that run.
+  def run(:retry_selected, _key, state, _table) do
+    with id when is_binary(id) <- Map.get(state.selection, state.focus),
+         %{run_id: run_id} when is_binary(run_id) <-
+           SwarmCodeCLI.UI.ReadModel.transcript_item(state.read_model, id),
+         %{state: run_state, revision: revision} when run_state in [:failed, :stopped] <-
+           Map.get(state.read_model.runs, run_id) do
+      ok({:invoke, {:retry_run, run_id, revision}, elem(State.next_id(state, :request), 0)})
+    else
+      _ -> if state.layers == [], do: ok({:compose, "r"}), else: :ignore
+    end
+  end
+
   # "q" closes the top layer and only quits when there is none. Inside a run
   # view it closes while the filter is empty and types once a query has been
   # started, because a filter could never usefully spell "query".

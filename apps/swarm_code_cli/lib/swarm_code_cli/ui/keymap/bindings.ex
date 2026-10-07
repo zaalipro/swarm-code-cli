@@ -695,6 +695,18 @@ defmodule SwarmCodeCLI.UI.Keymap.Bindings do
       help: "Open the run inspector over this run",
       hint: 2
     },
+    # cli020 D16 (ux-live-4): `r` in select mode retries the selected item's
+    # failed or stopped run; on anything else it types `r` as before.
+    %Binding{
+      id: :retry_selected,
+      keys: [{"r", []}],
+      action: {:special, :retry_selected},
+      contexts: [:main],
+      group: :act,
+      label: "Retry",
+      help: "Retry the selected failed or stopped run",
+      hint: 0
+    },
     %Binding{
       id: :copy_selected,
       keys: [{"y", []}],

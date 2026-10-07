@@ -324,6 +324,7 @@ Mouse: Wheel scrolls; select text with the mouse. /mouse on sends wheel reports 
 | `p` | Pause or continue the current run |
 | `m` | Mark the current run as seen |
 | `a` | Open the action menu for what is selected |
+| `r` | Retry the selected failed or stopped run |
 | `y` | Copy the selected item's text to the clipboard |
 | `o` | Open the full text of the selected item |
 | `Enter` | Activate what is focused; on an approval card that cuts its command, show all of it |
