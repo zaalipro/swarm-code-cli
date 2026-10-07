@@ -1376,6 +1376,14 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         {accepted(id, [attachment_id]),
          %{state | attachment_ids: Enum.uniq([attachment_id | state.attachment_ids])}}
 
+      # cli020 C11: /rename.
+      {:ok, %{type: :renamed, title: title}} ->
+        {accepted(
+           id,
+           [state.opts[:conversation_id]],
+           notice("Conversation", "Renamed “#{title}”.")
+         ), refresh(state)}
+
       {:ok, %{type: :updated, mode: mode}} ->
         {accepted(id, [state.opts[:conversation_id]], notice_feedback(mode)), refresh(state)}
 
@@ -2285,6 +2293,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   defp error_code(:unknown_outcome), do: :unknown_outcome
   defp error_code({:provider_required, _words}), do: :not_allowed
   defp error_code({:stale, _words}), do: :stale_revision
+  defp error_code({:busy, _words}), do: :not_allowed
   defp error_code(:not_configured), do: :source_unavailable
   # The client's closed error enum has no "not found": a model no provider
   # lists is an argument the request cannot carry, which is what it says.
@@ -4573,6 +4582,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
   # cli020: a compare-and-set lost (the queue, a run's revision), in words.
   defp refusal({:stale, words}, _text) when is_binary(words), do: {"stale", words}
+  # cli020 C11/C15: something still running holds the request, in words.
+  defp refusal({:busy, words}, _text) when is_binary(words), do: {"busy", words}
 
   defp refusal(_reason, text), do: refusal(:operation_failed, text)
 

@@ -125,4 +125,92 @@ defmodule SwarmCode.Daemon.Service.C020DispatcherTest do
       refute inspect(rows) =~ "**"
     end
   end
+
+  # E3 parses /rename, /delete and /fork; until it lands these tests hand the
+  # dispatcher the command map the parser returns (`execute_parsed/3`).
+  defp parsed(conv, name, action, fields \\ %{}),
+    do:
+      Dispatcher.execute_parsed(
+        conv.id,
+        Map.merge(%{name: name, kind: :builtin, action: action}, fields)
+      )
+
+  defp message!(conv, role, content) do
+    {:ok, m} =
+      Conversations.create_message(%{conversation_id: conv.id, role: role, content: content})
+
+    m
+  end
+
+  describe "C11 /rename, /delete, /fork" do
+    test "/rename trims and bounds the title", c do
+      conv = c.conversation
+
+      assert {:ok, %{type: :renamed, title: "Build fix"}} =
+               parsed(conv, "rename", :rename_conversation, %{title: "  Build fix  "})
+
+      assert Conversations.get(conv.id).title == "Build fix"
+
+      for bad <- ["   ", String.duplicate("x", 201)] do
+        assert {:error, :invalid_argument} =
+                 parsed(conv, "rename", :rename_conversation, %{title: bad})
+      end
+
+      assert Conversations.get(conv.id).title == "Build fix"
+    end
+
+    test "/delete removes this conversation and opens the newest other one", c do
+      {:ok, older} = Conversations.create(c.project.id)
+      {:ok, newer} = Conversations.create(c.project.id)
+      {:ok, _} = Conversations.update(newer, %{title: "Newest other"})
+      message!(newer, "user", "hello")
+
+      assert {:ok, %{type: :conversation, conversation_id: target}} =
+               parsed(older, "delete", :delete_conversation)
+
+      assert Conversations.get(older.id) == nil
+      assert target == newer.id
+    end
+
+    test "/delete of the last conversation opens a new one", c do
+      root = c.root <> "-delete-last"
+      File.mkdir_p!(root)
+      {:ok, project} = SwarmCode.Domain.Projects.create(%{name: "Alone", root_path: root})
+      {:ok, only} = Conversations.create(project.id)
+
+      assert {:ok, %{type: :conversation, conversation_id: target, created: true}} =
+               parsed(only, "delete", :delete_conversation)
+
+      assert target != only.id
+      assert Conversations.get(target).project_id == project.id
+    end
+
+    test "/delete is refused while a run of the conversation is live", c do
+      conv = c.conversation
+      run_id = Ecto.UUID.generate()
+      {:ok, _} = Registry.register(SwarmCode.Domain.Registry, {:run, run_id}, {conv.id, nil})
+
+      assert {:error, {:busy, words}} = parsed(conv, "delete", :delete_conversation)
+      assert words =~ "Stop"
+      assert Conversations.get(conv.id) != nil
+      Registry.unregister(SwarmCode.Domain.Registry, {:run, run_id})
+    end
+
+    test "/fork copies the whole conversation and opens the copy", c do
+      conv = c.conversation
+      {:ok, conv} = Conversations.update(conv, %{title: "Original"})
+      message!(conv, "user", "first")
+      message!(conv, "assistant", "reply")
+      message!(conv, "user", "second")
+
+      assert {:ok, %{type: :conversation, conversation_id: fork_id, created: true}} =
+               parsed(conv, "fork", :fork_conversation)
+
+      assert fork_id != conv.id
+      assert Conversations.get(fork_id).title == "Fork: Original"
+
+      assert Enum.map(Conversations.list_messages(fork_id), & &1.content) ==
+               ["first", "reply", "second"]
+    end
+  end
 end

@@ -75,6 +75,19 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
     end
   end
 
+  @doc false
+  # cli020 lane C: runs a command map as `Commands.parse/2` returns it. The
+  # tests of the actions E3's parser adds (/rename, /delete, /fork, /undo,
+  # bare /effort) call this until that parser lands.
+  @spec execute_parsed(String.t(), map(), keyword()) :: {:ok, map()} | {:error, term()}
+  def execute_parsed(conversation_id, %{action: action} = command, opts \\ [])
+      when is_binary(conversation_id) and is_atom(action) do
+    case Conversations.get(conversation_id) do
+      nil -> {:error, :conversation_not_found}
+      conv -> conv |> execute(command, opts) |> normalize_result()
+    end
+  end
+
   defp dispatch_known(conversation_id, text, opts) do
     case Conversations.get(conversation_id) do
       nil ->
@@ -470,6 +483,53 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
   defp execute(conv, %{action: :new_conversation} = cmd, _) do
     with {:ok, new} <- Conversations.create(conv.project_id),
          do: result(conv, cmd.name, :conversation, %{conversation_id: new.id, created: true})
+  end
+
+  # cli020 C11 (tui-code-14): /rename <title>, /delete, /fork.
+  defp execute(conv, %{action: :rename_conversation} = cmd, _) do
+    title = cmd |> Map.get(:title, "") |> to_string() |> String.trim()
+
+    if title != "" and String.length(title) <= 200 do
+      with {:ok, renamed} <- Conversations.rename(conv, title),
+           do: result(conv, cmd.name, :renamed, %{title: renamed.title})
+    else
+      {:error, :invalid_argument}
+    end
+  end
+
+  # Refused while any run of it is live (stop it first); the answer is the
+  # conversation the service switches to: the project's newest other one, or
+  # a new one when none is left.
+  defp execute(conv, %{action: :delete_conversation} = cmd, _) do
+    if Engine.running_runs(conv.id) != [] do
+      {:error, {:busy, "Stop the running work first, then delete this conversation."}}
+    else
+      with {:ok, _} <- Conversations.delete(conv) do
+        case Enum.find(Conversations.list_for_project(conv.project_id), &(&1.id != conv.id)) do
+          nil ->
+            with {:ok, new} <- Conversations.create(conv.project_id),
+                 do:
+                   result(conv, cmd.name, :conversation, %{conversation_id: new.id, created: true})
+
+          other ->
+            result(conv, cmd.name, :conversation, %{conversation_id: other.id, created: false})
+        end
+      end
+    end
+  end
+
+  # The whole conversation (every message `fork/2` copies) into a new one.
+  defp execute(conv, %{action: :fork_conversation} = cmd, _) do
+    newest =
+      Repo.one(
+        from(m in SwarmCode.Domain.Conversations.Message,
+          where: m.conversation_id == ^conv.id,
+          select: max(m.position)
+        )
+      ) || 0
+
+    with {:ok, fork} <- Conversations.fork(conv, newest + 1),
+         do: result(conv, cmd.name, :conversation, %{conversation_id: fork.id, created: true})
   end
 
   defp execute(conv, %{action: :select_conversation} = cmd, _),
@@ -887,6 +947,8 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
   defp normalize_result(_), do: {:error, :operation_failed}
   defp failure(reason) when reason in @errors, do: {:error, reason}
   defp failure(:invalid_workflow_arguments), do: {:error, :invalid_workflow_arguments}
+  # cli020: a refusal in words (C11 /delete of a live conversation).
+  defp failure({:busy, words}) when is_binary(words), do: {:error, {:busy, words}}
 
   # pass73 T3/T8: an unexpected failure is still refused, but cli.log names its
   # shape (a tag, never a changeset's text) so the next report is diagnosable.
