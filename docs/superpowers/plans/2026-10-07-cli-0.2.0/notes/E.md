@@ -245,3 +245,13 @@ Branch `cli020/E` from M1 `3008f352`, worktree `~/dev/swarm-code-cli-wt/cli020-E
 - Tests updated: `pass70_qa_picker_row_test` (`11 runs  open │`), `conversations_test` (the label
   no longer ends `· open`; the entry's `right` is `open`). New `cli020/e20_resume_rows_test.exs`.
   ui + demo dirs 2438/0.
+
+### E21 Syntax
+- `Projector.Syntax.lines/2` carries `{:comment | :string, close}` from line to line of a fence
+  (`/* */` in js/rust/go/c/cpp/java/sql/css, `<!-- -->` in html; triple quotes in python/elixir/toml,
+  backticks in js/go); `line/2` is the same tokenizer with no carry. Comments, quotes and
+  multi-line delimiters are tables per language; keyword tables for go, c, cpp, java, ruby, sql
+  (case-insensitive), yaml, toml, css, html (tags with their bracket are keywords); YAML/CSS keys
+  before `:` and TOML keys before `=` are `:type`. `@line_bytes` unchanged (a long line inside a
+  comment stays one `:comment` token and keeps the carry).
+- Test `cli020/e21_syntax_test.exs` (17); paint + projector dirs (goldens included) 527/0.
