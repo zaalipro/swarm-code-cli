@@ -78,7 +78,17 @@ defmodule SwarmCodeCLI.UI.Projector.Strip do
       if ctx.hint? do
         hinted(ctx, head.(@title_cells), agents, need)
       else
-        fitted(ctx, head, need, swarm(ctx, runs), turn_limit(runs, views), money(ctx, runs))
+        # cli020 E29: `Plan 3/7` of the run in front, before the swarm count.
+        plan = SwarmCodeCLI.UI.Projector.Panel.PlanSection.strip_part(run)
+
+        fitted(
+          ctx,
+          head,
+          need ++ plan,
+          swarm(ctx, runs),
+          turn_limit(runs, views),
+          money(ctx, runs)
+        )
       end
 
     targets =

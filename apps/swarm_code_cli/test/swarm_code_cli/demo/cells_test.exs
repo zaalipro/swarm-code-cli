@@ -24,7 +24,9 @@ defmodule SwarmCodeCLI.Demo.CellsTest do
     # pass71 V6: six rich conversation previews and three light ones.
     # pass72: 10 panel scenes x 4 sizes, their ASCII twins at 160x45, compact + hint.
     # pass75: 12 panel scenes (the two owner19 scenes).
-    assert length(files) == 23 + 8 * 4 + 2 + 6 + 3 + 12 * 4 + 12 + 8
+    # cli020 E15: the eight 0.2.0 feature scenes at 120x36.
+    assert length(files) == 23 + 8 * 4 + 2 + 6 + 3 + 12 * 4 + 12 + 8 + 8
+    assert "cli020-shell-item-120x36-truecolor-rich.svg" in files
     assert "index.html" in files
     assert Enum.sort(File.ls!(directory)) == files
 

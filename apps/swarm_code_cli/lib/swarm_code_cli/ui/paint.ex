@@ -8,7 +8,7 @@ defmodule SwarmCodeCLI.UI.Paint do
          :ok <- Budget.validate_scene(scene),
          true <- compatible_styles?(scene, options.color_mode),
          {:ok, plan} <- SwarmCodeCLI.UI.Paint.Scene.paint(scene, options),
-         plan = themed(plan, options.theme),
+         plan = themed(plan, options.theme, options.palette),
          :ok <- Plan.validate(plan) do
       {:ok, plan}
     else
@@ -23,16 +23,18 @@ defmodule SwarmCodeCLI.UI.Paint do
   # pass71 V4: the light theme is a palette substitution: every colour the
   # scene resolved to is exchanged for its Carbon light twin, and the canvas
   # (no colour) becomes the light page, so a dark terminal shows it too.
-  defp themed(plan, :dark), do: plan
+  # cli020 E27: a palette other than Carbon is the same substitution, by the
+  # desktop theme's tokens (`Theme.palette_entry/4`), dark or light.
+  defp themed(plan, :dark, :carbon), do: plan
 
-  defp themed(plan, :light) do
-    palette =
+  defp themed(plan, theme, palette) do
+    entries =
       plan.palette
       |> Tuple.to_list()
-      |> Enum.map(&SwarmCodeCLI.UI.Theme.light_entry(&1, plan.color_mode))
+      |> Enum.map(&SwarmCodeCLI.UI.Theme.palette_entry(&1, palette, theme, plan.color_mode))
       |> List.to_tuple()
 
-    %{plan | palette: palette}
+    %{plan | palette: entries}
   end
 
   # Admission is independent of which blocks happen to be visible this frame.

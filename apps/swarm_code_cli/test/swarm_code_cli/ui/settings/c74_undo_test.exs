@@ -41,19 +41,19 @@ defmodule SwarmCodeCLI.UI.Settings.C74UndoTest do
     state = act!(ready(), {:settings_open, {:key, "terminal.panel"}})
     {state, effects} = act(state, {:settings, {:verb, :right}})
     state = answer(state, effects)
-    assert state.prefs["panel"] == "compact"
+    assert state.prefs["panel"] == "full"
 
     state = press!(state, Input.key(:escape))
     assert state.settings == nil
     state = act!(state, {:settings_open, nil})
 
     {state, effects} = act(state, {:settings, {:verb, :undo}})
-    assert [{%{"panel" => :remove}, %{"panel" => "compact"}}] = writes(effects)
+    assert [{%{"panel" => :remove}, %{"panel" => "full"}}] = writes(effects)
     state = answer(state, effects)
-    assert state.panel_mode == :full
+    assert state.panel_mode == :auto
 
     {_state, effects} = act(state, {:settings, {:verb, :redo}})
-    assert [{%{"panel" => "compact"}, %{"panel" => :absent}}] = writes(effects)
+    assert [{%{"panel" => "full"}, %{"panel" => :absent}}] = writes(effects)
   end
 
   test "nothing to undo says so" do

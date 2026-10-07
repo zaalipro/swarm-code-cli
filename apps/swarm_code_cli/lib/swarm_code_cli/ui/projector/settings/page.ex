@@ -1177,14 +1177,29 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Page do
 
     tail = [{" · #{count} #{if count == 1, do: "row", else: "rows"} #{words}", :text_faint}]
 
-    names =
-      names
-      |> Enum.map(&[{&1, :text_muted}])
-      |> Enum.intersperse([{" · ", :text_faint}])
-      |> Enum.concat()
-
     room = grid.page.width - Text.cells(state, arrow) - Text.cells(state, tail) - 1
-    Text.fit(state, arrow ++ Text.clip(state, names, max(room, 0)) ++ tail, grid.page.width)
+
+    # cli020 E27: whole names that fit (the first one clipped when it alone
+    # is too long), never a name cut mid-word behind another.
+    names =
+      case whole_names(state, names, max(room, 0)) do
+        [] -> Text.clip(state, [{List.first(names) || "", :text_muted}], max(room, 0))
+        kept -> kept
+      end
+
+    Text.fit(state, arrow ++ names ++ tail, grid.page.width)
+  end
+
+  defp whole_names(state, names, room) do
+    names
+    |> Enum.reduce_while([], fn name, kept ->
+      next =
+        if kept == [],
+          do: [{name, :text_muted}],
+          else: kept ++ [{" · ", :text_faint}, {name, :text_muted}]
+
+      if Text.cells(state, next) <= room, do: {:cont, next}, else: {:halt, kept}
+    end)
   end
 
   defp pad_lines(state, lines, %Grid{} = grid) do

@@ -20,8 +20,9 @@ defmodule SwarmCodeCLI.UI.ThemeTest do
     {:border, 0x2A2A2A, 236, :bright_black},
     {:text_primary, 0xF3F2F0, 255, :bright_white},
     {:text_muted, 0x8C8B88, 245, :white},
-    {:text_faint, 0x5E5D5A, 240, :bright_black},
-    {:text_ghost, 0x4B4A48, 239, :bright_black},
+    # cli020 E23: the contrast floors (4.5:1 faint, 3:1 ghost).
+    {:text_faint, 0x868583, 245, :white},
+    {:text_ghost, 0x6A6967, 242, :bright_black},
     {:focus, 0xFF6A1A, 208, :bright_yellow},
     {:disabled, 0x5E5D5A, 240, :bright_black},
     {:stale, 0xF5B400, 220, :bright_yellow},

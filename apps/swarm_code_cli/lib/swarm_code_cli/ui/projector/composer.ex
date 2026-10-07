@@ -43,6 +43,11 @@ defmodule SwarmCodeCLI.UI.Projector.Composer do
 
   def label(state), do: "Composer · " <> mode_label(state)
 
+  @doc "cli020 E2 (Q6): a mode's words on the status chip and in the help sheet."
+  @spec mode_title(String.t(), String.t()) :: String.t()
+  def mode_title("ultra", _label), do: "Ultra · workflows"
+  def mode_title(_value, label), do: label
+
   def placeholder(state, width),
     do: Density.safe("Type a message, or / for commands…", state, width)
 
@@ -323,7 +328,79 @@ defmodule SwarmCodeCLI.UI.Projector.Composer do
         ],
         else: [{String.duplicate(hairline, max(1, width)), tint(:text_ghost, state)}]
 
+    segments = with_rule_chips(segments, rule_chips(state), hairline, state)
+
     row(segments, [], nil, state, width)
+  end
+
+  # cli020 E15 (decisions 4c, 4i): what the draft carries, on the rule above
+  # it, after two cells of rule: `$ shell` while Enter runs the draft as a
+  # command (D7's rule: the first character is `!` and the rest is not
+  # blank), and one chip per staged image, `[Image #1 · 412 KB]`.
+  defp rule_chips(state) do
+    case draft(state) do
+      nil ->
+        []
+
+      draft ->
+        shell =
+          if shell_draft?(Editor.text(draft.editor)),
+            do: [{" $ shell ", tint(:accent, state, [:bold])}],
+            else: []
+
+        images =
+          draft.attachments
+          |> Enum.with_index(1)
+          |> Enum.map(fn {image, n} ->
+            {" [Image ##{n} · #{size_words(image.byte_size)}] ", tint(:text_muted, state)}
+          end)
+
+        shell ++ images
+    end
+  end
+
+  @doc false
+  def shell_draft?("!" <> rest), do: String.trim(rest) != ""
+  def shell_draft?(_text), do: false
+
+  defp size_words(bytes) when is_integer(bytes) and bytes >= 1_048_576,
+    do: :erlang.float_to_binary(bytes / 1_048_576, decimals: 1) <> " MB"
+
+  defp size_words(bytes) when is_integer(bytes) and bytes >= 1_024,
+    do: "#{round(bytes / 1_024)} KB"
+
+  defp size_words(bytes) when is_integer(bytes), do: "#{bytes} B"
+  defp size_words(_bytes), do: "?"
+
+  # The chips replace the rule's cells from the third one on; the queued
+  # label at the right end keeps its place, and chips that do not fit drop
+  # from the last.
+  defp with_rule_chips(segments, [], _hairline, _state), do: segments
+
+  defp with_rule_chips(segments, chips, hairline, state) do
+    policy = state.capabilities.ambiguous_width
+    [{rule, rule_style} | rest] = segments
+    rule_cells = Width.cells(rule, policy)
+    lead = 2
+
+    chips =
+      chips
+      |> Enum.reduce({[], 0}, fn {text, style}, {kept, used} ->
+        cells = Width.cells(text, policy)
+
+        if lead + used + cells + 1 <= rule_cells,
+          do: {kept ++ [{text, style}], used + cells},
+          else: {kept, used}
+      end)
+
+    case chips do
+      {[], _} ->
+        segments
+
+      {kept, used} ->
+        [{String.duplicate(hairline, lead), rule_style} | kept] ++
+          [{String.duplicate(hairline, max(1, rule_cells - lead - used)), rule_style} | rest]
+    end
   end
 
   @doc """
@@ -458,6 +535,8 @@ defmodule SwarmCodeCLI.UI.Projector.Composer do
     flags = keyword_flags(Editor.text(draft.editor), slice)
     count = fn some -> Enum.reduce(some, 0, &(&2 + length(Regex.scan(@letters, &1)))) end
 
+    faint = tint(:text_faint, state)
+
     if Enum.any?(flags) and count.(lines) == length(flags) do
       {rows, _} =
         Enum.map_reduce(visible, Enum.drop(flags, count.(Enum.take(lines, first))), fn line,
@@ -467,7 +546,18 @@ defmodule SwarmCodeCLI.UI.Projector.Composer do
 
       rows
     else
-      Enum.map(visible, &[{&1, plain}])
+      Enum.map(visible, &paste_segments(&1, plain, faint))
+    end
+  end
+
+  # cli020 E15 (decision 4e, D8): a collapsed paste's placeholder
+  # `[Pasted text #1 · 60 lines]` is one dim chip in the draft.
+  @paste ~r/\[Pasted text #\d+ · \d+ lines?\]/u
+
+  defp paste_segments(line, plain, faint) do
+    case Regex.split(@paste, line, include_captures: true, trim: true) do
+      [] -> [{line, plain}]
+      parts -> Enum.map(parts, &{&1, if(Regex.match?(@paste, &1), do: faint, else: plain)})
     end
   end
 
@@ -517,6 +607,8 @@ defmodule SwarmCodeCLI.UI.Projector.Composer do
   """
   def slash_popup(state, width, rows \\ SlashPalette.rows()) do
     suggestions = SlashPalette.visible(state, rows)
+    entries = SlashPalette.entries(state)
+    policy = state.capabilities.ambiguous_width
 
     # pass73 T4/T6: the selected row says what Enter does with it now (runs a
     # bare command, completes one that waits for its argument, or queues
@@ -529,41 +621,103 @@ defmodule SwarmCodeCLI.UI.Projector.Composer do
         _ -> nil
       end
 
-    Enum.map(suggestions, fn item ->
-      name_style =
-        if item.selected?,
-          do: tint(:accent, state, [:bold]),
-          else: tint(:text_primary, state, [:bold])
+    # cli020 E8 (ux-live-18): the descriptions start in one column (the
+    # widest `/name args` of every match, at most 2/5 of the row) and are
+    # elided with `…` where the row ends.
+    signature = fn item ->
+      case Map.get(item, :args) do
+        args when is_binary(args) and args != "" -> "  /" <> item.name <> " " <> args
+        _ -> "  /" <> item.name
+      end
+    end
 
-      rail =
-        if item.selected?,
-          do: {SafeText.value(Support.rail(state)), tint(:accent, state)},
-          else: {" ", tint(:text_muted, state)}
+    column =
+      entries
+      |> Enum.map(&Width.cells(signature.(&1), policy))
+      |> Enum.max(fn -> 0 end)
+      |> min(max(8, div(width * 2, 5)))
 
-      args =
-        case Map.get(item, :args) do
-          args when is_binary(args) and args != "" -> [{" " <> args, tint(:text_faint, state)}]
-          _ -> []
-        end
+    rows =
+      Enum.map(suggestions, fn item ->
+        name_style =
+          if item.selected?,
+            do: tint(:accent, state, [:bold]),
+            else: tint(:text_primary, state, [:bold])
 
-      row(
-        [rail, {"  /" <> item.name, name_style}] ++
-          args ++ [{"   " <> (item.desc || ""), tint(:text_muted, state)}],
-        cond do
-          item.selected? and enter != nil ->
-            [{"Enter", tint(:key, state, [:bold])}, {enter, tint(:text_faint, state)}]
+        rail =
+          if item.selected?,
+            do: {SafeText.value(Support.rail(state)), tint(:accent, state)},
+            else: {" ", tint(:text_muted, state)}
 
-          item.selected? ->
-            [{"Tab", tint(:key, state, [:bold])}, {" complete", tint(:text_faint, state)}]
+        right =
+          cond do
+            item.selected? and enter != nil ->
+              [{"Enter", tint(:key, state, [:bold])}, {enter, tint(:text_faint, state)}]
 
-          true ->
-            []
-        end,
-        if(item.selected?, do: :hover, else: :popover),
-        state,
-        width
-      )
-    end)
+            item.selected? ->
+              [{"Tab", tint(:key, state, [:bold])}, {" complete", tint(:text_faint, state)}]
+
+            true ->
+              []
+          end
+
+        name = "  /" <> item.name
+        args = String.replace_prefix(signature.(item), name, "")
+        rail_cells = Width.cells(elem(rail, 0), policy)
+        {name, args} = fit_signature(name, args, column, policy)
+        used = rail_cells + Width.cells(name <> args, policy)
+        pad = String.duplicate(" ", max(0, column - Width.cells(name <> args, policy)))
+
+        right_cells =
+          Enum.reduce(right, 0, fn {text, _}, sum -> sum + Width.cells(text, policy) end)
+
+        room =
+          width - used - String.length(pad) - 3 - if(right == [], do: 0, else: right_cells + 2)
+
+        desc = item.desc || ""
+        desc = if room > 0, do: Width.elide(desc, room, :end, policy), else: ""
+
+        row(
+          [rail, {name, name_style}, {args <> pad, tint(:text_faint, state)}] ++
+            [{"   " <> desc, tint(:text_muted, state)}],
+          right,
+          if(item.selected?, do: :hover, else: :popover),
+          state,
+          width
+        )
+      end)
+
+    # The list's top rule: how many of the matches are shown, and the keys.
+    if length(entries) > length(suggestions) and suggestions != [] do
+      [slash_rule(length(suggestions), length(entries), state, width) | rows]
+    else
+      rows
+    end
+  end
+
+  defp fit_signature(name, args, column, policy) do
+    if Width.cells(name <> args, policy) <= column,
+      do: {name, args},
+      else: {name, Width.elide(args, max(0, column - Width.cells(name, policy)), :end, policy)}
+  end
+
+  defp slash_rule(shown, total, state, width) do
+    policy = state.capabilities.ambiguous_width
+    ascii? = state.capabilities.ascii?
+    {line, arrows} = if ascii?, do: {"-", "up/down"}, else: {"─", "↑↓"}
+    label = " #{shown} of #{total} · #{arrows} "
+    label_cells = Width.cells(label, policy)
+    unit = max(1, Width.cells(line, policy))
+    lead = div(max(0, width - label_cells - 2), unit)
+    text = String.duplicate(line, lead) <> label
+
+    row(
+      [{text, tint(:text_faint, state)}],
+      [],
+      :popover,
+      state,
+      width
+    )
   end
 
   @doc """

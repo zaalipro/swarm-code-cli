@@ -57,7 +57,7 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
         room = min(SlashPalette.rows(), rect.height - growth - 1)
 
         if room > 0 and SlashPalette.open?(state),
-          do: card ++ Composer.slash_popup(state, rect.width, room),
+          do: card ++ slash_rows(state, rect.width, room, rect.height - growth - 1),
           else: card
 
       nil ->
@@ -66,7 +66,7 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
             []
 
           SlashPalette.open?(state) ->
-            Enum.take(Composer.slash_popup(state, rect.width), max(0, rect.height - 4))
+            slash_rows(state, rect.width, SlashPalette.rows(), max(0, rect.height - 4))
 
           (paths = path_completion(state)) != [] ->
             Enum.take(Composer.path_popup(paths, state, rect.width), max(0, rect.height - 4))
@@ -75,6 +75,19 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
             []
         end
     end
+  end
+
+  # cli020 E8: the `/` list with its top rule in at most `bound` rows; when
+  # the rule does not fit beside `rows` suggestions, one suggestion gives way
+  # (the selected one is always kept: `SlashPalette.visible/2` windows on it).
+  defp slash_rows(_state, _width, _rows, bound) when bound <= 0, do: []
+
+  defp slash_rows(state, width, rows, bound) do
+    popup = Composer.slash_popup(state, width, min(rows, bound))
+
+    if length(popup) > bound and bound > 1,
+      do: Composer.slash_popup(state, width, bound - 1),
+      else: Enum.take(popup, bound)
   end
 
   # E5's `@path` completion (`state.path_completion`: `%{items, index,
@@ -147,7 +160,33 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
     facts = Composer.facts(state, rect.width)
     panel = if run, do: mode_panel(state, run, rect.width, class), else: []
     panel = if panel == [], do: [], else: panel ++ [Support.text(" ", state, rect.width)]
-    facts ++ trust_banner(state, rect.width) ++ panel
+    facts ++ desktop_banner(state, rect.width) ++ trust_banner(state, rect.width) ++ panel
+  end
+
+  # cli020 E16 (bugs-6, C4): the ncode app opened on the same database while
+  # this session runs is a warning that stays until it closes (C4's shell
+  # delta sets `desktop_running`, on the state or the workspace snapshot).
+  defp desktop_banner(state, width) do
+    workspace = Map.get(state.read_model.snapshots, :workspace) || %{}
+
+    if Map.get(state, :desktop_running) == true or Map.get(workspace, :desktop_running) == true do
+      warn = %{RunRow.tinted(:warning, state) | modifiers: [:bold]}
+      text = RunRow.tinted(:text_muted, state)
+
+      spans =
+        [
+          {"  ! ", warn},
+          {"The ncode app is open on the same database. ", warn},
+          {"Quit it, or stop your runs here and quit (Ctrl-C twice).", text}
+        ]
+        |> Enum.map(fn {words, style} ->
+          %Span{text: Density.safe(words, state, width), style: style}
+        end)
+
+      [%Block.RichText{spans: spans}, Support.text(" ", state, width)]
+    else
+      []
+    end
   end
 
   # A project the user has not trusted runs read-only (pass 63 trust): say so

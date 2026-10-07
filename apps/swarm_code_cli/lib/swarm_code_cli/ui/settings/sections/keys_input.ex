@@ -37,16 +37,10 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.KeysInput do
   @impl true
   def rows(ctx) do
     rows = Rows.registry(ctx, :keys)
-    mouse? = pref(ctx, "mouse", true) != false
 
+    # cli020 E26: with alternate scroll the wheel moves by `wheel_lines`
+    # whether wheel reports are on or off, so its row is never disabled.
     Enum.map(rows, fn
-      %Row{key: "terminal.wheel_lines"} = row when not mouse? ->
-        %Row{
-          row
-          | state: :disabled,
-            lines: row.lines ++ [[{"only when Wheel scrolling is on", :text_faint}]]
-        }
-
       %Row{key: "terminal.keys"} = row ->
         bindings_link(row, ctx)
 
@@ -411,7 +405,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.KeysInput do
     [
       "bracketed paste #{feature(Map.get(caps, :paste))}",
       "focus #{feature(Map.get(caps, :focus))}",
-      "wheel #{if pref(ctx, "mouse", true) != false, do: "on", else: "off"}",
+      "wheel #{if pref(ctx, "mouse", false) == true, do: "on", else: "off"}",
       "enhanced keys never"
     ]
     |> Enum.join(" · ")

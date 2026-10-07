@@ -57,12 +57,12 @@ defmodule SwarmCodeCLI.UI.ModelPicker do
 
   @spec title(target()) :: binary()
   def title(:chat), do: "Model"
-  def title(:swarm), do: "Sub-agent model"
+  def title(:swarm), do: "Worker model"
 
   @doc "The palette label for the entry that opens the picker."
   @spec label(target()) :: binary()
   def label(:chat), do: "Switch model…"
-  def label(:swarm), do: "Switch sub-agent model…"
+  def label(:swarm), do: "Switch worker model…"
 
   @doc "The model the conversation uses for `target` now, as the workspace snapshot names it."
   @spec current(State.t(), target()) :: binary() | nil

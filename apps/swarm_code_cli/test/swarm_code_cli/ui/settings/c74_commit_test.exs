@@ -166,15 +166,15 @@ defmodule SwarmCodeCLI.UI.Settings.C74CommitTest do
       state = ready() |> open("terminal.panel")
       {state, effects} = verb(state, :right)
       first = cli_write(effects)
-      assert {:settings_cli_write, _, _, %{"panel" => "compact"}, %{"panel" => :absent}} = first
+      assert {:settings_cli_write, _, _, %{"panel" => "full"}, %{"panel" => :absent}} = first
 
       {state, effects} = verb(state, :right)
       assert cli_write(effects) == nil
-      assert words(row(state, "terminal.panel").value) =~ "idden"
+      assert words(row(state, "terminal.panel").value) =~ "ompact"
 
       {_state, effects} = answer(state, first)
 
-      assert {:settings_cli_write, _, _, %{"panel" => "hidden"}, %{"panel" => "compact"}} =
+      assert {:settings_cli_write, _, _, %{"panel" => "compact"}, %{"panel" => "full"}} =
                cli_write(effects)
     end
 
@@ -191,7 +191,7 @@ defmodule SwarmCodeCLI.UI.Settings.C74CommitTest do
 
       {_resent, effects} = verb(state, :enter)
 
-      assert {:settings_cli_write, _, _, %{"panel" => "compact"}, %{"panel" => "hidden"}} =
+      assert {:settings_cli_write, _, _, %{"panel" => "full"}, %{"panel" => "hidden"}} =
                cli_write(effects)
 
       taken = verb!(state, :back)
@@ -209,7 +209,7 @@ defmodule SwarmCodeCLI.UI.Settings.C74CommitTest do
       assert :invalid in row.marks
       assert Enum.any?(row.lines, &(words(&1) == "✗ is invalid"))
       assert state.settings.status.text == "Couldn't save: is invalid"
-      assert words(row.value) =~ "ull"
+      assert words(row.value) =~ "auto"
     end
 
     test "a number steps in place and writes once, 600 ms after the last step" do
@@ -271,8 +271,8 @@ defmodule SwarmCodeCLI.UI.Settings.C74CommitTest do
                write = cli_write(effects)
 
       {state, _} = answer(state, write)
-      assert state.panel_mode == :full
-      assert state.settings.status.text == "Side panel back to full"
+      assert state.panel_mode == :auto
+      assert state.settings.status.text == "Side panel back to auto"
     end
 
     test "a letter the row has no use for says so" do

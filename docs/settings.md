@@ -16,25 +16,28 @@ Override: the environment variable or flag that wins over the stored value. The 
 | Key | Label | Scope | Type | Default | Applies | Override |
 |---|---|---|---|---|---|---|
 | `models.chat` | Chat model | global | model | the first provider with a key | new conversations | — |
-| `models.sub_agent` | Sub-agent model | global | model | the first provider with a key | next spawn | — |
+| `models.sub_agent` | Worker model | global | model | the first provider with a key | next spawn | — |
+| `models.validator` | Validator model | global | model | the main model | desktop | — |
 | `models.scheduled` | Scheduled task model | global | model | the chat model | desktop | — |
 | `models.workflow` | Workflow model | global | model | the chat model | next turn | — |
 | `models.implementer` | Implementer model (consensus) | global | model | the planner implements | next turn | — |
 | `efforts.default` | Default effort | global | effort | medium | next turn | — |
-| `efforts.sub_agent` | Sub-agent effort | global | effort | medium | next spawn | — |
+| `efforts.sub_agent` | Worker effort | global | effort | medium | next spawn | — |
+| `efforts.validator` | Validator effort | global | effort | same as the default effort | desktop | — |
 | `efforts.scheduled` | Scheduled effort | global | effort | same as the default effort | desktop | — |
 | `efforts.workflow` | Workflow effort | global | effort | same as the default effort | next turn | — |
 | `efforts.implementer` | Implementer effort | global | effort | medium (not set) | next turn | — |
 | `session.model` | Model · this conversation | session | model | the chat model | next turn | `--model` |
 | `session.effort` | Effort · this conversation | session | effort | the default effort | next turn | — |
-| `session.sub_agent_model` | Sub-agent model · this conversation | session | model | the sub-agent model | next spawn | `--model` |
-| `session.sub_agent_effort` | Sub-agent effort · this conversation | session | effort | the sub-agent effort | next spawn | — |
+| `session.sub_agent_model` | Worker model · this conversation | session | model | the worker model | next spawn | `--model` |
+| `session.sub_agent_effort` | Worker effort · this conversation | session | effort | the worker effort | next spawn | — |
+| `session.validator_model` | Validator model · this conversation | session | model | the main model | desktop | — |
 | `session.mode` | Mode | session | enum | build | next turn | — |
 | `session.title` | Title | session | text | New conversation | at once | — |
 | `session.pinned` | Pinned | session | toggle | off | at once | — |
 | `session.consensus_checks` | Consensus checks | session | checklist | the 7 defaults | next turn | — |
 | `session.consensus_rounds` | Consensus rounds | session | enum | 2 | next turn | — |
-| `session.judge_model` | Judge model | session | model | the sub-agent model | next turn | — |
+| `session.judge_model` | Judge model | session | model | the worker model | next turn | — |
 | `session.judge_effort` | Judge effort | session | effort | the default | next turn | — |
 | `session.implementer_model` | Implementer model · this conversation | session | model | the default implementer | next turn | — |
 | `session.implementer_effort` | Implementer effort · this conversation | session | effort | the default implementer effort | next turn | — |
@@ -60,11 +63,11 @@ Override: the environment variable or flag that wins over the stored value. The 
 | `research.auto_design` | Designed HTML report | global | enum | deep | next research | — |
 | `research.include_domains` | Only these domains | global | list |  | next research | — |
 | `research.exclude_domains` | Never these domains | global | list |  | next research | — |
-| `research.lead_model` | Lead model | global | model | the sub-agent model | next research | — |
+| `research.lead_model` | Lead model | global | model | the worker model | next research | — |
 | `research.lead_effort` | Lead effort | global | effort | default | next research | — |
-| `research.worker_model` | Worker model | global | model | the sub-agent model | next research | — |
+| `research.worker_model` | Worker model | global | model | the worker model | next research | — |
 | `research.worker_effort` | Worker effort | global | effort | default | next research | — |
-| `research.reporter_model` | Reporter model | global | model | the sub-agent model | next research | — |
+| `research.reporter_model` | Reporter model | global | model | the worker model | next research | — |
 | `research.reporter_effort` | Reporter effort | global | effort | default | next research | — |
 
 ## Language servers
@@ -128,6 +131,7 @@ Override: the environment variable or flag that wins over the stored value. The 
 | Key | Label | Scope | Type | Default | Applies | Override |
 |---|---|---|---|---|---|---|
 | `terminal.theme` | Theme | cli | enum | follow | at once | `NCODE_THEME` or `SWARM_THEME` |
+| `terminal.palette` | Palette | cli | enum | carbon | at once | — |
 | `terminal.colors` | Colours | cli | enum | auto | next launch | `NO_COLOR` |
 | `terminal.glyphs` | Glyphs | cli | enum | auto | next launch | `NCODE_ASCII` or `SWARM_ASCII` |
 | `terminal.ambiguous_width` | Ambiguous-width characters | cli | enum | narrow | next launch | — |
@@ -138,12 +142,17 @@ Override: the environment variable or flag that wins over the stored value. The 
 
 | Key | Label | Scope | Type | Default | Applies | Override |
 |---|---|---|---|---|---|---|
-| `terminal.panel` | Side panel | cli | enum | full | at once | — |
+| `terminal.panel` | Side panel | cli | enum | auto | at once | — |
 | `terminal.composer_rows` | Composer height | cli | integer | 3 | at once | — |
 | `terminal.inspector_width` | Inspector width | cli | enum | default | at once | — |
 | `terminal.show_diffs` | Show diffs | cli | toggle | on | at once | — |
 | `terminal.agent_summaries` | AI status lines | cli | toggle | on | at once | — |
 | `terminal.notice_seconds` | Notices stay for | cli | duration | 6s | at once | — |
+| `terminal.notify` | Notify | cli | enum | auto | at once | — |
+| `terminal.title` | Window title | cli | toggle | on | at once | — |
+| `terminal.paste_collapse_lines` | Collapse pastes over | cli | integer | 8 | at once | — |
+| `terminal.exit_transcript` | Turns printed on exit | cli | integer | 3 | next launch | — |
+| `terminal.status_items` | Status line | cli | checklist | mode, approval, model, effort, ctx, cost, waiting | at once | — |
 | `terminal.diff_lines` | Diff lines shown | cli | integer | 12 | at once | — |
 
 ## Keys & input
@@ -151,7 +160,7 @@ Override: the environment variable or flag that wins over the stored value. The 
 | Key | Label | Scope | Type | Default | Applies | Override |
 |---|---|---|---|---|---|---|
 | `terminal.keymap` | Keymap | cli | enum | standard | at once | `NCODE_KEYMAP` or `SWARM_KEYMAP` |
-| `terminal.mouse` | Wheel scrolling | cli | toggle | on | at once | `NCODE_MOUSE` or `SWARM_MOUSE` |
+| `terminal.mouse` | Wheel scrolling | cli | toggle | off | at once | `NCODE_MOUSE` or `SWARM_MOUSE` |
 | `terminal.wheel_lines` | Lines per notch | cli | integer | 3 | at once | — |
 | `terminal.editor` | Editor for Ctrl-X | cli | text | $VISUAL, then $EDITOR, then vi | at once | `VISUAL`, `EDITOR` |
 | `terminal.hint_letters` | Hint letters | cli | text | sfghjklwertuiop | at once | — |

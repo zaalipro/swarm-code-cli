@@ -933,7 +933,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Providers do
           kind: :action,
           label: "▸ Use #{R.field(f, "name")} · #{model} for new chats",
           value: [
-            {"sets the chat and sub-agent models of new conversations · u undoes", :text_faint}
+            {"sets the chat and worker models of new conversations · u undoes", :text_faint}
           ],
           keys: [{"Enter", :open_row, "use it"}],
           target: {:use_for_chats, id, model}
@@ -1004,7 +1004,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Providers do
 
   @default_words %{
     "models.chat" => "the chat default",
-    "models.sub_agent" => "the sub-agent default",
+    "models.sub_agent" => "the worker default",
     "models.scheduled" => "the scheduled default",
     "models.workflow" => "the workflow default",
     "models.implementer" => "the implementer default",
