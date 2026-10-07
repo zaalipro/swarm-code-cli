@@ -27,7 +27,9 @@ defmodule SwarmCodeCLI.Plain.Presenter do
             sequences: %{},
             delivered: MapSet.new(),
             delivered_order: [],
-            retired_epochs: []
+            retired_epochs: [],
+            # cli020 B8: what was printed, by entity and revision.
+            printed: %{}
 
   @type t :: %__MODULE__{}
   @type output_record :: {:stdout | :stderr, iodata()}
@@ -487,36 +489,44 @@ defmodule SwarmCodeCLI.Plain.Presenter do
         do: p.conversations,
         else: put_bounded(p.conversations, r.conversation_id, %{revision: 0, allowed_actions: []})
 
-    {%{p | runs: put_bounded(p.runs, r.id, r), conversations: conversations},
-     [
-       record([
-         "RUN ",
-         r.id,
-         "@",
-         Integer.to_string(r.revision),
-         " ",
-         Atom.to_string(r.state),
-         " ",
-         r.title
-       ])
-     ]}
+    once(
+      %{p | runs: put_bounded(p.runs, r.id, r), conversations: conversations},
+      {:run, r.id},
+      r.revision,
+      [
+        record([
+          "RUN ",
+          r.id,
+          "@",
+          Integer.to_string(r.revision),
+          " ",
+          Atom.to_string(r.state),
+          " ",
+          r.title
+        ])
+      ]
+    )
   end
 
   defp body(p, %DTO.AgentSummary{} = a),
     do:
-      {%{p | agents: put_bounded(p.agents, {a.run_id, a.id}, a)},
-       [
-         record([
-           "AGENT ",
-           a.run_id,
-           "/",
-           a.id,
-           "@",
-           Integer.to_string(a.revision),
-           " ",
-           Atom.to_string(a.state)
-         ])
-       ]}
+      once(
+        %{p | agents: put_bounded(p.agents, {a.run_id, a.id}, a)},
+        {:agent, a.run_id, a.id},
+        a.revision,
+        [
+          record([
+            "AGENT ",
+            a.run_id,
+            "/",
+            a.id,
+            "@",
+            Integer.to_string(a.revision),
+            " ",
+            Atom.to_string(a.state)
+          ])
+        ]
+      )
 
   defp body(p, %DTO.TranscriptItem{} = n) do
     targets =
@@ -541,21 +551,25 @@ defmodule SwarmCodeCLI.Plain.Presenter do
         ],
         else: []
 
-    {%{
-       p
-       | nodes: put_bounded(p.nodes, {n.run_id, n.node_id}, n),
-         target_catalogue: targets,
-         detail_refs: details
-     },
-     [record(["TEXT ", n.run_id, "/", n.node_id] ++ preview ++ [" ", n.text])] ++
-       if(n.reasoning_detail_ref,
-         do: [record(["REASONING preview; detail ", n.reasoning_detail_ref.id])],
-         else: []
-       ) ++
-       if(n.reasoning == "",
-         do: [],
-         else: [record(["REASONING ", n.run_id, "/", n.node_id, " ", n.reasoning])]
-       )}
+    once(
+      %{
+        p
+        | nodes: put_bounded(p.nodes, {n.run_id, n.node_id}, n),
+          target_catalogue: targets,
+          detail_refs: details
+      },
+      {:node, n.conversation_id, n.id},
+      n.revision,
+      [record(["TEXT ", n.run_id, "/", n.node_id] ++ preview ++ [" ", n.text])] ++
+        if(n.reasoning_detail_ref,
+          do: [record(["REASONING preview; detail ", n.reasoning_detail_ref.id])],
+          else: []
+        ) ++
+        if(n.reasoning == "",
+          do: [],
+          else: [record(["REASONING ", n.run_id, "/", n.node_id, " ", n.reasoning])]
+        )
+    )
   end
 
   defp body(p, %DTO.PendingInteraction{state: :resolved} = i),
@@ -735,6 +749,23 @@ defmodule SwarmCodeCLI.Plain.Presenter do
         else: table
 
     Map.put(table, key, value)
+  end
+
+  # cli020 B8: the shell snapshot, the workspace snapshot and the replay of
+  # buffered deltas repeat the same run or item at the same revision; it is
+  # printed the first time only. The Inspector (a run scope) shows what it was
+  # asked for. The index is bounded: past 2,048 entries it starts again, so an
+  # item may be printed twice, never dropped.
+  @printed_limit 2_048
+  defp once(%{scope: %{kind: :run}} = p, _key, _revision, records), do: {p, records}
+
+  defp once(p, key, revision, records) do
+    if Map.get(p.printed, key) == revision do
+      {p, []}
+    else
+      printed = if map_size(p.printed) >= @printed_limit, do: %{}, else: p.printed
+      {%{p | printed: Map.put(printed, key, revision)}, records}
+    end
   end
 
   defp approval_verb(:always_allow), do: "always-allow"
