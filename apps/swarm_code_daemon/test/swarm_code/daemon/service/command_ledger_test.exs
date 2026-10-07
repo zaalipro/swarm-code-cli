@@ -99,9 +99,11 @@ defmodule SwarmCode.Daemon.Service.CommandLedgerTest do
       [old]
     )
 
-    # This session started after the stuck row was admitted.
-    epoch = DateTime.add(DateTime.utc_now(), 60)
-    assert CommandLedger.prune(now, epoch) == 4
+    # A session that started a minute later keeps the unresolved row (its
+    # client may still retry it and must read outcome_unknown) ...
+    assert CommandLedger.prune(now, DateTime.add(DateTime.utc_now(), 60)) == 3
+    # ... one that started over an hour later drops it.
+    assert CommandLedger.prune(now, DateTime.add(DateTime.utc_now(), 3_700)) == 1
 
     assert %{rows: [["new-1"]]} =
              Ecto.Adapters.SQL.query!(Repo, "SELECT request_id FROM cli_command_ledger", [])

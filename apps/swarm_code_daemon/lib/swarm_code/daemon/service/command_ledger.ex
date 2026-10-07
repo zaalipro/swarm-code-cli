@@ -112,18 +112,26 @@ defmodule SwarmCode.Daemon.Service.CommandLedger do
 
   @prune_days 7
   @prune_batch 5_000
+  # A request lives at most 600 s (`timeout_ms`); an earlier session's
+  # unresolved row older than this can no longer be retried by its client.
+  @stale_processing_s 3_600
 
   @doc """
   cli020 C3 (bugs-19): delete ledger rows untouched for 7 days before `now`,
-  and `processing` rows last touched before `epoch_started_at` (the start of
-  this session: an earlier session's unresolved command, which only ever
-  answers `outcome_unknown`). The table has no epoch column, so the session's
-  start time stands for it. At most 5,000 rows per call; the count deleted.
+  and `processing` rows of an earlier session: last touched before
+  `epoch_started_at` (the table has no epoch column; the session's start
+  stands for it) and more than an hour before it, longer than any request
+  lives, so a client retrying one still gets `outcome_unknown` and never a
+  second execution. At most 5,000 rows per call; the count deleted.
   """
   @spec prune(DateTime.t(), DateTime.t() | nil) :: non_neg_integer()
   def prune(%DateTime{} = now, epoch_started_at \\ nil) do
     cutoff = now |> DateTime.add(-@prune_days * 86_400) |> stamp()
-    epoch = if epoch_started_at, do: stamp(epoch_started_at), else: ""
+
+    epoch =
+      if epoch_started_at,
+        do: epoch_started_at |> DateTime.add(-@stale_processing_s) |> stamp(),
+        else: ""
 
     case SQL.query(
            Repo,
