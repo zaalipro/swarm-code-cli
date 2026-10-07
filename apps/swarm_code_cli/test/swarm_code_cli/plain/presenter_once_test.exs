@@ -15,7 +15,13 @@ defmodule SwarmCodeCLI.Plain.PresenterOnceTest do
   @scope %Scope{kind: :conversation, id: "c", generation: 1}
 
   defp run(id, revision),
-    do: %DTO.RunSummary{id: id, conversation_id: "c", title: "turn " <> id, state: :done, revision: revision}
+    do: %DTO.RunSummary{
+      id: id,
+      conversation_id: "c",
+      title: "turn " <> id,
+      state: :done,
+      revision: revision
+    }
 
   defp item(id, run, text, revision),
     do: %DTO.TranscriptItem{
@@ -94,12 +100,21 @@ defmodule SwarmCodeCLI.Plain.PresenterOnceTest do
     {p, replay} = Presenter.present(p, "e", upsert(Enum.at(items, 1), 2))
     output = text(shell) <> text(opening) <> text(replay)
 
-    for needle <- ["RUN r1@3", "RUN r2@5", "first question", "first answer", "second question", "second answer"] do
+    for needle <- [
+          "RUN r1@3",
+          "RUN r2@5",
+          "first question",
+          "first answer",
+          "second question",
+          "second answer"
+        ] do
       assert count(output, needle) == 1, needle
     end
 
     # A new revision of an item is news.
-    {_p, changed} = Presenter.present(p, "e", upsert(item("m1", "r1", "first answer, longer", 6), 3))
+    {_p, changed} =
+      Presenter.present(p, "e", upsert(item("m1", "r1", "first answer, longer", 6), 3))
+
     assert text(changed) =~ "first answer, longer"
   end
 end

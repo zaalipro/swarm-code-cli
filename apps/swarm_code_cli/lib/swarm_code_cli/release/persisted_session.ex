@@ -219,6 +219,10 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
   ## The TUI session
 
   defp main(test_boot, opts) do
+    # cli020 B9: SIGTERM and SIGHUP close the session the normal way (the
+    # terminal restored, the runs stopped, the private folder removed).
+    if test_boot == nil, do: SwarmCodeCLI.Release.Signals.install(self())
+
     result =
       guarded(fn ->
         preflight!()
@@ -501,6 +505,10 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
                "The terminal stopped responding, so ncode closed.",
                "Run ncode again; your conversation is saved."
              )}
+
+          {:shutdown_signal, signal} when signal in [:sigterm, :sighup] ->
+            Logger.info("closing on #{signal}")
+            {:signal, signal}
 
           {:DOWN, ^supervisor_monitor, :process, ^supervisor, reason} ->
             Logger.error("session supervisor stopped: #{inspect(reason)}")
@@ -865,6 +873,12 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
     do: System.get_env("NO_COLOR") in [nil, ""] and :prim_tty.isatty(:stdout) == true
 
   defp outcome_status(:ok), do: 0
+
+  defp outcome_status({:signal, signal}) do
+    say(:stderr, "ncode: " <> SwarmCodeCLI.Release.Signals.words(signal))
+    SwarmCodeCLI.Release.Signals.exit_code(signal)
+  end
+
   defp outcome_status({:failed, failure}), do: report(failure)
 
   ## Failures

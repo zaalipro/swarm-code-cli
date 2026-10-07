@@ -81,6 +81,8 @@ defmodule SwarmCodeCLI.Release do
     # cli020 B2: the headless output and the prompt on stdin are UTF-8 whatever
     # the locale says (under LANG=C the devices start as latin1).
     configure_io()
+    # cli020 B9: SIGTERM and SIGHUP close the session the normal way.
+    if headless_args?(args), do: SwarmCodeCLI.Release.Signals.install(self())
     code = run(args)
     System.halt(code)
   end
@@ -101,8 +103,13 @@ defmodule SwarmCodeCLI.Release do
     end)
   end
 
+  defp headless_args?(["config" | _]), do: false
+
+  defp headless_args?(args),
+    do: Enum.any?(args, &(&1 in ["-p", "--prompt", "--print", "--plain"]))
+
   @doc "Runs the command line and returns the exit code (the VM keeps running)."
-  @spec run([binary()]) :: 0 | 1 | 2 | 3 | 4
+  @spec run([binary()]) :: 0 | 1 | 2 | 3 | 4 | 129 | 143
   def run(args) do
     case parse(args) do
       {:config, rest} ->

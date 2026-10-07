@@ -52,11 +52,14 @@ defmodule SwarmCodeCLI.Plain.OneShot do
   optionally `format` (`:text` | `:json`), `output` and `error` (IO devices),
   `progress` (tool lines on `error`), `clock` (a zero-arity millisecond clock).
   """
-  @spec run(keyword()) :: 0 | 1
+  @spec run(keyword()) :: 0 | 1 | 129 | 143
   def run(options) do
     {:ok, pid} = GenServer.start(__MODULE__, Keyword.put(options, :observer, self()))
     monitor = Process.monitor(pid)
+    await(pid, monitor)
+  end
 
+  defp await(pid, monitor) do
     receive do
       {:one_shot, ^pid, {:finished, code}} ->
         receive do
@@ -64,6 +67,12 @@ defmodule SwarmCodeCLI.Plain.OneShot do
         end
 
         code
+
+      # cli020 B9: SIGTERM/SIGHUP reach the caller (the session owner); the
+      # one-shot stops its run and finishes with the signal's code.
+      {:shutdown_signal, signal} when signal in [:sigterm, :sighup] ->
+        send(pid, {:shutdown_signal, signal})
+        await(pid, monitor)
 
       {:DOWN, ^monitor, :process, ^pid, _} ->
         1
@@ -196,7 +205,27 @@ defmodule SwarmCodeCLI.Plain.OneShot do
     continue(own_response(%{state | own: own}, purpose, :deadline))
   end
 
+  def handle_info({:shutdown_signal, signal}, %{phase: phase} = state)
+      when signal in [:sigterm, :sighup] and phase != :finished do
+    state = if state.ui, do: Enum.reduce(state.runs, state, &signal_stop/2), else: state
+    words = SwarmCodeCLI.Release.Signals.words(signal)
+    stop(finish(state, SwarmCodeCLI.Release.Signals.exit_code(signal), words))
+  end
+
   def handle_info(_, state), do: {:noreply, state}
+
+  # A live owned run is asked to stop; the session's close stops it anyway.
+  defp signal_stop(run_id, state) do
+    case Map.get(state.ui.read_model.runs, run_id) do
+      %{state: run_state} when run_state in @terminal ->
+        state
+
+      _ ->
+        id = elem(State.next_id(state.ui, :request), 0)
+        {state, _effects} = update(state, {:invoke, {:run_control, :stop, run_id}, id})
+        state
+    end
+  end
 
   defp continue(%{phase: :finished} = state), do: stop(state)
   defp continue(state), do: {:noreply, state}

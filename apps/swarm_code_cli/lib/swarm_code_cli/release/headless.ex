@@ -37,7 +37,7 @@ defmodule SwarmCodeCLI.Release.Headless do
   default `SWARM_CONVERSATION`, else latest) and `model` (a session override,
   exported as `SWARM_MODEL_OVERRIDE` for the provider configuration).
   """
-  @spec run(mode(), keyword()) :: 0 | 1 | 2 | 3
+  @spec run(mode(), keyword()) :: 0 | 1 | 2 | 3 | 129 | 143
   def run(mode, options \\ []) do
     root = Keyword.get(options, :project_root) || System.get_env("SWARM_PROJECT_ROOT")
     root = if root in [nil, ""], do: File.cwd!(), else: root
@@ -222,6 +222,14 @@ defmodule SwarmCodeCLI.Release.Headless do
           end
 
         plain_exit(reason, summary, Keyword.get(extra, :fail_on_denied, false))
+
+      # cli020 B9: SIGTERM/SIGHUP detach the presenter; the session's close
+      # (with_saved_session) stops the live runs.
+      {:shutdown_signal, signal} when signal in [:sigterm, :sighup] ->
+        _ = SwarmCodeCLI.Plain.Session.close(plain, :interrupt)
+        Process.demonitor(monitor, [:flush])
+        IO.puts(:stderr, "ncode: " <> SwarmCodeCLI.Release.Signals.words(signal))
+        SwarmCodeCLI.Release.Signals.exit_code(signal)
 
       {:DOWN, ^monitor, :process, ^plain, _} ->
         fail("The plain session stopped unexpectedly.")
