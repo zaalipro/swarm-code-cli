@@ -36,6 +36,7 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
 
   alias SwarmCodeCLI.UI.OsCommand
   alias SwarmCodeCLI.UI.Reducer.ImagePaste
+  alias SwarmCodeCLI.UI.MarkdownCache
   alias SwarmCodeCLI.Companion
   alias SwarmCodeCLI.UI.Init.{Preferences, PrefsQueue}
   alias SwarmCodeCLI.UI.DataSource
@@ -1355,9 +1356,11 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
 
     case safe_project(state) do
       {:ok, scene, table} ->
+        {rows, table} = markdown_rows(table)
+
         case SceneSlot.put(state.slot, scene) do
           :ok ->
-            %{state | table: table, scene_failures: 0}
+            %{state | table: table, scene_failures: 0} |> cache_markdown(rows)
 
           _ ->
             if state.scene_failures + 1 >= @max_scene_failures,
@@ -1370,6 +1373,29 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
       {:raised, words} ->
         Logger.error("ncode: the screen update raised: " <> words)
         scene_failed(state)
+    end
+  end
+
+  # cli020 D21: the rows the projector computed this time (E31 reports them
+  # under `table.markdown_rows`) join the cache; the table stays the action
+  # table. A conversation switch starts an empty cache.
+  defp markdown_rows(table) when is_map(table) do
+    case Map.pop(table, :markdown_rows) do
+      {rows, table} when is_map(rows) -> {rows, table}
+      {_none, table} -> {%{}, table}
+    end
+  end
+
+  defp cache_markdown(%{ui: ui} = state, rows) do
+    scope = ui.destination
+    cache = ui.markdown_cache
+
+    cond do
+      rows == %{} and (cache == nil or cache.scope == scope) ->
+        state
+
+      true ->
+        %{state | ui: %{ui | markdown_cache: MarkdownCache.merge(cache, rows, scope)}}
     end
   end
 

@@ -152,6 +152,9 @@ defmodule SwarmCodeCLI.UI.State do
     stashes: %{},
     # cli020 D20: when a bare /delete asked to be confirmed.
     delete_armed_at: nil,
+    # cli020 D21: rendered markdown rows (`UI.MarkdownCache`, 4 MiB), owned
+    # by the session runtime; nil until the projector reports any.
+    markdown_cache: nil,
     notify: :auto,
     title?: true,
     # cli020 D8, D13: cli.json's paste collapse threshold (0 = never), lines
