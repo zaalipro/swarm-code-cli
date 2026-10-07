@@ -106,6 +106,7 @@ defmodule SwarmCodeCLI.UI.Action do
           | :send_plain
           # cli020 lane D (§8.3).
           | {:cycle_permission_mode}
+          | :shell_send
           | {:show_diffs, boolean() | :toggle}
           | {:theme_mode, :dark | :light | :toggle}
           | {:mouse, boolean() | :toggle}
@@ -259,6 +260,9 @@ defmodule SwarmCodeCLI.UI.Action do
     do: valid_action(action, SwarmCodeCLI.UI.SlashPalette.valid_name?(name))
 
   def validate(:send_plain), do: {:ok, :send_plain}
+
+  # cli020 D7: Enter on a `!` draft runs it as a shell command.
+  def validate(:shell_send), do: {:ok, :shell_send}
 
   # cli020 D6: Shift-Tab in the composer cycles Ask → Auto → Plan.
   def validate({:cycle_permission_mode} = action), do: {:ok, action}

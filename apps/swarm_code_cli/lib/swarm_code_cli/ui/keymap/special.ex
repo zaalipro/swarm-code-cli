@@ -260,7 +260,14 @@ defmodule SwarmCodeCLI.UI.Keymap.Special do
   # pass73 T4: while the slash palette is open, Enter accepts its highlighted
   # command like Tab; a command that takes no argument then runs at once.
   def run(:activate, _key, %{focus: "composer"} = state, table) do
-    case SlashPalette.enter_completion(state) do
+    # cli020 D7: a `!` draft runs as a shell command (Ctrl-S sends it plain).
+    case if(SwarmCodeCLI.UI.Composer.shell?(state),
+           do: :shell,
+           else: SlashPalette.enter_completion(state)
+         ) do
+      :shell ->
+        ok(:shell_send)
+
       {:complete, name} ->
         ok({:complete_command, name})
 

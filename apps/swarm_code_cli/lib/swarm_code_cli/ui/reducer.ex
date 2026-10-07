@@ -25,7 +25,7 @@ defmodule SwarmCodeCLI.UI.Reducer do
   alias SwarmCodeCLI.UI.Reducer.{Watch, Commands, Pages, Editing, Details, PathCompletion}
   alias SwarmCodeCLI.UI.Reducer.Hint, as: Hints
   alias SwarmCodeCLI.UI.Reducer.Overlay
-  alias SwarmCodeCLI.UI.Reducer.{Deliveries, Display}
+  alias SwarmCodeCLI.UI.Reducer.{Deliveries, Display, Remote}
   alias SwarmCodeCLI.UI.WorkflowKeyword
   alias SwarmCodeCLI.UI.Hint
   alias SwarmCodeCLI.UI.DataSource.DTO.Outcome
@@ -475,17 +475,43 @@ defmodule SwarmCodeCLI.UI.Reducer do
 
   # Esc in the composer stops the turn that is generating, and nothing else.
   # A turn that was sent but is not on screen yet is that turn (I3).
-  defp transition(state, {:interrupt, :escape}) do
-    case Keymap.live_turn(state) do
-      %{id: id, allowed_actions: actions} = _turn ->
-        if :stop in actions, do: stop_turn(state, id), else: {state, []}
+  # cli020 D7: Enter on `!cmd` sends `shell.run` with the command (the `!`
+  # removed); the draft goes into the prompt history and clears once the
+  # request is out. `!` alone says what to type.
+  defp transition(state, :shell_send) do
+    command = SwarmCodeCLI.UI.Composer.shell_command(state)
+    conversation = Remote.conversation(state)
+    key = State.current_draft_key(state)
 
-      nil ->
-        case stop_unseen_turn(state) do
-          {:ok, next} -> {next, []}
-          :none -> {state, []}
+    cond do
+      command in [nil, ""] ->
+        feedback(state, "Type a command after !")
+
+      byte_size(command) > 4_096 ->
+        feedback(state, "A shell command is at most 4,096 bytes.")
+
+      conversation == nil ->
+        {state, []}
+
+      true ->
+        typed = Keymap.draft_text(state)
+
+        case Remote.send(state, {:shell_run, conversation, command}, :shell) do
+          {next, [_ | _] = sent} ->
+            {next, cleared} = clear_draft(remember_text(next, conversation, typed), key)
+            {next, sent ++ cleared}
+
+          refused ->
+            refused
         end
     end
+  end
+
+  # cli020 D7: Esc while a `!` command runs stops it before any turn.
+  defp transition(state, {:interrupt, :escape}) do
+    if shell_running?(state),
+      do: Remote.send(state, {:shell_stop, Remote.conversation(state)}, :shell),
+      else: stop_on_escape(state)
   end
 
   # Ctrl-C (pass71 R1): a press closes the top layer, else clears the draft,
@@ -2845,6 +2871,50 @@ defmodule SwarmCodeCLI.UI.Reducer do
   end
 
   defp remember_prompt(state, _request, _outcome), do: state
+
+  defp stop_on_escape(state) do
+    case Keymap.live_turn(state) do
+      %{id: id, allowed_actions: actions} = _turn ->
+        if :stop in actions, do: stop_turn(state, id), else: {state, []}
+
+      nil ->
+        case stop_unseen_turn(state) do
+          {:ok, next} -> {next, []}
+          :none -> {state, []}
+        end
+    end
+  end
+
+  # cli020 D7: a `!` command goes into the history as typed, when it is sent.
+  defp remember_text(state, conversation, text) do
+    if byte_size(text) > @history_max_bytes or String.trim(text) == "" do
+      state
+    else
+      sent = [text | List.delete(Map.get(state.prompt_history, conversation, []), text)]
+
+      history =
+        state.prompt_history
+        |> Map.put(conversation, Enum.take(sent, @history_limit))
+        |> bound_history(conversation)
+
+      %{state | prompt_history: history, history_cursor: nil}
+    end
+  end
+
+  # cli020 D7: a shell command of the conversation in view is running: its
+  # `shell.run` is unanswered, or its transcript row (kind `:shell`, C15)
+  # has no exit yet.
+  defp shell_running?(state) do
+    conversation = Remote.conversation(state)
+
+    Enum.any?(state.requests, fn {_, request} ->
+      match?({:shell_run, ^conversation, _}, request.kind)
+    end) or
+      Enum.any?(state.read_model.transcript, fn {_, item} ->
+        Map.get(item, :kind) == :shell and Map.get(item, :exit, :none) == nil and
+          Map.get(item, :conversation_id, conversation) == conversation
+      end)
+  end
 
   # At most @history_conversations conversations keep a history; the one just
   # written stays, and the others go smallest first.
