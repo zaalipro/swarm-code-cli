@@ -183,6 +183,23 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
     steps = Enum.filter(lead_work, &(&1.kind == :thinking))
     {step_texts, residual} = decompose(answer && answer.text, steps)
 
+    # cli020 E10 (ux-live-6): a finished swarm's `swarm` report message (an
+    # assistant item after the work) repeats the Lead's last words, which the
+    # Lead's answer and its last step already show: drawn once.
+    shown =
+      [answer && answer.text | Map.values(step_texts)]
+      |> Enum.filter(&is_binary/1)
+      |> MapSet.new(&String.trim/1)
+      |> MapSet.delete("")
+
+    repeats =
+      for item <- lead_work,
+          item.role == :assistant and item.kind == :text,
+          answer == nil or item.id != answer.id,
+          MapSet.member?(shown, String.trim(item.text || "")),
+          into: %{},
+          do: {item.id, true}
+
     workers =
       items
       |> Enum.filter(worker?)
@@ -208,6 +225,7 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
       last_id: items |> List.last() |> then(&(&1 && &1.id)),
       continues: continues(items),
       answer: answer,
+      repeats: repeats,
       header_id: header && header.id,
       step_texts: step_texts,
       residual: residual,
@@ -923,6 +941,11 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
   # The answer's own position holds nothing but the header; its words follow
   # the work, after the run's last item.
   defp lead_rows(%{id: id}, %{answer: %{id: id}}, _state, _width), do: []
+
+  # cli020 E10: a report whose words the turn already shows.
+  defp lead_rows(%{id: id}, %{repeats: repeats}, _state, _width)
+       when is_map_key(repeats, id),
+       do: []
 
   defp lead_rows(item, _ctx, state, width),
     do: prose_rows(item.text, state, width, @body) ++ cut_rows(item, state)

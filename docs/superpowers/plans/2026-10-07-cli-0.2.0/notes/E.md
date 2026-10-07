@@ -116,3 +116,14 @@ Branch `cli020/E` from M1 `3008f352`, worktree `~/dev/swarm-code-cli-wt/cli020-E
   prefix `?`, title "Search results: <words>") with Enter = `{:local, {:open_conversation, id}}`.
   Today's client `Feedback` DTO has no `:select` kind (C's), so nothing sets the field yet.
 - The failure hint says `r retries · Ctrl-P Retry failed run` (`Turns.next_step_text/2`).
+
+### E10 The Lead's report once
+- X14 VERIFIED (with one correction): a done swarm writes a `swarm` message with the Lead's text
+  (`domain/engine/run_server.ex` ~4470), `PersistedBackend.message_role/1` maps `"swarm"` to an
+  assistant item, and `represented_answer_query/0` only folds the root node into an `assistant`
+  message, so the client gets the Lead agent item, its last llm step and the report item. The
+  Lead's answer + step decomposition showed the text once; the report item drew it again.
+- `Turns.context/2` gathers `repeats` (assistant text items, not the answer, whose trimmed text
+  the answer or a step already shows) and `lead_rows/4` draws nothing for them (0 rows, so
+  `Turns.height/3` agrees). A report with other words ("Swarm stopped by user.") still draws.
+  The panel's "reported" fact is unchanged. Test `cli020/e10_report_once_test.exs`.
