@@ -31,4 +31,30 @@ defmodule SwarmCode.Daemon.Service.StagedAttachmentTest do
     assert :sys.get_state(backend).attachment_ids == []
     assert CommandLedger.staged_attachments(c.project.id, conv.id) == []
   end
+
+  # cli020 C3: the backend prunes the ledger once, as owned work, at start.
+  test "a starting backend prunes week-old ledger rows", c do
+    {:ok, conv} = Conversations.create(c.project.id)
+    :ok = CommandLedger.ensure!()
+    scope = scope(conv)
+    :new = CommandLedger.admit(c.project.id, "c3-old", scope, "f")
+    :ok = CommandLedger.complete(c.project.id, "c3-old", {:ok, %{"value" => %{}}})
+    old = DateTime.utc_now() |> DateTime.add(-8 * 86_400) |> DateTime.to_iso8601()
+
+    Ecto.Adapters.SQL.query!(
+      SwarmCode.Domain.Repo,
+      "UPDATE cli_command_ledger SET updated_at = ? WHERE request_id = 'c3-old'",
+      [old]
+    )
+
+    backend = start_backend(c, conv)
+    assert eventually(fn -> :sys.get_state(backend).ledger_prune == nil end)
+
+    assert %{rows: [[0]]} =
+             Ecto.Adapters.SQL.query!(
+               SwarmCode.Domain.Repo,
+               "SELECT count(*) FROM cli_command_ledger WHERE request_id = 'c3-old'",
+               []
+             )
+  end
 end

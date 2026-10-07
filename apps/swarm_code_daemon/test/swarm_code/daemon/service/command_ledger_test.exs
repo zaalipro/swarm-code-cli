@@ -76,6 +76,37 @@ defmodule SwarmCode.Daemon.Service.CommandLedgerTest do
              Ecto.Adapters.SQL.query!(Repo, "SELECT count(*) FROM cli_attachment_staging", [])
   end
 
+  # cli020 C3 (bugs-19): the ledger is pruned: rows untouched for 7 days, and
+  # unresolved rows of an earlier session, at most 5,000 per call.
+  test "prune drops rows older than 7 days and earlier sessions' processing rows" do
+    :ok = CommandLedger.ensure!()
+    project = Ecto.UUID.generate()
+    scope = %Scope{kind: :conversation, id: Ecto.UUID.generate(), generation: 1}
+    now = ~U[2026-10-07 12:00:00.000000Z]
+    old = DateTime.add(now, -8 * 86_400) |> DateTime.to_iso8601()
+
+    for id <- ["old-1", "old-2", "old-3", "new-1", "stuck-1"],
+        do: :new = CommandLedger.admit(project, id, scope, "f")
+
+    for id <- ["old-1", "old-2", "old-3"],
+        do: :ok = CommandLedger.complete(project, id, {:ok, %{"value" => %{}}})
+
+    :ok = CommandLedger.complete(project, "new-1", {:ok, %{"value" => %{}}})
+
+    Ecto.Adapters.SQL.query!(
+      Repo,
+      "UPDATE cli_command_ledger SET updated_at = ? WHERE request_id LIKE 'old-%'",
+      [old]
+    )
+
+    # This session started after the stuck row was admitted.
+    epoch = DateTime.add(DateTime.utc_now(), 60)
+    assert CommandLedger.prune(now, epoch) == 4
+
+    assert %{rows: [["new-1"]]} =
+             Ecto.Adapters.SQL.query!(Repo, "SELECT request_id FROM cli_command_ledger", [])
+  end
+
   test "atomic durable reservation admits only one concurrent caller and preserves unknown outcomes" do
     :ok = CommandLedger.ensure!()
     project = Ecto.UUID.generate()

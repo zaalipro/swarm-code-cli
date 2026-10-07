@@ -110,6 +110,38 @@ defmodule SwarmCode.Daemon.Service.CommandLedger do
     :ok
   end
 
+  @prune_days 7
+  @prune_batch 5_000
+
+  @doc """
+  cli020 C3 (bugs-19): delete ledger rows untouched for 7 days before `now`,
+  and `processing` rows last touched before `epoch_started_at` (the start of
+  this session: an earlier session's unresolved command, which only ever
+  answers `outcome_unknown`). The table has no epoch column, so the session's
+  start time stands for it. At most 5,000 rows per call; the count deleted.
+  """
+  @spec prune(DateTime.t(), DateTime.t() | nil) :: non_neg_integer()
+  def prune(%DateTime{} = now, epoch_started_at \\ nil) do
+    cutoff = now |> DateTime.add(-@prune_days * 86_400) |> stamp()
+    epoch = if epoch_started_at, do: stamp(epoch_started_at), else: ""
+
+    case SQL.query(
+           Repo,
+           """
+           DELETE FROM cli_command_ledger WHERE rowid IN (
+             SELECT rowid FROM cli_command_ledger
+             WHERE updated_at < ?1 OR (status = 'processing' AND updated_at < ?2)
+             LIMIT ?3)
+           """,
+           [cutoff, epoch, @prune_batch]
+         ) do
+      {:ok, %{num_rows: n}} -> n
+      _ -> 0
+    end
+  end
+
+  defp stamp(at), do: at |> DateTime.truncate(:microsecond) |> DateTime.to_iso8601()
+
   @doc "Admit a mutation exactly once; a processing row is unresolved and never replayed."
   def admit(project_id, request_id, scope, fingerprint) do
     now = DateTime.utc_now() |> DateTime.truncate(:microsecond) |> DateTime.to_iso8601()

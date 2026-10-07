@@ -161,6 +161,13 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         # cli020 C1 (bugs-17): conversations whose queue a stop the user asked
         # for paused; `queue.resume` (or the next turn the user starts) lifts it.
         queue_paused: MapSet.new(),
+        # cli020 C3 (bugs-19): the ledger prune this backend started (owned
+        # work under the job supervisor, never the init callback itself).
+        ledger_prune:
+          start_ledger_prune(
+            Keyword.get(opts, :task_supervisor, SwarmCode.Domain.TaskSupervisor),
+            DateTime.utc_now()
+          ),
         # pass71 S2: running read jobs (task ref => job), where they run, and
         # the functions that do the slow work (tests inject blocking fakes).
         jobs: %{},
@@ -364,6 +371,16 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   def handle_info({:DOWN, monitor, :process, _, _}, %{queue_monitors: monitors} = state)
       when is_map_key(monitors, monitor),
       do: {:noreply, drain_queue(%{state | queue_monitors: Map.delete(monitors, monitor)})}
+
+  # cli020 C3: the ledger prune ended (its count is only logged).
+  def handle_info({ref, pruned}, %{ledger_prune: %Task{ref: ref}} = state) do
+    Process.demonitor(ref, [:flush])
+    if is_integer(pruned) and pruned > 0, do: Logger.info("cli ledger: pruned #{pruned} rows")
+    {:noreply, %{state | ledger_prune: nil}}
+  end
+
+  def handle_info({:DOWN, ref, :process, _, _}, %{ledger_prune: %Task{ref: ref}} = state),
+    do: {:noreply, %{state | ledger_prune: nil}}
 
   # pass71 F8: a retry of a queued prompt whose start was refused.
   def handle_info({:drain_queue, conversation_id}, state) do
@@ -617,6 +634,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   @impl true
   def terminate(_, state) do
     cancel_jobs(state, wire_error(:source_unavailable))
+    with %Task{} = task <- Map.get(state, :ledger_prune), do: Task.shutdown(task, :brutal_kill)
     # pass74 S1-9/S1-10: every settings job settles (a command's ledger row
     # completes), every task stops by its kind, every purge timer ends.
     Enum.reduce(Map.keys(state.settings_jobs), state, &settle_settings_job(&2, &1, true))
@@ -2038,6 +2056,14 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     do: notice("Attachments", "A staged image was removed before sending.")
 
   defp removed_notice(_state), do: nil
+
+  defp start_ledger_prune(supervisor, started_at) do
+    Task.Supervisor.async_nolink(supervisor, fn -> CommandLedger.prune(started_at, started_at) end)
+  rescue
+    _ -> nil
+  catch
+    :exit, _ -> nil
+  end
 
   defp consume_staged(state, attachment_ids) when is_list(attachment_ids) do
     CommandLedger.consume_attachments(
