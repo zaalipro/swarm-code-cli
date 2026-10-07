@@ -1082,7 +1082,7 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
     options =
       [{"question", "Question: " <> if(q == "", do: "(required)", else: q), nil}] ++
         Enum.map([:low, :medium, :high, :ultra], fn d ->
-          {Atom.to_string(d), if(d == depth, do: "› ", else: "  ") <> Atom.to_string(d),
+          {Atom.to_string(d), if(d == depth, do: "› ", else: "  ") <> research_level(d),
            {:local, {:research_depth, d}}}
         end)
 
@@ -1400,6 +1400,12 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
 
   # STUB (cli020 §8.3): `{:effort_pick, level}` is D18's action; until it is
   # in `Action`, a row has no target rather than an invalid one.
+  # cli020 E25 (tui-code-21): the levels in words; the atom is what is stored.
+  defp research_level(:low), do: "Fastest · about a minute"
+  defp research_level(:medium), do: "Standard"
+  defp research_level(:high), do: "Deep"
+  defp research_level(:ultra), do: "Ultra"
+
   defp rewind_words(turn, state) do
     files =
       case Map.get(turn, :files) do

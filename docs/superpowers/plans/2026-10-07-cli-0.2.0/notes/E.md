@@ -284,8 +284,13 @@ Branch `cli020/E` from M1 `3008f352`, worktree `~/dev/swarm-code-cli-wt/cli020-E
   pure function of the state). The page shows `↑ N lines above` first when scrolled and keeps
   `↓ N lines below` last.
 - **Handoff D** (`keymap/settings_bindings.ex`), binding rows to add:
-  `{:settings_half_page_down, [{"d", [:control]}], :half_page_down, "Half page down", "Scroll the open detail half a page"}`
-  and `{:settings_half_page_up, [{"u", [:control]}], :half_page_up, "Half page up", "Scroll the open detail back half a page"}`
-  (shape as the existing `:settings_page_down` row; only while the detail is open if Ctrl-U/D mean
-  something else on the page).
+  `{:settings_half_page_down, [{"d", [:control]}], :half_page_down, [:settings], "Half page down", "Half a page down in the open detail (i)", 0, false},`
+  and `{:settings_half_page_up, [{"u", [:control]}], :half_page_up, [:settings], "Half page up", "Half a page up in the open detail (i)", 0, false},`
+  (the 8-field shape of `:settings_page_down`, `settings_bindings.ex:47`; the reducer ignores the
+  verbs while no detail is open).
 - Test `cli020/e24_settings_detail_scroll_test.exs`; `c75_note_test` green.
+
+### E25 Research levels
+- The research form's levels read `Fastest · about a minute`, `Standard`, `Deep`, `Ultra`
+  (`Dialog.research_level/1`); the option ids and `{:research_depth, atom}` are unchanged. Test
+  `cli020/e25_research_levels_test.exs`; `research_form_test`, `bindings_test` green.
