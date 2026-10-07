@@ -97,6 +97,14 @@ defmodule SwarmCodeCLI.Release.LauncherTest do
   end
 
   describe "usage" do
+    # cli020 finisher: bash 5.3 writes a here-document into a pipe when it
+    # fits the pipe size it was built for; when macOS hands out small (512
+    # byte) pipes under pipe-memory pressure, `cat <<'HELP'` waited for ever
+    # and `ncode --help` hung. The launcher prints its words with builtins.
+    test "the launcher uses no here-document" do
+      refute File.read!(@launcher) =~ ~r/<<-?\s*['"]?[A-Z_]+/
+    end
+
     test "--help and --version answer without starting the release", context do
       assert {0, help} = launch(context, ["--help"])
       assert help =~ "Usage: ncode [DIR] [--new | --continue | --resume ID] [--model M]"
