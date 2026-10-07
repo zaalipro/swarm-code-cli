@@ -654,7 +654,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Settings do
         }
       ],
       "versions" => %{
-        "service" => "0.1.0",
+        "service" => "0.2.0",
         "protocol" => 1,
         "otp" => "28",
         "elixir" => "1.18.4"

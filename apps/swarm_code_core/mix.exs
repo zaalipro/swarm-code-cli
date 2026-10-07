@@ -4,7 +4,7 @@ defmodule SwarmCodeCore.MixProject do
   def project do
     [
       app: :swarm_code_core,
-      version: "0.1.0",
+      version: "0.2.0",
       elixir: "~> 1.18.4",
       build_path: "../../_build",
       config_path: "../../config/config.exs",
