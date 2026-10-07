@@ -341,6 +341,9 @@ defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.Owner do
 
   defp record({:ready, 1, size, bits}, state) do
     mouse? = Map.get(state.flags, :mouse?, false)
+    # cli020 D2: the kitty keyboard protocol answered the port's probe.
+    enhanced? = (bits &&& 128) != 0
+    bits = bits &&& bnot(128)
 
     expected =
       if(state.flags.alternate?, do: 1, else: 0) ||| if(state.flags.focus?, do: 2, else: 0) |||
@@ -360,7 +363,7 @@ defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.Owner do
         alternate_screen: feature(state.flags.alternate?),
         focus: feature(state.flags.focus?),
         paste: feature(state.flags.paste?),
-        enhanced_keys: :unavailable,
+        enhanced_keys: if(enhanced?, do: :supported, else: :unavailable),
         mouse: feature(mouse?)
     }
 

@@ -1,11 +1,15 @@
 //! One writer, one input credit, one command body, one fixed tty-read buffer.
 use crate::{
     guard,
-    input::InputParser,
+    input::{Event, InputParser},
     output::Painter,
-    protocol::{self, Command},
+    protocol::{self, Command, NotifyKind},
     tty::{self, BufferedWriter, FdWriter},
 };
+
+/// cli020 D2: how long the start-up keyboard probe waits for the terminal's
+/// answers before it treats the kitty protocol as unavailable.
+const PROBE_WAIT: Duration = Duration::from_millis(500);
 use std::{
     io::{self, Write},
     os::{fd::RawFd, unix::net::UnixStream},
@@ -94,6 +98,19 @@ struct Session<'a> {
     pending_resize: Option<(u16, u16)>,
     // Bytes queued before raw mode began, typed under cooked input (Q17).
     cooked: usize,
+    // cli020 D2: the start-up probe (`CSI ? u`, `CSI c`) is waiting since then;
+    // Ready is sent when it ends.
+    probe: Option<Instant>,
+    probed: bool,
+    kitty_seen: bool,
+    // cli020 D2: the kitty disambiguate mode is on (Ready reports it).
+    enhanced: bool,
+    // cli020 D3: the last window title asked for, and whether the terminal's
+    // own title is saved (`CSI 22;2 t`) and must be restored (`CSI 23;2 t`).
+    title: Option<String>,
+    title_saved: bool,
+    // cli020 D5: an arrow burst read as the wheel, waiting for input credit.
+    pending_scroll: Option<Event>,
 }
 impl Session<'_> {
     fn send(&mut self, bytes: Vec<u8>) -> Result<(), u8> {
@@ -112,20 +129,123 @@ impl Session<'_> {
         self.dimensions = tty::size(self.tty).map_err(|_| 2)?;
         self.pending_resize = None;
         self.escape_since = self.parser.pending_escape().then(Instant::now);
+        // cli020 D2: a resume pushes the kitty mode the probe found again.
+        if self.enhanced {
+            guard::kitty(self.guard).map_err(|_| 2)?;
+        }
+        // cli020 D3: and puts the session's title back.
+        if let Some(title) = self.title.take() {
+            self.write_title(&title);
+            self.title = Some(title);
+        }
+        // cli020 D2: once, after entering the alternate screen, ask whether
+        // the kitty keyboard protocol is there; the DA1 answer ends the wait.
+        if !self.probed && self.flags & 1 != 0 {
+            self.probed = true;
+            if self
+                .output
+                .write_all(b"\x1b[?u\x1b[c")
+                .and_then(|()| self.output.flush())
+                .is_ok()
+            {
+                self.probe = Some(Instant::now());
+                return Ok(());
+            }
+            self.output.discard();
+        }
+        self.ready()
+    }
+    fn ready(&mut self) -> Result<(), u8> {
+        let enhanced = if self.enhanced {
+            protocol::READY_ENHANCED_KEYS
+        } else {
+            0
+        };
         self.send(
             protocol::ready(
                 self.generation.unwrap(),
                 self.dimensions.0,
                 self.dimensions.1,
-                self.flags,
+                self.flags | enhanced,
             )
             .map_err(|_| 2)?,
         )
+    }
+    /// cli020 D2: reads the probe's answers without an input credit (nothing
+    /// is sent to the owner before Ready), keeping any typeahead in order.
+    fn probe_step(&mut self, since: Instant) -> Result<(), u8> {
+        if self.start > 0 {
+            self.input.copy_within(self.start..self.end, 0);
+            self.end -= self.start;
+            self.start = 0;
+        }
+        let mut finished = since.elapsed() >= PROBE_WAIT;
+        if self.end < self.input.len() {
+            match read_fd(self.tty, &mut self.input[self.end..]).map_err(|_| 4)? {
+                None => (),
+                Some(0) => finished = true,
+                Some(n) => {
+                    let end = self.end + n;
+                    self.cooked =
+                        crate::input::typeahead_enter(&mut self.input[self.end..end], self.cooked);
+                    self.end = end;
+                }
+            }
+        } else {
+            finished = true;
+        }
+        let (end, found) = crate::input::take_probe_replies(&mut self.input[..self.end]);
+        self.end = end;
+        self.kitty_seen |= found.kitty_flags.is_some();
+        if found.attributes || finished {
+            self.probe = None;
+            if self.kitty_seen && guard::kitty(self.guard).is_ok() {
+                self.enhanced = true;
+            }
+            self.ready()?;
+        }
+        Ok(())
+    }
+    /// cli020 D3: an OSC 2 title, saving the terminal's own title first.
+    fn write_title(&mut self, title: &str) {
+        let mut bytes = Vec::with_capacity(16 + title.len());
+        if !self.title_saved {
+            bytes.extend_from_slice(b"\x1b[22;2t");
+        }
+        bytes.extend_from_slice(&protocol::notify_bytes(NotifyKind::Title, title));
+        if self
+            .output
+            .write_all(&bytes)
+            .and_then(|()| self.output.flush())
+            .is_ok()
+        {
+            self.title_saved = true;
+        } else {
+            self.output.discard();
+            self.painter.invalidate();
+        }
+    }
+    /// cli020 D3: the terminal's own title back, before the modes are restored.
+    fn restore_title(&mut self) {
+        if self.title_saved {
+            self.title_saved = false;
+            if self
+                .output
+                .write_all(b"\x1b[23;2t")
+                .and_then(|()| self.output.flush())
+                .is_err()
+            {
+                self.output.discard();
+            }
+        }
     }
     fn suspend(&mut self) -> Result<(), u8> {
         self.credit = None;
         self.output.discard();
         self.escape_since = None;
+        self.probe = None;
+        self.pending_scroll = None;
+        self.restore_title();
         guard::modes(self.guard, None)?;
         self.active = false;
         self.painter.invalidate();
@@ -230,6 +350,36 @@ impl Session<'_> {
                     }
                 }
             }
+            // cli020 D3: bell, notification or title between frames. A
+            // suspended terminal is the shell's: only the title is kept, for
+            // the resume.
+            Command::Notify { kind, text, .. } => {
+                let live = self.active && !self.awaiting_resume && self.probe.is_none();
+                match kind {
+                    NotifyKind::Title => {
+                        if live {
+                            self.write_title(text);
+                        }
+                        self.title = Some(text.to_owned());
+                    }
+                    _ if live => {
+                        let bytes = protocol::notify_bytes(kind, text);
+                        if self
+                            .output
+                            .write_all(&bytes)
+                            .and_then(|()| self.output.flush())
+                            .is_err()
+                        {
+                            self.output.discard();
+                            self.painter.invalidate();
+                        }
+                    }
+                    _ => (),
+                }
+            }
+            // cli020 D11: Ctrl-L. The painter forgets what is on screen, so
+            // the next frame repaints every cell.
+            Command::Redraw { .. } => self.painter.invalidate(),
             // pass70 B10: OSC 52 between frames. A suspended terminal belongs
             // to the shell, so the text is dropped; a failed write only costs
             // the next frame a full repaint.
@@ -258,6 +408,10 @@ impl Session<'_> {
         if let Some((columns, rows)) = self.pending_resize.take() {
             self.credit = None;
             return self.send(protocol::resize(generation, token, columns, rows).map_err(|_| 1)?);
+        }
+        if let Some(event) = self.pending_scroll.take() {
+            self.credit = None;
+            return self.send(protocol::encode_event(generation, token, &event).map_err(|_| 1)?);
         }
         if self.start < self.end {
             let step = self.parser.advance(&self.input[self.start..self.end]);
@@ -309,7 +463,9 @@ impl Session<'_> {
                 }
                 size_time = Instant::now();
             }
-            if self.active {
+            if let Some(since) = self.probe {
+                self.probe_step(since)?;
+            } else if self.active {
                 self.input()?;
             }
             let read_tty = self.active && self.credit.is_some() && self.start == self.end;
@@ -364,6 +520,14 @@ impl Session<'_> {
                             crate::input::typeahead_enter(&mut self.input[..n], self.cooked);
                         self.start = 0;
                         self.end = n;
+                        // cli020 D5: with no mouse reports, alternate scroll
+                        // sends the wheel as a burst of identical arrows.
+                        if self.flags & 1 != 0 && self.flags & protocol::FLAG_MOUSE == 0 {
+                            if let Some((up, count)) = crate::input::arrow_burst(&self.input[..n]) {
+                                self.pending_scroll = Some(Event::Scroll { up, count });
+                                self.end = 0;
+                            }
+                        }
                     }
                 }
             }
@@ -427,11 +591,19 @@ pub fn run(guard: &mut UnixStream, tty: RawFd) -> i32 {
         dimensions: (0, 0),
         pending_resize: None,
         cooked: 0,
+        probe: None,
+        probed: false,
+        kitty_seen: false,
+        enhanced: false,
+        title: None,
+        title_saved: false,
+        pending_scroll: None,
     };
     let result = session.run();
     // This synchronous handshake also handles initialization failure. The guard
     // remains the emergency backstop for panic, abrupt writer death or bad pipes.
     session.output.discard();
+    session.restore_title();
     let restored = guard::modes(session.guard, None);
     let reason = match (result, restored) {
         (_, Err(_)) => Some(6),

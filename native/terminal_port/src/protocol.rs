@@ -18,6 +18,14 @@ pub const FLAGS: u8 = 1 | 2 | 4 | FLAG_MOUSE;
 /// neither is the restore byte 8.
 pub const GUARD_MOUSE_ON: u8 = 32;
 pub const GUARD_MOUSE_OFF: u8 = 64;
+/// cli020 D2: the guard byte that pushes the kitty keyboard protocol's
+/// disambiguate mode (`CSI > 1 u`); restoration pops it (`CSI < u`).
+pub const GUARD_KITTY_PUSH: u8 = 128;
+/// cli020 D2: Ready's flags bit for "enhanced keys are on" (the kitty
+/// keyboard protocol answered the start-up probe). Ready only: Init rejects it.
+pub const READY_ENHANCED_KEYS: u8 = 128;
+/// cli020 D3: the longest Notify text (bell, OSC 9 notification, OSC 2 title).
+pub const MAX_NOTIFY_BYTES: usize = 512;
 pub const MAX_RESPONSE_BYTES: usize = 262_167;
 
 /// A fixed diagnostic that cannot expose rejected input or OS details.
@@ -61,6 +69,27 @@ pub enum Command<'a> {
         token: u64,
         on: bool,
     },
+    /// cli020 D3: a bell (kind 0), an OSC 9 notification (1) or an OSC 2
+    /// window title (2), written between frames.
+    Notify {
+        generation: u64,
+        token: u64,
+        kind: NotifyKind,
+        text: &'a str,
+    },
+    /// cli020 D11: Ctrl-L. The next frame repaints every cell.
+    Redraw {
+        generation: u64,
+        token: u64,
+    },
+}
+
+/// cli020 D3: what a Notify command writes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NotifyKind {
+    Bell,
+    Notification,
+    Title,
 }
 impl Command<'_> {
     /// Draw inherits the already initialized connection's generation.
@@ -72,7 +101,9 @@ impl Command<'_> {
             | Self::Suspend { generation, .. }
             | Self::Resume { generation, .. }
             | Self::Copy { generation, .. }
-            | Self::Mouse { generation, .. } => Some(*generation),
+            | Self::Mouse { generation, .. }
+            | Self::Notify { generation, .. }
+            | Self::Redraw { generation, .. } => Some(*generation),
             Self::Draw { .. } => None,
         }
     }
@@ -83,7 +114,9 @@ impl Command<'_> {
             | Self::Suspend { token, .. }
             | Self::Resume { token, .. }
             | Self::Copy { token, .. }
-            | Self::Mouse { token, .. } => Some(*token),
+            | Self::Mouse { token, .. }
+            | Self::Notify { token, .. }
+            | Self::Redraw { token, .. } => Some(*token),
             _ => None,
         }
     }
@@ -97,6 +130,8 @@ impl Command<'_> {
             Self::Resume { .. } => "resume",
             Self::Copy { .. } => "copy",
             Self::Mouse { .. } => "mouse",
+            Self::Notify { .. } => "notify",
+            Self::Redraw { .. } => "redraw",
         }
     }
 }
@@ -121,6 +156,9 @@ impl fmt::Debug for Command<'_> {
             }
             Self::Mouse { on, .. } => {
                 debug.field("on", on);
+            }
+            Self::Notify { kind, text, .. } => {
+                debug.field("kind", kind).field("text_bytes", &text.len());
             }
             _ => {}
         }
@@ -148,9 +186,12 @@ pub fn decode_command(body: &[u8]) -> Result<Command<'_>, ProtocolError> {
     if body[1] == 8 {
         return decode_mouse(body);
     }
+    if body[1] == 9 {
+        return decode_notify(body);
+    }
     let expected = match body[1] {
         1 => 11,
-        2 | 4 | 5 | 6 => 18,
+        2 | 4 | 5 | 6 | 10 => 18,
         _ => return Err(ProtocolError),
     };
     if body.len() != expected {
@@ -170,6 +211,7 @@ pub fn decode_command(body: &[u8]) -> Result<Command<'_>, ProtocolError> {
         4 => Command::Shutdown { generation, token },
         5 => Command::Suspend { generation, token },
         6 => Command::Resume { generation, token },
+        10 => Command::Redraw { generation, token },
         _ => return Err(ProtocolError),
     })
 }
@@ -186,6 +228,49 @@ fn decode_mouse(body: &[u8]) -> Result<Command<'_>, ProtocolError> {
         token,
         on: body[18] == 1,
     })
+}
+
+/// cli020 D3: `1, 9, generation, token, kind:u8, length:u16, text (0..512)`.
+/// Any C0 or C1 control in the text is refused (it would end or extend the
+/// OSC string), and a notification may not start with a digit (ConEmu's
+/// `OSC 9;<n>` progress sequences share its prefix).
+fn decode_notify(body: &[u8]) -> Result<Command<'_>, ProtocolError> {
+    if body.len() < 21 {
+        return Err(ProtocolError);
+    }
+    let generation = u64::from_be_bytes(body[2..10].try_into().map_err(|_| ProtocolError)?);
+    let token = u64::from_be_bytes(body[10..18].try_into().map_err(|_| ProtocolError)?);
+    let kind = match body[18] {
+        0 => NotifyKind::Bell,
+        1 => NotifyKind::Notification,
+        2 => NotifyKind::Title,
+        _ => return Err(ProtocolError),
+    };
+    let length = u16::from_be_bytes(body[19..21].try_into().map_err(|_| ProtocolError)?) as usize;
+    if length > MAX_NOTIFY_BYTES || body.len() != 21 + length {
+        return Err(ProtocolError);
+    }
+    let text = std::str::from_utf8(&body[21..]).map_err(|_| ProtocolError)?;
+    if text.chars().any(char::is_control)
+        || (kind == NotifyKind::Notification && text.starts_with(|c: char| c.is_ascii_digit()))
+    {
+        return Err(ProtocolError);
+    }
+    Ok(Command::Notify {
+        generation,
+        token,
+        kind,
+        text,
+    })
+}
+
+/// cli020 D3: the exact bytes a Notify writes.
+pub fn notify_bytes(kind: NotifyKind, text: &str) -> Vec<u8> {
+    match kind {
+        NotifyKind::Bell => vec![7],
+        NotifyKind::Notification => [b"\x1b]9;".as_slice(), text.as_bytes(), b"\x07"].concat(),
+        NotifyKind::Title => [b"\x1b]2;".as_slice(), text.as_bytes(), b"\x07"].concat(),
+    }
 }
 
 /// `1, 7, generation, token, length:u32, text`: clipboard text for OSC 52.
@@ -316,6 +401,12 @@ pub fn encode_event(generation: u64, credit: u64, event: &Event) -> Result<Vec<u
         Event::Rejected(_) => 2,
         Event::FocusGained | Event::FocusLost => 1,
         Event::Wheel { .. } => 7,
+        Event::Scroll { count, .. } => {
+            if !(1..=crate::input::MAX_SCROLL_COUNT).contains(count) {
+                return Err(ProtocolError);
+            }
+            3
+        }
     };
     let body_len = 18 + payload_len;
     if body_len > MAX_RESPONSE_BYTES {
@@ -363,6 +454,7 @@ pub fn encode_event(generation: u64, credit: u64, event: &Event) -> Result<Vec<u
             packet.extend_from_slice(&column.to_be_bytes());
             packet.extend_from_slice(&row.to_be_bytes());
         }
+        Event::Scroll { up, count } => packet.extend_from_slice(&[7, u8::from(*up), *count]),
     }
     Ok(packet)
 }
@@ -372,7 +464,7 @@ pub fn ready(
     rows: u16,
     flags: u8,
 ) -> Result<Vec<u8>, ProtocolError> {
-    if columns == 0 || rows == 0 || flags & !FLAGS != 0 {
+    if columns == 0 || rows == 0 || flags & !(FLAGS | READY_ENHANCED_KEYS) != 0 {
         return Err(ProtocolError);
     }
     let mut packet = response(16, generation, 15);
