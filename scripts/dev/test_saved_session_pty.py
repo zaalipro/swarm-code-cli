@@ -128,13 +128,14 @@ class SavedSession(unittest.TestCase):
                         terminal.wait_for(b'Remember saved terminal')
                     terminal.wait_for(b'Saved terminal verified.', timeout=30)
                     terminal.capture(f'saved-session-{phase}')
-                    # pass75 V2 (R7.1, R7.3): the side panel draws the chat run's
-                    # header (`chat · in chat`) and no found block for a run
-                    # without sub agents; the transcript holds the reply once.
+                    # pass75 V2 (R7.1, R7.3): the transcript holds the reply once.
+                    # cli020 E5 (Q8): the side panel is auto, so a chat run with
+                    # no sub agent and nothing waiting draws no panel at all
+                    # (it drew `chat · in chat` before 0.2.0).
                     said = [line for line in terminal.screen().split(b'\n')
                             if line.strip().startswith(b'Saved terminal verified.')]
                     self.assertEqual(len(said), 1)
-                    self.assertIn(b'chat \xc2\xb7 in chat', terminal.screen())
+                    self.assertNotIn(b'chat \xc2\xb7 in chat', terminal.screen())
                     if phase == 0:
                         terminal.send(b'\x1b[200~/goal\x1b[201~\r')
                         terminal.wait_for(b'Conversation goal')
@@ -146,8 +147,10 @@ class SavedSession(unittest.TestCase):
                         terminal.send(b'\x1b[200~/plan\x1b[201~\r')
                         terminal.wait_for(b'Plan mode enabled')
                         terminal.capture('saved-plan-mode')
+                        # cli020 D10/C16: bare /rewind lists the turns
+                        # (rewind.turns over the socket), not the checkpoints.
                         terminal.send(b'\x1b[200~/rewind\x1b[201~\r')
-                        terminal.wait_for(b'heckpoint')
+                        terminal.wait_for(b'Turn 1 \xc2\xb7 Remember saved terminal')
                         terminal.capture('saved-rewind')
                         terminal.send(b'\x1b')
                         # The first-run toast lasts 8 s; after it the status
