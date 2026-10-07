@@ -2420,9 +2420,9 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     }
   end
 
-  # cli020 C15: the shell message the next turn reads. The finisher flips the
-  # role to "shell" once F3's role is synced (§8.1).
-  defp shell_message_role, do: "swarm"
+  # cli020 C15: the shell message the next turn reads (F3's role "shell",
+  # synced at desktop 7b8f379f).
+  defp shell_message_role, do: "shell"
 
   defp finish_shell(%{shell: nil} = state, _output, _exit), do: state
 
