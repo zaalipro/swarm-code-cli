@@ -25,7 +25,19 @@ defmodule SwarmCodeCLI.UI.Reducer do
   alias SwarmCodeCLI.UI.Reducer.{Watch, Commands, Pages, Editing, Details, PathCompletion}
   alias SwarmCodeCLI.UI.Reducer.Hint, as: Hints
   alias SwarmCodeCLI.UI.Reducer.Overlay
-  alias SwarmCodeCLI.UI.Reducer.{Deliveries, Display}
+
+  alias SwarmCodeCLI.UI.Reducer.{
+    Deliveries,
+    Display,
+    EffortPicker,
+    HistorySearch,
+    ImagePaste,
+    QueueCommands,
+    Remote,
+    Rewind
+  }
+
+  alias SwarmCodeCLI.UI.Draft.Pastes
   alias SwarmCodeCLI.UI.WorkflowKeyword
   alias SwarmCodeCLI.UI.Hint
   alias SwarmCodeCLI.UI.DataSource.DTO.Outcome
@@ -66,10 +78,11 @@ defmodule SwarmCodeCLI.UI.Reducer do
     unless SwarmCodeCLI.UI.Intent.valid_id?(init.source_epoch) and
              init.banner in [nil, :live_banner, :persisted_banner] and
              init.focus in ["main", "composer"] and init.keymap in [:default, :vim] and
-             init.panel_mode in [:full, :compact, :hidden] and
+             init.panel_mode in [:auto, :full, :compact, :hidden] and
              is_boolean(init.show_diffs) and is_boolean(init.agent_summaries?) and
              init.theme_mode in [:dark, :light] and
              init.theme_env in [nil, :dark, :light] and is_boolean(init.mouse?) and
+             init.notify in [:auto, :bell, :osc9, :os, :off] and is_boolean(init.title?) and
              SwarmCodeCLI.UI.Intent.valid_id?(init.id_prefix) and is_integer(init.now) and
              init.now >= 0 and is_integer(init.deadline_ms) and init.deadline_ms >= 0 and
              is_integer(init.id_sequence) and init.id_sequence >= 0 and is_map(init.prefs) and
@@ -88,6 +101,8 @@ defmodule SwarmCodeCLI.UI.Reducer do
         pending_resume_picker: init.resume_picker? and is_nil(init.settings_open),
         key_overrides: SwarmCodeCLI.UI.Keymap.Overrides.compile(Map.get(init.prefs, "keys"))
       })
+
+    state = SwarmCodeCLI.UI.Reducer.TerminalPrefs.apply_prefs(state, init.prefs)
 
     state = %{
       state
@@ -114,6 +129,8 @@ defmodule SwarmCodeCLI.UI.Reducer do
         {next, effects} = replay_deferred(next, effects)
         {next, effects} = track_sent_turn(next, effects)
         {next, effects} = sync_interactions(next, effects, action, state)
+        next = SwarmCodeCLI.UI.Reducer.TerminalPrefs.sync(next, state)
+        {next, effects} = SwarmCodeCLI.UI.Reducer.Attention.after_update(state, next, effects)
         next = note_policy_change(state, next)
         next = hush_refusals(state, next)
         next = stamp_notice(state, next)
@@ -182,6 +199,42 @@ defmodule SwarmCodeCLI.UI.Reducer do
     {state, closed} = close_switcher(state)
     {state, opened} = SwarmCodeCLI.UI.Reducer.Settings.open(state, arg)
     {state, closed ++ opened}
+  end
+
+  # cli020 D6 (decision 4b, §7.2): Shift-Tab in the composer cycles Ask
+  # (read-only) → Auto → Plan → Ask through the project's /approval and the
+  # conversation's /plan, so the server stays the decider. Full access is
+  # never entered by the cycle (from full, the next step is Plan). While the
+  # previous step is unanswered a second Shift-Tab waits.
+  defp transition(state, {:cycle_permission_mode}) do
+    workspace = Map.get(state.read_model.snapshots, :workspace)
+
+    cond do
+      Enum.any?(state.mode_cycle, &Map.has_key?(state.requests, &1)) ->
+        {state, []}
+
+      workspace == nil or is_nil(workspace.approval_mode) ->
+        feedback(state, "The session is not connected yet.")
+
+      workspace.mode == :plan ->
+        cycle_step(
+          state,
+          ["/plan"],
+          :read_only,
+          "Ask · writes and commands ask first · Shift-Tab: Auto (this project)"
+        )
+
+      workspace.approval_mode == :read_only ->
+        cycle_step(
+          state,
+          [],
+          :auto,
+          "Auto · edits and safe commands run · Shift-Tab: Plan (this project)"
+        )
+
+      true ->
+        cycle_step(state, ["/plan"], nil, "Plan · read-only tools, a plan first · Shift-Tab: Ask")
+    end
   end
 
   # pass73-K T7: a row of the /approval picker sets the project's mode; the
@@ -434,15 +487,100 @@ defmodule SwarmCodeCLI.UI.Reducer do
 
   # Esc in the composer stops the turn that is generating, and nothing else.
   # A turn that was sent but is not on screen yet is that turn (I3).
-  defp transition(state, {:interrupt, :escape}) do
-    case Keymap.live_turn(state) do
-      %{id: id, allowed_actions: actions} = _turn ->
-        if :stop in actions, do: stop_turn(state, id), else: {state, []}
+  # cli020 D11: Ctrl-L.
+  defp transition(state, :redraw_screen), do: {state, [{:terminal_control, :redraw}]}
 
+  # cli020 D20: the queue list's keys.
+  defp transition(state, {:queue_move, delta}), do: QueueCommands.move(state, delta)
+  defp transition(state, {:queue_drop}), do: QueueCommands.drop_selected(state)
+
+  # cli020 D19: history search and the stash (`Reducer.HistorySearch`).
+  defp transition(state, :history_search), do: HistorySearch.open(state)
+  defp transition(state, {:history_query, operation}), do: HistorySearch.edit(state, operation)
+  defp transition(state, {:history_move, delta}), do: HistorySearch.move(state, delta)
+  defp transition(state, {:history_pick}), do: HistorySearch.pick(state)
+  defp transition(state, {:stash_draft}), do: HistorySearch.stash(state)
+  defp transition(state, {:restore_stash}), do: HistorySearch.restore(state)
+
+  # cli020 D18: the effort picker (`Reducer.EffortPicker`); the level goes
+  # out as the typed command would, the draft kept.
+  defp transition(state, {:effort_move, delta}), do: EffortPicker.move(state, delta)
+
+  defp transition(state, {:effort_pick, level}) do
+    case EffortPicker.command(state, level) do
       nil ->
-        case stop_unseen_turn(state) do
-          {:ok, next} -> {next, []}
-          :none -> {state, []}
+        {state, []}
+
+      text ->
+        {state, closed} = transition(state, :close_top_layer)
+        {state, sent} = send_command_text(state, text)
+        {state, closed ++ sent}
+    end
+  end
+
+  # cli020 D10: the rewind list and its confirm (`Reducer.Rewind`).
+  defp transition(state, {:rewind_move, delta}), do: Rewind.move(state, delta)
+  defp transition(state, {:rewind_open}), do: Rewind.choose_turn(state)
+  defp transition(state, {:rewind_choose, scope}), do: Rewind.apply(state, scope)
+
+  # cli020 D9: Ctrl-V and the runtime's steps (`Reducer.ImagePaste`).
+  defp transition(state, {:paste_image}), do: ImagePaste.open(state)
+
+  defp transition(state, {:paste_image_slot, conversation}),
+    do: ImagePaste.slot(state, conversation)
+
+  defp transition(state, {:paste_image_done, conversation, token, result}),
+    do: ImagePaste.done(state, conversation, token, result)
+
+  # cli020 D7: Enter on `!cmd` sends `shell.run` with the command (the `!`
+  # removed); the draft goes into the prompt history and clears once the
+  # request is out. `!` alone says what to type.
+  defp transition(state, :shell_send) do
+    command = SwarmCodeCLI.UI.Composer.shell_command(state)
+    conversation = Remote.conversation(state)
+    key = State.current_draft_key(state)
+
+    cond do
+      command in [nil, ""] ->
+        feedback(state, "Type a command after !")
+
+      byte_size(command) > 4_096 ->
+        feedback(state, "A shell command is at most 4,096 bytes.")
+
+      conversation == nil ->
+        {state, []}
+
+      true ->
+        typed = Keymap.draft_text(state)
+
+        case Remote.send(state, {:shell_run, conversation, command}, :shell) do
+          {next, [_ | _] = sent} ->
+            {next, cleared} = clear_draft(remember_text(next, conversation, typed), key)
+            {next, sent ++ cleared}
+
+          refused ->
+            refused
+        end
+    end
+  end
+
+  # cli020 D7: Esc while a `!` command runs stops it before any turn.
+  defp transition(state, {:interrupt, :escape}) do
+    cond do
+      shell_running?(state) ->
+        Remote.send(state, {:shell_stop, Remote.conversation(state)}, :shell)
+
+      true ->
+        case stop_on_escape(state) do
+          # cli020 D10: a bare Esc that stopped nothing arms Esc Esc.
+          {^state, []} ->
+            case Rewind.escape(state) do
+              {:open, next} -> Rewind.request(next, :pick)
+              {:armed, next} -> {next, []}
+            end
+
+          stopped ->
+            {%{elem(stopped, 0) | last_escape_at: nil}, elem(stopped, 1)}
         end
     end
   end
@@ -533,6 +671,9 @@ defmodule SwarmCodeCLI.UI.Reducer do
          }, []}
     end
   end
+
+  defp transition(%{history_timer: id} = state, {:timer_fired, id}) when id != nil,
+    do: HistorySearch.fire(state)
 
   defp transition(%{quit_armed: id} = state, {:timer_fired, id}) do
     state = disarm_quit(state)
@@ -786,6 +927,8 @@ defmodule SwarmCodeCLI.UI.Reducer do
           lifecycle: :running
       }
 
+      # cli020 D13: cli.json's reduced_motion outlives a new terminal.
+      state = SwarmCodeCLI.UI.Reducer.TerminalPrefs.motion(state)
       {resize(state, capabilities.size), []}
     else
       {state, []}
@@ -928,7 +1071,9 @@ defmodule SwarmCodeCLI.UI.Reducer do
   # while it does); the session runtime runs the editor and answers.
   defp transition(%{lifecycle: :running} = state, {:external_editor, key}) do
     if key == State.current_draft_key(state) do
-      text = Editor.text(Drafts.fetch(state.drafts, key).editor)
+      # cli020 D8: the editor gets the pastes expanded.
+      draft = Drafts.fetch(state.drafts, key)
+      text = Pastes.expand(Editor.text(draft.editor), draft.pastes)
       {%{state | lifecycle: :suspend_requested}, [{:edit_externally, key, text}]}
     else
       {state, []}
@@ -945,9 +1090,21 @@ defmodule SwarmCodeCLI.UI.Reducer do
 
     case result do
       {:ok, text} ->
-        if text == Editor.text(Drafts.fetch(state.drafts, key).editor),
+        draft = Drafts.fetch(state.drafts, key)
+
+        # cli020 D8: the edited text has every paste in it; nothing collapses back.
+        if text == Pastes.expand(Editor.text(draft.editor), draft.pastes),
           do: {state, []},
-          else: replace_draft(%{state | history_cursor: nil}, key, text)
+          else:
+            replace_draft(
+              %{
+                state
+                | history_cursor: nil,
+                  drafts: Drafts.put(state.drafts, %{draft | pastes: %{}})
+              },
+              key,
+              text
+            )
 
       {:error, reason} ->
         {%{state | notice: {:command_feedback, external_edit_words(reason)}}, []}
@@ -1059,6 +1216,9 @@ defmodule SwarmCodeCLI.UI.Reducer do
   defp transition(state, {:field_editor, {:feature_field, _, _}, _}), do: {state, []}
 
   defp transition(state, {kind, key, operation}) when kind in [:editor, :field_editor] do
+    {state, operation} =
+      if kind == :editor, do: collapse_paste(state, key, operation), else: {state, operation}
+
     {next, effects} = Editing.apply(state, kind, key, operation)
     next = if kind == :editor and next != state, do: %{next | slash_palette: nil}, else: next
 
@@ -1482,7 +1642,12 @@ defmodule SwarmCodeCLI.UI.Reducer do
             SwarmCodeCLI.UI.Reducer.Settings.Responses.response(state, request, body)
 
           _ ->
-            Pages.response(state, request, delivery.body)
+            if Remote.mine?(request) do
+              state = %{state | requests: Map.delete(state.requests, delivery.request_id)}
+              Remote.answer(state, request, {:ok, elem_body(delivery.body)})
+            else
+              Pages.response(state, request, delivery.body)
+            end
         end
 
       _ ->
@@ -1560,6 +1725,11 @@ defmodule SwarmCodeCLI.UI.Reducer do
 
   # An accepted open or new has switched the service's conversation: the view
   # follows it. A refusal says so; project updates show the service's words.
+  # cli020 lane D: the answers to the ops `Reducer.Remote` sends.
+  defp settle_service(%{} = state, %{origin: {:conversation, action}} = request, outcome)
+       when action in [:shell, :rewind, :attachment, :history, :queue],
+       do: Remote.answer(state, request, Remote.outcome_payload(outcome))
+
   defp settle_service(state, %{kind: {:conversation_open, id}}, %Outcome{status: :accepted}),
     do: navigate_conversation(state, id)
 
@@ -1586,6 +1756,15 @@ defmodule SwarmCodeCLI.UI.Reducer do
 
     {%{state | notice: {:command_feedback, words}}, []}
   end
+
+  # cli020 D6: a refused approval change (an untrusted project refuses
+  # auto) says the service's own words.
+  defp settle_service(state, %{kind: {:project_update, mode, _}}, %Outcome{
+         status: status,
+         reason: %{text: text}
+       })
+       when status != :accepted and mode != nil and is_binary(text) and text != "",
+       do: {%{state | notice: {:command_feedback, String.trim(text)}}, []}
 
   defp settle_service(state, %{kind: kind}, %Outcome{status: status})
        when status != :accepted do
@@ -2805,6 +2984,89 @@ defmodule SwarmCodeCLI.UI.Reducer do
 
   defp remember_prompt(state, _request, _outcome), do: state
 
+  defp stop_on_escape(state) do
+    case Keymap.live_turn(state) do
+      %{id: id, allowed_actions: actions} = _turn ->
+        if :stop in actions, do: stop_turn(state, id), else: {state, []}
+
+      nil ->
+        case stop_unseen_turn(state) do
+          {:ok, next} -> {next, []}
+          :none -> {state, []}
+        end
+    end
+  end
+
+  defp elem_body({_tag, body}), do: body
+  defp elem_body(body), do: body
+
+  # cli020 D8: a large paste becomes its placeholder; Backspace or Delete
+  # next to a whole placeholder deletes all of it and its entry.
+  defp collapse_paste(state, key, {:paste, text} = operation) do
+    draft = Drafts.fetch(state.drafts, key)
+
+    if Pastes.collapse?(text, state.paste_collapse_lines) do
+      {words, pastes} = Pastes.put(draft.pastes, text)
+      {%{state | drafts: Drafts.put(state.drafts, %{draft | pastes: pastes})}, {:paste, words}}
+    else
+      {state, operation}
+    end
+  end
+
+  defp collapse_paste(state, key, operation)
+       when operation in [:delete_backward, :delete_forward] do
+    draft = Drafts.fetch(state.drafts, key)
+    direction = if operation == :delete_backward, do: :backward, else: :forward
+
+    with true <- draft.pastes != %{},
+         nil <- Editor.selection(draft.editor),
+         {length, n} <-
+           Pastes.deletion(
+             Editor.text(draft.editor),
+             Editor.cursor(draft.editor),
+             direction,
+             draft.pastes
+           ) do
+      draft = %{draft | pastes: Map.delete(draft.pastes, n)}
+      {%{state | drafts: Drafts.put(state.drafts, draft)}, {:times, length, operation}}
+    else
+      _ -> {state, operation}
+    end
+  end
+
+  defp collapse_paste(state, _key, operation), do: {state, operation}
+
+  # cli020 D7: a `!` command goes into the history as typed, when it is sent.
+  defp remember_text(state, conversation, text) do
+    if byte_size(text) > @history_max_bytes or String.trim(text) == "" do
+      state
+    else
+      sent = [text | List.delete(Map.get(state.prompt_history, conversation, []), text)]
+
+      history =
+        state.prompt_history
+        |> Map.put(conversation, Enum.take(sent, @history_limit))
+        |> bound_history(conversation)
+
+      %{state | prompt_history: history, history_cursor: nil}
+    end
+  end
+
+  # cli020 D7: a shell command of the conversation in view is running: its
+  # `shell.run` is unanswered, or its transcript row (kind `:shell`, C15)
+  # has no exit yet.
+  defp shell_running?(state) do
+    conversation = Remote.conversation(state)
+
+    Enum.any?(state.requests, fn {_, request} ->
+      match?({:shell_run, ^conversation, _}, request.kind)
+    end) or
+      Enum.any?(state.read_model.transcript, fn {_, item} ->
+        Map.get(item, :kind) == :shell and Map.get(item, :exit, :none) == nil and
+          Map.get(item, :conversation_id, conversation) == conversation
+      end)
+  end
+
   # At most @history_conversations conversations keep a history; the one just
   # written stays, and the others go smallest first.
   defp bound_history(history, _keep) when map_size(history) <= @history_conversations,
@@ -2869,6 +3131,10 @@ defmodule SwarmCodeCLI.UI.Reducer do
     end
   end
 
+  @doc false
+  # cli020 D10: the rewound prompt goes into the draft as one undoable edit.
+  def replace_text(state, key, text), do: replace_draft(state, key, text)
+
   # One undoable replacement of the draft's text, like a slash completion.
   defp replace_draft(state, key, text) do
     {state, a} = Editing.apply(state, :editor, key, :select_all)
@@ -2900,6 +3166,34 @@ defmodule SwarmCodeCLI.UI.Reducer do
 
   # ------------------------------------------------- client slash commands
 
+  # cli020 D20: bare /delete asks first; the second within 5 s goes out.
+  defp slash_local(state, :delete) do
+    case QueueCommands.delete(state) do
+      {:asked, state} ->
+        clear_command_draft(state)
+
+      {:send, state} ->
+        case Keymap.draft_dispatch(state, :send) do
+          {:ok, {:invoke, intent, id}} -> invoke_intent(state, intent, id)
+          _ -> {state, []}
+        end
+    end
+  end
+
+  # cli020 D18/D20: bare /effort and /swarm_effort open the picker.
+  defp slash_local(state, {:effort, target}) do
+    {state, cleared} = clear_command_draft(state)
+    {state, opened} = EffortPicker.open(state, target)
+    {state, cleared ++ opened}
+  end
+
+  # cli020 D10/D20: bare /rewind lists the turns; /undo confirms the newest.
+  defp slash_local(state, command) when command in [:rewind, :undo] do
+    {state, cleared} = clear_command_draft(state)
+    {state, sent} = Rewind.request(state, if(command == :rewind, do: :pick, else: :undo))
+    {state, cleared ++ sent}
+  end
+
   defp slash_local(state, :help) do
     {state, cleared} = clear_command_draft(state)
     {state, opened} = transition(state, {:open_layer, :help})
@@ -2913,18 +3207,42 @@ defmodule SwarmCodeCLI.UI.Reducer do
   end
 
   # `/queue text` queues the text behind the running turn: the draft becomes
-  # the text, then goes out exactly as Alt-Enter would send it.
+  # the text, then goes out exactly as Alt-Enter would send it. cli020 D20:
+  # bare `/queue` lists the queue; `/queue clear` and `/queue drop N` edit it.
   defp slash_local(state, :queue) do
     key = State.current_draft_key(state)
     text = Keymap.draft_text(state)
-    rest = text |> String.replace_prefix("/queue", "") |> String.trim_leading()
+
+    rest =
+      text
+      |> String.trim_leading()
+      |> String.replace_prefix("/queue", "")
+      |> String.trim_leading()
 
     cond do
       key == nil ->
         {state, []}
 
-      String.trim(rest) == "" ->
-        {%{state | notice: {:command_feedback, "Type the message after /queue."}}, []}
+      QueueCommands.parse(rest) == :list ->
+        {state, cleared} = clear_command_draft(state)
+        {state, opened} = QueueCommands.list(state)
+        {state, cleared ++ opened}
+
+      match?({:bad_drop, _}, QueueCommands.parse(rest)) ->
+        {:bad_drop, words} = QueueCommands.parse(rest)
+        feedback(state, words)
+
+      match?({:edit, _}, QueueCommands.parse(rest)) ->
+        {:edit, edit} = QueueCommands.parse(rest)
+
+        case QueueCommands.edit(state, edit) do
+          {next, [_ | _] = sent} ->
+            {next, cleared} = clear_command_draft(next)
+            {next, cleared ++ sent}
+
+          refused ->
+            refused
+        end
 
       true ->
         {state, replaced} = replace_draft(state, key, rest)
@@ -3029,6 +3347,7 @@ defmodule SwarmCodeCLI.UI.Reducer do
 
     mode =
       case argument do
+        "auto" -> :auto
         "full" -> :full
         "compact" -> :compact
         value when value in ["hidden", "off", "hide", "none"] -> :hidden
@@ -3057,10 +3376,10 @@ defmodule SwarmCodeCLI.UI.Reducer do
         {state, cleared ++ set}
 
       argument == "" ->
-        feedback(state, "Panel is #{state.panel_mode}: /panel full, compact or hidden.")
+        feedback(state, "Panel is #{state.panel_mode}: /panel auto, full, compact or hidden.")
 
       true ->
-        feedback(state, "Panel is full, compact or hidden: /panel compact.")
+        feedback(state, "Panel is auto, full, compact or hidden: /panel compact.")
     end
   end
 
@@ -3097,6 +3416,53 @@ defmodule SwarmCodeCLI.UI.Reducer do
     {state, cleared} = clear_command_draft(state)
     {state, sent} = service_request(state, {:project_update, nil, true}, {:project, :update})
     {state, cleared ++ sent}
+  end
+
+  # cli020 D6: one Shift-Tab step: the slash commands (sent as typed, the
+  # draft kept), then the project's approval mode; the notice says where it
+  # went. A refusal (an untrusted project refuses auto) replaces the notice
+  # with the service's words when it answers.
+  defp cycle_step(state, commands, mode, words) do
+    before = Map.keys(state.requests)
+
+    {state, sent} =
+      Enum.reduce(commands, {state, []}, fn text, {state, effects} ->
+        {state, more} = send_command_text(state, text)
+        {state, effects ++ more}
+      end)
+
+    {state, updated} =
+      if mode,
+        do: service_request(state, {:project_update, mode, nil}, {:project, :update}),
+        else: {state, []}
+
+    ids = Map.keys(state.requests) -- before
+    {%{state | mode_cycle: ids, notice: {:command_feedback, words}}, sent ++ updated}
+  end
+
+  # cli020 D6, D18: sends `text`, a slash command the daemon parses, the way
+  # the composer sends a typed one, and gives the draft back exactly as it
+  # was (text, attachments, undo history): the command goes out from a blank
+  # copy of the draft, then the draft is put back, which also releases the
+  # submission so the answer never clears what the user typed.
+  defp send_command_text(state, text) do
+    case State.current_draft_key(state) do
+      nil ->
+        {state, []}
+
+      key ->
+        original = Drafts.fetch(state.drafts, key)
+        state = %{state | drafts: Drafts.put(state.drafts, Draft.clear(original))}
+        {state, _edited} = replace_draft(state, key, text)
+
+        {state, sent} =
+          case Keymap.draft_dispatch(state, :send) do
+            {:ok, {:invoke, intent, id}} -> invoke_intent(state, intent, id)
+            _ -> {state, []}
+          end
+
+        {%{state | drafts: Drafts.put(state.drafts, original), slash_palette: nil}, sent}
+    end
   end
 
   defp approval_mode(value) when value in ["read-only", "readonly", "read_only", "ro"],
@@ -3328,9 +3694,11 @@ defmodule SwarmCodeCLI.UI.Reducer do
     case {narrow?, state.panel_mode} do
       {true, :hidden} -> state.panel_shown
       {true, _} -> :hidden
+      # cli020 (E5): auto → full → compact → hidden → auto.
+      {false, :auto} -> :full
       {false, :full} -> :compact
       {false, :compact} -> :hidden
-      {false, :hidden} -> :full
+      {false, :hidden} -> :auto
     end
   end
 
@@ -3346,7 +3714,12 @@ defmodule SwarmCodeCLI.UI.Reducer do
 
     state = %{state | panel_mode: mode, panel_shown: shown_panel(mode, state.panel_shown)}
     {state, effects} = feedback(state, words)
-    {state, effects ++ [{:save_preferences, %{panel_mode: mode}}]}
+
+    # cli020: cli.json takes "auto" once E5's Preferences knows it; until
+    # then :auto holds for the session and is not written (a stub).
+    if SwarmCodeCLI.UI.Init.Preferences.valid?(%{panel_mode: mode}),
+      do: {state, effects ++ [{:save_preferences, %{panel_mode: mode}}]},
+      else: {state, effects}
   end
 
   defp shown_panel(:hidden, shown), do: shown

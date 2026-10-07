@@ -10,7 +10,7 @@ same list for the current context on screen. Vim's NORMAL and VISUAL modes
 exist only with the vim keymap on (`NCODE_KEYMAP=vim`, or "Vim mode" in
 the command palette; the older `SWARM_KEYMAP=vim` still works).
 
-Mouse: the wheel scrolls the pane under the pointer (the transcript, the side panel, the agent overlay, the pager), three lines a notch. While wheel reports are on, Shift-drag (Option-drag in Terminal.app and iTerm2) selects text; `/mouse off` gives the terminal its own selection back.
+Mouse: Wheel scrolls; select text with the mouse. /mouse on sends wheel reports instead (Shift-drag selects). With reports on the wheel scrolls the pane under the pointer (the transcript, the side panel, the agent overlay, the pager); a notch is `terminal.wheel_lines` lines (3). A terminal that sends one arrow per notch walks the prompt history instead: use `/mouse on`.
 
 ## Composer
 
@@ -53,7 +53,6 @@ Mouse: the wheel scrolls the pane under the pointer (the transcript, the side pa
 |---|---|
 | `Ctrl-P` | Command palette; pressed again it keeps the palette and its query |
 | `Ctrl-G` | Runs dashboard; the same chord closes it |
-| `Ctrl-R` | Run palette; the same chord closes it |
 | `Ctrl-B` / `Alt-I` | Side panel: full, compact, hidden (strip or off under 120 columns) |
 | `Alt-H` / `Alt-Shift-H` / `Ctrl-Alt-H` / `Ctrl-Alt-Shift-H` | Narrow the inspector dock (add Ctrl for a bigger step) |
 | `Alt-L` / `Alt-Shift-L` / `Ctrl-Alt-L` / `Ctrl-Alt-Shift-L` | Widen the inspector dock (add Ctrl for a bigger step) |
@@ -66,12 +65,17 @@ Mouse: the wheel scrolls the pane under the pointer (the transcript, the side pa
 |---|---|
 | `Tab` | Complete a slash command; while a turn runs, queue the draft behind it |
 | `Ctrl-O` / `Ctrl-J` / `Shift-Enter` | Insert a line break without sending (Ctrl-O or Ctrl-J) |
+| `Ctrl-R` | Search your earlier prompts in this project |
+| `Ctrl-V` | Paste an image from the clipboard |
 | `Ctrl-X` | Edit the draft in $VISUAL or $EDITOR; saving and quitting brings it back |
 | `↑` | Up a line; on an empty draft, the previous prompt; up the slash list |
 | `↓` | Down a line; back towards the draft in prompt history; down the slash list |
 | `Ctrl-A` | Move to the start of the line |
 | `Ctrl-E` | Move to the end of the line |
 | `Ctrl-W` | Delete the word before the cursor |
+| `Alt-←` / `Ctrl-←` / `Alt-B` | Word left/right (Option-←/→, Ctrl-←/→, Alt-b/f) |
+| `Alt-→` / `Ctrl-→` / `Alt-F` | Word left/right (Option-←/→, Ctrl-←/→, Alt-b/f) |
+| `Alt-D` / `Alt-Del` | Delete the word after the cursor (Option-Delete, Alt-d) |
 | `Ctrl-U` | Delete back to the start of the line; on an empty draft, scroll up |
 | `Ctrl-Z` | Undo the last edit |
 | `Ctrl-Shift-Z` | Redo (needs a terminal that reports Ctrl-Shift) |
@@ -85,6 +89,8 @@ Mouse: the wheel scrolls the pane under the pointer (the transcript, the side pa
 | `F1` | The keyboard help sheet; the same key closes it |
 | `Ctrl-C` | Clear the draft, else stop the turn; twice with nothing to stop quits |
 | `Esc` | Stop the turn that is streaming; the draft stays |
+| `Shift-Tab` | Cycle Ask (read-only) → Auto → Plan |
+| `Ctrl-L` | Repaint the whole screen |
 
 ## Composer, vim NORMAL
 
@@ -318,6 +324,7 @@ Mouse: the wheel scrolls the pane under the pointer (the transcript, the side pa
 | `p` | Pause or continue the current run |
 | `m` | Mark the current run as seen |
 | `a` | Open the action menu for what is selected |
+| `r` | Retry the selected failed or stopped run |
 | `y` | Copy the selected item's text to the clipboard |
 | `o` | Open the full text of the selected item |
 | `Enter` | Activate what is focused; on an approval card that cuts its command, show all of it |
@@ -347,6 +354,7 @@ Mouse: the wheel scrolls the pane under the pointer (the transcript, the side pa
 | `q` | Close the top layer; in select mode with none open, quit |
 | `Esc` | Close the top layer, end a vim mode, or leave select mode |
 | `P` | Hand off to the plain presenter |
+| `Ctrl-L` | Repaint the whole screen |
 
 ## Inspector
 
@@ -538,6 +546,9 @@ Mouse: the wheel scrolls the pane under the pointer (the transcript, the side pa
 | `Ctrl-A` | Move to the start of the line |
 | `Ctrl-E` | Move to the end of the line |
 | `Ctrl-W` | Delete the word before the cursor |
+| `Alt-←` / `Ctrl-←` / `Alt-B` | Word left/right (Option-←/→, Ctrl-←/→, Alt-b/f) |
+| `Alt-→` / `Ctrl-→` / `Alt-F` | Word left/right (Option-←/→, Ctrl-←/→, Alt-b/f) |
+| `Alt-D` / `Alt-Del` | Delete the word after the cursor (Option-Delete, Alt-d) |
 | `Ctrl-U` | Delete back to the start of the line |
 | `Ctrl-Z` | Undo the last edit |
 | `Ctrl-Shift-Z` | Redo (needs a terminal that reports Ctrl-Shift) |
@@ -683,6 +694,9 @@ Mouse: the wheel scrolls the pane under the pointer (the transcript, the side pa
 | `Ctrl-A` | Move to the start of the line |
 | `Ctrl-E` | Move to the end of the line |
 | `Ctrl-W` | Delete the word before the cursor |
+| `Alt-←` / `Ctrl-←` / `Alt-B` | Word left/right (Option-←/→, Ctrl-←/→, Alt-b/f) |
+| `Alt-→` / `Ctrl-→` / `Alt-F` | Word left/right (Option-←/→, Ctrl-←/→, Alt-b/f) |
+| `Alt-D` / `Alt-Del` | Delete the word after the cursor (Option-Delete, Alt-d) |
 | `Ctrl-Z` | Undo the last edit |
 | `Ctrl-Shift-Z` | Redo (needs a terminal that reports Ctrl-Shift) |
 

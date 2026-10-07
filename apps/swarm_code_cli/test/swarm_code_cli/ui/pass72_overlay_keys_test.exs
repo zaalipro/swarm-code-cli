@@ -526,22 +526,25 @@ defmodule SwarmCodeCLI.UI.Pass72OverlayKeysTest do
   # ------------------------------------------------------------------ panel
 
   describe "the panel's mode" do
-    test "Ctrl-B cycles full, compact, hidden and asks the session to remember it" do
+    # cli020 (E5, Q8): the default is :auto and the cycle runs through it.
+    test "Ctrl-B cycles auto, full, compact, hidden and asks the session to remember it" do
       state = ready()
+      assert state.panel_mode == :auto
+      state = press!(state, ctrl("b"))
       assert state.panel_mode == :full
       {state, effects} = press(state, ctrl("b"))
       assert state.panel_mode == :compact
       assert {:save_preferences, %{panel_mode: :compact}} in effects
       state = press!(state, ctrl("b"))
       assert state.panel_mode == :hidden
-      assert press!(state, ctrl("b")).panel_mode == :full
+      assert press!(state, ctrl("b")).panel_mode == :auto
     end
 
     test "under 120 columns Ctrl-B is strip or off" do
       state = ready(size: %Size{columns: 100, rows: 30})
       state = press!(state, ctrl("b"))
       assert state.panel_mode == :hidden
-      assert press!(state, ctrl("b")).panel_mode == :full
+      assert press!(state, ctrl("b")).panel_mode == :auto
     end
 
     test "/panel compact sets it and clears the command" do
@@ -551,7 +554,7 @@ defmodule SwarmCodeCLI.UI.Pass72OverlayKeysTest do
       assert Keymap.draft_text(state) == ""
 
       {state, effects} = send_draft(ready(), "/panel sideways")
-      assert state.panel_mode == :full
+      assert state.panel_mode == :auto
       refute Enum.any?(effects, &match?({:save_preferences, _}, &1))
     end
 

@@ -32,6 +32,11 @@ class Demo:
         index=0
         while index<len(text):
             char=text[index]
+            if char=='\x1b' and text.startswith('\x1b]',index):
+                # cli020 D3: OSC (the window title, OSC 9) ends at BEL or ST.
+                ends=[e for e in (text.find('\x07',index),text.find('\x1b\\',index)) if e>=0]
+                if not ends: break
+                end=min(ends); index=end+(1 if text[end]=='\x07' else 2); continue
             if char=='\x1b':
                 match=CSI.match(text,index)
                 if not match: break

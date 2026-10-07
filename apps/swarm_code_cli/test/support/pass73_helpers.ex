@@ -154,6 +154,7 @@ defmodule SwarmCodeCLI.UI.Pass73Helpers do
            status: status,
            identifiers: ids,
            feedback: Keyword.get(opts, :feedback),
+           reason: Keyword.get(opts, :reason),
            error:
              if(status == :accepted,
                do: nil,

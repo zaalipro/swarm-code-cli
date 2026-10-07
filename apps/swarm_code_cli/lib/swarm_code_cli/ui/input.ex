@@ -101,6 +101,7 @@ defmodule SwarmCodeCLI.UI.Input do
           | :focus_lost
           | {:mouse, mouse_kind(), mouse_button() | nil, non_neg_integer(), non_neg_integer(),
              [modifier()]}
+          | {:scroll, :up | :down, 1..32}
 
   @spec key(key_code()) :: t()
   def key(code), do: key(:press, code, [])
@@ -185,6 +186,15 @@ defmodule SwarmCodeCLI.UI.Input do
 
     valid_input(input, valid?)
   end
+
+  # cli020 D5: the wheel under alternate scroll (no position: the terminal
+  # sent arrows).
+  def validate({:scroll, direction, count} = input),
+    do:
+      valid_input(
+        input,
+        direction in [:up, :down] and is_integer(count) and count >= 1 and count <= 32
+      )
 
   def validate(_input), do: {:error, :invalid_input}
 

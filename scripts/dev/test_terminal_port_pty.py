@@ -440,6 +440,125 @@ class TerminalPortPTY(unittest.TestCase):
         self.assertEqual(p.recv()[1], 19)
         p.restored()
 
+    # ------------------------------------------------------------ cli020 D
+
+    def wait_terminal(self, p, needle, mark=0):
+        end = time.monotonic() + 3
+        while needle not in p.terminal[mark:] and time.monotonic() < end:
+            p.pump()
+        self.assertIn(needle, p.terminal[mark:])
+
+    def test_kitty_probe_unanswered_still_starts_without_enhanced_keys(self):
+        # cli020 D2: a terminal that never answers the probe starts after the
+        # 500 ms wait, with no enhanced-keys bit and nothing pushed.
+        start = time.monotonic()
+        p = self.port(flags=7)
+        self.assertLess(time.monotonic() - start, 3)
+        self.assertIn(b'\x1b[?u\x1b[c', p.terminal)
+        self.assertNotIn(b'\x1b[>1u', p.terminal)
+        p.send(command(4, 1))
+        self.assertEqual(p.recv()[1], 19)
+        p.restored()
+        self.assertNotIn(b'\x1b[<u', p.terminal)
+
+    def test_kitty_answer_pushes_disambiguate_and_restoration_pops_it(self):
+        # cli020 D2: `CSI ? 0 u` then DA1: Ready carries bit 128, `CSI > 1 u`
+        # is pushed, typeahead stays, Ctrl-C (CSI 99;5 u) still decodes twice,
+        # and the restoration pops the mode before anything else.
+        p = self.port(flags=7, initialize=False)
+        p.flags = 7
+        p.send(packet(struct.pack('>BBQB', 1, 1, GEN, 7)))
+        self.wait_terminal(p, b'\x1b[?u\x1b[c')
+        os.write(p.master, b'a\x1b[?0u\x1b[?62;22c')
+        ready = p.recv()
+        self.assertEqual(ready, struct.pack('>BBQHHB', 1, 16, GEN, 80, 24, 7 | 128))
+        self.wait_terminal(p, b'\x1b[>1u')
+        p.send(command(2, 1))
+        self.assertEqual(p.recv(), struct.pack('>BBQQBBB H', 1, 17, GEN, 1, 1, 0, 0, 1) + b'a')
+        os.write(p.master, b'\x1b[99;5u')
+        p.send(command(2, 2))
+        self.assertEqual(p.recv(), struct.pack('>BBQQBBB H', 1, 17, GEN, 2, 1, 0, 2, 1) + b'c')
+        os.write(p.master, b'\x1b[99;5u')
+        p.send(command(2, 3))
+        self.assertEqual(p.recv(), struct.pack('>BBQQBBB H', 1, 17, GEN, 3, 1, 0, 2, 1) + b'c')
+        os.write(p.master, b'\x1b[13;2u')
+        p.send(command(2, 4))
+        self.assertEqual(p.recv(), struct.pack('>BBQQBBBB', 1, 17, GEN, 4, 0, 0, 1, 1))
+        mark = len(p.terminal)
+        p.send(command(4, 5))
+        self.assertEqual(p.recv()[1], 19)
+        p.restored()
+        tail = bytes(p.terminal[mark:])
+        self.assertIn(b'\x1b[<u', tail)
+        self.assertLess(tail.index(b'\x1b[<u'), tail.index(b'\x1b[?1049l'))
+
+    def test_notify_writes_bell_osc9_and_title_and_restores_the_title(self):
+        # cli020 D3: tag 9 between frames; the title is saved before the
+        # first one and restored at exit.
+        p = self.port(flags=7)
+        def notify(token, kind, text):
+            p.send(packet(struct.pack('>BBQQBH', 1, 9, GEN, token, kind, len(text)) + text))
+        notify(1, 2, 'ncode · demo'.encode())
+        self.wait_terminal(p, '\x1b[22;2t\x1b]2;ncode · demo\x07'.encode())
+        notify(2, 1, b'ncode: demo finished')
+        self.wait_terminal(p, b'\x1b]9;ncode: demo finished\x07')
+        mark = len(p.terminal)
+        notify(3, 0, b'')
+        self.wait_terminal(p, b'\x07', mark)
+        mark = len(p.terminal)
+        p.send(command(4, 4))
+        self.assertEqual(p.recv()[1], 19)
+        p.restored()
+        self.assertIn(b'\x1b[23;2t', p.terminal[mark:])
+
+    def test_notify_with_a_control_byte_is_a_protocol_error(self):
+        p = self.port(flags=7)
+        text = b'a\x1bb'
+        p.send(packet(struct.pack('>BBQQBH', 1, 9, GEN, 1, 2, len(text)) + text))
+        self.assertEqual(p.recv(), struct.pack('>BBQB', 1, 21, GEN, 1))
+        p.restored()
+        self.assertNotIn(b'\x1b]2;a', p.terminal)
+
+    def test_default_activation_uses_alternate_scroll_and_bursts_scroll(self):
+        # cli020 D5: no mouse reports by default; `?1007h` makes the wheel
+        # arrows, and a burst of them in one read is one Scroll event.
+        p = self.port(flags=7)
+        self.assertIn(b'\x1b[?1007h', p.terminal)
+        self.assertNotIn(b'\x1b[?1000h', p.terminal)
+        os.write(p.master, b'\x1b[A\x1b[A\x1b[A')
+        p.send(command(2, 1))
+        self.assertEqual(p.recv(), struct.pack('>BBQQBBB', 1, 17, GEN, 1, 7, 1, 3))
+        os.write(p.master, b'\x1b[B')
+        p.send(command(2, 2))
+        self.assertEqual(p.recv(), struct.pack('>BBQQBBBB', 1, 17, GEN, 2, 0, 0, 5, 0))
+        mark = len(p.terminal)
+        p.send(packet(struct.pack('>BBQQB', 1, 8, GEN, 3, 1)))
+        self.wait_terminal(p, b'\x1b[?1007l\x1b[?1000h\x1b[?1006h', mark)
+        mark = len(p.terminal)
+        p.send(command(4, 4))
+        self.assertEqual(p.recv()[1], 19)
+        p.restored()
+        self.assertIn(b'\x1b[?1007l', p.terminal[mark:])
+
+    def test_redraw_repaints_every_cell(self):
+        # cli020 D11: tag 10 forgets the painted screen, so an identical
+        # frame is painted again in full.
+        p = self.port(flags=7)
+        p.send(draw(1, text=b'QWERTY'))
+        self.assertEqual(p.recv()[1], 18)
+        mark = len(p.terminal)
+        p.send(draw(2, text=b'QWERTY'))
+        self.assertEqual(p.recv()[1], 18)
+        self.assertNotIn(b'QWERTY', p.terminal[mark:])
+        p.send(command(10, 1))
+        mark = len(p.terminal)
+        p.send(draw(3, text=b'QWERTY'))
+        self.assertEqual(p.recv()[1], 18)
+        self.assertIn(b'QWERTY', p.terminal[mark:])
+        p.send(command(4, 2))
+        self.assertEqual(p.recv()[1], 19)
+        p.restored()
+
     def test_parent_eof_and_signals_and_killed_writer(self):
         p = self.port()
         p.process.stdin.close()

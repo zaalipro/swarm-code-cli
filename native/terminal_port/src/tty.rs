@@ -13,6 +13,8 @@ pub struct Tty {
     active: bool,
     flags: u8,
     original_status_flags: libc::c_int,
+    /// cli020 D2: the kitty keyboard protocol's disambiguate mode is pushed.
+    kitty: bool,
 }
 impl Tty {
     pub fn open() -> io::Result<Self> {
@@ -98,6 +100,7 @@ impl Tty {
             active: false,
             flags: 0,
             original_status_flags,
+            kitty: false,
         })
     }
     pub fn activate(&mut self, flags: u8) -> io::Result<()> {
@@ -127,7 +130,22 @@ impl Tty {
         // pass70 B10: button reports in SGR encoding, for the wheel only.
         if flags & crate::protocol::FLAG_MOUSE != 0 {
             out.write_all(b"\x1b[?1000h\x1b[?1006h")?;
+        } else if flags & 1 != 0 {
+            // cli020 D5: no mouse reports, so the terminal keeps its own
+            // selection; alternate scroll turns the wheel into arrow keys.
+            out.write_all(b"\x1b[?1007h")?;
         }
+        out.flush()
+    }
+    /// cli020 D2: pushes the kitty keyboard protocol's disambiguate mode
+    /// (`CSI > 1 u`); every restoration pops it first.
+    pub fn kitty_push(&mut self) -> io::Result<()> {
+        if !self.active {
+            return Err(io::ErrorKind::NotConnected.into());
+        }
+        let mut out = FdWriter::new(self.file.as_raw_fd(), false);
+        out.write_all(b"\x1b[>1u")?;
+        self.kitty = true;
         out.flush()
     }
     /// pass73 T9: turns SGR wheel reports on or off in the active terminal
@@ -138,10 +156,13 @@ impl Tty {
         }
         let mut out = FdWriter::new(self.file.as_raw_fd(), false);
         if on {
-            out.write_all(b"\x1b[?1000h\x1b[?1006h")?;
+            out.write_all(b"\x1b[?1007l\x1b[?1000h\x1b[?1006h")?;
             self.flags |= crate::protocol::FLAG_MOUSE;
         } else {
             out.write_all(b"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l")?;
+            if self.flags & 1 != 0 {
+                out.write_all(b"\x1b[?1007h")?;
+            }
             self.flags &= !crate::protocol::FLAG_MOUSE;
         }
         out.flush()
@@ -155,8 +176,15 @@ impl Tty {
         // which may be blocking. Reestablish nonblocking on EVERY attempt so a
         // saturated sink cannot trap the guard inside write before its deadline.
         // Preserve setup failure as a result, never return before termios reset.
+        let kitty = std::mem::replace(&mut self.kitty, false);
         let modes = nonblocking(self.file.as_raw_fd()).and_then(|()| {
+            // cli020 D2: pop the kitty keyboard mode before anything else, so
+            // the shell gets its legacy keys back.
+            if kitty {
+                out.write_all(b"\x1b[<u")?;
+            }
             out.write_all(b"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1004l\x1b[?2004l")?;
+            out.write_all(b"\x1b[?1007l")?;
             if self.flags & 1 != 0 {
                 out.write_all(b"\x1b[?1049l")?;
             }

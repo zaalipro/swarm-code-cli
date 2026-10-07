@@ -94,6 +94,19 @@ defmodule SwarmCodeCLI.UI.Keymap.Special do
 
   def run(:copy_selected, _key, _state, _table), do: ok(:copy_selection)
 
+  # cli020 D16: `r` on a failed or stopped run's item retries that run.
+  def run(:retry_selected, _key, state, _table) do
+    with id when is_binary(id) <- Map.get(state.selection, state.focus),
+         %{run_id: run_id} when is_binary(run_id) <-
+           SwarmCodeCLI.UI.ReadModel.transcript_item(state.read_model, id),
+         %{state: run_state, revision: revision} when run_state in [:failed, :stopped] <-
+           Map.get(state.read_model.runs, run_id) do
+      ok({:invoke, {:retry_run, run_id, revision}, elem(State.next_id(state, :request), 0)})
+    else
+      _ -> if state.layers == [], do: ok({:compose, "r"}), else: :ignore
+    end
+  end
+
   # "q" closes the top layer and only quits when there is none. Inside a run
   # view it closes while the filter is empty and types once a query has been
   # started, because a filter could never usefully spell "query".
@@ -201,21 +214,12 @@ defmodule SwarmCodeCLI.UI.Keymap.Special do
 
   def run(:open_detail, _key, state, table) do
     run_id = current_run(state)
+    selected = Map.get(state.selection, state.focus)
 
-    # pass71 F2: the selected item's own detail when it has one.
-    case Keymap.text_target(state, Map.get(state.selection, state.focus)) do
-      {:local, {:open_detail, ^run_id, _}} = own ->
-        case Keymap.find_target(state, table, &(&1 == own)) do
-          :ignore ->
-            Keymap.find_target(state, table, &match?({:local, {:open_detail, ^run_id, _}}, &1))
-
-          resolved ->
-            resolved
-        end
-
-      _ ->
-        Keymap.find_target(state, table, &match?({:local, {:open_detail, ^run_id, _}}, &1))
-    end
+    # cli020 D17: `o` on a tool row opens its output, cut or not.
+    if Keymap.tool_row?(state, selected),
+      do: Keymap.tool_open(state, selected),
+      else: open_detail(state, table, run_id)
   end
 
   # ------------------------------------------------------- selection, scroll
@@ -260,7 +264,14 @@ defmodule SwarmCodeCLI.UI.Keymap.Special do
   # pass73 T4: while the slash palette is open, Enter accepts its highlighted
   # command like Tab; a command that takes no argument then runs at once.
   def run(:activate, _key, %{focus: "composer"} = state, table) do
-    case SlashPalette.enter_completion(state) do
+    # cli020 D7: a `!` draft runs as a shell command (Ctrl-S sends it plain).
+    case if(SwarmCodeCLI.UI.Composer.shell?(state),
+           do: :shell,
+           else: SlashPalette.enter_completion(state)
+         ) do
+      :shell ->
+        ok(:shell_send)
+
       {:complete, name} ->
         ok({:complete_command, name})
 
@@ -307,6 +318,15 @@ defmodule SwarmCodeCLI.UI.Keymap.Special do
   end
 
   # --------------------------------------------------------------- pickers
+
+  # cli020 D15: Up on a picker's first row (or its query) stays there; it
+  # never wraps round to Cancel.
+  def run(:picker_previous, _key, state, _table) do
+    case SwarmCodeCLI.UI.Reducer.focus_graph(state) do
+      ["query", first | _] when state.focus in ["query", first] -> :ignore
+      _ -> ok({:focus_cycle, :previous})
+    end
+  end
 
   def run(:picker_page_down, _key, state, _table), do: page_focus(state, :page_down)
   def run(:picker_page_up, _key, state, _table), do: page_focus(state, :page_up)
@@ -657,6 +677,23 @@ defmodule SwarmCodeCLI.UI.Keymap.Special do
 
       true ->
         :ignore
+    end
+  end
+
+  defp open_detail(state, table, run_id) do
+    # pass71 F2: the selected item's own detail when it has one.
+    case Keymap.text_target(state, Map.get(state.selection, state.focus)) do
+      {:local, {:open_detail, ^run_id, _}} = own ->
+        case Keymap.find_target(state, table, &(&1 == own)) do
+          :ignore ->
+            Keymap.find_target(state, table, &match?({:local, {:open_detail, ^run_id, _}}, &1))
+
+          resolved ->
+            resolved
+        end
+
+      _ ->
+        Keymap.find_target(state, table, &match?({:local, {:open_detail, ^run_id, _}}, &1))
     end
   end
 end

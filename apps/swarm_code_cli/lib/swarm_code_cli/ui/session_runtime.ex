@@ -34,6 +34,9 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
     SafeText
   }
 
+  alias SwarmCodeCLI.UI.OsCommand
+  alias SwarmCodeCLI.UI.Reducer.ImagePaste
+  alias SwarmCodeCLI.UI.MarkdownCache
   alias SwarmCodeCLI.Companion
   alias SwarmCodeCLI.UI.Init.{Preferences, PrefsQueue}
   alias SwarmCodeCLI.UI.DataSource
@@ -47,6 +50,19 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
   @max_edit_bytes 262_144
   # cli74: how long the desktop has to open a folder (`o` in Settings).
   @folder_ms 5_000
+  # cli020 D4: pbcopy's bounds; the terminal clipboard (OSC 52) takes 64 KiB.
+  @max_scene_failures 5
+  @image_ms 25_000
+  @osascript_ms 5_000
+  @sips_ms 10_000
+  @copy_ms 5_000
+  @max_pbcopy 1_048_576
+  @max_osc_copy 65_536
+  # cli020 D3: how long an OS notification (osascript) may take.
+  @notify_ms 5_000
+  # cli020 D3: terminals that show OSC 9 as a notification (`terminal.notify
+  # auto`); any other gets the bell.
+  @osc9_terminals ["iTerm.app", "ghostty", "WezTerm"]
 
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
 
@@ -157,7 +173,29 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
        # the panel's mode in memory only). cli74: every read and write of it
        # is a job of one FIFO (`Init.PrefsQueue`, at most 32) run one at a
        # time in a task this process owns.
-       prefs: start_preferences(Keyword.get_lazy(opts, :preferences_path, &default_preferences/0))
+       prefs:
+         start_preferences(Keyword.get_lazy(opts, :preferences_path, &default_preferences/0)),
+       # cli020 lane D: the owned external work (the OS notification, pbcopy,
+       # the clipboard image) runs in tasks of this supervisor, one entry per
+       # task in `jobs` (ref => %{kind, task, timer}), each with a deadline.
+       jobs_sup: start_jobs(),
+       jobs: %{},
+       # cli020 D12: the projector (a test injects a failing one) and the
+       # failed screen updates in a row.
+       projector: Keyword.get(opts, :projector, &Projector.project/1),
+       scene_failures: 0,
+       # cli020 D9: the slot token of the image paste in flight; a job
+       # result for another token is stale and deletes its file.
+       image_token: nil,
+       # The facts of the machine the runtime reads once (a test injects them):
+       # `TERM_PROGRAM`, the OS, and the environment the copy and the image
+       # paste look at (`SSH_CONNECTION`, `TMUX`).
+       term_program:
+         Keyword.get_lazy(opts, :term_program, fn -> System.get_env("TERM_PROGRAM") end),
+       os_type: Keyword.get_lazy(opts, :os_type, &:os.type/0),
+       env: Keyword.get_lazy(opts, :env, &System.get_env/0),
+       # How an external command runs: `OsCommand.run/3`, or a test's stub.
+       command_runner: Keyword.get(opts, :command_runner, &OsCommand.run/3)
      }}
   end
 
@@ -219,6 +257,7 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
         {:invoke, _, _} -> false
         {:timer_fired, _} -> false
         {:external_edit_done, _, _} -> false
+        {:paste_image_done, _, _, _} -> false
         _ -> true
       end
 
@@ -326,6 +365,23 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
   def handle_info({:edit_timeout, key}, %{edit: %{key: key, task: nil}} = state),
     do: {:noreply, finish_edit(state, {:error, :terminal})}
 
+  # cli020 lane D: an owned job answered, crashed or ran out of time.
+  def handle_info({ref, result}, %{jobs: jobs} = state) when is_map_key(jobs, ref) do
+    Process.demonitor(ref, [:flush])
+    {:noreply, job_done(state, ref, {:ok, result})}
+  end
+
+  def handle_info({:DOWN, ref, :process, _, _}, %{jobs: jobs} = state)
+      when is_map_key(jobs, ref),
+      do: {:noreply, job_done(state, ref, {:error, :crashed})}
+
+  def handle_info({:job_timeout, ref}, %{jobs: jobs} = state) when is_map_key(jobs, ref) do
+    %{task: task} = Map.fetch!(jobs, ref)
+    Task.Supervisor.terminate_child(state.jobs_sup, task.pid)
+    Process.demonitor(ref, [:flush])
+    {:noreply, job_done(state, ref, {:error, :timeout})}
+  end
+
   def handle_info({:owned_timer, id, token}, %{phase: :running} = state) do
     case TimerSupervisor.settle(state.timers, id, token) do
       {:ok, action, timers} -> {:noreply, update(%{state | timers: timers}, action)}
@@ -390,6 +446,12 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
         {:noreply, state}
     end
   end
+
+  # cli020 D12: the one re-projection after a failed screen update.
+  def handle_info(:reproject, %{phase: :running} = state),
+    do: {:noreply, state |> project() |> schedule()}
+
+  def handle_info(:reproject, state), do: {:noreply, state}
 
   def handle_info({:EXIT, _, :shutdown}, state), do: {:stop, :normal, state}
   def handle_info(_, state), do: {:noreply, state}
@@ -508,7 +570,10 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
         :nouse_stdio,
         args: [
           "-c",
-          ~s(exec $SWARM_EDIT_COMMAND "$1" 2>&1),
+          # cli020 D14: the command is evaluated by the shell, as git's
+          # core.editor is, so a quoted path with spaces and its arguments
+          # (`"/Applications/My Editor/e" --wait`) work.
+          ~s(eval "exec $SWARM_EDIT_COMMAND \\"\\$1\\"" 2>&1),
           "ncode-editor",
           file
         ],
@@ -708,6 +773,16 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
 
   defp local_effect(state, {:terminal_control, :shutdown}), do: begin_shutdown(state, :detach)
 
+  # cli020 D11: the port forgets what it painted; the next frame (asked at
+  # once) repaints every cell.
+  defp local_effect(%{terminal: terminal} = state, {:terminal_control, :redraw})
+       when is_pid(terminal) do
+    send(terminal, {:terminal_control, :redraw, state.ui.terminal_generation})
+    commit(%{state | ui: %{state.ui | revision: state.ui.revision + 1}}, state.ui)
+  end
+
+  defp local_effect(state, {:terminal_control, :redraw}), do: state
+
   # The palette's "Open visual companion": the reducer only emits, the runtime
   # opens the page and shows the URL through the existing feedback notice so it
   # can be copied even when no browser answers. No action carries free text, so
@@ -737,18 +812,18 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
     commit(%{state | ui: ui}, state.ui)
   end
 
-  # Select mode's `y`. The one terminal message that carries content: the
-  # text the user asked to put on the clipboard, which the terminal writes as
-  # OSC 52 and acknowledges with `{:terminal_copy_result, token, result}`. A
-  # terminal that does not answer within a second cannot copy, and says so.
-  defp local_effect(%{phase: :running, terminal: terminal} = state, {:copy, text})
-       when is_pid(terminal) do
-    token = identity()
-    send(terminal, {:terminal_copy, state.ui.terminal_generation, token, text})
-    timer = Process.send_after(self(), {:copy_timeout, token}, @copy_ack_ms)
-    cancel(elem(state.copy || {nil, nil}, 1))
+  # Select mode's `y`. cli020 D4: on macOS outside SSH the text goes to
+  # `/usr/bin/pbcopy` in an owned job (at most 1 MiB, 5 s), which really
+  # copies; elsewhere, or when pbcopy fails, through the terminal (OSC 52).
+  defp local_effect(%{phase: :running} = state, {:copy, text}) do
     lines = length(String.split(text, "\n"))
-    %{state | copy: {token, timer, lines}}
+
+    if pbcopy?(state, text) do
+      runner = state.command_runner
+      start_job(state, {:copy, lines, text}, fn -> pbcopy(runner, text) end, @copy_ms)
+    else
+      osc_copy(state, text, lines)
+    end
   end
 
   defp local_effect(state, {:copy, _text}), do: copy_notice(state, :unsupported)
@@ -840,8 +915,259 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
     commit(%{state | ui: %{state.ui | revision: state.ui.revision + 1}}, state.ui)
   end
 
+  # cli020 D3: the needs-you signal. `terminal.notify` picks how it shows:
+  # the bell (BEL), OSC 9 (a terminal notification), the OS notification
+  # centre (osascript, macOS) or nothing; `auto` is OSC 9 on the terminals
+  # that show it, else the bell. The reducer sends the bell and the words; the
+  # mode decides which of the two goes out.
+  defp local_effect(%{terminal: terminal} = state, {:bell, _kind}) when is_pid(terminal) do
+    if notify_mode(state) == :bell, do: send(terminal, {:terminal_notify, :bell, ""})
+    state
+  end
+
+  defp local_effect(%{terminal: terminal} = state, {:notify_os, text}) when is_pid(terminal) do
+    words = SafeText.value(text)
+
+    case notify_mode(state) do
+      :osc9 ->
+        send(terminal, {:terminal_notify, :notification, words})
+        state
+
+      :os ->
+        runner = state.command_runner
+
+        start_job(
+          state,
+          :notify_os,
+          fn -> runner.("/usr/bin/osascript", os_notification_args(words), @notify_ms) end,
+          @notify_ms
+        )
+
+      _ ->
+        state
+    end
+  end
+
+  # cli020 D3: the window title (`terminal.title on`); the port saves the
+  # terminal's own title first and restores it at exit.
+  defp local_effect(%{terminal: terminal} = state, {:terminal_title, text})
+       when is_pid(terminal) do
+    send(terminal, {:terminal_notify, :title, SafeText.value(text)})
+    state
+  end
+
+  # cli020 D9: Ctrl-V. Only a Mac's own clipboard has the image; the slot
+  # comes from the daemon (the reducer asks), then an owned job writes it.
+  defp local_effect(%{phase: :running} = state, {:paste_image, conversation}) do
+    cond do
+      state.os_type != {:unix, :darwin} ->
+        runtime_notice(state, ImagePaste.words(:not_macos))
+
+      present?(Map.get(state.env, "SSH_CONNECTION")) ->
+        runtime_notice(state, ImagePaste.words(:ssh))
+
+      true ->
+        update(state, {:paste_image_slot, conversation})
+    end
+  end
+
+  defp local_effect(
+         %{phase: :running} = state,
+         {:paste_image_write, conversation, token, path}
+       ) do
+    runner = state.command_runner
+
+    start_job(
+      %{state | image_token: token},
+      {:paste_image, conversation, token, path},
+      fn -> clipboard_image(runner, path) end,
+      @image_ms
+    )
+  end
+
   # Announcements already live in the safe Scene; no text is sent to terminal state.
   defp local_effect(state, _), do: state
+
+  # --------------------------------------------- cli020 lane D: owned jobs
+
+  defp start_jobs do
+    {:ok, supervisor} = Task.Supervisor.start_link()
+    supervisor
+  end
+
+  defp start_job(state, kind, fun, timeout) do
+    task = Task.Supervisor.async_nolink(state.jobs_sup, fun)
+    timer = Process.send_after(self(), {:job_timeout, task.ref}, timeout + 500)
+    %{state | jobs: Map.put(state.jobs, task.ref, %{kind: kind, task: task, timer: timer})}
+  end
+
+  defp job_done(state, ref, result) do
+    {job, jobs} = Map.pop(state.jobs, ref)
+    cancel(job.timer)
+    job_result(%{state | jobs: jobs}, job.kind, result)
+  end
+
+  defp job_result(state, :notify_os, {:ok, {:ok, 0, _}}), do: state
+
+  defp job_result(state, :notify_os, result) do
+    Logger.info("SwarmCode: the OS notification was not shown (#{inspect(result, limit: 4)})")
+    state
+  end
+
+  # cli020 D4: pbcopy took it; otherwise the terminal is asked instead.
+  defp job_result(state, {:copy, lines, _text}, {:ok, {:ok, 0, _}}),
+    do: copy_notice(state, {:copied, lines})
+
+  defp job_result(state, {:copy, lines, text}, _result), do: osc_copy(state, text, lines)
+
+  # cli020 D9: the image is on disk (or not); a result for a paste that is
+  # no longer the one in flight deletes its file.
+  defp job_result(state, {:paste_image, conversation, token, path}, result) do
+    outcome =
+      case result do
+        {:ok, :ok} -> :ok
+        {:ok, {:error, :no_image}} -> {:error, :no_image}
+        _ -> {:error, :failed}
+      end
+
+    cond do
+      state.image_token != token ->
+        File.rm(path)
+        state
+
+      true ->
+        if outcome != :ok, do: File.rm(path)
+        update(%{state | image_token: nil}, {:paste_image_done, conversation, token, outcome})
+    end
+  end
+
+  defp job_result(state, _kind, _result), do: state
+
+  @doc false
+  # cli020 D9: writes the clipboard's image as PNG to `path` (macOS only):
+  # PNG as it is, TIFF converted by `sips`; `{:error, :no_image}` when the
+  # clipboard has neither. Every failure deletes what it wrote.
+  def clipboard_image(runner, path) do
+    tiff = path <> ".tiff"
+
+    result =
+      case runner.("/usr/bin/osascript", ["-e", "clipboard info"], @osascript_ms) do
+        {:ok, 0, info} ->
+          cond do
+            String.contains?(info, "PNGf") -> write_clipboard(runner, "PNGf", path)
+            String.contains?(info, "TIFF") -> clipboard_tiff(runner, tiff, path)
+            true -> {:error, :no_image}
+          end
+
+        _ ->
+          {:error, :failed}
+      end
+
+    File.rm(tiff)
+    if result != :ok, do: File.rm(path)
+    result
+  end
+
+  defp clipboard_tiff(runner, tiff, path) do
+    with :ok <- write_clipboard(runner, "TIFF", tiff),
+         {:ok, 0, _} <-
+           runner.("/usr/bin/sips", ["-s", "format", "png", tiff, "--out", path], @sips_ms) do
+      :ok
+    else
+      _ -> {:error, :failed}
+    end
+  end
+
+  defp write_clipboard(runner, class, path) do
+    args = [
+      "-e",
+      "on run argv",
+      "-e",
+      "set f to open for access (POSIX file (item 1 of argv)) with write permission",
+      "-e",
+      "set eof f to 0",
+      "-e",
+      "write (the clipboard as «class #{class}») to f",
+      "-e",
+      "close access f",
+      "-e",
+      "end run",
+      path
+    ]
+
+    case runner.("/usr/bin/osascript", args, @osascript_ms) do
+      {:ok, 0, _} -> :ok
+      _ -> {:error, :failed}
+    end
+  end
+
+  # The one terminal message that carries content: the text the user asked
+  # to put on the clipboard, which the terminal writes as OSC 52 (inside tmux
+  # through its passthrough) and acknowledges with `{:terminal_copy_result,
+  # token, result}`. A terminal that does not answer within a second cannot
+  # copy, and says so. OSC 52 carries at most 64 KiB.
+  defp osc_copy(state, text, _lines) when byte_size(text) > @max_osc_copy,
+    do: copy_notice(state, :too_large)
+
+  defp osc_copy(%{terminal: terminal} = state, text, lines) when is_pid(terminal) do
+    token = identity()
+    send(terminal, {:terminal_copy, state.ui.terminal_generation, token, text})
+    timer = Process.send_after(self(), {:copy_timeout, token}, @copy_ack_ms)
+    cancel(elem(state.copy || {nil, nil}, 1))
+    %{state | copy: {token, timer, lines}}
+  end
+
+  defp osc_copy(state, _text, _lines), do: copy_notice(state, :unsupported)
+
+  defp pbcopy?(state, text) do
+    state.os_type == {:unix, :darwin} and not present?(Map.get(state.env, "SSH_CONNECTION")) and
+      byte_size(text) <= @max_pbcopy
+  end
+
+  @doc false
+  # cli020 D4: `pbcopy` reads the text from a private copy (0600 in a 0700
+  # folder, removed afterwards): an Erlang port cannot close the stdin of the
+  # program it runs while still waiting for its exit status.
+  def pbcopy(runner, text) do
+    case edit_copy(text, "copy.txt") do
+      {:ok, dir, file} ->
+        try do
+          runner.(
+            "/bin/sh",
+            ["-c", ~s(exec /usr/bin/pbcopy < "$1"), "ncode-copy", file],
+            @copy_ms
+          )
+        after
+          File.rm_rf(dir)
+        end
+
+      :error ->
+        {:error, :unavailable}
+    end
+  end
+
+  @doc false
+  # cli020 D3: what `terminal.notify` means here. `auto` is OSC 9 on iTerm2,
+  # ghostty and WezTerm, else the bell; `os` is macOS only (the bell
+  # elsewhere).
+  def notify_mode(%{ui: %{notify: :auto}, term_program: program}),
+    do: if(program in @osc9_terminals, do: :osc9, else: :bell)
+
+  def notify_mode(%{ui: %{notify: :os}, os_type: {:unix, :darwin}}), do: :os
+  def notify_mode(%{ui: %{notify: :os}}), do: :bell
+  def notify_mode(%{ui: %{notify: mode}}), do: mode
+
+  @doc false
+  def os_notification_args(text),
+    do: [
+      "-e",
+      "on run argv",
+      "-e",
+      ~s[display notification (item 1 of argv) with title "ncode"],
+      "-e",
+      "end run",
+      text
+    ]
 
   # ------------------------------------------- pass72-O: the preferences file
 
@@ -978,14 +1304,22 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
   defp copy_notice(state, result) do
     text =
       case result do
-        {:ok, 1} ->
+        {:copied, 1} ->
           "Copied 1 line."
 
-        {:ok, lines} ->
+        {:copied, lines} ->
           "Copied #{lines} lines."
 
+        # cli020 D4: OSC 52 cannot say whether the terminal took it.
+        {:ok, lines} ->
+          "Sent #{lines} #{if lines == 1, do: "line", else: "lines"} to the terminal clipboard; " <>
+            "if nothing arrived, your terminal does not allow OSC 52."
+
+        :too_large ->
+          "Not copied: the terminal clipboard takes at most 64 KiB."
+
         {:error, :invalid_text} ->
-          "Not copied: the text is over 64 KiB or has control characters."
+          "Not copied: the text has control characters."
 
         # cli74 (§3.7.2): `y` in Settings copies a key or a path, which the
         # detail pane always shows.
@@ -993,9 +1327,14 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
           "Couldn't copy · the path is shown in the detail"
 
         _ ->
-          "This terminal cannot take a copy from SwarmCode."
+          "This terminal cannot take a copy from ncode."
       end
 
+    runtime_notice(%{state | copy: nil}, text)
+  end
+
+  # A notice the runtime itself shows (the copy, the image paste).
+  defp runtime_notice(state, text) do
     state = tick(state)
 
     ui = %{
@@ -1005,21 +1344,82 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
         revision: state.ui.revision + 1
     }
 
-    commit(%{state | ui: ui, copy: nil}, state.ui)
+    commit(%{state | ui: ui}, state.ui)
   end
 
+  # cli020 D12 (tui-code-8): a scene that fails validation, or a projector
+  # that raises, keeps the last good scene on screen (the slot still holds
+  # it), says so, and asks for one more projection; only the fifth failure
+  # in a row closes the session.
   defp project(state) do
-    {scene, table} = Projector.project(state.ui)
     state = %{state | dirty?: false}
 
-    case SceneSlot.put(state.slot, scene) do
-      :ok ->
-        %{state | table: table}
+    case safe_project(state) do
+      {:ok, scene, table} ->
+        {rows, table} = markdown_rows(table)
 
-      _ ->
-        explain_invalid_scene(scene, state.instruction_sink)
-        begin_shutdown(state, :invalid_scene)
+        case SceneSlot.put(state.slot, scene) do
+          :ok ->
+            %{state | table: table, scene_failures: 0} |> cache_markdown(rows)
+
+          _ ->
+            if state.scene_failures + 1 >= @max_scene_failures,
+              do: explain_invalid_scene(scene, state.instruction_sink),
+              else: Logger.warning("ncode: " <> invalid_scene_words(scene))
+
+            scene_failed(state)
+        end
+
+      {:raised, words} ->
+        Logger.error("ncode: the screen update raised: " <> words)
+        scene_failed(state)
     end
+  end
+
+  # cli020 D21: the rows the projector computed this time (E31 reports them
+  # under `table.markdown_rows`) join the cache; the table stays the action
+  # table. A conversation switch starts an empty cache.
+  defp markdown_rows(table) when is_map(table) do
+    case Map.pop(table, :markdown_rows) do
+      {rows, table} when is_map(rows) -> {rows, table}
+      {_none, table} -> {%{}, table}
+    end
+  end
+
+  defp cache_markdown(%{ui: ui} = state, rows) do
+    scope = ui.destination
+    cache = ui.markdown_cache
+
+    cond do
+      rows == %{} and (cache == nil or cache.scope == scope) ->
+        state
+
+      true ->
+        %{state | ui: %{ui | markdown_cache: MarkdownCache.merge(cache, rows, scope)}}
+    end
+  end
+
+  defp safe_project(state) do
+    {scene, table} = state.projector.(state.ui)
+    {:ok, scene, table}
+  rescue
+    error -> {:raised, Exception.format(:error, error, __STACKTRACE__) |> String.slice(0, 4_000)}
+  end
+
+  defp scene_failed(%{scene_failures: failures} = state)
+       when failures + 1 >= @max_scene_failures,
+       do: begin_shutdown(%{state | scene_failures: failures + 1}, :invalid_scene)
+
+  defp scene_failed(state) do
+    ui = %{
+      state.ui
+      | notice: {:command_feedback, "A screen update failed; showing the last good one."},
+        notice_at: state.ui.now,
+        revision: state.ui.revision + 1
+    }
+
+    send(self(), :reproject)
+    %{state | ui: ui, scene_failures: state.scene_failures + 1}
   end
 
   # A close the user did not ask for is said in plain words; a session that
@@ -1073,13 +1473,14 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
   # A scene the slot refuses closes the session; saying why on stderr is the
   # difference between a bug report and a silent exit. With SWARM_SCENE_DUMP
   # set the scene is written there as an Erlang term for inspection.
-  defp explain_invalid_scene(scene, sink) do
-    bytes = safe_size(scene)
-
-    text =
+  defp invalid_scene_words(scene),
+    do:
       "the screen failed validation " <>
         "(valid: #{inspect(match?(:ok, SwarmCodeCLI.UI.Scene.validate(scene)))}, " <>
-        "bytes: #{bytes}, size: #{inspect(Map.get(scene, :size))})"
+        "bytes: #{safe_size(scene)}, size: #{inspect(Map.get(scene, :size))})"
+
+  defp explain_invalid_scene(scene, sink) do
+    text = invalid_scene_words(scene)
 
     if is_pid(sink),
       do: Logger.error("session closed: " <> text),

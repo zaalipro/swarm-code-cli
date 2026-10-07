@@ -104,6 +104,26 @@ defmodule SwarmCodeCLI.UI.Action do
           # /mouse (T1, T2, T9) and the /approval picker's rows (T7).
           | {:run_command, binary()}
           | :send_plain
+          # cli020 lane D (§8.3).
+          | {:cycle_permission_mode}
+          | :shell_send
+          | {:paste_image}
+          | :redraw_screen
+          | {:rewind_open}
+          | {:effort_move, -1 | 1}
+          | {:queue_move, -1 | 1}
+          | {:queue_drop}
+          | :history_search
+          | {:history_move, -1 | 1}
+          | {:history_pick}
+          | {:history_query, :backspace | {:append, binary()}}
+          | {:stash_draft}
+          | {:restore_stash}
+          | {:effort_pick, binary()}
+          | {:rewind_move, -1 | 1}
+          | {:rewind_choose, :both | :conversation | :files}
+          | {:paste_image_slot, binary()}
+          | {:paste_image_done, binary(), binary(), :ok | {:error, :no_image | :failed}}
           | {:show_diffs, boolean() | :toggle}
           | {:theme_mode, :dark | :light | :toggle}
           | {:mouse, boolean() | :toggle}
@@ -116,8 +136,8 @@ defmodule SwarmCodeCLI.UI.Action do
           | {:external_editor, DraftKey.t()}
           | {:external_edit_done, DraftKey.t(), {:ok, binary()} | {:error, external_edit_error()}}
           | {:toggle_dock, :inspector}
-          | {:panel_mode, :full | :compact | :hidden | :cycle}
-          | {:panel_preferences_loaded, :full | :compact | :hidden}
+          | {:panel_mode, :auto | :full | :compact | :hidden | :cycle}
+          | {:panel_preferences_loaded, :auto | :full | :compact | :hidden}
           | {:hint, :open | :again | :cancel | :backspace | {:key, binary()}}
           | {:overlay_open, binary(), binary()}
           | {:overlay,
@@ -232,6 +252,9 @@ defmodule SwarmCodeCLI.UI.Action do
   def validate({:history, direction} = action),
     do: valid_action(action, direction in [:previous, :next])
 
+  def validate({:slash_local, {:effort, target}} = action),
+    do: valid_action(action, target in [:chat, :swarm])
+
   def validate({:slash_local, command} = action),
     do:
       valid_action(
@@ -249,7 +272,11 @@ defmodule SwarmCodeCLI.UI.Action do
           :diff,
           :theme,
           :mouse,
-          :settings
+          :settings,
+          # cli020 D10/D20.
+          :rewind,
+          :undo,
+          :delete
         ]
       )
 
@@ -257,6 +284,59 @@ defmodule SwarmCodeCLI.UI.Action do
     do: valid_action(action, SwarmCodeCLI.UI.SlashPalette.valid_name?(name))
 
   def validate(:send_plain), do: {:ok, :send_plain}
+
+  # cli020 D11: Ctrl-L repaints every cell.
+  def validate(:redraw_screen), do: {:ok, :redraw_screen}
+
+  # cli020 D20: the queue list.
+  def validate({:queue_move, delta} = action), do: valid_action(action, delta in [-1, 1])
+  def validate({:queue_drop} = action), do: {:ok, action}
+
+  # cli020 D19: history search and the draft stash.
+  def validate(:history_search), do: {:ok, :history_search}
+  def validate({:history_move, delta} = action), do: valid_action(action, delta in [-1, 1])
+  def validate({:history_pick} = action), do: {:ok, action}
+  def validate({:history_query, :backspace} = action), do: {:ok, action}
+
+  def validate({:history_query, {:append, text}} = action),
+    do: valid_action(action, is_binary(text) and byte_size(text) <= 64 and String.valid?(text))
+
+  def validate({:stash_draft} = action), do: {:ok, action}
+  def validate({:restore_stash} = action), do: {:ok, action}
+
+  # cli020 D18: the effort picker.
+  def validate({:effort_move, delta} = action), do: valid_action(action, delta in [-1, 1])
+
+  def validate({:effort_pick, level} = action),
+    do: valid_action(action, is_binary(level) and level =~ ~r/\A[a-z0-9_-]{1,32}\z/)
+
+  # cli020 D10: the rewind list and its confirm.
+  def validate({:rewind_open} = action), do: {:ok, action}
+  def validate({:rewind_move, delta} = action), do: valid_action(action, delta in [-1, 1])
+
+  def validate({:rewind_choose, scope} = action),
+    do: valid_action(action, scope in [:both, :conversation, :files])
+
+  # cli020 D9: Ctrl-V attaches the clipboard's image; the runtime's steps.
+  def validate({:paste_image} = action), do: {:ok, action}
+
+  def validate({:paste_image_slot, conversation} = action),
+    do: valid_action(action, Intent.valid_id?(conversation))
+
+  def validate({:paste_image_done, conversation, token, result} = action),
+    do:
+      valid_action(
+        action,
+        Intent.valid_id?(conversation) and is_binary(token) and byte_size(token) == 32 and
+          (result == :ok or
+             match?({:error, reason} when reason in [:no_image, :failed], result))
+      )
+
+  # cli020 D7: Enter on a `!` draft runs it as a shell command.
+  def validate(:shell_send), do: {:ok, :shell_send}
+
+  # cli020 D6: Shift-Tab in the composer cycles Ask → Auto → Plan.
+  def validate({:cycle_permission_mode} = action), do: {:ok, action}
 
   # cli74 U1-2: the settings layer's keys and results, and the ways to open it
   # (F2, `/settings [ARG]`, a palette row).
@@ -326,10 +406,10 @@ defmodule SwarmCodeCLI.UI.Action do
   # pass72-O: the side panel's mode (Ctrl-B cycles it, /panel sets it) and
   # the mode the preferences file held at start.
   def validate({:panel_mode, mode} = action),
-    do: valid_action(action, mode in [:full, :compact, :hidden, :cycle])
+    do: valid_action(action, mode in [:auto, :full, :compact, :hidden, :cycle])
 
   def validate({:panel_preferences_loaded, mode} = action),
-    do: valid_action(action, mode in [:full, :compact, :hidden])
+    do: valid_action(action, mode in [:auto, :full, :compact, :hidden])
 
   # Hint mode: a badge key is one printable grapheme (a label is typed one
   # letter at a time); digits pick runs.

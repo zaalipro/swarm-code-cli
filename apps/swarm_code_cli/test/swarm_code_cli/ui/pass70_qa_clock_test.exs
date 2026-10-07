@@ -41,8 +41,9 @@ defmodule SwarmCodeCLI.UI.Pass70QaClockTest do
 
       # And the status line gives the key hints back.
       later = %{state | now: 1_000_000 + State.notice_ms()}
-      assert status_text(state) =~ "Type the message after /queue."
-      refute status_text(later) =~ "Type the message after /queue."
+      # cli020 D20: a bare /queue lists the queue (here: nothing queued).
+      assert status_text(state) =~ "Nothing is queued."
+      refute status_text(later) =~ "Nothing is queued."
       assert status_text(later) =~ "Ctrl-P palette"
     end
 
