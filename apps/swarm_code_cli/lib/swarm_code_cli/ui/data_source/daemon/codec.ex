@@ -30,7 +30,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
   # (`allowed_actions`, `created_sequence`, ...) stay mandatory on the wire.
   @optional_wire_keys %{
     # pass73 T3/T8: outcomes the durable ledger saved before these existed.
-    DTO.Outcome => [:disposition, :reason],
+    DTO.Outcome => [:disposition, :reason, :result],
+    DTO.ConversationSummary => [:last_prompt],
     DTO.WorkspaceSnapshot => [
       :mode,
       :chat_model,
@@ -51,8 +52,18 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
       :cost_usd,
       :title,
       :background,
+      :shells,
       :queued,
-      :queued_texts
+      :queued_texts,
+      :git_branch,
+      :git_dirty,
+      :effort_levels,
+      :swarm_effort_levels,
+      :validator_model,
+      :desktop_running,
+      :queued_count,
+      :queue_paused,
+      :queue_revision
     ],
     DTO.WorkspaceMetadata => [
       :project,
@@ -66,9 +77,20 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
       :cost_usd,
       :title,
       :queued,
-      :queued_texts
+      :queued_texts,
+      :git_branch,
+      :git_dirty,
+      :effort_levels,
+      :swarm_effort_levels,
+      :validator_model,
+      :desktop_running,
+      :queued_count,
+      :queue_paused,
+      :queue_revision
     ],
     DTO.ShellSnapshot => [:rate_limits],
+    # cli020 C8/C9/C18: structured command answers.
+    DTO.Feedback => [:subject, :rows],
     DTO.Approval => [
       :command,
       :cwd,
@@ -149,7 +171,9 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
       :goal_status,
       :round,
       :rounds,
-      :verdict
+      :verdict,
+      :retry_detail,
+      :plan
     ],
     DTO.ToolCall => [
       :title,
@@ -166,7 +190,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
       :exit_code,
       :background,
       :hunk,
-      :diff_lines
+      :diff_lines,
+      :background_state
     ],
     DTO.Change => [
       :agent_id,
@@ -370,7 +395,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
               :toast,
               :rate_limit,
               :settings_update,
-              :settings_task
+              :settings_task,
+              :desktop_running
             ],
        do: true
 
@@ -577,6 +603,52 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
             "expected_revision" => revision,
             "decision" => Atom.to_string(decision)
           }}
+
+  # cli020 C6: the desktop's ↻ Retry; the service re-sends the run's message.
+  defp request_body({:retry_run, run, revision}),
+    do: {:ok, %{"op" => "run.retry", "run_id" => run, "revision" => revision}}
+
+  # cli020 C14: a clipboard image slot.
+  defp request_body({:attachment_slot, _conversation}),
+    do: {:ok, %{"op" => "attachment.slot"}}
+
+  # cli020 C14: stage the image written into a slot.
+  defp request_body({:attach_slot, _conversation, token}),
+    do: {:ok, %{"op" => "attachment.attach_slot", "token" => token}}
+
+  # cli020 C15: the ! shell escape.
+  defp request_body({:shell_run, _conversation, text}),
+    do: {:ok, %{"op" => "shell.run", "command" => text}}
+
+  # cli020 C15: stop the running shell command.
+  defp request_body({:shell_stop, _conversation}),
+    do: {:ok, %{"op" => "shell.stop"}}
+
+  # cli020 C16: the turns the conversation can be rewound to.
+  defp request_body({:rewind_turns, _conversation}),
+    do: {:ok, %{"op" => "rewind.turns"}}
+
+  # cli020 C16: rewind to before a turn.
+  defp request_body({:rewind_apply, _conversation, message, scope}),
+    do:
+      {:ok, %{"op" => "rewind.apply", "message_id" => message, "scope" => Atom.to_string(scope)}}
+
+  # cli020 C20: the prompt history (Ctrl-R).
+  defp request_body({:history_search, _conversation, query}),
+    do: {:ok, %{"op" => "history.search", "query" => query}}
+
+  # cli020 C1: the queue (the conversation is the request's scope).
+  defp request_body({:queue_resume, _conversation}), do: {:ok, %{"op" => "queue.resume"}}
+
+  defp request_body({:queue_edit, _conversation, revision, edit}),
+    do:
+      {:ok,
+       %{
+         "op" => "queue.edit",
+         "revision" => revision,
+         "action" => if(edit == :clear, do: "clear", else: "drop"),
+         "position" => with({:drop, n} <- edit, do: n, else: (_ -> nil))
+       }}
 
   defp request_body(_), do: {:error, AdmissionError.new(:not_allowed)}
 

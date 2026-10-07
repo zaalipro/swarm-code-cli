@@ -16,7 +16,8 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.ToolCall do
       exit_code: nil,
       background: false,
       hunk: nil,
-      diff_lines: 0
+      diff_lines: 0,
+      background_state: nil
     ],
     fields: [
       name: {:text, 200},
@@ -54,7 +55,10 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.ToolCall do
       # pass71 F5: an edit's first hunk (from its first `@@`, at most 13 lines)
       # and the body lines of its whole diff, for the inline preview (R5).
       hunk: {:optional, {:text, 4096}},
-      diff_lines: :count
+      diff_lines: :count,
+      # cli020 C10 (ux-live-12): how a backgrounded command ended: `still
+      # running`, `exit N`, `ended (exit not recorded)`.
+      background_state: {:optional, {:text, 64}}
     ],
     defaults: [
       name: "",
@@ -72,6 +76,7 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.ToolCall do
       exit_code: nil,
       background: false,
       hunk: nil,
-      diff_lines: 0
+      diff_lines: 0,
+      background_state: nil
     ]
 end

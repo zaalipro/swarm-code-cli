@@ -358,7 +358,7 @@ defmodule SwarmCode.Daemon.Service.Settings.C74ValuesTest do
     for key <- ["session.model", "session.sub_agent_model"] do
       assert %{"winner" => "flag", "value" => %{"model" => "deepseek-v4-flash"}} = by_key[key]
       flag = Enum.find(by_key[key]["layers"], &(&1["layer"] == "flag"))
-      assert flag["source"] == "--model" and flag["note"] == "for this launch only"
+      assert flag["source"] == "--model" and flag["note"] == "this launch only"
     end
 
     pro = %{"provider_id" => fixture.deepseek.id, "model" => "deepseek-v4-pro"}

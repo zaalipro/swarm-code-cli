@@ -516,17 +516,37 @@ defmodule SwarmCode.Domain.FeatureCatalog do
     |> Enum.map(&file_item(&1, []))
   end
 
+  # cli020 C12 (ux-live-17): the file named like the query first. Tiers: the
+  # file name starts with the query, contains it, a directory starts with it,
+  # then any in-order subsequence (`FuzzyMatch.score/2`, which also orders
+  # that tier); ties go to the shorter path. `@mi` is `mix.exs`, not a
+  # migration three directories down.
   def file_matches(paths, query, limit) do
+    lower = String.downcase(query)
+
     paths
     |> Enum.flat_map(fn path ->
       case FuzzyMatch.score(path, query) do
-        {:match, score} -> [{path, score}]
+        {:match, score} -> [{path, file_tier(String.downcase(path), lower), score}]
         :no_match -> []
       end
     end)
-    |> Enum.sort_by(fn {path, score} -> {-score, byte_size(path), path} end)
+    |> Enum.sort_by(fn {path, tier, score} ->
+      {-tier, if(tier == 1, do: -score, else: 0), byte_size(path), path}
+    end)
     |> Enum.take(limit)
-    |> Enum.map(fn {path, _} -> file_item(path, matched(path, query)) end)
+    |> Enum.map(fn {path, _, _} -> file_item(path, matched(path, query)) end)
+  end
+
+  defp file_tier(path, query) do
+    base = Path.basename(path)
+
+    cond do
+      String.starts_with?(base, query) -> 4
+      String.contains?(base, query) -> 3
+      Enum.any?(Path.split(Path.dirname(path)), &String.starts_with?(&1, query)) -> 2
+      true -> 1
+    end
   end
 
   defp file_item(path, matches),
@@ -1076,8 +1096,20 @@ defmodule SwarmCode.Domain.FeatureCatalog do
 
   defp error_result(_), do: {:error, :operation_failed}
 
+  # cli020 C9 (ux-live-7): what the library shows of a definition — its
+  # description and arguments — never the program source or its raw `meta`.
   defp definition(w),
-    do: %{name: w.name, scope: w.scope, meta: plain(w.meta), problems: plain(w.problems)}
+    do: %{
+      description: w.meta[:description],
+      args:
+        Enum.map(SwarmCode.Domain.Workflows.Definition.arg_specs(w), fn {key, spec} ->
+          %{
+            name: to_string(key),
+            required?: spec[:required] == true,
+            default: plain(Map.get(spec, :default))
+          }
+        end)
+    }
 
   defp workflow(w),
     do:

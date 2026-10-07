@@ -126,6 +126,63 @@ defmodule SwarmCode.Domain.FeatureCatalogTest do
              FeatureCatalog.query(:workflows, c.scope, id: "unknown-definition")
   end
 
+  # cli020 C9 (ux-live-7): a definition's detail is its description and its
+  # arguments, never the program source or the raw `meta` JSON.
+  test "a workflow's detail is its description and arguments", c do
+    dir = Path.join([c.project.root_path, ".swarm_code", "workflows"])
+    File.mkdir_p!(dir)
+
+    File.write!(Path.join(dir, "c9-args.exs"), """
+    meta = %{
+      name: "c9-args",
+      description: "Review a path",
+      args: %{path: %{type: :string, required: true}, depth: %{type: :integer, default: 2}}
+    }
+
+    :ok
+    """)
+
+    assert {:ok, %{items: [%{detail: detail}]}} =
+             FeatureCatalog.query(:workflows, c.scope, id: "c9-args")
+
+    refute detail =~ "defmodule"
+    refute detail =~ "meta"
+    refute detail =~ "**"
+
+    assert %{"description" => "Review a path", "args" => args} = Jason.decode!(detail)
+
+    assert Enum.sort_by(args, & &1["name"]) == [
+             %{"name" => "depth", "required?" => false, "default" => 2},
+             %{"name" => "path", "required?" => true, "default" => nil}
+           ]
+  end
+
+  # cli020 C12 (ux-live-17): a file named like the query beats a deep
+  # subsequence match.
+  test "@ ranks basename prefix, basename substring, segment prefix, then fuzzy" do
+    paths = [
+      "priv/repo/migrations/20260101_create_items.exs",
+      "lib/admin/semi_final.ex",
+      "lib/my_mix_task.ex",
+      "lib/m/i.ex",
+      "mix.exs",
+      "lib/mix/tasks/mix_helper.ex"
+    ]
+
+    titles = Enum.map(FeatureCatalog.file_matches(paths, "mi", 10), & &1.title)
+
+    assert titles == [
+             "mix.exs",
+             "lib/mix/tasks/mix_helper.ex",
+             "lib/my_mix_task.ex",
+             "lib/admin/semi_final.ex",
+             "priv/repo/migrations/20260101_create_items.exs",
+             "lib/m/i.ex"
+           ]
+
+    assert ["mix.exs"] = Enum.map(FeatureCatalog.file_matches(paths, "MI", 1), & &1.title)
+  end
+
   test "Git and checkpoint reads derive project from scope", c do
     System.cmd("git", ["init", "--quiet", c.project.root_path])
     File.write!(Path.join(c.project.root_path, "new.txt"), "hello")

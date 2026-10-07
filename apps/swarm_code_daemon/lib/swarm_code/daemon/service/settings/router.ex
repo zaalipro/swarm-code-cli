@@ -64,7 +64,9 @@ defmodule SwarmCode.Daemon.Service.Settings.Router do
     {"records", "agent_defs"} => S.Library,
     {"records", "skills"} => S.Library,
     {"records", "workflows"} => S.Library,
-    {"record", "project_config"} => S.ProjectConfig
+    {"record", "project_config"} => S.ProjectConfig,
+    # cli020 C23: hooks and rules for Settings → Project file (E30).
+    {"project_config.summary", nil} => S.ProjectConfig
   }
 
   # §3.3.2: task-cache reads the table declares (handlers may add their own).

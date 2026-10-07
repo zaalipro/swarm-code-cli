@@ -13,7 +13,16 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.WorkspaceMetadata do
       cost_usd: nil,
       title: nil,
       queued: 0,
-      queued_texts: []
+      queued_texts: [],
+      git_branch: nil,
+      git_dirty: nil,
+      effort_levels: [],
+      swarm_effort_levels: [],
+      validator_model: nil,
+      desktop_running: false,
+      queued_count: 0,
+      queue_paused: false,
+      queue_revision: nil
     ],
     fields: [
       conversation_id: :id,
@@ -41,7 +50,22 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.WorkspaceMetadata do
       # pass71 S5: prompts of this conversation queued behind its live turn.
       queued: :count,
       # pass73 T3/T8: what waits there, oldest first (at most 20, 2 KB each).
-      queued_texts: {:list, {:text, 2048}}
+      queued_texts: {:list, {:text, 2048}},
+      # cli020 C22: the project's Git branch and how many paths changed (nil
+      # outside a repository or when Git did not answer in 2 s).
+      git_branch: {:optional, {:text, 80}},
+      git_dirty: {:optional, :count},
+      # cli020 C17: the levels /effort and /swarm_effort accept here, and the
+      # validator model (the main model when the conversation names none).
+      effort_levels: {:list, {:text, 32}, 16},
+      swarm_effort_levels: {:list, {:text, 32}, 16},
+      validator_model: {:optional, {:text, 256}},
+      # cli020 C4: the ncode app is open on the same database.
+      desktop_running: :boolean,
+      # cli020 C1: the queue count (0.2.0 name), whether a user stop paused it, and the revision queue.edit compares (16 hex).
+      queued_count: :count,
+      queue_paused: :boolean,
+      queue_revision: {:optional, {:text, 16}}
     ],
     defaults: [
       conversation_id: nil,
@@ -61,6 +85,15 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.WorkspaceMetadata do
       cost_usd: nil,
       title: nil,
       queued: 0,
-      queued_texts: []
+      queued_texts: [],
+      git_branch: nil,
+      git_dirty: nil,
+      effort_levels: [],
+      swarm_effort_levels: [],
+      validator_model: nil,
+      desktop_running: false,
+      queued_count: 0,
+      queue_paused: false,
+      queue_revision: nil
     ]
 end

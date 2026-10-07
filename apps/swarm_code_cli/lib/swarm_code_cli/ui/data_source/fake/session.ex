@@ -280,7 +280,13 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Session do
       live: Enum.any?(runs, &(&1.state in [:running, :streaming, :retrying, :waiting_approval])),
       waiting: waiting,
       unread: false,
-      current: row.id == script.session.current
+      current: row.id == script.session.current,
+      # cli020 C19: the demo's newest prompt is its run's.
+      last_prompt:
+        case Enum.max_by(runs, & &1.created_sequence, fn -> nil end) do
+          %{title: title} when is_binary(title) and title != "" -> String.slice(title, 0, 80)
+          _ -> nil
+        end
     }
   end
 
@@ -504,31 +510,77 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Session do
 
   defp slash_command(script, _request, :show_cost, _) do
     total = cost(script, script.session.current)
-    report(script, "Cost of this conversation", "$#{:erlang.float_to_binary(total, decimals: 2)}")
+
+    {:ok, script, deltas, ids, feedback} =
+      report(
+        script,
+        "Cost of this conversation",
+        "$#{:erlang.float_to_binary(total, decimals: 2)}"
+      )
+
+    # cli020 C18: per-model rows and the total, as the service answers.
+    rows = [
+      %DTO.FeedbackRow{
+        model: "demo-model",
+        runs: 1,
+        tokens_in: 0,
+        tokens_out: 0,
+        cost_usd: total
+      },
+      %DTO.FeedbackRow{name: "Total", runs: 1, tokens_in: 0, tokens_out: 0, cost_usd: total}
+    ]
+
+    {:ok, script, deltas, ids, %{feedback | subject: :cost, rows: rows}}
   end
 
   defp slash_command(script, _request, :search, %{query: query}) do
     needle = String.downcase(query)
 
-    hits =
-      for row <- Map.values(script.session.conversations),
+    rows =
+      for row <- Enum.sort_by(Map.values(script.session.conversations), & &1.title),
           String.contains?(String.downcase(row.title), needle),
-          do: "**#{row.title}**\n/resume " <> String.slice(row.id, 0, 8)
+          do: row
 
     text =
-      if hits == [],
+      if rows == [],
         do: "Nothing in this project's conversations matches “#{query}”.",
-        else: Enum.join(Enum.sort(hits), "\n\n")
+        else:
+          Enum.map_join(rows, "\n\n", fn row ->
+            "**#{row.title}**\n/resume " <> String.slice(row.id, 0, 8)
+          end)
 
-    report(script, "Search: " <> query, text)
+    # cli020 C8: rows beside the text, as the service answers.
+    with {:ok, script, deltas, ids, feedback} <- report(script, "Search: " <> query, text) do
+      rows =
+        for row <- Enum.take(rows, 50),
+            do: %DTO.FeedbackRow{
+              conversation_id: row.id,
+              title: row.title,
+              snippet: "",
+              at: Map.get(row, :updated_at)
+            }
+
+      {:ok, script, deltas, ids, %{feedback | subject: :search, rows: rows}}
+    end
   end
 
   defp slash_command(script, _request, :export, _),
     do:
       report(script, "Exported", "The demo keeps its transcript in memory; nothing was written.")
 
-  defp slash_command(script, _request, :list_agents, _),
-    do: report(script, "Agents", "- **reviewer** (bundled) — reads a diff and reports problems")
+  # cli020 C9: rows beside the text, as the service answers.
+  defp slash_command(script, _request, :list_agents, _) do
+    {:ok, script, deltas, ids, feedback} =
+      report(script, "Agents", "- reviewer (bundled) — reads a diff and reports problems")
+
+    row = %DTO.FeedbackRow{
+      name: "reviewer",
+      source: "bundled",
+      description: "reads a diff and reports problems"
+    }
+
+    {:ok, script, deltas, ids, %{feedback | subject: :agents, rows: [row]}}
+  end
 
   defp slash_command(script, _request, :help, _) do
     text =
@@ -581,7 +633,10 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Session do
         chat_provider: "openrouter",
         title: session.conversations[conversation_id].title,
         cost_usd: cost(script, conversation_id),
-        queued: queued(script, conversation_id)
+        queued: queued(script, conversation_id),
+        # cli020 C17: the levels the demo model accepts.
+        effort_levels: ~w(low medium high max),
+        swarm_effort_levels: ~w(low medium high max)
       }
     }
 
@@ -707,6 +762,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Session do
       context_window: 131_072,
       cost_usd: if(conversation_id, do: cost(script, conversation_id)),
       queued: if(conversation_id, do: queued(script, conversation_id), else: 0),
+      effort_levels: ~w(low medium high max),
+      swarm_effort_levels: ~w(low medium high max),
       title:
         case s.conversations[conversation_id] do
           %{title: title} -> title

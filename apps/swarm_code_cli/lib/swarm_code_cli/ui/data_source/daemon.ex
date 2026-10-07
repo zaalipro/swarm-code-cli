@@ -989,6 +989,16 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
   # pass74 §3.4.1: both settings ops need the `settings` grant.
   defp request_capability(%{"op" => "settings.query"}), do: :settings
   defp request_capability(%{"op" => "settings.command"}), do: :settings
+  # cli020 C1.
+  defp request_capability(%{"op" => op}) when op in ["queue.resume", "queue.edit"], do: :queue
+  defp request_capability(%{"op" => "run.retry"}), do: :run_retry
+  defp request_capability(%{"op" => "attachment.slot"}), do: :attachment
+  defp request_capability(%{"op" => "attachment.attach_slot"}), do: :attachment
+  defp request_capability(%{"op" => "shell.run"}), do: :shell
+  defp request_capability(%{"op" => "shell.stop"}), do: :shell
+  defp request_capability(%{"op" => "rewind.turns"}), do: :rewind
+  defp request_capability(%{"op" => "rewind.apply"}), do: :rewind
+  defp request_capability(%{"op" => "history.search"}), do: :history
   defp request_capability(_), do: nil
 
   defp expire_requests(state) do

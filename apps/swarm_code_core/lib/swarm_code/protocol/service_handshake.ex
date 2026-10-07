@@ -30,7 +30,15 @@ defmodule SwarmCode.Protocol.ServiceHandshake do
     "feature.command" => :feature_command,
     "question.answer" => :question_answer,
     # pass74 S1-5: settings.query and settings.command (§3.4.1).
-    "settings" => :settings
+    "settings" => :settings,
+    # cli020 C1: queue.resume and queue.edit.
+    "queue" => :queue,
+    "attachment" => :attachment,
+    "shell" => :shell,
+    "rewind" => :rewind,
+    "history" => :history,
+    # cli020 C6.
+    "run.retry" => :run_retry
   }
   @max_frame_bytes 1_048_576
 
@@ -56,6 +64,12 @@ defmodule SwarmCode.Protocol.ServiceHandshake do
             | :feature_command
             | :question_answer
             | :settings
+            | :queue
+            | :history
+            | :rewind
+            | :shell
+            | :attachment
+            | :run_retry
 
     @type t :: %__MODULE__{
             source_epoch: binary(),
@@ -127,7 +141,7 @@ defmodule SwarmCode.Protocol.ServiceHandshake do
 
   def encode_hello_ok(_value), do: invalid()
 
-  defp decode_capabilities(values) when is_list(values) and length(values) <= 20 do
+  defp decode_capabilities(values) when is_list(values) and length(values) <= 32 do
     if Enum.uniq(values) == values and Enum.all?(values, &Map.has_key?(@capabilities, &1)) do
       {:ok, Enum.map(values, &Map.fetch!(@capabilities, &1))}
     else
@@ -137,7 +151,7 @@ defmodule SwarmCode.Protocol.ServiceHandshake do
 
   defp decode_capabilities(_values), do: invalid()
 
-  defp encode_capabilities(values) when is_list(values) and length(values) <= 20 do
+  defp encode_capabilities(values) when is_list(values) and length(values) <= 32 do
     reverse = Map.new(@capabilities, fn {wire, atom} -> {atom, wire} end)
 
     if Enum.uniq(values) == values and Enum.all?(values, &Map.has_key?(reverse, &1)) do

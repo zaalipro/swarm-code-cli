@@ -205,6 +205,10 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.SettingsIntegrations do
   message}` or `:unsupported` (a view or kind `Fake.Settings` answers itself).
   """
   @spec query(state(), map()) :: {:ok, map()} | {:error, String.t(), String.t()} | :unsupported
+  # cli020 C23: F9's five events too.
+  @hook_events ~w(session_start pre_tool_use post_tool_use stop notification user_prompt_submit
+                  pre_compact session_end)
+
   def query(state, params) do
     view = get(params, "view")
     kind = get(params, "kind")
@@ -220,8 +224,35 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.SettingsIntegrations do
       {"file", _} ->
         file_view(state, get(params, "id") || get(options, "ref"))
 
+      # cli020 C23: hooks and rules, as the service answers (E30).
+      {"project_config.summary", nil} ->
+        project_config_summary(state, get(params, "id") || @ailogic)
+
       _ ->
         :unsupported
+    end
+  end
+
+  defp project_config_summary(state, id) do
+    case Map.fetch(state.project_config, id) do
+      :error ->
+        {:error, "not_found", "no such project"}
+
+      {:ok, config} ->
+        config = config || %{}
+        hooks = Map.get(config, "hooks", %{})
+        rules = Map.get(config, "permissions", %{})
+
+        {:ok,
+         %{
+           "hooks" =>
+             for(
+               event <- @hook_events,
+               %{"command" => command} <- Map.get(hooks, event, []),
+               do: %{"event" => event, "command" => String.slice(command, 0, 120)}
+             ),
+           "permissions" => Map.new(~w(allow ask deny), &{&1, Map.get(rules, &1, [])})
+         }}
     end
   end
 
@@ -3441,7 +3472,6 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.SettingsIntegrations do
 
   # project config helpers
 
-  @hook_events ~w(session_start pre_tool_use post_tool_use)
   @denied ~w(tavily_api_key default_chat_provider_id default_swarm_provider_id default_scheduled_provider_id default_workflow_provider_id monthly_budget_usd workflow_budget)
   @ignored_top ~w(effort swarm_effort model swarm_model)
 
@@ -3465,7 +3495,9 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.SettingsIntegrations do
       "unknown_keys" =>
         config
         |> Map.keys()
-        |> Enum.reject(&(&1 in @ignored_top or &1 in @denied or &1 in ~w(hooks profiles))),
+        |> Enum.reject(
+          &(&1 in @ignored_top or &1 in @denied or &1 in ~w(hooks profiles permissions))
+        ),
       "ignored_entries" => ignored_entries(config),
       "hooks" => Map.new(@hook_events, &{&1, config |> Map.get("hooks", %{}) |> Map.get(&1, [])}),
       "profiles" => Map.get(config, "profiles", %{}),
@@ -4047,6 +4079,11 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.SettingsIntegrations do
         "post_edit" => [%{"matcher" => "*.ex", "command" => "mix format"}]
       },
       "profiles" => %{"fast" => %{"mode" => "auto", "effort" => "low"}},
+      # cli020 C23: the rules E30 lists.
+      "permissions" => %{
+        "allow" => ["run_command(mix test*)"],
+        "deny" => ["run_command(rm -rf *)"]
+      },
       "x-custom" => true
     }
   end

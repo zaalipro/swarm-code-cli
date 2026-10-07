@@ -99,6 +99,11 @@ defmodule SwarmCodeCLI.UI.RequestResolver do
     do: decision
 
   defp required_permission({:mark_seen, _kind, _id, _revision}), do: :mark_seen
+  # cli020 C: the queue needs `:queue`; the other conversation commands `:send`.
+  defp required_permission(intent) when elem(intent, 0) in [:queue_resume, :queue_edit],
+    do: :queue
+
+  defp required_permission(_conversation_command), do: :send
 
   defp retry_not_failed?({:retry_run, _run_id, _revision}, context),
     do: context.active_run_state != :failed
@@ -260,6 +265,18 @@ defmodule SwarmCodeCLI.UI.RequestResolver do
   defp valid_origin?({:mark_seen, kind, id, revision}, context) do
     context.origin == {:seen, kind, id, revision} and scope_current?(context) and
       no_active_subject?(context) and canonical_non_text?(context)
+  end
+
+  defp valid_origin?(intent, context) do
+    case Intent.conversation_action(intent) do
+      nil ->
+        false
+
+      action ->
+        context.origin == {:conversation, action} and scope_current?(context) and
+          context.scope.kind == :conversation and context.scope.id == elem(intent, 1) and
+          no_active_subject?(context)
+    end
   end
 
   # The draft as typed, or (pass73 T5) the draft that names a workflow sent

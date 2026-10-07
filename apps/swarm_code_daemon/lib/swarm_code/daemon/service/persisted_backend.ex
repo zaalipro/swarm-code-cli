@@ -29,7 +29,17 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   # pass70 C8: finished-run checkpoints whose change facts a reload computes.
   @facts_per_reload 50
   # Operations that read: never ledgered, answered with a typed error.
-  @reads [:query, :detail, :feature_query, :conversation_list, :agent_detail]
+  # cli020 C16/C20: the rewind list and the prompt history are reads too (run
+  # as jobs; never ledgered).
+  @reads [
+    :query,
+    :detail,
+    :feature_query,
+    :conversation_list,
+    :agent_detail,
+    :rewind_turns,
+    :history_search
+  ]
   # pass71 S2: slow reads run as jobs; this many at once, the rest are refused.
   @max_jobs 8
   @terminal [:completed, :failed, :cancelled, :interrupted]
@@ -40,9 +50,12 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   alias SwarmCode.Daemon.Service.Settings.Tasks, as: SettingsTasks
 
   alias SwarmCode.Daemon.Service.{
+    ClipboardInbox,
     CommandDispatcher,
+    ShellEscape,
     CommandLedger,
     PersistedProjection,
+    Rewind,
     SessionConfiguration
   }
 
@@ -111,6 +124,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         metadata: nil,
         research_ids: [],
         attachment_ids: staged_attachments,
+        # cli020 C2: a staged image's file was gone at this send.
+        staged_removed: false,
         refresh_pending: false,
         # pass71 S6: what the armed refresh has to do — a full reload, or only
         # the runs and nodes a streaming tick touched — the inputs of the last
@@ -141,6 +156,9 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         agent_status: %AgentStatus{},
         background: %{},
         background_tick: nil,
+        # cli020 C10: the last exit seen per backgrounded run_command item
+        # (the book forgets a finished survivor after five minutes).
+        background_exits: %{},
         # pass70 C8: unified diffs being paged, and what each finished run
         # changed per file (line counts, created/modified/deleted).
         diff_cache: %{},
@@ -156,6 +174,36 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         # prompts are queued behind them (monitor ref => true).
         queue_monitors: %{},
         queue_retries: 0,
+        # cli020 C1 (bugs-17): conversations whose queue a stop the user asked
+        # for paused; `queue.resume` (or the next turn the user starts) lifts it.
+        queue_paused: MapSet.new(),
+        # cli020 C4 (bugs-6): whether the ncode app is open on this database
+        # (`DesktopWatch` tells; the launcher refused to start while it was).
+        desktop_running: false,
+        # cli020 C3 (bugs-19): the ledger prune this backend started (owned
+        # work under the job supervisor, never the init callback itself).
+        # cli020 C14: the clipboard image slots this session opened.
+        clipboard_slots: %{},
+        # cli020 C15: the running `!` command (one per conversation) and the
+        # projected shell items (`id => body`, newest 50).
+        shell: nil,
+        shells: %{},
+        # cli020 C22: the project's Git branch and changed-path count, read by
+        # one owned task at a time (2 s bound).
+        git: %{
+          branch: nil,
+          dirty: nil,
+          task: nil,
+          timer: nil,
+          due: nil,
+          last_at: nil,
+          pending: false
+        },
+        ledger_prune:
+          start_ledger_prune(
+            Keyword.get(opts, :task_supervisor, SwarmCode.Domain.TaskSupervisor),
+            DateTime.utc_now()
+          ),
         # pass71 S2: running read jobs (task ref => job), where they run, and
         # the functions that do the slow work (tests inject blocking fakes).
         jobs: %{},
@@ -180,6 +228,10 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         settings_session: SettingsDeltas.session_values(conversation)
       }
 
+      # cli020 C1 (bugs-7): a prompt queued before a restart drains now (after
+      # init returns, from the mailbox).
+      send(self(), {:drain_queue, opts[:conversation_id]})
+      send(self(), {:git_facts, :start})
       {:ok, reload(state)}
     else
       _ -> :ignore
@@ -356,6 +408,70 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   def handle_info({:DOWN, monitor, :process, _, _}, %{queue_monitors: monitors} = state)
       when is_map_key(monitors, monitor),
       do: {:noreply, drain_queue(%{state | queue_monitors: Map.delete(monitors, monitor)})}
+
+  # cli020 C4 (bugs-6): the ncode app opened or quit on the same database. The
+  # shell watch hears it as a `desktop_running` delta; the workspace metadata
+  # carries it too.
+  def handle_info({:desktop_running, running}, state) when is_boolean(running) do
+    if running == state.desktop_running do
+      {:noreply, state}
+    else
+      state = %{state | desktop_running: running, revision: state.revision + 1}
+
+      state =
+        broadcast(state, %{
+          "kind" => "desktop_running",
+          "entity_id" => nil,
+          "run_id" => nil,
+          "conversation_id" => nil,
+          "channel" => nil,
+          "attempt_id" => nil,
+          "text" => nil,
+          "body" => %{"running" => running},
+          "sequence" => 0,
+          "revision" => state.revision
+        })
+
+      {:noreply, refresh(state)}
+    end
+  end
+
+  # cli020 C15: the `!` command ended; its message is the transcript row.
+  def handle_info({ref, {output, exit}}, %{shell: %{task: %Task{ref: ref}}} = state) do
+    Process.demonitor(ref, [:flush])
+    {:noreply, finish_shell(state, output, exit)}
+  end
+
+  def handle_info({:DOWN, ref, :process, _, _}, %{shell: %{task: %Task{ref: ref}}} = state),
+    do: {:noreply, finish_shell(state, "", "error")}
+
+  # cli020 C22: Git facts are due (start, a run ended, files changed).
+  def handle_info({:git_facts, reason}, state), do: {:noreply, git_facts(state, reason)}
+
+  def handle_info({ref, {:git, branch, dirty}}, %{git: %{task: %Task{ref: ref}}} = state) do
+    Process.demonitor(ref, [:flush])
+    {:noreply, git_done(state, branch, dirty)}
+  end
+
+  def handle_info({:DOWN, ref, :process, _, _}, %{git: %{task: %Task{ref: ref}}} = state),
+    do: {:noreply, git_done(state, nil, nil)}
+
+  def handle_info({:git_timeout, ref}, %{git: %{task: %Task{ref: ref} = task}} = state) do
+    Task.shutdown(task, :brutal_kill)
+    {:noreply, git_done(state, nil, nil)}
+  end
+
+  def handle_info({:git_timeout, _ref}, state), do: {:noreply, state}
+
+  # cli020 C3: the ledger prune ended (its count is only logged).
+  def handle_info({ref, pruned}, %{ledger_prune: %Task{ref: ref}} = state) do
+    Process.demonitor(ref, [:flush])
+    if is_integer(pruned) and pruned > 0, do: Logger.info("cli ledger: pruned #{pruned} rows")
+    {:noreply, %{state | ledger_prune: nil}}
+  end
+
+  def handle_info({:DOWN, ref, :process, _, _}, %{ledger_prune: %Task{ref: ref}} = state),
+    do: {:noreply, %{state | ledger_prune: nil}}
 
   # pass71 F8: a retry of a queued prompt whose start was refused.
   def handle_info({:drain_queue, conversation_id}, state) do
@@ -609,6 +725,13 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   @impl true
   def terminate(_, state) do
     cancel_jobs(state, wire_error(:source_unavailable))
+    with %Task{} = task <- Map.get(state, :ledger_prune), do: Task.shutdown(task, :brutal_kill)
+    ClipboardInbox.close_all(Map.get(state, :clipboard_slots, %{}))
+    with %{task: %Task{} = task} <- Map.get(state, :git), do: Task.shutdown(task, :brutal_kill)
+    # cli020 C15: quitting kills a running `!` command (its task traps exits).
+    with %{task: task} <- Map.get(state, :shell),
+         do: ShellEscape.stop(state.task_supervisor, task)
+
     # pass74 S1-9/S1-10: every settings job settles (a command's ledger row
     # completes), every task stops by its kind, every purge timer ends.
     Enum.reduce(Map.keys(state.settings_jobs), state, &settle_settings_job(&2, &1, true))
@@ -747,6 +870,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
          id,
          state
        ) do
+    state = prune_staged(state)
+
     cond do
       params["attachment_refs"] != [] or state.attachment_ids != [] ->
         {refuse(id, :attachments_not_queued), state}
@@ -765,6 +890,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   end
 
   defp execute(%{operation: :dispatch_send, params: params}, _scope, id, state) do
+    state = prune_staged(state)
     text = params["text"]
     conversation_id = state.opts[:conversation_id]
     command = command_name(text)
@@ -1051,6 +1177,203 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     end
   end
 
+  # cli020 C6 (ux-live-4): ↻ Retry, as the desktop does it
+  # (`workspace_live.ex` `retry_run/2`): a failed or stopped run of this
+  # conversation whose revision matches goes out again — the user message that
+  # launched it through dispatch (so `/swarm …` stays a swarm), else a swarm
+  # restarts on its prompt, else its prompt starts a chat turn.
+  defp execute(%{operation: :run_retry, params: params}, scope, id, state) do
+    state = refresh(state)
+    run = state.runs[params["run_id"]]
+
+    cond do
+      is_nil(run) or not run_member?(run, scope, state) ->
+        {refuse(id, :run_not_found, "", "run.retry"), state}
+
+      run.status not in [:failed, :cancelled] ->
+        {refuse(id, :not_retryable, "", "run.retry"), state}
+
+      run.revision != params["revision"] ->
+        {refuse(id, {:stale, "That run changed · look again."}, "", "run.retry"), state}
+
+      true ->
+        retry_run(state, scope, id, run)
+    end
+  end
+
+  # cli020 C16 (competitors-8): the turns this conversation can be rewound to,
+  # read by a job.
+  defp execute(%{operation: :rewind_turns}, _scope, id, state) do
+    conversation = state.opts[:conversation_id]
+    work = fn -> Rewind.turns(conversation) end
+
+    finish = fn turns, next ->
+      {accepted_result(id, [], %{
+         "kind" => "rewind_turns",
+         "turns" => Enum.map(turns, &turn_body/1)
+       }), next}
+    end
+
+    {{:job, %{key: :rewind_turns, replace: true, work: work, finish: finish}}, state}
+  end
+
+  # cli020 C20 (competitors-19): the project's prompt history (Ctrl-R), read
+  # by a job; a newer search replaces an older one.
+  defp execute(%{operation: :history_search, params: %{"query" => query}}, _scope, id, state) do
+    project = state.opts[:project_id]
+    conversation = state.opts[:conversation_id]
+    work = fn -> SwarmCode.Daemon.Service.MessageSearch.prompts(project, query) end
+
+    finish = fn rows, next ->
+      body =
+        Enum.map(rows, fn row ->
+          %{
+            "text" => preview(row.text, 2048),
+            "conversation_id" => row.conversation_id,
+            "at" => row.at,
+            "detail_ref" =>
+              if(row.bytes > 2048 and row.conversation_id == conversation,
+                do: %{"id" => row.message_id <> ":text", "total_bytes" => row.bytes}
+              )
+          }
+        end)
+
+      {accepted_result(id, [], %{"kind" => "history", "rows" => body}), next}
+    end
+
+    {{:job, %{key: :history_search, replace: true, work: work, finish: finish}}, state}
+  end
+
+  # Rewind to before a turn: the runs it started stop, the conversation part
+  # folds, the files come back (Rewind.run/3); the prompt and its images
+  # return to the composer (the images staged again, C2's staging).
+  defp execute(%{operation: :rewind_apply, params: params}, _scope, id, state) do
+    scope =
+      Map.fetch!(
+        %{"both" => :both, "conversation" => :conversation, "files" => :files},
+        params["scope"]
+      )
+
+    rewind(state, id, params["message_id"], scope)
+  end
+
+  # cli020 C15 (competitors-9): `!cmd`, in the project, no approval (the user
+  # typed it), one at a time per conversation.
+  defp execute(%{operation: :shell_run, params: %{"command" => text}}, _scope, id, state) do
+    if state.shell do
+      {refuse(id, {:busy, "A shell command is still running · Esc stops it."}, "", "shell.run"),
+       state}
+    else
+      ctx = %{
+        project_root: state.opts[:project_root],
+        project_id: state.opts[:project_id],
+        conversation_id: state.opts[:conversation_id],
+        settings: SwarmCode.Domain.Settings.get(),
+        run_id: nil
+      }
+
+      task = ShellEscape.start(state.task_supervisor, ctx, text)
+      shell_id = Ecto.UUID.generate()
+      shell = %{task: task, id: shell_id, command: text, at: System.os_time(:millisecond)}
+      {accepted(id, [shell_id]), refresh(%{state | shell: shell})}
+    end
+  end
+
+  defp execute(%{operation: :shell_stop}, _scope, id, state) do
+    case state.shell do
+      %{task: task} ->
+        ShellEscape.stop(state.task_supervisor, task)
+        {accepted(id, [state.opts[:conversation_id]]), finish_shell(state, "", :stopped)}
+
+      nil ->
+        {refuse(id, :nothing_to_stop, "", "shell.stop"), state}
+    end
+  end
+
+  # cli020 C14 (competitors-6): a slot for a pasted clipboard image. The
+  # terminal writes the PNG to the path; `attachment.attach_slot` stages it.
+  defp execute(%{operation: :attachment_slot}, _scope, id, state) do
+    case ClipboardInbox.open(state.clipboard_slots, System.monotonic_time(:millisecond)) do
+      {:ok, slot, slots} ->
+        {accepted_result(id, [], Map.put(slot, "kind", "slot")),
+         %{state | clipboard_slots: slots}}
+
+      {:error, reason} ->
+        {refuse(id, reason, "", "attachment.slot"), state}
+    end
+  end
+
+  # The token names an open slot of this session (the path is never the
+  # client's); the file is checked, stored as an attachment and staged exactly
+  # like `/attach`. The slot file is gone whatever the answer.
+  defp execute(%{operation: :attachment_attach, params: %{"token" => token}}, _scope, id, state) do
+    now = System.monotonic_time(:millisecond)
+
+    case ClipboardInbox.take(state.clipboard_slots, token, now) do
+      {:error, reason, slots} ->
+        {refuse(id, clipboard_refusal(reason), "", "attachment.attach_slot"),
+         %{state | clipboard_slots: slots}}
+
+      {:ok, _png, slots} when length(state.attachment_ids) >= 4 ->
+        {refuse(id, :limit, "", "attachment.attach_slot"), %{state | clipboard_slots: slots}}
+
+      {:ok, png, slots} ->
+        state = %{state | clipboard_slots: slots}
+
+        case Attachments.store(ClipboardInbox.name(), "image/png", Base.encode64(png)) do
+          {:ok, %{"id" => attachment_id} = stored} ->
+            :ok =
+              CommandLedger.stage_attachment(
+                state.opts[:project_id],
+                state.opts[:conversation_id],
+                attachment_id
+              )
+
+            attachment =
+              stored |> Map.take(["id", "name", "mime"]) |> Map.put("bytes", byte_size(png))
+
+            {accepted_result(id, [attachment_id], %{
+               "kind" => "attachment",
+               "attachment" => attachment
+             }), %{state | attachment_ids: Enum.uniq([attachment_id | state.attachment_ids])}}
+
+          {:error, _reason} ->
+            {refuse(id, clipboard_refusal(:invalid_argument), "", "attachment.attach_slot"),
+             state}
+        end
+    end
+  end
+
+  # cli020 C1: `queue.resume` lifts the pause a stop set and drains now.
+  defp execute(%{operation: :queue_resume}, _scope, id, state) do
+    state = state |> resume_pause() |> drain_queue() |> refresh()
+    {accepted(id, [state.opts[:conversation_id]]), state}
+  end
+
+  # cli020 C1: clear the queue or drop one prompt, in one IMMEDIATE
+  # transaction that compares the full-text revision the client saw (it holds
+  # only 2 KB copies, so it never sends the texts back).
+  defp execute(%{operation: :queue_edit, params: params}, _scope, id, state) do
+    conversation_id = state.opts[:conversation_id]
+
+    edit =
+      case params["action"] do
+        "clear" -> :clear
+        "drop" -> {:drop, params["position"]}
+      end
+
+    case edit_queue(conversation_id, params["revision"], edit) do
+      {:ok, conversation} ->
+        Events.broadcast(conversation_id, {:conversation_updated, conversation})
+
+        state = if conversation.queued in [nil, []], do: resume_pause(state), else: state
+        {accepted(id, [conversation_id]), refresh(state)}
+
+      {:error, reason} ->
+        {refuse(id, reason, "", "queue.edit"), state}
+    end
+  end
+
   defp execute(%{operation: operation, params: params}, scope, id, state)
        when operation in [:run_control, :run_steer, :approval_resolve] do
     state = refresh(state)
@@ -1100,6 +1423,12 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
       true ->
         answer = control(operation, params, run, state)
+        # cli020 C1 (bugs-17): a stop the user asked for pauses the queue.
+        state =
+          if operation == :run_control and params["action"] == "stop" and
+               (answer == :ok or match?({:ok, _}, answer)),
+             do: pause_queue(state, operation, params),
+             else: state
 
         case answer do
           :ok -> {accepted(id, [run.id]), state}
@@ -1166,8 +1495,12 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
           :ok ->
             consume_staged(state, state.attachment_ids)
 
-            {accepted(id, [target], notice("Steer", "Sent to the running turn."), "steered"),
-             refresh(%{state | attachment_ids: []})}
+            {accepted(
+               id,
+               [target],
+               removed_notice(state) || notice("Steer", "Sent to the running turn."),
+               "steered"
+             ), refresh(%{state | attachment_ids: []})}
 
           {:error, _not_running} ->
             # The turn finished between the check and the steer: the message
@@ -1217,23 +1550,29 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   end
 
   defp settle_send(answer, id, text, state) do
+    state =
+      if match?({:ok, run_id} when is_binary(run_id), answer) or
+           match?({:ok, %{type: :started}}, answer),
+         do: resume_pause(state),
+         else: state
+
     case answer do
       {:ok, run_id} when is_binary(run_id) ->
         consume_staged(state, state.attachment_ids)
 
-        {accepted(id, [run_id], nil, "started"),
+        {accepted(id, [run_id], removed_notice(state), "started"),
          refresh(%{state | research_ids: [], attachment_ids: []})}
 
       {:ok, %{type: :started, run_id: run_id}} ->
         consume_staged(state, state.attachment_ids)
 
-        {accepted(id, [run_id], nil, "started"),
+        {accepted(id, [run_id], removed_notice(state), "started"),
          refresh(%{state | research_ids: [], attachment_ids: []})}
 
       {:ok, %{type: :attached, research_id: research_id}} ->
         {accepted(id, []), %{state | research_ids: Enum.uniq([research_id | state.research_ids])}}
 
-      {:ok, %{type: :attachment_staged, attachment: %{"id" => attachment_id}}} ->
+      {:ok, %{type: :attachment_staged, attachment: %{"id" => attachment_id} = attachment}} ->
         :ok =
           CommandLedger.stage_attachment(
             state.opts[:project_id],
@@ -1241,18 +1580,44 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
             attachment_id
           )
 
-        {accepted(id, [attachment_id]),
-         %{state | attachment_ids: Enum.uniq([attachment_id | state.attachment_ids])}}
+        # cli020 C14: the answer names the staged image and its size (the
+        # chip shows it).
+        {accepted_result(id, [attachment_id], %{
+           "kind" => "attachment",
+           "attachment" => staged_body(attachment)
+         }), %{state | attachment_ids: Enum.uniq([attachment_id | state.attachment_ids])}}
+
+      # cli020 C16: /undo rewinds the newest turn here (the backend stages
+      # the prompt's images again).
+      {:ok, %{type: :undo, message_id: message_id}} ->
+        rewind(state, id, message_id, :both)
+
+      # cli020 C11: /rename.
+      {:ok, %{type: :renamed, title: title}} ->
+        {accepted(
+           id,
+           [state.opts[:conversation_id]],
+           notice("Conversation", "Renamed “#{title}”.")
+         ), refresh(state)}
 
       {:ok, %{type: :updated, mode: mode}} ->
         {accepted(id, [state.opts[:conversation_id]], notice_feedback(mode)), refresh(state)}
 
-      {:ok, %{type: type}} when type in [:updated, :stopped, :controlled, :saved] ->
+      {:ok, %{type: :stopped}} ->
+        state = pause_queue(state, :run_control, %{"action" => "stop"})
+        {accepted(id, [state.opts[:conversation_id]]), refresh(state)}
+
+      {:ok, %{type: type}} when type in [:updated, :controlled, :saved] ->
         {accepted(id, [state.opts[:conversation_id]]), refresh(state)}
 
       {:ok, %{type: :select, subject: :goal, goal: goal}} ->
         feedback = goal_feedback(state.opts[:conversation_id], goal)
         {accepted(id, [], feedback), state}
+
+      # cli020 C8: /search answers rows (and the same lines as text for
+      # `--plain`); Enter on a row resumes that conversation.
+      {:ok, %{type: :select, subject: :search, options: rows} = answer} ->
+        {accepted(id, [], search_feedback(answer[:query] || "", rows)), state}
 
       {:ok, %{type: :select, subject: subject}} when subject in [:rewind, :research] ->
         {accepted(id, [], navigation_feedback(subject)), state}
@@ -1269,6 +1634,10 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       {:ok, %{type: :navigate, destination: destination}}
       when destination in [:conversations, :changes] ->
         {accepted(id, [], navigation_feedback(destination)), state}
+
+      # cli020 C9/C18: a report with rows (/agents, /cost).
+      {:ok, %{type: :report, title: title, text: text, subject: subject, rows: rows}} ->
+        {accepted(id, [], rows_feedback(title, text, subject, rows)), state}
 
       {:ok, %{type: :report, title: title, text: text}} ->
         {accepted(id, [], report_feedback(title, text)), state}
@@ -1346,38 +1715,157 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   defp drain_queue(state) do
     conversation_id = state.opts[:conversation_id]
 
-    if turn_runs(conversation_id) != [] do
-      watch_queue(state)
-    else
-      case Conversations.pop_queued(conversation_id) do
-        {:ok, text, conversation} ->
-          case start_queued(conversation, text) do
-            {:ok, _} ->
-              drain_queue(refresh(%{state | queue_retries: 0}))
+    cond do
+      MapSet.member?(state.queue_paused, conversation_id) ->
+        state
 
-            {:error, reason} when reason in [:database_busy, :operation_failed] ->
-              Conversations.set_queued(conversation, [text | conversation.queued || []])
-              retry_queue(state)
+      turn_runs(conversation_id) != [] ->
+        watch_queue(state)
 
-            {:error, reason} ->
-              # It can never start (nothing to compact, an unknown command):
-              # it leaves the queue, and the toast says why.
-              {_code, words} = refusal(reason, text)
-
-              state
-              |> toast("error", "Queue", "A queued message did not start: " <> words, nil)
-              |> refresh()
-              |> drain_queue()
-          end
-
-        {:error, _busy} ->
-          retry_queue(state)
-
-        _empty ->
-          state
-      end
+      true ->
+        pop_and_start(state, conversation_id)
     end
   end
+
+  defp pop_and_start(state, conversation_id) do
+    case Conversations.pop_queued(conversation_id) do
+      {:ok, text, conversation} ->
+        case start_queued(conversation, text) do
+          {:ok, _} ->
+            drain_queue(refresh(%{state | queue_retries: 0}))
+
+          {:error, reason} when reason in [:database_busy, :operation_failed] ->
+            Conversations.set_queued(conversation, [text | conversation.queued || []])
+            retry_queue(state)
+
+          {:error, reason} ->
+            # It can never start (nothing to compact, an unknown command):
+            # it leaves the queue, and the toast says why.
+            {_code, words} = refusal(reason, text)
+
+            state
+            |> toast("error", "Queue", "A queued message did not start: " <> words, nil)
+            |> refresh()
+            |> drain_queue()
+        end
+
+      {:error, _busy} ->
+        retry_queue(state)
+
+      _empty ->
+        state
+    end
+  end
+
+  defp retry_run(state, scope, id, run) do
+    row = Conversations.get_run(run.id)
+
+    case launch_text(state.opts[:conversation_id], run.id) do
+      text when is_binary(text) ->
+        send_params = %{
+          "action" => "send",
+          "text" => text,
+          "target" => %{"kind" => "main", "id" => nil},
+          "attachment_refs" => []
+        }
+
+        execute(%{operation: :dispatch_send, params: send_params}, scope, id, state)
+
+      nil when row.kind == "swarm" ->
+        conversation = Conversations.get!(state.opts[:conversation_id])
+
+        settle_send(
+          Engine.start_swarm(SessionConfiguration.overlay(conversation), row.prompt || ""),
+          id,
+          row.prompt || "",
+          state
+        )
+
+      nil ->
+        start_turn(state, id, %{"text" => row.prompt || "", "attachment_refs" => []})
+    end
+  end
+
+  # The user message that launched `run_id` (not a steer, not a side reply).
+  defp launch_text(conversation_id, run_id) do
+    alias SwarmCode.Domain.Conversations.Message
+
+    Repo.one(
+      from(m in Message,
+        where:
+          m.conversation_id == ^conversation_id and m.run_id == ^run_id and m.role == "user" and
+            is_nil(m.reply_to_run_id),
+        order_by: [asc: m.position],
+        limit: 1,
+        select: m.content
+      )
+    )
+    |> case do
+      text when is_binary(text) -> if String.trim(text) == "", do: nil, else: text
+      _ -> nil
+    end
+  end
+
+  @doc false
+  # cli020 C1: the queue's revision, the first 16 hex of sha256 over its full
+  # texts joined by the unit separator.
+  def queue_revision(texts) when is_list(texts),
+    do:
+      :crypto.hash(:sha256, Enum.join(texts, "\x1f"))
+      |> Base.encode16(case: :lower)
+      |> binary_part(0, 16)
+
+  defp edit_queue(conversation_id, revision, edit) do
+    alias SwarmCode.Domain.Conversations.Conversation
+
+    outcome =
+      Repo.retry(:queue_edit, fn ->
+        Repo.transaction(
+          fn ->
+            with %Conversation{} = conversation <- Repo.get(Conversation, conversation_id),
+                 queued = conversation.queued || [],
+                 true <- queue_revision(queued) == revision || :stale,
+                 {:ok, rest} <- queue_after(queued, edit) do
+              conversation |> Conversation.changeset(%{queued: rest}) |> Repo.update!()
+            else
+              nil -> Repo.rollback(:not_found)
+              :stale -> Repo.rollback({:stale, "The queue changed · look again."})
+              {:error, reason} -> Repo.rollback(reason)
+            end
+          end,
+          mode: :immediate
+        )
+      end)
+
+    case outcome do
+      {:ok, conversation} -> {:ok, conversation}
+      {:error, {:stale, _} = reason} -> {:error, reason}
+      {:error, reason} when reason in [:not_found, :invalid_argument] -> {:error, reason}
+      _ -> {:error, :database_busy}
+    end
+  end
+
+  defp queue_after(_queued, :clear), do: {:ok, []}
+
+  defp queue_after(queued, {:drop, n}) when n <= length(queued),
+    do: {:ok, List.delete_at(queued, n - 1)}
+
+  defp queue_after(_queued, _edit), do: {:error, :invalid_argument}
+
+  # A stop of a turn while prompts wait pauses them; with nothing queued
+  # there is nothing to hold back.
+  defp pause_queue(state, :run_control, %{"action" => "stop"}) do
+    conversation_id = state.opts[:conversation_id]
+
+    if Conversations.queued?(conversation_id),
+      do: %{state | queue_paused: MapSet.put(state.queue_paused, conversation_id)},
+      else: state
+  end
+
+  defp pause_queue(state, _operation, _params), do: state
+
+  defp resume_pause(state),
+    do: %{state | queue_paused: MapSet.delete(state.queue_paused, state.opts[:conversation_id])}
 
   defp start_queued(conversation, text) do
     if command_name(text) != nil do
@@ -1463,6 +1951,9 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
           facts_failed: MapSet.new(),
           settings_session: SettingsDeltas.session_values(Conversations.get(id))
       })
+      # cli020 C1 (bugs-7): its queue waits behind its own live turn, or
+      # drains now when none runs.
+      |> tap(fn _ -> send(self(), {:drain_queue, id}) end)
     end
   end
 
@@ -1492,7 +1983,9 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
           "live" => MapSet.member?(live, row.id),
           "waiting" => Map.get(waiting, row.id, 0),
           "unread" => unread?(row.last_seen_at, finished),
-          "current" => row.id == current
+          "current" => row.id == current,
+          # cli020 C19: what the conversation was last asked.
+          "last_prompt" => Map.get(row, :last_prompt)
         }
       end)
 
@@ -1891,6 +2384,305 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
   defp restore_staged_attachment(_response, state), do: state
 
+  # cli020 C2 (bugs-4): a staged image whose file is gone leaves the staging
+  # before a send (the send goes out, and says so) instead of refusing it.
+  defp prune_staged(state) do
+    {present, gone} =
+      Enum.split_with(state.attachment_ids, &match?({:ok, _, _}, Attachments.path(&1)))
+
+    if gone != [], do: consume_staged(state, gone)
+    %{state | attachment_ids: present, staged_removed: gone != []}
+  end
+
+  defp removed_notice(%{staged_removed: true}),
+    do: notice("Attachments", "A staged image was removed before sending.")
+
+  defp removed_notice(_state), do: nil
+
+  defp staged_body(%{"id" => id} = attachment) do
+    bytes =
+      case Attachments.path(id) do
+        {:ok, path, _mime} ->
+          case File.stat(path) do
+            {:ok, %File.Stat{size: size}} -> size
+            _ -> nil
+          end
+
+        _ ->
+          nil
+      end
+
+    %{
+      "id" => id,
+      "name" => preview(to_string(attachment["name"] || "image"), 256),
+      "mime" => to_string(attachment["mime"] || ""),
+      "bytes" => bytes
+    }
+  end
+
+  # cli020 C15: the shell message the next turn reads. The finisher flips the
+  # role to "shell" once F3's role is synced (§8.1).
+  defp shell_message_role, do: "swarm"
+
+  defp finish_shell(%{shell: nil} = state, _output, _exit), do: state
+
+  defp finish_shell(%{shell: shell} = state, output, exit) do
+    content = ShellEscape.content(shell.command, output, exit)
+
+    case Conversations.create_message(%{
+           conversation_id: state.opts[:conversation_id],
+           role: shell_message_role(),
+           content: content
+         }) do
+      {:ok, _message} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning(
+          "cli shell: the shell message was not saved: #{inspect(error_tag(reason))}"
+        )
+    end
+
+    refresh(%{state | shell: nil})
+  end
+
+  defp error_tag(%Ecto.Changeset{}), do: :invalid
+  defp error_tag(reason) when is_atom(reason), do: reason
+  defp error_tag(_), do: :error
+
+  # The projected shell items: the running one, then the newest saved ones.
+  defp shell_bodies(state) do
+    conversation = state.opts[:conversation_id]
+
+    saved =
+      conversation
+      |> PersistedProjection.shell_messages(shell_message_role(), 50)
+      |> Enum.flat_map(fn row ->
+        case ShellEscape.parse(row.head, row.tail, row.bytes) do
+          nil ->
+            []
+
+          parsed ->
+            [
+              shell_body(
+                conversation,
+                row.id,
+                parsed,
+                ms(row.inserted_at),
+                stamp(row.updated_at),
+                row.bytes
+              )
+            ]
+        end
+      end)
+
+    running =
+      case state.shell do
+        %{id: id, command: command, at: at} ->
+          [
+            shell_body(
+              conversation,
+              id,
+              %{command: command, output: "", state: :running, exit_code: nil},
+              at,
+              state.revision,
+              0
+            )
+          ]
+
+        nil ->
+          []
+      end
+
+    Map.new(running ++ saved, &{&1["id"], &1})
+  rescue
+    _ -> state.shells
+  end
+
+  defp shell_body(conversation, id, parsed, at, revision, bytes) do
+    output = preview(parsed.output, 2048)
+
+    %{
+      "id" => id,
+      "conversation_id" => conversation,
+      "command" => preview(parsed.command, 4096),
+      "output" => output,
+      "state" => Atom.to_string(parsed.state),
+      "exit_code" => parsed.exit_code,
+      "at" => at || 0,
+      "revision" => revision,
+      "detail_ref" =>
+        if(byte_size(parsed.output) > byte_size(output) or bytes > 8192,
+          do: %{"id" => id <> ":text", "total_bytes" => bytes}
+        )
+    }
+  end
+
+  defp rewind(state, id, message_id, scope) do
+    conversation = Conversations.get!(state.opts[:conversation_id])
+
+    case Rewind.run(conversation, message_id, scope) do
+      {:ok, rewound} ->
+        {staged, state} = restage(state, rewound.attachments)
+
+        result = %{
+          "kind" => "rewound",
+          "text" => rewound.text,
+          "attachments" => staged,
+          "restored" => rewound.restored,
+          "skipped" => Enum.take(rewound.skipped, 50)
+        }
+
+        {accepted_result(id, [conversation.id], result), refresh(state)}
+
+      {:error, reason} ->
+        {refuse(id, rewind_refusal(reason), "", "rewind.apply"), refresh(state)}
+    end
+  end
+
+  defp rewind_refusal(:busy),
+    do: {:busy, "A compaction or a stop is still running · rewind when it ends."}
+
+  defp rewind_refusal(:database_busy),
+    do: {:database_busy, "The database is busy — rewind again."}
+
+  defp rewind_refusal({:restore_failed, words, :superseded}) when is_binary(words),
+    do: {:restore_failed, words <> " The conversation was rewound; the files were not."}
+
+  defp rewind_refusal(words) when is_binary(words), do: {:restore_failed, words}
+  defp rewind_refusal(reason), do: reason
+
+  # The rewound prompt's images, if still on disk, ride with the resend.
+  defp restage(state, attachments) do
+    present =
+      attachments
+      |> Enum.filter(&match?(%{"id" => id} when is_binary(id), &1))
+      |> Enum.filter(&match?({:ok, _, _}, Attachments.path(&1["id"])))
+      |> Enum.take(4 - min(length(state.attachment_ids), 4))
+
+    Enum.each(present, fn %{"id" => attachment_id} ->
+      CommandLedger.stage_attachment(
+        state.opts[:project_id],
+        state.opts[:conversation_id],
+        attachment_id
+      )
+    end)
+
+    ids = Enum.map(present, & &1["id"])
+
+    {Enum.map(present, &staged_body/1),
+     %{state | attachment_ids: Enum.uniq(state.attachment_ids ++ ids)}}
+  end
+
+  defp turn_body(turn),
+    do: %{
+      "message_id" => turn.message_id,
+      "position" => turn.position || 0,
+      "turn" => turn.turn,
+      "prompt" => preview(turn.prompt, 512),
+      "at" => turn.at || 0,
+      "run_id" => turn.run_id,
+      "files" => turn.files
+    }
+
+  # cli020 C22 (competitors-20): one Git read at a time. A run's end reads at
+  # once; file changes at most every 10 s (a later one waits for the gap).
+  @git_gap_ms 10_000
+  @git_bound_ms 2_000
+
+  defp git_facts(%{git: %{task: %Task{}} = git} = state, _reason),
+    do: %{state | git: %{git | pending: true}}
+
+  defp git_facts(%{git: git} = state, reason) do
+    now = System.monotonic_time(:millisecond)
+    since = if git.last_at, do: now - git.last_at, else: @git_gap_ms
+
+    cond do
+      reason == :files and since < @git_gap_ms ->
+        if git.due,
+          do: state,
+          else: %{
+            state
+            | git: %{
+                git
+                | due: Process.send_after(self(), {:git_facts, :due}, @git_gap_ms - since)
+              }
+          }
+
+      true ->
+        if git.due, do: Process.cancel_timer(git.due)
+        root = state.opts[:project_root]
+
+        task =
+          Task.Supervisor.async_nolink(state.task_supervisor, fn ->
+            case SwarmCode.Domain.Git.current_branch(root) do
+              branch when is_binary(branch) and branch != "" ->
+                {:git, branch, length(SwarmCode.Domain.Git.status(root))}
+
+              _ ->
+                {:git, nil, nil}
+            end
+          end)
+
+        timer = Process.send_after(self(), {:git_timeout, task.ref}, @git_bound_ms)
+        %{state | git: %{git | task: task, timer: timer, due: nil, pending: false}}
+    end
+  rescue
+    _ -> state
+  end
+
+  defp git_done(%{git: git} = state, branch, dirty) do
+    if git.timer, do: Process.cancel_timer(git.timer)
+
+    git = %{
+      git
+      | branch: if(is_binary(branch), do: preview(branch, 80)),
+        dirty: dirty,
+        task: nil,
+        timer: nil,
+        last_at: System.monotonic_time(:millisecond)
+    }
+
+    state = %{state | git: git}
+    state = if git.pending, do: git_facts(state, :run_done), else: state
+
+    # Only the metadata changes: no reload of the projection.
+    case state.metadata do
+      %{} = meta ->
+        facts = %{"git_branch" => git.branch, "git_dirty" => git.dirty}
+
+        if Map.take(meta, Map.keys(facts)) == facts,
+          do: state,
+          else:
+            broadcast_metadata(%{
+              state
+              | metadata: Map.merge(meta, facts),
+                revision: state.revision + 1
+            })
+
+      _ ->
+        state
+    end
+  end
+
+  defp clipboard_refusal(:invalid_argument),
+    do: {:invalid_argument, "That is not a PNG image pasted here; paste it again."}
+
+  defp clipboard_refusal(reason), do: reason
+
+  defp start_ledger_prune(supervisor, started_at) do
+    # cli020 C14: the same owned start-up work removes clipboard inbox files
+    # an earlier session left behind (older than an hour).
+    Task.Supervisor.async_nolink(supervisor, fn ->
+      ClipboardInbox.sweep(started_at)
+      CommandLedger.prune(started_at, started_at)
+    end)
+  rescue
+    _ -> nil
+  catch
+    :exit, _ -> nil
+  end
+
   defp consume_staged(state, attachment_ids) when is_list(attachment_ids) do
     CommandLedger.consume_attachments(
       state.opts[:project_id],
@@ -1994,6 +2786,12 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
   defp error_code(:unknown_outcome), do: :unknown_outcome
   defp error_code({:provider_required, _words}), do: :not_allowed
+  defp error_code({:stale, _words}), do: :stale_revision
+  defp error_code({:busy, _words}), do: :not_allowed
+
+  defp error_code({reason, words}) when is_atom(reason) and is_binary(words),
+    do: error_code(reason)
+
   defp error_code(:not_configured), do: :source_unavailable
   # The client's closed error enum has no "not found": a model no provider
   # lists is an argument the request cannot carry, which is what it says.
@@ -2258,9 +3056,84 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       "result_bytes" => r.result_bytes || 0,
       "files" => op_files(type, r.input)
     }
+    |> Map.merge(background_fields(op_facts[:background_states][r.id]))
   end
 
   defp tool_call(_, _), do: nil
+
+  # An update_plan input read back: at most 30 items of 200 bytes, each a
+  # text and a status; anything else is no plan.
+  @plan_statuses %{"pending" => "pending", "in_progress" => "in_progress", "done" => "done"}
+
+  defp plan_items(json) when is_binary(json) do
+    with {:ok, %{"items" => [_ | _] = items}} <- Jason.decode(json) do
+      items
+      |> Enum.take(30)
+      |> Enum.flat_map(fn
+        %{"text" => text, "status" => status} when is_binary(text) and text != "" ->
+          case @plan_statuses[status] do
+            nil -> []
+            status -> [%{"text" => preview(text, 200), "status" => status}]
+          end
+
+        _ ->
+          []
+      end)
+      |> case do
+        [] -> nil
+        items -> items
+      end
+    else
+      _ -> nil
+    end
+  end
+
+  defp plan_items(_json), do: nil
+
+  defp background_fields(nil), do: %{}
+
+  defp background_fields(text) do
+    exit_code =
+      case Integer.parse(String.replace_prefix(text, "exit ", "")) do
+        {code, ""} when code >= 0 -> code
+        _ -> nil
+      end
+
+    %{"background" => true, "background_state" => text, "exit_code" => exit_code}
+  end
+
+  # cli020 C10 (ux-live-12): a `run_command` that yielded to the background
+  # (its op detail is `running in the background (<pid>)`, `run_command.ex`)
+  # says how it ended, from the synced `Tools.BackgroundProcs` book: `still
+  # running`, `exit N`, or `ended (exit not recorded)` when the shell never
+  # reported one or the book has no row (a new service: the process ended or
+  # was reaped at quit). An exit once seen is kept while the item is shown.
+  @background_detail ~r/\Arunning in the background \((\d+)\)\z/
+
+  defp background_states(records, state) do
+    Enum.reduce(records, {%{}, %{}}, fn r, {states, exits} ->
+      with "op" <- Map.get(r, :source_kind),
+           "run_command" <- Map.get(r, :op_type),
+           detail when is_binary(detail) <- r.detail,
+           [_, pid] <- Regex.run(@background_detail, detail) do
+        text = background_state(r.run_id, String.to_integer(pid), state.background_exits[r.id])
+        exits = if String.starts_with?(text, "exit "), do: Map.put(exits, r.id, text), else: exits
+        {Map.put(states, r.id, text), exits}
+      else
+        _ -> {states, exits}
+      end
+    end)
+  end
+
+  defp background_state(run_id, os_pid, seen) do
+    case :ets.lookup(SwarmCode.Domain.Tools.BackgroundProcs, {run_id, os_pid}) do
+      [{_key, _command, _at, _janitor, nil, _conv}] -> "still running"
+      [{_key, _command, _at, _janitor, code, _conv}] when is_integer(code) -> "exit #{code}"
+      _ -> seen || "ended (exit not recorded)"
+    end
+  rescue
+    ArgumentError -> seen || "ended (exit not recorded)"
+  end
 
   # pass70 C8: per checkpoint of a finished run, what `FeatureCatalog.change_diff/2`
   # says it changed (counts, file state, the diff's size), kept for the
@@ -2676,6 +3549,16 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         else: %{state | change_facts: facts}
 
     op_facts = op_diff_facts(checkpoints, facts)
+
+    # cli020 C23: the runs' live plans (a partial reload keeps what it read).
+    plans =
+      case mode do
+        {:partial, inputs} -> Map.get(inputs, :plans, %{})
+        _ -> PersistedProjection.plans(conv, ids)
+      end
+
+    {background_states, background_exits} = background_states(records, state)
+    op_facts = Map.put(op_facts, :background_states, background_states)
     panel = panel_inputs(state, rows)
 
     runs =
@@ -2712,6 +3595,10 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
           consensus: row.consensus == true,
           error: run_error(row, ns),
           stop: stop_facts(row.status, Map.get(row, :error_kind)),
+          # cli020 C5 (ux-live-3): the detail of an llm op this run is retrying.
+          retry_detail: retry_detail(ns, ops),
+          # cli020 C23: the lead's checklist (`update_plan`, F11), or nil.
+          plan: plan_items(plans[row.id]),
           panel: %{}
         }
 
@@ -2762,6 +3649,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
           cond do
             approval != nil -> :waiting_approval
             interactions != [] -> :waiting_question
+            run.retry_detail != nil and run.status == :running -> :retrying
             true -> run.status
           end
 
@@ -2774,7 +3662,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         if run.status in @terminal, do: [], else: Enum.map(run.records, & &1.id)
       end)
 
-    metadata = workspace_metadata(Conversations.get!(state.opts[:conversation_id]))
+    metadata = workspace_metadata(Conversations.get!(state.opts[:conversation_id]), state)
     revision = Enum.max([state.revision | Enum.map(Map.values(runs), & &1.revision)])
     revision = if metadata != state.metadata, do: revision + 1, else: revision
 
@@ -2811,6 +3699,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
             else: state.agent_status
           ),
         background: background,
+        background_exits: if(reload?, do: background_exits, else: state.background_exits),
+        shells: if(reload?, do: shell_bodies(state), else: state.shells),
         inputs:
           if(reload?,
             do: %{
@@ -2820,6 +3710,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
               ops: ops,
               checkpoints: checkpoints,
               checkpoint_counts: checkpoint_counts,
+              plans: plans,
               panel_ops: panel.ops
             },
             else: state.inputs
@@ -3103,6 +3994,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   defp bound(_, _), do: nil
 
   defp publish_changes(old, state) do
+    state = git_triggers(old, state)
     state = if old.metadata != state.metadata, do: broadcast_metadata(state), else: state
     state = publish_entities(old, state)
 
@@ -3205,11 +4097,53 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
           else: broadcast(acc, entity_delta("background_upsert", body["run_id"], id, body, acc))
       end)
 
-    Enum.reduce(Map.keys(old.background) -- Map.keys(state.background), state, fn id, acc ->
-      gone = old.background[id]
-      broadcast(acc, entity_delta("background_remove", gone["run_id"], id, nil, acc))
+    state =
+      Enum.reduce(Map.keys(old.background) -- Map.keys(state.background), state, fn id, acc ->
+        gone = old.background[id]
+        broadcast(acc, entity_delta("background_remove", gone["run_id"], id, nil, acc))
+      end)
+
+    # cli020 C15: the conversation's shell items (no run).
+    state =
+      Enum.reduce(state.shells, state, fn {id, body}, acc ->
+        if old.shells[id] == body,
+          do: acc,
+          else: broadcast(acc, shell_delta("shell_upsert", id, body, acc))
+      end)
+
+    Enum.reduce(Map.keys(old.shells) -- Map.keys(state.shells), state, fn id, acc ->
+      broadcast(acc, shell_delta("shell_remove", id, nil, acc))
     end)
   end
+
+  # cli020 C22: a run that ended, or files that changed, make the Git facts
+  # due (read by the owned task, never here).
+  defp git_triggers(old, state) do
+    ended? =
+      Enum.any?(state.runs, fn {id, run} ->
+        run.status in @terminal and match?(%{status: s} when s not in @terminal, old.runs[id])
+      end)
+
+    cond do
+      ended? -> tap(state, fn _ -> send(self(), {:git_facts, :run_done}) end)
+      old.changes != state.changes -> tap(state, fn _ -> send(self(), {:git_facts, :files}) end)
+      true -> state
+    end
+  end
+
+  defp shell_delta(kind, id, body, state),
+    do: %{
+      "kind" => kind,
+      "entity_id" => id,
+      "run_id" => nil,
+      "conversation_id" => state.opts[:conversation_id],
+      "channel" => nil,
+      "attempt_id" => nil,
+      "text" => nil,
+      "body" => body,
+      "sequence" => 0,
+      "revision" => if(is_map(body), do: body["revision"], else: state.revision)
+    }
 
   defp entity_delta(kind, run_id, entity, body, state) do
     run = state.runs[run_id] || %{id: run_id, revision: state.revision}
@@ -3359,6 +4293,18 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     %{run | agents: agents, panel: facts}
   end
 
+  # cli020 C5: the newest open op of an agent of this run that the provider
+  # is being asked again for (`Operation` writes `retrying n/N · reason`).
+  defp retry_detail(agents, ops) do
+    Enum.find_value(agents, fn agent ->
+      case ops[agent.id] do
+        %{status: "retrying", detail: detail} when is_binary(detail) and detail != "" -> detail
+        %{status: "retrying"} -> "retrying"
+        _ -> nil
+      end
+    end)
+  end
+
   defp positive(n) when is_integer(n) and n > 0, do: n
   defp positive(_), do: nil
 
@@ -3390,7 +4336,9 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         "started_at" => run.started_at,
         "finished_at" => run.finished_at,
         "consensus" => run.consensus,
-        "error" => run.error
+        "error" => run.error,
+        "retry_detail" => if(run.status == :retrying, do: run.retry_detail),
+        "plan" => Map.get(run, :plan)
       }
       |> Map.merge(run.stop)
       |> Map.merge(Map.get(run, :panel, %{}))
@@ -3456,7 +4404,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
                 "toast",
                 "rate_limit",
                 "settings_update",
-                "settings_task"
+                "settings_task",
+                "desktop_running"
               ]
 
             _other when settings_delta? ->
@@ -3466,7 +4415,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
               delta["kind"] == "activity_upsert"
 
             "workspace" ->
-              delta["kind"] not in ["activity_upsert", "toast", "rate_limit"]
+              delta["kind"] not in ["activity_upsert", "toast", "rate_limit", "desktop_running"]
 
             # pass70 C6: background commands belong to the workspace and the
             # run inspector, not to the transcript or pending windows.
@@ -3475,7 +4424,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
                 "activity_upsert",
                 "workspace_metadata",
                 "toast",
-                "rate_limit"
+                "rate_limit",
+                "desktop_running"
               ]
 
             _ ->
@@ -3485,7 +4435,10 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
                 "toast",
                 "rate_limit",
                 "background_upsert",
-                "background_remove"
+                "background_remove",
+                "desktop_running",
+                "shell_upsert",
+                "shell_remove"
               ]
           end
 
@@ -3711,7 +4664,12 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
                 "changes" => changes_for(runs, state),
                 "verdicts" => verdicts_for(runs, state),
                 "agents" => Enum.flat_map(runs, & &1.agents) |> Enum.take(limit),
-                "background" => background_for(runs, state)
+                "background" => background_for(runs, state),
+                "shells" =>
+                  state.shells
+                  |> Map.values()
+                  |> Enum.sort_by(&{&1["at"], &1["id"]})
+                  |> Enum.take(-50)
               })
               |> Map.merge(state.metadata)
 
@@ -3747,7 +4705,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   defp workspace_mode(%{mode: "plan"}), do: "plan"
   defp workspace_mode(_), do: "build"
 
-  defp workspace_metadata(conversation) do
+  defp workspace_metadata(conversation, state) do
     # The status line names the model this session runs (a `--model` override).
     conversation = SessionConfiguration.overlay(conversation)
     chat = SwarmCode.Domain.Providers.effective_model(conversation, :chat)
@@ -3777,7 +4735,22 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       # pass73 T3/T8: and what they say, so the terminal can show where each
       # send went (bounded: the oldest 20, 2 KB each).
       "queued_texts" =>
-        conversation.queued |> List.wrap() |> Enum.take(20) |> Enum.map(&preview(&1, 2048))
+        conversation.queued |> List.wrap() |> Enum.take(20) |> Enum.map(&preview(&1, 2048)),
+      # cli020 C1: the count again under its 0.2.0 name, whether a stop paused
+      # the queue, and the revision `queue.edit` compares.
+      "queued_count" => length(conversation.queued || []),
+      "queue_paused" => MapSet.member?(state.queue_paused, conversation.id),
+      "queue_revision" => queue_revision(conversation.queued || []),
+      # cli020 C4: the ncode app is open on the same database.
+      "desktop_running" => Map.get(state, :desktop_running, false),
+      # cli020 C17: the levels the dispatcher accepts for this conversation
+      # (`CommandDispatcher.efforts/2`), and who checks mission work.
+      "effort_levels" => effort_levels(conversation, :chat),
+      "swarm_effort_levels" => effort_levels(conversation, :swarm),
+      "validator_model" => effective_model_name(conversation, :validator),
+      # cli020 C22: the status line's Git facts.
+      "git_branch" => state |> Map.get(:git, %{}) |> Map.get(:branch),
+      "git_dirty" => state |> Map.get(:git, %{}) |> Map.get(:dirty)
     }
   end
 
@@ -3830,6 +4803,13 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     end)
     |> Enum.filter(&(&1["model"] != ""))
     |> Enum.take(@max_models)
+  end
+
+  defp effort_levels(conversation, kind) do
+    conversation
+    |> CommandDispatcher.efforts(kind)
+    |> Enum.take(16)
+    |> Enum.map(&preview(to_string(&1), 32))
   end
 
   defp effective_model_name(conversation, role) do
@@ -4132,6 +5112,13 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
   defp reject(id, code), do: outcome(id, "rejected", [], error(code))
 
+  # cli020 C14/C16/C20: an accepted conversation command with its answer
+  # (`Outcome.result`); the key is absent from every other outcome.
+  defp accepted_result(id, ids, result, feedback \\ nil) do
+    {:ok, %{"value" => value} = response} = accepted(id, ids, feedback)
+    {:ok, %{response | "value" => Map.put(value, "result", result)}}
+  end
+
   # pass73 T3/T8: a refused command says why and what to do, in words. The
   # error keeps the closed wire code; `reason` carries the service's own
   # reason and the sentence the terminal shows. cli.log names the reason.
@@ -4191,7 +5178,13 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     decision_not_offered: "That answer is not offered for this request.",
     run_finished: "That run has already finished.",
     steer_finished: "That run has finished; send the message in the chat to start a new turn.",
-    finished: "That run has already finished."
+    finished: "That run has already finished.",
+    # cli020 C6.
+    not_retryable: "Only a failed or stopped run can be retried.",
+    nothing_to_undo: "Nothing to undo: no turn of this conversation is left to rewind.",
+    # cli020 C14: a pasted clipboard image.
+    too_large: "The image is over #{div(Attachments.max_bytes(), 1_000_000)} MB.",
+    limit: "At most 4 images per message."
   }
 
   defp refusal(reason, text) when is_atom(reason) do
@@ -4202,6 +5195,15 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
   defp refusal({:provider_required, words}, _text) when is_binary(words),
     do: {"provider_required", words}
+
+  # cli020: a compare-and-set lost (the queue, a run's revision), in words.
+  defp refusal({:stale, words}, _text) when is_binary(words), do: {"stale", words}
+  # cli020 C11/C15: something still running holds the request, in words.
+  defp refusal({:busy, words}, _text) when is_binary(words), do: {"busy", words}
+
+  # cli020: any other closed reason with its own sentence.
+  defp refusal({reason, words}, _text) when is_atom(reason) and is_binary(words),
+    do: {Atom.to_string(reason), words}
 
   defp refusal(_reason, text), do: refusal(:operation_failed, text)
 
@@ -4236,6 +5238,50 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       "text" => "",
       "conversation_id" => nil
     }
+
+  # cli020 C8/C9/C18: a report with rows (`Feedback.rows`, ≤ 50).
+  defp rows_feedback(title, text, subject, rows),
+    do:
+      Map.merge(report_feedback(title, text), %{
+        "subject" => Atom.to_string(subject),
+        "rows" => rows |> Enum.take(50) |> Enum.map(&feedback_row/1)
+      })
+
+  @row_keys ~w(conversation_id title snippet at name source model description runs tokens_in tokens_out cost_usd)a
+  @row_text %{title: 256, snippet: 512, name: 200, source: 64, model: 200, description: 512}
+
+  defp feedback_row(row) do
+    Map.new(@row_keys, fn key ->
+      value = Map.get(row, key)
+
+      value =
+        case @row_text[key] do
+          nil -> value
+          max when is_binary(value) -> preview(value, max)
+          _ -> value
+        end
+
+      {Atom.to_string(key), value}
+    end)
+  end
+
+  defp search_feedback(query, []),
+    do:
+      rows_feedback(
+        "Search: " <> query,
+        "Nothing in this project's conversations matches “#{query}”.",
+        :search,
+        []
+      )
+
+  defp search_feedback(query, rows) do
+    text =
+      Enum.map_join(rows, "\n\n", fn row ->
+        "**#{row.title}**\n#{row.snippet}\n/resume " <> String.slice(row.conversation_id, 0, 8)
+      end)
+
+    rows_feedback("Search: " <> query, text, :search, rows)
+  end
 
   defp report_feedback(title, text),
     do: %{

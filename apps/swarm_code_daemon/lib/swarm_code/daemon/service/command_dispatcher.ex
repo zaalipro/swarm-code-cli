@@ -11,7 +11,6 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
   alias SwarmCode.Domain.{
     Agents,
     AtomicFile,
-    Checkpoints,
     Conversations,
     Engine,
     Attachments,
@@ -24,6 +23,7 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
   }
 
   alias SwarmCode.Domain.Conversations.{Conversation, Export, Run}
+  alias SwarmCode.Daemon.Service.Rewind
   import Ecto.Query, only: [from: 2]
 
   @allowed [:custom, :workflows, :efforts, :swarm_efforts, :attachments, :research_ids]
@@ -49,6 +49,7 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
     :budget_too_low,
     :nothing_to_compact,
     :nothing_to_stop,
+    :nothing_to_undo,
     :not_attachable,
     :conversation_not_found,
     :invalid_request,
@@ -72,6 +73,19 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
 
       true ->
         dispatch_known(conversation_id, text, opts)
+    end
+  end
+
+  @doc false
+  # cli020 lane C: runs a command map as `Commands.parse/2` returns it. The
+  # tests of the actions E3's parser adds (/rename, /delete, /fork, /undo,
+  # bare /effort) call this until that parser lands.
+  @spec execute_parsed(String.t(), map(), keyword()) :: {:ok, map()} | {:error, term()}
+  def execute_parsed(conversation_id, %{action: action} = command, opts \\ [])
+      when is_binary(conversation_id) and is_atom(action) do
+    case Conversations.get(conversation_id) do
+      nil -> {:error, :conversation_not_found}
+      conv -> conv |> execute(command, opts) |> normalize_result()
     end
   end
 
@@ -110,7 +124,13 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
     ]
   end
 
-  defp efforts(conv, kind) do
+  @doc """
+  cli020 C17: the effort levels `/effort` (`:chat`) or `/swarm_effort`
+  (`:swarm`) accept for `conv` (its effective model's, else the classic ones).
+  The workspace carries them for the terminal's effort picker.
+  """
+  @spec efforts(map(), :chat | :swarm) :: [String.t()]
+  def efforts(conv, kind) do
     levels =
       case Providers.effective_model(conv, kind) do
         {:ok, %{provider: provider, model: model}} -> Settings.efforts(provider, model)
@@ -261,16 +281,27 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
     )
   end
 
+  # cli020 C7 (ux-live-9, Q7): `/consensus <task>` judges this one run and
+  # leaves the conversation's mode as it was: the engine reads `consensus`
+  # from the struct it is given, so the overlay sets in memory exactly what
+  # `mode_fields(:consensus)` would persist. Bare `/consensus` stays sticky.
   defp execute(conv, %{action: :start_turn, mode: :consensus} = cmd, opts) do
-    with {:ok, conv} <- persist_mode(conv, :consensus) do
-      started(
-        conv,
-        cmd.name,
-        Engine.start_chat_turn(SessionConfiguration.overlay(conv), cmd.task, attachments(opts),
-          research_ids: research_ids(opts)
-        )
+    started(
+      conv,
+      cmd.name,
+      Engine.start_chat_turn(
+        %{
+          SessionConfiguration.overlay(conv)
+          | mode: "build",
+            consensus: true,
+            ultra: false,
+            authoring_workflow: false
+        },
+        cmd.task,
+        attachments(opts),
+        research_ids: research_ids(opts)
       )
-    end
+    )
   end
 
   defp execute(conv, %{action: :author_workflow} = cmd, opts) do
@@ -328,21 +359,29 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
     if run, do: started(conv, cmd.name, Engine.resume_run(run)), else: {:error, :not_resumable}
   end
 
+  # cli020 C16 (decision 4h): the turns the conversation can be rewound to
+  # (`Rewind.turns/1`, as `rewind.turns` answers them).
   defp execute(conv, %{action: :select_rewind} = cmd, _) do
     items =
-      conv.id
-      |> Checkpoints.for_conversation()
-      |> Enum.take(200)
-      |> Enum.map(fn item ->
+      Enum.map(Rewind.turns(conv.id), fn turn ->
         %{
-          run_id: item.run_id,
-          turn: item.turn,
-          prompt: clip(item.prompt),
-          file_count: length(item.files)
+          message_id: turn.message_id,
+          run_id: turn.run_id,
+          turn: turn.turn,
+          prompt: clip(turn.prompt),
+          file_count: turn.files
         }
       end)
 
     result(conv, cmd.name, :select, %{subject: :rewind, options: items})
+  end
+
+  # `/undo`: rewind the newest turn, its messages and its files.
+  defp execute(conv, %{action: :undo_turn} = cmd, _) do
+    case Rewind.newest(conv.id) do
+      nil -> {:error, :nothing_to_undo}
+      message_id -> result(conv, cmd.name, :undo, %{message_id: message_id})
+    end
   end
 
   defp execute(conv, %{action: :open_workflows} = cmd, _),
@@ -461,6 +500,73 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
          do: result(conv, cmd.name, :conversation, %{conversation_id: new.id, created: true})
   end
 
+  # cli020 C17: bare /effort and /swarm_effort (E3's `:show_effort`) say the
+  # current level and the ones accepted here.
+  defp execute(conv, %{action: :show_effort} = cmd, _) do
+    {words, field, command} =
+      case Map.get(cmd, :target, :chat) do
+        :swarm -> {"Worker effort", :swarm_effort, "/swarm_effort"}
+        _ -> {"Effort", :effort, "/effort"}
+      end
+
+    kind = if field == :swarm_effort, do: :swarm, else: :chat
+    model = if kind == :swarm, do: "worker model", else: "chat model"
+    current = Map.get(conv, field) || "default"
+    levels = Enum.join(efforts(conv, kind), ", ")
+
+    result(conv, cmd.name, :report, %{
+      title: "Effort",
+      text: "#{words}: #{current} (#{model}). Levels: #{levels}. #{command} <level> sets it."
+    })
+  end
+
+  # cli020 C11 (tui-code-14): /rename <title>, /delete, /fork.
+  defp execute(conv, %{action: :rename_conversation} = cmd, _) do
+    title = cmd |> Map.get(:title, "") |> to_string() |> String.trim()
+
+    if title != "" and String.length(title) <= 200 do
+      with {:ok, renamed} <- Conversations.rename(conv, title),
+           do: result(conv, cmd.name, :renamed, %{title: renamed.title})
+    else
+      {:error, :invalid_argument}
+    end
+  end
+
+  # Refused while any run of it is live (stop it first); the answer is the
+  # conversation the service switches to: the project's newest other one, or
+  # a new one when none is left.
+  defp execute(conv, %{action: :delete_conversation} = cmd, _) do
+    if Engine.running_runs(conv.id) != [] do
+      {:error, {:busy, "Stop the running work first, then delete this conversation."}}
+    else
+      with {:ok, _} <- Conversations.delete(conv) do
+        case Enum.find(Conversations.list_for_project(conv.project_id), &(&1.id != conv.id)) do
+          nil ->
+            with {:ok, new} <- Conversations.create(conv.project_id),
+                 do:
+                   result(conv, cmd.name, :conversation, %{conversation_id: new.id, created: true})
+
+          other ->
+            result(conv, cmd.name, :conversation, %{conversation_id: other.id, created: false})
+        end
+      end
+    end
+  end
+
+  # The whole conversation (every message `fork/2` copies) into a new one.
+  defp execute(conv, %{action: :fork_conversation} = cmd, _) do
+    newest =
+      Repo.one(
+        from(m in SwarmCode.Domain.Conversations.Message,
+          where: m.conversation_id == ^conv.id,
+          select: max(m.position)
+        )
+      ) || 0
+
+    with {:ok, fork} <- Conversations.fork(conv, newest + 1),
+         do: result(conv, cmd.name, :conversation, %{conversation_id: fork.id, created: true})
+  end
+
   defp execute(conv, %{action: :select_conversation} = cmd, _),
     do: result(conv, cmd.name, :navigate, %{destination: :conversations})
 
@@ -524,9 +630,17 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
           group_by: r.model,
           order_by: [desc: sum(r.cost_usd)],
           limit: 50,
-          select: {r.model, count(r.id), sum(r.tokens_in), sum(r.tokens_out), sum(r.cost_usd)}
+          select:
+            {r.model, count(r.id), sum(r.tokens_in), sum(r.tokens_out), sum(r.cost_usd),
+             count(r.cost_usd)}
         )
       )
+
+    # cli020 C18: a model none of whose runs has a price has no cost (nil), not $0.
+    rows =
+      Enum.map(rows, fn {model, n, i, o, c, priced} ->
+        {model, n, i, o, if(priced > 0, do: c || 0.0)}
+      end)
 
     {runs, tokens_in, tokens_out, cost} =
       Enum.reduce(rows, {0, 0, 0, 0.0}, fn {_, n, i, o, c}, {rn, ri, ro, rc} ->
@@ -536,7 +650,7 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
     lines =
       Enum.map(rows, fn {model, n, i, o, c} ->
         "- #{model || "unknown model"}: #{n} run#{if n == 1, do: "", else: "s"}, " <>
-          "#{tokens(i)} in, #{tokens(o)} out, #{usd(c)}"
+          "#{tokens(i)} in, #{tokens(o)} out, #{if c, do: usd(c), else: "price unknown"}"
       end)
 
     text =
@@ -549,40 +663,48 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
         "\n"
       )
 
-    report(conv, cmd.name, "Cost of this conversation", text)
+    # cli020 C18 (ux-live-19): the same per-model rows for the terminal to
+    # draw, then the total (`name: "Total"`); `--plain` keeps the text.
+    model_rows =
+      Enum.map(rows, fn {model, n, i, o, c} ->
+        %{
+          model: model && clip(model),
+          runs: n,
+          tokens_in: i || 0,
+          tokens_out: o || 0,
+          cost_usd: c
+        }
+      end)
+
+    total = %{
+      name: "Total",
+      runs: runs,
+      tokens_in: tokens_in,
+      tokens_out: tokens_out,
+      cost_usd: cost
+    }
+
+    with {:ok, answer} <- report(conv, cmd.name, "Cost of this conversation", text),
+         do: {:ok, Map.merge(answer, %{subject: :cost, rows: model_rows ++ [total]})}
   end
 
+  # cli020 C8 (tui-code-11): this project's conversations only, filtered in
+  # SQL before the limit (another project's hits no longer fill every slot),
+  # answered as rows the terminal draws as a picker (Enter resumes one).
   defp execute(conv, %{action: :search} = cmd, _) do
-    hits = Conversations.search(cmd.query, limit: 20)
-    ids = Enum.map(hits, & &1.conversation_id)
+    rows =
+      conv.project_id
+      |> SwarmCode.Daemon.Service.MessageSearch.conversations(cmd.query, 50)
+      |> Enum.map(fn hit ->
+        %{
+          conversation_id: hit.conversation_id,
+          title: clip(hit.title),
+          snippet: clip(hit.snippet),
+          at: search_at(hit.updated_at)
+        }
+      end)
 
-    projects =
-      Map.new(
-        Repo.all(from(c in Conversation, where: c.id in ^ids, select: {c.id, c.project_id}))
-      )
-
-    here = Enum.filter(hits, &(projects[&1.conversation_id] == conv.project_id))
-    elsewhere = length(hits) - length(here)
-
-    text =
-      case here do
-        [] ->
-          "Nothing in this project's conversations matches “#{cmd.query}”."
-
-        _ ->
-          Enum.map_join(here, "\n\n", fn hit ->
-            "**#{clip(hit.title)}**#{if hit.conversation_id == conv.id, do: " (open)", else: ""}\n" <>
-              clip(hit.snippet) <>
-              "\n/resume " <> String.slice(hit.conversation_id, 0, 8)
-          end)
-      end
-
-    text =
-      if elsewhere > 0,
-        do: text <> "\n\n#{elsewhere} more in other projects.",
-        else: text
-
-    report(conv, cmd.name, "Search: " <> clip(cmd.query), text)
+    result(conv, cmd.name, :select, %{subject: :search, query: clip(cmd.query), options: rows})
   end
 
   defp execute(conv, %{action: :export} = cmd, _) do
@@ -595,23 +717,36 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
     end
   end
 
+  # cli020 C9 (ux-live-7): the agent definitions as rows (name, source,
+  # model, description) the terminal draws; the text, for `--plain`, has no
+  # Markdown.
   defp execute(conv, %{action: :list_agents} = cmd, _) do
-    definitions = Agents.list(conv.project.root_path) |> Enum.take(100)
+    rows =
+      Agents.list(conv.project.root_path)
+      |> Enum.take(50)
+      |> Enum.map(fn agent ->
+        %{
+          name: clip(agent.name),
+          source: clip(to_string(agent.source)),
+          model: if(agent.model, do: clip(agent.model)),
+          description: if(agent.description, do: clip(agent.description))
+        }
+      end)
 
     text =
-      case definitions do
+      case rows do
         [] ->
           "No agent definitions. Add markdown files to .swarm_code/agents/ in the project."
 
         _ ->
-          Enum.map_join(definitions, "\n", fn agent ->
-            "- **#{clip(agent.name)}** (#{agent.source})" <>
-              if(agent.model, do: " · " <> clip(agent.model), else: "") <>
-              if(agent.description, do: " — " <> clip(agent.description), else: "")
+          Enum.map_join(rows, "\n", fn row ->
+            "- #{row.name} (#{row.source})" <>
+              if(row.model, do: " · " <> row.model, else: "") <>
+              if(row.description, do: " — " <> row.description, else: "")
           end)
       end
 
-    report(conv, cmd.name, "Agents", text)
+    result(conv, cmd.name, :report, %{title: "Agents", text: text, subject: :agents, rows: rows})
   end
 
   defp execute(conv, %{action: :help} = cmd, opts) do
@@ -877,6 +1012,8 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
   defp normalize_result(_), do: {:error, :operation_failed}
   defp failure(reason) when reason in @errors, do: {:error, reason}
   defp failure(:invalid_workflow_arguments), do: {:error, :invalid_workflow_arguments}
+  # cli020: a refusal in words (C11 /delete of a live conversation).
+  defp failure({:busy, words}) when is_binary(words), do: {:error, {:busy, words}}
 
   # pass73 T3/T8: an unexpected failure is still refused, but cli.log names its
   # shape (a tag, never a changeset's text) so the next report is diagnosable.
@@ -898,6 +1035,24 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
       _ -> nil
     end
   end
+
+  defp search_at(%DateTime{} = at), do: DateTime.to_unix(at, :millisecond)
+  defp search_at(%NaiveDateTime{} = at), do: search_at(DateTime.from_naive!(at, "Etc/UTC"))
+
+  defp search_at(at) when is_binary(at) do
+    case DateTime.from_iso8601(at) do
+      {:ok, at, _} ->
+        search_at(at)
+
+      _ ->
+        case NaiveDateTime.from_iso8601(at) do
+          {:ok, at} -> search_at(at)
+          _ -> 0
+        end
+    end
+  end
+
+  defp search_at(_), do: 0
 
   defp clip(nil), do: ""
   defp clip(text), do: String.slice(text, 0, 256)
