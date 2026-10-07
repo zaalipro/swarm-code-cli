@@ -134,7 +134,8 @@ defmodule SwarmCodeCLI.Plain.Presenter do
           ]
 
       :approval ->
-        commands = Enum.filter([:approve, :deny, :always_allow], &(&1 in item.allowed_actions))
+        # cli020 B22: the decisions the row offers, the full screen's list.
+        commands = SwarmCodeCLI.UI.Keymap.decisions(item)
 
         [record(["APPROVAL ", reference])] ++
           approval_records(item) ++
@@ -771,6 +772,9 @@ defmodule SwarmCodeCLI.Plain.Presenter do
   defp approval_verb(:always_allow), do: "always-allow"
   defp approval_verb(:approve), do: "approve"
   defp approval_verb(:deny), do: "deny"
+  defp approval_verb(:approve_run), do: "approve-run"
+  defp approval_verb(:always_prefix), do: "always-prefix"
+  defp approval_verb(:deny_stop), do: "deny-stop"
   # Each external field is sanitized independently: fixed metadata never consumes
   # the field's admitted 64 KiB input budget. A delivery has a DTO-bounded count
   # of records; no accepted record is discarded to fit an unrelated page budget.
