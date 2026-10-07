@@ -44,4 +44,25 @@ defmodule SwarmCodeCLI.Cli020EHelpers do
   end
 
   def screen_text(state), do: state |> screen() |> Enum.join("\n")
+
+  @doc "A transcript item of run `s` in conversation `c` (Pass73Helpers' ids)."
+  def item(id, fields) do
+    struct!(
+      %SwarmCodeCLI.UI.DataSource.DTO.TranscriptItem{
+        id: id,
+        run_id: "s",
+        conversation_id: "c",
+        node_id: "lead",
+        revision: 1,
+        role: :assistant,
+        state: :done,
+        text: "",
+        reasoning: "",
+        attempt_id: "a",
+        allowed_actions: [],
+        at: 1
+      },
+      fields
+    )
+  end
 end

@@ -843,13 +843,22 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
         [{"waiting for you", {:role, :warning, [:bold]}}]
 
       run.state in [:running, :streaming, :retrying, :queued] ->
+        # cli020 E12 (ux-live-3, ux-live-23): a retry says which attempt and
+        # why (C5's `retry_detail`, "retrying 2/5 · HTTP 500"); `writing`
+        # from the answer's first words, even while its newest step holds
+        # the same words (the residual is then empty).
+        retry = retry_words(run)
+
         doing =
           cond do
             tool = Enum.find(ctx.lead_tools, &(&1.state in [:running, :streaming])) ->
               "running " <> verb(tool.tool || %DTO.ToolCall{})
 
+            retry != nil ->
+              retry
+
             ctx.answer != nil and ctx.answer.state == :streaming and
-                String.trim(ctx.residual) != "" ->
+                String.trim(ctx.answer.text || "") != "" ->
               "writing"
 
             run.state == :retrying ->
@@ -878,6 +887,14 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
           [] -> spend(run, state, false)
           chip -> tl_space(chip) ++ spend(run, state, true)
         end
+    end
+  end
+
+  defp retry_words(run) do
+    case Map.get(run, :retry_detail) do
+      "retrying" <> _ = detail -> detail
+      detail when is_binary(detail) and detail != "" -> "retrying " <> detail
+      _ -> nil
     end
   end
 
@@ -936,7 +953,10 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
        do: []
 
   defp lead_rows(%{kind: :tool} = item, _ctx, state, width), do: tool_rows(item, state, width)
-  defp lead_rows(%{kind: :error} = item, _ctx, state, width), do: error_rows(item, state, width)
+  # cli020 E12: a failed run prints its error once, in its failure block.
+  defp lead_rows(%{kind: :error} = item, ctx, state, width) do
+    if failure_repeat?(item, ctx), do: [], else: error_rows(item, state, width)
+  end
 
   # The answer's own position holds nothing but the header; its words follow
   # the work, after the run's last item.
@@ -1588,6 +1608,7 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
   defp drawn_work?(item, ctx) do
     cond do
       item.id == ctx.answer.id or item.role == :user -> false
+      item.kind == :error and failure_repeat?(item, ctx) -> false
       item.kind in [:tool, :error] -> true
       Map.has_key?(ctx.worker_ids, item.id) -> true
       Map.has_key?(ctx.step_texts, item.id) -> true
@@ -1596,11 +1617,29 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
     end
   end
 
+  defp failure_repeat?(item, %{run: %{state: :failed} = run}) do
+    reason = present(run.error) || present(Map.get(run, :stop_label))
+    reason != nil and humane_error(String.trim(item.text || "")) == humane_error(reason)
+  end
+
+  defp failure_repeat?(_item, _ctx), do: false
+
+  @doc false
+  # cli020 E12 (ux-live-3): an error the user can act on, in words. A
+  # refused connection is not a dropped one.
+  @spec humane_error(String.t()) :: String.t()
+  def humane_error(text) when is_binary(text) do
+    if String.contains?(String.downcase(text), "econnrefused"),
+      do: "Cannot connect to the provider (connection refused).",
+      else: String.trim(text)
+  end
+
   # A failed run says what failed and what to do; a stopped one says so once.
   defp footer_rows(%{run: %{state: :failed} = run}, state, width) do
     inner = max(1, width - @body - 3)
 
     reason = present(run.error) || present(Map.get(run, :stop_label))
+    reason = reason && humane_error(reason)
 
     lines =
       case reason do
@@ -1687,7 +1726,10 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
       true ->
         by = if provider, do: " by " <> provider, else: ""
 
-        case Map.get(run, :error_kind) do
+        refused? = String.contains?(String.downcase(Map.get(run, :error) || ""), "econnrefused")
+
+        case if(refused?, do: "refused", else: Map.get(run, :error_kind)) do
+          "refused" -> "is the provider running? · " <> @retry_keys
           "rate_limit" -> "rate limited" <> by <> " · retry in a moment · /model to switch"
           "usage_limit" -> "out of quota" <> by <> " · /model to switch model"
           "overloaded" -> "provider busy · " <> @retry_keys <> " · /model to switch"
@@ -1715,7 +1757,7 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
           ""
       end
 
-    (name <> (item.text || ""))
+    (name <> humane_error(item.text || ""))
     |> admitted(state)
     |> String.split(["\r\n", "\n"])
     |> Enum.flat_map(&SwarmCodeCLI.UI.Prose.wrap(&1, inner, state.capabilities.ambiguous_width))

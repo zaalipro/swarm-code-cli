@@ -13,26 +13,6 @@ defmodule SwarmCodeCLI.Cli020.E10ReportOnceTest do
 
   @report "Worker report: the router pipes :browser twice; PageController error path untested."
 
-  def item(id, fields) do
-    struct!(
-      %DTO.TranscriptItem{
-        id: id,
-        run_id: "s",
-        conversation_id: "c",
-        node_id: "lead",
-        revision: 1,
-        role: :assistant,
-        state: :done,
-        text: "",
-        reasoning: "",
-        attempt_id: "a",
-        allowed_actions: [],
-        at: 1
-      },
-      fields
-    )
-  end
-
   defp swarm(report_message_text) do
     items = [
       item("u", role: :user, text: "/swarm Audit the router and list test gaps", node_id: "s"),

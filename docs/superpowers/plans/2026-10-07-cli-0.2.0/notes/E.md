@@ -139,3 +139,17 @@ Branch `cli020/E` from M1 `3008f352`, worktree `~/dev/swarm-code-cli-wt/cli020-E
   draw as a two-column list (no asterisks). If C9 sends `/agents` as structured rows over a new DTO,
   the drawing of those rows is still to wire (no DTO for it exists in this branch).
 - Test `cli020/e11_agents_workflows_test.exs`.
+
+### E12 Turn header words
+- Cause of `thinking ▮` over streamed words (VERIFIED by a failing test): `decompose/2` gives the
+  streaming answer's words to its newest step, leaving the residual empty; the header now says
+  `writing` once the streaming answer has any words.
+- `retrying 2/5 · HTTP 500` from `RunSummary.retry_detail` (C5; read with `Map.get`, so it is
+  inert until C adds the field; the test puts it on the run). Without the field a `:retrying`
+  run still says `retrying`.
+- A failed run's per-agent error item draws nothing when it says what the failure block says
+  (`failure_repeat?/2`); `econnrefused` reads `Cannot connect to the provider (connection
+  refused).` in both places (`Turns.humane_error/1`) and the hint is `is the provider running?
+  · r retries · Ctrl-P Retry failed run` (not "connection dropped").
+- Test helper `item/2` moved to `test/support/cli020_e_helpers.ex`. Test
+  `cli020/e12_turn_header_test.exs`; projector/paint/demo tests 586/0.
