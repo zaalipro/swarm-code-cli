@@ -221,7 +221,7 @@ defmodule SwarmCodeCLI.UI.Reducer do
           state,
           ["/plan"],
           :read_only,
-          "Ask (this project) · writes and commands ask first · Shift-Tab: Auto"
+          "Ask · writes and commands ask first · Shift-Tab: Auto (this project)"
         )
 
       workspace.approval_mode == :read_only ->
@@ -229,7 +229,7 @@ defmodule SwarmCodeCLI.UI.Reducer do
           state,
           [],
           :auto,
-          "Auto (this project) · edits and safe commands run · Shift-Tab: Plan"
+          "Auto · edits and safe commands run · Shift-Tab: Plan (this project)"
         )
 
       true ->
@@ -1756,6 +1756,15 @@ defmodule SwarmCodeCLI.UI.Reducer do
 
     {%{state | notice: {:command_feedback, words}}, []}
   end
+
+  # cli020 D6: a refused approval change (an untrusted project refuses
+  # auto) says the service's own words.
+  defp settle_service(state, %{kind: {:project_update, mode, _}}, %Outcome{
+         status: status,
+         reason: %{text: text}
+       })
+       when status != :accepted and mode != nil and is_binary(text) and text != "",
+       do: {%{state | notice: {:command_feedback, String.trim(text)}}, []}
 
   defp settle_service(state, %{kind: kind}, %Outcome{status: status})
        when status != :accepted do

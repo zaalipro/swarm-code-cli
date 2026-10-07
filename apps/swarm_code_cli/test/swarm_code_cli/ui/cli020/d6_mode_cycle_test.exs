@@ -38,7 +38,7 @@ defmodule SwarmCodeCLI.UI.Cli020.D6ModeCycleTest do
 
     assert state.notice ==
              {:command_feedback,
-              "Auto (this project) · edits and safe commands run · Shift-Tab: Plan"}
+              "Auto · edits and safe commands run · Shift-Tab: Plan (this project)"}
   end
 
   test "Auto → Plan sends /plan" do
@@ -57,7 +57,7 @@ defmodule SwarmCodeCLI.UI.Cli020.D6ModeCycleTest do
 
     assert state.notice ==
              {:command_feedback,
-              "Ask (this project) · writes and commands ask first · Shift-Tab: Auto"}
+              "Ask · writes and commands ask first · Shift-Tab: Auto (this project)"}
   end
 
   test "full access is never entered: from full the step is Plan" do
@@ -79,5 +79,20 @@ defmodule SwarmCodeCLI.UI.Cli020.D6ModeCycleTest do
     [request] = requests(effects)
     {state, _} = outcome(state, request, :accepted, [])
     assert text(state) == "half a thought"
+  end
+
+  test "a refused step shows the service's own words" do
+    {state, effects} = shift_tab(at(:read_only))
+    [request] = requests(effects)
+
+    {state, _} =
+      outcome(state, request, :rejected, [],
+        reason: %SwarmCodeCLI.UI.DataSource.DTO.Refusal{
+          code: "untrusted",
+          text: "Trust the project first: /trust"
+        }
+      )
+
+    assert state.notice == {:command_feedback, "Trust the project first: /trust"}
   end
 end
