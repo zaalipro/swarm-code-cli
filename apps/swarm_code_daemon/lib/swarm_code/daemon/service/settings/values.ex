@@ -512,8 +512,10 @@ defmodule SwarmCode.Daemon.Service.Settings.Values do
 
   ## ------------------------------------------------------------------ state
 
+  # cli020 C17: E1's models.validator too.
   @pair_entries ~w(models.chat models.sub_agent models.scheduled models.workflow models.implementer
-                   research.lead_model research.worker_model research.reporter_model)
+                   models.validator research.lead_model research.worker_model
+                   research.reporter_model)
 
   defp state(_entry, _stored, true, _choices, _reads), do: {"invalid", nil}
 
