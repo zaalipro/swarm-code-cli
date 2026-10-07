@@ -563,37 +563,23 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
     report(conv, cmd.name, "Cost of this conversation", text)
   end
 
+  # cli020 C8 (tui-code-11): this project's conversations only, filtered in
+  # SQL before the limit (another project's hits no longer fill every slot),
+  # answered as rows the terminal draws as a picker (Enter resumes one).
   defp execute(conv, %{action: :search} = cmd, _) do
-    hits = Conversations.search(cmd.query, limit: 20)
-    ids = Enum.map(hits, & &1.conversation_id)
+    rows =
+      conv.project_id
+      |> SwarmCode.Daemon.Service.MessageSearch.conversations(cmd.query, 50)
+      |> Enum.map(fn hit ->
+        %{
+          conversation_id: hit.conversation_id,
+          title: clip(hit.title),
+          snippet: clip(hit.snippet),
+          at: search_at(hit.updated_at)
+        }
+      end)
 
-    projects =
-      Map.new(
-        Repo.all(from(c in Conversation, where: c.id in ^ids, select: {c.id, c.project_id}))
-      )
-
-    here = Enum.filter(hits, &(projects[&1.conversation_id] == conv.project_id))
-    elsewhere = length(hits) - length(here)
-
-    text =
-      case here do
-        [] ->
-          "Nothing in this project's conversations matches “#{cmd.query}”."
-
-        _ ->
-          Enum.map_join(here, "\n\n", fn hit ->
-            "**#{clip(hit.title)}**#{if hit.conversation_id == conv.id, do: " (open)", else: ""}\n" <>
-              clip(hit.snippet) <>
-              "\n/resume " <> String.slice(hit.conversation_id, 0, 8)
-          end)
-      end
-
-    text =
-      if elsewhere > 0,
-        do: text <> "\n\n#{elsewhere} more in other projects.",
-        else: text
-
-    report(conv, cmd.name, "Search: " <> clip(cmd.query), text)
+    result(conv, cmd.name, :select, %{subject: :search, query: clip(cmd.query), options: rows})
   end
 
   defp execute(conv, %{action: :export} = cmd, _) do
@@ -909,6 +895,24 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
       _ -> nil
     end
   end
+
+  defp search_at(%DateTime{} = at), do: DateTime.to_unix(at, :millisecond)
+  defp search_at(%NaiveDateTime{} = at), do: search_at(DateTime.from_naive!(at, "Etc/UTC"))
+
+  defp search_at(at) when is_binary(at) do
+    case DateTime.from_iso8601(at) do
+      {:ok, at, _} ->
+        search_at(at)
+
+      _ ->
+        case NaiveDateTime.from_iso8601(at) do
+          {:ok, at} -> search_at(at)
+          _ -> 0
+        end
+    end
+  end
+
+  defp search_at(_), do: 0
 
   defp clip(nil), do: ""
   defp clip(text), do: String.slice(text, 0, 256)

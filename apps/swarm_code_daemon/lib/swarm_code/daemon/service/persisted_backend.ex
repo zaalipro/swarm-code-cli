@@ -1387,6 +1387,11 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         feedback = goal_feedback(state.opts[:conversation_id], goal)
         {accepted(id, [], feedback), state}
 
+      # cli020 C8: /search answers rows (and the same lines as text for
+      # `--plain`); Enter on a row resumes that conversation.
+      {:ok, %{type: :select, subject: :search, options: rows} = answer} ->
+        {accepted(id, [], search_feedback(answer[:query] || "", rows)), state}
+
       {:ok, %{type: :select, subject: subject}} when subject in [:rewind, :research] ->
         {accepted(id, [], navigation_feedback(subject)), state}
 
@@ -4546,6 +4551,50 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       "text" => "",
       "conversation_id" => nil
     }
+
+  # cli020 C8/C9/C18: a report with rows (`Feedback.rows`, ≤ 50).
+  defp rows_feedback(title, text, subject, rows),
+    do:
+      Map.merge(report_feedback(title, text), %{
+        "subject" => Atom.to_string(subject),
+        "rows" => rows |> Enum.take(50) |> Enum.map(&feedback_row/1)
+      })
+
+  @row_keys ~w(conversation_id title snippet at name source model description runs tokens_in tokens_out cost_usd)a
+  @row_text %{title: 256, snippet: 512, name: 200, source: 64, model: 200, description: 512}
+
+  defp feedback_row(row) do
+    Map.new(@row_keys, fn key ->
+      value = Map.get(row, key)
+
+      value =
+        case @row_text[key] do
+          nil -> value
+          max when is_binary(value) -> preview(value, max)
+          _ -> value
+        end
+
+      {Atom.to_string(key), value}
+    end)
+  end
+
+  defp search_feedback(query, []),
+    do:
+      rows_feedback(
+        "Search: " <> query,
+        "Nothing in this project's conversations matches “#{query}”.",
+        :search,
+        []
+      )
+
+  defp search_feedback(query, rows) do
+    text =
+      Enum.map_join(rows, "\n\n", fn row ->
+        "**#{row.title}**\n#{row.snippet}\n/resume " <> String.slice(row.conversation_id, 0, 8)
+      end)
+
+    rows_feedback("Search: " <> query, text, :search, rows)
+  end
 
   defp report_feedback(title, text),
     do: %{

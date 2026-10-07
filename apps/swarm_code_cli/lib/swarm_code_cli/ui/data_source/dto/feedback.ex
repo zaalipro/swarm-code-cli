@@ -23,9 +23,22 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.Feedback do
           ]}},
       title: :text,
       text: :text,
-      conversation_id: {:optional, :id}
+      conversation_id: {:optional, :id},
+      # cli020 C8/C9/C18: a structured answer beside its text (the text stays
+      # for `--plain`): what the rows are, and the rows (at most 50).
+      subject: {:optional, {:enum, [:search, :agents, :cost]}},
+      rows: {:list, {:dto, SwarmCodeCLI.UI.DataSource.DTO.FeedbackRow}, 50}
     ],
-    defaults: [kind: :notice, feature: nil, title: "", text: "", conversation_id: nil]
+    wire_defaults: [subject: nil, rows: []],
+    defaults: [
+      kind: :notice,
+      feature: nil,
+      title: "",
+      text: "",
+      conversation_id: nil,
+      subject: nil,
+      rows: []
+    ]
 
   def decode_kind("report"), do: {:ok, :report}
   def decode_kind("navigate"), do: {:ok, :navigate}

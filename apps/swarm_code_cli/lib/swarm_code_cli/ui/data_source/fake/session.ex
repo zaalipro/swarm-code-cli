@@ -510,17 +510,32 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Session do
   defp slash_command(script, _request, :search, %{query: query}) do
     needle = String.downcase(query)
 
-    hits =
-      for row <- Map.values(script.session.conversations),
+    rows =
+      for row <- Enum.sort_by(Map.values(script.session.conversations), & &1.title),
           String.contains?(String.downcase(row.title), needle),
-          do: "**#{row.title}**\n/resume " <> String.slice(row.id, 0, 8)
+          do: row
 
     text =
-      if hits == [],
+      if rows == [],
         do: "Nothing in this project's conversations matches “#{query}”.",
-        else: Enum.join(Enum.sort(hits), "\n\n")
+        else:
+          Enum.map_join(rows, "\n\n", fn row ->
+            "**#{row.title}**\n/resume " <> String.slice(row.id, 0, 8)
+          end)
 
-    report(script, "Search: " <> query, text)
+    # cli020 C8: rows beside the text, as the service answers.
+    with {:ok, script, deltas, ids, feedback} <- report(script, "Search: " <> query, text) do
+      rows =
+        for row <- Enum.take(rows, 50),
+            do: %DTO.FeedbackRow{
+              conversation_id: row.id,
+              title: row.title,
+              snippet: "",
+              at: Map.get(row, :updated_at)
+            }
+
+      {:ok, script, deltas, ids, %{feedback | subject: :search, rows: rows}}
+    end
   end
 
   defp slash_command(script, _request, :export, _),

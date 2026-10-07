@@ -77,6 +77,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
       :queue_revision
     ],
     DTO.ShellSnapshot => [:rate_limits],
+    # cli020 C8/C9/C18: structured command answers.
+    DTO.Feedback => [:subject, :rows],
     DTO.Approval => [
       :command,
       :cwd,
