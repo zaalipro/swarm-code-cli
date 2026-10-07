@@ -32,7 +32,8 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.RunSummary do
       goal_status: nil,
       round: nil,
       rounds: nil,
-      verdict: nil
+      verdict: nil,
+      retry_detail: nil
     ],
     fields: [
       tokens_in: :count,
@@ -72,6 +73,8 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.RunSummary do
       round: {:optional, :count},
       rounds: {:optional, :count},
       verdict: {:optional, {:text, 400}},
+      # cli020 C5: `retrying 2/5 · <reason>` while state is :retrying.
+      retry_detail: {:optional, {:text, 200}},
       created_sequence: :revision,
       parent_run_id: {:optional, :id},
       seen_revision: :revision,
@@ -128,6 +131,7 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.RunSummary do
       round: nil,
       rounds: nil,
       verdict: nil,
+      retry_detail: nil,
       created_sequence: 0,
       parent_run_id: nil,
       seen_revision: 0,

@@ -557,7 +557,17 @@ defmodule SwarmCode.Daemon.Service.PersistedProjection do
           parent_id: n.parent_id,
           op_type: n.op_type,
           title: fragment("substr(coalesce(?, ''), 1, 200)", n.title),
-          started_at: n.started_at
+          started_at: n.started_at,
+          # cli020 C5: a transport retry (`retrying 2/5 · <reason>`). Only a
+          # retrying op's detail is read: a running op's detail moves with
+          # every streaming tick, which reuses these rows (pass71 S6).
+          status: n.status,
+          detail:
+            fragment(
+              "CASE WHEN ? = 'retrying' THEN substr(coalesce(?, ''), 1, 200) END",
+              n.status,
+              n.detail
+            )
         }
       )
     )

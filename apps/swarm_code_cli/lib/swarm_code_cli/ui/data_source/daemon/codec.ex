@@ -157,7 +157,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
       :goal_status,
       :round,
       :rounds,
-      :verdict
+      :verdict,
+      :retry_detail
     ],
     DTO.ToolCall => [
       :title,

@@ -2916,6 +2916,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
           consensus: row.consensus == true,
           error: run_error(row, ns),
           stop: stop_facts(row.status, Map.get(row, :error_kind)),
+          # cli020 C5 (ux-live-3): the detail of an llm op this run is retrying.
+          retry_detail: retry_detail(ns, ops),
           panel: %{}
         }
 
@@ -2966,6 +2968,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
           cond do
             approval != nil -> :waiting_approval
             interactions != [] -> :waiting_question
+            run.retry_detail != nil and run.status == :running -> :retrying
             true -> run.status
           end
 
@@ -3563,6 +3566,18 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     %{run | agents: agents, panel: facts}
   end
 
+  # cli020 C5: the newest open op of an agent of this run that the provider
+  # is being asked again for (`Operation` writes `retrying n/N · reason`).
+  defp retry_detail(agents, ops) do
+    Enum.find_value(agents, fn agent ->
+      case ops[agent.id] do
+        %{status: "retrying", detail: detail} when is_binary(detail) and detail != "" -> detail
+        %{status: "retrying"} -> "retrying"
+        _ -> nil
+      end
+    end)
+  end
+
   defp positive(n) when is_integer(n) and n > 0, do: n
   defp positive(_), do: nil
 
@@ -3594,7 +3609,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         "started_at" => run.started_at,
         "finished_at" => run.finished_at,
         "consensus" => run.consensus,
-        "error" => run.error
+        "error" => run.error,
+        "retry_detail" => if(run.status == :retrying, do: run.retry_detail)
       }
       |> Map.merge(run.stop)
       |> Map.merge(Map.get(run, :panel, %{}))
