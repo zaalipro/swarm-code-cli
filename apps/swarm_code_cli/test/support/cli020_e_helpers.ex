@@ -45,6 +45,34 @@ defmodule SwarmCodeCLI.Cli020EHelpers do
 
   def screen_text(state), do: state |> screen() |> Enum.join("\n")
 
+  @doc "The painted plan (truecolor)."
+  def plan(state) do
+    {scene, _} = Projector.project(state)
+    {:ok, plan} = Paint.build(scene, %Options{color_mode: :truecolor})
+    plan
+  end
+
+  @doc "The palette style of the cell at `{x, y}`."
+  def cell_style(plan, x, y) do
+    case Plan.cell(plan, x, y) do
+      {:glyph, _, _, index} -> elem(plan.palette, index)
+      _ -> nil
+    end
+  end
+
+  @doc "`{x, y}` of the first cell of `needle` on the screen."
+  def locate(state, needle) do
+    state
+    |> screen()
+    |> Enum.with_index()
+    |> Enum.find_value(fn {row, y} ->
+      case String.split(row, needle, parts: 2) do
+        [before, _] -> {SwarmCodeCLI.UI.Width.cells(before, :narrow), y}
+        _ -> nil
+      end
+    end)
+  end
+
   @doc "A transcript item of run `s` in conversation `c` (Pass73Helpers' ids)."
   def item(id, fields) do
     struct!(

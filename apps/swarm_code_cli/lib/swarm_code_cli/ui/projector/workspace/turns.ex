@@ -407,6 +407,11 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
     end
   end
 
+  # cli020 E15 (decision 4c, C15): a `!command` the user ran stands alone:
+  # no turn header, no answer, its own block.
+  defp item_rows(%{kind: :shell} = item, _ctx, state, width),
+    do: [blank() | shell_rows(item, state, width)]
+
   defp item_rows(item, ctx, state, width) do
     late = Map.get(ctx, :late, MapSet.new())
 
@@ -458,6 +463,76 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
 
   defp worker_item?(item, ctx),
     do: is_binary(item.agent_id) and Map.has_key?(ctx.first_by_worker, item.agent_id)
+
+  # --- a shell command ----------------------------------------------------------------
+
+  #     $ mix test --failed                                   exit 1
+  #       1 test, 1 failure
+  #       …
+  # The text is the command, then its output (the persisted message is
+  # `"$ cmd\noutput\n[exit N]"`, C15); the item's `exit` wins over the
+  # trailer. Running, it says `running… ▮`.
+  defp shell_rows(item, state, width) do
+    {command, output, trailer} = shell_parts(item.text || "")
+    exit = if Map.has_key?(item, :exit) and item.exit != nil, do: item.exit, else: trailer
+
+    status =
+      cond do
+        exit in [:stopped, "stopped"] or item.state == :stopped ->
+          [{"stopped", {:role, :warning, []}}]
+
+        is_integer(exit) and exit == 0 ->
+          [{"exit 0", :muted}]
+
+        is_integer(exit) ->
+          [{"exit #{exit}", {:role, :error, []}}]
+
+        item.state in [:running, :streaming, :queued] ->
+          caret = SafeText.value(Support.glyph(:caret, state))
+          [{"running#{ellipsis(state)} " <> caret, {:role, :accent, []}}]
+
+        item.state == :failed ->
+          [{"failed", {:role, :error, []}}]
+
+        true ->
+          []
+      end
+
+    head =
+      spec(
+        [
+          {String.duplicate(" ", @body), :plain},
+          {"$ ", {:role, :accent, [:bold]}},
+          {admitted(command, state), :text},
+          {:right, status}
+        ],
+        nil
+      )
+
+    [head | preview(output, :muted, state, width, @body + 2, item.detail_ref)]
+  end
+
+  defp shell_parts(text) do
+    {command, rest} =
+      case String.split(text, ["\r\n", "\n"]) do
+        ["$ " <> command | rest] -> {command, rest}
+        [command | rest] -> {command, rest}
+      end
+
+    case List.last(rest) do
+      "[exit " <> tail ->
+        code =
+          case tail |> String.trim_trailing("]") |> Integer.parse() do
+            {n, ""} -> n
+            _ -> if String.starts_with?(tail, "stopped"), do: :stopped, else: nil
+          end
+
+        {command, rest |> Enum.drop(-1) |> Enum.join("\n"), code}
+
+      _ ->
+        {command, Enum.join(rest, "\n"), nil}
+    end
+  end
 
   # --- the prompt -------------------------------------------------------------------------
 

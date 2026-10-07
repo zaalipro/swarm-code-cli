@@ -328,7 +328,79 @@ defmodule SwarmCodeCLI.UI.Projector.Composer do
         ],
         else: [{String.duplicate(hairline, max(1, width)), tint(:text_ghost, state)}]
 
+    segments = with_rule_chips(segments, rule_chips(state), hairline, state)
+
     row(segments, [], nil, state, width)
+  end
+
+  # cli020 E15 (decisions 4c, 4i): what the draft carries, on the rule above
+  # it, after two cells of rule: `$ shell` while Enter runs the draft as a
+  # command (D7's rule: the first character is `!` and the rest is not
+  # blank), and one chip per staged image, `[Image #1 · 412 KB]`.
+  defp rule_chips(state) do
+    case draft(state) do
+      nil ->
+        []
+
+      draft ->
+        shell =
+          if shell_draft?(Editor.text(draft.editor)),
+            do: [{" $ shell ", tint(:accent, state, [:bold])}],
+            else: []
+
+        images =
+          draft.attachments
+          |> Enum.with_index(1)
+          |> Enum.map(fn {image, n} ->
+            {" [Image ##{n} · #{size_words(image.byte_size)}] ", tint(:text_muted, state)}
+          end)
+
+        shell ++ images
+    end
+  end
+
+  @doc false
+  def shell_draft?("!" <> rest), do: String.trim(rest) != ""
+  def shell_draft?(_text), do: false
+
+  defp size_words(bytes) when is_integer(bytes) and bytes >= 1_048_576,
+    do: :erlang.float_to_binary(bytes / 1_048_576, decimals: 1) <> " MB"
+
+  defp size_words(bytes) when is_integer(bytes) and bytes >= 1_024,
+    do: "#{round(bytes / 1_024)} KB"
+
+  defp size_words(bytes) when is_integer(bytes), do: "#{bytes} B"
+  defp size_words(_bytes), do: "?"
+
+  # The chips replace the rule's cells from the third one on; the queued
+  # label at the right end keeps its place, and chips that do not fit drop
+  # from the last.
+  defp with_rule_chips(segments, [], _hairline, _state), do: segments
+
+  defp with_rule_chips(segments, chips, hairline, state) do
+    policy = state.capabilities.ambiguous_width
+    [{rule, rule_style} | rest] = segments
+    rule_cells = Width.cells(rule, policy)
+    lead = 2
+
+    chips =
+      chips
+      |> Enum.reduce({[], 0}, fn {text, style}, {kept, used} ->
+        cells = Width.cells(text, policy)
+
+        if lead + used + cells + 1 <= rule_cells,
+          do: {kept ++ [{text, style}], used + cells},
+          else: {kept, used}
+      end)
+
+    case chips do
+      {[], _} ->
+        segments
+
+      {kept, used} ->
+        [{String.duplicate(hairline, lead), rule_style} | kept] ++
+          [{String.duplicate(hairline, max(1, rule_cells - lead - used)), rule_style} | rest]
+    end
   end
 
   @doc """
@@ -463,6 +535,8 @@ defmodule SwarmCodeCLI.UI.Projector.Composer do
     flags = keyword_flags(Editor.text(draft.editor), slice)
     count = fn some -> Enum.reduce(some, 0, &(&2 + length(Regex.scan(@letters, &1)))) end
 
+    faint = tint(:text_faint, state)
+
     if Enum.any?(flags) and count.(lines) == length(flags) do
       {rows, _} =
         Enum.map_reduce(visible, Enum.drop(flags, count.(Enum.take(lines, first))), fn line,
@@ -472,7 +546,18 @@ defmodule SwarmCodeCLI.UI.Projector.Composer do
 
       rows
     else
-      Enum.map(visible, &[{&1, plain}])
+      Enum.map(visible, &paste_segments(&1, plain, faint))
+    end
+  end
+
+  # cli020 E15 (decision 4e, D8): a collapsed paste's placeholder
+  # `[Pasted text #1 · 60 lines]` is one dim chip in the draft.
+  @paste ~r/\[Pasted text #\d+ · \d+ lines?\]/u
+
+  defp paste_segments(line, plain, faint) do
+    case Regex.split(@paste, line, include_captures: true, trim: true) do
+      [] -> [{line, plain}]
+      parts -> Enum.map(parts, &{&1, if(Regex.match?(@paste, &1), do: faint, else: plain)})
     end
   end
 

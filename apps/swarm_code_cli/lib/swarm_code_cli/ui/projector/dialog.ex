@@ -379,7 +379,9 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
 
   defp hover(state), do: Theme.style(:hover, state.capabilities).background
 
-  defp prose_layer?({kind, _}) when kind in [:library, :command_report], do: true
+  defp prose_layer?({kind, _}) when kind in [:library, :command_report, :rewind_confirm],
+    do: true
+
   defp prose_layer?(_layer), do: false
 
   defp picker_layer?({kind, _}) when kind in [:switcher, :action_menu, :region_filter, :jump],
@@ -843,6 +845,145 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
      footer, if(state.focus in graph, do: state.focus, else: "cancel")}
   end
 
+  # --- cli020 E15: the rewind list and confirm, history search, the queue -----------
+
+  # `{:rewind, %{turns, selected}}` (D10 opens it from C16's `rewind.turns`):
+  # one row per turn, newest first, `Turn 7 · <prompt> · 3 files · 2 h ago`;
+  # D's reducer moves `selected` and opens the confirm on Enter.
+  defp contents({:rewind, %{turns: turns, selected: selected}}, state, rect, _class) do
+    rows =
+      turns
+      |> Enum.with_index()
+      |> Enum.map(fn {turn, index} ->
+        {"turn-#{index}", Density.safe(rewind_words(turn, state), state, rect.width * 2), nil}
+      end)
+
+    rows =
+      if rows == [],
+        do: [{"empty", Density.safe("Nothing to rewind yet.", state, rect.width), nil}],
+        else: rows
+
+    {Density.safe("Rewind", state, rect.width - 2),
+     rows ++
+       [
+         {"keys", Density.safe("↑↓ choose · Enter rewinds to it · Esc closes", state, rect.width),
+          nil}
+       ], [control("cancel", SafeText.chrome(:cancel), {:local, :close_top_layer})],
+     if(turns == [], do: "cancel", else: "turn-#{min(selected, length(turns) - 1)}")}
+  end
+
+  # `{:rewind_confirm, turn}`: the three scopes of D10 and what folding means.
+  defp contents({:rewind_confirm, turn}, state, rect, _class) do
+    title =
+      case Map.get(turn, :turn) do
+        n when is_integer(n) -> "Rewind to turn #{n}"
+        _ -> "Rewind to this prompt"
+      end
+
+    choices =
+      for {id, key, words, scope} <- [
+            {"both", "b", "Conversation and files", :both},
+            {"conversation", "c", "Conversation only", :conversation},
+            {"files", "f", "Files only", :files}
+          ] do
+        {id, Density.safe(key <> "  " <> words, state, rect.width), rewind_target(scope)}
+      end
+
+    prompt = Map.get(turn, :prompt) || ""
+
+    body =
+      [{"prompt", Density.safe(prompt, state, rect.width * 2), nil} | choices] ++
+        [
+          {"fold",
+           Density.safe(
+             "Later turns are folded (kept, not deleted); files come back from checkpoints.",
+             state,
+             rect.width * 2
+           ), nil}
+        ]
+
+    {Density.safe(title, state, rect.width - 2), body,
+     [control("cancel", SafeText.chrome(:cancel), {:local, :close_top_layer})],
+     if(state.focus in ["both", "conversation", "files"], do: state.focus, else: "both")}
+  end
+
+  # `{:history_search, %{query, rows, selected}}` (D19, C20's answers).
+  defp contents(
+         {:history_search, %{query: query, rows: rows, selected: selected}},
+         state,
+         rect,
+         _c
+       ) do
+    found =
+      rows
+      |> Enum.with_index()
+      |> Enum.map(fn {row, index} ->
+        text = row |> Map.get(:text, "") |> String.split(["\r\n", "\n"]) |> hd()
+        ago = SwarmCodeCLI.UI.Switcher.ago(Map.get(row, :at), state.now)
+        label = if ago, do: text <> "  · " <> ago, else: text
+        {"history-#{index}", Density.safe(label, state, rect.width * 2), nil}
+      end)
+
+    empty =
+      cond do
+        found != [] ->
+          []
+
+        String.trim(query) == "" ->
+          [
+            {"empty", Density.safe("Type to search your earlier prompts.", state, rect.width),
+             nil}
+          ]
+
+        true ->
+          [{"empty", Density.safe("No earlier prompt matches.", state, rect.width), nil}]
+      end
+
+    marker = SafeText.value(Support.glyph(:caret, state))
+
+    {Density.safe("History", state, rect.width - 2),
+     [{"query", Density.safe("› " <> query <> marker, state, rect.width * 2), nil}] ++
+       found ++ empty, [control("cancel", SafeText.chrome(:cancel), {:local, :close_top_layer})],
+     if(found == [], do: "cancel", else: "history-#{min(selected, length(found) - 1)}")}
+  end
+
+  # `{:queue_list}` (D20's bare `/queue`): what waits behind the live turn.
+  defp contents({:queue_list}, state, rect, _class) do
+    workspace = Map.get(state.read_model.snapshots, :workspace) || %{}
+    texts = Map.get(workspace, :queued_texts) || []
+
+    rows =
+      texts
+      |> Enum.with_index(1)
+      |> Enum.map(fn {text, n} ->
+        line = text |> to_string() |> String.split(["\r\n", "\n"]) |> hd()
+        {"queued-#{n}", Density.safe("#{n}  " <> line, state, rect.width * 2), nil}
+      end)
+
+    paused =
+      if Map.get(workspace, :queue_paused) == true and rows != [],
+        do: [
+          {"paused",
+           Density.safe(
+             "Paused · Enter on an empty composer runs the next one",
+             state,
+             rect.width
+           ), nil}
+        ],
+        else: []
+
+    rows =
+      if rows == [],
+        do: [{"empty", Density.safe("Nothing queued.", state, rect.width), nil}],
+        else:
+          rows ++
+            paused ++
+            [{"keys", Density.safe("/queue drop N · /queue clear", state, rect.width), nil}]
+
+    {Density.safe("Queue", state, rect.width - 2), rows,
+     [control("cancel", Density.safe("Close", state, 20), {:local, :close_top_layer})], "cancel"}
+  end
+
   defp contents({:research_form, owner}, state, rect, _class) do
     q = FieldEditors.fetch(state.field_editors, {:research_question, owner}) |> Editor.text()
     depth = Map.get(state.selection, {:research_form, :depth}, :medium)
@@ -1148,6 +1289,38 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
 
   # STUB (cli020 §8.3): `{:effort_pick, level}` is D18's action; until it is
   # in `Action`, a row has no target rather than an invalid one.
+  defp rewind_words(turn, state) do
+    files =
+      case Map.get(turn, :files) do
+        n when is_integer(n) and n > 0 -> "#{n} #{if n == 1, do: "file", else: "files"}"
+        _ -> nil
+      end
+
+    at =
+      case Map.get(turn, :at) do
+        %DateTime{} = at -> DateTime.to_unix(at, :millisecond)
+        at -> at
+      end
+
+    [
+      case Map.get(turn, :turn) do
+        n when is_integer(n) -> "Turn #{n}"
+        _ -> "Prompt"
+      end,
+      (Map.get(turn, :prompt) || "") |> String.split(["\r\n", "\n"]) |> hd(),
+      files,
+      SwarmCodeCLI.UI.Switcher.ago(at, state.now)
+    ]
+    |> Enum.reject(&(&1 in [nil, ""]))
+    |> Enum.join(" · ")
+  end
+
+  # STUB (cli020 §8.3): `{:rewind_choose, scope}` is D10's action.
+  defp rewind_target(scope) do
+    target = {:local, {:rewind_choose, scope}}
+    if match?({:ok, _}, SwarmCodeCLI.UI.ActionTarget.validate(target)), do: target
+  end
+
   defp effort_target(level) do
     target = {:local, {:effort_pick, level}}
     if match?({:ok, _}, SwarmCodeCLI.UI.ActionTarget.validate(target)), do: target

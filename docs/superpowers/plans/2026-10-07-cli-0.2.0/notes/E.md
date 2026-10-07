@@ -176,3 +176,27 @@ Branch `cli020/E` from M1 `3008f352`, worktree `~/dev/swarm-code-cli-wt/cli020-E
   read-only file ask is path + 12 + the count (other cards keep 6). Keys keep the card's chip
   layout (`y  once     d  deny     D  deny and stop`), not literal ` · ` separators.
 - Test `cli020/e14_read_only_card_test.exs`; projector/paint/approval tests 586/0.
+
+### E15 Drawing the new features
+- Composer rule (`Projector.Composer.hairline/2`): after two cells of rule, `$ shell` (accent,
+  bold) while the draft starts with `!` and the rest is not blank (D7's rule, computed here from
+  the draft text: `Composer.shell_draft?/1`; **handoff D**: if D exposes `shell?` differently, swap
+  the predicate), then one `[Image #N · 412 KB]` chip per `draft.attachments` entry; the queued
+  label keeps its place at the right. The chips are on the hairline only: when the workflow hint or
+  the hive strip takes the edge row they are not drawn (deviation; noted for review).
+- Paste placeholders `[Pasted text #N · L lines]` are drawn `:text_faint` as one span; cursor
+  skipping is D8's editor.
+- Transcript `kind: :shell` (C15; the DTO enum gains `:shell` in C, so tests put it with
+  `struct!`/`Map.put`): its own block, no turn header: `$ <command>` with `exit 0` muted, `exit N`
+  error, `stopped` warning, `running… ▮` accent; output through the usual `preview/6` (its
+  detail_ref "N more" line). The text `"$ cmd\noutput\n[exit N]"` is parsed; the item's `exit` wins.
+- Layers (`Dialog.contents/4`): `{:rewind, …}` rows `Turn 7 · <prompt> · 3 files · 2 h ago`
+  (`Switcher.ago/2` words, which read `2 h ago`), empty `Nothing to rewind yet.`;
+  `{:rewind_confirm, turn}` with `b/c/f` rows and the fold sentence (word-wrapped);
+  `{:history_search, …}` query row + matches + `No earlier prompt matches.`; `{:queue_list}` from
+  `queued_texts` numbered, `Nothing queued.`. **STUB** `rewind_target/1`: `{:rewind_choose, scope}`
+  targets appear only once D10's action validates.
+- Gallery: `Demo.Cli020` (8 scenes) wired into `Demo.Cells` at 120x36 rich (`cli020-*.svg`);
+  `cells_test` count +8.
+- Tests: `cli020/e15_drawing_test.exs` (12); ui + cli020 + demo dirs 2509 tests, 1 failure (the
+  cells count, fixed and re-run green).
