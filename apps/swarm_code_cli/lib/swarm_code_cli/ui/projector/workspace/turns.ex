@@ -1086,12 +1086,21 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
     # pass71 F12 (review R4): a command handed to the background, or a poll
     # that found it still running, has no exit code yet; a green check said it
     # had succeeded. It shows the clock until a poll reports the code.
-    pending? = status == :done and is_nil(code) and background_pending?(item, tool)
+    # cli020 E19 (ux-live-12): C10 says how a backgrounded command ended
+    # (`exit 0`, `killed at quit`, `still running`, `ended (exit not
+    # recorded)`); that replaces `exit code pending` and the `background` word.
+    ended = background_state(item)
+
+    pending? =
+      status == :done and is_nil(code) and background_pending?(item, tool) and
+        (ended == nil or ended == "still running")
 
     {mark, mark_style} =
-      if pending?,
-        do: {glyph(:clock_mark, state), {:role, :info, []}},
-        else: status_mark(status, state)
+      cond do
+        pending? -> {glyph(:clock_mark, state), {:role, :info, []}}
+        ended != nil -> status_mark(ended_status(ended), state)
+        true -> status_mark(status, state)
+      end
 
     verb = verb(tool)
     target = target(tool, verb)
@@ -1102,6 +1111,7 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
     summary =
       cond do
         counts != [] -> nil
+        ended != nil -> nil
         pending? and poll?(tool) -> "still running"
         true -> summary_line(tool) || last_line(item, tool) || bytes(tool.result_bytes)
       end
@@ -1118,7 +1128,10 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
           do: [{Density.safe(summary, state, @summary_cells) |> SafeText.value(), :muted}],
           else: []
         ) ++
-        exit_words(tool) ++
+        if(ended,
+          do: [{ended, ended_style(ended)}],
+          else: exit_words(tool)
+        ) ++
         if(duration, do: [{"  " <> duration, :faint}], else: [])
 
     left = [
@@ -1152,6 +1165,25 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
         (is_binary(item.text) and String.starts_with?(item.text, "exit code pending"))
 
   defp poll?(tool), do: String.starts_with?(tool.title || "", "poll background process")
+
+  defp background_state(item) do
+    case Map.get(item, :background_state) do
+      words when is_binary(words) and words != "" -> words
+      _ -> nil
+    end
+  end
+
+  defp ended_status("exit 0"), do: :done
+  defp ended_status("exit " <> _), do: :failed
+  defp ended_status("killed" <> _), do: :stopped
+  defp ended_status("still running"), do: :running
+  defp ended_status(_words), do: :done
+
+  defp ended_style("exit 0"), do: :muted
+  defp ended_style("exit " <> _), do: {:role, :error, []}
+  defp ended_style("killed" <> _), do: {:role, :warning, []}
+  defp ended_style("still running"), do: {:role, :info, []}
+  defp ended_style(_words), do: :muted
 
   # A command that failed says its exit code; one handed to the background
   # says so, since its output keeps arriving after the row.

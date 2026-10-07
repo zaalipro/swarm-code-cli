@@ -222,3 +222,16 @@ Branch `cli020/E` from M1 `3008f352`, worktree `~/dev/swarm-code-cli-wt/cli020-E
 - `RunPalette.row/3`: done/failed/stopped/interrupted/superseded rows drop the gauge; a glyph
   `✓`/`✕`/`■` (ASCII `+`/`x`/`#`, success/error/muted) and the words column widened by the gauge's
   cells (columns stay aligned). Test `cli020/e17_run_palette_test.exs`.
+
+### E18 Task lists
+- `Projector.Markdown` `block_rows({:item, …})`: a bullet item starting `[ ] `/`[x] `/`[X] ` draws
+  `☐`/`☑` (bullet style) in place of the bullet; ASCII keeps the brackets. The hang is the measured
+  marker width (`Width.cells/2` under the policy). Test `cli020/e18_task_list_test.exs` (both
+  policies).
+
+### E19 Background command row
+- `Turns.tool_rows/4`: an item's `background_state` (C10, read with `Map.get`) replaces the
+  `exit code pending …` summary and the `background` word, with a mark from it (`exit 0` done,
+  `exit N` failed, `killed…` stopped, `still running` keeps the clock). Test
+  `cli020/e19_background_row_test.exs` (the field is put on the read model after DTO validation,
+  which refuses it until C10 lands).
