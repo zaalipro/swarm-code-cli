@@ -709,8 +709,44 @@ defmodule SwarmCode.Daemon.Service.PersistedProjection do
             )
             |> Map.new(fn {id, count, finished} -> {id, {count, finished}} end)
 
-      {:ok, Enum.map(page, &Map.put(&1, :stats, Map.get(stats, &1.id, {0, nil}))), rest != []}
+      prompts = last_prompts(ids)
+
+      {:ok,
+       Enum.map(page, fn row ->
+         row
+         |> Map.put(:stats, Map.get(stats, row.id, {0, nil}))
+         |> Map.put(:last_prompt, Map.get(prompts, row.id))
+       end), rest != []}
     end
+  end
+
+  # cli020 C19 (ux-live-24): per conversation of the page, the first line of
+  # its newest user message that is not superseded (80 characters), in one
+  # query.
+  defp last_prompts([]), do: %{}
+
+  defp last_prompts(ids) do
+    newest =
+      from(m2 in Message,
+        where:
+          m2.conversation_id == parent_as(:prompt).conversation_id and m2.role == "user" and
+            is_nil(m2.superseded_at),
+        select: max(m2.position)
+      )
+
+    Repo.all(
+      from(m in Message,
+        as: :prompt,
+        where:
+          m.conversation_id in ^ids and m.role == "user" and is_nil(m.superseded_at) and
+            m.position == subquery(newest),
+        select: {m.conversation_id, fragment("substr(coalesce(?, ''), 1, 400)", m.content)}
+      )
+    )
+    |> Map.new(fn {id, text} ->
+      line = text |> String.split("\n", parts: 2) |> hd() |> String.trim() |> String.slice(0, 80)
+      {id, if(line == "", do: nil, else: line)}
+    end)
   end
 
   @doc """

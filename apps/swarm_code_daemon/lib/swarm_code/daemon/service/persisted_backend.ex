@@ -1925,7 +1925,9 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
           "live" => MapSet.member?(live, row.id),
           "waiting" => Map.get(waiting, row.id, 0),
           "unread" => unread?(row.last_seen_at, finished),
-          "current" => row.id == current
+          "current" => row.id == current,
+          # cli020 C19: what the conversation was last asked.
+          "last_prompt" => Map.get(row, :last_prompt)
         }
       end)
 

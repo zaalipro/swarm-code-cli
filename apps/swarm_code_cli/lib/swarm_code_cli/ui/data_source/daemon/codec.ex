@@ -31,6 +31,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
   @optional_wire_keys %{
     # pass73 T3/T8: outcomes the durable ledger saved before these existed.
     DTO.Outcome => [:disposition, :reason, :result],
+    DTO.ConversationSummary => [:last_prompt],
     DTO.WorkspaceSnapshot => [
       :mode,
       :chat_model,

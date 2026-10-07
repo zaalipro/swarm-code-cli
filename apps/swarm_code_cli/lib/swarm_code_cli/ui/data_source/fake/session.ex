@@ -280,7 +280,13 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Session do
       live: Enum.any?(runs, &(&1.state in [:running, :streaming, :retrying, :waiting_approval])),
       waiting: waiting,
       unread: false,
-      current: row.id == script.session.current
+      current: row.id == script.session.current,
+      # cli020 C19: the demo's newest prompt is its run's.
+      last_prompt:
+        case Enum.max_by(runs, & &1.created_sequence, fn -> nil end) do
+          %{title: title} when is_binary(title) and title != "" -> String.slice(title, 0, 80)
+          _ -> nil
+        end
     }
   end
 

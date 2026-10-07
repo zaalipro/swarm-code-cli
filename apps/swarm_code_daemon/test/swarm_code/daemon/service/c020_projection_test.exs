@@ -185,4 +185,60 @@ defmodule SwarmCode.Daemon.Service.C020ProjectionTest do
       assert meta.effort_levels == levels
     end
   end
+
+  describe "C19 resume rows" do
+    test "each conversation row carries its newest prompt's first line", c do
+      root = c.root <> "-resume"
+      File.mkdir_p!(root)
+      {:ok, project} = SwarmCode.Domain.Projects.create(%{name: "Resume", root_path: root})
+      {:ok, a} = Conversations.create(project.id)
+      {:ok, b} = Conversations.create(project.id)
+
+      for {conv, text} <- [{a, "old prompt"}, {a, "Fix the login bug\nwith details"}, {b, "x"}] do
+        {:ok, _} =
+          Conversations.create_message(%{conversation_id: conv.id, role: "user", content: text})
+      end
+
+      {:ok, superseded} =
+        Conversations.create_message(%{conversation_id: b.id, role: "user", content: "gone"})
+
+      Repo.update_all(
+        from(m in SwarmCode.Domain.Conversations.Message, where: m.id == ^superseded.id),
+        set: [superseded_at: DateTime.utc_now()]
+      )
+
+      {:ok, empty} = Conversations.create(project.id)
+
+      assert {:ok, rows, false} =
+               SwarmCode.Daemon.Service.PersistedProjection.conversations(project.id, nil, 50)
+
+      by_id = Map.new(rows, &{&1.id, &1})
+      assert by_id[a.id].last_prompt == "Fix the login bug"
+      assert by_id[b.id].last_prompt == "x"
+      assert by_id[empty.id].last_prompt == nil
+    end
+
+    test "the client's row decodes it (and defaults it for an older service)" do
+      base = %{
+        "id" => "33333333-3333-4333-8333-333333333333",
+        "title" => "t",
+        "created_at" => 1,
+        "updated_at" => 2,
+        "run_count" => 0,
+        "live" => false,
+        "waiting" => 0,
+        "unread" => false,
+        "current" => false
+      }
+
+      {:ok, row} =
+        SwarmCodeCLI.UI.DataSource.DTO.ConversationSummary.decode(
+          Map.put(base, "last_prompt", "Fix it")
+        )
+
+      assert row.last_prompt == "Fix it"
+      {:ok, old} = SwarmCodeCLI.UI.DataSource.DTO.ConversationSummary.decode(base)
+      assert old.last_prompt == nil
+    end
+  end
 end
