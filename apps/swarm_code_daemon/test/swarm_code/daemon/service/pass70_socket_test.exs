@@ -193,6 +193,39 @@ defmodule SwarmCode.Daemon.Service.Pass70SocketTest do
     assert text =~ "-defmodule Old do" and text =~ "+defmodule App do"
   end
 
+  # cli020 finisher: the rewind list and the prompt history travel the socket
+  # (a saved-session PTY run closed the connection on `/rewind`).
+  test "rewind.turns and history.search travel the socket", c do
+    {:ok, run} =
+      Conversations.create_run(%{
+        conversation_id: c.conv.id,
+        kind: "chat",
+        status: "done",
+        prompt: "Remember the socket",
+        started_at: DateTime.utc_now()
+      })
+
+    {:ok, _} =
+      Conversations.create_message(%{
+        conversation_id: c.conv.id,
+        role: "user",
+        content: "Remember the socket",
+        run_id: run.id
+      })
+
+    scope = %Scope{kind: :conversation, id: c.conv.id, generation: 1}
+
+    assert {:ok, %DTO.Outcome{status: :accepted, result: %DTO.CommandResult{turns: [turn]}}} =
+             roundtrip(c, {:rewind_turns, c.conv.id}, {:conversation, :rewind}, scope: scope)
+
+    assert turn.prompt == "Remember the socket"
+
+    assert {:ok, %DTO.Outcome{status: :accepted, result: %DTO.CommandResult{rows: [_ | _]}}} =
+             roundtrip(c, {:history_search, c.conv.id, "socket"}, {:conversation, :history},
+               scope: scope
+             )
+  end
+
   defp settled_change(c, scope, tries) do
     assert {:ok, %DTO.WorkspaceSnapshot{changes: [change]}} =
              roundtrip(c, {:query, :workspace, nil, :before, 50, 1_048_576}, {:query, :workspace},

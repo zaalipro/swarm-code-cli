@@ -32,6 +32,23 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
     # pass73 T3/T8: outcomes the durable ledger saved before these existed.
     DTO.Outcome => [:disposition, :reason, :result],
     DTO.ConversationSummary => [:last_prompt],
+    # cli020 C14/C16/C20: a command's answer names only the fields of its
+    # `kind` (the DTOs' `wire_defaults`); without these the exact-shape check
+    # refused every `rewind.turns`/`history.search`/`attachment.*` answer and
+    # closed the connection (finisher, saved-session PTY `/rewind`).
+    DTO.CommandResult => [
+      :token,
+      :path,
+      :attachment,
+      :text,
+      :attachments,
+      :restored,
+      :skipped,
+      :turns,
+      :rows
+    ],
+    DTO.HistoryRow => [:detail_ref],
+    DTO.StagedAttachment => [:bytes],
     DTO.WorkspaceSnapshot => [
       :mode,
       :chat_model,
