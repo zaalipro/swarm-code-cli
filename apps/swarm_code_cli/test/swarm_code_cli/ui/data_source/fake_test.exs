@@ -512,9 +512,13 @@ defmodule SwarmCodeCLI.UI.DataSource.FakeTest do
       assert_receive {:held, {:fake_source, _, %Delivery{kind: :response}}}
       [token] = Map.keys(:sys.get_state(client).workers)
       send(client, {:expired, token})
+      # cli020 finisher: the client emits the failure while it handles the
+      # expiry, so once it answers a system call the delivery is already in
+      # this mailbox (a loaded precommit missed the 100 ms assert_receive).
+      :sys.get_state(client)
 
-      assert_receive {:swarm_code_ui_data, _,
-                      %Delivery{kind: :response, body: %{state: :error}} = failure}
+      assert_received {:swarm_code_ui_data, _,
+                       %Delivery{kind: :response, body: %{state: :error}} = failure}
 
       assert failure.request_id == req.request_id
       assert {:ok, ^failure} = Delivery.validate(failure)
