@@ -789,7 +789,9 @@ defmodule SwarmCodeCLI.Plain.OneShot do
       "conversation_id" => state.conversation,
       "run_id" => List.first(state.runs),
       "state" => if(run, do: Atom.to_string(run.state), else: "not_started"),
-      "text" => clean(text),
+      # cli020 B5: the exact text; Jason escapes what JSON must, and a
+      # script decides what reaches a terminal.
+      "text" => text,
       "error" => message,
       "question" => state.question,
       "denied" => Enum.map(state.denied, &%{"tool" => &1.tool, "command" => &1.command}),
