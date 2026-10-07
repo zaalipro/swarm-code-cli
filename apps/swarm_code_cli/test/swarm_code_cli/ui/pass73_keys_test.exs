@@ -41,7 +41,9 @@ defmodule SwarmCodeCLI.UI.Pass73KeysTest do
       assert [:help | _] = state.layers
 
       {state, _} = ready() |> type("/pan") |> enter()
-      assert state.notice == {:command_feedback, "Panel is full: /panel full, compact or hidden."}
+
+      assert state.notice ==
+               {:command_feedback, "Panel is auto: /panel auto, full, compact or hidden."}
     end
 
     test "Down picks another command before Enter" do

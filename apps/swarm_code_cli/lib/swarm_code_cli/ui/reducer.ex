@@ -78,7 +78,7 @@ defmodule SwarmCodeCLI.UI.Reducer do
     unless SwarmCodeCLI.UI.Intent.valid_id?(init.source_epoch) and
              init.banner in [nil, :live_banner, :persisted_banner] and
              init.focus in ["main", "composer"] and init.keymap in [:default, :vim] and
-             init.panel_mode in [:full, :compact, :hidden] and
+             init.panel_mode in [:auto, :full, :compact, :hidden] and
              is_boolean(init.show_diffs) and is_boolean(init.agent_summaries?) and
              init.theme_mode in [:dark, :light] and
              init.theme_env in [nil, :dark, :light] and is_boolean(init.mouse?) and
@@ -3338,6 +3338,7 @@ defmodule SwarmCodeCLI.UI.Reducer do
 
     mode =
       case argument do
+        "auto" -> :auto
         "full" -> :full
         "compact" -> :compact
         value when value in ["hidden", "off", "hide", "none"] -> :hidden
@@ -3366,10 +3367,10 @@ defmodule SwarmCodeCLI.UI.Reducer do
         {state, cleared ++ set}
 
       argument == "" ->
-        feedback(state, "Panel is #{state.panel_mode}: /panel full, compact or hidden.")
+        feedback(state, "Panel is #{state.panel_mode}: /panel auto, full, compact or hidden.")
 
       true ->
-        feedback(state, "Panel is full, compact or hidden: /panel compact.")
+        feedback(state, "Panel is auto, full, compact or hidden: /panel compact.")
     end
   end
 
@@ -3684,9 +3685,11 @@ defmodule SwarmCodeCLI.UI.Reducer do
     case {narrow?, state.panel_mode} do
       {true, :hidden} -> state.panel_shown
       {true, _} -> :hidden
+      # cli020 (E5): auto → full → compact → hidden → auto.
+      {false, :auto} -> :full
       {false, :full} -> :compact
       {false, :compact} -> :hidden
-      {false, :hidden} -> :full
+      {false, :hidden} -> :auto
     end
   end
 
@@ -3702,7 +3705,12 @@ defmodule SwarmCodeCLI.UI.Reducer do
 
     state = %{state | panel_mode: mode, panel_shown: shown_panel(mode, state.panel_shown)}
     {state, effects} = feedback(state, words)
-    {state, effects ++ [{:save_preferences, %{panel_mode: mode}}]}
+
+    # cli020: cli.json takes "auto" once E5's Preferences knows it; until
+    # then :auto holds for the session and is not written (a stub).
+    if SwarmCodeCLI.UI.Init.Preferences.valid?(%{panel_mode: mode}),
+      do: {state, effects ++ [{:save_preferences, %{panel_mode: mode}}]},
+      else: {state, effects}
   end
 
   defp shown_panel(:hidden, shown), do: shown

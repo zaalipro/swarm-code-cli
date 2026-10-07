@@ -136,8 +136,8 @@ defmodule SwarmCodeCLI.UI.Action do
           | {:external_editor, DraftKey.t()}
           | {:external_edit_done, DraftKey.t(), {:ok, binary()} | {:error, external_edit_error()}}
           | {:toggle_dock, :inspector}
-          | {:panel_mode, :full | :compact | :hidden | :cycle}
-          | {:panel_preferences_loaded, :full | :compact | :hidden}
+          | {:panel_mode, :auto | :full | :compact | :hidden | :cycle}
+          | {:panel_preferences_loaded, :auto | :full | :compact | :hidden}
           | {:hint, :open | :again | :cancel | :backspace | {:key, binary()}}
           | {:overlay_open, binary(), binary()}
           | {:overlay,
@@ -406,10 +406,10 @@ defmodule SwarmCodeCLI.UI.Action do
   # pass72-O: the side panel's mode (Ctrl-B cycles it, /panel sets it) and
   # the mode the preferences file held at start.
   def validate({:panel_mode, mode} = action),
-    do: valid_action(action, mode in [:full, :compact, :hidden, :cycle])
+    do: valid_action(action, mode in [:auto, :full, :compact, :hidden, :cycle])
 
   def validate({:panel_preferences_loaded, mode} = action),
-    do: valid_action(action, mode in [:full, :compact, :hidden])
+    do: valid_action(action, mode in [:auto, :full, :compact, :hidden])
 
   # Hint mode: a badge key is one printable grapheme (a label is typed one
   # letter at a time); digits pick runs.

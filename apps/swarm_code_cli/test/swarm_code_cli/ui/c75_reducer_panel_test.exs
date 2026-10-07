@@ -50,7 +50,7 @@ defmodule SwarmCodeCLI.UI.C75ReducerPanelTest do
     assert state.agent_summaries? == true
 
     assert state.notice ==
-             {:command_feedback, "Panel is full, compact or hidden: /panel compact."}
+             {:command_feedback, "Panel is auto, full, compact or hidden: /panel compact."}
 
     refute Enum.any?(effects, &match?({:save_preferences, _}, &1))
   end
