@@ -1346,7 +1346,7 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
       |> List.last()
 
     if report && agent && agent.state == :done do
-      rows = prose_rows(report.text, state, width, @body + 2)
+      rows = report_rows(report.text, agent, state, width, @body + 2)
       shown = Enum.take(rows, @report_rows)
       more = length(rows) - length(shown)
 
@@ -1370,6 +1370,62 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
 
   defp stopped_report_rows(_items, _agent, _ctx, _state, _width), do: []
 
+  # cli020 E13 (ux-live-2): the engine's note to the Lead ("[Changes on
+  # branch … Integrate them with the integrate_agent tool when they are
+  # good.]", "[No file changes.]") is not drawn; a dim row says what changed.
+  defp report_rows(text, agent, state, width, indent) do
+    {body, stat} = worker_report(text || "", agent && Map.get(agent, :changes_stat))
+    rows = prose_rows(body, state, width, indent)
+
+    if stat,
+      do: rows ++ [spec([{String.duplicate(" ", indent), :plain}, {stat, :faint}], nil)],
+      else: rows
+  end
+
+  @worker_note ~r/\s*\[(?:Changes on branch [^\n]*?\((?<stat>[^\n]*)\)\. Integrate them with the integrate_agent tool when they are good\.|(?<none>No file changes\.))\]\s*\z/u
+
+  @doc false
+  @spec worker_report(String.t(), String.t() | nil) :: {String.t(), String.t() | nil}
+  def worker_report(text, changes_stat) when is_binary(text) do
+    case Regex.named_captures(@worker_note, text) do
+      %{"none" => "No file changes."} ->
+        {strip_note(text), "no file changes"}
+
+      %{"stat" => note_stat} ->
+        {strip_note(text), stat_words(changes_stat) || stat_words(note_stat) || note_stat}
+
+      nil ->
+        {text, nil}
+    end
+  end
+
+  defp strip_note(text), do: text |> String.replace(@worker_note, "") |> String.trim_trailing()
+
+  # `3 files changed, 40 insertions(+), 2 deletions(-)` or `+40 −2` →
+  # `+40 −2 in 3 files`.
+  defp stat_words(stat) when is_binary(stat) and stat != "" do
+    number = fn regexes ->
+      Enum.find_value(regexes, fn re ->
+        case Regex.run(re, stat) do
+          [_, n] -> String.to_integer(n)
+          _ -> nil
+        end
+      end)
+    end
+
+    files = number.([~r/(\d+) files? changed/u])
+    added = number.([~r/(\d+) insertions?\(\+\)/u, ~r/\+(\d+)/u]) || 0
+    removed = number.([~r/(\d+) deletions?\(-\)/u, ~r/[−-](\d+)/u]) || 0
+
+    cond do
+      files == nil and added == 0 and removed == 0 -> nil
+      files == nil -> "+#{added} −#{removed}"
+      true -> "+#{added} −#{removed} in #{files} #{if files == 1, do: "file", else: "files"}"
+    end
+  end
+
+  defp stat_words(_stat), do: nil
+
   # A worker's other items take no row until its lane is expanded; expanded,
   # each shows under the lane line.
   defp worker_detail_rows(item, ctx, state, width, force? \\ false) do
@@ -1377,13 +1433,26 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
     expanded? = MapSet.member?(state.expansions, first)
 
     cond do
-      force? and item.kind == :tool -> tool_rows(item, state, width, @body + 2)
-      force? and item.kind == :text -> prose_rows(item.text, state, width, @body + 2)
-      force? and item.kind == :error -> error_rows(item, state, width)
-      force? -> []
-      expanded? or item.id == first -> []
-      selected?(state, item.id) -> tool_rows(item, state, width, @body + 2)
-      true -> []
+      force? and item.kind == :tool ->
+        tool_rows(item, state, width, @body + 2)
+
+      force? and item.kind == :text ->
+        report_rows(item.text, agent(item, state), state, width, @body + 2)
+
+      force? and item.kind == :error ->
+        error_rows(item, state, width)
+
+      force? ->
+        []
+
+      expanded? or item.id == first ->
+        []
+
+      selected?(state, item.id) ->
+        tool_rows(item, state, width, @body + 2)
+
+      true ->
+        []
     end
   end
 

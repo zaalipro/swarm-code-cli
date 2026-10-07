@@ -153,3 +153,13 @@ Branch `cli020/E` from M1 `3008f352`, worktree `~/dev/swarm-code-cli-wt/cli020-E
   · r retries · Ctrl-P Retry failed run` (not "connection dropped").
 - Test helper `item/2` moved to `test/support/cli020_e_helpers.ex`. Test
   `cli020/e12_turn_header_test.exs`; projector/paint/demo tests 586/0.
+
+### E13 Worker changes, user-facing
+- `Turns.worker_report/2` strips the engine's trailing note (`run_server.ex` `report_with_note/5`:
+  `[Changes on branch <b> (<stat>). Integrate them …]` / `[No file changes.]`) and returns the
+  dim row: `+N −M in K files` from the agent's `changes_stat` (git shortstat words or `+N −M`),
+  else from the note's own stat, or `no file changes`. Used where a worker's report is drawn in the
+  transcript (expanded lane, stopped swarm's report rows). Stored text unchanged. The panel's
+  finding already drops the note (`panel_facts.ex` `without_engine_notes/1`).
+- Test `cli020/e13_worker_changes_test.exs` (unit level; the transcript path is the existing
+  `prose_rows` call sites switched to `report_rows/5`).
