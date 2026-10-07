@@ -50,6 +50,7 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
   # cli74: how long the desktop has to open a folder (`o` in Settings).
   @folder_ms 5_000
   # cli020 D4: pbcopy's bounds; the terminal clipboard (OSC 52) takes 64 KiB.
+  @max_scene_failures 5
   @image_ms 25_000
   @osascript_ms 5_000
   @sips_ms 10_000
@@ -178,6 +179,10 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
        # task in `jobs` (ref => %{kind, task, timer}), each with a deadline.
        jobs_sup: start_jobs(),
        jobs: %{},
+       # cli020 D12: the projector (a test injects a failing one) and the
+       # failed screen updates in a row.
+       projector: Keyword.get(opts, :projector, &Projector.project/1),
+       scene_failures: 0,
        # cli020 D9: the slot token of the image paste in flight; a job
        # result for another token is stale and deletes its file.
        image_token: nil,
@@ -440,6 +445,12 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
         {:noreply, state}
     end
   end
+
+  # cli020 D12: the one re-projection after a failed screen update.
+  def handle_info(:reproject, %{phase: :running} = state),
+    do: {:noreply, state |> project() |> schedule()}
+
+  def handle_info(:reproject, state), do: {:noreply, state}
 
   def handle_info({:EXIT, _, :shutdown}, state), do: {:stop, :normal, state}
   def handle_info(_, state), do: {:noreply, state}
@@ -1332,18 +1343,54 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
     commit(%{state | ui: ui}, state.ui)
   end
 
+  # cli020 D12 (tui-code-8): a scene that fails validation, or a projector
+  # that raises, keeps the last good scene on screen (the slot still holds
+  # it), says so, and asks for one more projection; only the fifth failure
+  # in a row closes the session.
   defp project(state) do
-    {scene, table} = Projector.project(state.ui)
     state = %{state | dirty?: false}
 
-    case SceneSlot.put(state.slot, scene) do
-      :ok ->
-        %{state | table: table}
+    case safe_project(state) do
+      {:ok, scene, table} ->
+        case SceneSlot.put(state.slot, scene) do
+          :ok ->
+            %{state | table: table, scene_failures: 0}
 
-      _ ->
-        explain_invalid_scene(scene, state.instruction_sink)
-        begin_shutdown(state, :invalid_scene)
+          _ ->
+            if state.scene_failures + 1 >= @max_scene_failures,
+              do: explain_invalid_scene(scene, state.instruction_sink),
+              else: Logger.warning("ncode: " <> invalid_scene_words(scene))
+
+            scene_failed(state)
+        end
+
+      {:raised, words} ->
+        Logger.error("ncode: the screen update raised: " <> words)
+        scene_failed(state)
     end
+  end
+
+  defp safe_project(state) do
+    {scene, table} = state.projector.(state.ui)
+    {:ok, scene, table}
+  rescue
+    error -> {:raised, Exception.format(:error, error, __STACKTRACE__) |> String.slice(0, 4_000)}
+  end
+
+  defp scene_failed(%{scene_failures: failures} = state)
+       when failures + 1 >= @max_scene_failures,
+       do: begin_shutdown(%{state | scene_failures: failures + 1}, :invalid_scene)
+
+  defp scene_failed(state) do
+    ui = %{
+      state.ui
+      | notice: {:command_feedback, "A screen update failed; showing the last good one."},
+        notice_at: state.ui.now,
+        revision: state.ui.revision + 1
+    }
+
+    send(self(), :reproject)
+    %{state | ui: ui, scene_failures: state.scene_failures + 1}
   end
 
   # A close the user did not ask for is said in plain words; a session that
@@ -1397,13 +1444,14 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
   # A scene the slot refuses closes the session; saying why on stderr is the
   # difference between a bug report and a silent exit. With SWARM_SCENE_DUMP
   # set the scene is written there as an Erlang term for inspection.
-  defp explain_invalid_scene(scene, sink) do
-    bytes = safe_size(scene)
-
-    text =
+  defp invalid_scene_words(scene),
+    do:
       "the screen failed validation " <>
         "(valid: #{inspect(match?(:ok, SwarmCodeCLI.UI.Scene.validate(scene)))}, " <>
-        "bytes: #{bytes}, size: #{inspect(Map.get(scene, :size))})"
+        "bytes: #{safe_size(scene)}, size: #{inspect(Map.get(scene, :size))})"
+
+  defp explain_invalid_scene(scene, sink) do
+    text = invalid_scene_words(scene)
 
     if is_pid(sink),
       do: Logger.error("session closed: " <> text),
