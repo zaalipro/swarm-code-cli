@@ -131,8 +131,11 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
           block
       end)
 
-    # Headings are not items.
-    items = Enum.reject(options, fn {id, _, _} -> match?(%{heading: _}, Map.get(decor, id)) end)
+    # Headings (and E20's sublines) are not items.
+    items =
+      Enum.reject(options, fn {id, _, _} ->
+        match?(%{heading: _}, Map.get(decor, id)) or match?(%{subline: _}, Map.get(decor, id))
+      end)
 
     found = Enum.find_index(items, fn {id, _, _} -> id == focus end)
     ordinal = found || 0
@@ -424,6 +427,20 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
     ]
   end
 
+  defp decor_spans(%{subline: text}, _focused?, state, width) do
+    policy = state.capabilities.ambiguous_width
+    # Under the title: past the rail and the mark column.
+    lead = "    "
+    room = max(1, width - Width.cells(lead, policy))
+
+    [
+      %Span{
+        text: Density.safe(lead <> Width.elide(text, room, :end, policy), state, width),
+        style: RunRow.tinted(:text_faint, state)
+      }
+    ]
+  end
+
   defp decor_spans(row, focused?, state, width) do
     policy = state.capabilities.ambiguous_width
     surface = if focused?, do: hover(state)
@@ -464,6 +481,11 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
     # as long as a readable stretch of it is left, and one cell stays clear
     # before the border as on the rows with a kind at the right.
     room = width - measure.([rail | mark]) - measure.(detail) - 1
+
+    # cli020 E20: words at the right edge (a conversation's age) keep their
+    # place too, while a readable stretch of the title is left.
+    right_room = if row.right in [nil, ""], do: 0, else: Width.cells(row.right, policy) + 2
+    room = if room - right_room >= 16, do: room - right_room, else: room
 
     title_text =
       if detail != [] and Width.cells(row.title, policy) > room and room >= 16,
@@ -1224,17 +1246,36 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
         entries
       end
 
+    # cli020 E20: an entry's `subline` is its own dim row under it, not an item.
     options =
-      Enum.map(entries, fn entry ->
-        {entry.id, Density.safe(entry.label, state, rect.width * 4), entry.target}
+      Enum.flat_map(entries, fn entry ->
+        row = {entry.id, Density.safe(entry.label, state, rect.width * 4), entry.target}
+
+        case Map.get(entry, :subline) do
+          text when is_binary(text) ->
+            [row, {entry.id <> ":subline", Density.safe(text, state, rect.width * 2), nil}]
+
+          _ ->
+            [row]
+        end
       end)
 
     marks? = Enum.any?(entries, &Map.get(&1, :current?, false))
 
+    sublines =
+      for entry <- entries, is_binary(Map.get(entry, :subline)), into: %{} do
+        {entry.id <> ":subline", %{subline: entry.subline}}
+      end
+
     decor =
       Map.new(entries, fn entry ->
         title = Map.get(entry, :title) || entry.label
-        {right, right_role} = entry_right(entry, state)
+
+        {right, right_role} =
+          case Map.get(entry, :right) do
+            words when is_binary(words) -> {words, :text_faint}
+            _ -> entry_right(entry, state)
+          end
 
         {entry.id,
          %{
@@ -1247,6 +1288,7 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
            right_role: right_role
          }}
       end)
+      |> Map.merge(sublines)
 
     options = if options == [], do: [{"empty", SafeText.chrome(:no_results), nil}], else: options
     title = Density.safe(switcher_title(search_query(query, state)), state, rect.width - 2)

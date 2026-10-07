@@ -235,3 +235,13 @@ Branch `cli020/E` from M1 `3008f352`, worktree `~/dev/swarm-code-cli-wt/cli020-E
   `exit N` failed, `killed…` stopped, `still running` keeps the clock). Test
   `cli020/e19_background_row_test.exs` (the field is put on the read model after DTO validation,
   which refuses it until C10 lands).
+
+### E20 Resume rows
+- `Switcher.Entry` gains `right` and `subline`. A conversation entry: its detail is runs/live/
+  waiting; `right` is the age (`2 h ago`, `Switcher.ago/2` words) or `open`; `subline` is C19's
+  `last_prompt` (first line; `Map.get`). `Dialog` draws `right` at the right edge (a long title is
+  elided to keep it while ≥ 16 cells of title remain) and the subline as its own dim row
+  (`decor_spans(%{subline: …})`), not counted as an item.
+- Tests updated: `pass70_qa_picker_row_test` (`11 runs  open │`), `conversations_test` (the label
+  no longer ends `· open`; the entry's `right` is `open`). New `cli020/e20_resume_rows_test.exs`.
+  ui + demo dirs 2438/0.

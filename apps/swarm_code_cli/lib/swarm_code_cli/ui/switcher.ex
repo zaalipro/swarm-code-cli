@@ -18,6 +18,10 @@ defmodule SwarmCodeCLI.UI.Switcher.Entry do
     current?: false,
     # cli020 E9: listed before every other match (the retry of a failed run).
     pinned?: false,
+    # cli020 E20: words at the row's right edge (a conversation's age) and a
+    # dim second line under it (its last prompt).
+    right: nil,
+    subline: nil,
     order: 0,
     search: nil
   ]
@@ -176,13 +180,26 @@ defmodule SwarmCodeCLI.UI.Switcher do
     |> Enum.with_index(-1_000)
     |> Enum.map(fn {item, order} ->
       title = conversation_title(item)
-      detail = conversation_detail(item, now)
+      detail = conversation_detail(item)
+
+      right = if item.current, do: "open", else: ago(Map.get(item, :updated_at), now)
+
+      prompt =
+        case Map.get(item, :last_prompt) do
+          text when is_binary(text) ->
+            text |> String.split(["\r\n", "\n"]) |> hd() |> String.trim()
+
+          _ ->
+            nil
+        end
 
       %{
         entry(title <> " · " <> detail, :conversation, {:local, {:open_conversation, item.id}})
         | title: title,
           detail: detail,
           current?: item.current == true,
+          right: right,
+          subline: if(prompt in [nil, ""], do: nil, else: prompt),
           order: order
       }
     end)
@@ -199,7 +216,7 @@ defmodule SwarmCodeCLI.UI.Switcher do
 
   defp conversation_title(_item), do: "Untitled conversation"
 
-  defp conversation_detail(item, now) do
+  defp conversation_detail(item) do
     runs =
       case item.run_count do
         1 -> "1 run"
@@ -209,8 +226,8 @@ defmodule SwarmCodeCLI.UI.Switcher do
     [
       runs,
       if(item.live, do: "live"),
-      if(is_integer(item.waiting) and item.waiting > 0, do: "#{item.waiting} waiting"),
-      if(item.current, do: "open", else: ago(Map.get(item, :updated_at), now))
+      # cli020 E20: when it last moved is the row's right edge (`right`).
+      if(is_integer(item.waiting) and item.waiting > 0, do: "#{item.waiting} waiting")
     ]
     |> Enum.reject(&is_nil/1)
     |> Enum.join(" · ")
