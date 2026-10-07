@@ -36,8 +36,34 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
 
   alias SwarmCodeCLI.Release.TerminalPreferences
 
+  @provider_setup_words "Add a model provider to start: pick a preset, paste its key."
+  # cli020 B12/B13: what the interactive TUI answers with the Providers page.
+  @setup_reasons [:provider_required, :model_required, :endpoint_required]
+
+  defp setup_words(:provider_required), do: @provider_setup_words
+
+  defp setup_words(reason),
+    do: session_failure(reason, nil).message <> " " <> @provider_setup_words
+
   @exit_failure 1
   @exit_usage 2
+
+  # cli020 §8.4: the Preferences fields E adds, passed into the launch map
+  # unchanged (like `mouse?`) for D's `UI.Init`/`State`.
+  @passthrough_preferences [
+    :panel_mode,
+    :notify,
+    :title?,
+    :paste_collapse_lines,
+    :exit_transcript,
+    :wheel_lines,
+    :notice_seconds,
+    :hint_letters,
+    :reduced_motion,
+    :palette,
+    :status_items
+  ]
+
   @exit_refused 3
   @log_bytes 2_097_152
   @log_files 3
@@ -167,8 +193,8 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
   end
 
   @doc "Prints a failure (two lines and the log path) on stderr and returns its exit status."
-  @spec report(failure()) :: non_neg_integer()
-  def report(%{status: status, message: message, action: action}) do
+  @spec report(failure(), Path.t()) :: non_neg_integer()
+  def report(%{status: status, message: message, action: action} = failure, log \\ log_path(nil)) do
     # A sentence that names ncode itself is not prefixed twice (pass70 F14).
     message =
       case message do
@@ -179,14 +205,25 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
     lines =
       ["ncode: " <> message] ++
         if(action != "", do: ["  " <> action], else: []) ++
-        if(status != @exit_usage and File.exists?(log_path(nil)),
-          do: ["  Details: " <> log_path(nil)],
-          else: []
-        )
+        if(details?(failure, log), do: ["  Details: " <> log], else: [])
 
     say(:stderr, Enum.join(lines, "\n"))
     status
   end
+
+  # cli020 B15 (onboarding-3): the log is named only when it holds something,
+  # and never for a refusal its own sentence fixes.
+  @self_explained [:provider_required, :endpoint_required, :model_required]
+
+  defp details?(%{status: status} = failure, log) do
+    status != @exit_usage and Map.get(failure, :reason) not in @self_explained and
+      match?({:ok, %File.Stat{type: :regular, size: size}} when size > 0, File.stat(log))
+  end
+
+  @doc false
+  # cli020 B15: the failure a session reason becomes (tests).
+  @spec session_failure_for(atom()) :: failure()
+  def session_failure_for(reason), do: session_failure(reason, nil)
 
   @doc """
   pass72 G17 (QA Q17): writes the closing words, but never waits more than
@@ -219,6 +256,10 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
   ## The TUI session
 
   defp main(test_boot, opts) do
+    # cli020 B9: SIGTERM and SIGHUP close the session the normal way (the
+    # terminal restored, the runs stopped, the private folder removed).
+    if test_boot == nil, do: SwarmCodeCLI.Release.Signals.install(self())
+
     result =
       guarded(fn ->
         preflight!()
@@ -233,22 +274,38 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
           test_boot,
           fn session -> tui(session, executable, Keyword.put(opts, :resume_picker?, ask?)) end,
           root,
-          conversation: selection
+          conversation: selection,
+          interactive: true
         )
       end)
 
-    case result do
-      {:ok, {:ok, outcome, summary}} ->
-        print_summary(summary)
-        outcome_status(outcome)
+    status =
+      case result do
+        {:ok, {:ok, outcome, summary}} ->
+          print_summary(summary)
+          outcome_status(outcome)
 
-      {:ok, {:error, failure}} ->
-        report(failure)
+        {:ok, {:error, failure}} ->
+          clear_starting_line(test_boot)
+          report(failure)
 
-      {:error, failure} ->
-        report(failure)
-    end
+        {:error, failure} ->
+          clear_starting_line(test_boot)
+          report(failure)
+      end
+
+    # cli020 B15: the log is on disk before the VM stops.
+    SwarmCodeCLI.Release.flush_logs()
+    status
   end
+
+  # cli020 B20: a failure before the full screen erases the launcher's
+  # "Starting ncode…" too (the summary does it itself).
+  defp clear_starting_line(nil) do
+    if match?({:ok, _}, :io.columns(:standard_io)), do: IO.write("\r\e[2K")
+  end
+
+  defp clear_starting_line(_test_boot), do: :ok
 
   defp tui(session, executable, opts) do
     started_at = DateTime.utc_now()
@@ -266,7 +323,9 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
 
   # Starts storage, selects and configures the session, runs `fun`, and always
   # closes the owned runtime. `fun` returns `{:ok, outcome, summary}`.
-  defp with_storage(test_boot, fun, root, selection) do
+  defp with_storage(test_boot, fun, root, options) do
+    {interactive?, selection} = Keyword.pop(options, :interactive, false)
+
     version = Application.spec(:swarm_code_daemon, :vsn) |> to_string()
     boot = test_boot || BootConfig.canonical(platform(), System.user_home!(), version)
 
@@ -276,7 +335,7 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
     try do
       with :ok <- await_storage(launcher, boot),
            :ok <- boot_runtime(),
-           {:ok, session} <- open_session(root, selection) do
+           {:ok, session} <- open_session(root, selection, interactive?) do
         fun.(session)
       end
     after
@@ -291,25 +350,97 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
     end
   end
 
-  defp open_session(root, selection) do
+  defp open_session(root, selection, interactive?) do
     # SQL callers are short-lived. Returning plain session structs does not
     # retain native statement resources in the launcher while the TUI runs.
     query_worker(fn ->
-      with {:ok, session} <- SessionSelection.open(root, selection),
-           {:ok, session} <- prepare(session) do
-        {:ok, session}
-      else
-        {:error, reason} -> {:error, session_failure(reason, selection)}
+      case resolved_selection(root, selection) do
+        {:ok, selection} -> open_resolved(root, selection, interactive?)
+        {:error, failure} -> {:error, failure}
       end
     end)
   end
 
+  defp resolved_selection(root, selection) when is_binary(selection) do
+    case Ecto.UUID.cast(selection) do
+      {:ok, ^selection} -> {:ok, selection}
+      _ -> resolve_resume(root, selection)
+    end
+  end
+
+  defp resolved_selection(_root, selection), do: {:ok, selection}
+
+  @doc """
+  cli020 B19 (competitors-12): the conversation of the project at `root`
+  that `value` names: an exact title, else a unique id prefix of at least 6
+  characters. Several matches are a usage error listing up to five.
+  """
+  @spec resolve_resume(Path.t(), String.t()) :: {:ok, String.t()} | {:error, failure()}
+  def resolve_resume(root, value) do
+    case SessionSelection.resolve(root, value) do
+      {:ok, id} ->
+        {:ok, id}
+
+      {:error, :none} ->
+        {:error,
+         failure(
+           @exit_usage,
+           "No conversation of this project matches #{value}.",
+           "Give a title, or 6 or more characters of an id; ncode --resume alone opens the picker."
+         )}
+
+      {:error, {:ambiguous, n, rows}} ->
+        lines = Enum.map(rows, fn {id, title} -> "#{id}  #{title}" end)
+
+        {:error,
+         failure(
+           @exit_usage,
+           "--resume #{value} matches #{n} conversations.",
+           Enum.join(lines ++ ["Name more of the id, or run ncode --resume to pick."], "\n")
+         )}
+    end
+  end
+
+  defp open_resolved(root, selection, interactive?) do
+    case SessionSelection.open(root, selection) do
+      {:ok, opened} ->
+        case prepare(opened, interactive?) do
+          {:ok, session} ->
+            {:ok, session}
+
+          {:error, reason} ->
+            # cli020 B11: a failed start leaves no empty conversation (and
+            # no project row this call created).
+            SessionSelection.discard(opened)
+            {:error, session_failure(reason, selection)}
+        end
+
+      {:error, reason} ->
+        {:error, session_failure(reason, selection)}
+    end
+  end
+
   # pass74 S1-13 (D11): `ncode settings` opens without a usable provider —
   # that is how one is added; the dispatch refuses a send until then.
-  defp prepare(session) do
+  # cli020 B12 (onboarding-2): the interactive TUI (the release's full screen
+  # on a terminal; `main/2`'s preflight checked both) opens Providers instead of
+  # exiting 3; `-p`, `--plain` and a non-tty keep exit 3.
+  defp prepare(session, interactive?) do
     case SessionConfiguration.prepare(session, System.get_env()) do
-      {:error, :provider_required} ->
-        if settings_only?(), do: {:ok, session}, else: {:error, :provider_required}
+      {:error, reason} when reason in @setup_reasons ->
+        cond do
+          reason == :provider_required and settings_only?() ->
+            {:ok, session}
+
+          interactive? ->
+            {:ok,
+             session
+             |> Map.put(:open_settings, "providers")
+             |> Map.put(:setup_notice, setup_words(reason))}
+
+          true ->
+            {:error, reason}
+        end
 
       other ->
         other
@@ -354,6 +485,8 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
   end
 
   defp run_ui(session, executable, resume_picker?) do
+    # cli020 B10: folders a hard exit left behind go first.
+    _ = SwarmCodeCLI.Release.SocketSweep.sweep()
     {dir, stat} = private_directory!()
     {:ok, supervisor} = Supervisor.start_link([], strategy: :one_for_all, max_restarts: 0)
     Process.unlink(supervisor)
@@ -371,7 +504,7 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
           project_id: session.project.id,
           conversation_id: conversation_id,
           source_epoch: source_epoch,
-          first_run_notice: session[:notice]
+          first_run_notice: session[:notice] || session[:setup_notice]
         )
 
       path = Path.join(dir, "s")
@@ -433,7 +566,7 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
       # them ignores the keys).
       init =
         struct(init,
-          settings_open: settings_open(),
+          settings_open: settings_open() || session[:open_settings],
           prefs: launch.prefs,
           launch_facts: launch_facts(launch, session.project.root_path, cli_path),
           resume_picker?: resume_picker?
@@ -501,6 +634,10 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
                "The terminal stopped responding, so ncode closed.",
                "Run ncode again; your conversation is saved."
              )}
+
+          {:shutdown_signal, signal} when signal in [:sigterm, :sighup] ->
+            Logger.info("closing on #{signal}")
+            {:signal, signal}
 
           {:DOWN, ^supervisor_monitor, :process, ^supervisor, reason} ->
             Logger.error("session supervisor stopped: #{inspect(reason)}")
@@ -574,7 +711,9 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
     ascii? = ascii?(env)
     start = start_preferences(env, preferences, desktop_mode)
 
-    %{
+    start
+    |> Map.take(@passthrough_preferences)
+    |> Map.merge(%{
       theme: start.theme,
       theme_env: start.theme_env,
       mouse?: start.mouse?,
@@ -591,7 +730,7 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
       env_overrides: %{},
       flag_overrides: %{},
       warnings: []
-    }
+    })
   end
 
   @doc "pass74 S1-13: what the settings layer shows about this launch (§3.8.3)."
@@ -624,9 +763,17 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
   """
   @spec tui_selection() :: {:latest | :new | String.t(), boolean()}
   def tui_selection do
-    if System.get_env("SWARM_CONVERSATION") in [nil, ""] and not settings_only?(),
-      do: startup_selection(SwarmCodeCLI.Release.preferences_path()),
-      else: {selection_from_env(), false}
+    cond do
+      # cli020 B19: bare `ncode --resume` opens the latest with the picker over it.
+      System.get_env("SWARM_RESUME_PICKER") == "1" and not settings_only?() ->
+        {:latest, true}
+
+      System.get_env("SWARM_CONVERSATION") in [nil, ""] and not settings_only?() ->
+        startup_selection(SwarmCodeCLI.Release.preferences_path())
+
+      true ->
+        {selection_from_env(), false}
+    end
   end
 
   @doc false
@@ -696,10 +843,37 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
 
   ## Summary (B9)
 
+  @doc false
+  # cli020 B21: `summary/3` for tests (`exchanges:` replaces cli.json's N).
+  def exit_summary(session, started_at, opts \\ []), do: summary(session, started_at, opts)
+
+  @doc """
+  cli020 B21 (E26's `exit_transcript`, 0..20, default 3): how many of the
+  last exchanges the exit summary prints, from cli.json's values.
+  """
+  @spec exit_transcript(map()) :: 0..20
+  def exit_transcript(values) when is_map(values) do
+    case Map.get(values, "exit_transcript") do
+      n when is_integer(n) and n in 0..20 -> n
+      _ -> 3
+    end
+  end
+
+  @exchange_bytes 4_000
+  @transcript_bytes 24 * 1024
+
   # Plain SQL: this app does not depend on Ecto at compile time.
-  defp summary(session, started_at) do
+  defp summary(session, started_at, opts \\ []) do
     id = session.conversation.id
     since = DateTime.to_iso8601(started_at)
+
+    n =
+      Keyword.get_lazy(opts, :exchanges, fn ->
+        SwarmCodeCLI.Release.preferences_path()
+        |> SwarmCode.Settings.CliFile.read_all()
+        |> Map.get(:values, %{})
+        |> exit_transcript()
+      end)
 
     title = scalar("SELECT title FROM conversations WHERE id = ?1", [id])
 
@@ -720,6 +894,8 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
     %{
       title: title,
       prompt: prompt,
+      exchanges: exchanges(id, n),
+      spent: spent(id, since, started_at),
       files:
         for(
           [path] <- files,
@@ -742,6 +918,118 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
       }
   end
 
+  # cli020 B21 (decision 4d): the last `n` exchanges, newest rows first from
+  # SQL, each clipped to 4,000 bytes and 24 KiB in all (the newest kept),
+  # returned oldest first.
+  defp exchanges(_id, 0), do: []
+
+  defp exchanges(id, n) do
+    rows(
+      "SELECT role, content FROM messages WHERE conversation_id = ?1 AND superseded_at IS NULL " <>
+        "AND role IN ('user','assistant','shell') AND content != '' " <>
+        "ORDER BY position DESC LIMIT ?2",
+      [id, 2 * n]
+    )
+    |> Enum.reduce_while({[], 0}, fn
+      [role, content], {kept, bytes} when is_binary(content) ->
+        text = clip(content, @exchange_bytes)
+        bytes = bytes + byte_size(text)
+
+        if bytes > @transcript_bytes,
+          do: {:halt, {kept, bytes}},
+          else: {:cont, {[{role, text} | kept], bytes}}
+
+      _row, acc ->
+        {:cont, acc}
+    end)
+    |> elem(0)
+  end
+
+  defp clip(text, max) when byte_size(text) <= max, do: text
+  defp clip(text, max), do: valid_prefix(binary_part(text, 0, max)) <> "…"
+
+  defp valid_prefix(bin) do
+    if String.valid?(bin) or bin == "",
+      do: bin,
+      else: valid_prefix(binary_part(bin, 0, byte_size(bin) - 1))
+  end
+
+  # cli020 B21 (decision 4g): tokens, cost and time of the runs this session
+  # started; nil when it started none.
+  defp spent(id, since, started_at) do
+    case rows(
+           "SELECT COALESCE(SUM(tokens_in),0), COALESCE(SUM(tokens_out),0), SUM(cost_usd), " <>
+             "COUNT(cost_usd), COUNT(*) FROM runs WHERE conversation_id = ?1 AND inserted_at >= ?2",
+           [id, since]
+         ) do
+      [[tokens_in, tokens_out, cost, costed, count]] when is_integer(count) and count > 0 ->
+        %{
+          tokens: (tokens_in || 0) + (tokens_out || 0),
+          cost: if(costed == count, do: cost),
+          seconds: max(DateTime.diff(DateTime.utc_now(), started_at), 0)
+        }
+
+      _ ->
+        nil
+    end
+  end
+
+  @doc false
+  def spent_line(%{tokens: tokens, cost: cost, seconds: seconds}) do
+    [tokens_words(tokens), cost && cost_words(cost), duration(seconds)]
+    |> Enum.filter(&is_binary/1)
+    |> Enum.join(" · ")
+  end
+
+  defp tokens_words(n) when n < 1_000, do: "#{n} tokens"
+  defp tokens_words(n) when n < 1_000_000, do: one_decimal(n / 1_000) <> "k tokens"
+  defp tokens_words(n), do: one_decimal(n / 1_000_000) <> "M tokens"
+
+  defp one_decimal(x), do: :erlang.float_to_binary(x * 1.0, decimals: 1)
+
+  defp cost_words(cost) when is_number(cost) and cost < 0.01, do: "<$0.01"
+
+  defp cost_words(cost) when is_number(cost),
+    do: "$" <> :erlang.float_to_binary(cost * 1.0, decimals: 2)
+
+  defp cost_words(_), do: nil
+
+  defp duration(s) when s < 60, do: "#{s}s"
+  defp duration(s) when s < 3_600, do: "#{div(s, 60)}m #{rem(s, 60)}s"
+
+  defp duration(s),
+    do:
+      "#{div(s, 3_600)}h #{String.pad_leading(Integer.to_string(div(rem(s, 3_600), 60)), 2, "0")}m"
+
+  # The exchanges as lines: `› ` for a prompt, `$ ` for a shell row (their
+  # continuation lines indented two), a reply as is; a blank line before
+  # every prompt but the first. Terminal controls never reach the scrollback.
+  defp exchange_lines(exchanges) do
+    exchanges
+    |> Enum.with_index()
+    |> Enum.flat_map(fn {{role, text}, index} ->
+      lines = text |> scrub() |> String.split("\n")
+
+      body =
+        case role do
+          "user" -> mark(lines, "› ")
+          "shell" -> mark(lines, "$ ")
+          _ -> lines
+        end
+
+      if index > 0 and role in ["user", "shell"], do: ["" | body], else: body
+    end)
+  end
+
+  defp mark([first | rest], prefix), do: [prefix <> first | Enum.map(rest, &("  " <> &1))]
+
+  defp scrub(text) do
+    text
+    |> String.replace(~r/\e\][^\a\e]*(?:\a|\e\\)?/u, "")
+    |> String.replace(~r/\e\[[0-?]*[ -\/]*[@-~]/u, "")
+    |> String.replace(~r/[\x00-\x08\x0B-\x1F\x7F\x{80}-\x{9F}]/u, "")
+  end
+
   defp scalar(sql, params) do
     case rows(sql, params) do
       [[value] | _] when is_binary(value) -> value
@@ -756,7 +1044,12 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
     end
   end
 
-  defp print_summary(summary) do
+  defp print_summary(summary), do: say(:stdio, summary_text(summary))
+
+  @doc false
+  # cli020 B20/B21: the exit summary as written. It starts by erasing the
+  # launcher's "Starting ncode…" line, then the last exchanges, then the block.
+  def summary_text(summary) do
     dim = fn text -> if(color?(), do: "\e[2m" <> text <> "\e[22m", else: text) end
     label = fn text -> dim.(String.pad_trailing(text, 14)) end
 
@@ -771,6 +1064,7 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
         "",
         "  " <> bold(title),
         prompt && "  " <> label.("Last prompt") <> prompt,
+        summary[:spent] && "  " <> label.("Spent") <> spent_line(summary[:spent]),
         files != [] && "  " <> label.("Files changed") <> files_line(files),
         stopped != [] && "  " <> label.("Stopped") <> stopped_lines(stopped),
         notice && "  " <> label.("Note") <> notice,
@@ -779,7 +1073,13 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
       ]
       |> Enum.filter(&is_binary/1)
 
-    say(:stdio, Enum.join(lines, "\n"))
+    transcript =
+      case exchange_lines(summary[:exchanges] || []) do
+        [] -> ""
+        lines -> Enum.join(lines, "\n") <> "\n"
+      end
+
+    "\r\e[2K" <> transcript <> Enum.join(lines, "\n")
   end
 
   # pass71 S4 (R1): every run the quit stopped, one per line under the count.
@@ -865,6 +1165,12 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
     do: System.get_env("NO_COLOR") in [nil, ""] and :prim_tty.isatty(:stdout) == true
 
   defp outcome_status(:ok), do: 0
+
+  defp outcome_status({:signal, signal}) do
+    say(:stderr, "ncode: " <> SwarmCodeCLI.Release.Signals.words(signal))
+    SwarmCodeCLI.Release.Signals.exit_code(signal)
+  end
+
   defp outcome_status({:failed, failure}), do: report(failure)
 
   ## Failures
@@ -1038,6 +1344,27 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
         "No model provider is set up yet.",
         "Run 'ncode settings providers' to add one, or set NCODE_MODEL, NCODE_BASE_URL and NCODE_API_KEY in ~/.secrets (the older SWARM_* names still work)."
       )
+      |> Map.put(:reason, :provider_required)
+
+  # cli020 B13 (onboarding-4): a first run from the environment that lacks
+  # an endpoint or a model says which.
+  defp session_failure(:endpoint_required, _),
+    do:
+      failure(
+        @exit_refused,
+        "NCODE_BASE_URL is missing (OpenAI-compatible URLs end in /v1).",
+        "Set NCODE_BASE_URL, or run 'ncode settings providers'."
+      )
+      |> Map.put(:reason, :endpoint_required)
+
+  defp session_failure(:model_required, _),
+    do:
+      failure(
+        @exit_refused,
+        "NCODE_MODEL is missing.",
+        "Set NCODE_MODEL to a model of your provider, or run 'ncode settings providers'."
+      )
+      |> Map.put(:reason, :model_required)
 
   # pass71 F19 (review R17): the sentence names the model that was given.
   defp session_failure(:unknown_model, _),
@@ -1241,18 +1568,9 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
       "new" ->
         :new
 
-      id ->
-        case Ecto.UUID.cast(id) do
-          {:ok, ^id} ->
-            id
-
-          _ ->
-            fail!(
-              @exit_usage,
-              "SWARM_CONVERSATION must be latest, new, or a conversation id.",
-              "Run ncode --help."
-            )
-        end
+      # cli020 B19: an id, an id prefix or a title (`open_session/3` resolves it).
+      value ->
+        value
     end
   end
 
@@ -1339,11 +1657,13 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
         _ -> Map.get(preferences, :mouse?, true) != false
       end
 
-    %{
+    preferences
+    |> Map.take(@passthrough_preferences)
+    |> Map.merge(%{
       theme: theme_env || SwarmCodeCLI.UI.Theme.mode(nil, fallback),
       theme_env: theme_env,
       mouse?: mouse?
-    }
+    })
   end
 
   # pass71 F4: the desktop's light/dark choice (`settings.mode`), read

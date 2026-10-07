@@ -52,11 +52,14 @@ defmodule SwarmCodeCLI.Plain.OneShot do
   optionally `format` (`:text` | `:json`), `output` and `error` (IO devices),
   `progress` (tool lines on `error`), `clock` (a zero-arity millisecond clock).
   """
-  @spec run(keyword()) :: 0 | 1
+  @spec run(keyword()) :: 0 | 1 | 129 | 143
   def run(options) do
     {:ok, pid} = GenServer.start(__MODULE__, Keyword.put(options, :observer, self()))
     monitor = Process.monitor(pid)
+    await(pid, monitor)
+  end
 
+  defp await(pid, monitor) do
     receive do
       {:one_shot, ^pid, {:finished, code}} ->
         receive do
@@ -64,6 +67,12 @@ defmodule SwarmCodeCLI.Plain.OneShot do
         end
 
         code
+
+      # cli020 B9: SIGTERM/SIGHUP reach the caller (the session owner); the
+      # one-shot stops its run and finishes with the signal's code.
+      {:shutdown_signal, signal} when signal in [:sigterm, :sighup] ->
+        send(pid, {:shutdown_signal, signal})
+        await(pid, monitor)
 
       {:DOWN, ^monitor, :process, ^pid, _} ->
         1
@@ -80,7 +89,7 @@ defmodule SwarmCodeCLI.Plain.OneShot do
     format = Keyword.get(options, :format, :text)
 
     if Intent.valid_id?(epoch) and Intent.valid_id?(conversation) and Intent.valid_text?(prompt) and
-         format in [:text, :json] do
+         format in [:text, :json, :stream_json] do
       client = Keyword.fetch!(options, :data_source)
 
       state = %{
@@ -96,6 +105,21 @@ defmodule SwarmCodeCLI.Plain.OneShot do
         progress?: Keyword.get(options, :progress, false) == true,
         clock: Keyword.get(options, :clock, fn -> System.system_time(:millisecond) end),
         observer: Keyword.get(options, :observer),
+        # cli020 B3: `--fail-on-denied`, and the folder the hint names.
+        fail_on_denied?: Keyword.get(options, :fail_on_denied, false) == true,
+        project_root: Keyword.get(options, :project_root),
+        # Tool items of the owned runs counted as blocked (by the policy or a hook).
+        blocked: MapSet.new(),
+        # cli020 B23: the run's limits, and the plain presenter whose records
+        # `--output-format stream-json` writes, one JSON object per line.
+        max_turns: Keyword.get(options, :max_turns),
+        max_budget_usd: Keyword.get(options, :max_budget_usd),
+        limited?: false,
+        no_cost_said?: false,
+        presenter:
+          if(format == :stream_json,
+            do: SwarmCodeCLI.Plain.Presenter.new(%SwarmCodeCLI.Plain.Options{format: :ndjson})
+          ),
         ui: nil,
         dispatch: nil,
         runs: [],
@@ -191,7 +215,27 @@ defmodule SwarmCodeCLI.Plain.OneShot do
     continue(own_response(%{state | own: own}, purpose, :deadline))
   end
 
+  def handle_info({:shutdown_signal, signal}, %{phase: phase} = state)
+      when signal in [:sigterm, :sighup] and phase != :finished do
+    state = if state.ui, do: Enum.reduce(state.runs, state, &signal_stop/2), else: state
+    words = SwarmCodeCLI.Release.Signals.words(signal)
+    stop(finish(state, SwarmCodeCLI.Release.Signals.exit_code(signal), words))
+  end
+
   def handle_info(_, state), do: {:noreply, state}
+
+  # A live owned run is asked to stop; the session's close stops it anyway.
+  defp signal_stop(run_id, state) do
+    case Map.get(state.ui.read_model.runs, run_id) do
+      %{state: run_state} when run_state in @terminal ->
+        state
+
+      _ ->
+        id = elem(State.next_id(state.ui, :request), 0)
+        {state, _effects} = update(state, {:invoke, {:run_control, :stop, run_id}, id})
+        state
+    end
+  end
 
   defp continue(%{phase: :finished} = state), do: stop(state)
   defp continue(state), do: {:noreply, state}
@@ -207,6 +251,7 @@ defmodule SwarmCodeCLI.Plain.OneShot do
 
   defp deliver(state, %Delivery{} = delivery) do
     {state, _effects} = update(state, {:data, delivery})
+    state = stream_records(state, delivery)
 
     state
     |> observe_outcome(delivery)
@@ -270,11 +315,103 @@ defmodule SwarmCodeCLI.Plain.OneShot do
     state
     |> print_answer(answer_items(state))
     |> announce_tools()
+    |> count_blocked(ReadModel.items(state.ui.read_model, :workspace))
     |> answer_interactions()
+    |> enforce_limits()
     |> maybe_settle()
   end
 
   defp check(state), do: state
+
+  # -- cli020 B23: stream-json and the run's limits ---------------------------
+
+  # The workspace watch's deliveries go through a plain presenter; each of
+  # its records is one line `{"stream", "text"}` (the `--plain --ndjson`
+  # shape), and `finish/3` ends the stream with `{"type": "summary", …}`.
+  defp stream_records(%{presenter: nil} = state, _delivery), do: state
+
+  defp stream_records(state, %Delivery{scope: scope} = delivery) do
+    watch = state.ui && state.ui.watches.workspace
+
+    if watch && scope == watch.scope do
+      {presenter, records} =
+        SwarmCodeCLI.Plain.Presenter.present(state.presenter, state.epoch, delivery)
+
+      Enum.each(records, fn {stream, content} ->
+        line = %{"stream" => Atom.to_string(stream), "text" => IO.iodata_to_binary(content)}
+        write(state.output, [Jason.encode!(line), "\n"])
+      end)
+
+      %{state | presenter: presenter}
+    else
+      state
+    end
+  end
+
+  defp enforce_limits(%{limited?: true} = state), do: state
+
+  defp enforce_limits(state) do
+    model = state.ui.read_model
+
+    Enum.reduce_while(state.runs, state, fn run_id, state ->
+      run = Map.get(model.runs, run_id)
+
+      cond do
+        run == nil or run.state in @terminal ->
+          {:cont, state}
+
+        turns_passed?(state, model, run_id) ->
+          {:halt, limit_stop(state, run_id, "stopped after #{state.max_turns} turns.")}
+
+        is_number(state.max_budget_usd) and is_number(run.cost_usd) and
+            run.cost_usd > state.max_budget_usd ->
+          words =
+            "stopped at --max-budget-usd #{budget(state.max_budget_usd)} " <>
+              "(the run cost $#{:erlang.float_to_binary(run.cost_usd * 1.0, decimals: 2)})."
+
+          {:halt, limit_stop(state, run_id, words)}
+
+        true ->
+          {:cont, state}
+      end
+    end)
+  end
+
+  defp turns_passed?(%{max_turns: max}, model, run_id) when is_integer(max) do
+    Enum.any?(model.agents, fn {_id, agent} ->
+      agent.run_id == run_id and agent.role == :lead and is_integer(agent.turn) and
+        agent.turn > max
+    end)
+  end
+
+  defp turns_passed?(_state, _model, _run_id), do: false
+
+  defp budget(x) when is_float(x), do: x |> Float.to_string() |> String.trim_trailing(".0")
+  defp budget(x), do: to_string(x)
+
+  defp limit_stop(state, run_id, words) do
+    id = elem(State.next_id(state.ui, :request), 0)
+    {state, effects} = update(state, {:invoke, {:run_control, :stop, run_id}, id})
+    state = say(%{state | limited?: true}, words)
+
+    if Enum.any?(effects, &match?({:command, %Request{request_id: ^id}}, &1)),
+      do: %{state | stopped?: true},
+      else: finish(state, 1)
+  end
+
+  # A run whose cost stays unknown is never stopped by the budget; said once,
+  # when the run has ended without one.
+  defp say_no_cost(%{max_budget_usd: x, no_cost_said?: false} = state, runs) when is_number(x) do
+    if Enum.any?(runs, &(&1.state in @terminal and &1.cost_usd == nil)),
+      do:
+        say(
+          %{state | no_cost_said?: true},
+          "the provider reports no cost; --max-budget-usd is not enforced."
+        ),
+      else: state
+  end
+
+  defp say_no_cost(state, _runs), do: state
 
   # -- sending ----------------------------------------------------------------
 
@@ -453,17 +590,13 @@ defmodule SwarmCodeCLI.Plain.OneShot do
       {state, effects} = update(state, {:invoke, intent, id})
 
       if Enum.any?(effects, &match?({:command, %Request{request_id: ^id}}, &1)) do
-        state = %{
+        # cli020 B3: one line at the end names every denial (`denied_line/3`).
+        %{
           state
           | answers: Map.put(state.answers, id, item),
             denials: state.denials + 1,
             denied: Enum.take(state.denied ++ [what], 32)
         }
-
-        say(
-          state,
-          "denied #{what.label}: nobody is here to approve it." <> denial_hint(mode(state))
-        )
       else
         stop_run(state, item.run_id, "#{what.label} could not be denied, so the run")
       end
@@ -484,6 +617,78 @@ defmodule SwarmCodeCLI.Plain.OneShot do
 
   def denial_hint(mode) when mode in [:full_access, "full_access"], do: ""
   def denial_hint(_mode), do: " /approval auto or full allows more without asking."
+
+  @doc """
+  cli020 B3: the one stderr line a one-shot ends with when tool calls were
+  denied (auto-denied approvals and calls the policy or a hook blocked): at
+  most five labels, then how many more, then how to allow them.
+  """
+  @spec denied_line([String.t()], term(), String.t() | nil) :: String.t()
+  def denied_line(labels, mode, root) do
+    count = length(labels)
+    shown = Enum.take(labels, 5)
+    rest = count - length(shown)
+    names = Enum.join(shown, ", ") <> if(rest > 0, do: " and #{rest} more", else: "")
+    mode_name = if mode in [nil, ""], do: "unknown", else: to_string(mode)
+
+    "#{count} tool call(s) were denied (approval mode #{mode_name}): #{names}." <>
+      allow_hint(mode, root)
+  end
+
+  defp allow_hint(mode, root) when mode in [:read_only, "read_only"],
+    do:
+      " Allow them with: ncode config set project.approval_mode auto --project " <>
+        shell_quote(root || ".") <> ", or answer them in ncode."
+
+  defp allow_hint(mode, _root), do: denial_hint(mode)
+
+  defp shell_quote(path) do
+    if path =~ ~r/^[A-Za-z0-9_\/.~+-]+$/,
+      do: path,
+      else: "'" <> String.replace(path, "'", "'\\''") <> "'"
+  end
+
+  # cli020 B3: a tool call of an owned run that the policy or a hook refused
+  # (`"blocked by …"`, `"hook blocked: …"`, from the op's error in the item's
+  # text) counts as denied, once per item.
+  defp count_blocked(state, items) do
+    Enum.reduce(items, state, fn item, state ->
+      if item.run_id in state.runs and item.kind == :tool and
+           not MapSet.member?(state.blocked, item.id) and blocked?(item.text) do
+        %{
+          state
+          | blocked: MapSet.put(state.blocked, item.id),
+            denied: Enum.take(state.denied ++ [blocked_label(item)], 32)
+        }
+      else
+        state
+      end
+    end)
+  end
+
+  defp blocked?(text) when is_binary(text) do
+    text
+    |> String.split("\n")
+    |> Enum.any?(
+      &(String.starts_with?(&1, "blocked by ") or String.starts_with?(&1, "hook blocked: "))
+    )
+  end
+
+  defp blocked?(_), do: false
+
+  defp blocked_label(%{tool: %DTO.ToolCall{name: name, title: title}}) do
+    subject = first_line(title || "")
+    subject = if subject == name, do: "", else: subject
+    label = String.trim(name <> " " <> subject)
+
+    %{
+      tool: name,
+      command: if(subject == "", do: nil, else: subject),
+      label: if(label == "", do: "a tool call", else: label)
+    }
+  end
+
+  defp blocked_label(_), do: %{tool: nil, command: nil, label: "a tool call"}
 
   defp mode(state) do
     case Map.get(state.ui.read_model.snapshots, :workspace) do
@@ -570,7 +775,10 @@ defmodule SwarmCodeCLI.Plain.OneShot do
               &1.id != &1.node_id)
         )
 
-      state = print_answer(state, items)
+      state =
+        state
+        |> print_answer(items)
+        |> count_blocked(Enum.filter(snapshot.transcript.items, &(&1.run_id in state.runs)))
 
       details =
         for item <- items,
@@ -644,6 +852,7 @@ defmodule SwarmCodeCLI.Plain.OneShot do
     do: Enum.flat_map(state.runs, &List.wrap(Map.get(state.ui.read_model.runs, &1)))
 
   defp conclude(state, runs) do
+    state = say_no_cost(state, runs)
     failed = Enum.find(runs, &(&1.state != :done))
 
     cond do
@@ -651,7 +860,8 @@ defmodule SwarmCodeCLI.Plain.OneShot do
         finish(state, 1, "the run did not start.")
 
       failed == nil ->
-        finish(state, 0)
+        # cli020 B3: `--fail-on-denied` fails a done run that had denials.
+        finish(state, if(state.fail_on_denied? and state.denied != [], do: 1, else: 0))
 
       # The line saying why was written when this process stopped it.
       state.stopped? and failed.state == :stopped ->
@@ -676,9 +886,22 @@ defmodule SwarmCodeCLI.Plain.OneShot do
   defp finish(state, code, message) do
     state = if message, do: say(state, message), else: state
 
+    state =
+      if state.denied != [],
+        do:
+          say(
+            state,
+            denied_line(Enum.map(state.denied, & &1.label), mode(state), state.project_root)
+          ),
+        else: state
+
     case state.format do
       :json ->
         write(state.output, [Jason.encode!(summary(state, code, message)), "\n"])
+
+      :stream_json ->
+        summary = Map.put(summary(state, code, message), "type", "summary")
+        write(state.output, [Jason.encode!(summary), "\n"])
 
       :text ->
         if state.mid_line?, do: write(state.output, "\n")
@@ -702,7 +925,9 @@ defmodule SwarmCodeCLI.Plain.OneShot do
       "conversation_id" => state.conversation,
       "run_id" => List.first(state.runs),
       "state" => if(run, do: Atom.to_string(run.state), else: "not_started"),
-      "text" => clean(text),
+      # cli020 B5: the exact text; Jason escapes what JSON must, and a
+      # script decides what reaches a terminal.
+      "text" => text,
       "error" => message,
       "question" => state.question,
       "denied" => Enum.map(state.denied, &%{"tool" => &1.tool, "command" => &1.command}),

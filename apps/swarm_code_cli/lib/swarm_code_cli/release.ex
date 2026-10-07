@@ -15,38 +15,54 @@ defmodule SwarmCodeCLI.Release do
 
   @compile {:no_warn_undefined, [SwarmCode.Domain.Paths]}
 
+  @resume_needs_value "--resume needs an id or a title here; ncode --resume alone opens the picker."
+
   @usage """
   Usage: ncode [DIR] [--new | --continue | --resume ID] [--model M]
-               [-p PROMPT [--json]] [--plain [--ndjson]] [--help] [--version]
+               [-p PROMPT [--json] [--fail-on-denied]] [--plain [--ndjson]]
          ncode settings [QUERY] [--dir DIR]
          ncode config COMMAND [ARGS]     (ncode config help lists them)
+         ncode help | version | doctor
 
   Opens the saved session for DIR (default: the current directory).
 
     settings [QUERY]  open Settings, at QUERY when given ('ncode settings providers');
                       it opens even when no model provider is set up yet
     config COMMAND    read and change settings from scripts, dotfiles and SSH
-                      (a folder named settings or config: ncode ./settings, ./config)
+    doctor            check the install, the providers and the database (config doctor)
+                      (a folder with one of these names: ncode ./settings, ./config)
 
-    --new           start a new conversation
-    --continue, -c  continue the latest conversation (the default)
-    --resume ID     open the conversation with this id
-    --model M       use model M (or provider/model) for this session only
-    -p PROMPT       run one turn without the full-screen view, print the answer and
-                    exit; approvals nobody can give are denied and said on stderr.
-                    PROMPT - reads the prompt from stdin
-    --json          with -p: print one JSON object instead of the streamed answer
-    --plain         line-by-line presenter for pipes, CI and SSH (type `help`)
-    --ndjson        with --plain: one JSON record per line
-    --help, -h      this text
-    --version, -V   the version
+    --new             start a new conversation
+    --continue, -c    continue the latest conversation (the default)
+    --resume, -r [ID] open the conversation with this id, 6+ characters of it or its
+                      title; without one, pick it from a list
+    --model, -m M     use model M (or provider/model) for this session only
+    -p PROMPT         run one turn without the full-screen view, print the answer
+                      and exit; approvals nobody can give are denied, and one
+                      stderr line says which. PROMPT - reads the prompt from stdin;
+                      with a PROMPT, piped stdin is sent after it
+    --json            with -p: print one JSON object instead of the streamed answer
+    --fail-on-denied  with -p or --plain: exit 1 when a tool call was denied
+    --output-format F with -p: text (the default), json (= --json) or stream-json
+                      (one JSON record per line, the last {"type":"summary",...})
+    --max-turns N     with -p: stop the run after N turns of its lead (1-200)
+    --max-budget-usd X  with -p: stop the run once it costs more than $X
+    --approval MODE   with -p: read-only, auto or full for this run only
+    --plain           line-by-line presenter for pipes, CI and SSH (type `help`)
+    --ndjson          with --plain: one JSON record per line
+    --help, -h        this text
+    --version, -V, -v the version
 
-  Exit codes: 0 done, 1 the run failed, 2 usage, 3 startup refused.
+  Examples:
+    ncode
+    ncode -p "explain this repo" --json
+    ncode settings providers
+    ncode config doctor
+
+  Exit codes: 0 done, 1 the run failed, 2 usage, 3 startup refused,
+  4 changed elsewhere (ncode config), 129/143 closed by SIGHUP/SIGTERM.
   Keys in the full-screen view: Ctrl-P palette, ? every key, Esc stops a turn,
   Ctrl-F opens an agent from the side panel, Ctrl-B its shape, Ctrl-C twice quits.
-  The mouse wheel scrolls the pane under the pointer; Shift-drag (Option-drag in
-  Terminal.app and iTerm2) still selects text, and /mouse off gives the
-  terminal its own selection back.
   """
 
   # The prompt's size is the composer's: one paste.
@@ -58,7 +74,8 @@ defmodule SwarmCodeCLI.Release do
           conversation: binary() | nil,
           model: binary() | nil,
           prompt: binary() | nil,
-          format: :text | :json | :ndjson
+          format: :text | :json | :ndjson,
+          fail_on_denied: boolean()
         }
 
   @doc """
@@ -76,12 +93,62 @@ defmodule SwarmCodeCLI.Release do
   def main(["tui"]), do: SwarmCodeCLI.Release.PersistedSession.run()
 
   def main(args) when is_list(args) do
+    # cli020 B2: the headless output and the prompt on stdin are UTF-8 whatever
+    # the locale says (under LANG=C the devices start as latin1).
+    configure_io()
+    # cli020 B9: SIGTERM and SIGHUP close the session the normal way.
+    if headless_args?(args), do: SwarmCodeCLI.Release.Signals.install(self())
     code = run(args)
+    flush_logs()
     System.halt(code)
   end
 
+  @doc """
+  cli020 B15 (onboarding-3): writes what the log handler still buffers before
+  the VM halts (a halt drops it, so cli.log stayed empty after a failure).
+  Bounded: a log that cannot be written within `timeout` is left as it is.
+  """
+  @spec flush_logs(non_neg_integer()) :: :ok
+  def flush_logs(timeout \\ 2_000) do
+    {pid, ref} =
+      spawn_monitor(fn ->
+        _ = Logger.flush()
+        _ = :logger_std_h.filesync(:default)
+      end)
+
+    receive do
+      {:DOWN, ^ref, :process, ^pid, _} -> :ok
+    after
+      timeout ->
+        Process.demonitor(ref, [:flush])
+        Process.exit(pid, :kill)
+        :ok
+    end
+  end
+
+  @doc """
+  cli020 B2: puts the standard devices in unicode mode, so a `-p` answer, a
+  `--json` summary and a prompt read from stdin keep their UTF-8 under
+  `LC_ALL=C` (the VM opens them as latin1 there).
+  """
+  @spec configure_io([atom() | pid()]) :: :ok
+  def configure_io(devices \\ [:standard_io, :standard_error]) do
+    Enum.each(devices, fn device ->
+      try do
+        :io.setopts(device, encoding: :unicode)
+      catch
+        _, _ -> :ok
+      end
+    end)
+  end
+
+  defp headless_args?(["config" | _]), do: false
+
+  defp headless_args?(args),
+    do: Enum.any?(args, &(&1 in ["-p", "--prompt", "--print", "--plain"]))
+
   @doc "Runs the command line and returns the exit code (the VM keeps running)."
-  @spec run([binary()]) :: 0 | 1 | 2 | 3 | 4
+  @spec run([binary()]) :: 0 | 1 | 2 | 3 | 4 | 129 | 143
   def run(args) do
     case parse(args) do
       {:config, rest} ->
@@ -109,12 +176,13 @@ defmodule SwarmCodeCLI.Release do
         2
 
       {:ok, options} ->
-        with {:ok, options} <- read_prompt(options) do
+        with {:ok, options} <- headless_approval(options),
+             {:ok, options} <- read_prompt(options) do
           Headless.run(mode(options), headless_options(options))
         else
           {:error, message} ->
             IO.puts(:stderr, "ncode: " <> message)
-            2
+            Headless.json_failure(options.format, message, 2)
         end
     end
   end
@@ -135,6 +203,10 @@ defmodule SwarmCodeCLI.Release do
   # pass74 S1-13/S1-14: the first word `settings` or `config` is the
   # subcommand (a folder of that name opens with ./settings or -- settings).
   def parse(["config" | rest]), do: {:config, rest}
+  # cli020 B16: the conventional words.
+  def parse(["help" | _]), do: :help
+  def parse(["version" | _]), do: :version
+  def parse(["doctor" | rest]), do: {:config, ["doctor" | rest]}
   def parse(["settings" | rest]), do: settings(rest, [], nil)
 
   def parse(args) when is_list(args) do
@@ -147,6 +219,11 @@ defmodule SwarmCodeCLI.Release do
       json?: false,
       plain?: false,
       ndjson?: false,
+      fail_on_denied?: false,
+      output_format: nil,
+      max_turns: nil,
+      max_budget_usd: nil,
+      approval: nil,
       seen: MapSet.new()
     }
 
@@ -201,7 +278,7 @@ defmodule SwarmCodeCLI.Release do
       flag when flag in ["--help", "-h"] ->
         {:ok, %{parsed | seen: MapSet.put(parsed.seen, :help)}}
 
-      flag when flag in ["--version", "-V"] ->
+      flag when flag in ["--version", "-V", "-v"] ->
         {:ok, %{parsed | seen: MapSet.put(parsed.seen, :version)}}
 
       "--new" ->
@@ -213,8 +290,19 @@ defmodule SwarmCodeCLI.Release do
       "--resume=" <> id ->
         conversation(parsed, id, rest)
 
+      # cli020 B19: a value is an id, a 6+ character id prefix or a title,
+      # resolved once storage is open; bare --resume is the TUI's picker
+      # (the launcher's), so here it needs a value.
       flag when flag in ["--resume", "-r"] ->
-        value(flag, rest, fn id, rest -> conversation(parsed, id, rest) end)
+        case rest do
+          [value | rest] when value != "--" ->
+            if String.starts_with?(value, "-"),
+              do: {:error, @resume_needs_value},
+              else: conversation(parsed, value, rest)
+
+          _ ->
+            {:error, @resume_needs_value}
+        end
 
       "--model=" <> model ->
         once(parsed, :model, rest, &%{&1 | model: model})
@@ -239,6 +327,27 @@ defmodule SwarmCodeCLI.Release do
       "--ndjson" ->
         once(parsed, :ndjson, rest, &%{&1 | ndjson?: true})
 
+      "--fail-on-denied" ->
+        once(parsed, :fail_on_denied, rest, &%{&1 | fail_on_denied?: true})
+
+      # cli020 B23 (competitors-4): the other headless flags.
+      "--output-format=" <> v ->
+        b23(parsed, :output_format, v, rest)
+
+      "--max-turns=" <> v ->
+        b23(parsed, :max_turns, v, rest)
+
+      "--max-budget-usd=" <> v ->
+        b23(parsed, :max_budget_usd, v, rest)
+
+      "--approval=" <> v ->
+        b23(parsed, :approval, v, rest)
+
+      "--" <> name = flag
+      when name in ["output-format", "max-turns", "max-budget-usd", "approval"] ->
+        key = name |> String.replace("-", "_") |> b23_key()
+        value(flag, rest, fn v, rest -> b23(parsed, key, v, rest) end)
+
       "--" ->
         directories(rest, parsed)
 
@@ -249,6 +358,14 @@ defmodule SwarmCodeCLI.Release do
         directory(parsed, directory, rest)
     end
   end
+
+  defp b23_key("output_format"), do: :output_format
+  defp b23_key("max_turns"), do: :max_turns
+  defp b23_key("max_budget_usd"), do: :max_budget_usd
+  defp b23_key("approval"), do: :approval
+
+  defp b23(parsed, key, value, rest),
+    do: once(parsed, key, rest, &Map.put(&1, key, value))
 
   defp directories([], parsed), do: {:ok, parsed}
 
@@ -281,6 +398,10 @@ defmodule SwarmCodeCLI.Release do
   end
 
   defp flag_name(:prompt), do: "-p"
+  defp flag_name(:fail_on_denied), do: "--fail-on-denied"
+  defp flag_name(:output_format), do: "--output-format"
+  defp flag_name(:max_turns), do: "--max-turns"
+  defp flag_name(:max_budget_usd), do: "--max-budget-usd"
   defp flag_name(key), do: "--" <> Atom.to_string(key)
 
   defp validate(parsed) do
@@ -294,13 +415,18 @@ defmodule SwarmCodeCLI.Release do
       parsed.plain? and parsed.prompt != nil ->
         {:error, "-p and --plain do not go together."}
 
+      parsed.fail_on_denied? and parsed.prompt == nil and not parsed.plain? ->
+        {:error, "--fail-on-denied goes with -p or --plain."}
+
       parsed.model != nil and String.trim(parsed.model) == "" ->
         {:error, "--model needs a model name."}
 
-      parsed.conversation not in [nil, "new", "latest"] and not uuid?(parsed.conversation) ->
-        # pass70 Q19: an eight-digit prefix is an id to a person; say what
-        # is missing and where the ids are.
-        {:error, "--resume needs a whole conversation id; /resume inside ncode picks one."}
+      b23_error(parsed) != nil ->
+        {:error, b23_error(parsed)}
+
+      parsed.conversation not in [nil, "new", "latest"] and
+          not resume_value?(parsed.conversation) ->
+        {:error, @resume_needs_value}
 
       parsed.prompt != nil and parsed.prompt != "-" and not prompt?(parsed.prompt) ->
         {:error, "-p needs a prompt of at most 256 KiB."}
@@ -315,7 +441,8 @@ defmodule SwarmCodeCLI.Release do
 
         format =
           cond do
-            parsed.json? -> :json
+            parsed.json? or parsed.output_format == "json" -> :json
+            parsed.output_format == "stream-json" -> :stream_json
             parsed.ndjson? -> :ndjson
             true -> :text
           end
@@ -327,44 +454,173 @@ defmodule SwarmCodeCLI.Release do
            conversation: parsed.conversation,
            model: parsed.model,
            prompt: parsed.prompt,
-           format: format
+           format: format,
+           fail_on_denied: parsed.fail_on_denied?,
+           max_turns: parsed.max_turns && String.to_integer(parsed.max_turns),
+           max_budget_usd: parsed.max_budget_usd && budget_value(parsed.max_budget_usd),
+           approval: approval_value(parsed.approval)
          }}
     end
   end
 
-  defp uuid?(value),
+  # cli020 B23: the four flags' rules (all with -p).
+  defp b23_error(parsed) do
+    given =
+      Enum.find([:output_format, :max_turns, :max_budget_usd, :approval], &(parsed[&1] != nil))
+
+    cond do
+      given != nil and parsed.prompt == nil ->
+        flag_name(given) <> " goes with -p."
+
+      parsed.output_format not in [nil, "text", "json", "stream-json"] ->
+        "--output-format is text, json or stream-json."
+
+      parsed.json? and parsed.output_format in ["text", "stream-json"] ->
+        "--json and --output-format #{parsed.output_format} do not go together."
+
+      parsed.max_turns != nil and
+          not (parsed.max_turns =~ ~r/\A[0-9]{1,3}\z/ and
+                   String.to_integer(parsed.max_turns) in 1..200) ->
+        "--max-turns needs a number from 1 to 200."
+
+      parsed.max_budget_usd != nil and budget_value(parsed.max_budget_usd) == nil ->
+        "--max-budget-usd needs an amount above 0 (in dollars)."
+
+      parsed.approval != nil and approval_value(parsed.approval) == nil ->
+        "--approval is read-only, auto or full."
+
+      true ->
+        nil
+    end
+  end
+
+  defp budget_value(text) do
+    with true <- text =~ ~r/\A[0-9]{1,6}(\.[0-9]{1,6})?\z/,
+         {value, ""} <- Float.parse(text),
+         true <- value > 0 do
+      value
+    else
+      _ -> nil
+    end
+  end
+
+  defp approval_value("read-only"), do: "read_only"
+  defp approval_value("auto"), do: "auto"
+  defp approval_value("full"), do: "full_access"
+  defp approval_value(_), do: nil
+
+  defp resume_value?(value),
     do:
-      Regex.match?(
-        ~r/\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/i,
-        value
-      )
+      String.valid?(value) and String.trim(value) != "" and byte_size(value) <= 200 and
+        not String.match?(value, ~r/[\x00-\x1f\x7f]/)
 
   defp prompt?(text),
     do: byte_size(text) <= @max_prompt_bytes and String.valid?(text) and String.trim(text) != ""
 
-  # `-p -` reads the prompt from stdin, bounded like any prompt.
-  defp read_prompt(%{mode: :prompt, prompt: "-"} = options) do
-    case IO.binread(:stdio, @max_prompt_bytes + 1) do
-      text when is_binary(text) ->
-        if prompt?(text),
-          do: {:ok, %{options | prompt: text}},
-          else: {:error, "the prompt on stdin is empty, not UTF-8, or over 256 KiB."}
+  @doc """
+  cli020 B1: the prompt `-p -` reads from stdin, and the piped stdin a `-p
+  PROMPT` gets when the launcher saw a pipe or a file there
+  (`SWARM_STDIN_PIPED=1`). Both are read in unicode mode (B2) and bounded to
+  256 KiB in bytes.
+  """
+  @spec read_prompt(map(), atom() | pid(), map()) :: {:ok, map()} | {:error, String.t()}
+  def read_prompt(options, device \\ :stdio, env \\ System.get_env())
 
-      _ ->
+  def read_prompt(%{mode: :prompt, prompt: "-"} = options, device, _env) do
+    case read_stdin(device) do
+      {:ok, text} ->
+        if String.trim(text) == "",
+          do: {:error, "the prompt on stdin is empty."},
+          else: {:ok, %{options | prompt: text}}
+
+      {:error, :empty} ->
         {:error, "the prompt on stdin is empty."}
+
+      {:error, :unicode} ->
+        {:error, "the prompt on stdin is not UTF-8."}
+
+      {:error, :too_large} ->
+        {:error, "the prompt on stdin is over 256 KiB."}
     end
   end
 
-  defp read_prompt(options), do: {:ok, options}
+  def read_prompt(%{mode: :prompt, prompt: prompt} = options, device, env)
+      when is_binary(prompt) do
+    if Map.get(env, "SWARM_STDIN_PIPED") == "1" do
+      case read_stdin(device) do
+        {:ok, stdin} ->
+          if String.trim(stdin) == "",
+            do: {:ok, options},
+            else: piped(options, prompt <> "\n\n<stdin>\n" <> stdin <> "\n</stdin>")
+
+        {:error, :empty} ->
+          {:ok, options}
+
+        {:error, :unicode} ->
+          {:error, "the prompt on stdin is not UTF-8."}
+
+        {:error, :too_large} ->
+          {:error, "the prompt and its piped stdin are over 256 KiB."}
+      end
+    else
+      {:ok, options}
+    end
+  end
+
+  def read_prompt(options, _device, _env), do: {:ok, options}
+
+  defp piped(options, text) do
+    if byte_size(text) <= @max_prompt_bytes,
+      do: {:ok, %{options | prompt: text}},
+      else: {:error, "the prompt and its piped stdin are over 256 KiB."}
+  end
+
+  # A unicode device counts characters, so the byte bound is checked again.
+  defp read_stdin(device) do
+    case IO.read(device, @max_prompt_bytes + 1) do
+      :eof ->
+        {:error, :empty}
+
+      text when is_binary(text) and byte_size(text) > @max_prompt_bytes ->
+        {:error, :too_large}
+
+      text when is_binary(text) ->
+        if String.valid?(text), do: {:ok, text}, else: {:error, :unicode}
+
+      {:error, _} ->
+        {:error, :unicode}
+    end
+  end
 
   defp mode(%{mode: :prompt, prompt: prompt, format: format}), do: {:prompt, prompt, format}
   defp mode(%{mode: :plain, format: format}), do: {:plain, format}
+
+  # cli020 B23 (§8.1 stub, the finisher removes it when A'1 lands F8's
+  # `approval_mode:` dispatch option): `--approval` (the flag, or the
+  # launcher's SWARM_HEADLESS_APPROVAL export) is refused until then. After
+  # A'1 it returns `{:ok, Map.put(options, :approval, mode)}` and OneShot
+  # passes the mode into the dispatch.
+  defp headless_approval(options) do
+    mode =
+      Map.get(options, :approval) ||
+        approval_env(System.get_env("SWARM_HEADLESS_APPROVAL"))
+
+    if mode == nil,
+      do: {:ok, options},
+      else: {:error, "--approval needs the 0.2.0 engine."}
+  end
+
+  defp approval_env(value) when value in ["read_only", "auto", "full_access"], do: value
+  defp approval_env(_), do: nil
 
   defp headless_options(options) do
     [
       project_root: options.project && Path.expand(options.project),
       conversation: options.conversation,
-      model: options.model
+      model: options.model,
+      fail_on_denied: Map.get(options, :fail_on_denied) == true || nil,
+      max_turns: Map.get(options, :max_turns),
+      max_budget_usd: Map.get(options, :max_budget_usd)
     ]
     |> Enum.reject(fn {_, value} -> is_nil(value) end)
   end

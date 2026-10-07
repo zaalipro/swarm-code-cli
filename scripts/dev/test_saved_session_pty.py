@@ -19,6 +19,29 @@ OVERRIDES = ('SWARM_PROVIDER SWARM_MODEL SWARM_BASE_URL OPENAI_MODEL ANTHROPIC_M
              'OPENAI_BASE_URL ANTHROPIC_BASE_URL OPENAI_API_KEY ANTHROPIC_API_KEY SWARM_API_KEY '
              'SWARM_CONVERSATION SWARM_PERSISTED SWARM_MODEL_OVERRIDE SWARM_ENV_FILE')
 
+# Direct test-only function call: production has no database path option/env
+# fallback. Test storage is never the user's home.
+RUNNER = '''
+Code.require_file("scripts/dev/persisted_session.exs")
+root = %s
+Application.put_env(:swarm_code_daemon, :domain_config_dir, Path.join(root, "config"))
+boot = [platform: :linux, mode: :test, home: root,
+  env: Map.new(~w(XDG_DATA_HOME XDG_CONFIG_HOME XDG_STATE_HOME XDG_CACHE_HOME XDG_RUNTIME_DIR), &{&1, root}),
+  database_path: Path.join(root, "swarm_code.db"), app_version: "0.1.0",
+  desktop_detector: fn -> :none end,
+  directory_ensure: fn path, owner ->
+    case File.mkdir(path) do
+      :ok -> File.chmod!(path, 0o700)
+      {:error, :eexist} -> :ok
+    end
+    SwarmCode.Daemon.Platform.PrivateDirectory.ensure(path, owner)
+  end,
+  identity: fn -> {:ok, %%SwarmCode.Daemon.Platform.ProcessIdentity{
+    uid: File.stat!(root).uid, pid: String.to_integer(System.pid()),
+    process_start_id: "saved-pty", boot_id: "saved-pty"}} end]
+SwarmCode.Development.PersistedSession.run_for_test(boot)
+'''
+
 
 class SavedSession(unittest.TestCase):
     def settle(self, terminal, seconds):
@@ -61,26 +84,7 @@ class SavedSession(unittest.TestCase):
             runner = fixture / 'trusted_runner.exs'
             # Direct test-only function call: production has no database path
             # option/env fallback. Test storage is never the user's home.
-            runner.write_text('''
-Code.require_file("scripts/dev/persisted_session.exs")
-root = %s
-Application.put_env(:swarm_code_daemon, :domain_config_dir, Path.join(root, "config"))
-boot = [platform: :linux, mode: :test, home: root,
-  env: Map.new(~w(XDG_DATA_HOME XDG_CONFIG_HOME XDG_STATE_HOME XDG_CACHE_HOME XDG_RUNTIME_DIR), &{&1, root}),
-  database_path: Path.join(root, "swarm_code.db"), app_version: "0.1.0",
-  desktop_detector: fn -> :none end,
-  directory_ensure: fn path, owner ->
-    case File.mkdir(path) do
-      :ok -> File.chmod!(path, 0o700)
-      {:error, :eexist} -> :ok
-    end
-    SwarmCode.Daemon.Platform.PrivateDirectory.ensure(path, owner)
-  end,
-  identity: fn -> {:ok, %%SwarmCode.Daemon.Platform.ProcessIdentity{
-    uid: File.stat!(root).uid, pid: String.to_integer(System.pid()),
-    process_start_id: "saved-pty", boot_id: "saved-pty"}} end]
-SwarmCode.Development.PersistedSession.run_for_test(boot)
-''' % json.dumps(str(storage)))
+            runner.write_text(RUNNER % json.dumps(str(storage)))
             wrappers = []
             for phase in range(2):
                 wrapper = fixture / f'launch-{phase}.sh'
@@ -188,8 +192,48 @@ SwarmCode.Development.PersistedSession.run_for_test(boot)
                 self.assertIn(('Remember saved terminal',), messages)
                 self.assertIn(('Saved terminal verified.',), messages)
                 self.assertEqual(database.execute('SELECT count(*) FROM conversations').fetchone()[0], 1)
-                self.assertEqual(database.execute('SELECT count(*) FROM schema_migrations').fetchone()[0], 57)
+                self.assertEqual(database.execute('SELECT count(*) FROM schema_migrations').fetchone()[0], 58)
             database.close()
+
+    def test_fresh_database_without_provider_opens_providers(self):
+        # cli020 B12 (onboarding-2): bare ncode with no provider opens the
+        # Providers page and stays open, instead of exiting 3.
+        fixture_parent = ROOT / '_build/saved-session-pty'
+        fixture_parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix='fixture-', dir=fixture_parent) as temporary:
+            fixture = Path(temporary)
+            storage = fixture / 'storage'
+            project = fixture / 'project'
+            storage.mkdir(mode=0o700)
+            project.mkdir()
+            runner = fixture / 'trusted_runner.exs'
+            runner.write_text(RUNNER % json.dumps(str(storage)))
+            wrapper = fixture / 'launch.sh'
+            wrapper.write_text('\n'.join([
+                '#!/usr/bin/env bash', 'set -euo pipefail', 'unset ' + OVERRIDES,
+                'export MIX_ENV=test', 'export SWARM_PROJECT_ROOT=' + shlex.quote(str(project)),
+                'exec mise exec -- elixir --erl "-noinput" -S mix run --no-start ' + shlex.quote(str(runner))
+            ]) + '\n')
+            terminal = Demo(launcher=wrapper)
+            try:
+                # The Providers page itself (its toast sits under the layer).
+                terminal.wait_for(b'Settings \xe2\x80\xba Providers', timeout=120)
+                terminal.wait_for(b'No provider yet')
+                self.settle(terminal, 2)
+                self.assertIsNone(terminal.status)
+                terminal.capture('saved-no-provider')
+                for _ in range(10):
+                    if terminal.status is not None:
+                        break
+                    terminal.send(b'\x03')
+                    end = time.monotonic() + .3
+                    while time.monotonic() < end and terminal.status is None:
+                        terminal.pump()
+                        if select.select([terminal.meta], [], [], 0)[0]:
+                            terminal.status = int(terminal.meta.readline())
+                terminal.finish()
+            finally:
+                terminal.close()
 
 
 if __name__ == '__main__':

@@ -102,7 +102,12 @@ defmodule SwarmCode.Daemon.Service.SessionConfigurationTest do
     assert {:ok, prepared} =
              SessionConfiguration.prepare(session, %{"SWARM_MODEL_OVERRIDE" => "beta/b-model"})
 
-    assert SessionConfiguration.override() == %{provider_id: b.id, model: "b-model"}
+    assert SessionConfiguration.override() == %{
+             provider_id: b.id,
+             model: "b-model",
+             source: :flag
+           }
+
     assert prepared.conversation.chat_provider_id == b.id
     assert prepared.conversation.swarm_model == "b-model"
 
@@ -115,13 +120,13 @@ defmodule SwarmCode.Daemon.Service.SessionConfigurationTest do
 
     # A bare model id prefers the conversation's own provider.
     assert {:ok, _} = SessionConfiguration.prepare(session, %{"SWARM_MODEL_OVERRIDE" => "shared"})
-    assert SessionConfiguration.override() == %{provider_id: a.id, model: "shared"}
+    assert SessionConfiguration.override() == %{provider_id: a.id, model: "shared", source: :flag}
 
     # provider_id|model works too; an id nobody lists is refused.
     assert {:ok, _} =
              SessionConfiguration.prepare(session, %{"SWARM_MODEL_OVERRIDE" => "#{b.id}|shared"})
 
-    assert SessionConfiguration.override() == %{provider_id: b.id, model: "shared"}
+    assert SessionConfiguration.override() == %{provider_id: b.id, model: "shared", source: :flag}
 
     assert {:error, :unknown_model} =
              SessionConfiguration.prepare(session, %{"SWARM_MODEL_OVERRIDE" => "nobody-lists-it"})
@@ -158,7 +163,11 @@ defmodule SwarmCode.Daemon.Service.SessionConfigurationTest do
     assert {:ok, _} =
              SessionConfiguration.prepare(session, %{"SWARM_MODEL_OVERRIDE" => "beta/b-model"})
 
-    assert SessionConfiguration.override() == %{provider_id: b.id, model: "b-model"}
+    assert SessionConfiguration.override() == %{
+             provider_id: b.id,
+             model: "b-model",
+             source: :flag
+           }
 
     assert {:ok, _} =
              SwarmCode.Daemon.Service.CommandDispatcher.dispatch(
@@ -181,7 +190,10 @@ defmodule SwarmCode.Daemon.Service.SessionConfigurationTest do
     assert provider.base_url == "http://127.0.0.1:45678/v1"
     assert provider.default_model == "fixture-model"
     assert provider.api_key == "local-key"
-    assert SessionConfiguration.override() == %{provider_id: provider.id, model: "fixture-model"}
+
+    assert SessionConfiguration.override() ==
+             %{provider_id: provider.id, model: "fixture-model", source: :first_run_env}
+
     assert Repo.query!("SELECT * FROM conversations").rows == before_conversation
 
     # The next launch finds a usable provider and writes nothing.
@@ -231,5 +243,64 @@ defmodule SwarmCode.Daemon.Service.SessionConfigurationTest do
              })
 
     assert Providers.list() == []
+  end
+
+  # cli020 B13 (onboarding-4, onboarding-21, ux-live-11).
+  test "a bare ANTHROPIC_API_KEY onboards Anthropic, named after the preset", c do
+    env = %{"ANTHROPIC_API_KEY" => "sk-ant-fixture", "SWARM_MODEL" => "claude-fixture"}
+    assert {:ok, prepared} = SessionConfiguration.prepare(c.session, env)
+    assert prepared.notice =~ "added the provider Anthropic"
+    assert [provider] = Providers.list()
+    assert provider.kind == "anthropic"
+    assert provider.base_url == "https://api.anthropic.com"
+    assert provider.name == "Anthropic"
+    assert provider.default_model == "claude-fixture"
+    assert SessionConfiguration.override_source(SessionConfiguration.override()) == :first_run_env
+  end
+
+  test "a bare OPENAI_API_KEY onboards OpenAI at api.openai.com/v1", c do
+    env = %{"OPENAI_API_KEY" => "sk-fixture", "SWARM_MODEL" => "gpt-fixture"}
+    assert {:ok, _prepared} = SessionConfiguration.prepare(c.session, env)
+    assert [provider] = Providers.list()
+    assert provider.kind == "openai_compatible"
+    assert provider.base_url == "https://api.openai.com/v1"
+    assert provider.name == "OpenAI"
+  end
+
+  test "a key without a model is model_required; a generic key without a URL is endpoint_required",
+       c do
+    assert {:error, :model_required} =
+             SessionConfiguration.prepare(c.session, %{"ANTHROPIC_API_KEY" => "sk-ant"})
+
+    assert {:error, :model_required} =
+             SessionConfiguration.prepare(c.session, %{"OPENAI_API_KEY" => "sk"})
+
+    assert {:error, :endpoint_required} =
+             SessionConfiguration.prepare(c.session, %{
+               "SWARM_API_KEY" => "k",
+               "SWARM_MODEL" => "m"
+             })
+
+    assert Providers.list() == []
+  end
+
+  test "a base URL that is no preset names the row after its host", c do
+    assert {:ok, _} = SessionConfiguration.prepare(c.session, @swarm_env)
+    assert [provider] = Providers.list()
+    assert provider.name == "127.0.0.1"
+  end
+
+  test "override_source/1 says where an override came from", c do
+    assert SessionConfiguration.override_source(nil) == nil
+
+    saved = provider!(%{name: "Saved", models: ["saved-model"], default_model: "saved-model"})
+
+    assert {:ok, _} =
+             SessionConfiguration.prepare(c.session, %{"SWARM_MODEL_OVERRIDE" => "saved-model"})
+
+    assert %{provider_id: id} = SessionConfiguration.override()
+    assert id == saved.id
+    assert SessionConfiguration.override_source(SessionConfiguration.override()) == :flag
+    assert SessionConfiguration.override_source(%{provider_id: "x", model: "y"}) == :flag
   end
 end

@@ -438,7 +438,7 @@ defmodule SwarmCode.Daemon.Service.Settings.Providers do
           end
 
         {:error, message} ->
-          {:error, "The new key was refused (#{refusal(Kit.redact(message, [new, old]), name)})."}
+          {:error, key_test_words(Kit.redact(message, [new, old]), name, fresh.base_url)}
       end
     end
 
@@ -480,6 +480,22 @@ defmodule SwarmCode.Daemon.Service.Settings.Providers do
 
       {:error, _other} ->
         {:error, "Couldn't save the new key right now."}
+    end
+  end
+
+  @doc false
+  # cli020 B18 (onboarding-16): only an HTTP answer refuses a key; a request
+  # that never reached the endpoint says so and how to save the key anyway.
+  def key_test_words(message, name, base_url) do
+    case Regex.run(~r/request failed(?: after \d+ attempts)?: (.*)\z/s, message) do
+      [_, reason] ->
+        host = (is_binary(base_url) && URI.parse(base_url).host) || "the provider"
+
+        "could not reach #{host} (#{String.slice(String.trim(reason), 0, 160)}); " <>
+          "the key was not saved. Use --no-test to save it anyway."
+
+      nil ->
+        "The new key was refused (#{refusal(message, name)})."
     end
   end
 
@@ -1053,6 +1069,11 @@ defmodule SwarmCode.Daemon.Service.Settings.Providers do
 
   defp attributes(_attrs, _allowed), do: Kit.error(:invalid, "attributes must be a map")
 
+  defp preset_key(value) when is_binary(value),
+    do: value |> String.downcase() |> String.replace(~r/[\s_-]+/u, "")
+
+  defp preset_key(_), do: nil
+
   # `ncode config record add provider --preset NAME` (A61) sends the
   # preset's id: its name, kind, base URL, the Anthropic fallbacks and the
   # preset's effort levels fill whatever the command did not give.
@@ -1064,11 +1085,15 @@ defmodule SwarmCode.Daemon.Service.Settings.Providers do
         {:ok, attrs}
 
       {id, attrs} ->
-        case Enum.find(SwarmCode.Settings.Registry.Actions.provider_presets(), &(&1.id == id)) do
+        presets = SwarmCode.Settings.Registry.Actions.provider_presets()
+        # cli020 B18 (onboarding-15): an id or a display name, in any case and
+        # with or without spaces, hyphens or underscores (`LM Studio`, `lm-studio`).
+        wanted = preset_key(id)
+
+        case Enum.find(presets, &(preset_key(&1.id) == wanted or preset_key(&1.name) == wanted)) do
           nil ->
-            Kit.error(:invalid, "no preset named #{id}", [
-              Kit.field_error("preset", "no preset named #{id}")
-            ])
+            words = "no preset named #{id}; presets: " <> Enum.map_join(presets, ", ", & &1.id)
+            Kit.error(:invalid, words, [Kit.field_error("preset", words)])
 
           preset ->
             levels =

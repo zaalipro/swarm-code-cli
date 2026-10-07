@@ -44,6 +44,35 @@ defmodule SwarmCode.Daemon.Service.SessionSelectionTest do
     assert {:error, :conversation_not_found} = SessionSelection.open(c.root, conversation: "bad")
   end
 
+  # cli020 B11 (bugs-11): a start that fails after the session was opened
+  # removes what this call created, never what existed before.
+  test "a failed start on a fresh database leaves no conversation and no project", c do
+    assert {:ok, session} = SessionSelection.open(c.root, conversation: :new)
+    assert session.created == %{project: true, conversation: true}
+
+    assert {:error, :provider_required} =
+             SwarmCode.Daemon.Service.SessionConfiguration.prepare(session, %{})
+
+    assert :ok = SessionSelection.discard(session)
+    assert Projects.list() == []
+    assert %{rows: [[0]]} = Repo.query!("SELECT count(*) FROM conversations")
+  end
+
+  test "discard keeps rows that existed before the call", c do
+    assert {:ok, first} = SessionSelection.open(c.root)
+    assert {:ok, again} = SessionSelection.open(c.root)
+    assert again.created == %{project: false, conversation: false}
+    assert :ok = SessionSelection.discard(again)
+    assert [_] = Conversations.list_for_project(first.project.id)
+
+    assert {:ok, fresh} = SessionSelection.open(c.root, conversation: :new)
+    assert fresh.created == %{project: false, conversation: true}
+    assert :ok = SessionSelection.discard(fresh)
+    assert [only] = Conversations.list_for_project(first.project.id)
+    assert only.id == first.conversation.id
+    assert length(Projects.list()) == 1
+  end
+
   test "rejects unavailable projects and invalid options before creating records", c do
     assert {:error, :invalid_project} = SessionSelection.open(Path.join(c.root, "missing"))
     assert {:error, :invalid_selection} = SessionSelection.open(c.root, unexpected: true)

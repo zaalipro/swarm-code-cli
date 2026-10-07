@@ -196,21 +196,122 @@ defmodule SwarmCodeCLI.Release.C74ConfigCommandTest do
     assert {2, _, err} =
              config(c, ["set", "project.approval_mode", "auto", "--project", elsewhere])
 
-    assert err =~ "This folder is not an ncode project yet."
+    assert err =~ "ncode has not opened "
+    assert err =~ "Open it once (ncode "
     assert {0, _, _} = config(c, ["set", "project.approval_mode", "auto"])
     assert Projects.get(c.project.id).approval_mode == "auto"
   end
 
   test "a held lease: list still shows the cli keys; a database write says why", c do
-    assert {0, out, _} = config(c, ["list"], foundation: c.held)
+    # cli020 B17 (onboarding-13): the cli keys print, the database ones cannot
+    # be read, and the exit code says so.
+    assert {3, out, err} = config(c, ["list"], foundation: c.held)
     assert out =~ "terminal.panel"
-    assert out =~ "(unavailable while a session is open)"
+    refute out =~ "models.chat"
+
+    assert err =~
+             "A session is using the database; this value cannot be read now. Close it and run this again."
 
     assert {3, _, err} =
              config(c, ["set", "limits.max_concurrent_agents", "7"], foundation: c.held)
 
     assert err =~ "A ncode session is open ("
     assert err =~ "change it there with /settings, or close it first."
+  end
+
+  # cli020 B17 (onboarding-12, -13, -14, -20).
+  test "get of a database key while a session is open exits 3; cli keys still answer", c do
+    assert {3, "", err} = config(c, ["get", "models.chat"], foundation: c.held)
+    assert err =~ "A session is using the database; this value cannot be read now."
+    assert {0, out, _} = config(c, ["get", "terminal.panel"], foundation: c.held)
+    assert out =~ "terminal.panel"
+  end
+
+  test "doctor while a session is open runs its own checks and skips the database", c do
+    assert {0, out, _} = config(c, ["doctor"], foundation: c.held)
+    assert out =~ "database checks skipped: a session is open"
+    assert out =~ "cli.json"
+  end
+
+  test "doctor: a newer database and an open app are blocking, with a hint", c do
+    ahead = SwarmCode.Daemon.Schema.Refusal.database_ahead()
+
+    newer = fn _ ->
+      {:error,
+       %{code: :schema_incompatible, status: 3, message: ahead.message, action: ahead.action}}
+    end
+
+    assert {1, out, _} = config(c, ["doctor"], foundation: newer)
+    assert out =~ ahead.message
+    assert out =~ "!!"
+
+    app = fn _ -> {:error, %{code: :desktop_active, status: 3, message: "open", action: ""}} end
+    assert {1, out, _} = config(c, ["doctor"], foundation: app)
+    assert out =~ "the ncode app is open"
+    assert out =~ "quit the ncode app"
+  end
+
+  test "doctor: search is a note, problems carry a hint, exit 0 without blocking ones", c do
+    assert {0, out, _} = config(c, ["doctor"])
+    assert out =~ ~r/--\s+search\s+no search engine is on\s+run: ncode settings search/
+    assert {0, json, _} = config(c, ["doctor", "--json"])
+    rows = Jason.decode!(json)
+
+    assert %{"level" => "note", "hint" => "run: ncode settings search"} =
+             Enum.find(rows, &(&1["id"] == "search"))
+
+    assert Enum.all?(rows, &(&1["level"] in ["ok", "note", "problem"]))
+
+    Repo.query!("DELETE FROM providers")
+    Cache.clear()
+    assert {1, out, _} = config(c, ["doctor"])
+    assert out =~ ~r/!!\s+providers\s+no model provider is set up\s+run: ncode settings providers/
+  end
+
+  test "set project.trusted for a folder ncode never opened says what to do", c do
+    dir = Path.join(c.base, "unknown")
+    File.mkdir_p!(dir)
+
+    assert {2, _, err} = config(c, ["set", "project.trusted", "on", "--project", dir])
+
+    assert err =~
+             "ncode has not opened #{dir} yet. Open it once (ncode #{dir}), then run this again."
+  end
+
+  # cli020 B18 (onboarding-15).
+  test "record add provider takes --base-url and --kind; --preset other needs a URL", c do
+    assert {0, out, _} =
+             config(c, [
+               "record",
+               "add",
+               "provider",
+               "--preset",
+               "Other",
+               "--name",
+               "Mine",
+               "--base-url",
+               "http://127.0.0.1:9/v1",
+               "--kind",
+               "openai"
+             ])
+
+    assert out =~ "Mine"
+    mine = Enum.find(Providers.list(), &(&1.name == "Mine"))
+    assert mine.base_url == "http://127.0.0.1:9/v1"
+    assert mine.kind == "openai_compatible"
+
+    assert {2, _, err} = config(c, ["record", "add", "provider", "--preset", "other"])
+    assert err =~ "--preset other needs --base-url URL."
+
+    assert {2, _, err} =
+             config(c, ["record", "add", "provider", "--preset", "openai", "--kind", "gemini"])
+
+    assert err =~ "--kind is anthropic or openai."
+  end
+
+  test "config help says what keys lists", c do
+    assert {0, out, _} = config(c, ["help"])
+    assert out =~ ~r/keys \[--json\]\s+every setting key/
   end
 
   test "secrets never come from argv; a piped one is read from stdin", c do

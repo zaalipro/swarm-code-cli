@@ -11,6 +11,9 @@ defmodule SwarmCodeCLI.Plain.Session do
   alias SwarmCodeCLI.UI.DataSource
   alias SwarmCodeCLI.UI.DataSource.{DataBridge, Delivery, DTO, Request, Watch}
 
+  # cli020 B6: the longest a plain session waits after stdin ends (a turn's).
+  @eof_deadline_ms 600_000
+
   def start_link(options), do: GenServer.start_link(__MODULE__, options)
   def snapshot(server), do: GenServer.call(server, :snapshot)
 
@@ -24,12 +27,16 @@ defmodule SwarmCodeCLI.Plain.Session do
     now = Keyword.fetch!(options, :now)
     presenter_options = Keyword.fetch!(options, :options)
     output_timeout = Keyword.get(options, :output_timeout, 1000)
+    # cli020 B7: a consumer slower than `output_timeout` is backpressure; a
+    # batch fails only after this deadline (or at once on a closed device).
+    output_deadline = Keyword.get(options, :output_deadline, 30_000)
     eof_mode = Keyword.get(options, :eof, :close)
 
     if Intent.valid_id?(epoch) and Intent.valid_id?(conversation) and is_integer(now) and now >= 0 and
          match?(%Options{}, presenter_options) and eof_mode in [:close, :wait] and
          is_integer(output_timeout) and
-         output_timeout in 1..5000 do
+         output_timeout in 1..5000 and is_integer(output_deadline) and
+         output_deadline in 1..60_000 do
       client = Keyword.fetch!(options, :data_source)
 
       state = %{
@@ -40,8 +47,10 @@ defmodule SwarmCodeCLI.Plain.Session do
         input: Keyword.fetch!(options, :input),
         output: Keyword.fetch!(options, :output),
         output_timeout: output_timeout,
+        output_deadline: max(output_deadline, output_timeout),
         eof_mode: eof_mode,
         eof_pending?: false,
+        eof_token: nil,
         completion_ids: MapSet.new(),
         error: Keyword.fetch!(options, :error),
         observer: Keyword.get(options, :observer),
@@ -58,7 +67,11 @@ defmodule SwarmCodeCLI.Plain.Session do
         now: now,
         requests: %{},
         detail: nil,
-        ready_notified?: false
+        ready_notified?: false,
+        # cli020 B6/B3: refused sends and denied approvals of this session, for
+        # the exit code (`{:summary, …}` before `{:closed, …}`).
+        refused: 0,
+        denied: 0
       }
 
       {:ok, state, {:continue, :bind}}
@@ -124,6 +137,7 @@ defmodule SwarmCodeCLI.Plain.Session do
           {presenter, records} = Presenter.present(state.presenter, state.epoch, delivery)
           next = write(%{state | presenter: presenter}, records)
           next = track_completion(next, delivery)
+          next = tally(next, delivery)
           notify(state, {:delivery, delivery})
 
           next =
@@ -150,7 +164,10 @@ defmodule SwarmCodeCLI.Plain.Session do
           if state.eof_mode == :wait do
             token = make_ref()
             Process.send_after(self(), {:eof_probe, token}, 50)
-            %{state | eof_pending?: true, phase: {:eof_waiting, token}}
+            # cli020 B6: the wait for the queue and the live chat runs is as
+            # long as a turn may take.
+            Process.send_after(self(), {:eof_deadline, token}, @eof_deadline_ms)
+            %{state | eof_pending?: true, eof_token: token, phase: {:eof_waiting, token}}
           else
             finish(state, :eof)
           end
@@ -189,6 +206,10 @@ defmodule SwarmCodeCLI.Plain.Session do
         %{eof_pending?: true, phase: {:eof_waiting, token}} = state
       ),
       do: {:noreply, if(map_size(state.requests) == 0, do: query_completion(state), else: state)}
+
+  def handle_info({:eof_deadline, token}, %{eof_pending?: true, eof_token: token} = state)
+      when state.phase != :closed,
+      do: {:noreply, finish(state, :eof_timeout)}
 
   def handle_info(_, state), do: {:noreply, state}
 
@@ -250,12 +271,23 @@ defmodule SwarmCodeCLI.Plain.Session do
        when is_struct(body, DTO.WorkspaceSnapshot) or is_struct(body, DTO.RunDetailSnapshot) do
     runs = if is_struct(body, DTO.WorkspaceSnapshot), do: body.runs, else: List.wrap(body.run)
     owned = Enum.filter(runs, &MapSet.member?(state.completion_ids, &1.id))
+    # cli020 B6: the conversation's chat runs and its queue decide too: a
+    # prompt queued before EOF starts when the live turn ends.
+    chats =
+      if is_struct(body, DTO.WorkspaceSnapshot),
+        do: Enum.filter(runs, &(&1.kind == :chat)),
+        else: []
+
+    watched = Enum.uniq_by(owned ++ chats, & &1.id)
 
     cond do
-      Enum.any?(owned, &(&1.state in [:waiting_question, :waiting_approval])) ->
+      Enum.any?(watched, &(&1.state in [:waiting_question, :waiting_approval])) ->
         finish(state, :needs_input)
 
-      Enum.any?(owned, &(&1.state not in [:done, :failed, :stopped, :interrupted, :superseded])) ->
+      Enum.any?(watched, &(&1.state not in [:done, :failed, :stopped, :interrupted, :superseded])) ->
+        %{state | phase: :waiting_completion}
+
+      queue_waiting?(body) ->
         %{state | phase: :waiting_completion}
 
       Enum.any?(owned, &(&1.state in [:failed, :stopped, :interrupted])) ->
@@ -268,7 +300,7 @@ defmodule SwarmCodeCLI.Plain.Session do
 
   defp ready(
          %{eof_pending?: true, phase: :waiting_completion} = state,
-         %{kind: :delta, body: %{kind: :run_update, body: %{id: id, state: status}}}
+         %{kind: :delta, body: %{kind: :run_update, body: %{state: status}}}
        )
        when status in [
               :done,
@@ -279,7 +311,7 @@ defmodule SwarmCodeCLI.Plain.Session do
               :waiting_question,
               :waiting_approval
             ] do
-    if MapSet.member?(state.completion_ids, id), do: query_completion(state), else: state
+    query_completion(state)
   end
 
   defp ready(%{eof_pending?: true} = state, %{kind: :watch_ready}),
@@ -341,7 +373,8 @@ defmodule SwarmCodeCLI.Plain.Session do
 
   defp ready(%{phase: :awaiting_outcome} = state, %{kind: :response}) do
     if map_size(state.requests) == 0 do
-      if state.eof_pending?, do: finish(state, :eof), else: %{state | phase: :ready}
+      # cli020 B6: after EOF a refused send still waits for the live runs.
+      if state.eof_pending?, do: query_completion(state), else: %{state | phase: :ready}
     else
       state
     end
@@ -393,6 +426,34 @@ defmodule SwarmCodeCLI.Plain.Session do
         )
     end
   end
+
+  # A queue that waits on nothing (paused, once C1 says so) does not hold the
+  # session open.
+  defp queue_waiting?(%DTO.WorkspaceSnapshot{} = body),
+    do: (body.queued > 0 or body.queued_texts != []) and Map.get(body, :queue_paused) != true
+
+  defp queue_waiting?(_), do: false
+
+  # cli020 B6/B3: the first refused send makes the exit code 1; denied
+  # approvals count for `--fail-on-denied`.
+  defp tally(state, %{kind: :response, request_id: id, body: %DTO.Outcome{status: status}}) do
+    case Map.get(state.requests, id) do
+      %Request{kind: {:dispatch, _, _, _, _}} when status != :accepted ->
+        %{state | refused: state.refused + 1}
+
+      %Request{kind: {:steer, _, _, _, _}} when status != :accepted ->
+        %{state | refused: state.refused + 1}
+
+      %Request{kind: {:resolve_approval, _, _, _, _, decision}}
+      when status == :accepted and decision in [:deny, :deny_stop] ->
+        %{state | denied: state.denied + 1}
+
+      _ ->
+        state
+    end
+  end
+
+  defp tally(state, _), do: state
 
   defp track_completion(state, %{
          kind: :response,
@@ -610,6 +671,7 @@ defmodule SwarmCodeCLI.Plain.Session do
           {:stdout, [detach_message(state.presenter.options.detached_runs?), "\n"]}
         ])
 
+    notify(state, {:summary, %{refused: state.refused, denied: state.denied}})
     notify(state, {:closed, reason})
     %{state | phase: :closed, reader: nil, reader_monitor: nil, requests: %{}, watch: nil}
   end
@@ -651,7 +713,9 @@ defmodule SwarmCodeCLI.Plain.Session do
         {:plain_output, ^token, result} -> result
         {:DOWN, ^monitor, :process, ^worker, _} -> :error
       after
-        state.output_timeout -> :error
+        # cli020 B7: the writer is no longer killed at `output_timeout`; a
+        # paused pipe gets the whole deadline, a failed write ends sooner.
+        state.output_deadline -> :error
       end
 
     Process.unlink(worker)

@@ -37,53 +37,88 @@ defmodule SwarmCodeCLI.Release.Headless do
   default `SWARM_CONVERSATION`, else latest) and `model` (a session override,
   exported as `SWARM_MODEL_OVERRIDE` for the provider configuration).
   """
-  @spec run(mode(), keyword()) :: 0 | 1 | 2 | 3
+  @spec run(mode(), keyword()) :: 0 | 1 | 2 | 3 | 129 | 143
   def run(mode, options \\ []) do
     root = Keyword.get(options, :project_root) || System.get_env("SWARM_PROJECT_ROOT")
     root = if root in [nil, ""], do: File.cwd!(), else: root
     conversation = Keyword.get(options, :conversation) || System.get_env("SWARM_CONVERSATION")
     if model = Keyword.get(options, :model), do: System.put_env("SWARM_MODEL_OVERRIDE", model)
 
+    open = Keyword.get(options, :with_saved_session, &PersistedSession.with_saved_session/2)
+
     with {:ok, selection} <- selection(conversation),
          {:ok, code} <-
-           PersistedSession.with_saved_session(
+           open.(
              [project_root: root, conversation: selection],
-             &run_session(&1, mode)
+             &run_session(&1, mode, options)
            ) do
       code
     else
-      {:error, failure} -> PersistedSession.report(failure)
+      {:error, failure} -> json_failure(mode, failure.message, PersistedSession.report(failure))
     end
   rescue
-    error -> fail("ncode stopped unexpectedly (#{inspect(error.__struct__)}).")
+    error -> fail_json(mode, "ncode stopped unexpectedly (#{inspect(error.__struct__)}).")
   catch
-    kind, _ -> fail("ncode stopped unexpectedly (#{kind}).")
+    kind, _ -> fail_json(mode, "ncode stopped unexpectedly (#{kind}).")
   end
+
+  @doc """
+  cli020 B4: a `-p … --json` that ends before the run prints the summary
+  object anyway (stdout is the script's), beside the stderr line. Returns
+  `code`. Other modes print nothing.
+  """
+  @spec json_failure(mode() | :json | term(), String.t(), non_neg_integer()) :: non_neg_integer()
+  def json_failure(mode, sentence, code)
+
+  def json_failure(:json, sentence, code), do: print_failure(sentence, code)
+
+  def json_failure({:prompt, _prompt, :json}, sentence, code), do: print_failure(sentence, code)
+
+  # cli020 B23: a stream ends with the summary object whatever stopped it.
+  def json_failure(:stream_json, sentence, code),
+    do: print_failure(sentence, code, %{"type" => "summary"})
+
+  def json_failure({:prompt, _prompt, :stream_json}, sentence, code),
+    do: print_failure(sentence, code, %{"type" => "summary"})
+
+  def json_failure(_mode, _sentence, code), do: code
+
+  defp print_failure(sentence, code, extra \\ %{}) do
+    if code != 0 do
+      object =
+        Map.merge(extra, %{
+          "state" => "not_started",
+          "conversation_id" => nil,
+          "run_id" => nil,
+          "text" => "",
+          "error" => sentence,
+          "question" => nil,
+          "denied" => [],
+          "exit_code" => code
+        })
+
+      IO.puts(Jason.encode!(object))
+    end
+
+    code
+  end
+
+  defp fail_json(mode, text), do: json_failure(mode, text, fail(text))
 
   # -- startup ----------------------------------------------------------------
 
   defp selection(value) when value in [nil, "", "latest"], do: {:ok, :latest}
   defp selection("new"), do: {:ok, :new}
 
-  defp selection(id) do
-    case Ecto.UUID.cast(id) do
-      {:ok, ^id} ->
-        {:ok, id}
+  # cli020 B19: an id, an id prefix or a title; the session resolves it.
+  defp selection(value) when is_binary(value), do: {:ok, value}
 
-      _ ->
-        {:error,
-         %{
-           status: 2,
-           message: "A conversation is latest, new, or a conversation id; #{id} is none.",
-           action: "Run ncode --help."
-         }}
-    end
-  end
-
-  defp run_session(session, mode) do
+  defp run_session(session, mode, options) do
     # First-run onboarding (D3) says on stderr that it wrote the provider row.
     if notice = session[:notice], do: IO.puts(:stderr, "ncode: " <> notice)
     warn_full_access(session, mode)
+    # cli020 B10: folders a hard exit left behind go first.
+    _ = SwarmCodeCLI.Release.SocketSweep.sweep()
     {dir, stat} = private_directory()
     {:ok, supervisor} = Supervisor.start_link([], strategy: :one_for_all, max_restarts: 0)
     Process.unlink(supervisor)
@@ -115,9 +150,16 @@ defmodule SwarmCodeCLI.Release.Headless do
                nonce: nonce,
                source_epoch: source_epoch
              ) do
-        present(mode, source, source_epoch, session.conversation.id)
+        present(mode, source, source_epoch, session.conversation.id,
+          fail_on_denied: Keyword.get(options, :fail_on_denied, false),
+          project_root: session.project.root_path,
+          # cli020 B23
+          max_turns: Keyword.get(options, :max_turns),
+          max_budget_usd: Keyword.get(options, :max_budget_usd)
+        )
       else
-        _ -> fail("The saved session could not start its service.")
+        _ ->
+          fail_json(mode, "The saved session could not start its service.")
       end
     after
       if Process.alive?(supervisor), do: Supervisor.stop(supervisor, :normal, 15_000)
@@ -138,18 +180,20 @@ defmodule SwarmCodeCLI.Release.Headless do
 
   def warn_full_access(_session, _mode), do: :ok
 
-  defp present({:prompt, prompt, format}, source, epoch, conversation) do
+  defp present({:prompt, prompt, format}, source, epoch, conversation, extra) do
     OneShot.run(
-      data_source: source,
-      source_epoch: epoch,
-      conversation_id: conversation,
-      prompt: prompt,
-      format: format,
-      progress: tty?(:stderr)
+      [
+        data_source: source,
+        source_epoch: epoch,
+        conversation_id: conversation,
+        prompt: prompt,
+        format: format,
+        progress: tty?(:stderr)
+      ] ++ extra
     )
   end
 
-  defp present({:plain, format}, source, epoch, conversation) do
+  defp present({:plain, format}, source, epoch, conversation, extra) do
     {:ok, plain} =
       SwarmCodeCLI.Plain.Session.start_link(
         data_source: source,
@@ -171,10 +215,43 @@ defmodule SwarmCodeCLI.Release.Headless do
     receive do
       {:plain_session, ^plain, {:closed, reason}} ->
         Process.demonitor(monitor, [:flush])
-        plain_code(reason)
+
+        summary =
+          receive do
+            {:plain_session, ^plain, {:summary, summary}} -> summary
+          after
+            0 -> %{refused: 0, denied: 0}
+          end
+
+        plain_exit(reason, summary, Keyword.get(extra, :fail_on_denied, false))
+
+      # cli020 B9: SIGTERM/SIGHUP detach the presenter; the session's close
+      # (with_saved_session) stops the live runs.
+      {:shutdown_signal, signal} when signal in [:sigterm, :sighup] ->
+        _ = SwarmCodeCLI.Plain.Session.close(plain, :interrupt)
+        Process.demonitor(monitor, [:flush])
+        IO.puts(:stderr, "ncode: " <> SwarmCodeCLI.Release.Signals.words(signal))
+        SwarmCodeCLI.Release.Signals.exit_code(signal)
 
       {:DOWN, ^monitor, :process, ^plain, _} ->
         fail("The plain session stopped unexpectedly.")
+    end
+  end
+
+  @doc """
+  cli020 B6/B3: the exit code of a `--plain` session from how it closed and
+  its summary: a refused send fails a clean close, and so does a denied
+  approval with `--fail-on-denied`.
+  """
+  @spec plain_exit(atom(), map(), boolean()) :: 0 | 1
+  def plain_exit(reason, summary, fail_on_denied?) do
+    code = plain_code(reason)
+
+    cond do
+      code != 0 -> code
+      Map.get(summary, :refused, 0) > 0 -> 1
+      fail_on_denied? and Map.get(summary, :denied, 0) > 0 -> 1
+      true -> 0
     end
   end
 
@@ -182,7 +259,21 @@ defmodule SwarmCodeCLI.Release.Headless do
   defp plain_code(:run_failed), do: 1
 
   defp plain_code(:needs_input) do
-    IO.puts(:stderr, "ncode: a run is waiting for an answer; open ncode to give it.")
+    IO.puts(
+      :stderr,
+      "ncode: the run was waiting for an approval and was stopped when input ended. " <>
+        "Answer it before closing stdin (approve or deny), or allow it with /approval auto, then rerun."
+    )
+
+    1
+  end
+
+  defp plain_code(:eof_timeout) do
+    IO.puts(
+      :stderr,
+      "ncode: input ended and the runs were still going after 10 minutes, so they were stopped."
+    )
+
     1
   end
 
