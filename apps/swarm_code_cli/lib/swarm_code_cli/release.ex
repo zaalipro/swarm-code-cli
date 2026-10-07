@@ -15,6 +15,8 @@ defmodule SwarmCodeCLI.Release do
 
   @compile {:no_warn_undefined, [SwarmCode.Domain.Paths]}
 
+  @resume_needs_value "--resume needs an id or a title here; ncode --resume alone opens the picker."
+
   @usage """
   Usage: ncode [DIR] [--new | --continue | --resume ID] [--model M]
                [-p PROMPT [--json] [--fail-on-denied]] [--plain [--ndjson]]
@@ -32,7 +34,8 @@ defmodule SwarmCodeCLI.Release do
 
     --new             start a new conversation
     --continue, -c    continue the latest conversation (the default)
-    --resume, -r ID   open the conversation with this id
+    --resume, -r [ID] open the conversation with this id, 6+ characters of it or its
+                      title; without one, pick it from a list
     --model, -m M     use model M (or provider/model) for this session only
     -p PROMPT         run one turn without the full-screen view, print the answer
                       and exit; approvals nobody can give are denied, and one
@@ -277,8 +280,19 @@ defmodule SwarmCodeCLI.Release do
       "--resume=" <> id ->
         conversation(parsed, id, rest)
 
+      # cli020 B19: a value is an id, a 6+ character id prefix or a title,
+      # resolved once storage is open; bare --resume is the TUI's picker
+      # (the launcher's), so here it needs a value.
       flag when flag in ["--resume", "-r"] ->
-        value(flag, rest, fn id, rest -> conversation(parsed, id, rest) end)
+        case rest do
+          [value | rest] when value != "--" ->
+            if String.starts_with?(value, "-"),
+              do: {:error, @resume_needs_value},
+              else: conversation(parsed, value, rest)
+
+          _ ->
+            {:error, @resume_needs_value}
+        end
 
       "--model=" <> model ->
         once(parsed, :model, rest, &%{&1 | model: model})
@@ -368,10 +382,9 @@ defmodule SwarmCodeCLI.Release do
       parsed.model != nil and String.trim(parsed.model) == "" ->
         {:error, "--model needs a model name."}
 
-      parsed.conversation not in [nil, "new", "latest"] and not uuid?(parsed.conversation) ->
-        # pass70 Q19: an eight-digit prefix is an id to a person; say what
-        # is missing and where the ids are.
-        {:error, "--resume needs a whole conversation id; /resume inside ncode picks one."}
+      parsed.conversation not in [nil, "new", "latest"] and
+          not resume_value?(parsed.conversation) ->
+        {:error, @resume_needs_value}
 
       parsed.prompt != nil and parsed.prompt != "-" and not prompt?(parsed.prompt) ->
         {:error, "-p needs a prompt of at most 256 KiB."}
@@ -404,12 +417,10 @@ defmodule SwarmCodeCLI.Release do
     end
   end
 
-  defp uuid?(value),
+  defp resume_value?(value),
     do:
-      Regex.match?(
-        ~r/\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/i,
-        value
-      )
+      String.valid?(value) and String.trim(value) != "" and byte_size(value) <= 200 and
+        not String.match?(value, ~r/[\x00-\x1f\x7f]/)
 
   defp prompt?(text),
     do: byte_size(text) <= @max_prompt_bytes and String.valid?(text) and String.trim(text) != ""

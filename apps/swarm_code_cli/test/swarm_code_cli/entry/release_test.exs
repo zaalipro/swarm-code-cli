@@ -56,11 +56,12 @@ defmodule SwarmCodeCLI.ReleaseTest do
     test "usage errors name the problem" do
       for {args, text} <- [
             {["--bogus"], "unknown option '--bogus'."},
-            {["--resume"], "--resume needs a value."},
-            {["--resume", "x"],
-             "--resume needs a whole conversation id; /resume inside ncode picks one."},
-            {["--resume", "7d01acff"],
-             "--resume needs a whole conversation id; /resume inside ncode picks one."},
+            # cli020 B19: a prefix or a title is resolved later; bare
+            # --resume is the launcher's picker.
+            {["--resume"],
+             "--resume needs an id or a title here; ncode --resume alone opens the picker."},
+            {["--resume", " "],
+             "--resume needs an id or a title here; ncode --resume alone opens the picker."},
             {["--new", "--resume", @conversation],
              "choose one of --new, --continue and --resume."},
             {["--json"], "--json goes with -p."},

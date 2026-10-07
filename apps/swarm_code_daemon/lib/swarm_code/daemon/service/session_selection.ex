@@ -69,6 +69,52 @@ defmodule SwarmCode.Daemon.Service.SessionSelection do
   defp project_root(_), do: {:error, :invalid_project}
 
   @doc """
+  cli020 B19 (competitors-12): the conversation of the project at `root`
+  that `value` names for `--resume`: an exact title, else (6 to 36 id
+  characters) a unique id prefix. `{:error, :none}` when nothing matches,
+  `{:error, {:ambiguous, count, [{id, title}]}}` (the five newest) when
+  several do. Read-only.
+  """
+  @spec resolve(Path.t(), String.t()) ::
+          {:ok, String.t()}
+          | {:error, :none | {:ambiguous, pos_integer(), [{String.t(), String.t()}]}}
+  def resolve(root, value) when is_binary(root) and is_binary(value) do
+    real =
+      case ProjectPath.real_path(root) do
+        {:ok, real} -> real
+        _ -> root
+      end
+
+    by_title = matches(real, "c.title = ?2", value)
+
+    found =
+      if elem(by_title, 0) == 0 and Regex.match?(~r/\A[0-9a-fA-F-]{6,36}\z/, value),
+        do: matches(real, "c.id LIKE ?2 || '%'", String.downcase(value)),
+        else: by_title
+
+    case found do
+      {1, [{id, _title}]} -> {:ok, id}
+      {0, _} -> {:error, :none}
+      {n, rows} -> {:error, {:ambiguous, n, rows}}
+    end
+  end
+
+  defp matches(root, where, value) do
+    from =
+      "FROM conversations c JOIN projects p ON p.id = c.project_id WHERE p.root_path = ?1 AND "
+
+    %{rows: [[count]]} = Repo.query!("SELECT COUNT(*) " <> from <> where, [root, value])
+
+    %{rows: rows} =
+      Repo.query!(
+        "SELECT c.id, c.title " <> from <> where <> " ORDER BY c.updated_at DESC LIMIT 5",
+        [root, value]
+      )
+
+    {count, Enum.map(rows, fn [id, title] -> {id, title} end)}
+  end
+
+  @doc """
   cli020 B11 (bugs-11): undoes what `open/2` created when the start fails
   after it (no provider, an unknown `--model`, a first-run error): the
   conversation it created, and the project it created when no conversation

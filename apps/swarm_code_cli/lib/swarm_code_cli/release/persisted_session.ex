@@ -327,23 +327,70 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
     # SQL callers are short-lived. Returning plain session structs does not
     # retain native statement resources in the launcher while the TUI runs.
     query_worker(fn ->
-      case SessionSelection.open(root, selection) do
-        {:ok, opened} ->
-          case prepare(opened, interactive?) do
-            {:ok, session} ->
-              {:ok, session}
-
-            {:error, reason} ->
-              # cli020 B11: a failed start leaves no empty conversation (and
-              # no project row this call created).
-              SessionSelection.discard(opened)
-              {:error, session_failure(reason, selection)}
-          end
-
-        {:error, reason} ->
-          {:error, session_failure(reason, selection)}
+      case resolved_selection(root, selection) do
+        {:ok, selection} -> open_resolved(root, selection, interactive?)
+        {:error, failure} -> {:error, failure}
       end
     end)
+  end
+
+  defp resolved_selection(root, selection) when is_binary(selection) do
+    case Ecto.UUID.cast(selection) do
+      {:ok, ^selection} -> {:ok, selection}
+      _ -> resolve_resume(root, selection)
+    end
+  end
+
+  defp resolved_selection(_root, selection), do: {:ok, selection}
+
+  @doc """
+  cli020 B19 (competitors-12): the conversation of the project at `root`
+  that `value` names: an exact title, else a unique id prefix of at least 6
+  characters. Several matches are a usage error listing up to five.
+  """
+  @spec resolve_resume(Path.t(), String.t()) :: {:ok, String.t()} | {:error, failure()}
+  def resolve_resume(root, value) do
+    case SessionSelection.resolve(root, value) do
+      {:ok, id} ->
+        {:ok, id}
+
+      {:error, :none} ->
+        {:error,
+         failure(
+           @exit_usage,
+           "No conversation of this project matches #{value}.",
+           "Give a title, or 6 or more characters of an id; ncode --resume alone opens the picker."
+         )}
+
+      {:error, {:ambiguous, n, rows}} ->
+        lines = Enum.map(rows, fn {id, title} -> "#{id}  #{title}" end)
+
+        {:error,
+         failure(
+           @exit_usage,
+           "--resume #{value} matches #{n} conversations.",
+           Enum.join(lines ++ ["Name more of the id, or run ncode --resume to pick."], "\n")
+         )}
+    end
+  end
+
+  defp open_resolved(root, selection, interactive?) do
+    case SessionSelection.open(root, selection) do
+      {:ok, opened} ->
+        case prepare(opened, interactive?) do
+          {:ok, session} ->
+            {:ok, session}
+
+          {:error, reason} ->
+            # cli020 B11: a failed start leaves no empty conversation (and
+            # no project row this call created).
+            SessionSelection.discard(opened)
+            {:error, session_failure(reason, selection)}
+        end
+
+      {:error, reason} ->
+        {:error, session_failure(reason, selection)}
+    end
   end
 
   # pass74 S1-13 (D11): `ncode settings` opens without a usable provider —
@@ -687,9 +734,17 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
   """
   @spec tui_selection() :: {:latest | :new | String.t(), boolean()}
   def tui_selection do
-    if System.get_env("SWARM_CONVERSATION") in [nil, ""] and not settings_only?(),
-      do: startup_selection(SwarmCodeCLI.Release.preferences_path()),
-      else: {selection_from_env(), false}
+    cond do
+      # cli020 B19: bare `ncode --resume` opens the latest with the picker over it.
+      System.get_env("SWARM_RESUME_PICKER") == "1" and not settings_only?() ->
+        {:latest, true}
+
+      System.get_env("SWARM_CONVERSATION") in [nil, ""] and not settings_only?() ->
+        startup_selection(SwarmCodeCLI.Release.preferences_path())
+
+      true ->
+        {selection_from_env(), false}
+    end
   end
 
   @doc false
@@ -1331,18 +1386,9 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
       "new" ->
         :new
 
-      id ->
-        case Ecto.UUID.cast(id) do
-          {:ok, ^id} ->
-            id
-
-          _ ->
-            fail!(
-              @exit_usage,
-              "SWARM_CONVERSATION must be latest, new, or a conversation id.",
-              "Run ncode --help."
-            )
-        end
+      # cli020 B19: an id, an id prefix or a title (`open_session/3` resolves it).
+      value ->
+        value
     end
   end
 

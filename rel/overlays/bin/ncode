@@ -30,7 +30,8 @@ Opens the saved session for DIR (default: the current directory).
 
   --new             start a new conversation
   --continue, -c    continue the latest conversation (the default)
-  --resume, -r ID   open the conversation with this id
+  --resume, -r [ID] open the conversation with this id, 6+ characters of it or its
+                    title; without one, pick it from a list
   --model, -m M     use model M (or provider/model) for this session only
   -p PROMPT         run one turn in a new conversation (-c or --resume to continue
                     one) without the full-screen view, print the answer and exit;
@@ -143,6 +144,7 @@ unset ncode_pair ncode_name
 project=""
 project_set=0
 conversation=""
+resume_picker=0
 model=""
 model_set=0
 prompt=""
@@ -235,7 +237,14 @@ while [[ $# -gt 0 ]]; do
     --version | -V | -v) version; exit 0 ;;
     --new) set_conversation new ;;
     --continue | -c) set_conversation latest ;;
-    --resume | -r) needs_value "$1" $# "${2:-}"; set_conversation "$2"; shift ;;
+    # cli020 B19: bare --resume opens the /resume picker; a value is an id,
+    # 6 or more characters of one, or a title (the release resolves it).
+    --resume | -r)
+      if [[ $# -lt 2 || "$2" == "--" || "$2" == -* ]]; then
+        set_conversation latest; resume_picker=1
+      else
+        set_conversation "$2"; shift
+      fi ;;
     --resume=*) set_conversation "${1#--resume=}" ;;
     --model | -m) needs_value "$1" $# "${2:-}"; once --model; model="$2"; model_set=1; shift ;;
     --model=*) once --model; model="${1#--model=}"; model_set=1 ;;
@@ -268,11 +277,16 @@ fi
 if [[ $prompt_set -eq 1 && -z "${prompt//[[:space:]]/}" ]]; then
   die_usage "-p needs a prompt."
 fi
-uuid='^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
 case "$conversation" in
   "" | new | latest) ;;
-  *) [[ "$conversation" =~ $uuid ]] || die_usage "--resume needs a conversation id." ;;
+  *)
+    if [[ -z "${conversation//[[:space:]]/}" || "$conversation" =~ [[:cntrl:]] ]]; then
+      die_usage "--resume needs an id or a title."
+    fi ;;
 esac
+if [[ $resume_picker -eq 1 && ( $prompt_set -eq 1 || $plain -eq 1 ) ]]; then
+  die_usage "--resume needs an id or a title here; ncode --resume alone opens the picker."
+fi
 
 # The project is the directory named on the command line, else where the
 # command was run. SWARM_PROJECT_ROOT is deliberately ignored: shells that
@@ -313,7 +327,13 @@ if [[ $model_set -eq 1 ]]; then
 else
   unset SWARM_MODEL_OVERRIDE
 fi
-unset SWARM_RELEASE_TUI SWARM_SETTINGS_OPEN SWARM_SETTINGS_ONLY
+unset SWARM_RELEASE_TUI SWARM_SETTINGS_OPEN SWARM_SETTINGS_ONLY SWARM_RESUME_PICKER
+
+# cli020 B20 (onboarding-18): something on the terminal while the VM boots;
+# the release erases it ("\r\e[2K") before its exit summary.
+starting_line() {
+  if [[ -t 1 ]]; then printf 'Starting ncode\342\200\246'; fi
+}
 
 headless() {
   if [[ $fail_on_denied -eq 1 ]]; then set -- "$@" --fail-on-denied; fi
@@ -339,10 +359,14 @@ if [[ $settings_mode -eq 1 ]]; then
   export SWARM_SETTINGS_OPEN="$settings_query"
   export SWARM_SETTINGS_ONLY=1
   export SWARM_RELEASE_TUI=1
+  starting_line
   exec "$root/bin/swarm_code_cli" start
 fi
 
 if [[ $plain -eq 0 ]] && ! [[ -t 0 && -t 1 && "${TERM:-dumb}" != "dumb" ]]; then
+  if [[ $resume_picker -eq 1 ]]; then
+    die_usage "--resume needs an id or a title without a terminal; ncode --resume alone opens the picker."
+  fi
   echo "ncode: not a terminal, so the plain presenter answers (--plain)." >&2
   plain=1
 fi
@@ -351,4 +375,6 @@ if [[ $plain -eq 1 ]]; then
 fi
 
 export SWARM_RELEASE_TUI=1
+if [[ $resume_picker -eq 1 ]]; then export SWARM_RESUME_PICKER=1; fi
+starting_line
 exec "$root/bin/swarm_code_cli" start

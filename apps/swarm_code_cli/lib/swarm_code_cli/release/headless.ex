@@ -101,20 +101,8 @@ defmodule SwarmCodeCLI.Release.Headless do
   defp selection(value) when value in [nil, "", "latest"], do: {:ok, :latest}
   defp selection("new"), do: {:ok, :new}
 
-  defp selection(id) do
-    case Ecto.UUID.cast(id) do
-      {:ok, ^id} ->
-        {:ok, id}
-
-      _ ->
-        {:error,
-         %{
-           status: 2,
-           message: "A conversation is latest, new, or a conversation id; #{id} is none.",
-           action: "Run ncode --help."
-         }}
-    end
-  end
+  # cli020 B19: an id, an id prefix or a title; the session resolves it.
+  defp selection(value) when is_binary(value), do: {:ok, value}
 
   defp run_session(session, mode, options) do
     # First-run onboarding (D3) says on stderr that it wrote the provider row.

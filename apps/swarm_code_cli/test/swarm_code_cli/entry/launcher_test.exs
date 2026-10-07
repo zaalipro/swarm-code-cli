@@ -22,6 +22,7 @@ defmodule SwarmCodeCLI.Release.LauncherTest do
     printf 'ROOT=%s\\n' "${SWARM_PROJECT_ROOT-<unset>}"
     printf 'TUI=%s\\n' "${SWARM_RELEASE_TUI-<unset>}"
     printf 'PIPED=%s\\n' "${SWARM_STDIN_PIPED-<unset>}"
+    printf 'PICKER=%s\\n' "${SWARM_RESUME_PICKER-<unset>}"
   } >"$STUB_LOG"
   exit "${STUB_EXIT:-0}"
   """
@@ -70,6 +71,18 @@ defmodule SwarmCodeCLI.Release.LauncherTest do
     {code, output}
   end
 
+  # The launcher on a pseudo-terminal (script(1)), for the full-screen path.
+  defp tty(context, args) do
+    {output, code} =
+      System.cmd("script", ["-q", "/dev/null", "bash", context.launcher | args],
+        env: [{"STUB_LOG", context.log}, {"TERM", "xterm-256color"}, {"SWARM_CONVERSATION", nil}],
+        cd: context.project,
+        stderr_to_stdout: true
+      )
+
+    {code, output}
+  end
+
   defp stub(context) do
     context.log
     |> File.read!()
@@ -98,7 +111,7 @@ defmodule SwarmCodeCLI.Release.LauncherTest do
       for args <- [
             ["--bogus"],
             ["--resume"],
-            ["--resume", "not-a-uuid"],
+            ["--resume", " "],
             ["--new", "--continue"],
             ["--model"],
             ["--model", " "],
@@ -228,6 +241,32 @@ defmodule SwarmCodeCLI.Release.LauncherTest do
 
       assert {2, "ncode: --fail-on-denied goes with -p or --plain. Run 'ncode --help'.\n"} =
                launch(context, ["--fail-on-denied"])
+    end
+
+    # cli020 B19: a prefix or a title passes to the release, which resolves it.
+    test "--resume takes a prefix or a title; bare --resume is the TUI's picker", context do
+      launch(context, ["-r", "Fix the login", "-p", "hi"])
+      assert stub(context)["CONVERSATION"] == "Fix the login"
+      launch(context, ["--resume", "7d01ac", "--plain"])
+      assert stub(context)["CONVERSATION"] == "7d01ac"
+
+      for args <- [["--resume", "-p", "hi"], ["--plain", "--resume"]] do
+        assert {2, output} = launch(context, args), inspect(args)
+
+        assert output ==
+                 "ncode: --resume needs an id or a title here; ncode --resume alone opens the picker. Run 'ncode --help'.\n"
+      end
+
+      assert {0, output} = tty(context, ["--resume"])
+      assert stub(context)["TUI"] == "1"
+      assert stub(context)["PICKER"] == "1"
+      assert stub(context)["CONVERSATION"] == "latest"
+      # cli020 B20 (onboarding-18): the startup line, no newline.
+      assert output =~ "Starting ncode…"
+      refute output =~ "Starting ncode…\r\n"
+
+      tty(context, [])
+      assert stub(context)["PICKER"] == "<unset>"
     end
 
     test "the run's exit code is the command's", context do
