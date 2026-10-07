@@ -630,9 +630,17 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
           group_by: r.model,
           order_by: [desc: sum(r.cost_usd)],
           limit: 50,
-          select: {r.model, count(r.id), sum(r.tokens_in), sum(r.tokens_out), sum(r.cost_usd)}
+          select:
+            {r.model, count(r.id), sum(r.tokens_in), sum(r.tokens_out), sum(r.cost_usd),
+             count(r.cost_usd)}
         )
       )
+
+    # cli020 C18: a model none of whose runs has a price has no cost (nil), not $0.
+    rows =
+      Enum.map(rows, fn {model, n, i, o, c, priced} ->
+        {model, n, i, o, if(priced > 0, do: c || 0.0)}
+      end)
 
     {runs, tokens_in, tokens_out, cost} =
       Enum.reduce(rows, {0, 0, 0, 0.0}, fn {_, n, i, o, c}, {rn, ri, ro, rc} ->
@@ -642,7 +650,7 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
     lines =
       Enum.map(rows, fn {model, n, i, o, c} ->
         "- #{model || "unknown model"}: #{n} run#{if n == 1, do: "", else: "s"}, " <>
-          "#{tokens(i)} in, #{tokens(o)} out, #{usd(c)}"
+          "#{tokens(i)} in, #{tokens(o)} out, #{if c, do: usd(c), else: "price unknown"}"
       end)
 
     text =
@@ -655,7 +663,29 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
         "\n"
       )
 
-    report(conv, cmd.name, "Cost of this conversation", text)
+    # cli020 C18 (ux-live-19): the same per-model rows for the terminal to
+    # draw, then the total (`name: "Total"`); `--plain` keeps the text.
+    model_rows =
+      Enum.map(rows, fn {model, n, i, o, c} ->
+        %{
+          model: model && clip(model),
+          runs: n,
+          tokens_in: i || 0,
+          tokens_out: o || 0,
+          cost_usd: c
+        }
+      end)
+
+    total = %{
+      name: "Total",
+      runs: runs,
+      tokens_in: tokens_in,
+      tokens_out: tokens_out,
+      cost_usd: cost
+    }
+
+    with {:ok, answer} <- report(conv, cmd.name, "Cost of this conversation", text),
+         do: {:ok, Map.merge(answer, %{subject: :cost, rows: model_rows ++ [total]})}
   end
 
   # cli020 C8 (tui-code-11): this project's conversations only, filtered in

@@ -231,4 +231,36 @@ defmodule SwarmCode.Daemon.Service.C020DispatcherTest do
       assert worker =~ "(worker model)" and worker =~ "/swarm_effort <level> sets it."
     end
   end
+
+  describe "C18 /cost" do
+    test "rows per model, an unknown price stays unknown, then the total", c do
+      conv = c.conversation
+
+      for {model, cost, tin} <- [{"alpha", 0.5, 100}, {"alpha", 0.25, 50}, {"beta", nil, 10}] do
+        {:ok, _} =
+          Conversations.create_run(%{
+            conversation_id: conv.id,
+            kind: "chat",
+            prompt: "x",
+            status: "done",
+            model: model,
+            tokens_in: tin,
+            tokens_out: 5,
+            cost_usd: cost,
+            started_at: DateTime.utc_now()
+          })
+      end
+
+      assert {:ok, %{type: :report, subject: :cost, rows: rows, text: text}} =
+               Dispatcher.dispatch(conv.id, "/cost")
+
+      assert [
+               %{model: "alpha", runs: 2, tokens_in: 150, tokens_out: 10, cost_usd: 0.75},
+               %{model: "beta", runs: 1, tokens_in: 10, cost_usd: nil},
+               %{name: "Total", runs: 3, tokens_in: 160, tokens_out: 15}
+             ] = rows
+
+      assert text =~ "beta: 1 run, 10 in, 5 out, price unknown"
+    end
+  end
 end

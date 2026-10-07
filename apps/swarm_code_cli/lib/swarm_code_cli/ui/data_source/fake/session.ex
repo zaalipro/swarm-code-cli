@@ -504,7 +504,27 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Session do
 
   defp slash_command(script, _request, :show_cost, _) do
     total = cost(script, script.session.current)
-    report(script, "Cost of this conversation", "$#{:erlang.float_to_binary(total, decimals: 2)}")
+
+    {:ok, script, deltas, ids, feedback} =
+      report(
+        script,
+        "Cost of this conversation",
+        "$#{:erlang.float_to_binary(total, decimals: 2)}"
+      )
+
+    # cli020 C18: per-model rows and the total, as the service answers.
+    rows = [
+      %DTO.FeedbackRow{
+        model: "demo-model",
+        runs: 1,
+        tokens_in: 0,
+        tokens_out: 0,
+        cost_usd: total
+      },
+      %DTO.FeedbackRow{name: "Total", runs: 1, tokens_in: 0, tokens_out: 0, cost_usd: total}
+    ]
+
+    {:ok, script, deltas, ids, %{feedback | subject: :cost, rows: rows}}
   end
 
   defp slash_command(script, _request, :search, %{query: query}) do
