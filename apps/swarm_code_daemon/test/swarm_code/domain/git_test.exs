@@ -166,12 +166,18 @@ defmodule SwarmCode.Domain.GitTest do
     ready = Path.join(dir, "git_shim.ready")
     shim = Path.join(dir, "git-shim")
 
-    # `ready` is the shim's first action; the grandchild fires well after the
-    # timeout, so it can only exist if the kill missed it.
+    shim_pid = Path.join(dir, "shim.pid")
+    grandchild_pid = Path.join(dir, "grandchild.pid")
+
+    # `ready` is the shim's last setup step, after both pid files: spec 74
+    # EFFICIENCY-72 asserts those pids are gone instead of sleeping past the
+    # grandchild's timer. The marker stays as a second witness.
     File.write!(shim, """
     #!/bin/sh
+    echo $$ > #{shim_pid}
+    sh -c 'echo $$ > #{grandchild_pid}; sleep #{@grandchild_s} && touch #{marker}' &
+    while [ ! -s #{grandchild_pid} ]; do sleep 0.01; done
     touch #{ready}
-    sh -c 'sleep #{@grandchild_s} && touch #{marker}' &
     sleep 120
     """)
 
@@ -197,9 +203,18 @@ defmodule SwarmCode.Domain.GitTest do
     assert {:error, message} = Task.await(task, timeout + 10_000)
     assert message == "git timed out after #{timeout} ms"
 
-    # Past the grandchild's sleep, counted from when it was spawned: it must
-    # never have fired, and nothing of the tree is left running.
-    Process.sleep((@grandchild_s + 2) * 1_000)
+    # Nothing of the tree is left running (a short window for reaping), so the
+    # grandchild can never fire.
+    pids =
+      for f <- [shim_pid, grandchild_pid],
+          do: f |> File.read!() |> String.trim() |> String.to_integer()
+
+    assert SwarmCode.Domain.Fixtures.eventually(
+             fn -> SwarmCode.Domain.OSProcess.alive(pids) == [] end,
+             2_000
+           ),
+           "left running: #{inspect(SwarmCode.Domain.OSProcess.alive(pids))}"
+
     refute File.exists?(marker)
   end
 

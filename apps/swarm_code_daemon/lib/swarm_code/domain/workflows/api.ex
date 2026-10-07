@@ -17,6 +17,10 @@ defmodule SwarmCode.Domain.Workflows.API do
   # Panel slots are numbered 0..n-1; extra host calls inside a slot are pushed
   # far above any slot index so the (run_id, seq, slot) index stays unique.
   @slot_stride 1024
+  # pass74 (spec 74) BUGS-57: a `budget()`/`last_error()` read inside a panel
+  # slot is journaled far below the admission marker (-1) and below every
+  # top-level read (-2, -3, … at the seq of the call before it).
+  @read_base 1_000_000
 
   # ---------------------------------------------------------------- context
 
@@ -80,10 +84,15 @@ defmodule SwarmCode.Domain.Workflows.API do
     :ok
   end
 
-  @doc "`%{total:, spent:, remaining:}` agent slots of this run."
-  def budget do
-    context() |> budget_reply() |> Map.take([:total, :spent, :remaining])
-  end
+  @doc """
+  `%{total:, spent:, remaining:}` agent slots of this run.
+
+  pass74 (spec 74) BUGS-57: journaled like a host call, so a resumed run reads
+  what it read the first time — the capped-verify pattern
+  (`keep = min(n, budget().remaining - 1)`) used to see the end-of-journal
+  value on replay and fail every resume with a journal mismatch.
+  """
+  def budget, do: read(:budget)
 
   defp budget_reply(ctx), do: GenServer.call(ctx.runner, :budget, :infinity)
 
@@ -149,6 +158,10 @@ defmodule SwarmCode.Domain.Workflows.API do
         {:ok, seq} -> {seq, max(count, 1), false}
         {:replay, seq} -> {seq, max(count, 1), false}
         {:pause, kind, message} -> throw({:workflow, {:pause, kind, message}})
+        # pass74 (spec 74) BUGS-57: a journal mismatch (or a refused write) at
+        # the admission fails the run with its message, as `call/5` does — it
+        # used to be a CaseClauseError.
+        {:failed, message} -> throw({:workflow, {:failed, message}})
       end
 
     parent = %{ctx | panel: nil}
@@ -161,7 +174,15 @@ defmodule SwarmCode.Domain.Workflows.API do
         if track_tasks?, do: GenServer.call(ctx.runner, {:panel_task, self()}, :infinity)
 
         try do
-          put_context(%{parent | panel: %{seq: seq, slot: index}, calls: 0, agent_called?: false})
+          put_context(%{
+            parent
+            | panel: %{seq: seq, slot: index},
+              calls: 0,
+              agent_called?: false
+          })
+
+          # pass74 (spec 74) BUGS-57: this slot's own read counter.
+          update_context(&Map.put(&1, :reads, 0))
 
           if is_function(fun, 1), do: fun.(item), else: fun.(item, index)
         after
@@ -277,7 +298,8 @@ defmodule SwarmCode.Domain.Workflows.API do
 
       with {:ok, abs} <- SwarmCode.Domain.Tools.Path.resolve(ctx.root, rel),
            {:ok, text} <- File.read(abs) do
-        String.slice(text, 0, 200_000)
+        # spec 74 BUGS-16: valid UTF-8 before the journal encodes it.
+        text |> String.replace_invalid() |> String.slice(0, 200_000)
       else
         _ -> nil
       end
@@ -289,7 +311,28 @@ defmodule SwarmCode.Domain.Workflows.API do
   (spec 11 §R.3) — for `log("retrying \#{name}: \#{last_error()}")`.
   """
   @spec last_error() :: String.t() | nil
-  def last_error, do: GenServer.call(context().runner, :last_error, :infinity)
+  def last_error, do: read(:last_error)
+
+  # pass74 (spec 74) BUGS-57: a read the Runner journals (kind "read") and
+  # replays. Top-level reads are keyed by the Runner (the seq of the last
+  # call); a panel slot's by its own counter, so concurrent slots cannot
+  # trade places.
+  defp read(what) do
+    ctx = context()
+
+    case GenServer.call(ctx.runner, {:read, what, read_slot(ctx)}, :infinity) do
+      {:failed, message} -> throw({:workflow, {:failed, message}})
+      {:value, value} -> value
+    end
+  end
+
+  defp read_slot(%{panel: nil}), do: nil
+
+  defp read_slot(%{panel: %{seq: seq, slot: index}} = ctx) do
+    reads = Map.get(ctx, :reads, 0)
+    update_context(&Map.put(&1, :reads, reads + 1))
+    {seq, -(@read_base + index * @slot_stride + reads)}
+  end
 
   @doc """
   Writes a report into the run's scratch space and returns its path relative to
@@ -298,8 +341,12 @@ defmodule SwarmCode.Domain.Workflows.API do
   def write_report(filename, text) do
     ctx = context()
     name = filename |> to_string() |> Path.basename()
+    text = to_string(text)
+    # pass74 (spec 74) BUGS-58: the fingerprint stays `{:write_report, name,
+    # []}` (old journals replay), and the entry records a hash of the text.
+    hash = :erlang.phash2(text)
 
-    call(:write_report, name, [], & &1, fn ->
+    write = fn ->
       # spec 60 T35: a mkdir/resolve/write failure fails the run (nothing is
       # journaled, so a resume re-executes the call) instead of reporting a path
       # that holds nothing.
@@ -307,8 +354,8 @@ defmodule SwarmCode.Domain.Workflows.API do
 
       with {:ok, abs} <- SwarmCode.Domain.Tools.Path.resolve(ctx.root, rel),
            :ok <- File.mkdir_p(Path.dirname(abs)),
-           :ok <- File.write(abs, to_string(text)) do
-        rel
+           :ok <- File.write(abs, text) do
+        %{"path" => rel, "hash" => hash}
       else
         {:error, reason} when is_binary(reason) ->
           raise Error, message: "write_report #{name}: #{reason}"
@@ -316,7 +363,15 @@ defmodule SwarmCode.Domain.Workflows.API do
         {:error, reason} ->
           raise Error, message: "write_report #{name}: #{:file.format_error(reason)}"
       end
-    end)
+    end
+
+    case call(:write_report, name, [], & &1, write) do
+      %{"path" => rel, "hash" => ^hash} -> rel
+      # A replay whose text changed (a retried result fed it): written again.
+      %{"path" => _rel} -> write.()["path"]
+      # A journal from before the hash, or the Canned preview: the path.
+      other -> other
+    end
   end
 
   @doc """
@@ -330,8 +385,8 @@ defmodule SwarmCode.Domain.Workflows.API do
 
     result =
       call(:host, {:integrate, id}, [], & &1, fn ->
-        case SwarmCode.Domain.Conversations.list_nodes(ctx.run_id)
-             |> Enum.find(&(&1.id == id or &1.branch == id)) do
+        # spec 74 EFFICIENCY-49: one narrow read, not every node of the run.
+        case SwarmCode.Domain.Conversations.find_run_node(ctx.run_id, id) do
           %{branch: branch} = node when is_binary(branch) ->
             # Spec 32 §4: the node this run owns is what gets merged and cleaned
             # up — never a branch name looked up again across the database.
@@ -396,7 +451,13 @@ defmodule SwarmCode.Domain.Workflows.API do
   @doc "Ends the run successfully with `value` as its result."
   def complete(value) do
     refuse_in_panel!("complete/1")
-    throw({:workflow, {:complete, value}})
+
+    # spec 74 BUGS-16: a result the run row cannot store (a pid, a ref, a fun,
+    # invalid UTF-8) is a script error on this line, not a Runner crash.
+    case SwarmCode.Domain.Workflows.Runner.safe_encode(value) do
+      {:ok, _json} -> throw({:workflow, {:complete, value}})
+      {:error, message} -> raise Error, message: "complete/1: #{message}"
+    end
   end
 
   # ---------------------------------------------------------------- plumbing

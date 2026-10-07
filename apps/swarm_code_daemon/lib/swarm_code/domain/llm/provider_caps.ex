@@ -34,6 +34,96 @@ defmodule SwarmCode.Domain.LLM.ProviderCaps do
     :ok
   end
 
+  # ------------------------------------------ per model (pass74 BUGS-51/52)
+
+  # pass74 (spec 74) BUGS-51: one model's 400 used to turn effort off for every
+  # model and every level of the provider until restart. Only an
+  # "unknown parameter" rejection is about the server (`remember_no_effort/1`);
+  # anything else is about one model, or one level of one model.
+
+  @doc "False once `model` on this provider has 400'd on its effort keys (not as unknown)."
+  @spec model_effort?(term(), String.t() | nil) :: boolean()
+  def model_effort?(provider, model),
+    do: :ets.lookup(@table, {:no_effort, key(provider), model}) == []
+
+  @doc "Remembers that `model` on this provider rejects the effort keys."
+  @spec remember_no_model_effort(term(), String.t() | nil) :: :ok
+  def remember_no_model_effort(provider, model) do
+    :ets.insert(@table, {{:no_effort, key(provider), model}, true})
+    :ok
+  end
+
+  @doc "True once `model` on this provider has refused the value of level `level_key`."
+  @spec level_rejected?(term(), String.t() | nil, String.t() | nil) :: boolean()
+  def level_rejected?(provider, model, level_key),
+    do: :ets.lookup(@table, {:no_level, key(provider), model, level_key}) != []
+
+  @doc "Remembers that `model` refuses level `level_key` (it falls back to its default level)."
+  @spec remember_rejected_level(term(), String.t() | nil, String.t() | nil) :: :ok
+  def remember_rejected_level(provider, model, level_key) do
+    :ets.insert(@table, {{:no_level, key(provider), model, level_key}, true})
+    :ok
+  end
+
+  @doc """
+  pass74 (spec 74) EFFICIENCY-41: false once `model` on this provider (an
+  Anthropic gateway) 400'd on `thinking` with no continuation state in the
+  request. Model-scoped: another model on the same provider keeps its level.
+  """
+  @spec thinking?(term(), String.t() | nil) :: boolean()
+  def thinking?(provider, model),
+    do: :ets.lookup(@table, {:no_thinking, key(provider), model}) == []
+
+  @doc "Remembers that `model` rejects the `thinking` parameter."
+  @spec remember_no_thinking(term(), String.t() | nil) :: :ok
+  def remember_no_thinking(provider, model) do
+    :ets.insert(@table, {{:no_thinking, key(provider), model}, true})
+    :ok
+  end
+
+  @doc """
+  pass74 (spec 74) BUGS-52: true once `model` answered "use
+  `max_completion_tokens`" (OpenAI o-series, gpt-5.x): the key is renamed on
+  every later request to it.
+  """
+  @spec max_completion_tokens?(term(), String.t() | nil) :: boolean()
+  def max_completion_tokens?(provider, model),
+    do: :ets.lookup(@table, {:max_completion_tokens, key(provider), model}) != []
+
+  @doc "Remembers that `model` takes `max_completion_tokens` instead of `max_tokens`."
+  @spec remember_max_completion_tokens(term(), String.t() | nil) :: :ok
+  def remember_max_completion_tokens(provider, model) do
+    :ets.insert(@table, {{:max_completion_tokens, key(provider), model}, true})
+    :ok
+  end
+
+  @doc "pass74 (spec 74) BUGS-52: false once `model` refused a non-default `temperature`."
+  @spec temperature?(term(), String.t() | nil) :: boolean()
+  def temperature?(provider, model),
+    do: :ets.lookup(@table, {:no_temperature, key(provider), model}) == []
+
+  @doc "Remembers that `model` only takes its default `temperature`."
+  @spec remember_no_temperature(term(), String.t() | nil) :: :ok
+  def remember_no_temperature(provider, model) do
+    :ets.insert(@table, {{:no_temperature, key(provider), model}, true})
+    :ok
+  end
+
+  @doc """
+  pass74 (spec 74) BUGS-77: false once `model` 400'd on the continuation state
+  echoed back to it (`reasoning_content`, `extra_content`).
+  """
+  @spec continuation?(term(), String.t() | nil) :: boolean()
+  def continuation?(provider, model),
+    do: :ets.lookup(@table, {:no_continuation, key(provider), model}) == []
+
+  @doc "Remembers that `model` refuses the echoed continuation state."
+  @spec remember_no_continuation(term(), String.t() | nil) :: :ok
+  def remember_no_continuation(provider, model) do
+    :ets.insert(@table, {{:no_continuation, key(provider), model}, true})
+    :ok
+  end
+
   @doc """
   False once this provider has 400'd on the prefix-cache field in this session:
   `prompt_cache_key` (OpenAI-compatible) or the `cache_control` markers
@@ -71,7 +161,11 @@ defmodule SwarmCode.Domain.LLM.ProviderCaps do
   """
   @spec forget(term()) :: :ok
   def forget(provider) do
-    :ets.match_delete(@table, {{:_, key(provider)}, :_})
+    id = key(provider)
+    :ets.match_delete(@table, {{:_, id}, :_})
+    # pass74 (spec 74) BUGS-51/52: the per-model and per-level entries.
+    :ets.match_delete(@table, {{:_, id, :_}, :_})
+    :ets.match_delete(@table, {{:_, id, :_, :_}, :_})
     :ok
   end
 

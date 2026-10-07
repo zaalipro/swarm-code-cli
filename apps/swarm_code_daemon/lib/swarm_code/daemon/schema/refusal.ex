@@ -9,15 +9,27 @@ defmodule SwarmCode.Daemon.Schema.Refusal do
 
   alias SwarmCode.Daemon.StartupError
 
-  @doc "The database carries migrations this build does not know: the desktop is newer."
+  @doc """
+  The database carries migrations this build does not know: the desktop is
+  newer. The action names this CLI's version (cli020 A4), so the person can
+  tell which build to replace.
+  """
   @spec database_ahead() :: StartupError.t()
   def database_ahead do
     StartupError.new(
       :schema_incompatible,
       false,
       "This ncode database was upgraded by a newer ncode app than this ncode supports.",
-      "Update ncode to a build made for your ncode app; the database was not changed."
+      "Install the ncode CLI that matches your ncode app (ncode --version shows this one: " <>
+        version() <> "); the database was not changed."
     )
+  end
+
+  defp version do
+    case Application.spec(:swarm_code_daemon, :vsn) do
+      vsn when is_list(vsn) -> List.to_string(vsn)
+      _unloaded -> "unknown"
+    end
   end
 
   @doc "The file where the database belongs is not an SQLite database (pass70 Q13)."

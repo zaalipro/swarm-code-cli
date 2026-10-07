@@ -21,7 +21,7 @@ defmodule SwarmCode.Daemon.FoundationGate do
   alias SwarmCode.Daemon.Schema.MigrationManifest
   alias SwarmCode.Daemon.StartupError
 
-  @manifest_source Path.expand("../../../priv/schema/desktop-6dd8d82.json", __DIR__)
+  @manifest_source Path.expand("../../../priv/schema/desktop-4c7c577.json", __DIR__)
   @external_resource @manifest_source
   @audited_manifest MigrationManifest.load!(@manifest_source)
   @schema_contract %{
@@ -106,6 +106,52 @@ defmodule SwarmCode.Daemon.FoundationGate do
     end
 
     def prepare(_opts), do: {:error, production_configuration_rejected()}
+  end
+
+  @doc """
+  True when the signed desktop detector reports the ncode desktop app running
+  for this user (cli020 A3): the check `prepare/1` refuses on, without the
+  paths, lease or schema work, for a caller that polls while a session is
+  open. Every detector, identity or platform failure answers false; the
+  fail-closed gate stays `prepare/1`. Test builds take `:platform`,
+  `:desktop_detector` (or `:detector`) and `:identity` like `prepare/1`;
+  other builds ignore the options.
+  """
+  @spec desktop_running?(keyword()) :: boolean()
+  def desktop_running?(opts \\ [])
+
+  def desktop_running?(opts) when is_list(opts) do
+    {identity_source, detector} = running_sources(opts)
+
+    with {:ok, identity} <- obtain_identity(identity_source),
+         {:error, %StartupError{code: :desktop_active}} <- detect_desktop(detector, identity.uid) do
+      true
+    else
+      _other -> false
+    end
+  rescue
+    _error -> false
+  catch
+    _kind, _reason -> false
+  end
+
+  def desktop_running?(_opts), do: false
+
+  if @test_build do
+    defp running_sources(opts) do
+      platform = Keyword.get_lazy(opts, :platform, &current_platform/0)
+
+      {first_option(opts, [:identity, :identity_fun], fn ->
+         ProcessIdentity.current(platform: platform)
+       end),
+       first_option(opts, [:desktop_detector, :detector], default_desktop_detector(platform))}
+    end
+  else
+    defp running_sources(_opts) do
+      platform = current_platform()
+
+      {fn -> ProcessIdentity.current(platform: platform) end, default_desktop_detector(platform)}
+    end
   end
 
   defp prepare_list(opts, purpose \\ :probe) when is_list(opts) do

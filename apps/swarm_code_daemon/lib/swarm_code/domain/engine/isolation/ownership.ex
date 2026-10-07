@@ -91,33 +91,60 @@ defmodule SwarmCode.Domain.Engine.Isolation.Ownership do
   def cleanup_stale(worktrees_root, project_root \\ nil) do
     case File.ls(worktrees_root) do
       {:ok, entries} ->
-        count =
-          Enum.count(entries, fn entry ->
-            subdir = Path.join(worktrees_root, entry)
-            File.dir?(subdir) and not live?(subdir) and reclaim(subdir, project_root)
-          end)
+        branches =
+          for entry <- entries,
+              subdir = Path.join(worktrees_root, entry),
+              File.dir?(subdir) and not live?(subdir),
+              {:removed, branch} <- [reclaim(subdir, project_root)],
+              do: branch
 
-        if is_binary(project_root), do: Git.worktree_prune(project_root)
-        {:ok, count}
+        if is_binary(project_root) do
+          Git.worktree_prune(project_root)
+          # After the prune: a worktree's branch is "checked out" until then.
+          Enum.each(branches, &drop_spent_branch(project_root, &1))
+        end
+
+        {:ok, length(branches)}
 
       {:error, _} ->
         {:ok, 0}
     end
   end
 
-  # spec 73 T12
+  # spec 73 T12. spec 74 ARCHITECTURE-6: `{:removed, branch}` — the branch the
+  # dir had checked out (read before it goes), or `:kept`.
   defp reclaim(subdir, project_root) do
+    branch = if File.exists?(Path.join(subdir, ".git")), do: Git.current_branch(subdir)
+
     case preserve_work(subdir, project_root) do
       :ok ->
         Logger.info("swarm_code removing stale isolation dir: #{subdir}")
         File.rm_rf(subdir)
-        true
+        {:removed, branch}
 
       {:error, reason} ->
         Logger.warning("swarm_code kept stale isolation dir #{subdir}: #{reason}")
-        false
+        :kept
     end
   end
+
+  # spec 74 ARCHITECTURE-6: every dead dir used to leave its `swarm/<run>/<name>`
+  # branch in the user's repository for good, most of them with nothing on
+  # them. A branch with no commit the project's HEAD lacks is deleted — the
+  # delete loses nothing; one with commits ahead is the user's recoverable
+  # work and stays.
+  defp drop_spent_branch(project_root, "swarm/" <> _ = branch) do
+    case Git.commits_ahead(project_root, "HEAD", branch) do
+      {:ok, 0} ->
+        Logger.info("swarm_code deleting spent branch #{branch}")
+        Git.branch_delete(project_root, branch)
+
+      _ahead_or_unknown ->
+        :ok
+    end
+  end
+
+  defp drop_spent_branch(_project_root, _other), do: :ok
 
   defp preserve_work(_subdir, nil), do: :ok
 
@@ -126,24 +153,26 @@ defmodule SwarmCode.Domain.Engine.Isolation.Ownership do
     # file) is a tree of its own: a plain directory under the project would
     # answer git's questions for the *project* and `add -A` the user's tree.
     if File.exists?(Path.join(subdir, ".git")) do
-      commit_stopped(subdir)
-
-      with true <- Clone.clone_dir?(subdir),
-           "swarm/" <> _ = branch <- Git.current_branch(subdir) do
-        Clone.export_branch(project_root, subdir, branch)
-      else
-        _worktree_or_other_branch -> :ok
+      # spec 74 BUGS-4: a tree whose work could not be committed is kept —
+      # `reclaim/2` used to `rm_rf` it whatever the commit said.
+      with :ok <- commit_stopped(subdir) do
+        with true <- Clone.clone_dir?(subdir),
+             "swarm/" <> _ = branch <- Git.current_branch(subdir) do
+          Clone.export_branch(project_root, subdir, branch)
+        else
+          _worktree_or_other_branch -> :ok
+        end
       end
     else
       :ok
     end
   end
 
+  # spec 74 BUGS-4: the safety commit (no hooks, no signing), and its result.
   defp commit_stopped(dir) do
-    if Git.status(dir) != [], do: Git.commit(dir, "swarm: (stopped)")
-    :ok
+    SwarmCode.Domain.Engine.Isolation.commit_dirty(dir, "swarm: (stopped)")
   rescue
-    _ -> :ok
+    error -> {:error, Exception.message(error)}
   end
 
   # Returns the OS pid of this BEAM instance.

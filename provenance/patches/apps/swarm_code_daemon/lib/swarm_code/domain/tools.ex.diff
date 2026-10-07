@@ -1,0 +1,25 @@
+# CLI-local change to lib/swarm_code/tools.ex at 4c7c577, after the rewrite
+# rules of provenance/sync-rules.json. Recorded by mix swarm_code.provenance.sync.
+--- a/apps/swarm_code_daemon/lib/swarm_code/domain/tools.ex
++++ b/apps/swarm_code_daemon/lib/swarm_code/domain/tools.ex
+@@ -165,7 +165,8 @@
+   `/create-workflow` turn cannot start a swarm, and a `/swarm` turn (which is
+   already a swarm) gets neither `start_swarm` nor the workflow tools.
+ 
+-  Spec 75: with `ultra: true` the root assistant also gets `mission_start`.
++  Spec 75: with `ultra: true` the desktop's root assistant also gets
++  `mission_start`; the CLI's does not (cli020 A6: no mission card yet).
+   """
+   @spec for_agent(String.t(), non_neg_integer(), non_neg_integer(), String.t(), keyword()) ::
+           [Ref.t()]
+@@ -177,7 +178,9 @@
+         role != "assistant" or depth != 0 -> []
+         command == :create_workflow -> @workflow_modules
+         command == :swarm -> []
+-        opts[:ultra] -> @workflow_modules ++ @swarm_modules ++ @mission_modules
++        # cli020 A6 (CLI patch): CLI Ultra keeps the workflow tools; the
++        # mission card is the desktop's until the missions pass.
++        opts[:ultra] -> @workflow_modules ++ @swarm_modules
+         true -> @workflow_modules ++ @swarm_modules
+       end
+ 

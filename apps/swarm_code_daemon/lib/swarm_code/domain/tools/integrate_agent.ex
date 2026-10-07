@@ -35,7 +35,7 @@ defmodule SwarmCode.Domain.Tools.IntegrateAgent do
   def parallel?, do: false
 
   @impl true
-  def title(args), do: "integrate " <> to_string(args["branch"] || "")
+  def title(args), do: "integrate " <> SwarmCode.Domain.Tools.arg_text(args["branch"] || "")
 
   @impl true
   def run(args, ctx, progress) do

@@ -16,6 +16,8 @@ defmodule SwarmCode.Domain.Workflows.Host do
   @cap 200_000
   @max_entries 5_000
   @max_matches 200
+  # spec 74 EFFICIENCY-50: a non-git `host(:grep)` reads at most this much of one file.
+  @max_scan_bytes 32 * 1024 * 1024
 
   @ops ~w(changed_files git_diff git_log glob files subdirs read_file list_dir
           exists? dir? grep now)a
@@ -38,6 +40,13 @@ defmodule SwarmCode.Domain.Workflows.Host do
     opts = Map.new(opts)
     path = to_string(Map.get(opts, :path) || ".")
 
+    # spec 74 BUGS-16: a Latin-1 file, diff, grep line or file name is made
+    # valid UTF-8 here, at the source, so the value the script sees live is the
+    # value the journal stores and a replay hands back.
+    op |> dispatch(opts, path, root) |> valid_utf8()
+  end
+
+  defp dispatch(op, opts, path, root) do
     case op do
       :changed_files -> changed_files(root, to_string(Map.get(opts, :base) || ""))
       :git_diff -> git_diff(root, opts)
@@ -53,6 +62,16 @@ defmodule SwarmCode.Domain.Workflows.Host do
       :now -> DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
     end
   end
+
+  @doc false
+  @spec valid_utf8(term()) :: term()
+  def valid_utf8(value) when is_binary(value), do: String.replace_invalid(value)
+  def valid_utf8(value) when is_list(value), do: Enum.map(value, &valid_utf8/1)
+
+  def valid_utf8(value) when is_map(value) and not is_struct(value),
+    do: Map.new(value, fn {k, v} -> {k, valid_utf8(v)} end)
+
+  def valid_utf8(value), do: value
 
   @doc """
   Puts the atom keys of a host result back after a journal replay (a replayed
@@ -245,27 +264,72 @@ defmodule SwarmCode.Domain.Workflows.Host do
         do: SwarmCode.Domain.Tools.Path.walk(root, base, dot: false),
         else: [base]
 
+    # spec 74 EFFICIENCY-50: lazily, file by file and line by line, so the scan
+    # stops at the 200th match instead of reading and splitting every file whole.
     files
-    |> Enum.flat_map(fn file ->
-      case File.read(file) do
-        {:ok, text} ->
-          text
-          |> String.split("\n")
-          |> Enum.with_index(1)
-          |> Enum.filter(fn {line, _i} -> String.contains?(line, pattern) end)
-          |> Enum.map(fn {line, i} ->
-            %{
-              file: relative(file, root),
-              line: i,
-              text: String.slice(String.trim(line), 0, 300)
-            }
-          end)
+    |> Stream.reject(&binary_file?/1)
+    |> Stream.flat_map(fn file ->
+      rel = relative(file, root)
 
-        _ ->
-          []
-      end
+      file
+      |> lines()
+      |> Stream.with_index(1)
+      |> Stream.filter(fn {line, _i} -> String.contains?(line, pattern) end)
+      |> Stream.map(fn {line, i} ->
+        %{file: rel, line: i, text: String.slice(String.trim(line), 0, 300)}
+      end)
     end)
     |> Enum.take(@max_matches)
+  end
+
+  # `git grep -I`: a NUL in the first 8 KB is a binary file.
+  defp binary_file?(file) do
+    case File.open(file, [:read, :binary], &IO.binread(&1, 8_192)) do
+      {:ok, head} when is_binary(head) -> String.contains?(head, <<0>>)
+      {:ok, :eof} -> false
+      _ -> true
+    end
+  end
+
+  # The lines of `String.split(text, "\n")` (a trailing "" included), read in
+  # 64 KB chunks and stopped after @max_scan_bytes of the file.
+  defp lines(file) do
+    Stream.resource(
+      fn ->
+        case File.open(file, [:read, :binary, :raw]) do
+          {:ok, io} -> {io, [], 0}
+          _ -> :done
+        end
+      end,
+      fn
+        :done ->
+          {:halt, :done}
+
+        {io, rest, read} ->
+          case read < @max_scan_bytes && :file.read(io, 65_536) do
+            {:ok, chunk} ->
+              read = read + byte_size(chunk)
+
+              # The unfinished line is iodata: a long line is joined once.
+              case :binary.split(chunk, "\n", [:global]) do
+                [partial] ->
+                  {[], {io, [rest, partial], read}}
+
+                [first | more] ->
+                  {last, full} = List.pop_at(more, -1)
+                  {[IO.iodata_to_binary([rest, first]) | full], {io, last, read}}
+              end
+
+            _eof_or_cap ->
+              File.close(io)
+              {[IO.iodata_to_binary(rest)], :done}
+          end
+      end,
+      fn
+        {io, _rest, _read} -> File.close(io)
+        :done -> :ok
+      end
+    )
   end
 
   # ------------------------------------------------------------------ paths

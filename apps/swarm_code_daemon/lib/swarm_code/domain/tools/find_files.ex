@@ -11,6 +11,7 @@ defmodule SwarmCode.Domain.Tools.FindFiles do
   """
   @behaviour SwarmCode.Domain.Tools.Tool
 
+  alias SwarmCode.Domain.Tools
   alias SwarmCode.Domain.Tools.Path
   alias SwarmCode.Domain.Tools.Ripgrep
 
@@ -62,7 +63,8 @@ defmodule SwarmCode.Domain.Tools.FindFiles do
   def permission(_args), do: :read
 
   @impl true
-  def title(args), do: "find " <> String.slice(to_string(args["pattern"] || ""), 0, 60)
+  def title(args),
+    do: "find " <> String.slice(SwarmCode.Domain.Tools.arg_text(args["pattern"] || ""), 0, 60)
 
   @impl true
   def run(args, ctx, progress) do
@@ -82,19 +84,28 @@ defmodule SwarmCode.Domain.Tools.FindFiles do
         root = ctx.project_root
         limit = limit(args)
 
-        # spec 70 C4: use rg --files when available.
-        matches =
+        # spec 70 C4: use rg --files when available. spec 74 ARCHITECTURE-19:
+        # its lines are filtered as they arrive into a bounded top-K, so the
+        # memory is O(limit), not the whole listing.
+        result =
           if Ripgrep.available?() do
-            case rg_find(pattern, start, root, args) do
-              {:ok, paths} -> paths |> filter(pattern) |> sort()
-              :fallback -> elixir_find(pattern, start, root, args)
+            case rg_find(pattern, start, root, args, limit, ctx) do
+              {:ok, top} -> {:ok, top}
+              :timeout -> :timeout
+              :fallback -> {:ok, elixir_find(pattern, start, root, args, limit)}
             end
           else
-            elixir_find(pattern, start, root, args)
+            {:ok, elixir_find(pattern, start, root, args, limit)}
           end
 
-        progress.(100, "#{length(matches)} matches")
-        {:ok, render(matches, limit, pattern)}
+        case result do
+          {:ok, {shown, count}} ->
+            progress.(100, "#{count} matches")
+            {:ok, render(shown, count, pattern)}
+
+          :timeout ->
+            {:error, "find_files timed out after #{Tools.timeout(ctx)} ms — narrow the path"}
+        end
       else
         {:error, "not a directory: #{Path.relative(ctx.project_root, start)}"}
       end
@@ -102,12 +113,18 @@ defmodule SwarmCode.Domain.Tools.FindFiles do
   end
 
   # spec 70 C4: the original Elixir-based Path.walk, extracted for fallback.
-  defp elixir_find(pattern, start, root, args) do
+  # spec 74 EFFICIENCY-51: one pass into the same bounded top-K as the rg path
+  # (no relative-path list, no filtered list, no sort of every match).
+  defp elixir_find(pattern, start, root, args, limit) do
+    keep? = matcher(pattern)
+
     root
     |> Path.walk(start, walk_opts(pattern, args))
-    |> Enum.map(&Path.relative(root, &1))
-    |> filter(pattern)
-    |> sort()
+    |> Enum.reduce(top_new(limit), fn abs, top ->
+      rel = Path.relative(root, abs)
+      if keep?.(rel), do: top_add(top, rel), else: top
+    end)
+    |> top_result()
   end
 
   # spec 70 C4: rg --files based file search.
@@ -116,7 +133,7 @@ defmodule SwarmCode.Domain.Tools.FindFiles do
   # rg lists all files and we apply the same glob/substring filter in Elixir.
   @ignored_globs ~w(_build* .git deps node_modules .elixir_ls .superpowers .DS_Store cover doc)
 
-  defp rg_find(_pattern, start, root, args) do
+  defp rg_find(pattern, start, root, args, limit, ctx) do
     rg = Ripgrep.rg_path()
     include_ignored = args["include_ignored"] == true
 
@@ -129,35 +146,52 @@ defmodule SwarmCode.Domain.Tools.FindFiles do
     skip = Enum.flat_map(@ignored_globs, &["--glob", "!#{&1}"])
     ignore_args = if include_ignored, do: ["--no-ignore"], else: []
     all_args = base_args ++ skip ++ ignore_args ++ [start]
+    keep? = matcher(pattern)
 
-    case System.cmd(rg, all_args,
+    # spec 74 ARCHITECTURE-19: one path per line, filtered and ranked as it
+    # arrives; the deadline is the tool timeout and kills rg's tree.
+    fold = fn line, top ->
+      abs = Elixir.Path.expand(line)
+
+      if String.starts_with?(abs, root <> "/") or abs == root do
+        rel = Path.relative(root, abs)
+        if keep?.(rel), do: top_add(top, rel), else: top
+      else
+        top
+      end
+    end
+
+    case SwarmCode.Domain.OSProcess.run(rg, all_args,
            cd: root,
            env: [{"HOME", System.user_home!()}],
-           stderr_to_stdout: true
+           timeout: Tools.timeout(ctx),
+           max_bytes: 64 * 1024,
+           on_line: {fold, top_new(limit)}
          ) do
-      {output, code} when code in [0, 1] ->
-        paths =
-          output
-          |> String.split("\n", trim: true)
-          |> Enum.reduce([], fn line, acc ->
-            abs = Elixir.Path.expand(line)
-
-            if String.starts_with?(abs, root <> "/") or abs == root do
-              [Path.relative(root, abs) | acc]
-            else
-              acc
-            end
-          end)
-          |> Enum.reverse()
-
-        {:ok, paths}
-
-      _ ->
-        :fallback
+      {:ok, code, top, _cut?} when code in [0, 1] -> {:ok, top_result(top)}
+      {:error, :timeout} -> :timeout
+      _ -> :fallback
     end
   rescue
     _ -> :fallback
   end
+
+  # The `limit` smallest paths by the sort key, and how many matched at all.
+  defp top_new(limit), do: {:gb_sets.empty(), 0, limit}
+
+  defp top_add({set, count, limit}, path) do
+    set = :gb_sets.add({sort_key(path), path}, set)
+
+    set =
+      if :gb_sets.size(set) > limit,
+        do: elem(:gb_sets.take_largest(set), 1),
+        else: set
+
+    {set, count + 1, limit}
+  end
+
+  defp top_result({set, count, _limit}),
+    do: {set |> :gb_sets.to_list() |> Enum.map(&elem(&1, 1)), count}
 
   # A pattern with a glob character is a glob and `Path.walk/3` matches it while
   # it walks; anything else is a substring of the path, which is what a model
@@ -169,21 +203,17 @@ defmodule SwarmCode.Domain.Tools.FindFiles do
       if glob?(pattern), do: [glob: pattern], else: []
   end
 
-  defp filter(paths, pattern) do
+  # spec 70 C4: for the rg path, glob filtering happens here rather than
+  # during the walk. Path.walk applies globs during the walk; rg --files does
+  # not, so we match here. The Elixir path's walker already filtered, but
+  # re-filtering is a no-op (all paths match). Compiled once per search.
+  defp matcher(pattern) do
     if glob?(pattern) do
-      # spec 70 C4: for the rg path, glob filtering happens here rather than
-      # during the walk. Path.walk applies globs during the walk; rg --files
-      # does not, so we match here. The Elixir path's walker already filtered,
-      # but re-filtering is a no-op (all paths match).
-      matcher = compile_glob(pattern)
-
-      Enum.filter(paths, fn path ->
-        name = Elixir.Path.basename(path)
-        glob_match?(matcher, path, name)
-      end)
+      compiled = compile_glob(pattern)
+      fn path -> glob_match?(compiled, path, Elixir.Path.basename(path)) end
     else
       needle = String.downcase(pattern)
-      Enum.filter(paths, &String.contains?(String.downcase(&1), needle))
+      fn path -> String.contains?(String.downcase(path), needle) end
     end
   end
 
@@ -238,9 +268,7 @@ defmodule SwarmCode.Domain.Tools.FindFiles do
   # Shortest first: the file the model means is almost always the shallow one
   # (`lib/app/user.ex` before `test/support/fixtures/user.ex`), and a tie is
   # broken alphabetically so the list is stable between calls.
-  defp sort(paths) do
-    Enum.sort_by(paths, &{length(Elixir.Path.split(&1)), byte_size(&1), &1})
-  end
+  defp sort_key(path), do: {length(Elixir.Path.split(path)), byte_size(path), path}
 
   defp limit(args) do
     case args["max_results"] do
@@ -249,11 +277,10 @@ defmodule SwarmCode.Domain.Tools.FindFiles do
     end
   end
 
-  defp render([], _limit, pattern), do: "no file matches #{pattern}"
+  defp render([], _count, pattern), do: "no file matches #{pattern}"
 
-  defp render(matches, limit, _pattern) do
-    shown = Enum.take(matches, limit)
-    extra = length(matches) - length(shown)
+  defp render(shown, count, _pattern) do
+    extra = count - length(shown)
     text = Enum.join(shown, "\n")
 
     if extra > 0,

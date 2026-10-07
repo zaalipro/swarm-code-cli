@@ -1,14 +1,18 @@
 defmodule SwarmCode.Daemon.Boot do
   @moduledoc """
   Startup recovery for a saved session (pass70 B6): the desktop's
-  `Bootstrap.run/1` at 6dd8d82, run once the guarded Repo is live and before
-  the session's first snapshot.
+  `Bootstrap.run/1` and `Bootstrap.deferred/1` at 4c7c577a, run once the
+  guarded Repo is live and before the session's first snapshot.
 
   In order: runs left `running` by a previous runtime are marked interrupted,
   claimed scheduled occurrences are settled, default providers are seeded on an
   empty database, the legacy search key is adopted, configured MCP servers
-  start, orphaned researches are closed, abandoned attachments are pruned, and
-  (5 s later, supervised) stale isolation directories are swept.
+  start, orphaned researches are closed, nodes a crash left without a
+  `finished_at` are repaired, abandoned attachments are pruned, and (5 s
+  later, under `Engine.CleanupSupervisor`, which a quit waits for) stale
+  isolation directories and delta patches are swept. The desktop runs the
+  repair and the prune 3 s after its window is up (spec 74 EFFICIENCY-23); the
+  CLI has no window to wait for, so they stay inline with the other steps.
 
   Every step is bounded (retried after 100, 250 and 500 ms) and logged; none can
   stop the session. The Scheduler and the workflow Watchdog are not started:
@@ -39,8 +43,9 @@ defmodule SwarmCode.Daemon.Boot do
 
   @doc """
   Runs the recovery steps. `opts` are test seams: any step name below mapped to
-  a zero-arity function, `:sleep` (the retry sleep) and `:isolation_cleanup`
-  (`false` to skip the delayed sweep).
+  a zero-arity function, `:sleep` (the retry sleep), `:isolation_cleanup`
+  (`false` to skip the delayed sweep), `:isolation_delay_ms` and
+  `:sweep_isolation` (the sweep itself).
   """
   @spec run(keyword()) :: result()
   def run(opts \\ []) do
@@ -53,6 +58,7 @@ defmodule SwarmCode.Daemon.Boot do
       adopt_legacy_search_key: &Search.adopt_legacy_key/0,
       start_mcp: &MCP.start_all/0,
       sweep_researches: &sweep_researches/0,
+      repair_unfinished_nodes: &Conversations.repair_unfinished_nodes/0,
       prune_attachments: &Attachments.prune_abandoned/0
     ]
 
@@ -61,7 +67,12 @@ defmodule SwarmCode.Daemon.Boot do
         {step, retry(step, Keyword.get(opts, step, default), sleep, @retry_delays)}
       end
 
-    if Keyword.get(opts, :isolation_cleanup, true), do: schedule_isolation_cleanup()
+    if Keyword.get(opts, :isolation_cleanup, true) do
+      schedule_isolation_cleanup(
+        Keyword.get(opts, :isolation_delay_ms, @isolation_delay_ms),
+        Keyword.get(opts, :sweep_isolation, &sweep_isolation/0)
+      )
+    end
 
     failed = for {step, {:error, _}} <- results, do: step
 
@@ -76,7 +87,8 @@ defmodule SwarmCode.Daemon.Boot do
 
   # Spec 24 §3.5 / 51 §4.6: deep research is not resumable; a research still
   # marked running after a restart is closed, and a designed pass the restart
-  # cut short gets its rendered report back.
+  # cut short reads `rendered` again (spec 74 BUGS-60: its stale designed.html
+  # is deleted; report.html never moved).
   @doc false
   def sweep_researches do
     now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
@@ -98,27 +110,38 @@ defmodule SwarmCode.Daemon.Boot do
   end
 
   # spec 72 D6 / 73 T12: stale isolation directories after boot, supervised so
-  # the session's shutdown takes it down with the runtime.
-  defp schedule_isolation_cleanup do
+  # the session's shutdown takes it down with the runtime. spec 74
+  # ARCHITECTURE-6: the sweep itself runs under the cleanup supervisor, which a
+  # quit waits for; the settle wait before it does not, so a quick quit is not
+  # held by it.
+  defp schedule_isolation_cleanup(delay_ms, sweep) do
     Task.Supervisor.start_child(SwarmCode.Domain.TaskSupervisor, fn ->
       receive do
       after
-        @isolation_delay_ms -> :ok
+        delay_ms -> :ok
       end
 
-      for project <- Projects.list() do
-        worktrees = Projects.Workspace.worktrees_dir(project.root_path)
-
-        if File.dir?(worktrees),
-          do:
-            SwarmCode.Domain.Engine.Isolation.Ownership.cleanup_stale(
-              worktrees,
-              project.root_path
-            )
-      end
+      Task.Supervisor.start_child(SwarmCode.Domain.Engine.CleanupSupervisor, sweep)
     end)
   catch
     _, _ -> :ok
+  end
+
+  defp sweep_isolation do
+    for project <- Projects.list() do
+      worktrees = Projects.Workspace.worktrees_dir(project.root_path)
+
+      # spec 73 T12: the project root lets the sweep keep a dead worker's work.
+      if File.dir?(worktrees),
+        do:
+          SwarmCode.Domain.Engine.Isolation.Ownership.cleanup_stale(
+            worktrees,
+            project.root_path
+          )
+
+      # spec 74 ARCHITECTURE-6: delta patches nothing will integrate any more.
+      SwarmCode.Domain.Engine.Isolation.sweep_deltas(project.root_path)
+    end
   end
 
   defp retry(step, fun, sleep, delays) do

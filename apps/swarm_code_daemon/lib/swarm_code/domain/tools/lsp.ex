@@ -75,6 +75,9 @@ defmodule SwarmCode.Domain.Tools.Lsp do
     end
   end
 
+  @untrusted "language servers build and run project code — trust the project first " <>
+               "(banner above the composer)"
+
   @impl true
   def run(args, ctx, progress) do
     op = to_string(args["operation"] || "")
@@ -82,12 +85,18 @@ defmodule SwarmCode.Domain.Tools.Lsp do
     if op not in @operations do
       {:error, "unknown operation: #{op}; valid: #{Enum.join(@operations, ", ")}"}
     else
-      with {:ok, abs} <- ToolsPath.resolve(ctx.project_root, args["path"]) do
+      with :ok <- trusted(ctx),
+           {:ok, abs} <- ToolsPath.resolve(ctx.project_root, args["path"]) do
         progress.(nil, "lsp #{op}")
+        settings = ctx.settings || %{}
 
+        # spec 74 BUGS-7: the server runs with the scrubbed environment every
+        # other child gets, and only a trusted project may start one.
         lsp_opts = [
-          lsp_servers: Map.get(ctx.settings || %{}, :lsp_servers, %{}),
-          timeout: SwarmCode.Domain.Tools.timeout(ctx)
+          lsp_servers: Map.get(settings, :lsp_servers, %{}),
+          timeout: SwarmCode.Domain.Tools.timeout(ctx),
+          trusted?: true,
+          env: SwarmCode.Domain.Tools.RunCommand.clean_env(settings)
         ]
 
         {method, params} = build_request(op, abs, args)
@@ -105,6 +114,21 @@ defmodule SwarmCode.Domain.Tools.Lsp do
   end
 
   ## ----------------------------------------------------------------- private
+
+  # spec 74 BUGS-7: `lsp` is a `:read` tool, allowed in every mode — but
+  # elixir-ls, rust-analyzer, gopls and solargraph evaluate mix.exs, build.rs
+  # and proc-macros, so a language server is repository code running. Trust is
+  # resolved through `project_id`, never the root: an isolated worker's root
+  # is a worktree path.
+  defp trusted(ctx) do
+    with id when is_binary(id) <- Map.get(ctx, :project_id),
+         %{} = project <- SwarmCode.Domain.Projects.get_cached(id),
+         true <- SwarmCode.Domain.Projects.trusted?(project) do
+      :ok
+    else
+      _untrusted -> {:error, @untrusted}
+    end
+  end
 
   defp build_request(op, abs_path, args) do
     uri = file_uri(abs_path)

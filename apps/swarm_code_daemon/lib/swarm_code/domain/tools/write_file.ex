@@ -10,7 +10,10 @@ defmodule SwarmCode.Domain.Tools.WriteFile do
 
   @impl true
   def description,
-    do: "Create or overwrite a file with the given content (creates parent directories)."
+    do:
+      "Create or overwrite a file with the given content (creates parent directories). " <>
+        "The previous content is snapshotted so the turn can be rewound; snapshots of files " <>
+        "over 2 MB or not UTF-8 cannot be rewound."
 
   @impl true
   def parameters do
@@ -32,7 +35,7 @@ defmodule SwarmCode.Domain.Tools.WriteFile do
   def parallel?, do: false
 
   @impl true
-  def title(args), do: "write " <> (args["path"] || "")
+  def title(args), do: "write " <> SwarmCode.Domain.Tools.arg_text(args["path"] || "")
 
   @impl true
   def run(args, ctx, progress) do

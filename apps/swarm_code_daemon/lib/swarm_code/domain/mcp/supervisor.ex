@@ -11,7 +11,17 @@ defmodule SwarmCode.Domain.MCP.Supervisor do
     MCP.ensure_tables()
 
     children = [
-      {DynamicSupervisor, name: SwarmCode.Domain.MCP.ClientSup, strategy: :one_for_one}
+      # pass74 (spec 74) UX-10: the login shell's PATH, read once at boot for
+      # stdio servers; before the clients, which wait for it without blocking.
+      SwarmCode.Domain.MCP.LoginPath,
+      # pass74 (spec 74) BUGS-24: clients are independent. The default 3
+      # restarts in 5 s let one crash-looping server take ClientSup down, and
+      # it came back empty — every other server gone until the next boot.
+      {DynamicSupervisor,
+       name: SwarmCode.Domain.MCP.ClientSup,
+       strategy: :one_for_one,
+       max_restarts: 50,
+       max_seconds: 5}
     ]
 
     Supervisor.init(children, strategy: :one_for_one)

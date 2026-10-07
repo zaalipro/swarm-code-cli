@@ -302,8 +302,16 @@ defmodule SwarmCode.Domain.Research.Server do
     Process.demonitor(ref, [:flush])
 
     case result do
-      {:ok, outcome} -> {:stop, :normal, close(state, "done", outcome)}
-      {:error, reason} -> {:stop, :normal, close(state, "failed", %{error: to_string(reason)})}
+      # pass74 (spec 74) BUGS-61: the reporter failed — the notes are kept in
+      # result.md, and the research says it failed, with why.
+      {:ok, %{error: error} = outcome} when is_binary(error) ->
+        {:stop, :normal, close(state, "failed", outcome)}
+
+      {:ok, outcome} ->
+        {:stop, :normal, close(state, "done", outcome)}
+
+      {:error, reason} ->
+        {:stop, :normal, close(state, "failed", %{error: to_string(reason)})}
     end
   end
 
@@ -379,8 +387,9 @@ defmodule SwarmCode.Domain.Research.Server do
         # A stopped design leaves the rendered report and the button; a failed
         # one says so. Either way the research itself stays `done`.
         #
-        # spec 60 T44: the program task was just killed — its own restore never
-        # ran — so the kept rendered.html goes back to report_path/1 here.
+        # spec 60 T44: the program task was just killed mid-pass. pass74
+        # (spec 74) BUGS-60: the rendered report never moved; the half-written
+        # designed.html goes.
         Research.restore_rendered_file(research)
 
         if research.design_state == "designing",
@@ -410,7 +419,7 @@ defmodule SwarmCode.Domain.Research.Server do
 
     if research && research.status in ["queued", "running"] do
       settling(state, "write", fn ->
-        totals = if state.run_id, do: Conversations.run_totals(state.run_id), else: %{}
+        totals = if state.run_id, do: finish_totals(state.run_id), else: %{}
 
         Research.update(
           research,
@@ -455,6 +464,21 @@ defmodule SwarmCode.Domain.Research.Server do
   # the borrowed run is told either way, so no RunServer sits on an open root.
   # (Under the test sandbox the one shared connection does not come back; the
   # tests that kill wait until nothing is querying, `server_test.exs`.)
+  # pass74 (spec 74) BUGS-34: the totals come from the live RunServer, which
+  # holds them exactly (`bump_totals/3`), not from a SQL sum over node rows
+  # that only reach SQLite on its write-behind flush up to 100 ms later — the
+  # reporter's usage was often missing from the research row. A run that has
+  # already stopped flushed on the way out, so its rows are the answer.
+  defp finish_totals(run_id) do
+    case RunServer.finish_totals(run_id) do
+      %{tokens_in: tokens_in, tokens_out: tokens_out, cost_usd: cost_usd} ->
+        %{tokens_in: tokens_in || 0, tokens_out: tokens_out || 0, cost_usd: cost_usd}
+
+      _not_running ->
+        Conversations.run_totals(run_id)
+    end
+  end
+
   defp settling(state, what, fun, attempt \\ 0) do
     fun.()
   rescue

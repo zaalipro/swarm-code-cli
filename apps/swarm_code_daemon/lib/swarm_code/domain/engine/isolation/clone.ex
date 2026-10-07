@@ -11,6 +11,7 @@ defmodule SwarmCode.Domain.Engine.Isolation.Clone do
 
   @behaviour SwarmCode.Domain.Engine.Isolation.Backend
 
+  alias SwarmCode.Domain.Engine.Isolation.Ownership
   alias SwarmCode.Domain.Git
 
   # spec 72 R1: the target lives under `<root>/.swarm_code/worktrees/`, so
@@ -20,6 +21,10 @@ defmodule SwarmCode.Domain.Engine.Isolation.Clone do
   # entries are copied one by one instead, and `.swarm_code` without the
   # subtrees that hold siblings' clones, delta patches and scratch files.
   @skip_swarm_code ~w(worktrees isolation tmp)
+
+  # spec 74 ARCHITECTURE-19: `cp` had no deadline at all; a copy-on-write
+  # clone of even a large tree takes seconds, a plain copy minutes.
+  @copy_timeout_ms 600_000
 
   @impl true
   def create(project_root, target_path, opts) do
@@ -72,11 +77,18 @@ defmodule SwarmCode.Domain.Engine.Isolation.Clone do
   defp copy_entries(src_dir, dst_dir, entries) do
     sources = Enum.map(entries, &Path.join(src_dir, &1))
 
-    case System.cmd("cp", ["-c", "-R", "--"] ++ sources ++ [dst_dir <> "/"],
-           stderr_to_stdout: true
+    # spec 74 ARCHITECTURE-19: the shared bounded runner — a deadline, and
+    # at most 64 KB of cp's messages kept (`:drain` reads past the bound
+    # rather than killing a copy that only complains a lot).
+    case SwarmCode.Domain.OSProcess.run("cp", ["-c", "-R", "--"] ++ sources ++ [dst_dir <> "/"],
+           timeout: @copy_timeout_ms,
+           max_bytes: 64 * 1024,
+           on_cap: :drain
          ) do
-      {_out, 0} -> :ok
-      {out, _code} -> {:error, "clone failed: #{String.slice(out, 0, 500)}"}
+      {:ok, 0, _out, _cut?} -> :ok
+      {:ok, _code, out, _cut?} -> {:error, "clone failed: #{String.slice(out, 0, 500)}"}
+      {:error, :timeout} -> {:error, "clone failed: cp timed out"}
+      {:error, reason} -> {:error, "clone failed: #{inspect(reason)}"}
     end
   end
 
@@ -93,14 +105,37 @@ defmodule SwarmCode.Domain.Engine.Isolation.Clone do
   end
 
   defp finish_clone(target_path, branch) when is_binary(branch) and branch != "" do
-    case Git.run(target_path, ["checkout", "-b", branch]) do
-      {:ok, _} ->
-        base_sha = Git.head(target_path) || ""
-        {:ok, %{root: target_path, branch: branch, base_sha: base_sha}}
-
+    with {:ok, _} <- Git.run(target_path, ["checkout", "-b", branch]),
+         :ok <- drop_uncommitted(target_path) do
+      base_sha = Git.head(target_path) || ""
+      {:ok, %{root: target_path, branch: branch, base_sha: base_sha}}
+    else
       {:error, reason} ->
         File.rm_rf(target_path)
         {:error, "could not create branch: #{reason}"}
+    end
+  end
+
+  # spec 74 BUGS-59 (decision D1: reset to HEAD): the copy carries the user's
+  # uncommitted work — modified and untracked files — and the agent's
+  # `add -A` + commit put it on the agent's branch, so its diff stat, its delta
+  # and its integration all carried the user's WIP. The clone starts at HEAD,
+  # like a worktree does. `clean` never takes `-x`: ignored files (deps,
+  # _build, node_modules — why a clone is used) stay, and so do `.swarm_code/`
+  # and the ownership marker, named with `-e` so they survive even where
+  # `Workspace.ensure!/1` has not put them in `.git/info/exclude` yet. A
+  # repository with no commit yet has no HEAD to reset to; its copy stays as
+  # it is.
+  defp drop_uncommitted(target_path) do
+    if Git.head(target_path) do
+      keep = ["-e", "/.swarm_code/", "-e", "/" <> Ownership.marker_file()]
+
+      with {:ok, _} <- Git.run(target_path, ["reset", "-q", "--hard", "HEAD"]),
+           {:ok, _} <- Git.run(target_path, ["clean", "-q", "-f", "-d"] ++ keep) do
+        :ok
+      end
+    else
+      :ok
     end
   end
 
@@ -170,8 +205,11 @@ defmodule SwarmCode.Domain.Engine.Isolation.Clone do
     try do
       File.write!(src, "probe")
 
-      case System.cmd("cp", ["-c", src, dst], stderr_to_stdout: true) do
-        {_out, 0} -> true
+      case SwarmCode.Domain.OSProcess.run("cp", ["-c", src, dst],
+             timeout: 10_000,
+             max_bytes: 4_096
+           ) do
+        {:ok, 0, _out, _cut?} -> true
         _ -> false
       end
     rescue

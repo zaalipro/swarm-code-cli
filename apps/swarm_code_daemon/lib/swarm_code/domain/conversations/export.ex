@@ -5,13 +5,27 @@ defmodule SwarmCode.Domain.Conversations.Export do
 
   # spec 70 D7
 
+  import Ecto.Query
+
   alias SwarmCode.Domain.Conversations
+  alias SwarmCode.Domain.Conversations.{Message, Run}
+  alias SwarmCode.Domain.Repo
 
   @spec to_markdown(String.t()) :: String.t()
   def to_markdown(conversation_id) do
     conv = Conversations.get!(conversation_id)
-    messages = Conversations.list_messages(conversation_id)
-    runs = Conversations.list_runs(conversation_id)
+    # spec 74 EFFICIENCY-32: the four columns it prints, and a run count —
+    # not every message's reasoning and every run row for `length/1`.
+    messages =
+      Repo.all(
+        from(m in Message,
+          where: m.conversation_id == ^conversation_id,
+          order_by: [asc: m.position, asc: m.inserted_at],
+          select: map(m, [:role, :content, :inserted_at, :superseded_at])
+        )
+      )
+
+    runs = Repo.aggregate(from(r in Run, where: r.conversation_id == ^conversation_id), :count)
 
     visible =
       Enum.filter(messages, fn m ->
@@ -23,7 +37,7 @@ defmodule SwarmCode.Domain.Conversations.Export do
       "**Project:** #{project_name(conv)}  \n",
       "**Created:** #{format_time(conv.inserted_at)}  \n",
       "**Messages:** #{length(visible)}  \n",
-      "**Runs:** #{length(runs)}\n\n",
+      "**Runs:** #{runs}\n\n",
       "---\n\n",
       Enum.map(visible, &render_message/1)
     ]

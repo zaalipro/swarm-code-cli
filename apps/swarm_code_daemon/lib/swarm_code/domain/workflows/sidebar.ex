@@ -6,13 +6,16 @@ defmodule SwarmCode.Domain.Workflows.Sidebar do
 
   `build/4` answers the whole panel — the four KPI tiles, the phase board, the
   needs-you cards, the per-definition health of the Library and the next
-  scheduled workflow — out of **four** queries:
+  scheduled workflow — out of these queries:
 
-    1. the unfinished runs (`Workflows.list_runs(:active)` as it is);
-    2. the agent nodes of those runs (live and done counts per run);
+    1. the unfinished runs, projected to the columns the board, the needs-you
+       cards and the KPIs read — never `logs`, `source`, `result`, `args` or
+       `phase_details` (spec 74 EFFICIENCY-9);
+    2. the agent nodes of those runs, counted per run and status in SQL;
     3. this month's workflow runs (the WEEK and SPEND tiles);
-    4. every workflow run that carries a `definition_name` (the Library's
-       `runs · ok %` and its last-run glyph).
+    4. the Library's per-definition health (`definition_stats/0`: counts
+       aggregated in SQL plus the newest finished row per name). A page that
+       caches it passes it as `:stats` and this query is skipped.
 
   The definitions and the scheduled tasks come in as arguments — the page
   already holds both — so nothing else is read.
@@ -23,7 +26,6 @@ defmodule SwarmCode.Domain.Workflows.Sidebar do
   alias SwarmCode.Domain.Conversations.{Node, Run}
   alias SwarmCode.Domain.Repo
   alias SwarmCode.Domain.Scheduler.Next
-  alias SwarmCode.Domain.Workflows
   alias SwarmCode.Domain.Workflows.Run, as: WorkflowRun
 
   # What the board shows, in the order it shows them.
@@ -63,9 +65,10 @@ defmodule SwarmCode.Domain.Workflows.Sidebar do
   under `All projects`), `projects` name the board's chips and the Library's
   groups, `tasks` are the shell's scheduled ones.
 
-  Options: `:now`, `:zone` (the local zone the week and the month are cut on)
-  and `:scope` — the switcher's project id or `"all"`, which says whether the
-  footer can tell a broken scheduled workflow from one it simply cannot see.
+  Options: `:now`, `:zone` (the local zone the week and the month are cut on),
+  `:scope` — the switcher's project id or `"all"`, which says whether the
+  footer can tell a broken scheduled workflow from one it simply cannot see —
+  and `:stats`, a `definition_stats/0` result the caller already holds.
   """
   @spec build([map()], [map()], [map()], keyword()) :: t()
   def build(definitions, projects, tasks, opts \\ []) do
@@ -73,10 +76,10 @@ defmodule SwarmCode.Domain.Workflows.Sidebar do
     zone = Keyword.get(opts, :zone) || Next.local_zone()
     scope = Keyword.get(opts, :scope, "all")
 
-    rows = Workflows.list_runs(:active) |> Enum.filter(&(&1.run.status in @unfinished))
+    rows = live_rows()
     agents = agent_nodes(Enum.map(rows, & &1.wf.run_id))
     month = month_rows(month_start(now, zone))
-    history = definition_rows()
+    history = Keyword.get_lazy(opts, :stats, &definition_stats/0)
 
     tracks = tracks(rows, agents, projects, now)
 
@@ -95,25 +98,69 @@ defmodule SwarmCode.Domain.Workflows.Sidebar do
 
   ## ------------------------------------------------------------- the queries
 
-  # Query 2. Only the agent nodes of the unfinished runs, only their status:
-  # the board's `6 live` and the segment titles' `3 done of 9 admitted`.
+  # Query 1 (spec 74 EFFICIENCY-9): the unfinished runs, newest first, as
+  # `%{wf, run, conversation}` maps holding only what this module reads. The
+  # full rows carried every run's source, args, result and up to 500 log lines
+  # (862 KB decoded at 7 active runs) into a rebuild that runs per flush.
+  defp live_rows do
+    from(w in WorkflowRun,
+      join: r in Run,
+      on: r.id == w.run_id,
+      left_join: c in SwarmCode.Domain.Conversations.Conversation,
+      on: c.id == w.conversation_id,
+      where: r.status in ^@unfinished,
+      order_by: [desc: r.started_at],
+      select: %{
+        wf: %{
+          run_id: w.run_id,
+          conversation_id: w.conversation_id,
+          definition_name: w.definition_name,
+          scope: w.scope,
+          display_name: w.display_name,
+          phases: w.phases,
+          phase: w.phase,
+          pause_kind: w.pause_kind,
+          pause_message: w.pause_message,
+          gate_question: w.gate_question,
+          gate_options: w.gate_options,
+          agents_admitted: w.agents_admitted,
+          budget: w.budget,
+          inserted_at: w.inserted_at
+        },
+        run: %{
+          status: r.status,
+          started_at: r.started_at,
+          updated_at: r.updated_at,
+          cost_usd: r.cost_usd
+        },
+        conversation: %{project_id: c.project_id}
+      }
+    )
+    |> Repo.all()
+  end
+
+  # Query 2. Only the agent nodes of the unfinished runs, counted per status in
+  # SQL: the board's `6 live` and the segment titles' `3 done of 9 admitted`.
   defp agent_nodes([]), do: %{}
 
   defp agent_nodes(run_ids) do
     from(n in Node,
       where: n.run_id in ^run_ids and n.kind == "agent",
-      select: {n.run_id, n.status}
+      group_by: [n.run_id, n.status],
+      select: {n.run_id, n.status, count(n.id)}
     )
     |> Repo.all()
-    |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
-    |> Map.new(fn {run_id, statuses} ->
+    |> Enum.group_by(&elem(&1, 0))
+    |> Map.new(fn {run_id, counts} ->
       {run_id,
        %{
-         live: Enum.count(statuses, &(&1 in @node_live)),
-         done: Enum.count(statuses, &(&1 == "done"))
+         live: counts |> Enum.filter(&(elem(&1, 1) in @node_live)) |> sum_counts(),
+         done: counts |> Enum.filter(&(elem(&1, 1) == "done")) |> sum_counts()
        }}
     end)
   end
+
+  defp sum_counts(counts), do: Enum.reduce(counts, 0, fn {_id, _status, n}, acc -> acc + n end)
 
   # Query 3. A month of workflow runs is small; the week split and both sums
   # happen in Elixir rather than in three aggregate queries.
@@ -125,26 +172,60 @@ defmodule SwarmCode.Domain.Workflows.Sidebar do
     |> Repo.all()
   end
 
-  # Query 4. Every run that names a definition, newest first. If `workflow_runs`
-  # ever grows past a few thousand rows this is the query to page (a per-name
-  # `LIMIT` needs a window function; today the whole table is cheaper than the
-  # complexity).
-  defp definition_rows do
-    from(w in WorkflowRun,
-      join: r in Run,
-      on: r.id == w.run_id,
-      where: not is_nil(w.definition_name),
-      order_by: [desc: r.started_at],
-      select: %{
-        scope: w.scope,
-        name: w.definition_name,
-        status: r.status,
-        started_at: r.started_at,
-        run_id: w.run_id,
-        display_name: w.display_name
-      }
-    )
-    |> Repo.all()
+  @doc """
+  Query 4 (spec 74 EFFICIENCY-9): the Library's per-definition history,
+  `%{{scope, name} => %{runs, done, bad, last}}` — the counts aggregated in
+  SQL, `last` the newest finished run of each name. It used to read every
+  workflow run ever on every sidebar rebuild; a page keeps this and refreshes
+  it only when a run's status moved or a definition changed.
+  """
+  @spec definition_stats() :: %{optional({String.t(), String.t()}) => map()}
+  def definition_stats do
+    counts =
+      from(w in WorkflowRun,
+        join: r in Run,
+        on: r.id == w.run_id,
+        where: not is_nil(w.definition_name),
+        group_by: [w.scope, w.definition_name],
+        select:
+          {w.scope, w.definition_name, count(w.run_id),
+           sum(fragment("CASE WHEN ? = 'done' THEN 1 ELSE 0 END", r.status)),
+           sum(fragment("CASE WHEN ? IN ('failed', 'stopped') THEN 1 ELSE 0 END", r.status))}
+      )
+      |> Repo.all()
+
+    ranked =
+      from(w in WorkflowRun,
+        join: r in Run,
+        on: r.id == w.run_id,
+        where: not is_nil(w.definition_name) and r.status in ^@finished,
+        select: %{
+          scope: w.scope,
+          name: w.definition_name,
+          status: r.status,
+          at: r.started_at,
+          run_id: w.run_id,
+          display_name: w.display_name,
+          rank:
+            over(row_number(),
+              partition_by: [w.scope, w.definition_name],
+              order_by: [desc: r.started_at]
+            )
+        }
+      )
+
+    last =
+      from(x in subquery(ranked), where: x.rank == 1)
+      |> Repo.all()
+      |> Map.new(fn x ->
+        {{x.scope, x.name},
+         %{run_id: x.run_id, display_name: x.display_name, status: x.status, at: x.at}}
+      end)
+
+    Map.new(counts, fn {scope, name, runs, done, bad} ->
+      {{scope, name},
+       %{runs: runs, done: done || 0, bad: bad || 0, last: Map.get(last, {scope, name})}}
+    end)
   end
 
   ## -------------------------------------------------------------------- KPIs
@@ -289,9 +370,17 @@ defmodule SwarmCode.Domain.Workflows.Sidebar do
     |> Enum.sort_by(&{Map.get(@rank, &1.run.status, 9), -unix(&1.run.started_at)})
     |> Enum.map(fn %{wf: wf, run: run} ->
       phases = phases(wf)
+      # Spec 75 (pass 71): a mission plan is approved on its card in the
+      # conversation (with the model pickers), never in place.
+      mission? = SwarmCode.Domain.Missions.approval_gate?(wf, run)
 
       %{
-        kind: (run.status == "waiting_user" && :gate) || :paused,
+        kind:
+          cond do
+            mission? -> :mission
+            run.status == "waiting_user" -> :gate
+            true -> :paused
+          end,
         run_id: wf.run_id,
         name: wf.display_name,
         status: run.status,
@@ -301,12 +390,19 @@ defmodule SwarmCode.Domain.Workflows.Sidebar do
         admitted: wf.agents_admitted || 0,
         budget: wf.budget,
         cost: run.cost_usd,
-        question: wf.gate_question || wf.pause_message || "Waiting for you.",
-        options: wf.gate_options || [],
+        question:
+          if(mission?,
+            do: "Mission plan waiting for your approval",
+            else: wf.gate_question || wf.pause_message || "Waiting for you."
+          ),
+        options: if(mission?, do: [], else: wf.gate_options || []),
         pause_kind: wf.pause_kind,
         pause_message: wf.pause_message,
         updated_at: run.updated_at || run.started_at
       }
+      # Only a mission card links to its conversation (its "Review plan" row);
+      # every other card keeps the shape spec 74 EFFICIENCY-9 pinned.
+      |> then(&if(mission?, do: Map.put(&1, :conversation_id, wf.conversation_id), else: &1))
     end)
   end
 
@@ -333,24 +429,12 @@ defmodule SwarmCode.Domain.Workflows.Sidebar do
       end)
 
     history
-    |> Enum.group_by(&{&1.scope, &1.name})
-    |> Map.new(fn {key, rows} ->
-      done = Enum.count(rows, &(&1.status == "done"))
-      bad = Enum.count(rows, &(&1.status in ["failed", "stopped"]))
-      last = Enum.find(rows, &(&1.status in @finished))
-
+    |> Map.new(fn {key, %{runs: runs, done: done, bad: bad, last: last}} ->
       {key,
        %{
-         runs: length(rows),
+         runs: runs,
          ok_pct: if(done + bad > 0, do: round(done * 100 / (done + bad))),
-         last:
-           last &&
-             %{
-               run_id: last.run_id,
-               display_name: last.display_name,
-               status: last.status,
-               at: last.started_at
-             },
+         last: last,
          unfinished: Map.get(unfinished, key)
        }}
     end)

@@ -62,7 +62,7 @@ defmodule SwarmCode.Domain.Tools.AskUser do
   @impl true
   def title(args) do
     case normalize(args["questions"]) do
-      [%{"question" => q} | _] -> "asked " <> String.slice(to_string(q), 0, 60)
+      [%{"question" => q} | _] -> "asked " <> String.slice(q, 0, 60)
       _ -> "asked the user"
     end
   end
@@ -127,6 +127,12 @@ defmodule SwarmCode.Domain.Tools.AskUser do
 
   # Normalises whatever the model sent into a list of question maps with string
   # keys and at least two options.
+  #
+  # spec 74 BUGS-12: every field is typed here, once — a string `options`
+  # raised in `Enum.take/2` inside the AgentServer, and an object
+  # `description` raised in the question panel's `SwarmCode.Domain.HTML.Safe`. Options
+  # are a list or nothing (so "needs ≥2 options" answers), and the text fields
+  # are binaries or nil.
   @spec normalize(term()) :: [map()]
   def normalize(questions) when is_list(questions) do
     questions
@@ -135,15 +141,16 @@ defmodule SwarmCode.Domain.Tools.AskUser do
       q = stringify(q)
 
       %{
-        "question" => to_string(q["question"] || ""),
-        "header" => q["header"] && String.slice(to_string(q["header"]), 0, 12),
+        "question" => text(q["question"]) || "",
+        "header" => (header = text(q["header"])) && String.slice(header, 0, 12),
         "multi_select" => q["multi_select"] == true,
         "options" =>
-          (q["options"] || [])
+          q["options"]
+          |> options()
           |> Enum.take(4)
           |> Enum.map(fn o ->
             o = stringify(o)
-            %{"label" => to_string(o["label"] || ""), "description" => o["description"]}
+            %{"label" => text(o["label"]) || "", "description" => text(o["description"])}
           end)
           |> Enum.reject(&(&1["label"] == ""))
       }
@@ -152,6 +159,13 @@ defmodule SwarmCode.Domain.Tools.AskUser do
   end
 
   def normalize(_other), do: []
+
+  defp options(list) when is_list(list), do: list
+  defp options(_other), do: []
+
+  defp text(nil), do: nil
+  defp text(value) when is_binary(value), do: value
+  defp text(value), do: inspect(value, limit: 5)
 
   defp stringify(map) when is_map(map),
     do: Map.new(map, fn {k, v} -> {to_string(k), v} end)

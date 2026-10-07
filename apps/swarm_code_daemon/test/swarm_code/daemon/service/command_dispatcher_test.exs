@@ -312,6 +312,9 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcherTest do
       "meta = %{name: \"fixture-launch\", description: \"Fixture\", args: %{target: %{type: :string, required: true}}}\n\"finished\""
 
     {:ok, definition} = Workflows.parse(source, "project")
+    # cli020 A1: the synced Workflows (desktop 4c7c577a) runs a project-scope
+    # workflow only in a trusted project.
+    {:ok, _project} = Projects.trust(Projects.get!(c.project_id))
 
     assert {:error, :invalid_workflow_arguments} =
              Dispatcher.dispatch(c.id, "/fixture-launch", workflows: [definition])

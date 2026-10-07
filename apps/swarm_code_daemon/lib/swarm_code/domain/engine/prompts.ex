@@ -71,6 +71,9 @@ defmodule SwarmCode.Domain.Engine.Prompts do
 
   defp section(_header, _text), do: nil
 
+  # cli020 A6 (CLI patch): desktop Ultra is Factory-style missions (spec 75),
+  # which need the mission approval card the CLI does not have yet; CLI Ultra
+  # keeps authoring and launching workflows.
   @ultra """
   ULTRA MODE: for any substantive task (multi-file change, audit, research, review, migration) do not do the work inline. For tasks that fan out (review/audit/research/migrate many files, implement a multi-part spec) author and launch a workflow instead of doing it inline. Call workflow_list first and reuse a saved workflow whose when_to_use matches; otherwise author one for exactly this request following the WORKFLOW AUTHORING MODE procedure below — smoke-check it, save it into the project and launch it with workflow_run straight away. Never ask "shall I launch it?". Say in two sentences what it will do, name the run, and continue when its result arrives. Prefer adversarial verification panels. Trivial questions and one-line edits stay inline.
   """
@@ -82,8 +85,9 @@ defmodule SwarmCode.Domain.Engine.Prompts do
   """
 
   def assistant(%Project{} = project, opts \\ []) do
-    # Ultra authors a workflow for every substantive request (spec 11 §10.1),
-    # so it needs the authoring procedure just as much as /create-workflow does.
+    # cli020 A6 (CLI patch): CLI Ultra authors a workflow for every substantive
+    # request (spec 11 §10.1), so it needs the authoring procedure just as much
+    # as /create-workflow does.
     create_workflow? = opts[:command] == :create_workflow
     authoring? = opts[:authoring] || opts[:ultra] || create_workflow?
 
@@ -236,41 +240,88 @@ defmodule SwarmCode.Domain.Engine.Prompts do
     "<environment>\n" <> elements <> "\n</environment>\n"
   end
 
+  # spec 74 EFFICIENCY-39: the branch is read from `HEAD` itself — a file read,
+  # not a subprocess (35 ms median → well under 1 ms, and this runs on every
+  # think step of every agent). `ref: refs/heads/<name>` is exactly what
+  # `git branch --show-current` prints, an unborn branch included. Only a HEAD
+  # that names no branch (detached) or cannot be read goes to git as before:
+  #
   # `branch --show-current` first: `rev-parse --abbrev-ref HEAD` exits 128 in a
   # repository with no commit yet, which is exactly the state a project the user
   # just created is in. `rev-parse` is the fallback for a detached HEAD, where
   # `--show-current` is empty.
   #
-  # Both are skipped entirely unless a `.git` is actually there: a prompt is
-  # built per agent, and two failing subprocess spawns per agent is a cost a
-  # project that is not a repository should not pay at all.
+  # Nothing runs unless a `.git` is actually there: a prompt is built per
+  # agent, and two failing subprocess spawns per agent is a cost a project that
+  # is not a repository should not pay at all.
   defp branch(root) do
-    if repo?(root) do
-      case first_line(SwarmCode.Domain.Git.run(root, ["branch", "--show-current"])) do
-        nil -> first_line(SwarmCode.Domain.Git.run(root, ["rev-parse", "--abbrev-ref", "HEAD"]))
-        name -> name
+    case dot_git(root) do
+      nil ->
+        nil
+
+      dot_git ->
+        case head_branch(dot_git) do
+          {:ok, name} -> name
+          :git -> git_branch(root)
+        end
+    end
+  end
+
+  defp git_branch(root) do
+    case first_line(SwarmCode.Domain.Git.run(root, ["branch", "--show-current"])) do
+      nil -> first_line(SwarmCode.Domain.Git.run(root, ["rev-parse", "--abbrev-ref", "HEAD"]))
+      name -> name
+    end
+  end
+
+  # `.git` is a directory in a checkout and a file in a worktree or a
+  # submodule (`gitdir: <path>`, relative to the file's own directory).
+  defp head_branch(dot_git) do
+    with {:ok, git_dir} <- git_dir(dot_git),
+         {:ok, head} <- File.read(Elixir.Path.join(git_dir, "HEAD")),
+         true <- String.valid?(head),
+         "ref: refs/heads/" <> name when name != "" <- first_line_of(head) do
+      {:ok, name}
+    else
+      _detached_or_unreadable -> :git
+    end
+  end
+
+  defp git_dir(dot_git) do
+    if File.dir?(dot_git) do
+      {:ok, dot_git}
+    else
+      with {:ok, text} <- File.read(dot_git),
+           true <- String.valid?(text),
+           "gitdir:" <> path <- first_line_of(text),
+           path when path != "" <- String.trim(path) do
+        {:ok, Elixir.Path.expand(path, Elixir.Path.dirname(dot_git))}
+      else
+        _other -> :error
       end
     end
   end
 
-  # `.git` is a directory in a checkout and a file in a worktree; both exist.
-  # Six levels of ancestors so a project rooted at a package inside a repository
-  # still reports the branch, at six `stat` calls and no process.
-  defp repo?(root) when is_binary(root) and root != "" do
-    root = Elixir.Path.expand(root)
+  defp first_line_of(text), do: text |> String.split("\n", parts: 2) |> hd() |> String.trim()
 
+  # The nearest `.git` of the root or one of its ancestors, six levels up, so a
+  # project rooted at a package inside a repository still reports the branch,
+  # at six `stat` calls and no process.
+  defp dot_git(root) when is_binary(root) and root != "" do
     1..6
-    |> Enum.reduce_while({root, false}, fn _level, {dir, _found} ->
+    |> Enum.reduce_while({Elixir.Path.expand(root), nil}, fn _level, {dir, nil} ->
+      dot_git = Elixir.Path.join(dir, ".git")
+
       cond do
-        File.exists?(Elixir.Path.join(dir, ".git")) -> {:halt, {dir, true}}
-        Elixir.Path.dirname(dir) == dir -> {:halt, {dir, false}}
-        true -> {:cont, {Elixir.Path.dirname(dir), false}}
+        File.exists?(dot_git) -> {:halt, {dir, dot_git}}
+        Elixir.Path.dirname(dir) == dir -> {:halt, {dir, nil}}
+        true -> {:cont, {Elixir.Path.dirname(dir), nil}}
       end
     end)
     |> elem(1)
   end
 
-  defp repo?(_root), do: false
+  defp dot_git(_root), do: nil
 
   defp first_line({:ok, out}) do
     case out |> String.split("\n", parts: 2) |> List.first() |> String.trim() do
@@ -378,6 +429,9 @@ defmodule SwarmCode.Domain.Engine.Prompts do
       "You are read-only: you may read, search and fetch, but you must not change anything.",
     read_write: "You may read and write files in the project, but you cannot run commands.",
     execute: "You may read, write and run commands in the project.",
+    # Spec 75: the mission's user-testing validator.
+    verify:
+      "You may read and run commands (tests, scripts, the app) but you must not change files. You report; you never fix.",
     all: "You have the full tool set of the project.",
     # Spec 37 §3.1: the judge that must not read the repo.
     none: "You have no tools besides structured_output: judge from the text you were given."
@@ -489,7 +543,7 @@ defmodule SwarmCode.Domain.Engine.Prompts do
 
     Enum.flat_map(messages, fn
       %Message{role: "user"} = m ->
-        user_message(m, MapSet.member?(recent, m.id))
+        m |> user_message(recent) |> mark_research(m.research_ids)
 
       %Message{role: "assistant", content: content} when content != "" ->
         [%{role: "assistant", content: content}]
@@ -510,41 +564,79 @@ defmodule SwarmCode.Domain.Engine.Prompts do
     end)
   end
 
+  # spec 74 BUGS-31: the byte window is counted per image, not per message.
+  # A message whose images together passed 12 MB (three 4.5 MB screenshots)
+  # used to lose all of them — on this turn and every later one. Newest message
+  # first, its images one at a time in order, then older messages the same way,
+  # until the next image would pass the cap; everything older than that is
+  # omitted, so the window only ever shrinks from its oldest end. One image
+  # always fits (6 MB is under 12 MB). The keys are `{message_id,
+  # attachment_id}` pairs.
   defp recent_image_ids(messages) do
     messages
     |> Enum.filter(&(&1.role == "user" and (&1.attachments || []) != []))
     |> Enum.reverse()
-    |> Enum.reduce_while({[], 0, 0}, fn m, {ids, count, bytes} ->
-      bytes = bytes + SwarmCode.Domain.Attachments.size(m.attachments)
+    |> Enum.take(@image_window)
+    |> Enum.flat_map(fn m -> Enum.map(m.attachments, &{m.id, &1}) end)
+    |> Enum.reduce_while({MapSet.new(), 0}, fn {message_id, a}, {ids, bytes} ->
+      bytes = bytes + SwarmCode.Domain.Attachments.size([a])
 
-      if count < @image_window and bytes <= @image_window_bytes do
-        {:cont, {[m.id | ids], count + 1, bytes}}
-      else
-        {:halt, {ids, count, bytes}}
-      end
+      if bytes <= @image_window_bytes,
+        do: {:cont, {MapSet.put(ids, {message_id, a["id"]}), bytes}},
+        else: {:halt, {ids, bytes}}
     end)
     |> elem(0)
-    |> MapSet.new()
   end
 
-  defp user_message(%Message{attachments: attachments} = m, with_images?)
+  defp user_message(%Message{attachments: attachments} = m, recent)
        when attachments != nil and attachments != [] do
-    if with_images? do
-      [
-        %{
-          role: "user",
-          content: m.content,
-          images: SwarmCode.Domain.Attachments.images(attachments)
-        }
-      ]
-    else
-      omitted = Enum.map_join(attachments, "\n", &"[image #{&1["name"]} omitted]")
-      [%{role: "user", content: String.trim(m.content <> "\n" <> omitted)}]
+    {sent, left_out} = Enum.split_with(attachments, &MapSet.member?(recent, {m.id, &1["id"]}))
+
+    content =
+      case left_out do
+        [] ->
+          m.content
+
+        _some ->
+          omitted = Enum.map_join(left_out, "\n", &"[image #{&1["name"]} omitted]")
+          String.trim(m.content <> "\n" <> omitted)
+      end
+
+    if sent == [],
+      do: [%{role: "user", content: content}],
+      else: [%{role: "user", content: content, images: SwarmCode.Domain.Attachments.images(sent)}]
+  end
+
+  defp user_message(%Message{content: content}, _recent) when content != "",
+    do: [%{role: "user", content: content}]
+
+  defp user_message(_m, _recent), do: []
+
+  # spec 74 BUGS-76: the reports a message attached stay in every later
+  # turn's context. The mark is expanded by the agent that receives the
+  # history (`Engine.ResearchContext.expand/1`), off the caller's process.
+  defp mark_research([message], [_ | _] = ids), do: [Map.put(message, :research_ids, ids)]
+  defp mark_research(converted, _ids), do: converted
+
+  @omitted_line ~r/\A\[image .* omitted\]\z/
+
+  @doc """
+  spec 74 BUGS-31: `text` followed by the `[image … omitted]` lines
+  `history_to_messages/1` appended to `converted` — the Engine replaces the
+  newest user message's content with the turn's prompt, and the model must
+  still be told which of its images were left out.
+  """
+  @spec keep_omitted(String.t(), String.t()) :: String.t()
+  def keep_omitted(text, converted) when is_binary(converted) do
+    converted
+    |> String.split("\n")
+    |> Enum.reverse()
+    |> Enum.take_while(&Regex.match?(@omitted_line, &1))
+    |> case do
+      [] -> text
+      lines -> text <> "\n" <> (lines |> Enum.reverse() |> Enum.join("\n"))
     end
   end
 
-  defp user_message(%Message{content: content}, _with_images?) when content != "",
-    do: [%{role: "user", content: content}]
-
-  defp user_message(_m, _with_images?), do: []
+  def keep_omitted(text, _converted), do: text
 end

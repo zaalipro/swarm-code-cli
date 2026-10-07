@@ -156,8 +156,14 @@ defmodule SwarmCode.Domain.Scheduled.Task do
 
       expr ->
         case SwarmCode.Domain.Scheduler.Cron.parse(expr) do
-          {:ok, _} -> changeset
-          {:error, reason} -> add_error(changeset, :cron, reason)
+          {:ok, cron} ->
+            # spec 74 BUGS-25: `0 9 31 4 *` parses but never fires.
+            if SwarmCode.Domain.Scheduler.Cron.next(cron, DateTime.utc_now()),
+              do: changeset,
+              else: add_error(changeset, :cron, "never matches a real date")
+
+          {:error, reason} ->
+            add_error(changeset, :cron, reason)
         end
     end
   end

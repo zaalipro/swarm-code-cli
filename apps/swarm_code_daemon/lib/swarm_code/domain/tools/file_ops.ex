@@ -13,12 +13,28 @@ defmodule SwarmCode.Domain.Tools.FileOps do
 
   @doc false
   # The shared guard: no write without a rewind point (spec 55 T16 / spec 60 T26).
-  @spec checkpoint(map(), [String.t()]) :: :ok | {:error, String.t()}
-  def checkpoint(ctx, paths) do
+  #
+  # spec 74 BUGS-3: `require_restorable:` lists the paths whose snapshot must be
+  # restorable. A binary, non-UTF-8 or over-2 MB file there is refused before
+  # anything changes on disk — a rewind of its move deleted both copies, and a
+  # rewind of its delete restored nothing, both without a word.
+  @spec checkpoint(map(), [String.t()], keyword()) :: :ok | {:error, String.t()}
+  def checkpoint(ctx, paths, opts \\ []) do
+    required = Keyword.get(opts, :require_restorable, [])
+
     Enum.reduce_while(paths, :ok, fn path, :ok ->
-      case Checkpoints.snapshot(ctx, path) do
-        :ok -> {:cont, :ok}
-        {:error, reason} -> {:halt, {:error, Checkpoints.error_message(reason)}}
+      case Checkpoints.snapshot(ctx, path, require_restorable: path in required) do
+        :ok ->
+          {:cont, :ok}
+
+        {:error, :unrestorable} ->
+          {:halt,
+           {:error,
+            "#{Path.relative(ctx.project_root, path)} is binary or over 2 MB, so it cannot " <>
+              "be rewound — use run_command mv/rm, which asks first"}}
+
+        {:error, reason} ->
+          {:halt, {:error, Checkpoints.error_message(reason)}}
       end
     end)
   end
@@ -47,7 +63,8 @@ defmodule SwarmCode.Domain.Tools.FileOps do
         "Rename or move a file inside the project root. Both paths are relative to the " <>
           "project root; the destination must not exist unless overwrite is true, and its " <>
           "parent directories are created. The file's previous location is snapshotted, so " <>
-          "the move can be rewound. Use this instead of run_command with mv."
+          "the move can be rewound; a binary file or one over 2 MB cannot be rewound and is " <>
+          "refused. Use this instead of run_command with mv."
 
     @impl true
     def parameters do
@@ -70,7 +87,11 @@ defmodule SwarmCode.Domain.Tools.FileOps do
     def parallel?, do: false
 
     @impl true
-    def title(args), do: "move " <> (args["from"] || "") <> " → " <> (args["to"] || "")
+    def title(args),
+      do:
+        "move " <>
+          SwarmCode.Domain.Tools.arg_text(args["from"] || "") <>
+          " → " <> SwarmCode.Domain.Tools.arg_text(args["to"] || "")
 
     @impl true
     def run(args, ctx, progress) do
@@ -104,7 +125,9 @@ defmodule SwarmCode.Domain.Tools.FileOps do
       # The destination is checkpointed too, existing or not: a checkpoint of a
       # file that did not exist rewinds by deleting it again, which is exactly
       # what undoing a move needs.
-      with :ok <- FileOps.checkpoint(ctx, [from, to]),
+      # spec 74 BUGS-3: both ends must be restorable — the source so the file
+      # comes back, an existing destination so an overwrite does too.
+      with :ok <- FileOps.checkpoint(ctx, [from, to], require_restorable: [from, to]),
            :ok <- File.mkdir_p(Elixir.Path.dirname(to)),
            :ok <- File.rename(from, to) do
         progress.(100, to_rel)
@@ -131,7 +154,8 @@ defmodule SwarmCode.Domain.Tools.FileOps do
       do:
         "Delete a file inside the project root. The path is relative to the project root and " <>
           "must be a file, not a directory. The content is snapshotted first, so the delete " <>
-          "can be rewound. Use this instead of run_command with rm."
+          "can be rewound; a binary file or one over 2 MB cannot be rewound and is refused. " <>
+          "Use this instead of run_command with rm."
 
     @impl true
     def parameters do
@@ -152,7 +176,7 @@ defmodule SwarmCode.Domain.Tools.FileOps do
     def parallel?, do: false
 
     @impl true
-    def title(args), do: "delete " <> (args["path"] || "")
+    def title(args), do: "delete " <> SwarmCode.Domain.Tools.arg_text(args["path"] || "")
 
     @impl true
     def run(args, ctx, progress) do
@@ -181,7 +205,7 @@ defmodule SwarmCode.Domain.Tools.FileOps do
           _error -> 0
         end
 
-      with :ok <- FileOps.checkpoint(ctx, [abs]),
+      with :ok <- FileOps.checkpoint(ctx, [abs], require_restorable: [abs]),
            :ok <- File.rm(abs) do
         progress.(100, rel)
         {:ok, "deleted #{rel} (#{size} bytes)"}

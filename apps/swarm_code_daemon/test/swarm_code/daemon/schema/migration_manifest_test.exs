@@ -39,25 +39,29 @@ defmodule SwarmCode.Daemon.Schema.MigrationManifestTest do
            } = List.last(manifest.migrations)
   end
 
-  test "the default contract covers the current 57-migration desktop" do
+  test "the default contract covers the current 58-migration desktop (0.2.0)" do
     manifest = MigrationManifest.load!()
-    assert manifest.contract == "desktop-6dd8d82"
-    assert manifest.upstream_commit == "6dd8d82ef29f9a6608b942259e1801846bb87ed9"
-    assert length(manifest.migrations) == 57
+    assert manifest.contract == "desktop-4c7c577"
+    assert manifest.upstream_commit == "4c7c577aa909274b009dc1bf0f216e5179acddc9"
+    assert length(manifest.migrations) == 58
 
     assert manifest.migration_set_sha256 ==
-             "4c0a8ec7fa4ca33aba4ca17ee300b98e1be008e165e7ff18f69d05943137e23f"
+             "32dd14f0d9ad6a4a3c489ccd76da7247982549b8e5e5d499951f77ba629e8779"
 
     assert %MigrationManifest.Entry{
-             version: 20_261_017_000_004,
-             filename: "20261017000004_isolation_backend.exs",
-             source_sha256: "0051949533fe1318fe94b08f557b4db4b526641ff947fe117f4237e714c8fd16"
+             version: 20_261_018_000_001,
+             filename: "20261018000001_mission_validator_models.exs",
+             source_sha256: "e2ed2c9f26c8a128f0aa224fe4f3d1aba5b7a76df4a3f3efede97a05bb352ad8"
            } = List.last(manifest.migrations)
 
     legacy = MigrationManifest.load!(default_manifest_path())
     assert Enum.take(manifest.migrations, 43) == legacy.migrations
 
-    for {name, count} <- [{"desktop-fb1b4ff.json", 46}, {"desktop-ccb1973.json", 53}] do
+    for {name, count} <- [
+          {"desktop-fb1b4ff.json", 46},
+          {"desktop-ccb1973.json", 53},
+          {"desktop-6dd8d82.json", 57}
+        ] do
       previous =
         MigrationManifest.load!(default_manifest_path() |> Path.dirname() |> Path.join(name))
 

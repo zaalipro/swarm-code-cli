@@ -38,7 +38,8 @@ defmodule SwarmCode.Domain.Tools.Remember do
   def parallel?, do: false
 
   @impl true
-  def title(args), do: "remember: " <> String.slice(to_string(args["text"] || ""), 0, 40)
+  def title(args),
+    do: "remember: " <> String.slice(SwarmCode.Domain.Tools.arg_text(args["text"] || ""), 0, 40)
 
   @impl true
   def run(args, ctx, progress) do

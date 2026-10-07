@@ -125,26 +125,55 @@ defmodule SwarmCode.Tools.ReadFile do
     limit = args["limit"] || 2000
     limit = limit |> max(1) |> min(5000)
     slice = Enum.slice(lines, offset - 1, limit)
-    remaining = total - (offset - 1) - length(slice)
     progress.(100, "#{total} lines")
 
-    suffix =
-      if remaining > 0 do
-        "\n…[truncated, #{remaining} more lines; call again with offset=#{offset + length(slice)}]"
-      else
-        ""
-      end
-
-    body = Enum.join(slice, "\n")
-
-    body =
-      if String.length(body) > @max_chars do
-        String.slice(body, 0, @max_chars) <>
-          "\n…[truncated: file has #{total} lines; request a range with offset/limit]"
-      else
-        body
-      end
-
-    "#{rel} (#{total} lines)\n" <> body <> suffix
+    "#{rel} (#{total} lines)\n" <> page(slice, offset, total)
   end
+
+  # spec 74 BUGS-44: the resume offset was computed from the `limit` slice
+  # *before* the character cap cut the body, so a 3 000-line file came back
+  # ending at line 800 with "call again with offset=2001" — a model following
+  # the hint never read lines 801–2000. Whole lines are taken while the body
+  # stays within `@max_chars`, and the one suffix is built from the lines
+  # actually returned.
+  defp page([], _offset, _total), do: ""
+
+  defp page([first | _] = slice, offset, total) do
+    case take_lines(slice) do
+      [] ->
+        # One line longer than the whole cap: its head, and the next line.
+        chars = String.length(first)
+
+        String.slice(first, 0, @max_chars) <>
+          suffix(
+            offset,
+            offset,
+            total,
+            " (line #{offset} cut at #{@max_chars} of #{chars} characters)"
+          )
+
+      taken ->
+        last = offset + length(taken) - 1
+        Enum.join(taken, "\n") <> suffix(offset, last, total, "")
+    end
+  end
+
+  defp take_lines(slice) do
+    slice
+    |> Enum.reduce_while({[], 0}, fn line, {acc, chars} ->
+      chars = chars + String.length(line) + if(acc == [], do: 0, else: 1)
+      if chars <= @max_chars, do: {:cont, {[line | acc], chars}}, else: {:halt, {acc, chars}}
+    end)
+    |> elem(0)
+    |> Enum.reverse()
+  end
+
+  defp suffix(_first, last, total, "") when last >= total, do: ""
+
+  defp suffix(first, last, total, note) when last >= total,
+    do: "\n…[showing lines #{first}-#{last} of #{total}#{note}]"
+
+  defp suffix(first, last, total, note),
+    do:
+      "\n…[showing lines #{first}-#{last} of #{total}#{note}; call again with offset=#{last + 1}]"
 end

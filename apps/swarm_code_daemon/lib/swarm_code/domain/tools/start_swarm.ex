@@ -54,7 +54,8 @@ defmodule SwarmCode.Domain.Tools.StartSwarm do
   def permission(_args), do: :read
 
   @impl true
-  def title(args), do: "start_swarm " <> String.slice(to_string(args["task"] || ""), 0, 60)
+  def title(args),
+    do: "start_swarm " <> String.slice(SwarmCode.Domain.Tools.arg_text(args["task"] || ""), 0, 60)
 
   @impl true
   def run(args, ctx, _progress) do

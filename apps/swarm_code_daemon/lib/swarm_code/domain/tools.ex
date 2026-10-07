@@ -57,6 +57,9 @@ defmodule SwarmCode.Domain.Tools do
   # The assistant's own fan-out: a swarm, never a workflow (spec 12 §1).
   @swarm_modules [SwarmCode.Domain.Tools.StartSwarm]
 
+  # Spec 75 (pass 71): the Ultra orchestrator's mission tool.
+  @mission_modules [SwarmCode.Domain.Tools.MissionStart]
+
   # Only the root assistant gets these (spec 09 §5.7).
   @workflow_modules [
     SwarmCode.Domain.Tools.WorkflowList,
@@ -133,7 +136,10 @@ defmodule SwarmCode.Domain.Tools do
   @spec get(String.t()) :: {:ok, Ref.t()} | :error
   def get(name) do
     case Enum.find(
-           @modules ++ @workflow_modules ++ @swarm_modules ++ @ask_modules ++ @consensus_modules,
+           @modules ++
+             @workflow_modules ++
+             @swarm_modules ++
+             @mission_modules ++ @ask_modules ++ @consensus_modules,
            &(&1.name() == name)
          ) do
       nil -> mcp_lookup(name)
@@ -158,6 +164,9 @@ defmodule SwarmCode.Domain.Tools do
   spec 12 §5): the command the user invoked is *enforced*, not suggested — a
   `/create-workflow` turn cannot start a swarm, and a `/swarm` turn (which is
   already a swarm) gets neither `start_swarm` nor the workflow tools.
+
+  Spec 75: with `ultra: true` the desktop's root assistant also gets
+  `mission_start`; the CLI's does not (cli020 A6: no mission card yet).
   """
   @spec for_agent(String.t(), non_neg_integer(), non_neg_integer(), String.t(), keyword()) ::
           [Ref.t()]
@@ -169,6 +178,9 @@ defmodule SwarmCode.Domain.Tools do
         role != "assistant" or depth != 0 -> []
         command == :create_workflow -> @workflow_modules
         command == :swarm -> []
+        # cli020 A6 (CLI patch): CLI Ultra keeps the workflow tools; the
+        # mission card is the desktop's until the missions pass.
+        opts[:ultra] -> @workflow_modules ++ @swarm_modules
         true -> @workflow_modules ++ @swarm_modules
       end
 
@@ -243,6 +255,9 @@ defmodule SwarmCode.Domain.Tools do
         # `write_file`, so they travel with it.
         :read_write -> ~w(write_file edit_file move_file delete_file)
         :execute -> ~w(write_file edit_file move_file delete_file run_command)
+        # Spec 75: a mission's user-testing validator runs the app and the
+        # tests but never writes a file.
+        :verify -> ~w(run_command)
         # spec 73 T96: `:all` keeps every builtin through the short-circuit
         # below; its own list was a copy of `:execute` nothing consulted.
         _all_or_unknown -> []
@@ -329,6 +344,15 @@ defmodule SwarmCode.Domain.Tools do
     ((is_map(ctx) and Map.get(ctx, :settings)) && Map.get(ctx.settings, :tool_timeout_ms)) ||
       120_000
   end
+
+  @doc """
+  A model-supplied argument as title text (spec 74 BUGS-12): a binary passes
+  through, anything else — a list of paths, an object — is shown inspected and
+  short, instead of raising inside the AgentServer that builds the title.
+  """
+  @spec arg_text(term()) :: String.t()
+  def arg_text(value) when is_binary(value), do: value
+  def arg_text(value), do: inspect(value, limit: 5, printable_limit: 80)
 
   @doc "Runs a tool by name (looks the ref up first)."
   def run(name, args, ctx, progress) when is_binary(name) do
@@ -455,10 +479,20 @@ defmodule SwarmCode.Domain.Tools do
   the model was handed the first 100 000 with nothing to say the rest existed —
   it read a cut-off document as the whole document. The UI keys its "truncated"
   chip off this same marker. Spec 66 T19 moved it from the end of the text to
-  the middle of it; the marker text itself did not change.
+  the middle of it; the marker text itself did not change. Pass 75 (the ncode
+  rename) changed the product name inside it; `truncation_markers/0` lists the
+  old spelling too.
   """
   @spec truncation_marker() :: String.t()
-  def truncation_marker, do: "[SwarmCode: output truncated"
+  def truncation_marker, do: "[ncode: output truncated"
+
+  @doc """
+  Every marker a truncated tool result may carry: the current one first, then
+  the one results persisted before pass 75 (the ncode rename) still hold. Code
+  that detects a truncated result matches any of them.
+  """
+  @spec truncation_markers() :: [String.t()]
+  def truncation_markers, do: [truncation_marker(), "[SwarmCode: output truncated"]
 
   @doc false
   def truncate({:ok, s}) when is_binary(s), do: {:ok, cut(s)}

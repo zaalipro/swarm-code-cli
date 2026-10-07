@@ -19,6 +19,10 @@ defmodule SwarmCode.Domain.Workflows.Canned do
 
   @impl true
   def init(opts) do
+    # spec 74 EFFICIENCY-50: `Host.run/3` runs in this process; the same bound
+    # the Runner's script process has.
+    SwarmCode.Domain.Workflows.API.bound_heap()
+
     {:ok,
      %{
        budget: opts[:budget] || 128,
@@ -131,6 +135,16 @@ defmodule SwarmCode.Domain.Workflows.Canned do
   end
 
   def handle_call(:last_error, _from, state), do: {:reply, nil, state}
+
+  # pass74 (spec 74) BUGS-57: `budget()`/`last_error()` are journaled reads now.
+  def handle_call({:read, :budget, _where}, _from, state) do
+    {:reply,
+     {:value,
+      %{total: state.budget, spent: state.admitted, remaining: state.budget - state.admitted}},
+     state}
+  end
+
+  def handle_call({:read, :last_error, _where}, _from, state), do: {:reply, {:value, nil}, state}
 
   def handle_call({:commit, _seq, _slot, _kind, _value}, _from, state), do: {:reply, :ok, state}
 

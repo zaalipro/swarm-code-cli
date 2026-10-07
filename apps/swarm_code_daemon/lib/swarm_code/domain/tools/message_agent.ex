@@ -53,7 +53,9 @@ defmodule SwarmCode.Domain.Tools.MessageAgent do
   def parallel?, do: false
 
   @impl true
-  def title(args), do: "message " <> String.slice(to_string(args["agent_name"] || ""), 0, 40)
+  def title(args),
+    do:
+      "message " <> String.slice(SwarmCode.Domain.Tools.arg_text(args["agent_name"] || ""), 0, 40)
 
   @impl true
   def run(args, ctx, progress) do

@@ -5,6 +5,85 @@ defmodule SwarmCode.Tools.Path do
   # class as `_build`, and 7 MB of HTML in this checkout (Blockers → A 44).
   @ignored ~w(.git _build deps node_modules .elixir_ls .superpowers .DS_Store cover doc)
 
+  # cli020 A5: the protected write paths of the desktop's `Tools.Path` at
+  # 4c7c577a (spec 66 T11, spec 67 B6, spec 74 BUGS-1 = a64d6ff6), ported by
+  # hand into this live-runtime copy. Directories a tool may read but never
+  # write: `.git` because a hook an agent installs runs on the user's next
+  # commit, outside every approval; `.claude` because it configures the
+  # harness that is running the agent. Inside `.swarm_code` only the memory
+  # file and `config.json` (the project's hooks, which run before every tool
+  # call once the project is trusted) are protected. Both lists are compared
+  # downcased (see `protection/1`), so they are written downcased.
+  @protected ~w(.git .claude)
+  @protected_files %{
+    ".swarm_code/memory.md" => :memory,
+    ".swarm_code/config.json" => :config
+  }
+
+  @doc """
+  `resolve/2` for a tool that is about to **write**: the same confinement, plus
+  a refusal for `@protected` / `@protected_files`. Reads keep using
+  `resolve/2` — `read_file .git/HEAD` is legitimate.
+
+  Both the lexical relative path **and** the real one (every symlink resolved)
+  are tested, and either one being protected is a refusal: `ln -s .git
+  gitlink` must not let `write_file gitlink/hooks/pre-commit` through.
+  """
+  @spec resolve_write(String.t(), String.t()) :: {:ok, String.t()} | {:error, String.t()}
+  def resolve_write(root, path) do
+    with {:ok, abs} <- resolve(root, path) do
+      case Enum.find_value([relative(root, abs), real_relative(root, abs)], &protection(&1)) do
+        nil -> {:ok, abs}
+        {:dir, first} -> {:error, protected_dir_message(first, path)}
+        {:file, rel} -> {:error, protected_file_message(rel, path)}
+      end
+    end
+  end
+
+  # The same relative path with every symlink resolved, on both sides. `nil`
+  # when the links cannot be resolved — the lexical test is then the only one.
+  defp real_relative(root, abs) do
+    with {:ok, real_root} <- real_path(root),
+         {:ok, real} <- real_path(abs) do
+      relative(real_root, real)
+    else
+      _ -> nil
+    end
+  end
+
+  defp protection(nil), do: nil
+
+  # Compared downcased. On the default case-insensitive APFS volume
+  # `.GIT/config` *is* `.git/config` (and `.swarm_code/memory.md` is
+  # MEMORY.md). Downcasing only refuses more on a case-sensitive volume.
+  defp protection(rel) do
+    folded = String.downcase(rel)
+    first = folded |> Elixir.Path.split() |> List.first()
+
+    cond do
+      first in @protected -> {:dir, first}
+      Map.has_key?(@protected_files, folded) -> {:file, folded}
+      true -> nil
+    end
+  end
+
+  defp protected_dir_message(first, path),
+    do:
+      "#{first}/ is managed by ncode and git and cannot be written by a tool: " <>
+        to_string(path || "")
+
+  defp protected_file_message(folded, path) do
+    case Map.fetch!(@protected_files, folded) do
+      :memory ->
+        ".swarm_code/MEMORY.md is the memory tool's own file — use the remember tool " <>
+          "instead of writing it: " <> to_string(path || "")
+
+      :config ->
+        ".swarm_code/config.json holds the project's hooks and config, which are edited " <>
+          "by the user (Settings or by hand), not by a tool: " <> to_string(path || "")
+    end
+  end
+
   def resolve(root, path) do
     path = to_string(path || "")
     root = Elixir.Path.expand(root)

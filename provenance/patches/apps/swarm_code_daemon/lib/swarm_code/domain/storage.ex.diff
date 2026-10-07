@@ -1,4 +1,4 @@
-# CLI-local change to lib/swarm_code/storage.ex at 6dd8d82, after the rewrite
+# CLI-local change to lib/swarm_code/storage.ex at 4c7c577, after the rewrite
 # rules of provenance/sync-rules.json. Recorded by mix swarm_code.provenance.sync.
 --- a/apps/swarm_code_daemon/lib/swarm_code/domain/storage.ex
 +++ b/apps/swarm_code_daemon/lib/swarm_code/domain/storage.ex
@@ -37,7 +37,7 @@
    @type selection :: map()
    @type plan :: map()
  
-@@ -92,10 +120,55 @@
+@@ -97,10 +125,55 @@
  
    # ------------------------------------------------------------ sizes on disk
  
@@ -95,7 +95,7 @@
    @doc "The bytes the database occupies: the file, its write-ahead log and its shared index."
    @spec file_bytes() :: %{db: non_neg_integer(), wal: non_neg_integer(), shm: non_neg_integer()}
    def file_bytes do
-@@ -658,8 +731,17 @@
+@@ -673,8 +746,17 @@
      else
        Task.Supervisor.start_child(SwarmCode.Domain.TaskSupervisor, fn ->
          case Registry.register(SwarmCode.Domain.Registry, :storage_cleanup, nil) do
@@ -115,7 +115,7 @@
          end
        end)
      end
-@@ -668,14 +750,28 @@
+@@ -683,14 +765,28 @@
    @doc """
    Runs a plan in the calling process — the retention sweep's path (spec 49 §2),
    and what the tests drive.
@@ -147,7 +147,7 @@
      state =
        state
        |> step("Workflow journals", &delete_journals(&1, plan))
-@@ -696,7 +792,8 @@
+@@ -711,7 +807,8 @@
        before: before.db,
        after: file_bytes().db,
        reclaimable: reclaimable_bytes(),
@@ -157,7 +157,7 @@
      }
  
      notify.({:storage_done, result})
-@@ -729,10 +826,15 @@
+@@ -744,10 +841,15 @@
      query = prunable_journals(plan.journal_days, plan.session_ids, plan.planned_at)
  
      state
@@ -177,7 +177,7 @@
      |> log("workflow journal rows")
    end
  
-@@ -744,31 +846,54 @@
+@@ -759,31 +861,54 @@
      query = prunable_checkpoints(plan.checkpoint_days, plan.session_ids, plan.planned_at)
  
      state
@@ -244,7 +244,7 @@
    # 3. payload prune -------------------------------------------------------
  
    defp prune_payloads(state, %{prune_days: nil}), do: state
-@@ -779,59 +904,68 @@
+@@ -794,59 +919,68 @@
      from(r in query, select: r.id)
      |> Repo.all()
      |> Enum.chunk_every(@run_batch)

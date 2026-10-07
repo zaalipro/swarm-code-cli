@@ -109,8 +109,9 @@ defmodule SwarmCode.Domain.Conversations.Run do
 
       {true, cells}, acc ->
         # The earlier row's cells win; a nil cell says nothing.
+        # Spec 74 EFFICIENCY-28: a row's cells are built only when it matches.
         acc =
-          cells
+          cells.()
           |> Enum.reject(fn {_key, value} -> is_nil(value) end)
           |> Map.new()
           |> Map.merge(acc)
@@ -144,32 +145,35 @@ defmodule SwarmCode.Domain.Conversations.Run do
 
     [
       # Spec 17 §2.7: the user's own label names the run, whatever it is.
-      {present?(label), %{name: strip_markers(label)}},
+      {present?(label), fn -> %{name: strip_markers(label)} end},
       # A workflow shows its display name; its glyph and colour are the workflow's.
-      {is_map(wf), %{name: wf && Map.get(wf, :display_name), glyph: "⧉", kind: :wf}},
-      {kind == "workflow", %{glyph: "⧉", kind: :wf}},
+      # Spec 75 (pass 71): a mission is a workflow with its own glyph.
+      {is_map(wf) and Map.get(wf, :definition_name) == "mission",
+       fn -> %{name: Map.get(wf, :display_name), glyph: "◈", kind: :wf} end},
+      {is_map(wf), fn -> %{name: wf && Map.get(wf, :display_name), glyph: "⧉", kind: :wf} end},
+      {kind == "workflow", fn -> %{glyph: "⧉", kind: :wf} end},
       # Spec 50 §1.6: a compaction is bookkeeping — the only card with no kind
       # colour, whatever conversation it folds (above the goal rows for that).
       {kind == "compact",
-       %{name: "Context compacted", glyph: "⊟", kind: :ai, agent: "Compactor"}},
+       fn -> %{name: "Context compacted", glyph: "⊟", kind: :ai, agent: "Compactor"} end},
       # A goal run is named by its goal (spec 07 §15) — renaming it there edits the goal.
-      {present?(goal_text), %{name: goal_text, glyph: "◎", kind: :goal}},
+      {present?(goal_text), fn -> %{name: goal_text, glyph: "◎", kind: :goal} end},
       {is_binary(Map.get(run, :goal_id)),
-       %{name: preview(prompt || "goal"), glyph: "◎", kind: :goal}},
-      {kind == "swarm", %{name: preview(prompt || "swarm"), glyph: "⋔", kind: :swarm}},
+       fn -> %{name: preview(prompt || "goal"), glyph: "◎", kind: :goal} end},
+      {kind == "swarm", fn -> %{name: preview(prompt || "swarm"), glyph: "⋔", kind: :swarm} end},
       # Spec 12 §5: the `/create-workflow` turn authors a workflow (the engine's
       # `chat_agent_name/1` puts it first as well).
       {String.starts_with?(to_string(prompt), "/create-workflow"),
-       %{name: "Authoring workflow…", glyph: "⧉", kind: :wf, agent: "Workflow author"}},
+       fn -> %{name: "Authoring workflow…", glyph: "⧉", kind: :wf, agent: "Workflow author"} end},
       # Spec 42 §3.1: a judged turn is a consensus from its first second. Above
       # plan mode: a consensus turn carries the conversation's mode, and pass 36
       # §3.3 pins that such a run reads "Consensus".
       {Map.get(run, :consensus) == true,
-       %{name: "Consensus", glyph: "⚖", kind: :ai, agent: "Consensus"}},
+       fn -> %{name: "Consensus", glyph: "⚖", kind: :ai, agent: "Consensus"} end},
       # Spec 50 §4: the Planner, with the mode menu's own glyph.
       {Map.get(run, :mode) == "plan",
-       %{name: "Planner", glyph: "▤", kind: :ai, agent: "Planner"}},
-      {true, %{name: "Assistant", glyph: "✱", kind: :ai, agent: "Assistant"}}
+       fn -> %{name: "Planner", glyph: "▤", kind: :ai, agent: "Planner"} end},
+      {true, fn -> %{name: "Assistant", glyph: "✱", kind: :ai, agent: "Assistant"} end}
     ]
   end
 
@@ -194,8 +198,12 @@ defmodule SwarmCode.Domain.Conversations.Run do
   # notification's rule (spec 43 §1.7, pinned by `pass37_engine_test`); the
   # card used `Format.preview(prompt, 40)` (41 with the ellipsis) before the
   # table, so a long swarm prompt reads one character shorter on its card.
+  # Spec 74 EFFICIENCY-28: the same result from a bounded scan — the regex ran
+  # over the whole prompt (4.1 ms for 20 KB).
   defp preview(text) do
-    text = text |> String.replace(~r/\s+/u, " ") |> String.trim()
-    if String.length(text) > 40, do: String.slice(text, 0, 39) <> "…", else: text
+    case SwarmCode.Domain.Format.clip_line(text, 40, 39) do
+      {line, false} -> line
+      {head, true} -> head <> "…"
+    end
   end
 end

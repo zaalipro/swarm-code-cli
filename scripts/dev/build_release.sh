@@ -4,6 +4,15 @@ set -euo pipefail
 root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$root"
 
+# cli020 A7: a release is never cut while the desktop has moved past the pin
+# (new migrations would make this CLI refuse the shared database; code drift
+# means the domain is stale). NCODE_ALLOW_DRIFT=1 is the escape hatch.
+if [ "${NCODE_ALLOW_DRIFT:-}" = "1" ]; then
+  echo "NCODE_ALLOW_DRIFT=1: skipping the provenance drift gate"
+else
+  mise exec -- mix swarm_code.provenance.drift --strict
+fi
+
 # The release owns the BEAM/daemon. The native terminal port remains an explicit
 # checked artifact so a release can never silently fall back to a fake renderer.
 # Released binaries must run on macOS 15; without this the toolchain targets the

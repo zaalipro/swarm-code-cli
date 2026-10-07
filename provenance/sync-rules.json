@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "upstream_commit": "6dd8d82ef29f9a6608b942259e1801846bb87ed9",
+  "upstream_commit": "4c7c577aa909274b009dc1bf0f216e5179acddc9",
   "rewrite_rules": [
     {
       "id": "desktop-notify",
@@ -14,7 +14,7 @@
     },
     {
       "id": "web-shims",
-      "pattern": "\\bSwarmCodeWeb\\.(Markdown|MarkdownCache|UIState|Chat)\\b",
+      "pattern": "\\bSwarmCodeWeb\\.(Markdown|MarkdownCache|UIState|Chat|Format)\\b",
       "replacement": "SwarmCode.\\1"
     },
     {

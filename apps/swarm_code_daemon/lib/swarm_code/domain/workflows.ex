@@ -17,14 +17,20 @@ defmodule SwarmCode.Domain.Workflows do
 
   # spec 68 T28: one definition with \A/\z anchors (the security-critical form)
   @name_re ~r/\A[a-z][a-z0-9-]{1,40}\z/
-  @arg_types [:string, :integer, :boolean, :list, :path, :enum]
+  @arg_types [:string, :integer, :boolean, :list, :path, :enum, :map]
 
   # ------------------------------------------------------------------ discovery
 
-  @doc "Every definition visible in `project`, shadowed names removed."
+  @doc """
+  Every definition visible in `project`, shadowed names removed. Spec 75 §11.4:
+  the builtin `mission` is not a launchable library item (it only starts through
+  `mission_start`), so the Library, the `/` palette and `workflow_list` — every
+  caller of this listing — never show it; `get/2` still resolves it. A user or
+  project workflow that happens to be named "mission" is an ordinary item.
+  """
   @spec list(map() | nil) :: [Definition.t()]
   def list(project \\ nil) do
-    (builtins() ++
+    (Enum.reject(builtins(), &mission_builtin?/1) ++
        scope_list(project_dir(project), "project") ++
        scope_list(user_dir(), "user"))
     |> Enum.reduce({[], MapSet.new()}, fn definition, {acc, seen} ->
@@ -36,18 +42,31 @@ defmodule SwarmCode.Domain.Workflows do
     |> Enum.reverse()
   end
 
-  @doc "The definition `name` resolves to in `project`, or nil."
+  # Spec 75 §11.4: the builtin mission only — a user or project workflow named
+  # "mission" is an ordinary library item.
+  defp mission_builtin?(%Definition{name: "mission", scope: "builtin"}), do: true
+  defp mission_builtin?(_definition), do: false
+
+  @doc """
+  The definition `name` resolves to in `project`, or nil. The hidden builtin
+  `mission` still resolves here when nothing of the project or the user is
+  called so.
+  """
   @spec get(map() | nil, String.t()) :: Definition.t() | nil
   def get(project, name) do
     name = to_string(name)
-    Enum.find(list(project), &(&1.name == name))
+
+    Enum.find(list(project), &(&1.name == name)) ||
+      Enum.find(builtins(), &(&1.name == name and mission_builtin?(&1)))
   end
 
   @doc "Every definition of every scope, including shadowed ones (Library warnings)."
   @spec list_all(map() | nil) :: [Definition.t()]
-  def list_all(project \\ nil) do
-    builtins() ++ project_list(project) ++ scope_list(user_dir(), "user")
-  end
+  def list_all(project \\ nil),
+    do: project |> every_definition() |> Enum.reject(&mission_builtin?/1)
+
+  defp every_definition(project),
+    do: builtins() ++ project_list(project) ++ scope_list(user_dir(), "user")
 
   @doc """
   Spec 64 §Data: the same listing over *every* project — what the Workflows
@@ -56,7 +75,8 @@ defmodule SwarmCode.Domain.Workflows do
   """
   @spec list_all_projects([map()]) :: [Definition.t()]
   def list_all_projects(projects) when is_list(projects) do
-    builtins() ++ Enum.flat_map(projects, &project_list/1) ++ scope_list(user_dir(), "user")
+    (builtins() ++ Enum.flat_map(projects, &project_list/1) ++ scope_list(user_dir(), "user"))
+    |> Enum.reject(&mission_builtin?/1)
   end
 
   # A project's own definitions, tagged with the project they were read from.
@@ -492,6 +512,31 @@ defmodule SwarmCode.Domain.Workflows do
     )
   end
 
+  @doc """
+  pass74 (spec 74) BUGS-58: deletes journal entries of `run_id` by id, all or
+  none (one transaction). The Runner calls it when a retried result changed a
+  later call: that call and everything after it are re-run.
+  """
+  @spec delete_journal(String.t(), [String.t()]) :: :ok | {:error, :database_busy}
+  def delete_journal(_run_id, []), do: :ok
+
+  def delete_journal(run_id, ids) do
+    Repo.retry(:workflow_journal, fn ->
+      {:ok, :ok} =
+        Repo.transaction(fn ->
+          for chunk <- Enum.chunk_every(ids, 500) do
+            Repo.delete_all(
+              from(e in JournalEntry, where: e.run_id == ^run_id and e.id in ^chunk)
+            )
+          end
+
+          :ok
+        end)
+
+      :ok
+    end)
+  end
+
   @spec insert_journal(map()) ::
           {:ok, JournalEntry.t()} | {:error, Ecto.Changeset.t() | :database_busy}
   def insert_journal(attrs) do
@@ -562,11 +607,40 @@ defmodule SwarmCode.Domain.Workflows do
     ) || 0
   end
 
+  @row_fields Run.__schema__(:fields) -- [:source, :args]
+
   @doc "The workflow rows of a conversation, keyed by run id."
   def for_conversation(conversation_id) do
-    Repo.all(from(w in Run, where: w.conversation_id == ^conversation_id))
+    # spec 74 EFFICIENCY-47: WorkspaceLive keeps these rows in `workflow_runs`
+    # and never shows a script's source or args — every column but those two.
+    Repo.all(
+      from(w in Run,
+        where: w.conversation_id == ^conversation_id,
+        select: struct(w, ^@row_fields)
+      )
+    )
     |> Map.new(&{&1.run_id, &1})
   end
+
+  @doc """
+  One workflow run row without `source` and `args` (spec 74 EFFICIENCY-47): a
+  control click patches this row into `workflow_runs` instead of reloading
+  every run of the conversation. `nil` when it is gone.
+  """
+  @spec get_run_row(String.t()) :: Run.t() | nil
+  def get_run_row(run_id) do
+    Repo.one(from(w in Run, where: w.run_id == ^run_id, select: struct(w, ^@row_fields)))
+  end
+
+  @doc """
+  The row as `{:workflow_updated, _}` should carry it (spec 74 EFFICIENCY-47):
+  without the script `source` and the `args`, which never change during a run
+  and made every phase/charge/log event carry them to every subscriber. A
+  subscriber that shows the source keeps the one it has (`Map.merge/2` over
+  the previous row minus these keys).
+  """
+  @spec wire_row(Run.t()) :: Run.t()
+  def wire_row(%Run{} = wf), do: %{wf | source: nil, args: nil}
 
   # ------------------------------------------------------------------ launching
 
@@ -581,6 +655,7 @@ defmodule SwarmCode.Domain.Workflows do
     project = attrs[:project] || SwarmCode.Domain.Projects.get!(conversation.project_id)
 
     with {:ok, definition} <- definition_for(attrs),
+         {:ok, definition} <- validated(definition, project),
          {:ok, cast} <- cast_launch_args(definition, attrs) do
       declared =
         definition
@@ -695,9 +770,15 @@ defmodule SwarmCode.Domain.Workflows do
     end
   end
 
+  # spec 74 BUGS-27: the `%{number}` of a validation is filled in ("budget
+  # must be less than or equal to 1024"), not shown raw.
   defp changeset_message(%Ecto.Changeset{} = changeset) do
     changeset
-    |> Ecto.Changeset.traverse_errors(fn {msg, _opts} -> msg end)
+    |> Ecto.Changeset.traverse_errors(fn {msg, opts} ->
+      Enum.reduce(opts, msg, fn {key, value}, acc ->
+        String.replace(acc, "%{#{key}}", fn _ -> to_string(value) end)
+      end)
+    end)
     |> Enum.map_join("; ", fn {field, msgs} -> "#{field} #{Enum.join(msgs, ", ")}" end)
   end
 
@@ -719,6 +800,31 @@ defmodule SwarmCode.Domain.Workflows do
   end
 
   defp definition_for(_attrs), do: {:error, :no_definition}
+
+  # spec 74 BUGS-6: every definition that reaches `Runner.eval/2` — saved,
+  # project, scheduled, resumed or re-run — passes the Smoke allow-list, not
+  # only the one-off `source` launches. A project-scope file runs only in a
+  # project the user trusts: it is code committed to a repository.
+  @doc false
+  def validated(%Definition{} = definition, project) do
+    problems =
+      case definition do
+        %Definition{problems: [_ | _] = problems} -> problems
+        %Definition{ast: nil} -> ["the workflow has no program"]
+        %Definition{} -> if unchecked_programs?(), do: [], else: Smoke.errors(definition)
+      end
+
+    cond do
+      problems != [] ->
+        {:error, {:invalid, problems}}
+
+      definition.scope == "project" and not SwarmCode.Domain.Projects.trusted?(project) ->
+        {:error, {:invalid, ["trust the project to run its workflows"]}}
+
+      true ->
+        {:ok, definition}
+    end
+  end
 
   defp cast_launch_args(definition, attrs) do
     raw = attrs[:args] || %{}
@@ -971,37 +1077,67 @@ defmodule SwarmCode.Domain.Workflows do
 
     # Spec 51 §5.11: the budget is what the journal proves was admitted — a
     # pause mid-agent had charged a slot the journal never saw.
-    {:ok, wf} =
-      update_run(wf, %{
-        budget: opts[:budget] || wf.budget,
-        agents_admitted: admitted_from_journal(run.id),
-        pause_kind: nil,
-        pause_message: nil,
-        gate_question: nil,
-        gate_options: []
-      })
+    # spec 74 BUGS-27: a refused write is an `{:error, message}` for the
+    # caller, not a MatchError in the LiveView that asked (`budget=2000`
+    # fails `Run.changeset`'s 1..1024 bound).
+    with {:ok, wf} <-
+           update_run(wf, %{
+             budget: opts[:budget] || wf.budget,
+             agents_admitted: admitted_from_journal(run.id),
+             pause_kind: nil,
+             pause_message: nil,
+             gate_question: nil,
+             gate_options: []
+           }),
+         {:ok, run} <-
+           Conversations.update_run(run, %{
+             status: "running",
+             finished_at: nil,
+             interrupted: false
+           }) do
+      start_resumed(wf, run, was, prior, conversation, project, settings, opts)
+    else
+      {:error, %Ecto.Changeset{} = changeset} -> {:error, changeset_message(changeset)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
 
-    {:ok, run} =
-      Conversations.update_run(run, %{status: "running", finished_at: nil, interrupted: false})
+  defp start_resumed(wf, run, was, prior, conversation, project, settings, opts) do
+    # spec 74 BUGS-6: the stored source is re-checked, so a run saved before the
+    # allow-list (or edited in the database) cannot resume past it.
+    with {:ok, definition} <- parse(wf.source, wf.scope || "adhoc", nil),
+         {:ok, definition} <- resume_validated(definition, project) do
+      args = atomize_args(definition.meta, wf.args)
+      answer = opts[:answer]
+      # pass74 (spec 74) BUGS-58: the Runner learns where a retry starts.
+      wf = %{wf | retry_from_seq: opts[:retry_from_seq]}
 
-    case parse(wf.source, wf.scope || "adhoc", nil) do
-      {:ok, definition} ->
-        args = atomize_args(definition.meta, wf.args)
-        answer = opts[:answer]
+      case start_run(run, wf, conversation, project, settings, definition, args, answer) do
+        {:ok, _pid} ->
+          broadcast(conversation.id, wf)
+          :ok
 
-        case start_run(run, wf, conversation, project, settings, definition, args, answer) do
-          {:ok, _pid} ->
-            broadcast(conversation.id, wf)
-            :ok
-
-          {:error, reason} ->
-            settle_resume_failure(was, wf, prior, reason)
-            {:error, {:start_failed, reason}}
-        end
-
+        {:error, reason} ->
+          settle_resume_failure(was, wf, prior, reason)
+          {:error, {:start_failed, reason}}
+      end
+    else
       {:error, problems} ->
         settle_resume_failure(was, wf, prior, {:invalid, problems})
         {:error, {:invalid, problems}}
+    end
+  end
+
+  # A test-only seam, the same shape as `:workflow_run_starter`: a Runner test
+  # that needs `send`/`receive` in its script turns the allow-list off for its
+  # own launch. Production never sets it.
+  defp unchecked_programs?,
+    do: Application.get_env(:swarm_code_daemon, :workflow_unchecked_programs, false) == true
+
+  defp resume_validated(definition, project) do
+    case validated(definition, project) do
+      {:ok, definition} -> {:ok, definition}
+      {:error, {:invalid, problems}} -> {:error, problems}
     end
   end
 
@@ -1024,9 +1160,19 @@ defmodule SwarmCode.Domain.Workflows do
         {:error, :running}
 
       true ->
-        all = journal(run_id)
+        # spec 74 EFFICIENCY-49: the failed agent entries in SQL, not every
+        # blob decoded (`failed_entry?/1` is the same test).
+        entries =
+          Repo.all(
+            from(e in JournalEntry,
+              where:
+                e.run_id == ^run_id and e.kind == "agent" and
+                  fragment("json_valid(?) AND json_extract(?, '$.ok') = 0", e.result, e.result),
+              select: map(e, [:id, :seq])
+            )
+          )
 
-        case Enum.filter(all, &failed_entry?/1) do
+        case entries do
           [] ->
             {:error, :nothing_to_retry}
 
@@ -1034,7 +1180,8 @@ defmodule SwarmCode.Domain.Workflows do
             # Spec 51 §5.11: the entries go and the resume recomputes the
             # admissions from what is left of the journal — no refund
             # arithmetic (spec 13 §11 A-12 did it by hand).
-            Enum.each(entries, &Repo.delete/1)
+            ids = Enum.map(entries, & &1.id)
+            Repo.delete_all(from(e in JournalEntry, where: e.id in ^ids))
 
             {:ok, _run} =
               Conversations.update_run(run, %{
@@ -1043,7 +1190,10 @@ defmodule SwarmCode.Domain.Workflows do
                 interrupted: false
               })
 
-            control(run_id, :resume, [])
+            # pass74 (spec 74) BUGS-58: a retried slot that now returns text
+            # changes every call it feeds; from the first deleted seq on, the
+            # Runner re-runs a changed call instead of failing on it.
+            control(run_id, :resume, retry_from_seq: entries |> Enum.map(& &1.seq) |> Enum.min())
         end
     end
   end
@@ -1055,8 +1205,48 @@ defmodule SwarmCode.Domain.Workflows do
   """
   @spec admitted_from_journal(String.t()) :: non_neg_integer()
   def admitted_from_journal(run_id) do
-    all = journal(run_id)
+    # spec 74 EFFICIENCY-49: counted in SQL — `admitted/1` over every journal
+    # blob, in the LiveView on Resume, was O(n²) through `panel_slot?/2`.
+    singles =
+      Repo.one(
+        from(e in JournalEntry,
+          where:
+            e.run_id == ^run_id and e.kind == "agent" and
+              fragment(
+                "NOT EXISTS (SELECT 1 FROM workflow_journal p WHERE p.run_id = ? AND p.seq = ? AND p.slot = -1 AND p.kind = 'panel')",
+                e.run_id,
+                e.seq
+              ),
+          select: count(e.id)
+        )
+      )
 
+    panels =
+      Repo.one(
+        from(e in JournalEntry,
+          where: e.run_id == ^run_id and e.kind == "panel" and e.slot == -1,
+          select:
+            fragment(
+              "coalesce(sum(CASE WHEN json_valid(?) AND json_type(?, '$.value') = 'integer' AND json_extract(?, '$.value') >= 0 THEN json_extract(?, '$.value') ELSE 0 END), 0)",
+              e.result,
+              e.result,
+              e.result,
+              e.result
+            )
+        )
+      )
+
+    (singles || 0) + (panels || 0)
+  end
+
+  @doc """
+  `admitted_from_journal/1`'s rule over entries already in hand (pass74,
+  spec 74 BUGS-57/58: the Runner applies it to a prefix of its journal, and
+  after a retry drops the entries a changed result invalidated). Only `agent`
+  and `panel` entries count — `read` records never do.
+  """
+  @spec admitted([%JournalEntry{}]) :: non_neg_integer()
+  def admitted(all) do
     singles = Enum.count(all, &(&1.kind == "agent" and not panel_slot?(all, &1)))
 
     panels =
@@ -1072,12 +1262,6 @@ defmodule SwarmCode.Domain.Workflows do
 
     singles + panels
   end
-
-  defp failed_entry?(%JournalEntry{kind: "agent", result: result}) when is_binary(result) do
-    match?({:ok, %{"ok" => false}}, Jason.decode(result))
-  end
-
-  defp failed_entry?(_entry), do: false
 
   # A panel's slots share their `seq` with the `{seq, -1}` "panel" entry that
   # paid for all of them at once.
@@ -1178,6 +1362,7 @@ defmodule SwarmCode.Domain.Workflows do
   @spec run_again(String.t()) :: {:ok, Run.t()} | {:error, term()}
   def run_again(run_id) do
     with %Run{} = wf <- get_run(run_id),
+         :ok <- not_a_mission(wf),
          conversation when not is_nil(conversation) <- Conversations.get(wf.conversation_id),
          {:ok, definition} <- parse(wf.source, wf.scope || "adhoc", nil) do
       launch(%{
@@ -1190,9 +1375,17 @@ defmodule SwarmCode.Domain.Workflows do
       })
     else
       nil -> {:error, :not_found}
+      {:error, message} when is_binary(message) -> {:error, message}
       {:error, problems} -> {:error, {:invalid, problems}}
     end
   end
+
+  # Spec 75 §11.4: a mission is never relaunched without `mission_start`'s
+  # plan check and one-active-mission rule.
+  defp not_a_mission(%Run{definition_name: "mission", scope: "builtin"}),
+    do: {:error, "Start a new mission from an Ultra conversation."}
+
+  defp not_a_mission(_wf), do: :ok
 
   defp decode_result(nil), do: nil
 
@@ -1218,7 +1411,7 @@ defmodule SwarmCode.Domain.Workflows do
       not Regex.match?(@name_re, new_name) ->
         {:error, "the name must be lowercase letters, digits and hyphens"}
 
-      Enum.any?(list_all(project), &(&1.name == new_name)) ->
+      Enum.any?(every_definition(project), &(&1.name == new_name)) ->
         {:error, "#{new_name} already exists"}
 
       true ->
@@ -1306,6 +1499,8 @@ defmodule SwarmCode.Domain.Workflows do
   conversation topic and nothing else.
   """
   def broadcast(conversation_id, wf) do
+    # spec 74 EFFICIENCY-47: status moves travel without the script too.
+    wf = if match?(%Run{}, wf), do: wire_row(wf), else: wf
     if conversation_id, do: Events.broadcast(conversation_id, {:workflow_updated, wf})
     Events.ui_broadcast({:workflow_runs_changed})
     :ok

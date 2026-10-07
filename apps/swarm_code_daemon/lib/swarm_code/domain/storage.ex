@@ -77,13 +77,18 @@ defmodule SwarmCode.Domain.Storage do
 
   # ------------------------------------------------------- the byte fragments
 
+  # spec 74 EFFICIENCY-17: `octet_length(col)` reads the byte length from the
+  # record header for TEXT and BLOB; `length(CAST(COALESCE(col,'') AS BLOB))`
+  # materialised every overflow chain. The bare column is the direct argument
+  # (a COALESCE around it loses the header-only path). SQLite >= 3.43.
+  #
   # `Node`'s four payload columns (spec 49 §1.5). `error` and `changes_stat`
   # are deliberately not here — 40 KB and 405 B in the measured database, and
   # they are what a failed run is read for.
   defmacrop node_bytes(n) do
     quote do
       fragment(
-        "length(CAST(COALESCE(?,'') AS BLOB)) + length(CAST(COALESCE(?,'') AS BLOB)) + length(CAST(COALESCE(?,'') AS BLOB)) + length(CAST(COALESCE(?,'') AS BLOB))",
+        "coalesce(octet_length(?), 0) + coalesce(octet_length(?), 0) + coalesce(octet_length(?), 0) + coalesce(octet_length(?), 0)",
         unquote(n).result,
         unquote(n).input,
         unquote(n).prompt,
@@ -95,7 +100,7 @@ defmodule SwarmCode.Domain.Storage do
   defmacrop msg_bytes(m) do
     quote do
       fragment(
-        "length(CAST(COALESCE(?,'') AS BLOB)) + length(CAST(COALESCE(?,'') AS BLOB))",
+        "coalesce(octet_length(?), 0) + coalesce(octet_length(?), 0)",
         unquote(m).content,
         unquote(m).reasoning
       )
@@ -103,7 +108,7 @@ defmodule SwarmCode.Domain.Storage do
   end
 
   defmacrop col_bytes(c) do
-    quote do: fragment("length(CAST(COALESCE(?,'') AS BLOB))", unquote(c))
+    quote do: fragment("coalesce(octet_length(?), 0)", unquote(c))
   end
 
   # ------------------------------------------------------------------- topic
@@ -204,9 +209,16 @@ defmodule SwarmCode.Domain.Storage do
   @doc "Free bytes on the volume the database lives on, or nil when `df` cannot say."
   @spec free_disk_bytes() :: non_neg_integer() | nil
   def free_disk_bytes do
-    case System.cmd("df", ["-k", Path.dirname(db_path())], stderr_to_stdout: true) do
-      {out, 0} -> out |> String.split("\n", trim: true) |> Enum.at(1) |> available_kb()
-      _ -> nil
+    # spec 74 ARCHITECTURE-19: bounded — a hung network volume cannot hold the caller.
+    case SwarmCode.Domain.OSProcess.run("df", ["-k", Path.dirname(db_path())],
+           timeout: 5_000,
+           max_bytes: 64 * 1024
+         ) do
+      {:ok, 0, out, _cut?} ->
+        out |> String.split("\n", trim: true) |> Enum.at(1) |> available_kb()
+
+      _ ->
+        nil
     end
   rescue
     _ -> nil
@@ -625,12 +637,15 @@ defmodule SwarmCode.Domain.Storage do
       end
 
     if query do
-      rows = Repo.all(from(r in query, select: {r.id, r.summary, r.interpretation}))
+      # spec 74 EFFICIENCY-17: the sizes, not the texts, cross into the BEAM.
+      rows =
+        Repo.all(
+          from(r in query, select: {r.id, col_bytes(r.summary) + col_bytes(r.interpretation)})
+        )
 
       bytes =
-        Enum.reduce(rows, 0, fn {id, summary, interpretation}, acc ->
-          acc + byte_size(summary || "") + byte_size(interpretation || "") +
-            dir_bytes(Research.dir(id))
+        Enum.reduce(rows, 0, fn {id, text_bytes}, acc ->
+          acc + text_bytes + dir_bytes(Research.dir(id))
         end)
 
       {Enum.map(rows, &elem(&1, 0)), bytes}
@@ -987,16 +1002,13 @@ defmodule SwarmCode.Domain.Storage do
       Repo.one(
         from(r in Research.Research,
           where: r.id == ^id,
-          select: {r.summary, r.interpretation}
+          select: col_bytes(r.summary) + col_bytes(r.interpretation)
         )
       )
 
     case row do
-      {summary, interpretation} ->
-        byte_size(summary || "") + byte_size(interpretation || "") + dir_bytes(Research.dir(id))
-
-      _ ->
-        0
+      text_bytes when is_integer(text_bytes) -> text_bytes + dir_bytes(Research.dir(id))
+      _ -> 0
     end
   end
 
@@ -1181,6 +1193,85 @@ defmodule SwarmCode.Domain.Storage do
     :ok
   end
 
+  @doc """
+  pass74 (spec 74) ARCHITECTURE-9: the Scheduler's retention entry point.
+
+  The sweep used to run inside the Scheduler's tick — due scheduled tasks
+  started late behind it, a `catch_up: false` one could be recorded as
+  `skipped` — and it never registered `:storage_cleanup`, so `running?/0` was
+  false and a manual `run/1` (maybe with VACUUM) could start alongside it. It
+  also stamped `storage_last_cleanup_at` before executing, so a sweep that
+  raised waited a whole day.
+
+  Now it reads the policy from the cached settings and, when a sweep is due
+  and no cleanup runs, starts one in a supervised task that registers
+  `:storage_cleanup` first, reports progress on `topic/0` like `run/1`, and
+  stamps the day only after the plan executed. A raise logs a warning and
+  leaves the stamp unset: the next tick tries again.
+  """
+  @spec maybe_start_retention(DateTime.t()) :: {:ok, pid()} | :skipped | {:error, term()}
+  def maybe_start_retention(now \\ DateTime.utc_now()) do
+    settings = Settings.get_cached()
+
+    selection =
+      %{}
+      |> put_days(:older_than_days, settings.storage_retention_days)
+      |> put_days(:prune_days, settings.storage_prune_days)
+
+    cond do
+      selection == %{} -> :skipped
+      not due?(settings.storage_last_cleanup_at, now) -> :skipped
+      running?() -> :skipped
+      true -> start_retention(selection, now)
+    end
+  end
+
+  defp start_retention(selection, now) do
+    Task.Supervisor.start_child(SwarmCode.Domain.TaskSupervisor, fn ->
+      case Registry.register(SwarmCode.Domain.Registry, :storage_cleanup, nil) do
+        {:ok, _} -> retention_task(selection, now)
+        # A cleanup started in between: it has the database.
+        _taken -> :ok
+      end
+    end)
+  end
+
+  defp retention_task(selection, now) do
+    plan = plan(selection)
+    retention_seam(plan)
+
+    result =
+      if plan.total_count > 0 do
+        Logger.info(
+          "swarm_code storage: retention sweep — #{plan.total_count} items, #{mb(plan.total_bytes)}"
+        )
+
+        # The progress goes out as it happens; `:storage_done` waits for the
+        # stamp, so whoever hears it reads the day as swept.
+        execute(plan, fn
+          {:storage_done, _result} -> :ok
+          message -> broadcast(message)
+        end)
+      end
+
+    {:ok, _} = Settings.update_quiet(%{storage_last_cleanup_at: now})
+    if result, do: broadcast({:storage_done, result})
+    :ok
+  rescue
+    error ->
+      message = error |> Exception.message() |> SwarmCode.Domain.LLM.HTTP.redact()
+      Logger.warning("swarm_code storage: retention sweep failed, retried next tick — #{message}")
+      :error
+  end
+
+  # Tests make a sweep raise through this seam; production never sets it.
+  defp retention_seam(plan) do
+    case Application.get_env(:swarm_code_daemon, :storage_retention_seam) do
+      fun when is_function(fun, 1) -> fun.(plan)
+      _ -> :ok
+    end
+  end
+
   defp put_days(selection, _key, nil), do: selection
   defp put_days(selection, key, days) when is_integer(days), do: Map.put(selection, key, days)
 
@@ -1207,8 +1298,12 @@ defmodule SwarmCode.Domain.Storage do
         File.dir?(dir),
         reduce: 0 do
       acc ->
-        case System.cmd("du", ["-sk", dir], stderr_to_stdout: true) do
-          {out, 0} ->
+        # spec 74 ARCHITECTURE-19: a deadline and a byte bound on `du`.
+        case SwarmCode.Domain.OSProcess.run("du", ["-sk", dir],
+               timeout: 30_000,
+               max_bytes: 64 * 1024
+             ) do
+          {:ok, 0, out, _cut?} ->
             case Integer.parse(out) do
               {kb, _} -> acc + kb * 1024
               _ -> acc

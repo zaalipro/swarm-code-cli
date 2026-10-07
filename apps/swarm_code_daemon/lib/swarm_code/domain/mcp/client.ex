@@ -2,10 +2,14 @@ defmodule SwarmCode.Domain.MCP.Client do
   @moduledoc """
   One connection to an MCP server (JSON-RPC 2.0 over stdio or streamable HTTP).
 
-  The handshake (`initialize` → `notifications/initialized` → `tools/list`) is
-  serialised: it runs inside `handle_info(:connect, …)` with a blocking receive,
-  so nothing else is in flight while it happens. The discovered tools land in the
-  shared ETS table so every agent can call them.
+  The handshake (`initialize` → `notifications/initialized` → `tools/list`)
+  never blocks this process (pass74, spec 74 ARCHITECTURE-3): over stdio each
+  step is a pending request answered in `reply_pending/3`, over HTTP the three
+  steps run in one owned task whose result is adopted by generation. A
+  `tools/call` that arrives meanwhile waits in `waiting` and goes out once the
+  connection is ready. So a shutdown (Settings save, toggle, delete) is handled
+  at once and `terminate/2` always reaps the server's process tree. The
+  discovered tools land in the shared ETS table so every agent can call them.
 
   Steady-state `tools/call` requests may be concurrent: each one is registered in
   `pending` under its JSON-RPC id and answered through `GenServer.reply/2` when
@@ -13,6 +17,13 @@ defmodule SwarmCode.Domain.MCP.Client do
   slow call never blocks a fast one. Replies are correlated by id only — a late
   answer for a request that already timed out is dropped, and no caller is ever
   replied to twice.
+
+  Every in-flight call has an owner here (pass74, spec 74 ARCHITECTURE-18): its
+  caller is monitored, and a caller that stops (a stopped run's operation) or a
+  request that times out is cancelled with `notifications/cancelled`. An HTTP
+  call's task is kept in `http_tasks`, so a reconnect, a failure, a disable or
+  a delete stops it and answers its caller instead of leaving it running on
+  the old session.
 
   Stdio servers are terminated as a process tree (`SwarmCode.Domain.OSProcess`), because
   `npx`/`uvx`/`sh -c` wrappers leave the real server as a grandchild.
@@ -22,11 +33,11 @@ defmodule SwarmCode.Domain.MCP.Client do
 
   alias SwarmCode.Domain.LLM.SSE
   alias SwarmCode.Domain.MCP
-  alias SwarmCode.Domain.MCP.Server
+  alias SwarmCode.Domain.MCP.{LoginPath, Server, SSEFramer}
   alias SwarmCode.Domain.Tools.RunCommand
 
   @protocol_version "2025-06-18"
-  @client_info %{"name" => "SwarmCode", "version" => "0.1.0"}
+  @client_info %{"name" => "ncode", "version" => "0.2.0"}
   @handshake_timeout 30_000
   # spec 60 T12: an HTTP body past this is refused; `tools/list` stops after this many pages.
   @max_http_body 16_000_000
@@ -44,7 +55,11 @@ defmodule SwarmCode.Domain.MCP.Client do
     %{
       id: {__MODULE__, server.id},
       start: {__MODULE__, :start_link, [server]},
-      restart: :transient
+      restart: :transient,
+      # pass74 (spec 74) ARCHITECTURE-3: the client never blocks now, so the
+      # shutdown is handled at once; 10 s is only there so `OSProcess.kill_tree`
+      # (TERM, then KILL, ~600 ms at worst) is never cut short by a `:kill`.
+      shutdown: 10_000
     }
   end
 
@@ -125,7 +140,15 @@ defmodule SwarmCode.Domain.MCP.Client do
       # Spec 13 §11 A-9: JSON-RPC id => {caller, timeout timer} of the calls
       # that are in flight right now. Spec 51 §7.8: a health-check ping sits
       # here too, under `{:ping, timer}` — nobody is waiting for its answer.
+      # pass74 (spec 74) ARCHITECTURE-18: `{caller, timer, caller monitor}`
+      # (the monitor is nil for a re-list page or a handshake step).
       pending: %{},
+      # pass74 (spec 74) ARCHITECTURE-18: JSON-RPC id => the HTTP round trip in
+      # flight, `%{task, gen, mref, call, establishing?}` — its task, the
+      # connection generation it went out on, the caller monitor, the call
+      # itself `{from, method, params, timeout}`, and whether it is the one
+      # request that establishes the session (Sakana task 11).
+      http_tasks: %{},
       # The id of the one ping that may be in flight (spec 51 §7.8, R21).
       ping: nil,
       # spec 67 T8 (B11): the armed backoff `:connect`, so a reconnect that
@@ -135,7 +158,15 @@ defmodule SwarmCode.Domain.MCP.Client do
       # and, on stdio, whatever it wrote to stderr. Newest first, capped at
       # `@output_lines`; mirrored into the MCP output table so Settings can read
       # it without calling a client that is busy with a two-minute tool call.
-      output: []
+      output: [],
+      # pass74 (spec 74) ARCHITECTURE-3: the handshake in flight, or nil —
+      # `%{gen, timer, task, then}`: the connection generation it belongs to,
+      # its deadline timer, the HTTP task (nil on stdio) and what to do when
+      # it succeeds (`{:retry_call, …}` after an expired HTTP session).
+      handshake: nil,
+      # pass74 (spec 74) ARCHITECTURE-3: the calls that arrived while a
+      # handshake ran, `{from, method, params, timeout, retry?}`, oldest first.
+      waiting: :queue.new()
     }
   end
 
@@ -166,32 +197,77 @@ defmodule SwarmCode.Domain.MCP.Client do
     # spec 67 T8 (B11): the backoff's own `:connect` goes first — a manual
     # reconnect during the backoff used to succeed and be torn down by it
     # seconds later, re-handshaking a healthy connection.
+    # pass74 (spec 74) ARCHITECTURE-3: a handshake this overtakes is dropped
+    # (its task stopped); the calls waiting on it wait for this one instead.
+    # pass74 (spec 74) ARCHITECTURE-18: the HTTP round trips of the old
+    # connection are stopped and answered, not left running on its session.
     state =
       state
       |> cancel_connect_timer()
+      |> cancel_handshake()
       |> fail_pending("reconnecting")
+      |> fail_http_tasks("reconnecting")
       |> fail_http_queue("reconnecting")
       |> close()
       |> Map.update!(:http_gen, &(&1 + 1))
 
     MCP.put_status(state.server.id, :connecting)
+    {:noreply, connect_when_path_known(%{state | status: :connecting})}
+  end
 
-    case open(%{state | status: :connecting}) do
-      {:ok, state} ->
-        case handshake(state) do
-          {:ok, state} ->
-            MCP.put_tools(state.server, state.tools)
-            MCP.put_status(state.server.id, :ready)
-            {:noreply, %{state | status: :ready, attempt: 0}}
+  # pass74 (spec 74) UX-10: the login PATH became known; the connect that
+  # waited for it goes ahead (the calls in `waiting` keep waiting).
+  def handle_info({:login_path_ready, gen}, %{http_gen: gen, port: nil, handshake: %{}} = state),
+    do: {:noreply, state |> cancel_handshake() |> connect()}
 
-          {:error, reason, state} ->
-            {:noreply, fail(state, reason)}
-        end
+  def handle_info({:login_path_ready, _gen}, state), do: {:noreply, state}
 
-      {:error, reason} ->
-        {:noreply, fail(state, reason)}
+  # pass74 (spec 74) ARCHITECTURE-3: the HTTP handshake task finished. Only the
+  # task of the handshake in flight is adopted; any other `{ref, _}` is stale.
+  def handle_info({ref, result}, %{handshake: %{task: %Task{ref: ref}}} = state) do
+    Process.demonitor(ref, [:flush])
+    {:noreply, adopt_http_handshake(state, result)}
+  end
+
+  def handle_info(
+        {:DOWN, ref, :process, _pid, reason},
+        %{handshake: %{task: %Task{ref: ref}}} = state
+      ) do
+    {:noreply, handshake_failed(state, "handshake crashed: " <> inspect(reason))}
+  end
+
+  # pass74 (spec 74) ARCHITECTURE-18: an HTTP round trip finished. Only the
+  # task still registered under its id is read; a late answer of a task that
+  # was stopped (reconnect, failure, a caller that went away) is dropped.
+  def handle_info({ref, {:mcp_http, id, result, session_id, outcome}}, state)
+      when is_reference(ref) do
+    Process.demonitor(ref, [:flush])
+
+    case Map.pop(state.http_tasks, id) do
+      {%{task: %Task{ref: ^ref}} = entry, tasks} ->
+        demonitor(entry.mref)
+
+        {:noreply,
+         settle_http(%{state | http_tasks: tasks}, id, entry, result, session_id, outcome)}
+
+      _stale ->
+        {:noreply, state}
     end
   end
+
+  # pass74 (spec 74) ARCHITECTURE-18: a monitored process went down — a caller
+  # whose call is still in flight (it is cancelled at the server) or an HTTP
+  # round-trip task that crashed (its caller is answered).
+  def handle_info({:DOWN, ref, :process, _pid, reason}, state) do
+    {:noreply, down(state, ref, reason)}
+  end
+
+  # pass74 (spec 74) ARCHITECTURE-3: the handshake of this generation took too
+  # long (a server that never answers `initialize`).
+  def handle_info({:handshake_timeout, gen}, %{handshake: %{gen: gen}} = state),
+    do: {:noreply, handshake_failed(state, "timed out waiting for a response")}
+
+  def handle_info({:handshake_timeout, _gen}, state), do: {:noreply, state}
 
   # The stdio process died while we were idle.
   def handle_info({port, {:exit_status, code}}, %{port: port} = state) do
@@ -224,7 +300,9 @@ defmodule SwarmCode.Domain.MCP.Client do
     # would kill a healthy connection.
     if Map.has_key?(state.pending, id) do
       reason = "timed out waiting for a response"
-      state = reply_pending(state, id, {:error, reason})
+      # pass74 (spec 74) ARCHITECTURE-18: MCP 2025-06-18 — a sender that stops
+      # waiting SHOULD say so, so the server can stop the work.
+      state = state |> reply_pending(id, {:error, reason}) |> cancel_at_server(id, "timed out")
 
       case state.server.transport do
         # Spec 51 §7.8 (R21): one slow-but-healthy tool used to answer "timed
@@ -249,78 +327,6 @@ defmodule SwarmCode.Domain.MCP.Client do
     else
       {:noreply, state}
     end
-  end
-
-  # Sakana task 11: one HTTP round trip finished. The session it learned (if
-  # any) is adopted before the queued calls go out, and only a *transport*
-  # failure reconnects — application-level error text never does.
-  # spec 60 T11: only a settle of the current generation is read; a conflicting
-  # session answers the queued callers instead of dropping them; a malformed
-  # reply never marks the server stateless.
-  def handle_info({:http_settled, gen, session_id, outcome}, %{http_gen: gen} = state) do
-    case merge_session(state, session_id) do
-      {:error, reason} ->
-        {:noreply, fail(fail_http_queue(%{state | http_establishing?: false}, reason), reason)}
-
-      {:ok, state} ->
-        state = %{state | http_establishing?: false}
-
-        state =
-          if is_nil(state.session_id) and is_nil(session_id) and outcome == :ok,
-            do: %{state | http_stateless?: true},
-            else: state
-
-        case outcome do
-          {:transport_error, reason} ->
-            {:noreply, fail(fail_http_queue(state, reason), reason)}
-
-          # spec 61 T1: a revoked token is not fixed by waiting — the tools go,
-          # the status says why, and nothing reconnects until Settings asks.
-          {:permanent, reason} ->
-            {:noreply, fail(fail_http_queue(state, reason), reason, permanent: true)}
-
-          # spec 61 T1: one refused call (429, 5xx, a client-side timeout) is the
-          # caller's problem, not the connection's: it keeps its status and tools.
-          _ok_or_call_error_or_malformed ->
-            {:noreply, drain_http_queue(state)}
-        end
-    end
-  end
-
-  # spec 60 T11: a settle from before the last reconnect.
-  def handle_info({:http_settled, _gen, _session, _outcome}, state), do: {:noreply, state}
-
-  # spec 61 T1: the server forgot our session (404/410). Re-initialize right
-  # away — no backoff, no forgotten tools — and give the call one more try.
-  def handle_info({:http_session_expired, gen, call, error}, %{http_gen: gen} = state) do
-    {from, method, params, timeout} = call
-
-    state = %{
-      state
-      | http_establishing?: false,
-        session_id: nil,
-        protocol_version: nil,
-        http_stateless?: false
-    }
-
-    case handshake(state) do
-      {:ok, state} ->
-        MCP.put_tools(state.server, state.tools)
-        MCP.put_status(state.server.id, :ready)
-        state = %{state | status: :ready, attempt: 0}
-        state = dispatch_http(state, from, method, params, timeout, false)
-        {:noreply, drain_http_queue(state)}
-
-      {:error, reason, state} ->
-        GenServer.reply(from, error)
-        {:noreply, fail(fail_http_queue(state, reason), reason)}
-    end
-  end
-
-  # A reconnect overtook the retry: the caller gets the error it already had.
-  def handle_info({:http_session_expired, _gen, {from, _m, _p, _t}, error}, state) do
-    GenServer.reply(from, error)
-    {:noreply, state}
   end
 
   # spec 62 T1: the owner switched a tool on or off. The cached row is the one a
@@ -444,6 +450,9 @@ defmodule SwarmCode.Domain.MCP.Client do
     MCP.put_tools(state.server, tools)
     MCP.broadcast()
     push_output(state, "tools/list_changed: #{length(tools)} tools")
+  rescue
+    # pass74 (spec 74) BUGS-24: see `handle_info(:connect, …)`.
+    e -> fail(state, "malformed response: " <> Exception.message(e))
   end
 
   defp rpc_reply(state, %{"result" => result}), do: tool_result(state, result)
@@ -463,10 +472,19 @@ defmodule SwarmCode.Domain.MCP.Client do
   def handle_call({:call_tool, tool_name, args, timeout}, from, state) do
     params = %{"name" => tool_name, "arguments" => args || %{}}
 
-    if state.status != :ready do
-      {:reply, {:error, "MCP server #{state.server.name} is not connected"}, state}
-    else
-      {:noreply, start_request(state, from, "tools/call", params, timeout)}
+    cond do
+      # pass74 (spec 74) ARCHITECTURE-3: the handshake used to hold this
+      # process, so a call queued in the mailbox until it was done. It waits
+      # in `waiting` now, and goes out when the connection is ready.
+      state.handshake != nil ->
+        {:noreply,
+         %{state | waiting: :queue.in({from, "tools/call", params, timeout, true}, state.waiting)}}
+
+      state.status != :ready ->
+        {:reply, {:error, "MCP server #{state.server.name} is not connected"}, state}
+
+      true ->
+        {:noreply, start_request(state, from, "tools/call", params, timeout)}
     end
   end
 
@@ -493,7 +511,7 @@ defmodule SwarmCode.Domain.MCP.Client do
       )
 
       timer = Process.send_after(self(), {:request_timeout, id}, timeout)
-      %{state | pending: Map.put(state.pending, id, {from, timer})}
+      %{state | pending: Map.put(state.pending, id, {from, timer, monitor_caller(from)})}
     end
   end
 
@@ -512,61 +530,289 @@ defmodule SwarmCode.Domain.MCP.Client do
 
   # spec 61 T1: `retry?` is false for the one retry a re-handshake allows itself,
   # so a server that 404s for ever cannot loop through initialize.
+  # pass74 (spec 74) ARCHITECTURE-18: the round trip is an owned task kept in
+  # `http_tasks` under its JSON-RPC id, and its caller is monitored. The task
+  # only returns its outcome; this process answers the caller and settles the
+  # connection (`settle_http/6`), so a stopped task never answers anyone and a
+  # caller is answered exactly once.
   defp dispatch_http(state, from, method, params, timeout, retry? \\ true) do
     id = state.next_id
     state = %{state | next_id: id + 1}
-    client = self()
-    gen = state.http_gen
     # spec 73 T81: only what the round trip reads — `send_message/4`,
     # `base_headers/1`, `remember_session/2`, `safe/2` and `learned/2` — is
     # copied into the task; the tool catalogue and the output ring stay here.
     snapshot =
       Map.take(state, [:server, :secrets, :session_id, :protocol_version, :http_stateless?])
 
+    task =
+      Task.Supervisor.async_nolink(SwarmCode.Domain.TaskSupervisor, fn ->
+        http_round_trip(snapshot, id, method, params, timeout, retry?)
+      end)
+
+    entry = %{
+      task: task,
+      gen: state.http_gen,
+      mref: monitor_caller(from),
+      call: {from, method, params, timeout},
+      establishing?: state.http_establishing?,
+      # pass74 (spec 74) EFFICIENCY-56: the session this call went out with.
+      session: state.session_id
+    }
+
+    %{state | http_tasks: Map.put(state.http_tasks, id, entry)}
+  end
+
+  # Runs in the round-trip task: `{:mcp_http, id, result, learned session, outcome}`.
+  defp http_round_trip(snapshot, id, method, params, timeout, retry?) do
     # spec 67 T8 (B12): the settle reports only a session this call *learned*.
     # Echoing the snapshot's own id back was read, once a concurrent call had
     # re-established the session, as "conflicting mcp-session-id" — and that
     # failed a connection that was fine.
     had = snapshot.session_id
 
-    Task.Supervisor.start_child(SwarmCode.Domain.TaskSupervisor, fn ->
-      # spec 60 T11: a raise in here used to leave the caller waiting for its whole
-      # timeout and `http_establishing?` true for ever.
-      {result, session, outcome} =
-        try do
-          case send_message(snapshot, request_message(id, method, params), id, timeout) do
-            {:ok, %{"result" => result}, new_state} ->
-              {tool_result(new_state, result), learned(had, new_state.session_id), :ok}
+    # spec 60 T11: a raise in here used to leave the caller waiting for its whole
+    # timeout and `http_establishing?` true for ever.
+    {result, session, outcome} =
+      try do
+        case send_message(snapshot, request_message(id, method, params), id, timeout) do
+          {:ok, %{"result" => result}, new_state} ->
+            {tool_result(new_state, result), learned(had, new_state.session_id), :ok}
 
-            {:ok, %{"error" => err}, new_state} ->
-              {{:error, rpc_error(new_state, err)}, learned(had, new_state.session_id), :ok}
+          {:ok, %{"error" => err}, new_state} ->
+            {{:error, rpc_error(new_state, err)}, learned(had, new_state.session_id), :ok}
 
-            {:ok, _other, new_state} ->
-              {{:error, "unexpected response to #{method}"}, learned(had, new_state.session_id),
-               :ok}
+          {:ok, _other, new_state} ->
+            {{:error, "unexpected response to #{method}"}, learned(had, new_state.session_id),
+             :ok}
 
-            {:error, reason, class, new_state} ->
-              class = if class == :session_expired and not retry?, do: :call_error, else: class
-              {{:error, reason}, learned(had, new_state.session_id), {class, reason}}
-          end
-        rescue
-          e ->
-            {{:error, safe(snapshot, "malformed response: " <> Exception.message(e))}, nil,
-             {:malformed, Exception.message(e)}}
+          {:error, reason, class, new_state} ->
+            class = if class == :session_expired and not retry?, do: :call_error, else: class
+            {{:error, reason}, learned(had, new_state.session_id), {class, reason}}
         end
+      rescue
+        e ->
+          {{:error, safe(snapshot, "malformed response: " <> Exception.message(e))}, nil,
+           {:malformed, Exception.message(e)}}
+      end
 
-      case outcome do
-        # The caller is not answered yet: the client re-handshakes and calls again.
-        {:session_expired, _reason} ->
-          send(client, {:http_session_expired, gen, {from, method, params, timeout}, result})
+    {:mcp_http, id, result, session, outcome}
+  end
 
-        _settled ->
-          GenServer.reply(from, result)
-          send(client, {:http_settled, gen, session, outcome})
+  defp settle_http(state, id, entry, result, session_id, outcome) do
+    %{gen: gen, call: {from, _method, _params, _timeout} = call} = entry
+
+    case outcome do
+      # The caller is not answered yet: the client re-handshakes and calls again.
+      {:session_expired, _reason} ->
+        http_session_expired(state, gen, call, Map.get(entry, :session), result)
+
+      {:timeout, _reason} ->
+        GenServer.reply(from, result)
+        state |> cancel_at_server(id, "timed out") |> http_settled(gen, session_id, outcome)
+
+      _settled ->
+        GenServer.reply(from, result)
+        http_settled(state, gen, session_id, outcome)
+    end
+  end
+
+  # Sakana task 11: one HTTP round trip finished. The session it learned (if
+  # any) is adopted before the queued calls go out, and only a *transport*
+  # failure reconnects — application-level error text never does.
+  # spec 60 T11: only a settle of the current generation is read; a conflicting
+  # session answers the queued callers instead of dropping them; a malformed
+  # reply never marks the server stateless.
+  defp http_settled(%{http_gen: gen} = state, gen, session_id, outcome) do
+    case merge_session(state, session_id) do
+      {:error, reason} ->
+        fail(fail_http_queue(%{state | http_establishing?: false}, reason), reason)
+
+      {:ok, state} ->
+        state = %{state | http_establishing?: false}
+
+        state =
+          if is_nil(state.session_id) and is_nil(session_id) and outcome == :ok,
+            do: %{state | http_stateless?: true},
+            else: state
+
+        case outcome do
+          {:transport_error, reason} ->
+            fail(fail_http_queue(state, reason), reason)
+
+          # spec 61 T1: a revoked token is not fixed by waiting — the tools go,
+          # the status says why, and nothing reconnects until Settings asks.
+          {:permanent, reason} ->
+            fail(fail_http_queue(state, reason), reason, permanent: true)
+
+          # spec 61 T1: one refused call (429, 5xx, a client-side timeout) is the
+          # caller's problem, not the connection's: it keeps its status and tools.
+          _ok_or_call_error_or_malformed ->
+            drain_http_queue(state)
+        end
+    end
+  end
+
+  # spec 60 T11: a settle from before the last reconnect.
+  defp http_settled(state, _gen, _session, _outcome), do: state
+
+  # spec 61 T1: the server forgot our session (404/410). Re-initialize right
+  # away — no backoff, no forgotten tools — and give the call one more try.
+  # pass74 (spec 74) ARCHITECTURE-3: the re-handshake is the async one; a
+  # call that saw the 404 while it runs waits for it (one re-handshake however
+  # many calls saw the expired session) and is retried once, without retry.
+  defp http_session_expired(%{http_gen: gen, handshake: %{}} = state, gen, call, _used, _error) do
+    {from, method, params, timeout} = call
+    %{state | waiting: :queue.in({from, method, params, timeout, false}, state.waiting)}
+  end
+
+  # pass74 (spec 74) EFFICIENCY-56: the call went out on a session that has
+  # already been replaced — a sibling saw the 404 first and its re-handshake
+  # finished before this settle arrived. Five concurrent calls after an expiry
+  # used to run five handshakes back to back and abandon four sessions; this
+  # one only goes out again, on the new session, without a further retry.
+  defp http_session_expired(
+         %{http_gen: gen, session_id: current} = state,
+         gen,
+         call,
+         used,
+         _error
+       )
+       when is_binary(current) and current != used do
+    {from, method, params, timeout} = call
+    dispatch_http(state, from, method, params, timeout, false)
+  end
+
+  defp http_session_expired(%{http_gen: gen} = state, gen, call, _used, error) do
+    {from, method, params, timeout} = call
+
+    state = %{
+      state
+      | http_establishing?: false,
+        session_id: nil,
+        protocol_version: nil,
+        http_stateless?: false
+    }
+
+    begin_handshake(state, {:retry_call, from, method, params, timeout, error})
+  end
+
+  # A reconnect overtook the retry: the caller gets the error it already had.
+  defp http_session_expired(state, _gen, {from, _m, _p, _t}, _used, error) do
+    GenServer.reply(from, error)
+    state
+  end
+
+  ## -------------------------------- caller monitors (pass74 ARCHITECTURE-18)
+
+  # A `GenServer.call` caller is monitored while its request is in flight; a
+  # re-list page or a handshake step has no caller.
+  defp monitor_caller({pid, _tag}) when is_pid(pid), do: Process.monitor(pid)
+  defp monitor_caller(_internal), do: nil
+
+  defp demonitor(nil), do: :ok
+  defp demonitor(ref), do: Process.demonitor(ref, [:flush])
+
+  defp down(state, ref, reason) do
+    case Enum.find(state.pending, &match?({_id, {_from, _timer, ^ref}}, &1)) do
+      # A stdio caller stopped: its entry and timer go, and the server is told.
+      {id, {_from, timer, _ref}} ->
+        cancel_timer(timer)
+        cancel_at_server(%{state | pending: Map.delete(state.pending, id)}, id, "caller stopped")
+
+      nil ->
+        http_down(state, ref, reason)
+    end
+  end
+
+  defp http_down(state, ref, reason) do
+    found =
+      Enum.find_value(state.http_tasks, fn
+        {id, %{mref: ^ref} = entry} -> {:caller, id, entry}
+        {id, %{task: %Task{ref: ^ref}} = entry} -> {:task, id, entry}
+        _other -> nil
+      end)
+
+    case found do
+      # An HTTP caller stopped: its round trip is stopped and cancelled at the
+      # server. If it was establishing the session, the calls queued behind it
+      # go out now instead of waiting for a settle that will never come.
+      {:caller, id, entry} ->
+        stop_task(entry.task)
+        state = %{state | http_tasks: Map.delete(state.http_tasks, id)}
+        state = cancel_at_server(state, id, "caller stopped")
+
+        if entry.establishing?,
+          do: http_settled(state, entry.gen, nil, {:call_error, "caller stopped"}),
+          else: state
+
+      # The round-trip task crashed without an outcome (an exit or a throw the
+      # `rescue` does not see): the caller is answered, the queue moves on.
+      {:task, id, entry} ->
+        demonitor(entry.mref)
+        message = "request failed: " <> inspect(reason)
+        state = %{state | http_tasks: Map.delete(state.http_tasks, id)}
+        settle_http(state, id, entry, {:error, message}, nil, {:malformed, message})
+
+      nil ->
+        state
+    end
+  end
+
+  # `notifications/cancelled` for a request nobody waits on any more. Stdio
+  # writes it to the port; HTTP posts it from an owned, bounded task (like the
+  # session DELETE), so this process never waits on the network.
+  defp cancel_at_server(state, id, reason) do
+    message = %{
+      "jsonrpc" => "2.0",
+      "method" => "notifications/cancelled",
+      "params" => %{"requestId" => id, "reason" => reason}
+    }
+
+    case state.server.transport do
+      "http" -> post_notification(state, message)
+      _stdio -> send_json(state, message)
+    end
+  end
+
+  defp post_notification(%{server: server} = state, message) do
+    headers = base_headers(state)
+
+    Task.Supervisor.start_child(SwarmCode.Domain.TaskSupervisor, fn ->
+      try do
+        Req.post(SwarmCode.Domain.LLM.HTTP.request(server.url),
+          json: message,
+          headers: headers,
+          retry: false,
+          receive_timeout: 2_000,
+          decode_body: false,
+          into: mcp_collector(nil)
+        )
+      rescue
+        _ -> :ok
+      catch
+        _, _ -> :ok
       end
     end)
 
     state
+  catch
+    # the task supervisor is already down (application shutdown)
+    _, _ -> state
+  end
+
+  # Stops every HTTP round trip in flight and answers its caller once.
+  defp fail_http_tasks(%{http_tasks: tasks} = state, _reason) when map_size(tasks) == 0,
+    do: state
+
+  defp fail_http_tasks(state, reason) do
+    Enum.each(state.http_tasks, fn {_id, %{task: task, mref: mref, call: {from, _, _, _}}} ->
+      stop_task(task)
+      demonitor(mref)
+      GenServer.reply(from, {:error, reason})
+    end)
+
+    # The session-establishing request was one of them, if any was in flight.
+    %{state | http_tasks: %{}, http_establishing?: false}
   end
 
   # spec 67 T8 (B12): `nil` unless the round trip changed the id it went out
@@ -652,16 +898,30 @@ defmodule SwarmCode.Domain.MCP.Client do
         Process.cancel_timer(timer)
         %{state | pending: pending, ping: nil}
 
-      {{from, timer}, pending} ->
-        Process.cancel_timer(timer)
+      {{from, timer, mref}, pending} ->
+        cancel_timer(timer)
+        demonitor(mref)
         answer(%{state | pending: pending}, from, reply)
     end
   end
+
+  # A handshake step has no timer of its own (the handshake has one).
+  defp cancel_timer(nil), do: :ok
+  defp cancel_timer(ref), do: Process.cancel_timer(ref)
 
   # spec 73 T15: what a finished request does with its reply — a caller is
   # answered with the tool result, a re-list page is folded into the catalogue.
   defp answer(state, {:list_tools, ctx}, reply),
     do: list_tools_page(state, ctx, list_reply(state, reply))
+
+  # pass74 (spec 74) ARCHITECTURE-3: one step of the stdio handshake answered.
+  # pass74 (spec 74) BUGS-24: a raise here (a catalogue shape
+  # `sanitize_tools/1` did not foresee) is a failed connection, not a crash.
+  defp answer(state, {:handshake, step}, reply) do
+    handshake_step(state, step, reply)
+  rescue
+    e -> handshake_failed(state, "malformed response: " <> Exception.message(e))
+  end
 
   defp answer(state, from, reply) do
     GenServer.reply(from, call_reply(state, reply))
@@ -681,11 +941,16 @@ defmodule SwarmCode.Domain.MCP.Client do
       {_id, {:ping, timer}} ->
         Process.cancel_timer(timer)
 
-      {_id, {{:list_tools, _ctx}, timer}} ->
+      {_id, {{:list_tools, _ctx}, timer, _mref}} ->
         Process.cancel_timer(timer)
 
-      {_id, {from, timer}} ->
+      # pass74 (spec 74) ARCHITECTURE-3: the handshake is failed by its owner.
+      {_id, {{:handshake, _step}, _timer, _mref}} ->
+        :ok
+
+      {_id, {from, timer, mref}} ->
         Process.cancel_timer(timer)
+        demonitor(mref)
         GenServer.reply(from, {:error, reason})
     end)
 
@@ -694,7 +959,22 @@ defmodule SwarmCode.Domain.MCP.Client do
 
   @impl true
   def terminate(_reason, state) do
-    close(state)
+    # pass74 (spec 74) ARCHITECTURE-3: reached on every shutdown now — the
+    # handshake task goes, the waiting callers are answered, and `close/1`
+    # reaps the stdio process tree.
+    # pass74 (spec 74) ARCHITECTURE-18: so do the calls in flight — the HTTP
+    # round trips are stopped (not left running on the closed session) and
+    # every caller gets the reason instead of an exit.
+    reason = "MCP server #{state.server.name} stopped"
+
+    state
+    |> cancel_handshake()
+    |> fail_waiting(reason)
+    |> fail_pending(reason)
+    |> fail_http_tasks(reason)
+    |> fail_http_queue(reason)
+    |> close()
+
     MCP.forget(state.server.id)
     :ok
   end
@@ -707,14 +987,239 @@ defmodule SwarmCode.Domain.MCP.Client do
 
   def format_status(status), do: status
 
-  ## --------------------------------------------------------------- handshake
+  ## ------------------------------------ async handshake (pass74 ARCHITECTURE-3)
 
-  defp handshake(state) do
-    params = %{
+  # pass74 (spec 74) UX-10: a stdio command is looked up on the login PATH,
+  # read once at boot. Until it is known the connect waits — as a handshake,
+  # under its deadline, so tool calls queue and a shutdown is not held up.
+  defp connect_when_path_known(%{server: %Server{transport: "stdio"}} = state) do
+    case LoginPath.await(state.http_gen) do
+      :ready ->
+        connect(state)
+
+      :later ->
+        gen = state.http_gen
+        timer = Process.send_after(self(), {:handshake_timeout, gen}, handshake_timeout())
+        %{state | handshake: %{gen: gen, timer: timer, task: nil, then: nil}}
+    end
+  end
+
+  defp connect_when_path_known(state), do: connect(state)
+
+  defp connect(state) do
+    case open(state) do
+      {:ok, state} -> begin_handshake(state, nil)
+      {:error, reason} -> fail(state, reason)
+    end
+  end
+
+  defp handshake_timeout,
+    do: Application.get_env(:swarm_code_daemon, :mcp_handshake_timeout, @handshake_timeout)
+
+  defp init_params do
+    %{
       "protocolVersion" => @protocol_version,
       "capabilities" => %{},
       "clientInfo" => @client_info
     }
+  end
+
+  # Stdio: `initialize` goes out as a pending request; its answer (and each
+  # `tools/list` page after it) arrives through `reply_pending/3` like any
+  # tool call, so nothing blocks. Each step gets the old 30 s bound.
+  defp begin_handshake(%{server: %Server{transport: "stdio"}} = state, then) do
+    state = %{state | handshake: %{gen: state.http_gen, timer: nil, task: nil, then: then}}
+    handshake_request(state, :initialize, "initialize", init_params())
+  end
+
+  # HTTP: the three round trips run in one owned task (the blocking
+  # `handshake/1` below, on a copy of what it reads); `handle_info({ref, _})`
+  # adopts its result. Its deadline covers the three steps.
+  defp begin_handshake(%{server: %Server{transport: "http"}} = state, then) do
+    snapshot =
+      Map.take(state, [
+        :server,
+        :secrets,
+        :session_id,
+        :protocol_version,
+        :http_stateless?,
+        :next_id,
+        :tools
+      ])
+
+    task =
+      Task.Supervisor.async_nolink(SwarmCode.Domain.TaskSupervisor, fn ->
+        try do
+          handshake(%{snapshot | tools: []})
+        rescue
+          e -> {:error, "malformed response: " <> Exception.message(e), snapshot}
+        end
+      end)
+
+    gen = state.http_gen
+    timer = Process.send_after(self(), {:handshake_timeout, gen}, handshake_timeout() * 3)
+    %{state | handshake: %{gen: gen, timer: timer, task: task, then: then}}
+  end
+
+  defp handshake_request(state, step, method, params) do
+    id = state.next_id
+    state = %{state | next_id: id + 1}
+
+    if state.port == nil do
+      handshake_failed(state, "not connected")
+    else
+      state = send_json(state, request_message(id, method, params))
+      hs = state.handshake
+      cancel_timer(hs.timer)
+      timer = Process.send_after(self(), {:handshake_timeout, hs.gen}, handshake_timeout())
+
+      %{
+        state
+        | pending: Map.put(state.pending, id, {{:handshake, step}, nil, nil}),
+          handshake: %{hs | timer: timer}
+      }
+    end
+  end
+
+  defp handshake_step(state, :initialize, %{"result" => info}) do
+    # spec 61 T3: from here on every request carries the negotiated version.
+    state = %{state | protocol_version: negotiated_version(info)}
+    state = notify(state, "notifications/initialized", %{})
+    handshake_request(state, {:tools, {[], MapSet.new(), 1}}, "tools/list", %{})
+  end
+
+  defp handshake_step(state, {:tools, {acc, seen, pages}}, %{"result" => result}) do
+    case next_tools_page(state, result, acc, seen, pages) do
+      {:done, tools} ->
+        handshake_done(%{state | tools: tools})
+
+      {:more, next, acc, seen, pages} ->
+        handshake_request(state, {:tools, {acc, seen, pages}}, "tools/list", %{"cursor" => next})
+    end
+  end
+
+  defp handshake_step(state, step, reply),
+    do: handshake_failed(state, handshake_error(state, step, reply))
+
+  defp handshake_error(state, _step, %{"error" => err}), do: rpc_error(state, err)
+  defp handshake_error(_state, _step, {:error, reason}), do: to_string(reason)
+  defp handshake_error(_state, :initialize, _other), do: "unexpected response to initialize"
+  defp handshake_error(_state, _step, _other), do: "unexpected response to tools/list"
+
+  defp adopt_http_handshake(state, result) do
+    {outcome, learned} =
+      case result do
+        {:ok, hs} -> {:ok, hs}
+        {:error, reason, hs} -> {{:error, reason}, hs}
+      end
+
+    state = %{
+      state
+      | session_id: learned.session_id,
+        protocol_version: learned.protocol_version,
+        next_id: max(state.next_id, learned.next_id),
+        tools: learned.tools
+    }
+
+    case outcome do
+      :ok -> handshake_done(state)
+      {:error, reason} -> handshake_failed(state, safe(state, reason))
+    end
+  rescue
+    e -> handshake_failed(state, "malformed response: " <> Exception.message(e))
+  end
+
+  # The connection is ready: publish, answer the session-expired retry if
+  # this was one, then send every call that waited.
+  defp handshake_done(state) do
+    then = state.handshake.then
+    state = cancel_handshake(state)
+    MCP.put_tools(state.server, state.tools)
+    MCP.put_status(state.server.id, :ready)
+    state = %{state | status: :ready, attempt: 0}
+
+    state =
+      case then do
+        {:retry_call, from, method, params, timeout, _error} ->
+          dispatch_http(state, from, method, params, timeout, false)
+
+        nil ->
+          state
+      end
+
+    drain_waiting(state)
+  end
+
+  defp handshake_failed(state, reason) do
+    case state.handshake do
+      %{then: {:retry_call, from, _method, _params, _timeout, error}} ->
+        GenServer.reply(from, error)
+
+      _other ->
+        :ok
+    end
+
+    state |> fail_http_queue(reason) |> fail(reason)
+  end
+
+  # Drops the handshake in flight: its deadline, its HTTP task (stopped, and
+  # any result it already sent flushed) and its pending stdio step.
+  defp cancel_handshake(%{handshake: nil} = state), do: state
+
+  defp cancel_handshake(%{handshake: hs} = state) do
+    cancel_timer(hs.timer)
+    if hs.task, do: stop_task(hs.task)
+
+    pending =
+      state.pending
+      |> Enum.reject(fn {_id, entry} -> match?({{:handshake, _step}, _timer, _mref}, entry) end)
+      |> Map.new()
+
+    %{state | handshake: nil, pending: pending}
+  end
+
+  defp stop_task(%Task{ref: ref, pid: pid}) do
+    Process.demonitor(ref, [:flush])
+    Task.Supervisor.terminate_child(SwarmCode.Domain.TaskSupervisor, pid)
+    :ok
+  catch
+    # the task supervisor is already down (application shutdown)
+    _, _ -> :ok
+  end
+
+  defp drain_waiting(state) do
+    case :queue.out(state.waiting) do
+      {{:value, {from, method, params, timeout, retry?}}, rest} ->
+        state = %{state | waiting: rest}
+
+        state =
+          if retry?,
+            do: start_request(state, from, method, params, timeout),
+            else: dispatch_http(state, from, method, params, timeout, false)
+
+        drain_waiting(state)
+
+      {:empty, _rest} ->
+        state
+    end
+  end
+
+  defp fail_waiting(state, reason) do
+    state.waiting
+    |> :queue.to_list()
+    |> Enum.each(fn {from, _method, _params, _timeout, _retry?} ->
+      GenServer.reply(from, {:error, reason})
+    end)
+
+    %{state | waiting: :queue.new()}
+  end
+
+  ## --------------------------------------------------------------- handshake
+
+  # The blocking form: Settings → Test (`probe/1`, in the caller's process)
+  # and the HTTP handshake task. Never called inside this GenServer.
+  defp handshake(state) do
+    params = init_params()
 
     with {:ok, info, state} <- request(state, "initialize", params, @handshake_timeout),
          # spec 61 T3: from here on every HTTP request carries the negotiated version.
@@ -752,7 +1257,7 @@ defmodule SwarmCode.Domain.MCP.Client do
   # walk and the re-list's pending-map walk.
   defp next_tools_page(state, %{"tools" => tools} = result, acc, seen, pages)
        when is_list(tools) do
-    acc = acc ++ tools
+    acc = acc ++ sanitize_tools(state, tools)
 
     case result["nextCursor"] do
       next when is_binary(next) and next != "" ->
@@ -773,6 +1278,65 @@ defmodule SwarmCode.Domain.MCP.Client do
   end
 
   defp next_tools_page(_state, _other, acc, _seen, _pages), do: {:done, acc}
+
+  @doc """
+  pass74 (spec 74) BUGS-24: the catalogue is the server's JSON, not a contract.
+  Keeps only maps with a non-empty binary `name`; a non-map `annotations`
+  (`"annotations": []` from PHP-style servers) becomes `%{}`, a non-map
+  `inputSchema` is dropped (the default object schema applies), a non-binary `description`/`title` is dropped. Anything else is logged and left out.
+  """
+  @spec sanitize_tools(map() | nil, list()) :: [map()]
+  def sanitize_tools(state \\ nil, tools) when is_list(tools) do
+    {kept, dropped} =
+      Enum.reduce(tools, {[], 0}, fn
+        %{"name" => name} = tool, {kept, dropped} when is_binary(name) and name != "" ->
+          {[sanitize_tool(tool) | kept], dropped}
+
+        _other, {kept, dropped} ->
+          {kept, dropped + 1}
+      end)
+
+    if dropped > 0 do
+      label = if is_map(state) and is_map(state[:server]), do: state.server.name, else: "?"
+
+      Logger.warning(
+        "swarm_code mcp #{label}: dropped #{dropped} tools/list entries without a usable name"
+      )
+    end
+
+    Enum.reverse(kept)
+  end
+
+  defp sanitize_tool(tool) do
+    tool
+    |> map_field("annotations")
+    |> drop_unless_map("inputSchema")
+    |> text_field("description")
+    |> text_field("title")
+  end
+
+  defp map_field(tool, key) do
+    case tool do
+      %{^key => value} when not is_map(value) -> Map.put(tool, key, %{})
+      _ -> tool
+    end
+  end
+
+  # A missing schema falls back to the empty object schema in `MCP.to_ref/1`;
+  # a bare `%{}` would reach the provider without its `"type": "object"`.
+  defp drop_unless_map(tool, key) do
+    case tool do
+      %{^key => value} when not is_map(value) -> Map.delete(tool, key)
+      _ -> tool
+    end
+  end
+
+  defp text_field(tool, key) do
+    case tool do
+      %{^key => value} when not is_binary(value) -> Map.delete(tool, key)
+      _ -> tool
+    end
+  end
 
   ## ---------------------------------------------------------------- requests
 
@@ -807,7 +1371,9 @@ defmodule SwarmCode.Domain.MCP.Client do
   ## ------------------------------------------------------------------- stdio
 
   defp open(%{server: %Server{transport: "stdio"} = server} = state) do
-    executable = System.find_executable(server.command)
+    cwd = cwd(server)
+    path = LoginPath.path()
+    executable = find_command(server.command, cwd, path)
 
     cond do
       is_nil(executable) ->
@@ -820,8 +1386,8 @@ defmodule SwarmCode.Domain.MCP.Client do
               :binary,
               :exit_status,
               {:args, server.args || []},
-              {:env, env(server)},
-              {:cd, String.to_charlist(cwd(server))},
+              {:env, env(server, path)},
+              {:cd, String.to_charlist(cwd)},
               # spec 67 T28 (G37): a stdio server's stderr is where it says it
               # could not find its config, its token expired or it is about to
               # exit. It went to the void; it is now read as ordinary port data
@@ -880,13 +1446,34 @@ defmodule SwarmCode.Domain.MCP.Client do
     %{state | port: nil, buffer: [], buffer_size: 0}
   end
 
-  defp env(server) do
+  # pass74 (spec 74) UX-10: the child runs on the same PATH its command was
+  # found on (`npx` has to find `node`); the server's own env still wins.
+  defp env(server, path) do
     extra =
       for {k, v} <- server.env || %{},
           do: {String.to_charlist(to_string(k)), String.to_charlist(to_string(v))}
 
-    RunCommand.clean_env() ++ extra
+    base = Enum.reject(RunCommand.clean_env(), &match?({~c"PATH", _}, &1))
+    [{~c"PATH", String.to_charlist(path)} | base] ++ extra
   end
+
+  @doc false
+  # pass74 (spec 74) UX-10: `./bin/mcp` is relative to the server's working
+  # directory, not the VM's; a bare name is looked up on `path`.
+  @spec find_command(String.t() | nil, String.t(), String.t()) :: String.t() | nil
+  def find_command(command, cwd, path) when is_binary(command) and command != "" do
+    if String.contains?(command, "/") do
+      expanded = Path.expand(command, cwd)
+      if RunCommand.executable?(expanded), do: expanded
+    else
+      case :os.find_executable(String.to_charlist(command), String.to_charlist(path)) do
+        false -> nil
+        found -> List.to_string(found)
+      end
+    end
+  end
+
+  def find_command(_command, _cwd, _path), do: nil
 
   defp cwd(server) do
     with id when is_binary(id) <- server.project_id,
@@ -910,7 +1497,8 @@ defmodule SwarmCode.Domain.MCP.Client do
   # spec 61 T1: every HTTP failure leaves here classified, so the settle handler
   # never has to read the error text to decide whether the transport died.
   # `{:error, reason, class, state}`, where class is one of
-  # `:call_error` (answer this caller, keep the connection), `:session_expired`
+  # `:call_error` (answer this caller, keep the connection), `:timeout` (the
+  # same, and cancel the request at the server), `:session_expired`
   # (re-handshake and retry once), `:permanent` (a revoked token: fail, no
   # reconnect) or `:transport_error` (fail with the backoff, as before).
   defp send_message(%{server: %Server{transport: "http"} = server} = state, message, id, timeout) do
@@ -942,8 +1530,10 @@ defmodule SwarmCode.Domain.MCP.Client do
 
       # spec 61 T2: both transports say "timed out" the same way, so
       # `Tools.with_limit_hint/2` points at Settings → Limits → Tool timeout.
+      # pass74 (spec 74) ARCHITECTURE-18: `:timeout` settles like `:call_error`
+      # and also cancels the request at the server.
       {:error, %Req.TransportError{reason: :timeout}} ->
-        {:error, "timed out waiting for a response after #{timeout} ms", :call_error, state}
+        {:error, "timed out waiting for a response after #{timeout} ms", :timeout, state}
 
       {:error, exception} ->
         reason = safe(state, "request failed: " <> Exception.message(exception))
@@ -1017,6 +1607,9 @@ defmodule SwarmCode.Domain.MCP.Client do
   defp decode_body(resp, id) do
     body = body_of(resp)
 
+    # An SSE body the collector framed has no `body_parts` (spec 74
+    # EFFICIENCY-57): this finds nothing and the reply is `:none`, as a scan
+    # of events the collector already matched against `id` would.
     if sse?(resp) do
       {events, _rest} = SSE.parse("", body)
 
@@ -1047,9 +1640,14 @@ defmodule SwarmCode.Domain.MCP.Client do
   # spec 73 T42: as a reversed parts list with a running byte count — the
   # previous body was referenced from the private map, so `body <> chunk`
   # copied the accumulation on every chunk; `body_of/1` joins once.
+  # spec 74 EFFICIENCY-57: an SSE body is framed incrementally
+  # (`MCP.SSEFramer`: the unfinished event as iodata, each chunk searched
+  # once) instead of re-parsing the growing buffer per chunk, and it is not
+  # kept a second time in `body_parts` — the collector already saw every
+  # complete event, so the post-EOF fallback has nothing left to find in it.
+  # The 16 MB cap applies to the running count while reading.
   defp mcp_collector(id) do
     fn {:data, chunk}, {req, resp} ->
-      parts = [chunk | resp.private[:body_parts] || []]
       size = (resp.private[:body_size] || 0) + byte_size(chunk)
 
       cond do
@@ -1057,12 +1655,15 @@ defmodule SwarmCode.Domain.MCP.Client do
           {:halt, {req, Req.Response.put_private(resp, :skip, :length)}}
 
         sse?(resp) ->
-          {events, rest} = SSE.parse(resp.private[:sse_buf] || "", chunk)
+          {events, framer} = SSEFramer.feed(resp.private[:sse_framer] || SSEFramer.new(), chunk)
 
+          # The first 4 KB stay for an HTTP error's snippet.
           resp =
-            resp
-            |> put_body_parts(parts, size)
-            |> Req.Response.put_private(:sse_buf, rest)
+            if size - byte_size(chunk) < 4_096,
+              do: put_body_parts(resp, [chunk | resp.private[:body_parts] || []], size),
+              else: Req.Response.put_private(resp, :body_size, size)
+
+          resp = Req.Response.put_private(resp, :sse_framer, framer)
 
           case id && Enum.find_value(events, &reply_for(&1, id)) do
             nil -> {:cont, {req, resp}}
@@ -1070,6 +1671,7 @@ defmodule SwarmCode.Domain.MCP.Client do
           end
 
         true ->
+          parts = [chunk | resp.private[:body_parts] || []]
           {:cont, {req, put_body_parts(resp, parts, size)}}
       end
     end
@@ -1256,17 +1858,25 @@ defmodule SwarmCode.Domain.MCP.Client do
 
   @doc false
   def images(%{"content" => items}) when is_list(items) do
-    for %{"type" => "image", "data" => data} = item <- items,
-        is_binary(data) and data != "" do
-      mime = to_string(item["mimeType"] || "image/png")
+    for %{"type" => "image", "data" => data} = item <- items, carried_image?(item) do
+      mime = image_mime(item)
       %{mime: mime, data: data, tokens: image_tokens(data, mime)}
     end
   end
 
   def images(_result), do: []
 
-  defp carried_image?(%{"type" => "image", "data" => data}), do: is_binary(data) and data != ""
+  # pass74 (spec 74) BUGS-32: only an image a provider will take is carried as
+  # a block — a supported type, within the size and pixel limits
+  # (`Attachments.provider_image?/2`). An SVG, a TIFF or an oversized full-page
+  # screenshot stays on the agent's history and 400s every later request; it is
+  # announced as `[image mime]` text instead.
+  defp carried_image?(%{"type" => "image", "data" => data} = item),
+    do: SwarmCode.Domain.Attachments.provider_image?(image_mime(item), data)
+
   defp carried_image?(_item), do: false
+
+  defp image_mime(item), do: to_string(item["mimeType"] || "image/png")
 
   defp image_tokens(data, mime) do
     case Base.decode64(data) do
@@ -1301,9 +1911,22 @@ defmodule SwarmCode.Domain.MCP.Client do
 
     # spec 67 T8 (B11): two failures used to arm two timers, and the second
     # `:connect` tore down whatever the first had rebuilt.
-    state = state |> cancel_connect_timer() |> close()
+    # pass74 (spec 74) ARCHITECTURE-3: a failed connection takes its handshake
+    # and the calls that waited on it with it — answered once the status says
+    # why, so a caller that reads it next sees the failure.
+    state = state |> cancel_connect_timer() |> cancel_handshake() |> close()
+
     MCP.forget_tools(state.server.id)
     MCP.put_status(state.server.id, {:error, safe_reason})
+
+    # pass74 (spec 74) ARCHITECTURE-18: the HTTP round trips of the failed
+    # connection are stopped and answered too (and the calls queued behind the
+    # session they were establishing).
+    state =
+      state
+      |> fail_waiting(safe_reason)
+      |> fail_http_tasks(safe_reason)
+      |> fail_http_queue(safe_reason)
 
     backoff = Application.get_env(:swarm_code_daemon, :mcp_backoff, @backoff)
     delay = Enum.at(backoff, state.attempt) || List.last(backoff)

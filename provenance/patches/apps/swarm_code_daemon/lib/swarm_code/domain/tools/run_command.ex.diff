@@ -1,4 +1,4 @@
-# CLI-local change to lib/swarm_code/tools/run_command.ex at 6dd8d82, after the rewrite
+# CLI-local change to lib/swarm_code/tools/run_command.ex at 4c7c577, after the rewrite
 # rules of provenance/sync-rules.json. Recorded by mix swarm_code.provenance.sync.
 --- a/apps/swarm_code_daemon/lib/swarm_code/domain/tools/run_command.ex
 +++ b/apps/swarm_code_daemon/lib/swarm_code/domain/tools/run_command.ex
@@ -14,7 +14,7 @@
    end
  
    @impl true
-@@ -361,6 +364,24 @@
+@@ -382,6 +385,24 @@
    # `command` is concatenated, not `to_string/1`-ed: a provider that streams a
    # non-string `command` still raises here and the model is told the call
    # crashed, exactly as before this task (`failure_test.exs:72`).
@@ -39,22 +39,13 @@
    defp script(command, rc_file) do
      # Spec 51 §7.3 (R18): the port's stdin is a pipe nobody ever writes to, so
      # `cat`, `git commit` without `-m`, `python`, `npm init`, `ssh` and `sudo`
-@@ -370,7 +391,8 @@
-     # the command left behind — once the shell exits, a survivor is re-parented
-     # to launchd and nothing links it to this call any more. It is written
-     # before the status file, so a status file means the job list is complete.
+@@ -403,7 +424,8 @@
+       ~s(jobs -p > ") <>
+         jobs_file(rc_file) <> ~s(" 2>/dev/null; printf %s "$__sc_rc" > ") <> rc_file <> ~s(")
+ 
 -    "exec </dev/null\n" <>
 +    umask_prefix() <>
 +      "exec </dev/null\n" <>
-       command <>
-       "\n" <>
-       ~s(__sc_rc=$?; jobs -p > ") <>
-@@ -535,7 +557,7 @@
-                   RELEASE_VM_ARGS RELEASE_REMOTE_VM_ARGS)
- 
-   # spec 66 T6: Erlang's `{env, …}` *extends* the BEAM's environment, so every
--  # key the app was launched with — `ANTHROPIC_API_KEY`, `LLMOTIONS_API_KEY` —
-+  # key the app was launched with — `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` —
-   # was visible to `env` in every command the model ran. `{name, false}` removes
-   # one. `GITHUB_TOKEN`/`GH_TOKEN` are kept by default so `gh` keeps working.
-   @secret_name ~r/(API_?KEY|_KEY$|SECRET|TOKEN|PASSWORD|PASSWD|CREDENTIAL|_PAT$)/i
+       ~s(trap '__sc_rc=$?; [ -e ") <>
+       rc_file <>
+       ~s(" ] || { ) <>

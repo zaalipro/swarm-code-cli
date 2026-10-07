@@ -337,9 +337,22 @@ defmodule SwarmCode.Domain.Tools.WorkflowRun do
       is_nil(conversation) ->
         {:error, "no conversation to launch into"}
 
+      builtin_mission?(args["name"], ctx) ->
+        {:error, "start a mission with mission_start — it validates the plan first"}
+
       true ->
         launch(args, ctx, conversation)
     end
+  end
+
+  # Only the BUILTIN mission is refused (§11.4): a user's or project's own
+  # workflow named "mission" is an ordinary library item and launches.
+  defp builtin_mission?(name, ctx) do
+    name == SwarmCode.Domain.Missions.definition_name() and
+      match?(
+        %{scope: "builtin"},
+        SwarmCode.Domain.Workflows.get(WorkflowTools.project(ctx), name)
+      )
   end
 
   defp launch(args, ctx, conversation) do

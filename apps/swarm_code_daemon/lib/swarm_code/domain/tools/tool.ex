@@ -4,7 +4,7 @@ defmodule SwarmCode.Domain.Tools.Tool do
   @callback name() :: String.t()
   @callback description() :: String.t()
   @callback parameters() :: map()
-  @callback permission(args :: map()) :: :read | :write | :execute
+  @callback permission(args :: map()) :: :read | :write | :execute | :private_network
   @callback title(args :: map()) :: String.t()
   @callback run(
               args :: map(),
@@ -22,5 +22,14 @@ defmodule SwarmCode.Domain.Tools.Tool do
   """
   @callback parallel?() :: boolean()
 
-  @optional_callbacks parallel?: 0
+  @doc """
+  spec 74 BUGS-47: the permission of one call, when the answer needs bounded
+  I/O the pure `permission/1` must not do (`web_fetch` resolves the URL's host
+  to tell an intranet address from a public one). It runs in the operation's
+  own process, right before the approval decision; `permission/1` stays what
+  the registry reads with `%{}`.
+  """
+  @callback call_permission(args :: map()) :: :read | :write | :execute | :private_network
+
+  @optional_callbacks parallel?: 0, call_permission: 1
 end

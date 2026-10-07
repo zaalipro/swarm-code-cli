@@ -39,6 +39,13 @@ defmodule SwarmCode.Domain.Research do
   @spec report_path(integer() | Row.t()) :: String.t()
   def report_path(research), do: Path.join(dir(research), "report.html")
 
+  @doc """
+  pass74 (spec 74) BUGS-60: where the designed pass writes. Only a finished,
+  sane document is renamed over `report_path/1`; the rendered report stays
+  served until then.
+  """
+  def designed_path(research), do: Path.join(dir(research), "designed.html")
+
   @doc "Creates `<root>/<id>` and returns it."
   @spec ensure_dir!(integer() | Row.t()) :: String.t()
   def ensure_dir!(research) do
@@ -49,13 +56,20 @@ defmodule SwarmCode.Domain.Research do
 
   # ------------------------------------------------------------------ reads
 
+  # spec 74 EFFICIENCY-60: every column but the three blobs the index and the
+  # sidebar never draw (`sources`, `summary`, `interpretation`).
+  @list_fields Row.__schema__(:fields) -- [:sources, :summary, :interpretation]
+
   @doc """
   Researches, newest first. `:status` takes a name or a list of names,
   `:project_id` filters by tag, `:level` by level, `:limit` caps the rows.
+  `project: true` (spec 74 EFFICIENCY-60) selects the index's projection:
+  no `sources`/`summary`/`interpretation`, `source_count` set instead.
   """
   @spec list(keyword()) :: [Row.t()]
   def list(opts \\ []) do
     Row
+    |> project(opts[:project])
     |> filter_status(opts[:status])
     |> filter_project(opts[:project_id])
     |> filter_level(opts[:level])
@@ -67,6 +81,30 @@ defmodule SwarmCode.Domain.Research do
     |> maybe_limit(opts[:limit])
     |> Repo.all()
   end
+
+  defp project(query, true) do
+    query
+    |> select([r], struct(r, ^@list_fields))
+    |> select_merge([r], %{source_count: fragment("coalesce(json_array_length(?), 0)", r.sources)})
+  end
+
+  defp project(query, _no), do: query
+
+  @doc """
+  spec 74 EFFICIENCY-60: a full row as the index keeps it — `source_count` set
+  from the row, then the blobs dropped. A projected row passes through.
+  """
+  @spec row_summary(Row.t()) :: Row.t()
+  def row_summary(%Row{source_count: n} = row) when is_integer(n), do: row
+
+  def row_summary(%Row{} = row),
+    do: %{
+      row
+      | source_count: length(row.sources || []),
+        sources: [],
+        summary: nil,
+        interpretation: nil
+    }
 
   defp filter_level(query, nil), do: query
   defp filter_level(query, level), do: where(query, [r], r.level == ^level)
@@ -235,7 +273,16 @@ defmodule SwarmCode.Domain.Research do
           ms: non_neg_integer() | nil
         }
   def estimate(level) do
-    case list(status: "done", level: level, limit: 8) do
+    # spec 74 EFFICIENCY-60: the three columns it reads, not 8 full rows.
+    query =
+      from(r in Row,
+        where: r.status == "done" and r.level == ^level,
+        order_by: [desc: r.pinned_at, desc: r.inserted_at, desc: r.id],
+        limit: 8,
+        select: struct(r, [:id, :cost_usd, :started_at, :finished_at])
+      )
+
+    case Repo.all(query) do
       [] ->
         %{runs: 0}
 
@@ -622,10 +669,10 @@ defmodule SwarmCode.Domain.Research do
   end
 
   @doc """
-  Spec 51 §4.6: a research whose designed pass is gone keeps the report it had.
-  The kept `rendered.html` goes back to `report_path/1` when no report is there,
+  Spec 51 §4.6: a research whose designed pass is gone keeps the report it had,
   and the row reads `rendered` again — the button comes back, "designing…" does
-  not outlive the pass.
+  not outlive the pass. pass74 (spec 74) BUGS-60: the rendered `report.html`
+  never moved; a half-written `designed.html` is deleted.
   """
   @spec restore_rendered(Row.t()) :: {:ok, Row.t()} | {:error, Ecto.Changeset.t()}
   def restore_rendered(%Row{} = research) do
@@ -638,6 +685,10 @@ defmodule SwarmCode.Domain.Research do
   @doc false
   @spec restore_rendered_file(Row.t()) :: :ok
   def restore_rendered_file(%Row{} = research) do
+    File.rm(designed_path(research))
+
+    # A design interrupted by a build before pass 74 had moved the rendered
+    # report aside; it goes back once.
     path = report_path(research)
     kept = Path.join(dir(research), "rendered.html")
 

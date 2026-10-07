@@ -5,45 +5,102 @@ defmodule SwarmCode.Domain.LLM.OpenAI do
   """
   @behaviour SwarmCode.Domain.LLM.Provider
 
-  alias SwarmCode.Domain.LLM.{Chunks, Efforts, HTTP, Request, Result, SSE, ToolArgs}
+  alias SwarmCode.Domain.LLM.{Chunks, Efforts, HTTP, ProviderCaps, Request, Result, SSE, ToolArgs}
 
   # Servers that rejected `reasoning_effort` or `prompt_cache_key` once are
   # remembered (`ProviderCaps`, ETS) for the rest of the session so every later
   # request skips the parameter (and the retry).
 
+  @generic_rejections ["unknown parameter", "unrecognized"]
+
   @impl true
   def stream(%Request{} = r, on_event) do
     on_event = on_event || fn _ -> :ok end
-    base = base_url(r.provider)
-    url = base <> "/chat/completions"
 
-    headers = [
-      {"authorization", "Bearer " <> key(r.provider)},
-      {"content-type", "application/json"}
-    ]
+    # pass74 (spec 74) BUGS-28: the level is read once, and the keys it put on
+    # *this* body ride to `settle_error/3`. Re-reading the caps when the 400
+    # came back meant that once a concurrent sibling had remembered "no
+    # effort", every other in-flight request saw no level keys and failed.
+    # pass74 (spec 74) BUGS-51/52: every retry arm rebuilds the body from the
+    # request (`build_body/3`) with the level it chose, instead of taking keys
+    # off the rejected body — `Map.drop` also took the caller's `max_tokens`.
+    post(base_body(r, continuation?(r)), r, Efforts.level(r), MapSet.new(), on_event)
+  end
 
+  # pass74 (spec 74) BUGS-77: whether this model's continuation state is echoed.
+  defp continuation?(%Request{provider: provider, model: model}),
+    do: ProviderCaps.continuation?(provider, model)
+
+  # The part of the body no retry arm changes (but the continuation one):
+  # formatted once per call.
+  defp base_body(%Request{} = r, continuation?) do
     body = %{
       "model" => r.model,
-      "messages" => format_messages(r.system, r.messages),
+      "messages" => format_messages(r.system, r.messages, continuation?),
       "stream" => true,
       "stream_options" => %{"include_usage" => true},
       "max_tokens" => r.max_tokens,
       "temperature" => r.temperature
     }
 
-    body = if r.tools == [], do: body, else: Map.put(body, "tools", format_tools(r.tools))
-    body = put_effort(body, r)
-    # spec 66 T18: prefix-cache affinity across a run.
-    body = put_cache_key(body, r)
-
-    post(body, url, headers, r, on_event)
+    if r.tools == [], do: body, else: Map.put(body, "tools", format_tools(r.tools))
   end
 
-  defp post(body, url, headers, %Request{} = r, on_event) do
+  @doc false
+  # The body one attempt sends, and the keys its effort level put on it: the
+  # level, then the prefix-cache key (spec 66 T18), then what this model is
+  # known to need (pass74 BUGS-52) — after the level, so a level's own
+  # `max_tokens` is renamed too.
+  @spec build_body(map(), Request.t(), Efforts.level() | nil) :: {map(), [String.t()]}
+  def build_body(base, %Request{} = r, level) do
+    {body, sent_keys} = put_level(base, level)
+    {body |> put_cache_key(r) |> put_model_caps(r), sent_keys}
+  end
+
+  defp put_level(body, nil), do: {body, []}
+
+  defp put_level(body, level) do
+    level_body = if is_map(level["body"]), do: level["body"], else: %{}
+
+    {body |> Efforts.merge(level_body) |> Map.drop(List.wrap(level["drop"])),
+     Map.keys(level_body)}
+  end
+
+  # pass74 (spec 74) BUGS-52: o-series and gpt-5.x answer 400 to `max_tokens`
+  # ("use 'max_completion_tokens'") and to any temperature but the default.
+  # Once a model said so, its requests are sent the way it wants from the start.
+  defp put_model_caps(body, %Request{provider: provider, model: model}) do
+    body =
+      if Map.has_key?(body, "max_tokens") and
+           ProviderCaps.max_completion_tokens?(provider, model) do
+        {n, body} = Map.pop(body, "max_tokens")
+        Map.update(body, "max_completion_tokens", n, &max_of(&1, n))
+      else
+        body
+      end
+
+    if ProviderCaps.temperature?(provider, model), do: body, else: Map.delete(body, "temperature")
+  end
+
+  defp max_of(a, b) when is_number(a) and is_number(b), do: max(a, b)
+  defp max_of(a, _b), do: a
+
+  defp post(base, %Request{} = r, level, tried, on_event) do
+    {body, sent_keys} = build_body(base, r, level)
+    url = base_url(r.provider) <> "/chat/completions"
+
+    headers = [
+      {"authorization", "Bearer " <> key(r.provider)},
+      {"content-type", "application/json"}
+    ]
+
     init = %{
       sse: "",
       text: Chunks.new(),
       reasoning: Chunks.new(),
+      # pass74 (spec 74) BUGS-77: the reasoning came as `reasoning_content` —
+      # the field a thinking model wants back inside its tool loop.
+      reasoning_content?: false,
       calls: %{},
       usage: %{input: 0, output: 0, cache_read: 0},
       finish: nil,
@@ -52,7 +109,21 @@ defmodule SwarmCode.Domain.LLM.OpenAI do
       # whether the 200 that carried it is retried.
       error_code: nil,
       # spec 55 T13 (55a A1): set by a finish_reason or [DONE]; a 200 without it is retried.
-      completed?: false
+      completed?: false,
+      # pass74 (spec 74) BUGS-49: choice deltas so far; `HTTP` resets its idle
+      # deadline whenever this moves (keep-alives and empty deltas do not).
+      progress: 0
+    }
+
+    # What a failed attempt needs to decide on its retry.
+    ctx = %{
+      base: base,
+      body: body,
+      keys: sent_keys,
+      level: level,
+      tried: tried,
+      r: r,
+      on_event: on_event
     }
 
     case HTTP.stream_post(
@@ -73,17 +144,18 @@ defmodule SwarmCode.Domain.LLM.OpenAI do
       # error, so a server that names `reasoning_effort` in-band still gets the
       # existing one-shot retry without it.
       {:ok, %{error: message} = acc} when is_binary(message) ->
-        settle_error(message, body, url, headers, r, on_event, in_band_kind(acc))
+        settle_error(message, ctx, in_band_kind(acc))
 
       {:ok, acc} ->
-        {:ok, to_result(acc, r.model)}
+        max_tokens = body["max_tokens"] || body["max_completion_tokens"] || r.max_tokens
+        {:ok, to_result(acc, r.model, max_tokens)}
 
       # spec 67 T30 (G42): the transport's kind survives the one-shot retries.
       {:error, kind, message} ->
-        settle_error(message, body, url, headers, r, on_event, kind)
+        settle_error(message, ctx, kind)
 
       {:error, message} ->
-        settle_error(message, body, url, headers, r, on_event, nil)
+        settle_error(message, ctx, nil)
     end
   end
 
@@ -110,12 +182,10 @@ defmodule SwarmCode.Domain.LLM.OpenAI do
 
   defp status_code(_code), do: nil
 
-  defp settle_error(message, body, url, headers, %Request{} = r, on_event, kind) do
-    # Older / smaller OpenAI-compatible servers 400 on `reasoning_effort`.
-    # Drop the level's keys (spec 45 §3.4 — every key its body added, not only
-    # `reasoning_effort`), remember that for this provider and try exactly
-    # once more.
-    keys = level_keys(r)
+  # Each arm retries at most once per call (`tried`), after remembering what
+  # the 400 taught in `ProviderCaps`, so the next call does not ask again.
+  defp settle_error(message, %{body: body, keys: keys, r: r} = ctx, kind) do
+    level_key = ctx.level && ctx.level["key"]
 
     cond do
       # spec 66 T18: the one-shot shape for a server that does not know
@@ -124,21 +194,48 @@ defmodule SwarmCode.Domain.LLM.OpenAI do
       # takes a generic "unknown parameter" when the message names none of the
       # other fields — a 400 about `prompt_cache_key` used to turn
       # `reasoning_effort` off for the provider for the whole session.
-      Map.has_key?(body, "prompt_cache_key") and rejected_cache_key?(message, keys) ->
+      untried?(ctx, :cache_key) and Map.has_key?(body, "prompt_cache_key") and
+          rejected_cache_key?(message, keys) ->
         remember_no_cache_key(r.provider)
-        # Spec 43 §1.5 (B2): whatever the first attempt streamed before the error
-        # object must not stay in front of the second answer — the Anthropic
-        # provider resets the same way, and a reset with nothing streamed is a no-op.
-        on_event.({:text_reset})
-        on_event.({:reasoning_reset})
-        post(Map.delete(body, "prompt_cache_key"), url, headers, r, on_event)
+        retry(ctx, :cache_key, ctx.level)
 
-      keys != [] and Enum.any?(keys, &Map.has_key?(body, &1)) and
-          rejected_effort?(message, keys) ->
-        remember_no_effort(r.provider)
-        on_event.({:text_reset})
-        on_event.({:reasoning_reset})
-        post(Map.drop(body, keys), url, headers, r, on_event)
+      # pass74 (spec 74) BUGS-77: a server that will not take the continuation
+      # state back (the old deepseek-reasoner) — once, and remembered per model.
+      untried?(ctx, :continuation) and echoed_continuation?(body) and
+          rejected_continuation?(message) ->
+        ProviderCaps.remember_no_continuation(r.provider, r.model)
+        ctx.on_event.({:text_reset})
+        ctx.on_event.({:reasoning_reset})
+
+        post(
+          base_body(r, false),
+          r,
+          ctx.level,
+          MapSet.put(ctx.tried, :continuation),
+          ctx.on_event
+        )
+
+      # pass74 (spec 74) BUGS-52: "Unsupported parameter: 'max_tokens' … use
+      # 'max_completion_tokens'". Before the effort arm: the `max` level's own
+      # body carries `max_tokens`, and that arm would have dropped the level.
+      untried?(ctx, :max_completion_tokens) and Map.has_key?(body, "max_tokens") and
+          rejected_max_tokens?(message) ->
+        ProviderCaps.remember_max_completion_tokens(r.provider, r.model)
+        retry(ctx, :max_completion_tokens, ctx.level)
+
+      # pass74 (spec 74) BUGS-52: "Unsupported value: 'temperature' … Only the
+      # default (1) value is supported".
+      untried?(ctx, :temperature) and Map.has_key?(body, "temperature") and
+          rejected_temperature?(message) ->
+        ProviderCaps.remember_no_temperature(r.provider, r.model)
+        retry(ctx, :temperature, ctx.level)
+
+      # Older / smaller OpenAI-compatible servers 400 on `reasoning_effort`.
+      # Every key the level's body added counts (spec 45 §3.4), and `keys` are
+      # the ones this body was sent with (BUGS-28).
+      untried?(ctx, {:effort, level_key}) and keys != [] and
+        Enum.any?(keys, &Map.has_key?(body, &1)) and rejected_effort?(message, keys) ->
+        settle_effort(message, ctx)
 
       true ->
         # Spec 51 §6.10: this text becomes the op's `error` and the run's message.
@@ -149,12 +246,126 @@ defmodule SwarmCode.Domain.LLM.OpenAI do
     end
   end
 
+  # pass74 (spec 74) BUGS-51: which effort rejection this is decides how far
+  # it reaches. "Unknown parameter" is the server: the provider is remembered.
+  # A refused *value* ("does not support 'max' with this model") is one level
+  # of one model: that model falls back to its default level, and the llm node
+  # says so. Anything else is one model: its requests go without the keys.
+  defp settle_effort(message, %{r: r, level: level} = ctx) do
+    tag = {:effort, level["key"]}
+
+    cond do
+      unknown_parameter?(message) ->
+        remember_no_effort(r.provider)
+        retry(ctx, tag, nil)
+
+      value_rejected?(message, level) ->
+        ProviderCaps.remember_rejected_level(r.provider, r.model, level["key"])
+        fallback = Efforts.default_level(r, level)
+
+        used =
+          if fallback, do: "used default (#{fallback["key"]})", else: "sent without effort"
+
+        SwarmCode.Domain.LLM.on_retry(ctx.on_event).(
+          1,
+          1,
+          "effort #{level["key"]} not supported by #{r.model}; #{used}",
+          true
+        )
+
+        post(ctx.base, r, fallback, MapSet.put(ctx.tried, tag), ctx.on_event)
+
+      true ->
+        ProviderCaps.remember_no_model_effort(r.provider, r.model)
+        retry(ctx, tag, nil)
+    end
+  end
+
+  # Spec 43 §1.5 (B2): whatever the first attempt streamed before the error
+  # object must not stay in front of the second answer — the Anthropic
+  # provider resets the same way, and a reset with nothing streamed is a no-op.
+  defp retry(ctx, tag, level) do
+    ctx.on_event.({:text_reset})
+    ctx.on_event.({:reasoning_reset})
+    post(ctx.base, ctx.r, level, MapSet.put(ctx.tried, tag), ctx.on_event)
+  end
+
+  defp untried?(%{tried: tried}, tag), do: not MapSet.member?(tried, tag)
+
+  defp unknown_parameter?(message) do
+    text = String.downcase(to_string(message))
+    Enum.any?(@generic_rejections, &String.contains?(text, &1))
+  end
+
+  @doc false
+  # pass74 (spec 74) BUGS-51: the message quotes one of the level's values, or
+  # says the value is unsupported.
+  def value_rejected?(message, level) do
+    text = String.downcase(to_string(message))
+
+    String.contains?(text, "unsupported value") or String.contains?(text, "does not support") or
+      Enum.any?(level_values(level), fn value ->
+        Enum.any?(["'#{value}'", "\"#{value}\"", "`#{value}`"], &String.contains?(text, &1))
+      end)
+  end
+
+  defp level_values(%{"body" => body}) when is_map(body), do: leaf_values(body)
+  defp level_values(_level), do: []
+
+  defp leaf_values(map) when is_map(map), do: Enum.flat_map(Map.values(map), &leaf_values/1)
+  defp leaf_values(value) when is_binary(value) and value != "", do: [String.downcase(value)]
+  defp leaf_values(_value), do: []
+
+  defp echoed_continuation?(%{"messages" => messages}) when is_list(messages) do
+    Enum.any?(messages, fn m ->
+      Map.has_key?(m, "reasoning_content") or
+        Enum.any?(List.wrap(m["tool_calls"]), &Map.has_key?(&1, "extra_content"))
+    end)
+  end
+
+  defp echoed_continuation?(_body), do: false
+
+  @doc false
+  def rejected_continuation?(message) do
+    text = String.downcase(to_string(message))
+
+    String.contains?(text, "400") and
+      (String.contains?(text, "reasoning_content") or String.contains?(text, "extra_content"))
+  end
+
+  @doc false
+  def rejected_max_tokens?(message) do
+    text = String.downcase(to_string(message))
+
+    String.contains?(text, "400") and String.contains?(text, "max_tokens") and
+      String.contains?(text, "max_completion_tokens")
+  end
+
+  @temperature_rejections [
+    "unsupported value",
+    "only the default",
+    "does not support",
+    "not supported",
+    "unsupported parameter"
+  ]
+
+  @doc false
+  def rejected_temperature?(message) do
+    text = String.downcase(to_string(message))
+
+    String.contains?(text, "400") and String.contains?(text, "temperature") and
+      Enum.any?(@temperature_rejections, &String.contains?(text, &1))
+  end
+
   @doc """
   spec 66 T18: `prompt_cache_key` keeps one agent's requests on one prefix cache
   for the whole run. Omitted when the request carries no key, and after a server
   has once refused it.
   """
   @spec put_cache_key(map(), Request.t()) :: map()
+  # pass74 (spec 74) EFFICIENCY-42: a one-shot request routes on no cache.
+  def put_cache_key(body, %Request{cache: :none}), do: body
+
   def put_cache_key(body, %Request{cache_key: key} = r) when is_binary(key) and key != "" do
     if cache_key?(r.provider), do: Map.put(body, "prompt_cache_key", key), else: body
   end
@@ -177,8 +388,7 @@ defmodule SwarmCode.Domain.LLM.OpenAI do
   # spec 67 B36: "unknown parameter" / "unrecognized" are shared by every field a
   # server can refuse, so a classifier takes them only when the message names
   # none of the *other* fields this request may carry. Its own field name
-  # always counts.
-  @generic_rejections ["unknown parameter", "unrecognized"]
+  # always counts (`@generic_rejections` is defined at the top).
 
   defp rejected_field?(message, fields, other_fields) do
     text = String.downcase(to_string(message))
@@ -207,13 +417,6 @@ defmodule SwarmCode.Domain.LLM.OpenAI do
     do: {:retry, "server"}
 
   defp retry_if(_acc), do: :ok
-
-  defp level_keys(%Request{} = r) do
-    case Efforts.level(r) do
-      %{"body" => body} when is_map(body) -> Map.keys(body)
-      _none -> []
-    end
-  end
 
   @doc """
   Merges the request's effort level into the body (spec 45 §3.4) unless this
@@ -252,10 +455,79 @@ defmodule SwarmCode.Domain.LLM.OpenAI do
   end
 
   @doc "Prefixes the optional system message and maps every message to the wire format."
-  @spec format_messages(String.t() | nil, [map()]) :: [map()]
-  def format_messages(system, messages) do
+  @spec format_messages(String.t() | nil, [map()], boolean()) :: [map()]
+  def format_messages(system, messages, continuation? \\ true) do
     head = if blank?(system), do: [], else: [%{"role" => "system", "content" => system}]
-    head ++ Enum.map(messages, &format_message/1)
+
+    # pass74 (spec 74) BUGS-77: continuation state goes back only inside the
+    # current tool loop — on assistant turns after the last user message.
+    loop_start = if continuation?, do: last_user_index(messages) + 1, else: :none
+
+    body =
+      messages
+      |> Enum.with_index()
+      |> Enum.map(fn {m, i} -> format_message(m, loop_start != :none and i >= loop_start) end)
+
+    head ++ body
+  end
+
+  defp last_user_index(messages) do
+    messages
+    |> Enum.with_index()
+    |> Enum.reduce(-1, fn
+      {%{role: "user"}, i}, _last -> i
+      _other, last -> last
+    end)
+  end
+
+  # pass74 (spec 74) EFFICIENCY-45: the data URL is spliced into the encoded
+  # body as iodata — Req's `json:` step encodes with `Jason.encode_to_iodata!`,
+  # which takes fragments — instead of a fresh binary copy of every image's
+  # base64 on every call. A MIME type and base64 need no JSON escaping.
+  @doc false
+  def data_url(image),
+    do: Jason.Fragment.new([?", "data:", image.mime, ";base64,", image.data, ?"])
+
+  defp format_message(%{role: "assistant"} = m, true), do: echo_continuation(m)
+  defp format_message(m, _in_loop?), do: format_message(m)
+
+  # pass74 (spec 74) BUGS-77: `reasoning_content` on the message, and each
+  # call's `extra_content` (Gemini's thought signature) on the call it came
+  # with. Only blocks of type "openai" — Anthropic's never reach this wire.
+  defp echo_continuation(m) do
+    message = format_message(m)
+
+    case Enum.find(Map.get(m, :provider_blocks) || [], &(&1["type"] == "openai")) do
+      nil ->
+        message
+
+      block ->
+        message =
+          case block["reasoning_content"] do
+            text when is_binary(text) and text != "" ->
+              Map.put(message, "reasoning_content", text)
+
+            _other ->
+              message
+          end
+
+        extras = block["extra_content"] || %{}
+
+        case message do
+          %{"tool_calls" => calls} when extras != %{} ->
+            %{message | "tool_calls" => Enum.map(calls, &put_extra(&1, extras))}
+
+          _other ->
+            message
+        end
+    end
+  end
+
+  defp put_extra(%{"id" => id} = call, extras) do
+    case Map.fetch(extras, id) do
+      {:ok, extra} -> Map.put(call, "extra_content", extra)
+      :error -> call
+    end
   end
 
   @doc "Maps tool specs to OpenAI `function` tools."
@@ -286,7 +558,7 @@ defmodule SwarmCode.Domain.LLM.OpenAI do
             Enum.map(images, fn image ->
               %{
                 "type" => "image_url",
-                "image_url" => %{"url" => "data:#{image.mime};base64,#{image.data}"}
+                "image_url" => %{"url" => data_url(image)}
               }
             end)
 
@@ -310,13 +582,13 @@ defmodule SwarmCode.Domain.LLM.OpenAI do
   defp format_message(%{role: "tool"} = m) do
     text = Map.get(m, :content) || ""
 
-    text =
-      case Map.get(m, :images) || [] do
-        [] ->
-          text
+    # spec 74 EFFICIENCY-40: the agent keeps only `image_count` on this path.
+    count = length(Map.get(m, :images) || []) + (Map.get(m, :image_count) || 0)
 
-        images ->
-          String.trim_leading(text <> String.duplicate("\n[image omitted]", length(images)), "\n")
+    text =
+      case count do
+        0 -> text
+        n -> String.trim_leading(text <> String.duplicate("\n[image omitted]", n), "\n")
       end
 
     %{
@@ -391,11 +663,19 @@ defmodule SwarmCode.Domain.LLM.OpenAI do
 
     acc
     |> apply_reasoning(delta["reasoning_content"] || delta["reasoning"], on_event)
+    |> note_reasoning_content(delta["reasoning_content"])
     |> apply_content(delta["content"], on_event)
     |> apply_tool_calls(delta["tool_calls"])
     |> apply_finish(choice["finish_reason"])
     |> apply_usage(chunk["usage"])
+    |> count_progress(delta, choice["finish_reason"])
   end
+
+  # pass74 (spec 74) BUGS-49: a non-empty choice delta or a finish is progress.
+  defp count_progress(acc, delta, finish) when (is_map(delta) and delta != %{}) or finish != nil,
+    do: %{acc | progress: acc.progress + 1}
+
+  defp count_progress(acc, _delta, _finish), do: acc
 
   defp first_choice(%{"choices" => [choice | _rest]}) when is_map(choice), do: choice
   defp first_choice(_chunk), do: %{}
@@ -416,6 +696,11 @@ defmodule SwarmCode.Domain.LLM.OpenAI do
 
   defp apply_reasoning(acc, _text, _on_event), do: acc
 
+  defp note_reasoning_content(acc, text) when is_binary(text) and text != "",
+    do: %{acc | reasoning_content?: true}
+
+  defp note_reasoning_content(acc, _text), do: acc
+
   defp apply_tool_calls(acc, tool_calls) when is_list(tool_calls) do
     Enum.reduce(tool_calls, acc, &put_call/2)
   end
@@ -424,20 +709,26 @@ defmodule SwarmCode.Domain.LLM.OpenAI do
 
   defp put_call(tool_call, acc) when is_map(tool_call) do
     index = tool_call["index"] || 0
-    current = Map.get(acc.calls, index, %{id: nil, name: nil, args: Chunks.new()})
+    current = Map.get(acc.calls, index, %{id: nil, name: nil, args: Chunks.new(), extra: nil})
     function = tool_call["function"] || %{}
 
     updated = %{
       current
       | id: current.id || tool_call["id"],
         name: current.name || function["name"],
-        args: Chunks.append(current.args, fragment(function["arguments"]))
+        args: Chunks.append(current.args, fragment(function["arguments"])),
+        # pass74 (spec 74) BUGS-77: Gemini's per-call thought signature.
+        extra: merge_extra(current.extra, tool_call["extra_content"])
     }
 
     %{acc | calls: Map.put(acc.calls, index, updated)}
   end
 
   defp put_call(_tool_call, acc), do: acc
+
+  defp merge_extra(nil, %{} = extra), do: extra
+  defp merge_extra(%{} = current, %{} = extra), do: Efforts.merge(current, extra)
+  defp merge_extra(current, _extra), do: current
 
   defp fragment(value) when is_binary(value), do: value
   defp fragment(_value), do: ""
@@ -462,7 +753,7 @@ defmodule SwarmCode.Domain.LLM.OpenAI do
 
   defp apply_usage(acc, _usage), do: acc
 
-  defp to_result(acc, model) do
+  defp to_result(acc, model, max_tokens) do
     tool_calls =
       acc.calls
       |> Enum.sort_by(fn {index, _call} -> index end)
@@ -484,14 +775,47 @@ defmodule SwarmCode.Domain.LLM.OpenAI do
         end
       end)
 
+    # pass74 (spec 74) BUGS-29: `finish_reason: "length"` — an undecodable
+    # call was cut off at the output limit, not malformed.
+    tool_calls =
+      if acc.finish == "length",
+        do: Result.mark_truncated(tool_calls, max_tokens),
+        else: tool_calls
+
+    reasoning = Chunks.to_string(acc.reasoning)
+
     %Result{
       text: Chunks.to_string(acc.text),
-      reasoning: Chunks.to_string(acc.reasoning),
+      reasoning: reasoning,
       tool_calls: tool_calls,
+      provider_blocks: continuation_blocks(acc, reasoning, tool_calls),
       usage: acc.usage,
       stop_reason: stop_reason(acc.finish, tool_calls),
       model: model
     }
+  end
+
+  # pass74 (spec 74) BUGS-77: the state a thinking model needs back inside its
+  # tool loop, kept (in memory only, like Anthropic's signed blocks) on a turn
+  # that called tools. A turn without calls ends the loop: nothing to keep.
+  defp continuation_blocks(_acc, _reasoning, []), do: []
+
+  defp continuation_blocks(acc, reasoning, tool_calls) do
+    ids = acc.calls |> Enum.sort_by(&elem(&1, 0)) |> Enum.zip(tool_calls)
+
+    extras =
+      for {{_index, %{extra: %{} = extra}}, %{id: id}} <- ids,
+          extra != %{},
+          into: %{},
+          do: {id, extra}
+
+    reasoning = if acc.reasoning_content?, do: reasoning, else: ""
+
+    if reasoning == "" and extras == %{} do
+      []
+    else
+      [%{"type" => "openai", "reasoning_content" => reasoning, "extra_content" => extras}]
+    end
   end
 
   @doc """

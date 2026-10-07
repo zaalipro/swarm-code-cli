@@ -108,6 +108,9 @@ defmodule SwarmCode.Domain.Engine.RunServerAnswerQuestionTest do
       pending_reasoning: Chunks.new(),
       assistant_message: nil,
       run_dirty: false,
+      # the RunServer state key the synced engine added at 4c7c577 (spec 74
+      # EFFICIENCY-4)
+      totals_dirty: false,
       conversation: %{id: Ecto.UUID.generate()},
       run: %{id: Ecto.UUID.generate(), tokens_in: 0, tokens_out: 0, cost_usd: nil}
     }

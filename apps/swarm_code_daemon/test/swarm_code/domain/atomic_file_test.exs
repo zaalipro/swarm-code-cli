@@ -5,7 +5,7 @@ defmodule SwarmCode.Domain.AtomicFileTest do
   alias SwarmCode.Domain.AtomicFile
 
   setup do
-    root = Path.join(System.tmp_dir!(), "atomic_file_#{System.unique_integer([:positive])}")
+    root = Path.join(System.tmp_dir!(), "atomic_file_#{Ecto.UUID.generate()}")
 
     outside =
       Path.join(root, "..") |> Path.expand() |> Path.join("outside_#{:erlang.phash2(root)}")

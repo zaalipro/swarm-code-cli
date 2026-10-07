@@ -275,11 +275,19 @@ defmodule SwarmCode.Domain.Engine.Consensus do
   The run-row copy of `config/1` (spec 40 §2.2): string keys, the judge and
   the implementer as ids and names, no structs — what `runs.consensus_config`
   stores.
-  """
-  @spec persistable(map() | nil) :: map() | nil
-  def persistable(nil), do: nil
 
-  def persistable(config) do
+  spec 74 EFFICIENCY-46: `prompt` is the run's own `prompt`. The request is
+  stored only when it differs from it (a goal turn, a resume) — for an
+  ordinary turn the two are the same text, and every `consensus_round_done`
+  rewrite of the row carried it twice. Readers fall back to the run prompt.
+  """
+  @spec persistable(map() | nil, String.t() | nil) :: map() | nil
+  def persistable(config, prompt \\ nil)
+  def persistable(nil, _prompt), do: nil
+
+  def persistable(config, prompt) do
+    request = Map.get(config, :request)
+
     %{
       "checks" => config.checks,
       "rounds" => config.rounds,
@@ -287,7 +295,7 @@ defmodule SwarmCode.Domain.Engine.Consensus do
       "judge_effort" => config.judge_effort,
       # Spec 51 §5.7: the user's request, so a resumed run is judged against
       # it and not against "Continue the interrupted turn".
-      "request" => Map.get(config, :request),
+      "request" => if(request != prompt, do: request),
       "judge" => model_row(config.judge),
       # Spec 45 §4.1
       "implementer" => model_row(Map.get(config, :implementer)),
@@ -313,15 +321,15 @@ defmodule SwarmCode.Domain.Engine.Consensus do
           implementer: map() | nil,
           implementer_effort: String.t() | nil
         }
-  def config_of(%{consensus_config: %{} = c}) do
+  def config_of(%{consensus_config: %{} = c} = run) do
     %{
       checks: c["checks"] || default_keys(),
       rounds: c["rounds"] || 2,
       mode: c["mode"] || "build",
       judge: c["judge"],
       judge_effort: c["judge_effort"],
-      # Spec 51 §5.7
-      request: c["request"],
+      # Spec 51 §5.7. spec 74 EFFICIENCY-46: nil when it was the run prompt.
+      request: c["request"] || Map.get(run, :prompt),
       # Spec 45 §4.1: the implementer as stored — ids and names, no structs.
       implementer: c["implementer"],
       implementer_effort: c["implementer_effort"]

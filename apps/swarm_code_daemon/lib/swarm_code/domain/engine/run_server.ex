@@ -4,7 +4,15 @@ defmodule SwarmCode.Domain.Engine.RunServer do
 
   Every node change goes through this process; changes are persisted (SQLite) when
   meaningful and broadcast on the conversation topic at most every 100 ms
-  (`{:nodes_upsert, run_id, nodes}`, `{:assistant_delta, message_id, text}`, `{:run_updated, run}`).
+  (`{:nodes_upsert, run_id, nodes}`, `{:assistant_delta, message_id, text}`, `{:run_updated, run}`,
+  `{:run_totals, run_id, totals}`).
+
+  Spec 74 EFFICIENCY-4: `{:run_updated, run}` means the run row really
+  changed (status, error, label, finish…). A flush whose only run change is the
+  token totals sends `{:run_totals, run_id, %{tokens_in: integer, tokens_out:
+  integer, cost_usd: float | nil}}` instead — the three columns, nothing else.
+  A `{:run_updated}` always carries the current totals, so a flush that has
+  both sends only the `{:run_updated}`.
   It also starts/queues agents within `max_concurrent_agents`, gates operations on user
   approval, stops subtrees, detects agent crashes and finishes the run by writing the
   assistant / swarm / error message.
@@ -14,7 +22,7 @@ defmodule SwarmCode.Domain.Engine.RunServer do
 
   alias SwarmCode.Domain.Conversations
   alias SwarmCode.Domain.Conversations.Node
-  alias SwarmCode.Domain.Engine.{AgentsSup, Events, Isolation, Prompts, Telemetry}
+  alias SwarmCode.Domain.Engine.{AgentsSup, Events, Isolation, ProjectContext, Prompts, Telemetry}
   alias SwarmCode.Domain.LLM.Chunks
   alias SwarmCode.Domain.{Pricing, Providers, Tools}
   alias SwarmCode.Domain.Tools.IntegrateAgent
@@ -99,6 +107,16 @@ defmodule SwarmCode.Domain.Engine.RunServer do
     do: GenServer.cast(via(run_id), {:reasoning_reset, node_id})
 
   @doc """
+  Spec 74 BUGS-71: a window that subscribed mid-stream asks for what it
+  missed. The pending delta goes to every subscriber first; then `pid` alone
+  gets the whole text so far as a reset, which replaces what its deltas built.
+  A cast — the LiveView never blocks on the run.
+  """
+  @spec resync_stream(String.t(), pid()) :: :ok
+  def resync_stream(run_id, pid) when is_pid(pid),
+    do: GenServer.cast(via(run_id), {:resync_stream, pid})
+
+  @doc """
   Tells a live run about the AI label that landed after it started (spec 13 §4
   + §11 A-3). The server keeps its own copy of the `runs` row and broadcasts it
   on every flush, so without this the next token update would push the creation
@@ -110,6 +128,19 @@ defmodule SwarmCode.Domain.Engine.RunServer do
     GenServer.cast(via(run_id), {:set_label, label})
   catch
     :exit, _ -> :ok
+  end
+
+  @doc """
+  spec 74 BUGS-33: adds the usage of a one-shot request made for this run
+  outside its agents (the run label) to the run's token and cost totals.
+  `:not_running` when the run has already ended — the caller then adds it to
+  the row itself (`Writes.add_run_usage/4`).
+  """
+  @spec add_usage(String.t(), map(), float() | nil) :: :ok | :not_running
+  def add_usage(run_id, usage, cost) do
+    GenServer.call(via(run_id), {:add_usage, usage, cost})
+  catch
+    :exit, _ -> :not_running
   end
 
   @doc "Appends a user message to the root agent's next LLM call (see item 5, steering)."
@@ -126,7 +157,16 @@ defmodule SwarmCode.Domain.Engine.RunServer do
     # …}` still in the mailbox was processed afterwards — the agent read the
     # message twice. A steer waits for its own server; only a server that is
     # gone is `:not_running`.
-    GenServer.call(via(run_id), {:steer, text, images, opts[:node_id]}, :infinity)
+    #
+    # spec 74 BUGS-76: `research_ids:` — the reports the steer attached; the
+    # message keeps its old shape when there are none.
+    message =
+      case List.wrap(opts[:research_ids]) do
+        [] -> {:steer, text, images, opts[:node_id]}
+        ids -> {:steer, text, images, opts[:node_id], ids}
+      end
+
+    GenServer.call(via(run_id), message, :infinity)
   catch
     :exit, {:noproc, _} -> {:error, :not_running}
     :exit, {:shutdown, _} -> {:error, :not_running}
@@ -139,12 +179,17 @@ defmodule SwarmCode.Domain.Engine.RunServer do
 
   # spec 66 T4/T5: `safety` is the command's class; `request_approval/3` keeps
   # working and means `:normal`.
-  @spec request_approval(String.t(), String.t(), :read | :write | :execute, atom()) ::
+  @spec request_approval(
+          String.t(),
+          String.t(),
+          :read | :write | :execute | :private_network,
+          atom()
+        ) ::
           :approved | :denied | :timeout
   def request_approval(run_id, node_id, permission, safety),
     do: GenServer.call(via(run_id), {:request_approval, node_id, permission, safety}, :infinity)
 
-  @spec request_approval(String.t(), String.t(), :read | :write | :execute) ::
+  @spec request_approval(String.t(), String.t(), :read | :write | :execute | :private_network) ::
           :approved | :denied | :timeout
   def request_approval(run_id, node_id, permission),
     do: request_approval(run_id, node_id, permission, :normal)
@@ -374,6 +419,15 @@ defmodule SwarmCode.Domain.Engine.RunServer do
   @spec get_state(String.t()) :: map() | {:error, :not_running}
   def get_state(run_id), do: safe_call(run_id, :get_state)
 
+  @doc """
+  The run's `tokens_in`, `tokens_out` and `cost_usd` as they stand now, after
+  a flush (spec 74 BUGS-34): a research closing reads its totals here instead
+  of from SQLite before the 100 ms flush, and without copying the whole state.
+  `{:error, :not_running}` once the run has stopped.
+  """
+  @spec finish_totals(String.t()) :: map() | {:error, :not_running}
+  def finish_totals(run_id), do: safe_call(run_id, :finish_totals)
+
   # spec 72 C1: deliver a message to an agent's mailbox.
   @spec deliver_message(String.t(), String.t(), String.t(), String.t()) ::
           :ok | {:error, term()}
@@ -422,7 +476,7 @@ defmodule SwarmCode.Domain.Engine.RunServer do
     end)
 
     # spec 73 T8
-    if hook = state.pending_session_hook, do: Task.shutdown(hook.task, 100)
+    if prepare = state.pending_prepare, do: Task.shutdown(prepare.task, 100)
 
     # spec 73 T56 (F1): a background agent's clock goes with its owner.
     Enum.each(state.agents, fn
@@ -567,6 +621,12 @@ defmodule SwarmCode.Domain.Engine.RunServer do
         busy_warned?: false,
         # spec 55 T8: a busy terminal write waits here for :finish_retry
         finish_pending: nil,
+        # spec 74 BUGS-4: the RunSup this server runs under — the run-end
+        # cleanup waits for it (and so for every agent) to be gone.
+        run_sup: run_sup(),
+        # spec 74 BUGS-19: the names of the agents the finish stopped, kept
+        # across a `:finish_retry` so the note survives the second attempt.
+        stopped_at_end: [],
         position: 0,
         agents: %{},
         queue: [],
@@ -586,6 +646,9 @@ defmodule SwarmCode.Domain.Engine.RunServer do
         pending_reasoning: Chunks.new(),
         stream: %{},
         run_dirty: false,
+        # spec 74 EFFICIENCY-4: the totals moved since the last announcement;
+        # `flush/1` sends `{:run_totals}` for it unless `run_dirty` is set too.
+        totals_dirty: false,
         totals: %{},
         totals_written: nil,
         root_node_id: nil,
@@ -602,8 +665,9 @@ defmodule SwarmCode.Domain.Engine.RunServer do
         baselines: %{},
         finalization_generation: 0,
         pending_finalization: %{},
-        # spec 73 T8: the chat run's `session_start` hook, while it runs.
-        pending_session_hook: nil,
+        # spec 73 T8, spec 74 UI-SPEED-13: the root's prepare task (project
+        # context, then a chat run's `session_start` hook), while it runs.
+        pending_prepare: nil,
         # spec 70 C6: maps background agent node_id to parent agent node_id.
         background_agents: %{},
         # spec 72 C1: per-agent bounded mailboxes for peer messaging.
@@ -647,6 +711,13 @@ defmodule SwarmCode.Domain.Engine.RunServer do
       })
 
     {:ok, Map.put(state, :telemetry_start, telemetry_start), {:continue, :boot}}
+  end
+
+  defp run_sup do
+    case Process.get(:"$ancestors") do
+      [pid | _] when is_pid(pid) -> pid
+      _other -> nil
+    end
   end
 
   defp max_live(%{workflow: %{wf: %{max_live: n}}}) when is_integer(n), do: n
@@ -806,156 +877,187 @@ defmodule SwarmCode.Domain.Engine.RunServer do
     # own work now: an owned task started here, its output merged into the
     # project instructions before the root agent starts, cancelled with the
     # run's other background work. Still once per turn, as hooks.ex documents.
-    if state.run.kind == "chat",
-      do: {:noreply, start_session_hook(state)},
-      else: {:noreply, start_agent_process(state, node.id)}
+    #
+    # spec 74 UI-SPEED-13: `ProjectContext.build/2` (config, a depth-3 walk
+    # with `git ls-files --ignored`, up to 12 instruction files, the memory)
+    # joined it — it ran in the same send handler, 31–95 ms per turn. The
+    # compactor's system prompt is `Prompts.base_only/1` and reads none of it.
+    if state.run.kind == "compact",
+      do: {:noreply, start_agent_process(state, node.id)},
+      else: {:noreply, start_prepare(state)}
   end
 
   # spec 73 T8: the hook runs off the state owner; `ProjectConfig.load/1` reads
   # the file there too. The generation is the isolation one — a stop bumps it,
   # so a result that lands after `cancel_background_work(:all)` is ignored.
-  defp start_session_hook(state) do
+  #
+  # spec 74 UI-SPEED-13: one owned task prepares the root — the project
+  # context first (its ignore-set cache lives and dies in this task's process
+  # dictionary), then, for a chat run, the session hook. A context that cannot
+  # be built fails the run; a failing hook only logs, as before.
+  defp start_prepare(state) do
     generation = state.isolation_generation
-    root = state.project.root_path
+    project = state.project
+    conversation = state.conversation
+    given = Map.get(state, :project_context)
+    hook? = state.run.kind == "chat"
 
     task =
       Task.Supervisor.async_nolink(SwarmCode.Domain.TaskSupervisor, fn ->
-        result =
-          try do
-            SwarmCode.Domain.Hooks.run(:session_start, %{}, root)
-          rescue
-            error -> {:error, Exception.message(error)}
-          catch
-            kind, reason -> {:error, Exception.format_banner(kind, reason)}
-          end
+        context =
+          guarded(fn -> {:ok, given || ProjectContext.build(project, conversation)} end)
 
-        {:session_hook, generation, result}
+        hook =
+          if hook? and match?({:ok, _}, context),
+            do:
+              guarded(fn ->
+                SwarmCode.Domain.Hooks.run(:session_start, %{}, project.root_path)
+              end),
+            else: :ok
+
+        {:prepared, generation, context, hook}
       end)
 
-    %{state | pending_session_hook: %{task: task, generation: generation}}
+    %{state | pending_prepare: %{task: task, generation: generation}}
+  end
+
+  defp guarded(fun) do
+    fun.()
+  rescue
+    error -> {:error, SwarmCode.Domain.LLM.HTTP.redact(Exception.message(error))}
+  catch
+    kind, reason ->
+      {:error, SwarmCode.Domain.LLM.HTTP.redact(Exception.format_banner(kind, reason))}
   end
 
   # spec 73 T8: the root agent starts from here. `{:inject, text}` is appended
-  # to the instructions and the root's system prompt is rebuilt from them; the
-  # spec built at boot is kept otherwise (its `messages` may already carry a
-  # steer that arrived while the hook ran).
-  defp start_root_after_hook(state, result) do
+  # to the instructions. spec 74 UI-SPEED-13: the root's system prompt is
+  # rebuilt from the prepared context; the rest of the spec built at boot is
+  # kept (its `messages` may already carry a steer that arrived meanwhile).
+  defp start_root_after_prepare(state, {:error, reason}, _hook) do
+    Logger.warning("swarm_code: could not prepare run #{state.run.id}: #{reason}")
+
+    agent_finished(
+      state.run.id,
+      state.root_node_id,
+      {:error, "could not prepare the run: " <> reason}
+    )
+
+    state
+  end
+
+  defp start_root_after_prepare(state, {:ok, ctx}, hook) do
     root_id = state.root_node_id
 
-    state =
-      case result do
+    ctx =
+      case hook do
         {:inject, text} when is_binary(text) and text != "" ->
-          ctx = Map.get(state, :project_context) || %{}
+          Map.update(ctx || %{}, :instructions, text, fn
+            existing when is_binary(existing) and existing != "" ->
+              existing <> "\n\n" <> text
 
-          ctx =
-            Map.update(ctx, :instructions, text, fn
-              existing when is_binary(existing) and existing != "" ->
-                existing <> "\n\n" <> text
-
-              _empty ->
-                text
-            end)
-
-          state = Map.put(state, :project_context, ctx)
-          agent = state.agents[root_id]
-
-          put_agent(state, root_id, %{
-            agent
-            | spec: %{agent.spec | system: root_spec(state).system}
-          })
+            _empty ->
+              text
+          end)
 
         {:error, reason} ->
           Logger.warning("swarm_code: session_start hook failed: #{task_reason(reason)}")
-          state
+          ctx
 
         _ok ->
-          state
+          ctx
       end
 
+    state = Map.put(state, :project_context, ctx)
+
     case state.agents[root_id] do
-      %{server: nil, result: nil} -> start_agent_process(state, root_id)
-      _started_or_gone -> state
+      %{server: nil, result: nil} = agent ->
+        state
+        |> put_agent(root_id, %{agent | spec: %{agent.spec | system: root_spec(state).system}})
+        |> start_agent_process(root_id)
+
+      _started_or_gone ->
+        state
     end
   end
 
   @impl true
   def handle_call({:register_node, attrs}, _from, state) do
+    # spec 74 BUGS-48: a register queued behind the stop of its owner's
+    # subtree used to insert a `running` op that nothing would ever settle.
+    # It is inserted settled, and still answered `{:ok, node}` —
+    # `Operation.start/3` matches on it.
+    attrs =
+      if owner_live?(state, attrs[:parent_id]),
+        do: attrs,
+        else:
+          Map.merge(attrs, %{
+            status: "stopped",
+            progress: 100,
+            finished_at: now(),
+            error_kind: "parent_stopped"
+          })
+
     {node, state} = do_register_node(state, attrs)
     {:reply, {:ok, node}, state}
   end
 
   def handle_call({:request_approval, node_id, permission, safety}, from, state) do
-    # spec 66 T4: a dangerous command is asked about even when the class was
-    # "always allow"ed. T5: a command whose family the project already approved
-    # never gets here a second time.
-    if safety != :dangerous and
-         (MapSet.member?(state.always, always_key(state, node_id, permission)) or
-            auto_approved?(state, node_id)) do
-      {:reply, :approved, state}
-    else
-      timer = Process.send_after(self(), {:approval_timeout, node_id}, @approval_timeout_ms)
+    cond do
+      # spec 74 BUGS-48: an approval queued behind a stop revived the stopped
+      # op (`awaiting_approval`), left a Questions row and pinged the user.
+      not op_live?(state, node_id) ->
+        {:reply, :denied, state}
 
-      state =
-        state
-        |> put_in([:approvals, node_id], %{
-          from: from,
-          timer: timer,
-          permission: permission,
-          safety: safety,
-          requested_at: DateTime.utc_now()
-        })
-        # spec 66 T3: the card used to render the node title alone — "run: " and
-        # 60 characters of the command — and `detail` said "awaiting approval".
-        # The arguments were on the node the whole time.
-        |> put_node(node_id, %{
-          status: "awaiting_approval",
-          detail: approval_detail(state, node_id),
-          approval_prefix: approval_prefix(state, node_id, safety)
-        })
+      # spec 66 T4: a dangerous command is asked about even when the class was
+      # "always allow"ed. T5: a command whose family the project already
+      # approved never gets here a second time.
+      safety != :dangerous and
+          (MapSet.member?(state.always, always_key(state, node_id, permission)) or
+             auto_approved?(state, node_id) or
+             mission_commands_allowed?(state, node_id, permission)) ->
+        {:reply, :approved, state}
 
-      SwarmCode.Domain.Engine.Questions.put(
-        state.conversation.id,
-        state.run.id,
-        node_id,
-        :approval
-      )
+      true ->
+        timer = Process.send_after(self(), {:approval_timeout, node_id}, @approval_timeout_ms)
 
-      state = notify_waiting(state, node_id)
+        state =
+          state
+          |> put_in([:approvals, node_id], %{
+            from: from,
+            timer: timer,
+            permission: permission,
+            safety: safety,
+            requested_at: DateTime.utc_now()
+          })
+          # spec 66 T3: the card used to render the node title alone — "run: " and
+          # 60 characters of the command — and `detail` said "awaiting approval".
+          # The arguments were on the node the whole time.
+          |> put_node(node_id, %{
+            status: "awaiting_approval",
+            detail: approval_detail(state, node_id),
+            approval_prefix: approval_prefix(state, node_id, safety)
+          })
 
-      {:noreply, state}
+        SwarmCode.Domain.Engine.Questions.put(
+          state.conversation.id,
+          state.run.id,
+          node_id,
+          :approval
+        )
+
+        state = notify_waiting(state, node_id)
+
+        {:noreply, state}
     end
   end
 
   def handle_call({:ask_user, node_id, questions, timeout}, from, state) do
-    # Spec 51 §5.4: `:infinity` installs no timer — the consensus gate waits
-    # for the user's answer or their Stop, never for a clock.
-    timer =
-      if timeout == :infinity,
-        do: nil,
-        else: Process.send_after(self(), {:question_timeout, node_id}, timeout)
-
-    first = questions |> List.first() |> then(&(&1 && &1["question"]))
-
-    state =
-      state
-      |> put_in([:questions, node_id], %{
-        from: from,
-        timer: timer,
-        questions: questions,
-        answers: %{},
-        requested_at: DateTime.utc_now()
-      })
-      |> put_node(node_id, %{status: "awaiting_answer", detail: first})
-
-    SwarmCode.Domain.Engine.Questions.put(state.conversation.id, state.run.id, node_id)
-    state = notify_waiting(state, node_id)
-
-    Events.broadcast(
-      state.conversation.id,
-      {:question, state.run.id, node_id, questions}
-    )
-
-    {:noreply, flush(state)}
+    # spec 74 BUGS-48: a question queued behind a stop would wait for an
+    # answer nobody can give (the panel of a stopped agent).
+    if op_live?(state, node_id),
+      do: ask_user_call(state, node_id, questions, timeout, from),
+      else: {:reply, {:error, "stopped"}, state}
   end
 
   # Spec 37 §4.2: `submit_plan` asks for the config and claims a round in one
@@ -1005,33 +1107,51 @@ defmodule SwarmCode.Domain.Engine.RunServer do
     {:reply, :ok, state}
   end
 
-  def handle_call({:start_agent, %{role: "worker"} = attrs}, _from, state) do
+  # spec 74 BUGS-48: a spawn queued behind the stop of its parent's subtree
+  # started a live orphan — nobody awaited it and no stop reached it. The
+  # checks and the start below answer `{:start_agent_live, attrs}`, which
+  # only this clause sends.
+  def handle_call({:start_agent, attrs}, from, state) do
+    if owner_live?(state, attrs[:parent_id]),
+      do: handle_call({:start_agent_live, attrs}, from, state),
+      else: {:reply, {:error, "parent stopped"}, state}
+  end
+
+  def handle_call({:start_agent_live, %{role: "worker"} = attrs}, _from, state) do
     name = String.slice(to_string(attrs.name), 0, 24)
     opts = attrs.opts || []
     capability = opts[:capability] || :read_only
     schema = opts[:schema]
 
     # Spec 25 §1.3: a skill's instructions, appended verbatim.
-    system =
-      Prompts.worker(
-        state.project,
-        name,
-        Keyword.merge(prompt_opts(state), capability: capability)
-      ) <>
-        if(schema, do: Prompts.structured_output_note(), else: "") <>
-        case opts[:system_extra] do
-          text when is_binary(text) and text != "" -> "\n\n" <> text
-          _other -> ""
-        end
+    system_extra =
+      case opts[:system_extra] do
+        text when is_binary(text) and text != "" -> text
+        _other -> nil
+      end
+
+    system = worker_system(state, state.project, name, capability, schema, system_extra)
 
     tools =
       Tools.for_worker(capability, state.project.id) ++
         if(schema, do: [Tools.structured_output_ref(schema)], else: [])
 
+    # Spec 75 (pass 71): a mission agent names its slot (orchestrator, worker,
+    # validator) and runs on that slot's model and effort. `model_map` (a
+    # research tier, the consensus judge or implementer) still wins, an explicit
+    # `model:`/`effort:` still wins, and an agent without `role:` resolves
+    # exactly as before.
+    {role_model, role_effort} = SwarmCode.Domain.Providers.role_model(opts, state.conversation)
+
     spec = %{
       name: name,
       role: "worker",
       system: system,
+      # spec 74 ARCHITECTURE-8 (under EFFICIENCY-39): what the system prompt
+      # is built from, so an isolated worker's is rebuilt for its worktree.
+      capability: capability,
+      schema: schema,
+      system_extra: system_extra,
       messages: [
         %{role: "user", content: Prompts.worker_user(attrs.prompt, opts[:context])}
         |> maybe_images(opts[:images])
@@ -1039,16 +1159,20 @@ defmodule SwarmCode.Domain.Engine.RunServer do
       # Spec 24 §3.3: a research resolves its own per-tier model and hands the
       # pair over already resolved, so it never falls into the workflow defaults.
       model:
-        opts[:model_map] ||
+        opts[:model_map] || role_model ||
           SwarmCode.Domain.Workflows.resolve_model(opts, state.settings, state.conversation) ||
           state.chat_model,
       depth: 1,
       project_root: state.project.root_path,
       tools: tools,
       max_turns: opts[:max_turns] || state.settings.max_agent_turns,
-      effort: SwarmCode.Domain.Workflows.effort(opts, state.settings),
+      effort: role_effort || SwarmCode.Domain.Workflows.effort(opts, state.settings),
       require_tool: if(schema, do: "structured_output"),
       isolation: opts[:isolation] || :shared,
+      # Spec 75 §5.2: the model slot the speed monitor files this agent under.
+      speed_role: worker_speed_role(opts, state),
+      # Spec 75 §11.1: only the builtin mission reads it (`mission_commands_allowed?/3`).
+      allow_commands: opts[:allow_commands] == true,
       # Spec 26 §5.3: an agent whose whole answer is one huge tool call can ask
       # for a bigger output budget; everything else takes the Request default.
       max_tokens: opts[:max_tokens]
@@ -1090,7 +1214,20 @@ defmodule SwarmCode.Domain.Engine.RunServer do
   # the refusal is a normal tool error the model can read and work around.
   @max_agents_per_run 24
 
-  def handle_call({:start_agent, attrs}, _from, state) do
+  # spec 74 BUGS-12: defence in depth behind `SpawnAgent.run/3`'s checks — a
+  # model-typed task, context or schema used to crash this process later
+  # (`Prompts.sub_agent_user/2`, `Schema.to_json_schema/1` in
+  # `handle_continue`), and RunSup is one_for_all, so the whole run died. The
+  # checked attrs carry the `structured_output` ref, built inside this call.
+  def handle_call({:start_agent_live, attrs}, from, state)
+      when not is_map_key(attrs, :structured_ref) do
+    case checked_sub_agent(attrs) do
+      {:ok, attrs} -> handle_call({:start_agent_live, attrs}, from, state)
+      {:error, problem} -> {:reply, {:error, problem}, state}
+    end
+  end
+
+  def handle_call({:start_agent_live, attrs}, _from, state) do
     if sub_agents(state) >= @max_agents_per_run do
       {:reply,
        {:error,
@@ -1165,6 +1302,8 @@ defmodule SwarmCode.Domain.Engine.RunServer do
       spec = %{
         name: name,
         role: "sub",
+        # Spec 75 §5.2: a spawned child runs on the worker slot.
+        speed_role: :worker,
         system: system,
         # spec 73 T7: what `agent_system/4` appends again after the base.
         system_extra: system_extra,
@@ -1181,6 +1320,8 @@ defmodule SwarmCode.Domain.Engine.RunServer do
         prewalk_model: prewalk_model,
         # spec 72 C5: tools and require_tool for structured output.
         output_schema: output_schema,
+        # spec 74 BUGS-12: built (and checked) in the `start_agent` call.
+        structured_ref: attrs.structured_ref,
         require_tool: if(output_schema, do: "structured_output")
       }
 
@@ -1286,6 +1427,27 @@ defmodule SwarmCode.Domain.Engine.RunServer do
     end
   end
 
+  # spec 74 BUGS-33: kept under its own key in `totals`, beside the agents',
+  # so `bump_totals/3` sums it with them; the next flush writes the row.
+  def handle_call({:add_usage, usage, cost}, _from, state) do
+    {input, output, total} = Map.get(state.totals, :one_shot, {0, 0, nil})
+
+    entry = %{
+      tokens_in: input + (Map.get(usage, :input) || 0),
+      tokens_out: output + (Map.get(usage, :output) || 0),
+      cost_usd: Pricing.add(total, cost)
+    }
+
+    state = bump_totals(state, :one_shot, entry)
+
+    state =
+      if state.flush_ref == nil,
+        do: %{state | flush_ref: Process.send_after(self(), :flush, @flush_ms)},
+        else: state
+
+    {:reply, :ok, state}
+  end
+
   # spec 72 R7
   def handle_call({:node_error_kind, node_id}, _from, state),
     do: {:reply, get_in(state.nodes, [node_id, Access.key(:error_kind)]), state}
@@ -1327,28 +1489,35 @@ defmodule SwarmCode.Domain.Engine.RunServer do
   def handle_call({:wait_for_message, node_id, timeout_ms, awaiting}, from, state) do
     mailbox = Map.get(state.mailboxes, node_id, [])
 
-    if mailbox != [] do
-      # Immediate: return the first message, leave the rest
-      [message | rest] = mailbox
-      state = %{state | mailboxes: Map.put(state.mailboxes, node_id, rest)}
-      {:reply, {:ok, message}, state}
-    else
-      # Block: register a waiter, release slot like spawn_agent await
-      state =
-        if is_binary(awaiting) and match?(%{slot: true}, state.agents[awaiting]),
-          do: release_slot(state, awaiting),
-          else: state
+    cond do
+      # spec 74 BUGS-48: a wait queued behind the stop of its agent would hold
+      # a waiter (and its timer) for an agent that no longer reads anything.
+      not owner_live?(state, node_id) ->
+        {:reply, {:error, :timeout}, state}
 
-      # spec 72 R6: the deadline used to be checked on the flush tick, which
-      # only `mark_dirty/3` arms — in an idle run nobody swept it, the tool's
-      # own call timed out and the stale waiter later swallowed a real
-      # message. Every waiter owns a timer; a wake cancels it.
-      ref = make_ref()
-      timer = Process.send_after(self(), {:message_wait_timeout, ref}, timeout_ms)
-      waiter = %{ref: ref, timer: timer, from: from, node_id: node_id, awaiting: awaiting}
+      mailbox != [] ->
+        # Immediate: return the first message, leave the rest
+        [message | rest] = mailbox
+        state = %{state | mailboxes: Map.put(state.mailboxes, node_id, rest)}
+        {:reply, {:ok, message}, state}
 
-      state = %{state | message_waiters: [waiter | state.message_waiters]}
-      {:noreply, state}
+      true ->
+        # Block: register a waiter, release slot like spawn_agent await
+        state =
+          if is_binary(awaiting) and match?(%{slot: true}, state.agents[awaiting]),
+            do: release_slot(state, awaiting),
+            else: state
+
+        # spec 72 R6: the deadline used to be checked on the flush tick, which
+        # only `mark_dirty/3` arms — in an idle run nobody swept it, the tool's
+        # own call timed out and the stale waiter later swallowed a real
+        # message. Every waiter owns a timer; a wake cancels it.
+        ref = make_ref()
+        timer = Process.send_after(self(), {:message_wait_timeout, ref}, timeout_ms)
+        waiter = %{ref: ref, timer: timer, from: from, node_id: node_id, awaiting: awaiting}
+
+        state = %{state | message_waiters: [waiter | state.message_waiters]}
+        {:noreply, state}
     end
   end
 
@@ -1383,27 +1552,22 @@ defmodule SwarmCode.Domain.Engine.RunServer do
           node.status not in @finished,
           do: id
 
+    # Spec 36 §A9: the ids being stopped leave the queue BEFORE anything is
+    # killed. Each `kill_agent` releases a slot, and `start_queued/1` would
+    # happily pop a queued worker (or a queued child of the next worker) and
+    # start it — the reduce then reached an agent it had just brought to life.
     stopped_ids =
       ids
       |> Enum.flat_map(&subtree(state, &1))
       |> MapSet.new()
 
+    # spec 74 ARCHITECTURE-7: every worker takes the stop every other subtree
+    # takes (`stop_subtree/4`). Its sub-agents used to be marked `stopped`
+    # while they ran on, and a background one among them kept its entry and
+    # its 30-minute timer.
     state =
-      state
-      |> settle_pending_interactions(stopped_ids)
-      |> cancel_background_work(stopped_ids)
-      # Spec 36 §A9: the ids being stopped leave the queue BEFORE the reduce,
-      # not after. Each `kill_agent` releases a slot, and `start_queued/1` would
-      # happily pop a queued worker that is itself in `ids` and start it — the
-      # reduce then reached an agent it had just brought to life.
-      |> then(fn state -> %{state | queue: Enum.reject(state.queue, &(&1 in ids))} end)
-      |> then(fn state ->
-        Enum.reduce(ids, state, fn id, acc ->
-          acc
-          |> kill_agent(id)
-          |> mark_subtree_stopped(id)
-          |> settle(id, {:error, "stopped"})
-        end)
+      Enum.reduce(ids, drop_from_queue(state, stopped_ids), fn id, acc ->
+        stop_subtree(acc, id, "user_stopped", {:error, "stopped"})
       end)
 
     {:reply, :ok, %{state | queue: []}}
@@ -1441,15 +1605,23 @@ defmodule SwarmCode.Domain.Engine.RunServer do
     end
   end
 
-  def handle_call({:steer, text, images, node_id}, _from, state) do
+  def handle_call({:steer, text, images, node_id}, from, state),
+    do: handle_call({:steer, text, images, node_id, []}, from, state)
+
+  def handle_call({:steer, text, images, node_id, research_ids}, _from, state) do
     target = node_id || state.root_node_id
 
     case state.agents[target] do
       # Spec 51 §5.9 (b): a queued worker has no server yet; the text joins
       # its opening messages (§2.2 drops them from this map only at start).
+      # spec 74 BUGS-76: the agent expands the research mark when it starts.
       %{server: nil, result: nil, spec: %{messages: messages} = spec} = agent ->
         message = %{role: "user", content: to_string(text)}
         message = if images == [], do: message, else: Map.put(message, :images, images)
+
+        message =
+          if research_ids == [], do: message, else: Map.put(message, :research_ids, research_ids)
+
         spec = %{spec | messages: messages ++ [message]}
         {:reply, :ok, put_agent(state, target, %{agent | spec: spec})}
 
@@ -1457,7 +1629,11 @@ defmodule SwarmCode.Domain.Engine.RunServer do
       # lost, and the caller would then persist a message nobody read.
       %{server: server, result: nil} when is_pid(server) ->
         if Process.alive?(server) do
-          SwarmCode.Domain.Engine.AgentServer.user_message(server, text, images)
+          if research_ids == [],
+            do: SwarmCode.Domain.Engine.AgentServer.user_message(server, text, images),
+            else:
+              SwarmCode.Domain.Engine.AgentServer.user_message(server, text, images, research_ids)
+
           {:reply, :ok, state}
         else
           {:reply, {:error, :finished}, state}
@@ -1516,14 +1692,61 @@ defmodule SwarmCode.Domain.Engine.RunServer do
     end
   end
 
+  def handle_call(:finish_totals, _from, state) do
+    state = flush(state)
+    {:reply, Map.take(state.run, [:tokens_in, :tokens_out, :cost_usd]), state}
+  end
+
   def handle_call(:pending_questions, _from, state) do
     {:reply, Enum.map(state.questions, fn {node_id, %{questions: qs}} -> {node_id, qs} end),
      state}
   end
 
+  # spec 74 BUGS-12: what `handle_call({:start_agent, …})` refuses, and the
+  # `structured_output` ref it builds inside the call.
+  defp checked_sub_agent(attrs) do
+    with nil <- sub_agent_problem(attrs),
+         {:ok, structured_ref} <- structured_ref(attrs[:output_schema]) do
+      {:ok, Map.put(attrs, :structured_ref, structured_ref)}
+    else
+      problem -> {:error, problem}
+    end
+  end
+
+  defp sub_agent_problem(attrs) do
+    cond do
+      not (is_binary(attrs[:task]) and String.trim(attrs[:task]) != "") ->
+        "task must be a non-empty string"
+
+      not (is_nil(attrs[:context]) or is_binary(attrs[:context])) ->
+        "context must be a string"
+
+      problem =
+          SwarmCode.Domain.Tools.SpawnAgent.schema_problem(attrs[:output_schema], "output_schema") ->
+        problem
+
+      true ->
+        nil
+    end
+  end
+
+  defp structured_ref(schema) when is_map(schema) do
+    {:ok, Tools.structured_output_ref(schema)}
+  rescue
+    e -> "output_schema is not a usable JSON schema: " <> Exception.message(e)
+  end
+
+  defp structured_ref(_schema), do: {:ok, nil}
+
   @impl true
+  # spec 74 BUGS-5: now that an op's intermediate progress reaches this
+  # process, one can arrive after a stop or a crash cleanup settled the node
+  # (`progress: 100`, `stopped`) — it would put the bar back to 37 % and write
+  # it with the next flush. A settled node keeps what settled it.
   def handle_cast({:update_node, node_id, attrs}, state) do
-    {:noreply, put_node(state, node_id, attrs)}
+    if progress_only?(attrs) and match?(%{status: s} when s in @finished, state.nodes[node_id]),
+      do: {:noreply, state},
+      else: {:noreply, put_node(state, node_id, attrs)}
   end
 
   def handle_cast({:reasoning_delta, node_id, text}, state) do
@@ -1580,6 +1803,24 @@ defmodule SwarmCode.Domain.Engine.RunServer do
 
         {:noreply, state}
     end
+  end
+
+  # Spec 74 BUGS-71: see `resync_stream/2`.
+  def handle_cast({:resync_stream, pid}, state) do
+    state = flush(state)
+
+    case state.assistant_message do
+      %{id: message_id} ->
+        text = Chunks.to_string(state.assistant_text)
+        reasoning = Chunks.to_string(state.assistant_reasoning)
+        if text != "", do: send(pid, {:assistant_reset, message_id, text})
+        if reasoning != "", do: send(pid, {:reasoning_reset, message_id, reasoning})
+
+      _none ->
+        :ok
+    end
+
+    {:noreply, state}
   end
 
   def handle_cast({:set_label, label}, state) do
@@ -1812,17 +2053,17 @@ defmodule SwarmCode.Domain.Engine.RunServer do
     end
   end
 
-  # spec 73 T8
+  # spec 73 T8, spec 74 UI-SPEED-13
   def handle_info(
-        {ref, {:session_hook, generation, result}},
-        %{pending_session_hook: %{task: %Task{ref: ref}}} = state
+        {ref, {:prepared, generation, context, hook}},
+        %{pending_prepare: %{task: %Task{ref: ref}}} = state
       )
       when is_reference(ref) do
     Process.demonitor(ref, [:flush])
-    state = %{state | pending_session_hook: nil}
+    state = %{state | pending_prepare: nil}
 
     if generation == state.isolation_generation and live_node?(state, state.root_node_id),
-      do: {:noreply, start_root_after_hook(state, result)},
+      do: {:noreply, start_root_after_prepare(state, context, hook)},
       else: {:noreply, state}
   end
 
@@ -1921,16 +2162,18 @@ defmodule SwarmCode.Domain.Engine.RunServer do
 
   def handle_info(_other, state), do: {:noreply, state}
 
-  # spec 73 T8: a crashed hook task never blocks the turn.
+  # spec 73 T8: a crashed prepare task never blocks the turn. spec 74
+  # UI-SPEED-13: without its context the root cannot start — the run fails
+  # with the reason on its card, never hangs.
   defp handle_non_isolation_down(
          ref,
          reason,
-         %{pending_session_hook: %{task: %Task{ref: ref}, generation: generation}} = state
+         %{pending_prepare: %{task: %Task{ref: ref}, generation: generation}} = state
        ) do
-    state = %{state | pending_session_hook: nil}
+    state = %{state | pending_prepare: nil}
 
     if generation == state.isolation_generation and live_node?(state, state.root_node_id),
-      do: {:noreply, start_root_after_hook(state, {:error, task_reason(reason)})},
+      do: {:noreply, start_root_after_prepare(state, {:error, task_reason(reason)}, :ok)},
       else: {:noreply, state}
   end
 
@@ -1974,20 +2217,28 @@ defmodule SwarmCode.Domain.Engine.RunServer do
 
           msg = "agent crashed: " <> reason_text
 
+          # spec 74 ARCHITECTURE-7: the completion path's transition — a
+          # crashed background agent used to leave its parent uninformed, its
+          # `background_agents` entry and 30-minute timer alive, and its
+          # monitor ref set.
           state =
             state
             |> crash_cleanup(node_id)
-            |> put_node(node_id, %{
-              status: "failed",
-              progress: 100,
-              error: msg,
-              detail: msg,
-              # spec 67 T30 (G42): a crashed agent is SwarmCode's own fault.
-              error_kind: "bug",
-              finished_at: now()
-            })
-            |> settle(node_id, {:error, "Agent #{node.name || "agent"} crashed"})
-            |> release_slot(node_id)
+            |> settle_agent(
+              node_id,
+              %{
+                status: "failed",
+                progress: 100,
+                error: msg,
+                detail: msg,
+                # spec 67 T30 (G42): a crashed agent is SwarmCode's own fault.
+                error_kind: "bug",
+                finished_at: now()
+              },
+              {:error, "Agent #{node.name || "agent"} crashed: " <> reason_text}
+            )
+            # spec 74 BUGS-59
+            |> then(&%{&1 | baselines: Map.delete(&1.baselines, node_id)})
 
           if node_id == state.root_node_id do
             crash_msg =
@@ -2069,75 +2320,92 @@ defmodule SwarmCode.Domain.Engine.RunServer do
 
       node ->
         attrs = if opts[:normalized?], do: Map.new(attrs), else: normalize(attrs)
-        new = struct(node, attrs)
 
-        persist? =
-          new.status != node.status or Map.has_key?(attrs, :finished_at) or
-            Enum.any?([:tokens_in, :tokens_out, :cost_usd], &Map.has_key?(attrs, &1)) or
-            Map.has_key?(attrs, :result) or
-            Map.has_key?(attrs, :turn) or Map.has_key?(attrs, :branch) or
-            Map.has_key?(attrs, :changes_stat) or Map.has_key?(attrs, :integrated)
-
-        # Spec 51 §2.5: register was the one full INSERT; everything after is
-        # an UPDATE of the changed persisted columns — an agent's 20 KB prompt
-        # is never rewritten on a status, turn or token change. A change that
-        # did not trigger a write waits in `unsaved` for the next one that does.
-        #
-        # Spec 54 §1.1 (54a A1): and the write itself no longer happens here.
-        # One autocommit UPDATE per node change was 322 write statements per
-        # second under eight lanes, each its own acquisition of SQLite's single
-        # writer lock — 7 ms for a 0.3 ms statement, and past `busy_timeout` a
-        # raise that took the whole swarm down with the RunServer. The columns
-        # accumulate in `unsaved`; `flush_writes/1` writes every node that has a
-        # triggering change waiting in one IMMEDIATE transaction, 100 ms later
-        # at the latest. What the UI shows comes from PubSub, not the row.
-        # The *values* are captured here, not read back at flush time: a
-        # finished op's `result` is replaced by its light projection a few lines
-        # below, and the row must keep the whole text (spec 51 §2.2).
-        changed = Map.new(attrs, fn {k, _} -> {k, Map.get(new, k)} end) |> Map.take(@persisted)
-        pending = Map.merge(Map.get(state.unsaved, node_id, %{}), changed)
-
-        state =
-          cond do
-            pending == %{} ->
-              state
-
-            persist? ->
-              %{
-                state
-                | unsaved: Map.put(state.unsaved, node_id, pending),
-                  persist_pending: MapSet.put(state.persist_pending, node_id)
-              }
-
-            true ->
-              %{state | unsaved: Map.put(state.unsaved, node_id, pending)}
-          end
-
-        # Spec 51 §2.2: once a tool op is finished its full text lives in the
-        # row (written just above); the state, the flush and every LiveView
-        # keep the light shape (§1.10). The persisted fields of a finished op
-        # never change again (mark_stopped/2 skips @finished), so the light
-        # struct is never written back.
-        new = if new.kind == "op" and new.status in @finished, do: Node.light(new), else: new
-
-        state = %{state | nodes: Map.put(state.nodes, node_id, new)}
-
-        # Spec 43 §1.4: a finished op's preview buffer has nothing left to feed.
-        state =
-          if new.kind == "op" and new.status in @finished and
-               Map.has_key?(state.stream, node_id),
-             do: %{state | stream: Map.delete(state.stream, node_id)},
-             else: state
-
-        state =
-          if new.kind == "agent" and
-               Enum.any?([:tokens_in, :tokens_out, :cost_usd], &Map.has_key?(attrs, &1)),
-             do: bump_totals(state, node_id, new),
-             else: state
-
-        mark_dirty(state, node_id, MapSet.new(Map.keys(attrs)))
+        # spec 74 EFFICIENCY-36: an attribute that already holds its value is
+        # no change — the per-turn `%{turn: n, max_turns: m}` used to mark
+        # `max_turns` dirty every turn, and a column outside `Node.patch_cols/0`
+        # shipped the whole agent struct (its prompt included) as an upsert.
+        case Map.reject(attrs, fn {k, v} -> Map.get(node, k) == v end) do
+          attrs when attrs == %{} -> state
+          attrs -> put_changed(state, node_id, node, attrs)
+        end
     end
   end
+
+  defp put_changed(state, node_id, node, attrs) do
+    new = struct(node, attrs)
+
+    persist? =
+      new.status != node.status or Map.has_key?(attrs, :finished_at) or
+        Enum.any?([:tokens_in, :tokens_out, :cost_usd], &Map.has_key?(attrs, &1)) or
+        Map.has_key?(attrs, :result) or
+        Map.has_key?(attrs, :turn) or Map.has_key?(attrs, :branch) or
+        Map.has_key?(attrs, :changes_stat) or Map.has_key?(attrs, :integrated)
+
+    # Spec 51 §2.5: register was the one full INSERT; everything after is
+    # an UPDATE of the changed persisted columns — an agent's 20 KB prompt
+    # is never rewritten on a status, turn or token change. A change that
+    # did not trigger a write waits in `unsaved` for the next one that does.
+    #
+    # Spec 54 §1.1 (54a A1): and the write itself no longer happens here.
+    # One autocommit UPDATE per node change was 322 write statements per
+    # second under eight lanes, each its own acquisition of SQLite's single
+    # writer lock — 7 ms for a 0.3 ms statement, and past `busy_timeout` a
+    # raise that took the whole swarm down with the RunServer. The columns
+    # accumulate in `unsaved`; `flush_writes/1` writes every node that has a
+    # triggering change waiting in one IMMEDIATE transaction, 100 ms later
+    # at the latest. What the UI shows comes from PubSub, not the row.
+    # The *values* are captured here, not read back at flush time: a
+    # finished op's `result` is replaced by its light projection a few lines
+    # below, and the row must keep the whole text (spec 51 §2.2).
+    changed = Map.new(attrs, fn {k, _} -> {k, Map.get(new, k)} end) |> Map.take(@persisted)
+    pending = Map.merge(Map.get(state.unsaved, node_id, %{}), changed)
+
+    state =
+      cond do
+        pending == %{} ->
+          state
+
+        persist? ->
+          %{
+            state
+            | unsaved: Map.put(state.unsaved, node_id, pending),
+              persist_pending: MapSet.put(state.persist_pending, node_id)
+          }
+
+        true ->
+          %{state | unsaved: Map.put(state.unsaved, node_id, pending)}
+      end
+
+    # Spec 51 §2.2: once a tool op is finished its full text lives in the
+    # row (written just above); the state, the flush and every LiveView
+    # keep the light shape (§1.10). The persisted fields of a finished op
+    # never change again (mark_stopped/2 skips @finished), so the light
+    # struct is never written back.
+    new = if new.kind == "op" and new.status in @finished, do: Node.light(new), else: new
+
+    state = %{state | nodes: Map.put(state.nodes, node_id, new)}
+
+    # Spec 43 §1.4: a finished op's preview buffer has nothing left to feed.
+    state =
+      if new.kind == "op" and new.status in @finished and
+           Map.has_key?(state.stream, node_id),
+         do: %{state | stream: Map.delete(state.stream, node_id)},
+         else: state
+
+    state =
+      if new.kind == "agent" and
+           Enum.any?([:tokens_in, :tokens_out, :cost_usd], &Map.has_key?(attrs, &1)),
+         do: bump_totals(state, node_id, new),
+         else: state
+
+    mark_dirty(state, node_id, MapSet.new(Map.keys(attrs)))
+  end
+
+  defp progress_only?(attrs) when is_map(attrs) and map_size(attrs) > 0,
+    do: Enum.all?(Map.keys(attrs), &(&1 in [:progress, :detail]))
+
+  defp progress_only?(_attrs), do: false
 
   defp normalize(attrs) do
     attrs = Map.new(attrs)
@@ -2354,8 +2622,14 @@ defmodule SwarmCode.Domain.Engine.RunServer do
       end)
 
     run = struct(state.run, %{tokens_in: tokens_in, tokens_out: tokens_out, cost_usd: cost_usd})
-    %{state | totals: totals, run: run, run_dirty: true}
+    # spec 74 EFFICIENCY-4: a token bump is not a run change. Persistence is
+    # unaffected — `pending_totals/1` compares against `totals_written`.
+    %{state | totals: totals, run: run, totals_dirty: true}
   end
+
+  # spec 74 EFFICIENCY-4: the payload of `{:run_totals, run_id, totals}`.
+  defp totals_payload(run),
+    do: %{tokens_in: run.tokens_in || 0, tokens_out: run.tokens_out || 0, cost_usd: run.cost_usd}
 
   # Spec 54 §2.1: `cols` is what changed — `:all` (a register, or anything the
   # patch shape cannot carry) or the attribute keys of this change. They
@@ -2403,7 +2677,18 @@ defmodule SwarmCode.Domain.Engine.RunServer do
       )
     end
 
-    if state.run_dirty, do: Events.broadcast(conv_id, {:run_updated, state.run})
+    # spec 74 EFFICIENCY-4: `{:run_updated}` carries the totals too, so it
+    # alone goes out when the row changed; a token-only flush is `{:run_totals}`.
+    cond do
+      state.run_dirty ->
+        Events.broadcast(conv_id, {:run_updated, state.run})
+
+      state.totals_dirty ->
+        Events.broadcast(conv_id, {:run_totals, state.run.id, totals_payload(state.run)})
+
+      true ->
+        :ok
+    end
 
     state = drop_finished_text(state, upserts)
 
@@ -2413,7 +2698,8 @@ defmodule SwarmCode.Domain.Engine.RunServer do
         dirty_cols: %{},
         pending_delta: Chunks.new(),
         pending_reasoning: Chunks.new(),
-        run_dirty: false
+        run_dirty: false,
+        totals_dirty: false
     }
   end
 
@@ -2592,7 +2878,7 @@ defmodule SwarmCode.Domain.Engine.RunServer do
       worktrees: state.worktrees?,
       # Spec 38 §4: one mode at a time — a row that still has both flags on
       # runs as consensus, the precedence the composer shows.
-      ultra: Map.get(state.conversation, :ultra, false) and is_nil(Map.get(state, :consensus)),
+      ultra: ultra?(state),
       # Spec 50 §6.1: `authoring:` used to come from
       # `conversation.authoring_workflow`, a flag only a successful
       # `workflow_save` ever cleared. A plan-mode turn after an abandoned
@@ -2615,7 +2901,8 @@ defmodule SwarmCode.Domain.Engine.RunServer do
 
     Tools.for_agent("assistant", 0, state.settings.max_agent_depth, mode(state),
       project_id: state.project.id,
-      command: command(state)
+      command: command(state),
+      ultra: ultra?(state)
     )
     |> Kernel.++(consensus_tools(state, spec))
     |> Enum.map(& &1.name)
@@ -2623,6 +2910,11 @@ defmodule SwarmCode.Domain.Engine.RunServer do
   end
 
   defp command(state), do: Map.get(state, :command)
+
+  # Spec 38 §4 / spec 75: one mode at a time — a row that still has both flags
+  # on runs as consensus. The prompt and the tool list read the same answer.
+  defp ultra?(state),
+    do: Map.get(state.conversation, :ultra, false) == true and is_nil(Map.get(state, :consensus))
 
   defp mode(state), do: Map.get(state, :mode) || state.conversation.mode || "build"
 
@@ -2635,13 +2927,16 @@ defmodule SwarmCode.Domain.Engine.RunServer do
     %{
       name: "Compactor",
       role: "assistant",
+      speed_role: :main,
       system: Prompts.base_only(state.project),
       messages: state.history,
       model: state.chat_model,
       tools: [],
       max_turns: 1,
       depth: 0,
-      project_root: state.project.root_path
+      project_root: state.project.root_path,
+      # spec 74 EFFICIENCY-42: its one request is never sent again.
+      cache: :none
     }
   end
 
@@ -2649,6 +2944,7 @@ defmodule SwarmCode.Domain.Engine.RunServer do
     %{
       name: chat_agent_name(state),
       role: "assistant",
+      speed_role: :main,
       # Spec 54 §5 (54c H7): the system prompt names the tools this request will
       # actually carry, never a hand-written list.
       system:
@@ -2667,6 +2963,7 @@ defmodule SwarmCode.Domain.Engine.RunServer do
     %{
       name: "Lead",
       role: "lead",
+      speed_role: :main,
       system:
         Prompts.lead(state.project, state.settings.max_concurrent_agents, prompt_opts(state)),
       messages: [%{role: "user", content: state.prompt}],
@@ -2732,7 +3029,16 @@ defmodule SwarmCode.Domain.Engine.RunServer do
     case isolation_spec(state, node_id, spec) do
       {:async, work} -> start_isolation(state, node_id, work)
       {:ready, root, branch} -> do_start_agent_process(state, node_id, root, branch)
+      {:error, reason} -> fail_agent_start(state, node_id, reason)
     end
+  end
+
+  # An isolated agent that cannot get its own tree ends through the same path
+  # as any other start failure, and whoever awaits it is told why.
+  defp fail_agent_start(state, node_id, reason) do
+    state = put_node(state, node_id, %{detail: reason})
+    agent_finished(state.run.id, node_id, {:error, reason})
+    state
   end
 
   defp do_start_agent_process(state, node_id, root, branch) do
@@ -2756,14 +3062,12 @@ defmodule SwarmCode.Domain.Engine.RunServer do
         (Map.get(spec, :tools) ||
            (Tools.for_agent(spec.role, spec.depth, settings.max_agent_depth, mode(state),
               project_id: state.project.id,
-              command: command(state)
+              command: command(state),
+              ultra: ultra?(state)
             ) ++ consensus_tools(state, spec))
            # spec 72 A4: apply the agent definition's tool allow-list
            |> Tools.filter_tools(Map.get(spec, :tool_allow_list))) ++
-          if(Map.get(spec, :output_schema),
-            do: [Tools.structured_output_ref(spec.output_schema)],
-            else: []
-          ),
+          List.wrap(Map.get(spec, :structured_ref)),
       depth: spec.depth,
       max_turns: Map.get(spec, :max_turns) || settings.max_agent_turns,
       project_root: root,
@@ -2777,11 +3081,19 @@ defmodule SwarmCode.Domain.Engine.RunServer do
       # its ops must never read that project's row for the approval mode.
       run_kind: state.run.kind,
       conversation_id: state.conversation.id,
+      # Spec 75 §5.2: read by AgentServer.start_llm/1 into LLM.Request.speed.
+      speed_tag: %{
+        conversation_id: state.conversation.id,
+        role: Map.get(spec, :speed_role, :main)
+      },
       effort: Map.get(spec, :effort) || state.effort,
       require_tool: Map.get(spec, :require_tool),
       # Spec 26 §5.3: nil for every agent but the one whose whole answer is a
       # 40 000-character tool call; `AgentServer` then keeps the Request default.
       max_tokens: Map.get(spec, :max_tokens),
+      # spec 74 EFFICIENCY-42: `:none` for the compactor, whose one request
+      # writes nothing to the prompt cache.
+      cache: Map.get(spec, :cache, :default),
       # Spec 45 §5.2: an agent whose isolation finished while the run was
       # paused starts held, before its first think step.
       paused?: state.paused?,
@@ -2873,6 +3185,15 @@ defmodule SwarmCode.Domain.Engine.RunServer do
     end
   end
 
+  # Spec 75 review G3: an isolated worker (a mission's parallel writer) never
+  # shares the tree. Worktrees switched off after the run was launched (the plan
+  # gate can wait for hours) would otherwise put several writers on the project
+  # root, so every worker after the first fails with the reason.
+  defp isolation_spec(state, _node_id, %{role: "worker", isolation: :worktree})
+       when not state.worktrees? and map_size(state.agents) > 1 do
+    {:error, "worktrees are off — isolated workers would share the working tree"}
+  end
+
   defp isolation_spec(state, node_id, %{role: "worker", isolation: :worktree} = spec) do
     isolation_spec(state, node_id, %{spec | role: "sub"})
   end
@@ -2916,11 +3237,8 @@ defmodule SwarmCode.Domain.Engine.RunServer do
                   SwarmCode.Domain.Engine.Isolation.Ownership.write(work.path, node_id)
 
                   # spec 72 D2: capture the baseline of the isolation directory.
-                  baseline =
-                    case SwarmCode.Domain.Engine.Isolation.Baseline.capture(work.path) do
-                      {:ok, b} -> b
-                      {:error, _reason} -> nil
-                    end
+                  # spec 74 BUGS-59: its HEAD — the directory starts clean.
+                  {:ok, baseline} = SwarmCode.Domain.Engine.Isolation.Baseline.capture(work.path)
 
                   {:ok, attrs |> Map.put(:backend, backend) |> Map.put(:baseline, baseline)}
 
@@ -3030,13 +3348,64 @@ defmodule SwarmCode.Domain.Engine.RunServer do
       "The lead merges your branch when your work is good.\n"
   end
 
-  defp agent_system(_state, %{role: "worker"} = spec, root, branch) when is_binary(branch) do
-    spec.system <>
+  # spec 74 ARCHITECTURE-8 (under EFFICIENCY-39): the worker's system prompt is
+  # rebuilt for its worktree, as spec 73 T7 did for a sub-agent. It used to
+  # keep the `<environment>` of the main checkout (its `<cwd>` and
+  # `<git_branch>`) under a note naming the worktree, and `environment_notice/1`
+  # compares the worktree with the worktree, so nothing ever corrected it.
+  defp agent_system(state, %{role: "worker"} = spec, root, branch) when is_binary(branch) do
+    worker_system(
+      state,
+      %{state.project | root_path: root},
+      spec.name,
+      Map.get(spec, :capability, :read_only),
+      Map.get(spec, :schema),
+      Map.get(spec, :system_extra)
+    ) <>
       "\nYou work in an isolated git worktree of the project at #{root} (branch #{branch}). " <>
       "Every path is relative to that directory; do not touch files outside it.\n"
   end
 
   defp agent_system(_state, spec, _root, _branch), do: spec.system
+
+  # Spec 75 §5.2: which model slot a workflow worker runs on, for the speed
+  # monitor. The consensus judge and implementer arrive as `model_map`; on the
+  # worker slot exactly when that map is the run's swarm model (the judge's
+  # fallback, providers.ex `effective_model(_, :judge)`).
+  @doc false
+  def worker_speed_role(opts, state) do
+    case opts[:role] do
+      role when role in [:orchestrator, "orchestrator"] ->
+        :main
+
+      role when role in [:validator, "validator"] ->
+        :validator
+
+      role when role in [:worker, "worker"] ->
+        :worker
+
+      _none ->
+        case opts[:model_map] do
+          nil ->
+            :worker
+
+          model_map ->
+            if same_model?(model_map, Map.get(state, :swarm_model)), do: :worker, else: :other
+        end
+    end
+  end
+
+  defp same_model?(%{provider: %{id: id}, model: model}, %{provider: %{id: id}, model: model})
+       when is_binary(model),
+       do: true
+
+  defp same_model?(_a, _b), do: false
+
+  defp worker_system(state, project, name, capability, schema, system_extra) do
+    Prompts.worker(project, name, Keyword.merge(prompt_opts(state), capability: capability)) <>
+      if(schema, do: Prompts.structured_output_note(), else: "") <>
+      if(system_extra, do: "\n\n" <> system_extra, else: "")
+  end
 
   # When an isolated agent finishes we commit its worktree so the branch can be
   # merged, and report the diff stat back to the lead's spawn_agent call.
@@ -3046,7 +3415,9 @@ defmodule SwarmCode.Domain.Engine.RunServer do
       when is_binary(branch) and is_binary(path) ->
         generation = state.finalization_generation
         # spec 72 D3: pass baseline so the task can capture the delta.
-        baseline = Map.get(state.baselines, node_id)
+        # spec 74 BUGS-59: and forget it — nothing reads it after this.
+        {baseline, baselines} = Map.pop(state.baselines, node_id)
+        state = %{state | baselines: baselines}
         # spec 72 F2: pass project root so the task can persist the delta patch.
         project_root = state.project.root_path
         backend = Map.get(state.isolation_backends, node_id, :worktree)
@@ -3176,13 +3547,7 @@ defmodule SwarmCode.Domain.Engine.RunServer do
           }
       end
 
-    state =
-      state
-      |> put_node(node_id, attrs)
-      |> settle(node_id, result)
-      |> inject_background_result(node_id, result)
-      |> demonitor(node_id)
-      |> release_slot(node_id)
+    state = settle_agent(state, node_id, attrs, result)
 
     if node_id == state.root_node_id do
       status = if match?({:ok, _}, result), do: "done", else: "failed"
@@ -3228,6 +3593,10 @@ defmodule SwarmCode.Domain.Engine.RunServer do
     end
   end
 
+  # spec 74 BUGS-4: how long the run-end cleanup waits for the run's
+  # supervisor (and so every agent) to be gone before its first git command.
+  @cleanup_wait_ms 10_000
+
   # Spec 51 §5.3 (3): every worktree of the run goes when the run ends; a
   # branch with commits over its base stays for the UI's integrate path
   # (`workspace_live.ex`), an empty one is noise and goes with its worktree.
@@ -3242,17 +3611,31 @@ defmodule SwarmCode.Domain.Engine.RunServer do
 
     if nodes != [] do
       run_id = state.run.id
+      run_sup = Map.get(state, :run_sup)
 
-      Task.Supervisor.start_child(SwarmCode.Domain.TaskSupervisor, fn ->
+      # spec 74 ARCHITECTURE-6: owned by the cleanup supervisor, which a quit
+      # waits for — it used to die with the halt, half-way through the nodes.
+      Task.Supervisor.start_child(SwarmCode.Domain.Engine.CleanupSupervisor, fn ->
+        # spec 74 BUGS-4: not one git command while an agent of the run can
+        # still write — the RunSup goes down after its agents (spec 43 §1.2
+        # keeps the stop path free of synchronous kills, so the wait is here).
+        await_down(run_sup, @cleanup_wait_ms)
         git = git_adapter()
 
         for node <- nodes, :ok == IntegrateAgent.validate_node(root, node) do
           # spec 60 T9 (spec 55 A16): keep the work on the branch; a failed commit never fails the finish.
-          try do
-            if git.status(node.workspace_path) != [],
-              do: git.commit(node.workspace_path, "swarm: #{node.name || "agent"} (stopped)")
-          rescue
-            _ -> :ok
+          # spec 74 BUGS-4: a safety commit (no hooks, no signing); when even
+          # that fails, `require_clean` keeps the tree, its branch and delta.
+          name = node.name || "agent"
+
+          case safe_commit(node.workspace_path, "swarm: #{name} (stopped)") do
+            :ok ->
+              :ok
+
+            {:error, reason} ->
+              Logger.warning(
+                "swarm_code could not commit the work of #{name}: #{task_reason(reason)}"
+              )
           end
 
           # spec 72 D1: the right cleanup per backend (spec 73 T72: decided by
@@ -3260,7 +3643,7 @@ defmodule SwarmCode.Domain.Engine.RunServer do
           # clone whose branch could not be fetched into the project is kept
           # — it holds the only copy of the work — and its branch row is left
           # alone rather than deleted on a stale count.
-          with :ok <- cleanup_isolation_dir(git, root, node),
+          with :ok <- cleanup_isolation_dir(git, root, node, require_clean: true),
                {:ok, 0} <- git.commits_ahead(root, node.base_sha || "HEAD", node.branch) do
             git.branch_delete(root, node.branch)
             # spec 72 R5: the delta patch goes with its branch — a branch kept
@@ -3280,9 +3663,44 @@ defmodule SwarmCode.Domain.Engine.RunServer do
 
   defp commit_and_stat(path, node) do
     git = git_adapter()
-    if git.status(path) != [], do: git.commit(path, "swarm: #{node.name || "agent"}")
+
+    # spec 74 BUGS-4: the safety commit — a commit-msg hook or a signing
+    # setup of the user's repo no longer leaves the work uncommitted.
+    if git.status(path) != [] do
+      case Isolation.safety_commit(path, "swarm: #{node.name || "agent"}") do
+        :ok ->
+          :ok
+
+        {:error, reason} ->
+          Logger.warning(
+            "swarm_code could not commit the work of #{node.name || "agent"}: " <>
+              task_reason(reason)
+          )
+      end
+    end
+
     {summary, _files} = git.diff_stat(path, base: node.base_sha || "HEAD")
     summary
+  end
+
+  defp await_down(pid, timeout) when is_pid(pid) do
+    ref = Process.monitor(pid)
+
+    receive do
+      {:DOWN, ^ref, :process, ^pid, _reason} -> :ok
+    after
+      timeout ->
+        Process.demonitor(ref, [:flush])
+        :timeout
+    end
+  end
+
+  defp await_down(_pid, _timeout), do: :ok
+
+  defp safe_commit(path, message) do
+    Isolation.commit_dirty(path, message)
+  rescue
+    error -> {:error, Exception.message(error)}
   end
 
   # spec 72 D3: capture delta patch after an agent finishes.
@@ -3366,10 +3784,19 @@ defmodule SwarmCode.Domain.Engine.RunServer do
   # `IntegrateAgent.cleanup/2`. Returns `:ok`, or `{:error, reason}` when a
   # clone had to be kept because its branch could not be exported (T73) — the
   # warning names the directory the user can still integrate by hand.
-  defp cleanup_isolation_dir(git, root, node) do
-    case Isolation.cleanup(root, node, git) do
+  defp cleanup_isolation_dir(git, root, node, opts) do
+    case Isolation.cleanup(root, node, git, opts) do
       :ok ->
         :ok
+
+      # spec 74 BUGS-4
+      {:error, :dirty} ->
+        Logger.warning(
+          "swarm_code kept the isolated tree of #{node.name || "agent"} at " <>
+            "#{node.workspace_path}: it still holds uncommitted work"
+        )
+
+        {:error, :dirty}
 
       {:error, reason} ->
         Logger.warning("swarm_code kept clone #{node.workspace_path}: #{task_reason(reason)}")
@@ -3384,6 +3811,33 @@ defmodule SwarmCode.Domain.Engine.RunServer do
   end
 
   defp cleanup_delta_dir(_, _), do: :ok
+
+  # spec 74 ARCHITECTURE-7: the one terminal transition of an agent that ends
+  # by itself — a report, a failure (`complete_agent/3`) or a crash
+  # (`handle_agent_down/3`): the node's final attrs, its awaiting callers
+  # answered, a background agent's parent told, the monitor and the slot let go.
+  # A pending approval, question or `wait_for_message` of the node is settled
+  # too (a no-op when there is none: nothing is broadcast).
+  defp settle_agent(state, node_id, attrs, result) do
+    state
+    |> put_node(node_id, attrs)
+    |> settle_and_report(node_id, result)
+    |> settle_pending_interactions([node_id])
+    |> demonitor(node_id)
+    |> release_slot(node_id)
+  end
+
+  # spec 74 ARCHITECTURE-7: every settle of an agent that did not finish by
+  # itself (the stop paths: `stop_subtree/4`, `settle_descendants/2`) also
+  # reports a background agent — its parent is told when it is still alive,
+  # and the `background_agents` entry and its timer go. Its mailbox goes as
+  # well: `message_agent` only reaches live agents, so nothing reads it again.
+  defp settle_and_report(state, node_id, result) do
+    state
+    |> settle(node_id, result)
+    |> inject_background_result(node_id, result)
+    |> then(&%{&1 | mailboxes: Map.delete(&1.mailboxes, node_id)})
+  end
 
   defp settle(state, node_id, result) do
     case state.agents[node_id] do
@@ -3569,7 +4023,11 @@ defmodule SwarmCode.Domain.Engine.RunServer do
   end
 
   defp kill_agent(state, node_id) do
-    state = state |> demonitor(node_id) |> cancel_background_timer(node_id)
+    # spec 74 BUGS-59: a killed agent's baseline is never read again.
+    state =
+      %{state | baselines: Map.delete(state.baselines, node_id)}
+      |> demonitor(node_id)
+      |> cancel_background_timer(node_id)
 
     case state.agents[node_id] do
       %{sup: sup} = agent when is_pid(sup) ->
@@ -3615,39 +4073,33 @@ defmodule SwarmCode.Domain.Engine.RunServer do
   # on, clears its question rows and answers whoever awaited it with an error
   # — never a report (spec 51 §5.9 (a)). `error_kind` lands on the stopped
   # node itself; its descendants stay `user_stopped` as before.
-  defp stop_subtree(state, node_id, error_kind, message) do
-    ids = [node_id | descendants(state, node_id)]
-    stopped_ids = MapSet.new(subtree(state, node_id))
+  # spec 74 ARCHITECTURE-7: `:stop_workers` and the background timeout take
+  # it too; what happens below the node is `stop_descendants/3`, shared with
+  # a crash.
+  defp stop_subtree(state, node_id, error_kind, message) when is_binary(message) do
+    name = (state.nodes[node_id] && state.nodes[node_id].name) || "agent"
+    stop_subtree(state, node_id, error_kind, {:error, "Agent #{name} #{message}"})
+  end
 
+  defp stop_subtree(state, node_id, error_kind, {:error, _} = error) do
     state =
       state
-      |> settle_pending_interactions(stopped_ids)
-      |> cancel_background_work(stopped_ids)
-      |> then(fn state ->
-        Enum.reduce(Enum.reverse(ids), state, fn id, acc ->
-          acc |> kill_agent(id) |> mark_subtree_stopped(id)
-        end)
-      end)
-
-    # Spec 13 §11 A-10: a stopped subtree can never answer its `ask_user`, so
-    # its rows have to go — otherwise the sidebar keeps an amber dot and the
-    # question panel keeps a dead agent's questions for ever.
-    Enum.each(subtree(state, node_id), fn id ->
-      SwarmCode.Domain.Engine.Questions.delete(state.run.id, id)
-      Events.broadcast(state.conversation.id, {:question_cleared, state.run.id, id})
-    end)
+      # spec 74 BUGS-18: out of the queue before the node's slot is released.
+      |> drop_from_queue(MapSet.new(subtree(state, node_id)))
+      # The node dies before anything below it is settled, so a background
+      # child's report is never sent to a parent that is being stopped.
+      |> kill_agent(node_id)
+      |> stop_descendants(node_id, "user_stopped")
+      |> mark_stopped(node_id)
 
     state =
       if error_kind == "user_stopped",
         do: state,
         else: put_node(state, node_id, %{error_kind: error_kind})
 
-    name = (state.nodes[node_id] && state.nodes[node_id].name) || "agent"
-    error = {:error, "Agent #{name} #{message}"}
-
     # spec 73 T56: a stopped background agent used to vanish without a word
     # to its parent — the injection only ran on the completion path.
-    state |> settle(node_id, error) |> inject_background_result(node_id, error)
+    settle_and_report(state, node_id, error)
   end
 
   # spec 36 §A1: a settled node's bar is full, whatever it was mid-flight.
@@ -3671,49 +4123,71 @@ defmodule SwarmCode.Domain.Engine.RunServer do
     end
   end
 
-  defp mark_subtree_stopped(state, node_id) do
-    Enum.reduce(subtree(state, node_id), state, &mark_stopped(&2, &1))
-  end
-
   # Spec 36 §A1: a crash has to clean up like a stop does. Without this an
   # agent that died left (a) its op nodes `running` in state and in the DB
   # until the next boot's `mark_interrupted`, (b) a pending approval /
   # `ask_user` row in `Engine.Questions` waiting out its 10/30-minute timeout,
   # and (c) every sub-agent it had spawned still alive and spending tokens with
-  # nobody awaiting it. Same body as `{:stop_agent, …}` except that the crashed
-  # node itself is left alone — the caller writes `"failed"` and the error text
-  # over it straight after, and its process is already gone.
-  defp crash_cleanup(state, node_id) do
+  # nobody awaiting it. The crashed node itself is left alone — the caller
+  # writes `"failed"` and the error text over it straight after, and its
+  # process is already gone. spec 72 B2: children inherit parent_stopped.
+  defp crash_cleanup(state, node_id), do: stop_descendants(state, node_id, "parent_stopped")
+
+  # spec 74 ARCHITECTURE-7: what a stop (`stop_subtree/4`) or a crash
+  # (`crash_cleanup/2`) of `node_id` does below it — the body the two used to
+  # repeat. The subtree leaves the queue before anything is killed (BUGS-18);
+  # its pending approvals, questions and waits and its isolation work are
+  # settled; every agent below is killed (deepest first), settled — a
+  # background one reports and loses its entry and its timer — and every node
+  # below is marked stopped with `kind`. The question rows of the whole
+  # subtree go, the node's own included: it may itself have been inside an
+  # `ask_user`, and nothing will ever answer that question now.
+  defp stop_descendants(state, node_id, kind) do
     stopped_ids = MapSet.new(subtree(state, node_id))
+    below = descendants(state, node_id)
 
     state =
       state
+      |> drop_from_queue(stopped_ids)
       |> settle_pending_interactions(stopped_ids)
       |> cancel_background_work(stopped_ids)
       |> then(fn state ->
-        state
-        |> descendants(node_id)
+        below
         |> Enum.reverse()
         |> Enum.reduce(state, &kill_agent(&2, &1))
       end)
+      |> settle_descendants(below)
       |> then(fn state ->
-        # Everything below the crashed agent — its own ops as well as the
-        # sub-agents just killed and their ops — settles as `"stopped"`.
-        # spec 72 B2: children inherit parent_stopped, not user_stopped.
         state
         |> subtree(node_id)
         |> Enum.drop(1)
-        |> Enum.reduce(state, &mark_stopped(&2, &1, "parent_stopped"))
+        |> Enum.reduce(state, &mark_stopped(&2, &1, kind))
       end)
 
-    # The crashed node is included: it may itself have been inside an
-    # `ask_user`, and nothing will ever answer that question now.
     Enum.each(subtree(state, node_id), fn id ->
       SwarmCode.Domain.Engine.Questions.delete(state.run.id, id)
       Events.broadcast(state.conversation.id, {:question_cleared, state.run.id, id})
     end)
 
     state
+  end
+
+  # spec 74 BUGS-18: a subtree being stopped leaves the queue before anything
+  # is killed. Each `kill_agent` releases a slot and `start_queued/1` popped the
+  # queue head — a queued child of the very agent being stopped — and started
+  # it after `cancel_background_work` had run, so its worktree or clone and its
+  # branch outlived the run (`:stop_workers` has done this since spec 36 §A9).
+  defp drop_from_queue(state, stopped_ids),
+    do: %{state | queue: Enum.reject(state.queue, &MapSet.member?(stopped_ids, &1))}
+
+  # spec 74 BUGS-18: every agent below a stopped or crashed one is settled, so
+  # nobody awaits it and it no longer counts as live (`result: nil`). The
+  # stopped node itself is settled by its caller, with its own message.
+  defp settle_descendants(state, ids) do
+    Enum.reduce(ids, state, fn id, acc ->
+      name = (acc.nodes[id] && acc.nodes[id].name) || "agent"
+      settle_and_report(acc, id, {:error, "Agent #{name} was stopped (parent stopped)"})
+    end)
   end
 
   # Pre-order list of node ids: the node itself, then its descendants.
@@ -3727,6 +4201,64 @@ defmodule SwarmCode.Domain.Engine.RunServer do
     |> subtree(node_id)
     |> Enum.drop(1)
     |> Enum.filter(fn id -> match?(%{kind: "agent"}, state.nodes[id]) end)
+  end
+
+  defp ask_user_call(state, node_id, questions, timeout, from) do
+    # Spec 51 §5.4: `:infinity` installs no timer — the consensus gate waits
+    # for the user's answer or their Stop, never for a clock.
+    timer =
+      if timeout == :infinity,
+        do: nil,
+        else: Process.send_after(self(), {:question_timeout, node_id}, timeout)
+
+    first = questions |> List.first() |> then(&(&1 && &1["question"]))
+
+    state =
+      state
+      |> put_in([:questions, node_id], %{
+        from: from,
+        timer: timer,
+        questions: questions,
+        answers: %{},
+        requested_at: DateTime.utc_now()
+      })
+      |> put_node(node_id, %{status: "awaiting_answer", detail: first})
+
+    SwarmCode.Domain.Engine.Questions.put(state.conversation.id, state.run.id, node_id)
+    state = notify_waiting(state, node_id)
+
+    Events.broadcast(
+      state.conversation.id,
+      {:question, state.run.id, node_id, questions}
+    )
+
+    {:noreply, flush(state)}
+  end
+
+  # spec 74 BUGS-48: false when an agent on the way up from `node_id` was
+  # stopped or crashed — a call queued behind the stop of that subtree. The
+  # walk ends at the top, or at a workflow/research root. An agent that
+  # finished normally does not count: a research round's workers hang under
+  # their round's lead after it is done, and a background agent's own spawn
+  # passes its parent's finished `spawn_agent` op.
+  defp owner_live?(_state, nil), do: true
+
+  defp owner_live?(state, node_id) do
+    case state.nodes[node_id] do
+      nil -> true
+      %{kind: kind} when kind in ["workflow", "research"] -> true
+      %{kind: "agent", status: status} when status in ["stopped", "failed"] -> false
+      node -> owner_live?(state, node.parent_id)
+    end
+  end
+
+  # spec 74 BUGS-48: an op may still ask (approval, question) only while it is
+  # itself unsettled and its owner is live.
+  defp op_live?(state, node_id) do
+    case state.nodes[node_id] do
+      %{status: status} when status in @finished -> false
+      _unsettled_or_unknown -> owner_live?(state, node_id)
+    end
   end
 
   defp live_node?(state, node_id) do
@@ -3743,7 +4275,7 @@ defmodule SwarmCode.Domain.Engine.RunServer do
 
   defp cancel_background_work(state, :all) do
     # spec 73 T8
-    if hook = state.pending_session_hook, do: Task.shutdown(hook.task, 100)
+    if prepare = state.pending_prepare, do: Task.shutdown(prepare.task, 100)
 
     state
     |> cancel_background_work(Map.keys(state.pending_isolation))
@@ -3751,7 +4283,7 @@ defmodule SwarmCode.Domain.Engine.RunServer do
     |> then(fn state ->
       %{
         state
-        | pending_session_hook: nil,
+        | pending_prepare: nil,
           isolation_generation: state.isolation_generation + 1,
           finalization_generation: state.finalization_generation + 1
       }
@@ -3836,7 +4368,10 @@ defmodule SwarmCode.Domain.Engine.RunServer do
     # spec 67 G30 (pass 62 T1 left this call site to pass 63): the commands a
     # run left running in the background are its own. Stop means stop — three
     # "start the server" turns no longer leave three servers on 4000–4002.
-    SwarmCode.Domain.Tools.BackgroundProcs.kill_all(state.run.id)
+    # Spec 74 UI-SPEED-17: the rows go now, the TERM/KILL runs in a
+    # TaskSupervisor child, so a survivor that ignores TERM no longer holds
+    # the stop for 500 ms each. Quit keeps the synchronous `kill/2`.
+    SwarmCode.Domain.Tools.BackgroundProcs.kill_all_async(state.run.id)
 
     state = %{state | approvals: %{}, questions: %{}, queue: []} |> cancel_background_work(:all)
     # Spec 43 §1.2: nothing is killed here. The `{:stop, :normal, …}` that
@@ -3879,7 +4414,12 @@ defmodule SwarmCode.Domain.Engine.RunServer do
   defp strip_error_kind(result), do: result
 
   defp finish_run(state, status, result, error_kind \\ nil) do
-    state = flush(state)
+    # spec 74 BUGS-19: the turn is over, so is every agent still running or
+    # queued under it (a background agent the Lead did not wait for, spec 70
+    # C6). They were left `running`/`queued` until the next boot, kept
+    # spending, and `cleanup_worktrees/1` removed their trees under them.
+    # Idempotent: the `:finish_retry` re-entry finds nothing left to stop.
+    state = state |> stop_leftover_agents() |> flush()
     run = state.run
     totals = %{tokens_in: run.tokens_in, tokens_out: run.tokens_out, cost_usd: run.cost_usd}
     conv_id = state.conversation.id
@@ -3908,6 +4448,7 @@ defmodule SwarmCode.Domain.Engine.RunServer do
             end
 
           text = if status == "stopped", do: text <> "\n\n_(stopped)_", else: text
+          text = with_stopped_note(text, state.stopped_at_end)
 
           update =
             if state.assistant_message do
@@ -3934,6 +4475,8 @@ defmodule SwarmCode.Domain.Engine.RunServer do
               {"stopped", _} -> {"swarm", "Swarm stopped by user."}
               _ -> {"swarm", ""}
             end
+
+          content = with_stopped_note(content, state.stopped_at_end)
 
           {nil,
            [
@@ -4064,6 +4607,48 @@ defmodule SwarmCode.Domain.Engine.RunServer do
 
   defp goal_settlement(_run, _status), do: nil
 
+  # spec 74 BUGS-19: every agent that is neither finished nor the root is
+  # stopped (`parent_stopped`) and settled; the names, in tree order, are kept
+  # for the note on the final message.
+  defp stop_leftover_agents(state) do
+    leftover =
+      for {id, %{kind: "agent", status: status} = node} <- state.nodes,
+          id != state.root_node_id,
+          status not in @finished do
+        node
+      end
+      |> Enum.sort_by(&(&1.position || 0))
+
+    if leftover == [] do
+      state
+    else
+      state = stop_workers_now(state, "parent_stopped")
+
+      state =
+        Enum.reduce(leftover, state, fn node, acc ->
+          settle(
+            acc,
+            node.id,
+            {:error, "Agent #{node.name || "agent"} was stopped (the turn ended)"}
+          )
+        end)
+
+      %{state | stopped_at_end: state.stopped_at_end ++ Enum.map(leftover, &(&1.name || "agent"))}
+    end
+  end
+
+  # spec 74 BUGS-19: the answer is kept exactly; a marker line is appended, as
+  # `_(stopped)_` is.
+  defp with_stopped_note(text, []), do: text
+
+  defp with_stopped_note(text, names) do
+    note =
+      "_(stopped #{length(names)} agent(s) still running when the turn ended: " <>
+        Enum.join(names, ", ") <> ")_"
+
+    if String.trim(text) == "", do: note, else: text <> "\n\n" <> note
+  end
+
   # spec 55 T8: a finish that is waiting for `:finish_retry` keeps the process.
   defp stop_or_retry(%{finish_pending: nil} = state), do: {:stop, :normal, state}
   defp stop_or_retry(state), do: {:noreply, state}
@@ -4092,11 +4677,11 @@ defmodule SwarmCode.Domain.Engine.RunServer do
         {:error, :database_busy} ->
           # spec 60 T7: spec 55 5.4 — the run row gets its own retry (`update_run/2` never raises).
           state = warn_busy(update_run(%{state | run: run}, run_attrs), "workflow row")
-          {struct(wf, attrs), state}
+          {struct(fresh_wf(wf), attrs), state}
 
         {:error, changeset} ->
           Logger.error("swarm_code db write failed: #{inspect(changeset.errors)}")
-          {struct(wf, attrs), %{state | run: struct(run, run_attrs), run_dirty: true}}
+          {struct(fresh_wf(wf), attrs), %{state | run: struct(run, run_attrs), run_dirty: true}}
       end
 
     state = put_in(state.workflow.wf, wf)
@@ -4114,7 +4699,12 @@ defmodule SwarmCode.Domain.Engine.RunServer do
 
     state = cleanup_worktrees(state)
     SwarmCode.Domain.Workflows.broadcast(state.conversation.id, wf)
-    state = announce_run(state)
+    # spec 74 BUGS-20: a flush, not a bare `{:run_updated}`: the root's
+    # terminal status and the stopped workers were put after the only flush and
+    # never broadcast (the caller stops this process, and `terminate/2` only
+    # writes). `run_dirty` is set on every branch above, so the flush sends
+    # the node upserts first and then `{:run_updated}` — once.
+    state = flush(state)
 
     if status in ["done", "failed"] do
       notify_async(fn ->
@@ -4161,7 +4751,9 @@ defmodule SwarmCode.Domain.Engine.RunServer do
       |> stop_workers_now()
       |> cleanup_worktrees()
 
-    state = announce_run(state)
+    # spec 74 BUGS-20: as in `finish_workflow/3` — the root's terminal status
+    # and the stopped workers go out before `{:run_updated}`.
+    state = flush(state)
 
     if status in ["done", "failed"] do
       prompt = String.slice(to_string(state.run.prompt), 0, 60)
@@ -4174,7 +4766,7 @@ defmodule SwarmCode.Domain.Engine.RunServer do
     state
   end
 
-  defp stop_workers_now(state) do
+  defp stop_workers_now(state, error_kind \\ "user_stopped") do
     # Spec 51 §2.7: a released slot must not admit the next queued worker of a
     # run that is ending — `kill_agent/2` → `release_slot/2` → `start_queued/1`
     # used to start an AgentServer (and a `git worktree add`) that terminate/2
@@ -4184,10 +4776,18 @@ defmodule SwarmCode.Domain.Engine.RunServer do
     Enum.reduce(Map.keys(state.nodes), state, fn id, acc ->
       case acc.nodes[id] do
         %{status: s} when s in @finished -> acc
-        %{kind: "agent"} -> acc |> kill_agent(id) |> mark_stopped(id)
-        _ -> mark_stopped(acc, id)
+        %{kind: "agent"} -> acc |> kill_agent(id) |> mark_stopped(id, error_kind)
+        _ -> mark_stopped(acc, id, error_kind)
       end
     end)
+  end
+
+  # spec 74 BUGS-20: the fallback struct of a finish whose row write failed is
+  # built on the newest row there is, not on the boot-time copy.
+  defp fresh_wf(wf) do
+    SwarmCode.Domain.Workflows.get_run(wf.run_id) || wf
+  rescue
+    _ -> wf
   end
 
   defp root_status("done"), do: "done"
@@ -4315,7 +4915,8 @@ defmodule SwarmCode.Domain.Engine.RunServer do
   # order, and the dirty flag is cleared so the next flush does not repeat it.
   defp announce_run(state) do
     Events.broadcast(state.conversation.id, {:run_updated, state.run})
-    %{state | run_dirty: false}
+    # spec 74 EFFICIENCY-4: the row it carries has the current totals.
+    %{state | run_dirty: false, totals_dirty: false}
   end
 
   # Spec 33 §4: the silent writer. This process announces the run itself, from
@@ -4416,6 +5017,27 @@ defmodule SwarmCode.Domain.Engine.RunServer do
       _other -> false
     end
   end
+
+  # Spec 75 §11.1: approving a mission's plan pre-approves its commands. True
+  # only for an `:execute` request of a `run_command` op (an MCP tool's
+  # `:execute` call keeps asking) whose owning agent was launched
+  # with `allow_commands: true` by the BUILTIN mission workflow. The workflow
+  # row is the one this RunServer already holds (`state.workflow.wf`), so a
+  # user or model-authored workflow — even one named "mission" — gets nothing.
+  # The caller keeps `safety != :dangerous` in front of this.
+  defp mission_commands_allowed?(state, node_id, :execute) do
+    with %{definition_name: "mission", scope: "builtin"} <-
+           get_in(Map.get(state, :workflow) || %{}, [:wf]),
+         %{op_type: "run_command", parent_id: agent_id} when is_binary(agent_id) <-
+           state.nodes[node_id],
+         %{spec: %{allow_commands: true}} <- state.agents[agent_id] do
+      true
+    else
+      _other -> false
+    end
+  end
+
+  defp mission_commands_allowed?(_state, _node_id, _permission), do: false
 
   # spec 67 T11 (B22): the set `:always` holds `{permission, op_type}` pairs —
   # "every call of *this tool* in this run", which is what the pill says.

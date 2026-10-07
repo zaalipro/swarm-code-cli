@@ -205,6 +205,101 @@ defmodule SwarmCode.Tools.PathTest do
     end
   end
 
+  # cli020 A5: desktop a64d6ff6 (spec 74 BUGS-1) in the live runtime's copy.
+  # An auto-allowed write of `.swarm_code/config.json` installed a hook that
+  # ran before the next tool call, and on case-insensitive APFS `.GIT/config`
+  # or `.SWARM_CODE/CONFIG.JSON` is the protected file itself.
+  describe "resolve_write/2" do
+    setup do
+      dir = tmp_dir()
+      File.mkdir_p!(Elixir.Path.join(dir, ".git/hooks"))
+      File.mkdir_p!(Elixir.Path.join(dir, ".claude"))
+      File.mkdir_p!(Elixir.Path.join(dir, ".swarm_code"))
+      File.write!(Elixir.Path.join(dir, ".swarm_code/config.json"), "{}\n")
+      File.write!(Elixir.Path.join(dir, ".swarm_code/MEMORY.md"), "# memory\n")
+      File.write!(Elixir.Path.join(dir, "plain.txt"), "plain\n")
+      %{dir: dir}
+    end
+
+    test "config.json is refused for write, case-folded and through a symlink", %{dir: dir} do
+      File.ln_s!(".swarm_code/config.json", Elixir.Path.join(dir, "cfg.json"))
+      File.ln_s!(".swarm_code", Elixir.Path.join(dir, "sc"))
+
+      for path <- [
+            ".swarm_code/config.json",
+            ".SWARM_CODE/CONFIG.JSON",
+            ".Swarm_Code/Config.json",
+            "cfg.json",
+            "sc/config.json"
+          ] do
+        assert {:error, message} = ToolPath.resolve_write(dir, path), path
+        assert message =~ "hooks and config", path
+        refute message =~ "memory tool", path
+      end
+
+      assert File.read!(Elixir.Path.join(dir, ".swarm_code/config.json")) == "{}\n"
+    end
+
+    test "the other protected paths are refused case-folded too", %{dir: dir} do
+      for path <- [".GIT/config", ".git/hooks/pre-commit", ".Claude/settings.json"] do
+        assert {:error, message} = ToolPath.resolve_write(dir, path), path
+        assert message =~ "cannot be written by a tool", path
+      end
+
+      for path <- [".swarm_code/MEMORY.md", ".swarm_code/memory.md"] do
+        assert {:error, message} = ToolPath.resolve_write(dir, path), path
+        assert message =~ "memory tool", path
+      end
+    end
+
+    test "reads, plain files and the rest of .swarm_code stay allowed", %{dir: dir} do
+      assert {:ok, _} = ToolPath.resolve(dir, ".swarm_code/config.json")
+      assert {:ok, _} = ToolPath.resolve(dir, ".git/config")
+
+      for path <- ["plain.txt", ".swarm_code/specs/a.md", ".swarm_code/commands/x.md"] do
+        assert {:ok, abs} = ToolPath.resolve_write(dir, path), path
+        assert abs == Elixir.Path.join(dir, path)
+      end
+
+      assert {:error, "path is outside the project root: ../x"} =
+               ToolPath.resolve_write(dir, "../x")
+    end
+
+    test "the live write_file and edit_file refuse config.json", %{dir: dir} do
+      ctx = %{project_root: dir}
+      progress = fn _, _ -> :ok end
+
+      for path <- [".swarm_code/config.json", ".SWARM_CODE/CONFIG.JSON"] do
+        assert {:error, message} =
+                 SwarmCode.Tools.WriteFile.run(
+                   %{"path" => path, "content" => "evil"},
+                   ctx,
+                   progress
+                 )
+
+        assert message =~ "hooks and config"
+
+        assert {:error, message} =
+                 SwarmCode.Tools.EditFile.run(
+                   %{"path" => path, "old_string" => "{", "new_string" => "evil"},
+                   ctx,
+                   progress
+                 )
+
+        assert message =~ "hooks and config"
+      end
+
+      assert File.read!(Elixir.Path.join(dir, ".swarm_code/config.json")) == "{}\n"
+
+      assert {:ok, _} =
+               SwarmCode.Tools.WriteFile.run(
+                 %{"path" => "ok.txt", "content" => "ok"},
+                 ctx,
+                 progress
+               )
+    end
+  end
+
   defp tmp_dir do
     dir =
       Elixir.Path.join(System.tmp_dir!(), "tool-regression-#{System.unique_integer([:positive])}")

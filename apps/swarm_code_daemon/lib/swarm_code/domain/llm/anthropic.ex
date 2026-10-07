@@ -11,6 +11,13 @@ defmodule SwarmCode.Domain.LLM.Anthropic do
 
   @impl true
   def stream(%Request{} = r, on_event) do
+    # pass74 (spec 74) BUGS-28: whether this request carried the cache markers
+    # and the fallback beta is read before it goes out. Reading the live caps
+    # when the 400 comes back meant a concurrent sibling that had already
+    # remembered the rejection left this one without its one-shot retry.
+    sent_cache? = cache?(r)
+    sent_fallbacks? = fallbacks?(r)
+
     case attempt(r, on_event) do
       {:error, _kind, message} = error ->
         cond do
@@ -20,6 +27,12 @@ defmodule SwarmCode.Domain.LLM.Anthropic do
           # thinking parameter and ask once more — the same shape as the
           # OpenAI-compatible `reasoning_effort` fallback.
           thinking_rejected?(message, r) ->
+            # pass74 (spec 74) EFFICIENCY-41: with no continuation state in
+            # the request, the parameter itself is what this model refuses —
+            # remembered per model, so the next turn does not pay the 400.
+            if not Enum.any?(r.messages, &(Map.get(&1, :provider_blocks, []) != [])),
+              do: ProviderCaps.remember_no_thinking(r.provider, r.model)
+
             SwarmCode.Domain.LLM.on_retry(on_event).(1, 1, "continuation state", true)
             attempt(without_thinking(r), on_event)
 
@@ -28,14 +41,14 @@ defmodule SwarmCode.Domain.LLM.Anthropic do
           # and remember that for the rest of the session the way
           # `remember_no_effort/1` does on the OpenAI side (spec 67 B37: the
           # flag lives in `ProviderCaps`, not in the op task that dies with the call).
-          cache_rejected?(message, r) ->
+          cache_rejected?(message, sent_cache?) ->
             ProviderCaps.remember_no_cache_key(r.provider)
             SwarmCode.Domain.LLM.on_retry(on_event).(1, 1, "prompt cache", true)
             attempt(r, on_event)
 
           # Spec 53b §3: same shape for the server-side fallback beta.
           # A gateway that does not know `fallbacks` must not cost the turn.
-          fallback_rejected?(message, r) ->
+          fallback_rejected?(message, sent_fallbacks?) ->
             ProviderCaps.remember_no_fallbacks(r.provider)
             SwarmCode.Domain.LLM.on_retry(on_event).(1, 1, "refusal fallback", true)
             attempt(r, on_event)
@@ -51,13 +64,16 @@ defmodule SwarmCode.Domain.LLM.Anthropic do
 
   # Spec 51 §6.4: the "this server does not do prompt caching" flag is per
   # provider row, in `ProviderCaps` (spec 67 B37).
+  # pass74 (spec 74) EFFICIENCY-42: a one-shot request writes no cache.
+  defp cache?(%Request{cache: :none}), do: false
   defp cache?(%Request{provider: provider}), do: ProviderCaps.cache_key?(provider)
 
   @doc false
-  def cache_rejected?(message, %Request{} = r) do
+  def cache_rejected?(message, sent_cache?) do
     text = String.downcase(to_string(message))
 
-    cache?(r) and String.contains?(text, "400") and String.contains?(text, "cache_control")
+    sent_cache? == true and String.contains?(text, "400") and
+      String.contains?(text, "cache_control")
   end
 
   @doc false
@@ -95,7 +111,7 @@ defmodule SwarmCode.Domain.LLM.Anthropic do
       %{
         "model" => r.model,
         "max_tokens" => r.max_tokens,
-        "messages" => r.messages |> format_messages() |> mark_last_block(cache?(r)),
+        "messages" => r |> anchored_messages() |> mark_last_block(cache?(r)),
         "stream" => true
       }
       |> put_sampling(r)
@@ -126,7 +142,10 @@ defmodule SwarmCode.Domain.LLM.Anthropic do
       # 200 that carried it is retried.
       error_type: nil,
       # spec 55 T13 (55a A1): set by message_stop; a 200 without it is retried.
-      completed?: false
+      completed?: false,
+      # pass74 (spec 74) BUGS-49: content events so far; `HTTP` resets its
+      # idle deadline whenever this moves (pings do not move it).
+      progress: 0
     }
 
     on_chunk = fn data, acc -> handle_chunk(data, acc, on_event, name) end
@@ -153,7 +172,7 @@ defmodule SwarmCode.Domain.LLM.Anthropic do
         {:error, SwarmCode.Domain.LLM.Error.classify(nil, acc[:error_type], text), text}
 
       {:ok, acc} ->
-        {:ok, to_result(acc, r.model)}
+        {:ok, to_result(acc, r.model, body["max_tokens"] || r.max_tokens)}
 
       {:error, kind, message} ->
         {:error, kind, redact(message, r)}
@@ -327,10 +346,10 @@ defmodule SwarmCode.Domain.LLM.Anthropic do
   end
 
   @doc false
-  def fallback_rejected?(message, %Request{} = r) do
+  def fallback_rejected?(message, sent_fallbacks?) do
     text = String.downcase(to_string(message))
 
-    fallbacks?(r) and String.contains?(text, "400") and
+    sent_fallbacks? == true and String.contains?(text, "400") and
       (String.contains?(text, "fallback") or String.contains?(text, @fallback_beta))
   end
 
@@ -381,6 +400,43 @@ defmodule SwarmCode.Domain.LLM.Anthropic do
   def format_messages(messages) do
     messages |> Enum.reduce([], &add_message/2) |> Enum.reverse()
   end
+
+  # pass74 (spec 74) EFFICIENCY-43: the third breakpoint. Step 1 of a chat
+  # turn writes the cache entry that ends on its opening history; from step 3
+  # on the reads land on the previous step's entry, so that one expired ~5
+  # minutes after step 2 and a follow-up after a long turn wrote its whole
+  # history again at 1.25×. A marker on the anchor keeps it alive. It is put
+  # only where the formatted anchor message is exactly what it was when the
+  # anchor was formatted (a later user message merged into it would move the
+  # breakpoint), and not on the last message (the second marker is there).
+  defp anchored_messages(%Request{cache_anchor: anchor} = r)
+       when is_integer(anchor) and anchor >= 0 do
+    if cache?(r) do
+      {acc, snap, _i} =
+        Enum.reduce(r.messages, {[], nil, 0}, fn m, {acc, snap, i} ->
+          acc = add_message(m, acc)
+          snap = if i == anchor, do: {length(acc), hd(acc)}, else: snap
+          {acc, snap, i + 1}
+        end)
+
+      formatted = Enum.reverse(acc)
+
+      case snap do
+        {k, head} when k < length(formatted) ->
+          if Enum.at(formatted, k - 1) == head,
+            do:
+              List.update_at(formatted, k - 1, &%{&1 | "content" => mark_content(&1["content"])}),
+            else: formatted
+
+        _last_or_missing ->
+          formatted
+      end
+    else
+      format_messages(r.messages)
+    end
+  end
+
+  defp anchored_messages(%Request{} = r), do: format_messages(r.messages)
 
   # Spec 51 §6.4: prompt caching. 90.9 % of every input token this app has ever
   # sent was a re-send of the previous call's prefix — the system prompt and the
@@ -489,13 +545,7 @@ defmodule SwarmCode.Domain.LLM.Anthropic do
     text = Map.get(m, :content) || ""
     text_blocks = if text == "", do: [], else: [%{"type" => "text", "text" => text}]
 
-    image_blocks =
-      for image <- Map.get(m, :images) || [] do
-        %{
-          "type" => "image",
-          "source" => %{"type" => "base64", "media_type" => image.mime, "data" => image.data}
-        }
-      end
+    image_blocks = Enum.map(Map.get(m, :images) || [], &user_image_block/1)
 
     case text_blocks ++ image_blocks do
       [] -> [%{"type" => "text", "text" => ""}]
@@ -503,9 +553,51 @@ defmodule SwarmCode.Domain.LLM.Anthropic do
     end
   end
 
+  # spec 74 BUGS-31: the Messages API refuses an image over 5 MB (decoded), and
+  # an image kept in the window was a 400 on every later turn. Such an image is
+  # a text block naming it; the file and the message row stay as they are.
+  @max_user_image_bytes 5_242_880
+
+  defp user_image_block(image) do
+    data = image.data
+
+    if decoded_size(data) > @max_user_image_bytes do
+      %{
+        "type" => "text",
+        "text" =>
+          "[image #{Map.get(image, :name) || "image"} omitted: over the provider's 5 MB image limit]"
+      }
+    else
+      %{
+        "type" => "image",
+        "source" => %{"type" => "base64", "media_type" => image.mime, "data" => data}
+      }
+    end
+  end
+
+  # The decoded size of standard, padded base64 without decoding it.
+  defp decoded_size(data) when is_binary(data) do
+    padding =
+      cond do
+        String.ends_with?(data, "==") -> 2
+        String.ends_with?(data, "=") -> 1
+        true -> 0
+      end
+
+    div(byte_size(data) * 3, 4) - padding
+  end
+
+  defp decoded_size(_data), do: 0
+
   # The provider's own blocks win: they are the turn Anthropic sent, signatures
   # and all, and the Messages API wants them back unaltered (spec 30 §1).
-  defp assistant_blocks(%{provider_blocks: [_ | _] = blocks}), do: blocks
+  # pass74 (spec 74) BUGS-77: an OpenAI-compatible turn's continuation state
+  # (type "openai") is not Messages API content; that turn is formatted plain.
+  defp assistant_blocks(%{provider_blocks: [_ | _] = blocks} = m) do
+    if Enum.any?(blocks, &(&1["type"] == "openai")),
+      do: assistant_blocks(Map.delete(m, :provider_blocks)),
+      else: blocks
+  end
 
   defp assistant_blocks(m) do
     content = Map.get(m, :content)
@@ -540,14 +632,19 @@ defmodule SwarmCode.Domain.LLM.Anthropic do
     text = Map.get(m, :content) || ""
 
     case Map.get(m, :images) || [] do
+      # spec 74 EFFICIENCY-40: a result kept by an agent on the OpenAI path
+      # (a prewalk hand-off can switch providers) says what it had.
       [] ->
-        text
+        case Map.get(m, :image_count) || 0 do
+          0 -> text
+          n -> String.trim_leading(text <> "\n[#{n} image(s) omitted]", "\n")
+        end
 
       images ->
         {kept, omitted} = take_images(images)
 
         trailer =
-          if omitted > 0, do: "\n[SwarmCode: #{omitted} further images omitted]", else: ""
+          if omitted > 0, do: "\n[ncode: #{omitted} further images omitted]", else: ""
 
         text_blocks =
           case text <> trailer do
@@ -597,10 +694,22 @@ defmodule SwarmCode.Domain.LLM.Anthropic do
 
   defp handle_event(data, acc, on_event, name) do
     case Jason.decode(data) do
-      {:ok, %{} = json} -> apply_event(json["type"], json, acc, on_event, name)
-      _other -> acc
+      {:ok, %{} = json} ->
+        json["type"] |> apply_event(json, acc, on_event, name) |> count_progress(json["type"])
+
+      _other ->
+        acc
     end
   end
+
+  # pass74 (spec 74) BUGS-49: the events that are the model producing
+  # something. `ping`, `message_start` and SSE comments are not.
+  @progress_events ["content_block_start", "content_block_delta", "message_delta"]
+
+  defp count_progress(acc, type) when type in @progress_events,
+    do: %{acc | progress: acc.progress + 1}
+
+  defp count_progress(acc, _type), do: acc
 
   # Spec 51 §6.4: a cached prefix is billed under two other counters, so
   # `input_tokens` alone would report a 6 k prompt as 300. `input` stays "the
@@ -825,8 +934,12 @@ defmodule SwarmCode.Domain.LLM.Anthropic do
 
   defp append_json(acc, _index, _partial), do: acc
 
-  defp to_result(acc, model) do
+  defp to_result(acc, model, max_tokens) do
     calls = Enum.reverse(acc.done_calls)
+
+    # pass74 (spec 74) BUGS-29: `stop_reason: "max_tokens"` — an undecodable
+    # call was cut off at the output limit, not malformed.
+    calls = if acc.stop == "max_tokens", do: Result.mark_truncated(calls, max_tokens), else: calls
 
     %Result{
       text: Chunks.to_string(acc.text),

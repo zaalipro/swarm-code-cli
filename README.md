@@ -15,7 +15,7 @@ your projects.
 curl -fsSL https://code.llmotions.com/install.sh | sh
 ```
 
-ncode 0.1.0 is an unsigned developer preview for macOS 15 or later on Apple
+ncode 0.2.0 is an unsigned developer preview for macOS 15 or later on Apple
 silicon. The installer downloads the release from GitHub Releases, checks its
 SHA-256 and installs the `ncode` command. Bring your own model provider: an
 Anthropic key or any OpenAI-compatible endpoint, added with
@@ -183,7 +183,10 @@ toolchain (`mise`, see `.tool-versions`) and Rust for the terminal port. The
 contributor gate `mix precommit` also needs the maintainer's desktop checkout
 (`~/dev/swarm-code`, or `SWARM_CODE_UPSTREAM`) at the pinned commit:
 `provenance.verify` and `provenance.sync --check` re-derive the extracted domain
-from it, so the gate cannot pass from this repository alone.
+from it, so the gate cannot pass from this repository alone. `provenance.drift`
+(also in the gate, and with `--strict` in `scripts/dev/build_release.sh`) fails
+when the desktop's `main` has migrations the pin lacks, so no release can lock
+the other app out of the shared database.
 
 ### Using `ncode`
 
@@ -399,11 +402,12 @@ they do not run a terminal, daemon, or provider. Each export gets a fresh direct
 
 The existing foundation gate covers canonical paths, identity, private directories, leases,
 read-only schema admission, and verified backups. It is not a normal startup path.
-Its current schema contract describes all 57 migrations at desktop `6dd8d82`
-(pass 69); a 53-migration database from desktop pass 63 is backed up and migrated
-through the contract's `forward_compatible` allowlist, and any other pending or
-unknown migration is refused with one sentence. The domain itself is re-derived
-from that commit with `mix swarm_code.provenance.sync` (see AGENTS.md).
+Its current schema contract describes all 58 migrations at desktop `4c7c577`
+(desktop 0.2.0); a database from desktop pass 63 (53 migrations) or pass 69 and CLI
+0.1.0 (57) is backed up and migrated through the contract's `forward_compatible`
+allowlist, and any other pending or unknown migration is refused with one sentence
+(a newer desktop's database names the CLI version to replace). The domain itself
+is re-derived from that commit with `mix swarm_code.provenance.sync` (see AGENTS.md).
 
 - [Approved CLI architecture](docs/superpowers/specs/2026-09-01-swarm-code-cli-design.md)
 - [Foundation safety and macOS residual risk](docs/foundation-safety.md)

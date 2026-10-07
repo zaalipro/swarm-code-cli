@@ -434,17 +434,29 @@ defmodule SwarmCode.Domain.Research.Prompts do
     """
   end
 
-  @doc "The reporter: write result.md from the notes and nothing else."
-  def reporter(ctx, notes, sources) do
+  @doc """
+  The reporter: write result.md from the notes and nothing else.
+
+  pass74 (spec 74) BUGS-61: `notes_cap: n` replaces the level's notes cap
+  (`reporter_notes_cap/1`) — the retry after a context overflow sends half.
+  """
+  def reporter(ctx, notes, sources, opts \\ []) do
+    cap = opts[:notes_cap] || reporter_notes_cap(ctx)
+
     if Levels.fast?(ctx.level),
-      do: fast_reporter(ctx, notes, sources),
-      else: deep_reporter(ctx, notes, sources)
+      do: fast_reporter(ctx, notes, sources, cap),
+      else: deep_reporter(ctx, notes, sources, cap)
   end
+
+  @doc "pass74 (spec 74) BUGS-61: how much of the notes a reporter of this level reads."
+  @spec reporter_notes_cap(map()) :: pos_integer()
+  def reporter_notes_cap(ctx),
+    do: if(Levels.fast?(ctx[:level]), do: @notes_cap, else: @reporter_notes_cap)
 
   # Spec 47 §2.5: no tools, so no `write_file` round trip and no chance of a
   # reporter that answers with a plan for writing the file. The reply *is* the
   # file; `Program.report/2` puts it on disk.
-  defp fast_reporter(ctx, notes, sources) do
+  defp fast_reporter(ctx, notes, sources, cap) do
     numbered =
       sources
       |> Enum.with_index(1)
@@ -461,7 +473,7 @@ defmodule SwarmCode.Domain.Research.Prompts do
 
     NOTES FROM #{length(notes)} RESEARCH AGENTS
     #{if Enum.any?(notes, & &1["partial"]), do: "Notes marked PARTIAL came from agents that ran out of time or turns; cite them only for what they actually opened.\n", else: ""}
-    #{render_notes(notes)}
+    #{render_notes(notes, cap)}
 
     NUMBERED SOURCES — use these exact numbers for inline citations
     #{numbered}
@@ -492,7 +504,7 @@ defmodule SwarmCode.Domain.Research.Prompts do
     """
   end
 
-  defp deep_reporter(ctx, notes, sources) do
+  defp deep_reporter(ctx, notes, sources, cap) do
     numbered =
       sources
       |> Enum.with_index(1)
@@ -509,7 +521,7 @@ defmodule SwarmCode.Domain.Research.Prompts do
 
     NOTES FROM #{length(notes)} RESEARCH AGENTS OVER #{ctx.steps_total} ROUND(S)
     #{if Enum.any?(notes, & &1["partial"]), do: "Notes marked PARTIAL came from agents that timed out; cite them only for what they actually opened.\n", else: ""}
-    #{render_notes(notes, @reporter_notes_cap)}
+    #{render_notes(notes, cap)}
 
     NUMBERED SOURCES — use these exact numbers for inline citations
     #{numbered}
@@ -571,7 +583,7 @@ defmodule SwarmCode.Domain.Research.Prompts do
     #{numbered}
 
     YOUR JOB
-    Call write_file exactly once with path `report.html` and the whole document.
+    Call write_file exactly once with path `designed.html` and the whole document.
 
     RULES
     - Say nothing the Markdown does not say. You are designing it, not rewriting

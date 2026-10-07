@@ -188,19 +188,36 @@ defmodule SwarmCode.Domain.Tools.RunCommand do
 
   # ------------------------------------------------------------------ T25: poll and stop
 
+  # spec 74 UX-9: the conversation comes from the trusted tool context, so the
+  # next chat turn (a new run) can still reach what an earlier turn started.
   defp poll_background(os_pid, args, ctx, progress) do
     run_id = Map.get(ctx, :run_id)
     progress.(nil, "polling #{os_pid}")
 
-    case SwarmCode.Domain.Tools.BackgroundProcs.poll(run_id, os_pid) do
+    case SwarmCode.Domain.Tools.BackgroundProcs.poll(
+           run_id,
+           Map.get(ctx, :conversation_id),
+           os_pid
+         ) do
       {:ok, %{status: nil} = read} ->
         progress.(100, "still running")
 
         {:ok,
          "exit code pending\n" <>
            poll_body(read, args) <>
-           "\n[SwarmCode: background process #{os_pid} is still running; poll: #{os_pid} " <>
+           "\n[ncode: background process #{os_pid} is still running; poll: #{os_pid} " <>
            "again for more output, stop: #{os_pid} kills it]"}
+
+      # spec 74 BUGS-54: the shell is over, what it started is not.
+      {:ok, %{status: status, survivors: [_ | _] = survivors} = read} ->
+        progress.(100, "exit code #{status}")
+
+        {:ok,
+         "exit code #{status}\n" <>
+           poll_body(read, args) <>
+           "\n[ncode: background process #{os_pid} has exited, but left " <>
+           "#{pid_list(survivors)} running; poll: #{os_pid} returns its output, " <>
+           "stop: #{os_pid} kills it]"}
 
       {:ok, %{status: status} = read} ->
         progress.(100, "exit code #{status}")
@@ -208,7 +225,7 @@ defmodule SwarmCode.Domain.Tools.RunCommand do
         {:ok,
          "exit code #{status}\n" <>
            poll_body(read, args) <>
-           "\n[SwarmCode: background process #{os_pid} has finished and is now forgotten]"}
+           "\n[ncode: background process #{os_pid} has finished and is now forgotten]"}
 
       {:error, :unknown} ->
         {:error, unknown_background(os_pid)}
@@ -219,7 +236,11 @@ defmodule SwarmCode.Domain.Tools.RunCommand do
     run_id = Map.get(ctx, :run_id)
     progress.(nil, "stopping #{os_pid}")
 
-    case SwarmCode.Domain.Tools.BackgroundProcs.stop(run_id, os_pid) do
+    case SwarmCode.Domain.Tools.BackgroundProcs.stop(
+           run_id,
+           Map.get(ctx, :conversation_id),
+           os_pid
+         ) do
       :ok ->
         progress.(100, "stopped #{os_pid}")
         {:ok, "stopped background process #{os_pid} and everything it had started"}
@@ -310,8 +331,8 @@ defmodule SwarmCode.Domain.Tools.RunCommand do
          head <>
            "\n" <>
            body(output) <>
-           "\n[SwarmCode: the command exited but left a background process running " <>
-           "(#{pid_list(pids)}); SwarmCode stopped reading its output after #{drained_ms} ms " <>
+           "\n[ncode: the command exited but left a background process running " <>
+           "(#{pid_list(pids)}); ncode stopped reading its output after #{drained_ms} ms " <>
            "and left it running — anything it prints from now on is discarded]"}
 
       # spec 67 G25: the yield passed and the command is still running. It is
@@ -326,7 +347,7 @@ defmodule SwarmCode.Domain.Tools.RunCommand do
          head <>
            "\n" <>
            body(output) <>
-           "\n[SwarmCode: still running as background process #{os_pid}; run_command with " <>
+           "\n[ncode: still running as background process #{os_pid}; run_command with " <>
            "poll: #{os_pid} returns more output, stop: #{os_pid} kills it]"}
 
       # spec 66 T2: the last thing a hung `mix test` printed is the whole point.
@@ -391,16 +412,32 @@ defmodule SwarmCode.Domain.Tools.RunCommand do
     # the command left behind — once the shell exits, a survivor is re-parented
     # to launchd and nothing links it to this call any more. It is written
     # before the status file, so a status file means the job list is complete.
+    #
+    # spec 74 BUGS-54: an `exit N` (or `exit` in a trap of the command's own)
+    # never reached line three, so a yielded command that exited that way
+    # left no status and no job list — `poll` said "pending" forever. The
+    # same handshake runs from an EXIT trap too, and writes only when line
+    # three did not, so a status file is never rewritten while it is read. A
+    # command that sets its own EXIT trap replaces this one; line three still
+    # covers it unless it also exits early.
+    handshake =
+      ~s(jobs -p > ") <>
+        jobs_file(rc_file) <> ~s(" 2>/dev/null; printf %s "$__sc_rc" > ") <> rc_file <> ~s(")
+
     umask_prefix() <>
       "exec </dev/null\n" <>
+      ~s(trap '__sc_rc=$?; [ -e ") <>
+      rc_file <>
+      ~s(" ] || { ) <>
+      handshake <>
+      "; }' EXIT\n" <>
       command <>
       "\n" <>
-      ~s(__sc_rc=$?; jobs -p > ") <>
-      jobs_file(rc_file) <>
-      ~s(" 2>/dev/null; printf %s "$__sc_rc" > ") <> rc_file <> ~s("; exit "$__sc_rc")
+      "__sc_rc=$?; " <> handshake <> ~s(; exit "$__sc_rc")
   end
 
-  defp jobs_file(rc_file), do: rc_file <> ".jobs"
+  @doc false
+  def jobs_file(rc_file), do: rc_file <> ".jobs"
 
   # `sh`, `dash` and `bash` print one bare pid per line; `zsh` prints its whole
   # job line ("[1]  + 19603 running    (…)"). Anything else is ignored rather
@@ -408,7 +445,11 @@ defmodule SwarmCode.Domain.Tools.RunCommand do
   @sh_job ~r/^(\d+)$/
   @zsh_job ~r/^\[\d+\]\s*[-+]?\s*(\d+)\b/
 
-  defp read_jobs(rc_file) do
+  # spec 74 BUGS-54: also read by the janitor of a yielded command, once its
+  # shell has exited.
+  @doc false
+  @spec read_jobs(String.t()) :: [pos_integer()]
+  def read_jobs(rc_file) do
     case File.read(jobs_file(rc_file)) do
       {:ok, text} ->
         text
@@ -667,6 +708,7 @@ defmodule SwarmCode.Domain.Tools.RunCommand do
       os_pid: SwarmCode.Domain.OSProcess.port_pid(port),
       rc_file: rc_file,
       run_id: Map.get(ctx, :run_id),
+      conversation_id: Map.get(ctx, :conversation_id),
       command: to_string(args["command"] || ""),
       limit: output_limit(args),
       gone_at: nil,
@@ -684,6 +726,14 @@ defmodule SwarmCode.Domain.Tools.RunCommand do
   # did.
   @default_yield_ms 10_000
   @min_yield_ms 1_000
+
+  # ncode p4: "never happens" held only while the loop ran on time. One starved
+  # past both instants (CPU load: a 10 s stall under a 1 s timeout) tested the
+  # yield first and left a command whose timeout had passed running in the
+  # background. The yield now wins only when it was due no later than the
+  # deadline; the first one due still wins either way.
+  defp yield_due?(watch, now, deadline),
+    do: now >= watch.yield_at and watch.yield_at <= deadline
 
   defp yield_ms(args) do
     case args["yield_ms"] do
@@ -722,8 +772,15 @@ defmodule SwarmCode.Domain.Tools.RunCommand do
           watch.gone_at && now - watch.gone_at >= @drain_ms ->
             drained(port, buffers, watch, now)
 
-          is_nil(watch.gone_at) and now >= watch.yield_at ->
+          is_nil(watch.gone_at) and yield_due?(watch, now, deadline) ->
             yielded(port, buffers, watch)
+
+          # ncode p4: output that keeps the mailbox full never reaches the
+          # `after` clause, so past the deadline the data path takes the timer
+          # path's decision (status file first, spec 67 B2) — `yes` under a
+          # 1 s timeout and a 20 s yield ran 30 s and was yielded.
+          is_nil(watch.gone_at) and now >= deadline ->
+            tick(port, buffers, tail, deadline, progress, watch, 0)
 
           true ->
             collect(port, buffers, tail, deadline, progress, watch)
@@ -767,7 +824,7 @@ defmodule SwarmCode.Domain.Tools.RunCommand do
       # spec 67 G25: still running when the yield passed. Tested before the
       # deadline, because a yield shorter than the command timeout is the whole
       # point of it; a yield longer than the timeout never fires.
-      now >= watch.yield_at ->
+      yield_due?(watch, now, deadline) ->
         yielded(port, buffers, watch)
 
       remaining == 0 ->
@@ -798,9 +855,12 @@ defmodule SwarmCode.Domain.Tools.RunCommand do
   # `Port.close/1` a survivor's next write gets EPIPE, which a shell ignores but
   # Node and Python die on. The janitor reads and discards until the last writer
   # closes the pipe; the registry is what lets Stop reach the survivor later.
+  #
+  # spec 74 BUGS-23: the port is handed over first and the job list read
+  # afterwards (one `ps` per job), so that work no longer delays the handover.
   defp drained(port, buffers, watch, now) do
-    pids = read_jobs(watch.rc_file)
-    hand_over(port, watch, pids, [])
+    rc_file = watch.rc_file
+    {:ok, pids} = hand_over(port, watch, fn -> read_jobs(rc_file) end, [])
     {:drained, now - watch.gone_at, pids, output(buffers, watch.limit)}
   end
 
@@ -808,19 +868,34 @@ defmodule SwarmCode.Domain.Tools.RunCommand do
   # register and to report is the shell's own — killing it kills the whole tree,
   # which is what `stop: <os_pid>` promises. The status and job files are the
   # janitor's to remove: the script has not written them yet.
+  #
+  # spec 74 BUGS-54: the janitor watches that shell (`shell_pid`), so its exit
+  # is seen even while something it started keeps the pipe open.
   defp yielded(port, buffers, watch) do
     os_pid = watch.os_pid || SwarmCode.Domain.OSProcess.port_pid(port)
-    hand_over(port, watch, List.wrap(os_pid), [watch.rc_file, jobs_file(watch.rc_file)])
+
+    hand_over(port, watch, List.wrap(os_pid), [watch.rc_file, jobs_file(watch.rc_file)],
+      shell_pid: os_pid
+    )
+
     {:yielded, os_pid, output(buffers, watch.limit)}
   end
 
-  defp hand_over(port, watch, pids, tmp) do
-    SwarmCode.Domain.Tools.BackgroundProcs.adopt(port, %{
-      run_id: watch.run_id,
-      os_pids: pids,
-      command: watch.command,
-      tmp: tmp
-    })
+  defp hand_over(port, watch, pids, tmp, extra \\ []) do
+    SwarmCode.Domain.Tools.BackgroundProcs.adopt(
+      port,
+      Map.merge(
+        %{
+          run_id: watch.run_id,
+          conversation_id: watch.conversation_id,
+          os_pids: pids,
+          command: watch.command,
+          tmp: tmp,
+          rc_file: watch.rc_file
+        },
+        Map.new(extra)
+      )
+    )
   end
 
   # The status file appears the instant the command is over; `ps` is the

@@ -184,6 +184,9 @@ defmodule SwarmCode.Domain.FeatureCatalogTest do
   end
 
   test "workflow launch executes the real supervisor and persists completion", c do
+    # The synced Workflows (desktop 4c7c577) runs a project-scope workflow
+    # only in a trusted project.
+    {:ok, _project} = Projects.trust(c.project)
     dir = Path.join([c.project.root_path, ".swarm_code", "workflows"])
     File.mkdir_p!(dir)
 

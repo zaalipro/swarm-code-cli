@@ -7,7 +7,16 @@ defmodule SwarmCode.Domain.Engine.AgentServer do
   use GenServer, restart: :temporary
   require Logger
 
-  alias SwarmCode.Domain.Engine.{AgentSup, Context, Operation, Prompts, RunServer, Telemetry}
+  alias SwarmCode.Domain.Engine.{
+    AgentSup,
+    Context,
+    Operation,
+    Prompts,
+    ResearchContext,
+    RunServer
+  }
+
+  alias SwarmCode.Domain.Engine.Telemetry
   alias SwarmCode.Domain.Projects.Project
   alias SwarmCode.Domain.LLM
   alias SwarmCode.Domain.{Pricing, Tools}
@@ -42,14 +51,18 @@ defmodule SwarmCode.Domain.Engine.AgentServer do
   message waits for the turn after; if it is waiting on tool results it goes out
   together with them.
   """
-  @spec user_message(pid() | String.t(), String.t(), [map()]) :: :ok
-  def user_message(pid, text, images \\ [])
+  @spec user_message(pid() | String.t(), String.t(), [map()], [integer()]) :: :ok
+  def user_message(pid, text, images \\ [], research_ids \\ [])
 
-  def user_message(pid, text, images) when is_pid(pid),
-    do: GenServer.cast(pid, {:user_message, text, images})
+  def user_message(pid, text, images, research_ids),
+    do: GenServer.cast(target(pid), user_message_cast(text, images, research_ids))
 
-  def user_message(node_id, text, images),
-    do: GenServer.cast(via(node_id), {:user_message, text, images})
+  # spec 74 BUGS-76: the cast keeps its old shape without reports.
+  defp user_message_cast(text, images, []), do: {:user_message, text, images}
+  defp user_message_cast(text, images, ids), do: {:user_message, text, images, ids}
+
+  defp target(pid) when is_pid(pid), do: pid
+  defp target(node_id), do: via(node_id)
 
   @doc """
   Spec 45 §5.2: the agent finishes the step it is on (an LLM stream or a batch
@@ -97,6 +110,8 @@ defmodule SwarmCode.Domain.Engine.AgentServer do
         # threshold is judged — `Context.estimate_tokens/1` sees neither the
         # system prompt nor the tool schemas and reads ~60 % of the truth.
         last_input: 0,
+        # spec 74 EFFICIENCY-43: set by `handle_continue(:start, _)`.
+        cache_anchor: nil,
         usage: %{input: 0, output: 0, cache_read: 0, cache_write: 0},
         cost: nil,
         llm_node: nil,
@@ -161,13 +176,53 @@ defmodule SwarmCode.Domain.Engine.AgentServer do
     {:ok, state, {:continue, :start}}
   end
 
+  # spec 74 BUGS-76: the attached reports of the history (and of a steer
+  # that joined a queued agent's opening messages) are read here, in the
+  # agent's own process, before its first think step.
   @impl true
-  def handle_continue(:start, state), do: start_llm(state)
+  def handle_continue(:start, state) do
+    messages = ResearchContext.expand(state.messages)
+
+    start_llm(
+      Map.merge(state, %{messages: messages, cache_anchor: cache_anchor(state, messages)})
+    )
+  end
+
+  # spec 74 EFFICIENCY-43: a root chat agent's opening history is the prefix
+  # the next user turn shares (cross-turn history is text only), so its last
+  # message carries a cache breakpoint on every step — `{length, prefix}`,
+  # dropped in `think/2` once trim, compress or an inline compaction edits it.
+  defp cache_anchor(%{depth: 0, role: "assistant"} = state, [_ | _] = messages) do
+    if Map.get(state, :cache) == :none, do: nil, else: {length(messages), messages}
+  end
+
+  defp cache_anchor(_state, _messages), do: nil
+
+  defp live_anchor({n, prefix}, messages) do
+    if List.starts_with?(messages, prefix), do: {n, prefix}
+  end
+
+  defp live_anchor(_anchor, _messages), do: nil
 
   @impl true
-  def handle_cast({:user_message, text, images}, state) do
+  def handle_cast({:user_message, text, images}, state),
+    do: handle_cast({:user_message, text, images, []}, state)
+
+  def handle_cast({:user_message, text, images, research_ids}, state) do
     message = %{role: "user", content: to_string(text)}
     message = if images == [], do: message, else: Map.put(message, :images, images)
+
+    # spec 74 BUGS-76: a steer that attached reports carries their block.
+    message =
+      if research_ids in [nil, []],
+        do: message,
+        else:
+          message
+          |> Map.put(:research_ids, research_ids)
+          |> List.wrap()
+          |> ResearchContext.expand()
+          |> hd()
+
     {:noreply, %{state | steer: state.steer ++ [Context.count(message)]}}
   end
 
@@ -183,57 +238,40 @@ defmodule SwarmCode.Domain.Engine.AgentServer do
   def handle_cast(:continue, state), do: {:noreply, %{state | paused?: false}}
 
   @impl true
+  # spec 74 ARCHITECTURE-4: the in-place summary (an owned op) is in. Its usage
+  # is billed whatever came of it (spec 74 BUGS-33), the history is replaced
+  # on a good summary, and the think step it held back starts — or holds, if a
+  # pause came in meanwhile (`start_llm/1`'s paused clause).
+  def handle_info({:op_done, id, result}, %{held: {:inline_compact, id, before, model}} = state) do
+    {outcome, usage} = summary_outcome(result)
+    state = %{state | held: nil}
+
+    {state, tokens} =
+      case usage do
+        %{} ->
+          {account_usage(state, usage, model),
+           %{tokens_in: usage.input, tokens_out: usage.output}}
+
+        nil ->
+          {state, %{}}
+      end
+
+    state
+    |> apply_inline_summary(id, outcome, before, tokens)
+    |> start_llm()
+  end
+
   # The llm op finished with a result. Spec 51 §6.3: there is no `:op_event`
   # clause any more — streamed text and reasoning go straight to the RunServer
   # (spec 43 §1.1) and usage is read from `Result.usage` right here.
   def handle_info({:op_done, id, {:ok, %LLM.Result{} = result}}, %{llm_node: id} = state) do
-    # Spec 53b §5: the two cache counters are part of `input` (the prompt is the
-    # sum of the three, whatever it was billed as) and are carried beside it so
-    # the fresh part can be priced at the input rate and the rest at its own.
-    usage = %{
-      input: state.usage.input + result.usage.input,
-      output: state.usage.output + result.usage.output,
-      cache_read: Map.get(state.usage, :cache_read, 0) + Map.get(result.usage, :cache_read, 0),
-      cache_write: Map.get(state.usage, :cache_write, 0) + Map.get(result.usage, :cache_write, 0)
-    }
-
-    # spec 73 T48: each call is priced at the model that made it and the costs
-    # add up — the cumulative `usage` used to be re-priced at `state.model`,
-    # so after a prewalk hand-off (spec 72 A5) an implementer's strong-model
-    # planning tokens showed at the cheap model's rate, or as no cost at all
-    # when that model has no pricing row. `Pricing.cost/5` is linear per call,
-    # so the running sum is exact.
-    cost =
-      Pricing.add(
-        state.cost,
-        Pricing.cost(
-          state.settings.pricing,
-          state.model.model,
-          result.usage.input,
-          result.usage.output,
-          %{
-            read: Map.get(result.usage, :cache_read, 0),
-            write: Map.get(result.usage, :cache_write, 0)
-          }
-        )
-      )
-
-    RunServer.update_node(state.run_id, state.node_id, %{
-      tokens_in: usage.input,
-      tokens_out: usage.output,
-      cache_read: usage.cache_read,
-      cache_write: usage.cache_write,
-      cost_usd: cost
-    })
-
+    state = account_usage(state, result.usage, state.model.model)
     messages = state.messages ++ [assistant_message(result)]
 
     # spec 66 T14: the overflow retry is one per overflow, not one per agent.
     state = %{
       state
-      | usage: usage,
-        cost: cost,
-        messages: messages,
+      | messages: messages,
         llm_node: nil,
         overflow_retried?: false,
         # spec 67 T11 (G27): the exact prompt size of the call that just
@@ -279,23 +317,21 @@ defmodule SwarmCode.Domain.Engine.AgentServer do
       result.stop_reason == "max_tokens" and String.trim(result.text) == "" ->
         finish(state, {:error, "the answer hit max_tokens before any text was produced"})
 
-      # spec 60 T5: a steer that landed while the final answer streamed (spec 55 7.4 covered tools only).
-      state.steer != [] and state.turn < state.max_turns ->
-        start_llm(state)
-
-      state.steer != [] and not Map.get(state, :steer_turn?, false) ->
-        start_llm(%{state | max_turns: state.max_turns + 1, steer_turn?: true})
-
       true ->
-        finish(state, {:ok, result.text})
+        answer_or_read_steer(state, result.text)
     end
   end
 
-  # The llm op failed. spec 67 T30 (G42): with a kind beside the message when
-  # the provider produced one.
   def handle_info({:op_done, id, {:error, kind, msg}}, %{llm_node: id} = state)
       when is_atom(kind),
       do: llm_failed(id, kind, msg, state)
+
+  # spec 74 BUGS-53: the provider refused this step's continuation state and
+  # retried without it (`Operation` saw the "continuation state" retry). The
+  # blocks it refused are still in the history, so every later step would pay
+  # the same 400 and retry: they go now, once. The op's `op_done` follows.
+  def handle_info({:thinking_stripped, id}, %{llm_node: id} = state),
+    do: {:noreply, %{state | messages: Context.strip_blocks(state.messages)}}
 
   def handle_info({:op_done, id, {:error, msg}}, %{llm_node: id} = state),
     do: llm_failed(id, LLM.Error.classify(nil, nil, msg), msg, state)
@@ -304,12 +340,15 @@ defmodule SwarmCode.Domain.Engine.AgentServer do
   def handle_info({:op_done, id, result}, state) do
     if Map.has_key?(state.pending, id) do
       # spec 67 T34 (G35): a third element is the MCP images of this result.
+      # spec 74 BUGS-15: an error text becomes a tool message as is, and one
+      # invalid byte in the history fails every later request to encode — the
+      # boundary guard covers every tool's error, whoever built it.
       {text, error?, images} =
         case result do
           {:ok, text, images} when is_list(images) -> {to_string(text), false, images}
           {:ok, text} -> {to_string(text), false, []}
-          {:error, msg} -> {"Error: " <> to_string(msg), true, []}
-          {:error, _kind, msg} -> {"Error: " <> to_string(msg), true, []}
+          {:error, msg} -> {error_text(msg), true, []}
+          {:error, _kind, msg} -> {error_text(msg), true, []}
         end
 
       state = %{
@@ -372,10 +411,8 @@ defmodule SwarmCode.Domain.Engine.AgentServer do
 
       budget = trunc(Context.budget(state.model.model, state.settings) * 0.6)
 
-      messages =
-        state.messages
-        |> Context.compress(budget)
-        |> Context.trim(budget)
+      # spec 74 BUGS-53: a rewrite strips the signed thinking it invalidated.
+      messages = state.messages |> Context.fit(budget) |> strip_if_rewritten()
 
       start_llm(%{
         state
@@ -389,6 +426,9 @@ defmodule SwarmCode.Domain.Engine.AgentServer do
       finish(state, {:error, kind, msg})
     end
   end
+
+  defp strip_if_rewritten({messages, true}), do: Context.strip_blocks(messages)
+  defp strip_if_rewritten({messages, false}), do: messages
 
   # Spec 30 §2: provider continuation state (Anthropic's signed thinking blocks)
   # rides along with the assistant turn it belongs to, in memory only.
@@ -467,8 +507,6 @@ defmodule SwarmCode.Domain.Engine.AgentServer do
   end
 
   defp start_llm(state) do
-    turn = state.turn + 1
-
     # spec 66 T13: the model's own context window when Settings → Pricing has
     # one for it, today's three cases otherwise.
     budget = Context.budget(state.model.model, state.settings)
@@ -484,7 +522,17 @@ defmodule SwarmCode.Domain.Engine.AgentServer do
     # it crosses the same threshold — the conversation-level path above only
     # helps the *next* user turn, and a single turn with sixty tool calls never
     # gets one.
-    state = maybe_inline_compact(state, budget)
+    #
+    # spec 74 ARCHITECTURE-4: as an owned op, not a call inside this callback.
+    # The think step comes back here when the summary is in (`op_done` below);
+    # `last_inline_compact_turn` is set by then, so it goes straight on.
+    if inline_compact?(state, budget),
+      do: start_inline_compact(state, budget),
+      else: think(state, budget)
+  end
+
+  defp think(state, budget) do
+    turn = state.turn + 1
 
     # spec 67 T26 (G29): the world the block in the system prompt described can
     # have moved (a `git checkout -b`, a mode switch from the composer). The
@@ -498,7 +546,17 @@ defmodule SwarmCode.Domain.Engine.AgentServer do
     state = drain_mailbox(state)
 
     # spec 72 B1: two-turn wrap-up notice at max_turns - 1, last-turn notice at
-    # max_turns. Both go to the *request* only, once; never into durable history.
+    # max_turns. Each is sent once.
+    #
+    # spec 74 BUGS-30: once, and then kept — both notices and the environment
+    # refresh join the stored history like any other message (in this
+    # process only; the agent's history is never a table row). They used to go
+    # to the request alone, so the next request dropped them: the model lost
+    # the correction, and because the Anthropic formatter merges a notice into
+    # the tool_result turn before it, the drop edited an earlier turn — which
+    # invalidates every later signed thinking block (a 400 and a retry without
+    # thinking on every later step). Now each request is a pure append of the
+    # one before.
     {notice, is_last_turn_notice, is_wrap_up_notice} =
       cond do
         turn == state.max_turns and state.max_turns > 1 and not state.notice_sent? ->
@@ -522,14 +580,22 @@ defmodule SwarmCode.Domain.Engine.AgentServer do
     # first message sent changed per call — the prefix-cache miss spec 72 B4's
     # hysteresis was written to stop. Trimmed once and stored, the following
     # calls grow from the low-water mark with a byte-identical prefix.
+    #
+    # spec 74 BUGS-53: a compress that rewrote a kept tool result edited the
+    # history in the middle, which invalidates every later signed thinking
+    # block — resent as they were, each later step paid a rejected request and
+    # a retry without thinking. They are stripped once, here.
     messages =
-      (state.messages ++ state.steer)
-      |> Context.compress(budget)
-      |> Context.trim(budget)
+      (state.messages ++ state.steer ++ Enum.map(env_notice ++ notice, &Context.count/1))
+      |> Context.fit(budget)
+      |> strip_if_rewritten()
+
+    anchor = live_anchor(Map.get(state, :cache_anchor), messages)
 
     state = %{
       state
       | messages: messages,
+        cache_anchor: anchor,
         steer: [],
         notice_sent?: state.notice_sent? or is_last_turn_notice,
         wrap_up_sent?: state.wrap_up_sent? or is_wrap_up_notice,
@@ -540,7 +606,7 @@ defmodule SwarmCode.Domain.Engine.AgentServer do
       provider: state.model.provider,
       model: state.model.model,
       system: state.system,
-      messages: state.messages ++ env_notice ++ notice,
+      messages: state.messages,
       tools: state.tool_specs,
       # Spec 45 §3.3: the one effort → request site every agent goes through
       # (chat, swarm, judge, workflow, research tier, scheduled) — a key the
@@ -554,7 +620,11 @@ defmodule SwarmCode.Domain.Engine.AgentServer do
       # spec 66 T18: one prefix-cache key per agent — the run's for the agent at
       # the root, the run's plus the node's for a sub-agent, so siblings with
       # different prefixes do not evict each other's cache.
-      cache_key: cache_key(state)
+      cache_key: cache_key(state),
+      cache_anchor: with({n, _prefix} <- anchor, do: n - 1),
+      # Spec 75: the RunServer's speed tag (contract §5.2) — nil for an agent
+      # started without one.
+      speed: Map.get(state, :speed_tag)
     }
 
     # Spec 26 §5.3: only an agent that asked for one; the struct default (8 192)
@@ -564,6 +634,8 @@ defmodule SwarmCode.Domain.Engine.AgentServer do
         n when is_integer(n) and n > 0 -> %{request | max_tokens: n}
         _other -> request
       end
+
+    request = if Map.get(state, :cache) == :none, do: one_shot(request), else: request
 
     RunServer.update_node(state.run_id, state.node_id, %{turn: turn, max_turns: state.max_turns})
 
@@ -615,6 +687,13 @@ defmodule SwarmCode.Domain.Engine.AgentServer do
   defp cache_key(%{run_id: run_id, node_id: node_id, depth: depth, role: role})
        when is_binary(run_id) and (depth > 0 or role != "assistant"),
        do: run_id <> ":" <> to_string(node_id)
+
+  # spec 74 EFFICIENCY-44: every chat turn is a new run, so a per-run key sent
+  # consecutive turns of one conversation — which share their prefix — to
+  # different cache shards. The conversation's assistant keeps one key.
+  defp cache_key(%{run_kind: kind, conversation_id: conversation_id})
+       when kind in ["chat", "compact"] and is_binary(conversation_id),
+       do: "conv:" <> conversation_id
 
   defp cache_key(%{run_id: run_id}) when is_binary(run_id), do: run_id
   defp cache_key(_state), do: nil
@@ -685,13 +764,9 @@ defmodule SwarmCode.Domain.Engine.AgentServer do
   # user turn reads. That does nothing for the turn that is actually too big:
   # one request with sixty tool calls silently loses its earliest exchanges to
   # `Context.trim/2` and the agent forgets what it was asked. Over the same
-  # threshold the agent now summarises its own history, synchronously, inside
-  # its think step, and carries on against the summary plus the last exchanges.
-  #
-  # The summary call blocks this GenServer on purpose: the agent has nothing
-  # else to do (its next step is the request this is preparing), every message
-  # it can receive is a cast that simply waits, and a stop still kills it
-  # through its supervisor. The deadline is 120 s, not the LLM default.
+  # threshold the agent now summarises its own history before its think step,
+  # and carries on against the summary plus the last exchanges. The deadline is
+  # 120 s, not the LLM default.
   #
   # Messages kept whole after the summary, and the smallest number of turns
   # between two inline compactions of one agent (a tail that is still over the
@@ -703,73 +778,75 @@ defmodule SwarmCode.Domain.Engine.AgentServer do
   @inline_max_tokens 4_000
   @inline_marker "[Summary of this turn so far]\n"
 
-  defp maybe_inline_compact(state, budget) do
-    if inline_compact?(state, budget) do
-      before = context_tokens(state)
-      op = inline_node(state)
+  # spec 74 ARCHITECTURE-4: the summary runs as an owned op under this agent's
+  # task supervisor, like a think step — it used to be a synchronous LLM call
+  # inside this callback (up to 120 s, each provider fallback restarting the
+  # clock), while pause, steer, messages and background results queued behind
+  # it and the node showed no retry. A pause or a stop meanwhile follows the
+  # op's own cancellation.
+  defp start_inline_compact(state, budget) do
+    before = context_tokens(state)
+    {request, model} = inline_request(state, budget)
 
-      case inline_summary(state, budget) do
-        {:ok, summary} ->
-          messages =
-            [Context.count(%{role: "user", content: @inline_marker <> summary})] ++
-              inline_tail(state.messages)
+    {:ok, id} =
+      Operation.start(state.ops_sup, self(), %{
+        run_id: state.run_id,
+        parent_id: state.node_id,
+        op_type: "compact",
+        title: "compacting the history",
+        work: {:summary, request}
+      })
 
-          after_tokens = Context.estimate_tokens(messages)
-          note = "compacted in place (#{before} → #{after_tokens} tokens)"
-
-          # The op row is what survives the turn: `complete_agent/3` overwrites
-          # the agent node's `detail` with the final answer.
-          finish_inline_node(state, op, %{
-            status: "done",
-            progress: 100,
-            detail: note,
-            result: summary
-          })
-
-          RunServer.update_node(state.run_id, state.node_id, %{detail: note})
-
-          %{
-            state
-            | messages: messages,
-              # The reported size belongs to the prompt that has just been
-              # thrown away; leaving it would keep the threshold tripped.
-              last_input: 0,
-              last_inline_compact_turn: state.turn
-          }
-
-        {:error, reason} ->
-          Logger.warning("swarm_code inline compaction failed: " <> String.slice(reason, 0, 200))
-
-          finish_inline_node(state, op, %{
-            status: "failed",
-            progress: 100,
-            error: String.slice(reason, 0, 500),
-            detail: "compaction failed"
-          })
-
-          # Carry on with the history as it is — `Context.trim/2` still fits the
-          # request — and do not ask again before the gap.
-          %{state | last_inline_compact_turn: state.turn}
-      end
-    else
-      state
-    end
+    {:noreply, %{state | held: {:inline_compact, id, before, model}}}
   end
 
-  defp inline_node(state) do
-    case RunServer.register_node(state.run_id, %{
-           kind: "op",
-           op_type: "compact",
-           title: "compacting the history",
-           parent_id: state.node_id,
-           progress: nil,
-           status: "running"
-         }) do
-      {:ok, node} -> node.id
-      _other -> nil
-    end
-  rescue
-    _error -> nil
+  defp apply_inline_summary(state, op, {:ok, summary}, before, tokens) do
+    # spec 74 BUGS-53: a new summary head is a history edit — the kept
+    # tail's signed thinking is invalid behind it.
+    messages =
+      [Context.count(%{role: "user", content: @inline_marker <> summary})] ++
+        Context.strip_blocks(inline_tail(state.messages))
+
+    after_tokens = Context.estimate_tokens(messages)
+    note = "compacted in place (#{before} → #{after_tokens} tokens)"
+
+    # The op row is what survives the turn: `complete_agent/3` overwrites
+    # the agent node's `detail` with the final answer.
+    finish_inline_node(
+      state,
+      op,
+      Map.merge(tokens, %{status: "done", progress: 100, detail: note, result: summary})
+    )
+
+    RunServer.update_node(state.run_id, state.node_id, %{detail: note})
+
+    %{
+      state
+      | messages: messages,
+        # The reported size belongs to the prompt that has just been
+        # thrown away; leaving it would keep the threshold tripped.
+        last_input: 0,
+        last_inline_compact_turn: state.turn
+    }
+  end
+
+  defp apply_inline_summary(state, op, {:error, reason}, _before, tokens) do
+    Logger.warning("swarm_code inline compaction failed: " <> String.slice(reason, 0, 200))
+
+    finish_inline_node(
+      state,
+      op,
+      Map.merge(tokens, %{
+        status: "failed",
+        progress: 100,
+        error: String.slice(reason, 0, 500),
+        detail: "compaction failed"
+      })
+    )
+
+    # Carry on with the history as it is — `Context.trim/2` still fits the
+    # request — and do not ask again before the gap.
+    %{state | last_inline_compact_turn: state.turn}
   end
 
   defp finish_inline_node(_state, nil, _attrs), do: :ok
@@ -805,15 +882,22 @@ defmodule SwarmCode.Domain.Engine.AgentServer do
   # re-sent out of their run), and neither survives a request whose whole point
   # is to have no tools. A transcript has the same information and no shape
   # rules.
-  defp inline_summary(state, budget) do
+  # spec 74 BUGS-33: the usage of the call rides along so it is billed at the
+  # model that made it; a summary cut at `max_tokens` or refused is an error,
+  # never a replacement for the history. The provider row is refreshed first:
+  # this runs before `think/2` does. spec 74 ARCHITECTURE-4: the request and
+  # its model name; `start_inline_compact/2` runs it as an op.
+  defp inline_request(state, budget) do
     body =
       state.messages
       |> Context.trim(budget)
       |> Enum.map_join("\n\n", &transcript_line/1)
 
+    model = refresh_provider(state.model)
+
     request = %LLM.Request{
-      provider: state.model.provider,
-      model: state.model.model,
+      provider: model.provider,
+      model: model.model,
       system: "",
       messages: [
         %{
@@ -829,21 +913,31 @@ defmodule SwarmCode.Domain.Engine.AgentServer do
       deadline_ms: @inline_deadline_ms
     }
 
-    case LLM.stream(request, fn _ -> :ok end) do
-      {:ok, %LLM.Result{text: text}} ->
-        if String.trim(text) == "", do: {:error, "the summary was empty"}, else: {:ok, text}
-
-      {:error, message} ->
-        {:error, to_string(message)}
-
-      # spec 67 T30: the structured error shape.
-      {:error, _kind, message} ->
-        {:error, to_string(message)}
-
-      other ->
-        {:error, inspect(other)}
-    end
+    {one_shot(request), model.model}
   end
+
+  # spec 74 EFFICIENCY-42: a request whose prompt is never sent again — the
+  # inline summary, the /compact agent's one step — writes nothing to the
+  # prompt cache: no `cache_control` marker (a write costs 1.25× the input
+  # price and is never read) and no `prompt_cache_key`. `Request.cache` is the
+  # provider side's field (llm/request.ex).
+  defp one_shot(%LLM.Request{} = request), do: %{request | cache: :none, cache_key: nil}
+
+  # `{outcome, usage | nil}` of the summary op's result.
+  defp summary_outcome({:ok, %LLM.Result{stop_reason: stop, usage: usage}})
+       when stop in ["max_tokens", "refusal"],
+       do: {{:error, "the summary was cut off (#{stop})"}, usage}
+
+  defp summary_outcome({:ok, %LLM.Result{text: text, usage: usage}}) do
+    if String.trim(text) == "",
+      do: {{:error, "the summary was empty"}, usage},
+      else: {{:ok, text}, usage}
+  end
+
+  defp summary_outcome({:error, message}), do: {{:error, to_string(message)}, nil}
+  # spec 67 T30: the structured error shape.
+  defp summary_outcome({:error, _kind, message}), do: {{:error, to_string(message)}, nil}
+  defp summary_outcome(other), do: {{:error, inspect(other)}, nil}
 
   defp transcript_line(%{role: "tool"} = m) do
     "[tool result · #{m[:name] || "tool"}#{if m[:is_error], do: " · error", else: ""}]\n" <>
@@ -1068,6 +1162,78 @@ defmodule SwarmCode.Domain.Engine.AgentServer do
     %{state | serial_running: op_id}
   end
 
+  # spec 60 T5: a steer that landed while the final answer streamed (spec 55
+  # 7.4 covered tools only). spec 74 BUGS-21: a peer message too — the
+  # RunServer only flags it (`{:mailbox_pending, _}`) and only `start_llm/1`
+  # drained it, so a message that arrived during the final think step was never
+  # read while its sender had been told it was delivered. Draining here (a
+  # no-op without the flag) puts it in the steer; `start_llm/1` then reads it
+  # exactly once, and an agent with nothing new still finishes at once.
+  defp answer_or_read_steer(state, text) do
+    state = drain_mailbox(state)
+
+    cond do
+      state.steer != [] and state.turn < state.max_turns ->
+        start_llm(state)
+
+      state.steer != [] and not Map.get(state, :steer_turn?, false) ->
+        start_llm(%{state | max_turns: state.max_turns + 1, steer_turn?: true})
+
+      true ->
+        finish(state, {:ok, text})
+    end
+  end
+
+  # The llm op failed. spec 67 T30 (G42): with a kind beside the message when
+  # the provider produced one.
+  # Spec 53b §5: the two cache counters are part of `input` (the prompt is the
+  # sum of the three, whatever it was billed as) and are carried beside it so
+  # the fresh part can be priced at the input rate and the rest at its own.
+  #
+  # spec 73 T48: each call is priced at the model that made it and the costs
+  # add up — the cumulative `usage` used to be re-priced at `state.model`,
+  # so after a prewalk hand-off (spec 72 A5) an implementer's strong-model
+  # planning tokens showed at the cheap model's rate, or as no cost at all
+  # when that model has no pricing row. `Pricing.cost/5` is linear per call,
+  # so the running sum is exact.
+  #
+  # spec 74 BUGS-33: shared by the llm `op_done` clause and the inline
+  # compaction, whose call (the single largest request of a long turn) used to
+  # reach neither the agent's tokens nor the run's cost.
+  defp account_usage(state, call, model) do
+    usage = %{
+      input: state.usage.input + call.input,
+      output: state.usage.output + call.output,
+      cache_read: Map.get(state.usage, :cache_read, 0) + Map.get(call, :cache_read, 0),
+      cache_write: Map.get(state.usage, :cache_write, 0) + Map.get(call, :cache_write, 0)
+    }
+
+    cost =
+      Pricing.add(
+        state.cost,
+        Pricing.cost(
+          state.settings.pricing,
+          model,
+          call.input,
+          call.output,
+          %{read: Map.get(call, :cache_read, 0), write: Map.get(call, :cache_write, 0)}
+        )
+      )
+
+    RunServer.update_node(state.run_id, state.node_id, %{
+      tokens_in: usage.input,
+      tokens_out: usage.output,
+      cache_read: usage.cache_read,
+      cache_write: usage.cache_write,
+      cost_usd: cost
+    })
+
+    %{state | usage: usage, cost: cost}
+  end
+
+  # spec 74 BUGS-15: see the tool `op_done` clause.
+  defp error_text(msg), do: String.replace_invalid("Error: " <> to_string(msg))
+
   # The batch is over when nothing is running and nothing is queued.
   defp tools_done?(state),
     do: map_size(state.pending) == 0 and Map.get(state, :serial_queue, []) == []
@@ -1178,6 +1344,11 @@ defmodule SwarmCode.Domain.Engine.AgentServer do
     end)
   end
 
+  defp images_sent?(%{model: %{provider: %{kind: kind}}}),
+    do: LLM.provider_module(kind) != SwarmCode.Domain.LLM.OpenAI
+
+  defp images_sent?(_state), do: true
+
   defp continue_after_tools(state) do
     tool_messages =
       Enum.map(state.order, fn op_id ->
@@ -1194,7 +1365,15 @@ defmodule SwarmCode.Domain.Engine.AgentServer do
 
         # spec 67 T34 (G35): the provider turns these into `tool_result` image
         # blocks (Anthropic) or an `[image omitted]` line (OpenAI).
-        message = if images == [], do: message, else: Map.put(message, :images, images)
+        # spec 74 EFFICIENCY-40: the OpenAI formatter only needs how many
+        # there were, so an agent on that path keeps the count, not the base64
+        # (≈9 MB resident after 30 screenshots, and charged as context).
+        message =
+          cond do
+            images == [] -> message
+            images_sent?(state) -> Map.put(message, :images, images)
+            true -> Map.put(message, :image_count, length(images))
+          end
 
         Context.count(message)
       end)
@@ -1242,11 +1421,15 @@ defmodule SwarmCode.Domain.Engine.AgentServer do
         # spec 72 B6: doom loop gets its own stop reason.
         finish(state, {:error, reason}, :doom_loop)
 
-      state ->
-        cond do
-          state.turn < state.max_turns ->
-            start_llm(state)
+      state when state.turn < state.max_turns ->
+        start_llm(state)
 
+      state ->
+        # spec 74 BUGS-21: out of turns — a peer message waiting in the mailbox
+        # counts as a steer, as in `answer_or_read_steer/2`.
+        state = drain_mailbox(state)
+
+        cond do
           # Spec 43 §1.5 (B5): the user steered during the last turn — their
           # message is already in the transcript, so it is read: one extra turn,
           # once (`max_turns + 1` makes the next check fail for good).

@@ -39,7 +39,7 @@ defmodule SwarmCode.Domain.Tools.ListDir do
   def permission(_args), do: :read
 
   @impl true
-  def title(args), do: "list " <> (args["path"] || ".")
+  def title(args), do: "list " <> SwarmCode.Domain.Tools.arg_text(args["path"] || ".")
 
   @impl true
   def run(args, ctx, progress) do

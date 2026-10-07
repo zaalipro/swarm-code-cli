@@ -77,7 +77,7 @@ defmodule SwarmCode.Daemon.CrossAppLeaseProductionProof do
       },
       database_fingerprint: "production-lease-proof",
       schema_contract: SwarmCode.Daemon.FoundationGate.schema_contract(),
-      app_version: "0.1.0"
+      app_version: "0.2.0"
     ]
 
     %{opts: opts, paths: paths}

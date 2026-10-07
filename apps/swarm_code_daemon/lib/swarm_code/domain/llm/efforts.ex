@@ -191,14 +191,45 @@ defmodule SwarmCode.Domain.LLM.Efforts do
   The level `r.effort` resolves to for `r.provider`/`r.model` (§3.4): nil
   without an effort, or once the provider has rejected the parameter this
   session; an unknown key falls back to `default_key/2`.
+
+  pass74 (spec 74) BUGS-51: also nil once this *model* rejected the effort
+  keys, and a level whose value this model refused becomes the model's
+  default level (`default_level/2`).
   """
   @spec level(Request.t()) :: level() | nil
   def level(%Request{effort: nil}), do: nil
 
   def level(%Request{} = r) do
-    if ProviderCaps.effort?(r.provider) do
-      find(r.provider, r.model, r.effort) ||
-        find(r.provider, r.model, default_key(r.provider, r.model))
+    # pass74 (spec 74) EFFICIENCY-41: and nil once this model refused `thinking`.
+    if ProviderCaps.effort?(r.provider) and ProviderCaps.model_effort?(r.provider, r.model) and
+         ProviderCaps.thinking?(r.provider, r.model) do
+      level =
+        find(r.provider, r.model, r.effort) ||
+          find(r.provider, r.model, default_key(r.provider, r.model))
+
+      cond do
+        is_nil(level) -> nil
+        ProviderCaps.level_rejected?(r.provider, r.model, level["key"]) -> default_level(r, level)
+        true -> level
+      end
+    end
+  end
+
+  @doc """
+  pass74 (spec 74) BUGS-51: what a request whose `level` was refused by value
+  falls back to — the model's default level, unless that is the same level or
+  was refused too (then nil: no effort keys at all).
+  """
+  @spec default_level(Request.t(), level() | nil) :: level() | nil
+  def default_level(%Request{} = r, level) do
+    key = default_key(r.provider, r.model)
+    default = find(r.provider, r.model, key)
+
+    cond do
+      is_nil(default) -> nil
+      level != nil and default["key"] == level["key"] -> nil
+      ProviderCaps.level_rejected?(r.provider, r.model, key) -> nil
+      true -> default
     end
   end
 
@@ -243,9 +274,11 @@ defmodule SwarmCode.Domain.LLM.Efforts do
         "openai",
         "OpenAI reasoning_effort",
         openai,
+        # pass74 (spec 74) BUGS-52: o-series and gpt-5.x reasoning models
+        # take only the default temperature (1); 0.2 is a 400.
         for(
           k <- ~w(none minimal low medium high xhigh max),
-          do: level(k, %{"reasoning_effort" => k})
+          do: k |> level(%{"reasoning_effort" => k}) |> Map.put("drop", ["temperature"])
         )
       ),
       preset(

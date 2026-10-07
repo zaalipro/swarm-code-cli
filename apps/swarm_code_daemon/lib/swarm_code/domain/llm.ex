@@ -86,6 +86,36 @@ defmodule SwarmCode.Domain.LLM do
   def rate_limit(nil), do: nil
   def rate_limit(provider_id), do: SwarmCode.Domain.Cache.get({:rate_limit, provider_id})
 
+  @doc """
+  spec 74 EFFICIENCY-68: the topic `{:rate_limit, provider_id, snapshot}`
+  travels on — its own, not `"ui"`, so only the window that shows the chip
+  wakes — and only when what the chip shows changed (`rate_limit_shown/1`).
+  """
+  @spec rate_limit_topic() :: String.t()
+  def rate_limit_topic, do: "rate_limits"
+
+  @doc "Subscribes the caller to `rate_limit_topic/0`."
+  @spec subscribe_rate_limits() :: :ok | {:error, term()}
+  def subscribe_rate_limits,
+    do: SwarmCode.Domain.PubSub.subscribe(SwarmCode.Domain.PubSub, rate_limit_topic())
+
+  @doc """
+  spec 74 EFFICIENCY-68: what the rate-limit chip shows for a snapshot — nil
+  under 80 % (no chip), else its scope, whole percent and reset minute.
+  """
+  @spec rate_limit_shown(map() | nil) :: {String.t(), integer(), term()} | nil
+  def rate_limit_shown(%{used_percent: used} = snapshot) when is_number(used) and used >= 80 do
+    minute =
+      case snapshot[:resets_at] do
+        %DateTime{} = at -> DateTime.to_unix(at, :second) |> div(60)
+        _none -> nil
+      end
+
+    {snapshot[:scope], round(used), minute}
+  end
+
+  def rate_limit_shown(_snapshot), do: nil
+
   def list_models(%Provider{kind: kind} = provider) do
     case provider_module(kind) do
       nil -> {:error, "unknown provider kind: " <> kind}

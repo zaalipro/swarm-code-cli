@@ -19,7 +19,7 @@ defmodule SwarmCode.Domain.SkillsTest do
     end
 
     test "a project skill shadows a built-in of the same name" do
-      root = Path.join(System.tmp_dir!(), "sk-#{System.unique_integer([:positive])}")
+      root = Path.join(System.tmp_dir!(), "sk-#{Ecto.UUID.generate()}")
       dir = Path.join([root, ".swarm_code", "skills", "html-report"])
       File.mkdir_p!(dir)
       File.write!(Path.join(dir, "SKILL.md"), "# mine\n\nA project override.\n")
@@ -31,7 +31,7 @@ defmodule SwarmCode.Domain.SkillsTest do
     end
 
     test "a folder with no SKILL.md is not a skill" do
-      root = Path.join(System.tmp_dir!(), "sk-#{System.unique_integer([:positive])}")
+      root = Path.join(System.tmp_dir!(), "sk-#{Ecto.UUID.generate()}")
       File.mkdir_p!(Path.join([root, ".swarm_code", "skills", "empty"]))
       on_exit(fn -> File.rm_rf(root) end)
 
@@ -57,7 +57,7 @@ defmodule SwarmCode.Domain.SkillsTest do
     end
 
     test "an oversized asset is truncated, not dropped" do
-      root = Path.join(System.tmp_dir!(), "sk-#{System.unique_integer([:positive])}")
+      root = Path.join(System.tmp_dir!(), "sk-#{Ecto.UUID.generate()}")
       dir = Path.join([root, ".swarm_code", "skills", "big"])
       File.mkdir_p!(dir)
       File.write!(Path.join(dir, "SKILL.md"), "# big\n\nA skill.\n")
@@ -75,7 +75,7 @@ defmodule SwarmCode.Domain.SkillsTest do
 
     # spec 60 T23: a 1 MB asset is read bounded and capped exactly as before.
     test "a huge asset is read bounded and capped the same" do
-      root = Path.join(System.tmp_dir!(), "sk-#{System.unique_integer([:positive])}")
+      root = Path.join(System.tmp_dir!(), "sk-#{Ecto.UUID.generate()}")
       dir = Path.join([root, ".swarm_code", "skills", "mega"])
       File.mkdir_p!(dir)
       File.write!(Path.join(dir, "SKILL.md"), "# mega\n\nA skill.\n")

@@ -12,6 +12,9 @@ defmodule SwarmCode.Domain.Scheduler.Cron do
   @type field :: %{min: 0..59, max: integer(), values: MapSet.t()}
   @type t :: %{minute: field(), hour: field(), dom: field(), month: field(), dow: field()}
 
+  # spec 74 BUGS-25: how far `next/2` searches, in calendar years.
+  @years 8
+
   @days ~w(sun mon tue wed thu fri sat)
   @months ~w(jan feb mar apr may jun jul aug sep oct nov dec)
   @day_names %{
@@ -59,7 +62,9 @@ defmodule SwarmCode.Domain.Scheduler.Cron do
 
   @doc """
   The first minute strictly after `from` that matches `expr`, in `from`'s own
-  time zone. Returns `nil` when nothing matches within four years (`30 2 30 2 *`).
+  time zone. Returns `nil` when nothing matches within eight calendar years of
+  `from` (`30 2 30 2 *`, `0 9 31 4 *`): every real date recurs within eight
+  years, Feb 29 included, across 2100 too.
   """
   @spec next(String.t() | t(), DateTime.t()) :: DateTime.t() | nil
   def next(expr, %DateTime{} = from) when is_binary(expr) do
@@ -79,9 +84,13 @@ defmodule SwarmCode.Domain.Scheduler.Cron do
 
     # spec 60 T41: never an instant at or before `from`, whatever the zone did
     # inside the repeated hour of a fall-back change.
-    case search(cron, start, 0) do
+    last_year = start.year + @years
+
+    case search(cron, start, last_year) do
       %DateTime{} = r ->
-        if DateTime.compare(r, from) == :gt, do: r, else: search(cron, add_minutes(r, 1), 0)
+        if DateTime.compare(r, from) == :gt,
+          do: r,
+          else: search(cron, add_minutes(r, 1), last_year)
 
       nil ->
         nil
@@ -89,22 +98,25 @@ defmodule SwarmCode.Domain.Scheduler.Cron do
   end
 
   # Walks minute by minute but skips whole days and hours that cannot match, so
-  # the worst case stays in the low thousands of iterations.
-  defp search(_cron, _dt, steps) when steps > 200_000, do: nil
+  # the worst case stays in the low thousands of iterations. spec 74 BUGS-25:
+  # the bound is calendar years, not steps — an impossible date costs about 41
+  # steps a year, so a 200 000-step bound searched ~5 000 years (184 s in a
+  # DST zone past 2037).
+  defp search(_cron, %DateTime{year: year}, last_year) when year > last_year, do: nil
 
-  defp search(cron, dt, steps) do
+  defp search(cron, dt, last_year) do
     cond do
       not member?(cron.month, dt.month) ->
-        search(cron, start_of_next_month(dt), steps + 1)
+        search(cron, start_of_next_month(dt), last_year)
 
       not day_matches?(cron, dt) ->
-        search(cron, start_of_next_day(dt), steps + 1)
+        search(cron, start_of_next_day(dt), last_year)
 
       not member?(cron.hour, dt.hour) ->
-        search(cron, start_of_next_hour(dt), steps + 1)
+        search(cron, start_of_next_hour(dt), last_year)
 
       not member?(cron.minute, dt.minute) ->
-        search(cron, add_minutes(dt, 1), steps + 1)
+        search(cron, add_minutes(dt, 1), last_year)
 
       true ->
         dt

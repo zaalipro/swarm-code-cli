@@ -55,9 +55,8 @@ defmodule SwarmCode.Daemon.Schema.Contract do
   # Desktop pass 69. The four migrations after ccb1973 are additive (three
   # defaulted `settings` columns and the `messages_fts` FTS5 index with its
   # triggers), so an older desktop keeps working on a database the CLI moved
-  # forward: they are the only versions the CLI may run itself
-  # (`forward_compatible`, see `Schema.Gate.admit_migration/2`).
-  @current %{
+  # forward: they were the only versions the CLI could run itself.
+  @desktop_6dd8d82 %{
     commit: "6dd8d82ef29f9a6608b942259e1801846bb87ed9",
     name: "desktop-6dd8d82",
     migration_count: 57,
@@ -87,6 +86,43 @@ defmodule SwarmCode.Daemon.Schema.Contract do
       20_261_017_000_004
     ]
   }
+  # Desktop 0.2.0 (pass 71 + the ncode rename), CLI 0.2.0 (cli020 A3). The one
+  # migration after 6dd8d82, `20261018000001_mission_validator_models`, only
+  # adds nullable columns (three on `conversations`, three on `settings`), so
+  # it joins the additive versions the CLI may run itself after the verified
+  # backup (`forward_compatible`, see `Schema.Gate.admit_migration/2`).
+  @current %{
+    commit: "4c7c577aa909274b009dc1bf0f216e5179acddc9",
+    name: "desktop-4c7c577",
+    migration_count: 58,
+    migration_set_sha256: "32dd14f0d9ad6a4a3c489ccd76da7247982549b8e5e5d499951f77ba629e8779",
+    final_schema_sha256: "a95f2a134a2cfb74a6353698992815c16845005536d022587972cfcb9658e9bb",
+    lineage_sha256: "e34dfec0ae49da3632e4eefd42fbacf2f946ea2e701ce7de125acd5ac7201d53",
+    last_version: 20_261_018_000_001,
+    last_filename: "20261018000001_mission_validator_models.exs",
+    last_source_sha256: "e2ed2c9f26c8a128f0aa224fe4f3d1aba5b7a76df4a3f3efede97a05bb352ad8",
+    snapshot_versions: [
+      20_260_923_000_000,
+      20_260_924_000_000,
+      20_260_926_000_000,
+      20_260_927_000_000,
+      20_260_928_000_000,
+      20_260_929_000_000,
+      20_261_015_000_003,
+      20_261_015_000_004,
+      20_261_016_000_001,
+      20_261_016_000_002,
+      20_261_017_000_004,
+      20_261_018_000_001
+    ],
+    forward_compatible: [
+      20_261_015_000_004,
+      20_261_016_000_001,
+      20_261_016_000_002,
+      20_261_017_000_004,
+      20_261_018_000_001
+    ]
+  }
 
   @spec current() :: map()
   def current, do: @current
@@ -95,7 +131,8 @@ defmodule SwarmCode.Daemon.Schema.Contract do
   def fetch("dbb8804b3d7293178e571fa7afdf6bd47d06a51c"), do: {:ok, @legacy}
   def fetch("fb1b4ff82354ac8ff2e82d4f6516121fd55ff212"), do: {:ok, @previous}
   def fetch("ccb19732c7225a6bc88556f8f743bab7bda41a5b"), do: {:ok, @ccb1973}
-  def fetch("6dd8d82ef29f9a6608b942259e1801846bb87ed9"), do: {:ok, @current}
+  def fetch("6dd8d82ef29f9a6608b942259e1801846bb87ed9"), do: {:ok, @desktop_6dd8d82}
+  def fetch("4c7c577aa909274b009dc1bf0f216e5179acddc9"), do: {:ok, @current}
   def fetch(_), do: :error
 
   @spec maximum_migrations() :: pos_integer()

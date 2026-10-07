@@ -18,7 +18,8 @@ defmodule SwarmCode.Tools.ReadListTest do
   test "offset and limit", %{dir: dir, ctx: ctx, p: p} do
     File.write!(Path.join(dir, "a.txt"), "l1\nl2\nl3\n")
 
-    assert {:ok, "a.txt (3 lines)\nl2\n…[truncated, 1 more lines; call again with offset=3]"} =
+    # spec 74 BUGS-44: one suffix, built from the lines actually returned.
+    assert {:ok, "a.txt (3 lines)\nl2\n…[showing lines 2-2 of 3; call again with offset=3]"} =
              Tools.run("read_file", %{"path" => "a.txt", "offset" => 2, "limit" => 1}, ctx, p)
   end
 
@@ -52,7 +53,7 @@ defmodule SwarmCode.Tools.ReadListTest do
     File.write!(Path.join(dir, "big.txt"), content)
 
     assert {:ok, out} = Tools.run("read_file", %{"path" => "big.txt", "limit" => 5000}, ctx, p)
-    assert out =~ "[truncated: file has 1 lines; request a range with offset/limit]"
+    assert out =~ "…[showing lines 1-1 of 1 (line 1 cut at 40000 of 120000 characters)]"
     assert String.length(out) < 41_000
   end
 

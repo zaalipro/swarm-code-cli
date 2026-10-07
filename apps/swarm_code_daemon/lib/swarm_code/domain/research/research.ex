@@ -49,6 +49,9 @@ defmodule SwarmCode.Domain.Research.Research do
     # background), "designed", or "failed" (a design ran and produced nothing;
     # the rendered report stands). NULL is a row from before pass 42.
     field(:design_state, :string)
+    # spec 74 EFFICIENCY-60: `length(sources)` on a projected index row, whose
+    # `sources` are not loaded (`Research.list(project: true)`).
+    field(:source_count, :integer, virtual: true)
 
     timestamps(type: :utc_datetime_usec)
   end
