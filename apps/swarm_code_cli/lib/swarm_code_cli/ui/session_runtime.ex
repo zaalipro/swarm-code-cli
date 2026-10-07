@@ -34,6 +34,7 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
     SafeText
   }
 
+  alias SwarmCodeCLI.UI.OsCommand
   alias SwarmCodeCLI.Companion
   alias SwarmCodeCLI.UI.Init.{Preferences, PrefsQueue}
   alias SwarmCodeCLI.UI.DataSource
@@ -47,6 +48,11 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
   @max_edit_bytes 262_144
   # cli74: how long the desktop has to open a folder (`o` in Settings).
   @folder_ms 5_000
+  # cli020 D3: how long an OS notification (osascript) may take.
+  @notify_ms 5_000
+  # cli020 D3: terminals that show OSC 9 as a notification (`terminal.notify
+  # auto`); any other gets the bell.
+  @osc9_terminals ["iTerm.app", "ghostty", "WezTerm"]
 
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
 
@@ -157,7 +163,22 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
        # the panel's mode in memory only). cli74: every read and write of it
        # is a job of one FIFO (`Init.PrefsQueue`, at most 32) run one at a
        # time in a task this process owns.
-       prefs: start_preferences(Keyword.get_lazy(opts, :preferences_path, &default_preferences/0))
+       prefs:
+         start_preferences(Keyword.get_lazy(opts, :preferences_path, &default_preferences/0)),
+       # cli020 lane D: the owned external work (the OS notification, pbcopy,
+       # the clipboard image) runs in tasks of this supervisor, one entry per
+       # task in `jobs` (ref => %{kind, task, timer}), each with a deadline.
+       jobs_sup: start_jobs(),
+       jobs: %{},
+       # The facts of the machine the runtime reads once (a test injects them):
+       # `TERM_PROGRAM`, the OS, and the environment the copy and the image
+       # paste look at (`SSH_CONNECTION`, `TMUX`).
+       term_program:
+         Keyword.get_lazy(opts, :term_program, fn -> System.get_env("TERM_PROGRAM") end),
+       os_type: Keyword.get_lazy(opts, :os_type, &:os.type/0),
+       env: Keyword.get_lazy(opts, :env, &System.get_env/0),
+       # How an external command runs: `OsCommand.run/3`, or a test's stub.
+       command_runner: Keyword.get(opts, :command_runner, &OsCommand.run/3)
      }}
   end
 
@@ -325,6 +346,23 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
 
   def handle_info({:edit_timeout, key}, %{edit: %{key: key, task: nil}} = state),
     do: {:noreply, finish_edit(state, {:error, :terminal})}
+
+  # cli020 lane D: an owned job answered, crashed or ran out of time.
+  def handle_info({ref, result}, %{jobs: jobs} = state) when is_map_key(jobs, ref) do
+    Process.demonitor(ref, [:flush])
+    {:noreply, job_done(state, ref, {:ok, result})}
+  end
+
+  def handle_info({:DOWN, ref, :process, _, _}, %{jobs: jobs} = state)
+      when is_map_key(jobs, ref),
+      do: {:noreply, job_done(state, ref, {:error, :crashed})}
+
+  def handle_info({:job_timeout, ref}, %{jobs: jobs} = state) when is_map_key(jobs, ref) do
+    %{task: task} = Map.fetch!(jobs, ref)
+    Task.Supervisor.terminate_child(state.jobs_sup, task.pid)
+    Process.demonitor(ref, [:flush])
+    {:noreply, job_done(state, ref, {:error, :timeout})}
+  end
 
   def handle_info({:owned_timer, id, token}, %{phase: :running} = state) do
     case TimerSupervisor.settle(state.timers, id, token) do
@@ -840,8 +878,100 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
     commit(%{state | ui: %{state.ui | revision: state.ui.revision + 1}}, state.ui)
   end
 
+  # cli020 D3: the needs-you signal. `terminal.notify` picks how it shows:
+  # the bell (BEL), OSC 9 (a terminal notification), the OS notification
+  # centre (osascript, macOS) or nothing; `auto` is OSC 9 on the terminals
+  # that show it, else the bell. The reducer sends the bell and the words; the
+  # mode decides which of the two goes out.
+  defp local_effect(%{terminal: terminal} = state, {:bell, _kind}) when is_pid(terminal) do
+    if notify_mode(state) == :bell, do: send(terminal, {:terminal_notify, :bell, ""})
+    state
+  end
+
+  defp local_effect(%{terminal: terminal} = state, {:notify_os, text}) when is_pid(terminal) do
+    words = SafeText.value(text)
+
+    case notify_mode(state) do
+      :osc9 ->
+        send(terminal, {:terminal_notify, :notification, words})
+        state
+
+      :os ->
+        runner = state.command_runner
+
+        start_job(
+          state,
+          :notify_os,
+          fn -> runner.("/usr/bin/osascript", os_notification_args(words), @notify_ms) end,
+          @notify_ms
+        )
+
+      _ ->
+        state
+    end
+  end
+
+  # cli020 D3: the window title (`terminal.title on`); the port saves the
+  # terminal's own title first and restores it at exit.
+  defp local_effect(%{terminal: terminal} = state, {:terminal_title, text})
+       when is_pid(terminal) do
+    send(terminal, {:terminal_notify, :title, SafeText.value(text)})
+    state
+  end
+
   # Announcements already live in the safe Scene; no text is sent to terminal state.
   defp local_effect(state, _), do: state
+
+  # --------------------------------------------- cli020 lane D: owned jobs
+
+  defp start_jobs do
+    {:ok, supervisor} = Task.Supervisor.start_link()
+    supervisor
+  end
+
+  defp start_job(state, kind, fun, timeout) do
+    task = Task.Supervisor.async_nolink(state.jobs_sup, fun)
+    timer = Process.send_after(self(), {:job_timeout, task.ref}, timeout + 500)
+    %{state | jobs: Map.put(state.jobs, task.ref, %{kind: kind, task: task, timer: timer})}
+  end
+
+  defp job_done(state, ref, result) do
+    {job, jobs} = Map.pop(state.jobs, ref)
+    cancel(job.timer)
+    job_result(%{state | jobs: jobs}, job.kind, result)
+  end
+
+  defp job_result(state, :notify_os, {:ok, {:ok, 0, _}}), do: state
+
+  defp job_result(state, :notify_os, result) do
+    Logger.info("SwarmCode: the OS notification was not shown (#{inspect(result, limit: 4)})")
+    state
+  end
+
+  defp job_result(state, _kind, _result), do: state
+
+  @doc false
+  # cli020 D3: what `terminal.notify` means here. `auto` is OSC 9 on iTerm2,
+  # ghostty and WezTerm, else the bell; `os` is macOS only (the bell
+  # elsewhere).
+  def notify_mode(%{ui: %{notify: :auto}, term_program: program}),
+    do: if(program in @osc9_terminals, do: :osc9, else: :bell)
+
+  def notify_mode(%{ui: %{notify: :os}, os_type: {:unix, :darwin}}), do: :os
+  def notify_mode(%{ui: %{notify: :os}}), do: :bell
+  def notify_mode(%{ui: %{notify: mode}}), do: mode
+
+  @doc false
+  def os_notification_args(text),
+    do: [
+      "-e",
+      "on run argv",
+      "-e",
+      ~s[display notification (item 1 of argv) with title "ncode"],
+      "-e",
+      "end run",
+      text
+    ]
 
   # ------------------------------------------- pass72-O: the preferences file
 

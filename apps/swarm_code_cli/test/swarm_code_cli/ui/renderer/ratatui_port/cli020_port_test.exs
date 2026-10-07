@@ -116,6 +116,27 @@ defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.Cli020PortTest do
     end
   end
 
+  describe "D3: the owner sends Notify between frames" do
+    test "a valid text spends a token; one the wire refuses is dropped" do
+      {owner, _runtime} = owner()
+      state = record(owner, <<1, 16, 1::64, 80::16, 24::16, 7>>)
+      counter = state.counter
+      send(owner, {:terminal_notify, :title, "ncode · demo"})
+      assert :sys.get_state(owner).counter == counter + 1
+      send(owner, {:terminal_notify, :title, "bad \e]0;x\a"})
+      assert :sys.get_state(owner).counter == counter + 1
+      send(owner, {:terminal_notify, :bell, ""})
+      assert :sys.get_state(owner).counter == counter + 2
+    end
+
+    test "nothing is sent before Ready" do
+      {owner, _runtime} = owner()
+      counter = :sys.get_state(owner).counter
+      send(owner, {:terminal_notify, :bell, ""})
+      assert :sys.get_state(owner).counter == counter
+    end
+  end
+
   describe "D11: the Redraw control" do
     test "is the fixed 18-byte control tag 10" do
       assert {:ok, <<18::32, 1, 10, 1::64, 7::64>>} = Wire.control(:redraw, 1, 7)

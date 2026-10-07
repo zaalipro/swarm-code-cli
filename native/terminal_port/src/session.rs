@@ -111,6 +111,9 @@ struct Session<'a> {
     title_saved: bool,
     // cli020 D5: an arrow burst read as the wheel, waiting for input credit.
     pending_scroll: Option<Event>,
+    // cli020 D4: the session runs inside tmux (`TMUX` set at start), so OSC 52
+    // goes through tmux's DCS passthrough.
+    tmux: bool,
 }
 impl Session<'_> {
     fn send(&mut self, bytes: Vec<u8>) -> Result<(), u8> {
@@ -385,7 +388,11 @@ impl Session<'_> {
             // the next frame a full repaint.
             Command::Copy { text, .. } => {
                 if self.active && !self.awaiting_resume {
-                    let sequence = protocol::osc52(text);
+                    let sequence = if self.tmux {
+                        protocol::osc52_tmux(text)
+                    } else {
+                        protocol::osc52(text)
+                    };
                     if self
                         .output
                         .write_all(&sequence)
@@ -598,6 +605,7 @@ pub fn run(guard: &mut UnixStream, tty: RawFd) -> i32 {
         title: None,
         title_saved: false,
         pending_scroll: None,
+        tmux: std::env::var_os("TMUX").is_some_and(|value| !value.is_empty()),
     };
     let result = session.run();
     // This synchronous handshake also handles initialization failure. The guard

@@ -70,6 +70,7 @@ defmodule SwarmCodeCLI.UI.Reducer do
              is_boolean(init.show_diffs) and is_boolean(init.agent_summaries?) and
              init.theme_mode in [:dark, :light] and
              init.theme_env in [nil, :dark, :light] and is_boolean(init.mouse?) and
+             init.notify in [:auto, :bell, :osc9, :os, :off] and is_boolean(init.title?) and
              SwarmCodeCLI.UI.Intent.valid_id?(init.id_prefix) and is_integer(init.now) and
              init.now >= 0 and is_integer(init.deadline_ms) and init.deadline_ms >= 0 and
              is_integer(init.id_sequence) and init.id_sequence >= 0 and is_map(init.prefs) and
@@ -88,6 +89,8 @@ defmodule SwarmCodeCLI.UI.Reducer do
         pending_resume_picker: init.resume_picker? and is_nil(init.settings_open),
         key_overrides: SwarmCodeCLI.UI.Keymap.Overrides.compile(Map.get(init.prefs, "keys"))
       })
+
+    state = SwarmCodeCLI.UI.Reducer.TerminalPrefs.apply_prefs(state, init.prefs)
 
     state = %{
       state
@@ -114,6 +117,8 @@ defmodule SwarmCodeCLI.UI.Reducer do
         {next, effects} = replay_deferred(next, effects)
         {next, effects} = track_sent_turn(next, effects)
         {next, effects} = sync_interactions(next, effects, action, state)
+        next = SwarmCodeCLI.UI.Reducer.TerminalPrefs.sync(next, state)
+        {next, effects} = SwarmCodeCLI.UI.Reducer.Attention.after_update(state, next, effects)
         next = note_policy_change(state, next)
         next = hush_refusals(state, next)
         next = stamp_notice(state, next)

@@ -133,6 +133,23 @@ defmodule SwarmCodeCLI.UI.State do
     # The approval mode the workspace last showed (nil before the first), so
     # a change is noticed across a resync that replaced the snapshot.
     approval_seen: nil,
+    # cli020 D3: the needs-you signal and the window title. `notify` is
+    # cli.json's `terminal.notify` (the session runtime resolves `:auto`),
+    # `title?` its `terminal.title`; `last_bell_at` is the owner's clock at
+    # the last bell (at most one per 2 s), `terminal_title` the title last
+    # sent, `title_done?` an unfocused finish not yet seen.
+    notify: :auto,
+    title?: true,
+    # cli020 D8, D13: cli.json's paste collapse threshold (0 = never), lines
+    # per wheel notch, how long a notice stays and the Ctrl-F letters
+    # (`Reducer.TerminalPrefs` keeps them in step with `prefs`).
+    paste_collapse_lines: 8,
+    wheel_lines: 3,
+    notice_ms: 6_000,
+    hint_letters: ~w(s f g h j k l w e r t u i o p),
+    last_bell_at: nil,
+    terminal_title: nil,
+    title_done?: false,
     library: nil,
     feature_form: nil,
     banner: nil,

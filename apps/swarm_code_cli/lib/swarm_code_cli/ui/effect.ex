@@ -14,7 +14,9 @@ defmodule SwarmCodeCLI.UI.Effect do
           | {:cancel_timer, binary()}
           | {:terminal_control, :suspend | :resume | :shutdown}
           | {:announce, SafeText.t()}
-          | {:bell, :needs_you}
+          | {:bell, :needs_you | :turn_done}
+          | {:terminal_title, SafeText.t()}
+          | {:notify_os, SafeText.t()}
           | {:presenter_handoff, :plain}
           | {:companion, :open}
           | {:copy, binary()}
@@ -80,7 +82,12 @@ defmodule SwarmCodeCLI.UI.Effect do
   def validate({:announce, safe_text} = effect),
     do: valid_effect(effect, valid_safe_text?(safe_text))
 
-  def validate({:bell, :needs_you} = effect), do: {:ok, effect}
+  # cli020 D3: the needs-you signal, its words, and the window title.
+  def validate({:bell, kind} = effect) when kind in [:needs_you, :turn_done], do: {:ok, effect}
+
+  def validate({kind, safe_text} = effect) when kind in [:terminal_title, :notify_os],
+    do: valid_effect(effect, valid_safe_text?(safe_text))
+
   def validate({:presenter_handoff, :plain} = effect), do: {:ok, effect}
   def validate({:companion, :open} = effect), do: {:ok, effect}
 

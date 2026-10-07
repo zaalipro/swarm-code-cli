@@ -249,3 +249,12 @@ fn redraw_is_a_fixed_control() {
     b.push(0);
     assert_eq!(decode_command(&b), Err(ProtocolError));
 }
+
+// ------------------------------------------------------------------ D4
+
+#[test]
+fn osc52_inside_tmux_uses_the_dcs_passthrough() {
+    use swarm_terminal_port::protocol::{osc52, osc52_tmux};
+    assert_eq!(osc52("hi"), b"\x1b]52;c;aGk=\x07");
+    assert_eq!(osc52_tmux("hi"), b"\x1bPtmux;\x1b\x1b]52;c;aGk=\x07\x1b\\");
+}

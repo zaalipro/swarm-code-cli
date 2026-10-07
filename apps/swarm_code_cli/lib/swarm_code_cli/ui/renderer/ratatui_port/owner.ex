@@ -263,6 +263,28 @@ defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.Owner do
     {:noreply, state}
   end
 
+  # cli020 D3: a bell, an OSC 9 notification or the window title, between
+  # frames (the session runtime's `{:bell, …}`, `{:notify_os, …}` and
+  # `{:terminal_title, …}` effects). A text the wire refuses is dropped here,
+  # never sent: the port would end the session on it.
+  defp dispatch({:terminal_notify, kind, text}, %{port: port, phase: phase} = state)
+       when port != nil and phase in [:running, :suspending, :suspended, :resuming] do
+    token = state.counter + 1
+
+    case Wire.notify(1, token, kind, text) do
+      {:ok, bytes} ->
+        if Port.command(port, bytes, [:nosuspend]),
+          do: {:noreply, %{state | counter: token}},
+          else: {:noreply, state}
+
+      _ ->
+        Logger.info("terminal notify refused: the text is too long or has controls")
+        {:noreply, state}
+    end
+  end
+
+  defp dispatch({:terminal_notify, _kind, _text}, state), do: {:noreply, state}
+
   defp dispatch({:plain_instruction, "Rerun with --plain"}, %{phase: :restored} = state) do
     IO.puts(
       "Run (cd apps/swarm_code_cli && MIX_QUIET=1 mise exec -- mix swarm_code.demo.plain --script complete)"

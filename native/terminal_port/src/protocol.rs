@@ -328,6 +328,23 @@ pub fn osc52(text: &str) -> Vec<u8> {
     out
 }
 
+/// cli020 D4: the OSC 52 sequence wrapped in tmux's DCS passthrough
+/// (`ESC P tmux; … ESC \\`, every ESC inside doubled), so a session inside
+/// tmux reaches the outer terminal's clipboard.
+pub fn osc52_tmux(text: &str) -> Vec<u8> {
+    let inner = osc52(text);
+    let mut out = Vec::with_capacity(inner.len() + 10);
+    out.extend_from_slice(b"\x1bPtmux;");
+    for byte in inner {
+        if byte == 0x1b {
+            out.push(0x1b);
+        }
+        out.push(byte);
+    }
+    out.extend_from_slice(b"\x1b\\");
+    out
+}
+
 // Length is checked by each public encoder before this sole allocation site.
 fn response(tag: u8, generation: u64, body_len: usize) -> Vec<u8> {
     debug_assert!((10..=MAX_RESPONSE_BYTES).contains(&body_len));

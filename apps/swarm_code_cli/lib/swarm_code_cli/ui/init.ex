@@ -23,6 +23,9 @@ defmodule SwarmCodeCLI.UI.Init do
     theme_mode: :dark,
     theme_env: nil,
     mouse?: true,
+    # cli020 D3: cli.json's terminal.notify and terminal.title.
+    notify: :auto,
+    title?: true,
     # cli74 (§3.8.4): every cli.json value by json name, the launch's env and
     # flag overrides, and `ncode settings [QUERY]`'s query (nil = none;
     # "" opens the Overview).
