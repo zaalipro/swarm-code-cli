@@ -44,6 +44,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   @max_jobs 8
   # cli020 qa: `:superseded` is a rewound turn's run (C16), as final as done.
   @terminal [:completed, :failed, :cancelled, :interrupted, :superseded]
+  @stream_events [:assistant_delta, :assistant_reset, :reasoning_delta, :reasoning_reset]
   alias SwarmCode.Daemon.Service.AgentStatus
   alias SwarmCode.Daemon.Service.PanelFacts
   alias SwarmCode.Daemon.Service.Settings.Deltas, as: SettingsDeltas
@@ -523,43 +524,9 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   def handle_info({:job_timeout, ref}, %{jobs: jobs} = state) when is_map_key(jobs, ref),
     do: {:noreply, cancel_job(state, ref, wire_error(:source_unavailable))}
 
-  def handle_info({:assistant_delta, message_id, text}, state)
-      when is_binary(message_id) and is_binary(text) do
-    {next, run_id} = stream_append(state, message_id, text, false)
-
-    if run_id,
-      do: {:noreply, publish_stream(state, next, run_id, message_id, text, :text, false)},
-      else: {:noreply, state}
-  end
-
-  def handle_info({:assistant_reset, message_id, text}, state)
-      when is_binary(message_id) and is_binary(text) do
-    {next, run_id} = stream_append(state, message_id, text, true)
-
-    if run_id,
-      do: {:noreply, publish_stream(state, next, run_id, message_id, text, :text, true)},
-      else: {:noreply, state}
-  end
-
   def handle_info({kind, message_id, text}, state)
-      when kind in [:reasoning_delta, :reasoning_reset] and is_binary(message_id) and
-             is_binary(text) do
-    {next, run_id} = stream_append(state, message_id, text, kind == :reasoning_reset, :reasoning)
-
-    if run_id,
-      do:
-        {:noreply,
-         publish_stream(
-           state,
-           next,
-           run_id,
-           message_id,
-           text,
-           :reasoning,
-           kind == :reasoning_reset
-         )},
-      else: {:noreply, state}
-  end
+      when kind in @stream_events and is_binary(message_id) and is_binary(text),
+      do: {:noreply, on_stream(state, kind, message_id, text)}
 
   # pass71 S6: a streaming tick refetches only what it touched; anything
   # else (or a refresh nobody armed) reloads the whole projection.
@@ -2850,10 +2817,43 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
   defp attachment_payloads(_), do: {:error, :invalid_request}
 
+  @stream_channels %{
+    assistant_delta: {:text, false},
+    assistant_reset: {:text, true},
+    reasoning_delta: {:reasoning, false},
+    reasoning_reset: {:reasoning, true}
+  }
+
+  defp on_stream(state, kind, message_id, text) do
+    {channel, reset?} = Map.fetch!(@stream_channels, kind)
+    {next, run_id} = stream_append(state, message_id, text, reset?, channel)
+
+    if run_id,
+      do: publish_stream(state, next, run_id, message_id, text, channel, reset?),
+      else: state
+  end
+
+  # cli020 qa: `RunServer.flush/1` writes a flush to the database before it
+  # broadcasts the flush's delta, so the deltas already in the mailbox are
+  # applied before a reload reads the database (bounded: they are messages
+  # that were sent before this read).
+  defp absorb_streams(state, left \\ 1_000)
+  defp absorb_streams(state, 0), do: state
+
+  defp absorb_streams(state, left) do
+    receive do
+      {kind, message_id, text}
+      when kind in @stream_events and is_binary(message_id) and is_binary(text) ->
+        state |> on_stream(kind, message_id, text) |> absorb_streams(left - 1)
+    after
+      0 -> state
+    end
+  end
+
   defp stream_text(_old, text, true), do: preview(text, 65_536)
   defp stream_text(old, text, false), do: preview(old <> preview(text, 65_536), 65_536)
 
-  defp stream_append(state, message_id, text, reset?, channel \\ :text) do
+  defp stream_append(state, message_id, text, reset?, channel) do
     Enum.reduce(state.runs, {state, nil}, fn {run_id, run}, {acc, found} ->
       if found do
         {acc, found}
@@ -2863,46 +2863,67 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
             {acc, nil}
 
           index ->
-            records =
-              List.update_at(run.records, index, fn row ->
-                value = stream_text(Map.fetch!(row, channel), text, reset?)
+            # cli020 qa: a reload can read a flush's text before its delta
+            # arrives; the first delta of a message whose read text already
+            # ends with it is that same chunk.
+            row = Enum.at(run.records, index)
 
-                row
-                |> Map.put(channel, value)
-                |> Map.put(
-                  if(channel == :text, do: :text_bytes, else: :reasoning_bytes),
-                  byte_size(value)
-                )
-                |> Map.put(:revision, max(run.revision, acc.revision) + 1)
-              end)
-
-            next_run = %{
-              run
-              | records: records,
-                revision: max(run.revision, acc.revision) + 1,
-                status: :running
-            }
-
-            {%{
-               acc
-               | runs: Map.put(acc.runs, run_id, next_run),
-                 revision: acc.revision + 1,
-                 streams:
-                   Map.put(
-                     acc.streams,
-                     message_id,
-                     Map.take(Enum.at(records, index), [
-                       :text,
-                       :text_bytes,
-                       :reasoning,
-                       :reasoning_bytes,
-                       :revision
-                     ])
-                   )
-             }, run_id}
+            if not reset? and not Map.has_key?(acc.streams, message_id) and text != "" and
+                 String.ends_with?(Map.fetch!(row, channel) || "", text) do
+              {%{acc | streams: Map.put(acc.streams, message_id, stream_fields(row))}, :absorbed}
+            else
+              stream_into(acc, run_id, run, index, message_id, text, reset?, channel)
+            end
         end
       end
     end)
+    |> case do
+      {state, :absorbed} -> {state, nil}
+      other -> other
+    end
+  end
+
+  defp stream_fields(row),
+    do: Map.take(row, [:text, :text_bytes, :reasoning, :reasoning_bytes, :revision])
+
+  defp stream_into(acc, run_id, run, index, message_id, text, reset?, channel) do
+    records =
+      List.update_at(run.records, index, fn row ->
+        value = stream_text(Map.fetch!(row, channel), text, reset?)
+
+        row
+        |> Map.put(channel, value)
+        |> Map.put(
+          if(channel == :text, do: :text_bytes, else: :reasoning_bytes),
+          byte_size(value)
+        )
+        |> Map.put(:revision, max(run.revision, acc.revision) + 1)
+      end)
+
+    next_run = %{
+      run
+      | records: records,
+        revision: max(run.revision, acc.revision) + 1,
+        status: :running
+    }
+
+    {%{
+       acc
+       | runs: Map.put(acc.runs, run_id, next_run),
+         revision: acc.revision + 1,
+         streams:
+           Map.put(
+             acc.streams,
+             message_id,
+             Map.take(Enum.at(records, index), [
+               :text,
+               :text_bytes,
+               :reasoning,
+               :reasoning_bytes,
+               :revision
+             ])
+           )
+     }, run_id}
   end
 
   defp publish_stream(_old, state, run_id, message_id, text, channel, reset?) do
@@ -3450,6 +3471,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   defp presentation_kind(row), do: row.kind
 
   defp reload(state) do
+    state = absorb_streams(state)
     conv = state.opts[:conversation_id]
     {:ok, rows, _, _} = PersistedProjection.runs(conv, nil, nil, "before", 200)
     {:ok, records, _, _} = PersistedProjection.records(conv, nil, nil, "before", 200)
@@ -3476,6 +3498,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   defp partial_reload(%{inputs: nil} = state, _partial), do: reload(state)
 
   defp partial_reload(%{inputs: inputs} = state, %{runs: runs, nodes: nodes}) do
+    state = absorb_streams(state)
     conv = state.opts[:conversation_id]
     run_ids = MapSet.to_list(runs)
     agent_ids = for a <- inputs.agents, MapSet.member?(nodes, a.id), do: a.id
