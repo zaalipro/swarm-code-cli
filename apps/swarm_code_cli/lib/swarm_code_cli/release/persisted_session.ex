@@ -47,6 +47,23 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
 
   @exit_failure 1
   @exit_usage 2
+
+  # cli020 §8.4: the Preferences fields E adds, passed into the launch map
+  # unchanged (like `mouse?`) for D's `UI.Init`/`State`.
+  @passthrough_preferences [
+    :panel_mode,
+    :notify,
+    :title?,
+    :paste_collapse_lines,
+    :exit_transcript,
+    :wheel_lines,
+    :notice_seconds,
+    :hint_letters,
+    :reduced_motion,
+    :palette,
+    :status_items
+  ]
+
   @exit_refused 3
   @log_bytes 2_097_152
   @log_files 3
@@ -269,9 +286,11 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
           outcome_status(outcome)
 
         {:ok, {:error, failure}} ->
+          clear_starting_line(test_boot)
           report(failure)
 
         {:error, failure} ->
+          clear_starting_line(test_boot)
           report(failure)
       end
 
@@ -279,6 +298,14 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
     SwarmCodeCLI.Release.flush_logs()
     status
   end
+
+  # cli020 B20: a failure before the full screen erases the launcher's
+  # "Starting ncode…" too (the summary does it itself).
+  defp clear_starting_line(nil) do
+    if match?({:ok, _}, :io.columns(:standard_io)), do: IO.write("\r\e[2K")
+  end
+
+  defp clear_starting_line(_test_boot), do: :ok
 
   defp tui(session, executable, opts) do
     started_at = DateTime.utc_now()
@@ -684,7 +711,9 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
     ascii? = ascii?(env)
     start = start_preferences(env, preferences, desktop_mode)
 
-    %{
+    start
+    |> Map.take(@passthrough_preferences)
+    |> Map.merge(%{
       theme: start.theme,
       theme_env: start.theme_env,
       mouse?: start.mouse?,
@@ -701,7 +730,7 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
       env_overrides: %{},
       flag_overrides: %{},
       warnings: []
-    }
+    })
   end
 
   @doc "pass74 S1-13: what the settings layer shows about this launch (§3.8.3)."
@@ -814,10 +843,37 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
 
   ## Summary (B9)
 
+  @doc false
+  # cli020 B21: `summary/3` for tests (`exchanges:` replaces cli.json's N).
+  def exit_summary(session, started_at, opts \\ []), do: summary(session, started_at, opts)
+
+  @doc """
+  cli020 B21 (E26's `exit_transcript`, 0..20, default 3): how many of the
+  last exchanges the exit summary prints, from cli.json's values.
+  """
+  @spec exit_transcript(map()) :: 0..20
+  def exit_transcript(values) when is_map(values) do
+    case Map.get(values, "exit_transcript") do
+      n when is_integer(n) and n in 0..20 -> n
+      _ -> 3
+    end
+  end
+
+  @exchange_bytes 4_000
+  @transcript_bytes 24 * 1024
+
   # Plain SQL: this app does not depend on Ecto at compile time.
-  defp summary(session, started_at) do
+  defp summary(session, started_at, opts \\ []) do
     id = session.conversation.id
     since = DateTime.to_iso8601(started_at)
+
+    n =
+      Keyword.get_lazy(opts, :exchanges, fn ->
+        SwarmCodeCLI.Release.preferences_path()
+        |> SwarmCode.Settings.CliFile.read_all()
+        |> Map.get(:values, %{})
+        |> exit_transcript()
+      end)
 
     title = scalar("SELECT title FROM conversations WHERE id = ?1", [id])
 
@@ -838,6 +894,8 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
     %{
       title: title,
       prompt: prompt,
+      exchanges: exchanges(id, n),
+      spent: spent(id, since, started_at),
       files:
         for(
           [path] <- files,
@@ -860,6 +918,118 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
       }
   end
 
+  # cli020 B21 (decision 4d): the last `n` exchanges, newest rows first from
+  # SQL, each clipped to 4,000 bytes and 24 KiB in all (the newest kept),
+  # returned oldest first.
+  defp exchanges(_id, 0), do: []
+
+  defp exchanges(id, n) do
+    rows(
+      "SELECT role, content FROM messages WHERE conversation_id = ?1 AND superseded_at IS NULL " <>
+        "AND role IN ('user','assistant','shell') AND content != '' " <>
+        "ORDER BY position DESC LIMIT ?2",
+      [id, 2 * n]
+    )
+    |> Enum.reduce_while({[], 0}, fn
+      [role, content], {kept, bytes} when is_binary(content) ->
+        text = clip(content, @exchange_bytes)
+        bytes = bytes + byte_size(text)
+
+        if bytes > @transcript_bytes,
+          do: {:halt, {kept, bytes}},
+          else: {:cont, {[{role, text} | kept], bytes}}
+
+      _row, acc ->
+        {:cont, acc}
+    end)
+    |> elem(0)
+  end
+
+  defp clip(text, max) when byte_size(text) <= max, do: text
+  defp clip(text, max), do: valid_prefix(binary_part(text, 0, max)) <> "…"
+
+  defp valid_prefix(bin) do
+    if String.valid?(bin) or bin == "",
+      do: bin,
+      else: valid_prefix(binary_part(bin, 0, byte_size(bin) - 1))
+  end
+
+  # cli020 B21 (decision 4g): tokens, cost and time of the runs this session
+  # started; nil when it started none.
+  defp spent(id, since, started_at) do
+    case rows(
+           "SELECT COALESCE(SUM(tokens_in),0), COALESCE(SUM(tokens_out),0), SUM(cost_usd), " <>
+             "COUNT(cost_usd), COUNT(*) FROM runs WHERE conversation_id = ?1 AND inserted_at >= ?2",
+           [id, since]
+         ) do
+      [[tokens_in, tokens_out, cost, costed, count]] when is_integer(count) and count > 0 ->
+        %{
+          tokens: (tokens_in || 0) + (tokens_out || 0),
+          cost: if(costed == count, do: cost),
+          seconds: max(DateTime.diff(DateTime.utc_now(), started_at), 0)
+        }
+
+      _ ->
+        nil
+    end
+  end
+
+  @doc false
+  def spent_line(%{tokens: tokens, cost: cost, seconds: seconds}) do
+    [tokens_words(tokens), cost && cost_words(cost), duration(seconds)]
+    |> Enum.filter(&is_binary/1)
+    |> Enum.join(" · ")
+  end
+
+  defp tokens_words(n) when n < 1_000, do: "#{n} tokens"
+  defp tokens_words(n) when n < 1_000_000, do: one_decimal(n / 1_000) <> "k tokens"
+  defp tokens_words(n), do: one_decimal(n / 1_000_000) <> "M tokens"
+
+  defp one_decimal(x), do: :erlang.float_to_binary(x * 1.0, decimals: 1)
+
+  defp cost_words(cost) when is_number(cost) and cost < 0.01, do: "<$0.01"
+
+  defp cost_words(cost) when is_number(cost),
+    do: "$" <> :erlang.float_to_binary(cost * 1.0, decimals: 2)
+
+  defp cost_words(_), do: nil
+
+  defp duration(s) when s < 60, do: "#{s}s"
+  defp duration(s) when s < 3_600, do: "#{div(s, 60)}m #{rem(s, 60)}s"
+
+  defp duration(s),
+    do:
+      "#{div(s, 3_600)}h #{String.pad_leading(Integer.to_string(div(rem(s, 3_600), 60)), 2, "0")}m"
+
+  # The exchanges as lines: `› ` for a prompt, `$ ` for a shell row (their
+  # continuation lines indented two), a reply as is; a blank line before
+  # every prompt but the first. Terminal controls never reach the scrollback.
+  defp exchange_lines(exchanges) do
+    exchanges
+    |> Enum.with_index()
+    |> Enum.flat_map(fn {{role, text}, index} ->
+      lines = text |> scrub() |> String.split("\n")
+
+      body =
+        case role do
+          "user" -> mark(lines, "› ")
+          "shell" -> mark(lines, "$ ")
+          _ -> lines
+        end
+
+      if index > 0 and role in ["user", "shell"], do: ["" | body], else: body
+    end)
+  end
+
+  defp mark([first | rest], prefix), do: [prefix <> first | Enum.map(rest, &("  " <> &1))]
+
+  defp scrub(text) do
+    text
+    |> String.replace(~r/\e\][^\a\e]*(?:\a|\e\\)?/u, "")
+    |> String.replace(~r/\e\[[0-?]*[ -\/]*[@-~]/u, "")
+    |> String.replace(~r/[\x00-\x08\x0B-\x1F\x7F\x{80}-\x{9F}]/u, "")
+  end
+
   defp scalar(sql, params) do
     case rows(sql, params) do
       [[value] | _] when is_binary(value) -> value
@@ -874,7 +1044,12 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
     end
   end
 
-  defp print_summary(summary) do
+  defp print_summary(summary), do: say(:stdio, summary_text(summary))
+
+  @doc false
+  # cli020 B20/B21: the exit summary as written. It starts by erasing the
+  # launcher's "Starting ncode…" line, then the last exchanges, then the block.
+  def summary_text(summary) do
     dim = fn text -> if(color?(), do: "\e[2m" <> text <> "\e[22m", else: text) end
     label = fn text -> dim.(String.pad_trailing(text, 14)) end
 
@@ -889,6 +1064,7 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
         "",
         "  " <> bold(title),
         prompt && "  " <> label.("Last prompt") <> prompt,
+        summary[:spent] && "  " <> label.("Spent") <> spent_line(summary[:spent]),
         files != [] && "  " <> label.("Files changed") <> files_line(files),
         stopped != [] && "  " <> label.("Stopped") <> stopped_lines(stopped),
         notice && "  " <> label.("Note") <> notice,
@@ -897,7 +1073,13 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
       ]
       |> Enum.filter(&is_binary/1)
 
-    say(:stdio, Enum.join(lines, "\n"))
+    transcript =
+      case exchange_lines(summary[:exchanges] || []) do
+        [] -> ""
+        lines -> Enum.join(lines, "\n") <> "\n"
+      end
+
+    "\r\e[2K" <> transcript <> Enum.join(lines, "\n")
   end
 
   # pass71 S4 (R1): every run the quit stopped, one per line under the count.
@@ -1475,11 +1657,13 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
         _ -> Map.get(preferences, :mouse?, true) != false
       end
 
-    %{
+    preferences
+    |> Map.take(@passthrough_preferences)
+    |> Map.merge(%{
       theme: theme_env || SwarmCodeCLI.UI.Theme.mode(nil, fallback),
       theme_env: theme_env,
       mouse?: mouse?
-    }
+    })
   end
 
   # pass71 F4: the desktop's light/dark choice (`settings.mode`), read
