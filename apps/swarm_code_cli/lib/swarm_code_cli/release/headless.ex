@@ -44,21 +44,57 @@ defmodule SwarmCodeCLI.Release.Headless do
     conversation = Keyword.get(options, :conversation) || System.get_env("SWARM_CONVERSATION")
     if model = Keyword.get(options, :model), do: System.put_env("SWARM_MODEL_OVERRIDE", model)
 
+    open = Keyword.get(options, :with_saved_session, &PersistedSession.with_saved_session/2)
+
     with {:ok, selection} <- selection(conversation),
          {:ok, code} <-
-           PersistedSession.with_saved_session(
+           open.(
              [project_root: root, conversation: selection],
              &run_session(&1, mode, options)
            ) do
       code
     else
-      {:error, failure} -> PersistedSession.report(failure)
+      {:error, failure} -> json_failure(mode, failure.message, PersistedSession.report(failure))
     end
   rescue
-    error -> fail("ncode stopped unexpectedly (#{inspect(error.__struct__)}).")
+    error -> fail_json(mode, "ncode stopped unexpectedly (#{inspect(error.__struct__)}).")
   catch
-    kind, _ -> fail("ncode stopped unexpectedly (#{kind}).")
+    kind, _ -> fail_json(mode, "ncode stopped unexpectedly (#{kind}).")
   end
+
+  @doc """
+  cli020 B4: a `-p … --json` that ends before the run prints the summary
+  object anyway (stdout is the script's), beside the stderr line. Returns
+  `code`. Other modes print nothing.
+  """
+  @spec json_failure(mode() | :json | term(), String.t(), non_neg_integer()) :: non_neg_integer()
+  def json_failure(mode, sentence, code)
+
+  def json_failure(:json, sentence, code), do: print_failure(sentence, code)
+
+  def json_failure({:prompt, _prompt, :json}, sentence, code), do: print_failure(sentence, code)
+  def json_failure(_mode, _sentence, code), do: code
+
+  defp print_failure(sentence, code) do
+    if code != 0 do
+      object = %{
+        "state" => "not_started",
+        "conversation_id" => nil,
+        "run_id" => nil,
+        "text" => "",
+        "error" => sentence,
+        "question" => nil,
+        "denied" => [],
+        "exit_code" => code
+      }
+
+      IO.puts(Jason.encode!(object))
+    end
+
+    code
+  end
+
+  defp fail_json(mode, text), do: json_failure(mode, text, fail(text))
 
   # -- startup ----------------------------------------------------------------
 
@@ -120,7 +156,8 @@ defmodule SwarmCodeCLI.Release.Headless do
           project_root: session.project.root_path
         )
       else
-        _ -> fail("The saved session could not start its service.")
+        _ ->
+          fail_json(mode, "The saved session could not start its service.")
       end
     after
       if Process.alive?(supervisor), do: Supervisor.stop(supervisor, :normal, 15_000)

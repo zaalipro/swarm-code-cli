@@ -82,8 +82,29 @@ version() {
   echo "ncode ${vsn:-unknown}"
 }
 
+# cli020 B4: with --json on the command line a usage error also prints the
+# -p summary object on stdout (the script reads stdout). The sentence is the
+# launcher's own; control characters go and \ and " are escaped.
+json_requested=0
+if [[ "${1:-}" != "config" && "${1:-}" != "settings" ]]; then
+  for json_arg in "$@"; do
+    [[ "$json_arg" == "--" ]] && break
+    [[ "$json_arg" == "--json" ]] && json_requested=1
+  done
+  unset json_arg
+fi
+
+json_failure() {
+  [[ $json_requested -eq 1 ]] || return 0
+  local text
+  text=$(printf '%s' "$1" | LC_ALL=C tr -d '\000-\037\177' | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')
+  printf '{"state":"not_started","conversation_id":null,"run_id":null,"text":"","error":"%s","question":null,"denied":[],"exit_code":%s}\n' \
+    "$text" "$2"
+}
+
 die_usage() {
   echo "ncode: $1 Run 'ncode --help'." >&2
+  json_failure "$1 Run 'ncode --help'." 2
   exit 2
 }
 
@@ -241,6 +262,7 @@ else
 fi
 if [[ ! -d "$root_dir" ]]; then
   echo "ncode: '$root_dir' is not a directory." >&2
+  json_failure "'$root_dir' is not a directory." 2
   exit 2
 fi
 SWARM_PROJECT_ROOT=$(cd -- "$root_dir" && pwd)

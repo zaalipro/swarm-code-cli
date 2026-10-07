@@ -102,7 +102,6 @@ defmodule SwarmCodeCLI.Release.LauncherTest do
             ["-p"],
             ["-p", "   "],
             ["-p", "one", "-p", "two"],
-            ["--json"],
             ["--ndjson"],
             ["--plain", "-p", "x"],
             ["a", "b"]
@@ -110,6 +109,26 @@ defmodule SwarmCodeCLI.Release.LauncherTest do
         assert {2, output} = launch(context, args), inspect(args)
         assert [line] = String.split(output, "\n", trim: true), inspect(args)
         assert line =~ ~r/^ncode: .+ Run 'ncode --help'\.$/
+      end
+
+      refute File.exists?(context.log)
+    end
+
+    # cli020 B4: with --json the usage error is also the JSON summary on stdout.
+    test "with --json a usage error prints the summary object on stdout", context do
+      for {args, sentence} <- [
+            {["--json"], "--json goes with -p. Run 'ncode --help'."},
+            {["-p", "x", "--json", "--bogus\"\\"],
+             "unknown option '--bogus\"\\'. Run 'ncode --help'."}
+          ] do
+        {stdout, 2} =
+          System.cmd("bash", ["-c", "bash \"$@\" 2>/dev/null", "_", context.launcher | args],
+            env: [{"STUB_LOG", context.log}],
+            cd: context.project
+          )
+
+        assert %{"exit_code" => 2, "state" => "not_started", "error" => ^sentence, "denied" => []} =
+                 Jason.decode!(stdout)
       end
 
       refute File.exists?(context.log)

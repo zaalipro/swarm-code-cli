@@ -135,7 +135,7 @@ defmodule SwarmCodeCLI.Release do
         else
           {:error, message} ->
             IO.puts(:stderr, "ncode: " <> message)
-            2
+            Headless.json_failure(options.format, message, 2)
         end
     end
   end
