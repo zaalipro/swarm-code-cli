@@ -44,7 +44,17 @@ defmodule SwarmCode.Domain.Conversations.Message do
     |> validate_required([:conversation_id, :role])
     # Spec 50 §1.2: `compact` is a summary of everything before it, written by
     # a `/compact` run. `Conversations.list_history_window/2` starts there.
-    |> validate_inclusion(:role, ["user", "assistant", "swarm", "error", "workflow", "compact"])
+    # pass 72 F3: `shell` is a command the user ran from the CLI composer
+    # (`!cmd`) with its output; the model reads it as a user turn.
+    |> validate_inclusion(:role, [
+      "user",
+      "assistant",
+      "swarm",
+      "error",
+      "workflow",
+      "compact",
+      "shell"
+    ])
     |> unique_constraint(:position, name: :messages_conversation_id_position_index)
   end
 end

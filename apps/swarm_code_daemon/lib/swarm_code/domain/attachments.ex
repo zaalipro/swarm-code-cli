@@ -370,8 +370,15 @@ defmodule SwarmCode.Domain.Attachments do
     end
   end
 
-  @doc "Deletes old upload files which no persisted message references."
-  def prune_abandoned(now \\ DateTime.utc_now(), older_than_hours \\ 24) do
+  @doc """
+  Deletes old upload files which no persisted message references.
+
+  pass 72 F5 (bugs-4): `opts[:keep]` is an enumerable of attachment ids treated
+  like referenced ones — an upload staged for a message not sent yet (the CLI's
+  `/attach`) is referenced by no row, and pruning it left the staging pointing
+  at a missing file.
+  """
+  def prune_abandoned(now \\ DateTime.utc_now(), older_than_hours \\ 24, opts \\ []) do
     # spec 68 T17: filter in SQL to skip rows with nil/empty attachments.
     # spec 74 EFFICIENCY-23: the default `[]` rows are skipped in SQL too.
     referenced =
@@ -385,6 +392,7 @@ defmodule SwarmCode.Domain.Attachments do
       |> Enum.map(&Map.get(&1, "id"))
       |> Enum.reject(&is_nil/1)
       |> MapSet.new()
+      |> MapSet.union(MapSet.new(Keyword.get(opts, :keep, [])))
 
     cutoff = DateTime.to_unix(now) - older_than_hours * 3_600
 

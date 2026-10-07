@@ -1,8 +1,8 @@
-# CLI-local change to lib/swarm_code/tools.ex at 4c7c577, after the rewrite
+# CLI-local change to lib/swarm_code/tools.ex at 7b8f379, after the rewrite
 # rules of provenance/sync-rules.json. Recorded by mix swarm_code.provenance.sync.
 --- a/apps/swarm_code_daemon/lib/swarm_code/domain/tools.ex
 +++ b/apps/swarm_code_daemon/lib/swarm_code/domain/tools.ex
-@@ -165,7 +165,8 @@
+@@ -168,7 +168,8 @@
    `/create-workflow` turn cannot start a swarm, and a `/swarm` turn (which is
    already a swarm) gets neither `start_swarm` nor the workflow tools.
  
@@ -12,7 +12,7 @@
    """
    @spec for_agent(String.t(), non_neg_integer(), non_neg_integer(), String.t(), keyword()) ::
            [Ref.t()]
-@@ -177,7 +178,9 @@
+@@ -180,7 +181,9 @@
          role != "assistant" or depth != 0 -> []
          command == :create_workflow -> @workflow_modules
          command == :swarm -> []

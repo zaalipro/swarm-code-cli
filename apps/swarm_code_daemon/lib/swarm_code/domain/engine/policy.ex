@@ -2,19 +2,21 @@ defmodule SwarmCode.Domain.Engine.Policy do
   @moduledoc "Approval decisions."
 
   # spec 66 T4: the fourth argument is `SwarmCode.Domain.Tools.CommandSafety.classify/1`
-  # for a `run_command` and `:normal` for everything else. Three clauses come
-  # before the old ones and nothing below them changed: read-only still denies
-  # every command whatever its class, a `:dangerous` one is always asked about
-  # (an "Always allow" of the `:execute` class cannot cover it), and a `:safe`
-  # one — `ls`, `git status`, `cat x | grep y` — stops interrupting the user.
+  # for a `run_command` and `:normal` for everything else. A `:dangerous` command
+  # is always asked about (an "Always allow" of the `:execute` class cannot cover
+  # it), and a `:safe` one — `ls`, `git status`, `cat x | grep y` — stops
+  # interrupting the user in Auto and Full access.
+  #
+  # pass 72 F1 (CLI 0.2.0 decision 3): read-only asks before every write and
+  # every command; a `:safe` command asks too. It used to refuse both outright,
+  # which left a new (untrusted, read-only) project with no path forward but
+  # the mode switch. The RunServer never remembers a read-only answer
+  # (`request_approval/5` stores the mode with the approval).
   #
   # spec 68 T6: removed the vestigial `always` MapSet parameter — the real
   # always-allow check lives in RunServer.handle_call(:request_approval) before
   # Policy is ever called. Operation.run always passed MapSet.new().
   def decide(mode, permission, safety \\ :normal)
-
-  def decide("read_only", :execute, _safety),
-    do: {:deny, "blocked by Read-only approval mode"}
 
   def decide(_mode, :execute, :dangerous), do: :ask
 
@@ -29,7 +31,7 @@ defmodule SwarmCode.Domain.Engine.Policy do
   def decide(mode, :private_network, _safety) when mode in ["read_only", "auto"], do: :ask
 
   def decide("read_only", permission, _safety) when permission in [:write, :execute],
-    do: {:deny, "blocked by Read-only approval mode"}
+    do: :ask
 
   def decide("auto", :write, _safety), do: :allow
 

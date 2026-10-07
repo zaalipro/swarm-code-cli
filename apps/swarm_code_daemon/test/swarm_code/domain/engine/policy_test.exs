@@ -9,12 +9,19 @@ defmodule SwarmCode.Domain.Engine.PolicyTest do
     end
   end
 
-  test "read_only blocks writes and commands" do
-    assert Policy.decide("read_only", :write) ==
-             {:deny, "blocked by Read-only approval mode"}
+  # pass 72 F1 (CLI 0.2.0 decision 3): read-only asks before every write and
+  # every command, whatever its class, instead of refusing.
+  test "read_only asks for writes and every command class" do
+    assert Policy.decide("read_only", :write) == :ask
+    assert Policy.decide("read_only", :execute) == :ask
 
-    assert Policy.decide("read_only", :execute) ==
-             {:deny, "blocked by Read-only approval mode"}
+    for safety <- [:safe, :normal, :dangerous] do
+      assert Policy.decide("read_only", :execute, safety) == :ask
+      assert Policy.decide("read_only", :write, safety) == :ask
+    end
+
+    assert Policy.decide("read_only", :read) == :allow
+    assert Policy.decide("read_only", :private_network) == :ask
   end
 
   test "auto allows writes and asks for commands" do
@@ -36,9 +43,8 @@ defmodule SwarmCode.Domain.Engine.PolicyTest do
     assert Policy.decide("auto", :execute, :dangerous) == :ask
     assert Policy.decide("full_access", :execute, :dangerous) == :ask
 
-    # Read-only still denies every command, whatever its class.
-    assert Policy.decide("read_only", :execute, :safe) ==
-             {:deny, "blocked by Read-only approval mode"}
+    # pass 72 F1: read-only asks for every command, a safe one included.
+    assert Policy.decide("read_only", :execute, :safe) == :ask
 
     # And a missing class behaves exactly as before the task.
     assert Policy.decide("auto", :execute) == :ask

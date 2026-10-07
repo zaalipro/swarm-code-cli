@@ -1,8 +1,8 @@
-# CLI-local change to lib/swarm_code/engine/run_server.ex at 4c7c577, after the rewrite
+# CLI-local change to lib/swarm_code/engine/run_server.ex at 7b8f379, after the rewrite
 # rules of provenance/sync-rules.json. Recorded by mix swarm_code.provenance.sync.
 --- a/apps/swarm_code_daemon/lib/swarm_code/domain/engine/run_server.ex
 +++ b/apps/swarm_code_daemon/lib/swarm_code/domain/engine/run_server.ex
-@@ -222,11 +222,48 @@
+@@ -241,11 +241,48 @@
    def consensus_round(run_id, stage),
      do: GenServer.call(via(run_id), {:consensus_round, stage}, :infinity)
  
@@ -51,7 +51,7 @@
    @doc "The questions waiting for an answer in this run, or `[]`."
    @spec pending_questions(String.t()) :: [{String.t(), [map()]}]
    # Spec 43 §1.4: its own call — `get_state/1` copied the whole run (nodes,
-@@ -239,6 +276,7 @@
+@@ -258,6 +295,7 @@
    end
  
    @spec start_agent(String.t(), %{
@@ -59,17 +59,17 @@
            parent_id: String.t(),
            name: String.t(),
            task: String.t(),
-@@ -989,7 +1027,8 @@
-             from: from,
+@@ -1014,7 +1052,8 @@
              timer: timer,
              permission: permission,
--            safety: safety
-+            safety: safety,
+             safety: safety,
+-            mode: mode
++            mode: mode,
 +            requested_at: DateTime.utc_now()
            })
            # spec 66 T3: the card used to render the node title alone — "run: " and
            # 60 characters of the command — and `detail` said "awaiting approval".
-@@ -1294,7 +1333,7 @@
+@@ -1320,7 +1359,7 @@
            parent_id: attrs.parent_id,
            name: name,
            role: "sub",
@@ -78,7 +78,7 @@
            depth: attrs.depth,
            prompt: attrs.task,
            status: if(queued?, do: "queued", else: "running")
-@@ -1607,6 +1646,52 @@
+@@ -1633,6 +1672,52 @@
  
    def handle_call(:get_state, _from, state), do: {:reply, state, state}
  
@@ -131,7 +131,7 @@
    def handle_call(:finish_totals, _from, state) do
      state = flush(state)
      {:reply, Map.take(state.run, [:tokens_in, :tokens_out, :cost_usd]), state}
-@@ -4130,7 +4215,13 @@
+@@ -4178,7 +4263,13 @@
  
      state =
        state

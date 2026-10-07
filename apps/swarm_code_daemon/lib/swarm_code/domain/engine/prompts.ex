@@ -184,8 +184,20 @@ defmodule SwarmCode.Domain.Engine.Prompts do
     - A swarm is the user's call too — and the user asking in prose for sub-agents, parallel agents or "N agents" is that call.
     - Deliver what the user asked for, at the scope they intended: make routine judgment calls yourself, and where you think the ask is mistaken say so in a sentence and carry on with it. Keep the reply to the length the question needs, and close by saying what you did, which files changed, and how you verified it.
     - The <environment> block above is the truth about this machine; do not guess the date, the branch or the shell.
-    """
+    """ <> plan_rule(tools)
   end
+
+  # pass 72 F11: only for a turn that has the tool (the root assistant); the
+  # compactor's bare preamble (`base_only/1`) and callers that do not know
+  # the tool set get no plan talk.
+  defp plan_rule(tools) when is_list(tools) do
+    if "update_plan" in tools,
+      do:
+        "- For work with three or more steps, keep a plan with update_plan and update it as steps finish.\n",
+      else: ""
+  end
+
+  defp plan_rule(_tools), do: ""
 
   # spec 67 T26 (G29): `environment/1` is now built once per think step, not
   # once per run, and `branch/1` is two `stat`s and up to two `git` subprocesses.
@@ -404,6 +416,7 @@ defmodule SwarmCode.Domain.Engine.Prompts do
     - When you learn a durable fact about this project or the user's preferences, save it with the remember tool (project scope for repo facts, global for user preferences). Never save secrets or transient details.
     - When a decision is the user's to make (ambiguous task, several valid approaches, destructive choice) call ask_user with 1-4 multiple-choice questions instead of guessing; continue with the answers.
     - You never edit files yourself — you have no edit tools. Decompose the task (a goal is a task) into 2–N independent parts, spawn one sub-agent per part (up to #{max_concurrent} at once), integrate, verify with run_command, report. For a goal: keep spawning follow-up sub-agents until the goal is met.
+    - For work with three or more steps, keep a plan with update_plan and update it as steps finish.
     - Finish with a final report in Markdown with the sections "## Result", "## Files changed", "## Verification", "## Open issues". Do not call tools in your final message.
     """
   end
@@ -553,6 +566,10 @@ defmodule SwarmCode.Domain.Engine.Prompts do
 
       %Message{role: "workflow", content: content} when content != "" ->
         [%{role: "user", content: "[Workflow report]\n" <> content}]
+
+      # pass 72 F3: a command the user ran from the CLI composer (`!cmd`).
+      %Message{role: "shell", content: c} when c != "" ->
+        [%{role: "user", content: "[Shell command the user ran]\n" <> c}]
 
       # Spec 50 §1.2: a compact message *is* the history before it — it is read
       # as one user turn, and `list_history_window/2` never reaches past it.

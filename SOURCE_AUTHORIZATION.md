@@ -108,3 +108,23 @@ adaptation pins: the four named above and this commit. The schema manifest
 migration files at this commit. The recorded copyright, MIT license and NOTICE
 terms remain in place. This addendum does not publish or modify the desktop
 repository.
+
+## Addendum: desktop commit 7b8f379f (CLI 0.2.0 A', 2026-10-07)
+
+**Date:** 2026-10-07
+
+The CLI 0.2.0 pass (`docs/superpowers/plans/2026-10-07-cli-0.2.0/00_contract.md`,
+lane A', task A'1) re-derives the extracted domain from desktop commit
+`7b8f379f5ed5976a191c08708af824d10b919633`: desktop `main` with pass 72 (lane F:
+read-only asks, `supersede_from`, the `shell` message role, permission rules,
+hook events, the plan tool, the CLI lockstep guard) merged, the same project and
+owner as the commits named above. It adds no migration, so the schema contract
+stays `desktop-4c7c577` (58 migrations). The provenance sync pins this commit
+(`provenance/sync-rules.json`), and 263 of the 303 entries in
+`provenance/extracted-files.json` record it as their upstream commit; 39 record
+`fb1b4ff82354ac8ff2e82d4f6516121fd55ff212` and one, the frozen
+`domain/format.ex` (unchanged upstream since), records
+`4c7c577aa909274b009dc1bf0f216e5179acddc9`. The verifier admits version 2
+records at six adaptation pins: the five named above and this commit. The
+recorded copyright, MIT license and NOTICE terms remain in place. This addendum
+does not publish or modify the desktop repository.
