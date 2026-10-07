@@ -125,7 +125,7 @@ defmodule SwarmCodeCLI.UI.Settings.C74SearchTest do
 
       assert Enum.any?(
                effects,
-               &match?({:settings_cli_write, _, _, %{"panel" => "compact"}, _}, &1)
+               &match?({:settings_cli_write, _, _, %{"panel" => "full"}, _}, &1)
              )
 
       assert state.settings.search.query == "side panel"

@@ -141,7 +141,7 @@ Override: the environment variable or flag that wins over the stored value. The 
 
 | Key | Label | Scope | Type | Default | Applies | Override |
 |---|---|---|---|---|---|---|
-| `terminal.panel` | Side panel | cli | enum | full | at once | — |
+| `terminal.panel` | Side panel | cli | enum | auto | at once | — |
 | `terminal.composer_rows` | Composer height | cli | integer | 3 | at once | — |
 | `terminal.inspector_width` | Inspector width | cli | enum | default | at once | — |
 | `terminal.show_diffs` | Show diffs | cli | toggle | on | at once | — |

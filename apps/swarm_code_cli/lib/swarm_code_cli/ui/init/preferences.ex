@@ -19,7 +19,9 @@ defmodule SwarmCodeCLI.UI.Init.Preferences do
 
   alias SwarmCode.Settings.CliFile
 
-  @modes %{"full" => :full, "compact" => :compact, "hidden" => :hidden}
+  # cli020 E5 (Q8): `auto` shows the panel only once two agents work or
+  # something needs the user (`Projector.Panel.effective_mode/1`).
+  @modes %{"auto" => :auto, "full" => :full, "compact" => :compact, "hidden" => :hidden}
   @themes %{"dark" => :dark, "light" => :light}
 
   # The five legacy preferences and their json names.
@@ -36,7 +38,7 @@ defmodule SwarmCodeCLI.UI.Init.Preferences do
   the desktop's settings (`SWARM_THEME` > cli.json > desktop > dark).
   """
   @type t :: %{
-          panel_mode: :full | :compact | :hidden,
+          panel_mode: :auto | :full | :compact | :hidden,
           show_diffs: boolean(),
           theme: :dark | :light | nil,
           mouse?: boolean(),
@@ -51,10 +53,10 @@ defmodule SwarmCodeCLI.UI.Init.Preferences do
           | {:write, non_neg_integer(), term(), map(), map()}
           | {:write_text, non_neg_integer(), term(), String.t(), String.t() | nil}
 
-  @doc "The defaults: the full panel, diffs shown, no theme of its own, wheel reports on."
+  @doc "The defaults: the auto panel, diffs shown, no theme of its own, wheel reports on."
   @spec defaults() :: t()
   def defaults,
-    do: %{panel_mode: :full, show_diffs: true, theme: nil, mouse?: true, agent_summaries?: true}
+    do: %{panel_mode: :auto, show_diffs: true, theme: nil, mouse?: true, agent_summaries?: true}
 
   @doc "The json names of the five legacy preferences."
   @spec legacy_names() :: %{atom() => String.t()}
@@ -68,7 +70,7 @@ defmodule SwarmCodeCLI.UI.Init.Preferences do
   @spec legacy(map()) :: t()
   def legacy(values) when is_map(values) do
     %{
-      panel_mode: Map.get(@modes, Map.get(values, "panel"), :full),
+      panel_mode: Map.get(@modes, Map.get(values, "panel"), :auto),
       show_diffs: boolean(Map.get(values, "show_diffs"), true),
       theme: Map.get(@themes, Map.get(values, "theme")),
       mouse?: boolean(Map.get(values, "mouse"), true),
@@ -86,7 +88,7 @@ defmodule SwarmCodeCLI.UI.Init.Preferences do
 
   def valid?(_preferences), do: false
 
-  defp valid_value?(:panel_mode, mode), do: mode in [:full, :compact, :hidden]
+  defp valid_value?(:panel_mode, mode), do: mode in [:auto, :full, :compact, :hidden]
   defp valid_value?(:show_diffs, value), do: is_boolean(value)
   defp valid_value?(:theme, value), do: value in [:dark, :light]
   defp valid_value?(:mouse?, value), do: is_boolean(value)

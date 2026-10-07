@@ -40,10 +40,44 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
 
   @doc "The panel mode the state asks for (owner O's `panel_mode`), `:full` by default."
   def mode(state) do
-    case state.panel_mode do
+    case effective_mode(state) do
       :compact -> :compact
       _ -> :full
     end
+  end
+
+  @doc """
+  cli020 E5 (Q8, §7.11): what `:auto` means now — `:full` once the visible
+  runs have two or more agents, something needs the user or the selected run
+  has a plan (E29), else `:hidden`. Every other mode is itself.
+  """
+  @spec effective_mode(map()) :: :full | :compact | :hidden
+  def effective_mode(state) do
+    case Map.get(state, :panel_mode, :full) do
+      :auto -> if auto_shown?(state), do: :full, else: :hidden
+      mode when mode in [:full, :compact, :hidden] -> mode
+      _ -> :full
+    end
+  end
+
+  @doc "The Ctrl-B order (E5 gives it to D's cycle): auto → full → compact → hidden."
+  @spec cycle_order() :: [:auto | :full | :compact | :hidden]
+  def cycle_order, do: [:auto, :full, :compact, :hidden]
+
+  @doc "Whether `:auto` shows the panel: ≥ 2 agents in visible runs, a needs-you item, a plan."
+  @spec auto_shown?(map()) :: boolean()
+  def auto_shown?(state) do
+    runs = Model.runs(state)
+    ids = MapSet.new(runs, & &1.id)
+
+    agents =
+      state.read_model.agents
+      |> Map.values()
+      |> Enum.count(&MapSet.member?(ids, Map.get(&1, :run_id)))
+
+    agents >= 2 or SwarmCodeCLI.UI.Question.needs(state) != [] or
+      Enum.any?(runs, &(Model.pending(state, &1) != [])) or
+      Enum.any?(runs, &match?([_ | _], Map.get(&1, :plan)))
   end
 
   @doc """
@@ -551,7 +585,9 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
     words =
       [
         "#{kind_word(run)}",
-        if(run.id == ctx.chat_id, do: "in chat"),
+        # cli020 E5 (ux-live-15): `chat · 2k`, not `chat · in chat · 2k`
+        # (the `▌` bar already marks the run in chat).
+        if(run.id == ctx.chat_id and kind_word(run) != "chat", do: "in chat"),
         Model.tokens(tokens(run, views))
       ]
       |> Enum.reject(&is_nil/1)

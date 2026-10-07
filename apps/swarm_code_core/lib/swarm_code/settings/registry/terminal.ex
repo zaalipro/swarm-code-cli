@@ -118,11 +118,18 @@ defmodule SwarmCode.Settings.Registry.Terminal do
   @layout [
     cli("terminal.panel", :layout, "Side panel",
       group: "layout",
-      description: "Applies at once; Ctrl-B cycles it.",
+      description:
+        "Applies at once; Ctrl-B cycles it. Auto shows it once two agents work or something needs you.",
       storage: {:cli, "panel"},
       type: :enum,
-      choices: choices([{"full", "full"}, {"compact", "compact"}, {"hidden", "hidden"}]),
-      default: "full",
+      choices:
+        choices([
+          {"auto", "auto"},
+          {"full", "full"},
+          {"compact", "compact"},
+          {"hidden", "hidden"}
+        ]),
+      default: "auto",
       applies: :at_once,
       synonyms: ["panel", "side panel"],
       parity: "CLI /panel"

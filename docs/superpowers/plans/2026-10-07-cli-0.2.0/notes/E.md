@@ -52,3 +52,22 @@ Branch `cli020/E` from M1 `3008f352`, worktree `~/dev/swarm-code-cli-wt/cli020-E
 - STUB: `Dialog.effort_target/1` gives a row the `{:local, {:effort_pick, level}}` target only
   once D18 adds `{:effort_pick, level}` to `Action.validate/1` (until then rows have no target).
   The finisher may drop the guard after D merges; `e4_effort_test` covers both branches.
+
+### E5 Side panel auto
+- `Preferences`: `"auto" => :auto`, default `:auto` (defaults, a missing/unknown `panel`);
+  registry `terminal.panel` choices `auto, full, compact, hidden`, default `auto`.
+- `Projector.Panel.effective_mode/1` (`:auto` → `:full` when `auto_shown?/1`, else `:hidden`),
+  `auto_shown?/1` (≥ 2 agents of the visible runs in `read_model.agents`, a pending approval or
+  question, a run's `needs_you`, or a run with a `plan` (E29)), `cycle_order/0` = the order E gives
+  D for Ctrl-B: `[:auto, :full, :compact, :hidden]`. `Layout.for_state/1` lays out the effective
+  mode (strip below 120 columns as before); a bare `Layout.calculate(…, :auto)` is hidden.
+- The chat run's subtitle is `chat · 2k` (no `in chat` for a chat run; other kinds keep it).
+- For D (not done here, D's files): add `:auto` to `State.panel_mode` default/type
+  (`state.ex:66`), to `Reducer.init`'s guard (`reducer.ex:69`, today it raises on `:auto`: until
+  D lands, a launch whose cli.json has no `panel` would get `:auto` from `Preferences.read/1` and
+  fail the guard; the finisher must merge D with E), to `next_panel/1` (`reducer.ex:3326`) in
+  `Panel.cycle_order/0`'s order, and to `Action.validate({:panel_mode, …})` (`action.ex:328`) and
+  the switcher rows (`switcher.ex:72-75` are E's: an `auto` row can be added once D's action
+  accepts it).
+- Tests updated for the new default: `c74_commit_test`, `c74_undo_test`, `c74_search_test`,
+  `c74_safety_test`, `pass72_preferences_test`, `golden_scenes_test` (`chat · `).

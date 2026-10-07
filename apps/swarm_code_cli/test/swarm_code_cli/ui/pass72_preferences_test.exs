@@ -6,13 +6,13 @@ defmodule SwarmCodeCLI.UI.Pass72PreferencesTest do
 
   @moduletag :tmp_dir
 
-  test "a missing, malformed, oversized or foreign file means the full panel", %{tmp_dir: dir} do
+  test "a missing, malformed, oversized or foreign file means the auto panel", %{tmp_dir: dir} do
     path = Path.join(dir, "cli.json")
     assert Preferences.read(path) == Preferences.defaults()
     assert Preferences.read(nil) == Preferences.defaults()
 
     assert Preferences.defaults() == %{
-             panel_mode: :full,
+             panel_mode: :auto,
              show_diffs: true,
              theme: nil,
              mouse?: true,
