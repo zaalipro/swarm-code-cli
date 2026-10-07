@@ -1,7 +1,9 @@
 defmodule SwarmCodeCLI.Release.VersionTest do
   # cli020 A8 (owner decision 1): one release, 0.2.0, in all three apps (the
   # umbrella `mix.exs` carries the same), and the synced MCP and LSP clients
-  # introduce themselves as the desktop does.
+  # introduce themselves as the desktop does. The contract names
+  # `test/swarm_code_cli/release/version_test.exs`, but that directory is one of
+  # `locked_branch_test`'s conditional campaign paths, so the test lives here.
   use ExUnit.Case, async: true
 
   test "every app of the release is version 0.2.0" do
@@ -11,7 +13,7 @@ defmodule SwarmCodeCLI.Release.VersionTest do
   end
 
   test "the synced MCP and LSP clients say ncode 0.2.0" do
-    root = Path.expand("../../../../..", __DIR__)
+    root = Path.expand("../../../..", __DIR__)
     domain = Path.join(root, "apps/swarm_code_daemon/lib/swarm_code/domain")
 
     assert File.read!(Path.join(domain, "mcp/client.ex")) =~
