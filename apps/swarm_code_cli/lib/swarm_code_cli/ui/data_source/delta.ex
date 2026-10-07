@@ -23,7 +23,9 @@ defmodule SwarmCodeCLI.UI.DataSource.Delta do
     settings_update: DTO.SettingsUpdate,
     settings_task: DTO.SettingsTask,
     # cli020 C4: the ncode app opened or quit on the same database (shell).
-    desktop_running: DTO.DesktopPresence
+    desktop_running: DTO.DesktopPresence,
+    # cli020 C15: a `!` shell command of the conversation (workspace watch).
+    shell_upsert: DTO.ShellItem
   }
   @kinds Map.keys(@bodies) ++
            [
@@ -34,6 +36,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Delta do
              :activity_remove,
              :change_remove,
              :background_remove,
+             :shell_remove,
              :snapshot_required
            ]
 
@@ -75,6 +78,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Delta do
           | :settings_update
           | :settings_task
           | :desktop_running
+          | :shell_upsert
+          | :shell_remove
   @type t :: %__MODULE__{
           kind: kind(),
           entity_id: binary() | nil,
@@ -192,6 +197,15 @@ defmodule SwarmCodeCLI.UI.DataSource.Delta do
          delta.entity_id == id and delta.run_id == run_id and
            delta.conversation_id == conversation_id and is_nil(delta.attempt_id)
 
+  # cli020 C15: a shell command belongs to the conversation, not to a run.
+  defp correlated_body?(%{kind: :shell_upsert, body: %DTO.ShellItem{} = body} = delta),
+    do:
+      delta.entity_id == body.id and is_nil(delta.run_id) and is_nil(delta.attempt_id) and
+        delta.conversation_id in [nil, body.conversation_id]
+
+  defp correlated_body?(%{kind: :shell_remove} = delta),
+    do: is_nil(delta.run_id) and is_nil(delta.attempt_id)
+
   # cli020 C4: about the database, not a run; the envelope may name the
   # conversation the daemon shows.
   defp correlated_body?(%{kind: :desktop_running, body: %DTO.DesktopPresence{}} = delta),
@@ -241,7 +255,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Delta do
               :interaction_remove,
               :activity_remove,
               :change_remove,
-              :background_remove
+              :background_remove,
+              :shell_remove
             ],
        do: Schema.valid?(:id, id)
 
@@ -266,6 +281,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Delta do
         :settings_update -> DTO.SettingsUpdate
         :settings_task -> DTO.SettingsTask
         :desktop_running -> DTO.DesktopPresence
+        :shell_upsert -> DTO.ShellItem
         _ -> nil
       end
 

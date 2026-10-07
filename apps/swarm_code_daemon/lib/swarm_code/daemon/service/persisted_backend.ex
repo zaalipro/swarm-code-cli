@@ -42,6 +42,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   alias SwarmCode.Daemon.Service.{
     ClipboardInbox,
     CommandDispatcher,
+    ShellEscape,
     CommandLedger,
     PersistedProjection,
     SessionConfiguration
@@ -172,6 +173,10 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         # work under the job supervisor, never the init callback itself).
         # cli020 C14: the clipboard image slots this session opened.
         clipboard_slots: %{},
+        # cli020 C15: the running `!` command (one per conversation) and the
+        # projected shell items (`id => body`, newest 50).
+        shell: nil,
+        shells: %{},
         ledger_prune:
           start_ledger_prune(
             Keyword.get(opts, :task_supervisor, SwarmCode.Domain.TaskSupervisor),
@@ -407,6 +412,15 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       {:noreply, refresh(state)}
     end
   end
+
+  # cli020 C15: the `!` command ended; its message is the transcript row.
+  def handle_info({ref, {output, exit}}, %{shell: %{task: %Task{ref: ref}}} = state) do
+    Process.demonitor(ref, [:flush])
+    {:noreply, finish_shell(state, output, exit)}
+  end
+
+  def handle_info({:DOWN, ref, :process, _, _}, %{shell: %{task: %Task{ref: ref}}} = state),
+    do: {:noreply, finish_shell(state, "", "error")}
 
   # cli020 C3: the ledger prune ended (its count is only logged).
   def handle_info({ref, pruned}, %{ledger_prune: %Task{ref: ref}} = state) do
@@ -672,6 +686,10 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     cancel_jobs(state, wire_error(:source_unavailable))
     with %Task{} = task <- Map.get(state, :ledger_prune), do: Task.shutdown(task, :brutal_kill)
     ClipboardInbox.close_all(Map.get(state, :clipboard_slots, %{}))
+    # cli020 C15: quitting kills a running `!` command (its task traps exits).
+    with %{task: task} <- Map.get(state, :shell),
+         do: ShellEscape.stop(state.task_supervisor, task)
+
     # pass74 S1-9/S1-10: every settings job settles (a command's ledger row
     # completes), every task stops by its kind, every purge timer ends.
     Enum.reduce(Map.keys(state.settings_jobs), state, &settle_settings_job(&2, &1, true))
@@ -1138,6 +1156,39 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
       true ->
         retry_run(state, scope, id, run)
+    end
+  end
+
+  # cli020 C15 (competitors-9): `!cmd`, in the project, no approval (the user
+  # typed it), one at a time per conversation.
+  defp execute(%{operation: :shell_run, params: %{"command" => text}}, _scope, id, state) do
+    if state.shell do
+      {refuse(id, {:busy, "A shell command is still running · Esc stops it."}, "", "shell.run"),
+       state}
+    else
+      ctx = %{
+        project_root: state.opts[:project_root],
+        project_id: state.opts[:project_id],
+        conversation_id: state.opts[:conversation_id],
+        settings: SwarmCode.Domain.Settings.get(),
+        run_id: nil
+      }
+
+      task = ShellEscape.start(state.task_supervisor, ctx, text)
+      shell_id = Ecto.UUID.generate()
+      shell = %{task: task, id: shell_id, command: text, at: System.os_time(:millisecond)}
+      {accepted(id, [shell_id]), refresh(%{state | shell: shell})}
+    end
+  end
+
+  defp execute(%{operation: :shell_stop}, _scope, id, state) do
+    case state.shell do
+      %{task: task} ->
+        ShellEscape.stop(state.task_supervisor, task)
+        {accepted(id, [state.opts[:conversation_id]]), finish_shell(state, "", :stopped)}
+
+      nil ->
+        {refuse(id, :nothing_to_stop, "", "shell.stop"), state}
     end
   end
 
@@ -2264,6 +2315,104 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     }
   end
 
+  # cli020 C15: the shell message the next turn reads. The finisher flips the
+  # role to "shell" once F3's role is synced (§8.1).
+  defp shell_message_role, do: "swarm"
+
+  defp finish_shell(%{shell: nil} = state, _output, _exit), do: state
+
+  defp finish_shell(%{shell: shell} = state, output, exit) do
+    content = ShellEscape.content(shell.command, output, exit)
+
+    case Conversations.create_message(%{
+           conversation_id: state.opts[:conversation_id],
+           role: shell_message_role(),
+           content: content
+         }) do
+      {:ok, _message} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning(
+          "cli shell: the shell message was not saved: #{inspect(error_tag(reason))}"
+        )
+    end
+
+    refresh(%{state | shell: nil})
+  end
+
+  defp error_tag(%Ecto.Changeset{}), do: :invalid
+  defp error_tag(reason) when is_atom(reason), do: reason
+  defp error_tag(_), do: :error
+
+  # The projected shell items: the running one, then the newest saved ones.
+  defp shell_bodies(state) do
+    conversation = state.opts[:conversation_id]
+
+    saved =
+      conversation
+      |> PersistedProjection.shell_messages(shell_message_role(), 50)
+      |> Enum.flat_map(fn row ->
+        case ShellEscape.parse(row.head, row.tail, row.bytes) do
+          nil ->
+            []
+
+          parsed ->
+            [
+              shell_body(
+                conversation,
+                row.id,
+                parsed,
+                ms(row.inserted_at),
+                stamp(row.updated_at),
+                row.bytes
+              )
+            ]
+        end
+      end)
+
+    running =
+      case state.shell do
+        %{id: id, command: command, at: at} ->
+          [
+            shell_body(
+              conversation,
+              id,
+              %{command: command, output: "", state: :running, exit_code: nil},
+              at,
+              state.revision,
+              0
+            )
+          ]
+
+        nil ->
+          []
+      end
+
+    Map.new(running ++ saved, &{&1["id"], &1})
+  rescue
+    _ -> state.shells
+  end
+
+  defp shell_body(conversation, id, parsed, at, revision, bytes) do
+    output = preview(parsed.output, 2048)
+
+    %{
+      "id" => id,
+      "conversation_id" => conversation,
+      "command" => preview(parsed.command, 4096),
+      "output" => output,
+      "state" => Atom.to_string(parsed.state),
+      "exit_code" => parsed.exit_code,
+      "at" => at || 0,
+      "revision" => revision,
+      "detail_ref" =>
+        if(byte_size(parsed.output) > byte_size(output) or bytes > 8192,
+          do: %{"id" => id <> ":text", "total_bytes" => bytes}
+        )
+    }
+  end
+
   defp clipboard_refusal(:invalid_argument),
     do: {:invalid_argument, "That is not a PNG image pasted here; paste it again."}
 
@@ -3260,6 +3409,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
           ),
         background: background,
         background_exits: if(reload?, do: background_exits, else: state.background_exits),
+        shells: if(reload?, do: shell_bodies(state), else: state.shells),
         inputs:
           if(reload?,
             do: %{
@@ -3654,11 +3804,38 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
           else: broadcast(acc, entity_delta("background_upsert", body["run_id"], id, body, acc))
       end)
 
-    Enum.reduce(Map.keys(old.background) -- Map.keys(state.background), state, fn id, acc ->
-      gone = old.background[id]
-      broadcast(acc, entity_delta("background_remove", gone["run_id"], id, nil, acc))
+    state =
+      Enum.reduce(Map.keys(old.background) -- Map.keys(state.background), state, fn id, acc ->
+        gone = old.background[id]
+        broadcast(acc, entity_delta("background_remove", gone["run_id"], id, nil, acc))
+      end)
+
+    # cli020 C15: the conversation's shell items (no run).
+    state =
+      Enum.reduce(state.shells, state, fn {id, body}, acc ->
+        if old.shells[id] == body,
+          do: acc,
+          else: broadcast(acc, shell_delta("shell_upsert", id, body, acc))
+      end)
+
+    Enum.reduce(Map.keys(old.shells) -- Map.keys(state.shells), state, fn id, acc ->
+      broadcast(acc, shell_delta("shell_remove", id, nil, acc))
     end)
   end
+
+  defp shell_delta(kind, id, body, state),
+    do: %{
+      "kind" => kind,
+      "entity_id" => id,
+      "run_id" => nil,
+      "conversation_id" => state.opts[:conversation_id],
+      "channel" => nil,
+      "attempt_id" => nil,
+      "text" => nil,
+      "body" => body,
+      "sequence" => 0,
+      "revision" => if(is_map(body), do: body["revision"], else: state.revision)
+    }
 
   defp entity_delta(kind, run_id, entity, body, state) do
     run = state.runs[run_id] || %{id: run_id, revision: state.revision}
@@ -3950,7 +4127,9 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
                 "rate_limit",
                 "background_upsert",
                 "background_remove",
-                "desktop_running"
+                "desktop_running",
+                "shell_upsert",
+                "shell_remove"
               ]
           end
 
@@ -4176,7 +4355,12 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
                 "changes" => changes_for(runs, state),
                 "verdicts" => verdicts_for(runs, state),
                 "agents" => Enum.flat_map(runs, & &1.agents) |> Enum.take(limit),
-                "background" => background_for(runs, state)
+                "background" => background_for(runs, state),
+                "shells" =>
+                  state.shells
+                  |> Map.values()
+                  |> Enum.sort_by(&{&1["at"], &1["id"]})
+                  |> Enum.take(-50)
               })
               |> Map.merge(state.metadata)
 

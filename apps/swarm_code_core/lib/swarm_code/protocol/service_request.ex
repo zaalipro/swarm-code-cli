@@ -40,6 +40,8 @@ defmodule SwarmCode.Protocol.ServiceRequest do
           | :queue_resume
           | :queue_edit
           | :run_retry
+          | :shell_stop
+          | :shell_run
           | :attachment_attach
           | :attachment_slot
 
@@ -134,6 +136,10 @@ defmodule SwarmCode.Protocol.ServiceRequest do
   defp decode_operation("attachment.slot"), do: :attachment_slot
   # cli020 C14: stage the image written into a slot.
   defp decode_operation("attachment.attach_slot"), do: :attachment_attach
+  # cli020 C15: the ! shell escape.
+  defp decode_operation("shell.run"), do: :shell_run
+  # cli020 C15: stop the running shell command.
+  defp decode_operation("shell.stop"), do: :shell_stop
   defp decode_operation(_operation), do: nil
 
   defp encode_operation(:query), do: "query"
@@ -163,6 +169,8 @@ defmodule SwarmCode.Protocol.ServiceRequest do
   defp encode_operation(:run_retry), do: "run.retry"
   defp encode_operation(:attachment_slot), do: "attachment.slot"
   defp encode_operation(:attachment_attach), do: "attachment.attach_slot"
+  defp encode_operation(:shell_run), do: "shell.run"
+  defp encode_operation(:shell_stop), do: "shell.stop"
   defp encode_operation(_operation), do: nil
 
   defp param_keys(:query), do: ~w(slot cursor direction page_size byte_limit)
@@ -205,6 +213,8 @@ defmodule SwarmCode.Protocol.ServiceRequest do
   defp param_keys(:run_retry), do: ~w(run_id revision)
   defp param_keys(:attachment_slot), do: []
   defp param_keys(:attachment_attach), do: ~w(token)
+  defp param_keys(:shell_run), do: ~w(command)
+  defp param_keys(:shell_stop), do: []
   defp param_keys(_operation), do: []
 
   defp valid_params?(:query, params, scope) do
@@ -343,6 +353,14 @@ defmodule SwarmCode.Protocol.ServiceRequest do
     do:
       scope.kind == :conversation and
         (is_binary(params["token"]) and Regex.match?(~r/\A[0-9a-f]{32}\z/, params["token"]))
+
+  defp valid_params?(:shell_run, params, scope),
+    do:
+      scope.kind == :conversation and
+        (is_binary(params["command"]) and byte_size(params["command"]) in 1..4096 and
+           String.valid?(params["command"]) and not String.contains?(params["command"], <<0>>))
+
+  defp valid_params?(:shell_stop, _params, scope), do: scope.kind == :conversation
 
   defp valid_params?(:queue_resume, _params, scope), do: scope.kind == :conversation
 

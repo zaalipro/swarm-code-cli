@@ -15,6 +15,7 @@ defmodule SwarmCodeCLI.UI.ReadModel do
             # provider rate limits (by provider id, from the shell) and the
             # newest toasts (transient, no snapshot).
             background: %{},
+            shells: %{},
             rate_limits: %{},
             toasts: [],
             # cli020 C4: the ncode app is open on the same database (the shell
@@ -33,7 +34,9 @@ defmodule SwarmCodeCLI.UI.ReadModel do
     :activity,
     :changes,
     :verdicts,
-    :background
+    :background,
+    # cli020 C15: the conversation's `!` shell commands (`DTO.ShellItem`).
+    :shells
   ]
   @toast_limit 16
   @rate_limit_limit 32
@@ -159,7 +162,8 @@ defmodule SwarmCodeCLI.UI.ReadModel do
              :activity_upsert,
              :change_upsert,
              :verdict_upsert,
-             :background_upsert
+             :background_upsert,
+             :shell_upsert
            ] do
     field =
       case kind do
@@ -171,6 +175,7 @@ defmodule SwarmCodeCLI.UI.ReadModel do
         :change_upsert -> :changes
         :verdict_upsert -> :verdicts
         :background_upsert -> :background
+        :shell_upsert -> :shells
       end
 
     table = Map.fetch!(model, field)
@@ -207,7 +212,8 @@ defmodule SwarmCodeCLI.UI.ReadModel do
              :interaction_remove,
              :activity_remove,
              :change_remove,
-             :background_remove
+             :background_remove,
+             :shell_remove
            ] do
     field =
       case kind do
@@ -216,6 +222,7 @@ defmodule SwarmCodeCLI.UI.ReadModel do
         :activity_remove -> :activity
         :change_remove -> :changes
         :background_remove -> :background
+        :shell_remove -> :shells
       end
 
     model = Map.update!(model, field, &Map.delete(&1, id))
@@ -345,6 +352,7 @@ defmodule SwarmCodeCLI.UI.ReadModel do
     changes = Map.get(body, :changes, [])
     verdicts = Map.get(body, :verdicts, [])
     background = Map.get(body, :background, []) || []
+    shells = Map.get(body, :shells, []) || []
 
     model =
       case Map.get(body, :rate_limits) do
@@ -367,7 +375,8 @@ defmodule SwarmCodeCLI.UI.ReadModel do
       interactions: Enum.map(interactions, & &1.id),
       changes: Enum.map(changes, & &1.id),
       verdicts: Enum.map(verdicts, & &1.id),
-      background: Enum.map(background, & &1.id)
+      background: Enum.map(background, & &1.id),
+      shells: Enum.map(shells, & &1.id)
     }
 
     model = %{model | coverage: Map.put(model.coverage, slot, coverage)}
@@ -381,6 +390,7 @@ defmodule SwarmCodeCLI.UI.ReadModel do
     |> put_rows(:changes, changes)
     |> put_rows(:verdicts, verdicts)
     |> put_rows(:background, background)
+    |> put_rows(:shells, shells)
     |> Map.update!(:order, &Map.put(&1, slot, Enum.map(rows, fn row -> row.id end)))
   end
 

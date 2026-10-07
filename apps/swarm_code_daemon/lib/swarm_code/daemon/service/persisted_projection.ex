@@ -540,6 +540,32 @@ defmodule SwarmCode.Daemon.Service.PersistedProjection do
     end
   end
 
+  @doc """
+  cli020 C15: the conversation's newest `limit` shell messages (role `role`,
+  no run, content `$ …`), newest first: the first 8 KB and the last 64 bytes
+  of each (where `[exit …]` is) and its size, never the whole output.
+  """
+  @spec shell_messages(String.t(), String.t(), pos_integer()) :: [map()]
+  def shell_messages(conversation, role, limit) do
+    Repo.all(
+      from(m in Message,
+        where:
+          m.conversation_id == ^conversation and is_nil(m.run_id) and m.role == ^role and
+            is_nil(m.superseded_at) and like(m.content, "$ %"),
+        order_by: [desc: m.position],
+        limit: ^limit,
+        select: %{
+          id: m.id,
+          head: fragment("substr(?, 1, 8192)", m.content),
+          tail: fragment("substr(?, -64)", m.content),
+          bytes: fragment("length(cast(? as blob))", m.content),
+          inserted_at: m.inserted_at,
+          updated_at: m.updated_at
+        }
+      )
+    )
+  end
+
   @doc "The newest still-open op per agent of `ids`: `%{agent_id => op}`."
   def running_ops(_conversation, []), do: %{}
 

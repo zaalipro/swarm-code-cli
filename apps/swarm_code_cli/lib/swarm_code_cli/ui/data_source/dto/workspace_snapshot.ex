@@ -24,6 +24,7 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.WorkspaceSnapshot do
       cost_usd: nil,
       title: nil,
       background: [],
+      shells: [],
       queued: 0,
       queued_texts: [],
       desktop_running: false,
@@ -54,6 +55,8 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.WorkspaceSnapshot do
       cost_usd: {:optional, :float},
       title: {:optional, {:text, 256}},
       background: {:list, {:dto, SwarmCodeCLI.UI.DataSource.DTO.BackgroundCommand}},
+      # cli020 C15: the conversation's `!` shell commands, newest 50.
+      shells: {:list, {:dto, SwarmCodeCLI.UI.DataSource.DTO.ShellItem}, 50},
       # pass71 S5: prompts of this conversation queued behind its live turn.
       queued: :count,
       # pass73 T3/T8: what waits there, oldest first (at most 20, 2 KB each).
@@ -102,6 +105,7 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.WorkspaceSnapshot do
       cost_usd: nil,
       title: nil,
       background: [],
+      shells: [],
       queued: 0,
       queued_texts: [],
       desktop_running: false,

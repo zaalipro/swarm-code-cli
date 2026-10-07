@@ -75,6 +75,8 @@ defmodule SwarmCodeCLI.UI.Intent do
           | {:mark_seen, :conversation | :run | :activity, binary(), non_neg_integer()}
           | {:queue_resume, binary()}
           | {:queue_edit, binary(), binary(), :clear | {:drop, pos_integer()}}
+          | {:shell_stop, binary()}
+          | {:shell_run, binary(), binary()}
           | {:attach_slot, binary(), binary()}
           | {:attachment_slot, binary()}
 
@@ -214,6 +216,19 @@ defmodule SwarmCodeCLI.UI.Intent do
         is_binary(token) and Regex.match?(~r/\A[0-9a-f]{32}\z/, token)
       ])
 
+  # cli020 C15: the ! shell escape.
+  def validate({:shell_run, conversation_id, text} = intent),
+    do:
+      valid_intent(intent, [
+        uuid?(conversation_id),
+        is_binary(text) and byte_size(text) in 1..4096 and String.valid?(text) and
+          not String.contains?(text, <<0>>)
+      ])
+
+  # cli020 C15: stop the running shell command.
+  def validate({:shell_stop, conversation_id} = intent),
+    do: valid_intent(intent, [uuid?(conversation_id)])
+
   def validate(_intent), do: {:error, :invalid_intent}
 
   @doc """
@@ -222,13 +237,15 @@ defmodule SwarmCodeCLI.UI.Intent do
   origin their request carries (`{:conversation, action}`).
   """
   @spec conversation_actions() :: [atom()]
-  def conversation_actions, do: [:queue, :attachment]
+  def conversation_actions, do: [:queue, :attachment, :shell]
 
   @spec conversation_action(term()) :: atom() | nil
   def conversation_action({:queue_resume, _}), do: :queue
   def conversation_action({:queue_edit, _, _, _}), do: :queue
   def conversation_action({:attachment_slot, _}), do: :attachment
   def conversation_action({:attach_slot, _, _}), do: :attachment
+  def conversation_action({:shell_run, _, _}), do: :shell
+  def conversation_action({:shell_stop, _}), do: :shell
   def conversation_action(_intent), do: nil
 
   defp uuid?(value) when is_binary(value) and byte_size(value) == 36,

@@ -30,6 +30,13 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Conversation do
   defp answer(script, {:queue_edit, _, _, _}, conversation),
     do: {:ok, script, [], [conversation], nil}
 
+  # cli020 C15: `!cmd` is accepted (the demo runs nothing) and so is a stop.
+  defp answer(script, {:shell_run, _, _}, _conversation),
+    do: {:ok, script, [], ["5e110000-0000-4000-8000-000000000001"], nil}
+
+  defp answer(script, {:shell_stop, _}, conversation),
+    do: {:ok, script, [], [conversation], nil}
+
   # cli020 C14: a clipboard slot (nothing is written: the demo has no inbox)
   # and the image staged from it.
   defp answer(script, {:attachment_slot, _}, _conversation) do

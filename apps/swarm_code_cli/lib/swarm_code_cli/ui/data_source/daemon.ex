@@ -994,6 +994,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
   defp request_capability(%{"op" => "run.retry"}), do: :run_retry
   defp request_capability(%{"op" => "attachment.slot"}), do: :attachment
   defp request_capability(%{"op" => "attachment.attach_slot"}), do: :attachment
+  defp request_capability(%{"op" => "shell.run"}), do: :shell
+  defp request_capability(%{"op" => "shell.stop"}), do: :shell
   defp request_capability(_), do: nil
 
   defp expire_requests(state) do

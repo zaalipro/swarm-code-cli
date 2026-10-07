@@ -172,4 +172,18 @@ defmodule SwarmCodeCLI.UI.DataSource.C020WireTest do
       assert outcome.result.attachment.bytes == 10
     end
   end
+
+  describe "C15 the shell escape" do
+    test "shell.run and shell.stop encode; bounds are checked" do
+      assert body({:shell_run, @conversation, "ls -la"}) == %{
+               "op" => "shell.run",
+               "command" => "ls -la"
+             }
+
+      assert body({:shell_stop, @conversation}) == %{"op" => "shell.stop"}
+      refute Intent.valid?({:shell_run, @conversation, ""})
+      refute Intent.valid?({:shell_run, @conversation, "a" <> <<0>>})
+      refute Intent.valid?({:shell_run, @conversation, String.duplicate("x", 4097)})
+    end
+  end
 end

@@ -488,6 +488,12 @@ defmodule SwarmCode.Daemon.Service.Connection do
         :run_retry ->
           :run_retry
 
+        :shell_stop ->
+          :shell
+
+        :shell_run ->
+          :shell
+
         :attachment_attach ->
           :attachment
 

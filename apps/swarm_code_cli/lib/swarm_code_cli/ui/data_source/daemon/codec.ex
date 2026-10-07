@@ -51,6 +51,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
       :cost_usd,
       :title,
       :background,
+      :shells,
       :queued,
       :queued_texts,
       :desktop_running,
@@ -602,6 +603,14 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
   # cli020 C14: stage the image written into a slot.
   defp request_body({:attach_slot, _conversation, token}),
     do: {:ok, %{"op" => "attachment.attach_slot", "token" => token}}
+
+  # cli020 C15: the ! shell escape.
+  defp request_body({:shell_run, _conversation, text}),
+    do: {:ok, %{"op" => "shell.run", "command" => text}}
+
+  # cli020 C15: stop the running shell command.
+  defp request_body({:shell_stop, _conversation}),
+    do: {:ok, %{"op" => "shell.stop"}}
 
   # cli020 C1: the queue (the conversation is the request's scope).
   defp request_body({:queue_resume, _conversation}), do: {:ok, %{"op" => "queue.resume"}}

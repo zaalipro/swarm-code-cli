@@ -49,6 +49,49 @@ defmodule SwarmCodeCLI.UI.DataSource.C020FakeTest do
     assert {:ok, _} = DTO.CommandResult.validate(staged)
   end
 
+  test "C15 the shell escape is accepted" do
+    a = Script.id(:a)
+
+    assert {:ok, next, %DTO.Outcome{status: :accepted}, _} =
+             command(script(), {:shell_run, a, "ls"})
+
+    assert {:ok, _, %DTO.Outcome{status: :accepted}, _} =
+             command(next, {:shell_stop, a}, "fake-2")
+  end
+
+  test "C15 the read model keeps shell items apart from the runs" do
+    item = %DTO.ShellItem{
+      id: "5e110000-0000-4000-8000-000000000001",
+      conversation_id: Script.id(:a),
+      command: "ls",
+      output: "mix.exs",
+      state: :done,
+      exit_code: 0,
+      at: 1,
+      revision: 1
+    }
+
+    delta = %SwarmCodeCLI.UI.DataSource.Delta{
+      kind: :shell_upsert,
+      entity_id: item.id,
+      conversation_id: item.conversation_id,
+      body: item,
+      revision: 1
+    }
+
+    assert {:ok, _} = SwarmCodeCLI.UI.DataSource.Delta.validate(delta)
+
+    assert {:ok, model, _, _} =
+             SwarmCodeCLI.UI.ReadModel.delta(%SwarmCodeCLI.UI.ReadModel{}, :workspace, delta)
+
+    assert model.shells[item.id] == item
+
+    remove = %SwarmCodeCLI.UI.DataSource.Delta{kind: :shell_remove, entity_id: item.id}
+    assert {:ok, _} = SwarmCodeCLI.UI.DataSource.Delta.validate(remove)
+    assert {:ok, model, _, _} = SwarmCodeCLI.UI.ReadModel.delta(model, :workspace, remove)
+    assert model.shells == %{}
+  end
+
   test "C4 the fake source tells its clients the ncode app opened" do
     source =
       start_supervised!(
