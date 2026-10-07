@@ -71,3 +71,12 @@ Branch `cli020/E` from M1 `3008f352`, worktree `~/dev/swarm-code-cli-wt/cli020-E
   accepts it).
 - Tests updated for the new default: `c74_commit_test`, `c74_undo_test`, `c74_search_test`,
   `c74_safety_test`, `pass72_preferences_test`, `golden_scenes_test` (`chat · `).
+
+### E6 Palette selection always visible
+- Cause (verified by a failing test): with the focus in the query (a fresh Ctrl-P) no row id
+  equals the focus, so the window kept the stale `dialog_scroll` offset of an earlier dialog.
+  `Dialog.modal/3` now anchors a picker's window on the selected entry (the one the footer
+  counts) when the focus is on no row. The keymap half of ux-live-1 (Up on row 0, typing while a
+  row has focus) is D15's.
+- Test `cli020/e6_palette_visible_test.exs` (offsets 0/5/15/40 → window at 0; first and last of
+  ≥ 24 entries visible). Also moved E4's picker below an unrelated comment it had split.

@@ -201,10 +201,23 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
 
     height = max(0, rect.height - 2 - footer_height)
 
+    # cli020 E6 (ux-live-1): in a picker the selected entry is always inside
+    # the window. With the focus in the query (a fresh Ctrl-P) the selection
+    # is the entry the footer counts (`ordinal`), not an offset an earlier
+    # dialog left in `dialog_scroll`.
+    selected =
+      case Enum.any?(rows, fn {id, _, _} -> id == focus end) do
+        false when items != [] ->
+          if picker_layer?(layer), do: items |> Enum.at(ordinal) |> elem(0), else: focus
+
+        _ ->
+          focus
+      end
+
     indices =
       rows
       |> Enum.with_index()
-      |> Enum.filter(fn {{id, _, _}, _} -> id == focus end)
+      |> Enum.filter(fn {{id, _, _}, _} -> id == selected end)
       |> Enum.map(&elem(&1, 1))
 
     first_focus = List.first(indices) || 0
@@ -1050,9 +1063,6 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
   defp switcher_title("@" <> query), do: "Projects: " <> query
   defp switcher_title(query), do: "Search: " <> query
 
-  # One row per model the daemon lists, the one in use marked, the provider
-  # after the model so a filter on either reads the same. A snapshot with no
-  # models says so in one line rather than showing an empty search.
   # cli020 E4 (decision 4f, D18): the levels the daemon would accept for the
   # model (C17's `effort_levels`), the current one ticked; Enter picks.
   @classic_efforts ~w(low medium high xhigh max)
@@ -1120,6 +1130,9 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
     if match?({:ok, _}, SwarmCodeCLI.UI.ActionTarget.validate(target)), do: target
   end
 
+  # One row per model the daemon lists, the one in use marked, the provider
+  # after the model so a filter on either reads the same. A snapshot with no
+  # models says so in one line rather than showing an empty search.
   defp model_picker({:model_picker, target, _} = layer, state, rect) do
     query = ModelPicker.query(state, layer)
     mark = SafeText.value(Support.glyph(:check, state))
