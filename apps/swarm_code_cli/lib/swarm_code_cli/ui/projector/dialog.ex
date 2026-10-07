@@ -181,11 +181,19 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
         width =
           max(1, rect.width - 2 - if(focused? or not mono?, do: prefix_width, else: 0))
 
-        # A decorated row is one line; its spans clip it.
+        # A decorated row is one line; its spans clip it. cli020 E11: the
+        # library and command reports are prose and wrap at words.
         lines =
-          if Map.has_key?(decor, id) and not mono?,
-            do: [text],
-            else: Width.wrap(text, width, state.capabilities.ambiguous_width)
+          cond do
+            Map.has_key?(decor, id) and not mono? ->
+              [text]
+
+            prose_layer?(layer) ->
+              SwarmCodeCLI.UI.Prose.wrap(text, width, state.capabilities.ambiguous_width)
+
+            true ->
+              Width.wrap(text, width, state.capabilities.ambiguous_width)
+          end
 
         Enum.map(lines, fn line ->
           {id, Density.safe(line, state, rect.width - 2), action}
@@ -370,6 +378,9 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
   end
 
   defp hover(state), do: Theme.style(:hover, state.capabilities).background
+
+  defp prose_layer?({kind, _}) when kind in [:library, :command_report], do: true
+  defp prose_layer?(_layer), do: false
 
   defp picker_layer?({kind, _}) when kind in [:switcher, :action_menu, :region_filter, :jump],
     do: true
@@ -589,7 +600,7 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
        when not is_nil(report) do
     rows =
       report.text
-      |> String.split("\n")
+      |> report_lines(help_geometry(state, rect).text_width, state)
       |> Enum.with_index()
       |> Enum.map(fn {line, i} ->
         {"report-#{i}", Density.external(line, SafeText.Limits.content()), nil}
@@ -807,7 +818,7 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
           "No entries"
 
         selected ->
-          selected.subtitle <> "\n" <> selected.detail
+          Library.detail_text(feature, selected)
 
         true ->
           "Select an entry to view details and actions."
@@ -1338,8 +1349,20 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
     end
   end
 
-  defp detail_rows(_feature, detail, state, rect),
-    do: [{"details", Density.safe(detail, state, rect.width * 8), nil}]
+  # cli020 E11: one row per line of the detail, each word-wrapped by the modal.
+  defp detail_rows(_feature, detail, state, rect) do
+    case String.split(detail, "\n") do
+      [line] ->
+        [{"details", Density.safe(line, state, rect.width * 8), nil}]
+
+      lines ->
+        lines
+        |> Enum.with_index()
+        |> Enum.map(fn {line, index} ->
+          {"details-#{index}", Density.safe(line, state, rect.width * 8), nil}
+        end)
+    end
+  end
 
   defp diff_detail_lines(file) do
     header =
@@ -1526,6 +1549,37 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
     else
       [RunRow.pad(key_cell, column, state)]
     end
+  end
+
+  # cli020 E11 (ux-live-7): a report's Markdown list of named entries
+  # (`- **reviewer** (bundled) — Code reviewer…`, `/agents`) is a two-column
+  # list, the description word-wrapped under its column; other lines as sent.
+  @entry_line ~r/^- \*\*(.+?)\*\*(?: \(([^)]*)\))? — (.*)$/u
+
+  defp report_lines(text, width, state) do
+    policy = state.capabilities.ambiguous_width
+    lines = String.split(text, "\n")
+
+    entries =
+      for line <- lines, match = Regex.run(@entry_line, line), match != nil, into: %{} do
+        [_, name, source, description] = match ++ List.duplicate("", 4 - length(match))
+        label = if source in [nil, ""], do: name, else: name <> " (" <> source <> ")"
+        {line, {label, description}}
+      end
+
+    column =
+      entries
+      |> Map.values()
+      |> Enum.map(&Width.cells(elem(&1, 0), policy))
+      |> Enum.max(fn -> 0 end)
+      |> min(max(8, div(width, 2)))
+
+    Enum.flat_map(lines, fn line ->
+      case Map.get(entries, line) do
+        nil -> [line]
+        {label, description} -> help_entry({label, description}, column, width, state, policy)
+      end
+    end)
   end
 
   # The sheet describes the state underneath it: the layers below the help

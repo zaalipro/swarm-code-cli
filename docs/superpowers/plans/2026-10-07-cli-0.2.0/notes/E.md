@@ -127,3 +127,15 @@ Branch `cli020/E` from M1 `3008f352`, worktree `~/dev/swarm-code-cli-wt/cli020-E
   the answer or a step already shows) and `lead_rows/4` draws nothing for them (0 rows, so
   `Turns.height/3` agrees). A report with other words ("Swarm stopped by user.") still draws.
   The panel's "reported" fact is unchanged. Test `cli020/e10_report_once_test.exs`.
+
+### E11 `/agents` and `/workflows`
+- Client side only (C9 changes the daemon's data): `Library.detail_text/2` reads a workflow's
+  detail as its description plus one argument line (`query (required) · angles=4 · sources=6`,
+  required first, then by name) from the JSON object at the end of the detail (today's raw
+  `{"meta": …}` or C9's `{"description", "args": […]}`, decoded with OTP's `:json`, no new
+  dependency), never the JSON itself; one Start (an item with a form drops its bare `:start`).
+- `Dialog`: library and command-report bodies word-wrap (`Prose.wrap/3`), a library detail is one
+  row per line; a report's Markdown entries `- **name** (source) — description` (today's `/agents`)
+  draw as a two-column list (no asterisks). If C9 sends `/agents` as structured rows over a new DTO,
+  the drawing of those rows is still to wire (no DTO for it exists in this branch).
+- Test `cli020/e11_agents_workflows_test.exs`.
