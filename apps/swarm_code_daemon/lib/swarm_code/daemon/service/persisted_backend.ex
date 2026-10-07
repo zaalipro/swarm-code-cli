@@ -1685,7 +1685,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         # read the first identifier of an accepted send as the run it
         # started: the terminal aimed Ctrl-C at the conversation id, and a
         # one-shot waited for that "run" to finish.
-        {accepted(id, [], notice("Queue", words), "queued"), state |> watch_queue() |> refresh()}
+        {accepted(id, [], notice("Queue", words), "queued"),
+         state |> watch_queue(live_turns(conversation_id)) |> refresh()}
 
       {:error, :database_busy} ->
         {refuse(id, :database_busy, text), state}
@@ -1704,10 +1705,25 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       "conversation_id" => nil
     }
 
+  # cli020 finisher: the running turns whose processes are alive. The
+  # registry drops a run's entry only after its process is gone, so right
+  # after a turn's DOWN its dead pid can still be listed; reading the
+  # registry once and skipping dead pids keeps drain_queue/1 and the watch
+  # agreeing (two reads raced: the first saw the turn, the second did not,
+  # nothing was monitored and the queued prompt waited for ever).
+  defp live_turns(conversation_id),
+    do: conversation_id |> turn_runs() |> Enum.filter(fn {_id, pid} -> Process.alive?(pid) end)
+
   # The pids of this conversation's running turns (chat turns and
-  # compactions, pass73), each monitored once.
-  defp watch_queue(state) do
-    pids = state.opts[:conversation_id] |> turn_runs() |> Enum.map(&elem(&1, 1))
+  # compactions, pass73), each monitored once. With none left (the turn
+  # ended meanwhile) the queue drains at once.
+  defp watch_queue(state, []) do
+    send(self(), {:drain_queue, state.opts[:conversation_id]})
+    state
+  end
+
+  defp watch_queue(state, turns) do
+    pids = Enum.map(turns, &elem(&1, 1))
 
     monitors =
       Enum.reduce(pids, state.queue_monitors, fn pid, acc ->
@@ -1727,12 +1743,14 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   defp drain_queue(state) do
     conversation_id = state.opts[:conversation_id]
 
+    turns = live_turns(conversation_id)
+
     cond do
       MapSet.member?(state.queue_paused, conversation_id) ->
         state
 
-      turn_runs(conversation_id) != [] ->
-        watch_queue(state)
+      turns != [] ->
+        watch_queue(state, turns)
 
       true ->
         pop_and_start(state, conversation_id)
