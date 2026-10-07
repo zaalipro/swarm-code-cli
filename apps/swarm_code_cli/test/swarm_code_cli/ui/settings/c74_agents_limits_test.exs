@@ -50,7 +50,7 @@ defmodule SwarmCodeCLI.UI.Settings.C74AgentsLimitsTest do
     project = Enum.find(rows, &(&1.id == "agent:project:reviewer"))
     user = Enum.find(rows, &(&1.id == "agent:user:reviewer"))
     assert words(project.value) =~ "m1 · high"
-    assert words(user.value) =~ "the sub-agent model"
+    assert words(user.value) =~ "the worker model"
     assert words(user.tag) == "shadowed"
 
     assert [{:section, :library}, {:toast, text, _}] =

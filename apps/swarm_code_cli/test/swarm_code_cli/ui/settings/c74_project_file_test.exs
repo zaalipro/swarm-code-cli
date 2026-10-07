@@ -82,7 +82,7 @@ defmodule SwarmCodeCLI.UI.Settings.C74ProjectFileTest do
     assert text =~ "post_tool_use ^edit_file$ mix format 10 s"
     assert text =~ "✗ hooks.post_edit · unknown event post_edit x remove"
     assert text =~ "! profiles.fast.mode · not a profile key x remove"
-    assert text =~ "name model effort sub-agent effort"
+    assert text =~ "name model effort worker effort"
     assert text =~ "fast — low —"
   end
 

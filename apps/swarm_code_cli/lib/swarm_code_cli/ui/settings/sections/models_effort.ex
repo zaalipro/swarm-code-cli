@@ -3,7 +3,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.ModelsEffort do
   pass74 U3-4 (spec §2.2, F3 with §4.1 item 13): Models & effort. Four
   groups: the models of new conversations (and `▸ Fetch every provider's
   models`), the default efforts, this conversation (its model, effort,
-  sub-agent pair, the one Mode row — build, plan, consensus, ultra, writing a
+  worker pair, the one Mode row — build, plan, consensus, ultra, writing a
   workflow — title, pinned, `▸ Apply a profile`), and the consensus
   settings of this conversation as a sub-page listed while the mode is
   consensus (its rows stay reachable through search and `:set`). Two link

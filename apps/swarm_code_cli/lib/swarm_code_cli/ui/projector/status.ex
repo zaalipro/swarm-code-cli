@@ -178,7 +178,7 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
           nil
       end
 
-    # The sub agents' model, only when it is not the chat model.
+    # The workers' model, only when it is not the chat model.
     agents =
       if is_binary(swarm_model) and swarm_model != "" and swarm_model != chat_model,
         do: {"agents " <> swarm_model, tint(:plain, state, :text_faint, [])}

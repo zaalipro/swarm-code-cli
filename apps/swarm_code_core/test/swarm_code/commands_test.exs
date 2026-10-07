@@ -59,7 +59,7 @@ defmodule SwarmCode.CommandsTest do
   test "the palette completes /mo to model and /swarm_m to swarm_model" do
     assert hd(Commands.catalogue("/mo")).name == "model"
     assert Enum.map(Commands.catalogue("/swarm_m"), & &1.name) == ["swarm_model"]
-    assert Enum.find(Commands.catalogue(), &(&1.name == "swarm_model")).desc =~ "sub agents"
+    assert Enum.find(Commands.catalogue(), &(&1.name == "swarm_model")).desc =~ "workers"
   end
 
   test "attachment staging parses a bounded path" do

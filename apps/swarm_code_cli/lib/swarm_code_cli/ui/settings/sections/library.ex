@@ -131,7 +131,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Library do
   end
 
   defp item_row(ctx, "agent", a, _smoke) do
-    model = R.field(a, "model") || "the sub-agent model"
+    model = R.field(a, "model") || "the worker model"
     effort = R.field(a, "effort")
     who = if effort, do: "#{model} · #{effort}", else: model
 

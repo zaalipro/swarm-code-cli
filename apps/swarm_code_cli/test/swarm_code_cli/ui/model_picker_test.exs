@@ -248,7 +248,7 @@ defmodule SwarmCodeCLI.UI.ModelPickerTest do
     test "a pick from the palette closes the palette beneath it" do
       state = ready()
       {state, []} = Reducer.update(state, {:open_layer, Switcher.open(state, "composer")})
-      entry = Enum.find(Switcher.catalogue(state), &(&1.label == "Switch sub-agent model…"))
+      entry = Enum.find(Switcher.catalogue(state), &(&1.label == "Switch worker model…"))
       {:local, action} = entry.target
       {state, []} = Reducer.update(state, action)
       assert [{:model_picker, :swarm, _}, {:switcher, _}] = state.layers
@@ -332,7 +332,7 @@ defmodule SwarmCodeCLI.UI.ModelPickerTest do
       {scene, _table} = Projector.project(state)
       {:ok, plan} = Paint.build(scene, %Options{color_mode: :truecolor, ascii?: false})
       full = screen(plan)
-      assert row(plan, scene.overlay.rect.y) =~ " Sub-agent model: "
+      assert row(plan, scene.overlay.rect.y) =~ " Worker model: "
       assert full =~ "No provider lists any model."
     end
   end
@@ -344,7 +344,7 @@ defmodule SwarmCodeCLI.UI.ModelPickerTest do
       state = ready()
       entries = Switcher.catalogue(state)
 
-      for {label, target} <- [{"Switch model…", :chat}, {"Switch sub-agent model…", :swarm}] do
+      for {label, target} <- [{"Switch model…", :chat}, {"Switch worker model…", :swarm}] do
         assert entry = Enum.find(entries, &(&1.label == label))
         assert entry.kind == :action
         assert {:local, {:open_layer, {:model_picker, ^target, id}}} = entry.target

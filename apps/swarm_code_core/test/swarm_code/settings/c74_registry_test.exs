@@ -5,7 +5,7 @@ defmodule SwarmCode.Settings.C74RegistryTest do
 
   @part1 %{
     models_effort:
-      ~w(models.chat models.sub_agent models.scheduled models.workflow models.implementer models.fetch_all efforts.default efforts.sub_agent efforts.scheduled efforts.workflow efforts.implementer session.model session.effort session.sub_agent_model session.sub_agent_effort session.mode session.title session.pinned session.consensus_checks session.consensus_rounds session.judge_model session.judge_effort session.implementer_model session.implementer_effort session.profile),
+      ~w(models.chat models.sub_agent models.validator models.scheduled models.workflow models.implementer models.fetch_all efforts.default efforts.sub_agent efforts.validator efforts.scheduled efforts.workflow efforts.implementer session.model session.effort session.sub_agent_model session.sub_agent_effort session.validator_model session.mode session.title session.pinned session.consensus_checks session.consensus_rounds session.judge_model session.judge_effort session.implementer_model session.implementer_effort session.profile),
     search_web: ~w(web.reader web.fetch_facts),
     deep_research:
       ~w(research.level research.max_live research.max_sources research.recency_days research.agent_timeout research.max_retries research.retry_timeouts research.headlines research.auto_design research.include_domains research.exclude_domains research.lead_model research.lead_effort research.worker_model research.worker_effort research.reporter_model research.reporter_effort research.root),
@@ -52,8 +52,8 @@ defmodule SwarmCode.Settings.C74RegistryTest do
     end
   end
 
-  test "the registry holds #{length(Registry.all())} entries (171: 169 table rows + lsp.check, lsp.stop)" do
-    assert length(Registry.all()) == 171
+  test "the registry holds #{length(Registry.all())} entries (174: 169 table rows + lsp.check, lsp.stop + cli020 E1's three validator rows)" do
+    assert length(Registry.all()) == 174
     all = Map.merge(@part1, @part2) |> Map.values() |> List.flatten()
     assert Enum.sort(all) == Enum.sort(Enum.map(Registry.all(), & &1.key))
   end
@@ -66,7 +66,7 @@ defmodule SwarmCode.Settings.C74RegistryTest do
 
   test "scalar keys fit in one values.patch; cli entries are the 21 terminal keys" do
     assert length(Registry.scalar_keys()) <= Registry.max_patch()
-    assert length(Registry.scalar_keys()) == 131
+    assert length(Registry.scalar_keys()) == 134
     assert length(Registry.cli_entries()) == 21
 
     for entry <- Registry.cli_entries() do

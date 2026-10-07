@@ -635,7 +635,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.ProjectFile do
             {"name", :text_faint, 1},
             {"model", :text_faint, 3},
             {"effort", :text_faint, 2},
-            {"sub-agent effort", :text_faint, 4}
+            {"worker effort", :text_faint, 4}
           ]
         }
 
