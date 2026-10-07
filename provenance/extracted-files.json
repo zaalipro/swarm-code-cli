@@ -252,7 +252,7 @@
     {
       "classification": "source",
       "destination": "apps/swarm_code_core/lib/swarm_code/commands.ex",
-      "sha256": "a9841442c4fa97aac89de9feddf630567b7e1adc637fe8d850c071bc23d2bc00",
+      "sha256": "aee29856a5433a7eaf8f6c7482ab745dea083c68a48650f82bfdae07086b4af3",
       "upstream_commit": "fb1b4ff82354ac8ff2e82d4f6516121fd55ff212",
       "upstream_path": "lib/swarm_code_web/components/chat.ex",
       "upstream_sha256": "948925c1f35087f7198e370abdd91945a298127fe9fb1b438060ef39476a9fbb"

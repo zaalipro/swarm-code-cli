@@ -736,66 +736,7 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
   defp contents(:help, state, rect, _class) do
     context = help_context(state)
     inner = max(1, rect.width - 2)
-    ascii? = state.capabilities.ascii?
-    policy = state.capabilities.ambiguous_width
-
-    sections =
-      for group <- Bindings.groups(),
-          rows =
-            context
-            |> Bindings.for_context()
-            |> Enum.filter(&(&1.group == group))
-            |> Enum.map(fn binding ->
-              keys =
-                binding
-                |> Bindings.keys_in_context(context, SwarmCodeCLI.UI.Keymap.overrides(state))
-                |> KeyLabel.joined(ascii?)
-
-              {keys, binding.help}
-            end),
-          rows != [],
-          do: {group, rows}
-
-    columns = if inner >= @help_two_column_width, do: 2, else: 1
-    column = div(inner - (columns - 1) * @help_gutter, columns)
-
-    widest_key =
-      sections
-      |> Enum.flat_map(fn {_group, rows} -> Enum.map(rows, &Width.cells(elem(&1, 0), policy)) end)
-      |> Enum.max(fn -> 0 end)
-
-    # The key column is never wider than half a column, nor than @help_key_max:
-    # one row with four spellings of a resize chord must not cost every other
-    # row its help text. A chord list that does not fit loses its tail.
-    key_width = min(widest_key, max(1, min(@help_key_max, div(column, 2))))
-
-    lines =
-      Enum.flat_map(sections, fn {group, rows} ->
-        # pass71 V5: headings in sentence case, as everywhere else.
-        heading = SwarmCodeCLI.UI.Keymap.Docs.group_title(group)
-
-        entries =
-          rows
-          |> Enum.map(&help_entry(&1, key_width, column, state, policy))
-          |> Enum.chunk_every(columns)
-          |> Enum.map(&Enum.join(&1, String.duplicate(" ", @help_gutter)))
-
-        [heading | entries]
-      end)
-
-    # pass73 finisher (K's request F2): while wheel reports are on, the sheet
-    # ends with how the mouse works and how to select text anyway.
-    lines =
-      if Map.get(state, :mouse?, true) do
-        note =
-          SwarmCodeCLI.UI.Keymap.Docs.mouse_note()
-          |> String.replace("`", "")
-          |> SwarmCodeCLI.UI.Prose.wrap(max(1, inner - 2), policy)
-
-        lines ++ [""] ++ note
-      else
-        lines
-      end
+    lines = help_lines(state, inner)
 
     options =
       lines
@@ -1315,6 +1256,91 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
       end)
 
     [header] ++ body ++ if(file.truncated?, do: ["…"], else: [])
+  end
+
+  @doc false
+  # The help sheet's text lines at `inner` cells (tests read them unscrolled).
+  @spec help_lines(map(), pos_integer()) :: [String.t()]
+  def help_lines(state, inner) do
+    context = help_context(state)
+    ascii? = state.capabilities.ascii?
+    policy = state.capabilities.ambiguous_width
+
+    sections =
+      for group <- Bindings.groups(),
+          rows =
+            context
+            |> Bindings.for_context()
+            |> Enum.filter(&(&1.group == group))
+            |> Enum.map(fn binding ->
+              keys =
+                binding
+                |> Bindings.keys_in_context(context, SwarmCodeCLI.UI.Keymap.overrides(state))
+                |> KeyLabel.joined(ascii?)
+
+              {keys, binding.help}
+            end),
+          rows != [],
+          do: {group, rows}
+
+    columns = if inner >= @help_two_column_width, do: 2, else: 1
+    column = div(inner - (columns - 1) * @help_gutter, columns)
+
+    widest_key =
+      sections
+      |> Enum.flat_map(fn {_group, rows} -> Enum.map(rows, &Width.cells(elem(&1, 0), policy)) end)
+      |> Enum.max(fn -> 0 end)
+
+    # The key column is never wider than half a column, nor than @help_key_max:
+    # one row with four spellings of a resize chord must not cost every other
+    # row its help text. A chord list that does not fit loses its tail.
+    key_width = min(widest_key, max(1, min(@help_key_max, div(column, 2))))
+
+    lines =
+      Enum.flat_map(sections, fn {group, rows} ->
+        # pass71 V5: headings in sentence case, as everywhere else.
+        heading = SwarmCodeCLI.UI.Keymap.Docs.group_title(group)
+
+        entries =
+          rows
+          |> Enum.map(&help_entry(&1, key_width, column, state, policy))
+          |> Enum.chunk_every(columns)
+          |> Enum.map(&Enum.join(&1, String.duplicate(" ", @help_gutter)))
+
+        [heading | entries]
+      end)
+
+    # pass73 finisher (K's request F2): while wheel reports are on, the sheet
+    # ends with how the mouse works and how to select text anyway.
+    lines =
+      if Map.get(state, :mouse?, true) do
+        note =
+          SwarmCodeCLI.UI.Keymap.Docs.mouse_note()
+          |> String.replace("`", "")
+          |> SwarmCodeCLI.UI.Prose.wrap(max(1, inner - 2), policy)
+
+        lines ++ [""] ++ note
+      else
+        lines
+      end
+
+    lines ++ help_modes(column, state, policy)
+  end
+
+  # cli020 E2 (Q6): the six modes and what each does; CLI Ultra runs
+  # workflows (the ncode app's missions are not ported yet).
+  defp help_modes(column, state, policy) do
+    rows =
+      for {value, label, _glyph, hint, _icon} <- SwarmCode.Commands.modes(),
+          do: {SwarmCodeCLI.UI.Projector.Composer.mode_title(value, label), hint}
+
+    width =
+      rows
+      |> Enum.map(&Width.cells(elem(&1, 0), policy))
+      |> Enum.max(fn -> 0 end)
+      |> min(max(1, div(column, 2)))
+
+    ["Modes" | Enum.map(rows, &help_entry(&1, width, column, state, policy))]
   end
 
   # One "keys  help" cell, padded to exactly `column` cells so two of them line

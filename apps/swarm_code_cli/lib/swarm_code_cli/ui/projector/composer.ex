@@ -43,6 +43,11 @@ defmodule SwarmCodeCLI.UI.Projector.Composer do
 
   def label(state), do: "Composer · " <> mode_label(state)
 
+  @doc "cli020 E2 (Q6): a mode's words on the status chip and in the help sheet."
+  @spec mode_title(String.t(), String.t()) :: String.t()
+  def mode_title("ultra", _label), do: "Ultra · workflows"
+  def mode_title(_value, label), do: label
+
   def placeholder(state, width),
     do: Density.safe("Type a message, or / for commands…", state, width)
 

@@ -17,3 +17,9 @@ Branch `cli020/E` from M1 `3008f352`, worktree `~/dev/swarm-code-cli-wt/cli020-E
   `validator_default: {:default_validator_provider_id, :default_validator_model, :chat}` to
   `@global_models` in `dmn/daemon/service/settings/values.ex`.
 - `core/commands.ex` repinned.
+
+### E2 Honest Ultra
+- `commands.ex` mode hint and `/ultra` description per the contract; the status chip says
+  `Ultra · workflows` (`Projector.Composer.mode_title/2`); the help sheet ends with a `Modes`
+  section from `Commands.modes/0` (Ultra as `Ultra · workflows`). The composer label and the
+  welcome keep `Ultra`. `Dialog.help_lines/2` is public (`@doc false`) for the tests.

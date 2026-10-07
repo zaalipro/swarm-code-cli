@@ -5,7 +5,7 @@ defmodule SwarmCode.Commands do
     {"build", "Build", "🛠", "the assistant reads, writes and runs", "hero-wrench-screwdriver"},
     {"plan", "Plan", "▤", "read-only tools, a step-by-step plan", "hero-clipboard-document-list"},
     {"goal", "Goal", "◎", "the next message sets a goal to pursue", nil},
-    {"ultra", "Ultra", "⧉", "big tasks become workflows", nil},
+    {"ultra", "Ultra", "⧉", "big tasks run as workflows (missions are in the ncode app)", nil},
     {"workflow", "Workflow", "⧉", "the next message authors and launches a workflow", nil},
     {"consensus", "Consensus", "⚖", "a second model judges the plan first", nil}
   ]
@@ -27,7 +27,8 @@ defmodule SwarmCode.Commands do
      "Launch or control a workflow run"},
     {"workflows", "", "Open the workflow dashboard"},
     {"create-workflow", "[what it should do]", "Author a new workflow with the assistant"},
-    {"ultra", "", "Toggle Ultra — the assistant orchestrates big tasks through workflows"},
+    {"ultra", "",
+     "Toggle Ultra — big tasks run as workflows here; missions are in the ncode app for now"},
     {"consensus", "[task]", "Run this turn as a judged plan"},
     {"deep_research", "[id]", "Attach a finished deep research to this message"},
     {"attach", "<image-path>", "Stage an image file for the next message"},

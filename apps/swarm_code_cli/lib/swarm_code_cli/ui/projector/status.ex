@@ -152,7 +152,10 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
     workspace = Map.get(state.read_model.snapshots, :workspace)
     run = Support.run(state)
 
-    mode = {Composer.mode_label(state), tint(:plain, state, :text_primary, [:bold])}
+    # cli020 E2 (Q6): CLI Ultra runs workflows, so the chip says so.
+    label = Composer.mode_label(state)
+    label = if label == "Ultra", do: Composer.mode_title("ultra", label), else: label
+    mode = {label, tint(:plain, state, :text_primary, [:bold])}
 
     approval =
       case workspace && Map.get(workspace, :approval_mode) do
