@@ -1,12 +1,16 @@
 defmodule SwarmCode.Daemon.Shutdown do
   @moduledoc """
   What quitting a saved session stops (pass70 B6): the desktop's
-  `Quit.stop_everything/0` at 6dd8d82.
+  `Quit.stop_everything/0` at 4c7c577a.
 
   Pauses the running workflows (they resume from their journal), stops every
   run, kills every command a run left running (`run_command` with `yield_ms`,
-  `cmd &`), waits for the runs' journals to flush, then takes the subtrees that
-  own OS processes down in order: runs, researches, MCP clients, LSP clients.
+  `cmd &`), waits for the runs' journals to flush, waits (bounded) for the
+  run-end isolation cleanups under `Engine.CleanupSupervisor` (spec 74
+  ARCHITECTURE-6: a halt used to cut one off mid-way — a clone half-removed, a
+  branch not yet fetched into the project), then takes the subtrees that own
+  OS processes down in order: runs, researches, MCP clients, LSP clients. The
+  desktop's `Quit.now_async/0` (a LiveView must not block) has no CLI caller.
   Every step is bounded and logged; a subtree that will not stop within its
   deadline is left to the application stop that follows.
   """
@@ -25,6 +29,7 @@ defmodule SwarmCode.Daemon.Shutdown do
   @flush_ms 10_000
   @flush_step_ms 100
   @teardown_ms 5_000
+  @cleanup_ms 15_000
 
   @typedoc """
   `stopped_runs` (pass71 S4): the runs the quit stopped, oldest first, each
@@ -41,7 +46,8 @@ defmodule SwarmCode.Daemon.Shutdown do
 
   @doc """
   Stops everything. `opts`: `:flush_ms` (journal wait, default 10 s),
-  `:teardown` (`false` keeps the supervisors, for tests), `:teardown_ms`.
+  `:teardown` (`false` keeps the supervisors, for tests), `:teardown_ms`,
+  `:cleanup_ms` (the isolation-cleanup wait, default 15 s).
   """
   @spec run(keyword()) :: result()
   def run(opts \\ []) do
@@ -49,6 +55,12 @@ defmodule SwarmCode.Daemon.Shutdown do
     stopped_runs = step(:stop_runs, &stop_runs/0, [])
     reaped = step(:reap_background_commands, &reap_survivors/0, 0)
     step(:wait_for_flush, fn -> wait_for_flush(Keyword.get(opts, :flush_ms, @flush_ms)) end, :ok)
+
+    step(
+      :wait_for_cleanups,
+      fn -> wait_for_cleanups(Keyword.get(opts, :cleanup_ms, @cleanup_ms)) end,
+      :ok
+    )
 
     if Keyword.get(opts, :teardown, true),
       do: teardown(Keyword.get(opts, :teardown_ms, @teardown_ms))
@@ -124,6 +136,45 @@ defmodule SwarmCode.Daemon.Shutdown do
       after
         @flush_step_ms -> wait_for_flush(left - @flush_step_ms)
       end
+    end
+  end
+
+  # Every cleanup child is monitored and waited for until one deadline; the
+  # ones still running are logged and left to the stop that follows.
+  defp wait_for_cleanups(timeout_ms) do
+    children =
+      try do
+        Task.Supervisor.children(SwarmCode.Domain.Engine.CleanupSupervisor)
+      catch
+        :exit, _no_supervisor -> []
+      end
+
+    refs = Map.new(children, &{Process.monitor(&1), &1})
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+
+    case await_cleanups(refs, deadline) do
+      [] ->
+        :ok
+
+      left ->
+        Logger.warning(
+          "shutdown: #{length(left)} isolation cleanup(s) still running at the deadline"
+        )
+    end
+  end
+
+  defp await_cleanups(refs, _deadline) when map_size(refs) == 0, do: []
+
+  defp await_cleanups(refs, deadline) do
+    left = max(deadline - System.monotonic_time(:millisecond), 0)
+
+    receive do
+      {:DOWN, ref, :process, _pid, _reason} when is_map_key(refs, ref) ->
+        await_cleanups(Map.delete(refs, ref), deadline)
+    after
+      left ->
+        Enum.each(Map.keys(refs), &Process.demonitor(&1, [:flush]))
+        Map.values(refs)
     end
   end
 

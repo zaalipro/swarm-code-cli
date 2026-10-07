@@ -73,6 +73,77 @@ defmodule SwarmCode.Daemon.ShutdownTest do
     end
   end
 
+  # cli020 A2 (desktop Quit at 4c7c577, spec 74 ARCHITECTURE-6): a quit waits,
+  # bounded, for the run-end isolation cleanups once the runs are down.
+  @tag :capture_log
+  test "quit waits for a running isolation cleanup, then returns" do
+    test = self()
+
+    {:ok, cleanup} =
+      Task.Supervisor.start_child(SwarmCode.Domain.Engine.CleanupSupervisor, fn ->
+        send(test, {:cleanup_started, self()})
+
+        receive do
+          :finish -> :ok
+        end
+      end)
+
+    assert_receive {:cleanup_started, ^cleanup}
+    ref = Process.monitor(cleanup)
+
+    quit = Task.async(fn -> Shutdown.run(teardown: false, flush_ms: 0, cleanup_ms: 30_000) end)
+
+    # The quit is waiting when it monitors the cleanup.
+    assert eventually(fn -> quit.pid in monitored_by(cleanup) end)
+    assert Task.yield(quit, 0) == nil
+
+    send(cleanup, :finish)
+    assert_receive {:DOWN, ^ref, :process, ^cleanup, :normal}
+    assert %{stopped: _} = Task.await(quit, 5_000)
+  end
+
+  @tag :capture_log
+  test "a cleanup still running at the deadline is left to the halt" do
+    test = self()
+
+    {:ok, cleanup} =
+      Task.Supervisor.start_child(SwarmCode.Domain.Engine.CleanupSupervisor, fn ->
+        send(test, {:cleanup_started, self()})
+
+        receive do
+          :finish -> :ok
+        end
+      end)
+
+    assert_receive {:cleanup_started, ^cleanup}
+    on_exit(fn -> send(cleanup, :finish) end)
+
+    assert %{stopped: _} = Shutdown.run(teardown: false, flush_ms: 0, cleanup_ms: 0)
+    assert Process.alive?(cleanup)
+    refute self() in monitored_by(cleanup)
+  end
+
+  defp monitored_by(pid) do
+    case Process.info(pid, :monitored_by) do
+      {:monitored_by, pids} -> pids
+      nil -> []
+    end
+  end
+
+  defp eventually(fun, attempts \\ 250)
+  defp eventually(_fun, 0), do: false
+
+  defp eventually(fun, attempts) do
+    if fun.() do
+      true
+    else
+      receive do
+      after
+        20 -> eventually(fun, attempts - 1)
+      end
+    end
+  end
+
   # Stands in for a RunServer: registered like one, it answers `:stop`.
   defp fake_run_server(run_id, value) do
     test = self()
