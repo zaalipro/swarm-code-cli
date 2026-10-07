@@ -1522,9 +1522,18 @@ defmodule SwarmCodeCLI.UI.Reducer do
       if match?({:command_report, _}, layer), do: %{state | command_report: nil}, else: state
 
     {context, contexts} =
-      case state.layer_contexts do
-        [head | tail] -> {head, tail}
-        [] -> {%{focus: state.hidden_focus || "main", hidden_focus: nil}, []}
+      cond do
+        # cli020 qa: lane D's layers (opened from the composer) push no
+        # context, so they leave the focus where it was instead of taking
+        # the one of the layer below or falling back to the transcript.
+        own_focus_layer?(layer) ->
+          {%{focus: state.focus, hidden_focus: state.hidden_focus}, state.layer_contexts}
+
+        match?([_ | _], state.layer_contexts) ->
+          {hd(state.layer_contexts), tl(state.layer_contexts)}
+
+        true ->
+          {%{focus: state.hidden_focus || "main", hidden_focus: nil}, []}
       end
 
     fields =
@@ -2207,6 +2216,13 @@ defmodule SwarmCodeCLI.UI.Reducer do
     do: transition(state, :close_top_layer)
 
   defp close_switcher(state), do: {state, []}
+
+  defp own_focus_layer?({kind, _}) when kind in [:effort_picker, :rewind, :rewind_confirm],
+    do: true
+
+  defp own_focus_layer?({:history_search, _}), do: true
+  defp own_focus_layer?({:queue_list}), do: true
+  defp own_focus_layer?(_layer), do: false
 
   defp push_layer_context(state),
     do: %{
