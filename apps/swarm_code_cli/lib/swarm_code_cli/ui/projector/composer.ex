@@ -586,7 +586,9 @@ defmodule SwarmCodeCLI.UI.Projector.Composer do
         right_cells =
           Enum.reduce(right, 0, fn {text, _}, sum -> sum + Width.cells(text, policy) end)
 
-        room = width - used - String.length(pad) - 3 - if(right == [], do: 0, else: right_cells + 2)
+        room =
+          width - used - String.length(pad) - 3 - if(right == [], do: 0, else: right_cells + 2)
+
         desc = item.desc || ""
         desc = if room > 0, do: Width.elide(desc, room, :end, policy), else: ""
 

@@ -1644,6 +1644,13 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
 
   # What to do about a failed turn: wait for the retry the daemon scheduled,
   # or retry it and perhaps switch model.
+  @doc false
+  # cli020 E9 (ux-live-4): the words name the real keys, `r` (D16) and the
+  # palette's "Retry failed run" row, which E9 puts first.
+  def next_step_text(run, state), do: next_step(run, state)
+
+  @retry_keys "r retries · Ctrl-P Retry failed run"
+
   defp next_step(run, state) do
     retry_at = Map.get(run, :retry_at)
     now = Map.get(state, :now)
@@ -1660,12 +1667,12 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
         case Map.get(run, :error_kind) do
           "rate_limit" -> "rate limited" <> by <> " · retry in a moment · /model to switch"
           "usage_limit" -> "out of quota" <> by <> " · /model to switch model"
-          "overloaded" -> "provider busy · retry from the palette · /model to switch"
+          "overloaded" -> "provider busy · " <> @retry_keys <> " · /model to switch"
           "unauthorized" -> "the key was refused · check the provider in settings"
           "context_overflow" -> "too long for the model · /compact, then retry"
-          "network" -> "connection dropped · retry from the palette"
-          "timeout" -> "timed out · retry from the palette"
-          _ -> "retry from the palette · /model to switch model"
+          "network" -> "connection dropped · " <> @retry_keys
+          "timeout" -> "timed out · " <> @retry_keys
+          _ -> @retry_keys <> " · /model to switch model"
         end
     end
   end

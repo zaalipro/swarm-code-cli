@@ -1042,7 +1042,7 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
       end)
 
     options = if options == [], do: [{"empty", SafeText.chrome(:no_results), nil}], else: options
-    title = Density.safe(switcher_title(query), state, rect.width - 2)
+    title = Density.safe(switcher_title(search_query(query, state)), state, rect.width - 2)
 
     {title, options, [control("cancel", SafeText.chrome(:cancel), {:local, :close_top_layer})],
      if(state.focus == "query", do: "query", else: focus(state, options)), decor}
@@ -1061,7 +1061,19 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
   defp switcher_title(">approvals:" <> typed), do: "Approvals: " <> typed
   defp switcher_title(">" <> query), do: "Actions: " <> query
   defp switcher_title("@" <> query), do: "Projects: " <> query
+  # cli020 E9: the hits of the last `/search` (C8), titled by its words.
+  defp switcher_title("?" <> query), do: "Search results: " <> query
+
   defp switcher_title(query), do: "Search: " <> query
+
+  defp search_query("?", state) do
+    case Map.get(state, :search_results) do
+      %{query: words} when is_binary(words) -> "?" <> words
+      _ -> "?"
+    end
+  end
+
+  defp search_query(query, _state), do: query
 
   # cli020 E4 (decision 4f, D18): the levels the daemon would accept for the
   # model (C17's `effort_levels`), the current one ticked; Enter picks.

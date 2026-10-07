@@ -450,7 +450,7 @@ defmodule SwarmCodeCLI.UI.Projector.WorkspaceTurnsTest do
 
     at = index_of(rows, "    ✕ Failed")
     assert Enum.at(rows, at) == "    ✕ Failed · mix test failed"
-    assert Enum.at(rows, at + 1) == "      retry from the palette · /model to switch model"
+    assert Enum.at(rows, at + 1) == "      r retries · Ctrl-P Retry failed run · /model to switch model"
     assert Enum.at(rows, at - 1) == ""
 
     red = Theme.style(:error, state.capabilities).foreground

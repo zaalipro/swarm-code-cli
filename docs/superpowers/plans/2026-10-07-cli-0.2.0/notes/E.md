@@ -101,3 +101,18 @@ Branch `cli020/E` from M1 `3008f352`, worktree `~/dev/swarm-code-cli-wt/cli020-E
   `Width.elide`; a top rule `─── 8 of 40 · ↑↓` (ASCII `- … up/down`) while some matches are
   not shown. `Workspace.slash_rows/4` keeps the popup inside its rows (one suggestion gives way to
   the rule when the room is exact). Test `cli020/e8_slash_list_test.exs`.
+
+### E9 Rows for retry, search and stash
+- `Switcher`: an entry can be `pinned?` (sorts before every other match); the newest run's
+  `Retry failed run` is pinned when that run is failed or stopped. Note: C's resolver
+  (`request_resolver.ex` `retry_not_failed?/2`) and the DTO schema (`:retry` only while
+  `:failed`) offer the row for failed runs only today; a stopped run's row is pinned once C6
+  lets it through.
+- STUB: `Stash draft` / `Restore stash` (`{:local, {:stash_draft}}`, `{:local, {:restore_stash}}`)
+  are listed only once D19 adds those actions to `Action.validate/1`.
+- `/search` hits: interface for C8/D — the reducer keeps C8's `{:select, %{subject: :search,
+  options}}` as `state.search_results = %{query, options: [%{conversation_id, title, snippet,
+  at}]}` and opens the palette with the query `?`; the switcher lists the hits (kind `:search`,
+  prefix `?`, title "Search results: <words>") with Enter = `{:local, {:open_conversation, id}}`.
+  Today's client `Feedback` DTO has no `:select` kind (C's), so nothing sets the field yet.
+- The failure hint says `r retries · Ctrl-P Retry failed run` (`Turns.next_step_text/2`).
