@@ -94,3 +94,10 @@ Branch `cli020/E` from M1 `3008f352`, worktree `~/dev/swarm-code-cli-wt/cli020-E
   `/` list's rows, `/name args  description`).
 - "Opens at the top" is the reducer's (D): `reducer.ex:2045` deletes `dialog_scroll` only for
   approvals and command reports when a layer opens; add `:help` there (D's file, handoff).
+
+### E8 Slash list
+- `Composer.slash_popup/3`: descriptions start in one column (the widest `/name args` of every
+  match, capped at 2/5 of the row; a longer signature elides its args), elided with `…` via
+  `Width.elide`; a top rule `─── 8 of 40 · ↑↓` (ASCII `- … up/down`) while some matches are
+  not shown. `Workspace.slash_rows/4` keeps the popup inside its rows (one suggestion gives way to
+  the rule when the room is exact). Test `cli020/e8_slash_list_test.exs`.

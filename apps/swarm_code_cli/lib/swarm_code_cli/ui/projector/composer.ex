@@ -522,6 +522,8 @@ defmodule SwarmCodeCLI.UI.Projector.Composer do
   """
   def slash_popup(state, width, rows \\ SlashPalette.rows()) do
     suggestions = SlashPalette.visible(state, rows)
+    entries = SlashPalette.entries(state)
+    policy = state.capabilities.ambiguous_width
 
     # pass73 T4/T6: the selected row says what Enter does with it now (runs a
     # bare command, completes one that waits for its argument, or queues
@@ -534,41 +536,101 @@ defmodule SwarmCodeCLI.UI.Projector.Composer do
         _ -> nil
       end
 
-    Enum.map(suggestions, fn item ->
-      name_style =
-        if item.selected?,
-          do: tint(:accent, state, [:bold]),
-          else: tint(:text_primary, state, [:bold])
+    # cli020 E8 (ux-live-18): the descriptions start in one column (the
+    # widest `/name args` of every match, at most 2/5 of the row) and are
+    # elided with `…` where the row ends.
+    signature = fn item ->
+      case Map.get(item, :args) do
+        args when is_binary(args) and args != "" -> "  /" <> item.name <> " " <> args
+        _ -> "  /" <> item.name
+      end
+    end
 
-      rail =
-        if item.selected?,
-          do: {SafeText.value(Support.rail(state)), tint(:accent, state)},
-          else: {" ", tint(:text_muted, state)}
+    column =
+      entries
+      |> Enum.map(&Width.cells(signature.(&1), policy))
+      |> Enum.max(fn -> 0 end)
+      |> min(max(8, div(width * 2, 5)))
 
-      args =
-        case Map.get(item, :args) do
-          args when is_binary(args) and args != "" -> [{" " <> args, tint(:text_faint, state)}]
-          _ -> []
-        end
+    rows =
+      Enum.map(suggestions, fn item ->
+        name_style =
+          if item.selected?,
+            do: tint(:accent, state, [:bold]),
+            else: tint(:text_primary, state, [:bold])
 
-      row(
-        [rail, {"  /" <> item.name, name_style}] ++
-          args ++ [{"   " <> (item.desc || ""), tint(:text_muted, state)}],
-        cond do
-          item.selected? and enter != nil ->
-            [{"Enter", tint(:key, state, [:bold])}, {enter, tint(:text_faint, state)}]
+        rail =
+          if item.selected?,
+            do: {SafeText.value(Support.rail(state)), tint(:accent, state)},
+            else: {" ", tint(:text_muted, state)}
 
-          item.selected? ->
-            [{"Tab", tint(:key, state, [:bold])}, {" complete", tint(:text_faint, state)}]
+        right =
+          cond do
+            item.selected? and enter != nil ->
+              [{"Enter", tint(:key, state, [:bold])}, {enter, tint(:text_faint, state)}]
 
-          true ->
-            []
-        end,
-        if(item.selected?, do: :hover, else: :popover),
-        state,
-        width
-      )
-    end)
+            item.selected? ->
+              [{"Tab", tint(:key, state, [:bold])}, {" complete", tint(:text_faint, state)}]
+
+            true ->
+              []
+          end
+
+        name = "  /" <> item.name
+        args = String.replace_prefix(signature.(item), name, "")
+        rail_cells = Width.cells(elem(rail, 0), policy)
+        {name, args} = fit_signature(name, args, column, policy)
+        used = rail_cells + Width.cells(name <> args, policy)
+        pad = String.duplicate(" ", max(0, column - Width.cells(name <> args, policy)))
+
+        right_cells =
+          Enum.reduce(right, 0, fn {text, _}, sum -> sum + Width.cells(text, policy) end)
+
+        room = width - used - String.length(pad) - 3 - if(right == [], do: 0, else: right_cells + 2)
+        desc = item.desc || ""
+        desc = if room > 0, do: Width.elide(desc, room, :end, policy), else: ""
+
+        row(
+          [rail, {name, name_style}, {args <> pad, tint(:text_faint, state)}] ++
+            [{"   " <> desc, tint(:text_muted, state)}],
+          right,
+          if(item.selected?, do: :hover, else: :popover),
+          state,
+          width
+        )
+      end)
+
+    # The list's top rule: how many of the matches are shown, and the keys.
+    if length(entries) > length(suggestions) and suggestions != [] do
+      [slash_rule(length(suggestions), length(entries), state, width) | rows]
+    else
+      rows
+    end
+  end
+
+  defp fit_signature(name, args, column, policy) do
+    if Width.cells(name <> args, policy) <= column,
+      do: {name, args},
+      else: {name, Width.elide(args, max(0, column - Width.cells(name, policy)), :end, policy)}
+  end
+
+  defp slash_rule(shown, total, state, width) do
+    policy = state.capabilities.ambiguous_width
+    ascii? = state.capabilities.ascii?
+    {line, arrows} = if ascii?, do: {"-", "up/down"}, else: {"─", "↑↓"}
+    label = " #{shown} of #{total} · #{arrows} "
+    label_cells = Width.cells(label, policy)
+    unit = max(1, Width.cells(line, policy))
+    lead = div(max(0, width - label_cells - 2), unit)
+    text = String.duplicate(line, lead) <> label
+
+    row(
+      [{text, tint(:text_faint, state)}],
+      [],
+      :popover,
+      state,
+      width
+    )
   end
 
   @doc """
