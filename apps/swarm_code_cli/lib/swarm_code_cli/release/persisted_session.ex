@@ -358,6 +358,8 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
   end
 
   defp run_ui(session, executable, resume_picker?) do
+    # cli020 B10: folders a hard exit left behind go first.
+    _ = SwarmCodeCLI.Release.SocketSweep.sweep()
     {dir, stat} = private_directory!()
     {:ok, supervisor} = Supervisor.start_link([], strategy: :one_for_all, max_restarts: 0)
     Process.unlink(supervisor)

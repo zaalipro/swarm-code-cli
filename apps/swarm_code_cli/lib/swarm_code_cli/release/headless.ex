@@ -120,6 +120,8 @@ defmodule SwarmCodeCLI.Release.Headless do
     # First-run onboarding (D3) says on stderr that it wrote the provider row.
     if notice = session[:notice], do: IO.puts(:stderr, "ncode: " <> notice)
     warn_full_access(session, mode)
+    # cli020 B10: folders a hard exit left behind go first.
+    _ = SwarmCodeCLI.Release.SocketSweep.sweep()
     {dir, stat} = private_directory()
     {:ok, supervisor} = Supervisor.start_link([], strategy: :one_for_all, max_restarts: 0)
     Process.unlink(supervisor)
