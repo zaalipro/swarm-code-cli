@@ -167,6 +167,19 @@ defmodule SwarmCodeCLI.Release.LauncherTest do
       assert stub(context)["PIPED"] == "<unset>"
     end
 
+    test "--fail-on-denied is passed to the headless entry", context do
+      launch(context, ["-p", "hi", "--fail-on-denied", "--json"])
+
+      assert stub(context)["ARGS"] ==
+               "[eval] [SwarmCodeCLI.Release.main(System.argv())] [-p] [hi] [--json] [--fail-on-denied]"
+
+      launch(context, ["--plain", "--fail-on-denied"])
+      assert stub(context)["ARGS"] =~ "[--plain] [--fail-on-denied]"
+
+      assert {2, "ncode: --fail-on-denied goes with -p or --plain. Run 'ncode --help'.\n"} =
+               launch(context, ["--fail-on-denied"])
+    end
+
     test "the run's exit code is the command's", context do
       for code <- [0, 1, 3] do
         assert {^code, _} = launch(context, ["-p", "hi"], [{"STUB_EXIT", "#{code}"}])

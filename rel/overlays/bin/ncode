@@ -35,6 +35,7 @@ Opens the saved session for DIR (default: the current directory).
                   approvals nobody can give are denied and said on stderr.
                   PROMPT - reads the prompt from stdin
   --json          with -p: print one JSON object instead of the streamed answer
+  --fail-on-denied  with -p or --plain: exit 1 when a tool call was denied
   --plain         line-by-line presenter for pipes, CI and SSH (type `help`);
                   chosen by itself when stdin or stdout is not a terminal
   --ndjson        with --plain: one JSON record per line
@@ -110,6 +111,7 @@ model_set=0
 prompt=""
 prompt_set=0
 json=0
+fail_on_denied=0
 plain=0
 ndjson=0
 seen=" "
@@ -194,6 +196,7 @@ while [[ $# -gt 0 ]]; do
     -p | --prompt | --print) needs_value "$1" $# "${2:-}"; once -p; prompt="$2"; prompt_set=1; shift ;;
     --prompt=*) once -p; prompt="${1#--prompt=}"; prompt_set=1 ;;
     --json) once --json; json=1 ;;
+    --fail-on-denied) once --fail-on-denied; fail_on_denied=1 ;;
     --plain) once --plain; plain=1 ;;
     --ndjson) once --ndjson; ndjson=1 ;;
     --)
@@ -210,6 +213,9 @@ done
 [[ $json -eq 0 || $prompt_set -eq 1 ]] || die_usage "--json goes with -p."
 [[ $ndjson -eq 0 || $plain -eq 1 ]] || die_usage "--ndjson goes with --plain."
 [[ $plain -eq 0 || $prompt_set -eq 0 ]] || die_usage "-p and --plain do not go together."
+if [[ $fail_on_denied -eq 1 && $prompt_set -eq 0 && $plain -eq 0 ]]; then
+  die_usage "--fail-on-denied goes with -p or --plain."
+fi
 if [[ $model_set -eq 1 && -z "${model//[[:space:]]/}" ]]; then
   die_usage "--model needs a model name."
 fi
@@ -257,6 +263,7 @@ fi
 unset SWARM_RELEASE_TUI SWARM_SETTINGS_OPEN SWARM_SETTINGS_ONLY
 
 headless() {
+  if [[ $fail_on_denied -eq 1 ]]; then set -- "$@" --fail-on-denied; fi
   exec "$root/bin/swarm_code_cli" eval 'SwarmCodeCLI.Release.main(System.argv())' "$@"
 }
 

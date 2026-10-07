@@ -48,7 +48,7 @@ defmodule SwarmCodeCLI.Release.Headless do
          {:ok, code} <-
            PersistedSession.with_saved_session(
              [project_root: root, conversation: selection],
-             &run_session(&1, mode)
+             &run_session(&1, mode, options)
            ) do
       code
     else
@@ -80,7 +80,7 @@ defmodule SwarmCodeCLI.Release.Headless do
     end
   end
 
-  defp run_session(session, mode) do
+  defp run_session(session, mode, options) do
     # First-run onboarding (D3) says on stderr that it wrote the provider row.
     if notice = session[:notice], do: IO.puts(:stderr, "ncode: " <> notice)
     warn_full_access(session, mode)
@@ -115,7 +115,10 @@ defmodule SwarmCodeCLI.Release.Headless do
                nonce: nonce,
                source_epoch: source_epoch
              ) do
-        present(mode, source, source_epoch, session.conversation.id)
+        present(mode, source, source_epoch, session.conversation.id,
+          fail_on_denied: Keyword.get(options, :fail_on_denied, false),
+          project_root: session.project.root_path
+        )
       else
         _ -> fail("The saved session could not start its service.")
       end
@@ -138,18 +141,20 @@ defmodule SwarmCodeCLI.Release.Headless do
 
   def warn_full_access(_session, _mode), do: :ok
 
-  defp present({:prompt, prompt, format}, source, epoch, conversation) do
+  defp present({:prompt, prompt, format}, source, epoch, conversation, extra) do
     OneShot.run(
-      data_source: source,
-      source_epoch: epoch,
-      conversation_id: conversation,
-      prompt: prompt,
-      format: format,
-      progress: tty?(:stderr)
+      [
+        data_source: source,
+        source_epoch: epoch,
+        conversation_id: conversation,
+        prompt: prompt,
+        format: format,
+        progress: tty?(:stderr)
+      ] ++ extra
     )
   end
 
-  defp present({:plain, format}, source, epoch, conversation) do
+  defp present({:plain, format}, source, epoch, conversation, _extra) do
     {:ok, plain} =
       SwarmCodeCLI.Plain.Session.start_link(
         data_source: source,

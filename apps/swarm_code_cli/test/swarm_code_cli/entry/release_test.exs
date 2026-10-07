@@ -30,6 +30,23 @@ defmodule SwarmCodeCLI.ReleaseTest do
       assert :version = Release.parse(["-V"])
     end
 
+    # cli020 B3: `--fail-on-denied` goes with -p or --plain.
+    test "--fail-on-denied" do
+      assert {:ok, %{mode: :prompt, fail_on_denied: true}} =
+               Release.parse(["-p", "hi", "--fail-on-denied"])
+
+      assert {:ok, %{mode: :plain, fail_on_denied: true}} =
+               Release.parse(["--fail-on-denied", "--plain"])
+
+      assert {:ok, %{fail_on_denied: false}} = Release.parse(["-p", "hi"])
+
+      assert {:error, "--fail-on-denied goes with -p or --plain."} =
+               Release.parse(["--fail-on-denied"])
+
+      assert {:error, "--fail-on-denied is given twice."} =
+               Release.parse(["-p", "x", "--fail-on-denied", "--fail-on-denied"])
+    end
+
     test "usage errors name the problem" do
       for {args, text} <- [
             {["--bogus"], "unknown option '--bogus'."},

@@ -36,6 +36,7 @@ defmodule SwarmCodeCLI.Release do
                     exit; approvals nobody can give are denied and said on stderr.
                     PROMPT - reads the prompt from stdin
     --json          with -p: print one JSON object instead of the streamed answer
+    --fail-on-denied  with -p or --plain: exit 1 when a tool call was denied
     --plain         line-by-line presenter for pipes, CI and SSH (type `help`)
     --ndjson        with --plain: one JSON record per line
     --help, -h      this text
@@ -58,7 +59,8 @@ defmodule SwarmCodeCLI.Release do
           conversation: binary() | nil,
           model: binary() | nil,
           prompt: binary() | nil,
-          format: :text | :json | :ndjson
+          format: :text | :json | :ndjson,
+          fail_on_denied: boolean()
         }
 
   @doc """
@@ -166,6 +168,7 @@ defmodule SwarmCodeCLI.Release do
       json?: false,
       plain?: false,
       ndjson?: false,
+      fail_on_denied?: false,
       seen: MapSet.new()
     }
 
@@ -258,6 +261,9 @@ defmodule SwarmCodeCLI.Release do
       "--ndjson" ->
         once(parsed, :ndjson, rest, &%{&1 | ndjson?: true})
 
+      "--fail-on-denied" ->
+        once(parsed, :fail_on_denied, rest, &%{&1 | fail_on_denied?: true})
+
       "--" ->
         directories(rest, parsed)
 
@@ -300,6 +306,7 @@ defmodule SwarmCodeCLI.Release do
   end
 
   defp flag_name(:prompt), do: "-p"
+  defp flag_name(:fail_on_denied), do: "--fail-on-denied"
   defp flag_name(key), do: "--" <> Atom.to_string(key)
 
   defp validate(parsed) do
@@ -312,6 +319,9 @@ defmodule SwarmCodeCLI.Release do
 
       parsed.plain? and parsed.prompt != nil ->
         {:error, "-p and --plain do not go together."}
+
+      parsed.fail_on_denied? and parsed.prompt == nil and not parsed.plain? ->
+        {:error, "--fail-on-denied goes with -p or --plain."}
 
       parsed.model != nil and String.trim(parsed.model) == "" ->
         {:error, "--model needs a model name."}
@@ -346,7 +356,8 @@ defmodule SwarmCodeCLI.Release do
            conversation: parsed.conversation,
            model: parsed.model,
            prompt: parsed.prompt,
-           format: format
+           format: format,
+           fail_on_denied: parsed.fail_on_denied?
          }}
     end
   end
@@ -443,7 +454,8 @@ defmodule SwarmCodeCLI.Release do
     [
       project_root: options.project && Path.expand(options.project),
       conversation: options.conversation,
-      model: options.model
+      model: options.model,
+      fail_on_denied: Map.get(options, :fail_on_denied) == true || nil
     ]
     |> Enum.reject(fn {_, value} -> is_nil(value) end)
   end

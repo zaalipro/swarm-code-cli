@@ -346,7 +346,9 @@ defmodule SwarmCodeCLI.Plain.OneShotTest do
     complete(session, [run(:done)], [])
 
     assert code(session) == 0
-    assert text(context.error) =~ "ncode: denied run_command rm -rf build"
+    # cli020 B3: one line at the end, not one per denial.
+    assert text(context.error) =~
+             "ncode: 1 tool call(s) were denied (approval mode unknown): run_command rm -rf build."
   end
 
   test "an approval the service will not deny stops the run, said once", context do
@@ -399,7 +401,10 @@ defmodule SwarmCodeCLI.Plain.OneShotTest do
     assert code(session) == 1
     assert text(context.output) == "_(stopped)_\n"
     error = text(context.error)
-    assert error =~ "ncode: denied run_command ls -la notes: nobody is here to approve it."
+
+    assert error =~
+             "ncode: 1 tool call(s) were denied (approval mode unknown): run_command ls -la notes."
+
     assert error =~ "the approval could not be denied, so the run was stopped."
     assert length(String.split(error, "stopped")) == 2
   end

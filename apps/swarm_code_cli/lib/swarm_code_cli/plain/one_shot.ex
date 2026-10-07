@@ -96,6 +96,11 @@ defmodule SwarmCodeCLI.Plain.OneShot do
         progress?: Keyword.get(options, :progress, false) == true,
         clock: Keyword.get(options, :clock, fn -> System.system_time(:millisecond) end),
         observer: Keyword.get(options, :observer),
+        # cli020 B3: `--fail-on-denied`, and the folder the hint names.
+        fail_on_denied?: Keyword.get(options, :fail_on_denied, false) == true,
+        project_root: Keyword.get(options, :project_root),
+        # Tool items of the owned runs counted as blocked (by the policy or a hook).
+        blocked: MapSet.new(),
         ui: nil,
         dispatch: nil,
         runs: [],
@@ -270,6 +275,7 @@ defmodule SwarmCodeCLI.Plain.OneShot do
     state
     |> print_answer(answer_items(state))
     |> announce_tools()
+    |> count_blocked(ReadModel.items(state.ui.read_model, :workspace))
     |> answer_interactions()
     |> maybe_settle()
   end
@@ -453,17 +459,13 @@ defmodule SwarmCodeCLI.Plain.OneShot do
       {state, effects} = update(state, {:invoke, intent, id})
 
       if Enum.any?(effects, &match?({:command, %Request{request_id: ^id}}, &1)) do
-        state = %{
+        # cli020 B3: one line at the end names every denial (`denied_line/3`).
+        %{
           state
           | answers: Map.put(state.answers, id, item),
             denials: state.denials + 1,
             denied: Enum.take(state.denied ++ [what], 32)
         }
-
-        say(
-          state,
-          "denied #{what.label}: nobody is here to approve it." <> denial_hint(mode(state))
-        )
       else
         stop_run(state, item.run_id, "#{what.label} could not be denied, so the run")
       end
@@ -484,6 +486,78 @@ defmodule SwarmCodeCLI.Plain.OneShot do
 
   def denial_hint(mode) when mode in [:full_access, "full_access"], do: ""
   def denial_hint(_mode), do: " /approval auto or full allows more without asking."
+
+  @doc """
+  cli020 B3: the one stderr line a one-shot ends with when tool calls were
+  denied (auto-denied approvals and calls the policy or a hook blocked): at
+  most five labels, then how many more, then how to allow them.
+  """
+  @spec denied_line([String.t()], term(), String.t() | nil) :: String.t()
+  def denied_line(labels, mode, root) do
+    count = length(labels)
+    shown = Enum.take(labels, 5)
+    rest = count - length(shown)
+    names = Enum.join(shown, ", ") <> if(rest > 0, do: " and #{rest} more", else: "")
+    mode_name = if mode in [nil, ""], do: "unknown", else: to_string(mode)
+
+    "#{count} tool call(s) were denied (approval mode #{mode_name}): #{names}." <>
+      allow_hint(mode, root)
+  end
+
+  defp allow_hint(mode, root) when mode in [:read_only, "read_only"],
+    do:
+      " Allow them with: ncode config set project.approval_mode auto --project " <>
+        shell_quote(root || ".") <> ", or answer them in ncode."
+
+  defp allow_hint(mode, _root), do: denial_hint(mode)
+
+  defp shell_quote(path) do
+    if path =~ ~r/^[A-Za-z0-9_\/.~+-]+$/,
+      do: path,
+      else: "'" <> String.replace(path, "'", "'\\''") <> "'"
+  end
+
+  # cli020 B3: a tool call of an owned run that the policy or a hook refused
+  # (`"blocked by …"`, `"hook blocked: …"`, from the op's error in the item's
+  # text) counts as denied, once per item.
+  defp count_blocked(state, items) do
+    Enum.reduce(items, state, fn item, state ->
+      if item.run_id in state.runs and item.kind == :tool and
+           not MapSet.member?(state.blocked, item.id) and blocked?(item.text) do
+        %{
+          state
+          | blocked: MapSet.put(state.blocked, item.id),
+            denied: Enum.take(state.denied ++ [blocked_label(item)], 32)
+        }
+      else
+        state
+      end
+    end)
+  end
+
+  defp blocked?(text) when is_binary(text) do
+    text
+    |> String.split("\n")
+    |> Enum.any?(
+      &(String.starts_with?(&1, "blocked by ") or String.starts_with?(&1, "hook blocked: "))
+    )
+  end
+
+  defp blocked?(_), do: false
+
+  defp blocked_label(%{tool: %DTO.ToolCall{name: name, title: title}}) do
+    subject = first_line(title || "")
+    subject = if subject == name, do: "", else: subject
+    label = String.trim(name <> " " <> subject)
+
+    %{
+      tool: name,
+      command: if(subject == "", do: nil, else: subject),
+      label: if(label == "", do: "a tool call", else: label)
+    }
+  end
+
+  defp blocked_label(_), do: %{tool: nil, command: nil, label: "a tool call"}
 
   defp mode(state) do
     case Map.get(state.ui.read_model.snapshots, :workspace) do
@@ -570,7 +644,10 @@ defmodule SwarmCodeCLI.Plain.OneShot do
               &1.id != &1.node_id)
         )
 
-      state = print_answer(state, items)
+      state =
+        state
+        |> print_answer(items)
+        |> count_blocked(Enum.filter(snapshot.transcript.items, &(&1.run_id in state.runs)))
 
       details =
         for item <- items,
@@ -651,7 +728,8 @@ defmodule SwarmCodeCLI.Plain.OneShot do
         finish(state, 1, "the run did not start.")
 
       failed == nil ->
-        finish(state, 0)
+        # cli020 B3: `--fail-on-denied` fails a done run that had denials.
+        finish(state, if(state.fail_on_denied? and state.denied != [], do: 1, else: 0))
 
       # The line saying why was written when this process stopped it.
       state.stopped? and failed.state == :stopped ->
@@ -675,6 +753,15 @@ defmodule SwarmCodeCLI.Plain.OneShot do
 
   defp finish(state, code, message) do
     state = if message, do: say(state, message), else: state
+
+    state =
+      if state.denied != [],
+        do:
+          say(
+            state,
+            denied_line(Enum.map(state.denied, & &1.label), mode(state), state.project_root)
+          ),
+        else: state
 
     case state.format do
       :json ->
