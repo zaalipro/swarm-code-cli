@@ -48,6 +48,10 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
   @max_edit_bytes 262_144
   # cli74: how long the desktop has to open a folder (`o` in Settings).
   @folder_ms 5_000
+  # cli020 D4: pbcopy's bounds; the terminal clipboard (OSC 52) takes 64 KiB.
+  @copy_ms 5_000
+  @max_pbcopy 1_048_576
+  @max_osc_copy 65_536
   # cli020 D3: how long an OS notification (osascript) may take.
   @notify_ms 5_000
   # cli020 D3: terminals that show OSC 9 as a notification (`terminal.notify
@@ -775,18 +779,18 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
     commit(%{state | ui: ui}, state.ui)
   end
 
-  # Select mode's `y`. The one terminal message that carries content: the
-  # text the user asked to put on the clipboard, which the terminal writes as
-  # OSC 52 and acknowledges with `{:terminal_copy_result, token, result}`. A
-  # terminal that does not answer within a second cannot copy, and says so.
-  defp local_effect(%{phase: :running, terminal: terminal} = state, {:copy, text})
-       when is_pid(terminal) do
-    token = identity()
-    send(terminal, {:terminal_copy, state.ui.terminal_generation, token, text})
-    timer = Process.send_after(self(), {:copy_timeout, token}, @copy_ack_ms)
-    cancel(elem(state.copy || {nil, nil}, 1))
+  # Select mode's `y`. cli020 D4: on macOS outside SSH the text goes to
+  # `/usr/bin/pbcopy` in an owned job (at most 1 MiB, 5 s), which really
+  # copies; elsewhere, or when pbcopy fails, through the terminal (OSC 52).
+  defp local_effect(%{phase: :running} = state, {:copy, text}) do
     lines = length(String.split(text, "\n"))
-    %{state | copy: {token, timer, lines}}
+
+    if pbcopy?(state, text) do
+      runner = state.command_runner
+      start_job(state, {:copy, lines, text}, fn -> pbcopy(runner, text) end, @copy_ms)
+    else
+      osc_copy(state, text, lines)
+    end
   end
 
   defp local_effect(state, {:copy, _text}), do: copy_notice(state, :unsupported)
@@ -948,7 +952,58 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
     state
   end
 
+  # cli020 D4: pbcopy took it; otherwise the terminal is asked instead.
+  defp job_result(state, {:copy, lines, _text}, {:ok, {:ok, 0, _}}),
+    do: copy_notice(state, {:copied, lines})
+
+  defp job_result(state, {:copy, lines, text}, _result), do: osc_copy(state, text, lines)
+
   defp job_result(state, _kind, _result), do: state
+
+  # The one terminal message that carries content: the text the user asked
+  # to put on the clipboard, which the terminal writes as OSC 52 (inside tmux
+  # through its passthrough) and acknowledges with `{:terminal_copy_result,
+  # token, result}`. A terminal that does not answer within a second cannot
+  # copy, and says so. OSC 52 carries at most 64 KiB.
+  defp osc_copy(state, text, _lines) when byte_size(text) > @max_osc_copy,
+    do: copy_notice(state, :too_large)
+
+  defp osc_copy(%{terminal: terminal} = state, text, lines) when is_pid(terminal) do
+    token = identity()
+    send(terminal, {:terminal_copy, state.ui.terminal_generation, token, text})
+    timer = Process.send_after(self(), {:copy_timeout, token}, @copy_ack_ms)
+    cancel(elem(state.copy || {nil, nil}, 1))
+    %{state | copy: {token, timer, lines}}
+  end
+
+  defp osc_copy(state, _text, _lines), do: copy_notice(state, :unsupported)
+
+  defp pbcopy?(state, text) do
+    state.os_type == {:unix, :darwin} and not present?(Map.get(state.env, "SSH_CONNECTION")) and
+      byte_size(text) <= @max_pbcopy
+  end
+
+  @doc false
+  # cli020 D4: `pbcopy` reads the text from a private copy (0600 in a 0700
+  # folder, removed afterwards): an Erlang port cannot close the stdin of the
+  # program it runs while still waiting for its exit status.
+  def pbcopy(runner, text) do
+    case edit_copy(text, "copy.txt") do
+      {:ok, dir, file} ->
+        try do
+          runner.(
+            "/bin/sh",
+            ["-c", ~s(exec /usr/bin/pbcopy < "$1"), "ncode-copy", file],
+            @copy_ms
+          )
+        after
+          File.rm_rf(dir)
+        end
+
+      :error ->
+        {:error, :unavailable}
+    end
+  end
 
   @doc false
   # cli020 D3: what `terminal.notify` means here. `auto` is OSC 9 on iTerm2,
@@ -1108,14 +1163,22 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
   defp copy_notice(state, result) do
     text =
       case result do
-        {:ok, 1} ->
+        {:copied, 1} ->
           "Copied 1 line."
 
-        {:ok, lines} ->
+        {:copied, lines} ->
           "Copied #{lines} lines."
 
+        # cli020 D4: OSC 52 cannot say whether the terminal took it.
+        {:ok, lines} ->
+          "Sent #{lines} #{if lines == 1, do: "line", else: "lines"} to the terminal clipboard; " <>
+            "if nothing arrived, your terminal does not allow OSC 52."
+
+        :too_large ->
+          "Not copied: the terminal clipboard takes at most 64 KiB."
+
         {:error, :invalid_text} ->
-          "Not copied: the text is over 64 KiB or has control characters."
+          "Not copied: the text has control characters."
 
         # cli74 (§3.7.2): `y` in Settings copies a key or a path, which the
         # detail pane always shows.
@@ -1123,7 +1186,7 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
           "Couldn't copy · the path is shown in the detail"
 
         _ ->
-          "This terminal cannot take a copy from SwarmCode."
+          "This terminal cannot take a copy from ncode."
       end
 
     state = tick(state)
