@@ -14,6 +14,7 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.WorkspaceMetadata do
       title: nil,
       queued: 0,
       queued_texts: [],
+      desktop_running: false,
       queued_count: 0,
       queue_paused: false,
       queue_revision: nil
@@ -45,6 +46,8 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.WorkspaceMetadata do
       queued: :count,
       # pass73 T3/T8: what waits there, oldest first (at most 20, 2 KB each).
       queued_texts: {:list, {:text, 2048}},
+      # cli020 C4: the ncode app is open on the same database.
+      desktop_running: :boolean,
       # cli020 C1: the queue count (0.2.0 name), whether a user stop paused it, and the revision queue.edit compares (16 hex).
       queued_count: :count,
       queue_paused: :boolean,
@@ -69,6 +72,7 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.WorkspaceMetadata do
       title: nil,
       queued: 0,
       queued_texts: [],
+      desktop_running: false,
       queued_count: 0,
       queue_paused: false,
       queue_revision: nil

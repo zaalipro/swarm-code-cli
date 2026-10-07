@@ -53,6 +53,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
       :background,
       :queued,
       :queued_texts,
+      :desktop_running,
       :queued_count,
       :queue_paused,
       :queue_revision
@@ -70,6 +71,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
       :title,
       :queued,
       :queued_texts,
+      :desktop_running,
       :queued_count,
       :queue_paused,
       :queue_revision
@@ -376,7 +378,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
               :toast,
               :rate_limit,
               :settings_update,
-              :settings_task
+              :settings_task,
+              :desktop_running
             ],
        do: true
 

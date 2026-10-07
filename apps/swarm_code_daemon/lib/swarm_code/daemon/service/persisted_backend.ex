@@ -161,6 +161,9 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         # cli020 C1 (bugs-17): conversations whose queue a stop the user asked
         # for paused; `queue.resume` (or the next turn the user starts) lifts it.
         queue_paused: MapSet.new(),
+        # cli020 C4 (bugs-6): whether the ncode app is open on this database
+        # (`DesktopWatch` tells; the launcher refused to start while it was).
+        desktop_running: false,
         # cli020 C3 (bugs-19): the ledger prune this backend started (owned
         # work under the job supervisor, never the init callback itself).
         ledger_prune:
@@ -371,6 +374,33 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   def handle_info({:DOWN, monitor, :process, _, _}, %{queue_monitors: monitors} = state)
       when is_map_key(monitors, monitor),
       do: {:noreply, drain_queue(%{state | queue_monitors: Map.delete(monitors, monitor)})}
+
+  # cli020 C4 (bugs-6): the ncode app opened or quit on the same database. The
+  # shell watch hears it as a `desktop_running` delta; the workspace metadata
+  # carries it too.
+  def handle_info({:desktop_running, running}, state) when is_boolean(running) do
+    if running == state.desktop_running do
+      {:noreply, state}
+    else
+      state = %{state | desktop_running: running, revision: state.revision + 1}
+
+      state =
+        broadcast(state, %{
+          "kind" => "desktop_running",
+          "entity_id" => nil,
+          "run_id" => nil,
+          "conversation_id" => nil,
+          "channel" => nil,
+          "attempt_id" => nil,
+          "text" => nil,
+          "body" => %{"running" => running},
+          "sequence" => 0,
+          "revision" => state.revision
+        })
+
+      {:noreply, refresh(state)}
+    end
+  end
 
   # cli020 C3: the ledger prune ended (its count is only logged).
   def handle_info({ref, pruned}, %{ledger_prune: %Task{ref: ref}} = state) do
@@ -3630,7 +3660,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
                 "toast",
                 "rate_limit",
                 "settings_update",
-                "settings_task"
+                "settings_task",
+                "desktop_running"
               ]
 
             _other when settings_delta? ->
@@ -3640,7 +3671,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
               delta["kind"] == "activity_upsert"
 
             "workspace" ->
-              delta["kind"] not in ["activity_upsert", "toast", "rate_limit"]
+              delta["kind"] not in ["activity_upsert", "toast", "rate_limit", "desktop_running"]
 
             # pass70 C6: background commands belong to the workspace and the
             # run inspector, not to the transcript or pending windows.
@@ -3649,7 +3680,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
                 "activity_upsert",
                 "workspace_metadata",
                 "toast",
-                "rate_limit"
+                "rate_limit",
+                "desktop_running"
               ]
 
             _ ->
@@ -3659,7 +3691,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
                 "toast",
                 "rate_limit",
                 "background_upsert",
-                "background_remove"
+                "background_remove",
+                "desktop_running"
               ]
           end
 
@@ -3956,7 +3989,9 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       # the queue, and the revision `queue.edit` compares.
       "queued_count" => length(conversation.queued || []),
       "queue_paused" => MapSet.member?(state.queue_paused, conversation.id),
-      "queue_revision" => queue_revision(conversation.queued || [])
+      "queue_revision" => queue_revision(conversation.queued || []),
+      # cli020 C4: the ncode app is open on the same database.
+      "desktop_running" => Map.get(state, :desktop_running, false)
     }
   end
 

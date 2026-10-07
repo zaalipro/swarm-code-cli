@@ -17,6 +17,9 @@ defmodule SwarmCodeCLI.UI.ReadModel do
             background: %{},
             rate_limits: %{},
             toasts: [],
+            # cli020 C4: the ncode app is open on the same database (the shell
+            # watch's `desktop_running` delta).
+            desktop_running: false,
             order: %{},
             coverage: %{},
             chunks: %ChunkDeque{}
@@ -299,6 +302,9 @@ defmodule SwarmCodeCLI.UI.ReadModel do
         {:ok, %{model | rate_limits: Map.put(limits, limit.provider_id, limit)}, [], []}
     end
   end
+
+  def delta(model, _slot, %Delta{kind: :desktop_running, body: %DTO.DesktopPresence{} = body}),
+    do: {:ok, %{model | desktop_running: body.running}, [], []}
 
   # Metadata only ever describes the workspace's conversation; anywhere else
   # there is nothing it could update.

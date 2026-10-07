@@ -8,7 +8,8 @@ defmodule SwarmCode.Daemon.Service do
   """
   use GenServer
   import Bitwise
-  alias SwarmCode.Daemon.Service.Connection
+  @test_build Mix.env() == :test
+  alias SwarmCode.Daemon.Service.{Connection, DesktopWatch, PersistedBackend}
   alias SwarmCode.Protocol.{Frame, Message, ServiceHandshake}
 
   def start_link(opts) do
@@ -69,6 +70,7 @@ defmodule SwarmCode.Daemon.Service do
 
       owner = self()
       acceptor = spawn_link(fn -> accept(socket, clients, config) end)
+      desktop_watch = start_desktop_watch(opts[:backend])
       # Covers untrappable listener death. Namespace replacement is preserved.
       spawn(fn ->
         ref = Process.monitor(owner)
@@ -85,6 +87,7 @@ defmodule SwarmCode.Daemon.Service do
          stat: stat,
          clients: clients,
          acceptor: acceptor,
+         desktop_watch: desktop_watch,
          backend_monitor: Process.monitor(opts[:backend])
        }}
     end
@@ -103,8 +106,32 @@ defmodule SwarmCode.Daemon.Service do
     :gen_tcp.close(state.socket)
     if Process.alive?(state.acceptor), do: Process.exit(state.acceptor, :shutdown)
     if Process.alive?(state.clients), do: Supervisor.stop(state.clients, :normal, 5000)
+    stop_desktop_watch(state[:desktop_watch])
     cleanup(state.path, state.stat)
   end
+
+  # cli020 C4 (bugs-6): a saved session watches for the ncode app opening on
+  # the same database (`DesktopWatch`, every 10 s); its backend tells the
+  # client. The live backend opens no database, so it gets none. Off in test
+  # builds unless a test turns it on (`:desktop_watch`).
+  defp start_desktop_watch(backend) do
+    with true <- Application.get_env(:swarm_code_daemon, :desktop_watch, not @test_build),
+         {:dictionary, dictionary} <- Process.info(backend, :dictionary),
+         {PersistedBackend, :init, 1} <- Keyword.get(dictionary, :"$initial_call"),
+         {:ok, watch} <- DesktopWatch.start_link(subscriber: backend) do
+      watch
+    else
+      _ -> nil
+    end
+  end
+
+  defp stop_desktop_watch(watch) when is_pid(watch) do
+    if Process.alive?(watch), do: GenServer.stop(watch, :normal, 5_000)
+  catch
+    :exit, _ -> :ok
+  end
+
+  defp stop_desktop_watch(_watch), do: :ok
 
   @doc """
   The capabilities a connection is granted unless the launcher names others:

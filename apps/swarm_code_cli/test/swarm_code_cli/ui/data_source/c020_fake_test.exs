@@ -33,4 +33,33 @@ defmodule SwarmCodeCLI.UI.DataSource.C020FakeTest do
     assert {:ok, _, %DTO.Outcome{status: :accepted}, _} =
              command(next, {:queue_edit, a, "0123456789abcdef", :clear}, "fake-2")
   end
+
+  test "C4 the fake source tells its clients the ncode app opened" do
+    source =
+      start_supervised!(
+        {SwarmCodeCLI.UI.DataSource.Fake.Source,
+         script: script(), source_epoch: "00000000-0000-4000-8000-0000000000ee"}
+      )
+
+    :ok = SwarmCodeCLI.UI.DataSource.Fake.Source.attach(source, "client-1", self())
+    :ok = SwarmCodeCLI.UI.DataSource.Fake.Source.desktop_running(source, true)
+
+    assert_receive {:fake_source, "client-1",
+                    [%SwarmCodeCLI.UI.DataSource.Delta{kind: :desktop_running} = delta]}
+
+    assert {:ok, _} = SwarmCodeCLI.UI.DataSource.Delta.validate(delta)
+    assert delta.body == %DTO.DesktopPresence{running: true}
+  end
+
+  test "C4 the read model keeps the last desktop presence" do
+    model = %SwarmCodeCLI.UI.ReadModel{}
+
+    delta = %SwarmCodeCLI.UI.DataSource.Delta{
+      kind: :desktop_running,
+      body: %DTO.DesktopPresence{running: true}
+    }
+
+    assert {:ok, %{desktop_running: true}, [], []} =
+             SwarmCodeCLI.UI.ReadModel.delta(model, :shell, delta)
+  end
 end
