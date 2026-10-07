@@ -131,6 +131,7 @@ Override: the environment variable or flag that wins over the stored value. The 
 | Key | Label | Scope | Type | Default | Applies | Override |
 |---|---|---|---|---|---|---|
 | `terminal.theme` | Theme | cli | enum | follow | at once | `NCODE_THEME` or `SWARM_THEME` |
+| `terminal.palette` | Palette | cli | enum | carbon | at once | — |
 | `terminal.colors` | Colours | cli | enum | auto | next launch | `NO_COLOR` |
 | `terminal.glyphs` | Glyphs | cli | enum | auto | next launch | `NCODE_ASCII` or `SWARM_ASCII` |
 | `terminal.ambiguous_width` | Ambiguous-width characters | cli | enum | narrow | next launch | — |

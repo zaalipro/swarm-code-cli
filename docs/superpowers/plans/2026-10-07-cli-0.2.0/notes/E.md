@@ -317,3 +317,39 @@ Branch `cli020/E` from M1 `3008f352`, worktree `~/dev/swarm-code-cli-wt/cli020-E
 - **Handoff D**: read the new `Preferences` fields into `State` (D3 notify/title, D5 mouse default,
   D8 `paste_collapse_lines`, D13 wheel/notice/hints/reduced motion); **handoff B**: pass them
   through `start_preferences/3` like `mouse?`; B21 reads `exit_transcript` via `CliFile`.
+
+### E27 The desktop's themes
+- `Theme.palettes/0` (carbon aurora dusk ember fjord graphite obsidian paper), `palette_value/3`,
+  `palette_entry/4`; `@palettes` maps each Carbon dark value to the palette's dark and light value,
+  token by token from `~/dev/swarm-code/assets/css/themes.css` (read-only): `--bg-elev` surface,
+  `--bg-card` card, `--bg-hover`, `--popover-bg`, `--border`, `--bar-track` (CLI ticks track),
+  `--text`, `--text-muted`, `--text-faint` (faint, ghost, disabled), `--accent`, `--on-accent`,
+  `--ok`, `--warn`, `--err`, `--info`; `page` = `--bg` (the light canvas). Aurora's rgba surfaces
+  are composited over its `--bg`; graphite's striped track is its stripe colour; obsidian, graphite
+  and aurora have `--text-faint: var(--text-muted)`, so faint = ghost = muted there. Generator:
+  `~/.cache/ncode/cli020/E/tools/palettes.py` (scratch, not committed).
+- `Paint.Options` gains `palette: :carbon` (6 fields, validated against the eight); `Paint.build`
+  substitutes through `palette_entry/4` (truecolor by value, 256 colours by nearest index of the
+  palette's accent/status values; grey ramp keeps Carbon's indices; 16 colours and monochrome are
+  the terminal's own and unchanged).
+- Registry `terminal.palette` (enum of the eight, default carbon, `{:cli, "palette"}`, at once);
+  `Preferences` `palette` (fixed map, no atoms from input). Counts 178 → 179, scalar 138 → 139,
+  cli entries 25 → 26; `docs/settings.md` +1 row. Slash palette `/theme` args list the names.
+- **Contrast floor changes** (E23's 4.5 faint / 3.0 ghost on surface and card; faint raised toward
+  `--text`, ghost — the desktop has none — from its faint): carbon dark 5E5D5A → 868583 / 6A6967
+  (E23); carbon light 96948F → 72706C / 8A8883 (E23); dusk dark 6A5F80 → 8C829E / 6F6585; dusk
+  light 9B92B0 → 756D89 / 948BA8; ember dark 6B6157 → 8D847A / 70675D; ember light A3968A →
+  7B6F65 / 9B8E82; fjord dark 5F7385 → 7B8C9C / 5F7385; fjord light 8EA1B2 → 637382 / 8092A2;
+  paper dark 6F655A → 91877C / 746A5F; paper light A0958A → 7B7168 / 9A8F84. Aurora, graphite,
+  obsidian: no change (their faint is muted, ≥ 4.9:1).
+- Deviation: the Carbon accent tint (0x3E291D, accent chip backgrounds) has no desktop token and
+  keeps its value under every palette. Settings page arrows (`projector/settings/page.ex`) now keep
+  whole names (the extra Appearance row made `↓ …` clip a name mid-word at 80x24, failing
+  `c75_twin_test`); `c75_chrome_search_test` counts 3 `/theme` matches in Appearance.
+- **Handoff D**: `/theme <palette>` in `keymap.ex` (`command?(trimmed, "/theme")`) sets
+  `terminal.palette`; `dark|light` keeps setting the mode. **Handoff B/D**: pass the
+  `Preferences.palette` into the renderer owner's `%Paint.Options{palette: …}`
+  (`renderer/ratatui_port/owner.ex:526`, not E's file) — until then every palette paints Carbon.
+- Tests: `cli020/e27_palettes_test.exs` (21: a contrast test per palette and mode, values, paint
+  substitution, options, preference + registry). Runs: core settings + commands 76/0; CLI ui +
+  cli020 + demo + c74 2 failures (above, fixed), settings re-run 524/0.

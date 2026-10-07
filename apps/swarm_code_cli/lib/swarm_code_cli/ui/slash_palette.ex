@@ -32,7 +32,12 @@ defmodule SwarmCodeCLI.UI.SlashPalette do
       args: "[on|off]",
       desc: "Show or hide diffs and file previews under tool rows; remembered"
     },
-    %{name: "theme", args: "[dark|light]", desc: "Switch the dark or light theme; remembered"},
+    # cli020 E27: a palette name sets `terminal.palette` (D's `/theme`).
+    %{
+      name: "theme",
+      args: "[dark|light|carbon|aurora|dusk|ember|fjord|graphite|obsidian|paper]",
+      desc: "Switch dark or light, or the palette; remembered"
+    },
     %{
       name: "mouse",
       args: "[on|off]",

@@ -25,6 +25,11 @@ defmodule SwarmCodeCLI.UI.Init.Preferences do
   @themes %{"dark" => :dark, "light" => :light}
 
   @notify %{"auto" => :auto, "bell" => :bell, "osc9" => :osc9, "os" => :os, "off" => :off}
+  # cli020 E27: a fixed map, never `String.to_atom/1`.
+  @palettes Map.new(
+              ~w(carbon aurora dusk ember fjord graphite obsidian paper)a,
+              &{Atom.to_string(&1), &1}
+            )
 
   # The five legacy preferences and, since cli020 E26 (§8.4), the launch's
   # terminal facts D, B and E read, with their json names.
@@ -41,7 +46,8 @@ defmodule SwarmCodeCLI.UI.Init.Preferences do
     notice_seconds: "notice_seconds",
     hint_letters: "hint_letters",
     reduced_motion?: "reduced_motion",
-    exit_transcript: "exit_transcript"
+    exit_transcript: "exit_transcript",
+    palette: "palette"
   }
 
   # The registry's bounds (`core/settings/registry/terminal.ex`).
@@ -70,7 +76,8 @@ defmodule SwarmCodeCLI.UI.Init.Preferences do
           notice_seconds: 2..30,
           hint_letters: String.t(),
           reduced_motion?: boolean(),
-          exit_transcript: 0..20
+          exit_transcript: 0..20,
+          palette: atom()
         }
 
   @typedoc "One job of the session runtime's preference queue (§3.8.2)."
@@ -101,7 +108,8 @@ defmodule SwarmCodeCLI.UI.Init.Preferences do
       notice_seconds: 6,
       hint_letters: @hint_letters,
       reduced_motion?: false,
-      exit_transcript: 3
+      exit_transcript: 3,
+      palette: :carbon
     }
 
   @doc "The json names of the preferences (the five legacy ones and E26's)."
@@ -130,7 +138,8 @@ defmodule SwarmCodeCLI.UI.Init.Preferences do
       notice_seconds: ranged(values, :notice_seconds, d),
       hint_letters: letters(Map.get(values, "hint_letters"), d.hint_letters),
       reduced_motion?: boolean(Map.get(values, "reduced_motion"), d.reduced_motion?),
-      exit_transcript: ranged(values, :exit_transcript, d)
+      exit_transcript: ranged(values, :exit_transcript, d),
+      palette: Map.get(@palettes, Map.get(values, "palette"), d.palette)
     }
   end
 
@@ -168,6 +177,7 @@ defmodule SwarmCodeCLI.UI.Init.Preferences do
   defp valid_value?(:title?, v), do: is_boolean(v)
   defp valid_value?(:reduced_motion?, v), do: is_boolean(v)
   defp valid_value?(:hint_letters, v), do: letters?(v)
+  defp valid_value?(:palette, v), do: v in Map.values(@palettes)
 
   defp valid_value?(key, v) when is_map_key(@ranges, key),
     do: is_integer(v) and v in Map.fetch!(@ranges, key)

@@ -28,6 +28,30 @@ defmodule SwarmCode.Settings.Registry.Terminal do
       synonyms: ["theme", "dark mode", "light mode", "colour theme"],
       parity: "CLI /theme"
     ),
+    # cli020 E27: the desktop's themes, each dark and light (`terminal.theme`
+    # keeps the mode).
+    cli("terminal.palette", :appearance, "Palette",
+      group: "colour and glyphs",
+      description: "The ncode app's themes, in the terminal; dark or light follows Theme.",
+      storage: {:cli, "palette"},
+      type: :enum,
+      choices:
+        choices([
+          {"carbon", "Carbon"},
+          {"aurora", "Aurora"},
+          {"dusk", "Dusk"},
+          {"ember", "Ember"},
+          {"fjord", "Fjord"},
+          {"graphite", "Graphite"},
+          {"obsidian", "Obsidian"},
+          {"paper", "Paper"}
+        ]),
+      default: "carbon",
+      applies: :at_once,
+      synonyms: ["palette", "colour theme", "themes", "aurora", "dusk", "ember", "fjord", "paper"],
+      since: :c74,
+      parity: "NEW"
+    ),
     cli("terminal.colors", :appearance, "Colours",
       group: "colour and glyphs",
       description:
