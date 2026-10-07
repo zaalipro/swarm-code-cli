@@ -71,20 +71,11 @@ defmodule SwarmCode.Domain.Engine.Prompts do
 
   defp section(_header, _text), do: nil
 
-  # Spec 75 (pass 71): Ultra is Factory-style missions. The orchestrator answers
-  # small requests itself and runs multi-feature work as a mission; it no longer
-  # authors workflows (/workflow and /create-workflow still do).
+  # cli020 A6 (CLI patch): desktop Ultra is Factory-style missions (spec 75),
+  # which need the mission approval card the CLI does not have yet; CLI Ultra
+  # keeps authoring and launching workflows.
   @ultra """
-  ULTRA MODE — MISSIONS: you are the orchestrator. Answer questions, explanations and small changes (one file, one clear fix) yourself, inline. Multi-feature work — several features, a multi-file change, a refactor across modules, anything that needs more than one worker — runs as a mission:
-  1. Investigate first: read the code, the tests and the project instructions; learn how the project builds and tests.
-  2. Ask what you cannot find out (ask_user, 1-4 multiple-choice questions): scope, behaviour the user cares about, constraints. Skip this when the request is unambiguous.
-  3. Write the validation contract BEFORE the features: behavioural assertions with ids VAL-<AREA>-NNN (AREA 2-8 capital letters, NNN three digits), each observable, each with a method (test | command | read) and the evidence a validator must capture. Cover the user's intent, not the implementation.
-  4. Split the work into features — each one self-contained for a fresh worker that has never seen this conversation: what to build, which files, which tests to add first, how to run them. Every feature claims the assertions it satisfies; every assertion is claimed; one assertion belongs to one milestone.
-  5. Group features into milestones (M1, M2, …, at most 6) in dependency order. Features inside one milestone run in parallel, so they must not edit the same files; put dependent work in a later milestone.
-  6. Write the guidelines (conventions, the exact test and build commands, files never to touch) and the knowledge (key files, APIs, gotchas you found).
-  7. Call mission_start with all of it. The user approves the plan and picks the worker and validator models in the approval card — do not ask for approval yourself. Say in one or two sentences what the mission will do, then stop.
-  8. When the mission reports back, read its summary: tell the user what passed, what failed and why, and what you suggest next. If the user asked to revise the plan, revise it and call mission_start again.
-  Never write the features yourself while a mission runs; you may answer the user's questions about it.
+  ULTRA MODE: for any substantive task (multi-file change, audit, research, review, migration) do not do the work inline. For tasks that fan out (review/audit/research/migrate many files, implement a multi-part spec) author and launch a workflow instead of doing it inline. Call workflow_list first and reuse a saved workflow whose when_to_use matches; otherwise author one for exactly this request following the WORKFLOW AUTHORING MODE procedure below — smoke-check it, save it into the project and launch it with workflow_run straight away. Never ask "shall I launch it?". Say in two sentences what it will do, name the run, and continue when its result arrives. Prefer adversarial verification panels. Trivial questions and one-line edits stay inline.
   """
 
   # Spec 12 §5: `/create-workflow` is enforced, not suggested — the turn has no
@@ -94,10 +85,11 @@ defmodule SwarmCode.Domain.Engine.Prompts do
   """
 
   def assistant(%Project{} = project, opts \\ []) do
-    # Spec 75: Ultra plans missions; only /create-workflow (and an explicit
-    # `authoring:` caller) get the workflow-authoring procedure.
+    # cli020 A6 (CLI patch): CLI Ultra authors a workflow for every substantive
+    # request (spec 11 §10.1), so it needs the authoring procedure just as much
+    # as /create-workflow does.
     create_workflow? = opts[:command] == :create_workflow
-    authoring? = opts[:authoring] || create_workflow?
+    authoring? = opts[:authoring] || opts[:ultra] || create_workflow?
 
     # Spec 37 §4.3: consensus mode — the planner's contract with the judge.
     # Spec 54 §5: `:tools` is the turn's own tool set (`Tools.for_agent/5`), or
@@ -188,7 +180,7 @@ defmodule SwarmCode.Domain.Engine.Prompts do
     - If a tool returns "Error: ...", adapt instead of repeating the same call.
     - A durable fact about this project or the user's preferences is worth saving to memory — project scope for repository facts, global for the user's own preferences. Never save secrets or transient details.
     - When a decision is the user's to make (an ambiguous request, several valid approaches, a destructive choice), put it to them as 1-4 multiple-choice questions rather than asking in prose, then continue with the answers.
-    - A workflow is the user's call, not yours: author or launch one only when the user used /create-workflow or /workflow. In Ultra mode, multi-feature work is a mission (mission_start), never an ad-hoc workflow.
+    - A workflow is the user's call, not yours: author or launch one only when the user used /create-workflow or /workflow, or turned Ultra mode on.
     - A swarm is the user's call too — and the user asking in prose for sub-agents, parallel agents or "N agents" is that call.
     - Deliver what the user asked for, at the scope they intended: make routine judgment calls yourself, and where you think the ask is mistaken say so in a sentence and carry on with it. Keep the reply to the length the question needs, and close by saying what you did, which files changed, and how you verified it.
     - The <environment> block above is the truth about this machine; do not guess the date, the branch or the shell.
