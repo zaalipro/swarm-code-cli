@@ -1312,6 +1312,40 @@ defmodule SwarmCodeCLI.UI.Keymap.Bindings do
       hint: 0,
       repeat: true
     },
+    # cli020 D1 (tui-code-3): macOS Option-arrows arrive as ESC b / ESC f.
+    %Binding{
+      id: :composer_word_left,
+      keys: [{:left, [:alt]}, {:left, [:control]}, {"b", [:alt]}],
+      action: {:editor_op, {:move, :word_left}},
+      contexts: [:composer, :field, :overlay],
+      group: :edit,
+      label: "Word left",
+      help: "Word left/right (Option-←/→, Ctrl-←/→, Alt-b/f)",
+      hint: 0,
+      repeat: true
+    },
+    %Binding{
+      id: :composer_word_right,
+      keys: [{:right, [:alt]}, {:right, [:control]}, {"f", [:alt]}],
+      action: {:editor_op, {:move, :word_right}},
+      contexts: [:composer, :field, :overlay],
+      group: :edit,
+      label: "Word right",
+      help: "Word left/right (Option-←/→, Ctrl-←/→, Alt-b/f)",
+      hint: 0,
+      repeat: true
+    },
+    %Binding{
+      id: :composer_delete_word_forward,
+      keys: [{"d", [:alt]}, {:delete, [:alt]}],
+      action: {:editor_op, :delete_word_forward},
+      contexts: [:composer, :field, :overlay],
+      group: :edit,
+      label: "Del word fwd",
+      help: "Delete the word after the cursor (Option-Delete, Alt-d)",
+      hint: 0,
+      repeat: true
+    },
     %Binding{
       id: :composer_delete_line_start,
       keys: [{"u", [:control]}],

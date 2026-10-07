@@ -72,6 +72,9 @@ Mouse: the wheel scrolls the pane under the pointer (the transcript, the side pa
 | `Ctrl-A` | Move to the start of the line |
 | `Ctrl-E` | Move to the end of the line |
 | `Ctrl-W` | Delete the word before the cursor |
+| `Alt-←` / `Ctrl-←` / `Alt-B` | Word left/right (Option-←/→, Ctrl-←/→, Alt-b/f) |
+| `Alt-→` / `Ctrl-→` / `Alt-F` | Word left/right (Option-←/→, Ctrl-←/→, Alt-b/f) |
+| `Alt-D` / `Alt-Del` | Delete the word after the cursor (Option-Delete, Alt-d) |
 | `Ctrl-U` | Delete back to the start of the line; on an empty draft, scroll up |
 | `Ctrl-Z` | Undo the last edit |
 | `Ctrl-Shift-Z` | Redo (needs a terminal that reports Ctrl-Shift) |
@@ -538,6 +541,9 @@ Mouse: the wheel scrolls the pane under the pointer (the transcript, the side pa
 | `Ctrl-A` | Move to the start of the line |
 | `Ctrl-E` | Move to the end of the line |
 | `Ctrl-W` | Delete the word before the cursor |
+| `Alt-←` / `Ctrl-←` / `Alt-B` | Word left/right (Option-←/→, Ctrl-←/→, Alt-b/f) |
+| `Alt-→` / `Ctrl-→` / `Alt-F` | Word left/right (Option-←/→, Ctrl-←/→, Alt-b/f) |
+| `Alt-D` / `Alt-Del` | Delete the word after the cursor (Option-Delete, Alt-d) |
 | `Ctrl-U` | Delete back to the start of the line |
 | `Ctrl-Z` | Undo the last edit |
 | `Ctrl-Shift-Z` | Redo (needs a terminal that reports Ctrl-Shift) |
@@ -683,6 +689,9 @@ Mouse: the wheel scrolls the pane under the pointer (the transcript, the side pa
 | `Ctrl-A` | Move to the start of the line |
 | `Ctrl-E` | Move to the end of the line |
 | `Ctrl-W` | Delete the word before the cursor |
+| `Alt-←` / `Ctrl-←` / `Alt-B` | Word left/right (Option-←/→, Ctrl-←/→, Alt-b/f) |
+| `Alt-→` / `Ctrl-→` / `Alt-F` | Word left/right (Option-←/→, Ctrl-←/→, Alt-b/f) |
+| `Alt-D` / `Alt-Del` | Delete the word after the cursor (Option-Delete, Alt-d) |
 | `Ctrl-Z` | Undo the last edit |
 | `Ctrl-Shift-Z` | Redo (needs a terminal that reports Ctrl-Shift) |
 

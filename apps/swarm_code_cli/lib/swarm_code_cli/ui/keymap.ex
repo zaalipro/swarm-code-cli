@@ -418,6 +418,11 @@ defmodule SwarmCodeCLI.UI.Keymap do
         code == :backspace and mods == [:alt] -> :delete_word_backward
         code == :delete and mods == [:alt] -> :delete_word_forward
         code in [:left, :right, :up, :down, :home, :end] -> movement(code, mods)
+        # cli020 D1: macOS Option-arrows arrive as ESC b / ESC f (the port
+        # decodes them as the letter with Alt), Option-Delete as ESC d.
+        code == "b" and mods == [:alt] -> {:move, :word_left}
+        code == "f" and mods == [:alt] -> {:move, :word_right}
+        code == "d" and mods == [:alt] -> :delete_word_forward
         is_binary(code) and mods == [] -> {:insert, code}
         true -> nil
       end
@@ -448,6 +453,8 @@ defmodule SwarmCodeCLI.UI.Keymap do
       case {code, base} do
         {:left, [:alt]} -> :word_left
         {:right, [:alt]} -> :word_right
+        {:left, [:control]} -> :word_left
+        {:right, [:control]} -> :word_right
         {:home, [:control]} -> :buffer_start
         {:end, [:control]} -> :buffer_end
         {:home, []} -> :line_start
@@ -578,6 +585,9 @@ defmodule SwarmCodeCLI.UI.Keymap do
     :composer_line_end,
     :composer_half_up,
     :composer_delete_word_backward,
+    :composer_word_left,
+    :composer_word_right,
+    :composer_delete_word_forward,
     :composer_newline,
     :composer_undo,
     :composer_redo,
