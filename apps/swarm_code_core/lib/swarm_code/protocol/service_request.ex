@@ -40,6 +40,7 @@ defmodule SwarmCode.Protocol.ServiceRequest do
           | :queue_resume
           | :queue_edit
           | :run_retry
+          | :history_search
           | :rewind_apply
           | :rewind_turns
           | :shell_stop
@@ -146,6 +147,8 @@ defmodule SwarmCode.Protocol.ServiceRequest do
   defp decode_operation("rewind.turns"), do: :rewind_turns
   # cli020 C16: rewind to before a turn.
   defp decode_operation("rewind.apply"), do: :rewind_apply
+  # cli020 C20: the prompt history (Ctrl-R).
+  defp decode_operation("history.search"), do: :history_search
   defp decode_operation(_operation), do: nil
 
   defp encode_operation(:query), do: "query"
@@ -179,6 +182,7 @@ defmodule SwarmCode.Protocol.ServiceRequest do
   defp encode_operation(:shell_stop), do: "shell.stop"
   defp encode_operation(:rewind_turns), do: "rewind.turns"
   defp encode_operation(:rewind_apply), do: "rewind.apply"
+  defp encode_operation(:history_search), do: "history.search"
   defp encode_operation(_operation), do: nil
 
   defp param_keys(:query), do: ~w(slot cursor direction page_size byte_limit)
@@ -225,6 +229,7 @@ defmodule SwarmCode.Protocol.ServiceRequest do
   defp param_keys(:shell_stop), do: []
   defp param_keys(:rewind_turns), do: []
   defp param_keys(:rewind_apply), do: ~w(message_id scope)
+  defp param_keys(:history_search), do: ~w(query)
   defp param_keys(_operation), do: []
 
   defp valid_params?(:query, params, scope) do
@@ -378,6 +383,12 @@ defmodule SwarmCode.Protocol.ServiceRequest do
     do:
       scope.kind == :conversation and
         (uuid?(params["message_id"]) and params["scope"] in ["both", "conversation", "files"])
+
+  defp valid_params?(:history_search, params, scope),
+    do:
+      scope.kind == :conversation and
+        (is_binary(params["query"]) and byte_size(params["query"]) <= 200 and
+           String.valid?(params["query"]))
 
   defp valid_params?(:queue_resume, _params, scope), do: scope.kind == :conversation
 

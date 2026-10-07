@@ -36,6 +36,7 @@ defmodule SwarmCode.Protocol.ServiceHandshake do
     "attachment" => :attachment,
     "shell" => :shell,
     "rewind" => :rewind,
+    "history" => :history,
     # cli020 C6.
     "run.retry" => :run_retry
   }
@@ -64,6 +65,7 @@ defmodule SwarmCode.Protocol.ServiceHandshake do
             | :question_answer
             | :settings
             | :queue
+            | :history
             | :rewind
             | :shell
             | :attachment

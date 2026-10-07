@@ -28,7 +28,7 @@ defmodule SwarmCode.Daemon.Service.Settings.C74ConnectionTest do
     {_socket, _backend, hello_ok} = connected(path)
     assert "settings" in hello_ok.body["capabilities"]
     assert :settings in Service.default_capabilities()
-    assert length(Service.default_capabilities()) == 22
+    assert length(Service.default_capabilities()) == 23
   end
 
   test "a deadline on a settings query is a typed read error; the connection stays", %{path: path} do

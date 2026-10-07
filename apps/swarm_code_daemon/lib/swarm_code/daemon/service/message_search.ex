@@ -68,6 +68,84 @@ defmodule SwarmCode.Daemon.Service.MessageSearch do
     end
   end
 
+  @doc """
+  cli020 C20 (competitors-19): the prompt history of `project_id` for Ctrl-R:
+  at most 50 distinct texts of non-superseded user messages of its
+  conversations, newest first, in one query. A query of 3 characters or more
+  uses the FTS index (each word a phrase, the last a prefix); a shorter one is
+  a prefix of the first 200 bytes; an empty one lists the newest. Each text is
+  its first 2 KB; `bytes` is its size and `message_id` the newest message
+  with it.
+  """
+  @spec prompts(String.t(), String.t()) :: [map()]
+  def prompts(project_id, query) when is_binary(project_id) and is_binary(query) do
+    trimmed = String.trim(query)
+
+    {match, args} =
+      cond do
+        String.length(trimmed) >= 3 and fts_query(trimmed) != "" ->
+          {"m.rowid IN (SELECT rowid FROM messages_fts WHERE messages_fts MATCH ?2)",
+           [fts_query(trimmed)]}
+
+        trimmed != "" ->
+          {"substr(m.content, 1, 200) LIKE ?2 ESCAPE '\\'", [like_prefix(trimmed)]}
+
+        true ->
+          {"?2 = ''", [""]}
+      end
+
+    sql = """
+    SELECT substr(m.content, 1, 2048), length(cast(m.content as blob)),
+           m.conversation_id, m.id, MAX(m.inserted_at) AS at
+    FROM messages m
+    JOIN conversations c ON c.id = m.conversation_id
+    WHERE c.project_id = ?1 AND c.research_id IS NULL
+      AND m.role = 'user' AND m.superseded_at IS NULL
+      AND m.content != ''
+      AND #{match}
+    GROUP BY m.content
+    ORDER BY at DESC
+    LIMIT 50
+    """
+
+    case Repo.query(sql, [project_id | args]) do
+      {:ok, %{rows: rows}} ->
+        Enum.map(rows, fn [text, bytes, conversation_id, message_id, at] ->
+          %{
+            text: text,
+            bytes: bytes,
+            conversation_id: conversation_id,
+            message_id: message_id,
+            at: unix_ms(at)
+          }
+        end)
+
+      _ ->
+        []
+    end
+  end
+
+  defp unix_ms(%DateTime{} = at), do: DateTime.to_unix(at, :millisecond)
+  defp unix_ms(%NaiveDateTime{} = at), do: unix_ms(DateTime.from_naive!(at, "Etc/UTC"))
+
+  defp unix_ms(at) when is_binary(at) do
+    case DateTime.from_iso8601(at) do
+      {:ok, at, _} ->
+        unix_ms(at)
+
+      _ ->
+        case NaiveDateTime.from_iso8601(at) do
+          {:ok, at} -> unix_ms(at)
+          _ -> 0
+        end
+    end
+  end
+
+  defp unix_ms(_), do: 0
+
+  defp like_prefix(text),
+    do: String.replace(text, ~r/[\\%_]/, fn char -> "\\" <> char end) <> "%"
+
   @doc "The FTS5 query the desktop builds from typed words (\"\" for none)."
   @spec fts_query(term()) :: String.t()
   def fts_query(query) do

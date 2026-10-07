@@ -12,6 +12,7 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.CommandResult do
     staged again), `restored` (files put back), `skipped` (files that could
     not be, with why)
   - `:rewind_turns` (`rewind.turns`): `turns`, newest first
+  - `:history` (`history.search`): `rows`, the project's prompts, newest first
   """
   use SwarmCodeCLI.UI.DataSource.DTO.Schema,
     fields: [
@@ -23,7 +24,8 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.CommandResult do
       attachments: {:list, {:dto, SwarmCodeCLI.UI.DataSource.DTO.StagedAttachment}, 4},
       restored: {:optional, :count},
       skipped: {:list, {:text, 1024}, 50},
-      turns: {:list, {:dto, SwarmCodeCLI.UI.DataSource.DTO.RewindTurn}, 200}
+      turns: {:list, {:dto, SwarmCodeCLI.UI.DataSource.DTO.RewindTurn}, 200},
+      rows: {:list, {:dto, SwarmCodeCLI.UI.DataSource.DTO.HistoryRow}, 50}
     ],
     wire_defaults: [
       token: nil,
@@ -33,7 +35,8 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.CommandResult do
       attachments: [],
       restored: nil,
       skipped: [],
-      turns: []
+      turns: [],
+      rows: []
     ],
     defaults: [
       kind: :slot,
@@ -44,6 +47,7 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.CommandResult do
       attachments: [],
       restored: nil,
       skipped: [],
-      turns: []
+      turns: [],
+      rows: []
     ]
 end

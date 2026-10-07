@@ -998,6 +998,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
   defp request_capability(%{"op" => "shell.stop"}), do: :shell
   defp request_capability(%{"op" => "rewind.turns"}), do: :rewind
   defp request_capability(%{"op" => "rewind.apply"}), do: :rewind
+  defp request_capability(%{"op" => "history.search"}), do: :history
   defp request_capability(_), do: nil
 
   defp expire_requests(state) do

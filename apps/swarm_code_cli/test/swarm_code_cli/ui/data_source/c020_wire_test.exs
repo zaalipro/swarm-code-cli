@@ -200,4 +200,20 @@ defmodule SwarmCodeCLI.UI.DataSource.C020WireTest do
       refute Intent.valid?({:rewind_apply, @conversation, @other, :everything})
     end
   end
+
+  describe "C20 history" do
+    test "history.search encodes; the query is bounded" do
+      assert body({:history_search, @conversation, "dep"}) == %{
+               "op" => "history.search",
+               "query" => "dep"
+             }
+
+      assert body({:history_search, @conversation, ""}) == %{
+               "op" => "history.search",
+               "query" => ""
+             }
+
+      refute Intent.valid?({:history_search, @conversation, String.duplicate("q", 201)})
+    end
+  end
 end

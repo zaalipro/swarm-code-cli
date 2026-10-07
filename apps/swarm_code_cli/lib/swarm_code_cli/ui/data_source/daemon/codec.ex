@@ -628,6 +628,10 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
     do:
       {:ok, %{"op" => "rewind.apply", "message_id" => message, "scope" => Atom.to_string(scope)}}
 
+  # cli020 C20: the prompt history (Ctrl-R).
+  defp request_body({:history_search, _conversation, query}),
+    do: {:ok, %{"op" => "history.search", "query" => query}}
+
   # cli020 C1: the queue (the conversation is the request's scope).
   defp request_body({:queue_resume, _conversation}), do: {:ok, %{"op" => "queue.resume"}}
 

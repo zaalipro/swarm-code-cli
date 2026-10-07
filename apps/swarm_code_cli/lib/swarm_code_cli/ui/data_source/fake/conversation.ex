@@ -67,6 +67,22 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Conversation do
      %DTO.CommandResult{kind: :rewound, text: text, restored: restored}}
   end
 
+  # cli020 C20: the demo's prompt history, filtered by the query (D19).
+  defp answer(script, {:history_search, _, query}, conversation) do
+    clock = SwarmCodeCLI.UI.DataSource.Fake.Script.clock_ms()
+    needle = String.downcase(query)
+
+    rows =
+      ["Add the retry button", "Explain the build", "Run the tests"]
+      |> Enum.with_index()
+      |> Enum.filter(fn {text, _} -> String.contains?(String.downcase(text), needle) end)
+      |> Enum.map(fn {text, n} ->
+        %DTO.HistoryRow{text: text, conversation_id: conversation, at: clock - n * 60_000}
+      end)
+
+    {:ok, script, [], [], nil, %DTO.CommandResult{kind: :history, rows: rows}}
+  end
+
   # cli020 C15: `!cmd` is accepted (the demo runs nothing) and so is a stop.
   defp answer(script, {:shell_run, _, _}, _conversation),
     do: {:ok, script, [], ["5e110000-0000-4000-8000-000000000001"], nil}

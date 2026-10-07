@@ -1014,7 +1014,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
        do: Session.prepare(script, request)
 
   # cli020 C: the conversation commands (queue, shell, rewind, attachments).
-  @conversation_commands ~w(rewind_apply rewind_turns shell_stop shell_run attach_slot attachment_slot queue_resume queue_edit)a
+  @conversation_commands ~w(history_search rewind_apply rewind_turns shell_stop shell_run attach_slot attachment_slot queue_resume queue_edit)a
 
   defp prepare_command(script, %{kind: kind} = request)
        when is_tuple(kind) and tuple_size(kind) >= 2 and is_binary(elem(kind, 1)) and

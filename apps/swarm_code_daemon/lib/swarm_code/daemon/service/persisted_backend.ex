@@ -1186,6 +1186,33 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     {{:job, %{key: :rewind_turns, replace: true, work: work, finish: finish}}, state}
   end
 
+  # cli020 C20 (competitors-19): the project's prompt history (Ctrl-R), read
+  # by a job; a newer search replaces an older one.
+  defp execute(%{operation: :history_search, params: %{"query" => query}}, _scope, id, state) do
+    project = state.opts[:project_id]
+    conversation = state.opts[:conversation_id]
+    work = fn -> SwarmCode.Daemon.Service.MessageSearch.prompts(project, query) end
+
+    finish = fn rows, next ->
+      body =
+        Enum.map(rows, fn row ->
+          %{
+            "text" => preview(row.text, 2048),
+            "conversation_id" => row.conversation_id,
+            "at" => row.at,
+            "detail_ref" =>
+              if(row.bytes > 2048 and row.conversation_id == conversation,
+                do: %{"id" => row.message_id <> ":text", "total_bytes" => row.bytes}
+              )
+          }
+        end)
+
+      {accepted_result(id, [], %{"kind" => "history", "rows" => body}), next}
+    end
+
+    {{:job, %{key: :history_search, replace: true, work: work, finish: finish}}, state}
+  end
+
   # Rewind to before a turn: the runs it started stop, the conversation part
   # folds, the files come back (Rewind.run/3); the prompt and its images
   # return to the composer (the images staged again, C2's staging).

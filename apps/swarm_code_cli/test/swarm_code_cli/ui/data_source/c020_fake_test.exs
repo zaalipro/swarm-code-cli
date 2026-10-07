@@ -63,6 +63,16 @@ defmodule SwarmCodeCLI.UI.DataSource.C020FakeTest do
              command(next, {:rewind_apply, a, t.message_id, :files}, "fake-2")
   end
 
+  test "C20 the prompt history filters by the query" do
+    a = Script.id(:a)
+
+    assert {:ok, _, %DTO.Outcome{result: %DTO.CommandResult{kind: :history, rows: [row]}}, _} =
+             command(script(), {:history_search, a, "build"})
+
+    assert row.text == "Explain the build"
+    assert {:ok, _} = DTO.HistoryRow.validate(row)
+  end
+
   test "C15 the shell escape is accepted" do
     a = Script.id(:a)
 
