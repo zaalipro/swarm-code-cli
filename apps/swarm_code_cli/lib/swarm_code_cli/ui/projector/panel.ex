@@ -237,6 +237,8 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
 
     band = band_rows(ctx)
     kinds = kind_rows(ctx, pairs)
+    # cli020 E29: the selected run's plan, above the agents.
+    plan = SwarmCodeCLI.UI.Projector.Panel.PlanSection.rows(ctx, chat)
     agents = agent_rows(ctx, pairs)
     tail = tail_rows(ctx, true)
 
@@ -255,7 +257,7 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
 
         kinds = if level == :bare, do: [], else: kinds
 
-        [headers, band, kinds, found, agents]
+        [headers, band, kinds, found, plan, agents]
         |> Enum.reject(&(&1 == []))
         |> Enum.intersperse([blank(ctx)])
         |> Enum.concat()
@@ -269,7 +271,15 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
 
     # Fold the other runs from the last one up (D5), then drop earlier runs.
     # The unfolded rows of each run are drawn once and shared by the folds.
-    chat_rows = unfold_compact(ctx, chat)
+    # cli020 E29: compact keeps the plan's counter under the run in chat.
+    chat_rows =
+      case SwarmCodeCLI.UI.Projector.Panel.PlanSection.counter(
+             SwarmCodeCLI.UI.Projector.Panel.PlanSection.steps(chat)
+           ) do
+        nil -> unfold_compact(ctx, chat)
+        words -> unfold_compact(ctx, chat) ++ [row(ctx, [{"  " <> words, :text_muted}])]
+      end
+
     open_rows = Map.new(others, &{&1.id, unfold_compact(ctx, &1)})
 
     folds =

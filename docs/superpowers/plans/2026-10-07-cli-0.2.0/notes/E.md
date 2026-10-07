@@ -368,3 +368,14 @@ Branch `cli020/E` from M1 `3008f352`, worktree `~/dev/swarm-code-cli-wt/cli020-E
   the workspace snapshot until C22 lands `git_branch`/`git_dirty`.
 - Tests: `cli020/e28_status_items_test.exs` (6). Runs: core settings 40/0; CLI ui + cli020 + demo +
   c74 2606/0.
+
+### E29 Plan section
+- New `projector/panel/plan_section.ex` (`Panel.PlanSection`): `steps/1` reads the run's `plan`
+  (STUB `Map.get` until C23's `RunSummary.plan` lands; items `%{text, status}` with atom or string
+  keys, statuses `done`/`in_progress`/`pending` as F11's `update_plan`, anything else pending, the
+  first line of a text), `counter/1` (`Plan 3/7`, done over all), `rows/2` (the counter bold, at
+  most 7 steps `✓`/`▸`/`·`, ASCII `+ > .`, then `… N more`), `strip_part/1`.
+- `panel.ex` full body: the plan of the run in chat between the found blocks and the agents;
+  compact: the counter row under the run in chat. `strip.ex`: `Plan 3/7` after the needs-you part.
+  `:auto` already counts a plan (E5's `auto_shown?/1`).
+- Tests: `cli020/e29_plan_section_test.exs` (6). Run: CLI ui + cli020 + demo 2599/0.
