@@ -26,6 +26,7 @@ defmodule SwarmCodeCLI.UI.Reducer do
   alias SwarmCodeCLI.UI.Reducer.Hint, as: Hints
   alias SwarmCodeCLI.UI.Reducer.Overlay
   alias SwarmCodeCLI.UI.Reducer.{Deliveries, Display, Remote}
+  alias SwarmCodeCLI.UI.Draft.Pastes
   alias SwarmCodeCLI.UI.WorkflowKeyword
   alias SwarmCodeCLI.UI.Hint
   alias SwarmCodeCLI.UI.DataSource.DTO.Outcome
@@ -995,7 +996,9 @@ defmodule SwarmCodeCLI.UI.Reducer do
   # while it does); the session runtime runs the editor and answers.
   defp transition(%{lifecycle: :running} = state, {:external_editor, key}) do
     if key == State.current_draft_key(state) do
-      text = Editor.text(Drafts.fetch(state.drafts, key).editor)
+      # cli020 D8: the editor gets the pastes expanded.
+      draft = Drafts.fetch(state.drafts, key)
+      text = Pastes.expand(Editor.text(draft.editor), draft.pastes)
       {%{state | lifecycle: :suspend_requested}, [{:edit_externally, key, text}]}
     else
       {state, []}
@@ -1012,9 +1015,21 @@ defmodule SwarmCodeCLI.UI.Reducer do
 
     case result do
       {:ok, text} ->
-        if text == Editor.text(Drafts.fetch(state.drafts, key).editor),
+        draft = Drafts.fetch(state.drafts, key)
+
+        # cli020 D8: the edited text has every paste in it; nothing collapses back.
+        if text == Pastes.expand(Editor.text(draft.editor), draft.pastes),
           do: {state, []},
-          else: replace_draft(%{state | history_cursor: nil}, key, text)
+          else:
+            replace_draft(
+              %{
+                state
+                | history_cursor: nil,
+                  drafts: Drafts.put(state.drafts, %{draft | pastes: %{}})
+              },
+              key,
+              text
+            )
 
       {:error, reason} ->
         {%{state | notice: {:command_feedback, external_edit_words(reason)}}, []}
@@ -1126,6 +1141,9 @@ defmodule SwarmCodeCLI.UI.Reducer do
   defp transition(state, {:field_editor, {:feature_field, _, _}, _}), do: {state, []}
 
   defp transition(state, {kind, key, operation}) when kind in [:editor, :field_editor] do
+    {state, operation} =
+      if kind == :editor, do: collapse_paste(state, key, operation), else: {state, operation}
+
     {next, effects} = Editing.apply(state, kind, key, operation)
     next = if kind == :editor and next != state, do: %{next | slash_palette: nil}, else: next
 
@@ -2884,6 +2902,42 @@ defmodule SwarmCodeCLI.UI.Reducer do
         end
     end
   end
+
+  # cli020 D8: a large paste becomes its placeholder; Backspace or Delete
+  # next to a whole placeholder deletes all of it and its entry.
+  defp collapse_paste(state, key, {:paste, text} = operation) do
+    draft = Drafts.fetch(state.drafts, key)
+
+    if Pastes.collapse?(text, state.paste_collapse_lines) do
+      {words, pastes} = Pastes.put(draft.pastes, text)
+      {%{state | drafts: Drafts.put(state.drafts, %{draft | pastes: pastes})}, {:paste, words}}
+    else
+      {state, operation}
+    end
+  end
+
+  defp collapse_paste(state, key, operation)
+       when operation in [:delete_backward, :delete_forward] do
+    draft = Drafts.fetch(state.drafts, key)
+    direction = if operation == :delete_backward, do: :backward, else: :forward
+
+    with true <- draft.pastes != %{},
+         nil <- Editor.selection(draft.editor),
+         {length, n} <-
+           Pastes.deletion(
+             Editor.text(draft.editor),
+             Editor.cursor(draft.editor),
+             direction,
+             draft.pastes
+           ) do
+      draft = %{draft | pastes: Map.delete(draft.pastes, n)}
+      {%{state | drafts: Drafts.put(state.drafts, draft)}, {:times, length, operation}}
+    else
+      _ -> {state, operation}
+    end
+  end
+
+  defp collapse_paste(state, _key, operation), do: {state, operation}
 
   # cli020 D7: a `!` command goes into the history as typed, when it is sent.
   defp remember_text(state, conversation, text) do

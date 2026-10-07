@@ -13,7 +13,9 @@ defmodule SwarmCodeCLI.UI.Draft do
     target: :none,
     chips: [],
     attachments: [],
-    staged_validation: :none
+    staged_validation: :none,
+    # cli020 D8: collapsed pastes by placeholder number (`Draft.Pastes`).
+    pastes: %{}
   ]
 
   @type t :: %__MODULE__{
@@ -25,7 +27,8 @@ defmodule SwarmCodeCLI.UI.Draft do
           target: :none | Intent.dispatch_target(),
           chips: [{:command | :goal | :research, binary(), SafeText.t()}],
           attachments: [AttachmentRef.t()],
-          staged_validation: :none | {:pending | :valid, binary()} | {:invalid, [binary()]}
+          staged_validation: :none | {:pending | :valid, binary()} | {:invalid, [binary()]},
+          pastes: %{pos_integer() => binary()}
         }
 
   def new(key, editor), do: validate!(%__MODULE__{key: key, editor: editor})
@@ -39,7 +42,7 @@ defmodule SwarmCodeCLI.UI.Draft do
   @doc "Payload identity excludes cursor, selection, undo history, scroll and height."
   def payload_identity(%__MODULE__{} = draft) do
     {Editor.text(draft.editor), draft.target, draft.chips, draft.attachments,
-     draft.staged_validation}
+     draft.staged_validation, draft.pastes}
     |> :erlang.term_to_binary()
     |> then(&:crypto.hash(:sha256, &1))
   end
@@ -50,13 +53,13 @@ defmodule SwarmCodeCLI.UI.Draft do
 
   def validate!(%__MODULE__{} = draft) do
     valid =
-      map_size(draft) == 10 and match?({:ok, _}, DraftKey.validate(draft.key)) and
+      map_size(draft) == 11 and match?({:ok, _}, DraftKey.validate(draft.key)) and
         valid_editor?(draft.editor) and nonneg?(draft.scroll_x) and nonneg?(draft.scroll_y) and
         is_integer(draft.height) and draft.height in 1..8 and
         (draft.target == :none or Intent.valid_dispatch_target?(draft.target)) and
         bounded?(draft.chips, 16, &chip?/1) and
         bounded?(draft.attachments, 16, &(AttachmentRef.validate(&1) == :ok)) and
-        validation?(draft.staged_validation)
+        validation?(draft.staged_validation) and pastes?(draft.pastes)
 
     if valid, do: draft, else: raise(ArgumentError, "invalid draft")
   end
@@ -79,6 +82,14 @@ defmodule SwarmCodeCLI.UI.Draft do
   end
 
   defp chip?(_), do: false
+
+  defp pastes?(pastes) when is_map(pastes) and map_size(pastes) <= 64,
+    do:
+      Enum.all?(pastes, fn {n, text} ->
+        is_integer(n) and n > 0 and is_binary(text) and byte_size(text) <= 262_144
+      end)
+
+  defp pastes?(_), do: false
   defp validation?(:none), do: true
   defp validation?({kind, id}) when kind in [:pending, :valid], do: Intent.valid_id?(id)
   defp validation?({:invalid, errors}), do: bounded?(errors, 16, &Intent.valid_id?/1)
