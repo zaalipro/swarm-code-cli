@@ -435,3 +435,60 @@ Branch `cli020/E` from M1 `3008f352`, worktree `~/dev/swarm-code-cli-wt/cli020-E
   100x40, 80x24; table equal apart from the report; key inputs; an ASCII entry never drawn on a
   rich frame; the collection cleared on a raise). Deviation: written after the module (it needs
   the report to exist); green at first run.
+
+## Stubs the finisher removes (§8.1)
+Each reads another lane's field or target with `Map.get` / `ActionTarget.validate/1` and is inert
+until that lane lands; remove the guard (or the fallback) once the field is on the wire.
+- `Dialog.effort_target/1` → `{:local, {:effort_pick, level}}` (D18).
+- Stash rows `{:local, {:stash_draft}}` / `{:local, {:restore_stash}}`, `stash_entries` (D19).
+- `Dialog.rewind_target/1` → `{:rewind_choose, scope}` (D10).
+- `RunSummary.retry_detail` (C5), `approval_mode` on the approval (C), `background_state` on a
+  tool item (C10), the `:shell` transcript kind (C), `last_prompt` on a conversation (C),
+  `desktop_running` on the workspace (C17), `search_results` (C20).
+- `efforts.validator` `dynamic_choices: {:effort_of, :validator_default}` needs `validator_default`
+  in the daemon's `@global_models` (C).
+- `git_branch` / `git_dirty` on the workspace (C22) — E28's `branch` item.
+- `RunSummary.plan` (C23) — E29's plan section.
+- `permissions` in the `project_config` record (C23) — E30's rules block.
+- `state.markdown_cache` (D21) — E31 reads `%{entries: map, bytes: n}`; D calls
+  `Projector.project_reporting/1` and merges its third element.
+- Renderer `%Paint.Options{palette: …}` from `Preferences.palette` (B/D) — E27; until then every
+  palette paints Carbon.
+
+## Gates (run on the done commit's tree)
+- `mise exec -- mix format --check-formatted`: clean.
+- `mise exec -- mix compile --warnings-as-errors --force` (umbrella, dev): exit 0, no warnings.
+- `(cd apps/swarm_code_cli && mise exec -- mix swarm_code.settings --write)` then
+  `git diff --exit-code docs/settings.md`: no diff.
+- `mix swarm_code.provenance.verify`: exit 0; `mix swarm_code.provenance.sync --check`: "every
+  synced file derives from the pinned commit" (core `commands.ex` was repinned in E1/E3).
+- `(cd apps/swarm_code_cli && mise exec -- mix swarm_code.demo.cells)`: 142 files.
+- Tests: the CLI app suite `apps/swarm_code_cli/test` 10 properties, 2833 tests, 0 failures (after
+  E31); core `apps/swarm_code_core/test/swarm_code/settings` 40/0 (after E28); the full umbrella
+  suite was not run (lane rule).
+
+## AGENTS.md text for the finisher (CLI)
+Add under the UI/projector notes:
+
+- Palettes (cli020 E27): `terminal.palette` (cli.json `palette`) picks one of the desktop's eight
+  themes; `Theme.palettes/0`, `Theme.palette_value/3` and `Paint.Options.palette`. The tables in
+  `ui/theme.ex` are derived token by token from `~/dev/swarm-code/assets/css/themes.css` with faint
+  and ghost raised to 4.5:1 / 3:1 on the surface and the card; change a palette only from that file
+  and keep `cli020/e27_palettes_test.exs` (contrast per palette and mode) green. High contrast
+  (`terminal.colors` = `high_contrast`, `Theme.put_high_contrast/1`) is a `:persistent_term` flag:
+  tests that set it are `async: false`.
+- Status line (E28): `terminal.status_items` (cli.json `status_items`) lists the items and their
+  order; `projector/status.ex` reads it from `state.prefs`. New status facts join an item or the
+  always-drawn tail (provider, rate limit, connection), never a free position.
+- Markdown rows (E31): transcript Markdown goes through `Projector.MarkdownRows.rows/3`, keyed by
+  `{sha256(text), inner, ambiguous, glyph tier, ascii?}`; anything new that changes
+  `Markdown.rows/4`'s output must join the key. `Projector.project_reporting/1` returns the frame's
+  computed rows beside the action table (the table stays `binary id => target`); the runtime owns
+  the bounded cache. Measure with `scripts/dev/bench_markdown.exs` on
+  `UI.Fixtures.long_conversation/3`; `cli020/e31_markdown_cache_test.exs` is the golden
+  equivalence test (empty, warm, half-evicted).
+- Settings registry counts (`c74_registry_test`): 180 entries, 140 scalar keys, 27 cli entries
+  after cli020 E; a new entry updates the counts, its section's key list and `docs/settings.md`
+  (`mix swarm_code.settings --write` from `apps/swarm_code_cli`).
+- Lane-E test helpers: `test/support/cli020_e_helpers.ex` (`fixture/3`, `screen/1`,
+  `put_workspace/2` which `Map.merge`s fields other lanes add, `cell_style/3`, `item/2`).
