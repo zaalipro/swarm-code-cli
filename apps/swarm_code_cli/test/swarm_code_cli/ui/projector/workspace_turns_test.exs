@@ -77,6 +77,18 @@ defmodule SwarmCodeCLI.UI.Projector.WorkspaceTurnsTest do
   defp glyph(token, state),
     do: SwarmCodeCLI.UI.SafeText.value(SwarmCodeCLI.UI.Projector.Support.glyph(token, state))
 
+  # cli020 qa (E12): a saved session's answer arrives as an item of the live
+  # run whose state is `running` (the daemon sets a record's state from its
+  # run), not `streaming`; live QA saw "thinking" while the words streamed.
+  test "an answer with words in a live run says writing, whatever its item state" do
+    state =
+      fixture(:swarm, {100, 30})
+      |> replace_item("002", &%{&1 | state: :running})
+
+    {rows, _, _, _} = painted(state)
+    assert String.ends_with?(Enum.at(rows, 2), "writing ▮  23k tok")
+  end
+
   test "the prompt is a card with its time, then the turn's one header row" do
     state = fixture(:swarm, {100, 30})
     {rows, _, _, _} = painted(state)

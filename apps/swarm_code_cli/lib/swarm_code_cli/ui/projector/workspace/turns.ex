@@ -932,7 +932,9 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
             retry != nil ->
               retry
 
-            ctx.answer != nil and ctx.answer.state == :streaming and
+            # cli020 qa: a saved session's answer item takes its run's
+            # state (`running`), a live session's says `streaming`.
+            ctx.answer != nil and ctx.answer.state in [:streaming, :running] and
                 String.trim(ctx.answer.text || "") != "" ->
               "writing"
 
