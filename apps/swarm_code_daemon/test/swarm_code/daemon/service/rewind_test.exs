@@ -88,6 +88,28 @@ defmodule SwarmCode.Daemon.Service.RewindTest do
     assert Enum.any?(Conversations.list_messages(t.conv.id), &(&1.content =~ "Rewound 1 file"))
   end
 
+  test "both: a run a rewound turn launched folds with it (supersede_from/2)", c do
+    t = three_turns(c)
+    [_, second, _] = turns(t)
+    parent = Enum.find(Conversations.list_runs(t.conv.id), &(&1.prompt == "second"))
+
+    {:ok, child} =
+      Conversations.create_run(%{
+        conversation_id: t.conv.id,
+        kind: "swarm",
+        prompt: "launched by the second turn",
+        status: "done",
+        launched_by_run_id: parent.id,
+        started_at: DateTime.utc_now()
+      })
+
+    assert {:ok, %{"value" => %{"status" => "accepted"}}} =
+             rewind(t, second["message_id"], "both")
+
+    folded = Enum.find(Conversations.list_runs(t.conv.id), &(&1.id == child.id))
+    assert folded.superseded_at
+  end
+
   test "conversation leaves the file; files leaves the messages", c do
     t = three_turns(c)
     [_, second, _] = turns(t)

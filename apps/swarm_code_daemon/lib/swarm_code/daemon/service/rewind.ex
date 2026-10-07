@@ -189,39 +189,13 @@ defmodule SwarmCode.Daemon.Service.Rewind do
     end
   end
 
-  # (2) F2's `Conversations.supersede_from/2` when it is synced; until then the
-  # same result for every message from this one on, newest first (§8.1 stub).
+  # (2) F2's `Conversations.supersede_from/2` (synced at desktop 7b8f379f):
+  # this message, every later one and the runs they launched.
   defp supersede(conversation, message) do
-    result =
-      if Code.ensure_loaded?(Conversations) and
-           function_exported?(Conversations, :supersede_from, 2),
-         do: apply(Conversations, :supersede_from, [conversation, message]),
-         else: supersede_loop(conversation, message)
-
-    case result do
-      {:ok, _} -> :ok
-      {:error, :database_busy} -> {:error, :database_busy}
+    case Conversations.supersede_from(conversation, message) do
+      {:ok, _runs} -> :ok
       {:error, reason} -> {:error, reason}
     end
-  end
-
-  defp supersede_loop(conversation, message) do
-    later =
-      Repo.all(
-        from(m in Message,
-          where:
-            m.conversation_id == ^conversation.id and m.role == "user" and
-              is_nil(m.superseded_at) and m.position >= ^message.position,
-          order_by: [desc: m.position]
-        )
-      )
-
-    Enum.reduce_while(later, {:ok, []}, fn m, {:ok, runs} ->
-      case Conversations.supersede(conversation, m) do
-        {:ok, run} -> {:cont, {:ok, if(run, do: [run | runs], else: runs)}}
-        {:error, _} = error -> {:halt, error}
-      end
-    end)
   end
 
   # (3) The files: the message's run, or the first later run with checkpoints.
