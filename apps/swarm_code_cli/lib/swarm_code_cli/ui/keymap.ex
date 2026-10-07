@@ -178,7 +178,7 @@ defmodule SwarmCodeCLI.UI.Keymap do
   `/trust`, and `/queue`, `/approval`, `/panel`, `/diff`, `/theme` and
   `/mouse` with or without their argument.
   """
-  @spec local_command(binary()) :: atom() | nil
+  @spec local_command(binary()) :: atom() | {:effort, :chat | :swarm} | nil
   def local_command(text) when is_binary(text) do
     trimmed = String.trim(text)
 
@@ -187,6 +187,9 @@ defmodule SwarmCodeCLI.UI.Keymap do
       # cli020 D10/D20: bare /rewind and /undo are the client's.
       trimmed == "/rewind" -> :rewind
       trimmed == "/undo" -> :undo
+      # cli020 D18/D20: bare /effort and /swarm_effort open the picker.
+      trimmed == "/effort" -> {:effort, :chat}
+      trimmed == "/swarm_effort" -> {:effort, :swarm}
       command?(trimmed, "/queue") -> :queue
       command?(trimmed, "/approval") -> :approval
       command?(trimmed, "/panel") -> :panel
@@ -916,6 +919,12 @@ defmodule SwarmCodeCLI.UI.Keymap do
           resolved -> resolved
         end
 
+      # cli020 D17 (ux-live-12): Enter on a tool row opens its full output
+      # whether or not the row cut it; with no output to open it folds the
+      # row open where one is drawn (pass70 Q9), else does nothing.
+      tool_row?(state, selected) and text_target(state, selected) != nil ->
+        tool_open(state, selected)
+
       # pass71 F1/F2 (review R1/R2): a reply or an output the daemon sent
       # only in part opens whole; "(Enter opens)" used to fold it instead.
       detail = text_target(state, selected) ->
@@ -926,6 +935,19 @@ defmodule SwarmCodeCLI.UI.Keymap do
 
       true ->
         find_target(state, table, &match?({:local, {:expand, ^selected, _}}, &1))
+    end
+  end
+
+  @doc false
+  # cli020 D17: a tool row of the transcript.
+  def tool_row?(state, selected),
+    do: match?(%{kind: :tool}, Map.get(state.read_model.transcript, selected))
+
+  @doc false
+  def tool_open(state, selected) do
+    case text_target(state, selected) do
+      {:local, action} -> result(action)
+      nil -> :ignore
     end
   end
 

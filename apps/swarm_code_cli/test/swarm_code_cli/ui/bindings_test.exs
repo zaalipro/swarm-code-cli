@@ -154,7 +154,8 @@ defmodule SwarmCodeCLI.UI.BindingsTest do
       #   vim's x and X on the fixture's empty draft line have nothing to
       #   delete (x at a line end would otherwise join lines);
       #   the overlay's x stops its agent only when the projector keeps a stop
-      #   action for it, and the fixture's table has none.
+      #   action for it, and the fixture's table has none;
+      #   Up on a picker's first row stays there (cli020 D15).
       assert Enum.sort(declining) ==
                Enum.sort(
                  [
@@ -164,6 +165,8 @@ defmodule SwarmCodeCLI.UI.BindingsTest do
                    {:composer_newline, :field},
                    {:composer_newline, :overlay},
                    {:overlay_stop_agent, :overlay},
+                   # cli020 D15: Up on a picker's first row stays put.
+                   {:picker_previous, :picker},
                    {:question_option, :dialog},
                    {:vim_delete_char, :composer_normal},
                    {:vim_delete_char_back, :composer_normal}

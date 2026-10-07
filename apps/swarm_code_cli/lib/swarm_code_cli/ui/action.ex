@@ -110,6 +110,8 @@ defmodule SwarmCodeCLI.UI.Action do
           | {:paste_image}
           | :redraw_screen
           | {:rewind_open}
+          | {:effort_move, -1 | 1}
+          | {:effort_pick, binary()}
           | {:rewind_move, -1 | 1}
           | {:rewind_choose, :both | :conversation | :files}
           | {:paste_image_slot, binary()}
@@ -242,6 +244,9 @@ defmodule SwarmCodeCLI.UI.Action do
   def validate({:history, direction} = action),
     do: valid_action(action, direction in [:previous, :next])
 
+  def validate({:slash_local, {:effort, target}} = action),
+    do: valid_action(action, target in [:chat, :swarm])
+
   def validate({:slash_local, command} = action),
     do:
       valid_action(
@@ -273,6 +278,12 @@ defmodule SwarmCodeCLI.UI.Action do
 
   # cli020 D11: Ctrl-L repaints every cell.
   def validate(:redraw_screen), do: {:ok, :redraw_screen}
+
+  # cli020 D18: the effort picker.
+  def validate({:effort_move, delta} = action), do: valid_action(action, delta in [-1, 1])
+
+  def validate({:effort_pick, level} = action),
+    do: valid_action(action, is_binary(level) and level =~ ~r/\A[a-z0-9_-]{1,32}\z/)
 
   # cli020 D10: the rewind list and its confirm.
   def validate({:rewind_open} = action), do: {:ok, action}

@@ -11,6 +11,7 @@ defmodule SwarmCodeCLI.UI.Keymap.Layers do
 
   @doc "The action for `code`/`mods` over the top layer, or `:pass`."
   @spec key(term(), [atom()], map()) :: {:ok, term()} | :ignore | :pass
+  def key(:enter, [], %{layers: [{:effort_picker, _} | _]} = state), do: enter(state)
   def key(code, mods, %{layers: [layer | _]}), do: layer_key(layer, code, mods)
   def key(_code, _mods, _state), do: :pass
 
@@ -28,5 +29,18 @@ defmodule SwarmCodeCLI.UI.Keymap.Layers do
 
   defp layer_key({:rewind_confirm, _}, "f", []), do: Keymap.result({:rewind_choose, :files})
 
+  # D18: the effort picker's rows.
+  defp layer_key({:effort_picker, _}, :up, []), do: Keymap.result({:effort_move, -1})
+  defp layer_key({:effort_picker, _}, :down, []), do: Keymap.result({:effort_move, 1})
+
   defp layer_key(_layer, _code, _mods), do: :pass
+
+  @doc false
+  # Enter needs the level under the cursor, so it reads the state.
+  def enter(%{layers: [{:effort_picker, target} | _]} = state) do
+    case SwarmCodeCLI.UI.Reducer.EffortPicker.selected(state, target) do
+      level when is_binary(level) -> Keymap.result({:effort_pick, level})
+      _ -> :ignore
+    end
+  end
 end

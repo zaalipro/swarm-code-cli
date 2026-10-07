@@ -25,7 +25,7 @@ defmodule SwarmCodeCLI.UI.Reducer do
   alias SwarmCodeCLI.UI.Reducer.{Watch, Commands, Pages, Editing, Details, PathCompletion}
   alias SwarmCodeCLI.UI.Reducer.Hint, as: Hints
   alias SwarmCodeCLI.UI.Reducer.Overlay
-  alias SwarmCodeCLI.UI.Reducer.{Deliveries, Display, ImagePaste, Remote, Rewind}
+  alias SwarmCodeCLI.UI.Reducer.{Deliveries, Display, EffortPicker, ImagePaste, Remote, Rewind}
   alias SwarmCodeCLI.UI.Draft.Pastes
   alias SwarmCodeCLI.UI.WorkflowKeyword
   alias SwarmCodeCLI.UI.Hint
@@ -478,6 +478,22 @@ defmodule SwarmCodeCLI.UI.Reducer do
   # A turn that was sent but is not on screen yet is that turn (I3).
   # cli020 D11: Ctrl-L.
   defp transition(state, :redraw_screen), do: {state, [{:terminal_control, :redraw}]}
+
+  # cli020 D18: the effort picker (`Reducer.EffortPicker`); the level goes
+  # out as the typed command would, the draft kept.
+  defp transition(state, {:effort_move, delta}), do: EffortPicker.move(state, delta)
+
+  defp transition(state, {:effort_pick, level}) do
+    case EffortPicker.command(state, level) do
+      nil ->
+        {state, []}
+
+      text ->
+        {state, closed} = transition(state, :close_top_layer)
+        {state, sent} = send_command_text(state, text)
+        {state, closed ++ sent}
+    end
+  end
 
   # cli020 D10: the rewind list and its confirm (`Reducer.Rewind`).
   defp transition(state, {:rewind_move, delta}), do: Rewind.move(state, delta)
@@ -3114,6 +3130,13 @@ defmodule SwarmCodeCLI.UI.Reducer do
     do: "No editor could be started; set $VISUAL or $EDITOR."
 
   # ------------------------------------------------- client slash commands
+
+  # cli020 D18/D20: bare /effort and /swarm_effort open the picker.
+  defp slash_local(state, {:effort, target}) do
+    {state, cleared} = clear_command_draft(state)
+    {state, opened} = EffortPicker.open(state, target)
+    {state, cleared ++ opened}
+  end
 
   # cli020 D10/D20: bare /rewind lists the turns; /undo confirms the newest.
   defp slash_local(state, command) when command in [:rewind, :undo] do

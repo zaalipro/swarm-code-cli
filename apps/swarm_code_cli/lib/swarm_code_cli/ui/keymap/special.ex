@@ -214,21 +214,12 @@ defmodule SwarmCodeCLI.UI.Keymap.Special do
 
   def run(:open_detail, _key, state, table) do
     run_id = current_run(state)
+    selected = Map.get(state.selection, state.focus)
 
-    # pass71 F2: the selected item's own detail when it has one.
-    case Keymap.text_target(state, Map.get(state.selection, state.focus)) do
-      {:local, {:open_detail, ^run_id, _}} = own ->
-        case Keymap.find_target(state, table, &(&1 == own)) do
-          :ignore ->
-            Keymap.find_target(state, table, &match?({:local, {:open_detail, ^run_id, _}}, &1))
-
-          resolved ->
-            resolved
-        end
-
-      _ ->
-        Keymap.find_target(state, table, &match?({:local, {:open_detail, ^run_id, _}}, &1))
-    end
+    # cli020 D17: `o` on a tool row opens its output, cut or not.
+    if Keymap.tool_row?(state, selected),
+      do: Keymap.tool_open(state, selected),
+      else: open_detail(state, table, run_id)
   end
 
   # ------------------------------------------------------- selection, scroll
@@ -686,6 +677,23 @@ defmodule SwarmCodeCLI.UI.Keymap.Special do
 
       true ->
         :ignore
+    end
+  end
+
+  defp open_detail(state, table, run_id) do
+    # pass71 F2: the selected item's own detail when it has one.
+    case Keymap.text_target(state, Map.get(state.selection, state.focus)) do
+      {:local, {:open_detail, ^run_id, _}} = own ->
+        case Keymap.find_target(state, table, &(&1 == own)) do
+          :ignore ->
+            Keymap.find_target(state, table, &match?({:local, {:open_detail, ^run_id, _}}, &1))
+
+          resolved ->
+            resolved
+        end
+
+      _ ->
+        Keymap.find_target(state, table, &match?({:local, {:open_detail, ^run_id, _}}, &1))
     end
   end
 end
