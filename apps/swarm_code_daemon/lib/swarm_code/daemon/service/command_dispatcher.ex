@@ -261,16 +261,27 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
     )
   end
 
+  # cli020 C7 (ux-live-9, Q7): `/consensus <task>` judges this one run and
+  # leaves the conversation's mode as it was: the engine reads `consensus`
+  # from the struct it is given, so the overlay sets in memory exactly what
+  # `mode_fields(:consensus)` would persist. Bare `/consensus` stays sticky.
   defp execute(conv, %{action: :start_turn, mode: :consensus} = cmd, opts) do
-    with {:ok, conv} <- persist_mode(conv, :consensus) do
-      started(
-        conv,
-        cmd.name,
-        Engine.start_chat_turn(SessionConfiguration.overlay(conv), cmd.task, attachments(opts),
-          research_ids: research_ids(opts)
-        )
+    started(
+      conv,
+      cmd.name,
+      Engine.start_chat_turn(
+        %{
+          SessionConfiguration.overlay(conv)
+          | mode: "build",
+            consensus: true,
+            ultra: false,
+            authoring_workflow: false
+        },
+        cmd.task,
+        attachments(opts),
+        research_ids: research_ids(opts)
       )
-    end
+    )
   end
 
   defp execute(conv, %{action: :author_workflow} = cmd, opts) do
