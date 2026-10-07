@@ -36,6 +36,15 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
 
   alias SwarmCodeCLI.Release.TerminalPreferences
 
+  @provider_setup_words "Add a model provider to start: pick a preset, paste its key."
+  # cli020 B12/B13: what the interactive TUI answers with the Providers page.
+  @setup_reasons [:provider_required, :model_required, :endpoint_required]
+
+  defp setup_words(:provider_required), do: @provider_setup_words
+
+  defp setup_words(reason),
+    do: session_failure(reason, nil).message <> " " <> @provider_setup_words
+
   @exit_failure 1
   @exit_usage 2
   @exit_refused 3
@@ -237,7 +246,8 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
           test_boot,
           fn session -> tui(session, executable, Keyword.put(opts, :resume_picker?, ask?)) end,
           root,
-          conversation: selection
+          conversation: selection,
+          interactive: true
         )
       end)
 
@@ -270,7 +280,9 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
 
   # Starts storage, selects and configures the session, runs `fun`, and always
   # closes the owned runtime. `fun` returns `{:ok, outcome, summary}`.
-  defp with_storage(test_boot, fun, root, selection) do
+  defp with_storage(test_boot, fun, root, options) do
+    {interactive?, selection} = Keyword.pop(options, :interactive, false)
+
     version = Application.spec(:swarm_code_daemon, :vsn) |> to_string()
     boot = test_boot || BootConfig.canonical(platform(), System.user_home!(), version)
 
@@ -280,7 +292,7 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
     try do
       with :ok <- await_storage(launcher, boot),
            :ok <- boot_runtime(),
-           {:ok, session} <- open_session(root, selection) do
+           {:ok, session} <- open_session(root, selection, interactive?) do
         fun.(session)
       end
     after
@@ -295,13 +307,13 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
     end
   end
 
-  defp open_session(root, selection) do
+  defp open_session(root, selection, interactive?) do
     # SQL callers are short-lived. Returning plain session structs does not
     # retain native statement resources in the launcher while the TUI runs.
     query_worker(fn ->
       case SessionSelection.open(root, selection) do
         {:ok, opened} ->
-          case prepare(opened) do
+          case prepare(opened, interactive?) do
             {:ok, session} ->
               {:ok, session}
 
@@ -320,10 +332,25 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
 
   # pass74 S1-13 (D11): `ncode settings` opens without a usable provider —
   # that is how one is added; the dispatch refuses a send until then.
-  defp prepare(session) do
+  # cli020 B12 (onboarding-2): the interactive TUI (the release's full screen
+  # on a terminal; `main/2`'s preflight checked both) opens Providers instead of
+  # exiting 3; `-p`, `--plain` and a non-tty keep exit 3.
+  defp prepare(session, interactive?) do
     case SessionConfiguration.prepare(session, System.get_env()) do
-      {:error, :provider_required} ->
-        if settings_only?(), do: {:ok, session}, else: {:error, :provider_required}
+      {:error, reason} when reason in @setup_reasons ->
+        cond do
+          reason == :provider_required and settings_only?() ->
+            {:ok, session}
+
+          interactive? ->
+            {:ok,
+             session
+             |> Map.put(:open_settings, "providers")
+             |> Map.put(:setup_notice, setup_words(reason))}
+
+          true ->
+            {:error, reason}
+        end
 
       other ->
         other
@@ -387,7 +414,7 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
           project_id: session.project.id,
           conversation_id: conversation_id,
           source_epoch: source_epoch,
-          first_run_notice: session[:notice]
+          first_run_notice: session[:notice] || session[:setup_notice]
         )
 
       path = Path.join(dir, "s")
@@ -449,7 +476,7 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
       # them ignores the keys).
       init =
         struct(init,
-          settings_open: settings_open(),
+          settings_open: settings_open() || session[:open_settings],
           prefs: launch.prefs,
           launch_facts: launch_facts(launch, session.project.root_path, cli_path),
           resume_picker?: resume_picker?
@@ -1063,6 +1090,24 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
         @exit_refused,
         "No model provider is set up yet.",
         "Run 'ncode settings providers' to add one, or set NCODE_MODEL, NCODE_BASE_URL and NCODE_API_KEY in ~/.secrets (the older SWARM_* names still work)."
+      )
+
+  # cli020 B13 (onboarding-4): a first run from the environment that lacks
+  # an endpoint or a model says which.
+  defp session_failure(:endpoint_required, _),
+    do:
+      failure(
+        @exit_refused,
+        "NCODE_BASE_URL is missing (OpenAI-compatible URLs end in /v1).",
+        "Set NCODE_BASE_URL, or run 'ncode settings providers'."
+      )
+
+  defp session_failure(:model_required, _),
+    do:
+      failure(
+        @exit_refused,
+        "NCODE_MODEL is missing.",
+        "Set NCODE_MODEL to a model of your provider, or run 'ncode settings providers'."
       )
 
   # pass71 F19 (review R17): the sentence names the model that was given.
