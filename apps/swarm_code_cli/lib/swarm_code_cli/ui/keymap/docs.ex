@@ -41,10 +41,13 @@ defmodule SwarmCodeCLI.UI.Keymap.Docs do
     settings: "Settings"
   ]
 
-  @mouse_note "Mouse: the wheel scrolls the pane under the pointer (the transcript, the side " <>
-                "panel, the agent overlay, the pager), three lines a notch. While wheel reports " <>
-                "are on, Shift-drag (Option-drag in Terminal.app and iTerm2) selects text; " <>
-                "`/mouse off` gives the terminal its own selection back."
+  # cli020 D5 (Q5): wheel reports are off by default; alternate scroll makes
+  # the terminal send the wheel as arrows, which scroll the transcript.
+  @mouse_note "Mouse: Wheel scrolls; select text with the mouse. /mouse on sends wheel " <>
+                "reports instead (Shift-drag selects). With reports on the wheel scrolls the " <>
+                "pane under the pointer (the transcript, the side panel, the agent overlay, " <>
+                "the pager); a notch is `terminal.wheel_lines` lines (3). A terminal that " <>
+                "sends one arrow per notch walks the prompt history instead: use `/mouse on`."
 
   # cli74 U1-2: the settings layer's chapter (spec §3.9, §4.3).
   @settings_intro """

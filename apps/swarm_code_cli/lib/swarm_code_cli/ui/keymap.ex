@@ -230,6 +230,13 @@ defmodule SwarmCodeCLI.UI.Keymap do
 
   defp route({:mouse, _, _, _, _, _}, _, _), do: :ignore
 
+  # cli020 D5: alternate scroll's arrow burst is the wheel without a
+  # position: what takes the wheel today takes it, the pane is the transcript.
+  defp route({:scroll, direction, count}, state, _) do
+    lines = count * wheel_lines(state)
+    wheel_delta(if(direction == :up, do: -lines, else: lines), nil, nil, state)
+  end
+
   defp route(:focus_gained, state, _),
     do: result({:terminal_focus, :gained, state.terminal_generation})
 
@@ -630,15 +637,24 @@ defmodule SwarmCodeCLI.UI.Keymap do
   # pager) takes the wheel while it is open; the approval card is not modal,
   # so it takes the wheel only under the pointer; any other layer (a picker,
   # a form) ignores it.
-  @wheel_lines 3
+  # cli020 D13: cli.json's `terminal.wheel_lines` (1..10, 3 by default).
+  defp wheel_lines(state) do
+    case Map.get(state, :wheel_lines) do
+      lines when is_integer(lines) -> min(max(lines, 1), 10)
+      _ -> 3
+    end
+  end
 
   defp wheel(kind, column, row, state) do
-    delta = if kind == :wheel_up, do: -@wheel_lines, else: @wheel_lines
+    lines = wheel_lines(state)
+    wheel_delta(if(kind == :wheel_up, do: -lines, else: lines), column, row, state)
+  end
 
+  defp wheel_delta(delta, column, row, state) do
     case state.layers do
       # cli74 U1-2: the settings layer scrolls the region under the pointer.
       [] when is_map_key(state, :settings) and is_struct(state.settings, Settings.Layer) ->
-        result({:settings, {:wheel, delta, column, row}})
+        result({:settings, {:wheel, delta, column || 0, row || 0}})
 
       [:help | _] ->
         result({:scroll, "dialog", {:line, delta}})
@@ -665,6 +681,8 @@ defmodule SwarmCodeCLI.UI.Keymap do
   defp pane_wheel(_column, _row, delta, %{overlay: %{}}),
     do: result({:overlay, {:scroll, delta}})
 
+  defp pane_wheel(nil, nil, delta, state), do: result({:scroll, "main", {:line, delta}})
+
   defp pane_wheel(column, row, delta, state),
     do: result({:scroll, wheel_region(column, row, state), {:line, delta}})
 
@@ -678,6 +696,8 @@ defmodule SwarmCodeCLI.UI.Keymap do
         "main"
     end
   end
+
+  defp in_dialog?(nil, nil, _state), do: false
 
   defp in_dialog?(column, row, state) do
     case SwarmCodeCLI.UI.Projector.Dialog.project(state, Layout.classify(state.size)) do

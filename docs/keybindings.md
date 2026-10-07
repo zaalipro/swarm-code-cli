@@ -10,7 +10,7 @@ same list for the current context on screen. Vim's NORMAL and VISUAL modes
 exist only with the vim keymap on (`NCODE_KEYMAP=vim`, or "Vim mode" in
 the command palette; the older `SWARM_KEYMAP=vim` still works).
 
-Mouse: the wheel scrolls the pane under the pointer (the transcript, the side panel, the agent overlay, the pager), three lines a notch. While wheel reports are on, Shift-drag (Option-drag in Terminal.app and iTerm2) selects text; `/mouse off` gives the terminal its own selection back.
+Mouse: Wheel scrolls; select text with the mouse. /mouse on sends wheel reports instead (Shift-drag selects). With reports on the wheel scrolls the pane under the pointer (the transcript, the side panel, the agent overlay, the pager); a notch is `terminal.wheel_lines` lines (3). A terminal that sends one arrow per notch walks the prompt history instead: use `/mouse on`.
 
 ## Composer
 
