@@ -328,6 +328,61 @@ defmodule SwarmCode.Daemon.Service.C020ProjectionTest do
       assert [%{status: :done} | _] = decoded.plan
     end
 
+    # cli020 qa: the engine writes a chat run's agent with role "assistant"
+    # (it is the run's root node, not a "lead"); live QA saw no Plan 1/3.
+    test "a chat run's root agent is its lead: its plan shows", c do
+      {:ok, conv} = Conversations.create(c.project.id)
+
+      {:ok, run} =
+        Conversations.create_run(%{
+          conversation_id: conv.id,
+          kind: "chat",
+          prompt: "Plan it",
+          status: "running",
+          started_at: DateTime.utc_now()
+        })
+
+      {:ok, agent} =
+        Conversations.insert_node(%{
+          run_id: run.id,
+          kind: "agent",
+          role: "assistant",
+          name: "assistant",
+          status: "running",
+          started_at: DateTime.utc_now()
+        })
+
+      {:ok, _} = Conversations.update_run(run, %{root_node_id: agent.id})
+
+      input =
+        Jason.encode!(%{
+          "items" => [
+            %{"text" => "read", "status" => "done"},
+            %{"text" => "test", "status" => "in_progress"},
+            %{"text" => "ship", "status" => "pending"}
+          ]
+        })
+
+      {:ok, _} =
+        Conversations.insert_node(%{
+          run_id: run.id,
+          kind: "op",
+          op_type: "update_plan",
+          parent_id: agent.id,
+          name: "update_plan",
+          title: "plan",
+          status: "done",
+          input: input,
+          started_at: DateTime.utc_now(),
+          finished_at: DateTime.utc_now()
+        })
+
+      backend = start_backend(c, conv)
+
+      assert [%{"text" => "read", "status" => "done"}, _, _] =
+               run_body(backend, conv, run.id)["plan"]
+    end
+
     test "a run without a plan has none", c do
       {conv, run, _lead} = running_chat(c, "Just answer")
       backend = start_backend(c, conv)

@@ -50,6 +50,10 @@ defmodule SwarmCode.Daemon.Service.RetryRunTest do
     backend = start_backend(c, conv)
     body = Enum.find(workspace(backend, scope(conv))["runs"], &(&1["id"] == run.id))
     assert body["state"] == "failed"
+    # cli020 qa: the client admits `run.retry` only when the run offers it;
+    # live QA saw `r` and "Retry failed run" refused with "not allowed".
+    assert body["allowed_actions"] == ["retry"]
+    assert {:ok, _} = SwarmCodeCLI.UI.DataSource.DTO.RunSummary.decode(body)
 
     assert {:ok, %{"value" => %{"status" => "accepted", "identifiers" => [new_run]}}} =
              retry(backend, conv, run.id, body["revision"])

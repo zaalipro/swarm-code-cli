@@ -41,7 +41,9 @@ defmodule SwarmCode.Daemon.Service.PersistedProjection do
           started_at: r.started_at,
           finished_at: r.finished_at,
           inserted_at: r.inserted_at,
-          updated_at: r.updated_at
+          updated_at: r.updated_at,
+          # cli020 qa (C16): a rewound turn's run reads as superseded.
+          superseded_at: r.superseded_at
         }
       )
 
@@ -549,13 +551,17 @@ defmodule SwarmCode.Daemon.Service.PersistedProjection do
   def plans(_conversation, []), do: %{}
 
   def plans(conversation, ids) do
+    # cli020 qa: the lead is a node with role "lead" or the run's root agent
+    # (a chat run's agent has role "assistant").
     newest =
       from(o2 in Node,
         join: p2 in Node,
         on: p2.id == o2.parent_id,
+        join: r2 in Run,
+        on: r2.id == o2.run_id,
         where:
           o2.run_id == parent_as(:plan).run_id and o2.kind == "op" and
-            o2.op_type == "update_plan" and p2.role == "lead",
+            o2.op_type == "update_plan" and (p2.role == "lead" or p2.id == r2.root_node_id),
         order_by: [desc: o2.inserted_at, desc: o2.id],
         limit: 1,
         select: o2.id
@@ -570,7 +576,7 @@ defmodule SwarmCode.Daemon.Service.PersistedProjection do
         on: r.id == o.run_id,
         where:
           r.conversation_id == ^conversation and o.run_id in ^ids and o.kind == "op" and
-            o.op_type == "update_plan" and p.role == "lead" and
+            o.op_type == "update_plan" and (p.role == "lead" or p.id == r.root_node_id) and
             o.id == subquery(newest),
         select: {o.run_id, fragment("substr(coalesce(?, ''), 1, 8192)", o.input)}
       )

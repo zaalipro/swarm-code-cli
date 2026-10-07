@@ -105,8 +105,9 @@ defmodule SwarmCodeCLI.UI.RequestResolver do
 
   defp required_permission(_conversation_command), do: :send
 
+  # cli020 C6/D16: the desktop's ↻ Retry takes a failed or a stopped run.
   defp retry_not_failed?({:retry_run, _run_id, _revision}, context),
-    do: context.active_run_state != :failed
+    do: context.active_run_state not in [:failed, :stopped]
 
   defp retry_not_failed?(_intent, _context), do: false
 
@@ -218,7 +219,7 @@ defmodule SwarmCodeCLI.UI.RequestResolver do
 
   defp valid_origin?({:retry_run, run_id, revision}, context) do
     context.origin == {:run_revision, run_id, revision} and scope_current?(context) and
-      context.active_run_id == run_id and context.active_run_state == :failed and
+      context.active_run_id == run_id and context.active_run_state in [:failed, :stopped] and
       context.subject_revision == revision and is_nil(context.active_node_id) and
       is_nil(context.active_agent_id) and is_nil(context.interaction) and
       canonical_non_text?(context)

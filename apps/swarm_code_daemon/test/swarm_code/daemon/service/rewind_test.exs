@@ -88,6 +88,26 @@ defmodule SwarmCode.Daemon.Service.RewindTest do
     assert Enum.any?(Conversations.list_messages(t.conv.id), &(&1.content =~ "Rewound 1 file"))
   end
 
+  # cli020 qa: live QA saw the rewound turn still drawn in full after the
+  # rewind; the client hides runs whose summary state is `superseded`.
+  test "both: the rewound runs read as superseded in the workspace", c do
+    t = three_turns(c)
+    [_, second, _] = turns(t)
+
+    assert {:ok, %{"value" => %{"status" => "accepted"}}} =
+             rewind(t, second["message_id"], "both")
+
+    states =
+      t.backend
+      |> workspace(scope(t.conv))
+      |> Map.fetch!("runs")
+      |> Map.new(&{&1["title"], {&1["state"], &1["allowed_actions"]}})
+
+    assert states["first"] == {"done", []}
+    assert states["second"] == {"superseded", []}
+    assert states["third"] == {"superseded", []}
+  end
+
   test "both: a run a rewound turn launched folds with it (supersede_from/2)", c do
     t = three_turns(c)
     [_, second, _] = turns(t)

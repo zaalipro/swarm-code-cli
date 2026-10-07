@@ -42,7 +42,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   ]
   # pass71 S2: slow reads run as jobs; this many at once, the rest are refused.
   @max_jobs 8
-  @terminal [:completed, :failed, :cancelled, :interrupted]
+  # cli020 qa: `:superseded` is a rewound turn's run (C16), as final as done.
+  @terminal [:completed, :failed, :cancelled, :interrupted, :superseded]
   alias SwarmCode.Daemon.Service.AgentStatus
   alias SwarmCode.Daemon.Service.PanelFacts
   alias SwarmCode.Daemon.Service.Settings.Deltas, as: SettingsDeltas
@@ -3677,6 +3678,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
         status =
           cond do
+            # cli020 qa (C16): the client folds a superseded run's turn away.
+            Map.get(row, :superseded_at) != nil and run.status in @terminal -> :superseded
             approval != nil -> :waiting_approval
             interactions != [] -> :waiting_question
             run.retry_detail != nil and run.status == :running -> :retrying
@@ -4923,6 +4926,9 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   defp status(:completed), do: "done"
   defp status(:cancelled), do: "stopped"
   defp status(s), do: Atom.to_string(s)
+  # cli020 qa (C6, D16): a failed or stopped run offers `retry`; the client
+  # admits `run.retry` only for a run that lists it.
+  defp actions(%{status: s}) when s in [:failed, :cancelled], do: ["retry"]
   defp actions(%{status: s}) when s in @terminal, do: []
   defp actions(%{status: :paused}), do: ["continue", "stop", "steer"]
   defp actions(_), do: ["pause", "stop", "steer"]

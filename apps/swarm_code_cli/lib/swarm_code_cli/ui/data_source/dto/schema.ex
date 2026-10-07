@@ -119,7 +119,7 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.Schema do
         ]
 
     Enum.all?(run.allowed_actions, &(&1 in actions)) and
-      (:retry not in run.allowed_actions or run.state == :failed) and
+      (:retry not in run.allowed_actions or run.state in [:failed, :stopped]) and
       run.seen_revision <= run.revision and run.parent_run_id != run.id
   end
 
