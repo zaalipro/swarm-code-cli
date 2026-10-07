@@ -261,6 +261,13 @@ headless() {
 }
 
 if [[ $prompt_set -eq 1 ]]; then
+  # cli020 B1: a prompt with a pipe or a file on stdin sends that stdin after
+  # it; a terminal, /dev/null or a socket is never read (a script whose stdin
+  # is an idle inherited terminal must not hang).
+  unset SWARM_STDIN_PIPED
+  if [[ "$prompt" != "-" ]] && { [[ -p /dev/stdin ]] || [[ -f /dev/stdin ]]; }; then
+    export SWARM_STDIN_PIPED=1
+  fi
   if [[ $json -eq 1 ]]; then headless -p "$prompt" --json; else headless -p "$prompt"; fi
 fi
 

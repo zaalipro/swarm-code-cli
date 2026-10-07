@@ -21,6 +21,7 @@ defmodule SwarmCodeCLI.Release.LauncherTest do
     printf 'MODEL=%s\\n' "${SWARM_MODEL_OVERRIDE-<unset>}"
     printf 'ROOT=%s\\n' "${SWARM_PROJECT_ROOT-<unset>}"
     printf 'TUI=%s\\n' "${SWARM_RELEASE_TUI-<unset>}"
+    printf 'PIPED=%s\\n' "${SWARM_STDIN_PIPED-<unset>}"
   } >"$STUB_LOG"
   exit "${STUB_EXIT:-0}"
   """
@@ -142,6 +143,28 @@ defmodule SwarmCodeCLI.Release.LauncherTest do
       # The command ran in the project, so the project is where it ran.
       assert log["ROOT"] == resolved(context.project, "-P")
       assert log["TUI"] == "<unset>"
+    end
+
+    # cli020 B1: piped stdin goes with the prompt; /dev/null and `-p -` never
+    # mark it (the release reads `-p -` itself).
+    test "a pipe or a file on stdin is marked for the prompt; /dev/null is not", context do
+      launch(context, ["-p", "hi"])
+      assert stub(context)["PIPED"] == "1"
+
+      file = Path.join(context.project, "input.txt")
+      File.write!(file, "diff")
+
+      for {redirect, expected} <- [{file, "1"}, {"/dev/null", "<unset>"}] do
+        System.cmd("bash", ["-c", "bash \"$1\" -p hi < \"$2\"", "_", context.launcher, redirect],
+          env: [{"STUB_LOG", context.log}, {"SWARM_STDIN_PIPED", "1"}],
+          cd: context.project
+        )
+
+        assert stub(context)["PIPED"] == expected, redirect
+      end
+
+      launch(context, ["-p", "-"])
+      assert stub(context)["PIPED"] == "<unset>"
     end
 
     test "the run's exit code is the command's", context do

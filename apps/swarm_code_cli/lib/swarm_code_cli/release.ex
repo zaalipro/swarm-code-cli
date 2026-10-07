@@ -76,8 +76,27 @@ defmodule SwarmCodeCLI.Release do
   def main(["tui"]), do: SwarmCodeCLI.Release.PersistedSession.run()
 
   def main(args) when is_list(args) do
+    # cli020 B2: the headless output and the prompt on stdin are UTF-8 whatever
+    # the locale says (under LANG=C the devices start as latin1).
+    configure_io()
     code = run(args)
     System.halt(code)
+  end
+
+  @doc """
+  cli020 B2: puts the standard devices in unicode mode, so a `-p` answer, a
+  `--json` summary and a prompt read from stdin keep their UTF-8 under
+  `LC_ALL=C` (the VM opens them as latin1 there).
+  """
+  @spec configure_io([atom() | pid()]) :: :ok
+  def configure_io(devices \\ [:standard_io, :standard_error]) do
+    Enum.each(devices, fn device ->
+      try do
+        :io.setopts(device, encoding: :unicode)
+      catch
+        _, _ -> :ok
+      end
+    end)
   end
 
   @doc "Runs the command line and returns the exit code (the VM keeps running)."
@@ -342,20 +361,80 @@ defmodule SwarmCodeCLI.Release do
   defp prompt?(text),
     do: byte_size(text) <= @max_prompt_bytes and String.valid?(text) and String.trim(text) != ""
 
-  # `-p -` reads the prompt from stdin, bounded like any prompt.
-  defp read_prompt(%{mode: :prompt, prompt: "-"} = options) do
-    case IO.binread(:stdio, @max_prompt_bytes + 1) do
-      text when is_binary(text) ->
-        if prompt?(text),
-          do: {:ok, %{options | prompt: text}},
-          else: {:error, "the prompt on stdin is empty, not UTF-8, or over 256 KiB."}
+  @doc """
+  cli020 B1: the prompt `-p -` reads from stdin, and the piped stdin a `-p
+  PROMPT` gets when the launcher saw a pipe or a file there
+  (`SWARM_STDIN_PIPED=1`). Both are read in unicode mode (B2) and bounded to
+  256 KiB in bytes.
+  """
+  @spec read_prompt(map(), atom() | pid(), map()) :: {:ok, map()} | {:error, String.t()}
+  def read_prompt(options, device \\ :stdio, env \\ System.get_env())
 
-      _ ->
+  def read_prompt(%{mode: :prompt, prompt: "-"} = options, device, _env) do
+    case read_stdin(device) do
+      {:ok, text} ->
+        if String.trim(text) == "",
+          do: {:error, "the prompt on stdin is empty."},
+          else: {:ok, %{options | prompt: text}}
+
+      {:error, :empty} ->
         {:error, "the prompt on stdin is empty."}
+
+      {:error, :unicode} ->
+        {:error, "the prompt on stdin is not UTF-8."}
+
+      {:error, :too_large} ->
+        {:error, "the prompt on stdin is over 256 KiB."}
     end
   end
 
-  defp read_prompt(options), do: {:ok, options}
+  def read_prompt(%{mode: :prompt, prompt: prompt} = options, device, env)
+      when is_binary(prompt) do
+    if Map.get(env, "SWARM_STDIN_PIPED") == "1" do
+      case read_stdin(device) do
+        {:ok, stdin} ->
+          if String.trim(stdin) == "",
+            do: {:ok, options},
+            else: piped(options, prompt <> "\n\n<stdin>\n" <> stdin <> "\n</stdin>")
+
+        {:error, :empty} ->
+          {:ok, options}
+
+        {:error, :unicode} ->
+          {:error, "the prompt on stdin is not UTF-8."}
+
+        {:error, :too_large} ->
+          {:error, "the prompt and its piped stdin are over 256 KiB."}
+      end
+    else
+      {:ok, options}
+    end
+  end
+
+  def read_prompt(options, _device, _env), do: {:ok, options}
+
+  defp piped(options, text) do
+    if byte_size(text) <= @max_prompt_bytes,
+      do: {:ok, %{options | prompt: text}},
+      else: {:error, "the prompt and its piped stdin are over 256 KiB."}
+  end
+
+  # A unicode device counts characters, so the byte bound is checked again.
+  defp read_stdin(device) do
+    case IO.read(device, @max_prompt_bytes + 1) do
+      :eof ->
+        {:error, :empty}
+
+      text when is_binary(text) and byte_size(text) > @max_prompt_bytes ->
+        {:error, :too_large}
+
+      text when is_binary(text) ->
+        if String.valid?(text), do: {:ok, text}, else: {:error, :unicode}
+
+      {:error, _} ->
+        {:error, :unicode}
+    end
+  end
 
   defp mode(%{mode: :prompt, prompt: prompt, format: format}), do: {:prompt, prompt, format}
   defp mode(%{mode: :plain, format: format}), do: {:plain, format}
