@@ -18,6 +18,8 @@ defmodule SwarmCode.Domain.Engine.RunServerPendingInteractionsTest do
     :command_family,
     :classification,
     :allowed_decisions,
+    # cli020 A'2: the approval mode the RunServer asked under (F1), nil for a question.
+    :approval_mode,
     :deadline_at,
     :requested_at,
     :questions
@@ -103,11 +105,65 @@ defmodule SwarmCode.Domain.Engine.RunServerPendingInteractionsTest do
              classification: :normal,
              permission: :execute,
              requested_at: ^asked,
-             allowed_decisions: [:approve, :approve_run, :always_prefix, :deny, :deny_stop]
+             allowed_decisions: [:approve, :approve_run, :always_prefix, :deny, :deny_stop],
+             approval_mode: nil
            } = row
 
     assert Map.keys(row) |> Enum.sort() == Enum.sort(@row_keys)
     assert Jason.encode!(row)
+  end
+
+  # cli020 A'2 (ux-live-5): a read-only ask (F1 stores `mode: "read_only"`)
+  # offers y once and d deny only; nothing is remembered.
+  test "a read-only approval offers approve, deny and deny_stop only" do
+    write = Ecto.UUID.generate()
+    shell = Ecto.UUID.generate()
+
+    state =
+      state(
+        %{
+          write => %{permission: :write, safety: :normal, mode: "read_only"},
+          shell => %{permission: :execute, safety: :normal, mode: "read_only"}
+        },
+        %{},
+        %{
+          write => %{op_type: "write_file", input: Jason.encode!(%{"path" => "a.txt"})},
+          shell => %{
+            op_type: "run_command",
+            input: Jason.encode!(%{"command" => "mix test"}),
+            approval_prefix: "mix test"
+          }
+        }
+      )
+
+    assert {:reply, rows, ^state} = RunServer.handle_call(:pending_interactions, nil, state)
+
+    for row <- rows do
+      assert row.allowed_decisions == [:approve, :deny, :deny_stop]
+      assert row.approval_mode == "read_only"
+      assert Map.keys(row) |> Enum.sort() == Enum.sort(@row_keys)
+    end
+  end
+
+  test "an auto approval keeps approve_run and, for a family, always_prefix" do
+    id = Ecto.UUID.generate()
+
+    state =
+      state(
+        %{id => %{permission: :execute, safety: :normal, mode: "auto"}},
+        %{},
+        %{
+          id => %{
+            op_type: "run_command",
+            input: Jason.encode!(%{"command" => "mix test"}),
+            approval_prefix: "mix test"
+          }
+        }
+      )
+
+    assert {:reply, [row], ^state} = RunServer.handle_call(:pending_interactions, nil, state)
+    assert row.allowed_decisions == [:approve, :approve_run, :always_prefix, :deny, :deny_stop]
+    assert row.approval_mode == "auto"
   end
 
   test "a dangerous command offers no family; a file tool names its path and the root" do

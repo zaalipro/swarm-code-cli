@@ -9,6 +9,18 @@ defmodule SwarmCode.Domain.Hooks do
     blocks the tool call, stderr is the reason.
   - `post_tool_use` — fires after a tool returns; informational only.
 
+  pass 72 F9 (CLI 0.2.0, competitors-10):
+  - `stop` — a run finished (`NCODE_STATUS`, `NCODE_RUN_ID`); informational.
+  - `notification` — a run waits for the user (`NCODE_KIND` = `approval` or
+    `question`, `NCODE_RUN_ID`); informational.
+  - `user_prompt_submit` — before a chat turn starts (`NCODE_PROMPT`, the
+    first 8 KB); exit 2 refuses the send, stderr is the reason.
+  - `pre_compact` — a compaction starts (`NCODE_RUN_ID`); informational.
+  - `session_end` — the app quits; informational, bounded (`SwarmCode.Domain.Quit`).
+
+  The informational events run in `SwarmCode.Domain.Hooks.TaskSupervisor`
+  (`run_async/3`), never in a state owner's callback.
+
   spec 73 T16: a hook is a committed shell command, so it only runs for a
   project the user has trusted (`SwarmCode.Domain.Projects.trusted?/1`, the spec 67
   T31 gate), with the scrubbed environment `run_command` uses, stdin closed,
@@ -27,8 +39,63 @@ defmodule SwarmCode.Domain.Hooks do
   alias SwarmCode.Domain.Repo
   alias SwarmCode.Domain.Tools.RunCommand
 
-  @type event :: :session_start | :pre_tool_use | :post_tool_use
+  @type event ::
+          :session_start
+          | :pre_tool_use
+          | :post_tool_use
+          | :stop
+          | :notification
+          | :user_prompt_submit
+          | :pre_compact
+          | :session_end
   @type result :: :ok | {:block, String.t()} | {:inject, String.t()}
+
+  # pass 72 F9: the events whose exit 2 refuses what fired them, and the ones
+  # whose stdout becomes context. Every other event is informational.
+  @blocking [:pre_tool_use, :user_prompt_submit]
+  @injecting [:session_start, :post_tool_use]
+
+  # pass 72 F9: what an event's context may export, and how much of the prompt.
+  @context_env [run_id: "NCODE_RUN_ID", status: "NCODE_STATUS", kind: "NCODE_KIND"]
+  @prompt_env_bytes 8_192
+
+  @doc """
+  pass 72 F9: `run/3` as owned work under `SwarmCode.Domain.Hooks.TaskSupervisor`,
+  for the informational events — the config read and the hook itself never
+  run in the caller (a RunServer callback, a LiveView). Returns `:ok` at once.
+  """
+  @spec run_async(event(), map(), String.t() | nil) :: :ok
+  def run_async(_event, _context, nil), do: :ok
+
+  def run_async(event, context, root) do
+    Task.Supervisor.start_child(SwarmCode.Domain.Hooks.TaskSupervisor, fn ->
+      run(event, context, root)
+    end)
+
+    :ok
+  end
+
+  @doc """
+  pass 72 F9: `run/3` for a blocking event, in a task under
+  `SwarmCode.Domain.Hooks.TaskSupervisor` so the hook's port and its messages never
+  touch the caller's mailbox. The caller waits for the answer, at most
+  `timeout` ms (then `:ok`: a hook that cannot answer does not block).
+  """
+  @spec run_supervised(event(), map(), String.t() | nil, timeout()) :: result()
+  def run_supervised(event, context, root, timeout \\ 60_000)
+  def run_supervised(_event, _context, nil, _timeout), do: :ok
+
+  def run_supervised(event, context, root, timeout) do
+    task =
+      Task.Supervisor.async_nolink(SwarmCode.Domain.Hooks.TaskSupervisor, fn ->
+        run(event, context, root)
+      end)
+
+    case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
+      {:ok, result} -> result
+      _exit_or_timeout -> :ok
+    end
+  end
 
   @doc """
   Runs every hook for `event` whose matcher (if any) matches `tool_name`.
@@ -67,6 +134,15 @@ defmodule SwarmCode.Domain.Hooks do
   # sits in `SwarmCode.Domain.Cache` under the `:project` tag. The project root is
   # the source for an isolation directory too (its copy is the same file at
   # clone time, and a worktree carries none).
+  @doc """
+  pass 72 F10: the parsed `.swarm_code/config.json` of `root` (an isolation
+  directory answers for its project), cached per (mtime, size) like the
+  hooks' own read; nil when there is none. No trust check — callers that act
+  on it check `trusted_root?/1` first (`SwarmCode.Domain.Engine.Rules.for_root/1`).
+  """
+  @spec project_config(String.t()) :: ProjectConfig.t() | nil
+  def project_config(root) when is_binary(root), do: cached_config(owner_root(root))
+
   defp cached_config(root) do
     path = Path.join(root, ".swarm_code/config.json")
 
@@ -167,13 +243,25 @@ defmodule SwarmCode.Domain.Hooks do
         case context[:tool_name] do
           tool when is_binary(tool) -> [{"NCODE_TOOL", tool}, {"SWARMCODE_TOOL", tool}]
           _none -> []
-        end
+        end ++ context_env(context)
+
+    cap_ms = context[:timeout_cap_ms]
 
     results =
       Enum.reduce_while(hooks, [], fn hook, acc ->
+        hook =
+          if is_integer(cap_ms) and cap_ms > 0,
+            do: %{hook | timeout_ms: min(hook.timeout_ms, cap_ms)},
+            else: hook
+
         case run_one(hook, root, env) do
-          {:block, reason} when event == :pre_tool_use ->
+          {:block, reason} when event in @blocking ->
             {:halt, {:blocked, reason}}
+
+          # pass 72 F9: exit 2 of an informational event (and of
+          # `session_start`, which raised a CaseClauseError here) blocks nothing.
+          {:block, _reason} ->
+            {:cont, acc}
 
           {:ok, output} ->
             {:cont, [output | acc]}
@@ -190,7 +278,7 @@ defmodule SwarmCode.Domain.Hooks do
       outputs when is_list(outputs) ->
         # pre_tool_use: exit 0 means :ok (no inject); only session_start and
         # post_tool_use collect stdout as injectable context.
-        if event == :pre_tool_use do
+        if event not in @injecting do
           :ok
         else
           text =
@@ -202,6 +290,35 @@ defmodule SwarmCode.Domain.Hooks do
           if text == "", do: :ok, else: {:inject, text}
         end
     end
+  end
+
+  # pass 72 F9: the event's facts as `NCODE_*` variables. Only short plain
+  # values go out (a port refuses a NUL byte in its environment), and the
+  # prompt is cut to its first 8 KB on a character boundary.
+  defp context_env(context) do
+    facts =
+      for {key, name} <- @context_env,
+          value = context[key],
+          is_binary(value) and Regex.match?(~r/\A[\w.:-]{1,128}\z/, value),
+          do: {name, value}
+
+    prompt =
+      case context[:prompt] do
+        text when is_binary(text) and text != "" ->
+          text = text |> String.replace_invalid() |> String.replace(<<0>>, "")
+
+          text =
+            if byte_size(text) > @prompt_env_bytes,
+              do: text |> binary_part(0, @prompt_env_bytes) |> String.replace_invalid(""),
+              else: text
+
+          [{"NCODE_PROMPT", text}]
+
+        _none ->
+          []
+      end
+
+    facts ++ prompt
   end
 
   # spec 73 T16: a Port instead of `Task.async` + `System.cmd`: the OS pid is

@@ -100,7 +100,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
       :agent_id,
       :agent_name,
       :requested_at,
-      :allowed_decisions
+      :allowed_decisions,
+      :approval_mode
     ],
     DTO.LibraryItem => [:matches],
     DTO.TranscriptItem => [:kind, :tool, :agent_id, :tokens_in, :tokens_out, :at],

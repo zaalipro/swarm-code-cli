@@ -467,3 +467,39 @@ after):
    - Re-run alone 3 times: 26 tests, 0 failures each time. It also passed in run 1. This is a
      **load flake** under §4.4 (the fixture server's socket closed under load), in C's test file,
      which A does not touch.
+
+## A' (branch `cli020/A2` from M2 `647569ec`, worktree `cli020-A2`)
+
+Done by the integrator (the M2 agent), as owner A for A'.
+
+- **A'1** `mix swarm_code.provenance.sync --ref 7b8f379f5ed5976a191c08708af824d10b919633
+  --upstream /Users/zaali/dev/swarm-code`: 15 synced files changed (policy, operation,
+  run_server, engine, agent_server, conversations, message, node, prompts, attachments, hooks,
+  project_config, tools, command_safety, research/server, mapped policy_test), 2 new
+  (`engine/rules.ex`, `tools/update_plan.ex`). One conflict, the one predicted above:
+  `run_server.ex`'s approval map (F1's `mode: mode` + the CLI's `requested_at:`, both kept).
+  A6 (tools.ex/prompts.ex) and the hooks.ex umask hunk merged cleanly. `agent_server.ex`,
+  `command_safety.ex` and `research/server.ex` changed too (F8's ctx key and F10; not in the
+  contract's expected list, all unpatched). `7b8f379f…` is the sixth `@adaptation_pins` entry
+  plus a `SOURCE_AUTHORIZATION.md` addendum (same deviation as A1: `source-policy.json` records
+  no pins). Schema contract unchanged; `drift --strict`: no new migration, no domain commit.
+  `domain/format.ex` stays frozen at 4c7c577a (format.ex unchanged upstream).
+- **A'2** `pending_interactions.ex`: `mode: "read_only"` → `[:approve, :deny, :deny_stop]`;
+  every row has `approval_mode` (the row-key contract test gained it). **Deviation:** the wire
+  half the contract gives to C (C's lane closed before A'1) is done here: the persisted
+  backend's card carries `"approval_mode"`, `DTO.Approval.approval_mode` (optional, 32 bytes)
+  and the codec's optional-field list. New `daemon/service/read_only_ask_test.exs` uses the
+  loopback OpenAI-compatible server (no `LLM.Fake` in the CLI domain); the denial is in the op
+  node's `error`, not `result`.
+- **A'3** `boot.ex`: `prune_abandoned(now, 24, keep: CommandLedger.staged_attachment_ids())`.
+- **A'4** `shutdown.ex`: the desktop's `Quit.session_end_hooks/1` (trusted, non-scratch
+  projects opened since the VM started, ≤ 20, 5 s cap, `Hooks.TaskSupervisor`), run as the
+  first step, before the runs stop (the contract's order; the desktop runs it after
+  `stop_everything`). Context `%{reason: "quit", timeout_cap_ms: cap}`.
+- A9's two strict dirty-tree tests are unskipped (F4 synced): 4/0 on both backends.
+- Stubs left for the finisher (§8.1, not A' tasks): C's `shell_message_role/0` flip to
+  `"shell"` (F3 is synced), C's `Rewind.supersede/2` direct `supersede_from/2` call (F2 is
+  synced; the `function_exported?` branch now takes it at runtime), B23's `--approval`
+  wiring (F8's `opts[:approval_mode]` is synced).
+- Tests: domain dir + boot/shutdown/read_only_ask/project_config/pass70_approval/rewind/
+  shell_escape: 411 tests, 0 failures, 2 skipped (the two now unskipped: 4/0 alone).

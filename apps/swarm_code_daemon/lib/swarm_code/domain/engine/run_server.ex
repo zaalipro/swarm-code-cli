@@ -179,6 +179,25 @@ defmodule SwarmCode.Domain.Engine.RunServer do
 
   # spec 66 T4/T5: `safety` is the command's class; `request_approval/3` keeps
   # working and means `:normal`.
+  # pass 72 F1: `mode` is the approval mode the op was decided in. In
+  # `"read_only"` nothing remembered (a run-wide "always", a command family, a
+  # mission's plan) skips the ask, and the answer is never remembered.
+  @spec request_approval(
+          String.t(),
+          String.t(),
+          :read | :write | :execute | :private_network,
+          atom(),
+          String.t() | nil
+        ) ::
+          :approved | :denied | :timeout
+  def request_approval(run_id, node_id, permission, safety, mode),
+    do:
+      GenServer.call(
+        via(run_id),
+        {:request_approval, node_id, permission, safety, mode},
+        :infinity
+      )
+
   @spec request_approval(
           String.t(),
           String.t(),
@@ -187,7 +206,7 @@ defmodule SwarmCode.Domain.Engine.RunServer do
         ) ::
           :approved | :denied | :timeout
   def request_approval(run_id, node_id, permission, safety),
-    do: GenServer.call(via(run_id), {:request_approval, node_id, permission, safety}, :infinity)
+    do: request_approval(run_id, node_id, permission, safety, nil)
 
   @spec request_approval(String.t(), String.t(), :read | :write | :execute | :private_network) ::
           :approved | :denied | :timeout
@@ -1002,7 +1021,10 @@ defmodule SwarmCode.Domain.Engine.RunServer do
     {:reply, {:ok, node}, state}
   end
 
-  def handle_call({:request_approval, node_id, permission, safety}, from, state) do
+  def handle_call({:request_approval, node_id, permission, safety}, from, state),
+    do: handle_call({:request_approval, node_id, permission, safety, nil}, from, state)
+
+  def handle_call({:request_approval, node_id, permission, safety, mode}, from, state) do
     cond do
       # spec 74 BUGS-48: an approval queued behind a stop revived the stopped
       # op (`awaiting_approval`), left a Questions row and pinged the user.
@@ -1012,7 +1034,9 @@ defmodule SwarmCode.Domain.Engine.RunServer do
       # spec 66 T4: a dangerous command is asked about even when the class was
       # "always allow"ed. T5: a command whose family the project already
       # approved never gets here a second time.
-      safety != :dangerous and
+      # pass 72 F1: and never in read-only, where every write and command asks.
+      # pass 72 F10: nor for a call a permission rule asks about (`:rule`).
+      safety not in [:dangerous, :rule] and mode != "read_only" and
           (MapSet.member?(state.always, always_key(state, node_id, permission)) or
              auto_approved?(state, node_id) or
              mission_commands_allowed?(state, node_id, permission)) ->
@@ -1028,6 +1052,7 @@ defmodule SwarmCode.Domain.Engine.RunServer do
             timer: timer,
             permission: permission,
             safety: safety,
+            mode: mode,
             requested_at: DateTime.utc_now()
           })
           # spec 66 T3: the card used to render the node title alone — "run: " and
@@ -1036,7 +1061,8 @@ defmodule SwarmCode.Domain.Engine.RunServer do
           |> put_node(node_id, %{
             status: "awaiting_approval",
             detail: approval_detail(state, node_id),
-            approval_prefix: approval_prefix(state, node_id, safety)
+            approval_prefix: approval_prefix(state, node_id, safety),
+            approval_mode: mode
           })
 
         SwarmCode.Domain.Engine.Questions.put(
@@ -1046,7 +1072,7 @@ defmodule SwarmCode.Domain.Engine.RunServer do
           :approval
         )
 
-        state = notify_waiting(state, node_id)
+        state = notify_waiting(state, node_id, "approval")
 
         {:noreply, state}
     end
@@ -1904,6 +1930,17 @@ defmodule SwarmCode.Domain.Engine.RunServer do
       {%{from: from, timer: timer, permission: permission} = approval, approvals} ->
         Process.cancel_timer(timer)
 
+        # pass 72 F1: a read-only approval is answered once. "Always" and a
+        # family pill (a stale card, a crafted event) approve this call only.
+        # pass 72 F10: so is a call a permission rule asks about (`:rule`).
+        decision =
+          case {Map.get(approval, :mode), Map.get(approval, :safety), decision} do
+            {"read_only", _safety, :always} -> :approve
+            {"read_only", _safety, {:always_prefix, _}} -> :approve
+            {_mode, :rule, :always} -> :approve
+            {_mode, _safety, decision} -> decision
+          end
+
         {reply, state} =
           case decision do
             :approve ->
@@ -1937,7 +1974,7 @@ defmodule SwarmCode.Domain.Engine.RunServer do
             {:always_prefix, _client_prefix} ->
               prefix = node_prefix(state, node_id)
 
-              if Map.get(approval, :safety) == :dangerous or prefix in [nil, ""] do
+              if Map.get(approval, :safety) in [:dangerous, :rule] or prefix in [nil, ""] do
                 {:approved, state}
               else
                 {:approved, remember_prefix(state, prefix)}
@@ -1948,7 +1985,12 @@ defmodule SwarmCode.Domain.Engine.RunServer do
 
         state =
           %{state | approvals: approvals}
-          |> put_node(node_id, %{status: "running", detail: nil, approval_prefix: nil})
+          |> put_node(node_id, %{
+            status: "running",
+            detail: nil,
+            approval_prefix: nil,
+            approval_mode: nil
+          })
 
         SwarmCode.Domain.Engine.Questions.delete(state.run.id, node_id)
 
@@ -3072,6 +3114,9 @@ defmodule SwarmCode.Domain.Engine.RunServer do
       max_turns: Map.get(spec, :max_turns) || settings.max_agent_turns,
       project_root: root,
       approval_mode: state.project.approval_mode,
+      # pass 72 F8: the run's approval override (`Engine.start_chat_turn/4`
+      # `opts[:approval_mode]`), read by `Operation.current_mode/1` first.
+      approval_override: Map.get(state, :approval_override),
       project_id: state.project.id,
       # spec 67 T26 (G29): the `<environment>` block this agent's system prompt
       # carries, so its first think step has nothing to compare and nothing to
@@ -3480,9 +3525,12 @@ defmodule SwarmCode.Domain.Engine.RunServer do
   # that used to follow had no producer.
   defp finalized_result(state, node_id, {:ok, text} = result, {:ok, {stat, delta_info}}) do
     # spec 72 D3: append delta info to the report.
+    # pass 72 F4 (CLI review ux-live-2): only when the patch has content — an
+    # empty delta ("0 bytes, 0 files changed") under "[No file changes.]" read
+    # as if the worker had captured changes.
     delta_note =
       case delta_info do
-        {:ok, %{patch_bytes: bytes, files: n}} ->
+        {:ok, %{patch_bytes: bytes, files: n}} when bytes > 0 ->
           "\nDelta patch captured: #{bytes} bytes, #{n} files changed"
 
         _ ->
@@ -4225,7 +4273,7 @@ defmodule SwarmCode.Domain.Engine.RunServer do
       |> put_node(node_id, %{status: "awaiting_answer", detail: first})
 
     SwarmCode.Domain.Engine.Questions.put(state.conversation.id, state.run.id, node_id)
-    state = notify_waiting(state, node_id)
+    state = notify_waiting(state, node_id, "question")
 
     Events.broadcast(
       state.conversation.id,
@@ -4389,12 +4437,20 @@ defmodule SwarmCode.Domain.Engine.RunServer do
     end
   end
 
-  defp notify_waiting(state, node_id) do
+  defp notify_waiting(state, node_id, kind) do
     if MapSet.member?(state.waiting_notified, node_id) do
       state
     else
       name = SwarmCode.Domain.Conversations.Run.display_name(state.run)
       notify_async(fn -> SwarmCode.Domain.Notifications.notify_waiting(name) end)
+
+      # pass 72 F9: the project's `notification` hook, as owned work.
+      SwarmCode.Domain.Hooks.run_async(
+        :notification,
+        %{kind: kind, run_id: state.run.id},
+        state.project.root_path
+      )
+
       %{state | waiting_notified: MapSet.put(state.waiting_notified, node_id)}
     end
   end
@@ -4547,6 +4603,7 @@ defmodule SwarmCode.Domain.Engine.RunServer do
           end)
         end
 
+        stop_hook(state, written.status)
         announce_run(state)
 
       {:error, :database_busy} ->
@@ -4572,6 +4629,7 @@ defmodule SwarmCode.Domain.Engine.RunServer do
             run_id: run.id
           })
 
+          stop_hook(state, "failed")
           announce_run(%{state | finish_pending: nil})
         else
           Process.send_after(self(), :finish_retry, 250)
@@ -4581,8 +4639,19 @@ defmodule SwarmCode.Domain.Engine.RunServer do
       {:error, changeset} ->
         Logger.error("swarm_code db write failed: #{inspect(changeset.errors)}")
         state = update_run(state, run_attrs)
+        stop_hook(state, status)
         announce_run(%{state | finish_pending: nil})
     end
+  end
+
+  # pass 72 F9: the project's `stop` hook — informational, owned by the hooks'
+  # task supervisor, never run in this callback.
+  defp stop_hook(state, status) do
+    SwarmCode.Domain.Hooks.run_async(
+      :stop,
+      %{status: to_string(status), run_id: state.run.id},
+      state.project.root_path
+    )
   end
 
   # Spec 13 §10: nothing used to set a goal to `done`, so the composer kept a
@@ -4991,7 +5060,7 @@ defmodule SwarmCode.Domain.Engine.RunServer do
   # T5: the family the fourth pill would remember, or nil when there is nothing
   # safe to remember — a dangerous command is never offered the pill.
   defp approval_prefix(state, node_id, safety) do
-    with false <- safety == :dangerous,
+    with false <- safety in [:dangerous, :rule],
          %{op_type: "run_command"} <- state.nodes[node_id],
          command when is_binary(command) and command != "" <- node_command(state, node_id),
          prefix when prefix != "" <- SwarmCode.Domain.Tools.CommandSafety.prefix(command) do

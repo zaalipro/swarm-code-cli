@@ -13,6 +13,55 @@ defmodule SwarmCode.Daemon.ShutdownTest do
     :ok
   end
 
+  # cli020 A'4 (competitors-10, F9): the quit runs the session's project's
+  # `session_end` hooks once, bounded, before it stops the runs.
+  test "quit runs the trusted project's session_end hook once" do
+    alias SwarmCode.Domain.Projects
+    root = Path.join(System.tmp_dir!(), "shutdown-hook-#{System.unique_integer([:positive])}")
+    marker = Path.join(root, "session-end.log")
+    File.mkdir_p!(Path.join(root, ".swarm_code"))
+    on_exit(fn -> File.rm_rf!(root) end)
+
+    File.write!(
+      Path.join(root, ".swarm_code/config.json"),
+      Jason.encode!(%{
+        "hooks" => %{
+          "session_end" => [%{"command" => "echo \"$NCODE_EVENT\" >> '#{marker}'"}]
+        }
+      })
+    )
+
+    {:ok, project} = Projects.create(%{name: "Hooked", root_path: root})
+    {:ok, project} = Projects.trust(project)
+    {:ok, _} = Projects.touch(project)
+
+    unless Process.whereis(SwarmCode.Domain.Hooks.TaskSupervisor),
+      do: start_supervised!({Task.Supervisor, name: SwarmCode.Domain.Hooks.TaskSupervisor})
+
+    Shutdown.run(teardown: false, flush_ms: 0, cleanup_ms: 0)
+
+    assert File.read!(marker) |> String.split("\n", trim: true) == ["session_end"]
+  end
+
+  test "an untrusted project's session_end hook does not run" do
+    alias SwarmCode.Domain.Projects
+    root = Path.join(System.tmp_dir!(), "shutdown-nohook-#{System.unique_integer([:positive])}")
+    marker = Path.join(root, "session-end.log")
+    File.mkdir_p!(Path.join(root, ".swarm_code"))
+    on_exit(fn -> File.rm_rf!(root) end)
+
+    File.write!(
+      Path.join(root, ".swarm_code/config.json"),
+      Jason.encode!(%{"hooks" => %{"session_end" => [%{"command" => "touch '#{marker}'"}]}})
+    )
+
+    {:ok, project} = Projects.create(%{name: "Untrusted", root_path: root})
+    {:ok, _} = Projects.touch(project)
+
+    Shutdown.run(teardown: false, flush_ms: 0, cleanup_ms: 0)
+    refute File.exists?(marker)
+  end
+
   test "quit reaps a yielded sleep 600" do
     {out, 0} = System.cmd("/bin/sh", ["-c", "/bin/sleep 600 >/dev/null 2>&1 & echo $!"])
     os_pid = out |> String.trim() |> String.to_integer()

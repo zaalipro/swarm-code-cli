@@ -117,7 +117,8 @@ defmodule SwarmCode.Domain.Research.Server do
         # also where the reporter writes result.md (spec 24 §3.1).
         #
         # `auto`, not `read_only`: the reporters have to be able to call
-        # write_file, and read_only denies every :write in `Policy.decide/3`.
+        # write_file unattended, and read_only asks before every :write in
+        # `Policy.decide/3` (pass 72 F1; it used to deny them).
         # Read-only is enforced per agent by `capability` instead — only the two
         # reporters are handed a write tool, and `root_path` pins them here.
         # Spec 39 §1.1: `Operation.current_mode/1` honours this in-memory mode

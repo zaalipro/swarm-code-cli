@@ -75,6 +75,7 @@ defmodule SwarmCode.Domain.Engine.PendingInteractions do
     input = decoded_input(Map.get(node, :input))
     family = bound_nonempty(Map.get(node, :approval_prefix), 500)
     classification = classification(approval, tool, input)
+    mode = bound_nonempty(Map.get(approval, :mode), 32)
 
     %{
       node_id: node_id,
@@ -89,10 +90,9 @@ defmodule SwarmCode.Domain.Engine.PendingInteractions do
       reason: string_arg(input, "justification", 500),
       command_family: family,
       classification: classification,
-      allowed_decisions:
-        [:approve, :approve_run] ++
-          if(family && classification != :dangerous, do: [:always_prefix], else: []) ++
-          [:deny, :deny_stop],
+      allowed_decisions: allowed_decisions(mode, family, classification),
+      # cli020 A'2: the approval mode the RunServer asked under (F1's `mode`).
+      approval_mode: mode,
       requested_at: Map.get(approval, :requested_at),
       deadline_at: nil,
       questions: []
@@ -116,11 +116,23 @@ defmodule SwarmCode.Domain.Engine.PendingInteractions do
       command_family: nil,
       classification: nil,
       allowed_decisions: [],
+      approval_mode: nil,
       requested_at: Map.get(entry, :requested_at),
       deadline_at: deadline_at(entry),
       questions: unanswered_question_data(entry)
     }
   end
+
+  # cli020 A'2 (ux-live-5): read-only asks for each write and command (F1)
+  # and remembers nothing, so its card offers y once and d deny only.
+  defp allowed_decisions("read_only", _family, _classification),
+    do: [:approve, :deny, :deny_stop]
+
+  defp allowed_decisions(_mode, family, classification),
+    do:
+      [:approve, :approve_run] ++
+        if(family && classification != :dangerous, do: [:always_prefix], else: []) ++
+        [:deny, :deny_stop]
 
   # pass75: when the ask's 30-minute timer fires; nil for an ask without one
   # (the consensus gate waits for ever).

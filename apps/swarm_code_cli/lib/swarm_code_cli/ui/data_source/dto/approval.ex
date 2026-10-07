@@ -18,7 +18,8 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.Approval do
       agent_id: nil,
       agent_name: nil,
       requested_at: nil,
-      allowed_decisions: []
+      allowed_decisions: [],
+      approval_mode: nil
     ],
     fields: [
       tool: :text,
@@ -34,7 +35,10 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.Approval do
       agent_name: {:optional, {:text, 200}},
       requested_at: {:optional, :count},
       allowed_decisions:
-        {:list, {:enum, [:approve, :approve_run, :always_prefix, :deny, :deny_stop]}}
+        {:list, {:enum, [:approve, :approve_run, :always_prefix, :deny, :deny_stop]}},
+      # cli020 A'2 (§8.2): the approval mode the run asked under; nil when
+      # unknown (an older daemon). `"read_only"` offers y once / d deny.
+      approval_mode: {:optional, {:text, 32}}
     ],
     defaults: [
       tool: "",
@@ -49,7 +53,8 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.Approval do
       agent_id: nil,
       agent_name: nil,
       requested_at: nil,
-      allowed_decisions: []
+      allowed_decisions: [],
+      approval_mode: nil
     ]
 
   @decisions [:approve, :approve_run, :always_prefix, :deny, :deny_stop]

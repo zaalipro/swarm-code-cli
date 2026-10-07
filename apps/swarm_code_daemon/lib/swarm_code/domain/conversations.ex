@@ -955,6 +955,151 @@ defmodule SwarmCode.Domain.Conversations do
     end
   end
 
+  @doc """
+  Pass 72 F2 (CLI 0.2.0 decision 4h): the multi-turn form of `supersede/2`,
+  for a conversation rewind. Every message of the conversation at or after
+  `message`'s position, every run one of those user messages launched
+  (`launched_run_id/2`: a steer launches nothing), the runs those launched
+  (`launched_by_run_id`) and every message of those runs (`run_id` or
+  `reply_to_run_id`, the `supersede_scope/3` rule) are marked superseded in
+  one IMMEDIATE transaction. Rows already superseded keep their mark. Nothing
+  is deleted. Stopping live runs is the caller's job. Returns the runs marked.
+  """
+  @spec supersede_from(Conversation.t(), Message.t()) ::
+          {:ok, [Run.t()]} | {:error, :database_busy | term()}
+  def supersede_from(%Conversation{id: conv_id}, %Message{} = message) do
+    at = now()
+
+    result =
+      with_busy_retry(fn ->
+        Repo.transaction(fn -> supersede_from_tx(conv_id, message.position, at) end,
+          mode: :immediate
+        )
+      end)
+
+    case result do
+      {:ok, {message_ids, runs}} ->
+        # Outside the transaction, as in `supersede/2`: `clear_goal/1`
+        # broadcasts, and a write that can still roll back must not.
+        for %Run{goal_id: goal_id} when is_binary(goal_id) <- runs do
+          case Repo.get(Goal, goal_id) do
+            %Goal{} = goal -> clear_goal(goal)
+            nil -> :ok
+          end
+        end
+
+        if message_ids != [] do
+          from(m in Message, where: m.id in ^message_ids, order_by: [asc: m.position])
+          |> Repo.all()
+          |> Enum.each(&broadcast(conv_id, {:message_updated, &1}))
+        end
+
+        Enum.each(runs, &broadcast(conv_id, {:run_updated, &1}))
+        {:ok, runs}
+
+      {:error, :database_busy} = busy ->
+        busy
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp supersede_from_tx(conv_id, position, at) do
+    tail =
+      Repo.all(
+        from(m in Message,
+          where:
+            m.conversation_id == ^conv_id and is_nil(m.superseded_at) and
+              m.position >= ^position
+        )
+      )
+
+    launched = tail |> launched_run_ids(conv_id) |> Enum.uniq()
+
+    run_ids =
+      if launched == [] do
+        []
+      else
+        children =
+          Repo.all(
+            from(r in Run,
+              where: r.conversation_id == ^conv_id and r.launched_by_run_id in ^launched,
+              select: r.id
+            )
+          )
+
+        Enum.uniq(launched ++ children)
+      end
+
+    open_run_ids =
+      if run_ids == [] do
+        []
+      else
+        Repo.all(
+          from(r in Run, where: r.id in ^run_ids and is_nil(r.superseded_at), select: r.id)
+        )
+      end
+
+    tail_ids = Enum.map(tail, & &1.id)
+
+    scope =
+      from(m in Message,
+        where:
+          m.conversation_id == ^conv_id and is_nil(m.superseded_at) and
+            (m.id in ^tail_ids or m.run_id in ^run_ids or m.reply_to_run_id in ^run_ids),
+        select: m.id
+      )
+
+    message_ids = Repo.all(scope)
+
+    if message_ids != [] do
+      Repo.update_all(from(m in Message, where: m.id in ^message_ids),
+        set: [superseded_at: at]
+      )
+    end
+
+    runs =
+      if open_run_ids == [] do
+        []
+      else
+        Repo.update_all(from(r in Run, where: r.id in ^open_run_ids), set: [superseded_at: at])
+        Repo.all(from(r in Run, where: r.id in ^open_run_ids, order_by: [asc: r.started_at]))
+      end
+
+    {message_ids, runs}
+  end
+
+  # The runs the user messages of `messages` launched. Only a user message
+  # launches a run (`LaunchPairing` pairs user rows only): an assistant reply
+  # carries its run's id but launched nothing. Legacy rows without `run_id` go
+  # through one pairing for the whole set, not one per message.
+  defp launched_run_ids(messages, conv_id) do
+    users = Enum.filter(messages, &(&1.role == "user"))
+
+    direct =
+      for %Message{run_id: run_id, reply_to_run_id: reply} <- users,
+          is_binary(run_id) and run_id != reply,
+          do: run_id
+
+    legacy_ids = for %Message{run_id: nil, id: id} <- users, into: MapSet.new(), do: id
+
+    legacy =
+      if MapSet.size(legacy_ids) == 0 do
+        []
+      else
+        conv_id
+        |> list_messages()
+        |> LaunchPairing.pair(list_runs(conv_id), %{})
+        |> Enum.flat_map(fn
+          {run_id, %{id: id}} -> if MapSet.member?(legacy_ids, id), do: [run_id], else: []
+          _other -> []
+        end)
+      end
+
+    direct ++ legacy
+  end
+
   # The run this message *launched*, or nil. A steer carries the run it steers
   # in both `run_id` and `reply_to_run_id` (`Engine.steer/4`, engine.ex:349) and
   # launched nothing: editing it re-steers (§1.4) and must not stop somebody
@@ -1088,9 +1233,10 @@ defmodule SwarmCode.Domain.Conversations do
   # An assistant row still streaming when the fork was taken copied as an empty
   # bubble with a model name and a time, and nothing else.
   defp fork_row?(m, before_position) do
-    m.position < before_position and m.role in ["user", "assistant", "swarm"] and
+    # pass 72 F3: a `shell` message (the CLI's `!cmd`) is part of the transcript.
+    m.position < before_position and m.role in ["user", "assistant", "swarm", "shell"] and
       is_nil(m.superseded_at) and
-      not (m.role in ["assistant", "swarm"] and to_string(m.content) == "")
+      not (m.role in ["assistant", "swarm", "shell"] and to_string(m.content) == "")
   end
 
   @doc """
