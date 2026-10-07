@@ -176,8 +176,8 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
   end
 
   @doc "Prints a failure (two lines and the log path) on stderr and returns its exit status."
-  @spec report(failure()) :: non_neg_integer()
-  def report(%{status: status, message: message, action: action}) do
+  @spec report(failure(), Path.t()) :: non_neg_integer()
+  def report(%{status: status, message: message, action: action} = failure, log \\ log_path(nil)) do
     # A sentence that names ncode itself is not prefixed twice (pass70 F14).
     message =
       case message do
@@ -188,14 +188,25 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
     lines =
       ["ncode: " <> message] ++
         if(action != "", do: ["  " <> action], else: []) ++
-        if(status != @exit_usage and File.exists?(log_path(nil)),
-          do: ["  Details: " <> log_path(nil)],
-          else: []
-        )
+        if(details?(failure, log), do: ["  Details: " <> log], else: [])
 
     say(:stderr, Enum.join(lines, "\n"))
     status
   end
+
+  # cli020 B15 (onboarding-3): the log is named only when it holds something,
+  # and never for a refusal its own sentence fixes.
+  @self_explained [:provider_required, :endpoint_required, :model_required]
+
+  defp details?(%{status: status} = failure, log) do
+    status != @exit_usage and Map.get(failure, :reason) not in @self_explained and
+      match?({:ok, %File.Stat{type: :regular, size: size}} when size > 0, File.stat(log))
+  end
+
+  @doc false
+  # cli020 B15: the failure a session reason becomes (tests).
+  @spec session_failure_for(atom()) :: failure()
+  def session_failure_for(reason), do: session_failure(reason, nil)
 
   @doc """
   pass72 G17 (QA Q17): writes the closing words, but never waits more than
@@ -251,17 +262,22 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
         )
       end)
 
-    case result do
-      {:ok, {:ok, outcome, summary}} ->
-        print_summary(summary)
-        outcome_status(outcome)
+    status =
+      case result do
+        {:ok, {:ok, outcome, summary}} ->
+          print_summary(summary)
+          outcome_status(outcome)
 
-      {:ok, {:error, failure}} ->
-        report(failure)
+        {:ok, {:error, failure}} ->
+          report(failure)
 
-      {:error, failure} ->
-        report(failure)
-    end
+        {:error, failure} ->
+          report(failure)
+      end
+
+    # cli020 B15: the log is on disk before the VM stops.
+    SwarmCodeCLI.Release.flush_logs()
+    status
   end
 
   defp tui(session, executable, opts) do
@@ -1091,6 +1107,7 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
         "No model provider is set up yet.",
         "Run 'ncode settings providers' to add one, or set NCODE_MODEL, NCODE_BASE_URL and NCODE_API_KEY in ~/.secrets (the older SWARM_* names still work)."
       )
+      |> Map.put(:reason, :provider_required)
 
   # cli020 B13 (onboarding-4): a first run from the environment that lacks
   # an endpoint or a model says which.
@@ -1101,6 +1118,7 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
         "NCODE_BASE_URL is missing (OpenAI-compatible URLs end in /v1).",
         "Set NCODE_BASE_URL, or run 'ncode settings providers'."
       )
+      |> Map.put(:reason, :endpoint_required)
 
   defp session_failure(:model_required, _),
     do:
@@ -1109,6 +1127,7 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
         "NCODE_MODEL is missing.",
         "Set NCODE_MODEL to a model of your provider, or run 'ncode settings providers'."
       )
+      |> Map.put(:reason, :model_required)
 
   # pass71 F19 (review R17): the sentence names the model that was given.
   defp session_failure(:unknown_model, _),

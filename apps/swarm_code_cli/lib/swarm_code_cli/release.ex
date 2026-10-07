@@ -84,7 +84,31 @@ defmodule SwarmCodeCLI.Release do
     # cli020 B9: SIGTERM and SIGHUP close the session the normal way.
     if headless_args?(args), do: SwarmCodeCLI.Release.Signals.install(self())
     code = run(args)
+    flush_logs()
     System.halt(code)
+  end
+
+  @doc """
+  cli020 B15 (onboarding-3): writes what the log handler still buffers before
+  the VM halts (a halt drops it, so cli.log stayed empty after a failure).
+  Bounded: a log that cannot be written within `timeout` is left as it is.
+  """
+  @spec flush_logs(non_neg_integer()) :: :ok
+  def flush_logs(timeout \\ 2_000) do
+    {pid, ref} =
+      spawn_monitor(fn ->
+        _ = Logger.flush()
+        _ = :logger_std_h.filesync(:default)
+      end)
+
+    receive do
+      {:DOWN, ^ref, :process, ^pid, _} -> :ok
+    after
+      timeout ->
+        Process.demonitor(ref, [:flush])
+        Process.exit(pid, :kill)
+        :ok
+    end
   end
 
   @doc """
