@@ -17,6 +17,9 @@ defmodule SwarmCodeCLI.UI.Effect do
           | {:bell, :needs_you | :turn_done}
           | {:terminal_title, SafeText.t()}
           | {:notify_os, SafeText.t()}
+          # cli020 D9: the clipboard's image (the runtime's owned jobs).
+          | {:paste_image, binary()}
+          | {:paste_image_write, binary(), binary(), Path.t()}
           | {:presenter_handoff, :plain}
           | {:companion, :open}
           | {:copy, binary()}
@@ -84,6 +87,18 @@ defmodule SwarmCodeCLI.UI.Effect do
 
   # cli020 D3: the needs-you signal, its words, and the window title.
   def validate({:bell, kind} = effect) when kind in [:needs_you, :turn_done], do: {:ok, effect}
+
+  def validate({:paste_image, conversation} = effect),
+    do: valid_effect(effect, SwarmCodeCLI.UI.Intent.valid_id?(conversation))
+
+  def validate({:paste_image_write, conversation, token, path} = effect),
+    do:
+      valid_effect(
+        effect,
+        SwarmCodeCLI.UI.Intent.valid_id?(conversation) and is_binary(token) and
+          token =~ ~r/\A[0-9a-f]{32}\z/ and is_binary(path) and byte_size(path) <= 4_096 and
+          Path.type(path) == :absolute
+      )
 
   def validate({kind, safe_text} = effect) when kind in [:terminal_title, :notify_os],
     do: valid_effect(effect, valid_safe_text?(safe_text))

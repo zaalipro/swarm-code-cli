@@ -1261,6 +1261,17 @@ defmodule SwarmCodeCLI.UI.Keymap.Bindings do
       help: "Insert a line break without sending (Ctrl-O or Ctrl-J)",
       hint: 7
     },
+    # cli020 D9 (decision 4i): text paste stays the terminal's own (Cmd-V,
+    # bracketed paste); Ctrl-V attaches the clipboard's image.
+    %Binding{
+      id: :paste_image,
+      keys: [{"v", [:control]}],
+      action: {:paste_image},
+      contexts: [:composer],
+      group: :edit,
+      label: "Paste image",
+      help: "Paste an image from the clipboard"
+    },
     %Binding{
       id: :external_editor,
       keys: [{"x", [:control]}],

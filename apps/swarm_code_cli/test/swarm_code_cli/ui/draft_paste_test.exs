@@ -42,7 +42,9 @@ defmodule SwarmCodeCLI.UI.DraftPasteTest do
     {state, _} = press(state, Input.key(:left))
     {state, _} = press(state, Input.key(:backspace))
     {_state, effects} = send(state)
-    assert [%{kind: {:dispatch, :send, "[Pasted text #1 · 60 line]", :main, []}}] = requests(effects)
+
+    assert [%{kind: {:dispatch, :send, "[Pasted text #1 · 60 line]", :main, []}}] =
+             requests(effects)
   end
 
   test "small pastes stay inline; 0 lines never collapses; over 4 KiB always does" do

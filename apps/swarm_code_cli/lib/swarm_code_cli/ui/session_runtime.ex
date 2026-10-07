@@ -35,6 +35,7 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
   }
 
   alias SwarmCodeCLI.UI.OsCommand
+  alias SwarmCodeCLI.UI.Reducer.ImagePaste
   alias SwarmCodeCLI.Companion
   alias SwarmCodeCLI.UI.Init.{Preferences, PrefsQueue}
   alias SwarmCodeCLI.UI.DataSource
@@ -49,6 +50,9 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
   # cli74: how long the desktop has to open a folder (`o` in Settings).
   @folder_ms 5_000
   # cli020 D4: pbcopy's bounds; the terminal clipboard (OSC 52) takes 64 KiB.
+  @image_ms 25_000
+  @osascript_ms 5_000
+  @sips_ms 10_000
   @copy_ms 5_000
   @max_pbcopy 1_048_576
   @max_osc_copy 65_536
@@ -174,6 +178,9 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
        # task in `jobs` (ref => %{kind, task, timer}), each with a deadline.
        jobs_sup: start_jobs(),
        jobs: %{},
+       # cli020 D9: the slot token of the image paste in flight; a job
+       # result for another token is stale and deletes its file.
+       image_token: nil,
        # The facts of the machine the runtime reads once (a test injects them):
        # `TERM_PROGRAM`, the OS, and the environment the copy and the image
        # paste look at (`SSH_CONNECTION`, `TMUX`).
@@ -244,6 +251,7 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
         {:invoke, _, _} -> false
         {:timer_fired, _} -> false
         {:external_edit_done, _, _} -> false
+        {:paste_image_done, _, _, _} -> false
         _ -> true
       end
 
@@ -923,6 +931,35 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
     state
   end
 
+  # cli020 D9: Ctrl-V. Only a Mac's own clipboard has the image; the slot
+  # comes from the daemon (the reducer asks), then an owned job writes it.
+  defp local_effect(%{phase: :running} = state, {:paste_image, conversation}) do
+    cond do
+      state.os_type != {:unix, :darwin} ->
+        runtime_notice(state, ImagePaste.words(:not_macos))
+
+      present?(Map.get(state.env, "SSH_CONNECTION")) ->
+        runtime_notice(state, ImagePaste.words(:ssh))
+
+      true ->
+        update(state, {:paste_image_slot, conversation})
+    end
+  end
+
+  defp local_effect(
+         %{phase: :running} = state,
+         {:paste_image_write, conversation, token, path}
+       ) do
+    runner = state.command_runner
+
+    start_job(
+      %{state | image_token: token},
+      {:paste_image, conversation, token, path},
+      fn -> clipboard_image(runner, path) end,
+      @image_ms
+    )
+  end
+
   # Announcements already live in the safe Scene; no text is sent to terminal state.
   defp local_effect(state, _), do: state
 
@@ -958,7 +995,86 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
 
   defp job_result(state, {:copy, lines, text}, _result), do: osc_copy(state, text, lines)
 
+  # cli020 D9: the image is on disk (or not); a result for a paste that is
+  # no longer the one in flight deletes its file.
+  defp job_result(state, {:paste_image, conversation, token, path}, result) do
+    outcome =
+      case result do
+        {:ok, :ok} -> :ok
+        {:ok, {:error, :no_image}} -> {:error, :no_image}
+        _ -> {:error, :failed}
+      end
+
+    cond do
+      state.image_token != token ->
+        File.rm(path)
+        state
+
+      true ->
+        if outcome != :ok, do: File.rm(path)
+        update(%{state | image_token: nil}, {:paste_image_done, conversation, token, outcome})
+    end
+  end
+
   defp job_result(state, _kind, _result), do: state
+
+  @doc false
+  # cli020 D9: writes the clipboard's image as PNG to `path` (macOS only):
+  # PNG as it is, TIFF converted by `sips`; `{:error, :no_image}` when the
+  # clipboard has neither. Every failure deletes what it wrote.
+  def clipboard_image(runner, path) do
+    tiff = path <> ".tiff"
+
+    result =
+      case runner.("/usr/bin/osascript", ["-e", "clipboard info"], @osascript_ms) do
+        {:ok, 0, info} ->
+          cond do
+            String.contains?(info, "PNGf") -> write_clipboard(runner, "PNGf", path)
+            String.contains?(info, "TIFF") -> clipboard_tiff(runner, tiff, path)
+            true -> {:error, :no_image}
+          end
+
+        _ ->
+          {:error, :failed}
+      end
+
+    File.rm(tiff)
+    if result != :ok, do: File.rm(path)
+    result
+  end
+
+  defp clipboard_tiff(runner, tiff, path) do
+    with :ok <- write_clipboard(runner, "TIFF", tiff),
+         {:ok, 0, _} <-
+           runner.("/usr/bin/sips", ["-s", "format", "png", tiff, "--out", path], @sips_ms) do
+      :ok
+    else
+      _ -> {:error, :failed}
+    end
+  end
+
+  defp write_clipboard(runner, class, path) do
+    args = [
+      "-e",
+      "on run argv",
+      "-e",
+      "set f to open for access (POSIX file (item 1 of argv)) with write permission",
+      "-e",
+      "set eof f to 0",
+      "-e",
+      "write (the clipboard as «class #{class}») to f",
+      "-e",
+      "close access f",
+      "-e",
+      "end run",
+      path
+    ]
+
+    case runner.("/usr/bin/osascript", args, @osascript_ms) do
+      {:ok, 0, _} -> :ok
+      _ -> {:error, :failed}
+    end
+  end
 
   # The one terminal message that carries content: the text the user asked
   # to put on the clipboard, which the terminal writes as OSC 52 (inside tmux
@@ -1189,6 +1305,11 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
           "This terminal cannot take a copy from ncode."
       end
 
+    runtime_notice(%{state | copy: nil}, text)
+  end
+
+  # A notice the runtime itself shows (the copy, the image paste).
+  defp runtime_notice(state, text) do
     state = tick(state)
 
     ui = %{
@@ -1198,7 +1319,7 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
         revision: state.ui.revision + 1
     }
 
-    commit(%{state | ui: ui, copy: nil}, state.ui)
+    commit(%{state | ui: ui}, state.ui)
   end
 
   defp project(state) do

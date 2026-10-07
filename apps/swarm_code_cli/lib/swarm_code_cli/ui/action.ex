@@ -107,6 +107,9 @@ defmodule SwarmCodeCLI.UI.Action do
           # cli020 lane D (§8.3).
           | {:cycle_permission_mode}
           | :shell_send
+          | {:paste_image}
+          | {:paste_image_slot, binary()}
+          | {:paste_image_done, binary(), binary(), :ok | {:error, :no_image | :failed}}
           | {:show_diffs, boolean() | :toggle}
           | {:theme_mode, :dark | :light | :toggle}
           | {:mouse, boolean() | :toggle}
@@ -260,6 +263,21 @@ defmodule SwarmCodeCLI.UI.Action do
     do: valid_action(action, SwarmCodeCLI.UI.SlashPalette.valid_name?(name))
 
   def validate(:send_plain), do: {:ok, :send_plain}
+
+  # cli020 D9: Ctrl-V attaches the clipboard's image; the runtime's steps.
+  def validate({:paste_image} = action), do: {:ok, action}
+
+  def validate({:paste_image_slot, conversation} = action),
+    do: valid_action(action, Intent.valid_id?(conversation))
+
+  def validate({:paste_image_done, conversation, token, result} = action),
+    do:
+      valid_action(
+        action,
+        Intent.valid_id?(conversation) and is_binary(token) and byte_size(token) == 32 and
+          (result == :ok or
+             match?({:error, reason} when reason in [:no_image, :failed], result))
+      )
 
   # cli020 D7: Enter on a `!` draft runs it as a shell command.
   def validate(:shell_send), do: {:ok, :shell_send}

@@ -68,21 +68,55 @@ defmodule SwarmCodeCLI.UI.Reducer.Remote do
   def mine?(_request), do: false
 
   @doc """
-  The payload of an answer: the outcome's feedback rows/text or the body a
-  query returned; `{:error, words}` for a refusal.
+  An answer to a request this module sent: an outcome (`settle/3`) or a
+  query body. The request is already out of `state.requests`. Each op's
+  feature module takes its payload; a refusal shows the service's words.
   """
-  @spec payload(term()) :: {:ok, term()} | {:error, binary() | nil}
-  def payload({:outcome, %{status: :accepted} = outcome}),
-    do: {:ok, Map.get(outcome, :result) || outcome}
+  @spec answer(map(), map(), {:ok, term()} | {:error, binary() | nil}) :: {map(), list()}
+  def answer(state, %{kind: kind} = request, result) do
+    case {elem(kind, 0), result} do
+      {_, {:error, words}} ->
+        {notice(state, words || refused_words(kind)), []}
 
-  def payload({:outcome, outcome}), do: {:error, refusal(outcome)}
-  def payload({_tag, body}), do: {:ok, body}
-  def payload(body), do: {:ok, body}
+      {:attachment_slot, {:ok, payload}} ->
+        SwarmCodeCLI.UI.Reducer.ImagePaste.slot_answer(state, request, payload)
+
+      _ ->
+        {state, []}
+    end
+  end
+
+  @doc "The answer's payload from an outcome (lane C's shape; §8.2)."
+  @spec outcome_payload(map()) :: {:ok, term()} | {:error, binary() | nil}
+  def outcome_payload(%{status: :accepted} = outcome) do
+    cond do
+      Map.get(outcome, :result) != nil -> {:ok, outcome.result}
+      match?(%{rows: [_ | _]}, outcome.feedback) -> {:ok, outcome.feedback.rows}
+      true -> {:ok, outcome}
+    end
+  end
+
+  def outcome_payload(outcome), do: {:error, refusal(outcome)}
 
   defp refusal(%{reason: %{text: text}}) when is_binary(text) and text != "",
     do: String.trim(text)
 
   defp refusal(_outcome), do: nil
+
+  defp refused_words({:shell_run, _, _}), do: "The command did not start."
+  defp refused_words({:shell_stop, _}), do: "The command could not be stopped."
+  defp refused_words({:attachment_slot, _}), do: "The image could not be attached."
+  defp refused_words({:attach_slot, _, _}), do: "The image could not be attached."
+  defp refused_words({:rewind_turns, _}), do: "The turns could not be listed."
+  defp refused_words({:rewind_apply, _, _, _}), do: "Nothing was rewound."
+  defp refused_words({:history_search, _}), do: "History search failed."
+  defp refused_words(_kind), do: "The command was refused."
+
+  @doc "A map field by atom or string key."
+  def field(map, key) when is_map(map),
+    do: Map.get(map, key, Map.get(map, Atom.to_string(key)))
+
+  def field(_map, _key), do: nil
 
   defp notice(state, words), do: %{state | notice: {:command_feedback, words}}
 end

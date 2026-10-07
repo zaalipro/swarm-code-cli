@@ -25,7 +25,7 @@ defmodule SwarmCodeCLI.UI.Reducer do
   alias SwarmCodeCLI.UI.Reducer.{Watch, Commands, Pages, Editing, Details, PathCompletion}
   alias SwarmCodeCLI.UI.Reducer.Hint, as: Hints
   alias SwarmCodeCLI.UI.Reducer.Overlay
-  alias SwarmCodeCLI.UI.Reducer.{Deliveries, Display, Remote}
+  alias SwarmCodeCLI.UI.Reducer.{Deliveries, Display, ImagePaste, Remote}
   alias SwarmCodeCLI.UI.Draft.Pastes
   alias SwarmCodeCLI.UI.WorkflowKeyword
   alias SwarmCodeCLI.UI.Hint
@@ -476,6 +476,15 @@ defmodule SwarmCodeCLI.UI.Reducer do
 
   # Esc in the composer stops the turn that is generating, and nothing else.
   # A turn that was sent but is not on screen yet is that turn (I3).
+  # cli020 D9: Ctrl-V and the runtime's steps (`Reducer.ImagePaste`).
+  defp transition(state, {:paste_image}), do: ImagePaste.open(state)
+
+  defp transition(state, {:paste_image_slot, conversation}),
+    do: ImagePaste.slot(state, conversation)
+
+  defp transition(state, {:paste_image_done, conversation, token, result}),
+    do: ImagePaste.done(state, conversation, token, result)
+
   # cli020 D7: Enter on `!cmd` sends `shell.run` with the command (the `!`
   # removed); the draft goes into the prompt history and clears once the
   # request is out. `!` alone says what to type.
@@ -1567,7 +1576,12 @@ defmodule SwarmCodeCLI.UI.Reducer do
             SwarmCodeCLI.UI.Reducer.Settings.Responses.response(state, request, body)
 
           _ ->
-            Pages.response(state, request, delivery.body)
+            if Remote.mine?(request) do
+              state = %{state | requests: Map.delete(state.requests, delivery.request_id)}
+              Remote.answer(state, request, {:ok, elem_body(delivery.body)})
+            else
+              Pages.response(state, request, delivery.body)
+            end
         end
 
       _ ->
@@ -1645,6 +1659,11 @@ defmodule SwarmCodeCLI.UI.Reducer do
 
   # An accepted open or new has switched the service's conversation: the view
   # follows it. A refusal says so; project updates show the service's words.
+  # cli020 lane D: the answers to the ops `Reducer.Remote` sends.
+  defp settle_service(%{} = state, %{origin: {:conversation, action}} = request, outcome)
+       when action in [:shell, :rewind, :attachment, :history],
+       do: Remote.answer(state, request, Remote.outcome_payload(outcome))
+
   defp settle_service(state, %{kind: {:conversation_open, id}}, %Outcome{status: :accepted}),
     do: navigate_conversation(state, id)
 
@@ -2902,6 +2921,9 @@ defmodule SwarmCodeCLI.UI.Reducer do
         end
     end
   end
+
+  defp elem_body({_tag, body}), do: body
+  defp elem_body(body), do: body
 
   # cli020 D8: a large paste becomes its placeholder; Backspace or Delete
   # next to a whole placeholder deletes all of it and its entry.
