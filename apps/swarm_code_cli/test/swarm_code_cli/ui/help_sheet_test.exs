@@ -171,8 +171,11 @@ defmodule SwarmCodeCLI.UI.HelpSheetTest do
   defp check_sheet(state, context) do
     rows = sheet_rows(state)
 
-    for binding <- Bindings.for_context(context) do
-      keys = binding |> Bindings.keys_in_context(context) |> KeyLabel.joined()
+    # cli020 E7: a chord that needs Alt in every spelling is not listed.
+    for binding <- Bindings.for_context(context),
+        spellings = Bindings.keys_in_context(binding, context),
+        not Enum.all?(spellings, fn {_code, mods} -> :alt in mods end) do
+      keys = KeyLabel.joined(spellings)
       count = Enum.count(rows, &key_row?(&1, keys))
       assert count == 1, "#{binding.id} (#{keys}) appears #{count} times in the #{context} sheet"
     end

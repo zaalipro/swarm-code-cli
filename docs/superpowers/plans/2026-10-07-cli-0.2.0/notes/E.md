@@ -80,3 +80,17 @@ Branch `cli020/E` from M1 `3008f352`, worktree `~/dev/swarm-code-cli-wt/cli020-E
   row has focus) is D15's.
 - Test `cli020/e6_palette_visible_test.exs` (offsets 0/5/15/40 → window at 0; first and last of
   ≥ 24 entries visible). Also moved E4's picker below an unrelated comment it had split.
+
+### E7 Help sheet
+- Cause of the `g…` rows and the blank row after every entry (X18, now VERIFIED): the lines were
+  built at the dialog's inner width but every option row is indented by a 2-cell rail in colour,
+  so each padded line overflowed by 2 cells and the modal soft-wrapped it.
+  `Dialog.help_geometry/2` is the text width (inner − 2 in colour, inner in monochrome, where
+  help rows carry no prefix); the test asserts it equals the painted text width.
+- Help longer than its cell word-wraps (`Prose.wrap/3`) onto continuation rows under the help
+  column; two-column pairs are padded row by row. Session first (after Vim in vim modes), with
+  Ctrl-C, Esc first; bindings whose every spelling needs Alt are dropped (`help_sheet_test`'s
+  "every binding once" now skips those). The sheet ends with `Modes` (E2) and `Commands` (the
+  `/` list's rows, `/name args  description`).
+- "Opens at the top" is the reducer's (D): `reducer.ex:2045` deletes `dialog_scroll` only for
+  approvals and command reports when a layer opens; add `:help` there (D's file, handoff).

@@ -753,7 +753,7 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
   defp contents(:help, state, rect, _class) do
     context = help_context(state)
     inner = max(1, rect.width - 2)
-    lines = help_lines(state, inner)
+    lines = help_lines(state, help_geometry(state, rect).text_width)
 
     options =
       lines
@@ -1343,32 +1343,53 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
   end
 
   @doc false
-  # The help sheet's text lines at `inner` cells (tests read them unscrolled).
+  # cli020 E7 (ux-live-8): the sheet's text width is the dialog's inner width
+  # minus the two cells of rail every option row is indented by in colour
+  # (none in monochrome, where only the focused row carries a prefix and no
+  # help row is ever focused). Lines built wider soft-wrapped in the painter:
+  # the one-letter `g…` rows and a blank row after every padded entry.
+  @spec help_geometry(map(), Rect.t()) :: %{
+          text_width: pos_integer(),
+          columns: 1 | 2,
+          column: pos_integer()
+        }
+  def help_geometry(state, %Rect{} = rect) do
+    mono? = Theme.style(:focus, state.capabilities).prefix != nil
+    text_width = max(1, rect.width - 2 - if(mono?, do: 0, else: 2))
+    help_columns(text_width)
+  end
+
+  defp help_columns(text_width) do
+    columns = if text_width + 2 >= @help_two_column_width, do: 2, else: 1
+    column = max(1, div(text_width - (columns - 1) * @help_gutter, columns))
+    %{text_width: text_width, columns: columns, column: column}
+  end
+
+  @doc false
+  # The help sheet's text lines at `width` cells (tests read them unscrolled).
   @spec help_lines(map(), pos_integer()) :: [String.t()]
-  def help_lines(state, inner) do
+  def help_lines(state, width) do
     context = help_context(state)
     ascii? = state.capabilities.ascii?
     policy = state.capabilities.ambiguous_width
+    overrides = SwarmCodeCLI.UI.Keymap.overrides(state)
+    %{columns: columns, column: column} = help_columns(width)
 
+    # cli020 E7: the session's keys first (quit and stop lead it); a chord
+    # that needs Alt in every spelling is left out (Alt is unreliable on
+    # macOS terminals, AGENTS.md).
     sections =
-      for group <- Bindings.groups(),
+      for group <- help_groups(),
           rows =
             context
             |> Bindings.for_context()
             |> Enum.filter(&(&1.group == group))
-            |> Enum.map(fn binding ->
-              keys =
-                binding
-                |> Bindings.keys_in_context(context, SwarmCodeCLI.UI.Keymap.overrides(state))
-                |> KeyLabel.joined(ascii?)
-
-              {keys, binding.help}
-            end),
+            |> Enum.map(&{&1, Bindings.keys_in_context(&1, context, overrides)})
+            |> Enum.reject(fn {_binding, keys} -> alt_only?(keys) end)
+            |> Enum.sort_by(fn {binding, _keys} -> help_rank(binding.id) end)
+            |> Enum.map(fn {binding, keys} -> {KeyLabel.joined(keys, ascii?), binding.help} end),
           rows != [],
           do: {group, rows}
-
-    columns = if inner >= @help_two_column_width, do: 2, else: 1
-    column = div(inner - (columns - 1) * @help_gutter, columns)
 
     widest_key =
       sections
@@ -1384,14 +1405,8 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
       Enum.flat_map(sections, fn {group, rows} ->
         # pass71 V5: headings in sentence case, as everywhere else.
         heading = SwarmCodeCLI.UI.Keymap.Docs.group_title(group)
-
-        entries =
-          rows
-          |> Enum.map(&help_entry(&1, key_width, column, state, policy))
-          |> Enum.chunk_every(columns)
-          |> Enum.map(&Enum.join(&1, String.duplicate(" ", @help_gutter)))
-
-        [heading | entries]
+        entries = Enum.map(rows, &help_entry(&1, key_width, column, state, policy))
+        [heading | side_by_side(entries, columns, column)]
       end)
 
     # pass73 finisher (K's request F2): while wheel reports are on, the sheet
@@ -1401,19 +1416,52 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
         note =
           SwarmCodeCLI.UI.Keymap.Docs.mouse_note()
           |> String.replace("`", "")
-          |> SwarmCodeCLI.UI.Prose.wrap(max(1, inner - 2), policy)
+          |> SwarmCodeCLI.UI.Prose.wrap(max(1, width), policy)
 
         lines ++ [""] ++ note
       else
         lines
       end
 
-    lines ++ help_modes(column, state, policy)
+    lines ++ help_modes(column, columns, state, policy) ++ help_commands(width, state, policy)
+  end
+
+  # Session first (after vim's own keys in a vim mode): Ctrl-C and Esc are
+  # what a newcomer looks for.
+  defp help_groups, do: [:vim, :session | Bindings.groups() -- [:vim, :session]]
+
+  @help_first [:interrupt, :interrupt_turn, :escape, :close_or_quit]
+  defp help_rank(id) do
+    case Enum.find_index(@help_first, &(&1 == id)) do
+      nil -> length(@help_first)
+      index -> index
+    end
+  end
+
+  defp alt_only?([_ | _] = keys), do: Enum.all?(keys, fn {_code, mods} -> :alt in mods end)
+  defp alt_only?(_keys), do: false
+
+  # Entries are lists of rows; two to a line, each padded to `column`, the
+  # shorter one padded with blank rows so the pair stays aligned.
+  defp side_by_side(entries, 1, _column), do: Enum.concat(entries)
+
+  defp side_by_side(entries, columns, column) do
+    blank = String.duplicate(" ", column)
+
+    entries
+    |> Enum.chunk_every(columns)
+    |> Enum.flat_map(fn chunk ->
+      height = chunk |> Enum.map(&length/1) |> Enum.max()
+
+      chunk
+      |> Enum.map(&(&1 ++ List.duplicate(blank, height - length(&1))))
+      |> Enum.zip_with(&Enum.join(&1, String.duplicate(" ", @help_gutter)))
+    end)
   end
 
   # cli020 E2 (Q6): the six modes and what each does; CLI Ultra runs
   # workflows (the ncode app's missions are not ported yet).
-  defp help_modes(column, state, policy) do
+  defp help_modes(column, columns, state, policy) do
     rows =
       for {value, label, _glyph, hint, _icon} <- SwarmCode.Commands.modes(),
           do: {SwarmCodeCLI.UI.Projector.Composer.mode_title(value, label), hint}
@@ -1424,21 +1472,48 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
       |> Enum.max(fn -> 0 end)
       |> min(max(1, div(column, 2)))
 
-    ["Modes" | Enum.map(rows, &help_entry(&1, width, column, state, policy))]
+    entries = Enum.map(rows, &help_entry(&1, width, column, state, policy))
+    ["", "Modes" | side_by_side(entries, columns, column)]
   end
 
-  # One "keys  help" cell, padded to exactly `column` cells so two of them line
-  # up. The help text is elided before the keys are.
+  # cli020 E7: `/help` lists the commands too (the `/` list's rows: the
+  # client's own and the service's), one to a line.
+  defp help_commands(width, state, policy) do
+    rows =
+      for item <- SwarmCodeCLI.UI.SlashPalette.catalogue("/"),
+          do: {String.trim("/" <> item.name <> " " <> (item.args || "")), item.desc || ""}
+
+    key_width =
+      rows
+      |> Enum.map(&Width.cells(elem(&1, 0), policy))
+      |> Enum.max(fn -> 0 end)
+      |> min(max(1, min(32, div(width, 2))))
+
+    ["", "Commands" | Enum.flat_map(rows, &help_entry(&1, key_width, width, state, policy))]
+  end
+
+  # One "keys  help" entry: rows exactly `column` cells wide so two of them
+  # line up. Help longer than its cell word-wraps onto continuation rows
+  # under the help column; a key list that does not fit loses its tail.
   defp help_entry({keys, help}, key_width, column, state, policy) do
     key_cell = keys |> Width.elide(key_width, :end, policy) |> RunRow.pad(key_width, state)
-    help_width = max(0, column - key_width - @help_gutter)
+    help_width = column - key_width - @help_gutter
 
-    help_cell =
-      if help_width > 0,
-        do: String.duplicate(" ", @help_gutter) <> Width.elide(help, help_width, :end, policy),
-        else: ""
+    if help_width > 0 do
+      indent = String.duplicate(" ", key_width + @help_gutter)
+      gutter = String.duplicate(" ", @help_gutter)
 
-    RunRow.pad(key_cell <> help_cell, column, state)
+      case SwarmCodeCLI.UI.Prose.wrap(help, help_width, policy) do
+        [] ->
+          [RunRow.pad(key_cell, column, state)]
+
+        [first | rest] ->
+          [RunRow.pad(key_cell <> gutter <> first, column, state)] ++
+            Enum.map(rest, &RunRow.pad(indent <> &1, column, state))
+      end
+    else
+      [RunRow.pad(key_cell, column, state)]
+    end
   end
 
   # The sheet describes the state underneath it: the layers below the help
