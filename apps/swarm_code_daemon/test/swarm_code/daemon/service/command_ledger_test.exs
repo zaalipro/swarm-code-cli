@@ -44,6 +44,38 @@ defmodule SwarmCode.Daemon.Service.CommandLedgerTest do
              Gate.check_bound(c.path, c.manifest, "0.1.0", [])
   end
 
+  # cli020 C2 (bugs-4): a staged image whose file is gone (the 24 h prune)
+  # leaves the staging table instead of poisoning every later send.
+  test "a staged row whose attachment file is gone is removed", c do
+    :ok = CommandLedger.ensure!()
+    dir = Path.join(Path.dirname(c.path), "c2-config-#{System.unique_integer([:positive])}")
+    prior = Application.get_env(:swarm_code_daemon, :domain_config_dir)
+    Application.put_env(:swarm_code_daemon, :domain_config_dir, dir)
+
+    on_exit(fn ->
+      if prior,
+        do: Application.put_env(:swarm_code_daemon, :domain_config_dir, prior),
+        else: Application.delete_env(:swarm_code_daemon, :domain_config_dir)
+
+      File.rm_rf!(dir)
+    end)
+
+    png = <<137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, "IHDR", 0::64>>
+    {:ok, kept} = SwarmCode.Domain.Attachments.store("a.png", "image/png", Base.encode64(png))
+    {:ok, gone} = SwarmCode.Domain.Attachments.store("b.png", "image/png", Base.encode64(png))
+    project = Ecto.UUID.generate()
+    conversation = Ecto.UUID.generate()
+    :ok = CommandLedger.stage_attachment(project, conversation, kept["id"])
+    :ok = CommandLedger.stage_attachment(project, conversation, gone["id"])
+    File.rm!(gone["path"])
+
+    assert CommandLedger.staged_attachments(project, conversation) == [kept["id"]]
+    assert CommandLedger.staged_attachment_ids() == [kept["id"]]
+
+    assert %{rows: [[1]]} =
+             Ecto.Adapters.SQL.query!(Repo, "SELECT count(*) FROM cli_attachment_staging", [])
+  end
+
   test "atomic durable reservation admits only one concurrent caller and preserves unknown outcomes" do
     :ok = CommandLedger.ensure!()
     project = Ecto.UUID.generate()

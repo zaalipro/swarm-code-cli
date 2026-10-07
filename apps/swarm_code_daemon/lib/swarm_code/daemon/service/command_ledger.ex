@@ -47,13 +47,44 @@ defmodule SwarmCode.Daemon.Service.CommandLedger do
     :ok
   end
 
-  @doc "Load staged attachment ids for a conversation after a backend restart."
+  @doc """
+  Load staged attachment ids for a conversation after a backend restart.
+
+  cli020 C2 (bugs-4): a row whose attachment file is gone (the desktop's
+  24-hour prune, a manual delete) is deleted here instead of being returned,
+  so it cannot refuse every later send.
+  """
   def staged_attachments(project_id, conversation_id)
       when is_binary(project_id) and is_binary(conversation_id) do
     case SQL.query(
            Repo,
-           "SELECT attachment_id FROM cli_attachment_staging WHERE project_id = ? AND conversation_id = ? ORDER BY inserted_at, attachment_id LIMIT 4",
+           "SELECT attachment_id FROM cli_attachment_staging WHERE project_id = ? AND conversation_id = ? ORDER BY inserted_at, attachment_id LIMIT 64",
            [project_id, conversation_id]
+         ) do
+      {:ok, %{rows: rows}} ->
+        {present, gone} =
+          rows
+          |> Enum.map(&List.first/1)
+          |> Enum.split_with(&match?({:ok, _, _}, SwarmCode.Domain.Attachments.path(&1)))
+
+        consume_attachments(project_id, conversation_id, gone)
+        Enum.take(present, 4)
+
+      _ ->
+        []
+    end
+  end
+
+  @doc """
+  cli020 C2: every attachment id still staged in any conversation, so the boot
+  prune of abandoned attachments keeps them (A'3). Bounded to 10,000 ids.
+  """
+  @spec staged_attachment_ids() :: [String.t()]
+  def staged_attachment_ids do
+    case SQL.query(
+           Repo,
+           "SELECT DISTINCT attachment_id FROM cli_attachment_staging ORDER BY attachment_id LIMIT 10000",
+           []
          ) do
       {:ok, %{rows: rows}} -> Enum.map(rows, &List.first/1)
       _ -> []

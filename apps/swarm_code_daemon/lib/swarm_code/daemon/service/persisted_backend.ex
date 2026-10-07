@@ -111,6 +111,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         metadata: nil,
         research_ids: [],
         attachment_ids: staged_attachments,
+        # cli020 C2: a staged image's file was gone at this send.
+        staged_removed: false,
         refresh_pending: false,
         # pass71 S6: what the armed refresh has to do — a full reload, or only
         # the runs and nodes a streaming tick touched — the inputs of the last
@@ -753,6 +755,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
          id,
          state
        ) do
+    state = prune_staged(state)
+
     cond do
       params["attachment_refs"] != [] or state.attachment_ids != [] ->
         {refuse(id, :attachments_not_queued), state}
@@ -771,6 +775,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   end
 
   defp execute(%{operation: :dispatch_send, params: params}, _scope, id, state) do
+    state = prune_staged(state)
     text = params["text"]
     conversation_id = state.opts[:conversation_id]
     command = command_name(text)
@@ -1208,8 +1213,12 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
           :ok ->
             consume_staged(state, state.attachment_ids)
 
-            {accepted(id, [target], notice("Steer", "Sent to the running turn."), "steered"),
-             refresh(%{state | attachment_ids: []})}
+            {accepted(
+               id,
+               [target],
+               removed_notice(state) || notice("Steer", "Sent to the running turn."),
+               "steered"
+             ), refresh(%{state | attachment_ids: []})}
 
           {:error, _not_running} ->
             # The turn finished between the check and the steer: the message
@@ -1269,13 +1278,13 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       {:ok, run_id} when is_binary(run_id) ->
         consume_staged(state, state.attachment_ids)
 
-        {accepted(id, [run_id], nil, "started"),
+        {accepted(id, [run_id], removed_notice(state), "started"),
          refresh(%{state | research_ids: [], attachment_ids: []})}
 
       {:ok, %{type: :started, run_id: run_id}} ->
         consume_staged(state, state.attachment_ids)
 
-        {accepted(id, [run_id], nil, "started"),
+        {accepted(id, [run_id], removed_notice(state), "started"),
          refresh(%{state | research_ids: [], attachment_ids: []})}
 
       {:ok, %{type: :attached, research_id: research_id}} ->
@@ -2014,6 +2023,21 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
        do: %{state | attachment_ids: Enum.uniq([attachment_id | state.attachment_ids])}
 
   defp restore_staged_attachment(_response, state), do: state
+
+  # cli020 C2 (bugs-4): a staged image whose file is gone leaves the staging
+  # before a send (the send goes out, and says so) instead of refusing it.
+  defp prune_staged(state) do
+    {present, gone} =
+      Enum.split_with(state.attachment_ids, &match?({:ok, _, _}, Attachments.path(&1)))
+
+    if gone != [], do: consume_staged(state, gone)
+    %{state | attachment_ids: present, staged_removed: gone != []}
+  end
+
+  defp removed_notice(%{staged_removed: true}),
+    do: notice("Attachments", "A staged image was removed before sending.")
+
+  defp removed_notice(_state), do: nil
 
   defp consume_staged(state, attachment_ids) when is_list(attachment_ids) do
     CommandLedger.consume_attachments(
