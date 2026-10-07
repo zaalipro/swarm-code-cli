@@ -4,7 +4,8 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.SettingValue do
   effective `value`, every `layer` (`%{layer, value, set, ignored, raw, source,
   note}`, in the entry's layer order), the `winner`, the `writable` layers, the
   `base` (the home layer's stored wire value: the CAS token), dynamic `choices`
-  (`%{value, label, hint}`), `state` (`:ok`, `:invalid`, `:attention`) and `note`.
+  (`%{value, label, hint}`), `state` (`:ok`, `:invalid`, `:attention`), `note` and
+  (cli020 C13) `modified`.
 
   Decoding (rule 1): a key that is not a registry scalar is dropped (logged by key
   only); a value or layer value that fails `WireValue.type_ok?/2` makes this value
@@ -25,7 +26,8 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.SettingValue do
             base: nil,
             choices: nil,
             state: :ok,
-            note: nil
+            note: nil,
+            modified: nil
 
   @type layer :: %{
           layer: atom(),
@@ -45,7 +47,8 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.SettingValue do
           base: term(),
           choices: [%{value: term(), label: String.t(), hint: String.t() | nil}] | nil,
           state: :ok | :invalid | :attention,
-          note: String.t() | nil
+          note: String.t() | nil,
+          modified: boolean() | nil
         }
 
   @doc "Decode one SettingValue; `{:ok, :drop}` for a key this client does not know."
@@ -103,9 +106,16 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.SettingValue do
       base: SettingsDecode.json!(SettingsDecode.fetch!(wire, "base"), 65_536, :base),
       choices: choices!(SettingsDecode.fetch!(wire, "choices")),
       state: state,
-      note: SettingsDecode.opt_text!(SettingsDecode.fetch!(wire, "note"), 2_048, :note)
+      note: SettingsDecode.opt_text!(SettingsDecode.fetch!(wire, "note"), 2_048, :note),
+      # cli020 C13: whether the value counts as changed (set and not the
+      # default; never a conversation's own value). nil from an older service:
+      # the reader falls back to the winner.
+      modified: modified!(Map.get(wire, "modified"))
     }
   end
+
+  defp modified!(nil), do: nil
+  defp modified!(value), do: SettingsDecode.bool!(value, :modified)
 
   defp layer!(entry, wire) do
     SettingsDecode.map!(wire, 16, :layer)

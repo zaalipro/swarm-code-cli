@@ -154,8 +154,23 @@ defmodule SwarmCode.Daemon.Service.Settings.Values do
 
     opts = [base: if(entry.home, do: stored), choices: choices, state: state, note: note]
     opts = if invalid?, do: Keyword.put(opts, :invalid_raw, stored), else: opts
-    Layers.setting_value(entry, layers, opts)
+    value = Layers.setting_value(entry, layers, opts)
+    Map.put(value, "modified", modified?(entry, value))
   end
+
+  # cli020 C13 (onboarding-19): what the "changed" counts and `config list
+  # --modified` read. A value is modified when something set it and it differs
+  # from the entry's default; a conversation's own values (`session.*`) are
+  # this conversation's, never part of the global count.
+  defp modified?(%Entry{scope: scope}, _value) when scope in [:session, :fact, :action, :link],
+    do: false
+
+  defp modified?(%Entry{home: :session}, _value), do: false
+  # A value with no default to go back to (a project's name) is not a change.
+  defp modified?(%Entry{resettable: false}, _value), do: false
+
+  defp modified?(%Entry{} = entry, %{"winner" => winner, "value" => value}),
+    do: winner not in [nil, "default"] and not WireValue.equal?(value, entry.default)
 
   # The stored wire value of an entry at its home, and whether its home exists
   # (a session entry without a conversation, a project entry without a project).
@@ -229,14 +244,25 @@ defmodule SwarmCode.Daemon.Service.Settings.Values do
 
   ## ----------------------------------------------------------------- layers
 
+  # cli020 C13 (ux-live-11): the override says where it came from: `--model`
+  # for this launch, or NCODE_MODEL when a first run created the provider
+  # from the environment (`SessionConfiguration.override_source/1`, B13).
   defp layer(%Entry{} = entry, :flag, _stored, _invalid?, reads) do
     case reads.override do
-      %{provider_id: id, model: model}
+      %{provider_id: id, model: model} = override
       when entry.key in ["session.model", "session.sub_agent_model"] ->
-        Layers.layer(:flag, %{"provider_id" => id, "model" => model},
-          source: "--model",
-          note: "for this launch only"
-        )
+        value = %{"provider_id" => id, "model" => model}
+
+        case override_source(override) do
+          :first_run_env ->
+            Layers.layer(:env, value, source: "NCODE_MODEL", note: "first run")
+
+          :flag ->
+            Layers.layer(:flag, value, source: "--model", note: "this launch only")
+
+          nil ->
+            Layers.unset(:flag)
+        end
 
       _ ->
         Layers.unset(:flag)
@@ -330,6 +356,17 @@ defmodule SwarmCode.Daemon.Service.Settings.Values do
 
   defp home_set?(%Entry{} = entry, stored, _reads),
     do: not WireValue.equal?(stored, entry.default)
+
+  # cli020 stub (§8.1): B13 adds `SessionConfiguration.override_source/1`.
+  # Until it lands an override records its source under `:source` (absent:
+  # the `--model` flag, the only override before B13). The finisher replaces
+  # this with the call.
+  defp override_source(override) when is_map(override) do
+    if Code.ensure_loaded?(SessionConfiguration) and
+         function_exported?(SessionConfiguration, :override_source, 1),
+       do: apply(SessionConfiguration, :override_source, [override]),
+       else: Map.get(override, :source, :flag)
+  end
 
   ## ---------------------------------------------------------------- choices
 

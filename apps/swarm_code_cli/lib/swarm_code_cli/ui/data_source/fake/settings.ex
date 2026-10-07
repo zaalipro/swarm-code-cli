@@ -385,8 +385,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Settings do
 
   defp layer(state, entry, :flag, _project_id) do
     if entry.key in ["session.model", "session.sub_agent_model"] and state.flag_model,
-      do:
-        wire_layer(:flag, state.flag_model, true, source: "--model", note: "for this launch only"),
+      do: wire_layer(:flag, state.flag_model, true, source: "--model", note: "this launch only"),
       else: wire_layer(:flag, nil, false)
   end
 
