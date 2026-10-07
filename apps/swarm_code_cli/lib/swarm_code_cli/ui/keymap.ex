@@ -178,12 +178,19 @@ defmodule SwarmCodeCLI.UI.Keymap do
   `/trust`, and `/queue`, `/approval`, `/panel`, `/diff`, `/theme` and
   `/mouse` with or without their argument.
   """
-  @spec local_command(binary()) :: atom() | nil
+  @spec local_command(binary()) :: atom() | {:effort, :chat | :swarm} | nil
   def local_command(text) when is_binary(text) do
     trimmed = String.trim(text)
 
     cond do
       Map.has_key?(@local_commands, trimmed) -> Map.fetch!(@local_commands, trimmed)
+      # cli020 D10/D20: bare /rewind and /undo are the client's.
+      trimmed == "/rewind" -> :rewind
+      trimmed == "/undo" -> :undo
+      # cli020 D18/D20: bare /effort and /swarm_effort open the picker.
+      trimmed == "/effort" -> {:effort, :chat}
+      trimmed == "/swarm_effort" -> {:effort, :swarm}
+      trimmed == "/delete" -> :delete
       command?(trimmed, "/queue") -> :queue
       command?(trimmed, "/approval") -> :approval
       command?(trimmed, "/panel") -> :panel
@@ -230,6 +237,13 @@ defmodule SwarmCodeCLI.UI.Keymap do
 
   defp route({:mouse, _, _, _, _, _}, _, _), do: :ignore
 
+  # cli020 D5: alternate scroll's arrow burst is the wheel without a
+  # position: what takes the wheel today takes it, the pane is the transcript.
+  defp route({:scroll, direction, count}, state, _) do
+    lines = count * wheel_lines(state)
+    wheel_delta(if(direction == :up, do: -lines, else: lines), nil, nil, state)
+  end
+
   defp route(:focus_gained, state, _),
     do: result({:terminal_focus, :gained, state.terminal_generation})
 
@@ -265,7 +279,15 @@ defmodule SwarmCodeCLI.UI.Keymap do
   defp fragment_mods([:shift]), do: []
   defp fragment_mods(mods), do: Enum.sort(mods)
 
+  # cli020 lane D: the layers D opens take their own keys first.
   defp dispatch(code, mods, phase, state, table) do
+    case phase in [:press, :repeat] and SwarmCodeCLI.UI.Keymap.Layers.key(code, mods, state) do
+      result when result in [false, :pass] -> dispatch_table(code, mods, phase, state, table)
+      result -> result
+    end
+  end
+
+  defp dispatch_table(code, mods, phase, state, table) do
     cond do
       phase not in [:press, :repeat] ->
         :ignore
@@ -296,7 +318,7 @@ defmodule SwarmCodeCLI.UI.Keymap do
       # keys reach that draft as well; Esc, PgUp/PgDn and the rest stay the
       # card's.
       composing_under_card?(code, mods, state) ->
-        dispatch(code, mods, phase, composer_view(state), table)
+        dispatch_table(code, mods, phase, composer_view(state), table)
 
       # cli74 U1-2: Ctrl-F's badges on the settings rail take the next key,
       # whatever it is (Ctrl-C still interrupts).
@@ -418,6 +440,11 @@ defmodule SwarmCodeCLI.UI.Keymap do
         code == :backspace and mods == [:alt] -> :delete_word_backward
         code == :delete and mods == [:alt] -> :delete_word_forward
         code in [:left, :right, :up, :down, :home, :end] -> movement(code, mods)
+        # cli020 D1: macOS Option-arrows arrive as ESC b / ESC f (the port
+        # decodes them as the letter with Alt), Option-Delete as ESC d.
+        code == "b" and mods == [:alt] -> {:move, :word_left}
+        code == "f" and mods == [:alt] -> {:move, :word_right}
+        code == "d" and mods == [:alt] -> :delete_word_forward
         is_binary(code) and mods == [] -> {:insert, code}
         true -> nil
       end
@@ -448,6 +475,8 @@ defmodule SwarmCodeCLI.UI.Keymap do
       case {code, base} do
         {:left, [:alt]} -> :word_left
         {:right, [:alt]} -> :word_right
+        {:left, [:control]} -> :word_left
+        {:right, [:control]} -> :word_right
         {:home, [:control]} -> :buffer_start
         {:end, [:control]} -> :buffer_end
         {:home, []} -> :line_start
@@ -578,6 +607,9 @@ defmodule SwarmCodeCLI.UI.Keymap do
     :composer_line_end,
     :composer_half_up,
     :composer_delete_word_backward,
+    :composer_word_left,
+    :composer_word_right,
+    :composer_delete_word_forward,
     :composer_newline,
     :composer_undo,
     :composer_redo,
@@ -620,15 +652,24 @@ defmodule SwarmCodeCLI.UI.Keymap do
   # pager) takes the wheel while it is open; the approval card is not modal,
   # so it takes the wheel only under the pointer; any other layer (a picker,
   # a form) ignores it.
-  @wheel_lines 3
+  # cli020 D13: cli.json's `terminal.wheel_lines` (1..10, 3 by default).
+  defp wheel_lines(state) do
+    case Map.get(state, :wheel_lines) do
+      lines when is_integer(lines) -> min(max(lines, 1), 10)
+      _ -> 3
+    end
+  end
 
   defp wheel(kind, column, row, state) do
-    delta = if kind == :wheel_up, do: -@wheel_lines, else: @wheel_lines
+    lines = wheel_lines(state)
+    wheel_delta(if(kind == :wheel_up, do: -lines, else: lines), column, row, state)
+  end
 
+  defp wheel_delta(delta, column, row, state) do
     case state.layers do
       # cli74 U1-2: the settings layer scrolls the region under the pointer.
       [] when is_map_key(state, :settings) and is_struct(state.settings, Settings.Layer) ->
-        result({:settings, {:wheel, delta, column, row}})
+        result({:settings, {:wheel, delta, column || 0, row || 0}})
 
       [:help | _] ->
         result({:scroll, "dialog", {:line, delta}})
@@ -655,6 +696,8 @@ defmodule SwarmCodeCLI.UI.Keymap do
   defp pane_wheel(_column, _row, delta, %{overlay: %{}}),
     do: result({:overlay, {:scroll, delta}})
 
+  defp pane_wheel(nil, nil, delta, _state), do: result({:scroll, "main", {:line, delta}})
+
   defp pane_wheel(column, row, delta, state),
     do: result({:scroll, wheel_region(column, row, state), {:line, delta}})
 
@@ -668,6 +711,8 @@ defmodule SwarmCodeCLI.UI.Keymap do
         "main"
     end
   end
+
+  defp in_dialog?(nil, nil, _state), do: false
 
   defp in_dialog?(column, row, state) do
     case SwarmCodeCLI.UI.Projector.Dialog.project(state, Layout.classify(state.size)) do
@@ -875,6 +920,12 @@ defmodule SwarmCodeCLI.UI.Keymap do
           resolved -> resolved
         end
 
+      # cli020 D17 (ux-live-12): Enter on a tool row opens its full output
+      # whether or not the row cut it; with no output to open it folds the
+      # row open where one is drawn (pass70 Q9), else does nothing.
+      tool_row?(state, selected) and text_target(state, selected) != nil ->
+        tool_open(state, selected)
+
       # pass71 F1/F2 (review R1/R2): a reply or an output the daemon sent
       # only in part opens whole; "(Enter opens)" used to fold it instead.
       detail = text_target(state, selected) ->
@@ -885,6 +936,19 @@ defmodule SwarmCodeCLI.UI.Keymap do
 
       true ->
         find_target(state, table, &match?({:local, {:expand, ^selected, _}}, &1))
+    end
+  end
+
+  @doc false
+  # cli020 D17: a tool row of the transcript.
+  def tool_row?(state, selected),
+    do: match?(%{kind: :tool}, Map.get(state.read_model.transcript, selected))
+
+  @doc false
+  def tool_open(state, selected) do
+    case text_target(state, selected) do
+      {:local, action} -> result(action)
+      nil -> :ignore
     end
   end
 
@@ -991,11 +1055,13 @@ defmodule SwarmCodeCLI.UI.Keymap do
   @spec editor_context(map()) :: {:field_editor, term()} | {:editor, term()} | nil
   def editor_context(%{layers: [layer | _]} = state) do
     cond do
-      state.focus in ["cancel", "confirm"] ->
-        nil
-
+      # cli020 D15: a picker with a query takes text and Backspace into its
+      # query whatever row has focus, Cancel and Confirm included.
       Switcher.field_key(layer) ->
         {:field_editor, Switcher.field_key(layer)}
+
+      state.focus in ["cancel", "confirm"] ->
+        nil
 
       # pass75 interview: the "other" editor of the note's current question.
       match?({:question, _}, layer) and state.focus == "other" ->

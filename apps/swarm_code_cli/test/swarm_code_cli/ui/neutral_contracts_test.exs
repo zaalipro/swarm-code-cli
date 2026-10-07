@@ -406,7 +406,9 @@ defmodule SwarmCodeCLI.UI.NeutralContractsTest do
              )
   end
 
-  test "retry requires both failed state and its own permission" do
+  # cli020 C6/D16: a failed or a stopped run can be retried (the desktop's
+  # ↻ Retry); a finished one cannot, and nothing without its own permission.
+  test "retry requires a failed or stopped state and its own permission" do
     intent = {:retry_run, "run-f", 12}
 
     assert {:error, :not_allowed} =
@@ -418,6 +420,17 @@ defmodule SwarmCodeCLI.UI.NeutralContractsTest do
              )
 
     assert {:error, :not_allowed} =
+             RequestResolver.resolve(
+               intent,
+               ContractFixtures.failed_run_context("run-f", 12,
+                 active_run_state: :done,
+                 allowed_actions: [:retry]
+               ),
+               "request",
+               1
+             )
+
+    assert {:ok, _request} =
              RequestResolver.resolve(
                intent,
                ContractFixtures.failed_run_context("run-f", 12,

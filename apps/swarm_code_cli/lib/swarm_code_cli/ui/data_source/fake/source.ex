@@ -25,6 +25,11 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Source do
     do: GenServer.call(server, {:request, client_id, request})
 
   def advance(server, barrier), do: GenServer.call(server, {:advance, barrier})
+
+  @doc "cli020 C4: tell every client the ncode app opened (`true`) or quit."
+  def desktop_running(server, running) when is_boolean(running),
+    do: GenServer.call(server, {:desktop_running, running})
+
   def metadata(server), do: GenServer.call(server, :metadata)
   def unwatch(server, client_id, ref), do: GenServer.call(server, {:unwatch, client_id, ref})
 
@@ -69,6 +74,24 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Source do
     {reply, settings, facts} = Settings.control(state.settings, op, args)
     next = settings_facts(%{state | settings: settings}, facts)
     {:reply, reply, next}
+  end
+
+  # cli020 C4: a test or demo opens (or quits) "the ncode app": every client
+  # hears the shell watch's `desktop_running` delta.
+  def handle_call({:desktop_running, running}, _, state) when is_boolean(running) do
+    revision = state.script.revision + 1
+    sequence = state.script.sequence + 1
+
+    delta = %Delta{
+      kind: :desktop_running,
+      body: %DTO.DesktopPresence{running: running},
+      sequence: sequence,
+      revision: revision
+    }
+
+    state = %{state | script: %{state.script | sequence: sequence, revision: revision}}
+    broadcast(state, [delta])
+    {:reply, :ok, state}
   end
 
   def handle_call({:attach, id, pid}, _, state) do

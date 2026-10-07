@@ -41,7 +41,9 @@ defmodule SwarmCode.Daemon.Service.PersistedProjection do
           started_at: r.started_at,
           finished_at: r.finished_at,
           inserted_at: r.inserted_at,
-          updated_at: r.updated_at
+          updated_at: r.updated_at,
+          # cli020 qa (C16): a rewound turn's run reads as superseded.
+          superseded_at: r.superseded_at
         }
       )
 
@@ -540,6 +542,74 @@ defmodule SwarmCode.Daemon.Service.PersistedProjection do
     end
   end
 
+  @doc """
+  cli020 C23 (competitors-14): per run of `ids`, the input (its first 8 KB, as
+  the op node keeps it) of the newest `update_plan` op of its lead agent: the
+  run's live plan (F11). `%{run_id => json}`; a run without one is absent.
+  """
+  @spec plans(String.t(), [String.t()]) :: %{String.t() => String.t()}
+  def plans(_conversation, []), do: %{}
+
+  def plans(conversation, ids) do
+    # cli020 qa: the lead is a node with role "lead" or the run's root agent
+    # (a chat run's agent has role "assistant").
+    newest =
+      from(o2 in Node,
+        join: p2 in Node,
+        on: p2.id == o2.parent_id,
+        join: r2 in Run,
+        on: r2.id == o2.run_id,
+        where:
+          o2.run_id == parent_as(:plan).run_id and o2.kind == "op" and
+            o2.op_type == "update_plan" and (p2.role == "lead" or p2.id == r2.root_node_id),
+        order_by: [desc: o2.inserted_at, desc: o2.id],
+        limit: 1,
+        select: o2.id
+      )
+
+    Repo.all(
+      from(o in Node,
+        as: :plan,
+        join: p in Node,
+        on: p.id == o.parent_id,
+        join: r in Run,
+        on: r.id == o.run_id,
+        where:
+          r.conversation_id == ^conversation and o.run_id in ^ids and o.kind == "op" and
+            o.op_type == "update_plan" and (p.role == "lead" or p.id == r.root_node_id) and
+            o.id == subquery(newest),
+        select: {o.run_id, fragment("substr(coalesce(?, ''), 1, 8192)", o.input)}
+      )
+    )
+    |> Map.new()
+  end
+
+  @doc """
+  cli020 C15: the conversation's newest `limit` shell messages (role `role`,
+  no run, content `$ …`), newest first: the first 8 KB and the last 64 bytes
+  of each (where `[exit …]` is) and its size, never the whole output.
+  """
+  @spec shell_messages(String.t(), String.t(), pos_integer()) :: [map()]
+  def shell_messages(conversation, role, limit) do
+    Repo.all(
+      from(m in Message,
+        where:
+          m.conversation_id == ^conversation and is_nil(m.run_id) and m.role == ^role and
+            is_nil(m.superseded_at) and like(m.content, "$ %"),
+        order_by: [desc: m.position],
+        limit: ^limit,
+        select: %{
+          id: m.id,
+          head: fragment("substr(?, 1, 8192)", m.content),
+          tail: fragment("substr(?, -64)", m.content),
+          bytes: fragment("length(cast(? as blob))", m.content),
+          inserted_at: m.inserted_at,
+          updated_at: m.updated_at
+        }
+      )
+    )
+  end
+
   @doc "The newest still-open op per agent of `ids`: `%{agent_id => op}`."
   def running_ops(_conversation, []), do: %{}
 
@@ -557,7 +627,17 @@ defmodule SwarmCode.Daemon.Service.PersistedProjection do
           parent_id: n.parent_id,
           op_type: n.op_type,
           title: fragment("substr(coalesce(?, ''), 1, 200)", n.title),
-          started_at: n.started_at
+          started_at: n.started_at,
+          # cli020 C5: a transport retry (`retrying 2/5 · <reason>`). Only a
+          # retrying op's detail is read: a running op's detail moves with
+          # every streaming tick, which reuses these rows (pass71 S6).
+          status: n.status,
+          detail:
+            fragment(
+              "CASE WHEN ? = 'retrying' THEN substr(coalesce(?, ''), 1, 200) END",
+              n.status,
+              n.detail
+            )
         }
       )
     )
@@ -673,8 +753,44 @@ defmodule SwarmCode.Daemon.Service.PersistedProjection do
             )
             |> Map.new(fn {id, count, finished} -> {id, {count, finished}} end)
 
-      {:ok, Enum.map(page, &Map.put(&1, :stats, Map.get(stats, &1.id, {0, nil}))), rest != []}
+      prompts = last_prompts(ids)
+
+      {:ok,
+       Enum.map(page, fn row ->
+         row
+         |> Map.put(:stats, Map.get(stats, row.id, {0, nil}))
+         |> Map.put(:last_prompt, Map.get(prompts, row.id))
+       end), rest != []}
     end
+  end
+
+  # cli020 C19 (ux-live-24): per conversation of the page, the first line of
+  # its newest user message that is not superseded (80 characters), in one
+  # query.
+  defp last_prompts([]), do: %{}
+
+  defp last_prompts(ids) do
+    newest =
+      from(m2 in Message,
+        where:
+          m2.conversation_id == parent_as(:prompt).conversation_id and m2.role == "user" and
+            is_nil(m2.superseded_at),
+        select: max(m2.position)
+      )
+
+    Repo.all(
+      from(m in Message,
+        as: :prompt,
+        where:
+          m.conversation_id in ^ids and m.role == "user" and is_nil(m.superseded_at) and
+            m.position == subquery(newest),
+        select: {m.conversation_id, fragment("substr(coalesce(?, ''), 1, 400)", m.content)}
+      )
+    )
+    |> Map.new(fn {id, text} ->
+      line = text |> String.split("\n", parts: 2) |> hd() |> String.trim() |> String.slice(0, 80)
+      {id, if(line == "", do: nil, else: line)}
+    end)
   end
 
   @doc """

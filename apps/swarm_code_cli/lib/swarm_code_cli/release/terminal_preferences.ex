@@ -12,7 +12,7 @@ defmodule SwarmCodeCLI.Release.TerminalPreferences do
     `colors` unless `auto`, else the `COLORTERM`/`TERM` probe;
   - glyphs: `SWARM_ASCII` in `1 true yes` → ascii, else cli `glyphs` unless
     `auto`, else `Capabilities.glyph_tier/4`;
-  - wheel: `SWARM_MOUSE` > cli `mouse` > on;
+  - wheel: `SWARM_MOUSE` > cli `mouse` > off (cli020 E26/D5: alternate scroll);
   - keymap: `SWARM_KEYMAP=vim` > cli `keymap` > standard;
   - companion: `SWARM_COMPANION=0` > cli `companion` > on;
   - startup: a conversation flag or `SWARM_CONVERSATION` > cli
@@ -224,7 +224,9 @@ defmodule SwarmCodeCLI.Release.TerminalPreferences do
   end
 
   defp mouse(env, prefs, acc) do
-    stored = Map.get(prefs, "mouse", true) != false
+    # cli020 E26/D5: wheel reports are off unless asked for; the wheel still
+    # scrolls through alternate scroll (`?1007h`) and native selection works.
+    stored = Map.get(prefs, "mouse", false) == true
 
     case env_value(env, "SWARM_MOUSE") do
       nil ->

@@ -11,12 +11,13 @@ defmodule SwarmCodeCLI.UI.Settings.C74EditorsU3Test do
   defp row, do: %{label: "Palette", key: "terminal.keys"}
 
   describe "KeyCapture, binding mode" do
-    test "capture of Ctrl-L writes [\"Ctrl-L\"] in the keys map" do
+    # cli020 M2: Ctrl-L is Redraw since D11; Ctrl-Q is still free.
+    test "capture of Ctrl-Q writes [\"Ctrl-Q\"] in the keys map" do
       {:ok, state} = KeyCapture.init(row(), %{mode: :binding, binding: "command_palette"}, ctx())
       assert %{context: :settings_capture} = KeyCapture.display(state, ctx())
 
-      assert {:commit, %{"command_palette" => ["Ctrl-L"]}, _} =
-               KeyCapture.handle(state, {:raw, {"l", [:control]}}, ctx())
+      assert {:commit, %{"command_palette" => ["Ctrl-Q"]}, _} =
+               KeyCapture.handle(state, {:raw, {"q", [:control]}}, ctx())
     end
 
     test "+ then F6 adds a key to the ones in force" do

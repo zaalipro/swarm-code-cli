@@ -183,6 +183,23 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
     steps = Enum.filter(lead_work, &(&1.kind == :thinking))
     {step_texts, residual} = decompose(answer && answer.text, steps)
 
+    # cli020 E10 (ux-live-6): a finished swarm's `swarm` report message (an
+    # assistant item after the work) repeats the Lead's last words, which the
+    # Lead's answer and its last step already show: drawn once.
+    shown =
+      [answer && answer.text | Map.values(step_texts)]
+      |> Enum.filter(&is_binary/1)
+      |> MapSet.new(&String.trim/1)
+      |> MapSet.delete("")
+
+    repeats =
+      for item <- lead_work,
+          item.role == :assistant and item.kind == :text,
+          answer == nil or item.id != answer.id,
+          MapSet.member?(shown, String.trim(item.text || "")),
+          into: %{},
+          do: {item.id, true}
+
     workers =
       items
       |> Enum.filter(worker?)
@@ -208,6 +225,7 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
       last_id: items |> List.last() |> then(&(&1 && &1.id)),
       continues: continues(items),
       answer: answer,
+      repeats: repeats,
       header_id: header && header.id,
       step_texts: step_texts,
       residual: residual,
@@ -389,6 +407,11 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
     end
   end
 
+  # cli020 E15 (decision 4c, C15): a `!command` the user ran stands alone:
+  # no turn header, no answer, its own block.
+  defp item_rows(%{kind: :shell} = item, _ctx, state, width),
+    do: [blank() | shell_rows(item, state, width)]
+
   defp item_rows(item, ctx, state, width) do
     late = Map.get(ctx, :late, MapSet.new())
 
@@ -440,6 +463,76 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
 
   defp worker_item?(item, ctx),
     do: is_binary(item.agent_id) and Map.has_key?(ctx.first_by_worker, item.agent_id)
+
+  # --- a shell command ----------------------------------------------------------------
+
+  #     $ mix test --failed                                   exit 1
+  #       1 test, 1 failure
+  #       …
+  # The text is the command, then its output (the persisted message is
+  # `"$ cmd\noutput\n[exit N]"`, C15); the item's `exit` wins over the
+  # trailer. Running, it says `running… ▮`.
+  defp shell_rows(item, state, width) do
+    {command, output, trailer} = shell_parts(item.text || "")
+    exit = if Map.has_key?(item, :exit) and item.exit != nil, do: item.exit, else: trailer
+
+    status =
+      cond do
+        exit in [:stopped, "stopped"] or item.state == :stopped ->
+          [{"stopped", {:role, :warning, []}}]
+
+        is_integer(exit) and exit == 0 ->
+          [{"exit 0", :muted}]
+
+        is_integer(exit) ->
+          [{"exit #{exit}", {:role, :error, []}}]
+
+        item.state in [:running, :streaming, :queued] ->
+          caret = SafeText.value(Support.glyph(:caret, state))
+          [{"running#{ellipsis(state)} " <> caret, {:role, :accent, []}}]
+
+        item.state == :failed ->
+          [{"failed", {:role, :error, []}}]
+
+        true ->
+          []
+      end
+
+    head =
+      spec(
+        [
+          {String.duplicate(" ", @body), :plain},
+          {"$ ", {:role, :accent, [:bold]}},
+          {admitted(command, state), :text},
+          {:right, status}
+        ],
+        nil
+      )
+
+    [head | preview(output, :muted, state, width, @body + 2, item.detail_ref)]
+  end
+
+  defp shell_parts(text) do
+    {command, rest} =
+      case String.split(text, ["\r\n", "\n"]) do
+        ["$ " <> command | rest] -> {command, rest}
+        [command | rest] -> {command, rest}
+      end
+
+    case List.last(rest) do
+      "[exit " <> tail ->
+        code =
+          case tail |> String.trim_trailing("]") |> Integer.parse() do
+            {n, ""} -> n
+            _ -> if String.starts_with?(tail, "stopped"), do: :stopped, else: nil
+          end
+
+        {command, rest |> Enum.drop(-1) |> Enum.join("\n"), code}
+
+      _ ->
+        {command, Enum.join(rest, "\n"), nil}
+    end
+  end
 
   # --- the prompt -------------------------------------------------------------------------
 
@@ -825,13 +918,24 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
         [{"waiting for you", {:role, :warning, [:bold]}}]
 
       run.state in [:running, :streaming, :retrying, :queued] ->
+        # cli020 E12 (ux-live-3, ux-live-23): a retry says which attempt and
+        # why (C5's `retry_detail`, "retrying 2/5 · HTTP 500"); `writing`
+        # from the answer's first words, even while its newest step holds
+        # the same words (the residual is then empty).
+        retry = retry_words(run)
+
         doing =
           cond do
             tool = Enum.find(ctx.lead_tools, &(&1.state in [:running, :streaming])) ->
               "running " <> verb(tool.tool || %DTO.ToolCall{})
 
-            ctx.answer != nil and ctx.answer.state == :streaming and
-                String.trim(ctx.residual) != "" ->
+            retry != nil ->
+              retry
+
+            # cli020 qa: a saved session's answer item takes its run's
+            # state (`running`), a live session's says `streaming`.
+            ctx.answer != nil and ctx.answer.state in [:streaming, :running] and
+                String.trim(ctx.answer.text || "") != "" ->
               "writing"
 
             run.state == :retrying ->
@@ -860,6 +964,14 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
           [] -> spend(run, state, false)
           chip -> tl_space(chip) ++ spend(run, state, true)
         end
+    end
+  end
+
+  defp retry_words(run) do
+    case Map.get(run, :retry_detail) do
+      "retrying" <> _ = detail -> detail
+      detail when is_binary(detail) and detail != "" -> "retrying " <> detail
+      _ -> nil
     end
   end
 
@@ -918,11 +1030,19 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
        do: []
 
   defp lead_rows(%{kind: :tool} = item, _ctx, state, width), do: tool_rows(item, state, width)
-  defp lead_rows(%{kind: :error} = item, _ctx, state, width), do: error_rows(item, state, width)
+  # cli020 E12: a failed run prints its error once, in its failure block.
+  defp lead_rows(%{kind: :error} = item, ctx, state, width) do
+    if failure_repeat?(item, ctx), do: [], else: error_rows(item, state, width)
+  end
 
   # The answer's own position holds nothing but the header; its words follow
   # the work, after the run's last item.
   defp lead_rows(%{id: id}, %{answer: %{id: id}}, _state, _width), do: []
+
+  # cli020 E10: a report whose words the turn already shows.
+  defp lead_rows(%{id: id}, %{repeats: repeats}, _state, _width)
+       when is_map_key(repeats, id),
+       do: []
 
   defp lead_rows(item, _ctx, state, width),
     do: prose_rows(item.text, state, width, @body) ++ cut_rows(item, state)
@@ -968,12 +1088,21 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
     # pass71 F12 (review R4): a command handed to the background, or a poll
     # that found it still running, has no exit code yet; a green check said it
     # had succeeded. It shows the clock until a poll reports the code.
-    pending? = status == :done and is_nil(code) and background_pending?(item, tool)
+    # cli020 E19 (ux-live-12): C10 says how a backgrounded command ended
+    # (`exit 0`, `killed at quit`, `still running`, `ended (exit not
+    # recorded)`); that replaces `exit code pending` and the `background` word.
+    ended = background_state(item)
+
+    pending? =
+      status == :done and is_nil(code) and background_pending?(item, tool) and
+        (ended == nil or ended == "still running")
 
     {mark, mark_style} =
-      if pending?,
-        do: {glyph(:clock_mark, state), {:role, :info, []}},
-        else: status_mark(status, state)
+      cond do
+        pending? -> {glyph(:clock_mark, state), {:role, :info, []}}
+        ended != nil -> status_mark(ended_status(ended), state)
+        true -> status_mark(status, state)
+      end
 
     verb = verb(tool)
     target = target(tool, verb)
@@ -984,6 +1113,7 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
     summary =
       cond do
         counts != [] -> nil
+        ended != nil -> nil
         pending? and poll?(tool) -> "still running"
         true -> summary_line(tool) || last_line(item, tool) || bytes(tool.result_bytes)
       end
@@ -1000,7 +1130,10 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
           do: [{Density.safe(summary, state, @summary_cells) |> SafeText.value(), :muted}],
           else: []
         ) ++
-        exit_words(tool) ++
+        if(ended,
+          do: [{ended, ended_style(ended)}],
+          else: exit_words(tool)
+        ) ++
         if(duration, do: [{"  " <> duration, :faint}], else: [])
 
     left = [
@@ -1034,6 +1167,25 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
         (is_binary(item.text) and String.starts_with?(item.text, "exit code pending"))
 
   defp poll?(tool), do: String.starts_with?(tool.title || "", "poll background process")
+
+  defp background_state(item) do
+    case Map.get(item, :background_state) do
+      words when is_binary(words) and words != "" -> words
+      _ -> nil
+    end
+  end
+
+  defp ended_status("exit 0"), do: :done
+  defp ended_status("exit " <> _), do: :failed
+  defp ended_status("killed" <> _), do: :stopped
+  defp ended_status("still running"), do: :running
+  defp ended_status(_words), do: :done
+
+  defp ended_style("exit 0"), do: :muted
+  defp ended_style("exit " <> _), do: {:role, :error, []}
+  defp ended_style("killed" <> _), do: {:role, :warning, []}
+  defp ended_style("still running"), do: {:role, :info, []}
+  defp ended_style(_words), do: :muted
 
   # A command that failed says its exit code; one handed to the background
   # says so, since its output keeps arriving after the row.
@@ -1303,7 +1455,7 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
       |> List.last()
 
     if report && agent && agent.state == :done do
-      rows = prose_rows(report.text, state, width, @body + 2)
+      rows = report_rows(report.text, agent, state, width, @body + 2)
       shown = Enum.take(rows, @report_rows)
       more = length(rows) - length(shown)
 
@@ -1327,6 +1479,62 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
 
   defp stopped_report_rows(_items, _agent, _ctx, _state, _width), do: []
 
+  # cli020 E13 (ux-live-2): the engine's note to the Lead ("[Changes on
+  # branch … Integrate them with the integrate_agent tool when they are
+  # good.]", "[No file changes.]") is not drawn; a dim row says what changed.
+  defp report_rows(text, agent, state, width, indent) do
+    {body, stat} = worker_report(text || "", agent && Map.get(agent, :changes_stat))
+    rows = prose_rows(body, state, width, indent)
+
+    if stat,
+      do: rows ++ [spec([{String.duplicate(" ", indent), :plain}, {stat, :faint}], nil)],
+      else: rows
+  end
+
+  @worker_note ~r/\s*\[(?:Changes on branch [^\n]*?\((?<stat>[^\n]*)\)\. Integrate them with the integrate_agent tool when they are good\.|(?<none>No file changes\.))\]\s*\z/u
+
+  @doc false
+  @spec worker_report(String.t(), String.t() | nil) :: {String.t(), String.t() | nil}
+  def worker_report(text, changes_stat) when is_binary(text) do
+    case Regex.named_captures(@worker_note, text) do
+      %{"none" => "No file changes."} ->
+        {strip_note(text), "no file changes"}
+
+      %{"stat" => note_stat} ->
+        {strip_note(text), stat_words(changes_stat) || stat_words(note_stat) || note_stat}
+
+      nil ->
+        {text, nil}
+    end
+  end
+
+  defp strip_note(text), do: text |> String.replace(@worker_note, "") |> String.trim_trailing()
+
+  # `3 files changed, 40 insertions(+), 2 deletions(-)` or `+40 −2` →
+  # `+40 −2 in 3 files`.
+  defp stat_words(stat) when is_binary(stat) and stat != "" do
+    number = fn regexes ->
+      Enum.find_value(regexes, fn re ->
+        case Regex.run(re, stat) do
+          [_, n] -> String.to_integer(n)
+          _ -> nil
+        end
+      end)
+    end
+
+    files = number.([~r/(\d+) files? changed/u])
+    added = number.([~r/(\d+) insertions?\(\+\)/u, ~r/\+(\d+)/u]) || 0
+    removed = number.([~r/(\d+) deletions?\(-\)/u, ~r/[−-](\d+)/u]) || 0
+
+    cond do
+      files == nil and added == 0 and removed == 0 -> nil
+      files == nil -> "+#{added} −#{removed}"
+      true -> "+#{added} −#{removed} in #{files} #{if files == 1, do: "file", else: "files"}"
+    end
+  end
+
+  defp stat_words(_stat), do: nil
+
   # A worker's other items take no row until its lane is expanded; expanded,
   # each shows under the lane line.
   defp worker_detail_rows(item, ctx, state, width, force? \\ false) do
@@ -1334,13 +1542,26 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
     expanded? = MapSet.member?(state.expansions, first)
 
     cond do
-      force? and item.kind == :tool -> tool_rows(item, state, width, @body + 2)
-      force? and item.kind == :text -> prose_rows(item.text, state, width, @body + 2)
-      force? and item.kind == :error -> error_rows(item, state, width)
-      force? -> []
-      expanded? or item.id == first -> []
-      selected?(state, item.id) -> tool_rows(item, state, width, @body + 2)
-      true -> []
+      force? and item.kind == :tool ->
+        tool_rows(item, state, width, @body + 2)
+
+      force? and item.kind == :text ->
+        report_rows(item.text, agent(item, state), state, width, @body + 2)
+
+      force? and item.kind == :error ->
+        error_rows(item, state, width)
+
+      force? ->
+        []
+
+      expanded? or item.id == first ->
+        []
+
+      selected?(state, item.id) ->
+        tool_rows(item, state, width, @body + 2)
+
+      true ->
+        []
     end
   end
 
@@ -1565,6 +1786,7 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
   defp drawn_work?(item, ctx) do
     cond do
       item.id == ctx.answer.id or item.role == :user -> false
+      item.kind == :error and failure_repeat?(item, ctx) -> false
       item.kind in [:tool, :error] -> true
       Map.has_key?(ctx.worker_ids, item.id) -> true
       Map.has_key?(ctx.step_texts, item.id) -> true
@@ -1573,11 +1795,29 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
     end
   end
 
+  defp failure_repeat?(item, %{run: %{state: :failed} = run}) do
+    reason = present(run.error) || present(Map.get(run, :stop_label))
+    reason != nil and humane_error(String.trim(item.text || "")) == humane_error(reason)
+  end
+
+  defp failure_repeat?(_item, _ctx), do: false
+
+  @doc false
+  # cli020 E12 (ux-live-3): an error the user can act on, in words. A
+  # refused connection is not a dropped one.
+  @spec humane_error(String.t()) :: String.t()
+  def humane_error(text) when is_binary(text) do
+    if String.contains?(String.downcase(text), "econnrefused"),
+      do: "Cannot connect to the provider (connection refused).",
+      else: String.trim(text)
+  end
+
   # A failed run says what failed and what to do; a stopped one says so once.
   defp footer_rows(%{run: %{state: :failed} = run}, state, width) do
     inner = max(1, width - @body - 3)
 
     reason = present(run.error) || present(Map.get(run, :stop_label))
+    reason = reason && humane_error(reason)
 
     lines =
       case reason do
@@ -1601,13 +1841,20 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
         )
       end)
 
+    # cli020 qa: beside the docked panel the hint was cut ("/model to sw");
+    # it wraps inside the card like the reason above it.
     hint =
-      spec(
-        [{String.duplicate(" ", @body), :plain}, {"  " <> next_step(run, state), :faint}],
-        {@body, :error_card}
-      )
+      run
+      |> next_step(state)
+      |> SwarmCodeCLI.UI.Prose.wrap(inner, state.capabilities.ambiguous_width)
+      |> Enum.map(fn line ->
+        spec(
+          [{String.duplicate(" ", @body), :plain}, {"  " <> line, :faint}],
+          {@body, :error_card}
+        )
+      end)
 
-    [blank()] ++ head ++ [hint]
+    [blank()] ++ head ++ hint
   end
 
   defp footer_rows(%{run: %{state: :stopped}} = ctx, _state, _width) do
@@ -1644,6 +1891,13 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
 
   # What to do about a failed turn: wait for the retry the daemon scheduled,
   # or retry it and perhaps switch model.
+  @doc false
+  # cli020 E9 (ux-live-4): the words name the real keys, `r` (D16) and the
+  # palette's "Retry failed run" row, which E9 puts first.
+  def next_step_text(run, state), do: next_step(run, state)
+
+  @retry_keys "r retries · Ctrl-P Retry failed run"
+
   defp next_step(run, state) do
     retry_at = Map.get(run, :retry_at)
     now = Map.get(state, :now)
@@ -1657,15 +1911,18 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
       true ->
         by = if provider, do: " by " <> provider, else: ""
 
-        case Map.get(run, :error_kind) do
+        refused? = String.contains?(String.downcase(Map.get(run, :error) || ""), "econnrefused")
+
+        case if(refused?, do: "refused", else: Map.get(run, :error_kind)) do
+          "refused" -> "is the provider running? · " <> @retry_keys
           "rate_limit" -> "rate limited" <> by <> " · retry in a moment · /model to switch"
           "usage_limit" -> "out of quota" <> by <> " · /model to switch model"
-          "overloaded" -> "provider busy · retry from the palette · /model to switch"
+          "overloaded" -> "provider busy · " <> @retry_keys <> " · /model to switch"
           "unauthorized" -> "the key was refused · check the provider in settings"
           "context_overflow" -> "too long for the model · /compact, then retry"
-          "network" -> "connection dropped · retry from the palette"
-          "timeout" -> "timed out · retry from the palette"
-          _ -> "retry from the palette · /model to switch model"
+          "network" -> "connection dropped · " <> @retry_keys
+          "timeout" -> "timed out · " <> @retry_keys
+          _ -> @retry_keys <> " · /model to switch model"
         end
     end
   end
@@ -1685,7 +1942,7 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
           ""
       end
 
-    (name <> (item.text || ""))
+    (name <> humane_error(item.text || ""))
     |> admitted(state)
     |> String.split(["\r\n", "\n"])
     |> Enum.flat_map(&SwarmCodeCLI.UI.Prose.wrap(&1, inner, state.capabilities.ambiguous_width))
@@ -1747,10 +2004,9 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
         inner = max(1, width - indent - 1)
         pad = {String.duplicate(" ", indent), :plain}
 
+        # cli020 E31: from `state.markdown_cache` when it holds the text.
         source
-        |> Markdown.rows(inner, state.capabilities.ambiguous_width,
-          ascii?: state.capabilities.ascii?
-        )
+        |> SwarmCodeCLI.UI.Projector.MarkdownRows.rows(inner, state)
         |> Enum.map(fn
           %{fill: :code_card, segments: segments, header: true} ->
             spec([pad | segments] ++ copy_hint(state), {indent, :code_card})

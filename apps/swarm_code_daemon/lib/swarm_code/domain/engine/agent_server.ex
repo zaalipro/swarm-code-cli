@@ -1061,6 +1061,8 @@ defmodule SwarmCode.Domain.Engine.AgentServer do
       # used to apply only to the next run.
       settings: SwarmCode.Domain.Settings.get_cached(),
       approval_mode: state.approval_mode,
+      # pass 72 F8: the run's approval override, nil for every desktop run.
+      approval_override: Map.get(state, :approval_override),
       project_id: Map.get(state, :project_id),
       # Spec 39 §1.1: the run kind, so a research op keeps its in-memory mode.
       run_kind: Map.get(state, :run_kind),

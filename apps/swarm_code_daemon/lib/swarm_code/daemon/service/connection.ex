@@ -481,6 +481,34 @@ defmodule SwarmCode.Daemon.Service.Connection do
         :question_answer ->
           :question_answer
 
+        # cli020 C1: the conversation's queue.
+        op when op in [:queue_resume, :queue_edit] ->
+          :queue
+
+        :run_retry ->
+          :run_retry
+
+        :history_search ->
+          :history
+
+        :rewind_apply ->
+          :rewind
+
+        :rewind_turns ->
+          :rewind
+
+        :shell_stop ->
+          :shell
+
+        :shell_run ->
+          :shell
+
+        :attachment_attach ->
+          :attachment
+
+        :attachment_slot ->
+          :attachment
+
         op
         when op in [
                :query,

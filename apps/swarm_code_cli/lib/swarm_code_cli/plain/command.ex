@@ -81,6 +81,26 @@ defmodule SwarmCodeCLI.Plain.Command do
     end
   end
 
+  # cli020 B22 (tui-code-18): the finer decisions, only when the row offers
+  # them (`Keymap.decisions/1`, the full screen's rule): a read-only row
+  # offers approve, deny and deny-stop.
+  defp decode([verb, reference], p) when verb in ["approve-run", "always-prefix", "deny-stop"] do
+    decision =
+      case verb do
+        "approve-run" -> :approve_run
+        "always-prefix" -> :always_prefix
+        "deny-stop" -> :deny_stop
+      end
+
+    with {:ok, id, rev} <- reference(reference),
+         %{kind: :approval, state: :pending, expected_revision: ^rev} = i <- p.interactions[id],
+         true <- decision in SwarmCodeCLI.UI.Keymap.decisions(i) do
+      intent({:resolve_approval, i.run_id, i.node_id, id, rev, decision})
+    else
+      _ -> :error
+    end
+  end
+
   defp decode([verb, run], p) when verb in ["pause", "continue", "resume", "stop"] do
     operation =
       case verb do

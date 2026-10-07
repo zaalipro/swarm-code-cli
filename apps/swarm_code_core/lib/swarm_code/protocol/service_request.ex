@@ -37,6 +37,16 @@ defmodule SwarmCode.Protocol.ServiceRequest do
           | :agent_detail
           | :settings_query
           | :settings_command
+          | :queue_resume
+          | :queue_edit
+          | :run_retry
+          | :history_search
+          | :rewind_apply
+          | :rewind_turns
+          | :shell_stop
+          | :shell_run
+          | :attachment_attach
+          | :attachment_slot
 
   @type t :: %__MODULE__{
           operation: operation(),
@@ -120,6 +130,25 @@ defmodule SwarmCode.Protocol.ServiceRequest do
   defp decode_operation("agent.detail"), do: :agent_detail
   defp decode_operation("settings.query"), do: :settings_query
   defp decode_operation("settings.command"), do: :settings_command
+  # cli020 C1: the conversation's queue (resume after a stop, clear, drop one).
+  defp decode_operation("queue.resume"), do: :queue_resume
+  defp decode_operation("queue.edit"), do: :queue_edit
+  # cli020 C6: retry a failed or stopped run (the desktop's ↻ Retry).
+  defp decode_operation("run.retry"), do: :run_retry
+  # cli020 C14: a clipboard image slot.
+  defp decode_operation("attachment.slot"), do: :attachment_slot
+  # cli020 C14: stage the image written into a slot.
+  defp decode_operation("attachment.attach_slot"), do: :attachment_attach
+  # cli020 C15: the ! shell escape.
+  defp decode_operation("shell.run"), do: :shell_run
+  # cli020 C15: stop the running shell command.
+  defp decode_operation("shell.stop"), do: :shell_stop
+  # cli020 C16: the turns the conversation can be rewound to.
+  defp decode_operation("rewind.turns"), do: :rewind_turns
+  # cli020 C16: rewind to before a turn.
+  defp decode_operation("rewind.apply"), do: :rewind_apply
+  # cli020 C20: the prompt history (Ctrl-R).
+  defp decode_operation("history.search"), do: :history_search
   defp decode_operation(_operation), do: nil
 
   defp encode_operation(:query), do: "query"
@@ -144,6 +173,16 @@ defmodule SwarmCode.Protocol.ServiceRequest do
   defp encode_operation(:agent_detail), do: "agent.detail"
   defp encode_operation(:settings_query), do: "settings.query"
   defp encode_operation(:settings_command), do: "settings.command"
+  defp encode_operation(:queue_resume), do: "queue.resume"
+  defp encode_operation(:queue_edit), do: "queue.edit"
+  defp encode_operation(:run_retry), do: "run.retry"
+  defp encode_operation(:attachment_slot), do: "attachment.slot"
+  defp encode_operation(:attachment_attach), do: "attachment.attach_slot"
+  defp encode_operation(:shell_run), do: "shell.run"
+  defp encode_operation(:shell_stop), do: "shell.stop"
+  defp encode_operation(:rewind_turns), do: "rewind.turns"
+  defp encode_operation(:rewind_apply), do: "rewind.apply"
+  defp encode_operation(:history_search), do: "history.search"
   defp encode_operation(_operation), do: nil
 
   defp param_keys(:query), do: ~w(slot cursor direction page_size byte_limit)
@@ -179,6 +218,18 @@ defmodule SwarmCode.Protocol.ServiceRequest do
   defp param_keys(op) when op in [:settings_query, :settings_command],
     do: WireBounds.param_keys(op)
 
+  # cli020 C1: `revision` is the queue's `queue_revision` the client saw.
+  defp param_keys(:queue_resume), do: []
+  defp param_keys(:queue_edit), do: ~w(revision action position)
+
+  defp param_keys(:run_retry), do: ~w(run_id revision)
+  defp param_keys(:attachment_slot), do: []
+  defp param_keys(:attachment_attach), do: ~w(token)
+  defp param_keys(:shell_run), do: ~w(command)
+  defp param_keys(:shell_stop), do: []
+  defp param_keys(:rewind_turns), do: []
+  defp param_keys(:rewind_apply), do: ~w(message_id scope)
+  defp param_keys(:history_search), do: ~w(query)
   defp param_keys(_operation), do: []
 
   defp valid_params?(:query, params, scope) do
@@ -308,6 +359,48 @@ defmodule SwarmCode.Protocol.ServiceRequest do
   defp valid_params?(op, params, scope) when op in [:settings_query, :settings_command],
     do: scope.kind == :global and scope.id == nil and WireBounds.valid?(op, params) == :ok
 
+  defp valid_params?(:run_retry, params, scope),
+    do: run_scope?(params["run_id"], scope) and counter?(params["revision"])
+
+  defp valid_params?(:attachment_slot, _params, scope), do: scope.kind == :conversation
+
+  defp valid_params?(:attachment_attach, params, scope),
+    do:
+      scope.kind == :conversation and
+        (is_binary(params["token"]) and Regex.match?(~r/\A[0-9a-f]{32}\z/, params["token"]))
+
+  defp valid_params?(:shell_run, params, scope),
+    do:
+      scope.kind == :conversation and
+        (is_binary(params["command"]) and byte_size(params["command"]) in 1..4096 and
+           String.valid?(params["command"]) and not String.contains?(params["command"], <<0>>))
+
+  defp valid_params?(:shell_stop, _params, scope), do: scope.kind == :conversation
+
+  defp valid_params?(:rewind_turns, _params, scope), do: scope.kind == :conversation
+
+  defp valid_params?(:rewind_apply, params, scope),
+    do:
+      scope.kind == :conversation and
+        (uuid?(params["message_id"]) and params["scope"] in ["both", "conversation", "files"])
+
+  defp valid_params?(:history_search, params, scope),
+    do:
+      scope.kind == :conversation and
+        (is_binary(params["query"]) and byte_size(params["query"]) <= 200 and
+           String.valid?(params["query"]))
+
+  defp valid_params?(:queue_resume, _params, scope), do: scope.kind == :conversation
+
+  defp valid_params?(:queue_edit, params, scope) do
+    scope.kind == :conversation and hex16?(params["revision"]) and
+      case params["action"] do
+        "clear" -> is_nil(params["position"])
+        "drop" -> bounded_integer?(params["position"], 1, 10_000)
+        _ -> false
+      end
+  end
+
   defp json_attributes?(_, depth) when depth > 6, do: false
 
   defp json_attributes?(value, _) when is_binary(value),
@@ -371,6 +464,12 @@ defmodule SwarmCode.Protocol.ServiceRequest do
     do: Regex.match?(~r/\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/, value)
 
   defp uuid?(_value), do: false
+
+  defp hex16?(value) when is_binary(value) and byte_size(value) == 16,
+    do: Regex.match?(~r/\A[0-9a-f]{16}\z/, value)
+
+  defp hex16?(_value), do: false
+
   defp optional_uuid?(nil), do: true
   defp optional_uuid?(value), do: uuid?(value)
 

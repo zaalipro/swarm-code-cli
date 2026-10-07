@@ -4,7 +4,7 @@ defmodule SwarmCode.Domain.Engine.Operation do
   Task.Supervisor, with its own node, progress reporting, approval gate and result delivery.
   """
 
-  alias SwarmCode.Domain.Engine.{Policy, RunServer, Telemetry}
+  alias SwarmCode.Domain.Engine.{Policy, Rules, RunServer, Telemetry}
   alias SwarmCode.Domain.Hooks
   alias SwarmCode.Domain.LLM
   alias SwarmCode.Domain.LLM.Speed
@@ -287,40 +287,64 @@ defmodule SwarmCode.Domain.Engine.Operation do
     permission = Ref.permission(ref, args)
     safety = safety(ref, args)
 
-    # spec 68 T6: removed the vestigial `always` MapSet.new() argument.
-    case Policy.decide(current_mode(ctx), permission, safety) do
-      {:deny, msg} ->
-        {:error, msg}
+    # pass 72 F1: the mode is read once per op and travels with the approval,
+    # so a card raised in read-only keeps its read-only answers.
+    mode = current_mode(ctx)
+
+    # pass 72 F10: the project's permission rules come first (trusted projects
+    # only, `Rules.for_root/1`). Deny beats ask beats allow; an ask asks in
+    # every mode and is never remembered (`safety: :rule`); an allow skips the
+    # ask except for a dangerous command and a private-network fetch.
+    root = ctx[:project_root]
+
+    decision =
+      case Rules.decide(Rules.for_root(root), ref.name, args, root: root) do
+        {:deny, rule} -> {:deny, rule}
+        :ask -> {:ask, :rule}
+        :allow -> rule_allow(mode, permission, safety)
+        # spec 68 T6: removed the vestigial `always` MapSet.new() argument.
+        :none -> Policy.decide(mode, permission, safety)
+      end
+
+    case decision do
+      {:deny, rule} ->
+        {:error, "blocked by rule " <> rule}
 
       :allow ->
         # spec 70 D3: pre_tool_use hook. spec 73 T6: the ctx `dispatch_tools/2`
         # builds carries the root as `:project_root`; this read `:root_path`,
         # which no caller ever set, so `Hooks.run/3` took its nil clause and
         # neither hook fired from a real run.
-        case Hooks.run(:pre_tool_use, %{tool_name: ref.name, args: args}, ctx[:project_root]) do
-          {:block, reason} -> {:error, "hook blocked: " <> reason}
-          _ -> run_tool(ref, args, ctx, progress)
-        end
+        hooked_run(ref, args, ctx, progress)
 
       :ask ->
-        case RunServer.request_approval(run_id, id, permission, safety) do
-          :approved ->
-            # spec 70 D3: pre_tool_use hook (spec 73 T6: `:project_root`).
-            case Hooks.run(
-                   :pre_tool_use,
-                   %{tool_name: ref.name, args: args},
-                   ctx[:project_root]
-                 ) do
-              {:block, reason} -> {:error, "hook blocked: " <> reason}
-              _ -> run_tool(ref, args, ctx, progress)
-            end
+        ask_then_run(run_id, id, {permission, safety, mode}, ref, args, ctx, progress)
 
-          :denied ->
-            {:error, "denied by user"}
+      {:ask, :rule} ->
+        ask_then_run(run_id, id, {permission, :rule, mode}, ref, args, ctx, progress)
+    end
+  end
 
-          :timeout ->
-            {:error, "approval timed out after 10 minutes"}
-        end
+  defp rule_allow(_mode, _permission, :dangerous), do: :ask
+
+  defp rule_allow(mode, :private_network, safety),
+    do: Policy.decide(mode, :private_network, safety)
+
+  defp rule_allow(_mode, _permission, _safety), do: :allow
+
+  defp ask_then_run(run_id, id, {permission, safety, mode}, ref, args, ctx, progress) do
+    case RunServer.request_approval(run_id, id, permission, safety, mode) do
+      # spec 70 D3: pre_tool_use hook (spec 73 T6: `:project_root`).
+      :approved -> hooked_run(ref, args, ctx, progress)
+      :denied -> {:error, "denied by user"}
+      :timeout -> {:error, "approval timed out after 10 minutes"}
+    end
+  end
+
+  defp hooked_run(ref, args, ctx, progress) do
+    case Hooks.run(:pre_tool_use, %{tool_name: ref.name, args: args}, ctx[:project_root]) do
+      {:block, reason} -> {:error, "hook blocked: " <> reason}
+      _ -> run_tool(ref, args, ctx, progress)
     end
   end
 
@@ -385,6 +409,10 @@ defmodule SwarmCode.Domain.Engine.Operation do
   # against a scratch %Project{} whose mode was set in memory (spec 24 §3.1),
   # and the row it borrows belongs to the user's "No project" chats.
   defp current_mode(%{run_kind: "research"} = ctx), do: ctx.approval_mode
+
+  # pass 72 F8: a run started with `opts[:approval_mode]` (the CLI's
+  # `-p --approval`) is decided in that mode, before the project's.
+  defp current_mode(%{approval_override: mode}) when is_binary(mode), do: mode
 
   defp current_mode(ctx) do
     with id when is_binary(id) <- Map.get(ctx, :project_id),

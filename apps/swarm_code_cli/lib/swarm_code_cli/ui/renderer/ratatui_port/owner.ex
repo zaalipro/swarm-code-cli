@@ -89,6 +89,8 @@ defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.Owner do
        # pass71 F4 (V's request I-2/S-2): the launcher decides the theme once
        # (`Theme.mode/2`: SWARM_THEME, else the desktop settings' mode).
        theme: Keyword.get(options, :theme, :dark),
+       # cli020 M2 (E27): the palette (`terminal.palette`), Carbon by default.
+       palette: Keyword.get(options, :palette, :carbon),
        flags: flags,
        slot: nil,
        generation: 1,
@@ -183,6 +185,16 @@ defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.Owner do
     {:noreply, %{state | phase: :resuming, control: {:resume, token}, timer: timer(:resume)}}
   end
 
+  # cli020 D11: Ctrl-L. The native painter is invalidated and the next plan
+  # is a full one.
+  defp dispatch(
+         {:terminal_control, :redraw, generation},
+         %{phase: :running, generation: generation} = state
+       ) do
+    {_token, state} = control(state, :redraw)
+    {:noreply, %{state | last_plan: nil}}
+  end
+
   defp dispatch({:terminal_control, _, _}, state), do: {:noreply, state}
 
   defp dispatch({port, {:exit_status, _}}, %{port: port, phase: :restored} = state) do
@@ -253,6 +265,7 @@ defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.Owner do
   # the port took it, so the `ready` of a later resume agrees with them.
   defp dispatch({:terminal_preferences, preferences}, state) when is_map(preferences) do
     state = retheme(state, Map.get(preferences, :theme))
+    state = repalette(state, Map.get(preferences, :palette))
 
     state =
       case Map.get(preferences, :mouse?) do
@@ -262,6 +275,28 @@ defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.Owner do
 
     {:noreply, state}
   end
+
+  # cli020 D3: a bell, an OSC 9 notification or the window title, between
+  # frames (the session runtime's `{:bell, …}`, `{:notify_os, …}` and
+  # `{:terminal_title, …}` effects). A text the wire refuses is dropped here,
+  # never sent: the port would end the session on it.
+  defp dispatch({:terminal_notify, kind, text}, %{port: port, phase: phase} = state)
+       when port != nil and phase in [:running, :suspending, :suspended, :resuming] do
+    token = state.counter + 1
+
+    case Wire.notify(1, token, kind, text) do
+      {:ok, bytes} ->
+        if Port.command(port, bytes, [:nosuspend]),
+          do: {:noreply, %{state | counter: token}},
+          else: {:noreply, state}
+
+      _ ->
+        Logger.info("terminal notify refused: the text is too long or has controls")
+        {:noreply, state}
+    end
+  end
+
+  defp dispatch({:terminal_notify, _kind, _text}, state), do: {:noreply, state}
 
   defp dispatch({:plain_instruction, "Rerun with --plain"}, %{phase: :restored} = state) do
     IO.puts(
@@ -341,6 +376,9 @@ defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.Owner do
 
   defp record({:ready, 1, size, bits}, state) do
     mouse? = Map.get(state.flags, :mouse?, false)
+    # cli020 D2: the kitty keyboard protocol answered the port's probe.
+    enhanced? = (bits &&& 128) != 0
+    bits = bits &&& bnot(128)
 
     expected =
       if(state.flags.alternate?, do: 1, else: 0) ||| if(state.flags.focus?, do: 2, else: 0) |||
@@ -360,7 +398,7 @@ defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.Owner do
         alternate_screen: feature(state.flags.alternate?),
         focus: feature(state.flags.focus?),
         paste: feature(state.flags.paste?),
-        enhanced_keys: :unavailable,
+        enhanced_keys: if(enhanced?, do: :supported, else: :unavailable),
         mouse: feature(mouse?)
     }
 
@@ -527,7 +565,8 @@ defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.Owner do
           color_mode: state.caps.color_mode,
           ascii?: state.caps.ascii?,
           glyph_tier: state.caps.glyph_tier,
-          theme: state.theme
+          theme: state.theme,
+          palette: state.palette
         }
 
         case encode(fn -> Paint.build(scene, options) end, sequence) do
@@ -554,6 +593,18 @@ defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.Owner do
   end
 
   defp retheme(state, _theme), do: state
+
+  # cli020 M2 (E27): the same for a palette (`/theme <palette>`).
+  defp repalette(state, palette) when is_atom(palette) and palette != state.palette do
+    if palette in SwarmCodeCLI.UI.Theme.palettes() do
+      Logger.info("terminal palette switched to #{palette}")
+      %{state | palette: palette, last_plan: nil}
+    else
+      state
+    end
+  end
+
+  defp repalette(state, _palette), do: state
 
   defp encode(build, sequence) do
     with {:ok, plan} <- build.(),

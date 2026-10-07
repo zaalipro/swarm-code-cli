@@ -6,7 +6,7 @@ Claude Code reads this file directly when the project has no `CLAUDE.md`; do not
 
 ## What this is
 
-Product name (v0.1.0): **ncode**, lowercase; the installed command is `ncode`
+Product name (v0.2.0): **ncode**, lowercase; the installed command is `ncode`
 (`rel/overlays/bin/ncode`), with `swarmcode` and `swarm-code` kept as deprecated aliases that
 exec it. Internal names are unchanged on purpose: modules (`SwarmCode.*`, `SwarmCodeCLI.*`), OTP
 apps and the release (`swarm_code_*`), Mix tasks, the data folder
@@ -49,7 +49,7 @@ command below says otherwise. Native builds also need `cc` (C11), `python3`, and
 | Real unsaved session | `scripts/dev/run_live_session.sh` |
 | Headless session, one command per line on stdin | `scripts/dev/run_plain_session.sh [--ndjson]` |
 | Release / install | `scripts/dev/build_release.sh` → `_build/prod/rel/swarm_code_cli`; `scripts/install.sh` installs `ncode` |
-| Packaged entry points | `bin/ncode [DIR] [--new\|--continue\|--resume ID] [--model M] [-p PROMPT [--json]] [--plain [--ndjson]]`; the launcher validates flags in bash (usage exits 2 before any VM), the TUI is `bin/swarm_code_cli start` with `SWARM_RELEASE_TUI=1`, `-p`/`--plain` are `bin/swarm_code_cli eval 'SwarmCodeCLI.Release.main(System.argv())' …`; `-p` starts a new conversation unless `-c`/`--resume`/`SWARM_CONVERSATION` names one (pass 71). Exit codes 0 done, 1 failed, 2 usage, 3 startup refused |
+| Packaged entry points | `bin/ncode [DIR] [--new\|--continue\|--resume ID] [--model M] [-p PROMPT [--json]] [--plain [--ndjson]]`; the launcher validates flags in bash (usage exits 2 before any VM), the TUI is `bin/swarm_code_cli start` with `SWARM_RELEASE_TUI=1`, `-p`/`--plain` are `bin/swarm_code_cli eval 'SwarmCodeCLI.Release.main(System.argv())' …`; `-p` starts a new conversation unless `-c`/`--resume`/`SWARM_CONVERSATION` names one (pass 71). Exit codes 0 done, 1 failed, 2 usage, 3 startup refused, 4 changed elsewhere (`ncode config`), 129 SIGHUP, 143 SIGTERM (cli020 B9) |
 | Settings (pass 74) | `ncode settings [QUERY]` opens the layer (`/settings`, F2); `ncode config help` lists the headless commands (`list/get/set/reset/keys/path/records/record/secret --stdin/search/mcp/export/import/doctor`) |
 | Re-derive the desktop domain | `mise exec -- mix swarm_code.provenance.sync --ref <desktop sha>` (read-only `git` on `~/dev/swarm-code` or `$SWARM_CODE_UPSTREAM`); `--check` verifies (in precommit) |
 | Re-pin a hand-edited ledger file outside the sync mappings | `mise exec -- mix swarm_code.provenance.repin <path> …` |
@@ -76,10 +76,25 @@ macOS quit the desktop app before a saved session; they cannot share the databas
 - `demo/cells_test.exs` fails when `MIX_QUIET=1` is exported in the shell that runs the suite
   (the child `mix` prints nothing). Unset it.
 - `ui/renderer/locked_branch_test.exs` fails whenever `_build/prod` exists (after
-  `build_release.sh`) or inside a git worktree whose `deps` is a symlink. A green suite means:
-  main checkout, no `_build/prod`, no `MIX_QUIET`.
-- Git worktrees need `deps` and `apps/swarm_code_daemon/priv/native` symlinked from the main
-  checkout before they compile.
+  `build_release.sh`; `rm -rf _build/prod` before the next `mix test`) or inside a git worktree
+  whose `deps` is a symlink. A green suite means: no `_build/prod`, no `MIX_QUIET`, and a main
+  checkout or a worktree prepared as below. New release tests go under
+  `apps/swarm_code_cli/test/swarm_code_cli/entry/`: `test/swarm_code_cli/release/` is one of
+  that test's conditional paths and must not exist.
+- Git worktrees (cli020 §4.1): clone, never symlink, from the main checkout before the first
+  compile (APFS copy-on-write, so a worktree costs no disk until it diverges):
+
+  ```sh
+  git worktree add ~/dev/swarm-code-cli-wt/<name> -b <branch> main
+  cd ~/dev/swarm-code-cli-wt/<name>
+  cp -cR /Users/zaali/dev/swarm-code-cli/deps ./deps
+  cp -cR /Users/zaali/dev/swarm-code-cli/_build ./_build      # includes _build/terminal-port
+  mkdir -p apps/swarm_code_daemon/priv
+  cp -cR /Users/zaali/dev/swarm-code-cli/apps/swarm_code_daemon/priv/native apps/swarm_code_daemon/priv/native
+  rm -rf _build/prod
+  mise exec -- mix compile                                    # warning-free before you start
+  ```
+- Run test files as `env -u MIX_QUIET mise exec -- mix test <file>`, one app per call.
 - Nothing hits a remote API: LLM and tool tests use a loopback HTTP server, and every schema test
   builds fixture databases under `apps/swarm_code_daemon/priv/schema/fixtures`, never the real one.
 - `mix test` with files of two apps in one call fails ("paths given to mix test did not
@@ -96,8 +111,8 @@ Three umbrella apps with deliberate ownership boundaries (`apps/*/mix.exs`):
   handshake/request), `SwarmCode.Commands` the slash-command registry, and
   `SwarmCode.Governance.Provenance` the extraction audit.
 - **`swarm_code_daemon`**: the domain extracted from the desktop app plus the daemon shell.
-  `SwarmCode.Domain.*` is the desktop lineage, re-derived from desktop `6dd8d82` (pass 69) by
-  `mix swarm_code.provenance.sync`; CLI-local files (`domain/runtime.ex`, `paths.ex`,
+  `SwarmCode.Domain.*` is the desktop lineage, re-derived from desktop `7b8f379f` (desktop pass
+  72, CLI 0.2.0) by `mix swarm_code.provenance.sync`; CLI-local files (`domain/runtime.ex`, `paths.ex`,
   `notifications.ex`, `pub_sub.ex`, `feature_catalog.ex`, `html.ex`,
   `engine/pending_interactions.ex`, `tools/agent_title.ex`) are never synced (Ecto SQLite Repo via vendored `exqlite`,
   conversations, `Engine` with run/agent supervisors, LLM adapters, tools, workflows, research,
@@ -138,14 +153,28 @@ Invariants that the code base defends and tests pin:
   **op** node; its decisions are `approve` (`y`), `approve_run` (`Y`, the engine's `:always`),
   `always_prefix` (`A`, the server's own command family, never the client's), `deny` (`d`) and
   `deny_stop` (`D`). The project's approval mode and trust are the desktop's: a new project is
-  `read_only` until `/trust`; `/approval read-only|auto|full` changes it. In `auto`, writes and
-  `:safe` commands (`ls`, `git status`) run without asking and other commands ask.
+  `read_only` until `/trust`; `/approval read-only|auto|full` changes it (Shift-Tab in the
+  composer cycles them). In `read_only` every write and command asks with the card's `y once ·
+  d deny` (desktop pass 72 F1; the row's `allowed_decisions` are `approve`, `deny`, `deny_stop`
+  and it carries `approval_mode`), headless counts the denials (`--fail-on-denied`). In `auto`,
+  writes and `:safe` commands (`ls`, `git status`) run without asking and other commands ask.
+  `ncode -p --approval read-only|auto|full` runs that session's runs in the mode (F8's
+  `approval_mode:`, in memory; `auto`/`full` refused with exit 3 in an untrusted project). The
+  project's `.swarm_code/config.json` `permissions` (`allow`/`ask`/`deny`, F10's
+  `Engine.Rules`, trusted projects only) are decided before the mode.
 - Runtime input never selects modules or creates atoms; JSON and text have byte, count and
   nesting ceilings that return errors rather than truncating.
 - The canonical database is never reset, recreated or repaired. An unknown schema fails closed
-  with `StartupError{code: :schema_incompatible}`. The contract `desktop-6dd8d82` has 57
-  migrations; its `forward_compatible` allowlist lets a 53-migration database (desktop pass 63)
-  be backed up and migrated, and `Schema.Gate.admit_migration/2` refuses any other pending
+  with `StartupError{code: :schema_incompatible}`. The domain is synced to desktop `4c7c577a`
+  (desktop 0.2.0), re-synced to `7b8f379f` (desktop pass 72, no migration); its schema contract is
+  `desktop-4c7c577` (58 migrations, `apps/swarm_code_daemon/priv/schema/desktop-4c7c577.json`),
+  and `forward_compatible` lets the CLI run `20261015000004`, `20261016000001`,
+  `20261016000002`, `20261017000004` and `20261018000001` itself after the verified backup.
+  `mix swarm_code.provenance.drift` (in `mix precommit`; `--strict` in
+  `scripts/dev/build_release.sh`, override `NCODE_ALLOW_DRIFT=1`) fails when the desktop's `main`
+  has migrations the pin lacks: re-pin (sync, contract, manifest) before any release; the
+  desktop's `mix ncode.cli_lockstep` is the same check from the other side.
+  `Schema.Gate.admit_migration/2` refuses any other pending
   migration ("Open the SwarmCode app once to upgrade the database") or a database ahead of the
   manifest (`Schema.Refusal` holds both sentences). When the desktop repo gains migrations,
   re-pin: sync the domain (`mix swarm_code.provenance.sync --ref <sha>`, which brings the
@@ -178,7 +207,11 @@ by `scripts/dev/sync_unicode_width.exs --check`, `sync_unicode_variants.py --che
 - Bindings live only in `UI.Keymap.Bindings`; the help sheet, status hints and
   `docs/keybindings.md` derive from it. Never bind Ctrl-K (a window-manager chord). Alt is
   unreliable on macOS ghostty, so nothing essential may be Alt-only. Enhanced keys (kitty
-  protocol) are always unavailable. A bare Esc resolves after 40 ms.
+  protocol) are used when the terminal offers them: the port probes `CSI ? u` + DA1 on the
+  first alternate-screen activation (Ready waits for the DA1 answer, at most 500 ms), pushes
+  `CSI > 1 u` (disambiguate) through the guard and pops it on every restore, suspend and
+  emergency exit; Ready's bit 128 reports it and Shift-Enter then inserts a newline. A terminal
+  that never answers starts normally. A bare Esc resolves after 40 ms.
 - Letters arrive as `{:text_fragment, …}`, only special keys as `{:key, …}`; keymap tests for
   bare letters must set `focus: "main"` or the letter is treated as typing.
 - The keyboard is composer-first (pass 70, D5): letters always type; Esc stops the streaming
@@ -196,9 +229,11 @@ by `scripts/dev/sync_unicode_width.exs --check`, `sync_unicode_variants.py --che
   the card aside; Esc and PgUp/PgDn stay the card's), and with the draft empty Enter shows the
   whole command, then folds it (`Keymap.show_all?/2`). A run this session already asked to
   stop (`State.stops_asked`) is no longer "the turn", so the next Ctrl-C stops another or arms the
-  quit. Wheel reports are on by default (pass73 T9): the wheel scrolls the pane under the pointer;
-  Shift-drag (Option-drag in Terminal.app/iTerm2) selects text; `/mouse off` (kept in cli.json) or
-  `SWARM_MOUSE=0` turns them off. Enter on the `/` list takes the highlighted command (runs it when
+  quit. Wheel reports are off by default (cli020 D5, cli.json `mouse`): the port writes
+  `CSI ? 1007 h` (alternate scroll), the terminal sends the wheel as arrows, and one read of two
+  or more identical Up/Down arrows is the Scroll input (`{:scroll, :up | :down, 1..32}`), which
+  scrolls what the wheel scrolls by `count × terminal.wheel_lines`; the terminal selects text.
+  `/mouse on` (or `SWARM_MOUSE=1`) sends wheel reports instead (Shift-drag selects). Enter on the `/` list takes the highlighted command (runs it when
   it takes no argument); a message naming a workflow goes as `/create-workflow`, Ctrl-S sends it
   plain. `SwarmCodeCLI.UI.Composer.enter_action/1` is the one answer to "what does Enter do now"
   (send, steer, queue, run, complete, show all, fold) for the keymap, the footer and the pending
@@ -303,3 +338,104 @@ by `scripts/dev/sync_unicode_width.exs --check`, `sync_unicode_variants.py --che
   `chip_accent` background (reverse video in ansi16/mono); `:text_ghost`/`:border` are remapped
   to `:text_faint` in settings; the twin (`Glyphs.twin?/1`) draws `* | ! >`; editors keep the
   `%{value, lines, popover, context, footer}` map.
+
+## CLI 0.2.0 (cli020) facts
+
+The pass's binding contract is `docs/superpowers/plans/2026-10-07-cli-0.2.0/00_contract.md`, its
+lane notes are in `notes/`, the outcome is `docs/research/2026-10-07-cli020-outcome.md`.
+
+Provenance and domain (lane A):
+
+- `SwarmCodeWeb.Format` maps to the frozen `SwarmCode.Domain.Format` (the pure `preview/2`,
+  `clip_line/3`, `window/2`); repin it by hand when the desktop changes them.
+- The CLI keeps its own Ultra (workflow + swarm tools, the CLI `@ultra` text): two recorded
+  patches in `domain/tools.ex` and `domain/engine/prompts.ex`; keep them on every sync until the
+  missions pass.
+- The 13 frozen `dmn/llm/**` entries are behind the synced `domain/llm` by the spec 74 LLM fixes
+  (BUGS-28/29/49-52/77; `notes/A.md`, A5): the live runtime still runs the frozen copies.
+- Test fixtures the mapped tests call from `SwarmCode.Fixtures` live in
+  `apps/swarm_code_daemon/test/support/domain_fixtures.ex` (`assistant_identity/0`, `eventually/2`).
+- The CLI domain has no `LLM.Fake`: engine tests use the loopback OpenAI-compatible server
+  (`SwarmCode.Test.LoopbackHTTP`, `SwarmCode.Test.C020Backend`).
+
+Headless and release (lane B):
+
+- **Headless (`-p`).** The launcher owns the grammar and exports; the release re-validates.
+  `-p TEXT` with a pipe or file on stdin sends the stdin after the prompt
+  (`SWARM_STDIN_PIPED=1`, set only by the launcher); `-p -` reads the prompt from stdin.
+  `--json`/`--output-format json` print one object even on failure (`state: not_started`);
+  `--output-format stream-json` prints the `--plain --ndjson` records and ends with
+  `{"type":"summary",…}`. `--max-turns`/`--max-budget-usd` stop the owned run (exit 1);
+  `--fail-on-denied` fails a done run that had denials. Denials are said in one stderr line.
+  `--approval MODE` (`SWARM_HEADLESS_APPROVAL`) is a `PersistedBackend` start option passed to
+  the runs it starts (plain prompts and the dispatcher's chat/swarm launches; workflows and
+  `/compact` keep the project's mode).
+- **Exit codes:** 0 done, 1 failed, 2 usage, 3 refused, 4 changed elsewhere (`ncode config`),
+  129 SIGHUP, 143 SIGTERM (`Release.Signals`; SIGINT stays under `+Bd`).
+- `--resume` takes an exact title or a 6+ character id prefix (`SessionSelection.resolve/2`);
+  bare `--resume` opens the picker (`SWARM_RESUME_PICKER=1`, TUI only).
+- The TUI exit summary (`PersistedSession.summary_text/1`) starts with `\r\e[2K` (it erases
+  the launcher's `Starting ncode…`), then the last `exit_transcript` exchanges, then the block
+  with `Spent`. Never in `-p`/`--plain`.
+- `Details: <cli.log>` is printed only for a non-empty log and never for refusals the sentence
+  itself fixes; logs are flushed before every `System.halt`.
+- Stale `/tmp/scl-p-*`/`scl-h-*` folders are swept at start (`Release.SocketSweep`).
+
+Service (lane C):
+
+- The composer's `!cmd` runs in an owned task of the backend (`Daemon.Service.ShellEscape`, no
+  approval: the user typed it) and is persisted as a `shell` message (the next turn reads it),
+  sent as `DTO.ShellItem` entities, not transcript items. Clipboard images go through
+  `Daemon.Service.ClipboardInbox` slots (`<config_dir>/cli-inbox`, 0700, 4 slots, 60 s); the path
+  is always rebuilt from the token, never taken from the client. Rewind (`rewind.turns`,
+  `rewind.apply`) lives in `Daemon.Service.Rewind` (`Conversations.supersede_from/2`, then the
+  checkpoints); history search (`history.search`) and conversation search in
+  `Daemon.Service.MessageSearch`, both project-filtered in SQL before the limit. Git facts
+  (`git_branch`, `git_dirty`) come from one owned task at a time, 2 s bound; never read Git in
+  a backend callback.
+
+Keys and terminal (lane D):
+
+- Option/Ctrl-←/→ and Alt-b/f move by word, Alt-d deletes one; Shift-Tab in the composer cycles
+  Ask → Auto → Plan (`/approval`, `/plan`); `!cmd` runs a shell command (Ctrl-S sends it plain,
+  Esc stops it); Ctrl-V attaches the clipboard's image (macOS, osascript/sips); Ctrl-L repaints
+  every cell; Ctrl-R in the composer searches the project's prompt history (Switch run stays on
+  Ctrl-R elsewhere); Esc Esc on an empty draft opens the rewind list; `r` in select mode retries a
+  failed or stopped run; Enter/`o` on a tool row open its full output. Large pastes collapse to
+  `[Pasted text #N · L lines]` and are expanded on send (`Draft.Pastes`). A `/search` with hits
+  opens the palette on its `?` rows (`State.search_results`).
+- Attention (D3): while the terminal reports focus lost, a new approval/question or the end of a
+  run this session started rings once per 2 s as BEL, OSC 9 or an OS notification
+  (`terminal.notify`), and the window title says `ncode · <project>` [`· working`, `· needs
+  you`, `· done`] (`terminal.title`); the port saves and restores the terminal's own title.
+- Copy (D4): `y` uses `/usr/bin/pbcopy` on macOS outside SSH, otherwise OSC 52 (tmux
+  passthrough when `TMUX` is set); the notice says which.
+- A failed screen update keeps the last good frame; only five failures in a row close the
+  session (D12). New client-to-daemon ops go through `UI.Reducer.Remote`.
+- `State.panel_mode`'s struct default is `:full` (tests that build a state without
+  preferences); the launch default is `:auto` through cli.json `panel` and `Init.Preferences`.
+
+Projector, theme, settings (lane E):
+
+- Palettes (E27): `terminal.palette` (cli.json `palette`) picks one of the desktop's eight
+  themes; `Theme.palettes/0`, `Theme.palette_value/3` and `Paint.Options.palette`. The tables in
+  `ui/theme.ex` are derived token by token from `~/dev/swarm-code/assets/css/themes.css` with faint
+  and ghost raised to 4.5:1 / 3:1 on the surface and the card; change a palette only from that file
+  and keep `cli020/e27_palettes_test.exs` (contrast per palette and mode) green. High contrast
+  (`terminal.colors` = `high_contrast`, `Theme.put_high_contrast/1`) is a `:persistent_term` flag:
+  tests that set it are `async: false`.
+- Status line (E28): `terminal.status_items` (cli.json `status_items`) lists the items and their
+  order; `projector/status.ex` reads it from `state.prefs`. New status facts join an item or the
+  always-drawn tail (provider, rate limit, connection), never a free position.
+- Markdown rows (E31): transcript Markdown goes through `Projector.MarkdownRows.rows/3`, keyed by
+  `{sha256(text), inner, ambiguous, glyph tier, ascii?}`; anything new that changes
+  `Markdown.rows/4`'s output must join the key. `Projector.project_reporting/1` returns the frame's
+  computed rows beside the action table (the table stays `binary id => target`); the runtime owns
+  the bounded cache. Measure with `scripts/dev/bench_markdown.exs` on
+  `UI.Fixtures.long_conversation/3`; `cli020/e31_markdown_cache_test.exs` is the golden
+  equivalence test (empty, warm, half-evicted).
+- Settings registry counts (`c74_registry_test`): 180 entries, 140 scalar keys, 27 cli entries
+  after cli020 E; a new entry updates the counts, its section's key list and `docs/settings.md`
+  (`mix swarm_code.settings --write` from `apps/swarm_code_cli`).
+- Lane-E test helpers: `test/support/cli020_e_helpers.ex` (`fixture/3`, `screen/1`,
+  `put_workspace/2` which `Map.merge`s fields other lanes add, `cell_style/3`, `item/2`).

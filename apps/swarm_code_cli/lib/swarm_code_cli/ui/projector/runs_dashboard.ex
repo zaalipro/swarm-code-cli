@@ -112,6 +112,14 @@ defmodule SwarmCodeCLI.UI.Projector.RunsDashboard do
     header = render_header(state, width, window.entries)
     groups = window.shown |> group_runs() |> render_groups(state, width)
 
+    # cli020 E16 (ux-live-19): no runs yet says how to start one.
+    groups =
+      if window.entries == [],
+        do: [
+          Support.text("  Nothing has run yet: send a message, or /swarm <task>.", state, width)
+        ],
+        else: groups
+
     [header, empty_line(state) | groups] ++
       overflow_line(state, width, window.first, length(window.shown), window.total)
   end

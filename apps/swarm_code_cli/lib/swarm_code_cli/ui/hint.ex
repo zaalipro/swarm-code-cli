@@ -36,7 +36,7 @@ defmodule SwarmCodeCLI.UI.Hint do
 
   @doc "The labels for the panel's `entries`, as `%{label => target}`."
   @spec labels([entry()]) :: %{binary() => target()}
-  def labels(entries) when is_list(entries) do
+  def labels(entries, letters \\ @letters) when is_list(entries) do
     runs =
       entries
       |> Enum.flat_map(fn
@@ -67,7 +67,7 @@ defmodule SwarmCodeCLI.UI.Hint do
 
     letters =
       ordered
-      |> Enum.zip(letter_labels(length(ordered)))
+      |> Enum.zip(letter_labels(length(ordered), letters))
       |> Map.new(fn {target, label} -> {label, target} end)
 
     Map.merge(runs, letters)
@@ -79,16 +79,17 @@ defmodule SwarmCodeCLI.UI.Hint do
   two-letter labels, as few of them as `count` needs. At most 225.
   """
   @spec letter_labels(non_neg_integer()) :: [binary()]
-  def letter_labels(count) when is_integer(count) and count >= 0 do
-    size = length(@letters)
+  # cli020 D13: `letters` is cli.json's hint_letters (`state.hint_letters`).
+  def letter_labels(count, letters \\ @letters) when is_integer(count) and count >= 0 do
+    size = length(letters)
 
     if count <= size do
-      Enum.take(@letters, count)
+      Enum.take(letters, count)
     else
       # The most singles `s` with s + (size - s) * size >= count.
       singles = max(0, div(size * size - count, size - 1))
-      {single, prefixes} = Enum.split(@letters, singles)
-      doubles = for prefix <- prefixes, letter <- @letters, do: prefix <> letter
+      {single, prefixes} = Enum.split(letters, singles)
+      doubles = for prefix <- prefixes, letter <- letters, do: prefix <> letter
       Enum.take(single ++ doubles, count)
     end
   end

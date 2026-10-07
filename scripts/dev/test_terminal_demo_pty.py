@@ -32,6 +32,11 @@ class Demo:
         index=0
         while index<len(text):
             char=text[index]
+            if char=='\x1b' and text.startswith('\x1b]',index):
+                # cli020 D3: OSC (the window title, OSC 9) ends at BEL or ST.
+                ends=[e for e in (text.find('\x07',index),text.find('\x1b\\',index)) if e>=0]
+                if not ends: break
+                end=min(ends); index=end+(1 if text[end]=='\x07' else 2); continue
             if char=='\x1b':
                 match=CSI.match(text,index)
                 if not match: break
@@ -151,7 +156,9 @@ class LiveDemo(unittest.TestCase):
         self.assertIsNone(d.status)
         self.assertIn(b'PTY draft marker',d.screen())
         # Cancel returns to select mode, where `q` asks again; X confirms.
-        d.wait_for(b'SELECT'); d.send(b'q'); d.wait_for(b'CONFIRM EXIT')
+        # The demo has live runs, so the dialog is E16's `Enter/X quit · Esc
+        # cancel` (cli020), not the bare unsent-draft one (`X CONFIRM EXIT`).
+        d.wait_for(b'SELECT'); d.send(b'q'); d.wait_for(b'Enter/X quit')
         d.send(b'X'); d.finish()
 
     def test_killed_native_writer_restores_before_demo_returns(self):

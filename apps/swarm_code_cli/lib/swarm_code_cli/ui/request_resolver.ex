@@ -99,9 +99,15 @@ defmodule SwarmCodeCLI.UI.RequestResolver do
     do: decision
 
   defp required_permission({:mark_seen, _kind, _id, _revision}), do: :mark_seen
+  # cli020 C: the queue needs `:queue`; the other conversation commands `:send`.
+  defp required_permission(intent) when elem(intent, 0) in [:queue_resume, :queue_edit],
+    do: :queue
 
+  defp required_permission(_conversation_command), do: :send
+
+  # cli020 C6/D16: the desktop's ↻ Retry takes a failed or a stopped run.
   defp retry_not_failed?({:retry_run, _run_id, _revision}, context),
-    do: context.active_run_state != :failed
+    do: context.active_run_state not in [:failed, :stopped]
 
   defp retry_not_failed?(_intent, _context), do: false
 
@@ -213,7 +219,7 @@ defmodule SwarmCodeCLI.UI.RequestResolver do
 
   defp valid_origin?({:retry_run, run_id, revision}, context) do
     context.origin == {:run_revision, run_id, revision} and scope_current?(context) and
-      context.active_run_id == run_id and context.active_run_state == :failed and
+      context.active_run_id == run_id and context.active_run_state in [:failed, :stopped] and
       context.subject_revision == revision and is_nil(context.active_node_id) and
       is_nil(context.active_agent_id) and is_nil(context.interaction) and
       canonical_non_text?(context)
@@ -260,6 +266,18 @@ defmodule SwarmCodeCLI.UI.RequestResolver do
   defp valid_origin?({:mark_seen, kind, id, revision}, context) do
     context.origin == {:seen, kind, id, revision} and scope_current?(context) and
       no_active_subject?(context) and canonical_non_text?(context)
+  end
+
+  defp valid_origin?(intent, context) do
+    case Intent.conversation_action(intent) do
+      nil ->
+        false
+
+      action ->
+        context.origin == {:conversation, action} and scope_current?(context) and
+          context.scope.kind == :conversation and context.scope.id == elem(intent, 1) and
+          no_active_subject?(context)
+    end
   end
 
   # The draft as typed, or (pass73 T5) the draft that names a workflow sent

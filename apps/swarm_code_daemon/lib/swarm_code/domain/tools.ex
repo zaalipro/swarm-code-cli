@@ -50,6 +50,9 @@ defmodule SwarmCode.Domain.Tools do
   # may not (spec 10 §1).
   @ask_modules [SwarmCode.Domain.Tools.AskUser]
 
+  # pass 72 F11: the live plan — root agents (the assistant, the Lead) only.
+  @plan_modules [SwarmCode.Domain.Tools.UpdatePlan]
+
   # Spec 37: only a consensus-mode assistant gets this. Spec 45 §6.2:
   # `write_spec` only when the run has an implementer.
   @consensus_modules [SwarmCode.Domain.Tools.SubmitPlan, SwarmCode.Domain.Tools.WriteSpec]
@@ -72,7 +75,7 @@ defmodule SwarmCode.Domain.Tools do
   @max_output 100_000
 
   @read_only ~w(read_file list_dir find_files lsp grep web_search web_fetch git_status git_diff
-                git_log ask_user submit_plan inbox wait_for_message agent_result)
+                git_log ask_user submit_plan inbox wait_for_message agent_result update_plan)
   # Sakana task 19: `workflow_control` left this list — it mutates live runs, so
   # a plan-mode assistant must not be offered it. Spec 50 §6.3:
   # `workflow_smoke_check` leaves it too. It is read-only, but the only reason a
@@ -139,7 +142,7 @@ defmodule SwarmCode.Domain.Tools do
            @modules ++
              @workflow_modules ++
              @swarm_modules ++
-             @mission_modules ++ @ask_modules ++ @consensus_modules,
+             @mission_modules ++ @ask_modules ++ @plan_modules ++ @consensus_modules,
            &(&1.name() == name)
          ) do
       nil -> mcp_lookup(name)
@@ -189,7 +192,13 @@ defmodule SwarmCode.Domain.Tools do
     ask_refs =
       if role in ["assistant", "lead"], do: Enum.map(@ask_modules, &builtin_ref/1), else: []
 
-    refs = builtins() ++ workflow_refs ++ ask_refs ++ mcp_tools(opts[:project_id])
+    # pass 72 F11: `update_plan` for the root agents, never a worker.
+    plan_refs =
+      if role in ["assistant", "lead"] and depth == 0,
+        do: Enum.map(@plan_modules, &builtin_ref/1),
+        else: []
+
+    refs = builtins() ++ workflow_refs ++ ask_refs ++ plan_refs ++ mcp_tools(opts[:project_id])
 
     refs =
       if mode == "plan" do

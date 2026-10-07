@@ -151,5 +151,46 @@ defmodule SwarmCode.Daemon.BootTest do
     assert Enum.sort(running) == Enum.sort(ids)
   end
 
+  # cli020 A'3 (bugs-4): an image staged for the next message (C2's
+  # `cli_attachment_staging`) is referenced by no message yet; the boot prune
+  # keeps it however old it is, and still prunes an abandoned one.
+  test "the boot prune keeps a staged attachment older than 24 hours", c do
+    config = Path.join(Path.dirname(c.session.project.root_path), "config")
+    prior = Application.get_env(:swarm_code_daemon, :domain_config_dir)
+    Application.put_env(:swarm_code_daemon, :domain_config_dir, config)
+
+    on_exit(fn ->
+      if prior,
+        do: Application.put_env(:swarm_code_daemon, :domain_config_dir, prior),
+        else: Application.delete_env(:swarm_code_daemon, :domain_config_dir)
+    end)
+
+    dir = SwarmCode.Domain.Attachments.dir()
+    File.mkdir_p!(dir)
+    staged = Ecto.UUID.generate()
+    abandoned = Ecto.UUID.generate()
+    old = System.os_time(:second) - 48 * 3_600
+
+    for id <- [staged, abandoned] do
+      path = Path.join(dir, id <> ".png")
+      File.write!(path, "png")
+      File.touch!(path, old)
+    end
+
+    :ok = SwarmCode.Daemon.Service.CommandLedger.ensure!()
+
+    :ok =
+      SwarmCode.Daemon.Service.CommandLedger.stage_attachment(
+        c.session.project.id,
+        c.session.conversation.id,
+        staged
+      )
+
+    assert %{failed: []} = Boot.run(quiet() ++ [sleep: fn _ -> :ok end])
+
+    assert File.exists?(Path.join(dir, staged <> ".png"))
+    refute File.exists?(Path.join(dir, abandoned <> ".png"))
+  end
+
   defp quiet, do: [start_mcp: fn -> :ok end, isolation_cleanup: false]
 end

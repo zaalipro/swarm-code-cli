@@ -47,13 +47,44 @@ defmodule SwarmCode.Daemon.Service.CommandLedger do
     :ok
   end
 
-  @doc "Load staged attachment ids for a conversation after a backend restart."
+  @doc """
+  Load staged attachment ids for a conversation after a backend restart.
+
+  cli020 C2 (bugs-4): a row whose attachment file is gone (the desktop's
+  24-hour prune, a manual delete) is deleted here instead of being returned,
+  so it cannot refuse every later send.
+  """
   def staged_attachments(project_id, conversation_id)
       when is_binary(project_id) and is_binary(conversation_id) do
     case SQL.query(
            Repo,
-           "SELECT attachment_id FROM cli_attachment_staging WHERE project_id = ? AND conversation_id = ? ORDER BY inserted_at, attachment_id LIMIT 4",
+           "SELECT attachment_id FROM cli_attachment_staging WHERE project_id = ? AND conversation_id = ? ORDER BY inserted_at, attachment_id LIMIT 64",
            [project_id, conversation_id]
+         ) do
+      {:ok, %{rows: rows}} ->
+        {present, gone} =
+          rows
+          |> Enum.map(&List.first/1)
+          |> Enum.split_with(&match?({:ok, _, _}, SwarmCode.Domain.Attachments.path(&1)))
+
+        consume_attachments(project_id, conversation_id, gone)
+        Enum.take(present, 4)
+
+      _ ->
+        []
+    end
+  end
+
+  @doc """
+  cli020 C2: every attachment id still staged in any conversation, so the boot
+  prune of abandoned attachments keeps them (A'3). Bounded to 10,000 ids.
+  """
+  @spec staged_attachment_ids() :: [String.t()]
+  def staged_attachment_ids do
+    case SQL.query(
+           Repo,
+           "SELECT DISTINCT attachment_id FROM cli_attachment_staging ORDER BY attachment_id LIMIT 10000",
+           []
          ) do
       {:ok, %{rows: rows}} -> Enum.map(rows, &List.first/1)
       _ -> []
@@ -78,6 +109,46 @@ defmodule SwarmCode.Daemon.Service.CommandLedger do
 
     :ok
   end
+
+  @prune_days 7
+  @prune_batch 5_000
+  # A request lives at most 600 s (`timeout_ms`); an earlier session's
+  # unresolved row older than this can no longer be retried by its client.
+  @stale_processing_s 3_600
+
+  @doc """
+  cli020 C3 (bugs-19): delete ledger rows untouched for 7 days before `now`,
+  and `processing` rows of an earlier session: last touched before
+  `epoch_started_at` (the table has no epoch column; the session's start
+  stands for it) and more than an hour before it, longer than any request
+  lives, so a client retrying one still gets `outcome_unknown` and never a
+  second execution. At most 5,000 rows per call; the count deleted.
+  """
+  @spec prune(DateTime.t(), DateTime.t() | nil) :: non_neg_integer()
+  def prune(%DateTime{} = now, epoch_started_at \\ nil) do
+    cutoff = now |> DateTime.add(-@prune_days * 86_400) |> stamp()
+
+    epoch =
+      if epoch_started_at,
+        do: epoch_started_at |> DateTime.add(-@stale_processing_s) |> stamp(),
+        else: ""
+
+    case SQL.query(
+           Repo,
+           """
+           DELETE FROM cli_command_ledger WHERE rowid IN (
+             SELECT rowid FROM cli_command_ledger
+             WHERE updated_at < ?1 OR (status = 'processing' AND updated_at < ?2)
+             LIMIT ?3)
+           """,
+           [cutoff, epoch, @prune_batch]
+         ) do
+      {:ok, %{num_rows: n}} -> n
+      _ -> 0
+    end
+  end
+
+  defp stamp(at), do: at |> DateTime.truncate(:microsecond) |> DateTime.to_iso8601()
 
   @doc "Admit a mutation exactly once; a processing row is unresolved and never replayed."
   def admit(project_id, request_id, scope, fingerprint) do

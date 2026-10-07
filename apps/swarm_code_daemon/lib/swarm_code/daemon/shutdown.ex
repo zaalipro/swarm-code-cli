@@ -1,7 +1,8 @@
 defmodule SwarmCode.Daemon.Shutdown do
   @moduledoc """
   What quitting a saved session stops (pass70 B6): the desktop's
-  `Quit.stop_everything/0` at 4c7c577a.
+  `Quit.stop_everything/0` at 4c7c577a, and (cli020 A'4) first the
+  `session_end` hooks of `Quit.now/0` at 7b8f379f.
 
   Pauses the running workflows (they resume from their journal), stops every
   run, kills every command a run left running (`run_command` with `yield_ms`,
@@ -30,6 +31,10 @@ defmodule SwarmCode.Daemon.Shutdown do
   @flush_step_ms 100
   @teardown_ms 5_000
   @cleanup_ms 15_000
+  # cli020 A'4 (desktop pass 72 F9, `Quit.session_end_hooks/1`): the
+  # `session_end` hooks get this long, all projects together.
+  @session_end_ms 5_000
+  @session_end_projects 20
 
   @typedoc """
   `stopped_runs` (pass71 S4): the runs the quit stopped, oldest first, each
@@ -47,10 +52,17 @@ defmodule SwarmCode.Daemon.Shutdown do
   @doc """
   Stops everything. `opts`: `:flush_ms` (journal wait, default 10 s),
   `:teardown` (`false` keeps the supervisors, for tests), `:teardown_ms`,
-  `:cleanup_ms` (the isolation-cleanup wait, default 15 s).
+  `:cleanup_ms` (the isolation-cleanup wait, default 15 s), `:session_end_ms`
+  (the cap of the `session_end` hooks, default 5 s).
   """
   @spec run(keyword()) :: result()
   def run(opts \\ []) do
+    step(
+      :session_end_hooks,
+      fn -> session_end_hooks(Keyword.get(opts, :session_end_ms, @session_end_ms)) end,
+      :ok
+    )
+
     paused = step(:pause_workflows, &pause_workflows/0, 0)
     stopped_runs = step(:stop_runs, &stop_runs/0, [])
     reaped = step(:reap_background_commands, &reap_survivors/0, 0)
@@ -71,6 +83,55 @@ defmodule SwarmCode.Daemon.Shutdown do
       stopped_runs: stopped_runs,
       reaped: reaped
     }
+  end
+
+  # cli020 A'4 (competitors-10): the desktop's `Quit.session_end_hooks/1` at
+  # 7b8f379f, run before the runs stop (contract A'4). Each trusted project
+  # this session opened runs its `session_end` hooks once, concurrently under
+  # `Hooks.TaskSupervisor`; each hook's timeout is capped at `cap_ms` (its
+  # tree is reaped there) and whatever has not answered `cap_ms + 1 s` later
+  # is shut down. A quit never fails on a hook.
+  defp session_end_hooks(cap_ms) do
+    supervisor = SwarmCode.Domain.Hooks.TaskSupervisor
+
+    if Process.whereis(supervisor) do
+      tasks =
+        for root <- session_roots() do
+          Task.Supervisor.async_nolink(supervisor, fn ->
+            SwarmCode.Domain.Hooks.run(
+              :session_end,
+              %{reason: "quit", timeout_cap_ms: cap_ms},
+              root
+            )
+          end)
+        end
+
+      tasks
+      |> Task.yield_many(cap_ms + 1_000)
+      |> Enum.each(fn {task, answer} -> answer || Task.shutdown(task, :brutal_kill) end)
+    end
+
+    :ok
+  end
+
+  # The projects this session touched: opened (`Projects.touch/1`, the saved
+  # session's `SessionSelection`) since the VM started, trusted, not scratch.
+  defp session_roots do
+    import Ecto.Query, only: [from: 2]
+
+    {up_ms, _since_last} = :erlang.statistics(:wall_clock)
+    since = DateTime.add(DateTime.utc_now(), -up_ms, :millisecond)
+
+    SwarmCode.Domain.Repo.all(
+      from(p in SwarmCode.Domain.Projects.Project,
+        where:
+          p.last_opened_at >= ^since and not is_nil(p.trusted_at) and p.scratch == false and
+            not is_nil(p.root_path),
+        order_by: [desc: p.last_opened_at],
+        limit: @session_end_projects,
+        select: p.root_path
+      )
+    )
   end
 
   # The workflows a quit pauses: an active row with a live runner.

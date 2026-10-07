@@ -430,6 +430,21 @@ defmodule SwarmCode.Daemon.Service.LiveBackend do
   defp execute(%{operation: :agent_detail}, _scope, _id, state),
     do: {wire_error(:not_allowed), state}
 
+  # cli020 C15: the shell escape persists a message; a live session has none.
+  defp execute(%{operation: :shell_run}, _, id, state) do
+    {:ok, %{"value" => value} = response} = reject(id, :not_allowed)
+
+    {{:ok,
+      %{
+        response
+        | "value" =>
+            Map.put(value, "reason", %{
+              "code" => "not_supported",
+              "text" => "The shell escape needs a saved session."
+            })
+      }}, state}
+  end
+
   defp execute(_, _, id, state), do: {reject(id, :not_allowed), state}
 
   # The unsaved runtime does not implement web modes. Never turn a slash

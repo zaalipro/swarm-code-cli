@@ -254,11 +254,13 @@ defmodule SwarmCodeCLI.UI.Library do
         ],
         else: []
 
+    # cli020 E11 (ux-live-7): an item with a form starts through it, so its
+    # bare `:start` would be a second Start button.
     actions =
       if item && state.library.command_id == nil && state.library.request_id == nil,
         do:
           Enum.filter(
-            item.actions,
+            if(item.form, do: List.delete(item.actions, :start), else: item.actions),
             &(&1 in [
                 :start,
                 :pause,
@@ -307,6 +309,89 @@ defmodule SwarmCodeCLI.UI.Library do
         {"cancel", "Close", :close_top_layer}
       ]
   end
+
+  @doc """
+  cli020 E11 (ux-live-7): the words of a selected item's detail. A workflow's
+  detail carries its description and its definition (today's raw `meta`
+  JSON, or C9's `{"description", "args"}`); it reads as the description and
+  one argument line, `query (required) · angles=4 · sources=6`, never JSON.
+  """
+  @spec detail_text(atom(), map()) :: String.t()
+  def detail_text(:workflows, item) do
+    detail = item.detail || ""
+
+    case json_tail(detail) do
+      {before, %{} = json} ->
+        meta = if is_map(json["meta"]), do: json["meta"], else: json
+        description = present(String.trim(before)) || present(meta["description"]) || ""
+        args = args_line(meta["args"])
+
+        [present(item.subtitle), description, args]
+        |> Enum.reject(&(&1 in [nil, ""]))
+        |> Enum.join("\n")
+
+      nil ->
+        join_detail(item)
+    end
+  end
+
+  def detail_text(_feature, item), do: join_detail(item)
+
+  defp join_detail(item), do: (item.subtitle || "") <> "\n" <> (item.detail || "")
+
+  # The JSON object the detail ends with, and the words before it.
+  defp json_tail(detail) do
+    with {at, _} <- :binary.match(detail, "{"),
+         json = binary_part(detail, at, byte_size(detail) - at),
+         {:ok, %{} = value} <- decode(json) do
+      {binary_part(detail, 0, at), value}
+    else
+      _ -> nil
+    end
+  end
+
+  defp decode(json) do
+    {:ok, :json.decode(json)}
+  rescue
+    _ -> :error
+  end
+
+  defp args_line(args) when is_map(args) do
+    args
+    |> Enum.map(fn {name, spec} ->
+      Map.put(if(is_map(spec), do: spec, else: %{}), "name", name)
+    end)
+    |> args_line()
+  end
+
+  defp args_line(args) when is_list(args) do
+    {required, optional} =
+      args
+      |> Enum.filter(&(is_map(&1) and is_binary(&1["name"])))
+      |> Enum.split_with(&(&1["required"] == true or &1["required?"] == true))
+
+    words =
+      Enum.map(Enum.sort_by(required, & &1["name"]), &(&1["name"] <> " (required)")) ++
+        Enum.map(Enum.sort_by(optional, & &1["name"]), fn arg ->
+          case arg["default"] do
+            nil ->
+              arg["name"]
+
+            value when is_binary(value) or is_number(value) or is_boolean(value) ->
+              arg["name"] <> "=" <> to_string(value)
+
+            _ ->
+              arg["name"]
+          end
+        end)
+
+    Enum.join(words, " · ")
+  end
+
+  defp args_line(_args), do: ""
+
+  defp present(value) when is_binary(value) and value != "", do: value
+  defp present(_value), do: nil
 
   def activation(state, focus) do
     Enum.find_value(rows(state), fn {item, index} ->

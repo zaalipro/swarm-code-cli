@@ -67,8 +67,44 @@ defmodule SwarmCode.Domain.Engine do
              | :no_project
              | :database_busy
              | {:invalid_message, Ecto.Changeset.t()}
+             | :invalid_approval_mode
+             | :untrusted_project
+             | {:hook_blocked, String.t()}
              | {:start_failed, term()}}
   def start_chat_turn(conversation, text, attachments \\ [], opts \\ []) do
+    # pass 72 F8: a per-run approval override is checked before anything runs
+    # or is written.
+    # pass 72 F9: and the project's `user_prompt_submit` hook may refuse it.
+    with :ok <- check_approval_override(conversation, opts[:approval_mode]),
+         :ok <- user_prompt_submit(conversation, text) do
+      start_checked_chat_turn(conversation, text, attachments, opts)
+    end
+  end
+
+  # pass 72 F9: exit 2 refuses the send, the hook's stderr is the reason. The
+  # hook runs in a supervised task (`Hooks.run_supervised/3`), so the caller's
+  # mailbox never sees its port; an untrusted project runs no hook.
+  defp user_prompt_submit(conversation, text) do
+    root =
+      case SwarmCode.Domain.Projects.get_cached(conversation.project_id) do
+        %{root_path: root} when is_binary(root) -> root
+        _none -> nil
+      end
+
+    case SwarmCode.Domain.Hooks.run_supervised(:user_prompt_submit, %{prompt: text}, root) do
+      {:block, reason} ->
+        reason = String.trim(reason)
+
+        {:error,
+         {:hook_blocked,
+          if(reason == "", do: "blocked by the user_prompt_submit hook", else: reason)}}
+
+      _ok ->
+        :ok
+    end
+  end
+
+  defp start_checked_chat_turn(conversation, text, attachments, opts) do
     # spec 67 T9 (B34): an automatic compaction asked for by the previous turn
     # runs *before* this turn reserves its own two rows — a summary written from
     # inside a running turn lands above that turn's answer and buries it under
@@ -195,7 +231,9 @@ defmodule SwarmCode.Domain.Engine do
         consensus_rounds: opts[:consensus_rounds],
         # Spec 51 §5.6: and the last verdict per stage, for the next judge.
         consensus_verdicts: opts[:consensus_verdicts],
-        assistant_message: assistant
+        assistant_message: assistant,
+        # pass 72 F8: nil, or the mode every op of this run is decided in.
+        approval_override: opts[:approval_mode]
       })
     else
       {:error, :database_busy} = busy -> busy
@@ -209,6 +247,28 @@ defmodule SwarmCode.Domain.Engine do
       {:error, {:invalid_message, _}} = error -> error
     end
   end
+
+  # pass 72 F8 (CLI 0.2.0 B23, `ncode -p --approval <mode>`): `opts[:approval_mode]`
+  # overrides the project's mode for one run, in memory — the project row is
+  # never written. An untrusted project (`Projects.trusted?/1`) refuses `auto`
+  # and `full_access`: trusting a folder is the user's consent to writes in it,
+  # and the override must not be a way around that. The desktop UI does not
+  # use it.
+  @approval_modes ~w(read_only auto full_access)
+
+  defp check_approval_override(_conversation, nil), do: :ok
+
+  defp check_approval_override(conversation, mode) when mode in @approval_modes do
+    with true <- mode != "read_only",
+         %{} = project <- SwarmCode.Domain.Projects.get(conversation.project_id),
+         false <- SwarmCode.Domain.Projects.trusted?(project) do
+      {:error, :untrusted_project}
+    else
+      _allowed_or_no_project -> :ok
+    end
+  end
+
+  defp check_approval_override(_conversation, _mode), do: {:error, :invalid_approval_mode}
 
   # spec 67 T12 (B14): every turn start reads the project through this, in a
   # `with` clause, before it writes anything.
@@ -349,6 +409,9 @@ defmodule SwarmCode.Domain.Engine do
              }
            ) do
       prompt = Prompts.compact(focus, omitted: omitted)
+
+      # pass 72 F9: informational, owned by the hooks' task supervisor.
+      SwarmCode.Domain.Hooks.run_async(:pre_compact, %{run_id: run.id}, project.root_path)
 
       start_run(%{
         run: run,
@@ -801,8 +864,17 @@ defmodule SwarmCode.Domain.Engine do
              :not_configured
              | :database_busy
              | {:invalid_message, Ecto.Changeset.t()}
+             | :invalid_approval_mode
+             | :untrusted_project
              | {:start_failed, term()}}
   def start_swarm(conversation, task, opts \\ []) do
+    case check_approval_override(conversation, opts[:approval_mode]) do
+      :ok -> start_checked_swarm(conversation, task, opts)
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp start_checked_swarm(conversation, task, opts) do
     # A model-launched swarm (the `start_swarm` tool, spec 12 §1) writes no
     # user message: the assistant's own message introduces it (`store_user: false`).
     prompt = opts[:prompt] || task
@@ -840,7 +912,9 @@ defmodule SwarmCode.Domain.Engine do
         prompt: prompt,
         mode: conversation.mode || "build",
         command: :swarm,
-        assistant_message: nil
+        assistant_message: nil,
+        # pass 72 F8
+        approval_override: opts[:approval_mode]
       })
     else
       {:error, :no_project} = error -> error

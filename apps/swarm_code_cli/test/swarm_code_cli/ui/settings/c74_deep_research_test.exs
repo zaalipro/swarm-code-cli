@@ -25,7 +25,7 @@ defmodule SwarmCodeCLI.UI.Settings.C74DeepResearchTest do
 
     for tier <- ~w(lead worker reporter) do
       row = key_row(state, "research.#{tier}_model")
-      assert words(row.value) == "the sub-agent model"
+      assert words(row.value) == "the worker model"
       assert line_words(row) =~ "runs per research: "
     end
   end

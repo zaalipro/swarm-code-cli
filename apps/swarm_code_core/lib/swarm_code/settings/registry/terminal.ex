@@ -28,10 +28,34 @@ defmodule SwarmCode.Settings.Registry.Terminal do
       synonyms: ["theme", "dark mode", "light mode", "colour theme"],
       parity: "CLI /theme"
     ),
+    # cli020 E27: the desktop's themes, each dark and light (`terminal.theme`
+    # keeps the mode).
+    cli("terminal.palette", :appearance, "Palette",
+      group: "colour and glyphs",
+      description: "The ncode app's themes, in the terminal; dark or light follows Theme.",
+      storage: {:cli, "palette"},
+      type: :enum,
+      choices:
+        choices([
+          {"carbon", "Carbon"},
+          {"aurora", "Aurora"},
+          {"dusk", "Dusk"},
+          {"ember", "Ember"},
+          {"fjord", "Fjord"},
+          {"graphite", "Graphite"},
+          {"obsidian", "Obsidian"},
+          {"paper", "Paper"}
+        ]),
+      default: "carbon",
+      applies: :at_once,
+      synonyms: ["palette", "colour theme", "themes", "aurora", "dusk", "ember", "fjord", "paper"],
+      since: :c74,
+      parity: "NEW"
+    ),
     cli("terminal.colors", :appearance, "Colours",
       group: "colour and glyphs",
       description:
-        "#{@next_launch} NO_COLOR (set and not empty) wins; auto probes COLORTERM and TERM.",
+        "#{@next_launch} NO_COLOR (set and not empty) wins; auto probes COLORTERM and TERM; high contrast probes too and draws faint text as muted.",
       storage: {:cli, "colors"},
       type: :enum,
       choices:
@@ -40,7 +64,9 @@ defmodule SwarmCode.Settings.Registry.Terminal do
           {"truecolor", "truecolor"},
           {"256", "256"},
           {"16", "16"},
-          {"none", "none"}
+          {"none", "none"},
+          # cli020 E23: the probed colours with faint and ghost text as muted, bold.
+          {"high_contrast", "high contrast"}
         ]),
       default: "auto",
       layers: [:env, :cli, :default],
@@ -118,11 +144,18 @@ defmodule SwarmCode.Settings.Registry.Terminal do
   @layout [
     cli("terminal.panel", :layout, "Side panel",
       group: "layout",
-      description: "Applies at once; Ctrl-B cycles it.",
+      description:
+        "Applies at once; Ctrl-B cycles it. Auto shows it once two agents work or something needs you.",
       storage: {:cli, "panel"},
       type: :enum,
-      choices: choices([{"full", "full"}, {"compact", "compact"}, {"hidden", "hidden"}]),
-      default: "full",
+      choices:
+        choices([
+          {"auto", "auto"},
+          {"full", "full"},
+          {"compact", "compact"},
+          {"hidden", "hidden"}
+        ]),
+      default: "auto",
       applies: :at_once,
       synonyms: ["panel", "side panel"],
       parity: "CLI /panel"
@@ -188,6 +221,91 @@ defmodule SwarmCode.Settings.Registry.Terminal do
       since: :c74,
       parity: "NEW"
     ),
+    # cli020 E26 (D3): how a turn that needs you, or ends, reaches you.
+    cli("terminal.notify", :layout, "Notify",
+      group: "notices",
+      description:
+        "When a run needs you or a turn ends while you look away: auto picks what the terminal supports.",
+      storage: {:cli, "notify"},
+      type: :enum,
+      choices:
+        choices([
+          {"auto", "auto"},
+          {"bell", "the terminal bell"},
+          {"osc9", "a terminal notification (OSC 9)"},
+          {"os", "a macOS notification"},
+          {"off", "off"}
+        ]),
+      default: "auto",
+      applies: :at_once,
+      synonyms: ["notifications", "bell", "notify"],
+      since: :c74,
+      parity: "NEW"
+    ),
+    cli("terminal.title", :layout, "Window title",
+      group: "notices",
+      description: "The terminal's title names the conversation and what it waits for.",
+      storage: {:cli, "title"},
+      type: :toggle,
+      default: true,
+      applies: :at_once,
+      synonyms: ["title", "tab title"],
+      since: :c74,
+      parity: "NEW"
+    ),
+    cli("terminal.paste_collapse_lines", :layout, "Collapse pastes over",
+      group: "transcript",
+      description:
+        "A paste longer than this is one [Pasted text #N · L lines] chip; 0 never collapses.",
+      storage: {:cli, "paste_collapse_lines"},
+      type: :integer,
+      unit: :lines,
+      min: 0,
+      max: 200,
+      big_step: 10,
+      default: 8,
+      applies: :at_once,
+      synonyms: ["paste"],
+      since: :c74,
+      parity: "NEW"
+    ),
+    cli("terminal.exit_transcript", :layout, "Turns printed on exit",
+      group: "transcript",
+      description:
+        "The last turns left in the terminal's scrollback when ncode quits; 0 prints none.",
+      storage: {:cli, "exit_transcript"},
+      type: :integer,
+      min: 0,
+      max: 20,
+      default: 3,
+      applies: :next_launch,
+      synonyms: ["scrollback", "exit"],
+      since: :c74,
+      parity: "NEW"
+    ),
+    # cli020 E28 (competitors-20): the status line's items and their order.
+    cli("terminal.status_items", :layout, "Status line",
+      group: "status line",
+      description: "The facts the bottom line shows, in this order. Branch needs a Git project.",
+      storage: {:cli, "status_items"},
+      type: :checklist,
+      choices:
+        choices([
+          {"mode", "mode"},
+          {"approval", "approval"},
+          {"model", "model"},
+          {"effort", "effort"},
+          {"branch", "branch"},
+          {"ctx", "context"},
+          {"cost", "cost"},
+          {"waiting", "waiting"}
+        ]),
+      default: ~w(mode approval model effort ctx cost waiting),
+      applies: :at_once,
+      synonyms: ["status bar", "status line", "branch", "git branch"],
+      since: :c74,
+      parity: "NEW"
+    ),
     cli("terminal.diff_lines", :layout, "Diff lines shown",
       group: "transcript",
       description: "Lines of each diff hunk drawn before … N more lines · Enter opens.",
@@ -221,11 +339,12 @@ defmodule SwarmCode.Settings.Registry.Terminal do
     ),
     cli("terminal.mouse", :keys, "Wheel scrolling",
       group: "keyboard and wheel",
+      # cli020 E26 (D5): off by default; the wheel still scrolls (alternate scroll).
       description:
-        "Off gives the terminal its own selection back. SWARM_MOUSE wins at the next launch.",
+        "Off: the wheel scrolls and the terminal's own selection works. On: wheel reports, Shift-drag selects. SWARM_MOUSE wins at the next launch.",
       storage: {:cli, "mouse"},
       type: :toggle,
-      default: true,
+      default: false,
       layers: [:env, :cli, :default],
       env: ["SWARM_MOUSE"],
       applies: :at_once,
@@ -234,7 +353,7 @@ defmodule SwarmCode.Settings.Registry.Terminal do
     ),
     cli("terminal.wheel_lines", :keys, "Lines per notch",
       group: "keyboard and wheel",
-      description: "Only when Wheel scrolling is on.",
+      description: "Lines per wheel notch.",
       storage: {:cli, "wheel_lines"},
       type: :integer,
       unit: :lines,

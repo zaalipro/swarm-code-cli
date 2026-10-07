@@ -3,8 +3,31 @@ defmodule SwarmCodeCLI.UI.Projector do
   alias SwarmCodeCLI.UI.{ActionTarget, Layout, SafeText, Scene, State}
   alias SwarmCodeCLI.UI.Scene.Region
   alias SwarmCodeCLI.UI.Projector.{Composer, Density, Dialog, Shell, Support, Workspace}
+
   @spec project(State.t()) :: {Scene.t(), %{binary() => ActionTarget.t()}}
   def project(state) do
+    {scene, table, _markdown_rows} = project_reporting(state)
+    {scene, table}
+  end
+
+  @doc """
+  cli020 E31: `project/1` plus the Markdown rows computed this frame
+  (`Projector.MarkdownRows`), for the runtime to cache in
+  `state.markdown_cache` (D21). The action table stays id → target only.
+  """
+  @spec project_reporting(State.t()) ::
+          {Scene.t(), %{binary() => ActionTarget.t()}, %{tuple() => list()}}
+  def project_reporting(state) do
+    # cli020 M2: C15's shell commands become E15's `:shell` rows.
+    state = SwarmCodeCLI.UI.Projector.ShellItems.merge(state)
+
+    {{scene, table}, computed} =
+      SwarmCodeCLI.UI.Projector.MarkdownRows.collect(fn -> project_frame(state) end)
+
+    {scene, table, computed}
+  end
+
+  defp project_frame(state) do
     layout = Layout.for_state(state)
 
     scene = %Scene{

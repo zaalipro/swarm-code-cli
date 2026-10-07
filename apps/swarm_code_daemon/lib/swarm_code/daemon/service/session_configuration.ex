@@ -21,9 +21,14 @@ defmodule SwarmCode.Daemon.Service.SessionConfiguration do
 
   @override_key :session_model_override
   @notice_key :session_provider_notice
-  @first_run_keys ~w(SWARM_MODEL SWARM_BASE_URL OPENAI_MODEL ANTHROPIC_MODEL)
+  @first_run_keys ~w(SWARM_MODEL SWARM_BASE_URL OPENAI_MODEL ANTHROPIC_MODEL
+                     OPENAI_API_KEY ANTHROPIC_API_KEY)
 
-  @type override :: %{provider_id: String.t(), model: String.t()}
+  @type override :: %{
+          required(:provider_id) => String.t(),
+          required(:model) => String.t(),
+          optional(:source) => :flag | :first_run_env
+        }
 
   @doc """
   Prepares `session` (`%{project: _, conversation: _}`) for `env`. Returns the
@@ -83,6 +88,17 @@ defmodule SwarmCode.Daemon.Service.SessionConfiguration do
   @spec notice() :: String.t() | nil
   def notice, do: Application.get_env(:swarm_code_daemon, @notice_key)
 
+  @doc """
+  cli020 B13 (ux-live-11): where a session override came from: `:flag` for
+  `ncode --model`, `:first_run_env` for the provider the first run made from
+  `NCODE_*`/`SWARM_*`, nil without an override (Settings labels it, C13).
+  """
+  @spec override_source(map() | nil) :: :flag | :first_run_env | nil
+  def override_source(nil), do: nil
+  def override_source(%{source: source}) when source in [:flag, :first_run_env], do: source
+  def override_source(%{}), do: :flag
+  def override_source(_), do: nil
+
   @doc "Drops the session override (an explicit `/model` choice wins from then on)."
   @spec clear_override() :: :ok
   def clear_override do
@@ -127,7 +143,7 @@ defmodule SwarmCode.Daemon.Service.SessionConfiguration do
   defp with_override(session, conversation, value) do
     case resolve_override(conversation, value) do
       {:ok, provider, model} ->
-        put_override(provider.id, model)
+        put_override(provider.id, model, :flag)
         {:ok, session}
 
       :error ->
@@ -184,26 +200,58 @@ defmodule SwarmCode.Daemon.Service.SessionConfiguration do
       hd(candidates)
   end
 
-  defp put_override(provider_id, model),
+  defp put_override(provider_id, model, source),
     do:
       Application.put_env(:swarm_code_daemon, @override_key, %{
         provider_id: provider_id,
-        model: model
+        model: model,
+        source: source
       })
 
   ## First run
 
   defp first_run(session, project, env, otherwise) do
     if Enum.any?(@first_run_keys, &(blank_to_nil(env[&1]) != nil)) do
+      env = standard_endpoint(env)
+
       with {:ok, config} <- Configuration.from_env(env, project.root_path),
            :ok <- explicit_endpoint(env),
            {:ok, provider, notice} <- onboard(config) do
-        put_override(provider.id, config[:model])
+        put_override(provider.id, config[:model], :first_run_env)
         if notice, do: Application.put_env(:swarm_code_daemon, @notice_key, notice)
         {:ok, Map.put(session, :notice, notice)}
       end
     else
       otherwise
+    end
+  end
+
+  # cli020 B13 (onboarding-4): a provider's own key names its endpoint. With
+  # no base URL given, a bare ANTHROPIC_API_KEY means Anthropic at
+  # api.anthropic.com and a bare OPENAI_API_KEY OpenAI at api.openai.com/v1;
+  # a generic NCODE_API_KEY/SWARM_API_KEY names none (`:endpoint_required`).
+  defp standard_endpoint(env) do
+    given? = fn name -> blank_to_nil(env[name]) != nil end
+    provider = blank_to_nil(env["SWARM_PROVIDER"])
+
+    cond do
+      given?.("SWARM_BASE_URL") or given?.("OPENAI_BASE_URL") or given?.("ANTHROPIC_BASE_URL") ->
+        env
+
+      given?.("SWARM_API_KEY") ->
+        env
+
+      provider in [nil, "anthropic"] and given?.("ANTHROPIC_API_KEY") and
+          (provider == "anthropic" or not given?.("OPENAI_API_KEY")) ->
+        env
+        |> Map.put("SWARM_PROVIDER", "anthropic")
+        |> Map.put("SWARM_BASE_URL", "https://api.anthropic.com")
+
+      provider in [nil, "openai"] and given?.("OPENAI_API_KEY") ->
+        Map.put(env, "SWARM_BASE_URL", "https://api.openai.com/v1")
+
+      true ->
+        env
     end
   end
 
@@ -226,7 +274,11 @@ defmodule SwarmCode.Daemon.Service.SessionConfiguration do
 
     case Enum.find(Providers.list(), &(&1.kind == kind and &1.base_url == endpoint.base_url)) do
       nil ->
-        name = available_name(URI.parse(endpoint.base_url).host || "provider")
+        # cli020 B13 (onboarding-21): a preset's endpoint gets the preset's name.
+        name =
+          available_name(
+            preset_name(endpoint.base_url) || URI.parse(endpoint.base_url).host || "provider"
+          )
 
         with {:ok, provider} <-
                Providers.create(%{
@@ -256,6 +308,20 @@ defmodule SwarmCode.Daemon.Service.SessionConfiguration do
       {:ok, _provider, _notice} = ok -> ok
       _ -> {:error, :provider_configuration_failed}
     end
+  end
+
+  defp preset_name(base_url) do
+    normalize = fn url ->
+      url |> String.trim() |> String.trim_trailing("/") |> String.downcase()
+    end
+
+    wanted = normalize.(base_url || "")
+
+    Enum.find_value(SwarmCode.Settings.Registry.Actions.provider_presets(), fn preset ->
+      if is_binary(preset[:base_url]) and normalize.(preset.base_url) == wanted, do: preset.name
+    end)
+  rescue
+    _ -> nil
   end
 
   defp available_name(base) do

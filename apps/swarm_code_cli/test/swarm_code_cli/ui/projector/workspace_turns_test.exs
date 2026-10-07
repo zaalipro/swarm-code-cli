@@ -77,6 +77,18 @@ defmodule SwarmCodeCLI.UI.Projector.WorkspaceTurnsTest do
   defp glyph(token, state),
     do: SwarmCodeCLI.UI.SafeText.value(SwarmCodeCLI.UI.Projector.Support.glyph(token, state))
 
+  # cli020 qa (E12): a saved session's answer arrives as an item of the live
+  # run whose state is `running` (the daemon sets a record's state from its
+  # run), not `streaming`; live QA saw "thinking" while the words streamed.
+  test "an answer with words in a live run says writing, whatever its item state" do
+    state =
+      fixture(:swarm, {100, 30})
+      |> replace_item("002", &%{&1 | state: :running})
+
+    {rows, _, _, _} = painted(state)
+    assert String.ends_with?(Enum.at(rows, 2), "writing ▮  23k tok")
+  end
+
   test "the prompt is a card with its time, then the turn's one header row" do
     state = fixture(:swarm, {100, 30})
     {rows, _, _, _} = painted(state)
@@ -441,6 +453,18 @@ defmodule SwarmCodeCLI.UI.Projector.WorkspaceTurnsTest do
     assert length(String.split(row, "The swarm slot")) == 2, row
   end
 
+  test "a narrow failed run's hint wraps inside the card instead of being cut (cli020 qa)" do
+    state = fixture(:swarm, {60, 30})
+    run = state.read_model.runs["fixture-run"]
+    run = %{run | state: :failed, error: "mix test failed", finished_at: run.started_at + 134_000}
+    state = put_in(state.read_model.runs["fixture-run"], run)
+    {rows, _scene, _, _} = painted(state)
+
+    at = index_of(rows, "    ✕ Failed")
+    hint = rows |> Enum.drop(at + 1) |> Enum.take(3) |> Enum.map_join(" ", &String.trim/1)
+    assert hint =~ "r retries · Ctrl-P Retry failed run · /model to switch model"
+  end
+
   test "a failed run ends in an error card that says what to do next" do
     state = fixture(:swarm, {100, 30})
     run = state.read_model.runs["fixture-run"]
@@ -450,7 +474,10 @@ defmodule SwarmCodeCLI.UI.Projector.WorkspaceTurnsTest do
 
     at = index_of(rows, "    ✕ Failed")
     assert Enum.at(rows, at) == "    ✕ Failed · mix test failed"
-    assert Enum.at(rows, at + 1) == "      retry from the palette · /model to switch model"
+
+    assert Enum.at(rows, at + 1) ==
+             "      r retries · Ctrl-P Retry failed run · /model to switch model"
+
     assert Enum.at(rows, at - 1) == ""
 
     red = Theme.style(:error, state.capabilities).foreground

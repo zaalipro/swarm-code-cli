@@ -14,7 +14,9 @@ defmodule SwarmCodeCLI.UI.Init do
     terminal_generation: 0,
     banner: nil,
     keymap: :default,
-    # pass72-O: the side panel's mode as the preferences file had it.
+    # pass72-O: the side panel's mode as the preferences file had it (the
+    # launch passes `Init.Preferences`, whose default is :auto; cli020 M2:
+    # this struct default stays :full, see `State`).
     panel_mode: :full,
     # pass73-K: the rest of cli.json (T1, T2, T9) as the launcher resolved it.
     show_diffs: true,
@@ -23,6 +25,9 @@ defmodule SwarmCodeCLI.UI.Init do
     theme_mode: :dark,
     theme_env: nil,
     mouse?: true,
+    # cli020 D3: cli.json's terminal.notify and terminal.title.
+    notify: :auto,
+    title?: true,
     # cli74 (§3.8.4): every cli.json value by json name, the launch's env and
     # flag overrides, and `ncode settings [QUERY]`'s query (nil = none;
     # "" opens the Overview).

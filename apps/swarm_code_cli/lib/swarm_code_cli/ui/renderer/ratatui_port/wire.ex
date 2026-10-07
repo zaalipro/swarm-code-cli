@@ -4,7 +4,7 @@ defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.Wire do
   alias SwarmCodeCLI.UI.{Input, Size}
   @max_u64 18_446_744_073_709_551_615
   @max_response 262_167
-  @controls %{credit: 2, shutdown: 4, suspend: 5, resume: 6}
+  @controls %{credit: 2, shutdown: 4, suspend: 5, resume: 6, redraw: 10}
   @keys ~w(backspace enter left right up down home end page_up page_down tab back_tab delete insert escape null caps_lock scroll_lock num_lock print_screen pause menu keypad_begin)a
   @phases {:press, :repeat, :release}
   @mods [:shift, :control, :alt, :super, :hyper, :meta]
@@ -12,7 +12,12 @@ defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.Wire do
   @errors {:protocol, :initialization, :draw, :read, :write, :restoration}
   # Init flag bits the native side accepts (alternate, focus, paste, mouse).
   @flag_mask 1 ||| 2 ||| 4 ||| 16
+  # cli020 D2: Ready (only) may add "enhanced keys are on".
+  @ready_enhanced_keys 128
   @max_copy 65_536
+  # cli020 D3: the longest Notify text.
+  @max_notify 512
+  @notify_kinds %{bell: 0, notification: 1, title: 2}
 
   @doc """
   The init record. `mouse?` (pass70 B10, optional, default false) asks for
@@ -72,6 +77,37 @@ defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.Wire do
 
   def mouse(_, _, _), do: invalid()
 
+  @doc """
+  cli020 D3: a bell, an OSC 9 notification or an OSC 2 title:
+  `1, 9, generation, token, kind:u8, length:u16, text`. The text is at most
+  512 bytes of UTF-8 with no C0 or C1 control (the port refuses one as a
+  protocol error, so it is checked here first), and a notification may not
+  start with a digit (ConEmu's `OSC 9;<n>` progress sequences).
+  """
+  def notify(generation, token, kind, text)
+      when is_integer(generation) and generation >= 0 and generation <= @max_u64 and
+             is_integer(token) and token >= 0 and token <= @max_u64 and
+             is_map_key(@notify_kinds, kind) and is_binary(text) do
+    if notify_text?(kind, text) do
+      code = Map.fetch!(@notify_kinds, kind)
+      length = byte_size(text)
+      {:ok, <<21 + length::32, 1, 9, generation::64, token::64, code, length::16, text::binary>>}
+    else
+      invalid()
+    end
+  end
+
+  def notify(_, _, _, _), do: invalid()
+
+  @doc "cli020 D3: whether `text` may travel in a Notify of `kind`."
+  def notify_text?(kind, text) when is_binary(text) do
+    byte_size(text) <= @max_notify and String.valid?(text) and
+      not String.match?(text, ~r/[\x{0}-\x{1f}\x{7f}-\x{9f}]/u) and
+      not (kind == :notification and String.match?(text, ~r/\A[0-9]/))
+  end
+
+  def notify_text?(_kind, _text), do: false
+
   defp inert?(text) do
     not String.match?(
       text,
@@ -80,7 +116,7 @@ defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.Wire do
   end
 
   def control(operation, generation, token)
-      when operation in [:credit, :shutdown, :suspend, :resume] and
+      when operation in [:credit, :shutdown, :suspend, :resume, :redraw] and
              is_integer(generation) and generation >= 0 and generation <= @max_u64 and
              is_integer(token) and token >= 0 and token <= @max_u64,
       do: {:ok, <<18::32, 1, Map.fetch!(@controls, operation), generation::64, token::64>>}
@@ -93,7 +129,8 @@ defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.Wire do
   def decode(_), do: invalid()
 
   defp record(<<1, 16, generation::64, columns::16, rows::16, flags>>)
-       when columns > 0 and rows > 0 and (flags &&& bnot(@flag_mask)) == 0,
+       when columns > 0 and rows > 0 and
+              (flags &&& bnot(@flag_mask ||| @ready_enhanced_keys)) == 0,
        do: {:ok, {:ready, generation, %Size{columns: columns, rows: rows}, flags}}
 
   defp record(<<1, 24, generation::64>>), do: {:ok, {:resume_needed, generation}}
@@ -144,6 +181,10 @@ defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.Wire do
     kind = if direction == 0, do: :wheel_up, else: :wheel_down
     {:ok, {:mouse, kind, nil, column, row, modifiers(modifiers)}}
   end
+
+  # cli020 D5: an arrow burst under alternate scroll (mouse reports off).
+  defp payload(<<7, up, count>>) when up in [0, 1] and count in 1..32,
+    do: {:ok, {:scroll, if(up == 1, do: :up, else: :down), count}}
 
   defp payload(<<4>>), do: {:ok, :focus_gained}
   defp payload(<<5>>), do: {:ok, :focus_lost}

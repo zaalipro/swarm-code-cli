@@ -260,10 +260,11 @@ defmodule SwarmCodeCLI.UI.Pass73MouseTest do
     end
   end
 
-  test "the launcher: SWARM_THEME > cli.json > desktop > dark; SWARM_MOUSE > cli.json > on" do
+  # cli020 E26: the default is off (the wheel still scrolls).
+  test "the launcher: SWARM_THEME > cli.json > desktop > dark; SWARM_MOUSE > cli.json > off" do
     defaults = SwarmCodeCLI.UI.Init.Preferences.defaults()
 
-    assert %{theme: :dark, theme_env: nil, mouse?: true} =
+    assert %{theme: :dark, theme_env: nil, mouse?: false} =
              PersistedSession.start_preferences(%{}, defaults, nil)
 
     assert %{theme: :light} = PersistedSession.start_preferences(%{}, defaults, "light")
@@ -290,5 +291,9 @@ defmodule SwarmCodeCLI.UI.Pass73MouseTest do
 
     assert %{mouse?: false} =
              PersistedSession.start_preferences(%{"SWARM_MOUSE" => "0"}, defaults, nil)
+
+    # cli020 qa (D5): a preferences map without the key is off too.
+    assert %{mouse?: false} =
+             PersistedSession.start_preferences(%{}, Map.delete(defaults, :mouse?), nil)
   end
 end

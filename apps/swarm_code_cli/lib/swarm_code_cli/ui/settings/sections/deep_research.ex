@@ -3,7 +3,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.DeepResearch do
   pass74 U3-5 (spec §2.6, F7 second page): Deep research. The level with this
   machine's measured medians (or `not measured yet`), the clocks and caps,
   the domain lists, the designed report, and the three tiers — lead, worker,
-  reporter — each with its model (the sub-agent model when unset), effort and
+  reporter — each with its model (the worker model when unset), effort and
   how many runs it makes per research at the chosen level (the desktop's
   `tier_runs/2`, from `facts.research_levels`). The research folder is a fact
   row: `o` opens it, `y` copies the path.

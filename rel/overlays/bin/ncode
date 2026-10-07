@@ -13,57 +13,81 @@
 set -euo pipefail
 
 usage() {
-  cat <<'HELP'
-Usage: ncode [DIR] [--new | --continue | --resume ID] [--model M]
-             [-p PROMPT [--json]] [--plain [--ndjson]] [--help] [--version]
+  # A builtin, not a here-document: bash 5.3 writes a here-document into a
+  # pipe, and a small (512-byte) pipe under macOS pipe-memory pressure left
+  # the help waiting for ever (cli020 finisher).
+  printf '%s\n' 'Usage: ncode [DIR] [--new | --continue | --resume ID] [--model M]
+             [-p PROMPT [--json] [--fail-on-denied]] [--plain [--ndjson]]
        ncode settings [QUERY] [--dir DIR]
        ncode config COMMAND [ARGS]     (ncode config help lists them)
+       ncode help | version | doctor
 
 Opens the saved session for DIR (default: the current directory).
 
-  settings [QUERY]  open Settings, at QUERY when given ('ncode settings providers');
+  settings [QUERY]  open Settings, at QUERY when given ('\''ncode settings providers'\'');
                     it opens even when no model provider is set up yet
   config COMMAND    read and change settings from scripts, dotfiles and SSH
-                    (a folder named settings or config: ncode ./settings, ./config)
+  doctor            check the install, the providers and the database (config doctor)
+                    (a folder with one of these names: ncode ./settings, ./config)
 
-  --new           start a new conversation
-  --continue, -c  continue the latest conversation (the default)
-  --resume ID     open the conversation with this id
-  --model M       use model M (or provider/model) for this session only
-  -p PROMPT       run one turn in a new conversation (-c or --resume to continue
-                  one) without the full-screen view, print the answer and exit;
-                  approvals nobody can give are denied and said on stderr.
-                  PROMPT - reads the prompt from stdin
-  --json          with -p: print one JSON object instead of the streamed answer
-  --plain         line-by-line presenter for pipes, CI and SSH (type `help`);
-                  chosen by itself when stdin or stdout is not a terminal
-  --ndjson        with --plain: one JSON record per line
-  --help, -h      this text
-  --version, -V   the version
+  --new             start a new conversation
+  --continue, -c    continue the latest conversation (the default)
+  --resume, -r [ID] open the conversation with this id, 6+ characters of it or its
+                    title; without one, pick it from a list
+  --model, -m M     use model M (or provider/model) for this session only
+  -p PROMPT         run one turn in a new conversation (-c or --resume to continue
+                    one) without the full-screen view, print the answer and exit;
+                    approvals nobody can give are denied, and one stderr line says
+                    which. PROMPT - reads the prompt from stdin; with a PROMPT,
+                    piped stdin is sent after it
+  --json            with -p: print one JSON object instead of the streamed answer
+  --fail-on-denied  with -p or --plain: exit 1 when a tool call was denied
+  --output-format F with -p: text (the default), json (= --json) or stream-json
+                    (one JSON record per line, the last {"type":"summary",...})
+  --max-turns N     with -p: stop the run after N turns of its lead (1-200)
+  --max-budget-usd X  with -p: stop the run once it costs more than $X
+  --approval MODE   with -p: read-only, auto or full for this run only
+  --plain           line-by-line presenter for pipes, CI and SSH (type `help`);
+                    chosen by itself when stdin or stdout is not a terminal
+  --ndjson          with --plain: one JSON record per line
+  --help, -h        this text
+  --version, -V, -v the version
 
-Exit codes: 0 done, 1 the run failed, 2 usage, 3 startup refused.
+Examples:
+  ncode
+  ncode -p "explain this repo" --json
+  ncode settings providers
+  ncode config doctor
+
+Exit codes: 0 done, 1 the run failed, 2 usage, 3 startup refused,
+4 changed elsewhere (ncode config), 129/143 closed by SIGHUP/SIGTERM.
 
 Provider settings (shell exports win; otherwise loaded from ~/.secrets or NCODE_ENV_FILE):
   NCODE_MODEL          model id (first run, when the app has no provider yet)
-  NCODE_BASE_URL       endpoint; OpenAI-compatible URLs include /v1
+  NCODE_BASE_URL       endpoint; OpenAI-compatible URLs include /v1 (OPENAI_API_KEY
+                       alone means api.openai.com, ANTHROPIC_API_KEY api.anthropic.com)
   NCODE_API_KEY        or OPENAI_API_KEY / ANTHROPIC_API_KEY
   NCODE_PROVIDER       openai (default) or anthropic
   NCODE_EFFORT         reasoning effort key
+  NCODE_ENV_FILE       the file to load them from (default ~/.secrets)
 
 Session:
   NCODE_CONVERSATION   latest (default), new, or a conversation id (the flags win)
   NCODE_KEYMAP=vim     vim keys in the composer
   NCODE_ASCII=1        plain ASCII glyphs, for a terminal or font without symbols
+  NCODE_THEME          dark or light
+  NCODE_MOUSE=1        mouse wheel reports (/mouse in ncode)
   NCODE_COMPANION=0    do not serve the visual companion
+  NCODE_CONFIG_DIR     the global folder: memory, skills, workflows, cli.json (absolute)
+  NCODE_SHELL          the shell the model'\''s commands run in
 
 The older SWARM_* names (SWARM_MODEL, SWARM_API_KEY, ...) still work; when both
-are set, the NCODE_* one wins.
+are set, the NCODE_* one wins. swarmcode and swarm-code are old names of ncode.
 
 Keys: type to write; Enter sends, Esc stops a turn, Ctrl-C twice quits,
 Ctrl-P palette (also /resume, /new, /model, /approval), Ctrl-T select, ? every key,
 Ctrl-F agents (side-panel hints), Ctrl-B panel (full, compact, hidden).
-SWARM_PROJECT_ROOT is ignored; name the directory instead.
-HELP
+SWARM_PROJECT_ROOT is ignored; name the directory instead.'
 }
 
 self="$0"
@@ -81,8 +105,39 @@ version() {
   echo "ncode ${vsn:-unknown}"
 }
 
+# cli020 B4: with --json on the command line a usage error also prints the
+# -p summary object on stdout (the script reads stdout). The sentence is the
+# launcher's own; control characters go and \ and " are escaped.
+json_requested=0
+if [[ "${1:-}" != "config" && "${1:-}" != "settings" ]]; then
+  json_prev=""
+  for json_arg in "$@"; do
+    [[ "$json_arg" == "--" ]] && break
+    case "$json_arg" in
+      --json | --output-format=json) json_requested=1 ;;
+      --output-format=stream-json) json_requested=2 ;;
+      json) [[ "$json_prev" == "--output-format" ]] && json_requested=1 ;;
+      stream-json) [[ "$json_prev" == "--output-format" ]] && json_requested=2 ;;
+    esac
+    json_prev="$json_arg"
+  done
+  unset json_arg json_prev
+fi
+
+json_failure() {
+  [[ $json_requested -ge 1 ]] || return 0
+  local text type=""
+  # A stream-json stream ends with its summary record.
+  [[ $json_requested -eq 2 ]] && type='"type":"summary",'
+
+  text=$(printf '%s' "$1" | LC_ALL=C tr -d '\000-\037\177' | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')
+  printf '{'"$type"'"state":"not_started","conversation_id":null,"run_id":null,"text":"","error":"%s","question":null,"denied":[],"exit_code":%s}\n' \
+    "$text" "$2"
+}
+
 die_usage() {
   echo "ncode: $1 Run 'ncode --help'." >&2
+  json_failure "$1 Run 'ncode --help'." 2
   exit 2
 }
 
@@ -105,11 +160,18 @@ unset ncode_pair ncode_name
 project=""
 project_set=0
 conversation=""
+resume_picker=0
 model=""
 model_set=0
 prompt=""
 prompt_set=0
 json=0
+fail_on_denied=0
+# cli020 B23: the other headless flags (with -p).
+output_format=""
+max_turns=""
+max_budget=""
+approval=""
 plain=0
 ndjson=0
 seen=" "
@@ -140,6 +202,15 @@ needs_value() {
 # subcommands; a folder of that name opens with ./settings or -- settings.
 settings_mode=0
 settings_query=""
+# cli020 B16 (onboarding-10): the conventional words. A folder of that name
+# opens with ./help, ./version or ./doctor.
+if [[ $# -gt 0 ]]; then
+  case "$1" in
+    help) usage; exit 0 ;;
+    version) version; exit 0 ;;
+    doctor) shift; set -- config doctor "$@" ;;
+  esac
+fi
 if [[ $# -gt 0 && "$1" == "config" ]]; then
   shift
   export SWARM_PROJECT_ROOT="$PWD"
@@ -184,16 +255,32 @@ fi
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --help | -h) usage; exit 0 ;;
-    --version | -V) version; exit 0 ;;
+    --version | -V | -v) version; exit 0 ;;
     --new) set_conversation new ;;
     --continue | -c) set_conversation latest ;;
-    --resume | -r) needs_value "$1" $# "${2:-}"; set_conversation "$2"; shift ;;
+    # cli020 B19: bare --resume opens the /resume picker; a value is an id,
+    # 6 or more characters of one, or a title (the release resolves it).
+    --resume | -r)
+      if [[ $# -lt 2 || "$2" == "--" || "$2" == -* ]]; then
+        set_conversation latest; resume_picker=1
+      else
+        set_conversation "$2"; shift
+      fi ;;
     --resume=*) set_conversation "${1#--resume=}" ;;
     --model | -m) needs_value "$1" $# "${2:-}"; once --model; model="$2"; model_set=1; shift ;;
     --model=*) once --model; model="${1#--model=}"; model_set=1 ;;
     -p | --prompt | --print) needs_value "$1" $# "${2:-}"; once -p; prompt="$2"; prompt_set=1; shift ;;
     --prompt=*) once -p; prompt="${1#--prompt=}"; prompt_set=1 ;;
     --json) once --json; json=1 ;;
+    --fail-on-denied) once --fail-on-denied; fail_on_denied=1 ;;
+    --output-format) needs_value "$1" $# "${2:-}"; once --output-format; output_format="$2"; shift ;;
+    --output-format=*) once --output-format; output_format="${1#--output-format=}" ;;
+    --max-turns) needs_value "$1" $# "${2:-}"; once --max-turns; max_turns="$2"; shift ;;
+    --max-turns=*) once --max-turns; max_turns="${1#--max-turns=}" ;;
+    --max-budget-usd) needs_value "$1" $# "${2:-}"; once --max-budget-usd; max_budget="$2"; shift ;;
+    --max-budget-usd=*) once --max-budget-usd; max_budget="${1#--max-budget-usd=}" ;;
+    --approval) needs_value "$1" $# "${2:-}"; once --approval; approval="$2"; shift ;;
+    --approval=*) once --approval; approval="${1#--approval=}" ;;
     --plain) once --plain; plain=1 ;;
     --ndjson) once --ndjson; ndjson=1 ;;
     --)
@@ -208,19 +295,54 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ $json -eq 0 || $prompt_set -eq 1 ]] || die_usage "--json goes with -p."
+for b23_flag in output-format max-turns max-budget-usd approval; do
+  b23_var=${b23_flag//-/_}; [[ $b23_var == max_budget_usd ]] && b23_var=max_budget
+  if [[ -n "${!b23_var}" && $prompt_set -eq 0 ]]; then die_usage "--$b23_flag goes with -p."; fi
+done
+unset b23_flag b23_var
+case "$output_format" in
+  "" | text) ;;
+  json) json=1 ;;
+  stream-json) [[ $json -eq 0 ]] || die_usage "--json and --output-format stream-json do not go together." ;;
+  *) die_usage "--output-format is text, json or stream-json." ;;
+esac
+if [[ "$output_format" == text && $json -eq 1 ]]; then
+  die_usage "--json and --output-format text do not go together."
+fi
+if [[ -n "$max_turns" ]] && ! [[ "$max_turns" =~ ^[0-9]{1,3}$ && 10#$max_turns -ge 1 && 10#$max_turns -le 200 ]]; then
+  die_usage "--max-turns needs a number from 1 to 200."
+fi
+if [[ -n "$max_budget" ]] && ! [[ "$max_budget" =~ ^[0-9]{1,6}(\.[0-9]{1,6})?$ && "$max_budget" =~ [1-9] ]]; then
+  die_usage "--max-budget-usd needs an amount above 0 (in dollars)."
+fi
+case "$approval" in
+  "") unset SWARM_HEADLESS_APPROVAL ;;
+  read-only) export SWARM_HEADLESS_APPROVAL=read_only ;;
+  auto) export SWARM_HEADLESS_APPROVAL=auto ;;
+  full) export SWARM_HEADLESS_APPROVAL=full_access ;;
+  *) die_usage "--approval is read-only, auto or full." ;;
+esac
 [[ $ndjson -eq 0 || $plain -eq 1 ]] || die_usage "--ndjson goes with --plain."
 [[ $plain -eq 0 || $prompt_set -eq 0 ]] || die_usage "-p and --plain do not go together."
+if [[ $fail_on_denied -eq 1 && $prompt_set -eq 0 && $plain -eq 0 ]]; then
+  die_usage "--fail-on-denied goes with -p or --plain."
+fi
 if [[ $model_set -eq 1 && -z "${model//[[:space:]]/}" ]]; then
   die_usage "--model needs a model name."
 fi
 if [[ $prompt_set -eq 1 && -z "${prompt//[[:space:]]/}" ]]; then
   die_usage "-p needs a prompt."
 fi
-uuid='^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
 case "$conversation" in
   "" | new | latest) ;;
-  *) [[ "$conversation" =~ $uuid ]] || die_usage "--resume needs a conversation id." ;;
+  *)
+    if [[ -z "${conversation//[[:space:]]/}" || "$conversation" =~ [[:cntrl:]] ]]; then
+      die_usage "--resume needs an id or a title."
+    fi ;;
 esac
+if [[ $resume_picker -eq 1 && ( $prompt_set -eq 1 || $plain -eq 1 ) ]]; then
+  die_usage "--resume needs an id or a title here; ncode --resume alone opens the picker."
+fi
 
 # The project is the directory named on the command line, else where the
 # command was run. SWARM_PROJECT_ROOT is deliberately ignored: shells that
@@ -233,8 +355,15 @@ if [[ $project_set -eq 1 ]]; then
 else
   root_dir="$PWD"
 fi
+if [[ ! -d "$root_dir" && $project_set -eq 1 && "$project" != */* && "$project" != .* && "$project" != "~"* ]]; then
+  # cli020 B16: a word that is no folder is most likely a command.
+  echo "ncode: '$project' is not a folder or a command. Did you mean --help? (To open a folder named $project, use ./$project.)" >&2
+  json_failure "'$project' is not a folder or a command." 2
+  exit 2
+fi
 if [[ ! -d "$root_dir" ]]; then
   echo "ncode: '$root_dir' is not a directory." >&2
+  json_failure "'$root_dir' is not a directory." 2
   exit 2
 fi
 SWARM_PROJECT_ROOT=$(cd -- "$root_dir" && pwd)
@@ -254,14 +383,33 @@ if [[ $model_set -eq 1 ]]; then
 else
   unset SWARM_MODEL_OVERRIDE
 fi
-unset SWARM_RELEASE_TUI SWARM_SETTINGS_OPEN SWARM_SETTINGS_ONLY
+unset SWARM_RELEASE_TUI SWARM_SETTINGS_OPEN SWARM_SETTINGS_ONLY SWARM_RESUME_PICKER
+
+# cli020 B20 (onboarding-18): something on the terminal while the VM boots;
+# the release erases it ("\r\e[2K") before its exit summary.
+starting_line() {
+  if [[ -t 1 ]]; then printf 'Starting ncode\342\200\246'; fi
+}
 
 headless() {
+  if [[ $fail_on_denied -eq 1 ]]; then set -- "$@" --fail-on-denied; fi
   exec "$root/bin/swarm_code_cli" eval 'SwarmCodeCLI.Release.main(System.argv())' "$@"
 }
 
 if [[ $prompt_set -eq 1 ]]; then
-  if [[ $json -eq 1 ]]; then headless -p "$prompt" --json; else headless -p "$prompt"; fi
+  # cli020 B1: a prompt with a pipe or a file on stdin sends that stdin after
+  # it; a terminal, /dev/null or a socket is never read (a script whose stdin
+  # is an idle inherited terminal must not hang).
+  unset SWARM_STDIN_PIPED
+  if [[ "$prompt" != "-" ]] && { [[ -p /dev/stdin ]] || [[ -f /dev/stdin ]]; }; then
+    export SWARM_STDIN_PIPED=1
+  fi
+  set -- -p "$prompt"
+  if [[ $json -eq 1 ]]; then set -- "$@" --json; fi
+  if [[ "$output_format" == stream-json ]]; then set -- "$@" --output-format stream-json; fi
+  if [[ -n "$max_turns" ]]; then set -- "$@" --max-turns "$max_turns"; fi
+  if [[ -n "$max_budget" ]]; then set -- "$@" --max-budget-usd "$max_budget"; fi
+  headless "$@"
 fi
 
 if [[ $settings_mode -eq 1 ]]; then
@@ -272,10 +420,14 @@ if [[ $settings_mode -eq 1 ]]; then
   export SWARM_SETTINGS_OPEN="$settings_query"
   export SWARM_SETTINGS_ONLY=1
   export SWARM_RELEASE_TUI=1
+  starting_line
   exec "$root/bin/swarm_code_cli" start
 fi
 
 if [[ $plain -eq 0 ]] && ! [[ -t 0 && -t 1 && "${TERM:-dumb}" != "dumb" ]]; then
+  if [[ $resume_picker -eq 1 ]]; then
+    die_usage "--resume needs an id or a title without a terminal; ncode --resume alone opens the picker."
+  fi
   echo "ncode: not a terminal, so the plain presenter answers (--plain)." >&2
   plain=1
 fi
@@ -284,4 +436,6 @@ if [[ $plain -eq 1 ]]; then
 fi
 
 export SWARM_RELEASE_TUI=1
+if [[ $resume_picker -eq 1 ]]; then export SWARM_RESUME_PICKER=1; fi
+starting_line
 exec "$root/bin/swarm_code_cli" start

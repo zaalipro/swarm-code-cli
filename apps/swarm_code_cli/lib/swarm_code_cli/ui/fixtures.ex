@@ -148,6 +148,73 @@ defmodule SwarmCodeCLI.UI.Fixtures do
     end)
   end
 
+  @doc """
+  cli020 E31: the locked fixture of the Markdown row cache's bench and its
+  golden test: the chat fixture with `n` (200) messages, user and assistant
+  in turn, every assistant answer Markdown with a heading, a list, a code
+  block, a table and a quote. Deterministic: the same text for the same `n`.
+  """
+  @spec long_conversation(Size.t(), Capabilities.t(), pos_integer()) :: State.t()
+  def long_conversation(%Size{} = size, %Capabilities{} = capabilities, n \\ 200)
+      when is_integer(n) and n > 0 do
+    state = representative(:chat, size, capabilities)
+    run = %{Map.fetch!(state.read_model.runs, "fixture-run") | state: :done}
+
+    items =
+      for i <- 1..n do
+        id = "m" <> String.pad_leading(Integer.to_string(i), 3, "0")
+        at = @clock_ms - (n - i + 1) * 30_000
+
+        if rem(i, 2) == 1,
+          do:
+            item(id, run, :user, :done, "Question #{div(i + 1, 2)}: how does step #{i} work?",
+              at: at
+            ),
+          else:
+            item(id, run, :assistant, :done, long_answer(i),
+              at: at,
+              tokens_in: 900,
+              tokens_out: 240
+            )
+      end
+
+    model = %{
+      state.read_model
+      | runs: %{run.id => run},
+        transcript: Map.new(items, &{&1.id, &1}),
+        order: %{state.read_model.order | workspace: Enum.map(items, & &1.id)}
+    }
+
+    %{state | read_model: model}
+  end
+
+  defp long_answer(i) do
+    """
+    ## Step #{i}: the router
+
+    The request reaches **`Router.call/2`** first; step #{i} adds a *plug* and a check.
+
+    - read `lib/app/router_#{i}.ex` and its tests
+    - add the `:browser` pipeline once, not twice
+    - [ ] run `mix test test/app/router_#{i}_test.exs`
+
+    ```elixir
+    defmodule App.Router#{i} do
+      use Phoenix.Router
+      pipeline :browser, do: plug(:accepts, ["html"])
+      get "/step/#{i}", PageController, :show
+    end
+    ```
+
+    | file | lines | change |
+    | --- | ---: | --- |
+    | router_#{i}.ex | #{10 + i} | +#{rem(i, 7) + 1} −#{rem(i, 3)} |
+    | page_#{i}.ex | #{20 + i} | +1 |
+
+    > Note: nothing is written until you approve step #{i}.
+    """
+  end
+
   defp item(id, run, role, state, text, extra \\ []),
     do:
       struct!(

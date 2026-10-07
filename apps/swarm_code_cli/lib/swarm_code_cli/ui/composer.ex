@@ -35,7 +35,15 @@ defmodule SwarmCodeCLI.UI.Composer do
   alias SwarmCodeCLI.UI.{Drafts, Editor, Keymap, SlashPalette, State, WorkflowKeyword}
 
   @type enter_action ::
-          :send | :steer | :queue | :run_command | :complete | :show_all | :fold | :none
+          :send
+          | :steer
+          | :queue
+          | :run_command
+          | :complete
+          | :show_all
+          | :fold
+          | :shell
+          | :none
   @type esc_action ::
           {:stop, map()} | :close_layer | :close_overlay | :dismiss_completion | :none
 
@@ -149,10 +157,27 @@ defmodule SwarmCodeCLI.UI.Composer do
 
   def command_name(_text), do: nil
 
+  @doc """
+  cli020 D7 (decision 4c): whether the draft is a shell command, `!` as its
+  very first character (no leading space). E draws the `$` chip from it.
+  """
+  @spec shell?(map()) :: boolean()
+  def shell?(state), do: String.starts_with?(draft_text(state), "!")
+
+  @doc "The shell command of a `!` draft without its `!` (trimmed), or nil."
+  @spec shell_command(map()) :: binary() | nil
+  def shell_command(state) do
+    case draft_text(state) do
+      "!" <> rest -> String.trim(rest)
+      _ -> nil
+    end
+  end
+
   defp composer_action(state, text) do
     trimmed = String.trim_leading(text)
 
     cond do
+      shell_command(state) not in [nil, ""] -> :shell
       String.starts_with?(trimmed, "/") -> slash_action(state, text)
       WorkflowKeyword.routes?(text) -> :run_command
       true -> message_action(state)

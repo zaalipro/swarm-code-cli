@@ -27,11 +27,17 @@ defmodule SwarmCodeCLI.UI.Settings.C74PreferencesTest do
 
       assert :ok = Preferences.write(path, %{theme: :light, show_diffs: false})
 
-      assert Preferences.read(path) == %{
+      assert Map.take(Preferences.read(path), [
+               :panel_mode,
+               :show_diffs,
+               :theme,
+               :mouse?,
+               :agent_summaries?
+             ]) == %{
                panel_mode: :compact,
                show_diffs: false,
                theme: :light,
-               mouse?: true,
+               mouse?: false,
                agent_summaries?: true
              }
 

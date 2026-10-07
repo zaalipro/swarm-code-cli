@@ -134,3 +134,46 @@ control. FIFO ordering lets native discard old queued Draw/Credit commands until
 that Resume. Only after reactivation/Ready may the owner send a fresh draw and
 credit. This avoids stale credits crossing external resume. Pending terminal
 bytes stay bounded and are not read or emitted while the barrier is active.
+
+## cli020 additions (CLI 0.2.0)
+
+Tags 7 (Copy) and 8 (Mouse) are the pass70/pass73 commands
+(`1,7,generation,token,length:u32,text` and `1,8,generation,token,on:u8`).
+CLI 0.2.0 adds:
+
+| Direction/tag | Fields after version/tag |
+|---|---|
+| BEAM→native Notify9 | generation, token, kind:u8 (bell0,notification1,title2), length:u16, UTF8 bytes (0..512) |
+| BEAM→native Redraw10 | generation, token |
+| Native→BEAM Input17 kind Scroll7 | up:u8 (1 up, 0 down), count:u8 (1..32) |
+
+- Notify writes between frames: bell `BEL`; notification `ESC ] 9 ; text BEL`;
+  title `ESC ] 2 ; text BEL`. Any C0 or C1 control in the text, or a
+  notification that starts with an ASCII digit (ConEmu's `OSC 9;<n>` progress
+  sequences share the prefix), is a protocol error (Error21 reason 1); the
+  owner validates first (`Wire.notify/4`). Before the first title the port
+  saves the terminal's title (`CSI 22;2 t`); restoration (shutdown, suspend,
+  parent EOF) restores it (`CSI 23;2 t`) only when a title was set, and a
+  resume writes the last title again. While suspended, a bell or notification
+  is dropped and a title is kept for the resume.
+- Redraw forgets the painted screen, so the next Draw repaints every cell
+  (Ctrl-L).
+- Scroll: with mouse reports off (Init flag 16 clear) and the alternate screen
+  on, activation writes `CSI ? 1007 h` (alternate scroll: the terminal sends
+  the wheel as arrow keys) and restoration `CSI ? 1007 l`; Mouse on writes
+  `CSI ? 1007 l` before `CSI ? 1000 h CSI ? 1006 h`, Mouse off writes
+  `CSI ? 1007 h` back. One tty read that consists only of two or more identical
+  `CSI A`/`CSI B` (or `SS3 A`/`SS3 B`) sequences is one Scroll (count capped at
+  32); a single arrow stays a Key.
+- Ready's flags byte may carry bit 128 `READY_ENHANCED_KEYS` (Ready only; Init
+  still rejects it). With the alternate screen, the first activation writes the
+  kitty keyboard probe `CSI ? u` then the primary device attributes query
+  `CSI c` and sends Ready when the DA1 answer arrives or after 500 ms. A
+  `CSI ? <flags> u` answer means the protocol is there: the guard pushes
+  disambiguate (`CSI > 1 u`, guard byte 128) and Ready carries bit 128. Both
+  answers are taken out of the input (typeahead before and after them is kept
+  in order) and a late answer is consumed by the decoder, never a key. With
+  disambiguate, `CSI 27 u` is Esc at once, `CSI <codepoint>;<mods> u` gives the
+  same events as the legacy bytes (Ctrl-C, Ctrl- and Alt-letters) and
+  `CSI 13;2 u` is Shift-Enter. Every restoration pops the mode (`CSI < u`)
+  before anything else; Resume pushes it again.

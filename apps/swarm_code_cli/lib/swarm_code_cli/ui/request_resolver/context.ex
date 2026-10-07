@@ -149,6 +149,10 @@ defmodule SwarmCodeCLI.UI.RequestResolver.Context do
   def valid_origin?({:seen, kind, id, revision}) when kind in [:conversation, :run, :activity],
     do: Intent.valid_id?(id) and non_negative_integer?(revision)
 
+  # cli020 C: a conversation command (`Intent.conversation_action/1`).
+  def valid_origin?({:conversation, action}) when is_atom(action),
+    do: action in Intent.conversation_actions()
+
   def valid_origin?(_origin), do: false
 
   defp valid_interaction?(nil), do: true

@@ -104,7 +104,7 @@ defmodule SwarmCodeCLI.UI.Settings.C74SafetyTest do
 
       {state, effects, _fake} = drive(sized(), actions)
       assert state.settings.search == nil and state.settings.mode == :browse
-      assert sent(effects) != [] and state.settings.status.text == "terminal.panel = full"
+      assert sent(effects) != [] and state.settings.status.text == "terminal.panel = auto"
       assert timers(effects) == []
 
       later = %{state | now: state.now + 60_000}

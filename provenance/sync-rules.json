@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "upstream_commit": "4c7c577aa909274b009dc1bf0f216e5179acddc9",
+  "upstream_commit": "7b8f379f5ed5976a191c08708af824d10b919633",
   "rewrite_rules": [
     {
       "id": "desktop-notify",

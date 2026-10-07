@@ -169,6 +169,7 @@ pub fn run(beam_port: bool) -> i32 {
                     8 => tty.restore(),
                     crate::protocol::GUARD_MOUSE_ON => tty.mouse(true),
                     crate::protocol::GUARD_MOUSE_OFF => tty.mouse(false),
+                    crate::protocol::GUARD_KITTY_PUSH => tty.kitty_push(),
                     flags if flags & !crate::protocol::FLAGS == 0 => tty.activate(flags),
                     _ => Err(io::ErrorKind::InvalidData.into()),
                 };
@@ -203,6 +204,16 @@ pub fn mouse(socket: &mut UnixStream, on: bool) -> Result<(), u8> {
         crate::protocol::GUARD_MOUSE_OFF
     };
     socket.write_all(&[byte]).map_err(|_| 6)?;
+    let mut ack = [0];
+    socket.read_exact(&mut ack).map_err(|_| 6)?;
+    if ack[0] == 1 { Ok(()) } else { Err(6) }
+}
+/// cli020 D2: asks the guard to push the kitty keyboard protocol's
+/// disambiguate mode; the guard pops it at every restoration.
+pub fn kitty(socket: &mut UnixStream) -> Result<(), u8> {
+    socket
+        .write_all(&[crate::protocol::GUARD_KITTY_PUSH])
+        .map_err(|_| 6)?;
     let mut ack = [0];
     socket.read_exact(&mut ack).map_err(|_| 6)?;
     if ack[0] == 1 { Ok(()) } else { Err(6) }

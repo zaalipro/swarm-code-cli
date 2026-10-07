@@ -962,11 +962,18 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
     # navigation) beside its identifiers.
     prepared =
       case prepare_command(script, request) do
-        {:ok, prepared, deltas, identifiers} -> {:ok, prepared, deltas, identifiers, nil}
-        other -> other
+        {:ok, prepared, deltas, identifiers} ->
+          {:ok, prepared, deltas, identifiers, nil, nil}
+
+        {:ok, prepared, deltas, identifiers, feedback} ->
+          {:ok, prepared, deltas, identifiers, feedback, nil}
+
+        other ->
+          other
       end
 
-    with {:ok, prepared, deltas, identifiers, feedback} <- prepared do
+    # cli020 C14/C16/C20: a conversation command may also answer a result.
+    with {:ok, prepared, deltas, identifiers, feedback, result} <- prepared do
       case apply_deltas(prepared, deltas) do
         {:error, _} = error ->
           error
@@ -976,7 +983,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
             status: :accepted,
             request_id: request.request_id,
             identifiers: identifiers,
-            feedback: feedback
+            feedback: feedback,
+            result: result
           }
 
           next = %{
@@ -1004,6 +1012,14 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
   defp prepare_command(script, %{kind: kind} = request)
        when elem(kind, 0) in [:conversation_new, :conversation_open, :project_update],
        do: Session.prepare(script, request)
+
+  # cli020 C: the conversation commands (queue, shell, rewind, attachments).
+  @conversation_commands ~w(history_search rewind_apply rewind_turns shell_stop shell_run attach_slot attachment_slot queue_resume queue_edit)a
+
+  defp prepare_command(script, %{kind: kind} = request)
+       when is_tuple(kind) and tuple_size(kind) >= 2 and is_binary(elem(kind, 1)) and
+              elem(kind, 0) in @conversation_commands,
+       do: SwarmCodeCLI.UI.DataSource.Fake.Conversation.prepare(script, request)
 
   defp prepare_command(script, request) do
     with :ok <- scope_allows(script, request),

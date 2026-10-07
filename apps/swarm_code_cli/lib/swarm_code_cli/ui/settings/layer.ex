@@ -41,6 +41,8 @@ defmodule SwarmCodeCLI.UI.Settings.Layer do
             page_project_id: nil,
             jump: nil,
             detail_open: false,
+            # cli020 E24: the open detail's first line (the projector clamps it).
+            detail_scroll: 0,
             next_launch: MapSet.new(),
             available: true,
             message: nil,
@@ -79,6 +81,7 @@ defmodule SwarmCodeCLI.UI.Settings.Layer do
           page_project_id: nil | String.t(),
           jump: nil | map(),
           detail_open: boolean(),
+          detail_scroll: non_neg_integer(),
           next_launch: MapSet.t(),
           available: boolean(),
           message: nil | String.t(),

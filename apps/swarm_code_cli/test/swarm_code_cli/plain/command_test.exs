@@ -114,4 +114,82 @@ defmodule SwarmCodeCLI.Plain.CommandTest do
     assert {:error, _} = Lexer.words("send -- a\u00a0b")
     assert {:ok, ["send", "--", "a\u00a0b"]} = Lexer.words("send -- 'a\u00a0b'")
   end
+
+  # cli020 B22 (tui-code-18): the finer approval decisions, offered only when
+  # the row lists them.
+  describe "approve-run, always-prefix and deny-stop" do
+    alias SwarmCodeCLI.UI.DataSource.{Delivery, DTO}
+
+    defp approval_presenter(decisions) do
+      scope = %Scope{kind: :global, id: nil, generation: 0}
+
+      approval = %DTO.PendingInteraction{
+        id: "approval",
+        run_id: "r",
+        node_id: "n",
+        conversation_id: "c",
+        kind: :approval,
+        expected_revision: 7,
+        allowed_actions: [:approve, :deny, :always_allow],
+        approval: %DTO.Approval{
+          tool: "run_command",
+          permission: :execute,
+          arguments_preview: "mix test",
+          command: "mix test",
+          command_family: "mix test",
+          classification: :normal,
+          allowed_decisions: decisions
+        }
+      }
+
+      item = %DTO.ActivityItem{
+        id: "activity-approval",
+        run_id: "r",
+        conversation_id: "c",
+        kind: :approval,
+        state: :waiting_approval,
+        revision: 7,
+        interaction: approval
+      }
+
+      delivery = %Delivery{
+        kind: :watch_ready,
+        watch_ref: "w",
+        request_id: nil,
+        sequence: nil,
+        scope: scope,
+        generation: 0,
+        revision: 1,
+        body: %DTO.ActivitySnapshot{items: [item], counts: %DTO.Counts{}}
+      }
+
+      {p, records} = Presenter.present(Presenter.new(%Options{}), "epoch", delivery)
+      {p, scope, records |> Enum.map(&elem(&1, 1)) |> IO.iodata_to_binary()}
+    end
+
+    test "each verb resolves with its decision when offered" do
+      {p, scope, out} =
+        approval_presenter([:approve, :approve_run, :always_prefix, :deny, :deny_stop])
+
+      for {verb, decision} <- [
+            {"approve-run", :approve_run},
+            {"always-prefix", :always_prefix},
+            {"deny-stop", :deny_stop}
+          ] do
+        assert {:ok, {:intent, {:resolve_approval, "r", "n", "approval", 7, ^decision}}} =
+                 Command.parse("#{verb} approval@7", p, scope),
+               verb
+
+        assert out =~ "#{verb} approval@7"
+      end
+    end
+
+    test "a read-only row offers approve, deny and deny-stop only" do
+      {p, scope, out} = approval_presenter([:approve, :deny, :deny_stop])
+      assert {:ok, {:intent, _}} = Command.parse("deny-stop approval@7", p, scope)
+      assert {:error, %SafeText{}} = Command.parse("approve-run approval@7", p, scope)
+      assert {:error, %SafeText{}} = Command.parse("always-prefix approval@7", p, scope)
+      refute out =~ "approve-run"
+    end
+  end
 end

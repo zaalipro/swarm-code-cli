@@ -25,9 +25,12 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.Outcome do
       # it starts when the running turn ends (identifiers: none).
       disposition: {:optional, {:enum, [:started, :steered, :queued]}},
       # pass73 T3/T8: why a command was refused, in words (rejected only).
-      reason: {:optional, {:dto, SwarmCodeCLI.UI.DataSource.DTO.Refusal}}
+      reason: {:optional, {:dto, SwarmCodeCLI.UI.DataSource.DTO.Refusal}},
+      # cli020 C14/C16/C20: what a conversation command answered (a slot,
+      # a staged image, a rewind, history rows).
+      result: {:optional, {:dto, SwarmCodeCLI.UI.DataSource.DTO.CommandResult}}
     ],
-    wire_defaults: [feedback: nil, disposition: nil, reason: nil],
+    wire_defaults: [feedback: nil, disposition: nil, reason: nil, result: nil],
     defaults: [
       status: :rejected,
       request_id: nil,
@@ -37,7 +40,8 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.Outcome do
       error: nil,
       corrective_action: :none,
       disposition: nil,
-      reason: nil
+      reason: nil,
+      result: nil
     ]
 
   def decode_status("accepted"), do: {:ok, :accepted}

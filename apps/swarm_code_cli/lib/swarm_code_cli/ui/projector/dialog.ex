@@ -89,6 +89,9 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
         {:model_picker, _, _} ->
           model_picker(layer, state, rect)
 
+        {:effort_picker, scope} ->
+          effort_picker(scope, state, rect)
+
         _ ->
           {title, options, footer, focus} = contents(layer, state, rect, class)
           {title, options, footer, focus, %{}}
@@ -128,8 +131,11 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
           block
       end)
 
-    # Headings are not items.
-    items = Enum.reject(options, fn {id, _, _} -> match?(%{heading: _}, Map.get(decor, id)) end)
+    # Headings (and E20's sublines) are not items.
+    items =
+      Enum.reject(options, fn {id, _, _} ->
+        match?(%{heading: _}, Map.get(decor, id)) or match?(%{subline: _}, Map.get(decor, id))
+      end)
 
     found = Enum.find_index(items, fn {id, _, _} -> id == focus end)
     ordinal = found || 0
@@ -151,7 +157,15 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
         rect.width - 2
       )
 
-    footer = [overflow | footer]
+    # cli020 E16 (ux-live-19): a message (a confirm, a report) is its words
+    # and one row of actions, without a chooser's count line.
+    message? = message_layer?(layer) and class != :compressed_small
+
+    footer =
+      if message?,
+        do: [%Block.ActionDeck{actions: Enum.intersperse(footer, Support.text("   ", state, 3))}],
+        else: [overflow | footer]
+
     {measured_footer, _} = Support.finalize(footer, state.revision)
     diff? = diff_layer?(layer, state)
 
@@ -178,11 +192,19 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
         width =
           max(1, rect.width - 2 - if(focused? or not mono?, do: prefix_width, else: 0))
 
-        # A decorated row is one line; its spans clip it.
+        # A decorated row is one line; its spans clip it. cli020 E11: the
+        # library and command reports are prose and wrap at words.
         lines =
-          if Map.has_key?(decor, id) and not mono?,
-            do: [text],
-            else: Width.wrap(text, width, state.capabilities.ambiguous_width)
+          cond do
+            Map.has_key?(decor, id) and not mono? ->
+              [text]
+
+            prose_layer?(layer) ->
+              SwarmCodeCLI.UI.Prose.wrap(text, width, state.capabilities.ambiguous_width)
+
+            true ->
+              Width.wrap(text, width, state.capabilities.ambiguous_width)
+          end
 
         Enum.map(lines, fn line ->
           {id, Density.safe(line, state, rect.width - 2), action}
@@ -196,12 +218,33 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
         do: %{rect | height: min(rect.height, max(8, length(rows) + 2 + footer_height))},
         else: rect
 
+    rect =
+      if message? do
+        height = min(rect.height, max(4, length(rows) + 2 + footer_height))
+        %{rect | height: height, y: rect.y + div(rect.height - height, 2)}
+      else
+        rect
+      end
+
     height = max(0, rect.height - 2 - footer_height)
+
+    # cli020 E6 (ux-live-1): in a picker the selected entry is always inside
+    # the window. With the focus in the query (a fresh Ctrl-P) the selection
+    # is the entry the footer counts (`ordinal`), not an offset an earlier
+    # dialog left in `dialog_scroll`.
+    selected =
+      case Enum.any?(rows, fn {id, _, _} -> id == focus end) do
+        false when items != [] ->
+          if picker_layer?(layer), do: items |> Enum.at(ordinal) |> elem(0), else: focus
+
+        _ ->
+          focus
+      end
 
     indices =
       rows
       |> Enum.with_index()
-      |> Enum.filter(fn {{id, _, _}, _} -> id == focus end)
+      |> Enum.filter(fn {{id, _, _}, _} -> id == selected end)
       |> Enum.map(&elem(&1, 1))
 
     first_focus = List.first(indices) || 0
@@ -355,10 +398,21 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
 
   defp hover(state), do: Theme.style(:hover, state.capabilities).background
 
+  defp message_layer?({kind, _}) when kind in [:unsent_changes, :confirm_intent, :command_report],
+    do: true
+
+  defp message_layer?(_layer), do: false
+
+  defp prose_layer?({kind, _}) when kind in [:library, :command_report, :rewind_confirm],
+    do: true
+
+  defp prose_layer?(_layer), do: false
+
   defp picker_layer?({kind, _}) when kind in [:switcher, :action_menu, :region_filter, :jump],
     do: true
 
   defp picker_layer?({:model_picker, _, _}), do: true
+  defp picker_layer?({:effort_picker, _}), do: true
   defp picker_layer?(_layer), do: false
 
   # A picker row in colour: rail, an optional check, the title with the
@@ -369,6 +423,20 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
       %Span{
         text: Density.safe("  " <> heading, state, width),
         style: %{RunRow.tinted(:text_faint, state) | modifiers: [:bold]}
+      }
+    ]
+  end
+
+  defp decor_spans(%{subline: text}, _focused?, state, width) do
+    policy = state.capabilities.ambiguous_width
+    # Under the title: past the rail and the mark column.
+    lead = "    "
+    room = max(1, width - Width.cells(lead, policy))
+
+    [
+      %Span{
+        text: Density.safe(lead <> Width.elide(text, room, :end, policy), state, width),
+        style: RunRow.tinted(:text_faint, state)
       }
     ]
   end
@@ -413,6 +481,11 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
     # as long as a readable stretch of it is left, and one cell stays clear
     # before the border as on the rows with a kind at the right.
     room = width - measure.([rail | mark]) - measure.(detail) - 1
+
+    # cli020 E20: words at the right edge (a conversation's age) keep their
+    # place too, while a readable stretch of the title is left.
+    right_room = if row.right in [nil, ""], do: 0, else: Width.cells(row.right, policy) + 2
+    room = if room - right_room >= 16, do: room - right_room, else: room
 
     title_text =
       if detail != [] and Width.cells(row.title, policy) > room and room >= 16,
@@ -568,11 +641,30 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
      [control("cancel", SafeText.chrome(:cancel), {:local, :close_top_layer})], state.focus}
   end
 
+  defp contents(
+         {:command_report, _},
+         %{command_report: %{rows: [_ | _] = rows} = report} = state,
+         rect,
+         _class
+       ) do
+    table = cost_rows(rows, Map.get(report, :total), state)
+
+    {Density.safe(report.title, state, rect.width - 2),
+     table
+     |> Enum.with_index()
+     |> Enum.map(fn {line, i} ->
+       {"report-#{i}", Density.safe(line, state, rect.width * 2), nil}
+     end),
+     [
+       control("cancel", Density.safe("Close", state, rect.width - 2), {:local, :close_top_layer})
+     ], state.focus}
+  end
+
   defp contents({:command_report, _}, %{command_report: report} = state, rect, _class)
        when not is_nil(report) do
     rows =
       report.text
-      |> String.split("\n")
+      |> report_lines(help_geometry(state, rect).text_width, state)
       |> Enum.with_index()
       |> Enum.map(fn {line, i} ->
         {"report-#{i}", Density.external(line, SafeText.Limits.content()), nil}
@@ -607,11 +699,26 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
         runs = if live == 1, do: "1 live run", else: "#{live} live runs"
         draft = if State.dirty?(state), do: " Your unsent draft is lost too.", else: ""
 
+        # cli020 E16: the keys in words, one row (`Enter/X quit · Esc cancel`).
+        quit =
+          if class == :compressed_small,
+            do: [],
+            else: [
+              control(
+                "confirm",
+                Density.safe("Enter/X quit", state, 20),
+                {:local, confirm_target}
+              )
+            ]
+
+        cancel =
+          control("cancel", Density.safe("Esc cancel", state, 20), {:local, :close_top_layer})
+
         {Density.safe("Stop " <> runs <> " and quit?", state, 60),
          [
            {"quit_live_runs", Density.safe("They stop when ncode quits." <> draft, state, 200),
             nil}
-         ], [cancel] ++ confirm, focused}
+         ], quit ++ [cancel], focused}
 
       _ ->
         {SafeText.chrome(:unsent_changes), [{"cancel", SafeText.chrome(:cancel_exit), nil}],
@@ -736,66 +843,7 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
   defp contents(:help, state, rect, _class) do
     context = help_context(state)
     inner = max(1, rect.width - 2)
-    ascii? = state.capabilities.ascii?
-    policy = state.capabilities.ambiguous_width
-
-    sections =
-      for group <- Bindings.groups(),
-          rows =
-            context
-            |> Bindings.for_context()
-            |> Enum.filter(&(&1.group == group))
-            |> Enum.map(fn binding ->
-              keys =
-                binding
-                |> Bindings.keys_in_context(context, SwarmCodeCLI.UI.Keymap.overrides(state))
-                |> KeyLabel.joined(ascii?)
-
-              {keys, binding.help}
-            end),
-          rows != [],
-          do: {group, rows}
-
-    columns = if inner >= @help_two_column_width, do: 2, else: 1
-    column = div(inner - (columns - 1) * @help_gutter, columns)
-
-    widest_key =
-      sections
-      |> Enum.flat_map(fn {_group, rows} -> Enum.map(rows, &Width.cells(elem(&1, 0), policy)) end)
-      |> Enum.max(fn -> 0 end)
-
-    # The key column is never wider than half a column, nor than @help_key_max:
-    # one row with four spellings of a resize chord must not cost every other
-    # row its help text. A chord list that does not fit loses its tail.
-    key_width = min(widest_key, max(1, min(@help_key_max, div(column, 2))))
-
-    lines =
-      Enum.flat_map(sections, fn {group, rows} ->
-        # pass71 V5: headings in sentence case, as everywhere else.
-        heading = SwarmCodeCLI.UI.Keymap.Docs.group_title(group)
-
-        entries =
-          rows
-          |> Enum.map(&help_entry(&1, key_width, column, state, policy))
-          |> Enum.chunk_every(columns)
-          |> Enum.map(&Enum.join(&1, String.duplicate(" ", @help_gutter)))
-
-        [heading | entries]
-      end)
-
-    # pass73 finisher (K's request F2): while wheel reports are on, the sheet
-    # ends with how the mouse works and how to select text anyway.
-    lines =
-      if Map.get(state, :mouse?, true) do
-        note =
-          SwarmCodeCLI.UI.Keymap.Docs.mouse_note()
-          |> String.replace("`", "")
-          |> SwarmCodeCLI.UI.Prose.wrap(max(1, inner - 2), policy)
-
-        lines ++ [""] ++ note
-      else
-        lines
-      end
+    lines = help_lines(state, help_geometry(state, rect).text_width)
 
     options =
       lines
@@ -846,16 +894,30 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
           "Unavailable · " <> body.error.message
 
         options == [] ->
-          "No entries"
+          empty_words(feature)
 
         selected ->
-          selected.subtitle <> "\n" <> selected.detail
+          Library.detail_text(feature, selected)
 
         true ->
           "Select an entry to view details and actions."
       end
 
-    options = options ++ detail_rows(feature, detail, state, rect)
+    # cli020 E22 (tui-code-12): the CLI never runs the scheduler, so the
+    # Schedules list says first when its tasks fire, after a save as well.
+    note =
+      if feature == :schedules,
+        do: [
+          {"schedules-note",
+           Density.safe(
+             "Scheduled tasks fire only while the ncode app is running. Run now works here.",
+             state,
+             rect.width * 2
+           ), nil}
+        ],
+        else: []
+
+    options = note ++ options ++ detail_rows(feature, detail, state, rect)
 
     options =
       if state.library && state.library.message,
@@ -874,6 +936,145 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
      footer, if(state.focus in graph, do: state.focus, else: "cancel")}
   end
 
+  # --- cli020 E15: the rewind list and confirm, history search, the queue -----------
+
+  # `{:rewind, %{turns, selected}}` (D10 opens it from C16's `rewind.turns`):
+  # one row per turn, newest first, `Turn 7 · <prompt> · 3 files · 2 h ago`;
+  # D's reducer moves `selected` and opens the confirm on Enter.
+  defp contents({:rewind, %{turns: turns, selected: selected}}, state, rect, _class) do
+    rows =
+      turns
+      |> Enum.with_index()
+      |> Enum.map(fn {turn, index} ->
+        {"turn-#{index}", Density.safe(rewind_words(turn, state), state, rect.width * 2), nil}
+      end)
+
+    rows =
+      if rows == [],
+        do: [{"empty", Density.safe("Nothing to rewind yet.", state, rect.width), nil}],
+        else: rows
+
+    {Density.safe("Rewind", state, rect.width - 2),
+     rows ++
+       [
+         {"keys", Density.safe("↑↓ choose · Enter rewinds to it · Esc closes", state, rect.width),
+          nil}
+       ], [control("cancel", SafeText.chrome(:cancel), {:local, :close_top_layer})],
+     if(turns == [], do: "cancel", else: "turn-#{min(selected, length(turns) - 1)}")}
+  end
+
+  # `{:rewind_confirm, turn}`: the three scopes of D10 and what folding means.
+  defp contents({:rewind_confirm, turn}, state, rect, _class) do
+    title =
+      case Map.get(turn, :turn) do
+        n when is_integer(n) -> "Rewind to turn #{n}"
+        _ -> "Rewind to this prompt"
+      end
+
+    choices =
+      for {id, key, words, scope} <- [
+            {"both", "b", "Conversation and files", :both},
+            {"conversation", "c", "Conversation only", :conversation},
+            {"files", "f", "Files only", :files}
+          ] do
+        {id, Density.safe(key <> "  " <> words, state, rect.width), rewind_target(scope)}
+      end
+
+    prompt = Map.get(turn, :prompt) || ""
+
+    body =
+      [{"prompt", Density.safe(prompt, state, rect.width * 2), nil} | choices] ++
+        [
+          {"fold",
+           Density.safe(
+             "Later turns are folded (kept, not deleted); files come back from checkpoints.",
+             state,
+             rect.width * 2
+           ), nil}
+        ]
+
+    {Density.safe(title, state, rect.width - 2), body,
+     [control("cancel", SafeText.chrome(:cancel), {:local, :close_top_layer})],
+     if(state.focus in ["both", "conversation", "files"], do: state.focus, else: "both")}
+  end
+
+  # `{:history_search, %{query, rows, selected}}` (D19, C20's answers).
+  defp contents(
+         {:history_search, %{query: query, rows: rows, selected: selected}},
+         state,
+         rect,
+         _c
+       ) do
+    found =
+      rows
+      |> Enum.with_index()
+      |> Enum.map(fn {row, index} ->
+        text = row |> Map.get(:text, "") |> String.split(["\r\n", "\n"]) |> hd()
+        ago = SwarmCodeCLI.UI.Switcher.ago(Map.get(row, :at), state.now)
+        label = if ago, do: text <> "  · " <> ago, else: text
+        {"history-#{index}", Density.safe(label, state, rect.width * 2), nil}
+      end)
+
+    empty =
+      cond do
+        found != [] ->
+          []
+
+        String.trim(query) == "" ->
+          [
+            {"empty", Density.safe("Type to search your earlier prompts.", state, rect.width),
+             nil}
+          ]
+
+        true ->
+          [{"empty", Density.safe("No earlier prompt matches.", state, rect.width), nil}]
+      end
+
+    marker = SafeText.value(Support.glyph(:caret, state))
+
+    {Density.safe("History", state, rect.width - 2),
+     [{"query", Density.safe("› " <> query <> marker, state, rect.width * 2), nil}] ++
+       found ++ empty, [control("cancel", SafeText.chrome(:cancel), {:local, :close_top_layer})],
+     if(found == [], do: "cancel", else: "history-#{min(selected, length(found) - 1)}")}
+  end
+
+  # `{:queue_list}` (D20's bare `/queue`): what waits behind the live turn.
+  defp contents({:queue_list}, state, rect, _class) do
+    workspace = Map.get(state.read_model.snapshots, :workspace) || %{}
+    texts = Map.get(workspace, :queued_texts) || []
+
+    rows =
+      texts
+      |> Enum.with_index(1)
+      |> Enum.map(fn {text, n} ->
+        line = text |> to_string() |> String.split(["\r\n", "\n"]) |> hd()
+        {"queued-#{n}", Density.safe("#{n}  " <> line, state, rect.width * 2), nil}
+      end)
+
+    paused =
+      if Map.get(workspace, :queue_paused) == true and rows != [],
+        do: [
+          {"paused",
+           Density.safe(
+             "Paused · Enter on an empty composer runs the next one",
+             state,
+             rect.width
+           ), nil}
+        ],
+        else: []
+
+    rows =
+      if rows == [],
+        do: [{"empty", Density.safe("Nothing queued.", state, rect.width), nil}],
+        else:
+          rows ++
+            paused ++
+            [{"keys", Density.safe("/queue drop N · /queue clear", state, rect.width), nil}]
+
+    {Density.safe("Queue", state, rect.width - 2), rows,
+     [control("cancel", Density.safe("Close", state, 20), {:local, :close_top_layer})], "cancel"}
+  end
+
   defp contents({:research_form, owner}, state, rect, _class) do
     q = FieldEditors.fetch(state.field_editors, {:research_question, owner}) |> Editor.text()
     depth = Map.get(state.selection, {:research_form, :depth}, :medium)
@@ -881,7 +1082,7 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
     options =
       [{"question", "Question: " <> if(q == "", do: "(required)", else: q), nil}] ++
         Enum.map([:low, :medium, :high, :ultra], fn d ->
-          {Atom.to_string(d), if(d == depth, do: "› ", else: "  ") <> Atom.to_string(d),
+          {Atom.to_string(d), if(d == depth, do: "› ", else: "  ") <> research_level(d),
            {:local, {:research_depth, d}}}
         end)
 
@@ -1059,17 +1260,36 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
         entries
       end
 
+    # cli020 E20: an entry's `subline` is its own dim row under it, not an item.
     options =
-      Enum.map(entries, fn entry ->
-        {entry.id, Density.safe(entry.label, state, rect.width * 4), entry.target}
+      Enum.flat_map(entries, fn entry ->
+        row = {entry.id, Density.safe(entry.label, state, rect.width * 4), entry.target}
+
+        case Map.get(entry, :subline) do
+          text when is_binary(text) ->
+            [row, {entry.id <> ":subline", Density.safe(text, state, rect.width * 2), nil}]
+
+          _ ->
+            [row]
+        end
       end)
 
     marks? = Enum.any?(entries, &Map.get(&1, :current?, false))
 
+    sublines =
+      for entry <- entries, is_binary(Map.get(entry, :subline)), into: %{} do
+        {entry.id <> ":subline", %{subline: entry.subline}}
+      end
+
     decor =
       Map.new(entries, fn entry ->
         title = Map.get(entry, :title) || entry.label
-        {right, right_role} = entry_right(entry, state)
+
+        {right, right_role} =
+          case Map.get(entry, :right) do
+            words when is_binary(words) -> {words, :text_faint}
+            _ -> entry_right(entry, state)
+          end
 
         {entry.id,
          %{
@@ -1082,9 +1302,10 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
            right_role: right_role
          }}
       end)
+      |> Map.merge(sublines)
 
     options = if options == [], do: [{"empty", SafeText.chrome(:no_results), nil}], else: options
-    title = Density.safe(switcher_title(query), state, rect.width - 2)
+    title = Density.safe(switcher_title(search_query(query, state)), state, rect.width - 2)
 
     {title, options, [control("cancel", SafeText.chrome(:cancel), {:local, :close_top_layer})],
      if(state.focus == "query", do: "query", else: focus(state, options)), decor}
@@ -1103,7 +1324,116 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
   defp switcher_title(">approvals:" <> typed), do: "Approvals: " <> typed
   defp switcher_title(">" <> query), do: "Actions: " <> query
   defp switcher_title("@" <> query), do: "Projects: " <> query
+  # cli020 E9: the hits of the last `/search` (C8), titled by its words.
+  defp switcher_title("?" <> query), do: "Search results: " <> query
+
   defp switcher_title(query), do: "Search: " <> query
+
+  defp search_query("?", state) do
+    case Map.get(state, :search_results) do
+      %{query: words} when is_binary(words) -> "?" <> words
+      _ -> "?"
+    end
+  end
+
+  defp search_query(query, _state), do: query
+
+  # cli020 E4 (decision 4f, D18): the levels the daemon would accept for the
+  # model (C17's `effort_levels`), the current one ticked; Enter picks.
+  @classic_efforts ~w(low medium high xhigh max)
+
+  defp effort_picker(scope, state, rect) do
+    workspace = Map.get(state.read_model.snapshots, :workspace) || %{}
+
+    {levels, current, title} =
+      case scope do
+        :chat ->
+          {Map.get(workspace, :effort_levels), Map.get(workspace, :effort), "Effort · chat model"}
+
+        :swarm ->
+          {Map.get(workspace, :swarm_effort_levels), Map.get(workspace, :swarm_effort),
+           "Effort · workers"}
+      end
+
+    levels =
+      case levels do
+        [_ | _] = list -> Enum.filter(list, &is_binary/1)
+        _ -> @classic_efforts
+      end
+
+    mark = SafeText.value(Support.glyph(:check, state))
+
+    {options, decor} =
+      levels
+      |> Enum.map(fn level ->
+        id = "effort-" <> level
+        current? = level == current
+        label = if(current?, do: mark, else: " ") <> " " <> level
+
+        {{id, Density.safe(label, state, rect.width * 4), effort_target(level)},
+         {id,
+          %{
+            title: level,
+            detail: nil,
+            query: "",
+            current?: current?,
+            marks?: true,
+            right: if(current?, do: "in use", else: ""),
+            right_role: :text_faint
+          }}}
+      end)
+      |> Enum.unzip()
+
+    ids = Enum.map(options, &elem(&1, 0))
+
+    focus =
+      cond do
+        state.focus in ids -> state.focus
+        is_binary(current) and ("effort-" <> current) in ids -> "effort-" <> current
+        true -> List.first(ids)
+      end
+
+    {Density.safe(title, state, rect.width - 2), options,
+     [control("cancel", SafeText.chrome(:cancel), {:local, :close_top_layer})], focus,
+     Map.new(decor)}
+  end
+
+  # cli020 E25 (tui-code-21): the levels in words; the atom is what is stored.
+  defp research_level(:low), do: "Fastest · about a minute"
+  defp research_level(:medium), do: "Standard"
+  defp research_level(:high), do: "Deep"
+  defp research_level(:ultra), do: "Ultra"
+
+  defp rewind_words(turn, state) do
+    files =
+      case Map.get(turn, :files) do
+        n when is_integer(n) and n > 0 -> "#{n} #{if n == 1, do: "file", else: "files"}"
+        _ -> nil
+      end
+
+    at =
+      case Map.get(turn, :at) do
+        %DateTime{} = at -> DateTime.to_unix(at, :millisecond)
+        at -> at
+      end
+
+    [
+      case Map.get(turn, :turn) do
+        n when is_integer(n) -> "Turn #{n}"
+        _ -> "Prompt"
+      end,
+      (Map.get(turn, :prompt) || "") |> String.split(["\r\n", "\n"]) |> hd(),
+      files,
+      SwarmCodeCLI.UI.Switcher.ago(at, state.now)
+    ]
+    |> Enum.reject(&(&1 in [nil, ""]))
+    |> Enum.join(" · ")
+  end
+
+  # cli020 §8.3: D10's `{:rewind_choose, scope}` and D18's `{:effort_pick, level}`.
+  defp rewind_target(scope), do: {:local, {:rewind_choose, scope}}
+
+  defp effort_target(level), do: {:local, {:effort_pick, level}}
 
   # One row per model the daemon lists, the one in use marked, the provider
   # after the model so a filter on either reads the same. A snapshot with no
@@ -1301,8 +1631,24 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
     end
   end
 
-  defp detail_rows(_feature, detail, state, rect),
-    do: [{"details", Density.safe(detail, state, rect.width * 8), nil}]
+  # cli020 E11: one row per line of the detail, each word-wrapped by the modal.
+  defp detail_rows(_feature, detail, state, rect) do
+    case String.split(detail, "\n") do
+      [line] ->
+        [{"details", Density.safe(line, state, rect.width * 8), nil}]
+
+      lines ->
+        lines
+        |> Enum.with_index()
+        |> Enum.map(fn {line, index} ->
+          {"details-#{index}", Density.safe(line, state, rect.width * 8), nil}
+        end)
+    end
+  end
+
+  # cli020 E16 (ux-live-19): an empty list says what fills it.
+  defp empty_words(:checkpoints), do: "No checkpoints yet: they are taken before each edit."
+  defp empty_words(_feature), do: "No entries"
 
   defp diff_detail_lines(file) do
     header =
@@ -1317,18 +1663,260 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
     [header] ++ body ++ if(file.truncated?, do: ["…"], else: [])
   end
 
-  # One "keys  help" cell, padded to exactly `column` cells so two of them line
-  # up. The help text is elided before the keys are.
+  @doc false
+  # cli020 E7 (ux-live-8): the sheet's text width is the dialog's inner width
+  # minus the two cells of rail every option row is indented by in colour
+  # (none in monochrome, where only the focused row carries a prefix and no
+  # help row is ever focused). Lines built wider soft-wrapped in the painter:
+  # the one-letter `g…` rows and a blank row after every padded entry.
+  @spec help_geometry(map(), Rect.t()) :: %{
+          text_width: pos_integer(),
+          columns: 1 | 2,
+          column: pos_integer()
+        }
+  def help_geometry(state, %Rect{} = rect) do
+    mono? = Theme.style(:focus, state.capabilities).prefix != nil
+    text_width = max(1, rect.width - 2 - if(mono?, do: 0, else: 2))
+    help_columns(text_width)
+  end
+
+  defp help_columns(text_width) do
+    columns = if text_width + 2 >= @help_two_column_width, do: 2, else: 1
+    column = max(1, div(text_width - (columns - 1) * @help_gutter, columns))
+    %{text_width: text_width, columns: columns, column: column}
+  end
+
+  @doc false
+  # The help sheet's text lines at `width` cells (tests read them unscrolled).
+  @spec help_lines(map(), pos_integer()) :: [String.t()]
+  def help_lines(state, width) do
+    context = help_context(state)
+    ascii? = state.capabilities.ascii?
+    policy = state.capabilities.ambiguous_width
+    overrides = SwarmCodeCLI.UI.Keymap.overrides(state)
+    %{columns: columns, column: column} = help_columns(width)
+
+    # cli020 E7: the session's keys first (quit and stop lead it); a chord
+    # that needs Alt in every spelling is left out (Alt is unreliable on
+    # macOS terminals, AGENTS.md).
+    sections =
+      for group <- help_groups(),
+          rows =
+            context
+            |> Bindings.for_context()
+            |> Enum.filter(&(&1.group == group))
+            |> Enum.map(&{&1, Bindings.keys_in_context(&1, context, overrides)})
+            |> Enum.reject(fn {_binding, keys} -> alt_only?(keys) end)
+            |> Enum.sort_by(fn {binding, _keys} -> help_rank(binding.id) end)
+            |> Enum.map(fn {binding, keys} -> {KeyLabel.joined(keys, ascii?), binding.help} end),
+          rows != [],
+          do: {group, rows}
+
+    widest_key =
+      sections
+      |> Enum.flat_map(fn {_group, rows} -> Enum.map(rows, &Width.cells(elem(&1, 0), policy)) end)
+      |> Enum.max(fn -> 0 end)
+
+    # The key column is never wider than half a column, nor than @help_key_max:
+    # one row with four spellings of a resize chord must not cost every other
+    # row its help text. A chord list that does not fit loses its tail.
+    key_width = min(widest_key, max(1, min(@help_key_max, div(column, 2))))
+
+    lines =
+      Enum.flat_map(sections, fn {group, rows} ->
+        # pass71 V5: headings in sentence case, as everywhere else.
+        heading = SwarmCodeCLI.UI.Keymap.Docs.group_title(group)
+        entries = Enum.map(rows, &help_entry(&1, key_width, column, state, policy))
+        [heading | side_by_side(entries, columns, column)]
+      end)
+
+    # pass73 finisher (K's request F2): while wheel reports are on, the sheet
+    # ends with how the mouse works and how to select text anyway.
+    lines =
+      if Map.get(state, :mouse?, true) do
+        note =
+          SwarmCodeCLI.UI.Keymap.Docs.mouse_note()
+          |> String.replace("`", "")
+          |> SwarmCodeCLI.UI.Prose.wrap(max(1, width), policy)
+
+        lines ++ [""] ++ note
+      else
+        lines
+      end
+
+    lines ++ help_modes(column, columns, state, policy) ++ help_commands(width, state, policy)
+  end
+
+  # Session first (after vim's own keys in a vim mode): Ctrl-C and Esc are
+  # what a newcomer looks for.
+  defp help_groups, do: [:vim, :session | Bindings.groups() -- [:vim, :session]]
+
+  @help_first [:interrupt, :interrupt_turn, :escape, :close_or_quit]
+  defp help_rank(id) do
+    case Enum.find_index(@help_first, &(&1 == id)) do
+      nil -> length(@help_first)
+      index -> index
+    end
+  end
+
+  defp alt_only?([_ | _] = keys), do: Enum.all?(keys, fn {_code, mods} -> :alt in mods end)
+  defp alt_only?(_keys), do: false
+
+  # Entries are lists of rows; two to a line, each padded to `column`, the
+  # shorter one padded with blank rows so the pair stays aligned.
+  defp side_by_side(entries, 1, _column), do: Enum.concat(entries)
+
+  defp side_by_side(entries, columns, column) do
+    blank = String.duplicate(" ", column)
+
+    entries
+    |> Enum.chunk_every(columns)
+    |> Enum.flat_map(fn chunk ->
+      height = chunk |> Enum.map(&length/1) |> Enum.max()
+
+      chunk
+      |> Enum.map(&(&1 ++ List.duplicate(blank, height - length(&1))))
+      |> Enum.zip_with(&Enum.join(&1, String.duplicate(" ", @help_gutter)))
+    end)
+  end
+
+  # cli020 E2 (Q6): the six modes and what each does; CLI Ultra runs
+  # workflows (the ncode app's missions are not ported yet).
+  defp help_modes(column, columns, state, policy) do
+    rows =
+      for {value, label, _glyph, hint, _icon} <- SwarmCode.Commands.modes(),
+          do: {SwarmCodeCLI.UI.Projector.Composer.mode_title(value, label), hint}
+
+    width =
+      rows
+      |> Enum.map(&Width.cells(elem(&1, 0), policy))
+      |> Enum.max(fn -> 0 end)
+      |> min(max(1, div(column, 2)))
+
+    entries = Enum.map(rows, &help_entry(&1, width, column, state, policy))
+    ["", "Modes" | side_by_side(entries, columns, column)]
+  end
+
+  # cli020 E7: `/help` lists the commands too (the `/` list's rows: the
+  # client's own and the service's), one to a line.
+  defp help_commands(width, state, policy) do
+    rows =
+      for item <- SwarmCodeCLI.UI.SlashPalette.catalogue("/"),
+          do: {String.trim("/" <> item.name <> " " <> (item.args || "")), item.desc || ""}
+
+    key_width =
+      rows
+      |> Enum.map(&Width.cells(elem(&1, 0), policy))
+      |> Enum.max(fn -> 0 end)
+      |> min(max(1, min(32, div(width, 2))))
+
+    ["", "Commands" | Enum.flat_map(rows, &help_entry(&1, key_width, width, state, policy))]
+  end
+
+  # One "keys  help" entry: rows exactly `column` cells wide so two of them
+  # line up. Help longer than its cell word-wraps onto continuation rows
+  # under the help column; a key list that does not fit loses its tail.
   defp help_entry({keys, help}, key_width, column, state, policy) do
     key_cell = keys |> Width.elide(key_width, :end, policy) |> RunRow.pad(key_width, state)
-    help_width = max(0, column - key_width - @help_gutter)
+    help_width = column - key_width - @help_gutter
 
-    help_cell =
-      if help_width > 0,
-        do: String.duplicate(" ", @help_gutter) <> Width.elide(help, help_width, :end, policy),
-        else: ""
+    if help_width > 0 do
+      indent = String.duplicate(" ", key_width + @help_gutter)
+      gutter = String.duplicate(" ", @help_gutter)
 
-    RunRow.pad(key_cell <> help_cell, column, state)
+      case SwarmCodeCLI.UI.Prose.wrap(help, help_width, policy) do
+        [] ->
+          [RunRow.pad(key_cell, column, state)]
+
+        [first | rest] ->
+          [RunRow.pad(key_cell <> gutter <> first, column, state)] ++
+            Enum.map(rest, &RunRow.pad(indent <> &1, column, state))
+      end
+    else
+      [RunRow.pad(key_cell, column, state)]
+    end
+  end
+
+  # cli020 E16 (C18): `/cost` by model, `model  12k in · 3k out  $0.04`,
+  # aligned, then the total (C18's, else the sum; a model without a price
+  # reads `—`).
+  defp cost_rows(rows, total, state) do
+    policy = state.capabilities.ambiguous_width
+    rows = Enum.filter(rows, &is_map/1)
+
+    sum = fn key -> Enum.reduce(rows, 0, &(&2 + (Map.get(&1, key) || 0))) end
+
+    total =
+      case total do
+        %{} = total ->
+          total
+
+        _ ->
+          prices = rows |> Enum.map(&Map.get(&1, :cost_usd)) |> Enum.filter(&is_number/1)
+
+          %{
+            model: "Total",
+            tokens_in: sum.(:tokens_in),
+            tokens_out: sum.(:tokens_out),
+            cost_usd: if(prices == [], do: nil, else: Enum.sum(prices))
+          }
+      end
+
+    lines =
+      Enum.map(rows ++ [Map.put(total, :model, "Total")], fn row ->
+        {to_string(Map.get(row, :model) || "?"),
+         compact_tokens(Map.get(row, :tokens_in)) <>
+           " in · " <> compact_tokens(Map.get(row, :tokens_out)) <> " out",
+         case Map.get(row, :cost_usd) do
+           cost when is_number(cost) -> "$" <> :erlang.float_to_binary(cost / 1, decimals: 2)
+           _ -> "—"
+         end}
+      end)
+
+    name_w = lines |> Enum.map(&Width.cells(elem(&1, 0), policy)) |> Enum.max(fn -> 0 end)
+    tok_w = lines |> Enum.map(&Width.cells(elem(&1, 1), policy)) |> Enum.max(fn -> 0 end)
+    pad = fn text, w -> text <> String.duplicate(" ", max(0, w - Width.cells(text, policy))) end
+
+    Enum.map(lines, fn {name, tokens, cost} ->
+      pad.(name, name_w) <> "  " <> pad.(tokens, tok_w) <> "  " <> cost
+    end)
+  end
+
+  defp compact_tokens(n) when is_integer(n) and n >= 1_000,
+    do: SwarmCodeCLI.UI.Projector.Workspace.Turns.compact(n)
+
+  defp compact_tokens(n) when is_integer(n), do: Integer.to_string(n)
+  defp compact_tokens(_n), do: "0"
+
+  # cli020 E11 (ux-live-7): a report's Markdown list of named entries
+  # (`- **reviewer** (bundled) — Code reviewer…`, `/agents`) is a two-column
+  # list, the description word-wrapped under its column; other lines as sent.
+  @entry_line ~r/^- \*\*(.+?)\*\*(?: \(([^)]*)\))? — (.*)$/u
+
+  defp report_lines(text, width, state) do
+    policy = state.capabilities.ambiguous_width
+    lines = String.split(text, "\n")
+
+    entries =
+      for line <- lines, match = Regex.run(@entry_line, line), match != nil, into: %{} do
+        [_, name, source, description] = match ++ List.duplicate("", 4 - length(match))
+        label = if source in [nil, ""], do: name, else: name <> " (" <> source <> ")"
+        {line, {label, description}}
+      end
+
+    column =
+      entries
+      |> Map.values()
+      |> Enum.map(&Width.cells(elem(&1, 0), policy))
+      |> Enum.max(fn -> 0 end)
+      |> min(max(8, div(width, 2)))
+
+    Enum.flat_map(lines, fn line ->
+      case Map.get(entries, line) do
+        nil -> [line]
+        {label, description} -> help_entry({label, description}, column, width, state, policy)
+      end
+    end)
   end
 
   # The sheet describes the state underneath it: the layers below the help

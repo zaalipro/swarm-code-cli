@@ -17,13 +17,22 @@ defmodule SwarmCode.Daemon.Service.Settings.ProjectConfig do
   alias SwarmCode.Domain.Projects.Workspace
 
   @max_bytes 1_048_576
-  @events ~w(session_start pre_tool_use post_tool_use)
+  # cli020 C23: F9's five events too (`SwarmCode.Domain.Hooks`).
+  @events ~w(session_start pre_tool_use post_tool_use stop notification user_prompt_submit
+             pre_compact session_end)
   @top_level ~w(effort swarm_effort model swarm_model)
+  # cli020 C23: F10's rules, read by the engine (not ignored like @top_level):
+  # three lists of at most 100 rules, each `tool` or `tool(pattern)` of at most
+  # 256 bytes (`Engine.Rules.parse/1` drops anything else).
+  @rule_lists ~w(allow ask deny)
+  @max_rules 100
+  @max_rule_bytes 256
+  @rule ~r/\A([A-Za-z0-9_.:*-]+)(?:\((.+)\))?\z/s
   @profile_keys ~w(effort swarm_effort model swarm_model)
   @denylist ~w(tavily_api_key default_chat_provider_id default_swarm_provider_id
                default_scheduled_provider_id default_workflow_provider_id
                monthly_budget_usd workflow_budget)
-  @known @top_level ++ ["hooks", "profiles"] ++ @denylist
+  @known @top_level ++ ["hooks", "profiles", "permissions"] ++ @denylist
   @invalid "the file is not valid JSON; fix it first (e opens it)"
 
   @doc false
@@ -33,7 +42,7 @@ defmodule SwarmCode.Daemon.Service.Settings.ProjectConfig do
          project_config.remove_entry)
 
   @doc false
-  def views, do: [{"record", "project_config"}]
+  def views, do: [{"record", "project_config"}, {"project_config.summary", nil}]
 
   @doc false
   def cache_reads(_action_or_view), do: []
@@ -124,7 +133,67 @@ defmodule SwarmCode.Daemon.Service.Settings.ProjectConfig do
     end
   end
 
+  # cli020 C23: what Settings → Project file lists read-only (E30).
+  def query("project_config.summary", nil, params, ctx) do
+    case project(Kit.get(params, "id") || page_project_id(ctx)) do
+      nil -> Kit.error(:not_found, "no such project")
+      project -> {:ok, summary(project)}
+    end
+  end
+
   def query(_view, _kind, _params, _ctx), do: Kit.unsupported()
+
+  @doc """
+  cli020 C23: a project's hooks (`%{"event", "command"}`, the command's first
+  120 bytes, in event then file order) and the rules the engine reads
+  (`%{"allow", "ask", "deny"}`, the valid ones as written).
+  """
+  @spec summary(map()) :: map()
+  def summary(project) do
+    json = read(project).json
+    hooks = hooks_of(json)
+
+    rows =
+      for event <- @events,
+          %{"command" => command} <- Map.get(hooks, event, []),
+          is_binary(command) and command != "" do
+        %{"event" => event, "command" => clip_bytes(command, 120)}
+      end
+
+    %{"hooks" => rows, "permissions" => Map.new(@rule_lists, &{&1, valid_rules(json, &1)})}
+  end
+
+  # The first `max` bytes, cut on a character boundary.
+  defp clip_bytes(text, max) when byte_size(text) <= max, do: text
+
+  defp clip_bytes(text, max) do
+    text
+    |> String.graphemes()
+    |> Enum.reduce_while({0, []}, fn g, {n, acc} ->
+      if n + byte_size(g) > max,
+        do: {:halt, {n, acc}},
+        else: {:cont, {n + byte_size(g), [g | acc]}}
+    end)
+    |> elem(1)
+    |> Enum.reverse()
+    |> IO.iodata_to_binary()
+  end
+
+  defp valid_rules(nil, _list), do: []
+
+  defp valid_rules(json, list) do
+    with %Obj{} = rules <- get(json, "permissions"),
+         items when is_list(items) <- get(rules, list) do
+      items |> Enum.filter(&rule?/1) |> Enum.take(@max_rules)
+    else
+      _ -> []
+    end
+  end
+
+  defp rule?(rule),
+    do:
+      is_binary(rule) and byte_size(rule) <= @max_rule_bytes and
+        Regex.match?(@rule, String.trim(rule))
 
   defp page_project_id(ctx) do
     case Kit.ctx(ctx, :project) do
@@ -154,6 +223,9 @@ defmodule SwarmCode.Daemon.Service.Settings.ProjectConfig do
       "trusted" => project.trusted_at != nil,
       "hooks" => hooks_of(json),
       "profiles" => profiles_of(json),
+      # cli020 M2 (E30): the valid permission rules, read-only (the Project
+      # file page lists them; `project_config.summary` answers the same).
+      "permissions" => Map.new(@rule_lists, &{&1, valid_rules(json, &1)}),
       "top_level" => top_level_of(json),
       "denied" => Enum.filter(@denylist, &has?(json, &1)),
       "unknown_keys" => if(json, do: Enum.reject(keys(json), &(&1 in @known)), else: []),
@@ -225,8 +297,61 @@ defmodule SwarmCode.Daemon.Service.Settings.ProjectConfig do
 
   def ignored(json) do
     hook_entries(get(json, "hooks"), has?(json, "hooks")) ++
-      profile_entries(get(json, "profiles"), has?(json, "profiles"))
+      profile_entries(get(json, "profiles"), has?(json, "profiles")) ++
+      permission_entries(get(json, "permissions"), has?(json, "permissions"))
   end
+
+  # cli020 C23: what `Engine.Rules.parse/1` drops.
+  defp permission_entries(_rules, false), do: []
+
+  defp permission_entries(%Obj{values: values}, true) do
+    Enum.flat_map(values, fn {list, items} ->
+      at = "permissions.#{list}"
+
+      cond do
+        list not in @rule_lists ->
+          [entry(at, "not allow, ask or deny · ignored", "warning", ["permissions", list])]
+
+        not is_list(items) ->
+          [entry(at, "not a list of rules · ignored", "error", ["permissions", list])]
+
+        true ->
+          bad =
+            for {rule, i} <- Enum.with_index(items), not rule?(rule) do
+              entry("#{at}[#{i}]", rule_reason(rule), "error", ["permissions", list, i])
+            end
+
+          over =
+            if length(items) > @max_rules,
+              do: [
+                entry(
+                  at,
+                  "#{length(items)} rules · only the first 100 are read",
+                  "warning",
+                  ["permissions", list, @max_rules]
+                )
+              ],
+              else: []
+
+          bad ++ over
+      end
+    end)
+  end
+
+  defp permission_entries(_other, true),
+    do: [
+      entry("permissions", "not an object of allow, ask and deny · ignored", "error", [
+        "permissions"
+      ])
+    ]
+
+  defp rule_reason(rule) when is_binary(rule) and byte_size(rule) > @max_rule_bytes,
+    do: "rule over 256 bytes · dropped"
+
+  defp rule_reason(rule) when is_binary(rule),
+    do: "#{shown(rule)} is not tool or tool(pattern) · dropped"
+
+  defp rule_reason(_rule), do: "not a rule · dropped"
 
   defp hook_entries(_hooks, false), do: []
 
@@ -593,7 +718,7 @@ defmodule SwarmCode.Daemon.Service.Settings.ProjectConfig do
   defp event_ok(event) when event in @events, do: :ok
 
   defp event_ok(_event),
-    do: Kit.error(:invalid, "event: session_start, pre_tool_use or post_tool_use")
+    do: Kit.error(:invalid, "event: " <> Enum.join(@events, ", "))
 
   defp index_ok(index) when is_integer(index) and index >= 0, do: :ok
   defp index_ok(_index), do: Kit.error(:invalid, "index: which hook")

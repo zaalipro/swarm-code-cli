@@ -11,6 +11,7 @@ defmodule SwarmCodeCLI.UI.Reducer.Commands do
   }
 
   alias SwarmCodeCLI.UI.RequestResolver.Context
+  alias SwarmCodeCLI.UI.Draft.Pastes
   alias SwarmCodeCLI.UI.DataSource.DTO.Outcome
 
   def invoke(state, intent, id) do
@@ -19,8 +20,9 @@ defmodule SwarmCodeCLI.UI.Reducer.Commands do
            Enum.any?(state.mutations, fn {_, mutation} -> match?({:settled, ^id, _}, mutation) end),
          {:ok, context} <- context(state, intent),
          false <- blocked?(context.origin, Map.get(state.mutations, context.origin)),
+         {:ok, sent, context} <- expand_pastes(state, intent, context),
          {:ok, request} <-
-           RequestResolver.resolve(intent, context, id, state.now + state.deadline_ms) do
+           RequestResolver.resolve(sent, context, id, state.now + state.deadline_ms) do
       {preview, advanced} = State.next_id(state, :request)
       state = if preview == id, do: advanced, else: state
 
@@ -38,10 +40,59 @@ defmodule SwarmCodeCLI.UI.Reducer.Commands do
            scrolls: follow_sent(state.scrolls, intent)
        }, [{:command, request}]}
     else
-      true -> {state, []}
-      {:error, reason} -> {%{state | notice: {:command_rejected, reason}}, []}
+      true ->
+        {state, []}
+
+      {:too_large, _} ->
+        {%{state | notice: {:command_feedback, "The message is over 256 KiB."}}, []}
+
+      {:error, reason} ->
+        {%{state | notice: {:command_rejected, reason}}, []}
     end
   end
+
+  # cli020 D8: a draft's collapsed pastes go out expanded, in the request
+  # and in the text the resolver checks it against; the pending mutation
+  # keeps the intent the composer drew (with its placeholders).
+  defp expand_pastes(
+         state,
+         {kind, operation, text, target, refs} = intent,
+         %{origin: {:draft, key}} = context
+       )
+       when kind == :dispatch do
+    case Drafts.fetch(state.drafts, key).pastes do
+      pastes when map_size(pastes) == 0 ->
+        {:ok, intent, context}
+
+      pastes ->
+        if Pastes.too_large?(text, pastes) do
+          {:too_large, intent}
+        else
+          {:ok, {kind, operation, Pastes.expand(text, pastes), target, refs},
+           %{context | editor_text: Pastes.expand(context.editor_text, pastes)}}
+        end
+    end
+  end
+
+  defp expand_pastes(
+         state,
+         {:steer, run, node, text, refs} = intent,
+         %{origin: {:draft, key}} = context
+       ) do
+    case Drafts.fetch(state.drafts, key).pastes do
+      pastes when map_size(pastes) == 0 ->
+        {:ok, intent, context}
+
+      pastes ->
+        if Pastes.too_large?(text, pastes),
+          do: {:too_large, intent},
+          else:
+            {:ok, {:steer, run, node, Pastes.expand(text, pastes), refs},
+             %{context | editor_text: Pastes.expand(context.editor_text, pastes)}}
+    end
+  end
+
+  defp expand_pastes(_state, intent, context), do: {:ok, intent, context}
 
   # pass70 Q1: what you send is what you look at next. A prompt or a steer
   # sent while the transcript was scrolled up puts the view back on the

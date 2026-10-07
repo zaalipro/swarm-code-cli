@@ -28,22 +28,20 @@ swarm_load_provider_env() {
     fi
   done
 
-  # Presence matters: an explicitly empty key selects unauthenticated local APIs.
-  if [[ ${SWARM_API_KEY+x} || ${OPENAI_API_KEY+x} || ${ANTHROPIC_API_KEY+x} ]]; then
-    return 0
-  fi
-
+  # cli020 B14 (bugs-13): the file is always read; an exported key no longer
+  # skips it. Each name the shell already has (presence matters: an explicitly
+  # empty key selects unauthenticated local APIs) keeps the shell's value.
   local swarm_env_path="${SWARM_ENV_FILE:-${HOME}/.secrets}"
   if [[ ! -f "$swarm_env_path" ]]; then
     if [[ -n ${SWARM_ENV_FILE:-} ]]; then
       echo 'NCODE_ENV_FILE (or SWARM_ENV_FILE) must point to an existing environment file.' >&2
-      return 1
+      return 2
     fi
     return 0
   fi
 
   local swarm_env_name swarm_env_value
-  # Shell exports win over the file: only unset names are taken from it.
+  # Shell exports win over the file, per variable: only unset names are taken.
   while IFS= read -r -d '' swarm_env_name && IFS= read -r -d '' swarm_env_value; do
     case "$swarm_env_name" in
       SWARM_MODEL_OVERRIDE | NCODE_MODEL_OVERRIDE) continue ;;

@@ -154,8 +154,23 @@ defmodule SwarmCode.Daemon.Service.Settings.Values do
 
     opts = [base: if(entry.home, do: stored), choices: choices, state: state, note: note]
     opts = if invalid?, do: Keyword.put(opts, :invalid_raw, stored), else: opts
-    Layers.setting_value(entry, layers, opts)
+    value = Layers.setting_value(entry, layers, opts)
+    Map.put(value, "modified", modified?(entry, value))
   end
+
+  # cli020 C13 (onboarding-19): what the "changed" counts and `config list
+  # --modified` read. A value is modified when something set it and it differs
+  # from the entry's default; a conversation's own values (`session.*`) are
+  # this conversation's, never part of the global count.
+  defp modified?(%Entry{scope: scope}, _value) when scope in [:session, :fact, :action, :link],
+    do: false
+
+  defp modified?(%Entry{home: :session}, _value), do: false
+  # A value with no default to go back to (a project's name) is not a change.
+  defp modified?(%Entry{resettable: false}, _value), do: false
+
+  defp modified?(%Entry{} = entry, %{"winner" => winner, "value" => value}),
+    do: winner not in [nil, "default"] and not WireValue.equal?(value, entry.default)
 
   # The stored wire value of an entry at its home, and whether its home exists
   # (a session entry without a conversation, a project entry without a project).
@@ -229,14 +244,25 @@ defmodule SwarmCode.Daemon.Service.Settings.Values do
 
   ## ----------------------------------------------------------------- layers
 
+  # cli020 C13 (ux-live-11): the override says where it came from: `--model`
+  # for this launch, or NCODE_MODEL when a first run created the provider
+  # from the environment (`SessionConfiguration.override_source/1`, B13).
   defp layer(%Entry{} = entry, :flag, _stored, _invalid?, reads) do
     case reads.override do
-      %{provider_id: id, model: model}
+      %{provider_id: id, model: model} = override
       when entry.key in ["session.model", "session.sub_agent_model"] ->
-        Layers.layer(:flag, %{"provider_id" => id, "model" => model},
-          source: "--model",
-          note: "for this launch only"
-        )
+        value = %{"provider_id" => id, "model" => model}
+
+        case override_source(override) do
+          :first_run_env ->
+            Layers.layer(:env, value, source: "NCODE_MODEL", note: "first run")
+
+          :flag ->
+            Layers.layer(:flag, value, source: "--model", note: "this launch only")
+
+          nil ->
+            Layers.unset(:flag)
+        end
 
       _ ->
         Layers.unset(:flag)
@@ -331,6 +357,9 @@ defmodule SwarmCode.Daemon.Service.Settings.Values do
   defp home_set?(%Entry{} = entry, stored, _reads),
     do: not WireValue.equal?(stored, entry.default)
 
+  # cli020 C13/B13: where the session override came from.
+  defp override_source(override), do: SessionConfiguration.override_source(override)
+
   ## ---------------------------------------------------------------- choices
 
   defp choices(%Entry{dynamic_choices: {:effort_of, source}} = entry, reads) do
@@ -379,6 +408,8 @@ defmodule SwarmCode.Daemon.Service.Settings.Values do
     scheduled_default: {:default_scheduled_provider_id, :default_scheduled_model, :chat},
     workflow_default: {:default_workflow_provider_id, :default_workflow_model, :chat},
     implementer_default: {:default_implementer_provider_id, :default_implementer_model, :chat},
+    # cli020 C17: E1's `efforts.validator` follows `models.validator`.
+    validator_default: {:default_validator_provider_id, :default_validator_model, :chat},
     research_lead: {:research_lead_provider_id, :research_lead_model, :chat},
     research_worker: {:research_worker_provider_id, :research_worker_model, :chat},
     research_reporter: {:research_reporter_provider_id, :research_reporter_model, :chat}
@@ -387,7 +418,8 @@ defmodule SwarmCode.Daemon.Service.Settings.Values do
     session_chat: :chat,
     session_swarm: :swarm,
     session_judge: :judge,
-    session_implementer: :implementer
+    session_implementer: :implementer,
+    session_validator: :validator
   }
 
   # {provider struct | nil, model | nil} of the model an effort belongs to.
@@ -442,6 +474,7 @@ defmodule SwarmCode.Daemon.Service.Settings.Values do
         :swarm -> {:swarm_provider_id, :swarm_model}
         :judge -> {:judge_provider_id, :judge_model}
         :implementer -> {:implementer_provider_id, :implementer_model}
+        :validator -> {:validator_provider_id, :validator_model}
       end
 
     resolve(Map.get(conversation, pf), Map.get(conversation, mf)) || default_model(:chat, reads)
@@ -471,8 +504,10 @@ defmodule SwarmCode.Daemon.Service.Settings.Values do
 
   ## ------------------------------------------------------------------ state
 
+  # cli020 C17: E1's models.validator too.
   @pair_entries ~w(models.chat models.sub_agent models.scheduled models.workflow models.implementer
-                   research.lead_model research.worker_model research.reporter_model)
+                   models.validator research.lead_model research.worker_model
+                   research.reporter_model)
 
   defp state(_entry, _stored, true, _choices, _reads), do: {"invalid", nil}
 

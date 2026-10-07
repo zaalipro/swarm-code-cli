@@ -371,6 +371,26 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings do
   defp verb(%{settings: %Layer{mode: :search} = layer} = state, :interrupt),
     do: verb(%{state | settings: layer}, :escape)
 
+  # cli020 E24 (tui-code-20): with the detail open, PgUp/PgDn (and D's
+  # half pages, Ctrl-U/Ctrl-D) scroll it, as the question note does; the
+  # projector clamps the offset to the detail's length.
+  defp verb(%{settings: %Layer{detail_open: true} = layer} = state, verb)
+       when verb in [:page_up, :page_down, :half_page_up, :half_page_down] do
+    page = max(1, (state.size && state.size.rows - 8) || 10)
+
+    delta =
+      case verb do
+        :page_down -> page
+        :page_up -> -page
+        :half_page_down -> div(page + 1, 2)
+        :half_page_up -> -div(page + 1, 2)
+      end
+
+    limit = SwarmCodeCLI.UI.Projector.Settings.Note.detail_max_scroll(state)
+    scroll = layer.detail_scroll |> Kernel.+(delta) |> max(0) |> min(limit)
+    {put_layer(state, %{layer | detail_scroll: scroll}), []}
+  end
+
   defp verb(%{settings: %Layer{region: :rail}} = state, verb)
        when verb in [:up, :down, :page_up, :page_down, :first, :last],
        do: {rail_to(state, Nav.rail_move(state, step(verb))), []}
@@ -405,7 +425,7 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings do
     do: {put_layer(state, %{layer | popover: {:help, %{scroll: 0}}}), []}
 
   defp verb(%{settings: %Layer{} = layer} = state, :info),
-    do: {put_layer(state, %{layer | detail_open: not layer.detail_open}), []}
+    do: {put_layer(state, %{layer | detail_open: not layer.detail_open, detail_scroll: 0}), []}
 
   defp verb(state, :search), do: Find.open(state)
   defp verb(state, :command), do: Find.command_line(state)

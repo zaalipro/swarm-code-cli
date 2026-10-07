@@ -35,11 +35,22 @@ defmodule SwarmCode.Domain.ProjectConfig do
           hooks: %{
             session_start: [hook()],
             pre_tool_use: [hook()],
-            post_tool_use: [hook()]
+            post_tool_use: [hook()],
+            stop: [hook()],
+            notification: [hook()],
+            user_prompt_submit: [hook()],
+            pre_compact: [hook()],
+            session_end: [hook()]
           },
           profiles: %{String.t() => map()},
+          permissions: SwarmCode.Domain.Engine.Rules.t(),
           raw: map()
         }
+
+  # pass 72 F10: the file is read only up to this size. The contract named an
+  # existing bound; there was none (`File.read/1` took any size), so this one
+  # is new — a project config over 256 KiB is not a config.
+  @max_bytes 262_144
 
   @spec load(String.t() | nil) :: {:ok, t()} | {:ok, nil}
   def load(nil), do: {:ok, nil}
@@ -47,7 +58,7 @@ defmodule SwarmCode.Domain.ProjectConfig do
   def load(root) do
     path = Path.join(root, @config_file)
 
-    case File.read(path) do
+    case read_bounded(path) do
       {:ok, data} ->
         case Jason.decode(data) do
           {:ok, map} when is_map(map) -> {:ok, parse(strip_denied(map))}
@@ -59,6 +70,20 @@ defmodule SwarmCode.Domain.ProjectConfig do
 
       _ ->
         {:ok, nil}
+    end
+  end
+
+  defp read_bounded(path) do
+    case File.stat(path) do
+      {:ok, %{size: size}} when size > @max_bytes ->
+        Logger.warning("project config: #{path} is over #{@max_bytes} bytes, ignored")
+        {:error, :too_large}
+
+      {:ok, _stat} ->
+        File.read(path)
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -92,6 +117,8 @@ defmodule SwarmCode.Domain.ProjectConfig do
       swarm_model: safe_string(map["swarm_model"]),
       hooks: parse_hooks(map["hooks"]),
       profiles: parse_profiles(map["profiles"]),
+      # pass 72 F10: `{"allow", "ask", "deny"}` rule lists (`Engine.Rules`).
+      permissions: SwarmCode.Domain.Engine.Rules.parse(map["permissions"]),
       raw: map
     }
   end
@@ -99,15 +126,16 @@ defmodule SwarmCode.Domain.ProjectConfig do
   defp safe_string(v) when is_binary(v) and v != "", do: v
   defp safe_string(_), do: nil
 
-  defp parse_hooks(nil), do: %{session_start: [], pre_tool_use: [], post_tool_use: []}
+  # pass 72 F9: five more events (`SwarmCode.Domain.Hooks`). Atoms from a fixed list,
+  # never from the file.
+  @hook_events ~w(session_start pre_tool_use post_tool_use stop notification
+                  user_prompt_submit pre_compact session_end)a
+
+  defp parse_hooks(nil), do: Map.new(@hook_events, &{&1, []})
   defp parse_hooks(map) when not is_map(map), do: parse_hooks(nil)
 
   defp parse_hooks(map) do
-    %{
-      session_start: parse_hook_list(map["session_start"]),
-      pre_tool_use: parse_hook_list(map["pre_tool_use"]),
-      post_tool_use: parse_hook_list(map["post_tool_use"])
-    }
+    Map.new(@hook_events, &{&1, parse_hook_list(map[Atom.to_string(&1)])})
   end
 
   defp parse_hook_list(nil), do: []

@@ -67,6 +67,16 @@ defmodule SwarmCodeCLI.UI.Reducer.Display do
     ])
   end
 
+  def set(state, :palette, palette) when is_atom(palette) do
+    words =
+      "#{palette |> Atom.to_string() |> String.capitalize()} palette · /theme carbon switches back"
+
+    changed(state, words, [
+      {:terminal_preferences, %{palette: palette}},
+      {:save_preferences, %{palette: palette}}
+    ])
+  end
+
   def set(state, :mouse, :toggle), do: set(state, :mouse, not state.mouse?)
 
   def set(state, :mouse, on?) when is_boolean(on?) do
@@ -94,7 +104,16 @@ defmodule SwarmCodeCLI.UI.Reducer.Display do
       "" -> {:ok, :theme_mode, :toggle}
       "dark" -> {:ok, :theme_mode, :dark}
       "light" -> {:ok, :theme_mode, :light}
-      _ -> {:error, "The theme is dark or light: /theme light."}
+      other -> palette(other)
+    end
+  end
+
+  # cli020 M2 (E27): a palette name sets `terminal.palette` (a fixed list,
+  # never `String.to_atom/1`).
+  defp palette(name) do
+    case Enum.find(SwarmCodeCLI.UI.Theme.palettes(), &(Atom.to_string(&1) == name)) do
+      nil -> {:error, "The theme is dark, light or a palette: /theme light, /theme ember."}
+      palette -> {:ok, :palette, palette}
     end
   end
 

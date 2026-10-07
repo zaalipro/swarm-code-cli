@@ -92,20 +92,12 @@ defmodule SwarmCode.Domain.Engine.CliDirtyTreeTest do
              "no [No file changes.] note: " <> String.slice(report, -400, 400)
 
       refute report =~ "Changes on branch"
-
-      # What the synced engine appends today (see the skipped test below).
-      case Regex.run(~r/Delta patch captured: (\d+) bytes, (\d+) files changed/, report) do
-        nil -> :ok
-        [_, _bytes, files] -> assert files == "0"
-      end
     end
 
-    # The contract's full assertion (00_contract.md A9). The synced engine
-    # (desktop 4c7c577 `RunServer.finalized_result/4`) still appends
-    # "Delta patch captured: 0 bytes, 0 files changed" after the note when the
-    # worker changed nothing. Per A9 that is reported to the desktop (lane F)
-    # instead of patched here; unskip once the desktop fix is synced (A').
-    @tag skip: "desktop appends an empty Delta patch line (cli020 A9, reported to F)"
+    # The contract's full assertion (00_contract.md A9). Desktop 4c7c577
+    # appended "Delta patch captured: 0 bytes, 0 files changed" after the
+    # note; lane F (F4) adds it only when the patch has bytes, and A'1 synced
+    # that (7b8f379f), so the strict form runs.
     test "the report ends with [No file changes.] and no delta line (#{backend})", c do
       report = run_noop_worker(c.root, unquote(backend))
 

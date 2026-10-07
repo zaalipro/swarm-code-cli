@@ -47,7 +47,7 @@ defmodule SwarmCodeCLI.UI.Layout do
   # panel is the one-row strip under the title.
   @panel_columns 120
 
-  @type panel_mode :: :full | :compact | :hidden
+  @type panel_mode :: :auto | :full | :compact | :hidden
 
   @doc "The column count from which the side panel docks beside main (P6)."
   def panel_columns, do: @panel_columns
@@ -59,7 +59,12 @@ defmodule SwarmCodeCLI.UI.Layout do
   """
   @spec for_state(map()) :: t()
   def for_state(state),
-    do: calculate(state.size, state.preferences, Map.get(state, :panel_mode, :full))
+    do:
+      calculate(
+        state.size,
+        state.preferences,
+        SwarmCodeCLI.UI.Projector.Panel.effective_mode(state)
+      )
 
   @doc """
   The geometry of `size`. `panel` is the side panel's mode (pass72 P6): from
@@ -71,7 +76,14 @@ defmodule SwarmCodeCLI.UI.Layout do
   def calculate(size, preferences \\ %Preferences{}, panel \\ :full) do
     class = classify(size)
     preferences = Preferences.validate!(preferences)
-    panel = if panel in [:full, :compact, :hidden], do: panel, else: :full
+    # cli020 E5: a bare `:auto` (no state to judge it by) lays out as hidden;
+    # `for_state/1` resolves it first.
+    panel =
+      cond do
+        panel == :auto -> :hidden
+        panel in [:full, :compact, :hidden] -> panel
+        true -> :full
+      end
 
     %__MODULE__{
       class: class,

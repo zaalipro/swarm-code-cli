@@ -201,8 +201,21 @@ defmodule SwarmCodeCLI.UI.Projector.Markdown do
   defp block_rows({:item, level, kind, content}, ctx) do
     indent = String.duplicate(" ", level * 2)
 
+    # cli020 E18 (ux-live-22): a task item's box replaces the bullet; the
+    # ASCII tier keeps the brackets as text. The rest of the item hangs under
+    # its text by the measured marker width (both glyphs are measured under
+    # the policy, so a wide `☐` keeps the hang right).
+    {kind, content, box} =
+      case {kind, content, ctx.ascii?} do
+        {:bullet, "[ ] " <> rest, false} -> {:bullet, rest, "☐"}
+        {:bullet, "[x] " <> rest, false} -> {:bullet, rest, "☑"}
+        {:bullet, "[X] " <> rest, false} -> {:bullet, rest, "☑"}
+        _ -> {kind, content, nil}
+      end
+
     marker =
       case kind do
+        _ when is_binary(box) -> box <> " "
         :bullet -> bullet(level, ctx) <> " "
         {:number, n} -> n <> ". "
       end

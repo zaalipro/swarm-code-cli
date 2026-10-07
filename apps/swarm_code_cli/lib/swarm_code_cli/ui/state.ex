@@ -14,6 +14,9 @@ defmodule SwarmCodeCLI.UI.State do
     :detail,
     :slash_palette,
     command_report: nil,
+    # cli020 C8/E9: the hits of the last `/search` with hits
+    # (`%{query, options: [DTO.FeedbackRow]}`), the palette's "?" rows.
+    search_results: nil,
     # pass70-E fields: the composer-first keyboard, approvals and history.
     # The id of the running "press Ctrl-C again to quit" timer, nil when unarmed.
     quit_armed: nil,
@@ -63,6 +66,11 @@ defmodule SwarmCodeCLI.UI.State do
     # pass72-O fields: the side panel's mode, hint mode and the agent overlay.
     # The panel's shape: :full (2 rows per agent), :compact (1 row) or
     # :hidden; under 120 columns anything but :hidden is the one-row strip.
+    # cli020 (E5, Q8): :auto shows it only once two agents work or something
+    # needs you (E's projector draws that). :auto is the launch's default
+    # (cli.json `panel`, `Init.Preferences`); cli020 M2: the struct default
+    # stays :full, so a state built without preferences (tests, the demo)
+    # keeps the docked panel it was written for.
     panel_mode: :full,
     # pass73 G1 (QA Q1-08): the last shape the panel had when it was not
     # :hidden, so Ctrl-B on a narrow terminal (strip -> off -> strip) brings
@@ -133,6 +141,40 @@ defmodule SwarmCodeCLI.UI.State do
     # The approval mode the workspace last showed (nil before the first), so
     # a change is noticed across a resync that replaced the snapshot.
     approval_seen: nil,
+    # cli020 D3: the needs-you signal and the window title. `notify` is
+    # cli.json's `terminal.notify` (the session runtime resolves `:auto`),
+    # `title?` its `terminal.title`; `last_bell_at` is the owner's clock at
+    # the last bell (at most one per 2 s), `terminal_title` the title last
+    # sent, `title_done?` an unfocused finish not yet seen.
+    # cli020 D6: the request ids of the last Shift-Tab step while one is
+    # still unanswered (a second Shift-Tab waits for them).
+    mode_cycle: [],
+    # cli020 D10: the rewind in flight (`%{mode}` while the turns load,
+    # `%{mode: :apply, turn, scope}` while it applies) and the last bare Esc.
+    rewind: nil,
+    last_escape_at: nil,
+    # cli020 D19: the history search's debounce timer and newest request,
+    # and one stashed draft per draft key.
+    history_timer: nil,
+    history_request: nil,
+    stashes: %{},
+    # cli020 D20: when a bare /delete asked to be confirmed.
+    delete_armed_at: nil,
+    # cli020 D21: rendered markdown rows (`UI.MarkdownCache`, 4 MiB), owned
+    # by the session runtime; nil until the projector reports any.
+    markdown_cache: nil,
+    notify: :auto,
+    title?: true,
+    # cli020 D8, D13: cli.json's paste collapse threshold (0 = never), lines
+    # per wheel notch, how long a notice stays and the Ctrl-F letters
+    # (`Reducer.TerminalPrefs` keeps them in step with `prefs`).
+    paste_collapse_lines: 8,
+    wheel_lines: 3,
+    notice_ms: 6_000,
+    hint_letters: ~w(s f g h j k l w e r t u i o p),
+    last_bell_at: nil,
+    terminal_title: nil,
+    title_done?: false,
     library: nil,
     feature_form: nil,
     banner: nil,
@@ -183,8 +225,11 @@ defmodule SwarmCodeCLI.UI.State do
   rejected: not allowed", "Stopping the turn.") fades `notice_ms/0` after it
   appeared; the quit hint and errors that need an answer stay.
   """
-  def shown_notice(%{notice: notice, notice_at: at, now: now}) do
-    if fading?(notice) and is_integer(at) and is_integer(now) and now - at >= @notice_ms,
+  def shown_notice(%{notice: notice, notice_at: at, now: now} = state) do
+    # cli020 D13: cli.json's notice_seconds.
+    window = Map.get(state, :notice_ms) || @notice_ms
+
+    if fading?(notice) and is_integer(at) and is_integer(now) and now - at >= window,
       do: nil,
       else: notice
   end

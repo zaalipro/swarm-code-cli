@@ -20,6 +20,12 @@ defmodule SwarmCodeCLI.UI.LayerSpec do
           | {:runs_dashboard, binary()}
           | {:run_palette, binary()}
           | {:model_picker, :chat | :swarm, binary()}
+          # cli020 §8.3: D opens and closes these, E draws them.
+          | {:effort_picker, :chat | :swarm}
+          | {:rewind, %{turns: list(), selected: non_neg_integer()}}
+          | {:rewind_confirm, map()}
+          | {:history_search, %{query: binary(), rows: list(), selected: non_neg_integer()}}
+          | {:queue_list}
 
   @spec help() :: t()
   def help, do: :help
@@ -64,7 +70,7 @@ defmodule SwarmCodeCLI.UI.LayerSpec do
       do: if(Intent.valid_id?(id), do: {:ok, layer}, else: {:error, :invalid_layer_spec})
 
   # The picker remembers which model it switches: the chat model or the one
-  # the sub agents use. The id owns its query field like any other picker.
+  # the workers use. The id owns its query field like any other picker.
   def validate({:model_picker, target, id} = layer) when target in [:chat, :swarm],
     do: if(Intent.valid_id?(id), do: {:ok, layer}, else: {:error, :invalid_layer_spec})
 
@@ -96,6 +102,23 @@ defmodule SwarmCodeCLI.UI.LayerSpec do
       when feature in [:workflows, :schedules, :mcp, :memory] do
     if Intent.valid_id?(id), do: {:ok, layer}, else: {:error, :invalid_layer_spec}
   end
+
+  # cli020 §8.3 (D18, D10, D19, D20): the effort picker, the rewind list and
+  # its confirmation, the history search and the queue list.
+  def validate({:effort_picker, scope} = layer) when scope in [:chat, :swarm], do: {:ok, layer}
+
+  def validate({:rewind, %{turns: turns, selected: selected}} = layer)
+      when is_list(turns) and is_integer(selected) and selected >= 0 and length(turns) <= 1_000,
+      do: {:ok, layer}
+
+  def validate({:rewind_confirm, turn} = layer) when is_map(turn), do: {:ok, layer}
+
+  def validate({:history_search, %{query: query, rows: rows, selected: selected}} = layer)
+      when is_binary(query) and byte_size(query) <= 1_024 and is_list(rows) and
+             length(rows) <= 50 and is_integer(selected) and selected >= 0,
+      do: {:ok, layer}
+
+  def validate({:queue_list} = layer), do: {:ok, layer}
 
   def validate(_layer), do: {:error, :invalid_layer_spec}
 end

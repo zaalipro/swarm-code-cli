@@ -140,7 +140,12 @@ defmodule SwarmCodeCLI.UI.ConversationsTest do
     {state, []} = respond(state, request, list())
     labels = Enum.map(Switcher.visible(state), & &1.label)
 
-    assert "Authentication review · 3 runs · live · open" in labels
+    # cli020 E20: "open" (else the age) is the row's right edge, not its label.
+    assert "Authentication review · 3 runs · live" in labels
+
+    assert %{right: "open"} =
+             Enum.find(Switcher.visible(state), &(&1.label =~ "Authentication review"))
+
     assert "Untitled conversation · 1 run" in labels
     refute Enum.any?(labels, &String.contains?(&1, @a))
   end

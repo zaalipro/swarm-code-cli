@@ -16,6 +16,12 @@ defmodule SwarmCodeCLI.UI.Switcher.Entry do
     :detail,
     recent?: false,
     current?: false,
+    # cli020 E9: listed before every other match (the retry of a failed run).
+    pinned?: false,
+    # cli020 E20: words at the row's right edge (a conversation's age) and a
+    # dim second line under it (its last prompt).
+    right: nil,
+    subline: nil,
     order: 0,
     search: nil
   ]
@@ -47,7 +53,9 @@ defmodule SwarmCodeCLI.UI.Switcher do
     :research,
     :run,
     :action,
-    :settings
+    :settings,
+    # cli020 E9: `/search` hits (C8), under the `?` prefix.
+    :search
   ]
 
   # cli74: one row per setting, listed only once two characters are typed or
@@ -79,7 +87,7 @@ defmodule SwarmCodeCLI.UI.Switcher do
 
     # pass73-K: the /approval picker's rows (T7) and the display toggles
     # (T1, T2, T9), each naming the state it is in.
-    local = local ++ approval_entries(state) ++ display_entries(state)
+    local = local ++ approval_entries(state) ++ display_entries(state) ++ stash_entries()
 
     # Both pickers open on the same next layer id: only one of them ever does.
     models =
@@ -113,7 +121,50 @@ defmodule SwarmCodeCLI.UI.Switcher do
       local_entries(state) ++
       domain_entries(state) ++
       conversation_entries(state) ++
+      search_entries(state) ++
       Enum.map(runs, &entry(run_label(&1), :run, {:local, {:navigate, {:run, &1.id}}}))
+  end
+
+  # cli020 E9 (tui-code-11): the last `/search`'s hits (C8's `{:select,
+  # %{subject: :search, options}}`, kept by the reducer as
+  # `state.search_results`), newest first as the service sent them; Enter
+  # opens the hit's conversation.
+  defp search_entries(state) do
+    case Map.get(state, :search_results) do
+      %{options: options} when is_list(options) ->
+        now = Map.get(state, :now)
+
+        options
+        |> Enum.take(50)
+        |> Enum.with_index(-1_000)
+        |> Enum.flat_map(fn {hit, order} ->
+          id = Map.get(hit, :conversation_id)
+
+          if is_binary(id) and SwarmCodeCLI.UI.Intent.valid_id?(id) do
+            title = to_string(Map.get(hit, :title) || "Untitled")
+
+            detail =
+              [Map.get(hit, :snippet), ago(Map.get(hit, :at), now)]
+              |> Enum.reject(&(&1 in [nil, ""]))
+              |> Enum.join(" · ")
+
+            [
+              %{
+                entry(title <> " · " <> detail, :search, {:local, {:open_conversation, id}})
+                | title: title,
+                  detail: detail,
+                  order: order,
+                  search: Map.get(state.search_results, :query)
+              }
+            ]
+          else
+            []
+          end
+        end)
+
+      _ ->
+        []
+    end
   end
 
   # The project's conversations by title, newest first, as the service listed
@@ -129,13 +180,26 @@ defmodule SwarmCodeCLI.UI.Switcher do
     |> Enum.with_index(-1_000)
     |> Enum.map(fn {item, order} ->
       title = conversation_title(item)
-      detail = conversation_detail(item, now)
+      detail = conversation_detail(item)
+
+      right = if item.current, do: "open", else: ago(Map.get(item, :updated_at), now)
+
+      prompt =
+        case Map.get(item, :last_prompt) do
+          text when is_binary(text) ->
+            text |> String.split(["\r\n", "\n"]) |> hd() |> String.trim()
+
+          _ ->
+            nil
+        end
 
       %{
         entry(title <> " · " <> detail, :conversation, {:local, {:open_conversation, item.id}})
         | title: title,
           detail: detail,
           current?: item.current == true,
+          right: right,
+          subline: if(prompt in [nil, ""], do: nil, else: prompt),
           order: order
       }
     end)
@@ -152,7 +216,7 @@ defmodule SwarmCodeCLI.UI.Switcher do
 
   defp conversation_title(_item), do: "Untitled conversation"
 
-  defp conversation_detail(item, now) do
+  defp conversation_detail(item) do
     runs =
       case item.run_count do
         1 -> "1 run"
@@ -162,8 +226,8 @@ defmodule SwarmCodeCLI.UI.Switcher do
     [
       runs,
       if(item.live, do: "live"),
-      if(is_integer(item.waiting) and item.waiting > 0, do: "#{item.waiting} waiting"),
-      if(item.current, do: "open", else: ago(Map.get(item, :updated_at), now))
+      # cli020 E20: when it last moved is the row's right edge (`right`).
+      if(is_integer(item.waiting) and item.waiting > 0, do: "#{item.waiting} waiting")
     ]
     |> Enum.reject(&is_nil/1)
     |> Enum.join(" · ")
@@ -209,7 +273,30 @@ defmodule SwarmCodeCLI.UI.Switcher do
           []
       end)
 
-    Enum.uniq_by(catalogue(state) ++ intents, & &1.id)
+    (catalogue(state) ++ intents)
+    |> Enum.uniq_by(& &1.id)
+    |> pin_retry(state)
+  end
+
+  # cli020 E9 (ux-live-4): "Retry failed run" of the newest run comes first
+  # when that run failed or stopped, so `r retries · Ctrl-P Retry failed run`
+  # finds it at the top.
+  defp pin_retry(entries, state) do
+    newest =
+      state.read_model.runs
+      |> Map.values()
+      |> Enum.max_by(&{&1.created_sequence, &1.id}, fn -> nil end)
+
+    case newest do
+      %{id: id, state: run_state} when run_state in [:failed, :stopped] ->
+        Enum.map(entries, fn
+          %Entry{target: {:intent, {:retry_run, ^id, _}}} = entry -> %{entry | pinned?: true}
+          entry -> entry
+        end)
+
+      _ ->
+        entries
+    end
   end
 
   def visible(state, table \\ %{}) do
@@ -268,7 +355,7 @@ defmodule SwarmCodeCLI.UI.Switcher do
       if is_nil(score),
         do: [],
         else: [
-          {{if(entry.kind == :setting, do: 1, else: 0), score,
+          {{if(entry.pinned?, do: 0, else: 1), if(entry.kind == :setting, do: 1, else: 0), score,
             Enum.find_index(@kinds, &(&1 == entry.kind)) || 99, entry.order, label, entry.id},
            entry}
         ]
@@ -423,6 +510,8 @@ defmodule SwarmCodeCLI.UI.Switcher do
 
   defp prefix("/" <> query), do: {[:command, :workflow], query}
   defp prefix("@" <> query), do: {[:project, :repository], query}
+  # cli020 E9: the hits of the last `/search` (C8), each opening its conversation.
+  defp prefix("?" <> query), do: {[:search], query}
   # `#` is the resume list: conversations and researches. Runs have their own
   # switcher (Ctrl-R) and only buried the conversations (pass70 Q10).
   defp prefix("#" <> query), do: {[:conversation, :research], query}
@@ -543,6 +632,12 @@ defmodule SwarmCodeCLI.UI.Switcher do
         {:local, {:mouse, :toggle}}
       )
     ]
+  end
+
+  # cli020 E9 (competitors-19): D19's stash actions.
+  defp stash_entries do
+    for {label, action} <- [{"Stash draft", {:stash_draft}}, {"Restore stash", {:restore_stash}}],
+        do: entry(label, :action, {:local, action})
   end
 
   # The one place the vim keymap is switched from inside the shell. The label

@@ -98,7 +98,8 @@ defmodule SwarmCodeCLI.UI.Projector.GoldenScenesTest do
   @pass71 %{
     first_reply: [
       "✳ Read mix.exs",
-      "· in chat",
+      # cli020 E5: a chat run's subtitle is `chat · <tokens>`.
+      "chat · ",
       "spent $0.01 · 19k tokens · 1 run",
       "context",
       " elixir "

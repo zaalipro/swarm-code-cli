@@ -61,8 +61,8 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.AgentsLimits do
 
     model =
       case {field(fields, :model), field(fields, :effort)} do
-        {nil, nil} -> "the sub-agent model"
-        {nil, effort} -> "the sub-agent model · #{effort}"
+        {nil, nil} -> "the worker model"
+        {nil, effort} -> "the worker model · #{effort}"
         {model, nil} -> model
         {model, effort} -> "#{model} · #{effort}"
       end

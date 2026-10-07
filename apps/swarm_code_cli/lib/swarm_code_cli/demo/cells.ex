@@ -93,11 +93,15 @@ defmodule SwarmCodeCLI.Demo.Cells do
                    size <- [{160, 45}, {120, 36}],
                    kind <- [{:panel, scene, :compact}, {:panel_hint, scene, :compact}],
                    do: {kind, size, :truecolor, false, :rich}
+  # cli020 E15: the 0.2.0 features' screens.
+  @cli020 for scene <- SwarmCodeCLI.Demo.Cli020.scenes(),
+              do: {{:cli020, scene}, {120, 36}, :truecolor, false, :rich}
   @examples @core ++
               @dialogs ++
               @pane ++
               [{:too_small, {49, 13}, :monochrome, true, :measured}] ++
-              @conversations ++ @pickers ++ @pass71 ++ @light ++ @panel ++ @panel_modes
+              @conversations ++
+              @pickers ++ @pass71 ++ @light ++ @panel ++ @panel_modes ++ @cli020
 
   @doc "How many files `run/0` writes, the index included."
   def file_count, do: length(@examples) + 1
@@ -275,6 +279,9 @@ defmodule SwarmCodeCLI.Demo.Cells do
   defp fixture({:conversation, scene}, size, capabilities),
     do: Conversation.state(scene, size, capabilities)
 
+  defp fixture({:cli020, scene}, size, capabilities),
+    do: SwarmCodeCLI.Demo.Cli020.state(scene, size, capabilities)
+
   defp fixture({:panel, scene, mode}, size, capabilities),
     do: scene |> SwarmCodeCLI.Demo.Panel.state(size, capabilities) |> Map.put(:panel_mode, mode)
 
@@ -317,6 +324,9 @@ defmodule SwarmCodeCLI.Demo.Cells do
         {:light, scene} ->
           "light-" <> String.replace(Atom.to_string(scene), "_", "-")
 
+        {:cli020, scene} ->
+          "cli020-" <> String.replace(Atom.to_string(scene), "_", "-")
+
         {:panel, scene, mode} ->
           String.replace(Atom.to_string(scene), "_", "-") <> "-" <> Atom.to_string(mode)
 
@@ -355,6 +365,7 @@ defmodule SwarmCodeCLI.Demo.Cells do
           case kind do
             {:conversation, scene} -> "conversation #{scene}"
             {:light, scene} -> "light #{scene}"
+            {:cli020, scene} -> "0.2.0 #{scene}"
             {:panel, scene, mode} -> "#{scene} #{mode}"
             {:panel_hint, scene, mode} -> "#{scene} #{mode} hint"
             kind -> Atom.to_string(kind)

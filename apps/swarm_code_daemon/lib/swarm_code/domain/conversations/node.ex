@@ -67,6 +67,11 @@ defmodule SwarmCode.Domain.Conversations.Node do
     # from `input`, it only exists for the seconds the card is on screen, and a
     # reload simply falls back to the three pills.
     field(:approval_prefix, :string, virtual: true)
+    # pass 72 F1: the approval mode the waiting approval was raised in, set
+    # with `approval_prefix` and cleared with it. `"read_only"` makes the card
+    # offer only Approve, Deny and Deny & stop (a read-only answer is never
+    # remembered). Virtual for the same reason as `approval_prefix`.
+    field(:approval_mode, :string, virtual: true)
 
     belongs_to(:run, SwarmCode.Domain.Conversations.Run)
 

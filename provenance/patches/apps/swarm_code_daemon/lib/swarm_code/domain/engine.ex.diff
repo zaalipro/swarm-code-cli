@@ -1,8 +1,8 @@
-# CLI-local change to lib/swarm_code/engine.ex at 4c7c577, after the rewrite
+# CLI-local change to lib/swarm_code/engine.ex at 7b8f379, after the rewrite
 # rules of provenance/sync-rules.json. Recorded by mix swarm_code.provenance.sync.
 --- a/apps/swarm_code_daemon/lib/swarm_code/domain/engine.ex
 +++ b/apps/swarm_code_daemon/lib/swarm_code/domain/engine.ex
-@@ -165,6 +165,7 @@
+@@ -201,6 +201,7 @@
            conversation.id,
            4 * SwarmCode.Domain.Engine.Context.budget(chat.model, settings)
          )
@@ -10,7 +10,7 @@
          |> Prompts.history_to_messages()
          |> replace_last_user(prompt)
  
-@@ -664,6 +665,56 @@
+@@ -727,6 +728,56 @@
  
    defp with_context(_context, prompt), do: prompt
  

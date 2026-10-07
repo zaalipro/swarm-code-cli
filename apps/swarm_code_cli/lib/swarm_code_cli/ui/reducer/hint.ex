@@ -99,7 +99,7 @@ defmodule SwarmCodeCLI.UI.Reducer.Hint do
 
   @doc "The hint state for `state`, or nil when the panel shows nothing to open."
   def open(state) do
-    labels = Hint.labels(entries(state))
+    labels = Hint.labels(entries(state), Map.get(state, :hint_letters) || Hint.letters())
     if labels == %{}, do: nil, else: %{labels: labels, typed: ""}
   end
 end

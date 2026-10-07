@@ -145,7 +145,8 @@ defmodule SwarmCodeCLI.UI.Settings.C75ChromeSearchTest do
             do: spans
 
       appearance = Enum.find(rows, &match?([{"Appearance", _} | _], &1))
-      assert [{"Appearance", %{role: :text_muted}}, {"2", %{role: :text_muted}}] = appearance
+      # cli020 E27: Theme, Palette (its "themes" synonym) and the desktop link.
+      assert [{"Appearance", %{role: :text_muted}}, {"3", %{role: :text_muted}}] = appearance
       pricing = Enum.find(rows, &match?([{"Pricing", _} | _], &1))
       assert [{"Pricing", %{role: :text_faint}}] = pricing
     end

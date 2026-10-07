@@ -21,6 +21,9 @@ defmodule SwarmCodeCLI.Release.LauncherTest do
     printf 'MODEL=%s\\n' "${SWARM_MODEL_OVERRIDE-<unset>}"
     printf 'ROOT=%s\\n' "${SWARM_PROJECT_ROOT-<unset>}"
     printf 'TUI=%s\\n' "${SWARM_RELEASE_TUI-<unset>}"
+    printf 'PIPED=%s\\n' "${SWARM_STDIN_PIPED-<unset>}"
+    printf 'PICKER=%s\\n' "${SWARM_RESUME_PICKER-<unset>}"
+    printf 'APPROVAL=%s\\n' "${SWARM_HEADLESS_APPROVAL-<unset>}"
   } >"$STUB_LOG"
   exit "${STUB_EXIT:-0}"
   """
@@ -69,6 +72,18 @@ defmodule SwarmCodeCLI.Release.LauncherTest do
     {code, output}
   end
 
+  # The launcher on a pseudo-terminal (script(1)), for the full-screen path.
+  defp tty(context, args) do
+    {output, code} =
+      System.cmd("script", ["-q", "/dev/null", "bash", context.launcher | args],
+        env: [{"STUB_LOG", context.log}, {"TERM", "xterm-256color"}, {"SWARM_CONVERSATION", nil}],
+        cd: context.project,
+        stderr_to_stdout: true
+      )
+
+    {code, output}
+  end
+
   defp stub(context) do
     context.log
     |> File.read!()
@@ -82,10 +97,21 @@ defmodule SwarmCodeCLI.Release.LauncherTest do
   end
 
   describe "usage" do
+    # cli020 finisher: bash 5.3 writes a here-document into a pipe when it
+    # fits the pipe size it was built for; when macOS hands out small (512
+    # byte) pipes under pipe-memory pressure, `cat <<'HELP'` waited for ever
+    # and `ncode --help` hung. The launcher prints its words with builtins.
+    test "the launcher uses no here-document" do
+      refute File.read!(@launcher) =~ ~r/<<-?\s*['"]?[A-Z_]+/
+    end
+
     test "--help and --version answer without starting the release", context do
       assert {0, help} = launch(context, ["--help"])
       assert help =~ "Usage: ncode [DIR] [--new | --continue | --resume ID] [--model M]"
-      assert help =~ "Exit codes: 0 done, 1 the run failed, 2 usage, 3 startup refused."
+
+      assert help =~
+               "Exit codes: 0 done, 1 the run failed, 2 usage, 3 startup refused,\n4 changed"
+
       assert {0, "ncode 0.1.0\n"} = launch(context, ["--version"])
       refute File.exists?(context.log)
     end
@@ -94,14 +120,13 @@ defmodule SwarmCodeCLI.Release.LauncherTest do
       for args <- [
             ["--bogus"],
             ["--resume"],
-            ["--resume", "not-a-uuid"],
+            ["--resume", " "],
             ["--new", "--continue"],
             ["--model"],
             ["--model", " "],
             ["-p"],
             ["-p", "   "],
             ["-p", "one", "-p", "two"],
-            ["--json"],
             ["--ndjson"],
             ["--plain", "-p", "x"],
             ["a", "b"]
@@ -114,8 +139,56 @@ defmodule SwarmCodeCLI.Release.LauncherTest do
       refute File.exists?(context.log)
     end
 
+    # cli020 B4: with --json the usage error is also the JSON summary on stdout.
+    test "with --json a usage error prints the summary object on stdout", context do
+      for {args, sentence} <- [
+            {["--json"], "--json goes with -p. Run 'ncode --help'."},
+            {["-p", "x", "--json", "--bogus\"\\"],
+             "unknown option '--bogus\"\\'. Run 'ncode --help'."}
+          ] do
+        {stdout, 2} =
+          System.cmd("bash", ["-c", "bash \"$@\" 2>/dev/null", "_", context.launcher | args],
+            env: [{"STUB_LOG", context.log}],
+            cd: context.project
+          )
+
+        assert %{"exit_code" => 2, "state" => "not_started", "error" => ^sentence, "denied" => []} =
+                 Jason.decode!(stdout)
+      end
+
+      refute File.exists?(context.log)
+    end
+
     test "a directory that does not exist is a usage error", context do
-      assert {2, "ncode: 'nowhere' is not a directory.\n"} = launch(context, ["nowhere"])
+      assert {2, "ncode: './nowhere' is not a directory.\n"} = launch(context, ["./nowhere"])
+    end
+
+    # cli020 B16 (onboarding-10, onboarding-24).
+    test "help, version, -v and doctor are words; an unknown word says so", context do
+      assert {0, help} = launch(context, ["help"])
+      assert help =~ "Examples:\n  ncode\n  ncode -p \"explain this repo\" --json\n"
+      assert help =~ "ncode settings providers\n  ncode config doctor\n"
+      assert help =~ "--fail-on-denied"
+      assert help =~ "--model, -m M"
+      assert help =~ "4 changed elsewhere (ncode config)"
+      assert {0, "ncode 0.1.0\n"} = launch(context, ["version"])
+      assert {0, "ncode 0.1.0\n"} = launch(context, ["-v"])
+      refute File.exists?(context.log)
+
+      assert {0, _} = launch(context, ["doctor", "--json"])
+
+      assert stub(context)["ARGS"] ==
+               "[eval] [SwarmCodeCLI.Release.main(System.argv())] [config] [doctor] [--json]"
+
+      assert {2, output} = launch(context, ["sttings"])
+
+      assert output ==
+               "ncode: 'sttings' is not a folder or a command. Did you mean --help? " <>
+                 "(To open a folder named sttings, use ./sttings.)\n"
+
+      File.mkdir_p!(Path.join(context.project, "help"))
+      assert {0, _} = launch(context, ["./help"])
+      assert stub(context)["ROOT"] =~ "/help"
     end
   end
 
@@ -142,6 +215,133 @@ defmodule SwarmCodeCLI.Release.LauncherTest do
       # The command ran in the project, so the project is where it ran.
       assert log["ROOT"] == resolved(context.project, "-P")
       assert log["TUI"] == "<unset>"
+    end
+
+    # cli020 B1: piped stdin goes with the prompt; /dev/null and `-p -` never
+    # mark it (the release reads `-p -` itself).
+    test "a pipe or a file on stdin is marked for the prompt; /dev/null is not", context do
+      launch(context, ["-p", "hi"])
+      assert stub(context)["PIPED"] == "1"
+
+      file = Path.join(context.project, "input.txt")
+      File.write!(file, "diff")
+
+      for {redirect, expected} <- [{file, "1"}, {"/dev/null", "<unset>"}] do
+        System.cmd("bash", ["-c", "bash \"$1\" -p hi < \"$2\"", "_", context.launcher, redirect],
+          env: [{"STUB_LOG", context.log}, {"SWARM_STDIN_PIPED", "1"}],
+          cd: context.project
+        )
+
+        assert stub(context)["PIPED"] == expected, redirect
+      end
+
+      launch(context, ["-p", "-"])
+      assert stub(context)["PIPED"] == "<unset>"
+    end
+
+    test "--fail-on-denied is passed to the headless entry", context do
+      launch(context, ["-p", "hi", "--fail-on-denied", "--json"])
+
+      assert stub(context)["ARGS"] ==
+               "[eval] [SwarmCodeCLI.Release.main(System.argv())] [-p] [hi] [--json] [--fail-on-denied]"
+
+      launch(context, ["--plain", "--fail-on-denied"])
+      assert stub(context)["ARGS"] =~ "[--plain] [--fail-on-denied]"
+
+      assert {2, "ncode: --fail-on-denied goes with -p or --plain. Run 'ncode --help'.\n"} =
+               launch(context, ["--fail-on-denied"])
+    end
+
+    # cli020 B19: a prefix or a title passes to the release, which resolves it.
+    test "--resume takes a prefix or a title; bare --resume is the TUI's picker", context do
+      launch(context, ["-r", "Fix the login", "-p", "hi"])
+      assert stub(context)["CONVERSATION"] == "Fix the login"
+      launch(context, ["--resume", "7d01ac", "--plain"])
+      assert stub(context)["CONVERSATION"] == "7d01ac"
+
+      for args <- [["--resume", "-p", "hi"], ["--plain", "--resume"]] do
+        assert {2, output} = launch(context, args), inspect(args)
+
+        assert output ==
+                 "ncode: --resume needs an id or a title here; ncode --resume alone opens the picker. Run 'ncode --help'.\n"
+      end
+
+      assert {0, output} = tty(context, ["--resume"])
+      assert stub(context)["TUI"] == "1"
+      assert stub(context)["PICKER"] == "1"
+      assert stub(context)["CONVERSATION"] == "latest"
+      # cli020 B20 (onboarding-18): the startup line, no newline.
+      assert output =~ "Starting ncode…"
+      refute output =~ "Starting ncode…\r\n"
+
+      tty(context, [])
+      assert stub(context)["PICKER"] == "<unset>"
+    end
+
+    # cli020 B23 (competitors-4).
+    test "the other headless flags pass to the release; --approval is exported", context do
+      launch(context, [
+        "-p",
+        "hi",
+        "--output-format",
+        "stream-json",
+        "--max-turns",
+        "5",
+        "--max-budget-usd=0.25",
+        "--approval",
+        "full"
+      ])
+
+      log = stub(context)
+
+      assert log["ARGS"] ==
+               "[eval] [SwarmCodeCLI.Release.main(System.argv())] [-p] [hi] " <>
+                 "[--output-format] [stream-json] [--max-turns] [5] [--max-budget-usd] [0.25]"
+
+      assert log["APPROVAL"] == "full_access"
+
+      launch(context, ["-p", "hi", "--output-format", "json"], [
+        {"SWARM_HEADLESS_APPROVAL", "auto"}
+      ])
+
+      log = stub(context)
+      assert log["ARGS"] =~ "[-p] [hi] [--json]"
+      assert log["APPROVAL"] == "<unset>"
+
+      for {args, line} <- [
+            {["--max-turns", "2"], "--max-turns goes with -p."},
+            {["-p", "x", "--max-turns", "300"], "--max-turns needs a number from 1 to 200."},
+            {["-p", "x", "--max-budget-usd", "0.0"],
+             "--max-budget-usd needs an amount above 0 (in dollars)."},
+            {["-p", "x", "--approval", "yolo"], "--approval is read-only, auto or full."},
+            {["-p", "x", "--output-format", "xml"],
+             "--output-format is text, json or stream-json."}
+          ] do
+        assert {2, output} = launch(context, args), inspect(args)
+        assert output == "ncode: #{line} Run 'ncode --help'.\n"
+      end
+
+      {stdout, 2} =
+        System.cmd(
+          "bash",
+          [
+            "-c",
+            "bash \"$@\" 2>/dev/null",
+            "_",
+            context.launcher,
+            "-p",
+            "x",
+            "--output-format",
+            "stream-json",
+            "--max-turns",
+            "0"
+          ],
+          env: [{"STUB_LOG", context.log}],
+          cd: context.project
+        )
+
+      assert %{"exit_code" => 2, "state" => "not_started", "type" => "summary"} =
+               Jason.decode!(stdout)
     end
 
     test "the run's exit code is the command's", context do

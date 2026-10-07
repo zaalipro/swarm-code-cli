@@ -17,8 +17,11 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.ConversationSummary do
       live: :boolean,
       waiting: :count,
       unread: :boolean,
-      current: :boolean
+      current: :boolean,
+      # cli020 C19: the first line of its newest prompt (80 characters).
+      last_prompt: {:optional, {:text, 400}}
     ],
+    wire_defaults: [last_prompt: nil],
     defaults: [
       id: nil,
       title: "",
@@ -28,6 +31,7 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.ConversationSummary do
       live: false,
       waiting: 0,
       unread: false,
-      current: false
+      current: false,
+      last_prompt: nil
     ]
 end

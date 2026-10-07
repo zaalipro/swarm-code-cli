@@ -8,8 +8,8 @@ defmodule SwarmCode.Domain.Tools.CommandSafety do
   and stop reading. Three classes now:
 
     * `:safe` — reads something and writes nothing. `auto` and `full_access`
-      run it without asking. Never `read_only`: that mode still denies every
-      command, safe or not.
+      run it without asking. Never `read_only`: that mode asks before every
+      command, safe or not (pass 72 F1; it used to deny them).
     * `:normal` — today's behaviour, an approval in `auto`.
     * `:dangerous` — destroys, publishes or escalates. It asks in **every** mode,
       an "Always allow" of the `:execute` class cannot satisfy it, and its prefix

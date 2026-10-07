@@ -134,7 +134,7 @@ defmodule SwarmCodeCLI.UI.Settings.C74Qa2Test do
       assert sent(effects) == []
       assert state.settings.mode == :editing
       text = state |> lines() |> Enum.join("\n")
-      assert text =~ "╭─ Sub-agent model"
+      assert text =~ "╭─ Worker model"
 
       # the options arrive: the cursor is on the current value, not the null choice
       {state, _fake} = serve(state, loads, fake)

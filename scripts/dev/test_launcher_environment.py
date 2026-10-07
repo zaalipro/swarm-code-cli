@@ -80,6 +80,26 @@ print(json.dumps({key: os.environ.get(key) == value for key, value in expected.i
                     {'OPENAI_API_KEY': 'shell-key', 'SWARM_MODEL': 'shell-model'},
                     {'OPENAI_API_KEY': 'shell-key', 'SWARM_MODEL': 'shell-model'})
 
+    # cli020 B14 (bugs-13): an exported key no longer skips the whole file;
+    # each variable the shell does not set comes from it.
+    def test_exported_key_still_loads_the_rest_of_the_file(self):
+        self.launch('OPENAI_API_KEY=file-key\nNCODE_MODEL=file-model\nSWARM_KEYMAP=vim\n',
+                    {'OPENAI_API_KEY': 'shell-key'},
+                    {'OPENAI_API_KEY': 'shell-key', 'SWARM_MODEL': 'file-model',
+                     'NCODE_MODEL': 'file-model', 'SWARM_KEYMAP': 'vim'})
+
+    def test_a_missing_named_file_exits_2(self):
+        with tempfile.TemporaryDirectory(prefix='swarm-env-') as temporary:
+            env = {key: value for key, value in os.environ.items()
+                   if not key.startswith(('SWARM_', 'NCODE_', 'OPENAI_', 'ANTHROPIC_'))}
+            env['SWARM_ENV_FILE'] = str(Path(temporary) / 'missing.env')
+            for launcher in LAUNCHERS:
+                with self.subTest(launcher=launcher.name):
+                    result = subprocess.run(['bash', str(launcher)], env=env, cwd=ROOT,
+                                            capture_output=True, text=True, timeout=10)
+                    self.assertEqual(result.returncode, 2)
+                    self.assertIn('must point to an existing environment file', result.stderr)
+
 
 if __name__ == '__main__':
     unittest.main()

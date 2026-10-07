@@ -127,8 +127,11 @@ defmodule SwarmCodeCLI.Release.C74TerminalPreferencesTest do
   end
 
   describe "mouse, keymap, companion" do
+    # cli020 qa (D5, E26): with nothing set the wheel reports are off, so the
+    # activation writes `?1007h` (alternate scroll) and never `?1000h`.
     for {env, file, mouse?} <- [
-          {%{}, %{}, true},
+          {%{}, %{}, false},
+          {%{}, %{"mouse" => true}, true},
           {%{}, %{"mouse" => false}, false},
           {%{"SWARM_MOUSE" => "1"}, %{"mouse" => false}, true},
           {%{"SWARM_MOUSE" => "off"}, %{"mouse" => true}, false},

@@ -150,7 +150,8 @@ defmodule SwarmCodeCLI.UI.Keymap.Bindings do
       id: :run_palette,
       keys: [{"r", [:control]}],
       action: {:special, :run_palette},
-      contexts: [:composer, :main, :inspector, :picker, :field, :dialog],
+      # cli020 D19: not in the composer, where Ctrl-R searches the history.
+      contexts: [:main, :inspector, :picker, :field, :dialog],
       group: :layers,
       label: "Switch run",
       help: "Run palette; the same chord closes it",
@@ -441,6 +442,19 @@ defmodule SwarmCodeCLI.UI.Keymap.Bindings do
       help: "Stop the turn that is streaming; the draft stays",
       hint: [composer: 8]
     },
+    # cli020 D6 (decision 4b): the composer's Shift-Tab cycles the approval
+    # and plan modes through /approval and /plan; elsewhere Shift-Tab still
+    # moves focus back.
+    %Binding{
+      id: :cycle_permission_mode,
+      keys: [{:tab, [:shift]}, {:back_tab, []}],
+      action: {:cycle_permission_mode},
+      contexts: [:composer],
+      group: :session,
+      label: "Mode",
+      help: "Cycle Ask (read-only) → Auto → Plan",
+      hint: 0
+    },
     %Binding{
       id: :back,
       keys: [{:left, [:alt]}, {:backspace, []}],
@@ -682,6 +696,18 @@ defmodule SwarmCodeCLI.UI.Keymap.Bindings do
       help: "Open the run inspector over this run",
       hint: 2
     },
+    # cli020 D16 (ux-live-4): `r` in select mode retries the selected item's
+    # failed or stopped run; on anything else it types `r` as before.
+    %Binding{
+      id: :retry_selected,
+      keys: [{"r", []}],
+      action: {:special, :retry_selected},
+      contexts: [:main],
+      group: :act,
+      label: "Retry",
+      help: "Retry the selected failed or stopped run",
+      hint: 0
+    },
     %Binding{
       id: :copy_selected,
       keys: [{"y", []}],
@@ -912,7 +938,7 @@ defmodule SwarmCodeCLI.UI.Keymap.Bindings do
       id: :picker_previous,
       # No Ctrl-P alias: that chord is the palette everywhere, pickers included.
       keys: [{:up, []}],
-      action: {:focus_cycle, :previous},
+      action: {:special, :picker_previous},
       contexts: [:picker],
       group: :navigate,
       label: "Up",
@@ -1248,6 +1274,39 @@ defmodule SwarmCodeCLI.UI.Keymap.Bindings do
       help: "Insert a line break without sending (Ctrl-O or Ctrl-J)",
       hint: 7
     },
+    # cli020 D19 (competitors-19): Ctrl-R in the composer searches the
+    # prompts of this project; elsewhere it is still Switch run, and Ctrl-G
+    # opens Runs from the composer.
+    %Binding{
+      id: :history_search,
+      keys: [{"r", [:control]}],
+      action: :history_search,
+      contexts: [:composer],
+      group: :edit,
+      label: "History",
+      help: "Search your earlier prompts in this project"
+    },
+    # cli020 D11 (tui-code-15): Ctrl-L repaints the whole screen.
+    %Binding{
+      id: :redraw,
+      keys: [{"l", [:control]}],
+      action: :redraw_screen,
+      contexts: [:composer, :main],
+      group: :session,
+      label: "Redraw",
+      help: "Repaint the whole screen"
+    },
+    # cli020 D9 (decision 4i): text paste stays the terminal's own (Cmd-V,
+    # bracketed paste); Ctrl-V attaches the clipboard's image.
+    %Binding{
+      id: :paste_image,
+      keys: [{"v", [:control]}],
+      action: {:paste_image},
+      contexts: [:composer],
+      group: :edit,
+      label: "Paste image",
+      help: "Paste an image from the clipboard"
+    },
     %Binding{
       id: :external_editor,
       keys: [{"x", [:control]}],
@@ -1309,6 +1368,40 @@ defmodule SwarmCodeCLI.UI.Keymap.Bindings do
       group: :edit,
       label: "Del word",
       help: "Delete the word before the cursor",
+      hint: 0,
+      repeat: true
+    },
+    # cli020 D1 (tui-code-3): macOS Option-arrows arrive as ESC b / ESC f.
+    %Binding{
+      id: :composer_word_left,
+      keys: [{:left, [:alt]}, {:left, [:control]}, {"b", [:alt]}],
+      action: {:editor_op, {:move, :word_left}},
+      contexts: [:composer, :field, :overlay],
+      group: :edit,
+      label: "Word left",
+      help: "Word left/right (Option-←/→, Ctrl-←/→, Alt-b/f)",
+      hint: 0,
+      repeat: true
+    },
+    %Binding{
+      id: :composer_word_right,
+      keys: [{:right, [:alt]}, {:right, [:control]}, {"f", [:alt]}],
+      action: {:editor_op, {:move, :word_right}},
+      contexts: [:composer, :field, :overlay],
+      group: :edit,
+      label: "Word right",
+      help: "Word left/right (Option-←/→, Ctrl-←/→, Alt-b/f)",
+      hint: 0,
+      repeat: true
+    },
+    %Binding{
+      id: :composer_delete_word_forward,
+      keys: [{"d", [:alt]}, {:delete, [:alt]}],
+      action: {:editor_op, :delete_word_forward},
+      contexts: [:composer, :field, :overlay],
+      group: :edit,
+      label: "Del word fwd",
+      help: "Delete the word after the cursor (Option-Delete, Alt-d)",
       hint: 0,
       repeat: true
     },

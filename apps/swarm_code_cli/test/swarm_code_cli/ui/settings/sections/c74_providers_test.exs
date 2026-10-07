@@ -197,7 +197,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.C74ProvidersTest do
                "DeepSeek V4 · 3 levels"
 
       assert text(row(rows, "info:used_by").value) ==
-               "the chat default · the sub-agent default · 12 conversations · 2 scheduled tasks"
+               "the chat default · the worker default · 12 conversations · 2 scheduled tasks"
 
       # pass 75 (R27.3): the hero line reads the kind and the scope; who uses
       # the provider is its continuation line

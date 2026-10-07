@@ -99,6 +99,13 @@ pub enum Event {
         row: u16,
         modifiers: Modifiers,
     },
+    /// cli020 D5: with mouse reports off and alternate scroll (`CSI ? 1007 h`)
+    /// on, the terminal turns a wheel notch into arrow keys. One read made only
+    /// of two or more identical Up (or Down) arrows is the wheel, not keys.
+    Scroll {
+        up: bool,
+        count: u8,
+    },
 }
 impl fmt::Debug for Event {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -138,6 +145,11 @@ impl fmt::Debug for Event {
                 .field("column", column)
                 .field("row", row)
                 .field("modifiers", modifiers)
+                .finish(),
+            Self::Scroll { up, count } => f
+                .debug_struct("Scroll")
+                .field("up", up)
+                .field("count", count)
                 .finish(),
         }
     }
@@ -729,4 +741,81 @@ pub fn typeahead_enter(bytes: &mut [u8], cooked: usize) -> usize {
         }
     }
     cooked - take
+}
+
+/// cli020 D5: the most a single arrow burst reports as one Scroll.
+pub const MAX_SCROLL_COUNT: u8 = 32;
+
+/// cli020 D5: whether one terminal read is the wheel under alternate scroll:
+/// nothing but two or more identical `CSI A`/`CSI B` (or `SS3 A`/`SS3 B`)
+/// sequences. Returns `(up, count)` with the count capped at 32. A single
+/// arrow, a mix of directions or any other byte is ordinary input.
+pub fn arrow_burst(bytes: &[u8]) -> Option<(bool, u8)> {
+    if bytes.len() < 6 || bytes.len() % 3 != 0 {
+        return None;
+    }
+    let first = &bytes[..3];
+    let up = match first {
+        b"\x1b[A" | b"\x1bOA" => true,
+        b"\x1b[B" | b"\x1bOB" => false,
+        _ => return None,
+    };
+    if !bytes.chunks(3).all(|chunk| chunk == first) {
+        return None;
+    }
+    let count = (bytes.len() / 3).min(usize::from(MAX_SCROLL_COUNT)) as u8;
+    Some((up, count))
+}
+
+/// cli020 D2: what the start-up keyboard probe found in the bytes read so far.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ProbeReplies {
+    /// The kitty keyboard protocol answered `CSI ? <flags> u`.
+    pub kitty_flags: Option<u8>,
+    /// The primary device attributes answered (`CSI ? … c`): the probe is over.
+    pub attributes: bool,
+}
+
+/// cli020 D2: removes the answers to the start-up probe (`CSI ? u` then
+/// `CSI c`) from `bytes`, in place, so they never become keys, and keeps every
+/// other byte (typeahead) in order. Returns the new length and what was seen.
+/// An answer split across reads stays in the buffer until it is complete.
+pub fn take_probe_replies(bytes: &mut [u8]) -> (usize, ProbeReplies) {
+    let mut found = ProbeReplies::default();
+    let mut read = 0;
+    let mut write = 0;
+    while read < bytes.len() {
+        if let Some((length, final_byte, value)) = probe_reply(&bytes[read..]) {
+            match final_byte {
+                b'u' => found.kitty_flags = Some(value),
+                _ => found.attributes = true,
+            }
+            read += length;
+            continue;
+        }
+        bytes[write] = bytes[read];
+        write += 1;
+        read += 1;
+    }
+    (write, found)
+}
+
+// `ESC [ ? <digits ; :> u|c`, complete. The value is the first field (the
+// kitty flags), saturated to u8.
+fn probe_reply(bytes: &[u8]) -> Option<(usize, u8, u8)> {
+    if !bytes.starts_with(b"\x1b[?") {
+        return None;
+    }
+    let mut value: u32 = 0;
+    let mut first = true;
+    for (index, byte) in bytes.iter().enumerate().skip(3).take(MAX_SEQUENCE_BYTES) {
+        match byte {
+            b'0'..=b'9' if first => value = (value * 10 + u32::from(byte - b'0')).min(255),
+            b'0'..=b'9' => (),
+            b';' | b':' => first = false,
+            b'u' | b'c' => return Some((index + 1, *byte, value as u8)),
+            _ => return None,
+        }
+    }
+    None
 }
