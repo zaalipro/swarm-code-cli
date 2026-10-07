@@ -6,7 +6,7 @@ defmodule SwarmCode.Domain.Conversations do
 
   require Logger
 
-  alias SwarmCode.Domain.Conversations.{Conversation, Goal, Message, Node, Run}
+  alias SwarmCode.Domain.Conversations.{Conversation, Goal, LaunchPairing, Message, Node, Run}
   alias SwarmCode.Domain.Engine
   alias SwarmCode.Domain.Projects
   alias SwarmCode.Domain.Repo
@@ -28,6 +28,31 @@ defmodule SwarmCode.Domain.Conversations do
 
   # spec 60 T19: what the history window loads — never `reasoning`, the persisted
   # extended thinking every turn start used to read and discard.
+  # spec 74 EFFICIENCY-3: the columns the sidebar reads from a listed row
+  # (Frame's conv_row, project_nodes, matches?, row_statuses, unread_markers;
+  # WorkspaceLive's conv_map_and_loose and reload_sidebar). `inserted_at` is
+  # left out on purpose: a nil there marks a projected row, which `update/2`
+  # re-reads before it writes and broadcasts.
+  @sidebar_row_fields ~w(id project_id title pinned_at scheduled_task_id updated_at last_seen_at queued research_id)a
+
+  # spec 74 EFFICIENCY-14: the columns the sidebar renders or filters on. A
+  # write that changes one of them re-lists every window's sidebar.
+  @nav_fields ~w(title project_id pinned_at research_id scheduled_task_id queued)a
+
+  # spec 74 UX-12: per-conversation settings. A write that changes only these
+  # keeps `updated_at` and sends no list broadcast.
+  @settings_fields ~w(mode chat_provider_id chat_model swarm_provider_id swarm_model effort
+                      swarm_effort ultra authoring_workflow consensus consensus_checks
+                      consensus_rounds judge_provider_id judge_model judge_effort
+                      implementer_provider_id implementer_model implementer_effort
+                      validator_provider_id validator_model validator_effort compact_due)a
+
+  # SQLite's default SQLITE_MAX_VARIABLE_NUMBER is 32 766; stay below it. Not
+  # the 900 spec 74 suggests: at 2 000 conversations three chunks measured
+  # 26–28 ms against 20 ms for the one query, and one query is what every
+  # sidebar below the cliff runs today.
+  @id_chunk 30_000
+
   @history_fields ~w(id conversation_id role content run_id reply_to_run_id position attachments research_ids superseded_at inserted_at updated_at)a
 
   @doc """
@@ -84,12 +109,16 @@ defmodule SwarmCode.Domain.Conversations do
   §1.10): `list_for_project/1`'s predicate without the project filter. Callers
   group by `project_id` in Elixir (`Enum.group_by(& &1.project_id)`).
   """
+  #
+  # spec 74 EFFICIENCY-3: projected to the columns the sidebar reads
+  # (`@sidebar_row_fields`); a row taken from it is re-read by `update/2`.
   @spec list_visible() :: [Conversation.t()]
   def list_visible do
     Repo.all(
       from(c in Conversation,
         where: is_nil(c.research_id),
-        order_by: [desc: :updated_at]
+        order_by: [desc: :updated_at],
+        select: struct(c, ^@sidebar_row_fields)
       )
     )
   end
@@ -187,24 +216,62 @@ defmodule SwarmCode.Domain.Conversations do
 
   def latest_run_rows([]), do: %{}
 
+  # spec 74 EFFICIENCY-3: one `?` per id, so past 32 766 conversations the
+  # single IN list raised and the workspace could not mount. Chunked; the
+  # groups are per conversation, so the merged map is the same.
   def latest_run_rows(conversations) when is_list(conversations) do
-    ids = Enum.map(conversations, & &1.id)
-
-    Repo.all(
-      from(r in Run,
-        where: r.conversation_id in ^ids,
-        group_by: r.conversation_id,
-        # SQLite's bare-column rule: with max() in the select list, the
-        # non-aggregated columns come from the row that holds the maximum
-        # (spec 51 §1.10) — one row per conversation instead of every run.
-        # Not portable; this app has one database.
-        select: {r.conversation_id, r.status, r.finished_at, max(r.started_at)}
+    conversations
+    |> Enum.map(& &1.id)
+    |> Enum.uniq()
+    |> Enum.chunk_every(@id_chunk)
+    |> Enum.reduce(%{}, fn ids, acc ->
+      Repo.all(
+        from(r in Run,
+          where: r.conversation_id in ^ids,
+          group_by: r.conversation_id,
+          # SQLite's bare-column rule: with max() in the select list, the
+          # non-aggregated columns come from the row that holds the maximum
+          # (spec 51 §1.10) — one row per conversation instead of every run.
+          # Not portable; this app has one database.
+          select: {r.conversation_id, r.status, r.finished_at, max(r.started_at)}
+        )
       )
-    )
-    |> Map.new(fn {id, status, finished_at, _started_at} -> {id, {status, finished_at}} end)
+      |> Enum.reduce(acc, fn {id, status, finished_at, _started_at}, acc ->
+        Map.put(acc, id, {status, finished_at})
+      end)
+    end)
   end
 
   def latest_run_rows(_conversations), do: %{}
+
+  @doc """
+  `latest_run_rows/1` for every row `list_visible/0` returns, with no bound
+  id list (spec 74 EFFICIENCY-3): no parameter per conversation, whatever
+  their number.
+
+  Spec 74 UI-SPEED-9 step 3: one seek per visible conversation on
+  `runs_conversation_id_started_at_desc_index` (a correlated `LIMIT 1`
+  subquery) instead of grouping every run of every conversation. Two runs
+  started in the same microsecond are ordered by `id`, the higher one being
+  the newest — the grouped `max()` left that choice to SQLite.
+  """
+  @spec latest_run_rows_visible() :: %{String.t() => {String.t(), DateTime.t() | nil}}
+  def latest_run_rows_visible do
+    Repo.all(
+      from(c in Conversation,
+        join: r in Run,
+        on:
+          r.id ==
+            fragment(
+              "(SELECT r2.id FROM runs AS r2 WHERE r2.conversation_id = ? ORDER BY r2.started_at DESC, r2.id DESC LIMIT 1)",
+              c.id
+            ),
+        where: is_nil(c.research_id),
+        select: {c.id, r.status, r.finished_at}
+      )
+    )
+    |> Map.new(fn {id, status, finished_at} -> {id, {status, finished_at}} end)
+  end
 
   defp unread?(_seen, nil), do: false
   defp unread?(nil, _finished), do: true
@@ -370,15 +437,59 @@ defmodule SwarmCode.Domain.Conversations do
     end
   end
 
-  def update(%Conversation{} = conversation, attrs) do
-    case conversation |> Conversation.changeset(attrs) |> Repo.update() do
-      {:ok, conversation} ->
-        broadcast(conversation.id, {:conversation_updated, conversation})
-        Projects.broadcast()
-        {:ok, conversation}
+  # spec 74 EFFICIENCY-3: a row from the projected `list_visible/0` (no
+  # `inserted_at`) is re-read first, so the broadcast carries the whole row.
+  def update(%Conversation{id: id, inserted_at: nil}, attrs) when is_binary(id) do
+    case get(id) do
+      %Conversation{} = full -> update(full, attrs)
+      nil -> {:error, :not_found}
+    end
+  end
 
-      {:error, changeset} ->
-        {:error, changeset}
+  def update(%Conversation{} = conversation, attrs) do
+    changeset = Conversation.changeset(conversation, attrs)
+    changed = Map.keys(changeset.changes)
+
+    if changeset.valid? and changed != [] and Enum.all?(changed, &(&1 in @settings_fields)) do
+      quiet_update(conversation, changeset)
+    else
+      case Repo.update(changeset) do
+        {:ok, conversation} ->
+          broadcast(conversation.id, {:conversation_updated, conversation})
+          # spec 74 EFFICIENCY-14: every window re-lists its sidebar only when a
+          # column the sidebar shows or filters on changed — and a conversation
+          # write never invalidates the engine's project cache.
+          if Enum.any?(changed, &(&1 in @nav_fields)), do: Projects.broadcast_list()
+          {:ok, conversation}
+
+        {:error, changeset} ->
+          {:error, changeset}
+      end
+    end
+  end
+
+  # spec 74 EFFICIENCY-14 / UX-12 (decision EFF-D7 = UX-D8, accepted): a model,
+  # effort, mode or consensus pick is not activity. `update_all` leaves
+  # `updated_at` alone — the row keeps its sidebar place and its "3 h ago" in
+  # every window — and the re-read is the row as stored (the held struct may be
+  # older than the row: `touch/1` writes `updated_at` with `update_all` too).
+  defp quiet_update(conversation, changeset) do
+    set = Map.to_list(changeset.changes)
+
+    case Repo.update_all(from(c in Conversation, where: c.id == ^conversation.id), set: set) do
+      {1, _} ->
+        case Repo.get(Conversation, conversation.id) do
+          %Conversation{} = fresh ->
+            fresh = %{fresh | project: conversation.project}
+            broadcast(fresh.id, {:conversation_updated, fresh})
+            {:ok, fresh}
+
+          nil ->
+            {:error, Ecto.Changeset.add_error(changeset, :id, "no longer exists")}
+        end
+
+      {0, _} ->
+        {:error, Ecto.Changeset.add_error(changeset, :id, "no longer exists")}
     end
   end
 
@@ -455,6 +566,33 @@ defmodule SwarmCode.Domain.Conversations do
   end
 
   @doc """
+  spec 74 BUGS-10: takes the flag `mark_compact_due/1` raised — true for
+  exactly one caller. `Engine.start_chat_turn/4` used to read `compact_due`
+  from the struct the window handed it, which the window never refreshes
+  (the flag is written without a broadcast), so an open window never compacted
+  and a window mounted with the flag set compacted on every send. The row is
+  the only truth, and the conditional UPDATE makes two windows sending at once
+  compact once.
+
+  The common case (no flag) is one indexed read and takes no write lock; a
+  busy database counts as "not claimed" — the flag stays for the next send.
+  """
+  @spec claim_compact_due(String.t() | Conversation.t()) :: boolean()
+  def claim_compact_due(%Conversation{id: id}), do: claim_compact_due(id)
+
+  def claim_compact_due(id) when is_binary(id) do
+    due = from(c in Conversation, where: c.id == ^id and c.compact_due == true)
+
+    with true <- Repo.exists?(due),
+         {1, _} <-
+           Repo.retry(:compact_due, fn -> Repo.update_all(due, set: [compact_due: false]) end) do
+      true
+    else
+      _ -> false
+    end
+  end
+
+  @doc """
   Bumps `updated_at` and broadcasts the row as it is *now* (spec 51 §1.5).
   The RunServer hands in the struct it was given at run start; a rename or a
   mode flip during the run must not snap back when the run finishes, so the
@@ -495,11 +633,30 @@ defmodule SwarmCode.Domain.Conversations do
 
     if match?({:ok, _}, result) do
       SwarmCode.Domain.UIState.delete(conversation.id)
+      broadcast_deleted(conversation.id)
     end
 
     Projects.broadcast()
     result
   end
+
+  @doc """
+  The data layer's delete notice (spec 74 ARCHITECTURE-21): `{:conversation_deleted, id}`
+  on the `"conversations"` topic, after a successful delete. Web-side caches
+  (UIState, MarkdownCache) can subscribe and evict there instead of being
+  called from here; until they do, `delete/1` still calls them directly.
+  """
+  @spec deleted_topic() :: String.t()
+  def deleted_topic, do: "conversations"
+
+  @doc false
+  def broadcast_deleted(conversation_id),
+    do:
+      SwarmCode.Domain.PubSub.broadcast(
+        SwarmCode.Domain.PubSub,
+        deleted_topic(),
+        {:conversation_deleted, conversation_id}
+      )
 
   def list_messages(conversation_id) do
     Repo.all(
@@ -508,6 +665,53 @@ defmodule SwarmCode.Domain.Conversations do
         order_by: [asc: m.position, asc: m.inserted_at]
       )
     )
+  end
+
+  @transcript_fields Message.__schema__(:fields) -- [:reasoning]
+
+  @doc """
+  `list_messages/1` for the transcript (spec 74 EFFICIENCY-33): every column
+  but `reasoning`, which stays `nil`, plus the virtual `has_reasoning`. The
+  disclosure fetches the text with `message_reasoning/1` (or
+  `messages_reasoning/1` for a window) when it is shown. `fork/2` and Export
+  keep their own readers.
+  """
+  @spec list_transcript(String.t()) :: [Message.t()]
+  def list_transcript(conversation_id) do
+    Repo.all(
+      from(m in Message,
+        where: m.conversation_id == ^conversation_id,
+        order_by: [asc: m.position, asc: m.inserted_at],
+        select: %{
+          struct(m, ^@transcript_fields)
+          | has_reasoning:
+              type(fragment("coalesce(octet_length(?), 0) > 0", m.reasoning), :boolean)
+        }
+      )
+    )
+  end
+
+  @doc "One message's reasoning, or nil (spec 74 EFFICIENCY-33)."
+  @spec message_reasoning(String.t()) :: String.t() | nil
+  def message_reasoning(id) when is_binary(id),
+    do: Repo.one(from(m in Message, where: m.id == ^id, select: m.reasoning))
+
+  @doc "The reasoning of the messages in `ids` that have any, as `%{id => text}`."
+  @spec messages_reasoning([String.t()]) :: %{String.t() => String.t()}
+  def messages_reasoning([]), do: %{}
+
+  def messages_reasoning(ids) when is_list(ids) do
+    ids
+    |> Enum.chunk_every(500)
+    |> Enum.flat_map(fn chunk ->
+      Repo.all(
+        from(m in Message,
+          where: m.id in ^chunk and not is_nil(m.reasoning) and m.reasoning != "",
+          select: {m.id, m.reasoning}
+        )
+      )
+    end)
+    |> Map.new()
   end
 
   # spec 68 T5: targeted query for the assistant message of a specific run,
@@ -604,7 +808,7 @@ defmodule SwarmCode.Domain.Conversations do
           # in both selects, so the budget and the load agree.
           where: m.conversation_id == ^conversation_id and is_nil(m.superseded_at),
           order_by: [desc: m.position, desc: m.inserted_at],
-          select: {m.id, fragment("length(CAST(? AS BLOB))", m.content)},
+          select: {m.id, fragment("coalesce(octet_length(?), 0)", m.content)},
           limit: ^row_limit
         )
       )
@@ -780,15 +984,14 @@ defmodule SwarmCode.Domain.Conversations do
 
   # Legacy rows only (spec 52 §1.2): before pass 13 a user message did not carry
   # its `run_id`, so the run that message launched is found the way the
-  # transcript pairs them — `Chat.launch_messages/3` inverted. The mix task
-  # `swarm_code.repair_launches` calls the same function from outside the web
-  # layer.
+  # transcript pairs them — the pairing inverted. spec 74 ARCHITECTURE-21: the
+  # fold lives in the data layer (`LaunchPairing.pair/3`), not in `Chat`.
   defp legacy_run_id(conv_id, %Message{} = message) do
     messages = list_messages(conv_id)
     runs = list_runs(conv_id)
 
     messages
-    |> SwarmCode.Domain.Chat.launch_messages(runs, %{})
+    |> LaunchPairing.pair(runs, %{})
     |> Enum.find_value(fn {run_id, m} -> is_map(m) and m.id == message.id and run_id end)
   end
 
@@ -827,7 +1030,11 @@ defmodule SwarmCode.Domain.Conversations do
       judge_effort: conversation.judge_effort,
       implementer_provider_id: conversation.implementer_provider_id,
       implementer_model: conversation.implementer_model,
-      implementer_effort: conversation.implementer_effort
+      implementer_effort: conversation.implementer_effort,
+      # Spec 75 (pass 71): the validator travels with the other model picks.
+      validator_provider_id: conversation.validator_provider_id,
+      validator_model: conversation.validator_model,
+      validator_effort: conversation.validator_effort
     }
 
     # spec 36 §A5: one transaction. The message copies used to be an
@@ -892,7 +1099,27 @@ defmodule SwarmCode.Domain.Conversations do
   """
   @spec interrupted_run(String.t()) :: {Run.t(), [String.t()]} | nil
   def interrupted_run(conversation_id) do
-    case list_runs(conversation_id) do
+    # spec 74 EFFICIENCY-32: only the head run matters — one row, not the list.
+    head =
+      Repo.all(
+        from(r in Run,
+          where: r.conversation_id == ^conversation_id,
+          order_by: [desc: :started_at],
+          limit: 1
+        )
+      )
+
+    interrupted_run(conversation_id, head)
+  end
+
+  @doc """
+  `interrupted_run/1` over runs the caller already holds, newest first (the
+  order of `list_runs/1`), so opening a conversation reads the runs once
+  (spec 74 EFFICIENCY-32).
+  """
+  @spec interrupted_run(String.t(), [Run.t()]) :: {Run.t(), [String.t()]} | nil
+  def interrupted_run(_conversation_id, runs) when is_list(runs) do
+    case runs do
       [%Run{status: "stopped", interrupted: true} = run | _] ->
         titles =
           Repo.all(
@@ -944,6 +1171,15 @@ defmodule SwarmCode.Domain.Conversations do
     end
   end
 
+  @doc "Whether messages wait in the queue — a plain read, no transaction (spec 74 EFFICIENCY-15)."
+  @spec queued?(String.t()) :: boolean()
+  def queued?(id) when is_binary(id) do
+    case Repo.one(from(c in Conversation, where: c.id == ^id, select: c.queued)) do
+      [_ | _] -> true
+      _empty -> false
+    end
+  end
+
   @doc """
   Takes the head of `queued` in one IMMEDIATE transaction (spec 60 T64).
 
@@ -980,6 +1216,70 @@ defmodule SwarmCode.Domain.Conversations do
 
       {:ok, :empty} ->
         :empty
+
+      _busy ->
+        {:error, :database_busy}
+    end
+  end
+
+  @doc """
+  Appends `text` to the stored queue in one IMMEDIATE transaction (spec 74
+  BUGS-67): every window pops, appends and removes, so the edit is made against
+  the row, never a view's copy.
+  """
+  @spec append_queued(String.t(), String.t()) ::
+          {:ok, Conversation.t()} | {:error, :not_found | :database_busy}
+  def append_queued(id, text) when is_binary(id) and is_binary(text),
+    do: edit_queued(:append_queued, id, fn queued -> {:ok, queued ++ [text]} end)
+
+  @doc """
+  Removes the item at `index` only while it is still `expected` (spec 74
+  BUGS-67) — another window may have popped or removed since the chip was
+  drawn.
+  """
+  @spec remove_queued(String.t(), non_neg_integer(), String.t()) ::
+          {:ok, Conversation.t()} | {:error, :stale | :not_found | :database_busy}
+  def remove_queued(id, index, expected) when is_binary(id) and is_integer(index) do
+    edit_queued(:remove_queued, id, fn queued ->
+      if Enum.at(queued, index) == expected,
+        do: {:ok, List.delete_at(queued, index)},
+        else: {:error, :stale}
+    end)
+  end
+
+  @doc "Puts `text` back at the head of the stored queue (spec 74 BUGS-67)."
+  @spec requeue_head(String.t(), String.t()) ::
+          {:ok, Conversation.t()} | {:error, :not_found | :database_busy}
+  def requeue_head(id, text) when is_binary(id) and is_binary(text),
+    do: edit_queued(:requeue_head, id, fn queued -> {:ok, [text | queued]} end)
+
+  defp edit_queued(label, id, fun) do
+    outcome =
+      Repo.retry(label, fn ->
+        Repo.transaction(
+          fn ->
+            with %Conversation{} = conversation <- Repo.get(Conversation, id),
+                 {:ok, queued} <- fun.(conversation.queued || []) do
+              {:ok, updated} =
+                conversation |> Conversation.changeset(%{queued: queued}) |> Repo.update()
+
+              {:ok, Repo.preload(updated, :project)}
+            else
+              nil -> {:error, :not_found}
+              {:error, reason} -> {:error, reason}
+            end
+          end,
+          mode: :immediate
+        )
+      end)
+
+    case outcome do
+      {:ok, {:ok, conversation}} ->
+        broadcast(conversation.id, {:conversation_updated, conversation})
+        {:ok, conversation}
+
+      {:ok, {:error, reason}} ->
+        {:error, reason}
 
       _busy ->
         {:error, :database_busy}
@@ -1248,15 +1548,17 @@ defmodule SwarmCode.Domain.Conversations do
   last `days` days and capped at `limit` rows.
 
   Options: `:days` (default 30, `nil` for everything), `:limit` (default 50,
-  `nil` for everything).
+  `nil` for everything), `:before` — spec 74 EFFICIENCY-61: the
+  `{started_at, id}` of the last row shown, for the next keyset page.
   """
   @spec usage_rows(keyword()) :: [map()]
   def usage_rows(opts \\ []) do
     Run
     |> usage_scope(opts)
+    |> usage_before(Keyword.get(opts, :before))
     |> join(:inner, [r], c in Conversation, on: c.id == r.conversation_id)
     |> join(:left, [r, c], p in SwarmCode.Domain.Projects.Project, on: p.id == c.project_id)
-    |> order_by([r], desc: r.started_at)
+    |> order_by([r], desc: r.started_at, desc: r.id)
     |> select([r, c, p], %{
       id: r.id,
       conversation_id: r.conversation_id,
@@ -1314,6 +1616,21 @@ defmodule SwarmCode.Domain.Conversations do
         since = DateTime.add(DateTime.utc_now(), -days * 86_400, :second)
         where(query, [r], r.started_at >= ^since)
     end
+  end
+
+  # spec 74 EFFICIENCY-61: rows strictly after `{at, id}` in `started_at desc,
+  # id desc` order (a NULL `started_at` sorts last).
+  defp usage_before(query, nil), do: query
+
+  defp usage_before(query, {nil, id}),
+    do: where(query, [r], is_nil(r.started_at) and r.id < ^id)
+
+  defp usage_before(query, {at, id}) do
+    where(
+      query,
+      [r],
+      r.started_at < ^at or (r.started_at == ^at and r.id < ^id) or is_nil(r.started_at)
+    )
   end
 
   defp maybe_limit(query, nil), do: query
@@ -1399,6 +1716,26 @@ defmodule SwarmCode.Domain.Conversations do
     Repo.all(from(n in Node, where: n.run_id == ^run_id, order_by: [asc: :position]))
   end
 
+  @node_light_fields Node.__schema__(:fields) -- [:prompt, :result, :input]
+
+  @doc """
+  The first node of `run_id` (in position order) whose id or branch is
+  `id_or_branch`, without its prompt, result and input — one narrow read
+  instead of `list_nodes/1` plus a scan (spec 74 EFFICIENCY-49, workflow
+  `integrate/1`).
+  """
+  @spec find_run_node(String.t(), String.t()) :: Node.t() | nil
+  def find_run_node(run_id, id_or_branch) do
+    Repo.one(
+      from(n in Node,
+        where: n.run_id == ^run_id and (n.id == ^id_or_branch or n.branch == ^id_or_branch),
+        order_by: [asc: n.position],
+        limit: 1,
+        select: struct(n, ^@node_light_fields)
+      )
+    )
+  end
+
   @doc """
   All nodes for the requested runs, keyed by run id in position order.
 
@@ -1470,8 +1807,14 @@ defmodule SwarmCode.Domain.Conversations do
   # The literal list mirrors `Node.whole_ops/0`; SQLite's `substr` counts
   # characters on TEXT, matching `String.slice/3`. A nil `op_type` is cut like
   # any other tool op (`coalesce`), as `Node.light/1`'s guard does.
+  #
+  # spec 74 EFFICIENCY-1: the query selects every column but the two blobs, then
+  # merges the cut ones. Without the explicit `select`, the generated SQL read
+  # the full `result` and `input` next to the CASE columns (2.2–3.6× the bytes
+  # through the NIF), and Ecto then dropped them.
   defp node_shape(query, :light) do
     from(n in query,
+      select: struct(n, ^light_node_fields()),
       select_merge: %{
         result:
           fragment(
@@ -1489,6 +1832,29 @@ defmodule SwarmCode.Domain.Conversations do
             n.input
           )
       }
+    )
+  end
+
+  defp light_node_fields, do: Node.__schema__(:fields) -- [:result, :input]
+
+  @doc """
+  The window of one op's result an expanded op row shows (spec 74
+  EFFICIENCY-27): the first `chars` characters (SQLite `substr`, like
+  `String.slice/3`) and the stored size in bytes, read on demand so the
+  light node the wire and the assigns carry can keep a preview only.
+  `nil` when the node is gone.
+  """
+  @spec op_window(String.t(), pos_integer()) ::
+          %{result: String.t() | nil, result_bytes: non_neg_integer()} | nil
+  def op_window(op_id, chars \\ 4_000) when is_binary(op_id) do
+    Repo.one(
+      from(n in Node,
+        where: n.id == ^op_id,
+        select: %{
+          result: fragment("substr(?, 1, ?)", n.result, ^chars),
+          result_bytes: fragment("coalesce(octet_length(?), 0)", n.result)
+        }
+      )
     )
   end
 
@@ -1582,15 +1948,30 @@ defmodule SwarmCode.Domain.Conversations do
 
   @doc "Agent nodes of `conversation_id` that still have an unmerged branch."
   def agent_branches(conversation_id) do
+    # spec 74 EFFICIENCY-32: the Branches tab shows the name and the stat; the
+    # prompt and result stayed in `@changes` for nothing. Merge/Discard re-read
+    # the full node (`own_branch`). At most 100; `agent_branch_count/1` counts all.
     Repo.all(
-      from(n in Node,
-        join: r in Run,
-        on: r.id == n.run_id,
-        where:
-          r.conversation_id == ^conversation_id and not is_nil(n.branch) and
-            n.integrated == false,
-        order_by: [desc: n.started_at]
+      from(n in agent_branch_query(conversation_id),
+        order_by: [desc: n.started_at],
+        limit: 100,
+        select: map(n, [:id, :run_id, :branch, :changes_stat, :started_at])
       )
+    )
+  end
+
+  @doc "How many unintegrated agent branches the conversation has (spec 74 EFFICIENCY-32)."
+  @spec agent_branch_count(String.t()) :: non_neg_integer()
+  def agent_branch_count(conversation_id),
+    do: Repo.aggregate(agent_branch_query(conversation_id), :count)
+
+  defp agent_branch_query(conversation_id) do
+    from(n in Node,
+      join: r in Run,
+      on: r.id == n.run_id,
+      where:
+        r.conversation_id == ^conversation_id and n.kind == "agent" and not is_nil(n.branch) and
+          n.integrated == false
     )
   end
 
@@ -1690,19 +2071,30 @@ defmodule SwarmCode.Domain.Conversations do
       set: [status: "stopped", detail: "interrupted by restart", finished_at: now]
     )
 
-    # Spec 12 §7: a settled node without an end has no length, and the Timeline
-    # would draw it as still running since its start. Its last write is the
-    # honest end.
-    Repo.update_all(
-      from(n in Node,
-        # spec 68 T25
-        where: is_nil(n.finished_at) and n.status in ["done", "failed", "stopped"],
-        update: [set: [finished_at: n.updated_at]]
-      ),
-      []
-    )
-
     {:ok, length(wf_ids)}
+  end
+
+  @doc """
+  Spec 12 §7: a settled node without an end has no length, and the Timeline
+  would draw it as still running since its start. Its last write is the
+  honest end (spec 68 T25).
+
+  spec 74 EFFICIENCY-23: a legacy repair — a full `nodes` scan that finds
+  nothing after its first run — so it left `mark_interrupted/0` (the window's
+  critical path) for `Bootstrap`'s deferred task. Idempotent; no index.
+  """
+  @spec repair_unfinished_nodes() :: {:ok, non_neg_integer()}
+  def repair_unfinished_nodes do
+    {count, _} =
+      Repo.update_all(
+        from(n in Node,
+          where: is_nil(n.finished_at) and n.status in ["done", "failed", "stopped"],
+          update: [set: [finished_at: n.updated_at]]
+        ),
+        []
+      )
+
+    {:ok, count}
   end
 
   # Workflow runs the database still believes are alive. Nothing runs at boot,
@@ -1794,8 +2186,8 @@ defmodule SwarmCode.Domain.Conversations do
 
   @doc """
   Full-text search over message content. Returns conversations whose
-  messages match `query`, newest first, with a snippet of the matching
-  message. Limited to `limit` results (default 20).
+  messages match `query`, best match first, one entry per conversation, with a
+  snippet of its best-matching message. Limited to `limit` results (default 20).
   """
   # spec 70 D5
   @spec search(String.t(), keyword()) :: [
@@ -1813,57 +2205,78 @@ defmodule SwarmCode.Domain.Conversations do
     if safe_q == "" do
       []
     else
-      # spec 70 D5: matches are over-fetched by 4x and deduplicated per
-      # conversation in Elixir, because snippet() cannot ride a GROUP BY.
-      # spec 73 T37/T39: the excerpt is FTS5's own `snippet()` — computed in
-      # SQL over the tokens, so `m.content` (tens to hundreds of KB per
-      # assistant message) never crosses the wire and no byte offset is ever
-      # fed to a grapheme API; the hand-rolled `make_snippet/2` put the
-      # excerpt in the wrong place as soon as a multi-byte character preceded
-      # the hit. Query at hand joins and orders without a subquery, which is
-      # where snippet() is allowed. spec 73 T38: an edited-and-resent turn is
-      # superseded and excluded, as every other history read excludes it.
-      fetch_limit = limit * 4
-
-      sql = """
-      SELECT m.conversation_id, c.title,
-             snippet(messages_fts, 0, '', '', '...', 20), c.updated_at
+      # spec 74 BUGS-43: one row per conversation in SQL. The spec 70 D5
+      # over-fetch (4x, deduplicated in Elixir) let one chatty conversation
+      # fill every slot. SQLite's bare-column rule: with MIN() in the select
+      # list, `messages_fts.rowid` comes from the best-ranked row of the group.
+      # spec 73 T38: an edited-and-resent turn is superseded and excluded.
+      winners_sql = """
+      SELECT m.conversation_id, c.title, c.updated_at, messages_fts.rowid,
+             MIN(messages_fts.rank) AS r
       FROM messages_fts
       JOIN messages m ON m.rowid = messages_fts.rowid
       JOIN conversations c ON c.id = m.conversation_id
       WHERE messages_fts MATCH ?1
         AND c.research_id IS NULL
         AND m.superseded_at IS NULL
-      ORDER BY rank
+      GROUP BY m.conversation_id
+      ORDER BY r
       LIMIT ?2
       """
 
-      case Repo.query(sql, [safe_q, fetch_limit]) do
-        {:ok, %{rows: rows}} ->
-          rows
-          |> Enum.uniq_by(fn [conv_id | _] -> conv_id end)
-          |> Enum.take(limit)
-          |> Enum.map(fn [id, title, snippet, updated_at] ->
-            %{
-              conversation_id: id,
-              title: title || "Untitled",
-              snippet: snippet || "",
-              updated_at: updated_at
-            }
-          end)
+      with {:ok, %{rows: [_ | _] = rows}} <- Repo.query(winners_sql, [safe_q, limit]) do
+        snippets = search_snippets(safe_q, Enum.map(rows, &Enum.at(&1, 3)))
 
-        _ ->
-          []
+        Enum.map(rows, fn [id, title, updated_at, rowid, _rank] ->
+          %{
+            conversation_id: id,
+            title: title || "Untitled",
+            snippet: Map.get(snippets, rowid) || "",
+            updated_at: updated_at
+          }
+        end)
+      else
+        _ -> []
       end
     end
   end
 
+  # spec 73 T37/T39: the excerpt is FTS5's own `snippet()` — computed in SQL
+  # over the tokens, so `m.content` never crosses the wire. snippet() cannot
+  # ride the GROUP BY above, so it runs over the winning rows only.
+  defp search_snippets(safe_q, rowids) do
+    placeholders = Enum.map_join(2..(length(rowids) + 1)//1, ", ", &"?#{&1}")
+
+    sql = """
+    SELECT messages_fts.rowid, snippet(messages_fts, 0, '', '', '...', 20)
+    FROM messages_fts
+    WHERE messages_fts MATCH ?1 AND messages_fts.rowid IN (#{placeholders})
+    """
+
+    case Repo.query(sql, [safe_q | rowids]) do
+      {:ok, %{rows: rows}} -> Map.new(rows, fn [rowid, snippet] -> {rowid, snippet} end)
+      _ -> %{}
+    end
+  end
+
+  # spec 74 BUGS-43: unicode61 indexes `workspace_live.ex` as `workspace live
+  # ex`, so each typed word becomes the phrase of its word runs
+  # (`"workspace_live ex"`, `"SwarmCode Engine"`, `"api v1"`), and the last
+  # phrase is a prefix match for as-you-type search (`"helpe"*`).
   defp sanitize_fts(query) do
-    query
-    |> String.replace(~r/[^\w\s]/u, "")
-    |> String.split()
-    |> Enum.reject(&(&1 == ""))
-    |> Enum.map(&("\"" <> &1 <> "\""))
-    |> Enum.join(" ")
+    phrases =
+      query
+      |> to_string()
+      |> String.split()
+      |> Enum.map(fn word ->
+        word |> String.replace(~r/[^\w]+/u, " ") |> String.trim()
+      end)
+      |> Enum.reject(&(&1 == ""))
+      |> Enum.map(&("\"" <> &1 <> "\""))
+
+    case phrases do
+      [] -> ""
+      phrases -> Enum.join(phrases, " ") <> "*"
+    end
   end
 end

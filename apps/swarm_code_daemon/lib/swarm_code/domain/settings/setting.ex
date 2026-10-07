@@ -100,6 +100,10 @@ defmodule SwarmCode.Domain.Settings.Setting do
     field(:default_implementer_provider_id, :binary_id)
     field(:default_implementer_model, :string)
     field(:default_implementer_effort, :string)
+    # Spec 75 (pass 71): the default mission validator — nil = the main model.
+    field(:default_validator_provider_id, :binary_id)
+    field(:default_validator_model, :string)
+    field(:default_validator_effort, :string)
     # Spec 49 §2: the retention policy the Scheduler applies once a day. nil is
     # off for both; `storage_last_cleanup_at` is when the sweep last ran.
     field(:storage_retention_days, :integer)
@@ -150,6 +154,7 @@ defmodule SwarmCode.Domain.Settings.Setting do
              research_agent_timeout_s research_retry_timeouts research_max_retries
              default_implementer_provider_id default_implementer_model
              default_implementer_effort
+             default_validator_provider_id default_validator_model default_validator_effort
              storage_retention_days storage_prune_days storage_last_cleanup_at
              shell_env_scrub shell_env_keep shell_path shell_login
              lsp_servers keybindings isolation_backend)a
@@ -158,7 +163,8 @@ defmodule SwarmCode.Domain.Settings.Setting do
   # provider's list, so the columns take any well-formed key.
   @effort_fields ~w(default_effort default_swarm_effort default_scheduled_effort
                     default_workflow_effort research_lead_effort research_worker_effort
-                    research_reporter_effort default_implementer_effort)a
+                    research_reporter_effort default_implementer_effort
+                    default_validator_effort)a
 
   def changeset(setting, attrs) do
     setting

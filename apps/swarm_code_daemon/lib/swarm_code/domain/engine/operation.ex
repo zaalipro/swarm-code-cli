@@ -7,11 +7,15 @@ defmodule SwarmCode.Domain.Engine.Operation do
   alias SwarmCode.Domain.Engine.{Policy, RunServer, Telemetry}
   alias SwarmCode.Domain.Hooks
   alias SwarmCode.Domain.LLM
+  alias SwarmCode.Domain.LLM.Speed
   alias SwarmCode.Domain.Tools
   alias SwarmCode.Domain.Tools.Ref
 
   @type work ::
           {:llm, LLM.Request.t()}
+          # spec 74 ARCHITECTURE-4: an agent's in-place summary — no stream to
+          # the transcript, and the owner writes the node's outcome.
+          | {:summary, LLM.Request.t()}
           | {:tool, Ref.t() | nil, map(), map()}
           | {:invalid_args, String.t(), String.t(), String.t() | nil}
 
@@ -61,6 +65,10 @@ defmodule SwarmCode.Domain.Engine.Operation do
   # nothing — its request is the whole history.
   @input_bytes 8_192
 
+  # spec 74 BUGS-53: the reason `Anthropic.stream/2` gives its one retry
+  # without thinking after the server refused the history's continuation state.
+  @thinking_retry "continuation state"
+
   defp input_of({:tool, _ref, args, _ctx}) when is_map(args) do
     case Jason.encode(args) do
       {:ok, json} -> window(json, @input_bytes)
@@ -70,7 +78,7 @@ defmodule SwarmCode.Domain.Engine.Operation do
 
   defp input_of(_work), do: nil
 
-  # A UTF-8-safe byte prefix — the same cut `SwarmCodeWeb.Format.window/2`
+  # A UTF-8-safe byte prefix — the same cut `SwarmCode.Domain.Format.window/2`
   # makes; the engine does not depend on the web layer.
   defp window(text, bytes) when byte_size(text) <= bytes, do: text
   defp window(text, bytes), do: valid_prefix(text, bytes, 0)
@@ -87,8 +95,8 @@ defmodule SwarmCode.Domain.Engine.Operation do
 
   @doc false
   def run(owner, run_id, agent_id, id, op_type, work) do
-    RunServer.update_node(run_id, id, %{pid: self()})
-
+    # spec 74 EFFICIENCY-36: no `%{pid: self()}` update — nothing reads the
+    # virtual field, and it was one RunServer cast per op.
     # spec 70 E2: structured telemetry — Logger metadata + op span start.
     Telemetry.put_op_metadata(run_id, agent_id, id)
 
@@ -99,10 +107,16 @@ defmodule SwarmCode.Domain.Engine.Operation do
     # thousand casts through the RunServer's normaliser; the flush coalesced
     # the broadcasts, not that work. One cast per 50 ms per op; the last one
     # (`pct == 100`, or whatever `finalize/1` writes) always lands.
+    #
+    # spec 74 BUGS-5: the first update always lands too. The stamp used to
+    # default to 0, and under multi_time_warp the monotonic clock is a large
+    # negative number, so `now - 0 >= 50` was never true and every update but
+    # the last was dropped.
     progress = fn pct, detail ->
       now = System.monotonic_time(:millisecond)
+      last = Process.get(:sc_progress_at)
 
-      if pct == 100 or now - Process.get(:sc_progress_at, 0) >= 50 do
+      if pct == 100 or is_nil(last) or now - last >= 50 do
         Process.put(:sc_progress_at, now)
         RunServer.update_node(run_id, id, %{progress: pct, detail: detail})
       end
@@ -148,7 +162,11 @@ defmodule SwarmCode.Domain.Engine.Operation do
       op_type: op_type
     })
 
-    RunServer.update_node(run_id, id, finalize(result))
+    # spec 74 ARCHITECTURE-4: a summary's outcome (a cut-off one fails, and the
+    # note says how far it compacted) is its owner's to write.
+    if not match?({:summary, _request}, work),
+      do: RunServer.update_node(run_id, id, finalize(result))
+
     send(owner, {:op_done, id, owner_view(result)})
     result
   end
@@ -165,7 +183,62 @@ defmodule SwarmCode.Domain.Engine.Operation do
   # Spec 43 §1.1: streamed text goes straight to the RunServer — the agent never
   # read it, it only forwarded it, and that hop copied every token once more.
   # Spec 51 §6.3: nothing at all goes to the owner while the stream runs.
-  defp do_work(_owner, run_id, id, _op_type, {:llm, request}, _progress) do
+  defp do_work(owner, run_id, id, _op_type, {:llm, request}, _progress) do
+    # Spec 75: the speed monitor's sample of this call (nil = not measured).
+    speed = Speed.begin(request.speed, request.model)
+
+    result =
+      LLM.stream(request, fn
+        {:retry, attempt, of, reason} ->
+          # spec 74 BUGS-53: the provider refused the history's signed
+          # thinking and asked again without it (`Anthropic.stream/2`).
+          if reason == @thinking_retry, do: Process.put(:sc_thinking_stripped, true)
+
+          RunServer.update_node(run_id, id, %{
+            status: "retrying",
+            detail: "retrying #{attempt}/#{of} · #{reason}"
+          })
+
+        {:text_delta, text} ->
+          Speed.delta(speed, byte_size(text))
+          RunServer.text_delta(run_id, id, text)
+
+        {:reasoning_delta, text} ->
+          Speed.delta(speed, byte_size(text))
+          RunServer.reasoning_delta(run_id, id, text)
+
+        {:text_reset} ->
+          # Spec 75 §11.3: a retry starts the call's byte count and first-token
+          # time over (one ETS write; no message).
+          Speed.retry(speed)
+          RunServer.text_reset(run_id, id)
+
+        {:reasoning_reset} ->
+          RunServer.reasoning_reset(run_id, id)
+
+        # Spec 51 §6.3: nothing is left for the agent to act on — the `{:usage, …}`
+        # hop is gone and `Result.usage` is read at `op_done`. The clause stays
+        # tolerant so a provider module (or a fake) that emits one more event kind
+        # cannot crash the op.
+        _other ->
+          :ok
+      end)
+
+    Speed.finish(speed, result)
+
+    # spec 74 BUGS-53: the owner drops the refused blocks from its history
+    # before this op's `op_done` (sent after this, from this process) appends
+    # the retried answer — so the next step does not send them again.
+    if Process.delete(:sc_thinking_stripped) == true and match?({:ok, _}, result),
+      do: send(owner, {:thinking_stripped, id})
+
+    result
+  end
+
+  # spec 74 ARCHITECTURE-4: the summary's text is not the answer — nothing is
+  # streamed (under a chat's root agent it would land in the assistant
+  # message). A retry still shows on the node.
+  defp do_work(_owner, run_id, id, _op_type, {:summary, request}, _progress) do
     LLM.stream(request, fn
       {:retry, attempt, of, reason} ->
         RunServer.update_node(run_id, id, %{
@@ -173,22 +246,6 @@ defmodule SwarmCode.Domain.Engine.Operation do
           detail: "retrying #{attempt}/#{of} · #{reason}"
         })
 
-      {:text_delta, text} ->
-        RunServer.text_delta(run_id, id, text)
-
-      {:reasoning_delta, text} ->
-        RunServer.reasoning_delta(run_id, id, text)
-
-      {:text_reset} ->
-        RunServer.text_reset(run_id, id)
-
-      {:reasoning_reset} ->
-        RunServer.reasoning_reset(run_id, id)
-
-      # Spec 51 §6.3: nothing is left for the agent to act on — the `{:usage, …}`
-      # hop is gone and `Result.usage` is read at `op_done`. The clause stays
-      # tolerant so a provider module (or a fake) that emits one more event kind
-      # cannot crash the op.
       _other ->
         :ok
     end)
@@ -196,6 +253,23 @@ defmodule SwarmCode.Domain.Engine.Operation do
 
   defp do_work(_owner, _run_id, _id, op_type, {:tool, nil, _args, _ctx}, _progress) do
     {:error, "unknown tool #{op_type}"}
+  end
+
+  # pass74 (spec 74) BUGS-29 (O3's task, O1's clause): a call cut off at the
+  # output limit is not a JSON mistake — resending it whole is cut off again.
+  # Tell the model to split it. The provider sets exactly this reason prefix
+  # (`LLM.Result.mark_truncated/2`).
+  defp do_work(
+         _owner,
+         _run_id,
+         _id,
+         _op_type,
+         {:invalid_args, name, "cut off at the output limit" <> _ = reason, _raw},
+         _progress
+       ) do
+    {:error,
+     "your call to #{name} was #{reason} — split the content: write the first part " <>
+       "with write_file, then add the rest with edit_file or edit_files"}
   end
 
   # The provider streamed `arguments` that are not a JSON object. Say so, and
@@ -295,9 +369,12 @@ defmodule SwarmCode.Domain.Engine.Operation do
 
   defp safety(_ref, _args), do: :normal
 
+  # spec 74 BUGS-15: the head is cut on a UTF-8 boundary. A byte slice could
+  # split a character; the hint became the tool message verbatim and every
+  # later request of the agent failed to encode ("invalid byte 0xE2").
   defp raw_hint(raw) when is_binary(raw) and raw != "" do
-    head = if byte_size(raw) > 200, do: binary_part(raw, 0, 200) <> "…", else: raw
-    ". Received: " <> head
+    head = if byte_size(raw) > 200, do: window(raw, 200) <> "…", else: raw
+    ". Received: " <> String.replace_invalid(head)
   end
 
   defp raw_hint(_raw), do: ""

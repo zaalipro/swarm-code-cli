@@ -1,8 +1,8 @@
-# CLI-local change to lib/swarm_code/engine/run_server.ex at 6dd8d82, after the rewrite
+# CLI-local change to lib/swarm_code/engine/run_server.ex at 4c7c577, after the rewrite
 # rules of provenance/sync-rules.json. Recorded by mix swarm_code.provenance.sync.
 --- a/apps/swarm_code_daemon/lib/swarm_code/domain/engine/run_server.ex
 +++ b/apps/swarm_code_daemon/lib/swarm_code/domain/engine/run_server.ex
-@@ -177,11 +177,48 @@
+@@ -222,11 +222,48 @@
    def consensus_round(run_id, stage),
      do: GenServer.call(via(run_id), {:consensus_round, stage}, :infinity)
  
@@ -51,7 +51,7 @@
    @doc "The questions waiting for an answer in this run, or `[]`."
    @spec pending_questions(String.t()) :: [{String.t(), [map()]}]
    # Spec 43 §1.4: its own call — `get_state/1` copied the whole run (nodes,
-@@ -194,6 +231,7 @@
+@@ -239,6 +276,7 @@
    end
  
    @spec start_agent(String.t(), %{
@@ -59,32 +59,17 @@
            parent_id: String.t(),
            name: String.t(),
            task: String.t(),
-@@ -863,7 +901,8 @@
-           from: from,
-           timer: timer,
-           permission: permission,
--          safety: safety
-+          safety: safety,
-+          requested_at: DateTime.utc_now()
-         })
-         # spec 66 T3: the card used to render the node title alone — "run: " and
-         # 60 characters of the command — and `detail` said "awaiting approval".
-@@ -899,7 +938,13 @@
- 
-     state =
-       state
--      |> put_in([:questions, node_id], %{from: from, timer: timer, questions: questions})
-+      |> put_in([:questions, node_id], %{
-+        from: from,
-+        timer: timer,
-+        questions: questions,
-+        answers: %{},
-+        requested_at: DateTime.utc_now()
-+      })
-       |> put_node(node_id, %{status: "awaiting_answer", detail: first})
- 
-     SwarmCode.Domain.Engine.Questions.put(state.conversation.id, state.run.id, node_id)
-@@ -1147,7 +1192,7 @@
+@@ -989,7 +1027,8 @@
+             from: from,
+             timer: timer,
+             permission: permission,
+-            safety: safety
++            safety: safety,
++            requested_at: DateTime.utc_now()
+           })
+           # spec 66 T3: the card used to render the node title alone — "run: " and
+           # 60 characters of the command — and `detail` said "awaiting approval".
+@@ -1294,7 +1333,7 @@
            parent_id: attrs.parent_id,
            name: name,
            role: "sub",
@@ -93,7 +78,7 @@
            depth: attrs.depth,
            prompt: attrs.task,
            status: if(queued?, do: "queued", else: "running")
-@@ -1425,6 +1470,52 @@
+@@ -1607,6 +1646,52 @@
  
    def handle_call(:get_state, _from, state), do: {:reply, state, state}
  
@@ -143,6 +128,21 @@
 +    end
 +  end
 +
-   def handle_call(:pending_questions, _from, state) do
-     {:reply, Enum.map(state.questions, fn {node_id, %{questions: qs}} -> {node_id, qs} end),
-      state}
+   def handle_call(:finish_totals, _from, state) do
+     state = flush(state)
+     {:reply, Map.take(state.run, [:tokens_in, :tokens_out, :cost_usd]), state}
+@@ -4130,7 +4215,13 @@
+ 
+     state =
+       state
+-      |> put_in([:questions, node_id], %{from: from, timer: timer, questions: questions})
++      |> put_in([:questions, node_id], %{
++        from: from,
++        timer: timer,
++        questions: questions,
++        answers: %{},
++        requested_at: DateTime.utc_now()
++      })
+       |> put_node(node_id, %{status: "awaiting_answer", detail: first})
+ 
+     SwarmCode.Domain.Engine.Questions.put(state.conversation.id, state.run.id, node_id)

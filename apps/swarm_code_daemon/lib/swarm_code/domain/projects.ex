@@ -104,14 +104,57 @@ defmodule SwarmCode.Domain.Projects do
     end
   end
 
-  def update(%Project{} = project, attrs) do
-    case project |> Project.changeset(attrs) |> Repo.update() do
-      {:ok, project} ->
-        broadcast()
-        {:ok, project}
+  @doc """
+  Updates a project's editable fields.
 
-      {:error, changeset} ->
-        {:error, changeset}
+  Spec 74 BUGS-9: consent (spec 67 T31) is given to a directory, not to a row.
+  Moving `root_path` therefore takes the trust away — `trusted_at` back to nil
+  and the mode back to `read_only`, set here, never through `cast` — so the new
+  folder's hooks and AGENTS.md wait for the banner like any folder just added.
+  A move is refused with `{:error, :running}` while a run of the project is
+  live, as `Conversations.set_project/2` refuses to move a running
+  conversation.
+  """
+  def update(%Project{} = project, attrs) do
+    changeset = Project.changeset(project, attrs)
+    moved? = Ecto.Changeset.get_change(changeset, :root_path) != nil
+
+    if moved? and live_run?(project.id) do
+      {:error, :running}
+    else
+      changeset =
+        if moved?,
+          do:
+            changeset
+            |> Ecto.Changeset.put_change(:trusted_at, nil)
+            |> Ecto.Changeset.put_change(:approval_mode, "read_only"),
+          else: changeset
+
+      case Repo.update(changeset) do
+        {:ok, project} ->
+          broadcast()
+          {:ok, project}
+
+        {:error, changeset} ->
+          {:error, changeset}
+      end
+    end
+  end
+
+  # Whether any conversation of the project has a run the engine still holds.
+  defp live_run?(project_id) do
+    case Engine.running_run_ids() do
+      [] ->
+        false
+
+      ids ->
+        Repo.exists?(
+          from(r in SwarmCode.Domain.Conversations.Run,
+            join: c in Conversation,
+            on: c.id == r.conversation_id,
+            where: c.project_id == ^project_id and r.id in ^ids
+          )
+        )
     end
   end
 
@@ -185,7 +228,19 @@ defmodule SwarmCode.Domain.Projects do
     # spec 73 T77: the project's language servers go with it (pass 67 promised
     # "on project close and on quit"; only quit was wired).
     SwarmCode.Domain.LSP.stop_project(project.root_path)
+    # spec 74 EFFICIENCY-67: the same eviction `Conversations.delete/1` runs, per
+    # conversation the FK cascade removes. Markdown first, while the message rows
+    # still exist (eviction is by message id; a failed delete only recomputes);
+    # UIState only once the rows are gone.
+    Enum.each(ids, &SwarmCode.Domain.MarkdownCache.delete_conversation/1)
     result = Repo.delete(project)
+
+    if match?({:ok, _}, result) do
+      Enum.each(ids, &SwarmCode.Domain.UIState.delete/1)
+      # spec 74 ARCHITECTURE-21: the same typed notice `Conversations.delete/1` sends.
+      Enum.each(ids, &SwarmCode.Domain.Conversations.broadcast_deleted/1)
+    end
+
     broadcast()
     result
   end
@@ -195,6 +250,14 @@ defmodule SwarmCode.Domain.Projects do
     SwarmCode.Domain.Cache.invalidate(:project)
     SwarmCode.Domain.PubSub.broadcast(SwarmCode.Domain.PubSub, "projects", {:projects_changed})
   end
+
+  @doc """
+  The sidebar list changed; the project rows did not, so the project cache is
+  left alone (spec 74 EFFICIENCY-14 — `broadcast/0` invalidates it).
+  """
+  def broadcast_list,
+    do:
+      SwarmCode.Domain.PubSub.broadcast(SwarmCode.Domain.PubSub, "projects", {:projects_changed})
 
   def subscribe, do: SwarmCode.Domain.PubSub.subscribe(SwarmCode.Domain.PubSub, "projects")
 end

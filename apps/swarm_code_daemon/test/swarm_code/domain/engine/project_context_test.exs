@@ -36,16 +36,26 @@ defmodule SwarmCode.Domain.Engine.ProjectContextTest do
     assert ProjectContext.instructions(project) == "agents text"
   end
 
-  test "reads NCODE.md when AGENTS.md is absent", %{project: project, dir: dir} do
+  # Pass 75 (the ncode rename): NCODE.md comes after AGENTS.md and before the
+  # older SWARMCODE.md, which is still read; the editor still creates AGENTS.md.
+  test "reads NCODE.md after AGENTS.md and before SWARMCODE.md", %{project: project, dir: dir} do
+    assert ProjectContext.instruction_files() ==
+             ~w(AGENTS.override.md AGENTS.md NCODE.md SWARMCODE.md CLAUDE.md)
+
+    assert ProjectContext.instructions_path(project) == Path.join(dir, "AGENTS.md")
+
     File.write!(Path.join(dir, "CLAUDE.md"), "claude text")
+    File.write!(Path.join(dir, "SWARMCODE.md"), "swarmcode text")
+    assert ProjectContext.instructions(project) == "swarmcode text"
+    assert ProjectContext.instructions_path(project) == Path.join(dir, "SWARMCODE.md")
+
     File.write!(Path.join(dir, "NCODE.md"), "ncode text")
     assert ProjectContext.instructions(project) == "ncode text"
-  end
+    assert ProjectContext.instructions_path(project) == Path.join(dir, "NCODE.md")
 
-  test "AGENTS.md wins over NCODE.md", %{project: project, dir: dir} do
-    File.write!(Path.join(dir, "NCODE.md"), "ncode text")
     File.write!(Path.join(dir, "AGENTS.md"), "agents text")
     assert ProjectContext.instructions(project) == "agents text"
+    assert ProjectContext.instructions_path(project) == Path.join(dir, "AGENTS.md")
   end
 
   test "instructions are head-capped", %{project: project, dir: dir} do

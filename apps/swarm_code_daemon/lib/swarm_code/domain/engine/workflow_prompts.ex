@@ -86,8 +86,11 @@ defmodule SwarmCode.Domain.Engine.WorkflowPrompts do
                               validated map when `schema:` is given, or nil when it failed.
                               opts: name: (≤24 chars), schema:, model:, provider:, effort:
                               ("low"|"medium"|"high"|"max"), capability: (:read_only default |
-                              :read_write | :execute | :all), isolation: (:shared | :worktree),
-                              max_turns:, context:, images:.
+                              :read_write | :execute | :verify (read + run_command, no writes) |
+                              :all), isolation: (:shared | :worktree), role: (:orchestrator |
+                              :worker | :validator — runs on the conversation's main, worker or
+                              validator model; model:/effort: still win), max_turns:, context:,
+                              images:.
                               At most ONE agent/2 per panel slot.
       panel(items, fun)       The only concurrency primitive: a barrier. `fun` takes (item) or
                               (item, index). Returns the slot results in item order; a failed

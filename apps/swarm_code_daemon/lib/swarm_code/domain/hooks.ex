@@ -110,7 +110,17 @@ defmodule SwarmCode.Domain.Hooks do
   defp trusted?(%{project: %{trusted_at: _} = project}, _root),
     do: SwarmCode.Domain.Projects.trusted?(project)
 
-  defp trusted?(_context, root) do
+  defp trusted?(_context, root), do: trusted_root?(root)
+
+  @doc """
+  True when the project rooted at `root` — or owning the isolation directory
+  `root` — is trusted. Cached under the `:project` tag.
+
+  spec 74 BUGS-8: `SwarmCode.Domain.Git` asks this before a commit or merge, so an
+  untrusted project's `core.hooksPath` scripts do not run.
+  """
+  @spec trusted_root?(String.t()) :: boolean()
+  def trusted_root?(root) when is_binary(root) do
     root = root |> owner_root() |> Path.expand()
 
     SwarmCode.Domain.Cache.fetch({:project, {:trusted_root, root}}, fn ->
@@ -120,6 +130,8 @@ defmodule SwarmCode.Domain.Hooks do
       end
     end)
   end
+
+  def trusted_root?(_root), do: false
 
   defp owner_root(root) do
     case root |> Path.split() |> Enum.reverse() do
@@ -141,14 +153,19 @@ defmodule SwarmCode.Domain.Hooks do
   defp run_hooks(hooks, event, context, root) do
     # spec 73 T95: the tool that fired, for every hook of a tool event — the
     # matcher's regex used to be exported instead, and a hook without one saw
-    # nothing.
+    # nothing. Pass 75 (the ncode rename): every value goes out as `NCODE_*`
+    # and, deprecated but kept for existing hook scripts, as `SWARMCODE_*`.
+    event_name = Atom.to_string(event)
+
     env =
       [
-        {"SWARMCODE_EVENT", Atom.to_string(event)},
+        {"NCODE_EVENT", event_name},
+        {"NCODE_PROJECT", root},
+        {"SWARMCODE_EVENT", event_name},
         {"SWARMCODE_PROJECT", root}
       ] ++
         case context[:tool_name] do
-          tool when is_binary(tool) -> [{"SWARMCODE_TOOL", tool}]
+          tool when is_binary(tool) -> [{"NCODE_TOOL", tool}, {"SWARMCODE_TOOL", tool}]
           _none -> []
         end
 

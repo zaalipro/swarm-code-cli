@@ -3,7 +3,7 @@ defmodule SwarmCode.Domain.Engine do
 
   require Logger
   alias SwarmCode.Domain.{Conversations, Providers, Repo, Settings}
-  alias SwarmCode.Domain.Engine.{ProjectContext, Prompts, RunServer, RunSupervisor}
+  alias SwarmCode.Domain.Engine.{Prompts, RunServer, RunSupervisor}
 
   # Spec 50 §2.4: commands whose turn is defined by the command itself, so a
   # judge would have nothing to judge — the workflow author's turn produces a
@@ -75,8 +75,13 @@ defmodule SwarmCode.Domain.Engine do
     # the compaction floor for ever. The caller is not held while it runs (this
     # is the LiveView's send handler): it gets the compaction's own run back and
     # the chat turn is chained onto it.
-    if Map.get(conversation, :compact_due) do
-      compact_then_turn(conversation, text, attachments, opts)
+    #
+    # spec 74 BUGS-10: the flag is claimed from the row, never read from the
+    # caller's struct — a window's copy is stale by design (the flag is set
+    # without a broadcast). The claim clears it atomically, so a second send
+    # during the wait, or a second window, does not queue a second compaction.
+    if Conversations.claim_compact_due(conversation.id) do
+      compact_then_turn(%{conversation | compact_due: false}, text, attachments, opts)
     else
       do_start_chat_turn(conversation, text, attachments, opts)
     end
@@ -140,10 +145,12 @@ defmodule SwarmCode.Domain.Engine do
       # front of the turn (the goal and its latest report, or the summary of
       # the workflow that just finished). The *stored* message stays the
       # user's own text.
-      prompt =
-        opts[:context]
-        |> with_context(opts[:prompt] || text)
-        |> then(&with_context(SwarmCode.Domain.Research.context_block(research_ids), &1))
+      #
+      # spec 74 BUGS-76: the attached reports are not read here (the
+      # LiveView's send handler) any more: the stored message carries their
+      # ids, the history marks the rebuilt message with them, and the root
+      # agent expands them — on this turn and on every later one.
+      prompt = with_context(opts[:context], opts[:prompt] || text)
 
       # Spec 50 §1.2: `list_history_window/2` is `list_messages_window/2` with a
       # floor — it never reaches back past the newest `/compact` summary.
@@ -162,16 +169,14 @@ defmodule SwarmCode.Domain.Engine do
         |> Prompts.history_to_messages()
         |> replace_last_user(prompt)
 
-      # spec 70 D3: the session_start hook's output joins these instructions —
+      # spec 70 D3: the session_start hook's output joins the instructions —
       # spec 73 T8: in the RunServer's boot, as owned work, never in the
       # LiveView's send handler or the Scheduler's tick this runs in.
-      project_context = ProjectContext.build(project, conversation)
-
+      # spec 74 UI-SPEED-13: and so does `ProjectContext.build/2` itself.
       start_run(%{
         run: run,
         conversation: conversation,
         project: project,
-        project_context: project_context,
         settings: settings,
         chat_model: chat,
         swarm_model: swarm_model(conversation),
@@ -197,6 +202,8 @@ defmodule SwarmCode.Domain.Engine do
       {:error, :not_configured} = error -> error
       # spec 67 T12 (B14): the conversation's project is gone; nothing was written.
       {:error, :no_project} = error -> error
+      # spec 74 BUGS-56: the run this one would resume already has a continuation.
+      {:error, :already_resumed} = error -> error
       {:error, %Ecto.Changeset{} = changeset} -> {:error, {:invalid_message, changeset}}
       # spec 55 T7: `create_turn/4` already wraps a message changeset.
       {:error, {:invalid_message, _}} = error -> error
@@ -231,7 +238,7 @@ defmodule SwarmCode.Domain.Engine do
       # spec 68 T4: cc bound once in do_start_chat_turn.
       consensus_config:
         if(judged?,
-          do: SwarmCode.Domain.Engine.Consensus.persistable(cc)
+          do: SwarmCode.Domain.Engine.Consensus.persistable(cc, text)
         ),
       # Spec 45 §5.2: a resumed turn names the run it continues.
       resumed_from_run_id: opts[:resume_of],
@@ -347,7 +354,6 @@ defmodule SwarmCode.Domain.Engine do
         run: run,
         conversation: conversation,
         project: project,
-        project_context: ProjectContext.build(project, conversation),
         settings: settings,
         chat_model: chat,
         swarm_model: swarm_model(conversation),
@@ -396,13 +402,11 @@ defmodule SwarmCode.Domain.Engine do
   # it. Both rows are written in this call either way, so the typed text still
   # appears in the transcript at once.
   defp compact_then_turn(conversation, text, attachments, opts) do
-    # Cleared when the compaction *starts*: a second send during the wait must
-    # not queue a second compaction, and a compaction that fails must not make
-    # every later turn pay for the same failure. The next turn over the
-    # threshold raises the flag again.
-    Conversations.clear_compact_due(conversation)
-    conversation = %{conversation | compact_due: false}
-
+    # Cleared when the compaction *starts* (spec 74 BUGS-10: by the claim in
+    # `start_chat_turn/4`): a second send during the wait must not queue a
+    # second compaction, and a compaction that fails must not make every later
+    # turn pay for the same failure. The next turn over the threshold raises
+    # the flag again.
     case start_compact(conversation, "", auto: true) do
       {:ok, compact_run_id} ->
         user = store_user_now(conversation, text, attachments, opts)
@@ -429,34 +433,163 @@ defmodule SwarmCode.Domain.Engine do
     end
   end
 
+  # spec 74 ARCHITECTURE-17: the chain has an owner and a name. It registers
+  # as `{:chain, conversation_id, compact_run_id}` before the caller goes on,
+  # so `cancel_chains/0,1` — the first thing `stop_all/0,1` does — finds it:
+  # a quit or a delete used to stop the compaction, which woke the chain, which
+  # started a new chat run through the still-live RunSupervisor. A user stop of
+  # the compaction alone still starts the turn, by design.
   defp chain_turn(conversation, text, attachments, opts, user, compact_run_id) do
-    Task.Supervisor.start_child(SwarmCode.Domain.TaskSupervisor, fn ->
-      await_run(compact_run_id, @auto_compact_wait_ms)
+    caller = self()
+    ref = make_ref()
 
-      # A compaction that failed, timed out or was stopped still leaves the
-      # message needing a run: the turn starts either way, against whatever
-      # history there is.
-      case Conversations.get(conversation.id) do
-        nil ->
-          Logger.warning("swarm_code: the conversation went away before its chat turn started")
+    started =
+      Task.Supervisor.start_child(SwarmCode.Domain.TaskSupervisor, fn ->
+        key = {:chain, conversation.id, compact_run_id}
+        {:ok, _owner} = Registry.register(SwarmCode.Domain.Registry, key, nil)
+        send(caller, {ref, :chained})
 
-        fresh ->
-          opts = Keyword.put(opts, :user_message, user)
+        # A compaction that failed, timed out or was stopped still leaves the
+        # message needing a run: the turn starts either way, against whatever
+        # history there is — unless the chain itself was cancelled.
+        case await_chain(compact_run_id, @auto_compact_wait_ms) do
+          :cancelled -> chain_stopped(conversation, text, user)
+          _done_or_timeout -> run_chained_turn(conversation, text, attachments, opts, user)
+        end
+      end)
 
-          case do_start_chat_turn(fresh, text, attachments, opts) do
-            {:ok, _run_id} ->
-              :ok
+    case started do
+      {:ok, pid} ->
+        monitor = Process.monitor(pid)
 
-            other ->
-              Logger.warning(
-                "swarm_code: the chat turn after an automatic compaction failed: " <>
-                  inspect(other)
-              )
-          end
-      end
-    end)
+        receive do
+          {^ref, :chained} -> Process.demonitor(monitor, [:flush])
+          {:DOWN, ^monitor, :process, ^pid, _reason} -> :ok
+        end
+
+      {:error, reason} ->
+        chain_failed(conversation, text, user, {:error, reason})
+    end
 
     :ok
+  end
+
+  defp run_chained_turn(conversation, text, attachments, opts, user) do
+    case Conversations.get(conversation.id) do
+      nil ->
+        Logger.warning("swarm_code: the conversation went away before its chat turn started")
+
+      fresh ->
+        opts = Keyword.put(opts, :user_message, user)
+
+        case do_start_chat_turn(fresh, text, attachments, opts) do
+          {:ok, _run_id} -> :ok
+          # `start_run/1` already paired a failed run and said why.
+          {:error, {:start_failed, _reason}} -> :ok
+          other -> chain_failed(fresh, text, user, other)
+        end
+    end
+  end
+
+  # spec 74 ARCHITECTURE-17: AGENTS.md's atomic launch — the stored message
+  # gets a `failed` chat run and an assistant row that says why, the shape
+  # `compensate_start_failure/2` writes, so the transcript shows the failure
+  # under it (and offers Resume). Only when that write fails too does the
+  # window hear a typed `{:chain_failed, conversation_id, user_message_id}`.
+  defp chain_failed(conversation, text, user, reason) do
+    why = reason |> chain_reason() |> SwarmCode.Domain.LLM.HTTP.redact()
+    Logger.warning("swarm_code: the chat turn after an automatic compaction failed: " <> why)
+
+    case end_chain(conversation, text, user, "failed", start_failure_message("chat", why)) do
+      {:ok, _turn} ->
+        :ok
+
+      _not_written ->
+        Conversations.broadcast(
+          conversation.id,
+          {:chain_failed, conversation.id, user && user.id}
+        )
+    end
+  end
+
+  @chain_stopped_text "Stopped before the turn after the automatic compaction started."
+
+  # A cancelled chain (a quit, a delete, `/stop`) leaves the message with a
+  # `stopped` run, not with none.
+  defp chain_stopped(conversation, text, user) do
+    if Conversations.get(conversation.id),
+      do: end_chain(conversation, text, user, "stopped", @chain_stopped_text)
+
+    :ok
+  end
+
+  defp end_chain(conversation, text, %Conversations.Message{} = user, status, content) do
+    now = now()
+
+    SwarmCode.Domain.Conversations.Writes.resume_turn(
+      conversation.id,
+      user,
+      %{conversation_id: conversation.id, role: "assistant", content: content},
+      %{
+        conversation_id: conversation.id,
+        kind: "chat",
+        status: status,
+        prompt: text,
+        mode: conversation.mode || "build",
+        started_at: now,
+        finished_at: now
+      }
+    )
+  rescue
+    error -> {:error, error}
+  end
+
+  defp end_chain(_conversation, _text, _no_user, _status, _content), do: {:error, :no_message}
+
+  defp chain_reason({:error, :not_configured}),
+    do: "no model is configured — add a provider in Settings"
+
+  defp chain_reason({:error, :no_project}), do: "the conversation's project is gone"
+  defp chain_reason({:error, :database_busy}), do: "the database was busy"
+  defp chain_reason(other), do: other |> inspect() |> String.slice(0, 200)
+
+  @doc """
+  spec 74 ARCHITECTURE-17: cancels the chat turns chained onto an automatic
+  compaction — one conversation's, or every one — so that stopping the
+  compaction does not wake them into a new run. Each chain is told first and
+  writes its `stopped` pairing; one that does not end within the deadline is
+  killed.
+  """
+  @spec cancel_chains(String.t()) :: :ok
+  def cancel_chains(conversation_id),
+    do: cancel_chain_pids([{{{:chain, conversation_id, :_}, :"$1", :_}, [], [:"$1"]}])
+
+  @spec cancel_chains() :: :ok
+  def cancel_chains, do: cancel_chain_pids([{{{:chain, :_, :_}, :"$1", :_}, [], [:"$1"]}])
+
+  @chain_cancel_ms 5_000
+
+  defp cancel_chain_pids(spec) do
+    monitors =
+      for pid <- Registry.select(SwarmCode.Domain.Registry, spec) do
+        monitor = Process.monitor(pid)
+        send(pid, :cancel_chain)
+        {pid, monitor}
+      end
+
+    deadline = System.monotonic_time(:millisecond) + @chain_cancel_ms
+
+    Enum.each(monitors, fn {pid, monitor} ->
+      remaining = max(deadline - System.monotonic_time(:millisecond), 0)
+
+      receive do
+        {:DOWN, ^monitor, :process, ^pid, _reason} -> :ok
+      after
+        remaining ->
+          Process.demonitor(monitor, [:flush])
+          Task.Supervisor.terminate_child(SwarmCode.Domain.TaskSupervisor, pid)
+      end
+    end)
   end
 
   defp open_turn(
@@ -485,22 +618,37 @@ defmodule SwarmCode.Domain.Engine do
   # spec 73 T40 (and T55): a monitor on the compaction's RunServer instead of
   # a `Registry.select` over every run each 25 ms for up to a minute — one
   # message, no lag. A run that exits between `whereis` and `monitor` delivers
-  # a `:noproc` DOWN at once, so the race is covered.
-  defp await_run(run_id, timeout) do
+  # a `:noproc` DOWN at once, so the race is covered. spec 74 ARCHITECTURE-17:
+  # `:cancel_chain` (from `cancel_chains/0,1`) ends the wait too, and wins
+  # over a DOWN that arrived with it.
+  defp await_chain(run_id, timeout) do
     case GenServer.whereis(SwarmCode.Domain.Engine.RunServer.via(run_id)) do
       nil ->
-        :ok
+        cancelled_or(:ok)
 
       pid ->
         ref = Process.monitor(pid)
 
         receive do
-          {:DOWN, ^ref, _kind, _pid, _reason} -> :ok
+          :cancel_chain ->
+            Process.demonitor(ref, [:flush])
+            :cancelled
+
+          {:DOWN, ^ref, _kind, _pid, _reason} ->
+            cancelled_or(:ok)
         after
           timeout ->
             Process.demonitor(ref, [:flush])
-            :timeout
+            cancelled_or(:timeout)
         end
+    end
+  end
+
+  defp cancelled_or(result) do
+    receive do
+      :cancel_chain -> :cancelled
+    after
+      0 -> result
     end
   end
 
@@ -569,8 +717,10 @@ defmodule SwarmCode.Domain.Engine do
 
   defp replace_last_user(history, prompt) do
     case Enum.reverse(history) do
+      # spec 74 BUGS-31: the `[image … omitted]` lines of the newest message
+      # survive the swap to the prompt.
       [%{role: "user"} = last | rest] ->
-        Enum.reverse([%{last | content: prompt} | rest])
+        Enum.reverse([%{last | content: Prompts.keep_omitted(prompt, last.content)} | rest])
 
       _ ->
         history
@@ -589,11 +739,18 @@ defmodule SwarmCode.Domain.Engine do
           :ok | {:error, :not_running}
   def steer(conversation_id, text, attachments \\ [], opts \\ []) do
     images = SwarmCode.Domain.Attachments.images(attachments)
+    # spec 74 BUGS-76: a steer's attached reports reach the agent (which reads
+    # them) and the stored row (so every later turn rebuilds them).
+    research_ids = List.wrap(opts[:research_ids])
 
     # Spec 12 §3: a reply mark steers exactly ONE run; without it the caller
     # still means "the chat run of this conversation".
     with [run_id | _] <- steer_targets(conversation_id, opts[:run_id]),
-         :ok <- RunServer.steer(run_id, text, images, node_id: opts[:node_id]),
+         :ok <-
+           RunServer.steer(run_id, text, images,
+             node_id: opts[:node_id],
+             research_ids: research_ids
+           ),
          conversation when not is_nil(conversation) <- Conversations.get(conversation_id),
          {:ok, _} <-
            Conversations.create_message(%{
@@ -601,6 +758,7 @@ defmodule SwarmCode.Domain.Engine do
              role: "user",
              content: text,
              attachments: attachments,
+             research_ids: research_ids,
              # Spec 17 §2.2: a steer belongs to the run it steers, so the pane and
              # the side chat both show it against that run.
              run_id: run_id,
@@ -675,7 +833,6 @@ defmodule SwarmCode.Domain.Engine do
         run: run,
         conversation: conversation,
         project: project,
-        project_context: ProjectContext.build(project, conversation),
         settings: Settings.get_cached(),
         chat_model: chat,
         swarm_model: swarm_model(conversation),
@@ -689,6 +846,8 @@ defmodule SwarmCode.Domain.Engine do
       {:error, :no_project} = error -> error
       {:error, :not_configured} = error -> error
       {:error, :database_busy} = busy -> busy
+      # spec 74 BUGS-56
+      {:error, :already_resumed} = error -> error
       {:error, %Ecto.Changeset{} = changeset} -> {:error, {:invalid_message, changeset}}
       # spec 55 T7: `create_turn/4` already wraps a message changeset.
       {:error, {:invalid_message, _}} = error -> error
@@ -748,45 +907,95 @@ defmodule SwarmCode.Domain.Engine do
 
   defp do_label_run(run, chat_model) do
     Task.Supervisor.start_child(SwarmCode.Domain.TaskSupervisor, fn ->
-      case ask_for_label(run, chat_model) do
-        nil ->
-          :ok
+      {label, usage} = ask_for_label(run, chat_model)
 
-        label ->
-          # Spec 13 §11 A-3: the struct this Task captured is the one from
-          # creation (running, no tokens). Broadcasting it would resurrect a
-          # run that has long finished — reload it first.
-          # Spec 54 §1.5 (54a C6): a run that finished before its label came
-          # back is settled — nothing is left to relabel, and the write used to
-          # be a bang match that took this Task down on `Database busy`
-          # (observed once in 54a's fast scenario). Retried, never raised.
-          case Conversations.get_run(run.id) do
-            nil ->
-              :ok
-
-            %{status: status} when status in ["done", "failed", "stopped"] ->
-              :ok
-
-            fresh ->
-              # Spec 13 §4: the RunServer caches the `runs` row and re-broadcasts
-              # it on every flush — tell it, or its next token update puts the
-              # fallback label back on the card.
-              #
-              # spec 67 T12 (B18): the cast goes *first*. With the row written
-              # first, a run that finished in the window between the two wrote
-              # its own cached (fallback) label over the fresh one and
-              # broadcast it — the card kept "chat" for ever, while the row in
-              # the database said something else again.
-              SwarmCode.Domain.Engine.RunServer.set_label(run.id, label)
-
-              Conversations.with_busy_retry(fn ->
-                Conversations.update_run(fresh, %{label: label})
-              end)
-          end
-      end
+      # spec 74 BUGS-33: the label first — it must reach a run that is about
+      # to finish — then its bill.
+      write_label(run, label)
+      report_label_usage(run, chat_model, usage)
     end)
 
     :ok
+  end
+
+  defp write_label(run, label) do
+    case label do
+      nil ->
+        :ok
+
+      label ->
+        # Spec 13 §11 A-3: the struct this Task captured is the one from
+        # creation (running, no tokens). Broadcasting it would resurrect a
+        # run that has long finished — reload it first.
+        # Spec 54 §1.5 (54a C6): a run that finished before its label came
+        # back is settled — nothing is left to relabel, and the write used to
+        # be a bang match that took this Task down on `Database busy`
+        # (observed once in 54a's fast scenario). Retried, never raised.
+        case Conversations.get_run(run.id) do
+          nil ->
+            :ok
+
+          %{status: status} when status in ["done", "failed", "stopped"] ->
+            :ok
+
+          fresh ->
+            # Spec 13 §4: the RunServer caches the `runs` row and re-broadcasts
+            # it on every flush — tell it, or its next token update puts the
+            # fallback label back on the card.
+            #
+            # spec 67 T12 (B18): the cast goes *first*. With the row written
+            # first, a run that finished in the window between the two wrote
+            # its own cached (fallback) label over the fresh one and
+            # broadcast it — the card kept "chat" for ever, while the row in
+            # the database said something else again.
+            SwarmCode.Domain.Engine.RunServer.set_label(run.id, label)
+
+            Conversations.with_busy_retry(fn ->
+              Conversations.update_run(fresh, %{label: label})
+            end)
+        end
+    end
+  end
+
+  # spec 74 BUGS-33: the label request is billed to its run. The RunServer
+  # owns the totals while it runs; once it is gone the row takes an increment.
+  # A run whose server has not registered yet (the label came back before
+  # `start_run/1` did — a fake provider can) is retried briefly first, or its
+  # first flush would write totals without the label's.
+  @label_usage_attempts 5
+
+  defp report_label_usage(run, %{model: model}, %{input: input, output: output} = usage)
+       when input + output > 0 do
+    cost =
+      SwarmCode.Domain.Pricing.cost(Settings.get_cached().pricing, model, input, output, %{
+        read: Map.get(usage, :cache_read, 0),
+        write: Map.get(usage, :cache_write, 0)
+      })
+
+    add_label_usage(run, usage, cost, @label_usage_attempts)
+  end
+
+  defp report_label_usage(_run, _model, _usage), do: :ok
+
+  defp add_label_usage(run, usage, cost, attempts) do
+    with :not_running <- RunServer.add_usage(run.id, usage, cost) do
+      case Conversations.get_run(run.id) do
+        %{status: "running"} when attempts > 1 ->
+          Process.sleep(100)
+          add_label_usage(run, usage, cost, attempts - 1)
+
+        %{} ->
+          SwarmCode.Domain.Conversations.Writes.add_run_usage(
+            run.id,
+            usage.input,
+            usage.output,
+            cost
+          )
+
+        nil ->
+          :ok
+      end
+    end
   end
 
   defp ask_for_label(run, %{provider: provider, model: model}) do
@@ -814,9 +1023,13 @@ defmodule SwarmCode.Domain.Engine do
       effort: label_effort(provider)
     }
 
+    # spec 74 EFFICIENCY-42: a label prompt is never sent again, so it writes
+    # nothing to the prompt cache (`Request.cache`, the provider side's field).
+    request = %{request | cache: :none}
+
     case SwarmCode.Domain.LLM.stream(request, fn _ -> :ok end) do
-      {:ok, %{text: text}} ->
-        sanitize_label(text, run.prompt)
+      {:ok, %{text: text} = result} ->
+        {sanitize_label(text, run.prompt), Map.get(result, :usage)}
 
       other ->
         # Spec 13 §4: a label request that fails used to fail in silence, which
@@ -825,21 +1038,21 @@ defmodule SwarmCode.Domain.Engine do
         # model rejects can go unnoticed for a whole pass.
         Logger.warning("swarm_code label request failed: " <> label_reason(other))
 
-        sanitize_label("", run.prompt)
+        {sanitize_label("", run.prompt), nil}
     end
   rescue
     _error ->
       Logger.warning("swarm_code label request raised")
 
-      nil
+      {nil, nil}
   catch
     kind, _reason ->
       Logger.warning("swarm_code label request exited (#{kind})")
 
-      nil
+      {nil, nil}
   end
 
-  defp ask_for_label(_run, _model), do: nil
+  defp ask_for_label(_run, _model), do: {nil, nil}
 
   defp label_effort(%{kind: "anthropic"}), do: "low"
   defp label_effort(_provider), do: nil
@@ -1221,23 +1434,7 @@ defmodule SwarmCode.Domain.Engine do
             "#{i}. [#{f["severity"]}] #{f["concern"]} Requested change: #{f["requested_change"]}"
           end)
 
-        next =
-          cond do
-            approved? and Map.get(config, :implementer) ->
-              "write the spec now (call write_spec with the complete spec) and hand it to the implementer"
-
-            approved? and config.mode == "plan" ->
-              "present the final plan as your answer; do not implement"
-
-            approved? ->
-              "implement the plan"
-
-            is_nil(verdict) ->
-              "call submit_plan with your plan"
-
-            true ->
-              "address the findings and call submit_plan again"
-          end
+        next = consensus_next(latest, config, nodes)
 
         # Spec 51 §5.7: the count is per stage, the stage is named, and the
         # rounds being used up is said so the planner does not try a round
@@ -1265,14 +1462,100 @@ defmodule SwarmCode.Domain.Engine do
 
   defp consensus_state_block(_run, _nodes), do: nil
 
+  # spec 74 BUGS-55: the next step read from the latest round's stage, the
+  # gate setting and the gate's answer (the `USER:` line `submit_plan` puts in
+  # its result once the user answered), not from the verdict alone. Resuming
+  # used to skip an unanswered gate — "implement the plan" — and restarted the
+  # implementation after an approved CHANGES round.
+  defp consensus_next(%{stage: "changes", verdict: verdict}, _config, _nodes) do
+    if approved_verdict?(verdict),
+      do: "finish with your summary",
+      else: "fix the findings, then finish"
+  end
+
+  defp consensus_next(latest, config, nodes) do
+    gate? = config.mode == "build" and "gate" in List.wrap(config.checks)
+    approved? = approved_verdict?(latest.verdict)
+
+    case gate_answer(latest.op) do
+      "Implement" <> _ ->
+        implement_next(config, nodes)
+
+      # `submit_plan` answers a lost question (a stop) as "Plan only (…)":
+      # the user never chose, so the gate asks again.
+      "Plan only (" <> _ ->
+        "call submit_plan again with the approved plan — the user is asked before " <>
+          "anything is implemented"
+
+      "Plan only" <> _ ->
+        "present the final plan as your answer; do not implement or call write_spec"
+
+      "Revise" <> _ ->
+        "revise the plan and call submit_plan again"
+
+      answer when is_binary(answer) ->
+        "the user answered the gate: #{String.slice(answer, 0, 500)} — follow that answer " <>
+          "and call submit_plan again"
+
+      nil ->
+        cond do
+          approved? and gate? ->
+            "call submit_plan again with the approved plan — the user is asked before " <>
+              "anything is implemented"
+
+          approved? and config.mode == "plan" ->
+            "present the final plan as your answer; do not implement"
+
+          approved? ->
+            implement_next(config, nodes)
+
+          is_nil(latest.verdict) ->
+            "call submit_plan with your plan"
+
+          true ->
+            "address the findings and call submit_plan again"
+        end
+    end
+  end
+
+  defp implement_next(config, nodes) do
+    cond do
+      Map.get(config, :implementer) == nil ->
+        "implement the plan"
+
+      Enum.any?(nodes, &(&1.kind == "op" and &1.op_type == "write_spec")) ->
+        "the spec is already written — hand it to the implementer (call write_spec again " <>
+          "with that spec), then verify its work"
+
+      true ->
+        "write the spec now (call write_spec with the complete spec) and hand it to the implementer"
+    end
+  end
+
+  defp approved_verdict?(verdict), do: is_map(verdict) and verdict["verdict"] == "approve"
+
+  # The gate's answer as `submit_plan` wrote it into its result, or nil.
+  defp gate_answer(%{result: result}) when is_binary(result) do
+    case Regex.run(~r/^USER: (.+)$/m, result, capture: :all_but_first) do
+      [answer] -> String.trim(answer)
+      nil -> nil
+    end
+  end
+
+  defp gate_answer(_op), do: nil
+
+  # spec 74 ARCHITECTURE-17: the chained turns go first — stopping a
+  # compaction is what would wake them.
   @spec stop_all(String.t()) :: :ok
   def stop_all(conversation_id) do
+    cancel_chains(conversation_id)
     conversation_id |> running_runs() |> Enum.each(&stop_run/1)
   end
 
   @doc "Stops every run of every conversation (the quit path, spec 11 §11)."
   @spec stop_all() :: :ok
   def stop_all do
+    cancel_chains()
     Enum.each(running_run_ids(), &stop_run/1)
   end
 

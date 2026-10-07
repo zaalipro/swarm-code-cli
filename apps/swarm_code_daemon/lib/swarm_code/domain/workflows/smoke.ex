@@ -128,9 +128,26 @@ defmodule SwarmCode.Domain.Workflows.Smoke do
   # as atoms is not — the atom table never shrinks.
   @atom_forming [{String, :to_atom}, {List, :to_atom}]
 
-  # Everything `Runner.eval/2` imports — the documented workflow DSL.
-  @api_functions SwarmCode.Domain.Workflows.API.__info__(:functions)
-                 |> Enum.reject(fn {name, _} -> name in @api_internal end)
+  # Everything `Runner.eval/2` imports — the documented workflow DSL. Spec 74
+  # ARCHITECTURE-5: read at runtime and memoised, not at compile time — a
+  # compile-time `API.__info__/1` made this file recompile on any lib/ edit.
+  defp api_functions do
+    key = {__MODULE__, :api_functions}
+
+    case :persistent_term.get(key, nil) do
+      nil ->
+        functions =
+          SwarmCode.Domain.Workflows.API.__info__(:functions)
+          |> Enum.reject(fn {name, _} -> name in @api_internal end)
+          |> MapSet.new()
+
+        :persistent_term.put(key, functions)
+        functions
+
+      functions ->
+        functions
+    end
+  end
 
   @doc """
   Runs the check against a definition or a raw source. `opts[:root]` makes the
@@ -193,6 +210,7 @@ defmodule SwarmCode.Domain.Workflows.Smoke do
       :list -> "sample"
       :enum -> to_string(List.first(spec[:values] || ["sample"]))
       :path -> "lib/sample.ex"
+      :map -> %{}
       _other -> "sample"
     end
   end
@@ -366,7 +384,7 @@ defmodule SwarmCode.Domain.Workflows.Smoke do
       name in @allowed_forms ->
         {node, acc}
 
-      {name, length(args)} in @api_functions ->
+      MapSet.member?(api_functions(), {name, length(args)}) ->
         {node, acc}
 
       true ->

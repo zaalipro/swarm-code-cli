@@ -61,6 +61,7 @@ defmodule SwarmCode.Domain.Providers do
     {:default_chat_provider_id, :default_chat_model},
     {:default_swarm_provider_id, :default_swarm_model},
     {:default_implementer_provider_id, :default_implementer_model},
+    {:default_validator_provider_id, :default_validator_model},
     {:default_workflow_provider_id, :default_workflow_model},
     {:default_scheduled_provider_id, :default_scheduled_model},
     {:research_lead_provider_id, :research_lead_model},
@@ -107,6 +108,11 @@ defmodule SwarmCode.Domain.Providers do
       set: [judge_provider_id: nil, judge_model: nil]
     )
 
+    # Spec 75 (pass 71): and the mission validator override.
+    Repo.update_all(from(c in Conversation, where: c.validator_provider_id == ^id),
+      set: [validator_provider_id: nil, validator_model: nil]
+    )
+
     :ok
   end
 
@@ -122,7 +128,8 @@ defmodule SwarmCode.Domain.Providers do
   def subscribe, do: SwarmCode.Domain.PubSub.subscribe(SwarmCode.Domain.PubSub, "providers")
 
   # ncode ships with no provider; the first-run flow asks the user to add one
-  # (BYOK). Existing rows are never touched.
+  # (BYOK). Existing rows are never touched. Kept as a function because
+  # `SwarmCode.Domain.Bootstrap` runs it as a boot step and tests inject it.
   def seed_defaults, do: :ok
 
   def fetch_models(%Provider{} = provider) do
@@ -187,6 +194,17 @@ defmodule SwarmCode.Domain.Providers do
       resolve(settings.default_implementer_provider_id, settings.default_implementer_model)
   end
 
+  # Spec 75 (pass 71): the validator — the conversation's pick, then the
+  # Settings default, then the main (orchestrator) model, so an unconfigured
+  # conversation validates on the model it plans with.
+  def effective_model(%Conversation{} = conversation, :validator) do
+    settings = Settings.get_cached()
+
+    resolve(conversation.validator_provider_id, conversation.validator_model) ||
+      resolve(settings.default_validator_provider_id, settings.default_validator_model) ||
+      effective_model(conversation, :chat)
+  end
+
   def effective_model(%Conversation{} = conversation, kind) when kind in [:chat, :swarm] do
     # Spec 54 §1.3: three of these ran at every run start (54a A2).
     settings = Settings.get_cached()
@@ -204,6 +222,61 @@ defmodule SwarmCode.Domain.Providers do
 
     resolve(conv_provider_id, conv_model) || resolve(default_provider_id, default_model) ||
       fallback()
+  end
+
+  @doc """
+  The model and effort of a mission agent's slot (spec 75 §5.1): `opts[:role]`
+  `:orchestrator` is the conversation's main model, `:worker` its worker model
+  (the `swarm_*` slot), `:validator` its validator. Strings are accepted too
+  (a role read back from JSON); nothing is converted to an atom. An explicit
+  `model:`/`provider:` leaves the model to `Workflows.resolve_model/3` and an
+  explicit `effort:` leaves the effort to the caller — both come back nil.
+  """
+  @spec role_model(keyword(), Conversation.t() | nil) ::
+          {%{provider: Provider.t(), model: String.t()} | nil, String.t() | nil}
+  def role_model(_opts, nil), do: {nil, nil}
+
+  def role_model(opts, %Conversation{} = conversation) do
+    case role_kind(opts[:role]) do
+      nil ->
+        {nil, nil}
+
+      kind ->
+        model =
+          if opts[:model] || opts[:provider] do
+            nil
+          else
+            case effective_model(conversation, kind) do
+              {:ok, model} -> model
+              _none -> nil
+            end
+          end
+
+        effort = if opts[:effort], do: nil, else: role_effort(conversation, kind)
+        {model, effort}
+    end
+  end
+
+  defp role_kind(role) when role in [:orchestrator, "orchestrator"], do: :chat
+  defp role_kind(role) when role in [:worker, "worker"], do: :swarm
+  defp role_kind(role) when role in [:validator, "validator"], do: :validator
+  defp role_kind(_role), do: nil
+
+  defp role_effort(conversation, :chat) do
+    settings = Settings.get_cached()
+    conversation.effort || settings.default_effort || "medium"
+  end
+
+  defp role_effort(conversation, :swarm) do
+    settings = Settings.get_cached()
+    conversation.swarm_effort || settings.default_swarm_effort || "medium"
+  end
+
+  defp role_effort(conversation, :validator) do
+    settings = Settings.get_cached()
+
+    conversation.validator_effort || settings.default_validator_effort ||
+      role_effort(conversation, :chat)
   end
 
   defp resolve(provider_id, model) when is_binary(provider_id) and is_binary(model) do

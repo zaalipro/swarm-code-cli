@@ -1,4 +1,4 @@
-# CLI-local change to lib/swarm_code/tools/spawn_agent.ex at 6dd8d82, after the rewrite
+# CLI-local change to lib/swarm_code/tools/spawn_agent.ex at 4c7c577, after the rewrite
 # rules of provenance/sync-rules.json. Recorded by mix swarm_code.provenance.sync.
 --- a/apps/swarm_code_daemon/lib/swarm_code/domain/tools/spawn_agent.ex
 +++ b/apps/swarm_code_daemon/lib/swarm_code/domain/tools/spawn_agent.ex
@@ -23,7 +23,7 @@
          "task" => %{
            "type" => "string",
            "description" => "precise task, files it owns, expected output"
-@@ -116,7 +123,9 @@
+@@ -122,7 +129,9 @@
          model_override: args["model"],
          effort_override: args["effort"],
          # spec 72 C5: structured output schema for sub-agents.

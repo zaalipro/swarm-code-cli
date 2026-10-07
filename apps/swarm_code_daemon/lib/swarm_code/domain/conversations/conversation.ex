@@ -39,6 +39,11 @@ defmodule SwarmCode.Domain.Conversations.Conversation do
     field(:implementer_provider_id, :binary_id)
     field(:implementer_model, :string)
     field(:implementer_effort, :string)
+    # Spec 75 (pass 71): the mission validator. nil = the main (orchestrator)
+    # model, resolved by Providers.effective_model(conversation, :validator).
+    field(:validator_provider_id, :binary_id)
+    field(:validator_model, :string)
+    field(:validator_effort, :string)
     # Spec 24 §7.3: set on the hidden conversation a deep research owns. Every
     # sidebar list filters these out; the Usage page deliberately does not.
     field(:research_id, :integer)
@@ -84,6 +89,9 @@ defmodule SwarmCode.Domain.Conversations.Conversation do
       :implementer_provider_id,
       :implementer_model,
       :implementer_effort,
+      :validator_provider_id,
+      :validator_model,
+      :validator_effort,
       :compact_due
     ])
     |> validate_required([:project_id])
@@ -95,6 +103,7 @@ defmodule SwarmCode.Domain.Conversations.Conversation do
     |> validate_format(:swarm_effort, SwarmCode.Domain.LLM.Efforts.key_format())
     |> validate_format(:judge_effort, SwarmCode.Domain.LLM.Efforts.key_format())
     |> validate_format(:implementer_effort, SwarmCode.Domain.LLM.Efforts.key_format())
+    |> validate_format(:validator_effort, SwarmCode.Domain.LLM.Efforts.key_format())
     |> validate_inclusion(:consensus_rounds, [1, 2, 3])
   end
 end

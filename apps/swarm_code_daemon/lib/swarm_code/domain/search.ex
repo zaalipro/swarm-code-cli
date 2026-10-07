@@ -277,7 +277,10 @@ defmodule SwarmCode.Domain.Search do
   defp reader(settings) do
     case settings.research_reader do
       kind when kind in ["jina", "firecrawl"] ->
-        row = get(kind) || %SearchProvider{kind: kind, api_key: ""}
+        # spec 74 EFFICIENCY-59: from the cache `engines/0` reads, not one
+        # `search_providers` query per `web_fetch`; `upsert/2` drops it.
+        rows = SwarmCode.Domain.Cache.fetch(:search_providers, &list/0)
+        row = Enum.find(rows, &(&1.kind == kind)) || %SearchProvider{kind: kind, api_key: ""}
         if kind == "jina" or String.trim(row.api_key || "") != "", do: config(row)
 
       _other ->

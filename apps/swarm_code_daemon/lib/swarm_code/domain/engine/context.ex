@@ -158,6 +158,35 @@ defmodule SwarmCode.Domain.Engine.Context do
     end
   end
 
+  @doc """
+  spec 74 BUGS-53: `compress/2` then `trim/2`, and whether a message was
+  rewritten on the way (a tool result compressed or cut). Dropping whole
+  exchanges from the oldest end is not a rewrite — that is the one removal
+  preserved thinking permits — but a rewrite in the middle invalidates every
+  later signed thinking block, so the caller strips them (`strip_blocks/1`)
+  once instead of repeating a rejected request on every later step.
+  """
+  @spec fit([map()], pos_integer()) :: {[map()], boolean()}
+  def fit(messages, budget \\ @budget) do
+    compressed = compress(messages, budget)
+    # `compress/2` hands back the very same terms for what it left alone, so
+    # this compare is a pointer walk.
+    {trim(compressed, budget), compressed != messages}
+  end
+
+  @doc """
+  spec 74 BUGS-53: the history without its provider continuation state
+  (Anthropic's signed thinking blocks). Each message sends its own text and
+  tool calls again and is counted again.
+  """
+  @spec strip_blocks([map()]) :: [map()]
+  def strip_blocks(messages) do
+    Enum.map(messages, fn
+      %{provider_blocks: _} = message -> message |> Map.delete(:provider_blocks) |> count()
+      message -> message
+    end)
+  end
+
   @doc "Replaces the content of old tool messages with a placeholder until under budget."
   def compress(messages, budget \\ @budget) do
     total = estimate_tokens(messages)
@@ -171,9 +200,19 @@ defmodule SwarmCode.Domain.Engine.Context do
         messages
         |> Enum.with_index()
         |> Enum.map_reduce(total, fn {message, index}, total ->
-          if total > budget and index < cutoff and compressible?(message) do
-            replaced = message |> Map.put(:content, placeholder(message[:content])) |> count()
-            {replaced, total - saving(message[:content], replaced[:content])}
+          if total > budget and index < cutoff do
+            # spec 74 EFFICIENCY-40: an old result's screenshots go first —
+            # the provider has already stopped sending them (OpenAI names
+            # them, Anthropic keeps the newest five), yet each was charged at
+            # its full token count and could only leave with its exchange.
+            {message, total} = reclaim_images(message, total)
+
+            if total > budget and compressible?(message) do
+              replaced = message |> Map.put(:content, placeholder(message[:content])) |> count()
+              {replaced, total - saving(message[:content], replaced[:content])}
+            else
+              {message, total}
+            end
           else
             {message, total}
           end
@@ -231,6 +270,22 @@ defmodule SwarmCode.Domain.Engine.Context do
       byte_size(message[:content]) > @min_compress and
       not String.starts_with?(message[:content], "[tool output omitted")
   end
+
+  defp reclaim_images(%{role: "tool", images: [_ | _] = images} = message, total) do
+    n = length(images)
+    marker = "[#{n} image(s) omitted — take a new screenshot if needed]"
+
+    content =
+      case to_string(message[:content] || "") do
+        "" -> marker
+        text -> text <> "\n" <> marker
+      end
+
+    replaced = message |> Map.delete(:images) |> Map.put(:content, content) |> count()
+    {replaced, total - ((message[:tokens] || tokens_of(message)) - replaced[:tokens])}
+  end
+
+  defp reclaim_images(message, total), do: {message, total}
 
   defp placeholder(content) do
     "[tool output omitted (#{String.length(content)} chars) — re-read the file if needed]"

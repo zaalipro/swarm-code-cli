@@ -26,6 +26,9 @@ defmodule SwarmCode.Domain.Conversations.Message do
     # Spec 52 §1.1: the user edited and resent this turn. The row stays in the
     # transcript (folded and dimmed); the model never reads it again.
     field(:superseded_at, :utc_datetime_usec)
+    # spec 74 EFFICIENCY-33: set by `Conversations.list_transcript/1`, which
+    # leaves `reasoning` unloaded (nil) and says here whether there is any.
+    field(:has_reasoning, :boolean, virtual: true)
 
     belongs_to(:conversation, SwarmCode.Domain.Conversations.Conversation)
 

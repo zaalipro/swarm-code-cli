@@ -4,7 +4,7 @@ defmodule SwarmCode.Domain.Workflows.HostTest do
   alias SwarmCode.Domain.Workflows.Host
 
   setup do
-    root = Path.join(System.tmp_dir!(), "host-test-#{System.unique_integer([:positive])}")
+    root = Path.join(System.tmp_dir!(), "host-test-#{Ecto.UUID.generate()}")
     File.mkdir_p!(Path.join([root, "lib", "app", "web"]))
     File.mkdir_p!(Path.join(root, "test"))
     File.write!(Path.join([root, "lib", "app.ex"]), "defmodule App do\n  @moon true\nend\n")

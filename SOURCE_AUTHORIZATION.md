@@ -87,3 +87,24 @@ records. No entry in `provenance/extracted-files.json` cites it, and the sync
 pin stays `6dd8d82ef29f9a6608b942259e1801846bb87ed9`. The recorded copyright,
 MIT license and NOTICE terms remain in place. This addendum does not publish or
 modify the desktop repository.
+
+## Addendum: desktop commit 4c7c577a (CLI 0.2.0, 2026-10-07)
+
+**Date:** 2026-10-07
+
+The CLI 0.2.0 pass (`docs/superpowers/plans/2026-10-07-cli-0.2.0/00_contract.md`,
+owner decisions 1 and 5, lane A) re-derives the extracted domain from desktop
+commit `4c7c577aa909274b009dc1bf0f216e5179acddc9` (desktop 0.2.0 `68512b59`
+plus one commit that changes three test files), the same project and owner as
+the commits named above. The provenance sync pins this commit
+(`provenance/sync-rules.json`), and 262 of the 301 entries in
+`provenance/extracted-files.json` record it as their upstream commit; the
+other 39 record `fb1b4ff82354ac8ff2e82d4f6516121fd55ff212`. One of the 262 is
+new and outside every sync mapping: `domain/format.ex`, the pure text helpers
+of the desktop's `lib/swarm_code_web/components/format.ex`, which the synced
+`Conversations.Run` calls. The verifier admits version 2 records at five
+adaptation pins: the four named above and this commit. The schema manifest
+`apps/swarm_code_daemon/priv/schema/desktop-4c7c577.json` describes the 58
+migration files at this commit. The recorded copyright, MIT license and NOTICE
+terms remain in place. This addendum does not publish or modify the desktop
+repository.

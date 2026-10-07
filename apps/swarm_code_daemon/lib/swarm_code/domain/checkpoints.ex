@@ -22,6 +22,10 @@ defmodule SwarmCode.Domain.Checkpoints do
   # of file content in SQLite.
   @max_bytes 2_000_000
 
+  # spec 74 BUGS-3: why a path was left alone by a rewind.
+  @unrestorable_reason "binary or over 2 MB"
+  @only_copy "kept: the moved copy of a file whose snapshot is binary or over 2 MB"
+
   @doc """
   Records the current content of `abs_path` for the run in `ctx`. A no-op when
   the context belongs to no conversation (direct tool calls in tests). `run_id`
@@ -29,10 +33,18 @@ defmodule SwarmCode.Domain.Checkpoints do
   """
   # spec 60 T26: every failure is an error — the callers write nothing without a
   # rewind point. Only "no run and no conversation in `ctx`" is still `:ok`.
-  @spec snapshot(map(), String.t()) ::
-          :ok | {:error, :database_busy | :invalid_checkpoint | term()}
-  def snapshot(ctx, abs_path) do
+  #
+  # spec 74 BUGS-3: with `require_restorable: true` a file that could not be
+  # rewound (binary, not UTF-8, over 2 MB) is `{:error, :unrestorable}` and no
+  # row is written — `move_file`/`delete_file` refuse it before anything
+  # changes on disk, instead of leaving a rewind that deletes both copies. The
+  # run's existing row for the path decides when there is one, and the check
+  # runs with no conversation too (a direct tool call).
+  @spec snapshot(map(), String.t(), keyword()) ::
+          :ok | {:error, :unrestorable | :database_busy | :invalid_checkpoint | term()}
+  def snapshot(ctx, abs_path, opts \\ []) do
     run_id = Map.get(ctx, :run_id)
+    require? = Keyword.get(opts, :require_restorable, false)
 
     case Repo.retry(:checkpoint, fn -> conversation_id(ctx, run_id) end) do
       {:error, :database_busy} ->
@@ -44,19 +56,15 @@ defmodule SwarmCode.Domain.Checkpoints do
         # the same run records nothing — 84 % of the checkpoint bytes in the
         # measured database were these duplicates. A manual edit from the
         # Changes tab (`run_id` nil) keeps one row per write.
-        case Repo.retry(:checkpoint, fn ->
-               is_binary(run_id) and
-                 Repo.exists?(
-                   from(c in Checkpoint, where: c.run_id == ^run_id and c.path == ^abs_path)
-                 )
-             end) do
+        case Repo.retry(:checkpoint, fn -> existing_restorable(run_id, abs_path) end) do
           {:error, :database_busy} -> {:error, :database_busy}
-          true -> :ok
-          false -> insert(conversation_id, ctx, abs_path)
+          nil -> insert(conversation_id, ctx, abs_path, read(abs_path), require?)
+          false when require? -> {:error, :unrestorable}
+          _recorded -> :ok
         end
 
       _none ->
-        :ok
+        if require? and not elem(read(abs_path), 1), do: {:error, :unrestorable}, else: :ok
     end
   rescue
     e -> {:error, e}
@@ -73,9 +81,24 @@ defmodule SwarmCode.Domain.Checkpoints do
   def error_message(other),
     do: "could not record a checkpoint (#{inspect(other)}) — the file was not changed"
 
-  defp insert(conversation_id, ctx, abs_path) do
-    {content, restorable?} = read(abs_path)
+  # The run's row for the path — its `restorable` flag — or nil when the run
+  # has none (or there is no run: a manual edit keeps one row per write).
+  defp existing_restorable(run_id, abs_path) when is_binary(run_id) do
+    Repo.one(
+      from(c in Checkpoint,
+        where: c.run_id == ^run_id and c.path == ^abs_path,
+        select: c.restorable,
+        limit: 1
+      )
+    )
+  end
 
+  defp existing_restorable(_run_id, _abs_path), do: nil
+
+  defp insert(_conversation_id, _ctx, _abs_path, {_content, false}, true = _require?),
+    do: {:error, :unrestorable}
+
+  defp insert(conversation_id, ctx, abs_path, {content, restorable?}, _require?) do
     # spec 55 T16 (55a A17): a busy database refuses the write instead of
     # letting the file go without a rewind point.
     # spec 68 T3: ownership IDs set via put_change from trusted context.
@@ -218,6 +241,37 @@ defmodule SwarmCode.Domain.Checkpoints do
   end
 
   def run_diff(_run_id), do: []
+
+  @doc """
+  One path's `run_diff/1` entry (spec 74 EFFICIENCY-55): the oldest checkpoint
+  of `path` in the run, diffed by the same rules — nil when the run never
+  touched it. Showing one file of a finished run no longer builds the whole
+  run's diff; a file past `run_diff/1`'s page now shows too.
+  """
+  @spec run_file_diff(String.t(), String.t()) :: map() | nil
+  def run_file_diff(run_id, path) when is_binary(run_id) and is_binary(path) do
+    from(c in Checkpoint,
+      where: c.run_id == ^run_id and c.path == ^path,
+      order_by: [asc: c.inserted_at, asc: c.id],
+      limit: 1,
+      select: %{
+        path: c.path,
+        previous_content: c.previous_content,
+        restorable: c.restorable,
+        inserted_at: c.inserted_at,
+        conversation_id: c.conversation_id
+      }
+    )
+    |> Repo.one()
+    |> case do
+      nil -> nil
+      row -> diff_entry(row, next_contents([row]))
+    end
+  rescue
+    Ecto.Query.CastError -> nil
+  end
+
+  def run_file_diff(_run_id, _path), do: nil
 
   # Only a page that may have been cut needs the count.
   defp distinct_paths(_run_id, rows) when length(rows) < @run_diff_files, do: length(rows)
@@ -378,8 +432,10 @@ defmodule SwarmCode.Domain.Checkpoints do
   The conversation's checkpoints grouped by run, newest turn first:
   `[%{run_id, turn, prompt, at, files: [checkpoint]}]`.
   """
-  @spec for_conversation(String.t()) :: [map()]
-  def for_conversation(conversation_id) do
+  @spec for_conversation(String.t(), [map()] | nil) :: [map()]
+  def for_conversation(conversation_id, runs \\ nil)
+
+  def for_conversation(conversation_id, runs) do
     checkpoints =
       from(c in Checkpoint,
         where: c.conversation_id == ^conversation_id,
@@ -388,7 +444,14 @@ defmodule SwarmCode.Domain.Checkpoints do
       |> listing()
       |> Repo.all()
 
-    runs = Conversations.list_runs(conversation_id)
+    # spec 74 EFFICIENCY-32: the runs the caller holds, and none read at all
+    # when there is nothing to list.
+    runs =
+      cond do
+        checkpoints == [] -> []
+        is_list(runs) -> runs
+        true -> Conversations.list_runs(conversation_id)
+      end
 
     turns =
       runs
@@ -406,7 +469,10 @@ defmodule SwarmCode.Domain.Checkpoints do
         turn: turn,
         prompt: run && run.prompt,
         at: List.last(files) && List.last(files).inserted_at,
-        files: dedupe(files)
+        # spec 74 BUGS-38: the manual saves of the Changes tab (no run) keep the
+        # newest row per path, so their Restore undoes the latest save; a
+        # turn keeps its oldest, which takes the file back to the turn's start.
+        files: if(is_nil(run_id), do: Enum.uniq_by(files, & &1.path), else: dedupe(files))
       }
     end)
     |> Enum.sort_by(& &1.turn, :desc)
@@ -427,21 +493,45 @@ defmodule SwarmCode.Domain.Checkpoints do
   The checkpoint must belong to `conversation_id`, and its target must still be
   inside that conversation's project.
   """
+  #
+  # spec 74 BUGS-3: a delete-on-restore row (the file did not exist) whose
+  # operation also recorded an unrestorable row is the destination of a move
+  # of a binary or oversized file — deleting it would delete the only copy, so
+  # it is refused by name.
   @spec restore_one(String.t(), String.t()) :: {:ok, String.t()} | {:error, String.t()}
   def restore_one(conversation_id, checkpoint_id) do
     with {:ok, root} <- project_root(conversation_id),
-         {:ok, checkpoint} <- own(conversation_id, checkpoint_id) do
+         {:ok, checkpoint} <- own(conversation_id, checkpoint_id),
+         :ok <- not_only_copy(root, checkpoint) do
       apply_checkpoint(root, checkpoint)
     end
   end
+
+  defp not_only_copy(root, %Checkpoint{previous_content: nil, node_id: node_id} = checkpoint)
+       when is_binary(node_id) do
+    if Repo.exists?(from(c in Checkpoint, where: c.node_id == ^node_id and not c.restorable)),
+      do:
+        {:error,
+         "#{relative(root, checkpoint.path)} is the moved copy of a file whose snapshot is " <>
+           "binary or over 2 MB — restoring it would delete the only copy"},
+      else: :ok
+  end
+
+  defp not_only_copy(_root, _checkpoint), do: :ok
 
   @doc "The conversation's own checkpoint, or the exact ownership error."
   @spec own(String.t(), String.t()) :: {:ok, Checkpoint.t()} | {:error, String.t()}
   def own(conversation_id, checkpoint_id) when is_binary(checkpoint_id) do
     case Repo.get_by(Checkpoint, id: checkpoint_id, conversation_id: conversation_id) do
-      nil -> {:error, @foreign}
-      %Checkpoint{restorable: false} -> {:error, "this file is too large to restore"}
-      checkpoint -> {:ok, checkpoint}
+      nil ->
+        {:error, @foreign}
+
+      %Checkpoint{restorable: false} ->
+        {:error,
+         "this file is binary or too large (over 2 MB), so its snapshot cannot be restored"}
+
+      checkpoint ->
+        {:ok, checkpoint}
     end
   rescue
     # A malformed id is a foreign id.
@@ -492,6 +582,17 @@ defmodule SwarmCode.Domain.Checkpoints do
   """
   @spec restore_run(String.t(), String.t()) :: {:ok, non_neg_integer()} | {:error, String.t()}
   def restore_run(conversation_id, run_id) do
+    with {:ok, %{restored: n}} <- restore_run_report(conversation_id, run_id), do: {:ok, n}
+  end
+
+  @doc """
+  `restore_run/2` with what could not be restored (spec 74 BUGS-3):
+  `{:ok, %{restored: n, skipped: [{relative_path, reason}], message: text}}`,
+  where `message` is the sentence the chat records ("Rewound 3 file(s) to
+  before turn 2; could not restore data/big.json (binary or over 2 MB).").
+  """
+  @spec restore_run_report(String.t(), String.t()) :: {:ok, map()} | {:error, String.t()}
+  def restore_run_report(conversation_id, run_id) do
     turns = for_conversation(conversation_id)
 
     case Enum.find(turns, &(&1.run_id == run_id)) do
@@ -499,22 +600,53 @@ defmodule SwarmCode.Domain.Checkpoints do
         {:error, "unknown turn"}
 
       %{turn: turn} ->
-        affected = Enum.filter(turns, &(&1.turn >= turn))
-
-        # A file touched in several turns must end up with the content it had
-        # before the OLDEST of them, so the earliest snapshot per path wins.
-        restored =
-          affected
+        rows =
+          turns
+          |> Enum.filter(&(&1.turn >= turn))
           |> Enum.sort_by(& &1.turn, :asc)
           |> Enum.flat_map(& &1.files)
-          |> Enum.filter(& &1.restorable)
-          |> Enum.uniq_by(& &1.path)
 
         with {:ok, root} <- project_root(conversation_id) do
-          rewind(conversation_id, root, restored, turn)
+          {restored, skipped} = plan_restore(rows)
+          do_rewind(conversation_id, root, restored, turn, describe_skipped(root, skipped))
         end
     end
   end
+
+  # A file touched in several turns must end up with the content it had before
+  # the OLDEST of them, so the earliest snapshot per path wins — and it wins
+  # **before** the restorable filter (spec 74 BUGS-3): filtering first let a
+  # later row of the same path stand in for an unrestorable earliest one. A
+  # path whose earliest row is unrestorable is skipped, and so is a
+  # delete-on-restore row of the same operation (`node_id`): that is the
+  # destination of a moved binary, and deleting it deleted the only copy.
+  defp plan_restore(rows) do
+    earliest = Enum.uniq_by(rows, & &1.path)
+
+    unrestorable_nodes =
+      for %{restorable: false, node_id: node_id} when is_binary(node_id) <- rows,
+          into: MapSet.new(),
+          do: node_id
+
+    Enum.reduce(earliest, {[], []}, fn row, {restored, skipped} ->
+      cond do
+        not row.restorable ->
+          {restored, [{row.path, @unrestorable_reason} | skipped]}
+
+        is_nil(row.previous_content) and MapSet.member?(unrestorable_nodes, row.node_id) ->
+          {restored, [{row.path, @only_copy} | skipped]}
+
+        true ->
+          {[row | restored], skipped}
+      end
+    end)
+    |> then(fn {restored, skipped} -> {Enum.reverse(restored), Enum.reverse(skipped)} end)
+  end
+
+  defp describe_skipped(root, skipped),
+    do: Enum.map(skipped, fn {path, reason} -> {relative(root, path), reason} end)
+
+  defp relative(root, path), do: SwarmCode.Domain.Tools.Path.relative(root, path)
 
   # Spec 32 §2: every failure used to be swallowed and the count reported as if
   # it had worked. It stops at the first one and says how far it got; retrying
@@ -522,6 +654,11 @@ defmodule SwarmCode.Domain.Checkpoints do
   # Public for the spec 51 §1.3 test (a row deleted between listing and restore).
   @doc false
   def rewind(conversation_id, root, checkpoints, turn) do
+    with {:ok, %{restored: n}} <- do_rewind(conversation_id, root, checkpoints, turn, []),
+         do: {:ok, n}
+  end
+
+  defp do_rewind(conversation_id, root, checkpoints, turn, skipped) do
     result =
       Enum.reduce_while(checkpoints, {:ok, 0}, fn checkpoint, {:ok, done} ->
         case apply_checkpoint(root, Repo.get(Checkpoint, checkpoint.id)) do
@@ -529,19 +666,28 @@ defmodule SwarmCode.Domain.Checkpoints do
             {:cont, {:ok, done + 1}}
 
           {:error, reason} ->
-            relative = SwarmCode.Domain.Tools.Path.relative(root, checkpoint.path)
+            relative = relative(root, checkpoint.path)
             {:halt, {:error, "Could not restore #{relative}: #{reason} after #{done} file(s)."}}
         end
       end)
 
     with {:ok, n} <- result do
+      message = rewind_message(n, turn, skipped)
+
       Conversations.create_message(%{
         conversation_id: conversation_id,
         role: "swarm",
-        content: "Rewound #{n} file(s) to before turn #{turn}."
+        content: message
       })
 
-      {:ok, n}
+      {:ok, %{restored: n, skipped: skipped, message: message}}
     end
+  end
+
+  defp rewind_message(n, turn, []), do: "Rewound #{n} file(s) to before turn #{turn}."
+
+  defp rewind_message(n, turn, skipped) do
+    names = Enum.map_join(skipped, ", ", fn {rel, reason} -> "#{rel} (#{reason})" end)
+    "Rewound #{n} file(s) to before turn #{turn}; could not restore #{names}."
   end
 end

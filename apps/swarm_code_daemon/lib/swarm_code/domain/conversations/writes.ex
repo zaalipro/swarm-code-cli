@@ -7,8 +7,9 @@ defmodule SwarmCode.Domain.Conversations.Writes do
   Spec 60 T27: that holds for the run's status event and the goal text too — the
   row writes inside the transaction are silent (`broadcast: false`) and the
   after-commit order is `run_status` (when the status changed), `message_updated`,
-  `message_created`…, `goals_updated`, `conversation_updated` (+ `Projects.broadcast/0`
-  when the goal text changed), then the touch's `conversation_updated`.
+  `message_created`…, `goals_updated`, `conversation_updated` (when the goal text
+  changed), then the touch's `conversation_updated`. Spec 74 EFFICIENCY-14: the goal
+  text is not a sidebar column, so no `{:projects_changed}` follows it.
   """
   import Ecto.Query, only: [from: 2]
   alias SwarmCode.Domain.Conversations
@@ -17,16 +18,76 @@ defmodule SwarmCode.Domain.Conversations.Writes do
 
   @type turn :: %{user: Message.t() | nil, assistant: Message.t() | nil, run: Run.t()}
 
+  @doc """
+  spec 74 BUGS-33: adds a one-shot request's usage (the run label) to a run
+  that has already finished — its RunServer, which owns the totals while it
+  runs (`RunServer.add_usage/3`), is gone. An increment, so it composes with
+  whatever the finish wrote; `{:run_totals}` (spec 74 EFFICIENCY-4) follows the commit.
+  """
+  @spec add_run_usage(String.t(), non_neg_integer(), non_neg_integer(), float() | nil) ::
+          :ok | {:error, :database_busy}
+  def add_run_usage(run_id, tokens_in, tokens_out, cost) do
+    cost = cost || 0.0
+
+    result =
+      Repo.retry(:add_run_usage, fn ->
+        Repo.update_all(
+          from(r in Run,
+            where: r.id == ^run_id,
+            update: [
+              set: [
+                tokens_in: fragment("COALESCE(tokens_in, 0) + ?", ^tokens_in),
+                tokens_out: fragment("COALESCE(tokens_out, 0) + ?", ^tokens_out),
+                cost_usd: fragment("COALESCE(cost_usd, 0) + ?", ^cost)
+              ]
+            ]
+          ),
+          []
+        )
+      end)
+
+    case result do
+      {:error, :database_busy} = busy ->
+        busy
+
+      {1, _} ->
+        # spec 74 EFFICIENCY-4: a token-only change is `{:run_totals}`.
+        if run = Repo.get(Run, run_id),
+          do:
+            Conversations.broadcast(
+              run.conversation_id,
+              {:run_totals, run.id,
+               %{
+                 tokens_in: run.tokens_in || 0,
+                 tokens_out: run.tokens_out || 0,
+                 cost_usd: run.cost_usd
+               }}
+            )
+
+        :ok
+
+      _none ->
+        :ok
+    end
+  end
+
   # spec 55 T4
+  # spec 74 BUGS-56: `{:error, :already_resumed}` when `run_attrs` continue a
+  # run that already has a live or successful continuation.
   @spec create_turn(String.t(), map() | nil, map() | nil, map()) ::
           {:ok, turn()}
-          | {:error, :database_busy | {:invalid_message, Ecto.Changeset.t()} | Ecto.Changeset.t()}
+          | {:error,
+             :database_busy
+             | :already_resumed
+             | {:invalid_message, Ecto.Changeset.t()}
+             | Ecto.Changeset.t()}
   def create_turn(conversation_id, user_attrs, assistant_attrs, run_attrs) do
     result =
       Repo.retry(:create_turn, fn ->
         Repo.transaction(
           fn ->
-            with {:ok, run} <- Conversations.insert_run_row(run_attrs),
+            with :ok <- not_resumed(run_attrs),
+                 {:ok, run} <- Conversations.insert_run_row(run_attrs),
                  {:ok, user} <- insert_or_nil(conversation_id, user_attrs, run.id),
                  {:ok, assistant} <- insert_or_nil(conversation_id, assistant_attrs, run.id) do
               %{user: user, assistant: assistant, run: run}
@@ -48,6 +109,9 @@ defmodule SwarmCode.Domain.Conversations.Writes do
       {:error, :database_busy} ->
         {:error, :database_busy}
 
+      {:error, :already_resumed} ->
+        {:error, :already_resumed}
+
       {:error, {:invalid_message, _} = reason} ->
         {:error, reason}
 
@@ -67,13 +131,18 @@ defmodule SwarmCode.Domain.Conversations.Writes do
   """
   @spec resume_turn(String.t(), Message.t(), map(), map()) ::
           {:ok, %{user: Message.t(), assistant: Message.t() | nil, run: Run.t()}}
-          | {:error, :database_busy | {:invalid_message, Ecto.Changeset.t()} | Ecto.Changeset.t()}
+          | {:error,
+             :database_busy
+             | :already_resumed
+             | {:invalid_message, Ecto.Changeset.t()}
+             | Ecto.Changeset.t()}
   def resume_turn(conversation_id, %Message{} = user, assistant_attrs, run_attrs) do
     result =
       Repo.retry(:create_turn, fn ->
         Repo.transaction(
           fn ->
-            with {:ok, run} <- Conversations.insert_run_row(run_attrs),
+            with :ok <- not_resumed(run_attrs),
+                 {:ok, run} <- Conversations.insert_run_row(run_attrs),
                  {:ok, user} <- link_message(user, run.id),
                  {:ok, assistant} <- insert_or_nil(conversation_id, assistant_attrs, run.id) do
               %{user: user, assistant: assistant, run: run}
@@ -95,6 +164,9 @@ defmodule SwarmCode.Domain.Conversations.Writes do
       {:error, :database_busy} ->
         {:error, :database_busy}
 
+      {:error, :already_resumed} ->
+        {:error, :already_resumed}
+
       {:error, {:invalid_message, _} = reason} ->
         {:error, reason}
 
@@ -102,6 +174,30 @@ defmodule SwarmCode.Domain.Conversations.Writes do
         {:error, changeset}
     end
   end
+
+  # spec 74 BUGS-56: the same stopped run could be resumed twice (two windows,
+  # a double click, `/resume` beside the card's button) and ran two parallel
+  # continuations. Checked inside the IMMEDIATE transaction that inserts the
+  # continuation, so two launches serialise on the write lock and the second
+  # sees the first. No unique index: a continuation that failed at start
+  # (compensated to `failed`, no nodes) must not block a new resume.
+  @blocking_continuation ~w(running paused waiting_user done)
+
+  defp not_resumed(%{resumed_from_run_id: old_id}) when is_binary(old_id) do
+    continued? =
+      Repo.exists?(
+        from(r in Run,
+          where: r.resumed_from_run_id == ^old_id,
+          where:
+            r.status in @blocking_continuation or
+              fragment("EXISTS (SELECT 1 FROM nodes AS n WHERE n.run_id = ?)", r.id)
+        )
+      )
+
+    if continued?, do: {:error, :already_resumed}, else: :ok
+  end
+
+  defp not_resumed(_run_attrs), do: :ok
 
   # Silent inside the transaction, like every other write here; the
   # `message_updated` event goes out after the commit.
@@ -173,10 +269,11 @@ defmodule SwarmCode.Domain.Conversations.Writes do
         Enum.each(created, &Conversations.broadcast(conv_id, {:message_created, &1}))
         if goal, do: Conversations.broadcast(conv_id, {:goals_updated, conv_id})
 
-        if goal_conv = out.goal_conv do
-          Conversations.broadcast(conv_id, {:conversation_updated, goal_conv})
-          SwarmCode.Domain.Projects.broadcast()
-        end
+        # spec 74 EFFICIENCY-14 (O4's task, O1's line): no `Projects.broadcast/0`
+        # — every open window reloaded its sidebar and the engine's project
+        # cache was invalidated for a column the sidebar does not show.
+        if goal_conv = out.goal_conv,
+          do: Conversations.broadcast(conv_id, {:conversation_updated, goal_conv})
 
         if id = opts[:touch] do
           if conv = Repo.get(Conversation, id),
@@ -209,8 +306,15 @@ defmodule SwarmCode.Domain.Conversations.Writes do
       Repo.retry(:finish_workflow_run, fn ->
         Repo.transaction(
           fn ->
+            # spec 74 BUGS-20: the caller's struct is the RunServer's boot-time
+            # copy — the Runner writes phase, logs and admissions on its own.
+            # The changeset only writes the changed columns, so the row was
+            # right, but the struct returned (and broadcast) put the phase, the
+            # logs and the admitted count back to their boot values.
+            fresh = Repo.get(SwarmCode.Domain.Workflows.Run, wf.run_id) || wf
+
             wf =
-              case wf |> SwarmCode.Domain.Workflows.Run.changeset(wf_attrs) |> Repo.update() do
+              case fresh |> SwarmCode.Domain.Workflows.Run.changeset(wf_attrs) |> Repo.update() do
                 {:ok, wf} -> wf
                 {:error, changeset} -> Repo.rollback(changeset)
               end

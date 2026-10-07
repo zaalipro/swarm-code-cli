@@ -73,7 +73,10 @@ defmodule SwarmCode.Domain.Tools.GitDiff do
   def permission(_args), do: :read
 
   @impl true
-  def title(args), do: "git diff" <> if(args["path"], do: " " <> args["path"], else: "")
+  def title(args),
+    do:
+      "git diff" <>
+        if(args["path"], do: " " <> SwarmCode.Domain.Tools.arg_text(args["path"]), else: "")
 
   @impl true
   def run(args, ctx, progress) do
@@ -184,7 +187,10 @@ defmodule SwarmCode.Domain.Tools.GitCommit do
   def parallel?, do: false
 
   @impl true
-  def title(args), do: "git commit: " <> String.slice(to_string(args["message"] || ""), 0, 50)
+  def title(args),
+    do:
+      "git commit: " <>
+        String.slice(SwarmCode.Domain.Tools.arg_text(args["message"] || ""), 0, 50)
 
   @impl true
   def run(args, ctx, progress) do

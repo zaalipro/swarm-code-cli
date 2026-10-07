@@ -30,7 +30,11 @@ defmodule SwarmCode.Domain.LLM.Request do
           temperature: float(),
           effort: effort(),
           deadline_ms: pos_integer() | nil,
-          cache_key: String.t() | nil
+          cache_key: String.t() | nil,
+          cache: :default | :none,
+          cache_anchor: non_neg_integer() | nil,
+          # Spec 75: which conversation and model slot the speed monitor files this call under.
+          speed: nil | %{conversation_id: String.t(), role: atom()}
         }
 
   @typedoc """
@@ -60,7 +64,21 @@ defmodule SwarmCode.Domain.LLM.Request do
             # for the root agent, `run_id:node_id` for a sub-agent, so siblings
             # with different prefixes do not evict each other. Anthropic does
             # not use it — it has explicit `cache_control` markers.
-            cache_key: nil
+            cache_key: nil,
+            # pass74 (spec 74) EFFICIENCY-42: `:none` for a one-shot request
+            # (inline compaction, /compact, the run label) whose prompt is never
+            # sent again — no `cache_control` markers on Anthropic (a cache
+            # write costs 1.25× the input price and would never be read), no
+            # `prompt_cache_key` on OpenAI-compatible servers.
+            cache: :default,
+            # pass74 (spec 74) EFFICIENCY-43: the index in `messages` of the
+            # last message of a root chat agent's opening history — the prefix
+            # its first step wrote to the Anthropic cache and the next user turn
+            # can read again. Anthropic puts a third marker there so later steps
+            # keep that entry alive; nil when the prefix has been edited.
+            cache_anchor: nil,
+            # Spec 75: which conversation and model slot the speed monitor files this call under.
+            speed: nil
 
   # spec 68 T14: efforts/0 removed — dead code superseded by Efforts.keys/2.
 

@@ -48,7 +48,7 @@ defmodule SwarmCode.Domain.Tools.Grep do
   def permission(_args), do: :read
 
   @impl true
-  def title(args), do: "grep " <> to_string(args["pattern"] || "")
+  def title(args), do: "grep " <> SwarmCode.Domain.Tools.arg_text(args["pattern"] || "")
 
   @impl true
   def run(args, ctx, progress) do
@@ -62,7 +62,7 @@ defmodule SwarmCode.Domain.Tools.Grep do
 
         {:ok, re} ->
           compiled = {Regex.re_pattern(re), file_filter(source)}
-          files = file_candidates(abs, args["glob"], ctx.project_root, source)
+          files = file_candidates(abs, args["glob"], ctx, source)
           scan(files, compiled, max, ctx.project_root, progress)
       end
     end
@@ -78,11 +78,12 @@ defmodule SwarmCode.Domain.Tools.Grep do
   # backtracking refusal, progress detail, and output formatting.
   @ignored_globs ~w(_build* .git deps node_modules .elixir_ls .superpowers .DS_Store cover doc)
 
-  defp file_candidates(abs, glob, root, source) do
+  defp file_candidates(abs, glob, ctx, source) do
+    root = ctx.project_root
     all_files = fn -> candidates(abs, glob, root) end
 
     if File.dir?(abs) and use_rg?() do
-      case rg_matching_set(source, abs, root) do
+      case rg_matching_set(source, abs, SwarmCode.Domain.Tools.timeout(ctx)) do
         {:ok, rg_set} when map_size(rg_set) > 0 ->
           all_files.() |> Enum.filter(&Map.has_key?(rg_set, &1))
 
@@ -97,21 +98,35 @@ defmodule SwarmCode.Domain.Tools.Grep do
     end
   end
 
-  defp rg_matching_set(pattern, abs_path, _root) do
+  # spec 74 BUGS-22: the pattern was a positional argument, so `-v`, `-e`,
+  # `--json` or `--` made the *path* the pattern and rg read the port's stdin,
+  # which never closes — the op hung until Stop; `--help` printed help and the
+  # answer was a false "no matches". The pattern goes in `--regexp=`, the path
+  # after `--`, rg's own messages never enter the file set, `--no-config`
+  # keeps a `RIPGREP_CONFIG_PATH` (and its `--pre`) out, and the run is a
+  # port with a deadline and a byte bound: a timeout, a bound hit or any
+  # failure falls back to the Elixir scan, and the process tree is reaped.
+  @rg_max_bytes 8_000_000
+
+  defp rg_matching_set(pattern, abs_path, timeout) do
     rg = Ripgrep.rg_path()
     skip = Enum.flat_map(@ignored_globs, &["--glob", "!#{&1}"])
 
     args =
-      ["--pcre2", "--files-with-matches", "--no-follow", "--color", "never"] ++
-        ["--max-filesize", "1M", "--hidden"] ++
-        skip ++ [pattern, abs_path]
+      ["--no-config", "--pcre2", "--files-with-matches", "--no-follow", "--color", "never"] ++
+        ["--no-messages", "--max-filesize", "1M", "--hidden"] ++
+        skip ++ ["--regexp=" <> pattern, "--", abs_path]
 
-    case System.cmd(rg, args,
+    # spec 74 ARCHITECTURE-19: the shared bounded runner. A cut at the byte
+    # bound would silently drop matches, so it falls back like a timeout.
+    case SwarmCode.Domain.OSProcess.run(rg, args,
            cd: abs_path,
            env: [{"HOME", System.user_home!()}],
-           stderr_to_stdout: true
+           stderr_to_stdout: false,
+           timeout: timeout,
+           max_bytes: @rg_max_bytes
          ) do
-      {output, code} when code in [0, 1] ->
+      {:ok, code, output, false} when code in [0, 1] ->
         set =
           output
           |> String.split("\n", trim: true)
@@ -119,7 +134,7 @@ defmodule SwarmCode.Domain.Tools.Grep do
 
         {:ok, set}
 
-      {_output, _code} ->
+      _failed_timed_out_or_too_big ->
         :fallback
     end
   rescue

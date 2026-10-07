@@ -107,30 +107,52 @@ defmodule SwarmCode.Domain.Scheduled do
   def recent_runs_by_task([], _limit), do: %{}
 
   def recent_runs_by_task(task_ids, limit) when is_list(task_ids) do
-    ranked =
-      from(r in Run,
-        where: r.task_id in ^task_ids,
-        left_join: c in Conversation,
-        on: c.id == r.conversation_id,
-        windows: [w: [partition_by: r.task_id, order_by: [desc: r.scheduled_for]]],
-        select: %{
-          task_id: r.task_id,
-          run_id: r.run_id,
-          conversation_id: r.conversation_id,
-          title: c.title,
-          status: r.status,
-          scheduled_for: r.scheduled_for,
-          started_at: r.started_at,
-          rank: over(row_number(), :w)
-        }
-      )
+    # spec 74 EFFICIENCY-18: one index seek per task on the unique
+    # `(task_id, scheduled_for)` — a `UNION ALL` of per-task `LIMIT` branches,
+    # each wrapped so SQLite accepts its ORDER BY — instead of ranking every
+    # occurrence ever with `row_number()`. The branch list is evaluated once
+    # (a correlated subquery was re-run per outer row); the outer ORDER BY is
+    # what orders the result, since UNION ALL order is unspecified.
+    # SQLite caps a compound SELECT at 500 terms: 200 tasks per statement.
+    task_ids
+    |> Enum.uniq()
+    |> Enum.chunk_every(200)
+    |> Enum.flat_map(&newest_runs(&1, limit))
+    |> Enum.group_by(& &1.task_id, &Map.delete(&1, :task_id))
+  end
 
-    from(x in subquery(ranked),
-      where: x.rank <= ^limit,
-      order_by: [asc: x.task_id, desc: x.scheduled_for]
+  defp newest_runs(task_ids, limit) do
+    newest =
+      task_ids
+      |> Enum.map(fn id ->
+        branch =
+          from(r in Run,
+            where: r.task_id == ^id,
+            order_by: [desc: r.scheduled_for],
+            limit: ^limit,
+            select: %{id: r.id}
+          )
+
+        from(x in subquery(branch), select: x.id)
+      end)
+      |> Enum.reduce(fn branch, acc -> union_all(acc, ^branch) end)
+
+    from(r in Run,
+      where: r.id in subquery(newest),
+      left_join: c in Conversation,
+      on: c.id == r.conversation_id,
+      order_by: [asc: r.task_id, desc: r.scheduled_for],
+      select: %{
+        task_id: r.task_id,
+        run_id: r.run_id,
+        conversation_id: r.conversation_id,
+        title: c.title,
+        status: r.status,
+        scheduled_for: r.scheduled_for,
+        started_at: r.started_at
+      }
     )
     |> Repo.all()
-    |> Enum.group_by(& &1.task_id, &Map.drop(&1, [:task_id, :rank]))
   end
 
   @doc "How many runs every task in `task_ids` has ever had (spec 56 T2)."
@@ -153,30 +175,39 @@ defmodule SwarmCode.Domain.Scheduled do
   """
   @spec statuses([Task.t()]) :: %{binary() => :paused | :running | :failed | :next}
   def statuses(tasks) when is_list(tasks) do
-    ids = Enum.map(tasks, & &1.id)
+    # spec 74 EFFICIENCY-18: the newest occurrence per task (one seek each),
+    # not every occurrence ever.
+    statuses(tasks, recent_runs_by_task(Enum.map(tasks, & &1.id), 1))
+  end
 
-    latest =
-      Run
-      |> where([r], r.task_id in ^ids)
-      |> order_by([r], asc: r.task_id, desc: r.scheduled_for)
-      |> select([r], {r.task_id, r.status})
-      |> Repo.all()
-      |> Enum.reduce(%{}, fn {id, status}, acc -> Map.put_new(acc, id, status) end)
+  def statuses(_tasks), do: %{}
 
+  @doc """
+  `statuses/1` from runs the caller already holds (spec 74 EFFICIENCY-18):
+  `recent` is `recent_runs_by_task/2`'s map, newest first, so a task's status
+  is read from the head of its list with no query.
+  """
+  @spec statuses([Task.t()], %{binary() => [map()]}) ::
+          %{binary() => :paused | :running | :failed | :next}
+  def statuses(tasks, recent) when is_list(tasks) and is_map(recent) do
     Map.new(tasks, fn task ->
+      latest =
+        case Map.get(recent, task.id) do
+          [%{status: status} | _] -> status
+          _none -> nil
+        end
+
       status =
         cond do
           not task.enabled -> :paused
-          Map.get(latest, task.id) in ["running", "paused", "waiting_user"] -> :running
-          Map.get(latest, task.id) == "failed" -> :failed
+          latest in ["running", "paused", "waiting_user"] -> :running
+          latest == "failed" -> :failed
           true -> :next
         end
 
       {task.id, status}
     end)
   end
-
-  def statuses(_tasks), do: %{}
 
   @doc "The dates inside `first..last` on which `task` fires (max 62)."
   defdelegate occurrences(task, first, last), to: Next
@@ -292,17 +323,7 @@ defmodule SwarmCode.Domain.Scheduled do
         # spec 60 T39: the occurrence was launched and settled but its `bump/3`
         # was lost to a busy database, so the task still points at it. Move the
         # schedule on now — `claim/2` never launches it twice.
-        case Repo.get_by(Run,
-               task_id: task.id,
-               scheduled_for: DateTime.truncate(scheduled_for, :second)
-             ) do
-          %Run{status: s} when s != "claimed" ->
-            if same_second?(task.next_run_at, scheduled_for), do: bump(task, scheduled_for, opts)
-
-          _ ->
-            :ok
-        end
-
+        rebump_settled(task, scheduled_for, opts)
         error
 
       {:ok, claimed} ->
@@ -527,15 +548,47 @@ defmodule SwarmCode.Domain.Scheduled do
   def skip(%Task{} = task, scheduled_for) do
     case claim(task, scheduled_for) do
       {:ok, claimed} ->
-        claimed |> Run.changeset(%{status: "skipped"}) |> Repo.update()
+        case claimed |> Run.changeset(%{status: "skipped"}) |> Repo.update() do
+          {:ok, _skipped} ->
+            :ok
+
+          other ->
+            Logger.warning(
+              "swarm_code scheduled #{task.id}: could not mark the occurrence skipped: " <>
+                inspect(other)
+            )
+        end
+
         bump(task, scheduled_for, [])
         broadcast()
 
       {:error, :already_claimed} ->
-        :ok
+        # spec 74 BUGS-26: the same repair `run_task/3` makes — a skipped or
+        # settled occurrence whose bump was lost must not pin the schedule.
+        rebump_settled(task, scheduled_for, [])
     end
 
     :ok
+  end
+
+  # spec 60 T39 / spec 74 BUGS-26: `scheduled_for` was claimed and settled
+  # (launched, failed or skipped) but the task still points at it.
+  defp rebump_settled(task, scheduled_for, opts) do
+    case Repo.get_by(Run,
+           task_id: task.id,
+           scheduled_for: DateTime.truncate(scheduled_for, :second)
+         ) do
+      %Run{status: status} when status != "claimed" ->
+        if same_second?(task.next_run_at, scheduled_for) do
+          bump(task, scheduled_for, opts)
+          broadcast()
+        end
+
+        :ok
+
+      _ ->
+        :ok
+    end
   end
 
   @doc "Copies a finished engine run's outcome onto its scheduled run, if any."

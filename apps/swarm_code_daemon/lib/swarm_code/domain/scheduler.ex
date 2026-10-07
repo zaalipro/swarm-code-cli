@@ -76,8 +76,12 @@ defmodule SwarmCode.Domain.Scheduler do
   # Spec 49 §2: the storage retention sweep. It settles itself — `:skipped`
   # until a policy is set and the last sweep is more than a day old — and it is
   # held off entirely while a VACUUM has the database.
+  # pass74 (spec 74) ARCHITECTURE-9: it runs in its own supervised task,
+  # registered as the running cleanup; the tick only starts it.
   defp retention do
-    unless SwarmCode.Domain.Storage.paused?(), do: SwarmCode.Domain.Storage.apply_retention()
+    unless SwarmCode.Domain.Storage.paused?(),
+      do: SwarmCode.Domain.Storage.maybe_start_retention()
+
     :ok
   rescue
     error ->

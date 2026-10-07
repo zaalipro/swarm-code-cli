@@ -15,8 +15,16 @@ defmodule SwarmCode.Domain.Tools.Path do
   # `.swarm_code/specs/` and the implementer ticks its boxes with `edit_file`
   # (spec 45 §6.2), and project skills and commands are files a user can ask the
   # agent to write. Only the file the memory tool owns is protected inside it.
+  #
+  # spec 74 BUGS-1: `.swarm_code/config.json` declares the project's hooks,
+  # which `Hooks` runs before every tool call once the project is trusted — an
+  # auto-allowed `write_file` of it was arbitrary code execution. Both lists are
+  # compared downcased (see `protection/1`), so they are written downcased.
   @protected ~w(.git .claude)
-  @protected_files [".swarm_code/MEMORY.md"]
+  @protected_files %{
+    ".swarm_code/memory.md" => :memory,
+    ".swarm_code/config.json" => :config
+  }
 
   @doc """
   `resolve/2` for a tool that is about to **write**: the same confinement, plus
@@ -55,25 +63,37 @@ defmodule SwarmCode.Domain.Tools.Path do
 
   defp protection(nil), do: nil
 
+  # spec 74 BUGS-1: compared downcased. On the default case-insensitive APFS
+  # volume `.GIT/config` *is* `.git/config` (and `.swarm_code/memory.md` is
+  # MEMORY.md), so an exact compare let an auto-allowed edit set
+  # `core.fsmonitor`. Downcasing only refuses more on a case-sensitive volume.
   defp protection(rel) do
-    first = rel |> Elixir.Path.split() |> List.first()
+    folded = String.downcase(rel)
+    first = folded |> Elixir.Path.split() |> List.first()
 
     cond do
       first in @protected -> {:dir, first}
-      rel in @protected_files -> {:file, rel}
+      Map.has_key?(@protected_files, folded) -> {:file, folded}
       true -> nil
     end
   end
 
   defp protected_dir_message(first, path),
     do:
-      "#{first}/ is managed by SwarmCode and git and cannot be written by a tool: " <>
+      "#{first}/ is managed by ncode and git and cannot be written by a tool: " <>
         to_string(path || "")
 
-  defp protected_file_message(rel, path),
-    do:
-      "#{rel} is the memory tool's own file — use the remember tool instead of writing it: " <>
-        to_string(path || "")
+  defp protected_file_message(folded, path) do
+    case Map.fetch!(@protected_files, folded) do
+      :memory ->
+        ".swarm_code/MEMORY.md is the memory tool's own file — use the remember tool " <>
+          "instead of writing it: " <> to_string(path || "")
+
+      :config ->
+        ".swarm_code/config.json holds the project's hooks and config, which are edited " <>
+          "by the user (Settings or by hand), not by a tool: " <> to_string(path || "")
+    end
+  end
 
   def resolve(root, path) do
     path = to_string(path || "")

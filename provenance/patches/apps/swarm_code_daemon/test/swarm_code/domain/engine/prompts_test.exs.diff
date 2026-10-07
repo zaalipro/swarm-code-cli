@@ -1,16 +1,7 @@
-# CLI-local change to test/swarm_code/engine/prompts_test.exs at 6dd8d82, after the rewrite
+# CLI-local change to test/swarm_code/engine/prompts_test.exs at 4c7c577, after the rewrite
 # rules of provenance/sync-rules.json. Recorded by mix swarm_code.provenance.sync.
 --- a/apps/swarm_code_daemon/test/swarm_code/domain/engine/prompts_test.exs
 +++ b/apps/swarm_code_daemon/test/swarm_code/domain/engine/prompts_test.exs
-@@ -9,7 +9,7 @@
- 
-   test "assistant/1" do
-     text = Prompts.assistant(@project)
--    assert String.starts_with?(text, "You are SwarmCode")
-+    assert String.starts_with?(text, "You are ncode")
-     assert text =~ "swarm-code"
-     assert text =~ "/tmp/swarm-code"
-   end
 @@ -65,56 +65,6 @@
      assert Prompts.lead(@project, 2, mode: "plan") =~ "PLAN MODE"
    end

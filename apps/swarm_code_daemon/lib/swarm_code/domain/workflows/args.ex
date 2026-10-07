@@ -103,6 +103,7 @@ defmodule SwarmCode.Domain.Workflows.Args do
         :boolean -> is_boolean(value)
         :list -> is_list(value)
         :enum -> to_string(value) in Enum.map(spec[:values] || [], &to_string/1)
+        :map -> is_map(value) and not is_struct(value)
         _ -> false
       end
 
@@ -134,6 +135,13 @@ defmodule SwarmCode.Domain.Workflows.Args do
           do: {:ok, String.trim(value)},
           else: {:error, "#{key} must be one of: " <> Enum.join(values, ", ")}
 
+      # Spec 75: a JSON object typed into the launch form or the composer.
+      :map ->
+        case Jason.decode(value) do
+          {:ok, map} when is_map(map) -> {:ok, map}
+          _ -> {:error, "#{key} must be a JSON object"}
+        end
+
       _ ->
         {:ok, value}
     end
@@ -148,6 +156,7 @@ defmodule SwarmCode.Domain.Workflows.Args do
       :boolean -> "#{key} must be true or false"
       :list -> "#{key} must be a list"
       :enum -> "#{key} must be one of: " <> Enum.map_join(spec[:values] || [], ", ", &to_string/1)
+      :map -> "#{key} must be a JSON object"
       _ -> "#{key} must be text"
     end
   end

@@ -67,7 +67,7 @@ defmodule SwarmCode.Domain.Tools.SpawnAgent do
           "type" => "string",
           "description" =>
             "Override the model for this sub-agent (e.g. 'claude-sonnet-4-20250514'). " <>
-              "When omitted, uses the agent definition's model or the run's swarm model."
+              "When omitted, uses the agent definition's model or the run's worker model."
         },
         "effort" => %{
           "type" => "string",
@@ -101,16 +101,22 @@ defmodule SwarmCode.Domain.Tools.SpawnAgent do
   def permission(_args), do: :read
 
   @impl true
-  def title(args), do: "agent " <> (args["name"] || "")
+  def title(args), do: "agent " <> SwarmCode.Domain.Tools.arg_text(args["name"] || "")
 
   @impl true
   def run(args, ctx, progress) do
-    name = String.slice(to_string(args["name"]), 0, 24)
+    name = String.slice(SwarmCode.Domain.Tools.arg_text(args["name"] || ""), 0, 24)
     background? = args["background"] == true
     progress.(nil, "starting")
 
     # spec 72 A3: resolve agent definition and validate effort
+    # spec 74 BUGS-12: the model's argument types are checked here, in the op
+    # process — a map `task` crashed the RunServer (`task <> "…"` in
+    # `Prompts.sub_agent_user/2`) and a shorthand schema crashed it later in
+    # `Schema.to_json_schema/1`, after the lead had been told "started". The
+    # RunSup is one_for_all, so the whole run died.
     with :ok <- depth_ok(ctx),
+         :ok <- validate_args(args),
          {:ok, agent_def} <- resolve_agent(args, ctx),
          :ok <- validate_effort(args["effort"]) do
       attrs = %{
@@ -161,7 +167,97 @@ defmodule SwarmCode.Domain.Tools.SpawnAgent do
   defp validate_effort(value) when value in @valid_efforts, do: :ok
 
   defp validate_effort(value) do
-    {:error, "invalid effort '#{value}' — use one of low, medium, high, xhigh, max"}
+    {:error,
+     "invalid effort '#{SwarmCode.Domain.Tools.arg_text(value)}' — use one of low, medium, high, " <>
+       "xhigh, max"}
+  end
+
+  # spec 74 BUGS-12
+  defp validate_args(args) do
+    cond do
+      not (is_binary(args["task"]) and String.trim(args["task"]) != "") ->
+        {:error, "task must be a non-empty string"}
+
+      not (is_nil(args["context"]) or is_binary(args["context"])) ->
+        {:error, "context must be a string"}
+
+      not (is_nil(args["model"]) or is_binary(args["model"])) ->
+        {:error, "model must be a string"}
+
+      true ->
+        case schema_problem(args["output_schema"], "output_schema") do
+          nil -> :ok
+          problem -> {:error, problem <> " — see the JSON-schema subset in the tool description"}
+        end
+    end
+  end
+
+  @schema_types ~w(object array string integer number boolean null)
+
+  @doc false
+  # A total check of the JSON-schema subset `Workflows.Schema.to_json_schema/1`
+  # and `validate/2` understand: nil when `schema` is usable, else what is
+  # wrong with it. Every `properties` value and `items` is a schema map, `type`
+  # is a known name, `required` is a list of strings and `enum` a list of
+  # scalars.
+  @spec schema_problem(term(), String.t()) :: String.t() | nil
+  def schema_problem(nil, _path), do: nil
+
+  def schema_problem(schema, path) when is_map(schema) do
+    get = fn key, atom -> Map.get(schema, key, Map.get(schema, atom)) end
+
+    type_problem(get.("type", :type), path) ||
+      properties_problem(get.("properties", :properties), path) ||
+      items_problem(get.("items", :items), path) ||
+      required_problem(get.("required", :required), path) ||
+      enum_problem(get.("enum", :enum), path)
+  end
+
+  def schema_problem(_schema, path), do: "#{path} must be an object (a JSON schema)"
+
+  defp type_problem(nil, _path), do: nil
+
+  defp type_problem(type, path) when is_binary(type) or (is_atom(type) and not is_nil(type)) do
+    if to_string(type) in @schema_types,
+      do: nil,
+      else: "#{path}.type must be one of " <> Enum.join(@schema_types, ", ")
+  end
+
+  defp type_problem(_type, path), do: "#{path}.type must be a string"
+
+  defp properties_problem(nil, _path), do: nil
+
+  defp properties_problem(props, path) when is_map(props) do
+    Enum.find_value(props, fn {key, sub} ->
+      sub_path = "#{path}.properties.#{SwarmCode.Domain.Tools.arg_text(key)}"
+
+      if is_map(sub),
+        do: schema_problem(sub, sub_path),
+        else: "#{sub_path} must be a schema object"
+    end)
+  end
+
+  defp properties_problem(_props, path), do: "#{path}.properties must be an object"
+
+  defp items_problem(nil, _path), do: nil
+  defp items_problem(items, path) when is_map(items), do: schema_problem(items, path <> ".items")
+  defp items_problem(_items, path), do: "#{path}.items must be a schema object"
+
+  defp required_problem(nil, _path), do: nil
+
+  defp required_problem(keys, path) do
+    if is_list(keys) and Enum.all?(keys, &(is_binary(&1) or is_atom(&1))),
+      do: nil,
+      else: "#{path}.required must be a list of property names"
+  end
+
+  defp enum_problem(nil, _path), do: nil
+
+  defp enum_problem(values, path) do
+    if is_list(values) and
+         Enum.all?(values, &(is_binary(&1) or is_number(&1) or is_boolean(&1) or is_atom(&1))),
+       do: nil,
+       else: "#{path}.enum must be a list of strings or numbers"
   end
 
   # spec 72 A3: resolve agent definition from args["agent"] if present.

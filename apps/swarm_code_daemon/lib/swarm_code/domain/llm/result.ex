@@ -12,7 +12,8 @@ defmodule SwarmCode.Domain.LLM.Result do
           :name => String.t(),
           :args => map(),
           optional(:args_error) => String.t(),
-          optional(:args_raw) => String.t()
+          optional(:args_raw) => String.t(),
+          optional(:truncated) => true
         }
 
   @typedoc """
@@ -71,4 +72,27 @@ defmodule SwarmCode.Domain.LLM.Result do
             stop_reason: "other",
             stop_details: nil,
             model: nil
+
+  @doc """
+  pass74 (spec 74) BUGS-29: a call that did not decode in a turn that stopped at
+  the output limit was cut off, not malformed. Its `args_error` says so (with
+  the limit that was sent) and it carries `truncated: true`, so the model is
+  told to split the content instead of to fix its JSON escaping. `args_raw`
+  is kept. Calls that decoded are left alone.
+  """
+  @spec mark_truncated([tool_call()], term()) :: [tool_call()]
+  def mark_truncated(calls, max_tokens) do
+    limit = if is_integer(max_tokens), do: " (max_tokens #{max_tokens})", else: ""
+
+    Enum.map(calls, fn
+      %{args_error: _} = call ->
+        Map.merge(call, %{
+          args_error: "cut off at the output limit#{limit} before the arguments were complete",
+          truncated: true
+        })
+
+      call ->
+        call
+    end)
+  end
 end

@@ -33,6 +33,13 @@ defmodule SwarmCode.Domain.Workflows.Run do
     field(:auto_continue, :boolean, default: false)
     field(:launch_message_id, :binary_id)
 
+    # pass74 (spec 74) BUGS-58: set by `Workflows.retry_failed/1` on the struct
+    # handed to the Runner (never cast, never stored): the lowest journal seq
+    # the retry deleted. A call at or after it whose fingerprint changed —
+    # because a retried result now feeds it — is re-run instead of failing the
+    # run with a journal mismatch.
+    field(:retry_from_seq, :integer, virtual: true)
+
     timestamps(type: :utc_datetime_usec)
   end
 

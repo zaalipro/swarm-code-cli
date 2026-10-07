@@ -7,7 +7,11 @@ defmodule SwarmCode.Domain.LSP.Client do
   framed with `Content-Length: N\\r\\n\\r\\n<json>` per the LSP spec.
   # spec 70 B8
   """
-  use GenServer, restart: :transient
+  # spec 74 BUGS-17: `:temporary` — a crashing client used to be restarted
+  # at once (and its server with it), and a few crashes in a second took
+  # ClientSup past its restart intensity, killing every language server of
+  # every project. `LSP.request/5` starts a new client lazily instead.
+  use GenServer, restart: :temporary
 
   require Logger
 
@@ -21,13 +25,26 @@ defmodule SwarmCode.Domain.LSP.Client do
   # spec 70 B8 — 16 MB cap on the read buffer
   @max_buffer_size 16_777_216
 
+  # spec 74 BUGS-73: the open documents a server is told about, at most; the
+  # least recently used one is closed past it.
+  @max_open_docs 200
+
   ## ------------------------------------------------------------------ public
 
-  @doc "Start a client linked to its supervisor."
-  def start_link({project_root, language, command}) do
+  @doc """
+  Start a client linked to its supervisor. `env` is the server's whole
+  environment (spec 74 BUGS-7); the three-element form uses the scrubbed
+  `RunCommand.clean_env/1` defaults.
+  """
+  def start_link({project_root, language, command}),
+    do: start_link({project_root, language, command, default_env()})
+
+  def start_link({project_root, language, command, env}) do
     name = {:via, Registry, {SwarmCode.Domain.Registry, {:lsp, project_root, language}}}
-    GenServer.start_link(__MODULE__, {project_root, language, command}, name: name)
+    GenServer.start_link(__MODULE__, {project_root, language, command, env}, name: name)
   end
+
+  defp default_env, do: SwarmCode.Domain.Tools.RunCommand.clean_env(%{})
 
   @doc "Send a request and wait for the response."
   def request(pid, method, params, timeout \\ @request_timeout) do
@@ -36,12 +53,35 @@ defmodule SwarmCode.Domain.LSP.Client do
     # GenServer that owns the port and every pending request — a disk read
     # there stalled every other agent waiting on the same server.
     text = did_open_text(method, params)
+    # spec 74 BUGS-73: its digest too, so the client can tell an edited file
+    # from the text the server already holds without keeping that text.
+    text = if text, do: {text, :crypto.hash(:sha256, text)}
     # Extra 5 s so the internal timer fires before GenServer.call times out.
     GenServer.call(pid, {:request, method, params, timeout, text}, timeout + 5_000)
   catch
-    :exit, {:noproc, _} -> {:error, "server not running"}
-    :exit, {:timeout, _} -> {:error, "timed out"}
+    # spec 74 EFFICIENCY-53: the client stopped (its idle shutdown, a
+    # worktree's cleanup) between the lookup and the call — `LSP.request/5`
+    # retries once on a fresh client.
+    :exit, {reason, {GenServer, :call, _}}
+    when reason in [:normal, :noproc] or
+           (is_tuple(reason) and elem(reason, 0) == :shutdown) ->
+      {:error, :gone}
+
+    :exit, {:noproc, _} ->
+      {:error, "server not running"}
+
+    :exit, {:timeout, _} ->
+      {:error, "timed out"}
+
+    # spec 74 BUGS-17: every other exit is an answer too — a `{:shutdown, _}`
+    # that reached `Operation.run`'s re-exit clause left the agent waiting
+    # for an `op_done` that never came.
+    :exit, reason ->
+      {:error, "language server unavailable: " <> exit_text(reason)}
   end
+
+  defp exit_text({reason, {GenServer, :call, _args}}), do: exit_text(reason)
+  defp exit_text(reason), do: inspect(reason, limit: 5, printable_limit: 200)
 
   @doc "Stop the client gracefully."
   def stop(pid) do
@@ -50,11 +90,14 @@ defmodule SwarmCode.Domain.LSP.Client do
     :exit, _ -> :ok
   end
 
-  def child_spec({project_root, language, command}) do
+  def child_spec({project_root, language, command}),
+    do: child_spec({project_root, language, command, default_env()})
+
+  def child_spec({project_root, language, command, env}) do
     %{
       id: {__MODULE__, project_root, language},
-      start: {__MODULE__, :start_link, [{project_root, language, command}]},
-      restart: :transient,
+      start: {__MODULE__, :start_link, [{project_root, language, command, env}]},
+      restart: :temporary,
       shutdown: 10_000
     }
   end
@@ -62,7 +105,7 @@ defmodule SwarmCode.Domain.LSP.Client do
   ## ------------------------------------------------------------------ server
 
   @impl true
-  def init({project_root, language, command}) do
+  def init({project_root, language, command, env}) do
     Process.flag(:trap_exit, true)
 
     [executable | args] = command
@@ -70,21 +113,38 @@ defmodule SwarmCode.Domain.LSP.Client do
     # spec 70 B2 (finisher): `:spawn_executable` takes a path, not a name — it
     # does not search PATH — so resolve first and refuse cleanly when the server
     # is not installed instead of dying with `:enoent` in the supervisor.
-    case System.find_executable(executable) do
+    # spec 74 BUGS-7: resolved on the child's own (scrubbed) PATH.
+    case find_executable(executable, env) do
       nil -> {:stop, {:not_installed, executable}}
-      path -> open_port(path, args, project_root, language, command)
+      path -> open_port(path, args, project_root, language, command, env)
     end
   end
 
-  defp open_port(path, args, project_root, language, command) do
+  defp find_executable(executable, env) do
+    case List.keyfind(env, ~c"PATH", 0) do
+      {~c"PATH", path} when is_list(path) ->
+        case :os.find_executable(String.to_charlist(executable), path) do
+          false -> nil
+          found -> List.to_string(found)
+        end
+
+      _no_path ->
+        System.find_executable(executable)
+    end
+  end
+
+  defp open_port(path, args, project_root, language, command, env) do
     # spec 70 B8 — raw :binary mode for Content-Length framing; no
     # :stderr_to_stdout so server log lines cannot corrupt the frame stream.
+    # spec 74 BUGS-7: `{:env, …}` — the server inherited the whole BEAM
+    # environment, provider keys included; every other child spawn scrubs it.
     port =
       Port.open({:spawn_executable, path}, [
         :binary,
         :exit_status,
         {:args, args},
-        {:cd, project_root}
+        {:cd, project_root},
+        {:env, env}
       ])
 
     state = %{
@@ -101,7 +161,10 @@ defmodule SwarmCode.Domain.LSP.Client do
       next_id: 1,
       pending: %{},
       initialized?: false,
-      open_docs: MapSet.new(),
+      # spec 74 BUGS-73: `uri => %{version, digest, used}` — what the server
+      # holds for each open document, and when it was last asked about.
+      open_docs: %{},
+      doc_clock: 0,
       idle_timer: nil,
       request_timeout: @request_timeout
     }
@@ -118,7 +181,7 @@ defmodule SwarmCode.Domain.LSP.Client do
         "rootUri" => SwarmCode.Domain.LSP.Language.file_uri(project_root),
         "capabilities" => %{},
         "processId" => System.pid() |> String.trim() |> String.to_integer(),
-        "clientInfo" => %{"name" => "swarm-code", "version" => "0.1.0"}
+        "clientInfo" => %{"name" => "ncode", "version" => "0.2.0"}
       }
     }
 
@@ -147,8 +210,8 @@ defmodule SwarmCode.Domain.LSP.Client do
   def handle_call({:request, method, params, timeout, text}, from, state) do
     state = reset_idle_timer(state)
 
-    # Ensure didOpen for text document requests.
-    state = maybe_did_open(state, method, params, text)
+    # Ensure didOpen (or didChange) for text document requests.
+    state = sync_document(state, method, params, text)
 
     {id, state} = next_id(state)
 
@@ -159,11 +222,17 @@ defmodule SwarmCode.Domain.LSP.Client do
       "params" => params
     }
 
-    send_json(state.port, request)
+    # spec 74 BUGS-17: a request that cannot be encoded is an answer, not a
+    # crash of the client that owns every other caller's request.
+    case send_json(state.port, request) do
+      :ok ->
+        timer = Process.send_after(self(), {:request_timeout, id}, timeout)
+        pending = Map.put(state.pending, id, {from, timer})
+        {:noreply, %{state | pending: pending}}
 
-    timer = Process.send_after(self(), {:request_timeout, id}, timeout)
-    pending = Map.put(state.pending, id, {from, timer})
-    {:noreply, %{state | pending: pending}}
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
   end
 
   @impl true
@@ -201,13 +270,11 @@ defmodule SwarmCode.Domain.LSP.Client do
       "params" => nil
     })
 
-    # Wait briefly for shutdown response.
-    receive do
-      {port, {:data, _}} when port == state.port -> :ok
-    after
-      5_000 -> :ok
-    end
-
+    # spec 74 EFFICIENCY-53: no blocking wait for the shutdown answer — a
+    # request that arrived meanwhile sat in this mailbox for up to 5 s and then
+    # died with the client. The exit notification follows at once, and
+    # `terminate/2` kills the server's process tree; a caller that raced the
+    # stop gets `{:error, :gone}` and `LSP.request/5` starts a fresh client.
     send_json(state.port, %{
       "jsonrpc" => "2.0",
       "method" => "exit",
@@ -411,10 +478,18 @@ defmodule SwarmCode.Domain.LSP.Client do
   end
 
   # spec 70 B8 — Content-Length framing on write
+  # spec 74 BUGS-17: `Jason.encode!/1` raised inside `handle_call` for a
+  # non-UTF-8 document; an encoding error is returned instead.
   defp send_json(port, msg) do
-    body = Jason.encode!(msg)
-    header = "Content-Length: #{byte_size(body)}\r\n\r\n"
-    Port.command(port, [header, body])
+    case Jason.encode(msg) do
+      {:ok, body} ->
+        header = "Content-Length: #{byte_size(body)}\r\n\r\n"
+        Port.command(port, [header, body])
+        :ok
+
+      {:error, error} ->
+        {:error, "cannot encode the LSP message: " <> Exception.message(error)}
+    end
   end
 
   defp arm_idle_timer(state) do
@@ -429,13 +504,22 @@ defmodule SwarmCode.Domain.LSP.Client do
 
   # spec 73 T79: the file's text (1 MB cap) for a `textDocument/*` request,
   # read in the caller; nil when the request opens nothing.
+  #
+  # spec 74 BUGS-17: LSP text is JSON, so it must be valid UTF-8 — a Latin-1
+  # file (or a 1 MB cut through a character) crashed the client. Invalid
+  # bytes become U+FFFD here, in the caller.
   defp did_open_text(method, params) do
     with true <- String.starts_with?(method, "textDocument/"),
          uri when is_binary(uri) <- get_in(params, ["textDocument", "uri"]) do
       case File.read(uri_to_path(uri)) do
-        {:ok, data} when byte_size(data) <= @max_file_size -> data
-        {:ok, data} -> binary_part(data, 0, @max_file_size)
-        {:error, _} -> ""
+        {:ok, data} when byte_size(data) <= @max_file_size ->
+          String.replace_invalid(data)
+
+        {:ok, data} ->
+          data |> binary_part(0, @max_file_size) |> String.replace_invalid()
+
+        {:error, _} ->
+          ""
       end
     else
       _ -> nil
@@ -444,38 +528,80 @@ defmodule SwarmCode.Domain.LSP.Client do
 
   # The text arrives with the call (spec 73 T79); this only checks `open_docs`
   # and sends.
-  defp maybe_did_open(state, method, params, text) do
-    if String.starts_with?(method, "textDocument/") do
-      case get_in(params, ["textDocument", "uri"]) do
-        nil ->
-          state
+  #
+  # spec 74 BUGS-73: a server treats an open document's text as the truth and
+  # stops reading the file, and nothing ever sent `didChange` — every answer
+  # after an edit came from the text of the first request. The text read for
+  # this request is compared (by digest) with what the server holds: a new
+  # document is opened at version 1, a changed one gets a whole-text
+  # `didChange` (valid under Full and Incremental sync) at the next version,
+  # and past @max_open_docs the least recently used document is closed.
+  defp sync_document(state, method, params, text) do
+    with true <- String.starts_with?(method, "textDocument/"),
+         uri when is_binary(uri) <- get_in(params, ["textDocument", "uri"]) do
+      {text, digest} = text || {"", :crypto.hash(:sha256, "")}
+      clock = state.doc_clock + 1
+      state = %{state | doc_clock: clock}
 
-        uri ->
-          if MapSet.member?(state.open_docs, uri) do
-            state
-          else
-            path = uri_to_path(uri)
-            lang_id = SwarmCode.Domain.LSP.Language.detect(path) || "text"
+      case state.open_docs do
+        %{^uri => %{digest: ^digest} = doc} ->
+          put_doc(state, uri, %{doc | used: clock})
 
-            send_json(state.port, %{
-              "jsonrpc" => "2.0",
-              "method" => "textDocument/didOpen",
-              "params" => %{
-                "textDocument" => %{
-                  "uri" => uri,
-                  "languageId" => lang_id,
-                  "version" => 1,
-                  "text" => text || ""
-                }
+        %{^uri => doc} ->
+          version = doc.version + 1
+
+          send_json(state.port, %{
+            "jsonrpc" => "2.0",
+            "method" => "textDocument/didChange",
+            "params" => %{
+              "textDocument" => %{"uri" => uri, "version" => version},
+              "contentChanges" => [%{"text" => text}]
+            }
+          })
+
+          put_doc(state, uri, %{version: version, digest: digest, used: clock})
+
+        _closed ->
+          path = uri_to_path(uri)
+          lang_id = SwarmCode.Domain.LSP.Language.detect(path) || "text"
+
+          send_json(state.port, %{
+            "jsonrpc" => "2.0",
+            "method" => "textDocument/didOpen",
+            "params" => %{
+              "textDocument" => %{
+                "uri" => uri,
+                "languageId" => lang_id,
+                "version" => 1,
+                "text" => text
               }
-            })
+            }
+          })
 
-            %{state | open_docs: MapSet.put(state.open_docs, uri)}
-          end
+          state
+          |> put_doc(uri, %{version: 1, digest: digest, used: clock})
+          |> close_least_used()
       end
     else
-      state
+      _not_a_document -> state
     end
+  end
+
+  defp put_doc(state, uri, doc), do: %{state | open_docs: Map.put(state.open_docs, uri, doc)}
+
+  defp close_least_used(%{open_docs: docs} = state) when map_size(docs) <= @max_open_docs,
+    do: state
+
+  defp close_least_used(state) do
+    {uri, _doc} = Enum.min_by(state.open_docs, fn {_uri, doc} -> doc.used end)
+
+    send_json(state.port, %{
+      "jsonrpc" => "2.0",
+      "method" => "textDocument/didClose",
+      "params" => %{"textDocument" => %{"uri" => uri}}
+    })
+
+    %{state | open_docs: Map.delete(state.open_docs, uri)}
   end
 
   # spec 73 T21

@@ -33,7 +33,7 @@ defmodule SwarmCode.Domain.Tools.WebSearch do
   def permission(_args), do: :read
 
   @impl true
-  def title(args), do: "web search \"#{args["query"]}\""
+  def title(args), do: "web search \"#{SwarmCode.Domain.Tools.arg_text(args["query"] || "")}\""
 
   @impl true
   def run(args, ctx, progress) do

@@ -20,7 +20,8 @@ defmodule SwarmCode.Domain.Tools.EditFiles do
         "its edits (old_string/new_string or an edits array, same format " <>
         "as edit_file). All files are checked and edited in memory first; " <>
         "if any edit in any file fails, nothing is written. Use this for " <>
-        "cross-file renames and coordinated changes."
+        "cross-file renames and coordinated changes. Snapshots of files over " <>
+        "2 MB or not UTF-8 cannot be rewound."
 
   @impl true
   def parameters do

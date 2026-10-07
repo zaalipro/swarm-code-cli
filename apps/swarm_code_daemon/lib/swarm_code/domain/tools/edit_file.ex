@@ -64,7 +64,8 @@ defmodule SwarmCode.Domain.Tools.EditFile do
         "if any one of them fails the file is not written at all. The file must already exist " <>
         "and be text under 5 MB — use write_file for a new file and run_command for a larger " <>
         "one. The write is atomic and snapshotted, so a failed edit leaves the original " <>
-        "intact. Returns the number of replacements, not the new content."
+        "intact; snapshots of files over 2 MB or not UTF-8 cannot be rewound. Returns the " <>
+        "number of replacements, not the new content."
 
   @impl true
   def parameters do
@@ -109,7 +110,7 @@ defmodule SwarmCode.Domain.Tools.EditFile do
   def parallel?, do: false
 
   @impl true
-  def title(args), do: "edit " <> (args["path"] || "")
+  def title(args), do: "edit " <> SwarmCode.Domain.Tools.arg_text(args["path"] || "")
 
   @impl true
   def run(args, ctx, progress) do

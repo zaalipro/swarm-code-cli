@@ -341,31 +341,36 @@ defmodule SwarmCode.Domain.Research.Program do
         {take_note(ctx, worker, result, notes), [age(worker) | durations]}
       end)
 
-    # Spec 51 §5.9 (c), pulled forward for §4.5: a straggler's start time is
-    # read once and kept, not once per 250 ms poll — a Program killed by its
-    # server (`close/3`) mid-`get_node` took the connection down with it.
-    still = Enum.map(still, &with_started_at/1)
-
     cond do
       still == [] ->
         {sorted(notes), []}
 
       # Spec 51 §5.9 (c): the quorum counts the workers that came back, with
       # or without a note — a nil note is a finished worker too.
-      rule.early? and close_round?(rule.total, length(durations), durations, still) ->
-        {sorted(notes), still}
+      #
+      # spec 74 EFFICIENCY-58: a straggler's start time is only needed once
+      # the quorum is in, so it is read then — from the RunServer's memory
+      # (no flush lag, no database), and kept once found. It used to be a
+      # full-row `get_node` per queued worker on every 250 ms poll of every
+      # round, the last one included.
+      rule.early? and quorum?(rule.total, length(durations), durations) ->
+        still = Enum.map(still, &with_started_at(ctx, &1))
+
+        if close_round?(durations, still),
+          do: {sorted(notes), still},
+          else: collect(ctx, still, notes, durations, rule)
 
       true ->
         collect(ctx, still, notes, durations, rule)
     end
   end
 
-  defp with_started_at(%{started_at: %DateTime{}} = worker), do: worker
+  defp with_started_at(_ctx, %{started_at: %DateTime{}} = worker), do: worker
 
-  defp with_started_at(worker) do
-    case Conversations.get_node(worker.node_id) do
-      %{started_at: %DateTime{} = at} -> Map.put(worker, :started_at, at)
-      _other -> worker
+  defp with_started_at(ctx, worker) do
+    case RunServer.node_field(ctx.run_id, worker.node_id, :started_at) do
+      %DateTime{} = at -> Map.put(worker, :started_at, at)
+      _queued_or_gone -> worker
     end
   end
 
@@ -403,10 +408,11 @@ defmodule SwarmCode.Domain.Research.Program do
   # Three quarters back, and the slowest of the rest is past
   # `1.5 × median(finished) + 30 s` of its **own** clock — a worker still queued
   # behind `research_max_live` has not started one, so it is never a straggler.
-  defp close_round?(total, reported, durations, still) do
-    reported >= ceil(@straggler_quorum * total) and durations != [] and
-      slowest(still) > @straggler_factor * median(durations) + grace_ms()
-  end
+  defp quorum?(total, reported, durations),
+    do: reported >= ceil(@straggler_quorum * total) and durations != []
+
+  defp close_round?(durations, still),
+    do: slowest(still) > @straggler_factor * median(durations) + grace_ms()
 
   defp slowest(running) do
     running
@@ -624,11 +630,112 @@ defmodule SwarmCode.Domain.Research.Program do
       Jason.encode_to_iodata!(sources, pretty: true)
     )
 
+    # pass74 (spec 74) BUGS-61: a reporter that failed or timed out used to
+    # leave a `done` research whose result.md held one sentence and the
+    # sources — every finding gone — and the designed pass then ran on that.
+    {answer, error} = reporter_answer(ctx, notes, sources)
+
+    path = Research.result_path(ctx.id)
+
+    cond do
+      # The notes are the research: kept, unsynthesised, beside the error.
+      error != nil ->
+        write_output(ctx, path, fallback_markdown(ctx, answer, sources, notes))
+
+      fast?(ctx) ->
+        # Spec 47 §2.5: nothing wrote the file, so this does — the answer
+        # verbatim when it is already the document, the wrapper when it is not.
+        write_output(ctx, path, fast_markdown(ctx, answer, sources))
+
+      # A reporter that answered but never called write_file still leaves a file.
+      not File.exists?(path) ->
+        write_output(ctx, path, fallback_markdown(ctx, answer, sources))
+
+      true ->
+        :ok
+    end
+
+    # Spec 48 §2: **every** level renders its report here, in microseconds. The
+    # designed pass used to run on this line — 52 s of a measured 259 s research
+    # (#9004) for a document that carries no fact `result.md` does not — and now
+    # runs in the background, off the clock the user is watching.
+    warm_report_cache(ctx.id, path)
+    report_path = if File.exists?(path), do: HtmlRender.write(ctx, path, sources)
+
+    outcome = %{
+      summary: summary(answer),
+      sources: sources,
+      report_path: report_path,
+      title: title_from(path) || Research.fallback_title(ctx.question),
+      design_state: if(report_path, do: "rendered"),
+      # BUGS-61: nothing to design from unsynthesised notes.
+      design?: error == nil and auto_design?(ctx)
+    }
+
+    {:ok, if(error, do: Map.put(outcome, :error, error), else: outcome)}
+  end
+
+  # spec 74 UI-SPEED-12: the research page renders `result.md` through
+  # `Markdown.render_cached("research-<id>", …)`. Rendering it here, in the
+  # task that owns the research, fills that entry — opening the finished
+  # report renders nothing on the LiveView (Earmark takes ~0.9 s on a 56 KB
+  # report). Best effort: a failure only means the page renders it itself.
+  defp warm_report_cache(id, path) do
+    case File.read(path) do
+      {:ok, markdown} -> SwarmCode.Domain.Markdown.render_cached("research-#{id}", markdown)
+      {:error, _reason} -> nil
+    end
+
+    :ok
+  rescue
+    _error -> :ok
+  end
+
+  # pass74 (spec 74) BUGS-61: the kinds a second reporter might get past.
+  @transient_kinds [:timeout, :rate_limit, :overloaded, :network]
+
+  # `{answer, nil}`, or `{message, message}` when no reporter produced one.
+  # One retry: after a timeout or a transient provider failure with the same
+  # notes, after a context overflow with half of them.
+  defp reporter_answer(ctx, notes, sources) do
+    case run_reporter(ctx, notes, sources, nil, "Report") do
+      {:ok, text} ->
+        {text, nil}
+
+      {:error, kind, message} ->
+        cond do
+          written?(ctx) ->
+            {written_answer(ctx) || message, nil}
+
+          kind == :context_overflow ->
+            cap = div(Prompts.reporter_notes_cap(ctx), 2)
+
+            settle_retry(
+              ctx,
+              run_reporter(ctx, notes, sources, cap, "Report retry, half notes")
+            )
+
+          kind in @transient_kinds ->
+            settle_retry(ctx, run_reporter(ctx, notes, sources, nil, "Report retry"))
+
+          true ->
+            {message, message}
+        end
+    end
+  end
+
+  defp settle_retry(_ctx, {:ok, text}), do: {text, nil}
+
+  defp settle_retry(ctx, {:error, _kind, message}) do
+    if written?(ctx), do: {written_answer(ctx) || message, nil}, else: {message, message}
+  end
+
+  defp run_reporter(ctx, notes, sources, notes_cap, name) do
     node_id =
       start(ctx, %{
         parent_id: ctx.root_id,
-        name: "Report",
-        prompt: Prompts.reporter(ctx, notes, sources),
+        name: name,
+        prompt: Prompts.reporter(ctx, notes, sources, notes_cap: notes_cap),
         phase: "Report",
         tier: :reporter,
         # The reporter writes result.md itself; `project_root` is the research
@@ -641,46 +748,36 @@ defmodule SwarmCode.Domain.Research.Program do
       })
 
     # Spec 40 §1.6: the reporter gets twice the agents' clock.
-    answer =
-      case await_running(ctx, node_id, timeout_ms(ctx, :reporter)) do
-        {:ok, text} ->
-          text
+    case await_running(ctx, node_id, timeout_ms(ctx, :reporter)) do
+      {:ok, text} ->
+        {:ok, text}
 
-        {:error, :timeout} ->
-          RunServer.stop_agent(ctx.run_id, node_id)
-          "The reporter timed out after #{div(timeout_ms(ctx, :reporter), 1000)} s."
+      {:error, :timeout} ->
+        RunServer.stop_agent(ctx.run_id, node_id)
 
-        {:error, reason} ->
-          "The reporter failed: " <> to_string(reason)
-      end
+        {:error, :timeout,
+         "The reporter timed out after #{div(timeout_ms(ctx, :reporter), 1000)} s."}
 
-    path = Research.result_path(ctx.id)
-
-    if fast?(ctx) do
-      # Spec 47 §2.5: nothing wrote the file, so this does — the answer
-      # verbatim when it is already the document, the wrapper when it is not.
-      write_output(ctx, path, fast_markdown(ctx, answer, sources))
-    else
-      # A reporter that answered but never called write_file still leaves a file.
-      unless File.exists?(path),
-        do: write_output(ctx, path, fallback_markdown(ctx, answer, sources))
+      {:error, reason} ->
+        message = "The reporter failed: " <> to_string(reason)
+        {:error, SwarmCode.Domain.LLM.Error.classify(nil, nil, reason), message}
     end
+  end
 
-    # Spec 48 §2: **every** level renders its report here, in microseconds. The
-    # designed pass used to run on this line — 52 s of a measured 259 s research
-    # (#9004) for a document that carries no fact `result.md` does not — and now
-    # runs in the background, off the clock the user is watching.
-    report_path = if File.exists?(path), do: HtmlRender.write(ctx, path, sources)
+  # A deep reporter that called write_file before it failed left the document:
+  # that is the report, whatever happened to its closing answer.
+  defp written?(ctx), do: not fast?(ctx) and File.exists?(Research.result_path(ctx.id))
 
-    {:ok,
-     %{
-       summary: summary(answer),
-       sources: sources,
-       report_path: report_path,
-       title: title_from(path) || Research.fallback_title(ctx.question),
-       design_state: if(report_path, do: "rendered"),
-       design?: auto_design?(ctx)
-     }}
+  defp written_answer(ctx) do
+    with {:ok, text} <- File.read(Research.result_path(ctx.id)),
+         [_all, answer] <- Regex.run(~r/^##\s+Answer\s*\n(.*?)(?=^##\s|\z)/ms, text) do
+      case String.trim(answer) do
+        "" -> nil
+        answer -> answer
+      end
+    else
+      _other -> nil
+    end
   end
 
   # spec 73 T87: every output of a research lands through `AtomicFile`,
@@ -729,63 +826,47 @@ defmodule SwarmCode.Domain.Research.Program do
   """
   @spec html_report(ctx(), String.t(), [map()]) :: String.t() | nil
   def html_report(ctx, markdown_path, sources) do
-    # Spec 48 §2: the rendered report is the floor. Each attempt deletes
-    # report.html before it writes (spec 39 §1.3), so the rendered one is kept
-    # aside first and put back if the designed pass produces nothing — a failed
-    # design must never leave a research with no report at all.
-    #
-    # spec 60 T44: bound before the `try`, so a raise anywhere in the pass puts
-    # it back too instead of leaving "Open report" pointing at nothing.
-    kept = keep_rendered(ctx)
+    # pass74 (spec 74) BUGS-60: the designed pass writes `designed.html` and
+    # only a finished, sane document is renamed over `report.html` — one
+    # atomic, same-directory swap. The rendered report used to be moved aside
+    # to `rendered.html` for the whole pass (a minute or more), so Open report
+    # and Download answered 404 until the design landed or was put back.
+    markdown = File.read!(markdown_path)
+    drop_stale_report(ctx)
 
-    try do
-      markdown = File.read!(markdown_path)
+    Enum.reduce_while(1..2, nil, fn attempt, _acc ->
+      case html_attempt(ctx, markdown, sources, attempt) do
+        nil when attempt < 2 -> {:cont, nil}
+        result -> {:halt, result}
+      end
+    end)
+  rescue
+    error ->
+      Logger.warning(
+        "swarm_code research #{ctx.id} HTML pass failed: #{Exception.message(error)}"
+      )
 
-      result =
-        Enum.reduce_while(1..2, nil, fn attempt, _acc ->
-          case html_attempt(ctx, markdown, sources, attempt) do
-            nil when attempt < 2 -> {:cont, nil}
-            result -> {:halt, result}
-          end
-        end)
+      File.rm(Research.designed_path(ctx.id))
+      nil
+  end
 
-      if result, do: rm_kept(kept), else: restore_rendered(ctx, kept)
-      result
-    rescue
-      error ->
-        Logger.warning(
-          "swarm_code research #{ctx.id} HTML pass failed: #{Exception.message(error)}"
-        )
+  # Spec 39 §1.3: only the report this research has actually adopted is
+  # kept — a `report.html` the row does not point at is a stale file from a
+  # reused id, and a failed pass must never leave it to be adopted later.
+  defp drop_stale_report(ctx) do
+    path = Research.report_path(ctx.id)
 
-        restore_rendered(ctx, kept)
-        nil
+    case Research.get(ctx.id) do
+      %{report_path: ^path} -> :ok
+      _other -> File.rm(path)
     end
   end
 
-  # Only the report this research has actually adopted is kept: a `report.html`
-  # the row does not point at is a stale file from a reused id, and spec 39 §1.3
-  # says a failed pass must never adopt one.
-  defp keep_rendered(ctx) do
-    path = Research.report_path(ctx.id)
-    kept = Path.join(Research.dir(ctx.id), "rendered.html")
-    research = Research.get(ctx.id)
-
-    if research && research.report_path == path && File.exists?(path) &&
-         File.rename(path, kept) == :ok,
-       do: kept
-  end
-
-  defp rm_kept(nil), do: :ok
-  defp rm_kept(path), do: File.rm(path)
-
-  defp restore_rendered(_ctx, nil), do: :ok
-  defp restore_rendered(ctx, kept), do: File.rename(kept, Research.report_path(ctx.id))
-
   defp html_attempt(ctx, markdown, sources, attempt) do
     # Spec 39 §1.3: the size check below must only ever see what *this*
-    # attempt wrote — never a report.html left by an earlier pass or rebuild.
-    path = Research.report_path(ctx.id)
-    File.rm(path)
+    # attempt wrote — never a designed.html left by an earlier pass.
+    designed = Research.designed_path(ctx.id)
+    File.rm(designed)
 
     node_id =
       start(ctx, %{
@@ -806,15 +887,16 @@ defmodule SwarmCode.Domain.Research.Program do
       _other -> :ok
     end
 
-    case File.stat(path) do
+    case File.stat(designed) do
       {:ok, %{size: size}} when size >= @min_report_bytes ->
-        path
+        adopt_designed(ctx, designed)
 
       {:ok, %{size: size}} ->
         Logger.info(
-          "swarm_code research #{ctx.id}: report.html was only #{size} bytes (attempt #{attempt})"
+          "swarm_code research #{ctx.id}: designed.html was only #{size} bytes (attempt #{attempt})"
         )
 
+        File.rm(designed)
         nil
 
       _other ->
@@ -823,6 +905,50 @@ defmodule SwarmCode.Domain.Research.Program do
         )
 
         nil
+    end
+  end
+
+  # pass74 (spec 74) BUGS-60: an HTML document (it opens with a doctype or an
+  # `<html>` tag and closes it) replaces the rendered report in one rename.
+  defp adopt_designed(ctx, designed) do
+    path = Research.report_path(ctx.id)
+
+    with true <- html_document?(designed),
+         :ok <- File.rename(designed, path) do
+      path
+    else
+      _refused ->
+        Logger.info("swarm_code research #{ctx.id}: designed.html is not an HTML document")
+        File.rm(designed)
+        nil
+    end
+  end
+
+  @doc false
+  @spec html_document?(String.t()) :: boolean()
+  def html_document?(path) do
+    with {:ok, size} <- file_size(path),
+         {:ok, io} <- File.open(path, [:read, :binary]) do
+      try do
+        head = IO.binread(io, 1_024)
+        {:ok, _} = :file.position(io, max(size - 1_024, 0))
+        tail = IO.binread(io, 1_024)
+
+        is_binary(head) and is_binary(tail) and
+          Regex.match?(~r/\A\s*(<!doctype\s+html|<html)/i, head) and
+          String.contains?(String.downcase(tail), "</html>")
+      after
+        File.close(io)
+      end
+    else
+      _error -> false
+    end
+  end
+
+  defp file_size(path) do
+    case File.stat(path) do
+      {:ok, %{size: size}} -> {:ok, size}
+      error -> error
     end
   end
 
@@ -840,11 +966,23 @@ defmodule SwarmCode.Domain.Research.Program do
   # spec 68 T36: delegate to the shared Research.rating/1
   defp quality(q), do: SwarmCode.Domain.Research.rating(q)
 
-  defp fallback_markdown(ctx, answer, sources) do
+  # pass74 (spec 74) BUGS-61: with `notes`, the reporter failed — every note
+  # goes in, unsynthesised, so nothing the research found is lost.
+  defp fallback_markdown(ctx, answer, sources, notes \\ nil) do
     list =
       sources
       |> Enum.with_index(1)
       |> Enum.map_join("\n", fn {s, i} -> "#{i}. [#{s["title"]}](#{s["url"]})" end)
+
+    notes_section =
+      case notes do
+        nil ->
+          ""
+
+        notes ->
+          "## Unsynthesised notes\n\n" <>
+            Prompts.render_notes(notes, Prompts.reporter_notes_cap(ctx)) <> "\n"
+      end
 
     """
     # #{Research.fallback_title(ctx.question)}
@@ -855,7 +993,7 @@ defmodule SwarmCode.Domain.Research.Program do
 
     #{answer}
 
-    ## Sources
+    #{notes_section}## Sources
 
     #{list}
     """
@@ -953,22 +1091,25 @@ defmodule SwarmCode.Domain.Research.Program do
 
   defp await_running(ctx, node_id, timeout_ms) do
     case RunServer.await_agent(ctx.run_id, node_id, timeout_ms) do
+      # spec 74 EFFICIENCY-58: the two fields from the RunServer's memory,
+      # not a full-row read of the node.
       {:error, :timeout} ->
-        case Conversations.get_node(node_id) do
-          %{status: "queued"} ->
+        case {RunServer.node_field(ctx.run_id, node_id, :status),
+              RunServer.node_field(ctx.run_id, node_id, :started_at)} do
+          {"queued", _started} ->
             await_running(ctx, node_id, timeout_ms)
 
-          %{started_at: nil} ->
-            await_running(ctx, node_id, timeout_ms)
-
-          %{started_at: started} ->
+          {_status, %DateTime{} = started} ->
             used = DateTime.diff(DateTime.utc_now(), started, :millisecond)
 
             if used < timeout_ms,
               do: await_running(ctx, node_id, max(timeout_ms - used, @min_wait_ms)),
               else: {:error, :timeout}
 
-          nil ->
+          {status, nil} when is_binary(status) ->
+            await_running(ctx, node_id, timeout_ms)
+
+          _gone ->
             {:error, :timeout}
         end
 

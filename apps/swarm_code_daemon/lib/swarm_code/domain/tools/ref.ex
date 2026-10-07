@@ -18,7 +18,7 @@ defmodule SwarmCode.Domain.Tools.Ref do
           tool_name: String.t() | nil,
           read_only?: boolean(),
           enabled?: boolean(),
-          permission: :read | :write | :execute | nil,
+          permission: :read | :write | :execute | :private_network | nil,
           schema: map() | nil
         }
 
@@ -39,17 +39,42 @@ defmodule SwarmCode.Domain.Tools.Ref do
     schema: nil
   ]
 
-  @doc "The permission this call needs."
-  @spec permission(t(), map()) :: :read | :write | :execute
+  @doc """
+  The permission this call needs.
+
+  spec 74 BUGS-47: `:private_network` is a call that reaches a loopback,
+  private or link-local address (`web_fetch http://localhost:…`); a builtin
+  that implements `Tools.Tool.call_permission/1` answers per call.
+  """
+  @spec permission(t(), map()) :: :read | :write | :execute | :private_network
   def permission(%__MODULE__{kind: :structured}, _args), do: :read
-  def permission(%__MODULE__{kind: :builtin, module: mod}, args), do: mod.permission(args)
+
+  def permission(%__MODULE__{kind: :builtin, module: mod}, args) do
+    if Code.ensure_loaded?(mod) and function_exported?(mod, :call_permission, 1),
+      do: mod.call_permission(args),
+      else: mod.permission(args)
+  end
+
   def permission(%__MODULE__{kind: :mcp, read_only?: true}, _args), do: :read
   def permission(%__MODULE__{kind: :mcp}, _args), do: :execute
 
   @doc "The human title shown on the op row."
   @spec title(t(), map()) :: String.t()
   def title(%__MODULE__{kind: :structured}, _args), do: "structured output"
-  def title(%__MODULE__{kind: :builtin, module: mod}, args), do: mod.title(args)
+  # spec 74 BUGS-12: titles are built in the AgentServer from the model's raw
+  # arguments — `git_diff` with a list `path` raised there, and the agent and
+  # its run ended `failed` with a `bug`. Any tool's title, including future
+  # ones, falls back to the tool's name.
+  def title(%__MODULE__{kind: :builtin, module: mod} = ref, args) do
+    case mod.title(args) do
+      title when is_binary(title) -> title
+      _other -> ref.name
+    end
+  rescue
+    _error -> ref.name
+  catch
+    _kind, _reason -> ref.name
+  end
 
   # spec 61 T8: the collapsed row showed "tavily: tavily_search" and the result
   # preview, never the question — three searches in a row were indistinguishable.

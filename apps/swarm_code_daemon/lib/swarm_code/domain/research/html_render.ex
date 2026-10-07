@@ -167,7 +167,8 @@ defmodule SwarmCode.Domain.Research.HtmlRender do
         # strip must count what actually ran.
         agents: agents_of(ctx),
         markdown: markdown,
-        sources: sources
+        sources: sources,
+        cache_id: "research-#{ctx.id}"
       )
 
     # spec 73 T87: atomic, confined to the research directory; the size check
@@ -200,7 +201,8 @@ defmodule SwarmCode.Domain.Research.HtmlRender do
 
   @doc """
   The document. `:title`, `:question`, `:level`, `:markdown` and `:sources`,
-  plus the optional `:date`, `:rounds` and `:agents`.
+  plus the optional `:date`, `:rounds`, `:agents` and `:cache_id` (spec 74
+  UI-SPEED-12: the research page's Markdown cache key).
   """
   @spec render(keyword()) :: String.t()
   def render(opts) do
@@ -234,11 +236,11 @@ defmodule SwarmCode.Domain.Research.HtmlRender do
       </ul>
     </header>
     <main class="prose">
-    #{markdown_html(body)}
+    #{markdown_html(body, Keyword.fetch!(opts, :markdown), Keyword.get(opts, :cache_id))}
     </main>
     #{sources_block(sources)}
     <footer class="foot">
-      <p>Rendered by SwarmCode from <code>result.md</code>. For the designed version, use
+      <p>Rendered by ncode from <code>result.md</code>. For the designed version, use
       <b>Build the designed report</b> on the research page.</p>
     </footer>
     </div>
@@ -303,8 +305,18 @@ defmodule SwarmCode.Domain.Research.HtmlRender do
     rounds * (fanout + 1) + 1
   end
 
-  defp markdown_html(markdown) do
-    markdown
+  # spec 74 UI-SPEED-12: when the body is the unmodified `result.md` (no
+  # Sources section was split off), it is the research page's own cache entry
+  # — the program warmed it just before; a split body renders uncached, so it
+  # never replaces the page's entry.
+  defp markdown_html(body, markdown, cache_id) when is_binary(cache_id) and body == markdown do
+    cache_id
+    |> SwarmCode.Domain.Markdown.render_cached(body)
+    |> SwarmCode.Domain.HTML.safe_to_string()
+  end
+
+  defp markdown_html(body, _markdown, _cache_id) do
+    body
     |> SwarmCode.Domain.Markdown.render()
     |> SwarmCode.Domain.HTML.safe_to_string()
   end

@@ -23,6 +23,13 @@ defmodule SwarmCode.Domain.LLM.HTTP do
   @retry_delays [1_000, 4_000, 15_000, 60_000]
   @retry_statuses [408, 409, 425, 429]
   @got_chunk_key :swarm_code_llm_got_chunk
+  # pass74 (spec 74) BUGS-49: when the stream last made progress (monotonic
+  # ms). Kept in the caller's process dictionary beside `@got_chunk_key`: the
+  # `into` fun runs in this process, and a transport error loses `resp.private`.
+  @last_progress_key :swarm_code_llm_last_progress
+  # pass74 (spec 74) BUGS-49: the hard cap is this many ms per `max_tokens`
+  # token (25 tokens/s), never under the idle deadline.
+  @hard_ms_per_token 40
 
   # Spec 51 §6.2 (b): a name that does not resolve and a port that refuses are
   # not going to answer differently four sleeps later; a TLS alert is a
@@ -50,10 +57,14 @@ defmodule SwarmCode.Domain.LLM.HTTP do
   defp attempts, do: if(Process.get(@no_retry_key) == true, do: 1, else: @max_attempts)
 
   @doc """
-  The default wall clock of one LLM call (spec 51 §6.2 (c)).
+  The default no-progress bound of one LLM call (spec 51 §6.2 (c); pass74
+  (spec 74) BUGS-49).
 
   Generous on purpose: a thinking model can pause well past a minute before its
   first token, and the per-chunk `receive_timeout` is the tighter bound anyway.
+  It is an *idle* deadline: a stream that keeps producing content (a delta, a
+  new block) is never cut by it; only keep-alives and silence count against
+  it. The whole call is bounded separately by `hard_cap_ms/2`.
   """
   @spec default_deadline_ms() :: pos_integer()
   def default_deadline_ms, do: Application.get_env(:swarm_code_daemon, :llm_deadline_ms, 600_000)
@@ -86,24 +97,64 @@ defmodule SwarmCode.Domain.LLM.HTTP do
     # when the call is made, so `:llm_deadline_ms` set after boot is honoured.
     deadline_ms = deadline_ms || default_deadline_ms()
     started = System.monotonic_time(:millisecond)
-    clock = {started, started + deadline_ms}
 
-    do_stream(
-      url,
-      headers,
-      body,
-      provider_name,
-      init_acc,
-      on_chunk,
-      on_retry,
-      retry_if || (&always_ok/1),
-      clock,
-      1,
-      provider_id
-    )
+    # pass74 (spec 74) BUGS-49: `deadline_ms` is the no-progress bound; the
+    # hard cap from the start scales with the answer budget the body asks for.
+    clock = %{
+      started: started,
+      idle_ms: deadline_ms,
+      hard: started + hard_cap_ms(deadline_ms, body)
+    }
+
+    result =
+      do_stream(
+        url,
+        headers,
+        body,
+        provider_name,
+        init_acc,
+        on_chunk,
+        on_retry,
+        retry_if || (&always_ok/1),
+        clock,
+        1,
+        provider_id
+      )
+
+    Process.delete(@last_progress_key)
+    result
   end
 
   defp always_ok(_acc), do: :ok
+
+  @doc """
+  pass74 (spec 74) BUGS-49: the hard cap of one call, from its start:
+  `max(deadline_ms, max_tokens * 40)` — a 64 000-token answer may run 42 min
+  as long as it keeps making progress, an 8 192-token one the idle deadline.
+  """
+  @spec hard_cap_ms(pos_integer(), map()) :: pos_integer()
+  def hard_cap_ms(deadline_ms, body) do
+    tokens =
+      case body do
+        %{"max_tokens" => n} when is_integer(n) -> n
+        %{"max_completion_tokens" => n} when is_integer(n) -> n
+        _other -> 0
+      end
+
+    max(deadline_ms, tokens * @hard_ms_per_token)
+  end
+
+  # pass74 (spec 74) BUGS-49: providers count content events in `acc.progress`
+  # (Anthropic: `content_block_start`, every `content_block_delta`,
+  # `message_delta`; OpenAI: every choice delta). Pings and SSE comments do not.
+  defp progress(%{progress: n}), do: n
+  defp progress(_acc), do: 0
+
+  defp last_progress(started), do: Process.get(@last_progress_key, started)
+
+  # Past the idle deadline (no progress for `idle_ms`) or the hard cap.
+  defp past_deadline?(%{idle_ms: idle, hard: hard}, now, last),
+    do: now - last > idle or now > hard
 
   @redirect_statuses [301, 302, 303, 307, 308]
 
@@ -151,19 +202,27 @@ defmodule SwarmCode.Domain.LLM.HTTP do
          provider_id
        ) do
     Process.delete(@got_chunk_key)
-    {started, deadline} = clock
+    %{started: started} = clock
+    # pass74 (spec 74) BUGS-49: every attempt gets a full idle window to its
+    # first token; a retry is judged against the last progress of the one before.
+    Process.put(@last_progress_key, System.monotonic_time(:millisecond))
 
     into = fn {:data, data}, {req, resp} ->
       if resp.status == 200 do
         Process.put(@got_chunk_key, true)
-        acc = on_chunk.(data, Map.get(resp.private, :acc, init_acc))
+        before = Map.get(resp.private, :acc, init_acc)
+        acc = on_chunk.(data, before)
         resp = %{resp | private: Map.put(resp.private, :acc, acc)}
+        now = System.monotonic_time(:millisecond)
+        if progress(acc) != progress(before), do: Process.put(@last_progress_key, now)
 
         # Spec 51 §6.2 (c): a stream that dribbles a keep-alive every few
         # hundred milliseconds never trips the per-chunk idle timeout. The
         # deadline is what ends it, and the 200 clause below turns the halt
         # into the same "gave up after" error a refused retry gives.
-        if System.monotonic_time(:millisecond) > deadline do
+        # pass74 (spec 74) BUGS-49: the deadline is "no progress for
+        # `idle_ms`" (or the hard cap), so a healthy stream past 10 min lives.
+        if past_deadline?(clock, now, last_progress(started)) do
           {:halt, {req, %{resp | private: Map.put(resp.private, :past_deadline, true)}}}
         else
           {:cont, {req, resp}}
@@ -177,7 +236,10 @@ defmodule SwarmCode.Domain.LLM.HTTP do
 
         # spec 60 T14: the deadline applies to an error body that dribbles too —
         # the halt reaches the >= 500 / 4xx arms below exactly like a plain 503.
-        if System.monotonic_time(:millisecond) > deadline do
+        # An error body is never progress.
+        now = System.monotonic_time(:millisecond)
+
+        if past_deadline?(clock, now, last_progress(started)) do
           {:halt, {req, %{resp | private: Map.put(resp.private, :past_deadline, true)}}}
         else
           {:cont, {req, resp}}
@@ -186,14 +248,16 @@ defmodule SwarmCode.Domain.LLM.HTTP do
     end
 
     result =
-      Req.post(request(url),
+      post_stream(url,
         json: body,
         headers: headers,
         retry: false,
         # Spec 51 §6.2 (c): the per-chunk idle timeout never outlives the call's
         # own deadline, so a dribbling stream cannot run past it.
-        receive_timeout: receive_timeout(deadline),
-        connect_options: [timeout: 15_000],
+        receive_timeout: receive_timeout(clock),
+        # pass74 (spec 74) BUGS-50: the LLM pool (256 connections) instead of
+        # Finch's on-demand default of 50; a checkout waits at most this long.
+        finch: Keyword.put(finch_options(), :pool_timeout, pool_timeout(clock)),
         into: into
       )
 
@@ -208,7 +272,9 @@ defmodule SwarmCode.Domain.LLM.HTTP do
 
         # Spec 51 §6.2 (c): a retry that would land past the deadline is not a
         # retry, it is a hang the caller cannot see the end of.
-        now + planned > deadline ->
+        # pass74 (spec 74) BUGS-49: the idle deadline counts from the last
+        # progress the failed attempt made, and the hard cap from the start.
+        now + planned > min(last_progress(started) + clock.idle_ms, clock.hard) ->
           text = "#{name} gave up after #{div(now - started, 1000)} s: " <> message
           {:error, Error.classify(nil, reason, text), text}
 
@@ -237,7 +303,7 @@ defmodule SwarmCode.Domain.LLM.HTTP do
 
     case result do
       {:ok, %Req.Response{status: 200, private: %{past_deadline: true}} = resp} ->
-        retry.("deadline", "the stream was still open", retry_after_ms(resp), attempts())
+        retry.("deadline", "the stream made no progress", retry_after_ms(resp), attempts())
 
       {:ok, %Req.Response{status: 200} = resp} ->
         acc = Map.get(resp.private, :acc, init_acc)
@@ -265,12 +331,74 @@ defmodule SwarmCode.Domain.LLM.HTTP do
         {:error, Error.classify(status, nil, text <> " " <> to_string(body)), text}
 
       {:error, exception} ->
-        retry.("network", Exception.message(exception), nil, max_for(exception))
+        retry.(transport_reason(exception), Exception.message(exception), nil, max_for(exception))
     end
   end
 
-  defp receive_timeout(deadline) do
-    min(120_000, max(deadline - System.monotonic_time(:millisecond), 1_000))
+  # pass74 (spec 74) BUGS-50: a pool checkout that times out *raises* out of
+  # Finch (`Finch.HTTP1.Pool.request/6` reraises the NimblePool exit as a
+  # RuntimeError) and nothing between Req and here rescued it, so the 51st
+  # concurrent stream crashed its op as a SwarmCode bug. It is a transport
+  # failure: it goes down the "network" retry like a refused connection.
+  defp post_stream(url, options) do
+    Req.post(request(url), options)
+  rescue
+    e in RuntimeError ->
+      if String.starts_with?(e.message, "Finch was unable to provide a connection"),
+        do: {:error, %Req.TransportError{reason: :pool_timeout}},
+        else: reraise(e, __STACKTRACE__)
+  end
+
+  @pool_size 256
+  @connect_timeout 15_000
+  @max_pool_timeout 30_000
+
+  @doc """
+  pass74 (spec 74) BUGS-50: the child spec of the named LLM connection pool
+  (`SwarmCode.Domain.LLM.Finch`, 256 connections per origin). While it is running
+  every LLM stream uses it; without it (it is not in the application tree yet)
+  `finch_options/0` asks Req for an on-demand pool of the same size, owned by
+  `Req.FinchSupervisor`.
+  """
+  def finch_child_spec do
+    {Finch, name: SwarmCode.Domain.LLM.Finch, pools: %{default: pool_options()}}
+  end
+
+  defp pool_options,
+    do: [size: @pool_size, conn_opts: [transport_opts: [timeout: @connect_timeout]]]
+
+  @doc false
+  # App env `:llm_finch` (Req `finch:` options) wins — tests start a size-1 pool.
+  def finch_options do
+    case Application.get_env(:swarm_code_daemon, :llm_finch) do
+      nil ->
+        if Process.whereis(SwarmCode.Domain.LLM.Finch),
+          do: [name: SwarmCode.Domain.LLM.Finch],
+          else: pool_options()
+
+      options ->
+        options
+    end
+  end
+
+  # pass74 (spec 74) BUGS-50: a checkout never outlives the call's own clock,
+  # and never holds the op longer than 30 s before the retry gets its turn.
+  defp pool_timeout(%{idle_ms: idle, hard: hard}) do
+    left = min(idle, hard - System.monotonic_time(:millisecond))
+    cap = Application.get_env(:swarm_code_daemon, :llm_pool_timeout, @max_pool_timeout)
+    min(cap, max(left, 100))
+  end
+
+  # pass74 (spec 74) BUGS-49: a socket that went silent past `receive_timeout`
+  # is the call's own deadline (kind `:timeout`), not a dropped network.
+  defp transport_reason(%{reason: :timeout}), do: "timeout"
+  defp transport_reason(_exception), do: "network"
+
+  # pass74 (spec 74) BUGS-49: silence (not even a keep-alive) for the idle
+  # deadline ends the attempt; never past the hard cap.
+  defp receive_timeout(%{idle_ms: idle, hard: hard}) do
+    left = hard - System.monotonic_time(:millisecond)
+    min(120_000, max(min(idle, left), 1_000))
   end
 
   ## ------------------------------------------------ rate limits (spec 67 T33)
@@ -293,8 +421,22 @@ defmodule SwarmCode.Domain.LLM.HTTP do
         nil
 
       snapshot ->
+        # spec 74 EFFICIENCY-68: every Anthropic response carries the headers,
+        # and every LiveView and the tray woke on the "ui" topic for each one.
+        # The snapshot is still cached every time (a mount reads it); the
+        # broadcast goes only when the chip would change, on its own topic.
+        previous = SwarmCode.Domain.Cache.get({:rate_limit, provider_id})
         SwarmCode.Domain.Cache.put({:rate_limit, provider_id}, snapshot)
-        SwarmCode.Domain.Engine.Events.ui_broadcast({:rate_limit, provider_id, snapshot})
+
+        if SwarmCode.Domain.LLM.rate_limit_shown(previous) !=
+             SwarmCode.Domain.LLM.rate_limit_shown(snapshot),
+           do:
+             SwarmCode.Domain.PubSub.broadcast(
+               SwarmCode.Domain.PubSub,
+               SwarmCode.Domain.LLM.rate_limit_topic(),
+               {:rate_limit, provider_id, snapshot}
+             )
+
         snapshot
     end
   end

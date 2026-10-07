@@ -71,10 +71,19 @@ defmodule SwarmCode.Domain.Workflows.Runner do
       logs_timer: nil,
       logs_written_at: 0,
       # spec 55 T10: attrs a busy write could not land; merged into the next one
-      pending_wf: %{}
+      pending_wf: %{},
+      # pass74 (spec 74) BUGS-57: top-level `budget()`/`last_error()` reads so
+      # far at each seq — the next one takes slot -2 - count.
+      reads: %{}
     }
 
-    {:ok, Map.merge(defaults, args), {:continue, :run}}
+    state = Map.merge(defaults, args)
+    # spec 74 UI-SPEED-15: every log line carries a monotonic "n" (the
+    # pipeline keys its rows by it); a resumed run continues after the lines
+    # it already has.
+    state = Map.put(state, :log_n, next_log_n(Map.get(state.wf, :logs)))
+    # pass74 (spec 74) BUGS-58: set by "Retry failed" (`Run.retry_from_seq`).
+    {:ok, Map.put(state, :retry_from, Map.get(state.wf, :retry_from_seq)), {:continue, :run}}
   end
 
   @impl true
@@ -192,25 +201,24 @@ defmodule SwarmCode.Domain.Workflows.Runner do
     seq = state.seq + 1
     state = %{state | seq: seq}
     fingerprint = :erlang.phash2({:panel, count})
-    remaining = state.wf.budget - state.wf.agents_admitted
-    max_concurrency = max(min(state.wf.max_live, remaining), 1)
 
     case state.journal[{seq, -1}] do
+      # spec 74 UI-SPEED-5: the panel was paid for when it was first admitted,
+      # and `agents_admitted` already counts it after a resume — bound its live
+      # slots by the panel's own size, not by what is left of the budget.
       %{fingerprint: ^fingerprint} ->
-        {:reply, {:replay, seq, max_concurrency}, state}
+        {:reply, {:replay, seq, max(min(state.wf.max_live, count), 1)}, state}
 
       %{} ->
-        {:reply, {:failed, mismatch_message(seq)}, state}
+        # pass74 (spec 74) BUGS-58: a retried result changed the panel's items.
+        case rewrite(state, seq, :all) do
+          {:ok, state} -> admit_panel(state, seq, count, fingerprint)
+          :no -> {:reply, {:failed, mismatch_message(seq)}, state}
+          {:error, :database_busy} -> {:reply, {:failed, @journal_refused}, state}
+        end
 
       nil ->
-        if count > remaining do
-          {:reply, {:pause, "budget", budget_message(count, remaining, state.wf.budget)}, state}
-        else
-          case journal_insert(state, seq, -1, "panel", fingerprint, count) do
-            {:ok, state} -> {:reply, {:ok, seq, max_concurrency}, charge(state, count)}
-            {:error, :database_busy} -> {:reply, {:failed, @journal_refused}, state}
-          end
-        end
+        admit_panel(state, seq, count, fingerprint)
     end
   end
 
@@ -225,11 +233,24 @@ defmodule SwarmCode.Domain.Workflows.Runner do
     fingerprint = :erlang.phash2({kind, payload, opts})
 
     case state.journal[{seq, slot}] do
-      %{fingerprint: ^fingerprint, result: result} ->
-        {:reply, {:replay, decode_result(result)}, state}
+      %{fingerprint: ^fingerprint, result: result} = entry ->
+        {:reply, {:replay, decode_result(result)},
+         state |> restore_last_error(entry) |> consumed({seq, slot})}
 
       %{} ->
-        {:reply, {:failed, mismatch_message(seq)}, state}
+        # pass74 (spec 74) BUGS-58: after "Retry failed", a call a retried
+        # result now feeds is re-run with everything after it.
+        case rewrite(state, seq, slot) do
+          {:ok, state} ->
+            state = %{state | pending: Map.put(state.pending, {seq, slot}, fingerprint)}
+            live(kind, payload, opts, seq, slot, panel?, from, state)
+
+          :no ->
+            {:reply, {:failed, mismatch_message(seq)}, state}
+
+          {:error, :database_busy} ->
+            {:reply, {:failed, @journal_refused}, state}
+        end
 
       nil ->
         state = %{state | pending: Map.put(state.pending, {seq, slot}, fingerprint)}
@@ -243,13 +264,49 @@ defmodule SwarmCode.Domain.Workflows.Runner do
     # Anything that came back means the provider is reachable again.
     state = if is_nil(value), do: state, else: %{state | infra_since: nil}
 
-    case journal_insert(state, seq, slot, kind, fingerprint, value) do
-      {:ok, state} -> {:reply, :ok, state}
-      {:error, :database_busy} -> {:reply, {:failed, @journal_refused}, state}
+    # pass74 (spec 74) BUGS-57: a failed agent's entry keeps the error, so a
+    # replay of it restores `last_error()`.
+    insert =
+      if is_nil(value) and kind == "agent",
+        do: journal_insert_failed(state, seq, slot, kind, fingerprint),
+        else: journal_insert(state, seq, slot, kind, fingerprint, value)
+
+    case insert do
+      {:ok, state} ->
+        {:reply, :ok, state}
+
+      {:error, :database_busy} ->
+        {:reply, {:failed, @journal_refused}, state}
+
+      # spec 74 BUGS-16: the script fails with the reason; the Runner lives on.
+      {:error, {:not_encodable, message}} ->
+        {:reply, {:failed, "host result is not JSON-encodable: " <> message}, state}
     end
   end
 
   def handle_call(:last_error, _from, state), do: {:reply, state.last_error, state}
+
+  # pass74 (spec 74) BUGS-57: a script's `budget()` / `last_error()`. The first
+  # read is journaled (kind "read"), a replay returns what was read then.
+  def handle_call({:read, what, where}, _from, state) when what in [:budget, :last_error] do
+    {seq, slot, state} = read_key(state, where)
+    fingerprint = :erlang.phash2({:read, what})
+
+    case state.journal[{seq, slot}] do
+      %{kind: "read", fingerprint: ^fingerprint, result: result} ->
+        {:reply, {:value, read_value(what, decode_result(result))}, consumed(state, {seq, slot})}
+
+      %{} ->
+        case rewrite(state, seq, slot) do
+          {:ok, state} -> live_read_reply(state, what, seq, slot, fingerprint)
+          :no -> {:reply, {:failed, mismatch_message(seq)}, state}
+          {:error, :database_busy} -> {:reply, {:failed, @journal_refused}, state}
+        end
+
+      nil ->
+        live_read_reply(state, what, seq, slot, fingerprint)
+    end
+  end
 
   # A worker died. Infrastructure failures buy one fresh agent (spec 11 §7.4);
   # everything else (max_turns, a refusal, a denied tool) is the slot's answer.
@@ -312,6 +369,145 @@ defmodule SwarmCode.Domain.Workflows.Runner do
   @impl true
   def handle_cast({:panel_task_done, pid}, state) when is_pid(pid) do
     {:noreply, %{state | panel_tasks: MapSet.delete(state.panel_tasks, pid)}}
+  end
+
+  # A panel admission charged against what is left of the budget.
+  defp admit_panel(state, seq, count, fingerprint) do
+    remaining = state.wf.budget - state.wf.agents_admitted
+    max_concurrency = max(min(state.wf.max_live, remaining), 1)
+
+    if count > remaining do
+      {:reply, {:pause, "budget", budget_message(count, remaining, state.wf.budget)}, state}
+    else
+      case journal_insert(state, seq, -1, "panel", fingerprint, count) do
+        {:ok, state} -> {:reply, {:ok, seq, max_concurrency}, charge(state, count)}
+        {:error, :database_busy} -> {:reply, {:failed, @journal_refused}, state}
+      end
+    end
+  end
+
+  # ------------------------------------------------------------ retry rewrite
+
+  # pass74 (spec 74) BUGS-58: "Retry failed" deletes the failed agent entries
+  # and resumes. A retried slot that now returns text changes the prompt of
+  # every call that uses it, and each of those used to answer
+  # `{:failed, mismatch}` — a done run became a failed one. At or after the
+  # first deleted seq, the Runner (which owns the journal) deletes the changed
+  # entry and every later one, refunds their admissions by re-deriving
+  # `agents_admitted` from what is left, and the call runs live. `:all` takes
+  # every slot at `seq` (a panel whose items changed).
+  defp rewrite(%{retry_from: from} = state, seq, slot) when is_integer(from) and seq >= from do
+    doomed =
+      for {{s, sl} = key, entry} <- state.journal,
+          s > seq or (s == seq and after_at_seq?(sl, slot)),
+          do: {key, entry}
+
+    case Workflows.delete_journal(state.run_id, Enum.map(doomed, fn {_key, e} -> e.id end)) do
+      :ok ->
+        journal = Map.drop(state.journal, Enum.map(doomed, &elem(&1, 0)))
+        state = %{state | journal: journal}
+        admitted = Workflows.admitted(Map.values(journal))
+
+        state =
+          state
+          |> log_line("retry: call #{seq} changed — re-running it and what follows")
+          |> update_wf(%{agents_admitted: admitted})
+
+        {:ok, state}
+
+      {:error, :database_busy} ->
+        {:error, :database_busy}
+    end
+  end
+
+  defp rewrite(_state, _seq, _slot), do: :no
+
+  # Which entries at the changed call's own seq go with it. A top-level read
+  # sits at the seq of the call before it (-2, -3, … in reading order); a
+  # panel slot's reads sit far below (`API` reads from -1_000_000 down).
+  defp after_at_seq?(_sl, :all), do: true
+  # A single call: it and the top-level reads after it.
+  defp after_at_seq?(sl, 0), do: sl == 0 or top_level_read?(sl)
+  # A top-level read: it and the reads after it, never one already read.
+  defp after_at_seq?(sl, slot) when slot <= -2 and slot > -1_000_000,
+    do: top_level_read?(sl) and sl <= slot
+
+  # A panel slot's call or read: that entry, and the reads after the panel.
+  # The other slots keep theirs; a later call in the same slot that changed
+  # too is re-run when it is reached.
+  defp after_at_seq?(sl, slot), do: sl == slot or top_level_read?(sl)
+
+  defp top_level_read?(slot), do: slot <= -2 and slot > -1_000_000
+
+  # ------------------------------------------------------------------ reads
+
+  # pass74 (spec 74) BUGS-57: where a read is journaled. A top-level read sits
+  # at the seq of the call before it, below the panel marker: -2, -3, …
+  defp read_key(state, nil) do
+    seq = state.seq
+    count = Map.get(state.reads, seq, 0)
+    {seq, -2 - count, %{state | reads: Map.put(state.reads, seq, count + 1)}}
+  end
+
+  defp read_key(state, {seq, slot}), do: {seq, slot, state}
+
+  defp live_read_reply(state, what, seq, slot, fingerprint) do
+    value = live_read(what, state)
+
+    case journal_insert(state, seq, slot, "read", fingerprint, %{"v" => value}) do
+      {:ok, state} -> {:reply, {:value, value}, state}
+      {:error, :database_busy} -> {:reply, {:failed, @journal_refused}, state}
+      {:error, {:not_encodable, message}} -> {:reply, {:failed, message}, state}
+    end
+  end
+
+  defp live_read(:last_error, state), do: state.last_error
+
+  # A journal written before reads were journaled has no record to replay:
+  # the budget is then what the journal proves was admitted *up to this
+  # call*, which is what the script read the first time — not the
+  # end-of-journal count a resume starts from.
+  defp live_read(:budget, state) do
+    spent =
+      if replaying?(state) do
+        state.journal
+        |> Map.values()
+        |> Enum.filter(&(&1.seq <= state.seq))
+        |> Workflows.admitted()
+      else
+        state.wf.agents_admitted
+      end
+
+    %{total: state.wf.budget, spent: spent, remaining: state.wf.budget - spent}
+  end
+
+  defp replaying?(state),
+    do: Enum.any?(state.journal, fn {{seq, _slot}, _e} -> seq > state.seq end)
+
+  defp read_value(:budget, %{"v" => %{} = v}),
+    do: %{total: v["total"], spent: v["spent"], remaining: v["remaining"]}
+
+  defp read_value(_what, %{"v" => v}), do: v
+  defp read_value(_what, _other), do: nil
+
+  # A replayed failed agent entry puts its error back where `last_error()` reads.
+  defp restore_last_error(state, %{kind: "agent", result: result}) when is_binary(result) do
+    case Jason.decode(result) do
+      {:ok, %{"ok" => false, "error" => error}} when is_binary(error) and error != "no result" ->
+        %{state | last_error: error}
+
+      _other ->
+        state
+    end
+  end
+
+  defp restore_last_error(state, _entry), do: state
+
+  defp journal_insert_failed(state, seq, slot, kind, fingerprint) do
+    case safe_json(%{"ok" => false, "error" => state.last_error || "no result"}) do
+      {:ok, json} -> journal_insert_json(state, seq, slot, kind, fingerprint, json)
+      {:error, _message} -> journal_insert(state, seq, slot, kind, fingerprint, nil)
+    end
   end
 
   # ------------------------------------------------------------------ live calls
@@ -446,7 +642,7 @@ defmodule SwarmCode.Domain.Workflows.Runner do
     message =
       "The model provider has been unreachable for over three minutes" <>
         if(state.last_error, do: " (#{state.last_error})", else: "") <>
-        ". SwarmCode probes it every 30 s and resumes this run by itself."
+        ". ncode probes it every 30 s and resumes this run by itself."
 
     # spec 60 T47: the caller keeps the flushed state, not the pre-flush one.
     finish(state, "paused", %{pause_kind: "infrastructure", pause_message: message})
@@ -464,13 +660,25 @@ defmodule SwarmCode.Domain.Workflows.Runner do
 
   defp log_line(state, text) do
     line = %{
+      "n" => state.log_n,
       "at" => DateTime.to_iso8601(DateTime.utc_now()),
       "text" => String.slice(text, 0, 500)
     }
 
     # spec 68 T31: prepend to avoid O(n^2) list append; reversed in write_logs
-    %{state | pending_logs: [line | state.pending_logs]} |> maybe_write_logs()
+    %{state | pending_logs: [line | state.pending_logs], log_n: state.log_n + 1}
+    |> maybe_write_logs()
   end
+
+  # spec 74 UI-SPEED-15: the next number after the persisted lines; legacy
+  # lines without "n" count by position.
+  @doc false
+  def next_log_n(logs) when is_list(logs) do
+    numbered = for %{"n" => n} when is_integer(n) <- logs, do: n
+    if numbered == [], do: length(logs) + 1, else: max(Enum.max(numbered), length(logs)) + 1
+  end
+
+  def next_log_n(_logs), do: 1
 
   # spec 68 T31: the empty-list clause is unreachable because log_line always
   # prepends before calling this; kept only in write_logs/1 which the timer hits.
@@ -550,8 +758,14 @@ defmodule SwarmCode.Domain.Workflows.Runner do
 
   # spec 60 T47: every terminal clause keeps the state `finish/3` flushed.
   defp handle_outcome({:complete, value}, state) do
-    state = finish(state, "done", %{result: encode(value)})
-    {:noreply, %{state | finished?: true}, {:continue, :shutdown}}
+    case safe_encode(value) do
+      {:ok, json} ->
+        state = finish(state, "done", %{result: json})
+        {:noreply, %{state | finished?: true}, {:continue, :shutdown}}
+
+      {:error, message} ->
+        handle_outcome({:failed, "the workflow result is not storable: " <> message}, state)
+    end
   end
 
   defp handle_outcome({:pause, kind, message}, state) do
@@ -615,25 +829,38 @@ defmodule SwarmCode.Domain.Workflows.Runner do
   # again from the stale one, re-broadcasting a `running` wf after `done`.
   defp finish(state, status, attrs) do
     state = write_logs(state)
-    RunServer.workflow_finished(state.run_id, status, attrs)
+    # spec 74 BUGS-20: attrs a busy database deferred (`update_wf/2`) are
+    # written in the finish transaction, not dropped.
+    RunServer.workflow_finished(state.run_id, status, Map.merge(state.pending_wf, attrs))
     state
   end
 
   # ------------------------------------------------------------------ journal
 
   # spec 55 T10 (55a A3): `{:ok, state}` or `{:error, :database_busy}` — never a bang.
+  # spec 74 BUGS-16: or `{:error, {:not_encodable, message}}`.
   defp journal_insert(state, seq, slot, kind, fingerprint, value) do
+    case encode_result(value) do
+      {:ok, json} -> journal_insert_json(state, seq, slot, kind, fingerprint, json)
+      {:error, message} -> {:error, {:not_encodable, message}}
+    end
+  end
+
+  defp journal_insert_json(state, seq, slot, kind, fingerprint, json) do
     case Workflows.insert_journal(%{
            run_id: state.run_id,
            seq: seq,
            slot: slot,
            kind: kind,
            fingerprint: fingerprint,
-           result: encode_result(value),
+           result: json,
            inserted_at: DateTime.utc_now()
          }) do
       {:ok, entry} ->
-        {:ok, %{state | journal: Map.put(state.journal, {seq, slot}, entry)}}
+        # spec 74 EFFICIENCY-49: a live entry is never replayed by this
+        # Runner (the seq only moves on), so only what the journal is still
+        # read for stays: kind, fingerprint and keys — and a panel's count.
+        {:ok, %{state | journal: Map.put(state.journal, {seq, slot}, slim(entry))}}
 
       {:error, :database_busy} ->
         {:error, :database_busy}
@@ -643,8 +870,21 @@ defmodule SwarmCode.Domain.Workflows.Runner do
     end
   end
 
-  defp encode_result(nil), do: Jason.encode!(%{"ok" => false, "error" => "no result"})
-  defp encode_result(value), do: Jason.encode!(%{"ok" => true, "value" => encodable(value)})
+  # The `result` blob goes once nothing reads it; the `panel` count stays
+  # (`Workflows.admitted/1`, `panel_replay_count/1`).
+  defp slim(%{kind: "panel"} = entry), do: entry
+  defp slim(entry), do: %{entry | result: nil}
+
+  # A replayed entry has handed its result to the script: keep the rest.
+  defp consumed(state, key) do
+    case state.journal do
+      %{^key => entry} -> %{state | journal: Map.put(state.journal, key, slim(entry))}
+      _none -> state
+    end
+  end
+
+  defp encode_result(nil), do: {:ok, Jason.encode!(%{"ok" => false, "error" => "no result"})}
+  defp encode_result(value), do: safe_json(%{"ok" => true, "value" => encodable(value)})
 
   defp decode_result(nil), do: nil
 
@@ -657,6 +897,23 @@ defmodule SwarmCode.Domain.Workflows.Runner do
 
   @doc false
   def encode(value), do: Jason.encode!(encodable(value))
+
+  @doc """
+  `encode/1` that never raises (spec 74 BUGS-16): `{:ok, json}` or
+  `{:error, message}` for a value JSON cannot hold (a pid, a ref, a fun, a
+  binary that is not valid UTF-8).
+  """
+  @spec safe_encode(term()) :: {:ok, String.t()} | {:error, String.t()}
+  def safe_encode(value), do: safe_json(encodable(value))
+
+  defp safe_json(value) do
+    case Jason.encode(value) do
+      {:ok, json} -> {:ok, json}
+      {:error, e} -> {:error, Exception.message(e) |> String.slice(0, 300)}
+    end
+  rescue
+    e in [Protocol.UndefinedError] -> {:error, Exception.message(e) |> String.slice(0, 300)}
+  end
 
   @doc false
   def encodable(value) when is_atom(value) and not is_boolean(value) and not is_nil(value),
@@ -681,7 +938,9 @@ defmodule SwarmCode.Domain.Workflows.Runner do
         # Spec 51 §5.9 (e): the lists hear about status transitions from
         # `finish_workflow/3` → `Workflows.broadcast/2`; a phase or an admission
         # reaches the open pages as `{:workflow_updated, wf}` and nothing else.
-        Events.broadcast(state.conversation_id, {:workflow_updated, wf})
+        # Spec 74 EFFICIENCY-47: without the script and its args, which never
+        # change during a run (the subscribers keep the ones they hold).
+        Events.broadcast(state.conversation_id, {:workflow_updated, Workflows.wire_row(wf)})
         %{state | wf: wf, pending_wf: %{}}
 
       # spec 55 T10 (55a A3): the attrs wait for the next write; the process lives.

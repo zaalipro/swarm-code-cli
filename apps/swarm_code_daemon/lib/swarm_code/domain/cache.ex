@@ -19,12 +19,14 @@ defmodule SwarmCode.Domain.Cache do
   cache because it leaked across sandboxed tests; this table is cleared by
   `DataCase.setup_sandbox/1` on both ends of every test.
 
-  Only the engine call sites use it. The LiveViews keep reading rows: they are
-  user-paced, and a settings form must never render its own cache.
+  The engine call sites use it, and so does the router's theme read (spec 74
+  EFFICIENCY-65). The LiveViews keep reading rows: they are user-paced, and a
+  settings form must never render its own cache.
   """
   use GenServer
 
   @table __MODULE__
+  @epoch :"$cache_gen_epoch"
 
   def start_link(_opts \\ []), do: GenServer.start_link(__MODULE__, :ok, name: __MODULE__)
 
@@ -110,7 +112,7 @@ defmodule SwarmCode.Domain.Cache do
   @doc "Empties the table (tests, and any write path that cannot name its key)."
   @spec clear() :: :ok
   def clear do
-    for [tag] <- :ets.match(@table, {{:gen, :"$1"}, :_}), do: bump(tag)
+    :ets.update_counter(@table, @epoch, 1, {@epoch, 0})
     :ets.match_delete(@table, {:_, :_, :_})
     :ok
   rescue
@@ -121,8 +123,14 @@ defmodule SwarmCode.Domain.Cache do
   defp tag(tag) when is_atom(tag), do: tag
   defp tag(_other), do: :other
 
+  # spec 74 EFFICIENCY-63: a read never writes. The generation is `{epoch, tag gen}`, two
+  # lock-free lookups on the `read_concurrency` table (the old `update_counter(…, {2, 0})` took the
+  # write lock on every `fetch`/`get`/`put`). `clear/0` bumps the epoch, so a tag that was never
+  # bumped is invalidated too.
   defp gen(key),
-    do: :ets.update_counter(@table, {:gen, tag(key)}, {2, 0}, {{:gen, tag(key)}, 0})
+    do:
+      {:ets.lookup_element(@table, @epoch, 2, 0),
+       :ets.lookup_element(@table, {:gen, tag(key)}, 2, 0)}
 
   defp bump(tag), do: :ets.update_counter(@table, {:gen, tag}, 1, {{:gen, tag}, 0})
 end

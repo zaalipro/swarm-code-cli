@@ -1,8 +1,8 @@
-# CLI-local change to lib/swarm_code/hooks.ex at 6dd8d82, after the rewrite
+# CLI-local change to lib/swarm_code/hooks.ex at 4c7c577, after the rewrite
 # rules of provenance/sync-rules.json. Recorded by mix swarm_code.provenance.sync.
 --- a/apps/swarm_code_daemon/lib/swarm_code/domain/hooks.ex
 +++ b/apps/swarm_code_daemon/lib/swarm_code/domain/hooks.ex
-@@ -152,6 +152,10 @@
+@@ -169,6 +169,10 @@
            _none -> []
          end
  
@@ -13,7 +13,7 @@
      results =
        Enum.reduce_while(hooks, [], fn hook, acc ->
          case run_one(hook, root, env) do
-@@ -238,7 +242,7 @@
+@@ -255,7 +259,7 @@
              :binary,
              :exit_status,
              :stderr_to_stdout,

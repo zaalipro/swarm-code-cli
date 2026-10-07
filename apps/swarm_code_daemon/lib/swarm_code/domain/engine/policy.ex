@@ -22,6 +22,12 @@ defmodule SwarmCode.Domain.Engine.Policy do
 
   def decide(_mode, :read, _safety), do: :allow
 
+  # spec 74 BUGS-47: a fetch that reaches loopback, a private range or a
+  # link-local address (or a dotless intranet name) asks in Read-only and
+  # Auto. It is not `:read`: a page on `localhost` or `10.x` is the user's
+  # own network, not the web. Full access allows it below.
+  def decide(mode, :private_network, _safety) when mode in ["read_only", "auto"], do: :ask
+
   def decide("read_only", permission, _safety) when permission in [:write, :execute],
     do: {:deny, "blocked by Read-only approval mode"}
 
