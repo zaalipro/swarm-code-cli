@@ -1635,7 +1635,7 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
   settings mode. The theme is `SWARM_THEME` > cli.json (`/theme`) > the
   desktop's mode > dark; `theme_env` names the theme `SWARM_THEME` set (so
   `/theme` can say it wins at the next launch). Wheel reports are
-  `SWARM_MOUSE=0|1` > cli.json (`/mouse`) > on.
+  `SWARM_MOUSE=0|1` > cli.json (`/mouse`) > off (cli020 E26/D5).
   """
   @spec start_preferences(map(), map(), term()) :: %{
           theme: :dark | :light,
@@ -1656,7 +1656,7 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
       case env |> Map.get("SWARM_MOUSE", "") |> String.trim() |> String.downcase() do
         value when value in ["1", "on", "true", "yes"] -> true
         value when value in ["0", "off", "false", "no"] -> false
-        _ -> Map.get(preferences, :mouse?, true) != false
+        _ -> Map.get(preferences, :mouse?, false) == true
       end
 
     preferences

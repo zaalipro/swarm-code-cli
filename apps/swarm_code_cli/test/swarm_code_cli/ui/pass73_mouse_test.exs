@@ -291,5 +291,9 @@ defmodule SwarmCodeCLI.UI.Pass73MouseTest do
 
     assert %{mouse?: false} =
              PersistedSession.start_preferences(%{"SWARM_MOUSE" => "0"}, defaults, nil)
+
+    # cli020 qa (D5): a preferences map without the key is off too.
+    assert %{mouse?: false} =
+             PersistedSession.start_preferences(%{}, Map.delete(defaults, :mouse?), nil)
   end
 end
