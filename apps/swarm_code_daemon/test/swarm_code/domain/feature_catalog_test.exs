@@ -157,6 +157,32 @@ defmodule SwarmCode.Domain.FeatureCatalogTest do
            ]
   end
 
+  # cli020 C12 (ux-live-17): a file named like the query beats a deep
+  # subsequence match.
+  test "@ ranks basename prefix, basename substring, segment prefix, then fuzzy" do
+    paths = [
+      "priv/repo/migrations/20260101_create_items.exs",
+      "lib/admin/semi_final.ex",
+      "lib/my_mix_task.ex",
+      "lib/m/i.ex",
+      "mix.exs",
+      "lib/mix/tasks/mix_helper.ex"
+    ]
+
+    titles = Enum.map(FeatureCatalog.file_matches(paths, "mi", 10), & &1.title)
+
+    assert titles == [
+             "mix.exs",
+             "lib/mix/tasks/mix_helper.ex",
+             "lib/my_mix_task.ex",
+             "lib/admin/semi_final.ex",
+             "priv/repo/migrations/20260101_create_items.exs",
+             "lib/m/i.ex"
+           ]
+
+    assert ["mix.exs"] = Enum.map(FeatureCatalog.file_matches(paths, "MI", 1), & &1.title)
+  end
+
   test "Git and checkpoint reads derive project from scope", c do
     System.cmd("git", ["init", "--quiet", c.project.root_path])
     File.write!(Path.join(c.project.root_path, "new.txt"), "hello")
