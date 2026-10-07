@@ -17,37 +17,44 @@ defmodule SwarmCodeCLI.Release do
 
   @usage """
   Usage: ncode [DIR] [--new | --continue | --resume ID] [--model M]
-               [-p PROMPT [--json]] [--plain [--ndjson]] [--help] [--version]
+               [-p PROMPT [--json] [--fail-on-denied]] [--plain [--ndjson]]
          ncode settings [QUERY] [--dir DIR]
          ncode config COMMAND [ARGS]     (ncode config help lists them)
+         ncode help | version | doctor
 
   Opens the saved session for DIR (default: the current directory).
 
     settings [QUERY]  open Settings, at QUERY when given ('ncode settings providers');
                       it opens even when no model provider is set up yet
     config COMMAND    read and change settings from scripts, dotfiles and SSH
-                      (a folder named settings or config: ncode ./settings, ./config)
+    doctor            check the install, the providers and the database (config doctor)
+                      (a folder with one of these names: ncode ./settings, ./config)
 
-    --new           start a new conversation
-    --continue, -c  continue the latest conversation (the default)
-    --resume ID     open the conversation with this id
-    --model M       use model M (or provider/model) for this session only
-    -p PROMPT       run one turn without the full-screen view, print the answer and
-                    exit; approvals nobody can give are denied and said on stderr.
-                    PROMPT - reads the prompt from stdin
-    --json          with -p: print one JSON object instead of the streamed answer
+    --new             start a new conversation
+    --continue, -c    continue the latest conversation (the default)
+    --resume, -r ID   open the conversation with this id
+    --model, -m M     use model M (or provider/model) for this session only
+    -p PROMPT         run one turn without the full-screen view, print the answer
+                      and exit; approvals nobody can give are denied, and one
+                      stderr line says which. PROMPT - reads the prompt from stdin;
+                      with a PROMPT, piped stdin is sent after it
+    --json            with -p: print one JSON object instead of the streamed answer
     --fail-on-denied  with -p or --plain: exit 1 when a tool call was denied
-    --plain         line-by-line presenter for pipes, CI and SSH (type `help`)
-    --ndjson        with --plain: one JSON record per line
-    --help, -h      this text
-    --version, -V   the version
+    --plain           line-by-line presenter for pipes, CI and SSH (type `help`)
+    --ndjson          with --plain: one JSON record per line
+    --help, -h        this text
+    --version, -V, -v the version
 
-  Exit codes: 0 done, 1 the run failed, 2 usage, 3 startup refused.
+  Examples:
+    ncode
+    ncode -p "explain this repo" --json
+    ncode settings providers
+    ncode config doctor
+
+  Exit codes: 0 done, 1 the run failed, 2 usage, 3 startup refused,
+  4 changed elsewhere (ncode config), 129/143 closed by SIGHUP/SIGTERM.
   Keys in the full-screen view: Ctrl-P palette, ? every key, Esc stops a turn,
   Ctrl-F opens an agent from the side panel, Ctrl-B its shape, Ctrl-C twice quits.
-  The mouse wheel scrolls the pane under the pointer; Shift-drag (Option-drag in
-  Terminal.app and iTerm2) still selects text, and /mouse off gives the
-  terminal its own selection back.
   """
 
   # The prompt's size is the composer's: one paste.
@@ -187,6 +194,10 @@ defmodule SwarmCodeCLI.Release do
   # pass74 S1-13/S1-14: the first word `settings` or `config` is the
   # subcommand (a folder of that name opens with ./settings or -- settings).
   def parse(["config" | rest]), do: {:config, rest}
+  # cli020 B16: the conventional words.
+  def parse(["help" | _]), do: :help
+  def parse(["version" | _]), do: :version
+  def parse(["doctor" | rest]), do: {:config, ["doctor" | rest]}
   def parse(["settings" | rest]), do: settings(rest, [], nil)
 
   def parse(args) when is_list(args) do
@@ -254,7 +265,7 @@ defmodule SwarmCodeCLI.Release do
       flag when flag in ["--help", "-h"] ->
         {:ok, %{parsed | seen: MapSet.put(parsed.seen, :help)}}
 
-      flag when flag in ["--version", "-V"] ->
+      flag when flag in ["--version", "-V", "-v"] ->
         {:ok, %{parsed | seen: MapSet.put(parsed.seen, :version)}}
 
       "--new" ->

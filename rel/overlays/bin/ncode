@@ -15,50 +15,66 @@ set -euo pipefail
 usage() {
   cat <<'HELP'
 Usage: ncode [DIR] [--new | --continue | --resume ID] [--model M]
-             [-p PROMPT [--json]] [--plain [--ndjson]] [--help] [--version]
+             [-p PROMPT [--json] [--fail-on-denied]] [--plain [--ndjson]]
        ncode settings [QUERY] [--dir DIR]
        ncode config COMMAND [ARGS]     (ncode config help lists them)
+       ncode help | version | doctor
 
 Opens the saved session for DIR (default: the current directory).
 
   settings [QUERY]  open Settings, at QUERY when given ('ncode settings providers');
                     it opens even when no model provider is set up yet
   config COMMAND    read and change settings from scripts, dotfiles and SSH
-                    (a folder named settings or config: ncode ./settings, ./config)
+  doctor            check the install, the providers and the database (config doctor)
+                    (a folder with one of these names: ncode ./settings, ./config)
 
-  --new           start a new conversation
-  --continue, -c  continue the latest conversation (the default)
-  --resume ID     open the conversation with this id
-  --model M       use model M (or provider/model) for this session only
-  -p PROMPT       run one turn in a new conversation (-c or --resume to continue
-                  one) without the full-screen view, print the answer and exit;
-                  approvals nobody can give are denied and said on stderr.
-                  PROMPT - reads the prompt from stdin
-  --json          with -p: print one JSON object instead of the streamed answer
+  --new             start a new conversation
+  --continue, -c    continue the latest conversation (the default)
+  --resume, -r ID   open the conversation with this id
+  --model, -m M     use model M (or provider/model) for this session only
+  -p PROMPT         run one turn in a new conversation (-c or --resume to continue
+                    one) without the full-screen view, print the answer and exit;
+                    approvals nobody can give are denied, and one stderr line says
+                    which. PROMPT - reads the prompt from stdin; with a PROMPT,
+                    piped stdin is sent after it
+  --json            with -p: print one JSON object instead of the streamed answer
   --fail-on-denied  with -p or --plain: exit 1 when a tool call was denied
-  --plain         line-by-line presenter for pipes, CI and SSH (type `help`);
-                  chosen by itself when stdin or stdout is not a terminal
-  --ndjson        with --plain: one JSON record per line
-  --help, -h      this text
-  --version, -V   the version
+  --plain           line-by-line presenter for pipes, CI and SSH (type `help`);
+                    chosen by itself when stdin or stdout is not a terminal
+  --ndjson          with --plain: one JSON record per line
+  --help, -h        this text
+  --version, -V, -v the version
 
-Exit codes: 0 done, 1 the run failed, 2 usage, 3 startup refused.
+Examples:
+  ncode
+  ncode -p "explain this repo" --json
+  ncode settings providers
+  ncode config doctor
+
+Exit codes: 0 done, 1 the run failed, 2 usage, 3 startup refused,
+4 changed elsewhere (ncode config), 129/143 closed by SIGHUP/SIGTERM.
 
 Provider settings (shell exports win; otherwise loaded from ~/.secrets or NCODE_ENV_FILE):
   NCODE_MODEL          model id (first run, when the app has no provider yet)
-  NCODE_BASE_URL       endpoint; OpenAI-compatible URLs include /v1
+  NCODE_BASE_URL       endpoint; OpenAI-compatible URLs include /v1 (OPENAI_API_KEY
+                       alone means api.openai.com, ANTHROPIC_API_KEY api.anthropic.com)
   NCODE_API_KEY        or OPENAI_API_KEY / ANTHROPIC_API_KEY
   NCODE_PROVIDER       openai (default) or anthropic
   NCODE_EFFORT         reasoning effort key
+  NCODE_ENV_FILE       the file to load them from (default ~/.secrets)
 
 Session:
   NCODE_CONVERSATION   latest (default), new, or a conversation id (the flags win)
   NCODE_KEYMAP=vim     vim keys in the composer
   NCODE_ASCII=1        plain ASCII glyphs, for a terminal or font without symbols
+  NCODE_THEME          dark or light
+  NCODE_MOUSE=1        mouse wheel reports (/mouse in ncode)
   NCODE_COMPANION=0    do not serve the visual companion
+  NCODE_CONFIG_DIR     the global folder: memory, skills, workflows, cli.json (absolute)
+  NCODE_SHELL          the shell the model's commands run in
 
 The older SWARM_* names (SWARM_MODEL, SWARM_API_KEY, ...) still work; when both
-are set, the NCODE_* one wins.
+are set, the NCODE_* one wins. swarmcode and swarm-code are old names of ncode.
 
 Keys: type to write; Enter sends, Esc stops a turn, Ctrl-C twice quits,
 Ctrl-P palette (also /resume, /new, /model, /approval), Ctrl-T select, ? every key,
@@ -163,6 +179,15 @@ needs_value() {
 # subcommands; a folder of that name opens with ./settings or -- settings.
 settings_mode=0
 settings_query=""
+# cli020 B16 (onboarding-10): the conventional words. A folder of that name
+# opens with ./help, ./version or ./doctor.
+if [[ $# -gt 0 ]]; then
+  case "$1" in
+    help) usage; exit 0 ;;
+    version) version; exit 0 ;;
+    doctor) shift; set -- config doctor "$@" ;;
+  esac
+fi
 if [[ $# -gt 0 && "$1" == "config" ]]; then
   shift
   export SWARM_PROJECT_ROOT="$PWD"
@@ -207,7 +232,7 @@ fi
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --help | -h) usage; exit 0 ;;
-    --version | -V) version; exit 0 ;;
+    --version | -V | -v) version; exit 0 ;;
     --new) set_conversation new ;;
     --continue | -c) set_conversation latest ;;
     --resume | -r) needs_value "$1" $# "${2:-}"; set_conversation "$2"; shift ;;
@@ -259,6 +284,12 @@ if [[ $project_set -eq 1 ]]; then
   root_dir="$project"
 else
   root_dir="$PWD"
+fi
+if [[ ! -d "$root_dir" && $project_set -eq 1 && "$project" != */* && "$project" != .* && "$project" != "~"* ]]; then
+  # cli020 B16: a word that is no folder is most likely a command.
+  echo "ncode: '$project' is not a folder or a command. Did you mean --help? (To open a folder named $project, use ./$project.)" >&2
+  json_failure "'$project' is not a folder or a command." 2
+  exit 2
 fi
 if [[ ! -d "$root_dir" ]]; then
   echo "ncode: '$root_dir' is not a directory." >&2

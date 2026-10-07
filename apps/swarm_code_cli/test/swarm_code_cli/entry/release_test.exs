@@ -28,6 +28,12 @@ defmodule SwarmCodeCLI.ReleaseTest do
       assert {:ok, %{prompt: "-v means verbose?"}} = Release.parse(["-p", "-v means verbose?"])
       assert :help = Release.parse(["--help", "--bogus"])
       assert :version = Release.parse(["-V"])
+      # cli020 B16
+      assert :version = Release.parse(["-v"])
+      assert :version = Release.parse(["version"])
+      assert :help = Release.parse(["help"])
+      assert {:config, ["doctor", "--json"]} = Release.parse(["doctor", "--json"])
+      assert Release.usage() =~ "Examples:"
     end
 
     # cli020 B3: `--fail-on-denied` goes with -p or --plain.

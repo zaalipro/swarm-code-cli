@@ -86,7 +86,10 @@ defmodule SwarmCodeCLI.Release.LauncherTest do
     test "--help and --version answer without starting the release", context do
       assert {0, help} = launch(context, ["--help"])
       assert help =~ "Usage: ncode [DIR] [--new | --continue | --resume ID] [--model M]"
-      assert help =~ "Exit codes: 0 done, 1 the run failed, 2 usage, 3 startup refused."
+
+      assert help =~
+               "Exit codes: 0 done, 1 the run failed, 2 usage, 3 startup refused,\n4 changed"
+
       assert {0, "ncode 0.1.0\n"} = launch(context, ["--version"])
       refute File.exists?(context.log)
     end
@@ -135,7 +138,35 @@ defmodule SwarmCodeCLI.Release.LauncherTest do
     end
 
     test "a directory that does not exist is a usage error", context do
-      assert {2, "ncode: 'nowhere' is not a directory.\n"} = launch(context, ["nowhere"])
+      assert {2, "ncode: './nowhere' is not a directory.\n"} = launch(context, ["./nowhere"])
+    end
+
+    # cli020 B16 (onboarding-10, onboarding-24).
+    test "help, version, -v and doctor are words; an unknown word says so", context do
+      assert {0, help} = launch(context, ["help"])
+      assert help =~ "Examples:\n  ncode\n  ncode -p \"explain this repo\" --json\n"
+      assert help =~ "ncode settings providers\n  ncode config doctor\n"
+      assert help =~ "--fail-on-denied"
+      assert help =~ "--model, -m M"
+      assert help =~ "4 changed elsewhere (ncode config)"
+      assert {0, "ncode 0.1.0\n"} = launch(context, ["version"])
+      assert {0, "ncode 0.1.0\n"} = launch(context, ["-v"])
+      refute File.exists?(context.log)
+
+      assert {0, _} = launch(context, ["doctor", "--json"])
+
+      assert stub(context)["ARGS"] ==
+               "[eval] [SwarmCodeCLI.Release.main(System.argv())] [config] [doctor] [--json]"
+
+      assert {2, output} = launch(context, ["sttings"])
+
+      assert output ==
+               "ncode: 'sttings' is not a folder or a command. Did you mean --help? " <>
+                 "(To open a folder named sttings, use ./sttings.)\n"
+
+      File.mkdir_p!(Path.join(context.project, "help"))
+      assert {0, _} = launch(context, ["./help"])
+      assert stub(context)["ROOT"] =~ "/help"
     end
   end
 
