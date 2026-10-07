@@ -114,7 +114,10 @@ defmodule SwarmCodeCLI.UI.Projector.ApprovalCard do
       reason: first_present([Map.get(approval, :reason), string(arguments["justification"])]),
       family: first_present([Map.get(approval, :command_family)]),
       classification: Map.get(approval, :classification),
-      agent: first_present([Map.get(approval, :agent_name)])
+      agent: first_present([Map.get(approval, :agent_name)]),
+      # cli020 E14: the mode the ask was raised in (§8.2, stored at request
+      # time by the engine; nil from an older daemon).
+      read_only?: Map.get(approval, :approval_mode) in ["read_only", :read_only]
     }
   end
 
@@ -139,7 +142,12 @@ defmodule SwarmCodeCLI.UI.Projector.ApprovalCard do
   defp asker(_item), do: nil
 
   @doc "\"scout-1 wants to run a command\": the asking agent by name, else the plainest true thing."
-  def title(item, state), do: who(item, state) <> " wants to " <> verb(facts(item))
+  def title(item, state) do
+    case facts(item) do
+      %{read_only?: true, tool: tool} when tool != "" -> "Ask · " <> tool
+      facts -> who(item, state) <> " wants to " <> verb(facts)
+    end
+  end
 
   @doc """
   Who asks, by the one name the panel, the band and the overlay use
@@ -227,6 +235,9 @@ defmodule SwarmCodeCLI.UI.Projector.ApprovalCard do
         |> String.split(["\r\n", "\n"])
         |> Enum.map(&{&1, :command})
 
+      facts.path != nil and facts.read_only? ->
+        [{facts.path, :path}] ++ ask_lines(facts.tool, facts.arguments)
+
       facts.path ->
         [{facts.path, :path}] ++ change_lines(facts.arguments)
 
@@ -240,6 +251,57 @@ defmodule SwarmCodeCLI.UI.Projector.ApprovalCard do
 
       true ->
         []
+    end
+  end
+
+  # cli020 E14: what a read-only ask would change, in at most @ask_lines
+  # lines: `edit_file` as a line diff of each edit's old → new text (the
+  # bounded arguments; `List.myers_difference/2`, as `UI.UnifiedDiff` only
+  # reads git's text), `write_file` as the first lines of its content.
+  @ask_lines 12
+
+  defp ask_lines("write_file", arguments) do
+    case string(arguments["content"]) do
+      nil -> []
+      content -> content |> String.split(["\r\n", "\n"]) |> Enum.map(&{&1, :plain}) |> capped()
+    end
+  end
+
+  defp ask_lines(_tool, arguments) do
+    edits =
+      case arguments["edits"] do
+        edits when is_list(edits) -> Enum.filter(edits, &is_map/1)
+        _ -> [arguments]
+      end
+
+    edits
+    |> Enum.flat_map(fn edit ->
+      old = string(edit["old_string"]) || string(edit["old"]) || ""
+      new = string(edit["new_string"]) || string(edit["new"]) || string(edit["content"]) || ""
+      line_diff(old, new)
+    end)
+    |> capped()
+  end
+
+  defp line_diff(old, new) do
+    split = fn
+      "" -> []
+      text -> String.split(text, ["\r\n", "\n"])
+    end
+
+    split.(old)
+    |> List.myers_difference(split.(new))
+    |> Enum.flat_map(fn
+      {:eq, lines} -> Enum.map(lines, &{"  " <> &1, :plain})
+      {:del, lines} -> Enum.map(lines, &{"- " <> &1, :del})
+      {:ins, lines} -> Enum.map(lines, &{"+ " <> &1, :add})
+    end)
+  end
+
+  defp capped(lines) do
+    case Enum.split(lines, @ask_lines) do
+      {shown, []} -> shown
+      {shown, rest} -> shown ++ [{"… #{length(rest)} more", :omitted}]
     end
   end
 
@@ -534,7 +596,14 @@ defmodule SwarmCodeCLI.UI.Projector.ApprovalCard do
     # Rows the card may take from main: most of it, never all of it.
     budget = max(6, div(main_rows * 2, 3))
     fixed = 1 + length(keys) + 1 + 1
-    limit = if expanded?, do: total, else: min(total, @command_rows)
+    # cli020 E14: a read-only ask shows its whole bounded change (the path,
+    # @ask_lines lines and the count).
+    limit =
+      cond do
+        expanded? -> total
+        facts.read_only? and facts.path != nil -> min(total, @ask_lines + 2)
+        true -> min(total, @command_rows)
+      end
 
     {spacer?, gaps?, reason?, shown} = fit(fixed, limit, total, budget)
     first = scroll(state, item, total, shown)
@@ -648,12 +717,17 @@ defmodule SwarmCodeCLI.UI.Projector.ApprovalCard do
     room = card - 3 - 1 - 1 - tail
     verb = " wants to " <> verb(facts)
 
+    # cli020 E14: a read-only ask names the tool it would run.
+    words =
+      if facts.read_only? and facts.tool != "",
+        do: [{"Ask · " <> facts.tool, tint(:text_primary, state, [:bold])}],
+        else: [
+          {name, tint(name_role(item, state), state, [:bold])},
+          {verb, tint(:text_primary, state, [:bold])}
+        ]
+
     title =
-      [
-        {mark <> " ", tint(:warning, state, [:bold])},
-        {name, tint(name_role(item, state), state, [:bold])},
-        {verb, tint(:text_primary, state, [:bold])}
-      ]
+      [{mark <> " ", tint(:warning, state, [:bold])} | words]
       |> clip(max(1, room), state)
 
     fill = max(1, card - 3 - segments_cells(title, policy) - 1 - tail)
@@ -947,9 +1021,16 @@ defmodule SwarmCodeCLI.UI.Projector.ApprovalCard do
     |> decisions(item)
     |> Enum.map(fn {decision, key, words, _target} ->
       words =
-        if decision == :always_prefix and facts.family,
-          do: words <> " " <> quoted(facts.family, state),
-          else: words
+        cond do
+          decision == :always_prefix and facts.family ->
+            words <> " " <> quoted(facts.family, state)
+
+          decision == :deny_stop and facts.read_only? ->
+            "deny and stop"
+
+          true ->
+            words
+        end
 
       {key, words, focused?(state, decision)}
     end)

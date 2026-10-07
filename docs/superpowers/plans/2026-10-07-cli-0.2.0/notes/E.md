@@ -163,3 +163,16 @@ Branch `cli020/E` from M1 `3008f352`, worktree `~/dev/swarm-code-cli-wt/cli020-E
   finding already drops the note (`panel_facts.ex` `without_engine_notes/1`).
 - Test `cli020/e13_worker_changes_test.exs` (unit level; the transcript path is the existing
   `prose_rows` call sites switched to `report_rows/5`).
+
+### E14 Read-only approval card
+- `ApprovalCard.facts/1` gains `read_only?` from `Map.get(approval, :approval_mode)` (C adds the
+  DTO field per §8.2; **stub-free but inert** until then: the test puts the key on the struct).
+  Read-only: title `! Ask · <tool>` (also `ApprovalCard.title/2`), the `D` chip reads
+  `deny and stop`; the keys row was already limited to the offered decisions (A'2 sends
+  `[:approve, :deny, :deny_stop]`).
+- Deviation: the diff is built with `List.myers_difference/2` over each edit's old/new lines
+  (`- `/`+ `/context), because `UI.UnifiedDiff` only parses git's diff text. 12 lines, then
+  `… N more`; `write_file` shows the first 12 lines of `content`; the card's line limit for a
+  read-only file ask is path + 12 + the count (other cards keep 6). Keys keep the card's chip
+  layout (`y  once     d  deny     D  deny and stop`), not literal ` · ` separators.
+- Test `cli020/e14_read_only_card_test.exs`; projector/paint/approval tests 586/0.
