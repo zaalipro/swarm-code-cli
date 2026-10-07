@@ -40,6 +40,11 @@ defmodule SwarmCodeCLI.UI.Reducer.TerminalPrefs do
 
   def apply_prefs(state, _prefs), do: state
 
+  @doc "Re-applies cli.json's `reduced_motion` over fresh capabilities."
+  @spec motion(map()) :: map()
+  def motion(state),
+    do: reduced_motion(state, boolean(Map.get(state.prefs || %{}, "reduced_motion")))
+
   defp put(state, _field, :keep), do: state
   defp put(state, field, value), do: Map.put(state, field, value)
 

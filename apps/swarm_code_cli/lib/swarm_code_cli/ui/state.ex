@@ -207,8 +207,11 @@ defmodule SwarmCodeCLI.UI.State do
   rejected: not allowed", "Stopping the turn.") fades `notice_ms/0` after it
   appeared; the quit hint and errors that need an answer stay.
   """
-  def shown_notice(%{notice: notice, notice_at: at, now: now}) do
-    if fading?(notice) and is_integer(at) and is_integer(now) and now - at >= @notice_ms,
+  def shown_notice(%{notice: notice, notice_at: at, now: now} = state) do
+    # cli020 D13: cli.json's notice_seconds.
+    window = Map.get(state, :notice_ms) || @notice_ms
+
+    if fading?(notice) and is_integer(at) and is_integer(now) and now - at >= window,
       do: nil,
       else: notice
   end

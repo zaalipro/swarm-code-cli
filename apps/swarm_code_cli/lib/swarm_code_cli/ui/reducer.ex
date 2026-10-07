@@ -885,6 +885,8 @@ defmodule SwarmCodeCLI.UI.Reducer do
           lifecycle: :running
       }
 
+      # cli020 D13: cli.json's reduced_motion outlives a new terminal.
+      state = SwarmCodeCLI.UI.Reducer.TerminalPrefs.motion(state)
       {resize(state, capabilities.size), []}
     else
       {state, []}
