@@ -84,6 +84,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     with true <- Enum.all?([:project_id, :conversation_id, :source_epoch], &uuid?(opts[&1])),
          %{project_id: project_id} = conversation <- Conversations.get(opts[:conversation_id]),
          true <- project_id == opts[:project_id],
+         # cli020 B23 + F8: `ncode -p --approval <mode>` (trusted launcher input).
+         true <- opts[:approval_mode] in [nil, "read_only", "auto", "full_access"],
          %{root_path: project_root} <- Projects.get!(project_id),
          {:ok, root} <- SwarmCode.Domain.Tools.Path.real_path(opts[:project_root]),
          {:ok, ^root} <- SwarmCode.Domain.Tools.Path.real_path(project_root),
@@ -1527,11 +1529,20 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
           SessionConfiguration.overlay(Conversations.get!(state.opts[:conversation_id])),
           text,
           attachments,
-          research_ids: state.research_ids
+          [research_ids: state.research_ids] ++ approval_opts(state)
         )
       end
 
     settle_send(answer, id, text, state)
+  end
+
+  # cli020 B23 + F8: the session's `--approval` mode for the runs it starts
+  # (in memory, those runs only); none outside `ncode -p --approval`.
+  defp approval_opts(state) do
+    case state.opts[:approval_mode] do
+      nil -> []
+      mode -> [approval_mode: mode]
+    end
   end
 
   defp send_command(state, id, params) do
@@ -1540,9 +1551,10 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     answer =
       with {:ok, attachments} <-
              attachment_payloads(Enum.uniq(state.attachment_ids ++ params["attachment_refs"])) do
-        CommandDispatcher.dispatch(state.opts[:conversation_id], text,
-          research_ids: state.research_ids,
-          attachments: attachments
+        CommandDispatcher.dispatch(
+          state.opts[:conversation_id],
+          text,
+          [research_ids: state.research_ids, attachments: attachments] ++ approval_opts(state)
         )
       end
 

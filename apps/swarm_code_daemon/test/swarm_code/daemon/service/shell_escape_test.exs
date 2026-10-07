@@ -33,6 +33,7 @@ defmodule SwarmCode.Daemon.Service.ShellEscapeTest do
   test "echo hi becomes a shell message and a shell item", c do
     assert {:ok, %{"value" => %{"status" => "accepted"}}} = run(c, "echo hi")
     assert eventually(fn -> shell_messages(c) != [] end)
+
     assert [%{content: "$ echo hi\nhi\n[exit 0]", run_id: nil, role: "shell"}] =
              shell_messages(c)
 

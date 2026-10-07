@@ -595,32 +595,31 @@ defmodule SwarmCodeCLI.Release do
   defp mode(%{mode: :prompt, prompt: prompt, format: format}), do: {:prompt, prompt, format}
   defp mode(%{mode: :plain, format: format}), do: {:plain, format}
 
-  # cli020 B23 (§8.1 stub, the finisher removes it when A'1 lands F8's
-  # `approval_mode:` dispatch option): `--approval` (the flag, or the
-  # launcher's SWARM_HEADLESS_APPROVAL export) is refused until then. After
-  # A'1 it returns `{:ok, Map.put(options, :approval, mode)}` and OneShot
-  # passes the mode into the dispatch.
+  # cli020 B23 + F8: `--approval` (the flag, or the launcher's
+  # SWARM_HEADLESS_APPROVAL export) is this session's approval mode for the
+  # runs it starts (`Engine` `approval_mode:`); the project row never changes.
   defp headless_approval(options) do
     mode =
       Map.get(options, :approval) ||
         approval_env(System.get_env("SWARM_HEADLESS_APPROVAL"))
 
-    if mode == nil,
-      do: {:ok, options},
-      else: {:error, "--approval needs the 0.2.0 engine."}
+    {:ok, Map.put(options, :approval, mode)}
   end
 
   defp approval_env(value) when value in ["read_only", "auto", "full_access"], do: value
   defp approval_env(_), do: nil
 
-  defp headless_options(options) do
+  @doc false
+  # The keyword `Headless.run/2` takes for the parsed `options`.
+  def headless_options(options) do
     [
       project_root: options.project && Path.expand(options.project),
       conversation: options.conversation,
       model: options.model,
       fail_on_denied: Map.get(options, :fail_on_denied) == true || nil,
       max_turns: Map.get(options, :max_turns),
-      max_budget_usd: Map.get(options, :max_budget_usd)
+      max_budget_usd: Map.get(options, :max_budget_usd),
+      approval_mode: Map.get(options, :approval)
     ]
     |> Enum.reject(fn {_, value} -> is_nil(value) end)
   end

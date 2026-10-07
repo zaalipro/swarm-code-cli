@@ -204,6 +204,56 @@ defmodule SwarmCode.Daemon.Service.ReadOnlyAskTest do
     assert op.error =~ "denied by user"
   end
 
+  # cli020 finisher (B23 + F8): `ncode -p --approval auto` starts the
+  # backend with `approval_mode: "auto"`; its runs write without asking and
+  # the project row keeps read_only.
+  test "a session started with approval_mode auto writes without asking", c do
+    root = Path.join(Path.dirname(c.root), "approval-override")
+    File.mkdir_p!(root)
+    {:ok, project} = Projects.create(%{name: "Approval override", root_path: root})
+    {:ok, project} = Projects.trust(project)
+    {:ok, project} = Projects.update(project, %{approval_mode: "read_only"})
+    {:ok, conv} = Conversations.create(project.id)
+    on_exit(fn -> Engine.stop_all(conv.id) end)
+
+    backend =
+      start_supervised!(
+        {Backend,
+         mode: :persisted,
+         repo: Repo,
+         project_root: root,
+         project_id: project.id,
+         conversation_id: conv.id,
+         source_epoch: Ecto.UUID.generate(),
+         approval_mode: "auto"},
+        id: :approval_override_backend
+      )
+
+    c = %{c | backend: backend, conversation: conv}
+    c = %{c | scope: %Scope{kind: :conversation, id: conv.id, generation: 3}}
+    server = write_server("override.txt")
+    on_exit(fn -> HTTP.stop(server) end)
+
+    {:ok, provider} =
+      Providers.create(%{
+        name: "override-#{conv.id}",
+        kind: "openai_compatible",
+        base_url: server.url <> "/v1",
+        models: ["fixture"],
+        default_model: "fixture"
+      })
+
+    {:ok, _} = Conversations.update(conv, %{chat_provider_id: provider.id, chat_model: "fixture"})
+
+    assert {:ok, %{"value" => %{"status" => "accepted", "identifiers" => [run]}}} =
+             request(c.backend, "prompt", c.scope, send_request("Write the file"))
+
+    assert eventually(fn -> Conversations.get_run(run).status == "done" end)
+    assert File.read!(Path.join(root, "override.txt")) == "hello\n"
+    assert pending(c) == []
+    assert Projects.get(project.id).approval_mode == "read_only"
+  end
+
   defp send_request(text),
     do: %ServiceRequest{
       operation: :dispatch_send,

@@ -165,13 +165,12 @@ defmodule SwarmCodeCLI.ReleaseTest do
       end
     end
 
-    test "--approval waits for the 0.2.0 engine (exit 2, the stub)" do
-      err =
-        ExUnit.CaptureIO.capture_io(:stderr, fn ->
-          assert Release.run(["-p", "x", "--approval", "auto"]) == 2
-        end)
-
-      assert err == "ncode: --approval needs the 0.2.0 engine.\n"
+    # cli020 finisher: the 0.2.0 engine (F8) is synced, so --approval is
+    # passed on (headless_approval_test covers the run and the refusal).
+    test "--approval is parsed into the run's approval mode" do
+      for {flag, mode} <- [{"read-only", "read_only"}, {"auto", "auto"}, {"full", "full_access"}] do
+        assert {:ok, %{approval: ^mode}} = Release.parse(["-p", "x", "--approval", flag])
+      end
     end
   end
 end

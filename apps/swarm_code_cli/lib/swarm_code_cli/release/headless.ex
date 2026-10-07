@@ -113,10 +113,29 @@ defmodule SwarmCodeCLI.Release.Headless do
   # cli020 B19: an id, an id prefix or a title; the session resolves it.
   defp selection(value) when is_binary(value), do: {:ok, value}
 
+  # cli020 B23 + F8: `auto`/`full_access` for one run still need the user's
+  # trust in the project (the engine refuses them as `:untrusted_project`).
+  @untrusted_approval "--approval auto and full need a trusted project. " <>
+                        "Run /trust in ncode first, or use --approval read-only."
+
   defp run_session(session, mode, options) do
+    approval = Keyword.get(options, :approval_mode)
+
+    if approval in ["auto", "full_access"] and not trusted?(session.project) do
+      IO.puts(:stderr, "ncode: " <> @untrusted_approval)
+      json_failure(mode, @untrusted_approval, 3)
+    else
+      start_session(session, mode, approval, options)
+    end
+  end
+
+  defp trusted?(%{trusted_at: %DateTime{}}), do: true
+  defp trusted?(_project), do: false
+
+  defp start_session(session, mode, approval, options) do
     # First-run onboarding (D3) says on stderr that it wrote the provider row.
     if notice = session[:notice], do: IO.puts(:stderr, "ncode: " <> notice)
-    warn_full_access(session, mode)
+    warn_full_access(session, mode, approval)
     # cli020 B10: folders a hard exit left behind go first.
     _ = SwarmCodeCLI.Release.SocketSweep.sweep()
     {dir, stat} = private_directory()
@@ -135,7 +154,8 @@ defmodule SwarmCodeCLI.Release.Headless do
                project_root: session.project.root_path,
                project_id: session.project.id,
                conversation_id: session.conversation.id,
-               source_epoch: source_epoch
+               source_epoch: source_epoch,
+               approval_mode: approval
              ),
            {:ok, _service} <-
              child(supervisor, SwarmCode.Daemon.Service,
@@ -170,7 +190,13 @@ defmodule SwarmCodeCLI.Release.Headless do
   # pass71 F9 (review R6): `-p` runs with the project's approval mode, and in
   # full access nothing asks; say so once, before the turn, on stderr.
   @doc false
-  def warn_full_access(%{project: %{approval_mode: "full_access"}}, {:prompt, _, _}) do
+  def warn_full_access(session, mode, approval \\ nil)
+
+  def warn_full_access(%{project: project}, {:prompt, _, _} = mode, approval)
+      when is_binary(approval),
+      do: warn_full_access(%{project: %{project | approval_mode: approval}}, mode, nil)
+
+  def warn_full_access(%{project: %{approval_mode: "full_access"}}, {:prompt, _, _}, nil) do
     IO.puts(
       :stderr,
       "ncode: this project is in full access: commands and edits run without asking " <>
@@ -178,7 +204,7 @@ defmodule SwarmCodeCLI.Release.Headless do
     )
   end
 
-  def warn_full_access(_session, _mode), do: :ok
+  def warn_full_access(_session, _mode, _approval), do: :ok
 
   defp present({:prompt, prompt, format}, source, epoch, conversation, extra) do
     OneShot.run(

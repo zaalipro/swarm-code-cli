@@ -144,23 +144,28 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
     with {:ok, conv} <- custom_mode(conv, cmd.mode) do
       result =
         if cmd.action == :start_swarm,
-          do: Engine.start_swarm(SessionConfiguration.overlay(conv), cmd.prompt),
+          do: Engine.start_swarm(SessionConfiguration.overlay(conv), cmd.prompt, approval(opts)),
           else:
             Engine.start_chat_turn(
               SessionConfiguration.overlay(conv),
               cmd.prompt,
               attachments(opts),
-              research_ids: research_ids(opts)
+              [research_ids: research_ids(opts)] ++ approval(opts)
             )
 
       started(conv, cmd.name, result)
     end
   end
 
-  defp execute(conv, %{action: :start_swarm} = cmd, _opts),
-    do: started(conv, cmd.name, Engine.start_swarm(SessionConfiguration.overlay(conv), cmd.task))
+  defp execute(conv, %{action: :start_swarm} = cmd, opts),
+    do:
+      started(
+        conv,
+        cmd.name,
+        Engine.start_swarm(SessionConfiguration.overlay(conv), cmd.task, approval(opts))
+      )
 
-  defp execute(conv, %{action: :pursue_goal} = cmd, _opts) do
+  defp execute(conv, %{action: :pursue_goal} = cmd, opts) do
     mode = if cmd.execution == :swarm, do: "swarm", else: "chat"
     message = if mode == "swarm", do: "/swarm /goal " <> cmd.text, else: "/goal " <> cmd.text
 
@@ -175,9 +180,27 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
       ]
 
       result =
-        if mode == "swarm",
-          do: Engine.start_swarm(SessionConfiguration.overlay(conv), goal.text, args),
-          else: Engine.start_goal_turn(SessionConfiguration.overlay(conv), goal.text, args)
+        cond do
+          mode == "swarm" ->
+            Engine.start_swarm(
+              SessionConfiguration.overlay(conv),
+              goal.text,
+              args ++ approval(opts)
+            )
+
+          approval(opts) == [] ->
+            Engine.start_goal_turn(SessionConfiguration.overlay(conv), goal.text, args)
+
+          # `start_goal_turn/3` does not forward `approval_mode:`; this is the
+          # chat turn it starts, with the session's mode.
+          true ->
+            Engine.start_chat_turn(
+              SessionConfiguration.overlay(conv),
+              message,
+              [],
+              [prompt: args[:prompt], goal_id: goal.id] ++ approval(opts)
+            )
+        end
 
       case started(conv, cmd.name, result) do
         {:ok, result} -> {:ok, Map.put(result, :goal_id, goal.id)}
@@ -276,7 +299,7 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
         %{SessionConfiguration.overlay(conv) | mode: "plan"},
         cmd.task,
         attachments(opts),
-        research_ids: research_ids(opts)
+        [research_ids: research_ids(opts)] ++ approval(opts)
       )
     )
   end
@@ -299,7 +322,7 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
         },
         cmd.task,
         attachments(opts),
-        research_ids: research_ids(opts)
+        [research_ids: research_ids(opts)] ++ approval(opts)
       )
     )
   end
@@ -313,9 +336,8 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
           SessionConfiguration.overlay(conv),
           "/create-workflow " <> cmd.prompt,
           attachments(opts),
-          prompt: cmd.prompt,
-          command: :create_workflow,
-          research_ids: research_ids(opts)
+          [prompt: cmd.prompt, command: :create_workflow, research_ids: research_ids(opts)] ++
+            approval(opts)
         )
       )
     end
@@ -330,7 +352,7 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
           SessionConfiguration.overlay(conv),
           @review_prompt,
           attachments(opts),
-          research_ids: research_ids(opts)
+          [research_ids: research_ids(opts)] ++ approval(opts)
         )
       )
 
@@ -1028,6 +1050,15 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
   defp failure_shape(_), do: "unrecognised"
   defp attachments(opts), do: Keyword.get(opts, :attachments, [])
   defp research_ids(opts), do: Keyword.get(opts, :research_ids, [])
+
+  # cli020 B23 + F8: the session's `ncode -p --approval` mode, for the runs
+  # this command starts (`Engine` `approval_mode:`); nothing otherwise.
+  defp approval(opts) do
+    case Keyword.get(opts, :approval_mode) do
+      nil -> []
+      mode -> [approval_mode: mode]
+    end
+  end
 
   defp research(id) do
     case Integer.parse(id) do
