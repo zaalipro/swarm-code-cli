@@ -183,6 +183,16 @@ defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.Owner do
     {:noreply, %{state | phase: :resuming, control: {:resume, token}, timer: timer(:resume)}}
   end
 
+  # cli020 D11: Ctrl-L. The native painter is invalidated and the next plan
+  # is a full one.
+  defp dispatch(
+         {:terminal_control, :redraw, generation},
+         %{phase: :running, generation: generation} = state
+       ) do
+    {_token, state} = control(state, :redraw)
+    {:noreply, %{state | last_plan: nil}}
+  end
+
   defp dispatch({:terminal_control, _, _}, state), do: {:noreply, state}
 
   defp dispatch({port, {:exit_status, _}}, %{port: port, phase: :restored} = state) do

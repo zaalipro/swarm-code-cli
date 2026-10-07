@@ -90,6 +90,7 @@ Mouse: Wheel scrolls; select text with the mouse. /mouse on sends wheel reports 
 | `Ctrl-C` | Clear the draft, else stop the turn; twice with nothing to stop quits |
 | `Esc` | Stop the turn that is streaming; the draft stays |
 | `Shift-Tab` | Cycle Ask (read-only) → Auto → Plan |
+| `Ctrl-L` | Repaint the whole screen |
 
 ## Composer, vim NORMAL
 
@@ -352,6 +353,7 @@ Mouse: Wheel scrolls; select text with the mouse. /mouse on sends wheel reports 
 | `q` | Close the top layer; in select mode with none open, quit |
 | `Esc` | Close the top layer, end a vim mode, or leave select mode |
 | `P` | Hand off to the plain presenter |
+| `Ctrl-L` | Repaint the whole screen |
 
 ## Inspector
 

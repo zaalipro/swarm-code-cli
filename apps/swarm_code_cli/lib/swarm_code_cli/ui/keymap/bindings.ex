@@ -1261,6 +1261,16 @@ defmodule SwarmCodeCLI.UI.Keymap.Bindings do
       help: "Insert a line break without sending (Ctrl-O or Ctrl-J)",
       hint: 7
     },
+    # cli020 D11 (tui-code-15): Ctrl-L repaints the whole screen.
+    %Binding{
+      id: :redraw,
+      keys: [{"l", [:control]}],
+      action: :redraw_screen,
+      contexts: [:composer, :main],
+      group: :session,
+      label: "Redraw",
+      help: "Repaint the whole screen"
+    },
     # cli020 D9 (decision 4i): text paste stays the terminal's own (Cmd-V,
     # bracketed paste); Ctrl-V attaches the clipboard's image.
     %Binding{

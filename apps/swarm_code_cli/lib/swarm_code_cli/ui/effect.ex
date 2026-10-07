@@ -12,7 +12,7 @@ defmodule SwarmCodeCLI.UI.Effect do
           | {:cancel_request, binary()}
           | {:start_timer, binary(), non_neg_integer(), Action.t()}
           | {:cancel_timer, binary()}
-          | {:terminal_control, :suspend | :resume | :shutdown}
+          | {:terminal_control, :suspend | :resume | :shutdown | :redraw}
           | {:announce, SafeText.t()}
           | {:bell, :needs_you | :turn_done}
           | {:terminal_title, SafeText.t()}
@@ -80,7 +80,7 @@ defmodule SwarmCodeCLI.UI.Effect do
     do: valid_effect(effect, Intent.valid_id?(timer_id))
 
   def validate({:terminal_control, operation} = effect),
-    do: valid_effect(effect, operation in [:suspend, :resume, :shutdown])
+    do: valid_effect(effect, operation in [:suspend, :resume, :shutdown, :redraw])
 
   def validate({:announce, safe_text} = effect),
     do: valid_effect(effect, valid_safe_text?(safe_text))

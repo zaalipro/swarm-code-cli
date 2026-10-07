@@ -476,6 +476,9 @@ defmodule SwarmCodeCLI.UI.Reducer do
 
   # Esc in the composer stops the turn that is generating, and nothing else.
   # A turn that was sent but is not on screen yet is that turn (I3).
+  # cli020 D11: Ctrl-L.
+  defp transition(state, :redraw_screen), do: {state, [{:terminal_control, :redraw}]}
+
   # cli020 D10: the rewind list and its confirm (`Reducer.Rewind`).
   defp transition(state, {:rewind_move, delta}), do: Rewind.move(state, delta)
   defp transition(state, {:rewind_open}), do: Rewind.choose_turn(state)

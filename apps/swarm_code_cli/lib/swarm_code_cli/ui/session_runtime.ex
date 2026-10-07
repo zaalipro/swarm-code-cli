@@ -758,6 +758,16 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
 
   defp local_effect(state, {:terminal_control, :shutdown}), do: begin_shutdown(state, :detach)
 
+  # cli020 D11: the port forgets what it painted; the next frame (asked at
+  # once) repaints every cell.
+  defp local_effect(%{terminal: terminal} = state, {:terminal_control, :redraw})
+       when is_pid(terminal) do
+    send(terminal, {:terminal_control, :redraw, state.ui.terminal_generation})
+    commit(%{state | ui: %{state.ui | revision: state.ui.revision + 1}}, state.ui)
+  end
+
+  defp local_effect(state, {:terminal_control, :redraw}), do: state
+
   # The palette's "Open visual companion": the reducer only emits, the runtime
   # opens the page and shows the URL through the existing feedback notice so it
   # can be copied even when no browser answers. No action carries free text, so

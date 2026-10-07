@@ -108,6 +108,7 @@ defmodule SwarmCodeCLI.UI.Action do
           | {:cycle_permission_mode}
           | :shell_send
           | {:paste_image}
+          | :redraw_screen
           | {:rewind_open}
           | {:rewind_move, -1 | 1}
           | {:rewind_choose, :both | :conversation | :files}
@@ -269,6 +270,9 @@ defmodule SwarmCodeCLI.UI.Action do
     do: valid_action(action, SwarmCodeCLI.UI.SlashPalette.valid_name?(name))
 
   def validate(:send_plain), do: {:ok, :send_plain}
+
+  # cli020 D11: Ctrl-L repaints every cell.
+  def validate(:redraw_screen), do: {:ok, :redraw_screen}
 
   # cli020 D10: the rewind list and its confirm.
   def validate({:rewind_open} = action), do: {:ok, action}

@@ -141,5 +141,24 @@ defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.Cli020PortTest do
     test "is the fixed 18-byte control tag 10" do
       assert {:ok, <<18::32, 1, 10, 1::64, 7::64>>} = Wire.control(:redraw, 1, 7)
     end
+
+    test "the owner sends it, spends a token and forgets its last plan" do
+      {owner, _runtime} = owner()
+      state = record(owner, <<1, 16, 1::64, 80::16, 24::16, 7>>)
+      :sys.replace_state(owner, &%{&1 | last_plan: :painted})
+      send(owner, {:terminal_control, :redraw, state.generation})
+      after_redraw = :sys.get_state(owner)
+      assert after_redraw.counter == state.counter + 1
+      assert after_redraw.last_plan == nil
+    end
+
+    test "Ctrl-L in the composer and the transcript is the redraw effect" do
+      alias SwarmCodeCLI.UI.{Input, Keymap, Reducer}
+      state = SwarmCodeCLI.UI.Pass73Helpers.ready()
+      ctrl_l = Input.text_fragment(:press, "l", [:control])
+      assert {:ok, :redraw_screen} = Keymap.resolve(ctrl_l, state, %{})
+      assert {:ok, :redraw_screen} = Keymap.resolve(ctrl_l, %{state | focus: "main"}, %{})
+      assert {_, [{:terminal_control, :redraw}]} = Reducer.update(state, :redraw_screen)
+    end
   end
 end
