@@ -607,7 +607,10 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Session do
         chat_provider: "openrouter",
         title: session.conversations[conversation_id].title,
         cost_usd: cost(script, conversation_id),
-        queued: queued(script, conversation_id)
+        queued: queued(script, conversation_id),
+        # cli020 C17: the levels the demo model accepts.
+        effort_levels: ~w(low medium high max),
+        swarm_effort_levels: ~w(low medium high max)
       }
     }
 
@@ -733,6 +736,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Session do
       context_window: 131_072,
       cost_usd: if(conversation_id, do: cost(script, conversation_id)),
       queued: if(conversation_id, do: queued(script, conversation_id), else: 0),
+      effort_levels: ~w(low medium high max),
+      swarm_effort_levels: ~w(low medium high max),
       title:
         case s.conversations[conversation_id] do
           %{title: title} -> title

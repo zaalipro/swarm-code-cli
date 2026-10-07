@@ -84,4 +84,94 @@ defmodule SwarmCode.Daemon.Service.Settings.C020ValuesTest do
     assert {env["layer"], env["source"], env["note"]} == {"env", "NCODE_MODEL", "first run"}
     refute Enum.any?(layers, &(&1["source"] == "--model"))
   end
+
+  # cli020 C17: E1 adds the Validator entries to the registry; their storage
+  # is read generically. Until then these entries stand in for E1's.
+  describe "C17 validator storage" do
+    alias SwarmCode.Daemon.Service.Settings.{Context, Values}
+    alias SwarmCode.Settings.Entry
+
+    defp entry(key, storage, home, extra \\ []) do
+      struct!(
+        Entry,
+        [
+          key: key,
+          id: key,
+          section: :models_effort,
+          label: key,
+          scope: home,
+          home: home,
+          storage: storage,
+          type: if(match?({_, _, _}, storage), do: :model, else: :effort),
+          nullable: true,
+          layers:
+            if(home == :session, do: [:session, :global, :default], else: [:global, :default])
+        ] ++ extra
+      )
+    end
+
+    test "the global and conversation validator columns read back", fixture do
+      {:ok, _} =
+        Repo.insert(%Setting{
+          default_validator_provider_id: fixture.provider.id,
+          default_validator_model: "fixture-model",
+          default_validator_effort: "high"
+        })
+
+      {:ok, conv} =
+        SwarmCode.Domain.Conversations.update(fixture.conversation, %{
+          validator_provider_id: fixture.provider.id,
+          validator_model: "fixture-model",
+          validator_effort: "low"
+        })
+
+      ctx =
+        Context.new(
+          project: fixture.project,
+          conversation: conv,
+          env: %{},
+          request_id: "11111111-1111-4111-8111-111111111111"
+        )
+
+      reads = Values.read(ctx, fixture.project.id)
+
+      global =
+        Values.setting_value(
+          entry(
+            "models.validator",
+            {:setting_pair, :default_validator_provider_id, :default_validator_model},
+            :global
+          ),
+          reads
+        )
+
+      assert global["value"] == %{
+               "provider_id" => fixture.provider.id,
+               "model" => "fixture-model"
+             }
+
+      effort =
+        Values.setting_value(
+          entry("efforts.validator", {:setting, :default_validator_effort}, :global,
+            dynamic_choices: {:effort_of, :validator_default}
+          ),
+          reads
+        )
+
+      assert effort["value"] == "high"
+      assert is_list(effort["choices"]) and effort["choices"] != []
+
+      session =
+        Values.setting_value(
+          entry(
+            "session.validator_model",
+            {:conversation_pair, :validator_provider_id, :validator_model},
+            :session
+          ),
+          reads
+        )
+
+      assert {session["winner"], session["value"]["model"]} == {"session", "fixture-model"}
+    end
+  end
 end

@@ -4545,7 +4545,12 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       "queue_paused" => MapSet.member?(state.queue_paused, conversation.id),
       "queue_revision" => queue_revision(conversation.queued || []),
       # cli020 C4: the ncode app is open on the same database.
-      "desktop_running" => Map.get(state, :desktop_running, false)
+      "desktop_running" => Map.get(state, :desktop_running, false),
+      # cli020 C17: the levels the dispatcher accepts for this conversation
+      # (`CommandDispatcher.efforts/2`), and who checks mission work.
+      "effort_levels" => effort_levels(conversation, :chat),
+      "swarm_effort_levels" => effort_levels(conversation, :swarm),
+      "validator_model" => effective_model_name(conversation, :validator)
     }
   end
 
@@ -4598,6 +4603,13 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     end)
     |> Enum.filter(&(&1["model"] != ""))
     |> Enum.take(@max_models)
+  end
+
+  defp effort_levels(conversation, kind) do
+    conversation
+    |> CommandDispatcher.efforts(kind)
+    |> Enum.take(16)
+    |> Enum.map(&preview(to_string(&1), 32))
   end
 
   defp effective_model_name(conversation, role) do

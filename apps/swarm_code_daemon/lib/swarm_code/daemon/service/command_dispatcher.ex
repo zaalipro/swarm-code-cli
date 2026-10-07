@@ -124,7 +124,13 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
     ]
   end
 
-  defp efforts(conv, kind) do
+  @doc """
+  cli020 C17: the effort levels `/effort` (`:chat`) or `/swarm_effort`
+  (`:swarm`) accept for `conv` (its effective model's, else the classic ones).
+  The workspace carries them for the terminal's effort picker.
+  """
+  @spec efforts(map(), :chat | :swarm) :: [String.t()]
+  def efforts(conv, kind) do
     levels =
       case Providers.effective_model(conv, kind) do
         {:ok, %{provider: provider, model: model}} -> Settings.efforts(provider, model)
@@ -492,6 +498,26 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
   defp execute(conv, %{action: :new_conversation} = cmd, _) do
     with {:ok, new} <- Conversations.create(conv.project_id),
          do: result(conv, cmd.name, :conversation, %{conversation_id: new.id, created: true})
+  end
+
+  # cli020 C17: bare /effort and /swarm_effort (E3's `:show_effort`) say the
+  # current level and the ones accepted here.
+  defp execute(conv, %{action: :show_effort} = cmd, _) do
+    {words, field, command} =
+      case Map.get(cmd, :target, :chat) do
+        :swarm -> {"Worker effort", :swarm_effort, "/swarm_effort"}
+        _ -> {"Effort", :effort, "/effort"}
+      end
+
+    kind = if field == :swarm_effort, do: :swarm, else: :chat
+    model = if kind == :swarm, do: "worker model", else: "chat model"
+    current = Map.get(conv, field) || "default"
+    levels = Enum.join(efforts(conv, kind), ", ")
+
+    result(conv, cmd.name, :report, %{
+      title: "Effort",
+      text: "#{words}: #{current} (#{model}). Levels: #{levels}. #{command} <level> sets it."
+    })
   end
 
   # cli020 C11 (tui-code-14): /rename <title>, /delete, /fork.

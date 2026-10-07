@@ -416,6 +416,8 @@ defmodule SwarmCode.Daemon.Service.Settings.Values do
     scheduled_default: {:default_scheduled_provider_id, :default_scheduled_model, :chat},
     workflow_default: {:default_workflow_provider_id, :default_workflow_model, :chat},
     implementer_default: {:default_implementer_provider_id, :default_implementer_model, :chat},
+    # cli020 C17: E1's `efforts.validator` follows `models.validator`.
+    validator_default: {:default_validator_provider_id, :default_validator_model, :chat},
     research_lead: {:research_lead_provider_id, :research_lead_model, :chat},
     research_worker: {:research_worker_provider_id, :research_worker_model, :chat},
     research_reporter: {:research_reporter_provider_id, :research_reporter_model, :chat}
@@ -424,7 +426,8 @@ defmodule SwarmCode.Daemon.Service.Settings.Values do
     session_chat: :chat,
     session_swarm: :swarm,
     session_judge: :judge,
-    session_implementer: :implementer
+    session_implementer: :implementer,
+    session_validator: :validator
   }
 
   # {provider struct | nil, model | nil} of the model an effort belongs to.
@@ -479,6 +482,7 @@ defmodule SwarmCode.Daemon.Service.Settings.Values do
         :swarm -> {:swarm_provider_id, :swarm_model}
         :judge -> {:judge_provider_id, :judge_model}
         :implementer -> {:implementer_provider_id, :implementer_model}
+        :validator -> {:validator_provider_id, :validator_model}
       end
 
     resolve(Map.get(conversation, pf), Map.get(conversation, mf)) || default_model(:chat, reads)

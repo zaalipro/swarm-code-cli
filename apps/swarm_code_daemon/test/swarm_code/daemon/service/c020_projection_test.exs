@@ -155,4 +155,34 @@ defmodule SwarmCode.Daemon.Service.C020ProjectionTest do
       assert tool_state(backend, conv, op.id) == nil
     end
   end
+
+  describe "C17 effort levels and the validator" do
+    test "the workspace carries the levels the dispatcher accepts and the validator model", c do
+      {:ok, conv} = Conversations.create(c.project.id)
+      {conv, _provider, _} = provider!(c, conv, fn _ -> {:text, "ok"} end)
+      {:ok, conv} = Conversations.update(conv, %{effort: "high", validator_model: nil})
+      backend = start_backend(c, conv)
+      body = workspace(backend, scope(conv))
+
+      levels = SwarmCode.Daemon.Service.CommandDispatcher.efforts(conv, :chat)
+      assert levels != [] and body["effort_levels"] == levels
+
+      assert body["swarm_effort_levels"] ==
+               SwarmCode.Daemon.Service.CommandDispatcher.efforts(conv, :swarm)
+
+      assert body["effort"] == "high"
+      # No validator of its own: the main model checks the work.
+      assert body["validator_model"] == "fixture"
+
+      {:ok, meta} =
+        SwarmCodeCLI.UI.DataSource.DTO.WorkspaceMetadata.decode(
+          Map.take(
+            body,
+            ~w(conversation_id mode chat_model swarm_model effort swarm_effort effort_levels swarm_effort_levels validator_model)
+          )
+        )
+
+      assert meta.effort_levels == levels
+    end
+  end
 end

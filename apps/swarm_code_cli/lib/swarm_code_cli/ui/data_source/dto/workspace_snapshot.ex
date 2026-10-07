@@ -27,6 +27,9 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.WorkspaceSnapshot do
       shells: [],
       queued: 0,
       queued_texts: [],
+      effort_levels: [],
+      swarm_effort_levels: [],
+      validator_model: nil,
       desktop_running: false,
       queued_count: 0,
       queue_paused: false,
@@ -61,6 +64,11 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.WorkspaceSnapshot do
       queued: :count,
       # pass73 T3/T8: what waits there, oldest first (at most 20, 2 KB each).
       queued_texts: {:list, {:text, 2048}},
+      # cli020 C17: the levels /effort and /swarm_effort accept here, and the
+      # validator model (the main model when the conversation names none).
+      effort_levels: {:list, {:text, 32}, 16},
+      swarm_effort_levels: {:list, {:text, 32}, 16},
+      validator_model: {:optional, {:text, 256}},
       # cli020 C4: the ncode app is open on the same database.
       desktop_running: :boolean,
       # cli020 C1: the queue count (0.2.0 name), whether a user stop paused it, and the revision queue.edit compares (16 hex).
@@ -108,6 +116,9 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.WorkspaceSnapshot do
       shells: [],
       queued: 0,
       queued_texts: [],
+      effort_levels: [],
+      swarm_effort_levels: [],
+      validator_model: nil,
       desktop_running: false,
       queued_count: 0,
       queue_paused: false,

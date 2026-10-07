@@ -213,4 +213,22 @@ defmodule SwarmCode.Daemon.Service.C020DispatcherTest do
                ["first", "reply", "second"]
     end
   end
+
+  describe "C17 bare /effort" do
+    test "reports the effort and the levels", c do
+      {:ok, conv} = Conversations.update(c.conversation, %{effort: "medium"})
+      levels = Dispatcher.efforts(conv, :chat)
+
+      assert {:ok, %{type: :report, title: "Effort", text: text}} =
+               parsed(conv, "effort", :show_effort, %{target: :chat})
+
+      assert text ==
+               "Effort: medium (chat model). Levels: #{Enum.join(levels, ", ")}. /effort <level> sets it."
+
+      assert {:ok, %{type: :report, text: worker}} =
+               parsed(conv, "swarm_effort", :show_effort, %{target: :swarm})
+
+      assert worker =~ "(worker model)" and worker =~ "/swarm_effort <level> sets it."
+    end
+  end
 end
