@@ -453,6 +453,18 @@ defmodule SwarmCodeCLI.UI.Projector.WorkspaceTurnsTest do
     assert length(String.split(row, "The swarm slot")) == 2, row
   end
 
+  test "a narrow failed run's hint wraps inside the card instead of being cut (cli020 qa)" do
+    state = fixture(:swarm, {60, 30})
+    run = state.read_model.runs["fixture-run"]
+    run = %{run | state: :failed, error: "mix test failed", finished_at: run.started_at + 134_000}
+    state = put_in(state.read_model.runs["fixture-run"], run)
+    {rows, _scene, _, _} = painted(state)
+
+    at = index_of(rows, "    ✕ Failed")
+    hint = rows |> Enum.drop(at + 1) |> Enum.take(3) |> Enum.map_join(" ", &String.trim/1)
+    assert hint =~ "r retries · Ctrl-P Retry failed run · /model to switch model"
+  end
+
   test "a failed run ends in an error card that says what to do next" do
     state = fixture(:swarm, {100, 30})
     run = state.read_model.runs["fixture-run"]

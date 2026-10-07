@@ -1841,13 +1841,20 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
         )
       end)
 
+    # cli020 qa: beside the docked panel the hint was cut ("/model to sw");
+    # it wraps inside the card like the reason above it.
     hint =
-      spec(
-        [{String.duplicate(" ", @body), :plain}, {"  " <> next_step(run, state), :faint}],
-        {@body, :error_card}
-      )
+      run
+      |> next_step(state)
+      |> SwarmCodeCLI.UI.Prose.wrap(inner, state.capabilities.ambiguous_width)
+      |> Enum.map(fn line ->
+        spec(
+          [{String.duplicate(" ", @body), :plain}, {"  " <> line, :faint}],
+          {@body, :error_card}
+        )
+      end)
 
-    [blank()] ++ head ++ [hint]
+    [blank()] ++ head ++ hint
   end
 
   defp footer_rows(%{run: %{state: :stopped}} = ctx, _state, _width) do
