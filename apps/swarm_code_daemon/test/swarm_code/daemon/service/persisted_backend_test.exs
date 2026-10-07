@@ -1605,6 +1605,10 @@ defmodule SwarmCode.Daemon.Service.PersistedBackendTest do
              GenServer.call(c.backend, {:service_watch, self(), "stream", c.scope, watch_request})
 
     send(c.backend, {:service_ready, self(), "stream"})
+    # cli020 qa: a reload applies the stream messages already in the mailbox
+    # first, ahead of a `:service_ready` still queued (appends queued for a
+    # watch that is not ready yet join); the watch is ready before they go.
+    :sys.get_state(c.backend)
 
     events = [
       {:assistant_delta, "first", "stream_append", "text"},
