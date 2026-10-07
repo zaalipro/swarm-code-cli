@@ -10,7 +10,8 @@ defmodule SwarmCode.Settings.WireBounds do
 
   alias SwarmCode.Settings.Sections
 
-  @views ~w(values overview facts usage open task records record file)
+  # cli020 M2 (C23): `project_config.summary` answers hooks and rules.
+  @views ~w(values overview facts usage open task records record file project_config.summary)
 
   @actions ~w(values.patch values.reset profile.apply task.cancel export import.preview import.apply
               doctor provider.create provider.update provider.set_key provider.clear_key

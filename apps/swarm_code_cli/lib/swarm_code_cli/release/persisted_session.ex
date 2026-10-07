@@ -601,7 +601,9 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
             mouse?: launch.mouse?
           },
           executable: executable,
-          theme: launch.theme
+          theme: launch.theme,
+          # cli020 M2 (E27): the palette cli.json names (`terminal.palette`).
+          palette: Map.get(preferences, :palette, :carbon)
         )
 
       owner_monitor = Process.monitor(owner)

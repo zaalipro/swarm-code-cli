@@ -609,6 +609,13 @@ defmodule SwarmCodeCLI.UI.Reducer.Settings.Commit do
 
   # notice_seconds, wheel_lines, editor, hint_letters and diff_lines are read
   # from `state.prefs` where they are used; the rest apply at the next launch.
+  # cli020 M2 (E27): a palette saved from Settings repaints at once.
+  defp consume("palette", {state, effects}, legacy) do
+    if env?(state, "terminal.palette"),
+      do: {state, effects},
+      else: {state, effects ++ [{:terminal_preferences, %{palette: legacy.palette}}]}
+  end
+
   defp consume(_name, acc, _legacy), do: acc
 
   defp clamp(value, low, high) when is_integer(value), do: value |> max(low) |> min(high)

@@ -47,15 +47,15 @@ defmodule SwarmCodeCLI.Cli020.E4EffortTest do
     state = base() |> picker(:chat)
     dialog = SwarmCodeCLI.UI.Projector.Dialog.project(state, :wide)
 
-    targets =
-      for block <- dialog.blocks, target = Map.get(block, :target), target != nil, do: target
+    targets = for block <- dialog.blocks, target = target(block), target != nil, do: target
 
-    # STUB until D18 adds `{:effort_pick, level}` to `Action`: no target.
-    if match?({:ok, _}, SwarmCodeCLI.UI.Action.validate({:effort_pick, "low"})) do
-      assert {:local, {:effort_pick, "low"}} in targets
-      assert {:local, {:effort_pick, "max"}} in targets
-    else
-      assert targets |> Enum.filter(&match?({:local, {:effort_pick, _}}, &1)) == []
-    end
+    # cli020 M2: D18's `{:effort_pick, level}` is in `Action`, so every row
+    # is a projector action with its level.
+    assert {:local, {:effort_pick, "low"}} in targets
+    assert {:local, {:effort_pick, "max"}} in targets
   end
+
+  defp target({:projector_action, _text, target}), do: target
+  defp target(%{} = block), do: Map.get(block, :target)
+  defp target(_block), do: nil
 end

@@ -51,7 +51,7 @@ defmodule SwarmCodeCLI.UI.Projector.MarkdownRows do
   end
 
   defp lookup(state, key) do
-    case Map.fetch(entries(Map.get(state, :markdown_cache)), key) do
+    case cached(Map.get(state, :markdown_cache), key) do
       {:ok, rows} ->
         {:ok, rows}
 
@@ -63,8 +63,18 @@ defmodule SwarmCodeCLI.UI.Projector.MarkdownRows do
     end
   end
 
-  defp entries(%{entries: %{} = entries}), do: entries
-  defp entries(_none), do: %{}
+  # cli020 M2: the runtime's cache is a `UI.MarkdownCache` (D21), whose
+  # entries carry their byte and recency accounting; a plain
+  # `%{entries: key => rows}` map is read as is.
+  defp cached(%SwarmCodeCLI.UI.MarkdownCache{} = cache, key) do
+    case SwarmCodeCLI.UI.MarkdownCache.get(cache, key) do
+      nil -> :error
+      rows -> {:ok, rows}
+    end
+  end
+
+  defp cached(%{entries: %{} = entries}, key), do: Map.fetch(entries, key)
+  defp cached(_none, _key), do: :error
 
   defp report(key, rows) do
     case Process.get(@frame) do

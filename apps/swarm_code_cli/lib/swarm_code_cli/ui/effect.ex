@@ -143,6 +143,8 @@ defmodule SwarmCodeCLI.UI.Effect do
           Enum.all?(preferences, fn
             {:theme, mode} -> mode in [:dark, :light]
             {:mouse?, on?} -> is_boolean(on?)
+            # cli020 M2 (E27): `/theme <palette>` repaints in that palette.
+            {:palette, palette} -> palette in SwarmCodeCLI.UI.Theme.palettes()
             _ -> false
           end)
       )

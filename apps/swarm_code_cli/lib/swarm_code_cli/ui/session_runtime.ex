@@ -182,7 +182,9 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
        jobs: %{},
        # cli020 D12: the projector (a test injects a failing one) and the
        # failed screen updates in a row.
-       projector: Keyword.get(opts, :projector, &Projector.project/1),
+       # cli020 M2 (D21/E31): the default projector also reports the
+       # Markdown rows it computed, for the cache.
+       projector: Keyword.get(opts, :projector, &Projector.project_reporting/1),
        scene_failures: 0,
        # cli020 D9: the slot token of the image paste in flight; a job
        # result for another token is stale and deletes its file.
@@ -1355,8 +1357,9 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
     state = %{state | dirty?: false}
 
     case safe_project(state) do
-      {:ok, scene, table} ->
+      {:ok, scene, table, reported} ->
         {rows, table} = markdown_rows(table)
+        rows = Map.merge(rows, reported)
 
         case SceneSlot.put(state.slot, scene) do
           :ok ->
@@ -1400,8 +1403,10 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
   end
 
   defp safe_project(state) do
-    {scene, table} = state.projector.(state.ui)
-    {:ok, scene, table}
+    case state.projector.(state.ui) do
+      {scene, table, reported} when is_map(reported) -> {:ok, scene, table, reported}
+      {scene, table} -> {:ok, scene, table, %{}}
+    end
   rescue
     error -> {:raised, Exception.format(:error, error, __STACKTRACE__) |> String.slice(0, 4_000)}
   end

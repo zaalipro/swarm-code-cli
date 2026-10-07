@@ -213,6 +213,8 @@ defmodule SwarmCode.Settings.Registry.Records do
         f("trusted", :bool),
         f("hooks", :map),
         f("profiles", {:records, "profile"}, max: 64),
+        # cli020 M2 (C23/E30): the valid `permissions` rules, read-only.
+        f("permissions", :map),
         f("top_level", :map),
         f("denied", :list, max: 16),
         f("unknown_keys", :list, max: 64),

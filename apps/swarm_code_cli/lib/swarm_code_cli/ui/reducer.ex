@@ -164,6 +164,7 @@ defmodule SwarmCodeCLI.UI.Reducer do
   # the rest of cli.json once the session has read it.
   defp transition(state, {:show_diffs, value}), do: Display.set(state, :show_diffs, value)
   defp transition(state, {:theme_mode, value}), do: Display.set(state, :theme_mode, value)
+  defp transition(state, {:palette, value}), do: Display.set(state, :palette, value)
   defp transition(state, {:mouse, value}), do: Display.set(state, :mouse, value)
   defp transition(state, {:preferences_loaded, loaded}), do: Display.loaded(state, loaded)
 

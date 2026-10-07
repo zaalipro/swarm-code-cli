@@ -89,6 +89,8 @@ defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.Owner do
        # pass71 F4 (V's request I-2/S-2): the launcher decides the theme once
        # (`Theme.mode/2`: SWARM_THEME, else the desktop settings' mode).
        theme: Keyword.get(options, :theme, :dark),
+       # cli020 M2 (E27): the palette (`terminal.palette`), Carbon by default.
+       palette: Keyword.get(options, :palette, :carbon),
        flags: flags,
        slot: nil,
        generation: 1,
@@ -263,6 +265,7 @@ defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.Owner do
   # the port took it, so the `ready` of a later resume agrees with them.
   defp dispatch({:terminal_preferences, preferences}, state) when is_map(preferences) do
     state = retheme(state, Map.get(preferences, :theme))
+    state = repalette(state, Map.get(preferences, :palette))
 
     state =
       case Map.get(preferences, :mouse?) do
@@ -562,7 +565,8 @@ defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.Owner do
           color_mode: state.caps.color_mode,
           ascii?: state.caps.ascii?,
           glyph_tier: state.caps.glyph_tier,
-          theme: state.theme
+          theme: state.theme,
+          palette: state.palette
         }
 
         case encode(fn -> Paint.build(scene, options) end, sequence) do
@@ -589,6 +593,18 @@ defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.Owner do
   end
 
   defp retheme(state, _theme), do: state
+
+  # cli020 M2 (E27): the same for a palette (`/theme <palette>`).
+  defp repalette(state, palette) when is_atom(palette) and palette != state.palette do
+    if palette in SwarmCodeCLI.UI.Theme.palettes() do
+      Logger.info("terminal palette switched to #{palette}")
+      %{state | palette: palette, last_plan: nil}
+    else
+      state
+    end
+  end
+
+  defp repalette(state, _palette), do: state
 
   defp encode(build, sequence) do
     with {:ok, plan} <- build.(),

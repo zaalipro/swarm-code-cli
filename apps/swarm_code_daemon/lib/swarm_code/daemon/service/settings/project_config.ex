@@ -223,6 +223,9 @@ defmodule SwarmCode.Daemon.Service.Settings.ProjectConfig do
       "trusted" => project.trusted_at != nil,
       "hooks" => hooks_of(json),
       "profiles" => profiles_of(json),
+      # cli020 M2 (E30): the valid permission rules, read-only (the Project
+      # file page lists them; `project_config.summary` answers the same).
+      "permissions" => Map.new(@rule_lists, &{&1, valid_rules(json, &1)}),
       "top_level" => top_level_of(json),
       "denied" => Enum.filter(@denylist, &has?(json, &1)),
       "unknown_keys" => if(json, do: Enum.reject(keys(json), &(&1 in @known)), else: []),

@@ -53,7 +53,13 @@ defmodule SwarmCodeCLI.UI.Reducer.HistorySearch do
   def fire(%{layers: [{:history_search, layer} | _]} = state) do
     state = %{state | history_timer: nil}
     before = Map.keys(state.requests)
-    {next, effects} = Remote.send(state, {:history_search, layer.query}, :history)
+
+    {next, effects} =
+      Remote.send(
+        state,
+        {:history_search, Remote.conversation(state), layer.query},
+        :history
+      )
 
     case Map.keys(next.requests) -- before do
       [id] -> {%{next | history_request: id}, effects}

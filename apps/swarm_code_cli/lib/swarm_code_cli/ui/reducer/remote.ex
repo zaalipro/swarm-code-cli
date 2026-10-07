@@ -14,6 +14,7 @@ defmodule SwarmCodeCLI.UI.Reducer.Remote do
   answers; until then this module is the stub listed in the lane notes.
   """
 
+  alias SwarmCodeCLI.UI.DataSource.DTO.CommandResult
   alias SwarmCodeCLI.UI.DataSource.Request
   alias SwarmCodeCLI.UI.State
 
@@ -109,9 +110,20 @@ defmodule SwarmCodeCLI.UI.Reducer.Remote do
   @spec outcome_payload(map()) :: {:ok, term()} | {:error, binary() | nil}
   def outcome_payload(%{status: :accepted} = outcome) do
     cond do
-      Map.get(outcome, :result) != nil -> {:ok, outcome.result}
-      match?(%{rows: [_ | _]}, outcome.feedback) -> {:ok, outcome.feedback.rows}
-      true -> {:ok, outcome}
+      match?(%CommandResult{kind: :rewind_turns}, Map.get(outcome, :result)) ->
+        {:ok, outcome.result.turns}
+
+      match?(%CommandResult{kind: :history}, Map.get(outcome, :result)) ->
+        {:ok, outcome.result.rows}
+
+      Map.get(outcome, :result) != nil ->
+        {:ok, outcome.result}
+
+      match?(%{rows: [_ | _]}, outcome.feedback) ->
+        {:ok, outcome.feedback.rows}
+
+      true ->
+        {:ok, outcome}
     end
   end
 
@@ -128,7 +140,7 @@ defmodule SwarmCodeCLI.UI.Reducer.Remote do
   defp refused_words({:attach_slot, _, _}), do: "The image could not be attached."
   defp refused_words({:rewind_turns, _}), do: "The turns could not be listed."
   defp refused_words({:rewind_apply, _, _, _}), do: "Nothing was rewound."
-  defp refused_words({:history_search, _}), do: "History search failed."
+  defp refused_words({:history_search, _, _}), do: "History search failed."
   defp refused_words({:queue_edit, _, _, _}), do: "The queue did not change."
   defp refused_words(_kind), do: "The command was refused."
 

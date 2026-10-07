@@ -18,6 +18,9 @@ defmodule SwarmCodeCLI.UI.Projector do
   @spec project_reporting(State.t()) ::
           {Scene.t(), %{binary() => ActionTarget.t()}, %{tuple() => list()}}
   def project_reporting(state) do
+    # cli020 M2: C15's shell commands become E15's `:shell` rows.
+    state = SwarmCodeCLI.UI.Projector.ShellItems.merge(state)
+
     {{scene, table}, computed} =
       SwarmCodeCLI.UI.Projector.MarkdownRows.collect(fn -> project_frame(state) end)
 
