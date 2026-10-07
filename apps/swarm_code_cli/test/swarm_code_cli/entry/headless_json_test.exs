@@ -44,4 +44,14 @@ defmodule SwarmCodeCLI.Release.HeadlessJsonTest do
 
     assert capture_io(fn -> assert Headless.json_failure(:json, "fine", 0) == 0 end) == ""
   end
+
+  # cli020 B23: a stream-json run that never starts still ends with its summary.
+  test "stream-json failures print the summary record" do
+    out =
+      ExUnit.CaptureIO.capture_io(fn ->
+        assert SwarmCodeCLI.Release.Headless.json_failure({:prompt, "x", :stream_json}, "no", 3) == 3
+      end)
+
+    assert %{"type" => "summary", "error" => "no", "exit_code" => 3} = Jason.decode!(out)
+  end
 end

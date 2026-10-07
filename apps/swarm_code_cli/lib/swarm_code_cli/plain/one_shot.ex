@@ -89,7 +89,7 @@ defmodule SwarmCodeCLI.Plain.OneShot do
     format = Keyword.get(options, :format, :text)
 
     if Intent.valid_id?(epoch) and Intent.valid_id?(conversation) and Intent.valid_text?(prompt) and
-         format in [:text, :json] do
+         format in [:text, :json, :stream_json] do
       client = Keyword.fetch!(options, :data_source)
 
       state = %{
@@ -110,6 +110,16 @@ defmodule SwarmCodeCLI.Plain.OneShot do
         project_root: Keyword.get(options, :project_root),
         # Tool items of the owned runs counted as blocked (by the policy or a hook).
         blocked: MapSet.new(),
+        # cli020 B23: the run's limits, and the plain presenter whose records
+        # `--output-format stream-json` writes, one JSON object per line.
+        max_turns: Keyword.get(options, :max_turns),
+        max_budget_usd: Keyword.get(options, :max_budget_usd),
+        limited?: false,
+        no_cost_said?: false,
+        presenter:
+          if(format == :stream_json,
+            do: SwarmCodeCLI.Plain.Presenter.new(%SwarmCodeCLI.Plain.Options{format: :ndjson})
+          ),
         ui: nil,
         dispatch: nil,
         runs: [],
@@ -241,6 +251,7 @@ defmodule SwarmCodeCLI.Plain.OneShot do
 
   defp deliver(state, %Delivery{} = delivery) do
     {state, _effects} = update(state, {:data, delivery})
+    state = stream_records(state, delivery)
 
     state
     |> observe_outcome(delivery)
@@ -306,10 +317,101 @@ defmodule SwarmCodeCLI.Plain.OneShot do
     |> announce_tools()
     |> count_blocked(ReadModel.items(state.ui.read_model, :workspace))
     |> answer_interactions()
+    |> enforce_limits()
     |> maybe_settle()
   end
 
   defp check(state), do: state
+
+  # -- cli020 B23: stream-json and the run's limits ---------------------------
+
+  # The workspace watch's deliveries go through a plain presenter; each of
+  # its records is one line `{"stream", "text"}` (the `--plain --ndjson`
+  # shape), and `finish/3` ends the stream with `{"type": "summary", …}`.
+  defp stream_records(%{presenter: nil} = state, _delivery), do: state
+
+  defp stream_records(state, %Delivery{scope: scope} = delivery) do
+    watch = state.ui && state.ui.watches.workspace
+
+    if watch && scope == watch.scope do
+      {presenter, records} =
+        SwarmCodeCLI.Plain.Presenter.present(state.presenter, state.epoch, delivery)
+
+      Enum.each(records, fn {stream, content} ->
+        line = %{"stream" => Atom.to_string(stream), "text" => IO.iodata_to_binary(content)}
+        write(state.output, [Jason.encode!(line), "\n"])
+      end)
+
+      %{state | presenter: presenter}
+    else
+      state
+    end
+  end
+
+  defp enforce_limits(%{limited?: true} = state), do: state
+
+  defp enforce_limits(state) do
+    model = state.ui.read_model
+
+    Enum.reduce_while(state.runs, state, fn run_id, state ->
+      run = Map.get(model.runs, run_id)
+
+      cond do
+        run == nil or run.state in @terminal ->
+          {:cont, state}
+
+        turns_passed?(state, model, run_id) ->
+          {:halt, limit_stop(state, run_id, "stopped after #{state.max_turns} turns.")}
+
+        is_number(state.max_budget_usd) and is_number(run.cost_usd) and
+            run.cost_usd > state.max_budget_usd ->
+          words =
+            "stopped at --max-budget-usd #{budget(state.max_budget_usd)} " <>
+              "(the run cost $#{:erlang.float_to_binary(run.cost_usd * 1.0, decimals: 2)})."
+
+          {:halt, limit_stop(state, run_id, words)}
+
+        true ->
+          {:cont, state}
+      end
+    end)
+  end
+
+  defp turns_passed?(%{max_turns: max}, model, run_id) when is_integer(max) do
+    Enum.any?(model.agents, fn {_id, agent} ->
+      agent.run_id == run_id and agent.role == :lead and is_integer(agent.turn) and
+        agent.turn > max
+    end)
+  end
+
+  defp turns_passed?(_state, _model, _run_id), do: false
+
+  defp budget(x) when is_float(x), do: x |> Float.to_string() |> String.trim_trailing(".0")
+  defp budget(x), do: to_string(x)
+
+  defp limit_stop(state, run_id, words) do
+    id = elem(State.next_id(state.ui, :request), 0)
+    {state, effects} = update(state, {:invoke, {:run_control, :stop, run_id}, id})
+    state = say(%{state | limited?: true}, words)
+
+    if Enum.any?(effects, &match?({:command, %Request{request_id: ^id}}, &1)),
+      do: %{state | stopped?: true},
+      else: finish(state, 1)
+  end
+
+  # A run whose cost stays unknown is never stopped by the budget; said once,
+  # when the run has ended without one.
+  defp say_no_cost(%{max_budget_usd: x, no_cost_said?: false} = state, runs) when is_number(x) do
+    if Enum.any?(runs, &(&1.state in @terminal and &1.cost_usd == nil)),
+      do:
+        say(
+          %{state | no_cost_said?: true},
+          "the provider reports no cost; --max-budget-usd is not enforced."
+        ),
+      else: state
+  end
+
+  defp say_no_cost(state, _runs), do: state
 
   # -- sending ----------------------------------------------------------------
 
@@ -750,6 +852,7 @@ defmodule SwarmCodeCLI.Plain.OneShot do
     do: Enum.flat_map(state.runs, &List.wrap(Map.get(state.ui.read_model.runs, &1)))
 
   defp conclude(state, runs) do
+    state = say_no_cost(state, runs)
     failed = Enum.find(runs, &(&1.state != :done))
 
     cond do
@@ -795,6 +898,10 @@ defmodule SwarmCodeCLI.Plain.OneShot do
     case state.format do
       :json ->
         write(state.output, [Jason.encode!(summary(state, code, message)), "\n"])
+
+      :stream_json ->
+        summary = Map.put(summary(state, code, message), "type", "summary")
+        write(state.output, [Jason.encode!(summary), "\n"])
 
       :text ->
         if state.mid_line?, do: write(state.output, "\n")

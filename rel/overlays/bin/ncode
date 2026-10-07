@@ -40,6 +40,11 @@ Opens the saved session for DIR (default: the current directory).
                     piped stdin is sent after it
   --json            with -p: print one JSON object instead of the streamed answer
   --fail-on-denied  with -p or --plain: exit 1 when a tool call was denied
+  --output-format F with -p: text (the default), json (= --json) or stream-json
+                    (one JSON record per line, the last {"type":"summary",...})
+  --max-turns N     with -p: stop the run after N turns of its lead (1-200)
+  --max-budget-usd X  with -p: stop the run once it costs more than $X
+  --approval MODE   with -p: read-only, auto or full for this run only
   --plain           line-by-line presenter for pipes, CI and SSH (type `help`);
                     chosen by itself when stdin or stdout is not a terminal
   --ndjson          with --plain: one JSON record per line
@@ -104,18 +109,28 @@ version() {
 # launcher's own; control characters go and \ and " are escaped.
 json_requested=0
 if [[ "${1:-}" != "config" && "${1:-}" != "settings" ]]; then
+  json_prev=""
   for json_arg in "$@"; do
     [[ "$json_arg" == "--" ]] && break
-    [[ "$json_arg" == "--json" ]] && json_requested=1
+    case "$json_arg" in
+      --json | --output-format=json) json_requested=1 ;;
+      --output-format=stream-json) json_requested=2 ;;
+      json) [[ "$json_prev" == "--output-format" ]] && json_requested=1 ;;
+      stream-json) [[ "$json_prev" == "--output-format" ]] && json_requested=2 ;;
+    esac
+    json_prev="$json_arg"
   done
-  unset json_arg
+  unset json_arg json_prev
 fi
 
 json_failure() {
-  [[ $json_requested -eq 1 ]] || return 0
-  local text
+  [[ $json_requested -ge 1 ]] || return 0
+  local text type=""
+  # A stream-json stream ends with its summary record.
+  [[ $json_requested -eq 2 ]] && type='"type":"summary",'
+
   text=$(printf '%s' "$1" | LC_ALL=C tr -d '\000-\037\177' | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')
-  printf '{"state":"not_started","conversation_id":null,"run_id":null,"text":"","error":"%s","question":null,"denied":[],"exit_code":%s}\n' \
+  printf '{'"$type"'"state":"not_started","conversation_id":null,"run_id":null,"text":"","error":"%s","question":null,"denied":[],"exit_code":%s}\n' \
     "$text" "$2"
 }
 
@@ -151,6 +166,11 @@ prompt=""
 prompt_set=0
 json=0
 fail_on_denied=0
+# cli020 B23: the other headless flags (with -p).
+output_format=""
+max_turns=""
+max_budget=""
+approval=""
 plain=0
 ndjson=0
 seen=" "
@@ -252,6 +272,14 @@ while [[ $# -gt 0 ]]; do
     --prompt=*) once -p; prompt="${1#--prompt=}"; prompt_set=1 ;;
     --json) once --json; json=1 ;;
     --fail-on-denied) once --fail-on-denied; fail_on_denied=1 ;;
+    --output-format) needs_value "$1" $# "${2:-}"; once --output-format; output_format="$2"; shift ;;
+    --output-format=*) once --output-format; output_format="${1#--output-format=}" ;;
+    --max-turns) needs_value "$1" $# "${2:-}"; once --max-turns; max_turns="$2"; shift ;;
+    --max-turns=*) once --max-turns; max_turns="${1#--max-turns=}" ;;
+    --max-budget-usd) needs_value "$1" $# "${2:-}"; once --max-budget-usd; max_budget="$2"; shift ;;
+    --max-budget-usd=*) once --max-budget-usd; max_budget="${1#--max-budget-usd=}" ;;
+    --approval) needs_value "$1" $# "${2:-}"; once --approval; approval="$2"; shift ;;
+    --approval=*) once --approval; approval="${1#--approval=}" ;;
     --plain) once --plain; plain=1 ;;
     --ndjson) once --ndjson; ndjson=1 ;;
     --)
@@ -266,6 +294,33 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ $json -eq 0 || $prompt_set -eq 1 ]] || die_usage "--json goes with -p."
+for b23_flag in output-format max-turns max-budget-usd approval; do
+  b23_var=${b23_flag//-/_}; [[ $b23_var == max_budget_usd ]] && b23_var=max_budget
+  if [[ -n "${!b23_var}" && $prompt_set -eq 0 ]]; then die_usage "--$b23_flag goes with -p."; fi
+done
+unset b23_flag b23_var
+case "$output_format" in
+  "" | text) ;;
+  json) json=1 ;;
+  stream-json) [[ $json -eq 0 ]] || die_usage "--json and --output-format stream-json do not go together." ;;
+  *) die_usage "--output-format is text, json or stream-json." ;;
+esac
+if [[ "$output_format" == text && $json -eq 1 ]]; then
+  die_usage "--json and --output-format text do not go together."
+fi
+if [[ -n "$max_turns" ]] && ! [[ "$max_turns" =~ ^[0-9]{1,3}$ && 10#$max_turns -ge 1 && 10#$max_turns -le 200 ]]; then
+  die_usage "--max-turns needs a number from 1 to 200."
+fi
+if [[ -n "$max_budget" ]] && ! [[ "$max_budget" =~ ^[0-9]{1,6}(\.[0-9]{1,6})?$ && "$max_budget" =~ [1-9] ]]; then
+  die_usage "--max-budget-usd needs an amount above 0 (in dollars)."
+fi
+case "$approval" in
+  "") unset SWARM_HEADLESS_APPROVAL ;;
+  read-only) export SWARM_HEADLESS_APPROVAL=read_only ;;
+  auto) export SWARM_HEADLESS_APPROVAL=auto ;;
+  full) export SWARM_HEADLESS_APPROVAL=full_access ;;
+  *) die_usage "--approval is read-only, auto or full." ;;
+esac
 [[ $ndjson -eq 0 || $plain -eq 1 ]] || die_usage "--ndjson goes with --plain."
 [[ $plain -eq 0 || $prompt_set -eq 0 ]] || die_usage "-p and --plain do not go together."
 if [[ $fail_on_denied -eq 1 && $prompt_set -eq 0 && $plain -eq 0 ]]; then
@@ -348,7 +403,12 @@ if [[ $prompt_set -eq 1 ]]; then
   if [[ "$prompt" != "-" ]] && { [[ -p /dev/stdin ]] || [[ -f /dev/stdin ]]; }; then
     export SWARM_STDIN_PIPED=1
   fi
-  if [[ $json -eq 1 ]]; then headless -p "$prompt" --json; else headless -p "$prompt"; fi
+  set -- -p "$prompt"
+  if [[ $json -eq 1 ]]; then set -- "$@" --json; fi
+  if [[ "$output_format" == stream-json ]]; then set -- "$@" --output-format stream-json; fi
+  if [[ -n "$max_turns" ]]; then set -- "$@" --max-turns "$max_turns"; fi
+  if [[ -n "$max_budget" ]]; then set -- "$@" --max-budget-usd "$max_budget"; fi
+  headless "$@"
 fi
 
 if [[ $settings_mode -eq 1 ]]; then

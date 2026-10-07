@@ -23,6 +23,7 @@ defmodule SwarmCodeCLI.Release.LauncherTest do
     printf 'TUI=%s\\n' "${SWARM_RELEASE_TUI-<unset>}"
     printf 'PIPED=%s\\n' "${SWARM_STDIN_PIPED-<unset>}"
     printf 'PICKER=%s\\n' "${SWARM_RESUME_PICKER-<unset>}"
+    printf 'APPROVAL=%s\\n' "${SWARM_HEADLESS_APPROVAL-<unset>}"
   } >"$STUB_LOG"
   exit "${STUB_EXIT:-0}"
   """
@@ -267,6 +268,72 @@ defmodule SwarmCodeCLI.Release.LauncherTest do
 
       tty(context, [])
       assert stub(context)["PICKER"] == "<unset>"
+    end
+
+    # cli020 B23 (competitors-4).
+    test "the other headless flags pass to the release; --approval is exported", context do
+      launch(context, [
+        "-p",
+        "hi",
+        "--output-format",
+        "stream-json",
+        "--max-turns",
+        "5",
+        "--max-budget-usd=0.25",
+        "--approval",
+        "full"
+      ])
+
+      log = stub(context)
+
+      assert log["ARGS"] ==
+               "[eval] [SwarmCodeCLI.Release.main(System.argv())] [-p] [hi] " <>
+                 "[--output-format] [stream-json] [--max-turns] [5] [--max-budget-usd] [0.25]"
+
+      assert log["APPROVAL"] == "full_access"
+
+      launch(context, ["-p", "hi", "--output-format", "json"], [
+        {"SWARM_HEADLESS_APPROVAL", "auto"}
+      ])
+
+      log = stub(context)
+      assert log["ARGS"] =~ "[-p] [hi] [--json]"
+      assert log["APPROVAL"] == "<unset>"
+
+      for {args, line} <- [
+            {["--max-turns", "2"], "--max-turns goes with -p."},
+            {["-p", "x", "--max-turns", "300"], "--max-turns needs a number from 1 to 200."},
+            {["-p", "x", "--max-budget-usd", "0.0"],
+             "--max-budget-usd needs an amount above 0 (in dollars)."},
+            {["-p", "x", "--approval", "yolo"], "--approval is read-only, auto or full."},
+            {["-p", "x", "--output-format", "xml"],
+             "--output-format is text, json or stream-json."}
+          ] do
+        assert {2, output} = launch(context, args), inspect(args)
+        assert output == "ncode: #{line} Run 'ncode --help'.\n"
+      end
+
+      {stdout, 2} =
+        System.cmd(
+          "bash",
+          [
+            "-c",
+            "bash \"$@\" 2>/dev/null",
+            "_",
+            context.launcher,
+            "-p",
+            "x",
+            "--output-format",
+            "stream-json",
+            "--max-turns",
+            "0"
+          ],
+          env: [{"STUB_LOG", context.log}],
+          cd: context.project
+        )
+
+      assert %{"exit_code" => 2, "state" => "not_started", "type" => "summary"} =
+               Jason.decode!(stdout)
     end
 
     test "the run's exit code is the command's", context do

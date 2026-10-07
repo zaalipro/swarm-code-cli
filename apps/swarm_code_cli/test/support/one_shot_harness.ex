@@ -208,6 +208,31 @@ defmodule SwarmCodeCLI.Test.OneShotHarness do
     })
   end
 
+  @doc "cli020 B23: the run's lead agent at `turn`."
+  def agent_update(session, turn, extra \\ []) do
+    body =
+      struct!(
+        %DTO.AgentSummary{
+          id: "agent-lead",
+          run_id: @run,
+          name: "lead",
+          role: :lead,
+          state: :running,
+          turn: turn,
+          revision: session.sequence + 1
+        },
+        extra
+      )
+
+    delta(session, %Delta{
+      kind: :agent_update,
+      entity_id: body.id,
+      run_id: @run,
+      conversation_id: @conversation,
+      body: body
+    })
+  end
+
   def interaction(session, %DTO.PendingInteraction{} = item) do
     delta(session, %Delta{
       kind: :interaction_upsert,

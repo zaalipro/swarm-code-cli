@@ -43,6 +43,11 @@ defmodule SwarmCodeCLI.Release do
                       with a PROMPT, piped stdin is sent after it
     --json            with -p: print one JSON object instead of the streamed answer
     --fail-on-denied  with -p or --plain: exit 1 when a tool call was denied
+    --output-format F with -p: text (the default), json (= --json) or stream-json
+                      (one JSON record per line, the last {"type":"summary",...})
+    --max-turns N     with -p: stop the run after N turns of its lead (1-200)
+    --max-budget-usd X  with -p: stop the run once it costs more than $X
+    --approval MODE   with -p: read-only, auto or full for this run only
     --plain           line-by-line presenter for pipes, CI and SSH (type `help`)
     --ndjson          with --plain: one JSON record per line
     --help, -h        this text
@@ -171,7 +176,8 @@ defmodule SwarmCodeCLI.Release do
         2
 
       {:ok, options} ->
-        with {:ok, options} <- read_prompt(options) do
+        with {:ok, options} <- headless_approval(options),
+             {:ok, options} <- read_prompt(options) do
           Headless.run(mode(options), headless_options(options))
         else
           {:error, message} ->
@@ -214,6 +220,10 @@ defmodule SwarmCodeCLI.Release do
       plain?: false,
       ndjson?: false,
       fail_on_denied?: false,
+      output_format: nil,
+      max_turns: nil,
+      max_budget_usd: nil,
+      approval: nil,
       seen: MapSet.new()
     }
 
@@ -320,6 +330,24 @@ defmodule SwarmCodeCLI.Release do
       "--fail-on-denied" ->
         once(parsed, :fail_on_denied, rest, &%{&1 | fail_on_denied?: true})
 
+      # cli020 B23 (competitors-4): the other headless flags.
+      "--output-format=" <> v ->
+        b23(parsed, :output_format, v, rest)
+
+      "--max-turns=" <> v ->
+        b23(parsed, :max_turns, v, rest)
+
+      "--max-budget-usd=" <> v ->
+        b23(parsed, :max_budget_usd, v, rest)
+
+      "--approval=" <> v ->
+        b23(parsed, :approval, v, rest)
+
+      "--" <> name = flag
+      when name in ["output-format", "max-turns", "max-budget-usd", "approval"] ->
+        key = name |> String.replace("-", "_") |> b23_key()
+        value(flag, rest, fn v, rest -> b23(parsed, key, v, rest) end)
+
       "--" ->
         directories(rest, parsed)
 
@@ -330,6 +358,14 @@ defmodule SwarmCodeCLI.Release do
         directory(parsed, directory, rest)
     end
   end
+
+  defp b23_key("output_format"), do: :output_format
+  defp b23_key("max_turns"), do: :max_turns
+  defp b23_key("max_budget_usd"), do: :max_budget_usd
+  defp b23_key("approval"), do: :approval
+
+  defp b23(parsed, key, value, rest),
+    do: once(parsed, key, rest, &Map.put(&1, key, value))
 
   defp directories([], parsed), do: {:ok, parsed}
 
@@ -363,6 +399,9 @@ defmodule SwarmCodeCLI.Release do
 
   defp flag_name(:prompt), do: "-p"
   defp flag_name(:fail_on_denied), do: "--fail-on-denied"
+  defp flag_name(:output_format), do: "--output-format"
+  defp flag_name(:max_turns), do: "--max-turns"
+  defp flag_name(:max_budget_usd), do: "--max-budget-usd"
   defp flag_name(key), do: "--" <> Atom.to_string(key)
 
   defp validate(parsed) do
@@ -382,6 +421,9 @@ defmodule SwarmCodeCLI.Release do
       parsed.model != nil and String.trim(parsed.model) == "" ->
         {:error, "--model needs a model name."}
 
+      b23_error(parsed) != nil ->
+        {:error, b23_error(parsed)}
+
       parsed.conversation not in [nil, "new", "latest"] and
           not resume_value?(parsed.conversation) ->
         {:error, @resume_needs_value}
@@ -399,7 +441,8 @@ defmodule SwarmCodeCLI.Release do
 
         format =
           cond do
-            parsed.json? -> :json
+            parsed.json? or parsed.output_format == "json" -> :json
+            parsed.output_format == "stream-json" -> :stream_json
             parsed.ndjson? -> :ndjson
             true -> :text
           end
@@ -412,10 +455,59 @@ defmodule SwarmCodeCLI.Release do
            model: parsed.model,
            prompt: parsed.prompt,
            format: format,
-           fail_on_denied: parsed.fail_on_denied?
+           fail_on_denied: parsed.fail_on_denied?,
+           max_turns: parsed.max_turns && String.to_integer(parsed.max_turns),
+           max_budget_usd: parsed.max_budget_usd && budget_value(parsed.max_budget_usd),
+           approval: approval_value(parsed.approval)
          }}
     end
   end
+
+  # cli020 B23: the four flags' rules (all with -p).
+  defp b23_error(parsed) do
+    given =
+      Enum.find([:output_format, :max_turns, :max_budget_usd, :approval], &(parsed[&1] != nil))
+
+    cond do
+      given != nil and parsed.prompt == nil ->
+        flag_name(given) <> " goes with -p."
+
+      parsed.output_format not in [nil, "text", "json", "stream-json"] ->
+        "--output-format is text, json or stream-json."
+
+      parsed.json? and parsed.output_format in ["text", "stream-json"] ->
+        "--json and --output-format #{parsed.output_format} do not go together."
+
+      parsed.max_turns != nil and
+          not (parsed.max_turns =~ ~r/\A[0-9]{1,3}\z/ and
+                   String.to_integer(parsed.max_turns) in 1..200) ->
+        "--max-turns needs a number from 1 to 200."
+
+      parsed.max_budget_usd != nil and budget_value(parsed.max_budget_usd) == nil ->
+        "--max-budget-usd needs an amount above 0 (in dollars)."
+
+      parsed.approval != nil and approval_value(parsed.approval) == nil ->
+        "--approval is read-only, auto or full."
+
+      true ->
+        nil
+    end
+  end
+
+  defp budget_value(text) do
+    with true <- text =~ ~r/\A[0-9]{1,6}(\.[0-9]{1,6})?\z/,
+         {value, ""} <- Float.parse(text),
+         true <- value > 0 do
+      value
+    else
+      _ -> nil
+    end
+  end
+
+  defp approval_value("read-only"), do: "read_only"
+  defp approval_value("auto"), do: "auto"
+  defp approval_value("full"), do: "full_access"
+  defp approval_value(_), do: nil
 
   defp resume_value?(value),
     do:
@@ -503,12 +595,32 @@ defmodule SwarmCodeCLI.Release do
   defp mode(%{mode: :prompt, prompt: prompt, format: format}), do: {:prompt, prompt, format}
   defp mode(%{mode: :plain, format: format}), do: {:plain, format}
 
+  # cli020 B23 (§8.1 stub, the finisher removes it when A'1 lands F8's
+  # `approval_mode:` dispatch option): `--approval` (the flag, or the
+  # launcher's SWARM_HEADLESS_APPROVAL export) is refused until then. After
+  # A'1 it returns `{:ok, Map.put(options, :approval, mode)}` and OneShot
+  # passes the mode into the dispatch.
+  defp headless_approval(options) do
+    mode =
+      Map.get(options, :approval) ||
+        approval_env(System.get_env("SWARM_HEADLESS_APPROVAL"))
+
+    if mode == nil,
+      do: {:ok, options},
+      else: {:error, "--approval needs the 0.2.0 engine."}
+  end
+
+  defp approval_env(value) when value in ["read_only", "auto", "full_access"], do: value
+  defp approval_env(_), do: nil
+
   defp headless_options(options) do
     [
       project_root: options.project && Path.expand(options.project),
       conversation: options.conversation,
       model: options.model,
-      fail_on_denied: Map.get(options, :fail_on_denied) == true || nil
+      fail_on_denied: Map.get(options, :fail_on_denied) == true || nil,
+      max_turns: Map.get(options, :max_turns),
+      max_budget_usd: Map.get(options, :max_budget_usd)
     ]
     |> Enum.reject(fn {_, value} -> is_nil(value) end)
   end

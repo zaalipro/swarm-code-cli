@@ -73,20 +73,29 @@ defmodule SwarmCodeCLI.Release.Headless do
   def json_failure(:json, sentence, code), do: print_failure(sentence, code)
 
   def json_failure({:prompt, _prompt, :json}, sentence, code), do: print_failure(sentence, code)
+
+  # cli020 B23: a stream ends with the summary object whatever stopped it.
+  def json_failure(:stream_json, sentence, code),
+    do: print_failure(sentence, code, %{"type" => "summary"})
+
+  def json_failure({:prompt, _prompt, :stream_json}, sentence, code),
+    do: print_failure(sentence, code, %{"type" => "summary"})
+
   def json_failure(_mode, _sentence, code), do: code
 
-  defp print_failure(sentence, code) do
+  defp print_failure(sentence, code, extra \\ %{}) do
     if code != 0 do
-      object = %{
-        "state" => "not_started",
-        "conversation_id" => nil,
-        "run_id" => nil,
-        "text" => "",
-        "error" => sentence,
-        "question" => nil,
-        "denied" => [],
-        "exit_code" => code
-      }
+      object =
+        Map.merge(extra, %{
+          "state" => "not_started",
+          "conversation_id" => nil,
+          "run_id" => nil,
+          "text" => "",
+          "error" => sentence,
+          "question" => nil,
+          "denied" => [],
+          "exit_code" => code
+        })
 
       IO.puts(Jason.encode!(object))
     end
@@ -143,7 +152,10 @@ defmodule SwarmCodeCLI.Release.Headless do
              ) do
         present(mode, source, source_epoch, session.conversation.id,
           fail_on_denied: Keyword.get(options, :fail_on_denied, false),
-          project_root: session.project.root_path
+          project_root: session.project.root_path,
+          # cli020 B23
+          max_turns: Keyword.get(options, :max_turns),
+          max_budget_usd: Keyword.get(options, :max_budget_usd)
         )
       else
         _ ->

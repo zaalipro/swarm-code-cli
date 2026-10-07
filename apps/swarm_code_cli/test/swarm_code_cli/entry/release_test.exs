@@ -118,4 +118,60 @@ defmodule SwarmCodeCLI.ReleaseTest do
       assert {2, "ncode: --json goes with -p." <> _} = halt_code(["--json"])
     end
   end
+
+  # cli020 B23 (competitors-4).
+  describe "the other headless flags" do
+    test "parse --output-format, --max-turns, --max-budget-usd and --approval" do
+      assert {:ok, %{format: :stream_json, max_turns: 3, max_budget_usd: 0.5, approval: "auto"}} =
+               Release.parse([
+                 "-p",
+                 "x",
+                 "--output-format",
+                 "stream-json",
+                 "--max-turns=3",
+                 "--max-budget-usd",
+                 "0.5",
+                 "--approval",
+                 "auto"
+               ])
+
+      assert {:ok, %{format: :json}} = Release.parse(["-p", "x", "--output-format=json"])
+
+      assert {:ok, %{format: :text, approval: nil}} =
+               Release.parse(["-p", "x", "--output-format", "text"])
+
+      assert {:ok, %{approval: "full_access"}} = Release.parse(["-p", "x", "--approval", "full"])
+      assert {:ok, %{approval: "read_only"}} = Release.parse(["-p", "x", "--approval=read-only"])
+    end
+
+    test "their usage errors" do
+      for {args, text} <- [
+            {["--max-turns", "3"], "--max-turns goes with -p."},
+            {["--plain", "--output-format", "json"], "--output-format goes with -p."},
+            {["-p", "x", "--output-format", "yaml"],
+             "--output-format is text, json or stream-json."},
+            {["-p", "x", "--json", "--output-format", "stream-json"],
+             "--json and --output-format stream-json do not go together."},
+            {["-p", "x", "--max-turns", "0"], "--max-turns needs a number from 1 to 200."},
+            {["-p", "x", "--max-turns", "201"], "--max-turns needs a number from 1 to 200."},
+            {["-p", "x", "--max-budget-usd", "0"],
+             "--max-budget-usd needs an amount above 0 (in dollars)."},
+            {["-p", "x", "--max-budget-usd", "-1"],
+             "--max-budget-usd needs an amount above 0 (in dollars)."},
+            {["-p", "x", "--approval", "yolo"], "--approval is read-only, auto or full."},
+            {["-p", "x", "--max-turns", "2", "--max-turns", "3"], "--max-turns is given twice."}
+          ] do
+        assert {:error, ^text} = Release.parse(args), inspect(args)
+      end
+    end
+
+    test "--approval waits for the 0.2.0 engine (exit 2, the stub)" do
+      err =
+        ExUnit.CaptureIO.capture_io(:stderr, fn ->
+          assert Release.run(["-p", "x", "--approval", "auto"]) == 2
+        end)
+
+      assert err == "ncode: --approval needs the 0.2.0 engine.\n"
+    end
+  end
 end
