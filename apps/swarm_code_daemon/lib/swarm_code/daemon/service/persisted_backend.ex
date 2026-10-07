@@ -1408,6 +1408,10 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       when destination in [:conversations, :changes] ->
         {accepted(id, [], navigation_feedback(destination)), state}
 
+      # cli020 C9/C18: a report with rows (/agents, /cost).
+      {:ok, %{type: :report, title: title, text: text, subject: subject, rows: rows}} ->
+        {accepted(id, [], rows_feedback(title, text, subject, rows)), state}
+
       {:ok, %{type: :report, title: title, text: text}} ->
         {accepted(id, [], report_feedback(title, text)), state}
 

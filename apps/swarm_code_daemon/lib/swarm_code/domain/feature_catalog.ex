@@ -1076,8 +1076,20 @@ defmodule SwarmCode.Domain.FeatureCatalog do
 
   defp error_result(_), do: {:error, :operation_failed}
 
+  # cli020 C9 (ux-live-7): what the library shows of a definition — its
+  # description and arguments — never the program source or its raw `meta`.
   defp definition(w),
-    do: %{name: w.name, scope: w.scope, meta: plain(w.meta), problems: plain(w.problems)}
+    do: %{
+      description: w.meta[:description],
+      args:
+        Enum.map(SwarmCode.Domain.Workflows.Definition.arg_specs(w), fn {key, spec} ->
+          %{
+            name: to_string(key),
+            required?: spec[:required] == true,
+            default: plain(Map.get(spec, :default))
+          }
+        end)
+    }
 
   defp workflow(w),
     do:

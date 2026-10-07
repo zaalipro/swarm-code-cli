@@ -99,4 +99,30 @@ defmodule SwarmCode.Daemon.Service.C020DispatcherTest do
       assert outcome.feedback.text =~ "/resume " <> String.slice(conv.id, 0, 8)
     end
   end
+
+  describe "C9 /agents" do
+    test "answers rows, never Markdown", c do
+      dir = Path.join([c.root, ".swarm_code", "agents"])
+      File.mkdir_p!(dir)
+
+      File.write!(Path.join(dir, "checker.md"), """
+      ---
+      name: checker
+      description: Reads a diff and reports problems
+      model: fixture
+      ---
+      Check the diff.
+      """)
+
+      assert {:ok, %{type: :report, subject: :agents, rows: rows, text: text}} =
+               Dispatcher.dispatch(c.conversation.id, "/agents")
+
+      assert %{name: "checker", model: "fixture", description: description, source: source} =
+               Enum.find(rows, &(&1.name == "checker"))
+
+      assert description =~ "Reads a diff" and is_binary(source)
+      refute text =~ "**"
+      refute inspect(rows) =~ "**"
+    end
+  end
 end

@@ -542,8 +542,19 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Session do
     do:
       report(script, "Exported", "The demo keeps its transcript in memory; nothing was written.")
 
-  defp slash_command(script, _request, :list_agents, _),
-    do: report(script, "Agents", "- **reviewer** (bundled) — reads a diff and reports problems")
+  # cli020 C9: rows beside the text, as the service answers.
+  defp slash_command(script, _request, :list_agents, _) do
+    {:ok, script, deltas, ids, feedback} =
+      report(script, "Agents", "- reviewer (bundled) — reads a diff and reports problems")
+
+    row = %DTO.FeedbackRow{
+      name: "reviewer",
+      source: "bundled",
+      description: "reads a diff and reports problems"
+    }
+
+    {:ok, script, deltas, ids, %{feedback | subject: :agents, rows: [row]}}
+  end
 
   defp slash_command(script, _request, :help, _) do
     text =

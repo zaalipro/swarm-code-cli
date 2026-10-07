@@ -592,23 +592,36 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
     end
   end
 
+  # cli020 C9 (ux-live-7): the agent definitions as rows (name, source,
+  # model, description) the terminal draws; the text, for `--plain`, has no
+  # Markdown.
   defp execute(conv, %{action: :list_agents} = cmd, _) do
-    definitions = Agents.list(conv.project.root_path) |> Enum.take(100)
+    rows =
+      Agents.list(conv.project.root_path)
+      |> Enum.take(50)
+      |> Enum.map(fn agent ->
+        %{
+          name: clip(agent.name),
+          source: clip(to_string(agent.source)),
+          model: if(agent.model, do: clip(agent.model)),
+          description: if(agent.description, do: clip(agent.description))
+        }
+      end)
 
     text =
-      case definitions do
+      case rows do
         [] ->
           "No agent definitions. Add markdown files to .swarm_code/agents/ in the project."
 
         _ ->
-          Enum.map_join(definitions, "\n", fn agent ->
-            "- **#{clip(agent.name)}** (#{agent.source})" <>
-              if(agent.model, do: " · " <> clip(agent.model), else: "") <>
-              if(agent.description, do: " — " <> clip(agent.description), else: "")
+          Enum.map_join(rows, "\n", fn row ->
+            "- #{row.name} (#{row.source})" <>
+              if(row.model, do: " · " <> row.model, else: "") <>
+              if(row.description, do: " — " <> row.description, else: "")
           end)
       end
 
-    report(conv, cmd.name, "Agents", text)
+    result(conv, cmd.name, :report, %{title: "Agents", text: text, subject: :agents, rows: rows})
   end
 
   defp execute(conv, %{action: :help} = cmd, opts) do
