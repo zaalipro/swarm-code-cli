@@ -40,6 +40,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   alias SwarmCode.Daemon.Service.Settings.Tasks, as: SettingsTasks
 
   alias SwarmCode.Daemon.Service.{
+    ClipboardInbox,
     CommandDispatcher,
     CommandLedger,
     PersistedProjection,
@@ -169,6 +170,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         desktop_running: false,
         # cli020 C3 (bugs-19): the ledger prune this backend started (owned
         # work under the job supervisor, never the init callback itself).
+        # cli020 C14: the clipboard image slots this session opened.
+        clipboard_slots: %{},
         ledger_prune:
           start_ledger_prune(
             Keyword.get(opts, :task_supervisor, SwarmCode.Domain.TaskSupervisor),
@@ -668,6 +671,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   def terminate(_, state) do
     cancel_jobs(state, wire_error(:source_unavailable))
     with %Task{} = task <- Map.get(state, :ledger_prune), do: Task.shutdown(task, :brutal_kill)
+    ClipboardInbox.close_all(Map.get(state, :clipboard_slots, %{}))
     # pass74 S1-9/S1-10: every settings job settles (a command's ledger row
     # completes), every task stops by its kind, every purge timer ends.
     Enum.reduce(Map.keys(state.settings_jobs), state, &settle_settings_job(&2, &1, true))
@@ -1137,6 +1141,60 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     end
   end
 
+  # cli020 C14 (competitors-6): a slot for a pasted clipboard image. The
+  # terminal writes the PNG to the path; `attachment.attach_slot` stages it.
+  defp execute(%{operation: :attachment_slot}, _scope, id, state) do
+    case ClipboardInbox.open(state.clipboard_slots, System.monotonic_time(:millisecond)) do
+      {:ok, slot, slots} ->
+        {accepted_result(id, [], Map.put(slot, "kind", "slot")),
+         %{state | clipboard_slots: slots}}
+
+      {:error, reason} ->
+        {refuse(id, reason, "", "attachment.slot"), state}
+    end
+  end
+
+  # The token names an open slot of this session (the path is never the
+  # client's); the file is checked, stored as an attachment and staged exactly
+  # like `/attach`. The slot file is gone whatever the answer.
+  defp execute(%{operation: :attachment_attach, params: %{"token" => token}}, _scope, id, state) do
+    now = System.monotonic_time(:millisecond)
+
+    case ClipboardInbox.take(state.clipboard_slots, token, now) do
+      {:error, reason, slots} ->
+        {refuse(id, clipboard_refusal(reason), "", "attachment.attach_slot"),
+         %{state | clipboard_slots: slots}}
+
+      {:ok, _png, slots} when length(state.attachment_ids) >= 4 ->
+        {refuse(id, :limit, "", "attachment.attach_slot"), %{state | clipboard_slots: slots}}
+
+      {:ok, png, slots} ->
+        state = %{state | clipboard_slots: slots}
+
+        case Attachments.store(ClipboardInbox.name(), "image/png", Base.encode64(png)) do
+          {:ok, %{"id" => attachment_id} = stored} ->
+            :ok =
+              CommandLedger.stage_attachment(
+                state.opts[:project_id],
+                state.opts[:conversation_id],
+                attachment_id
+              )
+
+            attachment =
+              stored |> Map.take(["id", "name", "mime"]) |> Map.put("bytes", byte_size(png))
+
+            {accepted_result(id, [attachment_id], %{
+               "kind" => "attachment",
+               "attachment" => attachment
+             }), %{state | attachment_ids: Enum.uniq([attachment_id | state.attachment_ids])}}
+
+          {:error, _reason} ->
+            {refuse(id, clipboard_refusal(:invalid_argument), "", "attachment.attach_slot"),
+             state}
+        end
+    end
+  end
+
   # cli020 C1: `queue.resume` lifts the pause a stop set and drains now.
   defp execute(%{operation: :queue_resume}, _scope, id, state) do
     state = state |> resume_pause() |> drain_queue() |> refresh()
@@ -1365,7 +1423,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       {:ok, %{type: :attached, research_id: research_id}} ->
         {accepted(id, []), %{state | research_ids: Enum.uniq([research_id | state.research_ids])}}
 
-      {:ok, %{type: :attachment_staged, attachment: %{"id" => attachment_id}}} ->
+      {:ok, %{type: :attachment_staged, attachment: %{"id" => attachment_id} = attachment}} ->
         :ok =
           CommandLedger.stage_attachment(
             state.opts[:project_id],
@@ -1373,8 +1431,12 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
             attachment_id
           )
 
-        {accepted(id, [attachment_id]),
-         %{state | attachment_ids: Enum.uniq([attachment_id | state.attachment_ids])}}
+        # cli020 C14: the answer names the staged image and its size (the
+        # chip shows it).
+        {accepted_result(id, [attachment_id], %{
+           "kind" => "attachment",
+           "attachment" => staged_body(attachment)
+         }), %{state | attachment_ids: Enum.uniq([attachment_id | state.attachment_ids])}}
 
       # cli020 C11: /rename.
       {:ok, %{type: :renamed, title: title}} ->
@@ -2181,8 +2243,39 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
   defp removed_notice(_state), do: nil
 
+  defp staged_body(%{"id" => id} = attachment) do
+    bytes =
+      case Attachments.path(id) do
+        {:ok, path, _mime} ->
+          case File.stat(path) do
+            {:ok, %File.Stat{size: size}} -> size
+            _ -> nil
+          end
+
+        _ ->
+          nil
+      end
+
+    %{
+      "id" => id,
+      "name" => preview(to_string(attachment["name"] || "image"), 256),
+      "mime" => to_string(attachment["mime"] || ""),
+      "bytes" => bytes
+    }
+  end
+
+  defp clipboard_refusal(:invalid_argument),
+    do: {:invalid_argument, "That is not a PNG image pasted here; paste it again."}
+
+  defp clipboard_refusal(reason), do: reason
+
   defp start_ledger_prune(supervisor, started_at) do
-    Task.Supervisor.async_nolink(supervisor, fn -> CommandLedger.prune(started_at, started_at) end)
+    # cli020 C14: the same owned start-up work removes clipboard inbox files
+    # an earlier session left behind (older than an hour).
+    Task.Supervisor.async_nolink(supervisor, fn ->
+      ClipboardInbox.sweep(started_at)
+      CommandLedger.prune(started_at, started_at)
+    end)
   rescue
     _ -> nil
   catch
@@ -2294,6 +2387,10 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   defp error_code({:provider_required, _words}), do: :not_allowed
   defp error_code({:stale, _words}), do: :stale_revision
   defp error_code({:busy, _words}), do: :not_allowed
+
+  defp error_code({reason, words}) when is_atom(reason) and is_binary(words),
+    do: error_code(reason)
+
   defp error_code(:not_configured), do: :source_unavailable
   # The client's closed error enum has no "not found": a model no provider
   # lists is an argument the request cannot carry, which is what it says.
@@ -4507,6 +4604,13 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
   defp reject(id, code), do: outcome(id, "rejected", [], error(code))
 
+  # cli020 C14/C16/C20: an accepted conversation command with its answer
+  # (`Outcome.result`); the key is absent from every other outcome.
+  defp accepted_result(id, ids, result, feedback \\ nil) do
+    {:ok, %{"value" => value} = response} = accepted(id, ids, feedback)
+    {:ok, %{response | "value" => Map.put(value, "result", result)}}
+  end
+
   # pass73 T3/T8: a refused command says why and what to do, in words. The
   # error keeps the closed wire code; `reason` carries the service's own
   # reason and the sentence the terminal shows. cli.log names the reason.
@@ -4568,7 +4672,10 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     steer_finished: "That run has finished; send the message in the chat to start a new turn.",
     finished: "That run has already finished.",
     # cli020 C6.
-    not_retryable: "Only a failed or stopped run can be retried."
+    not_retryable: "Only a failed or stopped run can be retried.",
+    # cli020 C14: a pasted clipboard image.
+    too_large: "The image is over #{div(Attachments.max_bytes(), 1_000_000)} MB.",
+    limit: "At most 4 images per message."
   }
 
   defp refusal(reason, text) when is_atom(reason) do
@@ -4584,6 +4691,10 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   defp refusal({:stale, words}, _text) when is_binary(words), do: {"stale", words}
   # cli020 C11/C15: something still running holds the request, in words.
   defp refusal({:busy, words}, _text) when is_binary(words), do: {"busy", words}
+
+  # cli020: any other closed reason with its own sentence.
+  defp refusal({reason, words}, _text) when is_atom(reason) and is_binary(words),
+    do: {Atom.to_string(reason), words}
 
   defp refusal(_reason, text), do: refusal(:operation_failed, text)
 

@@ -34,6 +34,21 @@ defmodule SwarmCodeCLI.UI.DataSource.C020FakeTest do
              command(next, {:queue_edit, a, "0123456789abcdef", :clear}, "fake-2")
   end
 
+  test "C14 a clipboard slot and the image staged from it" do
+    a = Script.id(:a)
+
+    assert {:ok, next, %DTO.Outcome{status: :accepted, result: %DTO.CommandResult{} = slot}, _} =
+             command(script(), {:attachment_slot, a})
+
+    assert slot.kind == :slot and slot.token =~ ~r/\A[0-9a-f]{32}\z/
+
+    assert {:ok, _, %DTO.Outcome{result: %DTO.CommandResult{kind: :attachment} = staged}, _} =
+             command(next, {:attach_slot, a, slot.token}, "fake-2")
+
+    assert staged.attachment.bytes > 0
+    assert {:ok, _} = DTO.CommandResult.validate(staged)
+  end
+
   test "C4 the fake source tells its clients the ncode app opened" do
     source =
       start_supervised!(

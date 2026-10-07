@@ -30,7 +30,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
   # (`allowed_actions`, `created_sequence`, ...) stay mandatory on the wire.
   @optional_wire_keys %{
     # pass73 T3/T8: outcomes the durable ledger saved before these existed.
-    DTO.Outcome => [:disposition, :reason],
+    DTO.Outcome => [:disposition, :reason, :result],
     DTO.WorkspaceSnapshot => [
       :mode,
       :chat_model,
@@ -594,6 +594,14 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
   # cli020 C6: the desktop's ↻ Retry; the service re-sends the run's message.
   defp request_body({:retry_run, run, revision}),
     do: {:ok, %{"op" => "run.retry", "run_id" => run, "revision" => revision}}
+
+  # cli020 C14: a clipboard image slot.
+  defp request_body({:attachment_slot, _conversation}),
+    do: {:ok, %{"op" => "attachment.slot"}}
+
+  # cli020 C14: stage the image written into a slot.
+  defp request_body({:attach_slot, _conversation, token}),
+    do: {:ok, %{"op" => "attachment.attach_slot", "token" => token}}
 
   # cli020 C1: the queue (the conversation is the request's scope).
   defp request_body({:queue_resume, _conversation}), do: {:ok, %{"op" => "queue.resume"}}

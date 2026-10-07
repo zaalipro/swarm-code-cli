@@ -488,6 +488,12 @@ defmodule SwarmCode.Daemon.Service.Connection do
         :run_retry ->
           :run_retry
 
+        :attachment_attach ->
+          :attachment
+
+        :attachment_slot ->
+          :attachment
+
         op
         when op in [
                :query,

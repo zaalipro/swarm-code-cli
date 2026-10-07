@@ -136,4 +136,40 @@ defmodule SwarmCodeCLI.UI.DataSource.C020WireTest do
              }
     end
   end
+
+  describe "C14 clipboard slots" do
+    test "the two ops encode and their answers decode" do
+      token = String.duplicate("ab", 16)
+      assert body({:attachment_slot, @conversation}) == %{"op" => "attachment.slot"}
+
+      assert body({:attach_slot, @conversation, token}) == %{
+               "op" => "attachment.attach_slot",
+               "token" => token
+             }
+
+      refute Intent.valid?({:attach_slot, @conversation, "../../etc/passwd"})
+
+      {:ok, outcome} =
+        DTO.Outcome.decode(%{
+          "status" => "accepted",
+          "request_id" => "local-1",
+          "identifiers" => [],
+          "interaction" => nil,
+          "feedback" => nil,
+          "error" => nil,
+          "corrective_action" => "none",
+          "result" => %{
+            "kind" => "attachment",
+            "attachment" => %{
+              "id" => @other,
+              "name" => "clipboard-120000.png",
+              "mime" => "image/png",
+              "bytes" => 10
+            }
+          }
+        })
+
+      assert outcome.result.attachment.bytes == 10
+    end
+  end
 end

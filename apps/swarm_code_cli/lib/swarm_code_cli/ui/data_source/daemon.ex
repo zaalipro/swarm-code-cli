@@ -992,6 +992,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
   # cli020 C1.
   defp request_capability(%{"op" => op}) when op in ["queue.resume", "queue.edit"], do: :queue
   defp request_capability(%{"op" => "run.retry"}), do: :run_retry
+  defp request_capability(%{"op" => "attachment.slot"}), do: :attachment
+  defp request_capability(%{"op" => "attachment.attach_slot"}), do: :attachment
   defp request_capability(_), do: nil
 
   defp expire_requests(state) do

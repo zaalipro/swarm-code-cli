@@ -6,6 +6,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Conversation do
   the fake keeps no queue, shell or rewind state of its own.
   """
   alias SwarmCodeCLI.UI.Intent
+  alias SwarmCodeCLI.UI.DataSource.DTO
 
   @doc "`{:ok, script, deltas, identifiers, feedback}` or `{:error, code}`."
   def prepare(script, %{kind: kind, scope: scope}) do
@@ -28,4 +29,25 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Conversation do
 
   defp answer(script, {:queue_edit, _, _, _}, conversation),
     do: {:ok, script, [], [conversation], nil}
+
+  # cli020 C14: a clipboard slot (nothing is written: the demo has no inbox)
+  # and the image staged from it.
+  defp answer(script, {:attachment_slot, _}, _conversation) do
+    token = String.duplicate("0", 31) <> "1"
+
+    {:ok, script, [], [], nil,
+     %DTO.CommandResult{kind: :slot, token: token, path: "/demo/cli-inbox/#{token}.png"}}
+  end
+
+  defp answer(script, {:attach_slot, _, _token}, _conversation) do
+    attachment = %DTO.StagedAttachment{
+      id: "a0000000-0000-4000-8000-000000000001",
+      name: "clipboard-120000.png",
+      mime: "image/png",
+      bytes: 48_213
+    }
+
+    {:ok, script, [], [attachment.id], nil,
+     %DTO.CommandResult{kind: :attachment, attachment: attachment}}
+  end
 end

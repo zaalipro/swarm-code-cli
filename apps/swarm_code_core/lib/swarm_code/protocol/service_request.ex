@@ -40,6 +40,8 @@ defmodule SwarmCode.Protocol.ServiceRequest do
           | :queue_resume
           | :queue_edit
           | :run_retry
+          | :attachment_attach
+          | :attachment_slot
 
   @type t :: %__MODULE__{
           operation: operation(),
@@ -128,6 +130,10 @@ defmodule SwarmCode.Protocol.ServiceRequest do
   defp decode_operation("queue.edit"), do: :queue_edit
   # cli020 C6: retry a failed or stopped run (the desktop's ↻ Retry).
   defp decode_operation("run.retry"), do: :run_retry
+  # cli020 C14: a clipboard image slot.
+  defp decode_operation("attachment.slot"), do: :attachment_slot
+  # cli020 C14: stage the image written into a slot.
+  defp decode_operation("attachment.attach_slot"), do: :attachment_attach
   defp decode_operation(_operation), do: nil
 
   defp encode_operation(:query), do: "query"
@@ -155,6 +161,8 @@ defmodule SwarmCode.Protocol.ServiceRequest do
   defp encode_operation(:queue_resume), do: "queue.resume"
   defp encode_operation(:queue_edit), do: "queue.edit"
   defp encode_operation(:run_retry), do: "run.retry"
+  defp encode_operation(:attachment_slot), do: "attachment.slot"
+  defp encode_operation(:attachment_attach), do: "attachment.attach_slot"
   defp encode_operation(_operation), do: nil
 
   defp param_keys(:query), do: ~w(slot cursor direction page_size byte_limit)
@@ -195,6 +203,8 @@ defmodule SwarmCode.Protocol.ServiceRequest do
   defp param_keys(:queue_edit), do: ~w(revision action position)
 
   defp param_keys(:run_retry), do: ~w(run_id revision)
+  defp param_keys(:attachment_slot), do: []
+  defp param_keys(:attachment_attach), do: ~w(token)
   defp param_keys(_operation), do: []
 
   defp valid_params?(:query, params, scope) do
@@ -326,6 +336,13 @@ defmodule SwarmCode.Protocol.ServiceRequest do
 
   defp valid_params?(:run_retry, params, scope),
     do: run_scope?(params["run_id"], scope) and counter?(params["revision"])
+
+  defp valid_params?(:attachment_slot, _params, scope), do: scope.kind == :conversation
+
+  defp valid_params?(:attachment_attach, params, scope),
+    do:
+      scope.kind == :conversation and
+        (is_binary(params["token"]) and Regex.match?(~r/\A[0-9a-f]{32}\z/, params["token"]))
 
   defp valid_params?(:queue_resume, _params, scope), do: scope.kind == :conversation
 
