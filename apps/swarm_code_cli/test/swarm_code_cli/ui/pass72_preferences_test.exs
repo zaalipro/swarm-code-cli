@@ -11,11 +11,18 @@ defmodule SwarmCodeCLI.UI.Pass72PreferencesTest do
     assert Preferences.read(path) == Preferences.defaults()
     assert Preferences.read(nil) == Preferences.defaults()
 
-    assert Preferences.defaults() == %{
+    # cli020 E26: wheel reports default off; E26's keys beside the legacy five.
+    assert Map.take(Preferences.defaults(), [
+             :panel_mode,
+             :show_diffs,
+             :theme,
+             :mouse?,
+             :agent_summaries?
+           ]) == %{
              panel_mode: :auto,
              show_diffs: true,
              theme: nil,
-             mouse?: true,
+             mouse?: false,
              agent_summaries?: true
            }
 

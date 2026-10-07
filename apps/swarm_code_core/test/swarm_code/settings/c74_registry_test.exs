@@ -25,7 +25,7 @@ defmodule SwarmCode.Settings.C74RegistryTest do
     appearance:
       ~w(terminal.theme terminal.colors terminal.glyphs terminal.ambiguous_width terminal.reduced_motion terminal.accent terminal.desktop_theme_link),
     layout:
-      ~w(terminal.panel terminal.composer_rows terminal.inspector_width terminal.show_diffs terminal.agent_summaries terminal.notice_seconds terminal.diff_lines),
+      ~w(terminal.panel terminal.composer_rows terminal.inspector_width terminal.show_diffs terminal.agent_summaries terminal.notice_seconds terminal.notify terminal.title terminal.paste_collapse_lines terminal.exit_transcript terminal.diff_lines),
     keys:
       ~w(terminal.keymap terminal.mouse terminal.wheel_lines terminal.editor terminal.hint_letters terminal.keys terminal.terminal_facts),
     startup:
@@ -52,8 +52,8 @@ defmodule SwarmCode.Settings.C74RegistryTest do
     end
   end
 
-  test "the registry holds #{length(Registry.all())} entries (174: 169 table rows + lsp.check, lsp.stop + cli020 E1's three validator rows)" do
-    assert length(Registry.all()) == 174
+  test "the registry holds #{length(Registry.all())} entries (178: 169 table rows + lsp.check, lsp.stop + cli020 E1's three validator rows + E26's four terminal rows)" do
+    assert length(Registry.all()) == 178
     all = Map.merge(@part1, @part2) |> Map.values() |> List.flatten()
     assert Enum.sort(all) == Enum.sort(Enum.map(Registry.all(), & &1.key))
   end
@@ -64,10 +64,11 @@ defmodule SwarmCode.Settings.C74RegistryTest do
     assert indexes == Enum.sort(indexes)
   end
 
-  test "scalar keys fit in one values.patch; cli entries are the 21 terminal keys" do
+  test "scalar keys fit in one values.patch; cli entries are the 25 terminal keys" do
     assert length(Registry.scalar_keys()) <= Registry.max_patch()
-    assert length(Registry.scalar_keys()) == 134
-    assert length(Registry.cli_entries()) == 21
+    # cli020 E26: notify, title, paste_collapse_lines, exit_transcript.
+    assert length(Registry.scalar_keys()) == 138
+    assert length(Registry.cli_entries()) == 25
 
     for entry <- Registry.cli_entries() do
       assert {:cli, name} = entry.storage

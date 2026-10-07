@@ -24,14 +24,34 @@ defmodule SwarmCodeCLI.UI.Init.Preferences do
   @modes %{"auto" => :auto, "full" => :full, "compact" => :compact, "hidden" => :hidden}
   @themes %{"dark" => :dark, "light" => :light}
 
-  # The five legacy preferences and their json names.
+  @notify %{"auto" => :auto, "bell" => :bell, "osc9" => :osc9, "os" => :os, "off" => :off}
+
+  # The five legacy preferences and, since cli020 E26 (§8.4), the launch's
+  # terminal facts D, B and E read, with their json names.
   @keys %{
     panel_mode: "panel",
     show_diffs: "show_diffs",
     theme: "theme",
     mouse?: "mouse",
-    agent_summaries?: "agent_summaries"
+    agent_summaries?: "agent_summaries",
+    notify: "notify",
+    title?: "title",
+    paste_collapse_lines: "paste_collapse_lines",
+    wheel_lines: "wheel_lines",
+    notice_seconds: "notice_seconds",
+    hint_letters: "hint_letters",
+    reduced_motion?: "reduced_motion",
+    exit_transcript: "exit_transcript"
   }
+
+  # The registry's bounds (`core/settings/registry/terminal.ex`).
+  @ranges %{
+    paste_collapse_lines: 0..200,
+    wheel_lines: 1..10,
+    notice_seconds: 2..30,
+    exit_transcript: 0..20
+  }
+  @hint_letters "sfghjklwertuiop"
 
   @typedoc """
   `theme` is nil when the file names none: the launcher then falls back to
@@ -42,7 +62,15 @@ defmodule SwarmCodeCLI.UI.Init.Preferences do
           show_diffs: boolean(),
           theme: :dark | :light | nil,
           mouse?: boolean(),
-          agent_summaries?: boolean()
+          agent_summaries?: boolean(),
+          notify: :auto | :bell | :osc9 | :os | :off,
+          title?: boolean(),
+          paste_collapse_lines: 0..200,
+          wheel_lines: 1..10,
+          notice_seconds: 2..30,
+          hint_letters: String.t(),
+          reduced_motion?: boolean(),
+          exit_transcript: 0..20
         }
 
   @typedoc "One job of the session runtime's preference queue (§3.8.2)."
@@ -53,12 +81,30 @@ defmodule SwarmCodeCLI.UI.Init.Preferences do
           | {:write, non_neg_integer(), term(), map(), map()}
           | {:write_text, non_neg_integer(), term(), String.t(), String.t() | nil}
 
-  @doc "The defaults: the auto panel, diffs shown, no theme of its own, wheel reports on."
+  @doc """
+  The defaults: the auto panel, diffs shown, no theme of its own, wheel
+  reports off (cli020 E26: the wheel still scrolls), and the registry's
+  defaults of the §8.4 keys.
+  """
   @spec defaults() :: t()
   def defaults,
-    do: %{panel_mode: :auto, show_diffs: true, theme: nil, mouse?: true, agent_summaries?: true}
+    do: %{
+      panel_mode: :auto,
+      show_diffs: true,
+      theme: nil,
+      mouse?: false,
+      agent_summaries?: true,
+      notify: :auto,
+      title?: true,
+      paste_collapse_lines: 8,
+      wheel_lines: 3,
+      notice_seconds: 6,
+      hint_letters: @hint_letters,
+      reduced_motion?: false,
+      exit_transcript: 3
+    }
 
-  @doc "The json names of the five legacy preferences."
+  @doc "The json names of the preferences (the five legacy ones and E26's)."
   @spec legacy_names() :: %{atom() => String.t()}
   def legacy_names, do: @keys
 
@@ -69,14 +115,39 @@ defmodule SwarmCodeCLI.UI.Init.Preferences do
   @doc "The legacy preferences of a cli.json values map (json name => wire value)."
   @spec legacy(map()) :: t()
   def legacy(values) when is_map(values) do
+    d = defaults()
+
     %{
       panel_mode: Map.get(@modes, Map.get(values, "panel"), :auto),
       show_diffs: boolean(Map.get(values, "show_diffs"), true),
       theme: Map.get(@themes, Map.get(values, "theme")),
-      mouse?: boolean(Map.get(values, "mouse"), true),
-      agent_summaries?: boolean(Map.get(values, "agent_summaries"), true)
+      mouse?: boolean(Map.get(values, "mouse"), d.mouse?),
+      agent_summaries?: boolean(Map.get(values, "agent_summaries"), true),
+      notify: Map.get(@notify, Map.get(values, "notify"), d.notify),
+      title?: boolean(Map.get(values, "title"), d.title?),
+      paste_collapse_lines: ranged(values, :paste_collapse_lines, d),
+      wheel_lines: ranged(values, :wheel_lines, d),
+      notice_seconds: ranged(values, :notice_seconds, d),
+      hint_letters: letters(Map.get(values, "hint_letters"), d.hint_letters),
+      reduced_motion?: boolean(Map.get(values, "reduced_motion"), d.reduced_motion?),
+      exit_transcript: ranged(values, :exit_transcript, d)
     }
   end
+
+  defp ranged(values, key, defaults) do
+    value = Map.get(values, Map.fetch!(@keys, key))
+
+    if is_integer(value) and value in Map.fetch!(@ranges, key),
+      do: value,
+      else: Map.fetch!(defaults, key)
+  end
+
+  # Hint letters as the registry validates them (`Validate.hint_letters/1`).
+  defp letters(value, default) do
+    if letters?(value), do: value, else: default
+  end
+
+  defp letters?(value), do: SwarmCode.Settings.Validate.hint_letters(value) == :ok
 
   @doc """
   Whether `preferences` is a non-empty map of known keys with valid values:
@@ -93,6 +164,14 @@ defmodule SwarmCodeCLI.UI.Init.Preferences do
   defp valid_value?(:theme, value), do: value in [:dark, :light]
   defp valid_value?(:mouse?, value), do: is_boolean(value)
   defp valid_value?(:agent_summaries?, v), do: is_boolean(v)
+  defp valid_value?(:notify, v), do: v in Map.values(@notify)
+  defp valid_value?(:title?, v), do: is_boolean(v)
+  defp valid_value?(:reduced_motion?, v), do: is_boolean(v)
+  defp valid_value?(:hint_letters, v), do: letters?(v)
+
+  defp valid_value?(key, v) when is_map_key(@ranges, key),
+    do: is_integer(v) and v in Map.fetch!(@ranges, key)
+
   defp valid_value?(_key, _value), do: false
 
   @doc "The cli.json changes (json name => wire value) of legacy preferences."
@@ -105,6 +184,7 @@ defmodule SwarmCodeCLI.UI.Init.Preferences do
 
   defp encode(value) when is_boolean(value), do: value
   defp encode(value) when is_atom(value), do: Atom.to_string(value)
+  defp encode(value) when is_integer(value) or is_binary(value), do: value
 
   @doc """
   Writes the given preferences (any subset of `t()`) to `path`, keeping every

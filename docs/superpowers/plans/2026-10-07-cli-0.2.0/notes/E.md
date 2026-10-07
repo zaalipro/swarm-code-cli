@@ -294,3 +294,26 @@ Branch `cli020/E` from M1 `3008f352`, worktree `~/dev/swarm-code-cli-wt/cli020-E
 - The research form's levels read `Fastest · about a minute`, `Standard`, `Deep`, `Ultra`
   (`Dialog.research_level/1`); the option ids and `{:research_depth, atom}` are unchanged. Test
   `cli020/e25_research_levels_test.exs`; `research_form_test`, `bindings_test` green.
+
+### E26 New terminal settings
+- Registry (`core/settings/registry/terminal.ex`): `terminal.mouse` default `false` with the
+  contract's description; new `terminal.notify` (enum auto|bell|osc9|os|off, default auto, group
+  "notices"), `terminal.title` (toggle, on), `terminal.paste_collapse_lines` (0..200, 8),
+  `terminal.exit_transcript` (0..20, 3, next launch), all on the Layout page; `terminal.wheel_lines`
+  reads `Lines per wheel notch.` and `keys_input.ex` no longer disables its row (the `wheel on/off`
+  words default to off). `terminal.panel` per E5.
+- `Init.Preferences`: `defaults/0`/`legacy/1` gain `notify`, `title?`, `paste_collapse_lines`,
+  `wheel_lines`, `notice_seconds`, `hint_letters` (checked by `Settings.Validate.hint_letters/1`),
+  `reduced_motion?`, `exit_transcript`, each bounded as the registry and falling back alone; they are
+  writable through `write/2` (`@keys`). `mouse?` defaults to `false`.
+- Counts: registry 174 → 178, scalar keys 134 → 138, cli entries 21 → 25 (`c74_registry_test`,
+  the Layout key list). `docs/settings.md` regenerated (+5 rows).
+- Tests updated for the mouse default and the wider map: `pass72_preferences`,
+  `pass73_preferences`, `pass73_mouse` (B's `start_preferences/3` now yields `mouse?: false` from
+  the defaults; no B change needed), `c74_preferences`, `c74_keys_layout_startup` (the wheel row stays
+  editable). New `cli020/e26_terminal_settings_test.exs`. Deviation: that test was written before
+  the code but first run after it (green at once). Runs: core 208 (3 count failures, fixed, 11/11
+  re-run), CLI ui + cli020 + c74 + release 2573 with 5 (the tests above, fixed, 39/39 re-run).
+- **Handoff D**: read the new `Preferences` fields into `State` (D3 notify/title, D5 mouse default,
+  D8 `paste_collapse_lines`, D13 wheel/notice/hints/reduced motion); **handoff B**: pass them
+  through `start_preferences/3` like `mouse?`; B21 reads `exit_transcript` via `CliFile`.

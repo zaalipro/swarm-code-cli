@@ -14,7 +14,14 @@ defmodule SwarmCodeCLI.UI.Pass73PreferencesTest do
       ~s({"panel": "compact", "show_diffs": false, "theme": "light", "mouse": false})
     )
 
-    assert Preferences.read(path) == %{
+    # cli020 E26: the five legacy keys (the file also reads E26's, at defaults).
+    assert Map.take(Preferences.read(path), [
+             :panel_mode,
+             :show_diffs,
+             :theme,
+             :mouse?,
+             :agent_summaries?
+           ]) == %{
              panel_mode: :compact,
              show_diffs: false,
              theme: :light,
@@ -24,11 +31,18 @@ defmodule SwarmCodeCLI.UI.Pass73PreferencesTest do
 
     File.write!(path, ~s({"panel": "compact", "show_diffs": "no", "theme": "dusk", "mouse": 0}))
 
-    assert Preferences.read(path) == %{
+    # cli020 E26: a bad `mouse` falls back to the new default, off.
+    assert Map.take(Preferences.read(path), [
+             :panel_mode,
+             :show_diffs,
+             :theme,
+             :mouse?,
+             :agent_summaries?
+           ]) == %{
              panel_mode: :compact,
              show_diffs: true,
              theme: nil,
-             mouse?: true,
+             mouse?: false,
              agent_summaries?: true
            }
   end

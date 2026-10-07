@@ -39,14 +39,16 @@ defmodule SwarmCodeCLI.UI.Settings.C74KeysLayoutStartupTest do
   end
 
   describe "Keys & input" do
-    test "Lines per notch is disabled while wheel scrolling is off" do
+    # cli020 E26: with alternate scroll the wheel moves by these lines with
+    # wheel reports off too, so the row is never disabled.
+    test "Lines per notch stays editable while wheel scrolling is off" do
       {state, _fake} = opened(:keys)
       assert key_row(state, "terminal.wheel_lines").state != :disabled
 
       ctx = %{Nav.ctx(state) | prefs: Map.put(state.prefs || %{}, "mouse", false)}
       row = :keys |> Sections.rows(ctx) |> find("key:terminal.wheel_lines")
-      assert row.state == :disabled
-      assert line_words(row) =~ "only when Wheel scrolling is on"
+      assert row.state != :disabled
+      refute line_words(row) =~ "only when Wheel scrolling is on"
     end
 
     test "hint letters refuse with the registry's words" do

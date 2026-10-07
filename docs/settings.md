@@ -147,6 +147,10 @@ Override: the environment variable or flag that wins over the stored value. The 
 | `terminal.show_diffs` | Show diffs | cli | toggle | on | at once | — |
 | `terminal.agent_summaries` | AI status lines | cli | toggle | on | at once | — |
 | `terminal.notice_seconds` | Notices stay for | cli | duration | 6s | at once | — |
+| `terminal.notify` | Notify | cli | enum | auto | at once | — |
+| `terminal.title` | Window title | cli | toggle | on | at once | — |
+| `terminal.paste_collapse_lines` | Collapse pastes over | cli | integer | 8 | at once | — |
+| `terminal.exit_transcript` | Turns printed on exit | cli | integer | 3 | next launch | — |
 | `terminal.diff_lines` | Diff lines shown | cli | integer | 12 | at once | — |
 
 ## Keys & input
@@ -154,7 +158,7 @@ Override: the environment variable or flag that wins over the stored value. The 
 | Key | Label | Scope | Type | Default | Applies | Override |
 |---|---|---|---|---|---|---|
 | `terminal.keymap` | Keymap | cli | enum | standard | at once | `NCODE_KEYMAP` or `SWARM_KEYMAP` |
-| `terminal.mouse` | Wheel scrolling | cli | toggle | on | at once | `NCODE_MOUSE` or `SWARM_MOUSE` |
+| `terminal.mouse` | Wheel scrolling | cli | toggle | off | at once | `NCODE_MOUSE` or `SWARM_MOUSE` |
 | `terminal.wheel_lines` | Lines per notch | cli | integer | 3 | at once | — |
 | `terminal.editor` | Editor for Ctrl-X | cli | text | $VISUAL, then $EDITOR, then vi | at once | `VISUAL`, `EDITOR` |
 | `terminal.hint_letters` | Hint letters | cli | text | sfghjklwertuiop | at once | — |
