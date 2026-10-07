@@ -4,7 +4,7 @@ defmodule SwarmCodeCLI.MixProject do
   def project do
     [
       apps_path: "apps",
-      version: "0.1.0",
+      version: "0.2.0",
       elixir: "~> 1.18.4",
       start_permanent: Mix.env() == :prod,
       deps: [],
@@ -38,6 +38,7 @@ defmodule SwarmCodeCLI.MixProject do
         "test",
         "swarm_code.provenance.verify",
         "swarm_code.provenance.sync --check",
+        "swarm_code.provenance.drift",
         &verify_schema_snapshot/1,
         &verify_unicode/1
       ]
