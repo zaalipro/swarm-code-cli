@@ -200,3 +200,25 @@ Branch `cli020/E` from M1 `3008f352`, worktree `~/dev/swarm-code-cli-wt/cli020-E
   `cells_test` count +8.
 - Tests: `cli020/e15_drawing_test.exs` (12); ui + cli020 + demo dirs 2509 tests, 1 failure (the
   cells count, fixed and re-run green).
+
+### E16 Dialogs sized to content
+- `Dialog.modal/3`: `message_layer?/1` (`:unsent_changes`, `:confirm_intent`, `:command_report`):
+  no chooser count line, the controls on one `Block.ActionDeck` row, the box as tall as its rows
+  (centred), at every class but `:compressed_small`.
+- Quit with live runs: `Enter/X quit` and `Esc cancel` on one row. **Handoff D**: `reducer.ex`
+  `exit_requested/3` opens the layer with `focus: "cancel"`, so Enter cancels today; for
+  "Enter quits" D must open it with `focus: "confirm"` (the projector draws the focus it is given).
+- `/cost`: a report with C18's `rows` draws `model  12k in · 3k out  $0.04` aligned plus `Total`
+  (C18's `total` when sent, else the sum; no price `—`); without `rows` the text as before.
+- Empty states: Checkpoints `No checkpoints yet: they are taken before each edit.`; the runs
+  dashboard `Nothing has run yet: send a message, or /swarm <task>.`; (E15's rewind/queue/history
+  empties).
+- Desktop open (C4): a persistent warning row at the top of main (beside the trust banner) from
+  `state.desktop_running` or the workspace's `desktop_running`. Deviation: drawn in main's banner
+  slot, not the one-line status bar (the sentence does not fit beside the status items at 80).
+- Test `cli020/e16_dialog_sizes_test.exs` (80x24); ui + cli020 + demo 2514/0.
+
+### E17 Run palette states
+- `RunPalette.row/3`: done/failed/stopped/interrupted/superseded rows drop the gauge; a glyph
+  `✓`/`✕`/`■` (ASCII `+`/`x`/`#`, success/error/muted) and the words column widened by the gauge's
+  cells (columns stay aligned). Test `cli020/e17_run_palette_test.exs`.

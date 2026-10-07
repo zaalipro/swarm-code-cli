@@ -184,6 +184,19 @@ defmodule SwarmCodeCLI.UI.Projector.RunPalette do
     kind = RunRow.theme_kind(run.kind)
     focused? = run.id == state.focus
 
+    # cli020 E17 (ux-live-21): a run that has ended has nothing to fill; its
+    # bar's cells go to a status glyph and the reason (the gauge was a gap
+    # and @gauge_width cells; the glyph, a gap, then the words' own gap).
+    {opts, status} =
+      case end_glyph(run.state, state) do
+        nil ->
+          {opts, []}
+
+        glyph ->
+          {Keyword.merge(opts, gauge_width: 0, words_width: opts[:words_width] + @gauge_width - 2),
+           [RunRow.gap(1, state), glyph]}
+      end
+
     spans =
       RunRow.spans(
         run,
@@ -192,7 +205,8 @@ defmodule SwarmCodeCLI.UI.Projector.RunPalette do
         Keyword.merge(opts,
           lead: stripe(focused?, state) ++ bang(run, state),
           trail:
-            words(run, state, opts[:words_width]) ++
+            status ++
+              words(run, state, opts[:words_width]) ++
               count(run, kind, state, opts[:count_width]) ++
               timestamp(run, state, opts[:time_width])
         )
@@ -205,6 +219,31 @@ defmodule SwarmCodeCLI.UI.Projector.RunPalette do
       tone: if(focused?, do: :hover, else: :card),
       accent: nil
     }
+  end
+
+  defp end_glyph(run_state, state) do
+    ascii? = state.capabilities.ascii?
+
+    case run_state do
+      :done ->
+        {if(ascii?, do: "+", else: "✓"), :success}
+
+      :failed ->
+        {if(ascii?, do: "x", else: "✕"), :error}
+
+      s when s in [:stopped, :interrupted, :superseded] ->
+        {if(ascii?, do: "#", else: "■"), :text_muted}
+
+      _ ->
+        nil
+    end
+    |> case do
+      nil ->
+        nil
+
+      {glyph, role} ->
+        %Span{text: Density.safe(glyph, state, 1), style: RunRow.tinted(role, state)}
+    end
   end
 
   # `!` in the warning colour when the run waits on you, a blank cell otherwise.
