@@ -75,12 +75,14 @@ defmodule SwarmCode.Tools.RunCommand do
     if not File.regular?(helper) do
       {:error, "owned command helper is unavailable on this installation"}
     else
+      # cli020 A5: the user's umask (CLI pass71 F6, as the synced domain copy
+      # does it) and the secret scrub (desktop spec 66 T6).
       SwarmCode.Tools.CommandOwner.run(
         helper,
-        command,
+        SwarmCode.Domain.Tools.RunCommand.umask_prefix() <> command,
         timeout,
         ctx.project_root,
-        clean_env(),
+        clean_env(Map.get(ctx, :settings) || %{}),
         fn port ->
           run_port(port, timeout, configured, progress)
         end
@@ -117,8 +119,42 @@ defmodule SwarmCode.Tools.RunCommand do
                   RELEASE_TMP RELEASE_DISTRIBUTION RELEASE_COMMAND RELEASE_PROG RELEASE_SYS_CONFIG
                   RELEASE_VM_ARGS RELEASE_REMOTE_VM_ARGS)
 
+  # spec 66 T6 (desktop, ported by cli020 A5): Erlang's `{env, …}` *extends*
+  # the BEAM's environment, so every key the app was launched with —
+  # `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` — was visible to `env` in every
+  # command the model ran. `{name, false}` removes one. `GITHUB_TOKEN`/`GH_TOKEN`
+  # are kept by default so `gh` keeps working.
+  @secret_name ~r/(API_?KEY|_KEY$|SECRET|TOKEN|PASSWORD|PASSWD|CREDENTIAL|_PAT$)/i
+
   @doc false
-  def clean_env do
+  def clean_env(settings \\ %{}) do
+    clean_env_base() ++ scrubbed(settings)
+  end
+
+  defp scrubbed(settings) do
+    if setting(settings, :shell_env_scrub, true) do
+      keep = settings |> setting(:shell_env_keep, ["GITHUB_TOKEN", "GH_TOKEN"]) |> MapSet.new()
+
+      for {name, _value} <- System.get_env(),
+          not MapSet.member?(keep, name),
+          Regex.match?(@secret_name, name),
+          do: {String.to_charlist(name), false}
+    else
+      []
+    end
+  end
+
+  defp setting(settings, key, default) when is_map(settings) do
+    case Map.get(settings, key, default) do
+      nil -> default
+      value -> value
+    end
+  end
+
+  defp setting(_settings, _key, default), do: default
+
+  @doc false
+  def clean_env_base do
     # erlexec prepends $BINDIR (and $ROOTDIR/bin) to PATH for our VM. Inside a packaged
     # release those are the embedded ERTS dirs — drop them so the child finds the user's
     # own erl/elixir. In dev, ROOTDIR/bin IS the user's Erlang, so only BINDIR is dropped.

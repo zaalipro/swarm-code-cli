@@ -48,7 +48,8 @@ defmodule SwarmCode.Tools.EditFile do
 
   @impl true
   def run(args, ctx, progress) do
-    with {:ok, abs} <- Path.resolve(ctx.project_root, args["path"]) do
+    # cli020 A5: protected paths (desktop a64d6ff6) are refused for write.
+    with {:ok, abs} <- Path.resolve_write(ctx.project_root, args["path"]) do
       rel = Path.relative(ctx.project_root, abs)
 
       # Spec 51 §7.5 (M9): `read_file` refuses more than 5 MB and `grep` skips
