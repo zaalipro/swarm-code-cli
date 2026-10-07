@@ -276,3 +276,16 @@ Branch `cli020/E` from M1 `3008f352`, worktree `~/dev/swarm-code-cli-wt/cli020-E
 - Tests: `cli020/e23_contrast_test.exs` (computes WCAG for dark and light); `theme_test` row values
   updated. `docs/settings.md` regenerated: unchanged (the table lists no choices). ui + cli020 +
   demo 2557/0; core settings 40/0.
+
+### E24 Settings detail scrolls
+- `Settings.Layer` gains `detail_scroll`; `i` resets it. With the detail open, the verbs
+  `:page_up`/`:page_down` (bound today) and `:half_page_up`/`:half_page_down` move it by a page
+  (`rows - 8`) or half; the reducer clamps with `Projector.Settings.Note.detail_max_scroll/1` (a
+  pure function of the state). The page shows `↑ N lines above` first when scrolled and keeps
+  `↓ N lines below` last.
+- **Handoff D** (`keymap/settings_bindings.ex`), binding rows to add:
+  `{:settings_half_page_down, [{"d", [:control]}], :half_page_down, "Half page down", "Scroll the open detail half a page"}`
+  and `{:settings_half_page_up, [{"u", [:control]}], :half_page_up, "Half page up", "Scroll the open detail back half a page"}`
+  (shape as the existing `:settings_page_down` row; only while the detail is open if Ctrl-U/D mean
+  something else on the page).
+- Test `cli020/e24_settings_detail_scroll_test.exs`; `c75_note_test` green.

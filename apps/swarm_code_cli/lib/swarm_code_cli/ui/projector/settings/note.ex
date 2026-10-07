@@ -461,15 +461,9 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Note do
     all = [title_line | lines]
 
     # A detail longer than the body names what it hides on its last line,
-    # at every width (R22.4: never cut silently).
-    {shown, below} =
-      if length(all) > grid.body_rows do
-        kept = Enum.take(all, max(grid.body_rows - 1, 0))
-        below = length(all) - length(kept)
-        {kept ++ [below_line(caps, below)], below}
-      else
-        {all, 0}
-      end
+    # at every width (R22.4: never cut silently). cli020 E24: scrolled
+    # (`layer.detail_scroll`), its first line names what is above.
+    {shown, below} = detail_window(all, grid.body_rows, detail_scroll(state), caps)
 
     blank = List.duplicate([], grid.body_rows - length(shown))
 
@@ -481,6 +475,61 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Note do
       above: 0,
       below: below
     }
+  end
+
+  @doc """
+  cli020 E24: the largest first line the open detail of the current row can
+  start at on this screen (0 when it fits), so the reducer keeps the offset
+  where PgUp moves the page at once.
+  """
+  @spec detail_max_scroll(map()) :: non_neg_integer()
+  def detail_max_scroll(%{size: %{columns: columns, rows: rows}} = state) do
+    grid = Grid.for(columns, rows)
+
+    case SwarmCodeCLI.UI.Settings.Nav.current(state) do
+      %Row{} = row ->
+        total = 1 + length(body(state, row, max(grid.page.width - 4, 1)))
+        if total <= grid.body_rows, do: 0, else: max(0, total - max(grid.body_rows - 1, 0))
+
+      _ ->
+        0
+    end
+  end
+
+  def detail_max_scroll(_state), do: 0
+
+  defp detail_scroll(state) do
+    case Map.get(state.settings || %{}, :detail_scroll) do
+      n when is_integer(n) and n > 0 -> n
+      _ -> 0
+    end
+  end
+
+  defp detail_window(all, rows, _scroll, _caps) when length(all) <= rows, do: {all, 0}
+
+  defp detail_window(all, rows, scroll, caps) do
+    # Scrolled, one row says what is above; the last first line leaves the
+    # page full to its end.
+    first = min(scroll, max(0, length(all) - max(rows - 1, 0)))
+    above = if first > 0, do: [above_line(caps, first)], else: []
+    rest = Enum.drop(all, first)
+    room = max(rows - length(above), 0)
+
+    if length(rest) > room do
+      kept = Enum.take(rest, max(room - 1, 0))
+      below = length(rest) - length(kept)
+      {above ++ kept ++ [below_line(caps, below)], below}
+    else
+      {above ++ rest, 0}
+    end
+  end
+
+  defp above_line(caps, count) do
+    [
+      {"   ", :text_primary},
+      {Glyphs.for_caps(:up, caps) <> " ", :text_faint},
+      {"#{count} #{if count == 1, do: "line", else: "lines"} above", :text_faint}
+    ]
   end
 
   defp below_line(caps, count) do
