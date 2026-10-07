@@ -190,6 +190,7 @@ defmodule SwarmCodeCLI.UI.Keymap do
       # cli020 D18/D20: bare /effort and /swarm_effort open the picker.
       trimmed == "/effort" -> {:effort, :chat}
       trimmed == "/swarm_effort" -> {:effort, :swarm}
+      trimmed == "/delete" -> :delete
       command?(trimmed, "/queue") -> :queue
       command?(trimmed, "/approval") -> :approval
       command?(trimmed, "/panel") -> :panel

@@ -13,7 +13,7 @@ defmodule SwarmCodeCLI.UI.Reducer.HistorySearch do
   aside, `{:restore_stash}` swaps the stash and the draft.
   """
 
-  alias SwarmCodeCLI.UI.{LayerSpec, State}
+  alias SwarmCodeCLI.UI.State
   alias SwarmCodeCLI.UI.Reducer.Remote
 
   @debounce_ms 150
@@ -23,7 +23,7 @@ defmodule SwarmCodeCLI.UI.Reducer.HistorySearch do
   def open(state) do
     layer = {:history_search, %{query: "", rows: [], selected: 0}}
 
-    if match?({:ok, _}, LayerSpec.validate(layer)) do
+    if Remote.drawable?(layer) do
       fire(%{state | layers: [layer | state.layers]})
     else
       {%{state | notice: {:command_feedback, "History search is not drawn in this build yet."}},

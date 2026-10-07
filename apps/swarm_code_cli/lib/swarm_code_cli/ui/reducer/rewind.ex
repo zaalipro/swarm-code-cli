@@ -15,7 +15,7 @@ defmodule SwarmCodeCLI.UI.Reducer.Rewind do
   knows them; lane E adds the drawing).
   """
 
-  alias SwarmCodeCLI.UI.{LayerSpec, State}
+  alias SwarmCodeCLI.UI.State
   alias SwarmCodeCLI.UI.Reducer.Remote
 
   @escape_ms 600
@@ -95,8 +95,8 @@ defmodule SwarmCodeCLI.UI.Reducer.Rewind do
   defp turn(_row), do: []
 
   defp open(state, layer) do
-    case LayerSpec.validate(layer) do
-      {:ok, _} ->
+    case Remote.drawable?(layer) do
+      true ->
         {%{state | layers: [layer | state.layers]}, []}
 
       _ ->

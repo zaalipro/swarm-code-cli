@@ -60,9 +60,16 @@ defmodule SwarmCodeCLI.UI.Reducer.Remote do
     end
   end
 
+  @doc """
+  Whether the client can draw `layer` yet: `LayerSpec` knows it (lane E adds
+  the new layers of §8.3 with their drawing). D opens a layer only then.
+  """
+  @spec drawable?(term()) :: boolean()
+  def drawable?(layer), do: match?({:ok, _}, SwarmCodeCLI.UI.LayerSpec.validate(layer))
+
   @doc "Whether `request` is one this module sent."
   def mine?(%{origin: {:conversation, action}})
-      when action in [:shell, :rewind, :attachment, :history],
+      when action in [:shell, :rewind, :attachment, :history, :queue],
       do: true
 
   def mine?(_request), do: false
@@ -83,6 +90,9 @@ defmodule SwarmCodeCLI.UI.Reducer.Remote do
 
       {:rewind_turns, {:ok, payload}} ->
         SwarmCodeCLI.UI.Reducer.Rewind.turns_answer(state, request, payload)
+
+      {:queue_edit, {:ok, _payload}} ->
+        {SwarmCodeCLI.UI.Reducer.QueueCommands.answered(state, kind), []}
 
       {:history_search, {:ok, payload}} ->
         SwarmCodeCLI.UI.Reducer.HistorySearch.answer(state, request, payload)
@@ -119,6 +129,7 @@ defmodule SwarmCodeCLI.UI.Reducer.Remote do
   defp refused_words({:rewind_turns, _}), do: "The turns could not be listed."
   defp refused_words({:rewind_apply, _, _, _}), do: "Nothing was rewound."
   defp refused_words({:history_search, _}), do: "History search failed."
+  defp refused_words({:queue_edit, _, _, _}), do: "The queue did not change."
   defp refused_words(_kind), do: "The command was refused."
 
   @doc "A map field by atom or string key."

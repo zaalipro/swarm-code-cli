@@ -32,6 +32,7 @@ defmodule SwarmCodeCLI.UI.Reducer do
     EffortPicker,
     HistorySearch,
     ImagePaste,
+    QueueCommands,
     Remote,
     Rewind
   }
@@ -488,6 +489,10 @@ defmodule SwarmCodeCLI.UI.Reducer do
   # A turn that was sent but is not on screen yet is that turn (I3).
   # cli020 D11: Ctrl-L.
   defp transition(state, :redraw_screen), do: {state, [{:terminal_control, :redraw}]}
+
+  # cli020 D20: the queue list's keys.
+  defp transition(state, {:queue_move, delta}), do: QueueCommands.move(state, delta)
+  defp transition(state, {:queue_drop}), do: QueueCommands.drop_selected(state)
 
   # cli020 D19: history search and the stash (`Reducer.HistorySearch`).
   defp transition(state, :history_search), do: HistorySearch.open(state)
@@ -1722,7 +1727,7 @@ defmodule SwarmCodeCLI.UI.Reducer do
   # follows it. A refusal says so; project updates show the service's words.
   # cli020 lane D: the answers to the ops `Reducer.Remote` sends.
   defp settle_service(%{} = state, %{origin: {:conversation, action}} = request, outcome)
-       when action in [:shell, :rewind, :attachment, :history],
+       when action in [:shell, :rewind, :attachment, :history, :queue],
        do: Remote.answer(state, request, Remote.outcome_payload(outcome))
 
   defp settle_service(state, %{kind: {:conversation_open, id}}, %Outcome{status: :accepted}),
@@ -3152,6 +3157,20 @@ defmodule SwarmCodeCLI.UI.Reducer do
 
   # ------------------------------------------------- client slash commands
 
+  # cli020 D20: bare /delete asks first; the second within 5 s goes out.
+  defp slash_local(state, :delete) do
+    case QueueCommands.delete(state) do
+      {:asked, state} ->
+        clear_command_draft(state)
+
+      {:send, state} ->
+        case Keymap.draft_dispatch(state, :send) do
+          {:ok, {:invoke, intent, id}} -> invoke_intent(state, intent, id)
+          _ -> {state, []}
+        end
+    end
+  end
+
   # cli020 D18/D20: bare /effort and /swarm_effort open the picker.
   defp slash_local(state, {:effort, target}) do
     {state, cleared} = clear_command_draft(state)
@@ -3179,18 +3198,42 @@ defmodule SwarmCodeCLI.UI.Reducer do
   end
 
   # `/queue text` queues the text behind the running turn: the draft becomes
-  # the text, then goes out exactly as Alt-Enter would send it.
+  # the text, then goes out exactly as Alt-Enter would send it. cli020 D20:
+  # bare `/queue` lists the queue; `/queue clear` and `/queue drop N` edit it.
   defp slash_local(state, :queue) do
     key = State.current_draft_key(state)
     text = Keymap.draft_text(state)
-    rest = text |> String.replace_prefix("/queue", "") |> String.trim_leading()
+
+    rest =
+      text
+      |> String.trim_leading()
+      |> String.replace_prefix("/queue", "")
+      |> String.trim_leading()
 
     cond do
       key == nil ->
         {state, []}
 
-      String.trim(rest) == "" ->
-        {%{state | notice: {:command_feedback, "Type the message after /queue."}}, []}
+      QueueCommands.parse(rest) == :list ->
+        {state, cleared} = clear_command_draft(state)
+        {state, opened} = QueueCommands.list(state)
+        {state, cleared ++ opened}
+
+      match?({:bad_drop, _}, QueueCommands.parse(rest)) ->
+        {:bad_drop, words} = QueueCommands.parse(rest)
+        feedback(state, words)
+
+      match?({:edit, _}, QueueCommands.parse(rest)) ->
+        {:edit, edit} = QueueCommands.parse(rest)
+
+        case QueueCommands.edit(state, edit) do
+          {next, [_ | _] = sent} ->
+            {next, cleared} = clear_command_draft(next)
+            {next, cleared ++ sent}
+
+          refused ->
+            refused
+        end
 
       true ->
         {state, replaced} = replace_draft(state, key, rest)

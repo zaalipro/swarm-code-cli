@@ -9,7 +9,7 @@ defmodule SwarmCodeCLI.UI.Reducer.EffortPicker do
   cursor is `state.selection["effort_picker"]`.
   """
 
-  alias SwarmCodeCLI.UI.LayerSpec
+  alias SwarmCodeCLI.UI.Reducer.Remote
 
   @doc "The levels the picker offers for `target`, from the workspace snapshot."
   @spec levels(map(), :chat | :swarm) :: [binary()]
@@ -50,7 +50,7 @@ defmodule SwarmCodeCLI.UI.Reducer.EffortPicker do
       rows == [] ->
         {%{state | notice: {:command_feedback, "This model has no effort levels to pick."}}, []}
 
-      not match?({:ok, _}, LayerSpec.validate(layer)) ->
+      not Remote.drawable?(layer) ->
         {%{
            state
            | notice: {:command_feedback, "The effort picker is not drawn in this build yet."}

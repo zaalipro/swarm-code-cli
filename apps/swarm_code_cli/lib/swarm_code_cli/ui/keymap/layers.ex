@@ -41,6 +41,11 @@ defmodule SwarmCodeCLI.UI.Keymap.Layers do
        when is_binary(code) and mods in [[], [:shift]],
        do: Keymap.result({:history_query, {:append, code}})
 
+  # D20: the queue list.
+  defp layer_key({:queue_list}, :up, []), do: Keymap.result({:queue_move, -1})
+  defp layer_key({:queue_list}, :down, []), do: Keymap.result({:queue_move, 1})
+  defp layer_key({:queue_list}, "d", []), do: Keymap.result({:queue_drop})
+
   # D18: the effort picker's rows.
   defp layer_key({:effort_picker, _}, :up, []), do: Keymap.result({:effort_move, -1})
   defp layer_key({:effort_picker, _}, :down, []), do: Keymap.result({:effort_move, 1})

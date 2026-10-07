@@ -111,6 +111,8 @@ defmodule SwarmCodeCLI.UI.Action do
           | :redraw_screen
           | {:rewind_open}
           | {:effort_move, -1 | 1}
+          | {:queue_move, -1 | 1}
+          | {:queue_drop}
           | :history_search
           | {:history_move, -1 | 1}
           | {:history_pick}
@@ -273,7 +275,8 @@ defmodule SwarmCodeCLI.UI.Action do
           :settings,
           # cli020 D10/D20.
           :rewind,
-          :undo
+          :undo,
+          :delete
         ]
       )
 
@@ -284,6 +287,10 @@ defmodule SwarmCodeCLI.UI.Action do
 
   # cli020 D11: Ctrl-L repaints every cell.
   def validate(:redraw_screen), do: {:ok, :redraw_screen}
+
+  # cli020 D20: the queue list.
+  def validate({:queue_move, delta} = action), do: valid_action(action, delta in [-1, 1])
+  def validate({:queue_drop} = action), do: {:ok, action}
 
   # cli020 D19: history search and the draft stash.
   def validate(:history_search), do: {:ok, :history_search}

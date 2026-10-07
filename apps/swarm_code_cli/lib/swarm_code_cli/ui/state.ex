@@ -150,6 +150,8 @@ defmodule SwarmCodeCLI.UI.State do
     history_timer: nil,
     history_request: nil,
     stashes: %{},
+    # cli020 D20: when a bare /delete asked to be confirmed.
+    delete_armed_at: nil,
     notify: :auto,
     title?: true,
     # cli020 D8, D13: cli.json's paste collapse threshold (0 = never), lines

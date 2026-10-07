@@ -169,7 +169,10 @@ defmodule SwarmCodeCLI.UI.ComposerFirstTest do
     test "does nothing at all when no turn is generating" do
       for idle <- [run("r", :done), run("r", :waiting_approval), run("r", :running, actions: [])] do
         state = ready([idle])
-        assert {^state, []} = press(state, Input.key(:escape))
+        # cli020 D10: the press is remembered for Esc Esc (rewind) and
+        # nothing else changes.
+        assert {next, []} = press(state, Input.key(:escape))
+        assert %{next | last_escape_at: nil, revision: state.revision} == state
       end
     end
 
