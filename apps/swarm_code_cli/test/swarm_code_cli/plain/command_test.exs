@@ -176,8 +176,6 @@ defmodule SwarmCodeCLI.Plain.CommandTest do
             {"always-prefix", :always_prefix},
             {"deny-stop", :deny_stop}
           ] do
-        intent = {:resolve_approval, "r", "n", "approval", 7, decision}
-
         assert {:ok, {:intent, {:resolve_approval, "r", "n", "approval", 7, ^decision}}} =
                  Command.parse("#{verb} approval@7", p, scope),
                verb

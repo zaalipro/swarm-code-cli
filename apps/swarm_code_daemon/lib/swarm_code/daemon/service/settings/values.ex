@@ -357,16 +357,8 @@ defmodule SwarmCode.Daemon.Service.Settings.Values do
   defp home_set?(%Entry{} = entry, stored, _reads),
     do: not WireValue.equal?(stored, entry.default)
 
-  # cli020 stub (§8.1): B13 adds `SessionConfiguration.override_source/1`.
-  # Until it lands an override records its source under `:source` (absent:
-  # the `--model` flag, the only override before B13). The finisher replaces
-  # this with the call.
-  defp override_source(override) when is_map(override) do
-    if Code.ensure_loaded?(SessionConfiguration) and
-         function_exported?(SessionConfiguration, :override_source, 1),
-       do: apply(SessionConfiguration, :override_source, [override]),
-       else: Map.get(override, :source, :flag)
-  end
+  # cli020 C13/B13: where the session override came from.
+  defp override_source(override), do: SessionConfiguration.override_source(override)
 
   ## ---------------------------------------------------------------- choices
 

@@ -281,7 +281,7 @@ defmodule SwarmCodeCLI.UI.Keymap do
 
   # cli020 lane D: the layers D opens take their own keys first.
   defp dispatch(code, mods, phase, state, table) do
-    case phase in [:press, :repeat] and __MODULE__.Layers.key(code, mods, state) do
+    case phase in [:press, :repeat] and SwarmCodeCLI.UI.Keymap.Layers.key(code, mods, state) do
       result when result in [false, :pass] -> dispatch_table(code, mods, phase, state, table)
       result -> result
     end

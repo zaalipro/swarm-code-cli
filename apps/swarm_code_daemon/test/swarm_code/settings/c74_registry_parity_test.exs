@@ -16,15 +16,11 @@ defmodule SwarmCode.Settings.C74RegistryParityTest do
   # §2.24 N1 / §2.26: columns that are deliberately not registry values.
   @not_settings ~w(id inserted_at updated_at tavily_api_key pricing)
 
-  # cli020 A STUB (§8.1, the finisher removes it): migration 20261018000001
-  # (desktop 4c7c577a) adds the three columns; E1 gives them registry entries
-  # (`models.validator`, `efforts.validator`). Until lane E is merged they are
-  # listed here and counted below.
-  @validator_stub ~w(default_validator_provider_id default_validator_model default_validator_effort)
-
   test "every settings column is a registry storage, a fact, a record map or listed as not ported" do
     columns = Setting.__schema__(:fields) |> Enum.map(&Atom.to_string/1)
-    assert length(columns) == 79 + 3 + length(@validator_stub)
+    # cli020: desktop 4c7c577a's three validator columns, registry storages
+    # since E1 (`models.validator`, `efforts.validator`).
+    assert length(columns) == 79 + 3 + 3
 
     stored =
       Registry.all()
@@ -40,7 +36,7 @@ defmodule SwarmCode.Settings.C74RegistryParityTest do
       |> MapSet.new()
 
     missing =
-      Enum.reject(columns, &(&1 in stored or &1 in @not_settings or &1 in @validator_stub))
+      Enum.reject(columns, &(&1 in stored or &1 in @not_settings))
 
     assert missing == []
   end

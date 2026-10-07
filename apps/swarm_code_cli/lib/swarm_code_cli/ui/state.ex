@@ -63,9 +63,12 @@ defmodule SwarmCodeCLI.UI.State do
     # pass72-O fields: the side panel's mode, hint mode and the agent overlay.
     # The panel's shape: :full (2 rows per agent), :compact (1 row) or
     # :hidden; under 120 columns anything but :hidden is the one-row strip.
-    # cli020 (E5, Q8): :auto, the default, shows it only once two agents work
-    # or something needs you (E's projector draws that).
-    panel_mode: :auto,
+    # cli020 (E5, Q8): :auto shows it only once two agents work or something
+    # needs you (E's projector draws that). :auto is the launch's default
+    # (cli.json `panel`, `Init.Preferences`); cli020 M2: the struct default
+    # stays :full, so a state built without preferences (tests, the demo)
+    # keeps the docked panel it was written for.
+    panel_mode: :full,
     # pass73 G1 (QA Q1-08): the last shape the panel had when it was not
     # :hidden, so Ctrl-B on a narrow terminal (strip -> off -> strip) brings
     # back :compact rather than writing :full over it.

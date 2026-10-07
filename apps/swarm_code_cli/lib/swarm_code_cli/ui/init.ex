@@ -14,8 +14,10 @@ defmodule SwarmCodeCLI.UI.Init do
     terminal_generation: 0,
     banner: nil,
     keymap: :default,
-    # pass72-O: the side panel's mode as the preferences file had it.
-    panel_mode: :auto,
+    # pass72-O: the side panel's mode as the preferences file had it (the
+    # launch passes `Init.Preferences`, whose default is :auto; cli020 M2:
+    # this struct default stays :full, see `State`).
+    panel_mode: :full,
     # pass73-K: the rest of cli.json (T1, T2, T9) as the launcher resolved it.
     show_diffs: true,
     # pass75: AI status lines in the panel (cli.json agent_summaries).
