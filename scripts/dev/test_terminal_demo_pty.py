@@ -156,7 +156,9 @@ class LiveDemo(unittest.TestCase):
         self.assertIsNone(d.status)
         self.assertIn(b'PTY draft marker',d.screen())
         # Cancel returns to select mode, where `q` asks again; X confirms.
-        d.wait_for(b'SELECT'); d.send(b'q'); d.wait_for(b'CONFIRM EXIT')
+        # The demo has live runs, so the dialog is E16's `Enter/X quit · Esc
+        # cancel` (cli020), not the bare unsent-draft one (`X CONFIRM EXIT`).
+        d.wait_for(b'SELECT'); d.send(b'q'); d.wait_for(b'Enter/X quit')
         d.send(b'X'); d.finish()
 
     def test_killed_native_writer_restores_before_demo_returns(self):
