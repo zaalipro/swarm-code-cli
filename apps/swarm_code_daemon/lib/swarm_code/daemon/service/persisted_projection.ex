@@ -541,6 +541,44 @@ defmodule SwarmCode.Daemon.Service.PersistedProjection do
   end
 
   @doc """
+  cli020 C23 (competitors-14): per run of `ids`, the input (its first 8 KB, as
+  the op node keeps it) of the newest `update_plan` op of its lead agent: the
+  run's live plan (F11). `%{run_id => json}`; a run without one is absent.
+  """
+  @spec plans(String.t(), [String.t()]) :: %{String.t() => String.t()}
+  def plans(_conversation, []), do: %{}
+
+  def plans(conversation, ids) do
+    newest =
+      from(o2 in Node,
+        join: p2 in Node,
+        on: p2.id == o2.parent_id,
+        where:
+          o2.run_id == parent_as(:plan).run_id and o2.kind == "op" and
+            o2.op_type == "update_plan" and p2.role == "lead",
+        order_by: [desc: o2.inserted_at, desc: o2.id],
+        limit: 1,
+        select: o2.id
+      )
+
+    Repo.all(
+      from(o in Node,
+        as: :plan,
+        join: p in Node,
+        on: p.id == o.parent_id,
+        join: r in Run,
+        on: r.id == o.run_id,
+        where:
+          r.conversation_id == ^conversation and o.run_id in ^ids and o.kind == "op" and
+            o.op_type == "update_plan" and p.role == "lead" and
+            o.id == subquery(newest),
+        select: {o.run_id, fragment("substr(coalesce(?, ''), 1, 8192)", o.input)}
+      )
+    )
+    |> Map.new()
+  end
+
+  @doc """
   cli020 C15: the conversation's newest `limit` shell messages (role `role`,
   no run, content `$ …`), newest first: the first 8 KB and the last 64 bytes
   of each (where `[exit …]` is) and its size, never the whole output.

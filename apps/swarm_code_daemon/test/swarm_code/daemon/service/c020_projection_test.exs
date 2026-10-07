@@ -241,4 +241,97 @@ defmodule SwarmCode.Daemon.Service.C020ProjectionTest do
       assert old.last_prompt == nil
     end
   end
+
+  describe "C22 git facts" do
+    defp git!(root, args),
+      do: {_, 0} = System.cmd("git", ["-C", root | args], stderr_to_stdout: true)
+
+    test "a repository with two changed files reports its branch and 2", c do
+      root = c.root <> "-git"
+      File.mkdir_p!(root)
+      git!(root, ["init", "-q", "-b", "trunk"])
+      File.write!(Path.join(root, "a.txt"), "a")
+      File.write!(Path.join(root, "b.txt"), "b")
+      git!(root, ["add", "."])
+
+      git!(root, [
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@example.invalid",
+        "commit",
+        "-q",
+        "-m",
+        "init"
+      ])
+
+      File.write!(Path.join(root, "a.txt"), "changed")
+      File.write!(Path.join(root, "new.txt"), "new")
+
+      {:ok, project} = SwarmCode.Domain.Projects.create(%{name: "Git", root_path: root})
+      {:ok, conv} = Conversations.create(project.id)
+      backend = start_backend(%{c | root: root, project: project}, conv)
+
+      assert eventually(fn -> workspace(backend, scope(conv))["git_dirty"] == 2 end)
+      assert workspace(backend, scope(conv))["git_branch"] == "trunk"
+    end
+
+    test "outside a repository both are nil", c do
+      root = c.root <> "-nogit"
+      File.mkdir_p!(root)
+      {:ok, project} = SwarmCode.Domain.Projects.create(%{name: "NoGit", root_path: root})
+      {:ok, conv} = Conversations.create(project.id)
+      backend = start_backend(%{c | root: root, project: project}, conv)
+      assert eventually(fn -> :sys.get_state(backend).git.task == nil end)
+      body = workspace(backend, scope(conv))
+      assert {body["git_branch"], body["git_dirty"]} == {nil, nil}
+    end
+  end
+
+  describe "C23 the plan" do
+    test "a run's plan is the lead's newest update_plan input", c do
+      {conv, run, lead} = running_chat(c, "Do three things")
+
+      plan = fn items ->
+        Jason.encode!(%{"items" => for({t, st} <- items, do: %{"text" => t, "status" => st})})
+      end
+
+      for {input, at} <- [
+            {plan.([{"one", "in_progress"}, {"two", "pending"}]), -10},
+            {plan.([{"one", "done"}, {"two", "in_progress"}, {"three", "pending"}]), 0}
+          ] do
+        {:ok, _} =
+          Conversations.insert_node(%{
+            run_id: run.id,
+            kind: "op",
+            op_type: "update_plan",
+            parent_id: lead.id,
+            name: "update_plan",
+            title: "plan",
+            status: "done",
+            input: input,
+            started_at: DateTime.add(DateTime.utc_now(), at),
+            finished_at: DateTime.utc_now()
+          })
+      end
+
+      backend = start_backend(c, conv)
+      body = run_body(backend, conv, run.id)
+
+      assert body["plan"] == [
+               %{"text" => "one", "status" => "done"},
+               %{"text" => "two", "status" => "in_progress"},
+               %{"text" => "three", "status" => "pending"}
+             ]
+
+      {:ok, decoded} = SwarmCodeCLI.UI.DataSource.DTO.RunSummary.decode(body)
+      assert [%{status: :done} | _] = decoded.plan
+    end
+
+    test "a run without a plan has none", c do
+      {conv, run, _lead} = running_chat(c, "Just answer")
+      backend = start_backend(c, conv)
+      assert run_body(backend, conv, run.id)["plan"] == nil
+    end
+  end
 end

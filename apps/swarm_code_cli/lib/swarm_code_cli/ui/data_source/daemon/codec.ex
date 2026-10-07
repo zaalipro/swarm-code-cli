@@ -55,6 +55,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
       :shells,
       :queued,
       :queued_texts,
+      :git_branch,
+      :git_dirty,
       :effort_levels,
       :swarm_effort_levels,
       :validator_model,
@@ -76,6 +78,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
       :title,
       :queued,
       :queued_texts,
+      :git_branch,
+      :git_dirty,
       :effort_levels,
       :swarm_effort_levels,
       :validator_model,
@@ -168,7 +172,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
       :round,
       :rounds,
       :verdict,
-      :retry_detail
+      :retry_detail,
+      :plan
     ],
     DTO.ToolCall => [
       :title,

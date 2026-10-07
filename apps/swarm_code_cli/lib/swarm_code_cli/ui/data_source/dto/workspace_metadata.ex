@@ -14,6 +14,8 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.WorkspaceMetadata do
       title: nil,
       queued: 0,
       queued_texts: [],
+      git_branch: nil,
+      git_dirty: nil,
       effort_levels: [],
       swarm_effort_levels: [],
       validator_model: nil,
@@ -49,6 +51,10 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.WorkspaceMetadata do
       queued: :count,
       # pass73 T3/T8: what waits there, oldest first (at most 20, 2 KB each).
       queued_texts: {:list, {:text, 2048}},
+      # cli020 C22: the project's Git branch and how many paths changed (nil
+      # outside a repository or when Git did not answer in 2 s).
+      git_branch: {:optional, {:text, 80}},
+      git_dirty: {:optional, :count},
       # cli020 C17: the levels /effort and /swarm_effort accept here, and the
       # validator model (the main model when the conversation names none).
       effort_levels: {:list, {:text, 32}, 16},
@@ -80,6 +86,8 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.WorkspaceMetadata do
       title: nil,
       queued: 0,
       queued_texts: [],
+      git_branch: nil,
+      git_dirty: nil,
       effort_levels: [],
       swarm_effort_levels: [],
       validator_model: nil,

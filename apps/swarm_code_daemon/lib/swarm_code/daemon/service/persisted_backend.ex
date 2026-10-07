@@ -188,6 +188,17 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         # projected shell items (`id => body`, newest 50).
         shell: nil,
         shells: %{},
+        # cli020 C22: the project's Git branch and changed-path count, read by
+        # one owned task at a time (2 s bound).
+        git: %{
+          branch: nil,
+          dirty: nil,
+          task: nil,
+          timer: nil,
+          due: nil,
+          last_at: nil,
+          pending: false
+        },
         ledger_prune:
           start_ledger_prune(
             Keyword.get(opts, :task_supervisor, SwarmCode.Domain.TaskSupervisor),
@@ -220,6 +231,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       # cli020 C1 (bugs-7): a prompt queued before a restart drains now (after
       # init returns, from the mailbox).
       send(self(), {:drain_queue, opts[:conversation_id]})
+      send(self(), {:git_facts, :start})
       {:ok, reload(state)}
     else
       _ -> :ignore
@@ -432,6 +444,24 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
   def handle_info({:DOWN, ref, :process, _, _}, %{shell: %{task: %Task{ref: ref}}} = state),
     do: {:noreply, finish_shell(state, "", "error")}
+
+  # cli020 C22: Git facts are due (start, a run ended, files changed).
+  def handle_info({:git_facts, reason}, state), do: {:noreply, git_facts(state, reason)}
+
+  def handle_info({ref, {:git, branch, dirty}}, %{git: %{task: %Task{ref: ref}}} = state) do
+    Process.demonitor(ref, [:flush])
+    {:noreply, git_done(state, branch, dirty)}
+  end
+
+  def handle_info({:DOWN, ref, :process, _, _}, %{git: %{task: %Task{ref: ref}}} = state),
+    do: {:noreply, git_done(state, nil, nil)}
+
+  def handle_info({:git_timeout, ref}, %{git: %{task: %Task{ref: ref} = task}} = state) do
+    Task.shutdown(task, :brutal_kill)
+    {:noreply, git_done(state, nil, nil)}
+  end
+
+  def handle_info({:git_timeout, _ref}, state), do: {:noreply, state}
 
   # cli020 C3: the ledger prune ended (its count is only logged).
   def handle_info({ref, pruned}, %{ledger_prune: %Task{ref: ref}} = state) do
@@ -697,6 +727,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     cancel_jobs(state, wire_error(:source_unavailable))
     with %Task{} = task <- Map.get(state, :ledger_prune), do: Task.shutdown(task, :brutal_kill)
     ClipboardInbox.close_all(Map.get(state, :clipboard_slots, %{}))
+    with %{task: %Task{} = task} <- Map.get(state, :git), do: Task.shutdown(task, :brutal_kill)
     # cli020 C15: quitting kills a running `!` command (its task traps exits).
     with %{task: task} <- Map.get(state, :shell),
          do: ShellEscape.stop(state.task_supervisor, task)
@@ -2554,6 +2585,86 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       "files" => turn.files
     }
 
+  # cli020 C22 (competitors-20): one Git read at a time. A run's end reads at
+  # once; file changes at most every 10 s (a later one waits for the gap).
+  @git_gap_ms 10_000
+  @git_bound_ms 2_000
+
+  defp git_facts(%{git: %{task: %Task{}} = git} = state, _reason),
+    do: %{state | git: %{git | pending: true}}
+
+  defp git_facts(%{git: git} = state, reason) do
+    now = System.monotonic_time(:millisecond)
+    since = if git.last_at, do: now - git.last_at, else: @git_gap_ms
+
+    cond do
+      reason == :files and since < @git_gap_ms ->
+        if git.due,
+          do: state,
+          else: %{
+            state
+            | git: %{
+                git
+                | due: Process.send_after(self(), {:git_facts, :due}, @git_gap_ms - since)
+              }
+          }
+
+      true ->
+        if git.due, do: Process.cancel_timer(git.due)
+        root = state.opts[:project_root]
+
+        task =
+          Task.Supervisor.async_nolink(state.task_supervisor, fn ->
+            case SwarmCode.Domain.Git.current_branch(root) do
+              branch when is_binary(branch) and branch != "" ->
+                {:git, branch, length(SwarmCode.Domain.Git.status(root))}
+
+              _ ->
+                {:git, nil, nil}
+            end
+          end)
+
+        timer = Process.send_after(self(), {:git_timeout, task.ref}, @git_bound_ms)
+        %{state | git: %{git | task: task, timer: timer, due: nil, pending: false}}
+    end
+  rescue
+    _ -> state
+  end
+
+  defp git_done(%{git: git} = state, branch, dirty) do
+    if git.timer, do: Process.cancel_timer(git.timer)
+
+    git = %{
+      git
+      | branch: if(is_binary(branch), do: preview(branch, 80)),
+        dirty: dirty,
+        task: nil,
+        timer: nil,
+        last_at: System.monotonic_time(:millisecond)
+    }
+
+    state = %{state | git: git}
+    state = if git.pending, do: git_facts(state, :run_done), else: state
+
+    # Only the metadata changes: no reload of the projection.
+    case state.metadata do
+      %{} = meta ->
+        facts = %{"git_branch" => git.branch, "git_dirty" => git.dirty}
+
+        if Map.take(meta, Map.keys(facts)) == facts,
+          do: state,
+          else:
+            broadcast_metadata(%{
+              state
+              | metadata: Map.merge(meta, facts),
+                revision: state.revision + 1
+            })
+
+      _ ->
+        state
+    end
+  end
+
   defp clipboard_refusal(:invalid_argument),
     do: {:invalid_argument, "That is not a PNG image pasted here; paste it again."}
 
@@ -2949,6 +3060,35 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   end
 
   defp tool_call(_, _), do: nil
+
+  # An update_plan input read back: at most 30 items of 200 bytes, each a
+  # text and a status; anything else is no plan.
+  @plan_statuses %{"pending" => "pending", "in_progress" => "in_progress", "done" => "done"}
+
+  defp plan_items(json) when is_binary(json) do
+    with {:ok, %{"items" => [_ | _] = items}} <- Jason.decode(json) do
+      items
+      |> Enum.take(30)
+      |> Enum.flat_map(fn
+        %{"text" => text, "status" => status} when is_binary(text) and text != "" ->
+          case @plan_statuses[status] do
+            nil -> []
+            status -> [%{"text" => preview(text, 200), "status" => status}]
+          end
+
+        _ ->
+          []
+      end)
+      |> case do
+        [] -> nil
+        items -> items
+      end
+    else
+      _ -> nil
+    end
+  end
+
+  defp plan_items(_json), do: nil
 
   defp background_fields(nil), do: %{}
 
@@ -3409,6 +3549,14 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         else: %{state | change_facts: facts}
 
     op_facts = op_diff_facts(checkpoints, facts)
+
+    # cli020 C23: the runs' live plans (a partial reload keeps what it read).
+    plans =
+      case mode do
+        {:partial, inputs} -> Map.get(inputs, :plans, %{})
+        _ -> PersistedProjection.plans(conv, ids)
+      end
+
     {background_states, background_exits} = background_states(records, state)
     op_facts = Map.put(op_facts, :background_states, background_states)
     panel = panel_inputs(state, rows)
@@ -3449,6 +3597,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
           stop: stop_facts(row.status, Map.get(row, :error_kind)),
           # cli020 C5 (ux-live-3): the detail of an llm op this run is retrying.
           retry_detail: retry_detail(ns, ops),
+          # cli020 C23: the lead's checklist (`update_plan`, F11), or nil.
+          plan: plan_items(plans[row.id]),
           panel: %{}
         }
 
@@ -3560,6 +3710,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
               ops: ops,
               checkpoints: checkpoints,
               checkpoint_counts: checkpoint_counts,
+              plans: plans,
               panel_ops: panel.ops
             },
             else: state.inputs
@@ -3843,6 +3994,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   defp bound(_, _), do: nil
 
   defp publish_changes(old, state) do
+    state = git_triggers(old, state)
     state = if old.metadata != state.metadata, do: broadcast_metadata(state), else: state
     state = publish_entities(old, state)
 
@@ -3962,6 +4114,21 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     Enum.reduce(Map.keys(old.shells) -- Map.keys(state.shells), state, fn id, acc ->
       broadcast(acc, shell_delta("shell_remove", id, nil, acc))
     end)
+  end
+
+  # cli020 C22: a run that ended, or files that changed, make the Git facts
+  # due (read by the owned task, never here).
+  defp git_triggers(old, state) do
+    ended? =
+      Enum.any?(state.runs, fn {id, run} ->
+        run.status in @terminal and match?(%{status: s} when s not in @terminal, old.runs[id])
+      end)
+
+    cond do
+      ended? -> tap(state, fn _ -> send(self(), {:git_facts, :run_done}) end)
+      old.changes != state.changes -> tap(state, fn _ -> send(self(), {:git_facts, :files}) end)
+      true -> state
+    end
   end
 
   defp shell_delta(kind, id, body, state),
@@ -4170,7 +4337,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         "finished_at" => run.finished_at,
         "consensus" => run.consensus,
         "error" => run.error,
-        "retry_detail" => if(run.status == :retrying, do: run.retry_detail)
+        "retry_detail" => if(run.status == :retrying, do: run.retry_detail),
+        "plan" => Map.get(run, :plan)
       }
       |> Map.merge(run.stop)
       |> Map.merge(Map.get(run, :panel, %{}))
@@ -4579,7 +4747,10 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       # (`CommandDispatcher.efforts/2`), and who checks mission work.
       "effort_levels" => effort_levels(conversation, :chat),
       "swarm_effort_levels" => effort_levels(conversation, :swarm),
-      "validator_model" => effective_model_name(conversation, :validator)
+      "validator_model" => effective_model_name(conversation, :validator),
+      # cli020 C22: the status line's Git facts.
+      "git_branch" => state |> Map.get(:git, %{}) |> Map.get(:branch),
+      "git_dirty" => state |> Map.get(:git, %{}) |> Map.get(:dirty)
     }
   end
 
