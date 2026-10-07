@@ -255,3 +255,8 @@ Branch `cli020/E` from M1 `3008f352`, worktree `~/dev/swarm-code-cli-wt/cli020-E
   before `:` and TOML keys before `=` are `:type`. `@line_bytes` unchanged (a long line inside a
   comment stays one `:comment` token and keeps the carry).
 - Test `cli020/e21_syntax_test.exs` (17); paint + projector dirs (goldens included) 527/0.
+
+### E22 Schedules note
+- `Dialog` library contents: for `:schedules` the first row is `Scheduled tasks fire only while the
+  ncode app is running. Run now works here.` (not focusable), with the list, the detail and a save's
+  message after it, so it shows again after Save. Test `cli020/e22_schedules_note_test.exs`.

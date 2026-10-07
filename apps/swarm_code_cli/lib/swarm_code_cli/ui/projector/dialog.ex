@@ -903,7 +903,21 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
           "Select an entry to view details and actions."
       end
 
-    options = options ++ detail_rows(feature, detail, state, rect)
+    # cli020 E22 (tui-code-12): the CLI never runs the scheduler, so the
+    # Schedules list says first when its tasks fire, after a save as well.
+    note =
+      if feature == :schedules,
+        do: [
+          {"schedules-note",
+           Density.safe(
+             "Scheduled tasks fire only while the ncode app is running. Run now works here.",
+             state,
+             rect.width * 2
+           ), nil}
+        ],
+        else: []
+
+    options = note ++ options ++ detail_rows(feature, detail, state, rect)
 
     options =
       if state.library && state.library.message,
