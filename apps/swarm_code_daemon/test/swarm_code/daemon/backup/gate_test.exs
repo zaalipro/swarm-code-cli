@@ -62,7 +62,12 @@ defmodule SwarmCode.Daemon.Backup.GateTest do
     assert manifest["manifest_version"] == 1
     assert manifest["operation_id"] == @operation_id
     assert manifest["verified_at"] == "2026-09-01T12:00:00Z"
-    assert manifest["application"] == %{"name" => "swarm_code_daemon", "version" => "0.1.0"}
+
+    assert manifest["application"] == %{
+             "name" => "swarm_code_daemon",
+             "version" => to_string(Application.spec(:swarm_code_daemon, :vsn))
+           }
+
     assert manifest["quick_check"] == "ok"
     assert manifest["foreign_key_violations"] == []
     assert manifest["row_counts"] == SchemaFixture.row_counts(fixture.db)
@@ -110,7 +115,7 @@ defmodule SwarmCode.Daemon.Backup.GateTest do
              [Path.basename(artifact.database), Path.basename(artifact.manifest)] |> Enum.sort()
   end
 
-  test "a genuine current ready decision backs up all 57 migrations and newly persisted values" do
+  test "a genuine current ready decision backs up all 58 migrations and newly persisted values" do
     fixture = migration_fixture!(lineage: :current)
     assert fixture.decision.status == :ready
     assert fixture.decision.pending == []
@@ -142,7 +147,7 @@ defmodule SwarmCode.Daemon.Backup.GateTest do
     assert {:ok, artifact} = create(fixture)
     assert source_state(fixture.db) == before
     assert {:ok, manifest} = Manifest.decode(bounded_read!(artifact.manifest, 4_194_304))
-    assert length(manifest["migrations"]) == 57
+    assert length(manifest["migrations"]) == 58
     assert manifest["migrations"] == fixture.decision.applied
     assert manifest["independent_restore"]["migrations"] == fixture.decision.applied
     assert manifest["independent_restore"]["verified"] == true
@@ -156,7 +161,7 @@ defmodule SwarmCode.Daemon.Backup.GateTest do
     restored = Path.join(Path.dirname(fixture.db), "independent-current-restore.db")
     copy_private!(artifact.database, restored)
     assert {:ok, probe} = Probe.inspect(restored)
-    assert length(probe.migration_versions) == 57
+    assert length(probe.migration_versions) == 58
     assert probe.quick_check == [["ok"]]
     assert probe.foreign_key_violations == []
     assert probe.schema_sha256 == fixture.decision.probe.schema_sha256
@@ -1502,7 +1507,7 @@ defmodule SwarmCode.Daemon.Backup.GateTest do
         newest_migration: 20_260_929_000_000,
         manifest_sha256: "f04a55a27d1fee6a3192c6ff277993d4ab5a8f6414896e2be87dc3a41f48b75f"
       },
-      app_version: "0.1.0"
+      app_version: "0.2.0"
     ]
 
     child =

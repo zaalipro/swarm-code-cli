@@ -191,7 +191,8 @@ defmodule SchemaFixture do
               20_261_015_000_004,
               20_261_016_000_001,
               20_261_016_000_002,
-              20_261_017_000_004
+              20_261_017_000_004,
+              20_261_018_000_001
             ],
        do: Path.join(fixtures_directory(), "desktop-#{version}.sql")
 

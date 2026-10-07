@@ -8,12 +8,12 @@ defmodule SwarmCode.Daemon.FoundationGateTest do
   alias SwarmCode.Daemon.Platform.{DatabaseFingerprint, PrivateDirectory, ProcessIdentity}
   alias SwarmCode.Daemon.StartupError
 
-  @app_version "0.1.0"
+  @app_version Application.spec(:swarm_code_daemon, :vsn) |> to_string()
   @backup_operation_id "5cebddf0-68ee-4f79-9129-b17f1ca2d6de"
-  @manifest_sha256 "4c0a8ec7fa4ca33aba4ca17ee300b98e1be008e165e7ff18f69d05943137e23f"
-  @newest_migration 20_261_017_000_004
-  # The installed desktop at pass 63 (the canonical database today): 53
-  # migrations, four behind the pin, all four forward compatible.
+  @manifest_sha256 "32dd14f0d9ad6a4a3c489ccd76da7247982549b8e5e5d499951f77ba629e8779"
+  @newest_migration 20_261_018_000_001
+  # The installed desktop at pass 63: 53 migrations, five behind the pin
+  # (desktop 0.2.0, 58), all five forward compatible.
   @desktop_53 20_261_015_000_003
   @now ~U[2026-09-01 12:00:00Z]
 
@@ -87,7 +87,7 @@ defmodule SwarmCode.Daemon.FoundationGateTest do
     assert ready.identity == identity(root)
     assert ready.schema.status == :ready
     assert ready.backup == nil
-    assert length(ready.schema.applied) == 57
+    assert length(ready.schema.applied) == 58
     assert List.last(ready.schema.applied) == @newest_migration
     owner = CrossAppLease.owner(ready.lease)
     assert owner.schema_epoch == 0
@@ -649,7 +649,7 @@ defmodule SwarmCode.Daemon.FoundationGateTest do
     assert database_state(fixture) == before
   end
 
-  test "the desktop's 53-migration database is backed up before the four forward migrations" do
+  test "the desktop's 53-migration database is backed up before the five forward migrations" do
     fixture = fixture_database!({:prefix, @desktop_53})
 
     SchemaFixture.insert_project!(
@@ -668,7 +668,8 @@ defmodule SwarmCode.Daemon.FoundationGateTest do
              20_261_015_000_004,
              20_261_016_000_001,
              20_261_016_000_002,
-             20_261_017_000_004
+             20_261_017_000_004,
+             20_261_018_000_001
            ]
 
     opts = test_opts(fixture, fn -> :none end)
@@ -734,7 +735,7 @@ defmodule SwarmCode.Daemon.FoundationGateTest do
     assert {:error, error} = FoundationGate.prepare(opts)
     assert error.code == :schema_incompatible
     assert error.message =~ "newer ncode app"
-    assert error.action =~ "Update ncode"
+    assert error.action =~ "Install the ncode CLI that matches your ncode app"
     assert File.ls!(Path.join(Path.dirname(fixture), "backups")) == []
     assert database_state(fixture) == before
     assert_reacquirable!(opts)
@@ -900,6 +901,49 @@ defmodule SwarmCode.Daemon.FoundationGateTest do
     assert_reacquirable!(opts)
   end
 
+  # cli020 A3: the poll C4 runs while a session is open — the same signed
+  # detector `prepare/1` refuses on, with no paths, lease or schema work.
+  describe "desktop_running?/1" do
+    setup do
+      root = private_tmp!("desktop-running")
+      %{identity: identity(root), uid: File.lstat!(root).uid}
+    end
+
+    test "true when the detector reports the desktop for this user", c do
+      active = fn -> {:active, %{pid: 4242, uid: c.uid, application: "com.zaali.swarmcode"}} end
+      assert FoundationGate.desktop_running?(desktop_detector: active, identity: c.identity)
+      assert FoundationGate.desktop_running?(detector: active, identity: c.identity)
+    end
+
+    test "false when no desktop runs, for another user, or the detector fails", c do
+      refute FoundationGate.desktop_running?(
+               desktop_detector: fn -> :none end,
+               identity: c.identity
+             )
+
+      other = fn ->
+        {:active, %{pid: 4242, uid: c.uid + 1, application: "com.zaali.swarmcode"}}
+      end
+
+      refute FoundationGate.desktop_running?(desktop_detector: other, identity: c.identity)
+
+      stranger = fn -> {:active, %{pid: 4242, uid: c.uid, application: "Other.app"}} end
+      refute FoundationGate.desktop_running?(desktop_detector: stranger, identity: c.identity)
+
+      refute FoundationGate.desktop_running?(
+               desktop_detector: fn -> raise "helper gone" end,
+               identity: c.identity
+             )
+
+      refute FoundationGate.desktop_running?(
+               desktop_detector: fn -> :none end,
+               identity: fn -> {:error, :macos_platform_helper_unavailable} end
+             )
+
+      refute FoundationGate.desktop_running?(:not_a_keyword)
+    end
+  end
+
   defp fixture_database!(lineage) do
     SchemaFixture.database!(lineage, SwarmCode.Daemon.Test.LeaseFixture.build_root())
   end
@@ -1013,7 +1057,7 @@ defmodule SwarmCode.Daemon.FoundationGateTest do
     :swarm_code_daemon
     |> :code.priv_dir()
     |> to_string()
-    |> Path.join("schema/desktop-6dd8d82.json")
+    |> Path.join("schema/desktop-4c7c577.json")
   end
 
   defp private_tmp!(label) do

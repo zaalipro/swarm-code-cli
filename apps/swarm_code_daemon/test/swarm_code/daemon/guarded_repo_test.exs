@@ -27,7 +27,7 @@ defmodule SwarmCode.Daemon.GuardedRepoTest do
           &{&1, root}
         ),
       database_path: database,
-      app_version: "0.1.0",
+      app_version: "0.2.0",
       desktop_detector: fn -> :none end,
       directory_ensure: fn path, owner ->
         case File.mkdir(path) do
@@ -57,7 +57,7 @@ defmodule SwarmCode.Daemon.GuardedRepoTest do
     assert {:ok, _repo} = RepoLauncher.await_ready(launcher, 90_000)
 
     Task.async(fn ->
-      assert [[57]] = Repo.query!("SELECT count(*) FROM schema_migrations").rows
+      assert [[58]] = Repo.query!("SELECT count(*) FROM schema_migrations").rows
 
       assert %{num_rows: 1} =
                Repo.query!(
@@ -87,7 +87,7 @@ defmodule SwarmCode.Daemon.GuardedRepoTest do
     assert {:ok, _} = RepoLauncher.await_ready(launcher, 90_000)
 
     Task.async(fn ->
-      assert [[57]] = Repo.query!("SELECT count(*) FROM schema_migrations").rows
+      assert [[58]] = Repo.query!("SELECT count(*) FROM schema_migrations").rows
       assert [["Before"]] = Repo.query!("SELECT name FROM projects WHERE id='project'").rows
     end)
     |> Task.await()

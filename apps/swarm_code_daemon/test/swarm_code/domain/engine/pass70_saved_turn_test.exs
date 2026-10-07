@@ -1,8 +1,8 @@
 defmodule SwarmCode.Domain.Engine.Pass70SavedTurnTest do
   @moduledoc """
-  Pass 70 A6: the synced (desktop 6dd8d82) engine runs a saved-mode chat turn
+  Pass 70 A6: the synced (desktop 4c7c577) engine runs a saved-mode chat turn
   end to end under the guarded Repo. The database starts at the desktop's 53
-  migrations, so the CLI's own backup and forward migration to 57 (the FTS5
+  migrations, so the CLI's own backup and forward migration to 58 (the FTS5
   index and its triggers included) happen first; then a loopback provider asks
   for `run_command` (with `yield_ms`), then `edit_file`, then answers. A second
   turn waits on a real RunServer approval and is released through the
@@ -17,7 +17,7 @@ defmodule SwarmCode.Domain.Engine.Pass70SavedTurnTest do
   alias SwarmCode.Domain.Engine.RunServer
   alias SwarmCode.Test.LoopbackHTTP, as: HTTP
 
-  # The guarded launch (verified backup, then the 53 -> 57 migration) costs
+  # The guarded launch (verified backup, then the 53 -> 58 migration) costs
   # seconds, so both turns share one launch; each test gets its own project.
   setup_all do
     SwarmCode.Domain.TestGlobalDir.isolate!()
@@ -103,8 +103,8 @@ defmodule SwarmCode.Domain.Engine.Pass70SavedTurnTest do
     %{project_root: project_root}
   end
 
-  test "a 53-migration database is moved to 57 and a tool turn completes on it", c do
-    assert [[57]] = Repo.query!("SELECT count(*) FROM schema_migrations").rows
+  test "a 53-migration database is moved to 58 and a tool turn completes on it", c do
+    assert [[58]] = Repo.query!("SELECT count(*) FROM schema_migrations").rows
 
     {:ok, project} =
       Projects.create(%{
