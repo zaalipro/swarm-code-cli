@@ -160,6 +160,7 @@ defmodule SwarmCode.Daemon.Service do
       # cli020 C: the queue, run retry, the shell escape, rewind, the
       # clipboard inbox and prompt history.
       :queue,
+      :rewind,
       :shell,
       :attachment,
       :run_retry

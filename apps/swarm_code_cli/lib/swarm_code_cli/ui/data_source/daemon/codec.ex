@@ -612,6 +612,15 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
   defp request_body({:shell_stop, _conversation}),
     do: {:ok, %{"op" => "shell.stop"}}
 
+  # cli020 C16: the turns the conversation can be rewound to.
+  defp request_body({:rewind_turns, _conversation}),
+    do: {:ok, %{"op" => "rewind.turns"}}
+
+  # cli020 C16: rewind to before a turn.
+  defp request_body({:rewind_apply, _conversation, message, scope}),
+    do:
+      {:ok, %{"op" => "rewind.apply", "message_id" => message, "scope" => Atom.to_string(scope)}}
+
   # cli020 C1: the queue (the conversation is the request's scope).
   defp request_body({:queue_resume, _conversation}), do: {:ok, %{"op" => "queue.resume"}}
 

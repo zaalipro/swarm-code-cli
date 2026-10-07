@@ -119,6 +119,9 @@ defmodule SwarmCode.Test.C020Backend do
 
   defp answer(socket, {:text, text}), do: stream(socket, %{"content" => text}, "stop")
 
+  # cli020 C16: a model that never answers (the run stays live until stopped).
+  defp answer(_socket, :hang), do: receive(do: (:never_sent -> :ok))
+
   defp answer(socket, {:tool, name, args}) do
     delta = %{
       "tool_calls" => [

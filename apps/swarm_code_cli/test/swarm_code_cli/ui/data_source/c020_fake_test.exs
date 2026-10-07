@@ -49,6 +49,20 @@ defmodule SwarmCodeCLI.UI.DataSource.C020FakeTest do
     assert {:ok, _} = DTO.CommandResult.validate(staged)
   end
 
+  test "C16 rewind turns and a rewind" do
+    a = Script.id(:a)
+
+    assert {:ok, next,
+            %DTO.Outcome{result: %DTO.CommandResult{kind: :rewind_turns, turns: [t | _]}},
+            _} =
+             command(script(), {:rewind_turns, a})
+
+    assert {:ok, _} = DTO.RewindTurn.validate(t)
+
+    assert {:ok, _, %DTO.Outcome{result: %DTO.CommandResult{kind: :rewound, text: nil}}, _} =
+             command(next, {:rewind_apply, a, t.message_id, :files}, "fake-2")
+  end
+
   test "C15 the shell escape is accepted" do
     a = Script.id(:a)
 

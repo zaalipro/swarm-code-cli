@@ -186,4 +186,18 @@ defmodule SwarmCodeCLI.UI.DataSource.C020WireTest do
       refute Intent.valid?({:shell_run, @conversation, String.duplicate("x", 4097)})
     end
   end
+
+  describe "C16 rewind" do
+    test "rewind.turns and rewind.apply encode" do
+      assert body({:rewind_turns, @conversation}) == %{"op" => "rewind.turns"}
+
+      assert body({:rewind_apply, @conversation, @other, :conversation}) == %{
+               "op" => "rewind.apply",
+               "message_id" => @other,
+               "scope" => "conversation"
+             }
+
+      refute Intent.valid?({:rewind_apply, @conversation, @other, :everything})
+    end
+  end
 end

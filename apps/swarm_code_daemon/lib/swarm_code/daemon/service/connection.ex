@@ -488,6 +488,12 @@ defmodule SwarmCode.Daemon.Service.Connection do
         :run_retry ->
           :run_retry
 
+        :rewind_apply ->
+          :rewind
+
+        :rewind_turns ->
+          :rewind
+
         :shell_stop ->
           :shell
 

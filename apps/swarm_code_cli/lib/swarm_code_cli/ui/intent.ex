@@ -75,6 +75,8 @@ defmodule SwarmCodeCLI.UI.Intent do
           | {:mark_seen, :conversation | :run | :activity, binary(), non_neg_integer()}
           | {:queue_resume, binary()}
           | {:queue_edit, binary(), binary(), :clear | {:drop, pos_integer()}}
+          | {:rewind_apply, binary(), binary(), :both | :conversation | :files}
+          | {:rewind_turns, binary()}
           | {:shell_stop, binary()}
           | {:shell_run, binary(), binary()}
           | {:attach_slot, binary(), binary()}
@@ -229,6 +231,19 @@ defmodule SwarmCodeCLI.UI.Intent do
   def validate({:shell_stop, conversation_id} = intent),
     do: valid_intent(intent, [uuid?(conversation_id)])
 
+  # cli020 C16: the turns the conversation can be rewound to.
+  def validate({:rewind_turns, conversation_id} = intent),
+    do: valid_intent(intent, [uuid?(conversation_id)])
+
+  # cli020 C16: rewind to before a turn.
+  def validate({:rewind_apply, conversation_id, message_id, scope} = intent),
+    do:
+      valid_intent(intent, [
+        uuid?(conversation_id),
+        uuid?(message_id),
+        scope in [:both, :conversation, :files]
+      ])
+
   def validate(_intent), do: {:error, :invalid_intent}
 
   @doc """
@@ -237,7 +252,7 @@ defmodule SwarmCodeCLI.UI.Intent do
   origin their request carries (`{:conversation, action}`).
   """
   @spec conversation_actions() :: [atom()]
-  def conversation_actions, do: [:queue, :attachment, :shell]
+  def conversation_actions, do: [:queue, :attachment, :shell, :rewind]
 
   @spec conversation_action(term()) :: atom() | nil
   def conversation_action({:queue_resume, _}), do: :queue
@@ -246,6 +261,8 @@ defmodule SwarmCodeCLI.UI.Intent do
   def conversation_action({:attach_slot, _, _}), do: :attachment
   def conversation_action({:shell_run, _, _}), do: :shell
   def conversation_action({:shell_stop, _}), do: :shell
+  def conversation_action({:rewind_turns, _}), do: :rewind
+  def conversation_action({:rewind_apply, _, _, _}), do: :rewind
   def conversation_action(_intent), do: nil
 
   defp uuid?(value) when is_binary(value) and byte_size(value) == 36,

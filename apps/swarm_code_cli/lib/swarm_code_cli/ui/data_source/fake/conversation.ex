@@ -30,6 +30,43 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Conversation do
   defp answer(script, {:queue_edit, _, _, _}, conversation),
     do: {:ok, script, [], [conversation], nil}
 
+  # cli020 C16: two synthetic turns to rewind to, and a rewind that hands
+  # the prompt back (the demo keeps its transcript as it is).
+  defp answer(script, {:rewind_turns, _}, _conversation) do
+    clock = SwarmCodeCLI.UI.DataSource.Fake.Script.clock_ms()
+
+    turns = [
+      %DTO.RewindTurn{
+        message_id: "7e000000-0000-4000-8000-000000000002",
+        position: 3,
+        turn: 2,
+        prompt: "Add the retry button",
+        at: clock - 60_000,
+        run_id: "7e000000-0000-4000-8000-0000000000b2",
+        files: 3
+      },
+      %DTO.RewindTurn{
+        message_id: "7e000000-0000-4000-8000-000000000001",
+        position: 1,
+        turn: 1,
+        prompt: "Explain the build",
+        at: clock - 600_000,
+        run_id: "7e000000-0000-4000-8000-0000000000b1",
+        files: 0
+      }
+    ]
+
+    {:ok, script, [], [], nil, %DTO.CommandResult{kind: :rewind_turns, turns: turns}}
+  end
+
+  defp answer(script, {:rewind_apply, _, _message, scope}, conversation) do
+    text = if scope == :files, do: nil, else: "Add the retry button"
+    restored = if scope == :conversation, do: 0, else: 3
+
+    {:ok, script, [], [conversation], nil,
+     %DTO.CommandResult{kind: :rewound, text: text, restored: restored}}
+  end
+
   # cli020 C15: `!cmd` is accepted (the demo runs nothing) and so is a stop.
   defp answer(script, {:shell_run, _, _}, _conversation),
     do: {:ok, script, [], ["5e110000-0000-4000-8000-000000000001"], nil}

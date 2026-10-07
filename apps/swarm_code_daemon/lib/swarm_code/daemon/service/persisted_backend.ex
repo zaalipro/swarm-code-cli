@@ -29,7 +29,17 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   # pass70 C8: finished-run checkpoints whose change facts a reload computes.
   @facts_per_reload 50
   # Operations that read: never ledgered, answered with a typed error.
-  @reads [:query, :detail, :feature_query, :conversation_list, :agent_detail]
+  # cli020 C16/C20: the rewind list and the prompt history are reads too (run
+  # as jobs; never ledgered).
+  @reads [
+    :query,
+    :detail,
+    :feature_query,
+    :conversation_list,
+    :agent_detail,
+    :rewind_turns,
+    :history_search
+  ]
   # pass71 S2: slow reads run as jobs; this many at once, the rest are refused.
   @max_jobs 8
   @terminal [:completed, :failed, :cancelled, :interrupted]
@@ -45,6 +55,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     ShellEscape,
     CommandLedger,
     PersistedProjection,
+    Rewind,
     SessionConfiguration
   }
 
@@ -1159,6 +1170,35 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     end
   end
 
+  # cli020 C16 (competitors-8): the turns this conversation can be rewound to,
+  # read by a job.
+  defp execute(%{operation: :rewind_turns}, _scope, id, state) do
+    conversation = state.opts[:conversation_id]
+    work = fn -> Rewind.turns(conversation) end
+
+    finish = fn turns, next ->
+      {accepted_result(id, [], %{
+         "kind" => "rewind_turns",
+         "turns" => Enum.map(turns, &turn_body/1)
+       }), next}
+    end
+
+    {{:job, %{key: :rewind_turns, replace: true, work: work, finish: finish}}, state}
+  end
+
+  # Rewind to before a turn: the runs it started stop, the conversation part
+  # folds, the files come back (Rewind.run/3); the prompt and its images
+  # return to the composer (the images staged again, C2's staging).
+  defp execute(%{operation: :rewind_apply, params: params}, _scope, id, state) do
+    scope =
+      Map.fetch!(
+        %{"both" => :both, "conversation" => :conversation, "files" => :files},
+        params["scope"]
+      )
+
+    rewind(state, id, params["message_id"], scope)
+  end
+
   # cli020 C15 (competitors-9): `!cmd`, in the project, no approval (the user
   # typed it), one at a time per conversation.
   defp execute(%{operation: :shell_run, params: %{"command" => text}}, _scope, id, state) do
@@ -1488,6 +1528,11 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
            "kind" => "attachment",
            "attachment" => staged_body(attachment)
          }), %{state | attachment_ids: Enum.uniq([attachment_id | state.attachment_ids])}}
+
+      # cli020 C16: /undo rewinds the newest turn here (the backend stages
+      # the prompt's images again).
+      {:ok, %{type: :undo, message_id: message_id}} ->
+        rewind(state, id, message_id, :both)
 
       # cli020 C11: /rename.
       {:ok, %{type: :renamed, title: title}} ->
@@ -2412,6 +2457,73 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         )
     }
   end
+
+  defp rewind(state, id, message_id, scope) do
+    conversation = Conversations.get!(state.opts[:conversation_id])
+
+    case Rewind.run(conversation, message_id, scope) do
+      {:ok, rewound} ->
+        {staged, state} = restage(state, rewound.attachments)
+
+        result = %{
+          "kind" => "rewound",
+          "text" => rewound.text,
+          "attachments" => staged,
+          "restored" => rewound.restored,
+          "skipped" => Enum.take(rewound.skipped, 50)
+        }
+
+        {accepted_result(id, [conversation.id], result), refresh(state)}
+
+      {:error, reason} ->
+        {refuse(id, rewind_refusal(reason), "", "rewind.apply"), refresh(state)}
+    end
+  end
+
+  defp rewind_refusal(:busy),
+    do: {:busy, "A compaction or a stop is still running · rewind when it ends."}
+
+  defp rewind_refusal(:database_busy),
+    do: {:database_busy, "The database is busy — rewind again."}
+
+  defp rewind_refusal({:restore_failed, words, :superseded}) when is_binary(words),
+    do: {:restore_failed, words <> " The conversation was rewound; the files were not."}
+
+  defp rewind_refusal(words) when is_binary(words), do: {:restore_failed, words}
+  defp rewind_refusal(reason), do: reason
+
+  # The rewound prompt's images, if still on disk, ride with the resend.
+  defp restage(state, attachments) do
+    present =
+      attachments
+      |> Enum.filter(&match?(%{"id" => id} when is_binary(id), &1))
+      |> Enum.filter(&match?({:ok, _, _}, Attachments.path(&1["id"])))
+      |> Enum.take(4 - min(length(state.attachment_ids), 4))
+
+    Enum.each(present, fn %{"id" => attachment_id} ->
+      CommandLedger.stage_attachment(
+        state.opts[:project_id],
+        state.opts[:conversation_id],
+        attachment_id
+      )
+    end)
+
+    ids = Enum.map(present, & &1["id"])
+
+    {Enum.map(present, &staged_body/1),
+     %{state | attachment_ids: Enum.uniq(state.attachment_ids ++ ids)}}
+  end
+
+  defp turn_body(turn),
+    do: %{
+      "message_id" => turn.message_id,
+      "position" => turn.position || 0,
+      "turn" => turn.turn,
+      "prompt" => preview(turn.prompt, 512),
+      "at" => turn.at || 0,
+      "run_id" => turn.run_id,
+      "files" => turn.files
+    }
 
   defp clipboard_refusal(:invalid_argument),
     do: {:invalid_argument, "That is not a PNG image pasted here; paste it again."}
@@ -4857,6 +4969,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     finished: "That run has already finished.",
     # cli020 C6.
     not_retryable: "Only a failed or stopped run can be retried.",
+    nothing_to_undo: "Nothing to undo: no turn of this conversation is left to rewind.",
     # cli020 C14: a pasted clipboard image.
     too_large: "The image is over #{div(Attachments.max_bytes(), 1_000_000)} MB.",
     limit: "At most 4 images per message."

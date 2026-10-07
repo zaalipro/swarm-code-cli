@@ -11,7 +11,6 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
   alias SwarmCode.Domain.{
     Agents,
     AtomicFile,
-    Checkpoints,
     Conversations,
     Engine,
     Attachments,
@@ -24,6 +23,7 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
   }
 
   alias SwarmCode.Domain.Conversations.{Conversation, Export, Run}
+  alias SwarmCode.Daemon.Service.Rewind
   import Ecto.Query, only: [from: 2]
 
   @allowed [:custom, :workflows, :efforts, :swarm_efforts, :attachments, :research_ids]
@@ -49,6 +49,7 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
     :budget_too_low,
     :nothing_to_compact,
     :nothing_to_stop,
+    :nothing_to_undo,
     :not_attachable,
     :conversation_not_found,
     :invalid_request,
@@ -352,21 +353,29 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
     if run, do: started(conv, cmd.name, Engine.resume_run(run)), else: {:error, :not_resumable}
   end
 
+  # cli020 C16 (decision 4h): the turns the conversation can be rewound to
+  # (`Rewind.turns/1`, as `rewind.turns` answers them).
   defp execute(conv, %{action: :select_rewind} = cmd, _) do
     items =
-      conv.id
-      |> Checkpoints.for_conversation()
-      |> Enum.take(200)
-      |> Enum.map(fn item ->
+      Enum.map(Rewind.turns(conv.id), fn turn ->
         %{
-          run_id: item.run_id,
-          turn: item.turn,
-          prompt: clip(item.prompt),
-          file_count: length(item.files)
+          message_id: turn.message_id,
+          run_id: turn.run_id,
+          turn: turn.turn,
+          prompt: clip(turn.prompt),
+          file_count: turn.files
         }
       end)
 
     result(conv, cmd.name, :select, %{subject: :rewind, options: items})
+  end
+
+  # `/undo`: rewind the newest turn, its messages and its files.
+  defp execute(conv, %{action: :undo_turn} = cmd, _) do
+    case Rewind.newest(conv.id) do
+      nil -> {:error, :nothing_to_undo}
+      message_id -> result(conv, cmd.name, :undo, %{message_id: message_id})
+    end
   end
 
   defp execute(conv, %{action: :open_workflows} = cmd, _),

@@ -40,6 +40,8 @@ defmodule SwarmCode.Protocol.ServiceRequest do
           | :queue_resume
           | :queue_edit
           | :run_retry
+          | :rewind_apply
+          | :rewind_turns
           | :shell_stop
           | :shell_run
           | :attachment_attach
@@ -140,6 +142,10 @@ defmodule SwarmCode.Protocol.ServiceRequest do
   defp decode_operation("shell.run"), do: :shell_run
   # cli020 C15: stop the running shell command.
   defp decode_operation("shell.stop"), do: :shell_stop
+  # cli020 C16: the turns the conversation can be rewound to.
+  defp decode_operation("rewind.turns"), do: :rewind_turns
+  # cli020 C16: rewind to before a turn.
+  defp decode_operation("rewind.apply"), do: :rewind_apply
   defp decode_operation(_operation), do: nil
 
   defp encode_operation(:query), do: "query"
@@ -171,6 +177,8 @@ defmodule SwarmCode.Protocol.ServiceRequest do
   defp encode_operation(:attachment_attach), do: "attachment.attach_slot"
   defp encode_operation(:shell_run), do: "shell.run"
   defp encode_operation(:shell_stop), do: "shell.stop"
+  defp encode_operation(:rewind_turns), do: "rewind.turns"
+  defp encode_operation(:rewind_apply), do: "rewind.apply"
   defp encode_operation(_operation), do: nil
 
   defp param_keys(:query), do: ~w(slot cursor direction page_size byte_limit)
@@ -215,6 +223,8 @@ defmodule SwarmCode.Protocol.ServiceRequest do
   defp param_keys(:attachment_attach), do: ~w(token)
   defp param_keys(:shell_run), do: ~w(command)
   defp param_keys(:shell_stop), do: []
+  defp param_keys(:rewind_turns), do: []
+  defp param_keys(:rewind_apply), do: ~w(message_id scope)
   defp param_keys(_operation), do: []
 
   defp valid_params?(:query, params, scope) do
@@ -361,6 +371,13 @@ defmodule SwarmCode.Protocol.ServiceRequest do
            String.valid?(params["command"]) and not String.contains?(params["command"], <<0>>))
 
   defp valid_params?(:shell_stop, _params, scope), do: scope.kind == :conversation
+
+  defp valid_params?(:rewind_turns, _params, scope), do: scope.kind == :conversation
+
+  defp valid_params?(:rewind_apply, params, scope),
+    do:
+      scope.kind == :conversation and
+        (uuid?(params["message_id"]) and params["scope"] in ["both", "conversation", "files"])
 
   defp valid_params?(:queue_resume, _params, scope), do: scope.kind == :conversation
 
