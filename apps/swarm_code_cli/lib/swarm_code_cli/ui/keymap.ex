@@ -681,7 +681,7 @@ defmodule SwarmCodeCLI.UI.Keymap do
   defp pane_wheel(_column, _row, delta, %{overlay: %{}}),
     do: result({:overlay, {:scroll, delta}})
 
-  defp pane_wheel(nil, nil, delta, state), do: result({:scroll, "main", {:line, delta}})
+  defp pane_wheel(nil, nil, delta, _state), do: result({:scroll, "main", {:line, delta}})
 
   defp pane_wheel(column, row, delta, state),
     do: result({:scroll, wheel_region(column, row, state), {:line, delta}})

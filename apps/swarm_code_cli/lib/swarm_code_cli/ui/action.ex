@@ -104,6 +104,8 @@ defmodule SwarmCodeCLI.UI.Action do
           # /mouse (T1, T2, T9) and the /approval picker's rows (T7).
           | {:run_command, binary()}
           | :send_plain
+          # cli020 lane D (§8.3).
+          | {:cycle_permission_mode}
           | {:show_diffs, boolean() | :toggle}
           | {:theme_mode, :dark | :light | :toggle}
           | {:mouse, boolean() | :toggle}
@@ -257,6 +259,9 @@ defmodule SwarmCodeCLI.UI.Action do
     do: valid_action(action, SwarmCodeCLI.UI.SlashPalette.valid_name?(name))
 
   def validate(:send_plain), do: {:ok, :send_plain}
+
+  # cli020 D6: Shift-Tab in the composer cycles Ask → Auto → Plan.
+  def validate({:cycle_permission_mode} = action), do: {:ok, action}
 
   # cli74 U1-2: the settings layer's keys and results, and the ways to open it
   # (F2, `/settings [ARG]`, a palette row).

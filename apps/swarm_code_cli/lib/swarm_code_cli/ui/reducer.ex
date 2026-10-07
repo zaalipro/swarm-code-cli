@@ -189,6 +189,42 @@ defmodule SwarmCodeCLI.UI.Reducer do
     {state, closed ++ opened}
   end
 
+  # cli020 D6 (decision 4b, §7.2): Shift-Tab in the composer cycles Ask
+  # (read-only) → Auto → Plan → Ask through the project's /approval and the
+  # conversation's /plan, so the server stays the decider. Full access is
+  # never entered by the cycle (from full, the next step is Plan). While the
+  # previous step is unanswered a second Shift-Tab waits.
+  defp transition(state, {:cycle_permission_mode}) do
+    workspace = Map.get(state.read_model.snapshots, :workspace)
+
+    cond do
+      Enum.any?(state.mode_cycle, &Map.has_key?(state.requests, &1)) ->
+        {state, []}
+
+      workspace == nil or is_nil(workspace.approval_mode) ->
+        feedback(state, "The session is not connected yet.")
+
+      workspace.mode == :plan ->
+        cycle_step(
+          state,
+          ["/plan"],
+          :read_only,
+          "Ask (this project) · writes and commands ask first · Shift-Tab: Auto"
+        )
+
+      workspace.approval_mode == :read_only ->
+        cycle_step(
+          state,
+          [],
+          :auto,
+          "Auto (this project) · edits and safe commands run · Shift-Tab: Plan"
+        )
+
+      true ->
+        cycle_step(state, ["/plan"], nil, "Plan · read-only tools, a plan first · Shift-Tab: Ask")
+    end
+  end
+
   # pass73-K T7: a row of the /approval picker sets the project's mode; the
   # picker closes, and the change is announced once the project says so
   # (`note_policy_change/2`).
@@ -3102,6 +3138,53 @@ defmodule SwarmCodeCLI.UI.Reducer do
     {state, cleared} = clear_command_draft(state)
     {state, sent} = service_request(state, {:project_update, nil, true}, {:project, :update})
     {state, cleared ++ sent}
+  end
+
+  # cli020 D6: one Shift-Tab step: the slash commands (sent as typed, the
+  # draft kept), then the project's approval mode; the notice says where it
+  # went. A refusal (an untrusted project refuses auto) replaces the notice
+  # with the service's words when it answers.
+  defp cycle_step(state, commands, mode, words) do
+    before = Map.keys(state.requests)
+
+    {state, sent} =
+      Enum.reduce(commands, {state, []}, fn text, {state, effects} ->
+        {state, more} = send_command_text(state, text)
+        {state, effects ++ more}
+      end)
+
+    {state, updated} =
+      if mode,
+        do: service_request(state, {:project_update, mode, nil}, {:project, :update}),
+        else: {state, []}
+
+    ids = Map.keys(state.requests) -- before
+    {%{state | mode_cycle: ids, notice: {:command_feedback, words}}, sent ++ updated}
+  end
+
+  # cli020 D6, D18: sends `text`, a slash command the daemon parses, the way
+  # the composer sends a typed one, and gives the draft back exactly as it
+  # was (text, attachments, undo history): the command goes out from a blank
+  # copy of the draft, then the draft is put back, which also releases the
+  # submission so the answer never clears what the user typed.
+  defp send_command_text(state, text) do
+    case State.current_draft_key(state) do
+      nil ->
+        {state, []}
+
+      key ->
+        original = Drafts.fetch(state.drafts, key)
+        state = %{state | drafts: Drafts.put(state.drafts, Draft.clear(original))}
+        {state, _edited} = replace_draft(state, key, text)
+
+        {state, sent} =
+          case Keymap.draft_dispatch(state, :send) do
+            {:ok, {:invoke, intent, id}} -> invoke_intent(state, intent, id)
+            _ -> {state, []}
+          end
+
+        {%{state | drafts: Drafts.put(state.drafts, original), slash_palette: nil}, sent}
+    end
   end
 
   defp approval_mode(value) when value in ["read-only", "readonly", "read_only", "ro"],

@@ -138,6 +138,9 @@ defmodule SwarmCodeCLI.UI.State do
     # `title?` its `terminal.title`; `last_bell_at` is the owner's clock at
     # the last bell (at most one per 2 s), `terminal_title` the title last
     # sent, `title_done?` an unfocused finish not yet seen.
+    # cli020 D6: the request ids of the last Shift-Tab step while one is
+    # still unanswered (a second Shift-Tab waits for them).
+    mode_cycle: [],
     notify: :auto,
     title?: true,
     # cli020 D8, D13: cli.json's paste collapse threshold (0 = never), lines

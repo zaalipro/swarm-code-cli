@@ -441,6 +441,19 @@ defmodule SwarmCodeCLI.UI.Keymap.Bindings do
       help: "Stop the turn that is streaming; the draft stays",
       hint: [composer: 8]
     },
+    # cli020 D6 (decision 4b): the composer's Shift-Tab cycles the approval
+    # and plan modes through /approval and /plan; elsewhere Shift-Tab still
+    # moves focus back.
+    %Binding{
+      id: :cycle_permission_mode,
+      keys: [{:tab, [:shift]}, {:back_tab, []}],
+      action: {:cycle_permission_mode},
+      contexts: [:composer],
+      group: :session,
+      label: "Mode",
+      help: "Cycle Ask (read-only) → Auto → Plan",
+      hint: 0
+    },
     %Binding{
       id: :back,
       keys: [{:left, [:alt]}, {:backspace, []}],
