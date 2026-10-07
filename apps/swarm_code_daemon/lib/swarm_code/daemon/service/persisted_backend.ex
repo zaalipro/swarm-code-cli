@@ -156,6 +156,9 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         # prompts are queued behind them (monitor ref => true).
         queue_monitors: %{},
         queue_retries: 0,
+        # cli020 C1 (bugs-17): conversations whose queue a stop the user asked
+        # for paused; `queue.resume` (or the next turn the user starts) lifts it.
+        queue_paused: MapSet.new(),
         # pass71 S2: running read jobs (task ref => job), where they run, and
         # the functions that do the slow work (tests inject blocking fakes).
         jobs: %{},
@@ -180,6 +183,9 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         settings_session: SettingsDeltas.session_values(conversation)
       }
 
+      # cli020 C1 (bugs-7): a prompt queued before a restart drains now (after
+      # init returns, from the mailbox).
+      send(self(), {:drain_queue, opts[:conversation_id]})
       {:ok, reload(state)}
     else
       _ -> :ignore
@@ -1051,6 +1057,36 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     end
   end
 
+  # cli020 C1: `queue.resume` lifts the pause a stop set and drains now.
+  defp execute(%{operation: :queue_resume}, _scope, id, state) do
+    state = state |> resume_pause() |> drain_queue() |> refresh()
+    {accepted(id, [state.opts[:conversation_id]]), state}
+  end
+
+  # cli020 C1: clear the queue or drop one prompt, in one IMMEDIATE
+  # transaction that compares the full-text revision the client saw (it holds
+  # only 2 KB copies, so it never sends the texts back).
+  defp execute(%{operation: :queue_edit, params: params}, _scope, id, state) do
+    conversation_id = state.opts[:conversation_id]
+
+    edit =
+      case params["action"] do
+        "clear" -> :clear
+        "drop" -> {:drop, params["position"]}
+      end
+
+    case edit_queue(conversation_id, params["revision"], edit) do
+      {:ok, conversation} ->
+        Events.broadcast(conversation_id, {:conversation_updated, conversation})
+
+        state = if conversation.queued in [nil, []], do: resume_pause(state), else: state
+        {accepted(id, [conversation_id]), refresh(state)}
+
+      {:error, reason} ->
+        {refuse(id, reason, "", "queue.edit"), state}
+    end
+  end
+
   defp execute(%{operation: operation, params: params}, scope, id, state)
        when operation in [:run_control, :run_steer, :approval_resolve] do
     state = refresh(state)
@@ -1100,6 +1136,12 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
       true ->
         answer = control(operation, params, run, state)
+        # cli020 C1 (bugs-17): a stop the user asked for pauses the queue.
+        state =
+          if operation == :run_control and params["action"] == "stop" and
+               (answer == :ok or match?({:ok, _}, answer)),
+             do: pause_queue(state, operation, params),
+             else: state
 
         case answer do
           :ok -> {accepted(id, [run.id]), state}
@@ -1217,6 +1259,12 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   end
 
   defp settle_send(answer, id, text, state) do
+    state =
+      if match?({:ok, run_id} when is_binary(run_id), answer) or
+           match?({:ok, %{type: :started}}, answer),
+         do: resume_pause(state),
+         else: state
+
     case answer do
       {:ok, run_id} when is_binary(run_id) ->
         consume_staged(state, state.attachment_ids)
@@ -1247,7 +1295,11 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       {:ok, %{type: :updated, mode: mode}} ->
         {accepted(id, [state.opts[:conversation_id]], notice_feedback(mode)), refresh(state)}
 
-      {:ok, %{type: type}} when type in [:updated, :stopped, :controlled, :saved] ->
+      {:ok, %{type: :stopped}} ->
+        state = pause_queue(state, :run_control, %{"action" => "stop"})
+        {accepted(id, [state.opts[:conversation_id]]), refresh(state)}
+
+      {:ok, %{type: type}} when type in [:updated, :controlled, :saved] ->
         {accepted(id, [state.opts[:conversation_id]]), refresh(state)}
 
       {:ok, %{type: :select, subject: :goal, goal: goal}} ->
@@ -1346,38 +1398,107 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   defp drain_queue(state) do
     conversation_id = state.opts[:conversation_id]
 
-    if turn_runs(conversation_id) != [] do
-      watch_queue(state)
-    else
-      case Conversations.pop_queued(conversation_id) do
-        {:ok, text, conversation} ->
-          case start_queued(conversation, text) do
-            {:ok, _} ->
-              drain_queue(refresh(%{state | queue_retries: 0}))
+    cond do
+      MapSet.member?(state.queue_paused, conversation_id) ->
+        state
 
-            {:error, reason} when reason in [:database_busy, :operation_failed] ->
-              Conversations.set_queued(conversation, [text | conversation.queued || []])
-              retry_queue(state)
+      turn_runs(conversation_id) != [] ->
+        watch_queue(state)
 
-            {:error, reason} ->
-              # It can never start (nothing to compact, an unknown command):
-              # it leaves the queue, and the toast says why.
-              {_code, words} = refusal(reason, text)
-
-              state
-              |> toast("error", "Queue", "A queued message did not start: " <> words, nil)
-              |> refresh()
-              |> drain_queue()
-          end
-
-        {:error, _busy} ->
-          retry_queue(state)
-
-        _empty ->
-          state
-      end
+      true ->
+        pop_and_start(state, conversation_id)
     end
   end
+
+  defp pop_and_start(state, conversation_id) do
+    case Conversations.pop_queued(conversation_id) do
+      {:ok, text, conversation} ->
+        case start_queued(conversation, text) do
+          {:ok, _} ->
+            drain_queue(refresh(%{state | queue_retries: 0}))
+
+          {:error, reason} when reason in [:database_busy, :operation_failed] ->
+            Conversations.set_queued(conversation, [text | conversation.queued || []])
+            retry_queue(state)
+
+          {:error, reason} ->
+            # It can never start (nothing to compact, an unknown command):
+            # it leaves the queue, and the toast says why.
+            {_code, words} = refusal(reason, text)
+
+            state
+            |> toast("error", "Queue", "A queued message did not start: " <> words, nil)
+            |> refresh()
+            |> drain_queue()
+        end
+
+      {:error, _busy} ->
+        retry_queue(state)
+
+      _empty ->
+        state
+    end
+  end
+
+  @doc false
+  # cli020 C1: the queue's revision, the first 16 hex of sha256 over its full
+  # texts joined by the unit separator.
+  def queue_revision(texts) when is_list(texts),
+    do:
+      :crypto.hash(:sha256, Enum.join(texts, "\x1f"))
+      |> Base.encode16(case: :lower)
+      |> binary_part(0, 16)
+
+  defp edit_queue(conversation_id, revision, edit) do
+    alias SwarmCode.Domain.Conversations.Conversation
+
+    outcome =
+      Repo.retry(:queue_edit, fn ->
+        Repo.transaction(
+          fn ->
+            with %Conversation{} = conversation <- Repo.get(Conversation, conversation_id),
+                 queued = conversation.queued || [],
+                 true <- queue_revision(queued) == revision || :stale,
+                 {:ok, rest} <- queue_after(queued, edit) do
+              conversation |> Conversation.changeset(%{queued: rest}) |> Repo.update!()
+            else
+              nil -> Repo.rollback(:not_found)
+              :stale -> Repo.rollback(:stale)
+              {:error, reason} -> Repo.rollback(reason)
+            end
+          end,
+          mode: :immediate
+        )
+      end)
+
+    case outcome do
+      {:ok, conversation} -> {:ok, conversation}
+      {:error, reason} when reason in [:stale, :not_found, :invalid_argument] -> {:error, reason}
+      _ -> {:error, :database_busy}
+    end
+  end
+
+  defp queue_after(_queued, :clear), do: {:ok, []}
+
+  defp queue_after(queued, {:drop, n}) when n <= length(queued),
+    do: {:ok, List.delete_at(queued, n - 1)}
+
+  defp queue_after(_queued, _edit), do: {:error, :invalid_argument}
+
+  # A stop of a turn while prompts wait pauses them; with nothing queued
+  # there is nothing to hold back.
+  defp pause_queue(state, :run_control, %{"action" => "stop"}) do
+    conversation_id = state.opts[:conversation_id]
+
+    if Conversations.queued?(conversation_id),
+      do: %{state | queue_paused: MapSet.put(state.queue_paused, conversation_id)},
+      else: state
+  end
+
+  defp pause_queue(state, _operation, _params), do: state
+
+  defp resume_pause(state),
+    do: %{state | queue_paused: MapSet.delete(state.queue_paused, state.opts[:conversation_id])}
 
   defp start_queued(conversation, text) do
     if command_name(text) != nil do
@@ -1463,6 +1584,9 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
           facts_failed: MapSet.new(),
           settings_session: SettingsDeltas.session_values(Conversations.get(id))
       })
+      # cli020 C1 (bugs-7): its queue waits behind its own live turn, or
+      # drains now when none runs.
+      |> tap(fn _ -> send(self(), {:drain_queue, id}) end)
     end
   end
 
@@ -2774,7 +2898,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         if run.status in @terminal, do: [], else: Enum.map(run.records, & &1.id)
       end)
 
-    metadata = workspace_metadata(Conversations.get!(state.opts[:conversation_id]))
+    metadata = workspace_metadata(Conversations.get!(state.opts[:conversation_id]), state)
     revision = Enum.max([state.revision | Enum.map(Map.values(runs), & &1.revision)])
     revision = if metadata != state.metadata, do: revision + 1, else: revision
 
@@ -3747,7 +3871,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   defp workspace_mode(%{mode: "plan"}), do: "plan"
   defp workspace_mode(_), do: "build"
 
-  defp workspace_metadata(conversation) do
+  defp workspace_metadata(conversation, state) do
     # The status line names the model this session runs (a `--model` override).
     conversation = SessionConfiguration.overlay(conversation)
     chat = SwarmCode.Domain.Providers.effective_model(conversation, :chat)
@@ -3777,7 +3901,12 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       # pass73 T3/T8: and what they say, so the terminal can show where each
       # send went (bounded: the oldest 20, 2 KB each).
       "queued_texts" =>
-        conversation.queued |> List.wrap() |> Enum.take(20) |> Enum.map(&preview(&1, 2048))
+        conversation.queued |> List.wrap() |> Enum.take(20) |> Enum.map(&preview(&1, 2048)),
+      # cli020 C1: the count again under its 0.2.0 name, whether a stop paused
+      # the queue, and the revision `queue.edit` compares.
+      "queued_count" => length(conversation.queued || []),
+      "queue_paused" => MapSet.member?(state.queue_paused, conversation.id),
+      "queue_revision" => queue_revision(conversation.queued || [])
     }
   end
 
@@ -4191,7 +4320,9 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     decision_not_offered: "That answer is not offered for this request.",
     run_finished: "That run has already finished.",
     steer_finished: "That run has finished; send the message in the chat to start a new turn.",
-    finished: "That run has already finished."
+    finished: "That run has already finished.",
+    # cli020 C1.
+    stale: "The queue changed · look again."
   }
 
   defp refusal(reason, text) when is_atom(reason) do

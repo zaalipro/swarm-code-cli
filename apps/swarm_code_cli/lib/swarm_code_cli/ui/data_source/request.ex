@@ -113,7 +113,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Request do
         generation == scope.generation and valid_origin?(origin) and
         correlated_kind_origin?(kind, origin) and
         is_integer(deadline) and valid_response?(kind, expected_response) and
-        settings_scope?(kind, scope)
+        settings_scope?(kind, scope) and conversation_scope?(kind, scope)
 
     if valid?, do: {:ok, request}, else: {:error, :invalid_request}
   end
@@ -262,6 +262,40 @@ defmodule SwarmCodeCLI.UI.DataSource.Request do
 
   defp settings_scope?(_kind, _scope), do: true
 
+  # cli020 C: a conversation command names the conversation it is scoped to.
+  defp conversation_scope?(kind, scope) when is_tuple(kind) and tuple_size(kind) >= 2 do
+    case Intent.conversation_action(kind) do
+      nil -> true
+      _action -> match?(%{kind: :conversation}, scope) and scope.id == elem(kind, 1)
+    end
+  end
+
+  defp conversation_scope?(_kind, _scope), do: true
+
+  @doc """
+  cli020 C: the validated request for a conversation command (`Intent.conversation_action/1`):
+  its origin is `{:conversation, action}` and the answer an outcome.
+  """
+  @spec conversation_command(Intent.t(), SwarmCode.Protocol.Scope.t(), binary(), integer()) ::
+          {:ok, t()} | {:error, :invalid_request}
+  def conversation_command(intent, scope, request_id, deadline) do
+    case Intent.conversation_action(intent) do
+      nil ->
+        {:error, :invalid_request}
+
+      action ->
+        validate(%__MODULE__{
+          request_id: request_id,
+          kind: intent,
+          scope: scope,
+          generation: if(is_map(scope), do: Map.get(scope, :generation)),
+          origin: {:conversation, action},
+          deadline: deadline,
+          expected_response: :outcome
+        })
+    end
+  end
+
   defp purpose?(value, _depth) when is_atom(value) or is_integer(value), do: true
 
   defp purpose?(value, _depth) when is_binary(value),
@@ -362,6 +396,10 @@ defmodule SwarmCodeCLI.UI.DataSource.Request do
 
   defp valid_origin?({:watch, ref}), do: Intent.valid_id?(ref)
   defp valid_origin?({:conversation, action}) when action in [:list, :new, :open], do: true
+  # cli020 C: the conversation commands' origins.
+  defp valid_origin?({:conversation, action}) when is_atom(action),
+    do: action in Intent.conversation_actions()
+
   defp valid_origin?({:project, :update}), do: true
 
   defp valid_origin?({:settings, generation, purpose})
@@ -455,6 +493,9 @@ defmodule SwarmCodeCLI.UI.DataSource.Request do
          {:seen, kind, id, revision}
        ),
        do: true
+
+  defp correlated_kind_origin?(kind, {:conversation, action}) when is_atom(action),
+    do: action in Intent.conversation_actions() and Intent.conversation_action(kind) == action
 
   defp correlated_kind_origin?(_kind, _origin), do: false
 

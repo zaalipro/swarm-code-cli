@@ -25,7 +25,10 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.WorkspaceSnapshot do
       title: nil,
       background: [],
       queued: 0,
-      queued_texts: []
+      queued_texts: [],
+      queued_count: 0,
+      queue_paused: false,
+      queue_revision: nil
     ],
     fields: [
       project: {:optional, {:text, 200}},
@@ -54,6 +57,10 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.WorkspaceSnapshot do
       queued: :count,
       # pass73 T3/T8: what waits there, oldest first (at most 20, 2 KB each).
       queued_texts: {:list, {:text, 2048}},
+      # cli020 C1: the queue count (0.2.0 name), whether a user stop paused it, and the revision queue.edit compares (16 hex).
+      queued_count: :count,
+      queue_paused: :boolean,
+      queue_revision: {:optional, {:text, 16}},
       allowed_actions: :actions,
       revision: :revision,
       seen_revision: :revision,
@@ -94,6 +101,9 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.WorkspaceSnapshot do
       background: [],
       queued: 0,
       queued_texts: [],
+      queued_count: 0,
+      queue_paused: false,
+      queue_revision: nil,
       allowed_actions: [],
       revision: 0,
       seen_revision: 0,

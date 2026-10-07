@@ -37,6 +37,8 @@ defmodule SwarmCode.Protocol.ServiceRequest do
           | :agent_detail
           | :settings_query
           | :settings_command
+          | :queue_resume
+          | :queue_edit
 
   @type t :: %__MODULE__{
           operation: operation(),
@@ -120,6 +122,9 @@ defmodule SwarmCode.Protocol.ServiceRequest do
   defp decode_operation("agent.detail"), do: :agent_detail
   defp decode_operation("settings.query"), do: :settings_query
   defp decode_operation("settings.command"), do: :settings_command
+  # cli020 C1: the conversation's queue (resume after a stop, clear, drop one).
+  defp decode_operation("queue.resume"), do: :queue_resume
+  defp decode_operation("queue.edit"), do: :queue_edit
   defp decode_operation(_operation), do: nil
 
   defp encode_operation(:query), do: "query"
@@ -144,6 +149,8 @@ defmodule SwarmCode.Protocol.ServiceRequest do
   defp encode_operation(:agent_detail), do: "agent.detail"
   defp encode_operation(:settings_query), do: "settings.query"
   defp encode_operation(:settings_command), do: "settings.command"
+  defp encode_operation(:queue_resume), do: "queue.resume"
+  defp encode_operation(:queue_edit), do: "queue.edit"
   defp encode_operation(_operation), do: nil
 
   defp param_keys(:query), do: ~w(slot cursor direction page_size byte_limit)
@@ -178,6 +185,10 @@ defmodule SwarmCode.Protocol.ServiceRequest do
   # `SwarmCode.Settings.WireBounds`, shared with the client.
   defp param_keys(op) when op in [:settings_query, :settings_command],
     do: WireBounds.param_keys(op)
+
+  # cli020 C1: `revision` is the queue's `queue_revision` the client saw.
+  defp param_keys(:queue_resume), do: []
+  defp param_keys(:queue_edit), do: ~w(revision action position)
 
   defp param_keys(_operation), do: []
 
@@ -308,6 +319,17 @@ defmodule SwarmCode.Protocol.ServiceRequest do
   defp valid_params?(op, params, scope) when op in [:settings_query, :settings_command],
     do: scope.kind == :global and scope.id == nil and WireBounds.valid?(op, params) == :ok
 
+  defp valid_params?(:queue_resume, _params, scope), do: scope.kind == :conversation
+
+  defp valid_params?(:queue_edit, params, scope) do
+    scope.kind == :conversation and hex16?(params["revision"]) and
+      case params["action"] do
+        "clear" -> is_nil(params["position"])
+        "drop" -> bounded_integer?(params["position"], 1, 10_000)
+        _ -> false
+      end
+  end
+
   defp json_attributes?(_, depth) when depth > 6, do: false
 
   defp json_attributes?(value, _) when is_binary(value),
@@ -371,6 +393,12 @@ defmodule SwarmCode.Protocol.ServiceRequest do
     do: Regex.match?(~r/\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/, value)
 
   defp uuid?(_value), do: false
+
+  defp hex16?(value) when is_binary(value) and byte_size(value) == 16,
+    do: Regex.match?(~r/\A[0-9a-f]{16}\z/, value)
+
+  defp hex16?(_value), do: false
+
   defp optional_uuid?(nil), do: true
   defp optional_uuid?(value), do: uuid?(value)
 

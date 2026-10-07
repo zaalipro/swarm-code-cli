@@ -13,7 +13,10 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.WorkspaceMetadata do
       cost_usd: nil,
       title: nil,
       queued: 0,
-      queued_texts: []
+      queued_texts: [],
+      queued_count: 0,
+      queue_paused: false,
+      queue_revision: nil
     ],
     fields: [
       conversation_id: :id,
@@ -41,7 +44,11 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.WorkspaceMetadata do
       # pass71 S5: prompts of this conversation queued behind its live turn.
       queued: :count,
       # pass73 T3/T8: what waits there, oldest first (at most 20, 2 KB each).
-      queued_texts: {:list, {:text, 2048}}
+      queued_texts: {:list, {:text, 2048}},
+      # cli020 C1: the queue count (0.2.0 name), whether a user stop paused it, and the revision queue.edit compares (16 hex).
+      queued_count: :count,
+      queue_paused: :boolean,
+      queue_revision: {:optional, {:text, 16}}
     ],
     defaults: [
       conversation_id: nil,
@@ -61,6 +68,9 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.WorkspaceMetadata do
       cost_usd: nil,
       title: nil,
       queued: 0,
-      queued_texts: []
+      queued_texts: [],
+      queued_count: 0,
+      queue_paused: false,
+      queue_revision: nil
     ]
 end

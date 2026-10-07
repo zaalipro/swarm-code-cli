@@ -52,7 +52,10 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
       :title,
       :background,
       :queued,
-      :queued_texts
+      :queued_texts,
+      :queued_count,
+      :queue_paused,
+      :queue_revision
     ],
     DTO.WorkspaceMetadata => [
       :project,
@@ -66,7 +69,10 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
       :cost_usd,
       :title,
       :queued,
-      :queued_texts
+      :queued_texts,
+      :queued_count,
+      :queue_paused,
+      :queue_revision
     ],
     DTO.ShellSnapshot => [:rate_limits],
     DTO.Approval => [
@@ -577,6 +583,19 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
             "expected_revision" => revision,
             "decision" => Atom.to_string(decision)
           }}
+
+  # cli020 C1: the queue (the conversation is the request's scope).
+  defp request_body({:queue_resume, _conversation}), do: {:ok, %{"op" => "queue.resume"}}
+
+  defp request_body({:queue_edit, _conversation, revision, edit}),
+    do:
+      {:ok,
+       %{
+         "op" => "queue.edit",
+         "revision" => revision,
+         "action" => if(edit == :clear, do: "clear", else: "drop"),
+         "position" => with({:drop, n} <- edit, do: n, else: (_ -> nil))
+       }}
 
   defp request_body(_), do: {:error, AdmissionError.new(:not_allowed)}
 

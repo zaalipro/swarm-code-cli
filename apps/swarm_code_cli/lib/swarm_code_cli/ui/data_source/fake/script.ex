@@ -1005,6 +1005,12 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
        when elem(kind, 0) in [:conversation_new, :conversation_open, :project_update],
        do: Session.prepare(script, request)
 
+  # cli020 C: the conversation commands (queue, shell, rewind, attachments).
+  defp prepare_command(script, %{kind: kind} = request)
+       when is_tuple(kind) and tuple_size(kind) >= 2 and is_binary(elem(kind, 1)) and
+              elem(kind, 0) in [:queue_resume, :queue_edit],
+       do: SwarmCodeCLI.UI.DataSource.Fake.Conversation.prepare(script, request)
+
   defp prepare_command(script, request) do
     with :ok <- scope_allows(script, request),
          {:ok, deltas, identifiers} <- command_deltas(script, request.kind),

@@ -73,6 +73,8 @@ defmodule SwarmCodeCLI.UI.Intent do
              [binary()] | %{option_ids: [binary()], custom_text: binary()}}
           | {:resolve_approval, binary(), binary(), binary(), non_neg_integer(), decision()}
           | {:mark_seen, :conversation | :run | :activity, binary(), non_neg_integer()}
+          | {:queue_resume, binary()}
+          | {:queue_edit, binary(), binary(), :clear | {:drop, pos_integer()}}
 
   @spec permissions() :: [permission()]
   def permissions, do: @permissions
@@ -185,7 +187,38 @@ defmodule SwarmCodeCLI.UI.Intent do
       when kind in [:conversation, :run, :activity],
       do: valid_intent(intent, [valid_id?(id), non_negative_integer?(revision)])
 
+  # cli020 C1: the conversation's queue. `queue_revision` is the 16-hex
+  # revision of the workspace the user looked at.
+  def validate({:queue_resume, conversation_id} = intent),
+    do: valid_intent(intent, [uuid?(conversation_id)])
+
+  def validate({:queue_edit, conversation_id, revision, edit} = intent),
+    do:
+      valid_intent(intent, [
+        uuid?(conversation_id),
+        is_binary(revision) and Regex.match?(~r/\A[0-9a-f]{16}\z/, revision),
+        edit == :clear or match?({:drop, n} when is_integer(n) and n in 1..10_000, edit)
+      ])
+
   def validate(_intent), do: {:error, :invalid_intent}
+
+  @doc """
+  cli020 C: the intents that act on the conversation the request is scoped
+  to (their first element after the tag is that conversation's id), and the
+  origin their request carries (`{:conversation, action}`).
+  """
+  @spec conversation_actions() :: [atom()]
+  def conversation_actions, do: [:queue]
+
+  @spec conversation_action(term()) :: atom() | nil
+  def conversation_action({:queue_resume, _}), do: :queue
+  def conversation_action({:queue_edit, _, _, _}), do: :queue
+  def conversation_action(_intent), do: nil
+
+  defp uuid?(value) when is_binary(value) and byte_size(value) == 36,
+    do: Regex.match?(~r/\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/, value)
+
+  defp uuid?(_value), do: false
 
   @spec validate!(term()) :: t()
   def validate!(intent) do
