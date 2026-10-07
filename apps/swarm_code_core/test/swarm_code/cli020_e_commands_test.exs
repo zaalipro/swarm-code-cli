@@ -16,4 +16,46 @@ defmodule SwarmCode.Cli020ECommandsTest do
                "Toggle Ultra — big tasks run as workflows here; missions are in the ncode app for now"
     end
   end
+
+  describe "E3 registry additions" do
+    test "/rename <title> renames; an empty title is a missing argument" do
+      assert {:ok, %{action: :rename_conversation, title: "New name"}} =
+               Commands.parse("/rename New name")
+
+      assert {:error, %{type: :missing_argument}} = Commands.parse("/rename")
+      assert {:error, %{type: :invalid_argument}} = Commands.parse("/rename a\u0007b")
+      assert desc("rename") == "Rename this conversation"
+    end
+
+    test "/delete, /fork and /undo take no argument" do
+      assert {:ok, %{action: :delete_conversation}} = Commands.parse("/delete")
+      assert {:ok, %{action: :fork_conversation}} = Commands.parse("/fork")
+      assert {:ok, %{action: :undo_turn}} = Commands.parse("/undo")
+
+      for name <- ~w(delete fork undo),
+          do: assert({:error, %{type: :unexpected_argument}} = Commands.parse("/#{name} x"))
+
+      assert desc("delete") == "Delete this conversation (asks first)"
+      assert desc("fork") == "Copy this conversation into a new one and open it"
+      assert desc("undo") == "Rewind the last turn: its messages and its files"
+    end
+
+    test "bare /effort and /swarm_effort show the effort" do
+      assert {:ok, %{action: :show_effort, target: :chat}} = Commands.parse("/effort")
+      assert {:ok, %{action: :show_effort, target: :swarm}} = Commands.parse("/swarm_effort")
+
+      assert {:ok, %{action: :set_effort, effort: :high, target: :chat}} =
+               Commands.parse("/effort high")
+    end
+
+    test "the reworded descriptions" do
+      assert desc("rewind") == "Rewind the conversation and files to before an earlier turn"
+      assert desc("consensus") == "Consensus mode; with a task, judge this one turn only"
+      assert desc("quit") == "Leave ncode; running work of this session stops"
+    end
+
+    test "/queue is not a core command (it is the client's, D20)" do
+      assert {:error, %{type: :unknown_command}} = Commands.parse("/queue clear")
+    end
+  end
 end

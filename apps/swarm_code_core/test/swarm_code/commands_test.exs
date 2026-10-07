@@ -4,7 +4,7 @@ defmodule SwarmCode.CommandsTest do
 
   test "catalogue exposes all builtins" do
     assert Enum.map(Commands.catalogue(), & &1.name) ==
-             ~w(swarm goal plan review effort swarm_effort model swarm_model rewind stop workflow workflows create-workflow ultra consensus deep_research attach compact new clear resume resume-run approval trust diff cost search export agents help quit)
+             ~w(swarm goal plan review effort swarm_effort model swarm_model rewind undo stop workflow workflows create-workflow ultra consensus deep_research attach compact new clear resume resume-run rename delete fork approval trust diff cost search export agents help quit)
   end
 
   test "catalogue ranking" do
@@ -174,7 +174,8 @@ defmodule SwarmCode.CommandsTest do
 
     assert {:ok, %{effort: :xhigh}} = Commands.parse("/effort xhigh", efforts: [:low, :xhigh])
     assert {:error, %{type: :invalid_effort}} = Commands.parse("/effort high", efforts: [:low])
-    assert {:error, %{type: :missing_argument}} = Commands.parse("/swarm_effort")
+    # cli020 E3: bare, it shows the effort (the TUI's picker, D18/D20).
+    assert {:ok, %{action: :show_effort, target: :swarm}} = Commands.parse("/swarm_effort")
   end
 
   test "mode commands distinguish toggles settings and turns" do

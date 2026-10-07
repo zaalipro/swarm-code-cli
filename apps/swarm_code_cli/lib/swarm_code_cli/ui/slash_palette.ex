@@ -44,11 +44,39 @@ defmodule SwarmCodeCLI.UI.SlashPalette do
       args: "[section or setting]",
       desc: "Every setting: models, providers, search, MCP, keys, this terminal"
     },
-    %{name: "queue", args: "<text>", desc: "Send this after the running turn"},
+    # cli020 E3 (D20): bare `/queue` lists the queue, `clear` and `drop N`
+    # edit it; the rewind, effort and delete rows are the client's too.
+    %{
+      name: "queue",
+      args: "<text> | clear | drop N",
+      desc: "Send this after the running turn; bare: the queue"
+    },
+    %{
+      name: "rewind",
+      args: "",
+      desc: "Rewind the conversation and files to before an earlier turn"
+    },
+    %{name: "undo", args: "", desc: "Rewind the last turn: its messages and its files"},
+    %{name: "delete", args: "", desc: "Delete this conversation (asks first)"},
+    %{
+      name: "effort",
+      args: "[low|medium|high|max]",
+      desc: "Reasoning effort of this conversation's chat model; bare: pick one"
+    },
+    %{
+      name: "swarm_effort",
+      args: "[low|medium|high|max]",
+      desc: "Reasoning effort of this conversation's worker model; bare: pick one"
+    },
     %{name: "help", args: "", desc: "List the commands and the keys"},
     %{name: "quit", args: "", desc: "Leave ncode; running work of this session stops"}
   ]
   @local_names Enum.map(@local, & &1.name)
+
+  # cli020 E3: local rows for core commands; they replace the catalogue's
+  # words in its own order rather than moving to the top.
+  @in_place ~w(rewind undo delete effort swarm_effort)
+  @in_place_rows for item <- @local, item.name in @in_place, into: %{}, do: {item.name, item}
 
   # pass73: commands whose meaning the client changed; their catalogue entry
   # (`diff` was "the files this conversation changed") lends no words.
@@ -92,14 +120,24 @@ defmodule SwarmCodeCLI.UI.SlashPalette do
     # The client's commands keep their place at the top; an entry the catalogue
     # flags `client: true` (pass70 C7) lends its words but not its position.
     local =
-      for item <- @local, score(item.name, needle) != nil do
+      for item <- @local, item.name not in @in_place, score(item.name, needle) != nil do
         own = Map.merge(item, %{scope: nil, kind: :builtin, client: true})
         if item.name in @own_words, do: own, else: Map.get(flagged, item.name, own)
       end
 
     names = Enum.map(local, & &1.name)
 
-    (local ++ Enum.reject(remote, &(&1.name in names or &1.name in @shadowed)))
+    # cli020 E3: a core command whose bare form the client answers keeps the
+    # catalogue's place (so `/sw` still means `/swarm`) with the local words.
+    remote =
+      for item <- remote, item.name not in names and item.name not in @shadowed do
+        case Map.get(@in_place_rows, item.name) do
+          nil -> item
+          own -> Map.merge(item, Map.put(own, :client, true))
+        end
+      end
+
+    (local ++ remote)
     |> Enum.with_index()
     |> Enum.sort_by(fn {item, index} -> {score(item.name, needle), index} end)
     |> Enum.map(&elem(&1, 0))

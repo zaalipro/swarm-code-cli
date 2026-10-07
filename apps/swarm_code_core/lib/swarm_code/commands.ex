@@ -16,12 +16,14 @@ defmodule SwarmCode.Commands do
     {"plan", "[task]",
      "Toggle plan mode; with a task, plan it now as a read-only run beside the others"},
     {"review", "", "Review the uncommitted changes and report problems"},
-    {"effort", "<low|medium|high|max>", "Reasoning effort of this conversation's chat model"},
-    {"swarm_effort", "<low|medium|high|max>",
+    {"effort", "[low|medium|high|max]", "Reasoning effort of this conversation's chat model"},
+    {"swarm_effort", "[low|medium|high|max]",
      "Reasoning effort of this conversation's worker model"},
     {"model", "<model | provider_id|model>", "Switch this conversation's chat model"},
     {"swarm_model", "<model | provider_id|model>", "Switch the model the workers use"},
-    {"rewind", "", "Restore files to how they were before an earlier turn"},
+    {"rewind", "", "Rewind the conversation and files to before an earlier turn"},
+    # cli020 E3 (decision 4h): the last turn, its messages and its files.
+    {"undo", "", "Rewind the last turn: its messages and its files"},
     {"stop", "", "Stop everything running in this conversation"},
     {"workflow", "<name> [key=value…] | pause|resume|stop|save <run>",
      "Launch or control a workflow run"},
@@ -29,7 +31,7 @@ defmodule SwarmCode.Commands do
     {"create-workflow", "[what it should do]", "Author a new workflow with the assistant"},
     {"ultra", "",
      "Toggle Ultra — big tasks run as workflows here; missions are in the ncode app for now"},
-    {"consensus", "[task]", "Run this turn as a judged plan"},
+    {"consensus", "[task]", "Consensus mode; with a task, judge this one turn only"},
     {"deep_research", "[id]", "Attach a finished deep research to this message"},
     {"attach", "<image-path>", "Stage an image file for the next message"},
     {"compact", "[focus]", "Summarise the conversation so far and continue from the summary"},
@@ -39,6 +41,10 @@ defmodule SwarmCode.Commands do
     {"resume", "[conversation]", "Open a saved conversation (no argument: pick one)"},
     # Was `/resume` before pass 70; `/resume` opens a conversation now.
     {"resume-run", "", "Resume the last stopped run of this conversation"},
+    # cli020 E3 (tui-code-14): rename, delete and fork from the TUI.
+    {"rename", "<title>", "Rename this conversation"},
+    {"delete", "", "Delete this conversation (asks first)"},
+    {"fork", "", "Copy this conversation into a new one and open it"},
     {"approval", "[read-only|auto|full]", "How much agents may do without asking"},
     {"trust", "", "Trust this project: read its AGENTS.md and allow edits"},
     {"diff", "", "The files this conversation changed, with their diffs"},
@@ -47,7 +53,7 @@ defmodule SwarmCode.Commands do
     {"export", "[file]", "Write this conversation as Markdown"},
     {"agents", "", "The agent definitions a swarm can use"},
     {"help", "", "List the commands and the keys"},
-    {"quit", "", "Leave SwarmCode; running work of this session stops"}
+    {"quit", "", "Leave ncode; running work of this session stops"}
   ]
 
   # pass70 C7: commands the terminal client performs itself (its reducer
@@ -99,7 +105,10 @@ defmodule SwarmCode.Commands do
     "cost" => :show_cost,
     "agents" => :list_agents,
     "help" => :help,
-    "quit" => :quit
+    "quit" => :quit,
+    "undo" => :undo_turn,
+    "delete" => :delete_conversation,
+    "fork" => :fork_conversation
   }
 
   @type error :: %{required(:type) => atom()}
@@ -204,8 +213,10 @@ defmodule SwarmCode.Commands do
     allowed = Keyword.get(opts, key, [:low, :medium, :high, :max])
 
     cond do
+      # cli020 E3 (decision 4f): bare, it reports the effort and its levels
+      # (the TUI opens its picker locally instead, D20).
       args == "" ->
-        error(:missing_argument)
+        ok(item, :show_effort, %{target: if(name == "effort", do: :chat, else: :swarm)})
 
       not is_list(allowed) ->
         error(:invalid_options)
@@ -330,6 +341,14 @@ defmodule SwarmCode.Commands do
   defp parse_known(%{name: "resume"} = item, target, _) do
     if valid_text?(target, @max_label) and not Regex.match?(~r/\p{Cc}/u, target),
       do: ok(item, :open_conversation, %{conversation: target, client: false}),
+      else: error(:invalid_argument)
+  end
+
+  defp parse_known(%{name: "rename"}, "", _), do: error(:missing_argument)
+
+  defp parse_known(%{name: "rename"} = item, title, _) do
+    if valid_text?(title, @max_label) and not Regex.match?(~r/\p{Cc}/u, title),
+      do: ok(item, :rename_conversation, %{title: title}),
       else: error(:invalid_argument)
   end
 
