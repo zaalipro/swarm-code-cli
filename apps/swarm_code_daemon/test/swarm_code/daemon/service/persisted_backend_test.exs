@@ -1720,6 +1720,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackendTest do
   end
 
   test "run inspector pages older persisted message records with transcript cursors", c do
+    require Ecto.Query
+
     {:ok, run} =
       Conversations.create_run(%{
         conversation_id: c.conversation.id,
@@ -1739,10 +1741,28 @@ defmodule SwarmCode.Daemon.Service.PersistedBackendTest do
             content: "Message #{i}"
           })
 
-        message
+        # cli020 finisher: 70 ms apart from a fixed instant, so the 45 rows
+        # cross three second boundaries on every run (a loaded suite crossed
+        # one by chance and the expectation, sorted by DateTime term order,
+        # compared microseconds before minutes and seconds).
+        at = DateTime.add(~U[2026-10-07 12:00:00.000000Z], i * 70_000, :microsecond)
+
+        {1, _} =
+          Repo.update_all(
+            Ecto.Query.from(m in SwarmCode.Domain.Conversations.Message,
+              where: m.id == ^message.id
+            ),
+            set: [inserted_at: at]
+          )
+
+        %{message | inserted_at: at}
       end
 
-    expected = messages |> Enum.sort_by(&{&1.inserted_at, &1.id}) |> Enum.map(& &1.id)
+    expected =
+      messages
+      |> Enum.sort_by(&{DateTime.to_unix(&1.inserted_at, :microsecond), &1.id})
+      |> Enum.map(& &1.id)
+
     scope = %{c.scope | kind: :run, id: run.id}
 
     params = %{
