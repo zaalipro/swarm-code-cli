@@ -29,7 +29,8 @@ defmodule SwarmCodeCLI.Cli020.E17RunPaletteTest do
     }
   end
 
-  defp line(text, title), do: text |> String.split("\n") |> Enum.find(&(&1 =~ "│" and &1 =~ title))
+  defp line(text, title),
+    do: text |> String.split("\n") |> Enum.find(&(&1 =~ "│" and &1 =~ title))
 
   test "terminal runs: a glyph, no bar; the live run keeps its bar" do
     text = screen_text(palette())
