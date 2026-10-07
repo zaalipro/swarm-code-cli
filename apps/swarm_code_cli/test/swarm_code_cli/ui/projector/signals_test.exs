@@ -185,6 +185,22 @@ defmodule SwarmCodeCLI.UI.Projector.SignalsTest do
       assert Enum.find(rows, &(&1 =~ "not trusted")) =~ "/trust trusts it."
     end
 
+    # cli020 qa (decision 3): read-only asks for each change, it no longer
+    # only reads; live QA saw "so ncode only reads it" over an Ask card.
+    test "a main column of 80 or more says every change asks first" do
+      {rows, _scene, _table, _plan} = scene(:trouble, {200, 40}) |> screen()
+
+      assert Enum.find(rows, &(&1 =~ "not trusted")) =~
+               "This project is not trusted, so every change asks first. /trust trusts it."
+    end
+
+    test "beside the docked panel the banner keeps its words short" do
+      {rows, _scene, _table, _plan} = scene(:trouble, {79, 40}) |> screen()
+
+      assert Enum.find(rows, &(&1 =~ "not trusted")) =~
+               "This project is not trusted: changes ask first. /trust trusts it."
+    end
+
     test "a trusted project has no banner" do
       {rows, _scene, _table, _plan} = scene(:first_reply, {120, 40}) |> screen()
       refute Enum.any?(rows, &(&1 =~ "not trusted"))

@@ -190,7 +190,8 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
   end
 
   # A project the user has not trusted runs read-only (pass 63 trust): say so
-  # once, above the conversation, with the command that changes it.
+  # once, above the conversation, with the command that changes it. cli020
+  # decision 3: read-only asks for each write and command (the Ask card).
   defp trust_banner(state, width) do
     workspace = Map.get(state.read_model.snapshots, :workspace)
 
@@ -203,8 +204,8 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
       # form keeps the command on the row.
       words =
         if width >= 80,
-          do: "This project is not trusted, so ncode only reads it. ",
-          else: "This project is not trusted: read only. "
+          do: "This project is not trusted, so every change asks first. ",
+          else: "This project is not trusted: changes ask first. "
 
       spans =
         [
