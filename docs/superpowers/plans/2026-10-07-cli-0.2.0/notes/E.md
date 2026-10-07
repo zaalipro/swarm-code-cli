@@ -394,3 +394,44 @@ Branch `cli020/E` from M1 `3008f352`, worktree `~/dev/swarm-code-cli-wt/cli020-E
 - Deviation: hooks stay the pass74 editable table rather than a new read-only `event · command`
   list (it already shows both; a read-only copy would duplicate it).
 - Tests: `cli020/e30_hooks_rules_test.exs` (3). Run: CLI settings + E30 527/0.
+
+### E31 Markdown rows cached
+- Locked fixture first: `UI.Fixtures.long_conversation/3` (200 messages, user and assistant in turn,
+  every answer a heading, list, task item, Elixir code block, table and quote; deterministic).
+  Bench `scripts/dev/bench_markdown.exs` (`cd apps/swarm_code_cli && mise exec -- mix run
+  --no-start ../../scripts/dev/bench_markdown.exs`): 160x50 truecolor, 40 frames, median frame,
+  reductions per frame, post-GC process memory, cache entries/bytes, warm == cold scene.
+- **Before** (the change stashed; three runs): median 5.25 / 5.17 / 4.85 ms per frame, 681 127 /
+  677 090 / 681 096 reductions per frame, post-GC process memory 602 392 bytes.
+- **After** (three runs, final code): cold (empty cache) 5.20 / 4.98 / 5.67 ms, 681 200 / 681 309 /
+  681 203 reductions — the same as before (the per-frame collection costs nothing measurable); warm
+  3.98 / 4.41 / 4.20 ms, 644 581 / 644 599 / 644 606 reductions (−5.4 % reductions, about −20 %
+  time; the wall times are noisy on a loaded machine, the reductions are stable); post-GC process
+  memory 602 392 bytes in both; 2 Markdown blocks computed per cold frame and 0 warm (the window at
+  160x50 shows two answers); the cache holds 2 entries, 7 890 bytes (external term size); warm
+  scene == cold scene in every run. Query/process counts: the projection makes no queries and
+  starts no process, before and after (the bench runs with `--no-start`: no Repo or application
+  is up).
+- `projector/markdown_rows.ex` (`Projector.MarkdownRows`): key `{sha256(text), inner, ambiguous
+  policy, glyph tier, ascii?}`; `rows/3` reads `state.markdown_cache` (`%{entries: map, bytes: n}`,
+  read with `Map.get`; STUB until D21 adds the field), else this frame's computed map, else computes
+  `Markdown.rows/4` and reports it. `turns.ex` `prose_rows/4` goes through it (the only change
+  there). New `Projector.project_reporting/1` → `{scene, table, markdown_rows}` wraps the frame in
+  `MarkdownRows.collect/1`; `project/1` is it without the third element.
+- Deviation: the computed entries are collected in the projecting process's dictionary for the
+  length of one `project/1` call (removed in an `after`, so on a raise too; a nested projection
+  leaves collecting to the outer one), instead of threading an accumulator through every
+  projector function; the scene and table stay functions of the state. A frame that draws the
+  same text twice computes it once.
+- Deviation (contract says `table.markdown_rows`): the report is a third element, not a key of the
+  action table. Putting `:markdown_rows` in the table broke 19 projector tests that check every
+  table entry is `binary id => target` (`ui/paint/projector_test.exs`, `ui/projector_test.exs`,
+  `ui/projector_runs_dashboard_test.exs`), and `Keymap.activate/3` scans the table's values.
+- **Handoff D (D21)**: `session_runtime.ex:1012` — call `Projector.project_reporting(state.ui)`
+  instead of `project/1`, merge the third element into `state.ui.markdown_cache` (`%{entries: map,
+  bytes: n}`, ≤ 4 MiB by `:erlang.external_size/1`, LRU), and clear it on a conversation switch.
+- Run: the CLI app suite (`apps/swarm_code_cli/test`) 2833/0.
+- Tests: `cli020/e31_markdown_cache_test.exs` (7: golden empty/warm/half-evicted at 160x120,
+  100x40, 80x24; table equal apart from the report; key inputs; an ASCII entry never drawn on a
+  rich frame; the collection cleared on a raise). Deviation: written after the module (it needs
+  the report to exist); green at first run.

@@ -1995,10 +1995,9 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
         inner = max(1, width - indent - 1)
         pad = {String.duplicate(" ", indent), :plain}
 
+        # cli020 E31: from `state.markdown_cache` when it holds the text.
         source
-        |> Markdown.rows(inner, state.capabilities.ambiguous_width,
-          ascii?: state.capabilities.ascii?
-        )
+        |> SwarmCodeCLI.UI.Projector.MarkdownRows.rows(inner, state)
         |> Enum.map(fn
           %{fill: :code_card, segments: segments, header: true} ->
             spec([pad | segments] ++ copy_hint(state), {indent, :code_card})
