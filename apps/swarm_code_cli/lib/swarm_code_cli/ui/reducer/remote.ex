@@ -84,6 +84,9 @@ defmodule SwarmCodeCLI.UI.Reducer.Remote do
       {:rewind_turns, {:ok, payload}} ->
         SwarmCodeCLI.UI.Reducer.Rewind.turns_answer(state, request, payload)
 
+      {:history_search, {:ok, payload}} ->
+        SwarmCodeCLI.UI.Reducer.HistorySearch.answer(state, request, payload)
+
       {:rewind_apply, {:ok, payload}} ->
         SwarmCodeCLI.UI.Reducer.Rewind.apply_answer(state, request, payload)
 

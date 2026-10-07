@@ -172,8 +172,14 @@ defmodule SwarmCodeCLI.UI.KeymapTest do
         assert {:ok, {:open_layer, {^kind, _}}} =
                  Keymap.resolve(letter(mods_key, [:control]), main(), %{})
 
-        assert {:ok, {:open_layer, {^kind, _}}} =
-                 Keymap.resolve(letter(mods_key, [:control]), state(), %{})
+        # cli020 D19: in the composer Ctrl-R searches the prompt history.
+        if kind == :run_palette do
+          assert {:ok, :history_search} =
+                   Keymap.resolve(letter(mods_key, [:control]), state(), %{})
+        else
+          assert {:ok, {:open_layer, {^kind, _}}} =
+                   Keymap.resolve(letter(mods_key, [:control]), state(), %{})
+        end
       end
 
       for {mods_key, kind} <- [{"g", :runs_dashboard}, {"r", :run_palette}] do

@@ -53,7 +53,6 @@ Mouse: Wheel scrolls; select text with the mouse. /mouse on sends wheel reports 
 |---|---|
 | `Ctrl-P` | Command palette; pressed again it keeps the palette and its query |
 | `Ctrl-G` | Runs dashboard; the same chord closes it |
-| `Ctrl-R` | Run palette; the same chord closes it |
 | `Ctrl-B` / `Alt-I` | Side panel: full, compact, hidden (strip or off under 120 columns) |
 | `Alt-H` / `Alt-Shift-H` / `Ctrl-Alt-H` / `Ctrl-Alt-Shift-H` | Narrow the inspector dock (add Ctrl for a bigger step) |
 | `Alt-L` / `Alt-Shift-L` / `Ctrl-Alt-L` / `Ctrl-Alt-Shift-L` | Widen the inspector dock (add Ctrl for a bigger step) |
@@ -66,6 +65,7 @@ Mouse: Wheel scrolls; select text with the mouse. /mouse on sends wheel reports 
 |---|---|
 | `Tab` | Complete a slash command; while a turn runs, queue the draft behind it |
 | `Ctrl-O` / `Ctrl-J` / `Shift-Enter` | Insert a line break without sending (Ctrl-O or Ctrl-J) |
+| `Ctrl-R` | Search your earlier prompts in this project |
 | `Ctrl-V` | Paste an image from the clipboard |
 | `Ctrl-X` | Edit the draft in $VISUAL or $EDITOR; saving and quitting brings it back |
 | `↑` | Up a line; on an empty draft, the previous prompt; up the slash list |

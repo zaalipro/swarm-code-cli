@@ -29,6 +29,18 @@ defmodule SwarmCodeCLI.UI.Keymap.Layers do
 
   defp layer_key({:rewind_confirm, _}, "f", []), do: Keymap.result({:rewind_choose, :files})
 
+  # D19: the history search's query and rows.
+  defp layer_key({:history_search, _}, :up, []), do: Keymap.result({:history_move, -1})
+  defp layer_key({:history_search, _}, :down, []), do: Keymap.result({:history_move, 1})
+  defp layer_key({:history_search, _}, :enter, []), do: Keymap.result({:history_pick})
+
+  defp layer_key({:history_search, _}, :backspace, []),
+    do: Keymap.result({:history_query, :backspace})
+
+  defp layer_key({:history_search, _}, code, mods)
+       when is_binary(code) and mods in [[], [:shift]],
+       do: Keymap.result({:history_query, {:append, code}})
+
   # D18: the effort picker's rows.
   defp layer_key({:effort_picker, _}, :up, []), do: Keymap.result({:effort_move, -1})
   defp layer_key({:effort_picker, _}, :down, []), do: Keymap.result({:effort_move, 1})

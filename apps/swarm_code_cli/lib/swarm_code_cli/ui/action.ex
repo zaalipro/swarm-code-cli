@@ -111,6 +111,12 @@ defmodule SwarmCodeCLI.UI.Action do
           | :redraw_screen
           | {:rewind_open}
           | {:effort_move, -1 | 1}
+          | :history_search
+          | {:history_move, -1 | 1}
+          | {:history_pick}
+          | {:history_query, :backspace | {:append, binary()}}
+          | {:stash_draft}
+          | {:restore_stash}
           | {:effort_pick, binary()}
           | {:rewind_move, -1 | 1}
           | {:rewind_choose, :both | :conversation | :files}
@@ -278,6 +284,18 @@ defmodule SwarmCodeCLI.UI.Action do
 
   # cli020 D11: Ctrl-L repaints every cell.
   def validate(:redraw_screen), do: {:ok, :redraw_screen}
+
+  # cli020 D19: history search and the draft stash.
+  def validate(:history_search), do: {:ok, :history_search}
+  def validate({:history_move, delta} = action), do: valid_action(action, delta in [-1, 1])
+  def validate({:history_pick} = action), do: {:ok, action}
+  def validate({:history_query, :backspace} = action), do: {:ok, action}
+
+  def validate({:history_query, {:append, text}} = action),
+    do: valid_action(action, is_binary(text) and byte_size(text) <= 64 and String.valid?(text))
+
+  def validate({:stash_draft} = action), do: {:ok, action}
+  def validate({:restore_stash} = action), do: {:ok, action}
 
   # cli020 D18: the effort picker.
   def validate({:effort_move, delta} = action), do: valid_action(action, delta in [-1, 1])

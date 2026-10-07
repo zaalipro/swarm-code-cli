@@ -25,7 +25,17 @@ defmodule SwarmCodeCLI.UI.Reducer do
   alias SwarmCodeCLI.UI.Reducer.{Watch, Commands, Pages, Editing, Details, PathCompletion}
   alias SwarmCodeCLI.UI.Reducer.Hint, as: Hints
   alias SwarmCodeCLI.UI.Reducer.Overlay
-  alias SwarmCodeCLI.UI.Reducer.{Deliveries, Display, EffortPicker, ImagePaste, Remote, Rewind}
+
+  alias SwarmCodeCLI.UI.Reducer.{
+    Deliveries,
+    Display,
+    EffortPicker,
+    HistorySearch,
+    ImagePaste,
+    Remote,
+    Rewind
+  }
+
   alias SwarmCodeCLI.UI.Draft.Pastes
   alias SwarmCodeCLI.UI.WorkflowKeyword
   alias SwarmCodeCLI.UI.Hint
@@ -479,6 +489,14 @@ defmodule SwarmCodeCLI.UI.Reducer do
   # cli020 D11: Ctrl-L.
   defp transition(state, :redraw_screen), do: {state, [{:terminal_control, :redraw}]}
 
+  # cli020 D19: history search and the stash (`Reducer.HistorySearch`).
+  defp transition(state, :history_search), do: HistorySearch.open(state)
+  defp transition(state, {:history_query, operation}), do: HistorySearch.edit(state, operation)
+  defp transition(state, {:history_move, delta}), do: HistorySearch.move(state, delta)
+  defp transition(state, {:history_pick}), do: HistorySearch.pick(state)
+  defp transition(state, {:stash_draft}), do: HistorySearch.stash(state)
+  defp transition(state, {:restore_stash}), do: HistorySearch.restore(state)
+
   # cli020 D18: the effort picker (`Reducer.EffortPicker`); the level goes
   # out as the typed command would, the draft kept.
   defp transition(state, {:effort_move, delta}), do: EffortPicker.move(state, delta)
@@ -648,6 +666,9 @@ defmodule SwarmCodeCLI.UI.Reducer do
          }, []}
     end
   end
+
+  defp transition(%{history_timer: id} = state, {:timer_fired, id}) when id != nil,
+    do: HistorySearch.fire(state)
 
   defp transition(%{quit_armed: id} = state, {:timer_fired, id}) do
     state = disarm_quit(state)

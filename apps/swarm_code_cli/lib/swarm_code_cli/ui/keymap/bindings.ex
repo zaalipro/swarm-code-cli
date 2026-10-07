@@ -150,7 +150,8 @@ defmodule SwarmCodeCLI.UI.Keymap.Bindings do
       id: :run_palette,
       keys: [{"r", [:control]}],
       action: {:special, :run_palette},
-      contexts: [:composer, :main, :inspector, :picker, :field, :dialog],
+      # cli020 D19: not in the composer, where Ctrl-R searches the history.
+      contexts: [:main, :inspector, :picker, :field, :dialog],
       group: :layers,
       label: "Switch run",
       help: "Run palette; the same chord closes it",
@@ -1272,6 +1273,18 @@ defmodule SwarmCodeCLI.UI.Keymap.Bindings do
       label: "Newline",
       help: "Insert a line break without sending (Ctrl-O or Ctrl-J)",
       hint: 7
+    },
+    # cli020 D19 (competitors-19): Ctrl-R in the composer searches the
+    # prompts of this project; elsewhere it is still Switch run, and Ctrl-G
+    # opens Runs from the composer.
+    %Binding{
+      id: :history_search,
+      keys: [{"r", [:control]}],
+      action: :history_search,
+      contexts: [:composer],
+      group: :edit,
+      label: "History",
+      help: "Search your earlier prompts in this project"
     },
     # cli020 D11 (tui-code-15): Ctrl-L repaints the whole screen.
     %Binding{

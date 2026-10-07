@@ -145,6 +145,11 @@ defmodule SwarmCodeCLI.UI.State do
     # `%{mode: :apply, turn, scope}` while it applies) and the last bare Esc.
     rewind: nil,
     last_escape_at: nil,
+    # cli020 D19: the history search's debounce timer and newest request,
+    # and one stashed draft per draft key.
+    history_timer: nil,
+    history_request: nil,
+    stashes: %{},
     notify: :auto,
     title?: true,
     # cli020 D8, D13: cli.json's paste collapse threshold (0 = never), lines
