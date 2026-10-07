@@ -3902,7 +3902,9 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       "agent_id" => agent && agent["id"],
       "agent_name" => agent && bound(agent["name"], 200),
       "requested_at" => unix_ms(detail[:requested_at]) || unix_ms(p.since),
-      "allowed_decisions" => decisions(detail[:allowed_decisions], classification, family)
+      "allowed_decisions" => decisions(detail[:allowed_decisions], classification, family),
+      # cli020 A'2: the mode the RunServer asked under (`"read_only"`: y / d only).
+      "approval_mode" => bound(detail[:approval_mode], 32)
     }
   end
 
