@@ -99,11 +99,8 @@ defmodule SwarmCodeCLI.UI.Cli020.D9ImagePasteTest do
   test "a finished write attaches the slot; no image says so" do
     state = Cli020State.ready()
     c = Cli020State.conversation()
-    {next, effects} = Reducer.update(state, {:paste_image_done, c, @token, :ok})
-
-    if Cli020State.landed?({:attach_slot, c, @token}),
-      do: assert(Cli020State.commands(effects) == [{:attach_slot, c, @token}]),
-      else: assert(next.notice == {:command_feedback, Remote.unavailable_words()})
+    {_next, effects} = Reducer.update(state, {:paste_image_done, c, @token, :ok})
+    assert Cli020State.commands(effects) == [{:attach_slot, c, @token}]
 
     {next, []} = Reducer.update(state, {:paste_image_done, c, @token, {:error, :no_image}})
     assert next.notice == {:command_feedback, "The clipboard has no image."}

@@ -4,7 +4,7 @@ defmodule SwarmCodeCLI.UI.Cli020.D18EffortPickerTest do
 
   import SwarmCodeCLI.UI.Pass73Helpers
 
-  alias SwarmCodeCLI.UI.{Input, Keymap, LayerSpec, Reducer}
+  alias SwarmCodeCLI.UI.{Input, Keymap, Reducer}
   alias SwarmCodeCLI.UI.Reducer.EffortPicker
 
   # C17's workspace fields, put on the snapshot the way the DTO will carry them.
@@ -31,8 +31,6 @@ defmodule SwarmCodeCLI.UI.Cli020.D18EffortPickerTest do
         swarm_effort: nil
       )
 
-  defp drawn?, do: match?({:ok, _}, LayerSpec.validate({:effort_picker, :chat}))
-
   test "bare /effort and /swarm_effort are local; with a level they go to the daemon" do
     assert Keymap.local_command("/effort") == {:effort, :chat}
     assert Keymap.local_command("/swarm_effort") == {:effort, :swarm}
@@ -46,13 +44,8 @@ defmodule SwarmCodeCLI.UI.Cli020.D18EffortPickerTest do
     assert EffortPicker.levels(state, :swarm) == ~w(low high)
     {opened, []} = Reducer.update(state, {:slash_local, {:effort, :chat}})
 
-    if drawn?() do
-      assert [{:effort_picker, :chat} | _] = opened.layers
-      assert opened.selection["effort_picker"] == 1
-    else
-      assert opened.notice ==
-               {:command_feedback, "The effort picker is not drawn in this build yet."}
-    end
+    assert [{:effort_picker, :chat} | _] = opened.layers
+    assert opened.selection["effort_picker"] == 1
   end
 
   test "no levels says so" do

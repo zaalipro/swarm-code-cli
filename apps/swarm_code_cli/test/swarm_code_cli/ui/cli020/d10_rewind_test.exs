@@ -8,12 +8,26 @@ defmodule SwarmCodeCLI.UI.Cli020.D10RewindTest do
   import SwarmCodeCLI.Test.Cli020State
 
   alias SwarmCodeCLI.Test.Cli020State
-  alias SwarmCodeCLI.UI.{Input, Keymap, LayerSpec, Reducer}
+  alias SwarmCodeCLI.UI.{Input, Keymap, Reducer}
   alias SwarmCodeCLI.UI.Reducer.Remote
 
   @c Cli020State.conversation()
-  @t1 %{message_id: "m3", turn: 3, prompt: "third", at: nil, run_id: nil, files: 2}
-  @t2 %{message_id: "m2", turn: 2, prompt: "second", at: nil, run_id: nil, files: 0}
+  @t1 %{
+    message_id: "3f0c1a2b-4d5e-4f60-8a71-b2c3d4e5f603",
+    turn: 3,
+    prompt: "third",
+    at: nil,
+    run_id: nil,
+    files: 2
+  }
+  @t2 %{
+    message_id: "3f0c1a2b-4d5e-4f60-8a71-b2c3d4e5f602",
+    turn: 2,
+    prompt: "second",
+    at: nil,
+    run_id: nil,
+    files: 0
+  }
 
   defp list(state), do: %{state | layers: [{:rewind, %{turns: [@t1, @t2], selected: 0}}]}
 
@@ -26,23 +40,26 @@ defmodule SwarmCodeCLI.UI.Cli020.D10RewindTest do
   test "/rewind asks for the turns" do
     {state, effects} = ready() |> type("/rewind") |> send_draft()
 
-    if landed?({:rewind_turns, @c}) do
-      assert commands(effects) == [{:rewind_turns, @c}]
-      assert state.rewind == %{mode: :pick}
-    else
-      assert state.notice == {:command_feedback, Remote.unavailable_words()}
-    end
+    assert commands(effects) == [{:rewind_turns, @c}]
+    assert state.rewind == %{mode: :pick}
   end
 
   test "the turns' answer opens the list, or says there is nothing" do
     state = %{ready() | rewind: %{mode: :pick}}
     request = %{kind: {:rewind_turns, @c}, origin: {:conversation, :rewind}}
-    rows = [%{"message_id" => "m3", "turn" => 3, "prompt" => "third", "files" => 2}]
+
+    rows = [
+      %{
+        "message_id" => "3f0c1a2b-4d5e-4f60-8a71-b2c3d4e5f603",
+        "turn" => 3,
+        "prompt" => "third",
+        "files" => 2
+      }
+    ]
+
     {opened, []} = Remote.answer(state, request, {:ok, rows})
 
-    if match?({:ok, _}, LayerSpec.validate({:rewind, %{turns: [], selected: 0}})),
-      do: assert([{:rewind, %{selected: 0, turns: [%{turn: 3}]}}] = opened.layers),
-      else: assert(opened.notice == {:command_feedback, "Rewind is not drawn in this build yet."})
+    assert [{:rewind, %{selected: 0, turns: [%{turn: 3}]}}] = opened.layers
 
     {empty, []} = Remote.answer(state, request, {:ok, []})
     assert empty.notice == {:command_feedback, "Nothing to rewind yet."}
@@ -58,8 +75,7 @@ defmodule SwarmCodeCLI.UI.Cli020.D10RewindTest do
     assert {:ok, {:rewind_open}} = Keymap.resolve(Input.key(:enter), state, %{})
     {opened, []} = Reducer.update(state, {:rewind_open})
 
-    if match?({:ok, _}, LayerSpec.validate({:rewind_confirm, @t2})),
-      do: assert([{:rewind_confirm, @t2}, {:rewind, _}] = opened.layers)
+    assert [{:rewind_confirm, @t2}, {:rewind, _}] = opened.layers
   end
 
   test "the confirm's keys choose the scope and send rewind.apply" do
@@ -77,14 +93,19 @@ defmodule SwarmCodeCLI.UI.Cli020.D10RewindTest do
     {next, effects} = Reducer.update(state, {:rewind_choose, :conversation})
     assert next.layers == []
 
-    if landed?({:rewind_apply, @c, "m3", :conversation}),
-      do: assert(commands(effects) == [{:rewind_apply, @c, "m3", :conversation}])
+    assert commands(effects) == [
+             {:rewind_apply, @c, "3f0c1a2b-4d5e-4f60-8a71-b2c3d4e5f603", :conversation}
+           ]
   end
 
   test "the answer fills the draft as one undoable edit and says what came back" do
     state = ready() |> type("draft before")
     state = %{state | rewind: %{mode: :apply, turn: @t1, scope: :both}}
-    request = %{kind: {:rewind_apply, @c, "m3", :both}, origin: {:conversation, :rewind}}
+
+    request = %{
+      kind: {:rewind_apply, @c, "3f0c1a2b-4d5e-4f60-8a71-b2c3d4e5f603", :both},
+      origin: {:conversation, :rewind}
+    }
 
     {state, _} =
       Remote.answer(state, request, {:ok, %{"text" => "third", "restored" => 2, "skipped" => 1}})
@@ -102,7 +123,12 @@ defmodule SwarmCodeCLI.UI.Cli020.D10RewindTest do
   test "files only leaves the draft and says the files came back" do
     state = ready() |> type("keep")
     state = %{state | rewind: %{mode: :apply, turn: @t1, scope: :files}}
-    request = %{kind: {:rewind_apply, @c, "m3", :files}, origin: {:conversation, :rewind}}
+
+    request = %{
+      kind: {:rewind_apply, @c, "3f0c1a2b-4d5e-4f60-8a71-b2c3d4e5f603", :files},
+      origin: {:conversation, :rewind}
+    }
+
     {state, []} = Remote.answer(state, request, {:ok, %{restored: 1, skipped: 0}})
     assert text(state) == "keep"
     assert state.notice == {:command_feedback, "Files back to before turn 3 · 1 restored"}
@@ -117,9 +143,7 @@ defmodule SwarmCodeCLI.UI.Cli020.D10RewindTest do
     {quick, effects} = press(%{state | now: 1_400}, Input.key(:escape))
     assert quick.last_escape_at == nil
 
-    if landed?({:rewind_turns, @c}),
-      do: assert(commands(effects) == [{:rewind_turns, @c}]),
-      else: assert(quick.notice == {:command_feedback, Remote.unavailable_words()})
+    assert commands(effects) == [{:rewind_turns, @c}]
   end
 
   test "Esc with a draft never opens the rewind" do

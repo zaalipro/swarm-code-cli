@@ -9,7 +9,6 @@ defmodule SwarmCodeCLI.UI.Cli020.D7ShellTest do
 
   alias SwarmCodeCLI.Test.Cli020State
   alias SwarmCodeCLI.UI.{Composer, Input}
-  alias SwarmCodeCLI.UI.Reducer.Remote
 
   @c Cli020State.conversation()
 
@@ -26,17 +25,9 @@ defmodule SwarmCodeCLI.UI.Cli020.D7ShellTest do
     state = ready() |> type("!ls")
     {state, effects} = enter(state)
 
-    if landed?({:shell_run, @c, "ls"}) do
-      assert commands(effects) == [{:shell_run, @c, "ls"}]
-      assert text(state) == ""
-      assert hd(state.prompt_history[@c]) == "!ls"
-    else
-      # lane C has not landed shell.run in this build: nothing is sent and
-      # the draft stays (§8.1 stub).
-      assert commands(effects) == []
-      assert state.notice == {:command_feedback, Remote.unavailable_words()}
-      assert text(state) == "!ls"
-    end
+    assert commands(effects) == [{:shell_run, @c, "ls"}]
+    assert text(state) == ""
+    assert hd(state.prompt_history[@c]) == "!ls"
   end
 
   test "! alone says what to type" do
@@ -56,8 +47,6 @@ defmodule SwarmCodeCLI.UI.Cli020.D7ShellTest do
     {state, _} = ready() |> type("!sleep 5") |> enter()
     {_state, effects} = press(state, Input.key(:escape))
 
-    if landed?({:shell_stop, @c}),
-      do: assert(commands(effects) == [{:shell_stop, @c}]),
-      else: assert(commands(effects) == [])
+    assert commands(effects) == [{:shell_stop, @c}]
   end
 end

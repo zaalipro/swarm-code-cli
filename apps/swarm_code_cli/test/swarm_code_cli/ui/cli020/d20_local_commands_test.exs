@@ -6,7 +6,7 @@ defmodule SwarmCodeCLI.UI.Cli020.D20LocalCommandsTest do
 
   alias SwarmCodeCLI.Test.Cli020State
   alias SwarmCodeCLI.UI.{Input, Keymap, Reducer}
-  alias SwarmCodeCLI.UI.Reducer.{QueueCommands, Remote}
+  alias SwarmCodeCLI.UI.Reducer.QueueCommands
 
   @c Cli020State.conversation()
   @rev "0123456789abcdef"
@@ -46,12 +46,7 @@ defmodule SwarmCodeCLI.UI.Cli020.D20LocalCommandsTest do
     assert QueueCommands.parse("") == :list
     {state, _} = queued() |> type("/queue") |> send_draft()
 
-    if Remote.drawable?({:queue_list}),
-      do: assert([{:queue_list} | _] = state.layers),
-      else:
-        assert(
-          state.notice == {:command_feedback, "The queue list is not drawn in this build yet."}
-        )
+    assert [{:queue_list} | _] = state.layers
   end
 
   test "/queue clear and /queue drop N send queue_edit with the workspace's revision" do
@@ -59,12 +54,8 @@ defmodule SwarmCodeCLI.UI.Cli020.D20LocalCommandsTest do
       {state, effects} = queued() |> type(text) |> send_draft()
       intent = {:queue_edit, @c, @rev, edit}
 
-      if landed?(intent) do
-        assert commands(effects) == [intent]
-        assert text(state) == ""
-      else
-        assert state.notice == {:command_feedback, Remote.unavailable_words()}
-      end
+      assert commands(effects) == [intent]
+      assert text(state) == ""
     end
   end
 
@@ -87,7 +78,7 @@ defmodule SwarmCodeCLI.UI.Cli020.D20LocalCommandsTest do
     assert {:ok, {:queue_drop}} = Keymap.resolve(Input.text_fragment(:press, "d", []), state, %{})
     {_state, effects} = Reducer.update(state, {:queue_drop})
     intent = {:queue_edit, @c, @rev, {:drop, 2}}
-    if landed?(intent), do: assert(commands(effects) == [intent])
+    assert commands(effects) == [intent]
   end
 
   test "bare /delete asks first; a second within 5 s sends it" do
