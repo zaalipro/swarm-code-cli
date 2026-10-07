@@ -529,14 +529,24 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
   # The daemon's newest toast (C1, kept by E's read model), for a few seconds.
   @toast_ms 8_000
 
-  defp daemon_toast(state) do
+  @doc """
+  The daemon's newest toast as `{words, role}` while it is fresh (8 s), else
+  nil; the settings page's message row shows it too (cli020 qa, B12).
+  """
+  def daemon_toast(state) do
     now = Map.get(state, :now)
 
     case Map.get(state.read_model, :toasts, []) do
       [%{at: at} = toast | _] when is_integer(at) and is_integer(now) and now - at < @toast_ms ->
         title = Map.get(toast, :title) || ""
         text = Map.get(toast, :text) || ""
-        words = if text == "", do: title, else: title <> " · " <> first_line(text)
+        # cli020 qa: "First run · First run: added …" said the title twice.
+        words =
+          cond do
+            text == "" -> title
+            title == "" or String.starts_with?(text, title) -> first_line(text)
+            true -> title <> " · " <> first_line(text)
+          end
 
         role =
           case Map.get(toast, :level) do

@@ -347,8 +347,8 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Chrome do
     current = current(state, current)
 
     left =
-      toast(state, layer, glyphs) || consequence(state, layer, current, glyphs) ||
-        tip(layer)
+      toast(state, layer, glyphs) || daemon_toast(state, glyphs) ||
+        consequence(state, layer, current, glyphs) || tip(layer)
 
     right =
       case writes_to(state, current) do
@@ -375,6 +375,26 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Chrome do
         end
 
       _ ->
+        nil
+    end
+  end
+
+  # cli020 qa (B12): the page covers the status row, so the daemon's notice
+  # (the first-run setup words among them) is said here for its seconds.
+  defp daemon_toast(state, glyphs) do
+    case SwarmCodeCLI.UI.Projector.Status.daemon_toast(state) do
+      {words, role} ->
+        glyph =
+          case role do
+            :success -> [{glyphs.(:ok) <> " ", :success}]
+            :error -> [{glyphs.(:fail) <> " ", :error}]
+            :warning -> [{"! ", :warning}]
+            _ -> []
+          end
+
+        glyph ++ [{words, :text_primary}]
+
+      nil ->
         nil
     end
   end
