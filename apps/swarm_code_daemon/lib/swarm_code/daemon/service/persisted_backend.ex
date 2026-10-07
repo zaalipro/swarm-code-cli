@@ -143,6 +143,9 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         agent_status: %AgentStatus{},
         background: %{},
         background_tick: nil,
+        # cli020 C10: the last exit seen per backgrounded run_command item
+        # (the book forgets a finished survivor after five minutes).
+        background_exits: %{},
         # pass70 C8: unified diffs being paged, and what each finished run
         # changed per file (line counts, created/modified/deleted).
         diff_cache: %{},
@@ -2546,9 +2549,55 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       "result_bytes" => r.result_bytes || 0,
       "files" => op_files(type, r.input)
     }
+    |> Map.merge(background_fields(op_facts[:background_states][r.id]))
   end
 
   defp tool_call(_, _), do: nil
+
+  defp background_fields(nil), do: %{}
+
+  defp background_fields(text) do
+    exit_code =
+      case Integer.parse(String.replace_prefix(text, "exit ", "")) do
+        {code, ""} when code >= 0 -> code
+        _ -> nil
+      end
+
+    %{"background" => true, "background_state" => text, "exit_code" => exit_code}
+  end
+
+  # cli020 C10 (ux-live-12): a `run_command` that yielded to the background
+  # (its op detail is `running in the background (<pid>)`, `run_command.ex`)
+  # says how it ended, from the synced `Tools.BackgroundProcs` book: `still
+  # running`, `exit N`, or `ended (exit not recorded)` when the shell never
+  # reported one or the book has no row (a new service: the process ended or
+  # was reaped at quit). An exit once seen is kept while the item is shown.
+  @background_detail ~r/\Arunning in the background \((\d+)\)\z/
+
+  defp background_states(records, state) do
+    Enum.reduce(records, {%{}, %{}}, fn r, {states, exits} ->
+      with "op" <- Map.get(r, :source_kind),
+           "run_command" <- Map.get(r, :op_type),
+           detail when is_binary(detail) <- r.detail,
+           [_, pid] <- Regex.run(@background_detail, detail) do
+        text = background_state(r.run_id, String.to_integer(pid), state.background_exits[r.id])
+        exits = if String.starts_with?(text, "exit "), do: Map.put(exits, r.id, text), else: exits
+        {Map.put(states, r.id, text), exits}
+      else
+        _ -> {states, exits}
+      end
+    end)
+  end
+
+  defp background_state(run_id, os_pid, seen) do
+    case :ets.lookup(SwarmCode.Domain.Tools.BackgroundProcs, {run_id, os_pid}) do
+      [{_key, _command, _at, _janitor, nil, _conv}] -> "still running"
+      [{_key, _command, _at, _janitor, code, _conv}] when is_integer(code) -> "exit #{code}"
+      _ -> seen || "ended (exit not recorded)"
+    end
+  rescue
+    ArgumentError -> seen || "ended (exit not recorded)"
+  end
 
   # pass70 C8: per checkpoint of a finished run, what `FeatureCatalog.change_diff/2`
   # says it changed (counts, file state, the diff's size), kept for the
@@ -2964,6 +3013,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         else: %{state | change_facts: facts}
 
     op_facts = op_diff_facts(checkpoints, facts)
+    {background_states, background_exits} = background_states(records, state)
+    op_facts = Map.put(op_facts, :background_states, background_states)
     panel = panel_inputs(state, rows)
 
     runs =
@@ -3102,6 +3153,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
             else: state.agent_status
           ),
         background: background,
+        background_exits: if(reload?, do: background_exits, else: state.background_exits),
         inputs:
           if(reload?,
             do: %{

@@ -177,7 +177,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
       :exit_code,
       :background,
       :hunk,
-      :diff_lines
+      :diff_lines,
+      :background_state
     ],
     DTO.Change => [
       :agent_id,

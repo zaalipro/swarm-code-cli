@@ -72,4 +72,87 @@ defmodule SwarmCode.Daemon.Service.C020ProjectionTest do
       assert body["retry_detail"] == nil
     end
   end
+
+  describe "C10 background commands" do
+    alias SwarmCode.Domain.Tools.BackgroundProcs
+
+    defp backgrounded(c, os_pid) do
+      unless Process.whereis(BackgroundProcs), do: start_supervised!(BackgroundProcs)
+      {conv, run, lead} = running_chat(c, "Start the server")
+
+      {:ok, op} =
+        Conversations.insert_node(%{
+          run_id: run.id,
+          kind: "op",
+          op_type: "run_command",
+          parent_id: lead.id,
+          name: "run_command",
+          title: "npm run dev",
+          status: "done",
+          detail: "running in the background (#{os_pid})",
+          started_at: DateTime.utc_now(),
+          finished_at: DateTime.utc_now()
+        })
+
+      {conv, run, op}
+    end
+
+    defp tool_state(backend, conv, op_id) do
+      item =
+        Enum.find(workspace(backend, scope(conv))["transcript"]["items"], &(&1["id"] == op_id))
+
+      {:ok, tool} = SwarmCodeCLI.UI.DataSource.DTO.ToolCall.decode(item["tool"])
+      tool.background_state
+    end
+
+    test "still running, then its exit, which outlives the book's row", c do
+      {conv, run, op} = backgrounded(c, 434_343)
+      [key] = BackgroundProcs.put(run.id, [434_343], "npm run dev", nil, conv.id)
+      on_exit(fn -> BackgroundProcs.delete(key) end)
+      backend = start_backend(c, conv)
+      assert tool_state(backend, conv, op.id) == "still running"
+
+      :ets.update_element(BackgroundProcs, key, {5, 0})
+      assert tool_state(backend, conv, op.id) == "exit 0"
+
+      BackgroundProcs.delete(key)
+      assert tool_state(backend, conv, op.id) == "exit 0"
+    end
+
+    test "an exit the shell never reported", c do
+      {conv, run, op} = backgrounded(c, 434_344)
+      [key] = BackgroundProcs.put(run.id, [434_344], "npm run dev", nil, conv.id)
+      on_exit(fn -> BackgroundProcs.delete(key) end)
+      :ets.update_element(BackgroundProcs, key, {5, :unknown})
+      backend = start_backend(c, conv)
+      assert tool_state(backend, conv, op.id) == "ended (exit not recorded)"
+    end
+
+    test "at init a process the book no longer has ended unrecorded", c do
+      {conv, _run, op} = backgrounded(c, 434_345)
+      backend = start_backend(c, conv)
+      assert tool_state(backend, conv, op.id) == "ended (exit not recorded)"
+    end
+
+    test "a command that was not backgrounded has no state", c do
+      {conv, run, lead} = running_chat(c, "List files")
+
+      {:ok, op} =
+        Conversations.insert_node(%{
+          run_id: run.id,
+          kind: "op",
+          op_type: "run_command",
+          parent_id: lead.id,
+          name: "run_command",
+          title: "ls",
+          status: "done",
+          detail: "exit code 0",
+          started_at: DateTime.utc_now(),
+          finished_at: DateTime.utc_now()
+        })
+
+      backend = start_backend(c, conv)
+      assert tool_state(backend, conv, op.id) == nil
+    end
+  end
 end
