@@ -52,7 +52,7 @@ defmodule SwarmCodeCLI.Release.ConfigCommand do
     records KIND [--project DIR] [--json]
     record get KIND:NAME[.FIELD] [--json]
     record set KIND:NAME.FIELD VALUE [--expect VALUE]
-    record add provider --preset NAME [--name N]
+    record add provider --preset NAME [--name N] [--base-url URL] [--kind anthropic|openai]
     record add mcp_server NAME --stdio CMD [ARGS...] | --http URL
     record delete KIND:NAME [--yes]
     secret KIND:NAME[.SLOT] --stdin [--no-test]
@@ -72,7 +72,7 @@ defmodule SwarmCodeCLI.Release.ConfigCommand do
   @stdin_words "Secrets are read from stdin so they never reach your shell history: " <>
                  "ncode config secret <KIND:NAME[.SLOT]> --stdin"
 
-  @value_flags ~w(--project --conversation --expect --name --preset --http)
+  @value_flags ~w(--project --conversation --expect --name --preset --http --base-url --kind)
   @bool_flags ~w(--json --modified --stdin --no-test --yes --apply --no-terminal --no-project
                  --include-records --mcp-plain-values)
 
@@ -778,15 +778,45 @@ defmodule SwarmCodeCLI.Release.ConfigCommand do
     end
   end
 
+  # cli020 B18 (onboarding-15): a custom endpoint is `--preset other
+  # --base-url URL [--kind anthropic|openai]`; presets match by id or name.
   defp record_add(["provider"], flags, env) do
-    attributes =
-      %{"preset" => flags["--preset"], "name" => flags["--name"]}
-      |> Enum.reject(fn {_, v} -> is_nil(v) end)
-      |> Map.new()
+    kind =
+      case flags["--kind"] do
+        nil -> {:ok, nil}
+        "anthropic" -> {:ok, "anthropic"}
+        "openai" -> {:ok, "openai_compatible"}
+        _ -> :error
+      end
 
-    if attributes["preset"],
-      do: plain_command(env, flags, "provider.create", nil, attributes, nil),
-      else: usage_error("record add provider needs --preset NAME.")
+    preset = flags["--preset"]
+    other? = is_binary(preset) and String.downcase(String.trim(preset)) == "other"
+
+    cond do
+      preset == nil ->
+        usage_error("record add provider needs --preset NAME.")
+
+      kind == :error ->
+        usage_error("--kind is anthropic or openai.")
+
+      other? and flags["--base-url"] in [nil, ""] ->
+        usage_error("--preset other needs --base-url URL.")
+
+      true ->
+        {:ok, kind} = kind
+
+        attributes =
+          %{
+            "preset" => preset,
+            "name" => flags["--name"],
+            "base_url" => flags["--base-url"],
+            "kind" => kind
+          }
+          |> Enum.reject(fn {_, v} -> is_nil(v) end)
+          |> Map.new()
+
+        plain_command(env, flags, "provider.create", nil, attributes, nil)
+    end
   end
 
   defp record_add(["mcp_server", name], flags, env) do

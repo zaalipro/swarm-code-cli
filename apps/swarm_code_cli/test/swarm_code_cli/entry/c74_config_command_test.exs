@@ -278,6 +278,37 @@ defmodule SwarmCodeCLI.Release.C74ConfigCommandTest do
              "ncode has not opened #{dir} yet. Open it once (ncode #{dir}), then run this again."
   end
 
+  # cli020 B18 (onboarding-15).
+  test "record add provider takes --base-url and --kind; --preset other needs a URL", c do
+    assert {0, out, _} =
+             config(c, [
+               "record",
+               "add",
+               "provider",
+               "--preset",
+               "Other",
+               "--name",
+               "Mine",
+               "--base-url",
+               "http://127.0.0.1:9/v1",
+               "--kind",
+               "openai"
+             ])
+
+    assert out =~ "Mine"
+    mine = Enum.find(Providers.list(), &(&1.name == "Mine"))
+    assert mine.base_url == "http://127.0.0.1:9/v1"
+    assert mine.kind == "openai_compatible"
+
+    assert {2, _, err} = config(c, ["record", "add", "provider", "--preset", "other"])
+    assert err =~ "--preset other needs --base-url URL."
+
+    assert {2, _, err} =
+             config(c, ["record", "add", "provider", "--preset", "openai", "--kind", "gemini"])
+
+    assert err =~ "--kind is anthropic or openai."
+  end
+
   test "config help says what keys lists", c do
     assert {0, out, _} = config(c, ["help"])
     assert out =~ ~r/keys \[--json\]\s+every setting key/

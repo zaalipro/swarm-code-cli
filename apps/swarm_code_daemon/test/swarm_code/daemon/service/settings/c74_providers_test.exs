@@ -271,6 +271,52 @@ defmodule SwarmCode.Daemon.Service.Settings.C74ProvidersTest do
       HTTP.stop(server)
     end
 
+    # cli020 B18 (onboarding-16): a transport error is no refusal.
+    test "test_first against a closed port says it could not reach the host", c do
+      {:ok, listen} = :gen_tcp.listen(0, [:binary, ip: {127, 0, 0, 1}, active: false])
+      {:ok, port} = :inet.port(listen)
+      :gen_tcp.close(listen)
+
+      provider =
+        local_provider!("Closed", "http://127.0.0.1:#{port}", "sk-old-key-00000000wxyz")
+
+      {:task, spec, _result} =
+        run("provider.set_key", c,
+          target: %{"id" => provider.id},
+          attributes: %{"test_first" => true},
+          expected: %{"key" => %{"set" => true, "hint" => "wxyz"}},
+          secrets: [%{slot: "api_key", value: @canary}]
+        )
+
+      assert {:error, words} = C74S2.run_task(spec)
+      assert words =~ "could not reach 127.0.0.1 ("
+      assert words =~ "); the key was not saved. Use --no-test to save it anyway."
+      refute words =~ "key was refused"
+      refute words =~ @canary
+      assert Providers.get(provider.id).api_key == "sk-old-key-00000000wxyz"
+    end
+
+    # cli020 B18 (onboarding-15): presets by id or name, any case or spacing.
+    test "presets match case- and space-insensitively; an unknown one lists the ids", c do
+      for preset <- ["LM Studio", "lm-studio", "lm studio", "LMSTUDIO"] do
+        result =
+          run("provider.create", c,
+            attributes: %{
+              "preset" => preset,
+              "name" => "Studio #{System.unique_integer([:positive])}"
+            }
+          )
+
+        assert fields_of(result)["base_url"] == "http://localhost:1234/v1", preset
+      end
+
+      assert {:error, %{code: :invalid, message: message}} =
+               run("provider.create", c, attributes: %{"preset" => "nope"})
+
+      assert message =~
+               "no preset named nope; presets: anthropic, openai, openrouter, deepseek, ollama, lmstudio, other"
+    end
+
     test "test_first with an accepted key writes it after the test", c do
       server = models_server(["x-1", "x-2"])
       provider = local_provider!("Gate", server.url, "sk-old-key-00000000wxyz")
