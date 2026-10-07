@@ -160,7 +160,33 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace do
     facts = Composer.facts(state, rect.width)
     panel = if run, do: mode_panel(state, run, rect.width, class), else: []
     panel = if panel == [], do: [], else: panel ++ [Support.text(" ", state, rect.width)]
-    facts ++ trust_banner(state, rect.width) ++ panel
+    facts ++ desktop_banner(state, rect.width) ++ trust_banner(state, rect.width) ++ panel
+  end
+
+  # cli020 E16 (bugs-6, C4): the ncode app opened on the same database while
+  # this session runs is a warning that stays until it closes (C4's shell
+  # delta sets `desktop_running`, on the state or the workspace snapshot).
+  defp desktop_banner(state, width) do
+    workspace = Map.get(state.read_model.snapshots, :workspace) || %{}
+
+    if Map.get(state, :desktop_running) == true or Map.get(workspace, :desktop_running) == true do
+      warn = %{RunRow.tinted(:warning, state) | modifiers: [:bold]}
+      text = RunRow.tinted(:text_muted, state)
+
+      spans =
+        [
+          {"  ! ", warn},
+          {"The ncode app is open on the same database. ", warn},
+          {"Quit it, or stop your runs here and quit (Ctrl-C twice).", text}
+        ]
+        |> Enum.map(fn {words, style} ->
+          %Span{text: Density.safe(words, state, width), style: style}
+        end)
+
+      [%Block.RichText{spans: spans}, Support.text(" ", state, width)]
+    else
+      []
+    end
   end
 
   # A project the user has not trusted runs read-only (pass 63 trust): say so

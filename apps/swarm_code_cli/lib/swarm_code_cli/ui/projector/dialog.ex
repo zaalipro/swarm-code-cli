@@ -154,7 +154,15 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
         rect.width - 2
       )
 
-    footer = [overflow | footer]
+    # cli020 E16 (ux-live-19): a message (a confirm, a report) is its words
+    # and one row of actions, without a chooser's count line.
+    message? = message_layer?(layer) and class != :compressed_small
+
+    footer =
+      if message?,
+        do: [%Block.ActionDeck{actions: Enum.intersperse(footer, Support.text("   ", state, 3))}],
+        else: [overflow | footer]
+
     {measured_footer, _} = Support.finalize(footer, state.revision)
     diff? = diff_layer?(layer, state)
 
@@ -206,6 +214,14 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
       if picker_layer?(layer) and class not in [:narrow, :small, :compressed_small],
         do: %{rect | height: min(rect.height, max(8, length(rows) + 2 + footer_height))},
         else: rect
+
+    rect =
+      if message? do
+        height = min(rect.height, max(4, length(rows) + 2 + footer_height))
+        %{rect | height: height, y: rect.y + div(rect.height - height, 2)}
+      else
+        rect
+      end
 
     height = max(0, rect.height - 2 - footer_height)
 
@@ -378,6 +394,11 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
   end
 
   defp hover(state), do: Theme.style(:hover, state.capabilities).background
+
+  defp message_layer?({kind, _}) when kind in [:unsent_changes, :confirm_intent, :command_report],
+    do: true
+
+  defp message_layer?(_layer), do: false
 
   defp prose_layer?({kind, _}) when kind in [:library, :command_report, :rewind_confirm],
     do: true
@@ -598,6 +619,25 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
      [control("cancel", SafeText.chrome(:cancel), {:local, :close_top_layer})], state.focus}
   end
 
+  defp contents(
+         {:command_report, _},
+         %{command_report: %{rows: [_ | _] = rows} = report} = state,
+         rect,
+         _class
+       ) do
+    table = cost_rows(rows, Map.get(report, :total), state)
+
+    {Density.safe(report.title, state, rect.width - 2),
+     table
+     |> Enum.with_index()
+     |> Enum.map(fn {line, i} ->
+       {"report-#{i}", Density.safe(line, state, rect.width * 2), nil}
+     end),
+     [
+       control("cancel", Density.safe("Close", state, rect.width - 2), {:local, :close_top_layer})
+     ], state.focus}
+  end
+
   defp contents({:command_report, _}, %{command_report: report} = state, rect, _class)
        when not is_nil(report) do
     rows =
@@ -637,11 +677,26 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
         runs = if live == 1, do: "1 live run", else: "#{live} live runs"
         draft = if State.dirty?(state), do: " Your unsent draft is lost too.", else: ""
 
+        # cli020 E16: the keys in words, one row (`Enter/X quit · Esc cancel`).
+        quit =
+          if class == :compressed_small,
+            do: [],
+            else: [
+              control(
+                "confirm",
+                Density.safe("Enter/X quit", state, 20),
+                {:local, confirm_target}
+              )
+            ]
+
+        cancel =
+          control("cancel", Density.safe("Esc cancel", state, 20), {:local, :close_top_layer})
+
         {Density.safe("Stop " <> runs <> " and quit?", state, 60),
          [
            {"quit_live_runs", Density.safe("They stop when ncode quits." <> draft, state, 200),
             nil}
-         ], [cancel] ++ confirm, focused}
+         ], quit ++ [cancel], focused}
 
       _ ->
         {SafeText.chrome(:unsent_changes), [{"cancel", SafeText.chrome(:cancel_exit), nil}],
@@ -817,7 +872,7 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
           "Unavailable · " <> body.error.message
 
         options == [] ->
-          "No entries"
+          empty_words(feature)
 
         selected ->
           Library.detail_text(feature, selected)
@@ -1537,6 +1592,10 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
     end
   end
 
+  # cli020 E16 (ux-live-19): an empty list says what fills it.
+  defp empty_words(:checkpoints), do: "No checkpoints yet: they are taken before each edit."
+  defp empty_words(_feature), do: "No entries"
+
   defp diff_detail_lines(file) do
     header =
       SafeText.value(file.path) <>
@@ -1723,6 +1782,57 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
       [RunRow.pad(key_cell, column, state)]
     end
   end
+
+  # cli020 E16 (C18): `/cost` by model, `model  12k in · 3k out  $0.04`,
+  # aligned, then the total (C18's, else the sum; a model without a price
+  # reads `—`).
+  defp cost_rows(rows, total, state) do
+    policy = state.capabilities.ambiguous_width
+    rows = Enum.filter(rows, &is_map/1)
+
+    sum = fn key -> Enum.reduce(rows, 0, &(&2 + (Map.get(&1, key) || 0))) end
+
+    total =
+      case total do
+        %{} = total ->
+          total
+
+        _ ->
+          prices = rows |> Enum.map(&Map.get(&1, :cost_usd)) |> Enum.filter(&is_number/1)
+
+          %{
+            model: "Total",
+            tokens_in: sum.(:tokens_in),
+            tokens_out: sum.(:tokens_out),
+            cost_usd: if(prices == [], do: nil, else: Enum.sum(prices))
+          }
+      end
+
+    lines =
+      Enum.map(rows ++ [Map.put(total, :model, "Total")], fn row ->
+        {to_string(Map.get(row, :model) || "?"),
+         compact_tokens(Map.get(row, :tokens_in)) <>
+           " in · " <> compact_tokens(Map.get(row, :tokens_out)) <> " out",
+         case Map.get(row, :cost_usd) do
+           cost when is_number(cost) -> "$" <> :erlang.float_to_binary(cost / 1, decimals: 2)
+           _ -> "—"
+         end}
+      end)
+
+    name_w = lines |> Enum.map(&Width.cells(elem(&1, 0), policy)) |> Enum.max(fn -> 0 end)
+    tok_w = lines |> Enum.map(&Width.cells(elem(&1, 1), policy)) |> Enum.max(fn -> 0 end)
+    pad = fn text, w -> text <> String.duplicate(" ", max(0, w - Width.cells(text, policy))) end
+
+    Enum.map(lines, fn {name, tokens, cost} ->
+      pad.(name, name_w) <> "  " <> pad.(tokens, tok_w) <> "  " <> cost
+    end)
+  end
+
+  defp compact_tokens(n) when is_integer(n) and n >= 1_000,
+    do: SwarmCodeCLI.UI.Projector.Workspace.Turns.compact(n)
+
+  defp compact_tokens(n) when is_integer(n), do: Integer.to_string(n)
+  defp compact_tokens(_n), do: "0"
 
   # cli020 E11 (ux-live-7): a report's Markdown list of named entries
   # (`- **reviewer** (bundled) — Code reviewer…`, `/agents`) is a two-column
