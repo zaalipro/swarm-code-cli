@@ -85,30 +85,12 @@ defmodule SwarmCode.Daemon.Service.Settings.C020ValuesTest do
     refute Enum.any?(layers, &(&1["source"] == "--model"))
   end
 
-  # cli020 C17: E1 adds the Validator entries to the registry; their storage
-  # is read generically. Until then these entries stand in for E1's.
+  # cli020 C17 + E1: the registry's Validator entries read the columns.
   describe "C17 validator storage" do
     alias SwarmCode.Daemon.Service.Settings.{Context, Values}
-    alias SwarmCode.Settings.Entry
+    alias SwarmCode.Settings.Registry
 
-    defp entry(key, storage, home, extra \\ []) do
-      struct!(
-        Entry,
-        [
-          key: key,
-          id: key,
-          section: :models_effort,
-          label: key,
-          scope: home,
-          home: home,
-          storage: storage,
-          type: if(match?({_, _, _}, storage), do: :model, else: :effort),
-          nullable: true,
-          layers:
-            if(home == :session, do: [:session, :global, :default], else: [:global, :default])
-        ] ++ extra
-      )
-    end
+    defp entry(key), do: Registry.fetch!(key)
 
     test "the global and conversation validator columns read back", fixture do
       {:ok, _} =
@@ -137,11 +119,7 @@ defmodule SwarmCode.Daemon.Service.Settings.C020ValuesTest do
 
       global =
         Values.setting_value(
-          entry(
-            "models.validator",
-            {:setting_pair, :default_validator_provider_id, :default_validator_model},
-            :global
-          ),
+          entry("models.validator"),
           reads
         )
 
@@ -152,9 +130,7 @@ defmodule SwarmCode.Daemon.Service.Settings.C020ValuesTest do
 
       effort =
         Values.setting_value(
-          entry("efforts.validator", {:setting, :default_validator_effort}, :global,
-            dynamic_choices: {:effort_of, :validator_default}
-          ),
+          entry("efforts.validator"),
           reads
         )
 
@@ -163,11 +139,7 @@ defmodule SwarmCode.Daemon.Service.Settings.C020ValuesTest do
 
       session =
         Values.setting_value(
-          entry(
-            "session.validator_model",
-            {:conversation_pair, :validator_provider_id, :validator_model},
-            :session
-          ),
+          entry("session.validator_model"),
           reads
         )
 
