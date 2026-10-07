@@ -299,11 +299,21 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
     # SQL callers are short-lived. Returning plain session structs does not
     # retain native statement resources in the launcher while the TUI runs.
     query_worker(fn ->
-      with {:ok, session} <- SessionSelection.open(root, selection),
-           {:ok, session} <- prepare(session) do
-        {:ok, session}
-      else
-        {:error, reason} -> {:error, session_failure(reason, selection)}
+      case SessionSelection.open(root, selection) do
+        {:ok, opened} ->
+          case prepare(opened) do
+            {:ok, session} ->
+              {:ok, session}
+
+            {:error, reason} ->
+              # cli020 B11: a failed start leaves no empty conversation (and
+              # no project row this call created).
+              SessionSelection.discard(opened)
+              {:error, session_failure(reason, selection)}
+          end
+
+        {:error, reason} ->
+          {:error, session_failure(reason, selection)}
       end
     end)
   end
