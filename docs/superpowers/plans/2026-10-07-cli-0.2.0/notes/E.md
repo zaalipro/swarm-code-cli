@@ -41,3 +41,14 @@ Branch `cli020/E` from M1 `3008f352`, worktree `~/dev/swarm-code-cli-wt/cli020-E
 - Tests: `swarm_code_core/test/swarm_code/cli020_e_commands_test.exs`,
   `cli020/e3_palette_rows_test.exs`; `commands_test.exs` updated (builtin list, bare
   `/swarm_effort`). The ui test directory: 2419 tests, 0 failures.
+
+### E4 Effort is visible
+- Status chip: `<model> · <effort>` from the workspace DTO `effort`.
+- `LayerSpec` validates the five §8.3 layers (`{:effort_picker, scope}`, `{:rewind, …}`,
+  `{:rewind_confirm, turn}`, `{:history_search, …}`, `{:queue_list}`) so D's `Action` can open them.
+- `Dialog` draws `{:effort_picker, :chat | :swarm}` as a picker (`Effort · chat model` /
+  `Effort · workers`), the rows from `effort_levels` / `swarm_effort_levels` (C17), else the five
+  classic levels; the current one ticked and focused when the focus is not on a row.
+- STUB: `Dialog.effort_target/1` gives a row the `{:local, {:effort_pick, level}}` target only
+  once D18 adds `{:effort_pick, level}` to `Action.validate/1` (until then rows have no target).
+  The finisher may drop the guard after D merges; `e4_effort_test` covers both branches.

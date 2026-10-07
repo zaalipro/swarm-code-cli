@@ -89,6 +89,9 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
         {:model_picker, _, _} ->
           model_picker(layer, state, rect)
 
+        {:effort_picker, scope} ->
+          effort_picker(scope, state, rect)
+
         _ ->
           {title, options, footer, focus} = contents(layer, state, rect, class)
           {title, options, footer, focus, %{}}
@@ -359,6 +362,7 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
     do: true
 
   defp picker_layer?({:model_picker, _, _}), do: true
+  defp picker_layer?({:effort_picker, _}), do: true
   defp picker_layer?(_layer), do: false
 
   # A picker row in colour: rail, an optional check, the title with the
@@ -1049,6 +1053,73 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
   # One row per model the daemon lists, the one in use marked, the provider
   # after the model so a filter on either reads the same. A snapshot with no
   # models says so in one line rather than showing an empty search.
+  # cli020 E4 (decision 4f, D18): the levels the daemon would accept for the
+  # model (C17's `effort_levels`), the current one ticked; Enter picks.
+  @classic_efforts ~w(low medium high xhigh max)
+
+  defp effort_picker(scope, state, rect) do
+    workspace = Map.get(state.read_model.snapshots, :workspace) || %{}
+
+    {levels, current, title} =
+      case scope do
+        :chat ->
+          {Map.get(workspace, :effort_levels), Map.get(workspace, :effort), "Effort · chat model"}
+
+        :swarm ->
+          {Map.get(workspace, :swarm_effort_levels), Map.get(workspace, :swarm_effort),
+           "Effort · workers"}
+      end
+
+    levels =
+      case levels do
+        [_ | _] = list -> Enum.filter(list, &is_binary/1)
+        _ -> @classic_efforts
+      end
+
+    mark = SafeText.value(Support.glyph(:check, state))
+
+    {options, decor} =
+      levels
+      |> Enum.map(fn level ->
+        id = "effort-" <> level
+        current? = level == current
+        label = if(current?, do: mark, else: " ") <> " " <> level
+
+        {{id, Density.safe(label, state, rect.width * 4), effort_target(level)},
+         {id,
+          %{
+            title: level,
+            detail: nil,
+            query: "",
+            current?: current?,
+            marks?: true,
+            right: if(current?, do: "in use", else: ""),
+            right_role: :text_faint
+          }}}
+      end)
+      |> Enum.unzip()
+
+    ids = Enum.map(options, &elem(&1, 0))
+
+    focus =
+      cond do
+        state.focus in ids -> state.focus
+        is_binary(current) and ("effort-" <> current) in ids -> "effort-" <> current
+        true -> List.first(ids)
+      end
+
+    {Density.safe(title, state, rect.width - 2), options,
+     [control("cancel", SafeText.chrome(:cancel), {:local, :close_top_layer})], focus,
+     Map.new(decor)}
+  end
+
+  # STUB (cli020 §8.3): `{:effort_pick, level}` is D18's action; until it is
+  # in `Action`, a row has no target rather than an invalid one.
+  defp effort_target(level) do
+    target = {:local, {:effort_pick, level}}
+    if match?({:ok, _}, SwarmCodeCLI.UI.ActionTarget.validate(target)), do: target
+  end
+
   defp model_picker({:model_picker, target, _} = layer, state, rect) do
     query = ModelPicker.query(state, layer)
     mark = SafeText.value(Support.glyph(:check, state))

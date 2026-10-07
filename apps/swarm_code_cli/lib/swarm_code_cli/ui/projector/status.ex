@@ -172,8 +172,14 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
     chat_model = workspace && Map.get(workspace, :chat_model)
     swarm_model = workspace && Map.get(workspace, :swarm_model)
 
+    # cli020 E4 (ux-live-14): the chat effort beside its model.
+    effort = workspace && Map.get(workspace, :effort)
+
     model =
       case chat_model do
+        model when is_binary(model) and model != "" and is_binary(effort) and effort != "" ->
+          {model <> " · " <> effort, tint(:plain, state, :text_muted, [])}
+
         model when is_binary(model) and model != "" ->
           {model, tint(:plain, state, :text_muted, [])}
 
