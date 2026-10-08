@@ -74,6 +74,21 @@ defmodule SwarmCodeCLI.Cli021.U3SettingsTest do
       ops = ModelsEffort.commit(ctx_of(state), row, 100)
       assert [{:row_error, "ctx:deepseek-v4-pro", message}] = ops
       assert message =~ "between 8000 and 2000000"
+
+      # `r` on a set window writes nil (the 1M default) with CAS on the row as read;
+      # on a window already at the default it does nothing.
+      opus = %SwarmCodeCLI.UI.Settings.Row{
+        id: "ctx:claude-opus-5",
+        target: {:context_window, "claude-opus-5"}
+      }
+
+      assert [
+               {:command, "pricing.put_row", nil,
+                %{"model" => "claude-opus-5", "context_window" => nil},
+                %{expected: %{"row" => %{"context_window" => 200_000}}}}
+             ] = ModelsEffort.act(ctx(), opus, :reset)
+
+      assert [] = ModelsEffort.act(ctx_of(state), row, :reset)
     end
 
     test "an unpriced model opens its price draft, where the window is set with the prices" do

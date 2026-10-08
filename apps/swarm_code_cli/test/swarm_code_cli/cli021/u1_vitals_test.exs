@@ -120,6 +120,14 @@ defmodule SwarmCodeCLI.Cli021.U1VitalsTest do
       refute Enum.any?(texts(Panel.plan(swarm(), 46, 8)), &(&1 =~ "tok/s"))
     end
 
+    test "a dock too short for any vitals row leaves them to the status line" do
+      state = swarm()
+      short = %{rects: %{inspector: %{x: 0, y: 0, width: 46, height: 8}}}
+      tall = %{rects: %{inspector: %{x: 0, y: 0, width: 46, height: 30}}}
+      assert Vitals.placement(short, state) == :status
+      assert Vitals.placement(tall, state) == :panel
+    end
+
     test "memory only: no speed heading" do
       state = swarm() |> put_vitals(%{models: [], beam_bytes: 2 * 1024 * @mb, sampled_at: 1})
       [first | _] = texts(Panel.plan(state, 46, 43))

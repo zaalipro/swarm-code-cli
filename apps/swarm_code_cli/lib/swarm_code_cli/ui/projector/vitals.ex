@@ -429,15 +429,22 @@ defmodule SwarmCodeCLI.UI.Projector.Vitals do
 
   @doc """
   Where the vitals go in the frame `layout` lays out: `:panel` when the dock
-  draws its agents tab, `:strip` when the one-row strip is drawn, else
-  `:status` (the status line).
+  draws its agents tab and is tall enough for a vitals row, `:strip` when the
+  one-row strip is drawn, else `:status` (the status line).
   """
   @spec placement(map(), map()) :: :panel | :strip | :status
   def placement(%{rects: rects}, state) do
+    dock = Map.get(rects, :inspector)
+
     cond do
-      Map.has_key?(rects, :inspector) and Inspector.tab(state) == :agents -> :panel
-      Map.has_key?(rects, :tabline) -> :strip
-      true -> :status
+      dock != nil and Inspector.tab(state) == :agents and Map.get(dock, :height, 0) >= @min_height ->
+        :panel
+
+      Map.has_key?(rects, :tabline) ->
+        :strip
+
+      true ->
+        :status
     end
   end
 
