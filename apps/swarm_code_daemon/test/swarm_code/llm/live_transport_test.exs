@@ -183,7 +183,8 @@ defmodule SwarmCode.Domain.LLM.LiveTransportTest do
       end)
 
     assert {:ok, %Result{text: "Ready"}} = LLM.stream(request, collect())
-    assert_received {:retry, 2, 5, "rate limit"}
+    # cli020 fix S2: a retry that came from a status names it.
+    assert_received {:retry, 2, 5, "HTTP 429"}
   end
 
   test "cross-origin redirects never deliver credentials or prompts to the target" do
@@ -249,7 +250,7 @@ defmodule SwarmCode.Domain.LLM.LiveTransportTest do
     request = %{request | deadline_ms: 120_000}
     owner = self()
     task = Task.async(fn -> LLM.stream(request, fn event -> send(owner, event) end) end)
-    assert_receive {:retry, 2, 5, "rate limit"}, 2_000
+    assert_receive {:retry, 2, 5, "HTTP 429"}, 2_000
     Task.shutdown(task, :brutal_kill)
     refute_receive {:http_request, 2, _}, 100
   end

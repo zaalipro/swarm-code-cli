@@ -50,7 +50,8 @@ defmodule SwarmCode.Daemon.Runtime.RunSyncedLLMTest do
     assert_received {:http_request, 1, first}
     assert_received {:http_request, 2, second}
     assert second.body == first.body
-    assert_received {:run_event, _, _, %{type: :retry, attempt: 2, count: 5, reason: "server"}}
+    # cli020 fix S2: the retry names the HTTP status the provider answered with.
+    assert_received {:run_event, _, _, %{type: :retry, attempt: 2, count: 5, reason: "HTTP 500"}}
   end
 
   test "BUGS-28: a rejection a sibling already learned still gets this request's one retry", %{
