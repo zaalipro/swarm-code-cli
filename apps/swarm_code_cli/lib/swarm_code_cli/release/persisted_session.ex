@@ -23,6 +23,7 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
               SwarmCode.Daemon.Shutdown,
               SwarmCode.Domain.Engine,
               SwarmCode.Domain.Repo,
+              SwarmCode.Domain.Tools.Path,
               Ecto.UUID
             ]}
   require Logger
@@ -886,24 +887,14 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
         [id]
       )
 
-    files =
-      rows(
-        "SELECT DISTINCT path FROM checkpoints WHERE conversation_id = ?1 AND inserted_at >= ?2 " <>
-          "ORDER BY path LIMIT 200",
-        [id, since]
-      )
+    files = net_changed(id, since, session.project.root_path)
 
     %{
       title: title,
       prompt: prompt,
       exchanges: exchanges(id, n),
       spent: spent(id, since, started_at),
-      files:
-        for(
-          [path] <- files,
-          is_binary(path),
-          do: Path.relative_to(path, session.project.root_path)
-        ),
+      files: Enum.map(files, &Path.relative_to(&1, session.project.root_path)),
       root: session.project.root_path,
       conversation: id
     }
@@ -918,6 +909,68 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
         root: session.project.root_path,
         conversation: session.conversation.id
       }
+  end
+
+  # cli022 F5: the session's net change. Every write leaves a checkpoint row
+  # (the file before it), and a rewind restores the files but keeps the rows,
+  # so listing the rows called a file `/rewind` put back "changed". The
+  # session's first row per path holds the file as it was before the session
+  # touched it: a path whose file now equals that (or that did not exist then
+  # and does not now) is left out. A row that could not be kept (binary or over
+  # 2 MB), a path outside the project, a symlink or an unreadable file stays
+  # listed. At most 200 paths, each file read only when its size matches.
+  @net_paths 200
+
+  defp net_changed(id, since, root) do
+    real_root =
+      case SwarmCode.Domain.Tools.Path.real_path(root) do
+        {:ok, real} -> real
+        _ -> root
+      end
+
+    rows(
+      "SELECT path, rowid, restorable, previous_content IS NULL, " <>
+        "LENGTH(CAST(previous_content AS BLOB)) FROM (SELECT path, rowid, restorable, " <>
+        "previous_content, ROW_NUMBER() OVER (PARTITION BY path ORDER BY inserted_at, rowid) " <>
+        "AS n FROM checkpoints WHERE conversation_id = ?1 AND inserted_at >= ?2) WHERE n = 1 " <>
+        "ORDER BY path LIMIT ?3",
+      [id, since, @net_paths]
+    )
+    |> Enum.flat_map(fn
+      [path, rowid, restorable, absent, bytes] when is_binary(path) ->
+        if unchanged?(path, rowid, restorable, absent, bytes, [root, real_root]),
+          do: [],
+          else: [path]
+
+      _row ->
+        []
+    end)
+  end
+
+  defp unchanged?(path, rowid, restorable, absent, bytes, roots) do
+    inside? = Enum.any?(roots, &String.starts_with?(path, String.trim_trailing(&1, "/") <> "/"))
+
+    cond do
+      restorable in [0, false] or not inside? ->
+        false
+
+      absent in [1, true] ->
+        File.lstat(path) == {:error, :enoent}
+
+      true ->
+        same_content?(path, rowid, bytes)
+    end
+  end
+
+  defp same_content?(path, rowid, bytes) do
+    with {:ok, %File.Stat{type: :regular, size: ^bytes}} <- File.lstat(path),
+         {:ok, now} <- File.read(path),
+         [[before]] when is_binary(before) <-
+           rows("SELECT previous_content FROM checkpoints WHERE rowid = ?1", [rowid]) do
+      now == before
+    else
+      _ -> false
+    end
   end
 
   # cli020 B21 (decision 4d): the last `n` exchanges, newest rows first from
