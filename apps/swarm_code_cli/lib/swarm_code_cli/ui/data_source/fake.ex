@@ -556,7 +556,14 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake do
   defp relevant?(_, %{kind: k}) when k in [:counts_update, :connection], do: true
   # pass70 C1: toasts and rate limits belong to the shell watch alone.
   defp relevant?(%{slot: slot}, %{kind: k})
-       when k in [:toast, :rate_limit, :settings_update, :settings_task, :desktop_running],
+       when k in [
+              :toast,
+              :rate_limit,
+              :settings_update,
+              :settings_task,
+              :desktop_running,
+              :vitals
+            ],
        do: slot == :shell
 
   defp relevant?(%{scope: %{kind: :global}}, _), do: true

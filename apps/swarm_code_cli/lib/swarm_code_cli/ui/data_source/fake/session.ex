@@ -47,7 +47,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Session do
   """
 
   @enforce_keys [:conversations, :current, :approval_mode, :trusted, :background, :rate_limits]
-  defstruct @enforce_keys ++ [toasts: 0]
+  defstruct @enforce_keys ++ [toasts: 0, vitals: nil]
 
   @type t :: %__MODULE__{
           conversations: %{binary() => map()},
@@ -56,7 +56,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Session do
           trusted: boolean(),
           background: %{binary() => DTO.BackgroundCommand.t()},
           rate_limits: %{binary() => DTO.RateLimit.t()},
-          toasts: non_neg_integer()
+          toasts: non_neg_integer(),
+          vitals: DTO.Vitals.t() | nil
         }
 
   @doc "The provider id of the synthetic rate-limit window."
@@ -86,6 +87,37 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Session do
       revision: 1
     }
 
+    # cli021 C2: the side panel's vitals, synthetic and steady: two model slots
+    # (one streaming), a few MiB of memory and a bar's scale.
+    vitals = %DTO.Vitals{
+      conversation_id: ids.a,
+      models: [
+        %DTO.ModelSpeed{
+          slot: :main,
+          model: "claude-sonnet-4-6",
+          tps: 62,
+          live: false,
+          ttft_ms: 410,
+          at: clock_ms - 20_000,
+          history: [58, 61, 64, 59, 62]
+        },
+        %DTO.ModelSpeed{
+          slot: :worker,
+          model: "deepseek-v4-flash",
+          tps: 118,
+          live: true,
+          ttft_ms: 260,
+          at: nil,
+          history: [96, 104, 111, 109, 118]
+        }
+      ],
+      beam_bytes: 268 * 1_048_576,
+      os_rss_bytes: 412 * 1_048_576,
+      children_rss_bytes: 61 * 1_048_576,
+      machine_bytes: 32 * 1_073_741_824,
+      sampled_at: clock_ms
+    }
+
     %__MODULE__{
       conversations: %{
         ids.a => %{
@@ -105,7 +137,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Session do
       approval_mode: :auto,
       trusted: true,
       background: %{background.id => background},
-      rate_limits: %{limit.provider_id => limit}
+      rate_limits: %{limit.provider_id => limit},
+      vitals: vitals
     }
   end
 
@@ -122,7 +155,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Session do
       end) and map_size(session.rate_limits) <= 32 and
       Enum.all?(session.rate_limits, fn {id, limit} ->
         limit.provider_id == id and Schema.valid?({:dto, DTO.RateLimit}, limit)
-      end) and Schema.valid?(:count, session.toasts)
+      end) and Schema.valid?(:count, session.toasts) and
+      Schema.valid?({:optional, {:dto, DTO.Vitals}}, session.vitals)
   end
 
   def valid?(_), do: false
@@ -740,6 +774,9 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Session do
   def apply_delta(%Delta{kind: :rate_limit, body: limit}, %{session: s} = script),
     do: %{script | session: %{s | rate_limits: Map.put(s.rate_limits, limit.provider_id, limit)}}
 
+  def apply_delta(%Delta{kind: :vitals, body: vitals}, %{session: s} = script),
+    do: %{script | session: %{s | vitals: vitals}}
+
   def apply_delta(%Delta{kind: :toast}, %{session: s} = script),
     do: %{script | session: %{s | toasts: s.toasts + 1}}
 
@@ -793,7 +830,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Session do
 
   def shell_fields(script),
     do: [
-      rate_limits: script.session.rate_limits |> Map.values() |> Enum.sort_by(& &1.provider_id)
+      rate_limits: script.session.rate_limits |> Map.values() |> Enum.sort_by(& &1.provider_id),
+      vitals: script.session.vitals
     ]
 
   defp scoped?(_run, %{kind: :global}), do: true

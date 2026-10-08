@@ -24,6 +24,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Delta do
     settings_task: DTO.SettingsTask,
     # cli020 C4: the ncode app opened or quit on the same database (shell).
     desktop_running: DTO.DesktopPresence,
+    # cli021 C2: the side panel's vitals (model speed, memory), shell watch.
+    vitals: DTO.Vitals,
     # cli020 C15: a `!` shell command of the conversation (workspace watch).
     shell_upsert: DTO.ShellItem
   }
@@ -78,6 +80,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Delta do
           | :settings_update
           | :settings_task
           | :desktop_running
+          | :vitals
           | :shell_upsert
           | :shell_remove
   @type t :: %__MODULE__{
@@ -105,6 +108,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Delta do
             | DTO.SettingsUpdate.t()
             | DTO.SettingsTask.t()
             | DTO.DesktopPresence.t()
+            | DTO.Vitals.t()
             | nil,
           sequence: non_neg_integer(),
           revision: non_neg_integer()
@@ -211,6 +215,13 @@ defmodule SwarmCodeCLI.UI.DataSource.Delta do
   defp correlated_body?(%{kind: :desktop_running, body: %DTO.DesktopPresence{}} = delta),
     do: is_nil(delta.entity_id) and is_nil(delta.run_id) and is_nil(delta.attempt_id)
 
+  # cli021 C2: about the conversation the daemon shows; the envelope names it
+  # (the daemon stamps every delta) and the body repeats it.
+  defp correlated_body?(%{kind: :vitals, body: %DTO.Vitals{} = body} = delta),
+    do:
+      is_nil(delta.entity_id) and is_nil(delta.run_id) and is_nil(delta.attempt_id) and
+        delta.conversation_id in [nil, body.conversation_id]
+
   defp correlated_body?(%{kind: kind} = delta)
        when kind in [:counts_update, :connection, :snapshot_required],
        do:
@@ -281,6 +292,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Delta do
         :settings_update -> DTO.SettingsUpdate
         :settings_task -> DTO.SettingsTask
         :desktop_running -> DTO.DesktopPresence
+        :vitals -> DTO.Vitals
         :shell_upsert -> DTO.ShellItem
         _ -> nil
       end

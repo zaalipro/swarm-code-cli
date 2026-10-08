@@ -899,6 +899,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Script do
        when kind in [
               :toast,
               :rate_limit,
+              :vitals,
               :background_upsert,
               :background_remove,
               :workspace_metadata
