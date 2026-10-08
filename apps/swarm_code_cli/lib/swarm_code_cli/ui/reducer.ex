@@ -1868,8 +1868,12 @@ defmodule SwarmCodeCLI.UI.Reducer do
     transition(%{state | command_report: feedback}, {:open_layer, {:command_report, id}})
   end
 
-  defp show_feedback(state, :notice, feedback, _),
-    do: {%{state | notice: {:command_feedback, feedback.text}}, []}
+  # cli020 qa2 (U1): the answer to a Shift-Tab step's own /plan ("Plan mode
+  # enabled") keeps the step's words, like its project_update answer does.
+  defp show_feedback(state, :notice, feedback, id) do
+    words = cycle_answer_words(state, id, feedback.text || "") || feedback.text
+    {%{state | notice: {:command_feedback, words}}, []}
+  end
 
   defp show_feedback(state, _, _, _), do: {state, []}
 

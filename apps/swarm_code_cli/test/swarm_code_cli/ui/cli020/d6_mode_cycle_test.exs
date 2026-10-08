@@ -170,6 +170,52 @@ defmodule SwarmCodeCLI.UI.Cli020.D6ModeCycleTest do
       assert state.notice == {:command_feedback, @auto_words <> " · this project is now trusted"}
     end
 
+    @plan_words "Plan · read-only tools, a plan first · Shift-Tab: Ask"
+    @ask_words "Ask · writes and commands ask first · Shift-Tab: Auto (this project)"
+
+    # cli020 qa2: the Plan step's /plan is a slash command; its answer
+    # ("Plan mode enabled") replaced the step's words on the release.
+    test "the /plan answer keeps the Plan step's words" do
+      {state, effects} = shift_tab(at(:auto))
+      [request] = requests(effects)
+      assert state.notice == {:command_feedback, @plan_words}
+
+      {state, _} =
+        outcome(state, request, :accepted, [],
+          feedback: %DTO.Feedback{kind: :notice, title: "Plan", text: "Plan mode enabled"}
+        )
+
+      assert state.notice == {:command_feedback, @plan_words}
+    end
+
+    test "the /plan answer of the Plan → Ask step keeps the Ask words" do
+      {state, effects} = shift_tab(at(:auto, :plan))
+      [plan, update] = requests(effects)
+
+      {state, _} =
+        outcome(state, update, :accepted, [], feedback: feedback("Approval mode: read-only"))
+
+      {state, _} =
+        outcome(state, plan, :accepted, [],
+          feedback: %DTO.Feedback{kind: :notice, title: "Plan", text: "Plan mode disabled"}
+        )
+
+      assert state.notice == {:command_feedback, @ask_words}
+    end
+
+    test "a /plan answer after the step's window says the service's words" do
+      {state, effects} = shift_tab(at(:auto))
+      [request] = requests(effects)
+      state = %{state | now: state.cycle_notice.at + 6_000}
+
+      {state, _} =
+        outcome(state, request, :accepted, [],
+          feedback: %DTO.Feedback{kind: :notice, title: "Plan", text: "Plan mode enabled"}
+        )
+
+      assert state.notice == {:command_feedback, "Plan mode enabled"}
+    end
+
     test "a mode changed some other way afterwards is said as itself" do
       {state, effects} = shift_tab(at(:read_only))
       [request] = requests(effects)
