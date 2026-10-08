@@ -462,7 +462,7 @@ defmodule SwarmCodeCLI.UI.Keymap.Bindings do
       contexts: [:main, :inspector],
       group: :navigate,
       label: "Back",
-      help: "Go back to where you came from",
+      help: "Go back to where you came from (Alt-← also from an empty composer)",
       hint: 2
     },
     %Binding{

@@ -14,6 +14,7 @@ defmodule SwarmCodeCLI.UI.Reducer.QueueCommands do
   """
 
   alias SwarmCodeCLI.UI.Reducer.Remote
+  alias SwarmCodeCLI.UI.State
 
   @confirm_ms 5_000
 
@@ -105,17 +106,92 @@ defmodule SwarmCodeCLI.UI.Reducer.QueueCommands do
   def move(state, _delta), do: {state, []}
 
   @doc "`d` on a row: drops that message (numbered from 1)."
-  def drop_selected(%{layers: [{:queue_list} | _]} = state),
-    do: edit(state, {:drop, Map.get(state.selection, "queue_list", 0) + 1})
+  def drop_selected(%{layers: [{:queue_list} | _]} = state) do
+    last = max(length(queued(state)) - 1, 0)
+    edit(state, {:drop, min(Map.get(state.selection, "queue_list", 0), last) + 1})
+  end
 
   def drop_selected(state), do: {state, []}
 
-  @doc "The answer of a queue edit."
+  # A queued text arrives from the daemon cut at 2 KB; one that long may be
+  # cut, and bringing back half a prompt would lose the rest.
+  @whole_bytes 2_000
+
+  @doc """
+  Enter on a row (fix round U5): the message moves into the composer for
+  editing. The daemon removes it from the queue (`queue.edit`, the same op as
+  `d`); the text is put in the draft when that is accepted (`answered/3`).
+  """
+  def take_selected(%{layers: [{:queue_list} | _]} = state) do
+    texts = queued(state)
+    at = min(Map.get(state.selection, "queue_list", 0), max(length(texts) - 1, 0))
+
+    case Enum.at(texts, at) do
+      text when is_binary(text) and byte_size(text) >= @whole_bytes ->
+        {%{
+           state
+           | notice:
+               {:command_feedback,
+                "That message is too long to edit here: d drops it, or let it run."}
+         }, []}
+
+      text when is_binary(text) ->
+        before = Map.keys(state.requests)
+        {next, effects} = edit(state, {:drop, at + 1})
+
+        case Map.keys(next.requests) -- before do
+          [id] -> {%{next | queue_take: %{id: id, text: text}}, effects}
+          _ -> {next, effects}
+        end
+
+      _ ->
+        {state, []}
+    end
+  end
+
+  def take_selected(state), do: {state, []}
+
+  @doc "A queue edit the daemon refused: a pending take is over."
+  def refused(%{queue_take: %{id: id}} = state, %{request_id: id}), do: %{state | queue_take: nil}
+  def refused(state, _request), do: state
+
+  @doc "The answer of a queue edit: `{state, effects}`."
+  def answered(state, %{request_id: id, kind: {:queue_edit, _, _, {:drop, n}}}) do
+    case state.queue_take do
+      %{id: ^id, text: text} -> brought_back(%{state | queue_take: nil}, n, text)
+      _ -> answered(state, {:queue_edit, nil, nil, {:drop, n}})
+    end
+  end
+
+  def answered(state, %{kind: kind}), do: answered(state, kind)
+
   def answered(state, {:queue_edit, _, _, :clear}),
-    do: %{state | notice: {:command_feedback, "Queue cleared."}}
+    do: {%{state | notice: {:command_feedback, "Queue cleared."}}, []}
 
   def answered(state, {:queue_edit, _, _, {:drop, n}}),
-    do: %{state | notice: {:command_feedback, "Dropped message #{n} from the queue."}}
+    do: {%{state | notice: {:command_feedback, "Dropped message #{n} from the queue."}}, []}
+
+  # The text goes into the draft (one undoable replacement, Ctrl-Z gives the
+  # earlier draft back); a draft already typed keeps its place and the text
+  # follows on a new line.
+  defp brought_back(state, n, text) do
+    state = %{state | layers: Enum.reject(state.layers, &match?({:queue_list}, &1))}
+
+    case State.current_draft_key(state) do
+      nil ->
+        {%{state | notice: {:command_feedback, "Message #{n} left the queue."}}, []}
+
+      key ->
+        draft = SwarmCodeCLI.UI.Keymap.draft_text(state)
+        joined = if String.trim(draft) == "", do: text, else: draft <> "\n" <> text
+        {state, effects} = SwarmCodeCLI.UI.Reducer.replace_text(state, key, joined)
+
+        {%{
+           state
+           | notice: {:command_feedback, "Message #{n} is in the composer · Enter sends it again"}
+         }, effects}
+    end
+  end
 
   @doc """
   Bare `/delete`: `{:send, state}` when this is the confirming second one,

@@ -113,6 +113,7 @@ defmodule SwarmCodeCLI.UI.Action do
           | {:effort_move, -1 | 1}
           | {:queue_move, -1 | 1}
           | {:queue_drop}
+          | {:queue_take}
           | :history_search
           | {:history_move, -1 | 1}
           | {:history_pick}
@@ -291,6 +292,7 @@ defmodule SwarmCodeCLI.UI.Action do
   # cli020 D20: the queue list.
   def validate({:queue_move, delta} = action), do: valid_action(action, delta in [-1, 1])
   def validate({:queue_drop} = action), do: {:ok, action}
+  def validate({:queue_take} = action), do: {:ok, action}
 
   # cli020 D19: history search and the draft stash.
   def validate(:history_search), do: {:ok, :history_search}

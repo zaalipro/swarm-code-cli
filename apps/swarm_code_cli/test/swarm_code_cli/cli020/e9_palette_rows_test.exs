@@ -81,9 +81,23 @@ defmodule SwarmCodeCLI.Cli020.E9PaletteRowsTest do
     assert screen_text(state) =~ "Search results: router"
   end
 
-  test "the failure hint names r and the palette row" do
-    hint = SwarmCodeCLI.UI.Projector.Workspace.Turns.next_step_text(%{error_kind: "network"}, %{})
-    assert hint == "connection dropped · r retries · Ctrl-P Retry failed run"
+  test "the failure hint names the key that works where the focus is (fix round U2)" do
+    turns = SwarmCodeCLI.UI.Projector.Workspace.Turns
+
+    # In the composer `r` types an `r`: only the palette row is named.
+    assert turns.next_step_text(%{error_kind: "network"}, %{focus: "composer"}) ==
+             "connection dropped · Ctrl-P → Retry failed run"
+
+    assert turns.next_step_text(%{error_kind: "network"}, %{}) ==
+             "connection dropped · Ctrl-P → Retry failed run"
+
+    # ASCII terminals get an ASCII arrow.
+    assert turns.next_step_text(%{error_kind: "network"}, %{capabilities: %{ascii?: true}}) ==
+             "connection dropped · Ctrl-P -> Retry failed run"
+
+    # In select mode (focus "main") `r` retries the selected run.
+    assert turns.next_step_text(%{error_kind: "network"}, %{focus: "main"}) ==
+             "connection dropped · r retries · Ctrl-P Retry failed run"
 
     refute SwarmCodeCLI.UI.Projector.Workspace.Turns.next_step_text(%{}, %{}) =~
              "from the palette"

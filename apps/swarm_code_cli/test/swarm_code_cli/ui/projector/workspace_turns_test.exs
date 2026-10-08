@@ -462,7 +462,7 @@ defmodule SwarmCodeCLI.UI.Projector.WorkspaceTurnsTest do
 
     at = index_of(rows, "    ✕ Failed")
     hint = rows |> Enum.drop(at + 1) |> Enum.take(3) |> Enum.map_join(" ", &String.trim/1)
-    assert hint =~ "r retries · Ctrl-P Retry failed run · /model to switch model"
+    assert hint =~ "Ctrl-P → Retry failed run · /model to switch model"
   end
 
   test "a failed run ends in an error card that says what to do next" do
@@ -476,7 +476,7 @@ defmodule SwarmCodeCLI.UI.Projector.WorkspaceTurnsTest do
     assert Enum.at(rows, at) == "    ✕ Failed · mix test failed"
 
     assert Enum.at(rows, at + 1) ==
-             "      r retries · Ctrl-P Retry failed run · /model to switch model"
+             "      Ctrl-P → Retry failed run · /model to switch model"
 
     assert Enum.at(rows, at - 1) == ""
 

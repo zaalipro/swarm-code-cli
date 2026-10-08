@@ -516,7 +516,8 @@ defmodule SwarmCodeCLI.UI.Paint.ProjectorTest do
                (status == :interrupted)
 
       # A failed run says so, and says what to do next.
-      assert pixels =~ "r retries · Ctrl-P Retry failed run" == (status == :failed)
+      assert pixels =~ "Ctrl-P → Retry failed run" == (status == :failed)
+      refute pixels =~ "r retries"
     end
   end
 

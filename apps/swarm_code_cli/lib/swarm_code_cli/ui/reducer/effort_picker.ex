@@ -25,6 +25,20 @@ defmodule SwarmCodeCLI.UI.Reducer.EffortPicker do
     end
   end
 
+  @doc """
+  The rows the picker draws: the daemon's levels, with a leading `default`
+  row while no effort is set (fix round U4), so the tick and the cursor have
+  a row to sit on. Choosing it changes nothing (the model's own default is
+  already in use) and closes the picker.
+  """
+  @spec rows(map(), :chat | :swarm) :: [binary()]
+  def rows(state, target) do
+    case levels(state, target) do
+      [] -> []
+      levels -> if is_nil(current(state, target)), do: ["default" | levels], else: levels
+    end
+  end
+
   @doc "The current level for `target` (nil = the default)."
   def current(state, target) do
     field = if target == :chat, do: :effort, else: :swarm_effort
@@ -37,13 +51,13 @@ defmodule SwarmCodeCLI.UI.Reducer.EffortPicker do
 
   @doc "The row under the cursor."
   def selected(state, target) do
-    rows = levels(state, target)
+    rows = rows(state, target)
     Enum.at(rows, min(Map.get(state.selection, "effort_picker", 0), max(length(rows) - 1, 0)))
   end
 
   @doc "Opens the picker on the current level."
   def open(state, target) do
-    rows = levels(state, target)
+    rows = rows(state, target)
     layer = {:effort_picker, target}
 
     cond do
@@ -57,7 +71,7 @@ defmodule SwarmCodeCLI.UI.Reducer.EffortPicker do
          }, []}
 
       true ->
-        at = Enum.find_index(rows, &(&1 == current(state, target))) || 0
+        at = Enum.find_index(rows, &(&1 == (current(state, target) || "default"))) || 0
 
         {%{
            state
@@ -69,7 +83,7 @@ defmodule SwarmCodeCLI.UI.Reducer.EffortPicker do
 
   @doc "↑/↓."
   def move(%{layers: [{:effort_picker, target} | _]} = state, delta) do
-    last = max(length(levels(state, target)) - 1, 0)
+    last = max(length(rows(state, target)) - 1, 0)
     at = min(max(Map.get(state.selection, "effort_picker", 0) + delta, 0), last)
     {%{state | selection: Map.put(state.selection, "effort_picker", at)}, []}
   end

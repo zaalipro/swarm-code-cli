@@ -95,4 +95,90 @@ defmodule SwarmCodeCLI.UI.Cli020.D6ModeCycleTest do
 
     assert state.notice == {:command_feedback, "Trust the project first: /trust"}
   end
+
+  describe "fix round U1: one notice carries the mode and the scope" do
+    alias SwarmCodeCLI.UI.DataSource.{DTO, Delivery, Delta}
+    alias SwarmCodeCLI.UI.Reducer
+
+    defp feedback(text),
+      do: %DTO.Feedback{kind: :notice, title: "Project", text: text}
+
+    @auto_words "Auto · edits and safe commands run · Shift-Tab: Plan (this project)"
+
+    defp metadata(state, mode, revision) do
+      watch = state.watches.workspace
+
+      Reducer.update(
+        state,
+        {:data,
+         %Delivery{
+           kind: :delta,
+           watch_ref: watch.watch_ref,
+           request_id: nil,
+           scope: watch.scope,
+           generation: watch.generation,
+           revision: revision,
+           sequence: watch.sequence + 1,
+           body: %Delta{
+             kind: :workspace_metadata,
+             conversation_id: "c",
+             body: struct(DTO.WorkspaceMetadata, conversation_id: "c", approval_mode: mode),
+             revision: revision,
+             sequence: watch.sequence + 1
+           }
+         }}
+      )
+    end
+
+    test "the mode change arriving before the answer keeps the cycle's words" do
+      {state, effects} = shift_tab(at(:read_only))
+      [request] = requests(effects)
+
+      {state, _} = metadata(state, :auto, 5)
+      assert state.notice == {:command_feedback, @auto_words}
+      # The change is still said in the transcript.
+      assert [%{from: :read_only, to: :auto}] = state.policy_notices
+
+      {state, _} =
+        outcome(state, request, :accepted, [], feedback: feedback("Approval mode: auto"))
+
+      assert state.notice == {:command_feedback, @auto_words}
+    end
+
+    test "the answer arriving before the mode change keeps the cycle's words too" do
+      {state, effects} = shift_tab(at(:read_only))
+      [request] = requests(effects)
+
+      {state, _} =
+        outcome(state, request, :accepted, [], feedback: feedback("Approval mode: auto"))
+
+      assert state.notice == {:command_feedback, @auto_words}
+      {state, _} = metadata(state, :auto, 5)
+      assert state.notice == {:command_feedback, @auto_words}
+    end
+
+    test "a trust the step caused is said in the same notice" do
+      {state, effects} = shift_tab(at(:read_only))
+      [request] = requests(effects)
+      {state, _} = metadata(state, :auto, 5)
+
+      {state, _} =
+        outcome(state, request, :accepted, [],
+          feedback: feedback("Approvals: read-only → auto · this project is now trusted")
+        )
+
+      assert state.notice == {:command_feedback, @auto_words <> " · this project is now trusted"}
+    end
+
+    test "a mode changed some other way afterwards is said as itself" do
+      {state, effects} = shift_tab(at(:read_only))
+      [request] = requests(effects)
+      {state, _} = metadata(state, :auto, 5)
+      {state, _} = outcome(state, request, :accepted, [])
+      {state, _} = metadata(state, :full_access, 6)
+
+      assert state.notice ==
+               {:command_feedback, "Approvals: auto → full access · nothing asks first"}
+    end
+  end
 end
