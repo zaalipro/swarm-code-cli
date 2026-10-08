@@ -25,6 +25,8 @@ defmodule SwarmCode.Daemon.Service.SessionConfigurationTest do
     on_exit(fn ->
       Cache.clear()
       SessionConfiguration.clear_override()
+      # cli022 F4: @swarm_env's SWARM_EFFORT is the session's chat effort.
+      SessionConfiguration.clear_env_effort()
     end)
 
     root = Path.join(Path.dirname(path), "project")

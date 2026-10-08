@@ -22,7 +22,11 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.WorkspaceMetadata do
       desktop_running: false,
       queued_count: 0,
       queue_paused: false,
-      queue_revision: nil
+      queue_revision: nil,
+      effort_effective: nil,
+      effort_source: nil,
+      swarm_effort_effective: nil,
+      swarm_effort_source: nil
     ],
     fields: [
       conversation_id: :id,
@@ -65,7 +69,15 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.WorkspaceMetadata do
       # cli020 C1: the queue count (0.2.0 name), whether a user stop paused it, and the revision queue.edit compares (16 hex).
       queued_count: :count,
       queue_paused: :boolean,
-      queue_revision: {:optional, {:text, 16}}
+      queue_revision: {:optional, {:text, 16}},
+      # cli022 F4: the level each slot really uses (`effort`/`swarm_effort`
+      # are the conversation's own, nil while it follows a default) and where
+      # it came from: the conversation, this session's NCODE_EFFORT (chat
+      # only) or Settings' default.
+      effort_effective: {:optional, {:text, 32}},
+      effort_source: {:optional, {:enum, [:conversation, :env, :default]}},
+      swarm_effort_effective: {:optional, {:text, 32}},
+      swarm_effort_source: {:optional, {:enum, [:conversation, :env, :default]}}
     ],
     defaults: [
       conversation_id: nil,
@@ -94,6 +106,10 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.WorkspaceMetadata do
       desktop_running: false,
       queued_count: 0,
       queue_paused: false,
-      queue_revision: nil
+      queue_revision: nil,
+      effort_effective: nil,
+      effort_source: nil,
+      swarm_effort_effective: nil,
+      swarm_effort_source: nil
     ]
 end

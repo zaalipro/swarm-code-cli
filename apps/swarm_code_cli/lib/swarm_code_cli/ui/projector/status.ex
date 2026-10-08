@@ -172,8 +172,11 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
     chat_model = workspace && Map.get(workspace, :chat_model)
     swarm_model = workspace && Map.get(workspace, :swarm_model)
 
-    # cli020 E4 (ux-live-14): the chat effort beside its model.
-    effort = workspace && Map.get(workspace, :effort)
+    # cli020 E4 (ux-live-14): the chat effort beside its model. cli022 F4: the
+    # level the next turn really uses (the conversation's, else NCODE_EFFORT,
+    # else Settings' default); the stored value only from an older daemon.
+    effort =
+      workspace && (Map.get(workspace, :effort_effective) || Map.get(workspace, :effort))
 
     model =
       if is_binary(chat_model) and chat_model != "",

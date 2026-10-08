@@ -80,7 +80,11 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
       :desktop_running,
       :queued_count,
       :queue_paused,
-      :queue_revision
+      :queue_revision,
+      :effort_effective,
+      :effort_source,
+      :swarm_effort_effective,
+      :swarm_effort_source
     ],
     DTO.WorkspaceMetadata => [
       :project,
@@ -103,7 +107,11 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
       :desktop_running,
       :queued_count,
       :queue_paused,
-      :queue_revision
+      :queue_revision,
+      :effort_effective,
+      :effort_source,
+      :swarm_effort_effective,
+      :swarm_effort_source
     ],
     DTO.ShellSnapshot => [:rate_limits, :vitals],
     # cli020 C8/C9/C18: structured command answers.

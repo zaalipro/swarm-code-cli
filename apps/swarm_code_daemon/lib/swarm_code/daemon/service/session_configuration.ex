@@ -15,12 +15,19 @@ defmodule SwarmCode.Daemon.Service.SessionConfiguration do
     names an endpoint and a model, one provider row is created from them (or a
     matching row without a key gets the key), the session uses it, and the
     session carries a `:notice` saying so.
+
+  cli022 F4: `NCODE_EFFORT` (`SWARM_EFFORT`) is this session's chat effort
+  while the conversation stores none, in memory only, like the `--model`
+  override: `overlay/1` puts it on the conversation a turn starts from and the
+  workspace names it as the source (`effective_effort/2`). The conversation's
+  own value (`/effort`) wins; the worker slot keeps Settings' worker default.
   """
   alias SwarmCode.Daemon.Runtime.Configuration
   alias SwarmCode.Domain.{Providers, Settings}
 
   @override_key :session_model_override
   @notice_key :session_provider_notice
+  @effort_key :session_effort_env
   @first_run_keys ~w(SWARM_MODEL SWARM_BASE_URL OPENAI_MODEL ANTHROPIC_MODEL
                      OPENAI_API_KEY ANTHROPIC_API_KEY)
 
@@ -40,6 +47,7 @@ defmodule SwarmCode.Daemon.Service.SessionConfiguration do
   def prepare(%{conversation: conversation, project: project} = session, env) when is_map(env) do
     clear_override()
     Application.delete_env(:swarm_code_daemon, @notice_key)
+    put_env_effort(env)
 
     result =
       case blank_to_nil(env["SWARM_MODEL_OVERRIDE"]) do
@@ -62,7 +70,80 @@ defmodule SwarmCode.Daemon.Service.SessionConfiguration do
   it through here; nothing is written.
   """
   @spec overlay(struct() | map()) :: struct() | map()
-  def overlay(%{} = conversation), do: overlay(conversation, override())
+  def overlay(%{} = conversation),
+    do: conversation |> overlay(override()) |> overlay_effort(env_effort())
+
+  # cli022 F4: the session's NCODE_EFFORT fills only an unset chat effort.
+  defp overlay_effort(%{effort: nil} = conversation, %{value: value}),
+    do: %{conversation | effort: value}
+
+  defp overlay_effort(conversation, _env_effort), do: conversation
+
+  @doc """
+  cli022 F4: the level a slot of `conversation` (as stored, not overlaid) runs
+  at and where it comes from: `{level, :conversation | :env | :default}`. The
+  chain is the engine's (`RunServer`'s `effective_effort`, `Providers`'
+  `role_effort`): the conversation's value, else (chat only) this session's
+  `NCODE_EFFORT`, else Settings' default, else `"medium"`.
+  """
+  @spec effective_effort(map(), :chat | :swarm) :: {String.t(), :conversation | :env | :default}
+  def effective_effort(%{} = conversation, slot) when slot in [:chat, :swarm] do
+    {own, default} =
+      case slot do
+        :chat -> {Map.get(conversation, :effort), :default_effort}
+        :swarm -> {Map.get(conversation, :swarm_effort), :default_swarm_effort}
+      end
+
+    env = if slot == :chat, do: env_effort()
+
+    cond do
+      present?(own) ->
+        {own, :conversation}
+
+      env ->
+        {env.value, :env}
+
+      true ->
+        settings = Settings.get_cached()
+        value = Map.get(settings, default)
+        {if(present?(value), do: value, else: "medium"), :default}
+    end
+  end
+
+  defp present?(value), do: is_binary(value) and value != ""
+
+  @doc """
+  cli022 F4: this session's `NCODE_EFFORT`/`SWARM_EFFORT` (`%{value:, name:}`,
+  the name the user set), or nil when unset, blank or not an effort key.
+  """
+  @spec env_effort() :: %{value: String.t(), name: String.t()} | nil
+  def env_effort, do: Application.get_env(:swarm_code_daemon, @effort_key)
+
+  @doc "Forgets the session's `NCODE_EFFORT` (tests; `prepare/2` sets it again)."
+  @spec clear_env_effort() :: :ok
+  def clear_env_effort do
+    Application.delete_env(:swarm_code_daemon, @effort_key)
+    :ok
+  end
+
+  defp put_env_effort(env) do
+    Application.delete_env(:swarm_code_daemon, @effort_key)
+    # The launcher copies NCODE_EFFORT over SWARM_EFFORT; the name shown is the
+    # one the user exported.
+    {value, name} =
+      case blank_to_nil(env["NCODE_EFFORT"]) do
+        nil -> {blank_to_nil(env["SWARM_EFFORT"]), "SWARM_EFFORT"}
+        value -> {value, "NCODE_EFFORT"}
+      end
+
+    # `$` also matches before a final newline, so line breaks are refused here.
+    if is_binary(value) and String.valid?(value) and not String.contains?(value, ["\r", "\n"]) and
+         Regex.match?(SwarmCode.Domain.LLM.Efforts.key_format(), value) do
+      Application.put_env(:swarm_code_daemon, @effort_key, %{value: value, name: name})
+    end
+
+    :ok
+  end
 
   @doc """
   `overlay/1` for a given override (the settings values read it from their

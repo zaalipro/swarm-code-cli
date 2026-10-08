@@ -35,7 +35,11 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.WorkspaceSnapshot do
       desktop_running: false,
       queued_count: 0,
       queue_paused: false,
-      queue_revision: nil
+      queue_revision: nil,
+      effort_effective: nil,
+      effort_source: nil,
+      swarm_effort_effective: nil,
+      swarm_effort_source: nil
     ],
     fields: [
       project: {:optional, {:text, 200}},
@@ -81,6 +85,14 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.WorkspaceSnapshot do
       queued_count: :count,
       queue_paused: :boolean,
       queue_revision: {:optional, {:text, 16}},
+      # cli022 F4: the level each slot really uses (`effort`/`swarm_effort`
+      # are the conversation's own, nil while it follows a default) and where
+      # it came from: the conversation, this session's NCODE_EFFORT (chat
+      # only) or Settings' default.
+      effort_effective: {:optional, {:text, 32}},
+      effort_source: {:optional, {:enum, [:conversation, :env, :default]}},
+      swarm_effort_effective: {:optional, {:text, 32}},
+      swarm_effort_source: {:optional, {:enum, [:conversation, :env, :default]}},
       allowed_actions: :actions,
       revision: :revision,
       seen_revision: :revision,
@@ -131,6 +143,10 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.WorkspaceSnapshot do
       queued_count: 0,
       queue_paused: false,
       queue_revision: nil,
+      effort_effective: nil,
+      effort_source: nil,
+      swarm_effort_effective: nil,
+      swarm_effort_source: nil,
       allowed_actions: [],
       revision: 0,
       seen_revision: 0,
