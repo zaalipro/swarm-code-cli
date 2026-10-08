@@ -428,7 +428,7 @@
     {
       "classification": "source",
       "destination": "apps/swarm_code_daemon/lib/swarm_code/domain/llm/http.ex",
-      "sha256": "7b783e9a48fe9d1ea4344e7eac2056d1fe76a534b0c51176771422b236a71cb8",
+      "sha256": "f3647d60074e37f88cd270001e1df915dc3655e6cc2f9236516055b6def3ebaf",
       "upstream_commit": "7b8f379f5ed5976a191c08708af824d10b919633",
       "upstream_path": "lib/swarm_code/llm/http.ex",
       "upstream_sha256": "85bab2ee4c0c8413d3cb2c659808f155ad252017c6a656f8216016ee5118f741"
@@ -1612,7 +1612,7 @@
     {
       "classification": "source",
       "destination": "apps/swarm_code_daemon/lib/swarm_code/daemon/service/command_dispatcher.ex",
-      "sha256": "c56fcdb3625db8a9d57b933f63f058c24f3f3ebbf964a215a562751e52710dd5",
+      "sha256": "0e1d327350f8d0daa74a6d340d88ca46bb06d44088d9f284c33a5e35fd809dfd",
       "upstream_commit": "fb1b4ff82354ac8ff2e82d4f6516121fd55ff212",
       "upstream_path": "lib/swarm_code_web/live/workspace_live.ex",
       "upstream_sha256": "5b081d749d362ab34b1838acede8e593d64aa83c42f93a5865f7d4d2483dd4b9"

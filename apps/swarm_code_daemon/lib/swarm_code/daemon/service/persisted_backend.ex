@@ -52,6 +52,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   alias SwarmCode.Daemon.Service.Settings.Tasks, as: SettingsTasks
 
   alias SwarmCode.Daemon.Service.{
+    ApprovalPick,
     ClipboardInbox,
     CommandDispatcher,
     ShellEscape,
@@ -1076,9 +1077,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   defp execute(%{operation: :project_update, params: params}, _scope, id, state) do
     project = Projects.get!(state.opts[:project_id])
 
-    with {:ok, project} <- trust_project(project, params["trusted"]),
-         {:ok, project} <- set_mode(project, params["approval_mode"]) do
-      text = project_notice(project, params)
+    with {:ok, project, picked} <- pick_or_trust(project, params) do
+      text = picked || project_notice(project, params)
       state = refresh(state)
       state = toast(state, "success", "Project", text, nil)
 
@@ -1728,7 +1728,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   defp pop_and_start(state, conversation_id) do
     case Conversations.pop_queued(conversation_id) do
       {:ok, text, conversation} ->
-        case start_queued(conversation, text) do
+        case start_queued(conversation, text, approval_opts(state)) do
           {:ok, _} ->
             drain_queue(refresh(%{state | queue_retries: 0}))
 
@@ -1773,7 +1773,11 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         conversation = Conversations.get!(state.opts[:conversation_id])
 
         settle_send(
-          Engine.start_swarm(SessionConfiguration.overlay(conversation), row.prompt || ""),
+          Engine.start_swarm(
+            SessionConfiguration.overlay(conversation),
+            row.prompt || "",
+            approval_opts(state)
+          ),
           id,
           row.prompt || "",
           state
@@ -1865,12 +1869,18 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   defp resume_pause(state),
     do: %{state | queue_paused: MapSet.delete(state.queue_paused, state.opts[:conversation_id])}
 
-  defp start_queued(conversation, text) do
+  # cli020 fix S1: a queued item starts with the session's `--approval` mode
+  # like a send does (`approval`: `approval_opts/1`, [] outside `ncode -p`).
+  defp start_queued(conversation, text, approval) do
     if command_name(text) != nil do
-      CommandDispatcher.dispatch(conversation.id, text, research_ids: [], attachments: [])
+      CommandDispatcher.dispatch(
+        conversation.id,
+        text,
+        [research_ids: [], attachments: []] ++ approval
+      )
     else
       # A prompt is never dropped: any failure puts it back to be retried.
-      case Engine.start_chat_turn(SessionConfiguration.overlay(conversation), text, []) do
+      case Engine.start_chat_turn(SessionConfiguration.overlay(conversation), text, [], approval) do
         {:ok, _} = ok -> ok
         {:error, _} -> {:error, :operation_failed}
       end
@@ -2019,9 +2029,19 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     end
   end
 
-  defp trust_project(project, true), do: Projects.trust(project)
+  # cli020 fix S3: `trusted: true` is `/trust`; a picked mode is the consent
+  # the desktop takes it for (`ApprovalPick`), and its notice says so.
+  defp pick_or_trust(project, %{"trusted" => true} = params) do
+    with {:ok, project} <- Projects.trust(project),
+         {:ok, project} <- set_mode(project, params["approval_mode"]),
+         do: {:ok, project, nil}
+  end
 
-  defp trust_project(project, _), do: {:ok, project}
+  defp pick_or_trust(project, %{"approval_mode" => mode})
+       when mode in ["read_only", "auto", "full_access"],
+       do: ApprovalPick.pick(project, mode)
+
+  defp pick_or_trust(project, _params), do: {:ok, project, nil}
 
   defp set_mode(project, mode) when mode in ["read_only", "auto", "full_access"],
     do: Projects.update(project, %{approval_mode: mode})

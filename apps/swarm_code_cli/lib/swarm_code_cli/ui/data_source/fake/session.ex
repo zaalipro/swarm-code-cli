@@ -329,16 +329,19 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Session do
     # Trusting a read-only project lifts it to `auto`, like `Projects.trust/1`.
     mode = mode || if(trusted == true and session.approval_mode == :read_only, do: :auto)
 
+    # cli020 fix S3, like the service (`ApprovalPick`): a mode picked by hand
+    # marks the project trusted, and the notice says so.
     next = %{
       session
       | approval_mode: mode || session.approval_mode,
-        trusted: trusted == true or session.trusted
+        trusted: trusted == true or session.trusted or mode != nil
     }
 
     text =
       case {mode, trusted} do
         {nil, true} -> "Project trusted; edits are allowed."
-        {mode, _} -> "Approval mode: " <> mode_label(mode)
+        {mode, _} when session.trusted -> "Approval mode: " <> mode_label(mode)
+        {mode, _} -> untrusted_pick_words(session.approval_mode, mode)
       end
 
     deltas =
@@ -350,6 +353,14 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Session do
     {:ok, %{script | session: next},
      deltas ++ [toast(request_id, :success, "Project", text, nil, nil)], [session.current]}
   end
+
+  defp untrusted_pick_words(mode, mode),
+    do: "Approvals: " <> mode_label(mode) <> " · this project is now trusted"
+
+  defp untrusted_pick_words(from, to),
+    do:
+      "Approvals: " <>
+        mode_label(from) <> " → " <> mode_label(to) <> " · this project is now trusted"
 
   @files ~w(README.md mix.exs lib/swarm_code/repo.ex lib/swarm_code/accounts/user.ex
              lib/swarm_code/accounts/session.ex test/swarm_code/repo_test.exs

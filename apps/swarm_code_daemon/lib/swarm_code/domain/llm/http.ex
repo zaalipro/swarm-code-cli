@@ -345,7 +345,7 @@ defmodule SwarmCode.Domain.LLM.HTTP do
           {:error, Error.classify(nil, reason, text), text}
 
         true ->
-          notify(on_retry, attempt + 1, reason, max_attempts)
+          notify(on_retry, attempt + 1, shown_reason(reason, message), max_attempts)
           sleep_fun().(planned)
 
           do_stream(
@@ -811,6 +811,13 @@ defmodule SwarmCode.Domain.LLM.HTTP do
     on_retry.(attempt, of, reason, Process.get(@got_chunk_key) == true)
     :ok
   end
+
+  # cli020 fix S2 (CLI provenance patch): the retry status line names the HTTP
+  # status when the provider answered with one (`retrying 2/5 · HTTP 500`), the
+  # reason word otherwise (`stream ended early`, `network`). `reason` still
+  # classifies the final error; only what the line shows changes.
+  defp shown_reason(_reason, "HTTP " <> _ = message), do: message
+  defp shown_reason(reason, _message), do: reason
 
   defp reason_for(429), do: "rate limit"
   defp reason_for(_status), do: "network"

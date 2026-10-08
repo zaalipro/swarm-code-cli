@@ -496,6 +496,42 @@ defmodule SwarmCode.Daemon.Schema.GateTest do
     assert Bitwise.band(File.lstat!(database).mode, 0o7777) == 0o644
   end
 
+  # cli020 fix S4: a database whose mode is not 0600 is refused with its own
+  # sentence and the one command that fixes it, checked before the schema
+  # sentence; the file is not changed.
+  test "a database file that is not mode 0600 is refused with chmod 600 and its path", %{
+    manifest: manifest
+  } do
+    database = SchemaFixture.database!(:current)
+    File.chmod!(database, 0o644)
+
+    assert {:error, error} = Gate.check(database, manifest, "0.1.0")
+    # The action names the physical path (macOS /var is /private/var).
+    assert %{error | action: ""} ==
+             %{SwarmCode.Daemon.Schema.Refusal.database_mode(database) | action: ""}
+
+    assert error.code == :schema_incompatible
+    assert error.action =~ ~r{\Arun: chmod 600 \S+/fixture\.db and then}i
+    assert Bitwise.band(File.lstat!(database).mode, 0o7777) == 0o644
+  end
+
+  test "a sidecar that is not mode 0600 names the sidecar's own path", %{manifest: manifest} do
+    database = SchemaFixture.database!(:current)
+    File.write!(database <> "-wal", "")
+    File.chmod!(database <> "-wal", 0o640)
+
+    assert {:error, error} = Gate.check(database, manifest, "0.1.0")
+    assert error.message == SwarmCode.Daemon.Schema.Refusal.database_mode("").message
+    assert error.action =~ ~r{chmod 600 \S+/fixture\.db-wal and then}
+  end
+
+  test "a database file with the wrong owner keeps the general refusal", %{manifest: manifest} do
+    database = SchemaFixture.database!(:current)
+
+    assert {:error, error} = Gate.check_bound(database, manifest, "0.1.0", uid: 0)
+    refute error.action =~ "chmod 600"
+  end
+
   test "post-probe replacement cannot produce a ready decision", %{manifest: manifest} do
     database = SchemaFixture.database!(:current)
     replacement = SchemaFixture.database!(:current)

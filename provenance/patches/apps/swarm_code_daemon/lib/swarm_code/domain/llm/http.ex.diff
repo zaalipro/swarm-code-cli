@@ -187,6 +187,15 @@
        )
  
      retry = fn reason, message, hint_ms, max_attempts ->
+@@ -279,7 +345,7 @@
+           {:error, Error.classify(nil, reason, text), text}
+ 
+         true ->
+-          notify(on_retry, attempt + 1, reason, max_attempts)
++          notify(on_retry, attempt + 1, shown_reason(reason, message), max_attempts)
+           sleep_fun().(planned)
+ 
+           do_stream(
 @@ -302,6 +368,10 @@
      with {:ok, %Req.Response{} = resp} <- result, do: capture_rate_limit(resp, provider_id)
  
@@ -372,7 +381,20 @@
    @pool_size 256
    @connect_timeout 15_000
    @max_pool_timeout 30_000
-@@ -611,16 +818,38 @@
+@@ -605,22 +812,51 @@
+     :ok
+   end
+ 
++  # cli020 fix S2 (CLI provenance patch): the retry status line names the HTTP
++  # status when the provider answered with one (`retrying 2/5 · HTTP 500`), the
++  # reason word otherwise (`stream ended early`, `network`). `reason` still
++  # classifies the final error; only what the line shows changes.
++  defp shown_reason(_reason, "HTTP " <> _ = message), do: message
++  defp shown_reason(reason, _message), do: reason
++
+   defp reason_for(429), do: "rate limit"
+   defp reason_for(_status), do: "network"
+ 
    @spec get_json(String.t(), [{String.t(), String.t()}], String.t()) ::
            {:ok, map()} | {:error, String.t()}
    def get_json(url, headers, name) do
@@ -418,7 +440,7 @@
        {:error, exception} ->
          {:error, "#{name} request failed: " <> Exception.message(exception)}
      end
-@@ -679,19 +908,30 @@
+@@ -679,19 +915,30 @@
      |> redact()
    end
  

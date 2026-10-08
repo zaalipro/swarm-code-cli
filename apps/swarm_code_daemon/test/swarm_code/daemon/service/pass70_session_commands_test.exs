@@ -129,8 +129,14 @@ defmodule SwarmCode.Daemon.Service.Pass70SessionCommandsTest do
 
     assert text =~ "Approval mode: auto" and text =~ "Trusted: no"
 
-    assert {:ok, %{"status" => "accepted", "feedback" => %{"text" => "Approval mode: read-only"}}} =
-             send_command(c, c.current.id, "/approval read-only")
+    # cli020 fix S3: a mode picked by hand trusts the project and says so.
+    assert {:ok,
+            %{
+              "status" => "accepted",
+              "feedback" => %{
+                "text" => "Approvals: auto → read-only · this project is now trusted"
+              }
+            }} = send_command(c, c.current.id, "/approval read-only")
 
     assert Projects.get(c.project.id).approval_mode == "read_only"
 
