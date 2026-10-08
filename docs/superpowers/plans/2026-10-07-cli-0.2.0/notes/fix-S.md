@@ -105,3 +105,17 @@ Every task has a test that failed first. Gates that ran are listed at the end.
   port started; harmless there, but it is the symptom lane R's brief describes when an app holds many
   pipes.
 - `ApprovalPick` is a new CLI-only file (not in the ledger).
+
+## Gates that ran (worktree `fix-S`, HEAD before this note's commit `671d54d0`)
+
+- `mix format` and `mix format --check-formatted`: clean.
+- `mix compile --warnings-as-errors`: clean.
+- `mix swarm_code.provenance.verify`: pass. `mix swarm_code.provenance.sync --check`: pass (after the
+  `llm/http.ex` patch was recorded and `command_dispatcher.ex` repinned).
+- Focused tests, one app per call: daemon 126 tests (gate, refusal, fix_s_approval, fix_s_retry_status,
+  pass70_conversation, pass70_session_commands, pass70_qa_queue, read_only_ask, command_dispatcher,
+  c020_dispatcher, retry_run, queue, c020_projection): 0 failures; cli 37 (persisted_session_release,
+  fix_s_fake_trust, pass70_fake, pass73_delivery): 0 failures; core drift test 5: 0 failures and
+  `apps/swarm_code_core/tmp` absent afterwards.
+- Not run: the full suite / `mix precommit` (finisher's, slot rule), `keymap --check` and
+  `settings --write` (no binding or registry touched), PTY suites, `check_terminal_port.sh`.
