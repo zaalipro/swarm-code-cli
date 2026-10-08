@@ -475,18 +475,34 @@ defmodule SwarmCodeCLI.UI.Projector.Vitals do
     end
   end
 
-  @doc "The compact form as one status fact's words and role, or nil."
-  @spec status_words(map()) :: {String.t(), atom()} | nil
-  def status_words(state) do
-    case compact(state) do
-      [] ->
-        nil
+  @doc """
+  cli021 qa: the compact form as separate status facts, `[{kind, words,
+  role}]` with kind `:live_speed`, `:speed` (the newest measure, nothing
+  streams) or `:ram`, so the status line can keep a live speed while the RAM
+  gives way (the whole form used to go at once, exactly while a model
+  streamed).
+  """
+  @spec status_parts(map()) :: [{:live_speed | :speed | :ram, String.t(), atom()}]
+  def status_parts(state) do
+    case read(state) do
+      nil ->
+        []
 
-      parts ->
-        role =
-          if Enum.any?(parts, &(elem(&1, 1) == :text_faint)), do: :text_faint, else: :text_muted
+      %{models: models, memory: memory} ->
+        speed =
+          case busiest(models) do
+            nil -> []
+            %{live?: true} = m -> [{:live_speed, tps_words(m.tps) <> " tok/s", :text_muted}]
+            m -> [{:speed, tps_words(m.tps) <> " tok/s", :text_faint}]
+          end
 
-        {Enum.map_join(parts, "", &elem(&1, 0)), role}
+        ram =
+          case memory do
+            %{total: n} -> [{:ram, "RAM " <> bytes_words(n), :text_muted}]
+            _ -> []
+          end
+
+        speed ++ ram
     end
   end
 

@@ -102,6 +102,32 @@ defmodule SwarmCodeCLI.Cli021.U2StatusLineTest do
       assert line =~ "deepseek-v4.1-flash"
     end
 
+    # cli021 qa (found live at 120x40, panel hidden): while a model streamed,
+    # the hints and the other facts left no room for the whole compact form,
+    # so the tok/s went away exactly while it moved. A live speed now holds
+    # its place before the worker, the cost and the RAM; RAM gives way first.
+    test "a live speed holds its place; RAM gives way first" do
+      state =
+        chat({120, 30})
+        |> put_workspace(
+          swarm_model: "gpt-6-mini",
+          context_used: 8_000,
+          context_window: 1_000_000,
+          cost_usd: 0.04
+        )
+        |> put_vitals()
+
+      line = status(state)
+      assert line =~ "142 tok/s"
+      refute line =~ "RAM"
+      assert line =~ ~r/ctx \S+ 8k\/1M/
+
+      # Idle, the stale speed gives way before the RAM.
+      idle = %{@vitals | models: [%{hd(@vitals.models) | live: false, history: [142], at: 9}]}
+      line = chat({100, 30}) |> put_workspace(context_used: 8_000) |> put_vitals(idle) |> status()
+      refute line =~ "tok/s"
+    end
+
     test "the item is listed, in the default, and can be left out" do
       entry = Enum.find(Registry.all(), &(&1.key == "terminal.status_items"))
       assert "vitals" in entry.default

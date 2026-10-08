@@ -193,11 +193,18 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
 
     # cli021 U1: the busiest model's tok/s and the RAM, while neither the
     # dock nor the strip draws them.
+    # cli021 qa: a live speed outranks the worker, the cost and the RAM (it
+    # used to go first, exactly while it moved); a stale one goes first.
     vitals =
-      case vitals? && SwarmCodeCLI.UI.Projector.Vitals.status_words(state) do
-        {words, role} -> {words, tint(:plain, state, role, [])}
-        _ -> nil
-      end
+      if vitals?,
+        do:
+          state
+          |> SwarmCodeCLI.UI.Projector.Vitals.status_parts()
+          |> Enum.map(fn {kind, words, role} ->
+            {Map.fetch!(%{live_speed: 45, speed: 8, ram: 10}, kind),
+             {words, tint(:plain, state, role, [])}}
+          end),
+        else: []
 
     context = context_words(state, run, workspace)
     cost = cost_words(state, workspace)
@@ -233,7 +240,7 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
       "ctx" => [{50, context}],
       "cost" => [{40, cost}],
       "waiting" => [{90, waiting}],
-      "vitals" => [{10, vitals}]
+      "vitals" => vitals
     }
 
     items =
