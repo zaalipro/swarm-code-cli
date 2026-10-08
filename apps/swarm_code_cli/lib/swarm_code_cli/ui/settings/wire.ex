@@ -19,6 +19,12 @@ defmodule SwarmCodeCLI.UI.Settings.Wire do
 
   @deadline_ms 15_000
   @page_size 100
+  # cli021 qa: the daemon runs at most four settings jobs per session
+  # (`Settings.Jobs.pool/0`) and refuses the fifth ("data source admission
+  # capacity exceeded"); a refused load is not asked again on that page, so
+  # Models & effort (seven loads) kept "…" rows. Three loads at a time leave
+  # one job for a write.
+  @max_loads 3
 
   @unavailable "This ncode service does not offer settings. Update the CLI and the daemon together."
 
@@ -45,8 +51,10 @@ defmodule SwarmCodeCLI.UI.Settings.Wire do
 
     loads = Enum.uniq(loads ++ editor_loads(layer) ++ search_loads(state))
 
+    # cli021 qa: at most @max_loads on their way; the rest are asked as the
+    # answers arrive (every answer syncs again).
     Enum.reduce(loads, {state, []}, fn load, {acc, effects} ->
-      if needed?(acc.settings, load) do
+      if loads_in_flight(acc.settings) < @max_loads and needed?(acc.settings, load) do
         {acc, more} = load(acc, load)
         {acc, effects ++ more}
       else
@@ -343,6 +351,10 @@ defmodule SwarmCodeCLI.UI.Settings.Wire do
   @spec failed(Layer.t(), term()) :: Layer.t()
   def failed(%Layer{} = layer, load),
     do: %{layer | requests: Map.put(layer.requests, {:failed, load}, Page.ref(Layer.page(layer)))}
+
+  defp loads_in_flight(%Layer{requests: requests}),
+    do:
+      Enum.count(requests, fn {_ref, meta} -> is_map(meta) and Map.get(meta, :kind) == :load end)
 
   defp in_flight?(%Layer{requests: requests}, load),
     do: Enum.any?(requests, fn {_ref, meta} -> is_map(meta) and Map.get(meta, :load) == load end)
