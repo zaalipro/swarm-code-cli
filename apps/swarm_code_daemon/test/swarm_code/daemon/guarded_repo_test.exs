@@ -27,7 +27,7 @@ defmodule SwarmCode.Daemon.GuardedRepoTest do
           &{&1, root}
         ),
       database_path: database,
-      app_version: "0.2.0",
+      app_version: "0.2.1",
       desktop_detector: fn -> :none end,
       directory_ensure: fn path, owner ->
         case File.mkdir(path) do

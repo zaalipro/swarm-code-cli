@@ -1509,7 +1509,7 @@ defmodule SwarmCode.Daemon.Backup.GateTest do
         newest_migration: 20_260_929_000_000,
         manifest_sha256: "f04a55a27d1fee6a3192c6ff277993d4ab5a8f6414896e2be87dc3a41f48b75f"
       },
-      app_version: "0.2.0"
+      app_version: "0.2.1"
     ]
 
     child =

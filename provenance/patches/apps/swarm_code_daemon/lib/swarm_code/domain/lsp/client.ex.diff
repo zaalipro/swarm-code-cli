@@ -8,7 +8,7 @@
          "processId" => System.pid() |> String.trim() |> String.to_integer(),
 -        "clientInfo" => %{"name" => "ncode", "version" => "0.2.2"}
 +        # cli021 K7 (CLI patch): the CLI introduces itself with its own version.
-+        "clientInfo" => %{"name" => "ncode", "version" => "0.2.0"}
++        "clientInfo" => %{"name" => "ncode", "version" => "0.2.1"}
        }
      }
  
