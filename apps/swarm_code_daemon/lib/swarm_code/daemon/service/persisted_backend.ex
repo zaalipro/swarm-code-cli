@@ -4842,6 +4842,12 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   defp workspace_mode(_), do: "build"
 
   defp workspace_metadata(conversation, state) do
+    # cli022 F4: the levels each slot runs at, from the stored row (the
+    # overlay below fills an unset chat effort from NCODE_EFFORT).
+    {effort, effort_source} = SessionConfiguration.effective_effort(conversation, :chat)
+    {swarm_effort, swarm_source} = SessionConfiguration.effective_effort(conversation, :swarm)
+    stored = conversation
+
     # The status line names the model this session runs (a `--model` override).
     conversation = SessionConfiguration.overlay(conversation)
     chat = SwarmCode.Domain.Providers.effective_model(conversation, :chat)
@@ -4853,8 +4859,14 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       "project" => project_name(conversation),
       "chat_model" => effective_model_name(conversation, :chat),
       "swarm_model" => effective_model_name(conversation, :swarm),
-      "effort" => conversation.effort,
-      "swarm_effort" => conversation.swarm_effort,
+      # The conversation's own values (nil: it follows a default) ...
+      "effort" => stored.effort,
+      "swarm_effort" => stored.swarm_effort,
+      # ... and cli022 F4: what each slot really uses, and where it came from.
+      "effort_effective" => effort,
+      "effort_source" => Atom.to_string(effort_source),
+      "swarm_effort_effective" => swarm_effort,
+      "swarm_effort_source" => Atom.to_string(swarm_source),
       "models" => model_options(),
       # pass70 C1/C2: the status line's facts.
       "approval_mode" => approval_mode(conversation),
