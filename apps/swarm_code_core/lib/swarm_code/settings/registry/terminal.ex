@@ -286,7 +286,8 @@ defmodule SwarmCode.Settings.Registry.Terminal do
     # cli020 E28 (competitors-20): the status line's items and their order.
     cli("terminal.status_items", :layout, "Status line",
       group: "status line",
-      description: "The facts the bottom line shows, in this order. Branch needs a Git project.",
+      description:
+        "The facts the bottom line shows, in this order. Branch needs a Git project; vitals (the busiest model's tok/s and RAM) show while the side panel does not.",
       storage: {:cli, "status_items"},
       type: :checklist,
       choices:
@@ -298,11 +299,21 @@ defmodule SwarmCode.Settings.Registry.Terminal do
           {"branch", "branch"},
           {"ctx", "context"},
           {"cost", "cost"},
-          {"waiting", "waiting"}
+          {"waiting", "waiting"},
+          {"vitals", "vitals"}
         ]),
-      default: ~w(mode approval model effort ctx cost waiting),
+      default: ~w(mode approval model effort ctx cost waiting vitals),
       applies: :at_once,
-      synonyms: ["status bar", "status line", "branch", "git branch"],
+      synonyms: [
+        "status bar",
+        "status line",
+        "branch",
+        "git branch",
+        "tokens per second",
+        "tok/s",
+        "ram",
+        "memory"
+      ],
       since: :c74,
       parity: "NEW"
     ),

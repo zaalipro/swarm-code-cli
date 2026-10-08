@@ -56,7 +56,18 @@ defmodule SwarmCodeCLI.UI.Projector.Panel.Glyph do
     report_off: {"▁", "▱", "-"},
     report_empty: {"▁", "▱", "x"},
     bang: {"!", "!", "!"},
-    agent_live: {"◒", "◒", "o"}
+    agent_live: {"◒", "◒", "o"},
+    # cli021 U1: the vitals' sparkline, lowest to highest. Block elements are
+    # ambiguous-width, so the measured tier draws braille (one cell under both
+    # policies); ASCII climbs `_ . - ~ = + * #`.
+    spark_1: {"▁", "⡀", "_"},
+    spark_2: {"▂", "⣀", "."},
+    spark_3: {"▃", "⣄", "-"},
+    spark_4: {"▄", "⣤", "~"},
+    spark_5: {"▅", "⣦", "="},
+    spark_6: {"▆", "⣶", "+"},
+    spark_7: {"▇", "⣷", "*"},
+    spark_8: {"█", "⣿", "#"}
   }
 
   @doc "Every token with its three forms, for the width tests and the gallery."
