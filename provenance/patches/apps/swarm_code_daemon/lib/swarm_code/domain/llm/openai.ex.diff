@@ -1,0 +1,49 @@
+# CLI-local change to lib/swarm_code/llm/openai.ex at 7b8f379, after the rewrite
+# rules of provenance/sync-rules.json. Recorded by mix swarm_code.provenance.sync.
+--- a/apps/swarm_code_daemon/lib/swarm_code/domain/llm/openai.ex
++++ b/apps/swarm_code_daemon/lib/swarm_code/domain/llm/openai.ex
+@@ -14,7 +14,11 @@
+   @generic_rejections ["unknown parameter", "unrecognized"]
+ 
+   @impl true
+-  def stream(%Request{} = r, on_event) do
++  # cli020 L2: one clock for the whole call, its re-attempts included.
++  def stream(%Request{} = r, on_event),
++    do: HTTP.with_call_clock(fn -> do_stream(r, on_event) end)
++
++  defp do_stream(%Request{} = r, on_event) do
+     on_event = on_event || fn _ -> :ok end
+ 
+     # pass74 (spec 74) BUGS-28: the level is read once, and the keys it put on
+@@ -241,7 +245,8 @@
+         # Spec 51 §6.10: this text becomes the op's `error` and the run's message.
+         # A gateway that echoes the Authorization header back does not have to
+         # have used an `sk-` shaped key for it to be a key.
+-        text = HTTP.redact(message, [key(r.provider)])
++        # cli020 L2: the exact key, however short.
++        text = HTTP.redact_key(message, [key(r.provider)])
+         {:error, kind || SwarmCode.Domain.LLM.Error.classify(nil, nil, text), text}
+     end
+   end
+@@ -622,9 +627,18 @@
+ 
+   defp handle_event(data, acc, on_event, name) do
+     case Jason.decode(data) do
+-      {:ok, %{"error" => error}} -> put_error(acc, error, name)
+-      {:ok, %{} = chunk} -> apply_chunk(chunk, acc, on_event)
+-      _other -> acc
++      {:ok, %{"error" => error}} ->
++        put_error(acc, error, name)
++
++      {:ok, %{} = chunk} ->
++        apply_chunk(chunk, acc, on_event)
++
++      # cli020 L2: an event that is not JSON fails the call instead of losing
++      # its content in silence (a blank `data:` carries none).
++      _other ->
++        if String.trim(data) == "",
++          do: acc,
++          else: put_error(acc, "invalid JSON in SSE event", name)
+     end
+   end
+ 

@@ -10,7 +10,11 @@ defmodule SwarmCode.Domain.LLM.Anthropic do
   @anthropic_version "2023-06-01"
 
   @impl true
-  def stream(%Request{} = r, on_event) do
+  # cli020 L2: one clock for the whole call, its re-attempts included.
+  def stream(%Request{} = r, on_event),
+    do: HTTP.with_call_clock(fn -> do_stream(r, on_event) end)
+
+  defp do_stream(%Request{} = r, on_event) do
     # pass74 (spec 74) BUGS-28: whether this request carried the cache markers
     # and the fallback beta is read before it goes out. Reading the live caps
     # when the 400 comes back meant a concurrent sibling that had already
@@ -186,7 +190,8 @@ defmodule SwarmCode.Domain.LLM.Anthropic do
   defp provider_id(%Request{provider: %{id: id}}) when is_binary(id), do: id
   defp provider_id(_request), do: nil
 
-  defp redact(message, %Request{} = r), do: HTTP.redact(message, [key(r.provider)])
+  # cli020 L2: the exact key, however short.
+  defp redact(message, %Request{} = r), do: HTTP.redact_key(message, [key(r.provider)])
 
   @doc """
   The sampling fields (spec 53b §1).
@@ -697,8 +702,17 @@ defmodule SwarmCode.Domain.LLM.Anthropic do
       {:ok, %{} = json} ->
         json["type"] |> apply_event(json, acc, on_event, name) |> count_progress(json["type"])
 
+      # cli020 L2: an event that is not JSON fails the call instead of losing
+      # its content in silence (a blank `data:` carries none; the first error
+      # stays the one reported).
       _other ->
-        acc
+        if String.trim(data) == "" or is_binary(acc.error),
+          do: acc,
+          else: %{
+            acc
+            | error: "#{name} invalid JSON in SSE event",
+              error_type: "invalid_response"
+          }
     end
   end
 

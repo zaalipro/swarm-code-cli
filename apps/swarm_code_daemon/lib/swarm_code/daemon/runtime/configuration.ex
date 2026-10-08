@@ -96,7 +96,7 @@ defmodule SwarmCode.Daemon.Runtime.Configuration do
 
   defp effort(value) when is_binary(value) do
     if String.valid?(value) and not String.contains?(value, ["\r", "\n"]) and
-         Regex.match?(SwarmCode.LLM.Efforts.key_format(), value),
+         Regex.match?(SwarmCode.Domain.LLM.Efforts.key_format(), value),
        do: {:ok, value},
        else: {:error, :invalid_effort}
   end

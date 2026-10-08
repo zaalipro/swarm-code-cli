@@ -6,10 +6,27 @@ defmodule SwarmCode.Daemon.Runtime.Run do
   provide production storage; presentation delivery is separately bounded.
   """
   use GenServer, restart: :temporary, shutdown: 10_000
-  alias SwarmCode.{LLM, Tools}
+  alias SwarmCode.Tools
   alias SwarmCode.Domain.Attachments
-  alias SwarmCode.LLM.{Chunks, Request, Result}
+  alias SwarmCode.Domain.LLM.{Chunks, Efforts, HTTP, Request, Result}
+  alias SwarmCode.Domain.Providers.Provider, as: SyncedProvider
   alias SwarmCode.Providers.Provider
+  # cli020 L1 (A5): the live runtime streams through the synced LLM stack
+  # (`SwarmCode.Domain.LLM`), which carries the spec 74 fixes. The live
+  # provider kinds and the adapter each one uses are fixed here: runtime input
+  # never selects a module, and an unsaved session needs no launcher-registered
+  # `:llm_providers`.
+  @adapters %{
+    "openai" => SwarmCode.Domain.LLM.OpenAI,
+    "anthropic" => SwarmCode.Domain.LLM.Anthropic
+  }
+  @synced_kinds %{"openai" => "openai_compatible", "anthropic" => "anthropic"}
+  # cli020 L1 (BUGS-49): the HTTP layer ends a call that makes no progress for
+  # `request_timeout_ms`, or at its hard cap (40 ms per `max_tokens` token from
+  # the call's start), so a long answer that keeps streaming is not cut. The
+  # model operation's own timer is only a backstop past the largest hard cap a
+  # body can ask for (128 K tokens, the streamable ceiling).
+  @answer_ceiling 128_000
   @terminal [:completed, :failed, :cancelled]
   @maximum_context 8 * 1_024 * 1_024
   @tool_result_bytes 65_000
@@ -454,8 +471,11 @@ defmodule SwarmCode.Daemon.Runtime.Run do
 
             launch_task(
               next,
-              next.request_timeout_ms + 1_000,
-              fn notify -> LLM.stream(request, fn event -> notify.(model_event(event)) end) end,
+              HTTP.hard_cap_ms(next.request_timeout_ms, %{"max_tokens" => @answer_ceiling}) +
+                5_000,
+              fn notify ->
+                stream(next.adapter, request, fn event -> notify.(model_event(event)) end)
+              end,
               %{type: :model_started, step: next.steps}
             )
           end
@@ -467,11 +487,17 @@ defmodule SwarmCode.Daemon.Runtime.Run do
     )
   end
 
+  # The synced providers answer `{:error, kind, message}`; the run's events and
+  # its canonical records keep the one-message shape they always had.
+  defp stream(adapter, request, on_event) do
+    case adapter.stream(request, on_event) do
+      {:error, kind, message} when is_atom(kind) -> {:error, message}
+      other -> other
+    end
+  end
+
   defp admit_tool(state, call) do
-    case if(Map.has_key?(call, :args_error),
-           do: {:error, call.args_error},
-           else: Tools.permission(call.name, call.args)
-         ) do
+    case admission(call) do
       {:error, reason} ->
         tool_result(state, nil, call, {:error, reason})
 
@@ -508,6 +534,18 @@ defmodule SwarmCode.Daemon.Runtime.Run do
         end
     end
   end
+
+  # cli020 L1 (BUGS-29): a call cut off at the output limit is not a JSON
+  # mistake (resending it whole is cut off again): it is reported, not run, and
+  # the model is told to split it. Any other undecodable call reports its reason.
+  defp admission(%{truncated: true, name: name, args_error: reason}),
+    do:
+      {:error,
+       "your call to #{name} was #{reason} — split the content: write the first part " <>
+         "with write_file, then add the rest with edit_file"}
+
+  defp admission(%{args_error: reason}), do: {:error, reason}
+  defp admission(call), do: Tools.permission(call.name, call.args)
 
   defp launch_tool(state, call) do
     op = new_operation(:tool, call)
@@ -703,7 +741,9 @@ defmodule SwarmCode.Daemon.Runtime.Run do
           result.stop_reason == "refusal" ->
             finish(next, :failed, :provider_refusal)
 
-          result.stop_reason == "max_tokens" ->
+          # cli020 L1 (BUGS-29): a turn cut off with tool calls goes on to them
+          # (a call cut off mid-arguments is reported by `admission/1`).
+          result.stop_reason == "max_tokens" and result.tool_calls == [] ->
             finish(next, :failed, :response_limit)
 
           not valid_calls?(result.tool_calls) ->
@@ -1023,8 +1063,7 @@ defmodule SwarmCode.Daemon.Runtime.Run do
          true <- is_binary(system) and String.valid?(system) and byte_size(system) <= 65_000,
          effort <- Keyword.get(opts, :effort, "medium"),
          true <-
-           is_nil(effort) or
-             (is_binary(effort) and Regex.match?(SwarmCode.LLM.Efforts.key_format(), effort)),
+           is_nil(effort) or (is_binary(effort) and Regex.match?(Efforts.key_format(), effort)),
          attachments <- Keyword.get(opts, :attachments, []),
          true <- valid_attachments?(attachments) do
       {:ok,
@@ -1033,7 +1072,8 @@ defmodule SwarmCode.Daemon.Runtime.Run do
          agent_id: agent_id,
          canonical_sink: sink,
          canonical_timeout_ms: sink_timeout,
-         provider: provider,
+         provider: synced_provider(provider),
+         adapter: Map.fetch!(@adapters, provider.kind),
          model: model,
          prompt: prompt,
          attachments: attachments,
@@ -1051,6 +1091,24 @@ defmodule SwarmCode.Daemon.Runtime.Run do
     end
   rescue
     _ -> {:error, :invalid_run_configuration}
+  end
+
+  # cli020 L1: the live configuration (validated by `Providers.Provider.new/1`,
+  # no database) as the synced stack's provider row. `id` keys what
+  # `ProviderCaps` learns about this endpoint for the rest of the session.
+  defp synced_provider(%Provider{} = p) do
+    %SyncedProvider{
+      id: p.id,
+      name: p.name,
+      kind: Map.fetch!(@synced_kinds, p.kind),
+      base_url: p.base_url,
+      api_key: p.api_key,
+      models: p.models,
+      default_model: p.default_model,
+      effort_levels: p.effort_levels,
+      model_effort_levels: p.model_effort_levels,
+      fallbacks: p.fallbacks
+    }
   end
 
   defp user_message(text, attachments) do

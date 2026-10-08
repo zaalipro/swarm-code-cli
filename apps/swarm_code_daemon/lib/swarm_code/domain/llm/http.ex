@@ -10,6 +10,12 @@ defmodule SwarmCode.Domain.LLM.HTTP do
   Usage totals exclude failed attempts (spec 51 §6.2): a retried attempt streams
   into an accumulator that the next attempt replaces, so whatever the provider
   may have counted for the attempt that failed is never added to the op's tokens.
+
+  ncode CLI (cli020 L2, the live runtime's copy folded in): the transport runs
+  in an owned process so the deadline is exact on a silent socket too; one
+  call's attempts share its hard cap (`with_call_clock/1`); a response has a
+  byte ceiling while it is read; the exact key is redacted from what a
+  provider answers; and no log line carries a redirect URL or host.
   """
 
   # Transport retries (spec 11 §7.3): 5 tries, jittered 1s -> 4s -> 15s -> 60s,
@@ -17,7 +23,7 @@ defmodule SwarmCode.Domain.LLM.HTTP do
   # 400/401/403/404/422 and model refusals come straight back.
   require Logger
 
-  alias SwarmCode.Domain.LLM.Error
+  alias SwarmCode.Domain.LLM.{Chunks, Error}
 
   @max_attempts 5
   @retry_delays [1_000, 4_000, 15_000, 60_000]
@@ -30,6 +36,8 @@ defmodule SwarmCode.Domain.LLM.HTTP do
   # pass74 (spec 74) BUGS-49: the hard cap is this many ms per `max_tokens`
   # token (25 tokens/s), never under the idle deadline.
   @hard_ms_per_token 40
+  # cli020 L2: the start and hard cap one provider call's attempts share.
+  @call_clock_key {__MODULE__, :call_clock}
 
   # Spec 51 §6.2 (b): a name that does not resolve and a port that refuses are
   # not going to answer differently four sleeps later; a TLS alert is a
@@ -100,11 +108,12 @@ defmodule SwarmCode.Domain.LLM.HTTP do
 
     # pass74 (spec 74) BUGS-49: `deadline_ms` is the no-progress bound; the
     # hard cap from the start scales with the answer budget the body asks for.
-    clock = %{
-      started: started,
-      idle_ms: deadline_ms,
-      hard: started + hard_cap_ms(deadline_ms, body)
-    }
+    clock =
+      call_clock(%{
+        started: started,
+        idle_ms: deadline_ms,
+        hard: started + hard_cap_ms(deadline_ms, body)
+      })
 
     result =
       do_stream(
@@ -126,6 +135,45 @@ defmodule SwarmCode.Domain.LLM.HTTP do
   end
 
   defp always_ok(_acc), do: :ok
+
+  @doc """
+  cli020 L2 (the CLI's call deadline): runs one provider call — its transport
+  retries and its capability re-attempts (thinking, cache markers, effort,
+  `max_completion_tokens`, temperature, continuation state) — on one clock.
+  Every `stream_post/10` inside takes the first one's start and hard cap; each
+  attempt still gets its own idle window (BUGS-49). Nested calls join the
+  outer clock. The providers' `stream/2` wrap themselves in it.
+  """
+  @spec with_call_clock((-> result)) :: result when result: term()
+  def with_call_clock(fun) do
+    case Process.get(@call_clock_key) do
+      nil ->
+        Process.put(@call_clock_key, :open)
+
+        try do
+          fun.()
+        after
+          Process.delete(@call_clock_key)
+        end
+
+      _open ->
+        fun.()
+    end
+  end
+
+  defp call_clock(clock) do
+    case Process.get(@call_clock_key) do
+      %{started: started, hard: hard} ->
+        %{clock | started: started, hard: hard}
+
+      :open ->
+        Process.put(@call_clock_key, Map.take(clock, [:started, :hard]))
+        clock
+
+      nil ->
+        clock
+    end
+  end
 
   @doc """
   pass74 (spec 74) BUGS-49: the hard cap of one call, from its start:
@@ -156,16 +204,27 @@ defmodule SwarmCode.Domain.LLM.HTTP do
   defp past_deadline?(%{idle_ms: idle, hard: hard}, now, last),
     do: now - last > idle or now > hard
 
+  # cli020 L2: the instant the owner stops waiting — no progress for
+  # `idle_ms` or the hard cap, whichever comes first; a model listing has
+  # one fixed deadline.
+  defp deadline_at(%{deadline: deadline}), do: deadline
+
+  defp deadline_at(%{started: started, idle_ms: idle, hard: hard}),
+    do: min(last_progress(started) + idle, hard)
+
   @redirect_statuses [301, 302, 303, 307, 308]
 
   @doc """
   spec 60 T10: the one request builder for credentialed calls. Same-origin redirects behave as
   before; a redirect to another `{scheme, host, port}` is not followed (Req forwards `x-api-key`,
   custom headers and the body — `deps/req/lib/req/steps.ex:1556-1564` strips `authorization` only).
+
+  cli020 L2: Req's own redirect log line is off — it prints the `location`,
+  query and all, and a provider may put a token there.
   """
   @spec request(String.t()) :: Req.Request.t()
   def request(url) do
-    Req.new(url: url)
+    Req.new(url: url, redirect_log_level: false)
     |> Req.Request.prepend_response_steps(swarm_code_redirect_guard: &guard_redirect/1)
   end
 
@@ -176,7 +235,9 @@ defmodule SwarmCode.Domain.LLM.HTTP do
          %URI{host: host} = target when is_binary(host) <-
            URI.merge(request.url, URI.parse(location)),
          true <- origin(target) != origin(request.url) do
-      Logger.warning("swarm_code: refused a cross-origin redirect to #{origin_text(target)}")
+      # cli020 L2: the log names no target — a private host stays out of the
+      # CLI's log file.
+      Logger.warning("swarm_code: refused a cross-origin credentialed redirect")
       {Req.Request.put_option(request, :redirect, false), response}
     else
       _ -> {request, response}
@@ -186,7 +247,6 @@ defmodule SwarmCode.Domain.LLM.HTTP do
   def guard_redirect(pair), do: pair
 
   defp origin(%URI{scheme: s, host: h, port: p}), do: {s, h, p || URI.default_port(s || "http")}
-  defp origin_text(%URI{} = u), do: "#{u.scheme}://#{u.host}:#{elem(origin(u), 2)}"
 
   defp do_stream(
          url,
@@ -206,6 +266,7 @@ defmodule SwarmCode.Domain.LLM.HTTP do
     # pass74 (spec 74) BUGS-49: every attempt gets a full idle window to its
     # first token; a retry is judged against the last progress of the one before.
     Process.put(@last_progress_key, System.monotonic_time(:millisecond))
+    max_bytes = max_response_bytes()
 
     into = fn {:data, data}, {req, resp} ->
       if resp.status == 200 do
@@ -248,17 +309,22 @@ defmodule SwarmCode.Domain.LLM.HTTP do
     end
 
     result =
-      post_stream(url,
-        json: body,
-        headers: headers,
-        retry: false,
-        # Spec 51 §6.2 (c): the per-chunk idle timeout never outlives the call's
-        # own deadline, so a dribbling stream cannot run past it.
-        receive_timeout: receive_timeout(clock),
-        # pass74 (spec 74) BUGS-50: the LLM pool (256 connections) instead of
-        # Finch's on-demand default of 50; a checkout waits at most this long.
-        finch: Keyword.put(finch_options(), :pool_timeout, pool_timeout(clock)),
-        into: into
+      owned_request(
+        :post,
+        url,
+        [
+          json: body,
+          headers: headers,
+          retry: false,
+          # Spec 51 §6.2 (c): the per-chunk idle timeout never outlives the call's
+          # own deadline, so a dribbling stream cannot run past it.
+          receive_timeout: receive_timeout(clock),
+          # pass74 (spec 74) BUGS-50: the LLM pool (256 connections) instead of
+          # Finch's on-demand default of 50; a checkout waits at most this long.
+          finch: Keyword.put(finch_options(), :pool_timeout, pool_timeout(clock)),
+          into: bounded(into, max_bytes)
+        ],
+        clock
       )
 
     retry = fn reason, message, hint_ms, max_attempts ->
@@ -302,6 +368,10 @@ defmodule SwarmCode.Domain.LLM.HTTP do
     with {:ok, %Req.Response{} = resp} <- result, do: capture_rate_limit(resp, provider_id)
 
     case result do
+      {:ok, %Req.Response{private: %{response_too_large: true}}} ->
+        text = "#{name} response exceeded #{max_bytes} bytes"
+        {:error, Error.classify(nil, nil, text), text}
+
       {:ok, %Req.Response{status: 200, private: %{past_deadline: true}} = resp} ->
         retry.("deadline", "the stream made no progress", retry_after_ms(resp), attempts())
 
@@ -327,11 +397,130 @@ defmodule SwarmCode.Domain.LLM.HTTP do
 
       {:ok, %Req.Response{status: status} = resp} ->
         body = Map.get(resp.private, :err_body, "")
-        text = status_message(status, name, body)
+        # cli020 L2: the key this request carried goes before the snippet is
+        # cut (a cut key no longer matches), whatever its length.
+        text = status_message(status, name, redact_key(error_body(resp), credentials(headers)))
         {:error, Error.classify(status, nil, text <> " " <> to_string(body)), text}
 
       {:error, exception} ->
         retry.(transport_reason(exception), Exception.message(exception), nil, max_for(exception))
+    end
+  end
+
+  # cli020 L2: the byte ceiling holds while a response is read (an
+  # unterminated SSE event or an error body included), not after it is all in
+  # memory; past it the read stops and the call fails.
+  defp bounded(into, max_bytes) do
+    fn {:data, data}, {req, resp} ->
+      received = Map.get(resp.private, :received_bytes, 0) + byte_size(data)
+      resp = %{resp | private: Map.put(resp.private, :received_bytes, received)}
+
+      if received > max_bytes,
+        do: {:halt, {req, %{resp | private: Map.put(resp.private, :response_too_large, true)}}},
+        else: into.({:data, data}, {req, resp})
+    end
+  end
+
+  # cli020 L2 (the live runtime's transport, kept): Finch's `receive_timeout`
+  # restarts on every chunk, so a keep-alive followed by silence, or a socket
+  # that goes quiet mid-answer, outlived the deadline by up to one
+  # `receive_timeout` (at least a second). The request runs in an owned
+  # process; this one relays each chunk to the `into` callback — in this
+  # process, so the progress keys, the retry state and the caller's `on_event`
+  # stay here — and stops waiting at `deadline_at/1` itself, on the monotonic
+  # clock (it pauses while the Mac sleeps). A guardian kills the transport if
+  # its owner dies, and the owner kills it on every way out, so the socket
+  # closes with the call.
+  defp owned_request(method, url, options, clock) do
+    if System.monotonic_time(:millisecond) >= deadline_at(clock) do
+      {:error, %Req.TransportError{reason: :timeout}}
+    else
+      start_owned_request(method, url, options, clock)
+    end
+  end
+
+  defp start_owned_request(method, url, options, clock) do
+    owner = self()
+    token = make_ref()
+    callback = Keyword.fetch!(options, :into)
+
+    {worker, monitor} =
+      spawn_monitor(fn ->
+        transport = self()
+
+        guardian =
+          spawn(fn ->
+            owner_monitor = Process.monitor(owner)
+            transport_monitor = Process.monitor(transport)
+
+            receive do
+              {:DOWN, ^owner_monitor, :process, ^owner, _} -> Process.exit(transport, :kill)
+              {:DOWN, ^transport_monitor, :process, ^transport, _} -> :ok
+            end
+          end)
+
+        relay = fn data, pair ->
+          send(owner, {token, :chunk, data, pair})
+
+          receive do
+            {^token, :continue, result} -> result
+          end
+        end
+
+        try do
+          result = Req.request(request(url), Keyword.merge(options, method: method, into: relay))
+          send(owner, {token, :result, result})
+        rescue
+          exception -> send(owner, {token, :raised, exception, __STACKTRACE__})
+        after
+          Process.exit(guardian, :kill)
+        end
+      end)
+
+    try do
+      await_request(worker, monitor, token, callback, clock)
+    after
+      Process.exit(worker, :kill)
+
+      receive do
+        {:DOWN, ^monitor, :process, ^worker, _} -> :ok
+      end
+
+      flush_request(token)
+    end
+  end
+
+  defp await_request(worker, monitor, token, callback, clock) do
+    remaining = max(deadline_at(clock) - System.monotonic_time(:millisecond), 0)
+
+    receive do
+      # The callback may move the idle deadline; the next wait reads it again.
+      {^token, :chunk, data, pair} ->
+        send(worker, {token, :continue, callback.(data, pair)})
+        await_request(worker, monitor, token, callback, clock)
+
+      {^token, :result, result} ->
+        result
+
+      {^token, :raised, exception, stacktrace} ->
+        raised(exception, stacktrace)
+
+      {:DOWN, ^monitor, :process, ^worker, _reason} = down ->
+        # Keep cleanup's single monitor settlement path, including unexpected exits.
+        send(self(), down)
+        {:error, %Req.TransportError{reason: :closed}}
+    after
+      remaining -> {:error, %Req.TransportError{reason: :timeout}}
+    end
+  end
+
+  defp flush_request(token) do
+    receive do
+      {^token, :chunk, _, _} -> flush_request(token)
+      {^token, :result, _} -> flush_request(token)
+      {^token, :raised, _, _} -> flush_request(token)
+    after
+      0 -> :ok
     end
   end
 
@@ -340,13 +529,31 @@ defmodule SwarmCode.Domain.LLM.HTTP do
   # RuntimeError) and nothing between Req and here rescued it, so the 51st
   # concurrent stream crashed its op as a SwarmCode bug. It is a transport
   # failure: it goes down the "network" retry like a refused connection.
-  defp post_stream(url, options) do
-    Req.post(request(url), options)
-  rescue
-    e in RuntimeError ->
-      if String.starts_with?(e.message, "Finch was unable to provide a connection"),
-        do: {:error, %Req.TransportError{reason: :pool_timeout}},
-        else: reraise(e, __STACKTRACE__)
+  # cli020 L2: it is raised in the transport process now; anything else it
+  # raised is raised again here, in the caller, as before.
+  defp raised(%RuntimeError{message: "Finch was unable to provide a connection" <> _}, _trace),
+    do: {:error, %Req.TransportError{reason: :pool_timeout}}
+
+  defp raised(exception, stacktrace), do: reraise(exception, stacktrace)
+
+  @doc false
+  # cli020 L2: `:llm_max_response_bytes` (tests set it small).
+  def max_response_bytes,
+    do: Application.get_env(:swarm_code_daemon, :llm_max_response_bytes, 16_777_216)
+
+  # cli020 L2: the credentials a request carried, as the provider could echo them.
+  defp credentials(headers) do
+    for {name, value} <- headers,
+        String.downcase(name) in ["authorization", "x-api-key"],
+        do: String.replace_prefix(value, "Bearer ", "")
+  end
+
+  # cli020 L2: an exact secret may straddle the 64 KiB retention boundary;
+  # a retained prefix of a capped error body is never rendered.
+  defp error_body(%Req.Response{private: private}) do
+    if Map.get(private, :received_bytes, 0) >= 65_536,
+      do: "[response body omitted: size limit reached]",
+      else: Map.get(private, :err_body, "")
   end
 
   @pool_size 256
@@ -611,15 +818,37 @@ defmodule SwarmCode.Domain.LLM.HTTP do
   @spec get_json(String.t(), [{String.t(), String.t()}], String.t()) ::
           {:ok, map()} | {:error, String.t()}
   def get_json(url, headers, name) do
-    case Req.get(request(url), headers: headers, retry: false, receive_timeout: 30_000) do
-      {:ok, %Req.Response{status: 200, body: %{} = body}} ->
-        {:ok, body}
+    # cli020 L2: the same owned transport (30 s, absolute), the byte ceiling
+    # while reading, and the request's key redacted from an error body.
+    max_bytes = max_response_bytes()
 
-      {:ok, %Req.Response{status: 200}} ->
-        {:error, "#{name} returned a non-JSON response"}
+    into = fn {:data, data}, {req, resp} ->
+      acc = Map.get(resp.private, :json_chunks, Chunks.new())
 
-      {:ok, %Req.Response{status: status, body: body}} ->
-        {:error, status_message(status, name, inspect_body(body))}
+      if acc.size + byte_size(data) > max_bytes do
+        {:halt, {req, %{resp | private: Map.put(resp.private, :response_too_large, true)}}}
+      else
+        acc = Chunks.append(acc, data)
+        {:cont, {req, %{resp | private: Map.put(resp.private, :json_chunks, acc)}}}
+      end
+    end
+
+    clock = %{deadline: System.monotonic_time(:millisecond) + 30_000}
+    options = [headers: headers, retry: false, receive_timeout: 30_000, into: into]
+
+    case owned_request(:get, url, options, clock) do
+      {:ok, %Req.Response{private: %{response_too_large: true}}} ->
+        {:error, "#{name} response exceeded #{max_bytes} bytes"}
+
+      {:ok, %Req.Response{status: 200, private: private}} ->
+        case Jason.decode(json_body(private)) do
+          {:ok, %{} = json} -> {:ok, json}
+          _other -> {:error, "#{name} returned a non-JSON response"}
+        end
+
+      {:ok, %Req.Response{status: status, private: private}} ->
+        body = redact_key(json_body(private), credentials(headers))
+        {:error, status_message(status, name, body)}
 
       {:error, exception} ->
         {:error, "#{name} request failed: " <> Exception.message(exception)}
@@ -679,18 +908,29 @@ defmodule SwarmCode.Domain.LLM.HTTP do
     |> redact()
   end
 
+  @doc """
+  cli020 L2: `redact/2` for the keys a provider request carried — every
+  non-empty key, whatever its length. `@min_secret` exists for MCP
+  environment values (a `1` flag is not a secret); a provider's API key is
+  one, however short.
+  """
+  @spec redact_key(term(), [String.t()]) :: String.t()
+  def redact_key(text, keys) when is_list(keys) do
+    keys
+    |> Enum.map(&to_string/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.uniq()
+    |> Enum.sort_by(&(-byte_size(&1)))
+    |> Enum.reduce(to_string(text), &String.replace(&2, &1, "[REDACTED]"))
+    |> redact()
+  end
+
   defp snippet(body) do
     body |> to_string() |> redact() |> String.replace(~r/\s+/, " ") |> String.slice(0, 300)
   end
 
-  defp inspect_body(body) when is_binary(body), do: body
-
-  defp inspect_body(body) do
-    case Jason.encode(body) do
-      {:ok, json} -> json
-      _ -> inspect(body)
-    end
-  end
+  defp json_body(private),
+    do: private |> Map.get(:json_chunks, Chunks.new()) |> Chunks.to_string()
 
   # Jittered backoff: two agents that hit the same 429 do not come back in step.
   # Spec 51 §6.2 (a): the provider's `retry-after` raises the floor — asking

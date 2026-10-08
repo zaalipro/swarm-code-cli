@@ -1,28 +1,54 @@
-defmodule SwarmCode.LLM.LiveTransportTest do
+defmodule SwarmCode.Domain.LLM.LiveTransportTest do
+  @moduledoc """
+  The synced LLM stack over real loopback HTTP, including the CLI behaviours
+  the live runtime's frozen copy carried and the synced files keep as recorded
+  provenance patches (cli020 L2, `notes/fix-L.md`): the exact call deadline on
+  an owned transport, one hard cap across a call's re-attempts, the response
+  byte ceiling, exact-key redaction, no URL or host in the logs, and a
+  malformed event that fails the call.
+  """
   use ExUnit.Case, async: false
-  alias SwarmCode.LLM
-  alias SwarmCode.LLM.{Request, Result}
-  alias SwarmCode.Providers.Provider
+  alias SwarmCode.Domain.LLM
+  alias SwarmCode.Domain.LLM.{Request, Result}
+  alias SwarmCode.Domain.Providers.Provider
   alias SwarmCode.Test.LoopbackHTTP, as: HTTP
   @moduletag :capture_log
 
   setup do
-    if Process.whereis(LLM.ProviderCaps) == nil, do: start_supervised!(LLM.ProviderCaps)
     LLM.ProviderCaps.reset()
+
+    put_env(:llm_providers, %{
+      "openai_compatible" => LLM.OpenAI,
+      "anthropic" => LLM.Anthropic
+    })
+
+    on_exit(fn -> LLM.ProviderCaps.reset() end)
     :ok
   end
 
-  defp fixture(handler, kind \\ "openai") do
+  defp put_env(key, value) do
+    previous = Application.fetch_env(:swarm_code_daemon, key)
+    Application.put_env(:swarm_code_daemon, key, value)
+
+    on_exit(fn ->
+      case previous do
+        {:ok, old} -> Application.put_env(:swarm_code_daemon, key, old)
+        :error -> Application.delete_env(:swarm_code_daemon, key)
+      end
+    end)
+  end
+
+  defp fixture(handler, kind \\ "openai_compatible") do
     server = HTTP.start(handler)
     on_exit(fn -> HTTP.stop(server) end)
 
-    {:ok, provider} =
-      Provider.new(
-        kind: kind,
-        name: "fixture",
-        base_url: server.url,
-        api_key: "fixture-private-key"
-      )
+    provider = %Provider{
+      id: "fixture-id",
+      kind: kind,
+      name: "fixture",
+      base_url: server.url,
+      api_key: "fixture-private-key"
+    }
 
     %Request{
       provider: provider,
@@ -142,7 +168,7 @@ defmodule SwarmCode.LLM.LiveTransportTest do
 
   test "401 is not retried and error bodies cannot echo credentials" do
     request = fixture(fn socket, _, _ -> HTTP.respond(socket, 401, "fixture-private-key") end)
-    assert {:error, message} = LLM.stream(request, collect())
+    assert {:error, :unauthorized, message} = LLM.stream(request, collect())
     assert message =~ "Unauthorized (401)"
     refute message =~ "fixture-private-key"
     refute_received {:retry, _, _, _}
@@ -172,7 +198,7 @@ defmodule SwarmCode.LLM.LiveTransportTest do
         "anthropic"
       )
 
-    assert {:error, message} = LLM.stream(request, nil)
+    assert {:error, _kind, message} = LLM.stream(request, nil)
     assert message =~ "Redirected (307)"
     assert_received {:http_request, 1, %{path: "/v1/messages"}}
     refute_receive {:http_request, _, %{path: "/stolen"}}, 100
@@ -191,14 +217,7 @@ defmodule SwarmCode.LLM.LiveTransportTest do
   end
 
   test "model listing bounds oversized JSON responses" do
-    previous = Application.get_env(:swarm_code_daemon, :llm_max_response_bytes)
-    Application.put_env(:swarm_code_daemon, :llm_max_response_bytes, 128)
-
-    on_exit(fn ->
-      if is_nil(previous),
-        do: Application.delete_env(:swarm_code_daemon, :llm_max_response_bytes),
-        else: Application.put_env(:swarm_code_daemon, :llm_max_response_bytes, previous)
-    end)
+    put_env(:llm_max_response_bytes, 128)
 
     request =
       fixture(fn socket, _, _ ->
@@ -247,7 +266,7 @@ defmodule SwarmCode.LLM.LiveTransportTest do
       end)
 
     started = System.monotonic_time(:millisecond)
-    assert {:error, _} = LLM.stream(%{request | deadline_ms: 50}, nil)
+    assert {:error, :timeout, _} = LLM.stream(%{request | deadline_ms: 50}, nil)
     assert System.monotonic_time(:millisecond) - started < 800
   end
 
@@ -346,14 +365,7 @@ defmodule SwarmCode.LLM.LiveTransportTest do
   end
 
   test "the streaming response has a byte ceiling, including unterminated SSE" do
-    previous = Application.get_env(:swarm_code_daemon, :llm_max_response_bytes)
-    Application.put_env(:swarm_code_daemon, :llm_max_response_bytes, 128)
-
-    on_exit(fn ->
-      if is_nil(previous),
-        do: Application.delete_env(:swarm_code_daemon, :llm_max_response_bytes),
-        else: Application.put_env(:swarm_code_daemon, :llm_max_response_bytes, previous)
-    end)
+    put_env(:llm_max_response_bytes, 128)
 
     request =
       fixture(fn socket, _, _ ->
@@ -389,7 +401,7 @@ defmodule SwarmCode.LLM.LiveTransportTest do
     assert_receive {:callback_socket, {:error, :closed}}, 1_000
   end
 
-  test "a late chunk cannot restart the absolute response deadline" do
+  test "a keep-alive chunk cannot restart the no-progress deadline" do
     owner = self()
 
     request =
@@ -405,7 +417,7 @@ defmodule SwarmCode.LLM.LiveTransportTest do
       end)
 
     started = System.monotonic_time(:millisecond)
-    assert {:error, _} = LLM.stream(%{request | deadline_ms: 500}, nil)
+    assert {:error, :timeout, _} = LLM.stream(%{request | deadline_ms: 500}, nil)
     assert System.monotonic_time(:millisecond) - started < 750
     assert_receive {:deadline_socket, {:error, :closed}}, 500
   end
@@ -427,7 +439,12 @@ defmodule SwarmCode.LLM.LiveTransportTest do
       end)
 
     started = System.monotonic_time(:millisecond)
-    assert {:error, _} = LLM.stream(%{request | deadline_ms: 500, effort: "medium"}, nil)
+    # BUGS-49 gives every attempt its own idle window; the hard cap counts
+    # from the start of the call (here `max_tokens: 1`, so the cap is the
+    # deadline itself) and the effort re-attempt does not restart it.
+    assert {:error, :timeout, _} =
+             LLM.stream(%{request | deadline_ms: 500, effort: "medium", max_tokens: 1}, nil)
+
     assert System.monotonic_time(:millisecond) - started < 750
   end
 
@@ -437,14 +454,14 @@ defmodule SwarmCode.LLM.LiveTransportTest do
         HTTP.respond(socket, 403, String.duplicate(" ", 65_530) <> "fixture-private-key denied")
       end)
 
-    assert {:error, message} = LLM.stream(request, nil)
+    assert {:error, _kind, message} = LLM.stream(request, nil)
     assert message =~ "Forbidden (403)"
     refute message =~ ":  fixtur"
     assert message =~ "response body omitted"
   end
 
   test "error redaction precedes snippet truncation and includes short API keys" do
-    for kind <- ["openai", "anthropic"], key <- ["fixture-private-key", "tiny"] do
+    for kind <- ["openai_compatible", "anthropic"], key <- ["fixture-private-key", "tiny"] do
       request =
         fixture(
           fn socket, _, _ ->
@@ -454,7 +471,7 @@ defmodule SwarmCode.LLM.LiveTransportTest do
         )
 
       request = %{request | provider: %{request.provider | api_key: key}}
-      assert {:error, message} = LLM.stream(request, nil)
+      assert {:error, _kind, message} = LLM.stream(request, nil)
       refute message =~ String.slice(key, 0, 10)
       assert {:error, message} = LLM.list_models(request.provider)
       refute message =~ String.slice(key, 0, 10)
@@ -498,5 +515,25 @@ defmodule SwarmCode.LLM.LiveTransportTest do
     Task.shutdown(task, :brutal_kill)
     assert_receive {:socket_after_cancel, {:error, :closed}}, 3_000
     refute_receive {:http_request, 2, _}, 100
+  end
+
+  test "a refused cross-origin redirect logs neither the target host nor its port" do
+    target = HTTP.start(fn socket, _, _ -> HTTP.respond(socket, 200, "unexpected") end)
+    on_exit(fn -> HTTP.stop(target) end)
+    port = target.url |> URI.parse() |> Map.fetch!(:port) |> Integer.to_string()
+
+    request =
+      fixture(fn socket, _, _ ->
+        HTTP.respond(socket, 302, "", [{"location", target.url <> "/elsewhere"}])
+      end)
+
+    log =
+      ExUnit.CaptureLog.capture_log([level: :debug], fn ->
+        assert {:error, _kind, message} = LLM.stream(request, nil)
+        assert message =~ "Redirected (302)"
+      end)
+
+    assert log =~ "refused a cross-origin credentialed redirect"
+    refute log =~ port
   end
 end
