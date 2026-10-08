@@ -54,6 +54,29 @@ defmodule SwarmCode.Daemon.Schema.Refusal do
     )
   end
 
+  @doc """
+  The database file (or one of its `-wal`/`-shm` sidecars) is owned by this
+  user but its mode is not 0600 (cli020 fix S4). The sentence is the same for
+  every path, so the launcher recognises it by its message; the path travels in
+  the action, with the one command that fixes it.
+  """
+  @spec database_mode(Path.t()) :: StartupError.t()
+  def database_mode(path) when is_binary(path) do
+    StartupError.new(
+      :schema_incompatible,
+      false,
+      "Your conversations database file has the wrong permissions.",
+      "Run: chmod 600 " <> shell_word(path) <> " and then run ncode again; nothing was changed."
+    )
+  end
+
+  # A path with a space (`Application Support`) or a quote must paste as one word.
+  defp shell_word(path) do
+    if path =~ ~r{\A[A-Za-z0-9_/.,:@%+=-]+\z},
+      do: path,
+      else: "'" <> String.replace(path, "'", "'\\''") <> "'"
+  end
+
   @doc "A pending migration is not one the CLI may run ahead of the desktop."
   @spec desktop_upgrade_required() :: StartupError.t()
   def desktop_upgrade_required do

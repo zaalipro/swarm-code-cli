@@ -216,10 +216,19 @@ defmodule SwarmCode.Daemon.Schema.Probe do
       when is_integer(uid) and actual_uid == uid and band(mode, 0o7777) == @private_file_mode ->
         {:ok, stat}
 
-      _other ->
-        {:error, incompatible_error()}
+      other ->
+        {:error, mode_or_incompatible(other, path, uid)}
     end
   end
+
+  # cli020 fix S4: our own regular file with a mode other than 0600 has a
+  # sentence and an action of its own; any other failure (another owner, a
+  # symlink, a directory) stays the general refusal.
+  defp mode_or_incompatible({:ok, %File.Stat{type: :regular, uid: uid}}, path, uid)
+       when is_integer(uid),
+       do: SwarmCode.Daemon.Schema.Refusal.database_mode(path)
+
+  defp mode_or_incompatible(_stat, _path, _uid), do: incompatible_error()
 
   defp sidecar_stats(path, uid) do
     Enum.reduce_while(["-wal", "-shm"], {:ok, []}, fn suffix, {:ok, acc} ->
@@ -231,8 +240,8 @@ defmodule SwarmCode.Daemon.Schema.Probe do
         when is_integer(uid) and actual_uid == uid and band(mode, 0o7777) == @private_file_mode ->
           {:cont, {:ok, [{suffix, path <> suffix, stat} | acc]}}
 
-        _other ->
-          {:halt, {:error, incompatible_error()}}
+        other ->
+          {:halt, {:error, mode_or_incompatible(other, path <> suffix, uid)}}
       end
     end)
   end
