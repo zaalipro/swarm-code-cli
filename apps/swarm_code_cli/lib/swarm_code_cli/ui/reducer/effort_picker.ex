@@ -1,11 +1,11 @@
 defmodule SwarmCodeCLI.UI.Reducer.EffortPicker do
   @moduledoc """
-  cli020 D18 (ux-live-14, decision 4f): bare `/effort` and `/swarm_effort`
+  cli020 D18 (ux-live-14, decision 4f): bare `/effort` and `/worker_effort`
   open `{:effort_picker, :chat | :swarm}` whose rows are exactly the levels
   the daemon accepts for the model (workspace `effort_levels` /
   `swarm_effort_levels`, C17), the current one (`effort` / `swarm_effort`)
   ticked and nil shown as `default`. Enter sends `/effort <level>` (or
-  `/swarm_effort <level>`) the way a typed command goes; Esc closes. The
+  `/worker_effort <level>`) the way a typed command goes; Esc closes. The
   cursor is `state.selection["effort_picker"]`.
   """
 
@@ -93,7 +93,7 @@ defmodule SwarmCodeCLI.UI.Reducer.EffortPicker do
   @doc "The command Enter sends for `level`, or nil when the level is not offered."
   def command(%{layers: [{:effort_picker, target} | _]} = state, level) do
     if level in levels(state, target),
-      do: if(target == :chat, do: "/effort ", else: "/swarm_effort ") <> level
+      do: if(target == :chat, do: "/effort ", else: "/worker_effort ") <> level
   end
 
   def command(_state, _level), do: nil

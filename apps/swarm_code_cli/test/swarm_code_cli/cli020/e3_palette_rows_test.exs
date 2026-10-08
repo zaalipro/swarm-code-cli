@@ -1,7 +1,7 @@
 defmodule SwarmCodeCLI.Cli020.E3PaletteRowsTest do
   # cli020 E3: the `/` list shows the client-local meaning of the commands
   # D20 answers itself (bare /queue, /rewind, /undo, /delete, /effort,
-  # /swarm_effort), with the words of the core registry.
+  # /worker_effort), with the words of the core registry.
   use ExUnit.Case, async: true
 
   alias SwarmCodeCLI.UI.SlashPalette
@@ -18,8 +18,8 @@ defmodule SwarmCodeCLI.Cli020.E3PaletteRowsTest do
     assert row("delete").client
     assert %{args: "[low|medium|high|max]", client: true} = row("effort")
     assert row("effort").desc =~ "Reasoning effort of this conversation's chat model"
-    assert %{args: "[low|medium|high|max]", client: true} = row("swarm_effort")
-    assert row("swarm_effort").desc =~ "Reasoning effort of this conversation's worker model"
+    assert %{args: "[low|medium|high|max]", client: true} = row("worker_effort")
+    assert row("worker_effort").desc =~ "Reasoning effort of this conversation's worker model"
   end
 
   test "each name is listed once" do

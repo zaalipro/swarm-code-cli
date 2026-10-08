@@ -29,6 +29,7 @@ defmodule SwarmCodeCLI.UI.Cli020.D20LocalCommandsTest do
           {"/rewind", :rewind},
           {"/undo", :undo},
           {"/effort", {:effort, :chat}},
+          {"/worker_effort", {:effort, :swarm}},
           {"/swarm_effort", {:effort, :swarm}},
           {"/delete", :delete},
           {"/queue", :queue},
@@ -38,7 +39,13 @@ defmodule SwarmCodeCLI.UI.Cli020.D20LocalCommandsTest do
       assert Keymap.local_command(text) == command, text
     end
 
-    for text <- ["/effort high", "/swarm_effort low", "/rewind 3", "/delete now"],
+    for text <- [
+          "/effort high",
+          "/worker_effort low",
+          "/swarm_effort low",
+          "/rewind 3",
+          "/delete now"
+        ],
         do: assert(Keymap.local_command(text) == nil, text)
   end
 

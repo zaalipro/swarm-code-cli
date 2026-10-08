@@ -1,6 +1,6 @@
 defmodule SwarmCodeCLI.UI.ModelPicker do
   @moduledoc """
-  The `/model` and `/swarm_model` picker: every model the workspace snapshot
+  The `/model` and `/worker_model` picker: every model the workspace snapshot
   lists, one row per provider/model pair, filtered by the layer's query.
 
   The layer is `{:model_picker, :chat | :swarm, id}`. It opens from the bare
@@ -41,14 +41,15 @@ defmodule SwarmCodeCLI.UI.ModelPicker do
   @doc "The slash command a pick sends: the exact `<provider_id>|<model>` pair the row shows."
   @spec command(target(), binary(), binary()) :: binary()
   def command(:chat, provider_id, model), do: "/model " <> provider_id <> "|" <> model
-  def command(:swarm, provider_id, model), do: "/swarm_model " <> provider_id <> "|" <> model
+  def command(:swarm, provider_id, model), do: "/worker_model " <> provider_id <> "|" <> model
 
   @doc "The picker's target when `text` is the bare command that opens it, else nil."
   @spec opener(term()) :: target() | nil
   def opener(text) when is_binary(text) do
     case String.trim(text) do
       "/model" -> :chat
-      "/swarm_model" -> :swarm
+      # cli021 B2: `/swarm_model` is the worker command's hidden old name.
+      name when name in ["/worker_model", "/swarm_model"] -> :swarm
       _ -> nil
     end
   end

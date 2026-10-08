@@ -47,7 +47,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Session do
   """
 
   @enforce_keys [:conversations, :current, :approval_mode, :trusted, :background, :rate_limits]
-  defstruct @enforce_keys ++ [toasts: 0]
+  # cli021 B1: the effort the demo's `/effort` and `/worker_effort` set.
+  defstruct @enforce_keys ++ [toasts: 0, effort: nil, swarm_effort: nil]
 
   @type t :: %__MODULE__{
           conversations: %{binary() => map()},
@@ -516,6 +517,23 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Session do
   defp slash_command(script, request, :set_approval, %{approval_mode: mode}),
     do: project_command(script, request, {:project_update, mode, nil})
 
+  # cli021 B1: `/effort <level>` and `/worker_effort <level>` set the demo's
+  # effort, so the status line shows it (the picker's PTY test).
+  defp slash_command(script, _request, :set_effort, %{effort: effort, target: target}) do
+    field = if target == :chat, do: :effort, else: :swarm_effort
+    level = Atom.to_string(effort)
+    next = Map.put(script.session, field, level)
+
+    deltas =
+      next.conversations
+      |> Map.keys()
+      |> Enum.sort()
+      |> Enum.map(&metadata_fact(script, next, &1))
+
+    {:ok, %{script | session: next}, deltas, [script.session.current],
+     %DTO.Feedback{kind: :notice, title: "Effort", text: "Effort set to " <> level}}
+  end
+
   defp slash_command(script, request, :trust_project, _),
     do: project_command(script, request, {:project_update, nil, true})
 
@@ -647,7 +665,9 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Session do
         queued: queued(script, conversation_id),
         # cli020 C17: the levels the demo model accepts.
         effort_levels: ~w(low medium high max),
-        swarm_effort_levels: ~w(low medium high max)
+        swarm_effort_levels: ~w(low medium high max),
+        effort: session.effort,
+        swarm_effort: session.swarm_effort
       }
     }
 
@@ -775,6 +795,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Session do
       queued: if(conversation_id, do: queued(script, conversation_id), else: 0),
       effort_levels: ~w(low medium high max),
       swarm_effort_levels: ~w(low medium high max),
+      effort: s.effort,
+      swarm_effort: s.swarm_effort,
       title:
         case s.conversations[conversation_id] do
           %{title: title} -> title

@@ -2,7 +2,7 @@ defmodule SwarmCodeCLI.UI.SlashPalette do
   @moduledoc "Pure builtin command completion. Suggestions never execute or dispatch a command."
 
   alias SwarmCode.Commands
-  alias SwarmCodeCLI.UI.{Drafts, Editor, State}
+  alias SwarmCodeCLI.UI.{Drafts, Editor, SlashArgs, State}
   alias SwarmCodeCLI.UI.Reducer.Editing
 
   # The popup above the composer shows this many rows and scrolls within them.
@@ -69,7 +69,7 @@ defmodule SwarmCodeCLI.UI.SlashPalette do
       desc: "Reasoning effort of this conversation's chat model; bare: pick one"
     },
     %{
-      name: "swarm_effort",
+      name: "worker_effort",
       args: "[low|medium|high|max]",
       desc: "Reasoning effort of this conversation's worker model; bare: pick one"
     },
@@ -80,7 +80,7 @@ defmodule SwarmCodeCLI.UI.SlashPalette do
 
   # cli020 E3: local rows for core commands; they replace the catalogue's
   # words in its own order rather than moving to the top.
-  @in_place ~w(rewind undo delete effort swarm_effort)
+  @in_place ~w(rewind undo delete effort worker_effort)
   @in_place_rows for item <- @local, item.name in @in_place, into: %{}, do: {item.name, item}
 
   # pass73: commands whose meaning the client changed; their catalogue entry
@@ -96,6 +96,26 @@ defmodule SwarmCodeCLI.UI.SlashPalette do
   # `<argument>`. Every other command without a required argument runs.
   @wants_text ~w(consensus create-workflow goal plan swarm queue search attach workflow)
 
+  # Names the client answers that no catalogue lists (`Keymap.local_command/1`).
+  @quiet ~w(exit conversations config prefs)
+
+  @doc """
+  cli021 B4: whether `name` (without the slash) is a command the composer
+  draws in the command colour: the client's own, the core registry's and the
+  worker commands' hidden old names. A project's custom commands and
+  workflows are the daemon's to know, so they read as unknown here.
+  """
+  @spec known?(term()) :: boolean()
+  def known?(name) when is_binary(name) do
+    name = String.downcase(name)
+    canonical = SlashArgs.canonical(name)
+
+    canonical in @local_names or canonical in @quiet or
+      Enum.any?(Commands.catalogue("/" <> canonical), &(&1.name == canonical))
+  end
+
+  def known?(_name), do: false
+
   @doc "Rows of the popup above the composer (pass 70 E5); `visible(state, rows())`."
   def rows, do: @rows
 
@@ -108,10 +128,126 @@ defmodule SwarmCodeCLI.UI.SlashPalette do
   @doc "Suggestions only apply to the entire first token, with the caret at its end."
   def entries(state) do
     case context(state) do
-      nil -> []
+      nil -> arg_entries(state)
       {_key, query} -> catalogue(query)
     end
   end
+
+  # ------------------------------------------------- the argument dropdown
+  #
+  # cli021 B3: once the draft is `/<command> ` (with or without a partial
+  # argument) and the command has choices (`SlashArgs`), the same popup lists
+  # them instead of the commands: filtered by what is typed, the current value
+  # marked in its words. A row is a map like a command's (`name` is the
+  # `<command> <label>` the popup draws after its `/`, `desc` its words)
+  # plus `arg?: true`, `text` (the draft it completes to, without the slash),
+  # `command`, `value`, `current?`. Up/Down move, Tab completes the draft, Enter
+  # completes it and runs it (`enter_completion/1`), Esc closes the list only
+  # (`dismiss_args/1`) until the draft leaves that command.
+
+  @arg_bytes 600
+
+  @doc "Whether the popup shows a command's argument choices rather than commands."
+  @spec args_open?(map()) :: boolean()
+  def args_open?(state), do: context(state) == nil and arg_entries(state) != []
+
+  defp arg_entries(state) do
+    with {key, command, typed} <- arg_context(state),
+         false <- dismissed?(state, key, command),
+         [_ | _] = choices <- SlashArgs.matching(state, command, typed) do
+      canonical = SlashArgs.canonical(command)
+
+      for choice <- choices do
+        %{
+          name: canonical <> " " <> choice.label,
+          text: canonical <> " " <> choice.value,
+          command: canonical,
+          value: choice.value,
+          label: choice.label,
+          args: "",
+          desc: choice.desc,
+          scope: nil,
+          kind: :builtin,
+          client: true,
+          arg?: true,
+          current?: choice.current?
+        }
+      end
+    else
+      _ -> []
+    end
+  end
+
+  # `{draft key, command as typed, the argument typed so far}` while the draft
+  # is one line `/<command> <argument>` with the caret at its end.
+  defp arg_context(state) do
+    with {key, text} <- draft_at_caret(state, @arg_bytes),
+         [_, command, typed] <-
+           Regex.run(~r/\A\/([A-Za-z0-9_.-]+) ([^\n\r]*)\z/u, text) do
+      {key, command, typed}
+    else
+      _ -> nil
+    end
+  end
+
+  defp dismissed?(state, key, command) do
+    case state.slash_palette do
+      %{dismissed: {^key, dismissed}} -> dismissed == SlashArgs.canonical(command)
+      _ -> false
+    end
+  end
+
+  @doc "Esc: closes the argument list until the draft leaves this command."
+  @spec dismiss_args(map()) :: map()
+  def dismiss_args(state) do
+    case arg_context(state) do
+      {key, command, _typed} ->
+        base = if is_map(state.slash_palette), do: state.slash_palette, else: %{}
+        %{state | slash_palette: Map.put(base, :dismissed, {key, SlashArgs.canonical(command)})}
+
+      nil ->
+        state
+    end
+  end
+
+  @doc """
+  What an edit of the draft leaves of the palette's state: nothing, except
+  that a closed argument list stays closed while the draft is still the same
+  command's arguments.
+  """
+  @spec after_edit(map()) :: map()
+  def after_edit(state) do
+    with %{dismissed: {key, command} = dismissed} <- state.slash_palette,
+         {^key, typed_command, _typed} <- arg_context(state),
+         true <- SlashArgs.canonical(typed_command) == command do
+      %{state | slash_palette: %{dismissed: dismissed}}
+    else
+      _ -> %{state | slash_palette: nil}
+    end
+  end
+
+  @doc """
+  The draft an argument row completes to: replaces the draft with
+  `/<text>` (one undoable edit), the row must be one the list shows.
+  """
+  @spec complete_argument(map(), binary()) :: {map(), list()}
+  def complete_argument(state, text) do
+    with true <- is_binary(text),
+         {key, _command, _typed} <- arg_context(state),
+         true <- Enum.any?(arg_entries(state), &(&1.text == text)),
+         draft <- Drafts.fetch(state.drafts, key),
+         true <- byte_size("/" <> text) <= draft.editor.max_bytes do
+      {selected, effects} = Editing.apply(state, :editor, key, :select_all)
+      {completed, edits} = Editing.apply(selected, :editor, key, {:paste, "/" <> text})
+      {%{completed | slash_palette: nil}, effects ++ edits}
+    else
+      _ -> {state, []}
+    end
+  end
+
+  @doc "The argument row `text` is, when the list shows it; else nil."
+  @spec argument_row(map(), binary()) :: map() | nil
+  def argument_row(state, text), do: Enum.find(arg_entries(state), &(&1.text == text))
 
   @doc """
   The service's commands and the client's own for `query` (`"/"`, `"/re"`):
@@ -207,6 +343,34 @@ defmodule SwarmCodeCLI.UI.SlashPalette do
   """
   @spec enter_completion(map()) :: {:complete | :run, binary()} | nil
   def enter_completion(state) do
+    case context(state) do
+      nil -> arg_enter(state)
+      _ -> command_enter(state)
+    end
+  end
+
+  # cli021 B3: Enter on the argument list completes the highlighted row and
+  # runs the command, unless the draft already says exactly one of the rows.
+  defp arg_enter(state) do
+    with {_key, _command, typed} <- arg_context(state),
+         [_ | _] = rows <- arg_entries(state),
+         needle = typed |> String.trim() |> String.downcase(),
+         false <- Enum.any?(rows, &exact?(&1, needle)),
+         %{text: text} <- selected(state) do
+      {:run_argument, text}
+    else
+      _ -> nil
+    end
+  end
+
+  # A model typed by its own name (`/model gpt-5.5`) is as complete as the
+  # `provider|model` pair the row inserts.
+  defp exact?(row, needle),
+    do:
+      needle != "" and
+        needle in [String.downcase(row.value), String.downcase(Map.get(row, :label, ""))]
+
+  defp command_enter(state) do
     with {_key, query} <- context(state),
          items when items != [] <- catalogue(query),
          name = query |> String.trim_leading("/") |> String.downcase(),
@@ -262,22 +426,36 @@ defmodule SwarmCodeCLI.UI.SlashPalette do
     end
   end
 
-  defp context(%{focus: "composer", layers: []} = state), do: draft_context(state)
+  defp context(state), do: if(gate?(state), do: draft_context(state))
 
-  # pass73 G1 (QA Q1-01): a draft typed under an approval card that opened by
-  # itself is still the composer's (`Keymap.typing_under_card?/1`), so its
-  # `/com` lists, completes and runs `/compact` as it does without the card.
-  defp context(%{layers: [{:approval, _} | _]} = state) do
-    if SwarmCodeCLI.UI.Keymap.typing_under_card?(state), do: draft_context(state), else: nil
-  end
+  # The palette belongs to the composer's draft: focused with no layer over
+  # it, or (pass73 G1, QA Q1-01) a draft typed under an approval card that
+  # opened by itself (`Keymap.typing_under_card?/1`), so its `/com` lists,
+  # completes and runs `/compact` as it does without the card.
+  defp gate?(%{focus: "composer", layers: []}), do: true
 
-  defp context(_), do: nil
+  defp gate?(%{layers: [{:approval, _} | _]} = state),
+    do: SwarmCodeCLI.UI.Keymap.typing_under_card?(state)
+
+  defp gate?(_state), do: false
 
   defp draft_context(state) do
-    with key when not is_nil(key) <- State.current_draft_key(state),
+    with {key, text} <- draft_at_caret(state, 257),
+         true <- Regex.match?(~r/^\/[A-Za-z0-9_.-]*\z/, text) do
+      {key, text}
+    else
+      _ -> nil
+    end
+  end
+
+  # The composer's draft as `{key, text}` while the caret ends it with no
+  # selection and it is no longer than `max` bytes; else nil.
+  defp draft_at_caret(state, max) do
+    with true <- gate?(state),
+         key when not is_nil(key) <- State.current_draft_key(state),
          draft <- Drafts.fetch(state.drafts, key),
          text <- Editor.text(draft.editor),
-         true <- byte_size(text) <= 257 and Regex.match?(~r/^\/[A-Za-z0-9_.-]*\z/, text),
+         true <- byte_size(text) <= max,
          true <- Editor.cursor(draft.editor) == String.length(text),
          nil <- Editor.selection(draft.editor) do
       {key, text}

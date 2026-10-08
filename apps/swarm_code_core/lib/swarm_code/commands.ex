@@ -17,10 +17,10 @@ defmodule SwarmCode.Commands do
      "Toggle plan mode; with a task, plan it now as a read-only run beside the others"},
     {"review", "", "Review the uncommitted changes and report problems"},
     {"effort", "[low|medium|high|max]", "Reasoning effort of this conversation's chat model"},
-    {"swarm_effort", "[low|medium|high|max]",
+    {"worker_effort", "[low|medium|high|max]",
      "Reasoning effort of this conversation's worker model"},
     {"model", "<model | provider_id|model>", "Switch this conversation's chat model"},
-    {"swarm_model", "<model | provider_id|model>", "Switch the model the workers use"},
+    {"worker_model", "<model | provider_id|model>", "Switch the model the workers use"},
     {"rewind", "", "Rewind the conversation and files to before an earlier turn"},
     # cli020 E3 (decision 4h): the last turn, its messages and its files.
     {"undo", "", "Rewind the last turn: its messages and its files"},
@@ -70,6 +70,12 @@ defmodule SwarmCode.Commands do
     "full-access" => :full_access,
     "full_access" => :full_access
   }
+
+  # cli021 B2: the worker slot's commands were `/swarm_effort` and
+  # `/swarm_model`. Those names are hidden aliases: not listed, still parsed
+  # (as the worker command, so a result names `worker_effort`), and a custom
+  # command or workflow that really has the old name keeps it.
+  @aliases %{"swarm_effort" => "worker_effort", "swarm_model" => "worker_model"}
 
   @max_text 262_144
   @max_label 256
@@ -166,7 +172,9 @@ defmodule SwarmCode.Commands do
     name = String.downcase(raw)
 
     if valid_name?(name) do
-      case Enum.find(registry(opts), &(&1.name == name)) do
+      registry = registry(opts)
+
+      case Enum.find(registry, &(&1.name == name)) || aliased(registry, name) do
         nil -> error(:unknown_command)
         item -> parse_known(item, args, opts)
       end
@@ -176,6 +184,19 @@ defmodule SwarmCode.Commands do
   end
 
   defp parse_text(_, _), do: error(:invalid_command)
+
+  defp aliased(registry, name) do
+    with target when is_binary(target) <- Map.get(@aliases, name),
+         %{kind: :builtin} = item <- Enum.find(registry, &(&1.name == target)) do
+      item
+    else
+      _ -> nil
+    end
+  end
+
+  @doc "The hidden old names of the worker slot's commands and what they mean now."
+  @spec aliases() :: %{String.t() => String.t()}
+  def aliases, do: @aliases
 
   defp parse_known(%{kind: :custom} = item, args, _opts) do
     custom = item.definition
@@ -207,7 +228,7 @@ defmodule SwarmCode.Commands do
   defp parse_known(%{kind: :workflow} = item, args, _opts),
     do: workflow_launch(item, item.name, args)
 
-  defp parse_known(%{name: name} = item, args, opts) when name in ["effort", "swarm_effort"] do
+  defp parse_known(%{name: name} = item, args, opts) when name in ["effort", "worker_effort"] do
     effort = Map.get(@efforts, String.downcase(args))
     key = if name == "effort", do: :efforts, else: :swarm_efforts
     allowed = Keyword.get(opts, key, [:low, :medium, :high, :max])
@@ -238,10 +259,10 @@ defmodule SwarmCode.Commands do
   # A model id is one token: a bare model name, or `<provider_id>|<model>` as
   # `SwarmCode.Domain.Providers.option/2` spells it. It stays a string; the
   # daemon resolves it against the configured providers.
-  defp parse_known(%{name: name}, "", _) when name in ["model", "swarm_model"],
+  defp parse_known(%{name: name}, "", _) when name in ["model", "worker_model"],
     do: error(:missing_argument)
 
-  defp parse_known(%{name: name} = item, args, _) when name in ["model", "swarm_model"] do
+  defp parse_known(%{name: name} = item, args, _) when name in ["model", "worker_model"] do
     if valid_text?(args, @max_label) and not Regex.match?(~r/[\s\p{Cc}]/u, args),
       do:
         ok(item, :set_model, %{

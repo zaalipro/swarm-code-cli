@@ -161,6 +161,49 @@ class LiveDemo(unittest.TestCase):
         d.wait_for(b'SELECT'); d.send(b'q'); d.wait_for(b'Enter/X quit')
         d.send(b'X'); d.finish()
 
+    def answer_question(self,d):
+        # The demo's waiting question opens over the composer; answer it first.
+        d.wait_for(b'Which review should proceed?'); self.settle(d,1.0)
+        d.send(b'2'); self.settle(d,.2); d.send(b'\r')
+        end=time.monotonic()+20
+        while b'Which review should proceed?' in d.screen() and time.monotonic()<end: d.pump()
+        self.assertNotIn(b'Which review should proceed?',d.screen()); self.settle(d,.5)
+    def test_effort_picker_arrows_and_enter_change_the_status_line(self):
+        # cli021 B1: the picker's cursor follows the arrows (it stayed on the
+        # ticked row, so they looked dead); Enter sets the row under it.
+        d=self.demo(); d.wait_for(b'NO USER DATA'); self.answer_question(d)
+        d.send(b'/effort'); d.wait_for(b'Reasoning effort of this conversation')
+        d.send(b'\r'); d.wait_for(b'Effort \xc2\xb7 chat model'); d.capture('effort-picker')
+        # No effort is set yet: the cursor starts on `default`, two Downs reach `medium`.
+        status=lambda: b'\n'.join(d.screen().split(b'\n')[-3:])
+        self.assertNotIn(b'medium',status())
+        mark=len(d.output)
+        d.send(b'\x1b[B'); self.settle(d,.5); d.send(b'\x1b[B'); self.settle(d,.5)
+        # The cursor row is drawn bold on the hover surface: `medium` is
+        # repainted so, `default` (where it started) is not the cursor now.
+        moved=bytes(d.output[mark:]); at=moved.rfind(b'medium')
+        self.assertNotEqual(at,-1,'the picker was not repainted by the arrows')
+        self.assertEqual(moved[at-4:at],b'\x1b[1m',moved[max(0,at-60):at+10])
+        d.send(b'\r')
+        end=time.monotonic()+15
+        while time.monotonic()<end and (b'Effort \xc2\xb7 chat model' in d.screen() or b'medium' not in status()): d.pump()
+        self.assertNotIn(b'Effort \xc2\xb7 chat model',d.screen())
+        self.assertIn(b'medium',status()); d.capture('effort-picked')
+        self.quit(d)
+    def test_slash_argument_dropdown_and_command_colour(self):
+        # cli021 B3/B4: `/panel ` lists its choices under the composer, Down +
+        # Enter runs the highlighted one; the command word is drawn bold.
+        d=self.demo(); d.wait_for(b'NO USER DATA'); self.answer_question(d)
+        d.send(b'/panel '); d.wait_for(b'summaries on'); d.capture('panel-dropdown')
+        self.assertIn(b'compact',d.screen()); self.assertIn(b'hidden',d.screen())
+        # Esc closes the list only: the draft stays and nothing quits.
+        d.send(b'\x1b'); self.settle(d,.5)
+        self.assertNotIn(b'summaries on',d.screen()); self.assertIsNone(d.status)
+        d.send(b'\x15'); d.send(b'/panel hid'); d.wait_for(b'No side panel')
+        d.send(b'\r'); self.settle(d,.8)
+        self.assertNotIn(b'No side panel',d.screen())
+        self.quit(d)
+
     def test_killed_native_writer_restores_before_demo_returns(self):
         d=self.demo(); d.wait_for(b'NO USER DATA')
         native=[pid for pid,name in d.descendants() if name.endswith('swarm-terminal-port')]

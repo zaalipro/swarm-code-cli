@@ -40,9 +40,9 @@ defmodule SwarmCode.Cli020ECommandsTest do
       assert desc("undo") == "Rewind the last turn: its messages and its files"
     end
 
-    test "bare /effort and /swarm_effort show the effort" do
+    test "bare /effort and /worker_effort show the effort" do
       assert {:ok, %{action: :show_effort, target: :chat}} = Commands.parse("/effort")
-      assert {:ok, %{action: :show_effort, target: :swarm}} = Commands.parse("/swarm_effort")
+      assert {:ok, %{action: :show_effort, target: :swarm}} = Commands.parse("/worker_effort")
 
       assert {:ok, %{action: :set_effort, effort: :high, target: :chat}} =
                Commands.parse("/effort high")
