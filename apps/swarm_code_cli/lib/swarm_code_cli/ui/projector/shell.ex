@@ -330,10 +330,20 @@ defmodule SwarmCodeCLI.UI.Projector.Shell do
 
   defp tab_worthy?(_), do: true
 
+  # fix round U3: after a rewind the conversation's newest run is the rewound
+  # (superseded) one; the title row must not keep naming it until the next
+  # turn, so a conversation view gives it no tab. A run opened on its own
+  # (`{:run, id}`) keeps its tab, as the row says what is on screen.
   defp active_run_id(state) do
     case Support.run(state) do
-      %{id: id} -> id
-      _ -> nil
+      %{id: id, state: :superseded} ->
+        if match?({:conversation, _}, state.destination), do: nil, else: id
+
+      %{id: id} ->
+        id
+
+      _ ->
+        nil
     end
   end
 

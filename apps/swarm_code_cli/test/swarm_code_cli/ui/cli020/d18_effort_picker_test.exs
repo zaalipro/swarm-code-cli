@@ -77,4 +77,40 @@ defmodule SwarmCodeCLI.UI.Cli020.D18EffortPickerTest do
     state = %{leveled() | layers: [{:effort_picker, :swarm}]}
     assert {_state, []} = Reducer.update(state, {:effort_pick, "medium"})
   end
+
+  describe "fix round U4: a default row while no effort is set" do
+    test "the swarm picker with no effort starts on a default row and offers the levels after it" do
+      state = leveled()
+      assert EffortPicker.current(state, :swarm) == nil
+      assert EffortPicker.rows(state, :swarm) == ~w(default low high)
+      {opened, []} = Reducer.update(state, {:slash_local, {:effort, :swarm}})
+      assert [{:effort_picker, :swarm} | _] = opened.layers
+      assert opened.selection["effort_picker"] == 0
+      assert EffortPicker.selected(opened, :swarm) == "default"
+    end
+
+    test "with an effort set there is no default row" do
+      assert EffortPicker.rows(leveled(), :chat) == ~w(low medium high)
+    end
+
+    test "Enter on the default row sends nothing and closes the picker" do
+      {state, []} = Reducer.update(leveled(), {:slash_local, {:effort, :swarm}})
+      assert {:ok, {:effort_pick, "default"}} = Keymap.resolve(Input.key(:enter), state, %{})
+      {state, effects} = Reducer.update(state, {:effort_pick, "default"})
+      assert requests(effects) == []
+      assert state.layers == []
+    end
+
+    test "the picker draws the default row ticked and the levels under it" do
+      state = %{leveled() | layers: [{:effort_picker, :swarm}], focus: "dialog"}
+      dialog = SwarmCodeCLI.UI.Projector.Dialog.project(state, :wide)
+      text = inspect(dialog.blocks, limit: :infinity)
+      assert text =~ ~s({:effort_pick, "default"})
+      assert text =~ ~s({:effort_pick, "low"})
+
+      screen = SwarmCodeCLI.Cli020EHelpers.screen_text(state)
+      assert screen =~ ~r/✓ default/
+      refute screen =~ ~r/✓ low/
+    end
+  end
 end
