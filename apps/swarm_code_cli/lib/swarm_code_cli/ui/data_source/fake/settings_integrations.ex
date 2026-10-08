@@ -1884,8 +1884,14 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.SettingsIntegrations do
           "added" => Enum.count(rows, &(&1["change"] == "new")),
           "removed" => Enum.count(rows, &(&1["change"] == "gone")),
           "unchanged" => Enum.count(rows, &(&1["change"] == "same")),
-          "ms" => 380
+          "ms" => 380,
+          # cli021 C1: the service's fetch saves (replace) and says so; this
+          # fake keeps the preview-then-apply flow the screens' tests drive,
+          # and answers the same keys with `saved: false`.
+          "saved" => false
         }
+
+        summary = Map.put(summary, "words", fetch_words(summary))
 
         fetches =
           Map.put(state.fetches, task["task_id"], %{
@@ -1933,7 +1939,20 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.SettingsIntegrations do
       end
 
     changed = Enum.count(rows, &(&1["added"] + &1["removed"] > 0))
-    {{:done, %{"providers" => rows, "total" => length(rows), "changed" => changed}, rows}, state}
+    failed = Enum.count(rows, &(&1["state"] != "done"))
+
+    summary = %{
+      "providers" => rows,
+      "total" => length(rows),
+      "changed" => changed,
+      "saved" => 0,
+      "failed" => failed,
+      "words" =>
+        "#{length(rows)} providers · no change" <>
+          if(failed > 0, do: " · #{failed} failed", else: "")
+    }
+
+    {{:done, summary, rows}, state}
   end
 
   defp finish("search.test", %{"target" => %{"kind" => kind}} = task, state) do
@@ -4086,5 +4105,19 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.SettingsIntegrations do
       },
       "x-custom" => true
     }
+  end
+
+  # "12 models · 3 new · 2 removed", the service's sentence.
+  defp fetch_words(%{"listed" => listed, "added" => added, "removed" => removed}) do
+    changes =
+      case Enum.reject(
+             [added > 0 && "#{added} new", removed > 0 && "#{removed} removed"],
+             &(&1 == false)
+           ) do
+        [] -> ["no change"]
+        parts -> parts
+      end
+
+    Enum.join(["#{listed} #{if listed == 1, do: "model", else: "models"}" | changes], " · ")
   end
 end

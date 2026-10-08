@@ -56,7 +56,7 @@ defmodule SwarmCodeCLI.Cli020.E1WorkerWordsTest do
 
   test "the command descriptions say worker" do
     descriptions = Map.new(SwarmCode.Commands.catalogue("/"), &{&1.name, &1.desc})
-    assert descriptions["swarm_effort"] == "Reasoning effort of this conversation's worker model"
-    assert descriptions["swarm_model"] == "Switch the model the workers use"
+    assert descriptions["worker_effort"] == "Reasoning effort of this conversation's worker model"
+    assert descriptions["worker_model"] == "Switch the model the workers use"
   end
 end

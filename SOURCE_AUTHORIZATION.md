@@ -128,3 +128,23 @@ stays `desktop-4c7c577` (58 migrations). The provenance sync pins this commit
 records at six adaptation pins: the five named above and this commit. The
 recorded copyright, MIT license and NOTICE terms remain in place. This addendum
 does not publish or modify the desktop repository.
+
+## Addendum: desktop commit a93d6d8e (CLI 0.2.1 K7, 2026-10-08)
+
+**Date:** 2026-10-08
+
+The CLI 0.2.1 pass (`docs/superpowers/plans/2026-10-08-cli-0.2.1/00_brief.md`,
+lane K, task K7) re-derives the extracted domain from desktop commit
+`a93d6d8ee74358749e157e91dea46ad8c0d66722`: desktop `main` with pass 74 (lane K:
+the 1,000,000-token default context window and the overflow retry that trims
+under what was sent, the workflow approval override, the retry status words,
+version 0.2.2) merged, the same project and owner as the commits named above.
+It adds no migration, so the schema contract stays `desktop-4c7c577`
+(58 migrations). The provenance sync pins this commit
+(`provenance/sync-rules.json`), and 263 of the 287 entries in
+`provenance/extracted-files.json` record it as their upstream commit; 23 record
+`fb1b4ff82354ac8ff2e82d4f6516121fd55ff212` and one, the frozen
+`domain/format.ex`, records `4c7c577aa909274b009dc1bf0f216e5179acddc9`. The
+verifier admits version 2 records at seven adaptation pins: the six named above
+and this commit. The recorded copyright, MIT license and NOTICE terms remain in
+place. This addendum does not publish or modify the desktop repository.

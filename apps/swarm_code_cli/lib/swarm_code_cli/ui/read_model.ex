@@ -21,6 +21,9 @@ defmodule SwarmCodeCLI.UI.ReadModel do
             # cli020 C4: the ncode app is open on the same database (the shell
             # watch's `desktop_running` delta).
             desktop_running: false,
+            # cli021 C2: the side panel's vitals (`DTO.Vitals`) of the shown
+            # conversation: model speeds and memory, nil before the first.
+            vitals: nil,
             order: %{},
             coverage: %{},
             chunks: %ChunkDeque{}
@@ -313,6 +316,19 @@ defmodule SwarmCodeCLI.UI.ReadModel do
   def delta(model, _slot, %Delta{kind: :desktop_running, body: %DTO.DesktopPresence{} = body}),
     do: {:ok, %{model | desktop_running: body.running}, [], []}
 
+  # cli021 C2: the newest reading replaces the last; the daemon sends them in
+  # order, and a reading older than the one held (by its instant) is dropped.
+  def delta(model, _slot, %Delta{kind: :vitals, body: %DTO.Vitals{} = body}) do
+    case model.vitals do
+      %DTO.Vitals{conversation_id: same, sampled_at: held}
+      when same == body.conversation_id and held > body.sampled_at ->
+        {:ok, model, [], []}
+
+      _ ->
+        {:ok, %{model | vitals: body}, [], []}
+    end
+  end
+
   # Metadata only ever describes the workspace's conversation; anywhere else
   # there is nothing it could update.
   def delta(model, _slot, %Delta{kind: :workspace_metadata}), do: {:ok, model, [], []}
@@ -365,6 +381,12 @@ defmodule SwarmCodeCLI.UI.ReadModel do
 
         _ ->
           model
+      end
+
+    model =
+      case Map.get(body, :vitals) do
+        %DTO.Vitals{} = vitals when slot == :shell -> %{model | vitals: vitals}
+        _ -> model
       end
 
     coverage = %{

@@ -247,10 +247,10 @@ defmodule SwarmCodeCLI.UI.ShellAwarenessTest do
       rows = String.split(screen(state), "\n")
       assert String.starts_with?(hd(rows), " ⬢ ailogic   ")
       refute hd(rows) =~ "SAVED"
-      assert List.last(rows) =~ "deepseek-v4.1-flash · agents gpt-5.5"
+      assert List.last(rows) =~ "deepseek-v4.1-flash · worker gpt-5.5"
     end
 
-    test "says nothing about the sub agents' model while it is the chat model" do
+    test "says nothing about the worker model while it is the chat model" do
       state =
         with_workspace(fixture(),
           project: "ailogic",
@@ -258,7 +258,7 @@ defmodule SwarmCodeCLI.UI.ShellAwarenessTest do
           swarm_model: "deepseek-v4.1-flash"
         )
 
-      refute state |> screen() |> String.split("\n") |> List.last() =~ "agents "
+      refute state |> screen() |> String.split("\n") |> List.last() =~ "worker "
     end
 
     test "falls back to the product's name for a saved session without a project" do

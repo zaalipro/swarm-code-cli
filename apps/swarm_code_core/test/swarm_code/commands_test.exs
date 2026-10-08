@@ -4,7 +4,7 @@ defmodule SwarmCode.CommandsTest do
 
   test "catalogue exposes all builtins" do
     assert Enum.map(Commands.catalogue(), & &1.name) ==
-             ~w(swarm goal plan review effort swarm_effort model swarm_model rewind undo stop workflow workflows create-workflow ultra consensus deep_research attach compact new clear resume resume-run rename delete fork approval trust diff cost search export agents help quit)
+             ~w(swarm goal plan review effort worker_effort model worker_model rewind undo stop workflow workflows create-workflow ultra consensus deep_research attach compact new clear resume resume-run rename delete fork approval profile trust diff cost search export agents help quit)
   end
 
   test "catalogue ranking" do
@@ -32,7 +32,9 @@ defmodule SwarmCode.CommandsTest do
   test "mode and effort" do
     assert {:ok, %{name: "effort", effort: :high}} = Commands.parse("/effort high")
     assert {:ok, %{name: "plan", mode: :plan}} = Commands.parse("/plan")
-    assert {:ok, %{name: "swarm_effort", effort: :max}} = Commands.parse("/swarm_effort max")
+    assert {:ok, %{name: "worker_effort", effort: :max}} = Commands.parse("/worker_effort max")
+    # cli021 B2: the old name is a hidden alias of the same command.
+    assert {:ok, %{name: "worker_effort", effort: :max}} = Commands.parse("/swarm_effort max")
     assert {:error, %{type: :invalid_effort}} = Commands.parse("/effort extreme")
   end
 
@@ -41,11 +43,15 @@ defmodule SwarmCode.CommandsTest do
             %{name: "model", kind: :builtin, action: :set_model, target: :chat, model: "gpt-5.5"}} =
              Commands.parse("/model gpt-5.5")
 
-    assert {:ok, %{name: "swarm_model", action: :set_model, target: :swarm, model: "abc|gpt-5.5"}} =
+    assert {:ok,
+            %{name: "worker_model", action: :set_model, target: :swarm, model: "abc|gpt-5.5"}} =
+             Commands.parse("/worker_model abc|gpt-5.5 ")
+
+    assert {:ok, %{name: "worker_model", action: :set_model, target: :swarm}} =
              Commands.parse("/swarm_model abc|gpt-5.5 ")
 
     assert {:error, %{type: :missing_argument}} = Commands.parse("/model")
-    assert {:error, %{type: :missing_argument}} = Commands.parse("/swarm_model   ")
+    assert {:error, %{type: :missing_argument}} = Commands.parse("/worker_model   ")
     assert {:error, %{type: :invalid_argument}} = Commands.parse("/model gpt 5")
     assert {:error, %{type: :invalid_argument}} = Commands.parse("/model gpt\u0001x")
 
@@ -56,10 +62,10 @@ defmodule SwarmCode.CommandsTest do
     assert byte_size(model) == 256
   end
 
-  test "the palette completes /mo to model and /swarm_m to swarm_model" do
+  test "the palette completes /mo to model and /worker_m to worker_model" do
     assert hd(Commands.catalogue("/mo")).name == "model"
-    assert Enum.map(Commands.catalogue("/swarm_m"), & &1.name) == ["swarm_model"]
-    assert Enum.find(Commands.catalogue(), &(&1.name == "swarm_model")).desc =~ "workers"
+    assert Enum.map(Commands.catalogue("/worker_m"), & &1.name) == ["worker_model"]
+    assert Enum.find(Commands.catalogue(), &(&1.name == "worker_model")).desc =~ "workers"
   end
 
   test "attachment staging parses a bounded path" do
@@ -175,7 +181,7 @@ defmodule SwarmCode.CommandsTest do
     assert {:ok, %{effort: :xhigh}} = Commands.parse("/effort xhigh", efforts: [:low, :xhigh])
     assert {:error, %{type: :invalid_effort}} = Commands.parse("/effort high", efforts: [:low])
     # cli020 E3: bare, it shows the effort (the TUI's picker, D18/D20).
-    assert {:ok, %{action: :show_effort, target: :swarm}} = Commands.parse("/swarm_effort")
+    assert {:ok, %{action: :show_effort, target: :swarm}} = Commands.parse("/worker_effort")
   end
 
   test "mode commands distinguish toggles settings and turns" do
@@ -389,5 +395,19 @@ defmodule SwarmCode.CommandsTest do
     assert byte_size(
              inspect(elem(Commands.parse("/effort " <> String.duplicate("x", 10_000)), 1))
            ) < 512
+  end
+
+  test "cli021 P1 /profile parses a bare list and one project profile name" do
+    assert {:ok, %{action: :apply_profile, profile: nil}} = Commands.parse("/profile")
+    assert {:ok, %{action: :apply_profile, profile: "fast-2"}} = Commands.parse("/profile fast-2")
+
+    assert {:ok, %{action: :apply_profile, profile: "Deep_1"}} =
+             Commands.parse("/profile  Deep_1 ")
+
+    assert {:error, %{type: :invalid_argument}} = Commands.parse("/profile two words")
+    assert {:error, %{type: :invalid_argument}} = Commands.parse("/profile ../x")
+
+    assert {:error, %{type: :invalid_argument}} =
+             Commands.parse("/profile " <> String.duplicate("a", 33))
   end
 end

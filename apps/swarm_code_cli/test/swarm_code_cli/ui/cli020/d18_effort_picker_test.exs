@@ -33,6 +33,7 @@ defmodule SwarmCodeCLI.UI.Cli020.D18EffortPickerTest do
 
   test "bare /effort and /swarm_effort are local; with a level they go to the daemon" do
     assert Keymap.local_command("/effort") == {:effort, :chat}
+    assert Keymap.local_command("/worker_effort") == {:effort, :swarm}
     assert Keymap.local_command("/swarm_effort") == {:effort, :swarm}
     assert Keymap.local_command("/effort high") == nil
     assert {:ok, {:slash_local, {:effort, :chat}}} = Keymap.draft_send(type(ready(), "/effort"))

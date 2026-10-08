@@ -59,7 +59,8 @@ defmodule SwarmCodeCLI.Cli020.E28StatusItemsTest do
     entry = Enum.find(Registry.all(), &(&1.key == "terminal.status_items"))
     assert entry.storage == {:cli, "status_items"}
     assert entry.type == :checklist
-    assert entry.default == ~w(mode approval model effort ctx cost waiting)
-    assert length(entry.choices) == 8
+    # cli021 U1: `vitals` (the busiest model's tok/s and RAM) joined the list.
+    assert entry.default == ~w(mode approval model effort ctx cost waiting vitals)
+    assert length(entry.choices) == 9
   end
 end

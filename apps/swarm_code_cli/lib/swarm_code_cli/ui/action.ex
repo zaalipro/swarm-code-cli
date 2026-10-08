@@ -103,6 +103,9 @@ defmodule SwarmCodeCLI.UI.Action do
           # key sends a "workflow" message as it is (T5); /diff, /theme and
           # /mouse (T1, T2, T9) and the /approval picker's rows (T7).
           | {:run_command, binary()}
+          # cli021 B3: the argument list (`SlashPalette`): Tab, Enter.
+          | {:complete_argument, binary()}
+          | {:run_argument, binary()}
           | :send_plain
           # cli020 lane D (§8.3).
           | {:cycle_permission_mode}
@@ -283,6 +286,14 @@ defmodule SwarmCodeCLI.UI.Action do
 
   def validate({:run_command, name} = action),
     do: valid_action(action, SwarmCodeCLI.UI.SlashPalette.valid_name?(name))
+
+  def validate({kind, text} = action) when kind in [:complete_argument, :run_argument],
+    do:
+      valid_action(
+        action,
+        is_binary(text) and byte_size(text) in 3..600 and String.valid?(text) and
+          not Regex.match?(~r/[\p{Cc}\n\r]/u, text)
+      )
 
   def validate(:send_plain), do: {:ok, :send_plain}
 

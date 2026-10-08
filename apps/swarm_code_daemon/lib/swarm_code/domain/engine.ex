@@ -256,19 +256,32 @@ defmodule SwarmCode.Domain.Engine do
   # use it.
   @approval_modes ~w(read_only auto full_access)
 
-  defp check_approval_override(_conversation, nil), do: :ok
+  # The project is read only for a mode that needs its trust.
+  defp check_approval_override(conversation, mode) when mode in ["auto", "full_access"],
+    do: check_approval_mode(SwarmCode.Domain.Projects.get(conversation.project_id), mode)
 
-  defp check_approval_override(conversation, mode) when mode in @approval_modes do
-    with true <- mode != "read_only",
-         %{} = project <- SwarmCode.Domain.Projects.get(conversation.project_id),
-         false <- SwarmCode.Domain.Projects.trusted?(project) do
-      {:error, :untrusted_project}
-    else
-      _allowed_or_no_project -> :ok
-    end
+  defp check_approval_override(_conversation, mode), do: check_approval_mode(nil, mode)
+
+  @doc """
+  pass 74 K3: the pass 72 F8 check of a per-run approval override, for every
+  launch that takes one (`start_chat_turn/4`, `start_swarm/3`,
+  `SwarmCode.Domain.Workflows.launch/1`). `nil` (no override) and `"read_only"` are
+  always allowed; `"auto"` and `"full_access"` are refused in a project the
+  user has not trusted (`Projects.trusted?/1`); any other value is invalid.
+  A nil project (gone, or "No project") refuses nothing.
+  """
+  @spec check_approval_mode(%SwarmCode.Domain.Projects.Project{} | nil, term()) ::
+          :ok | {:error, :invalid_approval_mode | :untrusted_project}
+  def check_approval_mode(_project, nil), do: :ok
+  def check_approval_mode(_project, "read_only"), do: :ok
+
+  def check_approval_mode(project, mode) when mode in @approval_modes do
+    if is_struct(project) and not SwarmCode.Domain.Projects.trusted?(project),
+      do: {:error, :untrusted_project},
+      else: :ok
   end
 
-  defp check_approval_override(_conversation, _mode), do: {:error, :invalid_approval_mode}
+  def check_approval_mode(_project, _mode), do: {:error, :invalid_approval_mode}
 
   # spec 67 T12 (B14): every turn start reads the project through this, in a
   # `with` clause, before it writes anything.

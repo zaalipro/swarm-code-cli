@@ -22,14 +22,14 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
 
   @composer_contexts [:composer, :composer_normal, :composer_visual]
 
-  def project(state, class, width) do
+  def project(state, class, width, opts \\ []) do
     policy = state.capabilities.ambiguous_width
     context = Context.of(state)
     budget = if class in [:xl, :wide, :medium], do: 2, else: 1
 
     lead = [gap(" ", state)] ++ vim_spans(state, context) ++ select_spans(state)
     lead_cells = cells(lead, policy)
-    parts = facts(state, class)
+    parts = facts(state, class, Keyword.get(opts, :vitals?, false))
     toast = toast(state)
 
     right =
@@ -147,8 +147,8 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
     |> List.flatten()
   end
 
-  # mode · approval · trust · model · ctx · cost · waiting · connection
-  defp facts(state, class) do
+  # mode · approval · trust · model · ctx · cost · waiting · vitals · connection
+  defp facts(state, class, vitals?) do
     workspace = Map.get(state.read_model.snapshots, :workspace)
     run = Support.run(state)
 
@@ -185,10 +185,26 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
 
     branch = branch_words(state, workspace)
 
-    # The workers' model, only when it is not the chat model.
-    agents =
+    # The workers' model, only when it is not the chat model (cli021 U2:
+    # the slot is the worker's, as the desktop's labels and B2's commands say).
+    worker =
       if is_binary(swarm_model) and swarm_model != "" and swarm_model != chat_model,
-        do: {"agents " <> swarm_model, tint(:plain, state, :text_faint, [])}
+        do: {"worker " <> swarm_model, tint(:plain, state, :text_faint, [])}
+
+    # cli021 U1: the busiest model's tok/s and the RAM, while neither the
+    # dock nor the strip draws them.
+    # cli021 qa: a live speed outranks the worker, the cost and the RAM (it
+    # used to go first, exactly while it moved); a stale one goes first.
+    vitals =
+      if vitals?,
+        do:
+          state
+          |> SwarmCodeCLI.UI.Projector.Vitals.status_parts()
+          |> Enum.map(fn {kind, words, role} ->
+            {Map.fetch!(%{live_speed: 45, speed: 8, ram: 10}, kind),
+             {words, tint(:plain, state, role, [])}}
+          end),
+        else: []
 
     context = context_words(state, run, workspace)
     cost = cost_words(state, workspace)
@@ -223,7 +239,8 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
       "branch" => [{30, branch}],
       "ctx" => [{50, context}],
       "cost" => [{40, cost}],
-      "waiting" => [{90, waiting}]
+      "waiting" => [{90, waiting}],
+      "vitals" => vitals
     }
 
     items =
@@ -232,7 +249,7 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
         else: %{
           items
           | "approval" => [{70, approval}, {65, trust}],
-            "model" => [{60, model}, {20, agents}],
+            "model" => [{60, model}, {20, worker}],
             "cost" => [{40, cost}, {45, background}]
         }
 
@@ -250,8 +267,8 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
 
   defp essential(parts), do: Enum.filter(parts, &(elem(&1, 0) >= 85))
 
-  @status_items ~w(mode approval model effort branch ctx cost waiting)
-  @default_items ~w(mode approval model effort ctx cost waiting)
+  @status_items ~w(mode approval model effort branch ctx cost waiting vitals)
+  @default_items ~w(mode approval model effort ctx cost waiting vitals)
 
   # cli020 E28: cli.json `status_items` (through `state.prefs`, the json
   # names), a list of distinct known items; anything else is the default.
@@ -364,13 +381,24 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
            String.duplicate(on, filled) <>
            String.duplicate(off, 6 - filled) <>
            " " <>
-           Turns.compact(tokens) <> "/" <> Turns.compact(window),
+           Turns.compact(tokens) <> "/" <> window_words(window),
          tint(:plain, state, :text_muted, [])}
 
       true ->
         {"ctx " <> Turns.compact(tokens), tint(:plain, state, :text_muted, [])}
     end
   end
+
+  # cli021 U2: the model's window in round words, `1M`, `1.5M`, `200k`.
+  defp window_words(n) when n >= 1_000_000 do
+    n
+    |> Kernel./(1_000_000)
+    |> :erlang.float_to_binary(decimals: 1)
+    |> String.replace_suffix(".0", "")
+    |> Kernel.<>("M")
+  end
+
+  defp window_words(n), do: Turns.compact(n)
 
   # What the conversation in view has cost so far: the daemon's total when it
   # says one, else the sum of the runs in view.

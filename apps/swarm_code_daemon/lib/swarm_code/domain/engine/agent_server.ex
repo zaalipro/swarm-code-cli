@@ -96,6 +96,10 @@ defmodule SwarmCode.Domain.Engine.AgentServer do
         # one-shot flag of the context-overflow retry.
         last_compact_turn: nil,
         overflow_retried?: false,
+        # pass 74 K1: the budget the last context-overflow retry trimmed to.
+        # The provider has shown its window is smaller than the configured or
+        # default one, so every later think step of this agent stays under it.
+        overflow_budget: nil,
         # spec 67 T24 (G26): the turn this agent last compacted its *own*
         # history at, so a tail that is still over the threshold cannot buy a
         # summary call every single turn.
@@ -409,7 +413,16 @@ defmodule SwarmCode.Domain.Engine.AgentServer do
         detail: "context overflow — trimmed and retried"
       })
 
-      budget = trunc(Context.budget(state.model.model, state.settings) * 0.6)
+      # pass 74 K1: 0.6 of what was *sent* (or the provider's own numbers),
+      # not of the budget — under the 1 000 000 default window the history that
+      # a 128 k model refused is far below the budget, and 0.6 of the budget
+      # trimmed nothing.
+      budget =
+        Context.overflow_budget(
+          Context.estimate_tokens(state.messages),
+          think_budget(state),
+          msg
+        )
 
       # spec 74 BUGS-53: a rewrite strips the signed thinking it invalidated.
       messages = state.messages |> Context.fit(budget) |> strip_if_rewritten()
@@ -418,12 +431,23 @@ defmodule SwarmCode.Domain.Engine.AgentServer do
         state
         | messages: messages,
           overflow_retried?: true,
+          overflow_budget: budget,
           # The failed attempt does not cost the agent one of its turns, the
           # way a transport retry does not (spec 11 §7.3).
           turn: max(state.turn - 1, 0)
       })
     else
       finish(state, {:error, kind, msg})
+    end
+  end
+
+  # pass 74 K1: the model's budget, capped by what the provider refused.
+  defp think_budget(state) do
+    budget = Context.budget(state.model.model, state.settings)
+
+    case Map.get(state, :overflow_budget) do
+      cap when is_integer(cap) -> min(budget, cap)
+      _none -> budget
     end
   end
 
@@ -508,8 +532,9 @@ defmodule SwarmCode.Domain.Engine.AgentServer do
 
   defp start_llm(state) do
     # spec 66 T13: the model's own context window when Settings → Pricing has
-    # one for it, today's three cases otherwise.
-    budget = Context.budget(state.model.model, state.settings)
+    # one for it, the 1 000 000 default otherwise (pass 74 K1) — and never
+    # more than a context-overflow retry of this agent trimmed to.
+    budget = think_budget(state)
 
     # spec 66 T14: over 80 % of the budget, a root chat agent summarises the
     # conversation into a `kind: "compact"` run of its own. This turn carries on

@@ -221,7 +221,7 @@ defmodule SwarmCode.Daemon.Service.Settings.Providers do
       "provider.test" -> test(cmd)
       "provider.fetch_models" -> fetch_models(cmd)
       "provider.apply_models" -> apply_models(cmd, ctx)
-      "provider.fetch_all" -> fetch_all()
+      "provider.fetch_all" -> fetch_all(cmd)
       "provider.forget_caps" -> forget_caps(cmd, ctx)
       _ -> unsupported()
     end
@@ -715,24 +715,128 @@ defmodule SwarmCode.Daemon.Service.Settings.Providers do
     end
   end
 
+  # cli021 C1: a fetch saves. `attributes.apply` is `replace` (the default, the
+  # desktop's Fetch models), `add` (the new ids only; a hand-added model stays)
+  # or `none` (the difference only, written later by `provider.apply_models`).
   defp fetch_models(cmd) do
-    case Providers.get(Kit.get(Kit.cmd(cmd, :target), "id") || "") do
-      nil ->
-        gone()
+    with {:ok, mode} <- fetch_mode(Kit.cmd(cmd, :attributes)) do
+      case Providers.get(Kit.get(Kit.cmd(cmd, :target), "id") || "") do
+        nil ->
+          gone()
 
-      provider ->
-        Kit.task(
-          action: "provider.fetch_models",
-          key: provider.id,
-          timeout_ms: @fetch_ms,
-          cancellable?: true,
-          kind: :plain,
-          run: fn _report -> fetch_one(provider) end,
-          summary: &Map.drop(&1, ["rows", "models"]),
-          redact: Secrets.redaction_list(provider)
-        )
+        provider ->
+          Kit.task(
+            action: "provider.fetch_models",
+            key: provider.id,
+            timeout_ms: @fetch_ms,
+            cancellable?: true,
+            kind: :plain,
+            run: fn _report -> fetch_and_store(provider, mode) end,
+            summary: &Map.drop(&1, ["rows", "models"]),
+            redact: Secrets.redaction_list(provider)
+          )
+      end
     end
   end
+
+  defp fetch_mode(attrs) do
+    case Kit.get(attrs, "apply") do
+      mode when mode in [nil, "replace"] -> {:ok, :replace}
+      "add" -> {:ok, :add}
+      "none" -> {:ok, :none}
+      _other -> Kit.error(:invalid, "apply must be replace, add or none")
+    end
+  end
+
+  @doc false
+  # Lists a provider's models and, unless `mode` is `:none`, saves them in one
+  # transaction against the stored row (`:replace` swaps the list, `:add`
+  # appends the new ids). A list longer than 2 000 is never replaced (it would
+  # drop models silently): it is added up to the ceiling instead.
+  def fetch_and_store(%Provider{} = provider, mode) do
+    with {:ok, diff} <- fetch_one(provider) do
+      store_fetched(provider, diff, mode)
+    end
+  end
+
+  defp store_fetched(_provider, diff, :none),
+    do: {:ok, diff |> Map.put("saved", false) |> Map.put("words", fetch_words(diff, :none))}
+
+  defp store_fetched(provider, diff, mode) do
+    mode = if mode == :replace and diff["truncated"], do: :add, else: mode
+
+    outcome =
+      Repo.retry(:settings_provider, fn ->
+        Repo.transaction(fn ->
+          fresh = Repo.get(Provider, provider.id) || Repo.rollback(:not_found)
+          current = fresh.models || []
+          next = if mode == :replace, do: diff["models"], else: add_new(current, diff["models"])
+
+          if next == current,
+            do: {:unchanged, fresh},
+            else: update_or_rollback(fresh, %{"models" => next})
+        end)
+      end)
+
+    case outcome do
+      {:ok, {:updated, saved}} ->
+        Providers.broadcast()
+        {:ok, saved_diff(diff, saved, mode)}
+
+      {:ok, {:unchanged, fresh}} ->
+        {:ok, saved_diff(diff, fresh, mode)}
+
+      {:error, :not_found} ->
+        {:error, "#{provider.name} no longer exists"}
+
+      {:error, {:invalid, _changeset}} ->
+        {:error, "#{provider.name}: the fetched list could not be saved"}
+
+      {:error, _other} ->
+        {:error, "#{provider.name}: the fetched list could not be saved"}
+    end
+  end
+
+  defp saved_diff(diff, saved, mode) do
+    diff
+    |> Map.put("saved", true)
+    |> Map.put("stored", length(saved.models || []))
+    |> Map.put("words", fetch_words(diff, mode))
+  end
+
+  # "12 models · 3 new · 2 removed": what the fetch found. An add never removes.
+  defp fetch_words(diff, mode) do
+    new = diff["added"] || 0
+    gone = if mode == :add, do: 0, else: diff["removed"] || 0
+
+    changes =
+      case Enum.reject([count_if(new, "new"), count_if(gone, "removed")], &is_nil/1) do
+        [] -> ["no change"]
+        parts -> parts
+      end
+
+    Enum.join(
+      [plural(diff["listed"] || 0, "model")] ++
+        changes ++ truncated_words(diff) ++ in_use_words(diff, gone),
+      " · "
+    )
+  end
+
+  defp count_if(0, _word), do: nil
+  defp count_if(n, word), do: "#{n} #{word}"
+
+  defp truncated_words(%{"truncated" => true, "kept" => kept, "listed" => listed}),
+    do: ["#{kept} of #{listed} kept"]
+
+  defp truncated_words(_diff), do: []
+
+  defp in_use_words(%{"removed_in_use" => n}, gone) when gone > 0 and n > 0,
+    do: ["#{plural(n, "conversation")} named a removed model"]
+
+  defp in_use_words(_diff, _gone), do: []
+
+  defp plural(1, noun), do: "1 #{noun}"
+  defp plural(n, noun), do: "#{n} #{noun}s"
 
   @doc false
   # Lists a provider's models and computes the difference with its stored
@@ -870,50 +974,70 @@ defmodule SwarmCode.Daemon.Service.Settings.Providers do
 
   defp fetch_again, do: Kit.error(:not_found, "fetch again first")
 
-  defp fetch_all do
-    providers = Providers.list()
+  defp fetch_all(cmd) do
+    with {:ok, mode} <- fetch_mode(Kit.cmd(cmd, :attributes)) do
+      providers = Providers.list()
 
-    run = fn report ->
-      total = length(providers)
-      report.(%{"done" => 0, "total" => total})
+      run = fn report ->
+        total = length(providers)
+        report.(%{"done" => 0, "total" => total})
 
-      rows =
-        providers
-        |> Task.async_stream(&fetch_one/1,
-          max_concurrency: 4,
-          timeout: @fetch_ms,
-          on_timeout: :kill_task,
-          ordered: true
-        )
-        |> Stream.zip(providers)
-        |> Stream.with_index(1)
-        |> Enum.map(fn {{outcome, provider}, done} ->
-          report.(%{"done" => done, "total" => total})
-          fetch_all_row(provider, outcome)
-        end)
+        rows =
+          providers
+          |> Task.async_stream(&fetch_and_store(&1, mode),
+            max_concurrency: 4,
+            timeout: @fetch_ms,
+            on_timeout: :kill_task,
+            ordered: true
+          )
+          |> Stream.zip(providers)
+          |> Stream.with_index(1)
+          |> Enum.map(fn {{outcome, provider}, done} ->
+            report.(%{"done" => done, "total" => total})
+            fetch_all_row(provider, outcome)
+          end)
 
-      {:ok,
-       %{
-         "providers" => rows,
-         "count" => total,
-         "changed" => Enum.count(rows, &(&1["added"] > 0 or &1["removed"] > 0))
-       }}
+        saved =
+          Enum.count(rows, &(&1["saved"] == true and (&1["added"] > 0 or &1["removed"] > 0)))
+
+        failed = Enum.count(rows, &(&1["state"] != "done"))
+
+        {:ok,
+         %{
+           "providers" => rows,
+           "count" => total,
+           "changed" => Enum.count(rows, &(&1["added"] > 0 or &1["removed"] > 0)),
+           "saved" => saved,
+           "failed" => failed,
+           "words" => fetch_all_words(total, saved, failed)
+         }}
+      end
+
+      Kit.task(
+        action: "provider.fetch_all",
+        key: "all",
+        timeout_ms: @fetch_all_ms,
+        cancellable?: true,
+        kind: :plain,
+        run: run,
+        summary: fn result ->
+          Map.update(result, "providers", [], fn rows ->
+            Enum.map(rows, &Map.drop(&1, ["models"]))
+          end)
+        end,
+        redact: Enum.flat_map(providers, &Secrets.redaction_list/1)
+      )
     end
+  end
 
-    Kit.task(
-      action: "provider.fetch_all",
-      key: "all",
-      timeout_ms: @fetch_all_ms,
-      cancellable?: true,
-      kind: :plain,
-      run: run,
-      summary: fn result ->
-        Map.update(result, "providers", [], fn rows ->
-          Enum.map(rows, &Map.drop(&1, ["models"]))
-        end)
-      end,
-      redact: Enum.flat_map(providers, &Secrets.redaction_list/1)
-    )
+  # "3 providers · 2 updated · 1 failed"
+  defp fetch_all_words(total, saved, failed) do
+    parts =
+      [plural(total, "provider")] ++
+        if(saved > 0, do: ["#{saved} updated"], else: ["no change"]) ++
+        if failed > 0, do: ["#{failed} failed"], else: []
+
+    Enum.join(parts, " · ")
   end
 
   defp fetch_all_row(provider, {:ok, {:ok, diff}}) do
@@ -925,7 +1049,8 @@ defmodule SwarmCode.Daemon.Service.Settings.Providers do
       "added" => diff["added"],
       "removed" => diff["removed"],
       "truncated" => diff["truncated"],
-      "message" => nil
+      "saved" => diff["saved"],
+      "message" => diff["words"]
     }
   end
 
@@ -947,6 +1072,7 @@ defmodule SwarmCode.Daemon.Service.Settings.Providers do
       "added" => 0,
       "removed" => 0,
       "truncated" => false,
+      "saved" => false,
       "message" => Kit.redact(message, Secrets.redaction_list(provider))
     }
   end

@@ -491,6 +491,25 @@ defmodule SwarmCodeCLI.UI.Settings.ModelPicker do
             {" fetch again", :text_faint}
           ]
 
+        # cli021 U3: a fetch started here says what it found (C1's words).
+        match?({_, _}, task) and R.field(elem(task, 1), "state") == "done" ->
+          s = R.field(elem(task, 1), "summary") || %{}
+
+          words =
+            case R.field(s, "words") do
+              w when is_binary(w) and w != "" ->
+                w
+
+              _ ->
+                SwarmCodeCLI.UI.Settings.Sections.Providers.model_words(
+                  R.field(s, "listed") || 0,
+                  R.field(s, "added") || 0,
+                  R.field(s, "removed") || 0
+                )
+            end
+
+          [{" · " <> words, :text_muted}]
+
         is_map(last) and R.field(last, "state") == "done" ->
           [{" · fetched this session #{R.hhmm(R.field(last, "at"))}", :text_muted}]
 

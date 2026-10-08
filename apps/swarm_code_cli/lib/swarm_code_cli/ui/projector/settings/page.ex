@@ -228,6 +228,13 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Page do
 
   defp chip(row, _caps), do: row
 
+  defp ends_blank?(segments) do
+    case segments |> Enum.map_join("", &elem(&1, 0)) |> String.last() do
+      nil -> true
+      last -> String.trim(last) == ""
+    end
+  end
+
   @doc "Every ` · ` in a primary or muted segment drawn faint; the pieces keep their role."
   @spec split_dots(segments()) :: segments()
   def split_dots(segments) do
@@ -509,17 +516,20 @@ defmodule SwarmCodeCLI.UI.Projector.Settings.Page do
 
         true ->
           lead = if k == 0, do: head, else: [{"  ", :text_primary}]
+          fitted = Text.fit(state, label_k, grid.label_width)
 
           gap =
             cond do
-              k == 0 and chip? -> []
+              # cli021 qa: a label that fills its column keeps one cell from
+              # the chip (`Fetch every provider's models✓ …` ran together).
+              k == 0 and chip? -> if(ends_blank?(fitted), do: [], else: [{" ", :text_primary}])
               k == 0 and well? -> [{" ", {:text_primary, :on, :hover}}]
               true -> [{" ", :text_primary}]
             end
 
           indent = if k == 0, do: [], else: [{"  ", :text_primary}]
 
-          lead ++ Text.fit(state, label_k, grid.label_width) ++ gap ++ indent ++ value_k
+          lead ++ fitted ++ gap ++ indent ++ value_k
       end
     end
 

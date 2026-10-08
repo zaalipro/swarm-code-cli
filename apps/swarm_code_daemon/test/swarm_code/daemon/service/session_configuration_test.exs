@@ -181,6 +181,47 @@ defmodule SwarmCode.Daemon.Service.SessionConfigurationTest do
     assert fresh.chat_model == "b-model"
   end
 
+  # cli021 qa: `/worker_model` (and the settings row and a profile that names
+  # only the worker model) used to end the whole override, so a first-run
+  # session (whose conversation stores no chat model) lost its chat model:
+  # "no model provider" on the status line, and a refused next turn.
+  test "a /worker_model choice ends only the worker half of the override", c do
+    assert {:ok, prepared} = SessionConfiguration.prepare(c.session, @swarm_env)
+    assert [provider] = Providers.list()
+
+    {:ok, _} =
+      Providers.update(provider, %{models: ["fixture-model", "worker-model"]})
+
+    Cache.clear()
+    id = prepared.conversation.id
+
+    assert {:ok, _} =
+             SwarmCode.Daemon.Service.CommandDispatcher.dispatch(
+               id,
+               "/worker_model #{provider.id}|worker-model"
+             )
+
+    fresh = Conversations.get!(id)
+    assert fresh.swarm_model == "worker-model"
+    assert fresh.chat_model == nil
+
+    shown = SessionConfiguration.overlay(fresh)
+    assert shown.chat_provider_id == provider.id
+    assert shown.chat_model == "fixture-model"
+    assert shown.swarm_model == "worker-model"
+    assert SessionConfiguration.override_source(SessionConfiguration.override()) == :first_run_env
+
+    # The chat choice still ends what is left.
+    assert {:ok, _} =
+             SwarmCode.Daemon.Service.CommandDispatcher.dispatch(
+               id,
+               "/model #{provider.id}|fixture-model"
+             )
+
+    assert SessionConfiguration.override() == nil
+    assert SessionConfiguration.overlay(Conversations.get!(id)).swarm_model == "worker-model"
+  end
+
   test "first run: no usable provider, SWARM_* create exactly one row and say so", c do
     before_conversation = Repo.query!("SELECT * FROM conversations").rows
 

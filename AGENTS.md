@@ -6,7 +6,7 @@ Claude Code reads this file directly when the project has no `CLAUDE.md`; do not
 
 ## What this is
 
-Product name (v0.2.0): **ncode**, lowercase; the installed command is `ncode`
+Product name (v0.2.1): **ncode**, lowercase; the installed command is `ncode`
 (`rel/overlays/bin/ncode`), with `swarmcode` and `swarm-code` kept as deprecated aliases that
 exec it. Internal names are unchanged on purpose: modules (`SwarmCode.*`, `SwarmCodeCLI.*`), OTP
 apps and the release (`swarm_code_*`), Mix tasks, the data folder
@@ -111,8 +111,8 @@ Three umbrella apps with deliberate ownership boundaries (`apps/*/mix.exs`):
   handshake/request), `SwarmCode.Commands` the slash-command registry, and
   `SwarmCode.Governance.Provenance` the extraction audit.
 - **`swarm_code_daemon`**: the domain extracted from the desktop app plus the daemon shell.
-  `SwarmCode.Domain.*` is the desktop lineage, re-derived from desktop `7b8f379f` (desktop pass
-  72, CLI 0.2.0) by `mix swarm_code.provenance.sync`; CLI-local files (`domain/runtime.ex`, `paths.ex`,
+  `SwarmCode.Domain.*` is the desktop lineage, re-derived from desktop `a93d6d8e` (desktop pass
+  74, CLI 0.2.1; before it `7b8f379f`, pass 72, CLI 0.2.0) by `mix swarm_code.provenance.sync`; CLI-local files (`domain/runtime.ex`, `paths.ex`,
   `notifications.ex`, `pub_sub.ex`, `feature_catalog.ex`, `html.ex`,
   `engine/pending_interactions.ex`, `tools/agent_title.ex`) are never synced (Ecto SQLite Repo via vendored `exqlite`,
   conversations, `Engine` with run/agent supervisors, LLM adapters, tools, workflows, research,
@@ -169,7 +169,8 @@ Invariants that the code base defends and tests pin:
   nesting ceilings that return errors rather than truncating.
 - The canonical database is never reset, recreated or repaired. An unknown schema fails closed
   with `StartupError{code: :schema_incompatible}`. The domain is synced to desktop `4c7c577a`
-  (desktop 0.2.0), re-synced to `7b8f379f` (desktop pass 72, no migration); its schema contract is
+  (desktop 0.2.0), re-synced to `7b8f379f` (desktop pass 72, no migration), then to `a93d6d8e`
+  (desktop pass 74, CLI 0.2.1, no migration); its schema contract is
   `desktop-4c7c577` (58 migrations, `apps/swarm_code_daemon/priv/schema/desktop-4c7c577.json`),
   and `forward_compatible` lets the CLI run `20261015000004`, `20261016000001`,
   `20261016000002`, `20261017000004` and `20261018000001` itself after the verified backup.
@@ -374,9 +375,12 @@ Provenance and domain (lane A):
   `:llm_max_response_bytes` ceiling (16 MiB) while reading, `HTTP.redact_key/2` (the request's
   key at any length, before the snippet is cut), no redirect URL or host in the logs, and a
   non-JSON SSE event fails the call (`notes/fix-L.md`). Saved sessions use the same patched
-  adapters. One more patch on `domain/llm/http.ex` (fix S2): the retry callback gets
-  `HTTP 500` when the retry came from a status, else the reason word, so the status line says
-  `retrying 2/5 · HTTP 500`; upstream it to the desktop.
+  adapters. Fix S2's retry words (`retrying 2/5 · HTTP 500`: the HTTP status when the retry came
+  from one, else the reason word) are upstream since desktop pass 74 K4 (`HTTP.shown_reason/2`),
+  so that patch is gone (cli021 K7). `domain/mcp/client.ex` and `domain/lsp/client.ex` carry one
+  recorded patch each: `clientInfo` says the CLI's own version (the desktop says its own, 0.2.2
+  at pass 74). A version stamp changes both literals and `version_test.exs`, then re-runs
+  `mix swarm_code.provenance.sync --ref <pin>` to re-record them.
 - Test fixtures the mapped tests call from `SwarmCode.Fixtures` live in
   `apps/swarm_code_daemon/test/support/domain_fixtures.ex` (`assistant_identity/0`, `eventually/2`).
 - The CLI domain has no `LLM.Fake`: engine tests use the loopback OpenAI-compatible server
@@ -393,9 +397,10 @@ Headless and release (lane B):
   `--fail-on-denied` fails a done run that had denials. Denials are said in one stderr line.
   `--approval MODE` (`SWARM_HEADLESS_APPROVAL`) is a `PersistedBackend` start option passed to
   the runs it starts (plain prompts, prompts and slash commands drained from the queue, the
-  dispatcher's chat/swarm launches and `retry_run`'s swarm; cli020 fix S1). Workflow runs keep
-  the project's mode until the desktop's `Workflows.launch/1` takes an `approval_mode`
-  (`notes/fix-S.md`); `/compact` has no tools, so no approval to carry.
+  dispatcher's chat/swarm launches and `retry_run`'s swarm; cli020 fix S1), and workflow launches
+  (desktop pass 74 K3's `Workflows.launch/1` `approval_mode`, cli021 P2; the dispatcher refuses
+  `auto`/`full` in an untrusted project before it writes the message, in the launcher's
+  words); `/compact` has no tools, so no approval to carry.
 - **Exit codes:** 0 done, 1 failed, 2 usage, 3 refused, 4 changed elsewhere (`ncode config`),
   129 SIGHUP, 143 SIGTERM (`Release.Signals`; SIGINT stays under `+Bd`).
 - `--resume` takes an exact title or a 6+ character id prefix (`SessionSelection.resolve/2`);
@@ -478,3 +483,45 @@ Projector, theme, settings (lane E):
   (`mix swarm_code.settings --write` from `apps/swarm_code_cli`).
 - Lane-E test helpers: `test/support/cli020_e_helpers.ex` (`fixture/3`, `screen/1`,
   `put_workspace/2` which `Map.merge`s fields other lanes add, `cell_style/3`, `item/2`).
+
+## CLI 0.2.1 (cli021) facts
+
+The pass's brief is `docs/superpowers/plans/2026-10-08-cli-0.2.1/00_brief.md` (rules from the
+0.2.0 contract), its lane notes are in `notes/{K,B,C,U}.md`, the outcome is the "CLI 0.2.1"
+section of `docs/research/2026-10-07-cli020-outcome.md`.
+
+- Domain (K7): synced to desktop `a93d6d8e` (desktop pass 74 = desktop 0.2.2's engine, no
+  migration). Every model without a configured `context_window` has a 1,000,000-token window
+  (`Engine.Context.default_window/0`, `effective_window/2`), the trim budget stays 75 %
+  (750,000), and a provider's "context too long" refusal retries trimmed to
+  `Context.overflow_budget/3` and keeps that budget for the rest of the agent's run.
+- The worker slot's commands are `/worker_effort` and `/worker_model`; `/swarm_effort` and
+  `/swarm_model` are hidden aliases (`SwarmCode.Commands.aliases/0`: not listed, still parsed as
+  the worker command). The wire's `swarm_effort(_levels)`/`swarm_model` fields and the project
+  file's keys keep their names; the words say worker.
+- `/<command> ` opens an argument dropdown (`UI.SlashArgs` lists the choices, `UI.SlashPalette`
+  has the argument mode, drawn by the existing popup): Up/Down move, Tab completes, Enter
+  completes and runs, Esc closes the list only. The composer draws a known command word in the
+  accent (`SlashPalette.known?/1`), an unknown one muted. The effort picker's cursor is
+  `selection["effort_picker"]` (cli021 B1: it drew from `state.focus`, so the arrows looked dead).
+- Fetching models saves (C1): `provider.fetch_models` and `provider.fetch_all` replace the stored
+  list by default (`attributes.apply`: `replace` | `add` | `none` = the old preview), in one
+  transaction, and answer `words` (`12 models · 3 new · 2 removed`), `saved`, `stored`; a list over
+  2,000 ids is added up to the ceiling, never replaced. The client `Fake` keeps the
+  preview-then-apply default (`saved: false`) for the screen tests.
+- Vitals (C2 → U1): a `vitals` delta on the shell watch (`DTO.Vitals`, `DTO.ModelSpeed`, also
+  `ShellSnapshot.vitals`), at most 1/s and only while a shell watch exists, measured by
+  `Daemon.Service.Vitals` (owned tasks: the conversation's models every 10 s, a bounded `ps`
+  every 5 s); the client reads `state.read_model.vitals`. The daemon and the TUI share one VM, so
+  `beam_bytes`/`os_rss_bytes` are the app and `children_rss_bytes` the renderer and tool commands.
+  The side panel's top block is the vitals (`ui/projector/vitals.ex`): tok/s per model with a
+  sparkline and RAM as a gauge. Below 120 columns or with the panel hidden, the busiest model's
+  tok/s and RAM move to the strip or the status line (`vitals` status item, lowest rank). Theme
+  roles only; nil vitals draw nothing; unsaved (live-launcher) sessions send none.
+- Context window (C3 → U2/U3): the workspace's and the agent detail's `context_window` is the
+  model's window (`Daemon.Service.ContextWindow.window/2` = `Context.effective_window/2`), not
+  the 75 % budget; the status line reads `ctx used/window` (`8k/1M`) and `worker <model>`.
+  Settings → Models & effort has a `context windows` group (one row per model the conversation
+  uses; the window lives on the model's price row, so an unpriced model opens its price draft).
+- `/profile [name]` applies a `.swarm_code/config.json` profile (the desktop's sentences);
+  `/resume-run` skips runs already resumed or rewound away ("Nothing to resume.").

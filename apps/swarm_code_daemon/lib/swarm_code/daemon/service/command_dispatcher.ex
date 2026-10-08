@@ -14,6 +14,7 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
     Conversations,
     Engine,
     Attachments,
+    ProjectConfig,
     Projects,
     Providers,
     Repo,
@@ -59,6 +60,12 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
     :ambiguous_conversation,
     :client_only
   ]
+  # cli021 int (K3): the headless launcher's sentence (`Release.Headless`) for
+  # a workflow that `ncode -p --approval auto|full` launches in an untrusted
+  # project (the launcher refuses such a session up front; this is the
+  # launch's own check).
+  @untrusted_approval "--approval auto and full need a trusted project. " <>
+                        "Run /trust in ncode first, or use --approval read-only."
   # A report is read in a dialog: bounded like the goal report.
   @report_bytes 60_000
   @review_prompt "Review the current uncommitted changes: call git_status and git_diff, then " <>
@@ -139,6 +146,51 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
       end
 
     Enum.map(levels, &elem(&1, 0))
+  end
+
+  @doc false
+  @spec resumable_run([map()]) :: map() | nil
+  def resumable_run(runs) when is_list(runs) do
+    continued = continued_ids(runs)
+
+    Enum.find(runs, fn run ->
+      run.kind in ["chat", "swarm"] and run.status in ["stopped", "failed", "interrupted"] and
+        is_nil(Map.get(run, :superseded_at)) and not MapSet.member?(continued, run.id)
+    end)
+  end
+
+  @doc false
+  # The ids of the runs that have a continuation `Conversations.Writes` would
+  # refuse a second time: one that runs, waits or finished, or has a root node.
+  # A continuation compensated to `failed` at its start (no root node) does not.
+  @spec continued_ids([map()]) :: MapSet.t()
+  def continued_ids(runs) do
+    for run <- runs,
+        is_binary(Map.get(run, :resumed_from_run_id)),
+        run.status in ["running", "paused", "waiting_user", "done"] or
+          not is_nil(Map.get(run, :root_node_id)),
+        into: MapSet.new(),
+        do: run.resumed_from_run_id
+  end
+
+  @doc false
+  # The map `Workflows.launch/1` takes. cli021 P2: the session's
+  # `ncode -p --approval` mode rides along (desktop pass 74 K3 makes the launch
+  # carry it to the run; until then the key is ignored and a workflow run
+  # decides in the project's mode).
+  def workflow_launch_attrs(conv, definition, cmd, message_id, opts) do
+    Map.merge(
+      %{
+        conversation: conv,
+        project: conv.project,
+        definition: definition,
+        args: cmd.inputs,
+        rest: cmd.input,
+        created_by: "user",
+        launch_message_id: message_id
+      },
+      Map.new(approval(opts))
+    )
   end
 
   defp execute(conv, %{kind: :custom} = cmd, opts) do
@@ -257,6 +309,29 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
          do: result(conv, cmd.name, :updated, %{fields: fields, field: field, value: cmd.effort})
   end
 
+  # cli021 P1 (desktop spec 70 D4): `/profile <name>` applies a profile of the
+  # project's `.swarm_code/config.json` (its effort, swarm_effort, model and
+  # swarm_model) to this conversation; bare, it lists the names. Every answer is
+  # a sentence for the notice line, as on the desktop.
+  defp execute(conv, %{action: :apply_profile} = cmd, _) do
+    profiles = profiles(conv)
+    names = profiles |> Map.keys() |> Enum.sort() |> Enum.join(", ")
+
+    cond do
+      profiles == %{} ->
+        profile_said(conv, cmd, "No profiles defined — add them to .swarm_code/config.json")
+
+      cmd.profile == nil ->
+        profile_said(conv, cmd, "Available profiles: " <> names)
+
+      not Map.has_key?(profiles, cmd.profile) ->
+        profile_said(conv, cmd, ~s(Unknown profile "#{cmd.profile}" — available: #{names}))
+
+      true ->
+        apply_profile(conv, cmd, Map.fetch!(profiles, cmd.profile))
+    end
+  end
+
   # `/model` and `/swarm_model` take either `<provider_id>|<model>` or a bare
   # model id. A bare id that several providers list goes to the provider the
   # conversation already uses for that role, then the settings default, then
@@ -275,7 +350,8 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
         # An explicit `/model` wins over the launcher's `--model` from here on
         # (the override lives only in memory, pass70 D3).
         with {:ok, _} <- Conversations.update(conv, fields) do
-          SessionConfiguration.clear_override()
+          # cli021 qa: a worker choice ends only the worker half.
+          SessionConfiguration.release(if cmd.target == :chat, do: :chat, else: :swarm)
 
           result(conv, cmd.name, :updated, %{
             fields: fields,
@@ -372,13 +448,11 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
     end
   end
 
+  # cli021 P3 (desktop spec 74 BUGS-56): the newest run that can still be
+  # resumed; one that already has a continuation or that a rewind folded away
+  # is not offered again.
   defp execute(conv, %{action: :resume_last} = cmd, _) do
-    run =
-      Enum.find(
-        Conversations.list_runs(conv.id),
-        &(&1.kind in ["chat", "swarm"] and &1.status in ["stopped", "failed", "interrupted"])
-      )
-
+    run = resumable_run(Conversations.list_runs(conv.id))
     if run, do: started(conv, cmd.name, Engine.resume_run(run)), else: {:error, :not_resumable}
   end
 
@@ -464,6 +538,9 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
 
     with %SwarmCode.Domain.Workflows.Definition{} = definition <- definition,
          {:ok, _} <- Workflows.cast_args(definition.meta, cmd.inputs, cmd.input),
+         # cli021 int (K3): the launch checks the session's `--approval` mode
+         # too; checked here first, so a refusal writes no message or title.
+         :ok <- Engine.check_approval_mode(conv.project, Keyword.get(opts, :approval_mode)),
          {:ok, conv} <- Conversations.set_title_from(conv, "/" <> cmd.workflow),
          {:ok, message} <-
            Conversations.create_message(%{
@@ -474,18 +551,12 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
       started(
         conv,
         cmd.name,
-        Workflows.launch(%{
-          conversation: conv,
-          project: conv.project,
-          definition: definition,
-          args: cmd.inputs,
-          rest: cmd.input,
-          created_by: "user",
-          launch_message_id: message.id
-        })
+        Workflows.launch(workflow_launch_attrs(conv, definition, cmd, message.id, opts))
       )
     else
       nil -> {:error, :unknown_workflow}
+      {:error, :untrusted_project} -> {:error, {:untrusted_project, @untrusted_approval}}
+      {:error, :invalid_approval_mode} -> {:error, :invalid_options}
       {:error, _} -> {:error, :invalid_workflow_arguments}
       _ -> {:error, :invalid_metadata}
     end
@@ -523,12 +594,13 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
          do: result(conv, cmd.name, :conversation, %{conversation_id: new.id, created: true})
   end
 
-  # cli020 C17: bare /effort and /swarm_effort (E3's `:show_effort`) say the
-  # current level and the ones accepted here.
+  # cli020 C17: bare /effort and /worker_effort (E3's `:show_effort`) say the
+  # current level and the ones accepted here (cli021 B2: the worker slot's
+  # command is /worker_effort; /swarm_effort is its hidden alias).
   defp execute(conv, %{action: :show_effort} = cmd, _) do
     {words, field, command} =
       case Map.get(cmd, :target, :chat) do
-        :swarm -> {"Worker effort", :swarm_effort, "/swarm_effort"}
+        :swarm -> {"Worker effort", :swarm_effort, "/worker_effort"}
         _ -> {"Effort", :effort, "/effort"}
       end
 
@@ -922,6 +994,89 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
     |> Kernel.<>("…")
   end
 
+  defp profiles(%{project: %{root_path: root}}) when is_binary(root) do
+    case ProjectConfig.load(root) do
+      {:ok, %{profiles: profiles}} when is_map(profiles) -> profiles
+      _ -> %{}
+    end
+  end
+
+  defp profiles(_conv), do: %{}
+
+  defp profile_said(conv, cmd, text),
+    do: result(conv, cmd.name, :profile, %{text: text, applied: false})
+
+  # The fields a profile names are applied one by one: a model no provider
+  # lists, or an effort the (new) model does not offer, is skipped and said,
+  # the rest still applies. Models first, so the efforts are checked against
+  # the models the conversation will have.
+  defp apply_profile(conv, cmd, profile) do
+    {models, model_skips} =
+      Enum.reduce([{:chat, "model"}, {:swarm, "swarm_model"}], {%{}, []}, fn {target, key}, acc ->
+        profile_model(conv, target, key, profile[key], acc)
+      end)
+
+    planned = struct(conv, models)
+
+    {efforts, effort_skips} =
+      Enum.reduce(
+        [{:chat, :effort, "effort"}, {:swarm, :swarm_effort, "swarm_effort"}],
+        {%{}, []},
+        fn
+          {target, field, key}, acc ->
+            profile_effort(planned, target, field, key, profile[key], acc)
+        end
+      )
+
+    fields = Map.merge(models, efforts)
+
+    with {:ok, _} <- if(fields == %{}, do: {:ok, conv}, else: Conversations.update(conv, fields)) do
+      # An explicit model pick wins over the launcher's `--model` from here on.
+      cond do
+        Map.has_key?(models, :chat_model) -> SessionConfiguration.release(:chat)
+        models != %{} -> SessionConfiguration.release(:swarm)
+        true -> :ok
+      end
+
+      skipped = Enum.reverse(effort_skips) ++ Enum.reverse(model_skips)
+      said = "Switched to profile: #{cmd.profile}"
+
+      said =
+        if skipped == [], do: said, else: said <> " · skipped " <> Enum.join(skipped, ", ")
+
+      result(conv, cmd.name, :profile, %{text: said, applied: true, fields: fields})
+    end
+  end
+
+  defp profile_model(_conv, _target, _key, value, acc) when value in [nil, ""], do: acc
+
+  defp profile_model(conv, target, key, value, {fields, skips}) when is_binary(value) do
+    {id_field, model_field} =
+      if target == :chat,
+        do: {:chat_provider_id, :chat_model},
+        else: {:swarm_provider_id, :swarm_model}
+
+    case resolve_model(conv, target, value) do
+      {:ok, provider_id, model} ->
+        {Map.merge(fields, %{id_field => provider_id, model_field => model}), skips}
+
+      :error ->
+        {fields, ["#{key} #{value} (no provider lists it)" | skips]}
+    end
+  end
+
+  defp profile_model(_conv, _target, _key, _value, acc), do: acc
+
+  defp profile_effort(_conv, _target, _field, _key, value, acc) when value in [nil, ""], do: acc
+
+  defp profile_effort(conv, target, field, key, value, {fields, skips}) when is_binary(value) do
+    if value in efforts(conv, target),
+      do: {Map.put(fields, field, value), skips},
+      else: {fields, ["#{key} #{value} (not offered)" | skips]}
+  end
+
+  defp profile_effort(_conv, _target, _field, _key, _value, acc), do: acc
+
   defp resolve_model(conv, target, arg) do
     providers = Providers.list()
     lists? = fn provider, model -> model in (provider.models || []) end
@@ -1035,6 +1190,9 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
   defp failure(:invalid_workflow_arguments), do: {:error, :invalid_workflow_arguments}
   # cli020: a refusal in words (C11 /delete of a live conversation).
   defp failure({:busy, words}) when is_binary(words), do: {:error, {:busy, words}}
+
+  defp failure({:untrusted_project, words}) when is_binary(words),
+    do: {:error, {:untrusted_project, words}}
 
   # pass73 T3/T8: an unexpected failure is still refused, but cli.log names its
   # shape (a tag, never a changeset's text) so the next report is diagnosable.

@@ -37,7 +37,8 @@ defmodule SwarmCode.Domain.MCP.Client do
   alias SwarmCode.Domain.Tools.RunCommand
 
   @protocol_version "2025-06-18"
-  @client_info %{"name" => "ncode", "version" => "0.2.0"}
+  # cli021 K7 (CLI patch): the CLI introduces itself with its own version.
+  @client_info %{"name" => "ncode", "version" => "0.2.1"}
   @handshake_timeout 30_000
   # spec 60 T12: an HTTP body past this is refused; `tools/list` stops after this many pages.
   @max_http_body 16_000_000

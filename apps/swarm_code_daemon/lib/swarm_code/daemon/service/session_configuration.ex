@@ -27,7 +27,8 @@ defmodule SwarmCode.Daemon.Service.SessionConfiguration do
   @type override :: %{
           required(:provider_id) => String.t(),
           required(:model) => String.t(),
-          optional(:source) => :flag | :first_run_env
+          optional(:source) => :flag | :first_run_env,
+          optional(:roles) => [:chat | :swarm]
         }
 
   @doc """
@@ -61,20 +62,66 @@ defmodule SwarmCode.Daemon.Service.SessionConfiguration do
   it through here; nothing is written.
   """
   @spec overlay(struct() | map()) :: struct() | map()
-  def overlay(%{} = conversation) do
-    case override() do
-      %{provider_id: id, model: model} ->
-        %{
-          conversation
-          | chat_provider_id: id,
-            chat_model: model,
-            swarm_provider_id: id,
-            swarm_model: model
-        }
+  def overlay(%{} = conversation), do: overlay(conversation, override())
 
-      nil ->
-        conversation
+  @doc """
+  `overlay/1` for a given override (the settings values read it from their
+  context). cli021 qa: an override whose worker half was released by an
+  explicit worker choice (`release/1`) replaces only the chat fields.
+  """
+  @spec overlay(struct() | map(), override() | nil) :: struct() | map()
+  def overlay(%{} = conversation, %{provider_id: id, model: model} = override) do
+    roles = roles(override)
+
+    conversation =
+      if :chat in roles,
+        do: %{conversation | chat_provider_id: id, chat_model: model},
+        else: conversation
+
+    if :swarm in roles,
+      do: %{conversation | swarm_provider_id: id, swarm_model: model},
+      else: conversation
+  end
+
+  def overlay(%{} = conversation, _override), do: conversation
+
+  @doc "The model slots an override still covers (`:chat`, `:swarm`; both unless released)."
+  @spec roles(map() | nil) :: [:chat | :swarm]
+  def roles(%{roles: roles}) when is_list(roles), do: roles
+  def roles(%{provider_id: _, model: _}), do: [:chat, :swarm]
+  def roles(_override), do: []
+
+  @doc """
+  cli021 qa: an explicit choice for one slot ends the override for that slot
+  only. A worker choice (`/worker_model`, the settings row, a profile naming
+  only the worker model) used to drop the whole override, and a session whose
+  conversation stores no chat model of its own (a first run from `NCODE_*`)
+  then had no chat model at all. `release(:chat)` ends everything, as
+  `/model` always did.
+  """
+  @spec release(:chat | :swarm) :: :ok
+  def release(:chat), do: clear_override()
+
+  def release(:swarm) do
+    case override() do
+      %{} = override ->
+        case roles(override) -- [:swarm] do
+          [] ->
+            clear_override()
+
+          left ->
+            Application.put_env(
+              :swarm_code_daemon,
+              @override_key,
+              Map.put(override, :roles, left)
+            )
+        end
+
+      _ ->
+        :ok
     end
+
+    :ok
   end
 
   @doc "The active session override, or nil."

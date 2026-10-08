@@ -1403,7 +1403,7 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
 
         :swarm ->
           {Map.get(workspace, :swarm_effort_levels), Map.get(workspace, :swarm_effort),
-           "Effort · workers"}
+           "Effort · worker model"}
       end
 
     levels =
@@ -1441,11 +1441,18 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
 
     ids = Enum.map(options, &elem(&1, 0))
 
+    # cli021 B1: the cursor is a row (`state.selection["effort_picker"]`, which
+    # ↑/↓ move and Enter reads), not the ticked one; it starts on the current
+    # level when the picker opens. Without a selection it falls back to that.
     focus =
-      cond do
-        state.focus in ids -> state.focus
-        is_binary(current) and ("effort-" <> current) in ids -> "effort-" <> current
-        true -> List.first(ids)
+      case Map.get(state.selection, "effort_picker") do
+        at when is_integer(at) and ids != [] ->
+          Enum.at(ids, min(max(at, 0), length(ids) - 1))
+
+        _ ->
+          if is_binary(current) and ("effort-" <> current) in ids,
+            do: "effort-" <> current,
+            else: List.first(ids)
       end
 
     {Density.safe(title, state, rect.width - 2), options,

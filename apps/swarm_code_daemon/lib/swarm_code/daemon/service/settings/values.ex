@@ -248,21 +248,13 @@ defmodule SwarmCode.Daemon.Service.Settings.Values do
   # for this launch, or NCODE_MODEL when a first run created the provider
   # from the environment (`SessionConfiguration.override_source/1`, B13).
   defp layer(%Entry{} = entry, :flag, _stored, _invalid?, reads) do
+    slot = %{"session.model" => :chat, "session.sub_agent_model" => :swarm}[entry.key]
+
     case reads.override do
-      %{provider_id: id, model: model} = override
-      when entry.key in ["session.model", "session.sub_agent_model"] ->
-        value = %{"provider_id" => id, "model" => model}
-
-        case override_source(override) do
-          :first_run_env ->
-            Layers.layer(:env, value, source: "NCODE_MODEL", note: "first run")
-
-          :flag ->
-            Layers.layer(:flag, value, source: "--model", note: "this launch only")
-
-          nil ->
-            Layers.unset(:flag)
-        end
+      %{provider_id: id, model: model} = override when slot != nil ->
+        if slot in SessionConfiguration.roles(override),
+          do: flag_layer(%{"provider_id" => id, "model" => model}, override),
+          else: Layers.unset(:flag)
 
       _ ->
         Layers.unset(:flag)
@@ -359,6 +351,14 @@ defmodule SwarmCode.Daemon.Service.Settings.Values do
 
   # cli020 C13/B13: where the session override came from.
   defp override_source(override), do: SessionConfiguration.override_source(override)
+
+  defp flag_layer(value, override) do
+    case override_source(override) do
+      :first_run_env -> Layers.layer(:env, value, source: "NCODE_MODEL", note: "first run")
+      :flag -> Layers.layer(:flag, value, source: "--model", note: "this launch only")
+      nil -> Layers.unset(:flag)
+    end
+  end
 
   ## ---------------------------------------------------------------- choices
 
@@ -484,16 +484,7 @@ defmodule SwarmCode.Daemon.Service.Settings.Values do
     do:
       effective(overlay(reads.conversation, reads.override), kind) || default_model(:chat, reads)
 
-  defp overlay(conversation, %{provider_id: id, model: model}),
-    do: %{
-      conversation
-      | chat_provider_id: id,
-        chat_model: model,
-        swarm_provider_id: id,
-        swarm_model: model
-    }
-
-  defp overlay(conversation, _override), do: conversation
+  defp overlay(conversation, override), do: SessionConfiguration.overlay(conversation, override)
 
   defp effective(conversation, kind) do
     case safe(fn -> Providers.effective_model(conversation, kind) end, nil) do
@@ -1106,8 +1097,17 @@ defmodule SwarmCode.Daemon.Service.Settings.Values do
     if Enum.any?(written, &match?({:project, _}, &1)), do: Projects.broadcast()
 
     # As `/model` and `/swarm_model` do: an explicit choice ends the --model override.
-    if Enum.any?(changes, &(&1.key in ["session.model", "session.sub_agent_model"])),
-      do: SessionConfiguration.clear_override()
+    # cli021 qa: the worker row ends only the worker half.
+    cond do
+      Enum.any?(changes, &(&1.key == "session.model")) ->
+        SessionConfiguration.release(:chat)
+
+      Enum.any?(changes, &(&1.key == "session.sub_agent_model")) ->
+        SessionConfiguration.release(:swarm)
+
+      true ->
+        :ok
+    end
 
     :ok
   end

@@ -152,7 +152,7 @@ Override: the environment variable or flag that wins over the stored value. The 
 | `terminal.title` | Window title | cli | toggle | on | at once | — |
 | `terminal.paste_collapse_lines` | Collapse pastes over | cli | integer | 8 | at once | — |
 | `terminal.exit_transcript` | Turns printed on exit | cli | integer | 3 | next launch | — |
-| `terminal.status_items` | Status line | cli | checklist | mode, approval, model, effort, ctx, cost, waiting | at once | — |
+| `terminal.status_items` | Status line | cli | checklist | mode, approval, model, effort, ctx, cost, waiting, vitals | at once | — |
 | `terminal.diff_lines` | Diff lines shown | cli | integer | 12 | at once | — |
 
 ## Keys & input

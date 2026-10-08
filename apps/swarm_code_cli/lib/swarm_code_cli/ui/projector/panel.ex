@@ -28,6 +28,7 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
   """
   alias SwarmCodeCLI.UI.Projector.Panel.{Draw, Model, Shapes}
   alias SwarmCodeCLI.UI.Projector.Inspector.Changes
+  alias SwarmCodeCLI.UI.Projector.Vitals
 
   @type target ::
           {:run, binary()} | {:agent, binary(), binary(), boolean()} | nil
@@ -87,12 +88,16 @@ defmodule SwarmCodeCLI.UI.Projector.Panel do
   """
   @spec plan(map(), non_neg_integer(), non_neg_integer()) :: [row()]
   def plan(state, width, height) do
+    # cli021 U1: the vitals are the panel's first block, pinned above the
+    # run (they never scroll and no candidate cuts them).
+    top = state |> Vitals.panel_rows(width, height) |> Enum.map(&{&1, nil, []})
+    height = height - length(top)
     ctx = context(state, width)
 
     if ctx.runs == [] do
-      empty(ctx, height)
+      top ++ empty(ctx, height)
     else
-      layout(ctx, height)
+      top ++ layout(ctx, height)
     end
   end
 

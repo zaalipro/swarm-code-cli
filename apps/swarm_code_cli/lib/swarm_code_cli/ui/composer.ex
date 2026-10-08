@@ -102,6 +102,10 @@ defmodule SwarmCodeCLI.UI.Composer do
       SwarmCodeCLI.UI.Reducer.PathCompletion.open?(state) ->
         :dismiss_completion
 
+      # cli021 B3: and the slash command's argument list.
+      SlashPalette.args_open?(state) ->
+        :dismiss_completion
+
       Map.get(state, :focus) in ["main", "inspector"] ->
         :none
 
@@ -188,6 +192,10 @@ defmodule SwarmCodeCLI.UI.Composer do
     case SlashPalette.enter_completion(state) do
       {:complete, _name} ->
         :complete
+
+      # cli021 B3: Enter on the argument list completes the row and runs.
+      {:run_argument, _text} ->
+        :run_command
 
       # pass73 finisher: `/com` Enter runs `/compact`, which the daemon queues
       # behind a live chat turn, so the hint says "queue" then too.
