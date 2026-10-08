@@ -118,7 +118,7 @@ defmodule SwarmCodeCLI.UI.Keymap do
        when state.banner == :live_banner and text in ["/deep_research", "/deep_research "],
        do: result({:open_layer, {:library, :research}})
 
-  # A bare `/model` or `/swarm_model` has nothing to send yet: it opens the
+  # A bare `/model` or `/worker_model` has nothing to send yet: it opens the
   # picker, whichever surface pressed Send. The reducer clears the draft as
   # the layer opens. The session's own commands (/help, /quit, /new, /resume,
   # /queue …) never reach the daemon either.
@@ -187,9 +187,10 @@ defmodule SwarmCodeCLI.UI.Keymap do
       # cli020 D10/D20: bare /rewind and /undo are the client's.
       trimmed == "/rewind" -> :rewind
       trimmed == "/undo" -> :undo
-      # cli020 D18/D20: bare /effort and /swarm_effort open the picker.
+      # cli020 D18/D20: bare /effort and /worker_effort open the picker
+      # (cli021 B2: `/swarm_effort` is the worker command's hidden old name).
       trimmed == "/effort" -> {:effort, :chat}
-      trimmed == "/swarm_effort" -> {:effort, :swarm}
+      trimmed in ["/worker_effort", "/swarm_effort"] -> {:effort, :swarm}
       trimmed == "/delete" -> :delete
       command?(trimmed, "/queue") -> :queue
       command?(trimmed, "/approval") -> :approval
@@ -589,6 +590,7 @@ defmodule SwarmCodeCLI.UI.Keymap do
     case SwarmCodeCLI.UI.SlashPalette.enter_completion(state) do
       {:complete, name} -> result({:complete_command, name})
       {:run, name} -> result({:run_command, name})
+      {:run_argument, text} -> result({:run_argument, text})
       nil -> draft_send(state)
     end
   end

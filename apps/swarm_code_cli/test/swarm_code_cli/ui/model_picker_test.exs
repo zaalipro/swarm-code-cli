@@ -122,8 +122,8 @@ defmodule SwarmCodeCLI.UI.ModelPickerTest do
                [true, false, false, false]
     end
 
-    test "/swarm_model opens the swarm picker with the swarm model marked" do
-      {state, layer} = open_picker(ready(), "  /swarm_model ")
+    test "/worker_model opens the swarm picker with the swarm model marked" do
+      {state, layer} = open_picker(ready(), "  /worker_model ")
       assert {:model_picker, :swarm, _} = layer
       rows = ModelPicker.rows(state, layer)
       # The model in use's provider (Beta) is listed first (pass70 Q5), and
@@ -131,7 +131,12 @@ defmodule SwarmCodeCLI.UI.ModelPickerTest do
       assert Enum.map(rows, & &1.current?) == [true, false, false, false]
 
       assert hd(rows).intent ==
-               {:dispatch, :send, "/swarm_model " <> @beta <> "|beta-mini", :main, []}
+               {:dispatch, :send, "/worker_model " <> @beta <> "|beta-mini", :main, []}
+    end
+
+    test "cli021 B2: the old /swarm_model still opens the worker picker" do
+      {_state, layer} = open_picker(ready(), "  /swarm_model ")
+      assert {:model_picker, :swarm, _} = layer
     end
 
     test "/model with an argument is sent as an ordinary command, not intercepted" do
@@ -200,7 +205,7 @@ defmodule SwarmCodeCLI.UI.ModelPickerTest do
     end
 
     test "the provider of the model in use is listed first, the model in use at its head" do
-      {state, layer} = open_picker(ready(), "/swarm_model")
+      {state, layer} = open_picker(ready(), "/worker_model")
 
       # pass70 Q15: the marked row is the first row, not the second of a
       # provider that may list 140 models.
@@ -256,7 +261,7 @@ defmodule SwarmCodeCLI.UI.ModelPickerTest do
       assert {:ok, {:invoke, intent, id}} = press(state, :enter)
       {sent, [{:command, _}]} = Reducer.update(state, {:invoke, intent, id})
       assert sent.layers == []
-      assert {:dispatch, :send, "/swarm_model " <> _, :main, []} = intent
+      assert {:dispatch, :send, "/worker_model " <> _, :main, []} = intent
     end
   end
 
