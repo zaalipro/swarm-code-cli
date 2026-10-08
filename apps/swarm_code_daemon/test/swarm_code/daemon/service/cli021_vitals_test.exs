@@ -46,6 +46,7 @@ defmodule SwarmCode.Daemon.Service.Cli021VitalsTest do
          speed: fn _cid -> Agent.get(speed, & &1) end,
          config: config,
          sampler: sampler,
+         memory: fn -> 280 * 1_048_576 end,
          task_supervisor: __MODULE__.Tasks}
       )
 
@@ -90,7 +91,7 @@ defmodule SwarmCode.Daemon.Service.Cli021VitalsTest do
     assert body["os_rss_bytes"] == 300 * 1_048_576
     assert body["children_rss_bytes"] == 40 * 1_048_576
     assert body["machine_bytes"] == 16 * 1_073_741_824
-    assert is_integer(body["beam_bytes"]) and body["beam_bytes"] > 0
+    assert body["beam_bytes"] == 280 * 1_048_576
   end
 
   test "the history keeps the last 12 finished calls; an estimate is shown, never stored", c do
@@ -149,6 +150,17 @@ defmodule SwarmCode.Daemon.Service.Cli021VitalsTest do
     Vitals.focus(c.vitals, other)
     assert_receive {:config_read, ^other}, 1_500
     assert_receive {:vitals, %{"conversation_id" => ^other}}, 2_500
+  end
+
+  test "a model name is cut at a character, within the wire's 256 bytes", c do
+    long = String.duplicate("é", 200)
+
+    Agent.update(c.speed, fn _ -> %{main: %{exact(5, ~U[2026-10-08 10:00:00Z]) | model: long}} end)
+
+    Vitals.demand(c.vitals, true)
+    body = await_body(fn body -> hd(body["models"])["tps"] == 5 end)
+    model = hd(body["models"])["model"]
+    assert byte_size(model) <= 256 and String.valid?(model) and String.starts_with?(long, model)
   end
 
   describe "OsMemory" do

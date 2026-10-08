@@ -30,6 +30,8 @@ defmodule SwarmCode.Daemon.Service.Vitals do
   @min_emit_ms 1_000
   @hot_ms 3_000
   @config_ms 10_000
+  # A reading is old enough one tick early: the five-second tick must not skip it.
+  @slack_ms 500
   @sys_ms 5_000
   @sys_timeout_ms 4_000
   @history 12
@@ -43,7 +45,7 @@ defmodule SwarmCode.Daemon.Service.Vitals do
   Options: `:subscriber` (required; receives `{:vitals, body}`), `:conversation_id`,
   and for tests `:speed` (`cid -> roles`), `:config` (`cid -> map`), `:sampler`
   (`keyword -> OsMemory.reading()`), `:clock` (`-> ms`, monotonic), `:wall` (`-> unix ms`),
-  `:task_supervisor`.
+  `:memory` (`-> VM bytes`), `:task_supervisor`.
   """
   def start_link(opts) when is_list(opts), do: GenServer.start_link(__MODULE__, opts)
 
@@ -82,6 +84,7 @@ defmodule SwarmCode.Daemon.Service.Vitals do
       sampler: Keyword.get(opts, :sampler, &OsMemory.read/1),
       clock: Keyword.get(opts, :clock, fn -> System.monotonic_time(:millisecond) end),
       wall: Keyword.get(opts, :wall, fn -> System.os_time(:millisecond) end),
+      memory: Keyword.get(opts, :memory, fn -> :erlang.memory(:total) end),
       supervisor: Keyword.get(opts, :task_supervisor, SwarmCode.Domain.TaskSupervisor),
       config: %{},
       config_at: nil,
@@ -221,7 +224,7 @@ defmodule SwarmCode.Daemon.Service.Vitals do
   defp now(state), do: state.clock.()
 
   defp ensure_config(%{config_task: nil, focus: cid} = state) when is_binary(cid) do
-    if state.config_at == nil or now(state) - state.config_at >= @config_ms do
+    if state.config_at == nil or now(state) - state.config_at >= @config_ms - @slack_ms do
       fun = state.config_fun
       task = Task.Supervisor.async_nolink(state.supervisor, fn -> {:config, cid, fun.(cid)} end)
       %{state | config_task: task}
@@ -233,7 +236,7 @@ defmodule SwarmCode.Daemon.Service.Vitals do
   defp ensure_config(state), do: state
 
   defp ensure_sys(%{sys_task: nil} = state) do
-    if state.sys_at == nil or now(state) - state.sys_at >= @sys_ms do
+    if state.sys_at == nil or now(state) - state.sys_at >= @sys_ms - @slack_ms do
       sampler = state.sampler
       machine? = state.sys.machine_bytes == nil
 
@@ -309,7 +312,7 @@ defmodule SwarmCode.Daemon.Service.Vitals do
     %{
       "conversation_id" => cid,
       "models" => Enum.take(rows ++ others, @max_models),
-      "beam_bytes" => :erlang.memory(:total),
+      "beam_bytes" => state.memory.(),
       "os_rss_bytes" => state.sys.os_rss_bytes,
       "children_rss_bytes" => state.sys.children_rss_bytes,
       "machine_bytes" => state.sys.machine_bytes,
@@ -360,7 +363,24 @@ defmodule SwarmCode.Daemon.Service.Vitals do
   defp at_ms(%DateTime{} = at), do: DateTime.to_unix(at, :millisecond)
   defp at_ms(_other), do: nil
 
-  defp clip(name) when is_binary(name), do: String.slice(name, 0, 256)
+  # `ModelSpeed.model` is at most 256 bytes: cut at a character, never in one.
+  defp clip(name) when is_binary(name) do
+    if byte_size(name) <= 256 do
+      name
+    else
+      {kept, _size} =
+        name
+        |> String.codepoints()
+        |> Enum.reduce_while({[], 0}, fn char, {acc, size} ->
+          if size + byte_size(char) <= 256,
+            do: {:cont, {[char | acc], size + byte_size(char)}},
+            else: {:halt, {acc, size}}
+        end)
+
+      kept |> Enum.reverse() |> Enum.join()
+    end
+  end
+
   defp clip(_other), do: ""
 
   defp live?(nil), do: false
