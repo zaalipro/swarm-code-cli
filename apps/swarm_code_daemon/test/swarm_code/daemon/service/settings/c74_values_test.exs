@@ -370,6 +370,30 @@ defmodule SwarmCode.Daemon.Service.Settings.C74ValuesTest do
     assert SwarmCode.Daemon.Service.SessionConfiguration.override() == nil
   end
 
+  # cli021 qa: the worker row ends only the worker half of the override; the
+  # chat row keeps its flag layer (a first-run session stores no chat model).
+  test "a worker model write keeps the override's chat half", fixture do
+    override = %{provider_id: fixture.deepseek.id, model: "deepseek-v4-flash"}
+    Application.put_env(:swarm_code_daemon, :session_model_override, override)
+    ctx = C74S1.context(fixture, override: override)
+    pro = %{"provider_id" => fixture.deepseek.id, "model" => "deepseek-v4-pro"}
+
+    assert {:ok, %Result{status: status}} =
+             patch(ctx, [{"session.sub_agent_model", pro}], %{
+               "session.sub_agent_model" => %{"$any" => true}
+             })
+
+    assert status in [:accepted, :unchanged]
+    left = SwarmCode.Daemon.Service.SessionConfiguration.override()
+    assert left.roles == [:chat]
+    assert left.model == "deepseek-v4-flash"
+
+    by_key = values(C74S1.context(fixture, override: left))
+    assert %{"winner" => "flag"} = by_key["session.model"]
+    assert %{"value" => %{"model" => "deepseek-v4-pro"}} = by_key["session.sub_agent_model"]
+    refute by_key["session.sub_agent_model"]["winner"] == "flag"
+  end
+
   test "a reader caching between the domain write and the commit sees the new approval mode (M2)",
        fixture do
     id = fixture.ailogic.id

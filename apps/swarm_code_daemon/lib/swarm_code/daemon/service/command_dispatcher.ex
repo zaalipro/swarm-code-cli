@@ -350,7 +350,8 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
         # An explicit `/model` wins over the launcher's `--model` from here on
         # (the override lives only in memory, pass70 D3).
         with {:ok, _} <- Conversations.update(conv, fields) do
-          SessionConfiguration.clear_override()
+          # cli021 qa: a worker choice ends only the worker half.
+          SessionConfiguration.release(if cmd.target == :chat, do: :chat, else: :swarm)
 
           result(conv, cmd.name, :updated, %{
             fields: fields,
@@ -1031,7 +1032,12 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
 
     with {:ok, _} <- if(fields == %{}, do: {:ok, conv}, else: Conversations.update(conv, fields)) do
       # An explicit model pick wins over the launcher's `--model` from here on.
-      if models != %{}, do: SessionConfiguration.clear_override()
+      cond do
+        Map.has_key?(models, :chat_model) -> SessionConfiguration.release(:chat)
+        models != %{} -> SessionConfiguration.release(:swarm)
+        true -> :ok
+      end
+
       skipped = Enum.reverse(effort_skips) ++ Enum.reverse(model_skips)
       said = "Switched to profile: #{cmd.profile}"
 
