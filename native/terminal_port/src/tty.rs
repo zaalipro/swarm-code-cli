@@ -270,19 +270,43 @@ pub fn nonblocking(fd: RawFd) -> io::Result<()> {
     }
     Ok(())
 }
-/// Bounded blocking at each write, interruptible by lifecycle signals.
+/// How long one bounded write may wait for its descriptor.
+const WRITE_BOUND: Duration = Duration::from_millis(500);
+/// Blocking at each write, interruptible by lifecycle signals: bounded
+/// (restoration, mode transactions, the BEAM's pipe) or patient (frames).
 pub struct FdWriter {
     fd: RawFd,
     interruptible: bool,
+    bound: Option<Duration>,
 }
 impl FdWriter {
+    /// A write that gives up after 500 ms: restoration must end even against
+    /// a terminal that never reads again.
     pub fn new(fd: RawFd, interruptible: bool) -> Self {
-        Self { fd, interruptible }
+        Self {
+            fd,
+            interruptible,
+            bound: Some(WRITE_BOUND),
+        }
+    }
+    /// cli020 R2: the session's frames, titles, notifications and copies. A
+    /// terminal that reads slowly only delays the write (a macOS pty holds
+    /// about 1 KiB of unread output, so any pause of the terminal's reader
+    /// stops a frame); a slow terminal slows the TUI and never ends it. The
+    /// write still fails when the terminal is gone (an error such as EIO, or
+    /// a hangup reported by poll) and when the helper is terminating: SIGTERM
+    /// from the owner's reap, or from the guard once the BEAM's pipe closed.
+    pub fn patient(fd: RawFd) -> Self {
+        Self {
+            fd,
+            interruptible: true,
+            bound: None,
+        }
     }
 }
 impl Write for FdWriter {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        let end = Instant::now() + Duration::from_millis(500);
+        let end = self.bound.map(|bound| Instant::now() + bound);
         loop {
             if self.interruptible && crate::guard::terminating() {
                 return Err(io::ErrorKind::BrokenPipe.into());
@@ -298,7 +322,7 @@ impl Write for FdWriter {
             ) {
                 return Err(error);
             }
-            if Instant::now() >= end {
+            if end.is_some_and(|end| Instant::now() >= end) {
                 return Err(io::ErrorKind::TimedOut.into());
             }
             let mut poll = libc::pollfd {
@@ -306,8 +330,14 @@ impl Write for FdWriter {
                 events: libc::POLLOUT,
                 revents: 0,
             };
-            unsafe {
-                libc::poll(&mut poll, 1, 20);
+            let ready = unsafe { libc::poll(&mut poll, 1, 20) };
+            if ready > 0 && poll.revents & libc::POLLNVAL != 0 {
+                // Darwin's poll does not support `/dev/tty` (the stand-alone
+                // mode's descriptor) and answers at once: wait here instead.
+                // A descriptor that is really invalid fails the write (EBADF).
+                std::thread::sleep(Duration::from_millis(10));
+            } else if ready > 0 && poll.revents & (libc::POLLHUP | libc::POLLERR) != 0 {
+                return Err(io::ErrorKind::BrokenPipe.into());
             }
         }
     }
