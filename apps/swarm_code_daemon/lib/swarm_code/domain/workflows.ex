@@ -647,14 +647,24 @@ defmodule SwarmCode.Domain.Workflows do
   @doc """
   Starts a run of `definition` (or of a one-off `source`) in `conversation`
   (spec 09 §5.1).
+
+  pass 74 K3: `attrs[:approval_mode]` (`read_only | auto | full_access`)
+  overrides the project's approval mode for this run only, in memory, exactly
+  like `Engine.start_chat_turn/4`'s `approval_mode:` (pass 72 F8): every agent
+  of the run decides in it, the project row is never written, and an untrusted
+  project refuses `auto` and `full_access` (`{:error, :untrusted_project}`)
+  before anything is written. A run resumed after a restart decides in the
+  project's mode again.
   """
   @spec launch(map()) :: {:ok, Run.t()} | {:error, term()}
   def launch(attrs) do
     settings = Settings.get()
     conversation = attrs.conversation
     project = attrs[:project] || SwarmCode.Domain.Projects.get!(conversation.project_id)
+    approval_override = attrs[:approval_mode]
 
-    with {:ok, definition} <- definition_for(attrs),
+    with :ok <- SwarmCode.Domain.Engine.check_approval_mode(project, approval_override),
+         {:ok, definition} <- definition_for(attrs),
          {:ok, definition} <- validated(definition, project),
          {:ok, cast} <- cast_launch_args(definition, attrs) do
       declared =
@@ -703,7 +713,17 @@ defmodule SwarmCode.Domain.Workflows do
         link_launch_message(attrs[:launch_message_id], run)
         Conversations.broadcast_run_created(run)
 
-        case start_run(run, wf, conversation, project, settings, definition, args, nil) do
+        case start_run(
+               run,
+               wf,
+               conversation,
+               project,
+               settings,
+               definition,
+               args,
+               nil,
+               approval_override
+             ) do
           {:ok, _pid} ->
             broadcast(conversation.id, wf)
             {:ok, wf}
@@ -968,7 +988,8 @@ defmodule SwarmCode.Domain.Workflows do
 
   defp safe_reason(reason), do: SwarmCode.Domain.LLM.HTTP.redact(inspect(reason))
 
-  defp start_run(run, wf, conversation, project, settings, definition, args, answer) do
+  # pass 74 K3: `approval_override` is nil, or the mode `launch/1` checked.
+  defp start_run(run, wf, conversation, project, settings, definition, args, answer, override) do
     start_supervised_run(%{
       run: run,
       conversation: conversation,
@@ -981,6 +1002,8 @@ defmodule SwarmCode.Domain.Workflows do
       prompt: run.prompt,
       mode: "build",
       assistant_message: nil,
+      # pass 72 F8 / pass 74 K3: read by `Operation.current_mode/1` first.
+      approval_override: override,
       workflow: %{
         wf: wf,
         ast: definition.ast,
@@ -1112,7 +1135,7 @@ defmodule SwarmCode.Domain.Workflows do
       # pass74 (spec 74) BUGS-58: the Runner learns where a retry starts.
       wf = %{wf | retry_from_seq: opts[:retry_from_seq]}
 
-      case start_run(run, wf, conversation, project, settings, definition, args, answer) do
+      case start_run(run, wf, conversation, project, settings, definition, args, answer, nil) do
         {:ok, _pid} ->
           broadcast(conversation.id, wf)
           :ok

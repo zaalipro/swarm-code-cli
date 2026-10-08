@@ -262,7 +262,8 @@ defmodule SwarmCode.Domain.Engine.ContextTest do
     end
 
     test "budget/0 is the trim budget" do
-      assert Context.budget() == 120_000
+      # pass 74 K1: 75 % of the 1 000 000-token default window.
+      assert Context.budget() == 750_000
 
       assert Context.trim([%{role: "user", content: "hi"}]) ==
                Context.trim([%{role: "user", content: "hi"}], Context.budget())
@@ -289,13 +290,15 @@ defmodule SwarmCode.Domain.Engine.ContextTest do
         end
     end
 
+    # pass 74 K1: at the 120 000 budget these were written for — under the
+    # 750 000 default the six results fit as they are.
     test "six max-size tool results in one turn degrade instead of failing" do
       messages = max_size_turn(6, 100_000)
-      assert Context.estimate_tokens(messages) > Context.budget()
+      assert Context.estimate_tokens(messages) > 120_000
 
-      compressed = Context.compress(messages)
+      compressed = Context.compress(messages, 120_000)
 
-      assert Context.estimate_tokens(compressed) <= Context.budget()
+      assert Context.estimate_tokens(compressed) <= 120_000
       assert length(compressed) == length(messages)
       assert Enum.map(compressed, & &1[:role]) == Enum.map(messages, & &1[:role])
 
@@ -311,8 +314,9 @@ defmodule SwarmCode.Domain.Engine.ContextTest do
     end
 
     test "a second compress/2 is a no-op" do
-      once = Context.compress(max_size_turn(6, 100_000))
-      assert Context.compress(once) == once
+      once = Context.compress(max_size_turn(6, 100_000), 120_000)
+      assert once != max_size_turn(6, 100_000)
+      assert Context.compress(once, 120_000) == once
     end
   end
 end

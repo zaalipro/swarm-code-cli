@@ -49,7 +49,7 @@ defmodule SwarmCode.Domain.LLM.HTTP do
   @max_sleep 90_000
 
   @type on_chunk :: (binary(), term() -> term())
-  @typedoc "attempt, of, reason (\"network\" | \"rate limit\" | \"server\"), mid-stream?"
+  @typedoc "attempt, of, reason (\"HTTP <status>\" | \"network\" | \"stream ended early\" | …), mid-stream?"
   @type on_retry :: (pos_integer(), pos_integer(), String.t(), boolean() -> any())
   @typedoc """
   Spec 51 §6.1: asked once per 200 response, with the accumulator the stream
@@ -812,10 +812,10 @@ defmodule SwarmCode.Domain.LLM.HTTP do
     :ok
   end
 
-  # cli020 fix S2 (CLI provenance patch): the retry status line names the HTTP
-  # status when the provider answered with one (`retrying 2/5 · HTTP 500`), the
-  # reason word otherwise (`stream ended early`, `network`). `reason` still
-  # classifies the final error; only what the line shows changes.
+  # pass 74 K4 (the CLI 0.2.0 fix S2, upstreamed): the retry status line names
+  # the HTTP status when the provider answered with one (`retrying 2/5 · HTTP
+  # 500`), the reason word otherwise (`stream ended early`, `network`). `reason`
+  # still classifies the final error; only what the line shows changes.
   defp shown_reason(_reason, "HTTP " <> _ = message), do: message
   defp shown_reason(reason, _message), do: reason
 
