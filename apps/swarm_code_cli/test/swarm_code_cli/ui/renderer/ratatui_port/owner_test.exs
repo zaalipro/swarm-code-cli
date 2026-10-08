@@ -280,7 +280,10 @@ defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.OwnerTest do
     monitor = Process.monitor(owner)
     send(owner, {:draw, "large", 1})
     send(owner, {:terminal_control, :shutdown, "close"})
-    assert_receive {:DOWN, ^monitor, :process, ^owner, :terminal_protocol_failed}, 4500
+    # cli020 R1: the busy port no longer crashes the owner; the shutdown waits
+    # for the port until its deadline, and the helper that never took it is
+    # reaped at once instead of being awaited.
+    assert_receive {:DOWN, ^monitor, :process, ^owner, :terminal_timeout}, 4500
     # rel F17: the helper that never read its EOF was signalled away.
     refute os_alive?(os_pid)
   end
