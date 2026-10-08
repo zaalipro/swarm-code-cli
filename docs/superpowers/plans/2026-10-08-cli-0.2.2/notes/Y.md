@@ -132,3 +132,24 @@ height still reads as "measured once".
 
 None. The `{:speed_call, …}` clause in `Vitals` is live code waiting for the desktop change above
 (nothing sends it today); it is not a stub of another lane's seam.
+
+## Tests and gates (lane Y, before `cli022 Y: done`)
+
+Each new test was written first and watched failing (F4: 5/5 daemon + 4/5 CLI before the fix; F5:
+2/2; F6: 2 of 3 Vitals tests and the lone-sample test, the repro passing as it pins the synced
+behaviour).
+
+| Gate | Result |
+| --- | --- |
+| New tests: daemon `cli022_effective_effort_test` (5), `cli022_quit_summary_test` (2), `cli022_vitals_samples_test` (3); CLI `cli022/y_f4_effort_status_test` (5), `cli022/y_f6_sparkline_test` (2) | all pass |
+| Daemon `test/swarm_code/daemon/service` dir (after F4) | 607 tests, 0 failures |
+| Daemon after F5/F6: the cli022 files, `cli021_vitals*`, `cli021_int_vitals_e2e`, `rewind`, `session_configuration`, `wire_contract` | 54 tests, 0 failures |
+| CLI `ui`, `cli020`, `cli021`, `cli022`, `entry`, `demo`, `plain`, `c74_acceptance`, `persisted_session_release` | 10 properties, 3124 tests, 0 failures |
+| `mix format --check-formatted`; `mix compile --warnings-as-errors --force` | clean, no warnings |
+| `(cd apps/swarm_code_cli && mix swarm_code.keymap --check)` | matches |
+| `mix swarm_code.settings --write` (from `apps/swarm_code_cli`) + `git diff --exit-code docs/settings.md` | no diff |
+| `mix swarm_code.provenance.verify`; `provenance.sync --check` (no repin needed: no Y file is in the ledger) | verified; every synced file derives from the pin |
+| PTY `test_terminal_demo_pty.py` (scratch HOME `~/.cache/ncode/cli022/Y/pty-home`) | 10 OK |
+| PTY `test_saved_session_pty.py` (same scratch HOME) | 2 OK |
+
+Not run (not a lane gate): the full `mix precommit`, the other PTY suites, the release build.
