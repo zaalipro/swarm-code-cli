@@ -113,6 +113,10 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.ModelsEffort do
       when verb in [:open, :enter, :open_row],
       do: window_ops_for_unpriced(model)
 
+  def act(_ctx, %Row{target: {:context_window_pricing, _model}}, verb)
+      when verb in [:open, :enter, :open_row],
+      do: [{:open, R.new_page(:pricing)}]
+
   def act(_ctx, %Row{key: "models.fetch_all"}, verb)
       when verb in [:open, :enter, :open_row, :fetch],
       do: [{:task, "provider.fetch_all", nil, %{}}]
@@ -264,10 +268,21 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.ModelsEffort do
                step: 1_000,
                big_step: 100_000,
                nullable: true,
-               null_label: "1M default"
+               null_label: R.context(nil)
              }},
           keys: [{"Enter", :open_row, "edit"}, {"r", :reset, "back to 1M"}],
           target: {:context_window, model}
+        }
+
+      {:unknown, _} ->
+        %Row{
+          id: "ctx:" <> model,
+          kind: :link,
+          label: model,
+          value: [{"set on the Pricing page", :text_faint}],
+          tag: tag,
+          keys: [{"Enter", :open_row, "open Pricing"}],
+          target: {:context_window_pricing, model}
         }
 
       {:unpriced, _} ->

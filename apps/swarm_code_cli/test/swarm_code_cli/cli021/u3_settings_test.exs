@@ -81,6 +81,17 @@ defmodule SwarmCodeCLI.Cli021.U3SettingsTest do
       assert {:draft_put, "pricing_row", %{"model" => "claude-sonnet-5"}} = Enum.at(ops, 1)
       assert {:open, %{section: :pricing}} = List.last(ops)
     end
+
+    test "a model past the loaded page of prices is not called unpriced" do
+      c = ctx()
+      key = {"pricing_rows", %{}}
+      page = c.data.records[key] || flunk("no pricing page in the ctx")
+      c = put_in(c.data.records[key], Map.merge(page, %{total: 250, next_cursor: "200"}))
+
+      assert {:unknown, nil} = Pricing.window(c, "some-model-on-page-two")
+      assert {:priced, nil} = Pricing.window(c, "deepseek-v4-flash")
+      assert {:error, _} = Pricing.window_ops(c, "some-model-on-page-two", 64_000)
+    end
   end
 
   describe "a fetch's result where it was started" do

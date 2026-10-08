@@ -210,7 +210,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Pricing do
   defp cache_cell(_ctx, value, _derived, priority), do: {R.money(value), :text_primary, priority}
 
   defp context_cell(ctx, nil, priority),
-    do: {"1M default", :text_faint, priority} |> keep(ctx)
+    do: {R.context(nil), :text_faint, priority} |> keep(ctx)
 
   defp context_cell(_ctx, n, priority), do: {group_digits(n), :text_primary, priority}
 
@@ -336,7 +336,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Pricing do
           [{"$" <> R.money(v), :text_primary}]
 
         {:context, nil} ->
-          [{"1M default", :text_faint}]
+          [{R.context(nil), :text_faint}]
 
         {:context, v} ->
           [{group_digits(v), :text_primary}]
@@ -371,7 +371,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Pricing do
              step: 1_000,
              big_step: 100_000,
              nullable: true,
-             null_label: "1M default"
+             null_label: R.context(nil)
            }}
       end
 
@@ -476,19 +476,46 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Pricing do
   """
   def window_ops(ctx, model, value) do
     with :ok <- check("context_window", value) do
-      case Enum.find(R.items(ctx, "pricing_rows"), &(R.record_id(&1) == model)) do
-        nil -> {:ok, draft_ops(model, %{"context_window" => value})}
-        rec -> {:ok, put_ops(ctx, model, row_wire(R.fields(rec)), %{"context_window" => value})}
+      case find_price(ctx, model) do
+        {:ok, rec} ->
+          {:ok, put_ops(ctx, model, row_wire(R.fields(rec)), %{"context_window" => value})}
+
+        :none ->
+          {:ok, draft_ops(model, %{"context_window" => value})}
+
+        :unknown ->
+          {:error, "set it on the Pricing page: this model's row is not loaded here"}
       end
     end
   end
 
-  @doc "The configured window of `model` on its price row, nil for none (or no row)."
+  @doc """
+  `{:priced, window | nil}` for a model with a price row, `{:unpriced, nil}`
+  without one, `{:unknown, nil}` when the loaded page of rows is partial (200
+  a page) and the model is not on it: never called unpriced on a guess.
+  """
   def window(ctx, model) do
-    case Enum.find(R.items(ctx, "pricing_rows"), &(R.record_id(&1) == model)) do
-      nil -> {:unpriced, nil}
-      rec -> {:priced, R.field(R.fields(rec), "context_window")}
+    case find_price(ctx, model) do
+      {:ok, rec} -> {:priced, R.field(R.fields(rec), "context_window")}
+      :none -> {:unpriced, nil}
+      :unknown -> {:unknown, nil}
     end
+  end
+
+  defp find_price(ctx, model) do
+    items = R.items(ctx, "pricing_rows")
+
+    case Enum.find(items, &(R.record_id(&1) == model)) do
+      nil -> if partial?(ctx, items), do: :unknown, else: :none
+      rec -> {:ok, rec}
+    end
+  end
+
+  defp partial?(ctx, items) do
+    page = R.records_page(ctx, "pricing_rows") || %{}
+    cursor = Map.get(page, :next_cursor) || Map.get(page, "next_cursor")
+    total = R.total(ctx, "pricing_rows") || 0
+    cursor not in [nil, ""] or total > length(items)
   end
 
   defp delete_ops(ctx, model) do
