@@ -103,6 +103,44 @@ defmodule SwarmCode.Daemon.Service.Settings.Cli021C1FetchModelsTest do
     assert task["state"] in ["done", :done]
     assert task["summary"]["words"] == "4 models · 4 new · 2 removed"
     assert task["summary"]["saved"] == true
+
+    # The open page learns of the saved list by itself (the providers change
+    # reaches the shell watch as a settings update) and shows the new ids.
+    state =
+      refresh_until(state, watch, c.client, fn state ->
+        row = Enum.find(Nav.rows(state), &(&1.id == "fld:provider:#{id}:models"))
+        row != nil and Enum.any?(row.lines, &(inspect(&1) =~ "ms/glm-5.2"))
+      end)
+
+    assert Enum.find(Nav.rows(state), &(&1.id == "fld:provider:#{id}:models"))
+  end
+
+  test "a gateway list over 2 000 is added up to the ceiling, never replaced", c do
+    id = c.deepseek.id
+    watch = shell_watch(c.backend)
+    big = for n <- 1..2_500, do: "gw/model-#{String.pad_leading(Integer.to_string(n), 4, "0")}"
+
+    server =
+      HTTP.start(fn socket, _request, _n ->
+        body = Jason.encode!(%{"data" => Enum.map(big, &%{"id" => &1})})
+        HTTP.respond(socket, 200, body, [{"content-type", "application/json"}])
+      end)
+
+    on_exit(fn -> HTTP.stop(server) end)
+    {:ok, _} = Providers.update(Providers.get(id), %{base_url: server.url <> "/v1"})
+
+    state =
+      open_provider(c, id)
+      |> Ops.run([{:task, "provider.fetch_models", %{"id" => id}, %{}}])
+      |> serve(c.client)
+      |> settle(watch, c.client)
+
+    stored = Providers.get(id).models
+    assert length(stored) == 2_000
+    assert Enum.take(stored, 2) == ["ms/glm-5.1", "old-model"]
+
+    assert only_task(state, "provider.fetch_models")["summary"]["words"] ==
+             "2500 models · 2000 new · 2000 of 2500 kept"
   end
 
   test "fetching every provider saves each list and names the result per provider", c do
@@ -206,6 +244,26 @@ defmodule SwarmCode.Daemon.Service.Settings.Cli021C1FetchModelsTest do
     |> serve(c.client)
     |> Ops.run([{:open, %Page{section: :providers, record: {"provider", id}}}])
     |> serve(c.client)
+  end
+
+  # Feeds shell-watch deltas to the reducer until the page satisfies `done?`.
+  defp refresh_until(state, ref, client, done?) do
+    if done?.(state) do
+      state
+    else
+      receive do
+        {:service_delta, backend, ^ref, delta} ->
+          send(backend, {:service_credit, self(), ref, delta["sequence"]})
+          {:ok, decoded} = DataSource.Delta.decode(delta)
+
+          decoded.body
+          |> then(&Responses.delta(state, &1))
+          |> serve(client)
+          |> refresh_until(ref, client, done?)
+      after
+        5_000 -> flunk("the page never showed the saved list")
+      end
+    end
   end
 
   defp shell_watch(backend) do
