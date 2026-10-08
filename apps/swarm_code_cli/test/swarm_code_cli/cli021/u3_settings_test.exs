@@ -44,6 +44,9 @@ defmodule SwarmCodeCLI.Cli021.U3SettingsTest do
       {state, _fake} = opened(:models_effort)
       ids = Enum.map(rows(state), & &1.id)
       assert "head:context windows" in ids
+      # cli021 qa: the windows sit with the models, before the danger group.
+      assert Enum.find_index(ids, &(&1 == "head:context windows")) <
+               Enum.find_index(ids, &(&1 == "head:danger"))
 
       # This conversation's worker follows its chat model: one row, both slots.
       pro = find(rows(state), "ctx:deepseek-v4-pro")

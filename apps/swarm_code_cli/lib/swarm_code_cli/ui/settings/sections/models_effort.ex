@@ -51,7 +51,10 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.ModelsEffort do
         do: main,
         else: drop_group(main, @session) ++ [no_conversation()]
 
-    dedupe_headings(main) ++ windows(ctx) ++ consensus_link(ctx, consensus) ++ links(ctx)
+    # cli021 qa: the context windows sit with the models, before the danger
+    # group (the section's reset), which stays last of the section's own rows.
+    {body, danger} = Enum.split_while(dedupe_headings(main), &(&1.id != "head:danger"))
+    body ++ windows(ctx) ++ danger ++ consensus_link(ctx, consensus) ++ links(ctx)
   end
 
   # The registry lists `▸ Apply a profile` after the consensus group; with
