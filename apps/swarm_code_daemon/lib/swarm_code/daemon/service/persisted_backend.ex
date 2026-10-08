@@ -4835,6 +4835,21 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       else: {:error, :capacity_exceeded}
   end
 
+  # `Next.local_zone/0` reads `/etc/localtime`; once per daemon is enough.
+  defp local_zone do
+    key = {__MODULE__, :local_zone}
+
+    case :persistent_term.get(key, nil) do
+      nil ->
+        zone = SwarmCode.Domain.Scheduler.Next.local_zone()
+        :persistent_term.put(key, zone)
+        zone
+
+      zone ->
+        zone
+    end
+  end
+
   defp workspace_mode(%{consensus: true}), do: "consensus"
   defp workspace_mode(%{ultra: true}), do: "ultra"
   defp workspace_mode(%{authoring_workflow: true}), do: "workflow"
@@ -4867,6 +4882,11 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       "effort_source" => Atom.to_string(effort_source),
       "swarm_effort_effective" => swarm_effort,
       "swarm_effort_source" => Atom.to_string(swarm_source),
+      # cli022 int (F1): what a new scheduled task follows, Settings' scheduled
+      # effort (nil: medium), and the Mac's zone the desktop's form starts on.
+      "scheduled_effort_default" =>
+        SwarmCode.Domain.Settings.get_cached().default_scheduled_effort,
+      "local_zone" => local_zone(),
       "models" => model_options(),
       # pass70 C1/C2: the status line's facts.
       "approval_mode" => approval_mode(conversation),

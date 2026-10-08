@@ -18,7 +18,8 @@ defmodule SwarmCode.Daemon.Service.Cli022IntEffortE2ETest do
   alias SwarmCode.Daemon.Service.SessionConfiguration
   alias SwarmCode.Domain.{Cache, Conversations, Projects, Providers, Repo, Settings}
   alias SwarmCode.Protocol.{Scope, ServiceRequest}
-  alias SwarmCodeCLI.UI.{Reducer, SlashPalette}
+  alias SwarmCode.Domain.Scheduler.Next
+  alias SwarmCodeCLI.UI.{FeatureForm, Library, Reducer, SlashPalette}
   alias SwarmCodeCLI.UI.DataSource.DTO
 
   setup_all do
@@ -86,7 +87,8 @@ defmodule SwarmCode.Daemon.Service.Cli022IntEffortE2ETest do
         default_chat_provider_id: provider.id,
         default_chat_model: "big-model",
         default_effort: "high",
-        default_swarm_effort: "low"
+        default_swarm_effort: "low",
+        default_scheduled_effort: "max"
       })
 
     Cache.clear()
@@ -175,6 +177,32 @@ defmodule SwarmCode.Daemon.Service.Cli022IntEffortE2ETest do
     assert [{"default", desc}] = current(state, "/effort ")
     assert desc =~ "medium"
     assert List.last(screen(state)) =~ "big-model · medium"
+  end
+
+  # cli022 F1 (the words X left open): the workspace also sends Settings'
+  # scheduled effort and the Mac's zone (`Next.local_zone/0`, the desktop
+  # form's `zone()`), so a new scheduled task shows `default · max` and the
+  # zone, and still stores a nil effort.
+  test "a new scheduled task shows Settings' scheduled effort and the Mac's zone", c do
+    {ws, state} = client(c)
+    assert ws.scheduled_effort_default == "max"
+    assert ws.local_zone == Next.local_zone()
+
+    state = put_workspace(state, scheduled_effort_default: "max", local_zone: ws.local_zone)
+    {state, [{:query, request}]} = Reducer.update(state, {:open_layer, {:library, :schedules}})
+
+    {state, []} =
+      Library.response(state, request, %DTO.LibrarySnapshot{
+        feature: :schedules,
+        request_id: request.request_id,
+        items: []
+      })
+
+    {state, []} = Reducer.update(state, {:open_layer, {:feature_form, :schedules, "new"}})
+    text = screen_text(state)
+    assert text =~ "default · max"
+    assert FeatureForm.value(state, "effort") == "default"
+    assert FeatureForm.value(state, "timezone") == ws.local_zone
   end
 
   defp conversation(id), do: %Scope{kind: :conversation, id: id, generation: 1}

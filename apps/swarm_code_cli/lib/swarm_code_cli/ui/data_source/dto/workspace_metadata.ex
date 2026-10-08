@@ -26,7 +26,9 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.WorkspaceMetadata do
       effort_effective: nil,
       effort_source: nil,
       swarm_effort_effective: nil,
-      swarm_effort_source: nil
+      swarm_effort_source: nil,
+      scheduled_effort_default: nil,
+      local_zone: nil
     ],
     fields: [
       conversation_id: :id,
@@ -77,7 +79,11 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.WorkspaceMetadata do
       effort_effective: {:optional, {:text, 32}},
       effort_source: {:optional, {:enum, [:conversation, :env, :default]}},
       swarm_effort_effective: {:optional, {:text, 32}},
-      swarm_effort_source: {:optional, {:enum, [:conversation, :env, :default]}}
+      swarm_effort_source: {:optional, {:enum, [:conversation, :env, :default]}},
+      # cli022 int (F1): Settings' scheduled effort and the Mac's zone, the
+      # defaults a new scheduled task shows.
+      scheduled_effort_default: {:optional, {:text, 32}},
+      local_zone: {:optional, {:text, 64}}
     ],
     defaults: [
       conversation_id: nil,
@@ -110,6 +116,8 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.WorkspaceMetadata do
       effort_effective: nil,
       effort_source: nil,
       swarm_effort_effective: nil,
-      swarm_effort_source: nil
+      swarm_effort_source: nil,
+      scheduled_effort_default: nil,
+      local_zone: nil
     ]
 end

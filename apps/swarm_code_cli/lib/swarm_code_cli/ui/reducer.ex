@@ -1450,7 +1450,15 @@ defmodule SwarmCodeCLI.UI.Reducer do
       end
 
     # cli022 F1: a scheduled task's effort is unset by default (`default`).
-    form = if feature == :schedules, do: SwarmCodeCLI.UI.Library.schedule_form(form), else: form
+    # cli022 int: with the workspace's scheduled default and the Mac's zone.
+    form =
+      if feature == :schedules,
+        do:
+          SwarmCodeCLI.UI.Library.schedule_form(
+            form,
+            Map.get(state.read_model.snapshots, :workspace)
+          ),
+        else: form
 
     case form do
       %DTO.FeatureForm{} = form ->

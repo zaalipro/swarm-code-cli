@@ -126,14 +126,43 @@ defmodule SwarmCodeCLI.UI.Library do
   cli022 F1: a scheduled-task form from the daemon gets the same `default`
   effort choice as the new form: an unset effort (blank) reads `default`, and
   `default` is submitted as nil. Idempotent.
+
+  cli022 int: with the workspace's `scheduled_effort_default` the effort's
+  label names the level `default` follows (`default · high`, the desktop's
+  `task.effort || settings.default_scheduled_effort`; when that is unset too
+  the run follows the chat default, and the label keeps its words),
+  and a blank zone starts on the workspace's `local_zone` (the Mac's zone, the
+  desktop form's `zone()`). Without them (an older daemon) the form keeps the
+  words and the blank zone the daemon fills.
   """
-  @spec schedule_form(DTO.FeatureForm.t()) :: DTO.FeatureForm.t()
-  def schedule_form(%DTO.FeatureForm{fields: fields} = form) do
+  @spec schedule_form(DTO.FeatureForm.t() | nil, map() | nil) :: DTO.FeatureForm.t() | nil
+  def schedule_form(form, workspace \\ nil)
+
+  def schedule_form(%DTO.FeatureForm{fields: fields} = form, workspace) do
+    workspace = if is_map(workspace), do: workspace, else: %{}
+
+    level =
+      case Map.get(workspace, :scheduled_effort_default) do
+        level when is_binary(level) and level != "" -> level
+        _ -> nil
+      end
+
+    zone =
+      case Map.get(workspace, :local_zone) do
+        zone when is_binary(zone) and zone != "" -> zone
+        _ -> nil
+      end
+
     fields =
       Enum.map(fields, fn
         %DTO.FormField{key: "effort", kind: :choice, choices: choices, value: value} = field ->
           choices = if "default" in choices, do: choices, else: ["default" | choices]
-          %{field | choices: choices, value: if(value in ["", nil], do: "default", else: value)}
+          value = if(value in ["", nil], do: "default", else: value)
+          label = if level, do: "Effort (default · #{level}, from Settings)", else: field.label
+          %{field | choices: choices, value: value, label: label}
+
+        %DTO.FormField{key: "timezone", value: value} = field when is_binary(zone) ->
+          if value in ["", nil], do: %{field | value: zone, label: "Timezone"}, else: field
 
         field ->
           field
@@ -142,7 +171,7 @@ defmodule SwarmCodeCLI.UI.Library do
     %{form | fields: fields}
   end
 
-  def schedule_form(form), do: form
+  def schedule_form(form, _workspace), do: form
 
   def open(state, feature) do
     state = close(state)

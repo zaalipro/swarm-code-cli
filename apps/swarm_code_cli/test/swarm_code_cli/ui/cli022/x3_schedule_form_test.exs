@@ -122,4 +122,26 @@ defmodule SwarmCodeCLI.UI.Cli022.X3ScheduleFormTest do
     assert FeatureForm.value(back, "effort") == "default"
     assert Map.fetch!(submitted(back), "effort") == nil
   end
+
+  # cli022 int: the workspace's scheduled default and the Mac's zone.
+  test "with the workspace's defaults the label names the level and the zone starts filled" do
+    ws = %DTO.WorkspaceSnapshot{scheduled_effort_default: "high", local_zone: "Asia/Dubai"}
+    form = Library.schedule_form(Library.new_form(:schedules), ws)
+    assert field(form, "effort").label =~ "default · high"
+    assert field(form, "effort").value == "default"
+    assert field(form, "timezone").value == "Asia/Dubai"
+
+    # An edit form keeps the task's own zone; an unset Settings level keeps the words.
+    edit = %DTO.FeatureForm{
+      title: "Edit",
+      fields: [%DTO.FormField{key: "timezone", label: "Timezone", value: "Europe/Paris"}]
+    }
+
+    assert field(Library.schedule_form(edit, ws), "timezone").value == "Europe/Paris"
+
+    unset =
+      Library.schedule_form(Library.new_form(:schedules), %{ws | scheduled_effort_default: nil})
+
+    refute field(unset, "effort").label =~ "·"
+  end
 end
