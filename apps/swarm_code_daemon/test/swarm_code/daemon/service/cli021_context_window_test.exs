@@ -20,16 +20,23 @@ defmodule SwarmCode.Daemon.Service.Cli021ContextWindowTest do
     assert ContextWindow.window("tiny", settings(small)) == 32_000
   end
 
-  test "a model without a configured window gets the domain's default" do
-    assert ContextWindow.window("some-model", settings(%{})) == 120_000
-    assert ContextWindow.window("some-model", nil) == 120_000
-    assert ContextWindow.window("claude-sonnet", nil) == 160_000
+  test "a model without a configured window gets the 1 M default (desktop pass 74 K1)" do
+    assert ContextWindow.window("some-model", settings(%{})) == 1_000_000
+    assert ContextWindow.window("some-model", nil) == 1_000_000
+    # K1: one default for every model (the old Claude 160 000 budget is gone).
+    assert ContextWindow.window("claude-sonnet", nil) == 1_000_000
   end
 
-  test "the K1 default budget (750 000, 75 % of 1 M) reads as a 1 000 000 window" do
-    # Pinned against the arithmetic K1 states, so the sync needs no edit here.
-    assert trunc(1_000_000 * 0.75) == 750_000
-    assert ContextWindow.__default__(750_000) == 1_000_000
+  test "the window is the synced engine's effective window, never its 75 % budget" do
+    pricing = %{"tiny" => %{"input" => 0.1, "output" => 0.2, "context_window" => 32_000}}
+
+    for {model, settings} <- [{"tiny", settings(pricing)}, {"other", settings(pricing)}, {"x", nil}] do
+      assert ContextWindow.window(model, settings) ==
+               SwarmCode.Domain.Engine.Context.effective_window(model, settings)
+    end
+
+    assert SwarmCode.Domain.Engine.Context.default_window() == 1_000_000
+    refute function_exported?(ContextWindow, :__default__, 1)
   end
 
   test "no model, no window" do

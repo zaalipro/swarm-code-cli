@@ -100,19 +100,20 @@ defmodule SwarmCode.Daemon.Service.Cli021VitalsBackendTest do
   end
 
   describe "C3 the context window" do
-    test "a configured window is sent whole; without one the domain's default", c do
+    test "a configured window is sent whole; without one the 1 M default", c do
       configure!(%{})
       assert {:ok, %{"value" => snapshot}} = query(c.backend, conversation(c.current.id))
-      assert snapshot["context_window"] == 120_000
+      # desktop pass 74 K1, synced in cli021 K7: every unconfigured model is 1 M.
+      assert snapshot["context_window"] == 1_000_000
 
       configure!(%{
-        "big-model" => %{"input" => 1.0, "output" => 2.0, "context_window" => 1_000_000}
+        "big-model" => %{"input" => 1.0, "output" => 2.0, "context_window" => 200_000}
       })
 
       assert {:ok, %{"value" => snapshot}} = query(c.backend, conversation(c.current.id))
-      assert snapshot["context_window"] == 1_000_000
+      assert snapshot["context_window"] == 200_000
 
-      assert {:ok, %DTO.WorkspaceSnapshot{context_window: 1_000_000}} =
+      assert {:ok, %DTO.WorkspaceSnapshot{context_window: 200_000}} =
                DTO.WorkspaceSnapshot.decode(snapshot)
     end
   end
