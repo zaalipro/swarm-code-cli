@@ -72,6 +72,30 @@ defmodule SwarmCodeCLI.UI.FixRoundUTest do
     end
   end
 
+  # cli020 qa2: the rewind dialog's second step (the scope) took the whole
+  # height on the release and counted its prompt and fold lines ("2 of 5").
+  describe "U5: the rewind scope step" do
+    test "is as tall as its rows and counts only the three scopes" do
+      turn = hd(@turns)
+
+      for size <- @sizes do
+        state = size |> chat() |> layer({:rewind_confirm, turn})
+        text = screen_text(%{state | focus: "both"})
+        rows = box(text)
+        # The prompt, three scopes, the fold note (up to two lines), the
+        # count line, Cancel and the two borders.
+        assert length(rows) <= 1 + 3 + 2 + 4, "#{inspect(size)}\n#{text}"
+        assert text =~ "1 of 3 · Enter chooses · Esc closes", text
+        refute text =~ "of 5"
+      end
+    end
+
+    test "the count follows the focused scope" do
+      state = chat({120, 36}) |> layer({:rewind_confirm, hd(@turns)})
+      assert screen_text(%{state | focus: "files"}) =~ "3 of 3"
+    end
+  end
+
   describe "U5: history search" do
     test "the query and the empty message are not rows" do
       rows = [

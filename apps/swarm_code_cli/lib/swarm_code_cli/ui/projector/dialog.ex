@@ -448,12 +448,15 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
   defp list_layer?({:rewind, _}), do: true
   defp list_layer?({:history_search, _}), do: true
   defp list_layer?({:queue_list}), do: true
+  # cli020 qa2: and the rewind dialog's second step, the scope.
+  defp list_layer?({:rewind_confirm, _}), do: true
   defp list_layer?(_layer), do: false
 
   # The rows of those lists a cursor can sit on.
   defp selectable?({:rewind, _}, id), do: String.starts_with?(id, "turn-")
   defp selectable?({:history_search, _}, id), do: String.starts_with?(id, "history-")
   defp selectable?({:queue_list}, id), do: String.starts_with?(id, "queued-")
+  defp selectable?({:rewind_confirm, _}, id), do: id in ["both", "conversation", "files"]
   defp selectable?(_layer, _id), do: true
 
   # A picker row in colour: rail, an optional check, the title with the
