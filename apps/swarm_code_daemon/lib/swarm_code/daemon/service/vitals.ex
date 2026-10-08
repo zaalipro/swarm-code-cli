@@ -131,6 +131,19 @@ defmodule SwarmCode.Daemon.Service.Vitals do
       else: {:noreply, state}
   end
 
+  # cli022 F6: one finished, measured call (one bar). The synced speed monitor
+  # does not send this yet (desktop change in notes/Y.md): its `shown` map lets
+  # a live estimate of the slot hide a call that finished beside it, so two
+  # parallel workers gave one bar. Each message is one sample, never merged.
+  def handle_info({:speed_call, cid, slot, %{tps: tps} = value}, state)
+      when is_binary(cid) and slot in @slots and is_integer(tps) do
+    state = push(state, cid, slot, tps, mark(value))
+
+    if cid == state.focus and state.demand,
+      do: {:noreply, wake(%{state | hot_until: now(state) + @hot_ms}, :soon)},
+      else: {:noreply, state}
+  end
+
   def handle_info(:tick, state) do
     state = %{state | timer: nil}
 
@@ -261,13 +274,13 @@ defmodule SwarmCode.Daemon.Service.Vitals do
   defp seed(%{focus: cid} = state) when is_binary(cid), do: absorb(state, cid, state.speed.(cid))
   defp seed(state), do: state
 
-  # A finished call (`live?: false`) with a new instant or rate is one more
-  # sample of its slot; estimates of a streaming call are never stored.
+  # A finished call (`live?: false`) with a new value is one more sample of
+  # its slot; estimates of a streaming call are never stored.
   defp absorb(state, cid, shown) do
     Enum.reduce(@slots, state, fn slot, acc ->
       case Map.get(shown, slot) do
-        %{live?: false, tps: tps, at: at} when is_integer(tps) ->
-          mark = {at, tps}
+        %{live?: false, tps: tps} = value when is_integer(tps) ->
+          mark = mark(value)
 
           if Map.get(acc.seen, {cid, slot}) == mark,
             do: acc,
@@ -278,6 +291,11 @@ defmodule SwarmCode.Daemon.Service.Vitals do
       end
     end)
   end
+
+  # cli022 F6: the whole value marks a sample. `{at, tps}` alone (`at` is a
+  # whole second) took a second call that finished in the same second at the
+  # same rate for the first one and dropped it, though the monitor sent it.
+  defp mark(value), do: Map.take(value, [:at, :tps, :ttft_ms, :model])
 
   defp push(state, cid, slot, tps, mark) do
     per_slot = Map.get(state.history, cid, %{})

@@ -524,7 +524,8 @@ defmodule SwarmCodeCLI.UI.Projector.Vitals do
   @doc """
   `samples` (oldest first) as a `cells`-wide sparkline at a glyph tier: the
   newest at the right, blanks where there is no sample, each bar's height on
-  the shared scale `0..top` (a zero is the baseline).
+  the shared scale `0..top` (a zero is the baseline); one bar is one finished
+  model call, and a lone one is at most half height (cli022 F6).
   """
   @spec spark([number()], number(), non_neg_integer(), :rich | :measured | :ascii) :: String.t()
   def spark(samples, top, cells, tier) do
@@ -534,11 +535,14 @@ defmodule SwarmCodeCLI.UI.Projector.Vitals do
 
   defp spark_parts(samples, top, cells, tier) do
     shown = Enum.take(samples, -cells)
+    # cli022 F6: a lone sample has no trend to compare; at most half height
+    # (it drew a full block, the loudest glyph of the panel).
+    ceiling = if length(shown) == 1, do: 3, else: 7
 
     glyphs =
       Enum.map(shown, fn v ->
         level = if top > 0, do: round(v / top * 7), else: 0
-        @spark |> Enum.at(level |> max(0) |> min(7)) |> Glyph.get(tier)
+        @spark |> Enum.at(level |> max(0) |> min(ceiling)) |> Glyph.get(tier)
       end)
 
     lead = String.duplicate(" ", cells - length(glyphs))

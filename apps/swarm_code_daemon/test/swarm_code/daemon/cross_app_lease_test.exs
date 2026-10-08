@@ -43,7 +43,7 @@ defmodule SwarmCode.Daemon.CrossAppLeaseTest do
         newest_migration: 20_260_926_000_000,
         manifest_sha256: "408afb8e6eb422c8df50fe65536a08f853475c162d584db45b4af708274fd1d0"
       },
-      app_version: "0.2.1"
+      app_version: "0.2.2"
     ]
 
     %{dir: dir, opts: opts}
@@ -566,7 +566,7 @@ defmodule SwarmCode.Daemon.CrossAppLeaseFinalFixTest do
         newest_migration: 1,
         manifest_sha256: String.duplicate("a", 64)
       },
-      app_version: "0.2.1",
+      app_version: "0.2.2",
       test_open_hook: hook
     ]
 
@@ -606,7 +606,7 @@ defmodule SwarmCode.Daemon.CrossAppLeaseFinalFixTest do
         newest_migration: 1,
         manifest_sha256: String.duplicate("a", 64)
       },
-      app_version: "0.2.1"
+      app_version: "0.2.2"
     ]
 
     assert {:ok, owner} = CrossAppLease.start_link(opts)

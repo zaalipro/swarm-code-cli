@@ -61,7 +61,13 @@ defmodule SwarmCodeCLI.UI.Library do
         },
         %DTO.FormField{key: "day_of_month", label: "Day of month", kind: :integer, hint: "1..31"},
         %DTO.FormField{key: "cron", label: "Cron", hint: "Five-field cron expression"},
-        %DTO.FormField{key: "timezone", label: "Timezone", value: "Etc/UTC", required: true},
+        # cli022 F1: no zone of its own; the daemon stores the Mac's local zone
+        # (the function the desktop's form uses) when it is blank.
+        %DTO.FormField{
+          key: "timezone",
+          label: "Timezone (blank = this Mac's)",
+          hint: "IANA zone name; blank is this Mac's zone"
+        },
         %DTO.FormField{key: "enabled", label: "Enabled", kind: :boolean, value: "true"},
         %DTO.FormField{key: "catch_up", label: "Catch up", kind: :boolean, value: "true"},
         %DTO.FormField{key: "workflow_name", label: "Workflow name"},
@@ -73,12 +79,14 @@ defmodule SwarmCodeCLI.UI.Library do
         },
         %DTO.FormField{key: "provider_id", label: "Provider ID"},
         %DTO.FormField{key: "model", label: "Model"},
+        # cli022 F1: unset by default, so the task follows Settings' scheduled
+        # effort; `default` stores nil (`FeatureForm`).
         %DTO.FormField{
           key: "effort",
-          label: "Effort",
+          label: "Effort (default follows Settings)",
           kind: :choice,
-          choices: ~w(low medium high max),
-          value: "medium"
+          choices: ~w(default low medium high max),
+          value: "default"
         },
         %DTO.FormField{
           key: "color",
@@ -113,6 +121,57 @@ defmodule SwarmCodeCLI.UI.Library do
       ]
     }
   end
+
+  @doc """
+  cli022 F1: a scheduled-task form from the daemon gets the same `default`
+  effort choice as the new form: an unset effort (blank) reads `default`, and
+  `default` is submitted as nil. Idempotent.
+
+  cli022 int: with the workspace's `scheduled_effort_default` the effort's
+  label names the level `default` follows (`default · high`, the desktop's
+  `task.effort || settings.default_scheduled_effort`; when that is unset too
+  the run follows the chat default, and the label keeps its words),
+  and a blank zone starts on the workspace's `local_zone` (the Mac's zone, the
+  desktop form's `zone()`). Without them (an older daemon) the form keeps the
+  words and the blank zone the daemon fills.
+  """
+  @spec schedule_form(DTO.FeatureForm.t() | nil, map() | nil) :: DTO.FeatureForm.t() | nil
+  def schedule_form(form, workspace \\ nil)
+
+  def schedule_form(%DTO.FeatureForm{fields: fields} = form, workspace) do
+    workspace = if is_map(workspace), do: workspace, else: %{}
+
+    level =
+      case Map.get(workspace, :scheduled_effort_default) do
+        level when is_binary(level) and level != "" -> level
+        _ -> nil
+      end
+
+    zone =
+      case Map.get(workspace, :local_zone) do
+        zone when is_binary(zone) and zone != "" -> zone
+        _ -> nil
+      end
+
+    fields =
+      Enum.map(fields, fn
+        %DTO.FormField{key: "effort", kind: :choice, choices: choices, value: value} = field ->
+          choices = if "default" in choices, do: choices, else: ["default" | choices]
+          value = if(value in ["", nil], do: "default", else: value)
+          label = if level, do: "Effort (default · #{level}, from Settings)", else: field.label
+          %{field | choices: choices, value: value, label: label}
+
+        %DTO.FormField{key: "timezone", value: value} = field when is_binary(zone) ->
+          if value in ["", nil], do: %{field | value: zone, label: "Timezone"}, else: field
+
+        field ->
+          field
+      end)
+
+    %{form | fields: fields}
+  end
+
+  def schedule_form(form, _workspace), do: form
 
   def open(state, feature) do
     state = close(state)

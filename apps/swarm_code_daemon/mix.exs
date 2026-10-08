@@ -123,7 +123,7 @@ defmodule SwarmCodeDaemon.MixProject do
   def project do
     [
       app: :swarm_code_daemon,
-      version: "0.2.1",
+      version: "0.2.2",
       elixir: "~> 1.18.4",
       build_path: "../../_build",
       config_path: "../../config/config.exs",

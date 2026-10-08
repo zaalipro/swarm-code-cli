@@ -65,12 +65,12 @@ defmodule SwarmCodeCLI.UI.SlashPalette do
     %{name: "delete", args: "", desc: "Delete this conversation (asks first)"},
     %{
       name: "effort",
-      args: "[low|medium|high|max]",
+      args: "[default|low|medium|high|max]",
       desc: "Reasoning effort of this conversation's chat model; bare: pick one"
     },
     %{
       name: "worker_effort",
-      args: "[low|medium|high|max]",
+      args: "[default|low|medium|high|max]",
       desc: "Reasoning effort of this conversation's worker model; bare: pick one"
     },
     %{name: "help", args: "", desc: "List the commands and the keys"},
@@ -422,8 +422,16 @@ defmodule SwarmCodeCLI.UI.SlashPalette do
         if saved == context(state), do: min(index, max(0, length(entries(state)) - 1)), else: 0
 
       _ ->
-        0
+        initial_index(state)
     end
+  end
+
+  # cli022 F3: the argument list opens with its cursor on the current value
+  # (the first marked row), the command list on its first row.
+  defp initial_index(state) do
+    if context(state) == nil,
+      do: Enum.find_index(entries(state), &(Map.get(&1, :current?) == true)) || 0,
+      else: 0
   end
 
   defp context(state), do: if(gate?(state), do: draft_context(state))

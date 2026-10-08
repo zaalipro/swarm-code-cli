@@ -124,7 +124,7 @@
     {
       "classification": "source",
       "destination": "apps/swarm_code_core/lib/swarm_code/commands.ex",
-      "sha256": "951becae9f9ea2c0096fe9d5556fcc8258b84b715d7e73cbe79dd6182e960687",
+      "sha256": "885064cdcc8e5c22a68d068f9aa18fb9d44719db769779cd920124cc3209f748",
       "upstream_commit": "fb1b4ff82354ac8ff2e82d4f6516121fd55ff212",
       "upstream_path": "lib/swarm_code_web/components/chat.ex",
       "upstream_sha256": "948925c1f35087f7198e370abdd91945a298127fe9fb1b438060ef39476a9fbb"
@@ -500,7 +500,7 @@
     {
       "classification": "source",
       "destination": "apps/swarm_code_daemon/lib/swarm_code/domain/mcp/client.ex",
-      "sha256": "2909be895ab1f2d208d9a9f700229e0ce460fec0cc1749ccdb183b14f04d0311",
+      "sha256": "01977f1ce1036ad5043b4c968c16845c6cfa9df220d0af4af113124a63d13396",
       "upstream_commit": "a93d6d8ee74358749e157e91dea46ad8c0d66722",
       "upstream_path": "lib/swarm_code/mcp/client.ex",
       "upstream_sha256": "031af4ca749ebd2878a3bf3f0de5182d1e93312c75722bddce31a43b60b53a39"
@@ -1612,7 +1612,7 @@
     {
       "classification": "source",
       "destination": "apps/swarm_code_daemon/lib/swarm_code/daemon/service/command_dispatcher.ex",
-      "sha256": "8b7323b182d23baf901cf81994b20e1c7f3aed72cacad0d1c0c9b272825cdf71",
+      "sha256": "b9c2d0c458743f1dc12a1ef85a1e90bf61919b7cc832aa62441af5f18565f522",
       "upstream_commit": "fb1b4ff82354ac8ff2e82d4f6516121fd55ff212",
       "upstream_path": "lib/swarm_code_web/live/workspace_live.ex",
       "upstream_sha256": "5b081d749d362ab34b1838acede8e593d64aa83c42f93a5865f7d4d2483dd4b9"
@@ -1796,7 +1796,7 @@
     {
       "classification": "source",
       "destination": "apps/swarm_code_daemon/lib/swarm_code/domain/lsp/client.ex",
-      "sha256": "d1de6a1b4c78ff36cc0d9cb62a17a58bd8fe3f0c48027e7cd8edf0fc9c4e2b87",
+      "sha256": "f176c163585349650905c9e0968f476d3d69a82608e5a0992a5165a206137de6",
       "upstream_commit": "a93d6d8ee74358749e157e91dea46ad8c0d66722",
       "upstream_path": "lib/swarm_code/lsp/client.ex",
       "upstream_sha256": "40e5c3590500755b27bb9617989a1eee3ec52fb55731f4e1340d88e32b81f8f9"

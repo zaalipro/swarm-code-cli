@@ -1,5 +1,5 @@
 defmodule SwarmCodeCLI.Release.VersionTest do
-  # cli020 A8 (owner decision 1), cli021: one release, 0.2.1, in all three apps
+  # cli020 A8 (owner decision 1), cli021, cli022: one release, 0.2.2, in all three apps
   # (the umbrella `mix.exs` carries the same), and the synced MCP and LSP
   # clients introduce themselves with the CLI's own version: since desktop
   # pass 74 says 0.2.2 there, the CLI keeps its number as a recorded
@@ -9,9 +9,9 @@ defmodule SwarmCodeCLI.Release.VersionTest do
   # `locked_branch_test`'s conditional campaign paths, so the test lives here.
   use ExUnit.Case, async: true
 
-  @version "0.2.1"
+  @version "0.2.2"
 
-  test "every app of the release is version 0.2.1" do
+  test "every app of the release is version 0.2.2" do
     for app <- [:swarm_code_core, :swarm_code_daemon, :swarm_code_cli] do
       assert Application.spec(app, :vsn) == String.to_charlist(@version), "#{app}"
     end
@@ -20,7 +20,7 @@ defmodule SwarmCodeCLI.Release.VersionTest do
     assert File.read!(Path.join(root, "mix.exs")) =~ ~s(version: "#{@version}")
   end
 
-  test "the synced MCP and LSP clients say ncode 0.2.1" do
+  test "the synced MCP and LSP clients say ncode 0.2.2" do
     root = Path.expand("../../../..", __DIR__)
     domain = Path.join(root, "apps/swarm_code_daemon/lib/swarm_code/domain")
 

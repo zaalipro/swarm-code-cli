@@ -555,7 +555,10 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Session do
   # effort, so the status line shows it (the picker's PTY test).
   defp slash_command(script, _request, :set_effort, %{effort: effort, target: target}) do
     field = if target == :chat, do: :effort, else: :swarm_effort
-    level = Atom.to_string(effort)
+    # cli022 F2/F4: `/effort default` arrives with a nil effort (X's parser; a
+    # `:default` atom is taken the same way) and clears the value, so the slot
+    # follows the demo's default level again (`effective_effort/2`).
+    level = if effort && effort != :default, do: Atom.to_string(effort)
     next = Map.put(script.session, field, level)
 
     deltas =
@@ -565,7 +568,11 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Session do
       |> Enum.map(&metadata_fact(script, next, &1))
 
     {:ok, %{script | session: next}, deltas, [script.session.current],
-     %DTO.Feedback{kind: :notice, title: "Effort", text: "Effort set to " <> level}}
+     %DTO.Feedback{
+       kind: :notice,
+       title: "Effort",
+       text: if(level, do: "Effort set to " <> level, else: "Effort follows the default")
+     }}
   end
 
   defp slash_command(script, request, :trust_project, _),
@@ -688,22 +695,47 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Session do
     do: %Delta{
       kind: :workspace_metadata,
       conversation_id: conversation_id,
-      body: %DTO.WorkspaceMetadata{
-        conversation_id: conversation_id,
-        mode: :build,
-        approval_mode: session.approval_mode,
-        trusted: session.trusted,
-        chat_provider: "openrouter",
-        title: session.conversations[conversation_id].title,
-        cost_usd: cost(script, conversation_id),
-        queued: queued(script, conversation_id),
-        # cli020 C17: the levels the demo model accepts.
-        effort_levels: ~w(low medium high max),
-        swarm_effort_levels: ~w(low medium high max),
-        effort: session.effort,
-        swarm_effort: session.swarm_effort
-      }
+      body:
+        %DTO.WorkspaceMetadata{
+          conversation_id: conversation_id,
+          mode: :build,
+          approval_mode: session.approval_mode,
+          trusted: session.trusted,
+          chat_provider: "openrouter",
+          title: session.conversations[conversation_id].title,
+          cost_usd: cost(script, conversation_id),
+          queued: queued(script, conversation_id),
+          # cli020 C17: the levels the demo model accepts.
+          effort_levels: ~w(low medium high max),
+          swarm_effort_levels: ~w(low medium high max),
+          effort: session.effort,
+          swarm_effort: session.swarm_effort
+        }
+        |> struct(effective_efforts(session))
     }
+
+  # cli022 F4: the demo's Settings defaults are `low` (chat) and `medium`
+  # (worker), so a status line that shows the default is told apart from one
+  # that shows a picked `medium`.
+  @demo_default_effort %{chat: "low", swarm: "medium"}
+
+  @doc false
+  def effective_efforts(session) do
+    {effort, effort_source} = effective_effort(Map.get(session, :effort), :chat)
+    {swarm, swarm_source} = effective_effort(Map.get(session, :swarm_effort), :swarm)
+
+    [
+      effort_effective: effort,
+      effort_source: effort_source,
+      swarm_effort_effective: swarm,
+      swarm_effort_source: swarm_source
+    ]
+  end
+
+  defp effective_effort(level, _slot) when is_binary(level) and level != "",
+    do: {level, :conversation}
+
+  defp effective_effort(_level, slot), do: {Map.fetch!(@demo_default_effort, slot), :default}
 
   @doc """
   pass71 S5: the metadata fact after a prompt of `conversation_id` was queued
@@ -844,7 +876,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Session do
         |> Map.values()
         |> Enum.filter(&MapSet.member?(run_ids, &1.run_id))
         |> Enum.sort_by(& &1.id)
-    ]
+    ] ++ effective_efforts(s)
   end
 
   @doc "The pass70 fields of a shell snapshot."

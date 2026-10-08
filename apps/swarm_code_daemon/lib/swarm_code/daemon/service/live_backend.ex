@@ -759,6 +759,9 @@ defmodule SwarmCode.Daemon.Service.LiveBackend do
               "swarm_model" => state.opts[:model],
               "effort" => nil,
               "swarm_effort" => nil,
+              # cli022 F4: the level every run of this unsaved session uses
+              # (NCODE_EFFORT, else medium); it has no stored value or workers.
+              "effort_effective" => state.opts[:effort],
               "runs" => selected,
               "transcript" => transcript,
               "interactions" => Enum.take(pending, limit),

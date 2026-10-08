@@ -15,7 +15,7 @@ your projects.
 curl -fsSL https://code.llmotions.com/install.sh | sh
 ```
 
-ncode 0.2.1 is an unsigned developer preview for macOS 15 or later on Apple
+ncode 0.2.2 is an unsigned developer preview for macOS 15 or later on Apple
 silicon. The installer downloads the release from GitHub Releases, checks its
 SHA-256 and installs the `ncode` command. Bring your own model provider: an
 Anthropic key or any OpenAI-compatible endpoint, added with
@@ -238,6 +238,7 @@ shared provider-file loader.
 | `NCODE_MODEL` (`SWARM_MODEL`) | First run only (no usable provider in the database): the model ID; `OPENAI_MODEL` / `ANTHROPIC_MODEL` also work |
 | `NCODE_BASE_URL` (`SWARM_BASE_URL`) | First run only: the endpoint; OpenAI-compatible URLs include `/v1`, Anthropic URLs omit it. `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL` also work. |
 | `NCODE_API_KEY` (`SWARM_API_KEY`) | First run only: overrides `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`; may be empty for local servers |
+| `NCODE_EFFORT` (`SWARM_EFFORT`) | This session's chat effort while the conversation has none of its own (`/effort` wins; `/effort default` gives it back); the status line and `/effort` show it. The unsaved launcher's runs use it too |
 | `SWARM_PROJECT_ROOT` | Development launchers: project directory (default: the current directory); `ncode` ignores it, name the directory instead |
 | `NCODE_CONVERSATION` (`SWARM_CONVERSATION`) | `latest` (default), `new`, or a conversation id; the `ncode` flags win |
 | `SWARM_MODEL_OVERRIDE` | Set by `ncode --model` only: the session's model, never written |

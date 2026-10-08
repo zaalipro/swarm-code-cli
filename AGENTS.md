@@ -6,7 +6,7 @@ Claude Code reads this file directly when the project has no `CLAUDE.md`; do not
 
 ## What this is
 
-Product name (v0.2.1): **ncode**, lowercase; the installed command is `ncode`
+Product name (v0.2.2): **ncode**, lowercase; the installed command is `ncode`
 (`rel/overlays/bin/ncode`), with `swarmcode` and `swarm-code` kept as deprecated aliases that
 exec it. Internal names are unchanged on purpose: modules (`SwarmCode.*`, `SwarmCodeCLI.*`), OTP
 apps and the release (`swarm_code_*`), Mix tasks, the data folder
@@ -112,7 +112,7 @@ Three umbrella apps with deliberate ownership boundaries (`apps/*/mix.exs`):
   `SwarmCode.Governance.Provenance` the extraction audit.
 - **`swarm_code_daemon`**: the domain extracted from the desktop app plus the daemon shell.
   `SwarmCode.Domain.*` is the desktop lineage, re-derived from desktop `a93d6d8e` (desktop pass
-  74, CLI 0.2.1; before it `7b8f379f`, pass 72, CLI 0.2.0) by `mix swarm_code.provenance.sync`; CLI-local files (`domain/runtime.ex`, `paths.ex`,
+  74, CLI 0.2.1 and 0.2.2; before it `7b8f379f`, pass 72, CLI 0.2.0) by `mix swarm_code.provenance.sync`; CLI-local files (`domain/runtime.ex`, `paths.ex`,
   `notifications.ex`, `pub_sub.ex`, `feature_catalog.ex`, `html.ex`,
   `engine/pending_interactions.ex`, `tools/agent_title.ex`) are never synced (Ecto SQLite Repo via vendored `exqlite`,
   conversations, `Engine` with run/agent supervisors, LLM adapters, tools, workflows, research,
@@ -170,7 +170,7 @@ Invariants that the code base defends and tests pin:
 - The canonical database is never reset, recreated or repaired. An unknown schema fails closed
   with `StartupError{code: :schema_incompatible}`. The domain is synced to desktop `4c7c577a`
   (desktop 0.2.0), re-synced to `7b8f379f` (desktop pass 72, no migration), then to `a93d6d8e`
-  (desktop pass 74, CLI 0.2.1, no migration); its schema contract is
+  (desktop pass 74, CLI 0.2.1 and 0.2.2, no migration); its schema contract is
   `desktop-4c7c577` (58 migrations, `apps/swarm_code_daemon/priv/schema/desktop-4c7c577.json`),
   and `forward_compatible` lets the CLI run `20261015000004`, `20261016000001`,
   `20261016000002`, `20261017000004` and `20261018000001` itself after the verified backup.
@@ -379,7 +379,8 @@ Provenance and domain (lane A):
   from one, else the reason word) are upstream since desktop pass 74 K4 (`HTTP.shown_reason/2`),
   so that patch is gone (cli021 K7). `domain/mcp/client.ex` and `domain/lsp/client.ex` carry one
   recorded patch each: `clientInfo` says the CLI's own version (the desktop says its own, 0.2.2
-  at pass 74). A version stamp changes both literals and `version_test.exs`, then re-runs
+  at pass 74; at CLI 0.2.2 the two agree, so each patch is only its comment line until either
+  moves). A version stamp changes both literals and `version_test.exs`, then re-runs
   `mix swarm_code.provenance.sync --ref <pin>` to re-record them.
 - Test fixtures the mapped tests call from `SwarmCode.Fixtures` live in
   `apps/swarm_code_daemon/test/support/domain_fixtures.ex` (`assistant_identity/0`, `eventually/2`).
@@ -525,3 +526,38 @@ section of `docs/research/2026-10-07-cli020-outcome.md`.
   uses; the window lives on the model's price row, so an unpriced model opens its price draft).
 - `/profile [name]` applies a `.swarm_code/config.json` profile (the desktop's sentences);
   `/resume-run` skips runs already resumed or rewound away ("Nothing to resume.").
+
+## CLI 0.2.2 (cli022) facts
+
+The pass's brief is `docs/superpowers/plans/2026-10-08-cli-0.2.2/00_brief.md` (rules from the
+0.2.0 contract), its lane notes are in `notes/{X,Y}.md`, the outcome is the "CLI 0.2.2" section
+of `docs/research/2026-10-07-cli020-outcome.md`. No desktop change, no sync, no migration.
+
+- Effort (F2/F4): the workspace (snapshot and metadata) sends `effort`/`swarm_effort` (the
+  conversation's own, nil = follows a default) and `effort_effective`/`effort_source`,
+  `swarm_effort_effective`/`swarm_effort_source` (`:conversation | :env | :default`), computed
+  by `SessionConfiguration.effective_effort/2`: the conversation's value, else the session's
+  `NCODE_EFFORT` (else `SWARM_EFFORT`; chat slot only, kept in memory by
+  `SessionConfiguration.prepare/2`, applied by `overlay/1` so the engine runs at it), else
+  Settings' default, else `medium`. The status line shows `effort_effective || effort`. The
+  client reads them only through `Reducer.EffortPicker.effective/2` and `source/2`.
+- Both effort pickers and the `/effort`/`/worker_effort` dropdowns always offer `default` first;
+  `/effort default` (also `/worker_effort default`) parses to `:set_effort` with `effort: nil`
+  and clears the stored value. `default` is the current row while nothing is stored; it names the
+  level in effect (`Follow NCODE_EFFORT · medium`, `default · medium (NCODE_EFFORT)`).
+- The argument dropdown opens with its cursor on the `current?` row (`SlashPalette.index/1`) and
+  marks it with a muted `●` (`*` on ASCII or wide-ambiguous terminals) before the description;
+  the other rows keep a blank slot. Enter on an untouched dropdown re-runs the current value.
+- Scheduled tasks (F1, parity P4): a new task's effort is the choice `default` (submitted as nil
+  by `FeatureForm.parse_value/2`; the task follows Settings' `default_scheduled_effort`), its
+  label names that level from the workspace's `scheduled_effort_default`; the zone starts on the
+  workspace's `local_zone` (`Next.local_zone/0`, read once per daemon) and, left blank, is
+  filled by the daemon's changeset with the same function. `Library.schedule_form/2` applies
+  this to new and daemon-supplied forms.
+- Quit summary (F5): `Files changed` is the net change of the session (`net_changed/3` in
+  `release/persisted_session.ex`): a path whose file equals the session's first checkpoint of it,
+  or was absent before and is absent now, is left out (a rewind or a hand revert).
+- Vitals (F6): one sparkline bar is one finished, measured model call. `Vitals.absorb/3` marks a
+  sample by its whole value; `{:speed_call, cid, slot, value}` is accepted (one sample each) but
+  nothing sends it until the desktop's `LLM.Speed` broadcasts it (notes/Y.md, open); until then
+  two parallel calls of one slot can show as one bar. A lone sample draws at most half height.

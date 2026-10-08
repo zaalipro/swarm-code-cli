@@ -2,13 +2,11 @@
 # rules of provenance/sync-rules.json. Recorded by mix swarm_code.provenance.sync.
 --- a/apps/swarm_code_daemon/lib/swarm_code/domain/mcp/client.ex
 +++ b/apps/swarm_code_daemon/lib/swarm_code/domain/mcp/client.ex
-@@ -37,7 +37,8 @@
+@@ -37,6 +37,7 @@
    alias SwarmCode.Domain.Tools.RunCommand
  
    @protocol_version "2025-06-18"
--  @client_info %{"name" => "ncode", "version" => "0.2.2"}
 +  # cli021 K7 (CLI patch): the CLI introduces itself with its own version.
-+  @client_info %{"name" => "ncode", "version" => "0.2.1"}
+   @client_info %{"name" => "ncode", "version" => "0.2.2"}
    @handshake_timeout 30_000
    # spec 60 T12: an HTTP body past this is refused; `tools/list` stops after this many pages.
-   @max_http_body 16_000_000

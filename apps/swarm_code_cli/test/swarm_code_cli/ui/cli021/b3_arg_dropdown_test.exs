@@ -93,12 +93,16 @@ defmodule SwarmCodeCLI.UI.Cli021.B3ArgDropdownTest do
     end
 
     test "/effort and /worker_effort list the model's own levels, the old name too" do
-      assert texts(type(base(), "/effort ")) == ["effort low", "effort medium", "effort high"]
+      # cli022 F2: `default` heads both lists.
+      assert texts(type(base(), "/effort ")) ==
+               ["effort default", "effort low", "effort medium", "effort high"]
 
       assert [%{text: "effort medium"}] =
                Enum.filter(SlashPalette.entries(type(base(), "/effort ")), & &1.current?)
 
-      assert texts(type(base(), "/worker_effort ")) == ["worker_effort low", "worker_effort high"]
+      assert texts(type(base(), "/worker_effort ")) ==
+               ["worker_effort default", "worker_effort low", "worker_effort high"]
+
       assert texts(type(base(), "/swarm_effort h")) == ["worker_effort high"]
     end
 
@@ -136,12 +140,14 @@ defmodule SwarmCodeCLI.UI.Cli021.B3ArgDropdownTest do
 
   describe "keys" do
     test "Down moves the highlight, Tab completes the draft to it" do
+      # cli022 F3: the list opens on the current shape (`full`), so two Downs
+      # reach `hidden`.
       state = type(base(), "/panel ") |> press!(Input.key(:down)) |> press!(Input.key(:down))
-      assert SlashPalette.selected(state).text == "panel compact"
+      assert SlashPalette.selected(state).text == "panel hidden"
       state = press!(state, Input.key(:tab))
-      assert text(state) == "/panel compact"
+      assert text(state) == "/panel hidden"
       # the list stays, showing the one row it completed to
-      assert texts(state) == ["panel compact"]
+      assert texts(state) == ["panel hidden"]
     end
 
     test "Enter completes the highlighted row and runs the command" do
