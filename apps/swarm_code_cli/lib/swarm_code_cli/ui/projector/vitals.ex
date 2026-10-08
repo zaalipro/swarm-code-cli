@@ -248,9 +248,10 @@ defmodule SwarmCodeCLI.UI.Projector.Vitals do
     role_w = Enum.max([3 | words])
 
     role_cells =
-      if inner >= 44 and name_for.(role_w + 2) >= min(@name_floor, longest),
-        do: role_w + 2,
-        else: 0
+      if inner >= 44 and Enum.any?(words, &(&1 > 0)) and
+           name_for.(role_w + 2) >= min(@name_floor, longest),
+         do: role_w + 2,
+         else: 0
 
     %{
       role_w: if(role_cells > 0, do: role_w, else: 0),
@@ -331,9 +332,6 @@ defmodule SwarmCodeCLI.UI.Projector.Vitals do
       )
 
     case cols.gap > 1 && breakdown(memory, cols.inner - 2 - label, state) do
-      {[], []} ->
-        [row]
-
       {split, scale} ->
         left = if split == [], do: [], else: [{String.duplicate(" ", 2 + label), :plain} | split]
         [row, Draw.row(left, scale, width, state)]
@@ -348,8 +346,14 @@ defmodule SwarmCodeCLI.UI.Projector.Vitals do
   # and fit `room`,
   # and what the gauge measures against under the number (`of 16 GB`).
   defp breakdown(memory, room, state) do
-    scale = if memory.system, do: [{"of " <> bytes_words(memory.system), :text_faint}], else: []
-    scale_cells = if scale == [], do: 0, else: Draw.cells(elem(hd(scale), 0), state) + 2
+    # Against the Mac's memory when it is known, else the soft scale says so.
+    scale =
+      case memory.system do
+        s when is_integer(s) -> [{"of " <> bytes_words(s), :text_faint}]
+        _ -> [{"scale " <> bytes_words(soft(memory.total, @soft_scale)), :text_ghost}]
+      end
+
+    scale_cells = Draw.cells(elem(hd(scale), 0), state) + 2
 
     words =
       if memory.app && memory.tools,
@@ -550,7 +554,7 @@ defmodule SwarmCodeCLI.UI.Projector.Vitals do
       :main -> "main"
       :worker -> "worker"
       :validator -> "validator"
-      :other -> nil
+      :other -> "other"
     end)
     |> Enum.reject(&is_nil/1)
     |> Enum.join("+")

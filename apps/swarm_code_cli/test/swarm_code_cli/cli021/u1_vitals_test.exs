@@ -170,6 +170,19 @@ defmodule SwarmCodeCLI.Cli021.U1VitalsTest do
       assert Enum.any?(rows, &(&1 =~ "312 MB"))
     end
 
+    test "a model outside the three slots says other; without the Mac's size the scale says so" do
+      kimi = %{slot: :other, model: "kimi-k2", tps: 61, live: true, history: [40, 61], at: nil}
+
+      state =
+        swarm()
+        |> put_vitals(%{@vitals | models: [kimi | @vitals.models], machine_bytes: nil})
+
+      rows = texts(Panel.plan(state, 56, 43))
+      assert Enum.any?(rows, &(&1 =~ ~r/other +kimi-k2/))
+      assert Enum.any?(rows, &(&1 =~ ~r/scale 2 GB $/))
+      refute Enum.any?(rows, &(&1 =~ "of 16 GB"))
+    end
+
     test "before the first OS reading the VM's own total" do
       state =
         swarm() |> put_vitals(%{@vitals | os_rss_bytes: nil, children_rss_bytes: nil})
