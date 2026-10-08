@@ -229,17 +229,14 @@ impl Session<'_> {
         }
     }
     /// cli020 D3: the terminal's own title back, before the modes are restored.
+    /// cli020 R2: part of restoration, so bounded like the guard's writes
+    /// (the frame writer waits for a slow terminal; this one never hangs a
+    /// shutdown on a terminal that stopped reading). Callers discard the
+    /// frame buffer first.
     fn restore_title(&mut self) {
         if self.title_saved {
             self.title_saved = false;
-            if self
-                .output
-                .write_all(b"\x1b[23;2t")
-                .and_then(|()| self.output.flush())
-                .is_err()
-            {
-                self.output.discard();
-            }
+            let _ = FdWriter::new(self.tty, true).write_all(b"\x1b[23;2t");
         }
     }
     fn suspend(&mut self) -> Result<(), u8> {
@@ -580,7 +577,9 @@ pub fn run(guard: &mut UnixStream, tty: RawFd) -> i32 {
         guard,
         tty,
         stdout: FdWriter::new(1, true),
-        output: BufferedWriter::new(FdWriter::new(tty, true)),
+        // cli020 R2: a terminal that stops reading for a while delays the
+        // frame; only a gone terminal or termination ends the write.
+        output: BufferedWriter::new(FdWriter::patient(tty)),
         generation: None,
         flags: 0,
         active: false,

@@ -83,6 +83,10 @@ defmodule SwarmCodeCLI.UI.Reducer.Remote do
   @spec answer(map(), map(), {:ok, term()} | {:error, binary() | nil}) :: {map(), list()}
   def answer(state, %{kind: kind} = request, result) do
     case {elem(kind, 0), result} do
+      {:queue_edit, {:error, words}} ->
+        state = SwarmCodeCLI.UI.Reducer.QueueCommands.refused(state, request)
+        {notice(state, words || refused_words(kind)), []}
+
       {_, {:error, words}} ->
         {notice(state, words || refused_words(kind)), []}
 
@@ -93,7 +97,7 @@ defmodule SwarmCodeCLI.UI.Reducer.Remote do
         SwarmCodeCLI.UI.Reducer.Rewind.turns_answer(state, request, payload)
 
       {:queue_edit, {:ok, _payload}} ->
-        {SwarmCodeCLI.UI.Reducer.QueueCommands.answered(state, kind), []}
+        SwarmCodeCLI.UI.Reducer.QueueCommands.answered(state, request)
 
       {:history_search, {:ok, payload}} ->
         SwarmCodeCLI.UI.Reducer.HistorySearch.answer(state, request, payload)

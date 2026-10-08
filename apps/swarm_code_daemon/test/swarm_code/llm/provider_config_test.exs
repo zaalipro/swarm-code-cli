@@ -1,4 +1,4 @@
-defmodule SwarmCode.LLM.ProviderConfigTest do
+defmodule SwarmCode.Providers.ProviderConfigTest do
   use ExUnit.Case, async: true
   alias SwarmCode.Providers.Provider
 

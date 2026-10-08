@@ -725,15 +725,30 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
   # after the live turn: S's `queued_texts` (the daemon's queue, oldest
   # first), else K's deliveries still `:queued`; and a send still on its way.
   defp pending_rows(ctx, state, width) do
-    queued = queued_texts(state)
     deliveries = Map.get(state, :deliveries, []) |> Enum.reverse()
     conversation = ctx.run && ctx.run.conversation_id
+    queued = queued_texts(state, conversation)
     mine = Enum.filter(deliveries, &(Map.get(&1, :conversation_id) == conversation))
 
+    # fix round U8: a queued message whose text is already in the transcript
+    # has left the queue (it started), so its "queued" row goes with it.
+    # cli020 qa2 (U8): without the daemon's queue (a run view) the fallback
+    # rows mean "sends after the running turn", so they need a running turn;
+    # under a run that ended they were drained or dropped long ago.
     queued =
       case queued do
-        nil -> for d <- mine, Map.get(d, :status) == :queued, do: Map.get(d, :text) || ""
-        texts -> texts
+        nil when not (is_map(ctx.run) and ctx.run.state in @live) ->
+          []
+
+        nil ->
+          for d <- mine,
+              Map.get(d, :status) == :queued,
+              text = Map.get(d, :text) || "",
+              not sent?(state, conversation, String.trim(text), Map.get(d, :at)),
+              do: text
+
+        texts ->
+          texts
       end
 
     sending =
@@ -754,12 +769,19 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
     if rows == [], do: [], else: [blank() | rows]
   end
 
-  defp queued_texts(state) do
+  # fix round U8: the snapshot's queue is the queue of ITS conversation; in a
+  # view of a run of another conversation it says nothing (the sends of this
+  # one are the fallback), so a drained queue's rows cannot linger there.
+  defp queued_texts(state, conversation) do
     snapshot = Map.get(state.read_model.snapshots, :workspace)
+    owner = snapshot && Map.get(snapshot, :conversation_id)
 
     case snapshot && Map.get(snapshot, :queued_texts) do
-      texts when is_list(texts) -> Enum.filter(texts, &is_binary/1)
-      _ -> nil
+      texts when is_list(texts) and (is_nil(conversation) or owner == conversation) ->
+        Enum.filter(texts, &is_binary/1)
+
+      _ ->
+        nil
     end
   end
 
@@ -1896,7 +1918,17 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
   # palette's "Retry failed run" row, which E9 puts first.
   def next_step_text(run, state), do: next_step(run, state)
 
-  @retry_keys "r retries · Ctrl-P Retry failed run"
+  # fix round U2: `r` retries only in select mode (focus "main"); in the
+  # composer it types an `r`, so the words name the palette row there.
+  defp retry_keys(%{focus: "main"}), do: "r retries · Ctrl-P Retry failed run"
+  defp retry_keys(state), do: "Ctrl-P " <> hint_arrow(state) <> " Retry failed run"
+
+  defp hint_arrow(%{capabilities: %{ascii?: true}}), do: "->"
+
+  defp hint_arrow(%{capabilities: %{ambiguous_width: policy}}),
+    do: if(Width.cells("→", policy) == 1, do: "→", else: "›")
+
+  defp hint_arrow(_state), do: "→"
 
   defp next_step(run, state) do
     retry_at = Map.get(run, :retry_at)
@@ -1914,15 +1946,15 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
         refused? = String.contains?(String.downcase(Map.get(run, :error) || ""), "econnrefused")
 
         case if(refused?, do: "refused", else: Map.get(run, :error_kind)) do
-          "refused" -> "is the provider running? · " <> @retry_keys
+          "refused" -> "is the provider running? · " <> retry_keys(state)
           "rate_limit" -> "rate limited" <> by <> " · retry in a moment · /model to switch"
           "usage_limit" -> "out of quota" <> by <> " · /model to switch model"
-          "overloaded" -> "provider busy · " <> @retry_keys <> " · /model to switch"
+          "overloaded" -> "provider busy · " <> retry_keys(state) <> " · /model to switch"
           "unauthorized" -> "the key was refused · check the provider in settings"
           "context_overflow" -> "too long for the model · /compact, then retry"
-          "network" -> "connection dropped · " <> @retry_keys
-          "timeout" -> "timed out · " <> @retry_keys
-          _ -> @retry_keys <> " · /model to switch model"
+          "network" -> "connection dropped · " <> retry_keys(state)
+          "timeout" -> "timed out · " <> retry_keys(state)
+          _ -> retry_keys(state) <> " · /model to switch model"
         end
     end
   end

@@ -251,21 +251,56 @@ class TerminalPortPTY(unittest.TestCase):
         self.assertEqual(p.recv()[1], 19)
         p.restored()
 
-    def test_undrained_terminal_restoration_retry_has_bounded_failure(self):
-        p = self.port()
-        p.send(draw())
-        # Never drain the terminal during this interval: the output pipe must
-        # remain saturated through the writer failure and guard's final retry.
-        end = time.monotonic() + 3
-        while p.poll() is None and time.monotonic() < end:
+    def read_wire_only(self, p, seconds):
+        # Reads the BEAM side only: the terminal stays undrained meanwhile.
+        end = time.monotonic() + seconds
+        while time.monotonic() < end and p.poll() is None:
             if select.select([p.process.stdout], [], [], .02)[0]:
                 p.wire.extend(os.read(p.process.stdout.fileno(), 65536))
+
+    def test_slow_terminal_delays_the_paint_and_keeps_input(self):
+        # cli020 R2: the terminal's reader stops for 1.5 s while a frame is
+        # written (a macOS pty holds about 1 KiB). The frame waits instead of
+        # failing after 500 ms, Esc typed during the stall is kept, and the
+        # session goes on once the terminal reads again.
+        p = self.port()
+        p.send(draw(text=b'XYZ' * 600))
+        self.read_wire_only(p, .75)
+        os.write(p.master, b'\x1b')
+        self.read_wire_only(p, .75)
+        self.assertIsNone(p.poll(), 'a slow terminal ended the port')
+        self.assertEqual(bytes(p.wire), b'', 'the port answered before the terminal read the frame')
+        os.kill(p.writer_pid, 0)
+        self.assertEqual(p.recv(), struct.pack('>BBQQQ', 1, 18, GEN, 1, 42))
+        self.assertIn(b'XYZXYZ', p.terminal)
+        p.send(command(2, 1))
+        self.assertEqual(p.recv(), struct.pack('>BBQQBBBB', 1, 17, GEN, 1, 0, 0, 14, 0))
+        p.send(draw(2, text=b'after the stall'))
+        self.assertEqual(p.recv(), struct.pack('>BBQQQ', 1, 18, GEN, 2, 42))
+        p.send(command(4, 2))
+        self.assertEqual(p.recv()[1], 19)
+        p.restored()
+
+    def test_undrained_terminal_waits_and_termination_restores_within_bounds(self):
+        p = self.port()
+        p.send(draw())
+        # Never drain the terminal during this interval: the output stays
+        # saturated through the wait, the termination and guard's final retry.
+        # cli020 R2: a terminal that does not read is not a failure by itself;
+        # the frame waits (the owner's own deadline decides when to stop).
+        self.read_wire_only(p, 1.5)
+        self.assertIsNone(p.poll(), 'an undrained terminal ended the port by itself')
+        self.assertEqual(bytes(p.wire), b'')
+        os.kill(p.writer_pid, 0)
+        # The owner's reap (or the guard, when the BEAM is gone) sends SIGTERM:
+        # the waiting write ends and restoration stays bounded.
+        p.terminate()
+        self.read_wire_only(p, 3)
         self.assertIsNotNone(p.poll(), 'guard blocked retrying terminal restoration')
         self.assertNotEqual(p.poll(), 0)
         self.assertEqual(termios.tcgetattr(p.slave), p.original)
-        self.assertEqual(bytes(p.wire), packet(struct.pack('>BBQB', 1, 21, GEN, 6)))
-        # No Restored success is emitted: termios is exact, but escape-mode
-        # restoration cannot be guaranteed against a permanently blocked sink.
+        # No paint is claimed: the frame never reached the terminal.
+        self.assertNotIn(struct.pack('>BBQ', 1, 18, GEN), bytes(p.wire))
         with self.assertRaises(ProcessLookupError):
             os.kill(p.writer_pid, 0)
         listing = subprocess.check_output(['ps', '-axo', 'ppid=,pid='], text=True)
@@ -274,6 +309,22 @@ class TerminalPortPTY(unittest.TestCase):
         # capture bytes so the separate test session-holder can close its tty.
         while select.select([p.master], [], [], 0)[0]:
             p.terminal.extend(os.read(p.master, 65536))
+
+    def test_terminal_gone_during_a_waiting_frame_ends_the_port(self):
+        # cli020 R2: a terminal that is gone (its master closed) still ends
+        # the session at once, with the terminal's modes left to the holder.
+        p = self.port()
+        p.send(draw())
+        self.read_wire_only(p, .5)
+        self.assertIsNone(p.poll())
+        os.close(p.master)
+        p.master = os.open('/dev/null', os.O_RDONLY)
+        self.read_wire_only(p, 3)
+        self.assertIsNotNone(p.poll(), 'a gone terminal kept the port waiting')
+        self.assertNotEqual(p.poll(), 0)
+        self.assertNotIn(struct.pack('>BBQ', 1, 18, GEN), bytes(p.wire))
+        with self.assertRaises(ProcessLookupError):
+            os.kill(p.writer_pid, 0)
 
     def test_copy_writes_osc52_and_opt_in_wheel_reports(self):
         # pass70 B10: clipboard text leaves as OSC 52 between frames; with the
@@ -602,6 +653,10 @@ def holder():
         child = subprocess.Popen([str(EXE), '--beam-port'], pass_fds=inherited, preexec_fn=handoff)
         for descriptor in [source, sink, 3, 4, terminal] + (list(wrong) if wrong else []):
             os.close(descriptor)
+    # cli020 R2: a test may hang up the terminal (close its master); the
+    # holder reports the port's exit instead of dying of SIGHUP. Set after
+    # the spawn, so the port keeps its own SIGHUP handling.
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)
     os.write(meta, (json.dumps({'pid': child.pid, 'termios': original}) + '\n').encode())
     os.close(0)
     os.close(1)

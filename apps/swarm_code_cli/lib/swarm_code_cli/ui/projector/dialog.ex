@@ -131,10 +131,14 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
           block
       end)
 
-    # Headings (and E20's sublines) are not items.
+    # Headings (and E20's sublines) are not items, and in the rewind, history
+    # and queue lists neither are the query, the keys line, the pause line or
+    # the empty message: "N of M" counts the rows a cursor can be on
+    # (fix round U5).
     items =
       Enum.reject(options, fn {id, _, _} ->
-        match?(%{heading: _}, Map.get(decor, id)) or match?(%{subline: _}, Map.get(decor, id))
+        match?(%{heading: _}, Map.get(decor, id)) or match?(%{subline: _}, Map.get(decor, id)) or
+          not selectable?(layer, id)
       end)
 
     found = Enum.find_index(items, fn {id, _, _} -> id == focus end)
@@ -149,9 +153,22 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
           :help ->
             "PgUp/PgDn, Ctrl-D/U scroll · #{length(options)} lines"
 
+          # fix round U5: the queue list's keys are its rows' keys.
+          {:queue_list} when items != [] ->
+            "#{min(ordinal + 1, length(items))} of #{length(items)} · Enter edits · d drops · Esc closes"
+
+          {:queue_list} ->
+            "Esc closes"
+
+          {:rewind, _} when items != [] ->
+            "#{min(ordinal + 1, length(items))} of #{length(items)} · ↑↓ choose · Enter rewinds to it · Esc closes"
+
           # pass70 Q10: where the choice is and how to make it, not "item 1 of 8".
           _ ->
-            "#{min(ordinal + 1, length(items))} of #{length(items)} · Enter chooses · Esc closes"
+            if items == [] and not picker_layer?(layer) and list_layer?(layer),
+              do: "Esc closes",
+              else:
+                "#{min(ordinal + 1, length(items))} of #{length(items)} · Enter chooses · Esc closes"
         end,
         state,
         rect.width - 2
@@ -214,9 +231,21 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
     # A picker is as tall as its rows (top edge where the centred box would
     # start, so filtering shortens it from below), never a tall empty box.
     rect =
-      if picker_layer?(layer) and class not in [:narrow, :small, :compressed_small],
-        do: %{rect | height: min(rect.height, max(8, length(rows) + 2 + footer_height))},
-        else: rect
+      cond do
+        # (fix round U5: a narrow screen, 80x24, sizes its pickers too; only
+        # the small classes keep the whole screen.)
+        picker_layer?(layer) and class not in [:small, :compressed_small] ->
+          %{rect | height: min(rect.height, max(8, length(rows) + 2 + footer_height))}
+
+        # fix round U5: the rewind, history and queue lists are as tall as
+        # their rows too (up to the same maximum), on a screen with room.
+        list_layer?(layer) and class not in [:small, :compressed_small] ->
+          height = min(rect.height, max(6, length(rows) + 2 + footer_height))
+          %{rect | height: height, y: rect.y + div(rect.height - height, 2)}
+
+        true ->
+          rect
+      end
 
     rect =
       if message? do
@@ -414,6 +443,21 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
   defp picker_layer?({:model_picker, _, _}), do: true
   defp picker_layer?({:effort_picker, _}), do: true
   defp picker_layer?(_layer), do: false
+
+  # fix round U5: lists that size to their rows (cli020 D10, D19, D20).
+  defp list_layer?({:rewind, _}), do: true
+  defp list_layer?({:history_search, _}), do: true
+  defp list_layer?({:queue_list}), do: true
+  # cli020 qa2: and the rewind dialog's second step, the scope.
+  defp list_layer?({:rewind_confirm, _}), do: true
+  defp list_layer?(_layer), do: false
+
+  # The rows of those lists a cursor can sit on.
+  defp selectable?({:rewind, _}, id), do: String.starts_with?(id, "turn-")
+  defp selectable?({:history_search, _}, id), do: String.starts_with?(id, "history-")
+  defp selectable?({:queue_list}, id), do: String.starts_with?(id, "queued-")
+  defp selectable?({:rewind_confirm, _}, id), do: id in ["both", "conversation", "files"]
+  defp selectable?(_layer, _id), do: true
 
   # A picker row in colour: rail, an optional check, the title with the
   # query's letters in the accent, the detail dimmed, and the kind or
@@ -954,12 +998,8 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
         do: [{"empty", Density.safe("Nothing to rewind yet.", state, rect.width), nil}],
         else: rows
 
-    {Density.safe("Rewind", state, rect.width - 2),
-     rows ++
-       [
-         {"keys", Density.safe("↑↓ choose · Enter rewinds to it · Esc closes", state, rect.width),
-          nil}
-       ], [control("cancel", SafeText.chrome(:cancel), {:local, :close_top_layer})],
+    {Density.safe("Rewind", state, rect.width - 2), rows,
+     [control("cancel", SafeText.chrome(:cancel), {:local, :close_top_layer})],
      if(turns == [], do: "cancel", else: "turn-#{min(selected, length(turns) - 1)}")}
   end
 
@@ -1071,8 +1111,13 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
             paused ++
             [{"keys", Density.safe("/queue drop N · /queue clear", state, rect.width), nil}]
 
+    # fix round U5: the cursor is a row (`state.selection["queue_list"]`), so
+    # Enter and `d` act on a row that is drawn as chosen.
+    cursor = min(Map.get(state.selection, "queue_list", 0), max(length(texts) - 1, 0))
+
     {Density.safe("Queue", state, rect.width - 2), rows,
-     [control("cancel", Density.safe("Close", state, 20), {:local, :close_top_layer})], "cancel"}
+     [control("cancel", Density.safe("Close", state, 20), {:local, :close_top_layer})],
+     if(texts == [], do: "cancel", else: "queued-#{cursor + 1}")}
   end
 
   defp contents({:research_form, owner}, state, rect, _class) do
@@ -1313,8 +1358,8 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
 
   # pass70 Q10: the palette names what its prefix lists instead of echoing
   # the prefix ("Search: #" after /resume).
-  defp switcher_title("#" <> query), do: "Conversations: " <> query
-  defp switcher_title("/" <> query), do: "Commands: " <> query
+  defp switcher_title("#" <> query), do: titled("Conversations", query)
+  defp switcher_title("/" <> query), do: titled("Commands", query)
   # pass73 finisher: the /approval picker's rows are a query of their own
   # (`Switcher.approval_query/0`); its title is what it chooses.
   defp switcher_title(">approvals:"), do: "Approvals · who asks before what runs"
@@ -1322,12 +1367,18 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
   # pass73 G2 (QA Q2-08): what is typed after it filters the three modes;
   # the title shows it, where "NO RESULTS" alone never said why.
   defp switcher_title(">approvals:" <> typed), do: "Approvals: " <> typed
-  defp switcher_title(">" <> query), do: "Actions: " <> query
-  defp switcher_title("@" <> query), do: "Projects: " <> query
+  defp switcher_title(">" <> query), do: titled("Actions", query)
+  defp switcher_title("@" <> query), do: titled("Projects", query)
   # cli020 E9: the hits of the last `/search` (C8), titled by its words.
-  defp switcher_title("?" <> query), do: "Search results: " <> query
+  defp switcher_title("?" <> query), do: titled("Search results", query)
 
   defp switcher_title(query), do: "Search: " <> query
+
+  # fix round U6: a prefix with nothing typed after it is its name alone
+  # ("Conversations"), not "Conversations:  ".
+  defp titled(word, query) do
+    if String.trim(query) == "", do: word, else: word <> ": " <> query
+  end
 
   defp search_query("?", state) do
     case Map.get(state, :search_results) do
@@ -1360,6 +1411,10 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
         [_ | _] = list -> Enum.filter(list, &is_binary/1)
         _ -> @classic_efforts
       end
+
+    # fix round U4: no effort set reads as a `default` row, ticked.
+    levels = if is_nil(current), do: ["default" | levels], else: levels
+    current = current || "default"
 
     mark = SafeText.value(Support.glyph(:check, state))
 

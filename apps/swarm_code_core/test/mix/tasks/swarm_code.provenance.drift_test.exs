@@ -17,6 +17,16 @@ defmodule Mix.Tasks.SwarmCode.Provenance.DriftTest do
     Mix.shell(Mix.Shell.Process)
     on_exit(fn -> Mix.shell(previous) end)
 
+    # cli020 fix S5: ExUnit keeps its `tmp_dir` after the run; nothing of this
+    # test may remain in `apps/swarm_code_core/tmp/`. The parents go too when
+    # they are empty (`rmdir` leaves a sibling test's directory alone).
+    on_exit(fn ->
+      File.rm_rf!(tmp)
+      module_dir = Path.dirname(tmp)
+      _ = File.rmdir(module_dir)
+      _ = File.rmdir(Path.dirname(module_dir))
+    end)
+
     upstream = Path.join(tmp, "desktop")
     File.mkdir_p!(Path.join(upstream, "priv/repo/migrations"))
     File.mkdir_p!(Path.join(upstream, "lib/swarm_code"))

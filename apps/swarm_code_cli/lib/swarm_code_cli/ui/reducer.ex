@@ -494,6 +494,7 @@ defmodule SwarmCodeCLI.UI.Reducer do
   # cli020 D20: the queue list's keys.
   defp transition(state, {:queue_move, delta}), do: QueueCommands.move(state, delta)
   defp transition(state, {:queue_drop}), do: QueueCommands.drop_selected(state)
+  defp transition(state, {:queue_take}), do: QueueCommands.take_selected(state)
 
   # cli020 D19: history search and the stash (`Reducer.HistorySearch`).
   defp transition(state, :history_search), do: HistorySearch.open(state)
@@ -506,6 +507,14 @@ defmodule SwarmCodeCLI.UI.Reducer do
   # cli020 D18: the effort picker (`Reducer.EffortPicker`); the level goes
   # out as the typed command would, the draft kept.
   defp transition(state, {:effort_move, delta}), do: EffortPicker.move(state, delta)
+
+  # fix round U4: the `default` row (shown while no effort is set) is the
+  # state already in use; it only closes the picker.
+  defp transition(%{layers: [{:effort_picker, target} | _]} = state, {:effort_pick, "default"}) do
+    if is_nil(EffortPicker.current(state, target)),
+      do: transition(state, :close_top_layer),
+      else: {state, []}
+  end
 
   defp transition(state, {:effort_pick, level}) do
     case EffortPicker.command(state, level) do
@@ -1752,19 +1761,28 @@ defmodule SwarmCodeCLI.UI.Reducer do
   # pass73 T7: the policy change the workspace already showed keeps its words
   # ("Approvals: auto → full access") when the service's own answer comes
   # after it; a /trust says both.
-  defp settle_service(state, %{kind: {:project_update, _mode, trust}}, %Outcome{
+  defp settle_service(state, %{request_id: id, kind: {:project_update, _mode, trust}}, %Outcome{
          status: :accepted,
          feedback: %{text: text}
        })
        when is_binary(text) do
-    words =
-      case {recent_policy_words(state), trust} do
-        {nil, _} -> text
-        {policy, true} -> "Project trusted · " <> policy
-        {policy, _} -> policy
-      end
+    case cycle_answer_words(state, id, text) do
+      words when is_binary(words) ->
+        # The words are kept, trust remark included, for a mode change that
+        # arrives after this answer.
+        cycle = %{state.cycle_notice | words: words}
+        {%{state | cycle_notice: cycle, notice: {:command_feedback, words}}, []}
 
-    {%{state | notice: {:command_feedback, words}}, []}
+      nil ->
+        words =
+          case {recent_policy_words(state), trust} do
+            {nil, _} -> text
+            {policy, true} -> "Project trusted · " <> policy
+            {policy, _} -> policy
+          end
+
+        {%{state | notice: {:command_feedback, words}}, []}
+    end
   end
 
   # cli020 D6: a refused approval change (an untrusted project refuses
@@ -1774,7 +1792,7 @@ defmodule SwarmCodeCLI.UI.Reducer do
          reason: %{text: text}
        })
        when status != :accepted and mode != nil and is_binary(text) and text != "",
-       do: {%{state | notice: {:command_feedback, String.trim(text)}}, []}
+       do: {%{state | cycle_notice: nil, notice: {:command_feedback, String.trim(text)}}, []}
 
   defp settle_service(state, %{kind: kind}, %Outcome{status: status})
        when status != :accepted do
@@ -1850,8 +1868,12 @@ defmodule SwarmCodeCLI.UI.Reducer do
     transition(%{state | command_report: feedback}, {:open_layer, {:command_report, id}})
   end
 
-  defp show_feedback(state, :notice, feedback, _),
-    do: {%{state | notice: {:command_feedback, feedback.text}}, []}
+  # cli020 qa2 (U1): the answer to a Shift-Tab step's own /plan ("Plan mode
+  # enabled") keeps the step's words, like its project_update answer does.
+  defp show_feedback(state, :notice, feedback, id) do
+    words = cycle_answer_words(state, id, feedback.text || "") || feedback.text
+    {%{state | notice: {:command_feedback, words}}, []}
+  end
 
   defp show_feedback(state, _, _, _), do: {state, []}
 
@@ -3476,7 +3498,11 @@ defmodule SwarmCodeCLI.UI.Reducer do
         else: {state, []}
 
     ids = Map.keys(state.requests) -- before
-    {%{state | mode_cycle: ids, notice: {:command_feedback, words}}, sent ++ updated}
+
+    cycle = %{words: words, mode: mode, at: state.now}
+
+    {%{state | mode_cycle: ids, cycle_notice: cycle, notice: {:command_feedback, words}},
+     sent ++ updated}
   end
 
   # cli020 D6, D18: sends `text`, a slash command the daemon parses, the way
@@ -3534,7 +3560,14 @@ defmodule SwarmCodeCLI.UI.Reducer do
             notice = %{conversation_id: conversation, from: from, to: to, at: next.now}
             # pass73 (V2's request K-5): the toast adds what the new mode
             # means; the transcript notice (V1) is the short form.
-            words = SwarmCodeCLI.UI.Projector.Status.policy_words(from, to, true)
+            # fix round U1: a change this session's Shift-Tab step asked for
+            # keeps the step's own words (mode and scope), never a second
+            # notice that replaces them.
+            words =
+              case live_cycle(next, to) do
+                %{words: cycle_words} -> cycle_words
+                nil -> SwarmCodeCLI.UI.Projector.Status.policy_words(from, to, true)
+              end
 
             %{
               next
@@ -3550,6 +3583,29 @@ defmodule SwarmCodeCLI.UI.Reducer do
   end
 
   @policy_recent_ms 5_000
+
+  # fix round U1: the answer to this session's own Shift-Tab step adds only
+  # what the daemon did on top of it (a trust); the step's words, which say
+  # the mode and the scope, stay the one notice.
+  defp cycle_answer_words(%{cycle_notice: %{words: words, at: at}} = state, id, text)
+       when is_integer(at) and is_integer(state.now) do
+    if id in state.mode_cycle and state.now - at <= @policy_recent_ms do
+      if String.contains?(String.downcase(text), "trusted"),
+        do: words <> " · this project is now trusted",
+        else: words
+    end
+  end
+
+  defp cycle_answer_words(_state, _id, _text), do: nil
+
+  # fix round U1: the Shift-Tab step still in its window whose target mode is
+  # `to` (any mode for a plan step, which sets none).
+  defp live_cycle(%{cycle_notice: %{at: at, mode: mode} = cycle, now: now}, to)
+       when is_integer(at) and is_integer(now) and now - at <= @policy_recent_ms do
+    if mode in [nil, to], do: cycle, else: nil
+  end
+
+  defp live_cycle(_state, _to), do: nil
 
   defp recent_policy_words(%{policy_notices: [%{at: at, from: from, to: to} | _], now: now})
        when is_integer(at) and is_integer(now) and now - at <= @policy_recent_ms,

@@ -37,7 +37,11 @@ defmodule SwarmCodeCLI.Release.PersistedSessionTest do
   test "a stray or damaged database file is said as such (pass70 Q13)" do
     alias SwarmCode.Daemon.Schema.Refusal
 
-    for refusal <- [Refusal.not_a_database(), Refusal.damaged()] do
+    for refusal <- [
+          Refusal.not_a_database(),
+          Refusal.damaged(),
+          Refusal.database_mode("/data/swarm_code.db")
+        ] do
       assert PersistedSession.schema_words(refusal) == {refusal.message, refusal.action}
       refute refusal.message =~ "does not know"
     end

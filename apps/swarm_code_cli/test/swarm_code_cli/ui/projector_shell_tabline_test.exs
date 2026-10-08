@@ -295,6 +295,24 @@ defmodule SwarmCodeCLI.UI.ProjectorShellTablineTest do
       assert overflow == 0
     end
 
+    # fix round U3: a rewind supersedes the newest run; the conversation view
+    # must stop naming it at once, not at the next turn.
+    test "a rewound (superseded) run leaves the title row of its conversation view" do
+      state = populated()
+      state = put_in(state.read_model.runs["chat-1"].state, :superseded)
+      state = %{state | destination: {:conversation, "conversation-chat-1"}}
+
+      refute "chat-1" in Enum.map(Shell.tabline_runs(state), & &1.id)
+      refute state |> painted(170) |> hd() |> String.contains?("Assistant thread")
+    end
+
+    test "a superseded run opened on its own keeps its tab" do
+      state = populated(active: "chat-1")
+      state = put_in(state.read_model.runs["chat-1"].state, :superseded)
+
+      assert [%{id: "chat-1"} | _] = Shell.tabline_runs(state)
+    end
+
     test "an empty read model still produces the row and its hint" do
       state = %{populated() | destination: :activity}
       state = put_in(state.read_model.runs, %{})

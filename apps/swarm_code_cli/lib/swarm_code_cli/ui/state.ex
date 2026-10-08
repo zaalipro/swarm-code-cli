@@ -149,6 +149,14 @@ defmodule SwarmCodeCLI.UI.State do
     # cli020 D6: the request ids of the last Shift-Tab step while one is
     # still unanswered (a second Shift-Tab waits for them).
     mode_cycle: [],
+    # fix round U1: the words of the Shift-Tab step in flight (`%{words, mode,
+    # at}`; `mode` is the approval mode it sets, nil for a plan step). They
+    # carry the mode and the scope, and the daemon's own answers (the mode
+    # change, the outcome) must not replace them with a second notice.
+    cycle_notice: nil,
+    # fix round U5: the queue row Enter is taking back into the composer
+    # (`%{id, text}`: the `queue.edit` request that removes it and what it said).
+    queue_take: nil,
     # cli020 D10: the rewind in flight (`%{mode}` while the turns load,
     # `%{mode: :apply, turn, scope}` while it applies) and the last bare Esc.
     rewind: nil,

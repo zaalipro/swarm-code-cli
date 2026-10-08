@@ -1292,15 +1292,17 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
   end
 
   # The allowlist's two refusals (pass70 D2: an upgrade only the app makes, a
-  # database from a newer app) and the gate's stray-file and damaged-file ones
-  # (Q13) already say what to do; any other schema failure gets the general
-  # sentence.
+  # database from a newer app), the gate's stray-file and damaged-file ones
+  # (Q13) and the mode refusal (cli020 fix S4) already say what to do; any
+  # other schema failure gets the general sentence.
   defp startup_words(:schema_incompatible, error, _boot) do
     refusals = [
       SwarmCode.Daemon.Schema.Refusal.desktop_upgrade_required(),
       SwarmCode.Daemon.Schema.Refusal.database_ahead(),
       SwarmCode.Daemon.Schema.Refusal.not_a_database(),
-      SwarmCode.Daemon.Schema.Refusal.damaged()
+      SwarmCode.Daemon.Schema.Refusal.damaged(),
+      # cli020 fix S4: one sentence, the path travels in the action.
+      SwarmCode.Daemon.Schema.Refusal.database_mode("")
     ]
 
     if Enum.any?(refusals, &(&1.message == error.message)),

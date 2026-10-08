@@ -13,7 +13,35 @@ defmodule SwarmCodeCLI.UI.Keymap.Layers do
   @spec key(term(), [atom()], map()) :: {:ok, term()} | :ignore | :pass
   def key(:enter, [], %{layers: [{:effort_picker, _} | _]} = state), do: enter(state)
   def key(code, mods, %{layers: [layer | _]}), do: layer_key(layer, code, mods)
+
+  # fix round U7: Alt-← goes back from the composer too, while the draft is
+  # empty (a word move has nothing to move over then): the previous place, or
+  # from a run view that was opened first, the run's conversation.
+  def key(:left, [:alt], %{layers: []} = state) do
+    with :composer <- Keymap.Context.of(state),
+         "" <- String.trim(Keymap.draft_text(state)),
+         {:ok, action} <- back_action(state) do
+      Keymap.result(action)
+    else
+      _ -> :pass
+    end
+  end
+
   def key(_code, _mods, _state), do: :pass
+
+  defp back_action(%{history: [_ | _]}), do: {:ok, :back}
+
+  defp back_action(%{destination: {:run, id}} = state) do
+    case Map.get(state.read_model.runs, id) do
+      %{conversation_id: conversation} when is_binary(conversation) ->
+        {:ok, {:navigate, {:conversation, conversation}}}
+
+      _ ->
+        :error
+    end
+  end
+
+  defp back_action(_state), do: :error
 
   # D10: the list of turns.
   defp layer_key({:rewind, _}, :up, []), do: Keymap.result({:rewind_move, -1})
@@ -45,6 +73,7 @@ defmodule SwarmCodeCLI.UI.Keymap.Layers do
   defp layer_key({:queue_list}, :up, []), do: Keymap.result({:queue_move, -1})
   defp layer_key({:queue_list}, :down, []), do: Keymap.result({:queue_move, 1})
   defp layer_key({:queue_list}, "d", []), do: Keymap.result({:queue_drop})
+  defp layer_key({:queue_list}, :enter, []), do: Keymap.result({:queue_take})
 
   # D18: the effort picker's rows.
   defp layer_key({:effort_picker, _}, :up, []), do: Keymap.result({:effort_move, -1})

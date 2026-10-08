@@ -20,4 +20,29 @@ defmodule SwarmCode.Daemon.Schema.RefusalTest do
 
     assert error.action =~ "0.2.0"
   end
+
+  # cli020 fix S4
+  test "the mode refusal names the file, the one command and keeps the code" do
+    error = Refusal.database_mode("/data/swarm_code.db")
+
+    assert error.code == :schema_incompatible
+    refute error.retryable
+    assert error.message =~ "permissions"
+    assert error.action =~ "chmod 600 /data/swarm_code.db"
+    assert error.action =~ "nothing was changed"
+
+    # A path with a space (~/Library/Application Support/...) is quoted so the
+    # command can be pasted.
+    spaced =
+      Refusal.database_mode("/Users/me/Library/Application Support/SwarmCode/swarm_code.db")
+
+    assert spaced.action =~
+             "chmod 600 '/Users/me/Library/Application Support/SwarmCode/swarm_code.db' "
+
+    quoted = Refusal.database_mode("/tmp/it's.db")
+    assert quoted.action =~ "chmod 600 '/tmp/it'\\''s.db' "
+    # The sentence is the same for every path: the launcher recognises it by
+    # its message, the path travels in the action.
+    assert Refusal.database_mode("/other/swarm_code.db").message == error.message
+  end
 end

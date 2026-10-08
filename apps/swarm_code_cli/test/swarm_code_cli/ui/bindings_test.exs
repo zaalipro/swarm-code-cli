@@ -304,6 +304,16 @@ defmodule SwarmCodeCLI.UI.BindingsTest do
   # for a binding that declined — when it fell through to typing.
   # pass72: hint mode takes every key; one no binding there uses ends it.
   defp agrees?(:ignore, {:ok, {:hint, :cancel}}), do: true
+
+  # fix round U7: Alt-← in an empty composer goes back (the previous place, or
+  # a run view's conversation) instead of moving over a word there is none of;
+  # `Keymap.Layers.key/3` answers it before the table, with a draft it is the
+  # word move the table declares (pinned in `fix_round_u_test.exs`).
+  defp agrees?({:ok, {:editor, _, {:move, :word_left}}}, {:ok, :back}), do: true
+
+  defp agrees?({:ok, {:editor, _, {:move, :word_left}}}, {:ok, {:navigate, {:conversation, _}}}),
+    do: true
+
   defp agrees?(:ignore, resolved), do: resolved == :ignore or typing?(resolved)
   defp agrees?(declared, resolved), do: declared == resolved
 

@@ -278,7 +278,7 @@ Mouse: Wheel scrolls; select text with the mouse. /mouse on sends wheel reports 
 
 | Keys | Does |
 |---|---|
-| `Alt-←` / `Backspace` | Go back to where you came from |
+| `Alt-←` / `Backspace` | Go back to where you came from (Alt-← also from an empty composer) |
 | `g` | Go-to prefix: g top, G bottom, t / T run tabs |
 | `j` / `↓` | Move the selection down |
 | `k` / `↑` | Move the selection up |
@@ -362,7 +362,7 @@ Mouse: Wheel scrolls; select text with the mouse. /mouse on sends wheel reports 
 
 | Keys | Does |
 |---|---|
-| `Alt-←` / `Backspace` | Go back to where you came from |
+| `Alt-←` / `Backspace` | Go back to where you came from (Alt-← also from an empty composer) |
 | `g` | Go-to prefix: g top, G bottom, t / T run tabs |
 | `j` / `↓` | Move the selection down |
 | `k` / `↑` | Move the selection up |

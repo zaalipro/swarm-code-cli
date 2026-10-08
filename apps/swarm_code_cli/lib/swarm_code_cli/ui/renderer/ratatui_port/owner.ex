@@ -8,6 +8,12 @@ defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.Owner do
   `:stale_revision` so it draws the latest state on its next frame, and a slow
   paint is answered early and the next request is queued. The native helper's
   OS process never outlives this owner.
+
+  cli020 R1/R2: a busy port never stops the owner either. A control (shutdown,
+  suspend, resume, redraw, a mouse mode change) waits in a small outbox and is
+  retried until the port takes it, bounded by the deadline of the phase it
+  opened; a slow terminal (the helper waits for it) delays frames, and every
+  draw request is still answered well inside the runtime's own deadline.
   """
   use GenServer, restart: :temporary
   import Bitwise
@@ -18,10 +24,15 @@ defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.Owner do
   @deadline 3_000
   # A paint the port has not confirmed after this long is answered to the
   # runtime as stale (it redraws later); only a much longer silence means the
-  # terminal is gone.
-  @draw_soft_ms 1_000
+  # terminal is gone. cli020 R2: counted from the request and well below the
+  # runtime's own draw deadline (`close_ms`: 1 s by default and in the dev live
+  # session, 3 s in the release); a request queued behind a slow paint gets the
+  # same bound, so a slow terminal slows the TUI and never ends it.
+  @draw_soft_ms 400
   @draw_hard_ms 60_000
   @kill_grace_ms 500
+  # cli020 R1: a busy port is tried again after this long (one timer at most).
+  @busy_retry_ms 10
 
   def start_link(options), do: GenServer.start_link(__MODULE__, options)
 
@@ -107,6 +118,13 @@ defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.Owner do
        os_pid: os_pid,
        pending_replied?: false,
        queued: nil,
+       # cli020 R2: the queued request's own soft deadline and arrival time.
+       queued_timer: nil,
+       queued_at: nil,
+       # cli020 R1: controls waiting for a busy port, and whether the retry
+       # timer runs.
+       outbox: [],
+       retry?: false,
        last_plan: nil,
        draw_errors: MapSet.new()
      }}
@@ -140,28 +158,41 @@ defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.Owner do
   end
 
   defp dispatch({:draw, token, revision}, %{phase: :running, pending: nil} = state),
-    do: {:noreply, paint(state, token, revision)}
+    do: {:noreply, paint(state, token, revision, now())}
 
   # The runtime was answered early for a slow paint and asked again: keep only
   # the newest request and draw it once the port confirms the paint in flight.
+  # cli020 R2: a queued request is answered stale after the soft deadline too
+  # (the runtime asks again), so a terminal that stays slow never makes the
+  # runtime's own draw deadline end the session.
   defp dispatch({:draw, token, revision}, %{phase: :running} = state) do
-    if state.queued, do: stale(state, state.queued)
-    {:noreply, %{state | queued: {token, revision}}}
-  end
-
-  defp dispatch({:draw, _, _}, state), do: {:noreply, state}
-
-  defp dispatch({:terminal_control, :shutdown, runtime_token}, state) do
-    state = state |> cancel() |> drop_queued()
-    {token, state} = control(state, :shutdown)
+    state = drop_queued(state)
 
     {:noreply,
      %{
        state
-       | phase: :closing,
-         control: {:shutdown, token, runtime_token},
-         timer: timer(:shutdown)
+       | queued: {token, revision},
+         queued_timer: timer(:queued, @draw_soft_ms),
+         queued_at: now()
      }}
+  end
+
+  defp dispatch({:draw, _, _}, state), do: {:noreply, state}
+
+  # The control's token is filled in when the port takes it (cli020 R1).
+  defp dispatch({:terminal_control, :shutdown, runtime_token}, state) do
+    state = state |> cancel() |> drop_queued()
+
+    {:noreply,
+     control(
+       %{
+         state
+         | phase: :closing,
+           control: {:shutdown, nil, runtime_token},
+           timer: timer(:shutdown)
+       },
+       :shutdown
+     )}
   end
 
   defp dispatch(
@@ -169,20 +200,20 @@ defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.Owner do
          %{phase: :running, generation: generation} = state
        ) do
     state = state |> cancel() |> drop_queued()
-    {token, state} = control(state, :suspend)
 
     {:noreply,
-     %{
-       state
-       | phase: :suspending,
-         control: {:suspend, token},
-         timer: timer(:suspend)
-     }}
+     control(
+       %{state | phase: :suspending, control: {:suspend, nil}, timer: timer(:suspend)},
+       :suspend
+     )}
   end
 
   defp dispatch({:terminal_control, :resume, _}, %{phase: :suspended} = state) do
-    {token, state} = control(state, :resume)
-    {:noreply, %{state | phase: :resuming, control: {:resume, token}, timer: timer(:resume)}}
+    {:noreply,
+     control(
+       %{state | phase: :resuming, control: {:resume, nil}, timer: timer(:resume)},
+       :resume
+     )}
   end
 
   # cli020 D11: Ctrl-L. The native painter is invalidated and the next plan
@@ -191,8 +222,7 @@ defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.Owner do
          {:terminal_control, :redraw, generation},
          %{phase: :running, generation: generation} = state
        ) do
-    {_token, state} = control(state, :redraw)
-    {:noreply, %{state | last_plan: nil}}
+    {:noreply, %{control(state, :redraw) | last_plan: nil}}
   end
 
   defp dispatch({:terminal_control, _, _}, state), do: {:noreply, state}
@@ -238,7 +268,13 @@ defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.Owner do
   defp dispatch({:deadline, identity, _}, %{timer: {_, identity}} = state),
     do: {:stop, :terminal_timeout, state}
 
-  defp dispatch(:grant, state), do: {:noreply, grant(state)}
+  defp dispatch({:deadline, identity, :queued}, %{queued_timer: {_, identity}} = state),
+    do: {:noreply, drop_queued(state)}
+
+  # cli020 R1: the port was busy; the waiting controls go first, then a
+  # credit if one is due.
+  defp dispatch(:busy_retry, state),
+    do: {:noreply, %{state | retry?: false} |> flush() |> grant()}
 
   # A copy spends a control token only when the port accepted it.
   defp dispatch({:terminal_copy, text}, state) do
@@ -328,27 +364,15 @@ defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.Owner do
 
   defp copy_text(state, _text), do: {{:error, :unavailable}, state}
 
+  # cli020 R1: a mode change is never dropped on a busy port; it waits in the
+  # outbox, and a newer choice replaces one that has not left yet (back to
+  # what the terminal has means nothing is left to send).
   defp set_mouse(%{port: port} = state, on?) when port != nil do
-    if Map.get(state.flags, :mouse?, false) == on? do
-      state
-    else
-      token = state.counter + 1
-      {:ok, bytes} = Wire.mouse(1, token, on?)
+    state = %{state | outbox: Enum.reject(state.outbox, &match?({:mouse, _}, &1))}
 
-      if Port.command(port, bytes, [:nosuspend]) do
-        Logger.info("terminal wheel reports #{if on?, do: "on", else: "off"}")
-
-        %{
-          state
-          | counter: token,
-            flags: Map.put(state.flags, :mouse?, on?),
-            caps: %{state.caps | mouse: feature(on?)}
-        }
-      else
-        Logger.info("terminal wheel report change dropped: the terminal was busy")
-        state
-      end
-    end
+    if Map.get(state.flags, :mouse?, false) == on?,
+      do: state,
+      else: control(state, {:mouse, on?})
   end
 
   defp set_mouse(state, _on?), do: state
@@ -360,18 +384,20 @@ defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.Owner do
     end
 
     state = state |> cancel() |> drop_queued()
-    {token, state} = control(state, :resume)
 
-    %{
-      state
-      | phase: :resuming,
-        pending: nil,
-        pending_replied?: false,
-        credit: nil,
-        input_enabled?: false,
-        control: {:resume, token},
-        timer: timer(:resume)
-    }
+    control(
+      %{
+        state
+        | phase: :resuming,
+          pending: nil,
+          pending_replied?: false,
+          credit: nil,
+          input_enabled?: false,
+          control: {:resume, nil},
+          timer: timer(:resume)
+      },
+      :resume
+    )
   end
 
   defp record({:ready, 1, size, bits}, state) do
@@ -444,7 +470,7 @@ defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.Owner do
 
     case state do
       %{phase: :running, queued: {queued_token, queued_revision}} ->
-        paint(%{state | queued: nil}, queued_token, queued_revision)
+        paint(cancel_queued(state), queued_token, queued_revision, state.queued_at)
 
       _ ->
         grant(state)
@@ -506,29 +532,99 @@ defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.Owner do
   defp feature(false), do: :unavailable
 
   # A credit that cannot be queued on a busy port is granted a moment later;
-  # the token is only spent when the command was accepted.
-  defp grant(%{phase: :running, credit: nil, pending: nil, input_enabled?: true} = state) do
+  # the token is only spent when the command was accepted. Controls waiting
+  # for the port go first (the retry grants after them).
+  defp grant(
+         %{phase: :running, credit: nil, pending: nil, input_enabled?: true, outbox: []} = state
+       ) do
     token = state.counter + 1
     {:ok, bytes} = Wire.control(:credit, 1, token)
 
     if Port.command(state.port, bytes, [:nosuspend]) do
+      observe(state, {:sent, :credit})
       %{state | credit: token, counter: token}
     else
-      Process.send_after(self(), :grant, 10)
-      state
+      retry(state)
     end
   end
 
   defp grant(state), do: state
 
-  defp control(state, operation) do
-    token = state.counter + 1
-    {:ok, bytes} = Wire.control(operation, 1, token)
-    true = Port.command(state.port, bytes, [:nosuspend])
-    {token, %{state | counter: token}}
+  # cli020 R1: a control changes the terminal's modes or closes it, so it is
+  # never dropped and never crashes the owner on a busy port. It waits in the
+  # outbox (at most one of each kind: a shutdown replaces everything still
+  # waiting, a newer mouse change an older one) and the port is tried again
+  # every @busy_retry_ms. Its token is taken when the port accepts it, so
+  # tokens stay increasing whatever was sent in between, and the control the
+  # owner awaits gets that token. The deadline of the phase it opened
+  # (shutdown, suspend, resume) bounds the wait: `:terminal_timeout`.
+  defp control(state, operation), do: state |> enqueue(operation) |> flush()
+
+  defp enqueue(state, :shutdown), do: %{state | outbox: [:shutdown]}
+
+  defp enqueue(state, {:mouse, _} = operation) do
+    outbox = Enum.reject(state.outbox, &match?({:mouse, _}, &1))
+    %{state | outbox: outbox ++ [operation]}
   end
 
-  defp paint(state, token, revision) do
+  defp enqueue(state, operation) do
+    if operation in state.outbox,
+      do: state,
+      else: %{state | outbox: state.outbox ++ [operation]}
+  end
+
+  defp flush(%{outbox: []} = state), do: state
+
+  defp flush(%{outbox: [operation | rest]} = state) do
+    token = state.counter + 1
+    {:ok, bytes} = control_bytes(operation, token)
+
+    if Port.command(state.port, bytes, [:nosuspend]) do
+      observe(state, {:sent, operation})
+      %{state | outbox: rest, counter: token} |> sent(operation, token) |> flush()
+    else
+      retry(state)
+    end
+  end
+
+  defp control_bytes({:mouse, on?}, token), do: Wire.mouse(1, token, on?)
+  defp control_bytes(operation, token), do: Wire.control(operation, 1, token)
+
+  defp sent(%{control: {:shutdown, nil, runtime_token}} = state, :shutdown, token),
+    do: %{state | control: {:shutdown, token, runtime_token}}
+
+  defp sent(%{control: {kind, nil}} = state, kind, token) when kind in [:suspend, :resume],
+    do: %{state | control: {kind, token}}
+
+  defp sent(state, {:mouse, on?}, _token) do
+    Logger.info("terminal wheel reports #{if on?, do: "on", else: "off"}")
+
+    %{
+      state
+      | flags: Map.put(state.flags, :mouse?, on?),
+        caps: %{state.caps | mouse: feature(on?)}
+    }
+  end
+
+  defp sent(state, _operation, _token), do: state
+
+  defp retry(%{retry?: true} = state), do: state
+
+  defp retry(state) do
+    Process.send_after(self(), :busy_retry, @busy_retry_ms)
+    %{state | retry?: true}
+  end
+
+  # `received` is when the runtime asked (cli020 R2): the soft deadline counts
+  # from there, not from the end of the paint build.
+  defp paint(%{outbox: [_ | _]} = state, token, revision, _received) do
+    # Controls wait for the busy port and go first: the runtime draws its
+    # latest state on the next frame.
+    stale(state, {token, revision})
+    %{state | input_enabled?: true}
+  end
+
+  defp paint(state, token, revision, received) do
     sequence = state.sequence + 1
 
     {result, state} = frame(state, revision, sequence)
@@ -541,7 +637,7 @@ defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.Owner do
             | sequence: sequence,
               pending: {sequence, revision, token},
               pending_replied?: false,
-              timer: timer(:draw, @draw_soft_ms),
+              timer: timer(:draw, max(@draw_soft_ms - (now() - received), 0)),
               input_enabled?: true,
               last_plan: plan
           }
@@ -704,8 +800,17 @@ defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.Owner do
 
   defp drop_queued(state) do
     stale(state, state.queued)
-    %{state | queued: nil}
+    cancel_queued(state)
   end
+
+  defp cancel_queued(%{queued_timer: nil} = state), do: %{state | queued: nil, queued_at: nil}
+
+  defp cancel_queued(%{queued_timer: {timer, _}} = state) do
+    Process.cancel_timer(timer)
+    %{state | queued: nil, queued_timer: nil, queued_at: nil}
+  end
+
+  defp now, do: System.monotonic_time(:millisecond)
 
   defp timer(kind, ms \\ @deadline) do
     identity = make_ref()
@@ -727,19 +832,16 @@ defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.Owner do
   @impl true
   def terminate(_, %{port: port} = state) when is_port(port) do
     if Port.info(port) do
-      if state.phase != :restored do
-        {:ok, shutdown} = Wire.control(:shutdown, 1, state.counter + 1)
-
-        try do
-          Port.command(port, shutdown, [:nosuspend])
-        rescue
-          ArgumentError -> :ok
+      # cli020 R1: a helper that never took the shutdown (its port is busy:
+      # it stopped reading) cannot restore by itself, so it is signalled at
+      # once instead of being awaited; SIGTERM still restores the terminal.
+      if state.phase == :restored or shutdown_now(port, state.counter + 1) do
+        case await_exit(port, System.monotonic_time(:millisecond) + @deadline) do
+          :exited -> :ok
+          :timeout -> reap(port, state.os_pid)
         end
-      end
-
-      case await_exit(port, System.monotonic_time(:millisecond) + @deadline) do
-        :exited -> :ok
-        :timeout -> reap(port, state.os_pid)
+      else
+        reap(port, state.os_pid)
       end
     end
 
@@ -747,6 +849,13 @@ defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.Owner do
   end
 
   def terminate(_, _), do: :ok
+
+  defp shutdown_now(port, token) do
+    {:ok, shutdown} = Wire.control(:shutdown, 1, token)
+    Port.command(port, shutdown, [:nosuspend])
+  rescue
+    ArgumentError -> false
+  end
 
   defp await_exit(port, deadline) do
     receive do

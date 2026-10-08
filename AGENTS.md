@@ -154,7 +154,10 @@ Invariants that the code base defends and tests pin:
   `always_prefix` (`A`, the server's own command family, never the client's), `deny` (`d`) and
   `deny_stop` (`D`). The project's approval mode and trust are the desktop's: a new project is
   `read_only` until `/trust`; `/approval read-only|auto|full` changes it (Shift-Tab in the
-  composer cycles them). In `read_only` every write and command asks with the card's `y once ·
+  composer cycles them), and like the desktop's `set_approval_mode` any manual pick also marks
+  the project trusted (`Daemon.Service.ApprovalPick`, cli020 fix S3), saying so: `Approvals:
+  read-only → auto · this project is now trusted` (the client's one Shift-Tab notice, fix U1,
+  appends that remark when the answer's text contains `trusted`; keep the word). In `read_only` every write and command asks with the card's `y once ·
   d deny` (desktop pass 72 F1; the row's `allowed_decisions` are `approve`, `deny`, `deny_stop`
   and it carries `approval_mode`), headless counts the denials (`--fail-on-denied`). In `auto`,
   writes and `:safe` commands (`ls`, `git status`) run without asking and other commands ask.
@@ -176,7 +179,10 @@ Invariants that the code base defends and tests pin:
   desktop's `mix ncode.cli_lockstep` is the same check from the other side.
   `Schema.Gate.admit_migration/2` refuses any other pending
   migration ("Open the SwarmCode app once to upgrade the database") or a database ahead of the
-  manifest (`Schema.Refusal` holds both sentences). When the desktop repo gains migrations,
+  manifest (`Schema.Refusal` holds both sentences). A database file (or its `-wal`/`-shm`) of
+  this user whose mode is not 0600 is refused first, in `Schema.Probe`, with its own sentence
+  and `chmod 600 <path>` (`Schema.Refusal.database_mode/1`, cli020 fix S4; the launcher's
+  `PersistedSession.startup_words/3` lists it). When the desktop repo gains migrations,
   re-pin: sync the domain (`mix swarm_code.provenance.sync --ref <sha>`, which brings the
   migrations), add a `Schema.Contract` entry for the commit, regenerate with
   `apps/swarm_code_daemon/priv/schema/generate_manifest.exs` using absolute
@@ -195,9 +201,15 @@ one, run `mix swarm_code.provenance.sync --ref <pinned sha>` to record the patch
 `--check` (in precommit) fails otherwise. A sync to a newer desktop commit 3-way merges patched
 files and stops on a conflict, writing only `<destination>.sync-conflict` (resolve, then rerun
 with `--resolved <destination>`). Ledger entries outside every mapping (the live-runtime copies
-`lib/swarm_code/{llm,tools}`, `daemon/runtime/run.ex`, core `commands.ex`,
+`lib/swarm_code/tools`, `providers/provider.ex`, `daemon/runtime/run.ex`, core `commands.ex`,
 `service/command_dispatcher.ex`, the web shims) are frozen: after editing one, run
-`mix swarm_code.provenance.repin <path>`. `third_party/` and `vendor/exqlite` are pinned copies checked
+`mix swarm_code.provenance.repin <path>`. A frozen copy that nothing calls any more is deleted
+and its entry dropped with the sync tooling's writer
+(`SwarmCode.Governance.ProvenanceSync.Ledger.load/1` + `write/2` from `mix run --no-start`),
+never by hand; `verify` and `sync --check` must pass after. When two branches both change the
+ledger or a recorded patch, take one side of `extracted-files.json` and the `.diff`, then re-run
+`sync --ref <pinned sha>` and `repin` on the union of the frozen paths both sides changed
+(`git checkout --ours` drops the other side's non-conflicting repins too). `third_party/` and `vendor/exqlite` are pinned copies checked
 by `scripts/dev/sync_unicode_width.exs --check`, `sync_unicode_variants.py --check` and
 `verify_terminal_port_licenses.py`. Hex deps are pinned with `==` and
 `deps.unlock --check-unused` is a gate: do not add packages casually.
@@ -351,8 +363,20 @@ Provenance and domain (lane A):
 - The CLI keeps its own Ultra (workflow + swarm tools, the CLI `@ultra` text): two recorded
   patches in `domain/tools.ex` and `domain/engine/prompts.ex`; keep them on every sync until the
   missions pass.
-- The 13 frozen `dmn/llm/**` entries are behind the synced `domain/llm` by the spec 74 LLM fixes
-  (BUGS-28/29/49-52/77; `notes/A.md`, A5): the live runtime still runs the frozen copies.
+- The live runtime (`Daemon.Runtime.Run`, unsaved sessions) streams through the synced
+  `SwarmCode.Domain.LLM` adapters (cli020 fix L, A5), chosen by the live kind in `Run`
+  (`openai` → `OpenAI`, `anthropic` → `Anthropic`; no `:llm_providers` registry needed);
+  `SwarmCode.Providers.Provider` stays its database-free configuration and becomes a synced
+  provider row in `Run`. The frozen `lib/swarm_code/llm/**` copies are gone. Their CLI
+  behaviours are recorded patches on `domain/llm/{http,anthropic,openai}.ex`, kept on every
+  sync: the owned transport (the no-progress deadline and the hard cap are exact on a silent
+  socket), `HTTP.with_call_clock/1` (one hard cap per provider call), the
+  `:llm_max_response_bytes` ceiling (16 MiB) while reading, `HTTP.redact_key/2` (the request's
+  key at any length, before the snippet is cut), no redirect URL or host in the logs, and a
+  non-JSON SSE event fails the call (`notes/fix-L.md`). Saved sessions use the same patched
+  adapters. One more patch on `domain/llm/http.ex` (fix S2): the retry callback gets
+  `HTTP 500` when the retry came from a status, else the reason word, so the status line says
+  `retrying 2/5 · HTTP 500`; upstream it to the desktop.
 - Test fixtures the mapped tests call from `SwarmCode.Fixtures` live in
   `apps/swarm_code_daemon/test/support/domain_fixtures.ex` (`assistant_identity/0`, `eventually/2`).
 - The CLI domain has no `LLM.Fake`: engine tests use the loopback OpenAI-compatible server
@@ -368,8 +392,10 @@ Headless and release (lane B):
   `{"type":"summary",…}`. `--max-turns`/`--max-budget-usd` stop the owned run (exit 1);
   `--fail-on-denied` fails a done run that had denials. Denials are said in one stderr line.
   `--approval MODE` (`SWARM_HEADLESS_APPROVAL`) is a `PersistedBackend` start option passed to
-  the runs it starts (plain prompts and the dispatcher's chat/swarm launches; workflows and
-  `/compact` keep the project's mode).
+  the runs it starts (plain prompts, prompts and slash commands drained from the queue, the
+  dispatcher's chat/swarm launches and `retry_run`'s swarm; cli020 fix S1). Workflow runs keep
+  the project's mode until the desktop's `Workflows.launch/1` takes an `approval_mode`
+  (`notes/fix-S.md`); `/compact` has no tools, so no approval to carry.
 - **Exit codes:** 0 done, 1 failed, 2 usage, 3 refused, 4 changed elsewhere (`ncode config`),
   129 SIGHUP, 143 SIGTERM (`Release.Signals`; SIGINT stays under `+Bd`).
 - `--resume` takes an exact title or a 6+ character id prefix (`SessionSelection.resolve/2`);
@@ -412,6 +438,19 @@ Keys and terminal (lane D):
   passthrough when `TMUX` is set); the notice says which.
 - A failed screen update keeps the last good frame; only five failures in a row close the
   session (D12). New client-to-daemon ops go through `UI.Reducer.Remote`.
+- A slow terminal slows the TUI, it never ends it (cli020 fix R): the port's frame writes
+  (`FdWriter::patient`) wait for the terminal (a macOS pty holds about 1 KiB unread); only a
+  gone terminal (EIO, POLLHUP/POLLERR) or termination ends them; restoration and the guard's
+  mode writes (resume activation, `/mouse`, kitty push) stay bounded at 500 ms. The owner keeps
+  shutdown, suspend, resume, redraw and mouse controls in a bounded outbox while the port is
+  busy (one `:busy_retry` timer, the phase deadline bounds it, then `:terminal_timeout`), and
+  answers every draw request within 400 ms (stale if the busy port could not take the frame;
+  the next request draws the newest state). Regression: `scripts/dev/test_terminal_stall_pty.py`.
+- Fix round U: the failure hint names the key that works where the focus is (`Ctrl-P → Retry
+  failed run` in the composer, `r` in select mode); Alt-Left in an empty composer goes back
+  (`:back`, else the run's conversation), with a draft it moves by word; the queue list has a
+  cursor (Enter takes the prompt back into the composer through `queue.edit`, `d` drops it); list
+  dialogs and pickers are as tall as their rows, and `N of M` counts selectable rows only.
 - `State.panel_mode`'s struct default is `:full` (tests that build a state without
   preferences); the launch default is `:auto` through cli.json `panel` and `Init.Preferences`.
 

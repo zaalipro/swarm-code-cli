@@ -2,8 +2,6 @@ defmodule SwarmCode.Daemon.ApplicationTest do
   use ExUnit.Case, async: false
 
   alias SwarmCode.Daemon.Runtime.{Run, RunSupervisor}
-  alias SwarmCode.LLM
-  alias SwarmCode.LLM.{Request, Result}
   alias SwarmCode.Providers.Provider
   alias SwarmCode.Test.LoopbackHTTP, as: HTTP
 
@@ -15,19 +13,20 @@ defmodule SwarmCode.Daemon.ApplicationTest do
       end)
 
     on_exit(fn -> HTTP.stop(server) end)
-    provider = provider(server)
 
-    assert {:ok, %Result{text: "Ready."}} =
-             LLM.stream(
-               %Request{
-                 provider: provider,
-                 model: "fixture-model",
-                 messages: [%{role: "user", content: "hello"}],
-                 effort: "medium",
-                 deadline_ms: 5_000
-               },
-               nil
+    # cli020 L1: through the live runtime, on the synced stack, with the
+    # capability table `Domain.Runtime` owns (nothing started by the test).
+    assert {:ok, run} =
+             RunSupervisor.start_run(
+               provider: provider(server),
+               model: "fixture-model",
+               project_root: System.tmp_dir!(),
+               prompt: "hello",
+               effort: "medium",
+               request_timeout_ms: 5_000
              )
+
+    assert {:ok, %{status: :completed, text: "Ready."}} = Run.await(run)
   end
 
   test "daemon-owned coding run continues after its submitting process detaches" do

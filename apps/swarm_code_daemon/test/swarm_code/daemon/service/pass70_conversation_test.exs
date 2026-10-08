@@ -166,7 +166,9 @@ defmodule SwarmCode.Daemon.Service.Pass70ConversationTest do
     assert {:ok, %{"value" => %{"status" => "accepted", "feedback" => feedback}}} =
              update(c.backend, "mode", scope, %{"approval_mode" => "full_access"})
 
-    assert feedback["text"] == "Approval mode: full access"
+    # cli020 fix S3: this project was never trusted, and picking a mode by
+    # hand trusts it (the desktop's `set_approval_mode`), said in the notice.
+    assert feedback["text"] == "Approvals: auto → full access · this project is now trusted"
     assert Projects.get(c.project.id).approval_mode == "full_access"
 
     assert_receive {:service_delta, _, "workspace",
