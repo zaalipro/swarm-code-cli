@@ -87,7 +87,8 @@ defmodule SwarmCodeCLI.UI.Projector.Strip do
           need ++ plan,
           swarm(ctx, runs),
           turn_limit(runs, views),
-          money(ctx, runs)
+          money(ctx, runs),
+          SwarmCodeCLI.UI.Projector.Vitals.compact(state)
         )
       end
 
@@ -99,13 +100,22 @@ defmodule SwarmCodeCLI.UI.Projector.Strip do
 
   # The row at its richest that fits (8.2): the stopped agent's name whole,
   # else cut to the cells left (at most 24), else left out; then the title
-  # cut to 12 cells; then no price.
-  defp fitted(ctx, head, need, swarm, stopped, money) do
+  # cut to 12 cells; then no price. cli021 U1: the vitals' compact form
+  # (`142 tok/s · RAM 312 MB`) sits before the price and gives way first.
+  defp fitted(ctx, head, need, swarm, stopped, money, vitals) do
     state = ctx.state
     inner = ctx.width - 2
 
-    attempt = fn title_cells, name?, money? ->
-      right = if money?, do: money, else: []
+    attempt = fn title_cells, name?, money?, vitals? ->
+      money = if money?, do: money, else: []
+
+      right =
+        cond do
+          not vitals? or vitals == [] -> money
+          money == [] -> vitals
+          true -> vitals ++ [{" · ", :text_ghost}] ++ money
+        end
+
       right_cells = if right == [], do: 0, else: cells(right, state) + 1
       left = head.(title_cells) ++ need ++ swarm
       room = inner - cells(left, state) - right_cells
@@ -116,12 +126,14 @@ defmodule SwarmCodeCLI.UI.Projector.Strip do
 
     Enum.find_value(
       [
-        {@title_cells, true, true},
-        {@title_cells, false, true},
-        {12, false, true},
-        {12, false, false}
+        {@title_cells, true, true, true},
+        {@title_cells, false, true, true},
+        {@title_cells, true, true, false},
+        {@title_cells, false, true, false},
+        {12, false, true, false},
+        {12, false, false, false}
       ],
-      fn {title, name?, money?} -> attempt.(title, name?, money?) end
+      fn {title, name?, money?, vitals?} -> attempt.(title, name?, money?, vitals?) end
     ) ||
       Draw.row(
         head.(12) ++ need ++ swarm ++ stopped_part(stopped, false, 0, state),

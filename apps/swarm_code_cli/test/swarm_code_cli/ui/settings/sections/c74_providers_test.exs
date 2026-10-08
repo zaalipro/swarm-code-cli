@@ -96,8 +96,9 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.C74ProvidersTest do
       {_s, id, task, rows} = T.run(I.seed(), "provider.fetch_all", nil)
       c = T.put(c, id, task, rows)
 
+      # cli021 U3: C1's words, and a line per provider below.
       assert text(row(Providers.rows(c), "act:providers.fetch_all").value) =~
-               "✓ 4 providers · 1 changed lists"
+               "✓ 4 providers · no change · 1 failed"
     end
   end
 
@@ -329,8 +330,9 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.C74ProvidersTest do
       assert text(row(page, "fld:provider:#{@ids.deepseek}:models").value) ==
                "2 → 3 after this fetch"
 
+      # cli021 U3: C1's words for the fetch's result.
       assert text(row(page, "act:provider.fetch_models").value) =~
-               "✓ 2 models from api.deepseek.com · 380 ms"
+               "✓ 2 models · 1 new · 1 removed"
 
       [
         {:command, "provider.apply_models", _, %{"fetch_task_id" => ^id, "mode" => "replace"},

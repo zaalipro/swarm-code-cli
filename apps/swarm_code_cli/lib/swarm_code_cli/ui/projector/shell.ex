@@ -21,6 +21,8 @@ defmodule SwarmCodeCLI.UI.Projector.Shell do
   @order [:title, :tabline, :main, :inspector, :activity, :composer, :status]
   def project(state, layout) do
     layout = without_idle_inspector(state, layout)
+    # cli021 U1: the vitals go to the dock, else the strip, else the status line.
+    vitals = SwarmCodeCLI.UI.Projector.Vitals.placement(layout, state)
 
     Enum.reduce(@order, {[], nil}, fn role, {regions, cursor} ->
       case Map.get(layout.rects, role) do
@@ -28,31 +30,31 @@ defmodule SwarmCodeCLI.UI.Projector.Shell do
           {regions, cursor}
 
         rect ->
-          {blocks, new_cursor} = blocks(role, state, rect, layout.class)
-          id = Atom.to_string(role)
-          focus = if state.focus == id and state.layers == [], do: :active, else: :inactive
+          {blocks, new_cursor} =
+            if role == :status,
+              do:
+                {Status.project(state, layout.class, rect.width, vitals?: vitals == :status), nil},
+              else: blocks(role, state, rect, layout.class)
 
-          label =
-            case role do
-              :title -> Composer.mode_label(state)
-              :composer -> Composer.label(state)
-              :tabline -> SafeText.chrome(:runs_label)
-              _ -> SafeText.chrome(role)
-            end
-            |> Density.safe(state, rect.width)
-
-          region = %Region{
-            id: id,
-            role: role,
-            rect: rect,
-            label: label,
-            blocks: blocks,
-            focus: focus
-          }
-
-          {regions ++ [region], new_cursor || cursor}
+          {regions ++ [region(state, role, rect, blocks)], new_cursor || cursor}
       end
     end)
+  end
+
+  defp region(state, role, rect, blocks) do
+    id = Atom.to_string(role)
+    focus = if state.focus == id and state.layers == [], do: :active, else: :inactive
+
+    label =
+      case role do
+        :title -> Composer.mode_label(state)
+        :composer -> Composer.label(state)
+        :tabline -> SafeText.chrome(:runs_label)
+        _ -> SafeText.chrome(role)
+      end
+      |> Density.safe(state, rect.width)
+
+    %Region{id: id, role: role, rect: rect, label: label, blocks: blocks, focus: focus}
   end
 
   # One row for the title and the runs (ux M5): the mark and the project,
@@ -151,7 +153,6 @@ defmodule SwarmCodeCLI.UI.Projector.Shell do
   defp blocks(:inspector, state, rect, class), do: {Inspector.project(state, rect, class), nil}
 
   defp blocks(:composer, state, rect, _), do: Composer.project(state, rect)
-  defp blocks(:status, state, rect, class), do: {Status.project(state, class, rect.width), nil}
 
   # The row between the transcript and the composer: a hairline, or the title
   # of the approval that has taken the composer slot.

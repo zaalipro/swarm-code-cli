@@ -521,8 +521,11 @@ defmodule SwarmCodeCLI.UI.Settings.IntegrationRows do
   def count(1, noun), do: "1 #{noun}"
   def count(n, noun), do: "#{n} #{noun}s"
 
-  @doc "Context window in words: `128k`, `1M`, `family default`."
-  def context(nil), do: "family default"
+  @doc """
+  Context window in words: `128k`, `1M`, `1M default` (cli021 U3: a model
+  without a configured window works in the 1 000 000-token default, K1).
+  """
+  def context(nil), do: "1M default"
 
   def context(n) when is_integer(n) and n >= 1_000_000 and rem(n, 1_000_000) == 0,
     do: "#{div(n, 1_000_000)}M"

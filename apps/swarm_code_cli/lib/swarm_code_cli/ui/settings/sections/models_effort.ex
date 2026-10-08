@@ -21,6 +21,8 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.ModelsEffort do
   use SwarmCodeCLI.UI.Settings.Section, id: :models_effort
 
   alias SwarmCodeCLI.UI.Settings.{Page, Picker, Row, Rows}
+  alias SwarmCodeCLI.UI.Settings.IntegrationRows, as: R
+  alias SwarmCodeCLI.UI.Settings.Sections.{Pricing, Providers}
 
   @consensus "consensus · this conversation"
   @session "this conversation"
@@ -30,7 +32,11 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.ModelsEffort do
   @impl true
   def loads(ctx) do
     # QA #2 P0-2, P1-1: the model rows name their provider and open the picker.
-    base = [{:values, [:models_effort]} | SwarmCodeCLI.UI.Settings.ModelPicker.loads()]
+    # cli021 U3: the price rows carry the models' context windows.
+    base =
+      [{:values, [:models_effort]} | SwarmCodeCLI.UI.Settings.ModelPicker.loads()] ++
+        [{:records, "pricing_rows", %{}}]
+
     if project_id(ctx), do: base ++ [{:record, "project_config", project_id(ctx)}], else: base
   end
 
@@ -45,7 +51,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.ModelsEffort do
         do: main,
         else: drop_group(main, @session) ++ [no_conversation()]
 
-    dedupe_headings(main) ++ consensus_link(ctx, consensus) ++ links(ctx)
+    dedupe_headings(main) ++ windows(ctx) ++ consensus_link(ctx, consensus) ++ links(ctx)
   end
 
   # The registry lists `▸ Apply a profile` after the consensus group; with
@@ -95,6 +101,22 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.ModelsEffort do
   def act(_ctx, %Row{id: "link:files_env"}, verb) when verb in [:open, :enter, :open_row, :goto],
     do: [{:section, :files_env}]
 
+  # cli021 U3: a model's context window (`windows/1`).
+  def act(ctx, %Row{target: {:context_window, model}}, :reset) do
+    case Pricing.window_ops(ctx, model, nil) do
+      {:ok, ops} -> ops
+      {:error, _words} -> []
+    end
+  end
+
+  def act(_ctx, %Row{target: {:context_window_unpriced, model}}, verb)
+      when verb in [:open, :enter, :open_row],
+      do: window_ops_for_unpriced(model)
+
+  def act(_ctx, %Row{target: {:context_window_pricing, _model}}, verb)
+      when verb in [:open, :enter, :open_row],
+      do: [{:open, R.new_page(:pricing)}]
+
   def act(_ctx, %Row{key: "models.fetch_all"}, verb)
       when verb in [:open, :enter, :open_row, :fetch],
       do: [{:task, "provider.fetch_all", nil, %{}}]
@@ -120,6 +142,22 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.ModelsEffort do
   end
 
   def act(_ctx, _row, _verb), do: :default
+
+  @impl true
+  def commit(ctx, %Row{target: {:context_window, model}} = row, value) do
+    case Pricing.window_ops(ctx, model, value) do
+      {:ok, ops} -> ops
+      {:error, words} -> [{:row_error, row.id, words}]
+    end
+  end
+
+  def commit(_ctx, _row, _value), do: :default
+
+  @doc """
+  A model without a price row opens its price draft: the desktop stores the
+  window on the price row (Settings → Pricing), so it is set with the prices.
+  """
+  def window_ops_for_unpriced(model), do: Pricing.draft_ops(model, %{})
 
   @doc false
   @impl true
@@ -158,7 +196,128 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.ModelsEffort do
 
   # ------------------------------------------------------------------ rows
 
+  # cli021 U3: `▸ Fetch every provider's models` says its result here too.
+  defp decorate(%Row{key: "models.fetch_all"} = row, ctx) do
+    case Providers.fetch_all_view(ctx) do
+      {_value, _tag, _lines, nil} -> row
+      {value, tag, lines, _task} -> %{row | value: value, tag: tag, lines: lines}
+    end
+  end
+
   defp decorate(row, _ctx), do: row
+
+  # cli021 U3 (owner point 6): one row per model this conversation uses (the
+  # chat, worker and validator slots; the new conversations' defaults when
+  # there is none) with its context window, 1M unless its price row sets one.
+  # A priced model edits in place (8 000 to 2 000 000, `r` back to 1M); an
+  # unpriced one opens its price draft.
+  @slots [
+    {"session.model", "models.chat", "chat"},
+    {"session.sub_agent_model", "models.sub_agent", "worker"},
+    {"session.validator_model", "models.validator", "validator"}
+  ]
+
+  defp windows(ctx) do
+    used =
+      @slots
+      |> Enum.flat_map(fn {session, global, word} ->
+        model =
+          if conversation?(ctx),
+            do: model_name(ctx, session) || model_name(ctx, global),
+            else: model_name(ctx, global)
+
+        if model, do: [{model, word}], else: []
+      end)
+      |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
+      |> Enum.sort_by(fn {_model, [word | _]} ->
+        Enum.find_index(@slots, &(elem(&1, 2) == word))
+      end)
+
+    case used do
+      [] -> []
+      _ -> [Row.heading("context windows") | Enum.map(used, &window_row(ctx, &1))]
+    end
+  end
+
+  defp window_row(ctx, {model, words}) do
+    tag = [{Enum.join(words, " · "), :text_faint}]
+
+    case R.loaded?(ctx, "pricing_rows") && Pricing.window(ctx, model) do
+      false ->
+        %Row{
+          id: "ctx:" <> model,
+          kind: :info,
+          label: model,
+          value: [{"…", :text_faint}],
+          tag: tag
+        }
+
+      {:priced, window} ->
+        %Row{
+          id: "ctx:" <> model,
+          kind: :field,
+          label: model,
+          value: [window_words(window)],
+          tag: tag,
+          editor:
+            {SwarmCodeCLI.UI.Settings.Editors.Number,
+             %{
+               value: window,
+               min: 8_000,
+               max: 2_000_000,
+               step: 1_000,
+               big_step: 100_000,
+               nullable: true,
+               null_label: R.context(nil)
+             }},
+          keys: [{"Enter", :open_row, "edit"}, {"r", :reset, "back to 1M"}],
+          target: {:context_window, model}
+        }
+
+      {:unknown, _} ->
+        %Row{
+          id: "ctx:" <> model,
+          kind: :link,
+          label: model,
+          value: [{"set on the Pricing page", :text_faint}],
+          tag: tag,
+          keys: [{"Enter", :open_row, "open Pricing"}],
+          target: {:context_window_pricing, model}
+        }
+
+      {:unpriced, _} ->
+        %Row{
+          id: "ctx:" <> model,
+          kind: :link,
+          label: model,
+          value: [window_words(nil), {" · set it with the model's price", :text_faint}],
+          tag: tag,
+          keys: [{"Enter", :open_row, "price it"}],
+          target: {:context_window_unpriced, model}
+        }
+    end
+  end
+
+  defp window_words(nil), do: {R.context(nil), :text_faint}
+  defp window_words(n), do: {R.context(n), :text_primary}
+
+  # A model value as the service sends it: `%{"provider_id", "model"}`.
+  defp model_name(ctx, key) do
+    case ctx.data |> Map.get(:values, %{}) |> Map.get(key) do
+      nil ->
+        nil
+
+      setting ->
+        case get(setting, :value) do
+          %{} = value -> present(get(value, :model))
+          value when is_binary(value) -> value |> String.split("|") |> List.last() |> present()
+          _ -> nil
+        end
+    end
+  end
+
+  defp present(value) when is_binary(value) and value != "", do: value
+  defp present(_value), do: nil
 
   defp split_consensus(rows) do
     {consensus, main, _in?} =
