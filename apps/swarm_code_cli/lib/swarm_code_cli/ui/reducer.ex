@@ -1062,6 +1062,29 @@ defmodule SwarmCodeCLI.UI.Reducer do
 
   defp transition(state, {:complete_command, name}), do: SlashPalette.complete(state, name)
 
+  defp transition(state, {:complete_argument, text}),
+    do: SlashPalette.complete_argument(state, text)
+
+  # cli021 B3: Enter on the argument list writes the highlighted row's draft
+  # and sends it, as if it had been typed whole.
+  defp transition(state, {:run_argument, text}) do
+    with key when not is_nil(key) <- State.current_draft_key(state),
+         %{text: ^text} <- SlashPalette.argument_row(state, text) do
+      {state, replaced} = replace_draft(state, key, "/" <> text)
+
+      case Keymap.draft_send(state) do
+        {:ok, action} ->
+          {state, sent} = transition(state, action)
+          {state, replaced ++ sent}
+
+        :ignore ->
+          {state, replaced}
+      end
+    else
+      _ -> {state, []}
+    end
+  end
+
   # pass73 finisher (V1's request K1): Enter on the approval card, with the
   # draft blank, shows every line of its command ("… N more lines · Enter
   # shows all"; PgUp/PgDn page it), and Enter again folds it back.
@@ -1121,7 +1144,12 @@ defmodule SwarmCodeCLI.UI.Reducer do
     end
   end
 
-  defp transition(state, :dismiss_completion), do: PathCompletion.dismiss(state)
+  defp transition(state, :dismiss_completion) do
+    if PathCompletion.open?(state),
+      do: PathCompletion.dismiss(state),
+      else: {SlashPalette.dismiss_args(state), []}
+  end
+
   defp transition(state, {:scroll, region, operation}), do: Pages.scroll(state, region, operation)
 
   defp transition(state, {:retry_page, slot, direction}),
@@ -1230,7 +1258,7 @@ defmodule SwarmCodeCLI.UI.Reducer do
       if kind == :editor, do: collapse_paste(state, key, operation), else: {state, operation}
 
     {next, effects} = Editing.apply(state, kind, key, operation)
-    next = if kind == :editor and next != state, do: %{next | slash_palette: nil}, else: next
+    next = if kind == :editor and next != state, do: SlashPalette.after_edit(next), else: next
 
     # Editing a recalled prompt makes it the draft: Up moves the caret again.
     next =
@@ -3241,7 +3269,7 @@ defmodule SwarmCodeCLI.UI.Reducer do
     end
   end
 
-  # cli020 D18/D20: bare /effort and /swarm_effort open the picker.
+  # cli020 D18/D20: bare /effort and /worker_effort open the picker.
   defp slash_local(state, {:effort, target}) do
     {state, cleared} = clear_command_draft(state)
     {state, opened} = EffortPicker.open(state, target)

@@ -462,7 +462,9 @@ defmodule SwarmCodeCLI.UI.Projector.Composer do
         if slice.text == "" do
           [[{placeholder_text(state), tint(:text_faint, state)}]]
         else
-          keyword_rows(lines, first, editor_height, draft, slice, state)
+          lines
+          |> keyword_rows(first, editor_height, draft, slice, state)
+          |> command_row(first == 0 and slice.start == 0, state)
         end
 
       rows =
@@ -549,6 +551,38 @@ defmodule SwarmCodeCLI.UI.Projector.Composer do
       Enum.map(visible, &paste_segments(&1, plain, faint))
     end
   end
+
+  # cli021 B4: the command token of a draft that starts with `/<word>` (the
+  # first word, up to a space or the end of the line): a command the client or
+  # the core registry knows in the accent, bold; any other word muted. Only
+  # the first row of a draft whose start is on screen has one; the arguments
+  # and every later row keep their colour. The text itself is not touched.
+  @command_token ~r/\A(\s*)(\/[A-Za-z0-9_.-]*)(?=\s|\z)/u
+
+  defp command_row([[{line, style} | segments] | rows], true, state) do
+    case Regex.run(@command_token, line) do
+      [whole, lead, token] ->
+        name = String.replace_prefix(token, "/", "")
+
+        command =
+          if SlashPalette.known?(name),
+            do: tint(:accent, state, [:bold]),
+            else: tint(:text_muted, state)
+
+        rest = binary_part(line, byte_size(whole), byte_size(line) - byte_size(whole))
+
+        head =
+          [{lead, style}, {token, command}, {rest, style}]
+          |> Enum.reject(fn {text, _} -> text == "" end)
+
+        [head ++ segments | rows]
+
+      _ ->
+        [[{line, style} | segments] | rows]
+    end
+  end
+
+  defp command_row(rows, _top?, _state), do: rows
 
   # cli020 E15 (decision 4e, D8): a collapsed paste's placeholder
   # `[Pasted text #1 · 60 lines]` is one dim chip in the draft.

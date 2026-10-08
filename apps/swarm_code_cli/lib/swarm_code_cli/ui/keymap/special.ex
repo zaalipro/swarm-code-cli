@@ -74,6 +74,8 @@ defmodule SwarmCodeCLI.UI.Keymap.Special do
     cond do
       filtering?(state) -> ok({:dashboard_filter, :clear})
       PathCompletion.open?(state) -> ok(:dismiss_completion)
+      # cli021 B3: Esc closes the argument list only, the draft stays.
+      SlashPalette.args_open?(state) and state.layers == [] -> ok(:dismiss_completion)
       state.layers != [] -> ok(:close_top_layer)
       state.focus in ["main", "inspector"] -> ok({:focus_region, "composer"})
       true -> ok({:interrupt, :escape})
@@ -140,6 +142,7 @@ defmodule SwarmCodeCLI.UI.Keymap.Special do
   def run(:focus_next, _key, %{focus: "composer", layers: []} = state, table) do
     case {PathCompletion.selected(state), SlashPalette.selected(state)} do
       {%{id: path}, _} -> ok({:complete_path, path})
+      {nil, %{arg?: true, text: text}} -> ok({:complete_argument, text})
       {nil, %{name: name}} -> ok({:complete_command, name})
       _ -> if Keymap.live_turn(state), do: run(:queue, nil, state, table), else: :ignore
     end
@@ -155,6 +158,7 @@ defmodule SwarmCodeCLI.UI.Keymap.Special do
 
   def run(:focus_next, _key, state, _table) do
     case SlashPalette.selected(state) do
+      %{arg?: true, text: text} -> ok({:complete_argument, text})
       %{name: name} -> ok({:complete_command, name})
       nil -> ok({:focus_cycle, :next})
     end
@@ -277,6 +281,9 @@ defmodule SwarmCodeCLI.UI.Keymap.Special do
 
       {:run, name} ->
         ok({:run_command, name})
+
+      {:run_argument, text} ->
+        ok({:run_argument, text})
 
       nil ->
         case Keymap.find_target(

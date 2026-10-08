@@ -43,7 +43,13 @@ defmodule SwarmCodeCLI.UI.Pass73ComposerKeywordTest do
           "fix the `workflow` module",
           "read priv/workflows/ and create-workflow.md"
         ] do
-      spans = composer_spans(typed(idle(), text))
+      # cli021 B4: the command word of a slash draft is bold in the command
+      # colour (monochrome has no colour to tell it from the keyword's), so
+      # the rows to check are the ones that are not a command token.
+      spans =
+        typed(idle(), text)
+        |> composer_spans()
+        |> Enum.reject(&String.starts_with?(SafeText.value(&1.text), "/"))
 
       refute Enum.any?(spans, &(&1.style.foreground == blue() and :bold in &1.style.modifiers)),
              text
