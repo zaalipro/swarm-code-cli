@@ -60,6 +60,12 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
     :ambiguous_conversation,
     :client_only
   ]
+  # cli021 int (K3): the headless launcher's sentence (`Release.Headless`) for
+  # a workflow that `ncode -p --approval auto|full` launches in an untrusted
+  # project (the launcher refuses such a session up front; this is the
+  # launch's own check).
+  @untrusted_approval "--approval auto and full need a trusted project. " <>
+                        "Run /trust in ncode first, or use --approval read-only."
   # A report is read in a dialog: bounded like the goal report.
   @report_bytes 60_000
   @review_prompt "Review the current uncommitted changes: call git_status and git_diff, then " <>
@@ -531,6 +537,9 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
 
     with %SwarmCode.Domain.Workflows.Definition{} = definition <- definition,
          {:ok, _} <- Workflows.cast_args(definition.meta, cmd.inputs, cmd.input),
+         # cli021 int (K3): the launch checks the session's `--approval` mode
+         # too; checked here first, so a refusal writes no message or title.
+         :ok <- Engine.check_approval_mode(conv.project, Keyword.get(opts, :approval_mode)),
          {:ok, conv} <- Conversations.set_title_from(conv, "/" <> cmd.workflow),
          {:ok, message} <-
            Conversations.create_message(%{
@@ -545,6 +554,8 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
       )
     else
       nil -> {:error, :unknown_workflow}
+      {:error, :untrusted_project} -> {:error, {:untrusted_project, @untrusted_approval}}
+      {:error, :invalid_approval_mode} -> {:error, :invalid_options}
       {:error, _} -> {:error, :invalid_workflow_arguments}
       _ -> {:error, :invalid_metadata}
     end
@@ -1173,6 +1184,9 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
   defp failure(:invalid_workflow_arguments), do: {:error, :invalid_workflow_arguments}
   # cli020: a refusal in words (C11 /delete of a live conversation).
   defp failure({:busy, words}) when is_binary(words), do: {:error, {:busy, words}}
+
+  defp failure({:untrusted_project, words}) when is_binary(words),
+    do: {:error, {:untrusted_project, words}}
 
   # pass73 T3/T8: an unexpected failure is still refused, but cli.log names its
   # shape (a tag, never a changeset's text) so the next report is diagnosable.

@@ -30,7 +30,11 @@ defmodule SwarmCode.Daemon.Service.Cli021ContextWindowTest do
   test "the window is the synced engine's effective window, never its 75 % budget" do
     pricing = %{"tiny" => %{"input" => 0.1, "output" => 0.2, "context_window" => 32_000}}
 
-    for {model, settings} <- [{"tiny", settings(pricing)}, {"other", settings(pricing)}, {"x", nil}] do
+    for {model, settings} <- [
+          {"tiny", settings(pricing)},
+          {"other", settings(pricing)},
+          {"x", nil}
+        ] do
       assert ContextWindow.window(model, settings) ==
                SwarmCode.Domain.Engine.Context.effective_window(model, settings)
     end
