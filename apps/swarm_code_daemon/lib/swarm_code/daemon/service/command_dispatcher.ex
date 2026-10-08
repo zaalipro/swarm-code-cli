@@ -26,6 +26,7 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
   alias SwarmCode.Daemon.Service.Rewind
   import Ecto.Query, only: [from: 2]
 
+  @approval_modes ["read_only", "auto", "full_access"]
   @allowed [:custom, :workflows, :efforts, :swarm_efforts, :attachments, :research_ids]
   @errors [
     :invalid_command,
@@ -623,16 +624,14 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
     report(conv, cmd.name, "Approvals", text)
   end
 
+  # cli020 fix S3: a mode picked by hand marks the project trusted, as the
+  # desktop's `set_approval_mode` does, and the notice says so.
   defp execute(conv, %{action: :set_approval} = cmd, _) do
     mode = Atom.to_string(cmd.approval_mode)
 
-    with {:ok, project} <-
-           Projects.update(Projects.get!(conv.project_id), %{approval_mode: mode}),
-         do:
-           result(conv, cmd.name, :project, %{
-             project_id: project.id,
-             text: "Approval mode: " <> mode_words(project.approval_mode)
-           })
+    with {:ok, project, text} <-
+           SwarmCode.Daemon.Service.ApprovalPick.pick(Projects.get!(conv.project_id), mode),
+         do: result(conv, cmd.name, :project, %{project_id: project.id, text: text})
   end
 
   defp execute(conv, %{action: :trust_project} = cmd, _) do
@@ -1128,6 +1127,14 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
 
   defp valid_options?(opts), do: valid_options?(opts, [])
   defp valid_options?([], _), do: true
+
+  # cli020 fix S1: `ncode -p --approval <mode>` rides on the options of every
+  # command a session dispatches (`approval/1` reads it). It is a mode, not a
+  # list, so it has its own clause; anything else is refused.
+  defp valid_options?([{:approval_mode, mode} | rest], seen) do
+    :approval_mode not in seen and mode in @approval_modes and
+      valid_options?(rest, [:approval_mode | seen])
+  end
 
   defp valid_options?([{key, value} | rest], seen) when key in @allowed do
     key not in seen and
